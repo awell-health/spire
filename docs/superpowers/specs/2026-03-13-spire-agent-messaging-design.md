@@ -160,36 +160,38 @@ merge       — Merge the worktree and clean up
 ### Formula definition
 
 ```toml
-[formula]
-name = "spire-agent-work"
-description = "Standard agent work protocol. Focus → design → implement in worktree → review → merge."
+description = "Standard agent work protocol. Focus -> design -> implement in worktree -> review -> merge."
+formula = "spire-agent-work"
 type = "workflow"
-
-[variables]
-task = { description = "The bead ID being worked on", required = true }
+version = 1
 
 [[steps]]
-name = "design"
+id = "design"
 title = "Design approach for {{task}}"
 description = "Read the task, explore relevant code, form a plan. Do not write code yet."
 
 [[steps]]
-name = "implement"
+id = "implement"
 title = "Implement {{task}}"
 description = "Use /worktree-merge-orchestrator to implement in an isolated git worktree."
-depends_on = ["design"]
+needs = ["design"]
 
 [[steps]]
-name = "review"
+id = "review"
 title = "Review implementation of {{task}}"
 description = "Review the changes against the original task requirements. Run tests."
-depends_on = ["implement"]
+needs = ["implement"]
 
 [[steps]]
-name = "merge"
+id = "merge"
 title = "Merge {{task}}"
 description = "Merge the worktree back to the working branch. Clean up."
-depends_on = ["review"]
+needs = ["review"]
+
+[vars]
+[vars.task]
+description = "The bead ID being worked on"
+required = true
 ```
 
 ### Installation
@@ -202,11 +204,14 @@ The formula file lives at `.beads/formulas/spire-agent-work.formula.toml` in the
 1. bd show <bead-id> --json                              # fetch the task
 2. bd children <bead-id> --json                           # check for existing molecule
 3. if no molecule children:
-     bd mol pour spire-agent-work --var task=<bead-id>    # pour the formula
-     bd dep add <first-step> <bead-id>                    # link molecule to task
+     bd mol pour spire-agent-work --var task=<bead-id>    # pour formula (inline cook)
+     # pour creates the molecule as children of the task bead
+     # parent-child relationship is sufficient — no extra dep needed
 4. bd mol progress <molecule-id> --json                   # get workflow state
 5. assemble and output the focus prompt
 ```
+
+Note: `bd mol pour` accepts formula names directly and cooks inline (no separate `bd cook` step needed).
 
 ## Implementation: Go Binary
 
