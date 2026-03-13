@@ -201,17 +201,16 @@ The formula file lives at `.beads/formulas/spire-agent-work.formula.toml` in the
 ### How `spire focus` uses it
 
 ```
-1. bd show <bead-id> --json                              # fetch the task
-2. bd children <bead-id> --json                           # check for existing molecule
+1. bd show <bead-id> --json                                          # fetch the task
+2. bd children <bead-id> --json                                       # check for existing molecule
 3. if no molecule children:
-     bd mol pour spire-agent-work --var task=<bead-id>    # pour formula (inline cook)
-     # pour creates the molecule as children of the task bead
-     # parent-child relationship is sufficient — no extra dep needed
-4. bd mol progress <molecule-id> --json                   # get workflow state
+     bd mol bond spire-agent-work <bead-id> --var task=<bead-id>      # bond formula to task bead
+     # bond cooks the formula inline and spawns steps as children of <bead-id>
+4. bd mol progress <bead-id> --json                                   # get workflow state
 5. assemble and output the focus prompt
 ```
 
-Note: `bd mol pour` accepts formula names directly and cooks inline (no separate `bd cook` step needed).
+Note: `bd mol bond` uses formula+bead polymorphism — cooks inline, no separate `bd cook` step needed. The task bead becomes the molecule root.
 
 ## Implementation: Go Binary
 
