@@ -11,19 +11,50 @@ description = "Read the task, explore relevant code, form a plan. Do not write c
 [[steps]]
 id = "implement"
 title = "Implement {{task}}"
-description = "Use /worktree-merge-orchestrator to implement in an isolated git worktree."
+description = """
+Implement in an isolated git worktree. The bead ID is used for naming.
+
+Setup:
+  git worktree add .worktrees/{{task}} -b feat/{{task}}
+  cd .worktrees/{{task}} && npm install  # if applicable
+
+Rules:
+  - Work ONLY within .worktrees/{{task}}
+  - Commit all changes to branch feat/{{task}}
+  - Run tests and verify your work compiles
+  - Do NOT merge, push, or touch other branches
+
+When done, report: branch name, what changed, test results.
+"""
 needs = ["design"]
 
 [[steps]]
 id = "review"
 title = "Review implementation of {{task}}"
-description = "Review the changes against the original task requirements. Run tests."
+description = """
+Review the implementation on branch feat/{{task}}.
+
+  cd .worktrees/{{task}}
+  # Run full test suite
+  # Verify build passes
+  # Check changes against the original task requirements
+
+If issues found, fix them on the same branch and re-verify.
+"""
 needs = ["implement"]
 
 [[steps]]
 id = "merge"
 title = "Merge {{task}}"
-description = "Merge the worktree back to the working branch. Clean up."
+description = """
+Merge the worktree branch into the current working branch.
+
+  git merge feat/{{task}} --no-ff -m "Merge feat/{{task}}: <summary>"
+  # Run tests on merged result
+  # Clean up:
+  git worktree remove .worktrees/{{task}}
+  git branch -d feat/{{task}}
+"""
 needs = ["review"]
 
 [vars]
