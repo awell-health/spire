@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -22,24 +23,47 @@ func cmdFocus(args []string) error {
 		return fmt.Errorf("focus %s: parse bead: %w", id, err)
 	}
 
-	// 2. Check if a molecule already exists for this bead
-	molOut, molErr := bd("mol", "show", id, "--json")
-	hasMolecule := molErr == nil && molOut != "" && strings.Contains(molOut, id)
+	// 2. Check if a molecule already exists for this task (via workflow: label)
+	var molID string
+	var existingMols []Bead
+	_ = bdJSON(&existingMols, "list", "--rig=spi", "--label", fmt.Sprintf("workflow:%s", id), "--status=open")
+	if len(existingMols) > 0 {
+		molID = existingMols[0].ID
+	}
 
-	// 3. Bond formula if no molecule exists
-	if !hasMolecule {
-		// Ensure the proto exists (cook --persist is idempotent if already exists)
+	// 3. Pour molecule if none exists
+	if molID == "" {
+		// Ensure the proto exists (cook --persist is idempotent)
 		bd("cook", "spire-agent-work", "--persist")
-		_, bondErr := bd("mol", "bond", "spire-agent-work", id, "--var", fmt.Sprintf("task=%s", id))
-		if bondErr != nil {
-			// Non-fatal: formula may not exist or bond may not be available
-			fmt.Fprintf(os.Stderr, "spire: warning: could not bond workflow: %s\n", bondErr)
+		pourOut, pourErr := bd("mol", "pour", "spire-agent-work", "--var", fmt.Sprintf("task=%s", id), "--json")
+		if pourErr != nil {
+			fmt.Fprintf(os.Stderr, "spire: warning: could not create workflow: %s\n", pourErr)
+		} else {
+			// Parse the poured molecule to get its root ID
+			var pourResult struct {
+				RootID string `json:"new_epic_id"`
+			}
+			if err := json.Unmarshal([]byte(pourOut), &pourResult); err == nil && pourResult.RootID != "" {
+				molID = pourResult.RootID
+			} else {
+				// Fallback: find by label (pour may not return JSON we expect)
+				_ = bdJSON(&existingMols, "list", "--rig=spi", "--label", fmt.Sprintf("workflow:%s", id), "--status=open")
+				if len(existingMols) > 0 {
+					molID = existingMols[0].ID
+				}
+			}
+			// Label the molecule to link it to the task
+			if molID != "" {
+				bd("update", molID, "--add-label", fmt.Sprintf("workflow:%s", id))
+			}
 		}
 	}
 
 	// 4. Get molecule progress if available
 	var progressOut string
-	progressOut, _ = bd("mol", "progress", id)
+	if molID != "" {
+		progressOut, _ = bd("mol", "progress", molID)
+	}
 
 	// 5. Assemble output
 	fmt.Printf("--- Task %s ---\n", target.ID)
