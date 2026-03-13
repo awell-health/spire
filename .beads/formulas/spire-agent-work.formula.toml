@@ -1,0 +1,32 @@
+description = "Standard agent work protocol. Focus -> design -> implement in worktree -> review -> merge."
+formula = "spire-agent-work"
+type = "workflow"
+version = 1
+
+[[steps]]
+id = "design"
+title = "Design approach for {{task}}"
+description = "Read the task, explore relevant code, form a plan. Do not write code yet."
+
+[[steps]]
+id = "implement"
+title = "Implement {{task}}"
+description = "Use /worktree-merge-orchestrator to implement in an isolated git worktree."
+needs = ["design"]
+
+[[steps]]
+id = "review"
+title = "Review implementation of {{task}}"
+description = "Review the changes against the original task requirements. Run tests."
+needs = ["implement"]
+
+[[steps]]
+id = "merge"
+title = "Merge {{task}}"
+description = "Merge the worktree back to the working branch. Clean up."
+needs = ["review"]
+
+[vars]
+[vars.task]
+description = "The bead ID being worked on"
+required = true
