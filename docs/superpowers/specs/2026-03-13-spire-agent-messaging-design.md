@@ -61,26 +61,43 @@ Name defaults to current repo's prefix. Output includes a hint: "run `spire read
 
 ### `spire focus <bead-id>`
 
-Clears context and reads a bead. Assembles a structured prompt:
+Focuses an agent on a bead. Two behaviors depending on state:
+
+**First focus (no molecule exists):**
+1. Pours the `spire-agent-work` formula with the bead as context, creating a molecule (child beads representing workflow steps)
+2. Assembles and outputs the structured prompt (see below)
+
+**Subsequent focus (molecule already exists):**
+1. Detects existing molecule children on the bead
+2. Shows current progress through the workflow
+3. Assembles and outputs the structured prompt with progress context
+
+**Output format:**
 
 ```
---- Message spi-12 ---
-From: pan
-Subject: deploy is failing on staging
-Body: ...
-
---- Referenced: pan-42 ---
+--- Task pan-42 ---
 Title: Fix staging deploy pipeline
-Status: open
+Status: in_progress
 Priority: P1
 Description: ...
 
---- Thread (2 replies) ---
-spi-12.1 [awp]: looking into it, bad migration
-spi-12.2 [awp]: fixed in awp-87
+--- Workflow (spire-agent-work) ---
+  [x] design      — Design the approach
+  [ ] implement   — Implement in worktree (use /worktree-merge-orchestrator)
+  [ ] review      — Review implementation
+  [ ] merge       — Merge and clean up
+
+--- Referenced by spi-12 ---
+From: pan
+Subject: deploy is failing on staging
+
+--- Comments (2) ---
+...
 ```
 
-Fetches the bead, its comments, referenced beads (via `ref:` labels), and thread context (parent + children). Plain text output meant to be consumed as agent context.
+Fetches the bead, its molecule/workflow state, comments, referenced beads (via `ref:` labels), and thread context (parent + children). Plain text output meant to be consumed as agent context.
+
+Detection of existing molecule: check for children of the bead that have labels matching the formula step names, or check `bd mol show` on the bead.
 
 ### `spire read <bead-id>`
 
@@ -127,6 +144,70 @@ spi-5   type=task  title="pan"  labels=[agent, name:pan]  status=open
 spi-6   type=task  title="awp"  labels=[agent, name:awp]  status=open
 ```
 
+## Work Formula: `spire-agent-work`
+
+A beads formula that encodes how agents should work on tasks. Poured automatically by `spire focus` on first focus.
+
+### Steps
+
+```
+design      — Understand the task, read relevant code, form an approach
+implement   — Implement in an isolated worktree (use /worktree-merge-orchestrator)
+review      — Review the implementation against the task requirements
+merge       — Merge the worktree and clean up
+```
+
+### Formula definition
+
+```toml
+[formula]
+name = "spire-agent-work"
+description = "Standard agent work protocol. Focus → design → implement in worktree → review → merge."
+type = "workflow"
+
+[variables]
+task = { description = "The bead ID being worked on", required = true }
+
+[[steps]]
+name = "design"
+title = "Design approach for {{task}}"
+description = "Read the task, explore relevant code, form a plan. Do not write code yet."
+
+[[steps]]
+name = "implement"
+title = "Implement {{task}}"
+description = "Use /worktree-merge-orchestrator to implement in an isolated git worktree."
+depends_on = ["design"]
+
+[[steps]]
+name = "review"
+title = "Review implementation of {{task}}"
+description = "Review the changes against the original task requirements. Run tests."
+depends_on = ["implement"]
+
+[[steps]]
+name = "merge"
+title = "Merge {{task}}"
+description = "Merge the worktree back to the working branch. Clean up."
+depends_on = ["review"]
+```
+
+### Installation
+
+The formula file lives at `.beads/formulas/spire-agent-work.formula.toml` in the Spire repo. Since all satellites redirect to Spire's `.beads/`, the formula is accessible from any repo via beads' formula search path.
+
+### How `spire focus` uses it
+
+```
+1. bd show <bead-id> --json                              # fetch the task
+2. bd children <bead-id> --json                           # check for existing molecule
+3. if no molecule children:
+     bd mol pour spire-agent-work --var task=<bead-id>    # pour the formula
+     bd dep add <first-step> <bead-id>                    # link molecule to task
+4. bd mol progress <molecule-id> --json                   # get workflow state
+5. assemble and output the focus prompt
+```
+
 ## Implementation: Go Binary
 
 ### Structure
@@ -137,10 +218,13 @@ cmd/spire/
   register.go      — register/unregister commands
   send.go          — send command
   collect.go       — collect command
-  focus.go         — focus + context assembly
+  focus.go         — focus, molecule pour/resume, context assembly
   read.go          — read (close) command
   identity.go      — auto-detect caller prefix from repo context
   bd.go            — shells out to bd, parses JSON output
+
+.beads/formulas/
+  spire-agent-work.formula.toml  — standard agent work protocol
 ```
 
 ### Key decisions
@@ -164,11 +248,12 @@ Detection strategy (highest priority first):
 
 Assembles structured plain text from:
 1. The target bead via `bd show <id> --json` (title, description, status, priority)
-2. Referenced beads — parse `labels` array from JSON, extract `ref:*` prefixed labels, fetch each with `bd show <ref-id> --json`
-3. Thread context — if bead has a parent, fetch parent + siblings via `bd children <parent-id> --json`
-4. Comments via `bd comments <id> --json`
+2. Molecule state — pour `spire-agent-work` on first focus, then `bd mol progress` for workflow status
+3. Referenced beads — parse `labels` array from JSON, extract `ref:*` prefixed labels, fetch each with `bd show <ref-id> --json`
+4. Thread context — if bead has a parent, fetch parent + siblings via `bd children <parent-id> --json`
+5. Comments via `bd comments <id> --json`
 
-Output is plain text, not JSON — designed for agent context consumption.
+Output is plain text, not JSON — designed for agent context consumption. The goal is minimal context: only what the agent needs to act on the current step.
 
 ## Error Handling
 
