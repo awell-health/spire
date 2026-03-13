@@ -24,35 +24,38 @@ The `spire` CLI is a thin ergonomic layer over `bd`. It owns no state. All data 
 
 ### `spire register <name>`
 
-Registers an agent as present in the system.
+Registers an agent as present in the system. Idempotent — if an agent bead with this name already exists and is open, returns the existing ID.
 
 Creates a bead:
-- `--rig=spi --type=agent --title="<name>" --labels agent --silent`
+- `bd create --rig=spi --type=task --title="<name>" -p 4 --labels "agent,name:<name>" --silent`
+
+Uses `type=task` (not a custom type) to ensure queryability with standard `bd list` filters. The `agent` label distinguishes these from regular tasks.
 
 Prints the bead ID. Agent appears in the roster. `status=open` means registered.
 
+Roster query: `bd list --rig=spi --label agent --status=open --json`
+
 ### `spire unregister <name>`
 
-Finds the agent bead by label query, closes it. `status=closed` means unregistered.
+Finds the agent bead: `bd list --rig=spi --label "agent,name:<name>" --status=open --json`, extracts the ID, then `bd close <id>`. `status=closed` means unregistered.
 
 ### `spire send <to> "<message>" [--ref <bead-id>] [--thread <message-id>]`
 
 Sends a message to another agent.
 
 Creates a bead:
-- `--rig=spi --type=message`
-- `--title="<message>"`
-- `--labels "to:<to>,from:<caller>"`
+- `bd create --rig=spi --type=task -p 3 --title="<message>" --labels "msg,to:<to>,from:<caller>" --silent`
 - If `--ref`: adds `ref:<bead-id>` label
 - If `--thread`: sets `--parent <message-id>`
+- Optional `--priority <0-4>` flag for urgent messages (default: 3)
 
-Caller identity is auto-detected from the current repo's prefix.
+Uses `type=task` with the `msg` label to distinguish messages. Caller identity is auto-detected from the current repo's prefix.
 
 ### `spire collect [<name>]`
 
 Checks the agent's inbox.
 
-Runs: `bd list --rig=spi --type=message --label "to:<name>" --status=open --json`
+Runs: `bd list --rig=spi --label "msg,to:<name>" --status=open --json`
 
 Name defaults to current repo's prefix. Output includes a hint: "run `spire read <id>` to mark as read."
 
@@ -85,16 +88,18 @@ Marks a message as read: `bd close <bead-id>`.
 
 ## Message Schema
 
-All messages are beads in the `spi-` prefix with `type=message`.
+All messages are beads in the `spi-` prefix with `type=task` and the `msg` label.
 
 ### Label conventions
 
 | Label pattern | Purpose |
 |---|---|
+| `msg` | Marks message beads (distinguishes from regular tasks) |
 | `to:<name>` | Recipient (agent prefix or functional name) |
 | `from:<name>` | Sender (auto-detected from caller's repo) |
 | `ref:<bead-id>` | Links to a bead this message is about |
 | `agent` | Marks agent registration beads |
+| `name:<name>` | Agent's name on registration beads |
 
 ### Threading
 
@@ -113,13 +118,13 @@ spi-12  "pan: deploy is failing on staging"        [to:awp, from:pan]
 - **open** = unread/unacknowledged
 - **closed** = read
 
-Messages are ephemeral. `spire collect` only shows open messages. Closed messages remain in the graph for history.
+Messages are transient — once read, they're done. `spire collect` only shows open messages. Closed messages remain in the graph for history.
 
 ### Agent registration beads
 
 ```
-spi-5   type=agent  title="pan"  labels=[agent]  status=open
-spi-6   type=agent  title="awp"  labels=[agent]  status=open
+spi-5   type=task  title="pan"  labels=[agent, name:pan]  status=open
+spi-6   type=task  title="awp"  labels=[agent, name:awp]  status=open
 ```
 
 ## Implementation: Go Binary
@@ -147,17 +152,31 @@ cmd/spire/
 
 ### Identity detection (`identity.go`)
 
-Walks up from cwd looking for `.beads/routes.jsonl`. Parses it to find the primary prefix for the current repo. Falls back to `.beads/config.yaml` `issue-prefix` field. If ambiguous, requires `--as <name>` flag.
+Detection strategy (highest priority first):
+
+1. **`--as <name>` flag** — explicit override, always wins.
+2. **`SPIRE_IDENTITY` env var** — set by `.envrc` or shell config during repo registration.
+3. **`.beads/config.yaml` `issue-prefix` field** — fallback to the repo's configured prefix.
+
+`setup.sh` writes `SPIRE_IDENTITY=<prefix>` into each satellite repo's `.envrc` (or equivalent) during registration, making detection reliable without fallback heuristics.
 
 ### Focus output (`focus.go`)
 
 Assembles structured plain text from:
-1. The target bead (title, description, status, priority)
-2. Referenced beads (fetched via `ref:` labels)
-3. Thread context (parent + sibling messages)
-4. Comments on the bead
+1. The target bead via `bd show <id> --json` (title, description, status, priority)
+2. Referenced beads — parse `labels` array from JSON, extract `ref:*` prefixed labels, fetch each with `bd show <ref-id> --json`
+3. Thread context — if bead has a parent, fetch parent + siblings via `bd children <parent-id> --json`
+4. Comments via `bd comments <id> --json`
 
 Output is plain text, not JSON — designed for agent context consumption.
+
+## Error Handling
+
+- **`spire register`** — idempotent. If an open agent bead with this name exists, returns existing ID.
+- **`spire send` to unknown agent** — warn that no agent bead found for recipient, but create the message anyway (recipient may register later).
+- **`spire register` when already registered** — return existing bead ID, no error.
+- **`spire read` on already-closed bead** — no-op, print "already read."
+- **`bd` failures** (Dolt down, network error) — propagate stderr from `bd` with added context ("spire: failed to send message: <bd error>").
 
 ## Integration
 
@@ -172,6 +191,8 @@ New step after routes/redirects:
 # Ensure ~/.local/bin is in $PATH
 # Register the hub: spire register spi
 ```
+
+Each satellite repo gets `SPIRE_IDENTITY=<prefix>` written to its `.envrc` during step 5.
 
 ### Agent session lifecycle
 
