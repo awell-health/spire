@@ -22,32 +22,18 @@ func cmdFocus(args []string) error {
 		return fmt.Errorf("focus %s: parse bead: %w", id, err)
 	}
 
-	// 2. Check for existing molecule children
-	var children []Bead
-	_ = bdJSON(&children, "children", id)
-
-	hasMolecule := false
-	for _, c := range children {
-		for _, l := range c.Labels {
-			if l == "template" || l == "mol" {
-				hasMolecule = true
-				break
-			}
-		}
-		if hasMolecule {
-			break
-		}
-	}
+	// 2. Check if a molecule already exists for this bead
+	molOut, molErr := bd("mol", "show", id, "--json")
+	hasMolecule := molErr == nil && molOut != "" && strings.Contains(molOut, id)
 
 	// 3. Bond formula if no molecule exists
 	if !hasMolecule {
+		// Ensure the proto exists (cook --persist is idempotent if already exists)
+		bd("cook", "spire-agent-work", "--persist")
 		_, bondErr := bd("mol", "bond", "spire-agent-work", id, "--var", fmt.Sprintf("task=%s", id))
 		if bondErr != nil {
 			// Non-fatal: formula may not exist or bond may not be available
 			fmt.Fprintf(os.Stderr, "spire: warning: could not bond workflow: %s\n", bondErr)
-		} else {
-			// Re-fetch children after bonding
-			_ = bdJSON(&children, "children", id)
 		}
 	}
 
@@ -69,16 +55,6 @@ func cmdFocus(args []string) error {
 	if progressOut != "" {
 		fmt.Println("--- Workflow (spire-agent-work) ---")
 		fmt.Println(progressOut)
-		fmt.Println()
-	} else if len(children) > 0 {
-		fmt.Println("--- Workflow ---")
-		for _, c := range children {
-			check := "[ ]"
-			if c.Status == "closed" {
-				check = "[x]"
-			}
-			fmt.Printf("  %s %s — %s\n", check, c.ID, c.Title)
-		}
 		fmt.Println()
 	}
 
