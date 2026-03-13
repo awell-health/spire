@@ -64,7 +64,7 @@ Name defaults to current repo's prefix. Output includes a hint: "run `spire read
 Focuses an agent on a bead. Two behaviors depending on state:
 
 **First focus (no molecule exists):**
-1. Pours the `spire-agent-work` formula with the bead as context, creating a molecule (child beads representing workflow steps)
+1. Bonds the `spire-agent-work` formula to the bead, creating workflow steps as child beads
 2. Assembles and outputs the structured prompt (see below)
 
 **Subsequent focus (molecule already exists):**
@@ -222,7 +222,7 @@ cmd/spire/
   register.go      — register/unregister commands
   send.go          — send command
   collect.go       — collect command
-  focus.go         — focus, molecule pour/resume, context assembly
+  focus.go         — focus, molecule bond/resume, context assembly
   read.go          — read (close) command
   identity.go      — auto-detect caller prefix from repo context
   bd.go            — shells out to bd, parses JSON output
@@ -252,7 +252,7 @@ Detection strategy (highest priority first):
 
 Assembles structured plain text from:
 1. The target bead via `bd show <id> --json` (title, description, status, priority)
-2. Molecule state — pour `spire-agent-work` on first focus, then `bd mol progress` for workflow status
+2. Molecule state — bond `spire-agent-work` on first focus, then `bd mol progress` for workflow status
 3. Referenced beads — parse `labels` array from JSON, extract `ref:*` prefixed labels, fetch each with `bd show <ref-id> --json`
 4. Thread context — if bead has a parent, fetch parent + siblings via `bd children <parent-id> --json`
 5. Comments via `bd comments <id> --json`
