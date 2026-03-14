@@ -272,14 +272,14 @@ echo ""
 # ─── Step 6: Cursor integration ──────────────────────────────────────────────
 echo "── 6. Cursor integration ──"
 
-# Install MCP server dependencies
-if [ -f "$HUB_DIR/mcp-server/package.json" ]; then
-  info "Installing spire MCP server dependencies..."
-  (cd "$HUB_DIR/mcp-server" && npm install --silent 2>/dev/null)
-  ok "MCP server dependencies installed"
+# Install all workspace dependencies
+if [ -f "$HUB_DIR/pnpm-workspace.yaml" ]; then
+  info "Installing monorepo dependencies (pnpm)..."
+  (cd "$HUB_DIR" && pnpm install --silent 2>/dev/null)
+  ok "Dependencies installed"
 fi
 
-MCP_SERVER_PATH="$HUB_DIR/mcp-server/index.js"
+MCP_SERVER_PATH="$HUB_DIR/packages/mcp-server/index.js"
 CURSOR_RULE_SRC="$HUB_DIR/cursor/spire-messaging.mdc"
 
 # Add spire MCP server + rule to each repo's .cursor config

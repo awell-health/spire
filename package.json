@@ -1,14 +1,14 @@
 {
   "name": "@awell-health/spire",
   "version": "0.1.0",
-  "description": "Agent that mirrors beads epics to Linear issues",
-  "type": "module",
-  "main": "index.js",
+  "private": true,
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "start": "turbo run start",
+    "lint": "turbo run lint"
   },
-  "dependencies": {
-    "dotenv": "^16.4.0"
+  "devDependencies": {
+    "turbo": "^2.5.0"
   }
 }

@@ -11,6 +11,16 @@ cmd/spire/spire
 synced-epics.json
 .beads/push-state.json
 
+# Next.js
+.next/
+
+# Turbo
+.turbo/
+
 # Vercel
 .vercel
 node_modules
+
+# Env vars
+*.local
+.env
