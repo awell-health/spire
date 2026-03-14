@@ -195,6 +195,18 @@ else
   ok "DoltHub remote 'origin' configured"
 fi
 
+# Create webhook_queue table if not exists
+info "Ensuring webhook_queue table exists..."
+DOLT_CLI_PASSWORD="" dolt --host 127.0.0.1 --port "$DOLT_PORT" --user root --no-tls --use-db "$HUB_PREFIX" \
+  sql -q "CREATE TABLE IF NOT EXISTS webhook_queue (
+  id          VARCHAR(36) PRIMARY KEY,
+  event_type  VARCHAR(64) NOT NULL,
+  linear_id   VARCHAR(32) NOT NULL,
+  payload     JSON NOT NULL,
+  processed   BOOLEAN NOT NULL DEFAULT 0,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);" 2>/dev/null && ok "webhook_queue table ready" || warn "Could not create webhook_queue table (run manually)"
+
 echo ""
 
 # ─── Step 5: Routes and redirects ────────────────────────────────────────────

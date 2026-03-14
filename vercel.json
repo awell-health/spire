@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/webhook.js": {
+      "memory": 128,
+      "maxDuration": 10
+    }
+  }
+}

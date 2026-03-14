@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -191,6 +194,153 @@ func ensureEpicBead(rig string, event linearEvent) (string, error) {
 
 	log.Printf("[daemon] created epic %s for %s in rig %s", id, identifier, rig)
 	return id, nil
+}
+
+// webhookQueueRow represents a row from the webhook_queue table.
+type webhookQueueRow struct {
+	ID        string `json:"id"`
+	EventType string `json:"event_type"`
+	LinearID  string `json:"linear_id"`
+	Payload   string `json:"payload"`
+}
+
+// doltSQL runs a SQL query against the Dolt server and returns the output.
+// Uses dolt CLI with connection parameters from environment.
+func doltSQL(query string, jsonOutput bool) (string, error) {
+	host := os.Getenv("BEADS_DOLT_SERVER_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := os.Getenv("BEADS_DOLT_SERVER_PORT")
+	if port == "" {
+		port = "3307"
+	}
+
+	args := []string{
+		"--host", host,
+		"--port", port,
+		"--user", "root",
+		"--no-tls",
+		"--use-db", "spi",
+		"sql", "-q", query,
+	}
+	if jsonOutput {
+		args = append(args, "-r", "json")
+	}
+
+	cmd := exec.Command("dolt", args...)
+	cmd.Env = append(os.Environ(), "DOLT_CLI_PASSWORD=")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("dolt sql: %s\n%s", err, stderr.String())
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// processWebhookQueue reads unprocessed rows from webhook_queue,
+// creates webhook event beads from them, processes them, and marks them done.
+// Returns (processed count, error count).
+func processWebhookQueue() (int, int) {
+	// Query unprocessed queue rows
+	out, err := doltSQL(
+		"SELECT id, event_type, linear_id, payload FROM webhook_queue WHERE processed = 0",
+		true,
+	)
+	if err != nil {
+		// Table may not exist yet -- not an error
+		if !strings.Contains(err.Error(), "webhook_queue") {
+			log.Printf("[daemon] query webhook_queue: %s", err)
+		}
+		return 0, 0
+	}
+
+	if strings.TrimSpace(out) == "" {
+		return 0, 0
+	}
+
+	// dolt sql -r json wraps results in {"rows": [...]}
+	var wrapper struct {
+		Rows []webhookQueueRow `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(out), &wrapper); err != nil {
+		// Try parsing as a plain array (fallback)
+		var rows []webhookQueueRow
+		if err2 := json.Unmarshal([]byte(out), &rows); err2 != nil {
+			log.Printf("[daemon] parse webhook_queue rows: %s (wrapper: %s)", err2, err)
+			return 0, 0
+		}
+		wrapper.Rows = rows
+	}
+
+	if len(wrapper.Rows) == 0 {
+		return 0, 0
+	}
+
+	log.Printf("[daemon] found %d unprocessed queue rows", len(wrapper.Rows))
+
+	processed := 0
+	errors := 0
+
+	for _, row := range wrapper.Rows {
+		// Create a webhook event bead from the queue row
+		eventID, createErr := bdSilent(
+			"create",
+			"--rig=spi",
+			"--type=task",
+			"-p", "3",
+			"--title", fmt.Sprintf("%s: %s", row.EventType, row.LinearID),
+			"--labels", fmt.Sprintf("webhook,event:%s,linear:%s", row.EventType, row.LinearID),
+			"--description", row.Payload,
+		)
+		if createErr != nil {
+			log.Printf("[daemon] queue row %s: create bead failed: %s", row.ID, createErr)
+			errors++
+			continue
+		}
+
+		// Fetch the created bead for processing
+		showOut, showErr := bd("show", eventID, "--json")
+		if showErr != nil {
+			log.Printf("[daemon] queue row %s: show bead %s failed: %s", row.ID, eventID, showErr)
+			errors++
+			continue
+		}
+
+		eventBead, parseErr := parseBead([]byte(showOut))
+		if parseErr != nil {
+			log.Printf("[daemon] queue row %s: parse bead %s failed: %s", row.ID, eventID, parseErr)
+			errors++
+			continue
+		}
+
+		// Process the event (existing logic)
+		procErr := processWebhookEvent(eventBead)
+		if procErr != nil {
+			log.Printf("[daemon] queue row %s: process error (will retry): %s", row.ID, procErr)
+			errors++
+			continue
+		}
+
+		// Close the event bead
+		bd("close", eventID)
+
+		// Mark queue row as processed
+		_, markErr := doltSQL(
+			fmt.Sprintf("UPDATE webhook_queue SET processed = 1 WHERE id = '%s'", row.ID),
+			false,
+		)
+		if markErr != nil {
+			log.Printf("[daemon] queue row %s: mark processed failed: %s", row.ID, markErr)
+			// Don't count as error -- the bead was created and processed
+		}
+
+		processed++
+	}
+
+	return processed, errors
 }
 
 // notifyOwnerIfClaimed sends spire mail to the epic owner if someone has claimed it.

@@ -1,8 +1,13 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -573,4 +578,116 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 
 	// Clean up
 	bd("close", epics[0].ID, "--force")
+}
+
+// --- Webhook Queue tests ---
+
+func TestWebhookSignatureVerification(t *testing.T) {
+	// Test the same HMAC-SHA256 algorithm used in api/webhook.js
+	secret := "test-secret"
+	body := `{"action":"update","type":"Issue","data":{"identifier":"AWE-1"}}`
+
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(body))
+	expected := hex.EncodeToString(h.Sum(nil))
+
+	// Verify it produces a deterministic signature
+	if expected == "" {
+		t.Error("empty signature")
+	}
+	if len(expected) != 64 {
+		t.Errorf("signature length = %d, want 64", len(expected))
+	}
+
+	// Verify same input produces same output
+	h2 := hmac.New(sha256.New, []byte(secret))
+	h2.Write([]byte(body))
+	expected2 := hex.EncodeToString(h2.Sum(nil))
+	if expected != expected2 {
+		t.Errorf("non-deterministic signature: %q vs %q", expected, expected2)
+	}
+
+	// Verify different secret produces different signature
+	h3 := hmac.New(sha256.New, []byte("wrong-secret"))
+	h3.Write([]byte(body))
+	wrong := hex.EncodeToString(h3.Sum(nil))
+	if expected == wrong {
+		t.Error("different secrets produced same signature")
+	}
+}
+
+func TestDoltSQL(t *testing.T) {
+	// Skip if dolt is not available
+	_, err := exec.LookPath("dolt")
+	if err != nil {
+		t.Skip("dolt not available, skipping")
+	}
+	requireBd(t)
+
+	out, err := doltSQL("SELECT 1 AS n", true)
+	if err != nil {
+		t.Fatalf("doltSQL error: %v", err)
+	}
+	if !strings.Contains(out, "1") {
+		t.Errorf("doltSQL output = %q, expected to contain '1'", out)
+	}
+}
+
+func TestIntegrationProcessWebhookQueue(t *testing.T) {
+	requireBd(t)
+
+	// Skip if dolt is not available
+	_, err := exec.LookPath("dolt")
+	if err != nil {
+		t.Skip("dolt not available, skipping")
+	}
+
+	// Create the webhook_queue table if needed
+	_, err = doltSQL(`CREATE TABLE IF NOT EXISTS webhook_queue (
+		id VARCHAR(36) PRIMARY KEY,
+		event_type VARCHAR(64) NOT NULL,
+		linear_id VARCHAR(32) NOT NULL,
+		payload JSON NOT NULL,
+		processed BOOLEAN NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`, false)
+	if err != nil {
+		t.Fatalf("create webhook_queue table: %v", err)
+	}
+
+	// Insert a test row
+	testID := fmt.Sprintf("test-queue-%d", os.Getpid())
+	payload := `{"action":"create","type":"Issue","data":{"id":"uuid-queue","identifier":"AWE-77","title":"Queue test epic","priority":1,"labels":[{"name":"Panels - Test"}]}}`
+	escapedPayload := strings.ReplaceAll(payload, "'", "''")
+
+	_, err = doltSQL(fmt.Sprintf(
+		"INSERT INTO webhook_queue (id, event_type, linear_id, payload) VALUES ('%s', 'Issue.create', 'AWE-77', '%s')",
+		testID, escapedPayload), false)
+	if err != nil {
+		t.Fatalf("insert queue row: %v", err)
+	}
+
+	// Process the queue
+	processed, errors := processWebhookQueue()
+	if errors > 0 {
+		t.Errorf("processWebhookQueue had %d errors", errors)
+	}
+	if processed == 0 {
+		t.Error("processWebhookQueue processed 0 rows")
+	}
+
+	// Verify the queue row is marked processed
+	out, err := doltSQL(
+		fmt.Sprintf("SELECT processed FROM webhook_queue WHERE id = '%s'", testID),
+		true,
+	)
+	if err != nil {
+		t.Fatalf("check processed: %v", err)
+	}
+	if !strings.Contains(out, "1") && !strings.Contains(out, "true") {
+		t.Errorf("queue row not marked processed: %s", out)
+	}
+
+	// Clean up
+	doltSQL(fmt.Sprintf("DELETE FROM webhook_queue WHERE id = '%s'", testID), false)
 }

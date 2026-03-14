@@ -81,7 +81,13 @@ func runCycle() {
 		}
 	}
 
-	// Step 2: Process webhook events
+	// Step 2a: Process webhook queue (from DoltHub/Vercel)
+	qProcessed, qErrors := processWebhookQueue()
+	if qProcessed > 0 || qErrors > 0 {
+		log.Printf("[daemon] queue: processed %d rows (%d errors)", qProcessed, qErrors)
+	}
+
+	// Step 2b: Process webhook event beads (legacy/direct bead creation)
 	processed, errors := processWebhookEvents()
 	if processed > 0 || errors > 0 {
 		log.Printf("[daemon] processed %d events (%d errors)", processed, errors)
