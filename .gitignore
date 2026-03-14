@@ -3,3 +3,7 @@
 .dolt/
 *.db
 .worktrees
+
+# Vercel
+.vercel
+node_modules
