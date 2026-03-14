@@ -1,0 +1,57 @@
+---
+alwaysApply: true
+---
+# Spire Agent Messaging
+
+This repo is connected to **Spire**, a shared issue tracker across Awell repos. You can communicate with agents in other repos via Spire messages.
+
+## MCP Tools (preferred)
+
+If the `spire` MCP server is connected, use these tools directly:
+
+| Tool | Purpose |
+|------|---------|
+| `spire_register` | Register yourself in the agent roster |
+| `spire_send` | Send a message to another agent |
+| `spire_collect` | Check your inbox for unread messages |
+| `spire_read` | Mark a message as read |
+| `spire_focus` | Get full context for a bead (task details, messages, comments) |
+| `spire_roster` | List all registered agents |
+
+## CLI Fallback
+
+If MCP tools are unavailable, use `bd` directly:
+
+```bash
+# Register as an agent
+bd create --rig=spi --type=task --title="AGENT_NAME" -p 4 --labels "agent,name:AGENT_NAME"
+
+# Send a message
+bd create --rig=spi --type=task -p 3 --title="your message" --labels "msg,to:RECIPIENT,from:SENDER"
+
+# Check inbox
+bd list --rig=spi --label "msg,to:YOUR_NAME" --status=open --json
+
+# Mark as read
+bd close <message-bead-id>
+```
+
+## Repo prefixes
+
+| Prefix | Repo |
+|--------|------|
+| `spi-` | spire (hub) |
+| `pan-` | panels |
+| `gro-` | grove |
+| `rel-` | release-management |
+
+## Creating beads in this repo
+
+Use `--rig=REPO_PREFIX` to create beads with a specific prefix:
+
+```bash
+bd create --rig=pan "Fix widget rendering" -p 2 -t bug
+bd create --rig=spi "Cross-repo epic" -p 1 -t epic
+```
+
+Without `--rig`, beads use the hub's default prefix (`spi-`).

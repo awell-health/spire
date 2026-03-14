@@ -4,6 +4,9 @@
 *.db
 .worktrees
 
+# Compiled binaries
+cmd/spire/spire
+
 # Vercel
 .vercel
 node_modules

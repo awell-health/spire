@@ -45,6 +45,9 @@ echo "    Awell directory: $AWELL_DIR"
 echo ""
 
 # ─── Step 1: Install/upgrade beads ───────────────────────────────────────────
+# Installs beads via Homebrew (which includes dolt as a dependency).
+# If already installed, upgrades to latest. Beads is the CLI (`bd`) for
+# the shared issue tracker that all Awell repos use.
 echo "── 1. Install beads ──"
 
 if command -v brew >/dev/null 2>&1; then
@@ -66,6 +69,14 @@ ok "beads ready ($BD_VERSION)"
 echo ""
 
 # ─── Step 2: Central dolt server ─────────────────────────────────────────────
+# Sets up a persistent dolt SQL server on port 3307 via a macOS LaunchAgent.
+# Why not `brew services start dolt`? The brew formula runs `dolt sql-server`
+# without --config, so config.yaml edits are silently ignored. We use a custom
+# LaunchAgent that passes --config explicitly.
+# See: https://github.com/steveyegge/beads/issues/2323
+#
+# Also adds BEADS_DOLT_SERVER_* env vars to ~/.zshrc so all repos connect
+# to this central server instead of spawning per-project embedded dolt instances.
 echo "── 2. Central dolt server ──"
 
 DOLT_DIR="/opt/homebrew/var/dolt"
@@ -156,6 +167,9 @@ export BEADS_DOLT_AUTO_START=0
 echo ""
 
 # ─── Step 3: Verify repos exist ──────────────────────────────────────────────
+# Checks that each repo in the registry exists as a sibling directory of spire.
+# Missing repos are skipped in later steps (routes, redirects, Cursor config).
+# They can be cloned later and setup.sh re-run — it's idempotent.
 echo "── 3. Verify repos ──"
 
 MISSING=()
