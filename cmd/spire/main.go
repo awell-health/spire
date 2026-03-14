@@ -30,6 +30,8 @@ func main() {
 		err = cmdFocus(args)
 	case "read":
 		err = cmdRead(args)
+	case "daemon":
+		err = cmdDaemon(args)
 	case "version":
 		fmt.Println("spire", version)
 		return
@@ -58,6 +60,7 @@ Commands:
   collect [name]        Check inbox for messages
   focus <bead-id>       Focus on a task (bonds workflow on first focus)
   read <bead-id>        Mark a message as read
+  daemon              Run sync daemon (--interval, --once)
   version               Print version
   help                  Show this help`)
 }
