@@ -424,3 +424,153 @@ func TestBdJSON(t *testing.T) {
 	}
 	// result may be empty or populated, both are valid
 }
+
+// --- Daemon / Webhook tests ---
+
+func TestLinearToBeadsPriority(t *testing.T) {
+	tests := []struct {
+		linear int
+		beads  int
+	}{
+		{0, 3}, // no priority -> P3
+		{1, 0}, // urgent -> P0
+		{2, 1}, // high -> P1
+		{3, 2}, // medium -> P2
+		{4, 3}, // low -> P3
+	}
+	for _, tt := range tests {
+		got := linearToBeadsPriority(tt.linear)
+		if got != tt.beads {
+			t.Errorf("linearToBeadsPriority(%d) = %d, want %d", tt.linear, got, tt.beads)
+		}
+	}
+}
+
+func TestMapLabelsToRig(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []string
+		want   string
+		found  bool
+	}{
+		{"exact match", []string{"Workstream: Platform"}, "awp", true},
+		{"prefix Panels", []string{"Panels - Design"}, "pan", true},
+		{"prefix Grove", []string{"Grove", "Bug"}, "gro", true},
+		{"no match", []string{"Bug", "Feature"}, "", false},
+		{"empty labels", []string{}, "", false},
+		{"exact wins over prefix", []string{"Workstream: Platform", "Panels"}, "awp", true},
+		{"panels variant", []string{"Panels - Frontend"}, "pan", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := mapLabelsToRig(tt.labels)
+			if got != tt.want || found != tt.found {
+				t.Errorf("mapLabelsToRig(%v) = (%q, %v), want (%q, %v)", tt.labels, got, found, tt.want, tt.found)
+			}
+		})
+	}
+}
+
+func TestParseWebhookPayload(t *testing.T) {
+	payload := `{
+		"action": "update",
+		"type": "Issue",
+		"data": {
+			"id": "uuid-123",
+			"identifier": "AWE-42",
+			"title": "Fix auth",
+			"priority": 2,
+			"labels": [{"name": "Panels - Design"}, {"name": "Bug"}]
+		}
+	}`
+
+	event, err := parseWebhookPayload(payload)
+	if err != nil {
+		t.Fatalf("parseWebhookPayload error: %v", err)
+	}
+	if event.Action != "update" {
+		t.Errorf("Action = %q, want %q", event.Action, "update")
+	}
+	if event.Data.Identifier != "AWE-42" {
+		t.Errorf("Identifier = %q, want %q", event.Data.Identifier, "AWE-42")
+	}
+	if event.Data.Title != "Fix auth" {
+		t.Errorf("Title = %q, want %q", event.Data.Title, "Fix auth")
+	}
+	if event.Data.Priority != 2 {
+		t.Errorf("Priority = %d, want %d", event.Data.Priority, 2)
+	}
+	if len(event.Data.Labels) != 2 {
+		t.Errorf("Labels len = %d, want 2", len(event.Data.Labels))
+	}
+}
+
+func TestParseWebhookPayloadMissingIdentifier(t *testing.T) {
+	payload := `{"action": "update", "type": "Issue", "data": {"title": "No ID"}}`
+	_, err := parseWebhookPayload(payload)
+	if err == nil {
+		t.Error("expected error for missing identifier")
+	}
+}
+
+func TestParseWebhookPayloadInvalid(t *testing.T) {
+	_, err := parseWebhookPayload("not json")
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestIntegrationProcessWebhookEvent(t *testing.T) {
+	requireBd(t)
+
+	// Create a fake webhook event bead
+	payload := `{"action":"create","type":"Issue","data":{"id":"uuid-test","identifier":"AWE-99","title":"Integration test epic","priority":2,"labels":[{"name":"Panels - Test"}]}}`
+
+	eventID, err := bdSilent(
+		"create",
+		"--rig=spi",
+		"--type=task",
+		"-p", "3",
+		"--title", "Issue created: AWE-99",
+		"--labels", "webhook,event:Issue.create,linear:AWE-99",
+		"--description", payload,
+	)
+	if err != nil {
+		t.Fatalf("create webhook event: %v", err)
+	}
+
+	// Run a single daemon cycle
+	processed, errors := processWebhookEvents()
+	if errors > 0 {
+		t.Errorf("processWebhookEvents had %d errors", errors)
+	}
+	if processed == 0 {
+		t.Error("processWebhookEvents processed 0 events")
+	}
+
+	// Verify the event bead is closed
+	out, err := bd("show", eventID, "--json")
+	if err != nil {
+		t.Fatalf("show event after processing: %v", err)
+	}
+	eventBead, _ := parseBead([]byte(out))
+	if eventBead.Status != "closed" {
+		t.Errorf("event status = %q, want closed", eventBead.Status)
+	}
+
+	// Verify an epic bead was created in the pan rig
+	var epics []Bead
+	err = bdJSON(&epics, "list", "--rig=pan", "--label", "linear:AWE-99", "--type", "epic")
+	if err != nil {
+		t.Fatalf("list epic: %v", err)
+	}
+	if len(epics) == 0 {
+		t.Fatal("no epic bead created for AWE-99")
+	}
+	if epics[0].Title != "Integration test epic" {
+		t.Errorf("epic title = %q, want %q", epics[0].Title, "Integration test epic")
+	}
+
+	// Clean up
+	bd("close", epics[0].ID, "--force")
+}
