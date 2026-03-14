@@ -185,6 +185,16 @@ else
   ok "Beads initialized with prefix $HUB_PREFIX-"
 fi
 
+# Configure DoltHub remote if not already set
+REMOTE_COUNT=$(bd dolt remote list 2>/dev/null | grep -c "origin" || echo "0")
+if [ "$REMOTE_COUNT" = "0" ]; then
+  info "No DoltHub remote configured."
+  info "To enable daemon sync, run:"
+  info "  cd $HUB_DIR && bd dolt remote add origin <dolthub-url>"
+else
+  ok "DoltHub remote 'origin' configured"
+fi
+
 echo ""
 
 # ─── Step 5: Routes and redirects ────────────────────────────────────────────
