@@ -691,3 +691,152 @@ func TestIntegrationProcessWebhookQueue(t *testing.T) {
 	// Clean up
 	doltSQL(fmt.Sprintf("DELETE FROM webhook_queue WHERE id = '%s'", testID), false)
 }
+
+// --- Grok / Linear API tests ---
+
+func TestLinearAPIKeyEnv(t *testing.T) {
+	os.Setenv("LINEAR_API_KEY", "lin_api_test123")
+	defer os.Unsetenv("LINEAR_API_KEY")
+
+	key := linearAPIKey()
+	if key != "lin_api_test123" {
+		t.Errorf("linearAPIKey() = %q, want %q", key, "lin_api_test123")
+	}
+}
+
+func TestLinearAPIKeyEmpty(t *testing.T) {
+	os.Unsetenv("LINEAR_API_KEY")
+
+	key := linearAPIKey()
+	// May return empty or a value from bd config — both are acceptable
+	t.Logf("linearAPIKey() = %q (empty is OK if no bd config)", key)
+}
+
+func TestParseLinearIssueResponse(t *testing.T) {
+	responseJSON := `{
+		"data": {
+			"issueByIdentifier": {
+				"id": "uuid-123",
+				"identifier": "AWE-42",
+				"title": "Fix auth token refresh",
+				"description": "The auth token needs refreshing every 30 minutes.",
+				"url": "https://linear.app/awell/issue/AWE-42",
+				"priority": 2,
+				"priorityLabel": "High",
+				"state": {
+					"name": "In Progress",
+					"type": "started"
+				},
+				"assignee": {
+					"name": "JB",
+					"email": "jb@awellhealth.com"
+				},
+				"labels": {
+					"nodes": [
+						{"name": "Panels - Design"},
+						{"name": "Bug"}
+					]
+				},
+				"comments": {
+					"nodes": [
+						{
+							"body": "Looking into this now",
+							"createdAt": "2026-03-12T10:30:00.000Z",
+							"user": {"name": "JB"}
+						},
+						{
+							"body": "Priority raised by PM",
+							"createdAt": "2026-03-11T08:00:00.000Z",
+							"user": {"name": "PM"}
+						}
+					]
+				}
+			}
+		}
+	}`
+
+	var result struct {
+		Data struct {
+			IssueByIdentifier *LinearIssue `json:"issueByIdentifier"`
+		} `json:"data"`
+	}
+
+	err := json.Unmarshal([]byte(responseJSON), &result)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	issue := result.Data.IssueByIdentifier
+	if issue == nil {
+		t.Fatal("issueByIdentifier is nil")
+	}
+
+	if issue.Identifier != "AWE-42" {
+		t.Errorf("Identifier = %q, want %q", issue.Identifier, "AWE-42")
+	}
+	if issue.Title != "Fix auth token refresh" {
+		t.Errorf("Title = %q, want %q", issue.Title, "Fix auth token refresh")
+	}
+	if issue.State.Name != "In Progress" {
+		t.Errorf("State.Name = %q, want %q", issue.State.Name, "In Progress")
+	}
+	if issue.State.Type != "started" {
+		t.Errorf("State.Type = %q, want %q", issue.State.Type, "started")
+	}
+	if issue.Assignee == nil {
+		t.Fatal("Assignee is nil")
+	}
+	if issue.Assignee.Name != "JB" {
+		t.Errorf("Assignee.Name = %q, want %q", issue.Assignee.Name, "JB")
+	}
+	if issue.PriorityLabel != "High" {
+		t.Errorf("PriorityLabel = %q, want %q", issue.PriorityLabel, "High")
+	}
+	if len(issue.Labels.Nodes) != 2 {
+		t.Errorf("Labels count = %d, want 2", len(issue.Labels.Nodes))
+	}
+	if len(issue.Comments.Nodes) != 2 {
+		t.Errorf("Comments count = %d, want 2", len(issue.Comments.Nodes))
+	}
+	if issue.Comments.Nodes[0].User.Name != "JB" {
+		t.Errorf("Comment[0].User.Name = %q, want %q", issue.Comments.Nodes[0].User.Name, "JB")
+	}
+}
+
+func TestParseLinearIssueNotFound(t *testing.T) {
+	responseJSON := `{"data": {"issueByIdentifier": null}}`
+
+	var result struct {
+		Data struct {
+			IssueByIdentifier *LinearIssue `json:"issueByIdentifier"`
+		} `json:"data"`
+	}
+
+	err := json.Unmarshal([]byte(responseJSON), &result)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if result.Data.IssueByIdentifier != nil {
+		t.Error("expected nil for not-found issue")
+	}
+}
+
+func TestIntegrationGrokNoLinearLabel(t *testing.T) {
+	requireBd(t)
+
+	// Create a task without a linear: label
+	taskID, err := bdSilent("create", "--rig=spi", "--type=task", "--title", "Grok test no-linear", "-p", "2")
+	if err != nil {
+		t.Fatalf("create task error: %v", err)
+	}
+
+	// Grok should succeed (output same as focus, no Linear section)
+	err = cmdGrok([]string{taskID})
+	if err != nil {
+		t.Fatalf("grok error: %v", err)
+	}
+
+	// Clean up
+	bd("close", taskID, "--force")
+}

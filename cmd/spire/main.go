@@ -28,6 +28,8 @@ func main() {
 		err = cmdCollect(args)
 	case "focus":
 		err = cmdFocus(args)
+	case "grok":
+		err = cmdGrok(args)
 	case "read":
 		err = cmdRead(args)
 	case "daemon":
@@ -59,6 +61,7 @@ Commands:
   send <to> <message>   Send a message (--ref, --thread, --priority)
   collect [name]        Check inbox for messages
   focus <bead-id>       Focus on a task (bonds workflow on first focus)
+  grok <bead-id>        Focus + live Linear context (requires LINEAR_API_KEY)
   read <bead-id>        Mark a message as read
   daemon              Run sync daemon (--interval, --once)
   version               Print version
