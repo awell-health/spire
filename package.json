@@ -1,0 +1,14 @@
+{
+  "name": "@awell-health/spire",
+  "version": "0.1.0",
+  "description": "Agent that mirrors beads epics to Linear issues",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0"
+  }
+}

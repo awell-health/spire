@@ -7,6 +7,10 @@
 # Compiled binaries
 cmd/spire/spire
 
+# Runtime state
+synced-epics.json
+.beads/push-state.json
+
 # Vercel
 .vercel
 node_modules
