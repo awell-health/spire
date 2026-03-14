@@ -84,12 +84,15 @@ async function writeToQueue(id, eventType, linearId, payload) {
     throw new Error('DOLTHUB_API_TOKEN not set');
   }
 
-  // Escape single quotes in payload for SQL
-  const escapedPayload = payload.replace(/'/g, "''");
+  // Sanitize values for SQL (escape single quotes)
+  const esc = (s) => s.replace(/'/g, "''");
+  const escapedPayload = esc(payload);
+  const escapedEventType = esc(eventType);
+  const escapedLinearId = esc(linearId);
 
   const sql = [
     'INSERT INTO webhook_queue (id, event_type, linear_id, payload, processed, created_at)',
-    `VALUES ('${id}', '${eventType}', '${linearId}', '${escapedPayload}', 0, NOW())`,
+    `VALUES ('${id}', '${escapedEventType}', '${escapedLinearId}', '${escapedPayload}', 0, NOW())`,
   ].join(' ');
 
   const url = `${DOLTHUB_API}/${owner}/${database}/write/main/main`;
