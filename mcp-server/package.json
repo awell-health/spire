@@ -1,0 +1,14 @@
+{
+  "name": "@awell/spire-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing Spire agent messaging tools for Cursor/Claude Code",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  }
+}
