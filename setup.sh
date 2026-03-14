@@ -331,6 +331,65 @@ else
   fi
 fi
 
+# ── Step 8: Spire daemon LaunchAgent ──────────────────────────────────────
+echo "── 8. Spire daemon LaunchAgent ──"
+
+SPIRE_PLIST_NAME="com.awell.spire-daemon"
+SPIRE_PLIST_PATH="$HOME/Library/LaunchAgents/$SPIRE_PLIST_NAME.plist"
+SPIRE_BIN="$HOME/.local/bin/spire"
+
+if [ -x "$SPIRE_BIN" ]; then
+  cat > "$SPIRE_PLIST_PATH" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$SPIRE_PLIST_NAME</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$SPIRE_BIN</string>
+        <string>daemon</string>
+        <string>--interval</string>
+        <string>2m</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$HUB_DIR</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$DOLT_LOG_DIR/spire-daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>$DOLT_LOG_DIR/spire-daemon.error.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SPIRE_IDENTITY</key>
+        <string>spi</string>
+        <key>BEADS_DOLT_SERVER_HOST</key>
+        <string>127.0.0.1</string>
+        <key>BEADS_DOLT_SERVER_PORT</key>
+        <string>$DOLT_PORT</string>
+        <key>BEADS_DOLT_SERVER_MODE</key>
+        <string>1</string>
+        <key>BEADS_DOLT_AUTO_START</key>
+        <string>0</string>
+    </dict>
+</dict>
+</plist>
+EOF
+  ok "LaunchAgent written ($SPIRE_PLIST_PATH)"
+
+  # (Re)load the LaunchAgent
+  launchctl bootout "gui/$(id -u)/$SPIRE_PLIST_NAME" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$SPIRE_PLIST_PATH"
+  ok "Spire daemon started"
+else
+  warn "Spire binary not found at $SPIRE_BIN — skipping daemon LaunchAgent"
+fi
+
 echo ""
 echo "=== Setup complete ==="
 echo ""
