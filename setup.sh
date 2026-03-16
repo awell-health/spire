@@ -11,13 +11,12 @@ set -euo pipefail
 #
 # Steps:
 #   1. Install/upgrade beads (includes dolt)
-#   2. Set up central dolt server (LaunchAgent + env vars)
+#   2. Set up dolt data directory + env vars
 #   3. Read satellite repo registry
 #   4. Initialize beads hub
 #   5. Configure redirects and routes in satellite repos
 #   6. Set up Cursor integration (MCP server + rules)
 #   7. Build spire CLI
-#   8. Start spire daemon
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PARENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -90,23 +89,17 @@ BD_VERSION="$(bd --version 2>/dev/null || echo 'unknown')"
 ok "beads ready ($BD_VERSION)"
 echo ""
 
-# ─── Step 2: Central dolt server ─────────────────────────────────────────────
-# Sets up a persistent dolt SQL server on port 3307 via a macOS LaunchAgent.
-# Why not `brew services start dolt`? The brew formula runs `dolt sql-server`
-# without --config, so config.yaml edits are silently ignored. We use a custom
-# LaunchAgent that passes --config explicitly.
-#
-# Also adds BEADS_DOLT_SERVER_* env vars to ~/.zshrc so all repos connect
-# to this central server instead of spawning per-project embedded dolt instances.
-echo "── 2. Central dolt server ──"
+# ─── Step 2: Dolt data directory + env vars ──────────────────────────────────
+# Ensures the dolt data directory exists and is initialized.
+# Adds BEADS_DOLT_SERVER_* env vars to ~/.zshrc so all repos connect
+# to a central server instead of spawning per-project embedded dolt instances.
+# The actual dolt server is started by `spire up`, not by setup.sh.
+echo "── 2. Dolt data directory ──"
 
 DOLT_DIR="/opt/homebrew/var/dolt"
-DOLT_LOG_DIR="/opt/homebrew/var/log"
-PLIST_NAME="com.local.dolt-server"
-PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"
 
-# Ensure directories
-mkdir -p "$DOLT_DIR" "$DOLT_LOG_DIR" "$HOME/Library/LaunchAgents"
+# Ensure directory
+mkdir -p "$DOLT_DIR"
 
 # Initialize dolt database directory if needed
 if [ ! -d "$DOLT_DIR/.dolt" ]; then
@@ -116,51 +109,6 @@ if [ ! -d "$DOLT_DIR/.dolt" ]; then
 else
   ok "Dolt database already initialized"
 fi
-
-# Write dolt config (port 3307 per beads convention)
-cat > "$DOLT_DIR/config.yaml" << EOF
-listener:
-  host: "127.0.0.1"
-  port: $DOLT_PORT
-  max_connections: 100
-EOF
-ok "Dolt config written ($DOLT_DIR/config.yaml, port $DOLT_PORT)"
-
-# Create LaunchAgent plist
-DOLT_BIN="$(command -v dolt)"
-cat > "$PLIST_PATH" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>$PLIST_NAME</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$DOLT_BIN</string>
-        <string>sql-server</string>
-        <string>--config</string>
-        <string>config.yaml</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>$DOLT_DIR</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>$DOLT_LOG_DIR/dolt.log</string>
-    <key>StandardErrorPath</key>
-    <string>$DOLT_LOG_DIR/dolt.error.log</string>
-</dict>
-</plist>
-EOF
-ok "LaunchAgent written ($PLIST_PATH)"
-
-# (Re)load the LaunchAgent
-launchctl bootout "gui/$(id -u)/$PLIST_NAME" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
-ok "Dolt server started (port $DOLT_PORT)"
 
 # Add env vars to ~/.zshrc if not already present
 ZSHRC="$HOME/.zshrc"
@@ -393,70 +341,6 @@ else
   fi
 fi
 
-# ── Step 8: Spire daemon LaunchAgent ──────────────────────────────────────
-echo "── 8. Spire daemon LaunchAgent ──"
-
-SPIRE_PLIST_NAME="com.spire.daemon"
-SPIRE_PLIST_PATH="$HOME/Library/LaunchAgents/$SPIRE_PLIST_NAME.plist"
-SPIRE_BIN="$HOME/.local/bin/spire"
-
-# Clean up old plist name if it exists
-OLD_PLIST_NAME="com.awell.spire-daemon"
-launchctl bootout "gui/$(id -u)/$OLD_PLIST_NAME" 2>/dev/null || true
-rm -f "$HOME/Library/LaunchAgents/$OLD_PLIST_NAME.plist" 2>/dev/null || true
-
-if [ -x "$SPIRE_BIN" ]; then
-  cat > "$SPIRE_PLIST_PATH" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>$SPIRE_PLIST_NAME</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$SPIRE_BIN</string>
-        <string>daemon</string>
-        <string>--interval</string>
-        <string>2m</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>$HUB_DIR</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>$DOLT_LOG_DIR/spire-daemon.log</string>
-    <key>StandardErrorPath</key>
-    <string>$DOLT_LOG_DIR/spire-daemon.error.log</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>SPIRE_IDENTITY</key>
-        <string>$HUB_PREFIX</string>
-        <key>BEADS_DOLT_SERVER_HOST</key>
-        <string>127.0.0.1</string>
-        <key>BEADS_DOLT_SERVER_PORT</key>
-        <string>$DOLT_PORT</string>
-        <key>BEADS_DOLT_SERVER_MODE</key>
-        <string>1</string>
-        <key>BEADS_DOLT_AUTO_START</key>
-        <string>0</string>
-    </dict>
-</dict>
-</plist>
-EOF
-  ok "LaunchAgent written ($SPIRE_PLIST_PATH)"
-
-  # (Re)load the LaunchAgent
-  launchctl bootout "gui/$(id -u)/$SPIRE_PLIST_NAME" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$SPIRE_PLIST_PATH"
-  ok "Spire daemon started"
-else
-  warn "Spire binary not found at $SPIRE_BIN — skipping daemon LaunchAgent"
-fi
-
 echo ""
 echo "=== Setup complete ==="
 echo ""
@@ -480,7 +364,8 @@ if [ ${#SATELLITES[@]} -eq 0 ]; then
   echo ""
 fi
 echo "Next steps:"
-echo "  spire connect linear    # set up Linear integration"
+echo "  spire up                 # start dolt server + daemon"
+echo "  spire connect linear     # set up Linear integration"
 echo "  spire collect            # check inbox"
 echo "  bd list                  # see all issues"
 echo ""

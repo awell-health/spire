@@ -214,6 +214,10 @@ func printLinearContext(issue *LinearIssue) {
 }
 
 func cmdGrok(args []string) error {
+	if err := requireDolt(); err != nil {
+		return err
+	}
+
 	if len(args) < 1 {
 		return fmt.Errorf("usage: spire grok <bead-id>")
 	}

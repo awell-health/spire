@@ -18,6 +18,10 @@ import (
 )
 
 func cmdServe(args []string) error {
+	if err := requireDolt(); err != nil {
+		return err
+	}
+
 	port := "8080"
 
 	for i := 0; i < len(args); i++ {

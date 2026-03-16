@@ -10,6 +10,7 @@ cmd/spire/spire
 # Runtime state
 synced-epics.json
 .beads/push-state.json
+.spire/
 
 # Next.js
 .next/

@@ -42,6 +42,11 @@ func cmdDaemon(args []string) error {
 
 	log.Printf("[daemon] starting (interval=%s, once=%v)", interval, once)
 
+	// Write our PID file so spire down can find us
+	if sd, sdErr := spireDir(); sdErr == nil {
+		writePID(sd+"/daemon.pid", os.Getpid())
+	}
+
 	// Run first cycle immediately
 	runCycle()
 

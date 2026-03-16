@@ -6,6 +6,10 @@ import (
 )
 
 func cmdCollect(args []string) error {
+	if err := requireDolt(); err != nil {
+		return err
+	}
+
 	asFlag, args := parseAsFlag(args)
 
 	// Name can be positional or detected
