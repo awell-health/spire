@@ -81,13 +81,19 @@ func runCycle() {
 		}
 	}
 
-	// Step 2a: Process webhook queue (from DoltHub/Vercel)
+	// Step 2a: Sync unsynced epics to Linear
+	epicsSynced := syncEpicsToLinear()
+	if epicsSynced > 0 {
+		log.Printf("[daemon] synced %d epic(s) to Linear", epicsSynced)
+	}
+
+	// Step 2b: Process webhook queue (from spire serve or serverless functions)
 	qProcessed, qErrors := processWebhookQueue()
 	if qProcessed > 0 || qErrors > 0 {
 		log.Printf("[daemon] queue: processed %d rows (%d errors)", qProcessed, qErrors)
 	}
 
-	// Step 2b: Process webhook event beads (legacy/direct bead creation)
+	// Step 2c: Process webhook event beads (legacy/direct bead creation)
 	processed, errors := processWebhookEvents()
 	if processed > 0 || errors > 0 {
 		log.Printf("[daemon] processed %d events (%d errors)", processed, errors)

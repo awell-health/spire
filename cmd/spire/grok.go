@@ -58,35 +58,37 @@ func linearAPIKey() string {
 
 const linearGraphQLURL = "https://api.linear.app/graphql"
 
-const issueByIdentifierQuery = `
-query IssueByIdentifier($identifier: String!) {
-  issueByIdentifier(identifier: $identifier) {
-    id
-    identifier
-    title
-    description
-    url
-    priority
-    priorityLabel
-    state {
-      name
-      type
-    }
-    assignee {
-      name
-      email
-    }
-    labels {
-      nodes {
+const issueSearchQuery = `
+query IssueSearch($term: String!) {
+  searchIssues(term: $term, first: 1) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      url
+      priority
+      priorityLabel
+      state {
         name
+        type
       }
-    }
-    comments {
-      nodes {
-        body
-        createdAt
-        user {
+      assignee {
+        name
+        email
+      }
+      labels {
+        nodes {
           name
+        }
+      }
+      comments {
+        nodes {
+          body
+          createdAt
+          user {
+            name
+          }
         }
       }
     }
@@ -100,8 +102,8 @@ func fetchLinearIssue(apiKey, identifier string) (*LinearIssue, error) {
 		Query     string         `json:"query"`
 		Variables map[string]any `json:"variables"`
 	}{
-		Query:     issueByIdentifierQuery,
-		Variables: map[string]any{"identifier": identifier},
+		Query:     issueSearchQuery,
+		Variables: map[string]any{"term": identifier},
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -114,7 +116,7 @@ func fetchLinearIssue(apiKey, identifier string) (*LinearIssue, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", apiKey)
+	req.Header.Set("Authorization", linearAuthHeader(apiKey))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -133,7 +135,9 @@ func fetchLinearIssue(apiKey, identifier string) (*LinearIssue, error) {
 
 	var result struct {
 		Data struct {
-			IssueByIdentifier *LinearIssue `json:"issueByIdentifier"`
+			SearchIssues struct {
+				Nodes []LinearIssue `json:"nodes"`
+			} `json:"searchIssues"`
 		} `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
@@ -152,11 +156,14 @@ func fetchLinearIssue(apiKey, identifier string) (*LinearIssue, error) {
 		return nil, fmt.Errorf("linear GraphQL errors: %s", strings.Join(msgs, ", "))
 	}
 
-	if result.Data.IssueByIdentifier == nil {
-		return nil, nil // issue not found
+	// Verify exact identifier match (search may return fuzzy results)
+	for _, issue := range result.Data.SearchIssues.Nodes {
+		if issue.Identifier == identifier {
+			return &issue, nil
+		}
 	}
 
-	return result.Data.IssueByIdentifier, nil
+	return nil, nil // not found
 }
 
 // printLinearContext prints the Linear-enriched section for a grok output.

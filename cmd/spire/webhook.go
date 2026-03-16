@@ -30,14 +30,31 @@ type linearEvent struct {
 }
 
 // labelRigMap maps exact Linear label names to rig prefixes.
-var labelRigMap = map[string]string{
-	"Workstream: Platform": "awp",
-}
+// Configure via bd config set linear.label-map 'Label Name=prefix,Other=pfx'
+var labelRigMap = map[string]string{}
 
 // labelPrefixRigMap maps Linear label prefixes to rig prefixes.
-var labelPrefixRigMap = map[string]string{
-	"Panels": "pan",
-	"Grove":  "gro",
+// Configure via bd config set linear.label-prefix-map 'Prefix=pfx,Other=pfx'
+var labelPrefixRigMap = map[string]string{}
+
+func init() {
+	// Load label maps from bd config if available
+	if out, err := bd("config", "get", "linear.label-map"); err == nil && !strings.Contains(out, "(not set)") {
+		for _, pair := range strings.Split(strings.TrimSpace(out), ",") {
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) == 2 {
+				labelRigMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	if out, err := bd("config", "get", "linear.label-prefix-map"); err == nil && !strings.Contains(out, "(not set)") {
+		for _, pair := range strings.Split(strings.TrimSpace(out), ",") {
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) == 2 {
+				labelPrefixRigMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			}
+		}
+	}
 }
 
 // linearToBeadsPriority converts Linear priority (0-4) to beads priority (0-4).
@@ -221,7 +238,7 @@ func doltSQL(query string, jsonOutput bool) (string, error) {
 		"--port", port,
 		"--user", "root",
 		"--no-tls",
-		"--use-db", "spi",
+		"--use-db", detectDBName(),
 		"sql", "-q", query,
 	}
 	if jsonOutput {

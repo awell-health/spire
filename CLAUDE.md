@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is Awell Health's centralized beads tracking server (Spire). Multiple repos file beads here, each with their own prefix. Epics created here are automatically mirrored to Linear by the epic agent.
+Spire is a coordination hub for AI agents across repositories. Multiple repos register here, each with their own prefix. Epics created here are automatically mirrored to Linear by the epic agent.
 
 ## Using beads in Spire
 
@@ -34,11 +34,11 @@ Each repo has its own prefix. When creating beads from a repo context, the prefi
 
 | Repo | Prefix | Example ID |
 |------|--------|------------|
-| Spire (this repo) | `spi-` | `spi-a3f8` |
-| Awell Platform | `awp-` | `awp-b7d0` |
-| Panels | `pan-` | `pan-8a01` |
+| Hub (this repo) | `hub-` | `hub-a3f8` |
+| Web app | `web-` | `web-b7d0` |
+| API server | `api-` | `api-8a01` |
 
-Additional repos are registered via `scripts/register-repo.sh`. Check `.beads/config.yaml` for the current prefix map.
+Additional repos are registered via `setup.sh` or `spire init --satellite`. Check `.beads/config.yaml` for the current prefix map.
 
 ## Epics and Linear
 

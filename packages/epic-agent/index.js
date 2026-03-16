@@ -66,7 +66,7 @@ function bdList() {
 
 function bdUpdate(id, label) {
   try {
-    execSync(`bd update ${id} --label "${label}"`, {
+    execSync(`bd update ${id} --add-label "${label}"`, {
       cwd: config.hubPath,
       encoding: "utf-8",
       timeout: 10_000,
@@ -84,7 +84,7 @@ function bdComment(id, comment) {
   try {
     // Escape the comment for shell safety
     const escaped = comment.replace(/"/g, '\\"');
-    execSync(`bd update ${id} --comment "${escaped}"`, {
+    execSync(`bd comments add ${id} "${escaped}"`, {
       cwd: config.hubPath,
       encoding: "utf-8",
       timeout: 10_000,

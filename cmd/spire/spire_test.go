@@ -452,6 +452,16 @@ func TestLinearToBeadsPriority(t *testing.T) {
 }
 
 func TestMapLabelsToRig(t *testing.T) {
+	// Set up test label maps (these are configurable via bd config in production)
+	origExact := labelRigMap
+	origPrefix := labelPrefixRigMap
+	labelRigMap = map[string]string{"Workstream: Platform": "awp"}
+	labelPrefixRigMap = map[string]string{"Panels": "pan", "Grove": "gro"}
+	defer func() {
+		labelRigMap = origExact
+		labelPrefixRigMap = origPrefix
+	}()
+
 	tests := []struct {
 		name   string
 		labels []string
@@ -527,6 +537,11 @@ func TestParseWebhookPayloadInvalid(t *testing.T) {
 
 func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	requireBd(t)
+
+	// Set up label maps for this test
+	origPrefix := labelPrefixRigMap
+	labelPrefixRigMap = map[string]string{"Panels": "pan"}
+	defer func() { labelPrefixRigMap = origPrefix }()
 
 	// Create a fake webhook event bead
 	payload := `{"action":"create","type":"Issue","data":{"id":"uuid-test","identifier":"AWE-99","title":"Integration test epic","priority":2,"labels":[{"name":"Panels - Test"}]}}`

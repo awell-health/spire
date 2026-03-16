@@ -53,6 +53,18 @@ type Bead struct {
 	Parent      string   `json:"parent"`
 }
 
+// detectDBName returns the Dolt database name (same as the hub prefix).
+func detectDBName() string {
+	if env := os.Getenv("SPIRE_IDENTITY"); env != "" {
+		return env
+	}
+	out, err := bd("config", "get", "issue-prefix")
+	if err == nil && out != "" && !strings.Contains(out, "(not set)") {
+		return strings.TrimSpace(out)
+	}
+	return "spi" // fallback
+}
+
 // parseBead parses a bead from bd show --json output (which returns an array).
 func parseBead(data []byte) (Bead, error) {
 	var beads []Bead

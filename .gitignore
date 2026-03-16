@@ -24,3 +24,9 @@ node_modules
 # Env vars
 *.local
 .env
+
+# Per-deployment config (see satellites.conf.example)
+satellites.conf
+
+# GoReleaser
+dist/

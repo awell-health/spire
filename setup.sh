@@ -1,53 +1,75 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# setup.sh — Set up Spire as the beads hub for Awell repos
+# setup.sh — Set up Spire as a beads hub for multi-repo coordination
 #
 # Run after cloning spire:
-#   cd ~/awell/spire && ./setup.sh
+#   cd spire && ./setup.sh
+#
+# Satellite repos are listed in satellites.conf (one per line, format: prefix|path).
+# If satellites.conf doesn't exist, only the hub is configured.
 #
 # Steps:
 #   1. Install/upgrade beads (includes dolt)
 #   2. Set up central dolt server (LaunchAgent + env vars)
-#   3. Verify managed repos exist
-#   4. Initialize beads hub in spire
+#   3. Read satellite repo registry
+#   4. Initialize beads hub
 #   5. Configure redirects and routes in satellite repos
 #   6. Set up Cursor integration (MCP server + rules)
 #   7. Build spire CLI
+#   8. Start spire daemon
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-AWELL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PARENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 HUB_DIR="$SCRIPT_DIR"
+HUB_NAME="$(basename "$HUB_DIR")"
 
-# ─── Repo registry ───────────────────────────────────────────────────────────
-# Format: prefix|directory_name
-# All paths are relative to $AWELL_DIR
-# The first entry is the hub (spire); the rest are satellites.
-REPOS=(
-  "spi|spire"
-  "pan|panels"
-  "gro|grove"
-  "rel|release-management"
-)
-
-HUB_PREFIX="spi"
-HUB_REPO="spire"
+# ─── Hub prefix ──────────────────────────────────────────────────────────────
+# Read from .beads/config.yaml if it exists, otherwise derive from directory name
+if [ -f "$HUB_DIR/.beads/config.yaml" ] && command -v grep >/dev/null 2>&1; then
+  CONFIGURED_PREFIX=$(grep -m1 'issue-prefix:' "$HUB_DIR/.beads/config.yaml" 2>/dev/null | sed 's/.*: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' || echo "")
+fi
+HUB_PREFIX="${CONFIGURED_PREFIX:-${HUB_NAME:0:3}}"
 DOLT_PORT=3307
+
+# ─── Satellite repo registry ────────────────────────────────────────────────
+# Read from satellites.conf if it exists. Format: prefix|relative-path
+# Paths are relative to the parent directory of this repo.
+SATELLITES=()
+SATELLITES_CONF="$HUB_DIR/satellites.conf"
+if [ -f "$SATELLITES_CONF" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Skip comments and blank lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+    SATELLITES+=("$line")
+  done < "$SATELLITES_CONF"
+fi
+
+# Build full REPOS array: hub first, then satellites
+REPOS=("$HUB_PREFIX|$HUB_NAME")
+for sat in "${SATELLITES[@]}"; do
+  REPOS+=("$sat")
+done
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 info()  { echo -e "  → $*"; }
 ok()    { echo -e "  ✓ $*"; }
 warn()  { echo -e "  ⚠ $*"; }
 
+# Detect git user for dolt init
+GIT_NAME="$(git config user.name 2>/dev/null || echo "spire")"
+GIT_EMAIL="$(git config user.email 2>/dev/null || echo "spire@localhost")"
+
 echo ""
-echo "=== Spire Beads Setup ==="
-echo "    Awell directory: $AWELL_DIR"
+echo "=== Spire Setup ==="
+echo "    Hub: $HUB_DIR (prefix: $HUB_PREFIX-)"
+echo "    Satellites: ${#SATELLITES[@]}"
 echo ""
 
 # ─── Step 1: Install/upgrade beads ───────────────────────────────────────────
 # Installs beads via Homebrew (which includes dolt as a dependency).
-# If already installed, upgrades to latest. Beads is the CLI (`bd`) for
-# the shared issue tracker that all Awell repos use.
+# If already installed, upgrades to latest.
 echo "── 1. Install beads ──"
 
 if command -v brew >/dev/null 2>&1; then
@@ -73,7 +95,6 @@ echo ""
 # Why not `brew services start dolt`? The brew formula runs `dolt sql-server`
 # without --config, so config.yaml edits are silently ignored. We use a custom
 # LaunchAgent that passes --config explicitly.
-# See: https://github.com/steveyegge/beads/issues/2323
 #
 # Also adds BEADS_DOLT_SERVER_* env vars to ~/.zshrc so all repos connect
 # to this central server instead of spawning per-project embedded dolt instances.
@@ -90,7 +111,7 @@ mkdir -p "$DOLT_DIR" "$DOLT_LOG_DIR" "$HOME/Library/LaunchAgents"
 # Initialize dolt database directory if needed
 if [ ! -d "$DOLT_DIR/.dolt" ]; then
   info "Initializing dolt database..."
-  (cd "$DOLT_DIR" && dolt init --name "awell" --email "dev@awellhealth.com" 2>/dev/null) || true
+  (cd "$DOLT_DIR" && dolt init --name "$GIT_NAME" --email "$GIT_EMAIL" 2>/dev/null) || true
   ok "Dolt database initialized at $DOLT_DIR"
 else
   ok "Dolt database already initialized"
@@ -147,7 +168,7 @@ if ! grep -q "BEADS_DOLT_SERVER_HOST" "$ZSHRC" 2>/dev/null; then
   info "Adding beads env vars to ~/.zshrc..."
   cat >> "$ZSHRC" << EOF
 
-# Beads — central dolt server (added by spire/setup.sh)
+# Beads — central dolt server (added by spire setup.sh)
 export BEADS_DOLT_SERVER_HOST="127.0.0.1"
 export BEADS_DOLT_SERVER_PORT="$DOLT_PORT"
 export BEADS_DOLT_SERVER_MODE=1
@@ -166,8 +187,8 @@ export BEADS_DOLT_AUTO_START=0
 
 echo ""
 
-# ─── Step 3: Verify repos exist ──────────────────────────────────────────────
-# Checks that each repo in the registry exists as a sibling directory of spire.
+# ─── Step 3: Verify repos ────────────────────────────────────────────────────
+# Checks that each repo in the registry exists as a sibling directory.
 # Missing repos are skipped in later steps (routes, redirects, Cursor config).
 # They can be cloned later and setup.sh re-run — it's idempotent.
 echo "── 3. Verify repos ──"
@@ -176,7 +197,7 @@ MISSING=()
 for entry in "${REPOS[@]}"; do
   prefix="${entry%%|*}"
   repo="${entry##*|}"
-  repo_path="$AWELL_DIR/$repo"
+  repo_path="$PARENT_DIR/$repo"
   if [ -d "$repo_path" ]; then
     ok "$prefix- → $repo"
   else
@@ -191,9 +212,9 @@ echo ""
 echo "── 4. Initialize beads hub ──"
 
 if [ -d "$HUB_DIR/.beads/dolt" ]; then
-  ok "Beads already initialized in spire"
+  ok "Beads already initialized"
 else
-  info "Initializing beads in spire..."
+  info "Initializing beads..."
   cd "$HUB_DIR"
   bd init --prefix "$HUB_PREFIX"
   ok "Beads initialized with prefix $HUB_PREFIX-"
@@ -203,8 +224,8 @@ fi
 REMOTE_COUNT=$(bd dolt remote list 2>/dev/null | grep -c "origin" || echo "0")
 if [ "$REMOTE_COUNT" = "0" ]; then
   info "No DoltHub remote configured."
-  info "To enable daemon sync, run:"
-  info "  cd $HUB_DIR && bd dolt remote add origin <dolthub-url>"
+  info "To enable remote sync, run:"
+  info "  bd dolt remote add origin <dolthub-url>"
 else
   ok "DoltHub remote 'origin' configured"
 fi
@@ -221,13 +242,21 @@ DOLT_CLI_PASSWORD="" dolt --host 127.0.0.1 --port "$DOLT_PORT" --user root --no-
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );" 2>/dev/null && ok "webhook_queue table ready" || warn "Could not create webhook_queue table (run manually)"
 
+# Write .envrc for the hub
+if [ ! -f "$HUB_DIR/.envrc" ]; then
+  echo "export SPIRE_IDENTITY=\"$HUB_PREFIX\"" > "$HUB_DIR/.envrc"
+  ok "Hub .envrc created (SPIRE_IDENTITY=$HUB_PREFIX)"
+else
+  ok "Hub .envrc already exists"
+fi
+
 echo ""
 
 # ─── Step 5: Routes and redirects ────────────────────────────────────────────
 echo "── 5. Configure routes and redirects ──"
 
-# Build routes.jsonl — all prefixes point to "." (spire's db)
-# Satellites resolve "." through their redirect to spire
+# Build routes.jsonl — all prefixes point to "." (hub's db)
+# Satellites resolve "." through their redirect to the hub
 ROUTES=""
 for entry in "${REPOS[@]}"; do
   prefix="${entry%%|*}"
@@ -235,15 +264,15 @@ for entry in "${REPOS[@]}"; do
   ROUTES+='{"prefix":"'"$prefix"'-","path":"."}'$'\n'
 done
 
-# Write routes to spire
+# Write routes to hub
 printf '%s' "$ROUTES" > "$HUB_DIR/.beads/routes.jsonl"
-ok "Spire routes.jsonl updated"
+ok "Hub routes.jsonl updated"
 
 # Set up each satellite repo
 for entry in "${REPOS[@]}"; do
   prefix="${entry%%|*}"
   repo="${entry##*|}"
-  repo_path="$AWELL_DIR/$repo"
+  repo_path="$PARENT_DIR/$repo"
 
   # Skip hub and missing repos
   [ "$prefix" = "$HUB_PREFIX" ] && continue
@@ -251,7 +280,7 @@ for entry in "${REPOS[@]}"; do
 
   # Create .beads dir with redirect + routes
   mkdir -p "$repo_path/.beads"
-  echo "../spire/.beads" > "$repo_path/.beads/redirect"
+  echo "../$HUB_NAME/.beads" > "$repo_path/.beads/redirect"
   printf '%s' "$ROUTES" > "$repo_path/.beads/routes.jsonl"
 
   ok "$repo: redirect + routes configured"
@@ -286,7 +315,7 @@ CURSOR_RULE_SRC="$HUB_DIR/cursor/spire-messaging.mdc"
 for entry in "${REPOS[@]}"; do
   prefix="${entry%%|*}"
   repo="${entry##*|}"
-  repo_path="$AWELL_DIR/$repo"
+  repo_path="$PARENT_DIR/$repo"
 
   # Skip missing repos
   [[ " ${MISSING[*]:-} " =~ " $prefix " ]] && continue
@@ -304,8 +333,6 @@ for entry in "${REPOS[@]}"; do
   if [ -f "$MCP_JSON" ]; then
     # Check if spire server already configured
     if ! grep -q '"spire"' "$MCP_JSON" 2>/dev/null; then
-      # Insert spire server into existing mcpServers object
-      # Use node for reliable JSON manipulation
       node -e "
         const fs = require('fs');
         const cfg = JSON.parse(fs.readFileSync('$MCP_JSON', 'utf8'));
@@ -322,7 +349,6 @@ for entry in "${REPOS[@]}"; do
       ok "$repo: spire MCP server already in .cursor/mcp.json"
     fi
   else
-    # Create new mcp.json
     cat > "$MCP_JSON" << EOF
 {
   "mcpServers": {
@@ -355,7 +381,7 @@ else
   ok "spire installed to ~/.local/bin/spire"
 
   # Register the hub as an agent
-  "$HOME/.local/bin/spire" register spi >/dev/null 2>&1 || true
+  "$HOME/.local/bin/spire" register "$HUB_PREFIX" >/dev/null 2>&1 || true
 
   # Ensure ~/.local/bin is in PATH
   if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
@@ -370,9 +396,14 @@ fi
 # ── Step 8: Spire daemon LaunchAgent ──────────────────────────────────────
 echo "── 8. Spire daemon LaunchAgent ──"
 
-SPIRE_PLIST_NAME="com.awell.spire-daemon"
+SPIRE_PLIST_NAME="com.spire.daemon"
 SPIRE_PLIST_PATH="$HOME/Library/LaunchAgents/$SPIRE_PLIST_NAME.plist"
 SPIRE_BIN="$HOME/.local/bin/spire"
+
+# Clean up old plist name if it exists
+OLD_PLIST_NAME="com.awell.spire-daemon"
+launchctl bootout "gui/$(id -u)/$OLD_PLIST_NAME" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/$OLD_PLIST_NAME.plist" 2>/dev/null || true
 
 if [ -x "$SPIRE_BIN" ]; then
   cat > "$SPIRE_PLIST_PATH" << EOF
@@ -403,7 +434,7 @@ if [ -x "$SPIRE_BIN" ]; then
     <key>EnvironmentVariables</key>
     <dict>
         <key>SPIRE_IDENTITY</key>
-        <string>spi</string>
+        <string>$HUB_PREFIX</string>
         <key>BEADS_DOLT_SERVER_HOST</key>
         <string>127.0.0.1</string>
         <key>BEADS_DOLT_SERVER_PORT</key>
@@ -442,8 +473,15 @@ for entry in "${REPOS[@]}"; do
   fi
 done
 echo ""
-echo "Usage:"
-echo "  cd ~/awell/panels && bd create --rig=pan 'Fix widget bug' -p 2 -t task"
-echo "  cd ~/awell/spire  && bd list   # see all issues across repos"
+if [ ${#SATELLITES[@]} -eq 0 ]; then
+  echo "No satellites configured. To add one, create satellites.conf:"
+  echo "  echo 'web|my-web-app' >> satellites.conf"
+  echo "  ./setup.sh"
+  echo ""
+fi
+echo "Next steps:"
+echo "  spire connect linear    # set up Linear integration"
+echo "  spire collect            # check inbox"
+echo "  bd list                  # see all issues"
 echo ""
 echo "Restart your shell or run: source ~/.zshrc"

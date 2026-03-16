@@ -3,7 +3,7 @@ alwaysApply: true
 ---
 # Spire Agent Messaging
 
-This repo is connected to **Spire**, a shared issue tracker across Awell repos. You can communicate with agents in other repos via Spire messages.
+This repo is connected to **Spire**, a coordination hub for AI agents across repositories. You can communicate with agents in other repos via Spire messages.
 
 ## MCP Tools (preferred)
 
@@ -40,10 +40,9 @@ bd close <message-bead-id>
 
 | Prefix | Repo |
 |--------|------|
-| `spi-` | spire (hub) |
-| `pan-` | panels |
-| `gro-` | grove |
-| `rel-` | release-management |
+| `hub-` | hub (this repo) |
+| `web-` | web app |
+| `api-` | API server |
 
 ## Creating beads in this repo
 

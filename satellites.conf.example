@@ -1,0 +1,19 @@
+# Satellite repos — one per line, format: prefix|directory-name
+# Paths are relative to the parent directory of this Spire hub.
+#
+# Example: if your hub is at ~/projects/spire and your web app is at
+# ~/projects/my-web-app, add:
+#
+#   web|my-web-app
+#
+# Each satellite gets:
+#   - A .beads/redirect pointing to the hub's database
+#   - Routes for cross-repo visibility
+#   - A SPIRE_IDENTITY in .envrc
+#   - Cursor MCP server config (if using Cursor)
+#
+# Re-run setup.sh after editing this file.
+
+# web|my-web-app
+# api|my-api-server
+# infra|my-infrastructure

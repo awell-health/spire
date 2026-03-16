@@ -32,6 +32,12 @@ func main() {
 		err = cmdGrok(args)
 	case "read":
 		err = cmdRead(args)
+	case "connect":
+		err = cmdConnect(args)
+	case "disconnect":
+		err = cmdDisconnect(args)
+	case "serve":
+		err = cmdServe(args)
 	case "daemon":
 		err = cmdDaemon(args)
 	case "version":
@@ -63,6 +69,9 @@ Commands:
   focus <bead-id>       Focus on a task (bonds workflow on first focus)
   grok <bead-id>        Focus + live Linear context (requires LINEAR_API_KEY)
   read <bead-id>        Mark a message as read
+  connect <service>    Connect an integration (linear)
+  disconnect <service> Disconnect an integration
+  serve               Run webhook receiver (--port)
   daemon              Run sync daemon (--interval, --once)
   version               Print version
   help                  Show this help`)

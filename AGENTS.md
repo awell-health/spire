@@ -2,7 +2,7 @@
 
 Use `bd` for task tracking in this repository.
 
-This is Spire — a centralized beads tracking server for multiple repos. See CLAUDE.md for full instructions.
+This is Spire — a coordination hub for AI agents across repositories. See CLAUDE.md for full instructions.
 
 Key commands:
 - `bd ready --json` — list tasks ready to work on
