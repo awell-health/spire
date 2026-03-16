@@ -16,7 +16,7 @@ Hey team — wanted to share something I've been building that I'm pretty excite
 
 **Where it stands:** The core is working — CLI, messaging, daemon, webhook receiver, Linear integration, Homebrew distribution pipeline. We're dogfooding it now. The Linear OAuth app is registered and the `spire connect linear` flow is built. Next up is end-to-end testing and cutting the first release.
 
-**The vision:** Any team running AI agents across multiple repos should be able to `brew install spire`, run `spire init`, and have their agents talking to each other in minutes. Linear is the first PM integration — Jira, GitHub Issues, etc. are contribution opportunities once we open source.
+**The vision:** Any team running AI agents across multiple repos should be able to `brew install spire`, run `spire`, and have their agents talking to each other in minutes. Linear is the first PM integration — Jira, GitHub Issues, etc. are contribution opportunities once we open source.
 
 Design docs are in the repo if you want the full picture: `docs/superpowers/specs/`
 Linear: AWL-3946

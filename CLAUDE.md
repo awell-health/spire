@@ -2,11 +2,11 @@
 
 ## Overview
 
-Spire is a coordination hub for AI agents across repositories. Multiple repos register here, each with their own prefix. Epics created here are automatically mirrored to Linear by the epic agent.
+Spire is a coordination hub for AI agents across repositories. Multiple repos register here, each with their own prefix. Epics created here are automatically mirrored to Linear by the daemon.
 
 ## Using beads in Spire
 
-All `bd` commands work as normal. Spire runs a shared Dolt server on port 3308.
+All `bd` commands work as normal. Spire runs a shared Dolt server on port 3307.
 
 ```bash
 # List all work across all repos
@@ -38,11 +38,11 @@ Each repo has its own prefix. When creating beads from a repo context, the prefi
 | Web app | `web-` | `web-b7d0` |
 | API server | `api-` | `api-8a01` |
 
-Additional repos are registered via `setup.sh` or `spire init --satellite`. Check `.beads/config.yaml` for the current prefix map.
+Additional repos are registered via `satellites.conf` + `setup.sh`. Check `.beads/config.yaml` for the current prefix map.
 
 ## Epics and Linear
 
-When you create a bead with `type=epic`, the epic agent will:
+When you create a bead with `type=epic`, the daemon will:
 
 1. Create a corresponding Linear issue
 2. Add a `linear:<identifier>` label to the bead
@@ -99,7 +99,7 @@ bd list --json | jq '.[] | select(.id | startswith("api-"))'
 - **Always set type**: `-t task`, `-t bug`, `-t feature`, `-t epic`, `-t chore`
 - **Claim before working**: `bd update <id> --claim` prevents double-work
 - **Use `--json` flag** for programmatic access to bead data
-- **Don't manually create Linear issues for epics** — let the agent handle it
+- **Don't manually create Linear issues for epics** — the daemon syncs them automatically
 
 ## Agent Messaging (Spire)
 

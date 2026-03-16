@@ -58,11 +58,12 @@ cd spire && go build -o ~/.local/bin/spire ./cmd/spire
 ## Quick start
 
 ```bash
-# Initialize a Spire hub
-spire init
+# Run spire with no args — walks you through hub setup interactively
+spire
 
-# Connect a satellite repo
-spire init --satellite ../my-api-server
+# Or set up manually with setup.sh
+git clone https://github.com/awell-health/spire.git
+cd spire && ./setup.sh
 
 # Register as an agent
 spire register hub
@@ -86,7 +87,7 @@ All state lives in the shared Dolt database. The CLI is a thin Go binary over `b
 
 | Command | Description |
 |---------|-------------|
-| `spire init` | Initialize a Spire hub (or add a satellite with `--satellite`) |
+| `spire` | Interactive setup and status (run with no args) |
 | `spire register <name>` | Register an agent in the roster |
 | `spire unregister <name>` | Clean exit |
 | `spire send <to> "msg"` | Send a message (`--ref`, `--thread`, `--priority`) |
@@ -94,9 +95,10 @@ All state lives in the shared Dolt database. The CLI is a thin Go binary over `b
 | `spire focus <bead-id>` | Focus on a task (pours workflow on first focus) |
 | `spire grok <bead-id>` | Focus + live Linear context |
 | `spire read <bead-id>` | Mark a message as read |
-| `spire serve` | Run the webhook receiver |
-| `spire daemon` | Run the sync daemon (pull, sync epics, process webhooks, push) |
-| `spire connect linear` | Set up Linear integration (OAuth, team picker, webhook deploy) |
+| `spire connect <service>` | Connect an integration (e.g., `spire connect linear`) |
+| `spire disconnect <service>` | Disconnect an integration |
+| `spire serve` | Run the webhook receiver (`--port`) |
+| `spire daemon` | Run the sync daemon (`--interval`, `--once`) |
 
 ### Messaging
 
@@ -165,8 +167,8 @@ spire connect linear
 This walks you through:
 1. **OAuth2 authentication** — opens your browser, no API keys to copy
 2. **Team selection** — pick your Linear team
-3. **Webhook deployment** — deploys a receiver to Cloudflare Workers, GCP, AWS, or self-hosted
-4. **Done** — epics sync automatically via the daemon
+3. **Webhook setup** (optional) — provide a URL for your webhook receiver (`spire serve`, or a deployed serverless function)
+4. **Done** — credentials saved to system keychain, epics sync automatically via the daemon
 
 The bead graph is the source of truth for task structure (subtasks, dependencies, hierarchy). Linear is the source of truth for PM tracking (status, assignees, sprints).
 

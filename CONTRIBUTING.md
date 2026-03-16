@@ -7,7 +7,7 @@ Thank you for your interest in contributing to Spire, a coordination hub for AI 
 Before you begin, make sure you have the following installed:
 
 - **Go 1.26+** -- the CLI and core logic are written in Go
-- **beads CLI** (`bd`) -- Spire's work-tracking system; see the [beads repository](https://github.com/awellhealth/beads) for installation instructions
+- **beads CLI** (`bd`) -- Spire's work-tracking system; see the [beads repository](https://github.com/steveyegge/beads) for installation instructions
 - **Dolt** -- Spire uses a shared Dolt database for persistent storage; install from [dolthub.com](https://www.dolthub.com/docs/getting-started/installation/)
 - **Node.js 20+** -- required for the MCP server package
 - **pnpm** -- used as the package manager for the Node.js workspace
@@ -47,20 +47,23 @@ Spire is organized as a monorepo managed with pnpm and Turbo:
 
 ```
 spire/
-  cmd/spire/          Go CLI -- the main spire binary
+  cmd/spire/          Go CLI — all commands, daemon, webhook server, epic sync
   packages/
     mcp-server/       MCP server for Cursor/Claude Code integration (Node.js)
-    epic-agent/       Linear epic sync agent
   docs/
     superpowers/
       specs/          Design specs for new features
       plans/          Implementation plans
-  scripts/            Setup and utility scripts
+  .beads/
+    formulas/         Workflow templates (spire-agent-work)
+    routes.jsonl      Multi-repo routing config
+  cursor/             Cursor IDE rules
+  setup.sh            Hub + satellite setup
+  satellites.conf     Your satellite repos (gitignored)
 ```
 
-- **`cmd/spire/`** -- Contains the Go source for the `spire` CLI, including agent registration, messaging, and bead management commands.
+- **`cmd/spire/`** -- The Go source for the `spire` CLI. Includes agent messaging, Linear OAuth connect flow, epic sync, webhook HTTP server, daemon, and keychain integration. Zero external Go dependencies.
 - **`packages/mcp-server/`** -- A Node.js MCP (Model Context Protocol) server that exposes Spire's capabilities to AI coding tools like Cursor and Claude Code.
-- **`packages/epic-agent/`** -- The daemon that syncs beads of type `epic` to Linear issues, keeping both systems in sync.
 - **`docs/`** -- Design specifications and implementation plans.
 
 ## Adding a New PM Integration
@@ -71,9 +74,9 @@ Spire is designed to integrate with multiple project management tools. To add a 
 
 2. **Implement the OAuth connect flow.** Allow users to authenticate Spire with the PM tool. Store credentials securely using the same pattern as the Linear integration.
 
-3. **Implement daemon sync logic.** Write a sync daemon (or extend the existing epic agent) that watches for bead changes and mirrors them to the external tool, and vice versa.
+3. **Implement daemon sync logic.** Add sync logic to the daemon (`cmd/spire/daemon.go`) that watches for bead changes and mirrors them to the external tool, and vice versa. See `cmd/spire/epic_sync.go` for the Linear example.
 
-4. **Implement webhook handling.** The webhook app in `packages/webhook-app/` receives inbound events from external tools. Add a new handler for your integration's webhook events.
+4. **Implement webhook handling.** The webhook server (`cmd/spire/serve.go`) receives inbound events. Add a new handler for your integration's webhook events, or extend the existing queue-based processing in `cmd/spire/webhook.go`.
 
 5. **Add a design spec.** Document your integration in `docs/superpowers/specs/` following the naming convention: `YYYY-MM-DD-spire-connect-<tool>.md`.
 
