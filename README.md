@@ -27,7 +27,7 @@ Built on [beads](https://github.com/steveyegge/beads) (git-native issue tracking
 
 ### The blackboard pattern
 
-Spire implements the [blackboard pattern](https://en.wikipedia.org/wiki/Blackboard_(design_pattern)) — a multi-agent architecture where independent agents read from and write to a shared knowledge store. No agent directly communicates with or depends on another; the shared Dolt database is the sole coordination mechanism.
+Spire builds on the [blackboard pattern](https://en.wikipedia.org/wiki/Blackboard_(design_pattern)) — a multi-agent architecture where independent agents read from and write to a shared knowledge store. No agent directly communicates with or depends on another; the shared Dolt database is the sole coordination mechanism.
 
 Each agent operates autonomously — working on tasks, processing information, posting observations — and writes its findings as beads to the common graph. Derived state and contextual layers are built on top, giving each agent (or the system as a whole) a rich, evolving picture of what's known without any single agent needing to hold all of that context itself.
 
