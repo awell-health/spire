@@ -101,11 +101,46 @@ bd list --json | jq '.[] | select(.id | startswith("api-"))'
 - **Use `--json` flag** for programmatic access to bead data
 - **Don't manually create Linear issues for epics** — the daemon syncs them automatically
 
-## Agent Messaging (Spire)
+## Spire CLI
 
-Spire provides agent-to-agent communication via the shared Dolt database.
+Spire is a single binary that manages the full lifecycle: dolt server, daemon, messaging, and work claiming.
 
-### Quick reference
+### Lifecycle
+
+```bash
+# Start everything (dolt server + daemon)
+spire up [--interval 2m]
+
+# Stop daemon only (dolt keeps running for other repos)
+spire down
+
+# Stop everything (daemon + dolt)
+spire shutdown
+
+# Check what's running
+spire status
+```
+
+After a reboot, run `spire up` to restore services.
+
+### Work management
+
+```bash
+# Claim a bead (pull → verify → set in_progress → push)
+spire claim <bead-id>
+
+# Focus on a task (read-only context assembly + workflow molecule)
+spire focus <bead-id>
+
+# Deep focus with live Linear context
+spire grok <bead-id>
+```
+
+`spire claim` is atomic: it pulls latest state, verifies the bead isn't closed or owned by someone else, sets it to in_progress, and pushes. Use it before starting work.
+
+`spire focus` assembles context: bead details, workflow progress, referenced beads, messages, comments. It pours a `spire-agent-work` molecule on first focus.
+
+### Agent messaging
 
 ```bash
 # Register as an agent
@@ -120,18 +155,31 @@ spire collect
 # Send a message
 spire send <agent> "message" [--ref <bead-id>] [--thread <msg-id>] [--priority <0-4>]
 
-# Focus on a task (bonds workflow on first focus)
-spire focus <bead-id>
-
 # Mark a message as read
 spire read <bead-id>
 ```
 
+### Integrations
+
+```bash
+# Connect Linear (OAuth2 or API key)
+spire connect linear
+
+# Disconnect
+spire disconnect linear
+
+# Run webhook receiver
+spire serve [--port 8080]
+```
+
 ### Session lifecycle
 
-1. `spire collect` — check inbox at session start
-2. Work on tasks, communicate as needed
-3. `spire send <agent> "status update" --ref <bead-id>` — notify other agents
+1. `spire up` — ensure services are running
+2. `spire collect` — check inbox
+3. `spire claim <bead-id>` — claim work
+4. `spire focus <bead-id>` — get context
+5. Work on the task
+6. `spire send <agent> "status update" --ref <bead-id>` — notify others
 
 ### Labels
 

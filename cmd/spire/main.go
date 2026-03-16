@@ -40,6 +40,8 @@ func main() {
 		err = cmdServe(args)
 	case "daemon":
 		err = cmdDaemon(args)
+	case "claim":
+		err = cmdClaim(args)
 	case "up":
 		err = cmdUp(args)
 	case "down":
@@ -79,6 +81,7 @@ Commands:
   read <bead-id>        Mark a message as read
   connect <service>    Connect an integration (linear)
   disconnect <service> Disconnect an integration
+  claim <bead-id>       Pull, verify, claim, push (atomic)
   up                    Start dolt server + daemon (--interval)
   down                  Stop daemon (dolt keeps running)
   shutdown              Stop daemon + dolt server
