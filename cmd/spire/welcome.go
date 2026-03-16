@@ -123,7 +123,8 @@ func runWelcome() {
 	if !linearReady {
 		fmt.Println("    spire connect linear             # sync epics to Linear")
 	}
-	fmt.Println("    spire daemon                     # start background sync")
+	fmt.Println("    spire up                         # start dolt + daemon")
+	fmt.Println("    spire status                     # check running state")
 	fmt.Println("    spire serve --port 8080          # run webhook receiver")
 	fmt.Println("    spire help                       # all commands")
 	fmt.Println()

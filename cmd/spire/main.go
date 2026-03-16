@@ -40,6 +40,14 @@ func main() {
 		err = cmdServe(args)
 	case "daemon":
 		err = cmdDaemon(args)
+	case "up":
+		err = cmdUp(args)
+	case "down":
+		err = cmdDown(args)
+	case "shutdown":
+		err = cmdShutdown(args)
+	case "status":
+		err = cmdStatus(args)
 	case "version":
 		fmt.Println("spire", version)
 		return
@@ -71,6 +79,10 @@ Commands:
   read <bead-id>        Mark a message as read
   connect <service>    Connect an integration (linear)
   disconnect <service> Disconnect an integration
+  up                    Start dolt server + daemon (--interval)
+  down                  Stop daemon (dolt keeps running)
+  shutdown              Stop daemon + dolt server
+  status                Show running state of dolt + daemon
   serve               Run webhook receiver (--port)
   daemon              Run sync daemon (--interval, --once)
   version               Print version

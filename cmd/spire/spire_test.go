@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -854,4 +855,153 @@ func TestIntegrationGrokNoLinearLabel(t *testing.T) {
 
 	// Clean up
 	bd("close", taskID, "--force")
+}
+
+// --- Lifecycle management tests ---
+
+func TestReadWritePID(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test.pid")
+	err := writePID(tmpFile, 12345)
+	if err != nil {
+		t.Fatalf("writePID error: %v", err)
+	}
+	got := readPID(tmpFile)
+	if got != 12345 {
+		t.Errorf("readPID = %d, want 12345", got)
+	}
+}
+
+func TestReadPIDMissing(t *testing.T) {
+	got := readPID("/nonexistent/path/test.pid")
+	if got != 0 {
+		t.Errorf("readPID(missing) = %d, want 0", got)
+	}
+}
+
+func TestReadPIDInvalid(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "bad.pid")
+	os.WriteFile(tmpFile, []byte("not-a-number"), 0644)
+	got := readPID(tmpFile)
+	if got != 0 {
+		t.Errorf("readPID(invalid) = %d, want 0", got)
+	}
+}
+
+func TestReadPIDWithWhitespace(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "ws.pid")
+	os.WriteFile(tmpFile, []byte("  42  \n"), 0644)
+	got := readPID(tmpFile)
+	if got != 42 {
+		t.Errorf("readPID(whitespace) = %d, want 42", got)
+	}
+}
+
+func TestProcessAlive(t *testing.T) {
+	// Current process should be alive
+	if !processAlive(os.Getpid()) {
+		t.Error("processAlive(self) = false, want true")
+	}
+	// PID 0 should not be alive
+	if processAlive(0) {
+		t.Error("processAlive(0) = true, want false")
+	}
+	// Negative PID should not be alive
+	if processAlive(-1) {
+		t.Error("processAlive(-1) = true, want false")
+	}
+}
+
+func TestDoltPort(t *testing.T) {
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	if p := doltPort(); p != "3307" {
+		t.Errorf("doltPort() = %q, want %q", p, "3307")
+	}
+	os.Setenv("BEADS_DOLT_SERVER_PORT", "3308")
+	defer os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	if p := doltPort(); p != "3308" {
+		t.Errorf("doltPort() = %q, want %q", p, "3308")
+	}
+}
+
+func TestDoltHost(t *testing.T) {
+	os.Unsetenv("BEADS_DOLT_SERVER_HOST")
+	if h := doltHost(); h != "127.0.0.1" {
+		t.Errorf("doltHost() = %q, want %q", h, "127.0.0.1")
+	}
+	os.Setenv("BEADS_DOLT_SERVER_HOST", "192.168.1.1")
+	defer os.Unsetenv("BEADS_DOLT_SERVER_HOST")
+	if h := doltHost(); h != "192.168.1.1" {
+		t.Errorf("doltHost() = %q, want %q", h, "192.168.1.1")
+	}
+}
+
+func TestDoltDataDir(t *testing.T) {
+	os.Unsetenv("DOLT_DATA_DIR")
+	d := doltDataDir()
+	if d == "" {
+		t.Error("doltDataDir() returned empty string")
+	}
+
+	os.Setenv("DOLT_DATA_DIR", "/tmp/test-dolt")
+	defer os.Unsetenv("DOLT_DATA_DIR")
+	if d := doltDataDir(); d != "/tmp/test-dolt" {
+		t.Errorf("doltDataDir() = %q, want %q", d, "/tmp/test-dolt")
+	}
+}
+
+func TestRequireDolt(t *testing.T) {
+	// If dolt is reachable, requireDolt should succeed
+	if doltIsReachable() {
+		err := requireDolt()
+		if err != nil {
+			t.Errorf("requireDolt() failed but dolt is reachable: %v", err)
+		}
+	} else {
+		err := requireDolt()
+		if err == nil {
+			t.Error("requireDolt() succeeded but dolt is not reachable")
+		}
+		if !strings.Contains(err.Error(), "spire up") {
+			t.Errorf("requireDolt() error = %q, want to contain 'spire up'", err.Error())
+		}
+	}
+}
+
+func TestStopProcessNotRunning(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "fake.pid")
+	// No file — should return false, nil
+	stopped, err := stopProcess(tmpFile)
+	if stopped {
+		t.Error("stopProcess(missing) = true, want false")
+	}
+	if err != nil {
+		t.Errorf("stopProcess(missing) error = %v, want nil", err)
+	}
+}
+
+func TestStopProcessStalePID(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "stale.pid")
+	// Write a PID that does not exist
+	writePID(tmpFile, 99999999)
+	stopped, err := stopProcess(tmpFile)
+	if stopped {
+		t.Error("stopProcess(stale) = true, want false")
+	}
+	if err != nil {
+		t.Errorf("stopProcess(stale) error = %v, want nil", err)
+	}
+	// PID file should be cleaned up
+	if readPID(tmpFile) != 0 {
+		t.Error("stale PID file not cleaned up")
+	}
+}
+
+func TestIntegrationStatus(t *testing.T) {
+	requireBd(t)
+
+	// spire status should not error regardless of running state
+	err := cmdStatus(nil)
+	if err != nil {
+		t.Fatalf("cmdStatus error: %v", err)
+	}
 }

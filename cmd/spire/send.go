@@ -7,6 +7,10 @@ import (
 )
 
 func cmdSend(args []string) error {
+	if err := requireDolt(); err != nil {
+		return err
+	}
+
 	asFlag, args := parseAsFlag(args)
 
 	// Parse flags

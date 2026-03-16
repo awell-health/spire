@@ -3,6 +3,10 @@ package main
 import "fmt"
 
 func cmdRead(args []string) error {
+	if err := requireDolt(); err != nil {
+		return err
+	}
+
 	if len(args) < 1 {
 		return fmt.Errorf("usage: spire read <bead-id>")
 	}
