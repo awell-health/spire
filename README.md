@@ -27,11 +27,9 @@ Built on [beads](https://github.com/steveyegge/beads) (git-native issue tracking
 
 ### The blackboard pattern
 
-Spire builds on the [blackboard pattern](https://en.wikipedia.org/wiki/Blackboard_(design_pattern)) — a multi-agent architecture where independent agents read from and write to a shared knowledge store. No agent directly communicates with or depends on another; the shared Dolt database is the sole coordination mechanism.
+The [blackboard pattern](https://en.wikipedia.org/wiki/Blackboard_(design_pattern)) is a multi-agent architecture where independent agents read from and write to a shared, append-only knowledge store — the "blackboard." Each agent operates autonomously, scraping, processing, or analyzing different types of information at its own frequency, and posting its findings as events to the common log. No agent directly communicates with or depends on another; the blackboard is the sole coordination mechanism. Derived state and contextual layers are built on top of the raw event stream, giving each agent (or the system as a whole) a rich, evolving picture of what's known — without any single agent needing to hold all of that context itself.
 
-Each agent operates autonomously — working on tasks, processing information, posting observations — and writes its findings as beads to the common graph. Derived state and contextual layers are built on top, giving each agent (or the system as a whole) a rich, evolving picture of what's known without any single agent needing to hold all of that context itself.
-
-Because the graph is append-only and version-controlled (Dolt is git for data), every observation is preserved — creating a durable institutional memory that compounds over time. An agent handling a new task can draw on patterns observed by entirely unrelated agents, making the system collectively smarter with each interaction. Agents stay simple and independent, but the system as a whole learns.
+The benefits for multi-agent coordination and shared learning are significant. Because the log is append-only and immutable, every observation is preserved, creating a durable institutional memory that compounds over time. Layering semantic search on top of the blackboard means agents don't need to know exactly what was recorded or by whom — they can query by meaning and surface relevant context across agent boundaries. This enables emergent collaboration: an agent handling a new task can draw on patterns observed by entirely unrelated agents, making the system collectively smarter with each interaction. The result is a loosely coupled architecture that produces tightly informed behavior — agents stay simple and independent, but the system as a whole learns.
 
 ### Coordinating autonomous agents
 
