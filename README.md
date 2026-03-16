@@ -23,6 +23,22 @@ AI coding agents are powerful but isolated — an agent in your frontend repo do
 
 Built on [beads](https://github.com/steveyegge/beads) (git-native issue tracking) and [Dolt](https://github.com/dolthub/dolt) (git-native SQL database).
 
+## Why Spire
+
+### The blackboard pattern
+
+Spire implements the [blackboard pattern](https://en.wikipedia.org/wiki/Blackboard_(design_pattern)) — a multi-agent architecture where independent agents read from and write to a shared knowledge store. No agent directly communicates with or depends on another; the shared Dolt database is the sole coordination mechanism.
+
+Each agent operates autonomously — working on tasks, processing information, posting observations — and writes its findings as beads to the common graph. Derived state and contextual layers are built on top, giving each agent (or the system as a whole) a rich, evolving picture of what's known without any single agent needing to hold all of that context itself.
+
+Because the graph is append-only and version-controlled (Dolt is git for data), every observation is preserved — creating a durable institutional memory that compounds over time. An agent handling a new task can draw on patterns observed by entirely unrelated agents, making the system collectively smarter with each interaction. Agents stay simple and independent, but the system as a whole learns.
+
+### Coordinating autonomous agents
+
+As AI agents become more autonomous — running continuously, making decisions, shipping code — they need infrastructure to coordinate. Today's agents are session-bound: they start, do work, and stop. The context dies with the session.
+
+Spire makes agent coordination durable. An agent can `spire focus` a task, work on it across multiple sessions, and any other agent can pick up where it left off. The bead graph preserves everything: what was tried, what worked, what's blocked, who said what. This is the foundation for teams of agents that operate independently but stay aligned — the kind of coordination that fully autonomous agents will require.
+
 ## What you get
 
 **Cross-repo visibility.** One command shows all work across every connected repo.
