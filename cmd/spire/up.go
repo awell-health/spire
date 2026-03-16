@@ -40,6 +40,13 @@ func cmdUp(args []string) error {
 		fmt.Printf("started (pid %d, port %s)\n", newPID, doltPort())
 	}
 
+	// Step 1b: Ensure beads database exists on the dolt server
+	dbName := detectDBName()
+	if err := ensureDatabase(dbName); err != nil {
+		// Non-fatal: bd init may handle this, or db may already exist
+		fmt.Printf("  warning: could not ensure database %q: %s\n", dbName, err)
+	}
+
 	// Step 2: Start daemon
 	fmt.Print("spire daemon: ")
 	daemonPID := readPID(daemonPIDPath())

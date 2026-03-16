@@ -276,6 +276,24 @@ func doltStop() error {
 	return nil
 }
 
+// ensureDatabase creates a database on the dolt server if it doesn't exist.
+// Uses a raw dolt connection without --use-db to avoid the chicken-and-egg problem.
+func ensureDatabase(name string) error {
+	cmd := exec.Command("dolt",
+		"--host", doltHost(),
+		"--port", doltPort(),
+		"--user", "root",
+		"--no-tls",
+		"sql", "-q", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", name),
+	)
+	cmd.Env = append(os.Environ(), "DOLT_CLI_PASSWORD=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s\n%s", err, string(out))
+	}
+	return nil
+}
+
 // stopProcess stops a process by PID with SIGTERM then SIGKILL.
 // Removes the PID file when done.
 func stopProcess(pidPath string) (bool, error) {
