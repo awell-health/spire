@@ -223,12 +223,10 @@ func cmdInit(args []string) error {
 				}
 			}
 		} else {
-			// No local .beads — need to init. Ensure database exists on dolt
-			// server first, then use --force to skip the "already initialized" check
-			// that bd raises when it detects a running dolt server.
-			if doltIsReachable() {
-				_ = ensureDatabase(prefix)
-			}
+			// No local .beads — need to init. Use --force to skip the
+			// "already initialized" check that bd raises when it detects
+			// a running dolt server. Don't pre-create the database —
+			// let bd init create it so the commit history is consistent.
 			_, initErr := bd("init", "--force", "--prefix", prefix)
 			if initErr != nil {
 				return fmt.Errorf("bd init failed: %w\n  Try: bd init --force --prefix %s", initErr, prefix)
