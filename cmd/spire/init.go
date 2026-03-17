@@ -208,21 +208,31 @@ func cmdInit(args []string) error {
 		}
 		fmt.Printf("  Redirect → %s\n", relPath)
 	} else {
-		// Hub/standalone: run bd init (or detect already-initialized)
-		_, initErr := bd("init", "--prefix", prefix)
-		if initErr != nil {
-			// Check if already initialized — that's fine, not an error
+		// Hub/standalone: run bd init
+		// Check if .beads already exists locally with the right prefix
+		localBeads := filepath.Join(cwd, ".beads")
+		if _, statErr := os.Stat(localBeads); statErr == nil {
+			// Already initialized locally — check prefix matches
 			existingPrefix, _ := bd("config", "get", "issue-prefix")
 			existingPrefix = strings.TrimSpace(existingPrefix)
 			if existingPrefix != "" && !strings.Contains(existingPrefix, "(not set)") {
-				if existingPrefix != prefix {
+				if existingPrefix == prefix {
+					fmt.Printf("  Beads already initialized (prefix: %s-)\n", prefix)
+				} else {
 					return fmt.Errorf("beads already initialized with prefix %q (wanted %q) — use bd init --force --prefix %s to reinitialize", existingPrefix, prefix, prefix)
 				}
-				fmt.Printf("  Beads already initialized (prefix: %s-)\n", prefix)
-			} else {
-				return fmt.Errorf("bd init failed: %w\n  Try: bd init --prefix %s", initErr, prefix)
 			}
 		} else {
+			// No local .beads — need to init. Ensure database exists on dolt
+			// server first, then use --force to skip the "already initialized" check
+			// that bd raises when it detects a running dolt server.
+			if doltIsReachable() {
+				_ = ensureDatabase(prefix)
+			}
+			_, initErr := bd("init", "--force", "--prefix", prefix)
+			if initErr != nil {
+				return fmt.Errorf("bd init failed: %w\n  Try: bd init --force --prefix %s", initErr, prefix)
+			}
 			fmt.Printf("  Beads initialized (prefix: %s-)\n", prefix)
 		}
 	}
