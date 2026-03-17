@@ -24,6 +24,11 @@ func cmdUp(args []string) error {
 		}
 	}
 
+	// Pre-check: .beads must exist
+	if _, err := os.Stat(".beads"); os.IsNotExist(err) {
+		return fmt.Errorf("no .beads directory — run `spire init` first")
+	}
+
 	// Step 1: Start dolt server
 	fmt.Print("dolt server: ")
 	pid, running, reachable := doltServerStatus()

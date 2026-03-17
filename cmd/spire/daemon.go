@@ -47,6 +47,9 @@ func cmdDaemon(args []string) error {
 		writePID(sd+"/daemon.pid", os.Getpid())
 	}
 
+	// Ensure webhook_queue table exists
+	ensureWebhookQueue()
+
 	// Run first cycle immediately
 	runCycle()
 
@@ -155,4 +158,19 @@ func processWebhookEvents() (int, int) {
 	}
 
 	return processed, errors
+}
+
+// ensureWebhookQueue creates the webhook_queue table if it doesn't exist.
+func ensureWebhookQueue() {
+	_, err := doltSQL(`CREATE TABLE IF NOT EXISTS webhook_queue (
+		id          VARCHAR(36) PRIMARY KEY,
+		event_type  VARCHAR(64) NOT NULL,
+		linear_id   VARCHAR(32) NOT NULL,
+		payload     JSON NOT NULL,
+		processed   BOOLEAN NOT NULL DEFAULT 0,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`, false)
+	if err != nil {
+		log.Printf("[daemon] ensure webhook_queue: %s", err)
+	}
 }

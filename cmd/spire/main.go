@@ -9,7 +9,18 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		runWelcome()
+		// If .beads exists, show status; otherwise run init
+		if _, err := os.Stat(".beads"); err == nil {
+			if err := cmdStatus([]string{}); err != nil {
+				fmt.Fprintf(os.Stderr, "spire: %s\n", err)
+				os.Exit(1)
+			}
+		} else {
+			if err := cmdInit([]string{}); err != nil {
+				fmt.Fprintf(os.Stderr, "spire: %s\n", err)
+				os.Exit(1)
+			}
+		}
 		return
 	}
 
@@ -42,6 +53,10 @@ func main() {
 		err = cmdDaemon(args)
 	case "claim":
 		err = cmdClaim(args)
+	case "init":
+		err = cmdInit(args)
+	case "repo":
+		err = cmdRepo(args)
 	case "up":
 		err = cmdUp(args)
 	case "down":
@@ -71,23 +86,35 @@ func main() {
 func printUsage() {
 	fmt.Println(`Usage: spire <command> [args]
 
-Commands:
-  register <name>       Register an agent
-  unregister <name>     Unregister an agent
-  send <to> <message>   Send a message (--ref, --thread, --priority)
-  collect [name]        Check inbox for messages
-  focus <bead-id>       Focus on a task (bonds workflow on first focus)
-  grok <bead-id>        Focus + live Linear context (requires LINEAR_API_KEY)
-  read <bead-id>        Mark a message as read
-  connect <service>    Connect an integration (linear)
-  disconnect <service> Disconnect an integration
-  claim <bead-id>       Pull, verify, claim, push (atomic)
+Setup:
+  init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
+  repo list             List all init'd repos (--json)
+  repo remove <prefix>  Remove a repo from config
+
+Lifecycle:
   up                    Start dolt server + daemon (--interval)
   down                  Stop daemon (dolt keeps running)
   shutdown              Stop daemon + dolt server
   status                Show running state of dolt + daemon
-  serve               Run webhook receiver (--port)
-  daemon              Run sync daemon (--interval, --once)
+
+Work:
+  claim <bead-id>       Pull, verify, claim, push (atomic)
+  focus <bead-id>       Focus on a task (bonds workflow on first focus)
+  grok <bead-id>        Focus + live Linear context (requires LINEAR_API_KEY)
+
+Messaging:
+  register <name>       Register an agent
+  unregister <name>     Unregister an agent
+  send <to> <message>   Send a message (--ref, --thread, --priority)
+  collect [name]        Check inbox for messages
+  read <bead-id>        Mark a message as read
+
+Integrations:
+  connect <service>     Connect an integration (linear)
+  disconnect <service>  Disconnect an integration
+  serve                 Run webhook receiver (--port)
+  daemon                Run sync daemon (--interval, --once)
+
   version               Print version
   help                  Show this help`)
 }

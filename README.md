@@ -72,12 +72,15 @@ cd spire && go build -o ~/.local/bin/spire ./cmd/spire
 ## Quick start
 
 ```bash
-# Run spire with no args — walks you through hub setup interactively
-spire
+# Install
+brew tap awell-health/tap
+brew install spire
 
-# Or set up manually with setup.sh
-git clone https://github.com/awell-health/spire.git
-cd spire && ./setup.sh
+# Initialize a hub in your repo
+cd my-project && spire init
+
+# Start services
+spire up
 
 # Register as an agent
 spire register hub
@@ -90,9 +93,6 @@ spire collect
 
 # Focus on a task (bonds a workflow on first focus)
 spire focus web-42
-
-# Mark a message as read
-spire read hub-12
 ```
 
 ## The `spire` CLI
@@ -101,7 +101,9 @@ All state lives in the shared Dolt database. The CLI is a thin Go binary over `b
 
 | Command | Description |
 |---------|-------------|
-| `spire` | Interactive setup and status (run with no args) |
+| `spire` | Status (if init'd) or init (if not) |
+| `spire init` | Initialize repo (`--prefix`, `--hub`, `--standalone`, `--satellite=<hub>`) |
+| `spire repo list` | List all init'd repos (`--json`) |
 | `spire register <name>` | Register an agent in the roster |
 | `spire unregister <name>` | Clean exit |
 | `spire send <to> "msg"` | Send a message (`--ref`, `--thread`, `--priority`) |
@@ -132,7 +134,7 @@ spire focus web-42
 spire read hub-12
 ```
 
-Identity is auto-detected from `SPIRE_IDENTITY` env var (set per-repo by `setup.sh`), or override with `--as <name>`.
+Identity is auto-detected from `SPIRE_IDENTITY` env var (set per-repo by `spire init`), or override with `--as <name>`.
 
 ### Workflows
 
@@ -149,26 +151,23 @@ merge       → Merge branch, clean up worktree
 
 Every repo gets a **prefix** (e.g., `web-`, `api-`, `inf-`). All issues, messages, and workflows live in one shared database.
 
-### Using setup.sh
-
-Create a `satellites.conf` in your Spire hub directory:
-
-```
-# prefix|directory-name (relative to parent dir)
-web|my-web-app
-api|my-api-server
-```
-
-Then run `./setup.sh`. It configures redirects, routes, Cursor integration, and the daemon.
-
-### Manual setup
-
 ```bash
-# In the satellite repo
-mkdir -p .beads
-echo "../spire/.beads" > .beads/redirect
-echo 'export SPIRE_IDENTITY="web"' > .envrc
+# Initialize the hub first
+cd my-hub && spire init
+# → picks prefix, role=hub, runs bd init, injects shell env
+
+# Connect a satellite
+cd ../my-web-app && spire init --satellite=hub --prefix=web
+# → creates .beads/redirect, regenerates routes, writes .envrc
+
+# Or non-interactively
+spire init --prefix=api --satellite=hub
+
+# See all repos
+spire repo list
 ```
+
+`spire init` handles redirects, routes, env vars, and config registration. Run it again to reconfigure.
 
 ## Linear integration
 
@@ -215,7 +214,7 @@ Add to your `.cursor/mcp.json`:
 }
 ```
 
-Or let `setup.sh` configure it automatically for all connected repos.
+Or configure it as part of your Cursor/Claude Code setup.
 
 ## Architecture
 
@@ -231,8 +230,7 @@ spire/
 │   ├── specs/          # Design specifications
 │   └── plans/          # Implementation plans
 ├── cursor/             # Cursor IDE rules
-├── setup.sh            # Hub + satellite setup
-└── satellites.conf     # Your satellite repos (gitignored)
+└── cmd/spire/init.go   # spire init — replaces setup.sh
 ```
 
 | Component | Technology | Role |

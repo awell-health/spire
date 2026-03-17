@@ -53,14 +53,29 @@ type Bead struct {
 	Parent      string   `json:"parent"`
 }
 
-// detectDBName returns the Dolt database name (same as the hub prefix).
+// detectDBName returns the Dolt database name.
+// For hubs/standalones this is the prefix; for satellites it's the hub's prefix.
 func detectDBName() string {
 	if env := os.Getenv("SPIRE_IDENTITY"); env != "" {
+		// Check config to see if this is a satellite (database != prefix)
+		if cfg, err := loadConfig(); err == nil {
+			if inst, ok := cfg.Instances[env]; ok {
+				return inst.Database
+			}
+		}
 		return env
 	}
 	out, err := bd("config", "get", "issue-prefix")
 	if err == nil && out != "" && !strings.Contains(out, "(not set)") {
 		return strings.TrimSpace(out)
+	}
+	// Fallback: look up cwd in config
+	if cwd, err := os.Getwd(); err == nil {
+		if cfg, err := loadConfig(); err == nil {
+			if inst := findInstanceByPath(cfg, cwd); inst != nil {
+				return inst.Database
+			}
+		}
 	}
 	return "spi" // fallback
 }
