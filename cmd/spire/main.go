@@ -57,6 +57,8 @@ func main() {
 		err = cmdClaim(args)
 	case "init":
 		err = cmdInit(args)
+	case "sync":
+		err = cmdSync(args)
 	case "repo":
 		err = cmdRepo(args)
 	case "up":
@@ -90,6 +92,7 @@ func printUsage() {
 
 Setup:
   init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
+  sync [--hard] [url]   Sync with a DoltHub remote (handles divergent histories)
   repo list             List all init'd repos (--json)
   repo remove <prefix>  Remove a repo from config
 

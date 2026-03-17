@@ -102,7 +102,8 @@ All state lives in the shared Dolt database. The CLI is a thin Go binary over `b
 | Command | Description |
 |---------|-------------|
 | `spire` | Status (if init'd) or init (if not) |
-| `spire init` | Initialize repo (`--prefix`, `--hub`, `--standalone`, `--satellite=<hub>`) |
+| `spire init` | Initialize repo (`--prefix`, `--hub`, `--standalone`, `--satellite=<hub>`, `--dolthub=<url>`) |
+| `spire sync [--hard] [url]` | Sync with a DoltHub remote (handles divergent histories) |
 | `spire repo list` | List all init'd repos (`--json`) |
 | `spire register <name>` | Register an agent in the roster |
 | `spire unregister <name>` | Clean exit |
@@ -168,6 +169,23 @@ spire repo list
 ```
 
 `spire init` handles redirects, routes, env vars, and config registration. Run it again to reconfigure.
+
+### Syncing with an existing DoltHub database
+
+If you have an existing DoltHub database, `spire sync` pulls it into your local hub — handling divergent histories that `bd dolt pull` cannot.
+
+```bash
+# Fresh hub: hard reset to remote (nothing local to lose)
+spire sync --hard https://doltremoteapi.dolthub.com/org/db
+
+# Or inline during init
+spire init --hub --prefix=myproject --dolthub=https://doltremoteapi.dolthub.com/org/db
+
+# Existing hub with local issues: stash → pull → reimport
+spire sync https://doltremoteapi.dolthub.com/org/db
+```
+
+Set `DOLT_REMOTE_USER` and `DOLT_REMOTE_PASSWORD` for DoltHub auth. `spire init --dolthub` auto-selects `--hard` for empty databases and `--merge` for non-empty ones.
 
 ## Linear integration
 

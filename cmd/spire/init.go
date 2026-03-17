@@ -13,7 +13,7 @@ func cmdInit(args []string) error {
 	fmt.Println(spireLogo)
 
 	// Parse flags
-	var flagPrefix, flagSatellite string
+	var flagPrefix, flagSatellite, flagDolthub string
 	var flagStandalone, flagHub bool
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -27,12 +27,17 @@ func cmdInit(args []string) error {
 			flagSatellite = args[i]
 		case strings.HasPrefix(args[i], "--satellite="):
 			flagSatellite = strings.TrimPrefix(args[i], "--satellite=")
+		case args[i] == "--dolthub" && i+1 < len(args):
+			i++
+			flagDolthub = args[i]
+		case strings.HasPrefix(args[i], "--dolthub="):
+			flagDolthub = strings.TrimPrefix(args[i], "--dolthub=")
 		case args[i] == "--standalone":
 			flagStandalone = true
 		case args[i] == "--hub":
 			flagHub = true
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire init [--prefix=<pfx>] [--hub|--standalone|--satellite=<hub>]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire init [--prefix=<pfx>] [--hub|--standalone|--satellite=<hub>] [--dolthub=<url>]", args[i])
 		}
 	}
 
@@ -296,12 +301,34 @@ func cmdInit(args []string) error {
 	// --- AGENTS.md ---
 	offerAgentsMDUpdate(reader, cwd)
 
+	// --- DoltHub sync (if --dolthub provided) ---
+	if flagDolthub != "" {
+		fmt.Println()
+		fmt.Printf("  Syncing from DoltHub: %s\n", flagDolthub)
+		// Use hard reset if there are no local issues (fresh init); otherwise merge.
+		syncMode := "hard"
+		if countStr, err := bd("count"); err == nil {
+			count := strings.TrimSpace(countStr)
+			if count != "" && count != "0" {
+				syncMode = "merge"
+			}
+		}
+		fmt.Printf("  Sync mode: --%s\n", syncMode)
+		if err := runSync(syncMode, flagDolthub); err != nil {
+			fmt.Printf("  Warning: dolthub sync failed: %s\n", err)
+			fmt.Println("  You can retry with: spire sync " + flagDolthub)
+		}
+	}
+
 	// --- Next steps ---
 	fmt.Println()
 	fmt.Println("  Next steps:")
 	fmt.Println("    spire up                     # start dolt server + daemon")
 	if role == "hub" {
 		fmt.Println("    spire init --satellite=" + prefix + "   # connect a satellite repo")
+	}
+	if flagDolthub == "" {
+		fmt.Println("    spire sync <dolthub-url>     # pull from existing DoltHub database")
 	}
 	fmt.Println("    spire connect linear         # sync epics to Linear")
 	fmt.Println("    spire repo list              # see all init'd repos")
