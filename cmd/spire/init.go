@@ -208,12 +208,23 @@ func cmdInit(args []string) error {
 		}
 		fmt.Printf("  Redirect → %s\n", relPath)
 	} else {
-		// Hub/standalone: run bd init
+		// Hub/standalone: run bd init (or detect already-initialized)
 		_, initErr := bd("init", "--prefix", prefix)
 		if initErr != nil {
-			return fmt.Errorf("bd init failed: %w\n  Try: bd init --prefix %s", initErr, prefix)
+			// Check if already initialized — that's fine, not an error
+			existingPrefix, _ := bd("config", "get", "issue-prefix")
+			existingPrefix = strings.TrimSpace(existingPrefix)
+			if existingPrefix != "" && !strings.Contains(existingPrefix, "(not set)") {
+				if existingPrefix != prefix {
+					return fmt.Errorf("beads already initialized with prefix %q (wanted %q) — use bd init --force --prefix %s to reinitialize", existingPrefix, prefix, prefix)
+				}
+				fmt.Printf("  Beads already initialized (prefix: %s-)\n", prefix)
+			} else {
+				return fmt.Errorf("bd init failed: %w\n  Try: bd init --prefix %s", initErr, prefix)
+			}
+		} else {
+			fmt.Printf("  Beads initialized (prefix: %s-)\n", prefix)
 		}
-		fmt.Printf("  Beads initialized (prefix: %s-)\n", prefix)
 	}
 
 	// --- Write .envrc ---
