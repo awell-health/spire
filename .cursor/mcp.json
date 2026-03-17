@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "spire": {
+      "command": "node",
+      "args": [
+        "/Users/jb/awell/spire/packages/mcp-server/index.js"
+      ],
+      "env": {
+        "SPIRE_IDENTITY": "spi"
+      }
+    }
+  }
+}

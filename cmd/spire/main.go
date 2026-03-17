@@ -51,6 +51,8 @@ func main() {
 		err = cmdServe(args)
 	case "daemon":
 		err = cmdDaemon(args)
+	case "file":
+		err = cmdFile(args)
 	case "claim":
 		err = cmdClaim(args)
 	case "init":
@@ -98,6 +100,7 @@ Lifecycle:
   status                Show running state of dolt + daemon
 
 Work:
+  file <title> [flags]  Create a bead (--prefix required if not in a repo dir)
   claim <bead-id>       Pull, verify, claim, push (atomic)
   focus <bead-id>       Focus on a task (bonds workflow on first focus)
   grok <bead-id>        Focus + live Linear context (requires LINEAR_API_KEY)

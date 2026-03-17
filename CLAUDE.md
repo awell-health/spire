@@ -202,3 +202,18 @@ spire serve [--port 8080]
 
 Messages use labels for routing: `to:<agent>`, `from:<agent>`, `ref:<bead-id>`.
 Query with: `bd list --rig=spi --label "msg,to:<agent>" --status=open --json`
+
+## Commit format
+
+Always reference the bead in commit messages:
+
+```
+<type>(<bead-id>): <message>
+```
+
+Examples:
+- `feat(spi-a3f8): add OAuth2 support`
+- `fix(xserver-0hy): handle nil pointer in rate limiter`
+- `chore(pan-b7d0): upgrade dependencies`
+
+Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`

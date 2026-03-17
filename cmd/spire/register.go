@@ -7,9 +7,14 @@ import (
 
 func cmdRegister(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire register <name>")
+		return fmt.Errorf("usage: spire register <name> [context]")
 	}
 	name := args[0]
+
+	var context string
+	if len(args) > 1 {
+		context = strings.Join(args[1:], " ")
+	}
 
 	// Check if already registered (idempotent)
 	existingID, err := findAgentBead(name)
@@ -19,14 +24,19 @@ func cmdRegister(args []string) error {
 	}
 
 	// Create agent bead
-	id, err := bdSilent(
+	bdArgs := []string{
 		"create",
 		"--rig=spi",
 		"--type=task",
 		"-p", "4",
 		"--title", name,
 		"--labels", fmt.Sprintf("agent,name:%s", name),
-	)
+	}
+	if context != "" {
+		bdArgs = append(bdArgs, "--description", context)
+	}
+
+	id, err := bdSilent(bdArgs...)
 	if err != nil {
 		return fmt.Errorf("register %s: %w", name, err)
 	}

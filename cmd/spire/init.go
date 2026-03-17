@@ -286,6 +286,16 @@ func cmdInit(args []string) error {
 		fmt.Printf("  Warning: editor config install failed: %s\n", err)
 	}
 
+	// --- SPIRE.md ---
+	if err := writeSpireMD(cwd, prefix); err != nil {
+		fmt.Printf("  Warning: SPIRE.md write failed: %s\n", err)
+	} else {
+		fmt.Println("  SPIRE.md written")
+	}
+
+	// --- AGENTS.md ---
+	offerAgentsMDUpdate(reader, cwd)
+
 	// --- Next steps ---
 	fmt.Println()
 	fmt.Println("  Next steps:")
@@ -586,6 +596,92 @@ func patchMCPJSON(path, prefix, mcpServerPath string) {
 		return
 	}
 	os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+// writeSpireMD writes SPIRE.md to the repo root with agent session instructions.
+// Skips if the file already exists.
+func writeSpireMD(repoPath, prefix string) error {
+	path := filepath.Join(repoPath, "SPIRE.md")
+	content := fmt.Sprintf(`# SPIRE.md — Agent Work Instructions
+
+This repo is connected to Spire (prefix: **%s**). Use Spire for work coordination.
+
+## Session lifecycle
+
+`+"```"+`bash
+spire up                        # ensure services are running
+spire collect                   # check inbox + read your context brief
+spire claim <bead-id>           # claim a task (atomic: pull → verify → set in_progress → push)
+spire focus <bead-id>           # assemble full context for the task
+# ... do the work ...
+spire send <agent> "done" --ref <bead-id>   # notify others
+`+"```"+`
+
+## Filing work
+
+`+"```"+`bash
+spire file "Title" -t task -p 2             # file from anywhere (prefix auto-detected in repo)
+spire file "Title" --prefix %s -t bug -p 1 # explicit prefix
+`+"```"+`
+
+## Messaging
+
+`+"```"+`bash
+spire register <name> [context]  # register as an agent, optionally with a brief
+spire collect                    # check inbox (also prints your context brief)
+spire send <to> "message" --ref <bead-id>
+spire read <bead-id>             # mark a message as read
+`+"```"+`
+
+## Commit format
+
+Always reference the bead in commit messages:
+
+`+"```"+`
+<type>(<bead-id>): <message>
+`+"```"+`
+
+Examples:
+- `+"`feat(spi-a3f8): add OAuth2 support`"+`
+- `+"`fix(xserver-0hy): handle nil pointer in rate limiter`"+`
+- `+"`chore(pan-b7d0): upgrade dependencies`"+`
+
+Types: `+"`feat`"+`, `+"`fix`"+`, `+"`chore`"+`, `+"`docs`"+`, `+"`refactor`"+`, `+"`test`"+`
+
+## Key conventions
+
+- **Claim before working**: prevents double-work
+- **Priority**: -p 0 (critical) → -p 4 (nice-to-have)
+- **Types**: task, bug, feature, epic, chore
+- **Epics** auto-sync to Linear — do not create Linear issues manually
+`, prefix, prefix)
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// offerAgentsMDUpdate prompts to add a SPIRE.md reference to AGENTS.md if it exists.
+func offerAgentsMDUpdate(reader *bufio.Reader, repoPath string) {
+	agentsPath := filepath.Join(repoPath, "AGENTS.md")
+	data, err := os.ReadFile(agentsPath)
+	if err != nil {
+		return // no AGENTS.md, nothing to do
+	}
+	if strings.Contains(string(data), "SPIRE.md") {
+		return // already references it
+	}
+
+	fmt.Print("  Add SPIRE.md reference to AGENTS.md? [Y/n] ")
+	answer, _ := reader.ReadString('\n')
+	if strings.HasPrefix(strings.TrimSpace(strings.ToLower(answer)), "n") {
+		return
+	}
+
+	addition := "\n## Work coordination\n\nThis repo uses Spire for agent work coordination. See [SPIRE.md](SPIRE.md) for the session lifecycle, work claiming, and inter-agent messaging.\n"
+	updated := append(data, []byte(addition)...)
+	if err := os.WriteFile(agentsPath, updated, 0644); err != nil {
+		fmt.Printf("  Warning: could not update AGENTS.md: %s\n", err)
+	} else {
+		fmt.Println("  AGENTS.md updated")
+	}
 }
 
 // findSpireRepoForCursor finds the spire repo path for copying cursor rules.

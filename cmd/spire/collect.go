@@ -24,6 +24,16 @@ func cmdCollect(args []string) error {
 		}
 	}
 
+	// Print agent context from registration bead if set
+	if agentID, err := findAgentBead(name); err == nil && agentID != "" {
+		var beads []Bead
+		if err := bdJSON(&beads, "show", agentID); err == nil && len(beads) > 0 {
+			if beads[0].Description != "" {
+				fmt.Printf("Context: %s\n\n", beads[0].Description)
+			}
+		}
+	}
+
 	var messages []Bead
 	err := bdJSON(&messages, "list", "--rig=spi", "--label", fmt.Sprintf("msg,to:%s", name), "--status=open")
 	if err != nil {
