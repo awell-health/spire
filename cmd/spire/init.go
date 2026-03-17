@@ -480,7 +480,7 @@ func installCursorConfig(repoPath, prefix, mcpServerPath string) bool {
 	return true
 }
 
-// installClaudeConfig writes .claude/settings.local.json and .mcp.json for Claude Code.
+// installClaudeConfig writes .claude/settings.local.json, .mcp.json, and copies skills.
 func installClaudeConfig(repoPath, prefix, mcpServerPath string) bool {
 	if mcpServerPath == "" {
 		return false
@@ -498,7 +498,60 @@ func installClaudeConfig(repoPath, prefix, mcpServerPath string) bool {
 	// .mcp.json at repo root — Claude Code picks this up
 	mcpJSON := filepath.Join(repoPath, ".mcp.json")
 	patchMCPJSON(mcpJSON, prefix, mcpServerPath)
+
+	// Copy spire skills to .claude/skills/ so they appear in this project's skill list
+	installSpireSkills(claudeDir)
+
 	return true
+}
+
+// installSpireSkills copies spire skills from ~/.claude/skills/ into .claude/skills/.
+func installSpireSkills(claudeDir string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+
+	globalSkillsDir := filepath.Join(home, ".claude", "skills")
+	projectSkillsDir := filepath.Join(claudeDir, "skills")
+
+	entries, err := os.ReadDir(globalSkillsDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		// Only copy spire-* skills
+		if !strings.HasPrefix(entry.Name(), "spire") {
+			continue
+		}
+		srcDir := filepath.Join(globalSkillsDir, entry.Name())
+		dstDir := filepath.Join(projectSkillsDir, entry.Name())
+		copyDir(srcDir, dstDir)
+	}
+}
+
+// copyDir recursively copies a directory tree from src to dst.
+func copyDir(src, dst string) {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return
+	}
+	os.MkdirAll(dst, 0755)
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			copyDir(srcPath, dstPath)
+		} else {
+			if data, err := os.ReadFile(srcPath); err == nil {
+				os.WriteFile(dstPath, data, 0644)
+			}
+		}
+	}
 }
 
 // patchMCPJSON adds the spire server entry to an MCP JSON config file.
