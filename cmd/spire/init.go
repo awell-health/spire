@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -280,6 +281,11 @@ func cmdInit(args []string) error {
 	}
 	fmt.Println("  Config saved")
 
+	// --- Install editor config (Cursor + Claude Code) ---
+	if err := installEditorConfig(cwd, prefix, cfg); err != nil {
+		fmt.Printf("  Warning: editor config install failed: %s\n", err)
+	}
+
 	// --- Next steps ---
 	fmt.Println()
 	fmt.Println("  Next steps:")
@@ -387,4 +393,162 @@ func containsStr(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// installEditorConfig installs Cursor rules and Claude Code MCP config in the repo.
+func installEditorConfig(repoPath, prefix string, cfg *SpireConfig) error {
+	mcpServerPath := findMCPServerPath(cfg)
+
+	cursorOK := installCursorConfig(repoPath, prefix, mcpServerPath)
+	claudeOK := installClaudeConfig(repoPath, prefix, mcpServerPath)
+
+	if cursorOK {
+		fmt.Println("  Cursor: spire rule + MCP server configured")
+	}
+	if claudeOK {
+		fmt.Println("  Claude Code: MCP server configured")
+	}
+	if !cursorOK && !claudeOK {
+		fmt.Println("  Editor config: skipped (MCP server path unknown — set SPIRE_REPO)")
+	}
+
+	return nil
+}
+
+// findMCPServerPath locates the spire MCP server index.js.
+// Checks: SPIRE_REPO env > hub instance path > sibling of executable.
+func findMCPServerPath(cfg *SpireConfig) string {
+	candidates := []string{}
+
+	if env := os.Getenv("SPIRE_REPO"); env != "" {
+		candidates = append(candidates, filepath.Join(env, "packages", "mcp-server", "index.js"))
+	}
+
+	// Look in hub instance paths
+	for _, inst := range cfg.Instances {
+		if inst.Role == "hub" || inst.Role == "standalone" {
+			candidates = append(candidates, filepath.Join(inst.Path, "packages", "mcp-server", "index.js"))
+		}
+	}
+
+	// Look relative to the spire binary
+	if exe, err := os.Executable(); err == nil {
+		// Binary might be at /opt/homebrew/bin/spire — check share dir
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, "..", "share", "spire", "mcp-server", "index.js"),
+			filepath.Join(dir, "..", "lib", "spire", "mcp-server", "index.js"),
+		)
+	}
+
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// installCursorConfig writes .cursor/rules/spire-messaging.mdc and patches .cursor/mcp.json.
+func installCursorConfig(repoPath, prefix, mcpServerPath string) bool {
+	spireRepoPath := findSpireRepoForCursor()
+
+	// Copy the .mdc rule if we can find it
+	ruleSrc := ""
+	if spireRepoPath != "" {
+		ruleSrc = filepath.Join(spireRepoPath, "cursor", "spire-messaging.mdc")
+	}
+
+	cursorDir := filepath.Join(repoPath, ".cursor")
+	rulesDir := filepath.Join(cursorDir, "rules")
+
+	if ruleSrc != "" {
+		if data, err := os.ReadFile(ruleSrc); err == nil {
+			os.MkdirAll(rulesDir, 0755)
+			os.WriteFile(filepath.Join(rulesDir, "spire-messaging.mdc"), data, 0644)
+		}
+	}
+
+	if mcpServerPath == "" {
+		return ruleSrc != ""
+	}
+
+	// Patch .cursor/mcp.json
+	os.MkdirAll(cursorDir, 0755)
+	mcpJSON := filepath.Join(cursorDir, "mcp.json")
+	patchMCPJSON(mcpJSON, prefix, mcpServerPath)
+	return true
+}
+
+// installClaudeConfig writes .claude/settings.local.json and .mcp.json for Claude Code.
+func installClaudeConfig(repoPath, prefix, mcpServerPath string) bool {
+	if mcpServerPath == "" {
+		return false
+	}
+
+	claudeDir := filepath.Join(repoPath, ".claude")
+	os.MkdirAll(claudeDir, 0755)
+
+	// .claude/settings.local.json — enable project MCP servers
+	settingsPath := filepath.Join(claudeDir, "settings.local.json")
+	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
+		os.WriteFile(settingsPath, []byte("{\n  \"enableAllProjectMcpServers\": true\n}\n"), 0644)
+	}
+
+	// .mcp.json at repo root — Claude Code picks this up
+	mcpJSON := filepath.Join(repoPath, ".mcp.json")
+	patchMCPJSON(mcpJSON, prefix, mcpServerPath)
+	return true
+}
+
+// patchMCPJSON adds the spire server entry to an MCP JSON config file.
+// Creates the file if it doesn't exist; preserves existing entries.
+func patchMCPJSON(path, prefix, mcpServerPath string) {
+	type mcpServer struct {
+		Command string            `json:"command"`
+		Args    []string          `json:"args"`
+		Env     map[string]string `json:"env"`
+	}
+	type mcpConfig struct {
+		MCPServers map[string]mcpServer `json:"mcpServers"`
+	}
+
+	cfg := mcpConfig{MCPServers: make(map[string]mcpServer)}
+
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &cfg)
+		if cfg.MCPServers == nil {
+			cfg.MCPServers = make(map[string]mcpServer)
+		}
+	}
+
+	cfg.MCPServers["spire"] = mcpServer{
+		Command: "node",
+		Args:    []string{mcpServerPath},
+		Env:     map[string]string{"SPIRE_IDENTITY": prefix},
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return
+	}
+	os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+// findSpireRepoForCursor finds the spire repo path for copying cursor rules.
+func findSpireRepoForCursor() string {
+	if env := os.Getenv("SPIRE_REPO"); env != "" {
+		return env
+	}
+	if cfg, err := loadConfig(); err == nil {
+		for _, inst := range cfg.Instances {
+			if inst.Role == "hub" || inst.Role == "standalone" {
+				rulePath := filepath.Join(inst.Path, "cursor", "spire-messaging.mdc")
+				if _, err := os.Stat(rulePath); err == nil {
+					return inst.Path
+				}
+			}
+		}
+	}
+	return ""
 }
