@@ -36,11 +36,13 @@ func cmdFile(args []string) error {
 	}
 
 	// Fall back to CWD detection
+	var instPath string
 	if prefix == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			if cfg, err := loadConfig(); err == nil {
 				if inst := findInstanceByPath(cfg, cwd); inst != nil {
 					prefix = inst.Prefix
+					instPath = inst.Path
 				}
 			}
 		}
@@ -54,6 +56,21 @@ func cmdFile(args []string) error {
 			prefixes = append(prefixes, p)
 		}
 		return fmt.Errorf("--prefix required (registered: %s)", strings.Join(prefixes, ", "))
+	}
+
+	// If prefix was supplied explicitly, look up the instance path
+	if instPath == "" {
+		if cfg, err := loadConfig(); err == nil {
+			if inst, ok := cfg.Instances[prefix]; ok {
+				instPath = inst.Path
+			}
+		}
+	}
+
+	// Chdir to the instance path so bd can find .beads/redirect regardless
+	// of where the caller (e.g. an AI agent) invoked spire from.
+	if instPath != "" {
+		os.Chdir(instPath) //nolint
 	}
 
 	bdArgs := append([]string{"create", "--prefix", prefix}, remaining...)
