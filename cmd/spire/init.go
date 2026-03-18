@@ -271,12 +271,27 @@ func cmdInit(args []string) error {
 	}
 	cfg.Instances[prefix] = inst
 
-	// --- Regenerate routes for satellite/hub ---
-	if role == "satellite" {
+	// --- Regenerate routes ---
+	switch role {
+	case "satellite":
 		if err := regenerateRoutes(cfg, hubPrefix); err != nil {
 			fmt.Printf("  Warning: route regeneration failed: %s\n", err)
 		} else {
 			fmt.Println("  Routes regenerated")
+		}
+	case "hub":
+		if err := regenerateRoutes(cfg, prefix); err != nil {
+			fmt.Printf("  Warning: route generation failed: %s\n", err)
+		} else {
+			fmt.Println("  Routes written")
+		}
+	case "standalone":
+		routesPath := filepath.Join(cwd, ".beads", "routes.jsonl")
+		routesContent := fmt.Sprintf("{\"prefix\":\"%s-\",\"path\":\".\"}\n", prefix)
+		if err := os.WriteFile(routesPath, []byte(routesContent), 0644); err != nil {
+			fmt.Printf("  Warning: routes.jsonl write failed: %s\n", err)
+		} else {
+			fmt.Println("  Routes written")
 		}
 	}
 
