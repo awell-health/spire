@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// isNoRemoteError returns true for errors caused by a missing remote configuration,
+// which are expected and non-fatal when no remote has been set up yet.
+func isNoRemoteError(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "no remotes") ||
+		strings.Contains(s, "remote 'origin' not found") ||
+		strings.Contains(s, "remote not found")
+}
+
 func cmdClaim(args []string) error {
 	if err := requireDolt(); err != nil {
 		return err
@@ -18,7 +27,7 @@ func cmdClaim(args []string) error {
 
 	// Step 1: Pull latest state (non-fatal if no remote)
 	if _, err := bd("dolt", "pull"); err != nil {
-		if !strings.Contains(err.Error(), "no remotes") {
+		if !isNoRemoteError(err) {
 			fmt.Printf("  pull warning: %s\n", err)
 		}
 	}
@@ -58,7 +67,7 @@ func cmdClaim(args []string) error {
 
 	// Step 4: Push
 	if _, err := bd("dolt", "push"); err != nil {
-		if !strings.Contains(err.Error(), "no remotes") {
+		if !isNoRemoteError(err) {
 			fmt.Printf("  push warning: %s\n", err)
 		}
 	}

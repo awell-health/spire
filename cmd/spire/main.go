@@ -59,6 +59,8 @@ func main() {
 		err = cmdInit(args)
 	case "sync":
 		err = cmdSync(args)
+	case "push":
+		err = cmdPush(args)
 	case "repo":
 		err = cmdRepo(args)
 	case "worktree":
@@ -94,7 +96,8 @@ func printUsage() {
 
 Setup:
   init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
-  sync [--hard] [url]   Sync with a DoltHub remote (handles divergent histories)
+  sync [--hard] [url]   Pull from a DoltHub remote (handles divergent histories)
+  push [url]            Push local database to DoltHub (creates remote db if needed)
   repo list             List all init'd repos (--json)
   repo remove <prefix>  Remove a repo from config (all paths)
   worktree remove       Unregister this directory only, leave other worktrees intact
