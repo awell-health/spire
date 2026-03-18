@@ -54,8 +54,22 @@ Examples:
 
 // runSync is the core sync logic, also called by cmdInit when --dolthub is provided.
 func runSync(mode, remoteURL string) error {
+	// ── Bootstrap: ensure local database exists ────────────────────────────────
+	if _, err := bd("status"); err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "not found") || strings.Contains(errStr, "does not exist") {
+			prefix, bootstrapErr := bootstrapDatabase()
+			if bootstrapErr != nil {
+				return fmt.Errorf("database not found and bootstrap failed: %w\n  run manually: bd init --prefix <prefix>", bootstrapErr)
+			}
+			fmt.Printf("  Database bootstrapped (prefix: %s-).\n", prefix)
+		}
+		// Other errors (server down, etc.) will surface later in context
+	}
+
 	// ── Remote setup ──────────────────────────────────────────────────────────
 	if remoteURL != "" {
+		remoteURL = normalizeDolthubURL(remoteURL)
 		out, _ := bd("dolt", "remote", "list")
 		existingURL := parseOriginURL(out)
 		if existingURL == "" {
@@ -65,10 +79,13 @@ func runSync(mode, remoteURL string) error {
 			}
 		} else if existingURL != remoteURL {
 			fmt.Printf("  Updating remote origin: %s → %s\n", existingURL, remoteURL)
-			bd("dolt", "remote", "remove", "origin") //nolint
-			if _, err := bd("dolt", "remote", "add", "origin", remoteURL); err != nil {
+			// Add under a temp name first; only remove old if add succeeds.
+			if _, err := bd("dolt", "remote", "add", "origin-new", remoteURL); err != nil {
 				return fmt.Errorf("add remote: %w", err)
 			}
+			bd("dolt", "remote", "remove", "origin")         //nolint
+			bd("dolt", "remote", "add", "origin", remoteURL) //nolint
+			bd("dolt", "remote", "remove", "origin-new")     //nolint
 		} else {
 			fmt.Printf("  Remote origin: %s\n", remoteURL)
 		}
@@ -143,6 +160,41 @@ func runSync(mode, remoteURL string) error {
 	bd("status") //nolint
 	fmt.Println("  Sync complete.")
 	return nil
+}
+
+// normalizeDolthubURL expands a short "org/repo" form to the full DoltHub API URL.
+// Full URLs (http/https) are returned unchanged.
+func normalizeDolthubURL(url string) string {
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		return url
+	}
+	// Looks like "org/repo" — expand to full DoltHub URL
+	return "https://doltremoteapi.dolthub.com/" + url
+}
+
+// bootstrapDatabase initializes the local Dolt database when it doesn't exist yet.
+// Looks up the prefix from the spire config for the current directory.
+func bootstrapDatabase() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getwd: %w", err)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return "", fmt.Errorf("load config: %w", err)
+	}
+
+	inst := findInstanceByPath(cfg, cwd)
+	if inst == nil {
+		return "", fmt.Errorf("directory %s is not registered with spire — run spire init first", cwd)
+	}
+
+	fmt.Printf("  Database not found — initializing (prefix: %s-)...\n", inst.Prefix)
+	if _, err := bd("init", "--force", "--prefix", inst.Prefix); err != nil {
+		return "", fmt.Errorf("bd init: %w", err)
+	}
+	return inst.Prefix, nil
 }
 
 // parseOriginURL extracts the URL for the 'origin' remote from 'bd dolt remote list' output.
