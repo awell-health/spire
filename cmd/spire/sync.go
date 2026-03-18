@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,7 +59,7 @@ func runSync(mode, remoteURL string) error {
 	if _, err := bd("status"); err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "not found") || strings.Contains(errStr, "does not exist") {
-			prefix, bootstrapErr := bootstrapDatabase()
+			prefix, bootstrapErr := bootstrapDatabase(mode == "hard")
 			if bootstrapErr != nil {
 				return fmt.Errorf("database not found and bootstrap failed: %w\n  run manually: bd init --prefix <prefix>", bootstrapErr)
 			}
@@ -135,6 +136,23 @@ func runSync(mode, remoteURL string) error {
 	}
 	fmt.Println("  Fetch complete.")
 
+	// ── Guard: verify remote has beads schema before resetting ────────────────
+	// If the remote has no issues table the reset would wipe a valid local schema.
+	hasSchema, _ := bd("sql", "SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='issues' LIMIT 1")
+	remoteHasSchema := strings.TrimSpace(hasSchema) != "" && strings.Contains(hasSchema, "1")
+	if !remoteHasSchema {
+		// Check if remote branch has the table
+		remoteCheck, _ := bd("sql", "CALL dolt_checkout('refs/remotes/origin/main'); SELECT COUNT(*) FROM information_schema.tables WHERE table_name='issues'")
+		remoteHasSchema = strings.Contains(remoteCheck, "1")
+		// Restore local branch regardless
+		bd("sql", "CALL dolt_checkout('main')") //nolint
+	}
+	if !remoteHasSchema {
+		return fmt.Errorf("remote has no beads schema (missing 'issues' table)\n" +
+			"  The remote may be a raw dolt repo, not a beads database.\n" +
+			"  Initialize locally first with 'bd init --prefix <prefix>', then push to the remote.")
+	}
+
 	// ── Hard reset to remote ───────────────────────────────────────────────────
 	fmt.Println("  Resetting to origin/main...")
 	if _, err := bd("sql", "CALL dolt_reset('--hard', 'refs/remotes/origin/main')"); err != nil {
@@ -172,9 +190,11 @@ func normalizeDolthubURL(url string) string {
 	return "https://doltremoteapi.dolthub.com/" + url
 }
 
-// bootstrapDatabase initializes the local Dolt database when it doesn't exist yet.
-// Looks up the prefix from the spire config for the current directory.
-func bootstrapDatabase() (string, error) {
+// bootstrapDatabase creates the local Dolt database when it doesn't exist yet.
+// Instead of running bd init (which may prompt for confirmation when backups exist),
+// it creates the database directly on the server via dolt SQL. The subsequent
+// fetch+reset will populate the schema and data from the remote.
+func bootstrapDatabase(_ bool) (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("getwd: %w", err)
@@ -190,11 +210,45 @@ func bootstrapDatabase() (string, error) {
 		return "", fmt.Errorf("directory %s is not registered with spire — run spire init first", cwd)
 	}
 
-	fmt.Printf("  Database not found — initializing (prefix: %s-)...\n", inst.Prefix)
-	if _, err := bd("init", "--force", "--prefix", inst.Prefix); err != nil {
-		return "", fmt.Errorf("bd init: %w", err)
+	// Read the actual database name bd expects from .beads/metadata.json.
+	// bd may name it differently from the prefix (e.g. "beads_mlti" vs "mlti").
+	dbName := readBeadsDBName()
+	if dbName == "" {
+		dbName = inst.Database
+	}
+
+	fmt.Printf("  Database not found — creating %q on dolt server...\n", dbName)
+	if err := ensureDatabase(dbName); err != nil {
+		return "", fmt.Errorf("create database %q: %w", dbName, err)
 	}
 	return inst.Prefix, nil
+}
+
+// readBeadsDBName reads the dolt_database field from .beads/metadata.json,
+// which is the actual database name bd uses to connect to the dolt server.
+func readBeadsDBName() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	// Walk up to find .beads/
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		meta := filepath.Join(dir, ".beads", "metadata.json")
+		if data, err := os.ReadFile(meta); err == nil {
+			var m struct {
+				DoltDatabase string `json:"dolt_database"`
+			}
+			if err := json.Unmarshal(data, &m); err == nil && m.DoltDatabase != "" {
+				return m.DoltDatabase
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
 }
 
 // parseOriginURL extracts the URL for the 'origin' remote from 'bd dolt remote list' output.
