@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -215,6 +216,12 @@ func cmdInit(args []string) error {
 			return fmt.Errorf("write redirect: %w", err)
 		}
 		fmt.Printf("  Redirect → %s\n", hubBeads)
+		// Set beads.role in the satellite's git config — bd reads this per-repo
+		// and warns if missing. bd init is not called for satellites (they redirect
+		// to the hub's .beads), so we set it directly.
+		if out, gitErr := exec.Command("git", "-C", cwd, "config", "beads.role", "maintainer").CombinedOutput(); gitErr != nil {
+			fmt.Printf("  Warning: could not set beads.role: %s\n", strings.TrimSpace(string(out)))
+		}
 	} else {
 		// Hub/standalone: run bd init
 		// Check if .beads already exists locally with the right prefix
