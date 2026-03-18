@@ -61,6 +61,8 @@ func main() {
 		err = cmdSync(args)
 	case "repo":
 		err = cmdRepo(args)
+	case "worktree":
+		err = cmdWorktree(args)
 	case "up":
 		err = cmdUp(args)
 	case "down":
@@ -94,7 +96,8 @@ Setup:
   init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
   sync [--hard] [url]   Sync with a DoltHub remote (handles divergent histories)
   repo list             List all init'd repos (--json)
-  repo remove <prefix>  Remove a repo from config
+  repo remove <prefix>  Remove a repo from config (all paths)
+  worktree remove       Unregister this directory only, leave other worktrees intact
 
 Lifecycle:
   up                    Start dolt server + daemon (--interval)

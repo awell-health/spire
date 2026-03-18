@@ -21,11 +21,12 @@ type ShellConfig struct {
 // Instance represents one init'd repo.
 type Instance struct {
 	Path       string   `json:"path"`
+	Paths      []string `json:"paths,omitempty"`      // additional directories (e.g. git worktrees)
 	Prefix     string   `json:"prefix"`
-	Role       string   `json:"role"`       // "hub", "satellite", "standalone"
-	Database   string   `json:"database"`   // for hub/standalone = prefix; for satellite = hub's prefix
+	Role       string   `json:"role"`                 // "hub", "satellite", "standalone"
+	Database   string   `json:"database"`             // for hub/standalone = prefix; for satellite = hub's prefix
 	Hub        string   `json:"hub,omitempty"`        // only on satellites
-	Satellites []string `json:"satellites,omitempty"`  // only on hubs
+	Satellites []string `json:"satellites,omitempty"` // only on hubs
 }
 
 // configDir returns ~/.config/spire/, creating it if needed.
@@ -86,12 +87,35 @@ func saveConfig(cfg *SpireConfig) error {
 	return os.WriteFile(p, append(data, '\n'), 0644)
 }
 
-// findInstanceByPath looks up the current working directory in the config.
+// findInstanceByPath looks up an instance by any of its registered paths (primary or worktree).
 func findInstanceByPath(cfg *SpireConfig, path string) *Instance {
 	for _, inst := range cfg.Instances {
 		if inst.Path == path {
 			return inst
 		}
+		for _, p := range inst.Paths {
+			if p == path {
+				return inst
+			}
+		}
 	}
 	return nil
+}
+
+// allPaths returns all registered paths for an instance (primary + worktrees).
+func allPaths(inst *Instance) []string {
+	paths := []string{inst.Path}
+	paths = append(paths, inst.Paths...)
+	return paths
+}
+
+// removeFromPaths removes a path from inst.Paths (not the primary Path).
+func removeFromPaths(inst *Instance, path string) {
+	updated := inst.Paths[:0]
+	for _, p := range inst.Paths {
+		if p != path {
+			updated = append(updated, p)
+		}
+	}
+	inst.Paths = updated
 }

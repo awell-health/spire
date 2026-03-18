@@ -103,9 +103,13 @@ func cmdInit(args []string) error {
 		}
 	}
 
-	// Check prefix uniqueness
-	if _, exists := cfg.Instances[prefix]; exists {
-		return fmt.Errorf("prefix %q is already in use by %s", prefix, cfg.Instances[prefix].Path)
+	// Check prefix uniqueness — if it already exists at a different path, offer worktree add
+	if existing, exists := cfg.Instances[prefix]; exists {
+		if findInstanceByPath(cfg, cwd) == existing {
+			// Same path, already handled above as re-init
+		} else {
+			return worktreeAdd(cfg, existing, cwd)
+		}
 	}
 
 	// --- Role ---
