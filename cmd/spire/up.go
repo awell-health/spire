@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -84,10 +85,10 @@ func cmdUp(args []string) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Env = os.Environ()
 
-	// Redirect daemon output to log files
-	sd, _ := spireDir()
-	logFile, _ := os.OpenFile(sd+"/daemon.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	errFile, _ := os.OpenFile(sd+"/daemon.error.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Redirect daemon output to log files in global dir
+	gd := doltGlobalDir()
+	logFile, _ := os.OpenFile(filepath.Join(gd, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	errFile, _ := os.OpenFile(filepath.Join(gd, "daemon.error.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	cmd.Stdout = logFile
 	cmd.Stderr = errFile
 

@@ -125,3 +125,7 @@ For more details, see README.md and docs/QUICKSTART.md.
 - If push fails, resolve and retry until it succeeds
 
 <!-- END BEADS INTEGRATION -->
+
+## Work coordination
+
+This repo uses Spire for agent work coordination. See [SPIRE.md](SPIRE.md) for the session lifecycle, work claiming, and inter-agent messaging.

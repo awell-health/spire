@@ -13,30 +13,6 @@ import (
 	"time"
 )
 
-// spireDir returns the path to the .spire/ directory (sibling of .beads/).
-// Creates it if it does not exist.
-func spireDir() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".beads")); err == nil {
-			sd := filepath.Join(dir, ".spire")
-			os.MkdirAll(sd, 0755)
-			return sd, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	// Fallback: use cwd
-	sd := filepath.Join(".", ".spire")
-	os.MkdirAll(sd, 0755)
-	return sd, nil
-}
 
 // doltDataDir returns the dolt database directory.
 func doltDataDir() string {
@@ -48,6 +24,19 @@ func doltDataDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "dolt")
+}
+
+// doltGlobalDir returns a user-level directory for dolt server state (PID, config, logs).
+// This is kept separate from any repo's .spire/ since dolt is a shared singleton.
+func doltGlobalDir() string {
+	if d := os.Getenv("SPIRE_DOLT_DIR"); d != "" {
+		os.MkdirAll(d, 0755)
+		return d
+	}
+	home, _ := os.UserHomeDir()
+	d := filepath.Join(home, ".local", "share", "spire")
+	os.MkdirAll(d, 0755)
+	return d
 }
 
 // doltPort returns the configured dolt server port.
@@ -103,15 +92,15 @@ func processAlive(pid int) bool {
 // --- Dolt server lifecycle ---
 
 // doltPIDPath returns the path to the dolt PID file.
+// Uses the global dolt dir so the PID is shared across all repos on this machine.
 func doltPIDPath() string {
-	sd, _ := spireDir()
-	return filepath.Join(sd, "dolt.pid")
+	return filepath.Join(doltGlobalDir(), "dolt.pid")
 }
 
 // daemonPIDPath returns the path to the daemon PID file.
+// Uses the global dir so up/down/status work from any directory.
 func daemonPIDPath() string {
-	sd, _ := spireDir()
-	return filepath.Join(sd, "daemon.pid")
+	return filepath.Join(doltGlobalDir(), "daemon.pid")
 }
 
 // doltIsReachable checks if the dolt server is reachable via TCP.
@@ -149,13 +138,9 @@ func doltServerStatus() (pid int, running bool, reachable bool) {
 	return
 }
 
-// doltWriteConfig writes the dolt server config file to .spire/dolt-config.yaml.
+// doltWriteConfig writes the dolt server config file to the global spire dir.
 func doltWriteConfig() (string, error) {
-	sd, err := spireDir()
-	if err != nil {
-		return "", err
-	}
-	configPath := filepath.Join(sd, "dolt-config.yaml")
+	configPath := filepath.Join(doltGlobalDir(), "dolt-config.yaml")
 	content := fmt.Sprintf(`listener:
   host: "%s"
   port: %s
@@ -205,10 +190,10 @@ func doltStart() (int, error) {
 	cmd.Dir = dataDir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	// Redirect output to log files
-	sd, _ := spireDir()
-	logFile, _ := os.OpenFile(filepath.Join(sd, "dolt.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	errFile, _ := os.OpenFile(filepath.Join(sd, "dolt.error.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Redirect output to log files in global dir (shared across repos)
+	gd := doltGlobalDir()
+	logFile, _ := os.OpenFile(filepath.Join(gd, "dolt.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	errFile, _ := os.OpenFile(filepath.Join(gd, "dolt.error.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	cmd.Stdout = logFile
 	cmd.Stderr = errFile
 
