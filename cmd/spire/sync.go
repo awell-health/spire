@@ -195,7 +195,7 @@ func normalizeDolthubURL(url string) string {
 // it creates the database directly on the server via dolt SQL. The subsequent
 // fetch+reset will populate the schema and data from the remote.
 func bootstrapDatabase(_ bool) (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := realCwd()
 	if err != nil {
 		return "", fmt.Errorf("getwd: %w", err)
 	}
@@ -227,7 +227,7 @@ func bootstrapDatabase(_ bool) (string, error) {
 // readBeadsDBName reads the dolt_database field from .beads/metadata.json,
 // which is the actual database name bd uses to connect to the dolt server.
 func readBeadsDBName() string {
-	cwd, err := os.Getwd()
+	cwd, err := realCwd()
 	if err != nil {
 		return ""
 	}

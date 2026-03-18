@@ -38,7 +38,7 @@ func cmdFile(args []string) error {
 	// Fall back to CWD detection
 	var instPath string
 	if prefix == "" {
-		if cwd, err := os.Getwd(); err == nil {
+		if cwd, err := realCwd(); err == nil {
 			if cfg, err := loadConfig(); err == nil {
 				if inst := findInstanceByPath(cfg, cwd); inst != nil {
 					prefix = inst.Prefix

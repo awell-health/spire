@@ -29,6 +29,21 @@ type Instance struct {
 	Satellites []string `json:"satellites,omitempty"` // only on hubs
 }
 
+// realCwd returns the current working directory with symlinks resolved.
+// This ensures paths stored in config are canonical regardless of how the
+// user navigated to the directory (e.g. /tmp vs /private/tmp on macOS).
+func realCwd() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return cwd, nil // fallback to unresolved
+	}
+	return real, nil
+}
+
 // configDir returns ~/.config/spire/, creating it if needed.
 func configDir() (string, error) {
 	home, err := os.UserHomeDir()

@@ -70,7 +70,7 @@ func detectDBName() string {
 		return strings.TrimSpace(out)
 	}
 	// Fallback: look up cwd in config
-	if cwd, err := os.Getwd(); err == nil {
+	if cwd, err := realCwd(); err == nil {
 		if cfg, err := loadConfig(); err == nil {
 			if inst := findInstanceByPath(cfg, cwd); inst != nil {
 				return inst.Database

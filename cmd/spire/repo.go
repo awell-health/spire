@@ -125,7 +125,7 @@ func repoRemove(prefix string) error {
 
 // worktreeRemove removes the CWD from its instance's path list without touching other worktrees.
 func worktreeRemove() error {
-	cwd, err := os.Getwd()
+	cwd, err := realCwd()
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
 	}
@@ -173,7 +173,8 @@ func worktreeAdd(cfg *SpireConfig, inst *Instance, cwd string) error {
 	fmt.Printf("  Prefix %q is already registered at %s\n", inst.Prefix, inst.Path)
 	fmt.Printf("  Adding %s as an additional path (worktree).\n", cwd)
 
-	// Write .beads/redirect pointing to hub's .beads
+	// Write .beads/redirect pointing to hub's .beads (absolute path — relative paths
+	// break under symlinked dirs like /tmp → /private/tmp on macOS).
 	if inst.Role == "satellite" && inst.Hub != "" {
 		hubInst, ok := cfg.Instances[inst.Hub]
 		if !ok {

@@ -41,7 +41,7 @@ func cmdInit(args []string) error {
 		}
 	}
 
-	cwd, err := os.Getwd()
+	cwd, err := realCwd()
 	if err != nil {
 		return fmt.Errorf("cannot determine working directory: %w", err)
 	}
@@ -205,18 +205,16 @@ func cmdInit(args []string) error {
 	}
 
 	if role == "satellite" {
-		// Satellite: create .beads/redirect
+		// Satellite: create .beads/redirect using absolute path.
+		// Relative paths break when the satellite is under a symlinked directory
+		// (e.g. /tmp → /private/tmp on macOS), so we always write absolute.
 		hubInst := cfg.Instances[hubPrefix]
 		hubBeads := filepath.Join(hubInst.Path, ".beads")
-		relPath, err := filepath.Rel(cwd, hubBeads)
-		if err != nil {
-			relPath = hubBeads // fallback to absolute
-		}
 		os.MkdirAll(filepath.Join(cwd, ".beads"), 0755)
-		if err := os.WriteFile(filepath.Join(cwd, ".beads", "redirect"), []byte(relPath+"\n"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(cwd, ".beads", "redirect"), []byte(hubBeads+"\n"), 0644); err != nil {
 			return fmt.Errorf("write redirect: %w", err)
 		}
-		fmt.Printf("  Redirect → %s\n", relPath)
+		fmt.Printf("  Redirect → %s\n", hubBeads)
 	} else {
 		// Hub/standalone: run bd init
 		// Check if .beads already exists locally with the right prefix
