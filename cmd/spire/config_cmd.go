@@ -5,11 +5,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire config <get|set|list> [key] [value]\n\nKeys: identity, dolt.port, daemon.interval, editor.cursor, editor.claude, mcp-server.path, dolthub.remote")
+		return fmt.Errorf("usage: spire config <get|set|list|repo> [key] [value]\n\nKeys: identity, dolt.port, daemon.interval, editor.cursor, editor.claude, mcp-server.path, dolthub.remote\n\nSubcommands:\n  repo    Print resolved spire.yaml (repo-level agent config)")
 	}
 
 	// Parse --repo flag
@@ -41,8 +43,10 @@ func cmdConfig(args []string) error {
 		return configSet(args[1], args[2])
 	case "list":
 		return configList()
+	case "repo":
+		return configRepo()
 	default:
-		return fmt.Errorf("unknown config subcommand: %q\nusage: spire config <get|set|list> [key] [value]", args[0])
+		return fmt.Errorf("unknown config subcommand: %q\nusage: spire config <get|set|list|repo> [key] [value]", args[0])
 	}
 }
 
@@ -292,5 +296,22 @@ func configList() error {
 		}
 	}
 
+	return nil
+}
+
+// configRepo loads spire.yaml (with auto-detection fallbacks) and prints
+// the fully resolved repo configuration.
+func configRepo() error {
+	cwd, err := realCwd()
+	if err != nil {
+		return fmt.Errorf("cannot determine working directory: %w", err)
+	}
+
+	cfg, err := repoconfig.Load(cwd)
+	if err != nil {
+		return fmt.Errorf("load repo config: %w", err)
+	}
+
+	fmt.Print(repoconfig.FormatResolved(cfg))
 	return nil
 }

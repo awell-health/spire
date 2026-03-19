@@ -109,7 +109,7 @@ Overview:
 
 Setup:
   init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
-  config <get|set|list> Read/write config values (--repo for .beads/config.yaml)
+  config <get|set|list|repo> Read/write config values; repo prints resolved spire.yaml
   sync [--hard] [url]   Pull from a DoltHub remote (handles divergent histories)
   push [url]            Push local database to DoltHub (creates remote db if needed)
   repo list             List all init'd repos (--json)

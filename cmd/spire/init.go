@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 func cmdInit(args []string) error {
@@ -352,6 +354,9 @@ func cmdInit(args []string) error {
 
 	// --- AGENTS.md ---
 	offerAgentsMDUpdate(reader, cwd)
+
+	// --- spire.yaml ---
+	writeSpireYAML(cwd)
 
 	// --- DoltHub sync (if --dolthub provided) ---
 	if flagDolthub != "" {
@@ -1034,6 +1039,23 @@ func ensureGitignore(repoPath string) {
 	}
 
 	fmt.Printf("  .gitignore updated (%d entries added)\n", len(missing))
+}
+
+// writeSpireYAML generates a default spire.yaml from auto-detection if one
+// does not already exist. Skips silently if the file is present.
+func writeSpireYAML(repoPath string) {
+	path := filepath.Join(repoPath, "spire.yaml")
+	if _, err := os.Stat(path); err == nil {
+		fmt.Println("  spire.yaml already exists")
+		return
+	}
+
+	content := repoconfig.GenerateYAML(repoPath)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		fmt.Printf("  Warning: spire.yaml write failed: %s\n", err)
+		return
+	}
+	fmt.Println("  spire.yaml written (auto-detected runtime)")
 }
 
 // findSpireRepoForCursor finds the spire repo path for copying cursor rules.

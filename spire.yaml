@@ -1,0 +1,23 @@
+runtime:
+  language: go
+  test: go test ./...
+  build: go build ./cmd/spire/
+  lint: go vet ./cmd/spire/
+
+agent:
+  model: claude-sonnet-4-6
+  max-turns: 50
+  timeout: 30m
+
+branch:
+  base: main
+  pattern: "feat/{bead-id}"
+
+pr:
+  auto-merge: false
+  labels: ["agent-generated"]
+
+context:
+  - CLAUDE.md
+  - SPIRE.md
+  - docs/superpowers/specs/
