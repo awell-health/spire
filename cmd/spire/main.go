@@ -51,8 +51,12 @@ func main() {
 		err = cmdServe(args)
 	case "daemon":
 		err = cmdDaemon(args)
+	case "mayor":
+		err = cmdMayor(args)
 	case "file":
 		err = cmdFile(args)
+	case "spec":
+		err = cmdSpec(args)
 	case "claim":
 		err = cmdClaim(args)
 	case "init":
@@ -73,6 +77,8 @@ func main() {
 		err = cmdDown(args)
 	case "shutdown":
 		err = cmdShutdown(args)
+	case "board":
+		err = cmdBoard(args)
 	case "status":
 		err = cmdStatus(args)
 	case "doctor":
@@ -98,6 +104,9 @@ func main() {
 func printUsage() {
 	fmt.Println(`Usage: spire <command> [args]
 
+Overview:
+  board [flags]         Unified work queue view (--mine, --ready, --json)
+
 Setup:
   init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
   config <get|set|list> Read/write config values (--repo for .beads/config.yaml)
@@ -116,6 +125,7 @@ Lifecycle:
 
 Work:
   file <title> [flags]  Create a bead (--prefix required if not in a repo dir)
+  spec <title> [flags]  Scaffold a spec and file it (--no-file, --break <id>)
   claim <bead-id>       Pull, verify, claim, push (atomic)
   focus <bead-id>       Focus on a task (bonds workflow on first focus)
   grok <bead-id>        Focus + live Linear context (requires LINEAR_API_KEY)
@@ -132,6 +142,7 @@ Integrations:
   disconnect <service>  Disconnect an integration
   serve                 Run webhook receiver (--port)
   daemon                Run sync daemon (--interval, --once)
+  mayor                 Run work coordinator (--once, --dry-run, --interval, --agents)
 
   version               Print version
   help                  Show this help`)
