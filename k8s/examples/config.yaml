@@ -1,0 +1,27 @@
+apiVersion: spire.awell.io/v1alpha1
+kind: SpireConfig
+metadata:
+  name: default
+  namespace: spire
+spec:
+  dolthub:
+    remote: "https://doltremoteapi.dolthub.com/awell/spire"
+    credentialsSecret: spire-credentials
+  polling:
+    interval: "2m"
+    staleThreshold: "4h"
+    reassignThreshold: "6h"
+  tokens:
+    default:
+      secret: spire-credentials
+      key: ANTHROPIC_API_KEY_DEFAULT
+    # heavy:
+    #   secret: spire-credentials
+    #   key: ANTHROPIC_API_KEY_HEAVY
+  defaultToken: default
+  routing:
+    # P0/P1 work gets the heavy token
+    # - match:
+    #     priority: [0, 1]
+    #   token: heavy
+    []

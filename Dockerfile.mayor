@@ -1,0 +1,36 @@
+# Stage 1: Build spire binary
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /spire ./cmd/spire/
+
+# Stage 2: Install dolt + bd
+FROM alpine:3.20 AS tools
+
+RUN apk add --no-cache curl bash
+
+# Install dolt
+RUN curl -L https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
+
+# Install bd (beads)
+RUN curl -sSL https://beads.sh/install | bash
+
+# Stage 3: Runtime
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates bash git
+
+COPY --from=build /spire /usr/local/bin/spire
+COPY --from=tools /usr/local/bin/dolt /usr/local/bin/dolt
+COPY --from=tools /usr/local/bin/bd /usr/local/bin/bd
+
+# Mayor doesn't need a repo checkout — just beads state
+WORKDIR /data
+
+# Entrypoint script handles init + sync + mayor loop
+COPY k8s/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

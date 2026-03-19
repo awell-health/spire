@@ -1,0 +1,91 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: spireworkloads.spire.awell.io
+spec:
+  group: spire.awell.io
+  names:
+    kind: SpireWorkload
+    listKind: SpireWorkloadList
+    plural: spireworkloads
+    singular: spireworkload
+    shortNames:
+      - sw
+      - workload
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [beadId]
+              properties:
+                beadId:
+                  type: string
+                  description: The bead ID this workload represents
+                title:
+                  type: string
+                priority:
+                  type: integer
+                  minimum: 0
+                  maximum: 4
+                type:
+                  type: string
+                  enum: [task, bug, feature, epic, chore]
+                prefixes:
+                  type: array
+                  items:
+                    type: string
+                  description: Prefix hints for agent matching
+                token:
+                  type: string
+                  description: Token override for this specific workload
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Assigned, InProgress, Done, Stale, Failed]
+                assignedTo:
+                  type: string
+                  description: Name of the SpireAgent handling this work
+                assignedAt:
+                  type: string
+                  format: date-time
+                startedAt:
+                  type: string
+                  format: date-time
+                completedAt:
+                  type: string
+                  format: date-time
+                lastProgress:
+                  type: string
+                  format: date-time
+                attempts:
+                  type: integer
+                  description: Number of times this workload has been assigned
+                message:
+                  type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Bead
+          type: string
+          jsonPath: .spec.beadId
+        - name: Priority
+          type: integer
+          jsonPath: .spec.priority
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Assigned To
+          type: string
+          jsonPath: .status.assignedTo
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

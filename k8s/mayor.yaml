@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-mayor
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-mayor
+    app.kubernetes.io/part-of: spire-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-mayor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-mayor
+    spec:
+      serviceAccountName: spire-operator
+      containers:
+        - name: mayor
+          image: spire-mayor:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DOLTHUB_REMOTE
+              value: "https://doltremoteapi.dolthub.com/awell/spire"
+            - name: MAYOR_PREFIX
+              value: "mayor"
+            - name: MAYOR_INTERVAL
+              value: "2m"
+            - name: MAYOR_STALE_THRESHOLD
+              value: "4h"
+            - name: DOLT_REMOTE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: DOLT_REMOTE_USER
+            - name: DOLT_REMOTE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: DOLT_REMOTE_PASSWORD
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+# RBAC for the operator (Phase 2: manages pods, reads secrets)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-operator
+  namespace: spire
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spire-operator
+  namespace: spire
+rules:
+  # CRDs
+  - apiGroups: ["spire.awell.io"]
+    resources: ["spireagents", "spireworkloads", "spireconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["spire.awell.io"]
+    resources: ["spireagents/status", "spireworkloads/status", "spireconfigs/status"]
+    verbs: ["get", "update", "patch"]
+  # Pod management (for managed agents)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Secret reading (for token injection)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spire-operator
+  namespace: spire
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spire-operator
+subjects:
+  - kind: ServiceAccount
+    name: spire-operator
+    namespace: spire
