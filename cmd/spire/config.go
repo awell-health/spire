@@ -8,8 +8,11 @@ import (
 
 // SpireConfig is the global Spire configuration stored at ~/.config/spire/config.json.
 type SpireConfig struct {
-	Shell     ShellConfig          `json:"shell"`
-	Instances map[string]*Instance `json:"instances"`
+	Shell        ShellConfig          `json:"shell"`
+	Instances    map[string]*Instance `json:"instances"`
+	MCPServer    string               `json:"mcp_server_path,omitempty"`
+	EditorCursor *bool                `json:"editor_cursor,omitempty"` // default: true
+	EditorClaude *bool                `json:"editor_claude,omitempty"` // default: true
 }
 
 // ShellConfig tracks whether shell env vars have been injected.
@@ -20,13 +23,17 @@ type ShellConfig struct {
 
 // Instance represents one init'd repo.
 type Instance struct {
-	Path       string   `json:"path"`
-	Paths      []string `json:"paths,omitempty"`      // additional directories (e.g. git worktrees)
-	Prefix     string   `json:"prefix"`
-	Role       string   `json:"role"`                 // "hub", "satellite", "standalone"
-	Database   string   `json:"database"`             // for hub/standalone = prefix; for satellite = hub's prefix
-	Hub        string   `json:"hub,omitempty"`        // only on satellites
-	Satellites []string `json:"satellites,omitempty"` // only on hubs
+	Path           string   `json:"path"`
+	Paths          []string `json:"paths,omitempty"`           // additional directories (e.g. git worktrees)
+	Prefix         string   `json:"prefix"`
+	Role           string   `json:"role"`                      // "hub", "satellite", "standalone"
+	Database       string   `json:"database"`                  // for hub/standalone = prefix; for satellite = hub's prefix
+	Hub            string   `json:"hub,omitempty"`             // only on satellites
+	Satellites     []string `json:"satellites,omitempty"`      // only on hubs
+	DoltPort       int      `json:"dolt_port,omitempty"`       // default: 3307
+	DaemonInterval string   `json:"daemon_interval,omitempty"` // default: "2m"
+	DolthubRemote  string   `json:"dolthub_remote,omitempty"`
+	Identity       string   `json:"identity,omitempty"`        // default: prefix
 }
 
 // realCwd returns the current working directory with symlinks resolved.

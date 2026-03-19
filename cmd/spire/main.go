@@ -57,6 +57,8 @@ func main() {
 		err = cmdClaim(args)
 	case "init":
 		err = cmdInit(args)
+	case "config":
+		err = cmdConfig(args)
 	case "sync":
 		err = cmdSync(args)
 	case "push":
@@ -96,6 +98,7 @@ func printUsage() {
 
 Setup:
   init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
+  config <get|set|list> Read/write config values (--repo for .beads/config.yaml)
   sync [--hard] [url]   Pull from a DoltHub remote (handles divergent histories)
   push [url]            Push local database to DoltHub (creates remote db if needed)
   repo list             List all init'd repos (--json)
