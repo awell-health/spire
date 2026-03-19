@@ -887,22 +887,9 @@ func writeSpireHooks(repoPath, prefix string) {
 	scriptContent := fmt.Sprintf(`#!/usr/bin/env bash
 # Spire context injection hook for Claude Code.
 # Reads the hook event from stdin and outputs additionalContext.
-set -euo pipefail
 
-EVENT=$(cat)
+EVENT=$(cat 2>/dev/null || true)
 HOOK_EVENT=$(echo "$EVENT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('hook_event_name',''))" 2>/dev/null || echo "")
-
-inject_context() {
-    local context="$1"
-    python3 -c "
-import json, sys
-print(json.dumps({
-    'hookSpecificOutput': {
-        'additionalContext': sys.argv[1]
-    }
-}))
-" "$context"
-}
 
 SPIRE_MD=""
 if [ -f "%s/SPIRE.md" ]; then
@@ -912,7 +899,7 @@ fi
 case "$HOOK_EVENT" in
     SessionStart)
         COLLECT=$(spire collect 2>/dev/null || echo "No messages.")
-        inject_context "# Spire Context (prefix: %s)
+        CONTEXT="# Spire Context (prefix: %s)
 
 ${SPIRE_MD}
 
@@ -920,12 +907,12 @@ ${SPIRE_MD}
 ${COLLECT}"
         ;;
     PostCompact)
-        inject_context "# Spire Context (re-injected after compaction, prefix: %s)
+        CONTEXT="# Spire Context (re-injected after compaction, prefix: %s)
 
 ${SPIRE_MD}"
         ;;
     SubagentStart)
-        inject_context "# Spire Work Protocol (prefix: %s)
+        CONTEXT="# Spire Work Protocol (prefix: %s)
 
 You are a subagent in a Spire-managed repo. Follow this protocol:
 
@@ -939,8 +926,18 @@ Never leave beads or molecule steps open after completing work."
         ;;
     *)
         echo "{}"
+        exit 0
         ;;
 esac
+
+python3 -c "
+import json, sys
+print(json.dumps({
+    'hookSpecificOutput': {
+        'additionalContext': sys.stdin.read()
+    }
+}))
+" <<< "$CONTEXT"
 `, repoPath, repoPath, prefix, prefix, prefix)
 
 	if err := os.WriteFile(hookScript, []byte(scriptContent), 0755); err != nil {
