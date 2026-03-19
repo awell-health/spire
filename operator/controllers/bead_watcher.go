@@ -31,6 +31,12 @@ type beadJSON struct {
 	Type     string `json:"type"`
 }
 
+// Start implements controller-runtime's Runnable interface.
+func (w *BeadWatcher) Start(ctx context.Context) error {
+	w.Run(ctx)
+	return nil
+}
+
 // Run is the main loop — call from the operator's main.go in a goroutine.
 func (w *BeadWatcher) Run(ctx context.Context) {
 	w.Log.Info("bead watcher starting", "interval", w.Interval)

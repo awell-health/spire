@@ -26,6 +26,12 @@ type AgentMonitor struct {
 	MayorImage      string        // image to use for managed agent pods
 }
 
+// Start implements controller-runtime's Runnable interface.
+func (m *AgentMonitor) Start(ctx context.Context) error {
+	m.Run(ctx)
+	return nil
+}
+
 func (m *AgentMonitor) Run(ctx context.Context) {
 	m.Log.Info("agent monitor starting", "interval", m.Interval)
 	ticker := time.NewTicker(m.Interval)

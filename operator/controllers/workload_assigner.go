@@ -23,6 +23,12 @@ type WorkloadAssigner struct {
 	ReassignThreshold  time.Duration
 }
 
+// Start implements controller-runtime's Runnable interface.
+func (a *WorkloadAssigner) Start(ctx context.Context) error {
+	a.Run(ctx)
+	return nil
+}
+
 func (a *WorkloadAssigner) Run(ctx context.Context) {
 	a.Log.Info("workload assigner starting", "interval", a.Interval)
 	ticker := time.NewTicker(a.Interval)

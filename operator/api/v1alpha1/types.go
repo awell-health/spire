@@ -126,8 +126,8 @@ type TokenRef struct {
 }
 
 type RoutingRule struct {
-	Match map[string]interface{} `json:"match,omitempty"`
-	Token string                 `json:"token"`
+	Match map[string]string `json:"match,omitempty"`
+	Token string            `json:"token"`
 }
 
 type SpireConfigStatus struct {

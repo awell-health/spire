@@ -1,85 +1,105 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
-	"github.com/go-logr/zapr"
-	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
 	"github.com/awell-health/spire/operator/controllers"
 )
 
+var scheme = runtime.NewScheme()
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(spirev1.AddToScheme(scheme))
+}
+
 func main() {
 	var (
-		namespace      = flag.String("namespace", "spire", "Namespace to watch")
-		interval       = flag.Duration("interval", 2*time.Minute, "Poll interval")
-		staleThreshold = flag.Duration("stale-threshold", 4*time.Hour, "Time before marking work as stale")
-		reassignAfter  = flag.Duration("reassign-after", 6*time.Hour, "Time before reassigning stale work")
-		offlineTimeout = flag.Duration("offline-timeout", 30*time.Minute, "Time before marking agent as offline")
-		mayorImage     = flag.String("mayor-image", "ghcr.io/awell-health/spire-mayor:latest", "Image for managed agent pods")
+		namespace      string
+		interval       time.Duration
+		staleThreshold time.Duration
+		reassignAfter  time.Duration
+		offlineTimeout time.Duration
+		mayorImage     string
 	)
+	flag.StringVar(&namespace, "namespace", "spire", "Namespace to watch")
+	flag.DurationVar(&interval, "interval", 2*time.Minute, "Poll interval")
+	flag.DurationVar(&staleThreshold, "stale-threshold", 4*time.Hour, "Time before marking work as stale")
+	flag.DurationVar(&reassignAfter, "reassign-after", 6*time.Hour, "Time before reassigning stale work")
+	flag.DurationVar(&offlineTimeout, "offline-timeout", 30*time.Minute, "Time before marking agent as offline")
+	flag.StringVar(&mayorImage, "mayor-image", "ghcr.io/awell-health/spire-mayor:latest", "Image for managed agent pods")
+
+	opts := zap.Options{Development: true}
+	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	// Logger
-	zapLog, _ := zap.NewProduction()
-	log := zapr.NewLogger(zapLog)
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	log := ctrl.Log.WithName("operator")
 
-	// TODO: Wire up controller-runtime client.
-	// For Phase 1, this is a scaffold. The actual client setup requires:
-	//   mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{...})
-	// For now, we run the controllers with nil clients and shell out to bd/spire.
-	// Phase 2 will add proper controller-runtime wiring.
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme: scheme,
+	})
+	if err != nil {
+		log.Error(err, "unable to create manager")
+		os.Exit(1)
+	}
 
-	log.Info("spire operator starting",
-		"namespace", *namespace,
-		"interval", *interval,
-		"staleThreshold", *staleThreshold,
-	)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	// Start controllers in goroutines
+	// Start the bead watcher as a runnable (not a reconciler — it's a poll loop)
 	beadWatcher := &controllers.BeadWatcher{
+		Client:    mgr.GetClient(),
 		Log:       log.WithName("bead-watcher"),
-		Namespace: *namespace,
-		Interval:  *interval,
+		Namespace: namespace,
+		Interval:  interval,
+	}
+	if err := mgr.Add(beadWatcher); err != nil {
+		log.Error(err, "unable to add bead watcher")
+		os.Exit(1)
 	}
 
+	// Workload assigner — matches pending workloads to agents
 	assigner := &controllers.WorkloadAssigner{
+		Client:            mgr.GetClient(),
 		Log:               log.WithName("workload-assigner"),
-		Namespace:         *namespace,
-		Interval:          *interval,
-		StaleThreshold:    *staleThreshold,
-		ReassignThreshold: *reassignAfter,
+		Namespace:         namespace,
+		Interval:          interval,
+		StaleThreshold:    staleThreshold,
+		ReassignThreshold: reassignAfter,
+	}
+	if err := mgr.Add(assigner); err != nil {
+		log.Error(err, "unable to add workload assigner")
+		os.Exit(1)
 	}
 
+	// Agent monitor — tracks heartbeats and manages pods
 	monitor := &controllers.AgentMonitor{
+		Client:         mgr.GetClient(),
 		Log:            log.WithName("agent-monitor"),
-		Namespace:      *namespace,
-		Interval:       *interval,
-		OfflineTimeout: *offlineTimeout,
-		MayorImage:     *mayorImage,
+		Namespace:      namespace,
+		Interval:       interval,
+		OfflineTimeout: offlineTimeout,
+		MayorImage:     mayorImage,
+	}
+	if err := mgr.Add(monitor); err != nil {
+		log.Error(err, "unable to add agent monitor")
+		os.Exit(1)
 	}
 
-	_ = beadWatcher
-	_ = assigner
-	_ = monitor
-
-	// Phase 1: Just run spire mayor directly (no CRD watches yet)
-	// Phase 2: Replace with controller-runtime manager
-	log.Info("Phase 1 mode: running spire mayor loop directly")
-	log.Info("Phase 2 will add CRD watches via controller-runtime")
-
-	// For now, just run the bead watcher loop (which does pull/ready/push)
-	// The assigner and monitor will be wired up when we add the k8s client
-	go beadWatcher.Run(ctx)
-
-	<-ctx.Done()
-	log.Info("shutting down")
+	log.Info("starting operator",
+		"namespace", namespace,
+		"interval", interval,
+		"staleThreshold", staleThreshold,
+	)
+	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		log.Error(err, "operator exited with error")
+		os.Exit(1)
+	}
 }
