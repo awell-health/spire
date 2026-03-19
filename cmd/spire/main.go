@@ -75,6 +75,8 @@ func main() {
 		err = cmdShutdown(args)
 	case "status":
 		err = cmdStatus(args)
+	case "doctor":
+		err = cmdDoctor(args)
 	case "version":
 		fmt.Println("spire", version)
 		return
@@ -110,6 +112,7 @@ Lifecycle:
   down                  Stop daemon (dolt keeps running)
   shutdown              Stop daemon + dolt server
   status                Show running state of dolt + daemon
+  doctor [--fix]        Verify CLAUDE.md, hooks, SPIRE.md, skills are current
 
 Work:
   file <title> [flags]  Create a bead (--prefix required if not in a repo dir)
