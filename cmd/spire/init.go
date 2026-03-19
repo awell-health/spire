@@ -222,7 +222,7 @@ func cmdInit(args []string) error {
 		// operates on the hub's .beads, not the satellite's local one.
 		satGitignore := filepath.Join(cwd, ".beads", ".gitignore")
 		if _, statErr := os.Stat(satGitignore); os.IsNotExist(statErr) {
-			content := "# Satellite .beads — only redirect lives here; ignore it\nredirect\nroutes.jsonl\n"
+			content := "# Satellite .beads — only redirect lives here; ignore it\nredirect\n"
 			if err := os.WriteFile(satGitignore, []byte(content), 0644); err != nil {
 				fmt.Printf("  Warning: could not write .beads/.gitignore: %s\n", err)
 			} else {
