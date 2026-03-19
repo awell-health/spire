@@ -81,6 +81,8 @@ func main() {
 		err = cmdBoard(args)
 	case "status":
 		err = cmdStatus(args)
+	case "metrics":
+		err = cmdMetrics(args)
 	case "doctor":
 		err = cmdDoctor(args)
 	case "version":
@@ -122,6 +124,7 @@ Lifecycle:
   shutdown              Stop daemon + dolt server
   status                Show running state of dolt + daemon
   doctor [--fix]        Verify CLAUDE.md, hooks, SPIRE.md, skills are current
+  metrics [flags]       Agent run metrics (--bead <id>, --model, --json)
 
 Work:
   file <title> [flags]  Create a bead (--prefix required if not in a repo dir)
