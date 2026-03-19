@@ -216,6 +216,19 @@ func cmdInit(args []string) error {
 			return fmt.Errorf("write redirect: %w", err)
 		}
 		fmt.Printf("  Redirect → %s\n", hubBeads)
+		// Ensure satellite has a .beads/.gitignore so redirect doesn't get
+		// accidentally committed. bd init generates this for hub/standalone,
+		// but satellites skip bd init. And bd doctor follows the redirect so it
+		// operates on the hub's .beads, not the satellite's local one.
+		satGitignore := filepath.Join(cwd, ".beads", ".gitignore")
+		if _, statErr := os.Stat(satGitignore); os.IsNotExist(statErr) {
+			content := "# Satellite .beads — only redirect lives here; ignore it\nredirect\nroutes.jsonl\n"
+			if err := os.WriteFile(satGitignore, []byte(content), 0644); err != nil {
+				fmt.Printf("  Warning: could not write .beads/.gitignore: %s\n", err)
+			} else {
+				fmt.Println("  .beads/.gitignore written")
+			}
+		}
 		// Set beads.role in the satellite's git config — bd reads this per-repo
 		// and warns if missing. bd init is not called for satellites (they redirect
 		// to the hub's .beads), so we set it directly.
