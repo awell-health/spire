@@ -10,7 +10,7 @@ import (
 )
 
 func cmdSync(args []string) error {
-	mode := "merge"
+	mode := "" // default: try gentle pull first
 	remoteURL := ""
 
 	for i := 0; i < len(args); i++ {
@@ -23,13 +23,16 @@ func cmdSync(args []string) error {
 			fmt.Print(`Usage: spire sync [--hard|--merge] [<dolthub-url>]
 
 Sync the local beads database with a DoltHub remote.
-Handles divergent histories that 'bd dolt pull' cannot (e.g. fresh init vs existing remote).
+
+By default, runs a normal pull (three-way merge). If histories have diverged
+and the pull fails, it tells you and suggests --merge or --hard.
 
 Modes:
-  --merge  (default) Export local issues, force pull from remote, reimport locals.
-           Safe when both sides have data you want to keep.
-  --hard   Force pull from remote, overwriting all local data.
-           Use when local is empty or expendable.
+  (default)  Try 'bd dolt pull'. Fast, safe, handles the common case.
+  --merge    Export local issues, force pull from remote, reimport locals.
+             Use when histories have diverged and both sides have data.
+  --hard     Force pull from remote, overwriting all local data.
+             Use when local is empty or expendable.
 
 Arguments:
   <dolthub-url>  Optional. Sets (or replaces) the 'origin' remote before syncing.
@@ -39,10 +42,10 @@ Auth:
   Set DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD env vars for DoltHub.
 
 Examples:
-  spire sync                                                  # merge with existing remote
-  spire sync https://doltremoteapi.dolthub.com/org/db         # merge, set remote first
+  spire sync                                                  # pull (normal workflow)
+  spire sync https://doltremoteapi.dolthub.com/org/db         # set remote + pull
+  spire sync --merge                                          # diverged histories, keep both
   spire sync --hard https://doltremoteapi.dolthub.com/org/db  # hard reset to remote
-  spire sync --hard                                           # hard reset, remote already set
 `)
 			return nil
 		default:
@@ -64,6 +67,10 @@ func runSync(mode, remoteURL string) error {
 				return fmt.Errorf("database not found and bootstrap failed: %w\n  run manually: bd init --prefix <prefix>", bootstrapErr)
 			}
 			fmt.Printf("  Database bootstrapped (prefix: %s-).\n", prefix)
+			// Fresh database — skip gentle pull, go straight to hard reset
+			if mode == "" {
+				mode = "hard"
+			}
 		}
 		// Other errors (server down, etc.) will surface later in context
 	}
@@ -95,6 +102,36 @@ func runSync(mode, remoteURL string) error {
 		if !strings.Contains(out, "origin") {
 			return fmt.Errorf("no remote configured\n  pass a DoltHub URL or run: bd dolt remote add origin <url>")
 		}
+	}
+
+	// ── Default mode: try gentle pull first ───────────────────────────────────
+	if mode == "" {
+		fmt.Println("  Pulling from remote...")
+		if _, err := bd("dolt", "pull"); err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "non-fast-forward") ||
+				strings.Contains(errStr, "diverged") ||
+				strings.Contains(errStr, "conflicts") ||
+				strings.Contains(errStr, "cannot merge") {
+				fmt.Println("  Pull failed — histories have diverged.")
+				fmt.Println()
+				fmt.Println("  To resolve, re-run with an explicit mode:")
+				fmt.Println("    spire sync --merge   # keep both local and remote data")
+				fmt.Println("    spire sync --hard    # overwrite local with remote")
+				return fmt.Errorf("pull failed (diverged histories)")
+			}
+			return fmt.Errorf("pull failed: %w", err)
+		}
+		fmt.Println("  Pull complete.")
+		// Push local commits to keep remote up to date
+		if _, err := bd("dolt", "push"); err != nil {
+			// Non-fatal: local is synced, push failure is informational
+			fmt.Printf("  Warning: push failed: %s\n", err)
+		} else {
+			fmt.Println("  Push complete.")
+		}
+		fmt.Println("  Sync complete.")
+		return nil
 	}
 
 	// ── Mode: merge — stash local issues ──────────────────────────────────────
