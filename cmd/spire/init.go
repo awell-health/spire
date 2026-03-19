@@ -335,6 +335,12 @@ func cmdInit(args []string) error {
 		fmt.Println("  SPIRE.md written")
 	}
 
+	// --- CLAUDE.md ---
+	writeCLAUDEMD(reader, cwd, prefix)
+
+	// --- Hooks ---
+	writeSpireHooks(cwd, prefix)
+
 	// --- AGENTS.md ---
 	offerAgentsMDUpdate(reader, cwd)
 
@@ -678,8 +684,21 @@ spire collect                   # check inbox + read your context brief
 spire claim <bead-id>           # claim a task (atomic: pull → verify → set in_progress → push)
 spire focus <bead-id>           # assemble full context for the task
 # ... do the work ...
+bd close <step-id>              # close each molecule step as you complete it
+bd close <bead-id>              # close the bead when all work is done
+bd dolt push                    # push state to remote
 spire send <agent> "done" --ref <bead-id>   # notify others
 `+"```"+`
+
+## Completing work
+
+When you finish a task, you MUST close things in order:
+
+1. **Close molecule steps** — `+"`spire focus <bead-id>`"+` shows your workflow molecule.
+   Close each step (design, implement, review, merge) with `+"`bd close <step-id>`"+`
+2. **Close the bead** — `+"`bd close <bead-id>`"+`
+3. **Push state** — `+"`bd dolt push`"+`
+4. **Notify** — `+"`spire send <agent> \"done\" --ref <bead-id>`"+` if assigned via mail
 
 ## Filing work
 
@@ -746,6 +765,214 @@ func offerAgentsMDUpdate(reader *bufio.Reader, repoPath string) {
 	} else {
 		fmt.Println("  AGENTS.md updated")
 	}
+}
+
+// spireWorkProtocol is the work lifecycle section added to CLAUDE.md.
+// Used by both writeCLAUDEMD and the hooks (PostCompact/SubagentStart).
+func spireWorkProtocol(prefix string) string {
+	return fmt.Sprintf(`## Spire — Work Coordination
+
+This repo uses [Spire](SPIRE.md) for work tracking and coordination (prefix: **%s**).
+
+### Creating work
+- `+"`spire file \"Title\" -t task -p 2`"+` — file new work (type: task/bug/feature/epic/chore, priority: 0-4)
+
+### Working on a bead
+- `+"`spire claim <bead-id>`"+` — claim before starting (atomic: pull → verify → set in_progress → push)
+- `+"`spire focus <bead-id>`"+` — assemble context and see your workflow molecule (design → implement → review → merge)
+
+### Completing work
+When done, close things in order:
+1. `+"`bd close <step-id>`"+` for each molecule step (design, implement, review, merge)
+2. `+"`bd close <bead-id>`"+` to close the bead itself
+3. `+"`bd dolt push`"+` to push state to remote
+
+Never leave a bead in_progress without closing it when done. Subagents must close their own molecule steps.
+
+### Commit format
+`+"```"+`
+<type>(<bead-id>): <message>
+`+"```"+`
+Types: feat, fix, chore, docs, refactor, test
+`, prefix)
+}
+
+// writeCLAUDEMD creates or appends the spire work protocol to CLAUDE.md.
+// If CLAUDE.md doesn't exist, creates it. If it exists but doesn't contain
+// the spire section, offers to append or prints the content for manual addition.
+func writeCLAUDEMD(reader *bufio.Reader, repoPath, prefix string) {
+	path := filepath.Join(repoPath, "CLAUDE.md")
+	section := spireWorkProtocol(prefix)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// No CLAUDE.md — create it
+		content := "# CLAUDE.md\n\n" + section
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			fmt.Printf("  Warning: CLAUDE.md write failed: %s\n", err)
+		} else {
+			fmt.Println("  CLAUDE.md created")
+		}
+		return
+	}
+
+	// CLAUDE.md exists — check if spire section is already there
+	if strings.Contains(string(data), "## Spire") {
+		fmt.Println("  CLAUDE.md already has Spire section")
+		return
+	}
+
+	// Exists without spire section — ask what to do
+	fmt.Println("  CLAUDE.md exists but has no Spire section.")
+	fmt.Print("  (A)ppend to end, (P)rint for manual addition, (S)kip? [A/p/s] ")
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+
+	switch {
+	case answer == "" || answer == "a":
+		updated := append(data, []byte("\n"+section)...)
+		if err := os.WriteFile(path, updated, 0644); err != nil {
+			fmt.Printf("  Warning: could not update CLAUDE.md: %s\n", err)
+		} else {
+			fmt.Println("  CLAUDE.md updated (Spire section appended)")
+		}
+	case answer == "p":
+		fmt.Println("\n  --- Add the following to your CLAUDE.md ---")
+		for _, line := range strings.Split(section, "\n") {
+			fmt.Printf("  %s\n", line)
+		}
+		fmt.Println("  --- end ---")
+	default:
+		fmt.Println("  Skipped CLAUDE.md")
+	}
+}
+
+// writeSpireHooks writes SessionStart, PostCompact, and SubagentStart hooks
+// to .claude/settings.json. Merges with existing hooks if the file exists.
+func writeSpireHooks(repoPath, prefix string) {
+	settingsPath := filepath.Join(repoPath, ".claude", "settings.json")
+	os.MkdirAll(filepath.Join(repoPath, ".claude"), 0755)
+
+	// Load existing settings
+	var settings map[string]interface{}
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		_ = json.Unmarshal(data, &settings)
+	}
+	if settings == nil {
+		settings = make(map[string]interface{})
+	}
+
+	// Check if hooks already configured
+	if hooks, ok := settings["hooks"]; ok {
+		if hooksMap, ok := hooks.(map[string]interface{}); ok {
+			if _, hasSession := hooksMap["SessionStart"]; hasSession {
+				fmt.Println("  Hooks already configured")
+				return
+			}
+		}
+	}
+
+	// Write the hook script
+	hookScript := filepath.Join(repoPath, ".claude", "spire-hook.sh")
+	scriptContent := fmt.Sprintf(`#!/usr/bin/env bash
+# Spire context injection hook for Claude Code.
+# Reads the hook event from stdin and outputs additionalContext.
+set -euo pipefail
+
+EVENT=$(cat)
+HOOK_EVENT=$(echo "$EVENT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('hook_event_name',''))" 2>/dev/null || echo "")
+
+inject_context() {
+    local context="$1"
+    python3 -c "
+import json, sys
+print(json.dumps({
+    'hookSpecificOutput': {
+        'additionalContext': sys.argv[1]
+    }
+}))
+" "$context"
+}
+
+SPIRE_MD=""
+if [ -f "%s/SPIRE.md" ]; then
+    SPIRE_MD=$(cat "%s/SPIRE.md")
+fi
+
+case "$HOOK_EVENT" in
+    SessionStart)
+        COLLECT=$(spire collect 2>/dev/null || echo "No messages.")
+        inject_context "# Spire Context (prefix: %s)
+
+${SPIRE_MD}
+
+## Current inbox
+${COLLECT}"
+        ;;
+    PostCompact)
+        inject_context "# Spire Context (re-injected after compaction, prefix: %s)
+
+${SPIRE_MD}"
+        ;;
+    SubagentStart)
+        inject_context "# Spire Work Protocol (prefix: %s)
+
+You are a subagent in a Spire-managed repo. Follow this protocol:
+
+${SPIRE_MD}
+
+IMPORTANT: When you complete work on a bead, you MUST:
+1. Close each molecule step: bd close <step-id>
+2. Close the bead: bd close <bead-id>
+3. Push state: bd dolt push
+Never leave beads or molecule steps open after completing work."
+        ;;
+    *)
+        echo "{}"
+        ;;
+esac
+`, repoPath, repoPath, prefix, prefix, prefix)
+
+	if err := os.WriteFile(hookScript, []byte(scriptContent), 0755); err != nil {
+		fmt.Printf("  Warning: could not write hook script: %s\n", err)
+		return
+	}
+
+	// Build hooks config
+	hookEntry := []interface{}{
+		map[string]interface{}{
+			"hooks": []interface{}{
+				map[string]interface{}{
+					"type":    "command",
+					"command": hookScript,
+					"timeout": 10,
+				},
+			},
+		},
+	}
+
+	hooksMap := make(map[string]interface{})
+	if existing, ok := settings["hooks"]; ok {
+		if existingMap, ok := existing.(map[string]interface{}); ok {
+			hooksMap = existingMap
+		}
+	}
+	hooksMap["SessionStart"] = hookEntry
+	hooksMap["PostCompact"] = hookEntry
+	hooksMap["SubagentStart"] = hookEntry
+	settings["hooks"] = hooksMap
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		fmt.Printf("  Warning: could not marshal settings: %s\n", err)
+		return
+	}
+	if err := os.WriteFile(settingsPath, append(data, '\n'), 0644); err != nil {
+		fmt.Printf("  Warning: could not write settings: %s\n", err)
+		return
+	}
+
+	fmt.Println("  Hooks configured (SessionStart, PostCompact, SubagentStart)")
 }
 
 // findSpireRepoForCursor finds the spire repo path for copying cursor rules.
