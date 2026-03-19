@@ -75,8 +75,14 @@ func cmdInit(args []string) error {
 	firstInit := len(cfg.Instances) == 0
 
 	// --- Shell env injection ---
+	// Determine dolt port from existing instance config (if re-initializing),
+	// falling back to the default 3307 for fresh inits.
+	shellPort := 3307
+	if existing := findInstanceByPath(cfg, cwd); existing != nil && existing.DoltPort != 0 {
+		shellPort = existing.DoltPort
+	}
 	if !cfg.Shell.Configured {
-		profile, injected := injectShellEnv()
+		profile, injected := injectShellEnv(shellPort)
 		if injected {
 			cfg.Shell.Configured = true
 			cfg.Shell.Profile = profile
@@ -381,8 +387,9 @@ func cmdInit(args []string) error {
 }
 
 // injectShellEnv detects the user's shell, finds the profile, and appends env vars.
+// The port parameter specifies the dolt server port to inject (from Instance config or default 3307).
 // Returns (profile path, true) if injected, or ("", false) if skipped/failed.
-func injectShellEnv() (string, bool) {
+func injectShellEnv(port int) (string, bool) {
 	shell := os.Getenv("SHELL")
 	profile := ""
 
@@ -413,13 +420,13 @@ func injectShellEnv() (string, bool) {
 		}
 	}
 
-	block := `
+	block := fmt.Sprintf(`
 # Beads — central dolt server (added by spire init)
 export BEADS_DOLT_SERVER_HOST="127.0.0.1"
-export BEADS_DOLT_SERVER_PORT="3307"
+export BEADS_DOLT_SERVER_PORT="%d"
 export BEADS_DOLT_SERVER_MODE=1
 export BEADS_DOLT_AUTO_START=0
-`
+`, port)
 
 	f, err := os.OpenFile(profile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
