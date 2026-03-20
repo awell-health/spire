@@ -11,12 +11,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 func cmdSteward(args []string) error {
-	// Parse flags
+	// Parse flags — staleThreshold left at zero to detect "not overridden".
 	interval := 2 * time.Minute
-	staleThreshold := 15 * time.Minute
+	var staleOverride time.Duration
 	once := false
 	dryRun := false
 	var agentList []string
@@ -28,7 +30,6 @@ func cmdSteward(args []string) error {
 		if strings.Contains(arg, "=") {
 			parts := strings.SplitN(arg, "=", 2)
 			arg = parts[0]
-			// Insert value as next arg for uniform handling
 			args = append(args[:i+1], append([]string{parts[1]}, args[i+1:]...)...)
 			args[i] = arg
 		}
@@ -50,14 +51,14 @@ func cmdSteward(args []string) error {
 			interval = d
 		case "--stale-threshold":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--stale-threshold requires a value (e.g., 4h, 30m)")
+				return fmt.Errorf("--stale-threshold requires a value (e.g., 15m, 30m)")
 			}
 			i++
 			d, err := time.ParseDuration(args[i])
 			if err != nil {
 				return fmt.Errorf("--stale-threshold: invalid duration %q", args[i])
 			}
-			staleThreshold = d
+			staleOverride = d
 		case "--once":
 			once = true
 		case "--dry-run":
@@ -74,7 +75,22 @@ func cmdSteward(args []string) error {
 				}
 			}
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 4h] [--agents a,b,c]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 15m] [--agents a,b,c]", args[i])
+		}
+	}
+
+	// Derive stale threshold from repo config (agent.timeout + 50% buffer).
+	// The --stale-threshold flag overrides if explicitly set.
+	staleThreshold := staleOverride
+	if staleThreshold == 0 {
+		cwd, _ := os.Getwd()
+		if cfg, err := repoconfig.Load(cwd); err == nil && cfg.Agent.Timeout != "" {
+			if timeout, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
+				staleThreshold = timeout + timeout/2 // timeout + 50% buffer
+			}
+		}
+		if staleThreshold == 0 {
+			staleThreshold = 15 * time.Minute // fallback if no config
 		}
 	}
 
