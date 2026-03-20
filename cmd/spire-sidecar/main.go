@@ -20,12 +20,23 @@ import (
 // SidecarState tracks the sidecar's current operational state.
 type SidecarState struct {
 	mu           sync.RWMutex
-	Phase        string    `json:"phase"`        // "polling", "paused", "stopping", "stopped"
-	LastCollect  time.Time `json:"lastCollect"`  // timestamp of last successful collect
-	MessageCount int       `json:"messageCount"` // messages in last collect
-	WorkerAlive  bool      `json:"workerAlive"`  // whether the worker is still running
-	AgentName    string    `json:"agentName"`    // identity for spire collect
-	StartedAt    time.Time `json:"startedAt"`    // when the sidecar started
+	Phase        string
+	LastCollect  time.Time
+	MessageCount int
+	WorkerAlive  bool
+	AgentName    string
+	StartedAt    time.Time
+	Error        string
+}
+
+// SidecarSnapshot is the JSON-serializable snapshot of SidecarState.
+type SidecarSnapshot struct {
+	Phase        string    `json:"phase"`
+	LastCollect  time.Time `json:"lastCollect"`
+	MessageCount int       `json:"messageCount"`
+	WorkerAlive  bool      `json:"workerAlive"`
+	AgentName    string    `json:"agentName"`
+	StartedAt    time.Time `json:"startedAt"`
 	Error        string    `json:"error,omitempty"`
 }
 
@@ -59,10 +70,10 @@ func (s *SidecarState) setCollectResult(count int, err error) {
 	}
 }
 
-func (s *SidecarState) snapshot() SidecarState {
+func (s *SidecarState) snapshot() SidecarSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return SidecarState{
+	return SidecarSnapshot{
 		Phase:        s.Phase,
 		LastCollect:  s.LastCollect,
 		MessageCount: s.MessageCount,

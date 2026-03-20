@@ -6,6 +6,11 @@
 
 # Compiled binaries
 cmd/spire/spire
+/spire
+/spire-sidecar
+
+# Claude Code worktrees
+.claude/worktrees/
 
 # Runtime state
 synced-epics.json
