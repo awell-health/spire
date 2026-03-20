@@ -513,7 +513,7 @@ run_agent_command() {
     if ! command -v claude >/dev/null 2>&1; then
       fatal "claude is not installed and SPIRE_AGENT_CMD is not set"
     fi
-    agent_cmd='claude --print "$(cat "$SPIRE_AGENT_PROMPT_FILE")"'
+    agent_cmd='claude --dangerously-skip-permissions --print "$(cat "$SPIRE_AGENT_PROMPT_FILE")"'
   fi
 
   export SPIRE_AGENT_PROMPT_FILE="$PROMPT_FILE"

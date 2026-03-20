@@ -35,6 +35,8 @@ FROM alpine:3.20
 ARG INSTALL_CLAUDE=1
 ARG CLAUDE_NPM_PACKAGE=@anthropic-ai/claude-code
 
+ARG GO_VERSION=1.26.1
+
 RUN apk add --no-cache \
     bash \
     ca-certificates \
@@ -42,13 +44,17 @@ RUN apk add --no-cache \
     curl \
     git \
     github-cli \
-    go \
     jq \
     nodejs \
     npm \
     openssh-client \
     py3-pip \
     python3
+
+# Install Go from official tarball (Alpine's package is too old)
+RUN ARCH=$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/') && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 COPY --from=build /out/spire /usr/local/bin/spire
 COPY --from=build /out/spire-sidecar /usr/local/bin/spire-sidecar
