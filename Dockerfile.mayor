@@ -9,6 +9,11 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /spire ./cmd/spire/
 
+# Build operator binary (separate Go module)
+WORKDIR /src/operator
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux go build -o /spire-operator .
+
 # Build bd (beads) from source
 WORKDIR /beads
 RUN apk add --no-cache git \
@@ -32,17 +37,21 @@ RUN if [ "$DOLT_VERSION" = "latest" ]; then \
 # Stage 3: Runtime
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates bash git
+RUN apk add --no-cache ca-certificates bash git curl jq \
+    && curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/')/kubectl" \
+    && chmod +x kubectl && mv kubectl /usr/local/bin/
 
 COPY --from=build /spire /usr/local/bin/spire
+COPY --from=build /spire-operator /usr/local/bin/spire-operator
 COPY --from=build /bd /usr/local/bin/bd
 COPY --from=tools /usr/local/bin/dolt /usr/local/bin/dolt
 
 # Mayor doesn't need a repo checkout — just beads state
 WORKDIR /data
 
-# Entrypoint script handles init + sync + mayor loop
+# Entrypoint + bridge scripts
 COPY k8s/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY k8s/bead-bridge.sh /bead-bridge.sh
+RUN chmod +x /entrypoint.sh /bead-bridge.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

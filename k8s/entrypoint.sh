@@ -63,9 +63,14 @@ trap 'echo "[mayor] shutting down dolt..."; bd dolt stop 2>/dev/null; exit 0' TE
 # Register mayor as an agent
 spire register mayor "Spire mayor — automated work coordinator" 2>/dev/null || true
 
+# Start the bead bridge (creates SpireWorkload CRs from ready beads)
+/bead-bridge.sh &
+BRIDGE_PID=$!
+echo "[mayor] bead bridge started (PID $BRIDGE_PID)"
+
 echo "[mayor] ready. interval=$MAYOR_INTERVAL, stale=$MAYOR_STALE_THRESHOLD"
 
-# Run the mayor loop
+# Run the mayor loop (replaces this process)
 exec spire mayor \
     --interval="$MAYOR_INTERVAL" \
     --stale-threshold="$MAYOR_STALE_THRESHOLD" \

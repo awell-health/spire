@@ -1,0 +1,36 @@
+# Spire Operator — watches CRDs, assigns workloads, creates wizard pods
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-operator
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-operator
+    app.kubernetes.io/part-of: spire-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-operator
+    spec:
+      serviceAccountName: spire-operator
+      containers:
+        - name: operator
+          image: spire-mayor:dev
+          imagePullPolicy: IfNotPresent
+          command: ["spire-operator"]
+          args:
+            - --namespace=spire
+            - --interval=30s
+            - --mayor-image=spire-agent:dev
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
