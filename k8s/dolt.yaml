@@ -1,0 +1,168 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-dolt
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-dolt
+    app.kubernetes.io/component: database
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # PV is RWO — only one pod can mount it
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-dolt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-dolt
+    spec:
+      containers:
+        - name: dolt
+          image: dolthub/dolt-sql-server:latest
+          ports:
+            - containerPort: 3306
+              name: mysql
+          env:
+            - name: DOLT_ROOT_PATH
+              value: /var/lib/dolt
+            - name: DOLT_ROOT_HOST
+              value: "%"
+            - name: DOLT_CREDS_PUB_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dolt-creds
+                  key: pub_key
+                  optional: true
+            - name: DOLT_CREDS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: dolt-creds
+                  key: key_id
+                  optional: true
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/dolt
+            - name: dolt-config
+              mountPath: /var/lib/dolt/config.yaml
+              subPath: config.yaml
+            - name: dolt-creds
+              mountPath: /root/.dolt/creds
+              readOnly: true
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: 3306
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3306
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: spire-beads-data
+        - name: dolt-config
+          configMap:
+            name: dolt-server-config
+        - name: dolt-creds
+          secret:
+            secretName: dolt-creds
+            optional: true
+        - name: init
+          configMap:
+            name: dolt-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-dolt
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-dolt
+spec:
+  selector:
+    app.kubernetes.io/name: spire-dolt
+  ports:
+    - port: 3306
+      targetPort: 3306
+      name: mysql
+  clusterIP: None  # headless — pods connect to spire-dolt.spire.svc:3306
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dolt-server-config
+  namespace: spire
+data:
+  config.yaml: |
+    log_level: info
+    behavior:
+      read_only: false
+      autocommit: true
+    user:
+      name: root
+      password: ""
+    privilege_file: ""
+    allow_cleartext_passwords: true
+    listener:
+      host: "0.0.0.0"
+      port: 3306
+      max_connections: 100
+      read_timeout_millis: 28800000
+      write_timeout_millis: 28800000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dolt-init
+  namespace: spire
+data:
+  init.sh: |
+    #!/bin/bash
+    # First boot: clone spi database from DoltHub.
+    # Subsequent boots (PV has data): no-op.
+    # Database goes at DOLT_ROOT_PATH/spi/ (dolthub image auto-discovers it).
+    set -e
+
+    DB_DIR="/var/lib/dolt/spi"
+    if [ ! -d "$DB_DIR/.dolt" ]; then
+        echo "[dolt-init] first boot — cloning from DoltHub..."
+
+        # Configure creds
+        CRED_FILE=$(ls /root/.dolt/creds/*.jwk 2>/dev/null | head -1)
+        if [ -n "$CRED_FILE" ]; then
+            # Copy from symlinked secret mount to real file (dolt can't follow k8s symlinks)
+            mkdir -p /tmp/dolt-creds
+            cp "$CRED_FILE" /tmp/dolt-creds/
+            KEY_ID=$(basename "$CRED_FILE" .jwk)
+            # Write global config directly (dolt config --global doesn't persist in this image)
+            echo "{\"user.creds\":\"$KEY_ID\",\"user.name\":\"spire-dolt\",\"user.email\":\"dolt@spire.local\"}" > /root/.dolt/config_global.json
+            rm -rf /root/.dolt/creds
+            mv /tmp/dolt-creds /root/.dolt/creds
+            echo "[dolt-init] credential configured: $KEY_ID"
+        else
+            dolt config --global --set user.name "spire-dolt"
+            dolt config --global --set user.email "dolt@spire.local"
+        fi
+
+        cd /var/lib/dolt
+        dolt clone https://doltremoteapi.dolthub.com/awell/spire spi 2>&1 \
+            || echo "[dolt-init] WARNING: clone failed — starting with empty database"
+
+        echo "[dolt-init] done"
+    else
+        echo "[dolt-init] PV has data — skipping clone"
+    fi

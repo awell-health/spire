@@ -22,24 +22,14 @@ spec:
           image: spire-steward:dev
           imagePullPolicy: IfNotPresent
           env:
-            - name: DOLTHUB_REMOTE
-              value: "https://doltremoteapi.dolthub.com/awell/spire"
             - name: BEADS_PREFIX
               value: "spi"
+            - name: DOLT_HOST
+              value: "spire-dolt.spire.svc"
+            - name: DOLT_PORT
+              value: "3306"
             - name: STEWARD_INTERVAL
               value: "2m"
-            - name: STEWARD_STALE_THRESHOLD
-              value: "10m"
-            - name: DOLT_REMOTE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: spire-credentials
-                  key: DOLT_REMOTE_USER
-            - name: DOLT_REMOTE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: spire-credentials
-                  key: DOLT_REMOTE_PASSWORD
           resources:
             requests:
               cpu: 50m
@@ -50,20 +40,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-            - name: dolt-creds
-              mountPath: /root/.dolt/creds
-              readOnly: true
             - name: spire-config
               mountPath: /etc/spire
               readOnly: true
           workingDir: /etc/spire
       volumes:
         - name: data
-          persistentVolumeClaim:
-            claimName: spire-beads-data
-        - name: dolt-creds
-          secret:
-            secretName: dolt-creds
+          emptyDir: {}  # steward only needs local scratch — dolt is external
         - name: spire-config
           configMap:
             name: spire-config
