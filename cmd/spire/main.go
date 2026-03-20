@@ -85,6 +85,8 @@ func main() {
 		err = cmdSummon(args)
 	case "dismiss":
 		err = cmdDismiss(args)
+	case "watch":
+		err = cmdWatch(args)
 	case "status":
 		err = cmdStatus(args)
 	case "metrics":
