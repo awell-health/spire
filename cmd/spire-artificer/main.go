@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -139,6 +140,11 @@ func main() {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			log.Fatalf("failed to create directory %s: %v", d, err)
 		}
+	}
+
+	// Initialize beads state (restore snapshot, start dolt, pull).
+	if err := initBeadsState(*stateDir); err != nil {
+		log.Fatalf("beads init failed: %v", err)
 	}
 
 	// Initialize: clone repo if needed, load config, load epic.
@@ -447,6 +453,72 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 }
 
 // --- Initialization ---
+
+// initBeadsState ensures the beads database is ready: restore snapshot, start dolt, pull.
+func initBeadsState(stateDir string) error {
+	os.Setenv("BEADS_DOLT_SERVER_PORT", "3307")
+
+	// Configure dolt credentials if mounted.
+	creds, _ := filepath.Glob("/root/.dolt/creds/*.jwk")
+	if len(creds) > 0 {
+		keyID := strings.TrimSuffix(filepath.Base(creds[0]), ".jwk")
+		exec.Command("dolt", "config", "--global", "--set", "user.creds", keyID).Run() //nolint
+		log.Printf("[artificer] dolt credential configured: %s", keyID)
+	}
+
+	beadsDir := filepath.Join(stateDir, ".beads")
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		// Restore pre-baked snapshot if available.
+		snapshotBeads := "/beads-snapshot/.beads"
+		if _, serr := os.Stat(snapshotBeads); serr == nil {
+			log.Println("[artificer] restoring pre-baked beads snapshot")
+			cp := exec.Command("cp", "-a", "/beads-snapshot/.", stateDir)
+			if out, cerr := cp.CombinedOutput(); cerr != nil {
+				return fmt.Errorf("restore snapshot: %w\n%s", cerr, out)
+			}
+		} else {
+			// Init fresh.
+			log.Println("[artificer] initializing beads from scratch")
+			exec.Command("git", "-C", stateDir, "init", "-q").Run()                                 //nolint
+			exec.Command("git", "-C", stateDir, "config", "user.name", "artificer").Run()            //nolint
+			exec.Command("git", "-C", stateDir, "config", "user.email", "artificer@spire.local").Run() //nolint
+			if out, ierr := exec.Command("bd", "init", "--force", "--prefix", "spi").CombinedOutput(); ierr != nil {
+				return fmt.Errorf("bd init: %w\n%s", ierr, out)
+			}
+			exec.Command("bd", "dolt", "set", "port", "3307").Run() //nolint
+			routesPath := filepath.Join(beadsDir, "routes.jsonl")
+			os.WriteFile(routesPath, []byte("{\"prefix\":\"spi-\",\"path\":\".\"}\n"), 0644) //nolint
+		}
+	}
+
+	// Clean stale lock and start dolt server.
+	os.Remove(filepath.Join(beadsDir, "dolt-server.lock"))
+	os.Remove(filepath.Join(beadsDir, "dolt-server.pid"))
+	os.Remove(filepath.Join(beadsDir, "dolt-server.port"))
+
+	if out, err := exec.Command("bd", "dolt", "start").CombinedOutput(); err != nil {
+		log.Printf("[artificer] dolt start warning: %s", strings.TrimSpace(string(out)))
+	}
+
+	// Wait for dolt to be reachable.
+	for i := 0; i < 15; i++ {
+		if exec.Command("bd", "dolt", "test").Run() == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+
+	// Pull latest from DoltHub.
+	if remote := os.Getenv("DOLTHUB_REMOTE"); remote != "" {
+		exec.Command("bd", "dolt", "remote", "add", "origin", remote).Run() //nolint
+		log.Println("[artificer] pulling beads from DoltHub...")
+		if out, err := exec.Command("bd", "dolt", "pull").CombinedOutput(); err != nil {
+			log.Printf("[artificer] pull warning: %s", strings.TrimSpace(string(out)))
+		}
+	}
+
+	return nil
+}
 
 // initWorkspace clones the repo (if needed) and loads repo config.
 func initWorkspace(workspaceDir, stateDir string) (*repoconfig.RepoConfig, error) {
