@@ -8,7 +8,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spire ./cmd/spire/ && \
-    CGO_ENABLED=0 GOOS=linux go build -o /out/spire-sidecar ./cmd/spire-sidecar/
+    CGO_ENABLED=0 GOOS=linux go build -o /out/spire-sidecar ./cmd/spire-sidecar/ && \
+    CGO_ENABLED=0 GOOS=linux go build -o /out/spire-artificer ./cmd/spire-artificer/
 
 # Build bd (beads) from source
 WORKDIR /beads
@@ -51,6 +52,7 @@ RUN apk add --no-cache \
 
 COPY --from=build /out/spire /usr/local/bin/spire
 COPY --from=build /out/spire-sidecar /usr/local/bin/spire-sidecar
+COPY --from=build /out/spire-artificer /usr/local/bin/spire-artificer
 COPY --from=build /out/bd /usr/local/bin/bd
 COPY --from=tools /usr/local/bin/dolt /usr/local/bin/dolt
 

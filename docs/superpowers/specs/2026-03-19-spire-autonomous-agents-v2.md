@@ -13,7 +13,7 @@ Every agent is a **pod with three containers**:
 │  Pod: spire-agent-<bead-id>                      │
 │                                                  │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │ sidecar  │  │ worker   │  │ refinery      │  │
+│  │ sidecar  │  │ worker   │  │ artificer      │  │
 │  │          │  │          │  │ (epic pods     │  │
 │  │ - inbox  │  │ - claude │  │  only)         │  │
 │  │ - ctrl   │  │ - git    │  │               │  │
@@ -87,7 +87,7 @@ The actual agent. Does the work, then exits.
 10. Write result to `/comms/result.json`
 11. Exit 0 (success) or exit 1 (failure)
 
-**The worker does NOT create PRs.** That's the refinery's job.
+**The worker does NOT create PRs.** That's the artificer's job.
 
 **Mid-task steering:**
 Worker watches `/comms/control` in a goroutine. On `STEER:<message>`,
@@ -114,12 +114,12 @@ go func() {
 }()
 ```
 
-### Container 3: Refinery (epic-level pods only)
+### Container 3: Artificer (epic-level pods only)
 
-Not every pod has a refinery. Only **epic pods** — pods coordinating
-multiple child beads — run the refinery container.
+Not every pod has a artificer. Only **epic pods** — pods coordinating
+multiple child beads — run the artificer container.
 
-**What the refinery does:**
+**What the artificer does:**
 - Watches child bead branches (`feat/<child-bead-id>`)
 - When a child's branch is pushed and tests pass:
   - Creates a PR from the feature branch
@@ -140,15 +140,15 @@ Epic: spi-abc (New onboarding flow)
   └── spi-abc.5  (blocked by spi-abc.4)
 ```
 
-**This is better than Gastown's refinery because:**
-- One refinery per epic (not one global refinery)
-- The refinery has full context of the epic's spec and dependency graph
+**This is better than Gastown's artificer because:**
+- One artificer per epic (not one global artificer)
+- The artificer has full context of the epic's spec and dependency graph
 - It can reorder merges based on actual dependencies, not just FIFO
 - It can detect cross-child conflicts early (before merge)
 - It scales: 10 epics = 10 refineries, each independent
 
-**Refinery as a standalone pod:**
-For large epics, the refinery can run as its own pod (no worker).
+**Artificer as a standalone pod:**
+For large epics, the artificer can run as its own pod (no worker).
 It just watches branches and manages PRs. The mayor spins it up
 when an epic has >1 active child.
 
@@ -165,7 +165,7 @@ when an epic has >1 active child.
 4. Worker exits 0
 5. Sidecar detects worker exit
 6. Sidecar reports to operator: "work complete, branch pushed"
-7. Refinery (epic-level) picks up the branch → creates PR
+7. Artificer (epic-level) picks up the branch → creates PR
 8. Operator deletes pod after cooldown (5 min for log collection)
 ```
 
@@ -175,15 +175,15 @@ when an epic has >1 active child.
 1. Mayor sees ready epic
 2. Operator creates epic pod:
    - sidecar container
-   - refinery container (no worker — epic pods don't write code)
-3. Refinery reads epic structure (bd children, bd graph)
+   - artificer container (no worker — epic pods don't write code)
+3. Artificer reads epic structure (bd children, bd graph)
 4. For each ready child bead:
    - Mayor assigns to an agent pod (separate pod)
 5. As child pods complete:
-   - Refinery creates PRs
-   - Refinery manages merge queue
+   - Artificer creates PRs
+   - Artificer manages merge queue
 6. When all children merged:
-   - Refinery reports epic complete
+   - Artificer reports epic complete
    - bd close <epic-id>
 7. Operator deletes epic pod
 ```
@@ -246,7 +246,7 @@ This eliminates the "every repo is different" problem. The agent reads
 For high-priority work (P0/P1), the mayor can:
 - Preempt lower-priority work (send STOP to P3/P4 agents)
 - Use the `heavy` token for faster/better model
-- Skip the merge queue (refinery fast-tracks P0 PRs)
+- Skip the merge queue (artificer fast-tracks P0 PRs)
 
 ## Visibility: `spire watch`
 
@@ -266,7 +266,7 @@ spire watch
 ```
 
 **Implementation**: `kubectl logs -f` for single beads.
-For epics, aggregate logs from all child pods + refinery.
+For epics, aggregate logs from all child pods + artificer.
 
 ```
 spire watch spi-abc
@@ -342,10 +342,10 @@ properties, selects the token name, and mounts only that key into the pod.
 5. **AgentMonitor: create pods** — when SpireWorkload is assigned, create the pod
 6. **End-to-end test**: file bead → pod starts → code written → branch pushed → bead closed
 
-### Phase 2: PR lifecycle + refinery (3 days)
+### Phase 2: PR lifecycle + artificer (3 days)
 
-7. **Refinery container** — watch branches, create PRs, manage merge queue
-8. **Epic pod template** — sidecar + refinery, no worker
+7. **Artificer container** — watch branches, create PRs, manage merge queue
+8. **Epic pod template** — sidecar + artificer, no worker
 9. **`spire watch`** — tail pod logs, aggregate epic progress
 10. **Review feedback**: PR comment → new bead → agent revises
 
@@ -369,7 +369,7 @@ properties, selects the token name, and mounts only that key into the pod.
   add a codebase summary step in the worker startup.
 
 - **Multi-repo epics**: An epic might span repos (frontend + backend).
-  Each child bead targets a different repo. The refinery needs to
+  Each child bead targets a different repo. The artificer needs to
   coordinate cross-repo PRs. This is where the mayor's routing
   by prefix becomes critical.
 

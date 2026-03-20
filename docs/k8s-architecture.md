@@ -293,7 +293,7 @@ The `agent_runs` Dolt table records every agent execution:
 | `id` | `run-{8hex}` |
 | `bead_id` | Which bead was worked on |
 | `model` | `claude-sonnet-4-6`, `claude-opus-4-6`, etc. |
-| `role` | `worker` or `refinery` |
+| `role` | `worker` or `artificer` |
 | `result` | `success`, `test_failure`, `timeout`, `stopped`, `error` |
 | `context_tokens_in/out` | Token usage |
 | `duration_seconds` | Wall time |

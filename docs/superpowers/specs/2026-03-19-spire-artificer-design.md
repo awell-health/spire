@@ -1,4 +1,4 @@
-# Spire Refinery — Opus-Powered PR Validation & Learning System
+# Spire Artificer — Opus-Powered PR Validation & Learning System
 
 **Date**: 2026-03-19
 **Status**: Design
@@ -8,27 +8,27 @@
 | Role | Model | Why |
 |------|-------|-----|
 | Worker | Sonnet | Fast, cheap, good at implementation. $1-3/task. |
-| Refinery | Opus (1M context) | Deep reasoning, can hold the full spec + all diffs + test results. Reviews like a senior engineer. |
+| Artificer | Opus (1M context) | Deep reasoning, can hold the full spec + all diffs + test results. Reviews like a senior engineer. |
 | Mayor | None (or Haiku for routing) | Pure coordination, no LLM needed for basic assignment. |
 
-The refinery is the senior engineer. Workers are junior devs.
-The refinery never writes code — it reads code and judges it.
+The artificer is the senior engineer. Workers are junior devs.
+The artificer never writes code — it reads code and judges it.
 
-## What the refinery does
+## What the artificer does
 
 ### 1. Validate work against spec
 
 When a worker pushes a branch:
 
 ```
-Refinery reads:
+Artificer reads:
   - The spec (full document)
   - The bead description
   - The diff (git diff main...feat/<bead-id>)
   - Test results
   - Any linting/build output
 
-Refinery asks (using Opus 1M):
+Artificer asks (using Opus 1M):
   "Does this implementation satisfy the spec?
    Is the code correct, clean, and complete?
    Are there edge cases not handled?
@@ -42,7 +42,7 @@ Output:
 
 ### 2. Request changes from workers
 
-When the refinery finds issues, it doesn't fix them. It sends
+When the artificer finds issues, it doesn't fix them. It sends
 a structured review back to the worker:
 
 ```json
@@ -67,15 +67,15 @@ a structured review back to the worker:
 
 This gets written to `/comms/review.json` and the sidecar sends it
 to the worker as a `STEER:` message. The worker reads the review,
-makes changes, pushes again. The refinery re-reviews.
+makes changes, pushes again. The artificer re-reviews.
 
 **Max review rounds**: configurable (default 3). After 3 rounds of
-changes, the refinery escalates to the human with a summary of
+changes, the artificer escalates to the human with a summary of
 what's still wrong.
 
 ### 3. Track context usage
 
-Every worker run and every refinery review records:
+Every worker run and every artificer review records:
 
 ```json
 {
@@ -89,7 +89,7 @@ Every worker run and every refinery review records:
   "duration_seconds": 180,
   "result": "success",
   "review_rounds": 1,
-  "refinery_verdict": "approve",
+  "artificer_verdict": "approve",
   "spec_file": "docs/superpowers/specs/2026-03-19-onboarding.md",
   "spec_size_tokens": 3200,
   "focus_context_tokens": 8500,
@@ -180,7 +180,7 @@ the full prompt context as a "golden run":
 ```
 
 Over time, this builds a corpus of "what works." When a new task
-comes in, the refinery can look at similar successful runs and
+comes in, the artificer can look at similar successful runs and
 suggest which context to include:
 
 ```
@@ -193,13 +193,13 @@ Estimated tokens: 40K
 Estimated success probability: 89%
 ```
 
-## Refinery architecture
+## Artificer architecture
 
 ### Container spec
 
 ```yaml
-- name: refinery
-  image: ghcr.io/awell-health/spire-refinery:latest
+- name: artificer
+  image: ghcr.io/awell-health/spire-artificer:latest
   env:
     - name: ANTHROPIC_API_KEY
       valueFrom:
@@ -208,9 +208,9 @@ Estimated success probability: 89%
           key: ANTHROPIC_API_KEY_HEAVY  # Opus token
     - name: SPIRE_EPIC_ID
       value: "<epic-bead-id>"
-    - name: REFINERY_MAX_REVIEW_ROUNDS
+    - name: ARTIFICER_MAX_REVIEW_ROUNDS
       value: "3"
-    - name: REFINERY_MODEL
+    - name: ARTIFICER_MODEL
       value: "claude-opus-4-6"
   resources:
     requests:
@@ -218,7 +218,7 @@ Estimated success probability: 89%
       memory: 256Mi
 ```
 
-### Refinery loop
+### Artificer loop
 
 ```
 while epic is open:
@@ -239,13 +239,13 @@ while epic is open:
   5. Sleep 30s
 ```
 
-### Refinery as an independent binary
+### Artificer as an independent binary
 
 ```go
-// cmd/spire-refinery/main.go
+// cmd/spire-artificer/main.go
 package main
 
-// The refinery:
+// The artificer:
 // - Watches git branches for an epic's children
 // - Reviews diffs against specs using Opus
 // - Creates and manages PRs
@@ -255,8 +255,8 @@ package main
 
 func main() {
     epicID := os.Getenv("SPIRE_EPIC_ID")
-    model := os.Getenv("REFINERY_MODEL") // default: claude-opus-4-6
-    maxRounds := getenvInt("REFINERY_MAX_REVIEW_ROUNDS", 3)
+    model := os.Getenv("ARTIFICER_MODEL") // default: claude-opus-4-6
+    maxRounds := getenvInt("ARTIFICER_MAX_REVIEW_ROUNDS", 3)
 
     epic := loadEpic(epicID)
     children := loadChildren(epicID)
@@ -322,7 +322,7 @@ CREATE TABLE agent_runs (
     epic_id VARCHAR(64),
     agent_name VARCHAR(128),
     model VARCHAR(64) NOT NULL,
-    role ENUM('worker', 'refinery') NOT NULL,
+    role ENUM('worker', 'artificer') NOT NULL,
 
     -- Execution metrics
     context_tokens_in INT,
@@ -332,9 +332,9 @@ CREATE TABLE agent_runs (
     duration_seconds INT,
     result ENUM('success', 'test_failure', 'review_rejected', 'timeout', 'error', 'stopped') NOT NULL,
 
-    -- Review metrics (refinery role)
+    -- Review metrics (artificer role)
     review_rounds INT DEFAULT 0,
-    refinery_verdict ENUM('approve', 'request_changes', 'reject'),
+    artificer_verdict ENUM('approve', 'request_changes', 'reject'),
 
     -- Spec context
     spec_file VARCHAR(256),
@@ -408,8 +408,8 @@ spire metrics --bead spi-abc
 
 spire metrics --model
 # Sonnet: 67 runs, avg 45K tokens, avg $1.80/task
-# Opus (refinery): 52 reviews, avg 80K tokens, avg $4.20/review
-# Total cost this week: $142 (workers: $95, refinery: $47)
+# Opus (artificer): 52 reviews, avg 80K tokens, avg $4.20/review
+# Total cost this week: $142 (workers: $95, artificer: $47)
 ```
 
 ## The feedback loop
@@ -430,7 +430,7 @@ spire metrics --model
                                               │
                                               ▼
                                         ┌───────────┐
-                                        │  Refinery  │
+                                        │  Artificer  │
                                         │  (Opus 1M) │
                                         │            │
                                         │  - Review  │
@@ -452,7 +452,7 @@ The system gets better over time:
 2. Third month: you know optimal task sizes, success rate hits 85%
 3. Sixth month: `spire spec --break` auto-suggests task sizes based on
    your repo's historical data. Success rate 90%+.
-4. Year one: the golden prompt corpus is rich enough that the refinery
+4. Year one: the golden prompt corpus is rich enough that the artificer
    can suggest which context to include for new task types. You write
    shorter specs because the system fills in the patterns.
 
@@ -462,15 +462,15 @@ The system gets better over time:
 
 1. Agent worker image + entrypoint
 2. Operator go.mod + pod creation
-3. Basic refinery (test runner + Opus review)
+3. Basic artificer (test runner + Opus review)
 4. `agent_runs` table in Dolt
 5. End-to-end test on minikube
 
 ### Next (Phase 2 — PR lifecycle)
 
-6. PR creation in refinery
+6. PR creation in artificer
 7. Merge queue management
-8. Review feedback loop (refinery → worker → refinery)
+8. Review feedback loop (artificer → worker → artificer)
 9. `spire watch` with epic aggregation
 10. `spire steer` / `spire stop` via sidecar
 

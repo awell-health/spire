@@ -46,7 +46,7 @@ COPY --from=build /spire-operator /usr/local/bin/spire-operator
 COPY --from=build /bd /usr/local/bin/bd
 COPY --from=tools /usr/local/bin/dolt /usr/local/bin/dolt
 
-# Mayor doesn't need a repo checkout — just beads state
+# Steward doesn't need a repo checkout — just beads state
 WORKDIR /data
 
 # Entrypoint + bridge scripts

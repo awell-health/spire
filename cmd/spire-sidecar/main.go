@@ -23,7 +23,7 @@ type SidecarState struct {
 	Phase        string
 	LastCollect  time.Time
 	MessageCount int
-	WorkerAlive  bool
+	WizardAlive  bool
 	AgentName    string
 	StartedAt    time.Time
 	Error        string
@@ -34,7 +34,7 @@ type SidecarSnapshot struct {
 	Phase        string    `json:"phase"`
 	LastCollect  time.Time `json:"lastCollect"`
 	MessageCount int       `json:"messageCount"`
-	WorkerAlive  bool      `json:"workerAlive"`
+	WizardAlive  bool      `json:"wizardAlive"`
 	AgentName    string    `json:"agentName"`
 	StartedAt    time.Time `json:"startedAt"`
 	Error        string    `json:"error,omitempty"`
@@ -52,10 +52,10 @@ func (s *SidecarState) getPhase() string {
 	return s.Phase
 }
 
-func (s *SidecarState) setWorkerAlive(alive bool) {
+func (s *SidecarState) setWizardAlive(alive bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.WorkerAlive = alive
+	s.WizardAlive = alive
 }
 
 func (s *SidecarState) setCollectResult(count int, err error) {
@@ -77,7 +77,7 @@ func (s *SidecarState) snapshot() SidecarSnapshot {
 		Phase:        s.Phase,
 		LastCollect:  s.LastCollect,
 		MessageCount: s.MessageCount,
-		WorkerAlive:  s.WorkerAlive,
+		WizardAlive:  s.WizardAlive,
 		AgentName:    s.AgentName,
 		StartedAt:    s.StartedAt,
 		Error:        s.Error,
@@ -93,7 +93,7 @@ func main() {
 
 	state := &SidecarState{
 		Phase:       "polling",
-		WorkerAlive: true,
+		WizardAlive: true,
 		AgentName:   *agentName,
 		StartedAt:   time.Now(),
 	}
@@ -148,11 +148,11 @@ func main() {
 		controlLoop(ctx, state, *commsDir)
 	}()
 
-	// Worker monitoring loop.
+	// Wizard monitoring loop.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		workerMonitorLoop(ctx, state, *commsDir)
+		wizardMonitorLoop(ctx, state, *commsDir)
 	}()
 
 	// Heartbeat loop.
@@ -167,17 +167,17 @@ func main() {
 	log.Println("received shutdown signal, initiating graceful shutdown")
 	state.setPhase("stopping")
 
-	// Write STOP to control channel so worker can pick it up.
+	// Write STOP to control channel so wizard can pick it up.
 	stopPath := filepath.Join(*commsDir, "stop")
 	_ = os.WriteFile(stopPath, []byte(time.Now().UTC().Format(time.RFC3339)), 0644)
-	log.Println("wrote stop signal for worker")
+	log.Println("wrote stop signal for wizard")
 
-	// Give worker time to exit (up to 30s).
-	workerDone := waitForWorkerExit(*commsDir, 30*time.Second)
-	if workerDone {
-		log.Println("worker exited cleanly")
+	// Give wizard time to exit (up to 30s).
+	wizardDone := waitForWizardExit(*commsDir, 30*time.Second)
+	if wizardDone {
+		log.Println("wizard exited cleanly")
 	} else {
-		log.Println("worker did not exit within timeout")
+		log.Println("wizard did not exit within timeout")
 	}
 
 	cancel()
@@ -287,7 +287,7 @@ func handleControl(state *SidecarState, commsDir, command string) {
 		if err := os.WriteFile(stopPath, []byte(time.Now().UTC().Format(time.RFC3339)), 0644); err != nil {
 			log.Printf("failed to write stop signal: %v", err)
 		}
-		log.Println("STOP: wrote stop signal for worker")
+		log.Println("STOP: wrote stop signal for wizard")
 
 	case strings.HasPrefix(command, "STEER:"):
 		message := strings.TrimPrefix(command, "STEER:")
@@ -295,7 +295,7 @@ func handleControl(state *SidecarState, commsDir, command string) {
 		if err := os.WriteFile(steerPath, []byte(message), 0644); err != nil {
 			log.Printf("failed to write steer message: %v", err)
 		}
-		log.Printf("STEER: wrote course correction for worker")
+		log.Printf("STEER: wrote course correction for wizard")
 
 	case command == "PAUSE":
 		state.setPhase("paused")
@@ -310,11 +310,11 @@ func handleControl(state *SidecarState, commsDir, command string) {
 	}
 }
 
-// --- Worker monitoring ---
+// --- Wizard monitoring ---
 
-func workerMonitorLoop(ctx context.Context, state *SidecarState, commsDir string) {
+func wizardMonitorLoop(ctx context.Context, state *SidecarState, commsDir string) {
 	resultPath := filepath.Join(commsDir, "result.json")
-	alivePath := filepath.Join(commsDir, "worker-alive")
+	alivePath := filepath.Join(commsDir, "wizard-alive")
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -323,32 +323,32 @@ func workerMonitorLoop(ctx context.Context, state *SidecarState, commsDir string
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Check if worker wrote a result (meaning it exited).
+			// Check if wizard wrote a result (meaning it exited).
 			if _, err := os.Stat(resultPath); err == nil {
-				state.setWorkerAlive(false)
-				log.Println("worker has exited (result.json found)")
+				state.setWizardAlive(false)
+				log.Println("wizard has exited (result.json found)")
 				continue
 			}
 
-			// Check worker-alive file freshness. Worker should touch
-			// this periodically. If it's stale (>60s), consider worker dead.
+			// Check wizard-alive file freshness. Wizard should touch
+			// this periodically. If it's stale (>60s), consider wizard dead.
 			info, err := os.Stat(alivePath)
 			if err != nil {
-				// File doesn't exist yet -- worker may not have started.
+				// File doesn't exist yet -- wizard may not have started.
 				continue
 			}
 
 			stale := time.Since(info.ModTime()) > 60*time.Second
-			state.setWorkerAlive(!stale)
+			state.setWizardAlive(!stale)
 			if stale {
-				log.Println("worker-alive file is stale (>60s)")
+				log.Println("wizard-alive file is stale (>60s)")
 			}
 		}
 	}
 }
 
-// waitForWorkerExit polls for the worker result file or worker-alive staleness.
-func waitForWorkerExit(commsDir string, timeout time.Duration) bool {
+// waitForWizardExit polls for the wizard result file or wizard-alive staleness.
+func waitForWizardExit(commsDir string, timeout time.Duration) bool {
 	resultPath := filepath.Join(commsDir, "result.json")
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(1 * time.Second)
@@ -436,7 +436,7 @@ func handleStatus(state *SidecarState) http.HandlerFunc {
 // --- Helpers ---
 
 // atomicWrite writes data to a temp file then renames it, preventing
-// partial reads by the worker.
+// partial reads by the wizard.
 func atomicWrite(path string, data []byte) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {

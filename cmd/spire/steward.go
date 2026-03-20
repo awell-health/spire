@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func cmdMayor(args []string) error {
+func cmdSteward(args []string) error {
 	// Parse flags
 	interval := 2 * time.Minute
 	staleThreshold := 4 * time.Hour
@@ -74,20 +74,20 @@ func cmdMayor(args []string) error {
 				}
 			}
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire mayor [--once] [--dry-run] [--interval 2m] [--stale-threshold 4h] [--agents a,b,c]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 4h] [--agents a,b,c]", args[i])
 		}
 	}
 
-	log.Printf("[mayor] starting (interval=%s, once=%v, dry-run=%v, stale-threshold=%s)", interval, once, dryRun, staleThreshold)
+	log.Printf("[steward] starting (interval=%s, once=%v, dry-run=%v, stale-threshold=%s)", interval, once, dryRun, staleThreshold)
 	if len(agentList) > 0 {
-		log.Printf("[mayor] agents: %s", strings.Join(agentList, ", "))
+		log.Printf("[steward] agents: %s", strings.Join(agentList, ", "))
 	}
 
 	// Run first cycle immediately
-	mayorCycle(dryRun, staleThreshold, agentList)
+	stewardCycle(dryRun, staleThreshold, agentList)
 
 	if once {
-		log.Printf("[mayor] --once mode, exiting")
+		log.Printf("[steward] --once mode, exiting")
 		return nil
 	}
 
@@ -101,23 +101,23 @@ func cmdMayor(args []string) error {
 	for {
 		select {
 		case <-ticker.C:
-			mayorCycle(dryRun, staleThreshold, agentList)
+			stewardCycle(dryRun, staleThreshold, agentList)
 		case sig := <-sigCh:
-			log.Printf("[mayor] received %s, shutting down", sig)
+			log.Printf("[steward] received %s, shutting down", sig)
 			return nil
 		}
 	}
 }
 
-// mayorCycle executes one mayor cycle: sync, find ready work, assign, check stale, push.
-func mayorCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
-	log.Printf("[mayor] cycle start")
+// stewardCycle executes one steward cycle: sync, find ready work, assign, check stale, push.
+func stewardCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
+	log.Printf("[steward] cycle start")
 
 	// Step 1: Pull latest state
 	_, err := bd("dolt", "pull")
 	if err != nil {
 		if !strings.Contains(err.Error(), "no remotes") {
-			log.Printf("[mayor] pull warning: %s", err)
+			log.Printf("[steward] pull warning: %s", err)
 		}
 	}
 
@@ -125,17 +125,17 @@ func mayorCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
 	var ready []Bead
 	err = bdJSON(&ready, "ready")
 	if err != nil {
-		log.Printf("[mayor] bd ready: %s", err)
+		log.Printf("[steward] bd ready: %s", err)
 		pushState()
 		return
 	}
 
-	log.Printf("[mayor] found %d ready bead(s)", len(ready))
+	log.Printf("[steward] found %d ready bead(s)", len(ready))
 
 	// Step 3: Load roster of available agents
 	roster := loadRoster(agentList)
 	if len(roster) == 0 {
-		log.Printf("[mayor] no agents available, skipping assignment")
+		log.Printf("[steward] no agents available, skipping assignment")
 		checkStaleBeads(staleThreshold, dryRun)
 		pushState()
 		return
@@ -143,7 +143,7 @@ func mayorCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
 
 	// Step 4: Find busy agents (those with in_progress beads)
 	busy := findBusyAgents()
-	log.Printf("[mayor] roster: %d agent(s), %d busy", len(roster), len(busy))
+	log.Printf("[steward] roster: %d agent(s), %d busy", len(roster), len(busy))
 
 	// Step 5: Assign ready beads to idle agents (round-robin)
 	assigned := 0
@@ -166,12 +166,12 @@ func mayorCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
 		}
 
 		if agent == "" {
-			log.Printf("[mayor] no idle agents for %s: %s", bead.ID, bead.Title)
+			log.Printf("[steward] no idle agents for %s: %s", bead.ID, bead.Title)
 			continue
 		}
 
 		if dryRun {
-			log.Printf("[mayor] [dry-run] would assign %s (%s) to %s", bead.ID, bead.Title, agent)
+			log.Printf("[steward] [dry-run] would assign %s (%s) to %s", bead.ID, bead.Title, agent)
 			assigned++
 			continue
 		}
@@ -182,20 +182,20 @@ func mayorCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
 			"send", agent, msg,
 			"--ref", bead.ID,
 			"-p", strconv.Itoa(bead.Priority),
-			"--as", "mayor",
+			"--as", "steward",
 		}
 		_, sendErr := runSpire(sendArgs...)
 		if sendErr != nil {
-			log.Printf("[mayor] send to %s for %s: %s", agent, bead.ID, sendErr)
+			log.Printf("[steward] send to %s for %s: %s", agent, bead.ID, sendErr)
 			continue
 		}
 
-		log.Printf("[mayor] assigned %s (%s) to %s", bead.ID, bead.Title, agent)
+		log.Printf("[steward] assigned %s (%s) to %s", bead.ID, bead.Title, agent)
 		busy[agent] = true // mark busy for this cycle
 		assigned++
 	}
 
-	log.Printf("[mayor] assigned %d bead(s)", assigned)
+	log.Printf("[steward] assigned %d bead(s)", assigned)
 
 	// Step 6: Check for stale beads
 	checkStaleBeads(staleThreshold, dryRun)
@@ -203,7 +203,7 @@ func mayorCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
 	// Step 7: Push state
 	pushState()
 
-	log.Printf("[mayor] cycle complete")
+	log.Printf("[steward] cycle complete")
 }
 
 // loadRoster returns a list of registered agent names.
@@ -217,7 +217,7 @@ func loadRoster(agentList []string) []string {
 	var agents []Bead
 	err := bdJSON(&agents, "list", "--rig=spi", "--label", "agent", "--status=open")
 	if err != nil {
-		log.Printf("[mayor] load roster: %s", err)
+		log.Printf("[steward] load roster: %s", err)
 		return nil
 	}
 
@@ -239,7 +239,7 @@ func findBusyAgents() map[string]bool {
 	var inProgress []Bead
 	err := bdJSON(&inProgress, "list", "--status=in_progress")
 	if err != nil {
-		log.Printf("[mayor] find busy agents: %s", err)
+		log.Printf("[steward] find busy agents: %s", err)
 		return busy
 	}
 
@@ -258,7 +258,7 @@ func checkStaleBeads(threshold time.Duration, dryRun bool) {
 	var inProgress []Bead
 	err := bdJSON(&inProgress, "list", "--status=in_progress")
 	if err != nil {
-		log.Printf("[mayor] check stale: %s", err)
+		log.Printf("[steward] check stale: %s", err)
 		return
 	}
 
@@ -284,16 +284,16 @@ func checkStaleBeads(threshold time.Duration, dryRun bool) {
 		if age > threshold {
 			owner := hasLabel(b, "owner:")
 			if dryRun {
-				log.Printf("[mayor] [dry-run] stale: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Minute))
+				log.Printf("[steward] [dry-run] stale: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Minute))
 			} else {
-				log.Printf("[mayor] WARNING stale: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Minute))
+				log.Printf("[steward] WARNING stale: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Minute))
 			}
 			staleCount++
 		}
 	}
 
 	if staleCount > 0 {
-		log.Printf("[mayor] %d stale bead(s) detected", staleCount)
+		log.Printf("[steward] %d stale bead(s) detected", staleCount)
 	}
 }
 
@@ -302,7 +302,7 @@ func pushState() {
 	_, err := bd("dolt", "push")
 	if err != nil {
 		if !strings.Contains(err.Error(), "no remotes") {
-			log.Printf("[mayor] push warning: %s", err)
+			log.Printf("[steward] push warning: %s", err)
 		}
 	}
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bead-bridge: reads ready beads from local dolt and creates SpireWorkload CRs.
-# Runs as a background loop in the mayor pod.
+# Runs as a background loop in the steward pod.
 set -uo pipefail
 
 : "${BRIDGE_INTERVAL:=30}"

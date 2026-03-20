@@ -296,7 +296,7 @@ func metricsModel(jsonOut bool) error {
 	}
 
 	var totalCost float64
-	var workerCost, refineryCost float64
+	var wizardCost, artificerCost float64
 
 	fmt.Println("Model breakdown (this week):")
 	fmt.Println()
@@ -313,18 +313,18 @@ func metricsModel(jsonOut bool) error {
 		costPerRun := estimateCost(avgIn, avgOut, model)
 		subtotal := estimateCost(tokIn, tokOut, model)
 		totalCost += subtotal
-		if role == "refinery" {
-			refineryCost += subtotal
+		if role == "artificer" {
+			artificerCost += subtotal
 		} else {
-			workerCost += subtotal
+			wizardCost += subtotal
 		}
 
 		fmt.Printf("  %s (%s): %d runs, %s success, avg %dK tokens, ~$%.2f/run\n",
 			model, role, total, rate, (avgIn+avgOut)/1000, costPerRun)
 	}
 
-	fmt.Printf("\nTotal cost this week: $%.0f (workers: $%.0f, refinery: $%.0f)\n",
-		totalCost, workerCost, refineryCost)
+	fmt.Printf("\nTotal cost this week: $%.0f (wizards: $%.0f, artificer: $%.0f)\n",
+		totalCost, wizardCost, artificerCost)
 
 	return nil
 }

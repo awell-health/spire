@@ -36,7 +36,7 @@ MONITOR_PID=""
 
 INBOX_PATH="$COMMS_DIR/inbox.json"
 RESULT_PATH="$COMMS_DIR/result.json"
-ALIVE_PATH="$COMMS_DIR/worker-alive"
+ALIVE_PATH="$COMMS_DIR/wizard-alive"
 STOP_PATH="$COMMS_DIR/stop"
 STOP_REQUESTED_PATH="$COMMS_DIR/stop.requested"
 STEER_PATH="$COMMS_DIR/steer"
@@ -120,7 +120,7 @@ finalize() {
     else
       RUN_RESULT="error"
       if [ -z "$RUN_SUMMARY" ]; then
-        RUN_SUMMARY="worker exited with status $status"
+        RUN_SUMMARY="wizard exited with status $status"
       fi
     fi
   fi
@@ -143,7 +143,7 @@ ensure_dirs() {
   : >"$STEER_LOG"
 }
 
-start_worker_heartbeat() {
+start_wizard_heartbeat() {
   (
     while true; do
       date -u +%FT%TZ >"$ALIVE_PATH"
@@ -269,7 +269,7 @@ setup_state_repo() {
     fi
   fi
 
-  spire register "$AGENT_NAME" "Managed autonomous worker" >/dev/null 2>&1 || true
+  spire register "$AGENT_NAME" "Managed autonomous wizard" >/dev/null 2>&1 || true
 }
 
 resolve_assignment() {
@@ -412,7 +412,7 @@ build_prompt() {
   fi
 
   cat >"$PROMPT_FILE" <<EOF
-You are Spire autonomous worker ${AGENT_NAME}.
+You are Spire autonomous wizard ${AGENT_NAME}.
 
 Task:
 - bead: ${BEAD_ID}
@@ -643,7 +643,7 @@ update_bead_state() {
   cd "$STATE_DIR" || fatal "failed to enter $STATE_DIR"
 
   local note
-  note="Worker ${AGENT_NAME} pushed branch ${BRANCH_NAME}"
+  note="Wizard ${AGENT_NAME} pushed branch ${BRANCH_NAME}"
   if [ -n "$COMMIT_SHA" ]; then
     note="${note} @ ${COMMIT_SHA}"
   fi
@@ -678,7 +678,7 @@ main() {
   require_env "SPIRE_AGENT_NAME" "$AGENT_NAME"
 
   ensure_dirs
-  start_worker_heartbeat
+  start_wizard_heartbeat
   clone_workspace_if_needed
   load_repo_config
   setup_state_repo
@@ -696,7 +696,7 @@ main() {
     EXIT_CODE=0
   else
     if [ -z "$RUN_SUMMARY" ]; then
-      RUN_SUMMARY="worker finished with result ${RUN_RESULT}"
+      RUN_SUMMARY="wizard finished with result ${RUN_RESULT}"
     fi
     EXIT_CODE=1
   fi

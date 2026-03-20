@@ -1,34 +1,34 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: spire-mayor
+  name: spire-steward
   namespace: spire
   labels:
-    app.kubernetes.io/name: spire-mayor
+    app.kubernetes.io/name: spire-steward
     app.kubernetes.io/part-of: spire-operator
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: spire-mayor
+      app.kubernetes.io/name: spire-steward
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: spire-mayor
+        app.kubernetes.io/name: spire-steward
     spec:
       serviceAccountName: spire-operator
       containers:
-        - name: mayor
-          image: spire-mayor:dev
+        - name: steward
+          image: spire-steward:dev
           imagePullPolicy: IfNotPresent
           env:
             - name: DOLTHUB_REMOTE
               value: "https://doltremoteapi.dolthub.com/awell/spire"
             - name: BEADS_PREFIX
               value: "spi"
-            - name: MAYOR_INTERVAL
+            - name: STEWARD_INTERVAL
               value: "2m"
-            - name: MAYOR_STALE_THRESHOLD
+            - name: STEWARD_STALE_THRESHOLD
               value: "4h"
             - name: DOLT_REMOTE_USER
               valueFrom:

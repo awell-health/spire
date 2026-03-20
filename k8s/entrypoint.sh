@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 set -e
 
-echo "[mayor] starting up..."
+echo "[steward] starting up..."
 
 # Required env vars
 : "${DOLTHUB_REMOTE:?DOLTHUB_REMOTE must be set}"
 : "${BEADS_PREFIX:=spi}"
-: "${MAYOR_INTERVAL:=2m}"
-: "${MAYOR_STALE_THRESHOLD:=4h}"
+: "${STEWARD_INTERVAL:=2m}"
+: "${STEWARD_STALE_THRESHOLD:=4h}"
 
 # Configure git identity (required by dolt)
-git config --global user.name "spire-mayor"
-git config --global user.email "mayor@spire.local"
+git config --global user.name "spire-steward"
+git config --global user.email "steward@spire.local"
 
 # Configure dolt credentials (JWK file mounted from dolt-creds secret)
 CRED_FILE=$(ls /root/.dolt/creds/*.jwk 2>/dev/null | head -1)
 if [ -n "$CRED_FILE" ]; then
     KEY_ID=$(basename "$CRED_FILE" .jwk)
     dolt config --global --set user.creds "$KEY_ID" 2>/dev/null || true
-    echo "[mayor] dolt credential configured: $KEY_ID"
+    echo "[steward] dolt credential configured: $KEY_ID"
 fi
 
 # Initialize beads from DoltHub clone
@@ -27,23 +27,23 @@ if [ ! -d /data/.beads ]; then
     git init -q
 
     # Clone the real database first
-    echo "[mayor] cloning from DoltHub: $DOLTHUB_REMOTE"
+    echo "[steward] cloning from DoltHub: $DOLTHUB_REMOTE"
     mkdir -p /data/.beads/dolt
     dolt clone "$DOLTHUB_REMOTE" "/data/.beads/dolt/$BEADS_PREFIX" 2>&1 \
-        || echo "[mayor] clone warning: could not clone (will init fresh)"
+        || echo "[steward] clone warning: could not clone (will init fresh)"
 
     # Init beads on top of the cloned data
-    echo "[mayor] initializing beads..."
+    echo "[steward] initializing beads..."
     bd init --prefix "$BEADS_PREFIX" --force
     spire init --prefix="$BEADS_PREFIX" --standalone
-    echo "[mayor] init complete"
+    echo "[steward] init complete"
 fi
 
 # Ensure routes.jsonl maps the spi rig to local data (required by --rig=spi)
 ROUTES_FILE="/data/.beads/routes.jsonl"
 if ! grep -q '"prefix":"spi-"' "$ROUTES_FILE" 2>/dev/null; then
     echo '{"prefix":"spi-","path":"."}' >> "$ROUTES_FILE"
-    echo "[mayor] added spi- route"
+    echo "[steward] added spi- route"
 fi
 
 cd /data
@@ -53,25 +53,25 @@ bd dolt set port 3307 2>/dev/null || true
 
 # Clean stale lock and start dolt server once for the lifetime of the container
 rm -f /data/.beads/dolt-server.lock
-echo "[mayor] starting dolt server..."
+echo "[steward] starting dolt server..."
 bd dolt start
-echo "[mayor] dolt server running (port 3307)"
+echo "[steward] dolt server running (port 3307)"
 
 # Shut down dolt cleanly on container exit
-trap 'echo "[mayor] shutting down dolt..."; bd dolt stop 2>/dev/null; exit 0' TERM INT
+trap 'echo "[steward] shutting down dolt..."; bd dolt stop 2>/dev/null; exit 0' TERM INT
 
-# Register mayor as an agent
-spire register mayor "Spire mayor — automated work coordinator" 2>/dev/null || true
+# Register steward as an agent
+spire register steward "Spire steward — automated work coordinator" 2>/dev/null || true
 
 # Start the bead bridge (creates SpireWorkload CRs from ready beads)
 /bead-bridge.sh &
 BRIDGE_PID=$!
-echo "[mayor] bead bridge started (PID $BRIDGE_PID)"
+echo "[steward] bead bridge started (PID $BRIDGE_PID)"
 
-echo "[mayor] ready. interval=$MAYOR_INTERVAL, stale=$MAYOR_STALE_THRESHOLD"
+echo "[steward] ready. interval=$STEWARD_INTERVAL, stale=$STEWARD_STALE_THRESHOLD"
 
-# Run the mayor loop (replaces this process)
-exec spire mayor \
-    --interval="$MAYOR_INTERVAL" \
-    --stale-threshold="$MAYOR_STALE_THRESHOLD" \
-    ${MAYOR_AGENTS:+--agents="$MAYOR_AGENTS"}
+# Run the steward loop (replaces this process)
+exec spire steward \
+    --interval="$STEWARD_INTERVAL" \
+    --stale-threshold="$STEWARD_STALE_THRESHOLD" \
+    ${STEWARD_AGENTS:+--agents="$STEWARD_AGENTS"}

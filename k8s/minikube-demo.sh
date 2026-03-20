@@ -3,7 +3,7 @@ set -e
 
 PROFILE="${MINIKUBE_PROFILE:-spire}"
 
-echo "=== Spire Mayor — Minikube Demo (profile: $PROFILE) ==="
+echo "=== Spire Steward — Minikube Demo (profile: $PROFILE) ==="
 echo ""
 
 # Check prerequisites
@@ -24,10 +24,10 @@ fi
 echo "Configuring docker to use minikube..."
 eval $(minikube docker-env -p "$PROFILE")
 
-# Build the mayor image
-echo "Building spire-mayor:dev..."
+# Build the steward image
+echo "Building spire-steward:dev..."
 cd "$(dirname "$0")/.."
-docker build -f Dockerfile.mayor -t spire-mayor:dev .
+docker build -f Dockerfile.steward -t spire-steward:dev .
 echo "Image built."
 
 # Apply namespace
@@ -60,8 +60,8 @@ fi
 
 # Deploy
 echo ""
-echo "Deploying mayor..."
-kubectl apply -f k8s/mayor.yaml
+echo "Deploying steward..."
+kubectl apply -f k8s/steward.yaml
 
 # Apply example config
 echo "Applying SpireConfig..."
@@ -73,21 +73,21 @@ kubectl apply -f k8s/examples/agent-external.yaml
 
 # Wait for rollout
 echo ""
-echo "Waiting for mayor to start..."
-kubectl rollout status -n spire deployment/spire-mayor --timeout=120s
+echo "Waiting for steward to start..."
+kubectl rollout status -n spire deployment/spire-steward --timeout=120s
 
 echo ""
 echo "=== Demo running! ==="
 echo ""
-echo "Watch the mayor logs:"
-echo "  kubectl logs -n spire deploy/spire-mayor -f"
+echo "Watch the steward logs:"
+echo "  kubectl logs -n spire deploy/spire-steward -f"
 echo ""
 echo "Check the board:"
 echo "  kubectl get spireworkloads -n spire"
 echo "  kubectl get spireagents -n spire"
 echo ""
 echo "Create a test bead locally and push:"
-echo "  spire file 'Test mayor assignment' -t task -p 2"
+echo "  spire file 'Test steward assignment' -t task -p 2"
 echo "  bd dolt push"
 echo ""
 echo "Then watch it appear:"

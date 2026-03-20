@@ -16,7 +16,7 @@ type AgentRun struct {
 	EpicID             string `json:"epic_id,omitempty"`
 	AgentName          string `json:"agent_name,omitempty"`
 	Model              string `json:"model"`
-	Role               string `json:"role"` // "worker" or "refinery"
+	Role               string `json:"role"` // "wizard" or "artificer"
 	ContextTokensIn    int    `json:"context_tokens_in,omitempty"`
 	ContextTokensOut   int    `json:"context_tokens_out,omitempty"`
 	TotalTokens        int    `json:"total_tokens,omitempty"`
@@ -24,7 +24,7 @@ type AgentRun struct {
 	DurationSeconds    int    `json:"duration_seconds,omitempty"`
 	Result             string `json:"result"`
 	ReviewRounds       int    `json:"review_rounds,omitempty"`
-	RefineryVerdict    string `json:"refinery_verdict,omitempty"`
+	ArtificerVerdict    string `json:"artificer_verdict,omitempty"`
 	SpecFile           string `json:"spec_file,omitempty"`
 	SpecSizeTokens     int    `json:"spec_size_tokens,omitempty"`
 	FocusContextTokens int    `json:"focus_context_tokens,omitempty"`
@@ -95,9 +95,9 @@ func Record(run AgentRun) error {
 		cols = append(cols, "review_rounds")
 		vals = append(vals, itoa(run.ReviewRounds))
 	}
-	if run.RefineryVerdict != "" {
-		cols = append(cols, "refinery_verdict")
-		vals = append(vals, esc(run.RefineryVerdict))
+	if run.ArtificerVerdict != "" {
+		cols = append(cols, "artificer_verdict")
+		vals = append(vals, esc(run.ArtificerVerdict))
 	}
 	if run.SpecFile != "" {
 		cols = append(cols, "spec_file")

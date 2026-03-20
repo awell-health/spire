@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     epic_id VARCHAR(64),
     agent_name VARCHAR(128),
     model VARCHAR(64) NOT NULL,
-    role VARCHAR(16) NOT NULL,  -- 'worker' or 'refinery'
+    role VARCHAR(16) NOT NULL,  -- 'worker' or 'artificer'
 
     -- Execution metrics
     context_tokens_in INT,
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 
     -- Review metrics
     review_rounds INT DEFAULT 0,
-    refinery_verdict VARCHAR(32),  -- approve, request_changes, reject
+    artificer_verdict VARCHAR(32),  -- approve, request_changes, reject
 
     -- Spec context
     spec_file VARCHAR(256),

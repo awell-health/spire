@@ -20,13 +20,13 @@ spec:
       serviceAccountName: spire-operator
       containers:
         - name: operator
-          image: spire-mayor:dev
+          image: spire-steward:dev
           imagePullPolicy: IfNotPresent
           command: ["spire-operator"]
           args:
             - --namespace=spire
             - --interval=30s
-            - --mayor-image=spire-agent:dev
+            - --steward-image=spire-agent:dev
           resources:
             requests:
               cpu: 50m

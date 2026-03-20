@@ -51,8 +51,8 @@ func main() {
 		err = cmdServe(args)
 	case "daemon":
 		err = cmdDaemon(args)
-	case "mayor":
-		err = cmdMayor(args)
+	case "steward":
+		err = cmdSteward(args)
 	case "file":
 		err = cmdFile(args)
 	case "spec":
@@ -145,7 +145,7 @@ Integrations:
   disconnect <service>  Disconnect an integration
   serve                 Run webhook receiver (--port)
   daemon                Run sync daemon (--interval, --once)
-  mayor                 Run work coordinator (--once, --dry-run, --interval, --agents)
+  steward               Run work coordinator (--once, --dry-run, --interval, --agents)
 
   version               Print version
   help                  Show this help`)
