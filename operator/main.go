@@ -53,17 +53,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start the bead watcher as a runnable (not a reconciler — it's a poll loop)
-	beadWatcher := &controllers.BeadWatcher{
-		Client:    mgr.GetClient(),
-		Log:       log.WithName("bead-watcher"),
-		Namespace: namespace,
-		Interval:  interval,
-	}
-	if err := mgr.Add(beadWatcher); err != nil {
-		log.Error(err, "unable to add bead watcher")
-		os.Exit(1)
-	}
+	// Bead discovery is handled by the bead bridge (runs in the steward pod).
+	// The bridge creates SpireWorkload CRs from ready beads via kubectl.
+	// The operator only manages CRs — no dolt dependency.
 
 	// Workload assigner — matches pending workloads to agents
 	assigner := &controllers.WorkloadAssigner{
