@@ -81,6 +81,10 @@ func main() {
 		err = cmdBoard(args)
 	case "roster":
 		err = cmdRoster(args)
+	case "summon":
+		err = cmdSummon(args)
+	case "dismiss":
+		err = cmdDismiss(args)
 	case "status":
 		err = cmdStatus(args)
 	case "metrics":
