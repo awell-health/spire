@@ -52,7 +52,14 @@ func reportToSteward(child Bead, review *Review) error {
 }
 
 // recordRun records an agent run metric for an artificer review.
-func recordRun(child Bead, epicID, model string, result string, review *Review, usage tokenUsage, diffStats [3]int) error {
+// reviewStartedAt is when the artificer began reviewing this child (for review_seconds).
+func recordRun(child Bead, epicID, model string, result string, review *Review, usage tokenUsage, diffStats [3]int, reviewStartedAt time.Time) error {
+	now := time.Now().UTC()
+	reviewSecs := 0
+	if !reviewStartedAt.IsZero() {
+		reviewSecs = int(now.Sub(reviewStartedAt).Seconds())
+	}
+
 	run := metrics.AgentRun{
 		ID:               metrics.GenerateID(),
 		BeadID:           child.ID,
@@ -63,8 +70,9 @@ func recordRun(child Bead, epicID, model string, result string, review *Review, 
 		ContextTokensIn:  usage.InputTokens,
 		ContextTokensOut: usage.OutputTokens,
 		TotalTokens:      usage.InputTokens + usage.OutputTokens,
-		StartedAt:        time.Now().UTC().Format(time.RFC3339),
-		CompletedAt:      time.Now().UTC().Format(time.RFC3339),
+		ReviewSeconds:    reviewSecs,
+		StartedAt:        reviewStartedAt.Format(time.RFC3339),
+		CompletedAt:      now.Format(time.RFC3339),
 		FilesChanged:     diffStats[0],
 		LinesAdded:       diffStats[1],
 		LinesRemoved:     diffStats[2],

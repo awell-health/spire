@@ -12,8 +12,10 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     total_tokens INT,
     turns INT,
     duration_seconds INT,
-    startup_seconds INT,     -- time from pod start to claude start (clone, install, claim, focus)
-    working_seconds INT,     -- time claude was actually working
+    startup_seconds INT,     -- pod start → claude start (clone, install, claim, focus)
+    working_seconds INT,     -- claude start → claude done (the actual LLM work)
+    queue_seconds INT,       -- bead filed → wizard assigned (time waiting in READY)
+    review_seconds INT,      -- branch pushed → artificer verdict (time in review)
     result VARCHAR(32) NOT NULL,  -- success, test_failure, review_rejected, timeout, error, stopped
 
     -- Review metrics

@@ -24,6 +24,8 @@ type AgentRun struct {
 	DurationSeconds    int    `json:"duration_seconds,omitempty"`
 	StartupSeconds     int    `json:"startup_seconds,omitempty"`
 	WorkingSeconds     int    `json:"working_seconds,omitempty"`
+	QueueSeconds       int    `json:"queue_seconds,omitempty"`    // bead filed → wizard assigned
+	ReviewSeconds      int    `json:"review_seconds,omitempty"`   // branch pushed → artificer verdict
 	Result             string `json:"result"`
 	ReviewRounds       int    `json:"review_rounds,omitempty"`
 	ArtificerVerdict    string `json:"artificer_verdict,omitempty"`
@@ -100,6 +102,14 @@ func Record(run AgentRun) error {
 	if run.WorkingSeconds > 0 {
 		cols = append(cols, "working_seconds")
 		vals = append(vals, itoa(run.WorkingSeconds))
+	}
+	if run.QueueSeconds > 0 {
+		cols = append(cols, "queue_seconds")
+		vals = append(vals, itoa(run.QueueSeconds))
+	}
+	if run.ReviewSeconds > 0 {
+		cols = append(cols, "review_seconds")
+		vals = append(vals, itoa(run.ReviewSeconds))
 	}
 	if run.ReviewRounds > 0 {
 		cols = append(cols, "review_rounds")

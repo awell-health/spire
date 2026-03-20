@@ -344,6 +344,7 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 			continue
 		}
 
+		reviewStart := time.Now()
 		log.Printf("[artificer] reviewing %s (new commits since %s)", childID, truncate(cs.LastReviewedCommit, 8))
 
 		// Load child bead for context.
@@ -362,7 +363,7 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 		if !testResult.Passed {
 			log.Printf("[artificer] tests failed on %s during %s", childID, testResult.Stage)
 			sendTestFailure(child, testResult) //nolint:errcheck
-			recordRun(child, epicID, model, "test_failure", nil, tokenUsage{}, [3]int{}) //nolint:errcheck
+			recordRun(child, epicID, model, "test_failure", nil, tokenUsage{}, [3]int{}, reviewStart) //nolint:errcheck
 			cs.LastReviewedCommit = head
 			saveChildStates(stateDir, childStates)
 			continue
@@ -387,7 +388,7 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 		}
 
 		log.Printf("[artificer] %s verdict: %s — %s", childID, review.Verdict, review.Summary)
-		recordRun(child, epicID, model, "success", review, usage, [3]int{filesChanged, linesAdded, linesRemoved}) //nolint:errcheck
+		recordRun(child, epicID, model, "success", review, usage, [3]int{filesChanged, linesAdded, linesRemoved}, reviewStart) //nolint:errcheck
 		cs.LastReviewedCommit = head
 
 		switch review.Verdict {
