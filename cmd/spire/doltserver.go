@@ -41,16 +41,20 @@ func doltGlobalDir() string {
 
 // doltPort returns the configured dolt server port.
 func doltPort() string {
-	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
-		return p
+	for _, key := range []string{"BEADS_DOLT_SERVER_PORT", "DOLT_PORT"} {
+		if p := os.Getenv(key); p != "" {
+			return p
+		}
 	}
 	return "3307"
 }
 
 // doltHost returns the configured dolt server host.
 func doltHost() string {
-	if h := os.Getenv("BEADS_DOLT_SERVER_HOST"); h != "" {
-		return h
+	for _, key := range []string{"BEADS_DOLT_SERVER_HOST", "DOLT_HOST"} {
+		if h := os.Getenv(key); h != "" {
+			return h
+		}
 	}
 	return "127.0.0.1"
 }
