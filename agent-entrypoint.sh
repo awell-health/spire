@@ -265,34 +265,38 @@ setup_state_repo() {
     log "dolt credential configured: $key_id"
   fi
 
-  if [ ! -d .beads ]; then
-    log "initializing local Spire state in $STATE_DIR"
+  export BEADS_DOLT_SERVER_PORT=3307
 
-    # Clone from DoltHub first if configured (avoids project ID mismatch)
-    if [ -n "${DOLTHUB_REMOTE:-}" ]; then
-      mkdir -p .beads/dolt
-      log "cloning from DoltHub: $DOLTHUB_REMOTE"
-      dolt clone "$DOLTHUB_REMOTE" ".beads/dolt/$AGENT_PREFIX" 2>&1 || log "clone warning: could not clone (will init fresh)"
-    fi
-
+  # Copy pre-baked beads snapshot if available (avoids 2min DoltHub clone)
+  if [ ! -d .beads ] && [ -d /beads-snapshot/.beads ]; then
+    log "restoring pre-baked beads snapshot"
+    cp -a /beads-snapshot/. .
+  elif [ ! -d .beads ]; then
+    log "initializing beads from scratch"
     bd init --force --prefix "$AGENT_PREFIX" >/dev/null || fatal "failed to initialize beads state"
+    bd dolt set port 3307 2>/dev/null || true
+    echo '{"prefix":"spi-","path":"."}' >> .beads/routes.jsonl 2>/dev/null || true
   fi
 
-  # Pin dolt to fixed port and start server explicitly
-  bd dolt set port 3307 2>/dev/null || true
-  rm -f .beads/dolt-server.lock
-  bd dolt start || log "dolt start warning: server may already be running"
+  # Start dolt server on fixed port
+  rm -f .beads/dolt-server.lock .beads/dolt-server.pid .beads/dolt-server.port
+  bd dolt start || log "dolt start warning"
 
-  # Wait for dolt to be reachable
+  # Wait for dolt to be reachable (up to 15s)
   local tries=0
-  while ! bd dolt test >/dev/null 2>&1 && [ $tries -lt 10 ]; do
+  while ! bd dolt test >/dev/null 2>&1 && [ $tries -lt 15 ]; do
     sleep 1
     tries=$((tries + 1))
   done
+  if [ $tries -ge 15 ]; then
+    log "warning: dolt server not reachable after 15s, continuing anyway"
+  fi
 
-  # Ensure routes include spi rig
-  if ! grep -q '"prefix":"spi-"' .beads/routes.jsonl 2>/dev/null; then
-    echo '{"prefix":"spi-","path":"."}' >> .beads/routes.jsonl
+  # Pull latest from DoltHub (incremental — only new commits)
+  if [ -n "${DOLTHUB_REMOTE:-}" ]; then
+    bd dolt remote add origin "$DOLTHUB_REMOTE" >/dev/null 2>&1 || true
+    log "pulling beads from DoltHub..."
+    bd dolt pull >/dev/null 2>&1 || log "pull warning: could not sync (will work with local state)"
   fi
 
   export SPIRE_IDENTITY="$AGENT_NAME"

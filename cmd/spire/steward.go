@@ -149,6 +149,16 @@ func stewardCycle(dryRun bool, staleThreshold time.Duration, agentList []string)
 	assigned := 0
 	agentIdx := 0
 	for _, bead := range ready {
+		// Skip message beads (created by spire send)
+		if hasLabel(bead, "msg") != "" || containsLabel(bead, "msg") {
+			continue
+		}
+
+		// Skip template beads
+		if containsLabel(bead, "template") {
+			continue
+		}
+
 		// Skip beads that already have an owner
 		if hasLabel(bead, "owner:") != "" {
 			continue
@@ -221,10 +231,17 @@ func loadRoster(agentList []string) []string {
 		return nil
 	}
 
+	// Agents to exclude from assignment (steward itself, prefix artifacts)
+	exclude := map[string]bool{
+		"steward": true, "mayor": true, // coordinator — not a worker
+		"spi":     true, // prefix artifact
+		"awell":   true, // prefix artifact
+	}
+
 	var names []string
 	for _, a := range agents {
 		name := hasLabel(a, "name:")
-		if name != "" {
+		if name != "" && !exclude[name] {
 			names = append(names, name)
 		}
 	}
