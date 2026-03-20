@@ -19,9 +19,9 @@ create_workload() {
     local prefix
     prefix="$(echo "$id" | cut -d- -f1)"
 
-    # Check if already exists
+    # Check if already exists — return 1 (skip) so caller doesn't count it
     if kubectl get spireworkload "$name" -n "$BRIDGE_NAMESPACE" &>/dev/null; then
-        return 0
+        return 1
     fi
 
     cat <<EOF | kubectl apply -f - 2>&1

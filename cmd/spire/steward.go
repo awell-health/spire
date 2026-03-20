@@ -113,10 +113,11 @@ func cmdSteward(args []string) error {
 func stewardCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
 	log.Printf("[steward] cycle start")
 
-	// Step 1: Pull latest state
+	// Step 1: Commit any local changes, then pull latest state
+	_, _ = bd("dolt", "commit", "steward cycle sync")
 	_, err := bd("dolt", "pull")
 	if err != nil {
-		if !strings.Contains(err.Error(), "no remotes") {
+		if !strings.Contains(err.Error(), "no remotes") && !strings.Contains(err.Error(), "nothing to commit") {
 			log.Printf("[steward] pull warning: %s", err)
 		}
 	}
