@@ -28,6 +28,7 @@ COMMIT_SHA=""
 BEAD_TITLE=""
 TESTS_PASSED="false"
 STARTED_AT="$(date -u +%FT%TZ)"
+CLAUDE_STARTED_AT=""
 EXIT_CODE=0
 
 AGENT_PID=""
@@ -49,6 +50,14 @@ REPO_CONFIG_PATH="$COMMS_DIR/repo-config.txt"
 
 log() {
   printf '[agent] %s\n' "$*" >&2
+}
+
+# elapsed_since returns seconds since an ISO timestamp.
+elapsed_since() {
+  local start_epoch now_epoch
+  start_epoch="$(date -d "$1" +%s 2>/dev/null || date -jf "%FT%TZ" "$1" +%s 2>/dev/null || echo 0)"
+  now_epoch="$(date +%s)"
+  echo $(( now_epoch - start_epoch ))
 }
 
 fatal() {
@@ -77,6 +86,15 @@ write_result() {
   completed_at="$(date -u +%FT%TZ)"
 
   mkdir -p "$COMMS_DIR"
+  # Compute time splits.
+  local startup_secs=0 working_secs=0 total_secs=0
+  total_secs="$(elapsed_since "$STARTED_AT")"
+  if [ -n "$CLAUDE_STARTED_AT" ]; then
+    startup_secs="$(elapsed_since "$STARTED_AT")"
+    startup_secs=$(( startup_secs - $(elapsed_since "$CLAUDE_STARTED_AT") ))
+    working_secs=$(( total_secs - startup_secs ))
+  fi
+
   jq -n \
     --arg agentName "$AGENT_NAME" \
     --arg beadId "$BEAD_ID" \
@@ -85,11 +103,15 @@ write_result() {
     --arg branch "$BRANCH_NAME" \
     --arg commit "$COMMIT_SHA" \
     --arg startedAt "$STARTED_AT" \
+    --arg claudeStartedAt "${CLAUDE_STARTED_AT:-}" \
     --arg completedAt "$completed_at" \
     --arg model "$MODEL" \
     --arg maxTurns "$MAX_TURNS" \
     --arg timeout "$TIMEOUT_RAW" \
     --arg testsPassed "$TESTS_PASSED" \
+    --argjson startupSeconds "$startup_secs" \
+    --argjson workingSeconds "$working_secs" \
+    --argjson totalSeconds "$total_secs" \
     '{
       agentName: $agentName,
       beadId: $beadId,
@@ -98,11 +120,15 @@ write_result() {
       branch: $branch,
       commit: $commit,
       startedAt: $startedAt,
+      claudeStartedAt: $claudeStartedAt,
       completedAt: $completedAt,
       model: $model,
       maxTurns: ($maxTurns | tonumber? // $maxTurns),
       timeout: $timeout,
-      testsPassed: ($testsPassed == "true")
+      testsPassed: ($testsPassed == "true"),
+      startupSeconds: $startupSeconds,
+      workingSeconds: $workingSeconds,
+      totalSeconds: $totalSeconds
     }' >"$RESULT_PATH"
 }
 
@@ -525,7 +551,8 @@ run_agent_command() {
   : >"$AGENT_LOG"
   rm -f "$STOP_REQUESTED_PATH"
 
-  log "starting agent command"
+  CLAUDE_STARTED_AT="$(date -u +%FT%TZ)"
+  log "starting agent command (startup took $(elapsed_since "$STARTED_AT")s)"
   timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" sh -lc "$agent_cmd" \
     > >(tee -a "$AGENT_LOG") 2>&1 &
   AGENT_PID="$!"

@@ -22,6 +22,8 @@ type AgentRun struct {
 	TotalTokens        int    `json:"total_tokens,omitempty"`
 	Turns              int    `json:"turns,omitempty"`
 	DurationSeconds    int    `json:"duration_seconds,omitempty"`
+	StartupSeconds     int    `json:"startup_seconds,omitempty"`
+	WorkingSeconds     int    `json:"working_seconds,omitempty"`
 	Result             string `json:"result"`
 	ReviewRounds       int    `json:"review_rounds,omitempty"`
 	ArtificerVerdict    string `json:"artificer_verdict,omitempty"`
@@ -90,6 +92,14 @@ func Record(run AgentRun) error {
 	if run.DurationSeconds > 0 {
 		cols = append(cols, "duration_seconds")
 		vals = append(vals, itoa(run.DurationSeconds))
+	}
+	if run.StartupSeconds > 0 {
+		cols = append(cols, "startup_seconds")
+		vals = append(vals, itoa(run.StartupSeconds))
+	}
+	if run.WorkingSeconds > 0 {
+		cols = append(cols, "working_seconds")
+		vals = append(vals, itoa(run.WorkingSeconds))
 	}
 	if run.ReviewRounds > 0 {
 		cols = append(cols, "review_rounds")

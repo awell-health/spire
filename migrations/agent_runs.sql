@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     total_tokens INT,
     turns INT,
     duration_seconds INT,
+    startup_seconds INT,     -- time from pod start to claude start (clone, install, claim, focus)
+    working_seconds INT,     -- time claude was actually working
     result VARCHAR(32) NOT NULL,  -- success, test_failure, review_rejected, timeout, error, stopped
 
     -- Review metrics
