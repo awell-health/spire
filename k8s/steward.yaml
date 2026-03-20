@@ -29,7 +29,7 @@ spec:
             - name: STEWARD_INTERVAL
               value: "2m"
             - name: STEWARD_STALE_THRESHOLD
-              value: "4h"
+              value: "10m"
             - name: DOLT_REMOTE_USER
               valueFrom:
                 secretKeyRef:
@@ -53,12 +53,20 @@ spec:
             - name: dolt-creds
               mountPath: /root/.dolt/creds
               readOnly: true
+            - name: spire-config
+              mountPath: /etc/spire
+              readOnly: true
+          workingDir: /etc/spire
       volumes:
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: spire-beads-data
         - name: dolt-creds
           secret:
             secretName: dolt-creds
+        - name: spire-config
+          configMap:
+            name: spire-config
 ---
 # RBAC for the operator (Phase 2: manages pods, reads secrets)
 apiVersion: v1
