@@ -165,7 +165,7 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 func extractPrefix(beadID string) string {
 	parts := strings.Split(beadID, "-")
 	if len(parts) >= 2 {
-		return parts[0]
+		return parts[0] + "-" // include trailing hyphen to match agent prefixes like "spi-"
 	}
 	return beadID
 }

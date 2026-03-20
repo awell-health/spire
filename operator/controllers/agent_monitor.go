@@ -141,6 +141,34 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		workSet[beadID] = true
 	}
 
+	// Reap completed/failed pods and remove their bead IDs from CurrentWork
+	statusChanged := false
+	for beadID, pod := range podsByBead {
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			// Remove bead from CurrentWork
+			for i, id := range agent.Status.CurrentWork {
+				if id == beadID {
+					agent.Status.CurrentWork = append(agent.Status.CurrentWork[:i], agent.Status.CurrentWork[i+1:]...)
+					delete(workSet, beadID)
+					statusChanged = true
+					m.Log.Info("reaped completed workload", "agent", agent.Name, "bead", beadID, "podPhase", pod.Status.Phase)
+					break
+				}
+			}
+			// Delete the finished pod
+			if pod.DeletionTimestamp == nil {
+				if err := m.Client.Delete(ctx, pod); err != nil {
+					m.Log.Error(err, "failed to delete finished pod", "pod", pod.Name)
+				}
+			}
+		}
+	}
+	if statusChanged {
+		if err := m.Client.Status().Update(ctx, agent); err != nil {
+			m.Log.Error(err, "failed to update agent CurrentWork after reaping")
+		}
+	}
+
 	// Create pods for new work
 	for _, beadID := range agent.Status.CurrentWork {
 		if _, exists := podsByBead[beadID]; exists {
@@ -163,6 +191,9 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		}
 		if pod.DeletionTimestamp != nil {
 			continue
+		}
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue // already handled above
 		}
 		if err := m.Client.Delete(ctx, pod); err != nil {
 			m.Log.Error(err, "failed to delete stale workload pod", "pod", pod.Name, "bead", beadID)
@@ -344,6 +375,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 						fmt.Sprintf("--agent-name=%s", agent.Name),
 					},
 					Env: sidecarEnv,
+					WorkingDir: "/data", // bd/spire find .beads by walking up from CWD
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "comms", MountPath: "/comms"},
 						{Name: "data", MountPath: "/data"},

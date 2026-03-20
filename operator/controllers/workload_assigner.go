@@ -76,7 +76,7 @@ func (a *WorkloadAssigner) cycle(ctx context.Context) {
 		switch wl.Status.Phase {
 		case "Pending", "":
 			pending = append(pending, wl)
-		case "Assigned", "InProgress":
+		case "Assigned", "InProgress", "Stale":
 			a.checkStale(ctx, wl)
 		}
 	}
@@ -169,8 +169,8 @@ func (a *WorkloadAssigner) checkStale(ctx context.Context, wl *spirev1.SpireWork
 
 	age := time.Since(assignedAt)
 
-	if age > a.ReassignThreshold && wl.Status.Phase != "Stale" {
-		// Mark as stale and unassign
+	if age > a.ReassignThreshold {
+		// Unassign and return to pending for re-matching
 		a.Log.Info("workload stale, unassigning",
 			"bead", wl.Spec.BeadID, "agent", wl.Status.AssignedTo, "age", age)
 
