@@ -35,6 +35,7 @@ type BoardDep struct {
 
 // boardColumns holds beads categorized into lifecycle columns.
 type boardColumns struct {
+	Alerts  []BoardBead // beads with "alert" label — things that need attention
 	Ready   []BoardBead // open, unblocked, unowned
 	Working []BoardBead // in_progress (wizards working)
 	Review  []BoardBead // in_progress, has branch pushed (artificer reviewing)
@@ -44,6 +45,7 @@ type boardColumns struct {
 
 // boardJSON is the JSON output structure.
 type boardJSON struct {
+	Alerts  []BoardBead `json:"alerts"`
 	Ready   []BoardBead `json:"ready"`
 	Working []BoardBead `json:"working"`
 	Review  []BoardBead `json:"review"`
@@ -122,6 +124,7 @@ func cmdBoard(args []string) error {
 
 	if flagJSON {
 		out := boardJSON{
+			Alerts:  nonNil(cols.Alerts),
 			Ready:   nonNil(cols.Ready),
 			Working: nonNil(cols.Working),
 			Review:  nonNil(cols.Review),
@@ -140,7 +143,15 @@ func cmdBoard(args []string) error {
 func categorizeColumns(beads, closedBeads []BoardBead, identity string) boardColumns {
 	var c boardColumns
 
-	// Skip message/template beads
+	isAlert := func(b BoardBead) bool {
+		for _, l := range b.Labels {
+			if l == "alert" || strings.HasPrefix(l, "alert:") {
+				return true
+			}
+		}
+		return false
+	}
+
 	skip := func(b BoardBead) bool {
 		for _, l := range b.Labels {
 			if strings.HasPrefix(l, "msg") || l == "template" || strings.HasPrefix(l, "agent") {
@@ -151,14 +162,18 @@ func categorizeColumns(beads, closedBeads []BoardBead, identity string) boardCol
 	}
 
 	for _, b := range beads {
+		// Alerts always surface, even if they'd otherwise be skipped.
+		if isAlert(b) && b.Status == "open" {
+			c.Alerts = append(c.Alerts, b)
+			continue
+		}
+
 		if skip(b) {
 			continue
 		}
 
 		switch b.Status {
 		case "in_progress":
-			// TODO: distinguish "working" vs "in review" once familiar
-			// enrichment is in place. For now all in_progress → Working.
 			c.Working = append(c.Working, b)
 
 		case "open":
@@ -232,6 +247,40 @@ type card struct {
 }
 
 func printColumnarBoard(cols boardColumns) {
+	// Alerts banner — always on top, full width, high visibility.
+	if len(cols.Alerts) > 0 {
+		sortBeads(cols.Alerts)
+		fmt.Printf("%s%s ALERTS (%d) %s\n", bold+red, "⚠", len(cols.Alerts), reset)
+		for _, a := range cols.Alerts {
+			// Extract alert type from label.
+			alertType := ""
+			refBead := ""
+			for _, l := range a.Labels {
+				if strings.HasPrefix(l, "alert:") {
+					alertType = l[6:]
+				}
+				if strings.HasPrefix(l, "ref:") {
+					refBead = l[4:]
+				}
+			}
+			typeStr := ""
+			if alertType != "" {
+				typeStr = fmt.Sprintf("[%s] ", alertType)
+			}
+			refStr := ""
+			if refBead != "" {
+				refStr = fmt.Sprintf(" %s→ %s%s", dim, refBead, reset)
+			}
+			fmt.Printf("  %s %s%s%s%s\n",
+				priorityStr(a.Priority),
+				typeStr,
+				a.Title,
+				refStr,
+				"")
+		}
+		fmt.Println()
+	}
+
 	// Build card lists for each column.
 	readyCards := renderCards(cols.Ready, renderReadyCard)
 	workingCards := renderCards(cols.Working, renderWorkingCard)
