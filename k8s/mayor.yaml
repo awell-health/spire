@@ -50,9 +50,15 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: dolt-creds
+              mountPath: /root/.dolt/creds
+              readOnly: true
       volumes:
         - name: data
           emptyDir: {}
+        - name: dolt-creds
+          secret:
+            secretName: dolt-creds
 ---
 # RBAC for the operator (Phase 2: manages pods, reads secrets)
 apiVersion: v1

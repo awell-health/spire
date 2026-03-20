@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== Spire Mayor — Minikube Demo ==="
+PROFILE="${MINIKUBE_PROFILE:-spire}"
+
+echo "=== Spire Mayor — Minikube Demo (profile: $PROFILE) ==="
 echo ""
 
 # Check prerequisites
@@ -13,14 +15,14 @@ for cmd in minikube kubectl docker; do
 done
 
 # Check minikube is running
-if ! minikube status &>/dev/null; then
-    echo "Starting minikube..."
-    minikube start
+if ! minikube status -p "$PROFILE" &>/dev/null; then
+    echo "Starting minikube (profile: $PROFILE)..."
+    minikube start -p "$PROFILE"
 fi
 
 # Point docker to minikube's daemon
 echo "Configuring docker to use minikube..."
-eval $(minikube docker-env)
+eval $(minikube docker-env -p "$PROFILE")
 
 # Build the mayor image
 echo "Building spire-mayor:dev..."
@@ -93,3 +95,4 @@ echo "  kubectl get spireworkloads -n spire -w"
 echo ""
 echo "Tear down:"
 echo "  kubectl delete namespace spire"
+echo "  minikube stop -p $PROFILE"

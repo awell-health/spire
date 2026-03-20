@@ -13,20 +13,42 @@ echo "[mayor] starting up..."
 git config --global user.name "spire-mayor"
 git config --global user.email "mayor@spire.local"
 
-# Initialize beads if not already done
+# Configure dolt credentials (JWK file mounted from dolt-creds secret)
+CRED_FILE=$(ls /root/.dolt/creds/*.jwk 2>/dev/null | head -1)
+if [ -n "$CRED_FILE" ]; then
+    KEY_ID=$(basename "$CRED_FILE" .jwk)
+    dolt config --global --set user.creds "$KEY_ID" 2>/dev/null || true
+    echo "[mayor] dolt credential configured: $KEY_ID"
+fi
+
+# Initialize beads from DoltHub clone
 if [ ! -d /data/.beads ]; then
-    echo "[mayor] initializing beads database..."
     cd /data
     git init -q
+
+    # Clone the real database first
+    echo "[mayor] cloning from DoltHub: $DOLTHUB_REMOTE"
+    mkdir -p /data/.beads/dolt
+    dolt clone "$DOLTHUB_REMOTE" "/data/.beads/dolt/$MAYOR_PREFIX" 2>&1 \
+        || echo "[mayor] clone warning: could not clone (will init fresh)"
+
+    # Init beads on top of the cloned data
+    echo "[mayor] initializing beads..."
     bd init --prefix "$MAYOR_PREFIX" --force
-    echo "[mayor] syncing from DoltHub: $DOLTHUB_REMOTE"
     spire init --prefix="$MAYOR_PREFIX" --standalone
-    bd dolt remote add origin "$DOLTHUB_REMOTE" 2>/dev/null || true
-    spire sync --hard "$DOLTHUB_REMOTE"
-    echo "[mayor] initial sync complete"
+    echo "[mayor] init complete"
 fi
 
 cd /data
+
+# Clean stale lock and start dolt server once for the lifetime of the container
+rm -f /data/.beads/dolt-server.lock
+echo "[mayor] starting dolt server..."
+bd dolt start
+echo "[mayor] dolt server running"
+
+# Shut down dolt cleanly on container exit
+trap 'echo "[mayor] shutting down dolt..."; bd dolt stop 2>/dev/null; exit 0' TERM INT
 
 # Register mayor as an agent
 spire register mayor "Spire mayor — automated work coordinator" 2>/dev/null || true
