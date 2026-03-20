@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/go-logr/logr"
@@ -18,12 +19,12 @@ import (
 
 // AgentMonitor tracks agent heartbeats and manages pods for managed agents.
 type AgentMonitor struct {
-	Client          client.Client
-	Log             logr.Logger
-	Namespace       string
-	Interval        time.Duration
-	OfflineTimeout  time.Duration // how long before an agent is considered offline
-	MayorImage      string        // image to use for managed agent pods
+	Client         client.Client
+	Log            logr.Logger
+	Namespace      string
+	Interval       time.Duration
+	OfflineTimeout time.Duration // how long before an agent is considered offline
+	MayorImage     string        // default image for managed agent pods
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -56,6 +57,9 @@ func (m *AgentMonitor) cycle(ctx context.Context) {
 		return
 	}
 
+	// Load SpireConfig for token/DoltHub resolution
+	cfg := m.loadConfig(ctx)
+
 	for i := range agents.Items {
 		agent := &agents.Items[i]
 
@@ -63,9 +67,22 @@ func (m *AgentMonitor) cycle(ctx context.Context) {
 		case "external":
 			m.checkExternalAgent(ctx, agent)
 		case "managed":
-			m.reconcileManagedAgent(ctx, agent)
+			m.reconcileManagedAgent(ctx, agent, cfg)
 		}
 	}
+}
+
+// loadConfig reads the "default" SpireConfig from the namespace.
+// Returns nil if not found (pods will be created without token injection).
+func (m *AgentMonitor) loadConfig(ctx context.Context) *spirev1.SpireConfig {
+	var cfg spirev1.SpireConfig
+	if err := m.Client.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: "default"}, &cfg); err != nil {
+		if !errors.IsNotFound(err) {
+			m.Log.Error(err, "failed to read SpireConfig")
+		}
+		return nil
+	}
+	return &cfg
 }
 
 // checkExternalAgent updates phase based on lastSeen heartbeat.
@@ -95,72 +112,201 @@ func (m *AgentMonitor) checkExternalAgent(ctx context.Context, agent *spirev1.Sp
 	}
 }
 
-// reconcileManagedAgent ensures a pod exists when there's work, cleans up when idle.
-func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1.SpireAgent) {
-	podName := fmt.Sprintf("spire-agent-%s", agent.Name)
+// reconcileManagedAgent creates one pod per assigned workload (bead),
+// and cleans up pods when work is removed.
+func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1.SpireAgent, cfg *spirev1.SpireConfig) {
+	// List existing pods for this agent
+	var podList corev1.PodList
+	if err := m.Client.List(ctx, &podList,
+		client.InNamespace(m.Namespace),
+		client.MatchingLabels{"spire.awell.io/agent": agent.Name, "spire.awell.io/managed": "true"},
+	); err != nil {
+		m.Log.Error(err, "failed to list agent pods", "agent", agent.Name)
+		return
+	}
 
-	// Check if pod exists
-	var existingPod corev1.Pod
-	podExists := true
-	if err := m.Client.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: podName}, &existingPod); err != nil {
-		if errors.IsNotFound(err) {
-			podExists = false
-		} else {
-			m.Log.Error(err, "failed to check pod", "pod", podName)
-			return
+	// Build set of bead IDs that have running pods
+	podsByBead := make(map[string]*corev1.Pod)
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		beadID := pod.Labels["spire.awell.io/bead"]
+		if beadID != "" {
+			podsByBead[beadID] = pod
 		}
 	}
 
-	hasWork := len(agent.Status.CurrentWork) > 0
+	// Build set of currently assigned work
+	workSet := make(map[string]bool)
+	for _, beadID := range agent.Status.CurrentWork {
+		workSet[beadID] = true
+	}
 
-	if hasWork && !podExists {
-		// Create pod
-		pod := m.buildAgentPod(agent, podName)
+	// Create pods for new work
+	for _, beadID := range agent.Status.CurrentWork {
+		if _, exists := podsByBead[beadID]; exists {
+			continue // pod already running for this bead
+		}
+
+		pod := m.buildWorkloadPod(agent, beadID, cfg)
 		if err := m.Client.Create(ctx, pod); err != nil {
-			m.Log.Error(err, "failed to create agent pod", "agent", agent.Name)
-			return
+			m.Log.Error(err, "failed to create workload pod", "agent", agent.Name, "bead", beadID)
+			continue
 		}
 
-		agent.Status.Phase = "Provisioning"
-		agent.Status.PodName = podName
-		agent.Status.Message = "Pod created, waiting for startup"
-		m.Client.Status().Update(ctx, agent) //nolint
-		m.Log.Info("created agent pod", "agent", agent.Name, "pod", podName)
+		m.Log.Info("created workload pod", "agent", agent.Name, "bead", beadID, "pod", pod.Name)
+	}
 
-	} else if !hasWork && podExists && existingPod.DeletionTimestamp == nil {
-		// No work — delete the pod
-		if err := m.Client.Delete(ctx, &existingPod); err != nil {
-			m.Log.Error(err, "failed to delete idle agent pod", "pod", podName)
-			return
+	// Delete pods for work that's no longer assigned
+	for beadID, pod := range podsByBead {
+		if workSet[beadID] {
+			continue
 		}
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if err := m.Client.Delete(ctx, pod); err != nil {
+			m.Log.Error(err, "failed to delete stale workload pod", "pod", pod.Name, "bead", beadID)
+		} else {
+			m.Log.Info("deleted stale workload pod", "agent", agent.Name, "bead", beadID)
+		}
+	}
 
-		agent.Status.Phase = "Idle"
-		agent.Status.PodName = ""
-		agent.Status.Message = "Pod deleted (no work)"
-		m.Client.Status().Update(ctx, agent) //nolint
-		m.Log.Info("deleted idle agent pod", "agent", agent.Name)
+	// Update agent phase based on pod states
+	m.updateAgentPhase(ctx, agent, podsByBead)
+}
 
-	} else if podExists {
-		// Pod exists — check its phase
-		switch existingPod.Status.Phase {
-		case corev1.PodRunning:
-			if agent.Status.Phase == "Provisioning" {
-				agent.Status.Phase = "Working"
-				agent.Status.Message = "Pod running"
-				m.Client.Status().Update(ctx, agent) //nolint
-			}
-		case corev1.PodFailed:
-			agent.Status.Phase = "Offline"
-			agent.Status.Message = fmt.Sprintf("Pod failed: %s", existingPod.Status.Message)
+// updateAgentPhase sets the agent phase based on its running pods.
+func (m *AgentMonitor) updateAgentPhase(ctx context.Context, agent *spirev1.SpireAgent, podsByBead map[string]*corev1.Pod) {
+	if len(agent.Status.CurrentWork) == 0 {
+		if agent.Status.Phase != "Idle" {
+			agent.Status.Phase = "Idle"
+			agent.Status.PodName = ""
+			agent.Status.Message = "No active work"
 			m.Client.Status().Update(ctx, agent) //nolint
 		}
+		return
+	}
+
+	// Check if any pods are still provisioning
+	anyProvisioning := false
+	anyFailed := false
+	for _, beadID := range agent.Status.CurrentWork {
+		pod, exists := podsByBead[beadID]
+		if !exists {
+			anyProvisioning = true // pod not created yet
+			continue
+		}
+		switch pod.Status.Phase {
+		case corev1.PodPending:
+			anyProvisioning = true
+		case corev1.PodFailed:
+			anyFailed = true
+		}
+	}
+
+	newPhase := "Working"
+	msg := fmt.Sprintf("%d active workload(s)", len(agent.Status.CurrentWork))
+	if anyProvisioning {
+		newPhase = "Provisioning"
+		msg = "Waiting for pod(s) to start"
+	} else if anyFailed {
+		msg = "One or more workload pods failed"
+	}
+
+	if agent.Status.Phase != newPhase || agent.Status.Message != msg {
+		agent.Status.Phase = newPhase
+		agent.Status.Message = msg
+		m.Client.Status().Update(ctx, agent) //nolint
 	}
 }
 
-func (m *AgentMonitor) buildAgentPod(agent *spirev1.SpireAgent, podName string) *corev1.Pod {
+// buildWorkloadPod creates a pod spec for a single bead assignment.
+// The pod has two containers:
+//   - worker: runs agent-entrypoint.sh (clone, claim, focus, execute, push)
+//   - sidecar: runs spire-sidecar (inbox polling, health, control channel)
+//
+// They share /comms (filesystem-based coordination) and /workspace.
+func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
 	image := agent.Spec.Image
 	if image == "" {
 		image = m.MayorImage
+	}
+
+	podName := fmt.Sprintf("spire-agent-%s-%s", agent.Name, sanitizeK8sName(beadID))
+	// k8s pod names max 63 chars
+	if len(podName) > 63 {
+		podName = podName[:63]
+	}
+
+	branch := agent.Spec.RepoBranch
+	if branch == "" {
+		branch = "main"
+	}
+
+	// Worker environment
+	workerEnv := []corev1.EnvVar{
+		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
+		{Name: "SPIRE_BEAD_ID", Value: beadID},
+		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
+		{Name: "SPIRE_REPO_BRANCH", Value: branch},
+		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
+		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
+		{Name: "SPIRE_STATE_DIR", Value: "/data"},
+	}
+
+	// Sidecar environment
+	sidecarEnv := []corev1.EnvVar{
+		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
+	}
+
+	// Inject secrets from SpireConfig
+	if cfg != nil {
+		// DoltHub credentials
+		if cfg.Spec.DoltHub.Remote != "" {
+			workerEnv = append(workerEnv, corev1.EnvVar{
+				Name: "DOLTHUB_REMOTE", Value: cfg.Spec.DoltHub.Remote,
+			})
+		}
+		if cfg.Spec.DoltHub.CredentialsSecret != "" {
+			workerEnv = append(workerEnv,
+				envFromSecret("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER"),
+				envFromSecret("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD"),
+			)
+		}
+
+		// Anthropic API key — resolve token name from agent spec or default
+		tokenName := agent.Spec.Token
+		if tokenName == "" {
+			tokenName = cfg.Spec.DefaultToken
+		}
+		if tokenName == "" {
+			tokenName = "default"
+		}
+		if tokenRef, ok := cfg.Spec.Tokens[tokenName]; ok {
+			workerEnv = append(workerEnv,
+				envFromSecret("ANTHROPIC_API_KEY", tokenRef.Secret, tokenRef.Key),
+			)
+		}
+
+		// GitHub token (if present in the credentials secret)
+		if cfg.Spec.DoltHub.CredentialsSecret != "" {
+			workerEnv = append(workerEnv,
+				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
+			)
+		}
+	}
+
+	// Shared volumes
+	volumes := []corev1.Volume{
+		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	}
+
+	sharedMounts := []corev1.VolumeMount{
+		{Name: "comms", MountPath: "/comms"},
+		{Name: "workspace", MountPath: "/workspace"},
+		{Name: "data", MountPath: "/data"},
 	}
 
 	pod := &corev1.Pod{
@@ -169,60 +315,95 @@ func (m *AgentMonitor) buildAgentPod(agent *spirev1.SpireAgent, podName string) 
 			Namespace: m.Namespace,
 			Labels: map[string]string{
 				"spire.awell.io/agent":   agent.Name,
+				"spire.awell.io/bead":    beadID,
 				"spire.awell.io/managed": "true",
 				"app.kubernetes.io/name": "spire-agent",
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyOnFailure,
+			RestartPolicy: corev1.RestartPolicyNever, // one-shot: do the work, exit
+			Volumes:       volumes,
 			Containers: []corev1.Container{
 				{
-					Name:  "agent",
-					Image: image,
-					Env: []corev1.EnvVar{
-						{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-						{Name: "SPIRE_AGENT_MODE", Value: "managed"},
+					Name:         "worker",
+					Image:        image,
+					Command:      []string{"/usr/local/bin/agent-entrypoint.sh"},
+					Env:          workerEnv,
+					Resources:    buildResources(agent.Spec.Resources),
+					VolumeMounts: sharedMounts,
+					WorkingDir:   "/workspace",
+				},
+				{
+					Name:  "sidecar",
+					Image: image, // same image — contains spire-sidecar binary
+					Command: []string{
+						"spire-sidecar",
+						"--comms-dir=/comms",
+						"--poll-interval=10s",
+						"--port=8080",
+						fmt.Sprintf("--agent-name=%s", agent.Name),
 					},
-					Resources: buildResources(agent.Spec.Resources),
+					Env: sidecarEnv,
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "comms", MountPath: "/comms"},
+						{Name: "data", MountPath: "/data"},
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/readyz",
+								Port: intstr8080(),
+							},
+						},
+						InitialDelaySeconds: 5,
+						PeriodSeconds:       10,
+					},
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/healthz",
+								Port: intstr8080(),
+							},
+						},
+						InitialDelaySeconds: 10,
+						PeriodSeconds:       30,
+					},
 				},
 			},
 		},
 	}
 
-	// Add repo clone init container if repo is specified
-	if agent.Spec.Repo != "" {
-		branch := agent.Spec.RepoBranch
-		if branch == "" {
-			branch = "main"
-		}
-		pod.Spec.InitContainers = []corev1.Container{
-			{
-				Name:  "clone",
-				Image: "alpine/git:latest",
-				Command: []string{
-					"git", "clone", "--depth=1", "--branch", branch,
-					agent.Spec.Repo, "/workspace",
-				},
-				VolumeMounts: []corev1.VolumeMount{
-					{Name: "workspace", MountPath: "/workspace"},
-				},
-			},
-		}
-		pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
-			{Name: "workspace", MountPath: "/workspace"},
-		}
-		pod.Spec.Containers[0].WorkingDir = "/workspace"
-		pod.Spec.Volumes = []corev1.Volume{
-			{
-				Name: "workspace",
-				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
-				},
-			},
-		}
-	}
-
 	return pod
+}
+
+func envFromSecret(envName, secretName, key string) corev1.EnvVar {
+	return corev1.EnvVar{
+		Name: envName,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Key:                  key,
+			},
+		},
+	}
+}
+
+func envFromSecretOptional(envName, secretName, key string) corev1.EnvVar {
+	optional := true
+	return corev1.EnvVar{
+		Name: envName,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Key:                  key,
+				Optional:             &optional,
+			},
+		},
+	}
+}
+
+func intstr8080() intstr.IntOrString {
+	return intstr.FromInt32(8080)
 }
 
 func buildResources(spec *spirev1.AgentResourceRequirements) corev1.ResourceRequirements {
@@ -243,4 +424,21 @@ func buildResources(spec *spirev1.AgentResourceRequirements) corev1.ResourceRequ
 		}
 	}
 	return reqs
+}
+
+func sanitizeK8sName(s string) string {
+	// k8s names: lowercase, alphanumeric, hyphens
+	result := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-':
+			result = append(result, c)
+		case c >= 'A' && c <= 'Z':
+			result = append(result, c+32) // lowercase
+		case c == '.' || c == '_':
+			result = append(result, '-')
+		}
+	}
+	return string(result)
 }
