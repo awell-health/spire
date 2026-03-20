@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,30 @@ func requireBd(t *testing.T) {
 	if err != nil {
 		t.Skip("bd not available, skipping integration test")
 	}
+}
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+
+	runErr := fn()
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+
+	data, readErr := io.ReadAll(r)
+	_ = r.Close()
+	if readErr != nil {
+		t.Fatalf("read stdout: %v", readErr)
+	}
+
+	return string(data), runErr
 }
 
 // TestParseAsFlag tests the --as flag extraction.
@@ -302,6 +327,54 @@ func TestIntegrationSendCollectRead(t *testing.T) {
 	err = cmdRead([]string{msgID})
 	if err != nil {
 		t.Fatalf("second read error: %v", err)
+	}
+}
+
+func TestIntegrationCollectJSON(t *testing.T) {
+	requireBd(t)
+
+	os.Setenv("SPIRE_IDENTITY", "json-sender")
+	defer os.Unsetenv("SPIRE_IDENTITY")
+
+	if err := cmdSend([]string{"json-receiver", "json hello", "--ref", "pan-101"}); err != nil {
+		t.Fatalf("send error: %v", err)
+	}
+
+	output, err := captureStdout(t, func() error {
+		return cmdCollect([]string{"--json", "json-receiver"})
+	})
+	if err != nil {
+		t.Fatalf("collect --json error: %v", err)
+	}
+
+	var messages []Bead
+	if err := json.Unmarshal([]byte(output), &messages); err != nil {
+		t.Fatalf("unmarshal collect --json output: %v\noutput=%s", err, output)
+	}
+
+	if len(messages) == 0 {
+		t.Fatalf("collect --json returned no messages")
+	}
+
+	found := false
+	for _, msg := range messages {
+		if msg.Title == "json hello" {
+			found = true
+			if hasLabel(msg, "to:") != "json-receiver" {
+				t.Errorf("to label = %q, want %q", hasLabel(msg, "to:"), "json-receiver")
+			}
+			if hasLabel(msg, "from:") != "json-sender" {
+				t.Errorf("from label = %q, want %q", hasLabel(msg, "from:"), "json-sender")
+			}
+			if hasLabel(msg, "ref:") != "pan-101" {
+				t.Errorf("ref label = %q, want %q", hasLabel(msg, "ref:"), "pan-101")
+			}
+			break
+		}
+	}
+
+	if !found {
+		t.Fatalf("collect --json output missing sent message: %s", output)
 	}
 }
 

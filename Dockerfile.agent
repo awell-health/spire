@@ -1,0 +1,49 @@
+# Stage 1: build the Spire binaries used by the worker image.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spire ./cmd/spire/ && \
+    CGO_ENABLED=0 GOOS=linux go build -o /out/spire-sidecar ./cmd/spire-sidecar/
+
+# Stage 2: install Dolt + bd once so the final image stays small.
+FROM alpine:3.20 AS tools
+RUN apk add --no-cache bash curl
+RUN curl -L https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
+RUN curl -sSL https://beads.sh/install | bash
+
+# Stage 3: worker runtime.
+FROM alpine:3.20
+
+ARG INSTALL_CLAUDE=1
+ARG CLAUDE_NPM_PACKAGE=@anthropic-ai/claude-code
+
+RUN apk add --no-cache \
+    bash \
+    ca-certificates \
+    coreutils \
+    curl \
+    git \
+    github-cli \
+    go \
+    jq \
+    nodejs \
+    npm \
+    openssh-client \
+    py3-pip \
+    python3
+
+COPY --from=build /out/spire /usr/local/bin/spire
+COPY --from=build /out/spire-sidecar /usr/local/bin/spire-sidecar
+COPY --from=tools /usr/local/bin/dolt /usr/local/bin/dolt
+COPY --from=tools /usr/local/bin/bd /usr/local/bin/bd
+
+RUN if [ "$INSTALL_CLAUDE" = "1" ]; then npm install -g "${CLAUDE_NPM_PACKAGE}"; fi
+
+COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint.sh
+RUN chmod +x /usr/local/bin/agent-entrypoint.sh && \
+    mkdir -p /workspace /data /comms
+
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/agent-entrypoint.sh"]

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -9,6 +10,17 @@ func cmdCollect(args []string) error {
 	if err := requireDolt(); err != nil {
 		return err
 	}
+
+	var jsonOut bool
+	var remaining []string
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOut = true
+			continue
+		}
+		remaining = append(remaining, arg)
+	}
+	args = remaining
 
 	asFlag, args := parseAsFlag(args)
 
@@ -24,6 +36,21 @@ func cmdCollect(args []string) error {
 		}
 	}
 
+	var messages []Bead
+	err := bdJSON(&messages, "list", "--rig=spi", "--label", fmt.Sprintf("msg,to:%s", name), "--status=open")
+	if err != nil {
+		return fmt.Errorf("collect: %w", err)
+	}
+
+	if jsonOut {
+		data, err := json.MarshalIndent(messages, "", "  ")
+		if err != nil {
+			return fmt.Errorf("collect: encode json: %w", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
 	// Print agent context from registration bead if set
 	if agentID, err := findAgentBead(name); err == nil && agentID != "" {
 		var beads []Bead
@@ -32,12 +59,6 @@ func cmdCollect(args []string) error {
 				fmt.Printf("Context: %s\n\n", beads[0].Description)
 			}
 		}
-	}
-
-	var messages []Bead
-	err := bdJSON(&messages, "list", "--rig=spi", "--label", fmt.Sprintf("msg,to:%s", name), "--status=open")
-	if err != nil {
-		return fmt.Errorf("collect: %w", err)
 	}
 
 	if len(messages) == 0 {
