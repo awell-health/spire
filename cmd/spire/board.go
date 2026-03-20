@@ -11,20 +11,20 @@ import (
 
 // BoardBead extends the standard Bead with fields needed for board display.
 type BoardBead struct {
-	ID              string       `json:"id"`
-	Title           string       `json:"title"`
-	Description     string       `json:"description"`
-	Status          string       `json:"status"`
-	Priority        int          `json:"priority"`
-	Type            string       `json:"issue_type"`
-	Owner           string       `json:"owner"`
-	CreatedAt       string       `json:"created_at"`
-	UpdatedAt       string       `json:"updated_at"`
-	Labels          []string     `json:"labels"`
-	Parent          string       `json:"parent"`
-	Dependencies    []BoardDep   `json:"dependencies"`
-	DependencyCount int          `json:"dependency_count"`
-	DependentCount  int          `json:"dependent_count"`
+	ID              string     `json:"id"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	Status          string     `json:"status"`
+	Priority        int        `json:"priority"`
+	Type            string     `json:"issue_type"`
+	Owner           string     `json:"owner"`
+	CreatedAt       string     `json:"created_at"`
+	UpdatedAt       string     `json:"updated_at"`
+	Labels          []string   `json:"labels"`
+	Parent          string     `json:"parent"`
+	Dependencies    []BoardDep `json:"dependencies"`
+	DependencyCount int        `json:"dependency_count"`
+	DependentCount  int        `json:"dependent_count"`
 }
 
 type BoardDep struct {
@@ -33,19 +33,21 @@ type BoardDep struct {
 	Type        string `json:"type"`
 }
 
-// boardSections holds categorized beads for display.
-type boardSections struct {
-	Review  []BoardBead // in_progress, claimed by current user
-	Ready   []BoardBead // open with no blocking deps
-	Agents  []BoardBead // in_progress, claimed by someone else
+// boardColumns holds beads categorized into lifecycle columns.
+type boardColumns struct {
+	Ready   []BoardBead // open, unblocked, unowned
+	Working []BoardBead // in_progress (wizards working)
+	Review  []BoardBead // in_progress, has branch pushed (artificer reviewing)
+	Merged  []BoardBead // recently closed (last 24h)
 	Blocked []BoardBead // open with blocking deps
 }
 
 // boardJSON is the JSON output structure.
 type boardJSON struct {
-	Review  []BoardBead `json:"review"`
 	Ready   []BoardBead `json:"ready"`
-	Agents  []BoardBead `json:"agents"`
+	Working []BoardBead `json:"working"`
+	Review  []BoardBead `json:"review"`
+	Merged  []BoardBead `json:"merged"`
 	Blocked []BoardBead `json:"blocked"`
 }
 
@@ -54,104 +56,364 @@ func cmdBoard(args []string) error {
 		return err
 	}
 
-	// Parse flags
 	var (
 		flagMine  bool
 		flagReady bool
 		flagJSON  bool
+		flagEpic  string
 	)
-	for _, arg := range args {
-		switch arg {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--mine":
 			flagMine = true
 		case "--ready":
 			flagReady = true
 		case "--json":
 			flagJSON = true
+		case "--epic":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--epic requires a bead ID")
+			}
+			i++
+			flagEpic = args[i]
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire board [--mine] [--ready] [--json]", arg)
+			return fmt.Errorf("unknown flag: %s\nusage: spire board [--mine] [--ready] [--epic <id>] [--json]", args[i])
 		}
 	}
 
-	// Single call to bd list --json
-	var beads []BoardBead
-	if err := bdJSON(&beads, "list"); err != nil {
+	// Fetch all beads (open + recently closed)
+	var allBeads []BoardBead
+	if err := bdJSON(&allBeads, "list"); err != nil {
 		return fmt.Errorf("board: %w", err)
 	}
 
-	// Detect current user identity for --mine and section assignment
+	// Also fetch recently closed beads
+	var closedBeads []BoardBead
+	_ = bdJSON(&closedBeads, "list", "--status=closed")
+
 	identity, _ := detectIdentity("")
 
-	// Categorize beads
-	sections := categorizeBeads(beads, identity)
+	// Categorize into columns
+	cols := categorizeColumns(allBeads, closedBeads, identity)
 
 	// Apply filters
+	if flagEpic != "" {
+		cols = filterEpic(cols, flagEpic)
+	}
 	if flagMine {
-		// Only show beads assigned to me or waiting for my review
-		sections.Ready = nil
-		sections.Agents = nil
-		sections.Blocked = filterOwned(sections.Blocked, identity)
+		cols.Ready = nil
+		cols.Working = filterOwned(cols.Working, identity)
+		cols.Review = filterOwned(cols.Review, identity)
+		cols.Blocked = filterOwned(cols.Blocked, identity)
 	}
 	if flagReady {
-		sections.Review = nil
-		sections.Agents = nil
-		sections.Blocked = nil
+		cols.Working = nil
+		cols.Review = nil
+		cols.Merged = nil
+		cols.Blocked = nil
 	}
 
-	// Sort each section by priority (ascending), then by updated_at (most recent first)
-	sortBeads(sections.Review)
-	sortBeads(sections.Ready)
-	sortBeads(sections.Agents)
-	sortBeads(sections.Blocked)
+	// Sort each column by priority then recency
+	sortBeads(cols.Ready)
+	sortBeads(cols.Working)
+	sortBeads(cols.Review)
+	sortBeads(cols.Merged)
+	sortBeads(cols.Blocked)
 
-	// Output
 	if flagJSON {
 		out := boardJSON{
-			Review:  nonNil(sections.Review),
-			Ready:   nonNil(sections.Ready),
-			Agents:  nonNil(sections.Agents),
-			Blocked: nonNil(sections.Blocked),
+			Ready:   nonNil(cols.Ready),
+			Working: nonNil(cols.Working),
+			Review:  nonNil(cols.Review),
+			Merged:  nonNil(cols.Merged),
+			Blocked: nonNil(cols.Blocked),
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(out)
 	}
 
-	printBoard(sections)
+	printColumnarBoard(cols)
 	return nil
 }
 
-func categorizeBeads(beads []BoardBead, identity string) boardSections {
-	var s boardSections
+func categorizeColumns(beads, closedBeads []BoardBead, identity string) boardColumns {
+	var c boardColumns
+
+	// Skip message/template beads
+	skip := func(b BoardBead) bool {
+		for _, l := range b.Labels {
+			if strings.HasPrefix(l, "msg") || l == "template" || strings.HasPrefix(l, "agent") {
+				return true
+			}
+		}
+		return false
+	}
 
 	for _, b := range beads {
+		if skip(b) {
+			continue
+		}
+
 		switch b.Status {
 		case "in_progress":
-			claimedBy := beadOwnerLabel(b)
-			if claimedBy == "" {
-				claimedBy = b.Owner
-			}
-			if isCurrentUser(claimedBy, identity) {
-				s.Review = append(s.Review, b)
-			} else {
-				s.Agents = append(s.Agents, b)
-			}
+			// TODO: distinguish "working" vs "in review" once familiar
+			// enrichment is in place. For now all in_progress → Working.
+			c.Working = append(c.Working, b)
 
 		case "open":
 			if hasBlockingDeps(b) {
-				s.Blocked = append(s.Blocked, b)
+				c.Blocked = append(c.Blocked, b)
 			} else {
-				s.Ready = append(s.Ready, b)
+				c.Ready = append(c.Ready, b)
 			}
-
-		// Skip closed beads entirely
 		}
 	}
 
-	return s
+	// Recently closed → Merged column (last 24h)
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, b := range closedBeads {
+		if skip(b) {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, b.UpdatedAt)
+		if err != nil {
+			// Try alternate format
+			t, err = time.Parse("2006-01-02 15:04:05", b.UpdatedAt)
+		}
+		if err == nil && t.After(cutoff) {
+			c.Merged = append(c.Merged, b)
+		}
+	}
+
+	return c
 }
 
-// beadOwnerLabel extracts the owner:<name> label value.
+func filterEpic(cols boardColumns, epicID string) boardColumns {
+	match := func(b BoardBead) bool {
+		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".")
+	}
+	return boardColumns{
+		Ready:   filterBeads(cols.Ready, match),
+		Working: filterBeads(cols.Working, match),
+		Review:  filterBeads(cols.Review, match),
+		Merged:  filterBeads(cols.Merged, match),
+		Blocked: filterBeads(cols.Blocked, match),
+	}
+}
+
+func filterBeads(beads []BoardBead, pred func(BoardBead) bool) []BoardBead {
+	var out []BoardBead
+	for _, b := range beads {
+		if pred(b) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// --- Columnar terminal output ---
+
+// ANSI codes
+const (
+	bold   = "\033[1m"
+	dim    = "\033[2m"
+	red    = "\033[31m"
+	yellow = "\033[33m"
+	green  = "\033[32m"
+	cyan   = "\033[36m"
+	magenta = "\033[35m"
+	reset  = "\033[0m"
+)
+
+// card is a rendered bead for display in a column.
+type card struct {
+	lines []string
+}
+
+func printColumnarBoard(cols boardColumns) {
+	// Build card lists for each column.
+	readyCards := renderCards(cols.Ready, renderReadyCard)
+	workingCards := renderCards(cols.Working, renderWorkingCard)
+	reviewCards := renderCards(cols.Review, renderReviewCard)
+	mergedCards := renderCards(cols.Merged, renderMergedCard)
+
+	// Column definitions.
+	type column struct {
+		header string
+		color  string
+		count  int
+		cards  []card
+	}
+
+	columns := []column{
+		{header: "READY", color: green, count: len(cols.Ready), cards: readyCards},
+		{header: "WORKING", color: cyan, count: len(cols.Working), cards: workingCards},
+		{header: "REVIEW", color: yellow, count: len(cols.Review), cards: reviewCards},
+		{header: "MERGED", color: magenta, count: len(cols.Merged), cards: mergedCards},
+	}
+
+	// Filter out empty columns.
+	var active []column
+	for _, col := range columns {
+		if col.count > 0 {
+			active = append(active, col)
+		}
+	}
+
+	if len(active) == 0 && len(cols.Blocked) == 0 {
+		fmt.Printf("%s(no work items)%s\n", dim, reset)
+		return
+	}
+
+	// Column width.
+	colWidth := 30
+	if len(active) <= 2 {
+		colWidth = 38
+	}
+	if len(active) == 1 {
+		colWidth = 50
+	}
+
+	// Print headers.
+	if len(active) > 0 {
+		for i, col := range active {
+			if i > 0 {
+				fmt.Print("  ")
+			}
+			header := fmt.Sprintf("%s%s%s (%d)%s", bold, col.color, col.header, col.count, reset)
+			fmt.Print(header)
+			// Pad to column width (accounting for ANSI codes).
+			visible := len(col.header) + 2 + countDigits(col.count) + 1 // "HEADER (N)"
+			pad := colWidth - visible
+			if pad > 0 {
+				fmt.Print(strings.Repeat(" ", pad))
+			}
+		}
+		fmt.Println()
+
+		// Separator line.
+		for i, col := range active {
+			if i > 0 {
+				fmt.Print("  ")
+			}
+			sep := strings.Repeat("─", min(colWidth, len(col.header)+4))
+			fmt.Printf("%s%s%s", dim, sep, reset)
+			pad := colWidth - min(colWidth, len(col.header)+4)
+			if pad > 0 {
+				fmt.Print(strings.Repeat(" ", pad))
+			}
+		}
+		fmt.Println()
+
+		// Print cards row by row. Each card takes 3 lines + 1 blank.
+		maxCards := 0
+		for _, col := range active {
+			if len(col.cards) > maxCards {
+				maxCards = len(col.cards)
+			}
+		}
+
+		linesPerCard := 4 // 3 content lines + 1 blank
+		maxRows := maxCards * linesPerCard
+
+		for row := 0; row < maxRows; row++ {
+			for i, col := range active {
+				if i > 0 {
+					fmt.Print("  ")
+				}
+
+				cardIdx := row / linesPerCard
+				lineIdx := row % linesPerCard
+
+				if cardIdx < len(col.cards) && lineIdx < len(col.cards[cardIdx].lines) {
+					line := col.cards[cardIdx].lines[lineIdx]
+					// Pad to column width.
+					visible := visibleLen(line)
+					fmt.Print(line)
+					pad := colWidth - visible
+					if pad > 0 {
+						fmt.Print(strings.Repeat(" ", pad))
+					}
+				} else {
+					fmt.Print(strings.Repeat(" ", colWidth))
+				}
+			}
+			fmt.Println()
+		}
+	}
+
+	// Blocked beads shown below as a compact list.
+	if len(cols.Blocked) > 0 {
+		if len(active) > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("%s%sBLOCKED (%d)%s\n", bold, red, len(cols.Blocked), reset)
+		for _, b := range cols.Blocked {
+			blockers := blockingDepIDs(b)
+			blockerStr := ""
+			if len(blockers) > 0 {
+				blockerStr = fmt.Sprintf(" %s← %s%s", dim, strings.Join(blockers, ", "), reset)
+			}
+			fmt.Printf("  %s %s %s%s\n",
+				priorityStr(b.Priority),
+				b.ID,
+				truncate(b.Title, 40),
+				blockerStr)
+		}
+	}
+}
+
+// --- Card renderers ---
+
+func renderCards(beads []BoardBead, render func(BoardBead) card) []card {
+	cards := make([]card, len(beads))
+	for i, b := range beads {
+		cards[i] = render(b)
+	}
+	return cards
+}
+
+func renderReadyCard(b BoardBead) card {
+	return card{lines: []string{
+		fmt.Sprintf("%s %s %s", priorityStr(b.Priority), b.ID, shortType(b.Type)),
+		fmt.Sprintf("  %s", truncate(b.Title, 26)),
+		fmt.Sprintf("  %s%s%s", dim, timeAgo(b.CreatedAt), reset),
+	}}
+}
+
+func renderWorkingCard(b BoardBead) card {
+	owner := beadOwnerLabel(b)
+	if owner == "" {
+		owner = b.Owner
+	}
+	elapsed := timeAgo(b.UpdatedAt)
+	return card{lines: []string{
+		fmt.Sprintf("%s %s %s", priorityStr(b.Priority), b.ID, shortType(b.Type)),
+		fmt.Sprintf("  %s", truncate(b.Title, 26)),
+		fmt.Sprintf("  %s%s%s %s%s%s", cyan, owner, reset, dim, elapsed, reset),
+	}}
+}
+
+func renderReviewCard(b BoardBead) card {
+	return card{lines: []string{
+		fmt.Sprintf("%s %s %s", priorityStr(b.Priority), b.ID, shortType(b.Type)),
+		fmt.Sprintf("  %s", truncate(b.Title, 26)),
+		fmt.Sprintf("  %s%sartificer reviewing%s", yellow, dim, reset),
+	}}
+}
+
+func renderMergedCard(b BoardBead) card {
+	ago := timeAgo(b.UpdatedAt)
+	return card{lines: []string{
+		fmt.Sprintf("%s %s %s", priorityStr(b.Priority), b.ID, shortType(b.Type)),
+		fmt.Sprintf("  %s", truncate(b.Title, 26)),
+		fmt.Sprintf("  %s%s%s", dim, ago, reset),
+	}}
+}
+
+// --- Helpers ---
+
 func beadOwnerLabel(b BoardBead) string {
 	for _, l := range b.Labels {
 		if strings.HasPrefix(l, "owner:") {
@@ -161,18 +423,15 @@ func beadOwnerLabel(b BoardBead) string {
 	return ""
 }
 
-// isCurrentUser checks if a claimedBy value matches the current identity.
 func isCurrentUser(claimedBy, identity string) bool {
 	if claimedBy == "" || identity == "" {
 		return false
 	}
-	// Exact match or prefix match (e.g., identity "spi" matches owner "spi")
 	return claimedBy == identity ||
 		strings.EqualFold(claimedBy, identity) ||
 		strings.Contains(claimedBy, identity)
 }
 
-// hasBlockingDeps returns true if the bead has unresolved blocking dependencies.
 func hasBlockingDeps(b BoardBead) bool {
 	if b.DependencyCount > 0 {
 		return true
@@ -185,7 +444,6 @@ func hasBlockingDeps(b BoardBead) bool {
 	return false
 }
 
-// blockingDepIDs returns the IDs of beads that block this one.
 func blockingDepIDs(b BoardBead) []string {
 	var ids []string
 	for _, d := range b.Dependencies {
@@ -215,7 +473,6 @@ func sortBeads(beads []BoardBead) {
 		if beads[i].Priority != beads[j].Priority {
 			return beads[i].Priority < beads[j].Priority
 		}
-		// More recently updated first
 		return beads[i].UpdatedAt > beads[j].UpdatedAt
 	})
 }
@@ -225,110 +482,6 @@ func nonNil(beads []BoardBead) []BoardBead {
 		return []BoardBead{}
 	}
 	return beads
-}
-
-// --- Terminal output ---
-
-// ANSI codes
-const (
-	bold    = "\033[1m"
-	dim     = "\033[2m"
-	red     = "\033[31m"
-	yellow  = "\033[33m"
-	green   = "\033[32m"
-	cyan    = "\033[36m"
-	reset   = "\033[0m"
-)
-
-func printBoard(s boardSections) {
-	any := false
-
-	if len(s.Review) > 0 {
-		printSection("REVIEW", s.Review, renderReview)
-		any = true
-	}
-	if len(s.Ready) > 0 {
-		if any {
-			fmt.Println()
-		}
-		printSection("READY", s.Ready, renderReady)
-		any = true
-	}
-	if len(s.Agents) > 0 {
-		if any {
-			fmt.Println()
-		}
-		printSection("AGENTS", s.Agents, renderAgents)
-		any = true
-	}
-	if len(s.Blocked) > 0 {
-		if any {
-			fmt.Println()
-		}
-		printSection("BLOCKED", s.Blocked, renderBlocked)
-		any = true
-	}
-
-	if !any {
-		fmt.Printf("%s(no work items)%s\n", dim, reset)
-	}
-}
-
-type renderFunc func(b BoardBead) string
-
-func printSection(name string, beads []BoardBead, render renderFunc) {
-	fmt.Printf("%s%s (%d)%s\n", bold, name, len(beads), reset)
-	for _, b := range beads {
-		fmt.Printf("  %s\n", render(b))
-	}
-}
-
-func renderReview(b BoardBead) string {
-	claimedBy := beadOwnerLabel(b)
-	if claimedBy == "" {
-		claimedBy = b.Owner
-	}
-	ago := timeAgo(b.UpdatedAt)
-	return fmt.Sprintf("%-12s %s  %-5s  %-40s  %sin_progress%s  claimed by %s  %s%s%s",
-		b.ID, priorityStr(b.Priority), shortType(b.Type),
-		truncate(b.Title, 40),
-		cyan, reset,
-		claimedBy,
-		dim, ago, reset)
-}
-
-func renderReady(b BoardBead) string {
-	return fmt.Sprintf("%-12s %s  %-5s  %-40s  %sunblocked%s",
-		b.ID, priorityStr(b.Priority), shortType(b.Type),
-		truncate(b.Title, 40),
-		green, reset)
-}
-
-func renderAgents(b BoardBead) string {
-	claimedBy := beadOwnerLabel(b)
-	if claimedBy == "" {
-		claimedBy = b.Owner
-	}
-	ago := timeAgo(b.UpdatedAt)
-	return fmt.Sprintf("%-12s %s  %-5s  %-40s  %sin_progress%s  claimed by %s  %s%s%s",
-		b.ID, priorityStr(b.Priority), shortType(b.Type),
-		truncate(b.Title, 40),
-		yellow, reset,
-		claimedBy,
-		dim, ago, reset)
-}
-
-func renderBlocked(b BoardBead) string {
-	blockers := blockingDepIDs(b)
-	blockerStr := ""
-	if len(blockers) > 0 {
-		blockerStr = fmt.Sprintf("  blocked by %s", strings.Join(blockers, ", "))
-	}
-	return fmt.Sprintf("%-12s %s  %-5s  %-40s  %s%sblocked%s%s",
-		b.ID, priorityStr(b.Priority), shortType(b.Type),
-		truncate(b.Title, 40),
-		dim, red, reset,
-		blockerStr)
 }
 
 func priorityStr(p int) string {
@@ -379,7 +532,10 @@ func timeAgo(ts string) string {
 	}
 	t, err := time.Parse(time.RFC3339, ts)
 	if err != nil {
-		return ""
+		t, err = time.Parse("2006-01-02 15:04:05", ts)
+		if err != nil {
+			return ""
+		}
 	}
 	d := time.Since(t)
 	switch {
@@ -394,4 +550,43 @@ func timeAgo(ts string) string {
 	default:
 		return fmt.Sprintf("%dw ago", int(d.Hours()/(24*7)))
 	}
+}
+
+// visibleLen returns the visible length of a string, ignoring ANSI escape codes.
+func visibleLen(s string) int {
+	n := 0
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\033' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if s[i] == 'm' {
+				inEscape = false
+			}
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func countDigits(n int) int {
+	if n == 0 {
+		return 1
+	}
+	d := 0
+	for n > 0 {
+		d++
+		n /= 10
+	}
+	return d
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
