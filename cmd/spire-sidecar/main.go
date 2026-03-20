@@ -27,6 +27,7 @@ type SidecarState struct {
 	AgentName    string
 	StartedAt    time.Time
 	Error        string
+	CommsDir     string // set once at startup
 }
 
 // SidecarSnapshot is the JSON-serializable snapshot of SidecarState.
@@ -38,6 +39,31 @@ type SidecarSnapshot struct {
 	AgentName    string    `json:"agentName"`
 	StartedAt    time.Time `json:"startedAt"`
 	Error        string    `json:"error,omitempty"`
+	Work         *WorkContext `json:"work,omitempty"`
+}
+
+// WorkContext describes the wizard's current work, scraped from /comms files.
+type WorkContext struct {
+	BeadID    string `json:"beadId,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+	Status    string `json:"status,omitempty"` // "running", "success", "error", "timeout"
+	StartedAt string `json:"startedAt,omitempty"`
+	Elapsed   string `json:"elapsed,omitempty"`
+}
+
+// BeadJSON matches the structure written to /comms/bead.json by the wizard.
+type BeadJSON struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// ResultJSON matches the structure written to /comms/result.json by the wizard.
+type ResultJSON struct {
+	BeadID    string `json:"beadId"`
+	Result    string `json:"result"`
+	Branch    string `json:"branch"`
+	StartedAt string `json:"startedAt"`
 }
 
 func (s *SidecarState) setPhase(phase string) {
@@ -73,7 +99,7 @@ func (s *SidecarState) setCollectResult(count int, err error) {
 func (s *SidecarState) snapshot() SidecarSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return SidecarSnapshot{
+	snap := SidecarSnapshot{
 		Phase:        s.Phase,
 		LastCollect:  s.LastCollect,
 		MessageCount: s.MessageCount,
@@ -82,6 +108,69 @@ func (s *SidecarState) snapshot() SidecarSnapshot {
 		StartedAt:    s.StartedAt,
 		Error:        s.Error,
 	}
+	// Enrich with work context from /comms files.
+	snap.Work = s.readWorkContext()
+	return snap
+}
+
+// readWorkContext scrapes /comms files to build work context.
+func (s *SidecarState) readWorkContext() *WorkContext {
+	if s.CommsDir == "" {
+		return nil
+	}
+
+	wc := &WorkContext{}
+
+	// Read bead.json (written by wizard during claim).
+	beadPath := filepath.Join(s.CommsDir, "bead.json")
+	if data, err := os.ReadFile(beadPath); err == nil {
+		// bead.json may be an array or single object.
+		var beads []BeadJSON
+		if json.Unmarshal(data, &beads) == nil && len(beads) > 0 {
+			wc.BeadID = beads[0].ID
+			wc.Title = beads[0].Title
+		} else {
+			var bead BeadJSON
+			if json.Unmarshal(data, &bead) == nil {
+				wc.BeadID = bead.ID
+				wc.Title = bead.Title
+			}
+		}
+	}
+
+	// Read result.json (written by wizard on exit).
+	resultPath := filepath.Join(s.CommsDir, "result.json")
+	if data, err := os.ReadFile(resultPath); err == nil {
+		var result ResultJSON
+		if json.Unmarshal(data, &result) == nil {
+			wc.Status = result.Result
+			wc.Branch = result.Branch
+			if wc.BeadID == "" {
+				wc.BeadID = result.BeadID
+			}
+			if result.StartedAt != "" {
+				wc.StartedAt = result.StartedAt
+				if t, err := time.Parse(time.RFC3339, result.StartedAt); err == nil {
+					wc.Elapsed = time.Since(t).Round(time.Second).String()
+				}
+			}
+		}
+	} else if wc.BeadID != "" {
+		// No result yet — wizard is still running.
+		wc.Status = "running"
+		wc.Elapsed = time.Since(s.StartedAt).Round(time.Second).String()
+	}
+
+	if wc.BeadID == "" {
+		return nil // no work context available
+	}
+
+	// Infer branch from bead ID if not in result.
+	if wc.Branch == "" && wc.BeadID != "" {
+		wc.Branch = "feat/" + wc.BeadID
+	}
+
+	return wc
 }
 
 func main() {
@@ -96,6 +185,7 @@ func main() {
 		WizardAlive: true,
 		AgentName:   *agentName,
 		StartedAt:   time.Now(),
+		CommsDir:    *commsDir,
 	}
 
 	// Ensure comms directory exists.

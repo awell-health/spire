@@ -83,15 +83,17 @@ func cmdSteward(args []string) error {
 		log.Printf("[steward] agents: %s", strings.Join(agentList, ", "))
 	}
 
-	// Run first cycle immediately
-	stewardCycle(dryRun, staleThreshold, agentList)
+	cycleNum := 1
+
+	// Run first cycle immediately.
+	stewardCycle(cycleNum, dryRun, staleThreshold, agentList)
+	cycleNum++
 
 	if once {
-		log.Printf("[steward] --once mode, exiting")
 		return nil
 	}
 
-	// Set up signal handling for graceful shutdown
+	// Set up signal handling for graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -101,71 +103,75 @@ func cmdSteward(args []string) error {
 	for {
 		select {
 		case <-ticker.C:
-			stewardCycle(dryRun, staleThreshold, agentList)
+			stewardCycle(cycleNum, dryRun, staleThreshold, agentList)
+			cycleNum++
 		case sig := <-sigCh:
-			log.Printf("[steward] received %s, shutting down", sig)
+			log.Printf("[steward] received %s, shutting down after %d cycles", sig, cycleNum-1)
 			return nil
 		}
 	}
 }
 
-// stewardCycle executes one steward cycle: sync, find ready work, assign, check stale, push.
-func stewardCycle(dryRun bool, staleThreshold time.Duration, agentList []string) {
-	log.Printf("[steward] cycle start")
+// stewardCycle executes one steward cycle: commit, pull, assess, assign, stale check, push.
+func stewardCycle(cycleNum int, dryRun bool, staleThreshold time.Duration, agentList []string) {
+	start := time.Now()
+	log.Printf("[steward] ═══ cycle %d ═══════════════════════════════", cycleNum)
 
-	// Step 1: Commit any local changes, then pull latest state
+	// Step 1: Commit + Pull.
 	_, _ = bd("dolt", "commit", "steward cycle sync")
 	_, err := bd("dolt", "pull")
 	if err != nil {
 		if !strings.Contains(err.Error(), "no remotes") && !strings.Contains(err.Error(), "nothing to commit") {
-			log.Printf("[steward] pull warning: %s", err)
+			log.Printf("[steward] pull: %s", err)
 		}
+	} else {
+		log.Printf("[steward] pull: synced")
 	}
 
-	// Step 2: Find ready work (unblocked, unassigned)
+	// Step 2: Assess — find ready work.
 	var ready []Bead
 	err = bdJSON(&ready, "ready")
 	if err != nil {
-		log.Printf("[steward] bd ready: %s", err)
+		log.Printf("[steward] ready: error — %s", err)
 		pushState()
+		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
 		return
 	}
 
-	log.Printf("[steward] found %d ready bead(s)", len(ready))
-
-	// Step 3: Load roster of available agents
+	// Step 3: Load roster.
 	roster := loadRoster(agentList)
+	busy := findBusyAgents()
+	idleCount := len(roster) - len(busy)
+	if idleCount < 0 {
+		idleCount = 0
+	}
+
+	log.Printf("[steward] ready: %d beads | roster: %d wizard(s) (%d busy, %d idle)",
+		len(ready), len(roster), len(busy), idleCount)
+
 	if len(roster) == 0 {
-		log.Printf("[steward] no agents available, skipping assignment")
 		checkStaleBeads(staleThreshold, dryRun)
 		pushState()
+		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
 		return
 	}
 
-	// Step 4: Find busy agents (those with in_progress beads)
-	busy := findBusyAgents()
-	log.Printf("[steward] roster: %d agent(s), %d busy", len(roster), len(busy))
-
-	// Step 5: Assign ready beads to idle agents (round-robin)
+	// Step 4: Assign ready beads to idle agents (round-robin).
 	assigned := 0
 	agentIdx := 0
 	for _, bead := range ready {
-		// Skip message beads (created by spire send)
+		// Skip message, template, and already-owned beads.
 		if hasLabel(bead, "msg") != "" || containsLabel(bead, "msg") {
 			continue
 		}
-
-		// Skip template beads
 		if containsLabel(bead, "template") {
 			continue
 		}
-
-		// Skip beads that already have an owner
 		if hasLabel(bead, "owner:") != "" {
 			continue
 		}
 
-		// Find next idle agent (round-robin)
+		// Find next idle agent (round-robin).
 		agent := ""
 		for attempts := 0; attempts < len(roster); attempts++ {
 			candidate := roster[agentIdx%len(roster)]
@@ -177,17 +183,16 @@ func stewardCycle(dryRun bool, staleThreshold time.Duration, agentList []string)
 		}
 
 		if agent == "" {
-			log.Printf("[steward] no idle agents for %s: %s", bead.ID, bead.Title)
-			continue
+			continue // all agents busy
 		}
 
 		if dryRun {
-			log.Printf("[steward] [dry-run] would assign %s (%s) to %s", bead.ID, bead.Title, agent)
+			log.Printf("[steward] [dry-run] would assign %s → %s", bead.ID, agent)
 			assigned++
 			continue
 		}
 
-		// Send assignment message
+		// Send assignment message.
 		msg := fmt.Sprintf("Please claim and work on %s: %s", bead.ID, bead.Title)
 		sendArgs := []string{
 			"send", agent, msg,
@@ -197,24 +202,31 @@ func stewardCycle(dryRun bool, staleThreshold time.Duration, agentList []string)
 		}
 		_, sendErr := runSpire(sendArgs...)
 		if sendErr != nil {
-			log.Printf("[steward] send to %s for %s: %s", agent, bead.ID, sendErr)
+			log.Printf("[steward] send failed: %s → %s: %s", bead.ID, agent, sendErr)
 			continue
 		}
 
-		log.Printf("[steward] assigned %s (%s) to %s", bead.ID, bead.Title, agent)
-		busy[agent] = true // mark busy for this cycle
+		log.Printf("[steward] assigned: %s → %s (P%d)", bead.ID, agent, bead.Priority)
+		busy[agent] = true
 		assigned++
 	}
 
-	log.Printf("[steward] assigned %d bead(s)", assigned)
+	if assigned > 0 {
+		log.Printf("[steward] assigned: %d bead(s)", assigned)
+	}
 
-	// Step 6: Check for stale beads
-	checkStaleBeads(staleThreshold, dryRun)
+	// Step 5: Stale check.
+	staleCount := checkStaleBeads(staleThreshold, dryRun)
+	if staleCount > 0 {
+		log.Printf("[steward] stale: %d bead(s)", staleCount)
+	} else {
+		log.Printf("[steward] stale: none")
+	}
 
-	// Step 7: Push state
+	// Step 6: Push.
 	pushState()
 
-	log.Printf("[steward] cycle complete")
+	log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
 }
 
 // loadRoster returns a list of registered agent names.
@@ -272,12 +284,12 @@ func findBusyAgents() map[string]bool {
 }
 
 // checkStaleBeads warns about beads that have been in_progress longer than the threshold.
-func checkStaleBeads(threshold time.Duration, dryRun bool) {
+func checkStaleBeads(threshold time.Duration, dryRun bool) int {
 	var inProgress []Bead
 	err := bdJSON(&inProgress, "list", "--status=in_progress")
 	if err != nil {
 		log.Printf("[steward] check stale: %s", err)
-		return
+		return 0
 	}
 
 	now := time.Now()
@@ -310,9 +322,7 @@ func checkStaleBeads(threshold time.Duration, dryRun bool) {
 		}
 	}
 
-	if staleCount > 0 {
-		log.Printf("[steward] %d stale bead(s) detected", staleCount)
-	}
+	return staleCount
 }
 
 // pushState pushes state to DoltHub, logging any errors.
