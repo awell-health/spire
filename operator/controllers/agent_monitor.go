@@ -299,16 +299,16 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 
 	// Inject secrets from SpireConfig
 	if cfg != nil {
-		// DoltHub credentials
-		if cfg.Spec.DoltHub.Remote != "" {
-			wizardEnv = append(wizardEnv, corev1.EnvVar{
-				Name: "DOLTHUB_REMOTE", Value: cfg.Spec.DoltHub.Remote,
-			})
-		}
+		// Dolt remote — in-cluster remotesapi (replaces DoltHub)
+		wizardEnv = append(wizardEnv,
+			corev1.EnvVar{Name: "DOLT_REMOTE_URL", Value: "http://spire-dolt:50051/spi"},
+			corev1.EnvVar{Name: "DOLT_HOST", Value: "spire-dolt"},
+			corev1.EnvVar{Name: "DOLT_PORT", Value: "3306"},
+		)
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
 			wizardEnv = append(wizardEnv,
-				envFromSecret("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER"),
-				envFromSecret("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD"),
+				envFromSecretOptional("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER_WIZARD"),
+				envFromSecretOptional("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD_WIZARD"),
 			)
 		}
 
@@ -526,15 +526,16 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 
 	// Inject secrets from SpireConfig.
 	if cfg != nil {
-		if cfg.Spec.DoltHub.Remote != "" {
-			artificerEnv = append(artificerEnv, corev1.EnvVar{
-				Name: "DOLTHUB_REMOTE", Value: cfg.Spec.DoltHub.Remote,
-			})
-		}
+		// Dolt remote — in-cluster remotesapi
+		artificerEnv = append(artificerEnv,
+			corev1.EnvVar{Name: "DOLT_REMOTE_URL", Value: "http://spire-dolt:50051/spi"},
+			corev1.EnvVar{Name: "DOLT_HOST", Value: "spire-dolt"},
+			corev1.EnvVar{Name: "DOLT_PORT", Value: "3306"},
+		)
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
 			artificerEnv = append(artificerEnv,
-				envFromSecret("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER"),
-				envFromSecret("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD"),
+				envFromSecretOptional("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER_ARTIFICER"),
+				envFromSecretOptional("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD_ARTIFICER"),
 			)
 		}
 

@@ -318,8 +318,13 @@ setup_state_repo() {
     log "warning: dolt server not reachable after 15s, continuing anyway"
   fi
 
-  # Pull latest from DoltHub (incremental — only new commits)
-  if [ -n "${DOLTHUB_REMOTE:-}" ]; then
+  # Pull latest from shared dolt server via remotesapi
+  if [ -n "${DOLT_REMOTE_URL:-}" ]; then
+    export DOLT_REMOTE_PASSWORD="${DOLT_REMOTE_PASSWORD:-}"
+    bd dolt remote add origin "$DOLT_REMOTE_URL" 2>/dev/null || true
+    log "pulling beads from dolt server..."
+    bd dolt pull >/dev/null 2>&1 || log "pull warning: could not sync (will work with local state)"
+  elif [ -n "${DOLTHUB_REMOTE:-}" ]; then
     bd dolt remote add origin "$DOLTHUB_REMOTE" >/dev/null 2>&1 || true
     log "pulling beads from DoltHub..."
     bd dolt pull >/dev/null 2>&1 || log "pull warning: could not sync (will work with local state)"

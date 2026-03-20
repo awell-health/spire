@@ -151,20 +151,12 @@ func stewardCycle(cycleNum int, dryRun bool, staleThreshold, shutdownThreshold t
 	start := time.Now()
 	log.Printf("[steward] ═══ cycle %d ═══════════════════════════════", cycleNum)
 
-	// Step 1: Commit + Pull.
+	// Step 1: Commit any local changes (pull/push disabled — shared dolt server is source of truth).
 	_, _ = bd("dolt", "commit", "steward cycle sync")
-	_, err := bd("dolt", "pull")
-	if err != nil {
-		if !strings.Contains(err.Error(), "no remotes") && !strings.Contains(err.Error(), "nothing to commit") {
-			log.Printf("[steward] pull: %s", err)
-		}
-	} else {
-		log.Printf("[steward] pull: synced")
-	}
 
 	// Step 2: Assess — find ready work.
 	var ready []Bead
-	err = bdJSON(&ready, "ready")
+	err := bdJSON(&ready, "ready")
 	if err != nil {
 		log.Printf("[steward] ready: error — %s", err)
 		pushState()
@@ -402,15 +394,9 @@ func killWizardPod(agentName, beadID string) {
 	}
 }
 
-// pushState pushes state to DoltHub, logging any errors.
-func pushState() {
-	_, err := bd("dolt", "push")
-	if err != nil {
-		if !strings.Contains(err.Error(), "no remotes") {
-			log.Printf("[steward] push warning: %s", err)
-		}
-	}
-}
+// pushState is a no-op when using a shared dolt server (server IS the source of truth).
+// DoltHub backup is handled by a separate cron, not the steward cycle.
+func pushState() {}
 
 // runSpire runs a spire subcommand by calling the spire binary.
 func runSpire(args ...string) (string, error) {

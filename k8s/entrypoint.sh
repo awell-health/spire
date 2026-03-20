@@ -7,6 +7,9 @@ echo "[steward] starting up..."
 : "${STEWARD_INTERVAL:=2m}"
 : "${DOLT_HOST:=spire-dolt.spire.svc}"
 : "${DOLT_PORT:=3306}"
+: "${DOLT_REMOTE_URL:=http://spire-dolt:50051/spi}"
+# DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD injected from k8s secret
+export DOLT_REMOTE_PASSWORD="${DOLT_REMOTE_PASSWORD:-}"
 
 # Configure git identity
 git config --global user.name "spire-steward"
@@ -51,6 +54,10 @@ if bd dolt test >/dev/null 2>&1; then
 else
     echo "[steward] WARNING: dolt not reachable after 60s, continuing anyway"
 fi
+
+# Configure remotesapi as the dolt remote (for bd dolt pull/push)
+echo "[steward] configuring remote: $DOLT_REMOTE_URL (user: $DOLT_REMOTE_USER)"
+bd dolt remote add origin "$DOLT_REMOTE_URL" 2>/dev/null || true
 
 # Register steward
 spire register steward "Spire steward — automated work coordinator" 2>/dev/null || true
