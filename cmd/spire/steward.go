@@ -264,25 +264,38 @@ func stewardCycle(cycleNum int, dryRun bool, staleThreshold, shutdownThreshold t
 }
 
 // loadRoster returns a list of registered agent names.
-// If agentList is non-empty, use that directly. Otherwise query beads for agent registrations.
+// Checks k8s SpireAgent CRs first (if available), then falls back to bead registrations.
 func loadRoster(agentList []string) []string {
 	if len(agentList) > 0 {
 		return agentList
 	}
 
-	// Query for registered agents (beads with label "agent", status open)
+	exclude := map[string]bool{
+		"steward": true, "mayor": true,
+		"spi": true, "awell": true,
+	}
+
+	// Try k8s SpireAgent CRs first — this is the canonical source in k8s mode.
+	cmd := exec.Command("kubectl", "get", "spireagent", "-n", "spire",
+		"-o", "jsonpath={.items[*].metadata.name}")
+	if out, err := cmd.Output(); err == nil {
+		var names []string
+		for _, name := range strings.Fields(strings.TrimSpace(string(out))) {
+			if !exclude[name] {
+				names = append(names, name)
+			}
+		}
+		if len(names) > 0 {
+			return names
+		}
+	}
+
+	// Fallback: query beads for agent registrations (non-k8s mode).
 	var agents []Bead
-	err := bdJSON(&agents, "list", "--rig=spi", "--label", "agent", "--status=open")
+	err := bdJSON(&agents, "list", "--label", "agent", "--status=open")
 	if err != nil {
 		log.Printf("[steward] load roster: %s", err)
 		return nil
-	}
-
-	// Agents to exclude from assignment (steward itself, prefix artifacts)
-	exclude := map[string]bool{
-		"steward": true, "mayor": true, // coordinator — not a worker
-		"spi":     true, // prefix artifact
-		"awell":   true, // prefix artifact
 	}
 
 	var names []string
