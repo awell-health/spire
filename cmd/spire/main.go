@@ -79,6 +79,8 @@ func main() {
 		err = cmdShutdown(args)
 	case "board":
 		err = cmdBoard(args)
+	case "roster":
+		err = cmdRoster(args)
 	case "status":
 		err = cmdStatus(args)
 	case "metrics":
