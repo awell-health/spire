@@ -16,7 +16,7 @@ import (
 func cmdSteward(args []string) error {
 	// Parse flags
 	interval := 2 * time.Minute
-	staleThreshold := 4 * time.Hour
+	staleThreshold := 15 * time.Minute
 	once := false
 	dryRun := false
 	var agentList []string

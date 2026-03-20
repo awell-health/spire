@@ -6,8 +6,8 @@ runtime:
 
 agent:
   model: claude-sonnet-4-6
-  max-turns: 50
-  timeout: 30m
+  max-turns: 30
+  timeout: 10m
 
 branch:
   base: main

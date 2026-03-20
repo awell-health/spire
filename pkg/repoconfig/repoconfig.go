@@ -122,10 +122,10 @@ func applyDefaults(cfg *RepoConfig, dir string) {
 		cfg.Agent.Model = "claude-sonnet-4-6"
 	}
 	if cfg.Agent.MaxTurns == 0 {
-		cfg.Agent.MaxTurns = 50
+		cfg.Agent.MaxTurns = 30
 	}
 	if cfg.Agent.Timeout == "" {
-		cfg.Agent.Timeout = "30m"
+		cfg.Agent.Timeout = "10m"
 	}
 
 	// Branch defaults
@@ -208,8 +208,8 @@ func GenerateYAML(dir string) string {
 	s += "\n"
 	s += "agent:\n"
 	s += "  model: claude-sonnet-4-6\n"
-	s += "  max-turns: 50\n"
-	s += "  timeout: 30m\n"
+	s += "  max-turns: 30\n"
+	s += "  timeout: 10m\n"
 	s += "\n"
 	s += "branch:\n"
 	s += "  base: main\n"
