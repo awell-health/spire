@@ -281,57 +281,42 @@ setup_state_repo() {
   git config user.name "$AGENT_NAME" >/dev/null 2>&1 || true
   git config user.email "${SPIRE_GIT_EMAIL:-$AGENT_NAME@spire.local}" >/dev/null 2>&1 || true
 
-  # Configure dolt credentials before any dolt operations
-  local cred_file
-  cred_file=$(ls /root/.dolt/creds/*.jwk 2>/dev/null | head -1)
-  if [ -n "$cred_file" ]; then
-    local key_id
-    key_id=$(basename "$cred_file" .jwk)
-    dolt config --global --set user.creds "$key_id" 2>/dev/null || true
-    log "dolt credential configured: $key_id"
-  fi
+  # Dolt runs as a shared cluster service (spire-dolt).
+  # Wizards connect to it — no local dolt server, no clone, no snapshot.
+  local dolt_host="${DOLT_HOST:-spire-dolt.spire.svc}"
+  local dolt_port="${DOLT_PORT:-3306}"
 
-  export BEADS_DOLT_SERVER_PORT=3307
-
-  # Copy pre-baked beads snapshot if available (avoids 2min DoltHub clone)
-  if [ ! -d .beads ] && [ -d /beads-snapshot/.beads ]; then
-    log "restoring pre-baked beads snapshot"
-    cp -a /beads-snapshot/. . 2>/dev/null || cp -r /beads-snapshot/.beads .beads 2>/dev/null || true
-  elif [ ! -d .beads ]; then
-    log "initializing beads from scratch"
+  if [ ! -d .beads ]; then
+    log "initializing beads (dolt: $dolt_host:$dolt_port)"
+    BEADS_DOLT_SERVER_HOST="$dolt_host" \
+    BEADS_DOLT_SERVER_PORT="$dolt_port" \
     bd init --force --prefix "$AGENT_PREFIX" >/dev/null || fatal "failed to initialize beads state"
-    bd dolt set port 3307 2>/dev/null || true
-    echo '{"prefix":"spi-","path":"."}' >> .beads/routes.jsonl 2>/dev/null || true
   fi
 
-  # Start dolt server on fixed port
-  rm -f .beads/dolt-server.lock .beads/dolt-server.pid .beads/dolt-server.port
-  bd dolt start || log "dolt start warning"
+  # Point beads at the shared dolt service.
+  bd dolt set host "$dolt_host" 2>/dev/null || true
+  bd dolt set port "$dolt_port" 2>/dev/null || true
+  # Remove local server files — we're a client, not a server.
+  rm -f .beads/dolt-server.port .beads/dolt-server.pid .beads/dolt-server.lock
 
-  # Wait for dolt to be reachable (up to 15s)
+  # Ensure routes
+  if ! grep -q "\"prefix\":\"spi-\"" .beads/routes.jsonl 2>/dev/null; then
+    echo '{"prefix":"spi-","path":"."}' >> .beads/routes.jsonl
+  fi
+
+  # Wait for shared dolt to be reachable
   local tries=0
   while ! bd dolt test >/dev/null 2>&1 && [ $tries -lt 15 ]; do
     sleep 1
     tries=$((tries + 1))
   done
   if [ $tries -ge 15 ]; then
-    log "warning: dolt server not reachable after 15s, continuing anyway"
-  fi
-
-  # Pull latest from shared dolt server via remotesapi
-  if [ -n "${DOLT_REMOTE_URL:-}" ]; then
-    export DOLT_REMOTE_PASSWORD="${DOLT_REMOTE_PASSWORD:-}"
-    bd dolt remote add origin "$DOLT_REMOTE_URL" 2>/dev/null || true
-    log "pulling beads from dolt server..."
-    bd dolt pull >/dev/null 2>&1 || log "pull warning: could not sync (will work with local state)"
-  elif [ -n "${DOLTHUB_REMOTE:-}" ]; then
-    bd dolt remote add origin "$DOLTHUB_REMOTE" >/dev/null 2>&1 || true
-    log "pulling beads from DoltHub..."
-    bd dolt pull >/dev/null 2>&1 || log "pull warning: could not sync (will work with local state)"
+    log "warning: dolt at $dolt_host:$dolt_port not reachable after 15s"
+  else
+    log "dolt connected ($dolt_host:$dolt_port)"
   fi
 
   export SPIRE_IDENTITY="$AGENT_NAME"
-
   spire register "$AGENT_NAME" "Managed autonomous wizard" >/dev/null 2>&1 || true
 }
 

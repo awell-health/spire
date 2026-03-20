@@ -290,6 +290,8 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
 		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
+		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_PORT", Value: "3306"},
 	}
 
 	// Sidecar environment
@@ -515,6 +517,8 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
 		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
+		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_PORT", Value: "3306"},
 		{Name: "ARTIFICER_MODEL", Value: "claude-opus-4-6"},
 		{Name: "ARTIFICER_MAX_REVIEW_ROUNDS", Value: "3"},
 	}
