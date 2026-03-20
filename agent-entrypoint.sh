@@ -255,19 +255,47 @@ setup_state_repo() {
   git config user.name "$AGENT_NAME" >/dev/null 2>&1 || true
   git config user.email "${SPIRE_GIT_EMAIL:-$AGENT_NAME@spire.local}" >/dev/null 2>&1 || true
 
+  # Configure dolt credentials before any dolt operations
+  local cred_file
+  cred_file=$(ls /root/.dolt/creds/*.jwk 2>/dev/null | head -1)
+  if [ -n "$cred_file" ]; then
+    local key_id
+    key_id=$(basename "$cred_file" .jwk)
+    dolt config --global --set user.creds "$key_id" 2>/dev/null || true
+    log "dolt credential configured: $key_id"
+  fi
+
   if [ ! -d .beads ]; then
     log "initializing local Spire state in $STATE_DIR"
+
+    # Clone from DoltHub first if configured (avoids project ID mismatch)
+    if [ -n "${DOLTHUB_REMOTE:-}" ]; then
+      mkdir -p .beads/dolt
+      log "cloning from DoltHub: $DOLTHUB_REMOTE"
+      dolt clone "$DOLTHUB_REMOTE" ".beads/dolt/$AGENT_PREFIX" 2>&1 || log "clone warning: could not clone (will init fresh)"
+    fi
+
     bd init --force --prefix "$AGENT_PREFIX" >/dev/null || fatal "failed to initialize beads state"
   fi
 
-  export SPIRE_IDENTITY="$AGENT_NAME"
+  # Pin dolt to fixed port and start server explicitly
+  bd dolt set port 3307 2>/dev/null || true
+  rm -f .beads/dolt-server.lock
+  bd dolt start || log "dolt start warning: server may already be running"
 
-  if [ -n "${DOLTHUB_REMOTE:-}" ]; then
-    bd dolt remote add origin "$DOLTHUB_REMOTE" >/dev/null 2>&1 || true
-    if ! spire sync --hard "$DOLTHUB_REMOTE" >/dev/null; then
-      fatal "failed to sync Spire state from $DOLTHUB_REMOTE"
-    fi
+  # Wait for dolt to be reachable
+  local tries=0
+  while ! bd dolt test >/dev/null 2>&1 && [ $tries -lt 10 ]; do
+    sleep 1
+    tries=$((tries + 1))
+  done
+
+  # Ensure routes include spi rig
+  if ! grep -q '"prefix":"spi-"' .beads/routes.jsonl 2>/dev/null; then
+    echo '{"prefix":"spi-","path":"."}' >> .beads/routes.jsonl
   fi
+
+  export SPIRE_IDENTITY="$AGENT_NAME"
 
   spire register "$AGENT_NAME" "Managed autonomous wizard" >/dev/null 2>&1 || true
 }

@@ -339,12 +339,19 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "dolt-creds", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: "dolt-creds",
+				Optional:   boolPtr(true),
+			},
+		}},
 	}
 
 	sharedMounts := []corev1.VolumeMount{
 		{Name: "comms", MountPath: "/comms"},
 		{Name: "workspace", MountPath: "/workspace"},
 		{Name: "data", MountPath: "/data"},
+		{Name: "dolt-creds", MountPath: "/root/.dolt/creds", ReadOnly: true},
 	}
 
 	pod := &corev1.Pod{
@@ -560,12 +567,19 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "dolt-creds", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: "dolt-creds",
+				Optional:   boolPtr(true),
+			},
+		}},
 	}
 
 	sharedMounts := []corev1.VolumeMount{
 		{Name: "comms", MountPath: "/comms"},
 		{Name: "workspace", MountPath: "/workspace"},
 		{Name: "data", MountPath: "/data"},
+		{Name: "dolt-creds", MountPath: "/root/.dolt/creds", ReadOnly: true},
 	}
 
 	pod := &corev1.Pod{
@@ -641,6 +655,8 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 
 	return pod
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 func sanitizeK8sName(s string) string {
 	// k8s names: lowercase, alphanumeric, hyphens

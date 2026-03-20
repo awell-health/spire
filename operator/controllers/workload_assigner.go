@@ -128,16 +128,7 @@ func (a *WorkloadAssigner) selectAgent(agents []spirev1.SpireAgent, wl *spirev1.
 func (a *WorkloadAssigner) assign(ctx context.Context, wl *spirev1.SpireWorkload, agent *spirev1.SpireAgent) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Send message via spire
-	msg := fmt.Sprintf("Please claim and work on %s: %s", wl.Spec.BeadID, wl.Spec.Title)
-	cmd := exec.CommandContext(ctx, "spire", "send", agent.Name, msg,
-		"--ref", wl.Spec.BeadID, "--priority", fmt.Sprintf("%d", wl.Spec.Priority))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		a.Log.Error(err, "failed to send assignment", "agent", agent.Name, "bead", wl.Spec.BeadID, "output", string(out))
-		return
-	}
-
-	// Update workload status
+	// Update workload status (agent-monitor will create the pod)
 	wl.Status.Phase = "Assigned"
 	wl.Status.AssignedTo = agent.Name
 	wl.Status.AssignedAt = now
