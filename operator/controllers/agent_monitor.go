@@ -144,7 +144,7 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 	// Reap completed/failed pods and remove their bead IDs from CurrentWork
 	statusChanged := false
 	for beadID, pod := range podsByBead {
-		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed || isPodFinished(pod) {
 			// Remove bead from CurrentWork
 			for i, id := range agent.Status.CurrentWork {
 				if id == beadID {
@@ -657,6 +657,20 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// isPodFinished checks if the main work container (wizard or artificer) has
+// terminated, even if the pod phase is still Running (sidecar may still be alive).
+func isPodFinished(pod *corev1.Pod) bool {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == "sidecar" {
+			continue // skip the sidecar
+		}
+		if cs.State.Terminated != nil {
+			return true
+		}
+	}
+	return false
+}
 
 func sanitizeK8sName(s string) string {
 	// k8s names: lowercase, alphanumeric, hyphens

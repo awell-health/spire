@@ -326,8 +326,10 @@ func wizardMonitorLoop(ctx context.Context, state *SidecarState, commsDir string
 			// Check if wizard wrote a result (meaning it exited).
 			if _, err := os.Stat(resultPath); err == nil {
 				state.setWizardAlive(false)
-				log.Println("wizard has exited (result.json found)")
-				continue
+				log.Println("wizard has exited (result.json found), sidecar shutting down in 10s")
+				time.Sleep(10 * time.Second) // grace period for final collect/push
+				log.Println("sidecar exiting")
+				return
 			}
 
 			// Check wizard-alive file freshness. Wizard should touch
