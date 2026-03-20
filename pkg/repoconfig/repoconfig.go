@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -33,7 +34,8 @@ type RuntimeConfig struct {
 type AgentConfig struct {
 	Model    string `yaml:"model"`     // default model for this repo
 	MaxTurns int    `yaml:"max-turns"` // safety limit
-	Timeout  string `yaml:"timeout"`   // e.g. "30m"
+	Stale    string `yaml:"stale"`     // warning: wizard exceeded guidelines (e.g. "10m")
+	Timeout  string `yaml:"timeout"`   // fatal: tower kills the wizard (e.g. "15m")
 }
 
 // BranchConfig controls branch naming.
@@ -74,7 +76,23 @@ func Load(dir string) (*RepoConfig, error) {
 	// Apply defaults (auto-detected values fill in blanks)
 	applyDefaults(cfg, detectDir)
 
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validate checks config invariants.
+func validate(cfg *RepoConfig) error {
+	if cfg.Agent.Stale != "" && cfg.Agent.Timeout != "" {
+		stale, err1 := time.ParseDuration(cfg.Agent.Stale)
+		timeout, err2 := time.ParseDuration(cfg.Agent.Timeout)
+		if err1 == nil && err2 == nil && stale >= timeout {
+			return fmt.Errorf("spire.yaml: agent.stale (%s) must be less than agent.timeout (%s)", cfg.Agent.Stale, cfg.Agent.Timeout)
+		}
+	}
+	return nil
 }
 
 // findAndParse walks up from dir looking for spire.yaml. Returns the parsed
@@ -124,8 +142,11 @@ func applyDefaults(cfg *RepoConfig, dir string) {
 	if cfg.Agent.MaxTurns == 0 {
 		cfg.Agent.MaxTurns = 30
 	}
+	if cfg.Agent.Stale == "" {
+		cfg.Agent.Stale = "10m"
+	}
 	if cfg.Agent.Timeout == "" {
-		cfg.Agent.Timeout = "10m"
+		cfg.Agent.Timeout = "15m"
 	}
 
 	// Branch defaults
@@ -209,7 +230,8 @@ func GenerateYAML(dir string) string {
 	s += "agent:\n"
 	s += "  model: claude-sonnet-4-6\n"
 	s += "  max-turns: 30\n"
-	s += "  timeout: 10m\n"
+	s += "  stale: 10m\n"
+	s += "  timeout: 15m\n"
 	s += "\n"
 	s += "branch:\n"
 	s += "  base: main\n"
@@ -249,6 +271,7 @@ func FormatResolved(cfg *RepoConfig) string {
 	s += "agent:\n"
 	s += "  model: " + cfg.Agent.Model + "\n"
 	s += "  max-turns: " + itoa(cfg.Agent.MaxTurns) + "\n"
+	s += "  stale: " + cfg.Agent.Stale + "\n"
 	s += "  timeout: " + cfg.Agent.Timeout + "\n"
 
 	s += "branch:\n"

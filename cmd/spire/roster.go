@@ -61,15 +61,24 @@ func cmdRoster(args []string) error {
 		}
 	}
 
-	// Load timeout from repo config.
+	// Load stale + timeout from repo config.
 	cwd, _ := os.Getwd()
 	cfg, _ := repoconfig.Load(cwd)
-	timeout := 10 * time.Minute // default
-	if cfg != nil && cfg.Agent.Timeout != "" {
-		if d, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
-			timeout = d
+	stale := 10 * time.Minute    // guideline — when we flag it
+	timeout := 15 * time.Minute  // kill — when we shut it down
+	if cfg != nil {
+		if cfg.Agent.Stale != "" {
+			if d, err := time.ParseDuration(cfg.Agent.Stale); err == nil {
+				stale = d
+			}
+		}
+		if cfg.Agent.Timeout != "" {
+			if d, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
+				timeout = d
+			}
 		}
 	}
+	_ = stale // used in future enrichment for bar color thresholds
 
 	// Try k8s first — it has real pod start times.
 	if agents, err := rosterFromK8s(timeout); err == nil && len(agents) > 0 {

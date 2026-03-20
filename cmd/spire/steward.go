@@ -79,24 +79,40 @@ func cmdSteward(args []string) error {
 		}
 	}
 
-	// Derive stale threshold from repo config (agent.timeout).
-	// A bead in_progress longer than the wizard timeout means something is wrong:
-	// the wizard crashed without cleanup, or someone claimed and never finished.
-	// The --stale-threshold flag overrides if explicitly set.
-	staleThreshold := staleOverride
-	if staleThreshold == 0 {
-		cwd, _ := os.Getwd()
-		if cfg, err := repoconfig.Load(cwd); err == nil && cfg.Agent.Timeout != "" {
-			if timeout, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
-				staleThreshold = timeout
+	// Read stale + shutdown (timeout) from spire.yaml.
+	//
+	// Stale = agent.stale (warning: wizard exceeded guidelines, create alert)
+	// Shutdown = agent.timeout (fatal: tower kills the pod)
+	//
+	// Defaults: stale=10m, shutdown=15m. stale must be < timeout.
+	// --stale-threshold flag overrides agent.stale if explicitly set.
+	var staleThreshold, shutdownThreshold time.Duration
+	cwd, _ := os.Getwd()
+	if cfg, err := repoconfig.Load(cwd); err == nil {
+		if cfg.Agent.Stale != "" {
+			if d, err := time.ParseDuration(cfg.Agent.Stale); err == nil {
+				staleThreshold = d
 			}
 		}
-		if staleThreshold == 0 {
-			staleThreshold = 10 * time.Minute // fallback if no config
+		if cfg.Agent.Timeout != "" {
+			if d, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
+				shutdownThreshold = d
+			}
 		}
 	}
+	if staleThreshold == 0 {
+		staleThreshold = 10 * time.Minute
+	}
+	if shutdownThreshold == 0 {
+		shutdownThreshold = 15 * time.Minute
+	}
+	// Explicit flag overrides config.
+	if staleOverride > 0 {
+		staleThreshold = staleOverride
+	}
 
-	log.Printf("[steward] starting (interval=%s, once=%v, dry-run=%v, stale-threshold=%s)", interval, once, dryRun, staleThreshold)
+	log.Printf("[steward] starting (interval=%s, once=%v, dry-run=%v, stale=%s, shutdown=%s)",
+		interval, once, dryRun, staleThreshold, shutdownThreshold)
 	if len(agentList) > 0 {
 		log.Printf("[steward] agents: %s", strings.Join(agentList, ", "))
 	}
@@ -104,7 +120,7 @@ func cmdSteward(args []string) error {
 	cycleNum := 1
 
 	// Run first cycle immediately.
-	stewardCycle(cycleNum, dryRun, staleThreshold, agentList)
+	stewardCycle(cycleNum, dryRun, staleThreshold, shutdownThreshold, agentList)
 	cycleNum++
 
 	if once {
@@ -121,7 +137,7 @@ func cmdSteward(args []string) error {
 	for {
 		select {
 		case <-ticker.C:
-			stewardCycle(cycleNum, dryRun, staleThreshold, agentList)
+			stewardCycle(cycleNum, dryRun, staleThreshold, shutdownThreshold, agentList)
 			cycleNum++
 		case sig := <-sigCh:
 			log.Printf("[steward] received %s, shutting down after %d cycles", sig, cycleNum-1)
@@ -130,8 +146,8 @@ func cmdSteward(args []string) error {
 	}
 }
 
-// stewardCycle executes one steward cycle: commit, pull, assess, assign, stale check, push.
-func stewardCycle(cycleNum int, dryRun bool, staleThreshold time.Duration, agentList []string) {
+// stewardCycle executes one steward cycle: commit, pull, assess, assign, stale/shutdown check, push.
+func stewardCycle(cycleNum int, dryRun bool, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
 	start := time.Now()
 	log.Printf("[steward] ═══ cycle %d ═══════════════════════════════", cycleNum)
 
@@ -168,7 +184,7 @@ func stewardCycle(cycleNum int, dryRun bool, staleThreshold time.Duration, agent
 		len(ready), len(roster), len(busy), idleCount)
 
 	if len(roster) == 0 {
-		checkStaleBeads(staleThreshold, dryRun)
+		checkBeadHealth(staleThreshold, shutdownThreshold, dryRun)
 		pushState()
 		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
 		return
@@ -233,10 +249,10 @@ func stewardCycle(cycleNum int, dryRun bool, staleThreshold time.Duration, agent
 		log.Printf("[steward] assigned: %d bead(s)", assigned)
 	}
 
-	// Step 5: Stale check.
-	staleCount := checkStaleBeads(staleThreshold, dryRun)
-	if staleCount > 0 {
-		log.Printf("[steward] stale: %d bead(s)", staleCount)
+	// Step 5: Stale + shutdown check.
+	staleCount, shutdownCount := checkBeadHealth(staleThreshold, shutdownThreshold, dryRun)
+	if staleCount > 0 || shutdownCount > 0 {
+		log.Printf("[steward] stale: %d warning(s), %d shutdown(s)", staleCount, shutdownCount)
 	} else {
 		log.Printf("[steward] stale: none")
 	}
@@ -301,17 +317,21 @@ func findBusyAgents() map[string]bool {
 	return busy
 }
 
-// checkStaleBeads warns about beads that have been in_progress longer than the threshold.
-func checkStaleBeads(threshold time.Duration, dryRun bool) int {
+// checkBeadHealth checks in_progress beads against two thresholds:
+//   - stale: wizard exceeded guidelines (warning + alert bead)
+//   - shutdown: tower kills the wizard (delete the pod)
+//
+// Returns (staleCount, shutdownCount).
+func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool) (int, int) {
 	var inProgress []Bead
 	err := bdJSON(&inProgress, "list", "--status=in_progress")
 	if err != nil {
-		log.Printf("[steward] check stale: %s", err)
-		return 0
+		log.Printf("[steward] check health: %s", err)
+		return 0, 0
 	}
 
 	now := time.Now()
-	staleCount := 0
+	staleCount, shutdownCount := 0, 0
 
 	for _, b := range inProgress {
 		updatedAt := hasLabel(b, "updated:")
@@ -321,7 +341,6 @@ func checkStaleBeads(threshold time.Duration, dryRun bool) int {
 
 		t, err := time.Parse(time.RFC3339, updatedAt)
 		if err != nil {
-			// Try other common formats
 			t, err = time.Parse("2006-01-02 15:04:05", updatedAt)
 			if err != nil {
 				continue
@@ -329,18 +348,45 @@ func checkStaleBeads(threshold time.Duration, dryRun bool) int {
 		}
 
 		age := now.Sub(t)
-		if age > threshold {
-			owner := hasLabel(b, "owner:")
+		owner := hasLabel(b, "owner:")
+
+		if age > shutdownThreshold {
+			// Fatal: kill the wizard pod.
+			shutdownCount++
 			if dryRun {
-				log.Printf("[steward] [dry-run] stale: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Minute))
+				log.Printf("[steward] [dry-run] SHUTDOWN: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
 			} else {
-				log.Printf("[steward] WARNING stale: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Minute))
+				log.Printf("[steward] SHUTDOWN: %s (%s) owner=%s age=%s — killing pod", b.ID, b.Title, owner, age.Round(time.Second))
+				killWizardPod(owner, b.ID)
 			}
+		} else if age > staleThreshold {
+			// Warning: wizard exceeded guidelines.
 			staleCount++
+			if dryRun {
+				log.Printf("[steward] [dry-run] STALE: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
+			} else {
+				log.Printf("[steward] STALE: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
+			}
 		}
 	}
 
-	return staleCount
+	return staleCount, shutdownCount
+}
+
+// killWizardPod deletes the k8s pod for a wizard working on a bead.
+// Falls back gracefully if not running in k8s.
+func killWizardPod(agentName, beadID string) {
+	// Try to find and delete the pod by labels.
+	cmd := exec.Command("kubectl", "delete", "pod",
+		"-n", "spire",
+		"-l", fmt.Sprintf("spire.awell.io/agent=%s,spire.awell.io/bead=%s", agentName, beadID),
+		"--grace-period=10")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[steward] kill pod failed for %s/%s: %s %s", agentName, beadID, err, string(out))
+	} else {
+		log.Printf("[steward] killed pod for %s/%s", agentName, beadID)
+	}
 }
 
 // pushState pushes state to DoltHub, logging any errors.
