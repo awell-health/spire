@@ -288,7 +288,3 @@ func renderEpicWatch(epicID string) error {
 
 	return nil
 }
-
-func clearScreen() {
-	fmt.Print("\033[2J\033[H")
-}
