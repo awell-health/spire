@@ -296,7 +296,7 @@ setup_state_repo() {
   # Copy pre-baked beads snapshot if available (avoids 2min DoltHub clone)
   if [ ! -d .beads ] && [ -d /beads-snapshot/.beads ]; then
     log "restoring pre-baked beads snapshot"
-    cp -a /beads-snapshot/. .
+    cp -a /beads-snapshot/. . 2>/dev/null || cp -r /beads-snapshot/.beads .beads 2>/dev/null || true
   elif [ ! -d .beads ]; then
     log "initializing beads from scratch"
     bd init --force --prefix "$AGENT_PREFIX" >/dev/null || fatal "failed to initialize beads state"
