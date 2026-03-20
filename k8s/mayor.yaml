@@ -24,8 +24,8 @@ spec:
           env:
             - name: DOLTHUB_REMOTE
               value: "https://doltremoteapi.dolthub.com/awell/spire"
-            - name: MAYOR_PREFIX
-              value: "mayor"
+            - name: BEADS_PREFIX
+              value: "spi"
             - name: MAYOR_INTERVAL
               value: "2m"
             - name: MAYOR_STALE_THRESHOLD
