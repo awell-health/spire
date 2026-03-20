@@ -79,18 +79,20 @@ func cmdSteward(args []string) error {
 		}
 	}
 
-	// Derive stale threshold from repo config (agent.timeout + 50% buffer).
+	// Derive stale threshold from repo config (agent.timeout).
+	// A bead in_progress longer than the wizard timeout means something is wrong:
+	// the wizard crashed without cleanup, or someone claimed and never finished.
 	// The --stale-threshold flag overrides if explicitly set.
 	staleThreshold := staleOverride
 	if staleThreshold == 0 {
 		cwd, _ := os.Getwd()
 		if cfg, err := repoconfig.Load(cwd); err == nil && cfg.Agent.Timeout != "" {
 			if timeout, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
-				staleThreshold = timeout + timeout/2 // timeout + 50% buffer
+				staleThreshold = timeout
 			}
 		}
 		if staleThreshold == 0 {
-			staleThreshold = 15 * time.Minute // fallback if no config
+			staleThreshold = 10 * time.Minute // fallback if no config
 		}
 	}
 
