@@ -37,7 +37,7 @@ func createOrUpdatePR(dir string, child Bead, branch string, review *Review, cfg
 	}
 
 	body := buildPRBody(child, review, "")
-	base := cfg.Branch.Base
+	base := resolveTargetBranch(&child, nil, cfg)
 
 	args := []string{
 		"pr", "create",

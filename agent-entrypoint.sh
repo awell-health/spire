@@ -622,6 +622,13 @@ push_branch() {
   COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
 }
 
+is_standalone_task() {
+  # A task is standalone if it has no parent.
+  local parent
+  parent="$(jq -r '.[0].parent // empty' "$BEAD_JSON_PATH" 2>/dev/null)"
+  [ -z "$parent" ]
+}
+
 update_bead_state() {
   if [ -z "$COMMIT_SHA" ]; then return 0; fi
   cd "$STATE_DIR" || fatal "failed to enter $STATE_DIR"
@@ -633,9 +640,20 @@ update_bead_state() {
   bd comments add "$BEAD_ID" "$note" >/dev/null 2>&1 || true
 
   if [ "$RUN_RESULT" = "running" ]; then
-    if ! bd close "$BEAD_ID" --reason "Completed on branch ${BRANCH_NAME}" >/dev/null 2>&1; then
-      RUN_RESULT="error"
-      RUN_SUMMARY="branch pushed but failed to close bead ${BEAD_ID}"
+    if is_standalone_task; then
+      # Standalone tasks: add review-ready + feat-branch labels, leave in_progress.
+      # The steward routes this to a review pod (artificer --mode=review).
+      bd update "$BEAD_ID" --add-label "review-ready" >/dev/null 2>&1 || true
+      bd update "$BEAD_ID" --add-label "feat-branch:${BRANCH_NAME}" >/dev/null 2>&1 || true
+      RUN_RESULT="success"
+      RUN_SUMMARY="validated and pushed branch ${BRANCH_NAME} (review-ready)"
+      log "standalone task — marked review-ready, leaving bead open for artificer review"
+    else
+      # Child of an epic: close normally, artificer handles review.
+      if ! bd close "$BEAD_ID" --reason "Completed on branch ${BRANCH_NAME}" >/dev/null 2>&1; then
+        RUN_RESULT="error"
+        RUN_SUMMARY="branch pushed but failed to close bead ${BEAD_ID}"
+      fi
     fi
   fi
 

@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
-	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -19,85 +17,11 @@ type TestResult struct {
 	Duration time.Duration `json:"duration"`
 }
 
-// processMergeQueue merges approved PRs in dependency order, testing after each.
+// processMergeQueue merges approved children via the staging branch pattern.
+// This replaces the old direct-to-base one-by-one merge flow.
 func processMergeQueue(dir string, states map[string]*ChildState, cfg *repoconfig.RepoConfig, epicID string) error {
-	// Collect children that are approved and in the merge queue.
-	var ready []string
-	for id, cs := range states {
-		if cs.InMergeQueue && cs.Verdict == "approved" && cs.PRNumber > 0 {
-			ready = append(ready, id)
-		}
-	}
-
-	if len(ready) == 0 {
-		return nil
-	}
-
-	// Sort by dependency order.
-	ordered, err := getDependencyOrder(epicID, ready)
-	if err != nil {
-		log.Printf("[artificer] warning: could not resolve dependencies, using original order: %v", err)
-		ordered = ready
-	}
-
-	base := cfg.Branch.Base
-
-	for _, childID := range ordered {
-		cs := states[childID]
-		branch := cs.Branch
-
-		log.Printf("[artificer] merge queue: attempting %s (PR #%d)", childID, cs.PRNumber)
-
-		// Checkout base and pull latest.
-		if err := gitCheckoutBase(dir, base); err != nil {
-			log.Printf("[artificer] failed to checkout base for merge: %v", err)
-			continue
-		}
-
-		// Attempt merge.
-		mergeMsg := fmt.Sprintf("Merge feat/%s: %s", childID, childID)
-		if err := gitMerge(dir, branch, mergeMsg); err != nil {
-			log.Printf("[artificer] merge conflict on %s: %v", childID, err)
-			gitRevertMerge(dir) //nolint:errcheck
-			cs.InMergeQueue = false
-			// Notify wizard of conflict.
-			spireSend(resolveWizardAgent(Bead{ID: childID}),
-				fmt.Sprintf("Merge conflict on feat/%s — please rebase on %s and push again", childID, base),
-				childID, 1) //nolint:errcheck
-			continue
-		}
-
-		// Run tests on merged result.
-		testResult := runTests(dir, base, cfg)
-		if !testResult.Passed {
-			log.Printf("[artificer] tests failed after merging %s: %s", childID, testResult.Stage)
-			gitRevertMerge(dir) //nolint:errcheck
-			cs.InMergeQueue = false
-			spireSend(resolveWizardAgent(Bead{ID: childID}),
-				fmt.Sprintf("Tests failed after merging feat/%s during %s. Please fix and push again.\n%s",
-					childID, testResult.Stage, truncate(testResult.Output, 2000)),
-				childID, 1) //nolint:errcheck
-			continue
-		}
-
-		// Push merged base.
-		if err := gitPush(dir, base); err != nil {
-			log.Printf("[artificer] failed to push merged base: %v", err)
-			gitRevertMerge(dir) //nolint:errcheck
-			continue
-		}
-
-		// Merge the PR via GitHub (marks it as merged, deletes branch).
-		if err := mergePR(dir, cs.PRNumber); err != nil {
-			log.Printf("[artificer] warning: gh pr merge failed (branch already merged): %v", err)
-		}
-
-		cs.Verdict = "merged"
-		cs.InMergeQueue = false
-		log.Printf("[artificer] merged %s (PR #%d)", childID, cs.PRNumber)
-	}
-
-	return nil
+	epic, _ := loadEpic(epicID)
+	return processStagingMerge(dir, states, cfg, epicID, epic)
 }
 
 // getDependencyOrder returns the given bead IDs sorted by their dependency graph.

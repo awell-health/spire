@@ -110,6 +110,8 @@ func (s *ArtificerState) updateCounts(states map[string]*ChildState) {
 
 func main() {
 	epicID := flag.String("epic-id", envOr("SPIRE_EPIC_ID", ""), "epic bead ID to manage")
+	beadID := flag.String("bead-id", envOr("SPIRE_BEAD_ID", ""), "bead ID for standalone review mode")
+	mode := flag.String("mode", "epic", "operating mode: epic (default) or review (standalone)")
 	model := flag.String("model", envOr("ARTIFICER_MODEL", "claude-opus-4-6"), "model for code review")
 	maxRounds := flag.Int("max-rounds", envOrInt("ARTIFICER_MAX_REVIEW_ROUNDS", 3), "max review rounds before escalation")
 	commsDir := flag.String("comms-dir", envOr("SPIRE_COMMS_DIR", "/comms"), "shared comms directory")
@@ -119,6 +121,15 @@ func main() {
 	port := flag.Int("port", 9090, "health endpoint port")
 	once := flag.Bool("once", false, "run one cycle and exit")
 	flag.Parse()
+
+	// In review mode, use --bead-id instead of --epic-id.
+	if *mode == "review" {
+		if *beadID == "" {
+			log.Fatal("--bead-id (or SPIRE_BEAD_ID) is required in review mode")
+		}
+		runReviewMode(*beadID, *model, *maxRounds, *commsDir, *workspaceDir, *stateDir)
+		return
+	}
 
 	if *epicID == "" {
 		log.Fatal("--epic-id (or SPIRE_EPIC_ID) is required")
@@ -324,7 +335,7 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 		spec = epic.Description
 	}
 
-	base := cfg.Branch.Base
+	base := resolveTargetBranch(epic, nil, cfg)
 
 	// Review each child.
 	for childID, cs := range childStates {

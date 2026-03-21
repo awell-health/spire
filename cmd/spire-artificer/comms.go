@@ -137,6 +137,15 @@ func resolveWizardAgent(child Bead) string {
 	return "steward"
 }
 
+// escalateOnStagingFailure sends a P0 alert when staging tests fail.
+func escalateOnStagingFailure(childID, stage, testOutput string) {
+	bd("update", childID, "--add-label", "escalation:staging-failure") //nolint:errcheck
+	bdComment(childID, fmt.Sprintf("Staging tests failed during %s:\n%s", stage, truncate(testOutput, 2000))) //nolint:errcheck
+	spireSend("steward",
+		fmt.Sprintf("P0: staging test failure for %s during %s. All branches preserved.", childID, stage),
+		childID, 0) //nolint:errcheck
+}
+
 // spireSend sends a message via the spire CLI.
 func spireSend(agent, message, refBeadID string, priority int) error {
 	args := []string{"send", agent, message}

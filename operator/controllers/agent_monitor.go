@@ -177,12 +177,17 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 			continue // pod already running for this bead
 		}
 
-		// Epic beads get a workshop pod (artificer + sidecar).
-		// Task/bug/feature/chore beads get a wizard pod (wizard + sidecar).
+		// Route by workload type:
+		//   epic   → workshop pod (artificer + sidecar)
+		//   review → review pod (artificer --mode=review, one-shot)
+		//   *      → wizard pod (wizard + sidecar)
 		var pod *corev1.Pod
-		if wlType := m.getWorkloadType(ctx, beadID); wlType == "epic" {
+		switch wlType := m.getWorkloadType(ctx, beadID); wlType {
+		case "epic":
 			pod = m.buildEpicPod(agent, beadID, cfg)
-		} else {
+		case "review":
+			pod = m.buildReviewPod(agent, beadID, cfg)
+		default:
 			pod = m.buildWorkloadPod(agent, beadID, cfg)
 		}
 		if err := m.Client.Create(ctx, pod); err != nil {
@@ -610,6 +615,179 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 					Image:   image,
 					Command: []string{"spire-artificer", fmt.Sprintf("--epic-id=%s", beadID)},
 					Env:     artificerEnv,
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("256Mi"),
+						},
+					},
+					VolumeMounts: sharedMounts,
+					WorkingDir:   "/workspace",
+				},
+				{
+					Name:  "sidecar",
+					Image: image,
+					Command: []string{
+						"spire-sidecar",
+						"--comms-dir=/comms",
+						"--poll-interval=10s",
+						"--port=8080",
+						fmt.Sprintf("--agent-name=%s", agent.Name),
+					},
+					Env:        sidecarEnv,
+					WorkingDir: "/data",
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "comms", MountPath: "/comms"},
+						{Name: "data", MountPath: "/data"},
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/readyz",
+								Port: intstr8080(),
+							},
+						},
+						InitialDelaySeconds: 5,
+						PeriodSeconds:       10,
+					},
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/healthz",
+								Port: intstr8080(),
+							},
+						},
+						InitialDelaySeconds: 10,
+						PeriodSeconds:       30,
+					},
+				},
+			},
+		},
+	}
+
+	return pod
+}
+
+// buildReviewPod creates a one-shot pod for standalone task review.
+// Similar to buildEpicPod but runs artificer in review mode (--mode=review --bead-id=X).
+func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
+	image := agent.Spec.Image
+	if image == "" {
+		image = m.StewardImage
+	}
+
+	podName := fmt.Sprintf("spire-review-%s", sanitizeK8sName(beadID))
+	if len(podName) > 63 {
+		podName = podName[:63]
+	}
+
+	branch := agent.Spec.RepoBranch
+	if branch == "" {
+		branch = "main"
+	}
+
+	// Artificer environment.
+	artificerEnv := []corev1.EnvVar{
+		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
+		{Name: "SPIRE_BEAD_ID", Value: beadID},
+		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
+		{Name: "SPIRE_REPO_BRANCH", Value: branch},
+		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
+		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
+		{Name: "SPIRE_STATE_DIR", Value: "/data"},
+		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_PORT", Value: "3306"},
+		{Name: "ARTIFICER_MODEL", Value: "claude-opus-4-6"},
+	}
+
+	// Sidecar environment.
+	sidecarEnv := []corev1.EnvVar{
+		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
+		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_PORT", Value: "3306"},
+	}
+
+	// Inject secrets from SpireConfig.
+	if cfg != nil {
+		artificerEnv = append(artificerEnv,
+			corev1.EnvVar{Name: "DOLT_REMOTE_URL", Value: "http://spire-dolt:50051/spi"},
+		)
+		if cfg.Spec.DoltHub.CredentialsSecret != "" {
+			artificerEnv = append(artificerEnv,
+				envFromSecretOptional("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER_ARTIFICER"),
+				envFromSecretOptional("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD_ARTIFICER"),
+			)
+		}
+
+		// Opus token.
+		tokenName := "heavy"
+		if _, ok := cfg.Spec.Tokens[tokenName]; !ok {
+			tokenName = agent.Spec.Token
+			if tokenName == "" {
+				tokenName = cfg.Spec.DefaultToken
+			}
+			if tokenName == "" {
+				tokenName = "default"
+			}
+		}
+		if tokenRef, ok := cfg.Spec.Tokens[tokenName]; ok {
+			artificerEnv = append(artificerEnv,
+				envFromSecret("ANTHROPIC_API_KEY", tokenRef.Secret, tokenRef.Key),
+			)
+		}
+
+		if cfg.Spec.DoltHub.CredentialsSecret != "" {
+			artificerEnv = append(artificerEnv,
+				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
+			)
+		}
+	}
+
+	volumes := []corev1.Volume{
+		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "dolt-creds", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: "dolt-creds",
+				Optional:   boolPtr(true),
+			},
+		}},
+	}
+
+	sharedMounts := []corev1.VolumeMount{
+		{Name: "comms", MountPath: "/comms"},
+		{Name: "workspace", MountPath: "/workspace"},
+		{Name: "data", MountPath: "/data"},
+		{Name: "dolt-creds", MountPath: "/root/.dolt/creds", ReadOnly: true},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: m.Namespace,
+			Labels: map[string]string{
+				"spire.awell.io/agent":   agent.Name,
+				"spire.awell.io/bead":    beadID,
+				"spire.awell.io/managed": "true",
+				"spire.awell.io/role":    "reviewer",
+				"app.kubernetes.io/name": "spire-review",
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Volumes:       volumes,
+			Containers: []corev1.Container{
+				{
+					Name:  "artificer",
+					Image: image,
+					Command: []string{
+						"spire-artificer",
+						fmt.Sprintf("--bead-id=%s", beadID),
+						"--mode=review",
+						"--once",
+					},
+					Env: artificerEnv,
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("100m"),
