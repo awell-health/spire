@@ -1,0 +1,23 @@
+# Static .beads/ config for connecting to the shared dolt server.
+# All pods mount this via initContainer instead of running bd init.
+# The project_id MUST match the server's spi.metadata._project_id.
+# To get it: dolt sql -q "USE spi; SELECT value FROM metadata WHERE `key`='_project_id'"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: beads-seed
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire
+    app.kubernetes.io/component: beads-config
+data:
+  metadata.json: |
+    {
+      "database": "dolt",
+      "backend": "dolt",
+      "dolt_mode": "server",
+      "dolt_database": "spi",
+      "project_id": "25cd01ed-bc22-4818-bfff-1e5e86d2b2ec"
+    }
+  routes.jsonl: |
+    {"prefix":"spi-","path":"."}

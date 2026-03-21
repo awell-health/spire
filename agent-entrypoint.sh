@@ -273,10 +273,12 @@ collect_context_paths() {
 }
 
 # ── Beads setup ──────────────────────────────────────────────────────
-# The wizard connects to the shared cluster dolt via SQL (port 3306).
-# No local dolt server. No remotes. No pull/push.
+# .beads/ is seeded by the pod's initContainer from the beads-seed ConfigMap.
+# No bd init needed — config is pre-aligned with the shared dolt server.
 setup_state_repo() {
   cd "$STATE_DIR" || fatal "failed to enter $STATE_DIR"
+
+  [ -f .beads/metadata.json ] || fatal ".beads/metadata.json missing (initContainer failed?)"
 
   if [ ! -d .git ]; then
     git init -q || fatal "failed to initialize git in $STATE_DIR"
@@ -286,30 +288,13 @@ setup_state_repo() {
   git config user.name "$AGENT_NAME" >/dev/null 2>&1 || true
   git config user.email "${SPIRE_GIT_EMAIL:-$AGENT_NAME@spire.local}" >/dev/null 2>&1 || true
 
-  local dolt_host="${DOLT_HOST:-spire-dolt.spire.svc}"
-  local dolt_port="${DOLT_PORT:-3306}"
-
-  if [ ! -d .beads ]; then
-    log "initializing beads (dolt: $dolt_host:$dolt_port)"
-    bd init --database spi --prefix spi \
-      --server-host "$dolt_host" --server-port "$dolt_port" >/dev/null 2>&1 || true
-    [ -d .beads ] || fatal "failed to initialize beads state"
-    # Clean up local server artifacts from init.
-    bd dolt stop 2>/dev/null || true
-    rm -f .beads/dolt-server.port .beads/dolt-server.pid .beads/dolt-server.lock
-  fi
-
-  if ! grep -q "\"prefix\":\"spi-\"" .beads/routes.jsonl 2>/dev/null; then
-    echo '{"prefix":"spi-","path":"."}' >> .beads/routes.jsonl
-  fi
-
   # Wait for dolt
   local tries=0
   while ! bd dolt test >/dev/null 2>&1 && [ $tries -lt 15 ]; do
     sleep 1
     tries=$((tries + 1))
   done
-  [ $tries -lt 15 ] && log "dolt connected ($dolt_host:$dolt_port)" \
+  [ $tries -lt 15 ] && log "dolt connected (${DOLT_HOST:-spire-dolt.spire.svc}:${DOLT_PORT:-3306})" \
     || log "warning: dolt not reachable after 15s"
 
   export SPIRE_IDENTITY="$AGENT_NAME"

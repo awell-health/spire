@@ -17,6 +17,33 @@ spec:
         app.kubernetes.io/name: spire-steward
     spec:
       serviceAccountName: spire-operator
+      initContainers:
+        # Seed .beads/ from ConfigMap if it doesn't exist yet (first boot on PVC).
+        - name: seed-beads
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              if [ ! -f /data/.beads/metadata.json ]; then
+                mkdir -p /data/.beads
+                cp /seed/metadata.json /data/.beads/metadata.json
+                cp /seed/routes.jsonl /data/.beads/routes.jsonl
+                echo "[seed] .beads/ seeded from ConfigMap"
+              else
+                echo "[seed] .beads/ already exists, skipping"
+              fi
+              # Ensure git repo exists (bd expects it).
+              if [ ! -d /data/.git ]; then
+                cd /data && git init -q 2>/dev/null || true
+                git config user.name "spire-steward"
+                git config user.email "steward@spire.local"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: beads-seed
+              mountPath: /seed
+              readOnly: true
       containers:
         - name: steward
           image: spire-steward:dev
@@ -28,10 +55,6 @@ spec:
               value: "spire-dolt.spire.svc"
             - name: DOLT_PORT
               value: "3306"
-            - name: DOLT_REMOTE_URL
-              value: "https://doltremoteapi.dolthub.com/awell/spire"
-            - name: DOLT_CREDS_KEY
-              value: "c8m89oa93a0rbo0oqukavck8vlko0tv9u85q23lhsi0ae"
             - name: STEWARD_INTERVAL
               value: "2m"
           resources:
@@ -47,19 +70,17 @@ spec:
             - name: spire-config
               mountPath: /etc/spire
               readOnly: true
-            - name: dolt-creds
-              mountPath: /creds
-              readOnly: true
           workingDir: /etc/spire
       volumes:
         - name: data
-          emptyDir: {}  # steward only needs local scratch — dolt is external
+          persistentVolumeClaim:
+            claimName: spire-steward-data
+        - name: beads-seed
+          configMap:
+            name: beads-seed
         - name: spire-config
           configMap:
             name: spire-config
-        - name: dolt-creds
-          secret:
-            secretName: dolt-creds
 ---
 # RBAC for the operator (Phase 2: manages pods, reads secrets)
 apiVersion: v1

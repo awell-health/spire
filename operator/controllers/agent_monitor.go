@@ -310,18 +310,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 
 	// Inject secrets from SpireConfig
 	if cfg != nil {
-		// Dolt remote — in-cluster remotesapi for bd dolt pull/push
-		wizardEnv = append(wizardEnv,
-			corev1.EnvVar{Name: "DOLT_REMOTE_URL", Value: "http://spire-dolt:50051/spi"},
-		)
-		if cfg.Spec.DoltHub.CredentialsSecret != "" {
-			wizardEnv = append(wizardEnv,
-				envFromSecretOptional("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER_WIZARD"),
-				envFromSecretOptional("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD_WIZARD"),
-			)
-		}
-
-		// Anthropic API key — resolve token name from agent spec or default
+		// Anthropic API key
 		tokenName := agent.Spec.Token
 		if tokenName == "" {
 			tokenName = cfg.Spec.DefaultToken
@@ -335,7 +324,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 			)
 		}
 
-		// GitHub token (if present in the credentials secret)
+		// GitHub token
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
 			wizardEnv = append(wizardEnv,
 				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
@@ -348,19 +337,13 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "dolt-creds", VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{
-				SecretName: "dolt-creds",
-				Optional:   boolPtr(true),
-			},
-		}},
+		beadsSeedVolume(),
 	}
 
 	sharedMounts := []corev1.VolumeMount{
 		{Name: "comms", MountPath: "/comms"},
 		{Name: "workspace", MountPath: "/workspace"},
 		{Name: "data", MountPath: "/data"},
-		{Name: "dolt-creds", MountPath: "/root/.dolt/creds", ReadOnly: true},
 	}
 
 	pod := &corev1.Pod{
@@ -375,8 +358,9 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever, // one-shot: do the work, exit
-			Volumes:       volumes,
+			RestartPolicy:  corev1.RestartPolicyNever, // one-shot: do the work, exit
+			InitContainers: []corev1.Container{beadsSeedInitContainer()},
+			Volumes:        volumes,
 			Containers: []corev1.Container{
 				{
 					Name:         "wizard",
@@ -539,17 +523,6 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 
 	// Inject secrets from SpireConfig.
 	if cfg != nil {
-		// Dolt remote — in-cluster remotesapi for bd dolt pull/push
-		artificerEnv = append(artificerEnv,
-			corev1.EnvVar{Name: "DOLT_REMOTE_URL", Value: "http://spire-dolt:50051/spi"},
-		)
-		if cfg.Spec.DoltHub.CredentialsSecret != "" {
-			artificerEnv = append(artificerEnv,
-				envFromSecretOptional("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER_ARTIFICER"),
-				envFromSecretOptional("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD_ARTIFICER"),
-			)
-		}
-
 		// Opus token — prefer "heavy" token for the artificer, fall back to default.
 		tokenName := "heavy"
 		if _, ok := cfg.Spec.Tokens[tokenName]; !ok {
@@ -579,19 +552,13 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "dolt-creds", VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{
-				SecretName: "dolt-creds",
-				Optional:   boolPtr(true),
-			},
-		}},
+		beadsSeedVolume(),
 	}
 
 	sharedMounts := []corev1.VolumeMount{
 		{Name: "comms", MountPath: "/comms"},
 		{Name: "workspace", MountPath: "/workspace"},
 		{Name: "data", MountPath: "/data"},
-		{Name: "dolt-creds", MountPath: "/root/.dolt/creds", ReadOnly: true},
 	}
 
 	pod := &corev1.Pod{
@@ -607,8 +574,9 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
-			Volumes:       volumes,
+			RestartPolicy:  corev1.RestartPolicyNever,
+			InitContainers: []corev1.Container{beadsSeedInitContainer()},
+			Volumes:        volumes,
 			Containers: []corev1.Container{
 				{
 					Name:    "artificer",
@@ -709,16 +677,6 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 
 	// Inject secrets from SpireConfig.
 	if cfg != nil {
-		artificerEnv = append(artificerEnv,
-			corev1.EnvVar{Name: "DOLT_REMOTE_URL", Value: "http://spire-dolt:50051/spi"},
-		)
-		if cfg.Spec.DoltHub.CredentialsSecret != "" {
-			artificerEnv = append(artificerEnv,
-				envFromSecretOptional("DOLT_REMOTE_USER", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_USER_ARTIFICER"),
-				envFromSecretOptional("DOLT_REMOTE_PASSWORD", cfg.Spec.DoltHub.CredentialsSecret, "DOLT_REMOTE_PASSWORD_ARTIFICER"),
-			)
-		}
-
 		// Opus token.
 		tokenName := "heavy"
 		if _, ok := cfg.Spec.Tokens[tokenName]; !ok {
@@ -747,19 +705,13 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "dolt-creds", VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{
-				SecretName: "dolt-creds",
-				Optional:   boolPtr(true),
-			},
-		}},
+		beadsSeedVolume(),
 	}
 
 	sharedMounts := []corev1.VolumeMount{
 		{Name: "comms", MountPath: "/comms"},
 		{Name: "workspace", MountPath: "/workspace"},
 		{Name: "data", MountPath: "/data"},
-		{Name: "dolt-creds", MountPath: "/root/.dolt/creds", ReadOnly: true},
 	}
 
 	pod := &corev1.Pod{
@@ -775,8 +727,9 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
-			Volumes:       volumes,
+			RestartPolicy:  corev1.RestartPolicyNever,
+			InitContainers: []corev1.Container{beadsSeedInitContainer()},
+			Volumes:        volumes,
 			Containers: []corev1.Container{
 				{
 					Name:  "artificer",
@@ -839,6 +792,35 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 	}
 
 	return pod
+}
+
+// beadsSeedInitContainer returns an initContainer that copies .beads/ config
+// from the beads-seed ConfigMap into /data/.beads/.
+func beadsSeedInitContainer() corev1.Container {
+	return corev1.Container{
+		Name:    "seed-beads",
+		Image:   "alpine:3.20",
+		Command: []string{"sh", "-c"},
+		Args: []string{
+			`mkdir -p /data/.beads && cp /seed/metadata.json /data/.beads/metadata.json && cp /seed/routes.jsonl /data/.beads/routes.jsonl && if [ ! -d /data/.git ]; then cd /data && git init -q 2>/dev/null; fi`,
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "data", MountPath: "/data"},
+			{Name: "beads-seed", MountPath: "/seed", ReadOnly: true},
+		},
+	}
+}
+
+// beadsSeedVolume returns the volume definition for the beads-seed ConfigMap.
+func beadsSeedVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: "beads-seed",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "beads-seed"},
+			},
+		},
+	}
 }
 
 func boolPtr(b bool) *bool { return &b }
