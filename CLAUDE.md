@@ -143,7 +143,7 @@ After a reboot, run `spire up` to restore services.
 ### Work management
 
 ```bash
-# Claim a bead (pull → verify → set in_progress → push)
+# Claim a bead (verify → set in_progress)
 spire claim <bead-id>
 
 # Focus on a task (read-only context assembly + workflow molecule)
@@ -153,7 +153,7 @@ spire focus <bead-id>
 spire grok <bead-id>
 ```
 
-`spire claim` is atomic: it pulls latest state, verifies the bead isn't closed or owned by someone else, sets it to in_progress, and pushes. Use it before starting work.
+`spire claim` verifies the bead isn't closed or owned by someone else, then sets it to in_progress. Use it before starting work.
 
 `spire focus` assembles context: bead details, workflow progress, referenced beads, messages, comments. It pours a `spire-agent-work` molecule on first focus.
 

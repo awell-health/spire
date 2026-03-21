@@ -7,7 +7,7 @@ This repo is connected to Spire (prefix: **spi**). Use Spire for work coordinati
 ```bash
 spire up                        # ensure services are running
 spire collect                   # check inbox + read your context brief
-spire claim <bead-id>           # claim a task (atomic: pull → verify → set in_progress → push)
+spire claim <bead-id>           # claim a task (verify → set in_progress)
 spire focus <bead-id>           # assemble full context for the task
 # ... do the work ...
 spire send <agent> "done" --ref <bead-id>   # notify others
