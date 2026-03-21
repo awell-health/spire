@@ -51,11 +51,13 @@ func (m *AgentMonitor) Run(ctx context.Context) {
 }
 
 func (m *AgentMonitor) cycle(ctx context.Context) {
+	m.Log.Info("agent monitor cycle start")
 	var agents spirev1.SpireAgentList
 	if err := m.Client.List(ctx, &agents, client.InNamespace(m.Namespace)); err != nil {
 		m.Log.Error(err, "failed to list agents")
 		return
 	}
+	m.Log.Info("agent monitor found agents", "count", len(agents.Items))
 
 	// Load SpireConfig for token/DoltHub resolution
 	cfg := m.loadConfig(ctx)
@@ -301,11 +303,9 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 
 	// Inject secrets from SpireConfig
 	if cfg != nil {
-		// Dolt remote — in-cluster remotesapi (replaces DoltHub)
+		// Dolt remote — in-cluster remotesapi for bd dolt pull/push
 		wizardEnv = append(wizardEnv,
 			corev1.EnvVar{Name: "DOLT_REMOTE_URL", Value: "http://spire-dolt:50051/spi"},
-			corev1.EnvVar{Name: "DOLT_HOST", Value: "spire-dolt"},
-			corev1.EnvVar{Name: "DOLT_PORT", Value: "3306"},
 		)
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
 			wizardEnv = append(wizardEnv,
@@ -530,11 +530,9 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 
 	// Inject secrets from SpireConfig.
 	if cfg != nil {
-		// Dolt remote — in-cluster remotesapi
+		// Dolt remote — in-cluster remotesapi for bd dolt pull/push
 		artificerEnv = append(artificerEnv,
 			corev1.EnvVar{Name: "DOLT_REMOTE_URL", Value: "http://spire-dolt:50051/spi"},
-			corev1.EnvVar{Name: "DOLT_HOST", Value: "spire-dolt"},
-			corev1.EnvVar{Name: "DOLT_PORT", Value: "3306"},
 		)
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
 			artificerEnv = append(artificerEnv,

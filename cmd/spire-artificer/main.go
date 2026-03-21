@@ -142,10 +142,12 @@ func main() {
 		}
 	}
 
-	// Initialize beads state (restore snapshot, start dolt, pull).
+	// Initialize beads state and connect to shared cluster dolt.
 	if err := initBeadsState(*stateDir); err != nil {
 		log.Fatalf("beads init failed: %v", err)
 	}
+	// Set BEADS_DIR so all bd commands find the .beads directory regardless of cwd.
+	os.Setenv("BEADS_DIR", filepath.Join(*stateDir, ".beads"))
 
 	// Initialize: clone repo if needed, load config, load epic.
 	repoCfg, err := initWorkspace(*workspaceDir, *stateDir)
@@ -455,66 +457,107 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 
 // --- Initialization ---
 
-// initBeadsState ensures the beads database is ready: restore snapshot, start dolt, pull.
+// initBeadsState connects to the shared cluster dolt service and initializes beads.
 func initBeadsState(stateDir string) error {
-	os.Setenv("BEADS_DOLT_SERVER_PORT", "3307")
-
-	// Configure dolt credentials if mounted.
-	creds, _ := filepath.Glob("/root/.dolt/creds/*.jwk")
-	if len(creds) > 0 {
-		keyID := strings.TrimSuffix(filepath.Base(creds[0]), ".jwk")
-		exec.Command("dolt", "config", "--global", "--set", "user.creds", keyID).Run() //nolint
-		log.Printf("[artificer] dolt credential configured: %s", keyID)
+	doltHost := os.Getenv("DOLT_HOST")
+	if doltHost == "" {
+		doltHost = "spire-dolt.spire.svc"
+	}
+	doltPort := os.Getenv("DOLT_PORT")
+	if doltPort == "" {
+		doltPort = "3306"
 	}
 
 	beadsDir := filepath.Join(stateDir, ".beads")
 	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-		// Restore pre-baked snapshot if available.
-		snapshotBeads := "/beads-snapshot/.beads"
-		if _, serr := os.Stat(snapshotBeads); serr == nil {
-			log.Println("[artificer] restoring pre-baked beads snapshot")
-			cp := exec.Command("cp", "-a", "/beads-snapshot/.", stateDir)
-			if out, cerr := cp.CombinedOutput(); cerr != nil {
-				return fmt.Errorf("restore snapshot: %w\n%s", cerr, out)
-			}
-		} else {
-			// Init fresh.
-			log.Println("[artificer] initializing beads from scratch")
-			exec.Command("git", "-C", stateDir, "init", "-q").Run()                                 //nolint
-			exec.Command("git", "-C", stateDir, "config", "user.name", "artificer").Run()            //nolint
-			exec.Command("git", "-C", stateDir, "config", "user.email", "artificer@spire.local").Run() //nolint
-			if out, ierr := exec.Command("bd", "init", "--force", "--prefix", "spi").CombinedOutput(); ierr != nil {
+		log.Printf("[artificer] initializing beads (dolt: %s:%s)", doltHost, doltPort)
+		exec.Command("git", "-C", stateDir, "init", "-q").Run()                                   //nolint
+		exec.Command("git", "-C", stateDir, "config", "user.name", "artificer").Run()              //nolint
+		exec.Command("git", "-C", stateDir, "config", "user.email", "artificer@spire.local").Run() //nolint
+
+		cmd := exec.Command("bd", "init", "--force", "--prefix", "spi")
+		cmd.Dir = stateDir
+		cmd.Env = append(os.Environ(),
+			"BEADS_DOLT_SERVER_HOST="+doltHost,
+			"BEADS_DOLT_SERVER_PORT="+doltPort,
+		)
+		// Tolerate init failure: shared dolt may already have schema from steward/other agents.
+		if out, ierr := cmd.CombinedOutput(); ierr != nil {
+			if _, serr := os.Stat(beadsDir); os.IsNotExist(serr) {
 				return fmt.Errorf("bd init: %w\n%s", ierr, out)
 			}
-			exec.Command("bd", "dolt", "set", "port", "3307").Run() //nolint
-			routesPath := filepath.Join(beadsDir, "routes.jsonl")
-			os.WriteFile(routesPath, []byte("{\"prefix\":\"spi-\",\"path\":\".\"}\n"), 0644) //nolint
+			log.Printf("[artificer] bd init warning (schema may already exist): %s", strings.TrimSpace(string(out)))
 		}
+
+		routesPath := filepath.Join(beadsDir, "routes.jsonl")
+		os.WriteFile(routesPath, []byte("{\"prefix\":\"spi-\",\"path\":\".\"}\n"), 0644) //nolint
 	}
 
-	// Clean stale lock and start dolt server.
+	// Stop any local dolt server that bd init may have started, then point at the shared service.
+	bdCmd := func(args ...string) *exec.Cmd {
+		c := exec.Command("bd", args...)
+		c.Dir = stateDir
+		return c
+	}
+	bdCmd("dolt", "stop").Run() //nolint — stop local server if running
+	bdCmd("dolt", "set", "host", doltHost).Run() //nolint
+	bdCmd("dolt", "set", "port", doltPort).Run() //nolint
 	os.Remove(filepath.Join(beadsDir, "dolt-server.lock"))
 	os.Remove(filepath.Join(beadsDir, "dolt-server.pid"))
 	os.Remove(filepath.Join(beadsDir, "dolt-server.port"))
-
-	if out, err := exec.Command("bd", "dolt", "start").CombinedOutput(); err != nil {
-		log.Printf("[artificer] dolt start warning: %s", strings.TrimSpace(string(out)))
+	// Remove deprecated dolt_server_port from metadata.json to prevent port confusion.
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	if data, err := os.ReadFile(metaPath); err == nil {
+		var meta map[string]any
+		if json.Unmarshal(data, &meta) == nil {
+			delete(meta, "dolt_server_port")
+			if jdata, merr := json.MarshalIndent(meta, "", "  "); merr == nil {
+				os.WriteFile(metaPath, jdata, 0644) //nolint
+			}
+		}
 	}
 
-	// Wait for dolt to be reachable.
+	// Wait for shared dolt to be reachable.
+	connected := false
 	for i := 0; i < 15; i++ {
-		if exec.Command("bd", "dolt", "test").Run() == nil {
+		if bdCmd("dolt", "test").Run() == nil {
+			log.Printf("[artificer] dolt connected (%s:%s)", doltHost, doltPort)
+			connected = true
 			break
+		}
+		if i == 14 {
+			log.Printf("[artificer] warning: dolt at %s:%s not reachable after 15s", doltHost, doltPort)
 		}
 		time.Sleep(time.Second)
 	}
 
-	// Pull latest from DoltHub.
-	if remote := os.Getenv("DOLTHUB_REMOTE"); remote != "" {
-		exec.Command("bd", "dolt", "remote", "add", "origin", remote).Run() //nolint
-		log.Println("[artificer] pulling beads from DoltHub...")
-		if out, err := exec.Command("bd", "dolt", "pull").CombinedOutput(); err != nil {
-			log.Printf("[artificer] pull warning: %s", strings.TrimSpace(string(out)))
+	// Align project ID with the dolt server's existing project.
+	// The artificer uses emptyDir, so bd init generates a new project ID each time.
+	if connected {
+		out, err := exec.Command("dolt", "--host", doltHost, "--port", doltPort,
+			"--user", "root", "--no-tls", "sql", "-q",
+			"USE spi; SELECT value FROM metadata WHERE `key`='_project_id'",
+			"-r", "csv").CombinedOutput()
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if len(lines) >= 2 {
+				serverPID := strings.TrimSpace(lines[len(lines)-1])
+				metaPath := filepath.Join(beadsDir, "metadata.json")
+				if data, rerr := os.ReadFile(metaPath); rerr == nil {
+					updated := strings.Replace(string(data),
+						`"project_id"`, `"project_id"`, 1) // no-op, just parse
+					// Simple JSON field replacement.
+					var meta map[string]any
+					if jerr := json.Unmarshal(data, &meta); jerr == nil {
+						meta["project_id"] = serverPID
+						if jdata, merr := json.MarshalIndent(meta, "", "  "); merr == nil {
+							os.WriteFile(metaPath, jdata, 0644) //nolint
+							log.Printf("[artificer] aligned project ID: %s", serverPID)
+						}
+					}
+					_ = updated
+				}
+			}
 		}
 	}
 

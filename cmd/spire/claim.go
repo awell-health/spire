@@ -25,14 +25,7 @@ func cmdClaim(args []string) error {
 	}
 	id := args[0]
 
-	// Step 1: Pull latest state (non-fatal if no remote)
-	if _, err := bd("dolt", "pull"); err != nil {
-		if !isNoRemoteError(err) {
-			fmt.Printf("  pull warning: %s\n", err)
-		}
-	}
-
-	// Step 2: Verify bead exists and check state
+	// Verify bead exists and check state
 	out, err := bd("show", id, "--json")
 	if err != nil {
 		return fmt.Errorf("bead %s not found: %w", id, err)
@@ -60,16 +53,9 @@ func cmdClaim(args []string) error {
 		return fmt.Errorf("bead %s is already in progress (owner: %s)", id, owner)
 	}
 
-	// Step 3: Claim it
+	// Claim it — writes directly to the shared dolt server via SQL
 	if _, err := bd("update", id, "--claim", "--status", "in_progress"); err != nil {
 		return fmt.Errorf("claim %s: %w", id, err)
-	}
-
-	// Step 4: Push
-	if _, err := bd("dolt", "push"); err != nil {
-		if !isNoRemoteError(err) {
-			fmt.Printf("  push warning: %s\n", err)
-		}
 	}
 
 	// Output result as JSON for easy consumption by spire-work

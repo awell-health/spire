@@ -52,7 +52,6 @@ log() {
   printf '[agent] %s\n' "$*" >&2
 }
 
-# elapsed_since returns seconds since an ISO timestamp.
 elapsed_since() {
   local start_epoch now_epoch
   start_epoch="$(date -d "$1" +%s 2>/dev/null || date -jf "%FT%TZ" "$1" +%s 2>/dev/null || echo 0)"
@@ -86,7 +85,6 @@ write_result() {
   completed_at="$(date -u +%FT%TZ)"
 
   mkdir -p "$COMMS_DIR"
-  # Compute time splits.
   local startup_secs=0 working_secs=0 total_secs=0
   total_secs="$(elapsed_since "$STARTED_AT")"
   if [ -n "$CLAUDE_STARTED_AT" ]; then
@@ -190,9 +188,7 @@ clone_workspace_if_needed() {
   if [ -d "$WORKSPACE_DIR/.git" ]; then
     return 0
   fi
-
   require_env "SPIRE_REPO_URL" "$REPO_URL"
-
   setup_github_auth
   log "cloning $REPO_URL into $WORKSPACE_DIR"
   if ! git clone --depth=1 --branch "$CLONE_BRANCH" "$REPO_URL" "$WORKSPACE_DIR"; then
@@ -271,50 +267,45 @@ collect_context_paths() {
   printf '%s\n' "${paths[@]}"
 }
 
+# ── Beads setup ──────────────────────────────────────────────────────
+# The wizard connects to the shared cluster dolt via SQL (port 3306).
+# No local dolt server. No remotes. No pull/push.
 setup_state_repo() {
   cd "$STATE_DIR" || fatal "failed to enter $STATE_DIR"
 
   if [ ! -d .git ]; then
     git init -q || fatal "failed to initialize git in $STATE_DIR"
   fi
-
+  git config --global --add safe.directory "$STATE_DIR" >/dev/null 2>&1 || true
+  git config --global --add safe.directory "$WORKSPACE_DIR" >/dev/null 2>&1 || true
   git config user.name "$AGENT_NAME" >/dev/null 2>&1 || true
   git config user.email "${SPIRE_GIT_EMAIL:-$AGENT_NAME@spire.local}" >/dev/null 2>&1 || true
 
-  # Dolt runs as a shared cluster service (spire-dolt).
-  # Wizards connect to it — no local dolt server, no clone, no snapshot.
   local dolt_host="${DOLT_HOST:-spire-dolt.spire.svc}"
   local dolt_port="${DOLT_PORT:-3306}"
 
   if [ ! -d .beads ]; then
     log "initializing beads (dolt: $dolt_host:$dolt_port)"
-    BEADS_DOLT_SERVER_HOST="$dolt_host" \
-    BEADS_DOLT_SERVER_PORT="$dolt_port" \
-    bd init --force --prefix "$AGENT_PREFIX" >/dev/null || fatal "failed to initialize beads state"
+    bd init --database spi --prefix spi \
+      --server-host "$dolt_host" --server-port "$dolt_port" >/dev/null 2>&1 || true
+    [ -d .beads ] || fatal "failed to initialize beads state"
+    # Clean up local server artifacts from init.
+    bd dolt stop 2>/dev/null || true
+    rm -f .beads/dolt-server.port .beads/dolt-server.pid .beads/dolt-server.lock
   fi
 
-  # Point beads at the shared dolt service.
-  bd dolt set host "$dolt_host" 2>/dev/null || true
-  bd dolt set port "$dolt_port" 2>/dev/null || true
-  # Remove local server files — we're a client, not a server.
-  rm -f .beads/dolt-server.port .beads/dolt-server.pid .beads/dolt-server.lock
-
-  # Ensure routes
   if ! grep -q "\"prefix\":\"spi-\"" .beads/routes.jsonl 2>/dev/null; then
     echo '{"prefix":"spi-","path":"."}' >> .beads/routes.jsonl
   fi
 
-  # Wait for shared dolt to be reachable
+  # Wait for dolt
   local tries=0
   while ! bd dolt test >/dev/null 2>&1 && [ $tries -lt 15 ]; do
     sleep 1
     tries=$((tries + 1))
   done
-  if [ $tries -ge 15 ]; then
-    log "warning: dolt at $dolt_host:$dolt_port not reachable after 15s"
-  else
-    log "dolt connected ($dolt_host:$dolt_port)"
-  fi
+  [ $tries -lt 15 ] && log "dolt connected ($dolt_host:$dolt_port)" \
+    || log "warning: dolt not reachable after 15s"
 
   export SPIRE_IDENTITY="$AGENT_NAME"
   spire register "$AGENT_NAME" "Managed autonomous wizard" >/dev/null 2>&1 || true
@@ -410,11 +401,9 @@ prepare_branch() {
 run_workspace_cmd() {
   local name="$1"
   local command="$2"
-
   if [ -z "$command" ]; then
     return 0
   fi
-
   log "running $name: $command"
   (cd "$WORKSPACE_DIR" && sh -lc "$command")
 }
@@ -428,29 +417,18 @@ install_dependencies() {
 duration_to_seconds() {
   local raw="$1"
   case "$raw" in
-    *h)
-      printf '%s' "$(( ${raw%h} * 3600 ))"
-      ;;
-    *m)
-      printf '%s' "$(( ${raw%m} * 60 ))"
-      ;;
-    *s)
-      printf '%s' "${raw%s}"
-      ;;
-    *)
-      printf '%s' "$raw"
-      ;;
+    *h) printf '%s' "$(( ${raw%h} * 3600 ))" ;;
+    *m) printf '%s' "$(( ${raw%m} * 60 ))" ;;
+    *s) printf '%s' "${raw%s}" ;;
+    *)  printf '%s' "$raw" ;;
   esac
 }
 
 build_prompt() {
-  local context_block
-  context_block=""
+  local context_block=""
   while IFS= read -r path; do
-    if [ -n "$path" ]; then
-      context_block="${context_block}- ${path}
+    [ -n "$path" ] && context_block="${context_block}- ${path}
 "
-    fi
   done < <(collect_context_paths)
 
   if [ -z "$context_block" ]; then
@@ -506,7 +484,6 @@ monitor_control() {
       rm -f "$STEER_PATH"
       log "captured steer message"
     fi
-
     if [ -f "$STOP_PATH" ]; then
       date -u +%FT%TZ >"$STOP_REQUESTED_PATH"
       if [ -n "$AGENT_PID" ]; then
@@ -514,7 +491,6 @@ monitor_control() {
       fi
       return 0
     fi
-
     sleep 2
   done
 }
@@ -565,47 +541,25 @@ run_agent_command() {
   fi
 
   case "$agent_rc" in
-    0)
-      return 0
-      ;;
-    124)
-      RUN_RESULT="timeout"
-      RUN_SUMMARY="agent timed out after ${TIMEOUT_RAW}"
-      return 0
-      ;;
-    *)
-      RUN_RESULT="error"
-      RUN_SUMMARY="agent exited with status ${agent_rc}"
-      return 0
-      ;;
+    0)   return 0 ;;
+    124) RUN_RESULT="timeout"; RUN_SUMMARY="agent timed out after ${TIMEOUT_RAW}"; return 0 ;;
+    *)   RUN_RESULT="error"; RUN_SUMMARY="agent exited with status ${agent_rc}"; return 0 ;;
   esac
 }
 
 run_validation() {
-  if [ "$RUN_RESULT" != "running" ]; then
-    return 0
-  fi
-
+  if [ "$RUN_RESULT" != "running" ]; then return 0; fi
   if ! run_workspace_cmd lint "$LINT_CMD"; then
-    RUN_RESULT="test_failure"
-    RUN_SUMMARY="lint failed"
-    return 0
+    RUN_RESULT="test_failure"; RUN_SUMMARY="lint failed"; return 0
   fi
-
   if ! run_workspace_cmd build "$BUILD_CMD"; then
-    RUN_RESULT="test_failure"
-    RUN_SUMMARY="build failed"
-    return 0
+    RUN_RESULT="test_failure"; RUN_SUMMARY="build failed"; return 0
   fi
-
   if [ -n "$TEST_CMD" ]; then
     if ! run_workspace_cmd test "$TEST_CMD"; then
-      RUN_RESULT="test_failure"
-      RUN_SUMMARY="test command failed"
-      return 0
+      RUN_RESULT="test_failure"; RUN_SUMMARY="test command failed"; return 0
     fi
   fi
-
   TESTS_PASSED="true"
 }
 
@@ -615,90 +569,61 @@ sanitize_title() {
 
 has_branch_work() {
   cd "$WORKSPACE_DIR" || return 1
-
-  if [ -n "$(git status --porcelain)" ]; then
-    return 0
-  fi
-
+  if [ -n "$(git status --porcelain)" ]; then return 0; fi
   if git rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
     local ahead
     ahead="$(git rev-list --count "origin/$BASE_BRANCH..HEAD" 2>/dev/null || printf '0')"
     [ "${ahead:-0}" -gt 0 ] && return 0
   fi
-
   return 1
 }
 
 commit_if_needed() {
   cd "$WORKSPACE_DIR" || fatal "failed to enter $WORKSPACE_DIR"
-
-  if [ -z "$(git status --porcelain)" ]; then
-    return 0
-  fi
-
-  local summary
+  if [ -z "$(git status --porcelain)" ]; then return 0; fi
+  local summary message
   summary="$(sanitize_title "$BEAD_TITLE")"
-  local message
   if [ "$RUN_RESULT" = "running" ]; then
     message="feat(${BEAD_ID}): ${summary}"
   else
     message="feat(${BEAD_ID}): partial progress"
   fi
-
   git add -A || return 1
-  if git diff --cached --quiet; then
-    return 0
-  fi
-
+  git diff --cached --quiet && return 0
   git commit -m "$message" >/dev/null
 }
 
 push_branch() {
   cd "$WORKSPACE_DIR" || fatal "failed to enter $WORKSPACE_DIR"
-
   if ! has_branch_work; then
     if [ "$RUN_RESULT" = "running" ]; then
-      RUN_RESULT="error"
-      RUN_SUMMARY="agent finished without producing any tracked changes"
+      RUN_RESULT="error"; RUN_SUMMARY="agent finished without producing any tracked changes"
     fi
     return 0
   fi
-
   if ! commit_if_needed; then
     if [ "$RUN_RESULT" = "running" ]; then
-      RUN_RESULT="error"
-      RUN_SUMMARY="failed to commit branch changes"
+      RUN_RESULT="error"; RUN_SUMMARY="failed to commit branch changes"
     fi
     return 0
   fi
-
   setup_github_auth
   if ! git push -u origin "$BRANCH_NAME"; then
     if [ "$RUN_RESULT" = "running" ]; then
-      RUN_RESULT="error"
-      RUN_SUMMARY="failed to push branch ${BRANCH_NAME}"
+      RUN_RESULT="error"; RUN_SUMMARY="failed to push branch ${BRANCH_NAME}"
     fi
     return 0
   fi
-
   COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
 }
 
 update_bead_state() {
-  if [ -z "$COMMIT_SHA" ]; then
-    return 0
-  fi
-
+  if [ -z "$COMMIT_SHA" ]; then return 0; fi
   cd "$STATE_DIR" || fatal "failed to enter $STATE_DIR"
 
-  local note
-  note="Wizard ${AGENT_NAME} pushed branch ${BRANCH_NAME}"
-  if [ -n "$COMMIT_SHA" ]; then
-    note="${note} @ ${COMMIT_SHA}"
-  fi
-  if [ "$RUN_RESULT" != "running" ]; then
-    note="${note} (result: ${RUN_RESULT})"
-  fi
+  local note="Wizard ${AGENT_NAME} pushed branch ${BRANCH_NAME}"
+  [ -n "$COMMIT_SHA" ] && note="${note} @ ${COMMIT_SHA}"
+  [ "$RUN_RESULT" != "running" ] && note="${note} (result: ${RUN_RESULT})"
 
   bd comments add "$BEAD_ID" "$note" >/dev/null 2>&1 || true
 
@@ -707,14 +632,6 @@ update_bead_state() {
       RUN_RESULT="error"
       RUN_SUMMARY="branch pushed but failed to close bead ${BEAD_ID}"
     fi
-  fi
-
-  if ! bd dolt push >/dev/null 2>&1; then
-    if [ "$RUN_RESULT" = "running" ]; then
-      RUN_RESULT="error"
-      RUN_SUMMARY="branch pushed but failed to push bead state"
-    fi
-    return 0
   fi
 
   if [ "$RUN_RESULT" = "running" ]; then
@@ -744,9 +661,7 @@ main() {
   if [ "$RUN_RESULT" = "success" ]; then
     EXIT_CODE=0
   else
-    if [ -z "$RUN_SUMMARY" ]; then
-      RUN_SUMMARY="wizard finished with result ${RUN_RESULT}"
-    fi
+    [ -z "$RUN_SUMMARY" ] && RUN_SUMMARY="wizard finished with result ${RUN_RESULT}"
     EXIT_CODE=1
   fi
 
