@@ -335,6 +335,15 @@ func collectAndWrite(state *SidecarState, commsDir, agentName string) {
 	state.setCollectResult(count, nil)
 	if count > 0 {
 		log.Printf("collected %d messages", count)
+		// Mark messages as read so they don't repeat on next poll.
+		for _, raw := range messages {
+			var msg struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(raw, &msg) == nil && msg.ID != "" {
+				exec.Command("spire", "read", msg.ID).Run() //nolint
+			}
+		}
 	}
 }
 
