@@ -299,6 +299,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
+		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
 	// Sidecar environment
@@ -306,6 +307,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
+		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
 	// Inject secrets from SpireConfig
@@ -512,6 +514,7 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		{Name: "DOLT_PORT", Value: "3306"},
 		{Name: "ARTIFICER_MODEL", Value: "claude-opus-4-6"},
 		{Name: "ARTIFICER_MAX_REVIEW_ROUNDS", Value: "3"},
+		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
 	// Sidecar environment.
@@ -519,6 +522,7 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
+		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
 	// Inject secrets from SpireConfig.
@@ -666,6 +670,7 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
 		{Name: "ARTIFICER_MODEL", Value: "claude-opus-4-6"},
+		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
 	// Sidecar environment.
@@ -673,6 +678,7 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
+		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
 	// Inject secrets from SpireConfig.
