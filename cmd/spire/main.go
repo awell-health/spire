@@ -67,6 +67,8 @@ func main() {
 		err = cmdSync(args)
 	case "push":
 		err = cmdPush(args)
+	case "register-repo":
+		err = cmdRegisterRepo(args)
 	case "repo":
 		err = cmdRepo(args)
 	case "worktree":
@@ -124,6 +126,7 @@ Setup:
   config <get|set|list|repo> Read/write config values; repo prints resolved spire.yaml
   sync [--hard] [url]   Pull from a DoltHub remote (handles divergent histories)
   push [url]            Push local database to DoltHub (creates remote db if needed)
+  register-repo         Register a repo under a tower (--prefix, --repo-url, --branch, --database)
   repo list             List all init'd repos (--json)
   repo remove <prefix>  Remove a repo from config (all paths)
   worktree remove       Unregister this directory only, leave other worktrees intact
