@@ -15,7 +15,8 @@ import (
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
 )
 
-// BeadWatcher syncs beads from DoltHub into SpireWorkload CRs.
+// BeadWatcher reads beads from the shared dolt server and reconciles SpireWorkload CRs.
+// DoltHub remote sync is handled by the dedicated spire-syncer pod.
 type BeadWatcher struct {
 	Client    client.Client
 	Log       logr.Logger
@@ -60,13 +61,10 @@ func (w *BeadWatcher) Run(ctx context.Context) {
 func (w *BeadWatcher) cycle(ctx context.Context) {
 	w.Log.V(1).Info("bead watcher cycle start")
 
-	// 1. Sync from DoltHub
-	if out, err := exec.CommandContext(ctx, "bd", "dolt", "pull").CombinedOutput(); err != nil {
-		w.Log.Error(err, "bd dolt pull failed", "output", string(out))
-		// Continue anyway — we might have stale-but-useful local state
-	}
+	// DoltHub remote sync (pull/push) is handled by the dedicated spire-syncer pod.
+	// The bead watcher reads directly from the shared dolt server.
 
-	// 2. Get ready beads
+	// 1. Get ready beads
 	out, err := exec.CommandContext(ctx, "bd", "ready", "--json").Output()
 	if err != nil {
 		w.Log.Error(err, "bd ready --json failed")
@@ -134,7 +132,7 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 		created++
 	}
 
-	// 5. Check for completed beads — update workloads that are done
+	// 4. Check for completed beads — update workloads that are done
 	allOut, err := exec.CommandContext(ctx, "bd", "list", "--status=closed", "--json").Output()
 	if err == nil {
 		var closedBeads []beadJSON
@@ -151,9 +149,6 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 			}
 		}
 	}
-
-	// 6. Push state
-	exec.CommandContext(ctx, "bd", "dolt", "push").Run() //nolint
 
 	if created > 0 {
 		w.Log.Info("bead watcher cycle complete", "newWorkloads", created, "totalReady", len(beads))

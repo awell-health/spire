@@ -297,10 +297,8 @@ func artificerLoop(ctx context.Context, workspaceDir, stateDir, epicID, model st
 func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int, cfg *repoconfig.RepoConfig, childStates map[string]*ChildState, state *ArtificerState) {
 	log.Println("[artificer] --- cycle start ---")
 
-	// Pull latest bead state.
-	if _, err := bd("dolt", "pull"); err != nil {
-		log.Printf("[artificer] warning: dolt pull failed: %v", err)
-	}
+	// DoltHub remote sync (pull/push) is handled by the dedicated spire-syncer pod.
+	// The artificer reads directly from the shared dolt server.
 
 	// Fetch latest git branches.
 	if err := gitFetch(workspaceDir); err != nil {
@@ -452,10 +450,8 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 		reportEpicProgress(epicID, childStates) //nolint:errcheck
 		bdComment(epicID, "All children merged or rejected. Closing epic.") //nolint:errcheck
 		bd("close", epicID) //nolint:errcheck
-		bd("dolt", "push")  //nolint:errcheck
 	} else {
 		reportEpicProgress(epicID, childStates) //nolint:errcheck
-		bd("dolt", "push")                      //nolint:errcheck
 	}
 
 	state.updateCounts(childStates)

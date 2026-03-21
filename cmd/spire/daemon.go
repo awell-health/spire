@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -74,43 +73,27 @@ func cmdDaemon(args []string) error {
 	}
 }
 
-// runCycle executes one pull -> process -> push cycle.
+// runCycle executes one daemon cycle: process webhooks and sync epics.
+// DoltHub remote sync (pull/push) is handled by the dedicated spire-syncer pod.
 func runCycle() {
 	log.Printf("[daemon] cycle start")
 
-	// Step 1: Pull
-	_, err := bd("dolt", "pull")
-	if err != nil {
-		// Non-fatal: log and continue. Remote may not be configured.
-		if !strings.Contains(err.Error(), "no remotes") {
-			log.Printf("[daemon] pull warning: %s", err)
-		}
-	}
-
-	// Step 2a: Sync unsynced epics to Linear
+	// Step 1: Sync unsynced epics to Linear
 	epicsSynced := syncEpicsToLinear()
 	if epicsSynced > 0 {
 		log.Printf("[daemon] synced %d epic(s) to Linear", epicsSynced)
 	}
 
-	// Step 2b: Process webhook queue (from spire serve or serverless functions)
+	// Step 2: Process webhook queue (from spire serve or serverless functions)
 	qProcessed, qErrors := processWebhookQueue()
 	if qProcessed > 0 || qErrors > 0 {
 		log.Printf("[daemon] queue: processed %d rows (%d errors)", qProcessed, qErrors)
 	}
 
-	// Step 2c: Process webhook event beads (legacy/direct bead creation)
+	// Step 3: Process webhook event beads (legacy/direct bead creation)
 	processed, errors := processWebhookEvents()
 	if processed > 0 || errors > 0 {
 		log.Printf("[daemon] processed %d events (%d errors)", processed, errors)
-	}
-
-	// Step 3: Push
-	_, err = bd("dolt", "push")
-	if err != nil {
-		if !strings.Contains(err.Error(), "no remotes") {
-			log.Printf("[daemon] push warning: %s", err)
-		}
 	}
 
 	log.Printf("[daemon] cycle complete")
