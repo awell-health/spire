@@ -93,6 +93,16 @@ func processAlive(pid int) bool {
 	return err == nil
 }
 
+// doltBin returns the resolved dolt binary path, falling back to "dolt" if
+// no managed or PATH binary is found. All dolt command invocations should
+// use this instead of a hardcoded "dolt" string.
+func doltBin() string {
+	if p := doltResolvedBinPath(); p != "" {
+		return p
+	}
+	return "dolt"
+}
+
 // --- Dolt server lifecycle ---
 
 // doltPIDPath returns the path to the dolt PID file.
@@ -171,7 +181,7 @@ func doltStart() (int, error) {
 		return 0, fmt.Errorf("create dolt data dir: %w", err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, ".dolt")); os.IsNotExist(err) {
-		initCmd := exec.Command("dolt", "init")
+		initCmd := exec.Command(doltBin(), "init")
 		initCmd.Dir = dataDir
 		if out, err := initCmd.CombinedOutput(); err != nil {
 			return 0, fmt.Errorf("dolt init: %s\n%s", err, string(out))
@@ -185,12 +195,15 @@ func doltStart() (int, error) {
 	}
 
 	// Start dolt sql-server
-	doltBin, err := exec.LookPath("dolt")
-	if err != nil {
-		return 0, fmt.Errorf("dolt not found in PATH")
+	binPath := doltBin()
+	if binPath == "dolt" {
+		// Bare "dolt" fallback — verify it's actually in PATH
+		if _, err := exec.LookPath("dolt"); err != nil {
+			return 0, fmt.Errorf("dolt not found — run `spire up` to auto-download, or install manually")
+		}
 	}
 
-	cmd := exec.Command(doltBin, "sql-server", "--config", configPath)
+	cmd := exec.Command(binPath, "sql-server", "--config", configPath)
 	cmd.Dir = dataDir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
@@ -268,7 +281,7 @@ func doltStop() error {
 // ensureDatabase creates a database on the dolt server if it doesn't exist.
 // Uses a raw dolt connection without --use-db to avoid the chicken-and-egg problem.
 func ensureDatabase(name string) error {
-	cmd := exec.Command("dolt",
+	cmd := exec.Command(doltBin(),
 		"--host", doltHost(),
 		"--port", doltPort(),
 		"--user", "root",

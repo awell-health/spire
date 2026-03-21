@@ -30,6 +30,15 @@ func cmdUp(args []string) error {
 		return fmt.Errorf("no .beads directory — run `spire init` first")
 	}
 
+	// Step 0: Ensure dolt binary is available
+	fmt.Print("dolt binary: ")
+	binPath, err := doltEnsureBinary()
+	if err != nil {
+		fmt.Printf("error: %s\n", err)
+		return fmt.Errorf("cannot ensure dolt binary: %w", err)
+	}
+	fmt.Printf("ok (%s)\n", binPath)
+
 	// Step 1: Start dolt server
 	fmt.Print("dolt server: ")
 	pid, running, reachable := doltServerStatus()
