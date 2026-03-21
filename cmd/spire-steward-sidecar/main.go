@@ -87,6 +87,10 @@ func main() {
 		log.Fatalf("failed to create comms dir: %v", err)
 	}
 
+	// Align project_id before the first inbox poll — ensures metadata.json
+	// matches the dolt server even after restarts that change the ID.
+	ensureProjectID()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

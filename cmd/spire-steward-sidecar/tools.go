@@ -528,3 +528,62 @@ func runKubectl(args ...string) (string, error) {
 func escapeShell(s string) string {
 	return strings.ReplaceAll(s, "'", "'\\''")
 }
+
+// ensureProjectID reads the local .beads/metadata.json project_id and the
+// dolt server's _project_id, then updates the local file if they disagree.
+// Called once at startup before the first inbox poll.
+func ensureProjectID() {
+	metaPath := ".beads/metadata.json"
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		log.Printf("[project-id] cannot read %s: %s", metaPath, err)
+		return
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(data, &meta); err != nil {
+		log.Printf("[project-id] cannot parse %s: %s", metaPath, err)
+		return
+	}
+	localPID, _ := meta["project_id"].(string)
+	log.Printf("[project-id] local: %s", localPID)
+
+	host := os.Getenv("DOLT_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := os.Getenv("DOLT_PORT")
+	if port == "" {
+		port = "3306"
+	}
+
+	out, err := exec.Command("dolt", "sql",
+		"--host", host, "--port", port,
+		"--user", "root", "-p", "", "--no-tls",
+		"-q", "USE spi; SELECT value FROM metadata WHERE `key`='_project_id'",
+		"-r", "csv").Output()
+	if err != nil {
+		log.Printf("[project-id] cannot query server at %s:%s: %s", host, port, err)
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		log.Printf("[project-id] unexpected server response: %s", string(out))
+		return
+	}
+	serverPID := strings.TrimSpace(lines[len(lines)-1])
+	log.Printf("[project-id] server: %s", serverPID)
+
+	if localPID == serverPID {
+		log.Printf("[project-id] aligned")
+		return
+	}
+
+	log.Printf("[project-id] MISMATCH — updating local %s → %s", localPID, serverPID)
+	meta["project_id"] = serverPID
+	updated, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(metaPath, updated, 0644); err != nil {
+		log.Printf("[project-id] cannot write %s: %s", metaPath, err)
+		return
+	}
+	log.Printf("[project-id] realigned successfully")
+}

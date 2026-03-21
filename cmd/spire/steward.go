@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -121,6 +120,10 @@ func cmdSteward(args []string) error {
 		log.Printf("[steward] agents: %s", strings.Join(agentList, ", "))
 	}
 
+	// Align project_id before the first cycle — ensures metadata.json
+	// matches the dolt server even after restarts that change the ID.
+	ensureProjectID()
+
 	cycleNum := 1
 
 	// Run first cycle immediately.
@@ -160,20 +163,11 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 
 	// Step 2: Assess — find ready work.
 	var ready []Bead
-	err := bdJSON(&ready, "ready")
-	if err != nil {
-		// If project ID mismatch (e.g. dolt restarted), re-align and retry once.
-		if strings.Contains(err.Error(), "PROJECT IDENTITY MISMATCH") {
-			if realignProjectID() {
-				err = bdJSON(&ready, "ready")
-			}
-		}
-		if err != nil {
-			log.Printf("[steward] ready: error — %s", err)
-			pushState()
-			log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
-			return
-		}
+	if err := bdJSON(&ready, "ready"); err != nil {
+		log.Printf("[steward] ready: error — %s", err)
+		pushState()
+		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
+		return
 	}
 
 	// Step 3: Load roster.
@@ -527,54 +521,10 @@ func sanitizeK8sLabel(s string) string {
 	return string(result)
 }
 
-// pushState is a no-op when using a shared dolt server (server IS the source of truth).
-// DoltHub backup is handled by a separate cron, not the steward cycle.
+// pushState is intentionally a no-op. The shared dolt server is the source
+// of truth — there is no remote to push to. DoltHub backup, if desired,
+// is handled by the syncer pod, not the steward cycle.
 func pushState() {}
-
-// realignProjectID reads the current project ID from the shared dolt server
-// and updates the local .beads/metadata.json to match. This handles dolt
-// restarts that change the project ID. Returns true if alignment succeeded.
-func realignProjectID() bool {
-	host, port := doltHost(), doltPort()
-	out, err := exec.Command("dolt", "--host", host, "--port", port,
-		"--user", "root", "--no-tls", "sql", "-q",
-		"USE spi; SELECT value FROM metadata WHERE `key`='_project_id'",
-		"-r", "csv").Output()
-	if err != nil {
-		return false
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) < 2 {
-		return false
-	}
-	serverPID := strings.TrimSpace(lines[len(lines)-1])
-	if serverPID == "" || serverPID == "value" {
-		return false
-	}
-
-	metaPath := ".beads/metadata.json"
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		return false
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return false
-	}
-	if meta["project_id"] == serverPID {
-		return false // already aligned
-	}
-	meta["project_id"] = serverPID
-	jdata, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return false
-	}
-	if err := os.WriteFile(metaPath, jdata, 0644); err != nil {
-		return false
-	}
-	log.Printf("[steward] re-aligned project ID: %s", serverPID)
-	return true
-}
 
 // runSpire runs a spire subcommand by calling the spire binary.
 func runSpire(args ...string) (string, error) {
