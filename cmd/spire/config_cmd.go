@@ -11,16 +11,20 @@ import (
 
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire config <get|set|list|repo> [key] [value]\n\nKeys: identity, dolt.port, daemon.interval, editor.cursor, editor.claude, mcp-server.path, dolthub.remote\n\nSubcommands:\n  repo    Print resolved spire.yaml (repo-level agent config)")
+		return fmt.Errorf("usage: spire config <get|set|list|repo> [key] [value]\n\nConfig keys: identity, dolt.port, daemon.interval, editor.cursor, editor.claude, mcp-server.path, dolthub.remote\nCredential keys: %s\n\nFlags:\n  --unmask  Show full credential values (default: masked)\n\nSubcommands:\n  repo    Print resolved spire.yaml (repo-level agent config)", strings.Join(validCredentialKeys(), ", "))
 	}
 
-	// Parse --repo flag
+	// Parse flags
 	var useRepo bool
+	var unmask bool
 	var remaining []string
 	for _, a := range args {
-		if a == "--repo" {
+		switch a {
+		case "--repo":
 			useRepo = true
-		} else {
+		case "--unmask":
+			unmask = true
+		default:
 			remaining = append(remaining, a)
 		}
 	}
@@ -35,7 +39,7 @@ func cmdConfig(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: spire config get <key>")
 		}
-		return configGet(args[1])
+		return configGet(args[1], unmask)
 	case "set":
 		if len(args) < 3 {
 			return fmt.Errorf("usage: spire config set <key> <value>")
@@ -70,7 +74,12 @@ func currentInstance(cfg *SpireConfig) (*Instance, string, error) {
 }
 
 // configGet reads a config value by key and prints it.
-func configGet(key string) error {
+func configGet(key string, unmask bool) error {
+	// Route credential keys to the credential store
+	if isCredentialKey(key) {
+		return credentialGet(key, unmask)
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -151,6 +160,15 @@ func configGet(key string) error {
 
 // configSet writes a config value by key.
 func configSet(key, value string) error {
+	// Route credential keys to the credential store
+	if isCredentialKey(key) {
+		if err := setCredential(key, value); err != nil {
+			return err
+		}
+		fmt.Printf("%s = %s (saved to credentials file)\n", key, maskValue(value))
+		return nil
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -246,6 +264,19 @@ func configList() error {
 		fmt.Println("mcp-server.path = (not set)")
 	}
 
+	// Credentials
+	fmt.Println()
+	fmt.Println("# Credentials")
+	for _, key := range validCredentialKeys() {
+		val := getCredential(key)
+		if val == "" {
+			fmt.Printf("%s = (not set)\n", key)
+		} else {
+			source := credentialSource(key)
+			fmt.Printf("%s = %s (from %s)\n", key, maskValue(val), source)
+		}
+	}
+
 	// Per-instance settings
 	if len(cfg.Instances) > 0 {
 		fmt.Println()
@@ -296,6 +327,24 @@ func configList() error {
 		}
 	}
 
+	return nil
+}
+
+// credentialGet prints a credential value with masking and source info.
+func credentialGet(key string, unmask bool) error {
+	val := getCredential(key)
+	if val == "" {
+		fmt.Printf("%s = (not set)\n", key)
+		return nil
+	}
+
+	display := maskValue(val)
+	if unmask {
+		display = val
+	}
+
+	source := credentialSource(key)
+	fmt.Printf("%s = %s (from %s)\n", key, display, source)
 	return nil
 }
 
