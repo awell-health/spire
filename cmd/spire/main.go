@@ -93,6 +93,8 @@ func main() {
 		err = cmdStatus(args)
 	case "metrics":
 		err = cmdMetrics(args)
+	case "tower":
+		err = cmdTower(args)
 	case "doctor":
 		err = cmdDoctor(args)
 	case "version":
@@ -120,6 +122,9 @@ Overview:
   board [flags]         Unified work queue view (--mine, --ready, --json)
 
 Setup:
+  tower create          Create a new tower (--name, --dolthub, --prefix)
+  tower attach          Clone a tower from DoltHub (<url> [--name])
+  tower list            List configured towers
   init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
   config <get|set|list|repo> Read/write config values; repo prints resolved spire.yaml
   sync [--hard] [url]   Pull from a DoltHub remote (handles divergent histories)
