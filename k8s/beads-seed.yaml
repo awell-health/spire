@@ -17,7 +17,7 @@ data:
       "backend": "dolt",
       "dolt_mode": "server",
       "dolt_database": "spi",
-      "project_id": "25cd01ed-bc22-4818-bfff-1e5e86d2b2ec"
+      "project_id": "96a3d185-3bb8-4066-9726-8afd78e9df53"
     }
   routes.jsonl: |
     {"prefix":"spi-","path":"."}

@@ -1,55 +1,51 @@
-# Stage 1: Build spire binary
-FROM golang:1.26-alpine AS build
-
-ARG BEADS_VERSION=v0.61.0
-
+# --- Cached base: Go modules, bd, dolt ---
+FROM golang:1.26-alpine AS deps
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /spire ./cmd/spire/
-
-# Build operator binary (separate Go module)
 WORKDIR /src/operator
+COPY operator/go.mod operator/go.sum ./
 RUN go mod download
-RUN CGO_ENABLED=0 GOOS=linux go build -o /spire-operator .
 
-# Build bd (beads) from source
+ARG BEADS_VERSION=v0.61.0
 WORKDIR /beads
 RUN apk add --no-cache git \
     && git clone --depth 1 --branch "${BEADS_VERSION}" https://github.com/steveyegge/beads.git . \
-    && CGO_ENABLED=0 GOOS=linux go build -o /bd ./cmd/bd/
+    && CGO_ENABLED=0 GOOS=linux go build -o /out/bd ./cmd/bd/
 
-# Stage 2: Install dolt
 FROM alpine:3.20 AS tools
-
 ARG DOLT_VERSION=latest
-
-RUN apk add --no-cache curl bash
-
-# Install dolt
-RUN if [ "$DOLT_VERSION" = "latest" ]; then \
+RUN apk add --no-cache bash curl \
+    && if [ "$DOLT_VERSION" = "latest" ]; then \
         curl -L https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash; \
     else \
         curl -L "https://github.com/dolthub/dolt/releases/download/${DOLT_VERSION}/install.sh" | bash; \
     fi
 
-# Stage 3: Runtime
+# --- Build spire binaries (only rebuilds on code change) ---
+FROM deps AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spire ./cmd/spire/ \
+    && CGO_ENABLED=0 GOOS=linux go build -o /out/spire-steward-sidecar ./cmd/spire-steward-sidecar/
+WORKDIR /src/operator
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spire-operator .
+
+# --- Runtime ---
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates bash git curl jq \
     && curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/')/kubectl" \
     && chmod +x kubectl && mv kubectl /usr/local/bin/
 
-COPY --from=build /spire /usr/local/bin/spire
-COPY --from=build /spire-operator /usr/local/bin/spire-operator
-COPY --from=build /bd /usr/local/bin/bd
+COPY --from=build /out/spire /usr/local/bin/spire
+COPY --from=build /out/spire-steward-sidecar /usr/local/bin/spire-steward-sidecar
+COPY --from=build /out/spire-operator /usr/local/bin/spire-operator
+COPY --from=deps /out/bd /usr/local/bin/bd
 COPY --from=tools /usr/local/bin/dolt /usr/local/bin/dolt
 
-# Steward doesn't need a repo checkout — just beads state
 WORKDIR /data
 
-# Entrypoint + bridge scripts
 COPY k8s/entrypoint.sh /entrypoint.sh
 COPY k8s/bead-bridge.sh /bead-bridge.sh
 RUN chmod +x /entrypoint.sh /bead-bridge.sh

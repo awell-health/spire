@@ -20,7 +20,8 @@ spec:
       initContainers:
         # Seed .beads/ from ConfigMap if it doesn't exist yet (first boot on PVC).
         - name: seed-beads
-          image: alpine:3.20
+          image: spire-steward:dev
+          imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
           args:
             - |
@@ -55,6 +56,10 @@ spec:
               value: "spire-dolt.spire.svc"
             - name: DOLT_PORT
               value: "3306"
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.spire.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: "3306"
             - name: STEWARD_INTERVAL
               value: "2m"
           resources:
@@ -71,10 +76,62 @@ spec:
               mountPath: /etc/spire
               readOnly: true
           workingDir: /etc/spire
+        - name: sidecar
+          image: spire-steward:dev
+          imagePullPolicy: IfNotPresent
+          command: ["spire-steward-sidecar"]
+          args:
+            - "--comms-dir=/comms"
+            - "--poll-interval=30s"
+            - "--model=claude-sonnet-4-6"
+            - "--context-threshold=0.45"
+            - "--port=8081"
+          env:
+            - name: DOLT_HOST
+              value: "spire-dolt.spire.svc"
+            - name: DOLT_PORT
+              value: "3306"
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.spire.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: "3306"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: ANTHROPIC_API_KEY_DEFAULT
+                  optional: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 512Mi
+          workingDir: /data
+          volumeMounts:
+            - name: comms
+              mountPath: /comms
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: spire-steward-data
+        - name: comms
+          emptyDir: {}
         - name: beads-seed
           configMap:
             name: beads-seed
