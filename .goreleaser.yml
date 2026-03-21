@@ -1,0 +1,60 @@
+version: 2
+
+project_name: spire
+
+builds:
+  - id: spire
+    main: ./cmd/spire/
+    binary: spire
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "spire_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: awell-health
+    name: spire
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: spire
+    repository:
+      owner: awell-health
+      name: homebrew-spire
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/awell-health/spire"
+    description: "AI agent coordination hub"
+    license: "Apache-2.0"
+    install: |
+      bin.install "spire"
+    test: |
+      system "#{bin}/spire", "version"
+    dependencies:
+      - name: git
+        type: optional

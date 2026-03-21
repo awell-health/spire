@@ -7,26 +7,33 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run tests
+        run: go test ./pkg/... ./cmd/spire/... -count=1 -timeout 120s
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Run tests
-        run: go test ./cmd/spire/... -run "Test[^I]" -count=1
-
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.CONTENTS_AND_WORKFLOWS_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.CONTENTS_AND_WORKFLOWS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
