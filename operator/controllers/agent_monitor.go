@@ -299,6 +299,8 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 	// Sidecar environment
 	sidecarEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
+		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_PORT", Value: "3306"},
 	}
 
 	// Inject secrets from SpireConfig
@@ -526,6 +528,8 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 	// Sidecar environment.
 	sidecarEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
+		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_PORT", Value: "3306"},
 	}
 
 	// Inject secrets from SpireConfig.
