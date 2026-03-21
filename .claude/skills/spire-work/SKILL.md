@@ -33,13 +33,13 @@ The subagent prompt should include ALL of the steps below verbatim.
 
 ## Step 0: Claim the bead
 
-Use `spire claim` to atomically pull, verify, claim, and push:
+Use `spire claim` to verify and claim:
 
 ```bash
 spire claim <bead-id>
 ```
 
-This does: `bd dolt pull` -> verify bead exists and isn't closed/owned by someone else -> `bd update --claim --status in_progress` -> `bd dolt push`.
+This does: verify bead exists and isn't closed/owned by someone else -> `bd update --claim --status in_progress`.
 
 If `spire claim` fails (bead closed, already owned, etc.) — **stop and report the error**. Do not proceed.
 
@@ -130,7 +130,6 @@ The first open, unblocked child step is where you are.
 3. `git worktree remove .worktrees/<bead-id> && git branch -d feat/<bead-id>`
 4. `bd close <merge-step-id>`
 5. `bd close <bead-id>`
-6. Push state: `bd dolt push`
 
 ## Step 5: Report completion
 
@@ -143,10 +142,9 @@ spire send <sender> "Completed <bead-id>: <summary>" --ref <bead-id>
 
 ## Rules
 
-- Always `spire claim` FIRST (Step 0) — atomic pull/verify/claim/push
+- Always `spire claim` FIRST (Step 0) — verify/claim
 - Always `spire focus` for tasks (Step 2) — single source of context
 - One step at a time — close each molecule step when complete
 - All implementation in `.worktrees/<bead-id>` on `feat/<bead-id>`
 - Never merge without passing tests
-- Push dolt state after merge: `bd dolt push`
 - If blocked, stop and report
