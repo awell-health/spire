@@ -475,18 +475,13 @@ func initBeadsState(stateDir string) error {
 		exec.Command("git", "-C", stateDir, "config", "user.name", "artificer").Run()              //nolint
 		exec.Command("git", "-C", stateDir, "config", "user.email", "artificer@spire.local").Run() //nolint
 
-		cmd := exec.Command("bd", "init", "--force", "--prefix", "spi")
+		cmd := exec.Command("bd", "init", "--database", "spi", "--prefix", "spi",
+			"--server-host", doltHost, "--server-port", doltPort)
 		cmd.Dir = stateDir
-		cmd.Env = append(os.Environ(),
-			"BEADS_DOLT_SERVER_HOST="+doltHost,
-			"BEADS_DOLT_SERVER_PORT="+doltPort,
-		)
-		// Tolerate init failure: shared dolt may already have schema from steward/other agents.
 		if out, ierr := cmd.CombinedOutput(); ierr != nil {
 			if _, serr := os.Stat(beadsDir); os.IsNotExist(serr) {
 				return fmt.Errorf("bd init: %w\n%s", ierr, out)
 			}
-			log.Printf("[artificer] bd init warning (schema may already exist): %s", strings.TrimSpace(string(out)))
 		}
 
 		routesPath := filepath.Join(beadsDir, "routes.jsonl")

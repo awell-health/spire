@@ -27,34 +27,24 @@ git config --global user.email "steward@spire.local"
 
 cd /data
 
-# Initialize beads to point at the dolt service.
-# bd init creates the local .beads config; the dolt server is external.
+# Initialize beads pointing at the shared dolt service.
+# --database spi connects to the existing DB (no new project ID).
 if [ ! -f /data/.beads/metadata.json ]; then
     echo "[steward] initializing beads (dolt server: $DOLT_HOST:$DOLT_PORT)..."
     git init -q 2>/dev/null || true
-    BEADS_DOLT_SERVER_HOST="$DOLT_HOST" \
-    BEADS_DOLT_SERVER_PORT="$DOLT_PORT" \
-    bd init --prefix "$BEADS_PREFIX" --force
+    bd init --database spi --prefix "$BEADS_PREFIX" \
+        --server-host "$DOLT_HOST" --server-port "$DOLT_PORT" 2>/dev/null || true
+    [ -d /data/.beads ] || { echo "[steward] FATAL: bd init failed"; exit 1; }
     spire init --prefix="$BEADS_PREFIX" --standalone 2>/dev/null || true
-
-    # Align project ID with the dolt server's existing project.
-    # The steward uses emptyDir, so bd init generates a new project ID on each restart.
-    # The dolt server retains the canonical project ID.
-    SERVER_PROJECT_ID=$(DOLT_CLI_PASSWORD="" dolt --host "$DOLT_HOST" --port "$DOLT_PORT" --user root --no-tls sql -q \
+    # Kill any local dolt server that bd init started.
+    bd dolt stop 2>/dev/null || true
+    rm -f /data/.beads/dolt-server.port /data/.beads/dolt-server.pid /data/.beads/dolt-server.lock
+    # Align project ID with whatever the server has.
+    _SPID=$(DOLT_CLI_PASSWORD="" dolt --host "$DOLT_HOST" --port "$DOLT_PORT" --user root --no-tls sql -q \
         "USE spi; SELECT value FROM metadata WHERE \`key\`='_project_id'" -r csv 2>/dev/null | tail -1)
-    if [ -n "$SERVER_PROJECT_ID" ] && [ "$SERVER_PROJECT_ID" != "value" ]; then
-        jq --arg pid "$SERVER_PROJECT_ID" '.project_id = $pid' /data/.beads/metadata.json > /tmp/meta.json \
-            && mv /tmp/meta.json /data/.beads/metadata.json
-        echo "[steward] aligned project ID with dolt server: $SERVER_PROJECT_ID"
-    fi
+    [ -n "$_SPID" ] && [ "$_SPID" != "value" ] && \
+        jq --arg p "$_SPID" '.project_id=$p' /data/.beads/metadata.json > /tmp/m.json && mv /tmp/m.json /data/.beads/metadata.json
 fi
-
-# Point beads at the external dolt service.
-bd dolt set host "$DOLT_HOST" 2>/dev/null || true
-bd dolt set port "$DOLT_PORT" 2>/dev/null || true
-# Remove dolt-server.port file — it overrides metadata and is created by bd init.
-# For external dolt servers, this file must not exist.
-rm -f /data/.beads/dolt-server.port /data/.beads/dolt-server.pid /data/.beads/dolt-server.lock
 
 # Ensure routes
 ROUTES_FILE="/data/.beads/routes.jsonl"
@@ -89,18 +79,6 @@ else
     echo "[steward] WARNING: DoltHub pull failed (will retry on next cycle)"
 fi
 
-# Re-align project ID after pull (DoltHub may have changed it)
-SERVER_PROJECT_ID=$(DOLT_CLI_PASSWORD="" dolt --host "$DOLT_HOST" --port "$DOLT_PORT" --user root --no-tls sql -q \
-    "USE spi; SELECT value FROM metadata WHERE \`key\`='_project_id'" -r csv 2>/dev/null | tail -1)
-if [ -n "$SERVER_PROJECT_ID" ] && [ "$SERVER_PROJECT_ID" != "value" ]; then
-    CURRENT_PID=$(jq -r '.project_id' /data/.beads/metadata.json 2>/dev/null)
-    if [ "$CURRENT_PID" != "$SERVER_PROJECT_ID" ]; then
-        jq --arg pid "$SERVER_PROJECT_ID" '.project_id = $pid' /data/.beads/metadata.json > /tmp/meta.json \
-            && mv /tmp/meta.json /data/.beads/metadata.json
-        echo "[steward] re-aligned project ID after pull: $SERVER_PROJECT_ID"
-    fi
-fi
-
 # Register steward
 spire register steward "Spire steward — automated work coordinator" 2>/dev/null || true
 
@@ -111,7 +89,9 @@ echo "[steward] bead bridge started (PID $BRIDGE_PID)"
 
 echo "[steward] ready. interval=$STEWARD_INTERVAL"
 
-# Run the steward loop. Stale/timeout come from spire.yaml (ConfigMap).
+# Run the steward loop.
+# --no-assign: managed agents get work via operator (SpireWorkloads), not messages.
 exec spire steward \
     --interval="$STEWARD_INTERVAL" \
+    --no-assign \
     ${STEWARD_AGENTS:+--agents="$STEWARD_AGENTS"}

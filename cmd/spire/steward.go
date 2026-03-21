@@ -21,6 +21,7 @@ func cmdSteward(args []string) error {
 	var staleOverride time.Duration
 	once := false
 	dryRun := false
+	noAssign := false // skip sending assignment messages (managed agents get work via operator)
 	var agentList []string
 
 	for i := 0; i < len(args); i++ {
@@ -63,6 +64,8 @@ func cmdSteward(args []string) error {
 			once = true
 		case "--dry-run":
 			dryRun = true
+		case "--no-assign":
+			noAssign = true
 		case "--agents":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--agents requires a comma-separated list of agent names")
@@ -120,7 +123,7 @@ func cmdSteward(args []string) error {
 	cycleNum := 1
 
 	// Run first cycle immediately.
-	stewardCycle(cycleNum, dryRun, staleThreshold, shutdownThreshold, agentList)
+	stewardCycle(cycleNum, dryRun, noAssign, staleThreshold, shutdownThreshold, agentList)
 	cycleNum++
 
 	if once {
@@ -137,7 +140,7 @@ func cmdSteward(args []string) error {
 	for {
 		select {
 		case <-ticker.C:
-			stewardCycle(cycleNum, dryRun, staleThreshold, shutdownThreshold, agentList)
+			stewardCycle(cycleNum, dryRun, noAssign, staleThreshold, shutdownThreshold, agentList)
 			cycleNum++
 		case sig := <-sigCh:
 			log.Printf("[steward] received %s, shutting down after %d cycles", sig, cycleNum-1)
@@ -147,7 +150,7 @@ func cmdSteward(args []string) error {
 }
 
 // stewardCycle executes one steward cycle: commit, pull, assess, assign, stale/shutdown check, push.
-func stewardCycle(cycleNum int, dryRun bool, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
+func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
 	start := time.Now()
 	log.Printf("[steward] ═══ cycle %d ═══════════════════════════════", cycleNum)
 
@@ -218,7 +221,15 @@ func stewardCycle(cycleNum int, dryRun bool, staleThreshold, shutdownThreshold t
 			continue
 		}
 
-		// Send assignment message.
+		if noAssign {
+			// Managed agents get work via operator (SpireWorkloads), not messages.
+			log.Printf("[steward] assigned: %s → %s (P%d) [no-assign: operator handles pods]", bead.ID, agent, bead.Priority)
+			busy[agent] = true
+			assigned++
+			continue
+		}
+
+		// Send assignment message (for external/unmanaged agents).
 		msg := fmt.Sprintf("Please claim and work on %s: %s", bead.ID, bead.Title)
 		sendArgs := []string{
 			"send", agent, msg,
