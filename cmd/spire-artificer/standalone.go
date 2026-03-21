@@ -62,8 +62,7 @@ func runReviewMode(beadID, model string, maxRounds int, commsDir, workspaceDir, 
 
 	log.Printf("[review] completed: %s", result)
 
-	// Push bead state.
-	bd("dolt", "push") //nolint:errcheck
+	// DoltHub remote sync is handled by the dedicated spire-syncer pod.
 }
 
 // reviewSingleBranch reviews a single branch and handles the outcome.

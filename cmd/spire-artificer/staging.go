@@ -154,8 +154,6 @@ func processStagingMerge(dir string, states map[string]*ChildState, cfg *repocon
 		gitCmd(dir, "push", "origin", "--delete", cs.Branch) //nolint:errcheck
 	}
 
-	bd("dolt", "push") //nolint:errcheck
-
 	return nil
 }
 
@@ -225,7 +223,6 @@ func handleStagingTestFailure(dir string, staging *StagingBranch, states map[str
 		}
 	}
 
-	bd("dolt", "push") //nolint:errcheck
 	return nil
 }
 
