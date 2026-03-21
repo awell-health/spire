@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -161,10 +162,18 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 	var ready []Bead
 	err := bdJSON(&ready, "ready")
 	if err != nil {
-		log.Printf("[steward] ready: error — %s", err)
-		pushState()
-		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
-		return
+		// If project ID mismatch (e.g. dolt restarted), re-align and retry once.
+		if strings.Contains(err.Error(), "PROJECT IDENTITY MISMATCH") {
+			if realignProjectID() {
+				err = bdJSON(&ready, "ready")
+			}
+		}
+		if err != nil {
+			log.Printf("[steward] ready: error — %s", err)
+			pushState()
+			log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
+			return
+		}
 	}
 
 	// Step 3: Load roster.
@@ -251,6 +260,12 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 	if assigned > 0 {
 		log.Printf("[steward] assigned: %d bead(s)", assigned)
 	}
+
+	// Step 4b: Detect standalone tasks ready for review.
+	detectReviewReady(dryRun)
+
+	// Step 4c: Detect tasks with review feedback that need wizard re-engagement.
+	detectReviewFeedback(dryRun)
 
 	// Step 5: Stale + shutdown check.
 	staleCount, shutdownCount := checkBeadHealth(staleThreshold, shutdownThreshold, dryRun)
@@ -405,9 +420,161 @@ func killWizardPod(agentName, beadID string) {
 	}
 }
 
+// detectReviewReady finds standalone tasks with the "review-ready" label
+// and routes them to a review pod (artificer --mode=review).
+func detectReviewReady(dryRun bool) {
+	var beads []Bead
+	if err := bdJSON(&beads, "list", "--label", "review-ready", "--status=in_progress"); err != nil {
+		log.Printf("[steward] detectReviewReady: %s", err)
+		return
+	}
+
+	for _, b := range beads {
+		// Skip if already assigned for review.
+		if hasLabel(b, "review-assigned") != "" || containsLabel(b, "review-assigned") {
+			continue
+		}
+
+		if dryRun {
+			log.Printf("[steward] [dry-run] would route %s to review pod", b.ID)
+			continue
+		}
+
+		log.Printf("[steward] routing %s for standalone review", b.ID)
+
+		// Mark as review-assigned so we don't double-route.
+		bd("update", b.ID, "--add-label", "review-assigned")
+
+		// Create a SpireWorkload CR with type="review" so the operator spins up
+		// an artificer review pod.
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1
+kind: SpireWorkload
+metadata:
+  name: review-%s
+  namespace: spire
+spec:
+  beadId: %s
+  title: "Review %s"
+  priority: %d
+  type: review
+`, sanitizeK8sLabel(b.ID), b.ID, b.Title, b.Priority))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("[steward] failed to create review workload for %s: %v\n%s", b.ID, err, string(out))
+		}
+	}
+}
+
+// detectReviewFeedback finds tasks with "review-feedback" label (without
+// "review-ready" or "review-assigned") and re-spawns a wizard to address feedback.
+func detectReviewFeedback(dryRun bool) {
+	var beads []Bead
+	if err := bdJSON(&beads, "list", "--label", "review-feedback", "--status=in_progress"); err != nil {
+		log.Printf("[steward] detectReviewFeedback: %s", err)
+		return
+	}
+
+	for _, b := range beads {
+		// Skip if already re-queued for review or reassigned.
+		if containsLabel(b, "review-ready") || containsLabel(b, "review-assigned") {
+			continue
+		}
+
+		if dryRun {
+			log.Printf("[steward] [dry-run] would re-engage wizard for %s (review feedback)", b.ID)
+			continue
+		}
+
+		log.Printf("[steward] re-engaging wizard for %s (review feedback)", b.ID)
+
+		// Find the wizard owner and send an assignment message.
+		owner := hasLabel(b, "owner:")
+		if owner == "" {
+			owner = "wizard" // fallback
+		}
+
+		msg := fmt.Sprintf("Review feedback on %s: %s — please address feedback on the existing branch and push again", b.ID, b.Title)
+		sendArgs := []string{
+			"send", owner, msg,
+			"--ref", b.ID,
+			"-p", strconv.Itoa(b.Priority),
+			"--as", "steward",
+		}
+		if _, err := runSpire(sendArgs...); err != nil {
+			log.Printf("[steward] failed to re-engage wizard for %s: %v", b.ID, err)
+			continue
+		}
+
+		// Remove review-feedback so we don't re-trigger, the wizard will add review-ready when done.
+		bd("update", b.ID, "--remove-label", "review-feedback")
+	}
+}
+
+// sanitizeK8sLabel makes a bead ID safe for k8s resource names.
+func sanitizeK8sLabel(s string) string {
+	result := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-':
+			result = append(result, c)
+		case c >= 'A' && c <= 'Z':
+			result = append(result, c+32)
+		case c == '.' || c == '_':
+			result = append(result, '-')
+		}
+	}
+	return string(result)
+}
+
 // pushState is a no-op when using a shared dolt server (server IS the source of truth).
 // DoltHub backup is handled by a separate cron, not the steward cycle.
 func pushState() {}
+
+// realignProjectID reads the current project ID from the shared dolt server
+// and updates the local .beads/metadata.json to match. This handles dolt
+// restarts that change the project ID. Returns true if alignment succeeded.
+func realignProjectID() bool {
+	host, port := doltHost(), doltPort()
+	out, err := exec.Command("dolt", "--host", host, "--port", port,
+		"--user", "root", "--no-tls", "sql", "-q",
+		"USE spi; SELECT value FROM metadata WHERE `key`='_project_id'",
+		"-r", "csv").Output()
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		return false
+	}
+	serverPID := strings.TrimSpace(lines[len(lines)-1])
+	if serverPID == "" || serverPID == "value" {
+		return false
+	}
+
+	metaPath := ".beads/metadata.json"
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return false
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return false
+	}
+	if meta["project_id"] == serverPID {
+		return false // already aligned
+	}
+	meta["project_id"] = serverPID
+	jdata, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return false
+	}
+	if err := os.WriteFile(metaPath, jdata, 0644); err != nil {
+		return false
+	}
+	log.Printf("[steward] re-aligned project ID: %s", serverPID)
+	return true
+}
 
 // runSpire runs a spire subcommand by calling the spire binary.
 func runSpire(args ...string) (string, error) {
