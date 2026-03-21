@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // StewardTools implements ToolExecutor for the steward sidecar.
@@ -471,15 +473,34 @@ func (t *StewardTools) listAgentsWork(_ json.RawMessage) (string, error) {
 
 // --- Command helpers ---
 
+// bdVerbose gates bd command logging. Background services set SPIRE_BD_LOG=1;
+// interactive CLI stays quiet unless the user opts in.
+var bdVerbose = os.Getenv("SPIRE_BD_LOG") != ""
+
 func runBD(args ...string) (string, error) {
+	label := "bd " + strings.Join(args, " ")
+	if bdVerbose {
+		log.Printf("[bd] exec: %s", label)
+	}
+	start := time.Now()
+
 	cmd := exec.Command("bd", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("bd %s: %w\n%s", strings.Join(args, " "), err, stderr.String())
+		errStr := strings.TrimSpace(stderr.String())
+		if bdVerbose {
+			log.Printf("[bd] FAIL (%.1fs): %s — %s", time.Since(start).Seconds(), label, errStr)
+		}
+		return "", fmt.Errorf("bd %s: %w\n%s", strings.Join(args, " "), err, errStr)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+
+	out := strings.TrimSpace(stdout.String())
+	if bdVerbose {
+		log.Printf("[bd] OK (%.1fs): %s — %d bytes", time.Since(start).Seconds(), label, len(out))
+	}
+	return out, nil
 }
 
 func runSpire(args ...string) (string, error) {
@@ -506,4 +527,63 @@ func runKubectl(args ...string) (string, error) {
 
 func escapeShell(s string) string {
 	return strings.ReplaceAll(s, "'", "'\\''")
+}
+
+// ensureProjectID reads the local .beads/metadata.json project_id and the
+// dolt server's _project_id, then updates the local file if they disagree.
+// Called once at startup before the first inbox poll.
+func ensureProjectID() {
+	metaPath := ".beads/metadata.json"
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		log.Printf("[project-id] cannot read %s: %s", metaPath, err)
+		return
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(data, &meta); err != nil {
+		log.Printf("[project-id] cannot parse %s: %s", metaPath, err)
+		return
+	}
+	localPID, _ := meta["project_id"].(string)
+	log.Printf("[project-id] local: %s", localPID)
+
+	host := os.Getenv("DOLT_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := os.Getenv("DOLT_PORT")
+	if port == "" {
+		port = "3306"
+	}
+
+	out, err := exec.Command("dolt", "sql",
+		"--host", host, "--port", port,
+		"--user", "root", "-p", "", "--no-tls",
+		"-q", "USE spi; SELECT value FROM metadata WHERE `key`='_project_id'",
+		"-r", "csv").Output()
+	if err != nil {
+		log.Printf("[project-id] cannot query server at %s:%s: %s", host, port, err)
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		log.Printf("[project-id] unexpected server response: %s", string(out))
+		return
+	}
+	serverPID := strings.TrimSpace(lines[len(lines)-1])
+	log.Printf("[project-id] server: %s", serverPID)
+
+	if localPID == serverPID {
+		log.Printf("[project-id] aligned")
+		return
+	}
+
+	log.Printf("[project-id] MISMATCH — updating local %s → %s", localPID, serverPID)
+	meta["project_id"] = serverPID
+	updated, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(metaPath, updated, 0644); err != nil {
+		log.Printf("[project-id] cannot write %s: %s", metaPath, err)
+		return
+	}
+	log.Printf("[project-id] realigned successfully")
 }

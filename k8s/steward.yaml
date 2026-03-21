@@ -62,6 +62,8 @@ spec:
               value: "3306"
             - name: STEWARD_INTERVAL
               value: "2m"
+            - name: SPIRE_BD_LOG
+              value: "1"
           resources:
             requests:
               cpu: 50m
@@ -95,6 +97,8 @@ spec:
               value: "spire-dolt.spire.svc"
             - name: BEADS_DOLT_SERVER_PORT
               value: "3306"
+            - name: SPIRE_BD_LOG
+              value: "1"
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
