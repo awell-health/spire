@@ -178,9 +178,14 @@ start_wizard_heartbeat() {
 }
 
 setup_github_auth() {
-  if [ -n "${GITHUB_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
-    printf '%s\n' "$GITHUB_TOKEN" | gh auth login --with-token >/dev/null 2>&1 || true
-    gh auth setup-git >/dev/null 2>&1 || true
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    if command -v gh >/dev/null 2>&1; then
+      printf '%s\n' "$GITHUB_TOKEN" | gh auth login --with-token >/dev/null 2>&1 || true
+      gh auth setup-git >/dev/null 2>&1 || true
+    fi
+    # Also set token directly in git config as a fallback — gh auth can be
+    # clobbered by Claude running git commands during its session.
+    git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/" 2>/dev/null || true
   fi
 }
 

@@ -67,7 +67,8 @@ RUN if [ "$INSTALL_CLAUDE" = "1" ]; then npm install -g "${CLAUDE_NPM_PACKAGE}";
 # Create non-root user for Claude Code (refuses to run as root).
 RUN adduser -D -h /home/wizard -s /bin/bash wizard && \
     mkdir -p /workspace /data /comms && \
-    chown wizard:wizard /workspace /data /comms
+    chown wizard:wizard /workspace /data /comms && \
+    echo 'export PATH="/usr/local/go/bin:$PATH"' >> /home/wizard/.profile
 
 COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint.sh
 RUN chmod +x /usr/local/bin/agent-entrypoint.sh
