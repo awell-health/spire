@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -32,10 +34,17 @@ func (s checkStatus) String() string {
 
 // checkResult holds the outcome of one doctor check.
 type checkResult struct {
-	Name    string
-	Status  checkStatus
-	Detail  string
-	FixFunc func() // nil if no fix available
+	Name     string
+	Status   checkStatus
+	Detail   string
+	FixFunc  func() // nil if no fix available
+	Optional bool   // if true, doesn't count as failure in summary
+}
+
+// checkCategory groups related checks under a heading.
+type checkCategory struct {
+	Name   string
+	Checks []checkResult
 }
 
 func cmdDoctor(args []string) error {
@@ -55,55 +64,100 @@ func cmdDoctor(args []string) error {
 		return fmt.Errorf("cannot determine working directory: %w", err)
 	}
 
+	// Build check categories. System and Tower always run.
+	// Repo checks only run if the current directory is a registered instance.
+	categories := []checkCategory{
+		{
+			Name: "System",
+			Checks: []checkResult{
+				checkDoltBinary(),
+				checkDoltServer(),
+				checkDocker(),
+			},
+		},
+		{
+			Name: "Tower",
+			Checks: []checkResult{
+				checkTowerConfig(cwd),
+				checkCredentials(),
+			},
+		},
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		// Config load failed — tower check will catch the detail, but we
+		// still show system checks.
+		cfg = &SpireConfig{Instances: make(map[string]*Instance)}
 	}
-
 	inst := findInstanceByPath(cfg, cwd)
-	if inst == nil {
-		return fmt.Errorf("this directory is not initialized — run spire init first")
-	}
-	prefix := inst.Prefix
-
-	// Run all checks
-	checks := []checkResult{
-		checkCLAUDEMD(cwd),
-		checkSPIREMD(cwd),
-		checkSettingsJSON(cwd),
-		checkSpireHookSH(cwd),
-		checkSpireSkills(cwd),
+	if inst != nil {
+		categories = append(categories, checkCategory{
+			Name: "Repo",
+			Checks: []checkResult{
+				checkCLAUDEMD(cwd),
+				checkSPIREMD(cwd),
+				checkSettingsJSON(cwd),
+				checkSpireHookSH(cwd),
+				checkSpireSkills(cwd),
+			},
+		})
 	}
 
 	// Report
-	hasIssues := false
-	for _, c := range checks {
-		icon := "+"
-		if c.Status != statusOK {
-			icon = "!"
-			hasIssues = true
-		}
-		fmt.Printf("  [%s] %-40s %s", icon, c.Name, c.Status)
-		if c.Detail != "" {
-			fmt.Printf("  (%s)", c.Detail)
+	totalChecks := 0
+	passedChecks := 0
+	hasFixable := false
+	var allChecks []checkResult
+
+	for _, cat := range categories {
+		fmt.Println(cat.Name)
+		for _, c := range cat.Checks {
+			allChecks = append(allChecks, c)
+			totalChecks++
+			if c.Status != statusOK && !c.Optional {
+				hasFixable = hasFixable || c.FixFunc != nil
+			}
+
+			icon := "+"
+			if c.Status == statusOK {
+				passedChecks++
+			} else if !c.Optional {
+				icon = "!"
+			}
+
+			optTag := ""
+			if c.Optional {
+				optTag = " [optional]"
+			}
+
+			if c.Detail != "" {
+				fmt.Printf("  [%s] %-40s %-10s (%s)%s\n", icon, c.Name, c.Status, c.Detail, optTag)
+			} else {
+				fmt.Printf("  [%s] %-40s %s%s\n", icon, c.Name, c.Status, optTag)
+			}
 		}
 		fmt.Println()
 	}
 
-	if !hasIssues {
-		fmt.Println("\n  All checks passed.")
+	// Summary
+	fmt.Printf("%d of %d checks passed.\n", passedChecks, totalChecks)
+
+	if passedChecks == totalChecks {
 		return nil
 	}
 
 	if !fix {
-		fmt.Println("\n  Run `spire doctor --fix` to repair issues.")
+		if hasFixable {
+			fmt.Println("Run `spire doctor --fix` to repair fixable issues.")
+		}
 		return nil
 	}
 
 	// Fix mode
 	fmt.Println()
 	fixed := 0
-	for _, c := range checks {
+	for _, c := range allChecks {
 		if c.Status == statusOK {
 			continue
 		}
@@ -116,32 +170,332 @@ func cmdDoctor(args []string) error {
 		fixed++
 	}
 
-	// Re-run checks after fix to show updated status.
-	// We need the prefix for the fix functions, but the checks themselves
-	// don't need it — pass prefix via closures in the fix functions.
-	_ = prefix // used in fix closures below
-
 	fmt.Printf("\n  Fixed %d issue(s). Re-checking:\n\n", fixed)
-	reChecks := []checkResult{
-		checkCLAUDEMD(cwd),
-		checkSPIREMD(cwd),
-		checkSettingsJSON(cwd),
-		checkSpireHookSH(cwd),
-		checkSpireSkills(cwd),
+
+	// Re-run all checks to show updated status
+	reCategories := []checkCategory{
+		{
+			Name: "System",
+			Checks: []checkResult{
+				checkDoltBinary(),
+				checkDoltServer(),
+				checkDocker(),
+			},
+		},
+		{
+			Name: "Tower",
+			Checks: []checkResult{
+				checkTowerConfig(cwd),
+				checkCredentials(),
+			},
+		},
 	}
-	for _, c := range reChecks {
-		icon := "+"
-		if c.Status != statusOK {
-			icon = "!"
-		}
-		fmt.Printf("  [%s] %-40s %s", icon, c.Name, c.Status)
-		if c.Detail != "" {
-			fmt.Printf("  (%s)", c.Detail)
+	if inst != nil {
+		reCategories = append(reCategories, checkCategory{
+			Name: "Repo",
+			Checks: []checkResult{
+				checkCLAUDEMD(cwd),
+				checkSPIREMD(cwd),
+				checkSettingsJSON(cwd),
+				checkSpireHookSH(cwd),
+				checkSpireSkills(cwd),
+			},
+		})
+	}
+
+	for _, cat := range reCategories {
+		fmt.Println(cat.Name)
+		for _, c := range cat.Checks {
+			icon := "+"
+			if c.Status != statusOK && !c.Optional {
+				icon = "!"
+			}
+			optTag := ""
+			if c.Optional {
+				optTag = " [optional]"
+			}
+			if c.Detail != "" {
+				fmt.Printf("  [%s] %-40s %-10s (%s)%s\n", icon, c.Name, c.Status, c.Detail, optTag)
+			} else {
+				fmt.Printf("  [%s] %-40s %s%s\n", icon, c.Name, c.Status, optTag)
+			}
 		}
 		fmt.Println()
 	}
 
 	return nil
+}
+
+// --- System checks ---
+
+// checkDoltBinary verifies a dolt binary is available.
+// Checks the managed path first, then system PATH.
+func checkDoltBinary() checkResult {
+	name := "dolt binary"
+
+	// Check managed binary first
+	managedPath := filepath.Join(doltGlobalDir(), "bin", "dolt")
+	if info, err := os.Stat(managedPath); err == nil && !info.IsDir() {
+		ver := doltVersionOutput(managedPath)
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: managedPath + " " + ver,
+		}
+	}
+
+	// Fall back to system PATH
+	sysPath, err := exec.LookPath("dolt")
+	if err == nil {
+		ver := doltVersionOutput(sysPath)
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: sysPath + " " + ver,
+		}
+	}
+
+	return checkResult{
+		Name:   name,
+		Status: statusMissing,
+		Detail: "not found — run spire up to auto-install",
+	}
+}
+
+// doltVersionOutput runs `dolt version` and returns a trimmed version string.
+func doltVersionOutput(doltPath string) string {
+	out, err := exec.Command(doltPath, "version").Output()
+	if err != nil {
+		return "(unknown version)"
+	}
+	// Output is like "dolt version 1.46.1\n"
+	s := strings.TrimSpace(string(out))
+	if strings.HasPrefix(s, "dolt version ") {
+		return "v" + strings.TrimPrefix(s, "dolt version ")
+	}
+	return s
+}
+
+// checkDoltServer verifies the dolt server is running and reachable.
+func checkDoltServer() checkResult {
+	name := "dolt server"
+
+	pid, running, reachable := doltServerStatus()
+	if running && reachable {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: fmt.Sprintf("port %s, pid %d", doltPort(), pid),
+		}
+	}
+	if running && !reachable {
+		return checkResult{
+			Name:   name,
+			Status: statusOutdated,
+			Detail: fmt.Sprintf("process running (pid %d) but port %s not reachable", pid, doltPort()),
+		}
+	}
+	// Not running. Check if the port is reachable anyway (external process).
+	if reachable {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: fmt.Sprintf("port %s (external process)", doltPort()),
+		}
+	}
+	return checkResult{
+		Name:   name,
+		Status: statusMissing,
+		Detail: "not running — run spire up",
+	}
+}
+
+// checkDocker verifies Docker is available. This is an optional check.
+func checkDocker() checkResult {
+	name := "docker"
+
+	out, err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").Output()
+	if err != nil {
+		return checkResult{
+			Name:     name,
+			Status:   statusMissing,
+			Detail:   "not available — process mode (--mode=process) available as alternative",
+			Optional: true,
+		}
+	}
+	ver := strings.TrimSpace(string(out))
+	return checkResult{
+		Name:     name,
+		Status:   statusOK,
+		Detail:   "v" + ver,
+		Optional: true,
+	}
+}
+
+// --- Tower checks ---
+
+// checkTowerConfig verifies ~/.config/spire/config.json exists and the current
+// directory is a registered instance.
+func checkTowerConfig(cwd string) checkResult {
+	name := "tower config"
+
+	cp, err := configPath()
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: statusMissing,
+			Detail: "cannot determine config path",
+		}
+	}
+	if _, err := os.Stat(cp); os.IsNotExist(err) {
+		return checkResult{
+			Name:   name,
+			Status: statusMissing,
+			Detail: "config.json does not exist — run spire init",
+		}
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: statusOutdated,
+			Detail: "config.json exists but cannot be loaded: " + err.Error(),
+		}
+	}
+
+	if len(cfg.Instances) == 0 {
+		return checkResult{
+			Name:   name,
+			Status: statusOutdated,
+			Detail: "no repos registered — run spire init",
+		}
+	}
+
+	inst := findInstanceByPath(cfg, cwd)
+	if inst == nil {
+		return checkResult{
+			Name:   name,
+			Status: statusOutdated,
+			Detail: "current directory not registered — run spire init",
+		}
+	}
+
+	return checkResult{
+		Name:   name,
+		Status: statusOK,
+		Detail: fmt.Sprintf("prefix: %s, role: %s", inst.Prefix, inst.Role),
+	}
+}
+
+// credentialSpec maps a credential key to its possible env var overrides.
+type credentialSpec struct {
+	Key     string
+	EnvVars []string
+}
+
+// credentialSpecs defines all required credentials and their env var overrides.
+var credentialSpecs = []credentialSpec{
+	{"anthropic-key", []string{"ANTHROPIC_API_KEY", "SPIRE_ANTHROPIC_KEY"}},
+	{"github-token", []string{"GITHUB_TOKEN", "SPIRE_GITHUB_TOKEN"}},
+	{"dolthub-user", []string{"DOLT_REMOTE_USER", "SPIRE_DOLTHUB_USER"}},
+	{"dolthub-password", []string{"DOLT_REMOTE_PASSWORD", "SPIRE_DOLTHUB_PASSWORD"}},
+}
+
+// checkCredentials verifies the credential file and/or env var overrides.
+func checkCredentials() checkResult {
+	name := "credentials"
+
+	dir, err := configDir()
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: statusMissing,
+			Detail: "cannot determine config dir",
+		}
+	}
+	credPath := filepath.Join(dir, "credentials")
+
+	// Parse the credentials file if it exists
+	fileKeys := parseCredentialFile(credPath)
+
+	var missing []string
+	var present []string
+	for _, spec := range credentialSpecs {
+		found := false
+		// Check file
+		if _, ok := fileKeys[spec.Key]; ok {
+			found = true
+		}
+		// Check env var overrides
+		if !found {
+			for _, env := range spec.EnvVars {
+				if os.Getenv(env) != "" {
+					found = true
+					break
+				}
+			}
+		}
+		if found {
+			present = append(present, spec.Key)
+		} else {
+			missing = append(missing, spec.Key)
+		}
+	}
+
+	if len(missing) == 0 {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: fmt.Sprintf("%d of %d keys set", len(present), len(credentialSpecs)),
+		}
+	}
+
+	if len(present) == 0 {
+		// Nothing set at all
+		detail := "missing: " + strings.Join(missing, ", ")
+		if _, err := os.Stat(credPath); os.IsNotExist(err) {
+			detail = "file does not exist; " + detail
+		}
+		return checkResult{
+			Name:   name,
+			Status: statusMissing,
+			Detail: detail,
+		}
+	}
+
+	return checkResult{
+		Name:   name,
+		Status: statusOutdated,
+		Detail: fmt.Sprintf("missing: %s", strings.Join(missing, ", ")),
+	}
+}
+
+// parseCredentialFile reads a flat key=value file and returns the keys that have non-empty values.
+func parseCredentialFile(path string) map[string]bool {
+	keys := make(map[string]bool)
+	f, err := os.Open(path)
+	if err != nil {
+		return keys
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			if key != "" && val != "" {
+				keys[key] = true
+			}
+		}
+	}
+	return keys
 }
 
 // checkCLAUDEMD verifies CLAUDE.md exists and contains the ## Spire section.
