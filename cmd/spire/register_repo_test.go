@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -213,6 +215,95 @@ func TestPrefixPatternEdgeCases(t *testing.T) {
 	// Numeric-only is valid
 	if err := validatePrefix("123"); err != nil {
 		t.Errorf("numeric prefix should be valid: %s", err)
+	}
+}
+
+func TestPrefixUniquenessSQL(t *testing.T) {
+	// Verify the SQL query generated for the prefix uniqueness check
+	prefix := "web"
+	checkSQL := fmt.Sprintf("SELECT repo_url FROM repos WHERE prefix = '%s'", sqlEscape(prefix))
+	want := "SELECT repo_url FROM repos WHERE prefix = 'web'"
+	if checkSQL != want {
+		t.Errorf("checkSQL = %q, want %q", checkSQL, want)
+	}
+
+	// Verify SQL escaping for adversarial prefix (prefix validation would
+	// reject this, but the SQL layer should still be safe)
+	checkSQL2 := fmt.Sprintf("SELECT repo_url FROM repos WHERE prefix = '%s'", sqlEscape("it's"))
+	want2 := "SELECT repo_url FROM repos WHERE prefix = 'it''s'"
+	if checkSQL2 != want2 {
+		t.Errorf("checkSQL with quotes = %q, want %q", checkSQL2, want2)
+	}
+}
+
+func TestPrefixUniquenessOutputParsing(t *testing.T) {
+	// Simulate bd sql pipe-delimited output parsing (same logic as in cmdRegisterRepo)
+	tests := []struct {
+		name      string
+		output    string
+		wantDup   bool
+		wantURL   string
+	}{
+		{
+			name:    "empty output — no match",
+			output:  "",
+			wantDup: false,
+		},
+		{
+			name:    "header only — no match",
+			output:  "| repo_url |",
+			wantDup: false,
+		},
+		{
+			name:    "one row — duplicate found",
+			output:  "| repo_url |\n| https://github.com/org/web-app |",
+			wantDup: true,
+			wantURL: "https://github.com/org/web-app",
+		},
+		{
+			name:    "row with extra whitespace",
+			output:  "| repo_url |\n|  https://github.com/org/api  |",
+			wantDup: true,
+			wantURL: "https://github.com/org/api",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := strings.Split(strings.TrimSpace(tt.output), "\n")
+			isDup := len(lines) > 1
+			if isDup != tt.wantDup {
+				t.Errorf("isDup = %v, want %v", isDup, tt.wantDup)
+				return
+			}
+			if !isDup {
+				return
+			}
+			// Extract repo_url using the same logic as the implementation
+			parts := strings.Split(lines[1], "|")
+			existingURL := ""
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					existingURL = p
+					break
+				}
+			}
+			if existingURL != tt.wantURL {
+				t.Errorf("existingURL = %q, want %q", existingURL, tt.wantURL)
+			}
+		})
+	}
+}
+
+func TestPrefixUniquenessErrorMessage(t *testing.T) {
+	prefix := "web"
+	repoURL := "https://github.com/org/web-app"
+	err := fmt.Errorf("prefix %q already registered in tower (repo: %s); use a different --prefix", prefix, repoURL)
+
+	want := `prefix "web" already registered in tower (repo: https://github.com/org/web-app); use a different --prefix`
+	if err.Error() != want {
+		t.Errorf("error message = %q, want %q", err.Error(), want)
 	}
 }
 

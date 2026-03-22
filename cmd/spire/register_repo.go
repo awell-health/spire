@@ -103,6 +103,29 @@ func cmdRegisterRepo(args []string) error {
 		return err
 	}
 
+	// --- Check prefix uniqueness in dolt repos table ---
+	checkSQL := fmt.Sprintf("SELECT repo_url FROM repos WHERE prefix = '%s'", sqlEscape(prefix))
+	if out, err := bd("sql", "-q", checkSQL); err == nil {
+		// Query succeeded — check if any rows were returned.
+		// bd sql output is pipe-delimited tabular; an empty result has only the header or is blank.
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) > 1 {
+			// There's at least one data row after the header — extract repo_url
+			parts := strings.Split(lines[1], "|")
+			existingURL := ""
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					existingURL = p
+					break
+				}
+			}
+			return fmt.Errorf("prefix %q already registered in tower (repo: %s); use a different --prefix", prefix, existingURL)
+		}
+	}
+	// If the query failed (e.g. table doesn't exist), skip the check —
+	// the INSERT below will fail with a clear error if the table is missing.
+
 	// --- Write to repos table ---
 	sql := fmt.Sprintf(
 		"INSERT INTO repos (prefix, repo_url, branch, language, registered_by) VALUES ('%s', '%s', '%s', '%s', '%s')",
