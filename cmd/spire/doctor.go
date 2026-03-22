@@ -622,6 +622,7 @@ func checkRepoMigration(cfg *SpireConfig) checkResult {
 		Status: statusOutdated,
 		Detail: fmt.Sprintf("local-only: %s", strings.Join(prefixes, ", ")),
 		FixFunc: func() {
+			migrated := 0
 			for _, inst := range missing {
 				repoURL := ""
 				// Try to detect repo URL from the instance path
@@ -643,6 +644,25 @@ func checkRepoMigration(cfg *SpireConfig) checkResult {
 					fmt.Printf("    Failed to migrate %s: %s\n", inst.Prefix, err)
 				} else {
 					fmt.Printf("    Migrated %s (%s) to dolt repos table\n", inst.Prefix, repoURL)
+					migrated++
+				}
+			}
+			// Commit the working set so the changes are durable for sync/push
+			if migrated > 0 {
+				addSQL := fmt.Sprintf("CALL DOLT_ADD(`%s`.repos)", tower.Database)
+				if _, err := rawDoltQuery(addSQL); err != nil {
+					// Fallback: try USE + add (some dolt versions need it)
+					rawDoltQuery(fmt.Sprintf("USE `%s`", tower.Database))
+					rawDoltQuery("CALL DOLT_ADD('repos')")
+				}
+				commitSQL := fmt.Sprintf("SELECT DOLT_COMMIT('-m', 'doctor-fix: migrate %d local registrations')", migrated)
+				if _, err := rawDoltQuery(commitSQL); err != nil {
+					// Fallback: try USE + commit
+					rawDoltQuery(fmt.Sprintf("USE `%s`", tower.Database))
+					_, err2 := rawDoltQuery(fmt.Sprintf("SELECT DOLT_COMMIT('-m', 'doctor-fix: migrate %d local registrations')", migrated))
+					if err2 != nil {
+						fmt.Printf("    Warning: dolt commit failed: %s\n", err2)
+					}
 				}
 			}
 		},
