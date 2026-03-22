@@ -535,6 +535,11 @@ func cmdTowerAttach(args []string) error {
 	if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
 		return fmt.Errorf("write .beads/metadata.json: %w", err)
 	}
+	// config.yaml — dolt server connection (mirrors register-repo bootstrap)
+	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		return fmt.Errorf("write .beads/config.yaml: %w", err)
+	}
 
 	// Save tower config
 	if err := saveTowerConfig(tower); err != nil {
