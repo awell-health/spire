@@ -257,9 +257,14 @@ func cmdTowerCreate(args []string) error {
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// Initialize beads database
+	// Initialize beads database in the dolt data directory
+	// (not the user's CWD — tower create should not pollute the repo)
+	dbDataDir := filepath.Join(doltDataDir(), database)
+	os.MkdirAll(dbDataDir, 0755)
+
 	fmt.Printf("initializing database %s...\n", database)
-	client := bdpkg.DefaultClient()
+	client := bdpkg.NewClient()
+	client.WorkDir = dbDataDir
 	if err := client.Init(bdpkg.InitOpts{
 		Database: database,
 		Prefix:   prefix,
@@ -302,13 +307,14 @@ func cmdTowerCreate(args []string) error {
 			os.Setenv("DOLT_REMOTE_PASSWORD", pass)
 		}
 
-		if err := client.DoltRemoteAdd("origin", remoteURL); err != nil {
-			// Remote may already exist if re-creating
-			if !strings.Contains(err.Error(), "already exists") {
-				return fmt.Errorf("add remote: %w", err)
-			}
+		// Use CLI-based push (inherits caller's env credentials)
+		// instead of bd dolt push (server-side CALL dolt_push() lacks creds)
+		dataDir := filepath.Join(doltDataDir(), tower.Database)
+		if err := ensureDoltHubDB(remoteURL); err != nil {
+			fmt.Printf("  Note: could not pre-create remote db: %s\n", err)
 		}
-		if err := client.DoltPush("origin", "main"); err != nil {
+		setDoltCLIRemote(dataDir, "origin", remoteURL)
+		if err := doltCLIPush(dataDir, false); err != nil {
 			return fmt.Errorf("push to DoltHub: %w", err)
 		}
 	}
@@ -316,6 +322,13 @@ func cmdTowerCreate(args []string) error {
 	// Save tower config
 	if err := saveTowerConfig(tower); err != nil {
 		return fmt.Errorf("save tower config: %w", err)
+	}
+
+	// Set as active tower in global config
+	cfg, cfgErr := loadConfig()
+	if cfgErr == nil {
+		cfg.ActiveTower = tower.Name
+		saveConfig(cfg)
 	}
 
 	// Print summary
@@ -470,6 +483,13 @@ func cmdTowerAttach(args []string) error {
 	// Save tower config
 	if err := saveTowerConfig(tower); err != nil {
 		return fmt.Errorf("save tower config: %w", err)
+	}
+
+	// Set as active tower in global config
+	cfg, cfgErr := loadConfig()
+	if cfgErr == nil {
+		cfg.ActiveTower = tower.Name
+		saveConfig(cfg)
 	}
 
 	// Print summary

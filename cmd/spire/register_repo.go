@@ -69,9 +69,18 @@ func cmdRegisterRepo(args []string) error {
 
 	language := detectLanguage(cwd)
 
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	database := flagDatabase
 	if database == "" {
-		database = detectDatabase(prefix)
+		database = detectDatabase(cfg, prefix)
+	}
+	if database == "" || database == prefix {
+		// No tower found and no existing instances — fail clearly
+		return fmt.Errorf("no tower found — run 'spire tower create' or 'spire tower attach' first")
 	}
 
 	user := detectUser()
@@ -83,11 +92,6 @@ func cmdRegisterRepo(args []string) error {
 
 	if repoURL == "" {
 		return fmt.Errorf("cannot detect repo URL (no git remote); use --repo-url")
-	}
-
-	cfg, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
 	}
 
 	if _, exists := cfg.Instances[prefix]; exists {
@@ -275,21 +279,25 @@ func detectLanguage(dir string) string {
 	return ""
 }
 
-// detectDatabase determines the database name. Checks existing config instances
-// for a database name, otherwise uses the prefix.
-func detectDatabase(prefix string) string {
-	cfg, err := loadConfig()
-	if err != nil {
-		return prefix
-	}
-	// If there are existing instances, use the first one's database
-	// (all repos in a tower share a database)
-	for _, inst := range cfg.Instances {
-		if inst.Database != "" {
-			return inst.Database
+// detectDatabase determines the database name.
+// Priority: 1) active tower config, 2) existing instances, 3) empty string.
+func detectDatabase(cfg *SpireConfig, prefix string) string {
+	// Priority 1: active tower config
+	if cfg != nil && cfg.ActiveTower != "" {
+		tower, err := loadTowerConfig(cfg.ActiveTower)
+		if err == nil && tower.Database != "" {
+			return tower.Database
 		}
 	}
-	return prefix
+	// Priority 2: existing instances (all repos in a tower share a database)
+	if cfg != nil {
+		for _, inst := range cfg.Instances {
+			if inst.Database != "" {
+				return inst.Database
+			}
+		}
+	}
+	return ""
 }
 
 // detectUser returns the current user for the registered_by field.
@@ -330,7 +338,7 @@ func readProjectID(database string) string {
 	host := doltHost()
 	port := doltPort()
 	query := fmt.Sprintf("USE %s; SELECT value FROM metadata WHERE `key`='_project_id'", database)
-	out, err := exec.Command("dolt", "sql",
+	out, err := exec.Command(doltBin(), "sql",
 		"--host", host, "--port", port,
 		"--user", "root", "-p", "", "--no-tls",
 		"-q", query, "-r", "csv").Output()
