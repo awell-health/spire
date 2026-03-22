@@ -196,6 +196,28 @@ func cmdRegisterRepo(args []string) error {
 		fmt.Printf("  Warning: dolt commit skipped: %s\n", err)
 	}
 
+	// --- Push to DoltHub (if remote configured) ---
+	if cfg.ActiveTower != "" {
+		if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil && tower.DolthubRemote != "" {
+			// Set credentials
+			if user := getCredential(CredKeyDolthubUser); user != "" {
+				os.Setenv("DOLT_REMOTE_USER", user)
+			}
+			if pass := getCredential(CredKeyDolthubPassword); pass != "" {
+				os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+			}
+
+			dataDir := filepath.Join(doltDataDir(), tower.Database)
+			setDoltCLIRemote(dataDir, "origin", tower.DolthubRemote)
+
+			fmt.Println("  Pushing registration to DoltHub...")
+			if err := doltCLIPush(dataDir, false); err != nil {
+				fmt.Printf("  Warning: DoltHub push skipped: %s\n", err)
+				fmt.Println("  Run 'spire push' later to sync.")
+			}
+		}
+	}
+
 	// --- Print summary ---
 	fmt.Println()
 	fmt.Printf("Repo registered: %s\n", prefix)
