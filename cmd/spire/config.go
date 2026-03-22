@@ -10,6 +10,7 @@ import (
 type SpireConfig struct {
 	Shell        ShellConfig          `json:"shell"`
 	Instances    map[string]*Instance `json:"instances"`
+	ActiveTower  string               `json:"active_tower,omitempty"` // name of active tower
 	MCPServer    string               `json:"mcp_server_path,omitempty"`
 	EditorCursor *bool                `json:"editor_cursor,omitempty"` // default: true
 	EditorClaude *bool                `json:"editor_claude,omitempty"` // default: true

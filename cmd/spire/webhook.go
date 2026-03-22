@@ -245,7 +245,7 @@ func doltSQL(query string, jsonOutput bool) (string, error) {
 		args = append(args, "-r", "json")
 	}
 
-	cmd := exec.Command("dolt", args...)
+	cmd := exec.Command(doltBin(), args...)
 	cmd.Env = append(os.Environ(), "DOLT_CLI_PASSWORD=")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

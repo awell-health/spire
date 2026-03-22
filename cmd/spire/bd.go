@@ -85,7 +85,7 @@ func ensureProjectID() {
 	host := doltHost()
 	port := doltPort()
 
-	out, err := exec.Command("dolt", "sql",
+	out, err := exec.Command(doltBin(), "sql",
 		"--host", host, "--port", port,
 		"--user", "root", "-p", "", "--no-tls",
 		"-q", "USE spi; SELECT value FROM metadata WHERE `key`='_project_id'",

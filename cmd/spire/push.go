@@ -141,9 +141,9 @@ func runPush(remoteURL string) error {
 // directory, inheriting the caller's environment so DOLT_REMOTE_USER /
 // DOLT_REMOTE_PASSWORD are available.
 func doltCLIPush(dataDir string, force bool) error {
-	doltBin, err := exec.LookPath("dolt")
-	if err != nil {
-		return fmt.Errorf("dolt not found in PATH")
+	bin := doltBin()
+	if bin == "" {
+		return fmt.Errorf("dolt not found — run spire up to install")
 	}
 
 	args := []string{"push", "origin", "main"}
@@ -151,7 +151,7 @@ func doltCLIPush(dataDir string, force bool) error {
 		args = []string{"push", "--force", "origin", "main"}
 	}
 
-	cmd := exec.Command(doltBin, args...)
+	cmd := exec.Command(bin, args...)
 	cmd.Dir = dataDir
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
@@ -165,18 +165,18 @@ func doltCLIPush(dataDir string, force bool) error {
 // inside the database data directory. This is separate from the SQL-level remote
 // managed by bd, which lives in the dolt database tables.
 func setDoltCLIRemote(dataDir, name, url string) {
-	doltBin, err := exec.LookPath("dolt")
-	if err != nil {
+	bin := doltBin()
+	if bin == "" {
 		return
 	}
 
 	// Remove existing, ignore error
-	removeCmd := exec.Command(doltBin, "remote", "remove", name)
+	removeCmd := exec.Command(bin, "remote", "remove", name)
 	removeCmd.Dir = dataDir
 	removeCmd.Env = os.Environ()
 	removeCmd.Run() //nolint
 
-	addCmd := exec.Command(doltBin, "remote", "add", name, url)
+	addCmd := exec.Command(bin, "remote", "add", name, url)
 	addCmd.Dir = dataDir
 	addCmd.Env = os.Environ()
 	addCmd.Run() //nolint

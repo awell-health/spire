@@ -16,6 +16,10 @@ type Client struct {
 	// BinPath is the path to the bd binary. Defaults to "bd".
 	BinPath string
 
+	// WorkDir sets the working directory for bd commands.
+	// If empty, the current process working directory is used.
+	WorkDir string
+
 	// Verbose enables command logging. Defaults to SPIRE_BD_LOG env var.
 	Verbose bool
 
@@ -51,6 +55,9 @@ func (c *Client) exec(args ...string) (string, error) {
 	start := time.Now()
 
 	cmd := exec.Command(c.BinPath, args...)
+	if c.WorkDir != "" {
+		cmd.Dir = c.WorkDir
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
