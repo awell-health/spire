@@ -1,0 +1,393 @@
+# Spire Local Mode
+
+**Status**: Specification (not yet fully implemented)
+**Date**: 2026-03-21
+
+Spire runs locally on a developer's laptop. No Kubernetes, no cloud
+infrastructure. Install the binary, create a tower, register repos, file
+work, and agents execute it locally.
+
+---
+
+## Prerequisites
+
+| Dependency | Purpose | Required |
+|------------|---------|----------|
+| `spire` binary (includes `bd`) | CLI for all operations | Yes |
+| Docker | Running agents in containers | No (process mode available) |
+| DoltHub account (free) | Remote sync of bead state | Yes |
+| Anthropic API key | LLM agent execution | Yes |
+| GitHub access (PAT or SSH key) | Repo operations (clone, branch, PR) | Yes |
+
+---
+
+## Setup Flow
+
+### 1. Install
+
+```
+brew install spire
+```
+
+Single binary. Ships with `bd` embedded. No runtime dependencies beyond
+Docker (optional).
+
+### 2. Configure credentials
+
+```
+spire config set anthropic-key sk-ant-...
+spire config set github-token ghp_...
+spire config set dolthub-user myuser
+spire config set dolthub-password mypassword
+```
+
+Credentials are stored in `~/.config/spire/credentials` (chmod 600).
+Simple file-based storage — no OS keychain dependency.
+
+Environment variables (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`,
+`DOLT_REMOTE_USER`, `DOLT_REMOTE_PASSWORD`) override file-based
+credentials when set, which is the expected pattern for CI/CD and
+containers.
+
+**Exists today**: `spire config set` supports instance-scoped settings
+like `identity`, `dolt.port`, `daemon.interval`, `dolthub.remote`.
+
+**Needs to be built**: `spire config set` support for credential keys
+(`anthropic-key`, `github-token`, `dolthub-user`, `dolthub-password`)
+writing to `~/.config/spire/credentials` with correct permissions.
+
+### 3. Create a tower
+
+```
+spire tower create --name my-team
+```
+
+This command:
+1. Initializes a local Dolt database with the beads schema
+2. Generates tower identity (`project_id`, hub prefix)
+3. Creates a DoltHub repo (using stored dolthub credentials)
+4. Pushes the initial database to DoltHub
+5. Writes tower config to `~/.config/spire/towers/my-team.json`
+
+**Tower config format**:
+```json
+{
+  "name": "my-team",
+  "project_id": "abc123",
+  "prefix": "spi",
+  "dolthub_remote": "https://doltremoteapi.dolthub.com/myuser/my-team",
+  "database": "beads_spi",
+  "created_at": "2026-03-21T10:00:00Z"
+}
+```
+
+**Needs to be built**: The `spire tower create` command does not exist.
+Today, tower setup is handled by `spire init` (which initializes a single
+repo instance) and manual dolt server configuration.
+
+### 4. Register a repo
+
+```
+cd ~/code/my-web-app
+spire register-repo --prefix=web
+```
+
+This command:
+1. Validates prefix uniqueness against the dolt `repos` table
+2. Writes a row to the `repos` table: prefix, repo URL (from `git remote`),
+   branch, runtime (auto-detected from repo contents)
+3. Sets up `.beads/` in the repo with `metadata.json` pointing at the
+   tower's dolt database
+4. Pushes the registration to DoltHub
+
+**Exists today**: `spire init` registers repos with a prefix and role
+(hub/satellite/standalone) in `~/.config/spire/config.json`. It creates
+`.beads/` directories with metadata, config, and routing files.
+
+**Needs to be built**: `spire register-repo` as a distinct command that
+operates against a tower (rather than `spire init` which assumes the repo
+is the tower). `spire init` will remain as an alias for `register-repo`.
+The `repos` table in dolt. Automatic runtime detection.
+
+### 5. File work
+
+```
+spire file "Add dark mode support" -t feature -p 2
+```
+
+Creates a bead in the local dolt database. Ready for agents to claim.
+
+**Exists today**: `spire file` works. It resolves the prefix from the
+current directory, delegates to `bd create`, and supports `--branch` and
+`--merge-mode` labels.
+
+### 6. Start the daemon
+
+```
+spire up
+```
+
+Starts a single background daemon that:
+- Runs the dolt SQL server (localhost:3307)
+- Runs the steward (work coordinator) on a 2-minute cycle
+- Syncs with DoltHub on interval (default 2 minutes)
+- Spawns agents locally when work is ready
+- Provides a health endpoint (`localhost:8080/status`)
+
+Only one `spire up` is allowed at a time. Running it again shows current
+status.
+
+**Exists today**: `spire up` starts the dolt server and a daemon process.
+The daemon runs Linear epic sync and webhook queue processing. The steward
+runs as a separate command (`spire steward`).
+
+**Needs to be built**: Unified daemon that includes the steward loop.
+Local agent spawning (Docker or process mode). Single-instance enforcement.
+Health endpoint. DoltHub sync integrated into the daemon cycle (currently
+handled by a separate syncer pod in k8s).
+
+### 7. Monitor
+
+```
+spire status          # tower status, agent activity, sync state
+spire logs            # follow daemon + agent logs
+spire logs wizard-1   # specific agent
+spire board           # kanban-style work queue
+spire roster          # who's in the tower, what they're working on
+spire watch           # live-updating view of all activity
+```
+
+**Exists today**: `spire status` shows dolt server and daemon PID/state.
+`spire board` renders a columnar work queue. `spire roster` lists
+registered agents. `spire watch` provides a live-updating terminal view.
+
+**Needs to be built**: `spire logs` command (today, logs are in
+`~/.local/share/spire/daemon.log` and `dolt.log` but have no CLI reader).
+Richer `spire status` output showing agent activity and sync state.
+
+---
+
+## Local Agent Execution
+
+### Docker mode (default)
+
+Agents run as Docker containers with:
+- An ephemeral workspace — the agent clones the repo inside the container
+- `ANTHROPIC_API_KEY` and GitHub credentials injected as environment
+  variables (from `~/.config/spire/credentials` or env var overrides)
+- Network access for git operations and LLM API calls
+- One container per wizard, isolated from each other
+- No host repo mount — this matches how k8s already works
+
+Container lifecycle:
+1. Steward identifies ready work and idle wizard slots
+2. Daemon pulls the agent image (`spire-agent:latest`)
+3. Container starts with the bead ID, repo URL, and branch as arguments
+4. Agent runs: `git clone <repo-url> -b <branch> /workspace`, then
+   `spire claim <bead-id>`, then `spire focus <bead-id>`, then executes
+   the work using Claude Code
+5. On completion, the agent pushes results (git push + spire push),
+   container exits; daemon collects the result
+
+```
+spire up                  # default: Docker mode
+spire up --mode=docker    # explicit
+```
+
+**Needs to be built**: Docker container spawning in the daemon. Image
+management (pull/build). Container lifecycle tracking. Result collection.
+
+### Process mode
+
+Agents run as local processes. Faster startup, easier debugging, less
+isolation.
+
+```
+spire up --mode=process
+```
+
+Each wizard runs as a background process in its own git worktree:
+1. Daemon creates a worktree at `/tmp/spire-wizard/<name>`
+2. Spawns `claude --print` (or the spire agent entrypoint) as a child
+   process
+3. Process inherits the daemon's environment (API keys, git config)
+4. On completion, daemon reads the result and cleans up the worktree
+
+**Exists today**: `spire summon` creates wizard entries in
+`~/.config/spire/wizards.json` and worktree directories at
+`/tmp/spire-wizard/<name>`. Process spawning is stubbed (PID=0 placeholder).
+
+**Needs to be built**: Actual process spawning with the wizard work loop
+(claim, focus, execute, push). Worktree creation via `git worktree add`.
+Process health monitoring. Result collection.
+
+---
+
+## Directory Structure
+
+```
+~/.config/spire/
+    config.json             # global config: instances, shell state, editor prefs
+    credentials             # API keys and tokens (chmod 600)
+    wizards.json            # local wizard registry (process mode)
+    towers/
+        my-team.json        # tower identity + DoltHub remote URL
+
+~/.local/share/spire/
+    dolt.pid                # dolt server PID
+    daemon.pid              # daemon PID
+    dolt.log                # dolt server stdout
+    dolt.error.log          # dolt server stderr
+    daemon.log              # daemon stdout
+    daemon.error.log        # daemon stderr
+    dolt-config.yaml        # dolt server listener config
+
+/opt/homebrew/var/dolt/     # (macOS) or ~/.local/share/dolt/ (Linux)
+    .dolt/                  # dolt data directory
+    beads_spi/              # database for tower prefix "spi"
+
+~/code/my-web-app/
+    .beads/
+        metadata.json       # tower identity, project_id, dolt connection
+        config.yaml         # dolt host/port, routing mode
+        routes.jsonl        # prefix routing (for multi-repo towers)
+```
+
+The dolt data directory is shared across all repos on the machine. It is
+managed by the dolt server process started by `spire up`. Default locations:
+
+| Platform | Data directory | Overrride |
+|----------|---------------|-----------|
+| macOS | `/opt/homebrew/var/dolt` | `DOLT_DATA_DIR` |
+| Linux | `~/.local/share/dolt` | `DOLT_DATA_DIR` |
+
+---
+
+## Sync Behavior
+
+DoltHub is the remote store. Local dolt is the working copy.
+
+| Command | Action |
+|---------|--------|
+| `spire push` | Commit local dolt changes, push to DoltHub |
+| `spire pull` | Pull from DoltHub, merge into local dolt |
+| Daemon auto-sync | Both directions on interval when `spire up` is running |
+
+**Merge contract — field-level ownership**:
+
+- **Cluster owns status fields**: `status`, `owner`, `assignee`. These are
+  set by the steward and agent lifecycle (claim, close, reassign). Users
+  should not edit these directly.
+- **User owns content fields**: `title`, `description`, `priority`, `type`.
+  These are set at creation time and updated by the user or agent working
+  the bead.
+- **Append-only fields**: `comments` and `messages` are append-only. Rows
+  are never updated or deleted, only inserted.
+
+The daemon commits and pushes after each steward cycle. Multiple machines
+running against the same DoltHub remote must coordinate via the steward
+(one active steward at a time).
+
+**Exists today**: `spire push` commits working-set changes, sets the CLI
+remote, and runs `dolt push origin main`. Handles divergent history with
+`--force`. `spire pull` pulls from DoltHub. Both handle credential
+injection via environment variables (`DOLT_REMOTE_USER`,
+`DOLT_REMOTE_PASSWORD`).
+
+**Needs to be built**: Automatic sync in the daemon cycle (currently the
+daemon only does Linear sync and webhook processing; DoltHub sync is in the
+k8s syncer pod). Conflict detection and reporting based on field-level
+ownership rules.
+
+---
+
+## Summoning and Dismissing Agents
+
+```
+spire summon 3                    # summon 3 wizards
+spire summon --for spi-7v2        # summon enough for this epic's ready children
+spire dismiss 1                   # dismiss one wizard (least busy first)
+spire dismiss --all               # dismiss all wizards
+spire roster                      # who's in the tower
+```
+
+**Exists today**: `spire summon` and `spire dismiss` both exist with k8s
+and local code paths. Local mode creates wizard entries in
+`~/.config/spire/wizards.json`, creates worktree directories, and cleans up
+dead wizards. k8s mode creates/deletes SpireAgent CRDs.
+
+**Needs to be built**: The local wizard work loop. Today `summonLocal`
+registers wizards but does not spawn processes (PID is 0). The full loop is:
+poll ready beads, claim one, focus, execute via Claude Code, push result,
+repeat.
+
+---
+
+## What Exists Today vs What Needs to Be Built
+
+### Exists and works
+
+| Component | Implementation |
+|-----------|---------------|
+| `bd` CLI | Bead CRUD, dolt operations, dependencies, labels, molecules |
+| `spire init` (alias for `register-repo`) | Repo registration with prefix, role, hub/satellite topology |
+| `spire up` / `down` / `shutdown` | Dolt server + daemon lifecycle management |
+| `spire status` | Dolt server and daemon PID/reachability check |
+| `spire file` | Bead creation with prefix resolution and label support |
+| `spire claim` | Atomic pull, verify, set in_progress, push |
+| `spire focus` | Context assembly and workflow molecule |
+| `spire push` / `pull` | DoltHub remote push/pull with credential handling |
+| `spire send` / `collect` | Agent-to-agent messaging via bead labels |
+| `spire register` / `unregister` | Agent registration |
+| `spire board` | Columnar work queue view |
+| `spire roster` | Agent listing with status |
+| `spire summon` / `dismiss` | Wizard creation (local: stubbed; k8s: functional) |
+| `spire watch` | Live-updating terminal view |
+| `spire steward` | Work coordinator with ready-assess-assign cycle |
+| `spire config` | Instance-scoped config get/set/list |
+| `spire connect linear` | Linear OAuth2 integration |
+| `spire daemon` | Background process for Linear sync + webhook processing |
+| Credential storage | File-based (`~/.config/spire/credentials`, chmod 600) |
+| Docker agent images | `Dockerfile.agent`, `Dockerfile.steward` |
+
+### Needs to be built
+
+| Component | Description | Blocked by |
+|-----------|-------------|------------|
+| `spire tower create` | Initialize a tower (dolt db + DoltHub remote + config) | Nothing |
+| `spire register-repo` | Register a repo against an existing tower | `tower create` |
+| `spire attach` | Join an existing tower from another machine | `tower create` |
+| `spire config set` for credentials | Store API keys in `~/.config/spire/credentials` (`anthropic-key`, `github-token`, `dolthub-user`, `dolthub-password`) | Nothing |
+| Unified daemon | Merge steward loop + DoltHub sync into `spire daemon` | Nothing |
+| Local wizard work loop | Claim, focus, execute, push in a background process | Nothing |
+| Docker agent spawning | Start/stop/monitor agent containers from the daemon | Local wizard loop |
+| `spire logs` | CLI log reader for daemon and agent logs | Nothing |
+| Single-daemon enforcement | Prevent multiple `spire up` from racing | Nothing |
+| `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Nothing |
+| Homebrew formula | `brew install spire` | Release pipeline |
+
+---
+
+## Design Constraints
+
+1. **Single binary**. Everything ships as `spire` with `bd` embedded. Dolt
+   is NOT embedded but spire manages its lifecycle — auto-downloads dolt if
+   missing and starts/stops the dolt server. The user does not need to
+   install dolt separately.
+
+2. **Offline-first**. All operations work against the local dolt database.
+   DoltHub sync is background and best-effort. Filing beads, claiming work,
+   and running agents all work without internet access (LLM calls excepted).
+
+3. **One steward per tower**. Only one machine should run `spire up` with
+   the steward active at a time. Multiple machines can file beads and push
+   to DoltHub, but only the steward assigns work and monitors agent health.
+
+4. **File-based credentials**. Secrets are stored in
+   `~/.config/spire/credentials` (chmod 600). Environment variables
+   (`ANTHROPIC_API_KEY`, `DOLT_REMOTE_PASSWORD`) override file-based
+   credentials for CI and containers.
+
+5. **Docker optional**. Process mode (`--mode=process`) is a first-class
+   alternative. Some users will not have Docker. Process mode is also better
+   for debugging and development.
