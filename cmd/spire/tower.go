@@ -264,7 +264,7 @@ func cmdTowerCreate(args []string) error {
 
 	fmt.Printf("initializing database %s...\n", database)
 	client := bdpkg.NewClient()
-	client.WorkDir = dbDataDir
+	client.BeadsDir = filepath.Join(dbDataDir, ".beads")
 	if err := client.Init(bdpkg.InitOpts{
 		Database: database,
 		Prefix:   prefix,

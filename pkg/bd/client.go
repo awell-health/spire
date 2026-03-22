@@ -16,9 +16,10 @@ type Client struct {
 	// BinPath is the path to the bd binary. Defaults to "bd".
 	BinPath string
 
-	// WorkDir sets the working directory for bd commands.
-	// If empty, the current process working directory is used.
-	WorkDir string
+	// BeadsDir points bd at a specific .beads/ directory via the BEADS_DIR
+	// env var. This is the native mechanism bd uses to locate its config
+	// (search order: BEADS_DIR → worktree resolution → walk up from cwd).
+	BeadsDir string
 
 	// Verbose enables command logging. Defaults to SPIRE_BD_LOG env var.
 	Verbose bool
@@ -55,8 +56,8 @@ func (c *Client) exec(args ...string) (string, error) {
 	start := time.Now()
 
 	cmd := exec.Command(c.BinPath, args...)
-	if c.WorkDir != "" {
-		cmd.Dir = c.WorkDir
+	if c.BeadsDir != "" {
+		cmd.Env = append(os.Environ(), "BEADS_DIR="+c.BeadsDir)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
