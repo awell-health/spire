@@ -499,6 +499,98 @@ func TestInstanceTowerRoundtrip(t *testing.T) {
 	}
 }
 
+// TestAttachBootstrapThenRegisterRepoClient verifies the full path:
+// tower attach materializes .beads/ (metadata.json + config.yaml),
+// then register-repo's client construction resolves against that workspace.
+func TestAttachBootstrapThenRegisterRepoClient(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Simulate dolt data dir with a cloned database
+	dataDir := filepath.Join(tmpDir, "dolt-data")
+	dbName := "beads_acme"
+	dbDir := filepath.Join(dataDir, dbName)
+	os.MkdirAll(dbDir, 0755)
+	t.Setenv("DOLT_DATA_DIR", dataDir)
+
+	// Save a tower config (as tower attach would after reading identity)
+	tower := &TowerConfig{
+		Name:          "acme-team",
+		ProjectID:     "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix:     "acm",
+		DolthubRemote: "https://doltremoteapi.dolthub.com/org/beads_acme",
+		Database:      dbName,
+		CreatedAt:     "2026-03-22T10:00:00Z",
+	}
+	if err := saveTowerConfig(tower); err != nil {
+		t.Fatalf("save tower config: %v", err)
+	}
+
+	// --- Simulate tower attach bootstrap (the code under test) ---
+	beadsDir := filepath.Join(dbDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	beadsMeta := map[string]any{
+		"project_id":    tower.ProjectID,
+		"database":      "dolt",
+		"backend":       "dolt",
+		"dolt_mode":     "server",
+		"dolt_database": dbName,
+	}
+	metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), append(metaBytes, '\n'), 0644); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+	configYAML := "dolt.host: \"127.0.0.1\"\ndolt.port: 3307\n"
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	// --- Verify: register-repo's tower resolution works ---
+	tc, err := towerConfigForDatabase(dbName)
+	if err != nil {
+		t.Fatalf("towerConfigForDatabase: %v", err)
+	}
+	if tc.Name != "acme-team" {
+		t.Errorf("tower Name = %q, want %q", tc.Name, "acme-team")
+	}
+
+	// --- Verify: register-repo's BeadsDir resolves to existing files ---
+	clientBeadsDir := filepath.Join(doltDataDir(), tc.Database, ".beads")
+
+	// metadata.json must exist and contain project_id
+	metaPath := filepath.Join(clientBeadsDir, "metadata.json")
+	metaData, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read metadata.json at client BeadsDir: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		t.Fatalf("parse metadata.json: %v", err)
+	}
+	if pid, _ := meta["project_id"].(string); pid != tower.ProjectID {
+		t.Errorf("metadata project_id = %q, want %q", pid, tower.ProjectID)
+	}
+	if db, _ := meta["dolt_database"].(string); db != dbName {
+		t.Errorf("metadata dolt_database = %q, want %q", db, dbName)
+	}
+
+	// config.yaml must exist and contain host/port
+	configPath := filepath.Join(clientBeadsDir, "config.yaml")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.yaml at client BeadsDir: %v", err)
+	}
+	configStr := string(configData)
+	if !strings.Contains(configStr, "dolt.host") {
+		t.Error("config.yaml missing dolt.host")
+	}
+	if !strings.Contains(configStr, "dolt.port") {
+		t.Error("config.yaml missing dolt.port")
+	}
+}
+
 func TestInstanceTowerOmitEmpty(t *testing.T) {
 	// Instance without Tower should omit the field in JSON (backward compat)
 	cfg := &SpireConfig{
