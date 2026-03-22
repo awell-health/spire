@@ -512,8 +512,8 @@ func TestIntegrationFocus(t *testing.T) {
 	bd("close", taskID, "--force")
 }
 
-// TestBdJSON tests the bdJSON helper with a real bd call.
-func TestBdJSON(t *testing.T) {
+// TestIntegrationBdJSON tests the bdJSON helper with a real bd call.
+func TestIntegrationBdJSON(t *testing.T) {
 	requireBd(t)
 
 	var result []json.RawMessage
@@ -740,7 +740,7 @@ func TestWebhookSignatureVerification(t *testing.T) {
 	}
 }
 
-func TestDoltSQL(t *testing.T) {
+func TestIntegrationDoltSQL(t *testing.T) {
 	// Skip if dolt is not available
 	_, err := exec.LookPath("dolt")
 	if err != nil {
