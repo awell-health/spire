@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	bdpkg "github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
@@ -101,9 +102,20 @@ func cmdRegisterRepo(args []string) error {
 		return err
 	}
 
+	// --- Resolve tower from database ---
+	tower, err := towerConfigForDatabase(database)
+	if err != nil {
+		return fmt.Errorf("resolve tower for database %q: %w", database, err)
+	}
+
+	// Create bd client with explicit BeadsDir for SQL calls.
+	// The tower's .beads/ lives in the dolt data directory, not the user's CWD.
+	client := bdpkg.NewClient()
+	client.BeadsDir = filepath.Join(doltDataDir(), tower.Database, ".beads")
+
 	// --- Check prefix uniqueness against shared state (repos table is source of truth) ---
 	checkSQL := fmt.Sprintf("SELECT repo_url FROM repos WHERE prefix = '%s'", sqlEscape(prefix))
-	if out, err := bd("sql", "-q", checkSQL); err == nil {
+	if out, err := client.DoltSQL(checkSQL); err == nil {
 		lines := strings.Split(strings.TrimSpace(out), "\n")
 		if len(lines) > 1 {
 			parts := strings.Split(lines[1], "|")
@@ -127,11 +139,11 @@ func cmdRegisterRepo(args []string) error {
 	}
 
 	// --- Write to repos table ---
-	sql := fmt.Sprintf(
+	insertSQL := fmt.Sprintf(
 		"INSERT INTO repos (prefix, repo_url, branch, language, registered_by) VALUES ('%s', '%s', '%s', '%s', '%s')",
 		sqlEscape(prefix), sqlEscape(repoURL), sqlEscape(branch), sqlEscape(language), sqlEscape(user),
 	)
-	if _, err := bd("sql", "-q", sql); err != nil {
+	if _, err := client.DoltSQL(insertSQL); err != nil {
 		// If the table doesn't exist, give a clear error
 		if strings.Contains(err.Error(), "repos") && strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("repos table not found — run: spire tower create\n  %w", err)
@@ -148,12 +160,7 @@ func cmdRegisterRepo(args []string) error {
 	// metadata.json — adopts the tower's shared identity into this repo.
 	// project_id originates from bd init (tower create), is stored in tower config,
 	// and is adopted here. Spire never generates its own project_id.
-	var projectID string
-	if cfg.ActiveTower != "" {
-		if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil {
-			projectID = tower.ProjectID
-		}
-	}
+	projectID := tower.ProjectID
 	metadata := map[string]any{
 		"database":      "dolt",
 		"backend":       "dolt",
@@ -198,6 +205,7 @@ func cmdRegisterRepo(args []string) error {
 		Prefix:   prefix,
 		Role:     "standalone",
 		Database: database,
+		Tower:    tower.Name,
 	}
 	if err := saveConfig(cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
@@ -215,30 +223,28 @@ func cmdRegisterRepo(args []string) error {
 	}
 
 	// --- Commit dolt changes ---
-	if _, err := bd("dolt", "commit", "-m", "register: "+prefix); err != nil {
+	if err := client.DoltCommit("register: " + prefix); err != nil {
 		// Non-fatal: commit may fail if no changes or dolt not configured for commits
 		fmt.Printf("  Warning: dolt commit skipped: %s\n", err)
 	}
 
 	// --- Push to DoltHub (if remote configured) ---
-	if cfg.ActiveTower != "" {
-		if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil && tower.DolthubRemote != "" {
-			// Set credentials
-			if user := getCredential(CredKeyDolthubUser); user != "" {
-				os.Setenv("DOLT_REMOTE_USER", user)
-			}
-			if pass := getCredential(CredKeyDolthubPassword); pass != "" {
-				os.Setenv("DOLT_REMOTE_PASSWORD", pass)
-			}
+	if tower.DolthubRemote != "" {
+		// Set credentials
+		if u := getCredential(CredKeyDolthubUser); u != "" {
+			os.Setenv("DOLT_REMOTE_USER", u)
+		}
+		if pass := getCredential(CredKeyDolthubPassword); pass != "" {
+			os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+		}
 
-			dataDir := filepath.Join(doltDataDir(), tower.Database)
-			setDoltCLIRemote(dataDir, "origin", tower.DolthubRemote)
+		dataDir := filepath.Join(doltDataDir(), tower.Database)
+		setDoltCLIRemote(dataDir, "origin", tower.DolthubRemote)
 
-			fmt.Println("  Pushing registration to DoltHub...")
-			if err := doltCLIPush(dataDir, false); err != nil {
-				fmt.Printf("  Warning: DoltHub push skipped: %s\n", err)
-				fmt.Println("  Run 'spire push' later to sync.")
-			}
+		fmt.Println("  Pushing registration to DoltHub...")
+		if err := doltCLIPush(dataDir, false); err != nil {
+			fmt.Printf("  Warning: DoltHub push skipped: %s\n", err)
+			fmt.Println("  Run 'spire push' later to sync.")
 		}
 	}
 

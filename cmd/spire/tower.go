@@ -133,6 +133,37 @@ func activeTowerConfig() (*TowerConfig, error) {
 	return nil, fmt.Errorf("no tower config found for database %q", inst.Database)
 }
 
+// rawDoltQuery runs a SQL query against the dolt server without --use-db.
+// For bootstrap contexts (tower attach) where no ambient database context exists.
+// Queries must use fully-qualified table names (e.g. `dbname`.table).
+func rawDoltQuery(query string) (string, error) {
+	cmd := exec.Command(doltBin(), "sql",
+		"--host", doltHost(), "--port", doltPort(),
+		"--user", "root", "-p", "", "--no-tls",
+		"-q", query)
+	cmd.Env = append(os.Environ(), "DOLT_CLI_PASSWORD=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("dolt sql: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// towerConfigForDatabase finds the tower owning a given database name.
+// Reuses the same matching logic as activeTowerConfig: exact match or beads_ prefix.
+func towerConfigForDatabase(database string) (*TowerConfig, error) {
+	towers, err := listTowerConfigs()
+	if err != nil {
+		return nil, err
+	}
+	for i := range towers {
+		if towers[i].Database == database || towers[i].Database == "beads_"+database {
+			return &towers[i], nil
+		}
+	}
+	return nil, fmt.Errorf("no tower config found for database %q", database)
+}
+
 // readBeadsProjectID reads project_id from a .beads/metadata.json file.
 // Used after bd init to adopt the identity that beads created.
 func readBeadsProjectID(beadsDir string) (string, error) {
@@ -432,23 +463,26 @@ func cmdTowerAttach(args []string) error {
 		// If database already exists, try pull instead
 		if strings.Contains(outStr, "already exists") || strings.Contains(outStr, "directory already exists") {
 			fmt.Println("  database already exists, pulling latest...")
-			client := bdpkg.DefaultClient()
-			if pullErr := client.DoltPull("origin", "main"); pullErr != nil {
-				return fmt.Errorf("pull from DoltHub: %w (clone error: %s)", pullErr, outStr)
+			pullCmd := exec.Command(doltBin(), "pull", "origin", "main")
+			pullCmd.Dir = filepath.Join(dataDir, dbName)
+			pullCmd.Env = os.Environ()
+			if pullOut, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
+				return fmt.Errorf("pull from DoltHub: %w (clone error: %s)\n%s", pullErr, outStr, strings.TrimSpace(string(pullOut)))
 			}
 		} else {
 			return fmt.Errorf("clone from DoltHub: %s\n%s", err, outStr)
 		}
 	}
 
-	// Read tower identity from cloned database
+	// Read tower identity from cloned database using raw dolt CLI.
+	// No --use-db: on a clean machine detectDBName() would resolve to the
+	// wrong ambient database. Fully-qualified queries against dbName instead.
 	fmt.Println("reading tower identity...")
-	client := bdpkg.DefaultClient()
 
 	var projectID, hubPrefix string
 
 	// Try to read project_id from metadata
-	metaOut, err := client.DoltSQL(fmt.Sprintf("SELECT `value` FROM `%s`.metadata WHERE `key` = '_project_id'", dbName))
+	metaOut, err := rawDoltQuery(fmt.Sprintf("SELECT `value` FROM `%s`.metadata WHERE `key` = '_project_id'", dbName))
 	if err == nil {
 		projectID = extractSQLValue(metaOut)
 	}
@@ -457,7 +491,7 @@ func cmdTowerAttach(args []string) error {
 	}
 
 	// Try to read prefix from config
-	prefixOut, err := client.DoltSQL(fmt.Sprintf("SELECT `value` FROM `%s`.metadata WHERE `key` = 'prefix'", dbName))
+	prefixOut, err := rawDoltQuery(fmt.Sprintf("SELECT `value` FROM `%s`.metadata WHERE `key` = 'prefix'", dbName))
 	if err == nil {
 		hubPrefix = extractSQLValue(prefixOut)
 	}
@@ -467,7 +501,7 @@ func cmdTowerAttach(args []string) error {
 	}
 
 	// Get bead count for display
-	countOut, _ := client.DoltSQL(fmt.Sprintf("SELECT COUNT(*) FROM `%s`.issues", dbName))
+	countOut, _ := rawDoltQuery(fmt.Sprintf("SELECT COUNT(*) FROM `%s`.issues", dbName))
 	beadCount := extractSQLValue(countOut)
 	if beadCount == "" {
 		beadCount = "0"
@@ -480,6 +514,26 @@ func cmdTowerAttach(args []string) error {
 		DolthubRemote: remoteURL,
 		Database:      dbName,
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Materialize .beads/metadata.json in the cloned data dir.
+	// tower create runs bd init which creates this; tower attach must
+	// bootstrap it so that register-repo's bd client has a valid workspace.
+	beadsDir := filepath.Join(dataDir, dbName, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		return fmt.Errorf("create .beads/ in data dir: %w", err)
+	}
+	beadsMeta := map[string]any{
+		"project_id":    projectID,
+		"database":      "dolt",
+		"backend":       "dolt",
+		"dolt_mode":     "server",
+		"dolt_database": dbName,
+	}
+	metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
+		return fmt.Errorf("write .beads/metadata.json: %w", err)
 	}
 
 	// Save tower config

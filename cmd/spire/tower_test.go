@@ -408,3 +408,114 @@ func TestMustHelper(t *testing.T) {
 		t.Errorf("must with error = %q, want empty", got)
 	}
 }
+
+func TestTowerConfigForDatabase(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Save two towers
+	t1 := &TowerConfig{
+		Name:      "alpha",
+		ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "alp",
+		Database:  "beads_alp",
+		CreatedAt: "2026-03-22T10:00:00Z",
+	}
+	t2 := &TowerConfig{
+		Name:      "beta",
+		ProjectID: "11111111-2222-4333-8444-555555555555",
+		HubPrefix: "bet",
+		Database:  "beads_bet",
+		CreatedAt: "2026-03-22T11:00:00Z",
+	}
+	if err := saveTowerConfig(t1); err != nil {
+		t.Fatalf("save t1: %v", err)
+	}
+	if err := saveTowerConfig(t2); err != nil {
+		t.Fatalf("save t2: %v", err)
+	}
+
+	// Exact match
+	tc, err := towerConfigForDatabase("beads_alp")
+	if err != nil {
+		t.Fatalf("exact match: %v", err)
+	}
+	if tc.Name != "alpha" {
+		t.Errorf("exact match Name = %q, want %q", tc.Name, "alpha")
+	}
+
+	// beads_ prefix match (bare prefix → "beads_"+prefix)
+	tc, err = towerConfigForDatabase("bet")
+	if err != nil {
+		t.Fatalf("prefix match: %v", err)
+	}
+	if tc.Name != "beta" {
+		t.Errorf("prefix match Name = %q, want %q", tc.Name, "beta")
+	}
+
+	// Not found — must fail even when ActiveTower is set (no silent fallback)
+	cfg := &SpireConfig{
+		Instances:   map[string]*Instance{},
+		ActiveTower: "alpha",
+	}
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	_, err = towerConfigForDatabase("nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent database, got nil (ActiveTower should not rescue)")
+	}
+}
+
+func TestInstanceTowerRoundtrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	cfg := &SpireConfig{
+		Instances: map[string]*Instance{
+			"web": {
+				Path:     "/tmp/web",
+				Prefix:   "web",
+				Role:     "standalone",
+				Database: "beads_hub",
+				Tower:    "my-tower",
+			},
+		},
+	}
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := loadConfig()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	inst := loaded.Instances["web"]
+	if inst == nil {
+		t.Fatal("instance 'web' not found after reload")
+	}
+	if inst.Tower != "my-tower" {
+		t.Errorf("Tower = %q, want %q", inst.Tower, "my-tower")
+	}
+}
+
+func TestInstanceTowerOmitEmpty(t *testing.T) {
+	// Instance without Tower should omit the field in JSON (backward compat)
+	cfg := &SpireConfig{
+		Instances: map[string]*Instance{
+			"old": {
+				Path:     "/tmp/old",
+				Prefix:   "old",
+				Role:     "standalone",
+				Database: "beads_hub",
+			},
+		},
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"tower"`) {
+		t.Error("expected tower to be omitted when empty")
+	}
+}

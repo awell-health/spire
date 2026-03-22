@@ -14,6 +14,26 @@ import (
 	"testing"
 )
 
+// findBeadsFile walks up from CWD to locate .beads/<name>, matching bd's resolution.
+func findBeadsFile(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		p := filepath.Join(dir, ".beads", name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("could not find .beads/%s walking up from CWD", name)
+		}
+		dir = parent
+	}
+}
+
 // requireBd skips the test if bd is not available.
 func requireBd(t *testing.T) {
 	t.Helper()
@@ -616,6 +636,21 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	origPrefix := labelPrefixRigMap
 	labelPrefixRigMap = map[string]string{"Panels": "pan"}
 	defer func() { labelPrefixRigMap = origPrefix }()
+
+	// Ensure the "pan" rig route exists in routes.jsonl so bd can resolve --rig=pan.
+	// Walk up from CWD to find .beads/ (same resolution bd uses).
+	routesPath := findBeadsFile(t, "routes.jsonl")
+	origRoutes, readErr := os.ReadFile(routesPath)
+	if readErr != nil {
+		t.Fatalf("read routes.jsonl: %v", readErr)
+	}
+	panRoute := `{"prefix":"pan-","path":"."}`
+	if !strings.Contains(string(origRoutes), panRoute) {
+		if err := os.WriteFile(routesPath, append(origRoutes, []byte(panRoute+"\n")...), 0644); err != nil {
+			t.Fatalf("write routes.jsonl: %v", err)
+		}
+		defer os.WriteFile(routesPath, origRoutes, 0644)
+	}
 
 	// Create a fake webhook event bead
 	payload := `{"action":"create","type":"Issue","data":{"id":"uuid-test","identifier":"AWE-99","title":"Integration test epic","priority":2,"labels":[{"name":"Panels - Test"}]}}`

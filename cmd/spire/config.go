@@ -35,6 +35,7 @@ type Instance struct {
 	DaemonInterval string   `json:"daemon_interval,omitempty"` // default: "2m"
 	DolthubRemote  string   `json:"dolthub_remote,omitempty"`
 	Identity       string   `json:"identity,omitempty"`        // default: prefix
+	Tower          string   `json:"tower,omitempty"`           // tower name this instance belongs to
 }
 
 // realCwd returns the current working directory with symlinks resolved.
