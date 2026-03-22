@@ -252,10 +252,24 @@ func checkDoltBinary() checkResult {
 	managedPath := filepath.Join(doltGlobalDir(), "bin", "dolt")
 	if info, err := os.Stat(managedPath); err == nil && !info.IsDir() {
 		ver := doltVersionOutput(managedPath)
+		if doltVersionOK(managedPath) {
+			return checkResult{
+				Name:   name,
+				Status: statusOK,
+				Detail: managedPath + " " + ver,
+			}
+		}
 		return checkResult{
 			Name:   name,
-			Status: statusOK,
-			Detail: managedPath + " " + ver,
+			Status: statusOutdated,
+			Detail: fmt.Sprintf("%s %s (need v%s)", managedPath, ver, doltRequiredVersion),
+			FixFunc: func() {
+				if err := doltDownload(); err != nil {
+					fmt.Printf("    Failed to download dolt: %s\n", err)
+				} else {
+					fmt.Println("    dolt binary updated")
+				}
+			},
 		}
 	}
 
@@ -263,10 +277,24 @@ func checkDoltBinary() checkResult {
 	sysPath, err := exec.LookPath("dolt")
 	if err == nil {
 		ver := doltVersionOutput(sysPath)
+		if doltVersionOK(sysPath) {
+			return checkResult{
+				Name:   name,
+				Status: statusOK,
+				Detail: sysPath + " " + ver,
+			}
+		}
 		return checkResult{
 			Name:   name,
-			Status: statusOK,
-			Detail: sysPath + " " + ver,
+			Status: statusOutdated,
+			Detail: fmt.Sprintf("%s %s (need v%s)", sysPath, ver, doltRequiredVersion),
+			FixFunc: func() {
+				if err := doltDownload(); err != nil {
+					fmt.Printf("    Failed to download dolt: %s\n", err)
+				} else {
+					fmt.Println("    managed dolt binary installed (takes precedence over PATH)")
+				}
+			},
 		}
 	}
 
@@ -539,19 +567,39 @@ func checkRepoMigration(cfg *SpireConfig) checkResult {
 		}
 	}
 
-	// Parse prefixes from output (skip header line)
+	// Parse prefixes from dolt's pipe-delimited tabular output
 	doltPrefixes := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		p := strings.TrimSpace(line)
-		if p != "" && p != "prefix" {
-			doltPrefixes[p] = true
+		line = strings.TrimSpace(line)
+		// Skip separators (+---+) and empty lines
+		if line == "" || strings.HasPrefix(line, "+") {
+			continue
+		}
+		// Parse pipe-delimited rows: | prefix_value |
+		if strings.HasPrefix(line, "|") {
+			for _, p := range strings.Split(line, "|") {
+				p = strings.TrimSpace(p)
+				if p != "" && p != "prefix" {
+					doltPrefixes[p] = true
+				}
+			}
 		}
 	}
 
-	// Find instances not in the repos table
+	// Find instances belonging to this tower that are not in the repos table
 	var missing []*Instance
 	for _, inst := range cfg.Instances {
-		if inst.Prefix != "" && !doltPrefixes[inst.Prefix] {
+		if inst.Prefix == "" {
+			continue
+		}
+		// Only consider instances that belong to the active tower
+		if inst.Tower != "" && inst.Tower != cfg.ActiveTower {
+			continue
+		}
+		if inst.Database != "" && inst.Database != tower.Database {
+			continue
+		}
+		if !doltPrefixes[inst.Prefix] {
 			missing = append(missing, inst)
 		}
 	}

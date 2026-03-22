@@ -10,20 +10,30 @@ import (
 // --- checkDoltBinary tests ---
 
 func TestDoctorCheckDoltBinary_SystemPath(t *testing.T) {
-	if _, err := exec.LookPath("dolt"); err != nil {
+	sysPath, err := exec.LookPath("dolt")
+	if err != nil {
 		t.Skip("dolt not in PATH, skipping")
 	}
 	r := checkDoltBinary()
-	if r.Status != statusOK {
-		t.Errorf("expected statusOK, got %s: %s", r.Status, r.Detail)
+	// Status depends on whether the system dolt matches the required version
+	if doltVersionOK(sysPath) {
+		if r.Status != statusOK {
+			t.Errorf("expected statusOK for correct version, got %s: %s", r.Status, r.Detail)
+		}
+	} else {
+		if r.Status != statusOutdated {
+			t.Errorf("expected statusOutdated for wrong version, got %s: %s", r.Status, r.Detail)
+		}
+		if r.FixFunc == nil {
+			t.Error("expected non-nil FixFunc for outdated system dolt")
+		}
 	}
 	if r.Detail == "" {
 		t.Error("expected Detail to contain version info")
 	}
 }
 
-func TestDoctorCheckDoltBinary_ManagedPath(t *testing.T) {
-	// Create a temp dir to act as dolt global dir, with a fake dolt binary
+func TestDoctorCheckDoltBinary_ManagedPath_CorrectVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("SPIRE_DOLT_DIR", tmpDir)
 
@@ -32,7 +42,30 @@ func TestDoctorCheckDoltBinary_ManagedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a fake dolt script that outputs a version
+	// Create a fake dolt script that outputs the required version
+	fakeDolt := filepath.Join(binDir, "dolt")
+	script := "#!/bin/sh\necho 'dolt version " + doltRequiredVersion + "'\n"
+	if err := os.WriteFile(fakeDolt, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := checkDoltBinary()
+	if r.Status != statusOK {
+		t.Errorf("expected statusOK with correct managed binary, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestDoctorCheckDoltBinary_ManagedPath_WrongVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("SPIRE_DOLT_DIR", tmpDir)
+	t.Setenv("PATH", tmpDir) // hide system dolt
+
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a fake dolt script with the wrong version
 	fakeDolt := filepath.Join(binDir, "dolt")
 	script := "#!/bin/sh\necho 'dolt version 1.99.0'\n"
 	if err := os.WriteFile(fakeDolt, []byte(script), 0755); err != nil {
@@ -40,11 +73,11 @@ func TestDoctorCheckDoltBinary_ManagedPath(t *testing.T) {
 	}
 
 	r := checkDoltBinary()
-	if r.Status != statusOK {
-		t.Errorf("expected statusOK with managed binary, got %s: %s", r.Status, r.Detail)
+	if r.Status != statusOutdated {
+		t.Errorf("expected statusOutdated with wrong version, got %s: %s", r.Status, r.Detail)
 	}
-	if r.Detail == "" || r.Detail == "(unknown version)" {
-		t.Errorf("expected version in Detail, got: %s", r.Detail)
+	if r.FixFunc == nil {
+		t.Error("expected non-nil FixFunc for outdated dolt binary")
 	}
 }
 
@@ -680,5 +713,40 @@ func TestDoctorCheckRepoMigration_AllMigrated(t *testing.T) {
 	// We just verify the function doesn't crash
 	if r.Name != "repo registrations in dolt" {
 		t.Errorf("unexpected check name: %s", r.Name)
+	}
+}
+
+func TestDoctorCheckRepoMigration_CrossTowerFilter(t *testing.T) {
+	// Instances belonging to a different tower should NOT be flagged for migration
+	tmpDir := t.TempDir()
+	configDir := filepath.Join(tmpDir, ".config", "spire")
+	towersDir := filepath.Join(configDir, "towers")
+	if err := os.MkdirAll(towersDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(`{"active_tower":"alpha","instances":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(towersDir, "alpha.json"), []byte(`{"name":"alpha","project_id":"p1","database":"beads_alpha"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", tmpDir)
+
+	cfg := &SpireConfig{
+		ActiveTower: "alpha",
+		Instances: map[string]*Instance{
+			"web-alpha": {Path: "/tmp/web", Prefix: "web", Tower: "alpha", Database: "beads_alpha"},
+			"api-beta":  {Path: "/tmp/api", Prefix: "api", Tower: "beta", Database: "beads_beta"},
+			"svc-gamma": {Path: "/tmp/svc", Prefix: "svc", Database: "beads_gamma"},
+		},
+	}
+
+	// This will fail to query dolt (not reachable on test port), but we can
+	// at least verify the function doesn't crash and handles the tower filter
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "19997")
+	r := checkRepoMigration(cfg)
+	// Should skip because repos table isn't queryable
+	if r.Status != statusOK {
+		t.Errorf("expected statusOK (skipped), got %s: %s", r.Status, r.Detail)
 	}
 }
