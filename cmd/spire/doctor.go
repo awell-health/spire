@@ -79,6 +79,7 @@ func cmdDoctor(args []string) error {
 			Name: "Tower",
 			Checks: []checkResult{
 				checkTowerConfig(cwd),
+				checkTowerBeadsDir(),
 				checkCredentials(),
 			},
 		},
@@ -90,6 +91,12 @@ func cmdDoctor(args []string) error {
 		// still show system checks.
 		cfg = &SpireConfig{Instances: make(map[string]*Instance)}
 	}
+
+	// Add registration migration check if dolt is reachable and we have instances
+	if doltIsReachable() && len(cfg.Instances) > 0 && cfg.ActiveTower != "" {
+		categories[1].Checks = append(categories[1].Checks, checkRepoMigration(cfg))
+	}
+
 	inst := findInstanceByPath(cfg, cwd)
 	if inst != nil {
 		categories = append(categories, checkCategory{
@@ -173,6 +180,10 @@ func cmdDoctor(args []string) error {
 	fmt.Printf("\n  Fixed %d issue(s). Re-checking:\n\n", fixed)
 
 	// Re-run all checks to show updated status
+	reCfg, _ := loadConfig()
+	if reCfg == nil {
+		reCfg = &SpireConfig{Instances: make(map[string]*Instance)}
+	}
 	reCategories := []checkCategory{
 		{
 			Name: "System",
@@ -186,9 +197,13 @@ func cmdDoctor(args []string) error {
 			Name: "Tower",
 			Checks: []checkResult{
 				checkTowerConfig(cwd),
+				checkTowerBeadsDir(),
 				checkCredentials(),
 			},
 		},
+	}
+	if doltIsReachable() && len(reCfg.Instances) > 0 && reCfg.ActiveTower != "" {
+		reCategories[1].Checks = append(reCategories[1].Checks, checkRepoMigration(reCfg))
 	}
 	if inst != nil {
 		reCategories = append(reCategories, checkCategory{
@@ -259,6 +274,13 @@ func checkDoltBinary() checkResult {
 		Name:   name,
 		Status: statusMissing,
 		Detail: "not found — run spire up to auto-install",
+		FixFunc: func() {
+			if err := doltDownload(); err != nil {
+				fmt.Printf("    Failed to download dolt: %s\n", err)
+			} else {
+				fmt.Println("    dolt binary installed")
+			}
+		},
 	}
 }
 
@@ -307,6 +329,19 @@ func checkDoltServer() checkResult {
 		Name:   name,
 		Status: statusMissing,
 		Detail: "not running — run spire up",
+		FixFunc: func() {
+			// Ensure dolt binary exists before trying to start the server
+			if _, err := doltEnsureBinary(); err != nil {
+				fmt.Printf("    Cannot start server: dolt binary not available: %s\n", err)
+				return
+			}
+			pid, err := doltStart()
+			if err != nil {
+				fmt.Printf("    Failed to start dolt server: %s\n", err)
+			} else {
+				fmt.Printf("    dolt server started (pid %d)\n", pid)
+			}
+		},
 	}
 }
 
@@ -388,6 +423,184 @@ func checkTowerConfig(cwd string) checkResult {
 	}
 }
 
+// checkTowerBeadsDir verifies the active tower's .beads/ directory exists in the
+// dolt data dir. If the tower config exists but .beads/ is missing, it can be
+// regenerated (same bootstrap as tower attach).
+func checkTowerBeadsDir() checkResult {
+	name := "tower .beads/ data"
+
+	cfg, err := loadConfig()
+	if err != nil || cfg.ActiveTower == "" {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: "no active tower (skipped)",
+		}
+	}
+
+	tower, err := loadTowerConfig(cfg.ActiveTower)
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: "tower config not loadable (skipped)",
+		}
+	}
+
+	dataDir := doltDataDir()
+	beadsDir := filepath.Join(dataDir, tower.Database, ".beads")
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	configYAMLPath := filepath.Join(beadsDir, "config.yaml")
+
+	metaOK := fileExists(metaPath)
+	configOK := fileExists(configYAMLPath)
+
+	if metaOK && configOK {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: beadsDir,
+		}
+	}
+
+	var missingFiles []string
+	if !metaOK {
+		missingFiles = append(missingFiles, "metadata.json")
+	}
+	if !configOK {
+		missingFiles = append(missingFiles, "config.yaml")
+	}
+
+	return checkResult{
+		Name:   name,
+		Status: statusMissing,
+		Detail: fmt.Sprintf("missing: %s in %s", strings.Join(missingFiles, ", "), beadsDir),
+		FixFunc: func() {
+			if err := os.MkdirAll(beadsDir, 0755); err != nil {
+				fmt.Printf("    Failed to create .beads/ dir: %s\n", err)
+				return
+			}
+			if !metaOK {
+				beadsMeta := map[string]any{
+					"project_id":    tower.ProjectID,
+					"database":      "dolt",
+					"backend":       "dolt",
+					"dolt_mode":     "server",
+					"dolt_database": tower.Database,
+				}
+				metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
+				if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
+					fmt.Printf("    Failed to write metadata.json: %s\n", err)
+					return
+				}
+				fmt.Println("    metadata.json regenerated")
+			}
+			if !configOK {
+				configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
+				if err := os.WriteFile(configYAMLPath, []byte(configYAML), 0644); err != nil {
+					fmt.Printf("    Failed to write config.yaml: %s\n", err)
+					return
+				}
+				fmt.Println("    config.yaml regenerated")
+			}
+		},
+	}
+}
+
+// fileExists returns true if the path exists and is a regular file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// checkRepoMigration checks if local config instances are missing from the
+// dolt repos table and offers to insert them. Requires dolt to be running.
+func checkRepoMigration(cfg *SpireConfig) checkResult {
+	name := "repo registrations in dolt"
+
+	tower, err := loadTowerConfig(cfg.ActiveTower)
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: "no active tower (skipped)",
+		}
+	}
+
+	// Query the repos table to see which prefixes are already registered
+	query := fmt.Sprintf("SELECT prefix FROM `%s`.repos", tower.Database)
+	out, err := rawDoltQuery(query)
+	if err != nil {
+		// Table might not exist
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: "repos table not queryable (skipped)",
+		}
+	}
+
+	// Parse prefixes from output (skip header line)
+	doltPrefixes := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		p := strings.TrimSpace(line)
+		if p != "" && p != "prefix" {
+			doltPrefixes[p] = true
+		}
+	}
+
+	// Find instances not in the repos table
+	var missing []*Instance
+	for _, inst := range cfg.Instances {
+		if inst.Prefix != "" && !doltPrefixes[inst.Prefix] {
+			missing = append(missing, inst)
+		}
+	}
+
+	if len(missing) == 0 {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: fmt.Sprintf("all %d local registrations present in dolt", len(cfg.Instances)),
+		}
+	}
+
+	var prefixes []string
+	for _, inst := range missing {
+		prefixes = append(prefixes, inst.Prefix)
+	}
+
+	return checkResult{
+		Name:   name,
+		Status: statusOutdated,
+		Detail: fmt.Sprintf("local-only: %s", strings.Join(prefixes, ", ")),
+		FixFunc: func() {
+			for _, inst := range missing {
+				repoURL := ""
+				// Try to detect repo URL from the instance path
+				if inst.Path != "" {
+					cmd := exec.Command("git", "-C", inst.Path, "remote", "get-url", "origin")
+					if urlOut, err := cmd.Output(); err == nil {
+						repoURL = strings.TrimSpace(string(urlOut))
+					}
+				}
+				if repoURL == "" {
+					repoURL = "unknown"
+				}
+
+				insertSQL := fmt.Sprintf(
+					"INSERT INTO `%s`.repos (prefix, repo_url, branch, registered_by) VALUES ('%s', '%s', 'main', 'doctor-fix')",
+					tower.Database, sqlEscape(inst.Prefix), sqlEscape(repoURL),
+				)
+				if _, err := rawDoltQuery(insertSQL); err != nil {
+					fmt.Printf("    Failed to migrate %s: %s\n", inst.Prefix, err)
+				} else {
+					fmt.Printf("    Migrated %s (%s) to dolt repos table\n", inst.Prefix, repoURL)
+				}
+			}
+		},
+	}
+}
+
 // credentialSpec maps a credential key to its possible env var overrides.
 type credentialSpec struct {
 	Key     string
@@ -415,6 +628,25 @@ func checkCredentials() checkResult {
 		}
 	}
 	credPath := filepath.Join(dir, "credentials")
+
+	// Check file permissions if the file exists
+	if info, statErr := os.Stat(credPath); statErr == nil {
+		perm := info.Mode().Perm()
+		if perm != 0600 {
+			return checkResult{
+				Name:   name,
+				Status: statusOutdated,
+				Detail: fmt.Sprintf("file permissions %04o (should be 0600)", perm),
+				FixFunc: func() {
+					if err := os.Chmod(credPath, 0600); err != nil {
+						fmt.Printf("    Failed to fix permissions: %s\n", err)
+					} else {
+						fmt.Println("    credentials file permissions set to 0600")
+					}
+				},
+			}
+		}
+	}
 
 	// Parse the credentials file if it exists
 	fileKeys := parseCredentialFile(credPath)
