@@ -36,8 +36,6 @@ What works well and should not change:
 
 What remains in Phase 1:
 
-- Homebrew tap repo and formula (goreleaser config exists, tap does not)
-- `spire doctor --fix` for auto-repair
 - `bd` as embedded Go library (deferred — subprocess wrapper ships first, can run in parallel with Phase 2)
 
 ---
@@ -190,12 +188,12 @@ Work items:
 Work items:
 - [x] goreleaser config: cross-compile for darwin/linux, amd64/arm64
 - [x] GitHub Actions workflow: test on push, release on tag
-- [ ] Homebrew tap: `homebrew-spire` repo with formula
-- [ ] Formula installs `spire` binary only -- dolt is auto-managed, not a Homebrew dependency
-- [ ] `spire version` prints clean version from git tag (includes managed dolt version)
+- [x] Homebrew tap: `awell-health/homebrew-spire` repo created; goreleaser `.goreleaser.yml` points at it
+- [x] Formula installs `spire` binary only -- dolt is auto-managed, not a Homebrew dependency
+- [x] `spire version` prints spire version + managed dolt version and path (or "not installed")
 - [x] SHA256 checksums in release artifacts
 
-**Status (2026-03-22):** goreleaser + CI done. Homebrew tap repo, formula, and `spire version` with dolt version remain (spi-n1aa.3).
+**Status (2026-03-22):** Complete. Tap repo created, goreleaser reconciled (duplicate `.goreleaser.yaml` removed, `.goreleaser.yml` v2 is canonical), `spire version` prints both versions.
 
 ### 1.9 `spire doctor` expansion
 
@@ -203,11 +201,13 @@ Work items:
 
 - [x] Check dolt installed and correct version (managed binary, not system-installed)
 - [x] Check tower config exists and points to valid database
+- [x] Check tower .beads/ data dir exists (metadata.json + config.yaml)
 - [x] Check credentials configured (anthropic, github, dolthub)
+- [x] Check credential file permissions (0600)
 - [x] Check Docker available (for agent spawning)
-- [ ] `--fix` flag auto-repairs what it can (spi-n1aa.4)
+- [x] `--fix` flag auto-repairs: download dolt binary, start dolt server, fix credential perms, regenerate .beads/
 
-**Status (2026-03-22):** 10 checks in 3 categories exist. `--fix` flag remains (spi-n1aa.4).
+**Status (2026-03-22):** Complete. 11 checks in 3 categories. `--fix` auto-repairs system and tower issues.
 
 ---
 

@@ -101,6 +101,17 @@ func main() {
 		err = cmdDoctor(args)
 	case "version":
 		fmt.Println("spire", version)
+		binPath := doltResolvedBinPath()
+		if binPath == "" {
+			fmt.Println("dolt  not installed")
+		} else {
+			v, err := doltInstalledVersion(binPath)
+			if err != nil {
+				fmt.Printf("dolt  (unknown version) (%s)\n", binPath)
+			} else {
+				fmt.Printf("dolt  v%s (%s)\n", v, binPath)
+			}
+		}
 		return
 	case "help", "--help", "-h":
 		printUsage()

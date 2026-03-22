@@ -353,13 +353,14 @@ repeat.
 | Dolt lifecycle | Auto-download binary, version pinning, managed server start/stop |
 | Docker agent images | `Dockerfile.agent`, `Dockerfile.steward` |
 | goreleaser + CI | Cross-compile, GitHub Actions test/release, SHA256 checksums |
+| Homebrew tap | `awell-health/homebrew-spire` repo exists; goreleaser formula generation configured |
+| `spire version` | Prints spire version + managed dolt version and path |
+| `spire doctor --fix` | Auto-repair: download dolt, start server, fix credential perms, regenerate .beads/ |
 
 ### Needs to be built
 
 | Component | Description | Blocked by |
 |-----------|-------------|------------|
-| Homebrew tap + formula | `brew install spire` — tap repo, formula, `spire version` with dolt version | Nothing (spi-n1aa.3) |
-| `spire doctor --fix` | Auto-repair: download dolt, migrate registrations, fix perms, regenerate .beads/ | Nothing (spi-n1aa.4) |
 | `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Deferred (spi-n1aa.5) |
 | Unified daemon | Merge steward loop + DoltHub sync into `spire daemon` | Nothing |
 | Local wizard work loop | Claim, focus, execute, push in a background process | Nothing |
