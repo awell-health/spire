@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	bdpkg "github.com/awell-health/spire/pkg/bd"
 )
 
 // checkStatus represents the result of a single doctor check.
@@ -622,10 +624,14 @@ func checkRepoMigration(cfg *SpireConfig) checkResult {
 		Status: statusOutdated,
 		Detail: fmt.Sprintf("local-only: %s", strings.Join(prefixes, ", ")),
 		FixFunc: func() {
+			// Use a bd client with the tower's BeadsDir for proper database
+			// context, matching the pattern in register_repo.go.
+			client := bdpkg.NewClient()
+			client.BeadsDir = filepath.Join(doltDataDir(), tower.Database, ".beads")
+
 			migrated := 0
 			for _, inst := range missing {
 				repoURL := ""
-				// Try to detect repo URL from the instance path
 				if inst.Path != "" {
 					cmd := exec.Command("git", "-C", inst.Path, "remote", "get-url", "origin")
 					if urlOut, err := cmd.Output(); err == nil {
@@ -637,32 +643,19 @@ func checkRepoMigration(cfg *SpireConfig) checkResult {
 				}
 
 				insertSQL := fmt.Sprintf(
-					"INSERT INTO `%s`.repos (prefix, repo_url, branch, registered_by) VALUES ('%s', '%s', 'main', 'doctor-fix')",
-					tower.Database, sqlEscape(inst.Prefix), sqlEscape(repoURL),
+					"INSERT INTO repos (prefix, repo_url, branch, registered_by) VALUES ('%s', '%s', 'main', 'doctor-fix')",
+					sqlEscape(inst.Prefix), sqlEscape(repoURL),
 				)
-				if _, err := rawDoltQuery(insertSQL); err != nil {
+				if _, err := client.DoltSQL(insertSQL); err != nil {
 					fmt.Printf("    Failed to migrate %s: %s\n", inst.Prefix, err)
 				} else {
 					fmt.Printf("    Migrated %s (%s) to dolt repos table\n", inst.Prefix, repoURL)
 					migrated++
 				}
 			}
-			// Commit the working set so the changes are durable for sync/push
 			if migrated > 0 {
-				addSQL := fmt.Sprintf("CALL DOLT_ADD(`%s`.repos)", tower.Database)
-				if _, err := rawDoltQuery(addSQL); err != nil {
-					// Fallback: try USE + add (some dolt versions need it)
-					rawDoltQuery(fmt.Sprintf("USE `%s`", tower.Database))
-					rawDoltQuery("CALL DOLT_ADD('repos')")
-				}
-				commitSQL := fmt.Sprintf("SELECT DOLT_COMMIT('-m', 'doctor-fix: migrate %d local registrations')", migrated)
-				if _, err := rawDoltQuery(commitSQL); err != nil {
-					// Fallback: try USE + commit
-					rawDoltQuery(fmt.Sprintf("USE `%s`", tower.Database))
-					_, err2 := rawDoltQuery(fmt.Sprintf("SELECT DOLT_COMMIT('-m', 'doctor-fix: migrate %d local registrations')", migrated))
-					if err2 != nil {
-						fmt.Printf("    Warning: dolt commit failed: %s\n", err2)
-					}
+				if err := client.DoltCommit(fmt.Sprintf("doctor-fix: migrate %d local registrations", migrated)); err != nil {
+					fmt.Printf("    Warning: dolt commit failed: %s\n", err)
 				}
 			}
 		},
