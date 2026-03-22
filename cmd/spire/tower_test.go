@@ -105,47 +105,42 @@ func TestDerivePrefixFromName(t *testing.T) {
 	}
 }
 
-func TestGenerateUUID(t *testing.T) {
-	uuid, err := generateUUID()
+func TestReadBeadsProjectID(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write a metadata.json with a project_id
+	metaPath := filepath.Join(tmpDir, "metadata.json")
+	content := `{"project_id": "abc-123-def", "database": "dolt"}`
+	if err := os.WriteFile(metaPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+
+	pid, err := readBeadsProjectID(tmpDir)
 	if err != nil {
-		t.Fatalf("generateUUID: %v", err)
+		t.Fatalf("readBeadsProjectID: %v", err)
+	}
+	if pid != "abc-123-def" {
+		t.Errorf("project_id = %q, want %q", pid, "abc-123-def")
+	}
+}
+
+func TestReadBeadsProjectID_Missing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// No metadata.json at all
+	_, err := readBeadsProjectID(tmpDir)
+	if err == nil {
+		t.Error("expected error for missing metadata.json, got nil")
 	}
 
-	// Check format: 8-4-4-4-12
-	parts := strings.Split(uuid, "-")
-	if len(parts) != 5 {
-		t.Fatalf("UUID %q has %d parts, want 5", uuid, len(parts))
+	// metadata.json without project_id
+	metaPath := filepath.Join(tmpDir, "metadata.json")
+	if err := os.WriteFile(metaPath, []byte(`{"database": "dolt"}`), 0644); err != nil {
+		t.Fatalf("write: %v", err)
 	}
-	expectedLens := []int{8, 4, 4, 4, 12}
-	for i, p := range parts {
-		if len(p) != expectedLens[i] {
-			t.Errorf("UUID part %d (%q) has length %d, want %d", i, p, len(p), expectedLens[i])
-		}
-	}
-
-	// Check total length (32 hex chars + 4 dashes)
-	if len(uuid) != 36 {
-		t.Errorf("UUID length = %d, want 36", len(uuid))
-	}
-
-	// Check version 4: third group must start with '4'
-	if parts[2][0] != '4' {
-		t.Errorf("UUID version char = %c, want '4'", parts[2][0])
-	}
-
-	// Check variant: fourth group must start with 8, 9, a, or b
-	variantChar := parts[3][0]
-	if variantChar != '8' && variantChar != '9' && variantChar != 'a' && variantChar != 'b' {
-		t.Errorf("UUID variant char = %c, want 8/9/a/b", variantChar)
-	}
-
-	// Check uniqueness
-	uuid2, err := generateUUID()
-	if err != nil {
-		t.Fatalf("generateUUID (second): %v", err)
-	}
-	if uuid == uuid2 {
-		t.Error("two generated UUIDs should not be equal")
+	_, err = readBeadsProjectID(tmpDir)
+	if err == nil {
+		t.Error("expected error for missing project_id, got nil")
 	}
 }
 

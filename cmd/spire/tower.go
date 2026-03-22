@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -134,17 +133,23 @@ func activeTowerConfig() (*TowerConfig, error) {
 	return nil, fmt.Errorf("no tower config found for database %q", inst.Database)
 }
 
-// generateUUID generates a random UUID v4 using crypto/rand.
-func generateUUID() (string, error) {
-	var uuid [16]byte
-	if _, err := rand.Read(uuid[:]); err != nil {
-		return "", fmt.Errorf("generate UUID: %w", err)
+// readBeadsProjectID reads project_id from a .beads/metadata.json file.
+// Used after bd init to adopt the identity that beads created.
+func readBeadsProjectID(beadsDir string) (string, error) {
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", metaPath, err)
 	}
-	// Set version 4 and variant bits
-	uuid[6] = (uuid[6] & 0x0f) | 0x40
-	uuid[8] = (uuid[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
+	var meta map[string]any
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", fmt.Errorf("parse %s: %w", metaPath, err)
+	}
+	pid, _ := meta["project_id"].(string)
+	if pid == "" {
+		return "", fmt.Errorf("no project_id in %s", metaPath)
+	}
+	return pid, nil
 }
 
 // derivePrefixFromName extracts the first 3 lowercase alphanumeric characters from a name.
@@ -239,23 +244,10 @@ func cmdTowerCreate(args []string) error {
 		}
 	}
 
-	// Generate tower identity
-	projectID, err := generateUUID()
-	if err != nil {
-		return err
-	}
 	if prefix == "" {
 		prefix = derivePrefixFromName(name)
 	}
 	database := "beads_" + prefix
-
-	tower := &TowerConfig{
-		Name:      name,
-		ProjectID: projectID,
-		HubPrefix: prefix,
-		Database:  database,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-	}
 
 	// Initialize beads database in the dolt data directory
 	// (not the user's CWD — tower create should not pollute the repo)
@@ -273,22 +265,30 @@ func cmdTowerCreate(args []string) error {
 	}); err != nil {
 		return fmt.Errorf("bd init: %w", err)
 	}
+
+	// Adopt the project_id that bd init created — Spire never invents identity
+	beadsDir := filepath.Join(dbDataDir, ".beads")
+	projectID, err := readBeadsProjectID(beadsDir)
+	if err != nil {
+		return fmt.Errorf("read tower identity after init: %w", err)
+	}
+
 	// Post-init: switch to BEADS_DIR for commands that read the config
 	client.RunDir = ""
-	client.BeadsDir = filepath.Join(dbDataDir, ".beads")
+	client.BeadsDir = beadsDir
+
+	tower := &TowerConfig{
+		Name:      name,
+		ProjectID: projectID,
+		HubPrefix: prefix,
+		Database:  database,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
 
 	// Create repos table
 	fmt.Println("creating repos table...")
 	if _, err := client.DoltSQL(reposTableSQL); err != nil {
 		return fmt.Errorf("create repos table: %w", err)
-	}
-
-	// Store project_id in metadata
-	metadataSQL := fmt.Sprintf(`INSERT INTO metadata (key, value) VALUES ('_project_id', '%s') ON DUPLICATE KEY UPDATE value = '%s'`,
-		tower.ProjectID, tower.ProjectID)
-	if _, err := client.DoltSQL(metadataSQL); err != nil {
-		// Non-fatal: metadata table may not exist in all bd versions
-		fmt.Printf("  note: could not write project_id to metadata: %v\n", err)
 	}
 
 	// Commit
@@ -453,9 +453,7 @@ func cmdTowerAttach(args []string) error {
 		projectID = extractSQLValue(metaOut)
 	}
 	if projectID == "" {
-		// Generate a new one if not found
-		projectID, _ = generateUUID()
-		fmt.Println("  note: no project_id found in metadata, generated new one")
+		return fmt.Errorf("no project_id found in tower database — was it created with 'spire tower create'?")
 	}
 
 	// Try to read prefix from config
