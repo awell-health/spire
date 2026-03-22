@@ -18,5 +18,8 @@ data:
       "dolt_mode": "server",
       "dolt_database": "spi"
     }
+  config.yaml: |
+    dolt.host: "spire-dolt.spire.svc"
+    dolt.port: 3306
   routes.jsonl: |
     {"prefix":"spi-","path":"."}

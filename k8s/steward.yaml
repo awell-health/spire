@@ -29,9 +29,11 @@ spec:
                 mkdir -p /data/.beads
                 cp /seed/metadata.json /data/.beads/metadata.json
                 cp /seed/routes.jsonl /data/.beads/routes.jsonl
+                [ -f /seed/config.yaml ] && cp /seed/config.yaml /data/.beads/config.yaml
                 echo "[seed] .beads/ seeded from ConfigMap"
               else
-                echo "[seed] .beads/ already exists, skipping"
+                echo "[seed] .beads/ already exists, refreshing config"
+                [ -f /seed/config.yaml ] && cp /seed/config.yaml /data/.beads/config.yaml
               fi
               # Ensure git repo exists (bd expects it).
               if [ ! -d /data/.git ]; then

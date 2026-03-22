@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Order matters: namespace → CRDs → storage → config → deployments
+  - namespace.yaml
+  - crds/spireagent.yaml
+  - crds/spireconfig.yaml
+  - crds/spireworkload.yaml
+  - beads-pvc.yaml
+  - steward-pvc.yaml
+  - beads-seed.yaml
+  - spire-config.yaml
+  - dolt.yaml
+  - steward.yaml
+  - operator.yaml
+  # Optional — uncomment to deploy:
+  # - syncer.yaml
