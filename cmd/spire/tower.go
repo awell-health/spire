@@ -137,10 +137,10 @@ func activeTowerConfig() (*TowerConfig, error) {
 // For bootstrap contexts (tower attach) where no ambient database context exists.
 // Queries must use fully-qualified table names (e.g. `dbname`.table).
 func rawDoltQuery(query string) (string, error) {
-	cmd := exec.Command(doltBin(), "sql",
+	cmd := exec.Command(doltBin(),
 		"--host", doltHost(), "--port", doltPort(),
-		"--user", "root", "-p", "", "--no-tls",
-		"-q", query)
+		"--user", "root", "--no-tls",
+		"sql", "-q", query)
 	cmd.Env = append(os.Environ(), "DOLT_CLI_PASSWORD=")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -280,12 +280,15 @@ func cmdTowerCreate(args []string) error {
 	}
 	database := "beads_" + prefix
 
-	// Initialize beads database in the dolt data directory
-	// (not the user's CWD — tower create should not pollute the repo)
+	// Pre-create database on the server so bd init can connect to it.
+	// bd init tries to USE the database it's creating — chicken-and-egg without this.
+	// The directory must NOT exist yet — dolt CREATE DATABASE creates it.
 	dbDataDir := filepath.Join(doltDataDir(), database)
-	os.MkdirAll(dbDataDir, 0755)
-
 	fmt.Printf("initializing database %s...\n", database)
+	if _, err := rawDoltQuery(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", database)); err != nil {
+		return fmt.Errorf("create database: %w", err)
+	}
+
 	client := bdpkg.NewClient()
 	// Init creates .beads/ in cwd, so use RunDir for the init call
 	client.RunDir = dbDataDir
