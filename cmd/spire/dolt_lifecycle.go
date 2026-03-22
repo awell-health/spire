@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	doltRequiredVersion = "1.46.1"
+	doltRequiredVersion = "1.87.0"
 	doltBinDirName      = "bin"
 )
 
