@@ -304,9 +304,12 @@ func cmdTowerCreate(args []string) error {
 		return fmt.Errorf("read tower identity after init: %w", err)
 	}
 
-	// Post-init: switch to BEADS_DIR for commands that read the config
-	client.RunDir = ""
-	client.BeadsDir = beadsDir
+	// bd init writes a default config.yaml without dolt server connection.
+	// Overwrite it so subsequent bd commands (and register-repo) can connect.
+	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\ndatabase: %q\n", doltHost(), doltPort(), database)
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		return fmt.Errorf("write .beads/config.yaml: %w", err)
+	}
 
 	tower := &TowerConfig{
 		Name:      name,
@@ -316,14 +319,14 @@ func cmdTowerCreate(args []string) error {
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// Create repos table
+	// Create repos table — use rawDoltQuery (bd dolt sql doesn't exist in bd 0.62)
 	fmt.Println("creating repos table...")
-	if _, err := client.DoltSQL(reposTableSQL); err != nil {
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, reposTableSQL)); err != nil {
 		return fmt.Errorf("create repos table: %w", err)
 	}
 
-	// Commit
-	if err := client.DoltCommit("tower: initialize " + tower.Name); err != nil {
+	// Commit via dolt server stored procedures
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'tower: initialize %s')", database, sqlEscape(tower.Name))); err != nil {
 		return fmt.Errorf("dolt commit: %w", err)
 	}
 

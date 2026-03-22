@@ -70,10 +70,16 @@ func detectDBName() string {
 		return strings.TrimSpace(out)
 	}
 	// Fallback: look up cwd in config
-	if cwd, err := realCwd(); err == nil {
-		if cfg, err := loadConfig(); err == nil {
+	if cfg, err := loadConfig(); err == nil {
+		if cwd, err := realCwd(); err == nil {
 			if inst := findInstanceByPath(cfg, cwd); inst != nil {
 				return inst.Database
+			}
+		}
+		// Fallback: active tower's database
+		if cfg.ActiveTower != "" {
+			if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil && tower.Database != "" {
+				return tower.Database
 			}
 		}
 	}

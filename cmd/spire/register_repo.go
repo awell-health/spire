@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 
-	bdpkg "github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
@@ -108,14 +107,10 @@ func cmdRegisterRepo(args []string) error {
 		return fmt.Errorf("resolve tower for database %q: %w", database, err)
 	}
 
-	// Create bd client with explicit BeadsDir for SQL calls.
-	// The tower's .beads/ lives in the dolt data directory, not the user's CWD.
-	client := bdpkg.NewClient()
-	client.BeadsDir = filepath.Join(doltDataDir(), tower.Database, ".beads")
-
 	// --- Check prefix uniqueness against shared state (repos table is source of truth) ---
-	checkSQL := fmt.Sprintf("SELECT repo_url FROM repos WHERE prefix = '%s'", sqlEscape(prefix))
-	if out, err := client.DoltSQL(checkSQL); err == nil {
+	// Use rawDoltQuery (direct dolt server SQL) because bd dolt sql doesn't exist in bd 0.62.
+	checkSQL := fmt.Sprintf("SELECT repo_url FROM `%s`.repos WHERE prefix = '%s'", tower.Database, sqlEscape(prefix))
+	if out, err := rawDoltQuery(checkSQL); err == nil {
 		lines := strings.Split(strings.TrimSpace(out), "\n")
 		if len(lines) > 1 {
 			parts := strings.Split(lines[1], "|")
@@ -140,10 +135,10 @@ func cmdRegisterRepo(args []string) error {
 
 	// --- Write to repos table ---
 	insertSQL := fmt.Sprintf(
-		"INSERT INTO repos (prefix, repo_url, branch, language, registered_by) VALUES ('%s', '%s', '%s', '%s', '%s')",
-		sqlEscape(prefix), sqlEscape(repoURL), sqlEscape(branch), sqlEscape(language), sqlEscape(user),
+		"INSERT INTO `%s`.repos (prefix, repo_url, branch, language, registered_by) VALUES ('%s', '%s', '%s', '%s', '%s')",
+		tower.Database, sqlEscape(prefix), sqlEscape(repoURL), sqlEscape(branch), sqlEscape(language), sqlEscape(user),
 	)
-	if _, err := client.DoltSQL(insertSQL); err != nil {
+	if _, err := rawDoltQuery(insertSQL); err != nil {
 		// If the table doesn't exist, give a clear error
 		if strings.Contains(err.Error(), "repos") && strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("repos table not found — run: spire tower create\n  %w", err)
@@ -223,7 +218,8 @@ func cmdRegisterRepo(args []string) error {
 	}
 
 	// --- Commit dolt changes ---
-	if err := client.DoltCommit("register: " + prefix); err != nil {
+	commitSQL := fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'register: %s')", tower.Database, sqlEscape(prefix))
+	if _, err := rawDoltQuery(commitSQL); err != nil {
 		// Non-fatal: commit may fail if no changes or dolt not configured for commits
 		fmt.Printf("  Warning: dolt commit skipped: %s\n", err)
 	}

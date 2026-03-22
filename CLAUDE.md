@@ -93,6 +93,11 @@ bd list --json | jq '.[] | select(.id | startswith("web-"))'
 bd list --json | jq '.[] | select(.id | startswith("api-"))'
 ```
 
+## DANGER — destructive commands
+
+- **NEVER run `bd init --force`**. This is equivalent to `git reset --hard` to the initial commit — it wipes the ENTIRE dolt history, destroying all beads irreversibly. There is no undo.
+- **NEVER run `bd init`** on a directory that already has a `.beads/` database unless you are certain the database is empty and disposable.
+
 ## Important conventions
 
 - **Always set priority** when creating beads: `-p 0` (P0/critical) through `-p 4` (P4/nice-to-have)
