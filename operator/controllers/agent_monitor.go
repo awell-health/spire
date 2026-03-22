@@ -808,7 +808,7 @@ func beadsSeedInitContainer() corev1.Container {
 		Image:   "alpine:3.20",
 		Command: []string{"sh", "-c"},
 		Args: []string{
-			`mkdir -p /data/.beads && cp /seed/metadata.json /data/.beads/metadata.json && cp /seed/routes.jsonl /data/.beads/routes.jsonl && if [ ! -d /data/.git ]; then cd /data && git init -q 2>/dev/null; fi`,
+			`mkdir -p /data/.beads && cp /seed/metadata.json /data/.beads/metadata.json && cp /seed/routes.jsonl /data/.beads/routes.jsonl && [ -f /seed/config.yaml ] && cp /seed/config.yaml /data/.beads/config.yaml; if [ ! -d /data/.git ]; then cd /data && git init -q 2>/dev/null; fi`,
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "data", MountPath: "/data"},
