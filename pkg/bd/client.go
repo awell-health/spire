@@ -19,7 +19,12 @@ type Client struct {
 	// BeadsDir points bd at a specific .beads/ directory via the BEADS_DIR
 	// env var. This is the native mechanism bd uses to locate its config
 	// (search order: BEADS_DIR → worktree resolution → walk up from cwd).
+	// Use for commands that read an existing .beads/ directory.
 	BeadsDir string
+
+	// RunDir sets the working directory for bd commands (cmd.Dir).
+	// Use for commands like Init that create a .beads/ directory in cwd.
+	RunDir string
 
 	// Verbose enables command logging. Defaults to SPIRE_BD_LOG env var.
 	Verbose bool
@@ -58,6 +63,9 @@ func (c *Client) exec(args ...string) (string, error) {
 	cmd := exec.Command(c.BinPath, args...)
 	if c.BeadsDir != "" {
 		cmd.Env = append(os.Environ(), "BEADS_DIR="+c.BeadsDir)
+	}
+	if c.RunDir != "" {
+		cmd.Dir = c.RunDir
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

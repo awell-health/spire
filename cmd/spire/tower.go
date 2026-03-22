@@ -264,7 +264,8 @@ func cmdTowerCreate(args []string) error {
 
 	fmt.Printf("initializing database %s...\n", database)
 	client := bdpkg.NewClient()
-	client.BeadsDir = filepath.Join(dbDataDir, ".beads")
+	// Init creates .beads/ in cwd, so use RunDir for the init call
+	client.RunDir = dbDataDir
 	if err := client.Init(bdpkg.InitOpts{
 		Database: database,
 		Prefix:   prefix,
@@ -272,6 +273,9 @@ func cmdTowerCreate(args []string) error {
 	}); err != nil {
 		return fmt.Errorf("bd init: %w", err)
 	}
+	// Post-init: switch to BEADS_DIR for commands that read the config
+	client.RunDir = ""
+	client.BeadsDir = filepath.Join(dbDataDir, ".beads")
 
 	// Create repos table
 	fmt.Println("creating repos table...")
