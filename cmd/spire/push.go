@@ -116,9 +116,10 @@ func runPush(remoteURL string) error {
 	}
 
 	// ── Push via dolt CLI (not bd) ────────────────────────────────────────────
-	// bd dolt push runs CALL dolt_push() on the server side, which doesn't
-	// have DOLT_REMOTE_USER/DOLT_REMOTE_PASSWORD in its environment.
-	// Calling dolt push directly inherits the caller's credentials.
+	// bd routes dolt push through the SQL server (CALL dolt_push()), which
+	// doesn't inherit the caller's credential environment. The CLI binary
+	// reads DOLT_REMOTE_USER/DOLT_REMOTE_PASSWORD directly. This is the
+	// standard bootstrap path for local-first operation.
 	fmt.Println("  Pushing to origin...")
 	if err := doltCLIPush(dataDir, false); err != nil {
 		if strings.Contains(err.Error(), "non-fast-forward") || strings.Contains(err.Error(), "no common ancestor") {

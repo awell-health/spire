@@ -13,7 +13,9 @@ import (
 )
 
 // cmdRegisterRepo registers a repository under an existing tower.
-// It writes a row to the dolt repos table and sets up the local .beads/ directory.
+// It writes a row to the shared dolt repos table (source of truth for prefix
+// uniqueness), seeds .beads/metadata.json with the tower's shared identity
+// (project_id, database), and pushes the registration to DoltHub.
 func cmdRegisterRepo(args []string) error {
 	var flagPrefix, flagRepoURL, flagBranch, flagDatabase string
 	for i := 0; i < len(args); i++ {
@@ -94,23 +96,16 @@ func cmdRegisterRepo(args []string) error {
 		return fmt.Errorf("cannot detect repo URL (no git remote); use --repo-url")
 	}
 
-	if _, exists := cfg.Instances[prefix]; exists {
-		return fmt.Errorf("prefix %q already registered in config; use a different --prefix or run: spire repo remove %s", prefix, prefix)
-	}
-
 	// --- Check dolt reachability ---
 	if err := requireDolt(); err != nil {
 		return err
 	}
 
-	// --- Check prefix uniqueness in dolt repos table ---
+	// --- Check prefix uniqueness against shared state (repos table is source of truth) ---
 	checkSQL := fmt.Sprintf("SELECT repo_url FROM repos WHERE prefix = '%s'", sqlEscape(prefix))
 	if out, err := bd("sql", "-q", checkSQL); err == nil {
-		// Query succeeded — check if any rows were returned.
-		// bd sql output is pipe-delimited tabular; an empty result has only the header or is blank.
 		lines := strings.Split(strings.TrimSpace(out), "\n")
 		if len(lines) > 1 {
-			// There's at least one data row after the header — extract repo_url
 			parts := strings.Split(lines[1], "|")
 			existingURL := ""
 			for _, p := range parts {
@@ -123,8 +118,13 @@ func cmdRegisterRepo(args []string) error {
 			return fmt.Errorf("prefix %q already registered in tower (repo: %s); use a different --prefix", prefix, existingURL)
 		}
 	}
-	// If the query failed (e.g. table doesn't exist), skip the check —
+	// If the query failed (e.g. table doesn't exist), skip —
 	// the INSERT below will fail with a clear error if the table is missing.
+
+	// Local config is a cache, not the source of truth. Warn if stale.
+	if _, exists := cfg.Instances[prefix]; exists {
+		fmt.Printf("  Note: prefix %q exists in local config — will re-register in tower\n", prefix)
+	}
 
 	// --- Write to repos table ---
 	sql := fmt.Sprintf(
@@ -145,8 +145,9 @@ func cmdRegisterRepo(args []string) error {
 		return fmt.Errorf("create .beads/: %w", err)
 	}
 
-	// metadata.json — tells bd how to connect to the dolt server
-	// Read project_id from tower config (no SQL needed)
+	// metadata.json — adopts the tower's shared identity into this repo.
+	// project_id originates from bd init (tower create), is stored in tower config,
+	// and is adopted here. Spire never generates its own project_id.
 	var projectID string
 	if cfg.ActiveTower != "" {
 		if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil {
