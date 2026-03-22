@@ -49,12 +49,12 @@ Environment variables (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`,
 credentials when set, which is the expected pattern for CI/CD and
 containers.
 
-**Exists today**: `spire config set` supports instance-scoped settings
-like `identity`, `dolt.port`, `daemon.interval`, `dolthub.remote`.
-
-**Needs to be built**: `spire config set` support for credential keys
-(`anthropic-key`, `github-token`, `dolthub-user`, `dolthub-password`)
-writing to `~/.config/spire/credentials` with correct permissions.
+**Exists today**: `spire config set` supports both instance-scoped
+settings (`identity`, `dolt.port`, `daemon.interval`, `dolthub.remote`)
+and credential keys (`anthropic-key`, `github-token`, `dolthub-user`,
+`dolthub-password`). Credentials are stored in
+`~/.config/spire/credentials` (chmod 600). `spire config get` reads
+credentials (masked by default). `spire config list` shows all.
 
 ### 3. Create a tower
 
@@ -81,9 +81,9 @@ This command:
 }
 ```
 
-**Needs to be built**: The `spire tower create` command does not exist.
-Today, tower setup is handled by `spire init` (which initializes a single
-repo instance) and manual dolt server configuration.
+**Exists today**: `spire tower create` is fully implemented. Creates dolt
+database, generates tower identity, creates repos table, optionally
+pushes to DoltHub, and writes tower config.
 
 ### 4. Register a repo
 
@@ -100,14 +100,12 @@ This command:
    tower's dolt database
 4. Pushes the registration to DoltHub
 
-**Exists today**: `spire init` registers repos with a prefix and role
-(hub/satellite/standalone) in `~/.config/spire/config.json`. It creates
-`.beads/` directories with metadata, config, and routing files.
-
-**Needs to be built**: `spire register-repo` as a distinct command that
-operates against a tower (rather than `spire init` which assumes the repo
-is the tower). `spire init` will remain as an alias for `register-repo`.
-The `repos` table in dolt. Automatic runtime detection.
+**Exists today**: `spire register-repo` is a distinct command that
+operates against an existing tower. It validates prefix uniqueness against
+the dolt `repos` table (source of truth), writes a row, sets up `.beads/`
+in the repo, generates `spire.yaml` if missing, and pushes the
+registration to DoltHub. `spire init` remains as a convenience alias.
+Tower resolution uses explicit database context (not ambient CWD).
 
 ### 5. File work
 
@@ -329,8 +327,11 @@ repeat.
 
 | Component | Implementation |
 |-----------|---------------|
-| `bd` CLI | Bead CRUD, dolt operations, dependencies, labels, molecules |
-| `spire init` (alias for `register-repo`) | Repo registration with prefix, role, hub/satellite topology |
+| `bd` CLI (via `pkg/bd` wrapper) | Bead CRUD, dolt operations, dependencies, labels, molecules |
+| `spire tower create` | Initialize tower: dolt db, identity, repos table, DoltHub push, config |
+| `spire tower attach` | Clone tower from DoltHub, bootstrap `.beads/`, write local config |
+| `spire register-repo` | Register repo against tower: prefix uniqueness check, dolt repos table, DoltHub push |
+| `spire init` (alias for `register-repo`) | Convenience wrapper with interactive prompts |
 | `spire up` / `down` / `shutdown` | Dolt server + daemon lifecycle management |
 | `spire status` | Dolt server and daemon PID/reachability check |
 | `spire file` | Bead creation with prefix resolution and label support |
@@ -344,27 +345,27 @@ repeat.
 | `spire summon` / `dismiss` | Wizard creation (local: stubbed; k8s: functional) |
 | `spire watch` | Live-updating terminal view |
 | `spire steward` | Work coordinator with ready-assess-assign cycle |
-| `spire config` | Instance-scoped config get/set/list |
+| `spire config` | Instance-scoped config + credential get/set/list |
 | `spire connect linear` | Linear OAuth2 integration |
 | `spire daemon` | Background process for Linear sync + webhook processing |
-| Credential storage | File-based (`~/.config/spire/credentials`, chmod 600) |
+| `spire doctor` | 10 checks in 3 categories (dolt, tower, credentials, Docker) |
+| Credential storage | File-based (`~/.config/spire/credentials`, chmod 600), env var overrides |
+| Dolt lifecycle | Auto-download binary, version pinning, managed server start/stop |
 | Docker agent images | `Dockerfile.agent`, `Dockerfile.steward` |
+| goreleaser + CI | Cross-compile, GitHub Actions test/release, SHA256 checksums |
 
 ### Needs to be built
 
 | Component | Description | Blocked by |
 |-----------|-------------|------------|
-| `spire tower create` | Initialize a tower (dolt db + DoltHub remote + config) | Nothing |
-| `spire register-repo` | Register a repo against an existing tower | `tower create` |
-| `spire attach` | Join an existing tower from another machine | `tower create` |
-| `spire config set` for credentials | Store API keys in `~/.config/spire/credentials` (`anthropic-key`, `github-token`, `dolthub-user`, `dolthub-password`) | Nothing |
+| Homebrew tap + formula | `brew install spire` — tap repo, formula, `spire version` with dolt version | Nothing (spi-n1aa.3) |
+| `spire doctor --fix` | Auto-repair: download dolt, migrate registrations, fix perms, regenerate .beads/ | Nothing (spi-n1aa.4) |
+| `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Deferred (spi-n1aa.5) |
 | Unified daemon | Merge steward loop + DoltHub sync into `spire daemon` | Nothing |
 | Local wizard work loop | Claim, focus, execute, push in a background process | Nothing |
 | Docker agent spawning | Start/stop/monitor agent containers from the daemon | Local wizard loop |
 | `spire logs` | CLI log reader for daemon and agent logs | Nothing |
 | Single-daemon enforcement | Prevent multiple `spire up` from racing | Nothing |
-| `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Nothing |
-| Homebrew formula | `brew install spire` | Release pipeline |
 
 ---
 

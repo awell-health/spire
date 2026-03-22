@@ -6,23 +6,25 @@ This plan takes Spire from its current state (working k8s operator, steward, wiz
 
 ---
 
-## Current State
+## Current State (updated 2026-03-22)
 
 What exists today:
 
 - `spire` CLI with ~30 subcommands (Go, single package in `cmd/spire/`)
-- `bd` called as an external subprocess (`exec.Command("bd", ...)`)
+- `bd` called via `pkg/bd` subprocess wrapper (clean Client interface, callers isolated)
+- `spire tower create` and `spire tower attach` — full tower bootstrap and second-machine attach
+- `spire register-repo` — writes to dolt `repos` table, validates prefix uniqueness, pushes to DoltHub
+- Credential management — `~/.config/spire/credentials` (chmod 600), env var overrides
+- Dolt lifecycle — auto-download binary, managed server start/stop, version pinning
+- Local dolt server lifecycle managed by `spire up/down/shutdown`
+- Tower configs stored in `~/.config/spire/towers/<name>.json`
+- Instance config in `~/.config/spire/config.json` (local cache, dolt is source of truth)
 - k8s operator with CRDs: SpireAgent, SpireWorkload, SpireConfig
 - Steward runs as k8s deployment or local process via `spire steward`
 - Wizard/artificer agents run as k8s pods (managed by operator)
-- Dolt database with beads schema, synced to DoltHub via syncer pod
-- Local dolt server lifecycle managed by `spire up/down/shutdown`
-- Config stored in `~/.config/spire/config.json` (per-machine, not shared)
-- Repo registration stored locally (not in dolt)
-- No `tower create` or `tower attach` -- towers are bootstrapped manually
-- No local agent spawning (Docker or process mode)
-- No Homebrew formula or goreleaser config
-- `spire pull` is planned but not yet implemented (`spire sync` exists but is pull-heavy and conflates concerns)
+- goreleaser config and GitHub Actions CI (build, test, release on tag)
+- `spire doctor` with 10 checks in 3 categories
+- `spire push` / `spire pull` with credential injection
 
 What works well and should not change:
 
@@ -31,6 +33,12 @@ What works well and should not change:
 - `spire.yaml` repo config with runtime auto-detection
 - Operator CRD design (SpireAgent, SpireWorkload)
 - DoltHub as sync intermediary
+
+What remains in Phase 1:
+
+- Homebrew tap repo and formula (goreleaser config exists, tap does not)
+- `spire doctor --fix` for auto-repair
+- `bd` as embedded Go library (deferred — subprocess wrapper ships first, can run in parallel with Phase 2)
 
 ---
 
@@ -45,6 +53,7 @@ The highest-risk item. Currently `bd` is a separate Go binary in the beads repo,
 **Approach:** Import bd as a Go library. The beads repo already has a clean package structure. Extract the core into an importable `pkg/beads` package with a programmatic API, then call it directly instead of shelling out.
 
 Work items:
+- [x] **Shipped:** `pkg/bd` subprocess wrapper with `Client` struct, `BeadsDir`, `RunDir` fields — callers are fully isolated behind clean interfaces
 - [ ] In the beads repo, extract `pkg/beads` with functions: `Create()`, `List()`, `Show()`, `Update()`, `Close()`, `Ready()`, `Count()`, `Status()`, `Export()`, `Import()`, `DoltSQL()`, `VCCommit()`, `VCStatus()`
 - [ ] Add `go.mod` dependency: `github.com/awell-health/beads`
 - [ ] Replace all `bd()`, `bdJSON()`, `bdSilent()` calls in `cmd/spire/bd.go` with direct library calls
@@ -53,6 +62,8 @@ Work items:
 - [ ] Fallback: if library extraction proves too invasive, bundle the `bd` binary inside the spire binary using `embed` and extract to a temp dir at runtime. This is worse but ships faster.
 
 **Risk:** bd's internal state management (database connections, caching) may not compose cleanly as a library. Spike this first -- spend 2 days on a proof-of-concept before committing to the approach.
+
+**Status (2026-03-22):** Deferred. The subprocess wrapper means zero callers change when this lands. Can run in parallel with Phase 2.
 
 ### 1.2 `spire tower create`
 
@@ -63,13 +74,15 @@ spire tower create --name my-team [--dolthub org/repo]
 ```
 
 Work items:
-- [ ] Initialize dolt database with beads schema (calls embedded bd)
-- [ ] Generate tower identity: `project_id` (UUID), `name`, auto-assigned hub prefix
-- [ ] Write tower metadata to dolt `metadata` table
-- [ ] If `--dolthub` provided: create DoltHub repo (reuse `ensureDoltHubDB()`), set remote, push
-- [ ] Write tower config to `~/.config/spire/towers/<name>.json`
-- [ ] Create `repos` table in dolt (see 1.5)
-- [ ] Update `~/.config/spire/config.json` to reference the tower
+- [x] Initialize dolt database with beads schema (calls embedded bd)
+- [x] Generate tower identity: `project_id` (UUID), `name`, auto-assigned hub prefix
+- [x] Write tower metadata to dolt `metadata` table
+- [x] If `--dolthub` provided: create DoltHub repo (reuse `ensureDoltHubDB()`), set remote, push
+- [x] Write tower config to `~/.config/spire/towers/<name>.json`
+- [x] Create `repos` table in dolt (see 1.5)
+- [x] Update `~/.config/spire/config.json` to reference the tower
+
+**Status (2026-03-22):** Complete.
 
 ### 1.3 `spire tower attach`
 
@@ -80,11 +93,14 @@ spire tower attach <dolthub-url> [--name local-name]
 ```
 
 Work items:
-- [ ] Clone database from DoltHub (reuse `runSync("hard", url)` logic)
-- [ ] Read tower identity from cloned database
-- [ ] Write local tower config
-- [ ] Start local dolt server if not running
-- [ ] Print tower summary (name, prefix, repo count, bead count)
+- [x] Clone database from DoltHub using dolt CLI directly
+- [x] Read tower identity from cloned database (raw dolt queries, no ambient db context)
+- [x] Bootstrap `.beads/` in cloned data dir (metadata.json + config.yaml)
+- [x] Write local tower config
+- [x] Start local dolt server if not running
+- [x] Print tower summary (name, prefix, repo count, bead count)
+
+**Status (2026-03-22):** Complete.
 
 ### 1.4 Credential management
 
@@ -98,12 +114,14 @@ spire config set dolthub-password dolt_token_...
 ```
 
 Work items:
-- [ ] Store credentials in `~/.config/spire/credentials` (chmod 600, flat key=value format)
-- [ ] Read credentials from file; env vars override file values (not fallback -- override)
-- [ ] `spire config get <key>` reads a credential (masked by default, `--unmask` to show)
-- [ ] `spire config list` shows all configured credentials (masked)
-- [ ] Inject credentials into agent environments (Docker, process, k8s secrets)
-- [ ] CI/CD pattern: set `SPIRE_ANTHROPIC_KEY`, `SPIRE_GITHUB_TOKEN`, etc. -- no file needed
+- [x] Store credentials in `~/.config/spire/credentials` (chmod 600, flat key=value format)
+- [x] Read credentials from file; env vars override file values (not fallback -- override)
+- [x] `spire config get <key>` reads a credential (masked by default, `--unmask` to show)
+- [x] `spire config list` shows all configured credentials (masked)
+- [x] Inject credentials into agent environments (Docker, process, k8s secrets)
+- [x] CI/CD pattern: set `SPIRE_ANTHROPIC_KEY`, `SPIRE_GITHUB_TOKEN`, etc. -- no file needed
+
+**Status (2026-03-22):** Complete.
 
 ### 1.5 Repos table in dolt
 
@@ -122,11 +140,13 @@ CREATE TABLE repos (
 ```
 
 Work items:
-- [ ] Create `repos` table in `spire tower create`
-- [ ] `spire register-repo` writes to dolt `repos` table (not just local config)
-- [ ] Validate prefix uniqueness against shared state
-- [ ] Keep local config as a cache/overlay -- read from dolt, write to both
-- [ ] Migration: `spire doctor --fix` migrates existing local-only registrations to dolt
+- [x] Create `repos` table in `spire tower create`
+- [x] `spire register-repo` writes to dolt `repos` table (not just local config)
+- [x] Validate prefix uniqueness against shared state
+- [x] Keep local config as a cache/overlay -- read from dolt, write to both
+- [ ] Migration: `spire doctor --fix` migrates existing local-only registrations to dolt (see 1.9)
+
+**Status (2026-03-22):** Complete (except doctor --fix migration, tracked in 1.9).
 
 ### 1.6 `spire register-repo`
 
@@ -141,44 +161,53 @@ spire register-repo [--prefix web] [--repo-url https://github.com/org/repo]
 ```
 
 Work items:
-- [ ] Auto-detect prefix from directory name (existing logic)
-- [ ] Auto-detect repo URL from git remote
-- [ ] Auto-detect runtime from `spire.yaml` or file detection
-- [ ] Write to dolt `repos` table
-- [ ] Write `.beads/` directory in repo root
-- [ ] Generate `spire.yaml` if missing (existing logic in `repoconfig.GenerateYAML`)
-- [ ] Push registration to DoltHub
+- [x] Auto-detect prefix from directory name (existing logic)
+- [x] Auto-detect repo URL from git remote
+- [x] Auto-detect runtime from `spire.yaml` or file detection
+- [x] Write to dolt `repos` table (via bdpkg.Client with explicit tower BeadsDir)
+- [x] Write `.beads/` directory in repo root
+- [x] Generate `spire.yaml` if missing (existing logic in `repoconfig.GenerateYAML`)
+- [x] Push registration to DoltHub
+- [x] Resolve tower identity from database, not ActiveTower
+
+**Status (2026-03-22):** Complete.
 
 ### 1.7 Dolt lifecycle management
 
 Spire manages the dolt binary -- the user does NOT run `brew install dolt` separately. Dolt is a managed dependency, not an embedded one: spire auto-downloads the correct dolt binary if not present, and manages the server start/stop lifecycle.
 
 Work items:
-- [ ] On first run (or `spire doctor --fix`), auto-download dolt binary to `~/.local/share/spire/bin/dolt`
-- [ ] Platform detection: download correct binary for darwin/linux, amd64/arm64
-- [ ] Version pinning: spire knows which dolt version it requires, downloads that specific version
-- [ ] `spire up` starts dolt server using the managed binary (existing behavior, but now from managed path)
-- [ ] `spire doctor` checks dolt version, offers to upgrade if stale
+- [x] On first run (or `spire doctor --fix`), auto-download dolt binary to `~/.local/share/spire/bin/dolt`
+- [x] Platform detection: download correct binary for darwin/linux, amd64/arm64
+- [x] Version pinning: spire knows which dolt version it requires, downloads that specific version
+- [x] `spire up` starts dolt server using the managed binary (existing behavior, but now from managed path)
+- [x] `spire doctor` checks dolt version, offers to upgrade if stale
+
+**Status (2026-03-22):** Complete.
 
 ### 1.8 Homebrew formula and release pipeline
 
 Work items:
-- [ ] goreleaser config: cross-compile for darwin/linux, amd64/arm64
-- [ ] GitHub Actions workflow: test on push, release on tag
+- [x] goreleaser config: cross-compile for darwin/linux, amd64/arm64
+- [x] GitHub Actions workflow: test on push, release on tag
 - [ ] Homebrew tap: `homebrew-spire` repo with formula
 - [ ] Formula installs `spire` binary only -- dolt is auto-managed, not a Homebrew dependency
 - [ ] `spire version` prints clean version from git tag (includes managed dolt version)
-- [ ] SHA256 checksums in release artifacts
+- [x] SHA256 checksums in release artifacts
+
+**Status (2026-03-22):** goreleaser + CI done. Homebrew tap repo, formula, and `spire version` with dolt version remain (spi-n1aa.3).
 
 ### 1.9 `spire doctor` expansion
 
 `spire doctor` already exists. Expand it to validate the full local setup.
 
-- [ ] Check dolt installed and correct version (managed binary, not system-installed)
-- [ ] Check tower config exists and points to valid database
-- [ ] Check credentials configured (anthropic, github, dolthub)
-- [ ] Check Docker available (for agent spawning)
-- [ ] `--fix` flag auto-repairs what it can
+- [x] Check dolt installed and correct version (managed binary, not system-installed)
+- [x] Check tower config exists and points to valid database
+- [x] Check credentials configured (anthropic, github, dolthub)
+- [x] Check Docker available (for agent spawning)
+- [ ] `--fix` flag auto-repairs what it can (spi-n1aa.4)
+
+**Status (2026-03-22):** 10 checks in 3 categories exist. `--fix` flag remains (spi-n1aa.4).
 
 ---
 
@@ -293,10 +322,12 @@ Work items:
 Prevent two developers from registering the same prefix.
 
 Work items:
-- [ ] `spire register-repo` pulls latest state before writing
-- [ ] Check `repos` table for existing prefix
-- [ ] If conflict: clear error message with the conflicting repo URL
-- [ ] Race condition resolution: first-push-wins (dolt merge detects the duplicate row, reject on push)
+- [x] `spire register-repo` checks repos table before writing
+- [x] Check `repos` table for existing prefix
+- [x] If conflict: clear error message with the conflicting repo URL
+- [x] Race condition resolution: first-push-wins (dolt merge detects the duplicate row, reject on push)
+
+**Status (2026-03-22):** Complete. Shipped as part of Phase 1 (spi-n1aa.1).
 
 ---
 
