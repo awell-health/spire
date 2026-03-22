@@ -25,11 +25,6 @@ func cmdUp(args []string) error {
 		}
 	}
 
-	// Pre-check: .beads must exist
-	if _, err := os.Stat(".beads"); os.IsNotExist(err) {
-		return fmt.Errorf("no .beads directory — run `spire init` first")
-	}
-
 	// Step 0: Ensure dolt binary is available
 	fmt.Print("dolt binary: ")
 	binPath, err := doltEnsureBinary()
@@ -53,18 +48,6 @@ func cmdUp(args []string) error {
 			return fmt.Errorf("cannot start dolt server: %w", err)
 		}
 		fmt.Printf("started (pid %d, port %s)\n", newPID, doltPort())
-	}
-
-	// Step 1b: Ensure beads database exists on the dolt server.
-	// Prefer the actual db name from .beads/metadata.json (e.g. "beads_mlti")
-	// over detectDBName() which returns only the prefix (e.g. "mlti").
-	dbName := readBeadsDBName()
-	if dbName == "" {
-		dbName = detectDBName()
-	}
-	if err := ensureDatabase(dbName); err != nil {
-		// Non-fatal: db may already exist or bd init may handle this
-		fmt.Printf("  warning: could not ensure database %q: %s\n", dbName, err)
 	}
 
 	// Step 2: Start daemon

@@ -233,12 +233,17 @@ func doltSQL(query string, jsonOutput bool) (string, error) {
 		port = "3307"
 	}
 
+	dbName := daemonDB
+	if dbName == "" {
+		dbName = detectDBName()
+	}
+
 	args := []string{
 		"--host", host,
 		"--port", port,
 		"--user", "root",
 		"--no-tls",
-		"--use-db", detectDBName(),
+		"--use-db", dbName,
 		"sql", "-q", query,
 	}
 	if jsonOutput {

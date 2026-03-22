@@ -5,10 +5,15 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 )
+
+// daemonDB is the database name override for the current tower cycle.
+// When set, doltSQL() and detectDBName() use it instead of CWD detection.
+var daemonDB string
 
 func cmdDaemon(args []string) error {
 	// Parse flags
@@ -44,9 +49,6 @@ func cmdDaemon(args []string) error {
 	// Write our PID file so spire down can find us
 	writePID(daemonPIDPath(), os.Getpid())
 
-	// Ensure webhook_queue table exists
-	ensureWebhookQueue()
-
 	// Run first cycle immediately
 	runCycle()
 
@@ -73,30 +75,62 @@ func cmdDaemon(args []string) error {
 	}
 }
 
-// runCycle executes one daemon cycle: process webhooks and sync epics.
-// DoltHub remote sync (pull/push) is handled by the dedicated spire-syncer pod.
+// runCycle iterates all configured towers and runs a cycle for each.
 func runCycle() {
-	log.Printf("[daemon] cycle start")
+	towers, err := listTowerConfigs()
+	if err != nil {
+		log.Printf("[daemon] list towers: %s", err)
+		return
+	}
 
-	// Step 1: Sync unsynced epics to Linear
+	if len(towers) == 0 {
+		log.Printf("[daemon] no towers configured, skipping cycle")
+		return
+	}
+
+	for _, tower := range towers {
+		runTowerCycle(tower)
+	}
+}
+
+// runTowerCycle runs one daemon cycle scoped to a single tower.
+// It sets BEADS_DIR and daemonDB so that bd commands and doltSQL
+// target the correct database.
+func runTowerCycle(tower TowerConfig) {
+	beadsDir := filepath.Join(doltDataDir(), tower.Database, ".beads")
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		log.Printf("[daemon] [%s] skipping — no .beads/ at %s", tower.Name, beadsDir)
+		return
+	}
+
+	log.Printf("[daemon] [%s] cycle start (db=%s)", tower.Name, tower.Database)
+
+	// Scope bd and doltSQL to this tower
+	os.Setenv("BEADS_DIR", beadsDir)
+	daemonDB = tower.Database
+	defer func() {
+		os.Unsetenv("BEADS_DIR")
+		daemonDB = ""
+	}()
+
+	ensureWebhookQueue()
+
 	epicsSynced := syncEpicsToLinear()
 	if epicsSynced > 0 {
-		log.Printf("[daemon] synced %d epic(s) to Linear", epicsSynced)
+		log.Printf("[daemon] [%s] synced %d epic(s) to Linear", tower.Name, epicsSynced)
 	}
 
-	// Step 2: Process webhook queue (from spire serve or serverless functions)
 	qProcessed, qErrors := processWebhookQueue()
 	if qProcessed > 0 || qErrors > 0 {
-		log.Printf("[daemon] queue: processed %d rows (%d errors)", qProcessed, qErrors)
+		log.Printf("[daemon] [%s] queue: processed %d rows (%d errors)", tower.Name, qProcessed, qErrors)
 	}
 
-	// Step 3: Process webhook event beads (legacy/direct bead creation)
 	processed, errors := processWebhookEvents()
 	if processed > 0 || errors > 0 {
-		log.Printf("[daemon] processed %d events (%d errors)", processed, errors)
+		log.Printf("[daemon] [%s] processed %d events (%d errors)", tower.Name, processed, errors)
 	}
 
-	log.Printf("[daemon] cycle complete")
+	log.Printf("[daemon] [%s] cycle complete", tower.Name)
 }
 
 // processWebhookEvents queries for unprocessed webhook event beads and processes them.
