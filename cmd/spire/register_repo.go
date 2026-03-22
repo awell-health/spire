@@ -123,7 +123,13 @@ func cmdRegisterRepo(args []string) error {
 	}
 
 	// metadata.json — tells bd how to connect to the dolt server
-	projectID := readProjectID(database)
+	// Read project_id from tower config (no SQL needed)
+	var projectID string
+	if cfg.ActiveTower != "" {
+		if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil {
+			projectID = tower.ProjectID
+		}
+	}
 	metadata := map[string]any{
 		"database":      "dolt",
 		"backend":       "dolt",
@@ -332,25 +338,6 @@ func sqlEscape(s string) string {
 }
 
 // --- Dolt helpers ---
-
-// readProjectID reads the project_id from the metadata table on the dolt server.
-func readProjectID(database string) string {
-	host := doltHost()
-	port := doltPort()
-	query := fmt.Sprintf("USE %s; SELECT value FROM metadata WHERE `key`='_project_id'", database)
-	out, err := exec.Command(doltBin(), "sql",
-		"--host", host, "--port", port,
-		"--user", "root", "-p", "", "--no-tls",
-		"-q", query, "-r", "csv").Output()
-	if err != nil {
-		return ""
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) < 2 {
-		return ""
-	}
-	return strings.TrimSpace(lines[len(lines)-1])
-}
 
 func printRegisterRepoUsage() {
 	fmt.Println(`Usage: spire register-repo [flags]
