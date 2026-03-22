@@ -22,6 +22,7 @@ brews:
   - repository:
       owner: awell-health
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/awell-health/spire"
     description: "Coordination hub for AI agents across repositories"
     license: "Apache-2.0"
