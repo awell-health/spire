@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads"
 )
 
 // findBeadsFile walks up from CWD to locate .beads/<name>, matching bd's resolution.
@@ -40,6 +42,15 @@ func requireBd(t *testing.T) {
 	_, err := bd("--version")
 	if err != nil {
 		t.Skip("bd not available, skipping integration test")
+	}
+}
+
+// requireStore skips the test if the beads store is not available.
+func requireStore(t *testing.T) {
+	t.Helper()
+	_, err := ensureStore()
+	if err != nil {
+		t.Skip("beads store not available, skipping integration test")
 	}
 }
 
@@ -220,7 +231,7 @@ func TestDetectIdentityNone(t *testing.T) {
 
 // TestIntegrationRegisterUnregister tests the full register/unregister cycle.
 func TestIntegrationRegisterUnregister(t *testing.T) {
-	requireBd(t)
+	requireStore(t)
 
 	name := "test-agent-" + t.Name()
 
@@ -266,7 +277,7 @@ func TestIntegrationRegisterUnregister(t *testing.T) {
 
 // TestIntegrationSendCollectRead tests the full message lifecycle.
 func TestIntegrationSendCollectRead(t *testing.T) {
-	requireBd(t)
+	requireStore(t)
 
 	os.Setenv("SPIRE_IDENTITY", "test-sender")
 	defer os.Unsetenv("SPIRE_IDENTITY")
@@ -278,8 +289,11 @@ func TestIntegrationSendCollectRead(t *testing.T) {
 	}
 
 	// Collect as receiver
-	var messages []Bead
-	err = bdJSON(&messages, "list", "--rig=spi", "--label", "msg,to:test-receiver", "--status=open")
+	messages, err := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"msg", "to:test-receiver"},
+		Status:   statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
 		t.Fatalf("collect query error: %v", err)
 	}
@@ -331,13 +345,9 @@ func TestIntegrationSendCollectRead(t *testing.T) {
 	}
 
 	// Verify it's closed
-	out, err := bd("show", msgID, "--json")
+	b, err := storeGetBead(msgID)
 	if err != nil {
 		t.Fatalf("show after read error: %v", err)
-	}
-	b, err := parseBead([]byte(out))
-	if err != nil {
-		t.Fatalf("parse after read error: %v", err)
 	}
 	if b.Status != "closed" {
 		t.Errorf("message status = %q after read, want %q", b.Status, "closed")
@@ -351,7 +361,7 @@ func TestIntegrationSendCollectRead(t *testing.T) {
 }
 
 func TestIntegrationCollectJSON(t *testing.T) {
-	requireBd(t)
+	requireStore(t)
 
 	os.Setenv("SPIRE_IDENTITY", "json-sender")
 	defer os.Unsetenv("SPIRE_IDENTITY")
@@ -400,7 +410,7 @@ func TestIntegrationCollectJSON(t *testing.T) {
 
 // TestIntegrationSendWithThread tests threaded messages.
 func TestIntegrationSendWithThread(t *testing.T) {
-	requireBd(t)
+	requireStore(t)
 
 	os.Setenv("SPIRE_IDENTITY", "thread-sender")
 	defer os.Unsetenv("SPIRE_IDENTITY")
@@ -412,8 +422,11 @@ func TestIntegrationSendWithThread(t *testing.T) {
 	}
 
 	// Find the parent
-	var messages []Bead
-	err = bdJSON(&messages, "list", "--rig=spi", "--label", "msg,to:thread-receiver", "--status=open")
+	messages, err := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"msg", "to:thread-receiver"},
+		Status:   statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
 		t.Fatalf("list error: %v", err)
 	}
@@ -435,7 +448,11 @@ func TestIntegrationSendWithThread(t *testing.T) {
 	}
 
 	// Find the reply — verify it was created
-	err = bdJSON(&messages, "list", "--rig=spi", "--label", "msg,to:thread-receiver", "--status=open")
+	messages, err = storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"msg", "to:thread-receiver"},
+		Status:   statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
 		t.Fatalf("list after reply error: %v", err)
 	}
@@ -452,7 +469,7 @@ func TestIntegrationSendWithThread(t *testing.T) {
 
 	// Clean up
 	for _, m := range messages {
-		bd("close", m.ID)
+		storeCloseBead(m.ID)
 	}
 }
 
@@ -461,7 +478,12 @@ func TestIntegrationFocus(t *testing.T) {
 	requireBd(t)
 
 	// Create a task
-	taskID, err := bdSilent("create", "--rig=spi", "--type=task", "--title", "Focus test task", "-p", "2")
+	taskID, err := storeCreateBead(createOpts{
+		Title:    "Focus test task",
+		Type:     parseIssueType("task"),
+		Priority: 2,
+		Prefix:   "spi",
+	})
 	if err != nil {
 		t.Fatalf("create task error: %v", err)
 	}
@@ -473,8 +495,11 @@ func TestIntegrationFocus(t *testing.T) {
 	}
 
 	// Verify molecule was created with workflow label
-	var mols []Bead
-	err = bdJSON(&mols, "list", "--rig=spi", "--label", "workflow:"+taskID, "--status=open")
+	mols, err := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"workflow:" + taskID},
+		Status:   statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
 		t.Fatalf("find molecule error: %v", err)
 	}
@@ -499,7 +524,11 @@ func TestIntegrationFocus(t *testing.T) {
 	}
 
 	// Verify still only one molecule
-	err = bdJSON(&mols, "list", "--rig=spi", "--label", "workflow:"+taskID, "--status=open")
+	mols, err = storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"workflow:" + taskID},
+		Status:   statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
 		t.Fatalf("find molecule after second focus error: %v", err)
 	}
@@ -655,15 +684,14 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	// Create a fake webhook event bead
 	payload := `{"action":"create","type":"Issue","data":{"id":"uuid-test","identifier":"AWE-99","title":"Integration test epic","priority":2,"labels":[{"name":"Panels - Test"}]}}`
 
-	eventID, err := bdSilent(
-		"create",
-		"--rig=spi",
-		"--type=task",
-		"-p", "3",
-		"--title", "Issue created: AWE-99",
-		"--labels", "webhook,event:Issue.create,linear:AWE-99",
-		"--description", payload,
-	)
+	eventID, err := storeCreateBead(createOpts{
+		Title:       "Issue created: AWE-99",
+		Type:        parseIssueType("task"),
+		Priority:    3,
+		Prefix:      "spi",
+		Labels:      []string{"webhook", "event:Issue.create", "linear:AWE-99"},
+		Description: payload,
+	})
 	if err != nil {
 		t.Fatalf("create webhook event: %v", err)
 	}
@@ -678,18 +706,20 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	}
 
 	// Verify the event bead is closed
-	out, err := bd("show", eventID, "--json")
+	eventBead, err := storeGetBead(eventID)
 	if err != nil {
 		t.Fatalf("show event after processing: %v", err)
 	}
-	eventBead, _ := parseBead([]byte(out))
 	if eventBead.Status != "closed" {
 		t.Errorf("event status = %q, want closed", eventBead.Status)
 	}
 
 	// Verify an epic bead was created in the pan rig
-	var epics []Bead
-	err = bdJSON(&epics, "list", "--rig=pan", "--label", "linear:AWE-99", "--type", "epic")
+	epics, err := storeListBeads(beads.IssueFilter{
+		IDPrefix:  "pan-",
+		Labels:    []string{"linear:AWE-99"},
+		IssueType: issueTypePtr(beads.TypeEpic),
+	})
 	if err != nil {
 		t.Fatalf("list epic: %v", err)
 	}
@@ -950,7 +980,12 @@ func TestIntegrationGrokNoLinearLabel(t *testing.T) {
 	requireBd(t)
 
 	// Create a task without a linear: label
-	taskID, err := bdSilent("create", "--rig=spi", "--type=task", "--title", "Grok test no-linear", "-p", "2")
+	taskID, err := storeCreateBead(createOpts{
+		Title:    "Grok test no-linear",
+		Type:     parseIssueType("task"),
+		Priority: 2,
+		Prefix:   "spi",
+	})
 	if err != nil {
 		t.Fatalf("create task error: %v", err)
 	}
@@ -1105,7 +1140,7 @@ func TestStopProcessStalePID(t *testing.T) {
 }
 
 func TestIntegrationStatus(t *testing.T) {
-	requireBd(t)
+	requireStore(t)
 
 	// spire status should not error regardless of running state
 	err := cmdStatus(nil)
