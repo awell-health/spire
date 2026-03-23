@@ -20,7 +20,7 @@ func cmdPush(args []string) error {
 			fmt.Print(`Usage: spire push [<dolthub-url>]
 
 Push the local beads database to a DoltHub remote.
-Counterpart to 'spire sync' (which pulls).
+Counterpart to 'spire pull'.
 
 If the DoltHub database does not exist and DOLT_REMOTE_PASSWORD is set,
 spire push creates it first.
