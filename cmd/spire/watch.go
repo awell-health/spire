@@ -7,13 +7,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/steveyegge/beads"
 )
 
 func cmdWatch(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	var epicID string
 	interval := 5 * time.Second
 	once := false
@@ -75,14 +73,16 @@ func renderWatch(epicID string) error {
 // renderTowerWatch shows all active work across the tower.
 func renderTowerWatch() error {
 	// Load all beads.
-	var allBeads []BoardBead
-	if err := bdJSON(&allBeads, "list"); err != nil {
+	allBeads, err := storeListBoardBeads(beads.IssueFilter{})
+	if err != nil {
 		return fmt.Errorf("watch: %w", err)
 	}
 
 	// Load agents.
-	var agentBeads []BoardBead
-	_ = bdJSON(&agentBeads, "list", "--label", "agent", "--status=open")
+	agentBeads, _ := storeListBoardBeads(beads.IssueFilter{
+		Labels: []string{"agent"},
+		Status: statusPtr(beads.StatusOpen),
+	})
 
 	// Count wizards.
 	wizardCount := 0
@@ -168,14 +168,15 @@ func renderTowerWatch() error {
 // renderEpicWatch shows progress for a specific epic and its children.
 func renderEpicWatch(epicID string) error {
 	// Load the epic.
-	var allBeads []BoardBead
-	if err := bdJSON(&allBeads, "list"); err != nil {
+	allBeads, err := storeListBoardBeads(beads.IssueFilter{})
+	if err != nil {
 		return fmt.Errorf("watch: %w", err)
 	}
 
 	// Also load closed beads.
-	var closedBeads []BoardBead
-	_ = bdJSON(&closedBeads, "list", "--status=closed")
+	closedBeads, _ := storeListBoardBeads(beads.IssueFilter{
+		Status: statusPtr(beads.StatusClosed),
+	})
 
 	// Find the epic.
 	var epic *BoardBead

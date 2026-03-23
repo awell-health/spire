@@ -18,9 +18,9 @@ func detectIdentity(asFlag string) (string, error) {
 		return env, nil
 	}
 
-	// Try bd config get issue-prefix
-	out, err := bd("config", "get", "issue-prefix")
-	if err == nil && out != "" && !strings.Contains(out, "(not set)") {
+	// Try beads config issue-prefix
+	out, err := storeGetConfig("issue-prefix")
+	if err == nil && out != "" {
 		return out, nil
 	}
 
@@ -65,8 +65,8 @@ func detectDBName() string {
 		}
 		return env
 	}
-	out, err := bd("config", "get", "issue-prefix")
-	if err == nil && out != "" && !strings.Contains(out, "(not set)") {
+	out, err := storeGetConfig("issue-prefix")
+	if err == nil && out != "" {
 		return strings.TrimSpace(out)
 	}
 	// Fallback: look up cwd in config

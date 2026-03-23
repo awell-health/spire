@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/steveyegge/beads"
 )
 
 // RosterAgent represents an agent registered in the tower.
@@ -47,10 +48,6 @@ type k8sPod struct {
 }
 
 func cmdRoster(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	flagJSON := false
 	for _, arg := range args {
 		switch arg {
@@ -188,12 +185,16 @@ func rosterFromK8s(timeout time.Duration) ([]RosterAgent, error) {
 
 // rosterFromBeads builds a roster from bead state (no k8s).
 func rosterFromBeads(timeout time.Duration) []RosterAgent {
-	var agentBeads []BoardBead
-	err := bdJSON(&agentBeads, "list", "--label", "agent", "--status=open")
+	agentBeads, err := storeListBoardBeads(beads.IssueFilter{
+		Labels: []string{"agent"},
+		Status: statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
-		_ = bdJSON(&agentBeads, "list", "--status=open")
+		allOpen, _ := storeListBoardBeads(beads.IssueFilter{
+			Status: statusPtr(beads.StatusOpen),
+		})
 		var filtered []BoardBead
-		for _, b := range agentBeads {
+		for _, b := range allOpen {
 			for _, l := range b.Labels {
 				if l == "agent" {
 					filtered = append(filtered, b)
@@ -204,8 +205,9 @@ func rosterFromBeads(timeout time.Duration) []RosterAgent {
 		agentBeads = filtered
 	}
 
-	var inProgress []BoardBead
-	_ = bdJSON(&inProgress, "list", "--status=in_progress")
+	inProgress, _ := storeListBoardBeads(beads.IssueFilter{
+		Status: statusPtr(beads.StatusInProgress),
+	})
 
 	ownerWork := make(map[string]BoardBead)
 	for _, b := range inProgress {
