@@ -77,6 +77,16 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 		return
 	}
 
+	// 2b. Filter out workflow step beads (parent carries workflow:* label)
+	var filteredBeads []beadJSON
+	for _, b := range beads {
+		if isWorkflowStep(ctx, b.ID) {
+			continue
+		}
+		filteredBeads = append(filteredBeads, b)
+	}
+	beads = filteredBeads
+
 	// 3. Get existing workloads
 	var existing spirev1.SpireWorkloadList
 	if err := w.Client.List(ctx, &existing, client.InNamespace(w.Namespace)); err != nil {
@@ -170,4 +180,54 @@ func sanitizeName(beadID string) string {
 	name := strings.ToLower(beadID)
 	name = strings.ReplaceAll(name, ".", "-")
 	return fmt.Sprintf("bead-%s", name)
+}
+
+// isWorkflowStep checks if a bead is a child of a workflow molecule.
+// It uses `bd show --json` to inspect the bead's parent and check for
+// workflow:* labels on the parent.
+func isWorkflowStep(ctx context.Context, beadID string) bool {
+	// Get bead details via bd show
+	out, err := exec.CommandContext(ctx, "bd", "show", beadID, "--json").Output()
+	if err != nil {
+		return false
+	}
+	var shown []struct {
+		Dependencies []struct {
+			DependsOnID string `json:"depends_on_id"`
+			Type        string `json:"type"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(out, &shown); err != nil || len(shown) == 0 {
+		return false
+	}
+
+	// Find parent via parent_child dependency
+	parentID := ""
+	for _, dep := range shown[0].Dependencies {
+		if dep.Type == "parent_child" {
+			parentID = dep.DependsOnID
+			break
+		}
+	}
+	if parentID == "" {
+		return false
+	}
+
+	// Check if parent has workflow:* label
+	parentOut, err := exec.CommandContext(ctx, "bd", "show", parentID, "--json").Output()
+	if err != nil {
+		return false
+	}
+	var parents []struct {
+		Labels []string `json:"labels"`
+	}
+	if err := json.Unmarshal(parentOut, &parents); err != nil || len(parents) == 0 {
+		return false
+	}
+	for _, l := range parents[0].Labels {
+		if strings.HasPrefix(l, "workflow:") {
+			return true
+		}
+	}
+	return false
 }
