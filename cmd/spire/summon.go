@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/steveyegge/beads"
 )
 
 // wizardRegistry tracks locally summoned wizards.
@@ -51,8 +53,8 @@ func cmdSummon(args []string) error {
 
 	// If --for epic, count = number of ready children.
 	if forEpic != "" && count == 0 {
-		var ready []Bead
-		if err := bdJSON(&ready, "ready"); err == nil {
+		ready, err := storeGetReadyWork(beads.WorkFilter{})
+		if err == nil {
 			for _, b := range ready {
 				if b.Parent == forEpic || strings.HasPrefix(b.ID, forEpic+".") {
 					count++

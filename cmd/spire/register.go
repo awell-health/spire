@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/steveyegge/beads"
 )
 
 func cmdRegister(args []string) error {
@@ -24,19 +26,14 @@ func cmdRegister(args []string) error {
 	}
 
 	// Create agent bead
-	bdArgs := []string{
-		"create",
-		"--rig=spi",
-		"--type=task",
-		"-p", "4",
-		"--title", name,
-		"--labels", fmt.Sprintf("agent,name:%s", name),
-	}
-	if context != "" {
-		bdArgs = append(bdArgs, "--description", context)
-	}
-
-	id, err := bdSilent(bdArgs...)
+	id, err := storeCreateBead(createOpts{
+		Title:       name,
+		Description: context,
+		Priority:    4,
+		Type:        beads.TypeTask,
+		Prefix:      "spi",
+		Labels:      []string{"agent", "name:" + name},
+	})
 	if err != nil {
 		return fmt.Errorf("register %s: %w", name, err)
 	}
@@ -59,8 +56,7 @@ func cmdUnregister(args []string) error {
 		return fmt.Errorf("unregister %s: no registered agent found", name)
 	}
 
-	_, err = bd("close", id)
-	if err != nil {
+	if err := storeCloseBead(id); err != nil {
 		return fmt.Errorf("unregister %s: %w", name, err)
 	}
 
@@ -70,12 +66,15 @@ func cmdUnregister(args []string) error {
 
 // findAgentBead returns the bead ID of a registered agent, or "" if not found.
 func findAgentBead(name string) (string, error) {
-	var beads []Bead
-	err := bdJSON(&beads, "list", "--rig=spi", "--label", fmt.Sprintf("agent,name:%s", name), "--status=open")
+	results, err := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"agent", "name:" + name},
+		Status:   statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
 		return "", err
 	}
-	for _, b := range beads {
+	for _, b := range results {
 		for _, l := range b.Labels {
 			if l == "name:"+name {
 				return b.ID, nil

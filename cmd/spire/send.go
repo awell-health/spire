@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/steveyegge/beads"
 )
 
 func cmdSend(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	asFlag, args := parseAsFlag(args)
 
 	// Parse flags
@@ -66,26 +64,19 @@ func cmdSend(args []string) error {
 	}
 
 	// Build labels
-	labels := fmt.Sprintf("msg,to:%s,from:%s", to, from)
+	labels := []string{"msg", "to:" + to, "from:" + from}
 	if ref != "" {
-		labels += fmt.Sprintf(",ref:%s", ref)
+		labels = append(labels, "ref:"+ref)
 	}
 
-	// Build bd create args
-	bdArgs := []string{
-		"create",
-		"--rig=spi",
-		"--type=task",
-		"-p", strconv.Itoa(priority),
-		"--title", message,
-		"--labels", labels,
-	}
-
-	if thread != "" {
-		bdArgs = append(bdArgs, "--parent", thread)
-	}
-
-	id, err := bdSilent(bdArgs...)
+	id, err := storeCreateBead(createOpts{
+		Title:    message,
+		Priority: priority,
+		Type:     beads.TypeTask,
+		Prefix:   "spi",
+		Labels:   labels,
+		Parent:   thread,
+	})
 	if err != nil {
 		return fmt.Errorf("send to %s: %w", to, err)
 	}

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strconv"
+
+	"github.com/steveyegge/beads"
 )
 
 // cmdAlert creates an alert bead that surfaces at the top of the board.
@@ -14,10 +16,6 @@ import (
 //	spire alert "Epic spi-x2mk complete" --ref spi-x2mk --type epic-complete -p 1
 //	spire alert "Review escalated for spi-7v2.2" --ref spi-7v2.2 --type escalation -p 0
 func cmdAlert(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	if len(args) == 0 {
 		return fmt.Errorf("usage: spire alert <message> [--ref <bead-id>] [--type <alert-type>] [-p <priority>]")
 	}
@@ -53,24 +51,27 @@ func cmdAlert(args []string) error {
 		}
 	}
 
-	// Build bd create args.
-	createArgs := []string{"create", message, "-t", "task", "-p", strconv.Itoa(priority)}
-
-	// Add labels.
-	label := "alert"
+	// Build labels.
+	labels := []string{}
 	if alertType != "" {
-		label = "alert:" + alertType
+		labels = append(labels, "alert:"+alertType)
+	} else {
+		labels = append(labels, "alert")
 	}
-	createArgs = append(createArgs, "--label", label)
 	if refBead != "" {
-		createArgs = append(createArgs, "--label", "ref:"+refBead)
+		labels = append(labels, "ref:"+refBead)
 	}
 
-	out, err := bd(createArgs...)
+	id, err := storeCreateBead(createOpts{
+		Title:    message,
+		Priority: priority,
+		Type:     beads.TypeTask,
+		Labels:   labels,
+	})
 	if err != nil {
 		return fmt.Errorf("create alert: %w", err)
 	}
 
-	fmt.Printf("Alert created: %s\n", out)
+	fmt.Printf("Alert created: %s\n", id)
 	return nil
 }
