@@ -63,10 +63,10 @@ func main() {
 		err = cmdInit(args)
 	case "config":
 		err = cmdConfig(args)
-	case "sync":
-		err = cmdSync(args)
 	case "push":
 		err = cmdPush(args)
+	case "pull":
+		err = cmdPull(args)
 	case "register-repo":
 		err = cmdRegisterRepo(args)
 	case "repo":
