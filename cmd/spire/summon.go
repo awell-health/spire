@@ -20,11 +20,13 @@ type wizardRegistry struct {
 }
 
 type localWizard struct {
-	Name      string `json:"name"`
-	PID       int    `json:"pid"`
-	BeadID    string `json:"bead_id"`
-	Worktree  string `json:"worktree"`
-	StartedAt string `json:"started_at"`
+	Name           string `json:"name"`
+	PID            int    `json:"pid"`
+	BeadID         string `json:"bead_id"`
+	Worktree       string `json:"worktree"`
+	StartedAt      string `json:"started_at"`
+	Phase          string `json:"phase,omitempty"`
+	PhaseStartedAt string `json:"phase_started_at,omitempty"`
 }
 
 func cmdSummon(args []string) error {
@@ -280,18 +282,19 @@ func summonLocal(count int) error {
 		logFile.Close() // child owns the fd now
 
 		worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
-		reg.Wizards = append(reg.Wizards, localWizard{
+		if err := wizardRegistryAdd(localWizard{
 			Name:      name,
 			PID:       cmd.Process.Pid,
 			BeadID:    bead.ID,
 			Worktree:  worktree,
 			StartedAt: time.Now().UTC().Format(time.RFC3339),
-		})
+		}); err != nil {
+			log.Printf("warning: registry add for %s: %v", name, err)
+		}
 
 		fmt.Printf("  %s%s%s → %s (%s) [pid %d]\n", cyan, name, reset, bead.ID, bead.Title, cmd.Process.Pid)
 	}
 
-	saveWizardRegistry(reg)
 	fmt.Printf("\n%d wizard(s) summoned. Logs: %s\n", count, logDir)
 	fmt.Printf("Run %sspire roster%s to check status.\n", bold, reset)
 	return nil
@@ -365,5 +368,101 @@ func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
 	}
 	reg.Wizards = alive
 	return reg
+}
+
+// wizardRegistryLock acquires a file lock for the wizard registry.
+// Returns a cleanup function that releases the lock.
+func wizardRegistryLock() (func(), error) {
+	lockPath := wizardRegistryPath() + ".lock"
+	os.MkdirAll(filepath.Dir(lockPath), 0755)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err == nil {
+			f.Close()
+			return func() { os.Remove(lockPath) }, nil
+		}
+		if time.Now().After(deadline) {
+			// Force-remove stale lock and retry once
+			os.Remove(lockPath)
+			f, err = os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+			if err != nil {
+				return nil, fmt.Errorf("acquire registry lock: %w", err)
+			}
+			f.Close()
+			return func() { os.Remove(lockPath) }, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// wizardRegistryAdd adds or replaces an entry in the wizard registry (file-locked).
+func wizardRegistryAdd(entry localWizard) error {
+	unlock, err := wizardRegistryLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	reg := loadWizardRegistry()
+
+	// Deduplicate by name — replace if exists, append if new.
+	found := false
+	for i, w := range reg.Wizards {
+		if w.Name == entry.Name {
+			reg.Wizards[i] = entry
+			found = true
+			break
+		}
+	}
+	if !found {
+		reg.Wizards = append(reg.Wizards, entry)
+	}
+
+	saveWizardRegistry(reg)
+	return nil
+}
+
+// wizardRegistryRemove removes an entry by name from the wizard registry (file-locked).
+func wizardRegistryRemove(name string) error {
+	unlock, err := wizardRegistryLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	reg := loadWizardRegistry()
+
+	var kept []localWizard
+	for _, w := range reg.Wizards {
+		if w.Name != name {
+			kept = append(kept, w)
+		}
+	}
+	reg.Wizards = kept
+
+	saveWizardRegistry(reg)
+	return nil
+}
+
+// wizardRegistryUpdate updates an entry by name using the provided function (file-locked).
+func wizardRegistryUpdate(name string, update func(*localWizard)) error {
+	unlock, err := wizardRegistryLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	reg := loadWizardRegistry()
+
+	for i := range reg.Wizards {
+		if reg.Wizards[i].Name == name {
+			update(&reg.Wizards[i])
+			saveWizardRegistry(reg)
+			return nil
+		}
+	}
+	return fmt.Errorf("wizard %q not found in registry", name)
 }
 

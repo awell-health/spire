@@ -32,10 +32,11 @@ type RuntimeConfig struct {
 
 // AgentConfig controls autonomous agent behaviour.
 type AgentConfig struct {
-	Model    string `yaml:"model"`     // default model for this repo
-	MaxTurns int    `yaml:"max-turns"` // safety limit
-	Stale    string `yaml:"stale"`     // warning: wizard exceeded guidelines (e.g. "10m")
-	Timeout  string `yaml:"timeout"`   // fatal: tower kills the wizard (e.g. "15m")
+	Model         string `yaml:"model"`          // default model for this repo
+	MaxTurns      int    `yaml:"max-turns"`      // safety limit
+	Stale         string `yaml:"stale"`          // warning: wizard exceeded guidelines (e.g. "10m")
+	Timeout       string `yaml:"timeout"`        // fatal: tower kills the wizard (e.g. "15m")
+	DesignTimeout string `yaml:"design-timeout"` // timeout for design phase (e.g. "10m")
 }
 
 // BranchConfig controls branch naming.
@@ -147,6 +148,9 @@ func applyDefaults(cfg *RepoConfig, dir string) {
 	}
 	if cfg.Agent.Timeout == "" {
 		cfg.Agent.Timeout = "15m"
+	}
+	if cfg.Agent.DesignTimeout == "" {
+		cfg.Agent.DesignTimeout = "10m"
 	}
 
 	// Branch defaults
