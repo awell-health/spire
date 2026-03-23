@@ -82,6 +82,8 @@ func main() {
 		err = cmdTower(args)
 	case "wizard-run":
 		err = cmdWizardRun(args)
+	case "wizard-review":
+		err = cmdWizardReview(args)
 	case "doctor":
 		err = cmdDoctor(args)
 	case "version":

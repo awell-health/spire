@@ -363,6 +363,8 @@ func storeDeleteConfig(key string) error {
 }
 
 // storeGetReadyWork returns beads that are ready to work on (no open blockers).
+// Post-filters out workflow step beads and message beads so they don't
+// appear as assignable work in the steward cycle.
 func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	store, err := ensureStore()
 	if err != nil {
@@ -372,7 +374,27 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get ready work: %w", err)
 	}
-	return issuesToBeads(issues), nil
+
+	result := issuesToBeads(issues)
+
+	// Post-filter: exclude workflow step beads and message beads
+	var filtered []Bead
+	for _, b := range result {
+		// Skip message beads
+		if containsLabel(b, "msg") {
+			continue
+		}
+		// Skip workflow step beads (parent carries workflow:* label)
+		if b.Parent != "" {
+			parent, perr := storeGetBead(b.Parent)
+			if perr == nil && hasLabel(parent, "workflow:") != "" {
+				continue
+			}
+		}
+		filtered = append(filtered, b)
+	}
+
+	return filtered, nil
 }
 
 // storeGetComments returns comments for a bead.

@@ -357,6 +357,11 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 	staleCount, shutdownCount := 0, 0
 
 	for _, b := range inProgress {
+		// Skip review-approved beads — they're parked waiting for merge
+		if containsLabel(b, "review-approved") {
+			continue
+		}
+
 		updatedAt := hasLabel(b, "updated:")
 		if updatedAt == "" {
 			continue
@@ -424,6 +429,10 @@ func detectReviewReady(dryRun bool) {
 	for _, b := range reviewBeads {
 		// Skip if already assigned for review.
 		if hasLabel(b, "review-assigned") != "" || containsLabel(b, "review-assigned") {
+			continue
+		}
+		// Skip if already approved.
+		if containsLabel(b, "review-approved") {
 			continue
 		}
 

@@ -1,0 +1,541 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/steveyegge/beads"
+)
+
+// Review is the structured output from a code review.
+type Review struct {
+	Verdict string        `json:"verdict"` // "approve", "request_changes"
+	Summary string        `json:"summary"`
+	Issues  []ReviewIssue `json:"issues,omitempty"`
+}
+
+// ReviewIssue represents a single issue found during review.
+type ReviewIssue struct {
+	File     string `json:"file"`
+	Line     int    `json:"line,omitempty"`
+	Severity string `json:"severity"` // "error", "warning"
+	Message  string `json:"message"`
+}
+
+func cmdWizardReview(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: spire wizard-review <bead-id> --name <name>")
+	}
+
+	beadID := args[0]
+	reviewerName := "reviewer"
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--name" && i+1 < len(args) {
+			i++
+			reviewerName = args[i]
+		}
+	}
+
+	log := func(format string, a ...interface{}) {
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", reviewerName, fmt.Sprintf(format, a...))
+	}
+
+	// Self-register in the wizard registry.
+	// TODO: use wizardRegistryAdd when available (merge agent will consolidate)
+	reviewRegistryAdd(localWizard{
+		Name:      reviewerName,
+		PID:       os.Getpid(),
+		BeadID:    beadID,
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	defer reviewRegistryRemove(reviewerName)
+
+	// Signal handler for cleanup
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		reviewRegistryRemove(reviewerName)
+		os.Exit(1)
+	}()
+
+	if err := requireDolt(); err != nil {
+		return err
+	}
+
+	// 1. Resolve repo
+	repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+
+	// 2. Get bead and resolve branch from labels
+	bead, err := storeGetBead(beadID)
+	if err != nil {
+		return fmt.Errorf("get bead: %w", err)
+	}
+
+	branch := hasLabel(bead, "feat-branch:")
+	if branch == "" {
+		branch = fmt.Sprintf("feat/%s", beadID)
+	}
+	log("reviewing %s branch %s", beadID, branch)
+
+	// 3. Add review-assigned label
+	storeAddLabel(beadID, "review-assigned")
+
+	// 4. Create own worktree
+	worktreeDir, err := reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
+	if err != nil {
+		return fmt.Errorf("create worktree: %w", err)
+	}
+	defer reviewCleanupWorktree(worktreeDir, repoPath)
+	log("worktree: %s", worktreeDir)
+
+	// 5. Get diff
+	diff, err := reviewGetDiff(worktreeDir, baseBranch)
+	if err != nil {
+		return fmt.Errorf("get diff: %w", err)
+	}
+	if diff == "" {
+		log("no diff found, nothing to review")
+		return nil
+	}
+
+	// 6. Run tests in worktree
+	repoCfg, _ := repoconfig.Load(repoPath)
+	testOutput := ""
+	if repoCfg != nil && repoCfg.Runtime.Test != "" {
+		log("running tests")
+		testOut, testErr := reviewRunTests(worktreeDir, repoCfg)
+		testOutput = testOut
+		if testErr != nil {
+			log("tests failed: %s", testErr)
+		}
+	}
+
+	// 7. Get current review round
+	round := reviewGetRound(beadID)
+	log("review round: %d", round)
+
+	// 8. Run Opus review
+	log("running Opus review")
+	review, err := reviewRunOpus(bead.Title, bead.Description, diff, testOutput, round)
+	if err != nil {
+		return fmt.Errorf("opus review: %w", err)
+	}
+	log("verdict: %s — %s", review.Verdict, review.Summary)
+
+	// 9. Handle verdict
+	switch review.Verdict {
+	case "approve":
+		reviewHandleApproval(beadID, reviewerName, log)
+	case "request_changes":
+		if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, log); err != nil {
+			return err
+		}
+	default:
+		log("unexpected verdict: %s, treating as request_changes", review.Verdict)
+		if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, log); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// --- Registry helpers (will be consolidated by merge agent with shared helpers from summon.go) ---
+
+// reviewRegistryAdd adds or updates a wizard entry in the local registry.
+// TODO: use wizardRegistryAdd when available
+func reviewRegistryAdd(entry localWizard) {
+	reg := loadWizardRegistry()
+	found := false
+	for i, w := range reg.Wizards {
+		if w.Name == entry.Name {
+			reg.Wizards[i] = entry
+			found = true
+			break
+		}
+	}
+	if !found {
+		reg.Wizards = append(reg.Wizards, entry)
+	}
+	saveWizardRegistry(reg)
+}
+
+// reviewRegistryRemove removes a wizard entry from the local registry.
+// TODO: use wizardRegistryRemove when available
+func reviewRegistryRemove(name string) {
+	reg := loadWizardRegistry()
+	var kept []localWizard
+	for _, w := range reg.Wizards {
+		if w.Name != name {
+			kept = append(kept, w)
+		}
+	}
+	reg.Wizards = kept
+	saveWizardRegistry(reg)
+}
+
+// --- Worktree helpers ---
+
+func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (string, error) {
+	worktreeDir := filepath.Join(os.TempDir(), "spire-review", reviewerName, beadID)
+
+	// Clean up stale worktree
+	if _, err := os.Stat(worktreeDir); err == nil {
+		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", worktreeDir).Run()
+		os.RemoveAll(worktreeDir)
+	}
+
+	os.MkdirAll(filepath.Dir(worktreeDir), 0755)
+
+	// Fetch the branch
+	exec.Command("git", "-C", repoPath, "fetch", "origin", branch).Run()
+
+	// Create worktree from the branch (not creating new branch)
+	cmd := exec.Command("git", "-C", repoPath, "worktree", "add", worktreeDir, "origin/"+branch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// Try with local branch name
+		cmd2 := exec.Command("git", "-C", repoPath, "worktree", "add", worktreeDir, branch)
+		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
+			return "", fmt.Errorf("git worktree add: %s\n%s\n%s", err, string(out), string(out2))
+		}
+	}
+
+	return worktreeDir, nil
+}
+
+func reviewCleanupWorktree(worktreeDir, repoPath string) {
+	exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", worktreeDir).Run()
+	os.RemoveAll(worktreeDir)
+}
+
+// --- Diff + test helpers ---
+
+func reviewGetDiff(worktreeDir, baseBranch string) (string, error) {
+	// Fetch base for comparison
+	exec.Command("git", "-C", worktreeDir, "fetch", "origin", baseBranch).Run()
+
+	cmd := exec.Command("git", "-C", worktreeDir, "diff", "origin/"+baseBranch+"...HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w", err)
+	}
+	return string(out), nil
+}
+
+func reviewRunTests(worktreeDir string, cfg *repoconfig.RepoConfig) (string, error) {
+	if cfg.Runtime.Test == "" {
+		return "", nil
+	}
+	cmd := exec.Command("sh", "-c", cfg.Runtime.Test)
+	cmd.Dir = worktreeDir
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func reviewGetRound(beadID string) int {
+	bead, err := storeGetBead(beadID)
+	if err != nil {
+		return 0
+	}
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "review-round:") {
+			n := 0
+			fmt.Sscanf(l[len("review-round:"):], "%d", &n)
+			return n
+		}
+	}
+	return 0
+}
+
+// --- Opus review ---
+
+func reviewRunOpus(title, spec, diff, testOutput string, round int) (*Review, error) {
+	systemPrompt := `You are a senior staff engineer performing code review. You review diffs against specifications.
+
+Your job is to determine: does this implementation satisfy the specification?
+
+Evaluate:
+1. Correctness: Does the code do what the spec says?
+2. Completeness: Are all requirements from the spec addressed?
+3. Quality: Is the code clean, well-tested, and maintainable?
+4. Edge cases: Are error paths and edge cases handled?
+
+Respond ONLY with a JSON object:
+{
+  "verdict": "approve" | "request_changes",
+  "summary": "1-3 sentence summary",
+  "issues": [{"file": "path", "line": 42, "severity": "error|warning", "message": "description"}]
+}
+
+Verdicts:
+- "approve": Implementation satisfies the spec. Minor style issues are OK.
+- "request_changes": Implementation has fixable issues. List them.`
+
+	var userPrompt strings.Builder
+	userPrompt.WriteString("## Task\n")
+	userPrompt.WriteString(title)
+	userPrompt.WriteString("\n\n")
+
+	if spec != "" {
+		userPrompt.WriteString("## Specification\n")
+		userPrompt.WriteString(spec)
+		userPrompt.WriteString("\n\n")
+	}
+
+	userPrompt.WriteString("## Diff\n```diff\n")
+	if len(diff) > 500000 {
+		userPrompt.WriteString(diff[:500000])
+		userPrompt.WriteString("\n... (truncated)\n")
+	} else {
+		userPrompt.WriteString(diff)
+	}
+	userPrompt.WriteString("\n```\n\n")
+
+	if testOutput != "" {
+		userPrompt.WriteString("## Test Results\n```\n")
+		if len(testOutput) > 50000 {
+			userPrompt.WriteString(testOutput[:50000])
+			userPrompt.WriteString("\n... (truncated)\n")
+		} else {
+			userPrompt.WriteString(testOutput)
+		}
+		userPrompt.WriteString("\n```\n\n")
+	}
+
+	if round > 0 {
+		userPrompt.WriteString(fmt.Sprintf("## Review Context\nThis is review round %d. Focus on whether previously flagged issues have been addressed.\n", round+1))
+	}
+
+	// Build full prompt for claude CLI
+	fullPrompt := fmt.Sprintf("System: %s\n\n%s", systemPrompt, userPrompt.String())
+
+	// Run claude with Opus model
+	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-p", fullPrompt, "--model", "claude-opus-4-6", "--output-format", "text")
+	cmd.Env = os.Environ()
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("claude review: %w", err)
+	}
+
+	return parseReviewOutput(string(out))
+}
+
+func parseReviewOutput(text string) (*Review, error) {
+	text = strings.TrimSpace(text)
+
+	// Try direct JSON parse
+	var review Review
+	if err := json.Unmarshal([]byte(text), &review); err == nil {
+		if review.Verdict == "approve" || review.Verdict == "request_changes" {
+			return &review, nil
+		}
+	}
+
+	// Try extracting from markdown code block
+	if idx := strings.Index(text, "```json"); idx >= 0 {
+		start := idx + len("```json")
+		if end := strings.Index(text[start:], "```"); end >= 0 {
+			block := strings.TrimSpace(text[start : start+end])
+			if err := json.Unmarshal([]byte(block), &review); err == nil {
+				if review.Verdict == "approve" || review.Verdict == "request_changes" {
+					return &review, nil
+				}
+			}
+		}
+	}
+
+	// Try finding any JSON object
+	if idx := strings.Index(text, "{"); idx >= 0 {
+		depth := 0
+		for i := idx; i < len(text); i++ {
+			switch text[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					block := text[idx : i+1]
+					if err := json.Unmarshal([]byte(block), &review); err == nil {
+						if review.Verdict == "approve" || review.Verdict == "request_changes" {
+							return &review, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback
+	return &Review{
+		Verdict: "request_changes",
+		Summary: "Could not parse structured review response",
+	}, nil
+}
+
+// --- Verdict handlers ---
+
+func reviewHandleApproval(beadID, reviewerName string, log func(string, ...interface{})) {
+	log("approved — closing review step")
+
+	// Remove review labels
+	storeRemoveLabel(beadID, "review-ready")
+	storeRemoveLabel(beadID, "review-assigned")
+
+	// Remove implemented-by label
+	bead, _ := storeGetBead(beadID)
+	implBy := hasLabel(bead, "implemented-by:")
+	if implBy != "" {
+		storeRemoveLabel(beadID, "implemented-by:"+implBy)
+	}
+
+	// Add review-approved
+	storeAddLabel(beadID, "review-approved")
+
+	// Close review molecule step
+	reviewCloseMoleculeStep(beadID, "review")
+
+	storeAddComment(beadID, fmt.Sprintf("Review approved by %s", reviewerName))
+	log("done — bead parked at review-approved")
+}
+
+func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, log func(string, ...interface{})) error {
+	newRound := round + 1
+	log("requesting changes (round %d)", newRound)
+
+	// Remove review labels
+	storeRemoveLabel(beadID, "review-ready")
+	storeRemoveLabel(beadID, "review-assigned")
+
+	// Add review-feedback
+	storeAddLabel(beadID, "review-feedback")
+
+	// Replace review-round label (remove old, add new)
+	if round > 0 {
+		storeRemoveLabel(beadID, fmt.Sprintf("review-round:%d", round))
+	}
+	storeAddLabel(beadID, fmt.Sprintf("review-round:%d", newRound))
+
+	// Post comment
+	var comment strings.Builder
+	comment.WriteString(fmt.Sprintf("Review round %d: request_changes — %s", newRound, review.Summary))
+	if len(review.Issues) > 0 {
+		comment.WriteString("\n\nIssues:")
+		for _, issue := range review.Issues {
+			comment.WriteString(fmt.Sprintf("\n- [%s] %s", issue.Severity, issue.Message))
+			if issue.File != "" {
+				comment.WriteString(fmt.Sprintf(" (%s", issue.File))
+				if issue.Line > 0 {
+					comment.WriteString(fmt.Sprintf(":%d", issue.Line))
+				}
+				comment.WriteString(")")
+			}
+		}
+	}
+	storeAddComment(beadID, comment.String())
+
+	// Escalation check
+	if newRound >= 4 {
+		storeAddComment(beadID, fmt.Sprintf("WARNING: Review round %d — consider splitting this bead into smaller tasks", newRound))
+	}
+	if newRound >= 5 {
+		log("escalation: round %d, not re-engaging wizard", newRound)
+		return nil
+	}
+
+	// Resolve wizard name from implemented-by label
+	bead, _ := storeGetBead(beadID)
+	wizardName := hasLabel(bead, "implemented-by:")
+	if wizardName == "" {
+		wizardName = "wizard-1" // fallback
+	}
+
+	// Send feedback message
+	feedbackText := review.Summary
+	if len(review.Issues) > 0 {
+		var buf strings.Builder
+		buf.WriteString(review.Summary)
+		for _, issue := range review.Issues {
+			buf.WriteString(fmt.Sprintf("\n- [%s] %s", issue.Severity, issue.Message))
+			if issue.File != "" {
+				buf.WriteString(fmt.Sprintf(" (%s:%d)", issue.File, issue.Line))
+			}
+		}
+		feedbackText = buf.String()
+	}
+
+	// Send via spire send
+	spireBin, _ := os.Executable()
+	sendCmd := exec.Command(spireBin, "send", wizardName, feedbackText, "--ref", beadID, "--as", reviewerName)
+	sendCmd.Env = os.Environ()
+	sendCmd.Stderr = os.Stderr
+	sendCmd.Run()
+
+	// Register re-engaged wizard
+	// TODO: use wizardRegistryAdd when available
+	reviewRegistryAdd(localWizard{
+		Name:      wizardName,
+		PID:       0,
+		BeadID:    beadID,
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	// Spawn wizard-run --review-fix
+	log("spawning %s --review-fix", wizardName)
+	wizardCmd := exec.Command(spireBin, "wizard-run", beadID, "--name", wizardName, "--review-fix")
+	logDir := filepath.Join(doltGlobalDir(), "wizards")
+	os.MkdirAll(logDir, 0755)
+	logFile, _ := os.OpenFile(filepath.Join(logDir, wizardName+"-fix.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if logFile != nil {
+		wizardCmd.Stdout = logFile
+		wizardCmd.Stderr = logFile
+		defer logFile.Close()
+	}
+	wizardCmd.Env = os.Environ()
+	if err := wizardCmd.Start(); err != nil {
+		log("failed to spawn wizard: %s", err)
+	}
+
+	log("done — re-engaged %s for round %d", wizardName, newRound)
+	return nil
+}
+
+// reviewCloseMoleculeStep closes a molecule step by name (e.g. "review")
+// for a given bead's workflow molecule.
+func reviewCloseMoleculeStep(beadID, stepName string) {
+	// Find the workflow molecule for this bead
+	mols, err := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"workflow:" + beadID},
+		Status:   statusPtr(beads.StatusOpen),
+	})
+	if err != nil || len(mols) == 0 {
+		return
+	}
+	molID := mols[0].ID
+
+	// Find the step child bead with the matching title
+	children, err := storeGetChildren(molID)
+	if err != nil {
+		return
+	}
+	for _, child := range children {
+		if strings.EqualFold(child.Title, stepName) {
+			storeCloseBead(child.ID)
+			return
+		}
+	}
+}
