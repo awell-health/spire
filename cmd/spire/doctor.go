@@ -442,7 +442,7 @@ func checkTowerConfig(cwd string) checkResult {
 		return checkResult{
 			Name:   name,
 			Status: statusOutdated,
-			Detail: "current directory not registered — run spire init",
+			Detail: "current directory not registered — run spire repo add",
 		}
 	}
 

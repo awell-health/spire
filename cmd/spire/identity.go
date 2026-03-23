@@ -54,7 +54,7 @@ type Bead struct {
 }
 
 // detectDBName returns the Dolt database name.
-// For hubs/standalones this is the prefix; for satellites it's the hub's prefix.
+// Returns the Dolt database name for the current context.
 func detectDBName() string {
 	if env := os.Getenv("SPIRE_IDENTITY"); env != "" {
 		// Check config to see if this is a satellite (database != prefix)
