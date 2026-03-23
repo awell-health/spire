@@ -14,15 +14,17 @@ import (
 
 // RosterAgent represents an agent registered in the tower.
 type RosterAgent struct {
-	Name        string        `json:"name"`
-	Role        string        `json:"role"`         // "wizard", "artificer", "steward"
-	Status      string        `json:"status"`       // "idle", "working", "offline"
-	BeadID      string        `json:"bead_id"`      // current work (if working)
-	BeadTitle   string        `json:"bead_title"`   // current work title
-	Elapsed     time.Duration `json:"elapsed"`       // time on current work
-	Timeout     time.Duration `json:"timeout"`       // configured wizard timeout
-	Remaining   time.Duration `json:"remaining"`     // time left (timeout - elapsed)
-	RegisteredAt string       `json:"registered_at"`
+	Name         string        `json:"name"`
+	Role         string        `json:"role"`           // "wizard", "artificer", "steward", "reviewer"
+	Status       string        `json:"status"`         // "idle", "working", "offline"
+	BeadID       string        `json:"bead_id"`        // current work (if working)
+	BeadTitle    string        `json:"bead_title"`     // current work title
+	Phase        string        `json:"phase"`          // current molecule phase (e.g. "implement", "review")
+	Elapsed      time.Duration `json:"elapsed"`        // time on current work
+	PhaseElapsed time.Duration `json:"phase_elapsed"`  // time in current phase
+	Timeout      time.Duration `json:"timeout"`        // configured wizard timeout
+	Remaining    time.Duration `json:"remaining"`      // time left (timeout - elapsed)
+	RegisteredAt string        `json:"registered_at"`
 }
 
 // RosterSummary is the JSON output.
@@ -281,33 +283,86 @@ func rosterFromBeads(timeout time.Duration) []RosterAgent {
 	return agents
 }
 
+// rosterWizardEntry is used to read the wizard registry JSON with optional
+// Phase and PhaseStartedAt fields (added by the wizard-core agent).
+// This is separate from localWizard in summon.go so roster.go can read
+// the extended fields without modifying summon.go.
+type rosterWizardEntry struct {
+	Name           string `json:"name"`
+	PID            int    `json:"pid"`
+	BeadID         string `json:"bead_id"`
+	Worktree       string `json:"worktree"`
+	StartedAt      string `json:"started_at"`
+	Phase          string `json:"phase,omitempty"`
+	PhaseStartedAt string `json:"phase_started_at,omitempty"`
+}
+
+type rosterWizardRegistry struct {
+	Wizards []rosterWizardEntry `json:"wizards"`
+}
+
+// loadRosterWizardRegistry reads the wizard registry with extended fields.
+func loadRosterWizardRegistry() rosterWizardRegistry {
+	var reg rosterWizardRegistry
+	data, err := os.ReadFile(wizardRegistryPath())
+	if err != nil {
+		return reg
+	}
+	json.Unmarshal(data, &reg) //nolint:errcheck
+	return reg
+}
+
 // rosterFromLocalWizards builds a roster from the local wizard registry (process mode).
 func rosterFromLocalWizards(timeout time.Duration) []RosterAgent {
-	reg := loadWizardRegistry()
-	reg = cleanDeadWizards(reg)
+	// Use rosterWizardRegistry to read extended fields (Phase, PhaseStartedAt).
+	reg := loadRosterWizardRegistry()
+
+	// Clean dead wizards inline (same logic as cleanDeadWizards but for our type).
+	var alive []rosterWizardEntry
+	for _, w := range reg.Wizards {
+		if w.PID > 0 && !processAlive(w.PID) {
+			continue
+		}
+		alive = append(alive, w)
+	}
+	reg.Wizards = alive
+
 	if len(reg.Wizards) == 0 {
 		return nil
 	}
 
 	var agents []RosterAgent
 	for _, w := range reg.Wizards {
+		// Determine role from wizard name or phase.
+		role := "wizard"
+		if strings.Contains(w.Name, "-review") || w.Phase == "review" {
+			role = "reviewer"
+		}
+
 		agent := RosterAgent{
 			Name:    w.Name,
-			Role:    "wizard",
+			Role:    role,
 			BeadID:  w.BeadID,
 			Timeout: timeout,
+			Phase:   w.Phase, // empty string if old registry format
 		}
 
 		// Check if process is alive.
-		alive := w.PID > 0 && processAlive(w.PID)
+		isAlive := w.PID > 0 && processAlive(w.PID)
 
-		if alive {
+		if isAlive {
 			agent.Status = "working"
 			if t, err := time.Parse(time.RFC3339, w.StartedAt); err == nil {
 				agent.Elapsed = time.Since(t).Round(time.Second)
 				agent.Remaining = timeout - agent.Elapsed
 				if agent.Remaining < 0 {
 					agent.Remaining = 0
+				}
+			}
+			// Phase elapsed time.
+			if w.PhaseStartedAt != "" {
+				if t, err := time.Parse(time.RFC3339, w.PhaseStartedAt); err == nil {
+					agent.PhaseElapsed = time.Since(t).Round(time.Second)
 				}
 			}
 		} else {
@@ -375,7 +430,19 @@ func printRoster(s RosterSummary) {
 		fmt.Printf("  %s %-12s %-14s", icon, a.Name, statusStr)
 
 		if a.BeadID != "" {
-			fmt.Printf("%-12s %s", a.BeadID, truncate(a.BeadTitle, 24))
+			phaseStr := ""
+			if a.Phase != "" {
+				phaseStr = fmt.Sprintf("%s[%s]%s ", yellow, a.Phase, reset)
+			}
+			// Adjust title width based on phase label width.
+			titleMax := 24
+			if a.Phase != "" {
+				titleMax = titleMax - len(a.Phase) - 3 // brackets + space
+				if titleMax < 10 {
+					titleMax = 10
+				}
+			}
+			fmt.Printf("%-12s %s%s", a.BeadID, phaseStr, truncate(a.BeadTitle, titleMax))
 
 			// Countdown bar.
 			if a.Timeout > 0 && a.Elapsed > 0 {
