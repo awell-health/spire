@@ -13,7 +13,8 @@ Spire runs in three configurations. All share the same work graph, sync
 protocol, and agent protocol.
 
 **Local** -- Developer laptop. The `spire` CLI manages a local Dolt server
-and daemon. Agents run as Docker containers or local processes.
+and daemon. Agents run as local processes via `spire summon` (each wizard
+is a `spire wizard-run` subprocess working in its own git worktree).
 
 **Cluster** -- Kubernetes. The operator watches CRDs and spins up agent
 pods. A shared Dolt Deployment holds the work graph. A syncer pod handles
@@ -49,7 +50,7 @@ Single Go binary. Entry point for all operations.
 | Lifecycle   | `up`, `down`, `shutdown`, `status`, `doctor`        |
 | Work        | `file`, `spec`, `claim`, `focus`, `grok`            |
 | Messaging   | `register`, `unregister`, `send`, `collect`, `read` |
-| Coordination| `steward`, `board`, `roster`, `summon`, `watch`     |
+| Coordination| `steward`, `board`, `roster`, `summon`, `wizard-run`, `watch` |
 | Integrations| `connect`, `disconnect`, `serve`, `daemon`          |
 | Metrics     | `metrics`                                           |
 
@@ -163,14 +164,20 @@ list.
 
 ### Agents
 
-#### Wizard (`agent-entrypoint.sh`)
+#### Wizard
 
 Implementation agent. One-shot: receives a task, does the work, exits.
 
+**Local** (`cmd/spire/wizard.go`): `spire wizard-run <bead-id>` runs as a
+background process spawned by `spire summon`. Works in a git worktree.
+
+**k8s** (`agent-entrypoint.sh`): Runs in a wizard pod. Clones the repo
+inside the container.
+
 ```
-Lifecycle:
-  ensure dirs -> clone repo -> load spire.yaml -> setup beads state
-  -> resolve assignment -> claim bead -> focus -> prepare branch
+Lifecycle (both modes):
+  resolve repo -> create worktree/clone -> load spire.yaml
+  -> claim bead -> focus -> prepare branch
   -> install deps -> build prompt -> run Claude Code -> validate
   -> commit -> push branch -> update bead state -> write result -> exit
 ```
@@ -178,10 +185,10 @@ Lifecycle:
 Key behaviors:
 - Reads `spire.yaml` for model, timeouts, test/build/lint commands
 - Creates a feature branch named `feat/{bead-id}` (configurable pattern)
-- Runs Claude Code with `--dangerously-skip-permissions --print`
+- Runs Claude Code with `--dangerously-skip-permissions -p <prompt>`
 - Validates output (lint, build, test) before pushing
-- Standalone tasks: marks `review-ready` for artificer review
-- Epic children: closes the bead; the artificer handles review
+- Marks `review-ready` for review agent
+- Writes result.json for observability (local: `~/.local/share/spire/wizards/`)
 
 #### Artificer (`cmd/spire-artificer/`)
 

@@ -1,7 +1,7 @@
 # Spire Local Mode
 
-**Status**: Specification (not yet fully implemented)
-**Date**: 2026-03-21
+**Status**: Implemented (Phase 2 MVP landed 2026-03-23)
+**Date**: 2026-03-21 (updated 2026-03-23)
 
 Spire runs locally on a developer's laptop. No Kubernetes, no cloud
 infrastructure. Install the binary, create a tower, register repos, file
@@ -136,12 +136,11 @@ status.
 
 **Exists today**: `spire up` starts the dolt server and a daemon process.
 The daemon runs Linear epic sync and webhook queue processing. The steward
-runs as a separate command (`spire steward`).
+runs as a separate command (`spire steward`). Local agent execution works
+via `spire summon` (see below).
 
-**Needs to be built**: Unified daemon that includes the steward loop.
-Local agent spawning (Docker or process mode). Single-instance enforcement.
-Health endpoint. DoltHub sync integrated into the daemon cycle (currently
-handled by a separate syncer pod in k8s).
+**Not yet built**: Unified daemon that includes the steward loop.
+Docker agent mode. Single-instance enforcement. Health endpoint.
 
 ### 7. Monitor
 
@@ -194,29 +193,39 @@ spire up --mode=docker    # explicit
 **Needs to be built**: Docker container spawning in the daemon. Image
 management (pull/build). Container lifecycle tracking. Result collection.
 
-### Process mode
+### Process mode (implemented)
 
 Agents run as local processes. Faster startup, easier debugging, less
-isolation.
+isolation. This is the default local execution mode.
 
 ```
-spire up --mode=process
+spire summon 3        # spawns 3 wizard processes
+spire roster          # shows wizard status + progress bar
 ```
 
-Each wizard runs as a background process in its own git worktree:
-1. Daemon creates a worktree at `/tmp/spire-wizard/<name>`
-2. Spawns `claude --print` (or the spire agent entrypoint) as a child
-   process
-3. Process inherits the daemon's environment (API keys, git config)
-4. On completion, daemon reads the result and cleans up the worktree
+Each wizard runs as a background process (`spire wizard-run <bead-id>`)
+in its own git worktree:
 
-**Exists today**: `spire summon` creates wizard entries in
-`~/.config/spire/wizards.json` and worktree directories at
-`/tmp/spire-wizard/<name>`. Process spawning is stubbed (PID=0 placeholder).
+1. `spire summon N` queries ready beads, picks the top N by priority
+2. For each bead, spawns `spire wizard-run <bead-id> --name wizard-N`
+3. The wizard process:
+   - Resolves the repo from the bead's prefix (repos table)
+   - Creates a git worktree at `/tmp/spire-wizard/<name>/<bead-id>`
+   - Claims the bead (`spire claim`)
+   - Captures focus context (`spire focus`)
+   - Loads `spire.yaml` for model, timeout, validation commands
+   - Builds a prompt (mirrors `agent-entrypoint.sh` format)
+   - Runs `claude --dangerously-skip-permissions -p <prompt> --model <model>`
+   - Validates: lint, build, test (from spire.yaml)
+   - Commits and pushes branch `feat/<bead-id>`
+   - Updates the bead with results (comment, review-ready label)
+   - Writes `result.json` for observability
+   - Cleans up the worktree
+4. Process PIDs tracked in `~/.config/spire/wizards.json`
+5. Logs written to `~/.local/share/spire/wizards/<name>.log`
 
-**Needs to be built**: Actual process spawning with the wizard work loop
-(claim, focus, execute, push). Worktree creation via `git worktree add`.
-Process health monitoring. Result collection.
+`spire roster` shows local wizards with elapsed time, progress bar, and
+bead assignment. Dead processes are cleaned up automatically.
 
 ---
 
@@ -308,15 +317,11 @@ spire dismiss --all               # dismiss all wizards
 spire roster                      # who's in the tower
 ```
 
-**Exists today**: `spire summon` and `spire dismiss` both exist with k8s
-and local code paths. Local mode creates wizard entries in
-`~/.config/spire/wizards.json`, creates worktree directories, and cleans up
-dead wizards. k8s mode creates/deletes SpireAgent CRDs.
-
-**Needs to be built**: The local wizard work loop. Today `summonLocal`
-registers wizards but does not spawn processes (PID is 0). The full loop is:
-poll ready beads, claim one, focus, execute via Claude Code, push result,
-repeat.
+**Implemented**: `spire summon` queries ready beads, spawns one
+`spire wizard-run` process per bead, tracks PIDs in `wizards.json`.
+`spire dismiss` sends SIGINT to wizard processes. `spire roster` shows
+local wizard status with elapsed time and progress bars. k8s mode
+creates/deletes SpireAgent CRDs.
 
 ---
 
@@ -340,7 +345,7 @@ repeat.
 | `spire register` / `unregister` | Agent registration |
 | `spire board` | Columnar work queue view |
 | `spire roster` | Agent listing with status |
-| `spire summon` / `dismiss` | Wizard creation (local: stubbed; k8s: functional) |
+| `spire summon` / `dismiss` | Wizard spawning (local: process mode; k8s: CRDs) |
 | `spire watch` | Live-updating terminal view |
 | `spire steward` | Work coordinator with ready-assess-assign cycle |
 | `spire config` | Instance-scoped config + credential get/set/list |
@@ -361,10 +366,11 @@ repeat.
 |-----------|-------------|------------|
 | `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Deferred (spi-n1aa.5) |
 | Unified daemon | Merge steward loop + DoltHub sync into `spire daemon` | Nothing |
-| Local wizard work loop | Claim, focus, execute, push in a background process | Nothing |
-| Docker agent spawning | Start/stop/monitor agent containers from the daemon | Local wizard loop |
+| Docker agent spawning | Start/stop/monitor agent containers from the daemon | Nothing |
 | `spire logs` | CLI log reader for daemon and agent logs | Nothing |
 | Single-daemon enforcement | Prevent multiple `spire up` from racing | Nothing |
+| Molecule-aware wizard | Close workflow steps as wizard progresses | Nothing |
+| Review agent | Opus-powered review after wizard pushes | Nothing |
 
 ---
 
