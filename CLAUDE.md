@@ -1,5 +1,17 @@
 # CLAUDE.md — Spire Agent Instructions
 
+## Required reading
+
+Before starting work, read these files in order to understand the system:
+
+1. `README.md` — what Spire is, quick start, CLI overview
+2. `docs/LOCAL.md` — local execution model, setup, wizard lifecycle
+3. `docs/PLAN.md` — current roadmap and priorities
+4. `docs/ARCHITECTURE.md` — components, data model, agent roles, pod architecture
+5. `docs/VISION.md` — product direction and design philosophy
+
+These are not optional. Agents that skip this context produce work that conflicts with the system's design.
+
 ## Overview
 
 Spire is a coordination hub for AI agents across repositories. Multiple repos register here, each with their own prefix. Epics created here are automatically mirrored to Linear by the daemon.
