@@ -38,7 +38,7 @@ Each repo has its own prefix. When creating beads from a repo context, the prefi
 | Web app | `web-` | `web-b7d0` |
 | API server | `api-` | `api-8a01` |
 
-Additional repos are registered via `spire init`. Check `spire repo list` or `~/.config/spire/config.json` for the current prefix map.
+Additional repos are registered via `spire repo add`. Check `spire repo list` for the current prefix map.
 
 ## Epics and Linear
 
@@ -113,17 +113,17 @@ Spire is a single binary that manages the full lifecycle: dolt server, daemon, m
 ### Setup
 
 ```bash
-# Initialize a repo (interactive)
-spire init
+# Create a tower (first time only)
+spire tower create --name my-team
 
-# Non-interactive variants
-spire init --prefix=mlti --standalone
-spire init --prefix=pan --satellite=spi
+# Register a repo under the tower
+spire repo add
+spire repo add --prefix=web /path/to/web-app
 
-# List all init'd repos
+# List registered repos
 spire repo list
 
-# Remove a repo from config
+# Remove a repo
 spire repo remove <prefix>
 ```
 

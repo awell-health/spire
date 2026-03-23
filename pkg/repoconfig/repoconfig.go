@@ -210,7 +210,7 @@ func detectRuntime(dir string) RuntimeConfig {
 }
 
 // GenerateYAML renders a spire.yaml string from auto-detected defaults for
-// the given directory. Used by `spire init` to write a starter config.
+// the given directory. Used by `spire repo add` to write a starter config.
 func GenerateYAML(dir string) string {
 	rt := detectRuntime(dir)
 

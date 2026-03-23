@@ -170,7 +170,7 @@ To enable DoltHub backup/sync, deploy the syncer:
 kubectl apply -f k8s/syncer.yaml
 ```
 
-This runs `spire sync` on an interval (default 5m), pulling and pushing to DoltHub. If not deployed, the cluster works entirely locally.
+This runs `spire pull` + `spire push` on an interval (default 5m), keeping the cluster in sync with DoltHub. If not deployed, the cluster works entirely locally.
 
 ## Troubleshooting
 

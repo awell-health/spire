@@ -45,7 +45,7 @@ Single Go binary. Entry point for all operations.
 
 | Category    | Commands                                           |
 |-------------|----------------------------------------------------|
-| Setup       | `tower create`, `register-repo`, `attach`, `config`, `push`, `pull` |
+| Setup       | `tower create`, `tower attach`, `repo add`, `config`, `push`, `pull` |
 | Lifecycle   | `up`, `down`, `shutdown`, `status`, `doctor`        |
 | Work        | `file`, `spec`, `claim`, `focus`, `grok`            |
 | Messaging   | `register`, `unregister`, `send`, `collect`, `read` |
@@ -53,9 +53,7 @@ Single Go binary. Entry point for all operations.
 | Integrations| `connect`, `disconnect`, `serve`, `daemon`          |
 | Metrics     | `metrics`                                           |
 
-When invoked with no arguments: shows `status` if `.beads/` exists,
-otherwise runs `tower create`. (`init` is retained as a convenience alias
-for `tower create` + `register-repo`.)
+When invoked with no arguments: prints the command reference.
 
 ### Beads / bd
 

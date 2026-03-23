@@ -139,7 +139,7 @@ Runs `agent-entrypoint.sh`. Lifecycle:
 1. **Bootstrap** — create dirs, start heartbeat, set up GitHub auth
 2. **Clone** — `git clone --depth=1` from `SPIRE_REPO_URL`
 3. **Load config** — read `spire.yaml` for model, timeout, test/build/lint commands
-4. **Init state** — `bd init` + `spire sync` in `/data`, register agent
+4. **Init state** — `bd init` + `spire pull` in `/data`, register agent
 5. **Resolve assignment** — use `SPIRE_BEAD_ID` from env, or parse `/comms/inbox.json`
 6. **Claim & focus** — `spire claim`, `spire focus`, `bd show --json`
 7. **Branch** — `git checkout -B feat/{bead-id}`

@@ -89,7 +89,7 @@ pushes to DoltHub, and writes tower config.
 
 ```
 cd ~/code/my-web-app
-spire register-repo --prefix=web
+spire repo add --prefix=web
 ```
 
 This command:
@@ -100,12 +100,11 @@ This command:
    tower's dolt database
 4. Pushes the registration to DoltHub
 
-**Exists today**: `spire register-repo` is a distinct command that
-operates against an existing tower. It validates prefix uniqueness against
-the dolt `repos` table (source of truth), writes a row, sets up `.beads/`
-in the repo, generates `spire.yaml` if missing, and pushes the
-registration to DoltHub. `spire init` remains as a convenience alias.
-Tower resolution uses explicit database context (not ambient CWD).
+**Exists today**: `spire repo add` registers a repo against an existing
+tower. It validates prefix uniqueness against the dolt `repos` table
+(source of truth), writes a row, sets up `.beads/` in the repo, generates
+`spire.yaml` if missing, and pushes the registration to DoltHub. Tower
+resolution uses explicit database context (not ambient CWD).
 
 ### 5. File work
 
@@ -330,8 +329,7 @@ repeat.
 | `bd` CLI (via `pkg/bd` wrapper) | Bead CRUD, dolt operations, dependencies, labels, molecules |
 | `spire tower create` | Initialize tower: dolt db, identity, repos table, DoltHub push, config |
 | `spire tower attach` | Clone tower from DoltHub, bootstrap `.beads/`, write local config |
-| `spire register-repo` | Register repo against tower: prefix uniqueness check, dolt repos table, DoltHub push |
-| `spire init` (alias for `register-repo`) | Convenience wrapper with interactive prompts |
+| `spire repo add` | Register repo against tower: prefix uniqueness check, dolt repos table, DoltHub push |
 | `spire up` / `down` / `shutdown` | Dolt server + daemon lifecycle management |
 | `spire status` | Dolt server and daemon PID/reachability check |
 | `spire file` | Bead creation with prefix resolution and label support |

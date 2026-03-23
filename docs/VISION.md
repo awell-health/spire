@@ -65,14 +65,14 @@ Beads and Spire define how agents coordinate: how work is filed, claimed, execut
 ```bash
 brew install spire
 spire tower create --name my-team
-spire register-repo .
+spire repo add
 spire file "Add dark mode" -t feature -p 2
 spire up
 ```
 
 Five commands from zero to an AI agent opening a PR on your repo.
 
-`spire tower create` initializes a Dolt database and pushes it to DoltHub. `spire register-repo` scans the current directory, assigns a prefix, and records the repo in the tower. `spire file` creates a bead. `spire up` starts the steward, which reads the work graph, finds the new task, spawns a wizard agent, and the wizard clones the repo, implements the feature, and opens a pull request.
+`spire tower create` initializes a Dolt database and pushes it to DoltHub. `spire repo add` scans the current directory, assigns a prefix, and records the repo in the tower. `spire file` creates a bead. `spire up` starts the steward, which reads the work graph, finds the new task, spawns a wizard agent, and the wizard clones the repo, implements the feature, and opens a pull request.
 
 You watch the PR appear. You review it. You merge it. The bead closes.
 

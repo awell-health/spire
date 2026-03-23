@@ -1,5 +1,7 @@
 # Spire Standalone Init → Push Test Plan
 
+> **ARCHIVED** — This test plan references `spire init` and `spire sync`, which were removed in the CLI API cleanup (2026-03-22). The equivalent workflow is now `spire tower create` + `spire repo add` + `spire push`/`spire pull`. This document is retained for historical context only.
+
 This document describes the end-to-end integration test for the **standalone init → file → claim → push** workflow.
 It is written for a human tester or an AI agent running a verification pass.
 

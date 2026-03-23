@@ -1,7 +1,7 @@
 # spire-syncer: optional DoltHub remote sync pod.
 #
-# Runs `spire sync` on a configurable interval to keep the shared dolt
-# database in sync with a DoltHub remote.  If this pod is not deployed,
+# Runs `spire pull` + `spire push` on a configurable interval to keep the
+# shared dolt database in sync with a DoltHub remote.  If this pod is not deployed,
 # everything works locally — DoltHub becomes an optional backup/collaboration
 # layer rather than a dependency woven into every component.
 #
@@ -75,7 +75,8 @@ spec:
               # Main loop: pull from DoltHub, push local changes.
               while true; do
                 echo "[syncer] running sync..."
-                spire sync 2>&1 || echo "[syncer] sync failed (will retry)"
+                spire pull 2>&1 || echo "[syncer] pull failed (will retry)"
+                spire push 2>&1 || echo "[syncer] push failed (will retry)"
                 echo "[syncer] sleeping ${SYNC_INTERVAL:-5m}..."
                 sleep "${SYNC_INTERVAL:-5m}"
               done

@@ -45,8 +45,9 @@ The result: you go from managing one agent at a time to managing a team.
 # Install
 brew tap awell-health/tap && brew install spire
 
-# Initialize in your repo
-cd my-project && spire init
+# Create a tower and register your repo
+spire tower create --name my-team
+cd my-project && spire repo add
 
 # Start services
 spire up

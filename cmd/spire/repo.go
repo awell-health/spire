@@ -12,7 +12,7 @@ func cmdRepo(args []string) error {
 	}
 	switch args[0] {
 	case "add":
-		// Delegate to the register-repo logic, passing remaining args
+		// Delegate to repo-add logic, passing remaining args
 		return cmdRegisterRepo(args[1:])
 	case "list":
 		jsonOut := false
@@ -41,48 +41,65 @@ func repoList(jsonOut bool) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Determine database name from active tower
-	database := ""
-	if cfg.ActiveTower != "" {
-		if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil {
-			database = tower.Database
-		}
+	database, ambiguous := resolveDatabase(cfg)
+	if ambiguous {
+		return fmt.Errorf("multiple towers found — run 'spire tower use <name>' to set the active tower")
 	}
-	if database == "" {
-		// Fallback: find database from any instance
-		for _, inst := range cfg.Instances {
-			if inst.Database != "" {
-				database = inst.Database
-				break
-			}
-		}
-	}
+
+	columns := []string{"prefix", "repo_url", "branch", "language", "registered_by"}
 
 	if database != "" {
 		sql := fmt.Sprintf("SELECT prefix, repo_url, branch, language, registered_by FROM `%s`.repos ORDER BY prefix", database)
 		out, err := rawDoltQuery(sql)
-		if err == nil && strings.TrimSpace(out) != "" {
+		if err == nil {
+			// Dolt reachable — this is authoritative, even if empty
+			rows := parseDoltRows(out, columns)
+			if len(rows) == 0 {
+				if jsonOut {
+					fmt.Println("[]")
+				} else {
+					fmt.Println("No repos registered. Run `spire repo add` in a repo to get started.")
+				}
+				return nil
+			}
 			if jsonOut {
-				// Parse the pipe-delimited output into JSON
-				rows := parseDoltRows(out, []string{"prefix", "repo_url", "branch", "language", "registered_by"})
 				data, _ := json.MarshalIndent(rows, "", "  ")
 				fmt.Println(string(data))
 			} else {
-				fmt.Println(out)
+				fmt.Printf("%-10s %-50s %-10s %-12s %s\n", "PREFIX", "REPO", "BRANCH", "LANGUAGE", "REGISTERED BY")
+				for _, r := range rows {
+					fmt.Printf("%-10s %-50s %-10s %-12s %s\n", r["prefix"], r["repo_url"], r["branch"], r["language"], r["registered_by"])
+				}
 			}
 			return nil
 		}
-		// Fall through to local config if dolt query failed
+		// Dolt not reachable — fall through to local config with warning
+		fmt.Println("  (dolt not reachable — showing local cache)")
 	}
 
-	// Fallback: local config
+	// Fallback: local config (not authoritative, only when no tower exists)
 	if len(cfg.Instances) == 0 {
-		fmt.Println("No repos registered. Run `spire repo add` in a repo to get started.")
+		if jsonOut {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("No repos registered. Run `spire repo add` in a repo to get started.")
+		}
 		return nil
 	}
 
 	if jsonOut {
-		data, _ := json.MarshalIndent(cfg.Instances, "", "  ")
+		// Emit same shape as shared-state path for stable JSON API
+		var rows []map[string]string
+		for _, inst := range cfg.Instances {
+			rows = append(rows, map[string]string{
+				"prefix":        inst.Prefix,
+				"repo_url":      "",
+				"branch":        "",
+				"language":      "",
+				"registered_by": "",
+			})
+		}
+		data, _ := json.MarshalIndent(rows, "", "  ")
 		fmt.Println(string(data))
 		return nil
 	}
@@ -94,75 +111,116 @@ func repoList(jsonOut bool) error {
 	return nil
 }
 
+// resolveRemoveDatabase determines which database a repo remove should target.
+// Priority: instance's tower config (authoritative) > instance's cached database
+// > global tower resolution. Returns the database name or an error if ambiguous
+// or unresolvable.
+func resolveRemoveDatabase(cfg *SpireConfig, prefix string) (string, error) {
+	// Resolve from the instance's own tower config (authoritative)
+	// rather than the cached inst.Database (which can drift).
+	if inst, ok := cfg.Instances[prefix]; ok {
+		if inst.Tower != "" {
+			if tower, err := loadTowerConfig(inst.Tower); err == nil && tower.Database != "" {
+				return tower.Database, nil
+			}
+		}
+		if inst.Database != "" {
+			return inst.Database, nil
+		}
+	}
+
+	// Fall back to global tower resolution
+	db, ambiguous := resolveDatabase(cfg)
+	if ambiguous {
+		return "", fmt.Errorf("multiple towers found — run 'spire tower use <name>' to set the active tower")
+	}
+	if db == "" {
+		return "", fmt.Errorf("cannot resolve tower for prefix %q — run 'spire tower use <name>' to set the active tower", prefix)
+	}
+	return db, nil
+}
+
 // repoRemove removes a repo from both the dolt repos table and local config.
+// Resolves the tower from the instance's own cache first (it knows which tower
+// it was registered under), falling back to global tower resolution only if the
+// instance doesn't record its tower.
 func repoRemove(prefix string) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Remove from dolt repos table if possible
-	database := ""
-	if cfg.ActiveTower != "" {
-		if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil {
-			database = tower.Database
-		}
-	}
-	if database != "" {
-		sql := fmt.Sprintf("DELETE FROM `%s`.repos WHERE prefix = '%s'", database, prefix)
-		if _, err := rawDoltQuery(sql); err != nil {
-			fmt.Printf("  Warning: could not remove from repos table: %s\n", err)
-		} else {
-			fmt.Printf("  Removed %q from repos table\n", prefix)
-		}
+	database, err := resolveRemoveDatabase(cfg, prefix)
+	if err != nil {
+		return err
 	}
 
-	// Remove from local config
-	if _, ok := cfg.Instances[prefix]; !ok {
-		if database == "" {
-			return fmt.Errorf("prefix %q not found", prefix)
-		}
-		// Already removed from dolt, just not in local config
-		return nil
+	// Remove from authoritative repos table first
+	sql := fmt.Sprintf("DELETE FROM `%s`.repos WHERE prefix = '%s'", database, sqlEscape(prefix))
+	if _, err := rawDoltQuery(sql); err != nil {
+		return fmt.Errorf("could not remove %q from repos table: %w", prefix, err)
 	}
+	fmt.Printf("  Removed %q from repos table\n", prefix)
 
-	delete(cfg.Instances, prefix)
-	if err := saveConfig(cfg); err != nil {
-		return fmt.Errorf("save config: %w", err)
+	// Then remove from local config
+	if _, ok := cfg.Instances[prefix]; ok {
+		delete(cfg.Instances, prefix)
+		if err := saveConfig(cfg); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+		fmt.Printf("  Removed %q from local config\n", prefix)
 	}
-	fmt.Printf("  Removed %q from local config\n", prefix)
 	return nil
 }
 
-// parseDoltRows parses pipe-delimited dolt SQL output into a slice of maps.
+// parseDoltRows parses MySQL-style tabular dolt SQL output into a slice of maps.
+// Dolt output format:
+//
+//	+--------+----------+
+//	| prefix | repo_url |
+//	+--------+----------+
+//	| spi    | https... |
+//	+--------+----------+
+//
+// Separator lines (+---+) and the header row (first | ... | line) are skipped.
 func parseDoltRows(out string, columns []string) []map[string]string {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) < 2 {
-		return nil
-	}
 
 	var rows []map[string]string
-	// Skip header line (first line)
-	for _, line := range lines[1:] {
-		if strings.TrimSpace(line) == "" {
+	headerSkipped := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "+") {
 			continue
 		}
+		// First pipe-delimited line is the header — skip it
+		if !headerSkipped {
+			headerSkipped = true
+			continue
+		}
+		// Parse data row
 		parts := strings.Split(line, "|")
-		row := make(map[string]string)
-		colIdx := 0
+		var cells []string
 		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			if colIdx < len(columns) {
-				row[columns[colIdx]] = p
-				colIdx++
+			cells = append(cells, strings.TrimSpace(p))
+		}
+		// Strip leading/trailing empty boundary cells from "| a | b |"
+		if len(cells) > 0 && cells[0] == "" {
+			cells = cells[1:]
+		}
+		if len(cells) > 0 && cells[len(cells)-1] == "" {
+			cells = cells[:len(cells)-1]
+		}
+
+		row := make(map[string]string)
+		for i, col := range columns {
+			if i < len(cells) {
+				row[col] = cells[i]
+			} else {
+				row[col] = ""
 			}
 		}
-		if len(row) > 0 {
-			rows = append(rows, row)
-		}
+		rows = append(rows, row)
 	}
 	return rows
 }

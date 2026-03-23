@@ -221,8 +221,13 @@ func cmdTower(args []string) error {
 		return cmdTowerAttach(args[1:])
 	case "list":
 		return cmdTowerList()
+	case "use":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: spire tower use <name>")
+		}
+		return cmdTowerUse(args[1])
 	default:
-		return fmt.Errorf("unknown tower subcommand: %q\nusage: spire tower <create|attach|list>", args[0])
+		return fmt.Errorf("unknown tower subcommand: %q\nusage: spire tower <create|attach|list|use>", args[0])
 	}
 }
 
@@ -586,15 +591,46 @@ func cmdTowerList() error {
 		return nil
 	}
 
-	fmt.Printf("%-16s %-8s %-20s %s\n", "NAME", "PREFIX", "DATABASE", "REMOTE")
-	fmt.Printf("%-16s %-8s %-20s %s\n", "----", "------", "--------", "------")
+	cfg, _ := loadConfig()
+	activeTower := ""
+	if cfg != nil {
+		activeTower = cfg.ActiveTower
+	}
+
+	fmt.Printf("  %-16s %-8s %-20s %s\n", "NAME", "PREFIX", "DATABASE", "REMOTE")
+	fmt.Printf("  %-16s %-8s %-20s %s\n", "----", "------", "--------", "------")
 	for _, t := range towers {
 		remote := "local"
 		if t.DolthubRemote != "" {
 			remote = t.DolthubRemote
 		}
-		fmt.Printf("%-16s %-8s %-20s %s\n", t.Name, t.HubPrefix, t.Database, remote)
+		marker := " "
+		if t.Name == activeTower {
+			marker = "*"
+		}
+		fmt.Printf("%s %-16s %-8s %-20s %s\n", marker, t.Name, t.HubPrefix, t.Database, remote)
 	}
+	return nil
+}
+
+// cmdTowerUse sets the active tower.
+func cmdTowerUse(name string) error {
+	// Verify the tower config exists
+	if _, err := loadTowerConfig(name); err != nil {
+		return fmt.Errorf("tower %q not found — run 'spire tower list' to see available towers", name)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.ActiveTower = name
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	fmt.Printf("Active tower set to %q\n", name)
 	return nil
 }
 

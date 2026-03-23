@@ -331,24 +331,46 @@ func detectLanguage(dir string) string {
 }
 
 // detectDatabase determines the database name.
-// Priority: 1) active tower config, 2) existing instances, 3) empty string.
+// Priority: 1) active tower config, 2) sole tower on disk, 3) empty string.
+// Refuses to guess when multiple towers exist and none is active.
 func detectDatabase(cfg *SpireConfig, prefix string) string {
+	db, _ := resolveDatabase(cfg)
+	return db
+}
+
+// resolveDatabase determines the database name and reports whether the
+// resolution was ambiguous (multiple towers, no active one set).
+// Returns ("", true) when ambiguous so callers can error instead of
+// silently falling back to stale local state.
+func resolveDatabase(cfg *SpireConfig) (string, bool) {
 	// Priority 1: active tower config
 	if cfg != nil && cfg.ActiveTower != "" {
 		tower, err := loadTowerConfig(cfg.ActiveTower)
 		if err == nil && tower.Database != "" {
-			return tower.Database
+			return tower.Database, false
 		}
 	}
-	// Priority 2: existing instances (all repos in a tower share a database)
-	if cfg != nil {
-		for _, inst := range cfg.Instances {
-			if inst.Database != "" {
-				return inst.Database
+	// Priority 2: if exactly one tower exists on disk, use it
+	if dir, err := towerConfigDir(); err == nil {
+		entries, err := os.ReadDir(dir)
+		if err == nil {
+			var towers []string
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+					towers = append(towers, strings.TrimSuffix(e.Name(), ".json"))
+				}
+			}
+			if len(towers) == 1 {
+				if tower, err := loadTowerConfig(towers[0]); err == nil && tower.Database != "" {
+					return tower.Database, false
+				}
+			}
+			if len(towers) > 1 {
+				return "", true // ambiguous
 			}
 		}
 	}
-	return ""
+	return "", false // no towers — not ambiguous, just empty
 }
 
 // detectUser returns the current user for the registered_by field.

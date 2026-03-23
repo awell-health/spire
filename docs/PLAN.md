@@ -13,7 +13,7 @@ What exists today:
 - `spire` CLI with ~30 subcommands (Go, single package in `cmd/spire/`)
 - `bd` called via `pkg/bd` subprocess wrapper (clean Client interface, callers isolated)
 - `spire tower create` and `spire tower attach` — full tower bootstrap and second-machine attach
-- `spire register-repo` — writes to dolt `repos` table, validates prefix uniqueness, pushes to DoltHub
+- `spire repo add` — writes to dolt `repos` table, validates prefix uniqueness, pushes to DoltHub
 - Credential management — `~/.config/spire/credentials` (chmod 600), env var overrides
 - Dolt lifecycle — auto-download binary, managed server start/stop, version pinning
 - Local dolt server lifecycle managed by `spire up/down/shutdown`
@@ -139,23 +139,19 @@ CREATE TABLE repos (
 
 Work items:
 - [x] Create `repos` table in `spire tower create`
-- [x] `spire register-repo` writes to dolt `repos` table (not just local config)
+- [x] `spire repo add` writes to dolt `repos` table (not just local config)
 - [x] Validate prefix uniqueness against shared state
 - [x] Keep local config as a cache/overlay -- read from dolt, write to both
 - [ ] Migration: `spire doctor --fix` migrates existing local-only registrations to dolt (see 1.9)
 
 **Status (2026-03-22):** Complete (except doctor --fix migration, tracked in 1.9).
 
-### 1.6 `spire register-repo`
+### 1.6 `spire repo add`
 
-Rework of the current `spire init` flow. `spire init` currently does too many things (shell injection, prefix prompting, role selection, worktree setup). Split it:
-
-- `spire tower create` -- creates the tower (new)
-- `spire register-repo` -- registers a repo under the tower (extracted from init)
-- `spire init` -- convenience wrapper that runs both if needed
+Repo registration. Registers a repo under an existing tower.
 
 ```
-spire register-repo [--prefix web] [--repo-url https://github.com/org/repo]
+spire repo add [--prefix web] [--repo-url https://github.com/org/repo]
 ```
 
 Work items:
@@ -283,13 +279,15 @@ Work items:
 
 ### 3.1 `spire pull`
 
-Planned command. `spire sync` exists but is too heavy (handles divergent histories, hard resets, merging). `spire pull` is the clean counterpart to `spire push`. Canonical command surface: `tower create`, `tower attach`, `register-repo`, `push`, `pull`. No `sync` as primary, no `init` as primary.
+Counterpart to `spire push`. Canonical command surface: `tower create`, `tower attach`, `repo add`, `push`, `pull`.
 
 Work items:
-- [ ] `spire pull`: wrapper around dolt pull with credential injection
-- [ ] Use CLI-based pull (like `doltCLIPush` but for pull) to inherit env credentials
-- [ ] Handle non-fast-forward gracefully: suggest `spire sync --merge`
+- [x] `spire pull`: wrapper around dolt pull with credential injection
+- [x] Use CLI-based pull (like `doltCLIPush` but for pull) to inherit env credentials
+- [x] Handle non-fast-forward gracefully with `--force` flag
 - [ ] Background daemon calls `spire pull` + `spire push` on interval
+
+**Status (2026-03-22):** Pull command complete. Background daemon integration remains.
 
 ### 3.2 Background sync daemon
 
@@ -322,7 +320,7 @@ Work items:
 Prevent two developers from registering the same prefix.
 
 Work items:
-- [x] `spire register-repo` checks repos table before writing
+- [x] `spire repo add` checks repos table before writing
 - [x] Check `repos` table for existing prefix
 - [x] If conflict: clear error message with the conflicting repo URL
 - [x] Race condition resolution: first-push-wins (dolt merge detects the duplicate row, reject on push)
@@ -390,7 +388,7 @@ Work items:
 ### 5.1 README.md
 
 - [ ] One-paragraph pitch (from VISION.md)
-- [ ] 5-command quickstart (tower create, register-repo, file, up, watch)
+- [ ] 5-command quickstart (tower create, repo add, file, up, watch)
 - [ ] Architecture diagram (ASCII or linked SVG)
 - [ ] Links to docs, contributing guide, license
 
@@ -433,7 +431,7 @@ Phase 1 (Foundation)
                      ├─> 1.2 tower create ──> 1.3 tower attach
   1.4 credentials ──┘         │
                               v
-                        1.5 repos table ──> 1.6 register-repo
+                        1.5 repos table ──> 1.6 repo add
                               │
   1.7 dolt lifecycle ─────────┘ (needed by tower create)
   1.8 homebrew ───────────────── (parallel, needs 1.1 + 1.7)
