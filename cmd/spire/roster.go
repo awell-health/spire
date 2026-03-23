@@ -87,6 +87,16 @@ func cmdRoster(args []string) error {
 		return nil
 	}
 
+	// Local wizards from wizard registry (process mode).
+	if localAgents := rosterFromLocalWizards(timeout); len(localAgents) > 0 {
+		summary := buildSummary(localAgents, timeout)
+		if flagJSON {
+			return jsonOut(summary)
+		}
+		printRoster(summary)
+		return nil
+	}
+
 	// Fallback: beads-based roster (no countdown, no pod times).
 	agents := rosterFromBeads(timeout)
 	summary := buildSummary(agents, timeout)
@@ -268,6 +278,44 @@ func rosterFromBeads(timeout time.Duration) []RosterAgent {
 		agents = append(agents, agent)
 	}
 
+	return agents
+}
+
+// rosterFromLocalWizards builds a roster from the local wizard registry (process mode).
+func rosterFromLocalWizards(timeout time.Duration) []RosterAgent {
+	reg := loadWizardRegistry()
+	reg = cleanDeadWizards(reg)
+	if len(reg.Wizards) == 0 {
+		return nil
+	}
+
+	var agents []RosterAgent
+	for _, w := range reg.Wizards {
+		agent := RosterAgent{
+			Name:    w.Name,
+			Role:    "wizard",
+			BeadID:  w.BeadID,
+			Timeout: timeout,
+		}
+
+		// Check if process is alive.
+		alive := w.PID > 0 && processAlive(w.PID)
+
+		if alive {
+			agent.Status = "working"
+			if t, err := time.Parse(time.RFC3339, w.StartedAt); err == nil {
+				agent.Elapsed = time.Since(t).Round(time.Second)
+				agent.Remaining = timeout - agent.Elapsed
+				if agent.Remaining < 0 {
+					agent.Remaining = 0
+				}
+			}
+		} else {
+			agent.Status = "done"
+		}
+
+		agents = append(agents, agent)
+	}
 	return agents
 }
 

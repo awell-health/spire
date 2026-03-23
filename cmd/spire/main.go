@@ -80,6 +80,8 @@ func main() {
 		err = cmdMetrics(args)
 	case "tower":
 		err = cmdTower(args)
+	case "wizard-run":
+		err = cmdWizardRun(args)
 	case "doctor":
 		err = cmdDoctor(args)
 	case "version":

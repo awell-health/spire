@@ -22,6 +22,7 @@ type wizardRegistry struct {
 type localWizard struct {
 	Name      string `json:"name"`
 	PID       int    `json:"pid"`
+	BeadID    string `json:"bead_id"`
 	Worktree  string `json:"worktree"`
 	StartedAt string `json:"started_at"`
 }
@@ -220,38 +221,79 @@ func deleteSpireAgentCR(name string) error {
 // --- Local mode ---
 
 func summonLocal(count int) error {
+	// Find ready beads to assign.
+	ready, err := storeGetReadyWork(beads.WorkFilter{})
+	if err != nil {
+		return fmt.Errorf("query ready work: %w", err)
+	}
+
+	// Filter to actionable beads (tasks/bugs, not epics).
+	var candidates []Bead
+	for _, b := range ready {
+		if b.Type == "epic" {
+			continue
+		}
+		candidates = append(candidates, b)
+	}
+
+	if len(candidates) == 0 {
+		fmt.Println("No ready beads to work on.")
+		return nil
+	}
+	if count > len(candidates) {
+		fmt.Printf("Only %d ready bead(s) available (requested %d).\n", len(candidates), count)
+		count = len(candidates)
+	}
+
 	reg := loadWizardRegistry()
-
-	// Clean up dead wizards first.
 	reg = cleanDeadWizards(reg)
-
 	existing := len(reg.Wizards)
 
-	for i := 0; i < count; i++ {
-		name := fmt.Sprintf("wizard-%d", existing+i+1)
-		worktree := filepath.Join(os.TempDir(), "spire-wizard", name)
+	spireBin, err := os.Executable()
+	if err != nil {
+		spireBin = os.Args[0]
+	}
 
-		// Create worktree directory.
-		if err := os.MkdirAll(worktree, 0755); err != nil {
-			return fmt.Errorf("failed to create worktree for %s: %w", name, err)
+	logDir := filepath.Join(doltGlobalDir(), "wizards")
+	os.MkdirAll(logDir, 0755)
+
+	for i := 0; i < count; i++ {
+		bead := candidates[i]
+		name := fmt.Sprintf("wizard-%d", existing+i+1)
+
+		// Spawn: spire wizard-run <bead-id> --name <wizard-name>
+		logPath := filepath.Join(logDir, name+".log")
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return fmt.Errorf("open log for %s: %w", name, err)
 		}
 
-		// Spawn the wizard as a background process.
-		// The wizard runs: spire claim → spire focus → claude --print → push
-		// For now, we just register them. The actual process spawning
-		// will be implemented when we have the local wizard loop.
+		cmd := exec.Command(spireBin, "wizard-run", bead.ID, "--name", name)
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		cmd.Env = os.Environ()
+
+		if err := cmd.Start(); err != nil {
+			logFile.Close()
+			return fmt.Errorf("spawn %s: %w", name, err)
+		}
+		logFile.Close() // child owns the fd now
+
+		worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
 		reg.Wizards = append(reg.Wizards, localWizard{
 			Name:      name,
-			PID:       0, // placeholder until local wizard loop is implemented
+			PID:       cmd.Process.Pid,
+			BeadID:    bead.ID,
 			Worktree:  worktree,
 			StartedAt: time.Now().UTC().Format(time.RFC3339),
 		})
 
-		fmt.Printf("  %s%s%s summoned (local mode)\n", cyan, name, reset)
+		fmt.Printf("  %s%s%s → %s (%s) [pid %d]\n", cyan, name, reset, bead.ID, bead.Title, cmd.Process.Pid)
 	}
 
 	saveWizardRegistry(reg)
-	fmt.Printf("\n%d wizard(s) summoned locally. Run %sspire roster%s to check status.\n", count, bold, reset)
+	fmt.Printf("\n%d wizard(s) summoned. Logs: %s\n", count, logDir)
+	fmt.Printf("Run %sspire roster%s to check status.\n", bold, reset)
 	return nil
 }
 
@@ -315,11 +357,8 @@ func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
 	var alive []localWizard
 	for _, w := range reg.Wizards {
 		if w.PID > 0 {
-			if proc, err := os.FindProcess(w.PID); err == nil {
-				// Check if process is still running.
-				if err := proc.Signal(os.Signal(nil)); err != nil {
-					continue // dead
-				}
+			if !processAlive(w.PID) {
+				continue // dead
 			}
 		}
 		alive = append(alive, w)
@@ -327,3 +366,4 @@ func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
 	reg.Wizards = alive
 	return reg
 }
+
