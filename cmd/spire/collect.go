@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/steveyegge/beads"
 )
 
 func cmdCollect(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	var jsonOut bool
 	var remaining []string
 	for _, arg := range args {
@@ -36,8 +34,11 @@ func cmdCollect(args []string) error {
 		}
 	}
 
-	var messages []Bead
-	err := bdJSON(&messages, "list", "--rig=spi", "--label", fmt.Sprintf("msg,to:%s", name), "--status=open")
+	messages, err := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"msg", "to:" + name},
+		Status:   statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
 		return fmt.Errorf("collect: %w", err)
 	}
@@ -53,10 +54,9 @@ func cmdCollect(args []string) error {
 
 	// Print agent context from registration bead if set
 	if agentID, err := findAgentBead(name); err == nil && agentID != "" {
-		var beads []Bead
-		if err := bdJSON(&beads, "show", agentID); err == nil && len(beads) > 0 {
-			if beads[0].Description != "" {
-				fmt.Printf("Context: %s\n\n", beads[0].Description)
+		if agentBead, err := storeGetBead(agentID); err == nil {
+			if agentBead.Description != "" {
+				fmt.Printf("Context: %s\n\n", agentBead.Description)
 			}
 		}
 	}

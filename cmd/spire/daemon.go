@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/steveyegge/beads"
 )
 
 // daemonDB is the database name override for the current tower cycle.
@@ -94,8 +96,8 @@ func runCycle() {
 }
 
 // runTowerCycle runs one daemon cycle scoped to a single tower.
-// It sets BEADS_DIR and daemonDB so that bd commands and doltSQL
-// target the correct database.
+// It opens a store scoped to the tower's .beads directory and sets
+// daemonDB so that doltSQL targets the correct database.
 func runTowerCycle(tower TowerConfig) {
 	beadsDir := filepath.Join(doltDataDir(), tower.Database, ".beads")
 	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
@@ -105,13 +107,16 @@ func runTowerCycle(tower TowerConfig) {
 
 	log.Printf("[daemon] [%s] cycle start (db=%s)", tower.Name, tower.Database)
 
-	// Scope bd and doltSQL to this tower
-	os.Setenv("BEADS_DIR", beadsDir)
+	// Open store scoped to this tower
+	if _, err := openStoreAt(beadsDir); err != nil {
+		log.Printf("[daemon] [%s] open store: %s", tower.Name, err)
+		return
+	}
+	defer resetStore()
+
+	// Keep daemonDB for doltSQL() calls that still need it
 	daemonDB = tower.Database
-	defer func() {
-		os.Unsetenv("BEADS_DIR")
-		daemonDB = ""
-	}()
+	defer func() { daemonDB = "" }()
 
 	ensureWebhookQueue()
 
@@ -136,8 +141,10 @@ func runTowerCycle(tower TowerConfig) {
 // processWebhookEvents queries for unprocessed webhook event beads and processes them.
 // Returns (processed count, error count).
 func processWebhookEvents() (int, int) {
-	var events []Bead
-	err := bdJSON(&events, "list", "--label", "webhook", "--status=open")
+	events, err := storeListBeads(beads.IssueFilter{
+		Labels: []string{"webhook"},
+		Status: statusPtr(beads.StatusOpen),
+	})
 	if err != nil {
 		log.Printf("[daemon] list webhook events: %s", err)
 		return 0, 0
@@ -162,8 +169,7 @@ func processWebhookEvents() (int, int) {
 		}
 
 		// Close the event bead (mark processed)
-		_, closeErr := bd("close", event.ID)
-		if closeErr != nil {
+		if closeErr := storeCloseBead(event.ID); closeErr != nil {
 			log.Printf("[daemon] event %s: close failed: %s", event.ID, closeErr)
 			errors++
 			continue

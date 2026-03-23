@@ -3,14 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
 func cmdFile(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
 		fmt.Println("usage: spire file <title> [--prefix <prefix>] [--branch <name>] [--merge-mode <merge|pr>] [bd create flags...]")
 		return nil
@@ -94,20 +91,67 @@ func cmdFile(args []string) error {
 		os.Chdir(instPath) //nolint
 	}
 
-	bdArgs := append([]string{"create", "--prefix", prefix}, remaining...)
-	id, err := bdSilent(bdArgs...)
+	// Parse remaining args into createOpts.
+	// First positional arg is title; then flags: -t/--type, -p/--priority,
+	// --label/--labels, --description, --parent.
+	opts := createOpts{Prefix: prefix, Type: parseIssueType("task")}
+	for i := 0; i < len(remaining); i++ {
+		switch {
+		case remaining[i] == "-t" || remaining[i] == "--type":
+			if i+1 < len(remaining) {
+				i++
+				opts.Type = parseIssueType(remaining[i])
+			}
+		case remaining[i] == "-p" || remaining[i] == "--priority":
+			if i+1 < len(remaining) {
+				i++
+				if p, perr := strconv.Atoi(remaining[i]); perr == nil {
+					opts.Priority = p
+				}
+			}
+		case remaining[i] == "--label" || remaining[i] == "--labels":
+			if i+1 < len(remaining) {
+				i++
+				for _, l := range strings.Split(remaining[i], ",") {
+					if l = strings.TrimSpace(l); l != "" {
+						opts.Labels = append(opts.Labels, l)
+					}
+				}
+			}
+		case remaining[i] == "--description":
+			if i+1 < len(remaining) {
+				i++
+				opts.Description = remaining[i]
+			}
+		case remaining[i] == "--parent":
+			if i+1 < len(remaining) {
+				i++
+				opts.Parent = remaining[i]
+			}
+		default:
+			if opts.Title == "" {
+				opts.Title = remaining[i]
+			}
+		}
+	}
+
+	if opts.Title == "" {
+		return fmt.Errorf("file: title is required")
+	}
+
+	id, err := storeCreateBead(opts)
 	if err != nil {
 		return fmt.Errorf("file: %w", err)
 	}
 
 	// Add branch and merge-mode labels if provided.
 	if branch != "" {
-		if _, lerr := bd("update", id, "--add-label", "branch:"+branch); lerr != nil {
+		if lerr := storeAddLabel(id, "branch:"+branch); lerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to add branch label: %v\n", lerr)
 		}
 	}
 	if mergeMode != "" {
-		if _, lerr := bd("update", id, "--add-label", "merge-mode:"+mergeMode); lerr != nil {
+		if lerr := storeAddLabel(id, "merge-mode:"+mergeMode); lerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to add merge-mode label: %v\n", lerr)
 		}
 	}
