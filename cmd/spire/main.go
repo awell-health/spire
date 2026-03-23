@@ -48,18 +48,14 @@ func main() {
 		err = cmdSpec(args)
 	case "claim":
 		err = cmdClaim(args)
-case "config":
+	case "config":
 		err = cmdConfig(args)
 	case "push":
 		err = cmdPush(args)
 	case "pull":
 		err = cmdPull(args)
-	case "register-repo":
-		err = cmdRegisterRepo(args)
 	case "repo":
 		err = cmdRepo(args)
-	case "worktree":
-		err = cmdWorktree(args)
 	case "up":
 		err = cmdUp(args)
 	case "down":

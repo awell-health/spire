@@ -17,7 +17,7 @@ import (
 // uniqueness), seeds .beads/metadata.json with the tower's shared identity
 // (project_id, database), and pushes the registration to DoltHub.
 func cmdRegisterRepo(args []string) error {
-	var flagPrefix, flagRepoURL, flagBranch, flagDatabase string
+	var flagPrefix, flagRepoURL, flagBranch string
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--prefix" && i+1 < len(args):
@@ -35,16 +35,17 @@ func cmdRegisterRepo(args []string) error {
 			flagBranch = args[i]
 		case strings.HasPrefix(args[i], "--branch="):
 			flagBranch = strings.TrimPrefix(args[i], "--branch=")
-		case args[i] == "--database" && i+1 < len(args):
-			i++
-			flagDatabase = args[i]
-		case strings.HasPrefix(args[i], "--database="):
-			flagDatabase = strings.TrimPrefix(args[i], "--database=")
 		case args[i] == "--help" || args[i] == "-h":
 			printRegisterRepoUsage()
 			return nil
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire register-repo [--prefix <pfx>] [--repo-url <url>] [--branch <branch>] [--database <db>]", args[i])
+			if strings.HasPrefix(args[i], "-") {
+				return fmt.Errorf("unknown flag: %s\nusage: spire repo add [path] [--prefix <pfx>] [--repo-url <url>] [--branch <branch>]", args[i])
+			}
+			// Positional path argument
+			if err := os.Chdir(args[i]); err != nil {
+				return fmt.Errorf("cannot change to directory %s: %w", args[i], err)
+			}
 		}
 	}
 
@@ -76,10 +77,7 @@ func cmdRegisterRepo(args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	database := flagDatabase
-	if database == "" {
-		database = detectDatabase(cfg, prefix)
-	}
+	database := detectDatabase(cfg, prefix)
 	if database == "" || database == prefix {
 		// No tower found and no existing instances — fail clearly
 		return fmt.Errorf("no tower found — run 'spire tower create' or 'spire tower attach' first")
@@ -388,19 +386,18 @@ func sqlEscape(s string) string {
 // --- Dolt helpers ---
 
 func printRegisterRepoUsage() {
-	fmt.Println(`Usage: spire register-repo [flags]
+	fmt.Println(`Usage: spire repo add [path] [flags]
 
 Register a repository under an existing tower. Detects prefix, repo URL,
-branch, and language automatically from the current directory.
+branch, and language automatically from the current (or given) directory.
 
 Flags:
   --prefix <pfx>      Repo prefix (default: first 3 chars of directory name)
   --repo-url <url>    Git remote URL (default: git remote get-url origin)
   --branch <branch>   Default branch (default: current branch or "main")
-  --database <db>     Dolt database name (default: detected from config)
 
 Examples:
-  spire register-repo
-  spire register-repo --prefix web --repo-url https://github.com/org/web-app
-  spire register-repo --prefix api --database beads_hub`)
+  spire repo add
+  spire repo add /path/to/my-repo
+  spire repo add --prefix web --repo-url https://github.com/org/web-app`)
 }
