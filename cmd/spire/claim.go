@@ -16,23 +16,15 @@ func isNoRemoteError(err error) bool {
 }
 
 func cmdClaim(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	if len(args) < 1 {
 		return fmt.Errorf("usage: spire claim <bead-id>")
 	}
 	id := args[0]
 
 	// Verify bead exists and check state
-	out, err := bd("show", id, "--json")
+	target, err := storeGetBead(id)
 	if err != nil {
 		return fmt.Errorf("bead %s not found: %w", id, err)
-	}
-	target, err := parseBead([]byte(out))
-	if err != nil {
-		return fmt.Errorf("parse bead %s: %w", id, err)
 	}
 
 	// Check if already closed
@@ -53,8 +45,11 @@ func cmdClaim(args []string) error {
 		return fmt.Errorf("bead %s is already in progress (owner: %s)", id, owner)
 	}
 
-	// Claim it — writes directly to the shared dolt server via SQL
-	if _, err := bd("update", id, "--claim", "--status", "in_progress"); err != nil {
+	// Claim it
+	if err := storeUpdateBead(id, map[string]interface{}{
+		"status":   "in_progress",
+		"assignee": identity,
+	}); err != nil {
 		return fmt.Errorf("claim %s: %w", id, err)
 	}
 
@@ -65,8 +60,8 @@ func cmdClaim(args []string) error {
 		"type":   target.Type,
 		"status": "in_progress",
 	}
-	out2, _ := json.Marshal(result)
-	fmt.Println(string(out2))
+	out, _ := json.Marshal(result)
+	fmt.Println(string(out))
 
 	return nil
 }

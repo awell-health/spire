@@ -476,6 +476,7 @@ func TestIntegrationSendWithThread(t *testing.T) {
 // TestIntegrationFocus tests focus with molecule pour.
 func TestIntegrationFocus(t *testing.T) {
 	requireBd(t)
+	requireStore(t)
 
 	// Create a task
 	taskID, err := storeCreateBead(createOpts{
@@ -660,6 +661,7 @@ func TestParseWebhookPayloadInvalid(t *testing.T) {
 
 func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	requireBd(t)
+	requireStore(t)
 
 	// Set up label maps for this test
 	origPrefix := labelPrefixRigMap
@@ -978,6 +980,7 @@ func TestParseLinearIssueNotFound(t *testing.T) {
 
 func TestIntegrationGrokNoLinearLabel(t *testing.T) {
 	requireBd(t)
+	requireStore(t)
 
 	// Create a task without a linear: label
 	taskID, err := storeCreateBead(createOpts{
@@ -1140,8 +1143,7 @@ func TestStopProcessStalePID(t *testing.T) {
 }
 
 func TestIntegrationStatus(t *testing.T) {
-	requireStore(t)
-
+	// cmdStatus is self-contained — no store or bd dependency.
 	// spire status should not error regardless of running state
 	err := cmdStatus(nil)
 	if err != nil {

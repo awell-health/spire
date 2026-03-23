@@ -328,18 +328,16 @@ func storeRemoveLabel(id, label string) error {
 	return store.RemoveLabel(storeCtx, id, label, storeActor())
 }
 
-// storeGetConfig gets a config value. Returns "" if not set.
+// storeGetConfig gets a config value. Returns "" if key is not set.
+// Real store errors (connection, missing table) are propagated.
 func storeGetConfig(key string) (string, error) {
 	store, err := ensureStore()
 	if err != nil {
 		return "", err
 	}
-	val, err := store.GetConfig(storeCtx, key)
-	if err != nil {
-		// Config not found — return empty string (matches bd "not set" behavior)
-		return "", nil
-	}
-	return val, nil
+	// beads GetConfig returns ("", nil) for unset keys,
+	// so we can pass through directly.
+	return store.GetConfig(storeCtx, key)
 }
 
 // storeSetConfig sets a config value.

@@ -152,11 +152,15 @@ Flags:
 	// File a bead (unless --no-file)
 	beadID := "(none)"
 	if !noFile {
-		if err := requireDolt(); err != nil {
-			return err
+		pri := 2
+		if p, err := fmt.Sscanf(priority, "%d", &pri); p == 0 || err != nil {
+			pri = 2
 		}
-
-		id, err := bdSilent("create", title, "-t", beadType, "-p", priority)
+		id, err := storeCreateBead(createOpts{
+			Title:    title,
+			Type:     parseIssueType(beadType),
+			Priority: pri,
+		})
 		if err != nil {
 			return fmt.Errorf("file bead: %w", err)
 		}
@@ -180,10 +184,6 @@ Flags:
 // specBreak reads a spec file associated with a bead and creates child beads
 // from the "Implementation order" section.
 func specBreak(beadID string, dir string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	// Find the spec file containing this bead ID
 	specPath, err := findSpecByBead(beadID, dir)
 	if err != nil {
@@ -206,7 +206,12 @@ func specBreak(beadID string, dir string) error {
 	fmt.Printf("Breaking %s into %d child beads:\n", beadID, len(steps))
 
 	for _, step := range steps {
-		id, err := bdSilent("create", step, "-t", "task", "-p", "2", "--parent", beadID)
+		id, err := storeCreateBead(createOpts{
+			Title:    step,
+			Type:     parseIssueType("task"),
+			Priority: 2,
+			Parent:   beadID,
+		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  warning: failed to create bead for %q: %s\n", step, err)
 			continue

@@ -9,17 +9,13 @@
 //   - sync.go:  bd status, dolt remote/pull/push/fetch/reset, vc ops, count, export/import, sql (schema checks)
 //   - focus.go: bd cook, bd mol pour, bd mol progress
 //   - grok.go:  bd mol progress
-//   - claim.go: bd show --json, bd update --claim
 //   - init.go:  bd config get, bd init
+//   - spire_test.go: bd close --force (no store equivalent), bd mol progress
 //
 // bdJSON() callers:
-//   - board.go: bd list (BoardBead with dependency data that storeListBoardBeads doesn't yet populate)
-//
-// bdSilent() callers:
-//   - spec.go: bd create (returns the new bead ID via --silent)
-//   - spire_test.go: TestIntegrationFocus, TestIntegrationEpicSync, TestIntegrationGrok
-//
-// watch.go was fully migrated in Phase 3 — it uses storeListBoardBeads, not bdJSON.
+//   - watch.go: bd list (hasBlockingDeps needs dependency data that SearchIssues doesn't populate)
+//   - board.go: bd list (same dependency data constraint as watch.go)
+//   - spire_test.go: TestIntegrationBdJSON
 package main
 
 import (
@@ -78,13 +74,6 @@ func bdJSON(result any, args ...string) error {
 		return nil
 	}
 	return json.Unmarshal([]byte(out), result)
-}
-
-// bdSilent runs a bd command with --silent and returns the trimmed output (typically an ID).
-// Production caller: spec.go (bd create). Also used in integration tests.
-func bdSilent(args ...string) (string, error) {
-	args = append(args, "--silent")
-	return bd(args...)
 }
 
 // ensureProjectID reads the local .beads/metadata.json project_id and the
