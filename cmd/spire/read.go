@@ -3,22 +3,13 @@ package main
 import "fmt"
 
 func cmdRead(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
-
 	if len(args) < 1 {
 		return fmt.Errorf("usage: spire read <bead-id>")
 	}
 	id := args[0]
 
 	// Check if already closed
-	var b Bead
-	out, err := bd("show", id, "--json")
-	if err != nil {
-		return fmt.Errorf("read %s: %w", id, err)
-	}
-	b, err = parseBead([]byte(out))
+	b, err := storeGetBead(id)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", id, err)
 	}
@@ -28,8 +19,7 @@ func cmdRead(args []string) error {
 		return nil
 	}
 
-	_, err = bd("close", id)
-	if err != nil {
+	if err := storeCloseBead(id); err != nil {
 		return fmt.Errorf("read %s: %w", id, err)
 	}
 
