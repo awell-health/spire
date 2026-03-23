@@ -114,50 +114,57 @@ func main() {
 func printUsage() {
 	fmt.Println(`Usage: spire <command> [args]
 
-Overview:
-  board [flags]         Unified work queue view (--mine, --ready, --json)
-
 Setup:
   tower create          Create a new tower (--name, --dolthub, --prefix)
   tower attach          Clone a tower from DoltHub (<url> [--name])
   tower list            List configured towers
-  init                  Initialize repo (--prefix, --hub, --standalone, --satellite=<hub>)
-  config <get|set|list|repo> Read/write config values; repo prints resolved spire.yaml
-  sync [--hard] [url]   Pull from a DoltHub remote (handles divergent histories)
-  push [url]            Push local database to DoltHub (creates remote db if needed)
-  register-repo         Register a repo under a tower (--prefix, --repo-url, --branch, --database)
-  repo list             List all init'd repos (--json)
-  repo remove <prefix>  Remove a repo from config (all paths)
-  worktree remove       Unregister this directory only, leave other worktrees intact
+  repo add [path]       Register a repo under a tower (--prefix, --repo-url, --branch)
+  repo list             List registered repos (--json)
+  repo remove <prefix>  Remove a repo
+  config <get|set|list> Read/write config values and credentials
+  doctor [--fix]        Health checks and auto-repair
+
+Sync:
+  push [url]            Push local database to DoltHub
+  pull [url]            Pull from DoltHub (--force)
 
 Lifecycle:
   up                    Start dolt server + daemon (--interval)
   down                  Stop daemon (dolt keeps running)
   shutdown              Stop daemon + dolt server
   status                Show running state of dolt + daemon
-  doctor [--fix]        Verify CLAUDE.md, hooks, SPIRE.md, skills are current
-  metrics [flags]       Agent run metrics (--bead <id>, --model, --json)
 
 Work:
-  file <title> [flags]  Create a bead (--prefix required if not in a repo dir)
+  file <title> [flags]  Create a bead (--prefix, -t type, -p priority)
   spec <title> [flags]  Scaffold a spec and file it (--no-file, --break <id>)
   claim <bead-id>       Pull, verify, claim, push (atomic)
   focus <bead-id>       Focus on a task (bonds workflow on first focus)
-  grok <bead-id>        Focus + live Linear context (requires LINEAR_API_KEY)
+  grok <bead-id>        Focus + live Linear context
+
+Agents:
+  summon [n]            Summon wizards (--for <epic-id>)
+  dismiss [n]           Dismiss wizards (--all)
+  roster                List agents and their status
 
 Messaging:
-  register <name>       Register an agent
-  unregister <name>     Unregister an agent
   send <to> <message>   Send a message (--ref, --thread, --priority)
   collect [name]        Check inbox for messages
   read <bead-id>        Mark a message as read
 
-Integrations:
+Observability:
+  board [flags]         Work queue view (--mine, --ready, --json)
+  watch                 Live-updating activity view
+  metrics [flags]       Agent run metrics (--bead, --model, --json)
+  alert [bead-id]       Alert on bead state changes
+
+Advanced:
+  register <name>       Register an agent identity
+  unregister <name>     Unregister an agent identity
+  daemon                Run sync daemon (--interval, --once)
+  steward               Run work coordinator (--once, --dry-run)
+  serve                 Run webhook receiver (--port)
   connect <service>     Connect an integration (linear)
   disconnect <service>  Disconnect an integration
-  serve                 Run webhook receiver (--port)
-  daemon                Run sync daemon (--interval, --once)
-  steward               Run work coordinator (--once, --dry-run, --interval, --agents)
 
   version               Print version
   help                  Show this help`)

@@ -149,7 +149,7 @@ func TestDoctorCheckTowerConfig_WithConfigDirNotRegistered(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := `{"instances":{"test":{"path":"/other/path","prefix":"tst","role":"standalone"}}}`
+	cfg := `{"instances":{"test":{"path":"/other/path","prefix":"tst"}}}`
 	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(cfg), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestDoctorCheckTowerConfig_OK(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := `{"instances":{"test":{"path":"` + repoDir + `","prefix":"tst","role":"standalone"}}}`
+	cfg := `{"instances":{"test":{"path":"` + repoDir + `","prefix":"tst"}}}`
 	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(cfg), 0644); err != nil {
 		t.Fatal(err)
 	}

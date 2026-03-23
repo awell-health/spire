@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // spireWorkProtocol is the work lifecycle section added to CLAUDE.md.
@@ -233,4 +235,63 @@ print(json.dumps({
 	}
 
 	fmt.Println("  Hooks configured (SessionStart, PostCompact, SubagentStart)")
+}
+
+// installSpireSkills copies spire-* skill directories from ~/.claude/skills/
+// into the project's .claude/skills/ directory.
+func installSpireSkills(claudeDir string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+
+	globalSkillsDir := filepath.Join(home, ".claude", "skills")
+	projectSkillsDir := filepath.Join(claudeDir, "skills")
+
+	entries, err := os.ReadDir(globalSkillsDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		// Only copy spire-* skills
+		if !strings.HasPrefix(entry.Name(), "spire") {
+			continue
+		}
+		srcDir := filepath.Join(globalSkillsDir, entry.Name())
+		dstDir := filepath.Join(projectSkillsDir, entry.Name())
+		copyDir(srcDir, dstDir)
+	}
+}
+
+// copyDir recursively copies a directory tree from src to dst.
+func copyDir(src, dst string) {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return
+	}
+	os.MkdirAll(dst, 0755)
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			copyDir(srcPath, dstPath)
+			continue
+		}
+		srcFile, err := os.Open(srcPath)
+		if err != nil {
+			continue
+		}
+		dstFile, err := os.Create(dstPath)
+		if err != nil {
+			srcFile.Close()
+			continue
+		}
+		io.Copy(dstFile, srcFile)
+		srcFile.Close()
+		dstFile.Close()
+	}
 }

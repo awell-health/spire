@@ -416,7 +416,7 @@ func checkTowerConfig(cwd string) checkResult {
 		return checkResult{
 			Name:   name,
 			Status: statusMissing,
-			Detail: "config.json does not exist — run spire init",
+			Detail: "config.json does not exist — run spire tower create",
 		}
 	}
 
@@ -433,7 +433,7 @@ func checkTowerConfig(cwd string) checkResult {
 		return checkResult{
 			Name:   name,
 			Status: statusOutdated,
-			Detail: "no repos registered — run spire init",
+			Detail: "no repos registered — run spire repo add",
 		}
 	}
 
@@ -449,7 +449,7 @@ func checkTowerConfig(cwd string) checkResult {
 	return checkResult{
 		Name:   name,
 		Status: statusOK,
-		Detail: fmt.Sprintf("prefix: %s, role: %s", inst.Prefix, inst.Role),
+		Detail: fmt.Sprintf("prefix: %s", inst.Prefix),
 	}
 }
 
@@ -625,7 +625,7 @@ func checkRepoMigration(cfg *SpireConfig) checkResult {
 		Detail: fmt.Sprintf("local-only: %s", strings.Join(prefixes, ", ")),
 		FixFunc: func() {
 			// Use a bd client with the tower's BeadsDir for proper database
-			// context, matching the pattern in register_repo.go.
+			// context, matching the pattern in repo add.
 			client := bdpkg.NewClient()
 			client.BeadsDir = filepath.Join(doltDataDir(), tower.Database, ".beads")
 

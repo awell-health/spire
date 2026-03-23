@@ -196,7 +196,6 @@ func cmdRegisterRepo(args []string) error {
 	cfg.Instances[prefix] = &Instance{
 		Path:     cwd,
 		Prefix:   prefix,
-		Role:     "standalone",
 		Database: database,
 		Tower:    tower.Name,
 	}

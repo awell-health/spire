@@ -68,7 +68,7 @@ func currentInstance(cfg *SpireConfig) (*Instance, string, error) {
 				return i, id, nil
 			}
 		}
-		return nil, "", fmt.Errorf("not in a spire-managed directory (run `spire init` first)")
+		return nil, "", fmt.Errorf("not in a spire-managed directory (run `spire repo add` first)")
 	}
 	return inst, inst.Prefix, nil
 }
@@ -318,8 +318,6 @@ func configList() error {
 				fmt.Println("  dolthub.remote = (not set)")
 			}
 
-			// Also show existing instance fields for reference
-			fmt.Printf("  role = %s\n", inst.Role)
 			fmt.Printf("  path = %s\n", inst.Path)
 			if len(inst.Paths) > 0 {
 				fmt.Printf("  paths = %s\n", strings.Join(inst.Paths, ", "))

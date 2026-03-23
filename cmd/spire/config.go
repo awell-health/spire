@@ -22,15 +22,12 @@ type ShellConfig struct {
 	Profile    string `json:"profile,omitempty"`
 }
 
-// Instance represents one init'd repo.
+// Instance represents one registered repo.
 type Instance struct {
 	Path           string   `json:"path"`
 	Paths          []string `json:"paths,omitempty"`           // additional directories (e.g. git worktrees)
 	Prefix         string   `json:"prefix"`
-	Role           string   `json:"role"`                      // "hub", "satellite", "standalone"
-	Database       string   `json:"database"`                  // for hub/standalone = prefix; for satellite = hub's prefix
-	Hub            string   `json:"hub,omitempty"`             // only on satellites
-	Satellites     []string `json:"satellites,omitempty"`      // only on hubs
+	Database       string   `json:"database"`
 	DoltPort       int      `json:"dolt_port,omitempty"`       // default: 3307
 	DaemonInterval string   `json:"daemon_interval,omitempty"` // default: "2m"
 	DolthubRemote  string   `json:"dolthub_remote,omitempty"`

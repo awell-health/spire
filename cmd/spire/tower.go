@@ -308,7 +308,7 @@ func cmdTowerCreate(args []string) error {
 	}
 
 	// bd init writes a default config.yaml without dolt server connection.
-	// Overwrite it so subsequent bd commands (and register-repo) can connect.
+	// Overwrite it so subsequent bd commands (and repo add) can connect.
 	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\ndatabase: %q\n", doltHost(), doltPort(), database)
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		return fmt.Errorf("write .beads/config.yaml: %w", err)
@@ -386,7 +386,7 @@ func cmdTowerCreate(args []string) error {
 	fmt.Printf("  dolthub:    %s\n", dolthubDisplay)
 	fmt.Printf("  config:     %s\n", configPath)
 	fmt.Printf("\nNext steps:\n")
-	fmt.Printf("  cd ~/your-repo && spire register-repo --prefix=web\n")
+	fmt.Printf("  cd ~/your-repo && spire repo add --prefix=web\n")
 	fmt.Printf("  spire up\n")
 
 	return nil
@@ -524,7 +524,7 @@ func cmdTowerAttach(args []string) error {
 
 	// Materialize .beads/metadata.json in the cloned data dir.
 	// tower create runs bd init which creates this; tower attach must
-	// bootstrap it so that register-repo's bd client has a valid workspace.
+	// bootstrap it so that repo add's bd client has a valid workspace.
 	beadsDir := filepath.Join(dataDir, dbName, ".beads")
 	if err := os.MkdirAll(beadsDir, 0755); err != nil {
 		return fmt.Errorf("create .beads/ in data dir: %w", err)
@@ -541,7 +541,7 @@ func cmdTowerAttach(args []string) error {
 	if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
 		return fmt.Errorf("write .beads/metadata.json: %w", err)
 	}
-	// config.yaml — dolt server connection (mirrors register-repo bootstrap)
+	// config.yaml — dolt server connection (mirrors repo add bootstrap)
 	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		return fmt.Errorf("write .beads/config.yaml: %w", err)

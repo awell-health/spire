@@ -476,7 +476,6 @@ func TestInstanceTowerRoundtrip(t *testing.T) {
 			"web": {
 				Path:     "/tmp/web",
 				Prefix:   "web",
-				Role:     "standalone",
 				Database: "beads_hub",
 				Tower:    "my-tower",
 			},
@@ -501,7 +500,7 @@ func TestInstanceTowerRoundtrip(t *testing.T) {
 
 // TestAttachBootstrapThenRegisterRepoClient verifies the full path:
 // tower attach materializes .beads/ (metadata.json + config.yaml),
-// then register-repo's client construction resolves against that workspace.
+// then repo add's client construction resolves against that workspace.
 func TestAttachBootstrapThenRegisterRepoClient(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
@@ -547,7 +546,7 @@ func TestAttachBootstrapThenRegisterRepoClient(t *testing.T) {
 		t.Fatalf("write config.yaml: %v", err)
 	}
 
-	// --- Verify: register-repo's tower resolution works ---
+	// --- Verify: repo add's tower resolution works ---
 	tc, err := towerConfigForDatabase(dbName)
 	if err != nil {
 		t.Fatalf("towerConfigForDatabase: %v", err)
@@ -556,7 +555,7 @@ func TestAttachBootstrapThenRegisterRepoClient(t *testing.T) {
 		t.Errorf("tower Name = %q, want %q", tc.Name, "acme-team")
 	}
 
-	// --- Verify: register-repo's BeadsDir resolves to existing files ---
+	// --- Verify: repo add's BeadsDir resolves to existing files ---
 	clientBeadsDir := filepath.Join(doltDataDir(), tc.Database, ".beads")
 
 	// metadata.json must exist and contain project_id
@@ -598,7 +597,6 @@ func TestInstanceTowerOmitEmpty(t *testing.T) {
 			"old": {
 				Path:     "/tmp/old",
 				Prefix:   "old",
-				Role:     "standalone",
 				Database: "beads_hub",
 			},
 		},
