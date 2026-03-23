@@ -1,0 +1,130 @@
+You are Spire autonomous wizard wizard-1.
+
+Task:
+- bead: spi-1dl.1
+- base branch: main
+- feature branch: feat/spi-1dl.1
+- target model: claude-sonnet-4-6
+- max turns: 30
+- hard timeout: 15m
+
+Before making changes:
+1. Read the focus context below.
+2. Read the repo context paths below. If a path is a directory, inspect only the relevant files.
+
+Repo context paths:
+- CLAUDE.md
+- SPIRE.md
+- docs/superpowers/specs/
+
+Validation commands:
+- install: (none)
+- lint: go vet ./cmd/spire/
+- build: go build ./cmd/spire/
+- test: go test ./...
+
+Constraints:
+- Do not create a PR.
+- Do not run git commit or git push — the wrapper handles that.
+- Focus on implementing the task described in the focus context.
+
+Focus context:
+--- Task spi-1dl.1 ---
+Title: Local steward adaptation
+Status: in_progress
+Priority: P1
+Description: Add --mode=local flag (default when not in k8s). In local mode, read agent config from spire.yaml or tower config instead of k8s CRs. Track running agents via PID files or container IDs. Integrate agent spawning into steward cycle: after assigning a bead, start the agent.
+
+--- Workflow (spire-agent-work) ---
+Molecule: spi-mol-xrfh (spire-agent-work)
+Progress: 0 / 4 (0.0%)
+
+
+
+Bead JSON:
+[
+  {
+    "id": "spi-1dl.1",
+    "title": "Local steward adaptation",
+    "description": "Add --mode=local flag (default when not in k8s). In local mode, read agent config from spire.yaml or tower config instead of k8s CRs. Track running agents via PID files or container IDs. Integrate agent spawning into steward cycle: after assigning a bead, start the agent.",
+    "status": "in_progress",
+    "priority": 1,
+    "issue_type": "task",
+    "assignee": "wizard-1",
+    "owner": "jonathan@awellhealth.com",
+    "created_at": "2026-03-23T02:40:54Z",
+    "created_by": "JB",
+    "updated_at": "2026-03-23T12:52:00Z",
+    "dependencies": [
+      {
+        "id": "spi-1dl",
+        "title": "Local agent execution",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "epic",
+        "owner": "jonathan@awellhealth.com",
+        "created_at": "2026-03-23T02:40:44Z",
+        "created_by": "JB",
+        "updated_at": "2026-03-23T02:40:44Z",
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-yyf",
+        "title": "CLI API cleanup: break the old surface",
+        "description": "Break the CLI API before Phase 2. Remove init, register-repo, sync, worktree commands. Add pull. Rename to repo add/list/remove. Remove hub/standalone/satellite model. Change bare spire to show help. Clean printUsage(). No backward compat aliases — internal only.",
+        "status": "closed",
+        "priority": 1,
+        "issue_type": "task",
+        "owner": "jonathan@awellhealth.com",
+        "created_at": "2026-03-23T02:47:52Z",
+        "created_by": "JB",
+        "updated_at": "2026-03-23T03:06:16Z",
+        "closed_at": "2026-03-23T03:06:16Z",
+        "close_reason": "Closed",
+        "dependency_type": "blocks"
+      }
+    ],
+    "dependents": [
+      {
+        "id": "spi-1dl.2",
+        "title": "Docker agent spawning",
+        "description": "Primary local execution mode. Default agent image (ghcr.io/awell-health/spire-agent:latest). Steward creates container per assignment: pass repo URL + branch, inject credentials. Agent clones repo inside container, workspace is ephemeral. Container lifecycle: start, poll for completion, collect exit code, cleanup. Timeout enforcement. Log collection.",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "task",
+        "owner": "jonathan@awellhealth.com",
+        "created_at": "2026-03-23T02:40:58Z",
+        "created_by": "JB",
+        "updated_at": "2026-03-23T02:40:58Z",
+        "dependency_type": "blocks"
+      },
+      {
+        "id": "spi-1dl.3",
+        "title": "Process agent spawning",
+        "description": "Alternative to Docker for faster iteration. spire up --mode=process. Spawn claude CLI as subprocess with appropriate flags. Set working directory to repo root. Inject credentials via environment. PID tracking and timeout enforcement. Explicitly opt-in (Docker is default).",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "task",
+        "owner": "jonathan@awellhealth.com",
+        "created_at": "2026-03-23T02:41:00Z",
+        "created_by": "JB",
+        "updated_at": "2026-03-23T02:41:00Z",
+        "dependency_type": "blocks"
+      },
+      {
+        "id": "spi-1dl.5",
+        "title": "Integrate spire up with steward",
+        "description": "Unified daemon lifecycle. spire up starts: dolt server, sync daemon, steward. spire down stops: steward, daemon (dolt stays). spire shutdown stops: steward, daemon, dolt. Steward PID tracked alongside daemon PID. spire up --no-agents starts without steward.",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "task",
+        "owner": "jonathan@awellhealth.com",
+        "created_at": "2026-03-23T02:41:05Z",
+        "created_by": "JB",
+        "updated_at": "2026-03-23T02:41:05Z",
+        "dependency_type": "blocks"
+      }
+    ],
+    "parent": "spi-1dl"
+  }
+]

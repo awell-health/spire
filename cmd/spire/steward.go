@@ -23,6 +23,7 @@ func cmdSteward(args []string) error {
 	once := false
 	dryRun := false
 	noAssign := false // skip sending assignment messages (managed agents get work via operator)
+	mode := StewardModeAuto
 	var agentList []string
 
 	for i := 0; i < len(args); i++ {
@@ -67,6 +68,17 @@ func cmdSteward(args []string) error {
 			dryRun = true
 		case "--no-assign":
 			noAssign = true
+		case "--mode":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--mode requires a value: auto, local, or k8s")
+			}
+			i++
+			switch args[i] {
+			case "auto", "local", "k8s":
+				mode = StewardMode(args[i])
+			default:
+				return fmt.Errorf("--mode: unknown value %q (use: auto, local, k8s)", args[i])
+			}
 		case "--agents":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--agents requires a comma-separated list of agent names")
@@ -79,7 +91,7 @@ func cmdSteward(args []string) error {
 				}
 			}
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 15m] [--agents a,b,c]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 15m] [--mode auto|local|k8s] [--agents a,b,c]", args[i])
 		}
 	}
 
@@ -115,8 +127,9 @@ func cmdSteward(args []string) error {
 		staleThreshold = staleOverride
 	}
 
-	log.Printf("[steward] starting (interval=%s, once=%v, dry-run=%v, stale=%s, shutdown=%s)",
-		interval, once, dryRun, staleThreshold, shutdownThreshold)
+	effectiveMode := resolveMode(mode)
+	log.Printf("[steward] starting (mode=%s, interval=%s, once=%v, dry-run=%v, stale=%s, shutdown=%s)",
+		effectiveMode, interval, once, dryRun, staleThreshold, shutdownThreshold)
 	if len(agentList) > 0 {
 		log.Printf("[steward] agents: %s", strings.Join(agentList, ", "))
 	}
@@ -128,7 +141,7 @@ func cmdSteward(args []string) error {
 	cycleNum := 1
 
 	// Run first cycle immediately.
-	stewardCycle(cycleNum, dryRun, noAssign, staleThreshold, shutdownThreshold, agentList)
+	stewardCycle(cycleNum, dryRun, noAssign, effectiveMode, staleThreshold, shutdownThreshold, agentList)
 	cycleNum++
 
 	if once {
@@ -145,7 +158,7 @@ func cmdSteward(args []string) error {
 	for {
 		select {
 		case <-ticker.C:
-			stewardCycle(cycleNum, dryRun, noAssign, staleThreshold, shutdownThreshold, agentList)
+			stewardCycle(cycleNum, dryRun, noAssign, effectiveMode, staleThreshold, shutdownThreshold, agentList)
 			cycleNum++
 		case sig := <-sigCh:
 			log.Printf("[steward] received %s, shutting down after %d cycles", sig, cycleNum-1)
@@ -155,7 +168,7 @@ func cmdSteward(args []string) error {
 }
 
 // stewardCycle executes one steward cycle: commit, pull, assess, assign, stale/shutdown check, push.
-func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
+func stewardCycle(cycleNum int, dryRun, noAssign bool, mode StewardMode, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
 	start := time.Now()
 	log.Printf("[steward] ═══ cycle %d ═══════════════════════════════", cycleNum)
 
@@ -171,9 +184,15 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 		return
 	}
 
-	// Step 3: Load roster.
-	roster := loadRoster(agentList)
-	busy := findBusyAgents()
+	// Step 3: Load roster. In local mode, sourced from the wizard registry;
+	// in k8s mode, from SpireAgent CRs then bead registrations.
+	roster := loadRoster(agentList, mode)
+	var busy map[string]bool
+	if mode == StewardModeLocal {
+		busy = localBusyAgents()
+	} else {
+		busy = findBusyAgents()
+	}
 	idleCount := len(roster) - len(busy)
 	if idleCount < 0 {
 		idleCount = 0
@@ -183,10 +202,16 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 		len(ready), len(roster), len(busy), idleCount)
 
 	if len(roster) == 0 {
-		checkBeadHealth(staleThreshold, shutdownThreshold, dryRun)
+		checkBeadHealth(staleThreshold, shutdownThreshold, dryRun, mode)
 		pushState()
 		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
 		return
+	}
+
+	// Load local agent config once if we may need it for spawning.
+	var localCfg *LocalStewardConfig
+	if mode == StewardModeLocal {
+		localCfg = loadLocalStewardConfig()
 	}
 
 	// Step 4: Assign ready beads to idle agents (round-robin).
@@ -250,6 +275,16 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 		log.Printf("[steward] assigned: %s → %s (P%d)", bead.ID, agent, bead.Priority)
 		busy[agent] = true
 		assigned++
+
+		// In local mode, spawn the agent process after assignment.
+		if mode == StewardModeLocal && localCfg != nil {
+			pid, spawnErr := spawnLocalAgent(agent, bead.ID, localCfg)
+			if spawnErr != nil {
+				log.Printf("[steward] spawn failed: %s → %s: %s", bead.ID, agent, spawnErr)
+			} else if pid > 0 {
+				recordWizardPID(agent, pid)
+			}
+		}
 	}
 
 	if assigned > 0 {
@@ -263,7 +298,7 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 	detectReviewFeedback(dryRun)
 
 	// Step 5: Stale + shutdown check.
-	staleCount, shutdownCount := checkBeadHealth(staleThreshold, shutdownThreshold, dryRun)
+	staleCount, shutdownCount := checkBeadHealth(staleThreshold, shutdownThreshold, dryRun, mode)
 	if staleCount > 0 || shutdownCount > 0 {
 		log.Printf("[steward] stale: %d warning(s), %d shutdown(s)", staleCount, shutdownCount)
 	} else {
@@ -277,10 +312,18 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 }
 
 // loadRoster returns a list of registered agent names.
-// Checks k8s SpireAgent CRs first (if available), then falls back to bead registrations.
-func loadRoster(agentList []string) []string {
+//
+// Local mode: reads from the wizard registry (created by `spire summon`).
+// K8s mode: checks SpireAgent CRs, then falls back to bead registrations.
+// An explicit agentList always takes priority.
+func loadRoster(agentList []string, mode StewardMode) []string {
 	if len(agentList) > 0 {
 		return agentList
+	}
+
+	// Local mode — use wizard registry as the source of truth for agent slots.
+	if mode == StewardModeLocal {
+		return localRoster()
 	}
 
 	exclude := map[string]bool{
@@ -288,7 +331,7 @@ func loadRoster(agentList []string) []string {
 		"spi": true, "awell": true,
 	}
 
-	// Try k8s SpireAgent CRs first — this is the canonical source in k8s mode.
+	// K8s mode: try SpireAgent CRs first — canonical source in cluster.
 	cmd := exec.Command("kubectl", "get", "spireagent", "-n", "spire",
 		"-o", "jsonpath={.items[*].metadata.name}")
 	if out, err := cmd.Output(); err == nil {
@@ -303,7 +346,7 @@ func loadRoster(agentList []string) []string {
 		}
 	}
 
-	// Fallback: query beads for agent registrations (non-k8s mode).
+	// Fallback: query beads for agent registrations.
 	agents, err := storeListBeads(beads.IssueFilter{Labels: []string{"agent"}, Status: statusPtr(beads.StatusOpen)})
 	if err != nil {
 		log.Printf("[steward] load roster: %s", err)
@@ -343,10 +386,10 @@ func findBusyAgents() map[string]bool {
 
 // checkBeadHealth checks in_progress beads against two thresholds:
 //   - stale: wizard exceeded guidelines (warning + alert bead)
-//   - shutdown: tower kills the wizard (delete the pod)
+//   - shutdown: tower kills the wizard (delete pod or kill process)
 //
 // Returns (staleCount, shutdownCount).
-func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool) (int, int) {
+func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool, mode StewardMode) (int, int) {
 	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] check health: %s", err)
@@ -374,13 +417,13 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 		owner := hasLabel(b, "owner:")
 
 		if age > shutdownThreshold {
-			// Fatal: kill the wizard pod.
+			// Fatal: kill the wizard (pod in k8s, process locally).
 			shutdownCount++
 			if dryRun {
 				log.Printf("[steward] [dry-run] SHUTDOWN: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
 			} else {
-				log.Printf("[steward] SHUTDOWN: %s (%s) owner=%s age=%s — killing pod", b.ID, b.Title, owner, age.Round(time.Second))
-				killWizardPod(owner, b.ID)
+				log.Printf("[steward] SHUTDOWN: %s (%s) owner=%s age=%s — killing wizard", b.ID, b.Title, owner, age.Round(time.Second))
+				killWizardProcess(owner, b.ID, mode)
 			}
 		} else if age > staleThreshold {
 			// Warning: wizard exceeded guidelines.
@@ -394,6 +437,17 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 	}
 
 	return staleCount, shutdownCount
+}
+
+// killWizardProcess terminates the wizard responsible for a bead.
+// In local mode, sends SIGTERM to the tracked PID.
+// In k8s mode, deletes the pod via kubectl.
+func killWizardProcess(agentName, beadID string, mode StewardMode) {
+	if mode == StewardModeLocal {
+		killLocalWizard(agentName, beadID)
+		return
+	}
+	killWizardPod(agentName, beadID)
 }
 
 // killWizardPod deletes the k8s pod for a wizard working on a bead.
