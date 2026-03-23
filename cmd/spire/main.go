@@ -67,12 +67,8 @@ func main() {
 		err = cmdSync(args)
 	case "push":
 		err = cmdPush(args)
-	case "register-repo":
-		err = cmdRegisterRepo(args)
 	case "repo":
 		err = cmdRepo(args)
-	case "worktree":
-		err = cmdWorktree(args)
 	case "up":
 		err = cmdUp(args)
 	case "down":
