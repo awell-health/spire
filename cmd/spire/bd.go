@@ -1,3 +1,25 @@
+// bd.go — Subprocess execution for bd CLI commands.
+//
+// Most bead operations have been migrated to the beads library (see store.go).
+// The functions below are retained for Tier 3 operations that are not yet
+// available on the Storage interface or require CLI orchestration:
+//
+// bd() callers:
+//   - push.go:  dolt remote list/add/remove, vc status/commit, bd status
+//   - sync.go:  bd status, dolt remote/pull/push/fetch/reset, vc ops, count, export/import, sql (schema checks)
+//   - focus.go: bd cook, bd mol pour, bd mol progress
+//   - grok.go:  bd mol progress
+//   - claim.go: bd show --json, bd update --claim
+//   - init.go:  bd config get, bd init
+//
+// bdJSON() callers:
+//   - board.go: bd list (BoardBead with dependency data that storeListBoardBeads doesn't yet populate)
+//
+// bdSilent() callers:
+//   - spec.go: bd create (returns the new bead ID via --silent)
+//   - spire_test.go: TestIntegrationFocus, TestIntegrationEpicSync, TestIntegrationGrok
+//
+// watch.go was fully migrated in Phase 3 — it uses storeListBoardBeads, not bdJSON.
 package main
 
 import (
@@ -59,6 +81,7 @@ func bdJSON(result any, args ...string) error {
 }
 
 // bdSilent runs a bd command with --silent and returns the trimmed output (typically an ID).
+// Production caller: spec.go (bd create). Also used in integration tests.
 func bdSilent(args ...string) (string, error) {
 	args = append(args, "--silent")
 	return bd(args...)
@@ -66,7 +89,9 @@ func bdSilent(args ...string) (string, error) {
 
 // ensureProjectID reads the local .beads/metadata.json project_id and the
 // dolt server's _project_id, then updates the local file if they disagree.
-// Called once at startup before the first steward cycle.
+// Called once at startup before the first steward cycle (steward.go:126).
+//
+// Tier 3 operation — uses raw dolt SQL, not the Storage interface.
 func ensureProjectID() {
 	metaPath := ".beads/metadata.json"
 	data, err := os.ReadFile(metaPath)
