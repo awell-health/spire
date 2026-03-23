@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/steveyegge/beads"
 )
 
 // BoardBead extends the standard Bead with fields needed for board display.
@@ -287,6 +288,7 @@ func (m boardModel) View() string {
 
 	if len(active) > 0 {
 		// Render each column as a string.
+		molCache := newMoleculeProgressCache()
 		rendered := make([]string, len(active))
 		for i, c := range active {
 			var cb strings.Builder
@@ -312,7 +314,11 @@ func (m boardModel) View() string {
 					cb.WriteString("\n")
 					break
 				}
-				cb.WriteString(renderCardStr(b, c.color, colWidth))
+				progress := ""
+				if c.name == "WORKING" {
+					progress = molCache.get(b.ID)
+				}
+				cb.WriteString(renderCardStr(b, c.color, colWidth, progress))
 			}
 			rendered[i] = cb.String()
 		}
@@ -353,14 +359,19 @@ func (m boardModel) View() string {
 }
 
 // renderCardStr renders a single bead card as a multi-line string for a column.
-func renderCardStr(b BoardBead, color lipgloss.Color, width int) string {
+func renderCardStr(b BoardBead, color lipgloss.Color, width int, progress string) string {
 	titleWidth := width - 4
 	if titleWidth < 10 {
 		titleWidth = 10
 	}
 
+	typeStr := shortType(b.Type)
+	if progress != "" {
+		typeStr += " " + progress
+	}
+
 	var s strings.Builder
-	s.WriteString(fmt.Sprintf("%s %s %s\n", priStr(b.Priority), b.ID, shortType(b.Type)))
+	s.WriteString(fmt.Sprintf("%s %s %s\n", priStr(b.Priority), b.ID, typeStr))
 	s.WriteString(fmt.Sprintf("  %s\n", truncate(b.Title, titleWidth)))
 
 	// Third line: context (owner, time, etc.)
@@ -724,6 +735,7 @@ func printColumnarBoard(cols boardColumns, _ int) {
 			}
 		}
 
+		molCache := newMoleculeProgressCache()
 		for row := 0; row < maxCards*4; row++ {
 			for i, col := range active {
 				if i > 0 {
@@ -732,7 +744,11 @@ func printColumnarBoard(cols boardColumns, _ int) {
 				cardIdx := row / 4
 				lineIdx := row % 4
 				if cardIdx < len(col.beads) {
-					line := staticCardLine(col.beads[cardIdx], col.color, lineIdx, colWidth)
+					progress := ""
+					if col.header == "WORKING" {
+						progress = molCache.get(col.beads[cardIdx].ID)
+					}
+					line := staticCardLine(col.beads[cardIdx], col.color, lineIdx, colWidth, progress)
 					fmt.Print(line)
 					if pad := colWidth - visibleLen(line); pad > 0 {
 						fmt.Print(strings.Repeat(" ", pad))
@@ -762,14 +778,18 @@ func printColumnarBoard(cols boardColumns, _ int) {
 	}
 }
 
-func staticCardLine(b BoardBead, color string, lineIdx, colWidth int) string {
+func staticCardLine(b BoardBead, color string, lineIdx, colWidth int, progress string) string {
 	titleWidth := colWidth - 4
 	if titleWidth < 10 {
 		titleWidth = 10
 	}
 	switch lineIdx {
 	case 0:
-		return fmt.Sprintf("%s %s %s", priorityStr(b.Priority), b.ID, shortType(b.Type))
+		typeStr := shortType(b.Type)
+		if progress != "" {
+			typeStr += " " + progress
+		}
+		return fmt.Sprintf("%s %s %s", priorityStr(b.Priority), b.ID, typeStr)
 	case 1:
 		return fmt.Sprintf("  %s", truncate(b.Title, titleWidth))
 	case 2:
@@ -828,4 +848,53 @@ func countDigits(n int) int {
 
 func clearScreen() {
 	fmt.Print("\033[2J\033[H")
+}
+
+// --- Molecule progress ---
+
+// moleculeProgress returns the progress string "(N/M)" for a bead's workflow molecule.
+// Returns "" if no molecule exists.
+func moleculeProgress(beadID string) string {
+	// Find molecule root by workflow:<beadID> label.
+	mols, _ := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"workflow:" + beadID},
+	})
+	if len(mols) == 0 {
+		return ""
+	}
+
+	// Get children (the step beads).
+	children, err := storeGetChildren(mols[0].ID)
+	if err != nil || len(children) == 0 {
+		return ""
+	}
+
+	total := len(children)
+	closed := 0
+	for _, c := range children {
+		if c.Status == "closed" {
+			closed++
+		}
+	}
+
+	return fmt.Sprintf("(%d/%d)", closed, total)
+}
+
+// moleculeProgressCache caches molecule progress lookups for one board render.
+type moleculeProgressCache struct {
+	cache map[string]string
+}
+
+func newMoleculeProgressCache() *moleculeProgressCache {
+	return &moleculeProgressCache{cache: make(map[string]string)}
+}
+
+func (c *moleculeProgressCache) get(beadID string) string {
+	if v, ok := c.cache[beadID]; ok {
+		return v
+	}
+	v := moleculeProgress(beadID)
+	c.cache[beadID] = v
+	return v
 }
