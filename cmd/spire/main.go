@@ -9,18 +9,7 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		// If .beads exists, show status; otherwise run init
-		if _, err := os.Stat(".beads"); err == nil {
-			if err := cmdStatus([]string{}); err != nil {
-				fmt.Fprintf(os.Stderr, "spire: %s\n", err)
-				os.Exit(1)
-			}
-		} else {
-			if err := cmdInit([]string{}); err != nil {
-				fmt.Fprintf(os.Stderr, "spire: %s\n", err)
-				os.Exit(1)
-			}
-		}
+		printUsage()
 		return
 	}
 
@@ -59,9 +48,7 @@ func main() {
 		err = cmdSpec(args)
 	case "claim":
 		err = cmdClaim(args)
-	case "init":
-		err = cmdInit(args)
-	case "config":
+case "config":
 		err = cmdConfig(args)
 	case "sync":
 		err = cmdSync(args)
