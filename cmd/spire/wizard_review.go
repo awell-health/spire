@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
-	"github.com/steveyegge/beads"
 )
 
 // Review is the structured output from a code review.
@@ -49,21 +48,21 @@ func cmdWizardReview(args []string) error {
 	}
 
 	// Self-register in the wizard registry.
-	// TODO: use wizardRegistryAdd when available (merge agent will consolidate)
-	reviewRegistryAdd(localWizard{
+	wizardRegistryAdd(localWizard{
 		Name:      reviewerName,
 		PID:       os.Getpid(),
 		BeadID:    beadID,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Phase:     "review",
 	})
-	defer reviewRegistryRemove(reviewerName)
+	defer wizardRegistryRemove(reviewerName)
 
 	// Signal handler for cleanup
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		reviewRegistryRemove(reviewerName)
+		wizardRegistryRemove(reviewerName)
 		os.Exit(1)
 	}()
 
@@ -150,40 +149,6 @@ func cmdWizardReview(args []string) error {
 	}
 
 	return nil
-}
-
-// --- Registry helpers (will be consolidated by merge agent with shared helpers from summon.go) ---
-
-// reviewRegistryAdd adds or updates a wizard entry in the local registry.
-// TODO: use wizardRegistryAdd when available
-func reviewRegistryAdd(entry localWizard) {
-	reg := loadWizardRegistry()
-	found := false
-	for i, w := range reg.Wizards {
-		if w.Name == entry.Name {
-			reg.Wizards[i] = entry
-			found = true
-			break
-		}
-	}
-	if !found {
-		reg.Wizards = append(reg.Wizards, entry)
-	}
-	saveWizardRegistry(reg)
-}
-
-// reviewRegistryRemove removes a wizard entry from the local registry.
-// TODO: use wizardRegistryRemove when available
-func reviewRegistryRemove(name string) {
-	reg := loadWizardRegistry()
-	var kept []localWizard
-	for _, w := range reg.Wizards {
-		if w.Name != name {
-			kept = append(kept, w)
-		}
-	}
-	reg.Wizards = kept
-	saveWizardRegistry(reg)
 }
 
 // --- Worktree helpers ---
@@ -406,7 +371,7 @@ func reviewHandleApproval(beadID, reviewerName string, log func(string, ...inter
 	storeAddLabel(beadID, "review-approved")
 
 	// Close review molecule step
-	reviewCloseMoleculeStep(beadID, "review")
+	wizardCloseMoleculeStep(beadID, "review")
 
 	storeAddComment(beadID, fmt.Sprintf("Review approved by %s", reviewerName))
 	log("done — bead parked at review-approved")
@@ -485,8 +450,7 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	sendCmd.Run()
 
 	// Register re-engaged wizard
-	// TODO: use wizardRegistryAdd when available
-	reviewRegistryAdd(localWizard{
+	wizardRegistryAdd(localWizard{
 		Name:      wizardName,
 		PID:       0,
 		BeadID:    beadID,
@@ -513,29 +477,3 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	return nil
 }
 
-// reviewCloseMoleculeStep closes a molecule step by name (e.g. "review")
-// for a given bead's workflow molecule.
-func reviewCloseMoleculeStep(beadID, stepName string) {
-	// Find the workflow molecule for this bead
-	mols, err := storeListBeads(beads.IssueFilter{
-		IDPrefix: "spi-",
-		Labels:   []string{"workflow:" + beadID},
-		Status:   statusPtr(beads.StatusOpen),
-	})
-	if err != nil || len(mols) == 0 {
-		return
-	}
-	molID := mols[0].ID
-
-	// Find the step child bead with the matching title
-	children, err := storeGetChildren(molID)
-	if err != nil {
-		return
-	}
-	for _, child := range children {
-		if strings.EqualFold(child.Title, stepName) {
-			storeCloseBead(child.ID)
-			return
-		}
-	}
-}

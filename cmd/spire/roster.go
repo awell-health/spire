@@ -283,49 +283,10 @@ func rosterFromBeads(timeout time.Duration) []RosterAgent {
 	return agents
 }
 
-// rosterWizardEntry is used to read the wizard registry JSON with optional
-// Phase and PhaseStartedAt fields (added by the wizard-core agent).
-// This is separate from localWizard in summon.go so roster.go can read
-// the extended fields without modifying summon.go.
-type rosterWizardEntry struct {
-	Name           string `json:"name"`
-	PID            int    `json:"pid"`
-	BeadID         string `json:"bead_id"`
-	Worktree       string `json:"worktree"`
-	StartedAt      string `json:"started_at"`
-	Phase          string `json:"phase,omitempty"`
-	PhaseStartedAt string `json:"phase_started_at,omitempty"`
-}
-
-type rosterWizardRegistry struct {
-	Wizards []rosterWizardEntry `json:"wizards"`
-}
-
-// loadRosterWizardRegistry reads the wizard registry with extended fields.
-func loadRosterWizardRegistry() rosterWizardRegistry {
-	var reg rosterWizardRegistry
-	data, err := os.ReadFile(wizardRegistryPath())
-	if err != nil {
-		return reg
-	}
-	json.Unmarshal(data, &reg) //nolint:errcheck
-	return reg
-}
-
 // rosterFromLocalWizards builds a roster from the local wizard registry (process mode).
 func rosterFromLocalWizards(timeout time.Duration) []RosterAgent {
-	// Use rosterWizardRegistry to read extended fields (Phase, PhaseStartedAt).
-	reg := loadRosterWizardRegistry()
-
-	// Clean dead wizards inline (same logic as cleanDeadWizards but for our type).
-	var alive []rosterWizardEntry
-	for _, w := range reg.Wizards {
-		if w.PID > 0 && !processAlive(w.PID) {
-			continue
-		}
-		alive = append(alive, w)
-	}
-	reg.Wizards = alive
+	reg := loadWizardRegistry()
+	reg = cleanDeadWizards(reg)
 
 	if len(reg.Wizards) == 0 {
 		return nil
