@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/steveyegge/beads"
 )
 
 func cmdSteward(args []string) error {
@@ -159,11 +160,11 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 	log.Printf("[steward] ═══ cycle %d ═══════════════════════════════", cycleNum)
 
 	// Step 1: Commit any local changes (pull/push disabled — shared dolt server is source of truth).
-	_, _ = bd("dolt", "commit", "steward cycle sync")
+	_ = storeCommitPending("steward cycle sync")
 
 	// Step 2: Assess — find ready work.
-	var ready []Bead
-	if err := bdJSON(&ready, "ready"); err != nil {
+	ready, err := storeGetReadyWork(beads.WorkFilter{})
+	if err != nil {
 		log.Printf("[steward] ready: error — %s", err)
 		pushState()
 		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
@@ -303,8 +304,7 @@ func loadRoster(agentList []string) []string {
 	}
 
 	// Fallback: query beads for agent registrations (non-k8s mode).
-	var agents []Bead
-	err := bdJSON(&agents, "list", "--label", "agent", "--status=open")
+	agents, err := storeListBeads(beads.IssueFilter{Labels: []string{"agent"}, Status: statusPtr(beads.StatusOpen)})
 	if err != nil {
 		log.Printf("[steward] load roster: %s", err)
 		return nil
@@ -325,8 +325,7 @@ func loadRoster(agentList []string) []string {
 func findBusyAgents() map[string]bool {
 	busy := make(map[string]bool)
 
-	var inProgress []Bead
-	err := bdJSON(&inProgress, "list", "--status=in_progress")
+	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] find busy agents: %s", err)
 		return busy
@@ -348,8 +347,7 @@ func findBusyAgents() map[string]bool {
 //
 // Returns (staleCount, shutdownCount).
 func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool) (int, int) {
-	var inProgress []Bead
-	err := bdJSON(&inProgress, "list", "--status=in_progress")
+	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] check health: %s", err)
 		return 0, 0
@@ -417,13 +415,13 @@ func killWizardPod(agentName, beadID string) {
 // detectReviewReady finds standalone tasks with the "review-ready" label
 // and routes them to a review pod (artificer --mode=review).
 func detectReviewReady(dryRun bool) {
-	var beads []Bead
-	if err := bdJSON(&beads, "list", "--label", "review-ready", "--status=in_progress"); err != nil {
+	reviewBeads, err := storeListBeads(beads.IssueFilter{Labels: []string{"review-ready"}, Status: statusPtr(beads.StatusInProgress)})
+	if err != nil {
 		log.Printf("[steward] detectReviewReady: %s", err)
 		return
 	}
 
-	for _, b := range beads {
+	for _, b := range reviewBeads {
 		// Skip if already assigned for review.
 		if hasLabel(b, "review-assigned") != "" || containsLabel(b, "review-assigned") {
 			continue
@@ -437,7 +435,7 @@ func detectReviewReady(dryRun bool) {
 		log.Printf("[steward] routing %s for standalone review", b.ID)
 
 		// Mark as review-assigned so we don't double-route.
-		bd("update", b.ID, "--add-label", "review-assigned")
+		storeAddLabel(b.ID, "review-assigned")
 
 		// Create a SpireWorkload CR with type="review" so the operator spins up
 		// an artificer review pod.
@@ -462,13 +460,13 @@ spec:
 // detectReviewFeedback finds tasks with "review-feedback" label (without
 // "review-ready" or "review-assigned") and re-spawns a wizard to address feedback.
 func detectReviewFeedback(dryRun bool) {
-	var beads []Bead
-	if err := bdJSON(&beads, "list", "--label", "review-feedback", "--status=in_progress"); err != nil {
+	feedbackBeads, err := storeListBeads(beads.IssueFilter{Labels: []string{"review-feedback"}, Status: statusPtr(beads.StatusInProgress)})
+	if err != nil {
 		log.Printf("[steward] detectReviewFeedback: %s", err)
 		return
 	}
 
-	for _, b := range beads {
+	for _, b := range feedbackBeads {
 		// Skip if already re-queued for review or reassigned.
 		if containsLabel(b, "review-ready") || containsLabel(b, "review-assigned") {
 			continue
@@ -500,7 +498,7 @@ func detectReviewFeedback(dryRun bool) {
 		}
 
 		// Remove review-feedback so we don't re-trigger, the wizard will add review-ready when done.
-		bd("update", b.ID, "--remove-label", "review-feedback")
+		storeRemoveLabel(b.ID, "review-feedback")
 	}
 }
 

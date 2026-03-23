@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/steveyegge/beads"
 )
 
 // LinearIssue represents a Linear issue fetched via GraphQL.
@@ -49,9 +51,9 @@ func linearAPIKey() string {
 	if key := os.Getenv("LINEAR_API_KEY"); key != "" {
 		return key
 	}
-	out, err := bd("config", "get", "linear-api-key")
-	if err == nil && out != "" && !strings.Contains(out, "(not set)") {
-		return strings.TrimSpace(out)
+	out, _ := storeGetConfig("linear-api-key")
+	if out != "" {
+		return out
 	}
 	return ""
 }
@@ -226,19 +228,14 @@ func cmdGrok(args []string) error {
 	// --- Bead-local context (same as focus) ---
 
 	// 1. Fetch the target bead
-	out, err := bd("show", id, "--json")
+	target, err := storeGetBead(id)
 	if err != nil {
 		return fmt.Errorf("grok %s: %w", id, err)
-	}
-	target, err := parseBead([]byte(out))
-	if err != nil {
-		return fmt.Errorf("grok %s: parse bead: %w", id, err)
 	}
 
 	// 2. Check if a molecule already exists (don't pour — grok is read-only)
 	var molID string
-	var existingMols []Bead
-	_ = bdJSON(&existingMols, "list", "--rig=spi", "--label", fmt.Sprintf("workflow:%s", id), "--status=open")
+	existingMols, _ := storeListBeads(beads.IssueFilter{IDPrefix: "spi-", Labels: []string{"workflow:" + id}, Status: statusPtr(beads.StatusOpen)})
 	if len(existingMols) > 0 {
 		molID = existingMols[0].ID
 	}
@@ -270,26 +267,22 @@ func cmdGrok(args []string) error {
 	for _, l := range target.Labels {
 		if strings.HasPrefix(l, "ref:") {
 			refID := l[4:]
-			refOut, refErr := bd("show", refID, "--json")
+			refBead, refErr := storeGetBead(refID)
 			if refErr != nil {
 				continue
 			}
-			refBead, refParseErr := parseBead([]byte(refOut))
-			if refParseErr == nil {
-				fmt.Printf("--- Referenced: %s ---\n", refBead.ID)
-				fmt.Printf("Title: %s\n", refBead.Title)
-				fmt.Printf("Status: %s\n", refBead.Status)
-				if refBead.Description != "" {
-					fmt.Printf("Description: %s\n", refBead.Description)
-				}
-				fmt.Println()
+			fmt.Printf("--- Referenced: %s ---\n", refBead.ID)
+			fmt.Printf("Title: %s\n", refBead.Title)
+			fmt.Printf("Status: %s\n", refBead.Status)
+			if refBead.Description != "" {
+				fmt.Printf("Description: %s\n", refBead.Description)
 			}
+			fmt.Println()
 		}
 	}
 
 	// Messages that reference this bead
-	var referrers []Bead
-	_ = bdJSON(&referrers, "list", "--rig=spi", "--label", fmt.Sprintf("msg,ref:%s", id), "--status=open")
+	referrers, _ := storeListBeads(beads.IssueFilter{IDPrefix: "spi-", Labels: []string{"msg", "ref:" + id}, Status: statusPtr(beads.StatusOpen)})
 	for _, m := range referrers {
 		from := hasLabel(m, "from:")
 		fmt.Printf("--- Referenced by %s ---\n", m.ID)
@@ -302,40 +295,32 @@ func cmdGrok(args []string) error {
 
 	// Thread context (parent + siblings)
 	if target.Parent != "" {
-		parentOut, parentErr := bd("show", target.Parent, "--json")
+		parentBead, parentErr := storeGetBead(target.Parent)
 		if parentErr == nil {
-			parentBead, parseErr := parseBead([]byte(parentOut))
-			if parseErr == nil {
-				fmt.Printf("--- Thread (parent: %s) ---\n", parentBead.ID)
-				fmt.Printf("Subject: %s\n", parentBead.Title)
+			fmt.Printf("--- Thread (parent: %s) ---\n", parentBead.ID)
+			fmt.Printf("Subject: %s\n", parentBead.Title)
 
-				var siblings []Bead
-				_ = bdJSON(&siblings, "children", target.Parent)
-				for _, s := range siblings {
-					if s.ID == target.ID {
-						continue
-					}
-					from := hasLabel(s, "from:")
-					fmt.Printf("  %s [%s]: %s\n", s.ID, from, s.Title)
+			siblings, _ := storeGetChildren(target.Parent)
+			for _, s := range siblings {
+				if s.ID == target.ID {
+					continue
 				}
-				fmt.Println()
+				from := hasLabel(s, "from:")
+				fmt.Printf("  %s [%s]: %s\n", s.ID, from, s.Title)
 			}
+			fmt.Println()
 		}
 	}
 
 	// Comments
-	var comments []struct {
-		Author string `json:"author"`
-		Body   string `json:"body"`
-	}
-	commErr := bdJSON(&comments, "comments", id)
+	comments, commErr := storeGetComments(id)
 	if commErr == nil && len(comments) > 0 {
 		fmt.Printf("--- Comments (%d) ---\n", len(comments))
 		for _, c := range comments {
 			if c.Author != "" {
-				fmt.Printf("[%s]: %s\n", c.Author, c.Body)
+				fmt.Printf("[%s]: %s\n", c.Author, c.Text)
 			} else {
-				fmt.Println(c.Body)
+				fmt.Println(c.Text)
 			}
 		}
 		fmt.Println()

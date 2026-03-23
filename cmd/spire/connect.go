@@ -42,10 +42,15 @@ func cmdConnect(args []string) error {
 }
 
 func connectLinear() error {
+	// Ensure store is open before config operations
+	if _, err := ensureStore(); err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+
 	// Check if already connected
-	existingTeam, _ := bd("config", "get", "linear.team-key")
-	if existingTeam != "" && !strings.Contains(existingTeam, "(not set)") {
-		fmt.Printf("  Linear is already connected (team: %s).\n", strings.TrimSpace(existingTeam))
+	existingTeam, _ := storeGetConfig("linear.team-key")
+	if existingTeam != "" {
+		fmt.Printf("  Linear is already connected (team: %s).\n", existingTeam)
 		fmt.Print("  Reconnect? [y/N] ")
 		reader := bufio.NewReader(os.Stdin)
 		answer, _ := reader.ReadString('\n')
@@ -156,14 +161,14 @@ func connectLinear() error {
 		}
 	}
 
-	// Non-secret config → bd config (shared via Dolt)
-	bd("config", "set", "linear.team-id", team.ID)
-	bd("config", "set", "linear.team-key", team.Key)
+	// Non-secret config → store config (shared via Dolt)
+	storeSetConfig("linear.team-id", team.ID)
+	storeSetConfig("linear.team-key", team.Key)
 	if projectID != "" {
-		bd("config", "set", "linear.project-id", projectID)
+		storeSetConfig("linear.project-id", projectID)
 	}
 	if webhookURL != "" {
-		bd("config", "set", "linear.webhook-url", webhookURL)
+		storeSetConfig("linear.webhook-url", webhookURL)
 	}
 
 	fmt.Println()
@@ -462,16 +467,21 @@ func cmdDisconnect(args []string) error {
 }
 
 func disconnectLinear() error {
+	// Ensure store is open before config operations
+	if _, err := ensureStore(); err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+
 	// Remove keychain entries
 	keychainDelete("linear.access-token")
 	keychainDelete("linear.webhook-secret")
 	fmt.Println("  ✓ Token removed from keychain")
 
-	// Remove bd config entries
-	bd("config", "unset", "linear.team-id")
-	bd("config", "unset", "linear.team-key")
-	bd("config", "unset", "linear.project-id")
-	bd("config", "unset", "linear.webhook-url")
+	// Remove store config entries
+	storeDeleteConfig("linear.team-id")
+	storeDeleteConfig("linear.team-key")
+	storeDeleteConfig("linear.project-id")
+	storeDeleteConfig("linear.webhook-url")
 	fmt.Println("  ✓ Config removed from beads")
 
 	fmt.Println()

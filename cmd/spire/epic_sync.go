@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/steveyegge/beads"
 )
 
 // syncEpicsToLinear finds unsynced epics and creates Linear issues for them.
@@ -27,15 +29,13 @@ func syncEpicsToLinear() int {
 	projectID := resolveLinearProjectID()
 
 	// List all epics (both open and closed, so we can close Linear issues too)
-	var openEpics []Bead
-	err := bdJSON(&openEpics, "list", "--type", "epic", "--status=open")
+	openEpics, err := storeListBeads(beads.IssueFilter{IssueType: issueTypePtr(beads.TypeEpic), Status: statusPtr(beads.StatusOpen)})
 	if err != nil {
 		log.Printf("[epic-sync] list open epics: %s", err)
 		return 0
 	}
 
-	var closedEpics []Bead
-	_ = bdJSON(&closedEpics, "list", "--type", "epic", "--status=closed")
+	closedEpics, _ := storeListBeads(beads.IssueFilter{IssueType: issueTypePtr(beads.TypeEpic), Status: statusPtr(beads.StatusClosed)})
 
 	synced := 0
 
@@ -61,15 +61,12 @@ func syncEpicsToLinear() int {
 		log.Printf("[epic-sync] created Linear issue %s (%s)", issue.Identifier, issue.URL)
 
 		// Add linear: label to bead
-		_, err = bd("update", epic.ID, "--add-label", fmt.Sprintf("linear:%s", issue.Identifier))
-		if err != nil {
+		if err = storeAddLabel(epic.ID, fmt.Sprintf("linear:%s", issue.Identifier)); err != nil {
 			log.Printf("[epic-sync] label %s: %s", epic.ID, err)
 		}
 
 		// Add comment with Linear URL
-		_, err = bd("comments", "add", epic.ID,
-			fmt.Sprintf("Linear issue created: %s — %s", issue.Identifier, issue.URL))
-		if err != nil {
+		if err = storeAddComment(epic.ID, fmt.Sprintf("Linear issue created: %s — %s", issue.Identifier, issue.URL)); err != nil {
 			log.Printf("[epic-sync] comment %s: %s", epic.ID, err)
 		}
 
@@ -228,7 +225,7 @@ func closeLinearForClosedEpics(apiKey, teamID string, closedEpics []Bead) int {
 		// Skip if already in a completed/cancelled state
 		if issue.State.Type == "completed" || issue.State.Type == "canceled" {
 			// Mark as synced so we don't check again
-			bd("update", epic.ID, "--add-label", "linear-closed")
+			storeAddLabel(epic.ID, "linear-closed")
 			continue
 		}
 
@@ -249,7 +246,7 @@ func closeLinearForClosedEpics(apiKey, teamID string, closedEpics []Bead) int {
 		}
 
 		// Mark bead so we don't try again
-		bd("update", epic.ID, "--add-label", "linear-closed")
+		storeAddLabel(epic.ID, "linear-closed")
 
 		log.Printf("[epic-sync] closed Linear issue %s (epic %s closed)", identifier, epic.ID)
 		closed++
@@ -380,9 +377,9 @@ func resolveLinearTeamID() string {
 	if id := os.Getenv("LINEAR_TEAM_ID"); id != "" {
 		return id
 	}
-	out, err := bd("config", "get", "linear.team-id")
-	if err == nil && out != "" && !strings.Contains(out, "(not set)") {
-		return strings.TrimSpace(out)
+	out, _ := storeGetConfig("linear.team-id")
+	if out != "" {
+		return out
 	}
 	return ""
 }
@@ -392,9 +389,9 @@ func resolveLinearProjectID() string {
 	if id := os.Getenv("LINEAR_PROJECT_ID"); id != "" {
 		return id
 	}
-	out, err := bd("config", "get", "linear.project-id")
-	if err == nil && out != "" && !strings.Contains(out, "(not set)") {
-		return strings.TrimSpace(out)
+	out, _ := storeGetConfig("linear.project-id")
+	if out != "" {
+		return out
 	}
 	return ""
 }

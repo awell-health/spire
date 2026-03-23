@@ -8,6 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+
+	"github.com/steveyegge/beads"
 )
 
 // linearEvent represents the relevant fields from a Linear webhook payload.
@@ -37,24 +40,27 @@ var labelRigMap = map[string]string{}
 // Configure via bd config set linear.label-prefix-map 'Prefix=pfx,Other=pfx'
 var labelPrefixRigMap = map[string]string{}
 
-func init() {
-	// Load label maps from bd config if available
-	if out, err := bd("config", "get", "linear.label-map"); err == nil && !strings.Contains(out, "(not set)") {
-		for _, pair := range strings.Split(strings.TrimSpace(out), ",") {
-			parts := strings.SplitN(pair, "=", 2)
-			if len(parts) == 2 {
-				labelRigMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+var labelMapsOnce sync.Once
+
+func loadLabelMaps() {
+	labelMapsOnce.Do(func() {
+		if out, _ := storeGetConfig("linear.label-map"); out != "" {
+			for _, pair := range strings.Split(out, ",") {
+				parts := strings.SplitN(pair, "=", 2)
+				if len(parts) == 2 {
+					labelRigMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				}
 			}
 		}
-	}
-	if out, err := bd("config", "get", "linear.label-prefix-map"); err == nil && !strings.Contains(out, "(not set)") {
-		for _, pair := range strings.Split(strings.TrimSpace(out), ",") {
-			parts := strings.SplitN(pair, "=", 2)
-			if len(parts) == 2 {
-				labelPrefixRigMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		if out, _ := storeGetConfig("linear.label-prefix-map"); out != "" {
+			for _, pair := range strings.Split(out, ",") {
+				parts := strings.SplitN(pair, "=", 2)
+				if len(parts) == 2 {
+					labelPrefixRigMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				}
 			}
 		}
-	}
+	})
 }
 
 // linearToBeadsPriority converts Linear priority (0-4) to beads priority (0-4).
@@ -78,6 +84,8 @@ func linearToBeadsPriority(linearPri int) int {
 // mapLabelsToRig determines the rig prefix from Linear issue labels.
 // Returns the rig prefix and true if a match is found, or "" and false.
 func mapLabelsToRig(labels []string) (string, bool) {
+	loadLabelMaps()
+
 	// Exact match first
 	for _, label := range labels {
 		if rig, ok := labelRigMap[label]; ok {
@@ -110,6 +118,8 @@ func parseWebhookPayload(description string) (linearEvent, error) {
 // processWebhookEvent processes a single webhook event bead.
 // Returns an error only if the event should be retried (not closed).
 func processWebhookEvent(eventBead Bead) error {
+	loadLabelMaps()
+
 	// Extract event type and linear identifier from labels
 	eventType := hasLabel(eventBead, "event:")
 	linearID := hasLabel(eventBead, "linear:")
@@ -163,8 +173,7 @@ func ensureEpicBead(rig string, event linearEvent) (string, error) {
 	priority := linearToBeadsPriority(event.Data.Priority)
 
 	// Look for existing epic with this linear identifier
-	var existing []Bead
-	err := bdJSON(&existing, "list", fmt.Sprintf("--rig=%s", rig), "--label", fmt.Sprintf("linear:%s", identifier), "--type", "epic")
+	existing, err := storeListBeads(beads.IssueFilter{IDPrefix: rig + "-", Labels: []string{"linear:" + identifier}, IssueType: issueTypePtr(beads.TypeEpic)})
 	if err != nil {
 		return "", fmt.Errorf("search for epic linear:%s: %w", identifier, err)
 	}
@@ -172,22 +181,17 @@ func ensureEpicBead(rig string, event linearEvent) (string, error) {
 	if len(existing) > 0 {
 		epicBead := existing[0]
 		// Update title/priority if changed
-		needsUpdate := false
-		var updateArgs []string
-		updateArgs = append(updateArgs, "update", epicBead.ID)
+		updates := map[string]interface{}{}
 
 		if epicBead.Title != title {
-			updateArgs = append(updateArgs, "--title", title)
-			needsUpdate = true
+			updates["title"] = title
 		}
 		if epicBead.Priority != priority {
-			updateArgs = append(updateArgs, "-p", fmt.Sprintf("%d", priority))
-			needsUpdate = true
+			updates["priority"] = priority
 		}
 
-		if needsUpdate {
-			_, err := bd(updateArgs...)
-			if err != nil {
+		if len(updates) > 0 {
+			if err := storeUpdateBead(epicBead.ID, updates); err != nil {
 				return "", fmt.Errorf("update epic %s: %w", epicBead.ID, err)
 			}
 			log.Printf("[daemon] updated epic %s (%s): title/priority synced", epicBead.ID, identifier)
@@ -197,14 +201,7 @@ func ensureEpicBead(rig string, event linearEvent) (string, error) {
 	}
 
 	// Create new epic bead
-	id, err := bdSilent(
-		"create",
-		fmt.Sprintf("--rig=%s", rig),
-		"--type=epic",
-		"--title", title,
-		"-p", fmt.Sprintf("%d", priority),
-		"--labels", fmt.Sprintf("linear:%s", identifier),
-	)
+	id, err := storeCreateBead(createOpts{Title: title, Priority: priority, Type: beads.TypeEpic, Labels: []string{"linear:" + identifier}, Prefix: rig})
 	if err != nil {
 		return "", fmt.Errorf("create epic for %s: %w", identifier, err)
 	}
@@ -308,15 +305,14 @@ func processWebhookQueue() (int, int) {
 
 	for _, row := range wrapper.Rows {
 		// Create a webhook event bead from the queue row
-		eventID, createErr := bdSilent(
-			"create",
-			"--rig=spi",
-			"--type=task",
-			"-p", "3",
-			"--title", fmt.Sprintf("%s: %s", row.EventType, row.LinearID),
-			"--labels", fmt.Sprintf("webhook,event:%s,linear:%s", row.EventType, row.LinearID),
-			"--description", row.Payload,
-		)
+		eventID, createErr := storeCreateBead(createOpts{
+			Title:       fmt.Sprintf("%s: %s", row.EventType, row.LinearID),
+			Description: row.Payload,
+			Priority:    3,
+			Type:        beads.TypeTask,
+			Labels:      []string{"webhook", fmt.Sprintf("event:%s", row.EventType), fmt.Sprintf("linear:%s", row.LinearID)},
+			Prefix:      "spi",
+		})
 		if createErr != nil {
 			log.Printf("[daemon] queue row %s: create bead failed: %s", row.ID, createErr)
 			errors++
@@ -324,16 +320,9 @@ func processWebhookQueue() (int, int) {
 		}
 
 		// Fetch the created bead for processing
-		showOut, showErr := bd("show", eventID, "--json")
-		if showErr != nil {
-			log.Printf("[daemon] queue row %s: show bead %s failed: %s", row.ID, eventID, showErr)
-			errors++
-			continue
-		}
-
-		eventBead, parseErr := parseBead([]byte(showOut))
-		if parseErr != nil {
-			log.Printf("[daemon] queue row %s: parse bead %s failed: %s", row.ID, eventID, parseErr)
+		eventBead, fetchErr := storeGetBead(eventID)
+		if fetchErr != nil {
+			log.Printf("[daemon] queue row %s: get bead %s failed: %s", row.ID, eventID, fetchErr)
 			errors++
 			continue
 		}
@@ -347,7 +336,7 @@ func processWebhookQueue() (int, int) {
 		}
 
 		// Close the event bead
-		bd("close", eventID)
+		storeCloseBead(eventID)
 
 		// Mark queue row as processed
 		_, markErr := doltSQL(
@@ -368,14 +357,9 @@ func processWebhookQueue() (int, int) {
 // notifyOwnerIfClaimed sends spire mail to the epic owner if someone has claimed it.
 func notifyOwnerIfClaimed(epicID, linearID, eventType string) error {
 	// Fetch the epic bead to check for owner
-	out, err := bd("show", epicID, "--json")
+	epicBead, err := storeGetBead(epicID)
 	if err != nil {
-		return fmt.Errorf("show epic %s: %w", epicID, err)
-	}
-
-	epicBead, err := parseBead([]byte(out))
-	if err != nil {
-		return fmt.Errorf("parse epic %s: %w", epicID, err)
+		return fmt.Errorf("get epic %s: %w", epicID, err)
 	}
 
 	// Check for owner — look for the owner field or a claimed-by label
