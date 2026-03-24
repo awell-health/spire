@@ -101,7 +101,7 @@ func ensureProjectID() {
 	out, err := exec.Command(doltBin(), "sql",
 		"--host", host, "--port", port,
 		"--user", "root", "-p", "", "--no-tls",
-		"-q", "USE spi; SELECT value FROM metadata WHERE `key`='_project_id'",
+		"-q", fmt.Sprintf("USE `%s`; SELECT value FROM metadata WHERE `key`='_project_id'", detectDBName()),
 		"-r", "csv").Output()
 	if err != nil {
 		log.Printf("[project-id] cannot query server at %s:%s: %s", host, port, err)
