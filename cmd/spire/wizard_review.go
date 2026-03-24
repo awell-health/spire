@@ -140,6 +140,18 @@ func cmdWizardReview(args []string) error {
 	round := reviewGetRound(beadID)
 	log("review round: %d", round)
 
+	// 7b. Load formula for revision policy
+	var revPolicy RevisionPolicy
+	formulaPath, fErr := FindFormula("spire-agent-work")
+	if fErr == nil {
+		if formula, pErr := LoadFormulaV2(formulaPath); pErr == nil {
+			revPolicy = formula.GetRevisionPolicy()
+		}
+	}
+	if revPolicy.MaxRounds == 0 {
+		revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: "claude-opus-4-6"}
+	}
+
 	// 8. Run Opus review
 	log("running Opus review")
 	review, err := reviewRunOpus(bead.Title, bead.Description, diff, testOutput, round)
@@ -154,12 +166,12 @@ func cmdWizardReview(args []string) error {
 	case "approve":
 		reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
 	case "request_changes":
-		if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, log); err != nil {
+		if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, log); err != nil {
 			return err
 		}
 	default:
 		log("unexpected verdict: %s, treating as request_changes", review.Verdict)
-		if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, log); err != nil {
+		if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, log); err != nil {
 			return err
 		}
 	}
@@ -476,7 +488,7 @@ func reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, log fun
 	return nil
 }
 
-func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, log func(string, ...interface{})) error {
+func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, revPolicy RevisionPolicy, log func(string, ...interface{})) error {
 	newRound := round + 1
 	log("requesting changes (round %d)", newRound)
 
@@ -511,13 +523,10 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	}
 	storeAddComment(beadID, comment.String())
 
-	// Escalation check
-	if newRound >= 4 {
-		storeAddComment(beadID, fmt.Sprintf("WARNING: Review round %d — consider splitting this bead into smaller tasks", newRound))
-	}
-	if newRound >= 5 {
-		log("escalation: round %d, not re-engaging wizard", newRound)
-		return nil
+	// Check if we've reached max review rounds — escalate to arbiter
+	if newRound >= revPolicy.MaxRounds {
+		log("max review rounds (%d) reached — escalating to arbiter", revPolicy.MaxRounds)
+		return reviewEscalateToArbiter(beadID, reviewerName, review, revPolicy, log)
 	}
 
 	// Transition back to implement phase for review-fix
@@ -580,6 +589,139 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 
 	log("done — re-engaged %s for round %d", wizardName, newRound)
 	return nil
+}
+
+// reviewEscalateToArbiter runs the arbiter model to make a final decision.
+// Arbiter outcomes: merge (force-approve), discard (close as wontfix), split (child beads).
+func reviewEscalateToArbiter(beadID, reviewerName string, lastReview *Review, policy RevisionPolicy, log func(string, ...interface{})) error {
+	log("running arbiter (%s)", policy.ArbiterModel)
+
+	// Build arbiter prompt
+	bead, err := storeGetBead(beadID)
+	if err != nil {
+		return fmt.Errorf("arbiter: get bead: %w", err)
+	}
+
+	// Collect review history from comments
+	comments, _ := storeGetComments(beadID)
+	var reviewHistory strings.Builder
+	for _, c := range comments {
+		if strings.Contains(c.Text, "Review round") || strings.Contains(c.Text, "review") {
+			reviewHistory.WriteString(c.Text)
+			reviewHistory.WriteString("\n---\n")
+		}
+	}
+
+	prompt := fmt.Sprintf(`You are an arbiter — a senior technical decision-maker.
+
+A code review has gone through %d rounds without resolution. You must make a final call.
+
+## Task
+Title: %s
+Description: %s
+
+## Last Review Summary
+%s
+
+## Review History
+%s
+
+## Your Decision
+
+You MUST respond with ONLY a JSON object (no markdown, no explanation):
+{
+  "decision": "merge" | "discard" | "split",
+  "reason": "1-2 sentence justification",
+  "split_tasks": [{"title": "task title", "description": "what to do"}]  // only if decision=split
+}
+
+Decision meanings:
+- "merge": Force-approve. The implementation is good enough. Minor remaining issues are acceptable.
+- "discard": Close as wontfix. The approach is fundamentally wrong or the task is no longer needed.
+- "split": The remaining issues are real but independent. Create child beads for each and close this bead.
+`, policy.MaxRounds, bead.Title, bead.Description, lastReview.Summary, reviewHistory.String())
+
+	// Run arbiter via claude CLI
+	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-p", prompt, "--model", policy.ArbiterModel, "--output-format", "text")
+	cmd.Env = os.Environ()
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		log("arbiter failed: %s — defaulting to discard", err)
+		storeAddComment(beadID, fmt.Sprintf("Arbiter failed: %s — closing bead", err))
+		storeAddLabel(beadID, "arbiter:discard")
+		return storeCloseBead(beadID)
+	}
+
+	// Parse arbiter response
+	var decision struct {
+		Decision   string `json:"decision"`
+		Reason     string `json:"reason"`
+		SplitTasks []struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		} `json:"split_tasks"`
+	}
+
+	outStr := strings.TrimSpace(string(out))
+	if err := json.Unmarshal([]byte(outStr), &decision); err != nil {
+		// Try extracting JSON from the response
+		if idx := strings.Index(outStr, "{"); idx >= 0 {
+			if end := strings.LastIndex(outStr, "}"); end > idx {
+				json.Unmarshal([]byte(outStr[idx:end+1]), &decision)
+			}
+		}
+	}
+
+	log("arbiter decision: %s — %s", decision.Decision, decision.Reason)
+	storeAddComment(beadID, fmt.Sprintf("Arbiter decision: %s — %s", decision.Decision, decision.Reason))
+	storeAddLabel(beadID, "arbiter:"+decision.Decision)
+
+	switch decision.Decision {
+	case "merge":
+		// Force-approve: proceed to merge via the approval path
+		log("arbiter: force-approve, proceeding to merge")
+		// Get branch info
+		branch := hasLabel(bead, "feat-branch:")
+		if branch == "" {
+			branch = fmt.Sprintf("feat/%s", beadID)
+		}
+		repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
+		if err != nil {
+			return fmt.Errorf("arbiter merge: resolve repo: %w", err)
+		}
+		reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
+		return nil
+
+	case "split":
+		// Create child beads for remaining issues, then close this bead
+		log("arbiter: splitting into %d tasks", len(decision.SplitTasks))
+		for _, task := range decision.SplitTasks {
+			childID, err := storeCreateBead(createOpts{
+				Title:       task.Title,
+				Description: task.Description,
+				Priority:    bead.Priority,
+				Type:        parseIssueType(bead.Type),
+				Parent:      beadID,
+			})
+			if err != nil {
+				log("warning: create split task: %s", err)
+				continue
+			}
+			log("created split task: %s", childID)
+			storeAddComment(beadID, fmt.Sprintf("Split task created: %s — %s", childID, task.Title))
+		}
+		// Close the original bead
+		storeRemoveLabel(beadID, "review-feedback")
+		return storeCloseBead(beadID)
+
+	default: // "discard" or unknown
+		// Close as wontfix
+		log("arbiter: discarding bead")
+		storeAddComment(beadID, "Arbiter: closing as wontfix")
+		storeRemoveLabel(beadID, "review-feedback")
+		return storeCloseBead(beadID)
+	}
 }
 
 // cmdWizardMerge merges a review-approved bead: creates PR, squash-merges,
