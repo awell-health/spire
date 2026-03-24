@@ -275,11 +275,10 @@ func repairClusterRegressions(dbName string, regressions []clusterRegression) er
 }
 
 // sqlNullableSet returns a SQL SET clause for a nullable field.
-// The authoritative value is used directly: if it is empty or "NULL",
-// the SQL clause produces NULL (the authoritative side cleared the field).
-// The fallback is only used when the authoritative value is truly absent
-// (empty string, meaning the side did not participate in the conflict —
-// e.g. a row only on one side of a merge).
+//
+//   - authoritative = "NULL" → field = NULL  (explicit clear, fallback ignored)
+//   - authoritative = "val"  → field = 'val' (fallback ignored)
+//   - authoritative = ""     → use fallback  (authoritative side absent from conflict)
 func sqlNullableSet(field, authoritative, fallback string) string {
 	if authoritative == "NULL" {
 		// Authoritative side explicitly set NULL — honor it.
