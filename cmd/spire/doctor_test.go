@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -557,7 +558,7 @@ func TestDoctorCheckCredentials_CorrectPermissions(t *testing.T) {
 
 // --- checkTowerBeadsDir tests ---
 
-func TestDoctorCheckTowerBeadsDir_NoActiveTower(t *testing.T) {
+func TestDoctorCheckTowerBeadsDirFor_NoTowers(t *testing.T) {
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, ".config", "spire")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -568,23 +569,17 @@ func TestDoctorCheckTowerBeadsDir_NoActiveTower(t *testing.T) {
 	}
 	t.Setenv("HOME", tmpDir)
 
-	r := checkTowerBeadsDir()
-	if r.Status != statusOK {
-		t.Errorf("expected statusOK (skipped) with no active tower, got %s: %s", r.Status, r.Detail)
+	towers := doctorResolveTowers()
+	if len(towers) != 0 {
+		t.Errorf("expected 0 towers with no tower configs, got %d", len(towers))
 	}
 }
 
-func TestDoctorCheckTowerBeadsDir_MissingFiles(t *testing.T) {
+func TestDoctorCheckTowerBeadsDirFor_MissingFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, ".config", "spire")
 	towersDir := filepath.Join(configDir, "towers")
 	if err := os.MkdirAll(towersDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Write a config with an active tower
-	cfg := `{"active_tower":"test-tower","instances":{}}`
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(cfg), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -603,7 +598,8 @@ func TestDoctorCheckTowerBeadsDir_MissingFiles(t *testing.T) {
 	t.Setenv("DOLT_DATA_DIR", doltDir)
 	t.Setenv("HOME", tmpDir)
 
-	r := checkTowerBeadsDir()
+	tower := &TowerConfig{Name: "test-tower", ProjectID: "proj-123", Database: "beads_tst"}
+	r := checkTowerBeadsDirFor(tower)
 	if r.Status != statusMissing {
 		t.Errorf("expected statusMissing for missing .beads/ files, got %s: %s", r.Status, r.Detail)
 	}
@@ -624,29 +620,14 @@ func TestDoctorCheckTowerBeadsDir_MissingFiles(t *testing.T) {
 	}
 
 	// Re-check should pass
-	r2 := checkTowerBeadsDir()
+	r2 := checkTowerBeadsDirFor(tower)
 	if r2.Status != statusOK {
 		t.Errorf("expected statusOK after fix, got %s: %s", r2.Status, r2.Detail)
 	}
 }
 
-func TestDoctorCheckTowerBeadsDir_OK(t *testing.T) {
+func TestDoctorCheckTowerBeadsDirFor_OK(t *testing.T) {
 	tmpDir := t.TempDir()
-	configDir := filepath.Join(tmpDir, ".config", "spire")
-	towersDir := filepath.Join(configDir, "towers")
-	if err := os.MkdirAll(towersDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := `{"active_tower":"test-tower","instances":{}}`
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(cfg), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	towerCfg := `{"name":"test-tower","project_id":"proj-123","database":"beads_tst"}`
-	if err := os.WriteFile(filepath.Join(towersDir, "test-tower.json"), []byte(towerCfg), 0644); err != nil {
-		t.Fatal(err)
-	}
 
 	// Create dolt data dir with .beads/ files
 	doltDir := filepath.Join(tmpDir, "dolt-data")
@@ -661,19 +642,18 @@ func TestDoctorCheckTowerBeadsDir_OK(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DOLT_DATA_DIR", doltDir)
-	t.Setenv("HOME", tmpDir)
 
-	r := checkTowerBeadsDir()
+	tower := &TowerConfig{Name: "test-tower", ProjectID: "proj-123", Database: "beads_tst"}
+	r := checkTowerBeadsDirFor(tower)
 	if r.Status != statusOK {
 		t.Errorf("expected statusOK, got %s: %s", r.Status, r.Detail)
 	}
 }
 
-// --- checkRepoMigration tests ---
+// --- checkRepoMigrationFor tests ---
 
-func TestDoctorCheckRepoMigration_NoDolt(t *testing.T) {
-	// checkRepoMigration is only called when dolt is reachable,
-	// so we just test the function directly with a config that has no tower
+func TestDoctorCheckRepoMigrationFor_NoDolt(t *testing.T) {
+	// Test with a tower that has no reachable dolt
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, ".config", "spire")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -683,21 +663,22 @@ func TestDoctorCheckRepoMigration_NoDolt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "19996")
 
 	cfg := &SpireConfig{
-		ActiveTower: "nonexistent",
 		Instances: map[string]*Instance{
-			"web": {Path: "/tmp/web", Prefix: "web"},
+			"web": {Path: "/tmp/web", Prefix: "web", Tower: "test"},
 		},
 	}
-	r := checkRepoMigration(cfg)
-	// Should skip gracefully since tower config doesn't exist
+	tower := &TowerConfig{Name: "test", Database: "beads_test"}
+	r := checkRepoMigrationFor(cfg, tower)
+	// Should skip gracefully since repos table isn't queryable
 	if r.Status != statusOK {
 		t.Errorf("expected statusOK (skipped), got %s: %s", r.Status, r.Detail)
 	}
 }
 
-func TestDoctorCheckRepoMigration_AllMigrated(t *testing.T) {
+func TestDoctorCheckRepoMigrationFor_AllMigrated(t *testing.T) {
 	// This test requires a running dolt server — skip if not available
 	if !doltIsReachable() {
 		t.Skip("dolt server not reachable")
@@ -708,15 +689,20 @@ func TestDoctorCheckRepoMigration_AllMigrated(t *testing.T) {
 		t.Skip("no active tower configured")
 	}
 
-	r := checkRepoMigration(cfg)
+	tower, err := loadTowerConfig(cfg.ActiveTower)
+	if err != nil {
+		t.Skip("cannot load tower config")
+	}
+
+	r := checkRepoMigrationFor(cfg, tower)
 	// Either OK (all migrated) or OUTDATED (some missing) — both are valid states
 	// We just verify the function doesn't crash
-	if r.Name != "repo registrations in dolt" {
+	if !strings.HasPrefix(r.Name, "repo registrations") {
 		t.Errorf("unexpected check name: %s", r.Name)
 	}
 }
 
-func TestDoctorCheckRepoMigration_CrossTowerFilter(t *testing.T) {
+func TestDoctorCheckRepoMigrationFor_CrossTowerFilter(t *testing.T) {
 	// Instances belonging to a different tower should NOT be flagged for migration
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, ".config", "spire")
@@ -741,10 +727,12 @@ func TestDoctorCheckRepoMigration_CrossTowerFilter(t *testing.T) {
 		},
 	}
 
+	tower := &TowerConfig{Name: "alpha", Database: "beads_alpha"}
+
 	// This will fail to query dolt (not reachable on test port), but we can
 	// at least verify the function doesn't crash and handles the tower filter
 	t.Setenv("BEADS_DOLT_SERVER_PORT", "19997")
-	r := checkRepoMigration(cfg)
+	r := checkRepoMigrationFor(cfg, tower)
 	// Should skip because repos table isn't queryable
 	if r.Status != statusOK {
 		t.Errorf("expected statusOK (skipped), got %s: %s", r.Status, r.Detail)
