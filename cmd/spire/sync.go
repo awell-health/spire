@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -78,16 +79,20 @@ func runSync() error {
 	// ── Inject DoltHub credentials ────────────────────────────────────────────
 	if user := getCredential(CredKeyDolthubUser); user != "" {
 		os.Setenv("DOLT_REMOTE_USER", user)
+		defer os.Unsetenv("DOLT_REMOTE_USER")
 	}
 	if pass := getCredential(CredKeyDolthubPassword); pass != "" {
 		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
 	}
 
-	// ── Three-way merge pull via dolt CLI ─────────────────────────────────────
-	// Unlike runPull, we don't intercept divergence errors — we let dolt's
-	// output flow through verbatim so the user can inspect conflict details.
-	fmt.Println("  Merging from origin (three-way)...")
-	if err := doltCLIPull(dataDir, false); err != nil {
+	// ── Three-way merge: fetch then merge ─────────────────────────────────────
+	// dolt pull fails on diverged histories (fast-forward only). Instead we run
+	// dolt fetch (updates remotes/origin/main) then dolt merge (three-way merge),
+	// which can reconcile commits from both sides without overwriting local history.
+	fmt.Println("  Fetching from origin...")
+	mergeOut, err := doltCLIFetchMerge(dataDir)
+	if err != nil {
 		fmt.Println("  Merge failed — dolt output:")
 		fmt.Println()
 		fmt.Println(err.Error())
@@ -97,8 +102,43 @@ func runSync() error {
 		return fmt.Errorf("sync --merge failed")
 	}
 
+	if mergeOut != "" {
+		fmt.Println(mergeOut)
+	}
 	fmt.Println("  Merge complete.")
 	fmt.Println()
 	bd("status") //nolint
 	return nil
+}
+
+// doltCLIFetchMerge performs a three-way merge by running dolt fetch followed
+// by dolt merge. Unlike dolt pull (fast-forward only), this can reconcile
+// diverged histories by creating a merge commit. Returns the merge output.
+func doltCLIFetchMerge(dataDir string) (string, error) {
+	bin := doltBin()
+	if bin == "" {
+		return "", fmt.Errorf("dolt not found — run spire up to install")
+	}
+
+	env := os.Environ()
+
+	// Step 1: fetch remote commits into remotes/origin/main.
+	fetchCmd := exec.Command(bin, "fetch", "origin", "main")
+	fetchCmd.Dir = dataDir
+	fetchCmd.Env = env
+	fetchOut, err := fetchCmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(fetchOut)), fmt.Errorf("dolt fetch: %w\n%s", err, strings.TrimSpace(string(fetchOut)))
+	}
+
+	// Step 2: three-way merge into current branch.
+	mergeCmd := exec.Command(bin, "merge", "remotes/origin/main")
+	mergeCmd.Dir = dataDir
+	mergeCmd.Env = env
+	mergeOut, err := mergeCmd.CombinedOutput()
+	output := strings.TrimSpace(string(mergeOut))
+	if err != nil {
+		return output, fmt.Errorf("dolt merge: %w\n%s", err, output)
+	}
+	return output, nil
 }

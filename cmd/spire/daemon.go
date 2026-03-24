@@ -199,12 +199,15 @@ func runDoltSync(tower TowerConfig) {
 	// Sync CLI remote config (.dolt/config.json) to match the tower's stored remote.
 	setDoltCLIRemote(dataDir, "origin", tower.DolthubRemote)
 
-	// Inject credentials.
+	// Inject credentials; defer cleanup so they don't leak into the rest of the
+	// daemon cycle after runDoltSync returns.
 	if user := getCredential(CredKeyDolthubUser); user != "" {
 		os.Setenv("DOLT_REMOTE_USER", user)
+		defer os.Unsetenv("DOLT_REMOTE_USER")
 	}
 	if pass := getCredential(CredKeyDolthubPassword); pass != "" {
 		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
 	}
 
 	// Pull first — work with the freshest remote state before Linear sync.
