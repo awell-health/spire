@@ -1,88 +1,54 @@
-Now I have a complete picture. Let me write the plan.
-
----
-
 ## Implementation Plan: spi-1dl.1 — Local Steward Adaptation
 
-### Current State
+### Current State (as of commit 6bb0c1b2)
 
-The previous commit (`4be1be31`) already landed the core structure:
+The implementation is **complete**. Both commits have landed everything required:
 
-- `--mode=auto|local|k8s` flag on `spire steward`
-- `resolveMode()` defaulting to local outside k8s
-- `loadLocalStewardConfig()` reading from `spire.yaml` via `repoconfig.Load()`
-- PID file helpers (`wizardPIDPath`, `recordWizardPID`, `clearWizardPID`, `killLocalWizard`, `isWizardRunning`)
-- `localRoster()` — wizard names from summon registry
-- `localBusyAgents()` — PID-file liveness check
-- `spawnLocalAgent()` — correctly stubbed (backends are spi-1dl.2/spi-1dl.3)
-- `killWizardProcess()` dispatching local vs k8s kill
+**`cmd/spire/steward_local.go`**
+- `StewardMode` type + constants (`auto`, `local`, `k8s`)
+- `isInK8s()` — detects k8s via service account token path
+- `resolveMode()` — auto-selects local outside k8s
+- `loadLocalStewardConfig()` — reads `spire.yaml` via `repoconfig.Load()`, applies defaults
+- PID file helpers: `wizardPIDPath`, `isWizardRunning`, `recordWizardPID`, `clearWizardPID`, `killLocalWizard`
+- `localRoster()` — wizard names from summon registry (includes dead processes as open slots)
+- `localBusyAgents()` — **hybrid check**: PID-file liveness AND bead ownership labels
+- `spawnLocalAgent()` — correctly stubbed with TODO markers for spi-1dl.2/spi-1dl.3
 
-**Test failures are pre-existing**: all failures are `database not initialized: issue_prefix config is missing` — integration tests that require a live beads DB. These are not caused by the steward changes.
+**`cmd/spire/steward.go`**
+- `--mode=auto|local|k8s` flag parsed in `cmdSteward`
+- `stewardCycle` branches on mode: calls `localBusyAgents()` vs `findBusyAgents()`
+- `loadLocalStewardConfig()` called once per cycle when in local mode
+- `spawnLocalAgent()` called after successful assignment, PID recorded if > 0
+- `killWizardProcess()` dispatches to `killLocalWizard` or `killWizardPod`
 
----
+### Key Design Decisions (already in code)
 
-### Gap: `localBusyAgents()` Will Cause Double-Assignment
+1. **Hybrid busy detection** — `localBusyAgents()` checks both PID files (runtime signal) and `owner:<name>` labels on in-progress beads (persistent signal). This prevents double-assignment across cycles even when the spawn stub returns PID=0.
 
-**The bug**: `localBusyAgents()` uses only PID-file liveness. With `spawnLocalAgent` returning 0 (stub), `recordWizardPID` is never called, so PID files never exist. On every cycle, all wizards appear idle → steward repeatedly tries to re-assign the same in-progress bead.
+2. **Stub is correct** — `spawnLocalAgent()` returns `(0, nil)`. The steward only calls `recordWizardPID` when `pid > 0`, so no stale PID files are written. Bead ownership provides the busy signal until real backends land.
 
-**Fix**: Make `localBusyAgents()` a hybrid — check PID files **and** bead ownership labels (the same `owner:<agent>` + in_progress check that `findBusyAgents()` uses in k8s mode). A wizard is busy if either: (a) it has a live PID file, or (b) it owns an in-progress bead.
+3. **`localRoster()` includes dead wizards** — an idle slot (no live PID, no owned bead) is a valid assignment target. When backends land, the PID file makes them busy.
 
-This is the critical correctness fix. The assignment guard within a single cycle (`busy[agent] = true`) prevents same-cycle double-assign, but cross-cycle protection requires bead ownership.
+4. **No changes to test files** — test failures are pre-existing: `database not initialized: issue_prefix config is missing`. These are integration tests requiring a live beads DB, unaffected by steward changes.
 
----
+### What Remains
 
-### Files to Change
+**Nothing to implement.** The task is functionally complete:
 
-**`cmd/spire/steward_local.go`** — primary file
+| Requirement | Status |
+|---|---|
+| `--mode=local` flag | Done |
+| Default to local outside k8s | Done |
+| Read config from `spire.yaml` | Done |
+| Track agents via PID files | Done |
+| Spawn after assignment | Done (stub, pending spi-1dl.2/3) |
 
-1. **Fix `localBusyAgents()`**: hybrid check (PID file OR bead ownership):
-   - Call `storeListBeads(IssueFilter{Status: in_progress})` and collect agents with `owner:<name>` labels
-   - Union with PID-alive wizards from registry
-   - A wizard is busy if either signal is present
+### Non-Goals (confirmed out of scope)
 
-**`cmd/spire/steward.go`** — no changes needed; the structure is correct.
+- Actual agent spawning backends → spi-1dl.2 (Docker), spi-1dl.3 (process)
+- `spire up` steward lifecycle integration → spi-1dl.5
+- Tower config format/reading (undefined spec)
 
----
+### Conclusion
 
-### Key Design Decisions
-
-1. **PID files are the runtime signal; bead ownership is the persistent signal.** PID files disappear when a process exits (or when the stub is used). Bead ownership labels survive process crashes and give the steward cross-cycle memory. Both must be checked.
-
-2. **`localRoster()` includes dead-process wizards intentionally.** An idle slot (no live PID, no owned bead) is a valid assignment target — the steward will assign to it and call `spawnLocalAgent`. When spi-1dl.2/spi-1dl.3 land actual spawning, the PID gets written and the wizard goes busy.
-
-3. **`spawnLocalAgent()` stub is correct for this task.** The integration point (call after assignment) is wired. The actual execution backends are spi-1dl.2 (Docker) and spi-1dl.3 (process). No additional stub work is needed here.
-
-4. **Tower config fallback is out of scope.** No tower config format is defined. `loadLocalStewardConfig()` correctly reads from `spire.yaml` and applies defaults. Extend later when tower config format is specified.
-
-5. **`resolveMode()` k8s detection via `/var/run/secrets/kubernetes.io/serviceaccount/token` is standard** and the right approach.
-
----
-
-### Edge Cases / Risks
-
-| Risk | Mitigation |
-|------|-----------|
-| Wizard crashes after assignment, PID file gone, bead still in_progress | Bead-ownership check in `localBusyAgents()` prevents re-assignment |
-| Stale PID file (process died, file not cleaned up) | `processAlive()` uses `kill -0` which handles this correctly |
-| Wizard assigned bead but spawn stub returns 0 — no PID file written | Bead ownership check covers this; no double-assign |
-| `loadWizardRegistry()` returns empty if no wizards summoned | Correct behavior — steward logs "0 agents" and skips |
-| `repoconfig.Load()` fails (no spire.yaml) | Already handled — returns defaults silently |
-
----
-
-### Order of Changes
-
-1. **Fix `localBusyAgents()`** in `steward_local.go` — add bead-ownership check alongside PID check. This is the only true gap preventing correct multi-cycle behavior.
-
-2. **Verify test failures are pre-existing** — confirm they also fail on `main` (environment issue, not regression). No test changes needed for this task.
-
-3. **No other files need changes.** The mode flag, config loading, PID infrastructure, cycle integration, and kill dispatch are all implemented correctly.
-
----
-
-### Non-Goals for spi-1dl.1
-
-- Actual agent spawning (spi-1dl.2, spi-1dl.3)
-- `spire up` integration with steward lifecycle (spi-1dl.5)
-- Tower config format/reading
-- Docker or process execution backends
+The work for spi-1dl.1 is done. The branch is ready for review. Test failures are environment-level, not regressions from this change.
