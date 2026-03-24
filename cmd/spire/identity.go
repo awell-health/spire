@@ -76,6 +76,12 @@ func detectDBName() string {
 				return inst.Database
 			}
 		}
+		// SPIRE_TOWER env override (from --tower flag or explicit env).
+		if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
+			if tower, err := loadTowerConfig(towerName); err == nil && tower.Database != "" {
+				return tower.Database
+			}
+		}
 		// Fallback: active tower's database
 		if cfg.ActiveTower != "" {
 			if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil && tower.Database != "" {

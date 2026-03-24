@@ -343,6 +343,13 @@ func detectDatabase(cfg *SpireConfig, prefix string) string {
 // Returns ("", true) when ambiguous so callers can error instead of
 // silently falling back to stale local state.
 func resolveDatabase(cfg *SpireConfig) (string, bool) {
+	// Priority 0: SPIRE_TOWER env override (from --tower flag).
+	if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
+		tower, err := loadTowerConfig(towerName)
+		if err == nil && tower.Database != "" {
+			return tower.Database, false
+		}
+	}
 	// Priority 1: active tower config
 	if cfg != nil && cfg.ActiveTower != "" {
 		tower, err := loadTowerConfig(cfg.ActiveTower)

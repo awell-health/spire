@@ -147,8 +147,9 @@ func removeFromPaths(inst *Instance, path string) {
 // Resolution order:
 //  1. BEADS_DIR env var (explicit override)
 //  2. beads.FindBeadsDir() (walk up from cwd)
-//  3. First instance matching the active tower in spire config
-//  4. First instance in spire config (any tower)
+//  3. SPIRE_TOWER env var (from --tower flag or explicit env)
+//  4. First instance matching the active tower in spire config
+//  5. First instance in spire config (any tower)
 //
 // Returns "" if no .beads/ directory can be found.
 func resolveBeadsDir() string {
@@ -161,6 +162,17 @@ func resolveBeadsDir() string {
 	cfg, err := loadConfig()
 	if err != nil {
 		return ""
+	}
+	// SPIRE_TOWER env override (from --tower flag or explicit env).
+	if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
+		for _, inst := range cfg.Instances {
+			if inst.Tower == towerName && inst.Path != "" {
+				d := filepath.Join(inst.Path, ".beads")
+				if info, err := os.Stat(d); err == nil && info.IsDir() {
+					return d
+				}
+			}
+		}
 	}
 	// Prefer an instance from the active tower.
 	if cfg.ActiveTower != "" {
