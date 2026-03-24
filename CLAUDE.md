@@ -105,6 +105,31 @@ bd list --json | jq '.[] | select(.id | startswith("web-"))'
 bd list --json | jq '.[] | select(.id | startswith("api-"))'
 ```
 
+## Code rules
+
+### Use the store API, not bdJSON
+
+**Never use `bdJSON()` or shell out to `bd` for data access in new code.** Use the store API (`ensureStore()`, `storeListBoardBeads()`, `storeGetBlockedIssues()`, etc.) in `store.go`. The `bd` subprocess requires `.beads/` in the cwd, is slower, and breaks when run from other directories.
+
+`bdJSON` is legacy — only `spire_test.go` still uses it. All production code paths (board, watch, roster, collect) have been migrated.
+
+For blocked/ready detection, use `storeGetBlockedIssues()` (calls `store.GetBlockedIssues()`) which returns blocker IDs. Do not use `hasBlockingDeps()` with dependency counts from `bd list`.
+
+### Every command must call resolveBeadsDir()
+
+Any command that reads beads must call `resolveBeadsDir()` + `os.Setenv("BEADS_DIR", d)` at entry. This makes the command work from any directory (not just inside a registered repo). Pattern:
+
+```go
+func cmdFoo(args []string) error {
+    if d := resolveBeadsDir(); d != "" {
+        os.Setenv("BEADS_DIR", d)
+    }
+    // ... rest of command
+}
+```
+
+`resolveBeadsDir()` checks: BEADS_DIR env → cwd walk → active tower instance → any instance.
+
 ## DANGER — destructive commands
 
 - **NEVER run `bd init --force`**. This is equivalent to `git reset --hard` to the initial commit — it wipes the ENTIRE dolt history, destroying all beads irreversibly. There is no undo.

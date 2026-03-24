@@ -7,11 +7,24 @@ This repo is connected to Spire (prefix: **spi**). Use Spire for work coordinati
 ```bash
 spire up                        # ensure services are running
 spire collect                   # check inbox + read your context brief
-spire claim <bead-id>           # claim a task (verify → set in_progress)
+spire claim <bead-id>           # claim a task (atomic: pull → verify → set in_progress → push)
 spire focus <bead-id>           # assemble full context for the task
 # ... do the work ...
+bd close <step-id>              # close each molecule step as you complete it
+bd close <bead-id>              # close the bead when all work is done
+bd dolt push                    # push state to remote
 spire send <agent> "done" --ref <bead-id>   # notify others
 ```
+
+## Completing work
+
+When you finish a task, you MUST close things in order:
+
+1. **Close molecule steps** — `spire focus <bead-id>` shows your workflow molecule.
+   Close each step (design, implement, review, merge) with `bd close <step-id>`
+2. **Close the bead** — `bd close <bead-id>`
+3. **Push state** — `bd dolt push`
+4. **Notify** — `spire send <agent> "done" --ref <bead-id>` if assigned via mail
 
 ## Filing work
 
