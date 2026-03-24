@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -184,11 +185,51 @@ func processWebhookEvents() (int, int) {
 	return processed, errors
 }
 
+// syncState tracks the result of the last DoltHub sync for a tower.
+type syncState struct {
+	Tower  string `json:"tower"`
+	Remote string `json:"remote"`
+	At     string `json:"at"`
+	Status string `json:"status"` // "ok", "pull_failed", "push_failed", "no_remote"
+	Error  string `json:"error,omitempty"`
+}
+
+// writeSyncState persists sync state to ~/.config/spire/sync/<tower>.json.
+func writeSyncState(state syncState) {
+	dir, err := configDir()
+	if err != nil {
+		return
+	}
+	syncDir := filepath.Join(dir, "sync")
+	os.MkdirAll(syncDir, 0755)
+	data, _ := json.MarshalIndent(state, "", "  ")
+	os.WriteFile(filepath.Join(syncDir, state.Tower+".json"), append(data, '\n'), 0644)
+}
+
+// readSyncState reads the last sync state for a tower.
+func readSyncState(towerName string) *syncState {
+	dir, err := configDir()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "sync", towerName+".json"))
+	if err != nil {
+		return nil
+	}
+	var state syncState
+	if json.Unmarshal(data, &state) != nil {
+		return nil
+	}
+	return &state
+}
+
 // runDoltSync pulls from and pushes to the DoltHub remote for the given tower.
 // Called at the start of each runTowerCycle to keep the database in sync with
 // the remote before running Linear sync and webhook processing.
 // Non-fatal: missing remote or auth errors are logged and skipped.
 func runDoltSync(tower TowerConfig) {
+	now := time.Now().UTC().Format(time.RFC3339)
+
 	if tower.DolthubRemote == "" {
 		// No remote configured — not an error, just not set up for DoltHub sync.
 		return
@@ -213,20 +254,26 @@ func runDoltSync(tower TowerConfig) {
 	// Pull first — work with the freshest remote state before Linear sync.
 	if err := doltCLIPull(dataDir, false); err != nil {
 		log.Printf("[daemon] [%s] dolt pull: %s", tower.Name, err)
+		writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "pull_failed", Error: err.Error()})
 		return
 	}
 	log.Printf("[daemon] [%s] dolt pull complete", tower.Name)
 
 	// Push local commits to the remote.
 	if err := doltCLIPush(dataDir, false); err != nil {
-		if strings.Contains(err.Error(), "non-fast-forward") || strings.Contains(err.Error(), "no common ancestor") {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "non-fast-forward") || strings.Contains(errMsg, "no common ancestor") {
 			log.Printf("[daemon] [%s] dolt push: non-fast-forward, skipping (will retry next cycle)", tower.Name)
+			writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "push_failed", Error: "non-fast-forward"})
 		} else {
 			log.Printf("[daemon] [%s] dolt push: %s", tower.Name, err)
+			writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "push_failed", Error: errMsg})
 		}
 		return
 	}
 	log.Printf("[daemon] [%s] dolt push complete", tower.Name)
+
+	writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "ok"})
 }
 
 // ensureWebhookQueue creates the webhook_queue table if it doesn't exist.

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 func cmdStatus(args []string) error {
@@ -31,5 +32,52 @@ func cmdStatus(args []string) error {
 		}
 	}
 
+	// Sync status per tower
+	towers, err := listTowerConfigs()
+	if err == nil && len(towers) > 0 {
+		fmt.Println()
+		for _, t := range towers {
+			state := readSyncState(t.Name)
+			if state == nil {
+				if t.DolthubRemote == "" {
+					fmt.Printf("sync [%s]: no remote configured\n", t.Name)
+				} else {
+					fmt.Printf("sync [%s]: never synced (%s)\n", t.Name, t.DolthubRemote)
+				}
+				continue
+			}
+			age := formatSyncAge(state.At)
+			switch state.Status {
+			case "ok":
+				fmt.Printf("sync [%s]: ok (%s ago) — %s\n", t.Name, age, state.Remote)
+			case "pull_failed":
+				fmt.Printf("sync [%s]: pull failed (%s ago) — %s\n", t.Name, age, state.Error)
+			case "push_failed":
+				fmt.Printf("sync [%s]: push failed (%s ago) — %s\n", t.Name, age, state.Error)
+			default:
+				fmt.Printf("sync [%s]: %s (%s ago)\n", t.Name, state.Status, age)
+			}
+		}
+	}
+
 	return nil
+}
+
+// formatSyncAge returns a human-readable duration since the given RFC3339 timestamp.
+func formatSyncAge(timestamp string) string {
+	t, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return "?"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
