@@ -54,6 +54,10 @@ func resolveMode(mode StewardMode) StewardMode {
 // loadLocalStewardConfig reads agent configuration from spire.yaml,
 // walking up from the current working directory.
 // Returns sensible defaults when no config file is found.
+//
+// Tower config (e.g. ~/.config/spire/towers/<name>.json) is intentionally not
+// read here: its schema is not yet defined. When a tower config format is
+// specified, this function should check it as a fallback after spire.yaml.
 func loadLocalStewardConfig() *LocalStewardConfig {
 	cfg := &LocalStewardConfig{
 		Model:         "claude-sonnet-4-6",
@@ -121,8 +125,11 @@ func killLocalWizard(agentName, beadID string) {
 		log.Printf("[steward] kill local wizard %s/%s: no PID file", agentName, beadID)
 		return
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
+	// On Unix, os.FindProcess never returns an error for a positive PID — it
+	// unconditionally creates a Process struct. Use Signal(0) to verify the
+	// process is still alive before sending SIGTERM.
+	proc, _ := os.FindProcess(pid)
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
 		clearWizardPID(agentName)
 		log.Printf("[steward] kill local wizard %s: process not found (pid %d)", agentName, pid)
 		return
