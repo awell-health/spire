@@ -122,8 +122,8 @@ func cmdSteward(args []string) error {
 		log.Printf("[steward] agents: %s", strings.Join(agentList, ", "))
 	}
 
-	// Align project_id before the first cycle — ensures metadata.json
-	// matches the dolt server even after restarts that change the ID.
+	// Align project_id — only for the CWD tower (legacy behavior).
+	// Multi-tower alignment is handled per-cycle via openStoreAt().
 	ensureProjectID()
 
 	cycleNum := 1
@@ -155,10 +155,49 @@ func cmdSteward(args []string) error {
 	}
 }
 
-// stewardCycle executes one steward cycle: commit, pull, assess, assign, stale/shutdown check, push.
+// stewardCycle iterates all towers and runs a steward cycle for each.
 func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
 	start := time.Now()
 	log.Printf("[steward] ═══ cycle %d ═══════════════════════════════", cycleNum)
+
+	towers, err := listTowerConfigs()
+	if err != nil {
+		log.Printf("[steward] list towers: %s", err)
+		return
+	}
+
+	if len(towers) == 0 {
+		// Fallback: single-tower mode (no tower configs, use default store).
+		stewardTowerCycle(cycleNum, "", dryRun, noAssign, staleThreshold, shutdownThreshold, agentList)
+	} else {
+		for _, tower := range towers {
+			stewardTowerCycle(cycleNum, tower.Name, dryRun, noAssign, staleThreshold, shutdownThreshold, agentList)
+		}
+	}
+
+	log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
+}
+
+// stewardTowerCycle runs one steward cycle for a specific tower.
+// If towerName is "", uses the default store (legacy single-tower mode).
+func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
+	prefix := ""
+	if towerName != "" {
+		prefix = "[" + towerName + "] "
+
+		// Open store for this tower's .beads/ directory.
+		beadsDir := beadsDirForTower(towerName)
+		if beadsDir == "" {
+			log.Printf("[steward] %sno .beads/ directory found, skipping", prefix)
+			return
+		}
+		if _, err := openStoreAt(beadsDir); err != nil {
+			log.Printf("[steward] %sopen store: %s", prefix, err)
+			return
+		}
+		defer resetStore()
+		log.Printf("[steward] %s───────────────────────────────", prefix)
+	}
 
 	// Step 1: Commit any local changes (pull/push disabled — shared dolt server is source of truth).
 	_ = storeCommitPending("steward cycle sync")
@@ -166,9 +205,8 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 	// Step 2: Assess — find ready work.
 	ready, err := storeGetReadyWork(beads.WorkFilter{})
 	if err != nil {
-		log.Printf("[steward] ready: error — %s", err)
+		log.Printf("[steward] %sready: error — %s", prefix, err)
 		pushState()
-		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
 		return
 	}
 
@@ -180,13 +218,12 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 		idleCount = 0
 	}
 
-	log.Printf("[steward] ready: %d beads | roster: %d wizard(s) (%d busy, %d idle)",
-		len(ready), len(roster), len(busy), idleCount)
+	log.Printf("[steward] %sready: %d beads | roster: %d wizard(s) (%d busy, %d idle)",
+		prefix, len(ready), len(roster), len(busy), idleCount)
 
 	if len(roster) == 0 {
 		checkBeadHealth(staleThreshold, shutdownThreshold, dryRun)
 		pushState()
-		log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
 		return
 	}
 
@@ -221,14 +258,14 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 		}
 
 		if dryRun {
-			log.Printf("[steward] [dry-run] would assign %s → %s", bead.ID, agent)
+			log.Printf("[steward] %s[dry-run] would assign %s → %s", prefix, bead.ID, agent)
 			assigned++
 			continue
 		}
 
 		if noAssign {
 			// Managed agents get work via operator (SpireWorkloads), not messages.
-			log.Printf("[steward] assigned: %s → %s (P%d) [no-assign: operator handles pods]", bead.ID, agent, bead.Priority)
+			log.Printf("[steward] %sassigned: %s → %s (P%d) [no-assign: operator handles pods]", prefix, bead.ID, agent, bead.Priority)
 			busy[agent] = true
 			assigned++
 			continue
@@ -244,17 +281,17 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 		}
 		_, sendErr := runSpire(sendArgs...)
 		if sendErr != nil {
-			log.Printf("[steward] send failed: %s → %s: %s", bead.ID, agent, sendErr)
+			log.Printf("[steward] %ssend failed: %s → %s: %s", prefix, bead.ID, agent, sendErr)
 			continue
 		}
 
-		log.Printf("[steward] assigned: %s → %s (P%d)", bead.ID, agent, bead.Priority)
+		log.Printf("[steward] %sassigned: %s → %s (P%d)", prefix, bead.ID, agent, bead.Priority)
 		busy[agent] = true
 		assigned++
 	}
 
 	if assigned > 0 {
-		log.Printf("[steward] assigned: %d bead(s)", assigned)
+		log.Printf("[steward] %sassigned: %d bead(s)", prefix, assigned)
 	}
 
 	// Step 4b: Detect standalone tasks ready for review.
@@ -266,15 +303,32 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, staleThreshold, shutdownT
 	// Step 5: Stale + shutdown check.
 	staleCount, shutdownCount := checkBeadHealth(staleThreshold, shutdownThreshold, dryRun)
 	if staleCount > 0 || shutdownCount > 0 {
-		log.Printf("[steward] stale: %d warning(s), %d shutdown(s)", staleCount, shutdownCount)
+		log.Printf("[steward] %sstale: %d warning(s), %d shutdown(s)", prefix, staleCount, shutdownCount)
 	} else {
-		log.Printf("[steward] stale: none")
+		log.Printf("[steward] %sstale: none", prefix)
 	}
 
 	// Step 6: Push.
 	pushState()
+}
 
-	log.Printf("[steward] ═══ cycle %d complete (%.1fs) ════════════════", cycleNum, time.Since(start).Seconds())
+// beadsDirForTower finds the .beads/ directory for the given tower name.
+// Uses the same pattern as the daemon: doltDataDir()/tower.Database/.beads.
+func beadsDirForTower(towerName string) string {
+	towers, err := listTowerConfigs()
+	if err != nil {
+		return ""
+	}
+	for _, t := range towers {
+		if t.Name == towerName {
+			d := filepath.Join(doltDataDir(), t.Database, ".beads")
+			if info, err := os.Stat(d); err == nil && info.IsDir() {
+				return d
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 // loadRoster returns a list of registered agent names.
