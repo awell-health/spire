@@ -99,34 +99,41 @@ func runSync() error {
 	// which can reconcile commits from both sides without overwriting local history.
 	fmt.Println("  Fetching from origin...")
 	mergeOut, err := doltCLIFetchMerge(dataDir)
+	mergeHadConflicts := err != nil
+
+	// If merge produced conflicts, try automatic field-level resolution.
+	if mergeHadConflicts && dbName != "" {
+		resolved, resolveErr := resolveIssueConflicts(dbName)
+		if resolveErr == nil && resolved > 0 {
+			fmt.Printf("  Auto-resolved %d conflict(s) with field-level ownership rules.\n", resolved)
+			err = nil // conflicts were resolved
+		}
+	}
 	if err != nil {
-		// Merge failed — try automatic conflict resolution before giving up.
-		if dbName != "" {
-			resolved, resolveErr := resolveIssueConflicts(dbName)
-			if resolveErr == nil && resolved > 0 {
-				fmt.Printf("  Auto-resolved %d conflict(s) with field-level ownership rules.\n", resolved)
-				err = nil // conflicts were resolved
-			}
-		}
-		if err != nil {
-			fmt.Println("  Merge failed — dolt output:")
-			fmt.Println()
-			fmt.Println(err.Error())
-			fmt.Println()
-			fmt.Println("  Resolve any conflicts manually, then commit with:")
-			fmt.Println("    bd vc commit -m 'resolve merge conflicts'")
-			return fmt.Errorf("sync --merge failed")
-		}
+		fmt.Println("  Merge failed — dolt output:")
+		fmt.Println()
+		fmt.Println(err.Error())
+		fmt.Println()
+		fmt.Println("  Resolve any conflicts manually, then commit with:")
+		fmt.Println("    bd vc commit -m 'resolve merge conflicts'")
+		return fmt.Errorf("sync --merge failed")
 	}
 
 	if mergeOut != "" {
 		fmt.Println(mergeOut)
 	}
 
-	// ── Enforce field-level ownership ─────────────────────────────────────────
+	// ── Scan for status regressions (skip conflict resolution — already done above) ──
 	if dbName != "" && preCommit != "" {
-		if ownerErr := applyMergeOwnership(dbName, preCommit); ownerErr != nil {
-			fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
+		regressions, scanErr := scanStatusRegressions(dbName, preCommit)
+		if scanErr != nil {
+			fmt.Printf("  Warning: regression scan: %s\n", scanErr)
+		} else if len(regressions) > 0 {
+			if repairErr := repairStatusRegressions(dbName, regressions); repairErr != nil {
+				fmt.Printf("  Warning: repair regressions: %s\n", repairErr)
+			} else {
+				fmt.Printf("  Repaired %d status regression(s).\n", len(regressions))
+			}
 		}
 	}
 
