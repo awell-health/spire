@@ -263,17 +263,31 @@ func cmdWizardRun(args []string) error {
 	// 12. Update bead (comment)
 	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, pushed, testsPassed, log)
 
-	// 13. Review handoff if pushed and tests passed.
+	// 13. Review handoff if pushed.
+	// Test failures are informational — the reviewer runs tests independently.
+	// Pre-existing integration-test failures (e.g. missing .beads/ in worktree)
+	// must not block the review handoff.
+	//
 	// handoffDone suppresses the deferred owner: removal. Set it true
 	// unconditionally once we enter handoff — the function already swapped
 	// owner: → implemented-by: before attempting the spawn, so the deferred
 	// cleanup must not try to remove a label that no longer exists.
-	if pushed && testsPassed {
+	if pushed {
+		if !testsPassed {
+			log("tests failed but branch pushed — proceeding to review")
+			storeAddLabel(beadID, "test-failure")
+		}
 		handoffDone = true
 		wizardReviewHandoff(beadID, wizardName, branchName, log)
 	}
 
-	// 14. Write result
+	// 14. If we didn't hand off, reopen the bead so it doesn't stay orphaned.
+	if !handoffDone {
+		storeUpdateBead(beadID, map[string]interface{}{"status": "open"})
+		log("no handoff — bead reopened")
+	}
+
+	// 15. Write result
 	elapsed := time.Since(startedAt)
 	result := "success"
 	if !pushed {
