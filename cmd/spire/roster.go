@@ -405,9 +405,15 @@ func printRoster(s RosterSummary) {
 			}
 			fmt.Printf("%-12s %s%s", a.BeadID, phaseStr, truncate(a.BeadTitle, titleMax))
 
-			// Countdown bar.
-			if a.Timeout > 0 && a.Elapsed > 0 {
-				fmt.Printf("  %s", renderCountdown(a.Elapsed, a.Timeout))
+			// Phase-aware countdown: use phase elapsed + phase timeout when available.
+			countdownElapsed := a.Elapsed
+			countdownTimeout := a.Timeout
+			if a.Phase != "" && a.PhaseElapsed > 0 {
+				countdownElapsed = a.PhaseElapsed
+				countdownTimeout = rosterPhaseTimeout(a.Phase, s.Timeout)
+			}
+			if countdownTimeout > 0 && countdownElapsed > 0 {
+				fmt.Printf("  %s", renderCountdown(countdownElapsed, countdownTimeout))
 			}
 		} else {
 			fmt.Printf("%s—%s", dim, reset)
@@ -421,6 +427,20 @@ func printRoster(s RosterSummary) {
 		fmt.Printf(" (%s%d idle%s)", green, s.Idle, reset)
 	}
 	fmt.Println()
+}
+
+// rosterPhaseTimeout returns the expected timeout for a given molecule phase.
+// Design and review-fix get 10m; implement gets the global timeout (15m default);
+// review gets 10m (Opus call is fast, but leave room for tests).
+func rosterPhaseTimeout(phase string, globalTimeout time.Duration) time.Duration {
+	switch phase {
+	case "design", "review-fix", "review":
+		return 10 * time.Minute
+	case "implement":
+		return globalTimeout
+	default:
+		return globalTimeout
+	}
 }
 
 // renderCountdown renders an elapsed/timeout bar like: 7m12s / 10m  ███████░░░

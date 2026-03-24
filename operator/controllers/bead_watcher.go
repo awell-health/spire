@@ -25,11 +25,12 @@ type BeadWatcher struct {
 }
 
 type beadJSON struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Status   string `json:"status"`
-	Priority int    `json:"priority"`
-	Type     string `json:"type"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
+	Priority int      `json:"priority"`
+	Type     string   `json:"type"`
+	Labels   []string `json:"labels"`
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -77,9 +78,14 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 		return
 	}
 
-	// 2b. Filter out workflow step beads (parent carries workflow:* label)
+	// 2b. Filter out workflow step beads and message beads
 	var filteredBeads []beadJSON
 	for _, b := range beads {
+		// Skip message beads — not schedulable work
+		if hasBeadLabel(b.Labels, "msg") {
+			continue
+		}
+		// Skip workflow step beads (parent carries workflow:* label)
 		if isWorkflowStep(ctx, b.ID) {
 			continue
 		}
@@ -180,6 +186,16 @@ func sanitizeName(beadID string) string {
 	name := strings.ToLower(beadID)
 	name = strings.ReplaceAll(name, ".", "-")
 	return fmt.Sprintf("bead-%s", name)
+}
+
+// hasBeadLabel checks if a label list contains an exact match.
+func hasBeadLabel(labels []string, label string) bool {
+	for _, l := range labels {
+		if l == label {
+			return true
+		}
+	}
+	return false
 }
 
 // isWorkflowStep checks if a bead is a child of a workflow molecule.

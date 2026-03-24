@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -446,10 +447,10 @@ func detectReviewReady(dryRun bool) {
 		// Mark as review-assigned so we don't double-route.
 		storeAddLabel(b.ID, "review-assigned")
 
-		// Create a SpireWorkload CR with type="review" so the operator spins up
-		// an artificer review pod.
-		cmd := exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1
+		if isK8sAvailable() {
+			// K8s mode: create a SpireWorkload CR for the operator.
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1
 kind: SpireWorkload
 metadata:
   name: review-%s
@@ -460,8 +461,42 @@ spec:
   priority: %d
   type: review
 `, sanitizeK8sLabel(b.ID), b.ID, b.Title, b.Priority))
-		if out, err := cmd.CombinedOutput(); err != nil {
-			log.Printf("[steward] failed to create review workload for %s: %v\n%s", b.ID, err, string(out))
+			if out, err := cmd.CombinedOutput(); err != nil {
+				log.Printf("[steward] failed to create review workload for %s: %v\n%s", b.ID, err, string(out))
+				// Roll back review-assigned so the next cycle can retry.
+				storeRemoveLabel(b.ID, "review-assigned")
+			}
+		} else {
+			// Local mode: spawn wizard-review directly.
+			implBy := hasLabel(b, "implemented-by:")
+			reviewerName := "reviewer-" + sanitizeK8sLabel(b.ID)
+			if implBy != "" {
+				reviewerName = implBy + "-review"
+			}
+
+			spireBin, _ := os.Executable()
+			logDir := filepath.Join(doltGlobalDir(), "wizards")
+			os.MkdirAll(logDir, 0755)
+			logFile, _ := os.OpenFile(filepath.Join(logDir, reviewerName+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+
+			cmd := exec.Command(spireBin, "wizard-review", b.ID, "--name", reviewerName)
+			cmd.Env = os.Environ()
+			if logFile != nil {
+				cmd.Stdout = logFile
+				cmd.Stderr = logFile
+			}
+			if err := cmd.Start(); err != nil {
+				log.Printf("[steward] failed to spawn local reviewer for %s: %v", b.ID, err)
+				storeRemoveLabel(b.ID, "review-assigned")
+				if logFile != nil {
+					logFile.Close()
+				}
+			} else {
+				log.Printf("[steward] spawned local reviewer %s for %s (pid %d)", reviewerName, b.ID, cmd.Process.Pid)
+				if logFile != nil {
+					logFile.Close()
+				}
+			}
 		}
 	}
 }

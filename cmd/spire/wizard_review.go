@@ -47,21 +47,36 @@ func cmdWizardReview(args []string) error {
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", reviewerName, fmt.Sprintf(format, a...))
 	}
 
+	// Deferred review-assigned cleanup: remove the label on any exit that
+	// doesn't reach a verdict handler. This covers review-assigned added by
+	// either the steward (before spawn) or by this process. The label-remove
+	// is idempotent if the label was never set.
+	verdictHandled := false
+	defer func() {
+		if !verdictHandled {
+			storeRemoveLabel(beadID, "review-assigned")
+		}
+	}()
+
 	// Self-register in the wizard registry.
+	now := time.Now().UTC().Format(time.RFC3339)
 	wizardRegistryAdd(localWizard{
-		Name:      reviewerName,
-		PID:       os.Getpid(),
-		BeadID:    beadID,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Phase:     "review",
+		Name:           reviewerName,
+		PID:            os.Getpid(),
+		BeadID:         beadID,
+		StartedAt:      now,
+		Phase:          "review",
+		PhaseStartedAt: now,
 	})
 	defer wizardRegistryRemove(reviewerName)
 
-	// Signal handler for cleanup
+	// Signal handler for cleanup. os.Exit skips defers, so we must
+	// replicate the review-assigned and registry cleanup here.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
+		storeRemoveLabel(beadID, "review-assigned")
 		wizardRegistryRemove(reviewerName)
 		os.Exit(1)
 	}()
@@ -88,10 +103,7 @@ func cmdWizardReview(args []string) error {
 	}
 	log("reviewing %s branch %s", beadID, branch)
 
-	// 3. Add review-assigned label
-	storeAddLabel(beadID, "review-assigned")
-
-	// 4. Create own worktree
+	// 3. Create own worktree (before adding review-assigned, so failures don't leak the label)
 	worktreeDir, err := reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
@@ -99,7 +111,7 @@ func cmdWizardReview(args []string) error {
 	defer reviewCleanupWorktree(worktreeDir, repoPath)
 	log("worktree: %s", worktreeDir)
 
-	// 5. Get diff
+	// 4. Get diff
 	diff, err := reviewGetDiff(worktreeDir, baseBranch)
 	if err != nil {
 		return fmt.Errorf("get diff: %w", err)
@@ -108,6 +120,9 @@ func cmdWizardReview(args []string) error {
 		log("no diff found, nothing to review")
 		return nil
 	}
+
+	// 5. Ensure review-assigned is set (may already be set by steward or wizard handoff).
+	storeAddLabel(beadID, "review-assigned")
 
 	// 6. Run tests in worktree
 	repoCfg, _ := repoconfig.Load(repoPath)
@@ -134,6 +149,7 @@ func cmdWizardReview(args []string) error {
 	log("verdict: %s — %s", review.Verdict, review.Summary)
 
 	// 9. Handle verdict
+	verdictHandled = true
 	switch review.Verdict {
 	case "approve":
 		reviewHandleApproval(beadID, reviewerName, log)
@@ -450,11 +466,14 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	sendCmd.Run()
 
 	// Register re-engaged wizard
+	reengageNow := time.Now().UTC().Format(time.RFC3339)
 	wizardRegistryAdd(localWizard{
-		Name:      wizardName,
-		PID:       0,
-		BeadID:    beadID,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Name:           wizardName,
+		PID:            0,
+		BeadID:         beadID,
+		StartedAt:      reengageNow,
+		Phase:          "review-fix",
+		PhaseStartedAt: reengageNow,
 	})
 
 	// Spawn wizard-run --review-fix

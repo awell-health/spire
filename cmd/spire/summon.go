@@ -359,10 +359,11 @@ func saveWizardRegistry(reg wizardRegistry) {
 func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
 	var alive []localWizard
 	for _, w := range reg.Wizards {
-		if w.PID > 0 {
-			if !processAlive(w.PID) {
-				continue // dead
-			}
+		if w.PID <= 0 {
+			continue // placeholder entry with no real process — prune it
+		}
+		if !processAlive(w.PID) {
+			continue // dead
 		}
 		alive = append(alive, w)
 	}

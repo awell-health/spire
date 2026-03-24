@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -131,8 +132,14 @@ func cmdWizardRun(args []string) error {
 		os.Setenv("SPIRE_IDENTITY", wizardName)
 	}
 
-	// 6. Add owner label
+	// 6. Add owner label (deferred cleanup removes it if we exit without review handoff)
 	storeAddLabel(beadID, "owner:"+wizardName)
+	handoffDone := false
+	defer func() {
+		if !handoffDone {
+			storeRemoveLabel(beadID, "owner:"+wizardName)
+		}
+	}()
 
 	// 7. Capture focus context
 	log("assembling focus context")
@@ -180,9 +187,10 @@ func cmdWizardRun(args []string) error {
 			return fmt.Errorf("write implement prompt: %w", err)
 		}
 
+		reviewFixTimeout := designTimeout // spec: review-fix gets 10m, not 15m
 		claudeStartedAt := time.Now()
-		log("starting implement phase with review feedback (timeout: %s)", timeout)
-		if err := wizardRunClaude(worktreeDir, implPromptPath, model, timeout); err != nil {
+		log("starting implement phase with review feedback (timeout: %s)", reviewFixTimeout)
+		if err := wizardRunClaude(worktreeDir, implPromptPath, model, reviewFixTimeout, maxTurns); err != nil {
 			log("claude implement failed: %s", err)
 		}
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
@@ -206,7 +214,7 @@ func cmdWizardRun(args []string) error {
 
 		designStartedAt := time.Now()
 		log("starting design phase (timeout: %s)", designTimeout)
-		designOutput, err := wizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout)
+		designOutput, err := wizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
 		if err != nil {
 			log("design phase failed: %s", err)
 		}
@@ -237,7 +245,7 @@ func cmdWizardRun(args []string) error {
 
 		claudeStartedAt := time.Now()
 		log("starting implement phase (timeout: %s)", timeout)
-		if err := wizardRunClaude(worktreeDir, implPromptPath, model, timeout); err != nil {
+		if err := wizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns); err != nil {
 			log("claude implement failed: %s", err)
 		}
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
@@ -255,8 +263,13 @@ func cmdWizardRun(args []string) error {
 	// 12. Update bead (comment)
 	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, pushed, testsPassed, log)
 
-	// 13. Review handoff if pushed and tests passed
+	// 13. Review handoff if pushed and tests passed.
+	// handoffDone suppresses the deferred owner: removal. Set it true
+	// unconditionally once we enter handoff — the function already swapped
+	// owner: → implemented-by: before attempting the spawn, so the deferred
+	// cleanup must not try to remove a label that no longer exists.
 	if pushed && testsPassed {
+		handoffDone = true
 		wizardReviewHandoff(beadID, wizardName, branchName, log)
 	}
 
@@ -318,6 +331,9 @@ func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err
 }
 
 // wizardCreateWorktree creates a git worktree for the wizard to work in.
+// On first run it creates a new branch from baseBranch. On --review-fix
+// the branch already exists (pushed by the previous run), so it checks
+// out the existing branch instead of trying to create it again.
 func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string) (string, error) {
 	worktreeBase := filepath.Join(os.TempDir(), "spire-wizard", wizardName)
 	worktreeDir := filepath.Join(worktreeBase, beadID)
@@ -332,10 +348,15 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 		return "", err
 	}
 
-	// Create worktree with new branch from base
+	// Try creating worktree with new branch from base
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "add", "-b", branchName, worktreeDir, baseBranch)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git worktree add: %s\n%s", err, string(out))
+		// Branch may already exist (--review-fix path). Fetch and check out the existing branch.
+		exec.Command("git", "-C", repoPath, "fetch", "origin", branchName).Run()
+		cmd2 := exec.Command("git", "-C", repoPath, "worktree", "add", worktreeDir, branchName)
+		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
+			return "", fmt.Errorf("git worktree add: %s\n%s\n(retry with existing branch): %s\n%s", err, string(out), err2, string(out2))
+		}
 	}
 
 	// Configure git user in worktree
@@ -484,21 +505,37 @@ Bead JSON:
 		focusContext, beadJSON)
 }
 
+// wizardBuildClaudeArgs builds the common claude CLI arguments.
+// maxTurns is passed as --max-turns to limit agent iterations.
+// Timeout enforcement is handled by the caller via context.WithTimeout.
+func wizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
+	args := []string{
+		"--dangerously-skip-permissions",
+		"-p", prompt,
+		"--model", model,
+		"--max-turns", fmt.Sprintf("%d", maxTurns),
+	}
+	return args
+}
+
 // wizardRunClaude invokes the claude CLI in print mode (output goes to stderr).
-func wizardRunClaude(worktreeDir, promptPath, model, timeout string) error {
-	// Read prompt from file
+// timeout enforces a hard process-level deadline via context.
+func wizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int) error {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
 		return fmt.Errorf("read prompt: %w", err)
 	}
 
-	args := []string{
-		"--dangerously-skip-permissions",
-		"-p", string(promptBytes),
-		"--model", model,
-	}
+	args := wizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
 
-	cmd := exec.Command("claude", args...)
+	dur, parseErr := time.ParseDuration(timeout)
+	if parseErr != nil {
+		dur = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dur)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = worktreeDir
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stderr // wizard output goes to stderr (stdout is for JSON results)
@@ -508,19 +545,23 @@ func wizardRunClaude(worktreeDir, promptPath, model, timeout string) error {
 }
 
 // wizardRunClaudeCapture invokes the claude CLI and captures stdout.
-func wizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string) (string, error) {
+// timeout enforces a hard process-level deadline via context.
+func wizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int) (string, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
 		return "", fmt.Errorf("read prompt: %w", err)
 	}
 
-	args := []string{
-		"--dangerously-skip-permissions",
-		"-p", string(promptBytes),
-		"--model", model,
-	}
+	args := wizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
 
-	cmd := exec.Command("claude", args...)
+	dur, parseErr := time.ParseDuration(timeout)
+	if parseErr != nil {
+		dur = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dur)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = worktreeDir
 	cmd.Env = os.Environ()
 	cmd.Stderr = os.Stderr
@@ -754,6 +795,8 @@ func wizardCollectFeedback(beadID, wizardName string) string {
 // --- Review handoff ---
 
 // wizardReviewHandoff swaps labels and spawns a reviewer process.
+// On spawn failure, review-ready and implemented-by stay in place so the
+// steward's detectReviewReady() can re-route the bead on the next cycle.
 func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string, ...interface{})) {
 	// Swap owner -> implemented-by
 	storeRemoveLabel(beadID, "owner:"+wizardName)
@@ -781,9 +824,21 @@ func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string,
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
 	if err := cmd.Start(); err != nil {
-		log("failed to spawn reviewer: %s", err)
+		log("failed to spawn reviewer: %s — leaving review-ready for steward", err)
+		// Remove the dead registry entry but keep review-ready and
+		// implemented-by so the steward's detectReviewReady() can re-route
+		// the bead to a review pod (k8s) or a future local retry.
+		// Remove owner: swap since the wizard is about to exit.
+		wizardRegistryRemove(reviewerName)
+		storeAddComment(beadID, fmt.Sprintf("Local review spawn failed: %s — bead left review-ready for steward", err))
+		return
 	}
 
-	log("review handoff complete, spawned %s", reviewerName)
+	// Update registry with the actual PID now that Start() succeeded.
+	wizardRegistryUpdate(reviewerName, func(w *localWizard) {
+		w.PID = cmd.Process.Pid
+	})
+
+	log("review handoff complete, spawned %s (pid %d)", reviewerName, cmd.Process.Pid)
 	// Self-unregister happens via defer in cmdWizardRun
 }
