@@ -390,6 +390,9 @@ func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, r
 	wizardCloseMoleculeStep(beadID, "review")
 	storeAddComment(beadID, fmt.Sprintf("Review approved by %s", reviewerName))
 
+	// Transition to merge phase
+	setPhase(beadID, "merge")
+
 	// --- Merge step ---
 	log("starting merge step")
 	if err := reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath, log); err != nil {
@@ -403,6 +406,8 @@ func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, r
 	storeRemoveLabel(beadID, "review-approved")
 	storeRemoveLabel(beadID, "test-failure")
 	storeRemoveLabel(beadID, "feat-branch:"+branch)
+	// Clear phase label on close (bead moves to Done via status=closed)
+	storeRemoveLabel(beadID, "phase:merge")
 	if err := storeCloseBead(beadID); err != nil {
 		log("warning: close bead: %s", err)
 	}
@@ -514,6 +519,9 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 		log("escalation: round %d, not re-engaging wizard", newRound)
 		return nil
 	}
+
+	// Transition back to implement phase for review-fix
+	setPhase(beadID, "implement")
 
 	// Resolve wizard name: prefer implemented-by label, fall back to bead-based name.
 	bead, _ := storeGetBead(beadID)
