@@ -105,3 +105,26 @@ func TestGetCurrentCommitHash_Live(t *testing.T) {
 		t.Errorf("commit hash too short: %q", h)
 	}
 }
+
+func TestSqlNullableSet(t *testing.T) {
+	tests := []struct {
+		field, preferred, fallback, want string
+	}{
+		{"owner", "alice", "", "owner = 'alice'"},
+		{"owner", "", "bob", "owner = 'bob'"},
+		{"owner", "NULL", "bob", "owner = 'bob'"},
+		{"owner", "", "", "owner = NULL"},
+		{"owner", "NULL", "", "owner = NULL"},
+		{"owner", "NULL", "NULL", "owner = NULL"},
+		{"closed_at", "2026-01-01 00:00:00", "", "closed_at = '2026-01-01 00:00:00'"},
+		{"closed_at", "", "", "closed_at = NULL"},
+		{"closed_at", "NULL", "", "closed_at = NULL"},
+	}
+	for _, tt := range tests {
+		got := sqlNullableSet(tt.field, tt.preferred, tt.fallback)
+		if got != tt.want {
+			t.Errorf("sqlNullableSet(%q, %q, %q) = %q, want %q",
+				tt.field, tt.preferred, tt.fallback, got, tt.want)
+		}
+	}
+}

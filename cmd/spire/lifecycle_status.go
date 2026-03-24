@@ -37,13 +37,14 @@ func cmdStatus(args []string) error {
 	if err == nil && len(towers) > 0 {
 		fmt.Println()
 		for _, t := range towers {
+			if t.DolthubRemote == "" {
+				fmt.Printf("sync [%s]: no remote configured\n", t.Name)
+				continue
+			}
 			state := readSyncState(t.Name)
-			if state == nil {
-				if t.DolthubRemote == "" {
-					fmt.Printf("sync [%s]: no remote configured\n", t.Name)
-				} else {
-					fmt.Printf("sync [%s]: never synced (%s)\n", t.Name, t.DolthubRemote)
-				}
+			if state == nil || state.Remote != t.DolthubRemote {
+				// No state, or stale state from a previous remote config.
+				fmt.Printf("sync [%s]: never synced (%s)\n", t.Name, t.DolthubRemote)
 				continue
 			}
 			age := formatSyncAge(state.At)

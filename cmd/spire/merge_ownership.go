@@ -33,16 +33,19 @@ func isStatusRegression(from, to string) bool {
 	}
 }
 
-// statusRegression describes a single status field regression detected after pull/merge.
-type statusRegression struct {
-	BeadID   string
-	Field    string
-	OldValue string // pre-pull value (higher rank)
-	NewValue string // post-pull value (lower rank)
+// clusterRegression describes a regression in a cluster-owned field after pull/merge.
+type clusterRegression struct {
+	BeadID string
+	// Cluster field snapshots from pre-pull state to restore.
+	Status          string
+	Owner           string
+	Assignee        string
+	ClosedAt        string // "" means NULL
+	ClosedBySession string // "" means NULL
 }
 
 // applyMergeOwnership runs after a pull or merge to enforce field-level ownership.
-// It resolves dolt conflicts (if any) and scans for status regressions.
+// It resolves dolt conflicts (if any) and scans for cluster-field regressions.
 // dbName is the dolt database name; preCommit is the HEAD hash before the pull/merge.
 func applyMergeOwnership(dbName, preCommit string) error {
 	if preCommit == "" {
@@ -59,25 +62,27 @@ func applyMergeOwnership(dbName, preCommit string) error {
 		log.Printf("[ownership] resolved %d conflict(s) with field-level ownership", resolved)
 	}
 
-	// Phase 2: scan for status regressions.
-	regressions, err := scanStatusRegressions(dbName, preCommit)
+	// Phase 2: scan for cluster-field regressions.
+	regressions, err := scanClusterRegressions(dbName, preCommit)
 	if err != nil {
 		log.Printf("[ownership] scan regressions: %s", err)
 		return err
 	}
 	if len(regressions) > 0 {
-		if err := repairStatusRegressions(dbName, regressions); err != nil {
+		if err := repairClusterRegressions(dbName, regressions); err != nil {
 			log.Printf("[ownership] repair regressions: %s", err)
 			return err
 		}
-		log.Printf("[ownership] repaired %d status regression(s)", len(regressions))
+		log.Printf("[ownership] repaired %d cluster-field regression(s)", len(regressions))
 	}
 
 	return nil
 }
 
 // resolveIssueConflicts reads dolt_conflicts_issues and applies field-level
-// ownership rules to produce resolved rows. Returns the number of conflicts resolved.
+// ownership rules to produce resolved rows. Only deletes conflict rows that
+// were successfully resolved; unresolved rows remain for manual intervention.
+// Returns the number of conflicts resolved.
 func resolveIssueConflicts(dbName string) (int, error) {
 	// Check if the conflicts table has any rows.
 	countQ := fmt.Sprintf("SELECT COUNT(*) AS c FROM `%s`.dolt_conflicts_issues", dbName)
@@ -130,6 +135,7 @@ func resolveIssueConflicts(dbName string) (int, error) {
 	}
 
 	resolved := 0
+	var resolvedIDs []string
 	for _, row := range rows {
 		id := coalesce(row["our_id"], row["their_id"], row["base_id"])
 		if id == "" {
@@ -140,8 +146,10 @@ func resolveIssueConflicts(dbName string) (int, error) {
 		updates := []string{
 			// Cluster-owned fields: take theirs (remote)
 			fmt.Sprintf("status = '%s'", sqlEscape(coalesce(row["their_status"], row["our_status"]))),
-			fmt.Sprintf("owner = '%s'", sqlEscape(coalesce(row["their_owner"], row["our_owner"]))),
-			fmt.Sprintf("assignee = '%s'", sqlEscape(coalesce(row["their_assignee"], row["our_assignee"]))),
+			sqlNullableSet("owner", row["their_owner"], row["our_owner"]),
+			sqlNullableSet("assignee", row["their_assignee"], row["our_assignee"]),
+			sqlNullableSet("closed_at", row["their_closed_at"], row["our_closed_at"]),
+			sqlNullableSet("closed_by_session", row["their_closed_by_session"], row["our_closed_by_session"]),
 			// User-owned fields: take ours (local)
 			fmt.Sprintf("title = '%s'", sqlEscape(coalesce(row["our_title"], row["their_title"]))),
 			fmt.Sprintf("description = '%s'", sqlEscape(coalesce(row["our_description"], row["their_description"]))),
@@ -149,25 +157,16 @@ func resolveIssueConflicts(dbName string) (int, error) {
 			fmt.Sprintf("issue_type = '%s'", sqlEscape(coalesce(row["our_issue_type"], row["their_issue_type"]))),
 		}
 
-		// Handle nullable cluster fields.
-		if row["their_closed_at"] != "" && row["their_closed_at"] != "NULL" {
-			updates = append(updates, fmt.Sprintf("closed_at = '%s'", sqlEscape(row["their_closed_at"])))
-		} else {
-			updates = append(updates, "closed_at = NULL")
-		}
-		if row["their_closed_by_session"] != "" {
-			updates = append(updates, fmt.Sprintf("closed_by_session = '%s'", sqlEscape(row["their_closed_by_session"])))
-		}
-
 		updateSQL := fmt.Sprintf("UPDATE `%s`.issues SET %s WHERE id = '%s'",
 			dbName, strings.Join(updates, ", "), sqlEscape(id))
 		if _, err := doltSQL(updateSQL, false); err != nil {
 			log.Printf("[ownership] update %s: %s", id, err)
-			continue
+			continue // leave this conflict row for manual resolution
 		}
 
 		log.Printf("[ownership] resolved conflict: %s (cluster: status=%s, user: title=%q)",
 			id, coalesce(row["their_status"], "?"), coalesce(row["our_title"], "?"))
+		resolvedIDs = append(resolvedIDs, id)
 		resolved++
 	}
 
@@ -175,10 +174,14 @@ func resolveIssueConflicts(dbName string) (int, error) {
 		return 0, nil
 	}
 
-	// Clear the conflicts table and commit.
-	deleteSQL := fmt.Sprintf("DELETE FROM `%s`.dolt_conflicts_issues", dbName)
-	if _, err := doltSQL(deleteSQL, false); err != nil {
-		return resolved, fmt.Errorf("clear conflicts: %w", err)
+	// Delete only the conflict rows we actually resolved.
+	for _, id := range resolvedIDs {
+		deleteSQL := fmt.Sprintf(
+			"DELETE FROM `%s`.dolt_conflicts_issues WHERE our_id = '%s' OR their_id = '%s' OR base_id = '%s'",
+			dbName, sqlEscape(id), sqlEscape(id), sqlEscape(id))
+		if _, err := doltSQL(deleteSQL, false); err != nil {
+			log.Printf("[ownership] delete conflict %s: %s", id, err)
+		}
 	}
 
 	commitSQL := fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'spire: field-level merge resolution (%d conflicts)')",
@@ -190,11 +193,16 @@ func resolveIssueConflicts(dbName string) (int, error) {
 	return resolved, nil
 }
 
-// scanStatusRegressions compares the pre-pull state to HEAD and finds status
-// fields that regressed (closed→open, in_progress→open).
-func scanStatusRegressions(dbName, preCommit string) ([]statusRegression, error) {
+// scanClusterRegressions compares the pre-pull state to HEAD and finds
+// cluster-owned fields that regressed (e.g. closed→open, lost owner/assignee).
+// Returns a snapshot of the pre-pull cluster fields for each regressed bead.
+func scanClusterRegressions(dbName, preCommit string) ([]clusterRegression, error) {
 	q := fmt.Sprintf(`SELECT from_id, to_id, diff_type,
-		from_status, to_status, from_owner, to_owner, from_assignee, to_assignee
+		from_status, to_status,
+		from_owner, to_owner,
+		from_assignee, to_assignee,
+		from_closed_at, to_closed_at,
+		from_closed_by_session, to_closed_by_session
 	FROM dolt_diff('%s', 'HEAD', 'issues')
 	WHERE diff_type = 'modified'`, sqlEscape(preCommit))
 
@@ -208,51 +216,76 @@ func scanStatusRegressions(dbName, preCommit string) ([]statusRegression, error)
 		"from_status", "to_status",
 		"from_owner", "to_owner",
 		"from_assignee", "to_assignee",
+		"from_closed_at", "to_closed_at",
+		"from_closed_by_session", "to_closed_by_session",
 	})
 
-	var regressions []statusRegression
+	var regressions []clusterRegression
 	for _, row := range rows {
 		id := coalesce(row["to_id"], row["from_id"])
 		fromStatus := row["from_status"]
 		toStatus := row["to_status"]
 
-		if fromStatus != "" && toStatus != "" && fromStatus != toStatus {
-			if isStatusRegression(fromStatus, toStatus) {
-				regressions = append(regressions, statusRegression{
-					BeadID:   id,
-					Field:    "status",
-					OldValue: fromStatus,
-					NewValue: toStatus,
-				})
-			}
+		if fromStatus != "" && toStatus != "" && fromStatus != toStatus && isStatusRegression(fromStatus, toStatus) {
+			// Capture ALL cluster fields from the pre-pull state so we restore
+			// the full cluster snapshot, not just status.
+			regressions = append(regressions, clusterRegression{
+				BeadID:          id,
+				Status:          fromStatus,
+				Owner:           row["from_owner"],
+				Assignee:        row["from_assignee"],
+				ClosedAt:        row["from_closed_at"],
+				ClosedBySession: row["from_closed_by_session"],
+			})
 		}
 	}
 
 	return regressions, nil
 }
 
-// repairStatusRegressions restores the pre-pull status values for regressed beads.
-func repairStatusRegressions(dbName string, regressions []statusRegression) error {
+// repairClusterRegressions restores the pre-pull cluster field values for regressed beads.
+func repairClusterRegressions(dbName string, regressions []clusterRegression) error {
 	for _, r := range regressions {
-		updateSQL := fmt.Sprintf("UPDATE `%s`.issues SET status = '%s' WHERE id = '%s'",
-			dbName, sqlEscape(r.OldValue), sqlEscape(r.BeadID))
+		updates := []string{
+			fmt.Sprintf("status = '%s'", sqlEscape(r.Status)),
+			sqlNullableSet("owner", r.Owner, ""),
+			sqlNullableSet("assignee", r.Assignee, ""),
+			sqlNullableSet("closed_at", r.ClosedAt, ""),
+			sqlNullableSet("closed_by_session", r.ClosedBySession, ""),
+		}
+		updateSQL := fmt.Sprintf("UPDATE `%s`.issues SET %s WHERE id = '%s'",
+			dbName, strings.Join(updates, ", "), sqlEscape(r.BeadID))
 		if _, err := doltSQL(updateSQL, false); err != nil {
 			log.Printf("[ownership] repair %s: %s", r.BeadID, err)
 			continue
 		}
-		log.Printf("[ownership] repaired: %s status %s → %s (restored to %s)",
-			r.BeadID, r.OldValue, r.NewValue, r.OldValue)
+		log.Printf("[ownership] repaired: %s (restored cluster state: status=%s, owner=%s)",
+			r.BeadID, r.Status, r.Owner)
 	}
 
 	// Commit repairs.
-	commitSQL := fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'spire: repair %d status regression(s)')",
+	commitSQL := fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'spire: repair %d cluster-field regression(s)')",
 		dbName, len(regressions))
 	if _, err := rawDoltQuery(commitSQL); err != nil {
-		// Non-fatal — may fail if no actual changes (e.g. already at correct status).
+		// Non-fatal — may fail if no actual changes (e.g. already at correct state).
 		log.Printf("[ownership] commit regressions: %s", err)
 	}
 
 	return nil
+}
+
+// sqlNullableSet returns a SQL SET clause for a nullable field.
+// If the preferred value is empty or "NULL", returns "field = NULL".
+// Otherwise returns "field = 'value'".
+func sqlNullableSet(field, preferred, fallback string) string {
+	val := preferred
+	if val == "" || val == "NULL" {
+		val = fallback
+	}
+	if val == "" || val == "NULL" {
+		return field + " = NULL"
+	}
+	return fmt.Sprintf("%s = '%s'", field, sqlEscape(val))
 }
 
 // doltSQLWithDB runs a SQL query against a specific database using --use-db.

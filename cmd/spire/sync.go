@@ -125,11 +125,11 @@ func runSync() error {
 
 	// ── Scan for status regressions (skip conflict resolution — already done above) ──
 	if dbName != "" && preCommit != "" {
-		regressions, scanErr := scanStatusRegressions(dbName, preCommit)
+		regressions, scanErr := scanClusterRegressions(dbName, preCommit)
 		if scanErr != nil {
 			fmt.Printf("  Warning: regression scan: %s\n", scanErr)
 		} else if len(regressions) > 0 {
-			if repairErr := repairStatusRegressions(dbName, regressions); repairErr != nil {
+			if repairErr := repairClusterRegressions(dbName, regressions); repairErr != nil {
 				fmt.Printf("  Warning: repair regressions: %s\n", repairErr)
 			} else {
 				fmt.Printf("  Repaired %d status regression(s).\n", len(regressions))
