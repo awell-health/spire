@@ -8,7 +8,8 @@ import (
 
 func cmdRepo(args []string) error {
 	if len(args) == 0 {
-		return repoList(false)
+		printRepoUsage()
+		return nil
 	}
 	switch args[0] {
 	case "add":
@@ -27,9 +28,25 @@ func cmdRepo(args []string) error {
 			return fmt.Errorf("usage: spire repo remove <prefix>")
 		}
 		return repoRemove(args[1])
+	case "--help", "-h", "help":
+		printRepoUsage()
+		return nil
 	default:
-		return fmt.Errorf("unknown repo subcommand: %q\nusage: spire repo [add|list|remove]", args[0])
+		return fmt.Errorf("unknown repo subcommand: %q\nRun 'spire repo --help' for usage", args[0])
 	}
+}
+
+func printRepoUsage() {
+	fmt.Println(`Usage: spire repo <command> [args]
+
+Manage repository registrations under a tower.
+
+Commands:
+  add [path]          Register a repo (--prefix, --repo-url, --branch)
+  list                List registered repos (--json)
+  remove <prefix>     Remove a repo registration
+
+Run 'spire repo add --help' for details on registration.`)
 }
 
 // repoList queries the dolt repos table (source of truth) for registered repos.

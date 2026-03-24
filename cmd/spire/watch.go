@@ -82,25 +82,36 @@ func renderTowerWatch() error {
 		return fmt.Errorf("watch: %w", err)
 	}
 
+	// Build set of alive wizard PIDs from the local registry.
+	aliveWizards := make(map[string]bool)
+	reg := loadWizardRegistry()
+	for _, w := range reg.Wizards {
+		if w.PID > 0 && processAlive(w.PID) {
+			aliveWizards[w.Name] = true
+		}
+	}
+
 	// Load agents.
 	var agentBeads []BoardBead
 	_ = bdJSON(&agentBeads, "list", "--label", "agent", "--status=open")
 
-	// Count wizards.
+	// Count wizards (only alive ones).
 	wizardCount := 0
 	for _, ab := range agentBeads {
 		for _, l := range ab.Labels {
 			if strings.HasPrefix(l, "name:") {
 				name := l[5:]
 				if name != "steward" && name != "mayor" && name != "spi" && name != "awell" {
-					wizardCount++
+					if aliveWizards[name] {
+						wizardCount++
+					}
 				}
 			}
 		}
 	}
 
 	// Categorize.
-	var working, ready []BoardBead
+	var working, stale, ready []BoardBead
 	for _, b := range allBeads {
 		// Skip noise.
 		for _, l := range b.Labels {
@@ -110,7 +121,13 @@ func renderTowerWatch() error {
 		}
 		switch b.Status {
 		case "in_progress":
-			working = append(working, b)
+			// Check if the owner wizard is still alive.
+			owner := beadOwnerLabel(b)
+			if owner != "" && !aliveWizards[owner] {
+				stale = append(stale, b)
+			} else {
+				working = append(working, b)
+			}
 		case "open":
 			if !hasBlockingDeps(b) {
 				ready = append(ready, b)
@@ -120,13 +137,31 @@ func renderTowerWatch() error {
 	}
 
 	sortBeads(working)
+	sortBeads(stale)
 	sortBeads(ready)
 
 	// Header.
 	fmt.Printf("%sTOWER STATUS%s — %d wizard(s), %d working, %d ready\n",
 		bold, reset, wizardCount, len(working), len(ready))
-	fmt.Printf("%sUpdated: %s%s\n", dim, time.Now().Format("15:04:05"), reset)
+	fmt.Printf("%sUpdated: %s  (Ctrl-C to exit)%s\n", dim, time.Now().Format("15:04:05"), reset)
 	fmt.Println()
+
+	if len(stale) > 0 {
+		fmt.Printf("%s%sSTALE%s %s(owner process dead)%s\n", bold, red, reset, dim, reset)
+		for _, b := range stale {
+			owner := beadOwnerLabel(b)
+			if owner == "" {
+				owner = "unknown"
+			}
+			fmt.Printf("  %s%-12s%s  %s %-12s %s\n",
+				red, owner, reset,
+				priorityStr(b.Priority),
+				b.ID,
+				truncate(b.Title, 35))
+		}
+		fmt.Printf("  %sRun 'spire dismiss --all' to clean up%s\n", dim, reset)
+		fmt.Println()
+	}
 
 	if len(working) > 0 {
 		fmt.Printf("%s%sWORKING%s\n", bold, cyan, reset)

@@ -302,7 +302,7 @@ func summonLocal(count int) error {
 
 func dismissLocal(count int, all bool) error {
 	reg := loadWizardRegistry()
-	reg = cleanDeadWizards(reg)
+	// Don't clean dead wizards first — we need them to clean up bead state.
 
 	if all {
 		count = len(reg.Wizards)
@@ -319,19 +319,49 @@ func dismissLocal(count int, all bool) error {
 	for i := 0; i < count; i++ {
 		idx := len(reg.Wizards) - 1 - i
 		w := reg.Wizards[idx]
-		if w.PID > 0 {
+		alive := w.PID > 0 && processAlive(w.PID)
+		if alive {
 			// Kill the process.
 			if proc, err := os.FindProcess(w.PID); err == nil {
 				proc.Signal(os.Interrupt)
 			}
 		}
-		fmt.Printf("  %s%s%s dismissed\n", dim, w.Name, reset)
+		// Clean up bead state: remove owner label and reopen.
+		dismissCleanupBead(w)
+		if alive {
+			fmt.Printf("  %s%s%s dismissed (killed pid %d)\n", dim, w.Name, reset, w.PID)
+		} else {
+			fmt.Printf("  %s%s%s dismissed (was dead)\n", dim, w.Name, reset)
+		}
 	}
 
 	reg.Wizards = reg.Wizards[:len(reg.Wizards)-count]
 	saveWizardRegistry(reg)
 	fmt.Printf("\n%d wizard(s) dismissed.\n", count)
 	return nil
+}
+
+// dismissCleanupBead removes the owner label and reopens the bead if it's still in_progress.
+func dismissCleanupBead(w localWizard) {
+	if w.BeadID == "" {
+		return
+	}
+
+	// Remove owner label.
+	storeRemoveLabel(w.BeadID, "owner:"+w.Name)
+
+	// Remove any other wizard labels.
+	storeRemoveLabel(w.BeadID, "implemented-by:"+w.Name)
+	storeRemoveLabel(w.BeadID, "review-ready")
+	storeRemoveLabel(w.BeadID, "review-feedback")
+
+	// Reopen if still in_progress.
+	if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err != nil {
+		// Not fatal — bead may already be open or closed.
+		fmt.Printf("  %s(note: could not reopen %s: %s)%s\n", dim, w.BeadID, err, reset)
+	} else {
+		fmt.Printf("  %s↺ %s reopened%s\n", yellow, w.BeadID, reset)
+	}
 }
 
 func wizardRegistryPath() string {
