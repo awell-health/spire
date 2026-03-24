@@ -38,21 +38,27 @@ type BoardDep struct {
 }
 
 type boardColumns struct {
-	Alerts  []BoardBead
-	Ready   []BoardBead
-	Working []BoardBead
-	Review  []BoardBead
-	Merged  []BoardBead
-	Blocked []BoardBead
+	Alerts    []BoardBead
+	Ready     []BoardBead
+	Design    []BoardBead
+	Plan      []BoardBead
+	Implement []BoardBead
+	Review    []BoardBead
+	Merge     []BoardBead
+	Done      []BoardBead
+	Blocked   []BoardBead
 }
 
 type boardJSON struct {
-	Alerts  []BoardBead `json:"alerts"`
-	Ready   []BoardBead `json:"ready"`
-	Working []BoardBead `json:"working"`
-	Review  []BoardBead `json:"review"`
-	Merged  []BoardBead `json:"merged"`
-	Blocked []BoardBead `json:"blocked"`
+	Alerts    []BoardBead `json:"alerts"`
+	Ready     []BoardBead `json:"ready"`
+	Design    []BoardBead `json:"design"`
+	Plan      []BoardBead `json:"plan"`
+	Implement []BoardBead `json:"implement"`
+	Review    []BoardBead `json:"review"`
+	Merge     []BoardBead `json:"merge"`
+	Done      []BoardBead `json:"done"`
+	Blocked   []BoardBead `json:"blocked"`
 }
 
 // --- Board options (shared between static and TUI mode) ---
@@ -117,12 +123,15 @@ func cmdBoard(args []string) error {
 			return err
 		}
 		out := boardJSON{
-			Alerts:  nonNil(cols.Alerts),
-			Ready:   nonNil(cols.Ready),
-			Working: nonNil(cols.Working),
-			Review:  nonNil(cols.Review),
-			Merged:  nonNil(cols.Merged),
-			Blocked: nonNil(cols.Blocked),
+			Alerts:    nonNil(cols.Alerts),
+			Ready:     nonNil(cols.Ready),
+			Design:    nonNil(cols.Design),
+			Plan:      nonNil(cols.Plan),
+			Implement: nonNil(cols.Implement),
+			Review:    nonNil(cols.Review),
+			Merge:     nonNil(cols.Merge),
+			Done:      nonNil(cols.Done),
+			Blocked:   nonNil(cols.Blocked),
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -153,8 +162,8 @@ func fetchBoard(opts boardOpts) (boardColumns, error) {
 		return boardColumns{}, fmt.Errorf("board: list open beads: %w", err)
 	}
 
-	// Fetch recently closed beads (last 24h) for the Merged column.
-	// Best effort — an empty Merged column is acceptable.
+	// Fetch recently closed beads (last 24h) for the Done column.
+	// Best effort — an empty Done column is acceptable.
 	closedBeads, _ := storeListBoardBeads(beads.IssueFilter{
 		Status: statusPtr(beads.StatusClosed),
 	})
@@ -171,21 +180,30 @@ func fetchBoard(opts boardOpts) (boardColumns, error) {
 	}
 	if opts.mine {
 		cols.Ready = nil
-		cols.Working = filterOwned(cols.Working, identity)
+		cols.Design = filterOwned(cols.Design, identity)
+		cols.Plan = filterOwned(cols.Plan, identity)
+		cols.Implement = filterOwned(cols.Implement, identity)
 		cols.Review = filterOwned(cols.Review, identity)
+		cols.Merge = filterOwned(cols.Merge, identity)
 		cols.Blocked = filterOwned(cols.Blocked, identity)
 	}
 	if opts.ready {
-		cols.Working = nil
+		cols.Design = nil
+		cols.Plan = nil
+		cols.Implement = nil
 		cols.Review = nil
-		cols.Merged = nil
+		cols.Merge = nil
+		cols.Done = nil
 		cols.Blocked = nil
 	}
 
 	sortBeads(cols.Ready)
-	sortBeads(cols.Working)
+	sortBeads(cols.Design)
+	sortBeads(cols.Plan)
+	sortBeads(cols.Implement)
 	sortBeads(cols.Review)
-	sortBeads(cols.Merged)
+	sortBeads(cols.Merge)
+	sortBeads(cols.Done)
 	sortBeads(cols.Blocked)
 
 	return cols, nil
@@ -301,9 +319,12 @@ func (m boardModel) View() string {
 	}
 	columns := []col{
 		{"READY", lipgloss.Color("2"), m.cols.Ready},
-		{"WORKING", lipgloss.Color("6"), m.cols.Working},
+		{"DESIGN", lipgloss.Color("4"), m.cols.Design},
+		{"PLAN", lipgloss.Color("6"), m.cols.Plan},
+		{"IMPLEMENT", lipgloss.Color("6"), m.cols.Implement},
 		{"REVIEW", lipgloss.Color("3"), m.cols.Review},
-		{"MERGED", lipgloss.Color("5"), m.cols.Merged},
+		{"MERGE", lipgloss.Color("5"), m.cols.Merge},
+		{"DONE", lipgloss.Color("8"), m.cols.Done},
 	}
 
 	// Filter empty columns.
@@ -316,7 +337,6 @@ func (m boardModel) View() string {
 
 	if len(active) > 0 {
 		// Render each column as a string.
-		molCache := newMoleculeProgressCache()
 		rendered := make([]string, len(active))
 		for i, c := range active {
 			var cb strings.Builder
@@ -342,11 +362,7 @@ func (m boardModel) View() string {
 					cb.WriteString("\n")
 					break
 				}
-				progress := ""
-				if c.name == "WORKING" {
-					progress = molCache.get(b.ID)
-				}
-				cb.WriteString(renderCardStr(b, c.color, colWidth, progress))
+				cb.WriteString(renderCardStr(b, c.color, colWidth))
 			}
 			rendered[i] = cb.String()
 		}
@@ -387,15 +403,15 @@ func (m boardModel) View() string {
 }
 
 // renderCardStr renders a single bead card as a multi-line string for a column.
-func renderCardStr(b BoardBead, color lipgloss.Color, width int, progress string) string {
+func renderCardStr(b BoardBead, color lipgloss.Color, width int) string {
 	titleWidth := width - 4
 	if titleWidth < 10 {
 		titleWidth = 10
 	}
 
 	typeStr := shortType(b.Type)
-	if progress != "" {
-		typeStr += " " + progress
+	if phase := getBoardBeadPhase(b); phase != "" {
+		typeStr += " [" + phase + "]"
 	}
 
 	var s strings.Builder
@@ -432,13 +448,22 @@ func countActiveCols(cols boardColumns) int {
 	if len(cols.Ready) > 0 {
 		n++
 	}
-	if len(cols.Working) > 0 {
+	if len(cols.Design) > 0 {
+		n++
+	}
+	if len(cols.Plan) > 0 {
+		n++
+	}
+	if len(cols.Implement) > 0 {
 		n++
 	}
 	if len(cols.Review) > 0 {
 		n++
 	}
-	if len(cols.Merged) > 0 {
+	if len(cols.Merge) > 0 {
+		n++
+	}
+	if len(cols.Done) > 0 {
 		n++
 	}
 	return n
@@ -502,15 +527,26 @@ func categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		if skip(b) {
 			continue
 		}
+		// Skip beads already in the Blocked column.
+		if blockedIDs[b.ID] {
+			continue
+		}
 
-		switch b.Status {
-		case "in_progress":
-			c.Working = append(c.Working, b)
-		case "open":
-			// Skip beads already in the Blocked column.
-			if !blockedIDs[b.ID] {
-				c.Ready = append(c.Ready, b)
-			}
+		phase := getBoardBeadPhase(b)
+		switch phase {
+		case "design":
+			c.Design = append(c.Design, b)
+		case "plan":
+			c.Plan = append(c.Plan, b)
+		case "implement":
+			c.Implement = append(c.Implement, b)
+		case "review":
+			c.Review = append(c.Review, b)
+		case "merge":
+			c.Merge = append(c.Merge, b)
+		default:
+			// No phase label → Ready.
+			c.Ready = append(c.Ready, b)
 		}
 	}
 
@@ -524,7 +560,7 @@ func categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 			t, err = time.Parse("2006-01-02 15:04:05", b.UpdatedAt)
 		}
 		if err == nil && t.After(cutoff) {
-			c.Merged = append(c.Merged, b)
+			c.Done = append(c.Done, b)
 		}
 	}
 
@@ -536,12 +572,15 @@ func filterEpic(cols boardColumns, epicID string) boardColumns {
 		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".")
 	}
 	return boardColumns{
-		Alerts:  filterBeads(cols.Alerts, match),
-		Ready:   filterBeads(cols.Ready, match),
-		Working: filterBeads(cols.Working, match),
-		Review:  filterBeads(cols.Review, match),
-		Merged:  filterBeads(cols.Merged, match),
-		Blocked: filterBeads(cols.Blocked, match),
+		Alerts:    filterBeads(cols.Alerts, match),
+		Ready:     filterBeads(cols.Ready, match),
+		Design:    filterBeads(cols.Design, match),
+		Plan:      filterBeads(cols.Plan, match),
+		Implement: filterBeads(cols.Implement, match),
+		Review:    filterBeads(cols.Review, match),
+		Merge:     filterBeads(cols.Merge, match),
+		Done:      filterBeads(cols.Done, match),
+		Blocked:   filterBeads(cols.Blocked, match),
 	}
 }
 
@@ -709,9 +748,12 @@ func printColumnarBoard(cols boardColumns, _ int) {
 	}
 	columns := []column{
 		{"READY", green, cols.Ready},
-		{"WORKING", cyan, cols.Working},
+		{"DESIGN", cyan, cols.Design},
+		{"PLAN", cyan, cols.Plan},
+		{"IMPLEMENT", cyan, cols.Implement},
 		{"REVIEW", yellow, cols.Review},
-		{"MERGED", magenta, cols.Merged},
+		{"MERGE", magenta, cols.Merge},
+		{"DONE", dim, cols.Done},
 	}
 
 	var active []column
@@ -765,7 +807,6 @@ func printColumnarBoard(cols boardColumns, _ int) {
 			}
 		}
 
-		molCache := newMoleculeProgressCache()
 		for row := 0; row < maxCards*4; row++ {
 			for i, col := range active {
 				if i > 0 {
@@ -774,11 +815,7 @@ func printColumnarBoard(cols boardColumns, _ int) {
 				cardIdx := row / 4
 				lineIdx := row % 4
 				if cardIdx < len(col.beads) {
-					progress := ""
-					if col.header == "WORKING" {
-						progress = molCache.get(col.beads[cardIdx].ID)
-					}
-					line := staticCardLine(col.beads[cardIdx], col.color, lineIdx, colWidth, progress)
+					line := staticCardLine(col.beads[cardIdx], col.color, lineIdx, colWidth)
 					fmt.Print(line)
 					if pad := colWidth - visibleLen(line); pad > 0 {
 						fmt.Print(strings.Repeat(" ", pad))
@@ -808,7 +845,7 @@ func printColumnarBoard(cols boardColumns, _ int) {
 	}
 }
 
-func staticCardLine(b BoardBead, color string, lineIdx, colWidth int, progress string) string {
+func staticCardLine(b BoardBead, color string, lineIdx, colWidth int) string {
 	titleWidth := colWidth - 4
 	if titleWidth < 10 {
 		titleWidth = 10
@@ -816,8 +853,8 @@ func staticCardLine(b BoardBead, color string, lineIdx, colWidth int, progress s
 	switch lineIdx {
 	case 0:
 		typeStr := shortType(b.Type)
-		if progress != "" {
-			typeStr += " " + progress
+		if phase := getBoardBeadPhase(b); phase != "" {
+			typeStr += " [" + phase + "]"
 		}
 		return fmt.Sprintf("%s %s %s", priorityStr(b.Priority), b.ID, typeStr)
 	case 1:
@@ -880,51 +917,3 @@ func clearScreen() {
 	fmt.Print("\033[2J\033[H")
 }
 
-// --- Molecule progress ---
-
-// moleculeProgress returns the progress string "(N/M)" for a bead's workflow molecule.
-// Returns "" if no molecule exists.
-func moleculeProgress(beadID string) string {
-	// Find molecule root by workflow:<beadID> label.
-	mols, _ := storeListBeads(beads.IssueFilter{
-		IDPrefix: "spi-",
-		Labels:   []string{"workflow:" + beadID},
-	})
-	if len(mols) == 0 {
-		return ""
-	}
-
-	// Get children (the step beads).
-	children, err := storeGetChildren(mols[0].ID)
-	if err != nil || len(children) == 0 {
-		return ""
-	}
-
-	total := len(children)
-	closed := 0
-	for _, c := range children {
-		if c.Status == "closed" {
-			closed++
-		}
-	}
-
-	return fmt.Sprintf("(%d/%d)", closed, total)
-}
-
-// moleculeProgressCache caches molecule progress lookups for one board render.
-type moleculeProgressCache struct {
-	cache map[string]string
-}
-
-func newMoleculeProgressCache() *moleculeProgressCache {
-	return &moleculeProgressCache{cache: make(map[string]string)}
-}
-
-func (c *moleculeProgressCache) get(beadID string) string {
-	if v, ok := c.cache[beadID]; ok {
-		return v
-	}
-	v := moleculeProgress(beadID)
-	c.cache[beadID] = v
-	return v
-}
