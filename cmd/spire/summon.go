@@ -27,6 +27,7 @@ type localWizard struct {
 	StartedAt      string `json:"started_at"`
 	Phase          string `json:"phase,omitempty"`
 	PhaseStartedAt string `json:"phase_started_at,omitempty"`
+	Tower          string `json:"tower,omitempty"`
 }
 
 func cmdSummon(args []string) error {
@@ -281,6 +282,16 @@ func summonLocal(count int) error {
 		}
 		logFile.Close() // child owns the fd now
 
+		// Resolve tower for this wizard.
+		towerName := ""
+		if tc, err := activeTowerConfig(); err == nil {
+			towerName = tc.Name
+		} else if tName := os.Getenv("SPIRE_TOWER"); tName != "" {
+			towerName = tName
+		} else if cfg, err := loadConfig(); err == nil && cfg.ActiveTower != "" {
+			towerName = cfg.ActiveTower
+		}
+
 		worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
 		if err := wizardRegistryAdd(localWizard{
 			Name:      name,
@@ -288,6 +299,7 @@ func summonLocal(count int) error {
 			BeadID:    bead.ID,
 			Worktree:  worktree,
 			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			Tower:     towerName,
 		}); err != nil {
 			log.Printf("warning: registry add for %s: %v", name, err)
 		}
@@ -304,29 +316,48 @@ func dismissLocal(count int, all bool) error {
 	reg := loadWizardRegistry()
 	// Don't clean dead wizards first — we need them to clean up bead state.
 
-	if all {
-		count = len(reg.Wizards)
+	// Resolve current tower for scoping.
+	currentTower := ""
+	if tc, err := activeTowerConfig(); err == nil {
+		currentTower = tc.Name
+	} else if tName := os.Getenv("SPIRE_TOWER"); tName != "" {
+		currentTower = tName
+	} else if cfg, err := loadConfig(); err == nil && cfg.ActiveTower != "" {
+		currentTower = cfg.ActiveTower
 	}
-	if count > len(reg.Wizards) {
-		count = len(reg.Wizards)
+
+	// Separate wizards by tower scope.
+	var scoped []localWizard
+	var other []localWizard
+	for _, w := range reg.Wizards {
+		if currentTower == "" || w.Tower == "" || w.Tower == currentTower {
+			scoped = append(scoped, w)
+		} else {
+			other = append(other, w)
+		}
+	}
+
+	if all {
+		count = len(scoped)
+	}
+	if count > len(scoped) {
+		count = len(scoped)
 	}
 	if count == 0 {
 		fmt.Println("No local wizards to dismiss.")
 		return nil
 	}
 
-	// Dismiss from the end.
+	// Dismiss from the end of scoped list.
 	for i := 0; i < count; i++ {
-		idx := len(reg.Wizards) - 1 - i
-		w := reg.Wizards[idx]
+		idx := len(scoped) - 1 - i
+		w := scoped[idx]
 		alive := w.PID > 0 && processAlive(w.PID)
 		if alive {
-			// Kill the process.
 			if proc, err := os.FindProcess(w.PID); err == nil {
 				proc.Signal(os.Interrupt)
 			}
 		}
-		// Clean up bead state: remove owner label and reopen.
 		dismissCleanupBead(w)
 		if alive {
 			fmt.Printf("  %s%s%s dismissed (killed pid %d)\n", dim, w.Name, reset, w.PID)
@@ -335,7 +366,10 @@ func dismissLocal(count int, all bool) error {
 		}
 	}
 
-	reg.Wizards = reg.Wizards[:len(reg.Wizards)-count]
+	// Rebuild: keep other tower wizards + remaining scoped wizards.
+	remaining := other
+	remaining = append(remaining, scoped[:len(scoped)-count]...)
+	reg.Wizards = remaining
 	saveWizardRegistry(reg)
 	fmt.Printf("\n%d wizard(s) dismissed.\n", count)
 	return nil
@@ -399,6 +433,20 @@ func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
 	}
 	reg.Wizards = alive
 	return reg
+}
+
+// wizardsForTower returns wizards matching the given tower (or all if tower is "").
+func wizardsForTower(reg wizardRegistry, tower string) []localWizard {
+	if tower == "" {
+		return reg.Wizards
+	}
+	var result []localWizard
+	for _, w := range reg.Wizards {
+		if w.Tower == tower {
+			result = append(result, w)
+		}
+	}
+	return result
 }
 
 // wizardRegistryLock acquires a file lock for the wizard registry.
