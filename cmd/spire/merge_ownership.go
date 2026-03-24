@@ -275,17 +275,24 @@ func repairClusterRegressions(dbName string, regressions []clusterRegression) er
 }
 
 // sqlNullableSet returns a SQL SET clause for a nullable field.
-// If the preferred value is empty or "NULL", returns "field = NULL".
-// Otherwise returns "field = 'value'".
-func sqlNullableSet(field, preferred, fallback string) string {
-	val := preferred
-	if val == "" || val == "NULL" {
-		val = fallback
-	}
-	if val == "" || val == "NULL" {
+// The authoritative value is used directly: if it is empty or "NULL",
+// the SQL clause produces NULL (the authoritative side cleared the field).
+// The fallback is only used when the authoritative value is truly absent
+// (empty string, meaning the side did not participate in the conflict —
+// e.g. a row only on one side of a merge).
+func sqlNullableSet(field, authoritative, fallback string) string {
+	if authoritative == "NULL" {
+		// Authoritative side explicitly set NULL — honor it.
 		return field + " = NULL"
 	}
-	return fmt.Sprintf("%s = '%s'", field, sqlEscape(val))
+	if authoritative != "" {
+		return fmt.Sprintf("%s = '%s'", field, sqlEscape(authoritative))
+	}
+	// Authoritative side absent — use fallback.
+	if fallback == "" || fallback == "NULL" {
+		return field + " = NULL"
+	}
+	return fmt.Sprintf("%s = '%s'", field, sqlEscape(fallback))
 }
 
 // doltSQLWithDB runs a SQL query against a specific database using --use-db.

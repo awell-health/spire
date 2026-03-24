@@ -108,23 +108,32 @@ func TestGetCurrentCommitHash_Live(t *testing.T) {
 
 func TestSqlNullableSet(t *testing.T) {
 	tests := []struct {
-		field, preferred, fallback, want string
+		field, authoritative, fallback, want string
 	}{
+		// Authoritative has a value — use it regardless of fallback.
 		{"owner", "alice", "", "owner = 'alice'"},
-		{"owner", "", "bob", "owner = 'bob'"},
-		{"owner", "NULL", "bob", "owner = 'bob'"},
-		{"owner", "", "", "owner = NULL"},
+		{"owner", "alice", "bob", "owner = 'alice'"},
+
+		// Authoritative is "NULL" — honor the explicit clear, ignore fallback.
+		{"owner", "NULL", "bob", "owner = NULL"},
 		{"owner", "NULL", "", "owner = NULL"},
 		{"owner", "NULL", "NULL", "owner = NULL"},
+
+		// Authoritative absent (empty) — fall back.
+		{"owner", "", "bob", "owner = 'bob'"},
+		{"owner", "", "", "owner = NULL"},
+		{"owner", "", "NULL", "owner = NULL"},
+
+		// Datetime fields follow the same rules.
 		{"closed_at", "2026-01-01 00:00:00", "", "closed_at = '2026-01-01 00:00:00'"},
+		{"closed_at", "NULL", "2026-01-01 00:00:00", "closed_at = NULL"},
 		{"closed_at", "", "", "closed_at = NULL"},
-		{"closed_at", "NULL", "", "closed_at = NULL"},
 	}
 	for _, tt := range tests {
-		got := sqlNullableSet(tt.field, tt.preferred, tt.fallback)
+		got := sqlNullableSet(tt.field, tt.authoritative, tt.fallback)
 		if got != tt.want {
 			t.Errorf("sqlNullableSet(%q, %q, %q) = %q, want %q",
-				tt.field, tt.preferred, tt.fallback, got, tt.want)
+				tt.field, tt.authoritative, tt.fallback, got, tt.want)
 		}
 	}
 }
