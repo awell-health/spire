@@ -3,11 +3,15 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 var version = "dev"
 
 func main() {
+	// Extract global --tower flag before dispatching to subcommands.
+	extractTowerFlag()
+
 	if len(os.Args) < 2 {
 		printUsage()
 		return
@@ -115,8 +119,28 @@ func main() {
 	}
 }
 
+// extractTowerFlag removes --tower <name> from os.Args and sets SPIRE_TOWER env.
+// This allows any spire command to target a specific tower regardless of CWD or ActiveTower config.
+func extractTowerFlag() {
+	for i := 1; i < len(os.Args); i++ {
+		if os.Args[i] == "--tower" && i+1 < len(os.Args) {
+			os.Setenv("SPIRE_TOWER", os.Args[i+1])
+			os.Args = append(os.Args[:i], os.Args[i+2:]...)
+			return
+		}
+		if strings.HasPrefix(os.Args[i], "--tower=") {
+			os.Setenv("SPIRE_TOWER", strings.TrimPrefix(os.Args[i], "--tower="))
+			os.Args = append(os.Args[:i], os.Args[i+1:]...)
+			return
+		}
+	}
+}
+
 func printUsage() {
 	fmt.Println(`Usage: spire <command> [args]
+
+Global flags:
+  --tower <name>        Override active tower for this command
 
 Setup:
   tower create          Create a new tower (--name, --dolthub, --prefix)
