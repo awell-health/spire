@@ -81,7 +81,6 @@ func cmdDoctor(args []string) error {
 			Name: "Tower",
 			Checks: []checkResult{
 				checkTowerConfig(cwd),
-				checkTowerBeadsDir(),
 				checkCredentials(),
 			},
 		},
@@ -94,9 +93,21 @@ func cmdDoctor(args []string) error {
 		cfg = &SpireConfig{Instances: make(map[string]*Instance)}
 	}
 
-	// Add registration migration check if dolt is reachable and we have instances
-	if doltIsReachable() && len(cfg.Instances) > 0 && cfg.ActiveTower != "" {
-		categories[1].Checks = append(categories[1].Checks, checkRepoMigration(cfg))
+	// Iterate all towers (or just SPIRE_TOWER if set) for tower-specific checks.
+	towers := doctorResolveTowers()
+	for _, tower := range towers {
+		tc := tower // capture for closures
+		categories[1].Checks = append(categories[1].Checks, checkTowerBeadsDirFor(&tc))
+		if doltIsReachable() && len(cfg.Instances) > 0 {
+			categories[1].Checks = append(categories[1].Checks, checkRepoMigrationFor(cfg, &tc))
+		}
+	}
+	if len(towers) == 0 {
+		categories[1].Checks = append(categories[1].Checks, checkResult{
+			Name:   "tower .beads/ data",
+			Status: statusOK,
+			Detail: "no towers configured (skipped)",
+		})
 	}
 
 	inst := findInstanceByPath(cfg, cwd)
@@ -199,13 +210,17 @@ func cmdDoctor(args []string) error {
 			Name: "Tower",
 			Checks: []checkResult{
 				checkTowerConfig(cwd),
-				checkTowerBeadsDir(),
 				checkCredentials(),
 			},
 		},
 	}
-	if doltIsReachable() && len(reCfg.Instances) > 0 && reCfg.ActiveTower != "" {
-		reCategories[1].Checks = append(reCategories[1].Checks, checkRepoMigration(reCfg))
+	reTowers := doctorResolveTowers()
+	for _, tower := range reTowers {
+		tc := tower
+		reCategories[1].Checks = append(reCategories[1].Checks, checkTowerBeadsDirFor(&tc))
+		if doltIsReachable() && len(reCfg.Instances) > 0 {
+			reCategories[1].Checks = append(reCategories[1].Checks, checkRepoMigrationFor(reCfg, &tc))
+		}
 	}
 	if inst != nil {
 		reCategories = append(reCategories, checkCategory{
@@ -453,29 +468,28 @@ func checkTowerConfig(cwd string) checkResult {
 	}
 }
 
-// checkTowerBeadsDir verifies the active tower's .beads/ directory exists in the
+// doctorResolveTowers returns the towers to check. If SPIRE_TOWER is set,
+// returns only that tower. Otherwise returns all configured towers.
+func doctorResolveTowers() []TowerConfig {
+	if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
+		tc, err := loadTowerConfig(towerName)
+		if err != nil {
+			return nil
+		}
+		return []TowerConfig{*tc}
+	}
+	towers, err := listTowerConfigs()
+	if err != nil {
+		return nil
+	}
+	return towers
+}
+
+// checkTowerBeadsDirFor verifies a tower's .beads/ directory exists in the
 // dolt data dir. If the tower config exists but .beads/ is missing, it can be
 // regenerated (same bootstrap as tower attach).
-func checkTowerBeadsDir() checkResult {
-	name := "tower .beads/ data"
-
-	cfg, err := loadConfig()
-	if err != nil || cfg.ActiveTower == "" {
-		return checkResult{
-			Name:   name,
-			Status: statusOK,
-			Detail: "no active tower (skipped)",
-		}
-	}
-
-	tower, err := loadTowerConfig(cfg.ActiveTower)
-	if err != nil {
-		return checkResult{
-			Name:   name,
-			Status: statusOK,
-			Detail: "tower config not loadable (skipped)",
-		}
-	}
+func checkTowerBeadsDirFor(tower *TowerConfig) checkResult {
+	name := fmt.Sprintf(".beads/ data [%s]", tower.Name)
 
 	dataDir := doltDataDir()
 	beadsDir := filepath.Join(dataDir, tower.Database, ".beads")
@@ -543,19 +557,10 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// checkRepoMigration checks if local config instances are missing from the
-// dolt repos table and offers to insert them. Requires dolt to be running.
-func checkRepoMigration(cfg *SpireConfig) checkResult {
-	name := "repo registrations in dolt"
-
-	tower, err := loadTowerConfig(cfg.ActiveTower)
-	if err != nil {
-		return checkResult{
-			Name:   name,
-			Status: statusOK,
-			Detail: "no active tower (skipped)",
-		}
-	}
+// checkRepoMigrationFor checks if local config instances are missing from the
+// dolt repos table for a specific tower and offers to insert them.
+func checkRepoMigrationFor(cfg *SpireConfig, tower *TowerConfig) checkResult {
+	name := fmt.Sprintf("repo registrations [%s]", tower.Name)
 
 	// Query the repos table to see which prefixes are already registered
 	query := fmt.Sprintf("SELECT prefix FROM `%s`.repos", tower.Database)
@@ -594,8 +599,8 @@ func checkRepoMigration(cfg *SpireConfig) checkResult {
 		if inst.Prefix == "" {
 			continue
 		}
-		// Only consider instances that belong to the active tower
-		if inst.Tower != "" && inst.Tower != cfg.ActiveTower {
+		// Only consider instances that belong to this tower
+		if inst.Tower != "" && inst.Tower != tower.Name {
 			continue
 		}
 		if inst.Database != "" && inst.Database != tower.Database {

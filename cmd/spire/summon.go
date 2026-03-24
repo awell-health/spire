@@ -250,7 +250,6 @@ func summonLocal(count int) error {
 
 	reg := loadWizardRegistry()
 	reg = cleanDeadWizards(reg)
-	existing := len(reg.Wizards)
 
 	spireBin, err := os.Executable()
 	if err != nil {
@@ -262,7 +261,7 @@ func summonLocal(count int) error {
 
 	for i := 0; i < count; i++ {
 		bead := candidates[i]
-		name := fmt.Sprintf("wizard-%d", existing+i+1)
+		name := "wizard-" + bead.ID
 
 		// Spawn: spire wizard-run <bead-id> --name <wizard-name>
 		logPath := filepath.Join(logDir, name+".log")
