@@ -597,6 +597,12 @@ func cmdTowerList() error {
 		activeTower = cfg.ActiveTower
 	}
 
+	// Also resolve CWD tower for display.
+	cwdTower := ""
+	if tc, err := activeTowerConfig(); err == nil {
+		cwdTower = tc.Name
+	}
+
 	fmt.Printf("  %-16s %-8s %-20s %s\n", "NAME", "PREFIX", "DATABASE", "REMOTE")
 	fmt.Printf("  %-16s %-8s %-20s %s\n", "----", "------", "--------", "------")
 	for _, t := range towers {
@@ -605,10 +611,21 @@ func cmdTowerList() error {
 			remote = t.DolthubRemote
 		}
 		marker := " "
-		if t.Name == activeTower {
-			marker = "*"
+		if t.Name == activeTower && t.Name == cwdTower {
+			marker = "*" // both active and CWD
+		} else if t.Name == cwdTower {
+			marker = ">" // CWD-resolved (not the global default)
+		} else if t.Name == activeTower {
+			marker = "~" // global default (not CWD)
 		}
 		fmt.Printf("%s %-16s %-8s %-20s %s\n", marker, t.Name, t.HubPrefix, t.Database, remote)
+	}
+
+	fmt.Println()
+	if cwdTower != "" && cwdTower != activeTower {
+		fmt.Printf("  > = current directory    ~ = global default\n")
+	} else {
+		fmt.Printf("  * = active tower\n")
 	}
 	return nil
 }
@@ -623,6 +640,33 @@ func cmdTowerUse(name string) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Warn about running wizards for the old tower.
+	if cfg.ActiveTower != "" && cfg.ActiveTower != name {
+		reg := loadWizardRegistry()
+		reg = cleanDeadWizards(reg)
+		var running []localWizard
+		for _, w := range reg.Wizards {
+			// Check if wizard's bead prefix matches old tower's instances.
+			for _, inst := range cfg.Instances {
+				if inst.Tower == cfg.ActiveTower {
+					prefix := inst.Prefix + "-"
+					if strings.HasPrefix(w.BeadID, prefix) {
+						running = append(running, w)
+						break
+					}
+				}
+			}
+		}
+		if len(running) > 0 {
+			fmt.Printf("Warning: %d wizard(s) running for tower %q:\n", len(running), cfg.ActiveTower)
+			for _, w := range running {
+				fmt.Printf("  %s (pid %d) working on %s\n", w.Name, w.PID, w.BeadID)
+			}
+			fmt.Println("These will continue using the old tower until they complete.")
+			fmt.Println()
+		}
 	}
 
 	cfg.ActiveTower = name
