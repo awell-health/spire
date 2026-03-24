@@ -112,7 +112,10 @@ func cmdBoard(args []string) error {
 	}
 
 	if flagJSON {
-		cols := fetchBoard(opts)
+		cols, err := fetchBoard(opts)
+		if err != nil {
+			return err
+		}
 		out := boardJSON{
 			Alerts:  nonNil(cols.Alerts),
 			Ready:   nonNil(cols.Ready),
@@ -131,25 +134,33 @@ func cmdBoard(args []string) error {
 	}
 
 	// Static one-shot.
-	cols := fetchBoard(opts)
+	cols, err := fetchBoard(opts)
+	if err != nil {
+		return err
+	}
 	printColumnarBoard(cols, 0)
 	return nil
 }
 
 // --- Data fetching ---
 
-func fetchBoard(opts boardOpts) boardColumns {
+func fetchBoard(opts boardOpts) (boardColumns, error) {
 	// Fetch open + in_progress beads via store API.
-	openBeads, _ := storeListBoardBeads(beads.IssueFilter{
+	openBeads, err := storeListBoardBeads(beads.IssueFilter{
 		ExcludeStatus: []beads.Status{beads.StatusClosed},
 	})
+	if err != nil {
+		return boardColumns{}, fmt.Errorf("board: list open beads: %w", err)
+	}
 
 	// Fetch recently closed beads (last 24h) for the Merged column.
+	// Best effort — an empty Merged column is acceptable.
 	closedBeads, _ := storeListBoardBeads(beads.IssueFilter{
 		Status: statusPtr(beads.StatusClosed),
 	})
 
 	// Fetch blocked beads with blocker IDs.
+	// Best effort — without this, blocked beads appear in Ready instead.
 	blockedBeads, _ := storeGetBlockedIssues(beads.WorkFilter{})
 
 	identity, _ := detectIdentity("")
@@ -177,7 +188,7 @@ func fetchBoard(opts boardOpts) boardColumns {
 	sortBeads(cols.Merged)
 	sortBeads(cols.Blocked)
 
-	return cols
+	return cols, nil
 }
 
 // --- Bubbletea TUI ---
@@ -198,13 +209,17 @@ func tickCmd(interval time.Duration) tea.Cmd {
 }
 
 func runBoardTUI(opts boardOpts) error {
+	cols, err := fetchBoard(opts)
+	if err != nil {
+		return err
+	}
 	m := boardModel{
 		opts:     opts,
-		cols:     fetchBoard(opts),
+		cols:     cols,
 		lastTick: time.Now(),
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
+	_, err = p.Run()
 	return err
 }
 
@@ -224,7 +239,9 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tickMsg:
-		m.cols = fetchBoard(m.opts)
+		if cols, err := fetchBoard(m.opts); err == nil {
+			m.cols = cols
+		}
 		m.lastTick = time.Now()
 		return m, tickCmd(m.opts.interval)
 	}
@@ -464,7 +481,10 @@ func categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		return false
 	}
 
-	// Build a set of blocked IDs for fast lookup.
+	// Build a set of blocked IDs for fast lookup. Blocked beads are authoritative
+	// from storeGetBlockedIssues (which includes blocker metadata); openBeads will
+	// also contain these same beads (status=open), but we skip them via blockedIDs
+	// so the Blocked column uses the richer representation with dependency info.
 	blockedIDs := make(map[string]bool, len(blockedBeads))
 	for _, b := range blockedBeads {
 		if skip(b) {

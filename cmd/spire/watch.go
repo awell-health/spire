@@ -288,7 +288,7 @@ func renderEpicWatch(epicID string) error {
 		case "in_progress":
 			working++
 		case "open":
-			if blockedMap[b.ID].ID != "" {
+			if _, ok := blockedMap[b.ID]; ok {
 				blocked++
 			} else {
 				ready++
