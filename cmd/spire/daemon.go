@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -118,6 +119,8 @@ func runTowerCycle(tower TowerConfig) {
 	daemonDB = tower.Database
 	defer func() { daemonDB = "" }()
 
+	runDoltSync(tower)
+
 	ensureWebhookQueue()
 
 	epicsSynced := syncEpicsToLinear()
@@ -179,6 +182,51 @@ func processWebhookEvents() (int, int) {
 	}
 
 	return processed, errors
+}
+
+// runDoltSync pulls from and pushes to the DoltHub remote for the given tower.
+// Called at the start of each runTowerCycle to keep the database in sync with
+// the remote before running Linear sync and webhook processing.
+// Non-fatal: missing remote or auth errors are logged and skipped.
+func runDoltSync(tower TowerConfig) {
+	if tower.DolthubRemote == "" {
+		// No remote configured — not an error, just not set up for DoltHub sync.
+		return
+	}
+
+	dataDir := filepath.Join(doltDataDir(), tower.Database)
+
+	// Sync CLI remote config (.dolt/config.json) to match the tower's stored remote.
+	setDoltCLIRemote(dataDir, "origin", tower.DolthubRemote)
+
+	// Inject credentials; defer cleanup so they don't leak into the rest of the
+	// daemon cycle after runDoltSync returns.
+	if user := getCredential(CredKeyDolthubUser); user != "" {
+		os.Setenv("DOLT_REMOTE_USER", user)
+		defer os.Unsetenv("DOLT_REMOTE_USER")
+	}
+	if pass := getCredential(CredKeyDolthubPassword); pass != "" {
+		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
+	}
+
+	// Pull first — work with the freshest remote state before Linear sync.
+	if err := doltCLIPull(dataDir, false); err != nil {
+		log.Printf("[daemon] [%s] dolt pull: %s", tower.Name, err)
+		return
+	}
+	log.Printf("[daemon] [%s] dolt pull complete", tower.Name)
+
+	// Push local commits to the remote.
+	if err := doltCLIPush(dataDir, false); err != nil {
+		if strings.Contains(err.Error(), "non-fast-forward") || strings.Contains(err.Error(), "no common ancestor") {
+			log.Printf("[daemon] [%s] dolt push: non-fast-forward, skipping (will retry next cycle)", tower.Name)
+		} else {
+			log.Printf("[daemon] [%s] dolt push: %s", tower.Name, err)
+		}
+		return
+	}
+	log.Printf("[daemon] [%s] dolt push complete", tower.Name)
 }
 
 // ensureWebhookQueue creates the webhook_queue table if it doesn't exist.

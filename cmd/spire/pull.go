@@ -18,14 +18,15 @@ func cmdPull(args []string) error {
 		case args[i] == "--help" || args[i] == "-h":
 			fmt.Print(`Usage: spire pull [--force] [<dolthub-url>]
 
-Pull the beads database from a DoltHub remote.
+Pull the beads database from a DoltHub remote (fast-forward).
 Counterpart to 'spire push'.
 
-By default, runs a normal pull (three-way merge). If histories have diverged
-and the pull fails, it tells you and suggests --force.
+If histories have diverged and the fast-forward pull fails:
+  - Run 'spire sync --merge' to attempt a three-way merge (preserves both sides).
+  - Run 'spire pull --force' to overwrite local history with the remote (destructive).
 
 Options:
-  --force        Force pull, overwriting local history.
+  --force        Force pull, overwriting local history with the remote.
 
 Arguments:
   <dolthub-url>  Optional. Sets (or replaces) the 'origin' remote before pulling.
@@ -40,6 +41,7 @@ Examples:
   spire pull                              # pull from existing remote
   spire pull awell/my-db                 # set remote and pull
   spire pull --force                      # force pull (overwrite local)
+  spire sync --merge                      # three-way merge for diverged histories
 `)
 			return nil
 		default:
@@ -111,7 +113,10 @@ func runPull(remoteURL string, force bool) error {
 			strings.Contains(err.Error(), "cannot merge")) {
 			fmt.Println("  Pull failed — histories have diverged.")
 			fmt.Println()
-			fmt.Println("  To resolve, re-run with --force:")
+			fmt.Println("  To attempt a three-way merge (preserves both sides), run:")
+			fmt.Println("    spire sync --merge")
+			fmt.Println()
+			fmt.Println("  To overwrite local history with the remote (destructive), run:")
 			fmt.Println("    spire pull --force")
 			return fmt.Errorf("pull failed (diverged histories)")
 		}
