@@ -54,6 +54,8 @@ func main() {
 		err = cmdPush(args)
 	case "pull":
 		err = cmdPull(args)
+	case "sync":
+		err = cmdSync(args)
 	case "repo":
 		err = cmdRepo(args)
 	case "up":
@@ -131,7 +133,8 @@ Setup:
 
 Sync:
   push [url]            Push local database to DoltHub
-  pull [url]            Pull from DoltHub (--force)
+  pull [url]            Pull from DoltHub (fast-forward; --force to overwrite)
+  sync --merge          Three-way merge pull for diverged histories
 
 Lifecycle:
   up                    Start dolt server + daemon (--interval)
