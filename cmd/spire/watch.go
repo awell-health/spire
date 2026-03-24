@@ -7,9 +7,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/steveyegge/beads"
 )
 
 func cmdWatch(args []string) error {
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
 	if err := requireDolt(); err != nil {
 		return err
 	}
@@ -73,13 +78,20 @@ func renderWatch(epicID string) error {
 }
 
 // renderTowerWatch shows all active work across the tower.
-// Uses bdJSON because hasBlockingDeps needs dependency data
-// that SearchIssues does not populate.
 func renderTowerWatch() error {
-	// Load all beads.
-	var allBeads []BoardBead
-	if err := bdJSON(&allBeads, "list"); err != nil {
+	// Load open beads via store API.
+	allBeads, err := storeListBoardBeads(beads.IssueFilter{
+		ExcludeStatus: []beads.Status{beads.StatusClosed},
+	})
+	if err != nil {
 		return fmt.Errorf("watch: %w", err)
+	}
+
+	// Load blocked beads to distinguish ready from blocked.
+	blockedBeads, _ := storeGetBlockedIssues(beads.WorkFilter{})
+	blockedIDs := make(map[string]bool, len(blockedBeads))
+	for _, b := range blockedBeads {
+		blockedIDs[b.ID] = true
 	}
 
 	// Build set of alive wizard PIDs from the local registry.
@@ -91,9 +103,11 @@ func renderTowerWatch() error {
 		}
 	}
 
-	// Load agents.
-	var agentBeads []BoardBead
-	_ = bdJSON(&agentBeads, "list", "--label", "agent", "--status=open")
+	// Load agents via store API.
+	agentBeads, _ := storeListBoardBeads(beads.IssueFilter{
+		Labels: []string{"agent"},
+		Status: statusPtr(beads.StatusOpen),
+	})
 
 	// Count wizards (only alive ones).
 	wizardCount := 0
@@ -129,7 +143,7 @@ func renderTowerWatch() error {
 				working = append(working, b)
 			}
 		case "open":
-			if !hasBlockingDeps(b) {
+			if !blockedIDs[b.ID] {
 				ready = append(ready, b)
 			}
 		}
@@ -203,18 +217,26 @@ func renderTowerWatch() error {
 }
 
 // renderEpicWatch shows progress for a specific epic and its children.
-// Uses bdJSON because hasBlockingDeps needs dependency data
-// that SearchIssues does not populate.
 func renderEpicWatch(epicID string) error {
-	// Load the epic.
-	var allBeads []BoardBead
-	if err := bdJSON(&allBeads, "list"); err != nil {
+	// Load open beads via store API.
+	allBeads, err := storeListBoardBeads(beads.IssueFilter{
+		ExcludeStatus: []beads.Status{beads.StatusClosed},
+	})
+	if err != nil {
 		return fmt.Errorf("watch: %w", err)
 	}
 
 	// Also load closed beads.
-	var closedBeads []BoardBead
-	_ = bdJSON(&closedBeads, "list", "--status=closed")
+	closedBeads, _ := storeListBoardBeads(beads.IssueFilter{
+		Status: statusPtr(beads.StatusClosed),
+	})
+
+	// Load blocked beads for blocker IDs.
+	blockedBeads, _ := storeGetBlockedIssues(beads.WorkFilter{})
+	blockedMap := make(map[string]BoardBead, len(blockedBeads))
+	for _, b := range blockedBeads {
+		blockedMap[b.ID] = b
+	}
 
 	// Find the epic.
 	var epic *BoardBead
@@ -266,7 +288,7 @@ func renderEpicWatch(epicID string) error {
 		case "in_progress":
 			working++
 		case "open":
-			if hasBlockingDeps(b) {
+			if blockedMap[b.ID].ID != "" {
 				blocked++
 			} else {
 				ready++
@@ -311,8 +333,8 @@ func renderEpicWatch(epicID string) error {
 			icon = cyan + "◐" + reset
 			detail = fmt.Sprintf("%s%s%s  %s", cyan, owner, reset, elapsed)
 		case "open":
-			if hasBlockingDeps(b) {
-				blockers := blockingDepIDs(b)
+			if bb, ok := blockedMap[b.ID]; ok {
+				blockers := blockingDepIDs(bb)
 				icon = dim + "○" + reset
 				detail = fmt.Sprintf("%sblocked by %s%s", dim, strings.Join(blockers, ", "), reset)
 			} else {

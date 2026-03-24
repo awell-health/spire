@@ -50,6 +50,10 @@ type k8sPod struct {
 }
 
 func cmdRoster(args []string) error {
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
+
 	flagJSON := false
 	for _, arg := range args {
 		switch arg {

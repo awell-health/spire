@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/steveyegge/beads"
 )
 
 // SpireConfig is the global Spire configuration stored at ~/.config/spire/config.json.
@@ -139,4 +141,46 @@ func removeFromPaths(inst *Instance, path string) {
 		}
 	}
 	inst.Paths = updated
+}
+
+// resolveBeadsDir returns a .beads/ directory path that can be used to open a store.
+// Resolution order:
+//  1. BEADS_DIR env var (explicit override)
+//  2. beads.FindBeadsDir() (walk up from cwd)
+//  3. First instance matching the active tower in spire config
+//  4. First instance in spire config (any tower)
+//
+// Returns "" if no .beads/ directory can be found.
+func resolveBeadsDir() string {
+	if d := os.Getenv("BEADS_DIR"); d != "" {
+		return d
+	}
+	if d := beads.FindBeadsDir(); d != "" {
+		return d
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return ""
+	}
+	// Prefer an instance from the active tower.
+	if cfg.ActiveTower != "" {
+		for _, inst := range cfg.Instances {
+			if inst.Tower == cfg.ActiveTower && inst.Path != "" {
+				d := filepath.Join(inst.Path, ".beads")
+				if info, err := os.Stat(d); err == nil && info.IsDir() {
+					return d
+				}
+			}
+		}
+	}
+	// Fall back to any instance.
+	for _, inst := range cfg.Instances {
+		if inst.Path != "" {
+			d := filepath.Join(inst.Path, ".beads")
+			if info, err := os.Stat(d); err == nil && info.IsDir() {
+				return d
+			}
+		}
+	}
+	return ""
 }

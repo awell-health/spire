@@ -3,12 +3,17 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/steveyegge/beads"
 )
 
 func cmdCollect(args []string) error {
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
+
 	var jsonOut bool
 	var remaining []string
 	for _, arg := range args {

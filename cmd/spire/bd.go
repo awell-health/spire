@@ -13,9 +13,8 @@
 //   - spire_test.go: bd close --force (no store equivalent), bd mol progress
 //
 // bdJSON() callers:
-//   - watch.go: bd list (hasBlockingDeps needs dependency data that SearchIssues doesn't populate)
-//   - board.go: bd list (same dependency data constraint as watch.go)
 //   - spire_test.go: TestIntegrationBdJSON
+// NOTE: board.go and watch.go have been migrated to the store API + storeGetBlockedIssues.
 package main
 
 import (

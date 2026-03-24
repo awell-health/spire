@@ -397,6 +397,43 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	return filtered, nil
 }
 
+// storeGetBlockedIssues returns open beads that have unresolved blocking dependencies.
+func storeGetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
+	store, err := ensureStore()
+	if err != nil {
+		return nil, err
+	}
+	blocked, err := store.GetBlockedIssues(storeCtx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("get blocked issues: %w", err)
+	}
+	result := make([]BoardBead, 0, len(blocked))
+	for _, bi := range blocked {
+		bb := BoardBead{
+			ID:              bi.ID,
+			Title:           bi.Title,
+			Description:     bi.Description,
+			Status:          string(bi.Status),
+			Priority:        bi.Priority,
+			Type:            string(bi.IssueType),
+			Owner:           bi.Owner,
+			CreatedAt:       bi.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:       bi.UpdatedAt.Format(time.RFC3339),
+			Labels:          bi.Labels,
+			DependencyCount: bi.BlockedByCount,
+		}
+		for _, blockerID := range bi.BlockedBy {
+			bb.Dependencies = append(bb.Dependencies, BoardDep{
+				IssueID:     bi.ID,
+				DependsOnID: blockerID,
+				Type:        "blocks",
+			})
+		}
+		result = append(result, bb)
+	}
+	return result, nil
+}
+
 // storeGetComments returns comments for a bead.
 func storeGetComments(id string) ([]*beads.Comment, error) {
 	store, err := ensureStore()

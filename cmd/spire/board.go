@@ -65,6 +65,10 @@ type boardOpts struct {
 }
 
 func cmdBoard(args []string) error {
+	// Resolve .beads/ directory so board works from any directory.
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
 	if err := requireDolt(); err != nil {
 		return err
 	}
@@ -135,14 +139,21 @@ func cmdBoard(args []string) error {
 // --- Data fetching ---
 
 func fetchBoard(opts boardOpts) boardColumns {
-	var allBeads []BoardBead
-	bdJSON(&allBeads, "list") //nolint:errcheck
+	// Fetch open + in_progress beads via store API.
+	openBeads, _ := storeListBoardBeads(beads.IssueFilter{
+		ExcludeStatus: []beads.Status{beads.StatusClosed},
+	})
 
-	var closedBeads []BoardBead
-	bdJSON(&closedBeads, "list", "--status=closed") //nolint:errcheck
+	// Fetch recently closed beads (last 24h) for the Merged column.
+	closedBeads, _ := storeListBoardBeads(beads.IssueFilter{
+		Status: statusPtr(beads.StatusClosed),
+	})
+
+	// Fetch blocked beads with blocker IDs.
+	blockedBeads, _ := storeGetBlockedIssues(beads.WorkFilter{})
 
 	identity, _ := detectIdentity("")
-	cols := categorizeColumns(allBeads, closedBeads, identity)
+	cols := categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, identity)
 
 	if opts.epic != "" {
 		cols = filterEpic(cols, opts.epic)
@@ -430,7 +441,9 @@ func priStr(p int) string {
 
 // --- Shared helpers (used by both static and TUI) ---
 
-func categorizeColumns(beads, closedBeads []BoardBead, identity string) boardColumns {
+// categorizeColumnsFromStore builds board columns from store API results.
+// blockedBeads come from GetBlockedIssues and already have blocker metadata.
+func categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead, identity string) boardColumns {
 	var c boardColumns
 
 	isAlert := func(b BoardBead) bool {
@@ -451,7 +464,17 @@ func categorizeColumns(beads, closedBeads []BoardBead, identity string) boardCol
 		return false
 	}
 
-	for _, b := range beads {
+	// Build a set of blocked IDs for fast lookup.
+	blockedIDs := make(map[string]bool, len(blockedBeads))
+	for _, b := range blockedBeads {
+		if skip(b) {
+			continue
+		}
+		blockedIDs[b.ID] = true
+		c.Blocked = append(c.Blocked, b)
+	}
+
+	for _, b := range openBeads {
 		if isAlert(b) && b.Status == "open" {
 			c.Alerts = append(c.Alerts, b)
 			continue
@@ -464,9 +487,8 @@ func categorizeColumns(beads, closedBeads []BoardBead, identity string) boardCol
 		case "in_progress":
 			c.Working = append(c.Working, b)
 		case "open":
-			if hasBlockingDeps(b) {
-				c.Blocked = append(c.Blocked, b)
-			} else {
+			// Skip beads already in the Blocked column.
+			if !blockedIDs[b.ID] {
 				c.Ready = append(c.Ready, b)
 			}
 		}
@@ -529,18 +551,6 @@ func isCurrentUser(claimedBy, identity string) bool {
 	return claimedBy == identity ||
 		strings.EqualFold(claimedBy, identity) ||
 		strings.Contains(claimedBy, identity)
-}
-
-func hasBlockingDeps(b BoardBead) bool {
-	if b.DependencyCount > 0 {
-		return true
-	}
-	for _, d := range b.Dependencies {
-		if d.Type == "blocks" {
-			return true
-		}
-	}
-	return false
 }
 
 func blockingDepIDs(b BoardBead) []string {
