@@ -86,6 +86,13 @@ func runSync() error {
 		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
 	}
 
+	// ── Record pre-merge commit for ownership enforcement ────────────────────
+	dbName := readBeadsDBName()
+	preCommit := ""
+	if dbName != "" {
+		preCommit = getCurrentCommitHash(dbName)
+	}
+
 	// ── Three-way merge: fetch then merge ─────────────────────────────────────
 	// dolt pull fails on diverged histories (fast-forward only). Instead we run
 	// dolt fetch (updates remotes/origin/main) then dolt merge (three-way merge),
@@ -93,18 +100,36 @@ func runSync() error {
 	fmt.Println("  Fetching from origin...")
 	mergeOut, err := doltCLIFetchMerge(dataDir)
 	if err != nil {
-		fmt.Println("  Merge failed — dolt output:")
-		fmt.Println()
-		fmt.Println(err.Error())
-		fmt.Println()
-		fmt.Println("  Resolve any conflicts manually, then commit with:")
-		fmt.Println("    bd vc commit -m 'resolve merge conflicts'")
-		return fmt.Errorf("sync --merge failed")
+		// Merge failed — try automatic conflict resolution before giving up.
+		if dbName != "" {
+			resolved, resolveErr := resolveIssueConflicts(dbName)
+			if resolveErr == nil && resolved > 0 {
+				fmt.Printf("  Auto-resolved %d conflict(s) with field-level ownership rules.\n", resolved)
+				err = nil // conflicts were resolved
+			}
+		}
+		if err != nil {
+			fmt.Println("  Merge failed — dolt output:")
+			fmt.Println()
+			fmt.Println(err.Error())
+			fmt.Println()
+			fmt.Println("  Resolve any conflicts manually, then commit with:")
+			fmt.Println("    bd vc commit -m 'resolve merge conflicts'")
+			return fmt.Errorf("sync --merge failed")
+		}
 	}
 
 	if mergeOut != "" {
 		fmt.Println(mergeOut)
 	}
+
+	// ── Enforce field-level ownership ─────────────────────────────────────────
+	if dbName != "" && preCommit != "" {
+		if ownerErr := applyMergeOwnership(dbName, preCommit); ownerErr != nil {
+			fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
+		}
+	}
+
 	fmt.Println("  Merge complete.")
 	fmt.Println()
 	bd("status") //nolint

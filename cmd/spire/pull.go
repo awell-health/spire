@@ -104,6 +104,13 @@ func runPull(remoteURL string, force bool) error {
 		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
 	}
 
+	// ── Record pre-pull commit for ownership enforcement ─────────────────────
+	dbName := readBeadsDBName()
+	preCommit := ""
+	if dbName != "" {
+		preCommit = getCurrentCommitHash(dbName)
+	}
+
 	// ── Pull via dolt CLI ─────────────────────────────────────────────────────
 	fmt.Println("  Pulling from origin...")
 	if err := doltCLIPull(dataDir, force); err != nil {
@@ -121,6 +128,13 @@ func runPull(remoteURL string, force bool) error {
 			return fmt.Errorf("pull failed (diverged histories)")
 		}
 		return fmt.Errorf("dolt pull: %w", err)
+	}
+
+	// ── Enforce field-level ownership ─────────────────────────────────────────
+	if dbName != "" && preCommit != "" {
+		if ownerErr := applyMergeOwnership(dbName, preCommit); ownerErr != nil {
+			fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
+		}
 	}
 
 	fmt.Println("  Pull complete.")

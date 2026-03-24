@@ -251,6 +251,9 @@ func runDoltSync(tower TowerConfig) {
 		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
 	}
 
+	// Record pre-pull commit for ownership enforcement.
+	preCommit := getCurrentCommitHash(tower.Database)
+
 	// Pull first — work with the freshest remote state before Linear sync.
 	if err := doltCLIPull(dataDir, false); err != nil {
 		log.Printf("[daemon] [%s] dolt pull: %s", tower.Name, err)
@@ -258,6 +261,11 @@ func runDoltSync(tower TowerConfig) {
 		return
 	}
 	log.Printf("[daemon] [%s] dolt pull complete", tower.Name)
+
+	// Enforce field-level ownership after pull.
+	if err := applyMergeOwnership(tower.Database, preCommit); err != nil {
+		log.Printf("[daemon] [%s] ownership enforcement: %s", tower.Name, err)
+	}
 
 	// Push local commits to the remote.
 	if err := doltCLIPush(dataDir, false); err != nil {
