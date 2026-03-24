@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
-	github.com/steveyegge/beads v0.0.0-00010101000000-000000000000
+	github.com/steveyegge/beads v0.62.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -52,5 +52,3 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 )
-
-replace github.com/steveyegge/beads => /Users/jb/dev/beads
