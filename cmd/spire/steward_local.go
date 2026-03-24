@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/steveyegge/beads"
 )
 
 // StewardMode controls how the steward manages agents.
@@ -162,15 +163,37 @@ func localRoster() []string {
 	return names
 }
 
-// localBusyAgents returns a set of wizard names that have a live local process.
+// localBusyAgents returns a set of wizard names that are currently busy.
+// A wizard is busy if either:
+//   - it has a live PID file (process is running), or
+//   - it owns an in_progress bead (survives crashes and the spawn stub case
+//     where no PID file is written yet).
+//
 // Used in place of findBusyAgents() in local mode.
 func localBusyAgents() map[string]bool {
-	reg := loadWizardRegistry()
 	busy := make(map[string]bool)
+
+	// Signal 1: live PID file.
+	reg := loadWizardRegistry()
 	for _, w := range reg.Wizards {
 		if isWizardRunning(w.Name) {
 			busy[w.Name] = true
 		}
 	}
+
+	// Signal 2: bead ownership — a wizard assigned a bead is busy even if its
+	// process hasn't started yet or its PID file was lost after a crash.
+	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
+	if err != nil {
+		log.Printf("[steward] localBusyAgents: bead ownership check failed: %s", err)
+		return busy
+	}
+	for _, b := range inProgress {
+		owner := hasLabel(b, "owner:")
+		if owner != "" {
+			busy[owner] = true
+		}
+	}
+
 	return busy
 }
