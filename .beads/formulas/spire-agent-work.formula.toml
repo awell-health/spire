@@ -1,63 +1,27 @@
-description = "Standard agent work protocol. Focus -> design -> implement in worktree -> review -> merge."
-formula = "spire-agent-work"
-type = "workflow"
-version = 1
+name = "spire-agent-work"
+description = "Standard agent work protocol: design → implement → review → merge."
+version = 2
 
-[[steps]]
-id = "design"
-title = "Design approach for {{task}}"
-description = "Read the task, explore relevant code, form a plan. Do not write code yet."
+[phases.design]
+timeout = "10m"
+context = ["CLAUDE.md", "PLAYBOOK.md"]
 
-[[steps]]
-id = "implement"
-title = "Implement {{task}}"
-description = """
-Implement in an isolated git worktree. The bead ID is used for naming.
+[phases.implement]
+timeout = "15m"
+model = "claude-sonnet-4-6"
+context = ["CLAUDE.md", "PLAYBOOK.md"]
 
-Setup:
-  git worktree add .worktrees/{{task}} -b feat/{{task}}
-  cd .worktrees/{{task}} && npm install  # if applicable
+[phases.review]
+timeout = "10m"
+model = "claude-opus-4-6"
+context = ["CLAUDE.md"]
 
-Rules:
-  - Work ONLY within .worktrees/{{task}}
-  - Commit all changes to branch feat/{{task}}
-  - Run tests and verify your work compiles
-  - Do NOT merge, push, or touch other branches
+[phases.review.revision_policy]
+max_rounds = 3
+arbiter_model = "claude-opus-4-6"
 
-When done, report: branch name, what changed, test results.
-"""
-needs = ["design"]
+[phases.merge]
 
-[[steps]]
-id = "review"
-title = "Review implementation of {{task}}"
-description = """
-Review the implementation on branch feat/{{task}}.
-
-  cd .worktrees/{{task}}
-  # Run full test suite
-  # Verify build passes
-  # Check changes against the original task requirements
-
-If issues found, fix them on the same branch and re-verify.
-"""
-needs = ["implement"]
-
-[[steps]]
-id = "merge"
-title = "Merge {{task}}"
-description = """
-Merge the worktree branch into the current working branch.
-
-  git merge feat/{{task}} --no-ff -m "Merge feat/{{task}}: <summary>"
-  # Run tests on merged result
-  # Clean up:
-  git worktree remove .worktrees/{{task}}
-  git branch -d feat/{{task}}
-"""
-needs = ["review"]
-
-[vars]
 [vars.task]
 description = "The bead ID being worked on"
 required = true
