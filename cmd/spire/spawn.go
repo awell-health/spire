@@ -58,13 +58,14 @@ type SpawnConfig struct {
 }
 
 // NewSpawner returns an AgentSpawner for the given backend.
-// Supported: "process" (default). Future: "docker", "k8s".
+// Supported: "process" (default), "docker". Future: "k8s".
 func NewSpawner(backend string) AgentSpawner {
 	switch backend {
 	case "process", "":
 		return &processSpawner{}
+	case "docker":
+		return newDockerSpawner()
 	default:
-		// TODO(spi-1dl.2): "docker" → &dockerSpawner{}
 		// TODO(spi-1dl.5): "k8s" → &k8sSpawner{}
 		log.Printf("[spawn] unknown backend %q, falling back to process", backend)
 		return &processSpawner{}

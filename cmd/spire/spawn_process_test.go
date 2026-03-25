@@ -139,9 +139,9 @@ func TestNewSpawner_Empty(t *testing.T) {
 }
 
 func TestNewSpawner_Unknown(t *testing.T) {
-	s := NewSpawner("docker")
+	s := NewSpawner("nonexistent")
 	if _, ok := s.(*processSpawner); !ok {
-		t.Errorf("NewSpawner(\"docker\") returned %T, want *processSpawner (fallback)", s)
+		t.Errorf("NewSpawner(\"nonexistent\") returned %T, want *processSpawner (fallback)", s)
 	}
 }
 
