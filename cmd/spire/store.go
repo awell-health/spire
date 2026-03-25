@@ -181,6 +181,8 @@ func parseIssueType(s string) beads.IssueType {
 		return beads.TypeEpic
 	case "chore":
 		return beads.TypeChore
+	case "design":
+		return beads.IssueType("design")
 	default:
 		return beads.TypeTask
 	}
@@ -377,11 +379,15 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 
 	result := issuesToBeads(issues)
 
-	// Post-filter: exclude workflow step beads and message beads
+	// Post-filter: exclude workflow step beads, message beads, and design beads
 	var filtered []Bead
 	for _, b := range result {
 		// Skip message beads
 		if containsLabel(b, "msg") {
+			continue
+		}
+		// Skip design beads (thinking artifacts, not work items)
+		if b.Type == "design" {
 			continue
 		}
 		// Skip workflow step beads (parent carries workflow:* label)

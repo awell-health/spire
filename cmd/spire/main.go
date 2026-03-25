@@ -50,6 +50,8 @@ func main() {
 		err = cmdSteward(args)
 	case "file":
 		err = cmdFile(args)
+	case "design":
+		err = cmdDesign(args)
 	case "spec":
 		err = cmdSpec(args)
 	case "claim":
@@ -179,6 +181,7 @@ Lifecycle:
 
 Work:
   file <title> [flags]  Create a bead (--prefix, -t type, -p priority)
+  design <title>        Create a design bead (brainstorm/exploration artifact)
   spec <title> [flags]  Scaffold a spec and file it (--no-file, --break <id>)
   claim <bead-id>       Pull, verify, claim, push (atomic)
   focus <bead-id>       Focus on a task (bonds workflow on first focus)

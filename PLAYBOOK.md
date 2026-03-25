@@ -129,6 +129,7 @@ spire status                        # what's running
 spire claim spi-abc                 # verify + claim (always do this first)
 spire focus spi-abc                 # assemble context, pour molecule if needed
 spire file "Title" -t task -p 2     # create a bead via spire
+spire design "Title" -p 2           # create a design bead (brainstorm artifact)
 spire board                         # kanban view
 spire board --json                  # machine-readable board
 ```
@@ -244,6 +245,28 @@ out, err := bdJSON("list")
 ```
 
 The `bd()` helper is only used for molecule operations (`bd cook`, `bd mol pour`) that don't have store API equivalents yet.
+
+### Design beads
+
+Design beads (`-t design`) are thinking artifacts, not work items. They capture brainstorming, exploration, rejected approaches, and design decisions.
+
+```bash
+spire design "Auth system overhaul" -p 2   # create design bead
+bd comments add spi-xxx "approach A: ..."   # capture thinking incrementally
+bd comments add spi-xxx "rejected because..."
+bd close spi-xxx                            # close when settled
+
+# then create work and link:
+spire file "Auth overhaul" -t epic -p 1 --label "ref:spi-xxx"
+```
+
+Design beads are:
+- **Visible** on the board (they're real beads)
+- **Not work items** — filtered out of `bd ready` and `spire summon`
+- **Not formula-driven** — no phases, no wizard, no lifecycle
+- **Linked** to work items via `ref:` labels (surfaced by `spire focus`)
+
+Use the `/spire-design` skill to brainstorm interactively. It creates the design bead at the start and captures decisions as the conversation progresses.
 
 ### Phase labels (convention)
 
