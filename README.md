@@ -119,14 +119,14 @@ spire board                  # kanban columns: Ready → Working → Review → 
 spire board --epic spi-x2mk  # scoped to one epic
 spire watch                  # live tower status
 spire watch spi-x2mk         # live epic progress with countdown
-spire roster                 # who's in the tower, what they're working on
+spire roster                 # work grouped by epic, plus underlying agent processes
 ```
 
 ### Manage capacity
 
 ```bash
 spire summon 3               # conjure 3 wizards
-spire summon --for spi-x2mk  # summon enough for this epic's ready children
+spire summon --targets spi-x2mk,spi-x2mk.1  # run exact bead IDs
 spire dismiss 1              # send one home
 spire roster                 # check capacity
 ```

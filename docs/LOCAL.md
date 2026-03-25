@@ -311,10 +311,10 @@ ownership rules.
 
 ```
 spire summon 3                    # summon 3 wizards
-spire summon --for spi-7v2        # summon enough for this epic's ready children
+spire summon --targets spi-7v2    # summon an exact bead ID
 spire dismiss 1                   # dismiss one wizard (least busy first)
 spire dismiss --all               # dismiss all wizards
-spire roster                      # who's in the tower
+spire roster                      # work grouped by epic, plus agent process status
 ```
 
 **Implemented**: `spire summon` queries ready beads, spawns one

@@ -32,22 +32,17 @@ type localWizard struct {
 
 func cmdSummon(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire summon <N> [--for <epic-id>] [--targets <ids>] [--auto]")
+		return fmt.Errorf("usage: spire summon <N> [--targets <ids>] [--auto]")
 	}
 
 	var count int
-	var forEpic string
 	var targets string
 	var auto bool
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--for":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--for requires an epic bead ID")
-			}
-			i++
-			forEpic = args[i]
+			return fmt.Errorf("--for has been removed; use --targets <bead-id> for exact targeting")
 		case "--targets":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--targets requires comma-separated bead IDs")
@@ -59,7 +54,7 @@ func cmdSummon(args []string) error {
 		default:
 			n, err := strconv.Atoi(args[i])
 			if err != nil {
-				return fmt.Errorf("expected a number, got %q\nusage: spire summon <N> [--for <epic-id>] [--targets <ids>] [--auto]", args[i])
+				return fmt.Errorf("expected a number, got %q\nusage: spire summon <N> [--targets <ids>] [--auto]", args[i])
 			}
 			count = n
 		}
@@ -80,23 +75,6 @@ func cmdSummon(args []string) error {
 			}
 		}
 		count = len(targetIDs)
-	}
-
-	// If --for epic, count = number of ready children.
-	if forEpic != "" && count == 0 {
-		ready, err := storeGetReadyWork(beads.WorkFilter{})
-		if err == nil {
-			for _, b := range ready {
-				if b.Parent == forEpic || strings.HasPrefix(b.ID, forEpic+".") {
-					count++
-				}
-			}
-		}
-		if count == 0 {
-			fmt.Printf("No ready children for %s. Nothing to summon.\n", forEpic)
-			return nil
-		}
-		fmt.Printf("Epic %s has %d ready children. Summoning %d wizard(s).\n", forEpic, count, count)
 	}
 
 	if count <= 0 {
@@ -677,4 +655,3 @@ func scanOrphanedBeads(liveReg wizardRegistry) []Bead {
 
 	return orphans
 }
-

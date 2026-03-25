@@ -4,8 +4,19 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestCmdSummon_ForRemoved(t *testing.T) {
+	err := cmdSummon([]string{"1", "--for", "spi-abc"})
+	if err == nil {
+		t.Fatal("expected error for removed --for flag")
+	}
+	if !strings.Contains(err.Error(), "--for has been removed") {
+		t.Fatalf("expected removed --for error, got %v", err)
+	}
+}
 
 // writeScanOrphanState writes an executorState JSON file at
 // <configDir>/runtime/<agentName>/state.json.

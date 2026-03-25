@@ -195,9 +195,9 @@ Work:
   workshop <epic-id>    Start wizard workshop for an epic
 
 Agents:
-  summon [n]            Summon wizards (--for <epic-id>, --targets <ids>, --auto)
+  summon [n]            Summon wizards (--targets <ids>, --auto)
   dismiss [n]           Dismiss wizards (--all)
-  roster                List agents and their status
+  roster                List work by epic and agent status
 
 Messaging:
   send <to> <message>   Send a message (--ref, --thread, --priority)

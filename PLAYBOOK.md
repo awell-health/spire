@@ -154,9 +154,9 @@ spire inbox --watch                 # block until new messages (for wizard main 
 
 ```bash
 spire summon 3                          # summon 3 wizards (pick ready beads, use formula from bead type)
-spire summon 2 --for spi-abc            # summon wizards for an epic's ready children
-spire summon 1 --targets=spi-x,spi-y   # run exactly these beads (k8s/CI)
-spire roster                            # show all agents and their status
+spire summon 1 --targets=spi-abc       # run exactly this bead
+spire summon 2 --targets=spi-x,spi-y   # run exactly these beads (k8s/CI)
+spire roster                            # show work grouped by epic and agent status
 spire dismiss --all                     # dismiss all agents
 ```
 
