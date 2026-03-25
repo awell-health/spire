@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"sort"
 	"time"
 )
 
@@ -129,29 +129,14 @@ func inboxRead(agentName string, jsonOut bool) error {
 }
 
 // inboxCheck is for PostToolUse hooks: silent if empty, prints if new messages.
-// Tracks last check time to avoid re-injecting the same messages.
+// Tracks message IDs to avoid re-injecting the same messages.
 func inboxCheck(agentName string) error {
 	path := inboxPath(agentName)
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil // no file = no messages = silent
-	}
 
-	// Check if file has been modified since last check
-	lastCheckPath := inboxLastCheckPath(agentName)
-	lastCheck := time.Time{}
-	if lcData, err := os.ReadFile(lastCheckPath); err == nil {
-		lastCheck, _ = time.Parse(time.RFC3339Nano, strings.TrimSpace(string(lcData)))
-	}
-
-	if !lastCheck.IsZero() && !info.ModTime().After(lastCheck) {
-		return nil // file hasn't changed since last check
-	}
-
-	// Read and parse inbox
+	// Read inbox
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil // no file = no messages = silent
 	}
 
 	var inbox inboxFile
@@ -160,12 +145,25 @@ func inboxCheck(agentName string) error {
 	}
 
 	if len(inbox.Messages) == 0 {
-		return nil // empty = silent
+		return nil
 	}
 
-	// Update last check time
+	// Compare message IDs to last check
+	currentIDs := inboxMessageIDs(inbox.Messages)
+	lastCheckPath := inboxLastCheckPath(agentName)
+	if lastData, err := os.ReadFile(lastCheckPath); err == nil {
+		var lastIDs []string
+		if json.Unmarshal(lastData, &lastIDs) == nil {
+			if slicesEqual(currentIDs, lastIDs) {
+				return nil // same messages, skip
+			}
+		}
+	}
+
+	// Save current IDs as last check
 	os.MkdirAll(filepath.Dir(lastCheckPath), 0755)
-	os.WriteFile(lastCheckPath, []byte(time.Now().Format(time.RFC3339Nano)), 0644)
+	idData, _ := json.Marshal(currentIDs)
+	os.WriteFile(lastCheckPath, idData, 0644)
 
 	// Print messages (stdout — Claude Code hook injects this)
 	fmt.Printf("[spire inbox] %d new message(s) for %s:\n", len(inbox.Messages), agentName)
@@ -267,4 +265,27 @@ func writeInboxFile(agentName string, data []byte) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// inboxMessageIDs extracts sorted message IDs from inbox messages.
+func inboxMessageIDs(msgs []inboxMessage) []string {
+	ids := make([]string, len(msgs))
+	for i, m := range msgs {
+		ids[i] = m.ID
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// slicesEqual checks if two string slices are equal.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
