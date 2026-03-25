@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -158,6 +159,39 @@ func doltServerStatus() (pid int, running bool, reachable bool) {
 	return
 }
 
+// ensureDoltIdentity ensures dolt has user.name and user.email set globally.
+// Without these, dolt init fails with "Author identity unknown".
+// Prompts the user interactively if not already configured.
+func ensureDoltIdentity() {
+	bin := doltBin()
+	reader := bufio.NewReader(os.Stdin)
+
+	// Check user.name
+	out, err := exec.Command(bin, "config", "--global", "--get", "user.name").Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		fmt.Println("Dolt needs your identity for commit history (like git).")
+		fmt.Print("Your name: ")
+		name, _ := reader.ReadString('\n')
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = "spire-user"
+		}
+		exec.Command(bin, "config", "--global", "--add", "user.name", name).Run()
+	}
+
+	// Check user.email
+	out, err = exec.Command(bin, "config", "--global", "--get", "user.email").Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		fmt.Print("Your email: ")
+		email, _ := reader.ReadString('\n')
+		email = strings.TrimSpace(email)
+		if email == "" {
+			email = "spire@localhost"
+		}
+		exec.Command(bin, "config", "--global", "--add", "user.email", email).Run()
+	}
+}
+
 // doltWriteConfig writes the dolt server config file to the global spire dir.
 func doltWriteConfig() (string, error) {
 	configPath := filepath.Join(doltGlobalDir(), "dolt-config.yaml")
@@ -187,6 +221,8 @@ func doltStart() (int, error) {
 		return 0, fmt.Errorf("create dolt data dir: %w", err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, ".dolt")); os.IsNotExist(err) {
+		// Ensure dolt has user identity — dolt init fails without it.
+		ensureDoltIdentity()
 		initCmd := exec.Command(doltBin(), "init")
 		initCmd.Dir = dataDir
 		if out, err := initCmd.CombinedOutput(); err != nil {
