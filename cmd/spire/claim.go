@@ -53,6 +53,11 @@ func cmdClaim(args []string) error {
 		return fmt.Errorf("claim %s: %w", id, err)
 	}
 
+	// Add owner label so spire watch can identify who is working the bead.
+	if identity != "" {
+		storeAddLabel(id, "owner:"+identity)
+	}
+
 	// Output result as JSON for easy consumption by spire-work
 	result := map[string]string{
 		"id":     target.ID,
