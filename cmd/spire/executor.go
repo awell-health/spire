@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/steveyegge/beads"
 )
 
 // executorState is the persistent state for a formula executor.
@@ -216,6 +218,8 @@ func (e *formulaExecutor) wizardValidateDesign() error {
 		e.log("no linked design bead found — marking as needs-design")
 		storeAddLabel(e.beadID, "needs-design")
 		storeAddComment(e.beadID, "Wizard: no design bead linked (ref:). Create a design bead with `spire design`, then link it: `bd label add "+e.beadID+" \"ref:<design-id>\"`")
+		wizardMessageArchmage(e.agentName, e.beadID,
+			fmt.Sprintf("Epic %s needs a design bead. No ref: label found. Create one with `spire design`, then link it: `bd label add %s \"ref:<design-id>\"`", e.beadID, e.beadID))
 		return fmt.Errorf("epic %s has no linked design bead — label needs-design added", e.beadID)
 	}
 
@@ -225,6 +229,8 @@ func (e *formulaExecutor) wizardValidateDesign() error {
 			e.log("design bead %s is still open — waiting for it to be closed", db.ID)
 			storeAddLabel(e.beadID, "needs-design")
 			storeAddComment(e.beadID, fmt.Sprintf("Wizard: design bead %s is still open. Close it when the design is settled.", db.ID))
+			wizardMessageArchmage(e.agentName, e.beadID,
+				fmt.Sprintf("Epic %s is blocked: design bead %s is still open. Close it when the design is settled.", e.beadID, db.ID))
 			return fmt.Errorf("design bead %s not yet closed", db.ID)
 		}
 	}
@@ -236,6 +242,8 @@ func (e *formulaExecutor) wizardValidateDesign() error {
 			e.log("design bead %s has no content — needs enrichment", db.ID)
 			storeAddLabel(e.beadID, "needs-design")
 			storeAddComment(e.beadID, fmt.Sprintf("Wizard: design bead %s exists but has no content. Add design decisions as comments before proceeding.", db.ID))
+			wizardMessageArchmage(e.agentName, e.beadID,
+				fmt.Sprintf("Epic %s is blocked: design bead %s has no content. Add design decisions as comments before proceeding.", e.beadID, db.ID))
 			return fmt.Errorf("design bead %s has no content", db.ID)
 		}
 	}
@@ -245,6 +253,21 @@ func (e *formulaExecutor) wizardValidateDesign() error {
 	e.log("design validated: %d design bead(s) linked and closed", len(designBeads))
 	storeAddComment(e.beadID, fmt.Sprintf("Wizard: design validated — %d design bead(s) linked and closed. Advancing to plan.", len(designBeads)))
 	return nil
+}
+
+// wizardMessageArchmage sends a spire message to the archmage referencing the given bead.
+// Errors are logged but do not block the caller.
+func wizardMessageArchmage(from, beadID, message string) {
+	labels := []string{"msg", "to:archmage", "from:" + from, "ref:" + beadID}
+	if _, err := storeCreateBead(createOpts{
+		Title:    message,
+		Priority: 1,
+		Type:     beads.TypeTask,
+		Prefix:   "spi",
+		Labels:   labels,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: message archmage: %s\n", err)
+	}
 }
 
 // wizardPlan reads the design bead(s) and invokes Claude to break the epic into subtasks.
