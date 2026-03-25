@@ -253,6 +253,9 @@ func deleteSpireAgentCR(name string) error {
 func summonLocal(count int, targetIDs []string) error {
 	var candidates []Bead
 
+	reg := loadWizardRegistry()
+	reg = cleanDeadWizards(reg)
+
 	if len(targetIDs) > 0 {
 		// Look up each target bead directly.
 		for _, id := range targetIDs {
@@ -269,7 +272,21 @@ func summonLocal(count int, targetIDs []string) error {
 		if err != nil {
 			return fmt.Errorf("query ready work: %w", err)
 		}
-		candidates = ready
+
+		// Prepend orphaned resumable beads (have executor state but no live process).
+		orphans := scanOrphanedBeads(reg)
+		if len(orphans) > 0 {
+			readyIDs := make(map[string]bool)
+			for _, b := range ready {
+				readyIDs[b.ID] = true
+			}
+			for _, b := range orphans {
+				if !readyIDs[b.ID] {
+					candidates = append(candidates, b)
+				}
+			}
+		}
+		candidates = append(candidates, ready...)
 	}
 
 	if len(candidates) == 0 {
@@ -280,9 +297,6 @@ func summonLocal(count int, targetIDs []string) error {
 		fmt.Printf("Only %d ready bead(s) available (requested %d).\n", len(candidates), count)
 		count = len(candidates)
 	}
-
-	reg := loadWizardRegistry()
-	reg = cleanDeadWizards(reg)
 
 	logDir := filepath.Join(doltGlobalDir(), "wizards")
 	backend := ResolveBackend("")
@@ -571,5 +585,70 @@ func wizardRegistryUpdate(name string, update func(*localWizard)) error {
 		}
 	}
 	return fmt.Errorf("wizard %q not found in registry", name)
+}
+
+// scanOrphanedBeads returns beads that have executor state but no live wizard process.
+// These are resumable candidates — the work was interrupted mid-flight.
+func scanOrphanedBeads(liveReg wizardRegistry) []Bead {
+	dir, err := configDir()
+	if err != nil {
+		return nil
+	}
+
+	runtimeDir := filepath.Join(dir, "runtime")
+	entries, err := os.ReadDir(runtimeDir)
+	if err != nil {
+		return nil
+	}
+
+	// Build set of live agent names from the cleaned registry.
+	liveAgents := make(map[string]bool)
+	for _, w := range liveReg.Wizards {
+		liveAgents[w.Name] = true
+	}
+
+	seen := make(map[string]bool)
+	var orphans []Bead
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		agentName := entry.Name()
+
+		// Skip agents that have a live process.
+		if liveAgents[agentName] {
+			continue
+		}
+
+		statePath := filepath.Join(runtimeDir, agentName, "state.json")
+		data, err := os.ReadFile(statePath)
+		if err != nil {
+			continue
+		}
+		var state executorState
+		if err := json.Unmarshal(data, &state); err != nil {
+			continue
+		}
+
+		if state.BeadID == "" || seen[state.BeadID] {
+			continue
+		}
+		seen[state.BeadID] = true
+
+		bead, err := storeGetBead(state.BeadID)
+		if err != nil {
+			continue
+		}
+
+		// Only resumable if still open/in_progress.
+		if bead.Status == "closed" || bead.Status == "done" {
+			continue
+		}
+
+		orphans = append(orphans, bead)
+	}
+
+	return orphans
 }
 
