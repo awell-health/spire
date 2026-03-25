@@ -10,13 +10,13 @@ CLAUDE.md tells you the rules. This file tells you the exact commands.
 |---|---|---|---|
 | **Archmage** | The user (human) | — | Sets priorities, resolves gates, bounces between towers |
 | **Steward** | Global coordinator | `spire steward` | Capacity, scheduling, starts wizards |
-| **Wizard** | Per-epic orchestrator | `spire workshop <epic-id>` | Long-lived. Summons apprentices, consults sages, seals the work. Uses `claude --resume` |
-| **Apprentice** | Per-subtask implementer | dispatched by wizard | Writes code in a worktree. One-shot. Reports back to wizard |
-| **Sage** | Per-review agent | dispatched by wizard | Reviews implementation, sends verdict to wizard. One-shot |
-| **Artificer** | Formula creator | `spire artificer` | Crafts formulas/molecules. NOT part of the workshop |
+| **Wizard** | Per-bead orchestrator | `spire summon N` | Driven by formula. Orchestrates the full lifecycle for any bead (task, bug, epic). Dispatches apprentices and sages as the formula requires |
+| **Apprentice** | Per-subtask implementer | dispatched by wizard | Writes code in a worktree. One-shot. Pure implementer (`--no-handoff`) |
+| **Sage** | Per-review agent | dispatched by wizard | Reviews implementation, produces verdict (`--verdict-only`). One-shot |
+| **Artificer** | Formula creator | `spire workshop` | Crafts and tests formulas. The workshop is the artificer's tool |
 | **Familiar** | Per-agent sidecar | daemon (local) / container (k8s) | Messaging infrastructure, inbox file delivery |
 
-The wizard IS the workshop. It summons apprentices (implement), consults sages (review), and seals the work (merge). Merge is the wizard's own action, not delegated.
+A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration. A bug gets `spire-bugfix` (implement → review → merge). An epic gets `spire-epic` (plan → wave dispatch → review with judgment → merge). Same executor, different formula.
 
 ## bd CLI quick reference
 
@@ -149,15 +149,33 @@ spire inbox --watch                 # block until new messages (for wizard main 
 
 `spire collect` queries the DB. `spire inbox` reads the cached local file written by the daemon. Use `spire inbox` for hot-path checks (hooks, wizard loops). Use `spire collect` for manual/CLI use.
 
-### Workshop (per-epic orchestrator)
+### Agents
 
 ```bash
-spire workshop spi-abc              # start wizard session for an epic
-spire roster                        # show all agents and their status
-spire dismiss --all                 # dismiss all agents
+spire summon 3                          # summon 3 wizards (pick ready beads, use formula from bead type)
+spire summon 2 --for spi-abc            # summon wizards for an epic's ready children
+spire summon 1 --targets=spi-x,spi-y   # run exactly these beads (k8s/CI)
+spire roster                            # show all agents and their status
+spire dismiss --all                     # dismiss all agents
 ```
 
-`spire workshop` starts a wizard — a long-lived process that manages the full lifecycle (design → merge). It dispatches apprentices (implementers) and sages (reviewers).
+`spire summon` spawns formula executors. Each wizard picks a ready bead, resolves its formula (from bead type → formula mapping), and runs the full lifecycle. The formula determines everything: which phases, how review works, whether to use wave dispatch.
+
+### Formulas
+
+```
+.beads/formulas/spire-agent-work.formula.toml   # default: design → implement → review → merge
+.beads/formulas/spire-bugfix.formula.toml        # quick: implement → review → merge
+.beads/formulas/spire-epic.formula.toml          # epic: plan → wave implement → review (judgment) → merge
+```
+
+Formula resolution (automatic):
+1. Bead label `formula:<name>` — explicit override
+2. Bead type → formula: task→spire-agent-work, bug→spire-bugfix, epic→spire-epic
+3. spire.yaml `agent.formula` field
+4. Default: spire-agent-work
+
+Override per-bead: `bd label add spi-abc "formula:spire-bugfix"`
 
 ## Common gotchas
 
@@ -367,7 +385,7 @@ At `max_rounds` (from formula revision policy), the arbiter role is activated. A
 
 ### Wave-based execution
 
-When an epic has subtasks with dependencies, the wizard dispatches apprentices in waves:
+When an epic has subtasks with dependencies, the executor (using `spire-epic` formula with `dispatch = "wave"`) dispatches apprentices in waves:
 
 ```
 Wave 0 (parallel):  spi-zpp.1    spi-zpp.2     ← no deps, start immediately
@@ -376,7 +394,7 @@ Wave 2:             spi-zpp.5                   ← depends on wave 1
 Wave 3:             spi-zpp.6                   ← depends on wave 2
 ```
 
-Each wave's apprentices run in isolated worktrees. The wizard:
+Each wave's apprentices run in isolated worktrees. The executor:
 1. Claims subtasks: `spire claim spi-zpp.N`
 2. Dispatches apprentices with `isolation: "worktree"`
 3. Waits for all apprentices in the wave to complete
@@ -431,7 +449,7 @@ Individual subtasks don't need phase labels — they're implementation units, no
 
 ## Lifecycle reference (worked example: spi-zpp)
 
-This is the full cycle that produced the phase pipeline itself — dogfooding the process.
+This is the full cycle that produced the phase pipeline itself — dogfooding the process. This predates the formula executor; the phases are the same but the execution was manual. With the executor, `spire summon 1 --targets=spi-zpp` would run the same lifecycle automatically via the `spire-epic` formula.
 
 ### Design (interactive)
 - Human + agent explored the problem space in conversation
