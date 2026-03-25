@@ -300,23 +300,14 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		// Merge child branches into staging branch
 		if pc.StagingBranch != "" {
 			stagingBranch := strings.ReplaceAll(pc.StagingBranch, "{bead-id}", e.beadID)
-			// Ensure we're on the staging branch
 			exec.Command("git", "-C", repoPath, "checkout", stagingBranch).Run()
 			for _, subtaskID := range wave {
 				st, ok := e.state.Subtasks[subtaskID]
 				if !ok || st.Status != "closed" || st.Branch == "" {
 					continue
 				}
-				e.log("  merging %s into %s", st.Branch, stagingBranch)
-				// Fetch the branch in case it was pushed by the apprentice
-				exec.Command("git", "-C", repoPath, "fetch", "origin", st.Branch).Run()
-				mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", "origin/"+st.Branch)
-				if out, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
-					// Try local branch if remote fetch failed
-					mergeCmd2 := exec.Command("git", "-C", repoPath, "merge", "--no-edit", st.Branch)
-					if out2, mergeErr2 := mergeCmd2.CombinedOutput(); mergeErr2 != nil {
-						e.log("  merge %s failed: %s\n%s\n%s", st.Branch, mergeErr, string(out), string(out2))
-					}
+				if mergeErr := e.mergeChildBranch(repoPath, st.Branch, stagingBranch); mergeErr != nil {
+					return fmt.Errorf("merge %s into %s: %w", st.Branch, stagingBranch, mergeErr)
 				}
 			}
 		}
@@ -331,6 +322,100 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		}
 	}
 
+	return nil
+}
+
+// mergeChildBranch merges a child branch into the staging branch.
+// On conflict, it invokes Claude to resolve the conflicts.
+func (e *formulaExecutor) mergeChildBranch(repoPath, childBranch, stagingBranch string) error {
+	e.log("  merging %s into %s", childBranch, stagingBranch)
+
+	// Fetch in case the apprentice pushed to remote
+	exec.Command("git", "-C", repoPath, "fetch", "origin", childBranch).Run()
+
+	// Try remote branch first, fall back to local
+	branchRef := "origin/" + childBranch
+	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", branchRef)
+	if _, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
+		// Try local branch
+		branchRef = childBranch
+		mergeCmd2 := exec.Command("git", "-C", repoPath, "merge", "--no-edit", branchRef)
+		if _, mergeErr2 := mergeCmd2.CombinedOutput(); mergeErr2 != nil {
+			// Merge conflict — check if git is in a merge state
+			statusCmd := exec.Command("git", "-C", repoPath, "status", "--porcelain")
+			statusOut, _ := statusCmd.Output()
+			if strings.Contains(string(statusOut), "UU ") || strings.Contains(string(statusOut), "AA ") {
+				// There are conflicts — resolve via Claude
+				e.log("  conflict detected, invoking Claude to resolve")
+				if resolveErr := e.resolveConflicts(repoPath, childBranch); resolveErr != nil {
+					// Abort the merge if resolution fails
+					exec.Command("git", "-C", repoPath, "merge", "--abort").Run()
+					return fmt.Errorf("conflict resolution failed: %w", resolveErr)
+				}
+				return nil
+			}
+			// Not a conflict — some other merge error
+			exec.Command("git", "-C", repoPath, "merge", "--abort").Run()
+			return fmt.Errorf("merge failed: %w", mergeErr2)
+		}
+	}
+	return nil
+}
+
+// resolveConflicts invokes Claude to resolve merge conflicts in the working tree.
+func (e *formulaExecutor) resolveConflicts(repoPath, childBranch string) error {
+	// Get the list of conflicted files
+	diffCmd := exec.Command("git", "-C", repoPath, "diff", "--name-only", "--diff-filter=U")
+	diffOut, err := diffCmd.Output()
+	if err != nil {
+		return fmt.Errorf("list conflicts: %w", err)
+	}
+	conflictedFiles := strings.TrimSpace(string(diffOut))
+	if conflictedFiles == "" {
+		return fmt.Errorf("no conflicted files found")
+	}
+
+	// Build a prompt with the conflicts
+	prompt := fmt.Sprintf(`You are resolving merge conflicts for branch %s being merged into the staging branch.
+
+The following files have conflicts. For each file, read it, resolve the conflict markers (<<<<<<< ======= >>>>>>>), and write the resolved version. Keep both sides' changes where they don't contradict. When they do contradict, prefer the incoming branch (%s) since it has the newer implementation.
+
+Conflicted files:
+%s
+
+After resolving all conflicts, stage them with git add.
+Do NOT commit — the merge commit will be created automatically.`,
+		childBranch, childBranch, conflictedFiles)
+
+	// Invoke Claude to resolve
+	cmd := exec.Command("claude",
+		"--dangerously-skip-permissions",
+		"-p", prompt,
+		"--model", "claude-sonnet-4-6",
+		"--max-turns", "10",
+	)
+	cmd.Dir = repoPath
+	cmd.Env = os.Environ()
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("claude resolve: %w", err)
+	}
+
+	// Verify all conflicts are resolved (no more conflict markers)
+	statusCmd := exec.Command("git", "-C", repoPath, "status", "--porcelain")
+	statusOut, _ := statusCmd.Output()
+	if strings.Contains(string(statusOut), "UU ") {
+		return fmt.Errorf("conflicts still unresolved after Claude")
+	}
+
+	// Complete the merge
+	commitCmd := exec.Command("git", "-C", repoPath, "commit", "--no-edit")
+	if out, commitErr := commitCmd.CombinedOutput(); commitErr != nil {
+		return fmt.Errorf("commit merge: %s\n%s", commitErr, string(out))
+	}
+
+	e.log("  conflicts resolved by Claude")
 	return nil
 }
 
