@@ -69,43 +69,17 @@ func (b *processBackendShim) Kill(name string) error {
 }
 
 // ---------------------------------------------------------------------------
-// dockerBackendShim — wraps dockerSpawner to satisfy AgentBackend.
-// Only Spawn is functional; List, Logs, Kill return errNotImplemented.
-// The full dockerBackend implementation lands in spi-1dl.5.4.
-// ---------------------------------------------------------------------------
-
-type dockerBackendShim struct {
-	spawner *dockerSpawner
-}
-
-func (b *dockerBackendShim) Spawn(cfg SpawnConfig) (AgentHandle, error) {
-	return b.spawner.Spawn(cfg)
-}
-
-func (b *dockerBackendShim) List() ([]AgentInfo, error) {
-	return nil, fmt.Errorf("dockerBackendShim.List: %w", errNotImplemented)
-}
-
-func (b *dockerBackendShim) Logs(name string) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("dockerBackendShim.Logs: %w", errNotImplemented)
-}
-
-func (b *dockerBackendShim) Kill(name string) error {
-	return fmt.Errorf("dockerBackendShim.Kill: %w", errNotImplemented)
-}
-
-// ---------------------------------------------------------------------------
 // Compile-time interface checks
 // ---------------------------------------------------------------------------
 
 var _ AgentBackend = (*processBackendShim)(nil)
-var _ AgentBackend = (*dockerBackendShim)(nil)
+var _ AgentBackend = (*dockerBackend)(nil)
 
 // ---------------------------------------------------------------------------
 // ResolveBackend returns an AgentBackend for the given backend name.
 //
 //   - "process" or "" → processBackendShim (wraps processSpawner)
-//   - "docker"        → dockerBackendShim  (wraps dockerSpawner)
+//   - "docker"        → dockerBackend      (full implementation)
 //   - unknown         → log warning, fall back to process
 //
 // ResolveBackend replaces NewSpawner as the preferred factory.
@@ -116,7 +90,7 @@ func ResolveBackend(name string) AgentBackend {
 	case "process", "":
 		return &processBackendShim{spawner: &processSpawner{}}
 	case "docker":
-		return &dockerBackendShim{spawner: newDockerSpawner()}
+		return newDockerBackend()
 	default:
 		log.Printf("[backend] unknown backend %q, falling back to process", name)
 		return &processBackendShim{spawner: &processSpawner{}}

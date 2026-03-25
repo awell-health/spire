@@ -20,15 +20,15 @@ func TestBackendProcessShimSatisfiesInterface(t *testing.T) {
 	}
 }
 
-// TestBackendDockerShimSatisfiesInterface verifies dockerBackendShim
+// TestBackendDockerSatisfiesInterface verifies dockerBackend
 // satisfies AgentBackend at runtime via type assertion.
-func TestBackendDockerShimSatisfiesInterface(t *testing.T) {
-	var b interface{} = &dockerBackendShim{spawner: &dockerSpawner{}}
+func TestBackendDockerSatisfiesInterface(t *testing.T) {
+	var b interface{} = &dockerBackend{spawner: &dockerSpawner{}}
 	if _, ok := b.(AgentBackend); !ok {
-		t.Fatal("dockerBackendShim does not satisfy AgentBackend")
+		t.Fatal("dockerBackend does not satisfy AgentBackend")
 	}
 	if _, ok := b.(AgentSpawner); !ok {
-		t.Fatal("dockerBackendShim does not satisfy AgentSpawner")
+		t.Fatal("dockerBackend does not satisfy AgentSpawner")
 	}
 }
 
@@ -50,11 +50,11 @@ func TestBackendResolveEmpty(t *testing.T) {
 }
 
 // TestBackendResolveDocker verifies ResolveBackend("docker") returns a
-// dockerBackendShim.
+// dockerBackend.
 func TestBackendResolveDocker(t *testing.T) {
 	b := ResolveBackend("docker")
-	if _, ok := b.(*dockerBackendShim); !ok {
-		t.Fatalf("ResolveBackend(\"docker\") returned %T, want *dockerBackendShim", b)
+	if _, ok := b.(*dockerBackend); !ok {
+		t.Fatalf("ResolveBackend(\"docker\") returned %T, want *dockerBackend", b)
 	}
 }
 
@@ -67,48 +67,42 @@ func TestBackendResolveUnknown(t *testing.T) {
 	}
 }
 
-// TestBackendShimListNotImplemented verifies the shims return errNotImplemented
-// for List.
+// TestBackendShimListNotImplemented verifies the process shim returns
+// errNotImplemented for List.
 func TestBackendShimListNotImplemented(t *testing.T) {
-	for _, name := range []string{"process", "docker"} {
-		b := ResolveBackend(name)
-		_, err := b.List()
-		if err == nil {
-			t.Fatalf("ResolveBackend(%q).List() returned nil error, want errNotImplemented", name)
-		}
-		if !errors.Is(err, errNotImplemented) {
-			t.Fatalf("ResolveBackend(%q).List() error = %v, want errNotImplemented", name, err)
-		}
+	b := ResolveBackend("process")
+	_, err := b.List()
+	if err == nil {
+		t.Fatal("processBackendShim.List() returned nil error, want errNotImplemented")
+	}
+	if !errors.Is(err, errNotImplemented) {
+		t.Fatalf("processBackendShim.List() error = %v, want errNotImplemented", err)
 	}
 }
 
-// TestBackendShimLogsNotImplemented verifies the shims return errNotImplemented
-// for Logs.
+// TestBackendShimLogsNotImplemented verifies the process shim returns
+// errNotImplemented for Logs.
 func TestBackendShimLogsNotImplemented(t *testing.T) {
-	for _, name := range []string{"process", "docker"} {
-		b := ResolveBackend(name)
-		_, err := b.Logs("wizard-test")
-		if err == nil {
-			t.Fatalf("ResolveBackend(%q).Logs() returned nil error, want errNotImplemented", name)
-		}
-		if !errors.Is(err, errNotImplemented) {
-			t.Fatalf("ResolveBackend(%q).Logs() error = %v, want errNotImplemented", name, err)
-		}
+	b := ResolveBackend("process")
+	_, err := b.Logs("wizard-test")
+	if err == nil {
+		t.Fatal("processBackendShim.Logs() returned nil error, want errNotImplemented")
+	}
+	if !errors.Is(err, errNotImplemented) {
+		t.Fatalf("processBackendShim.Logs() error = %v, want errNotImplemented", err)
 	}
 }
 
-// TestBackendShimKillNotImplemented verifies the shims return errNotImplemented
-// for Kill.
+// TestBackendShimKillNotImplemented verifies the process shim returns
+// errNotImplemented for Kill.
 func TestBackendShimKillNotImplemented(t *testing.T) {
-	for _, name := range []string{"process", "docker"} {
-		b := ResolveBackend(name)
-		err := b.Kill("wizard-test")
-		if err == nil {
-			t.Fatalf("ResolveBackend(%q).Kill() returned nil error, want errNotImplemented", name)
-		}
-		if !errors.Is(err, errNotImplemented) {
-			t.Fatalf("ResolveBackend(%q).Kill() error = %v, want errNotImplemented", name, err)
-		}
+	b := ResolveBackend("process")
+	err := b.Kill("wizard-test")
+	if err == nil {
+		t.Fatal("processBackendShim.Kill() returned nil error, want errNotImplemented")
+	}
+	if !errors.Is(err, errNotImplemented) {
+		t.Fatalf("processBackendShim.Kill() error = %v, want errNotImplemented", err)
 	}
 }
 
