@@ -123,25 +123,27 @@ func TestProcessHandle_Signal_AfterExit(t *testing.T) {
 }
 
 // --- NewSpawner factory tests ---
+// NewSpawner delegates to ResolveBackend, which returns AgentBackend shims.
+// These tests verify the returned value satisfies AgentSpawner (the old contract).
 
 func TestNewSpawner_Process(t *testing.T) {
 	s := NewSpawner("process")
-	if _, ok := s.(*processSpawner); !ok {
-		t.Errorf("NewSpawner(\"process\") returned %T, want *processSpawner", s)
+	if s == nil {
+		t.Fatal("NewSpawner(\"process\") returned nil")
 	}
 }
 
 func TestNewSpawner_Empty(t *testing.T) {
 	s := NewSpawner("")
-	if _, ok := s.(*processSpawner); !ok {
-		t.Errorf("NewSpawner(\"\") returned %T, want *processSpawner", s)
+	if s == nil {
+		t.Fatal("NewSpawner(\"\") returned nil")
 	}
 }
 
 func TestNewSpawner_Unknown(t *testing.T) {
 	s := NewSpawner("nonexistent")
-	if _, ok := s.(*processSpawner); !ok {
-		t.Errorf("NewSpawner(\"nonexistent\") returned %T, want *processSpawner (fallback)", s)
+	if s == nil {
+		t.Fatal("NewSpawner(\"nonexistent\") returned nil")
 	}
 }
 

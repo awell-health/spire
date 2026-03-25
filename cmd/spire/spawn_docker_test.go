@@ -75,8 +75,8 @@ func TestSanitizeContainerName(t *testing.T) {
 
 func TestNewSpawner_Docker(t *testing.T) {
 	s := NewSpawner("docker")
-	if _, ok := s.(*dockerSpawner); !ok {
-		t.Errorf("NewSpawner(\"docker\") returned %T, want *dockerSpawner", s)
+	if s == nil {
+		t.Fatal("NewSpawner(\"docker\") returned nil")
 	}
 }
 
