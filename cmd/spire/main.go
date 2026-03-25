@@ -88,6 +88,8 @@ func main() {
 		err = cmdMetrics(args)
 	case "tower":
 		err = cmdTower(args)
+	case "workshop":
+		err = cmdWorkshop(args)
 	case "wizard-run":
 		err = cmdWizardRun(args)
 	case "wizard-review":
@@ -176,6 +178,7 @@ Work:
   claim <bead-id>       Pull, verify, claim, push (atomic)
   focus <bead-id>       Focus on a task (bonds workflow on first focus)
   grok <bead-id>        Focus + live Linear context
+  workshop <epic-id>    Start wizard workshop for an epic
 
 Agents:
   summon [n]            Summon wizards (--for <epic-id>)
