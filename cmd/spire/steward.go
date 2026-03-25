@@ -17,6 +17,35 @@ import (
 	"github.com/steveyegge/beads"
 )
 
+// agentNames extracts agent names from an AgentInfo slice.
+// If override is provided, it takes priority (explicit --agents flag).
+func agentNames(agents []AgentInfo, override []string) []string {
+	if len(override) > 0 {
+		return override
+	}
+	seen := make(map[string]bool)
+	var names []string
+	for _, a := range agents {
+		if !seen[a.Name] {
+			seen[a.Name] = true
+			names = append(names, a.Name)
+		}
+	}
+	return names
+}
+
+// busySet builds a set of agent names that are currently busy.
+// An agent is busy if it is alive (has a running process/container/pod).
+func busySet(agents []AgentInfo) map[string]bool {
+	busy := make(map[string]bool)
+	for _, a := range agents {
+		if a.Alive {
+			busy[a.Name] = true
+		}
+	}
+	return busy
+}
+
 func cmdSteward(args []string) error {
 	// Parse flags — staleThreshold left at zero to detect "not overridden".
 	interval := 2 * time.Minute
@@ -24,7 +53,7 @@ func cmdSteward(args []string) error {
 	once := false
 	dryRun := false
 	noAssign := false // skip sending assignment messages (managed agents get work via operator)
-	mode := StewardModeAuto
+	backendName := "" // default: auto-resolve from ResolveBackend
 	var agentList []string
 
 	for i := 0; i < len(args); i++ {
@@ -69,16 +98,16 @@ func cmdSteward(args []string) error {
 			dryRun = true
 		case "--no-assign":
 			noAssign = true
-		case "--mode":
+		case "--backend":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--mode requires a value: auto, local, or k8s")
+				return fmt.Errorf("--backend requires a value: process, docker, or k8s")
 			}
 			i++
 			switch args[i] {
-			case "auto", "local", "k8s":
-				mode = StewardMode(args[i])
+			case "process", "docker", "k8s":
+				backendName = args[i]
 			default:
-				return fmt.Errorf("--mode: unknown value %q (use: auto, local, k8s)", args[i])
+				return fmt.Errorf("--backend: unknown value %q (use: process, docker, k8s)", args[i])
 			}
 		case "--agents":
 			if i+1 >= len(args) {
@@ -92,7 +121,7 @@ func cmdSteward(args []string) error {
 				}
 			}
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 15m] [--mode auto|local|k8s] [--agents a,b,c]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 15m] [--backend process|docker|k8s] [--agents a,b,c]", args[i])
 		}
 	}
 
@@ -128,9 +157,12 @@ func cmdSteward(args []string) error {
 		staleThreshold = staleOverride
 	}
 
-	effectiveMode := resolveMode(mode)
-	log.Printf("[steward] starting (mode=%s, interval=%s, once=%v, dry-run=%v, stale=%s, shutdown=%s)",
-		effectiveMode, interval, once, dryRun, staleThreshold, shutdownThreshold)
+	backend := ResolveBackend(backendName)
+	log.Printf("[steward] starting (backend=%s, interval=%s, once=%v, dry-run=%v, stale=%s, shutdown=%s)",
+		backendName, interval, once, dryRun, staleThreshold, shutdownThreshold)
+	if backendName == "" {
+		log.Printf("[steward] backend auto-resolved to process")
+	}
 	if len(agentList) > 0 {
 		log.Printf("[steward] agents: %s", strings.Join(agentList, ", "))
 	}
@@ -142,7 +174,7 @@ func cmdSteward(args []string) error {
 	cycleNum := 1
 
 	// Run first cycle immediately.
-	stewardCycle(cycleNum, dryRun, noAssign, effectiveMode, staleThreshold, shutdownThreshold, agentList)
+	stewardCycle(cycleNum, dryRun, noAssign, backend, staleThreshold, shutdownThreshold, agentList)
 	cycleNum++
 
 	if once {
@@ -159,7 +191,7 @@ func cmdSteward(args []string) error {
 	for {
 		select {
 		case <-ticker.C:
-			stewardCycle(cycleNum, dryRun, noAssign, effectiveMode, staleThreshold, shutdownThreshold, agentList)
+			stewardCycle(cycleNum, dryRun, noAssign, backend, staleThreshold, shutdownThreshold, agentList)
 			cycleNum++
 		case sig := <-sigCh:
 			log.Printf("[steward] received %s, shutting down after %d cycles", sig, cycleNum-1)
@@ -169,7 +201,7 @@ func cmdSteward(args []string) error {
 }
 
 // stewardCycle iterates all towers and runs a steward cycle for each.
-func stewardCycle(cycleNum int, dryRun, noAssign bool, mode StewardMode, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
+func stewardCycle(cycleNum int, dryRun, noAssign bool, backend AgentBackend, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
 	start := time.Now()
 	log.Printf("[steward] ═══ cycle %d ═══════════════════════════════", cycleNum)
 
@@ -181,10 +213,10 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, mode StewardMode, staleTh
 
 	if len(towers) == 0 {
 		// Fallback: single-tower mode (no tower configs, use default store).
-		stewardTowerCycle(cycleNum, "", dryRun, noAssign, mode, staleThreshold, shutdownThreshold, agentList)
+		stewardTowerCycle(cycleNum, "", dryRun, noAssign, backend, staleThreshold, shutdownThreshold, agentList)
 	} else {
 		for _, tower := range towers {
-			stewardTowerCycle(cycleNum, tower.Name, dryRun, noAssign, mode, staleThreshold, shutdownThreshold, agentList)
+			stewardTowerCycle(cycleNum, tower.Name, dryRun, noAssign, backend, staleThreshold, shutdownThreshold, agentList)
 		}
 	}
 
@@ -193,7 +225,7 @@ func stewardCycle(cycleNum int, dryRun, noAssign bool, mode StewardMode, staleTh
 
 // stewardTowerCycle runs one steward cycle for a specific tower.
 // If towerName is "", uses the default store (legacy single-tower mode).
-func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, mode StewardMode, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
+func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, backend AgentBackend, staleThreshold, shutdownThreshold time.Duration, agentList []string) {
 	prefix := ""
 	if towerName != "" {
 		prefix = "[" + towerName + "] "
@@ -223,15 +255,10 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, mo
 		return
 	}
 
-	// Step 3: Load roster. In local mode, sourced from the wizard registry;
-	// in k8s mode, from SpireAgent CRs then bead registrations.
-	roster := loadRoster(agentList, mode)
-	var busy map[string]bool
-	if mode == StewardModeLocal {
-		busy = localBusyAgents()
-	} else {
-		busy = findBusyAgents()
-	}
+	// Step 3: Load roster via backend.List() — one code path for all backends.
+	agents, _ := backend.List()
+	roster := agentNames(agents, agentList)
+	busy := busySet(agents)
 	idleCount := len(roster) - len(busy)
 	if idleCount < 0 {
 		idleCount = 0
@@ -241,15 +268,9 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, mo
 		prefix, len(ready), len(roster), len(busy), idleCount)
 
 	if len(roster) == 0 {
-		checkBeadHealth(staleThreshold, shutdownThreshold, dryRun, mode)
+		checkBeadHealth(staleThreshold, shutdownThreshold, dryRun, backend)
 		pushState()
 		return
-	}
-
-	// Create spawner for local agent lifecycle.
-	var spawner AgentSpawner
-	if mode == StewardModeLocal {
-		spawner = NewSpawner("process")
 	}
 
 	// Step 4: Assign ready beads to idle agents (round-robin).
@@ -314,11 +335,17 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, mo
 		busy[agent] = true
 		assigned++
 
-		// In local mode, spawn the agent process after assignment.
-		if mode == StewardModeLocal && spawner != nil {
-			if _, spawnErr := spawnLocalAgent(agent, bead.ID, spawner); spawnErr != nil {
-				log.Printf("[steward] spawn failed: %s → %s: %s", bead.ID, agent, spawnErr)
-			}
+		// Spawn the agent via backend after assignment.
+		handle, spawnErr := backend.Spawn(SpawnConfig{
+			Name:    agent,
+			BeadID:  bead.ID,
+			Role:    RoleApprentice,
+			LogPath: filepath.Join(doltGlobalDir(), "wizards", agent+".log"),
+		})
+		if spawnErr != nil {
+			log.Printf("[steward] spawn failed: %s → %s: %s", bead.ID, agent, spawnErr)
+		} else if handle != nil {
+			log.Printf("[steward] spawned %s for %s (%s)", agent, bead.ID, handle.Identifier())
 		}
 	}
 
@@ -327,13 +354,13 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, mo
 	}
 
 	// Step 4b: Detect standalone tasks ready for review.
-	detectReviewReady(dryRun)
+	detectReviewReady(dryRun, backend)
 
 	// Step 4c: Detect tasks with review feedback that need wizard re-engagement.
 	detectReviewFeedback(dryRun)
 
 	// Step 5: Stale + shutdown check.
-	staleCount, shutdownCount := checkBeadHealth(staleThreshold, shutdownThreshold, dryRun, mode)
+	staleCount, shutdownCount := checkBeadHealth(staleThreshold, shutdownThreshold, dryRun, backend)
 	if staleCount > 0 || shutdownCount > 0 {
 		log.Printf("[steward] %sstale: %d warning(s), %d shutdown(s)", prefix, staleCount, shutdownCount)
 	} else {
@@ -363,85 +390,12 @@ func beadsDirForTower(towerName string) string {
 	return ""
 }
 
-// loadRoster returns a list of registered agent names.
-//
-// Local mode: reads from the wizard registry (created by `spire summon`).
-// K8s mode: checks SpireAgent CRs, then falls back to bead registrations.
-// An explicit agentList always takes priority.
-func loadRoster(agentList []string, mode StewardMode) []string {
-	if len(agentList) > 0 {
-		return agentList
-	}
-
-	// Local mode — use wizard registry as the source of truth for agent slots.
-	if mode == StewardModeLocal {
-		return localRoster()
-	}
-
-	exclude := map[string]bool{
-		"steward": true, "mayor": true,
-		"spi": true, "awell": true,
-	}
-
-	// K8s mode: try SpireAgent CRs first — canonical source in cluster.
-	cmd := exec.Command("kubectl", "get", "spireagent", "-n", "spire",
-		"-o", "jsonpath={.items[*].metadata.name}")
-	if out, err := cmd.Output(); err == nil {
-		var names []string
-		for _, name := range strings.Fields(strings.TrimSpace(string(out))) {
-			if !exclude[name] {
-				names = append(names, name)
-			}
-		}
-		if len(names) > 0 {
-			return names
-		}
-	}
-
-	// Fallback: query beads for agent registrations.
-	agents, err := storeListBeads(beads.IssueFilter{Labels: []string{"agent"}, Status: statusPtr(beads.StatusOpen)})
-	if err != nil {
-		log.Printf("[steward] load roster: %s", err)
-		return nil
-	}
-
-	var names []string
-	for _, a := range agents {
-		name := hasLabel(a, "name:")
-		if name != "" && !exclude[name] {
-			names = append(names, name)
-		}
-	}
-
-	return names
-}
-
-// findBusyAgents returns a set of agent names that currently have in_progress beads.
-func findBusyAgents() map[string]bool {
-	busy := make(map[string]bool)
-
-	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
-	if err != nil {
-		log.Printf("[steward] find busy agents: %s", err)
-		return busy
-	}
-
-	for _, b := range inProgress {
-		owner := hasLabel(b, "owner:")
-		if owner != "" {
-			busy[owner] = true
-		}
-	}
-
-	return busy
-}
-
 // checkBeadHealth checks in_progress beads against two thresholds:
 //   - stale: wizard exceeded guidelines (warning + alert bead)
-//   - shutdown: tower kills the wizard (delete pod or kill process)
+//   - shutdown: tower kills the wizard via backend.Kill()
 //
 // Returns (staleCount, shutdownCount).
-func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool, mode StewardMode) (int, int) {
+func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool, backend AgentBackend) (int, int) {
 	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] check health: %s", err)
@@ -474,13 +428,15 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 		owner := hasLabel(b, "owner:")
 
 		if age > shutdownThreshold {
-			// Fatal: kill the wizard (pod in k8s, process locally).
+			// Fatal: kill the wizard via backend.
 			shutdownCount++
 			if dryRun {
 				log.Printf("[steward] [dry-run] SHUTDOWN: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
 			} else {
 				log.Printf("[steward] SHUTDOWN: %s (%s) owner=%s age=%s — killing wizard", b.ID, b.Title, owner, age.Round(time.Second))
-				killWizardProcess(owner, b.ID, mode)
+				if killErr := backend.Kill(owner); killErr != nil {
+					log.Printf("[steward] kill %s: %s", owner, killErr)
+				}
 			}
 		} else if age > staleThreshold {
 			// Warning: wizard exceeded guidelines.
@@ -496,36 +452,9 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 	return staleCount, shutdownCount
 }
 
-// killWizardProcess terminates the wizard responsible for a bead.
-// In local mode, sends SIGTERM to the tracked PID.
-// In k8s mode, deletes the pod via kubectl.
-func killWizardProcess(agentName, beadID string, mode StewardMode) {
-	if mode == StewardModeLocal {
-		killLocalWizard(agentName, beadID)
-		return
-	}
-	killWizardPod(agentName, beadID)
-}
-
-// killWizardPod deletes the k8s pod for a wizard working on a bead.
-// Falls back gracefully if not running in k8s.
-func killWizardPod(agentName, beadID string) {
-	// Try to find and delete the pod by labels.
-	cmd := exec.Command("kubectl", "delete", "pod",
-		"-n", "spire",
-		"-l", fmt.Sprintf("spire.awell.io/agent=%s,spire.awell.io/bead=%s", agentName, beadID),
-		"--grace-period=10")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[steward] kill pod failed for %s/%s: %s %s", agentName, beadID, err, string(out))
-	} else {
-		log.Printf("[steward] killed pod for %s/%s", agentName, beadID)
-	}
-}
-
 // detectReviewReady finds standalone tasks with the "review-ready" label
-// and routes them to a review pod (artificer --mode=review).
-func detectReviewReady(dryRun bool) {
+// and spawns a reviewer via the backend.
+func detectReviewReady(dryRun bool, backend AgentBackend) {
 	reviewBeads, err := storeListBeads(beads.IssueFilter{Labels: []string{"review-ready"}, Status: statusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] detectReviewReady: %s", err)
@@ -552,47 +481,23 @@ func detectReviewReady(dryRun bool) {
 		// Mark as review-assigned so we don't double-route.
 		storeAddLabel(b.ID, "review-assigned")
 
-		if isK8sAvailable() {
-			// K8s mode: create a SpireWorkload CR for the operator.
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1
-kind: SpireWorkload
-metadata:
-  name: review-%s
-  namespace: spire
-spec:
-  beadId: %s
-  title: "Review %s"
-  priority: %d
-  type: review
-`, sanitizeK8sLabel(b.ID), b.ID, b.Title, b.Priority))
-			if out, err := cmd.CombinedOutput(); err != nil {
-				log.Printf("[steward] failed to create review workload for %s: %v\n%s", b.ID, err, string(out))
-				// Roll back review-assigned so the next cycle can retry.
-				storeRemoveLabel(b.ID, "review-assigned")
-			}
-		} else {
-			// Local mode: spawn wizard-review directly.
-			implBy := hasLabel(b, "implemented-by:")
-			reviewerName := "reviewer-" + sanitizeK8sLabel(b.ID)
-			if implBy != "" {
-				reviewerName = implBy + "-review"
-			}
+		implBy := hasLabel(b, "implemented-by:")
+		reviewerName := "reviewer-" + sanitizeK8sLabel(b.ID)
+		if implBy != "" {
+			reviewerName = implBy + "-review"
+		}
 
-			logDir := filepath.Join(doltGlobalDir(), "wizards")
-			spawner := NewSpawner("process")
-			handle, spawnErr := spawner.Spawn(SpawnConfig{
-				Name:    reviewerName,
-				BeadID:  b.ID,
-				Role:    RoleSage,
-				LogPath: filepath.Join(logDir, reviewerName+".log"),
-			})
-			if spawnErr != nil {
-				log.Printf("[steward] failed to spawn local reviewer for %s: %v", b.ID, spawnErr)
-				storeRemoveLabel(b.ID, "review-assigned")
-			} else {
-				log.Printf("[steward] spawned local reviewer %s for %s (%s)", reviewerName, b.ID, handle.Identifier())
-			}
+		handle, spawnErr := backend.Spawn(SpawnConfig{
+			Name:    reviewerName,
+			BeadID:  b.ID,
+			Role:    RoleSage,
+			LogPath: filepath.Join(doltGlobalDir(), "wizards", reviewerName+".log"),
+		})
+		if spawnErr != nil {
+			log.Printf("[steward] failed to spawn reviewer for %s: %v", b.ID, spawnErr)
+			storeRemoveLabel(b.ID, "review-assigned")
+		} else {
+			log.Printf("[steward] spawned reviewer %s for %s (%s)", reviewerName, b.ID, handle.Identifier())
 		}
 	}
 }

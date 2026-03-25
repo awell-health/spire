@@ -7,32 +7,63 @@ import (
 	"time"
 )
 
-// --- resolveMode tests ---
+// --- agentNames tests (replaces loadRoster tests) ---
 
-func TestResolveMode(t *testing.T) {
-	tests := []struct {
-		name  string
-		input StewardMode
-		want  StewardMode
-		skipInK8s bool
-	}{
-		{name: "explicit local", input: StewardModeLocal, want: StewardModeLocal},
-		{name: "explicit k8s", input: StewardModeK8s, want: StewardModeK8s},
-		// Auto outside k8s resolves to local. Skip this case when actually running
-		// inside a cluster so the test suite stays green in CI pods.
-		{name: "auto outside k8s", input: StewardModeAuto, want: StewardModeLocal, skipInK8s: true},
+func TestAgentNames_Override(t *testing.T) {
+	agents := []AgentInfo{
+		{Name: "wizard-1"},
+		{Name: "wizard-2"},
 	}
+	override := []string{"explicit-a", "explicit-b"}
+	got := agentNames(agents, override)
+	if len(got) != 2 || got[0] != "explicit-a" || got[1] != "explicit-b" {
+		t.Errorf("agentNames with override = %v, want [explicit-a explicit-b]", got)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.skipInK8s && isInK8s() {
-				t.Skip("running inside k8s — auto resolves to k8s, not local")
-			}
-			got := resolveMode(tt.input)
-			if got != tt.want {
-				t.Errorf("resolveMode(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
+func TestAgentNames_FromAgentInfo(t *testing.T) {
+	agents := []AgentInfo{
+		{Name: "wizard-1"},
+		{Name: "wizard-2"},
+		{Name: "wizard-1"}, // duplicate
+	}
+	got := agentNames(agents, nil)
+	if len(got) != 2 || got[0] != "wizard-1" || got[1] != "wizard-2" {
+		t.Errorf("agentNames = %v, want [wizard-1 wizard-2]", got)
+	}
+}
+
+func TestAgentNames_Empty(t *testing.T) {
+	got := agentNames(nil, nil)
+	if len(got) != 0 {
+		t.Errorf("agentNames(nil, nil) = %v, want []", got)
+	}
+}
+
+// --- busySet tests (replaces findBusyAgents/localBusyAgents tests) ---
+
+func TestBusySet_AliveOnly(t *testing.T) {
+	agents := []AgentInfo{
+		{Name: "wizard-1", Alive: true},
+		{Name: "wizard-2", Alive: false},
+		{Name: "wizard-3", Alive: true},
+	}
+	busy := busySet(agents)
+	if !busy["wizard-1"] {
+		t.Error("expected wizard-1 to be busy (alive)")
+	}
+	if busy["wizard-2"] {
+		t.Error("expected wizard-2 to NOT be busy (dead)")
+	}
+	if !busy["wizard-3"] {
+		t.Error("expected wizard-3 to be busy (alive)")
+	}
+}
+
+func TestBusySet_Empty(t *testing.T) {
+	busy := busySet(nil)
+	if len(busy) != 0 {
+		t.Errorf("busySet(nil) = %v, want empty", busy)
 	}
 }
 

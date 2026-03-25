@@ -5,21 +5,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
-	"github.com/steveyegge/beads"
-)
-
-// StewardMode controls how the steward manages agents.
-type StewardMode string
-
-const (
-	StewardModeAuto  StewardMode = "auto"
-	StewardModeLocal StewardMode = "local"
-	StewardModeK8s   StewardMode = "k8s"
 )
 
 // LocalStewardConfig holds agent settings for local steward mode.
@@ -38,18 +26,6 @@ type LocalStewardConfig struct {
 func isInK8s() bool {
 	_, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token")
 	return err == nil
-}
-
-// resolveMode returns the effective StewardMode.
-// Auto selects k8s when running inside a cluster, local otherwise.
-func resolveMode(mode StewardMode) StewardMode {
-	if mode == StewardModeAuto {
-		if isInK8s() {
-			return StewardModeK8s
-		}
-		return StewardModeLocal
-	}
-	return mode
 }
 
 // loadLocalStewardConfig reads agent configuration from spire.yaml,
@@ -117,98 +93,4 @@ func recordWizardPID(name string, pid int) {
 // clearWizardPID removes the PID file for a wizard (called on exit/kill).
 func clearWizardPID(name string) {
 	os.Remove(wizardPIDPath(name))
-}
-
-// killLocalWizard sends SIGTERM to a locally-running wizard and removes its PID file.
-func killLocalWizard(agentName, beadID string) {
-	pid := readPID(wizardPIDPath(agentName))
-	if pid <= 0 {
-		log.Printf("[steward] kill local wizard %s/%s: no PID file", agentName, beadID)
-		return
-	}
-	// On Unix, os.FindProcess never returns an error for a positive PID — it
-	// unconditionally creates a Process struct. Use Signal(0) to verify the
-	// process is still alive before sending SIGTERM.
-	proc, _ := os.FindProcess(pid)
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
-		clearWizardPID(agentName)
-		log.Printf("[steward] kill local wizard %s: process not found (pid %d)", agentName, pid)
-		return
-	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		log.Printf("[steward] kill local wizard %s (pid %d): %s", agentName, pid, err)
-	} else {
-		log.Printf("[steward] killed local wizard %s (pid %d) for bead %s", agentName, pid, beadID)
-	}
-	clearWizardPID(agentName)
-}
-
-// spawnLocalAgent spawns an agent locally for the given bead using the
-// provided AgentSpawner. Returns the handle on success.
-// The spawner backend (process, docker, k8s) is selected by the caller.
-func spawnLocalAgent(wizardName, beadID string, spawner AgentSpawner) (AgentHandle, error) {
-	logDir := filepath.Join(doltGlobalDir(), "wizards")
-	handle, err := spawner.Spawn(SpawnConfig{
-		Name:    wizardName,
-		BeadID:  beadID,
-		Role:    RoleApprentice,
-		LogPath: filepath.Join(logDir, wizardName+".log"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	// Bridge to PID-file tracking for localBusyAgents() liveness checks.
-	if id := handle.Identifier(); id != "" {
-		if pid, convErr := strconv.Atoi(id); convErr == nil && pid > 0 {
-			recordWizardPID(wizardName, pid)
-		}
-	}
-	return handle, nil
-}
-
-// localRoster returns the names of wizards tracked in the local wizard registry.
-// These are created by `spire summon`. Dead wizards (no live process) are included
-// so the steward can see open slots and spawn new processes for them.
-func localRoster() []string {
-	reg := loadWizardRegistry()
-	var names []string
-	for _, w := range reg.Wizards {
-		names = append(names, w.Name)
-	}
-	return names
-}
-
-// localBusyAgents returns a set of wizard names that are currently busy.
-// A wizard is busy if either:
-//   - it has a live PID file (process is running), or
-//   - it owns an in_progress bead (survives crashes and the spawn stub case
-//     where no PID file is written yet).
-//
-// Used in place of findBusyAgents() in local mode.
-func localBusyAgents() map[string]bool {
-	busy := make(map[string]bool)
-
-	// Signal 1: live PID file.
-	reg := loadWizardRegistry()
-	for _, w := range reg.Wizards {
-		if isWizardRunning(w.Name) {
-			busy[w.Name] = true
-		}
-	}
-
-	// Signal 2: bead ownership — a wizard assigned a bead is busy even if its
-	// process hasn't started yet or its PID file was lost after a crash.
-	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
-	if err != nil {
-		log.Printf("[steward] localBusyAgents: bead ownership check failed: %s", err)
-		return busy
-	}
-	for _, b := range inProgress {
-		owner := hasLabel(b, "owner:")
-		if owner != "" {
-			busy[owner] = true
-		}
-	}
-
-	return busy
 }
