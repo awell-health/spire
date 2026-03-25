@@ -4,6 +4,20 @@ Operational reference for agents working in this repo. Not architecture, not con
 
 CLAUDE.md tells you the rules. This file tells you the exact commands.
 
+## Role hierarchy
+
+| Role | Scope | Entry point | What |
+|---|---|---|---|
+| **Archmage** | The user (human) | — | Sets priorities, resolves gates, bounces between towers |
+| **Steward** | Global coordinator | `spire steward` | Capacity, scheduling, starts wizards |
+| **Wizard** | Per-epic orchestrator | `spire workshop <epic-id>` | Long-lived. Summons apprentices, consults sages, seals the work. Uses `claude --resume` |
+| **Apprentice** | Per-subtask implementer | dispatched by wizard | Writes code in a worktree. One-shot. Reports back to wizard |
+| **Sage** | Per-review agent | dispatched by wizard | Reviews implementation, sends verdict to wizard. One-shot |
+| **Artificer** | Formula creator | `spire artificer` | Crafts formulas/molecules. NOT part of the workshop |
+| **Familiar** | Per-agent sidecar | daemon (local) / container (k8s) | Messaging infrastructure, inbox file delivery |
+
+The wizard IS the workshop. It summons apprentices (implement), consults sages (review), and seals the work (merge). Merge is the wizard's own action, not delegated.
+
 ## bd CLI quick reference
 
 ### Beads (CRUD)
@@ -124,20 +138,26 @@ spire board --json                  # machine-readable board
 ```bash
 spire register my-agent             # register agent identity
 spire unregister my-agent           # unregister
-spire collect                       # check inbox (all)
+spire collect                       # check inbox (all, queries DB)
 spire collect my-agent              # check inbox for specific agent
 spire send target-agent "message" --ref spi-abc  # send message
 spire read spi-msg-id               # mark message as read
+spire inbox [agent-name]            # read local inbox file (fast, no DB)
+spire inbox --check                 # silent if empty, prints if new (for hooks)
+spire inbox --watch                 # block until new messages (for wizard main loop)
 ```
 
-### Agents
+`spire collect` queries the DB. `spire inbox` reads the cached local file written by the daemon. Use `spire inbox` for hot-path checks (hooks, wizard loops). Use `spire collect` for manual/CLI use.
+
+### Workshop (per-epic orchestrator)
 
 ```bash
-spire summon 1                      # summon 1 wizard
-spire summon 2 --for spi-abc        # summon 2 wizards for an epic
-spire dismiss --all                 # dismiss all wizards
-spire roster                        # show agents and their status
+spire workshop spi-abc              # start wizard session for an epic
+spire roster                        # show all agents and their status
+spire dismiss --all                 # dismiss all agents
 ```
+
+`spire workshop` starts a wizard — a long-lived process that manages the full lifecycle (design → merge). It dispatches apprentices (implementers) and sages (reviewers).
 
 ## Common gotchas
 
@@ -146,9 +166,9 @@ spire roster                        # show agents and their status
 | Use `spire` for | Use `bd` for |
 |---|---|
 | claim, focus, board, roster | create, update, show, list |
-| send, collect, read (messages) | comments, labels, notes |
+| send, collect, inbox, read (messages) | comments, labels, notes |
 | up, down, shutdown, status | dep, mol, formula, gate |
-| summon, dismiss | close, reopen, children |
+| workshop, dismiss | close, reopen, children |
 
 Rule of thumb: `spire` for coordination and agent lifecycle. `bd` for data operations on beads.
 
@@ -235,10 +255,11 @@ Replace, don't accumulate. At most one `review-round:N` label at a time.
 Agents MUST follow the phase pipeline in order. Do NOT jump to implementation.
 
 For each epic or task with a formula:
-1. **phase:plan** — break into subtasks, file them, post the plan as a comment
-2. **phase:implement** — ONLY after plan is complete and subtasks are filed
-3. **phase:review** — ONLY after implementation is complete
-4. **phase:merge** — ONLY after review approves
+1. **phase:design** — explore the problem, produce design decisions
+2. **phase:plan** — break into subtasks, file them, post the plan as a comment
+3. **phase:implement** — ONLY after plan is complete and subtasks are filed
+4. **phase:review** — ONLY after implementation is complete
+5. **phase:merge** — ONLY after review approves
 
 Transition phases explicitly:
 ```bash
@@ -265,7 +286,7 @@ These are not pipeline-specific — they're the vocabulary of how all work progr
 | `phase:X` label on the bead | Where the bead is RIGHT NOW | Board column routing, agent dispatch |
 | Molecule children (child beads) | What has been COMPLETED | Audit trail, progress record |
 
-The wizard calls both `setPhase()` and `wizardCloseMoleculeStep()` on each transition. They are complementary, not redundant.
+On each phase transition, the code calls both `setPhase()` (update board routing) and `wizardCloseMoleculeStep()` (close the audit trail child bead). They are complementary, not redundant.
 
 ### Phase transitions
 
@@ -346,7 +367,7 @@ At `max_rounds` (from formula revision policy), the arbiter role is activated. A
 
 ### Wave-based execution
 
-When an epic has subtasks with dependencies, the orchestrator dispatches agents in waves:
+When an epic has subtasks with dependencies, the wizard dispatches apprentices in waves:
 
 ```
 Wave 0 (parallel):  spi-zpp.1    spi-zpp.2     ← no deps, start immediately
@@ -355,36 +376,36 @@ Wave 2:             spi-zpp.5                   ← depends on wave 1
 Wave 3:             spi-zpp.6                   ← depends on wave 2
 ```
 
-Each wave's agents run in isolated worktrees. The orchestrator:
+Each wave's apprentices run in isolated worktrees. The wizard:
 1. Claims subtasks: `spire claim spi-zpp.N`
-2. Dispatches agents with `isolation: "worktree"`
-3. Waits for all agents in the wave to complete
-4. Merges worktree branches back to main
+2. Dispatches apprentices with `isolation: "worktree"`
+3. Waits for all apprentices in the wave to complete
+4. Merges worktree branches back to staging
 5. Verifies the build: `go build ./...`
 6. Closes completed subtasks: `bd close spi-zpp.N`
 7. Proceeds to next wave
 
-### Agent limitations
+### Apprentice limitations
 
-- Subagents **cannot receive messages** mid-work. They work with the context given at dispatch.
-- If an agent fails: the orchestrator reads the output, diagnoses the issue, and re-dispatches with corrected instructions (not blind retry).
-- Each agent must get ALL necessary context upfront — bead description, design decisions, file paths, corrections from comments.
+- Apprentices **cannot receive messages** mid-work. They work with the context given at dispatch.
+- If an apprentice fails: the wizard reads the output, diagnoses the issue, and re-dispatches with corrected instructions (not blind retry).
+- Each apprentice must get ALL necessary context upfront — bead description, design decisions, file paths, corrections from comments.
 
 ### Bead comment corrections
 
 **Bead descriptions can become stale.** When design decisions are refined after subtasks are filed, the corrections land in comments on the epic, not in the subtask descriptions.
 
-Before dispatching an implementing agent:
+Before dispatching an apprentice:
 1. Read `bd comments <epic-id> --json` for the latest corrections
 2. Check if any corrections contradict the subtask description
 3. Update the subtask description if needed: `bd update <id> -d "corrected description"`
 4. Include critical corrections verbatim in the agent prompt
 
-The implementing agent reads its bead description and trusts it. If the description is wrong, the agent will do the wrong thing. Fix the description before dispatch.
+The apprentice reads its bead description and trusts it. If the description is wrong, the apprentice will do the wrong thing. Fix the description before dispatch.
 
-### Context injection for subagents
+### Context injection for apprentices
 
-Every implementing agent prompt should include:
+Every apprentice prompt should include:
 
 1. **Bead description** — from `bd show spi-zpp.N --json`
 2. **Critical design decisions** — from epic comments, copied verbatim
@@ -394,7 +415,7 @@ Every implementing agent prompt should include:
 
 ### Phase transitions during orchestration
 
-The orchestrator manages the epic's phase label:
+The wizard manages the epic's phase label:
 
 ```bash
 # Before wave 0
@@ -427,29 +448,29 @@ This is the full cycle that produced the phase pipeline itself — dogfooding th
 - Human resolved all 3 gates, answers posted as comments
 - Transitioned: `phase:plan` → `phase:implement`
 
-### Implement (orchestrator + subagents)
-- Orchestrator dispatched wave 0 (2 parallel worktree agents), waited, merged, verified build, then wave 1, etc.
-- **Critical step**: before dispatch, orchestrator checked epic comments for design corrections and updated subtask descriptions. Without this, spi-zpp.5 would have deleted molecule code that should have been preserved.
+### Implement (wizard + apprentices)
+- Wizard dispatched wave 0 (2 parallel worktree apprentices), waited, merged, verified build, then wave 1, etc.
+- **Critical step**: before dispatch, wizard checked epic comments for design corrections and updated subtask descriptions. Without this, spi-zpp.5 would have deleted molecule code that should have been preserved.
 - 4 waves, 6 subtasks, 6 commits, clean build
 - Transitioned: `phase:implement` → `phase:review`
 
-### Review
-- Reviewer reads all commits against design decisions
+### Review (sage)
+- Sage reads all commits against design decisions
 - Checks: does the code match the intent? Are invariants preserved?
-- Outcomes: approve → merge, or request changes → back to implement
+- Outcomes: approve → merge, or request changes → wizard re-dispatches apprentice
 
 ### Key takeaways
 
 **Description/comment divergence.** Design refinements landed as comments on the epic after subtask descriptions were already written. The playbook now requires reconciliation before dispatch — but tooling should eventually enforce this (e.g., `spire dispatch` checks for comments newer than the subtask description).
 
-**Review checklists verify what's listed, not what's missing.** The review agent verified 7 specific checks and approved — but missed that the design spec called for `[review rN]` on board cards, which wasn't implemented. A checklist catches correctness bugs but not omissions. Always include "check for design completeness" as an explicit review item.
+**Review checklists verify what's listed, not what's missing.** The sage verified 7 specific checks and approved — but missed that the design spec called for `[review rN]` on board cards, which wasn't implemented. A checklist catches correctness bugs but not omissions. Always include "check for design completeness" as an explicit review item.
 
-## Review agent prompt template
+## Sage (review agent) prompt template
 
-When dispatching a review agent, include all of the following. The template is designed to catch both correctness issues AND design omissions.
+When dispatching a sage, include all of the following. The template is designed to catch both correctness issues AND design omissions.
 
 ```
-You are reviewing the implementation of <epic-id> (<title>).
+You are a sage — reviewing the implementation of <epic-id> (<title>).
 
 ## Context recovery
 
@@ -491,7 +512,7 @@ Post your review as a comment:
   bd comments add <epic-id> "Review: <verdict and findings>"
 ```
 
-The key addition vs a naive review prompt: the **Design completeness** section. Without it, review agents verify what exists but don't notice what's absent.
+The key addition vs a naive review prompt: the **Design completeness** section. Without it, sages verify what exists but don't notice what's absent.
 
 ## Error recovery
 
