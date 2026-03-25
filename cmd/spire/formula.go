@@ -23,6 +23,40 @@ type PhaseConfig struct {
 	Model          string          `toml:"model,omitempty"`
 	Context        []string        `toml:"context,omitempty"`
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
+	// Execution directives
+	Role          string `toml:"role,omitempty"`           // human | apprentice | sage | skip
+	Dispatch      string `toml:"dispatch,omitempty"`       // direct | wave
+	VerdictOnly   bool   `toml:"verdict_only,omitempty"`   // sage: produce verdict only
+	Judgment      bool   `toml:"judgment,omitempty"`        // executor judges review feedback
+	StagingBranch string `toml:"staging_branch,omitempty"` // branch pattern for wave merges
+	MergeStrategy string `toml:"strategy,omitempty"`       // squash | merge | rebase
+	Auto          bool   `toml:"auto,omitempty"`           // auto-execute without human gate
+	NoHandoff     bool   `toml:"no_handoff,omitempty"`     // apprentice: skip review handoff
+	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
+}
+
+// GetRole returns the phase role, defaulting to "apprentice".
+func (pc PhaseConfig) GetRole() string {
+	if pc.Role != "" {
+		return pc.Role
+	}
+	return "apprentice"
+}
+
+// GetDispatch returns the dispatch mode, defaulting to "direct".
+func (pc PhaseConfig) GetDispatch() string {
+	if pc.Dispatch != "" {
+		return pc.Dispatch
+	}
+	return "direct"
+}
+
+// GetMergeStrategy returns the merge strategy, defaulting to "squash".
+func (pc PhaseConfig) GetMergeStrategy() string {
+	if pc.MergeStrategy != "" {
+		return pc.MergeStrategy
+	}
+	return "squash"
 }
 
 // RevisionPolicy configures review loop behavior (review phase only).

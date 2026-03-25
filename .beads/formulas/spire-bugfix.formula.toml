@@ -1,19 +1,14 @@
-name = "spire-agent-work"
-description = "Standard agent work protocol: design → implement → review → merge."
+name = "spire-bugfix"
+description = "Quick bugfix: implement, review, merge. No design or plan phase."
 version = 2
 
-[phases.design]
-timeout = "10m"
-role = "human"
-context = ["CLAUDE.md", "PLAYBOOK.md"]
-
 [phases.implement]
-timeout = "15m"
+timeout = "10m"
 model = "claude-sonnet-4-6"
 role = "apprentice"
 no_handoff = true
 worktree = true
-context = ["CLAUDE.md", "PLAYBOOK.md"]
+context = ["CLAUDE.md"]
 
 [phases.review]
 timeout = "10m"
@@ -22,7 +17,7 @@ role = "sage"
 verdict_only = true
 
 [phases.review.revision_policy]
-max_rounds = 3
+max_rounds = 2
 arbiter_model = "claude-opus-4-6"
 
 [phases.merge]

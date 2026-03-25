@@ -1,25 +1,27 @@
-name = "spire-agent-work"
-description = "Standard agent work protocol: design → implement → review → merge."
+name = "spire-epic"
+description = "Epic lifecycle: plan, wave-based implement, review with judgment, merge."
 version = 2
 
-[phases.design]
-timeout = "10m"
+[phases.plan]
 role = "human"
 context = ["CLAUDE.md", "PLAYBOOK.md"]
 
 [phases.implement]
-timeout = "15m"
+timeout = "30m"
 model = "claude-sonnet-4-6"
 role = "apprentice"
+dispatch = "wave"
+staging_branch = "epic/{bead-id}"
 no_handoff = true
 worktree = true
 context = ["CLAUDE.md", "PLAYBOOK.md"]
 
 [phases.review]
-timeout = "10m"
+timeout = "20m"
 model = "claude-opus-4-6"
 role = "sage"
 verdict_only = true
+judgment = true
 
 [phases.review.revision_policy]
 max_rounds = 3
@@ -27,8 +29,9 @@ arbiter_model = "claude-opus-4-6"
 
 [phases.merge]
 strategy = "squash"
+staging_branch = "epic/{bead-id}"
 auto = true
 
 [vars.task]
-description = "The bead ID being worked on"
+description = "The epic bead ID"
 required = true
