@@ -10,7 +10,7 @@ import (
 
 // workshopLoop is the wizard's main event loop.
 // It dispatches to phase-specific handlers and saves state after each action.
-func workshopLoop(state *workshopState) error {
+func workshopLoop(state *workshopState, spawner AgentSpawner) error {
 	for {
 		// Check inbox for messages between actions
 		workshopCheckInbox(state)
@@ -27,9 +27,9 @@ func workshopLoop(state *workshopState) error {
 		case "plan":
 			err = workshopPlan(state)
 		case "implement":
-			err = workshopImplement(state)
+			err = workshopImplement(state, spawner)
 		case "review":
-			err = workshopReview(state)
+			err = workshopReview(state, spawner)
 		case "merge":
 			err = workshopMerge(state)
 		default:

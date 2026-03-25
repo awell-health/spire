@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -142,20 +143,27 @@ func killLocalWizard(agentName, beadID string) {
 	clearWizardPID(agentName)
 }
 
-// spawnLocalAgent spawns an agent locally for the given bead.
-// Returns the spawned process PID (>0) or 0 if spawning is deferred.
-//
-// The execution backend is determined by subsequent tasks:
-//   - spi-1dl.2: Docker container per assignment
-//   - spi-1dl.3: claude CLI subprocess (--exec=process)
-//
-// This stub records the intent and returns 0 until a backend is wired in.
-func spawnLocalAgent(wizardName, beadID string, cfg *LocalStewardConfig) (int, error) {
-	// TODO(spi-1dl.2): Docker backend — create container, inject bead env
-	// TODO(spi-1dl.3): Process backend — exec claude CLI in repo worktree
-	log.Printf("[steward] local spawn: %s → %s (model=%s, max-turns=%d, timeout=%s) [pending: spi-1dl.2/spi-1dl.3]",
-		wizardName, beadID, cfg.Model, cfg.MaxTurns, cfg.Timeout)
-	return 0, nil
+// spawnLocalAgent spawns an agent locally for the given bead using the
+// provided AgentSpawner. Returns the handle on success.
+// The spawner backend (process, docker, k8s) is selected by the caller.
+func spawnLocalAgent(wizardName, beadID string, spawner AgentSpawner) (AgentHandle, error) {
+	logDir := filepath.Join(doltGlobalDir(), "wizards")
+	handle, err := spawner.Spawn(SpawnConfig{
+		Name:    wizardName,
+		BeadID:  beadID,
+		Role:    RoleApprentice,
+		LogPath: filepath.Join(logDir, wizardName+".log"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Bridge to PID-file tracking for localBusyAgents() liveness checks.
+	if id := handle.Identifier(); id != "" {
+		if pid, convErr := strconv.Atoi(id); convErr == nil && pid > 0 {
+			recordWizardPID(wizardName, pid)
+		}
+	}
+	return handle, nil
 }
 
 // localRoster returns the names of wizards tracked in the local wizard registry.

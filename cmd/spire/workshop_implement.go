@@ -99,7 +99,7 @@ func computeWaves(epicID string) ([][]string, error) {
 // workshopImplement handles the implement phase of the wizard workshop.
 // It computes waves from the dependency graph, dispatches apprentices
 // in parallel worktrees, and merges their work back.
-func workshopImplement(state *workshopState) error {
+func workshopImplement(state *workshopState, spawner AgentSpawner) error {
 	epicID := state.EpicID
 	log := func(format string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)
@@ -155,13 +155,17 @@ func workshopImplement(state *workshopState) error {
 				apprenticeName := fmt.Sprintf("apprentice-%s-%d", epicID, idx)
 				log("  dispatching %s for %s", apprenticeName, beadID)
 
-				spireBin, _ := os.Executable()
-				cmd := exec.Command(spireBin, "wizard-run", beadID, "--name", apprenticeName)
-				cmd.Env = os.Environ()
-				cmd.Stdout = os.Stderr
-				cmd.Stderr = os.Stderr
-
-				if err := cmd.Run(); err != nil {
+				handle, err := spawner.Spawn(SpawnConfig{
+					Name:   apprenticeName,
+					BeadID: beadID,
+					Role:   RoleApprentice,
+				})
+				if err != nil {
+					log("  %s spawn failed: %s", apprenticeName, err)
+					resultCh <- apprenticeResult{BeadID: beadID, Agent: apprenticeName, Err: err}
+					return
+				}
+				if err := handle.Wait(); err != nil {
 					log("  %s failed: %s", apprenticeName, err)
 					resultCh <- apprenticeResult{BeadID: beadID, Agent: apprenticeName, Err: err}
 					return

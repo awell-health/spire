@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -846,27 +847,31 @@ func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string,
 	})
 
 	// Spawn reviewer
-	spireBin, _ := os.Executable()
-	cmd := exec.Command(spireBin, "wizard-review", beadID, "--name", reviewerName)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	if err := cmd.Start(); err != nil {
-		log("failed to spawn reviewer: %s — leaving review-ready for steward", err)
+	spawner := NewSpawner("process")
+	handle, spawnErr := spawner.Spawn(SpawnConfig{
+		Name:   reviewerName,
+		BeadID: beadID,
+		Role:   RoleSage,
+	})
+	if spawnErr != nil {
+		log("failed to spawn reviewer: %s — leaving review-ready for steward", spawnErr)
 		// Remove the dead registry entry but keep review-ready and
 		// implemented-by so the steward's detectReviewReady() can re-route
 		// the bead to a review pod (k8s) or a future local retry.
-		// Remove owner: swap since the wizard is about to exit.
 		wizardRegistryRemove(reviewerName)
-		storeAddComment(beadID, fmt.Sprintf("Local review spawn failed: %s — bead left review-ready for steward", err))
+		storeAddComment(beadID, fmt.Sprintf("Local review spawn failed: %s — bead left review-ready for steward", spawnErr))
 		return
 	}
 
-	// Update registry with the actual PID now that Start() succeeded.
-	wizardRegistryUpdate(reviewerName, func(w *localWizard) {
-		w.PID = cmd.Process.Pid
-	})
+	// Update registry with the identifier now that spawn succeeded.
+	if id := handle.Identifier(); id != "" {
+		if pid, err := strconv.Atoi(id); err == nil {
+			wizardRegistryUpdate(reviewerName, func(w *localWizard) {
+				w.PID = pid
+			})
+		}
+	}
 
-	log("review handoff complete, spawned %s (pid %d)", reviewerName, cmd.Process.Pid)
+	log("review handoff complete, spawned %s (%s)", reviewerName, handle.Identifier())
 	// Self-unregister happens via defer in cmdWizardRun
 }

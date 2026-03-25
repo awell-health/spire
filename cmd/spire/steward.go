@@ -246,10 +246,10 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, mo
 		return
 	}
 
-	// Load local agent config once if we may need it for spawning.
-	var localCfg *LocalStewardConfig
+	// Create spawner for local agent lifecycle.
+	var spawner AgentSpawner
 	if mode == StewardModeLocal {
-		localCfg = loadLocalStewardConfig()
+		spawner = NewSpawner("process")
 	}
 
 	// Step 4: Assign ready beads to idle agents (round-robin).
@@ -315,12 +315,9 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, mo
 		assigned++
 
 		// In local mode, spawn the agent process after assignment.
-		if mode == StewardModeLocal && localCfg != nil {
-			pid, spawnErr := spawnLocalAgent(agent, bead.ID, localCfg)
-			if spawnErr != nil {
+		if mode == StewardModeLocal && spawner != nil {
+			if _, spawnErr := spawnLocalAgent(agent, bead.ID, spawner); spawnErr != nil {
 				log.Printf("[steward] spawn failed: %s → %s: %s", bead.ID, agent, spawnErr)
-			} else if pid > 0 {
-				recordWizardPID(agent, pid)
 			}
 		}
 	}
@@ -582,28 +579,19 @@ spec:
 				reviewerName = implBy + "-review"
 			}
 
-			spireBin, _ := os.Executable()
 			logDir := filepath.Join(doltGlobalDir(), "wizards")
-			os.MkdirAll(logDir, 0755)
-			logFile, _ := os.OpenFile(filepath.Join(logDir, reviewerName+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-
-			cmd := exec.Command(spireBin, "wizard-review", b.ID, "--name", reviewerName)
-			cmd.Env = os.Environ()
-			if logFile != nil {
-				cmd.Stdout = logFile
-				cmd.Stderr = logFile
-			}
-			if err := cmd.Start(); err != nil {
-				log.Printf("[steward] failed to spawn local reviewer for %s: %v", b.ID, err)
+			spawner := NewSpawner("process")
+			handle, spawnErr := spawner.Spawn(SpawnConfig{
+				Name:    reviewerName,
+				BeadID:  b.ID,
+				Role:    RoleSage,
+				LogPath: filepath.Join(logDir, reviewerName+".log"),
+			})
+			if spawnErr != nil {
+				log.Printf("[steward] failed to spawn local reviewer for %s: %v", b.ID, spawnErr)
 				storeRemoveLabel(b.ID, "review-assigned")
-				if logFile != nil {
-					logFile.Close()
-				}
 			} else {
-				log.Printf("[steward] spawned local reviewer %s for %s (pid %d)", reviewerName, b.ID, cmd.Process.Pid)
-				if logFile != nil {
-					logFile.Close()
-				}
+				log.Printf("[steward] spawned local reviewer %s for %s (%s)", reviewerName, b.ID, handle.Identifier())
 			}
 		}
 	}

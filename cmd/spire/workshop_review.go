@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 )
 
 // workshopReview handles the review phase of the wizard workshop.
 // It dispatches a sage (reviewer), waits for the verdict, and makes
 // judgment calls on review feedback.
-func workshopReview(state *workshopState) error {
+func workshopReview(state *workshopState, spawner AgentSpawner) error {
 	epicID := state.EpicID
 	log := func(format string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)
@@ -21,14 +20,17 @@ func workshopReview(state *workshopState) error {
 	sageName := fmt.Sprintf("sage-%s", epicID)
 	log("dispatching sage %s for review", sageName)
 
-	spireBin, _ := os.Executable()
-	reviewCmd := exec.Command(spireBin, "wizard-review", epicID, "--name", sageName)
-	reviewCmd.Env = os.Environ()
-	reviewCmd.Stdout = os.Stderr
-	reviewCmd.Stderr = os.Stderr
+	handle, spawnErr := spawner.Spawn(SpawnConfig{
+		Name:   sageName,
+		BeadID: epicID,
+		Role:   RoleSage,
+	})
+	if spawnErr != nil {
+		return fmt.Errorf("spawn sage: %w", spawnErr)
+	}
 
 	// Run the sage synchronously — it reviews and posts a verdict message
-	if err := reviewCmd.Run(); err != nil {
+	if err := handle.Wait(); err != nil {
 		// The sage may have posted a verdict even if it exited non-zero
 		// (e.g., it requested changes and spawned a wizard-run which we don't want)
 		log("sage exited: %s — checking for verdict", err)
@@ -139,12 +141,15 @@ Respond with ONLY a JSON object:
 			// Spawn wizard-run --review-fix directly (subtasks are already closed,
 			// so the wave system would produce zero waves)
 			fixName := fmt.Sprintf("apprentice-%s-fix-%d", epicID, state.ReviewRounds)
-			spireBin, _ := os.Executable()
-			fixCmd := exec.Command(spireBin, "wizard-run", epicID, "--name", fixName, "--review-fix")
-			fixCmd.Env = os.Environ()
-			fixCmd.Stdout = os.Stderr
-			fixCmd.Stderr = os.Stderr
-			if err := fixCmd.Run(); err != nil {
+			fixHandle, fixErr := spawner.Spawn(SpawnConfig{
+				Name:      fixName,
+				BeadID:    epicID,
+				Role:      RoleApprentice,
+				ExtraArgs: []string{"--review-fix"},
+			})
+			if fixErr != nil {
+				log("review-fix spawn failed: %s", fixErr)
+			} else if err := fixHandle.Wait(); err != nil {
 				log("review-fix failed: %s", err)
 			}
 

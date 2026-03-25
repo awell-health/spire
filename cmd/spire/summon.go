@@ -251,35 +251,22 @@ func summonLocal(count int) error {
 	reg := loadWizardRegistry()
 	reg = cleanDeadWizards(reg)
 
-	spireBin, err := os.Executable()
-	if err != nil {
-		spireBin = os.Args[0]
-	}
-
 	logDir := filepath.Join(doltGlobalDir(), "wizards")
-	os.MkdirAll(logDir, 0755)
+	spawner := NewSpawner("process")
 
 	for i := 0; i < count; i++ {
 		bead := candidates[i]
 		name := "wizard-" + bead.ID
 
-		// Spawn: spire wizard-run <bead-id> --name <wizard-name>
-		logPath := filepath.Join(logDir, name+".log")
-		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		handle, err := spawner.Spawn(SpawnConfig{
+			Name:    name,
+			BeadID:  bead.ID,
+			Role:    RoleApprentice,
+			LogPath: filepath.Join(logDir, name+".log"),
+		})
 		if err != nil {
-			return fmt.Errorf("open log for %s: %w", name, err)
-		}
-
-		cmd := exec.Command(spireBin, "wizard-run", bead.ID, "--name", name)
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
-		cmd.Env = os.Environ()
-
-		if err := cmd.Start(); err != nil {
-			logFile.Close()
 			return fmt.Errorf("spawn %s: %w", name, err)
 		}
-		logFile.Close() // child owns the fd now
 
 		// Resolve tower for this wizard.
 		towerName := ""
@@ -291,10 +278,11 @@ func summonLocal(count int) error {
 			towerName = cfg.ActiveTower
 		}
 
+		pid, _ := strconv.Atoi(handle.Identifier())
 		worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
 		if err := wizardRegistryAdd(localWizard{
 			Name:      name,
-			PID:       cmd.Process.Pid,
+			PID:       pid,
 			BeadID:    bead.ID,
 			Worktree:  worktree,
 			StartedAt: time.Now().UTC().Format(time.RFC3339),
@@ -303,7 +291,7 @@ func summonLocal(count int) error {
 			log.Printf("warning: registry add for %s: %v", name, err)
 		}
 
-		fmt.Printf("  %s%s%s → %s (%s) [pid %d]\n", cyan, name, reset, bead.ID, bead.Title, cmd.Process.Pid)
+		fmt.Printf("  %s%s%s → %s (%s) [%s]\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier())
 	}
 
 	fmt.Printf("\n%d wizard(s) summoned. Logs: %s\n", count, logDir)
