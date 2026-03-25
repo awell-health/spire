@@ -26,6 +26,8 @@ brews:
     homepage: "https://github.com/awell-health/spire"
     description: "Coordination hub for AI agents across repositories"
     license: "Apache-2.0"
+    dependencies:
+      - name: beads
     install: |
       bin.install "spire"
     test: |
