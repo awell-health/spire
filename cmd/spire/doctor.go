@@ -399,7 +399,7 @@ func checkDocker() checkResult {
 		return checkResult{
 			Name:     name,
 			Status:   statusMissing,
-			Detail:   "not available — process mode (--mode=process) available as alternative",
+			Detail:   "not available — process backend (--backend=process) available as alternative",
 			Optional: true,
 		}
 	}

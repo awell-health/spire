@@ -33,9 +33,9 @@ func TestProcessBackend_List(t *testing.T) {
 
 	// Also redirect the wizard registry (it uses configDir, not SPIRE_DOLT_DIR).
 	// We need to create the registry file directly at the path wizardRegistryPath() returns.
-	// Override XDG_CONFIG_HOME so configDir() returns our temp dir.
-	configHome := filepath.Join(tmpDir, "config")
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	// Override SPIRE_CONFIG_DIR so configDir() returns our temp dir.
+	configHome := filepath.Join(tmpDir, "config", "spire")
+	t.Setenv("SPIRE_CONFIG_DIR", configHome)
 
 	reg := wizardRegistry{
 		Wizards: []localWizard{
@@ -185,8 +185,8 @@ func TestProcessBackend_Kill_NoPID(t *testing.T) {
 	t.Setenv("SPIRE_DOLT_DIR", tmpDir)
 
 	// Override config dir so we get an empty registry.
-	configHome := filepath.Join(tmpDir, "config")
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configHome := filepath.Join(tmpDir, "config", "spire")
+	t.Setenv("SPIRE_CONFIG_DIR", configHome)
 
 	b := newProcessBackend()
 	err := b.Kill("nonexistent-wizard")

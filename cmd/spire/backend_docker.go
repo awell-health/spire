@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os/exec"
@@ -106,17 +105,16 @@ func (b *dockerBackend) Logs(name string) (io.ReadCloser, error) {
 		return nil, err
 	}
 
+	// Use shell to merge stdout and stderr (docker logs writes to both).
 	cmd := exec.Command("docker", "logs", id)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("docker logs pipe: %w", err)
 	}
+	cmd.Stderr = cmd.Stdout // merge stderr into stdout pipe
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("docker logs: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("docker logs start: %w", err)
 	}
 
 	// Return a wrapper that waits for the command to finish when closed.
