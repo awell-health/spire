@@ -454,6 +454,11 @@ func cmdTowerCreate(args []string) error {
 		fmt.Printf("  warning: could not register custom types: %s\n", err)
 	}
 
+	// Re-write config.yaml to guarantee database key survives.
+	// bd init and ensureCustomBeadTypes may have rewritten it.
+	configYAML = fmt.Sprintf("dolt.host: %q\ndolt.port: %s\ndatabase: %q\n", doltHost(), doltPort(), database)
+	os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644)
+
 	tower := &TowerConfig{
 		Name:      name,
 		ProjectID: projectID,
