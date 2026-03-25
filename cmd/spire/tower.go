@@ -214,6 +214,69 @@ const reposTableSQL = `CREATE TABLE IF NOT EXISTS repos (
 // These supplement bd's built-in types (task, bug, feature, epic, chore).
 var requiredCustomTypes = []string{"design"}
 
+// ensureBootstrapCustomTypesFn exists so bootstrap helpers can be tested
+// without shelling out to the real bd binary.
+var ensureBootstrapCustomTypesFn = ensureCustomBeadTypes
+
+// bootstrapTowerBeadsDir writes the minimum .beads workspace needed for a
+// tower-backed store and ensures Spire's required custom bead types exist.
+func bootstrapTowerBeadsDir(beadsDir string, tower *TowerConfig) error {
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		return fmt.Errorf("create .beads/: %w", err)
+	}
+
+	beadsMeta := map[string]any{
+		"database":      "dolt",
+		"backend":       "dolt",
+		"dolt_mode":     "server",
+		"dolt_database": tower.Database,
+	}
+	if tower.ProjectID != "" {
+		beadsMeta["project_id"] = tower.ProjectID
+	}
+	metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
+		return fmt.Errorf("write .beads/metadata.json: %w", err)
+	}
+
+	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
+	configPath := filepath.Join(beadsDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+		return fmt.Errorf("write .beads/config.yaml: %w", err)
+	}
+
+	if err := ensureBootstrapCustomTypesFn(beadsDir); err != nil {
+		return fmt.Errorf("register custom bead types: %w", err)
+	}
+
+	return nil
+}
+
+// bootstrapRepoBeadsDir writes repo-local beads config and routes, then ensures
+// the shared tower custom bead types are available immediately.
+func bootstrapRepoBeadsDir(beadsDir string, tower *TowerConfig, prefix string) error {
+	if err := bootstrapTowerBeadsDir(beadsDir, tower); err != nil {
+		return err
+	}
+
+	routesContent := fmt.Sprintf("{\"prefix\":\"%s-\",\"path\":\".\"}\n", prefix)
+	routesPath := filepath.Join(beadsDir, "routes.jsonl")
+	if err := os.WriteFile(routesPath, []byte(routesContent), 0644); err != nil {
+		return fmt.Errorf("write routes.jsonl: %w", err)
+	}
+
+	gitignorePath := filepath.Join(beadsDir, ".gitignore")
+	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
+		gitignoreContent := "metadata.json\nconfig.yaml\nroutes.jsonl\n"
+		if writeErr := os.WriteFile(gitignorePath, []byte(gitignoreContent), 0644); writeErr != nil {
+			return fmt.Errorf("write .beads/.gitignore: %w", writeErr)
+		}
+	}
+
+	return nil
+}
+
 // ensureCustomBeadTypes registers Spire's required custom bead types in the
 // given .beads directory. Idempotent — merges with any existing custom types.
 func ensureCustomBeadTypes(beadsDir string) error {
@@ -582,29 +645,10 @@ func cmdTowerAttach(args []string) error {
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// Materialize .beads/metadata.json in the cloned data dir.
-	// tower create runs bd init which creates this; tower attach must
-	// bootstrap it so that repo add's bd client has a valid workspace.
+	// Materialize the tower's .beads workspace in the cloned data dir.
 	beadsDir := filepath.Join(dataDir, dbName, ".beads")
-	if err := os.MkdirAll(beadsDir, 0755); err != nil {
-		return fmt.Errorf("create .beads/ in data dir: %w", err)
-	}
-	beadsMeta := map[string]any{
-		"project_id":    projectID,
-		"database":      "dolt",
-		"backend":       "dolt",
-		"dolt_mode":     "server",
-		"dolt_database": dbName,
-	}
-	metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
-	metaPath := filepath.Join(beadsDir, "metadata.json")
-	if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
-		return fmt.Errorf("write .beads/metadata.json: %w", err)
-	}
-	// config.yaml — dolt server connection (mirrors repo add bootstrap)
-	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
-	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
-		return fmt.Errorf("write .beads/config.yaml: %w", err)
+	if err := bootstrapTowerBeadsDir(beadsDir, tower); err != nil {
+		return err
 	}
 
 	// Save tower config

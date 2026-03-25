@@ -97,7 +97,7 @@ This command:
 2. Writes a row to the `repos` table: prefix, repo URL (from `git remote`),
    branch, runtime (auto-detected from repo contents)
 3. Sets up `.beads/` in the repo with `metadata.json` pointing at the
-   tower's dolt database
+   tower's dolt database and ensures required custom bead types exist
 4. Pushes the registration to DoltHub
 
 **Exists today**: `spire repo add` registers a repo against an existing

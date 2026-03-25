@@ -71,6 +71,7 @@ spire config set dolthub-password mypassword
 # Create a tower and register your repo
 spire tower create --name my-team
 cd my-project && spire repo add
+# repo add bootstraps required custom bead types like `design`
 
 # Start services (dolt server + daemon)
 spire up
@@ -91,7 +92,7 @@ The primary onboarding story for non-trivial work is: **design → plan → impl
 
 ```bash
 # 1. Design: create a design bead to capture intent before filing tasks
-spire file "Auth system design" -t epic -p 1
+spire design "Auth system design"
 
 # 2. Add tasks under the epic
 spire file "Implement OAuth2" -t task -p 2 --parent spi-abc

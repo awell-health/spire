@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -146,50 +145,8 @@ func cmdRegisterRepo(args []string) error {
 
 	// --- Set up .beads/ directory ---
 	beadsDir := filepath.Join(cwd, ".beads")
-	if err := os.MkdirAll(beadsDir, 0755); err != nil {
-		return fmt.Errorf("create .beads/: %w", err)
-	}
-
-	// metadata.json — adopts the tower's shared identity into this repo.
-	// project_id originates from bd init (tower create), is stored in tower config,
-	// and is adopted here. Spire never generates its own project_id.
-	projectID := tower.ProjectID
-	metadata := map[string]any{
-		"database":      "dolt",
-		"backend":       "dolt",
-		"dolt_mode":     "server",
-		"dolt_database": database,
-	}
-	if projectID != "" {
-		metadata["project_id"] = projectID
-	}
-	metaBytes, _ := json.MarshalIndent(metadata, "", "  ")
-	metaPath := filepath.Join(beadsDir, "metadata.json")
-	if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
-		return fmt.Errorf("write metadata.json: %w", err)
-	}
-
-	// config.yaml — dolt server connection
-	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
-	configPath := filepath.Join(beadsDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
-		return fmt.Errorf("write config.yaml: %w", err)
-	}
-
-	// routes.jsonl — prefix routing
-	routesContent := fmt.Sprintf("{\"prefix\":\"%s-\",\"path\":\".\"}\n", prefix)
-	routesPath := filepath.Join(beadsDir, "routes.jsonl")
-	if err := os.WriteFile(routesPath, []byte(routesContent), 0644); err != nil {
-		return fmt.Errorf("write routes.jsonl: %w", err)
-	}
-
-	// .gitignore — keep machine-specific files out of git
-	gitignorePath := filepath.Join(beadsDir, ".gitignore")
-	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
-		gitignoreContent := "metadata.json\nconfig.yaml\nroutes.jsonl\n"
-		if writeErr := os.WriteFile(gitignorePath, []byte(gitignoreContent), 0644); writeErr != nil {
-			fmt.Printf("  Warning: could not write .beads/.gitignore: %s\n", writeErr)
-		}
+	if err := bootstrapRepoBeadsDir(beadsDir, tower, prefix); err != nil {
+		return err
 	}
 
 	// --- Register in global config ---

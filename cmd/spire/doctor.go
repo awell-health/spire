@@ -520,31 +520,14 @@ func checkTowerBeadsDirFor(tower *TowerConfig) checkResult {
 		Status: statusMissing,
 		Detail: fmt.Sprintf("missing: %s in %s", strings.Join(missingFiles, ", "), beadsDir),
 		FixFunc: func() {
-			if err := os.MkdirAll(beadsDir, 0755); err != nil {
-				fmt.Printf("    Failed to create .beads/ dir: %s\n", err)
+			if err := bootstrapTowerBeadsDir(beadsDir, tower); err != nil {
+				fmt.Printf("    Failed to bootstrap .beads/: %s\n", err)
 				return
 			}
 			if !metaOK {
-				beadsMeta := map[string]any{
-					"project_id":    tower.ProjectID,
-					"database":      "dolt",
-					"backend":       "dolt",
-					"dolt_mode":     "server",
-					"dolt_database": tower.Database,
-				}
-				metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
-				if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
-					fmt.Printf("    Failed to write metadata.json: %s\n", err)
-					return
-				}
 				fmt.Println("    metadata.json regenerated")
 			}
 			if !configOK {
-				configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
-				if err := os.WriteFile(configYAMLPath, []byte(configYAML), 0644); err != nil {
-					fmt.Printf("    Failed to write config.yaml: %s\n", err)
-					return
-				}
 				fmt.Println("    config.yaml regenerated")
 			}
 		},
