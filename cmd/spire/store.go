@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -21,10 +20,7 @@ func ensureStore() (beads.Storage, error) {
 	if activeStore != nil {
 		return activeStore, nil
 	}
-	beadsDir := os.Getenv("BEADS_DIR")
-	if beadsDir == "" {
-		beadsDir = beads.FindBeadsDir()
-	}
+	beadsDir := resolveBeadsDir()
 	if beadsDir == "" {
 		return nil, fmt.Errorf("no .beads directory found")
 	}
