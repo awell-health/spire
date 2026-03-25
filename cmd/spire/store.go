@@ -294,6 +294,20 @@ func storeCreateBead(opts createOpts) (string, error) {
 	return issue.ID, nil
 }
 
+// storeAddDep adds a blocking dependency: issueID depends on dependsOnID.
+func storeAddDep(issueID, dependsOnID string) error {
+	store, err := ensureStore()
+	if err != nil {
+		return err
+	}
+	dep := &beads.Dependency{
+		IssueID:     issueID,
+		DependsOnID: dependsOnID,
+		Type:        beads.DepBlocks,
+	}
+	return store.AddDependency(storeCtx, dep, storeActor())
+}
+
 // storeCloseBead closes a bead.
 func storeCloseBead(id string) error {
 	store, err := ensureStore()
