@@ -206,7 +206,7 @@ Messaging:
   read <bead-id>        Mark a message as read
 
 Observability:
-  board [flags]         Work queue view (--mine, --ready, --json)
+  board [flags]         Interactive board TUI (--mine, --ready, --json)
   watch                 Live-updating activity view
   metrics [flags]       Agent run metrics (--bead, --model, --json)
   alert [bead-id]       Alert on bead state changes

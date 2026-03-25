@@ -148,13 +148,14 @@ Docker agent mode. Single-instance enforcement. Health endpoint.
 spire status          # tower status, agent activity, sync state
 spire logs            # follow daemon + agent logs
 spire logs wizard-1   # specific agent
-spire board           # kanban-style work queue
+spire board           # interactive board TUI
+spire board --json    # machine-readable board for agents/scripts
 spire roster          # who's in the tower, what they're working on
 spire watch           # live-updating view of all activity
 ```
 
 **Exists today**: `spire status` shows dolt server and daemon PID/state.
-`spire board` renders a columnar work queue. `spire roster` lists
+`spire board` opens an interactive Bubble Tea work queue. `spire roster` lists
 registered agents. `spire watch` provides a live-updating terminal view.
 
 **Needs to be built**: `spire logs` command (today, logs are in

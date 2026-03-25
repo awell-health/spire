@@ -116,7 +116,8 @@ See the [epic formula diagram](docs/epic-formula.md) for a visual walkthrough of
 ### See what's happening
 
 ```bash
-spire board                  # kanban columns: Ready → Working → Review → Merged
+spire board                  # interactive board TUI
+spire board --json           # machine-readable board for agents/scripts
 spire board --epic spi-x2mk  # scoped to one epic
 spire watch                  # live tower status
 spire watch spi-x2mk         # live epic progress with countdown

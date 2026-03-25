@@ -62,7 +62,7 @@ type boardJSON struct {
 	Blocked   []BoardBead `json:"blocked"`
 }
 
-// --- Board options (shared between static and TUI mode) ---
+// --- Board options (shared between JSON output and TUI mode) ---
 
 type boardOpts struct {
 	mine     bool
@@ -191,7 +191,6 @@ func cmdBoard(args []string) error {
 
 	var (
 		flagJSON bool
-		flagLive bool
 		opts     boardOpts
 	)
 	opts.interval = 5 * time.Second
@@ -204,8 +203,6 @@ func cmdBoard(args []string) error {
 			opts.ready = true
 		case "--json":
 			flagJSON = true
-		case "--live":
-			flagLive = true
 		case "--interval":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--interval requires a value")
@@ -223,7 +220,7 @@ func cmdBoard(args []string) error {
 			i++
 			opts.epic = args[i]
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire board [--live] [--mine] [--ready] [--epic <id>] [--json] [--interval 5s]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire board [--mine] [--ready] [--epic <id>] [--json] [--interval 5s]", args[i])
 		}
 	}
 
@@ -248,17 +245,11 @@ func cmdBoard(args []string) error {
 		return enc.Encode(out)
 	}
 
-	if flagLive {
-		return runBoardTUI(opts)
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Errorf("spire board now launches the interactive TUI by default; use `spire board --json` for non-interactive output")
 	}
 
-	// Static one-shot.
-	cols, err := fetchBoard(opts)
-	if err != nil {
-		return err
-	}
-	printColumnarBoard(cols, 0)
-	return nil
+	return runBoardTUI(opts)
 }
 
 // --- Data fetching ---
@@ -594,7 +585,7 @@ func priStr(p int) string {
 	}
 }
 
-// --- Shared helpers (used by both static and TUI) ---
+// --- Shared board helpers ---
 
 // categorizeColumnsFromStore builds board columns from store API results.
 // blockedBeads come from GetBlockedIssues and already have blocker metadata.
@@ -1118,4 +1109,3 @@ func countDigits(n int) int {
 func clearScreen() {
 	fmt.Print("\033[2J\033[H")
 }
-
