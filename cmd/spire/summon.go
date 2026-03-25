@@ -287,9 +287,16 @@ func summonLocal(count int, targetIDs []string) error {
 	logDir := filepath.Join(doltGlobalDir(), "wizards")
 	backend := ResolveBackend("")
 
+	spawned := 0
 	for i := 0; i < count; i++ {
 		bead := candidates[i]
 		name := "wizard-" + bead.ID
+
+		// Skip if a live wizard is already running for this bead.
+		if w := findLiveWizardForBead(reg, bead.ID); w != nil {
+			fmt.Printf("  %s%s%s already running for %s (pid %d) — skipping\n", dim, w.Name, reset, bead.ID, w.PID)
+			continue
+		}
 
 		// Resolve formula for the bead — best-effort, fall back to default.
 		formulaName := resolveFormulaName(bead)
@@ -329,9 +336,10 @@ func summonLocal(count int, targetIDs []string) error {
 		}
 
 		fmt.Printf("  %s%s%s → %s (%s) [%s] formula=%s\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier(), formulaName)
+		spawned++
 	}
 
-	fmt.Printf("\n%d wizard(s) summoned. Logs: %s\n", count, logDir)
+	fmt.Printf("\n%d wizard(s) summoned. Logs: %s\n", spawned, logDir)
 	fmt.Printf("Run %sspire roster%s to check status.\n", bold, reset)
 	return nil
 }
@@ -571,5 +579,16 @@ func wizardRegistryUpdate(name string, update func(*localWizard)) error {
 		}
 	}
 	return fmt.Errorf("wizard %q not found in registry", name)
+}
+
+// findLiveWizardForBead returns the first registry entry for the given bead, or nil.
+// The caller is expected to have already cleaned dead wizards from the registry.
+func findLiveWizardForBead(reg wizardRegistry, beadID string) *localWizard {
+	for i := range reg.Wizards {
+		if reg.Wizards[i].BeadID == beadID {
+			return &reg.Wizards[i]
+		}
+	}
+	return nil
 }
 
