@@ -32,16 +32,22 @@ type ReviewIssue struct {
 
 func cmdWizardReview(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire wizard-review <bead-id> --name <name>")
+		return fmt.Errorf("usage: spire wizard-review <bead-id> --name <name> [--verdict-only]")
 	}
 
 	beadID := args[0]
 	reviewerName := "reviewer"
+	verdictOnly := false
 	for i := 1; i < len(args); i++ {
 		if args[i] == "--name" && i+1 < len(args) {
 			i++
 			reviewerName = args[i]
+		} else if args[i] == "--verdict-only" {
+			verdictOnly = true
 		}
+	}
+	if os.Getenv("SPIRE_VERDICT_ONLY") == "1" {
+		verdictOnly = true
 	}
 
 	log := func(format string, a ...interface{}) {
@@ -165,15 +171,50 @@ func cmdWizardReview(args []string) error {
 	verdictHandled = true
 	switch review.Verdict {
 	case "approve":
-		reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
+		if verdictOnly {
+			// Verdict-only mode: set labels, post comment, exit. Don't merge or close.
+			storeRemoveLabel(beadID, "review-ready")
+			storeRemoveLabel(beadID, "review-assigned")
+			storeAddLabel(beadID, "review-approved")
+			storeAddComment(beadID, fmt.Sprintf("Review approved by %s (verdict-only)", reviewerName))
+			log("approved (verdict-only) — exiting")
+		} else {
+			reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
+		}
 	case "request_changes":
-		if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, log); err != nil {
-			return err
+		if verdictOnly {
+			storeRemoveLabel(beadID, "review-ready")
+			storeRemoveLabel(beadID, "review-assigned")
+			storeAddLabel(beadID, "review-feedback")
+			if round > 0 {
+				storeRemoveLabel(beadID, fmt.Sprintf("review-round:%d", round))
+			}
+			storeAddLabel(beadID, fmt.Sprintf("review-round:%d", round+1))
+			var comment strings.Builder
+			comment.WriteString(fmt.Sprintf("Review round %d: request_changes — %s", round+1, review.Summary))
+			for _, issue := range review.Issues {
+				comment.WriteString(fmt.Sprintf("\n- [%s] %s", issue.Severity, issue.Message))
+				if issue.File != "" {
+					comment.WriteString(fmt.Sprintf(" (%s", issue.File))
+					if issue.Line > 0 {
+						comment.WriteString(fmt.Sprintf(":%d", issue.Line))
+					}
+					comment.WriteString(")")
+				}
+			}
+			storeAddComment(beadID, comment.String())
+			log("request_changes (verdict-only) — exiting")
+		} else {
+			if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, log); err != nil {
+				return err
+			}
 		}
 	default:
 		log("unexpected verdict: %s, treating as request_changes", review.Verdict)
-		if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, log); err != nil {
-			return err
+		if !verdictOnly {
+			if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, log); err != nil {
+				return err
+			}
 		}
 	}
 
