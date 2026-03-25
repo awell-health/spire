@@ -43,32 +43,6 @@ type AgentInfo struct {
 var errNotImplemented = fmt.Errorf("not implemented")
 
 // ---------------------------------------------------------------------------
-// processBackendShim — wraps processSpawner to satisfy AgentBackend.
-// Only Spawn is functional; List, Logs, Kill return errNotImplemented.
-// The full processBackend implementation lands in spi-1dl.5.3.
-// ---------------------------------------------------------------------------
-
-type processBackendShim struct {
-	spawner *processSpawner
-}
-
-func (b *processBackendShim) Spawn(cfg SpawnConfig) (AgentHandle, error) {
-	return b.spawner.Spawn(cfg)
-}
-
-func (b *processBackendShim) List() ([]AgentInfo, error) {
-	return nil, fmt.Errorf("processBackendShim.List: %w", errNotImplemented)
-}
-
-func (b *processBackendShim) Logs(name string) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("processBackendShim.Logs: %w", errNotImplemented)
-}
-
-func (b *processBackendShim) Kill(name string) error {
-	return fmt.Errorf("processBackendShim.Kill: %w", errNotImplemented)
-}
-
-// ---------------------------------------------------------------------------
 // dockerBackendShim — wraps dockerSpawner to satisfy AgentBackend.
 // Only Spawn is functional; List, Logs, Kill return errNotImplemented.
 // The full dockerBackend implementation lands in spi-1dl.5.4.
@@ -98,13 +72,13 @@ func (b *dockerBackendShim) Kill(name string) error {
 // Compile-time interface checks
 // ---------------------------------------------------------------------------
 
-var _ AgentBackend = (*processBackendShim)(nil)
+var _ AgentBackend = (*processBackend)(nil)
 var _ AgentBackend = (*dockerBackendShim)(nil)
 
 // ---------------------------------------------------------------------------
 // ResolveBackend returns an AgentBackend for the given backend name.
 //
-//   - "process" or "" → processBackendShim (wraps processSpawner)
+//   - "process" or "" → processBackend (full implementation)
 //   - "docker"        → dockerBackendShim  (wraps dockerSpawner)
 //   - unknown         → log warning, fall back to process
 //
@@ -114,11 +88,11 @@ var _ AgentBackend = (*dockerBackendShim)(nil)
 func ResolveBackend(name string) AgentBackend {
 	switch name {
 	case "process", "":
-		return &processBackendShim{spawner: &processSpawner{}}
+		return newProcessBackend()
 	case "docker":
 		return &dockerBackendShim{spawner: newDockerSpawner()}
 	default:
 		log.Printf("[backend] unknown backend %q, falling back to process", name)
-		return &processBackendShim{spawner: &processSpawner{}}
+		return newProcessBackend()
 	}
 }
