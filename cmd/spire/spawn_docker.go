@@ -92,8 +92,8 @@ func (s *dockerSpawner) Spawn(cfg SpawnConfig) (AgentHandle, error) {
 	entryCmd := []string{"spire", subcmd, cfg.BeadID, "--name", cfg.Name}
 	entryCmd = append(entryCmd, cfg.ExtraArgs...)
 
-	// Container name: spire-<role>-<sanitized-bead-id>
-	containerName := fmt.Sprintf("spire-%s-%s", cfg.Role, sanitizeContainerName(cfg.BeadID))
+	// Container name includes agent name for uniqueness across retries/rounds.
+	containerName := fmt.Sprintf("spire-%s", sanitizeContainerName(cfg.Name))
 
 	// Resolve paths for volume mounts.
 	home, err := os.UserHomeDir()

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -573,18 +574,23 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 
 	// Spawn wizard-run --review-fix
 	log("spawning %s --review-fix", wizardName)
-	wizardCmd := exec.Command(spireBin, "wizard-run", beadID, "--name", wizardName, "--review-fix")
 	logDir := filepath.Join(doltGlobalDir(), "wizards")
-	os.MkdirAll(logDir, 0755)
-	logFile, _ := os.OpenFile(filepath.Join(logDir, wizardName+"-fix.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if logFile != nil {
-		wizardCmd.Stdout = logFile
-		wizardCmd.Stderr = logFile
-		defer logFile.Close()
-	}
-	wizardCmd.Env = os.Environ()
-	if err := wizardCmd.Start(); err != nil {
-		log("failed to spawn wizard: %s", err)
+	spawner := NewSpawner("process")
+	handle, spawnErr := spawner.Spawn(SpawnConfig{
+		Name:      wizardName,
+		BeadID:    beadID,
+		Role:      RoleApprentice,
+		ExtraArgs: []string{"--review-fix"},
+		LogPath:   filepath.Join(logDir, wizardName+"-fix.log"),
+	})
+	if spawnErr != nil {
+		log("failed to spawn wizard: %s", spawnErr)
+	} else if id := handle.Identifier(); id != "" {
+		if pid, convErr := strconv.Atoi(id); convErr == nil {
+			wizardRegistryUpdate(wizardName, func(w *localWizard) {
+				w.PID = pid
+			})
+		}
 	}
 
 	log("done — re-engaged %s for round %d", wizardName, newRound)
