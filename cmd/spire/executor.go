@@ -297,6 +297,30 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 			e.log("wave %d: %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))
 		}
 
+		// Merge child branches into staging branch
+		if pc.StagingBranch != "" {
+			stagingBranch := strings.ReplaceAll(pc.StagingBranch, "{bead-id}", e.beadID)
+			// Ensure we're on the staging branch
+			exec.Command("git", "-C", repoPath, "checkout", stagingBranch).Run()
+			for _, subtaskID := range wave {
+				st, ok := e.state.Subtasks[subtaskID]
+				if !ok || st.Status != "closed" || st.Branch == "" {
+					continue
+				}
+				e.log("  merging %s into %s", st.Branch, stagingBranch)
+				// Fetch the branch in case it was pushed by the apprentice
+				exec.Command("git", "-C", repoPath, "fetch", "origin", st.Branch).Run()
+				mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", "origin/"+st.Branch)
+				if out, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
+					// Try local branch if remote fetch failed
+					mergeCmd2 := exec.Command("git", "-C", repoPath, "merge", "--no-edit", st.Branch)
+					if out2, mergeErr2 := mergeCmd2.CombinedOutput(); mergeErr2 != nil {
+						e.log("  merge %s failed: %s\n%s\n%s", st.Branch, mergeErr, string(out), string(out2))
+					}
+				}
+			}
+		}
+
 		// Verify build
 		e.log("verifying build after wave %d", waveIdx)
 		buildCmd := exec.Command("go", "build", "./cmd/spire/")
@@ -394,9 +418,13 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 				if ferr != nil {
 					return fmt.Errorf("spawn review-fix: %w", ferr)
 				}
-				fh.Wait()
+				if waitErr := fh.Wait(); waitErr != nil {
+					return fmt.Errorf("review-fix apprentice failed: %w", waitErr)
+				}
 			} else {
-				e.executeDirect("implement", implPC)
+				if dirErr := e.executeDirect("implement", implPC); dirErr != nil {
+					return fmt.Errorf("review-fix direct failed: %w", dirErr)
+				}
 			}
 
 			// Return to review

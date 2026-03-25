@@ -183,8 +183,12 @@ func resolveFormulaName(bead Bead) string {
 	}
 
 	// 3. Check spire.yaml agent.formula
-	// Load repo config from CWD (best effort)
-	if cfg, err := repoconfig.Load("."); err == nil && cfg.Agent.Formula != "" {
+	// Try bead's repo first, fall back to CWD
+	repoPath, _, _, _ := wizardResolveRepo(bead.ID)
+	if repoPath == "" {
+		repoPath = "."
+	}
+	if cfg, err := repoconfig.Load(repoPath); err == nil && cfg.Agent.Formula != "" {
 		return cfg.Agent.Formula
 	}
 
