@@ -116,6 +116,10 @@ func (s *dockerSpawner) Spawn(cfg SpawnConfig) (AgentHandle, error) {
 		"--name", containerName,
 		"--network", s.resolvedNetwork(),
 		"-w", repoRoot,
+		// Discovery labels for List() to find running containers.
+		"--label", fmt.Sprintf("spire.agent=%s", cfg.Name),
+		"--label", fmt.Sprintf("spire.bead=%s", cfg.BeadID),
+		"--label", fmt.Sprintf("spire.role=%s", string(cfg.Role)),
 		// Volume mounts: host config dir → container config dir, and repo root.
 		"-v", fmt.Sprintf("%s:%s", hostConfigDir, containerConfigDir),
 		"-v", fmt.Sprintf("%s:%s", repoRoot, repoRoot),

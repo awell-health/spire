@@ -1,39 +1,36 @@
 package main
 
 import (
-	"errors"
 	"io"
 	"testing"
 	"time"
 )
 
-// TestBackendProcessShimSatisfiesInterface verifies processBackend
+// TestBackendProcessSatisfiesInterface verifies processBackend
 // satisfies AgentBackend at runtime via type assertion.
-func TestBackendProcessShimSatisfiesInterface(t *testing.T) {
+func TestBackendProcessSatisfiesInterface(t *testing.T) {
 	var b interface{} = &processBackend{spawner: &processSpawner{}}
 	if _, ok := b.(AgentBackend); !ok {
 		t.Fatal("processBackend does not satisfy AgentBackend")
 	}
-	// Also verify it satisfies AgentSpawner (superset guarantee).
 	if _, ok := b.(AgentSpawner); !ok {
 		t.Fatal("processBackend does not satisfy AgentSpawner")
 	}
 }
 
-// TestBackendDockerShimSatisfiesInterface verifies dockerBackendShim
+// TestBackendDockerSatisfiesInterface verifies dockerBackend
 // satisfies AgentBackend at runtime via type assertion.
-func TestBackendDockerShimSatisfiesInterface(t *testing.T) {
-	var b interface{} = &dockerBackendShim{spawner: &dockerSpawner{}}
+func TestBackendDockerSatisfiesInterface(t *testing.T) {
+	var b interface{} = &dockerBackend{spawner: &dockerSpawner{}}
 	if _, ok := b.(AgentBackend); !ok {
-		t.Fatal("dockerBackendShim does not satisfy AgentBackend")
+		t.Fatal("dockerBackend does not satisfy AgentBackend")
 	}
 	if _, ok := b.(AgentSpawner); !ok {
-		t.Fatal("dockerBackendShim does not satisfy AgentSpawner")
+		t.Fatal("dockerBackend does not satisfy AgentSpawner")
 	}
 }
 
-// TestBackendResolveProcess verifies ResolveBackend("process") returns a
-// processBackend.
+// TestBackendResolveProcess verifies ResolveBackend("process") returns a processBackend.
 func TestBackendResolveProcess(t *testing.T) {
 	b := ResolveBackend("process")
 	if _, ok := b.(*processBackend); !ok {
@@ -49,60 +46,20 @@ func TestBackendResolveEmpty(t *testing.T) {
 	}
 }
 
-// TestBackendResolveDocker verifies ResolveBackend("docker") returns a
-// dockerBackendShim.
+// TestBackendResolveDocker verifies ResolveBackend("docker") returns a dockerBackend.
 func TestBackendResolveDocker(t *testing.T) {
 	b := ResolveBackend("docker")
-	if _, ok := b.(*dockerBackendShim); !ok {
-		t.Fatalf("ResolveBackend(\"docker\") returned %T, want *dockerBackendShim", b)
+	if _, ok := b.(*dockerBackend); !ok {
+		t.Fatalf("ResolveBackend(\"docker\") returned %T, want *dockerBackend", b)
 	}
 }
 
 // TestBackendResolveUnknown verifies that an unknown backend name falls back
-// to processBackend with a warning (no panic, no error return).
+// to processBackend with a warning.
 func TestBackendResolveUnknown(t *testing.T) {
 	b := ResolveBackend("unknown")
 	if _, ok := b.(*processBackend); !ok {
 		t.Fatalf("ResolveBackend(\"unknown\") returned %T, want *processBackend (fallback)", b)
-	}
-}
-
-// TestBackendDockerShimListNotImplemented verifies the docker shim returns
-// errNotImplemented for List.
-func TestBackendDockerShimListNotImplemented(t *testing.T) {
-	b := ResolveBackend("docker")
-	_, err := b.List()
-	if err == nil {
-		t.Fatal("docker shim List() returned nil error, want errNotImplemented")
-	}
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("docker shim List() error = %v, want errNotImplemented", err)
-	}
-}
-
-// TestBackendDockerShimLogsNotImplemented verifies the docker shim returns
-// errNotImplemented for Logs.
-func TestBackendDockerShimLogsNotImplemented(t *testing.T) {
-	b := ResolveBackend("docker")
-	_, err := b.Logs("wizard-test")
-	if err == nil {
-		t.Fatal("docker shim Logs() returned nil error, want errNotImplemented")
-	}
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("docker shim Logs() error = %v, want errNotImplemented", err)
-	}
-}
-
-// TestBackendDockerShimKillNotImplemented verifies the docker shim returns
-// errNotImplemented for Kill.
-func TestBackendDockerShimKillNotImplemented(t *testing.T) {
-	b := ResolveBackend("docker")
-	err := b.Kill("wizard-test")
-	if err == nil {
-		t.Fatal("docker shim Kill() returned nil error, want errNotImplemented")
-	}
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("docker shim Kill() error = %v, want errNotImplemented", err)
 	}
 }
 
@@ -147,7 +104,6 @@ func TestBackendNewSpawnerDelegates(t *testing.T) {
 	if s == nil {
 		t.Fatal("NewSpawner(\"process\") returned nil")
 	}
-	// The returned value should also satisfy AgentBackend.
 	if _, ok := s.(AgentBackend); !ok {
 		t.Fatalf("NewSpawner(\"process\") returned %T, which does not satisfy AgentBackend", s)
 	}
