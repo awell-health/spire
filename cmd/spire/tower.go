@@ -277,23 +277,6 @@ func bootstrapRepoBeadsDir(beadsDir string, tower *TowerConfig, prefix string) e
 	return nil
 }
 
-// ensureBeadsConfigDatabase ensures the .beads/config.yaml has the database key.
-// Towers created by older versions may be missing it, causing "issue_prefix config is missing" errors.
-func ensureBeadsConfigDatabase(beadsDir, database string) {
-	configPath := filepath.Join(beadsDir, "config.yaml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return // no config to fix
-	}
-	content := string(data)
-	if strings.Contains(content, "database:") {
-		return // already has it
-	}
-	// Append database key
-	content = strings.TrimRight(content, "\n") + fmt.Sprintf("\ndatabase: %q\n", database)
-	os.WriteFile(configPath, []byte(content), 0644)
-}
-
 // ensureCustomBeadTypes registers Spire's required custom bead types in the
 // given .beads directory. Idempotent — merges with any existing custom types.
 func ensureCustomBeadTypes(beadsDir string) error {
@@ -441,9 +424,10 @@ func cmdTowerCreate(args []string) error {
 		return fmt.Errorf("read tower identity after init: %w", err)
 	}
 
-	// bd init writes a default config.yaml without dolt server connection.
-	// Overwrite it so subsequent bd commands (and repo add) can connect.
-	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\ndatabase: %q\n", doltHost(), doltPort(), database)
+	// bd init writes a default config.yaml. Overwrite with dolt server connection
+	// so subsequent bd commands can connect. The database name lives in metadata.json
+	// (written by bd init --database), not config.yaml.
+	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		return fmt.Errorf("write .beads/config.yaml: %w", err)
 	}
@@ -453,11 +437,6 @@ func cmdTowerCreate(args []string) error {
 	if err := ensureCustomBeadTypes(beadsDir); err != nil {
 		fmt.Printf("  warning: could not register custom types: %s\n", err)
 	}
-
-	// Re-write config.yaml to guarantee database key survives.
-	// bd init and ensureCustomBeadTypes may have rewritten it.
-	configYAML = fmt.Sprintf("dolt.host: %q\ndolt.port: %s\ndatabase: %q\n", doltHost(), doltPort(), database)
-	os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644)
 
 	tower := &TowerConfig{
 		Name:      name,
