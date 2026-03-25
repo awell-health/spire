@@ -386,8 +386,12 @@ func dismissCleanupBead(w localWizard) {
 }
 
 func wizardRegistryPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "spire", "wizards.json")
+	dir, err := configDir()
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config", "spire")
+	}
+	return filepath.Join(dir, "wizards.json")
 }
 
 func loadWizardRegistry() wizardRegistry {

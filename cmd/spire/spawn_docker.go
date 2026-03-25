@@ -96,12 +96,10 @@ func (s *dockerSpawner) Spawn(cfg SpawnConfig) (AgentHandle, error) {
 	containerName := fmt.Sprintf("spire-%s", sanitizeContainerName(cfg.Name))
 
 	// Resolve paths for volume mounts.
-	home, err := os.UserHomeDir()
+	hostConfigDir, err := configDir()
 	if err != nil {
-		return nil, fmt.Errorf("resolve home dir: %w", err)
+		return nil, fmt.Errorf("resolve config dir: %w", err)
 	}
-	runtimeDir := filepath.Join(home, ".config", "spire", "runtime")
-	doltDir := filepath.Join(home, ".config", "spire", "dolt")
 
 	// Resolve the repo root (cwd) for mounting.
 	repoRoot, err := os.Getwd()
@@ -109,16 +107,20 @@ func (s *dockerSpawner) Spawn(cfg SpawnConfig) (AgentHandle, error) {
 		return nil, fmt.Errorf("resolve working dir: %w", err)
 	}
 
+	// Container-side config dir: a fixed path so configDir() resolves inside the container.
+	containerConfigDir := "/spire/config"
+
 	// Build docker run arguments.
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
 		"--network", s.resolvedNetwork(),
 		"-w", repoRoot,
-		// Volume mounts: runtime, dolt, and repo root.
-		"-v", fmt.Sprintf("%s:%s", runtimeDir, runtimeDir),
-		"-v", fmt.Sprintf("%s:%s", doltDir, doltDir),
+		// Volume mounts: host config dir → container config dir, and repo root.
+		"-v", fmt.Sprintf("%s:%s", hostConfigDir, containerConfigDir),
 		"-v", fmt.Sprintf("%s:%s", repoRoot, repoRoot),
+		// Set SPIRE_CONFIG_DIR so configDir() resolves inside the container.
+		"-e", fmt.Sprintf("SPIRE_CONFIG_DIR=%s", containerConfigDir),
 	}
 
 	// Inherit key environment variables.

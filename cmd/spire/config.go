@@ -52,8 +52,16 @@ func realCwd() (string, error) {
 	return real, nil
 }
 
-// configDir returns ~/.config/spire/, creating it if needed.
+// configDir returns the Spire configuration directory, creating it if needed.
+// If SPIRE_CONFIG_DIR is set, that path is used (useful for Docker containers).
+// Otherwise falls back to ~/.config/spire/.
 func configDir() (string, error) {
+	if d := os.Getenv("SPIRE_CONFIG_DIR"); d != "" {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			return "", err
+		}
+		return d, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
