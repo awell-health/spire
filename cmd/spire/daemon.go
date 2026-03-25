@@ -144,6 +144,11 @@ func runTowerCycle(tower TowerConfig) {
 		log.Printf("[daemon] [%s] delivered inbox files for %d agent(s)", tower.Name, delivered)
 	}
 
+	reaped := reapDeadAgents(tower.Name)
+	if reaped > 0 {
+		log.Printf("[daemon] [%s] reaped %d dead agent(s)", tower.Name, reaped)
+	}
+
 	log.Printf("[daemon] [%s] cycle complete", tower.Name)
 }
 
@@ -337,11 +342,9 @@ func deliverAgentInboxes() int {
 	return delivered
 }
 
-// deliverInboxForAgent runs spire collect <name> --json and writes the
-// result as an inbox file. It converts the collect output (array of beads)
-// into the inboxFile format for consumption by spire inbox.
+// deliverInboxForAgent queries messages for an agent via the store and writes
+// the result as an inbox file in the inboxFile format.
 func deliverInboxForAgent(agentName string) error {
-	// Query messages for this agent via the store (same logic as cmdCollect)
 	messages, err := storeListBeads(beads.IssueFilter{
 		IDPrefix: "spi-",
 		Labels:   []string{"msg", "to:" + agentName},
@@ -351,7 +354,6 @@ func deliverInboxForAgent(agentName string) error {
 		return fmt.Errorf("query messages: %w", err)
 	}
 
-	// Convert to inbox format
 	inbox := inboxFile{
 		Agent:     agentName,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -381,6 +383,52 @@ func deliverInboxForAgent(agentName string) error {
 	}
 
 	return writeInboxFile(agentName, data)
+}
+
+// reapDeadAgents checks the wizard registry for dead agent processes with
+// unread messages. For each dead agent, it labels their pending messages
+// with dead-letter:<name> and removes the wizard from the registry.
+// Returns the number of agents reaped.
+func reapDeadAgents(towerName string) int {
+	reg := loadWizardRegistry()
+	wizards := wizardsForTower(reg, towerName)
+
+	reaped := 0
+	for _, w := range wizards {
+		if w.PID <= 0 {
+			continue
+		}
+		if processAlive(w.PID) {
+			continue
+		}
+
+		// Agent process is dead — check for unread messages
+		messages, err := storeListBeads(beads.IssueFilter{
+			IDPrefix: "spi-",
+			Labels:   []string{"msg", "to:" + w.Name},
+			Status:   statusPtr(beads.StatusOpen),
+		})
+		if err != nil {
+			log.Printf("[daemon] reap %s: list messages: %s", w.Name, err)
+			continue
+		}
+
+		if len(messages) > 0 {
+			log.Printf("[daemon] dead agent %s (pid %d) has %d unread messages", w.Name, w.PID, len(messages))
+			for _, m := range messages {
+				if err := storeAddLabel(m.ID, "dead-letter:"+w.Name); err != nil {
+					log.Printf("[daemon] reap %s: label %s: %s", w.Name, m.ID, err)
+				}
+			}
+		}
+
+		if err := wizardRegistryRemove(w.Name); err != nil {
+			log.Printf("[daemon] reap %s: remove from registry: %s", w.Name, err)
+			continue
+		}
+		reaped++
+	}
+	return reaped
 }
 
 // ensureWebhookQueue creates the webhook_queue table if it doesn't exist.
