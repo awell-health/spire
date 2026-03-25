@@ -551,6 +551,14 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
 
+	// Push the branch to remote (staging branches exist only locally after wave merges)
+	e.log("pushing %s to remote", branch)
+	pushCmd := exec.Command("git", "-C", repoPath, "push", "-u", "origin", branch)
+	pushCmd.Env = os.Environ()
+	if out, pushErr := pushCmd.CombinedOutput(); pushErr != nil {
+		return fmt.Errorf("push %s: %s\n%s", branch, pushErr, string(out))
+	}
+
 	e.log("merging %s → %s", branch, baseBranch)
 	if err := reviewMerge(e.beadID, bead.Title, branch, baseBranch, repoPath, e.log); err != nil {
 		return fmt.Errorf("merge: %w", err)
