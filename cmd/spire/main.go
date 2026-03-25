@@ -34,6 +34,8 @@ func main() {
 		err = cmdFocus(args)
 	case "grok":
 		err = cmdGrok(args)
+	case "inbox":
+		err = cmdInbox(args)
 	case "read":
 		err = cmdRead(args)
 	case "connect":
@@ -182,7 +184,8 @@ Agents:
 
 Messaging:
   send <to> <message>   Send a message (--ref, --thread, --priority)
-  collect [name]        Check inbox for messages
+  collect [name]        Check inbox for messages (DB query)
+  inbox [name]          Read local inbox file (--check, --watch, --json)
   read <bead-id>        Mark a message as read
 
 Observability:

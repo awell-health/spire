@@ -139,6 +139,11 @@ func runTowerCycle(tower TowerConfig) {
 		log.Printf("[daemon] [%s] processed %d events (%d errors)", tower.Name, processed, errors)
 	}
 
+	delivered := deliverAgentInboxes()
+	if delivered > 0 {
+		log.Printf("[daemon] [%s] delivered inbox files for %d agent(s)", tower.Name, delivered)
+	}
+
 	log.Printf("[daemon] [%s] cycle complete", tower.Name)
 }
 
@@ -282,6 +287,100 @@ func runDoltSync(tower TowerConfig) {
 	log.Printf("[daemon] [%s] dolt push complete", tower.Name)
 
 	writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "ok"})
+}
+
+// deliverAgentInboxes writes inbox.json files for all known agents.
+// It discovers agents from the wizard registry and registered agent beads,
+// runs spire collect <name> --json for each, and writes the output to
+// ~/.config/spire/runtime/<name>/inbox.json.
+// Returns the number of agents whose inboxes were written.
+func deliverAgentInboxes() int {
+	// Collect unique agent names from two sources:
+	// 1. Wizard registry (local running wizards)
+	// 2. Registered agent beads (persistent agents)
+	agents := make(map[string]bool)
+
+	reg := loadWizardRegistry()
+	for _, w := range reg.Wizards {
+		if w.Name != "" {
+			agents[w.Name] = true
+		}
+	}
+
+	agentBeads, err := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"agent"},
+		Status:   statusPtr(beads.StatusOpen),
+	})
+	if err == nil {
+		for _, b := range agentBeads {
+			for _, l := range b.Labels {
+				if strings.HasPrefix(l, "name:") {
+					agents[l[5:]] = true
+				}
+			}
+		}
+	}
+
+	if len(agents) == 0 {
+		return 0
+	}
+
+	delivered := 0
+	for name := range agents {
+		if err := deliverInboxForAgent(name); err != nil {
+			log.Printf("[daemon] inbox delivery for %s: %s", name, err)
+			continue
+		}
+		delivered++
+	}
+	return delivered
+}
+
+// deliverInboxForAgent runs spire collect <name> --json and writes the
+// result as an inbox file. It converts the collect output (array of beads)
+// into the inboxFile format for consumption by spire inbox.
+func deliverInboxForAgent(agentName string) error {
+	// Query messages for this agent via the store (same logic as cmdCollect)
+	messages, err := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"msg", "to:" + agentName},
+		Status:   statusPtr(beads.StatusOpen),
+	})
+	if err != nil {
+		return fmt.Errorf("query messages: %w", err)
+	}
+
+	// Convert to inbox format
+	inbox := inboxFile{
+		Agent:     agentName,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Messages:  make([]inboxMessage, 0, len(messages)),
+	}
+
+	for _, m := range messages {
+		msg := inboxMessage{
+			ID:       m.ID,
+			Text:     m.Title,
+			Priority: m.Priority,
+		}
+		for _, l := range m.Labels {
+			if strings.HasPrefix(l, "from:") {
+				msg.From = l[5:]
+			}
+			if strings.HasPrefix(l, "ref:") {
+				msg.Ref = l[4:]
+			}
+		}
+		inbox.Messages = append(inbox.Messages, msg)
+	}
+
+	data, err := json.MarshalIndent(inbox, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal inbox: %w", err)
+	}
+
+	return writeInboxFile(agentName, data)
 }
 
 // ensureWebhookQueue creates the webhook_queue table if it doesn't exist.
