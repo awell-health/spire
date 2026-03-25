@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/steveyegge/beads"
@@ -87,43 +86,41 @@ func cmdStatus(args []string) error {
 	}
 
 	// --- Agents ---
-	reg := loadWizardRegistry()
-	if len(reg.Wizards) > 0 {
+	backend := ResolveBackend("")
+	agents, agentErr := backend.List()
+	if agentErr == nil && len(agents) > 0 {
 		fmt.Printf("\n%sAgents%s\n", bold, reset)
 		fmt.Printf("  %-20s %-12s %-10s %-8s %s\n",
-			dim+"NAME", "BEAD", "PHASE", "PID", "STATUS"+reset)
-		for _, w := range reg.Wizards {
-			alive := w.PID > 0 && processAlive(w.PID)
+			dim+"NAME", "BEAD", "PHASE", "ID", "STATUS"+reset)
+		for _, a := range agents {
 			statusStr := fmt.Sprintf("%sdead%s", red, reset)
 			statusIcon := red + "●" + reset
-			if alive {
+			if a.Alive {
 				statusStr = fmt.Sprintf("%salive%s", green, reset)
 				statusIcon = green + "●" + reset
 
 				// Show elapsed time if we have start time.
-				if w.StartedAt != "" {
-					if t, err := time.Parse(time.RFC3339, w.StartedAt); err == nil {
-						elapsed := time.Since(t).Round(time.Second)
-						statusStr = fmt.Sprintf("%salive%s %s(%s)%s", green, reset, dim, formatDurationShort(elapsed), reset)
-					}
+				if !a.StartedAt.IsZero() {
+					elapsed := time.Since(a.StartedAt).Round(time.Second)
+					statusStr = fmt.Sprintf("%salive%s %s(%s)%s", green, reset, dim, formatDurationShort(elapsed), reset)
 				}
 			}
 
-			phase := w.Phase
+			phase := a.Phase
 			if phase == "" {
 				phase = "-"
 			}
-			beadID := w.BeadID
+			beadID := a.BeadID
 			if beadID == "" {
 				beadID = "-"
 			}
-			pidStr := "-"
-			if w.PID > 0 {
-				pidStr = fmt.Sprintf("%d", w.PID)
+			idStr := a.Identifier
+			if idStr == "" || idStr == "0" {
+				idStr = "-"
 			}
 
 			fmt.Printf("  %s %-18s %-12s %-10s %-8s %s\n",
-				statusIcon, w.Name, beadID, phase, pidStr, statusStr)
+				statusIcon, a.Name, beadID, phase, idStr, statusStr)
 		}
 	}
 
@@ -166,7 +163,9 @@ func cmdStatus(args []string) error {
 	// --- Log paths ---
 	gd := doltGlobalDir()
 	fmt.Printf("\n%sLogs%s\n", bold, reset)
-	logFiles := []struct {
+
+	// System logs (host services — always file-based).
+	sysLogs := []struct {
 		name string
 		path string
 	}{
@@ -174,22 +173,7 @@ func cmdStatus(args []string) error {
 		{"daemon (err)", filepath.Join(gd, "daemon.error.log")},
 		{"dolt", filepath.Join(gd, "dolt.log")},
 	}
-
-	// Add wizard logs.
-	wizardLogDir := filepath.Join(gd, "wizards")
-	if entries, err := os.ReadDir(wizardLogDir); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".log") {
-				name := strings.TrimSuffix(e.Name(), ".log")
-				logFiles = append(logFiles, struct {
-					name string
-					path string
-				}{name, filepath.Join(wizardLogDir, e.Name())})
-			}
-		}
-	}
-
-	for _, lf := range logFiles {
+	for _, lf := range sysLogs {
 		info, err := os.Stat(lf.path)
 		if err != nil {
 			fmt.Printf("  %s—%s %-16s %s(not found)%s\n", dim, reset, lf.name, dim, reset)
@@ -199,6 +183,31 @@ func cmdStatus(args []string) error {
 		size := formatFileSize(info.Size())
 		fmt.Printf("  %s●%s %-16s %s  modified %s ago\n", dim, reset, lf.name, size, age)
 	}
+
+	// Agent logs (discovered via backend).
+	if agentErr == nil {
+		for _, a := range agents {
+			rc, logErr := backend.Logs(a.Name)
+			if logErr != nil {
+				continue
+			}
+			// If it's a file, show size/age info.
+			if f, ok := rc.(*os.File); ok {
+				info, err := f.Stat()
+				rc.Close()
+				if err != nil {
+					continue
+				}
+				age := formatSyncAge(info.ModTime().Format(time.RFC3339))
+				size := formatFileSize(info.Size())
+				fmt.Printf("  %s●%s %-16s %s  modified %s ago\n", dim, reset, a.Name, size, age)
+			} else {
+				rc.Close()
+				fmt.Printf("  %s●%s %-16s %s(stream)%s\n", dim, reset, a.Name, dim, reset)
+			}
+		}
+	}
+
 	fmt.Printf("\n  %sTip: spire logs [name] to tail a log%s\n", dim, reset)
 
 	return nil
