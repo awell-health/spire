@@ -306,6 +306,12 @@ func summonLocal(count int, targetIDs []string) error {
 		bead := candidates[i]
 		name := "wizard-" + bead.ID
 
+		// Skip if a live wizard is already running for this bead.
+		if w := findLiveWizardForBead(reg, bead.ID); w != nil && processAlive(w.PID) {
+			fmt.Printf("  %s already running for %s (pid %d) — skipping\n", w.Name, bead.ID, w.PID)
+			continue
+		}
+
 		// Check for existing executor state to determine resume vs fresh start.
 		existingState, _ := loadExecutorState(name)
 
