@@ -1,11 +1,6 @@
 name = "spire-agent-work"
-description = "Standard agent work protocol: design → implement → review → merge."
+description = "Standard agent work protocol: implement → review → merge. Design happens in design beads before the task is filed."
 version = 2
-
-[phases.design]
-timeout = "10m"
-role = "human"
-context = ["CLAUDE.md", "PLAYBOOK.md"]
 
 [phases.implement]
 timeout = "15m"
