@@ -391,6 +391,14 @@ func enrichRosterAgents(agents []RosterAgent) []RosterAgent {
 		if agents[i].EpicTitle == "" {
 			agents[i].EpicTitle = ctx.EpicTitle
 		}
+		// Phase: always read from bead label (source of truth).
+		// The registry entry's Phase field is stale once the executor advances phases
+		// via setPhase() without updating wizards.json.
+		if bead, ok := beadCache[agents[i].BeadID]; ok {
+			if phase := getPhase(bead); phase != "" {
+				agents[i].Phase = phase
+			}
+		}
 	}
 
 	return agents
