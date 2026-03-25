@@ -152,79 +152,63 @@ func removeFromPaths(inst *Instance, path string) {
 }
 
 // resolveBeadsDir returns a .beads/ directory path that can be used to open a store.
+//
 // Resolution order:
 //  1. BEADS_DIR env var (explicit override)
-//  2. beads.FindBeadsDir() (walk up from cwd)
-//  3. SPIRE_TOWER env var (from --tower flag or explicit env)
-//  4. First instance matching the active tower in spire config
-//  5. First instance in spire config (any tower)
+//  2. Tower database directories in dolt data dir (canonical, has dolt/ subdir)
+//  3. beads.FindBeadsDir() (walk up from CWD — may find repo stubs)
 //
-// Returns "" if no .beads/ directory can be found.
+// Tower paths are checked before CWD because spire repo add creates .beads/ stubs
+// in repo directories that lack the dolt/ subdirectory. The beads library needs
+// the full database context to work in server mode.
 func resolveBeadsDir() string {
 	if d := os.Getenv("BEADS_DIR"); d != "" {
 		return d
 	}
+
+	// Tower database directories — the canonical .beads/ with dolt/ subdir.
+	cfg, _ := loadConfig()
+	if cfg != nil {
+		towers, tErr := listTowerConfigs()
+		if tErr == nil {
+			// SPIRE_TOWER env override
+			if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
+				for _, t := range towers {
+					if t.Name == towerName && t.Database != "" {
+						d := filepath.Join(doltDataDir(), t.Database, ".beads")
+						if info, err := os.Stat(d); err == nil && info.IsDir() {
+							return d
+						}
+					}
+				}
+			}
+			// Active tower
+			if cfg.ActiveTower != "" {
+				for _, t := range towers {
+					if t.Name == cfg.ActiveTower && t.Database != "" {
+						d := filepath.Join(doltDataDir(), t.Database, ".beads")
+						if info, err := os.Stat(d); err == nil && info.IsDir() {
+							return d
+						}
+					}
+				}
+			}
+			// Any tower
+			for _, t := range towers {
+				if t.Database != "" {
+					d := filepath.Join(doltDataDir(), t.Database, ".beads")
+					if info, err := os.Stat(d); err == nil && info.IsDir() {
+						return d
+					}
+				}
+			}
+		}
+	}
+
+	// Fall back to CWD walk (finds repo .beads/ stubs — works when no tower configured)
 	if d := beads.FindBeadsDir(); d != "" {
 		return d
 	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return ""
-	}
-	// SPIRE_TOWER env override (from --tower flag or explicit env).
-	if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
-		for _, inst := range cfg.Instances {
-			if inst.Tower == towerName && inst.Path != "" {
-				d := filepath.Join(inst.Path, ".beads")
-				if info, err := os.Stat(d); err == nil && info.IsDir() {
-					return d
-				}
-			}
-		}
-	}
-	// Prefer an instance from the active tower.
-	if cfg.ActiveTower != "" {
-		for _, inst := range cfg.Instances {
-			if inst.Tower == cfg.ActiveTower && inst.Path != "" {
-				d := filepath.Join(inst.Path, ".beads")
-				if info, err := os.Stat(d); err == nil && info.IsDir() {
-					return d
-				}
-			}
-		}
-	}
-	// Fall back to any instance.
-	for _, inst := range cfg.Instances {
-		if inst.Path != "" {
-			d := filepath.Join(inst.Path, ".beads")
-			if info, err := os.Stat(d); err == nil && info.IsDir() {
-				return d
-			}
-		}
-	}
-	// Last resort: check tower database directories in dolt data dir.
-	// This handles the common case where repos don't have .beads/ locally
-	// because the database lives in the dolt server's data directory.
-	towers, tErr := listTowerConfigs()
-	if tErr == nil {
-		// Prefer the active tower
-		for _, t := range towers {
-			if t.Name == cfg.ActiveTower && t.Database != "" {
-				d := filepath.Join(doltDataDir(), t.Database, ".beads")
-				if info, err := os.Stat(d); err == nil && info.IsDir() {
-					return d
-				}
-			}
-		}
-		// Fall back to any tower
-		for _, t := range towers {
-			if t.Database != "" {
-				d := filepath.Join(doltDataDir(), t.Database, ".beads")
-				if info, err := os.Stat(d); err == nil && info.IsDir() {
-					return d
-				}
-			}
-		}
-	}
+
 	return ""
 }
