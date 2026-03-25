@@ -139,6 +139,11 @@ func runTowerCycle(tower TowerConfig) {
 		log.Printf("[daemon] [%s] processed %d events (%d errors)", tower.Name, processed, errors)
 	}
 
+	reaped := reapDeadAgents(tower.Name)
+	if reaped > 0 {
+		log.Printf("[daemon] [%s] reaped %d dead agent(s)", tower.Name, reaped)
+	}
+
 	log.Printf("[daemon] [%s] cycle complete", tower.Name)
 }
 
@@ -282,6 +287,52 @@ func runDoltSync(tower TowerConfig) {
 	log.Printf("[daemon] [%s] dolt push complete", tower.Name)
 
 	writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "ok"})
+}
+
+// reapDeadAgents checks the wizard registry for dead agent processes with
+// unread messages. For each dead agent, it labels their pending messages
+// with dead-letter:<name> and removes the wizard from the registry.
+// Returns the number of agents reaped.
+func reapDeadAgents(towerName string) int {
+	reg := loadWizardRegistry()
+	wizards := wizardsForTower(reg, towerName)
+
+	reaped := 0
+	for _, w := range wizards {
+		if w.PID <= 0 {
+			continue
+		}
+		if processAlive(w.PID) {
+			continue
+		}
+
+		// Agent process is dead — check for unread messages
+		messages, err := storeListBeads(beads.IssueFilter{
+			IDPrefix: "spi-",
+			Labels:   []string{"msg", "to:" + w.Name},
+			Status:   statusPtr(beads.StatusOpen),
+		})
+		if err != nil {
+			log.Printf("[daemon] reap %s: list messages: %s", w.Name, err)
+			continue
+		}
+
+		if len(messages) > 0 {
+			log.Printf("[daemon] dead agent %s (pid %d) has %d unread messages", w.Name, w.PID, len(messages))
+			for _, m := range messages {
+				if err := storeAddLabel(m.ID, "dead-letter:"+w.Name); err != nil {
+					log.Printf("[daemon] reap %s: label %s: %s", w.Name, m.ID, err)
+				}
+			}
+		}
+
+		if err := wizardRegistryRemove(w.Name); err != nil {
+			log.Printf("[daemon] reap %s: remove from registry: %s", w.Name, err)
+			continue
+		}
+		reaped++
+	}
+	return reaped
 }
 
 // ensureWebhookQueue creates the webhook_queue table if it doesn't exist.
