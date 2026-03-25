@@ -550,19 +550,44 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
+	// TODO: baseBranch should come from summon-time context, not hardcoded repos table
+	_ = baseBranch
+	baseBranch = "main"
 
-	// Push the branch to remote (staging branches exist only locally after wave merges)
-	e.log("pushing %s to remote", branch)
-	pushCmd := exec.Command("git", "-C", repoPath, "push", "-u", "origin", branch)
+	// Local merge: checkout main, merge the feature/staging branch, push
+	e.log("merging %s → %s (local)", branch, baseBranch)
+
+	if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
+	}
+
+	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", branch)
+	if _, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
+		// Check for conflicts
+		statusOut, _ := exec.Command("git", "-C", repoPath, "status", "--porcelain").Output()
+		if strings.Contains(string(statusOut), "UU ") || strings.Contains(string(statusOut), "AA ") {
+			e.log("conflict merging %s → %s, invoking Claude", branch, baseBranch)
+			if resolveErr := e.resolveConflicts(repoPath, branch); resolveErr != nil {
+				exec.Command("git", "-C", repoPath, "merge", "--abort").Run()
+				return fmt.Errorf("merge conflict resolution: %w", resolveErr)
+			}
+		} else {
+			exec.Command("git", "-C", repoPath, "merge", "--abort").Run()
+			return fmt.Errorf("merge %s → %s: %w", branch, baseBranch, mergeErr)
+		}
+	}
+
+	// Push main
+	e.log("pushing %s", baseBranch)
+	pushCmd := exec.Command("git", "-C", repoPath, "push", "origin", baseBranch)
 	pushCmd.Env = os.Environ()
 	if out, pushErr := pushCmd.CombinedOutput(); pushErr != nil {
-		return fmt.Errorf("push %s: %s\n%s", branch, pushErr, string(out))
+		return fmt.Errorf("push %s: %s\n%s", baseBranch, pushErr, string(out))
 	}
 
-	e.log("merging %s → %s", branch, baseBranch)
-	if err := reviewMerge(e.beadID, bead.Title, branch, baseBranch, repoPath, e.log); err != nil {
-		return fmt.Errorf("merge: %w", err)
-	}
+	// Clean up the feature/staging branch
+	exec.Command("git", "-C", repoPath, "branch", "-d", branch).Run()
+	exec.Command("git", "-C", repoPath, "push", "origin", "--delete", branch).Run()
 
 	// Close the bead
 	storeRemoveLabel(e.beadID, "review-approved")
