@@ -98,6 +98,61 @@ func runCycle() {
 	}
 }
 
+// syncTowerDerivedConfigs regenerates derived config files from tower config
+// on each daemon cycle, ensuring tower JSON is the single source of truth.
+// It regenerates .beads/config.yaml for the tower data directory and all
+// registered repo instances, and updates Instance.Database in config.json
+// if it has drifted from the tower's current database name.
+func syncTowerDerivedConfigs(tower TowerConfig) {
+	// Canonical config.yaml content derived from current tower config.
+	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
+
+	// Regenerate .beads/config.yaml in the tower's data directory.
+	towerBeadsDir := filepath.Join(doltDataDir(), tower.Database, ".beads")
+	if _, err := os.Stat(towerBeadsDir); err == nil {
+		if err := os.WriteFile(filepath.Join(towerBeadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+			log.Printf("[daemon] [%s] sync tower config.yaml: %s", tower.Name, err)
+		}
+	}
+
+	// Sync instance map: update Database field and regenerate repo config.yaml
+	// for all instances registered under this tower.
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Printf("[daemon] [%s] sync: load config: %s", tower.Name, err)
+		return
+	}
+
+	changed := false
+	for prefix, inst := range cfg.Instances {
+		if inst.Tower != tower.Name {
+			continue
+		}
+		// Keep Instance.Database aligned with tower config (source of truth).
+		if inst.Database != tower.Database {
+			log.Printf("[daemon] [%s] updating instance %q database: %q → %q",
+				tower.Name, prefix, inst.Database, tower.Database)
+			inst.Database = tower.Database
+			changed = true
+		}
+		// Regenerate repo-local .beads/config.yaml if .beads/ exists.
+		if inst.Path != "" {
+			repoBeadsDir := filepath.Join(inst.Path, ".beads")
+			if _, err := os.Stat(repoBeadsDir); err == nil {
+				if err := os.WriteFile(filepath.Join(repoBeadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+					log.Printf("[daemon] [%s] sync repo config.yaml for %q: %s", tower.Name, prefix, err)
+				}
+			}
+		}
+	}
+
+	if changed {
+		if err := saveConfig(cfg); err != nil {
+			log.Printf("[daemon] [%s] sync: save config: %s", tower.Name, err)
+		}
+	}
+}
+
 // runTowerCycle runs one daemon cycle scoped to a single tower.
 // It opens a store scoped to the tower's .beads directory and sets
 // daemonDB so that doltSQL targets the correct database.
@@ -109,6 +164,9 @@ func runTowerCycle(tower TowerConfig) {
 	}
 
 	log.Printf("[daemon] [%s] cycle start (db=%s)", tower.Name, tower.Database)
+
+	// Sync derived configs from tower config (single source of truth).
+	syncTowerDerivedConfigs(tower)
 
 	// Open store scoped to this tower
 	if _, err := openStoreAt(beadsDir); err != nil {
