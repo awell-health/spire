@@ -155,6 +155,8 @@ func (e *formulaExecutor) Run() error {
 	}
 
 	e.log("all phases complete")
+	// Clean up state file on success to avoid stale state on agent name reuse
+	os.Remove(executorStatePath(e.agentName))
 	return nil
 }
 
@@ -222,7 +224,7 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 	if pc.StagingBranch != "" {
 		branch := strings.ReplaceAll(pc.StagingBranch, "{bead-id}", e.beadID)
 		e.log("creating staging branch %s", branch)
-		exec.Command("git", "-C", repoPath, "checkout", "-b", branch).Run()
+		exec.Command("git", "-C", repoPath, "checkout", "-B", branch).Run()
 		storeAddLabel(e.beadID, "feat-branch:"+branch)
 	}
 
