@@ -1,0 +1,46 @@
+name = "spire-epic"
+description = "Epic lifecycle: design validation, plan, wave-based implement, review with judgment, merge."
+version = 2
+
+[phases.design]
+role = "wizard"
+context = ["CLAUDE.md", "PLAYBOOK.md"]
+# Wizard validates that a linked design bead (ref:) exists and is closed/sufficient.
+# If design is missing or incomplete: label epic "needs-design", notify archmage, pause.
+# If design is complete: advance to plan.
+
+[phases.plan]
+role = "wizard"
+context = ["CLAUDE.md", "PLAYBOOK.md"]
+# Wizard reads the design bead, breaks epic into subtasks, computes waves from dep graph.
+# Files subtasks, posts the plan as a comment.
+
+[phases.implement]
+timeout = "30m"
+model = "claude-sonnet-4-6"
+role = "apprentice"
+dispatch = "wave"
+staging_branch = "epic/{bead-id}"
+no_handoff = true
+worktree = true
+context = ["CLAUDE.md", "PLAYBOOK.md"]
+
+[phases.review]
+timeout = "20m"
+model = "claude-opus-4-6"
+role = "sage"
+verdict_only = true
+judgment = true
+
+[phases.review.revision_policy]
+max_rounds = 3
+arbiter_model = "claude-opus-4-6"
+
+[phases.merge]
+strategy = "squash"
+staging_branch = "epic/{bead-id}"
+auto = true
+
+[vars.task]
+description = "The epic bead ID"
+required = true

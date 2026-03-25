@@ -1,0 +1,29 @@
+name = "spire-bugfix"
+description = "Quick bugfix: implement, review, merge. No design or plan phase."
+version = 2
+
+[phases.implement]
+timeout = "10m"
+model = "claude-sonnet-4-6"
+role = "apprentice"
+no_handoff = true
+worktree = true
+context = ["CLAUDE.md"]
+
+[phases.review]
+timeout = "10m"
+model = "claude-opus-4-6"
+role = "sage"
+verdict_only = true
+
+[phases.review.revision_policy]
+max_rounds = 2
+arbiter_model = "claude-opus-4-6"
+
+[phases.merge]
+strategy = "squash"
+auto = true
+
+[vars.task]
+description = "The bead ID being worked on"
+required = true

@@ -27,11 +27,7 @@ func cmdFocus(args []string) error {
 	phase := getPhase(target)
 
 	// 3. Try to load formula (optional — enriches context)
-	var formula *FormulaV2
-	formulaPath, err := FindFormula("spire-agent-work")
-	if err == nil {
-		formula, _ = LoadFormulaV2(formulaPath)
-	}
+	formula, _ := ResolveFormula(target)
 
 	// 4. Basic bead info (always shown)
 	fmt.Printf("--- Task %s ---\n", target.ID)

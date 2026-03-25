@@ -694,11 +694,10 @@ func cmdExecute(args []string) error {
 	var formula *FormulaV2
 	var err error
 	if formulaName != "" {
-		path, ferr := FindFormula(formulaName)
-		if ferr != nil {
-			return fmt.Errorf("find formula %s: %w", formulaName, ferr)
+		formula, err = LoadFormulaByName(formulaName)
+		if err != nil {
+			return fmt.Errorf("load formula %s: %w", formulaName, err)
 		}
-		formula, err = LoadFormulaV2(path)
 	} else {
 		bead, berr := storeGetBead(beadID)
 		if berr != nil {

@@ -149,11 +149,8 @@ func cmdWizardReview(args []string) error {
 
 	// 7b. Load formula for revision policy
 	var revPolicy RevisionPolicy
-	formulaPath, fErr := FindFormula("spire-agent-work")
-	if fErr == nil {
-		if formula, pErr := LoadFormulaV2(formulaPath); pErr == nil {
-			revPolicy = formula.GetRevisionPolicy()
-		}
+	if formula, fErr := LoadFormulaByName("spire-agent-work"); fErr == nil {
+		revPolicy = formula.GetRevisionPolicy()
 	}
 	if revPolicy.MaxRounds == 0 {
 		revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: "claude-opus-4-6"}

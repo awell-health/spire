@@ -8,6 +8,7 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 
+	"github.com/awell-health/spire/cmd/spire/embedded"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
@@ -153,19 +154,19 @@ var DefaultFormulaMap = map[string]string{
 //  4. Fall back to "spire-agent-work"
 func ResolveFormula(bead Bead) (*FormulaV2, error) {
 	name := resolveFormulaName(bead)
-	path, err := FindFormula(name)
+	f, err := LoadFormulaByName(name)
 	if err != nil {
 		// If the resolved formula doesn't exist, fall back to default
 		if name != "spire-agent-work" {
-			path, err = FindFormula("spire-agent-work")
+			f, err = LoadFormulaByName("spire-agent-work")
 			if err != nil {
 				return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
 			}
-		} else {
-			return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
+			return f, nil
 		}
+		return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
 	}
-	return LoadFormulaV2(path)
+	return f, nil
 }
 
 // resolveFormulaName returns the formula name for a bead without loading it.
@@ -196,7 +197,9 @@ func resolveFormulaName(bead Bead) string {
 	return "spire-agent-work"
 }
 
-// FindFormula locates a formula file in the .beads/formulas directory.
+// FindFormula locates a formula file on disk in the .beads/formulas directory.
+// Returns empty string and error if not found on disk — callers should
+// fall back to LoadEmbeddedFormula for built-in defaults.
 func FindFormula(name string) (string, error) {
 	beadsDir := os.Getenv("BEADS_DIR")
 	if beadsDir == "" {
@@ -211,11 +214,33 @@ func FindFormula(name string) (string, error) {
 				return path, nil
 			}
 		}
-		return "", fmt.Errorf("formula %q not found", name)
+		return "", fmt.Errorf("formula %q not found on disk", name)
 	}
 	path := filepath.Join(beadsDir, "formulas", name+".formula.toml")
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("formula %q not found at %s", name, path)
 	}
 	return path, nil
+}
+
+// LoadEmbeddedFormula loads a formula from the embedded defaults compiled into the binary.
+func LoadEmbeddedFormula(name string) (*FormulaV2, error) {
+	filename := "formulas/" + name + ".formula.toml"
+	data, err := embedded.Formulas.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("embedded formula %q not found", name)
+	}
+	return ParseFormulaV2(data)
+}
+
+// LoadFormulaByName loads a formula with layered resolution:
+//  1. On-disk (.beads/formulas/ or ~/.beads/formulas/) — user/project override
+//  2. Embedded default (compiled into binary)
+func LoadFormulaByName(name string) (*FormulaV2, error) {
+	// Try disk first (project or user override)
+	if path, err := FindFormula(name); err == nil {
+		return LoadFormulaV2(path)
+	}
+	// Fall back to embedded default
+	return LoadEmbeddedFormula(name)
 }
