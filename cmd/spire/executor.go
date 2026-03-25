@@ -837,6 +837,23 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 				if waitErr := fh.Wait(); waitErr != nil {
 					return fmt.Errorf("review-fix apprentice failed: %w", waitErr)
 				}
+
+				// Merge fix branch into staging so the sage reviews the updated code.
+				// Without this, the fix lands on feat/<bead-id> but the staging branch
+				// (which gets merged to main) never gets the fix.
+				if implPC.StagingBranch != "" {
+					repoPath, _, _, _ := wizardResolveRepo(e.beadID)
+					if repoPath != "" {
+						stagingBranch := strings.ReplaceAll(implPC.StagingBranch, "{bead-id}", e.beadID)
+						fixBranch := fmt.Sprintf("feat/%s", e.beadID)
+						e.log("merging fix branch %s into staging %s", fixBranch, stagingBranch)
+						exec.Command("git", "-C", repoPath, "checkout", stagingBranch).Run()
+						if mergeErr := e.mergeChildBranch(repoPath, fixBranch, stagingBranch); mergeErr != nil {
+							e.log("warning: merge fix into staging: %s", mergeErr)
+						}
+						exec.Command("git", "-C", repoPath, "checkout", "main").Run()
+					}
+				}
 			} else {
 				if dirErr := e.executeDirect("implement", implPC); dirErr != nil {
 					return fmt.Errorf("review-fix direct failed: %w", dirErr)
