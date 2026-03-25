@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,20 +51,29 @@ func cmdLogs(args []string) error {
 
 	gd := doltGlobalDir()
 
-	// Determine which log file to tail.
-	var logPath string
-
+	// System logs (daemon, dolt) are always file-based.
 	switch {
 	case flagDaemon:
-		logPath = filepath.Join(gd, "daemon.log")
+		return tailFile(filepath.Join(gd, "daemon.log"), lines, follow)
 	case flagDolt:
-		logPath = filepath.Join(gd, "dolt.log")
+		return tailFile(filepath.Join(gd, "dolt.log"), lines, follow)
 	case target != "":
-		// Look for agent log in wizards directory.
-		logPath = resolveAgentLogPath(gd, target)
-		if logPath == "" {
-			return fmt.Errorf("no log found for %q\n\nAvailable logs:\n%s", target, listAvailableLogs(gd))
+		// Agent log: resolve via AgentBackend.
+		backend := ResolveBackend("")
+		rc, err := backend.Logs(target)
+		if err != nil {
+			return fmt.Errorf("no logs for %q: %w\n\nAvailable logs:\n%s", target, err, listAvailableLogs(gd))
 		}
+		defer rc.Close()
+
+		// If the backend returned a file, use tail for --lines and --follow.
+		if f, ok := rc.(*os.File); ok {
+			return tailFile(f.Name(), lines, follow)
+		}
+		// Otherwise stream directly (e.g. docker pipe).
+		fmt.Printf("%sStreaming logs for %s%s%s\n\n", dim, reset, target, reset)
+		_, err = io.Copy(os.Stdout, rc)
+		return err
 	default:
 		// No args: list available logs.
 		fmt.Printf("%sAvailable logs%s\n\n", bold, reset)
@@ -79,25 +89,26 @@ func cmdLogs(args []string) error {
 		fmt.Printf("  spire logs --dolt         Tail the dolt server log\n")
 		return nil
 	}
+}
 
-	// Verify the log file exists.
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		return fmt.Errorf("log file not found: %s", logPath)
+// tailFile tails a log file with the given line count and optional follow mode.
+func tailFile(path string, lines int, follow bool) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("log file not found: %s", path)
 	}
 
-	fmt.Printf("%sTailing %s%s%s (%d lines)\n", dim, reset, logPath, dim, lines)
+	fmt.Printf("%sTailing %s%s%s (%d lines)\n", dim, reset, path, dim, lines)
 	if follow {
 		fmt.Printf("Press Ctrl-C to stop.%s\n\n", reset)
 	} else {
 		fmt.Printf("%s\n\n", reset)
 	}
 
-	// Use tail to display the log.
 	tailArgs := []string{"-n", strconv.Itoa(lines)}
 	if follow {
 		tailArgs = append(tailArgs, "-f")
 	}
-	tailArgs = append(tailArgs, logPath)
+	tailArgs = append(tailArgs, path)
 
 	cmd := exec.Command("tail", tailArgs...)
 	cmd.Stdout = os.Stdout
@@ -106,51 +117,13 @@ func cmdLogs(args []string) error {
 	return cmd.Run()
 }
 
-// resolveAgentLogPath finds the log file for an agent name or bead ID.
-// Checks the wizards/ log directory for matching files.
-func resolveAgentLogPath(globalDir, target string) string {
-	wizardLogDir := filepath.Join(globalDir, "wizards")
-
-	// Direct match: wizard-<target>.log
-	candidates := []string{
-		filepath.Join(wizardLogDir, target+".log"),
-		filepath.Join(wizardLogDir, "wizard-"+target+".log"),
-	}
-
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-
-	// Substring match: any log containing the target string.
-	entries, err := os.ReadDir(wizardLogDir)
-	if err != nil {
-		return ""
-	}
-
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".log") {
-			if strings.Contains(e.Name(), target) {
-				return filepath.Join(wizardLogDir, e.Name())
-			}
-		}
-	}
-
-	// Also check top-level logs (daemon, dolt) by name.
-	topLevel := filepath.Join(globalDir, target+".log")
-	if _, err := os.Stat(topLevel); err == nil {
-		return topLevel
-	}
-
-	return ""
-}
-
 // listAvailableLogs returns a formatted string listing all available log files.
+// System logs are listed from the global dir; agent logs are discovered via
+// the AgentBackend so that process, docker, and future backends all work.
 func listAvailableLogs(globalDir string) string {
 	var sb strings.Builder
 
-	// Top-level logs.
+	// System logs (host services — always file-based).
 	topLogs := []struct {
 		flag string
 		name string
@@ -173,23 +146,31 @@ func listAvailableLogs(globalDir string) string {
 			l.name, size, age, dim, l.flag, reset))
 	}
 
-	// Wizard logs.
-	wizardLogDir := filepath.Join(globalDir, "wizards")
-	entries, err := os.ReadDir(wizardLogDir)
+	// Agent logs (discovered via backend).
+	backend := ResolveBackend("")
+	agents, err := backend.List()
 	if err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+		for _, a := range agents {
+			rc, logErr := backend.Logs(a.Name)
+			if logErr != nil {
 				continue
 			}
-			info, err := e.Info()
-			if err != nil {
-				continue
+			// If it's a file, show size/age metadata.
+			if f, ok := rc.(*os.File); ok {
+				info, statErr := f.Stat()
+				rc.Close()
+				if statErr != nil {
+					continue
+				}
+				age := formatSyncAge(info.ModTime().Format("2006-01-02T15:04:05Z07:00"))
+				size := formatFileSize(info.Size())
+				sb.WriteString(fmt.Sprintf("  %-20s %6s  modified %s ago  %sspire logs %s%s\n",
+					a.Name, size, age, dim, a.Name, reset))
+			} else {
+				rc.Close()
+				sb.WriteString(fmt.Sprintf("  %-20s %s(stream)%s  %sspire logs %s%s\n",
+					a.Name, dim, reset, dim, a.Name, reset))
 			}
-			name := strings.TrimSuffix(e.Name(), ".log")
-			age := formatSyncAge(info.ModTime().Format("2006-01-02T15:04:05Z07:00"))
-			size := formatFileSize(info.Size())
-			sb.WriteString(fmt.Sprintf("  %-20s %6s  modified %s ago  %sspire logs %s%s\n",
-				name, size, age, dim, name, reset))
 		}
 	}
 
