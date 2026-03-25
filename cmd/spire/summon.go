@@ -306,11 +306,8 @@ func summonLocal(count int, targetIDs []string) error {
 		bead := candidates[i]
 		name := "wizard-" + bead.ID
 
-		// Skip if a live wizard is already running for this bead.
-		if w := findLiveWizardForBead(reg, bead.ID); w != nil {
-			fmt.Printf("  %s%s%s already running for %s (pid %d) — skipping\n", dim, w.Name, reset, bead.ID, w.PID)
-			continue
-		}
+		// Check for existing executor state to determine resume vs fresh start.
+		existingState, _ := loadExecutorState(name)
 
 		// Resolve formula for the bead — best-effort, fall back to default.
 		formulaName := resolveFormulaName(bead)
@@ -349,7 +346,11 @@ func summonLocal(count int, targetIDs []string) error {
 			log.Printf("warning: registry add for %s: %v", name, err)
 		}
 
-		fmt.Printf("  %s%s%s → %s (%s) [%s] formula=%s\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier(), formulaName)
+		if existingState != nil && existingState.Phase != "" {
+			fmt.Printf("  %s%s%s → resuming %s from %s phase [%s] formula=%s\n", cyan, name, reset, bead.ID, existingState.Phase, handle.Identifier(), formulaName)
+		} else {
+			fmt.Printf("  %s%s%s → starting %s (%s) [%s] formula=%s\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier(), formulaName)
+		}
 		spawned++
 	}
 
