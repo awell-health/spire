@@ -10,10 +10,11 @@
 //   - focus.go: bd cook, bd mol pour, bd mol progress
 //   - grok.go:  bd mol progress
 //   - init.go:  bd config get, bd init
-//   - spire_test.go: bd close --force (no store equivalent), bd mol progress
+//   - spire_test.go: bd mol progress
 //
 // bdJSON() callers:
 //   - spire_test.go: TestIntegrationBdJSON
+//
 // NOTE: board.go and watch.go have been migrated to the store API + storeGetBlockedIssues.
 package main
 

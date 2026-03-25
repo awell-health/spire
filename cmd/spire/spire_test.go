@@ -54,6 +54,37 @@ func requireStore(t *testing.T) {
 	}
 }
 
+// createTestBead creates a bead and always registers store-based cleanup.
+func createTestBead(t *testing.T, opts createOpts) string {
+	t.Helper()
+
+	id, err := storeCreateBead(opts)
+	if err != nil {
+		t.Fatalf("create test bead error: %v", err)
+	}
+	registerBeadCleanup(t, id)
+	return id
+}
+
+// registerBeadCleanup closes an open bead during test cleanup.
+func registerBeadCleanup(t *testing.T, id string) {
+	t.Helper()
+
+	t.Cleanup(func() {
+		bead, err := storeGetBead(id)
+		if err != nil {
+			t.Errorf("cleanup bead %s: get bead: %v", id, err)
+			return
+		}
+		if bead.Status == "closed" {
+			return
+		}
+		if err := storeCloseBead(id); err != nil {
+			t.Errorf("cleanup bead %s: close bead: %v", id, err)
+		}
+	})
+}
+
 func captureStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 
@@ -479,18 +510,15 @@ func TestIntegrationFocus(t *testing.T) {
 	requireStore(t)
 
 	// Create a task
-	taskID, err := storeCreateBead(createOpts{
+	taskID := createTestBead(t, createOpts{
 		Title:    "Focus test task",
 		Type:     parseIssueType("task"),
 		Priority: 2,
 		Prefix:   "spi",
 	})
-	if err != nil {
-		t.Fatalf("create task error: %v", err)
-	}
 
 	// First focus — read-only, should succeed without creating any molecule
-	err = cmdFocus([]string{taskID})
+	err := cmdFocus([]string{taskID})
 	if err != nil {
 		t.Fatalf("first focus error: %v", err)
 	}
@@ -513,9 +541,6 @@ func TestIntegrationFocus(t *testing.T) {
 	if len(mols) != 0 {
 		t.Errorf("expected no molecules after focus (focus is read-only), got %d", len(mols))
 	}
-
-	// Clean up
-	bd("close", taskID, "--force")
 }
 
 // TestIntegrationBdJSON tests the bdJSON helper with a real bd call.
@@ -662,7 +687,7 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	// Create a fake webhook event bead
 	payload := `{"action":"create","type":"Issue","data":{"id":"uuid-test","identifier":"AWE-99","title":"Integration test epic","priority":2,"labels":[{"name":"Panels - Test"}]}}`
 
-	eventID, err := storeCreateBead(createOpts{
+	eventID := createTestBead(t, createOpts{
 		Title:       "Issue created: AWE-99",
 		Type:        parseIssueType("task"),
 		Priority:    3,
@@ -670,9 +695,6 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 		Labels:      []string{"webhook", "event:Issue.create", "linear:AWE-99"},
 		Description: payload,
 	})
-	if err != nil {
-		t.Fatalf("create webhook event: %v", err)
-	}
 
 	// Run a single daemon cycle
 	processed, errors := processWebhookEvents()
@@ -707,9 +729,7 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	if epics[0].Title != "Integration test epic" {
 		t.Errorf("epic title = %q, want %q", epics[0].Title, "Integration test epic")
 	}
-
-	// Clean up
-	bd("close", epics[0].ID, "--force")
+	registerBeadCleanup(t, epics[0].ID)
 }
 
 // --- Webhook Queue tests ---
@@ -959,24 +979,18 @@ func TestIntegrationGrokNoLinearLabel(t *testing.T) {
 	requireStore(t)
 
 	// Create a task without a linear: label
-	taskID, err := storeCreateBead(createOpts{
+	taskID := createTestBead(t, createOpts{
 		Title:    "Grok test no-linear",
 		Type:     parseIssueType("task"),
 		Priority: 2,
 		Prefix:   "spi",
 	})
-	if err != nil {
-		t.Fatalf("create task error: %v", err)
-	}
 
 	// Grok should succeed (output same as focus, no Linear section)
-	err = cmdGrok([]string{taskID})
+	err := cmdGrok([]string{taskID})
 	if err != nil {
 		t.Fatalf("grok error: %v", err)
 	}
-
-	// Clean up
-	bd("close", taskID, "--force")
 }
 
 // --- Lifecycle management tests ---
