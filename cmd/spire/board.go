@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/steveyegge/beads"
+	"golang.org/x/term"
 )
 
 // BoardBead extends the standard Bead with fields needed for board display.
@@ -68,6 +69,115 @@ type boardOpts struct {
 	ready    bool
 	epic     string
 	interval time.Duration
+}
+
+// heightBudgetResult holds the computed layout parameters for the board.
+type heightBudgetResult struct {
+	maxCards   int  // max cards to show per column
+	compact    bool // use 1-line compact cards instead of 4-line cards
+	maxAlerts  int  // max alert lines to show
+	maxBlocked int  // max blocked lines to show
+}
+
+// calcHeightBudget computes card limits based on terminal height.
+// Returns permissive defaults when termHeight is zero (non-TTY or unknown).
+func calcHeightBudget(termHeight, alertCount, blockedCount, colCount int) heightBudgetResult {
+	if termHeight <= 0 {
+		return heightBudgetResult{maxCards: 99, maxAlerts: alertCount, maxBlocked: 8}
+	}
+
+	// Fixed rows: header(2) + column-header+separator(2) + footer(2).
+	const fixed = 6
+	available := termHeight - fixed
+	if available < 4 {
+		available = 4
+	}
+
+	// Allocate up to 20% of available rows for alerts (min 1, max alertCount).
+	maxAlerts := 0
+	if alertCount > 0 {
+		maxAlerts = available / 5
+		if maxAlerts < 1 {
+			maxAlerts = 1
+		}
+		if maxAlerts > alertCount {
+			maxAlerts = alertCount
+		}
+		available -= maxAlerts + 2 // header(1) + lines + blank(1)
+		if available < 4 {
+			available = 4
+		}
+	}
+
+	// Allocate up to 20% of remaining rows for blocked (min 1, max blockedCount).
+	maxBlocked := 0
+	if blockedCount > 0 {
+		maxBlocked = available / 5
+		if maxBlocked < 1 {
+			maxBlocked = 1
+		}
+		if maxBlocked > blockedCount {
+			maxBlocked = blockedCount
+		}
+		available -= maxBlocked + 2 // blank(1) + header(1) + lines
+		if available < 4 {
+			available = 4
+		}
+	}
+
+	// Try fitting cards in normal mode (4 lines each).
+	maxCards := available / 4
+	compact := false
+	if maxCards < 2 {
+		// Switch to compact (1 line per card).
+		compact = true
+		maxCards = available
+		if maxCards < 1 {
+			maxCards = 1
+		}
+	}
+
+	return heightBudgetResult{
+		maxCards:   maxCards,
+		compact:    compact,
+		maxAlerts:  maxAlerts,
+		maxBlocked: maxBlocked,
+	}
+}
+
+// renderCompactCard renders a single bead as a one-line string for TUI columns.
+func renderCompactCard(b BoardBead, color lipgloss.Color, width int) string {
+	titleWidth := width - 26
+	if titleWidth < 15 {
+		titleWidth = 15
+	}
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	owner := beadOwnerLabel(b)
+	ownerStr := ""
+	if owner != "" {
+		ownerStr = " " + lipgloss.NewStyle().Foreground(color).Render(owner)
+	}
+	return fmt.Sprintf("%s %s %s %s%s %s\n",
+		priStr(b.Priority), b.ID, shortType(b.Type),
+		truncate(b.Title, titleWidth), ownerStr,
+		dimStyle.Render(timeAgo(b.UpdatedAt)))
+}
+
+// staticCompactCardLine renders a single bead as a one-line static string.
+func staticCompactCardLine(b BoardBead, color string, colWidth int) string {
+	titleWidth := colWidth - 26
+	if titleWidth < 15 {
+		titleWidth = 15
+	}
+	owner := beadOwnerLabel(b)
+	ownerStr := ""
+	if owner != "" {
+		ownerStr = " " + color + owner + reset
+	}
+	return fmt.Sprintf("%s %s %s %s%s %s%s%s",
+		priorityStr(b.Priority), b.ID, shortType(b.Type),
+		truncate(b.Title, titleWidth), ownerStr,
+		dim, timeAgo(b.UpdatedAt), reset)
 }
 
 func cmdBoard(args []string) error {
@@ -289,17 +399,25 @@ func (m boardModel) View() string {
 
 	var s strings.Builder
 
+	// Compute height budget before rendering any sections.
+	budget := calcHeightBudget(m.height, len(m.cols.Alerts), len(m.cols.Blocked), countActiveCols(m.cols))
+
 	// Header.
 	header := lipgloss.NewStyle().Bold(true).Render("Spire Board")
 	ts := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.lastTick.Format("15:04:05"))
 	s.WriteString(header + "  " + ts + "\n\n")
 
-	// Alerts.
+	// Alerts (capped by budget).
 	if len(m.cols.Alerts) > 0 {
 		sortBeads(m.cols.Alerts)
 		alertStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 		s.WriteString(alertStyle.Render(fmt.Sprintf("⚠ ALERTS (%d)", len(m.cols.Alerts))) + "\n")
-		for _, a := range m.cols.Alerts {
+		for i, a := range m.cols.Alerts {
+			if i >= budget.maxAlerts {
+				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(m.cols.Alerts)-budget.maxAlerts)) + "\n")
+				break
+			}
 			alertType := ""
 			for _, l := range a.Labels {
 				if strings.HasPrefix(l, "alert:") {
@@ -347,22 +465,18 @@ func (m boardModel) View() string {
 			cb.WriteString(sepStyle.Render(strings.Repeat("─", min(colWidth, len(c.name)+4))))
 			cb.WriteString("\n")
 
-			maxShow := 15
-			if m.height > 0 {
-				maxShow = (m.height - 8) / 4 // 4 lines per card, leave room for header/footer
-				if maxShow < 3 {
-					maxShow = 3
-				}
-			}
-
 			for j, b := range c.beads {
-				if j >= maxShow {
+				if j >= budget.maxCards {
 					dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-					cb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(c.beads)-maxShow)))
+					cb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(c.beads)-budget.maxCards)))
 					cb.WriteString("\n")
 					break
 				}
-				cb.WriteString(renderCardStr(b, c.color, colWidth))
+				if budget.compact {
+					cb.WriteString(renderCompactCard(b, c.color, colWidth))
+				} else {
+					cb.WriteString(renderCardStr(b, c.color, colWidth))
+				}
 			}
 			rendered[i] = cb.String()
 		}
@@ -372,16 +486,15 @@ func (m boardModel) View() string {
 		s.WriteString("\n")
 	}
 
-	// Blocked.
+	// Blocked (capped by budget).
 	if len(m.cols.Blocked) > 0 {
 		blockedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 		s.WriteString(blockedStyle.Render(fmt.Sprintf("BLOCKED (%d)", len(m.cols.Blocked))) + "\n")
 
-		maxShow := 8
 		for i, b := range m.cols.Blocked {
-			if i >= maxShow {
+			if i >= budget.maxBlocked {
 				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(m.cols.Blocked)-maxShow)) + "\n")
+				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(m.cols.Blocked)-budget.maxBlocked)) + "\n")
 				break
 			}
 			blockers := blockingDepIDs(b)
@@ -724,11 +837,30 @@ const (
 )
 
 func printColumnarBoard(cols boardColumns, _ int) {
-	// Alerts.
+	// Detect terminal height for height-aware layout.
+	_, termHeight, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		termHeight = 0
+	}
+
+	// Compute height budget.
+	var activeCols int
+	for _, c := range [][]BoardBead{cols.Ready, cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge, cols.Done} {
+		if len(c) > 0 {
+			activeCols++
+		}
+	}
+	budget := calcHeightBudget(termHeight, len(cols.Alerts), len(cols.Blocked), activeCols)
+
+	// Alerts (capped by budget).
 	if len(cols.Alerts) > 0 {
 		sortBeads(cols.Alerts)
 		fmt.Printf("%s%s ALERTS (%d) %s\n", bold+red, "⚠", len(cols.Alerts), reset)
-		for _, a := range cols.Alerts {
+		for i, a := range cols.Alerts {
+			if i >= budget.maxAlerts {
+				fmt.Printf("  %s... +%d more%s\n", dim, len(cols.Alerts)-budget.maxAlerts, reset)
+				break
+			}
 			alertType := ""
 			for _, l := range a.Labels {
 				if strings.HasPrefix(l, "alert:") {
@@ -800,41 +932,111 @@ func printColumnarBoard(cols boardColumns, _ int) {
 		}
 		fmt.Println()
 
-		maxCards := 0
-		for _, col := range active {
-			if len(col.beads) > maxCards {
-				maxCards = len(col.beads)
+		// Cap each column to budget.maxCards beads.
+		type cappedColumn struct {
+			header   string
+			color    string
+			beads    []BoardBead
+			overflow int
+		}
+		capped := make([]cappedColumn, len(active))
+		for i, col := range active {
+			cc := cappedColumn{header: col.header, color: col.color}
+			if len(col.beads) > budget.maxCards {
+				cc.beads = col.beads[:budget.maxCards]
+				cc.overflow = len(col.beads) - budget.maxCards
+			} else {
+				cc.beads = col.beads
 			}
+			capped[i] = cc
 		}
 
-		for row := 0; row < maxCards*4; row++ {
-			for i, col := range active {
-				if i > 0 {
-					fmt.Print("  ")
+		if budget.compact {
+			// Compact mode: 1 line per card.
+			maxRows := 0
+			for _, cc := range capped {
+				n := len(cc.beads)
+				if cc.overflow > 0 {
+					n++
 				}
-				cardIdx := row / 4
-				lineIdx := row % 4
-				if cardIdx < len(col.beads) {
-					line := staticCardLine(col.beads[cardIdx], col.color, lineIdx, colWidth)
-					fmt.Print(line)
-					if pad := colWidth - visibleLen(line); pad > 0 {
-						fmt.Print(strings.Repeat(" ", pad))
-					}
-				} else {
-					fmt.Print(strings.Repeat(" ", colWidth))
+				if n > maxRows {
+					maxRows = n
 				}
 			}
-			fmt.Println()
+			for row := 0; row < maxRows; row++ {
+				for i, cc := range capped {
+					if i > 0 {
+						fmt.Print("  ")
+					}
+					if row < len(cc.beads) {
+						line := staticCompactCardLine(cc.beads[row], cc.color, colWidth)
+						fmt.Print(line)
+						if pad := colWidth - visibleLen(line); pad > 0 {
+							fmt.Print(strings.Repeat(" ", pad))
+						}
+					} else if row == len(cc.beads) && cc.overflow > 0 {
+						line := fmt.Sprintf("%s... +%d more%s", dim, cc.overflow, reset)
+						fmt.Print(line)
+						if pad := colWidth - visibleLen(line); pad > 0 {
+							fmt.Print(strings.Repeat(" ", pad))
+						}
+					} else {
+						fmt.Print(strings.Repeat(" ", colWidth))
+					}
+				}
+				fmt.Println()
+			}
+		} else {
+			// Normal mode: 4 lines per card.
+			maxRows := 0
+			for _, cc := range capped {
+				n := len(cc.beads) * 4
+				if cc.overflow > 0 {
+					n++
+				}
+				if n > maxRows {
+					maxRows = n
+				}
+			}
+			for row := 0; row < maxRows; row++ {
+				for i, cc := range capped {
+					if i > 0 {
+						fmt.Print("  ")
+					}
+					cardIdx := row / 4
+					lineIdx := row % 4
+					if cardIdx < len(cc.beads) {
+						line := staticCardLine(cc.beads[cardIdx], cc.color, lineIdx, colWidth)
+						fmt.Print(line)
+						if pad := colWidth - visibleLen(line); pad > 0 {
+							fmt.Print(strings.Repeat(" ", pad))
+						}
+					} else if cardIdx == len(cc.beads) && lineIdx == 0 && cc.overflow > 0 {
+						line := fmt.Sprintf("%s... +%d more%s", dim, cc.overflow, reset)
+						fmt.Print(line)
+						if pad := colWidth - visibleLen(line); pad > 0 {
+							fmt.Print(strings.Repeat(" ", pad))
+						}
+					} else {
+						fmt.Print(strings.Repeat(" ", colWidth))
+					}
+				}
+				fmt.Println()
+			}
 		}
 	}
 
-	// Blocked.
+	// Blocked (capped by budget).
 	if len(cols.Blocked) > 0 {
 		if len(active) > 0 {
 			fmt.Println()
 		}
 		fmt.Printf("%s%sBLOCKED (%d)%s\n", bold, red, len(cols.Blocked), reset)
-		for _, b := range cols.Blocked {
+		for i, b := range cols.Blocked {
+			if i >= budget.maxBlocked {
+				fmt.Printf("  %s... +%d more%s\n", dim, len(cols.Blocked)-budget.maxBlocked, reset)
+				break
+			}
 			blockers := blockingDepIDs(b)
 			blockerStr := ""
 			if len(blockers) > 0 {
