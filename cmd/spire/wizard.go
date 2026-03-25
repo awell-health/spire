@@ -21,16 +21,17 @@ import (
 // It claims a bead, creates a worktree, runs design + implement phases,
 // validates, commits, pushes, updates the bead, and hands off to review.
 //
-// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix]
+// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--no-handoff]
 func cmdWizardRun(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix]")
+		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--no-handoff]")
 	}
 
 	// 1. Parse args
 	beadID := args[0]
 	wizardName := "wizard"
 	reviewFix := false
+	noHandoff := false
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--name":
@@ -40,7 +41,12 @@ func cmdWizardRun(args []string) error {
 			}
 		case "--review-fix":
 			reviewFix = true
+		case "--no-handoff":
+			noHandoff = true
 		}
+	}
+	if os.Getenv("SPIRE_NO_HANDOFF") == "1" {
+		noHandoff = true
 	}
 
 	startedAt := time.Now()
@@ -209,35 +215,38 @@ func cmdWizardRun(args []string) error {
 	} else {
 		// Normal path: design phase then implement phase
 
-		// --- Design phase ---
-		wizardRegistryUpdate(wizardName, func(w *localWizard) {
-			w.Phase = "design"
-			w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
-		})
+		// --- Design phase (skipped in no-handoff/executor mode) ---
+		var designOutput string
+		if !noHandoff {
+			wizardRegistryUpdate(wizardName, func(w *localWizard) {
+				w.Phase = "design"
+				w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
+			})
 
-		designPrompt := wizardBuildDesignPrompt(wizardName, beadID, repoCfg, focusContext, beadJSON)
-		designPromptPath := filepath.Join(worktreeDir, ".spire-design-prompt.txt")
-		if err := os.WriteFile(designPromptPath, []byte(designPrompt), 0644); err != nil {
-			return fmt.Errorf("write design prompt: %w", err)
+			designPrompt := wizardBuildDesignPrompt(wizardName, beadID, repoCfg, focusContext, beadJSON)
+			designPromptPath := filepath.Join(worktreeDir, ".spire-design-prompt.txt")
+			if err := os.WriteFile(designPromptPath, []byte(designPrompt), 0644); err != nil {
+				return fmt.Errorf("write design prompt: %w", err)
+			}
+
+			designStartedAt := time.Now()
+			log("starting design phase (timeout: %s)", designTimeout)
+			designOutput, err = wizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
+			if err != nil {
+				log("design phase failed: %s", err)
+			}
+			log("design finished (%.0fs)", time.Since(designStartedAt).Seconds())
+
+			// Write DESIGN.md
+			designPath := filepath.Join(worktreeDir, "DESIGN.md")
+			os.WriteFile(designPath, []byte(designOutput), 0644)
+
+			// Post plan as bead comment
+			storeAddComment(beadID, fmt.Sprintf("Design plan:\n%s", designOutput))
+
+			// Close design molecule step
+			wizardCloseMoleculeStep(beadID, "design")
 		}
-
-		designStartedAt := time.Now()
-		log("starting design phase (timeout: %s)", designTimeout)
-		designOutput, err := wizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
-		if err != nil {
-			log("design phase failed: %s", err)
-		}
-		log("design finished (%.0fs)", time.Since(designStartedAt).Seconds())
-
-		// Write DESIGN.md
-		designPath := filepath.Join(worktreeDir, "DESIGN.md")
-		os.WriteFile(designPath, []byte(designOutput), 0644)
-
-		// Post plan as bead comment
-		storeAddComment(beadID, fmt.Sprintf("Design plan:\n%s", designOutput))
-
-		// Close design molecule step
-		wizardCloseMoleculeStep(beadID, "design")
 
 		// Transition to implement phase
 		setPhase(beadID, "implement")
@@ -289,8 +298,13 @@ func cmdWizardRun(args []string) error {
 			log("tests failed but branch pushed — proceeding to review")
 			storeAddLabel(beadID, "test-failure")
 		}
-		handoffDone = true
-		wizardReviewHandoff(beadID, wizardName, branchName, log)
+		if !noHandoff {
+			handoffDone = true
+			wizardReviewHandoff(beadID, wizardName, branchName, log)
+		} else {
+			handoffDone = true
+			log("no-handoff mode — skipping review handoff")
+		}
 	}
 
 	// 14. If we didn't hand off, reopen the bead so it doesn't stay orphaned.
