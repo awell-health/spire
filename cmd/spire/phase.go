@@ -15,13 +15,22 @@ func getPhase(b Bead) string {
 }
 
 // getBoardBeadPhase returns the current phase of a BoardBead by reading its phase:X label.
+// When phase is "review" and a review-round:N label is present, returns "review rN".
 func getBoardBeadPhase(b BoardBead) string {
+	phase := ""
+	round := ""
 	for _, l := range b.Labels {
 		if strings.HasPrefix(l, "phase:") {
-			return l[len("phase:"):]
+			phase = l[len("phase:"):]
+		}
+		if strings.HasPrefix(l, "review-round:") {
+			round = l[len("review-round:"):]
 		}
 	}
-	return ""
+	if phase == "review" && round != "" {
+		return "review r" + round
+	}
+	return phase
 }
 
 // setPhase atomically transitions a bead to a new phase.
