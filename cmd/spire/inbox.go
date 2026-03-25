@@ -192,7 +192,7 @@ func inboxWatch(agentName string, timeout time.Duration, jsonOut bool) error {
 	}
 
 	// Also check if there are already messages
-	if hasNewMessages(path, lastMod) {
+	if hasNewMessages(path) {
 		return inboxRead(agentName, jsonOut)
 	}
 
@@ -206,7 +206,7 @@ func inboxWatch(agentName string, timeout time.Duration, jsonOut bool) error {
 
 		if info.ModTime().After(lastMod) {
 			// File changed — check if it has messages
-			if hasNewMessages(path, time.Time{}) {
+			if hasNewMessages(path) {
 				return inboxRead(agentName, jsonOut)
 			}
 			lastMod = info.ModTime()
@@ -221,7 +221,7 @@ func inboxWatch(agentName string, timeout time.Duration, jsonOut bool) error {
 }
 
 // hasNewMessages checks if the inbox file has any messages.
-func hasNewMessages(path string, _ time.Time) bool {
+func hasNewMessages(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
