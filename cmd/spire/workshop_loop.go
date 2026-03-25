@@ -128,12 +128,7 @@ func workshopImplement(state *workshopState) error {
 	return fmt.Errorf("implement phase handler not yet available")
 }
 
-// workshopReview handles the review phase.
-// Full implementation in workshop_review.go (spi-3y8.4).
-func workshopReview(state *workshopState) error {
-	fmt.Fprintf(os.Stderr, "[workshop] review phase — not yet implemented\n")
-	return fmt.Errorf("review phase handler not yet available")
-}
+// workshopReview is implemented in workshop_review.go (spi-3y8.4).
 
 // workshopMerge handles the merge phase.
 func workshopMerge(state *workshopState) error {
