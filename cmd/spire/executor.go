@@ -1009,12 +1009,20 @@ func cmdExecute(args []string) error {
 		return fmt.Errorf("load formula: %w", err)
 	}
 
-	// Claim bead if not already
-	bead, _ := storeGetBead(beadID)
-	if bead.Status != "in_progress" {
-		os.Setenv("SPIRE_IDENTITY", agentName)
-		if cerr := cmdClaim([]string{beadID}); cerr != nil {
-			return fmt.Errorf("claim: %w", cerr)
+	// Skip claim when resuming an existing executor session.
+	// loadExecutorState returns nil when no state file exists (fresh start).
+	existingState, stateErr := loadExecutorState(agentName)
+	if stateErr != nil {
+		return fmt.Errorf("load state: %w", stateErr)
+	}
+	if existingState == nil {
+		// Fresh start: claim bead if not already in progress.
+		bead, _ := storeGetBead(beadID)
+		if bead.Status != "in_progress" {
+			os.Setenv("SPIRE_IDENTITY", agentName)
+			if cerr := cmdClaim([]string{beadID}); cerr != nil {
+				return fmt.Errorf("claim: %w", cerr)
+			}
 		}
 	}
 
