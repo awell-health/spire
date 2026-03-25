@@ -82,6 +82,8 @@ func main() {
 		err = cmdAlert(args)
 	case "status":
 		err = cmdStatus(args)
+	case "logs":
+		err = cmdLogs(args)
 	case "metrics":
 		err = cmdMetrics(args)
 	case "tower":
@@ -166,7 +168,8 @@ Lifecycle:
   up                    Start dolt server + daemon (--interval)
   down                  Stop daemon (dolt keeps running)
   shutdown              Stop daemon + dolt server
-  status                Show running state of dolt + daemon
+  status                Show services, agents, and work queue
+  logs [name]           Tail agent/system logs (--daemon, --dolt)
 
 Work:
   file <title> [flags]  Create a bead (--prefix, -t type, -p priority)
