@@ -108,6 +108,8 @@ spire board --epic spi-abc
 
 Wizards orchestrate the full lifecycle. You don't need to drive each step manually.
 
+See the [epic formula diagram](docs/epic-formula.md) for a visual walkthrough of how an epic moves through design → plan → implement → review → merge.
+
 ## The archmage's toolkit
 
 ### See what's happening
