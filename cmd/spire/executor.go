@@ -622,6 +622,14 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		}
 	}
 
+	// Switch back to main so the sage can create a worktree from the staging branch.
+	// During wave merges we checked out the staging branch in the main worktree —
+	// the sage needs it free to create its own worktree.
+	if pc.StagingBranch != "" {
+		e.log("switching back to main for review phase")
+		exec.Command("git", "-C", repoPath, "checkout", "main").Run()
+	}
+
 	return nil
 }
 
