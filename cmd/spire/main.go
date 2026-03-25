@@ -54,6 +54,10 @@ func main() {
 		err = cmdDesign(args)
 	case "spec":
 		err = cmdSpec(args)
+	case "close":
+		err = cmdClose(args)
+	case "advance":
+		err = cmdAdvance(args)
 	case "claim":
 		err = cmdClaim(args)
 	case "config":
@@ -184,6 +188,8 @@ Work:
   design <title>        Create a design bead (brainstorm/exploration artifact)
   spec <title> [flags]  Scaffold a spec and file it (--no-file, --break <id>)
   claim <bead-id>       Pull, verify, claim, push (atomic)
+  close <bead-id>       Force-close a bead (remove phase labels, close molecule steps)
+  advance <bead-id>     Advance bead to next formula phase (or close if at last phase)
   focus <bead-id>       Assemble read-only context for a task
   grok <bead-id>        Focus + live Linear context
   workshop <epic-id>    Start wizard workshop for an epic
