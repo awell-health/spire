@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // FormulaV2 represents a v2 formula that configures the universal phase pipeline.
@@ -96,6 +99,63 @@ func (f *FormulaV2) GetRevisionPolicy() RevisionPolicy {
 		return rp
 	}
 	return RevisionPolicy{MaxRounds: 3, ArbiterModel: "claude-opus-4-6"}
+}
+
+// DefaultFormulaMap maps bead types to default formula names.
+// Can be overridden by tower config in the future.
+var DefaultFormulaMap = map[string]string{
+	"task":    "spire-agent-work",
+	"bug":     "spire-bugfix",
+	"epic":    "spire-epic",
+	"chore":   "spire-agent-work",
+	"feature": "spire-agent-work",
+}
+
+// ResolveFormula determines which formula to use for a bead.
+// Resolution order:
+//  1. Bead label formula:<name> (explicit override)
+//  2. Bead type → DefaultFormulaMap
+//  3. spire.yaml agent.formula
+//  4. Fall back to "spire-agent-work"
+func ResolveFormula(bead Bead) (*FormulaV2, error) {
+	name := resolveFormulaName(bead)
+	path, err := FindFormula(name)
+	if err != nil {
+		// If the resolved formula doesn't exist, fall back to default
+		if name != "spire-agent-work" {
+			path, err = FindFormula("spire-agent-work")
+			if err != nil {
+				return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
+			}
+		} else {
+			return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
+		}
+	}
+	return LoadFormulaV2(path)
+}
+
+// resolveFormulaName returns the formula name for a bead without loading it.
+func resolveFormulaName(bead Bead) string {
+	// 1. Check bead labels for formula:<name>
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "formula:") {
+			return l[len("formula:"):]
+		}
+	}
+
+	// 2. Check bead type → formula mapping
+	if name, ok := DefaultFormulaMap[bead.Type]; ok {
+		return name
+	}
+
+	// 3. Check spire.yaml agent.formula
+	// Load repo config from CWD (best effort)
+	if cfg, err := repoconfig.Load("."); err == nil && cfg.Agent.Formula != "" {
+		return cfg.Agent.Formula
+	}
+
+	// 4. Default
+	return "spire-agent-work"
 }
 
 // FindFormula locates a formula file in the .beads/formulas directory.
