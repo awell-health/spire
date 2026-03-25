@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -354,6 +355,18 @@ func deliverInboxForAgent(agentName string) error {
 		return fmt.Errorf("query messages: %w", err)
 	}
 
+	// Check if message set changed before writing
+	newIDs := messageIDs(messages)
+	if existingData, err := readInboxFile(agentName); err == nil {
+		var existing inboxFile
+		if json.Unmarshal(existingData, &existing) == nil {
+			existingIDs := inboxMessageIDs(existing.Messages)
+			if slicesEqual(newIDs, existingIDs) {
+				return nil // unchanged, skip write
+			}
+		}
+	}
+
 	inbox := inboxFile{
 		Agent:     agentName,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -383,6 +396,16 @@ func deliverInboxForAgent(agentName string) error {
 	}
 
 	return writeInboxFile(agentName, data)
+}
+
+// messageIDs extracts sorted message IDs from store beads.
+func messageIDs(beadList []Bead) []string {
+	ids := make([]string, len(beadList))
+	for i, b := range beadList {
+		ids[i] = b.ID
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // reapDeadAgents checks the wizard registry for dead agent processes with
