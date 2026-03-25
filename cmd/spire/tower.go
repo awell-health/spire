@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -209,6 +210,54 @@ const reposTableSQL = `CREATE TABLE IF NOT EXISTS repos (
     registered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`
 
+// requiredCustomTypes are the bead types that Spire registers on every tower.
+// These supplement bd's built-in types (task, bug, feature, epic, chore).
+var requiredCustomTypes = []string{"design"}
+
+// ensureCustomBeadTypes registers Spire's required custom bead types in the
+// given .beads directory. Idempotent — merges with any existing custom types.
+func ensureCustomBeadTypes(beadsDir string) error {
+	client := bdpkg.NewClient()
+	client.BeadsDir = beadsDir
+
+	// Read current custom types to avoid clobbering user additions.
+	current, err := client.ConfigGet("types.custom")
+	if err != nil {
+		// Key may not exist yet — treat as empty.
+		current = ""
+	}
+
+	// Build set of existing custom types.
+	existing := make(map[string]bool)
+	for _, t := range strings.Split(current, ",") {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			existing[t] = true
+		}
+	}
+
+	// Add any missing required types.
+	changed := false
+	for _, t := range requiredCustomTypes {
+		if !existing[t] {
+			existing[t] = true
+			changed = true
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+
+	var types []string
+	for t := range existing {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+
+	return client.ConfigSet("types.custom", strings.Join(types, ","))
+}
+
 // cmdTower dispatches tower subcommands.
 func cmdTower(args []string) error {
 	if len(args) == 0 {
@@ -317,6 +366,12 @@ func cmdTowerCreate(args []string) error {
 	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\ndatabase: %q\n", doltHost(), doltPort(), database)
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		return fmt.Errorf("write .beads/config.yaml: %w", err)
+	}
+
+	// Register required custom bead types (e.g. "design").
+	fmt.Println("registering custom bead types...")
+	if err := ensureCustomBeadTypes(beadsDir); err != nil {
+		fmt.Printf("  warning: could not register custom types: %s\n", err)
 	}
 
 	tower := &TowerConfig{

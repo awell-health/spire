@@ -60,6 +60,27 @@ func cmdUp(args []string) error {
 		fmt.Printf("started (pid %d, port %s)\n", newPID, doltPort())
 	}
 
+	// Step 2: Ensure custom bead types for all towers.
+	fmt.Print("custom bead types: ")
+	towers, _ := listTowerConfigs()
+	if len(towers) == 0 {
+		fmt.Println("no towers configured")
+	} else {
+		warned := 0
+		for _, t := range towers {
+			beadsDir := filepath.Join(doltDataDir(), t.Database, ".beads")
+			if err := ensureCustomBeadTypes(beadsDir); err != nil {
+				fmt.Printf("\n  warning: %s: %s", t.Database, err)
+				warned++
+			}
+		}
+		if warned > 0 {
+			fmt.Println()
+		} else {
+			fmt.Printf("ok (%d tower(s))\n", len(towers))
+		}
+	}
+
 	// Find spire binary (shared by daemon and steward steps)
 	spireBin, err := os.Executable()
 	if err != nil {
