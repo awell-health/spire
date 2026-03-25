@@ -202,5 +202,12 @@ func resolveBeadsDir() string {
 			}
 		}
 	}
+	// Last resort: active tower's database directory in dolt data dir.
+	if tower, err := activeTowerConfig(); err == nil && tower != nil && tower.Database != "" {
+		d := filepath.Join(doltDataDir(), tower.Database, ".beads")
+		if info, err := os.Stat(d); err == nil && info.IsDir() {
+			return d
+		}
+	}
 	return ""
 }
