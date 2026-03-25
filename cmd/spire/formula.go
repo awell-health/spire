@@ -25,10 +25,11 @@ type FormulaV2 struct {
 type PhaseConfig struct {
 	Timeout        string          `toml:"timeout,omitempty"`
 	Model          string          `toml:"model,omitempty"`
+	MaxTurns       int             `toml:"max_turns,omitempty"`
 	Context        []string        `toml:"context,omitempty"`
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
 	// Execution directives
-	Role          string `toml:"role,omitempty"`           // human | apprentice | sage | skip
+	Role          string `toml:"role,omitempty"`           // human | apprentice | sage | wizard | skip
 	Dispatch      string `toml:"dispatch,omitempty"`       // direct | wave
 	VerdictOnly   bool   `toml:"verdict_only,omitempty"`   // sage: produce verdict only
 	Judgment      bool   `toml:"judgment,omitempty"`        // executor judges review feedback
@@ -37,6 +38,23 @@ type PhaseConfig struct {
 	Auto          bool   `toml:"auto,omitempty"`           // auto-execute without human gate
 	NoHandoff     bool   `toml:"no_handoff,omitempty"`     // apprentice: skip review handoff
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
+}
+
+// GetMaxTurns returns the max turns for this phase, with sensible defaults per role.
+func (pc PhaseConfig) GetMaxTurns() int {
+	if pc.MaxTurns > 0 {
+		return pc.MaxTurns
+	}
+	switch pc.GetRole() {
+	case "wizard":
+		return 5 // wizard phases are judgment/planning, not exploration
+	case "sage":
+		return 10
+	case "apprentice":
+		return 25
+	default:
+		return 10
+	}
 }
 
 // GetRole returns the phase role, defaulting to "apprentice".

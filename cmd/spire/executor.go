@@ -292,7 +292,7 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 		return nil
 	}
 
-	prompt := fmt.Sprintf(`You are a Spire wizard planning an epic. Read the design context and break the epic into concrete subtasks.
+	prompt := fmt.Sprintf(`You are a Spire wizard planning an epic. All context is provided below — do NOT read files.
 
 ## Epic
 %s
@@ -300,19 +300,16 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 ## Design Context
 %s
 
-## Instructions
+## Output format
 
-1. Break this epic into concrete implementation subtasks
-2. For each subtask, output a JSON object (one per line) with this format:
-   {"title": "Short title", "description": "What to implement", "deps": ["parent-task-title"]}
-3. Keep subtasks small enough for a single agent in a single worktree
-4. Use "deps" to express ordering (task B depends on task A)
-5. Output ONLY the JSON lines, no other text
+Output ONLY JSON objects, one per line, no other text. Each line:
+{"title": "Short title", "description": "What to implement and which files to change", "deps": ["title-of-dependency"]}
 
-## Rules
-- Read CLAUDE.md and PLAYBOOK.md for repo conventions
-- Each subtask should modify a small set of files
-- Consider what can be parallelized (no deps = same wave)
+Rules:
+- Each subtask should be small enough for one agent in one worktree
+- Use "deps" to express ordering — tasks with no deps run in parallel (same wave)
+- Keep titles short and specific (e.g. "Add max_turns to PhaseConfig" not "Update formula")
+- Description should say WHAT to change and WHERE (file names)
 `, epicContext, designContext.String())
 
 	// Resolve repo for working directory
@@ -326,13 +323,14 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 		model = "claude-sonnet-4-6"
 	}
 
-	e.log("invoking Claude for plan generation")
+	maxTurns := pc.GetMaxTurns()
+	e.log("invoking Claude for plan generation (max_turns=%d)", maxTurns)
 	cmd := exec.Command("claude",
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
 		"--output-format", "text",
-		"--max-turns", "15",
+		"--max-turns", fmt.Sprintf("%d", maxTurns),
 	)
 	cmd.Dir = repoPath
 	cmd.Env = os.Environ()
@@ -459,12 +457,13 @@ Complete this phase and output your results.`, phase, bead.ID, bead.Title, bead.
 		repoPath = "."
 	}
 
+	maxTurns := pc.GetMaxTurns()
 	cmd := exec.Command("claude",
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
 		"--output-format", "text",
-		"--max-turns", "10",
+		"--max-turns", fmt.Sprintf("%d", maxTurns),
 	)
 	cmd.Dir = repoPath
 	cmd.Env = os.Environ()

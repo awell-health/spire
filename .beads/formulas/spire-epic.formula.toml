@@ -4,19 +4,20 @@ version = 2
 
 [phases.design]
 role = "wizard"
-context = ["CLAUDE.md", "PLAYBOOK.md"]
+timeout = "1m"
+max_turns = 1
 # Wizard validates that a linked design bead (ref:) exists and is closed/sufficient.
-# If design is missing or incomplete: label epic "needs-design", notify archmage, pause.
-# If design is complete: advance to plan.
+# No Claude invocation — pure Go logic. Timeout is just a safety net.
 
 [phases.plan]
 role = "wizard"
-context = ["CLAUDE.md", "PLAYBOOK.md"]
-# Wizard reads the design bead, breaks epic into subtasks, computes waves from dep graph.
-# Files subtasks, posts the plan as a comment.
+timeout = "10m"
+max_turns = 3
+model = "claude-sonnet-4-6"
+# Wizard invokes Claude with all context inline to generate subtask breakdown.
 
 [phases.implement]
-timeout = "30m"
+timeout = "10m"
 model = "claude-sonnet-4-6"
 role = "apprentice"
 dispatch = "wave"
