@@ -99,7 +99,7 @@ func computeWaves(epicID string) ([][]string, error) {
 // workshopImplement handles the implement phase of the wizard workshop.
 // It computes waves from the dependency graph, dispatches apprentices
 // in parallel worktrees, and merges their work back.
-func workshopImplement(state *workshopState, spawner AgentSpawner) error {
+func workshopImplement(state *workshopState, spawner AgentBackend) error {
 	epicID := state.EpicID
 	log := func(format string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)

@@ -252,13 +252,13 @@ func summonLocal(count int) error {
 	reg = cleanDeadWizards(reg)
 
 	logDir := filepath.Join(doltGlobalDir(), "wizards")
-	spawner := NewSpawner("process")
+	backend := ResolveBackend("")
 
 	for i := 0; i < count; i++ {
 		bead := candidates[i]
 		name := "wizard-" + bead.ID
 
-		handle, err := spawner.Spawn(SpawnConfig{
+		handle, err := backend.Spawn(SpawnConfig{
 			Name:    name,
 			BeadID:  bead.ID,
 			Role:    RoleApprentice,

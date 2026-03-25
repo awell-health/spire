@@ -52,10 +52,17 @@ func cmdStatus(args []string) error {
 		fmt.Printf("  %s○%s daemon         %sstopped%s\n", dim, reset, dim, reset)
 	}
 
-	// Steward — no PID file, but check if there's a process with
-	// "spire steward" in the wizard registry or as a known process.
-	// For now, check if steward is visible via the same daemon log.
-	// Steward doesn't have a dedicated PID file, so we note it as N/A.
+	// Steward
+	stewardPID := readPID(stewardPIDPath())
+	stewardAlive := stewardPID > 0 && processAlive(stewardPID)
+	if stewardAlive {
+		fmt.Printf("  %s●%s steward        %srunning%s  pid %d\n", green, reset, green, reset, stewardPID)
+	} else {
+		if stewardPID > 0 {
+			os.Remove(stewardPIDPath())
+		}
+		fmt.Printf("  %s○%s steward        %sstopped%s\n", dim, reset, dim, reset)
+	}
 
 	// --- Sync ---
 	towers, err := listTowerConfigs()
@@ -171,6 +178,8 @@ func cmdStatus(args []string) error {
 	}{
 		{"daemon", filepath.Join(gd, "daemon.log")},
 		{"daemon (err)", filepath.Join(gd, "daemon.error.log")},
+		{"steward", filepath.Join(gd, "steward.log")},
+		{"steward (err)", filepath.Join(gd, "steward.error.log")},
 		{"dolt", filepath.Join(gd, "dolt.log")},
 	}
 	for _, lf := range sysLogs {

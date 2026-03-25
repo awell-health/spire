@@ -847,8 +847,8 @@ func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string,
 	})
 
 	// Spawn reviewer
-	spawner := NewSpawner("process")
-	handle, spawnErr := spawner.Spawn(SpawnConfig{
+	backend := ResolveBackend("")
+	handle, spawnErr := backend.Spawn(SpawnConfig{
 		Name:   reviewerName,
 		BeadID: beadID,
 		Role:   RoleSage,

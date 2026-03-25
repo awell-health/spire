@@ -17,6 +17,7 @@ func cmdLogs(args []string) error {
 	follow := true
 	flagDaemon := false
 	flagDolt := false
+	flagSteward := false
 
 	i := 0
 	for i < len(args) {
@@ -25,6 +26,8 @@ func cmdLogs(args []string) error {
 			flagDaemon = true
 		case "--dolt":
 			flagDolt = true
+		case "--steward":
+			flagSteward = true
 		case "--lines", "-n":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--lines requires a number")
@@ -51,10 +54,12 @@ func cmdLogs(args []string) error {
 
 	gd := doltGlobalDir()
 
-	// System logs (daemon, dolt) are always file-based.
+	// System logs (daemon, steward, dolt) are always file-based.
 	switch {
 	case flagDaemon:
 		return tailFile(filepath.Join(gd, "daemon.log"), lines, follow)
+	case flagSteward:
+		return tailFile(filepath.Join(gd, "steward.log"), lines, follow)
 	case flagDolt:
 		return tailFile(filepath.Join(gd, "dolt.log"), lines, follow)
 	case target != "":
@@ -86,6 +91,7 @@ func cmdLogs(args []string) error {
 		fmt.Printf("\n%sUsage:%s\n", bold, reset)
 		fmt.Printf("  spire logs <agent-name>   Tail an agent log\n")
 		fmt.Printf("  spire logs --daemon       Tail the daemon log\n")
+		fmt.Printf("  spire logs --steward      Tail the steward log\n")
 		fmt.Printf("  spire logs --dolt         Tail the dolt server log\n")
 		return nil
 	}
@@ -131,6 +137,8 @@ func listAvailableLogs(globalDir string) string {
 	}{
 		{"--daemon", "daemon", filepath.Join(globalDir, "daemon.log")},
 		{"--daemon", "daemon (err)", filepath.Join(globalDir, "daemon.error.log")},
+		{"--steward", "steward", filepath.Join(globalDir, "steward.log")},
+		{"--steward", "steward (err)", filepath.Join(globalDir, "steward.error.log")},
 		{"--dolt", "dolt", filepath.Join(globalDir, "dolt.log")},
 		{"--dolt", "dolt (err)", filepath.Join(globalDir, "dolt.error.log")},
 	}
@@ -187,6 +195,7 @@ Arguments:
 
 Flags:
   --daemon         Tail the daemon log
+  --steward        Tail the steward log
   --dolt           Tail the dolt server log
   --lines N, -n N  Number of historical lines to show (default: 50)
   --no-follow      Print lines and exit (don't follow)

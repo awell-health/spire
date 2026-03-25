@@ -10,7 +10,7 @@ import (
 
 // workshopLoop is the wizard's main event loop.
 // It dispatches to phase-specific handlers and saves state after each action.
-func workshopLoop(state *workshopState, spawner AgentSpawner) error {
+func workshopLoop(state *workshopState, spawner AgentBackend) error {
 	for {
 		// Check inbox for messages between actions
 		workshopCheckInbox(state)

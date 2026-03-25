@@ -575,8 +575,8 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	// Spawn wizard-run --review-fix
 	log("spawning %s --review-fix", wizardName)
 	logDir := filepath.Join(doltGlobalDir(), "wizards")
-	spawner := NewSpawner("process")
-	handle, spawnErr := spawner.Spawn(SpawnConfig{
+	backend := ResolveBackend("")
+	handle, spawnErr := backend.Spawn(SpawnConfig{
 		Name:      wizardName,
 		BeadID:    beadID,
 		Role:      RoleApprentice,

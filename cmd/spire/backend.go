@@ -3,7 +3,10 @@ package main
 import (
 	"io"
 	"log"
+	"os"
 	"time"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // AgentBackend is the unified adapter for agent execution environments.
@@ -55,6 +58,13 @@ var _ AgentBackend = (*dockerBackend)(nil)
 // ---------------------------------------------------------------------------
 
 func ResolveBackend(name string) AgentBackend {
+	if name == "" {
+		// Auto-resolve: read from spire.yaml, then fall back to detection.
+		cwd, _ := os.Getwd()
+		if cfg, err := repoconfig.Load(cwd); err == nil && cfg.Agent.Backend != "" {
+			name = cfg.Agent.Backend
+		}
+	}
 	switch name {
 	case "process", "":
 		return newProcessBackend()

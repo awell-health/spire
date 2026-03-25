@@ -32,6 +32,7 @@ type RuntimeConfig struct {
 
 // AgentConfig controls autonomous agent behaviour.
 type AgentConfig struct {
+	Backend       string       `yaml:"backend"`        // execution backend: "process", "docker", "k8s"
 	Model         string       `yaml:"model"`          // default model for this repo
 	MaxTurns      int          `yaml:"max-turns"`      // safety limit
 	Stale         string       `yaml:"stale"`          // warning: wizard exceeded guidelines (e.g. "10m")

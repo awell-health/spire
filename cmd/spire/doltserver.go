@@ -117,6 +117,12 @@ func daemonPIDPath() string {
 	return filepath.Join(doltGlobalDir(), "daemon.pid")
 }
 
+// stewardPIDPath returns the path to the steward PID file.
+// Uses the global dir so up/down/status work from any directory.
+func stewardPIDPath() string {
+	return filepath.Join(doltGlobalDir(), "steward.pid")
+}
+
 // doltIsReachable checks if the dolt server is reachable via TCP.
 func doltIsReachable() bool {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(doltHost(), doltPort()), 2*time.Second)

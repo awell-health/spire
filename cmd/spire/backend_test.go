@@ -2,6 +2,8 @@ package main
 
 import (
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -106,6 +108,71 @@ func TestBackendNewSpawnerDelegates(t *testing.T) {
 	}
 	if _, ok := s.(AgentBackend); !ok {
 		t.Fatalf("NewSpawner(\"process\") returned %T, which does not satisfy AgentBackend", s)
+	}
+}
+
+// TestResolveBackend_FromConfig verifies that ResolveBackend("") reads
+// the backend from spire.yaml when agent.backend is set.
+func TestResolveBackend_FromConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write spire.yaml with agent.backend: docker
+	yaml := `agent:
+  backend: docker
+`
+	if err := os.WriteFile(filepath.Join(dir, "spire.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to the temp dir so repoconfig.Load finds spire.yaml
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+
+	b := ResolveBackend("")
+	if _, ok := b.(*dockerBackend); !ok {
+		t.Fatalf("ResolveBackend(\"\") with agent.backend=docker returned %T, want *dockerBackend", b)
+	}
+}
+
+// TestResolveBackend_ExplicitOverridesConfig verifies that an explicit
+// backend name overrides the spire.yaml config.
+func TestResolveBackend_ExplicitOverridesConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write spire.yaml with agent.backend: docker
+	yaml := `agent:
+  backend: docker
+`
+	if err := os.WriteFile(filepath.Join(dir, "spire.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to the temp dir so repoconfig.Load finds spire.yaml
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+
+	// Explicit "process" should override the config's "docker"
+	b := ResolveBackend("process")
+	if _, ok := b.(*processBackend); !ok {
+		t.Fatalf("ResolveBackend(\"process\") with agent.backend=docker returned %T, want *processBackend", b)
+	}
+}
+
+// TestResolveBackend_NoConfigFallsToProcess verifies that ResolveBackend("")
+// returns processBackend when there is no spire.yaml.
+func TestResolveBackend_NoConfigFallsToProcess(t *testing.T) {
+	dir := t.TempDir()
+
+	// Change to empty temp dir (no spire.yaml)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+
+	b := ResolveBackend("")
+	if _, ok := b.(*processBackend); !ok {
+		t.Fatalf("ResolveBackend(\"\") with no config returned %T, want *processBackend", b)
 	}
 }
 

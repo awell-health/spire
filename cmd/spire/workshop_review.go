@@ -10,7 +10,7 @@ import (
 // workshopReview handles the review phase of the wizard workshop.
 // It dispatches a sage (reviewer), waits for the verdict, and makes
 // judgment calls on review feedback.
-func workshopReview(state *workshopState, spawner AgentSpawner) error {
+func workshopReview(state *workshopState, spawner AgentBackend) error {
 	epicID := state.EpicID
 	log := func(format string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)

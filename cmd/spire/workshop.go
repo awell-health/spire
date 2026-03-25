@@ -81,8 +81,8 @@ func cmdWorkshop(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "[workshop] starting for %s (phase: %s)\n", epicID, state.Phase)
 
-	spawner := NewSpawner("process")
-	return workshopLoop(state, spawner)
+	backend := ResolveBackend("")
+	return workshopLoop(state, backend)
 }
 
 // workshopRuntimeDir returns the directory for workshop runtime state.
