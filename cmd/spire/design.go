@@ -57,6 +57,11 @@ Workflow:
 				i++
 				opts.Parent = args[i]
 			}
+		case args[i] == "--prefix":
+			if i+1 < len(args) {
+				i++
+				opts.Prefix = args[i]
+			}
 		case args[i] == "--label" || args[i] == "--labels":
 			if i+1 < len(args) {
 				i++
@@ -77,7 +82,7 @@ Workflow:
 		return fmt.Errorf("design: title is required")
 	}
 
-	// Detect prefix from CWD
+	// Detect prefix: CWD repo → active tower hub prefix → error
 	if cwd, err := realCwd(); err == nil {
 		if cfg, err := loadConfig(); err == nil {
 			if inst := findInstanceByPath(cfg, cwd); inst != nil {
@@ -86,12 +91,13 @@ Workflow:
 		}
 	}
 	if opts.Prefix == "" {
-		cfg, _ := loadConfig()
-		var prefixes []string
-		for p := range cfg.Instances {
-			prefixes = append(prefixes, p)
+		// Fall back to active tower's hub prefix
+		if tower, err := activeTowerConfig(); err == nil && tower != nil && tower.HubPrefix != "" {
+			opts.Prefix = tower.HubPrefix
 		}
-		return fmt.Errorf("--prefix required (registered: %s)", strings.Join(prefixes, ", "))
+	}
+	if opts.Prefix == "" {
+		return fmt.Errorf("no repo registered for this directory.\nRun `spire repo add` to register, or use `spire design --prefix <name> \"Title\"`")
 	}
 
 	id, err := storeCreateBead(opts)

@@ -66,14 +66,16 @@ func cmdFile(args []string) error {
 		}
 	}
 
-	// Still no prefix — list available and error
+	// Fall back to active tower's hub prefix
 	if prefix == "" {
-		cfg, _ := loadConfig()
-		var prefixes []string
-		for p := range cfg.Instances {
-			prefixes = append(prefixes, p)
+		if tower, err := activeTowerConfig(); err == nil && tower != nil && tower.HubPrefix != "" {
+			prefix = tower.HubPrefix
 		}
-		return fmt.Errorf("--prefix required (registered: %s)", strings.Join(prefixes, ", "))
+	}
+
+	// Still no prefix — helpful error
+	if prefix == "" {
+		return fmt.Errorf("no repo registered for this directory.\nRun `spire repo add` to register, or use `--prefix <name>`")
 	}
 
 	// If prefix was supplied explicitly, look up the instance path
