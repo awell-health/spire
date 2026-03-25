@@ -898,9 +898,6 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
-	// TODO: baseBranch should come from summon-time context, not hardcoded repos table
-	_ = baseBranch
-	baseBranch = "main"
 
 	// Local merge: checkout main, merge the feature/staging branch, push
 	e.log("merging %s → %s (local)", branch, baseBranch)
