@@ -35,6 +35,8 @@ func (s *processSpawner) Spawn(cfg SpawnConfig) (AgentHandle, error) {
 		subcmd = "wizard-review"
 	case RoleWizard:
 		subcmd = "workshop"
+	case RoleExecutor:
+		subcmd = "execute"
 	default:
 		return nil, fmt.Errorf("unknown spawn role: %q", cfg.Role)
 	}

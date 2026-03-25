@@ -186,7 +186,7 @@ Work:
   workshop <epic-id>    Start wizard workshop for an epic
 
 Agents:
-  summon [n]            Summon wizards (--for <epic-id>)
+  summon [n]            Summon wizards (--for <epic-id>, --targets <ids>, --auto)
   dismiss [n]           Dismiss wizards (--all)
   roster                List agents and their status
 

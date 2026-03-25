@@ -44,6 +44,9 @@ const (
 
 	// RoleWizard is a per-epic orchestrator (workshop).
 	RoleWizard SpawnRole = "wizard"
+
+	// RoleExecutor is a formula-driven executor (execute).
+	RoleExecutor SpawnRole = "executor"
 )
 
 // SpawnConfig describes the intent for spawning an agent.

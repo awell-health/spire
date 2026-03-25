@@ -32,11 +32,13 @@ type localWizard struct {
 
 func cmdSummon(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire summon <N> [--for <epic-id>]")
+		return fmt.Errorf("usage: spire summon <N> [--for <epic-id>] [--targets <ids>] [--auto]")
 	}
 
 	var count int
 	var forEpic string
+	var targets string
+	var auto bool
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -46,13 +48,38 @@ func cmdSummon(args []string) error {
 			}
 			i++
 			forEpic = args[i]
+		case "--targets":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--targets requires comma-separated bead IDs")
+			}
+			i++
+			targets = args[i]
+		case "--auto":
+			auto = true
 		default:
 			n, err := strconv.Atoi(args[i])
 			if err != nil {
-				return fmt.Errorf("expected a number, got %q\nusage: spire summon <N> [--for <epic-id>]", args[i])
+				return fmt.Errorf("expected a number, got %q\nusage: spire summon <N> [--for <epic-id>] [--targets <ids>] [--auto]", args[i])
 			}
 			count = n
 		}
+	}
+
+	if auto {
+		fmt.Println("Auto mode not yet implemented. Run spire summon N to summon agents manually.")
+		return nil
+	}
+
+	// If --targets provided, split and pass directly.
+	var targetIDs []string
+	if targets != "" {
+		for _, id := range strings.Split(targets, ",") {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				targetIDs = append(targetIDs, id)
+			}
+		}
+		count = len(targetIDs)
 	}
 
 	// If --for epic, count = number of ready children.
@@ -80,7 +107,7 @@ func cmdSummon(args []string) error {
 	if isK8sAvailable() {
 		return summonK8s(count)
 	}
-	return summonLocal(count)
+	return summonLocal(count, targetIDs)
 }
 
 func cmdDismiss(args []string) error {
@@ -223,20 +250,26 @@ func deleteSpireAgentCR(name string) error {
 
 // --- Local mode ---
 
-func summonLocal(count int) error {
-	// Find ready beads to assign.
-	ready, err := storeGetReadyWork(beads.WorkFilter{})
-	if err != nil {
-		return fmt.Errorf("query ready work: %w", err)
-	}
-
-	// Filter to actionable beads (tasks/bugs, not epics).
+func summonLocal(count int, targetIDs []string) error {
 	var candidates []Bead
-	for _, b := range ready {
-		if b.Type == "epic" {
-			continue
+
+	if len(targetIDs) > 0 {
+		// Look up each target bead directly.
+		for _, id := range targetIDs {
+			bead, err := storeGetBead(id)
+			if err != nil {
+				return fmt.Errorf("target %s: %w", id, err)
+			}
+			candidates = append(candidates, bead)
 		}
-		candidates = append(candidates, b)
+		count = len(candidates)
+	} else {
+		// Find ready beads to assign — all bead types welcome.
+		ready, err := storeGetReadyWork(beads.WorkFilter{})
+		if err != nil {
+			return fmt.Errorf("query ready work: %w", err)
+		}
+		candidates = ready
 	}
 
 	if len(candidates) == 0 {
@@ -258,11 +291,15 @@ func summonLocal(count int) error {
 		bead := candidates[i]
 		name := "wizard-" + bead.ID
 
+		// Resolve formula for the bead — best-effort, fall back to default.
+		formulaName := resolveFormulaName(bead)
+
 		handle, err := backend.Spawn(SpawnConfig{
-			Name:    name,
-			BeadID:  bead.ID,
-			Role:    RoleApprentice,
-			LogPath: filepath.Join(logDir, name+".log"),
+			Name:      name,
+			BeadID:    bead.ID,
+			Role:      RoleExecutor,
+			LogPath:   filepath.Join(logDir, name+".log"),
+			ExtraArgs: []string{"--formula", formulaName},
 		})
 		if err != nil {
 			return fmt.Errorf("spawn %s: %w", name, err)
@@ -291,7 +328,7 @@ func summonLocal(count int) error {
 			log.Printf("warning: registry add for %s: %v", name, err)
 		}
 
-		fmt.Printf("  %s%s%s → %s (%s) [%s]\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier())
+		fmt.Printf("  %s%s%s → %s (%s) [%s] formula=%s\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier(), formulaName)
 	}
 
 	fmt.Printf("\n%d wizard(s) summoned. Logs: %s\n", count, logDir)
