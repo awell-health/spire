@@ -133,8 +133,14 @@ func workshopImplement(state *workshopState) error {
 		state.Wave = waveIdx
 		log("=== wave %d: %d subtask(s) ===", waveIdx, len(wave))
 
+		type apprenticeResult struct {
+			BeadID string
+			Agent  string
+			Err    error
+		}
+
 		var wg sync.WaitGroup
-		errCh := make(chan error, len(wave))
+		resultCh := make(chan apprenticeResult, len(wave))
 
 		for i, subtaskID := range wave {
 			if st, ok := state.Subtasks[subtaskID]; ok && st.Status == "closed" {
@@ -157,25 +163,30 @@ func workshopImplement(state *workshopState) error {
 
 				if err := cmd.Run(); err != nil {
 					log("  %s failed: %s", apprenticeName, err)
-					errCh <- fmt.Errorf("%s: %w", beadID, err)
+					resultCh <- apprenticeResult{BeadID: beadID, Agent: apprenticeName, Err: err}
 					return
 				}
 
 				log("  %s completed", apprenticeName)
-				state.Subtasks[beadID] = subtaskState{
-					Status: "closed",
-					Branch: fmt.Sprintf("feat/%s", beadID),
-					Agent:  apprenticeName,
-				}
+				resultCh <- apprenticeResult{BeadID: beadID, Agent: apprenticeName}
 			}(i, subtaskID)
 		}
 
 		wg.Wait()
-		close(errCh)
+		close(resultCh)
 
+		// Collect results — single-threaded write to state.Subtasks (no race)
 		var errs []string
-		for e := range errCh {
-			errs = append(errs, e.Error())
+		for r := range resultCh {
+			if r.Err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %s", r.BeadID, r.Err))
+				continue
+			}
+			state.Subtasks[r.BeadID] = subtaskState{
+				Status: "closed",
+				Branch: fmt.Sprintf("feat/%s", r.BeadID),
+				Agent:  r.Agent,
+			}
 		}
 
 		saveWorkshopState(state)

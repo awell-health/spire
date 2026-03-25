@@ -131,20 +131,26 @@ Respond with ONLY a JSON object:
 			state.Phase = "merge"
 			return nil
 
-		case "partial":
-			// Some feedback is valid — go back to implement for targeted fixes
-			log("partial agreement — re-implementing with targeted feedback")
+		default: // "agree", "partial", or unknown — re-implement with feedback
+			log("accepting feedback — dispatching review-fix")
 			storeRemoveLabel(epicID, "review-feedback")
 			setPhase(epicID, "implement")
-			state.Phase = "implement"
-			return nil
 
-		default: // "agree" or unknown
-			// Full agreement — go back to implement
-			log("agreeing with sage — re-implementing")
-			storeRemoveLabel(epicID, "review-feedback")
-			setPhase(epicID, "implement")
-			state.Phase = "implement"
+			// Spawn wizard-run --review-fix directly (subtasks are already closed,
+			// so the wave system would produce zero waves)
+			fixName := fmt.Sprintf("apprentice-%s-fix-%d", epicID, state.ReviewRounds)
+			spireBin, _ := os.Executable()
+			fixCmd := exec.Command(spireBin, "wizard-run", epicID, "--name", fixName, "--review-fix")
+			fixCmd.Env = os.Environ()
+			fixCmd.Stdout = os.Stderr
+			fixCmd.Stderr = os.Stderr
+			if err := fixCmd.Run(); err != nil {
+				log("review-fix failed: %s", err)
+			}
+
+			// After fix, go back to review
+			setPhase(epicID, "review")
+			state.Phase = "review"
 			return nil
 		}
 	}
