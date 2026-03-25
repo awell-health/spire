@@ -271,6 +271,7 @@ func storeCreateBead(opts createOpts) (string, error) {
 		Title:       opts.Title,
 		Description: opts.Description,
 		Priority:    opts.Priority,
+		Status:      beads.StatusOpen,
 		IssueType:   opts.Type,
 		Labels:      opts.Labels,
 	}
