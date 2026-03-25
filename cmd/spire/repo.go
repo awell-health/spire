@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -128,6 +129,32 @@ func repoList(jsonOut bool) error {
 	return nil
 }
 
+// resolveRepoArg resolves a user-supplied argument to a canonical prefix.
+// Tries exact prefix match first, then falls back to matching by directory path
+// or basename, so users can type the directory name instead of the prefix.
+// Returns the original arg unchanged if no local config match is found
+// (letting dolt be the final arbiter).
+func resolveRepoArg(cfg *SpireConfig, arg string) (string, error) {
+	if _, ok := cfg.Instances[arg]; ok {
+		return arg, nil
+	}
+	var matched []string
+	for prefix, inst := range cfg.Instances {
+		if inst.Path == arg || filepath.Base(inst.Path) == arg {
+			matched = append(matched, prefix)
+		}
+	}
+	switch len(matched) {
+	case 0:
+		return arg, nil // not in local config; dolt SELECT will catch non-existence
+	case 1:
+		fmt.Printf("  Resolved %q → prefix %q\n", arg, matched[0])
+		return matched[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous: %q matches prefixes %s — use the prefix directly", arg, strings.Join(matched, ", "))
+	}
+}
+
 // resolveRemoveDatabase determines which database a repo remove should target.
 // Priority: instance's tower config (authoritative) > instance's cached database
 // > global tower resolution. Returns the database name or an error if ambiguous
@@ -161,10 +188,16 @@ func resolveRemoveDatabase(cfg *SpireConfig, prefix string) (string, error) {
 // Resolves the tower from the instance's own cache first (it knows which tower
 // it was registered under), falling back to global tower resolution only if the
 // instance doesn't record its tower.
-func repoRemove(prefix string) error {
+func repoRemove(arg string) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Resolve arg to canonical prefix (accepts path or basename as fallback).
+	prefix, err := resolveRepoArg(cfg, arg)
+	if err != nil {
+		return err
 	}
 
 	database, err := resolveRemoveDatabase(cfg, prefix)
@@ -172,14 +205,34 @@ func repoRemove(prefix string) error {
 		return err
 	}
 
-	// Remove from authoritative repos table first
-	sql := fmt.Sprintf("DELETE FROM `%s`.repos WHERE prefix = '%s'", database, sqlEscape(prefix))
-	if _, err := rawDoltQuery(sql); err != nil {
+	// Verify the prefix exists in the repos table before attempting to delete.
+	checkSQL := fmt.Sprintf("SELECT prefix FROM `%s`.repos WHERE prefix = '%s'", database, sqlEscape(prefix))
+	out, err := rawDoltQuery(checkSQL)
+	if err != nil {
+		return fmt.Errorf("could not verify %q in repos table: %w", prefix, err)
+	}
+	rows := parseDoltRows(out, []string{"prefix"})
+	if len(rows) == 0 {
+		// Not in dolt — clean up local config if present and warn.
+		if _, ok := cfg.Instances[prefix]; ok {
+			delete(cfg.Instances, prefix)
+			if err := saveConfig(cfg); err != nil {
+				return fmt.Errorf("save config: %w", err)
+			}
+			fmt.Printf("  Removed %q from local config (was not in repos table)\n", prefix)
+			return nil
+		}
+		return fmt.Errorf("no repo registered with prefix %q\nRun 'spire repo list' to see registered repos", prefix)
+	}
+
+	// Remove from authoritative repos table first.
+	deleteSQL := fmt.Sprintf("DELETE FROM `%s`.repos WHERE prefix = '%s'", database, sqlEscape(prefix))
+	if _, err := rawDoltQuery(deleteSQL); err != nil {
 		return fmt.Errorf("could not remove %q from repos table: %w", prefix, err)
 	}
 	fmt.Printf("  Removed %q from repos table\n", prefix)
 
-	// Then remove from local config
+	// Then remove from local config.
 	if _, ok := cfg.Instances[prefix]; ok {
 		delete(cfg.Instances, prefix)
 		if err := saveConfig(cfg); err != nil {
