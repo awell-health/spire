@@ -60,12 +60,19 @@ func cmdUp(args []string) error {
 		fmt.Printf("started (pid %d, port %s)\n", newPID, doltPort())
 	}
 
-	// Step 2: Ensure custom bead types for all towers.
-	fmt.Print("custom bead types: ")
+	// Step 2: Ensure tower configs are healthy.
 	towers, _ := listTowerConfigs()
 	if len(towers) == 0 {
-		fmt.Println("no towers configured")
+		fmt.Println("towers: none configured")
 	} else {
+		// Ensure .beads/config.yaml has database key (repairs towers created by older versions)
+		for _, t := range towers {
+			beadsDir := filepath.Join(doltDataDir(), t.Database, ".beads")
+			ensureBeadsConfigDatabase(beadsDir, t.Database)
+		}
+
+		// Ensure custom bead types
+		fmt.Print("custom bead types: ")
 		warned := 0
 		for _, t := range towers {
 			beadsDir := filepath.Join(doltDataDir(), t.Database, ".beads")

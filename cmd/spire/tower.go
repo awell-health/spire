@@ -277,6 +277,23 @@ func bootstrapRepoBeadsDir(beadsDir string, tower *TowerConfig, prefix string) e
 	return nil
 }
 
+// ensureBeadsConfigDatabase ensures the .beads/config.yaml has the database key.
+// Towers created by older versions may be missing it, causing "issue_prefix config is missing" errors.
+func ensureBeadsConfigDatabase(beadsDir, database string) {
+	configPath := filepath.Join(beadsDir, "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return // no config to fix
+	}
+	content := string(data)
+	if strings.Contains(content, "database:") {
+		return // already has it
+	}
+	// Append database key
+	content = strings.TrimRight(content, "\n") + fmt.Sprintf("\ndatabase: %q\n", database)
+	os.WriteFile(configPath, []byte(content), 0644)
+}
+
 // ensureCustomBeadTypes registers Spire's required custom bead types in the
 // given .beads directory. Idempotent — merges with any existing custom types.
 func ensureCustomBeadTypes(beadsDir string) error {
