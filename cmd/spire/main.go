@@ -184,7 +184,7 @@ Work:
   design <title>        Create a design bead (brainstorm/exploration artifact)
   spec <title> [flags]  Scaffold a spec and file it (--no-file, --break <id>)
   claim <bead-id>       Pull, verify, claim, push (atomic)
-  focus <bead-id>       Focus on a task (bonds workflow on first focus)
+  focus <bead-id>       Assemble read-only context for a task
   grok <bead-id>        Focus + live Linear context
   workshop <epic-id>    Start wizard workshop for an epic
 

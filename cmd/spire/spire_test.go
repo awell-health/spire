@@ -473,7 +473,7 @@ func TestIntegrationSendWithThread(t *testing.T) {
 	}
 }
 
-// TestIntegrationFocus tests focus with molecule pour.
+// TestIntegrationFocus tests that focus is read-only context assembly (no molecule pour).
 func TestIntegrationFocus(t *testing.T) {
 	requireBd(t)
 	requireStore(t)
@@ -489,56 +489,32 @@ func TestIntegrationFocus(t *testing.T) {
 		t.Fatalf("create task error: %v", err)
 	}
 
-	// First focus — should pour molecule
+	// First focus — read-only, should succeed without creating any molecule
 	err = cmdFocus([]string{taskID})
 	if err != nil {
 		t.Fatalf("first focus error: %v", err)
 	}
 
-	// Verify molecule was created with workflow label
+	// Second focus — idempotent, still no side effects
+	err = cmdFocus([]string{taskID})
+	if err != nil {
+		t.Fatalf("second focus error: %v", err)
+	}
+
+	// Verify no molecule was created (focus is read-only)
 	mols, err := storeListBeads(beads.IssueFilter{
 		IDPrefix: "spi-",
 		Labels:   []string{"workflow:" + taskID},
 		Status:   statusPtr(beads.StatusOpen),
 	})
 	if err != nil {
-		t.Fatalf("find molecule error: %v", err)
+		t.Fatalf("list molecules error: %v", err)
 	}
-	if len(mols) == 0 {
-		t.Fatal("no molecule found after focus")
-	}
-	molID := mols[0].ID
-
-	// Verify molecule has progress
-	progressOut, err := bd("mol", "progress", molID)
-	if err != nil {
-		t.Fatalf("mol progress error: %v", err)
-	}
-	if !strings.Contains(progressOut, "0 / 4") {
-		t.Errorf("progress = %q, want to contain '0 / 4'", progressOut)
+	if len(mols) != 0 {
+		t.Errorf("expected no molecules after focus (focus is read-only), got %d", len(mols))
 	}
 
-	// Second focus — should NOT pour again
-	err = cmdFocus([]string{taskID})
-	if err != nil {
-		t.Fatalf("second focus error: %v", err)
-	}
-
-	// Verify still only one molecule
-	mols, err = storeListBeads(beads.IssueFilter{
-		IDPrefix: "spi-",
-		Labels:   []string{"workflow:" + taskID},
-		Status:   statusPtr(beads.StatusOpen),
-	})
-	if err != nil {
-		t.Fatalf("find molecule after second focus error: %v", err)
-	}
-	if len(mols) != 1 {
-		t.Errorf("expected 1 molecule, got %d (pour ran twice?)", len(mols))
-	}
-
-	// Clean up: close molecule and task
-	bd("close", molID, "--force")
+	// Clean up
 	bd("close", taskID, "--force")
 }
 
