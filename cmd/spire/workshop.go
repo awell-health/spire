@@ -127,7 +127,3 @@ func saveWorkshopState(state *workshopState) error {
 
 // workshopLoop is the wizard's main event loop.
 // Implemented in workshop_loop.go (spi-3y8.2).
-func workshopLoop(state *workshopState) error {
-	fmt.Fprintf(os.Stderr, "[workshop] loop not yet implemented — state saved at %s\n", workshopStatePath(state.EpicID))
-	return saveWorkshopState(state)
-}
