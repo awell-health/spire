@@ -36,7 +36,7 @@ type PhaseConfig struct {
 	StagingBranch string `toml:"staging_branch,omitempty"` // branch pattern for wave merges
 	MergeStrategy string `toml:"strategy,omitempty"`       // squash | merge | rebase
 	Auto          bool   `toml:"auto,omitempty"`           // auto-execute without human gate
-	NoHandoff     bool   `toml:"no_handoff,omitempty"`     // apprentice: skip review handoff
+	Apprentice    bool   `toml:"apprentice,omitempty"`     // run as apprentice (no phase labels, no review handoff)
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
 }
 

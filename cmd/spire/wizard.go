@@ -21,17 +21,17 @@ import (
 // It claims a bead, creates a worktree, runs design + implement phases,
 // validates, commits, pushes, updates the bead, and hands off to review.
 //
-// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--no-handoff]
+// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice]
 func cmdWizardRun(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--no-handoff]")
+		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice]")
 	}
 
 	// 1. Parse args
 	beadID := args[0]
 	wizardName := "wizard"
 	reviewFix := false
-	noHandoff := false
+	apprenticeMode := false
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--name":
@@ -41,12 +41,12 @@ func cmdWizardRun(args []string) error {
 			}
 		case "--review-fix":
 			reviewFix = true
-		case "--no-handoff":
-			noHandoff = true
+		case "--apprentice":
+			apprenticeMode = true
 		}
 	}
-	if os.Getenv("SPIRE_NO_HANDOFF") == "1" {
-		noHandoff = true
+	if os.Getenv("SPIRE_APPRENTICE") == "1" {
+		apprenticeMode = true
 	}
 
 	startedAt := time.Now()
@@ -148,8 +148,8 @@ func cmdWizardRun(args []string) error {
 		}
 	}()
 
-	// 7. Set initial phase label (normal path only — review-fix is already past design)
-	if !reviewFix {
+	// 7. Set initial phase label (standalone wizard only — apprentices under executor don't set phase labels)
+	if !reviewFix && !apprenticeMode {
 		setPhase(beadID, "design")
 	}
 
@@ -185,8 +185,10 @@ func cmdWizardRun(args []string) error {
 		// Remove review-feedback label
 		storeRemoveLabel(beadID, "review-feedback")
 
-		// Transition to implement phase
-		setPhase(beadID, "implement")
+		// Transition to implement phase (standalone wizard only)
+		if !apprenticeMode {
+			setPhase(beadID, "implement")
+		}
 
 		// Update phase
 		wizardRegistryUpdate(wizardName, func(w *localWizard) {
@@ -215,9 +217,9 @@ func cmdWizardRun(args []string) error {
 	} else {
 		// Normal path: design phase then implement phase
 
-		// --- Design phase (skipped in no-handoff/executor mode) ---
+		// --- Design phase (skipped in apprentice mode) ---
 		var designOutput string
-		if !noHandoff {
+		if !apprenticeMode {
 			wizardRegistryUpdate(wizardName, func(w *localWizard) {
 				w.Phase = "design"
 				w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
@@ -248,8 +250,10 @@ func cmdWizardRun(args []string) error {
 			wizardCloseMoleculeStep(beadID, "design")
 		}
 
-		// Transition to implement phase
-		setPhase(beadID, "implement")
+		// Transition to implement phase (standalone wizard only)
+		if !apprenticeMode {
+			setPhase(beadID, "implement")
+		}
 
 		// --- Implement phase ---
 		wizardRegistryUpdate(wizardName, func(w *localWizard) {
@@ -298,19 +302,19 @@ func cmdWizardRun(args []string) error {
 			log("tests failed but branch pushed — proceeding to review")
 			storeAddLabel(beadID, "test-failure")
 		}
-		if !noHandoff {
+		if !apprenticeMode {
 			handoffDone = true
 			wizardReviewHandoff(beadID, wizardName, branchName, log)
 		} else {
 			handoffDone = true
-			log("no-handoff mode — skipping review handoff")
+			log("apprentice mode — skipping review handoff")
 		}
 	}
 
 	// 14. If we didn't hand off, reopen the bead so it doesn't stay orphaned.
 	if !handoffDone {
 		storeUpdateBead(beadID, map[string]interface{}{"status": "open"})
-		log("no handoff — bead reopened")
+		log("apprentice mode — bead reopened")
 	}
 
 	// 15. Write result

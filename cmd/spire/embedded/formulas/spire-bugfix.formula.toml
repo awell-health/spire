@@ -6,7 +6,7 @@ version = 2
 timeout = "10m"
 model = "claude-sonnet-4-6"
 role = "apprentice"
-no_handoff = true
+apprentice = true
 worktree = true
 context = ["CLAUDE.md"]
 

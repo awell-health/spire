@@ -478,8 +478,8 @@ func (e *formulaExecutor) executeDirect(phase string, pc PhaseConfig) error {
 	e.log("dispatching apprentice %s", apprenticeName)
 
 	extraArgs := []string{}
-	if pc.NoHandoff {
-		extraArgs = append(extraArgs, "--no-handoff")
+	if pc.Apprentice {
+		extraArgs = append(extraArgs, "--apprentice")
 	}
 
 	handle, err := e.spawner.Spawn(SpawnConfig{
@@ -555,7 +555,7 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx, idx)
 				e.log("  dispatching %s for %s", name, beadID)
 
-				extraArgs := []string{"--no-handoff"}
+				extraArgs := []string{"--apprentice"}
 				h, spawnErr := e.spawner.Spawn(SpawnConfig{
 					Name:      name,
 					BeadID:    beadID,
@@ -806,7 +806,7 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 					Name:      fixName,
 					BeadID:    e.beadID,
 					Role:      RoleApprentice,
-					ExtraArgs: []string{"--review-fix"},
+					ExtraArgs: []string{"--review-fix", "--apprentice"},
 				})
 				if ferr != nil {
 					return fmt.Errorf("spawn review-fix: %w", ferr)
