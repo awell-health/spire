@@ -128,15 +128,13 @@ func cmdWizardRun(args []string) error {
 		os.Exit(1)
 	}()
 
-	// 5. Claim the bead (skip if --review-fix — already claimed)
-	if !reviewFix {
+	// 5. Claim the bead (skip if --review-fix or --apprentice — already claimed by executor)
+	os.Setenv("SPIRE_IDENTITY", wizardName)
+	if !reviewFix && !apprenticeMode {
 		log("claiming %s", beadID)
-		os.Setenv("SPIRE_IDENTITY", wizardName)
 		if err := cmdClaim([]string{beadID}); err != nil {
 			return fmt.Errorf("claim: %w", err)
 		}
-	} else {
-		os.Setenv("SPIRE_IDENTITY", wizardName)
 	}
 
 	// 6. Add owner label (deferred cleanup removes it if we exit without review handoff)
