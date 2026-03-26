@@ -401,9 +401,12 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 		}
 	}
 
-	// Configure git user in worktree
-	exec.Command("git", "-C", worktreeDir, "config", "user.name", wizardName).Run()
-	exec.Command("git", "-C", worktreeDir, "config", "user.email", wizardName+"@spire.local").Run()
+	// Configure git user in worktree. Use --worktree so the setting is scoped
+	// to this worktree only and doesn't pollute the main repo's .git/config.
+	// Requires extensions.worktreeConfig=true on the main repo.
+	exec.Command("git", "-C", repoPath, "config", "extensions.worktreeConfig", "true").Run()
+	exec.Command("git", "-C", worktreeDir, "config", "--worktree", "user.name", wizardName).Run()
+	exec.Command("git", "-C", worktreeDir, "config", "--worktree", "user.email", wizardName+"@spire.local").Run()
 
 	return worktreeDir, nil
 }
