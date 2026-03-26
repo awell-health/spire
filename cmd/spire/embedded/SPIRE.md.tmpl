@@ -1,0 +1,135 @@
+# SPIRE.md — Agent Work Instructions
+
+This repo is connected to Spire (prefix: **{{.Prefix}}**). Use Spire for work coordination.
+
+## Roles
+
+| Role | What |
+|------|------|
+| **Archmage** | Human. Writes specs, reviews, steers. |
+| **Wizard** | Per-bead orchestrator. Drives the formula lifecycle. |
+| **Apprentice** | Implementer. Writes code in isolated worktree. |
+| **Sage** | Reviewer. Returns verdict (approve / request changes). |
+
+## Session lifecycle
+
+```bash
+spire up                        # ensure services are running
+spire collect                   # check inbox
+spire claim <bead-id>           # claim work (atomic: verify → set in_progress)
+spire focus <bead-id>           # assemble full context
+# ... do the work ...
+spire send <agent> "done" --ref <bead-id>   # notify others
+```
+
+## Formulas drive the lifecycle
+
+Every bead type maps to a formula that defines the phase pipeline:
+
+| Bead type | Formula | Phases |
+|-----------|---------|--------|
+| epic | `spire-epic` | design → plan → implement (waves) → review → merge |
+| bug | `spire-bugfix` | implement → review → merge |
+| task, feature, chore | `spire-agent-work` | implement → review → merge |
+
+## Design beads
+
+Design beads capture exploration and decisions BEFORE filing work items.
+
+```bash
+spire design "Auth system overhaul"          # → {{.Prefix}}-xxx
+# brainstorm, add comments...
+bd update {{.Prefix}}-xxx -s closed          # close when settled
+spire file "Auth overhaul" -t epic -p 1      # file the work
+bd dep add <epic-id> {{.Prefix}}-xxx --type discovered-from   # link design
+```
+
+The wizard validates that epics have a closed `discovered-from` design
+bead before entering plan. Use `discovered-from` deps, not `ref:` labels.
+
+## Dependencies
+
+```bash
+bd dep add <task-a> <task-b> --type blocks          # B blocks A
+bd create "Subtask" -t task --parent <epic-id>      # parent-child
+bd dep add <epic> <design> --type discovered-from   # provenance
+bd dep add <a> <b> --type related                   # cross-reference
+bd ready --json                                     # what's unblocked
+```
+
+Types: `blocks`, `related`, `parent-child`, `discovered-from`,
+`caused-by`, `validates`, `supersedes`.
+
+## Filing work
+
+```bash
+spire file "Title" -t task -p 2             # prefix auto-detected from repo
+spire file "Title" -t epic -p 1             # epic (auto-syncs to Linear)
+spire file "Title" -t bug -p 0              # P0 bug
+spire design "Title"                        # design bead (not a work item)
+```
+
+**Always set priority** (`-p 0` critical → `-p 4` nice-to-have) and
+**always set type** (`-t task|bug|feature|epic|chore`).
+
+## The review invariant
+
+Every bead goes through review after implementation. One rule:
+**every path ends with the branch either merged to main or deleted.**
+
+```
+sage: approve      → merge → main, delete branch, close bead
+sage: reject ×3    → arbiter decides:
+  arbiter: merge   → force-merge → main, delete branch, close
+  arbiter: split   → merge → main, create child beads, close
+  arbiter: discard → delete branch, close as wontfix
+  any failure      → label needs-human, alert archmage
+```
+
+## Completing work
+
+Close things in order:
+
+1. Close molecule steps — `bd close <step-id>` for each
+2. Close the bead — `bd close <bead-id>`
+3. Push state — `bd dolt push`
+4. Notify — `spire send <agent> "done" --ref <bead-id>`
+
+## Messaging
+
+```bash
+spire register <name>                       # register as an agent
+spire collect                               # check inbox
+spire send <to> "message" --ref <bead-id>   # send a message
+spire alert "message" --ref <bead-id> -p 1  # priority alert
+```
+
+## Monitoring
+
+```bash
+spire board              # interactive TUI (h/j/k/l navigate, s summon, f focus, c claim, L logs)
+spire board --json       # machine-readable for agents
+spire roster             # work grouped by epic, agent status
+spire logs <wizard-name> # tail wizard logs
+spire metrics            # agent performance summary
+```
+
+## Commit format
+
+```
+<type>(<bead-id>): <message>
+```
+
+Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`
+
+## Key conventions
+
+- **Claim before working** — prevents double-work
+- **Investigate before implementing** — trace the data flow, find the root cause
+- **Verify before removing** — grep for usage before deleting code or features
+- **Never leave branches hanging** — every branch must be merged or deleted
+
+## DANGER
+
+- **NEVER run `bd init --force`** — wipes entire dolt history. No undo.
+- **NEVER run `bd init`** on a directory with an existing `.beads/` database.
