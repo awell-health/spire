@@ -4,7 +4,7 @@ version = 2
 
 [phases.implement]
 timeout = "15m"
-model = "claude-sonnet-4-6"
+model = "claude-opus-4-6"
 role = "apprentice"
 apprentice = true
 worktree = true
