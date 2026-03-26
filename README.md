@@ -251,6 +251,12 @@ spire/
 ├── k8s/                   # Manifests, CRDs, entrypoints
 ├── agent-entrypoint.sh    # Wizard pod lifecycle
 ├── docs/
+│   ├── getting-started.md # Laptop setup, first task, first PR
+│   ├── cli-reference.md   # All commands documented
+│   ├── spire-yaml.md      # spire.yaml configuration reference
+│   ├── agent-development.md # Build custom agents
+│   ├── cluster-deployment.md # Kubernetes deployment guide
+│   ├── troubleshooting.md # FAQ and common fixes
 │   ├── metrics.md         # Metrics reference
 │   ├── k8s-architecture.md
 │   └── superpowers/specs/ # Design documents
