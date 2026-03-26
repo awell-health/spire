@@ -197,7 +197,25 @@ spire grok <bead-id>
 
 `spire claim` verifies the bead isn't closed or owned by someone else, then sets it to in_progress. Use it before starting work.
 
-`spire focus` assembles context: bead details, workflow progress, referenced beads, messages, comments. It pours a `spire-agent-work` molecule on first focus.
+`spire focus` assembles context: bead details, workflow progress, related deps, messages, comments. It pours a `spire-agent-work` molecule on first focus.
+
+### Design-to-work linkage
+
+Design beads capture exploration and decisions before filing work items. Link them with a `discovered-from` dependency — not `ref:` labels (those are for message routing only).
+
+```bash
+# Create a design bead
+spire design "Auth system overhaul"   # → spi-xxx
+
+# When ready to file a work item, link it:
+spire file "Auth overhaul epic" -t epic -p 1 --ref spi-xxx
+# --ref creates a discovered-from dep automatically
+
+# Or link manually after filing:
+bd dep add <new-id> spi-xxx --type discovered-from
+```
+
+The executor validates that epics have at least one `discovered-from` dep pointing to a closed design bead before entering the plan phase. `spire focus` and `spire grok` display related deps (including design links) grouped by dependency type.
 
 ### Agent messaging
 

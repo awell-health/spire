@@ -20,15 +20,18 @@ Create a design bead — a thinking artifact for brainstorming and exploration.
 
 Design beads are not work items. They capture exploration, rejected approaches,
 and design decisions. When the design is settled, create a task/epic/bug and
-link it with ref: to the design bead.
+link it to the design bead with a discovered-from dependency.
 
 Workflow:
-  spire design "Auth system overhaul"     # create design bead
+  spire design "Auth system overhaul"     # create design bead → spi-xxx
   # brainstorm, add comments, iterate...
   bd comments add spi-xxx "approach A: ..."
   bd comments add spi-xxx "rejected because ..."
   # when ready to commit:
-  spire file "Auth overhaul" -t epic -p 1 --label "ref:spi-xxx"`)
+  spire file "Auth overhaul" -t epic -p 1 --ref spi-xxx
+  # or manually:
+  spire file "Auth overhaul" -t epic -p 1
+  bd dep add <epic-id> spi-xxx --type discovered-from`)
 		return nil
 	}
 

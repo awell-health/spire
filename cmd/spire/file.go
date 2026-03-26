@@ -9,12 +9,12 @@ import (
 
 func cmdFile(args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Println("usage: spire file <title> [--prefix <prefix>] [--branch <name>] [--merge-mode <merge|pr>] [bd create flags...]")
+		fmt.Println("usage: spire file <title> [--prefix <prefix>] [--branch <name>] [--merge-mode <merge|pr>] [--ref <design-bead-id>] [bd create flags...]")
 		return nil
 	}
 
 	// Extract spire-specific flags from args; pass everything else to bd create
-	var prefix, branch, mergeMode string
+	var prefix, branch, mergeMode, ref string
 	remaining := []string{}
 
 	for i := 0; i < len(args); i++ {
@@ -43,6 +43,14 @@ func cmdFile(args []string) error {
 			mergeMode = args[i]
 		case strings.HasPrefix(args[i], "--merge-mode="):
 			mergeMode = strings.TrimPrefix(args[i], "--merge-mode=")
+		case args[i] == "--ref":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--ref requires a value")
+			}
+			i++
+			ref = args[i]
+		case strings.HasPrefix(args[i], "--ref="):
+			ref = strings.TrimPrefix(args[i], "--ref=")
 		default:
 			remaining = append(remaining, args[i])
 		}
@@ -155,6 +163,12 @@ func cmdFile(args []string) error {
 	if mergeMode != "" {
 		if lerr := storeAddLabel(id, "merge-mode:"+mergeMode); lerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to add merge-mode label: %v\n", lerr)
+		}
+	}
+	// Link to a design bead via discovered-from dep if --ref was provided.
+	if ref != "" {
+		if derr := storeAddDepTyped(id, ref, "discovered-from"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to link design bead %s: %v\n", ref, derr)
 		}
 	}
 

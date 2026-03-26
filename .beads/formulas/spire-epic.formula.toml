@@ -6,8 +6,8 @@ version = 2
 role = "wizard"
 timeout = "1m"
 max_turns = 1
-# Wizard validates that a linked design bead (ref:) exists and is closed/sufficient.
-# No Claude invocation — pure Go logic. Timeout is just a safety net.
+# Wizard validates that the epic has at least one discovered-from dep pointing to a
+# closed design bead. Uses the dep graph, not ref: labels. Timeout is just a safety net.
 
 [phases.plan]
 role = "wizard"

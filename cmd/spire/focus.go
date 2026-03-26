@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/steveyegge/beads"
@@ -74,7 +75,10 @@ func cmdFocus(args []string) error {
 	}
 
 	// 7. Related beads (from dependency graph)
-	relDeps, _ := storeGetDepsWithMeta(id)
+	relDeps, relErr := storeGetDepsWithMeta(id)
+	if relErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not load related deps for %s: %v\n", id, relErr)
+	}
 	for _, dep := range relDeps {
 		if dep.DependencyType == beads.DepParentChild {
 			continue // parent-child shown elsewhere
