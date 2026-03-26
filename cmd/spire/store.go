@@ -306,6 +306,12 @@ func storeCreateBead(opts createOpts) (string, error) {
 
 // storeAddDep adds a blocking dependency: issueID depends on dependsOnID.
 func storeAddDep(issueID, dependsOnID string) error {
+	return storeAddDepTyped(issueID, dependsOnID, string(beads.DepBlocks))
+}
+
+// storeAddDepTyped adds a dependency with a specific type.
+// depType should be one of the beads.Dep* constants (e.g. "discovered-from", "related", "blocks").
+func storeAddDepTyped(issueID, dependsOnID, depType string) error {
 	store, err := ensureStore()
 	if err != nil {
 		return err
@@ -313,9 +319,18 @@ func storeAddDep(issueID, dependsOnID string) error {
 	dep := &beads.Dependency{
 		IssueID:     issueID,
 		DependsOnID: dependsOnID,
-		Type:        beads.DepBlocks,
+		Type:        beads.DependencyType(depType),
 	}
 	return store.AddDependency(storeCtx, dep, storeActor())
+}
+
+// storeGetDepsWithMeta returns all dependencies of a bead with their relationship metadata.
+func storeGetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	store, err := ensureStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.GetDependenciesWithMetadata(storeCtx, id)
 }
 
 // storeCloseBead closes a bead.

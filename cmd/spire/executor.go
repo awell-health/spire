@@ -241,36 +241,41 @@ func (e *formulaExecutor) executeWizard(phase string, pc PhaseConfig) error {
 	}
 }
 
-// wizardValidateDesign checks that the epic has a linked design bead (ref:) that is
+// wizardValidateDesign checks that the epic has a linked design bead (discovered-from dep) that is
 // closed and substantive. If missing or incomplete, labels the epic "needs-design"
 // and pauses. If complete, advances.
 func (e *formulaExecutor) wizardValidateDesign() error {
-	bead, err := storeGetBead(e.beadID)
+	// Find linked design beads via discovered-from deps
+	deps, err := storeGetDepsWithMeta(e.beadID)
 	if err != nil {
-		return fmt.Errorf("get bead: %w", err)
+		return fmt.Errorf("get deps: %w", err)
 	}
 
-	// Find linked design beads via ref: labels
 	var designBeads []Bead
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "ref:") {
-			refID := l[4:]
-			refBead, refErr := storeGetBead(refID)
-			if refErr != nil {
-				continue
-			}
-			if refBead.Type == "design" {
-				designBeads = append(designBeads, refBead)
-			}
+	for _, dep := range deps {
+		if string(dep.DependencyType) != string(beads.DepDiscoveredFrom) {
+			continue
 		}
+		if dep.IssueType != "design" {
+			continue
+		}
+		designBeads = append(designBeads, Bead{
+			ID:          dep.ID,
+			Title:       dep.Title,
+			Description: dep.Description,
+			Status:      string(dep.Status),
+			Priority:    dep.Priority,
+			Type:        string(dep.IssueType),
+			Labels:      dep.Labels,
+		})
 	}
 
 	if len(designBeads) == 0 {
 		e.log("no linked design bead found — marking as needs-design")
 		storeAddLabel(e.beadID, "needs-design")
-		storeAddComment(e.beadID, "Wizard: no design bead linked (ref:). Create a design bead with `spire design`, then link it: `bd label add "+e.beadID+" \"ref:<design-id>\"`")
+		storeAddComment(e.beadID, "Wizard: no design bead linked. Create a design bead with `spire design`, then link it: `bd dep add "+e.beadID+" <design-id> --type discovered-from`")
 		wizardMessageArchmage(e.agentName, e.beadID,
-			fmt.Sprintf("Epic %s needs a design bead. No ref: label found. Create one with `spire design`, then link it: `bd label add %s \"ref:<design-id>\"`", e.beadID, e.beadID))
+			fmt.Sprintf("Epic %s needs a design bead. No discovered-from dep found. Create one with `spire design`, then link it: `bd dep add %s <design-id> --type discovered-from`", e.beadID, e.beadID))
 		return fmt.Errorf("epic %s has no linked design bead — label needs-design added", e.beadID)
 	}
 
