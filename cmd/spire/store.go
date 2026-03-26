@@ -221,6 +221,19 @@ func storeGetBead(id string) (Bead, error) {
 	if err != nil {
 		return Bead{}, fmt.Errorf("get bead %s: %w", id, err)
 	}
+	// GetIssue does not populate Dependencies — fetch them separately
+	// so that Parent (derived from parent-child deps) is available.
+	if issue.Dependencies == nil {
+		if depsWithMeta, dErr := store.GetDependenciesWithMetadata(storeCtx, id); dErr == nil {
+			for _, dm := range depsWithMeta {
+				issue.Dependencies = append(issue.Dependencies, &beads.Dependency{
+					IssueID:     id,
+					DependsOnID: dm.ID,
+					Type:        dm.DependencyType,
+				})
+			}
+		}
+	}
 	return issueToBead(issue), nil
 }
 
