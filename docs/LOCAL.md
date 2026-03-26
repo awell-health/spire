@@ -1,7 +1,7 @@
 # Spire Local Mode
 
-**Status**: Implemented (Phase 2 MVP landed 2026-03-23)
-**Date**: 2026-03-21 (updated 2026-03-23)
+**Status**: Implemented (Phase 2 MVP landed 2026-03-23, formula system 2026-03-26)
+**Date**: 2026-03-21 (updated 2026-03-26)
 
 Spire runs locally on a developer's laptop. No Kubernetes, no cloud
 infrastructure. Install the binary, create a tower, register repos, file
@@ -135,12 +135,13 @@ Only one `spire up` is allowed at a time. Running it again shows current
 status.
 
 **Exists today**: `spire up` starts the dolt server and a daemon process.
-The daemon runs Linear epic sync and webhook queue processing. The steward
-runs as a separate command (`spire steward`). Local agent execution works
-via `spire summon` (see below).
+The daemon runs DoltHub sync (pull + push), Linear epic sync, and webhook
+queue processing. The steward runs as a separate command (`spire steward`).
+Local agent execution works via `spire summon` (see below).
 
-**Not yet built**: Unified daemon that includes the steward loop.
-Docker agent mode. Single-instance enforcement. Health endpoint.
+**Not yet built**: Unified daemon that includes the steward loop
+(`spire up --steward`). Docker agent mode. Single-instance enforcement.
+Health endpoint.
 
 ### 7. Monitor
 
@@ -155,18 +156,21 @@ spire watch           # live-updating view of all activity
 ```
 
 **Exists today**: `spire status` shows dolt server and daemon PID/state.
-`spire board` opens an interactive Bubble Tea work queue. `spire roster` lists
-registered agents. `spire watch` provides a live-updating terminal view.
+`spire board` opens an interactive Bubble Tea TUI with phase columns
+(READY, DESIGN, PLAN, IMPLEMENT, REVIEW, MERGE, DONE) and auto-refresh.
+`spire roster` shows work grouped by epic with agent process status,
+elapsed time, and progress bars. `spire watch` provides a live-updating
+terminal view. `spire logs [wizard-name]` tails wizard log output.
+`spire metrics` shows agent performance summary with DORA metrics.
 
-**Needs to be built**: `spire logs` command (today, logs are in
-`~/.local/share/spire/daemon.log` and `dolt.log` but have no CLI reader).
-Richer `spire status` output showing agent activity and sync state.
+**Not yet built**: Richer `spire status` output showing agent activity
+and sync state.
 
 ---
 
 ## Local Agent Execution
 
-### Docker mode (default)
+### Docker mode (not yet implemented locally)
 
 Agents run as Docker containers with:
 - An ephemeral workspace — the agent clones the repo inside the container
@@ -186,18 +190,14 @@ Container lifecycle:
 5. On completion, the agent pushes results (git push + spire push),
    container exits; daemon collects the result
 
-```
-spire up                  # default: Docker mode
-spire up --mode=docker    # explicit
-```
+**Not yet built**: Local Docker container spawning via `spire summon`.
+Image management (pull/build). Container lifecycle tracking. Docker
+images exist and work in k8s — local Docker spawning is the gap.
 
-**Needs to be built**: Docker container spawning in the daemon. Image
-management (pull/build). Container lifecycle tracking. Result collection.
+### Process mode (default)
 
-### Process mode (implemented)
-
-Agents run as local processes. Faster startup, easier debugging, less
-isolation. This is the default local execution mode.
+Agents run as local processes. Faster startup, easier debugging. This
+is the default and only local execution mode.
 
 ```
 spire summon 3        # spawns 3 wizard processes
@@ -299,12 +299,11 @@ running against the same DoltHub remote must coordinate via the steward
 remote, and runs `dolt push origin main`. Handles divergent history with
 `--force`. `spire pull` pulls from DoltHub. Both handle credential
 injection via environment variables (`DOLT_REMOTE_USER`,
-`DOLT_REMOTE_PASSWORD`).
+`DOLT_REMOTE_PASSWORD`). The daemon runs DoltHub sync (pull + push) on
+each cycle automatically via `runDoltSync()`.
 
-**Needs to be built**: Automatic sync in the daemon cycle (currently the
-daemon only does Linear sync and webhook processing; DoltHub sync is in the
-k8s syncer pod). Conflict detection and reporting based on field-level
-ownership rules.
+**Not yet built**: Conflict detection and reporting based on field-level
+ownership rules. Sync status reporting in `spire status`.
 
 ---
 
@@ -344,34 +343,40 @@ creates/deletes SpireAgent CRDs.
 | `spire push` / `pull` | DoltHub remote push/pull with credential handling |
 | `spire send` / `collect` | Agent-to-agent messaging via bead labels |
 | `spire register` / `unregister` | Agent registration |
-| `spire board` | Columnar work queue view |
-| `spire roster` | Agent listing with status |
+| `spire board` | Interactive Bubble Tea TUI with phase columns and auto-refresh |
+| `spire roster` | Work grouped by epic, agent processes with elapsed time/progress |
 | `spire summon` / `dismiss` | Wizard spawning (local: process mode; k8s: CRDs) |
 | `spire watch` | Live-updating terminal view |
+| `spire logs` | CLI log reader for wizard and daemon logs |
+| `spire metrics` | Agent performance summary with DORA metrics |
+| `spire alert` | Priority alerts with bead references |
+| `spire design` | Create design beads for brainstorming before filing tasks |
 | `spire steward` | Work coordinator with ready-assess-assign cycle |
 | `spire config` | Instance-scoped config + credential get/set/list |
 | `spire connect linear` | Linear OAuth2 integration |
-| `spire daemon` | Background process for Linear sync + webhook processing |
-| `spire doctor` | 10 checks in 3 categories (dolt, tower, credentials, Docker) |
+| `spire daemon` | Background process: DoltHub sync + Linear sync + webhook processing |
+| `spire doctor` | 11 checks in 3 categories, `--fix` auto-repair |
+| Formula system | 3 built-in formulas (`spire-epic`, `spire-bugfix`, `spire-agent-work`) with layered resolution |
+| Executor | Drives formula phases: design → plan → implement (waves) → review (sage) → merge |
+| Archmage identity | Tower config stores user identity for merge commit attribution |
 | Credential storage | File-based (`~/.config/spire/credentials`, chmod 600), env var overrides |
 | Dolt lifecycle | Auto-download binary, version pinning, managed server start/stop |
 | Docker agent images | `Dockerfile.agent`, `Dockerfile.steward` |
 | goreleaser + CI | Cross-compile, GitHub Actions test/release, SHA256 checksums |
-| Homebrew tap | `awell-health/homebrew-spire` repo exists; goreleaser formula generation configured |
+| Homebrew tap | `awell-health/tap` with `bd` and `dolt` as dependencies |
 | `spire version` | Prints spire version + managed dolt version and path |
-| `spire doctor --fix` | Auto-repair: download dolt, start server, fix credential perms, regenerate .beads/ |
+| Smoke test | Docker-based smoke test (`test/smoke/Dockerfile`) validates fresh install |
 
 ### Needs to be built
 
 | Component | Description | Blocked by |
 |-----------|-------------|------------|
-| `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Deferred (spi-n1aa.5) |
-| Unified daemon | Merge steward loop + DoltHub sync into `spire daemon` | Nothing |
-| Docker agent spawning | Start/stop/monitor agent containers from the daemon | Nothing |
-| `spire logs` | CLI log reader for daemon and agent logs | Nothing |
+| `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Deferred (spi-770) |
+| Unified daemon | Merge steward loop into `spire up --steward` | Nothing |
+| Docker agent spawning | Start/stop/monitor agent containers locally | Nothing |
 | Single-daemon enforcement | Prevent multiple `spire up` from racing | Nothing |
-| Molecule-aware wizard | Close workflow steps as wizard progresses | Nothing |
-| Review agent | Opus-powered review after wizard pushes | Nothing |
+| Cobra CLI migration | `--flag=value` syntax, `--help` on all commands | spi-7ywn |
+| Spire TUI interactivity | Board navigation, inspector pane, in-TUI actions | spi-1syd |
 
 ---
 

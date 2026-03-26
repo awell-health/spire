@@ -4,8 +4,8 @@ Spire is an AI agent coordination system. It manages a shared work graph
 (beads), routes work to autonomous agents, and synchronizes state across
 local machines and Kubernetes clusters via DoltHub.
 
-> **Target architecture.** This document describes the intended design.
-> Where the current implementation differs, inline callouts note the gap.
+> **Living document.** Updated 2026-03-26. Where the current implementation
+> differs from the target, inline callouts note the gap.
 
 ## Deployment Modes
 
@@ -46,13 +46,14 @@ Single Go binary. Entry point for all operations.
 
 | Category    | Commands                                           |
 |-------------|----------------------------------------------------|
-| Setup       | `tower create`, `tower attach`, `repo add`, `config`, `push`, `pull` |
-| Lifecycle   | `up`, `down`, `shutdown`, `status`, `doctor`        |
-| Work        | `file`, `spec`, `claim`, `focus`, `grok`            |
-| Messaging   | `register`, `unregister`, `send`, `collect`, `read` |
-| Coordination| `steward`, `board`, `roster`, `summon`, `wizard-run`, `watch` |
+| Setup       | `tower create`, `tower attach`, `repo add`, `config`, `push`, `pull`, `sync` |
+| Lifecycle   | `up`, `down`, `shutdown`, `status`, `doctor`, `version` |
+| Work        | `file`, `design`, `spec`, `claim`, `close`, `advance`, `focus`, `grok` |
+| Messaging   | `register`, `unregister`, `send`, `collect`, `read`, `inbox` |
+| Coordination| `steward`, `board`, `roster`, `summon`, `dismiss`, `watch`, `alert` |
+| Execution   | `wizard-run`, `wizard-review`, `wizard-merge`, `execute`, `workshop` |
+| Observability| `logs`, `metrics`                                  |
 | Integrations| `connect`, `disconnect`, `serve`, `daemon`          |
-| Metrics     | `metrics`                                           |
 
 When invoked with no arguments: prints the command reference.
 
@@ -105,9 +106,11 @@ pod in k8s).
 6. Detect tasks with review feedback for wizard re-engagement
 7. Check bead health (stale warning at `agent.stale`, pod kill at `agent.timeout`)
 
-> **Current state:** The operator watches SpireAgent CRDs for the roster.
-> Target: the operator reads the `repos` table directly and derives agent
-> configurations from it; SpireAgent CRDs are auto-generated or eliminated.
+> **Current state (2026-03-26):** In k8s, the operator watches SpireAgent
+> CRDs for the roster. Locally, `spire summon` drives agent lifecycle
+> directly — no steward assignment needed. Target: the operator reads the
+> `repos` table directly and derives agent configurations; SpireAgent CRDs
+> are auto-generated or eliminated.
 
 Assignment modes:
 - **External agents**: steward sends an assignment message via `spire send`
@@ -164,51 +167,71 @@ list.
 
 ### Agents
 
-#### Wizard
+#### Wizard (`cmd/spire/wizard.go`, `cmd/spire/executor.go`)
 
-Implementation agent. One-shot: receives a task, does the work, exits.
+Per-bead orchestrator. Drives the formula lifecycle for a single bead.
 
-**Local** (`cmd/spire/wizard.go`): `spire wizard-run <bead-id>` runs as a
-background process spawned by `spire summon`. Works in a git worktree.
+**Local**: `spire wizard-run <bead-id>` runs as a background process
+spawned by `spire summon`. For epics, the wizard dispatches apprentices
+in parallel worktrees and consults sages for review.
 
-**k8s** (`agent-entrypoint.sh`): Runs in a wizard pod. Clones the repo
+**k8s**: Runs in a wizard pod (`agent-entrypoint.sh`). Clones the repo
 inside the container.
 
 ```
-Lifecycle (both modes):
-  resolve repo -> create worktree/clone -> load spire.yaml
-  -> claim bead -> focus -> prepare branch
-  -> install deps -> build prompt -> run Claude Code -> validate
-  -> commit -> push branch -> update bead state -> write result -> exit
+Lifecycle:
+  resolve repo -> claim bead -> load formula
+  -> for each phase in formula:
+     design: validate linked design bead
+     plan:   invoke Claude (Opus) to generate subtask breakdown
+     implement: dispatch apprentices in parallel waves (worktrees)
+     review: dispatch sage for verdict (approve / request changes)
+     merge:  ff-only merge staging branch to main
+  -> close bead -> write result -> exit
 ```
 
 Key behaviors:
+- Formula-driven: bead type maps to formula (`spire-epic`, `spire-bugfix`, `spire-agent-work`)
+- For epics: creates staging branch, dispatches apprentices per wave, merges wave results
+- For standalone tasks: dispatches a single apprentice, then reviews and merges
+- Branch state file tracks staging/base/repo as single source of truth
+- Writes result.json for observability (local: `~/.local/share/spire/wizards/`)
+
+#### Apprentice
+
+Implementation agent. One-shot: receives a task, writes code, exits.
+
+Dispatched by the wizard during the implement phase. Each apprentice
+works in an isolated git worktree on a feature branch (`feat/{bead-id}`).
+
 - Reads `spire.yaml` for model, timeouts, test/build/lint commands
-- Creates a feature branch named `feat/{bead-id}` (configurable pattern)
 - Runs Claude Code with `--dangerously-skip-permissions -p <prompt>`
 - Validates output (lint, build, test) before pushing
-- Marks `review-ready` for review agent
-- Writes result.json for observability (local: `~/.local/share/spire/wizards/`)
+- Commits and pushes branch for the wizard to merge into staging
+
+#### Sage
+
+Review agent. One-shot: reviews code, returns a verdict.
+
+Dispatched by the wizard during the review phase. Reviews the staging
+branch diff against the bead spec.
+
+- Verdicts: `approve`, `request_changes`
+- Revision rounds: if changes requested, wizard spawns a review-fix apprentice and re-reviews
+- Arbiter escalation: after max rounds, Claude Opus tie-break decides final action
 
 #### Artificer (`cmd/spire-artificer/`)
 
-Epic management and code review agent. Two modes:
+Formula maker (k8s mode). Crafts and tests the formulas that wizards follow.
+Also handles epic management and code review in k8s workshop pods.
 
-**Epic mode** (`--epic-id`): Long-running. Manages an entire epic.
-- Loads epic and child beads from dolt
-- For each child with new commits: checks out branch, runs tests, calls
-  Opus for code review
-- Verdicts: `approve` (create/update PR, add to merge queue), `request_changes`
-  (send feedback to wizard), `reject` (report to steward)
-- Processes merge queue (ordered merge of approved PRs)
-- Closes the epic when all children are merged or rejected
+> **Current state (2026-03-26):** Locally, the wizard + executor handle
+> epic orchestration directly. The artificer binary is used in k8s only.
 
-**Review mode** (`--mode=review --bead-id`): One-shot. Reviews a single
-standalone task's branch, same review logic as epic mode.
+#### Sidecar / Familiar (`cmd/spire-sidecar/`)
 
-#### Sidecar (`cmd/spire-sidecar/`)
-
-Runs alongside wizard and artificer containers in every agent pod.
+Per-agent companion. Runs alongside wizard and artificer containers in
+every agent pod (k8s only).
 
 **Loops:**
 - Inbox polling: `spire collect --json` on interval, writes to `/comms/inbox.json`
@@ -218,15 +241,65 @@ Runs alongside wizard and artificer containers in every agent pod.
 
 **Health endpoints:** `/healthz`, `/readyz`, `/status` (JSON snapshot including work context)
 
+### Formula System (`cmd/spire/formula.go`, `cmd/spire/executor.go`)
+
+Formulas define the phase pipeline a wizard follows for a given bead type.
+Each formula is a TOML file declaring ordered phases with role, model,
+timeout, and behavior configuration.
+
+**Built-in formulas** (embedded in binary at `cmd/spire/embedded/formulas/`):
+
+| Formula | Bead types | Phases | Description |
+|---------|-----------|--------|-------------|
+| `spire-epic` | epic | design → plan → implement → review → merge | Full lifecycle with design validation, Opus planning, wave dispatch, sage review |
+| `spire-bugfix` | bug | implement → review → merge | Quick fix: single apprentice, sage review, auto-merge |
+| `spire-agent-work` | task, feature, chore | implement → review → merge | Standard work: single apprentice, sage review, auto-merge |
+
+**Bead type → formula mapping:**
+
+```
+epic    → spire-epic
+bug     → spire-bugfix
+task    → spire-agent-work
+feature → spire-agent-work
+chore   → spire-agent-work
+(fallback) → spire-agent-work
+```
+
+**Layered resolution** (first match wins):
+
+1. Label `formula:<name>` on the bead (explicit override)
+2. Bead type mapping (table above)
+3. `.beads/formulas/<name>.formula.toml` (tower-level customization)
+4. Embedded formulas (built into the binary)
+
+This means teams can override formulas per-tower without modifying the
+binary. A custom `spire-epic.formula.toml` in `.beads/formulas/` takes
+precedence over the embedded default.
+
+**Phase configuration** (from `spire-epic.formula.toml`):
+
+```toml
+[phases.design]     # wizard validates linked design bead (pure Go, no LLM)
+[phases.plan]       # wizard invokes Claude Opus to generate subtask breakdown
+[phases.implement]  # apprentices in parallel waves, each in a worktree
+[phases.review]     # sage reviews staging branch, verdict-only
+[phases.merge]      # ff-only merge staging branch to main
+```
+
+See [epic-formula.md](epic-formula.md) for the full lifecycle diagram.
+
 ### Daemon (`cmd/spire/daemon.go`)
 
-Background process for integration sync. Runs locally via `spire up` or
-`spire daemon`.
+Background process for sync and integrations. Runs locally via `spire up`
+or `spire daemon`.
 
-**Cycle:**
-1. Sync unsynced epics to Linear (via Linear API)
-2. Process webhook queue (from `spire serve` or serverless functions)
-3. Process webhook event beads
+**Cycle (per tower):**
+1. Sync derived configs from tower config (single source of truth)
+2. DoltHub sync: pull then push (`runDoltSync()`)
+3. Sync unsynced epics to Linear (via Linear API)
+4. Process webhook queue (from `spire serve` or serverless functions)
+5. Process webhook event beads
 
 ### Syncer (k8s only)
 
@@ -234,9 +307,10 @@ Dedicated pod for DoltHub remote sync. Handles `dolt pull` and `dolt push`
 on the shared cluster database. Decoupled from the steward and operator so
 that sync failures don't block work assignment.
 
-> **Current state:** Sync is manual (`spire push` / `spire pull`). Target:
-> a background daemon syncs automatically on interval, with explicit
-> `push`/`pull` available for immediate sync.
+> **Current state (2026-03-26):** The daemon syncs automatically on each
+> cycle (`runDoltSync()` does pull then push). Manual `spire push` /
+> `spire pull` available for immediate sync. k8s syncer pod is a separate
+> deployment for cluster-side sync.
 
 ## Pod Architecture
 
@@ -510,12 +584,15 @@ Managed via kustomize (`k8s/kustomization.yaml`):
 
 ## Naming Conventions (RPG Theme)
 
-| Role       | Name      | Description                              |
-|------------|-----------|------------------------------------------|
-| Coordinator| Steward   | Work coordinator, assigns tasks           |
-| Worker     | Wizard    | Implementation agent, executes tasks      |
-| Reviewer   | Artificer | Code reviewer, manages epics and merges   |
-| Epic pod   | Workshop  | Long-running epic management pod          |
-| Companion  | Familiar  | LLM sidecar for intelligent routing       |
-| Database   | Archive   | Dolt database                             |
-| Hub        | Tower     | A Spire coordination instance             |
+| Role          | Name       | Description                                     |
+|---------------|------------|-------------------------------------------------|
+| User          | Archmage   | You. Writes specs, files work, reviews, steers  |
+| Coordinator   | Steward    | Global work coordinator, assigns tasks          |
+| Orchestrator  | Wizard     | Per-bead orchestrator, drives formula lifecycle  |
+| Implementer   | Apprentice | Writes code in isolated worktrees, one-shot     |
+| Reviewer      | Sage       | Reviews code, returns verdict, one-shot         |
+| Formula maker | Artificer  | Crafts formulas that wizards follow             |
+| Companion     | Familiar   | Per-agent sidecar for messaging and health      |
+| Epic pod      | Workshop   | Long-running epic management pod (k8s)          |
+| Database      | Archive    | Dolt database                                   |
+| Hub           | Tower      | A Spire coordination instance                   |

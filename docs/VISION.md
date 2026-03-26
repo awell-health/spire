@@ -105,21 +105,33 @@ Managed towers with a web dashboard, GitHub App integration for automatic repo r
 
 Spire uses RPG-inspired naming for agent roles. The names are deliberate: they convey function, hierarchy, and personality.
 
+### Archmage
+
+You. The human. You write specs, file work, review what agents produce, and make the architecture calls. You bounce from tower to tower, steering work. The archmage's identity is stored in the tower config and used for merge commit attribution.
+
 ### Steward
 
-The coordinator. One per tower. The steward reads the work graph continuously, identifies ready work (no open blockers, not claimed), assigns tasks to available agents, routes messages, and tracks overall progress. It does not write code. It orchestrates.
+The global coordinator. One per tower. The steward reads the work graph continuously, identifies ready work (no open blockers, not claimed), assigns tasks to available agents, routes messages, and tracks overall progress. It does not write code. It orchestrates capacity.
 
 ### Wizard
 
-The worker. One per task, ephemeral. A wizard receives a task assignment, clones the target repo, implements the change, runs tests, and opens a pull request. When the PR is opened, the wizard's job is done. Wizards are stateless -- they read everything they need from the bead and the repo.
+The per-bead orchestrator. One per bead, ephemeral. A wizard is summoned to drive a bead through its formula lifecycle — validating design, generating a plan, dispatching apprentices to implement, consulting sages to review, and sealing the work with a merge. The wizard does not write code directly. It orchestrates the agents that do.
+
+### Apprentice
+
+The implementer. One-shot, ephemeral. An apprentice receives a task from a wizard, works in an isolated git worktree, writes code, runs tests, and pushes a feature branch. When the branch is pushed, the apprentice's job is done. Apprentices are stateless — they read everything they need from the bead and the repo.
+
+### Sage
+
+The reviewer. One-shot, ephemeral. A sage reviews the implementation against the spec and returns a verdict: approve or request changes. If changes are needed, the wizard dispatches a fix apprentice and re-consults the sage. After max rounds, an arbiter (Claude Opus) breaks the tie.
 
 ### Artificer
 
-The epic manager. One per epic. When work is complex enough to require multiple tasks coordinated together, the artificer breaks the epic into subtasks, sequences them by dependency, assigns them to wizards, reviews intermediate results, and ensures the whole epic lands coherently. The artificer is the strategic thinker; wizards are tactical executors.
+The formula maker. Crafts and tests the formulas that wizards follow. In k8s, the artificer runs in a workshop pod for long-running epic management. Locally, the wizard + executor handle formula execution directly.
 
 ### Familiar (Sidecar)
 
-An LLM-powered companion that runs alongside each agent. The familiar handles intelligent message routing, tool use, and context assembly. It is the agent's interface to the outside world -- translating between structured bead data and natural language reasoning.
+A per-agent companion that runs alongside each agent in k8s pods. The familiar handles inbox polling, control signals (STOP, STEER, PAUSE, RESUME), liveness heartbeats, and health endpoints. It is the agent's interface to the messaging layer.
 
 ## Sync Model
 

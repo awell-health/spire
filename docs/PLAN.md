@@ -6,12 +6,12 @@ This plan takes Spire from its current state (working k8s operator, steward, wiz
 
 ---
 
-## Current State (updated 2026-03-22)
+## Current State (updated 2026-03-26)
 
 What exists today:
 
-- `spire` CLI with ~30 subcommands (Go, single package in `cmd/spire/`)
-- `bd` called via `pkg/bd` subprocess wrapper (clean Client interface, callers isolated)
+- `spire` CLI with 42 subcommands (Go, single package in `cmd/spire/`)
+- `bd` called via `pkg/bd` subprocess wrapper (clean Client interface, callers isolated) and store API (`store.go`)
 - `spire tower create` and `spire tower attach` — full tower bootstrap and second-machine attach
 - `spire repo add` — writes to dolt `repos` table, validates prefix uniqueness, pushes to DoltHub
 - Credential management — `~/.config/spire/credentials` (chmod 600), env var overrides
@@ -21,10 +21,24 @@ What exists today:
 - Instance config in `~/.config/spire/config.json` (local cache, dolt is source of truth)
 - k8s operator with CRDs: SpireAgent, SpireWorkload, SpireConfig
 - Steward runs as k8s deployment or local process via `spire steward`
-- Wizard/artificer agents run as k8s pods (managed by operator)
+- Local agent execution via `spire summon` — wizard processes with worktrees, formula-driven lifecycle
+- Formula system: 3 built-in formulas (`spire-epic`, `spire-bugfix`, `spire-agent-work`) with layered resolution
+- Executor drives formula phases: design → plan → implement (wave dispatch) → review (sage) → merge
+- `spire board` — interactive Bubble Tea TUI with phase columns, auto-refresh
+- `spire roster` — work grouped by epic, agent processes with elapsed time/progress
+- `spire watch` — live tower status
+- `spire logs` — CLI log reader for wizard and daemon logs
+- `spire metrics` — agent performance summary (DORA metrics, lifecycle traces)
+- `spire dismiss` — graceful wizard shutdown
+- `spire alert` — priority alerts with bead references
+- `spire design` — create design beads for brainstorming before filing tasks
+- Daemon with DoltHub sync (pull + push on interval), Linear epic sync, webhook processing
 - goreleaser config and GitHub Actions CI (build, test, release on tag)
-- `spire doctor` with 10 checks in 3 categories
+- `spire doctor` with 11 checks in 3 categories, `--fix` auto-repair
 - `spire push` / `spire pull` with credential injection
+- Homebrew tap (`awell-health/tap`) with `bd` and `dolt` as dependencies
+- Archmage identity in tower config for merge commit attribution
+- Smoke test suite (`test/smoke/Dockerfile`)
 
 What works well and should not change:
 
@@ -33,10 +47,15 @@ What works well and should not change:
 - `spire.yaml` repo config with runtime auto-detection
 - Operator CRD design (SpireAgent, SpireWorkload)
 - DoltHub as sync intermediary
+- Formula-driven executor (design → plan → implement → review → merge)
+- RPG naming: archmage (user), wizard (orchestrator), apprentice (implementer), sage (reviewer)
 
-What remains in Phase 1:
+What remains:
 
-- `bd` as embedded Go library (deferred — subprocess wrapper ships first, can run in parallel with Phase 2)
+- `bd` as embedded Go library (deferred — subprocess wrapper + store API ships first)
+- Docker agent spawning (process mode is the working default)
+- Unified daemon (steward loop integrated into `spire up`)
+- Cobra migration for CLI flag parsing (hand-rolled parser doesn't support `--flag=value` or `--help`)
 
 ---
 
@@ -213,63 +232,77 @@ Work items:
 
 ### 2.1 Local steward adaptation
 
-The steward (`cmd/spire/steward.go`) already runs locally via `spire steward`. But it currently tries to load the roster from k8s SpireAgent CRs first, falling back to bead registrations. For local mode, it needs to manage agent lifecycle directly.
+The steward (`cmd/spire/steward.go`) runs locally via `spire steward`.
 
 Work items:
-- [ ] Add `--mode=local` flag (default when not in k8s)
-- [ ] In local mode, read agent config from `spire.yaml` or tower config instead of k8s CRs
-- [ ] Track running agents via PID files or container IDs (similar to dolt server tracking)
-- [ ] Integrate agent spawning into the steward cycle: after assigning a bead, start the agent
+- [x] Local mode is the default (no `--mode` flag needed)
+- [x] Reads agent config from `spire.yaml` and tower config
+- [x] Track running agents via PID files (`wizards.json`)
+- [ ] Integrate agent spawning into the steward cycle (currently manual via `spire summon`)
+
+**Status (2026-03-26):** Steward runs locally. Agent spawning is via `spire summon` (manual), not steward-driven. Steward still runs separately from the daemon.
 
 ### 2.2 Docker agent spawning
 
-The primary local execution mode. Each wizard task gets its own container.
+Container-based agent execution. Each wizard task gets its own container.
 
 Work items:
-- [ ] Default agent image: publish `ghcr.io/awell-health/spire-agent:latest`
-- [ ] Agent image includes: Go, Node, Python, git, dolt, bd, spire, claude-code CLI
-- [ ] Steward creates container per assignment: pass repo URL + branch, inject credentials (no host mount of local repo)
-- [ ] Agent clones the repo inside the container -- workspace is ephemeral, agent pushes results via git
-- [ ] Container entrypoint: `git clone <repo-url> -b <branch> /workspace && cd /workspace && spire focus <bead-id> && claude-code --task "$(spire focus <bead-id> --prompt)"`
-- [ ] Container lifecycle: start, poll for completion, collect exit code, cleanup
-- [ ] Timeout enforcement: kill container after `agent.timeout` from `spire.yaml`
-- [ ] Log collection: capture container stdout/stderr, store in tower (or just filesystem)
+- [x] Agent image Dockerfile exists (`Dockerfile.agent`)
+- [x] Agent image includes: Go, Node, Python, git, dolt, bd, spire, claude-code CLI
+- [ ] Steward creates container per assignment (currently only k8s operator does this)
+- [ ] Local Docker spawning from `spire summon` or daemon
+- [ ] Container lifecycle tracking from the daemon
+
+**Status (2026-03-26):** Docker images and k8s pod spawning work. Local Docker spawning is not implemented — process mode is the default and only local execution mode.
 
 ### 2.3 Process agent spawning
 
-Alternative to Docker for faster iteration during development.
+The default local execution mode. Each wizard runs as a local process in its own git worktree.
 
 ```
-spire up --mode=process
+spire summon 3        # spawns 3 wizard processes
+spire summon --targets spi-abc,spi-def  # exact bead IDs
 ```
 
 Work items:
-- [ ] Spawn `claude` CLI as subprocess with appropriate flags
-- [ ] Set working directory to repo root
-- [ ] Inject credentials via environment
-- [ ] PID tracking and timeout enforcement
-- [ ] Process mode is explicitly opt-in (Docker is default)
+- [x] Spawn `claude` CLI as subprocess with appropriate flags
+- [x] Each wizard works in an isolated git worktree
+- [x] Inject credentials via environment
+- [x] PID tracking and timeout enforcement
+- [x] Formula-driven lifecycle (design → plan → implement → review → merge)
+- [x] Wave dispatch for epics (parallel apprentices per dependency wave)
+- [x] Sage review with revision rounds and arbiter escalation
+- [x] Auto-merge to main with ff-only + rebase retry
+
+**Status (2026-03-26):** Complete. This is the primary local execution path. `spire summon` spawns wizards, the executor drives formula phases, apprentices run in parallel worktrees, sages review, and the wizard merges to main.
 
 ### 2.4 `spire status` and `spire logs`
 
 Make the local experience observable.
 
 Work items:
-- [ ] `spire status`: dolt server state, steward state, active agents (with bead IDs), last sync time, work queue summary
-- [ ] `spire logs [agent-name]`: tail agent output, filter by agent or bead ID
-- [ ] `spire logs --steward`: tail steward output
-- [ ] Status data written to `~/.local/share/spire/` (existing pattern from `doltGlobalDir()`)
+- [x] `spire status`: dolt server state, daemon state, PID/reachability
+- [x] `spire logs [wizard-name]`: tail wizard log output
+- [x] `spire board`: interactive TUI with phase columns, auto-refresh
+- [x] `spire roster`: work grouped by epic, agent process status with elapsed time
+- [x] `spire watch`: live tower status
+- [x] `spire metrics`: agent performance summary
+- [x] Log data written to `~/.local/share/spire/wizards/`
+
+**Status (2026-03-26):** Complete. `spire logs`, `spire board`, `spire roster`, `spire watch`, and `spire metrics` all implemented.
 
 ### 2.5 Integrate `spire up` with steward
 
-Currently `spire up` starts dolt + daemon (webhook/Linear sync). Add steward to the lifecycle.
+Currently `spire up` starts dolt + daemon. Steward runs separately.
 
 Work items:
-- [ ] `spire up` starts: dolt server, sync daemon, steward
-- [ ] `spire down` stops: steward, daemon (dolt stays for other repos)
-- [ ] `spire shutdown` stops: steward, daemon, dolt
-- [ ] Steward PID tracked alongside daemon PID in `doltGlobalDir()`
-- [ ] `spire up --no-agents` starts without steward (for manual work only)
+- [x] `spire up` starts: dolt server, daemon (Linear sync + DoltHub sync + webhook processing)
+- [x] `spire down` stops daemon (dolt stays for other repos)
+- [x] `spire shutdown` stops daemon + dolt
+- [ ] `spire up --steward` integrates the steward loop into the daemon
+- [ ] Single-daemon enforcement (prevent multiple `spire up` from racing)
+
+**Status (2026-03-26):** Partial. `spire up/down/shutdown` manage dolt + daemon. Steward still runs as a separate process via `spire steward`. Manual capacity via `spire summon` is the primary workflow.
 
 ---
 
@@ -285,20 +318,22 @@ Work items:
 - [x] `spire pull`: wrapper around dolt pull with credential injection
 - [x] Use CLI-based pull (like `doltCLIPush` but for pull) to inherit env credentials
 - [x] Handle non-fast-forward gracefully with `--force` flag
-- [ ] Background daemon calls `spire pull` + `spire push` on interval
+- [x] Background daemon calls `spire pull` + `spire push` on interval
 
-**Status (2026-03-22):** Pull command complete. Background daemon integration remains.
+**Status (2026-03-26):** Complete. Manual push/pull and daemon auto-sync both work.
 
 ### 3.2 Background sync daemon
 
-Rework the existing daemon to handle bidirectional DoltHub sync (currently only does webhook/Linear processing).
+The daemon handles bidirectional DoltHub sync alongside Linear and webhook processing.
 
 Work items:
-- [ ] Add pull-from-DoltHub step to `runCycle()` in `daemon.go`
-- [ ] Add push-to-DoltHub step after pull
-- [ ] Configurable interval (existing `--interval` flag)
+- [x] `runDoltSync()` in `daemon.go` — pull from DoltHub, then push
+- [x] Called in `runTowerCycle()` on each daemon interval
+- [x] Configurable interval (existing `--interval` flag)
 - [ ] Report sync status in `spire status` (last pull time, last push time, sync errors)
 - [ ] Conflict detection: log warnings when merge produces unexpected results
+
+**Status (2026-03-26):** Core sync implemented and running on every daemon cycle. Status reporting and conflict detection remain.
 
 ### 3.3 Merge ownership enforcement
 
@@ -387,20 +422,33 @@ Work items:
 
 ### 5.1 README.md
 
-- [ ] One-paragraph pitch (from VISION.md)
-- [ ] 5-command quickstart (tower create, repo add, file, up, watch)
-- [ ] Architecture diagram (ASCII or linked SVG)
-- [ ] Links to docs, contributing guide, license
+- [x] One-paragraph pitch
+- [x] Roles table with entry points
+- [x] ASCII architecture diagram
+- [x] Quickstart (tower create, repo add, file, up, summon, watch)
+- [x] Formula lifecycle section
+- [x] Archmage toolkit (board, roster, watch, summon, file, alert, send)
+- [x] DORA metrics section
+- [x] spire.yaml configuration reference
+- [x] k8s overview
+- [ ] Links to contributing guide and license (blocked on 5.3)
+- [ ] Verify all doc links resolve (some may reference unwritten guides)
+- [ ] Remove references to features that don't exist yet or are aspirational
+
+**Status (2026-03-26):** README is comprehensive (277 lines). Needs a cleanup pass to remove aspirational claims and verify doc links.
 
 ### 5.2 Documentation
 
-- [ ] Getting started guide (laptop setup, first task, first PR)
-- [ ] Concepts: towers, beads, agents, prefixes, sync model
+- [x] VISION.md — strategic overview, core concepts, design principles, roadmap
+- [x] ARCHITECTURE.md — components, data model, pod architecture, sync model
+- [x] LOCAL.md — local execution model, setup flow, directory structure
+- [x] PLAN.md — implementation phases with dependency graph and risk register
+- [x] epic-formula.md — Mermaid diagram of epic lifecycle
+- [x] metrics.md — DORA metrics, lifecycle tracing, performance signals
+- [x] k8s-architecture.md — operator, CRDs, pod architecture, RBAC
 - [ ] CLI reference (auto-generated from help text)
-- [ ] `spire.yaml` configuration reference
-- [ ] Cluster deployment guide (Helm)
-- [ ] Agent development guide (how to build custom agents)
 - [ ] Troubleshooting and FAQ
+- [ ] Agent development guide (how to build custom agents)
 
 ### 5.3 License and contributing
 

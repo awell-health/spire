@@ -43,7 +43,7 @@ agent:
   timeout: 15m    # fatal — tower kills the pod
 ```
 
-Track compliance to understand if your beads are right-sized. Too many shutdowns means beads are too large. See the [steward docs](superpowers/specs/2026-03-20-archmage-tower-vision.md) for how the steward enforces these.
+Track compliance to understand if your beads are right-sized. Too many shutdowns means beads are too large. The steward enforces these thresholds: stale triggers a warning, timeout kills the agent.
 
 ## Where the data lives
 

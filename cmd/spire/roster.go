@@ -732,7 +732,15 @@ func printRoster(s RosterSummary) {
 					}
 				}
 				fmt.Println()
-				fmt.Printf("      %sagents:%s %s\n", dim, reset, strings.Join(item.AgentNames, ", "))
+				// Show primary wizard name; if there are helper agents (apprentices, sages),
+			// show a count rather than listing every process name.
+			if len(item.AgentNames) == 1 {
+				fmt.Printf("      %sagent:%s %s\n", dim, reset, item.AgentNames[0])
+			} else {
+				// First agent alphabetically is typically the primary wizard.
+				// Others are -impl, -sage, -w0-N helpers.
+				fmt.Printf("      %sagent:%s %s %s(+%d helpers)%s\n", dim, reset, item.AgentNames[0], dim, len(item.AgentNames)-1, reset)
+			}
 			}
 		}
 	}
