@@ -66,19 +66,21 @@ func cmdUp(args []string) error {
 	if len(towers) == 0 {
 		fmt.Println("towers: none configured")
 	} else {
-		// Ensure archmage identity (backfill from git config for existing towers)
+		// Ensure archmage identity (backfill from global git config for towers missing it).
+		// Use --global to avoid picking up repo-local config set by wizard agents.
+		var globalGitName, globalGitEmail string
+		if out, err := exec.Command("git", "config", "--global", "user.name").Output(); err == nil {
+			globalGitName = strings.TrimSpace(string(out))
+		}
+		if out, err := exec.Command("git", "config", "--global", "user.email").Output(); err == nil {
+			globalGitEmail = strings.TrimSpace(string(out))
+		}
 		for i, t := range towers {
-			if t.Archmage.Name == "" {
-				if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
-					towers[i].Archmage.Name = strings.TrimSpace(string(out))
-				}
-				if out, err := exec.Command("git", "config", "user.email").Output(); err == nil {
-					towers[i].Archmage.Email = strings.TrimSpace(string(out))
-				}
-				if towers[i].Archmage.Name != "" {
-					saveTowerConfig(&towers[i])
-					fmt.Printf("archmage identity: backfilled from git config (%s <%s>)\n", towers[i].Archmage.Name, towers[i].Archmage.Email)
-				}
+			if t.Archmage.Name == "" && globalGitName != "" {
+				towers[i].Archmage.Name = globalGitName
+				towers[i].Archmage.Email = globalGitEmail
+				saveTowerConfig(&towers[i])
+				fmt.Printf("archmage identity: backfilled from global git config (%s <%s>)\n", towers[i].Archmage.Name, towers[i].Archmage.Email)
 			}
 		}
 
