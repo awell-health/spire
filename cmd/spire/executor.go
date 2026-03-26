@@ -15,15 +15,18 @@ import (
 
 // executorState is the persistent state for a formula executor.
 type executorState struct {
-	BeadID       string                  `json:"bead_id"`
-	AgentName    string                  `json:"agent_name"`
-	Formula      string                  `json:"formula"`
-	Phase        string                  `json:"phase"`
-	Wave         int                     `json:"wave"`
-	Subtasks     map[string]subtaskState `json:"subtasks"`
-	ReviewRounds int                     `json:"review_rounds"`
-	StartedAt    string                  `json:"started_at"`
-	LastActionAt string                  `json:"last_action_at"`
+	BeadID        string                  `json:"bead_id"`
+	AgentName     string                  `json:"agent_name"`
+	Formula       string                  `json:"formula"`
+	Phase         string                  `json:"phase"`
+	Wave          int                     `json:"wave"`
+	Subtasks      map[string]subtaskState `json:"subtasks"`
+	ReviewRounds  int                     `json:"review_rounds"`
+	StartedAt     string                  `json:"started_at"`
+	LastActionAt  string                  `json:"last_action_at"`
+	StagingBranch string                  `json:"staging_branch,omitempty"`
+	BaseBranch    string                  `json:"base_branch,omitempty"`
+	RepoPath      string                  `json:"repo_path,omitempty"`
 }
 
 // formulaExecutor drives a bead through its formula's phase pipeline.
@@ -93,11 +96,58 @@ func newExecutor(beadID, agentName string, formula *FormulaV2, spawner AgentBack
 	}, nil
 }
 
+// resolveBranchState resolves repo path, base branch, and staging branch once
+// and stores them in the executor state. All git operations read from state
+// instead of computing these independently.
+func (e *formulaExecutor) resolveBranchState() error {
+	// Already resolved (e.g. resumed from persisted state) — skip.
+	if e.state.RepoPath != "" && e.state.BaseBranch != "" {
+		e.log("branch state loaded from persisted state: repo=%s base=%s staging=%s",
+			e.state.RepoPath, e.state.BaseBranch, e.state.StagingBranch)
+		return nil
+	}
+
+	repoPath, _, baseBranch, err := wizardResolveRepo(e.beadID)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+	if repoPath == "" {
+		repoPath = "."
+	}
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	e.state.RepoPath = repoPath
+	e.state.BaseBranch = baseBranch
+
+	// Resolve staging branch from the implement phase config (if any).
+	// The staging branch template lives in the implement phase's StagingBranch
+	// field but is also referenced by merge and review-fix paths.
+	for _, phaseName := range e.formula.EnabledPhases() {
+		pc, ok := e.formula.Phases[phaseName]
+		if ok && pc.StagingBranch != "" {
+			e.state.StagingBranch = strings.ReplaceAll(pc.StagingBranch, "{bead-id}", e.beadID)
+			break
+		}
+	}
+
+	e.log("branch state resolved: repo=%s base=%s staging=%s",
+		e.state.RepoPath, e.state.BaseBranch, e.state.StagingBranch)
+	return e.saveState()
+}
+
 // Run drives the bead through its formula's phase pipeline until all phases
 // are complete or the bead is closed.
 func (e *formulaExecutor) Run() error {
 	defer wizardRegistryRemove(e.agentName)
 	defer e.saveState()
+
+	// Resolve repo path, base branch, and staging branch once at startup.
+	// All git operations read from e.state instead of computing independently.
+	if err := e.resolveBranchState(); err != nil {
+		return fmt.Errorf("resolve branch state: %w", err)
+	}
 
 	for {
 		phase := e.state.Phase
@@ -355,12 +405,6 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 - Tasks with no deps run in parallel (same wave)
 `, epicContext, designContext.String())
 
-	// Resolve repo for working directory
-	repoPath, _, _, _ := wizardResolveRepo(e.beadID)
-	if repoPath == "" {
-		repoPath = "."
-	}
-
 	model := pc.Model
 	if model == "" {
 		model = "claude-sonnet-4-6"
@@ -375,7 +419,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 		"--output-format", "text",
 		"--max-turns", fmt.Sprintf("%d", maxTurns),
 	)
-	cmd.Dir = repoPath
+	cmd.Dir = e.state.RepoPath
 	cmd.Env = os.Environ()
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
@@ -504,11 +548,6 @@ Focus context:
 
 Complete this phase and output your results.`, phase, bead.ID, bead.Title, bead.Description, focusContext)
 
-	repoPath, _, _, _ := wizardResolveRepo(e.beadID)
-	if repoPath == "" {
-		repoPath = "."
-	}
-
 	maxTurns := pc.GetMaxTurns()
 	cmd := exec.Command("claude",
 		"--dangerously-skip-permissions",
@@ -517,7 +556,7 @@ Complete this phase and output your results.`, phase, bead.ID, bead.Title, bead.
 		"--output-format", "text",
 		"--max-turns", fmt.Sprintf("%d", maxTurns),
 	)
-	cmd.Dir = repoPath
+	cmd.Dir = e.state.RepoPath
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -566,18 +605,14 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 
 	e.log("computed %d wave(s)", len(waves))
 
-	// Resolve repo for build verification
-	repoPath, _, _, err := wizardResolveRepo(e.beadID)
-	if err != nil {
-		return fmt.Errorf("resolve repo: %w", err)
-	}
+	repoPath := e.state.RepoPath
+	stagingBranch := e.state.StagingBranch
 
 	// Create staging branch if configured
-	if pc.StagingBranch != "" {
-		branch := strings.ReplaceAll(pc.StagingBranch, "{bead-id}", e.beadID)
-		e.log("creating staging branch %s", branch)
-		exec.Command("git", "-C", repoPath, "checkout", "-B", branch).Run()
-		storeAddLabel(e.beadID, "feat-branch:"+branch)
+	if stagingBranch != "" {
+		e.log("creating staging branch %s", stagingBranch)
+		exec.Command("git", "-C", repoPath, "checkout", "-B", stagingBranch).Run()
+		storeAddLabel(e.beadID, "feat-branch:"+stagingBranch)
 	}
 
 	startWave := e.state.Wave
@@ -653,8 +688,7 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		}
 
 		// Merge child branches into staging branch
-		if pc.StagingBranch != "" {
-			stagingBranch := strings.ReplaceAll(pc.StagingBranch, "{bead-id}", e.beadID)
+		if stagingBranch != "" {
 			exec.Command("git", "-C", repoPath, "checkout", stagingBranch).Run()
 			for _, subtaskID := range wave {
 				st, ok := e.state.Subtasks[subtaskID]
@@ -677,12 +711,12 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		}
 	}
 
-	// Switch back to main so the sage can create a worktree from the staging branch.
+	// Switch back to base branch so the sage can create a worktree from the staging branch.
 	// During wave merges we checked out the staging branch in the main worktree —
 	// the sage needs it free to create its own worktree.
-	if pc.StagingBranch != "" {
-		e.log("switching back to main for review phase")
-		exec.Command("git", "-C", repoPath, "checkout", "main").Run()
+	if stagingBranch != "" {
+		e.log("switching back to %s for review phase", e.state.BaseBranch)
+		exec.Command("git", "-C", repoPath, "checkout", e.state.BaseBranch).Run()
 	}
 
 	return nil
@@ -873,18 +907,14 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 				// Merge fix branch into staging so the sage reviews the updated code.
 				// Without this, the fix lands on feat/<bead-id> but the staging branch
 				// (which gets merged to main) never gets the fix.
-				if implPC.StagingBranch != "" {
-					repoPath, _, _, _ := wizardResolveRepo(e.beadID)
-					if repoPath != "" {
-						stagingBranch := strings.ReplaceAll(implPC.StagingBranch, "{bead-id}", e.beadID)
-						fixBranch := fmt.Sprintf("feat/%s", e.beadID)
-						e.log("merging fix branch %s into staging %s", fixBranch, stagingBranch)
-						exec.Command("git", "-C", repoPath, "checkout", stagingBranch).Run()
-						if mergeErr := e.mergeChildBranch(repoPath, fixBranch, stagingBranch); mergeErr != nil {
-							e.log("warning: merge fix into staging: %s", mergeErr)
-						}
-						exec.Command("git", "-C", repoPath, "checkout", "main").Run()
+				if e.state.StagingBranch != "" {
+					fixBranch := fmt.Sprintf("feat/%s", e.beadID)
+					e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
+					exec.Command("git", "-C", e.state.RepoPath, "checkout", e.state.StagingBranch).Run()
+					if mergeErr := e.mergeChildBranch(e.state.RepoPath, fixBranch, e.state.StagingBranch); mergeErr != nil {
+						e.log("warning: merge fix into staging: %s", mergeErr)
 					}
+					exec.Command("git", "-C", e.state.RepoPath, "checkout", e.state.BaseBranch).Run()
 				}
 			} else {
 				if dirErr := e.executeDirect("implement", implPC); dirErr != nil {
@@ -919,17 +949,15 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 
 	branch := hasLabel(bead, "feat-branch:")
 	if branch == "" {
-		if pc.StagingBranch != "" {
-			branch = strings.ReplaceAll(pc.StagingBranch, "{bead-id}", e.beadID)
+		if e.state.StagingBranch != "" {
+			branch = e.state.StagingBranch
 		} else {
 			branch = fmt.Sprintf("feat/%s", e.beadID)
 		}
 	}
 
-	repoPath, _, baseBranch, err := wizardResolveRepo(e.beadID)
-	if err != nil {
-		return fmt.Errorf("resolve repo: %w", err)
-	}
+	repoPath := e.state.RepoPath
+	baseBranch := e.state.BaseBranch
 
 	// Load archmage identity for merge commits.
 	// The merge commit should attribute to the tower owner, not the wizard.
