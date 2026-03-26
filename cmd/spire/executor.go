@@ -578,6 +578,9 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx, idx)
 				e.log("  dispatching %s for %s", name, beadID)
 
+				// Mark subtask as in_progress before dispatching
+				storeUpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
+
 				extraArgs := []string{"--apprentice"}
 				h, spawnErr := e.spawner.Spawn(SpawnConfig{
 					Name:      name,
