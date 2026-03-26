@@ -102,10 +102,38 @@ pnpm test
 
 Please add tests for any new functionality. If you are fixing a bug, add a regression test that would have caught it.
 
+## Developer Certificate of Origin (DCO)
+
+Spire requires all contributors to sign off on their commits using the [Developer Certificate of Origin](DCO) (DCO 1.1). The sign-off certifies that you wrote the code or have the right to submit it under the Apache 2.0 license.
+
+To sign off, add a `Signed-off-by` trailer to each commit message. Git can do this automatically with the `-s` flag:
+
+```bash
+git commit -s -m "feat: add new feature"
+```
+
+This produces a commit message like:
+
+```
+feat: add new feature
+
+Signed-off-by: Your Name <your@email.com>
+```
+
+Pull requests with unsigned commits will not be merged. If you forgot to sign off, you can amend recent commits:
+
+```bash
+# Amend the last commit
+git commit --amend -s --no-edit
+
+# Or sign off multiple commits with rebase
+git rebase --signoff HEAD~N
+```
+
 ## Pull Request Process
 
 1. **Fork** the repository and create a feature branch from `main`.
-2. **Make your changes** in focused, well-described commits.
+2. **Make your changes** in focused, well-described commits. Sign each commit with `-s`.
 3. **Run tests** locally to make sure nothing is broken.
 4. **Open a pull request** against `main` with a clear description of what you changed and why.
 5. A maintainer will review your PR. Please be responsive to feedback.
