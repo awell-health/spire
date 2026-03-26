@@ -334,11 +334,20 @@ func rosterFromLocalWizards(timeout time.Duration) []RosterAgent {
 			role = "reviewer"
 		}
 
+		// Epics run waves sequentially — the executor can run for hours.
+		// Use a longer timeout for epics so the progress bar makes sense.
+		agentTimeout := timeout
+		if w.BeadID != "" {
+			if bead, berr := storeGetBead(w.BeadID); berr == nil && bead.Type == "epic" {
+				agentTimeout = 2 * time.Hour
+			}
+		}
+
 		agent := RosterAgent{
 			Name:    w.Name,
 			Role:    role,
 			BeadID:  w.BeadID,
-			Timeout: timeout,
+			Timeout: agentTimeout,
 			Phase:   w.Phase, // empty string if old registry format
 		}
 
