@@ -902,14 +902,24 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
 
+	// Load archmage identity for merge commits.
+	// The merge commit should attribute to the tower owner, not the wizard.
+	var mergeEnv []string
+	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
+		mergeEnv = archmageGitEnv(tower)
+	} else {
+		mergeEnv = os.Environ()
+	}
+
 	// Local merge: checkout main, merge the feature/staging branch, push
-	e.log("merging %s → %s (local)", branch, baseBranch)
+	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
 
 	if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
 	}
 
 	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", branch)
+	mergeCmd.Env = mergeEnv
 	if _, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
 		// Check for conflicts
 		statusOut, _ := exec.Command("git", "-C", repoPath, "status", "--porcelain").Output()
@@ -925,10 +935,10 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		}
 	}
 
-	// Push main
+	// Push main (with archmage identity)
 	e.log("pushing %s", baseBranch)
 	pushCmd := exec.Command("git", "-C", repoPath, "push", "origin", baseBranch)
-	pushCmd.Env = os.Environ()
+	pushCmd.Env = mergeEnv
 	if out, pushErr := pushCmd.CombinedOutput(); pushErr != nil {
 		return fmt.Errorf("push %s: %s\n%s", baseBranch, pushErr, string(out))
 	}

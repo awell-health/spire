@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -65,6 +66,22 @@ func cmdUp(args []string) error {
 	if len(towers) == 0 {
 		fmt.Println("towers: none configured")
 	} else {
+		// Ensure archmage identity (backfill from git config for existing towers)
+		for i, t := range towers {
+			if t.Archmage.Name == "" {
+				if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
+					towers[i].Archmage.Name = strings.TrimSpace(string(out))
+				}
+				if out, err := exec.Command("git", "config", "user.email").Output(); err == nil {
+					towers[i].Archmage.Email = strings.TrimSpace(string(out))
+				}
+				if towers[i].Archmage.Name != "" {
+					saveTowerConfig(&towers[i])
+					fmt.Printf("archmage identity: backfilled from git config (%s <%s>)\n", towers[i].Archmage.Name, towers[i].Archmage.Email)
+				}
+			}
+		}
+
 		// Ensure custom bead types
 		fmt.Print("custom bead types: ")
 		warned := 0

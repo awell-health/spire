@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,12 +16,20 @@ import (
 
 // TowerConfig represents a tower's identity and configuration.
 type TowerConfig struct {
-	Name          string `json:"name"`
-	ProjectID     string `json:"project_id"`
-	HubPrefix     string `json:"hub_prefix"`
-	DolthubRemote string `json:"dolthub_remote,omitempty"`
-	Database      string `json:"database"`
-	CreatedAt     string `json:"created_at"`
+	Name          string          `json:"name"`
+	ProjectID     string          `json:"project_id"`
+	HubPrefix     string          `json:"hub_prefix"`
+	DolthubRemote string          `json:"dolthub_remote,omitempty"`
+	Database      string          `json:"database"`
+	CreatedAt     string          `json:"created_at"`
+	Archmage      ArchmageConfig  `json:"archmage,omitempty"`
+}
+
+// ArchmageConfig stores the tower owner's identity.
+// Used for merge commits so deployments and CI attribute to the right person.
+type ArchmageConfig struct {
+	Name  string `json:"name"`            // GitHub username (used by CI to validate workflows)
+	Email string `json:"email,omitempty"` // Git commit email
 }
 
 // towerConfigDir returns ~/.config/spire/towers/, creating it if needed.
@@ -185,6 +194,51 @@ func readBeadsProjectID(beadsDir string) (string, error) {
 }
 
 // derivePrefixFromName extracts the first 3 lowercase alphanumeric characters from a name.
+// promptArchmageIdentity prompts for the tower owner's identity.
+// This is used for merge commits so CI/CD and deployment platforms
+// attribute the merge to the right person.
+func promptArchmageIdentity() ArchmageConfig {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Println("\nSpire needs your identity for merge commits.")
+	fmt.Println("Use your GitHub username — CI workflows and deployment platforms")
+	fmt.Println("use this to validate whether workflows should run.")
+	fmt.Print("\nGitHub username: ")
+	name, _ := reader.ReadString('\n')
+	name = strings.TrimSpace(name)
+
+	fmt.Print("Git email: ")
+	email, _ := reader.ReadString('\n')
+	email = strings.TrimSpace(email)
+
+	if name == "" {
+		// Try to detect from git config
+		if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
+			name = strings.TrimSpace(string(out))
+		}
+	}
+	if email == "" {
+		if out, err := exec.Command("git", "config", "user.email").Output(); err == nil {
+			email = strings.TrimSpace(string(out))
+		}
+	}
+
+	return ArchmageConfig{Name: name, Email: email}
+}
+
+// archmageGitEnv returns environment variables that set the git committer
+// identity to the archmage for merge commits.
+func archmageGitEnv(tower *TowerConfig) []string {
+	env := os.Environ()
+	if tower.Archmage.Name != "" {
+		env = append(env, "GIT_COMMITTER_NAME="+tower.Archmage.Name)
+	}
+	if tower.Archmage.Email != "" {
+		env = append(env, "GIT_COMMITTER_EMAIL="+tower.Archmage.Email)
+	}
+	return env
+}
+
 func derivePrefixFromName(name string) string {
 	var prefix []byte
 	for _, r := range strings.ToLower(name) {
@@ -438,12 +492,16 @@ func cmdTowerCreate(args []string) error {
 		fmt.Printf("  warning: could not register custom types: %s\n", err)
 	}
 
+	// Prompt for archmage identity — used for merge commits and CI validation.
+	archmage := promptArchmageIdentity()
+
 	tower := &TowerConfig{
 		Name:      name,
 		ProjectID: projectID,
 		HubPrefix: prefix,
 		Database:  database,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Archmage:  archmage,
 	}
 
 	// Create repos table — use rawDoltQuery (bd dolt sql doesn't exist in bd 0.62)
