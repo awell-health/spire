@@ -26,6 +26,7 @@ staging_branch = "epic/{bead-id}"
 apprentice = true
 worktree = true
 context = ["CLAUDE.md", "PLAYBOOK.md"]
+build = "go build ./..."
 
 [phases.review]
 timeout = "20m"
