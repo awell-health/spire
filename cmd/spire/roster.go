@@ -334,12 +334,12 @@ func rosterFromLocalWizards(timeout time.Duration) []RosterAgent {
 			role = "reviewer"
 		}
 
-		// Epics run waves sequentially — the executor can run for hours.
-		// Use a longer timeout for epics so the progress bar makes sense.
+		// Epics run waves sequentially — no meaningful timeout.
+		// Set timeout to 0 so the display shows a running clock instead of a progress bar.
 		agentTimeout := timeout
 		if w.BeadID != "" {
 			if bead, berr := storeGetBead(w.BeadID); berr == nil && bead.Type == "epic" {
-				agentTimeout = 2 * time.Hour
+				agentTimeout = 0
 			}
 		}
 
@@ -724,8 +724,12 @@ func printRoster(s RosterSummary) {
 					title = "Untitled bead"
 				}
 				fmt.Printf("  %s %-12s %s%s", icon, item.BeadID, phaseStr, truncate(title, 52))
-				if item.Timeout > 0 && item.Elapsed > 0 {
-					fmt.Printf("  %s", renderCountdown(item.Elapsed, item.Timeout))
+				if item.Elapsed > 0 {
+					if item.Timeout > 0 {
+						fmt.Printf("  %s", renderCountdown(item.Elapsed, item.Timeout))
+					} else {
+						fmt.Printf("  %s", item.Elapsed.Round(time.Second))
+					}
 				}
 				fmt.Println()
 				fmt.Printf("      %sagents:%s %s\n", dim, reset, strings.Join(item.AgentNames, ", "))
