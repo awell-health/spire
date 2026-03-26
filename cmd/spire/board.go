@@ -146,7 +146,8 @@ func calcHeightBudget(termHeight, alertCount, blockedCount, colCount int) height
 }
 
 // renderCompactCard renders a single bead as a one-line string for TUI columns.
-func renderCompactCard(b BoardBead, color lipgloss.Color, width int) string {
+// When selected is true, a ▶ cursor is prepended to indicate the active card.
+func renderCompactCard(b BoardBead, color lipgloss.Color, width int, selected bool) string {
 	titleWidth := width - 26
 	if titleWidth < 15 {
 		titleWidth = 15
@@ -157,10 +158,15 @@ func renderCompactCard(b BoardBead, color lipgloss.Color, width int) string {
 	if owner != "" {
 		ownerStr = " " + lipgloss.NewStyle().Foreground(color).Render(owner)
 	}
-	return fmt.Sprintf("%s %s %s %s%s %s\n",
+	line := fmt.Sprintf("%s %s %s %s%s %s",
 		priStr(b.Priority), b.ID, shortType(b.Type),
 		truncate(b.Title, titleWidth), ownerStr,
 		dimStyle.Render(timeAgo(b.UpdatedAt)))
+	if selected {
+		cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
+		return cursor + " " + line + "\n"
+	}
+	return line + "\n"
 }
 
 // staticCompactCardLine renders a single bead as a one-line static string.
@@ -312,6 +318,45 @@ func fetchBoard(opts boardOpts) (boardColumns, error) {
 
 // --- Bubbletea TUI ---
 
+// boardColDef is a display column with a name, color, and bead slice.
+type boardColDef struct {
+	name  string
+	color lipgloss.Color
+	beads []BoardBead
+}
+
+// boardActiveColumns returns the non-empty columns in board display order.
+// This is the authoritative ordered list used by both navigation and rendering.
+func boardActiveColumns(cols boardColumns) []boardColDef {
+	all := []boardColDef{
+		{"READY", lipgloss.Color("2"), cols.Ready},
+		{"DESIGN", lipgloss.Color("4"), cols.Design},
+		{"PLAN", lipgloss.Color("6"), cols.Plan},
+		{"IMPLEMENT", lipgloss.Color("6"), cols.Implement},
+		{"REVIEW", lipgloss.Color("3"), cols.Review},
+		{"MERGE", lipgloss.Color("5"), cols.Merge},
+		{"DONE", lipgloss.Color("8"), cols.Done},
+	}
+	var active []boardColDef
+	for _, c := range all {
+		if len(c.beads) > 0 {
+			active = append(active, c)
+		}
+	}
+	return active
+}
+
+// boardPendingAction identifies an action to run after the TUI exits.
+type boardPendingAction int
+
+const (
+	boardActionNone   boardPendingAction = iota
+	boardActionFocus  // print cmdFocus output, then relaunch
+	boardActionLogs   // tail wizard logs, then relaunch
+	boardActionSummon // summon a wizard for the bead, then relaunch
+	boardActionClaim  // claim the bead, then relaunch
+)
+
 type boardModel struct {
 	opts     boardOpts
 	cols     boardColumns
@@ -319,6 +364,47 @@ type boardModel struct {
 	height   int
 	lastTick time.Time
 	quitting bool
+	selCol   int // selected column index into boardActiveColumns(cols)
+	selCard  int // selected card index within selCol
+	// Pending action: set before tea.Quit so runBoardTUI can execute it.
+	pendingAction boardPendingAction
+	pendingBeadID string
+}
+
+// clampSelection keeps selCol and selCard within valid bounds.
+func (m *boardModel) clampSelection() {
+	active := boardActiveColumns(m.cols)
+	if len(active) == 0 {
+		m.selCol = 0
+		m.selCard = 0
+		return
+	}
+	if m.selCol < 0 {
+		m.selCol = 0
+	}
+	if m.selCol >= len(active) {
+		m.selCol = len(active) - 1
+	}
+	n := len(active[m.selCol].beads)
+	if n == 0 {
+		m.selCard = 0
+		return
+	}
+	// Wrap vertically.
+	m.selCard = ((m.selCard % n) + n) % n
+}
+
+// selectedBead returns a pointer to the currently selected bead, or nil.
+func (m boardModel) selectedBead() *BoardBead {
+	active := boardActiveColumns(m.cols)
+	if m.selCol < 0 || m.selCol >= len(active) {
+		return nil
+	}
+	beads := active[m.selCol].beads
+	if m.selCard < 0 || m.selCard >= len(beads) {
+		return nil
+	}
+	return &beads[m.selCard]
 }
 
 type tickMsg time.Time
@@ -328,18 +414,33 @@ func tickCmd(interval time.Duration) tea.Cmd {
 }
 
 func runBoardTUI(opts boardOpts) error {
-	cols, err := fetchBoard(opts)
-	if err != nil {
-		return err
+	for {
+		cols, err := fetchBoard(opts)
+		if err != nil {
+			return err
+		}
+		m := boardModel{
+			opts:     opts,
+			cols:     cols,
+			lastTick: time.Now(),
+		}
+		p := tea.NewProgram(m, tea.WithAltScreen())
+		result, err := p.Run()
+		if err != nil {
+			return err
+		}
+
+		final, ok := result.(boardModel)
+		if !ok || final.pendingAction == boardActionNone {
+			break
+		}
+
+		// Execute the pending action on the raw terminal, then relaunch.
+		if !executeBoardAction(final.pendingAction, final.pendingBeadID) {
+			break
+		}
 	}
-	m := boardModel{
-		opts:     opts,
-		cols:     cols,
-		lastTick: time.Now(),
-	}
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err = p.Run()
-	return err
+	return nil
 }
 
 func (m boardModel) Init() tea.Cmd {
@@ -353,6 +454,70 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c", "esc":
 			m.quitting = true
 			return m, tea.Quit
+
+		// Column navigation.
+		case "h", "left", "shift+tab":
+			m.selCol--
+			m.selCard = 0
+			m.clampSelection()
+		case "l", "right", "tab":
+			m.selCol++
+			m.selCard = 0
+			m.clampSelection()
+
+		// Card navigation.
+		case "j", "down":
+			m.selCard++
+			m.clampSelection()
+		case "k", "up":
+			m.selCard--
+			m.clampSelection()
+
+		// Epic scoping toggle.
+		case "e":
+			if m.opts.epic != "" {
+				m.opts.epic = ""
+			} else if bead := m.selectedBead(); bead != nil {
+				if bead.Type == "epic" {
+					m.opts.epic = bead.ID
+				} else if bead.Parent != "" {
+					m.opts.epic = bead.Parent
+				}
+			}
+			if newCols, err := fetchBoard(m.opts); err == nil {
+				m.cols = newCols
+			}
+			m.clampSelection()
+
+		// Actions on the selected bead.
+		case "f":
+			if bead := m.selectedBead(); bead != nil {
+				m.pendingAction = boardActionFocus
+				m.pendingBeadID = bead.ID
+				m.quitting = true
+				return m, tea.Quit
+			}
+		case "s":
+			if bead := m.selectedBead(); bead != nil {
+				m.pendingAction = boardActionSummon
+				m.pendingBeadID = bead.ID
+				m.quitting = true
+				return m, tea.Quit
+			}
+		case "c":
+			if bead := m.selectedBead(); bead != nil {
+				m.pendingAction = boardActionClaim
+				m.pendingBeadID = bead.ID
+				m.quitting = true
+				return m, tea.Quit
+			}
+		case "L":
+			if bead := m.selectedBead(); bead != nil {
+				m.pendingAction = boardActionLogs
+				m.pendingBeadID = bead.ID
+				m.quitting = true
+				return m, tea.Quit
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -362,6 +527,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cols = cols
 		}
 		m.lastTick = time.Now()
+		m.clampSelection()
 		return m, tickCmd(m.opts.interval)
 	}
 	return m, nil
@@ -421,28 +587,7 @@ func (m boardModel) View() string {
 	}
 
 	// Build column content.
-	type col struct {
-		name  string
-		color lipgloss.Color
-		beads []BoardBead
-	}
-	columns := []col{
-		{"READY", lipgloss.Color("2"), m.cols.Ready},
-		{"DESIGN", lipgloss.Color("4"), m.cols.Design},
-		{"PLAN", lipgloss.Color("6"), m.cols.Plan},
-		{"IMPLEMENT", lipgloss.Color("6"), m.cols.Implement},
-		{"REVIEW", lipgloss.Color("3"), m.cols.Review},
-		{"MERGE", lipgloss.Color("5"), m.cols.Merge},
-		{"DONE", lipgloss.Color("8"), m.cols.Done},
-	}
-
-	// Filter empty columns.
-	var active []col
-	for _, c := range columns {
-		if len(c.beads) > 0 {
-			active = append(active, c)
-		}
-	}
+	active := boardActiveColumns(m.cols)
 
 	if len(active) > 0 {
 		// Render each column as a string.
@@ -450,6 +595,9 @@ func (m boardModel) View() string {
 		for i, c := range active {
 			var cb strings.Builder
 			headerStyle := lipgloss.NewStyle().Bold(true).Foreground(c.color)
+			if i == m.selCol {
+				headerStyle = headerStyle.Underline(true)
+			}
 			cb.WriteString(headerStyle.Render(fmt.Sprintf("%s (%d)", c.name, len(c.beads))))
 			cb.WriteString("\n")
 			sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -463,10 +611,11 @@ func (m boardModel) View() string {
 					cb.WriteString("\n")
 					break
 				}
+				isSelected := (i == m.selCol && j == m.selCard)
 				if budget.compact {
-					cb.WriteString(renderCompactCard(b, c.color, colWidth))
+					cb.WriteString(renderCompactCard(b, c.color, colWidth, isSelected))
 				} else {
-					cb.WriteString(renderCardStr(b, c.color, colWidth))
+					cb.WriteString(renderCardStr(b, c.color, colWidth, isSelected))
 				}
 			}
 			rendered[i] = cb.String()
@@ -501,13 +650,19 @@ func (m boardModel) View() string {
 	// Footer.
 	s.WriteString("\n")
 	footerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	s.WriteString(footerStyle.Render("q to quit • refreshes every " + m.opts.interval.String()))
+	epicInfo := ""
+	if m.opts.epic != "" {
+		epicInfo = " • epic:" + m.opts.epic
+	}
+	s.WriteString(footerStyle.Render("j/k ↕  h/l ↔  e epic  s summon  f focus  c claim  L logs" + epicInfo + " • q quit • ↻ " + m.opts.interval.String()))
 
 	return s.String()
 }
 
 // renderCardStr renders a single bead card as a multi-line string for a column.
-func renderCardStr(b BoardBead, color lipgloss.Color, width int) string {
+// renderCardStr renders a single bead card as a multi-line string for a column.
+// When selected is true, a ▶ cursor is prepended to indicate the active card.
+func renderCardStr(b BoardBead, color lipgloss.Color, width int, selected ...bool) string {
 	titleWidth := width - 4
 	if titleWidth < 10 {
 		titleWidth = 10
@@ -518,8 +673,14 @@ func renderCardStr(b BoardBead, color lipgloss.Color, width int) string {
 		typeStr += " [" + phase + "]"
 	}
 
+	isSel := len(selected) > 0 && selected[0]
 	var s strings.Builder
-	s.WriteString(fmt.Sprintf("%s %s %s\n", priStr(b.Priority), b.ID, typeStr))
+	if isSel {
+		cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
+		s.WriteString(fmt.Sprintf("%s %s %s %s\n", cursor, priStr(b.Priority), b.ID, typeStr))
+	} else {
+		s.WriteString(fmt.Sprintf("%s %s %s\n", priStr(b.Priority), b.ID, typeStr))
+	}
 	s.WriteString(fmt.Sprintf("  %s\n", truncate(b.Title, titleWidth)))
 
 	// Third line: context (owner, time, etc.)
