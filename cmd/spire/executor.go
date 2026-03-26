@@ -253,7 +253,7 @@ func (e *formulaExecutor) wizardValidateDesign() error {
 
 	var designBeads []Bead
 	for _, dep := range deps {
-		if string(dep.DependencyType) != string(beads.DepDiscoveredFrom) {
+		if dep.DependencyType != beads.DepDiscoveredFrom {
 			continue
 		}
 		if dep.IssueType != "design" {
@@ -334,27 +334,25 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
-	// Collect design context from linked design beads
+	// Collect design context from linked design beads (discovered-from deps)
 	var designContext strings.Builder
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "ref:") {
-			refID := l[4:]
-			refBead, refErr := storeGetBead(refID)
-			if refErr != nil {
-				continue
-			}
-			if refBead.Type == "design" {
-				designContext.WriteString(fmt.Sprintf("--- Design bead %s: %s ---\n", refBead.ID, refBead.Title))
-				if refBead.Description != "" {
-					designContext.WriteString(refBead.Description + "\n")
-				}
-				comments, _ := storeGetComments(refBead.ID)
-				for _, c := range comments {
-					designContext.WriteString(fmt.Sprintf("[%s]: %s\n", c.Author, c.Text))
-				}
-				designContext.WriteString("\n")
-			}
+	deps, _ := storeGetDepsWithMeta(e.beadID)
+	for _, dep := range deps {
+		if dep.DependencyType != beads.DepDiscoveredFrom {
+			continue
 		}
+		if dep.IssueType != "design" {
+			continue
+		}
+		designContext.WriteString(fmt.Sprintf("--- Design bead %s: %s ---\n", dep.ID, dep.Title))
+		if dep.Description != "" {
+			designContext.WriteString(dep.Description + "\n")
+		}
+		comments, _ := storeGetComments(dep.ID)
+		for _, c := range comments {
+			designContext.WriteString(fmt.Sprintf("[%s]: %s\n", c.Author, c.Text))
+		}
+		designContext.WriteString("\n")
 	}
 
 	// Also include epic description and comments

@@ -263,22 +263,19 @@ func cmdGrok(args []string) error {
 		fmt.Println()
 	}
 
-	// Referenced beads (from ref: labels)
-	for _, l := range target.Labels {
-		if strings.HasPrefix(l, "ref:") {
-			refID := l[4:]
-			refBead, refErr := storeGetBead(refID)
-			if refErr != nil {
-				continue
-			}
-			fmt.Printf("--- Referenced: %s ---\n", refBead.ID)
-			fmt.Printf("Title: %s\n", refBead.Title)
-			fmt.Printf("Status: %s\n", refBead.Status)
-			if refBead.Description != "" {
-				fmt.Printf("Description: %s\n", refBead.Description)
-			}
-			fmt.Println()
+	// Related beads (from dependency graph)
+	relDeps, _ := storeGetDepsWithMeta(id)
+	for _, dep := range relDeps {
+		if dep.DependencyType == beads.DepParentChild {
+			continue // parent-child shown elsewhere
 		}
+		fmt.Printf("--- %s: %s ---\n", dep.DependencyType, dep.ID)
+		fmt.Printf("Title: %s\n", dep.Title)
+		fmt.Printf("Status: %s\n", dep.Status)
+		if dep.Description != "" {
+			fmt.Printf("Description: %s\n", dep.Description)
+		}
+		fmt.Println()
 	}
 
 	// Messages that reference this bead
