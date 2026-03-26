@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/steveyegge/beads"
 )
@@ -119,13 +120,26 @@ func saveConfig(cfg *SpireConfig) error {
 }
 
 // findInstanceByPath looks up an instance by any of its registered paths (primary or worktree).
+// Also matches if path is a subdirectory of a registered path.
 func findInstanceByPath(cfg *SpireConfig, path string) *Instance {
+	// Exact match first
 	for _, inst := range cfg.Instances {
 		if inst.Path == path {
 			return inst
 		}
 		for _, p := range inst.Paths {
 			if p == path {
+				return inst
+			}
+		}
+	}
+	// Subdirectory match — CWD may be inside a registered repo
+	for _, inst := range cfg.Instances {
+		if inst.Path != "" && strings.HasPrefix(path, inst.Path+"/") {
+			return inst
+		}
+		for _, p := range inst.Paths {
+			if p != "" && strings.HasPrefix(path, p+"/") {
 				return inst
 			}
 		}
