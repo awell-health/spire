@@ -30,6 +30,21 @@ brews:
       - name: beads
     install: |
       bin.install "spire"
+    caveats: |
+      To get started with Spire:
+        1. Create a tower:    spire tower create --name my-team
+        2. Register a repo:   cd ~/your-repo && spire repo add
+        3. Start services:    spire up
+        4. File your first task: spire file "My first task" -t task -p 2
+
+      For AI agents:
+        spire summon 3                       # Summon wizards to work ready beads
+        spire summon 1 --targets spi-abc     # Target a specific bead
+        spire board --json                   # Machine-readable board state
+        spire roster --json                  # Agent status as JSON
+        spire collect --json                 # Check agent inbox
+
+      Docs: https://github.com/awell-health/spire
     test: |
       assert_match version.to_s, shell_output("#{bin}/spire version")
 
