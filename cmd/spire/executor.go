@@ -940,7 +940,9 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 	return fmt.Errorf("no verdict found after sage review")
 }
 
-// executeMerge handles the merge phase: creates PR, squash-merges, closes bead.
+// executeMerge handles the merge phase: ff-only merge of staging branch into main.
+// If main has moved ahead, it rebases the staging branch onto main in a temporary
+// worktree, re-verifies the build, then retries the ff-only merge. Never force merges.
 func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	bead, err := storeGetBead(e.beadID)
 	if err != nil {
@@ -959,8 +961,7 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	repoPath := e.state.RepoPath
 	baseBranch := e.state.BaseBranch
 
-	// Load archmage identity for merge commits.
-	// The merge commit should attribute to the tower owner, not the wizard.
+	// Load archmage identity for the push.
 	var mergeEnv []string
 	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
 		mergeEnv = archmageGitEnv(tower)
@@ -968,27 +969,87 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		mergeEnv = os.Environ()
 	}
 
-	// Local merge: checkout main, merge the feature/staging branch, push
-	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
-
-	if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
-		return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
+	// Ensure main is up to date before attempting ff-only merge.
+	e.log("pulling %s before merge", baseBranch)
+	pullCmd := exec.Command("git", "-C", repoPath, "pull", "--ff-only", "origin", baseBranch)
+	pullCmd.Env = mergeEnv
+	if out, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
+		e.log("warning: pull %s: %s\n%s", baseBranch, pullErr, string(out))
 	}
 
-	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", branch)
-	mergeCmd.Env = mergeEnv
-	if _, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
-		// Check for conflicts
-		statusOut, _ := exec.Command("git", "-C", repoPath, "status", "--porcelain").Output()
-		if strings.Contains(string(statusOut), "UU ") || strings.Contains(string(statusOut), "AA ") {
-			e.log("conflict merging %s → %s, invoking Claude", branch, baseBranch)
-			if resolveErr := e.resolveConflicts(repoPath, branch); resolveErr != nil {
-				exec.Command("git", "-C", repoPath, "merge", "--abort").Run()
-				return fmt.Errorf("merge conflict resolution: %w", resolveErr)
-			}
-		} else {
-			exec.Command("git", "-C", repoPath, "merge", "--abort").Run()
-			return fmt.Errorf("merge %s → %s: %w", branch, baseBranch, mergeErr)
+	// The main worktree is already on baseBranch (executeWave switches back).
+	// Verify we're on the right branch.
+	headRef, _ := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
+	if strings.TrimSpace(string(headRef)) != baseBranch {
+		if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
+			return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
+		}
+	}
+
+	e.log("ff-only merge %s → %s (committer: archmage)", branch, baseBranch)
+
+	// First attempt: fast-forward only merge from the main worktree.
+	ffCmd := exec.Command("git", "-C", repoPath, "merge", "--ff-only", branch)
+	ffCmd.Env = mergeEnv
+	if out, ffErr := ffCmd.CombinedOutput(); ffErr != nil {
+		e.log("ff-only failed: %s — rebasing staging onto %s", strings.TrimSpace(string(out)), baseBranch)
+
+		// ff-only failed — main has diverged. Rebase staging onto main in a
+		// temporary worktree so we don't disturb the main worktree's checkout.
+		tmpDir, err := os.MkdirTemp("", fmt.Sprintf("spire-rebase-%s-", e.beadID))
+		if err != nil {
+			return fmt.Errorf("create temp dir: %w", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		wtPath := filepath.Join(tmpDir, "staging")
+
+		// Create a worktree checking out the staging branch.
+		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", wtPath, branch).CombinedOutput(); wtErr != nil {
+			return fmt.Errorf("create staging worktree: %s\n%s", wtErr, string(out))
+		}
+		defer func() {
+			exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", wtPath).Run()
+		}()
+
+		// Rebase the staging branch onto main.
+		e.log("rebasing %s onto %s in staging worktree", branch, baseBranch)
+		rebaseCmd := exec.Command("git", "-C", wtPath, "rebase", baseBranch)
+		rebaseCmd.Env = os.Environ()
+		if out, rbErr := rebaseCmd.CombinedOutput(); rbErr != nil {
+			// Abort the rebase — never force merge.
+			exec.Command("git", "-C", wtPath, "rebase", "--abort").Run()
+			return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s", branch, baseBranch, rbErr, string(out))
+		}
+
+		// Re-verify build in the staging worktree after rebase.
+		e.log("verifying build after rebase")
+		buildCmd := exec.Command("go", "build", "./cmd/spire/")
+		buildCmd.Dir = wtPath
+		buildCmd.Env = os.Environ()
+		if out, buildErr := buildCmd.CombinedOutput(); buildErr != nil {
+			return fmt.Errorf("build failed after rebase (aborting merge): %s\n%s", buildErr, string(out))
+		}
+
+		// Run tests after rebase.
+		e.log("running tests after rebase")
+		testCmd := exec.Command("go", "test", "./cmd/spire/")
+		testCmd.Dir = wtPath
+		testCmd.Env = os.Environ()
+		if out, testErr := testCmd.CombinedOutput(); testErr != nil {
+			return fmt.Errorf("tests failed after rebase (aborting merge): %s\n%s", testErr, string(out))
+		}
+
+		// Remove the worktree before retrying the merge (the branch ref is
+		// already updated by the rebase — the worktree just holds a checkout).
+		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", wtPath).Run()
+
+		// Second attempt: ff-only should now succeed since staging was rebased.
+		e.log("retrying ff-only merge after rebase")
+		ffCmd2 := exec.Command("git", "-C", repoPath, "merge", "--ff-only", branch)
+		ffCmd2.Env = mergeEnv
+		if out, ffErr2 := ffCmd2.CombinedOutput(); ffErr2 != nil {
+			return fmt.Errorf("ff-only merge failed even after rebase (will not force merge): %s\n%s", ffErr2, string(out))
 		}
 	}
 
