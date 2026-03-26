@@ -38,6 +38,7 @@ type PhaseConfig struct {
 	Auto          bool   `toml:"auto,omitempty"`           // auto-execute without human gate
 	Apprentice    bool   `toml:"apprentice,omitempty"`     // run as apprentice (no phase labels, no review handoff)
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
+	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
 }
 
 // GetMaxTurns returns the max turns for this phase, with sensible defaults per role.

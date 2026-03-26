@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/steveyegge/beads"
 )
 
@@ -701,13 +702,12 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 			}
 		}
 
-		// Verify build
-		e.log("verifying build after wave %d", waveIdx)
-		buildCmd := exec.Command("go", "build", "./cmd/spire/")
-		buildCmd.Dir = repoPath
-		buildCmd.Env = os.Environ()
-		if out, buildErr := buildCmd.CombinedOutput(); buildErr != nil {
-			e.log("build failed: %s\n%s", buildErr, string(out))
+		// Verify build using formula's build command, repo config fallback, or hardcoded default
+		if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
+			e.log("verifying build after wave %d: %s", waveIdx, buildStr)
+			if buildErr := e.runBuildCommand(repoPath, buildStr); buildErr != nil {
+				return fmt.Errorf("build verification failed after wave %d: %w", waveIdx, buildErr)
+			}
 		}
 	}
 
@@ -813,6 +813,47 @@ Do NOT commit — the merge commit will be created automatically.`,
 	}
 
 	e.log("  conflicts resolved by Claude")
+	return nil
+}
+
+// resolveBuildCommand returns the build command to use for verification.
+// Resolution order:
+//  1. Current phase's Build field
+//  2. Implement phase's Build field (build is most commonly configured there)
+//  3. Repo config runtime.build (spire.yaml)
+//  4. Empty string (no build verification)
+func (e *formulaExecutor) resolveBuildCommand(pc PhaseConfig) string {
+	// 1. Current phase config
+	if pc.Build != "" {
+		return pc.Build
+	}
+	// 2. Implement phase fallback (build commands live here for wave-based formulas)
+	if impl, ok := e.formula.Phases["implement"]; ok && impl.Build != "" {
+		return impl.Build
+	}
+	// 3. Repo config fallback
+	if cfg, err := repoconfig.Load(e.state.RepoPath); err == nil && cfg.Runtime.Build != "" {
+		return cfg.Runtime.Build
+	}
+	return ""
+}
+
+// runBuildCommand executes a build command string in the given repo directory.
+// The command is split on spaces and run directly (no shell).
+func (e *formulaExecutor) runBuildCommand(repoPath, buildStr string) error {
+	parts := strings.Fields(buildStr)
+	if len(parts) == 0 {
+		return nil
+	}
+	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd.Dir = repoPath
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		e.log("build failed: %s\n%s", err, string(out))
+		return fmt.Errorf("%s: %w\n%s", buildStr, err, string(out))
+	}
+	e.log("build passed")
 	return nil
 }
 
@@ -966,6 +1007,21 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		mergeEnv = archmageGitEnv(tower)
 	} else {
 		mergeEnv = os.Environ()
+	}
+
+	// Run build verification on the staging/feature branch before merging to main.
+	// This catches type errors, bad imports, and missing exports from merged code.
+	if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
+		e.log("verifying build on %s before merge: %s", branch, buildStr)
+		// Checkout the staging/feature branch to run the build
+		if out, chkErr := exec.Command("git", "-C", repoPath, "checkout", branch).CombinedOutput(); chkErr != nil {
+			return fmt.Errorf("checkout %s for build verification: %s\n%s", branch, chkErr, string(out))
+		}
+		if buildErr := e.runBuildCommand(repoPath, buildStr); buildErr != nil {
+			// Switch back to base branch before returning the error
+			exec.Command("git", "-C", repoPath, "checkout", baseBranch).Run()
+			return fmt.Errorf("pre-merge build verification failed on %s: %w", branch, buildErr)
+		}
 	}
 
 	// Local merge: checkout main, merge the feature/staging branch, push
