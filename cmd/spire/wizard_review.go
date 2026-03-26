@@ -738,8 +738,24 @@ Decision meanings:
 		return nil
 
 	case "split":
-		// Create child beads for remaining issues, then close this bead
-		log("arbiter: splitting into %d tasks", len(decision.SplitTasks))
+		// Merge approved work, create child beads for remaining issues, then close.
+		// The arbiter only says "split" when partial work is good — if nothing was
+		// good it would say "discard." Therefore split always merges what exists.
+		log("arbiter: splitting — merging approved work + creating %d child tasks", len(decision.SplitTasks))
+
+		// Merge staging branch to main (same as approve path).
+		branch := hasLabel(bead, "feat-branch:")
+		if branch == "" {
+			branch = fmt.Sprintf("feat/%s", beadID)
+		}
+		repoPath, _, baseBranch, resolveErr := wizardResolveRepo(beadID)
+		if resolveErr != nil {
+			log("warning: split merge — could not resolve repo: %s", resolveErr)
+		} else {
+			reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
+		}
+
+		// Create child beads for remaining work.
 		for _, task := range decision.SplitTasks {
 			childID, err := storeCreateBead(createOpts{
 				Title:       task.Title,
@@ -755,14 +771,36 @@ Decision meanings:
 			log("created split task: %s", childID)
 			storeAddComment(beadID, fmt.Sprintf("Split task created: %s — %s", childID, task.Title))
 		}
-		// Close the original bead
+
+		// Close the original bead (reviewHandleApproval may have already closed it).
 		storeRemoveLabel(beadID, "review-feedback")
-		return storeCloseBead(beadID)
+		b, _ := storeGetBead(beadID)
+		if b.Status != "closed" {
+			return storeCloseBead(beadID)
+		}
+		return nil
 
 	default: // "discard" or unknown
-		// Close as wontfix
-		log("arbiter: discarding bead")
-		storeAddComment(beadID, "Arbiter: closing as wontfix")
+		// Delete branches and close as wontfix.
+		log("arbiter: discarding bead — deleting branches")
+		branch := hasLabel(bead, "feat-branch:")
+		if branch == "" {
+			branch = fmt.Sprintf("feat/%s", beadID)
+		}
+		repoPath, _, _, resolveErr := wizardResolveRepo(beadID)
+		if resolveErr == nil {
+			// Delete local branches.
+			exec.Command("git", "-C", repoPath, "branch", "-D", branch).Run()
+			epicBranch := fmt.Sprintf("epic/%s", beadID)
+			exec.Command("git", "-C", repoPath, "branch", "-D", epicBranch).Run()
+			// Delete remote branches.
+			exec.Command("git", "-C", repoPath, "push", "origin", "--delete", branch).Run()
+			exec.Command("git", "-C", repoPath, "push", "origin", "--delete", epicBranch).Run()
+			log("branches deleted")
+		} else {
+			log("warning: could not resolve repo for branch cleanup: %s", resolveErr)
+		}
+		storeAddComment(beadID, "Arbiter: closing as wontfix — branches deleted")
 		storeRemoveLabel(beadID, "review-feedback")
 		return storeCloseBead(beadID)
 	}
