@@ -505,9 +505,11 @@ func wizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch, mode
 		fmt.Fprintf(&extra, "\nAddress the following review feedback:\n%s\n", reviewFeedback)
 	}
 
-	return fmt.Sprintf(`You are Spire autonomous wizard %s — IMPLEMENT PHASE.
+	return fmt.Sprintf(`You are Spire apprentice %s — IMPLEMENT PHASE.
 
-Task:
+You are working in an isolated git worktree. Other agents may be working on related tasks in parallel — you cannot see their changes.
+
+## Task
 - bead: %s
 - base branch: %s
 - feature branch: %s
@@ -515,27 +517,35 @@ Task:
 - max turns: %d
 - hard timeout: %s
 
-Before making changes:
-1. Read the focus context below.
-2. Read the repo context paths below. If a path is a directory, inspect only the relevant files.
+## Before making changes
+1. Read the focus context below carefully — it contains the FULL task description.
+2. Read the repo context paths below. If a path is a directory, inspect only relevant files.
+3. Pay attention to "do not touch" constraints in the task description — other agents handle those files.
 
-Repo context paths:
+## Repo context paths
 %s
-Validation commands:
+
+## Validation commands
 - install: %s
 - lint: %s
 - build: %s
 - test: %s
 
-Constraints:
-- Do not create a PR.
-- Do not run git commit or git push — the wrapper handles that.
-- Focus on implementing the task described in the focus context.
+## Rules — READ THESE
+
+1. Work ONLY on the task described below. Do not add features, refactor unrelated code, or "improve" things outside your task scope.
+2. Do NOT create a PR, merge, push, or touch other branches. The orchestrator handles that.
+3. Do NOT modify files listed as "do_not_touch" in the task description — another agent handles those.
+4. If the task description says to create types/interfaces that other tasks will use, make them complete and well-documented.
+5. Run tests and the build command before finishing. Both must pass.
+6. If you CANNOT complete the full task as described, report what you completed and what's missing as a comment on the bead. Do NOT silently commit partial work.
+7. Commit all changes to your branch before exiting.
+
 %s
-Focus context:
+## Focus context (FULL task description)
 %s
 
-Bead JSON:
+## Bead JSON
 %s
 `, wizardName, beadID, baseBranch, branchName, model, maxTurns, timeout,
 		contextBlock.String(),

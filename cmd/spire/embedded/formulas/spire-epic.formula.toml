@@ -12,9 +12,10 @@ max_turns = 1
 [phases.plan]
 role = "wizard"
 timeout = "10m"
-max_turns = 3
-model = "claude-sonnet-4-6"
-# Wizard invokes Claude with all context inline to generate subtask breakdown.
+max_turns = 5
+model = "claude-opus-4-6"
+# Wizard invokes Claude (Opus) with all context inline to generate subtask breakdown.
+# Planning is judgment-heavy: shared file detection, wave ordering, negative constraints.
 
 [phases.implement]
 timeout = "10m"

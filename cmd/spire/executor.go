@@ -315,7 +315,9 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 		return nil
 	}
 
-	prompt := fmt.Sprintf(`You are a Spire wizard planning an epic. All context is provided below — do NOT read files.
+	prompt := fmt.Sprintf(`You are a Spire wizard planning an epic. Break the work into independent tasks that can be executed by parallel agents in isolated git worktrees.
+
+All context is provided below — do NOT read files.
 
 ## Epic
 %s
@@ -323,16 +325,34 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 ## Design Context
 %s
 
+## Planning rules
+
+CRITICAL: Each task will be executed by a separate agent in its own git worktree. Agents CANNOT see each other's work. They run in parallel within a wave, then their branches are merged. Think carefully about:
+
+1. SHARED FILES: If two tasks both need to modify the same file, they CANNOT be in the same wave. Put the foundational work (types, interfaces, shared utilities) in an earlier wave. Put consumers in a later wave.
+
+2. DEPENDENCIES: If task B needs types/functions that task A creates, B depends on A. Use the "deps" field. Tasks with no deps run in the same wave (parallel).
+
+3. NEGATIVE CONSTRAINTS: Each task must say what it does NOT do. If task A creates the query functions, task B's description must say "Do NOT create query functions — use the ones from task A." Without this, parallel agents will create conflicting implementations.
+
+4. COMPLETE DESCRIPTIONS: Each task description must be self-contained. Include:
+   - Exact file paths to create or modify
+   - Function/component names and signatures
+   - Expected behavior and edge cases
+   - What files this task must NOT touch (handled by other tasks)
+   Do NOT make agents read plan files or reference other tasks vaguely.
+
+5. WAVE ORDERING: Wave 0 = shared foundations (types, queries, utilities). Wave 1 = features that consume wave 0. Wave 2 = integration, entry points, cross-cutting concerns.
+
 ## Output format
 
 Output ONLY JSON objects, one per line, no other text. Each line:
-{"title": "Short title", "description": "What to implement and which files to change", "deps": ["title-of-dependency"]}
+{"title": "Short title", "description": "Complete task description with file paths, what to do, and what NOT to do", "deps": ["title-of-dependency"], "shared_files": ["path/to/shared/file.ts"], "do_not_touch": ["path/other-task-handles.ts"]}
 
-Rules:
-- Each subtask should be small enough for one agent in one worktree
-- Use "deps" to express ordering — tasks with no deps run in parallel (same wave)
-- Keep titles short and specific (e.g. "Add max_turns to PhaseConfig" not "Update formula")
-- Description should say WHAT to change and WHERE (file names)
+- "shared_files": files this task creates/modifies that other tasks will consume (helps detect wave ordering issues)
+- "do_not_touch": files this task must NOT modify (handled by another task)
+- "deps": titles of tasks that must complete before this one starts
+- Tasks with no deps run in parallel (same wave)
 `, epicContext, designContext.String())
 
 	// Resolve repo for working directory
@@ -368,6 +388,8 @@ Rules:
 		Title       string   `json:"title"`
 		Description string   `json:"description"`
 		Deps        []string `json:"deps"`
+		SharedFiles []string `json:"shared_files"`
+		DoNotTouch  []string `json:"do_not_touch"`
 	}
 
 	var tasks []planTask
@@ -390,12 +412,19 @@ Rules:
 
 	e.log("filing %d subtasks", len(tasks))
 
-	// Create subtasks
+	// Create subtasks — enrich descriptions with coordination metadata
 	titleToID := make(map[string]string)
 	for _, t := range tasks {
+		desc := t.Description
+		if len(t.SharedFiles) > 0 {
+			desc += "\n\nShared files (other tasks depend on these): " + strings.Join(t.SharedFiles, ", ")
+		}
+		if len(t.DoNotTouch) > 0 {
+			desc += "\n\nDo NOT touch (handled by other tasks): " + strings.Join(t.DoNotTouch, ", ")
+		}
 		id, createErr := storeCreateBead(createOpts{
 			Title:       t.Title,
-			Description: t.Description,
+			Description: desc,
 			Priority:    bead.Priority,
 			Type:        parseIssueType("task"),
 			Parent:      e.beadID,
