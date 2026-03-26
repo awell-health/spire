@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-steward
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-steward
+    app.kubernetes.io/part-of: spire
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-steward
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-steward
+    spec:
+      serviceAccountName: spire-operator
+      containers:
+        - name: steward
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          env:
+            - name: BEADS_PREFIX
+              value: {{ .Values.beads.prefix | quote }}
+            - name: DOLT_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: DOLT_PORT
+              value: "3306"
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: "3306"
+            - name: STEWARD_INTERVAL
+              value: {{ .Values.steward.interval | quote }}
+          resources:
+            requests:
+              cpu: {{ .Values.steward.resources.requests.cpu }}
+              memory: {{ .Values.steward.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.steward.resources.limits.cpu }}
+              memory: {{ .Values.steward.resources.limits.memory }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: spire-config
+              mountPath: /etc/spire
+              readOnly: true
+          workingDir: /etc/spire
+        - name: sidecar
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          command: ["spire-steward-sidecar"]
+          args:
+            - "--comms-dir=/comms"
+            - "--poll-interval=30s"
+            - "--model=claude-sonnet-4-6"
+            - "--context-threshold=0.45"
+            - "--port=8081"
+          env:
+            - name: DOLT_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: DOLT_PORT
+              value: "3306"
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: "3306"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: ANTHROPIC_API_KEY_DEFAULT
+                  optional: true
+          resources:
+            requests:
+              cpu: {{ .Values.steward.resources.requests.cpu }}
+              memory: {{ .Values.steward.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.steward.resources.limits.cpu }}
+              memory: 512Mi
+          workingDir: /data
+          volumeMounts:
+            - name: comms
+              mountPath: /comms
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: spire-steward-data
+        - name: comms
+          emptyDir: {}
+        - name: spire-config
+          configMap:
+            name: spire-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data: {}

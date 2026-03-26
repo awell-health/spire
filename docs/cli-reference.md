@@ -4,6 +4,8 @@ Complete reference for all `spire` commands.
 
 For the `bd` (beads) CLI reference, see the [beads documentation](https://github.com/steveyegge/beads).
 
+> **Note on generation:** This document is derived from the help text printed by `spire help` (see `printUsage()` in `cmd/spire/main.go`). If you add or change commands, update both `printUsage()` and this file together. A quick way to check for drift: `spire help 2>&1 | diff - <(grep -E '^\s+(spire|  [a-z])' docs/cli-reference.md)`
+
 ---
 
 ## Global flags

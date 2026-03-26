@@ -29,6 +29,24 @@ The cluster never creates a tower — it attaches to one you created locally. De
 
 ---
 
+## Helm chart
+
+Spire ships a Helm chart at `helm/spire/`. The chart deploys:
+
+- The Dolt SQL database (state layer)
+- The steward (work coordinator)
+- The operator (pod lifecycle manager)
+- SpireConfig CRD (cluster singleton configuration)
+- SpireAgent CRDs (per-repo agent definitions)
+
+**Requirements:**
+
+- Helm 3.x: `brew install helm`
+- A Kubernetes cluster (minikube, EKS, GKE, etc.)
+- A DoltHub remote (create with `spire tower create`)
+
+---
+
 ## Quick start (minikube)
 
 For local development and testing:
@@ -37,11 +55,27 @@ For local development and testing:
 # Start minikube if not running
 minikube start --memory=4096 --cpus=2
 
-# Deploy Spire
-./k8s/minikube-demo.sh
+# Install Spire with local images
+helm install spire ./helm/spire \
+  --namespace spire \
+  --create-namespace \
+  --set images.steward.repository=spire-steward \
+  --set images.steward.tag=dev \
+  --set images.steward.pullPolicy=IfNotPresent \
+  --set images.agent.repository=spire-agent \
+  --set images.agent.tag=dev \
+  --set images.agent.pullPolicy=IfNotPresent \
+  --set dolthub.remote=your-org/your-tower \
+  --set dolthub.user=your-dolthub-user \
+  --set dolthub.password=your-dolthub-token \
+  --set anthropic.apiKey=sk-ant-...
 ```
 
-The demo script builds images, applies manifests, prompts for credentials, and starts the operator.
+To use the demo build script that builds images first:
+
+```bash
+./k8s/minikube-demo.sh
+```
 
 ---
 
@@ -50,141 +84,82 @@ The demo script builds images, applies manifests, prompts for credentials, and s
 ### Step 1: Build and push images
 
 ```bash
-# Set your registry
 REGISTRY=ghcr.io/your-org
 
-# Build steward image (operator + steward)
 docker build -f Dockerfile.steward -t $REGISTRY/spire-steward:latest .
 docker push $REGISTRY/spire-steward:latest
 
-# Build agent image (wizard + sidecar + toolchains)
 docker build -f Dockerfile.agent -t $REGISTRY/spire-agent:latest .
 docker push $REGISTRY/spire-agent:latest
 ```
 
 The agent image includes: Go, Node.js, Python, git, dolt, `spire`, `bd`, and the `claude` CLI.
 
-### Step 2: Create the namespace and CRDs
+### Step 2: Create a values file
 
-```bash
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/crds/
+Create `my-values.yaml`:
+
+```yaml
+namespace: spire
+
+images:
+  steward:
+    repository: ghcr.io/your-org/spire-steward
+    tag: latest
+  agent:
+    repository: ghcr.io/your-org/spire-agent
+    tag: latest
+
+dolthub:
+  remote: your-org/your-tower
+  user: your-dolthub-user
+  password: your-dolthub-token
+
+anthropic:
+  apiKey: sk-ant-...
+
+github:
+  token: ghp_...
+
+beads:
+  prefix: spi
+
+# Define agents — one SpireAgent CRD per repo
+agents:
+  - name: my-repo-agent
+    mode: managed
+    repo: https://github.com/your-org/my-repo.git
+    repoBranch: main
+    prefixes: ["myp-"]
+    maxConcurrent: 2
+    capabilities: ["implement"]
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
 ```
 
-### Step 3: Create secrets
+### Step 3: Install with Helm
 
 ```bash
-kubectl create secret generic spire-credentials \
+helm install spire ./helm/spire \
   --namespace spire \
-  --from-literal=DOLT_REMOTE_USER="your-dolthub-user" \
-  --from-literal=DOLT_REMOTE_PASSWORD="your-dolthub-token" \
-  --from-literal=ANTHROPIC_API_KEY_DEFAULT="sk-ant-..." \
-  --from-literal=GITHUB_TOKEN="ghp_..."
+  --create-namespace \
+  --values my-values.yaml
 ```
 
-Or apply `k8s/secrets.yaml` after editing it:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: spire-credentials
-  namespace: spire
-type: Opaque
-stringData:
-  DOLT_REMOTE_USER: "your-dolthub-user"
-  DOLT_REMOTE_PASSWORD: "your-dolthub-token"
-  ANTHROPIC_API_KEY_DEFAULT: "sk-ant-..."
-  GITHUB_TOKEN: "ghp_..."
-```
-
-### Step 4: Apply SpireConfig
-
-Create `k8s/spire-config.yaml`:
-
-```yaml
-apiVersion: spire.awell.io/v1alpha1
-kind: SpireConfig
-metadata:
-  name: default
-  namespace: spire
-spec:
-  dolthub:
-    remote: your-org/your-tower    # DoltHub remote path
-    credentialsSecret: spire-credentials
-  polling:
-    interval: 2m
-    staleThreshold: 10m
-    reassignThreshold: 30m
-  tokens:
-    default:
-      secret: spire-credentials
-      key: ANTHROPIC_API_KEY_DEFAULT
-  defaultToken: default
-```
-
-```bash
-kubectl apply -f k8s/spire-config.yaml
-```
-
-### Step 5: Deploy dolt
-
-The dolt database is the shared state layer. Deploy it with a PersistentVolumeClaim:
-
-```bash
-kubectl apply -f k8s/beads-pvc.yaml
-kubectl apply -f k8s/dolt.yaml
-```
-
-Wait for it to be ready:
+Watch the rollout:
 
 ```bash
 kubectl rollout status deployment/spire-dolt -n spire
+kubectl rollout status deployment/spire-steward -n spire
+kubectl rollout status deployment/spire-operator -n spire
 ```
 
-### Step 6: Deploy the operator and steward
-
-```bash
-kubectl apply -f k8s/operator.yaml
-kubectl apply -f k8s/steward.yaml
-```
-
-The operator runs three concurrent control loops:
-- **BeadWatcher**: watches `bd ready --json`, creates SpireWorkload CRs
-- **WorkloadAssigner**: matches workloads to agents, handles capacity
-- **AgentMonitor**: creates agent pods, monitors heartbeats, reaps completed pods
-
-### Step 7: Register agents
-
-Create SpireAgent CRDs for each repo you want agents to work on:
-
-```yaml
-apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
-metadata:
-  name: my-repo-agent
-  namespace: spire
-spec:
-  mode: managed              # operator creates pods for this agent
-  image: ghcr.io/your-org/spire-agent:latest
-  repo: https://github.com/your-org/my-repo.git
-  repoBranch: main
-  prefixes: ["myp-"]         # must match the prefix used in spire repo add
-  maxConcurrent: 2           # max parallel wizards
-  capabilities: ["implement"]
-```
-
-```bash
-kubectl apply -f k8s/agents/my-repo-agent.yaml
-```
-
-Check agents are online:
-
-```bash
-kubectl get spireagents -n spire
-```
-
-### Step 8: Verify the pipeline
+### Step 4: Verify the pipeline
 
 File a bead and push it:
 
@@ -211,40 +186,79 @@ Workloads move: `Pending` → `Assigned` → `InProgress` → `Done`.
 
 ---
 
+## Upgrades
+
+To upgrade to a new chart or image version:
+
+```bash
+helm upgrade spire ./helm/spire \
+  --namespace spire \
+  --values my-values.yaml \
+  --set images.steward.tag=v0.2.0 \
+  --set images.agent.tag=v0.2.0
+```
+
+To preview changes before applying:
+
+```bash
+helm upgrade spire ./helm/spire \
+  --namespace spire \
+  --values my-values.yaml \
+  --dry-run
+```
+
+---
+
+## Configuration reference
+
+All configurable values are documented in `helm/spire/values.yaml`. Key values:
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `namespace` | `spire` | Kubernetes namespace |
+| `images.steward.repository` | `ghcr.io/awell-health/spire-steward` | Steward image |
+| `images.agent.repository` | `ghcr.io/awell-health/spire-agent` | Agent image |
+| `dolthub.remote` | `""` | DoltHub remote path (required) |
+| `dolthub.user` | `""` | DoltHub username (required) |
+| `dolthub.password` | `""` | DoltHub token (required) |
+| `anthropic.apiKey` | `""` | Anthropic API key (required) |
+| `github.token` | `""` | GitHub PAT (required for agents to open PRs) |
+| `beads.prefix` | `spi` | Hub bead prefix |
+| `steward.interval` | `2m` | Steward sync interval |
+| `spireConfig.polling.staleThreshold` | `4h` | Mark workload stale after this |
+| `spireConfig.polling.reassignThreshold` | `6h` | Reassign stale workloads after this |
+| `agents` | `[]` | List of SpireAgent definitions |
+| `syncer.enabled` | `false` | Enable DoltHub sync CronJob |
+| `syncer.schedule` | `*/2 * * * *` | CronJob schedule |
+
+---
+
 ## Resources
 
 ### Storage
 
 | Resource | Purpose | Default size |
 |----------|---------|-------------|
-| `beads-pvc` | Dolt database storage | 10Gi |
-| `steward-pvc` | Steward state persistence | 1Gi |
+| `spire-beads-data` | Dolt database storage | 5Gi |
+| `spire-steward-data` | Steward state persistence | 1Gi |
 
-Adjust sizes in `k8s/beads-pvc.yaml` and `k8s/steward-pvc.yaml` before deploying.
-
-### Resource requests
-
-Agent pods run LLM inference, so they need network access but minimal CPU/memory for the sidecar process. The Claude API does the heavy lifting remotely.
-
-Recommended resource requests:
+Adjust sizes in `my-values.yaml`:
 
 ```yaml
-resources:
-  requests:
-    memory: "256Mi"
-    cpu: "100m"
-  limits:
-    memory: "1Gi"
-    cpu: "500m"
-```
+dolt:
+  storage:
+    size: 20Gi
+    storageClass: gp3  # optional: leave empty for cluster default
 
-Set these in the SpireAgent CRD under `spec.resources`.
+stewardStorage:
+  size: 2Gi
+```
 
 ### RBAC
 
-The operator needs cluster-level access to manage pods and custom resources. The `k8s/operator.yaml` includes the necessary ServiceAccount, ClusterRole, and ClusterRoleBinding.
+The operator needs cluster-level access to manage pods and custom resources. The Helm chart creates a ServiceAccount, ClusterRole, and ClusterRoleBinding automatically.
 
-If your cluster enforces namespace-scoped RBAC, edit these to scope to the `spire` namespace only.
+If your cluster enforces namespace-scoped RBAC, patch the ClusterRole after installation to scope it to the `spire` namespace.
 
 ---
 
@@ -310,8 +324,8 @@ spec:
     credentialsSecret: string  # k8s Secret name
   polling:
     interval: duration         # steward cycle interval (default: 2m)
-    staleThreshold: duration   # mark stale after this (default: 10m)
-    reassignThreshold: duration # reassign after this (default: 30m)
+    staleThreshold: duration   # mark stale after this (default: 4h)
+    reassignThreshold: duration # reassign after this (default: 6h)
   tokens:
     <name>:
       secret: string           # k8s Secret name
@@ -364,13 +378,22 @@ spire metrics --model # cost breakdown
 
 ## Syncer (optional)
 
-For continuous bidirectional sync without the daemon:
+For continuous bidirectional sync without the daemon, enable the syncer CronJob:
 
-```bash
-kubectl apply -f k8s/syncer.yaml
+```yaml
+# in my-values.yaml
+syncer:
+  enabled: true
+  schedule: "*/2 * * * *"
 ```
 
-The syncer CronJob runs `spire pull && spire push` on the configured interval. Use it when you want the cluster to auto-sync with DoltHub without relying on the daemon's sync cycle.
+Then upgrade:
+
+```bash
+helm upgrade spire ./helm/spire --namespace spire --values my-values.yaml
+```
+
+The syncer CronJob runs `spire pull && spire push` on the configured interval.
 
 ---
 
@@ -426,7 +449,7 @@ Common causes:
 
 ### Stale workloads not reassigned
 
-Check the `reassignThreshold` in SpireConfig. Default is 30m — workloads aren't reassigned until then.
+Check the `reassignThreshold` in SpireConfig (configured via `spireConfig.polling.reassignThreshold` in values.yaml). Default is 6h — workloads aren't reassigned until then.
 
 To force reassignment, delete the SpireWorkload CR:
 
@@ -435,3 +458,31 @@ kubectl delete spireworkload -n spire <workload-name>
 ```
 
 The BeadWatcher will recreate it, and WorkloadAssigner will reassign it.
+
+### Helm troubleshooting
+
+List installed releases:
+
+```bash
+helm list -n spire
+```
+
+Check deployed values:
+
+```bash
+helm get values spire -n spire
+```
+
+Rollback to a previous release:
+
+```bash
+helm rollback spire -n spire
+```
+
+Uninstall (does not delete PVCs by default):
+
+```bash
+helm uninstall spire -n spire
+# PVCs persist — delete manually if you want to wipe all state:
+# kubectl delete pvc -n spire --all
+```

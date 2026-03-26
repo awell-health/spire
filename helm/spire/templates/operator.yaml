@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-operator
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-operator
+    app.kubernetes.io/part-of: spire
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-operator
+    spec:
+      serviceAccountName: spire-operator
+      containers:
+        - name: operator
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          command: ["spire-operator"]
+          args:
+            - --namespace={{ .Values.namespace }}
+            - --interval={{ .Values.operator.interval }}
+            - --steward-image={{ .Values.images.agent.repository }}:{{ .Values.images.agent.tag }}
+          resources:
+            requests:
+              cpu: {{ .Values.operator.resources.requests.cpu }}
+              memory: {{ .Values.operator.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.operator.resources.limits.cpu }}
+              memory: {{ .Values.operator.resources.limits.memory }}

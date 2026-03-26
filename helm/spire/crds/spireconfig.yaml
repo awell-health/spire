@@ -1,0 +1,98 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: spireconfigs.spire.awell.io
+spec:
+  group: spire.awell.io
+  names:
+    kind: SpireConfig
+    listKind: SpireConfigList
+    plural: spireconfigs
+    singular: spireconfig
+    shortNames:
+      - sc
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [dolthub]
+              properties:
+                dolthub:
+                  type: object
+                  required: [remote, credentialsSecret]
+                  properties:
+                    remote:
+                      type: string
+                      description: DoltHub remote URL
+                    credentialsSecret:
+                      type: string
+                      description: Secret name containing DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD
+                polling:
+                  type: object
+                  properties:
+                    interval:
+                      type: string
+                      default: "2m"
+                    staleThreshold:
+                      type: string
+                      default: "4h"
+                    reassignThreshold:
+                      type: string
+                      default: "6h"
+                tokens:
+                  type: object
+                  additionalProperties:
+                    type: object
+                    properties:
+                      secret:
+                        type: string
+                        description: Secret name
+                      key:
+                        type: string
+                        description: Key within the secret
+                  description: Named Anthropic tokens (name → secret ref)
+                routing:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      match:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                      token:
+                        type: string
+                  description: Rules mapping bead properties to token names
+                defaultToken:
+                  type: string
+                  default: default
+                linear:
+                  type: object
+                  properties:
+                    apiKeySecret:
+                      type: string
+                    apiKeyKey:
+                      type: string
+                      default: LINEAR_API_KEY
+            status:
+              type: object
+              properties:
+                lastSync:
+                  type: string
+                  format: date-time
+                beadCount:
+                  type: integer
+                agentCount:
+                  type: integer
+                workloadCount:
+                  type: integer
+                message:
+                  type: string
+      subresources:
+        status: {}

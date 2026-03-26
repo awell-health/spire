@@ -1,0 +1,32 @@
+{{- range .Values.agents }}
+---
+apiVersion: spire.awell.io/v1alpha1
+kind: SpireAgent
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+spec:
+  mode: {{ .mode | default "managed" }}
+  {{- if .image }}
+  image: {{ .image }}
+  {{- else }}
+  image: {{ $.Values.images.agent.repository }}:{{ $.Values.images.agent.tag }}
+  {{- end }}
+  repo: {{ .repo | quote }}
+  repoBranch: {{ .repoBranch | default "main" | quote }}
+  prefixes:
+    {{- range .prefixes }}
+    - {{ . | quote }}
+    {{- end }}
+  maxConcurrent: {{ .maxConcurrent | default 1 }}
+  capabilities:
+    {{- range (.capabilities | default (list "implement")) }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- if .resources }}
+  resources:
+    {{- toYaml .resources | nindent 4 }}
+  {{- end }}
+{{- end }}

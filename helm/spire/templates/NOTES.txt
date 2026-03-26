@@ -1,0 +1,21 @@
+Spire has been deployed to namespace "{{ .Values.namespace }}".
+
+Next steps:
+
+1. Verify dolt is ready:
+   kubectl rollout status deployment/spire-dolt -n {{ .Values.namespace }}
+
+2. Verify steward is running:
+   kubectl rollout status deployment/spire-steward -n {{ .Values.namespace }}
+
+3. Check operator logs:
+   kubectl logs -n {{ .Values.namespace }} deploy/spire-operator -f
+
+4. File a bead and push from your laptop:
+   spire file "Test cluster" -t task -p 2
+   spire push
+
+5. Watch the cluster pick it up:
+   kubectl get spireworkloads -n {{ .Values.namespace }} -w
+
+For the full deployment guide, see docs/cluster-deployment.md.

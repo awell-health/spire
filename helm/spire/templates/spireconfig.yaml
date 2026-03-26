@@ -1,0 +1,25 @@
+apiVersion: spire.awell.io/v1alpha1
+kind: SpireConfig
+metadata:
+  name: default
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  dolthub:
+    remote: {{ .Values.dolthub.remote | quote }}
+    credentialsSecret: spire-credentials
+  polling:
+    interval: {{ .Values.spireConfig.polling.interval | quote }}
+    staleThreshold: {{ .Values.spireConfig.polling.staleThreshold | quote }}
+    reassignThreshold: {{ .Values.spireConfig.polling.reassignThreshold | quote }}
+  tokens:
+    default:
+      secret: spire-credentials
+      key: ANTHROPIC_API_KEY_DEFAULT
+  defaultToken: {{ .Values.spireConfig.defaultToken | quote }}
+  {{- if .Values.linear.apiKey }}
+  linear:
+    apiKeySecret: spire-credentials
+    apiKeyKey: LINEAR_API_KEY
+  {{- end }}

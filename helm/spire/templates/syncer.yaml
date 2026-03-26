@@ -1,0 +1,40 @@
+{{- if .Values.syncer.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: spire-syncer
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-syncer
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  schedule: {{ .Values.syncer.schedule | quote }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: syncer
+              image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+              imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+              command: ["sh", "-c"]
+              args:
+                - "spire pull && spire push"
+              env:
+                - name: DOLT_HOST
+                  value: "spire-dolt.{{ .Values.namespace }}.svc"
+                - name: DOLT_PORT
+                  value: "3306"
+                - name: DOLT_REMOTE_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: spire-credentials
+                      key: DOLT_REMOTE_USER
+                - name: DOLT_REMOTE_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: spire-credentials
+                      key: DOLT_REMOTE_PASSWORD
+{{- end }}

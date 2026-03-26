@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spire-beads-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire
+    app.kubernetes.io/component: beads-storage
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.dolt.storage.size }}
+  {{- if .Values.dolt.storage.storageClass }}
+  storageClassName: {{ .Values.dolt.storage.storageClass }}
+  {{- end }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spire-steward-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-steward
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.stewardStorage.size }}
+  {{- if .Values.stewardStorage.storageClass }}
+  storageClassName: {{ .Values.stewardStorage.storageClass }}
+  {{- end }}

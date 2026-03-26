@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-dolt
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-dolt
+    app.kubernetes.io/component: database
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-dolt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-dolt
+    spec:
+      containers:
+        - name: dolt
+          image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
+          imagePullPolicy: {{ .Values.images.dolt.pullPolicy }}
+          ports:
+            - containerPort: 3306
+              name: mysql
+          env:
+            - name: DOLT_ROOT_PATH
+              value: /var/lib/dolt
+            - name: DOLT_ROOT_HOST
+              value: "%"
+            - name: DOLT_REMOTE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: DOLT_REMOTE_USER
+            - name: DOLT_REMOTE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: DOLT_REMOTE_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/dolt
+            - name: dolt-config
+              mountPath: /var/lib/dolt/config.yaml
+              subPath: config.yaml
+          resources:
+            requests:
+              cpu: {{ .Values.dolt.resources.requests.cpu }}
+              memory: {{ .Values.dolt.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.dolt.resources.limits.cpu }}
+              memory: {{ .Values.dolt.resources.limits.memory }}
+          readinessProbe:
+            tcpSocket:
+              port: 3306
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3306
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: spire-beads-data
+        - name: dolt-config
+          configMap:
+            name: dolt-server-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-dolt
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-dolt
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  selector:
+    app.kubernetes.io/name: spire-dolt
+  ports:
+    - port: 3306
+      targetPort: 3306
+      name: mysql
+  clusterIP: None
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dolt-server-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  config.yaml: |
+    log_level: info
+    behavior:
+      read_only: false
+      autocommit: true
+    user:
+      name: root
+      password: ""
+    allow_cleartext_passwords: true
+    listener:
+      host: "0.0.0.0"
+      port: 3306
+      max_connections: 100
+      read_timeout_millis: 28800000
+      write_timeout_millis: 28800000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dolt-init
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  init.sh: |
+    #!/bin/bash
+    set -e
+    DB_DIR="/var/lib/dolt/spi"
+    if [ ! -d "$DB_DIR/.dolt" ]; then
+      echo "[dolt-init] first boot — cloning from DoltHub..."
+      dolt config --global --set user.name "spire-dolt"
+      dolt config --global --set user.email "dolt@spire.local"
+      cd /var/lib/dolt
+      dolt clone https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }} spi 2>&1 \
+        || echo "[dolt-init] WARNING: clone failed — starting with empty database"
+      echo "[dolt-init] done"
+    else
+      echo "[dolt-init] PV has data — skipping clone"
+    fi

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: spire
+description: Spire — AI agent coordination hub for Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ai
+  - agents
+  - coordination
+  - dolt
+home: https://github.com/awell-health/spire
+sources:
+  - https://github.com/awell-health/spire
+maintainers:
+  - name: Awell Health
+    url: https://awellhealth.com
