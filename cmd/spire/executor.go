@@ -971,25 +971,17 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 	stagingBranch := e.state.StagingBranch
 
 	// Create staging branch in a dedicated worktree — never checkout in main worktree.
-	var stagingDir string
+	var stagingWt *StagingWorktree
 	if stagingBranch != "" {
 		e.log("creating staging branch %s", stagingBranch)
-		// Create the branch from current HEAD
+		// Create the branch from current HEAD before adding the worktree.
 		exec.Command("git", "-C", repoPath, "branch", "-f", stagingBranch).Run()
-		// Create a worktree for staging operations
-		tmpDir, tmpErr := os.MkdirTemp("", fmt.Sprintf("spire-staging-%s-", e.beadID))
-		if tmpErr != nil {
-			return fmt.Errorf("create staging temp dir: %w", tmpErr)
+		var wtErr error
+		stagingWt, wtErr = NewStagingWorktree(repoPath, stagingBranch, fmt.Sprintf("spire-staging-%s", e.beadID), e.log)
+		if wtErr != nil {
+			return fmt.Errorf("create staging worktree: %w", wtErr)
 		}
-		stagingDir = filepath.Join(tmpDir, "staging")
-		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", stagingDir, stagingBranch).CombinedOutput(); wtErr != nil {
-			os.RemoveAll(tmpDir)
-			return fmt.Errorf("create staging worktree: %s\n%s", wtErr, string(out))
-		}
-		defer func() {
-			exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", stagingDir).Run()
-			os.RemoveAll(tmpDir)
-		}()
+		defer stagingWt.Close()
 		storeAddLabel(e.beadID, "feat-branch:"+stagingBranch)
 	}
 
@@ -1069,26 +1061,28 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		}
 
 		// Merge child branches into staging worktree
-		if stagingDir != "" {
+		if stagingWt != nil {
 			for _, subtaskID := range wave {
 				st, ok := e.state.Subtasks[subtaskID]
 				if !ok || st.Status != "closed" || st.Branch == "" {
 					continue
 				}
-				if mergeErr := e.mergeChildBranch(stagingDir, st.Branch, stagingBranch); mergeErr != nil {
+				if mergeErr := stagingWt.MergeBranch(st.Branch, e.resolveConflicts); mergeErr != nil {
 					return fmt.Errorf("merge %s into %s: %w", st.Branch, stagingBranch, mergeErr)
 				}
 			}
 		}
 
-		// Verify build in the staging worktree
-		mergeDir := stagingDir
-		if mergeDir == "" {
-			mergeDir = repoPath
-		}
+		// Verify build in the staging worktree (or main repo if no staging branch).
 		if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
 			e.log("verifying build after wave %d: %s", waveIdx, buildStr)
-			if buildErr := e.runBuildCommand(mergeDir, buildStr); buildErr != nil {
+			var buildErr error
+			if stagingWt != nil {
+				buildErr = stagingWt.RunBuild(buildStr)
+			} else {
+				buildErr = e.runBuildCommand(repoPath, buildStr)
+			}
+			if buildErr != nil {
 				return fmt.Errorf("build verification failed after wave %d: %w", waveIdx, buildErr)
 			}
 		}
@@ -1100,42 +1094,6 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 	return nil
 }
 
-// mergeChildBranch merges a child branch into the staging branch.
-// On conflict, it invokes Claude to resolve the conflicts.
-func (e *formulaExecutor) mergeChildBranch(repoPath, childBranch, stagingBranch string) error {
-	e.log("  merging %s into %s", childBranch, stagingBranch)
-
-	// Fetch in case the apprentice pushed to remote
-	exec.Command("git", "-C", repoPath, "fetch", "origin", childBranch).Run()
-
-	// Try remote branch first, fall back to local
-	branchRef := "origin/" + childBranch
-	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", branchRef)
-	if _, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
-		// Try local branch
-		branchRef = childBranch
-		mergeCmd2 := exec.Command("git", "-C", repoPath, "merge", "--no-edit", branchRef)
-		if _, mergeErr2 := mergeCmd2.CombinedOutput(); mergeErr2 != nil {
-			// Merge conflict — check if git is in a merge state
-			statusCmd := exec.Command("git", "-C", repoPath, "status", "--porcelain")
-			statusOut, _ := statusCmd.Output()
-			if strings.Contains(string(statusOut), "UU ") || strings.Contains(string(statusOut), "AA ") {
-				// There are conflicts — resolve via Claude
-				e.log("  conflict detected, invoking Claude to resolve")
-				if resolveErr := e.resolveConflicts(repoPath, childBranch); resolveErr != nil {
-					// Abort the merge if resolution fails
-					exec.Command("git", "-C", repoPath, "merge", "--abort").Run()
-					return fmt.Errorf("conflict resolution failed: %w", resolveErr)
-				}
-				return nil
-			}
-			// Not a conflict — some other merge error
-			exec.Command("git", "-C", repoPath, "merge", "--abort").Run()
-			return fmt.Errorf("merge failed: %w", mergeErr2)
-		}
-	}
-	return nil
-}
 
 // resolveConflicts invokes Claude to resolve merge conflicts in the working tree.
 func (e *formulaExecutor) resolveConflicts(repoPath, childBranch string) error {
@@ -1344,16 +1302,12 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 					fixBranch := fmt.Sprintf("feat/%s", e.beadID)
 					e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
 					// Use a temporary worktree — never checkout in main worktree.
-					fixTmp, fixTmpErr := os.MkdirTemp("", fmt.Sprintf("spire-fix-merge-%s-", e.beadID))
-					if fixTmpErr == nil {
-						fixWt := filepath.Join(fixTmp, "fix-staging")
-						if _, wtErr := exec.Command("git", "-C", e.state.RepoPath, "worktree", "add", fixWt, e.state.StagingBranch).CombinedOutput(); wtErr == nil {
-							if mergeErr := e.mergeChildBranch(fixWt, fixBranch, e.state.StagingBranch); mergeErr != nil {
-								e.log("warning: merge fix into staging: %s", mergeErr)
-							}
-							exec.Command("git", "-C", e.state.RepoPath, "worktree", "remove", "--force", fixWt).Run()
+					fixWt, fixWtErr := NewStagingWorktree(e.state.RepoPath, e.state.StagingBranch, fmt.Sprintf("spire-fix-merge-%s", e.beadID), e.log)
+					if fixWtErr == nil {
+						if mergeErr := fixWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
+							e.log("warning: merge fix into staging: %s", mergeErr)
 						}
-						os.RemoveAll(fixTmp)
+						fixWt.Close()
 					}
 				}
 			} else {
@@ -1408,137 +1362,34 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		mergeEnv = os.Environ()
 	}
 
-	// Run build verification on the staging/feature branch in a temporary worktree.
-	// Never checkout branches in the main worktree.
-	if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
+	// Run build verification and doc review in a staging worktree — never checkout
+	// branches in the main worktree.
+	buildStr := e.resolveBuildCommand(pc)
+	mergeWt, mergeWtErr := NewStagingWorktree(repoPath, branch, fmt.Sprintf("spire-merge-%s", e.beadID), e.log)
+	if mergeWtErr != nil {
+		return fmt.Errorf("create merge worktree for %s: %w", branch, mergeWtErr)
+	}
+	defer mergeWt.Close()
+
+	if buildStr != "" {
 		e.log("verifying build on %s before merge: %s", branch, buildStr)
-		buildTmp, tmpErr := os.MkdirTemp("", fmt.Sprintf("spire-build-verify-%s-", e.beadID))
-		if tmpErr != nil {
-			return fmt.Errorf("create build-verify temp dir: %w", tmpErr)
-		}
-		buildWt := filepath.Join(buildTmp, "verify")
-		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", buildWt, branch).CombinedOutput(); wtErr != nil {
-			os.RemoveAll(buildTmp)
-			return fmt.Errorf("create build-verify worktree for %s: %s\n%s", branch, wtErr, string(out))
-		}
-		buildErr := e.runBuildCommand(buildWt, buildStr)
-		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", buildWt).Run()
-		os.RemoveAll(buildTmp)
-		if buildErr != nil {
+		if buildErr := mergeWt.RunBuild(buildStr); buildErr != nil {
 			return fmt.Errorf("pre-merge build verification failed on %s: %w", branch, buildErr)
 		}
 	}
 
 	// Review documentation for stale language before merging to main.
-	// Use a temporary worktree to avoid disturbing the main checkout.
-	docTmp, docTmpErr := os.MkdirTemp("", fmt.Sprintf("spire-docreview-%s-", e.beadID))
-	if docTmpErr == nil {
-		docWt := filepath.Join(docTmp, "docreview")
-		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", docWt, branch).CombinedOutput(); wtErr == nil {
-			if docErr := e.reviewDocsForStaleness(docWt, branch, baseBranch, pc); docErr != nil {
-				e.log("warning: doc review: %s", docErr)
-			}
-			exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", docWt).Run()
-		} else {
-			e.log("warning: could not create doc review worktree: %s\n%s", wtErr, string(out))
-		}
-		os.RemoveAll(docTmp)
+	if docErr := e.reviewDocsForStaleness(mergeWt.Dir(), branch, baseBranch, pc); docErr != nil {
+		e.log("warning: doc review: %s", docErr)
 	}
 
-	// Local merge: ensure main worktree is on baseBranch (should already be — staging
-	// operations now use their own worktrees), then ff-only merge the staging branch.
+	// ff-only merge into main, with rebase fallback if main has diverged.
+	// Build and test are re-verified after rebase using the same commands.
+	// MergeToMain handles all git checkout and worktree operations internally.
 	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
-
-	// Verify we're on the right branch; checkout only if not already there.
-	headCmd := exec.Command("git", "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD")
-	if headOut, _ := headCmd.Output(); strings.TrimSpace(string(headOut)) != baseBranch {
-		if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
-			return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
-		}
-	}
-
-	// Ensure main is up to date before attempting ff-only merge.
-	e.log("pulling %s before merge", baseBranch)
-	pullCmd := exec.Command("git", "-C", repoPath, "pull", "--ff-only", "origin", baseBranch)
-	pullCmd.Env = mergeEnv
-	if out, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
-		e.log("warning: pull %s: %s\n%s", baseBranch, pullErr, string(out))
-	}
-
-	// The main worktree is already on baseBranch (executeWave switches back).
-	// Verify we're on the right branch.
-	headRef, _ := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
-	if strings.TrimSpace(string(headRef)) != baseBranch {
-		if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
-			return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
-		}
-	}
-
-	e.log("ff-only merge %s → %s (committer: archmage)", branch, baseBranch)
-
-	// First attempt: fast-forward only merge from the main worktree.
-	ffCmd := exec.Command("git", "-C", repoPath, "merge", "--ff-only", branch)
-	ffCmd.Env = mergeEnv
-	if out, ffErr := ffCmd.CombinedOutput(); ffErr != nil {
-		e.log("ff-only failed: %s — rebasing staging onto %s", strings.TrimSpace(string(out)), baseBranch)
-
-		// ff-only failed — main has diverged. Rebase staging onto main in a
-		// temporary worktree so we don't disturb the main worktree's checkout.
-		tmpDir, err := os.MkdirTemp("", fmt.Sprintf("spire-rebase-%s-", e.beadID))
-		if err != nil {
-			return fmt.Errorf("create temp dir: %w", err)
-		}
-		defer os.RemoveAll(tmpDir)
-
-		wtPath := filepath.Join(tmpDir, "staging")
-
-		// Create a worktree checking out the staging branch.
-		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", wtPath, branch).CombinedOutput(); wtErr != nil {
-			return fmt.Errorf("create staging worktree: %s\n%s", wtErr, string(out))
-		}
-		defer func() {
-			exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", wtPath).Run()
-		}()
-
-		// Rebase the staging branch onto main.
-		e.log("rebasing %s onto %s in staging worktree", branch, baseBranch)
-		rebaseCmd := exec.Command("git", "-C", wtPath, "rebase", baseBranch)
-		rebaseCmd.Env = os.Environ()
-		if out, rbErr := rebaseCmd.CombinedOutput(); rbErr != nil {
-			// Abort the rebase — never force merge.
-			exec.Command("git", "-C", wtPath, "rebase", "--abort").Run()
-			return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s", branch, baseBranch, rbErr, string(out))
-		}
-
-		// Re-verify build in the staging worktree after rebase.
-		e.log("verifying build after rebase")
-		buildCmd := exec.Command("go", "build", "./cmd/spire/")
-		buildCmd.Dir = wtPath
-		buildCmd.Env = os.Environ()
-		if out, buildErr := buildCmd.CombinedOutput(); buildErr != nil {
-			return fmt.Errorf("build failed after rebase (aborting merge): %s\n%s", buildErr, string(out))
-		}
-
-		// Run tests after rebase.
-		e.log("running tests after rebase")
-		testCmd := exec.Command("go", "test", "./cmd/spire/")
-		testCmd.Dir = wtPath
-		testCmd.Env = os.Environ()
-		if out, testErr := testCmd.CombinedOutput(); testErr != nil {
-			return fmt.Errorf("tests failed after rebase (aborting merge): %s\n%s", testErr, string(out))
-		}
-
-		// Remove the worktree before retrying the merge (the branch ref is
-		// already updated by the rebase — the worktree just holds a checkout).
-		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", wtPath).Run()
-
-		// Second attempt: ff-only should now succeed since staging was rebased.
-		e.log("retrying ff-only merge after rebase")
-		ffCmd2 := exec.Command("git", "-C", repoPath, "merge", "--ff-only", branch)
-		ffCmd2.Env = mergeEnv
-		if out, ffErr2 := ffCmd2.CombinedOutput(); ffErr2 != nil {
-			return fmt.Errorf("ff-only merge failed even after rebase (will not force merge): %s\n%s", ffErr2, string(out))
-		}
+	testStr := "go test ./cmd/spire/"
+	if mergeErr := mergeWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
+		return mergeErr
 	}
 
 	// Push main (with archmage identity)
