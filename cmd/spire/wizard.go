@@ -663,12 +663,35 @@ func wizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 
 // wizardCommitAndPush commits any changes and pushes the branch.
 func wizardCommitAndPush(dir, beadID, beadTitle, branchName string, log func(string, ...interface{})) (commitSHA string, pushed bool) {
-	// Check for changes
+	// Check for uncommitted changes in the working tree.
 	statusCmd := exec.Command("git", "-C", dir, "status", "--porcelain")
 	statusOut, _ := statusCmd.Output()
-	if len(strings.TrimSpace(string(statusOut))) == 0 {
-		log("no changes to commit")
+	hasUncommitted := len(strings.TrimSpace(string(statusOut))) > 0
+
+	// Also check if Claude already committed to the branch (clean worktree but new commits).
+	logCmd := exec.Command("git", "-C", dir, "log", "origin/main..HEAD", "--oneline")
+	logOut, _ := logCmd.Output()
+	hasNewCommits := len(strings.TrimSpace(string(logOut))) > 0
+
+	if !hasUncommitted && !hasNewCommits {
+		log("no changes to commit and no new commits on branch")
 		return "", false
+	}
+
+	// If Claude already committed and pushed, just report success.
+	if !hasUncommitted && hasNewCommits {
+		shaCmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+		shaOut, _ := shaCmd.Output()
+		commitSHA = strings.TrimSpace(string(shaOut))
+		// Ensure the branch is pushed.
+		log("Claude already committed — pushing branch %s", branchName)
+		pushCmd := exec.Command("git", "-C", dir, "push", "-u", "origin", branchName)
+		pushCmd.Env = os.Environ()
+		if out, err := pushCmd.CombinedOutput(); err != nil {
+			log("git push failed: %s\n%s", err, string(out))
+			return commitSHA, false
+		}
+		return commitSHA, true
 	}
 
 	// Remove prompt files before staging
