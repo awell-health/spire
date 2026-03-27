@@ -38,7 +38,9 @@ func NewStagingWorktree(repoPath, branch, nameHint string, log func(string, ...i
 	// commits from conflict resolution or doc review are attributed correctly.
 	// Matches the pattern in wizard.go:377. Use --worktree so the setting is
 	// scoped to this worktree only and doesn't pollute the main repo's config.
-	exec.Command("git", "-C", repoPath, "config", "extensions.worktreeConfig", "true").Run()
+	if err := exec.Command("git", "-C", repoPath, "config", "extensions.worktreeConfig", "true").Run(); err != nil {
+		log("warn: git config extensions.worktreeConfig: %v", err)
+	}
 	archName, archEmail := "spire", "spire@spire.local" // fallback
 	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
 		if tower.Archmage.Name != "" {
@@ -48,8 +50,12 @@ func NewStagingWorktree(repoPath, branch, nameHint string, log func(string, ...i
 			archEmail = tower.Archmage.Email
 		}
 	}
-	exec.Command("git", "-C", dir, "config", "--worktree", "user.name", archName).Run()
-	exec.Command("git", "-C", dir, "config", "--worktree", "user.email", archEmail).Run()
+	if err := exec.Command("git", "-C", dir, "config", "--worktree", "user.name", archName).Run(); err != nil {
+		log("warn: git config user.name: %v", err)
+	}
+	if err := exec.Command("git", "-C", dir, "config", "--worktree", "user.email", archEmail).Run(); err != nil {
+		log("warn: git config user.email: %v", err)
+	}
 
 	return &StagingWorktree{
 		repoPath: repoPath,
