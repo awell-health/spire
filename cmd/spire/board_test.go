@@ -121,3 +121,90 @@ func TestSortBeads_FallsBackToCreatedAt(t *testing.T) {
 		t.Fatalf("created_at fallback sort mismatch: %#v", beads)
 	}
 }
+
+func TestBoardTypeScopeNext(t *testing.T) {
+	scope := boardTypeAll
+	want := []boardTypeScope{
+		boardTypeTask,
+		boardTypeBug,
+		boardTypeEpic,
+		boardTypeDesign,
+		boardTypeDecision,
+		boardTypeOther,
+		boardTypeAll,
+	}
+	for i, expected := range want {
+		scope = scope.next()
+		if scope != expected {
+			t.Fatalf("step %d: expected %v, got %v", i, expected, scope)
+		}
+	}
+}
+
+func TestFilterBoardTypeScope(t *testing.T) {
+	cols := boardColumns{
+		Alerts: []BoardBead{
+			{ID: "spi-decision", Type: "decision"},
+			{ID: "spi-bug", Type: "bug"},
+		},
+		Ready: []BoardBead{
+			{ID: "spi-task", Type: "task"},
+			{ID: "spi-feature", Type: "feature"},
+			{ID: "spi-design", Type: "design"},
+		},
+		Review: []BoardBead{
+			{ID: "spi-epic", Type: "epic"},
+		},
+		Blocked: []BoardBead{
+			{ID: "spi-chore", Type: "chore"},
+		},
+	}
+
+	taskOnly := filterBoardTypeScope(cols, boardTypeTask)
+	if len(taskOnly.Ready) != 1 || taskOnly.Ready[0].ID != "spi-task" {
+		t.Fatalf("task filter mismatch: %#v", taskOnly.Ready)
+	}
+	if len(taskOnly.Alerts) != 0 || len(taskOnly.Review) != 0 || len(taskOnly.Blocked) != 0 {
+		t.Fatalf("task filter leaked non-task beads: %#v", taskOnly)
+	}
+
+	decisionOnly := filterBoardTypeScope(cols, boardTypeDecision)
+	if len(decisionOnly.Alerts) != 1 || decisionOnly.Alerts[0].ID != "spi-decision" {
+		t.Fatalf("decision filter mismatch: %#v", decisionOnly.Alerts)
+	}
+
+	otherOnly := filterBoardTypeScope(cols, boardTypeOther)
+	if len(otherOnly.Ready) != 1 || otherOnly.Ready[0].ID != "spi-feature" {
+		t.Fatalf("other filter ready mismatch: %#v", otherOnly.Ready)
+	}
+	if len(otherOnly.Blocked) != 1 || otherOnly.Blocked[0].ID != "spi-chore" {
+		t.Fatalf("other filter blocked mismatch: %#v", otherOnly.Blocked)
+	}
+	if len(otherOnly.Alerts) != 0 || len(otherOnly.Review) != 0 {
+		t.Fatalf("other filter leaked core types: %#v", otherOnly)
+	}
+}
+
+func TestBoardModelSelectedBeadUsesTypeScope(t *testing.T) {
+	m := boardModel{
+		cols: boardColumns{
+			Ready: []BoardBead{
+				{ID: "spi-task", Type: "task"},
+				{ID: "spi-bug", Type: "bug"},
+			},
+		},
+		typeScope: boardTypeBug,
+	}
+
+	m.clampSelection()
+	bead := m.selectedBead()
+	if bead == nil || bead.ID != "spi-bug" {
+		t.Fatalf("expected filtered selected bead spi-bug, got %#v", bead)
+	}
+}
+
+func TestShortTypeDecision(t *testing.T) {
+	if got := shortType("decision"); got != "dec" {
+		t.Fatalf("shortType(decision) = %q, want %q", got, "dec")
+	}
+}
