@@ -28,9 +28,14 @@ type PhaseConfig struct {
 	MaxTurns       int             `toml:"max_turns,omitempty"`
 	Context        []string        `toml:"context,omitempty"`
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
+	// Behavior override — dispatched before role. When set, the executor
+	// calls the named behavior handler instead of role-based dispatch.
+	// See docs/wizard-workflow-dag.md for available behaviors per phase.
+	Behavior string `toml:"behavior,omitempty"`
+	Deploy   string `toml:"deploy,omitempty"` // deploy command (deploy behavior)
 	// Execution directives
-	Role          string `toml:"role,omitempty"`           // human | apprentice | sage | wizard | skip
-	Dispatch      string `toml:"dispatch,omitempty"`       // direct | wave
+	Role     string `toml:"role,omitempty"`     // human | apprentice | sage | wizard | skip
+	Dispatch string `toml:"dispatch,omitempty"` // direct | wave
 	VerdictOnly   bool   `toml:"verdict_only,omitempty"`   // sage: produce verdict only
 	Judgment      bool   `toml:"judgment,omitempty"`        // executor judges review feedback
 	StagingBranch string `toml:"staging_branch,omitempty"` // branch pattern for wave merges
@@ -40,6 +45,11 @@ type PhaseConfig struct {
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
 	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
 	Test          string `toml:"test,omitempty"`           // test command to verify after rebase/merge
+}
+
+// GetBehavior returns the behavior override, or "" for role-based dispatch.
+func (pc PhaseConfig) GetBehavior() string {
+	return pc.Behavior
 }
 
 // GetMaxTurns returns the max turns for this phase.

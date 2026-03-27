@@ -218,37 +218,67 @@ func (e *formulaExecutor) Run() error {
 		e.log("phase: %s (role: %s)", phase, pc.GetRole())
 		e.saveState()
 
-		// Merge phase has its own handler regardless of role.
-		if phase == "merge" {
-			if err := e.executeMerge(pc); err != nil {
-				e.closeAttempt("failure: merge: " + err.Error())
-				escalateHumanFailure(e.beadID, e.agentName, "merge-failure", err.Error())
-				return fmt.Errorf("phase merge: %w", err)
+		// Dispatch by behavior first (if set), then fall through to role.
+		var err error
+		behavior := pc.GetBehavior()
+
+		switch {
+		// --- Behavior-based dispatch (formula-driven) ---
+		case behavior == "validate-design":
+			err = e.wizardValidateDesign()
+		case behavior == "generate-subtasks":
+			err = e.wizardPlan(pc)
+		case behavior == "enrich-subtasks":
+			children, _ := e.childGetter(e.beadID)
+			err = e.enrichSubtasksWithChangeSpecs(children, "", "", pc)
+		case behavior == "sage-review":
+			err = e.executeReview(phase, pc)
+		case behavior == "auto-approve":
+			e.log("auto-approve: skipping review")
+		case behavior == "merge-to-main":
+			if mergeErr := e.executeMerge(pc); mergeErr != nil {
+				e.closeAttempt("failure: merge: " + mergeErr.Error())
+				escalateHumanFailure(e.beadID, e.agentName, "merge-failure", mergeErr.Error())
+				return fmt.Errorf("phase %s: %w", phase, mergeErr)
 			}
-			// Close the merge step bead on success.
 			e.transitionStepBead(phase, "")
 			e.closeAttempt("success: merged")
-			break // merge is terminal
-		}
+			return nil // merge is terminal
+		case behavior == "skip":
+			e.log("skipping phase %s (behavior: skip)", phase)
 
-		var err error
-		switch pc.GetRole() {
-		case "human":
-			err = e.waitForHuman(phase)
-		case "apprentice":
-			if pc.GetDispatch() == "wave" {
-				err = e.executeWave(phase, pc)
-			} else {
-				err = e.executeDirect(phase, pc)
+		// --- Role-based dispatch (legacy / default) ---
+		case behavior == "" && phase == "merge":
+			// Default merge behavior when no behavior set
+			if mergeErr := e.executeMerge(pc); mergeErr != nil {
+				e.closeAttempt("failure: merge: " + mergeErr.Error())
+				escalateHumanFailure(e.beadID, e.agentName, "merge-failure", mergeErr.Error())
+				return fmt.Errorf("phase merge: %w", mergeErr)
 			}
-		case "sage":
-			err = e.executeReview(phase, pc)
-		case "wizard":
-			err = e.executeWizard(phase, pc)
-		case "skip":
-			e.log("skipping phase %s", phase)
+			e.transitionStepBead(phase, "")
+			e.closeAttempt("success: merged")
+			return nil // merge is terminal
+		case behavior == "":
+			switch pc.GetRole() {
+			case "human":
+				err = e.waitForHuman(phase)
+			case "apprentice":
+				if pc.GetDispatch() == "wave" {
+					err = e.executeWave(phase, pc)
+				} else {
+					err = e.executeDirect(phase, pc)
+				}
+			case "sage":
+				err = e.executeReview(phase, pc)
+			case "wizard":
+				err = e.executeWizard(phase, pc)
+			case "skip":
+				e.log("skipping phase %s", phase)
+			default:
+				err = fmt.Errorf("unknown role %q for phase %s", pc.GetRole(), phase)
+			}
 		default:
-			err = fmt.Errorf("unknown role %q for phase %s", pc.GetRole(), phase)
+			err = fmt.Errorf("unknown behavior %q for phase %s", behavior, phase)
 		}
 
 		if err != nil {
