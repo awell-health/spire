@@ -176,7 +176,9 @@ func cmdWizardReview(args []string) error {
 			storeAddComment(beadID, fmt.Sprintf("Review approved by %s (verdict-only)", reviewerName))
 			log("approved (verdict-only) — exiting")
 		} else {
-			reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
+			if err := reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log); err != nil {
+				return err
+			}
 		}
 	case "request_changes":
 		if verdictOnly {
@@ -420,7 +422,7 @@ func parseReviewOutput(text string) (*Review, error) {
 
 // --- Verdict handlers ---
 
-func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, repoPath string, log func(string, ...interface{})) {
+func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, repoPath string, log func(string, ...interface{})) error {
 	log("approved — closing review step")
 
 	// Remove review labels
@@ -449,7 +451,7 @@ func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, r
 	if err := reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath, log); err != nil {
 		log("merge failed: %s — bead left at review-approved", err)
 		storeAddComment(beadID, fmt.Sprintf("Auto-merge failed: %s", err))
-		return
+		return err
 	}
 
 	// Close merge molecule step and bead
@@ -463,6 +465,7 @@ func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, r
 		log("warning: close bead: %s", err)
 	}
 	log("done — merged and closed")
+	return nil
 }
 
 // reviewMerge creates a PR for the feature branch and squash-merges it.
@@ -723,9 +726,8 @@ Decision meanings:
 
 	switch decision.Decision {
 	case "merge":
-		// Force-approve: proceed to merge via the approval path
+		// Force-approve: same terminal path as sage approve.
 		log("arbiter: force-approve, proceeding to merge")
-		// Get branch info
 		branch := hasLabel(bead, "feat-branch:")
 		if branch == "" {
 			branch = fmt.Sprintf("feat/%s", beadID)
@@ -734,75 +736,21 @@ Decision meanings:
 		if err != nil {
 			return fmt.Errorf("arbiter merge: resolve repo: %w", err)
 		}
-		reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
-		return nil
+		return reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
 
 	case "split":
-		// Merge approved work, create child beads for remaining issues, then close.
-		// The arbiter only says "split" when partial work is good — if nothing was
-		// good it would say "discard." Therefore split always merges what exists.
-		log("arbiter: splitting — merging approved work + creating %d child tasks", len(decision.SplitTasks))
-
-		// Merge staging branch to main (same as approve path).
-		branch := hasLabel(bead, "feat-branch:")
-		if branch == "" {
-			branch = fmt.Sprintf("feat/%s", beadID)
+		// Merge approved work, create child beads for remaining issues, close original.
+		// terminalSplit checks reviewHandleApproval error and aborts child-bead creation
+		// if the merge fails — preventing child beads from being orphaned from unmerged code.
+		var tasks []SplitTask
+		for _, t := range decision.SplitTasks {
+			tasks = append(tasks, SplitTask{Title: t.Title, Description: t.Description})
 		}
-		repoPath, _, baseBranch, resolveErr := wizardResolveRepo(beadID)
-		if resolveErr != nil {
-			log("warning: split merge — could not resolve repo: %s", resolveErr)
-		} else {
-			reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
-		}
-
-		// Create child beads for remaining work.
-		for _, task := range decision.SplitTasks {
-			childID, err := storeCreateBead(createOpts{
-				Title:       task.Title,
-				Description: task.Description,
-				Priority:    bead.Priority,
-				Type:        parseIssueType(bead.Type),
-				Parent:      beadID,
-			})
-			if err != nil {
-				log("warning: create split task: %s", err)
-				continue
-			}
-			log("created split task: %s", childID)
-			storeAddComment(beadID, fmt.Sprintf("Split task created: %s — %s", childID, task.Title))
-		}
-
-		// Close the original bead (reviewHandleApproval may have already closed it).
-		storeRemoveLabel(beadID, "review-feedback")
-		b, _ := storeGetBead(beadID)
-		if b.Status != "closed" {
-			return storeCloseBead(beadID)
-		}
-		return nil
+		return terminalSplit(beadID, reviewerName, tasks, log)
 
 	default: // "discard" or unknown
 		// Delete branches and close as wontfix.
-		log("arbiter: discarding bead — deleting branches")
-		branch := hasLabel(bead, "feat-branch:")
-		if branch == "" {
-			branch = fmt.Sprintf("feat/%s", beadID)
-		}
-		repoPath, _, _, resolveErr := wizardResolveRepo(beadID)
-		if resolveErr == nil {
-			// Delete local branches.
-			exec.Command("git", "-C", repoPath, "branch", "-D", branch).Run()
-			epicBranch := fmt.Sprintf("epic/%s", beadID)
-			exec.Command("git", "-C", repoPath, "branch", "-D", epicBranch).Run()
-			// Delete remote branches.
-			exec.Command("git", "-C", repoPath, "push", "origin", "--delete", branch).Run()
-			exec.Command("git", "-C", repoPath, "push", "origin", "--delete", epicBranch).Run()
-			log("branches deleted")
-		} else {
-			log("warning: could not resolve repo for branch cleanup: %s", resolveErr)
-		}
-		storeAddComment(beadID, "Arbiter: closing as wontfix — branches deleted")
-		storeRemoveLabel(beadID, "review-feedback")
-		return storeCloseBead(beadID)
+		return terminalDiscard(beadID, log)
 	}
 }
 
