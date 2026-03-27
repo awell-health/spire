@@ -39,6 +39,7 @@ type PhaseConfig struct {
 	Apprentice    bool   `toml:"apprentice,omitempty"`     // run as apprentice (no phase labels, no review handoff)
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
 	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
+	Test          string `toml:"test,omitempty"`           // test command to verify after rebase/merge
 }
 
 // GetMaxTurns returns the max turns for this phase.

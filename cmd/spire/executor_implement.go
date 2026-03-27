@@ -258,6 +258,28 @@ func (e *formulaExecutor) resolveBuildCommand(pc PhaseConfig) string {
 	return ""
 }
 
+// resolveTestCommand returns the test command to use for verification.
+// Resolution order:
+//  1. Current phase's Test field
+//  2. Merge phase's Test field (test may be configured there)
+//  3. Repo config runtime.test (spire.yaml)
+//  4. Empty string (no test verification)
+func (e *formulaExecutor) resolveTestCommand(pc PhaseConfig) string {
+	// 1. Current phase config
+	if pc.Test != "" {
+		return pc.Test
+	}
+	// 2. Merge phase fallback
+	if merge, ok := e.formula.Phases["merge"]; ok && merge.Test != "" {
+		return merge.Test
+	}
+	// 3. Repo config fallback
+	if cfg, err := repoconfig.Load(e.state.RepoPath); err == nil && cfg.Runtime.Test != "" {
+		return cfg.Runtime.Test
+	}
+	return ""
+}
+
 // runBuildCommand executes a build command string in the given repo directory.
 // The command is split on spaces and run directly (no shell).
 func (e *formulaExecutor) runBuildCommand(repoPath, buildStr string) error {

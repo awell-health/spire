@@ -62,7 +62,7 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	// Build and test are re-verified after rebase using the same commands.
 	// MergeToMain handles all git checkout and worktree operations internally.
 	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
-	testStr := "go test ./cmd/spire/"
+	testStr := e.resolveTestCommand(pc)
 	if mergeErr := mergeWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
 		return mergeErr
 	}
