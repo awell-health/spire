@@ -299,16 +299,34 @@ func (e *formulaExecutor) waitForHuman(phase string) error {
 }
 
 // executeWizard handles phases where the wizard (orchestrator) acts directly.
-// The wizard invokes Claude for judgment/planning tasks rather than dispatching sub-agents.
+// Behavior-driven dispatch takes precedence: if pc.GetBehavior() is set, the
+// matching behavior handler runs. If empty, falls back to phase-name dispatch
+// for backwards compatibility.
 func (e *formulaExecutor) executeWizard(phase string, pc PhaseConfig) error {
-	switch phase {
-	case "design":
-		return e.wizardValidateDesign()
-	case "plan":
-		return e.wizardPlan(pc)
+	switch pc.GetBehavior() {
+	case "validate-design":
+		return e.behaviorValidateDesign()
+	case "validate-spec":
+		return e.behaviorValidateSpec(pc)
+	case "validate-approval":
+		return e.behaviorValidateApproval(pc)
+	case "validate-gate":
+		return e.behaviorValidateGate(pc)
+	case "skip":
+		e.log("skipping phase %s (behavior: skip)", phase)
+		return nil
+	case "":
+		// Legacy: dispatch by phase name for backwards compatibility.
+		switch phase {
+		case "design":
+			return e.behaviorValidateDesign()
+		case "plan":
+			return e.wizardPlan(pc)
+		default:
+			return e.wizardGeneric(phase, pc)
+		}
 	default:
-		// Generic wizard phase: invoke Claude with bead context
-		return e.wizardGeneric(phase, pc)
+		return fmt.Errorf("unknown wizard behavior %q for phase %s", pc.GetBehavior(), phase)
 	}
 }
 

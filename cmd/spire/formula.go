@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -28,6 +29,8 @@ type PhaseConfig struct {
 	MaxTurns       int             `toml:"max_turns,omitempty"`
 	Context        []string        `toml:"context,omitempty"`
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
+	Behavior       string          `toml:"behavior,omitempty"`        // dispatch behavior (validate-design, validate-spec, etc.)
+	SpecType       string          `toml:"spec_type,omitempty"`       // for validate-spec: required dep issue type
 	// Execution directives
 	Role          string `toml:"role,omitempty"`           // human | apprentice | sage | wizard | skip
 	Dispatch      string `toml:"dispatch,omitempty"`       // direct | wave
@@ -71,6 +74,11 @@ func (pc PhaseConfig) GetMergeStrategy() string {
 		return pc.MergeStrategy
 	}
 	return "squash"
+}
+
+// GetBehavior returns the behavior for this phase, or "" for legacy dispatch.
+func (pc PhaseConfig) GetBehavior() string {
+	return pc.Behavior
 }
 
 // RevisionPolicy configures review loop behavior (review phase only).
@@ -152,24 +160,38 @@ func ParseFormulaV2(data []byte) (*FormulaV2, error) {
 	if f.Version != 2 {
 		return nil, fmt.Errorf("expected formula version 2, got %d", f.Version)
 	}
-	// Validate phase names
-	for name := range f.Phases {
-		if !isValidPhase(name) {
-			return nil, fmt.Errorf("unknown phase %q in formula", name)
+	// Validate phase names — free-form when behavior is set; only validate
+	// against the 5 universal phases when no behavior is specified.
+	for name, pc := range f.Phases {
+		if pc.Behavior == "" && !isValidPhase(name) {
+			return nil, fmt.Errorf("unknown phase %q in formula (set behavior to use custom names)", name)
 		}
 	}
 	return &f, nil
 }
 
 // EnabledPhases returns the ordered list of enabled phases for this formula.
-// Order follows validPhases (design, plan, implement, review, merge).
+// Standard phases appear first in validPhases order (design, plan, implement,
+// review, merge). Custom phases (those with a behavior set) are appended after
+// in sorted order for determinism.
 func (f *FormulaV2) EnabledPhases() []string {
 	var enabled []string
+	seen := make(map[string]bool)
 	for _, p := range validPhases {
 		if _, ok := f.Phases[p]; ok {
 			enabled = append(enabled, p)
+			seen[p] = true
 		}
 	}
+	// Append custom phases (behavior-driven, not in validPhases) in sorted order.
+	var custom []string
+	for name := range f.Phases {
+		if !seen[name] {
+			custom = append(custom, name)
+		}
+	}
+	sort.Strings(custom)
+	enabled = append(enabled, custom...)
 	return enabled
 }
 
