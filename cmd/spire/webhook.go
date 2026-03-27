@@ -354,22 +354,42 @@ func processWebhookQueue() (int, int) {
 	return processed, errors
 }
 
-// notifyOwnerIfClaimed sends spire mail to the epic owner if someone has claimed it.
+// resolveWebhookRecipient returns the agent that should receive a webhook notification
+// for the given epic. The active attempt bead's agent: label is authoritative; the
+// epic's owner: label is used as a fallback for backwards compatibility.
+func resolveWebhookRecipient(attempt *Bead, epicBead Bead) string {
+	if attempt != nil {
+		if agent := hasLabel(*attempt, "agent:"); agent != "" {
+			return agent
+		}
+	}
+	return hasLabel(epicBead, "owner:")
+}
+
+// notifyOwnerIfClaimed sends spire mail to the active attempt's agent if the epic
+// has an active attempt bead. Falls back to the owner: label if no attempt exists.
 func notifyOwnerIfClaimed(epicID, linearID, eventType string) error {
-	// Fetch the epic bead to check for owner
-	epicBead, err := storeGetBead(epicID)
+	// Check for an active attempt child bead — the attempt bead's agent: label
+	// is authoritative for who is currently working on this epic.
+	attempt, err := storeGetActiveAttempt(epicID)
 	if err != nil {
-		return fmt.Errorf("get epic %s: %w", epicID, err)
+		// Log the invariant violation but don't fail — fall back to owner: label.
+		log.Printf("[daemon] notifyOwnerIfClaimed %s: active attempt query error: %s", epicID, err)
 	}
 
-	// Check for owner — look for the owner field or a claimed-by label
-	owner := hasLabel(epicBead, "owner:")
-	if owner == "" {
-		// No owner, no notification
+	// Fetch the epic bead for the owner: fallback if needed.
+	epicBead, fetchErr := storeGetBead(epicID)
+	if fetchErr != nil {
+		return fmt.Errorf("get epic %s: %w", epicID, fetchErr)
+	}
+
+	recipient := resolveWebhookRecipient(attempt, epicBead)
+	if recipient == "" {
+		// No active attempt agent and no owner label — nothing to notify.
 		return nil
 	}
 
 	// Send notification via spire send
 	msg := fmt.Sprintf("%s updated (%s)", linearID, eventType)
-	return cmdSend([]string{"--as", "spi", owner, msg, "--ref", epicID})
+	return cmdSend([]string{"--as", "spi", recipient, msg, "--ref", epicID})
 }
