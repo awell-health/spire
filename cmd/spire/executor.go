@@ -352,12 +352,34 @@ func (e *formulaExecutor) closeAttempt(result string) {
 }
 
 // ensureStepBeads creates workflow step beads for each enabled formula phase.
-// Called once at executor start. Idempotent — if StepBeadIDs is already populated
-// (from persisted state), this is a no-op.
+// Called once at executor start. Idempotent in two ways:
+//  1. If StepBeadIDs is already populated (from persisted state), this is a no-op.
+//  2. If step beads already exist in the graph (crash between create and saveState),
+//     they are reconciled into StepBeadIDs rather than duplicated.
 func (e *formulaExecutor) ensureStepBeads() error {
 	if len(e.state.StepBeadIDs) > 0 {
 		e.log("step beads already created (%d phases)", len(e.state.StepBeadIDs))
 		return nil
+	}
+
+	// Guard against crash-between-create-and-save: query existing step children
+	// from the graph and rebuild StepBeadIDs before creating new ones.
+	if children, err := e.childGetter(e.beadID); err != nil {
+		e.log("warning: query step children for reconciliation: %s (will create fresh)", err)
+	} else {
+		rebuilt := make(map[string]string)
+		for _, child := range children {
+			if containsLabel(child, "workflow-step") {
+				if phase := hasLabel(child, "step:"); phase != "" {
+					rebuilt[phase] = child.ID
+				}
+			}
+		}
+		if len(rebuilt) > 0 {
+			e.state.StepBeadIDs = rebuilt
+			e.log("reconciled %d existing step beads from graph (skipping creation)", len(rebuilt))
+			return e.saveState()
+		}
 	}
 
 	phases := e.formula.EnabledPhases()

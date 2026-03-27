@@ -285,3 +285,125 @@ func TestWizardPlanSkipsAlreadyEnrichedSubtasks(t *testing.T) {
 		t.Errorf("already-enriched subtask has %d change spec comments, want exactly 1", specs)
 	}
 }
+
+// TestEnsureStepBeadsReconcileFromGraph verifies that ensureStepBeads does not create
+// duplicate step beads when they already exist in the graph (crash-recovery path:
+// process died after creating beads but before persisting StepBeadIDs to state).
+func TestEnsureStepBeadsReconcileFromGraph(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", dir)
+
+	epic := Bead{ID: "spi-test-step-reconcile", Title: "Test epic"}
+	// Simulate step beads already present in the graph.
+	existingSteps := []Bead{
+		{
+			ID:     "spi-test-step-reconcile.1",
+			Title:  "step:implement",
+			Labels: []string{"workflow-step", "step:implement"},
+			Status: "in_progress",
+		},
+		{
+			ID:     "spi-test-step-reconcile.2",
+			Title:  "step:review",
+			Labels: []string{"workflow-step", "step:review"},
+			Status: "open",
+		},
+		{
+			ID:     "spi-test-step-reconcile.3",
+			Title:  "step:merge",
+			Labels: []string{"workflow-step", "step:merge"},
+			Status: "open",
+		},
+	}
+
+	e, _ := newTestExecutor(t, epic, existingSteps)
+	e.state.StepBeadIDs = nil // empty — simulates crash before saveState
+
+	stepCreatorCalled := false
+	e.stepCreator = func(parentID, stepName string) (string, error) {
+		stepCreatorCalled = true
+		return "spi-new-" + stepName, nil
+	}
+	e.stepActivator = func(stepID string) error { return nil }
+	e.stepCloser = func(stepID string) error { return nil }
+
+	e.formula = &FormulaV2{
+		Name:    "test-formula",
+		Version: 2,
+		Phases: map[string]PhaseConfig{
+			"implement": {Role: "apprentice"},
+			"review":    {Role: "sage"},
+			"merge":     {Role: "wizard"},
+		},
+	}
+
+	if err := e.ensureStepBeads(); err != nil {
+		t.Fatalf("ensureStepBeads returned unexpected error: %v", err)
+	}
+
+	if stepCreatorCalled {
+		t.Error("stepCreator was called — reconciliation should have prevented new creation")
+	}
+
+	if len(e.state.StepBeadIDs) != 3 {
+		t.Errorf("StepBeadIDs has %d entries, want 3", len(e.state.StepBeadIDs))
+	}
+	if got := e.state.StepBeadIDs["implement"]; got != "spi-test-step-reconcile.1" {
+		t.Errorf("implement step bead ID = %q, want %q", got, "spi-test-step-reconcile.1")
+	}
+	if got := e.state.StepBeadIDs["review"]; got != "spi-test-step-reconcile.2" {
+		t.Errorf("review step bead ID = %q, want %q", got, "spi-test-step-reconcile.2")
+	}
+	if got := e.state.StepBeadIDs["merge"]; got != "spi-test-step-reconcile.3" {
+		t.Errorf("merge step bead ID = %q, want %q", got, "spi-test-step-reconcile.3")
+	}
+}
+
+// TestEnsureStepBeadsCreatesWhenNoneExist verifies that ensureStepBeads creates new step
+// beads when neither state nor graph has any (the normal first-run path).
+func TestEnsureStepBeadsCreatesWhenNoneExist(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", dir)
+
+	epic := Bead{ID: "spi-test-step-create", Title: "Test epic"}
+	e, _ := newTestExecutor(t, epic, nil) // no existing children
+	e.state.StepBeadIDs = nil
+
+	created := map[string]string{}
+	e.stepCreator = func(parentID, stepName string) (string, error) {
+		id := "spi-new-" + stepName
+		created[stepName] = id
+		return id, nil
+	}
+	activatedIDs := []string{}
+	e.stepActivator = func(stepID string) error {
+		activatedIDs = append(activatedIDs, stepID)
+		return nil
+	}
+	e.stepCloser = func(stepID string) error { return nil }
+
+	e.formula = &FormulaV2{
+		Name:    "test-formula",
+		Version: 2,
+		Phases: map[string]PhaseConfig{
+			"implement": {Role: "apprentice"},
+			"review":    {Role: "sage"},
+			"merge":     {Role: "wizard"},
+		},
+	}
+
+	if err := e.ensureStepBeads(); err != nil {
+		t.Fatalf("ensureStepBeads returned unexpected error: %v", err)
+	}
+
+	if len(created) != 3 {
+		t.Errorf("stepCreator called %d times, want 3", len(created))
+	}
+	// First phase (implement) must be activated.
+	if len(activatedIDs) != 1 || activatedIDs[0] != "spi-new-implement" {
+		t.Errorf("stepActivator called with %v, want [spi-new-implement]", activatedIDs)
+	}
+	if len(e.state.StepBeadIDs) != 3 {
+		t.Errorf("StepBeadIDs has %d entries, want 3", len(e.state.StepBeadIDs))
+	}
+}
