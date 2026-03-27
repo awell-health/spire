@@ -5,17 +5,16 @@ version = 2
 [phases.design]
 role = "wizard"
 timeout = "1m"
-max_turns = 1
 # Wizard validates that the epic has at least one discovered-from dep pointing to a
-# closed design bead. Uses the dep graph, not ref: labels. Timeout is just a safety net.
+# closed design bead. Pure Go logic — no Claude invocation. Timeout is just a safety net.
 
 [phases.plan]
 role = "wizard"
 timeout = "10m"
-max_turns = 5
 model = "claude-opus-4-6"
 # Wizard invokes Claude (Opus) with all context inline to generate subtask breakdown.
 # Planning is judgment-heavy: shared file detection, wave ordering, negative constraints.
+# No max_turns — let the timeout be the only gate.
 
 [phases.implement]
 timeout = "10m"
