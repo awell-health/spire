@@ -284,11 +284,9 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, ba
 		if containsLabel(bead, "template") {
 			continue
 		}
-		if hasLabel(bead, "owner:") != "" {
-			continue
-		}
 		// Skip beads with an active attempt child (someone is already working).
-		if attempt, err := storeGetActiveAttempt(bead.ID); err == nil && attempt != nil {
+		// The attempt bead is the authority — owner: label is not used here.
+		if attempt, err := storeGetActiveAttemptFunc(bead.ID); err == nil && attempt != nil {
 			continue
 		}
 
@@ -429,7 +427,10 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 		}
 
 		age := now.Sub(t)
-		owner := hasLabel(b, "owner:")
+		owner := ""
+		if attempt, err := storeGetActiveAttemptFunc(b.ID); err == nil && attempt != nil {
+			owner = hasLabel(*attempt, "agent:")
+		}
 
 		if age > shutdownThreshold {
 			// Fatal: kill the wizard via backend.
@@ -528,8 +529,11 @@ func detectReviewFeedback(dryRun bool) {
 
 		log.Printf("[steward] re-engaging wizard for %s (review feedback)", b.ID)
 
-		// Find the wizard owner and send an assignment message.
-		owner := hasLabel(b, "owner:")
+		// Find the wizard that owns the active attempt and send an assignment message.
+		owner := ""
+		if attempt, err := storeGetActiveAttemptFunc(b.ID); err == nil && attempt != nil {
+			owner = hasLabel(*attempt, "agent:")
+		}
 		if owner == "" {
 			owner = "wizard" // fallback
 		}
