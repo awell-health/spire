@@ -438,7 +438,11 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 		if isReviewRoundBead(b) {
 			continue
 		}
-		// Skip workflow step beads (parent carries workflow:* label)
+		// Skip workflow step beads (phase tracking children of work beads)
+		if isStepBead(b) {
+			continue
+		}
+		// Skip molecule step beads (parent carries workflow:* label)
 		if b.Parent != "" {
 			parent, perr := storeGetBead(b.Parent)
 			if perr == nil && hasLabel(parent, "workflow:") != "" {
@@ -660,6 +664,26 @@ func storeCreateReviewBead(parentID, sageName string, round int) (string, error)
 	return id, nil
 }
 
+// --- Workflow step bead helpers ---
+
+// storeCreateStepBead creates a child bead representing a workflow step.
+// It has type=task, title="step:<stepName>", and labels: [workflow-step, step:<stepName>].
+// The first step is created as in_progress (active), subsequent ones as open (pending).
+func storeCreateStepBead(parentID, stepName string) (string, error) {
+	labels := []string{"workflow-step", "step:" + stepName}
+	id, err := storeCreateBead(createOpts{
+		Title:    "step:" + stepName,
+		Priority: 3,
+		Type:     beads.TypeTask,
+		Labels:   labels,
+		Parent:   parentID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create step bead %s for %s: %w", stepName, parentID, err)
+	}
+	return id, nil
+}
+
 // storeCloseReviewBead closes a review-round bead and sets its description to verdict+summary.
 func storeCloseReviewBead(reviewID, verdict, summary string) error {
 	if reviewID == "" {
@@ -723,6 +747,79 @@ func isReviewRoundBoardBead(b BoardBead) bool {
 	return false
 }
 
+// storeActivateStepBead sets a step bead to in_progress status.
+func storeActivateStepBead(stepID string) error {
+	return storeUpdateBead(stepID, map[string]interface{}{
+		"status": "in_progress",
+	})
+}
+
+// storeCloseStepBead closes a workflow step bead.
+func storeCloseStepBead(stepID string) error {
+	return storeCloseBead(stepID)
+}
+
+// storeGetStepBeads returns all workflow-step children of a parent bead, ordered by creation.
+func storeGetStepBeads(parentID string) ([]Bead, error) {
+	children, err := storeGetChildren(parentID)
+	if err != nil {
+		return nil, err
+	}
+	var steps []Bead
+	for _, child := range children {
+		if isStepBead(child) {
+			steps = append(steps, child)
+		}
+	}
+	return steps, nil
+}
+
+// storeGetActiveStep returns the single in_progress step bead for a parent.
+// Returns (nil, nil) if no step is active.
+// Returns an error if more than one in_progress step exists (invariant violation).
+func storeGetActiveStep(parentID string) (*Bead, error) {
+	steps, err := storeGetStepBeads(parentID)
+	if err != nil {
+		return nil, err
+	}
+
+	var active []Bead
+	for _, s := range steps {
+		if s.Status == "in_progress" {
+			active = append(active, s)
+		}
+	}
+
+	switch len(active) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &active[0], nil
+	default:
+		ids := make([]string, len(active))
+		for i, a := range active {
+			ids[i] = a.ID
+		}
+		return nil, fmt.Errorf("invariant violation: %d in_progress step beads for %s: %s",
+			len(active), parentID, strings.Join(ids, ", "))
+	}
+}
+
+// isStepBead returns true if the bead is a workflow step bead.
+func isStepBead(b Bead) bool {
+	return containsLabel(b, "workflow-step")
+}
+
+// isStepBoardBead returns true if the BoardBead is a workflow step bead.
+func isStepBoardBead(b BoardBead) bool {
+	for _, l := range b.Labels {
+		if l == "workflow-step" {
+			return true
+		}
+	}
+	return false
+}
+
 // reviewRoundNumber extracts the round number from a review bead's round:<N> label.
 // Returns 0 if not found.
 func reviewRoundNumber(b Bead) int {
@@ -733,6 +830,12 @@ func reviewRoundNumber(b Bead) int {
 	n := 0
 	fmt.Sscanf(val, "%d", &n)
 	return n
+}
+
+// stepBeadPhaseName extracts the phase name from a step bead's step:<name> label.
+// Returns "" if no step: label is found.
+func stepBeadPhaseName(b Bead) string {
+	return hasLabel(b, "step:")
 }
 
 // storeCommitPending commits pending dolt changes. Requires pendingCommitter sub-interface.

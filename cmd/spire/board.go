@@ -959,6 +959,10 @@ func categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		if isReviewRoundBoardBead(b) {
 			return true
 		}
+		// Skip workflow step beads (internal phase tracking, not board-visible work)
+		if isStepBoardBead(b) {
+			return true
+		}
 		return false
 	}
 
