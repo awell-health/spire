@@ -656,7 +656,12 @@ func wizardCommitAndPush(dir, beadID, beadTitle, branchName string, log func(str
 	hasUncommitted := len(strings.TrimSpace(string(statusOut))) > 0
 
 	// Also check if Claude already committed to the branch (clean worktree but new commits).
-	logCmd := exec.Command("git", "-C", dir, "log", "origin/main..HEAD", "--oneline")
+	// Use main..HEAD (local ref), not origin/main — worktrees don't always have origin fetched.
+	baseBranch := "main"
+	if base := os.Getenv("SPIRE_BASE_BRANCH"); base != "" {
+		baseBranch = base
+	}
+	logCmd := exec.Command("git", "-C", dir, "log", baseBranch+"..HEAD", "--oneline")
 	logOut, _ := logCmd.Output()
 	hasNewCommits := len(strings.TrimSpace(string(logOut))) > 0
 
