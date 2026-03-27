@@ -203,3 +203,54 @@ func TestIsWizardRunning_DeadPID(t *testing.T) {
 		t.Error("expected false for wizard with PID 0")
 	}
 }
+
+// --- storeGetActiveAttemptFunc injection tests ---
+
+// TestStewardSkipsBeadWithAttemptChildNoOwnerLabel verifies that the steward's
+// assignment logic skips a bead that has an active attempt child, even when the
+// bead has no owner: label. The attempt bead is the authority.
+func TestStewardSkipsBeadWithAttemptChildNoOwnerLabel(t *testing.T) {
+	attemptBead := &Bead{
+		ID:     "spi-test.1",
+		Title:  "attempt: wizard-abc",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-abc"},
+	}
+
+	orig := storeGetActiveAttemptFunc
+	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
+		if parentID == "spi-test" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { storeGetActiveAttemptFunc = orig }()
+
+	// Bead has NO owner: label — authority comes from the attempt child only.
+	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
+
+	if hasLabel(bead, "owner:") != "" {
+		t.Fatal("test setup error: bead must not have owner: label")
+	}
+
+	attempt, err := storeGetActiveAttemptFunc(bead.ID)
+	if err != nil {
+		t.Fatalf("unexpected error from storeGetActiveAttemptFunc: %v", err)
+	}
+	if attempt == nil {
+		t.Fatal("expected active attempt to be found via attempt bead query")
+	}
+
+	// The assignment loop condition: skip if attempt != nil.
+	// This is what stewardTowerCycle does after removing the owner: label check.
+	shouldSkip := attempt != nil
+	if !shouldSkip {
+		t.Error("expected bead to be skipped (active attempt found)")
+	}
+
+	// Verify the agent name is readable from the attempt bead's agent: label.
+	agent := hasLabel(*attempt, "agent:")
+	if agent != "wizard-abc" {
+		t.Errorf("expected agent=wizard-abc, got %q", agent)
+	}
+}

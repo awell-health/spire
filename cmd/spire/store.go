@@ -633,6 +633,10 @@ func isAttemptBoardBead(b BoardBead) bool {
 // In production this stays at its default (storeGetChildren).
 var storeGetChildrenFunc = storeGetChildren
 
+// storeGetActiveAttemptFunc is a test-replaceable function for storeGetActiveAttempt.
+// In production this stays at its default (storeGetActiveAttempt).
+var storeGetActiveAttemptFunc = storeGetActiveAttempt
+
 // --- Review round bead helpers ---
 
 // storeCreateReviewBead creates a child review-round bead under parentID.
