@@ -951,6 +951,10 @@ func categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 				return true
 			}
 		}
+		// Skip attempt beads (internal tracking, not board-visible work)
+		if isAttemptBoardBead(b) {
+			return true
+		}
 		return false
 	}
 

@@ -394,6 +394,15 @@ func enrichRosterAgents(agents []RosterAgent) []RosterAgent {
 		if agents[i].BeadID == "" {
 			continue
 		}
+
+		// Check for active attempt bead — primary source for agent info.
+		if attempt, err := storeGetActiveAttempt(agents[i].BeadID); err == nil && attempt != nil {
+			attemptAgent := hasLabel(*attempt, "agent:")
+			if attemptAgent != "" && agents[i].Name == "" {
+				agents[i].Name = attemptAgent
+			}
+		}
+
 		ctx := resolveRosterBeadContext(agents[i].BeadID, beadCache, contextCache)
 		if agents[i].BeadTitle == "" {
 			agents[i].BeadTitle = ctx.BeadTitle

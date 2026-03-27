@@ -418,7 +418,8 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 
 	result := issuesToBeads(issues)
 
-	// Post-filter: exclude workflow step beads, message beads, and design beads
+	// Post-filter: exclude workflow step beads, message beads, design beads,
+	// attempt beads, and beads with active attempt children.
 	var filtered []Bead
 	for _, b := range result {
 		// Skip message beads
@@ -429,12 +430,20 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 		if b.Type == "design" {
 			continue
 		}
+		// Skip attempt beads (internal tracking, not assignable work)
+		if isAttemptBead(b) {
+			continue
+		}
 		// Skip workflow step beads (parent carries workflow:* label)
 		if b.Parent != "" {
 			parent, perr := storeGetBead(b.Parent)
 			if perr == nil && hasLabel(parent, "workflow:") != "" {
 				continue
 			}
+		}
+		// Skip beads with an active attempt child (someone is already working)
+		if attempt, err := storeGetActiveAttempt(b.ID); err == nil && attempt != nil {
+			continue
 		}
 		filtered = append(filtered, b)
 	}
@@ -511,6 +520,105 @@ func storeGetChildren(parentID string) ([]Bead, error) {
 		return nil, fmt.Errorf("get children of %s: %w", parentID, err)
 	}
 	return issuesToBeads(issues), nil
+}
+
+// --- Attempt bead helpers ---
+
+// storeGetActiveAttempt returns the single open/in_progress attempt child of parentID.
+// Returns (nil, nil) if no active attempt exists.
+// Returns an error if more than one open attempt exists (invariant violation).
+func storeGetActiveAttempt(parentID string) (*Bead, error) {
+	children, err := storeGetChildren(parentID)
+	if err != nil {
+		return nil, err
+	}
+
+	var active []Bead
+	for _, child := range children {
+		if child.Status != "open" && child.Status != "in_progress" {
+			continue
+		}
+		if !isAttemptBead(child) {
+			continue
+		}
+		active = append(active, child)
+	}
+
+	switch len(active) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &active[0], nil
+	default:
+		ids := make([]string, len(active))
+		for i, a := range active {
+			ids[i] = a.ID
+		}
+		return nil, fmt.Errorf("invariant violation: %d open attempt beads for %s: %s",
+			len(active), parentID, strings.Join(ids, ", "))
+	}
+}
+
+// storeCreateAttemptBead creates a child attempt bead under parentID.
+// Sets status=in_progress and adds labels: attempt, agent:<agentName>, model:<model>, branch:<branch>.
+// Returns the attempt bead ID.
+func storeCreateAttemptBead(parentID, agentName, model, branch string) (string, error) {
+	labels := []string{
+		"attempt",
+		"agent:" + agentName,
+		"model:" + model,
+		"branch:" + branch,
+	}
+	id, err := storeCreateBead(createOpts{
+		Title:    "attempt: " + agentName,
+		Priority: 3,
+		Type:     beads.TypeTask,
+		Labels:   labels,
+		Parent:   parentID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create attempt bead: %w", err)
+	}
+	// Transition to in_progress
+	if uerr := storeUpdateBead(id, map[string]interface{}{
+		"status": "in_progress",
+	}); uerr != nil {
+		return id, fmt.Errorf("set attempt in_progress: %w", uerr)
+	}
+	return id, nil
+}
+
+// storeCloseAttemptBead closes an attempt bead and adds a result comment.
+func storeCloseAttemptBead(attemptID, result string) error {
+	if attemptID == "" {
+		return nil
+	}
+	if result != "" {
+		storeAddComment(attemptID, result)
+	}
+	return storeCloseBead(attemptID)
+}
+
+// isAttemptBead returns true if the bead is an attempt bead
+// (has "attempt" label or title starts with "attempt:").
+func isAttemptBead(b Bead) bool {
+	if strings.HasPrefix(b.Title, "attempt:") {
+		return true
+	}
+	return containsLabel(b, "attempt")
+}
+
+// isAttemptBoardBead returns true if the BoardBead is an attempt bead.
+func isAttemptBoardBead(b BoardBead) bool {
+	if strings.HasPrefix(b.Title, "attempt:") {
+		return true
+	}
+	for _, l := range b.Labels {
+		if l == "attempt" {
+			return true
+		}
+	}
+	return false
 }
 
 // storeCommitPending commits pending dolt changes. Requires pendingCommitter sub-interface.

@@ -287,6 +287,10 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, ba
 		if hasLabel(bead, "owner:") != "" {
 			continue
 		}
+		// Skip beads with an active attempt child (someone is already working).
+		if attempt, err := storeGetActiveAttempt(bead.ID); err == nil && attempt != nil {
+			continue
+		}
 
 		// Find next idle agent (round-robin).
 		agent := ""

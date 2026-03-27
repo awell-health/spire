@@ -28,6 +28,7 @@ type executorState struct {
 	StagingBranch string                  `json:"staging_branch,omitempty"`
 	BaseBranch    string                  `json:"base_branch,omitempty"`
 	RepoPath      string                  `json:"repo_path,omitempty"`
+	AttemptBeadID string                  `json:"attempt_bead_id,omitempty"`
 }
 
 // formulaExecutor drives a bead through its formula's phase pipeline.
@@ -41,11 +42,14 @@ type formulaExecutor struct {
 
 	// Injectable store/exec operations — set to real implementations by newExecutor.
 	// Replaced in tests to avoid requiring a live dolt server.
-	beadGetter    func(id string) (Bead, error)
-	childGetter   func(parentID string) ([]Bead, error)
-	commentGetter func(id string) ([]*beads.Comment, error)
-	commentAdder  func(id, text string) error
-	claudeRunner  func(args []string, dir string) ([]byte, error)
+	beadGetter           func(id string) (Bead, error)
+	childGetter          func(parentID string) ([]Bead, error)
+	commentGetter        func(id string) ([]*beads.Comment, error)
+	commentAdder         func(id, text string) error
+	claudeRunner         func(args []string, dir string) ([]byte, error)
+	attemptCreator       func(parentID, agentName, model, branch string) (string, error)
+	attemptCloser        func(attemptID, result string) error
+	activeAttemptGetter  func(parentID string) (*Bead, error)
 }
 
 // newExecutor creates a formula executor for a bead.
@@ -113,6 +117,9 @@ func newExecutor(beadID, agentName string, formula *FormulaV2, spawner AgentBack
 			cmd.Stderr = os.Stderr
 			return cmd.Output()
 		},
+		attemptCreator:      storeCreateAttemptBead,
+		attemptCloser:       storeCloseAttemptBead,
+		activeAttemptGetter: storeGetActiveAttempt,
 	}, nil
 }
 
@@ -163,9 +170,26 @@ func (e *formulaExecutor) Run() error {
 	defer wizardRegistryRemove(e.agentName)
 	defer e.saveState()
 
+	// Create attempt bead at start (or resume existing one).
+	if err := e.ensureAttemptBead(); err != nil {
+		e.log("warning: create attempt bead: %s", err)
+		// Non-fatal — proceed without attempt tracking.
+	}
+
+	// Ensure attempt is closed on all exit paths (success, failure, panic).
+	defer func() {
+		if e.state.AttemptBeadID != "" {
+			if cerr := e.attemptCloser(e.state.AttemptBeadID, "executor exited"); cerr != nil {
+				e.log("warning: close attempt bead: %s", cerr)
+			}
+			e.state.AttemptBeadID = ""
+		}
+	}()
+
 	// Resolve repo path, base branch, and staging branch once at startup.
 	// All git operations read from e.state instead of computing independently.
 	if err := e.resolveBranchState(); err != nil {
+		e.closeAttempt("failure: repo-resolution: " + err.Error())
 		escalateHumanFailure(e.beadID, e.agentName, "repo-resolution", err.Error())
 		return fmt.Errorf("resolve branch state: %w", err)
 	}
@@ -174,6 +198,7 @@ func (e *formulaExecutor) Run() error {
 		phase := e.state.Phase
 		pc, ok := e.formula.Phases[phase]
 		if !ok {
+			e.closeAttempt(fmt.Sprintf("failure: unknown phase %q", phase))
 			return fmt.Errorf("phase %q not in formula %s", phase, e.formula.Name)
 		}
 
@@ -184,9 +209,11 @@ func (e *formulaExecutor) Run() error {
 		// Merge phase has its own handler regardless of role.
 		if phase == "merge" {
 			if err := e.executeMerge(pc); err != nil {
+				e.closeAttempt("failure: merge: " + err.Error())
 				escalateHumanFailure(e.beadID, e.agentName, "merge-failure", err.Error())
 				return fmt.Errorf("phase merge: %w", err)
 			}
+			e.closeAttempt("success: merged")
 			break // merge is terminal
 		}
 
@@ -211,6 +238,7 @@ func (e *formulaExecutor) Run() error {
 		}
 
 		if err != nil {
+			e.closeAttempt(fmt.Sprintf("failure: phase %s: %s", phase, err.Error()))
 			return fmt.Errorf("phase %s: %w", phase, err)
 		}
 
@@ -222,18 +250,79 @@ func (e *formulaExecutor) Run() error {
 		// Check if bead is closed
 		bead, err := storeGetBead(e.beadID)
 		if err != nil {
+			e.closeAttempt("failure: check bead: " + err.Error())
 			return fmt.Errorf("check bead: %w", err)
 		}
 		if bead.Status == "closed" {
 			e.log("bead closed — exiting")
+			e.closeAttempt("success: bead closed")
 			return nil
 		}
 	}
 
 	e.log("all phases complete")
+	e.closeAttempt("success: all phases complete")
 	// Clean up state file on success to avoid stale state on agent name reuse
 	os.Remove(executorStatePath(e.agentName))
 	return nil
+}
+
+// ensureAttemptBead creates an attempt bead if one doesn't already exist in state.
+// On retry (state has no attempt bead), creates a new one.
+func (e *formulaExecutor) ensureAttemptBead() error {
+	// If we already have an attempt bead from persisted state, verify it's still open.
+	if e.state.AttemptBeadID != "" {
+		b, err := e.beadGetter(e.state.AttemptBeadID)
+		if err == nil && (b.Status == "open" || b.Status == "in_progress") {
+			e.log("resuming existing attempt bead %s", e.state.AttemptBeadID)
+			return nil
+		}
+		// Previous attempt was closed — will create a new one.
+		e.state.AttemptBeadID = ""
+	}
+
+	// Check invariant: no open attempt should exist already.
+	existing, err := e.activeAttemptGetter(e.beadID)
+	if err != nil {
+		return err // invariant violation
+	}
+	if existing != nil {
+		// Another agent's attempt is still open — reuse if it's ours.
+		agent := hasLabel(*existing, "agent:")
+		if agent == e.agentName {
+			e.state.AttemptBeadID = existing.ID
+			e.log("reclaimed existing attempt bead %s", existing.ID)
+			return nil
+		}
+		return fmt.Errorf("active attempt %s already exists (agent: %s)", existing.ID, agent)
+	}
+
+	// Determine model and branch.
+	model := "unknown"
+	branch := e.state.StagingBranch
+	if branch == "" {
+		branch = fmt.Sprintf("feat/%s", e.beadID)
+	}
+
+	id, err := e.attemptCreator(e.beadID, e.agentName, model, branch)
+	if err != nil {
+		return err
+	}
+	e.state.AttemptBeadID = id
+	e.log("created attempt bead %s", id)
+	return e.saveState()
+}
+
+// closeAttempt closes the current attempt bead with the given result.
+// It is idempotent — safe to call even if the attempt is already closed.
+func (e *formulaExecutor) closeAttempt(result string) {
+	if e.state.AttemptBeadID == "" {
+		return
+	}
+	if err := e.attemptCloser(e.state.AttemptBeadID, result); err != nil {
+		e.log("warning: close attempt bead %s: %s", e.state.AttemptBeadID, err)
+	}
+	e.state.AttemptBeadID = ""
 }
 
 // waitForHuman blocks the executor until the human transitions the phase.
