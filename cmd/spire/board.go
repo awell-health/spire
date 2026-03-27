@@ -77,17 +77,22 @@ type heightBudgetResult struct {
 	compact    bool // use 1-line compact cards instead of 4-line cards
 	maxAlerts  int  // max alert lines to show
 	maxBlocked int  // max blocked lines to show
+	maxAgents  int  // max agent lines to show in the agent panel (0 = hidden)
 }
 
 // calcHeightBudget computes card limits based on terminal height.
 // Returns permissive defaults when termHeight is zero (non-TTY or unknown).
-func calcHeightBudget(termHeight, alertCount, blockedCount, colCount int) heightBudgetResult {
+func calcHeightBudget(termHeight, alertCount, blockedCount, colCount, agentCount int) heightBudgetResult {
 	if termHeight <= 0 {
-		return heightBudgetResult{maxCards: 99, maxAlerts: alertCount, maxBlocked: 8}
+		maxAg := agentCount
+		if maxAg > 5 {
+			maxAg = 5
+		}
+		return heightBudgetResult{maxCards: 99, maxAlerts: alertCount, maxBlocked: 8, maxAgents: maxAg}
 	}
 
-	// Fixed rows: header(2) + column-header+separator(2) + footer(2).
-	const fixed = 6
+	// Fixed rows: header(2) + column-header+separator(2) + footer(3: blank+keys+bead).
+	const fixed = 7
 	available := termHeight - fixed
 	if available < 4 {
 		available = 4
@@ -125,6 +130,26 @@ func calcHeightBudget(termHeight, alertCount, blockedCount, colCount int) height
 		}
 	}
 
+	// Allocate up to 20% of remaining rows for the agent panel (min 1, max 5).
+	maxAgents := 0
+	if agentCount > 0 {
+		maxAgents = available / 5
+		if maxAgents < 1 {
+			maxAgents = 1
+		}
+		cap := agentCount
+		if cap > 5 {
+			cap = 5
+		}
+		if maxAgents > cap {
+			maxAgents = cap
+		}
+		available -= maxAgents + 1 // header(1) + agent lines
+		if available < 4 {
+			available = 4
+		}
+	}
+
 	// Try fitting cards in normal mode (4 lines each).
 	maxCards := available / 4
 	compact := false
@@ -142,6 +167,7 @@ func calcHeightBudget(termHeight, alertCount, blockedCount, colCount int) height
 		compact:    compact,
 		maxAlerts:  maxAlerts,
 		maxBlocked: maxBlocked,
+		maxAgents:  maxAgents,
 	}
 }
 
@@ -360,6 +386,7 @@ const (
 type boardModel struct {
 	opts     boardOpts
 	cols     boardColumns
+	agents   []localWizard // alive local wizards from registry
 	width    int
 	height   int
 	lastTick time.Time
@@ -413,6 +440,13 @@ func tickCmd(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
+// fetchAgents loads alive local wizards from the wizard registry.
+func fetchAgents() []localWizard {
+	reg := loadWizardRegistry()
+	reg = cleanDeadWizards(reg)
+	return reg.Wizards
+}
+
 func runBoardTUI(opts boardOpts) error {
 	for {
 		cols, err := fetchBoard(opts)
@@ -422,6 +456,7 @@ func runBoardTUI(opts boardOpts) error {
 		m := boardModel{
 			opts:     opts,
 			cols:     cols,
+			agents:   fetchAgents(),
 			lastTick: time.Now(),
 		}
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -526,6 +561,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cols, err := fetchBoard(m.opts); err == nil {
 			m.cols = cols
 		}
+		m.agents = fetchAgents()
 		m.lastTick = time.Now()
 		m.clampSelection()
 		return m, tickCmd(m.opts.interval)
@@ -557,7 +593,7 @@ func (m boardModel) View() string {
 	var s strings.Builder
 
 	// Compute height budget before rendering any sections.
-	budget := calcHeightBudget(m.height, len(m.cols.Alerts), len(m.cols.Blocked), countActiveCols(m.cols))
+	budget := calcHeightBudget(m.height, len(m.cols.Alerts), len(m.cols.Blocked), countActiveCols(m.cols), len(m.agents))
 
 	// Header.
 	header := lipgloss.NewStyle().Bold(true).Render("Spire Board")
@@ -647,15 +683,84 @@ func (m boardModel) View() string {
 		}
 	}
 
-	// Footer.
+	// Agent panel (capped by budget).
+	if budget.maxAgents > 0 && len(m.agents) > 0 {
+		s.WriteString(renderAgentPanel(m.agents, budget.maxAgents))
+	}
+
+	// Footer: two lines — keybindings + contextual bead info.
 	s.WriteString("\n")
 	footerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	epicInfo := ""
-	if m.opts.epic != "" {
-		epicInfo = " • epic:" + m.opts.epic
+	s.WriteString(footerStyle.Render("j/k ↕  h/l ↔  tab  f focus  s summon  c claim  L logs  e epic  q quit  ↻ " + m.opts.interval.String()))
+	s.WriteString("\n")
+	// Second footer line: selected bead context + epic filter.
+	var footerParts []string
+	if bead := m.selectedBead(); bead != nil {
+		beadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+		footerParts = append(footerParts, beadStyle.Render(bead.ID+"  "+truncate(bead.Title, 60)))
 	}
-	s.WriteString(footerStyle.Render("j/k ↕  h/l ↔  e epic  s summon  f focus  c claim  L logs" + epicInfo + " • q quit • ↻ " + m.opts.interval.String()))
+	if m.opts.epic != "" {
+		footerParts = append(footerParts, footerStyle.Render("epic:"+m.opts.epic))
+	}
+	if len(footerParts) > 0 {
+		s.WriteString(strings.Join(footerParts, footerStyle.Render("  •  ")))
+	}
 
+	return s.String()
+}
+
+// renderAgentPanel renders a compact live agent status panel.
+// agents must already be alive (cleaned from registry).
+func renderAgentPanel(agents []localWizard, maxAgents int) string {
+	var s strings.Builder
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	phaseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+
+	shown := len(agents)
+	if shown > maxAgents {
+		shown = maxAgents
+	}
+	s.WriteString(headerStyle.Render(fmt.Sprintf("AGENTS (%d)", len(agents))) + "\n")
+	for i := 0; i < shown; i++ {
+		w := agents[i]
+		phase := w.Phase
+		if phase == "" {
+			phase = "working"
+		}
+		elapsed := ""
+		if t, err := time.Parse(time.RFC3339, w.StartedAt); err == nil {
+			d := time.Since(t).Round(time.Second)
+			h := int(d.Hours())
+			m := int(d.Minutes()) % 60
+			sec := int(d.Seconds()) % 60
+			if h > 0 {
+				elapsed = fmt.Sprintf("%dh%02dm", h, m)
+			} else if m > 0 {
+				elapsed = fmt.Sprintf("%dm%02ds", m, sec)
+			} else {
+				elapsed = fmt.Sprintf("%ds", sec)
+			}
+		}
+		name := w.Name
+		if len(name) > 28 {
+			name = name[:27] + "…"
+		}
+		beadPart := ""
+		if w.BeadID != "" {
+			beadPart = "  " + w.BeadID
+		}
+		line := fmt.Sprintf("  %-28s%s  %s  %s",
+			name,
+			beadPart,
+			phaseStyle.Render(phase),
+			dimStyle.Render(elapsed),
+		)
+		s.WriteString(line + "\n")
+	}
+	if len(agents) > maxAgents {
+		s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(agents)-maxAgents)) + "\n")
+	}
 	return s.String()
 }
 
@@ -1026,7 +1131,7 @@ func printColumnarBoard(cols boardColumns, _ int) {
 			activeCols++
 		}
 	}
-	budget := calcHeightBudget(termHeight, len(cols.Alerts), len(cols.Blocked), activeCols)
+	budget := calcHeightBudget(termHeight, len(cols.Alerts), len(cols.Blocked), activeCols, 0)
 
 	// Alerts (capped by budget).
 	if len(cols.Alerts) > 0 {
