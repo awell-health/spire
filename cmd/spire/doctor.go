@@ -112,15 +112,17 @@ func cmdDoctor(args []string) error {
 
 	inst := findInstanceByPath(cfg, cwd)
 	if inst != nil {
+		repoChecks := []checkResult{
+			checkCLAUDEMD(cwd),
+			checkSPIREMD(cwd),
+			checkSettingsJSON(cwd),
+			checkSpireHookSH(cwd),
+			checkSpireSkills(cwd),
+		}
+		repoChecks = append(repoChecks, checkStaleBranches(cwd)...)
 		categories = append(categories, checkCategory{
-			Name: "Repo",
-			Checks: []checkResult{
-				checkCLAUDEMD(cwd),
-				checkSPIREMD(cwd),
-				checkSettingsJSON(cwd),
-				checkSpireHookSH(cwd),
-				checkSpireSkills(cwd),
-			},
+			Name:   "Repo",
+			Checks: repoChecks,
 		})
 	}
 
@@ -223,15 +225,17 @@ func cmdDoctor(args []string) error {
 		}
 	}
 	if inst != nil {
+		reRepoChecks := []checkResult{
+			checkCLAUDEMD(cwd),
+			checkSPIREMD(cwd),
+			checkSettingsJSON(cwd),
+			checkSpireHookSH(cwd),
+			checkSpireSkills(cwd),
+		}
+		reRepoChecks = append(reRepoChecks, checkStaleBranches(cwd)...)
 		reCategories = append(reCategories, checkCategory{
-			Name: "Repo",
-			Checks: []checkResult{
-				checkCLAUDEMD(cwd),
-				checkSPIREMD(cwd),
-				checkSettingsJSON(cwd),
-				checkSpireHookSH(cwd),
-				checkSpireSkills(cwd),
-			},
+			Name:   "Repo",
+			Checks: reRepoChecks,
 		})
 	}
 
@@ -1020,4 +1024,78 @@ func detectPrefixFromPath(repoPath string) string {
 		return "spi" // fallback
 	}
 	return inst.Prefix
+}
+
+// checkStaleBranches scans local git branches matching feat/* and epic/*,
+// extracts the bead ID from each branch name, and warns if the bead is closed.
+// Returns one checkResult per stale branch found, plus one "all clear" result
+// if no stale branches exist.
+func checkStaleBranches(repoPath string) []checkResult {
+	// List local branches matching feat/* and epic/*
+	out, err := exec.Command("git", "-C", repoPath, "branch", "--list", "feat/*", "epic/*", "--format=%(refname:short)").Output()
+	if err != nil {
+		// git not available or not a git repo — skip silently
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var staleBranches []string
+	for _, branch := range lines {
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			continue
+		}
+		// Extract bead ID: feat/spi-70sa0 → spi-70sa0, epic/spi-70sa0 → spi-70sa0
+		var beadID string
+		if after, ok := strings.CutPrefix(branch, "feat/"); ok {
+			beadID = after
+		} else if after, ok := strings.CutPrefix(branch, "epic/"); ok {
+			beadID = after
+		}
+		if beadID == "" {
+			continue
+		}
+		bead, err := storeGetBead(beadID)
+		if err != nil {
+			// Bead not found or store unavailable — skip this branch
+			continue
+		}
+		if bead.Status == "closed" {
+			staleBranches = append(staleBranches, branch)
+		}
+	}
+
+	if len(staleBranches) == 0 {
+		return []checkResult{{
+			Name:   "stale feat/epic branches",
+			Status: statusOK,
+			Detail: "none found",
+		}}
+	}
+
+	var results []checkResult
+	for _, branch := range staleBranches {
+		b := branch // capture for closure
+		results = append(results, checkResult{
+			Name:   fmt.Sprintf("stale branch: %s", b),
+			Status: statusOutdated,
+			Detail: "bead is closed; branch should be deleted",
+			FixFunc: func() {
+				cmd := exec.Command("git", "-C", repoPath, "branch", "-d", b)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					// Try force-delete if regular delete fails (unmerged branch)
+					cmd2 := exec.Command("git", "-C", repoPath, "branch", "-D", b)
+					if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
+						fmt.Printf("    Failed to delete %s: %s\n", b, strings.TrimSpace(string(out2)))
+					} else {
+						fmt.Printf("    Deleted (force) %s\n", b)
+					}
+					_ = out
+				} else {
+					fmt.Printf("    Deleted %s\n", b)
+				}
+			},
+		})
+	}
+	return results
 }
