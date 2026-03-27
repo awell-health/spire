@@ -101,6 +101,19 @@ func cmdUp(args []string) error {
 		}
 	}
 
+	// Step 2.5: Clean dead wizards from registry and remove stale state files.
+	fmt.Print("dead wizard cleanup: ")
+	{
+		reg := loadWizardRegistry()
+		cleaned := cleanDeadWizards(reg)
+		if len(reg.Wizards) > len(cleaned.Wizards) {
+			saveWizardRegistry(cleaned)
+			fmt.Printf("reaped %d defunct process(es)\n", len(reg.Wizards)-len(cleaned.Wizards))
+		} else {
+			fmt.Println("none")
+		}
+	}
+
 	// Find spire binary (shared by daemon and steward steps)
 	spireBin, err := os.Executable()
 	if err != nil {
