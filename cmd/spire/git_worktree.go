@@ -166,6 +166,45 @@ func (wc *WorktreeContext) EnsureRemoteRef(remote, ref string) {
 	exec.Command("git", "-C", wc.RepoPath, "fetch", remote, ref).Run()
 }
 
+// ConflictedFiles returns the list of files with unresolved merge conflicts.
+func (wc *WorktreeContext) ConflictedFiles() ([]string, error) {
+	out, err := exec.Command("git", "-C", wc.Dir, "diff", "--name-only", "--diff-filter=U").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff --diff-filter=U: %w", err)
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+// CommitMerge commits an in-progress merge (after conflict resolution) using
+// the default merge message. Equivalent to "git commit --no-edit".
+func (wc *WorktreeContext) CommitMerge() error {
+	if out, err := exec.Command("git", "-C", wc.Dir, "commit", "--no-edit").CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit --no-edit: %w\n%s", err, out)
+	}
+	return nil
+}
+
+// DiffNameOnly returns the list of file paths changed between the given ref and HEAD.
+func (wc *WorktreeContext) DiffNameOnly(ref string) ([]string, error) {
+	out, err := exec.Command("git", "-C", wc.Dir, "diff", ref, "--name-only").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff %s --name-only: %w", ref, err)
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
 // Cleanup removes this worktree from git and deletes its directory.
 func (wc *WorktreeContext) Cleanup() {
 	if wc.Dir != "" {

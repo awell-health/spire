@@ -69,15 +69,14 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 
 	// Push main (with archmage identity)
 	e.log("pushing %s", baseBranch)
-	pushCmd := exec.Command("git", "-C", repoPath, "push", "origin", baseBranch)
-	pushCmd.Env = mergeEnv
-	if out, pushErr := pushCmd.CombinedOutput(); pushErr != nil {
-		return fmt.Errorf("push %s: %s\n%s", baseBranch, pushErr, string(out))
+	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
+		return fmt.Errorf("push %s: %w", baseBranch, pushErr)
 	}
 
-	// Clean up the feature/staging branch
-	exec.Command("git", "-C", repoPath, "branch", "-d", branch).Run()
-	exec.Command("git", "-C", repoPath, "push", "origin", "--delete", branch).Run()
+	// Clean up the feature/staging branch (best-effort)
+	rc.DeleteBranch(branch)
+	rc.DeleteRemoteBranch("origin", branch)
 
 	// Close any orphan subtasks that were not closed by the wave (e.g. skipped or failed).
 	if children, childErr := storeGetChildren(e.beadID); childErr == nil {
@@ -107,15 +106,15 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 func (e *formulaExecutor) reviewDocsForStaleness(repoPath, branch, baseBranch string, pc PhaseConfig) error {
 	// repoPath should be a worktree already on the staging branch.
 	// Find files changed relative to the base branch.
-	diffCmd := exec.Command("git", "-C", repoPath, "diff", baseBranch, "--name-only")
-	diffOut, err := diffCmd.Output()
+	wc := &WorktreeContext{Dir: repoPath}
+	changedFiles, err := wc.DiffNameOnly(baseBranch)
 	if err != nil {
-		return fmt.Errorf("git diff --name-only: %w", err)
+		return fmt.Errorf("diff --name-only: %w", err)
 	}
 
 	// Filter for documentation files.
 	var docFiles []string
-	for _, f := range strings.Split(strings.TrimSpace(string(diffOut)), "\n") {
+	for _, f := range changedFiles {
 		f = strings.TrimSpace(f)
 		if f == "" {
 			continue
