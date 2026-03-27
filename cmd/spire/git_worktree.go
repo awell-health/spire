@@ -141,6 +141,25 @@ func (wc *WorktreeContext) ConfigureUser(name, email string) {
 	exec.Command("git", "-C", wc.Dir, "config", "--worktree", "user.email", email).Run()
 }
 
+// Merge attempts to merge the given ref into the worktree's current branch.
+// Uses --no-edit to avoid opening an editor. Returns the combined output and
+// any error from the merge command.
+func (wc *WorktreeContext) Merge(ref string) (string, error) {
+	out, err := exec.Command("git", "-C", wc.Dir, "merge", "--no-edit", ref).CombinedOutput()
+	return string(out), err
+}
+
+// MergeAbort aborts an in-progress merge. Safe to call even if no merge is active.
+func (wc *WorktreeContext) MergeAbort() {
+	exec.Command("git", "-C", wc.Dir, "merge", "--abort").Run()
+}
+
+// StatusPorcelain returns the machine-readable status output (git status --porcelain).
+func (wc *WorktreeContext) StatusPorcelain() string {
+	out, _ := exec.Command("git", "-C", wc.Dir, "status", "--porcelain").Output()
+	return string(out)
+}
+
 // Cleanup removes this worktree from git and deletes its directory.
 func (wc *WorktreeContext) Cleanup() {
 	if wc.Dir != "" {

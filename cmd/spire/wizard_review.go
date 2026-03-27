@@ -98,7 +98,12 @@ func cmdWizardReview(args []string) error {
 	}
 	log("reviewing %s branch %s", beadID, branch)
 
-	// 3. Create own worktree (before adding review-assigned, so failures don't leak the label)
+	// 3. Fetch baseBranch in the main repo before creating the worktree.
+	// Worktrees share refs with the main repo, so this makes origin/baseBranch
+	// available in the worktree without violating WorktreeContext's local-ref-only semantics.
+	exec.Command("git", "-C", repoPath, "fetch", "origin", baseBranch).Run()
+
+	// 4. Create own worktree (before adding review-assigned, so failures don't leak the label)
 	wc, err := reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
@@ -106,8 +111,7 @@ func cmdWizardReview(args []string) error {
 	defer wc.Cleanup()
 	log("worktree: %s", wc.Dir)
 
-	// 4. Get diff — fetch baseBranch at the review level (not via WorktreeContext)
-	exec.Command("git", "-C", wc.Dir, "fetch", "origin", baseBranch).Run()
+	// 5. Get diff using the baseBranch ref fetched above
 	diff, err := wc.DiffMergeBase("origin/" + baseBranch)
 	if err != nil {
 		return fmt.Errorf("get diff: %w", err)
