@@ -1218,7 +1218,29 @@ func (e *formulaExecutor) runBuildCommand(repoPath, buildStr string) error {
 }
 
 // executeReview dispatches a sage for review and handles the verdict.
+// executeReview dispatches the review phase. When the phase config has an explicit
+// behavior, it routes to the named behavior handler. Otherwise it falls back to the
+// default sage-review behavior (dispatch Opus sage → fix cycle → arbiter).
 func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
+	switch pc.GetBehavior() {
+	case "sage-review", "": // "" = backwards-compatible default
+		return e.executeReviewSageReview(phase, pc)
+	case "human-review":
+		return e.executeReviewHumanReview(phase, pc)
+	case "ci-gate":
+		return e.executeReviewCIGate(phase, pc)
+	case "dual-review":
+		return e.executeReviewDualReview(phase, pc)
+	case "auto-approve":
+		return e.executeReviewAutoApprove(phase)
+	default:
+		return fmt.Errorf("unknown review behavior %q for phase %s", pc.GetBehavior(), phase)
+	}
+}
+
+// executeReviewSageReview is the default review behavior: dispatch an Opus sage,
+// handle the fix cycle on request_changes, and escalate to arbiter if max rounds hit.
+func (e *formulaExecutor) executeReviewSageReview(phase string, pc PhaseConfig) error {
 	sageName := fmt.Sprintf("%s-sage", e.agentName)
 	e.log("dispatching sage %s", sageName)
 

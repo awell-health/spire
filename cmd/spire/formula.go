@@ -30,6 +30,7 @@ type PhaseConfig struct {
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
 	// Execution directives
 	Role          string `toml:"role,omitempty"`           // human | apprentice | sage | wizard | skip
+	Behavior      string `toml:"behavior,omitempty"`       // named behavior — see docs for valid values per role
 	Dispatch      string `toml:"dispatch,omitempty"`       // direct | wave
 	VerdictOnly   bool   `toml:"verdict_only,omitempty"`   // sage: produce verdict only
 	Judgment      bool   `toml:"judgment,omitempty"`        // executor judges review feedback
@@ -64,6 +65,13 @@ func (pc PhaseConfig) GetRole() string {
 		return pc.Role
 	}
 	return "apprentice"
+}
+
+// GetBehavior returns the explicit behavior name, or "" if not set.
+// When empty, the executor falls back to role-based dispatch.
+// Review phase behaviors: sage-review, human-review, ci-gate, dual-review, auto-approve.
+func (pc PhaseConfig) GetBehavior() string {
+	return pc.Behavior
 }
 
 // GetDispatch returns the dispatch mode, defaulting to "direct".
