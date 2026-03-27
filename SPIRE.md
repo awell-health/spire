@@ -166,13 +166,136 @@ Always reference the bead:
 
 Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`
 
-## Code rules (for working on Spire itself)
+## Principles (for working on Spire itself)
+
+These are extracted from real failures. Every principle here prevented
+or would have prevented a bug we actually shipped.
+
+### 1. All git operations go through WorktreeContext or RepoContext
+
+**NEVER use `exec.Command("git", ...)` directly.** Two types handle git:
+
+- **WorktreeContext** (`git_worktree.go`) — operations INSIDE a worktree:
+  commit, diff, merge, status, conflict resolution
+- **RepoContext** (`git_repo.go`) — operations on the MAIN REPO:
+  create/delete branches, create/remove worktrees, ff-only merge, push
+
+If you need a git operation that doesn't exist on either type, add a
+method. Don't bypass the abstraction.
+
+**Why:** Every worktree bug we hit (git config pollution, checkout in
+main repo, origin/main not fetched, stale worktrees) came from raw
+exec.Command calls that didn't go through the abstraction.
+
+### 2. The main worktree never leaves the base branch
+
+The main worktree (`/Users/.../spire`) is ALWAYS on `main`. All staging,
+merging, building, and reviewing happens in worktrees. The only git
+operation on the main worktree is `git merge --ff-only` at the end.
+
+**Why:** Checking out branches in the main repo caused the user's
+working directory to switch to `epic/spi-swqje` without warning.
+
+### 3. Every branch and worktree is named after a bead
+
+- Branches: `feat/<bead-id>`, `staging/<bead-id>`
+- Worktrees: `.worktrees/<bead-id>`
+- No generic names like `temp-main` or `merge-staging`
+
+If you see a branch, you know which bead it belongs to. If you see a
+worktree, you know which bead is being worked.
+
+### 4. Only main gets pushed to origin
+
+Apprentice feature branches stay LOCAL. The wizard merges them into the
+staging worktree locally. Only the final `main` push goes to origin
+after ff-only merge. No intermediate branch pushes.
+
+**Why:** Pushing feature branches to origin wastes time, creates
+remote branch pollution, and causes non-fast-forward rejections on retry.
+
+### 5. The DAG is truth
+
+Runtime state lives in the bead graph, not labels or registries:
+- **Attempt beads** — who is working (not `owner:` labels)
+- **Step beads** — which phase (not `phase:` labels)
+- **Review round beads** — what the sage said (not comments)
+
+Labels are projections for display. The graph is authority for decisions.
+
+### 6. Beads close AFTER code lands on main
+
+A bead cannot be closed until its code is on main (or explicitly
+discarded). Subtask beads close after their branch is merged into
+staging. The epic bead closes after staging is ff-only merged to main.
+
+**Why:** Closing beads before merge leaves orphaned code on branches
+that nobody knows about.
+
+### 7. Design before implement
+
+Every epic needs a closed design bead (`discovered-from` dep) before
+the wizard enters the plan phase. The design captures exploration,
+rejected approaches, and decisions. The epic captures execution.
+
+### 8. One source of defaults
+
+Configuration defaults live in ONE place. `spire.yaml` declares what
+the repo wants. The executor reads it. Formulas can override. No
+`applyDefaults()` in the parser fighting with fallbacks in the consumer.
+
+**Why:** Three layers (repoconfig, wizard.go, formula.go) all set
+`maxTurns` with different defaults. The wrong one won every time.
+
+### 9. Investigate before implementing
+
+When fixing bugs, trace the data flow before writing code:
+1. Identify the symptom (what's wrong)
+2. Trace the data path (where does the value come from)
+3. Find the root cause (which layer is broken)
+4. Fix the root cause, not the symptom
+
+**Why:** Roster grouping was broken. The symptom was in roster.go.
+The root cause was in store.go — `GetIssue()` wasn't populating deps.
+Three wizard attempts failed because they fixed the wrong file.
+
+### 10. Commit before validate, never revert
+
+Apprentices must commit their work BEFORE running tests. If tests fail
+on code you didn't write, commit anyway. Partial work committed is
+ALWAYS better than no work committed.
+
+**Why:** Apprentices spent all their turns fighting test failures,
+reverted their own work, and exited with "nothing staged."
+
+### 11. Tests must not pollute the production database
+
+Apprentice worktrees have `.beads/` removed so Claude's exploratory
+commands don't create real beads. Tests use mock functions (`*Func`
+vars), not the real store. Integration tests are gated behind
+`SPIRE_INTEGRATION=1`.
+
+**Why:** Found 46+ junk beads (Subtask 1, dispatch-test, human-plan)
+created by wizard test runs polluting the board.
+
+### 12. File splits must DELETE from the source
+
+When splitting a large file into focused files, DELETE each function
+from the source file as you move it. The build must pass after each
+move. Never leave duplicates — the compiler will catch them but the
+agent won't.
+
+**Why:** Every file split attempt (executor.go, store.go, board.go)
+failed because the agent created new files but didn't delete from the
+original. The same bug happened 4 times.
+
+## Code rules
 
 ### Use the store API, not bd subprocess
 
 **Never use `bdJSON()` or shell out to `bd` for data access in new code.**
-Use the store API (`ensureStore()`, `storeGetBead()`, `storeListBeads()`,
-`storeGetDepsWithMeta()`, etc.) in `store.go`.
+Use the store API in `store_queries.go`, `store_mutations.go`, and
+`store_beadtypes.go`.
 
 ### Every command must call resolveBeadsDir()
 
@@ -185,31 +308,34 @@ func cmdFoo(args []string) error {
 }
 ```
 
-### Investigation before implementation
-
-When fixing bugs, **trace the data flow** before writing code. The most
-common failure mode for agents is modifying the wrong file because the
-symptom is in one place but the root cause is elsewhere. Before changing
-code:
-
-1. Identify the symptom (what's wrong)
-2. Trace the data path (where does the value come from)
-3. Find the root cause (which layer is broken)
-4. Fix the root cause, not the symptom
-
-Example: roster grouping was broken. The symptom was in roster.go, but
-the root cause was in store.go — `GetIssue()` wasn't populating the
-Dependencies field, so `bead.Parent` was always empty.
-
 ### Verify before removing
 
-Before removing code, features, or references, verify they don't exist:
+Before removing code, features, or references:
 - Check `cmd/spire/main.go` dispatch table for command existence
 - `grep` for function/type usage before deleting
 - Run `go build ./...` after every change
+
+### File organization
+
+The executor is split into focused files:
+
+| File | Responsibility |
+|------|----------------|
+| executor.go | Lifecycle core: Run, advancePhase, state |
+| executor_dag.go | Attempt + step bead tracking |
+| executor_design.go | Design validation |
+| executor_plan.go | Plan + change spec enrichment |
+| executor_implement.go | Wave dispatch + direct |
+| executor_review.go | Sage dispatch + fix cycle |
+| executor_merge.go | Merge to main + doc review |
+| executor_escalate.go | Human escalation + messaging |
+| executor_worktree.go | StagingWorktree abstraction |
+| git_worktree.go | WorktreeContext (in-worktree ops) |
+| git_repo.go | RepoContext (main repo ops) |
 
 ## DANGER — destructive commands
 
 - **NEVER run `bd init --force`** — wipes entire dolt history. No undo.
 - **NEVER run `bd init`** on a directory with an existing `.beads/` database.
 - **NEVER leave branches hanging** — every branch must be merged or deleted.
+- **NEVER use raw `exec.Command("git", ...)` outside git_worktree.go / git_repo.go.**
