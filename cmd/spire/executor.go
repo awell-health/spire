@@ -970,10 +970,26 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 	repoPath := e.state.RepoPath
 	stagingBranch := e.state.StagingBranch
 
-	// Create staging branch if configured
+	// Create staging branch in a dedicated worktree — never checkout in main worktree.
+	var stagingDir string
 	if stagingBranch != "" {
 		e.log("creating staging branch %s", stagingBranch)
-		exec.Command("git", "-C", repoPath, "checkout", "-B", stagingBranch).Run()
+		// Create the branch from current HEAD
+		exec.Command("git", "-C", repoPath, "branch", "-f", stagingBranch).Run()
+		// Create a worktree for staging operations
+		tmpDir, tmpErr := os.MkdirTemp("", fmt.Sprintf("spire-staging-%s-", e.beadID))
+		if tmpErr != nil {
+			return fmt.Errorf("create staging temp dir: %w", tmpErr)
+		}
+		stagingDir = filepath.Join(tmpDir, "staging")
+		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", stagingDir, stagingBranch).CombinedOutput(); wtErr != nil {
+			os.RemoveAll(tmpDir)
+			return fmt.Errorf("create staging worktree: %s\n%s", wtErr, string(out))
+		}
+		defer func() {
+			exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", stagingDir).Run()
+			os.RemoveAll(tmpDir)
+		}()
 		storeAddLabel(e.beadID, "feat-branch:"+stagingBranch)
 	}
 
@@ -1052,36 +1068,34 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 			e.log("wave %d: %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))
 		}
 
-		// Merge child branches into staging branch
-		if stagingBranch != "" {
-			exec.Command("git", "-C", repoPath, "checkout", stagingBranch).Run()
+		// Merge child branches into staging worktree
+		if stagingDir != "" {
 			for _, subtaskID := range wave {
 				st, ok := e.state.Subtasks[subtaskID]
 				if !ok || st.Status != "closed" || st.Branch == "" {
 					continue
 				}
-				if mergeErr := e.mergeChildBranch(repoPath, st.Branch, stagingBranch); mergeErr != nil {
+				if mergeErr := e.mergeChildBranch(stagingDir, st.Branch, stagingBranch); mergeErr != nil {
 					return fmt.Errorf("merge %s into %s: %w", st.Branch, stagingBranch, mergeErr)
 				}
 			}
 		}
 
-		// Verify build using formula's build command, repo config fallback, or hardcoded default
+		// Verify build in the staging worktree
+		mergeDir := stagingDir
+		if mergeDir == "" {
+			mergeDir = repoPath
+		}
 		if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
 			e.log("verifying build after wave %d: %s", waveIdx, buildStr)
-			if buildErr := e.runBuildCommand(repoPath, buildStr); buildErr != nil {
+			if buildErr := e.runBuildCommand(mergeDir, buildStr); buildErr != nil {
 				return fmt.Errorf("build verification failed after wave %d: %w", waveIdx, buildErr)
 			}
 		}
 	}
 
-	// Switch back to base branch so the sage can create a worktree from the staging branch.
-	// During wave merges we checked out the staging branch in the main worktree —
-	// the sage needs it free to create its own worktree.
-	if stagingBranch != "" {
-		e.log("switching back to %s for review phase", e.state.BaseBranch)
-		exec.Command("git", "-C", repoPath, "checkout", e.state.BaseBranch).Run()
-	}
+	// No need to switch branches — staging work happened in its own worktree.
+	// The main worktree stayed on the base branch the entire time.
 
 	return nil
 }
@@ -1329,11 +1343,18 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 				if e.state.StagingBranch != "" {
 					fixBranch := fmt.Sprintf("feat/%s", e.beadID)
 					e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
-					exec.Command("git", "-C", e.state.RepoPath, "checkout", e.state.StagingBranch).Run()
-					if mergeErr := e.mergeChildBranch(e.state.RepoPath, fixBranch, e.state.StagingBranch); mergeErr != nil {
-						e.log("warning: merge fix into staging: %s", mergeErr)
+					// Use a temporary worktree — never checkout in main worktree.
+					fixTmp, fixTmpErr := os.MkdirTemp("", fmt.Sprintf("spire-fix-merge-%s-", e.beadID))
+					if fixTmpErr == nil {
+						fixWt := filepath.Join(fixTmp, "fix-staging")
+						if _, wtErr := exec.Command("git", "-C", e.state.RepoPath, "worktree", "add", fixWt, e.state.StagingBranch).CombinedOutput(); wtErr == nil {
+							if mergeErr := e.mergeChildBranch(fixWt, fixBranch, e.state.StagingBranch); mergeErr != nil {
+								e.log("warning: merge fix into staging: %s", mergeErr)
+							}
+							exec.Command("git", "-C", e.state.RepoPath, "worktree", "remove", "--force", fixWt).Run()
+						}
+						os.RemoveAll(fixTmp)
 					}
-					exec.Command("git", "-C", e.state.RepoPath, "checkout", e.state.BaseBranch).Run()
 				}
 			} else {
 				if dirErr := e.executeDirect("implement", implPC); dirErr != nil {
@@ -1387,34 +1408,53 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		mergeEnv = os.Environ()
 	}
 
-	// Run build verification on the staging/feature branch before merging to main.
-	// This catches type errors, bad imports, and missing exports from merged code.
+	// Run build verification on the staging/feature branch in a temporary worktree.
+	// Never checkout branches in the main worktree.
 	if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
 		e.log("verifying build on %s before merge: %s", branch, buildStr)
-		// Checkout the staging/feature branch to run the build
-		if out, chkErr := exec.Command("git", "-C", repoPath, "checkout", branch).CombinedOutput(); chkErr != nil {
-			return fmt.Errorf("checkout %s for build verification: %s\n%s", branch, chkErr, string(out))
+		buildTmp, tmpErr := os.MkdirTemp("", fmt.Sprintf("spire-build-verify-%s-", e.beadID))
+		if tmpErr != nil {
+			return fmt.Errorf("create build-verify temp dir: %w", tmpErr)
 		}
-		if buildErr := e.runBuildCommand(repoPath, buildStr); buildErr != nil {
-			// Switch back to base branch before returning the error
-			exec.Command("git", "-C", repoPath, "checkout", baseBranch).Run()
+		buildWt := filepath.Join(buildTmp, "verify")
+		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", buildWt, branch).CombinedOutput(); wtErr != nil {
+			os.RemoveAll(buildTmp)
+			return fmt.Errorf("create build-verify worktree for %s: %s\n%s", branch, wtErr, string(out))
+		}
+		buildErr := e.runBuildCommand(buildWt, buildStr)
+		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", buildWt).Run()
+		os.RemoveAll(buildTmp)
+		if buildErr != nil {
 			return fmt.Errorf("pre-merge build verification failed on %s: %w", branch, buildErr)
 		}
 	}
 
 	// Review documentation for stale language before merging to main.
-	// Parallel workers write docs against pre-merge code — READMEs may say
-	// "planned" or "not yet implemented" for features that now exist.
-	if docErr := e.reviewDocsForStaleness(repoPath, branch, baseBranch, pc); docErr != nil {
-		e.log("warning: doc review: %s", docErr)
-		// Non-fatal — proceed with merge even if doc review fails.
+	// Use a temporary worktree to avoid disturbing the main checkout.
+	docTmp, docTmpErr := os.MkdirTemp("", fmt.Sprintf("spire-docreview-%s-", e.beadID))
+	if docTmpErr == nil {
+		docWt := filepath.Join(docTmp, "docreview")
+		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", docWt, branch).CombinedOutput(); wtErr == nil {
+			if docErr := e.reviewDocsForStaleness(docWt, branch, baseBranch, pc); docErr != nil {
+				e.log("warning: doc review: %s", docErr)
+			}
+			exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", docWt).Run()
+		} else {
+			e.log("warning: could not create doc review worktree: %s\n%s", wtErr, string(out))
+		}
+		os.RemoveAll(docTmp)
 	}
 
-	// Local merge: checkout main, merge the feature/staging branch, push
+	// Local merge: ensure main worktree is on baseBranch (should already be — staging
+	// operations now use their own worktrees), then ff-only merge the staging branch.
 	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
 
-	if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
-		return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
+	// Verify we're on the right branch; checkout only if not already there.
+	headCmd := exec.Command("git", "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if headOut, _ := headCmd.Output(); strings.TrimSpace(string(headOut)) != baseBranch {
+		if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
+			return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
+		}
 	}
 
 	// Ensure main is up to date before attempting ff-only merge.
@@ -1539,11 +1579,7 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 // refers to functionality now present in the merged code. If stale docs are found,
 // Claude fixes them and commits the changes on the staging branch.
 func (e *formulaExecutor) reviewDocsForStaleness(repoPath, branch, baseBranch string, pc PhaseConfig) error {
-	// Ensure we're on the staging/feature branch for the diff and potential commit.
-	if out, err := exec.Command("git", "-C", repoPath, "checkout", branch).CombinedOutput(); err != nil {
-		return fmt.Errorf("checkout %s for doc review: %s\n%s", branch, err, string(out))
-	}
-
+	// repoPath should be a worktree already on the staging branch.
 	// Find files changed relative to the base branch.
 	diffCmd := exec.Command("git", "-C", repoPath, "diff", baseBranch, "--name-only")
 	diffOut, err := diffCmd.Output()
