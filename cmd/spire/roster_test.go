@@ -5,6 +5,92 @@ import (
 	"time"
 )
 
+func TestBuildAttemptWorkMap_DeriveWorkFromAttemptBeads(t *testing.T) {
+	inProgress := []BoardBead{
+		{
+			ID:        "spi-abc",
+			Title:     "Fix auth bug",
+			Status:    "in_progress",
+			UpdatedAt: "2026-03-27T12:00:00Z",
+		},
+		{
+			ID:        "spi-abc.1",
+			Title:     "attempt: wizard-alpha",
+			Status:    "in_progress",
+			Labels:    []string{"attempt", "agent:wizard-alpha", "model:claude-opus-4-6", "branch:feat/spi-abc"},
+			Parent:    "spi-abc",
+			UpdatedAt: "2026-03-27T12:05:00Z",
+		},
+	}
+	ownerWork := map[string]BoardBead{} // no owner: labels
+
+	work, updatedAt := buildAttemptWorkMap(inProgress, ownerWork)
+
+	if len(work) != 1 {
+		t.Fatalf("expected 1 entry in attemptWork, got %d", len(work))
+	}
+	w, ok := work["wizard-alpha"]
+	if !ok {
+		t.Fatal("expected entry for wizard-alpha")
+	}
+	if w.ID != "spi-abc" {
+		t.Errorf("work.ID = %q, want spi-abc", w.ID)
+	}
+	if w.Title != "Fix auth bug" {
+		t.Errorf("work.Title = %q, want Fix auth bug", w.Title)
+	}
+	if updatedAt["wizard-alpha"] != "2026-03-27T12:05:00Z" {
+		t.Errorf("updatedAt = %q, want attempt bead time", updatedAt["wizard-alpha"])
+	}
+}
+
+func TestBuildAttemptWorkMap_SkipsIfCoveredByOwnerLabel(t *testing.T) {
+	inProgress := []BoardBead{
+		{
+			ID:        "spi-xyz",
+			Title:     "Some task",
+			Status:    "in_progress",
+			Labels:    []string{"owner:wizard-beta"},
+			UpdatedAt: "2026-03-27T11:00:00Z",
+		},
+		{
+			ID:        "spi-xyz.1",
+			Title:     "attempt: wizard-beta",
+			Status:    "in_progress",
+			Labels:    []string{"attempt", "agent:wizard-beta"},
+			Parent:    "spi-xyz",
+			UpdatedAt: "2026-03-27T11:01:00Z",
+		},
+	}
+	ownerWork := map[string]BoardBead{
+		"wizard-beta": inProgress[0],
+	}
+
+	work, _ := buildAttemptWorkMap(inProgress, ownerWork)
+	if len(work) != 0 {
+		t.Fatalf("expected no entries (agent covered by owner:), got %d", len(work))
+	}
+}
+
+func TestBuildAttemptWorkMap_SkipsAttemptWithMissingParent(t *testing.T) {
+	inProgress := []BoardBead{
+		{
+			ID:        "spi-orphan.1",
+			Title:     "attempt: wizard-gamma",
+			Status:    "in_progress",
+			Labels:    []string{"attempt", "agent:wizard-gamma"},
+			Parent:    "spi-orphan", // parent not in inProgress list
+			UpdatedAt: "2026-03-27T13:00:00Z",
+		},
+	}
+	ownerWork := map[string]BoardBead{}
+
+	work, _ := buildAttemptWorkMap(inProgress, ownerWork)
+	if len(work) != 0 {
+		t.Fatalf("expected no entries (parent not in inProgress), got %d", len(work))
+	}
+}
+
 func TestBuildRosterWorkItems_CollapsesProcessesByBead(t *testing.T) {
 	agents := []RosterAgent{
 		{

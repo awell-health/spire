@@ -263,6 +263,11 @@ func rosterFromBeads(timeout time.Duration) []RosterAgent {
 		}
 	}
 
+	// Derive work from attempt beads for agents not covered by owner: labels.
+	// Attempt beads carry labels: attempt, agent:<name>, model:<m>, branch:<b>.
+	// Their Parent field points to the actual work item being attempted.
+	attemptWork, attemptUpdatedAt := buildAttemptWorkMap(inProgress, ownerWork)
+
 	exclude := map[string]bool{
 		"steward": true, "mayor": true,
 		"spi": true, "awell": true,
@@ -307,6 +312,18 @@ func rosterFromBeads(timeout time.Duration) []RosterAgent {
 					agent.Remaining = 0
 				}
 			}
+		} else if work, ok := attemptWork[name]; ok {
+			agent.Status = "working"
+			agent.BeadID = work.ID
+			agent.BeadTitle = work.Title
+			// Use attempt bead's updated_at as best-effort elapsed.
+			if t, err := time.Parse(time.RFC3339, attemptUpdatedAt[name]); err == nil {
+				agent.Elapsed = time.Since(t).Round(time.Second)
+				agent.Remaining = timeout - agent.Elapsed
+				if agent.Remaining < 0 {
+					agent.Remaining = 0
+				}
+			}
 		} else {
 			agent.Status = "idle"
 		}
@@ -315,6 +332,49 @@ func rosterFromBeads(timeout time.Duration) []RosterAgent {
 	}
 
 	return agents
+}
+
+// buildAttemptWorkMap scans inProgress beads for attempt beads and returns two maps:
+// - attemptWork[agentName] = work item BoardBead (the attempt's parent)
+// - attemptUpdatedAt[agentName] = attempt bead UpdatedAt (for elapsed time calculation)
+//
+// Only agents not already covered by ownerWork are included.
+func buildAttemptWorkMap(inProgress []BoardBead, ownerWork map[string]BoardBead) (map[string]BoardBead, map[string]string) {
+	byID := make(map[string]BoardBead, len(inProgress))
+	for _, b := range inProgress {
+		byID[b.ID] = b
+	}
+
+	attemptWork := make(map[string]BoardBead)
+	attemptUpdatedAt := make(map[string]string)
+	for _, b := range inProgress {
+		if !isAttemptBoardBead(b) {
+			continue
+		}
+		agentName := ""
+		for _, l := range b.Labels {
+			if strings.HasPrefix(l, "agent:") {
+				agentName = l[6:]
+				break
+			}
+		}
+		if agentName == "" || b.Parent == "" {
+			continue
+		}
+		if _, covered := ownerWork[agentName]; covered {
+			continue
+		}
+		workItem, ok := byID[b.Parent]
+		if !ok {
+			continue
+		}
+		if _, already := attemptWork[agentName]; already {
+			continue // keep the first match
+		}
+		attemptWork[agentName] = workItem
+		attemptUpdatedAt[agentName] = b.UpdatedAt
+	}
+	return attemptWork, attemptUpdatedAt
 }
 
 // rosterFromLocalWizards builds a roster from the local wizard registry (process mode).
