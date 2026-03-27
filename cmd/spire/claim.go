@@ -6,6 +6,9 @@ import (
 	"strings"
 )
 
+// claimGetActiveAttemptFunc is a test-replaceable wrapper around storeGetActiveAttempt.
+var claimGetActiveAttemptFunc = storeGetActiveAttempt
+
 // isNoRemoteError returns true for errors caused by a missing remote configuration,
 // which are expected and non-fatal when no remote has been set up yet.
 func isNoRemoteError(err error) bool {
@@ -32,17 +35,25 @@ func cmdClaim(args []string) error {
 		return fmt.Errorf("bead %s is already closed", id)
 	}
 
-	// Check if claimed by someone else
-	owner := ""
-	for _, l := range target.Labels {
-		if strings.HasPrefix(l, "owner:") {
-			owner = l[6:]
-			break
-		}
-	}
+	// Check if claimed by someone else via attempt bead.
 	identity, _ := detectIdentity("")
-	if owner != "" && owner != identity && target.Status == "in_progress" {
-		return fmt.Errorf("bead %s is already in progress (owner: %s)", id, owner)
+	attempt, err := claimGetActiveAttemptFunc(id)
+	if err != nil {
+		return fmt.Errorf("claim %s: checking active attempt: %w", id, err)
+	}
+	if attempt != nil {
+		// An active attempt bead exists — bead is already claimed.
+		// Allow reclaim only if the attempt belongs to the same identity.
+		owner := ""
+		for _, l := range attempt.Labels {
+			if strings.HasPrefix(l, "agent:") {
+				owner = l[6:]
+				break
+			}
+		}
+		if owner != identity {
+			return fmt.Errorf("bead %s is already claimed (attempt: %s)", id, attempt.ID)
+		}
 	}
 
 	// Claim it
