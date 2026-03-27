@@ -17,7 +17,7 @@ import (
 )
 
 // daemonDB is the database name override for the current tower cycle.
-// When set, doltSQL() and detectDBName() use it instead of CWD detection.
+// When set, doltSQL() uses it instead of calling detectDBName().
 var daemonDB string
 
 func cmdDaemon(args []string) error {

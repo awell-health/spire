@@ -232,7 +232,11 @@ func doltSQL(query string, jsonOutput bool) (string, error) {
 
 	dbName := daemonDB
 	if dbName == "" {
-		dbName = detectDBName()
+		var dbErr error
+		dbName, dbErr = detectDBName()
+		if dbErr != nil {
+			return "", fmt.Errorf("resolve database: %w", dbErr)
+		}
 	}
 
 	args := []string{

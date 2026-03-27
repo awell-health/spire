@@ -666,8 +666,8 @@ func cmdTowerAttach(args []string) error {
 	}
 
 	// Read tower identity from cloned database using raw dolt CLI.
-	// No --use-db: on a clean machine detectDBName() would resolve to the
-	// wrong ambient database. Fully-qualified queries against dbName instead.
+	// No --use-db: on a clean machine detectDBName() would fail since no
+	// tower is configured yet. Fully-qualified queries against dbName instead.
 	fmt.Println("reading tower identity...")
 
 	var projectID, hubPrefix string

@@ -299,42 +299,16 @@ func detectDatabase(cfg *SpireConfig, prefix string) string {
 // resolution was ambiguous (multiple towers, no active one set).
 // Returns ("", true) when ambiguous so callers can error instead of
 // silently falling back to stale local state.
+// Delegates to the unified resolveTowerConfig() function.
 func resolveDatabase(cfg *SpireConfig) (string, bool) {
-	// Priority 0: SPIRE_TOWER env override (from --tower flag).
-	if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
-		tower, err := loadTowerConfig(towerName)
-		if err == nil && tower.Database != "" {
-			return tower.Database, false
+	tower, err := resolveTowerConfig()
+	if err != nil {
+		if strings.Contains(err.Error(), "multiple towers") {
+			return "", true // ambiguous
 		}
+		return "", false // no tower — not ambiguous, just empty
 	}
-	// Priority 1: active tower config
-	if cfg != nil && cfg.ActiveTower != "" {
-		tower, err := loadTowerConfig(cfg.ActiveTower)
-		if err == nil && tower.Database != "" {
-			return tower.Database, false
-		}
-	}
-	// Priority 2: if exactly one tower exists on disk, use it
-	if dir, err := towerConfigDir(); err == nil {
-		entries, err := os.ReadDir(dir)
-		if err == nil {
-			var towers []string
-			for _, e := range entries {
-				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-					towers = append(towers, strings.TrimSuffix(e.Name(), ".json"))
-				}
-			}
-			if len(towers) == 1 {
-				if tower, err := loadTowerConfig(towers[0]); err == nil && tower.Database != "" {
-					return tower.Database, false
-				}
-			}
-			if len(towers) > 1 {
-				return "", true // ambiguous
-			}
-		}
-	}
-	return "", false // no towers — not ambiguous, just empty
+	return tower.Database, false
 }
 
 // detectUser returns the current user for the registered_by field.

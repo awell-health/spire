@@ -99,10 +99,16 @@ func ensureProjectID() {
 	host := doltHost()
 	port := doltPort()
 
+	dbName, dbErr := detectDBName()
+	if dbErr != nil {
+		log.Printf("[project-id] cannot detect database: %s", dbErr)
+		return
+	}
+
 	out, err := exec.Command(doltBin(), "sql",
 		"--host", host, "--port", port,
 		"--user", "root", "-p", "", "--no-tls",
-		"-q", fmt.Sprintf("USE `%s`; SELECT value FROM metadata WHERE `key`='_project_id'", detectDBName()),
+		"-q", fmt.Sprintf("USE `%s`; SELECT value FROM metadata WHERE `key`='_project_id'", dbName),
 		"-r", "csv").Output()
 	if err != nil {
 		log.Printf("[project-id] cannot query server at %s:%s: %s", host, port, err)

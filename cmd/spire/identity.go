@@ -53,43 +53,45 @@ type Bead struct {
 	Parent      string   `json:"parent"`
 }
 
-// detectDBName returns the Dolt database name.
-// Returns the Dolt database name for the current context.
-func detectDBName() string {
+// detectDBName returns the Dolt database name for the current context.
+// Returns an error when the database cannot be determined unambiguously.
+//
+// Resolution order:
+//  1. SPIRE_IDENTITY env → config instance lookup → identity as DB name
+//  2. Store config issue-prefix
+//  3. CWD → registered instance → instance's database
+//  4. resolveTowerConfig() → tower database (deterministic, errors on ambiguity)
+func detectDBName() (string, error) {
 	if env := os.Getenv("SPIRE_IDENTITY"); env != "" {
 		// Check config to see if this is a satellite (database != prefix)
 		if cfg, err := loadConfig(); err == nil {
 			if inst, ok := cfg.Instances[env]; ok {
-				return inst.Database
+				return inst.Database, nil
 			}
 		}
-		return env
+		return env, nil
 	}
 	out, err := storeGetConfig("issue-prefix")
 	if err == nil && out != "" {
-		return strings.TrimSpace(out)
+		return strings.TrimSpace(out), nil
 	}
-	// Fallback: look up cwd in config
+	// CWD instance lookup
 	if cfg, err := loadConfig(); err == nil {
-		if cwd, err := realCwd(); err == nil {
+		if cwd, cwdErr := realCwd(); cwdErr == nil {
 			if inst := findInstanceByPath(cfg, cwd); inst != nil {
-				return inst.Database
-			}
-		}
-		// SPIRE_TOWER env override (from --tower flag or explicit env).
-		if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
-			if tower, err := loadTowerConfig(towerName); err == nil && tower.Database != "" {
-				return tower.Database
-			}
-		}
-		// Fallback: active tower's database
-		if cfg.ActiveTower != "" {
-			if tower, err := loadTowerConfig(cfg.ActiveTower); err == nil && tower.Database != "" {
-				return tower.Database
+				return inst.Database, nil
 			}
 		}
 	}
-	return "spi" // fallback
+	// Unified tower resolution — no hardcoded fallback.
+	tower, tErr := resolveTowerConfig()
+	if tErr != nil {
+		return "", fmt.Errorf("cannot detect database: %w", tErr)
+	}
+	if tower.Database == "" {
+		return "", fmt.Errorf("tower %q has no database configured", tower.Name)
+	}
+	return tower.Database, nil
 }
 
 // parseBead parses a bead from bd show --json output (which returns an array).
