@@ -551,7 +551,11 @@ func wizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
-		"--max-turns", fmt.Sprintf("%d", maxTurns),
+	}
+	// 0 means unlimited — omit the flag so Claude has no turn ceiling.
+	// The timeout is the real gate.
+	if maxTurns > 0 {
+		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 	}
 	return args
 }

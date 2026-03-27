@@ -41,21 +41,11 @@ type PhaseConfig struct {
 	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
 }
 
-// GetMaxTurns returns the max turns for this phase, with sensible defaults per role.
+// GetMaxTurns returns the max turns for this phase.
+// Returns 0 (unlimited) if not set in the formula — the timeout is the gate.
+// Set max_turns explicitly in the formula TOML to enforce a turn budget.
 func (pc PhaseConfig) GetMaxTurns() int {
-	if pc.MaxTurns > 0 {
-		return pc.MaxTurns
-	}
-	switch pc.GetRole() {
-	case "wizard":
-		return 5 // wizard phases are judgment/planning, not exploration
-	case "sage":
-		return 10
-	case "apprentice":
-		return 25
-	default:
-		return 10
-	}
+	return pc.MaxTurns
 }
 
 // GetRole returns the phase role, defaulting to "apprentice".
