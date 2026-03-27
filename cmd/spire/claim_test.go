@@ -5,74 +5,73 @@ import (
 	"testing"
 )
 
-// TestClaim_NoAttemptBead verifies claim succeeds when no attempt bead exists.
+// stubClaimDeps replaces all store/identity funcs used by cmdClaim with safe stubs.
+// Returns a cleanup func that restores originals.
+func stubClaimDeps(t *testing.T, bead Bead, attempt *Bead, identity string) func() {
+	t.Helper()
+	origGetBead := claimGetBeadFunc
+	origAttempt := claimGetActiveAttemptFunc
+	origUpdate := claimUpdateBeadFunc
+	origLabel := claimAddLabelFunc
+	origIdentity := claimIdentityFunc
+
+	claimGetBeadFunc = func(id string) (Bead, error) { return bead, nil }
+	claimGetActiveAttemptFunc = func(parentID string) (*Bead, error) { return attempt, nil }
+	claimUpdateBeadFunc = func(id string, updates map[string]interface{}) error { return nil }
+	claimAddLabelFunc = func(id, label string) error { return nil }
+	claimIdentityFunc = func(asFlag string) (string, error) { return identity, nil }
+
+	return func() {
+		claimGetBeadFunc = origGetBead
+		claimGetActiveAttemptFunc = origAttempt
+		claimUpdateBeadFunc = origUpdate
+		claimAddLabelFunc = origLabel
+		claimIdentityFunc = origIdentity
+	}
+}
+
+// TestClaim_NoAttemptBead verifies cmdClaim succeeds when no attempt bead exists.
 func TestClaim_NoAttemptBead(t *testing.T) {
-	orig := claimGetActiveAttemptFunc
-	claimGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
-		return nil, nil
-	}
-	defer func() { claimGetActiveAttemptFunc = orig }()
+	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
+	cleanup := stubClaimDeps(t, bead, nil, "wizard-self")
+	defer cleanup()
 
-	// No active attempt — claim check should pass (no error from attempt gate).
-	attempt, err := claimGetActiveAttemptFunc("spi-test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if attempt != nil {
-		t.Fatalf("expected nil attempt, got %+v", attempt)
+	if err := cmdClaim([]string{"spi-test"}); err != nil {
+		t.Fatalf("expected claim to succeed, got error: %v", err)
 	}
 }
 
-// TestClaim_RejectsWhenAttemptBeadOpen verifies claim is rejected when an open attempt exists.
+// TestClaim_RejectsWhenAttemptBeadOpen verifies cmdClaim is rejected when an open attempt
+// belonging to a different agent exists.
 func TestClaim_RejectsWhenAttemptBeadOpen(t *testing.T) {
-	orig := claimGetActiveAttemptFunc
-	claimGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
-		return &Bead{
-			ID:     parentID + ".1",
-			Title:  "attempt: wizard-other",
-			Status: "in_progress",
-			Labels: []string{"attempt", "agent:wizard-other"},
-		}, nil
+	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
+	activeAttempt := &Bead{
+		ID:     "spi-test.1",
+		Title:  "attempt: wizard-other",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-other"},
 	}
-	defer func() { claimGetActiveAttemptFunc = orig }()
+	cleanup := stubClaimDeps(t, bead, activeAttempt, "wizard-self")
+	defer cleanup()
 
-	attempt, err := claimGetActiveAttemptFunc("spi-test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := cmdClaim([]string{"spi-test"})
+	if err == nil {
+		t.Fatal("expected claim to be rejected, got nil error")
 	}
-	if attempt == nil {
-		t.Fatal("expected active attempt, got nil")
+	if !strings.Contains(err.Error(), "already claimed") {
+		t.Errorf("expected 'already claimed' in error, got: %v", err)
 	}
-
-	// Simulate the claim gate logic: different owner → should reject.
-	identity := "wizard-self"
-	owner := ""
-	for _, l := range attempt.Labels {
-		if strings.HasPrefix(l, "agent:") {
-			owner = l[6:]
-			break
-		}
-	}
-	if owner == identity {
-		t.Fatal("test setup error: owner and identity should differ")
-	}
-	// If owner != identity, claim would be rejected — correct behaviour.
 }
 
-// TestClaim_IgnoresClosedAttemptBead verifies closed attempt beads are not treated as active.
+// TestClaim_IgnoresClosedAttemptBead verifies cmdClaim succeeds when only closed attempt
+// beads exist (storeGetActiveAttempt filters closed beads, returning nil).
 func TestClaim_IgnoresClosedAttemptBead(t *testing.T) {
-	orig := claimGetActiveAttemptFunc
-	claimGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
-		// Closed attempt — storeGetActiveAttempt filters these out, so returns nil.
-		return nil, nil
-	}
-	defer func() { claimGetActiveAttemptFunc = orig }()
+	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
+	// Closed attempts are invisible — storeGetActiveAttempt returns nil for them.
+	cleanup := stubClaimDeps(t, bead, nil, "wizard-self")
+	defer cleanup()
 
-	attempt, err := claimGetActiveAttemptFunc("spi-test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if attempt != nil {
-		t.Fatalf("closed attempt should be invisible, got %+v", attempt)
+	if err := cmdClaim([]string{"spi-test"}); err != nil {
+		t.Fatalf("expected claim to succeed when only closed attempts exist, got: %v", err)
 	}
 }

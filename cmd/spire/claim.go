@@ -9,6 +9,18 @@ import (
 // claimGetActiveAttemptFunc is a test-replaceable wrapper around storeGetActiveAttempt.
 var claimGetActiveAttemptFunc = storeGetActiveAttempt
 
+// claimGetBeadFunc is a test-replaceable wrapper around storeGetBead.
+var claimGetBeadFunc = storeGetBead
+
+// claimUpdateBeadFunc is a test-replaceable wrapper around storeUpdateBead.
+var claimUpdateBeadFunc = storeUpdateBead
+
+// claimAddLabelFunc is a test-replaceable wrapper around storeAddLabel.
+var claimAddLabelFunc = storeAddLabel
+
+// claimIdentityFunc is a test-replaceable wrapper around detectIdentity.
+var claimIdentityFunc = func(asFlag string) (string, error) { return detectIdentity(asFlag) }
+
 // isNoRemoteError returns true for errors caused by a missing remote configuration,
 // which are expected and non-fatal when no remote has been set up yet.
 func isNoRemoteError(err error) bool {
@@ -25,7 +37,7 @@ func cmdClaim(args []string) error {
 	id := args[0]
 
 	// Verify bead exists and check state
-	target, err := storeGetBead(id)
+	target, err := claimGetBeadFunc(id)
 	if err != nil {
 		return fmt.Errorf("bead %s not found: %w", id, err)
 	}
@@ -36,7 +48,7 @@ func cmdClaim(args []string) error {
 	}
 
 	// Check if claimed by someone else via attempt bead.
-	identity, _ := detectIdentity("")
+	identity, _ := claimIdentityFunc("")
 	attempt, err := claimGetActiveAttemptFunc(id)
 	if err != nil {
 		return fmt.Errorf("claim %s: checking active attempt: %w", id, err)
@@ -57,7 +69,7 @@ func cmdClaim(args []string) error {
 	}
 
 	// Claim it
-	if err := storeUpdateBead(id, map[string]interface{}{
+	if err := claimUpdateBeadFunc(id, map[string]interface{}{
 		"status":   "in_progress",
 		"assignee": identity,
 	}); err != nil {
@@ -66,7 +78,7 @@ func cmdClaim(args []string) error {
 
 	// Add owner label so spire watch can identify who is working the bead.
 	if identity != "" {
-		storeAddLabel(id, "owner:"+identity)
+		claimAddLabelFunc(id, "owner:"+identity)
 	}
 
 	// Output result as JSON for easy consumption by spire-work
