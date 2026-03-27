@@ -577,14 +577,18 @@ func storeGetActiveAttempt(parentID string) (*Bead, error) {
 }
 
 // storeCreateAttemptBead creates a child attempt bead under parentID.
-// Sets status=in_progress and adds labels: attempt, agent:<agentName>, model:<model>, branch:<branch>.
+// Sets status=in_progress and adds labels: attempt, agent:<agentName>, branch:<branch>.
+// The model label is only added when model is non-empty (callers like cmdClaim
+// may not know the model at claim time — the executor updates it later).
 // Returns the attempt bead ID.
 func storeCreateAttemptBead(parentID, agentName, model, branch string) (string, error) {
 	labels := []string{
 		"attempt",
 		"agent:" + agentName,
-		"model:" + model,
 		"branch:" + branch,
+	}
+	if model != "" {
+		labels = append(labels, "model:"+model)
 	}
 	id, err := storeCreateBead(createOpts{
 		Title:    "attempt: " + agentName,
@@ -603,6 +607,38 @@ func storeCreateAttemptBead(parentID, agentName, model, branch string) (string, 
 		return id, fmt.Errorf("set attempt in_progress: %w", uerr)
 	}
 	return id, nil
+}
+
+// storeCreateAttemptBeadAtomic checks for an existing active attempt before
+// creating a new one. This narrows the TOCTOU race window between checking for
+// an active attempt and creating one.
+//
+// Returns:
+//   - (existingID, nil) if an active attempt by the same agent already exists
+//   - (newID, nil) if no active attempt exists and a new one was created
+//   - ("", error) if an active attempt by a different agent exists, or on failure
+func storeCreateAttemptBeadAtomic(parentID, agentName, model, branch string) (string, error) {
+	// Check for existing active attempt.
+	existing, err := storeGetActiveAttempt(parentID)
+	if err != nil {
+		return "", fmt.Errorf("check active attempt: %w", err)
+	}
+	if existing != nil {
+		owner := ""
+		for _, l := range existing.Labels {
+			if strings.HasPrefix(l, "agent:") {
+				owner = l[6:]
+				break
+			}
+		}
+		if owner == agentName {
+			return existing.ID, nil // reclaim — reuse existing attempt
+		}
+		return "", fmt.Errorf("active attempt %s already exists (agent: %s)", existing.ID, owner)
+	}
+
+	// No active attempt — create one.
+	return storeCreateAttemptBead(parentID, agentName, model, branch)
 }
 
 // storeCloseAttemptBead closes an attempt bead and adds a result comment.

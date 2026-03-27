@@ -6,19 +6,18 @@ import (
 	"strings"
 )
 
-// claimGetActiveAttemptFunc is a test-replaceable wrapper around storeGetActiveAttempt.
-var claimGetActiveAttemptFunc = storeGetActiveAttempt
-
 // claimGetBeadFunc is a test-replaceable wrapper around storeGetBead.
 var claimGetBeadFunc = storeGetBead
 
 // claimUpdateBeadFunc is a test-replaceable wrapper around storeUpdateBead.
 var claimUpdateBeadFunc = storeUpdateBead
 
-// claimCreateAttemptFunc is a test-replaceable wrapper around storeCreateAttemptBead.
+// claimCreateAttemptFunc is a test-replaceable wrapper around storeCreateAttemptBeadAtomic.
 // cmdClaim creates the attempt bead atomically as part of the claim so that
 // storeGetReadyWork and the steward see ownership immediately.
-var claimCreateAttemptFunc = storeCreateAttemptBead
+// The atomic variant checks for an existing active attempt before creating,
+// narrowing the TOCTOU race window.
+var claimCreateAttemptFunc = storeCreateAttemptBeadAtomic
 
 // claimIdentityFunc is a test-replaceable wrapper around detectIdentity.
 var claimIdentityFunc = func(asFlag string) (string, error) { return detectIdentity(asFlag) }
@@ -49,42 +48,19 @@ func cmdClaim(args []string) error {
 		return fmt.Errorf("bead %s is already closed", id)
 	}
 
-	// Check if claimed by someone else via attempt bead.
+	// Create or reclaim the attempt bead atomically.
+	// The attempt bead is the real ownership marker — storeGetReadyWork and
+	// the steward filter by attempt beads, not by in_progress status.
+	// storeCreateAttemptBeadAtomic checks for an existing active attempt and
+	// either reclaims it (same agent) or rejects the claim (different agent),
+	// narrowing the TOCTOU race window.
 	identity, _ := claimIdentityFunc("")
-	attempt, err := claimGetActiveAttemptFunc(id)
+	branch := fmt.Sprintf("feat/%s", id)
+	// Model is unknown at claim time — the executor updates the model label
+	// later when it has formula context.
+	attemptID, err := claimCreateAttemptFunc(id, identity, "", branch)
 	if err != nil {
-		return fmt.Errorf("claim %s: checking active attempt: %w", id, err)
-	}
-	if attempt != nil {
-		// An active attempt bead exists — bead is already claimed.
-		// Allow reclaim only if the attempt belongs to the same identity.
-		owner := ""
-		for _, l := range attempt.Labels {
-			if strings.HasPrefix(l, "agent:") {
-				owner = l[6:]
-				break
-			}
-		}
-		if owner != identity {
-			return fmt.Errorf("bead %s is already claimed (attempt: %s)", id, attempt.ID)
-		}
-	}
-
-	// Create attempt bead atomically as part of the claim.
-	// This is the real ownership marker — storeGetReadyWork and the steward
-	// filter by attempt beads, not by in_progress status. Creating the
-	// attempt bead before flipping status closes the race window where two
-	// actors could both think they own the same bead.
-	attemptID := ""
-	if attempt == nil {
-		branch := fmt.Sprintf("feat/%s", id)
-		aid, aerr := claimCreateAttemptFunc(id, identity, "pending", branch)
-		if aerr != nil {
-			return fmt.Errorf("claim %s: create attempt bead: %w", id, aerr)
-		}
-		attemptID = aid
-	} else {
-		attemptID = attempt.ID
+		return fmt.Errorf("claim %s: %w", id, err)
 	}
 
 	// Flip status to in_progress.

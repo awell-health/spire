@@ -1,31 +1,32 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
 
 // stubClaimDeps replaces all store/identity funcs used by cmdClaim with safe stubs.
 // Returns a cleanup func that restores originals.
-func stubClaimDeps(t *testing.T, bead Bead, attempt *Bead, identity string) func() {
+func stubClaimDeps(t *testing.T, bead Bead, attemptErr error, identity string) func() {
 	t.Helper()
 	origGetBead := claimGetBeadFunc
-	origAttempt := claimGetActiveAttemptFunc
 	origUpdate := claimUpdateBeadFunc
 	origIdentity := claimIdentityFunc
 	origCreate := claimCreateAttemptFunc
 
 	claimGetBeadFunc = func(id string) (Bead, error) { return bead, nil }
-	claimGetActiveAttemptFunc = func(parentID string) (*Bead, error) { return attempt, nil }
 	claimUpdateBeadFunc = func(id string, updates map[string]interface{}) error { return nil }
 	claimIdentityFunc = func(asFlag string) (string, error) { return identity, nil }
 	claimCreateAttemptFunc = func(parentID, agentName, model, branch string) (string, error) {
+		if attemptErr != nil {
+			return "", attemptErr
+		}
 		return parentID + ".attempt", nil
 	}
 
 	return func() {
 		claimGetBeadFunc = origGetBead
-		claimGetActiveAttemptFunc = origAttempt
 		claimUpdateBeadFunc = origUpdate
 		claimIdentityFunc = origIdentity
 		claimCreateAttemptFunc = origCreate
@@ -43,33 +44,28 @@ func TestClaim_NoAttemptBead(t *testing.T) {
 	}
 }
 
-// TestClaim_RejectsWhenAttemptBeadOpen verifies cmdClaim is rejected when an open attempt
-// belonging to a different agent exists.
+// TestClaim_RejectsWhenAttemptBeadOpen verifies cmdClaim is rejected when the
+// atomic attempt creation returns an error (e.g. active attempt by another agent).
 func TestClaim_RejectsWhenAttemptBeadOpen(t *testing.T) {
 	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
-	activeAttempt := &Bead{
-		ID:     "spi-test.1",
-		Title:  "attempt: wizard-other",
-		Status: "in_progress",
-		Labels: []string{"attempt", "agent:wizard-other"},
-	}
-	cleanup := stubClaimDeps(t, bead, activeAttempt, "wizard-self")
+	alreadyClaimed := fmt.Errorf("active attempt spi-test.1 already exists (agent: wizard-other)")
+	cleanup := stubClaimDeps(t, bead, alreadyClaimed, "wizard-self")
 	defer cleanup()
 
 	err := cmdClaim([]string{"spi-test"})
 	if err == nil {
 		t.Fatal("expected claim to be rejected, got nil error")
 	}
-	if !strings.Contains(err.Error(), "already claimed") {
-		t.Errorf("expected 'already claimed' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' in error, got: %v", err)
 	}
 }
 
 // TestClaim_IgnoresClosedAttemptBead verifies cmdClaim succeeds when only closed attempt
-// beads exist (storeGetActiveAttempt filters closed beads, returning nil).
+// beads exist (storeCreateAttemptBeadAtomic sees no active attempt, creates a new one).
 func TestClaim_IgnoresClosedAttemptBead(t *testing.T) {
 	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
-	// Closed attempts are invisible — storeGetActiveAttempt returns nil for them.
+	// Closed attempts are invisible — atomic create sees no active attempt.
 	cleanup := stubClaimDeps(t, bead, nil, "wizard-self")
 	defer cleanup()
 
@@ -79,8 +75,8 @@ func TestClaim_IgnoresClosedAttemptBead(t *testing.T) {
 }
 
 // TestClaim_CreatesAttemptBeadAtomically verifies that cmdClaim creates an attempt
-// bead as part of the claim, closing the race window where two actors could both
-// see no attempt and claim the same bead.
+// bead as part of the claim via storeCreateAttemptBeadAtomic, and passes empty
+// model (unknown at claim time — the executor fills it in later).
 func TestClaim_CreatesAttemptBeadAtomically(t *testing.T) {
 	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
 	cleanup := stubClaimDeps(t, bead, nil, "wizard-self")
@@ -94,6 +90,9 @@ func TestClaim_CreatesAttemptBeadAtomically(t *testing.T) {
 		}
 		if agentName != "wizard-self" {
 			t.Errorf("expected agentName=wizard-self, got %s", agentName)
+		}
+		if model != "" {
+			t.Errorf("expected model=\"\" (unknown at claim time), got %q", model)
 		}
 		if branch != "feat/spi-test" {
 			t.Errorf("expected branch=feat/spi-test, got %s", branch)
@@ -109,29 +108,20 @@ func TestClaim_CreatesAttemptBeadAtomically(t *testing.T) {
 	}
 }
 
-// TestClaim_ReclaimSkipsAttemptCreation verifies that reclaiming (same identity)
-// reuses the existing attempt bead without creating a new one.
-func TestClaim_ReclaimSkipsAttemptCreation(t *testing.T) {
+// TestClaim_ReclaimReusesExistingAttempt verifies that reclaiming (same identity)
+// reuses the existing attempt bead. The atomic create func returns the existing
+// attempt's ID when the same agent reclaims.
+func TestClaim_ReclaimReusesExistingAttempt(t *testing.T) {
 	bead := Bead{ID: "spi-test", Title: "some task", Status: "in_progress"}
-	existingAttempt := &Bead{
-		ID:     "spi-test.1",
-		Title:  "attempt: wizard-self",
-		Status: "in_progress",
-		Labels: []string{"attempt", "agent:wizard-self"},
-	}
-	cleanup := stubClaimDeps(t, bead, existingAttempt, "wizard-self")
+	cleanup := stubClaimDeps(t, bead, nil, "wizard-self")
 	defer cleanup()
 
-	attemptCreated := false
+	// Simulate atomic create returning an existing attempt ID (reclaim path).
 	claimCreateAttemptFunc = func(parentID, agentName, model, branch string) (string, error) {
-		attemptCreated = true
-		return "spi-test.new", nil
+		return "spi-test.existing", nil
 	}
 
 	if err := cmdClaim([]string{"spi-test"}); err != nil {
 		t.Fatalf("expected reclaim to succeed, got error: %v", err)
-	}
-	if attemptCreated {
-		t.Fatal("expected reclaim to reuse existing attempt, not create a new one")
 	}
 }

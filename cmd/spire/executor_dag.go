@@ -2,43 +2,52 @@ package main
 
 import "fmt"
 
-// ensureAttemptBead creates an attempt bead if one doesn't already exist in state.
-// On retry (state has no attempt bead), creates a new one.
+// ensureAttemptBead reuses an existing attempt bead (typically created by cmdClaim)
+// or creates a new one if none exists.
+//
+// Claim→executor handoff: cmdClaim creates the attempt bead atomically at claim
+// time with model="" (unknown). When the executor starts, it finds that attempt
+// and updates the model label from the formula. This avoids duplicate attempts
+// while ensuring the model label is eventually correct.
 func (e *formulaExecutor) ensureAttemptBead() error {
-	// If we already have an attempt bead from persisted state, verify it's still open.
-	if e.state.AttemptBeadID != "" {
-		b, err := e.beadGetter(e.state.AttemptBeadID)
-		if err == nil && (b.Status == "open" || b.Status == "in_progress") {
-			e.log("resuming existing attempt bead %s", e.state.AttemptBeadID)
-			return nil
-		}
-		// Previous attempt was closed — will create a new one.
-		e.state.AttemptBeadID = ""
-	}
-
-	// Check invariant: no open attempt should exist already.
-	existing, err := e.activeAttemptGetter(e.beadID)
-	if err != nil {
-		return err // invariant violation
-	}
-	if existing != nil {
-		// Another agent's attempt is still open — reuse if it's ours.
-		agent := hasLabel(*existing, "agent:")
-		if agent == e.agentName {
-			e.state.AttemptBeadID = existing.ID
-			e.log("reclaimed existing attempt bead %s", existing.ID)
-			return nil
-		}
-		return fmt.Errorf("active attempt %s already exists (agent: %s)", existing.ID, agent)
-	}
-
-	// Determine model and branch.
+	// Determine model from formula for label updates.
 	model := "unknown"
 	if e.formula != nil && e.formula.Phases != nil {
 		if pc, ok := e.formula.Phases[e.state.Phase]; ok && pc.Model != "" {
 			model = pc.Model
 		}
 	}
+
+	// If we already have an attempt bead from persisted state, verify it's still open.
+	if e.state.AttemptBeadID != "" {
+		b, err := e.beadGetter(e.state.AttemptBeadID)
+		if err == nil && (b.Status == "open" || b.Status == "in_progress") {
+			e.log("resuming existing attempt bead %s", e.state.AttemptBeadID)
+			e.ensureAttemptModelLabel(e.state.AttemptBeadID, b, model)
+			return nil
+		}
+		// Previous attempt was closed — will create a new one.
+		e.state.AttemptBeadID = ""
+	}
+
+	// Check for an existing active attempt (e.g. created by cmdClaim).
+	existing, err := e.activeAttemptGetter(e.beadID)
+	if err != nil {
+		return err // invariant violation
+	}
+	if existing != nil {
+		// Reuse if it belongs to this agent; reject if it belongs to another.
+		agent := hasLabel(*existing, "agent:")
+		if agent == e.agentName {
+			e.state.AttemptBeadID = existing.ID
+			e.log("reusing attempt bead %s (created by claim)", existing.ID)
+			e.ensureAttemptModelLabel(existing.ID, *existing, model)
+			return e.saveState()
+		}
+		return fmt.Errorf("active attempt %s already exists (agent: %s)", existing.ID, agent)
+	}
+
+	// No existing attempt — create one (direct executor invocation, not via claim).
 	branch := e.state.StagingBranch
 	if branch == "" {
 		branch = fmt.Sprintf("feat/%s", e.beadID)
@@ -51,6 +60,31 @@ func (e *formulaExecutor) ensureAttemptBead() error {
 	e.state.AttemptBeadID = id
 	e.log("created attempt bead %s", id)
 	return e.saveState()
+}
+
+// ensureAttemptModelLabel adds the model:<model> label to an attempt bead if
+// it's missing. This handles the claim→executor handoff where cmdClaim creates
+// the attempt with model="" (unknown at claim time) and the executor fills it
+// in once it has formula context.
+func (e *formulaExecutor) ensureAttemptModelLabel(attemptID string, b Bead, model string) {
+	if model == "" || model == "unknown" {
+		return
+	}
+	existingModel := hasLabel(b, "model:")
+	if existingModel == model {
+		return // already correct
+	}
+	if existingModel != "" {
+		// Model label exists but is wrong — remove it first.
+		if err := storeRemoveLabel(attemptID, "model:"+existingModel); err != nil {
+			e.log("warning: remove stale model label from %s: %s", attemptID, err)
+		}
+	}
+	if err := storeAddLabel(attemptID, "model:"+model); err != nil {
+		e.log("warning: add model label to attempt %s: %s", attemptID, err)
+	} else {
+		e.log("updated attempt %s model label to %s", attemptID, model)
+	}
 }
 
 // closeAttempt closes the current attempt bead with the given result.
