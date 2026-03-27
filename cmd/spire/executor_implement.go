@@ -86,8 +86,8 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		resultCh := make(chan result, len(wave))
 
 		for i, subtaskID := range wave {
-			if st, ok := e.state.Subtasks[subtaskID]; ok && st.Status == "closed" {
-				e.log("  %s already closed, skipping", subtaskID)
+			if st, ok := e.state.Subtasks[subtaskID]; ok && (st.Status == "closed" || st.Status == "done") {
+				e.log("  %s already %s, skipping", subtaskID, st.Status)
 				continue
 			}
 
@@ -122,7 +122,9 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		wg.Wait()
 		close(resultCh)
 
-		// Collect results (single-threaded — no race)
+		// Collect results (single-threaded — no race).
+		// Mark successful subtasks as "done" (apprentice finished) but do NOT
+		// close them yet — closing happens after merge + build verification.
 		var errs []string
 		for r := range resultCh {
 			if r.Err != nil {
@@ -130,12 +132,9 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 				continue
 			}
 			e.state.Subtasks[r.BeadID] = subtaskState{
-				Status: "closed",
+				Status: "done",
 				Branch: fmt.Sprintf("feat/%s", r.BeadID),
 				Agent:  r.Agent,
-			}
-			if err := storeCloseBead(r.BeadID); err != nil {
-				e.log("warning: close subtask %s: %s", r.BeadID, err)
 			}
 		}
 
@@ -149,7 +148,7 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		if stagingWt != nil {
 			for _, subtaskID := range wave {
 				st, ok := e.state.Subtasks[subtaskID]
-				if !ok || st.Status != "closed" || st.Branch == "" {
+				if !ok || st.Status != "done" || st.Branch == "" {
 					continue
 				}
 				if mergeErr := stagingWt.MergeBranch(st.Branch, e.resolveConflicts); mergeErr != nil {
@@ -171,6 +170,21 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 				return fmt.Errorf("build verification failed after wave %d: %w", waveIdx, buildErr)
 			}
 		}
+
+		// Close subtask beads AFTER successful merge and build verification.
+		// This ensures the bead graph stays accurate if merge or build fails.
+		for _, subtaskID := range wave {
+			st, ok := e.state.Subtasks[subtaskID]
+			if !ok || st.Status != "done" {
+				continue
+			}
+			if err := storeCloseBead(subtaskID); err != nil {
+				e.log("warning: close subtask %s: %s", subtaskID, err)
+			}
+			st.Status = "closed"
+			e.state.Subtasks[subtaskID] = st
+		}
+		e.saveState()
 	}
 
 	// No need to switch branches — staging work happened in its own worktree.
