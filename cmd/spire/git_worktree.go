@@ -144,39 +144,6 @@ func (wc *WorktreeContext) ConfigureUser(name, email string) {
 	exec.Command("git", "-C", wc.Dir, "config", "--worktree", "user.email", email).Run()
 }
 
-// MergeBranch merges childBranch into this worktree's branch.
-// It fetches from origin first, then tries origin/childBranch, then childBranch locally.
-// On merge conflict, resolver is called (if non-nil) to attempt resolution.
-func (wc *WorktreeContext) MergeBranch(childBranch string, resolver func(dir, branch string) error) error {
-	// Fetch in case the apprentice pushed to remote.
-	exec.Command("git", "-C", wc.Dir, "fetch", "origin", childBranch).Run()
-
-	// Try remote branch first, fall back to local.
-	branchRef := "origin/" + childBranch
-	if _, mergeErr := exec.Command("git", "-C", wc.Dir, "merge", "--no-edit", branchRef).CombinedOutput(); mergeErr != nil {
-		branchRef = childBranch
-		if _, mergeErr2 := exec.Command("git", "-C", wc.Dir, "merge", "--no-edit", branchRef).CombinedOutput(); mergeErr2 != nil {
-			// Check if git is in a conflict state.
-			statusOut, _ := exec.Command("git", "-C", wc.Dir, "status", "--porcelain").Output()
-			if strings.Contains(string(statusOut), "UU ") || strings.Contains(string(statusOut), "AA ") {
-				if resolver != nil {
-					if resolveErr := resolver(wc.Dir, childBranch); resolveErr != nil {
-						exec.Command("git", "-C", wc.Dir, "merge", "--abort").Run()
-						return fmt.Errorf("conflict resolution failed: %w", resolveErr)
-					}
-					return nil
-				}
-				exec.Command("git", "-C", wc.Dir, "merge", "--abort").Run()
-				return fmt.Errorf("merge conflict in %s: no resolver provided", childBranch)
-			}
-			// Not a conflict — some other merge error.
-			exec.Command("git", "-C", wc.Dir, "merge", "--abort").Run()
-			return fmt.Errorf("merge failed: %w", mergeErr2)
-		}
-	}
-	return nil
-}
-
 // Cleanup removes this worktree from git and deletes its directory.
 func (wc *WorktreeContext) Cleanup() {
 	if wc.Dir != "" {
@@ -185,8 +152,3 @@ func (wc *WorktreeContext) Cleanup() {
 	}
 }
 
-// FetchBranch fetches a specific branch from a remote into this worktree.
-// This is the only fetch operation allowed — targeted, not broad.
-func (wc *WorktreeContext) FetchBranch(remote, branch string) {
-	exec.Command("git", "-C", wc.Dir, "fetch", remote, branch).Run()
-}

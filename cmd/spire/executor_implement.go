@@ -62,7 +62,7 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		// Create the branch from current HEAD before adding the worktree.
 		exec.Command("git", "-C", repoPath, "branch", "-f", stagingBranch).Run()
 		var wtErr error
-		stagingWt, wtErr = NewStagingWorktree(repoPath, stagingBranch, fmt.Sprintf("spire-staging-%s", e.beadID), e.log)
+		stagingWt, wtErr = NewStagingWorktree(repoPath, stagingBranch, e.state.BaseBranch, fmt.Sprintf("spire-staging-%s", e.beadID), e.log)
 		if wtErr != nil {
 			return fmt.Errorf("create staging worktree: %w", wtErr)
 		}

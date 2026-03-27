@@ -99,15 +99,16 @@ func cmdWizardReview(args []string) error {
 	log("reviewing %s branch %s", beadID, branch)
 
 	// 3. Create own worktree (before adding review-assigned, so failures don't leak the label)
-	worktreeDir, err := reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
+	wc, err := reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}
-	defer reviewCleanupWorktree(worktreeDir, repoPath)
-	log("worktree: %s", worktreeDir)
+	defer wc.Cleanup()
+	log("worktree: %s", wc.Dir)
 
-	// 4. Get diff
-	diff, err := reviewGetDiff(worktreeDir, baseBranch)
+	// 4. Get diff — fetch baseBranch at the review level (not via WorktreeContext)
+	exec.Command("git", "-C", wc.Dir, "fetch", "origin", baseBranch).Run()
+	diff, err := wc.DiffMergeBase("origin/" + baseBranch)
 	if err != nil {
 		return fmt.Errorf("get diff: %w", err)
 	}
@@ -121,9 +122,9 @@ func cmdWizardReview(args []string) error {
 	testOutput := ""
 	if repoCfg != nil && repoCfg.Runtime.Test != "" {
 		log("running tests")
-		testOut, testErr := reviewRunTests(worktreeDir, repoCfg)
-		testOutput = testOut
+		testErr := wc.RunCommand(repoCfg.Runtime.Test)
 		if testErr != nil {
+			testOutput = testErr.Error()
 			log("tests failed: %s", testErr)
 		}
 	}
@@ -227,7 +228,7 @@ func cmdWizardReview(args []string) error {
 
 // --- Worktree helpers ---
 
-func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (string, error) {
+func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (*WorktreeContext, error) {
 	worktreeDir := filepath.Join(os.TempDir(), "spire-review", reviewerName, beadID)
 
 	// Clean up stale worktree
@@ -238,7 +239,7 @@ func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch str
 
 	os.MkdirAll(filepath.Dir(worktreeDir), 0755)
 
-	// Fetch the branch
+	// Fetch the branch from origin (done at the review level, not on WorktreeContext)
 	exec.Command("git", "-C", repoPath, "fetch", "origin", branch).Run()
 
 	// Create worktree from the branch (not creating new branch)
@@ -247,42 +248,19 @@ func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch str
 		// Try with local branch name
 		cmd2 := exec.Command("git", "-C", repoPath, "worktree", "add", worktreeDir, branch)
 		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			return "", fmt.Errorf("git worktree add: %s\n%s\n%s", err, string(out), string(out2))
+			return nil, fmt.Errorf("git worktree add: %s\n%s\n%s", err, string(out), string(out2))
 		}
 	}
 
-	return worktreeDir, nil
-}
-
-func reviewCleanupWorktree(worktreeDir, repoPath string) {
-	exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", worktreeDir).Run()
-	os.RemoveAll(worktreeDir)
+	return &WorktreeContext{
+		Dir:        worktreeDir,
+		Branch:     branch,
+		BaseBranch: baseBranch,
+		RepoPath:   repoPath,
+	}, nil
 }
 
 // --- Diff + test helpers ---
-
-func reviewGetDiff(worktreeDir, baseBranch string) (string, error) {
-	// Fetch base for comparison
-	exec.Command("git", "-C", worktreeDir, "fetch", "origin", baseBranch).Run()
-
-	cmd := exec.Command("git", "-C", worktreeDir, "diff", "origin/"+baseBranch+"...HEAD")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git diff: %w", err)
-	}
-	return string(out), nil
-}
-
-func reviewRunTests(worktreeDir string, cfg *repoconfig.RepoConfig) (string, error) {
-	if cfg.Runtime.Test == "" {
-		return "", nil
-	}
-	cmd := exec.Command("sh", "-c", cfg.Runtime.Test)
-	cmd.Dir = worktreeDir
-	cmd.Env = os.Environ()
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
 
 func reviewGetRound(beadID string) int {
 	reviews, err := storeGetReviewBeads(beadID)

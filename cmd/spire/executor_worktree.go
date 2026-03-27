@@ -22,9 +22,11 @@ type StagingWorktree struct {
 }
 
 // NewStagingWorktree creates a new temporary git worktree checking out branch.
+// baseBranch is the branch this was forked from (e.g. "main") — stored in the
+// embedded WorktreeContext so methods like HasNewCommits work correctly.
 // nameHint is included in the temp directory name for debugging (e.g. "spire-staging").
 // The caller must call Close() when done.
-func NewStagingWorktree(repoPath, branch, nameHint string, log func(string, ...interface{})) (*StagingWorktree, error) {
+func NewStagingWorktree(repoPath, branch, baseBranch, nameHint string, log func(string, ...interface{})) (*StagingWorktree, error) {
 	tmpDir, err := os.MkdirTemp("", nameHint+"-")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
@@ -36,9 +38,10 @@ func NewStagingWorktree(repoPath, branch, nameHint string, log func(string, ...i
 	}
 
 	wc := WorktreeContext{
-		Dir:      dir,
-		Branch:   branch,
-		RepoPath: repoPath,
+		Dir:        dir,
+		Branch:     branch,
+		BaseBranch: baseBranch,
+		RepoPath:   repoPath,
 	}
 
 	// Configure git user in the staging worktree to the archmage identity so
@@ -63,11 +66,47 @@ func NewStagingWorktree(repoPath, branch, nameHint string, log func(string, ...i
 	}, nil
 }
 
-// MergeBranch merges childBranch into this worktree's branch.
-// Delegates to the embedded WorktreeContext.MergeBranch with logging.
+// FetchBranch fetches a specific branch from a remote into this staging worktree.
+// Fetch operations live on StagingWorktree (not WorktreeContext) because
+// WorktreeContext enforces local-ref-only semantics.
+func (w *StagingWorktree) FetchBranch(remote, branch string) {
+	exec.Command("git", "-C", w.Dir, "fetch", remote, branch).Run()
+}
+
+// MergeBranch merges childBranch into this staging worktree's branch.
+// It fetches from origin first (since the apprentice may have pushed to remote),
+// then tries origin/childBranch, falling back to a local branch ref.
+// On merge conflict, resolver is called (if non-nil) to attempt resolution.
 func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, branch string) error) error {
 	w.log("  merging %s into %s", childBranch, w.Branch)
-	return w.WorktreeContext.MergeBranch(childBranch, resolver)
+
+	// Fetch in case the apprentice pushed to remote.
+	w.FetchBranch("origin", childBranch)
+
+	// Try remote branch first, fall back to local.
+	branchRef := "origin/" + childBranch
+	if _, mergeErr := exec.Command("git", "-C", w.Dir, "merge", "--no-edit", branchRef).CombinedOutput(); mergeErr != nil {
+		branchRef = childBranch
+		if _, mergeErr2 := exec.Command("git", "-C", w.Dir, "merge", "--no-edit", branchRef).CombinedOutput(); mergeErr2 != nil {
+			// Check if git is in a conflict state.
+			statusOut, _ := exec.Command("git", "-C", w.Dir, "status", "--porcelain").Output()
+			if strings.Contains(string(statusOut), "UU ") || strings.Contains(string(statusOut), "AA ") {
+				if resolver != nil {
+					if resolveErr := resolver(w.Dir, childBranch); resolveErr != nil {
+						exec.Command("git", "-C", w.Dir, "merge", "--abort").Run()
+						return fmt.Errorf("conflict resolution failed: %w", resolveErr)
+					}
+					return nil
+				}
+				exec.Command("git", "-C", w.Dir, "merge", "--abort").Run()
+				return fmt.Errorf("merge conflict in %s: no resolver provided", childBranch)
+			}
+			// Not a conflict — some other merge error.
+			exec.Command("git", "-C", w.Dir, "merge", "--abort").Run()
+			return fmt.Errorf("merge failed: %w", mergeErr2)
+		}
+	}
+	return nil
 }
 
 // RunBuild runs buildStr as a command in the worktree directory.
@@ -150,6 +189,14 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 	}
 	defer exec.Command("git", "-C", w.RepoPath, "worktree", "remove", "--force", rebaseWtPath).Run()
 
+	// Wrap the rebase worktree in a WorktreeContext for all operations.
+	rebaseWc := &WorktreeContext{
+		Dir:        rebaseWtPath,
+		Branch:     w.Branch,
+		BaseBranch: baseBranch,
+		RepoPath:   w.RepoPath,
+	}
+
 	// Rebase the staging branch onto main.
 	w.log("rebasing %s onto %s in staging worktree", w.Branch, baseBranch)
 	rebaseCmd := exec.Command("git", "-C", rebaseWtPath, "rebase", baseBranch)
@@ -162,24 +209,18 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 	// Re-verify build in the staging worktree after rebase.
 	if buildStr != "" {
 		w.log("verifying build after rebase")
-		buildParts := strings.Fields(buildStr)
-		buildCmd := exec.Command(buildParts[0], buildParts[1:]...)
-		buildCmd.Dir = rebaseWtPath
-		buildCmd.Env = os.Environ()
-		if out, buildErr := buildCmd.CombinedOutput(); buildErr != nil {
-			return fmt.Errorf("build failed after rebase (aborting merge): %s\n%s", buildErr, string(out))
+		out, buildErr := rebaseWc.RunCommandOutput(buildStr)
+		if buildErr != nil {
+			return fmt.Errorf("build failed after rebase (aborting merge): %s\n%s", buildErr, out)
 		}
 	}
 
 	// Run tests after rebase.
 	if testStr != "" {
 		w.log("running tests after rebase")
-		testParts := strings.Fields(testStr)
-		testCmd := exec.Command(testParts[0], testParts[1:]...)
-		testCmd.Dir = rebaseWtPath
-		testCmd.Env = os.Environ()
-		if out, testErr := testCmd.CombinedOutput(); testErr != nil {
-			return fmt.Errorf("tests failed after rebase (aborting merge): %s\n%s", testErr, string(out))
+		out, testErr := rebaseWc.RunCommandOutput(testStr)
+		if testErr != nil {
+			return fmt.Errorf("tests failed after rebase (aborting merge): %s\n%s", testErr, out)
 		}
 	}
 

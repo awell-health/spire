@@ -40,7 +40,7 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	// Run build verification and doc review in a staging worktree — never checkout
 	// branches in the main worktree.
 	buildStr := e.resolveBuildCommand(pc)
-	mergeWt, mergeWtErr := NewStagingWorktree(repoPath, branch, fmt.Sprintf("spire-merge-%s", e.beadID), e.log)
+	mergeWt, mergeWtErr := NewStagingWorktree(repoPath, branch, baseBranch, fmt.Sprintf("spire-merge-%s", e.beadID), e.log)
 	if mergeWtErr != nil {
 		return fmt.Errorf("create merge worktree for %s: %w", branch, mergeWtErr)
 	}
