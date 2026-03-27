@@ -540,9 +540,9 @@ You are working in an isolated git worktree. Other agents may be working on rela
 2. Do NOT create a PR, merge, push, or touch other branches. The orchestrator handles that.
 3. Do NOT modify files listed as "do_not_touch" in the task description — another agent handles those.
 4. If the task description says to create types/interfaces that other tasks will use, make them complete and well-documented.
-5. Run tests and the build command before finishing. Both must pass.
-6. If you CANNOT complete the full task as described, report what you completed and what's missing as a comment on the bead. Do NOT silently commit partial work.
-7. Commit all changes to your branch before exiting.
+5. COMMIT YOUR WORK before running validation. The orchestrator runs tests independently — your job is to produce code, not fix pre-existing test issues. If build fails, fix compilation errors. If tests fail on code you wrote, try to fix it. If tests fail on code you didn't write, IGNORE IT and commit anyway.
+6. If you CANNOT complete the full task as described, commit what you have and report what's missing as a comment on the bead. Partial work committed is ALWAYS better than no work committed.
+7. Do NOT revert your changes. Do NOT undo work you've done. If something isn't working, commit what you have — the reviewer will sort it out.
 
 %s
 ## Focus context (FULL task description)
