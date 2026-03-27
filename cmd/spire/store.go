@@ -456,7 +456,7 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 		attempt, aErr := storeGetActiveAttempt(b.ID)
 		if aErr != nil {
 			log.Printf("[store] quarantining %s (multiple open attempts): %v", b.ID, aErr)
-			storeRaiseCorruptedBeadAlert(b.ID, aErr)
+			storeRaiseCorruptedBeadAlertFunc(b.ID, aErr)
 			continue
 		}
 		if attempt != nil {
@@ -646,19 +646,43 @@ var storeGetChildrenFunc = storeGetChildren
 // In production this stays at its default (storeGetActiveAttempt).
 var storeGetActiveAttemptFunc = storeGetActiveAttempt
 
-// storeRaiseCorruptedBeadAlert creates a P0 alert bead flagging a bead with
-// multiple open attempt children (invariant violation). The caller should
-// already have logged the violation and excluded the bead from ready work.
-// Alert creation is best-effort: errors are logged, not propagated.
-func storeRaiseCorruptedBeadAlert(beadID string, violation error) {
-	msg := fmt.Sprintf("corrupted bead %s: %v", beadID, violation)
+// storeRaiseCorruptedBeadAlertFunc is a test-replaceable function for storeRaiseCorruptedBeadAlert.
+// In production this stays at its default (storeRaiseCorruptedBeadAlert).
+var storeRaiseCorruptedBeadAlertFunc = storeRaiseCorruptedBeadAlert
+
+// storeCheckExistingAlertFunc checks whether an open corrupted-bead alert already
+// exists for beadID. Test-replaceable to avoid needing a real store in unit tests.
+var storeCheckExistingAlertFunc = func(beadID string) bool {
+	existing, err := storeListBeads(beads.IssueFilter{
+		Labels: []string{"alert:corrupted-bead", "ref:" + beadID},
+	})
+	return err == nil && len(existing) > 0
+}
+
+// storeCreateAlertFunc creates the alert bead for a corrupted bead.
+// Test-replaceable to verify creation is skipped when dedup fires.
+var storeCreateAlertFunc = func(beadID, msg string) error {
 	_, err := storeCreateBead(createOpts{
 		Title:    msg,
 		Priority: 0,
 		Type:     beads.TypeTask,
 		Labels:   []string{"alert:corrupted-bead", "ref:" + beadID},
 	})
-	if err != nil {
+	return err
+}
+
+// storeRaiseCorruptedBeadAlert creates a P0 alert bead flagging a bead with
+// multiple open attempt children (invariant violation). The caller should
+// already have logged the violation and excluded the bead from ready work.
+// Alert creation is best-effort: errors are logged, not propagated.
+// Deduplication: if an open alert already exists for beadID, no new alert is created.
+func storeRaiseCorruptedBeadAlert(beadID string, violation error) {
+	if storeCheckExistingAlertFunc(beadID) {
+		log.Printf("[store] alert already exists for corrupted bead %s, skipping duplicate", beadID)
+		return
+	}
+	msg := fmt.Sprintf("corrupted bead %s: %v", beadID, violation)
+	if err := storeCreateAlertFunc(beadID, msg); err != nil {
 		log.Printf("[store] failed to raise alert for corrupted bead %s: %v", beadID, err)
 	}
 }

@@ -291,7 +291,7 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, ba
 		attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
 		if aErr != nil {
 			log.Printf("[steward] quarantining %s (multiple open attempts): %v", bead.ID, aErr)
-			storeRaiseCorruptedBeadAlert(bead.ID, aErr)
+			storeRaiseCorruptedBeadAlertFunc(bead.ID, aErr)
 			continue
 		}
 		if attempt != nil {
@@ -619,7 +619,7 @@ func detectReviewFeedback(dryRun bool) {
 		reEngageAttempt, reEngageErr := storeGetActiveAttemptFunc(b.ID)
 		if reEngageErr != nil {
 			log.Printf("[steward] quarantining %s (multiple open attempts): %v", b.ID, reEngageErr)
-			storeRaiseCorruptedBeadAlert(b.ID, reEngageErr)
+			storeRaiseCorruptedBeadAlertFunc(b.ID, reEngageErr)
 			continue
 		}
 		if reEngageAttempt != nil {

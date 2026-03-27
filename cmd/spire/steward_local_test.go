@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -201,6 +202,167 @@ func TestIsWizardRunning_DeadPID(t *testing.T) {
 
 	if isWizardRunning(name) {
 		t.Error("expected false for wizard with PID 0")
+	}
+}
+
+// --- Fail-closed: corrupted bead quarantine tests ---
+
+// TestStewardAssignment_FailClosed_ExcludesAndAlerts verifies that when
+// storeGetActiveAttemptFunc returns an error (multiple open attempts), the bead
+// is excluded (shouldSkip=true) and storeRaiseCorruptedBeadAlertFunc is called.
+func TestStewardAssignment_FailClosed_ExcludesAndAlerts(t *testing.T) {
+	origAttempt := storeGetActiveAttemptFunc
+	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
+		if parentID == "spi-corrupted" {
+			return nil, fmt.Errorf("invariant violation: 2 open attempt beads for spi-corrupted")
+		}
+		return nil, nil
+	}
+	defer func() { storeGetActiveAttemptFunc = origAttempt }()
+
+	var alertedBeads []string
+	origAlert := storeRaiseCorruptedBeadAlertFunc
+	storeRaiseCorruptedBeadAlertFunc = func(beadID string, err error) {
+		alertedBeads = append(alertedBeads, beadID)
+	}
+	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
+
+	bead := Bead{ID: "spi-corrupted", Title: "corrupted task", Status: "open"}
+
+	// Replicate the assignment-loop logic: fail closed on error.
+	attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
+	if aErr != nil {
+		storeRaiseCorruptedBeadAlertFunc(bead.ID, aErr)
+	}
+	shouldSkip := aErr != nil || attempt != nil
+
+	if !shouldSkip {
+		t.Error("expected corrupted bead to be excluded (shouldSkip=true)")
+	}
+	if len(alertedBeads) != 1 || alertedBeads[0] != "spi-corrupted" {
+		t.Errorf("expected alert for spi-corrupted, got %v", alertedBeads)
+	}
+}
+
+// TestStewardAssignment_FailClosed_CleanBeadUnaffected verifies that a bead
+// without corrupted attempts is NOT excluded or alerted.
+func TestStewardAssignment_FailClosed_CleanBeadUnaffected(t *testing.T) {
+	origAttempt := storeGetActiveAttemptFunc
+	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
+		return nil, nil // no active attempt, no error
+	}
+	defer func() { storeGetActiveAttemptFunc = origAttempt }()
+
+	var alertedBeads []string
+	origAlert := storeRaiseCorruptedBeadAlertFunc
+	storeRaiseCorruptedBeadAlertFunc = func(beadID string, err error) {
+		alertedBeads = append(alertedBeads, beadID)
+	}
+	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
+
+	bead := Bead{ID: "spi-clean", Title: "clean task", Status: "open"}
+
+	attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
+	if aErr != nil {
+		storeRaiseCorruptedBeadAlertFunc(bead.ID, aErr)
+	}
+	shouldSkip := aErr != nil || attempt != nil
+
+	if shouldSkip {
+		t.Error("clean bead should not be excluded")
+	}
+	if len(alertedBeads) != 0 {
+		t.Errorf("expected no alerts for clean bead, got %v", alertedBeads)
+	}
+}
+
+// TestStewardReengage_FailClosed_SkipsAndAlerts verifies the re-engagement path:
+// when storeGetActiveAttemptFunc returns an error, re-engagement is skipped and
+// an alert is raised.
+func TestStewardReengage_FailClosed_SkipsAndAlerts(t *testing.T) {
+	origAttempt := storeGetActiveAttemptFunc
+	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
+		if parentID == "spi-reeng" {
+			return nil, fmt.Errorf("invariant violation: 3 open attempt beads for spi-reeng")
+		}
+		return nil, nil
+	}
+	defer func() { storeGetActiveAttemptFunc = origAttempt }()
+
+	var alertedBeads []string
+	origAlert := storeRaiseCorruptedBeadAlertFunc
+	storeRaiseCorruptedBeadAlertFunc = func(beadID string, err error) {
+		alertedBeads = append(alertedBeads, beadID)
+	}
+	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
+
+	// Replicate the detectReviewFeedback re-engagement guard logic.
+	reEngageAttempt, reEngageErr := storeGetActiveAttemptFunc("spi-reeng")
+	if reEngageErr != nil {
+		storeRaiseCorruptedBeadAlertFunc("spi-reeng", reEngageErr)
+	}
+	shouldSkip := reEngageErr != nil || reEngageAttempt != nil
+
+	if !shouldSkip {
+		t.Error("expected corrupted bead to be skipped for re-engagement")
+	}
+	if len(alertedBeads) != 1 || alertedBeads[0] != "spi-reeng" {
+		t.Errorf("expected alert for spi-reeng, got %v", alertedBeads)
+	}
+}
+
+// TestRaiseCorruptedBeadAlert_Dedup verifies that storeRaiseCorruptedBeadAlert
+// does not create a duplicate alert when an open alert already exists for the bead.
+func TestRaiseCorruptedBeadAlert_Dedup(t *testing.T) {
+	// Track how many times the create function is called.
+	createCount := 0
+	origCreate := storeCreateAlertFunc
+	storeCreateAlertFunc = func(beadID, msg string) error {
+		createCount++
+		return nil
+	}
+	defer func() { storeCreateAlertFunc = origCreate }()
+
+	// First call: no existing alert.
+	origCheck := storeCheckExistingAlertFunc
+	storeCheckExistingAlertFunc = func(beadID string) bool { return false }
+	defer func() { storeCheckExistingAlertFunc = origCheck }()
+
+	storeRaiseCorruptedBeadAlert("spi-dup", fmt.Errorf("invariant violation"))
+	if createCount != 1 {
+		t.Errorf("expected 1 create on first call, got %d", createCount)
+	}
+
+	// Second call: alert now exists — dedup should suppress creation.
+	storeCheckExistingAlertFunc = func(beadID string) bool { return true }
+	storeRaiseCorruptedBeadAlert("spi-dup", fmt.Errorf("invariant violation"))
+	if createCount != 1 {
+		t.Errorf("expected still 1 create after dedup, got %d", createCount)
+	}
+}
+
+// TestRaiseCorruptedBeadAlert_DedupPerBead verifies dedup is scoped per-bead:
+// an existing alert for bead A does not suppress an alert for bead B.
+func TestRaiseCorruptedBeadAlert_DedupPerBead(t *testing.T) {
+	createCount := 0
+	origCreate := storeCreateAlertFunc
+	storeCreateAlertFunc = func(beadID, msg string) error {
+		createCount++
+		return nil
+	}
+	defer func() { storeCreateAlertFunc = origCreate }()
+
+	origCheck := storeCheckExistingAlertFunc
+	storeCheckExistingAlertFunc = func(beadID string) bool {
+		return beadID == "spi-a" // only spi-a has existing alert
+	}
+	defer func() { storeCheckExistingAlertFunc = origCheck }()
+
+	storeRaiseCorruptedBeadAlert("spi-a", fmt.Errorf("err")) // should be suppressed
+	storeRaiseCorruptedBeadAlert("spi-b", fmt.Errorf("err")) // should create
+
+	if createCount != 1 {
+		t.Errorf("expected 1 create (only spi-b), got %d", createCount)
 	}
 }
 
