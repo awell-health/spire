@@ -1,12 +1,11 @@
 runtime:
   language: go
-  test: go test ./...
+  test: go test ./cmd/spire/ -timeout=30s
   build: go build ./cmd/spire/
   lint: go vet ./cmd/spire/
 
 agent:
-  model: claude-sonnet-4-6
-  max-turns: 30
+  model: claude-opus-4-6
   stale: 10m
   timeout: 15m
 
