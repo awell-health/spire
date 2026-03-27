@@ -54,17 +54,6 @@ func cmdWizardReview(args []string) error {
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", reviewerName, fmt.Sprintf(format, a...))
 	}
 
-	// Deferred review-assigned cleanup: remove the label on any exit that
-	// doesn't reach a verdict handler. This covers review-assigned added by
-	// either the steward (before spawn) or by this process. The label-remove
-	// is idempotent if the label was never set.
-	verdictHandled := false
-	defer func() {
-		if !verdictHandled {
-			storeRemoveLabel(beadID, "review-assigned")
-		}
-	}()
-
 	// Self-register in the wizard registry.
 	now := time.Now().UTC().Format(time.RFC3339)
 	wizardRegistryAdd(localWizard{
@@ -78,12 +67,11 @@ func cmdWizardReview(args []string) error {
 	defer wizardRegistryRemove(reviewerName)
 
 	// Signal handler for cleanup. os.Exit skips defers, so we must
-	// replicate the review-assigned and registry cleanup here.
+	// replicate the registry cleanup here.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		storeRemoveLabel(beadID, "review-assigned")
 		wizardRegistryRemove(reviewerName)
 		os.Exit(1)
 	}()
@@ -128,10 +116,7 @@ func cmdWizardReview(args []string) error {
 		return nil
 	}
 
-	// 5. Ensure review-assigned is set (may already be set by steward or wizard handoff).
-	storeAddLabel(beadID, "review-assigned")
-
-	// 6. Run tests in worktree
+	// 5. Run tests in worktree
 	repoCfg, _ := repoconfig.Load(repoPath)
 	testOutput := ""
 	if repoCfg != nil && repoCfg.Runtime.Test != "" {
@@ -193,13 +178,11 @@ func cmdWizardReview(args []string) error {
 	}
 
 	// 9. Handle verdict
-	verdictHandled = true
 	switch review.Verdict {
 	case "approve":
 		if verdictOnly {
-			// Verdict-only mode: set labels, post comment, exit. Don't merge or close.
-			storeRemoveLabel(beadID, "review-ready")
-			storeRemoveLabel(beadID, "review-assigned")
+			// Verdict-only mode: post comment, exit. Don't merge or close.
+			// Review bead already closed with verdict above.
 			storeAddLabel(beadID, "review-approved")
 			storeAddComment(beadID, fmt.Sprintf("Review approved by %s (verdict-only)", reviewerName))
 			log("approved (verdict-only) — exiting")
@@ -210,13 +193,7 @@ func cmdWizardReview(args []string) error {
 		}
 	case "request_changes":
 		if verdictOnly {
-			storeRemoveLabel(beadID, "review-ready")
-			storeRemoveLabel(beadID, "review-assigned")
-			storeAddLabel(beadID, "review-feedback")
-			if round > 1 {
-				storeRemoveLabel(beadID, fmt.Sprintf("review-round:%d", round-1))
-			}
-			storeAddLabel(beadID, fmt.Sprintf("review-round:%d", round))
+			// Review bead already closed with verdict above.
 			var comment strings.Builder
 			comment.WriteString(fmt.Sprintf("Review round %d: request_changes — %s", round, review.Summary))
 			for _, issue := range review.Issues {
@@ -450,17 +427,7 @@ func parseReviewOutput(text string) (*Review, error) {
 func reviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath string, log func(string, ...interface{})) error {
 	log("approved — closing review step")
 
-	// Remove review labels
-	storeRemoveLabel(beadID, "review-ready")
-	storeRemoveLabel(beadID, "review-assigned")
-
-	// Remove implemented-by label
-	bead, _ := storeGetBead(beadID)
-	if implBy := hasLabel(bead, "implemented-by:"); implBy != "" {
-		storeRemoveLabel(beadID, "implemented-by:"+implBy)
-	}
-
-	// Add review-approved
+	// Add review-approved (still needed for executor/workshop reads until those are migrated)
 	storeAddLabel(beadID, "review-approved")
 
 	// Close review molecule step
@@ -471,7 +438,7 @@ func reviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath str
 	setPhase(beadID, "merge")
 
 	// Resolve build command from bead's formula
-	bead, _ = storeGetBead(beadID)
+	bead, _ := storeGetBead(beadID)
 	buildCmd := resolveBeadBuildCmd(bead)
 
 	// Terminal merge: rebase → build verify → ff-only merge → push → delete branch → close bead.
@@ -556,18 +523,7 @@ func reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, log fun
 func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, revPolicy RevisionPolicy, log func(string, ...interface{})) error {
 	log("requesting changes (round %d)", round)
 
-	// Remove review labels
-	storeRemoveLabel(beadID, "review-ready")
-	storeRemoveLabel(beadID, "review-assigned")
-
-	// Add review-feedback
-	storeAddLabel(beadID, "review-feedback")
-
-	// Replace review-round label for backwards compat (round is now 1-based)
-	if round > 1 {
-		storeRemoveLabel(beadID, fmt.Sprintf("review-round:%d", round-1))
-	}
-	storeAddLabel(beadID, fmt.Sprintf("review-round:%d", round))
+	// Review bead already closed with verdict above; no label writes needed.
 
 	// Post comment
 	var comment strings.Builder

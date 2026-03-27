@@ -1213,18 +1213,34 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 		e.log("sage exited: %s — checking verdict", err)
 	}
 
-	// Read verdict from bead labels
+	// Read verdict from review-round child beads.
 	bead, err := storeGetBead(e.beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
+	// Check review-approved label for backwards compat (verdict-only mode still sets it).
 	if containsLabel(bead, "review-approved") {
 		e.log("approved")
 		return nil // advance to next phase (merge)
 	}
 
-	if containsLabel(bead, "review-feedback") {
+	// Check review beads for verdict
+	reviews, _ := storeGetReviewBeads(e.beadID)
+	lastVerdict := ""
+	if len(reviews) > 0 {
+		lastReview := reviews[len(reviews)-1]
+		if lastReview.Status == "closed" {
+			lastVerdict = reviewBeadVerdict(lastReview)
+		}
+	}
+
+	if lastVerdict == "approve" {
+		e.log("approved (via review bead)")
+		return nil // advance to next phase (merge)
+	}
+
+	if lastVerdict == "request_changes" {
 		e.state.ReviewRounds++
 		e.log("request changes (round %d)", e.state.ReviewRounds)
 
@@ -1253,7 +1269,6 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 		}
 
 		// Go back to implement phase
-		storeRemoveLabel(e.beadID, "review-feedback")
 
 		// Find the implement phase to re-execute
 		if implPC, ok := e.formula.Phases["implement"]; ok {

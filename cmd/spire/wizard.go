@@ -174,9 +174,6 @@ func cmdWizardRun(args []string) error {
 		// --review-fix path: skip design, collect feedback, implement with feedback
 		feedback := wizardCollectReviewHistory(beadID, wizardName)
 
-		// Remove review-feedback label
-		storeRemoveLabel(beadID, "review-feedback")
-
 		// Transition to implement phase (standalone wizard only)
 		if !apprenticeMode {
 			setPhase(beadID, "implement")
@@ -901,14 +898,10 @@ func wizardCollectReviewHistory(beadID, wizardName string) string {
 
 // --- Review handoff ---
 
-// wizardReviewHandoff swaps labels and spawns a reviewer process.
-// On spawn failure, review-ready and implemented-by stay in place so the
-// steward's detectReviewReady() can re-route the bead on the next cycle.
+// wizardReviewHandoff spawns a reviewer process for a bead.
+// On spawn failure, the steward's detectReviewReady() will detect the bead
+// needs review via its closed implement step bead and re-route on the next cycle.
 func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string, ...interface{})) {
-	storeAddLabel(beadID, "implemented-by:"+wizardName)
-
-	// Add review labels
-	storeAddLabel(beadID, "review-ready")
 	storeAddLabel(beadID, "feat-branch:"+branchName)
 
 	// Transition to review phase
@@ -933,12 +926,11 @@ func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string,
 		Role:   RoleSage,
 	})
 	if spawnErr != nil {
-		log("failed to spawn reviewer: %s — leaving review-ready for steward", spawnErr)
-		// Remove the dead registry entry but keep review-ready and
-		// implemented-by so the steward's detectReviewReady() can re-route
-		// the bead to a review pod (k8s) or a future local retry.
+		log("failed to spawn reviewer: %s — steward will detect via review beads", spawnErr)
+		// Remove the dead registry entry; the steward's detectReviewReady()
+		// will detect the bead needs review via its closed implement step bead.
 		wizardRegistryRemove(reviewerName)
-		storeAddComment(beadID, fmt.Sprintf("Local review spawn failed: %s — bead left review-ready for steward", spawnErr))
+		storeAddComment(beadID, fmt.Sprintf("Local review spawn failed: %s — steward will re-route", spawnErr))
 		return
 	}
 

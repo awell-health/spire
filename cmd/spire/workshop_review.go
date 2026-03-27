@@ -36,24 +36,39 @@ func workshopReview(state *workshopState, spawner AgentBackend) error {
 		log("sage exited: %s — checking for verdict", err)
 	}
 
-	// 2. Read the verdict from the bead state
-	// The sage (wizard-review) updates bead labels directly:
-	// - review-approved → approved
-	// - review-feedback → request changes
+	// 2. Read the verdict from review-round child beads.
+	// The sage (wizard-review) creates and closes review-round beads with verdicts.
 	bead, err := storeGetBead(epicID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
+	// Also check review-approved label for backwards compat (verdict-only mode still sets it).
 	if containsLabel(bead, "review-approved") {
-		// Approved — transition to merge
 		log("review approved — transitioning to merge")
 		setPhase(epicID, "merge")
 		state.Phase = "merge"
 		return nil
 	}
 
-	if containsLabel(bead, "review-feedback") {
+	// Check review beads for verdict
+	reviews, _ := storeGetReviewBeads(epicID)
+	lastVerdict := ""
+	if len(reviews) > 0 {
+		lastReview := reviews[len(reviews)-1]
+		if lastReview.Status == "closed" {
+			lastVerdict = reviewBeadVerdict(lastReview)
+		}
+	}
+
+	if lastVerdict == "approve" {
+		log("review approved (via review bead) — transitioning to merge")
+		setPhase(epicID, "merge")
+		state.Phase = "merge"
+		return nil
+	}
+
+	if lastVerdict == "request_changes" {
 		// Request changes — the wizard makes a judgment call
 		log("review requested changes (round %d)", state.ReviewRounds+1)
 		state.ReviewRounds++
@@ -124,7 +139,6 @@ Respond with ONLY a JSON object:
 		case "disagree":
 			// Override the sage — proceed to merge
 			log("overriding sage — transitioning to merge")
-			storeRemoveLabel(epicID, "review-feedback")
 			storeAddLabel(epicID, "review-approved")
 			setPhase(epicID, "merge")
 			state.Phase = "merge"
@@ -132,7 +146,6 @@ Respond with ONLY a JSON object:
 
 		default: // "agree", "partial", or unknown — re-implement with feedback
 			log("accepting feedback — dispatching review-fix")
-			storeRemoveLabel(epicID, "review-feedback")
 			setPhase(epicID, "implement")
 
 			// Spawn wizard-run --review-fix directly (subtasks are already closed,
@@ -157,7 +170,7 @@ Respond with ONLY a JSON object:
 		}
 	}
 
-	// No clear verdict in labels — the sage may have merged directly
+	// No clear verdict in review beads — the sage may have merged directly
 	// Check if the bead is already closed
 	if bead.Status == "closed" {
 		log("epic already closed (sage may have merged directly)")

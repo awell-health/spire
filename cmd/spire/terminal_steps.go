@@ -237,8 +237,6 @@ func terminalDiscard(beadID string, log func(string, ...interface{})) error {
 
 	// Close bead as wontfix — only reached after branch deletion attempted.
 	storeRemoveLabel(beadID, "feat-branch:"+branch)
-	storeRemoveLabel(beadID, "review-feedback")
-	storeRemoveLabel(beadID, "review-assigned")
 	storeAddLabel(beadID, "wontfix")
 	storeAddComment(beadID, "Arbiter: closing as wontfix — branches deleted")
 	if err := storeCloseBead(beadID); err != nil {

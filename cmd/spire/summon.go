@@ -474,11 +474,6 @@ func dismissCleanupBead(w localWizard) {
 		return
 	}
 
-	// Remove wizard labels.
-	storeRemoveLabel(w.BeadID, "implemented-by:"+w.Name)
-	storeRemoveLabel(w.BeadID, "review-ready")
-	storeRemoveLabel(w.BeadID, "review-feedback")
-
 	// Reopen if still in_progress.
 	if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err != nil {
 		// Not fatal — bead may already be open or closed.
@@ -545,9 +540,6 @@ func reapDeadWizard(w localWizard) {
 
 	// Clean up bead labels and reopen if orphaned.
 	if w.BeadID != "" {
-		storeRemoveLabel(w.BeadID, "implemented-by:"+w.Name)
-		storeRemoveLabel(w.BeadID, "review-ready")
-		storeRemoveLabel(w.BeadID, "review-feedback")
 		if w.Phase != "" {
 			storeRemoveLabel(w.BeadID, "phase:"+w.Phase)
 		}
