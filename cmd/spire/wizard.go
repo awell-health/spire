@@ -399,6 +399,11 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 	}
 	wc.ConfigureUser(archName, archEmail)
 
+	// Remove .beads/ from the worktree so the apprentice's test runs
+	// and Claude's exploratory commands don't create real beads in the
+	// production database. The apprentice doesn't need store access.
+	os.RemoveAll(filepath.Join(wc.Dir, ".beads"))
+
 	return wc, nil
 }
 
