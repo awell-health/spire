@@ -72,3 +72,34 @@ func TestCalcHeightBudget_AlertsAndBlockedFewItems(t *testing.T) {
 		t.Errorf("maxBlocked should not exceed blockedCount=3, got %d", b.maxBlocked)
 	}
 }
+
+func TestSortBeads_PriorityThenDate(t *testing.T) {
+	beads := []BoardBead{
+		{ID: "spi-p2-old", Priority: 2, UpdatedAt: "2026-03-25T10:00:00Z"},
+		{ID: "spi-p1-old", Priority: 1, UpdatedAt: "2026-03-25T09:00:00Z"},
+		{ID: "spi-p1-new", Priority: 1, UpdatedAt: "2026-03-26T09:00:00Z"},
+		{ID: "spi-p2-new", Priority: 2, UpdatedAt: "2026-03-26T10:00:00Z"},
+	}
+
+	sortBeads(beads)
+
+	want := []string{"spi-p1-new", "spi-p1-old", "spi-p2-new", "spi-p2-old"}
+	for i, id := range want {
+		if beads[i].ID != id {
+			t.Fatalf("index %d: expected %s, got %s", i, id, beads[i].ID)
+		}
+	}
+}
+
+func TestSortBeads_FallsBackToCreatedAt(t *testing.T) {
+	beads := []BoardBead{
+		{ID: "spi-blocked-old", Priority: 1, CreatedAt: "2026-03-25 09:00:00"},
+		{ID: "spi-blocked-new", Priority: 1, CreatedAt: "2026-03-26T09:00:00Z"},
+	}
+
+	sortBeads(beads)
+
+	if beads[0].ID != "spi-blocked-new" || beads[1].ID != "spi-blocked-old" {
+		t.Fatalf("created_at fallback sort mismatch: %#v", beads)
+	}
+}

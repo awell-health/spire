@@ -351,10 +351,10 @@ type boardPendingAction int
 
 const (
 	boardActionNone   boardPendingAction = iota
-	boardActionFocus  // print cmdFocus output, then relaunch
-	boardActionLogs   // tail wizard logs, then relaunch
-	boardActionSummon // summon a wizard for the bead, then relaunch
-	boardActionClaim  // claim the bead, then relaunch
+	boardActionFocus                     // print cmdFocus output, then relaunch
+	boardActionLogs                      // tail wizard logs, then relaunch
+	boardActionSummon                    // summon a wizard for the bead, then relaunch
+	boardActionClaim                     // claim the bead, then relaunch
 )
 
 type boardModel struct {
@@ -906,8 +906,38 @@ func sortBeads(beads []BoardBead) {
 		if beads[i].Priority != beads[j].Priority {
 			return beads[i].Priority < beads[j].Priority
 		}
-		return beads[i].UpdatedAt > beads[j].UpdatedAt
+		left := boardSortTime(beads[i])
+		right := boardSortTime(beads[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return beads[i].ID < beads[j].ID
 	})
+}
+
+func boardSortTime(b BoardBead) time.Time {
+	if t, ok := parseBoardTime(b.UpdatedAt); ok {
+		return t
+	}
+	if t, ok := parseBoardTime(b.CreatedAt); ok {
+		return t
+	}
+	return time.Time{}
+}
+
+func parseBoardTime(ts string) (time.Time, bool) {
+	if ts == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err == nil {
+		return t, true
+	}
+	t, err = time.Parse("2006-01-02 15:04:05", ts)
+	if err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 func nonNil(beads []BoardBead) []BoardBead {
@@ -942,15 +972,9 @@ func truncate(s string, max int) string {
 }
 
 func timeAgo(ts string) string {
-	if ts == "" {
+	t, ok := parseBoardTime(ts)
+	if !ok {
 		return ""
-	}
-	t, err := time.Parse(time.RFC3339, ts)
-	if err != nil {
-		t, err = time.Parse("2006-01-02 15:04:05", ts)
-		if err != nil {
-			return ""
-		}
 	}
 	d := time.Since(t)
 	switch {
