@@ -92,6 +92,55 @@ type RevisionPolicy struct {
 type FormulaVar struct {
 	Description string `toml:"description"`
 	Required    bool   `toml:"required"`
+	Default     string `toml:"default,omitempty"`
+}
+
+// FormulaStepGraph is a version 3 formula that declares a step graph with conditional routing.
+// Unlike FormulaV2 (which declares sequential phases), FormulaStepGraph declares individual
+// steps with dependency edges and runtime conditions. Used for the review phase molecule:
+// the executor pours this formula as a molecule, creating step beads, then walks the graph
+// — closing each step bead as it progresses.
+type FormulaStepGraph struct {
+	Name        string                `toml:"name"`
+	Description string                `toml:"description"`
+	Version     int                   `toml:"version"`
+	Steps       map[string]StepConfig `toml:"steps"`
+	Vars        map[string]FormulaVar `toml:"vars"`
+}
+
+// StepConfig configures a single step in a FormulaStepGraph.
+type StepConfig struct {
+	Role        string   `toml:"role"`                   // sage | apprentice | arbiter | executor
+	Title       string   `toml:"title,omitempty"`        // human-readable title for the step bead
+	Timeout     string   `toml:"timeout,omitempty"`      // e.g. "10m"
+	Model       string   `toml:"model,omitempty"`        // model override for agent phases
+	VerdictOnly bool     `toml:"verdict_only,omitempty"` // sage: produce verdict only, no edits
+	// Graph edges
+	Needs     []string `toml:"needs,omitempty"`     // predecessor steps (OR semantics: any one satisfies)
+	Condition string   `toml:"condition,omitempty"` // runtime gate, e.g. "verdict == request_changes"
+	Terminal  bool     `toml:"terminal,omitempty"`  // step enforces branch-lifecycle invariant on completion
+}
+
+// ParseFormulaStepGraph parses a version 3 step-graph formula from TOML bytes.
+func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
+	var f FormulaStepGraph
+	if err := toml.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parse step-graph formula: %w", err)
+	}
+	if f.Version != 3 {
+		return nil, fmt.Errorf("expected step-graph formula version 3, got %d", f.Version)
+	}
+	return &f, nil
+}
+
+// LoadReviewPhaseFormula loads the embedded review-phase step-graph formula.
+// Used by the executor to pour the review molecule on entering the review phase.
+func LoadReviewPhaseFormula() (*FormulaStepGraph, error) {
+	data, err := embedded.Formulas.ReadFile("formulas/review-phase.formula.toml")
+	if err != nil {
+		return nil, fmt.Errorf("embedded review-phase formula not found: %w", err)
+	}
+	return ParseFormulaStepGraph(data)
 }
 
 // LoadFormulaV2 reads and parses a v2 formula from a TOML file.

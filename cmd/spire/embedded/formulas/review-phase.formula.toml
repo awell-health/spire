@@ -1,0 +1,74 @@
+name = "review-phase"
+description = "Review phase step graph: sage reviews, fix on request_changes, arbiter on max rounds, terminal merge or discard."
+version = 3
+
+# Step graph for the review phase.
+# The executor pours this formula as a molecule, creating step beads,
+# then walks the graph — closing each step bead as it progresses.
+#
+# Execution semantics:
+#   - A step fires when its `needs` predecessor closes AND its `condition` is true
+#   - `needs` uses OR semantics: any one listed predecessor satisfies the dependency
+#   - conditions reference runtime vars: verdict, round, max_rounds
+#   - terminal steps (merge, discard) enforce the branch-lifecycle invariant:
+#       branch merged-to-main or deleted, bead closed
+#
+# Review DAG:
+#   sage-review → [approve]          → merge
+#               → [request_changes,
+#                  round < max]      → fix → sage-review  (loop)
+#               → [request_changes,
+#                  round >= max]     → arbiter → [merge|split] → merge
+#                                             → [discard]      → discard
+
+[steps.sage-review]
+role = "sage"
+title = "Sage review"
+timeout = "10m"
+model = "claude-opus-4-6"
+verdict_only = true
+# Entry step — no predecessor
+
+[steps.fix]
+role = "apprentice"
+title = "Fix: address sage review feedback"
+timeout = "15m"
+model = "claude-opus-4-6"
+needs = ["sage-review"]
+condition = "verdict == request_changes"
+
+[steps.arbiter]
+role = "arbiter"
+title = "Arbiter: break review deadlock"
+timeout = "10m"
+model = "claude-opus-4-6"
+needs = ["sage-review"]
+condition = "round >= max_rounds"
+
+[steps.merge]
+role = "executor"
+title = "Merge to main"
+# needs uses OR semantics: sage-review (on approve) OR arbiter (on merge/split verdict)
+needs = ["sage-review", "arbiter"]
+condition = "verdict != discard"
+terminal = true
+
+[steps.discard]
+role = "executor"
+title = "Discard branch"
+needs = ["arbiter"]
+condition = "verdict == discard"
+terminal = true
+
+[vars.bead_id]
+description = "The bead being reviewed"
+required = true
+
+[vars.branch]
+description = "The feature branch to review"
+required = true
+
+[vars.max_rounds]
+description = "Maximum review rounds before arbiter escalation (default: 3)"
+required = false
+default = "3"
