@@ -288,10 +288,10 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, ba
 		// The attempt bead is the authority — owner: label is not used here.
 		// Fail closed: if storeGetActiveAttemptFunc returns an error (e.g. multiple
 		// open attempts), skip assignment and raise an alert rather than assigning.
-		attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
+		attempt, aErr := storeGetActiveAttemptFunc(_defaultSctx, bead.ID)
 		if aErr != nil {
 			log.Printf("[steward] quarantining %s (multiple open attempts): %v", bead.ID, aErr)
-			storeRaiseCorruptedBeadAlertFunc(bead.ID, aErr)
+			storeRaiseCorruptedBeadAlertFunc(_defaultSctx, bead.ID, aErr)
 			continue
 		}
 		if attempt != nil {
@@ -436,7 +436,7 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 
 		age := now.Sub(t)
 		owner := ""
-		attempt, aErr := storeGetActiveAttemptFunc(b.ID)
+		attempt, aErr := storeGetActiveAttemptFunc(_defaultSctx, b.ID)
 		if aErr != nil {
 			// Invariant violation: multiple open attempts. Raise an alert and
 			// continue health checking with empty owner (Kill("") will fail
@@ -616,10 +616,10 @@ func detectReviewFeedback(dryRun bool) {
 		// Skip if there's already an active attempt (wizard already working on it).
 		// Fail closed: if storeGetActiveAttemptFunc returns an error (e.g. multiple
 		// open attempts), skip re-engagement and raise an alert.
-		reEngageAttempt, reEngageErr := storeGetActiveAttemptFunc(b.ID)
+		reEngageAttempt, reEngageErr := storeGetActiveAttemptFunc(_defaultSctx, b.ID)
 		if reEngageErr != nil {
 			log.Printf("[steward] quarantining %s (multiple open attempts): %v", b.ID, reEngageErr)
-			storeRaiseCorruptedBeadAlertFunc(b.ID, reEngageErr)
+			storeRaiseCorruptedBeadAlertFunc(_defaultSctx, b.ID, reEngageErr)
 			continue
 		}
 		if reEngageAttempt != nil {

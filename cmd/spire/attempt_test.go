@@ -15,7 +15,7 @@ import (
 func TestGetActiveAttempt_NoChildren(t *testing.T) {
 	// Use a fake childGetter that returns empty.
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return nil, nil
 	}
 	defer func() { storeGetChildrenFunc = origGetChildren }()
@@ -32,7 +32,7 @@ func TestGetActiveAttempt_NoChildren(t *testing.T) {
 // TestGetActiveAttempt_OneOpenAttempt returns the single active attempt.
 func TestGetActiveAttempt_OneOpenAttempt(t *testing.T) {
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{ID: "spi-parent.1", Title: "attempt: wizard-1", Status: "in_progress", Labels: []string{"attempt", "agent:wizard-1"}},
 			{ID: "spi-parent.2", Title: "regular child", Status: "open"},
@@ -55,7 +55,7 @@ func TestGetActiveAttempt_OneOpenAttempt(t *testing.T) {
 // TestGetActiveAttempt_ClosedAttemptIgnored verifies closed attempts are ignored.
 func TestGetActiveAttempt_ClosedAttemptIgnored(t *testing.T) {
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{ID: "spi-parent.1", Title: "attempt: wizard-1", Status: "closed", Labels: []string{"attempt"}},
 		}, nil
@@ -74,7 +74,7 @@ func TestGetActiveAttempt_ClosedAttemptIgnored(t *testing.T) {
 // TestGetActiveAttempt_TwoOpenAttempts returns invariant violation error.
 func TestGetActiveAttempt_TwoOpenAttempts(t *testing.T) {
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{ID: "spi-parent.1", Title: "attempt: wizard-1", Status: "in_progress", Labels: []string{"attempt"}},
 			{ID: "spi-parent.2", Title: "attempt: wizard-2", Status: "open", Labels: []string{"attempt"}},
@@ -94,7 +94,7 @@ func TestGetActiveAttempt_TwoOpenAttempts(t *testing.T) {
 // TestGetActiveAttempt_TitleMatchWithoutLabel verifies title-based detection.
 func TestGetActiveAttempt_TitleMatchWithoutLabel(t *testing.T) {
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{ID: "spi-parent.1", Title: "attempt: wizard-1", Status: "in_progress", Labels: nil},
 		}, nil
@@ -546,7 +546,7 @@ func TestAttemptLifecycle_EndToEnd(t *testing.T) {
 
 // storeGetActiveAttemptTestable is a testable version that uses storeGetChildrenFunc.
 func storeGetActiveAttemptTestable(parentID string) (*Bead, error) {
-	children, err := storeGetChildrenFunc(parentID)
+	children, err := storeGetChildrenFunc(_defaultSctx, parentID)
 	if err != nil {
 		return nil, err
 	}

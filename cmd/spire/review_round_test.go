@@ -17,7 +17,7 @@ func TestCreateAndCloseReviewBead(t *testing.T) {
 	nextID := 1
 
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		var children []Bead
 		for _, b := range beads {
 			if b.Parent == parentID {
@@ -55,7 +55,7 @@ func TestCreateAndCloseReviewBead(t *testing.T) {
 	beads[0] = rb1
 
 	// Verify we can retrieve it via storeGetReviewBeads (using test childGetter)
-	children, err := storeGetChildrenFunc(parentID)
+	children, err := storeGetChildrenFunc(_defaultSctx, parentID)
 	if err != nil {
 		t.Fatalf("getChildren: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestCreateAndCloseReviewBead(t *testing.T) {
 
 func TestGetReviewBeads_OrderedByRound(t *testing.T) {
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{ID: "spi-p.3", Title: "review-round-3", Status: "closed", Labels: []string{"review-round", "round:3"}, Parent: parentID},
 			{ID: "spi-p.1", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "round:1"}, Parent: parentID},
@@ -160,7 +160,7 @@ func TestRoundCounting(t *testing.T) {
 	defer func() { storeGetChildrenFunc = origGetChildren }()
 
 	// Scenario: 2 existing review children → next round should be 3
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{ID: "spi-p.1", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "round:1"}, Parent: parentID},
 			{ID: "spi-p.2", Title: "review-round-2", Status: "in_progress", Labels: []string{"review-round", "round:2"}, Parent: parentID},
@@ -241,7 +241,7 @@ func TestBoard_FiltersReviewRoundBeads(t *testing.T) {
 
 func TestWizardCollectReviewHistory_WithReviewBeads(t *testing.T) {
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{
 				ID:          "spi-p.1",
@@ -284,7 +284,7 @@ func TestWizardCollectReviewHistory_WithReviewBeads(t *testing.T) {
 
 func TestWizardCollectReviewHistory_FallsBackToMessages(t *testing.T) {
 	origGetChildren := storeGetChildrenFunc
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return nil, nil // no review beads
 	}
 	defer func() { storeGetChildrenFunc = origGetChildren }()
@@ -307,7 +307,7 @@ func TestReviewGetRound_WithoutLabels(t *testing.T) {
 	defer func() { storeGetChildrenFunc = origGetChildren }()
 
 	// Two closed review beads, no review-round: labels on any parent.
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{ID: "spi-p.1", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "sage:sage-1", "round:1"}, Parent: parentID},
 			{ID: "spi-p.2", Title: "review-round-2", Status: "closed", Labels: []string{"review-round", "sage:sage-1", "round:2"}, Parent: parentID},
@@ -326,7 +326,7 @@ func TestReviewGetRound_NoReviewBeads(t *testing.T) {
 	origGetChildren := storeGetChildrenFunc
 	defer func() { storeGetChildrenFunc = origGetChildren }()
 
-	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+	storeGetChildrenFunc = func(_ *SpireContext, parentID string) ([]Bead, error) {
 		return []Bead{
 			{ID: "spi-p.1", Title: "attempt: wizard-1", Status: "closed", Labels: []string{"attempt"}, Parent: parentID},
 		}, nil

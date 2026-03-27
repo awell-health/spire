@@ -10,52 +10,31 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-var (
-	activeStore beads.Storage
-	storeCtx    context.Context
-)
+// _defaultSctx is the package-level SpireContext used by wrapper functions
+// during the transition to explicit SpireContext passing. Once all callers
+// create and pass their own SpireContext, this will be removed.
+var _defaultSctx = &SpireContext{}
 
-// ensureStore opens a beads store if one isn't already open.
-// Uses BEADS_DIR env var or auto-discovers .beads/ directory.
+// ensureStore opens a beads store using the default SpireContext.
+// Deprecated: callers should create a SpireContext and call sc.EnsureStore().
 func ensureStore() (beads.Storage, error) {
-	if activeStore != nil {
-		return activeStore, nil
-	}
-	beadsDir := resolveBeadsDir()
-	if beadsDir == "" {
-		return nil, fmt.Errorf("no .beads directory found")
-	}
-	ctx := context.Background()
-	store, err := beads.OpenFromConfig(ctx, beadsDir)
-	if err != nil {
-		return nil, fmt.Errorf("open beads store: %w", err)
-	}
-	activeStore = store
-	storeCtx = ctx
-	return store, nil
+	return _defaultSctx.EnsureStore()
 }
 
 // openStoreAt opens a beads store at a specific .beads directory.
 // Closes any existing store first.
+// Deprecated: callers should create a SpireContext via NewSpireContextForTower().
 func openStoreAt(beadsDir string) (beads.Storage, error) {
-	resetStore()
-	ctx := context.Background()
-	store, err := beads.OpenFromConfig(ctx, beadsDir)
-	if err != nil {
-		return nil, fmt.Errorf("open beads store at %s: %w", beadsDir, err)
-	}
-	activeStore = store
-	storeCtx = ctx
-	return store, nil
+	_defaultSctx.Close()
+	_defaultSctx = &SpireContext{BeadsDir: beadsDir}
+	return _defaultSctx.EnsureStore()
 }
 
 // resetStore closes the active store.
+// Deprecated: callers should call sc.Close() on their SpireContext.
 func resetStore() {
-	if activeStore != nil {
-		activeStore.Close()
-		activeStore = nil
-		storeCtx = nil
-	}
+	_defaultSctx.Close()
+	_defaultSctx = &SpireContext{}
 }
 
 // storeActor returns the actor identity for store operations.
@@ -210,22 +189,24 @@ type createOpts struct {
 	Prefix      string // sets Issue.PrefixOverride (the --rig equivalent)
 }
 
-// --- Convenience helpers ---
+// ============================================================
+// SpireContext methods — the real implementations.
+// ============================================================
 
-// storeGetBead fetches a single bead by ID.
-func storeGetBead(id string) (Bead, error) {
-	store, err := ensureStore()
+// GetBead fetches a single bead by ID.
+func (sc *SpireContext) GetBead(id string) (Bead, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return Bead{}, err
 	}
-	issue, err := store.GetIssue(storeCtx, id)
+	issue, err := store.GetIssue(sc.storeCtx, id)
 	if err != nil {
 		return Bead{}, fmt.Errorf("get bead %s: %w", id, err)
 	}
 	// GetIssue does not populate Dependencies — fetch them separately
 	// so that Parent (derived from parent-child deps) is available.
 	if issue.Dependencies == nil {
-		if depsWithMeta, dErr := store.GetDependenciesWithMetadata(storeCtx, id); dErr == nil {
+		if depsWithMeta, dErr := store.GetDependenciesWithMetadata(sc.storeCtx, id); dErr == nil {
 			for _, dm := range depsWithMeta {
 				issue.Dependencies = append(issue.Dependencies, &beads.Dependency{
 					IssueID:     id,
@@ -238,42 +219,42 @@ func storeGetBead(id string) (Bead, error) {
 	return issueToBead(issue), nil
 }
 
-// storeListBeads searches for beads matching the given filter.
+// ListBeads searches for beads matching the given filter.
 // Excludes closed beads by default (matching bd list behavior).
-func storeListBeads(filter beads.IssueFilter) ([]Bead, error) {
-	store, err := ensureStore()
+func (sc *SpireContext) ListBeads(filter beads.IssueFilter) ([]Bead, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return nil, err
 	}
 	if filter.Status == nil && len(filter.ExcludeStatus) == 0 {
 		filter.ExcludeStatus = []beads.Status{beads.StatusClosed}
 	}
-	issues, err := store.SearchIssues(storeCtx, "", filter)
+	issues, err := store.SearchIssues(sc.storeCtx, "", filter)
 	if err != nil {
 		return nil, fmt.Errorf("list beads: %w", err)
 	}
 	return issuesToBeads(issues), nil
 }
 
-// storeListBoardBeads searches for beads with full board metadata.
-func storeListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) {
-	store, err := ensureStore()
+// ListBoardBeads searches for beads with full board metadata.
+func (sc *SpireContext) ListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return nil, err
 	}
 	if filter.Status == nil && len(filter.ExcludeStatus) == 0 {
 		filter.ExcludeStatus = []beads.Status{beads.StatusClosed}
 	}
-	issues, err := store.SearchIssues(storeCtx, "", filter)
+	issues, err := store.SearchIssues(sc.storeCtx, "", filter)
 	if err != nil {
 		return nil, fmt.Errorf("list board beads: %w", err)
 	}
 	return issuesToBoardBeads(issues), nil
 }
 
-// storeCreateBead creates a new bead and returns its ID.
-func storeCreateBead(opts createOpts) (string, error) {
-	store, err := ensureStore()
+// CreateBead creates a new bead and returns its ID.
+func (sc *SpireContext) CreateBead(opts createOpts) (string, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return "", err
 	}
@@ -288,7 +269,7 @@ func storeCreateBead(opts createOpts) (string, error) {
 	if opts.Prefix != "" {
 		issue.PrefixOverride = opts.Prefix
 	}
-	if err := store.CreateIssue(storeCtx, issue, storeActor()); err != nil {
+	if err := store.CreateIssue(sc.storeCtx, issue, storeActor()); err != nil {
 		return "", fmt.Errorf("create bead: %w", err)
 	}
 	// CreateIssue populates issue.ID
@@ -298,22 +279,21 @@ func storeCreateBead(opts createOpts) (string, error) {
 			DependsOnID: opts.Parent,
 			Type:        beads.DepParentChild,
 		}
-		if err := store.AddDependency(storeCtx, dep, storeActor()); err != nil {
+		if err := store.AddDependency(sc.storeCtx, dep, storeActor()); err != nil {
 			return issue.ID, fmt.Errorf("add parent dep for %s: %w", issue.ID, err)
 		}
 	}
 	return issue.ID, nil
 }
 
-// storeAddDep adds a blocking dependency: issueID depends on dependsOnID.
-func storeAddDep(issueID, dependsOnID string) error {
-	return storeAddDepTyped(issueID, dependsOnID, string(beads.DepBlocks))
+// AddDep adds a blocking dependency: issueID depends on dependsOnID.
+func (sc *SpireContext) AddDep(issueID, dependsOnID string) error {
+	return sc.AddDepTyped(issueID, dependsOnID, string(beads.DepBlocks))
 }
 
-// storeAddDepTyped adds a dependency with a specific type.
-// depType should be one of the beads.Dep* constants (e.g. "discovered-from", "related", "blocks").
-func storeAddDepTyped(issueID, dependsOnID, depType string) error {
-	store, err := ensureStore()
+// AddDepTyped adds a dependency with a specific type.
+func (sc *SpireContext) AddDepTyped(issueID, dependsOnID, depType string) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
@@ -322,78 +302,75 @@ func storeAddDepTyped(issueID, dependsOnID, depType string) error {
 		DependsOnID: dependsOnID,
 		Type:        beads.DependencyType(depType),
 	}
-	return store.AddDependency(storeCtx, dep, storeActor())
+	return store.AddDependency(sc.storeCtx, dep, storeActor())
 }
 
-// storeGetDepsWithMeta returns all dependencies of a bead with their relationship metadata.
-func storeGetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
-	store, err := ensureStore()
+// GetDepsWithMeta returns all dependencies of a bead with their relationship metadata.
+func (sc *SpireContext) GetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return nil, err
 	}
-	return store.GetDependenciesWithMetadata(storeCtx, id)
+	return store.GetDependenciesWithMetadata(sc.storeCtx, id)
 }
 
-// storeCloseBead closes a bead.
-func storeCloseBead(id string) error {
-	store, err := ensureStore()
+// CloseBead closes a bead.
+func (sc *SpireContext) CloseBead(id string) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
-	return store.CloseIssue(storeCtx, id, "", storeActor(), "")
+	return store.CloseIssue(sc.storeCtx, id, "", storeActor(), "")
 }
 
-// storeUpdateBead updates a bead's fields.
-func storeUpdateBead(id string, updates map[string]interface{}) error {
-	store, err := ensureStore()
+// UpdateBead updates a bead's fields.
+func (sc *SpireContext) UpdateBead(id string, updates map[string]interface{}) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
-	return store.UpdateIssue(storeCtx, id, updates, storeActor())
+	return store.UpdateIssue(sc.storeCtx, id, updates, storeActor())
 }
 
-// storeAddLabel adds a label to a bead.
-func storeAddLabel(id, label string) error {
-	store, err := ensureStore()
+// AddLabel adds a label to a bead.
+func (sc *SpireContext) AddLabel(id, label string) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
-	return store.AddLabel(storeCtx, id, label, storeActor())
+	return store.AddLabel(sc.storeCtx, id, label, storeActor())
 }
 
-// storeRemoveLabel removes a label from a bead.
-func storeRemoveLabel(id, label string) error {
-	store, err := ensureStore()
+// RemoveLabel removes a label from a bead.
+func (sc *SpireContext) RemoveLabel(id, label string) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
-	return store.RemoveLabel(storeCtx, id, label, storeActor())
+	return store.RemoveLabel(sc.storeCtx, id, label, storeActor())
 }
 
-// storeGetConfig gets a config value. Returns "" if key is not set.
-// Real store errors (connection, missing table) are propagated.
-func storeGetConfig(key string) (string, error) {
-	store, err := ensureStore()
+// GetConfig gets a config value. Returns "" if key is not set.
+func (sc *SpireContext) GetConfig(key string) (string, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return "", err
 	}
-	// beads GetConfig returns ("", nil) for unset keys,
-	// so we can pass through directly.
-	return store.GetConfig(storeCtx, key)
+	return store.GetConfig(sc.storeCtx, key)
 }
 
-// storeSetConfig sets a config value.
-func storeSetConfig(key, val string) error {
-	store, err := ensureStore()
+// SetConfig sets a config value.
+func (sc *SpireContext) SetConfig(key, val string) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
-	return store.SetConfig(storeCtx, key, val)
+	return store.SetConfig(sc.storeCtx, key, val)
 }
 
-// storeDeleteConfig deletes a config key. Requires configDeleter sub-interface.
-func storeDeleteConfig(key string) error {
-	store, err := ensureStore()
+// DeleteConfig deletes a config key. Requires configDeleter sub-interface.
+func (sc *SpireContext) DeleteConfig(key string) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
@@ -401,18 +378,18 @@ func storeDeleteConfig(key string) error {
 	if !ok {
 		return fmt.Errorf("store does not support DeleteConfig")
 	}
-	return cd.DeleteConfig(storeCtx, key)
+	return cd.DeleteConfig(sc.storeCtx, key)
 }
 
-// storeGetReadyWork returns beads that are ready to work on (no open blockers).
+// GetReadyWork returns beads that are ready to work on (no open blockers).
 // Post-filters out workflow step beads and message beads so they don't
 // appear as assignable work in the steward cycle.
-func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
-	store, err := ensureStore()
+func (sc *SpireContext) GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return nil, err
 	}
-	issues, err := store.GetReadyWork(storeCtx, filter)
+	issues, err := store.GetReadyWork(sc.storeCtx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("get ready work: %w", err)
 	}
@@ -445,18 +422,18 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 		}
 		// Skip molecule step beads (parent carries workflow:* label)
 		if b.Parent != "" {
-			parent, perr := storeGetBead(b.Parent)
+			parent, perr := sc.GetBead(b.Parent)
 			if perr == nil && hasLabel(parent, "workflow:") != "" {
 				continue
 			}
 		}
 		// Skip beads with an active attempt child (someone is already working).
-		// Fail closed: if storeGetActiveAttempt returns an error (e.g. multiple
+		// Fail closed: if GetActiveAttempt returns an error (e.g. multiple
 		// open attempts), quarantine the bead rather than treating it as ready.
-		attempt, aErr := storeGetActiveAttempt(b.ID)
+		attempt, aErr := sc.GetActiveAttempt(b.ID)
 		if aErr != nil {
 			log.Printf("[store] quarantining %s (multiple open attempts): %v", b.ID, aErr)
-			storeRaiseCorruptedBeadAlertFunc(b.ID, aErr)
+			storeRaiseCorruptedBeadAlertFunc(sc, b.ID, aErr)
 			continue
 		}
 		if attempt != nil {
@@ -468,13 +445,13 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	return filtered, nil
 }
 
-// storeGetBlockedIssues returns open beads that have unresolved blocking dependencies.
-func storeGetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
-	store, err := ensureStore()
+// GetBlockedIssues returns open beads that have unresolved blocking dependencies.
+func (sc *SpireContext) GetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return nil, err
 	}
-	blocked, err := store.GetBlockedIssues(storeCtx, filter)
+	blocked, err := store.GetBlockedIssues(sc.storeCtx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("get blocked issues: %w", err)
 	}
@@ -505,32 +482,32 @@ func storeGetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
 	return result, nil
 }
 
-// storeGetComments returns comments for a bead.
-func storeGetComments(id string) ([]*beads.Comment, error) {
-	store, err := ensureStore()
+// GetComments returns comments for a bead.
+func (sc *SpireContext) GetComments(id string) ([]*beads.Comment, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return nil, err
 	}
-	return store.GetIssueComments(storeCtx, id)
+	return store.GetIssueComments(sc.storeCtx, id)
 }
 
-// storeAddComment adds a comment to a bead.
-func storeAddComment(id, text string) error {
-	store, err := ensureStore()
+// AddComment adds a comment to a bead.
+func (sc *SpireContext) AddComment(id, text string) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
-	_, err = store.AddIssueComment(storeCtx, id, storeActor(), text)
+	_, err = store.AddIssueComment(sc.storeCtx, id, storeActor(), text)
 	return err
 }
 
-// storeGetChildren returns child beads of a parent.
-func storeGetChildren(parentID string) ([]Bead, error) {
-	store, err := ensureStore()
+// GetChildren returns child beads of a parent.
+func (sc *SpireContext) GetChildren(parentID string) ([]Bead, error) {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return nil, err
 	}
-	issues, err := store.SearchIssues(storeCtx, "", beads.IssueFilter{
+	issues, err := store.SearchIssues(sc.storeCtx, "", beads.IssueFilter{
 		ParentID: &parentID,
 	})
 	if err != nil {
@@ -541,11 +518,11 @@ func storeGetChildren(parentID string) ([]Bead, error) {
 
 // --- Attempt bead helpers ---
 
-// storeGetActiveAttempt returns the single open/in_progress attempt child of parentID.
+// GetActiveAttempt returns the single open/in_progress attempt child of parentID.
 // Returns (nil, nil) if no active attempt exists.
 // Returns an error if more than one open attempt exists (invariant violation).
-func storeGetActiveAttempt(parentID string) (*Bead, error) {
-	children, err := storeGetChildren(parentID)
+func (sc *SpireContext) GetActiveAttempt(parentID string) (*Bead, error) {
+	children, err := sc.GetChildren(parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -576,12 +553,11 @@ func storeGetActiveAttempt(parentID string) (*Bead, error) {
 	}
 }
 
-// storeCreateAttemptBead creates a child attempt bead under parentID.
+// CreateAttemptBead creates a child attempt bead under parentID.
 // Sets status=in_progress and adds labels: attempt, agent:<agentName>, branch:<branch>.
-// The model label is only added when model is non-empty (callers like cmdClaim
-// may not know the model at claim time — the executor updates it later).
+// The model label is only added when model is non-empty.
 // Returns the attempt bead ID.
-func storeCreateAttemptBead(parentID, agentName, model, branch string) (string, error) {
+func (sc *SpireContext) CreateAttemptBead(parentID, agentName, model, branch string) (string, error) {
 	labels := []string{
 		"attempt",
 		"agent:" + agentName,
@@ -590,7 +566,7 @@ func storeCreateAttemptBead(parentID, agentName, model, branch string) (string, 
 	if model != "" {
 		labels = append(labels, "model:"+model)
 	}
-	id, err := storeCreateBead(createOpts{
+	id, err := sc.CreateBead(createOpts{
 		Title:    "attempt: " + agentName,
 		Priority: 3,
 		Type:     beads.TypeTask,
@@ -601,7 +577,7 @@ func storeCreateAttemptBead(parentID, agentName, model, branch string) (string, 
 		return "", fmt.Errorf("create attempt bead: %w", err)
 	}
 	// Transition to in_progress
-	if uerr := storeUpdateBead(id, map[string]interface{}{
+	if uerr := sc.UpdateBead(id, map[string]interface{}{
 		"status": "in_progress",
 	}); uerr != nil {
 		return id, fmt.Errorf("set attempt in_progress: %w", uerr)
@@ -609,17 +585,16 @@ func storeCreateAttemptBead(parentID, agentName, model, branch string) (string, 
 	return id, nil
 }
 
-// storeCreateAttemptBeadAtomic checks for an existing active attempt before
-// creating a new one. This narrows the TOCTOU race window between checking for
-// an active attempt and creating one.
+// CreateAttemptBeadAtomic checks for an existing active attempt before
+// creating a new one. This narrows the TOCTOU race window.
 //
 // Returns:
 //   - (existingID, nil) if an active attempt by the same agent already exists
 //   - (newID, nil) if no active attempt exists and a new one was created
 //   - ("", error) if an active attempt by a different agent exists, or on failure
-func storeCreateAttemptBeadAtomic(parentID, agentName, model, branch string) (string, error) {
+func (sc *SpireContext) CreateAttemptBeadAtomic(parentID, agentName, model, branch string) (string, error) {
 	// Check for existing active attempt.
-	existing, err := storeGetActiveAttempt(parentID)
+	existing, err := sc.GetActiveAttempt(parentID)
 	if err != nil {
 		return "", fmt.Errorf("check active attempt: %w", err)
 	}
@@ -638,18 +613,18 @@ func storeCreateAttemptBeadAtomic(parentID, agentName, model, branch string) (st
 	}
 
 	// No active attempt — create one.
-	return storeCreateAttemptBead(parentID, agentName, model, branch)
+	return sc.CreateAttemptBead(parentID, agentName, model, branch)
 }
 
-// storeCloseAttemptBead closes an attempt bead and adds a result comment.
-func storeCloseAttemptBead(attemptID, result string) error {
+// CloseAttemptBead closes an attempt bead and adds a result comment.
+func (sc *SpireContext) CloseAttemptBead(attemptID, result string) error {
 	if attemptID == "" {
 		return nil
 	}
 	if result != "" {
-		storeAddComment(attemptID, result)
+		sc.AddComment(attemptID, result)
 	}
-	return storeCloseBead(attemptID)
+	return sc.CloseBead(attemptID)
 }
 
 // isAttemptBead returns true if the bead is an attempt bead
@@ -674,22 +649,28 @@ func isAttemptBoardBead(b BoardBead) bool {
 	return false
 }
 
-// storeGetChildrenFunc is a test-replaceable function for storeGetChildren.
-// In production this stays at its default (storeGetChildren).
-var storeGetChildrenFunc = storeGetChildren
+// storeGetChildrenFunc is a test-replaceable function for GetChildren.
+// In production this stays at its default.
+var storeGetChildrenFunc = func(sc *SpireContext, parentID string) ([]Bead, error) {
+	return sc.GetChildren(parentID)
+}
 
-// storeGetActiveAttemptFunc is a test-replaceable function for storeGetActiveAttempt.
-// In production this stays at its default (storeGetActiveAttempt).
-var storeGetActiveAttemptFunc = storeGetActiveAttempt
+// storeGetActiveAttemptFunc is a test-replaceable function for GetActiveAttempt.
+// In production this stays at its default.
+var storeGetActiveAttemptFunc = func(sc *SpireContext, parentID string) (*Bead, error) {
+	return sc.GetActiveAttempt(parentID)
+}
 
-// storeRaiseCorruptedBeadAlertFunc is a test-replaceable function for storeRaiseCorruptedBeadAlert.
-// In production this stays at its default (storeRaiseCorruptedBeadAlert).
-var storeRaiseCorruptedBeadAlertFunc = storeRaiseCorruptedBeadAlert
+// storeRaiseCorruptedBeadAlertFunc is a test-replaceable function for RaiseCorruptedBeadAlert.
+// In production this stays at its default.
+var storeRaiseCorruptedBeadAlertFunc = func(sc *SpireContext, beadID string, violation error) {
+	sc.RaiseCorruptedBeadAlert(beadID, violation)
+}
 
 // storeCheckExistingAlertFunc checks whether an open corrupted-bead alert already
 // exists for beadID. Test-replaceable to avoid needing a real store in unit tests.
-var storeCheckExistingAlertFunc = func(beadID string) bool {
-	existing, err := storeListBeads(beads.IssueFilter{
+var storeCheckExistingAlertFunc = func(sc *SpireContext, beadID string) bool {
+	existing, err := sc.ListBeads(beads.IssueFilter{
 		Labels: []string{"alert:corrupted-bead", "ref:" + beadID},
 	})
 	return err == nil && len(existing) > 0
@@ -697,8 +678,8 @@ var storeCheckExistingAlertFunc = func(beadID string) bool {
 
 // storeCreateAlertFunc creates the alert bead for a corrupted bead.
 // Test-replaceable to verify creation is skipped when dedup fires.
-var storeCreateAlertFunc = func(beadID, msg string) error {
-	_, err := storeCreateBead(createOpts{
+var storeCreateAlertFunc = func(sc *SpireContext, beadID, msg string) error {
+	_, err := sc.CreateBead(createOpts{
 		Title:    msg,
 		Priority: 0,
 		Type:     beads.TypeTask,
@@ -707,35 +688,34 @@ var storeCreateAlertFunc = func(beadID, msg string) error {
 	return err
 }
 
-// storeRaiseCorruptedBeadAlert creates a P0 alert bead flagging a bead with
+// RaiseCorruptedBeadAlert creates a P0 alert bead flagging a bead with
 // multiple open attempt children (invariant violation). The caller should
 // already have logged the violation and excluded the bead from ready work.
 // Alert creation is best-effort: errors are logged, not propagated.
 // Deduplication: if an open alert already exists for beadID, no new alert is created.
-func storeRaiseCorruptedBeadAlert(beadID string, violation error) {
-	if storeCheckExistingAlertFunc(beadID) {
+func (sc *SpireContext) RaiseCorruptedBeadAlert(beadID string, violation error) {
+	if storeCheckExistingAlertFunc(sc, beadID) {
 		log.Printf("[store] alert already exists for corrupted bead %s, skipping duplicate", beadID)
 		return
 	}
 	msg := fmt.Sprintf("corrupted bead %s: %v", beadID, violation)
-	if err := storeCreateAlertFunc(beadID, msg); err != nil {
+	if err := storeCreateAlertFunc(sc, beadID, msg); err != nil {
 		log.Printf("[store] failed to raise alert for corrupted bead %s: %v", beadID, err)
 	}
 }
 
 // --- Review round bead helpers ---
 
-// storeCreateReviewBead creates a child review-round bead under parentID.
+// CreateReviewBead creates a child review-round bead under parentID.
 // Sets status=in_progress and adds labels: review-round, sage:<sageName>, round:<N>.
-// The round number is determined by counting existing review children + 1.
 // Returns the review bead ID.
-func storeCreateReviewBead(parentID, sageName string, round int) (string, error) {
+func (sc *SpireContext) CreateReviewBead(parentID, sageName string, round int) (string, error) {
 	labels := []string{
 		"review-round",
 		fmt.Sprintf("sage:%s", sageName),
 		fmt.Sprintf("round:%d", round),
 	}
-	id, err := storeCreateBead(createOpts{
+	id, err := sc.CreateBead(createOpts{
 		Title:    fmt.Sprintf("review-round-%d", round),
 		Priority: 3,
 		Type:     beads.TypeTask,
@@ -746,7 +726,7 @@ func storeCreateReviewBead(parentID, sageName string, round int) (string, error)
 		return "", fmt.Errorf("create review bead: %w", err)
 	}
 	// Transition to in_progress
-	if uerr := storeUpdateBead(id, map[string]interface{}{
+	if uerr := sc.UpdateBead(id, map[string]interface{}{
 		"status": "in_progress",
 	}); uerr != nil {
 		return id, fmt.Errorf("set review bead in_progress: %w", uerr)
@@ -756,12 +736,11 @@ func storeCreateReviewBead(parentID, sageName string, round int) (string, error)
 
 // --- Workflow step bead helpers ---
 
-// storeCreateStepBead creates a child bead representing a workflow step.
+// CreateStepBead creates a child bead representing a workflow step.
 // It has type=task, title="step:<stepName>", and labels: [workflow-step, step:<stepName>].
-// The first step is created as in_progress (active), subsequent ones as open (pending).
-func storeCreateStepBead(parentID, stepName string) (string, error) {
+func (sc *SpireContext) CreateStepBead(parentID, stepName string) (string, error) {
 	labels := []string{"workflow-step", "step:" + stepName}
-	id, err := storeCreateBead(createOpts{
+	id, err := sc.CreateBead(createOpts{
 		Title:    "step:" + stepName,
 		Priority: 3,
 		Type:     beads.TypeTask,
@@ -774,24 +753,24 @@ func storeCreateStepBead(parentID, stepName string) (string, error) {
 	return id, nil
 }
 
-// storeCloseReviewBead closes a review-round bead and sets its description to verdict+summary.
-func storeCloseReviewBead(reviewID, verdict, summary string) error {
+// CloseReviewBead closes a review-round bead and sets its description to verdict+summary.
+func (sc *SpireContext) CloseReviewBead(reviewID, verdict, summary string) error {
 	if reviewID == "" {
 		return nil
 	}
 	desc := fmt.Sprintf("verdict: %s\n\n%s", verdict, summary)
-	if err := storeUpdateBead(reviewID, map[string]interface{}{
+	if err := sc.UpdateBead(reviewID, map[string]interface{}{
 		"description": desc,
 	}); err != nil {
 		return fmt.Errorf("update review bead description: %w", err)
 	}
-	return storeCloseBead(reviewID)
+	return sc.CloseBead(reviewID)
 }
 
-// storeGetReviewBeads returns all review-round child beads of parentID,
+// GetReviewBeads returns all review-round child beads of parentID,
 // ordered by creation time (via round label, ascending).
-func storeGetReviewBeads(parentID string) ([]Bead, error) {
-	children, err := storeGetChildrenFunc(parentID)
+func (sc *SpireContext) GetReviewBeads(parentID string) ([]Bead, error) {
+	children, err := storeGetChildrenFunc(sc, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -802,7 +781,6 @@ func storeGetReviewBeads(parentID string) ([]Bead, error) {
 		}
 	}
 	// Sort by round number (extracted from round:<N> label).
-	// This gives creation-time ordering since round numbers are sequential.
 	for i := 0; i < len(reviews); i++ {
 		for j := i + 1; j < len(reviews); j++ {
 			ri := reviewRoundNumber(reviews[i])
@@ -837,21 +815,21 @@ func isReviewRoundBoardBead(b BoardBead) bool {
 	return false
 }
 
-// storeActivateStepBead sets a step bead to in_progress status.
-func storeActivateStepBead(stepID string) error {
-	return storeUpdateBead(stepID, map[string]interface{}{
+// ActivateStepBead sets a step bead to in_progress status.
+func (sc *SpireContext) ActivateStepBead(stepID string) error {
+	return sc.UpdateBead(stepID, map[string]interface{}{
 		"status": "in_progress",
 	})
 }
 
-// storeCloseStepBead closes a workflow step bead.
-func storeCloseStepBead(stepID string) error {
-	return storeCloseBead(stepID)
+// CloseStepBead closes a workflow step bead.
+func (sc *SpireContext) CloseStepBead(stepID string) error {
+	return sc.CloseBead(stepID)
 }
 
-// storeGetStepBeads returns all workflow-step children of a parent bead, ordered by creation.
-func storeGetStepBeads(parentID string) ([]Bead, error) {
-	children, err := storeGetChildren(parentID)
+// GetStepBeads returns all workflow-step children of a parent bead, ordered by creation.
+func (sc *SpireContext) GetStepBeads(parentID string) ([]Bead, error) {
+	children, err := sc.GetChildren(parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -864,11 +842,11 @@ func storeGetStepBeads(parentID string) ([]Bead, error) {
 	return steps, nil
 }
 
-// storeGetActiveStep returns the single in_progress step bead for a parent.
+// GetActiveStep returns the single in_progress step bead for a parent.
 // Returns (nil, nil) if no step is active.
 // Returns an error if more than one in_progress step exists (invariant violation).
-func storeGetActiveStep(parentID string) (*Bead, error) {
-	steps, err := storeGetStepBeads(parentID)
+func (sc *SpireContext) GetActiveStep(parentID string) (*Bead, error) {
+	steps, err := sc.GetStepBeads(parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -928,9 +906,9 @@ func stepBeadPhaseName(b Bead) string {
 	return hasLabel(b, "step:")
 }
 
-// storeCommitPending commits pending dolt changes. Requires pendingCommitter sub-interface.
-func storeCommitPending(message string) error {
-	store, err := ensureStore()
+// CommitPending commits pending dolt changes. Requires pendingCommitter sub-interface.
+func (sc *SpireContext) CommitPending(message string) error {
+	store, err := sc.EnsureStore()
 	if err != nil {
 		return err
 	}
@@ -938,6 +916,46 @@ func storeCommitPending(message string) error {
 	if !ok {
 		return fmt.Errorf("store does not support CommitPending")
 	}
-	_, err = pc.CommitPending(storeCtx, message)
+	_, err = pc.CommitPending(sc.storeCtx, message)
 	return err
 }
+
+// ============================================================
+// Package-level wrapper functions (transitional).
+// These delegate to _defaultSctx and will be removed once all
+// callers create and pass their own SpireContext.
+// ============================================================
+
+func storeGetBead(id string) (Bead, error)                            { return _defaultSctx.GetBead(id) }
+func storeListBeads(filter beads.IssueFilter) ([]Bead, error)         { return _defaultSctx.ListBeads(filter) }
+func storeListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) { return _defaultSctx.ListBoardBeads(filter) }
+func storeCreateBead(opts createOpts) (string, error)                  { return _defaultSctx.CreateBead(opts) }
+func storeAddDep(issueID, dependsOnID string) error                    { return _defaultSctx.AddDep(issueID, dependsOnID) }
+func storeAddDepTyped(issueID, dependsOnID, depType string) error      { return _defaultSctx.AddDepTyped(issueID, dependsOnID, depType) }
+func storeGetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) { return _defaultSctx.GetDepsWithMeta(id) }
+func storeCloseBead(id string) error                                   { return _defaultSctx.CloseBead(id) }
+func storeUpdateBead(id string, updates map[string]interface{}) error   { return _defaultSctx.UpdateBead(id, updates) }
+func storeAddLabel(id, label string) error                             { return _defaultSctx.AddLabel(id, label) }
+func storeRemoveLabel(id, label string) error                          { return _defaultSctx.RemoveLabel(id, label) }
+func storeGetConfig(key string) (string, error)                        { return _defaultSctx.GetConfig(key) }
+func storeSetConfig(key, val string) error                             { return _defaultSctx.SetConfig(key, val) }
+func storeDeleteConfig(key string) error                               { return _defaultSctx.DeleteConfig(key) }
+func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error)        { return _defaultSctx.GetReadyWork(filter) }
+func storeGetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) { return _defaultSctx.GetBlockedIssues(filter) }
+func storeGetComments(id string) ([]*beads.Comment, error)             { return _defaultSctx.GetComments(id) }
+func storeAddComment(id, text string) error                            { return _defaultSctx.AddComment(id, text) }
+func storeGetChildren(parentID string) ([]Bead, error)                 { return _defaultSctx.GetChildren(parentID) }
+func storeGetActiveAttempt(parentID string) (*Bead, error)             { return _defaultSctx.GetActiveAttempt(parentID) }
+func storeCreateAttemptBead(parentID, agentName, model, branch string) (string, error) { return _defaultSctx.CreateAttemptBead(parentID, agentName, model, branch) }
+func storeCreateAttemptBeadAtomic(parentID, agentName, model, branch string) (string, error) { return _defaultSctx.CreateAttemptBeadAtomic(parentID, agentName, model, branch) }
+func storeCloseAttemptBead(attemptID, result string) error             { return _defaultSctx.CloseAttemptBead(attemptID, result) }
+func storeCreateReviewBead(parentID, sageName string, round int) (string, error) { return _defaultSctx.CreateReviewBead(parentID, sageName, round) }
+func storeCloseReviewBead(reviewID, verdict, summary string) error     { return _defaultSctx.CloseReviewBead(reviewID, verdict, summary) }
+func storeGetReviewBeads(parentID string) ([]Bead, error)              { return _defaultSctx.GetReviewBeads(parentID) }
+func storeCreateStepBead(parentID, stepName string) (string, error)    { return _defaultSctx.CreateStepBead(parentID, stepName) }
+func storeActivateStepBead(stepID string) error                        { return _defaultSctx.ActivateStepBead(stepID) }
+func storeCloseStepBead(stepID string) error                           { return _defaultSctx.CloseStepBead(stepID) }
+func storeGetStepBeads(parentID string) ([]Bead, error)                { return _defaultSctx.GetStepBeads(parentID) }
+func storeGetActiveStep(parentID string) (*Bead, error)                { return _defaultSctx.GetActiveStep(parentID) }
+func storeCommitPending(message string) error                          { return _defaultSctx.CommitPending(message) }
+func storeRaiseCorruptedBeadAlert(beadID string, violation error)      { _defaultSctx.RaiseCorruptedBeadAlert(beadID, violation) }

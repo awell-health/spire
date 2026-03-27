@@ -212,7 +212,7 @@ func TestIsWizardRunning_DeadPID(t *testing.T) {
 // is excluded (shouldSkip=true) and storeRaiseCorruptedBeadAlertFunc is called.
 func TestStewardAssignment_FailClosed_ExcludesAndAlerts(t *testing.T) {
 	origAttempt := storeGetActiveAttemptFunc
-	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
+	storeGetActiveAttemptFunc = func(_ *SpireContext, parentID string) (*Bead, error) {
 		if parentID == "spi-corrupted" {
 			return nil, fmt.Errorf("invariant violation: 2 open attempt beads for spi-corrupted")
 		}
@@ -222,7 +222,7 @@ func TestStewardAssignment_FailClosed_ExcludesAndAlerts(t *testing.T) {
 
 	var alertedBeads []string
 	origAlert := storeRaiseCorruptedBeadAlertFunc
-	storeRaiseCorruptedBeadAlertFunc = func(beadID string, err error) {
+	storeRaiseCorruptedBeadAlertFunc = func(_ *SpireContext, beadID string, err error) {
 		alertedBeads = append(alertedBeads, beadID)
 	}
 	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
@@ -230,7 +230,7 @@ func TestStewardAssignment_FailClosed_ExcludesAndAlerts(t *testing.T) {
 	bead := Bead{ID: "spi-corrupted", Title: "corrupted task", Status: "open"}
 
 	// Replicate the assignment-loop logic: fail closed on error.
-	attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
+	attempt, aErr := storeGetActiveAttemptFunc(_defaultSctx, bead.ID)
 	if aErr != nil {
 		storeRaiseCorruptedBeadAlertFunc(bead.ID, aErr)
 	}
@@ -248,21 +248,21 @@ func TestStewardAssignment_FailClosed_ExcludesAndAlerts(t *testing.T) {
 // without corrupted attempts is NOT excluded or alerted.
 func TestStewardAssignment_FailClosed_CleanBeadUnaffected(t *testing.T) {
 	origAttempt := storeGetActiveAttemptFunc
-	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
+	storeGetActiveAttemptFunc = func(_ *SpireContext, parentID string) (*Bead, error) {
 		return nil, nil // no active attempt, no error
 	}
 	defer func() { storeGetActiveAttemptFunc = origAttempt }()
 
 	var alertedBeads []string
 	origAlert := storeRaiseCorruptedBeadAlertFunc
-	storeRaiseCorruptedBeadAlertFunc = func(beadID string, err error) {
+	storeRaiseCorruptedBeadAlertFunc = func(_ *SpireContext, beadID string, err error) {
 		alertedBeads = append(alertedBeads, beadID)
 	}
 	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
 
 	bead := Bead{ID: "spi-clean", Title: "clean task", Status: "open"}
 
-	attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
+	attempt, aErr := storeGetActiveAttemptFunc(_defaultSctx, bead.ID)
 	if aErr != nil {
 		storeRaiseCorruptedBeadAlertFunc(bead.ID, aErr)
 	}
@@ -281,7 +281,7 @@ func TestStewardAssignment_FailClosed_CleanBeadUnaffected(t *testing.T) {
 // an alert is raised.
 func TestStewardReengage_FailClosed_SkipsAndAlerts(t *testing.T) {
 	origAttempt := storeGetActiveAttemptFunc
-	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
+	storeGetActiveAttemptFunc = func(_ *SpireContext, parentID string) (*Bead, error) {
 		if parentID == "spi-reeng" {
 			return nil, fmt.Errorf("invariant violation: 3 open attempt beads for spi-reeng")
 		}
@@ -291,7 +291,7 @@ func TestStewardReengage_FailClosed_SkipsAndAlerts(t *testing.T) {
 
 	var alertedBeads []string
 	origAlert := storeRaiseCorruptedBeadAlertFunc
-	storeRaiseCorruptedBeadAlertFunc = func(beadID string, err error) {
+	storeRaiseCorruptedBeadAlertFunc = func(_ *SpireContext, beadID string, err error) {
 		alertedBeads = append(alertedBeads, beadID)
 	}
 	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
@@ -317,7 +317,7 @@ func TestRaiseCorruptedBeadAlert_Dedup(t *testing.T) {
 	// Track how many times the create function is called.
 	createCount := 0
 	origCreate := storeCreateAlertFunc
-	storeCreateAlertFunc = func(beadID, msg string) error {
+	storeCreateAlertFunc = func(_ *SpireContext, beadID, msg string) error {
 		createCount++
 		return nil
 	}
@@ -325,7 +325,7 @@ func TestRaiseCorruptedBeadAlert_Dedup(t *testing.T) {
 
 	// First call: no existing alert.
 	origCheck := storeCheckExistingAlertFunc
-	storeCheckExistingAlertFunc = func(beadID string) bool { return false }
+	storeCheckExistingAlertFunc = func(_ *SpireContext, beadID string) bool { return false }
 	defer func() { storeCheckExistingAlertFunc = origCheck }()
 
 	storeRaiseCorruptedBeadAlert("spi-dup", fmt.Errorf("invariant violation"))
@@ -334,7 +334,7 @@ func TestRaiseCorruptedBeadAlert_Dedup(t *testing.T) {
 	}
 
 	// Second call: alert now exists — dedup should suppress creation.
-	storeCheckExistingAlertFunc = func(beadID string) bool { return true }
+	storeCheckExistingAlertFunc = func(_ *SpireContext, beadID string) bool { return true }
 	storeRaiseCorruptedBeadAlert("spi-dup", fmt.Errorf("invariant violation"))
 	if createCount != 1 {
 		t.Errorf("expected still 1 create after dedup, got %d", createCount)
@@ -346,14 +346,14 @@ func TestRaiseCorruptedBeadAlert_Dedup(t *testing.T) {
 func TestRaiseCorruptedBeadAlert_DedupPerBead(t *testing.T) {
 	createCount := 0
 	origCreate := storeCreateAlertFunc
-	storeCreateAlertFunc = func(beadID, msg string) error {
+	storeCreateAlertFunc = func(_ *SpireContext, beadID, msg string) error {
 		createCount++
 		return nil
 	}
 	defer func() { storeCreateAlertFunc = origCreate }()
 
 	origCheck := storeCheckExistingAlertFunc
-	storeCheckExistingAlertFunc = func(beadID string) bool {
+	storeCheckExistingAlertFunc = func(_ *SpireContext, beadID string) bool {
 		return beadID == "spi-a" // only spi-a has existing alert
 	}
 	defer func() { storeCheckExistingAlertFunc = origCheck }()
@@ -380,7 +380,7 @@ func TestStewardSkipsBeadWithAttemptChildNoOwnerLabel(t *testing.T) {
 	}
 
 	orig := storeGetActiveAttemptFunc
-	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
+	storeGetActiveAttemptFunc = func(_ *SpireContext, parentID string) (*Bead, error) {
 		if parentID == "spi-test" {
 			return attemptBead, nil
 		}
@@ -395,7 +395,7 @@ func TestStewardSkipsBeadWithAttemptChildNoOwnerLabel(t *testing.T) {
 		t.Fatal("test setup error: bead must not have owner: label")
 	}
 
-	attempt, err := storeGetActiveAttemptFunc(bead.ID)
+	attempt, err := storeGetActiveAttemptFunc(_defaultSctx, bead.ID)
 	if err != nil {
 		t.Fatalf("unexpected error from storeGetActiveAttemptFunc: %v", err)
 	}
