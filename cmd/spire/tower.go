@@ -226,14 +226,17 @@ func promptArchmageIdentity() ArchmageConfig {
 	return ArchmageConfig{Name: name, Email: email}
 }
 
-// archmageGitEnv returns environment variables that set the git committer
-// identity to the archmage for merge commits.
+// archmageGitEnv returns environment variables that set BOTH the git author
+// and committer identity to the archmage. This ensures all commits merged
+// to main are attributed to the archmage on GitHub (which shows author).
 func archmageGitEnv(tower *TowerConfig) []string {
 	env := os.Environ()
 	if tower.Archmage.Name != "" {
+		env = append(env, "GIT_AUTHOR_NAME="+tower.Archmage.Name)
 		env = append(env, "GIT_COMMITTER_NAME="+tower.Archmage.Name)
 	}
 	if tower.Archmage.Email != "" {
+		env = append(env, "GIT_AUTHOR_EMAIL="+tower.Archmage.Email)
 		env = append(env, "GIT_COMMITTER_EMAIL="+tower.Archmage.Email)
 	}
 	return env

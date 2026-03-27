@@ -401,12 +401,22 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 		}
 	}
 
-	// Configure git user in worktree. Use --worktree so the setting is scoped
+	// Configure git user in worktree to the archmage identity so all commits
+	// are attributed to the archmage on GitHub. The wizard name goes in
+	// Co-Authored-By for traceability. Use --worktree so the setting is scoped
 	// to this worktree only and doesn't pollute the main repo's .git/config.
-	// Requires extensions.worktreeConfig=true on the main repo.
 	exec.Command("git", "-C", repoPath, "config", "extensions.worktreeConfig", "true").Run()
-	exec.Command("git", "-C", worktreeDir, "config", "--worktree", "user.name", wizardName).Run()
-	exec.Command("git", "-C", worktreeDir, "config", "--worktree", "user.email", wizardName+"@spire.local").Run()
+	archName, archEmail := wizardName, wizardName+"@spire.local" // fallback
+	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
+		if tower.Archmage.Name != "" {
+			archName = tower.Archmage.Name
+		}
+		if tower.Archmage.Email != "" {
+			archEmail = tower.Archmage.Email
+		}
+	}
+	exec.Command("git", "-C", worktreeDir, "config", "--worktree", "user.name", archName).Run()
+	exec.Command("git", "-C", worktreeDir, "config", "--worktree", "user.email", archEmail).Run()
 
 	return worktreeDir, nil
 }
