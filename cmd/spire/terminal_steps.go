@@ -1,14 +1,12 @@
 package main
 
-// terminal_steps.go — Step-graph formula types and terminal step enforcement.
-//
-// FormulaStepGraph (version 3) declares a DAG of named steps with conditions.
-// It encodes process-internal state machines (like the review loop) that cannot
-// be expressed as a linear phase sequence.
+// terminal_steps.go — Terminal step enforcement for the review DAG.
 //
 // terminalMerge, terminalSplit and terminalDiscard enforce the branch lifecycle
 // invariant from docs/review-dag.md: every path ends with the branch either
 // merged to main or deleted. No hanging branches. No orphaned code.
+//
+// Step-graph formula types (FormulaStepGraph, StepConfig, etc.) live in formula.go.
 
 import (
 	"fmt"
@@ -16,57 +14,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	toml "github.com/pelletier/go-toml/v2"
-
-	"github.com/awell-health/spire/cmd/spire/embedded"
 )
-
-// FormulaStepGraph is a v3 formula that declares a DAG of named steps with
-// conditions. Version 3 is distinct from the phase-based FormulaV2 (version 2).
-type FormulaStepGraph struct {
-	Name        string                    `toml:"name"`
-	Description string                    `toml:"description"`
-	Version     int                       `toml:"version"`
-	Vars        map[string]FormulaVar     `toml:"vars"`
-	Steps       map[string]FormulaStepDef `toml:"steps"`
-}
-
-// FormulaStepDef describes a single node in the step graph.
-type FormulaStepDef struct {
-	Description string   `toml:"description"`
-	Role        string   `toml:"role,omitempty"`
-	Needs       []string `toml:"needs,omitempty"`
-	Condition   string   `toml:"condition,omitempty"`
-	Terminal    bool     `toml:"terminal,omitempty"`
-}
 
 // SplitTask represents a follow-on task created when an arbiter decides to split a bead.
 type SplitTask struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
-}
-
-// ParseFormulaStepGraph parses a v3 step-graph formula from TOML bytes.
-func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
-	var f FormulaStepGraph
-	if err := toml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parse step graph formula: %w", err)
-	}
-	if f.Version != 3 {
-		return nil, fmt.Errorf("expected step graph formula version 3, got %d", f.Version)
-	}
-	return &f, nil
-}
-
-// LoadStepGraphFormula loads a named v3 step-graph formula from embedded defaults.
-func LoadStepGraphFormula(name string) (*FormulaStepGraph, error) {
-	filename := "formulas/" + name + ".formula.toml"
-	data, err := embedded.Formulas.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("embedded formula %q not found", name)
-	}
-	return ParseFormulaStepGraph(data)
 }
 
 // terminalMerge implements the merge terminal step:
