@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -299,11 +300,19 @@ func detectDatabase(cfg *SpireConfig, prefix string) string {
 // resolution was ambiguous (multiple towers, no active one set).
 // Returns ("", true) when ambiguous so callers can error instead of
 // silently falling back to stale local state.
-// Delegates to the unified resolveTowerConfig() function.
+// Uses the passed-in cfg so callers' config (e.g. ActiveTower) is respected.
 func resolveDatabase(cfg *SpireConfig) (string, bool) {
-	tower, err := resolveTowerConfig()
+	// Check SPIRE_TOWER env first (same as resolveTowerConfig step 1).
+	if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
+		tower, err := loadTowerConfig(towerName)
+		if err != nil {
+			return "", false
+		}
+		return tower.Database, false
+	}
+	tower, err := resolveTowerConfigWith(cfg)
 	if err != nil {
-		if strings.Contains(err.Error(), "multiple towers") {
+		if errors.Is(err, ErrAmbiguousTower) {
 			return "", true // ambiguous
 		}
 		return "", false // no tower — not ambiguous, just empty

@@ -2,13 +2,19 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/steveyegge/beads"
 )
+
+// ErrAmbiguousTower is returned when multiple towers exist and none is active.
+// Callers can use errors.Is(err, ErrAmbiguousTower) for reliable detection.
+var ErrAmbiguousTower = errors.New("ambiguous tower")
 
 // SpireConfig is the global Spire configuration stored at ~/.config/spire/config.json.
 type SpireConfig struct {
@@ -168,6 +174,8 @@ func removeFromPaths(inst *Instance, path string) {
 
 // resolveTowerConfig determines the active tower using explicit, deterministic
 // resolution. Returns an error when the tower cannot be determined unambiguously.
+// Loads config from disk. For callers that already have a SpireConfig, use
+// resolveTowerConfigWith.
 //
 // Resolution order:
 //  1. SPIRE_TOWER env var (explicit tower name from --tower flag or env)
@@ -190,13 +198,29 @@ func resolveTowerConfig() (*TowerConfig, error) {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
+	return resolveTowerConfigWith(cfg)
+}
+
+// resolveTowerConfigWith is the inner resolution logic that uses a pre-loaded
+// SpireConfig. This allows callers (like resolveDatabase) that already have a
+// config to pass it in, so test-injected values (e.g. ActiveTower) are respected.
+//
+// Resolution order (after SPIRE_TOWER, handled by resolveTowerConfig):
+//  2. CWD → registered instance → instance's tower
+//  3. Active tower (cfg.ActiveTower)
+//  4. Sole tower on disk (exactly one tower config file)
+//  5. Error: no tower found or ambiguous (multiple towers, none active)
+func resolveTowerConfigWith(cfg *SpireConfig) (*TowerConfig, error) {
 	// 2. CWD → registered instance → instance's tower.
 	if cwd, cwdErr := realCwd(); cwdErr == nil {
 		if inst := findInstanceByPath(cfg, cwd); inst != nil && inst.Tower != "" {
-			if tower, tErr := loadTowerConfig(inst.Tower); tErr == nil {
+			tower, tErr := loadTowerConfig(inst.Tower)
+			if tErr != nil {
+				// Broken tower reference is likely a misconfiguration — log it.
+				log.Printf("[tower] CWD instance references tower %q but config failed to load: %v", inst.Tower, tErr)
+			} else {
 				return tower, nil
 			}
-			// Instance references a tower config that doesn't exist — fall through.
 		}
 	}
 
@@ -222,8 +246,8 @@ func resolveTowerConfig() (*TowerConfig, error) {
 		for i, t := range towers {
 			names[i] = t.Name
 		}
-		return nil, fmt.Errorf("multiple towers found (%s) — run 'spire tower use <name>' to set the active tower",
-			strings.Join(names, ", "))
+		return nil, fmt.Errorf("%w: multiple towers found (%s) — run 'spire tower use <name>' to set the active tower",
+			ErrAmbiguousTower, strings.Join(names, ", "))
 	}
 }
 
