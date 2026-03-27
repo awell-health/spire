@@ -62,7 +62,6 @@ func workshopReview(state *workshopState, spawner AgentBackend) error {
 
 	if lastVerdict == "approve" {
 		log("review approved (via review bead) — transitioning to merge")
-		setPhase(epicID, "merge")
 		state.Phase = "merge"
 		return nil
 	}
