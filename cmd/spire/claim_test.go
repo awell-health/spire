@@ -12,20 +12,17 @@ func stubClaimDeps(t *testing.T, bead Bead, attempt *Bead, identity string) func
 	origGetBead := claimGetBeadFunc
 	origAttempt := claimGetActiveAttemptFunc
 	origUpdate := claimUpdateBeadFunc
-	origLabel := claimAddLabelFunc
 	origIdentity := claimIdentityFunc
 
 	claimGetBeadFunc = func(id string) (Bead, error) { return bead, nil }
 	claimGetActiveAttemptFunc = func(parentID string) (*Bead, error) { return attempt, nil }
 	claimUpdateBeadFunc = func(id string, updates map[string]interface{}) error { return nil }
-	claimAddLabelFunc = func(id, label string) error { return nil }
 	claimIdentityFunc = func(asFlag string) (string, error) { return identity, nil }
 
 	return func() {
 		claimGetBeadFunc = origGetBead
 		claimGetActiveAttemptFunc = origAttempt
 		claimUpdateBeadFunc = origUpdate
-		claimAddLabelFunc = origLabel
 		claimIdentityFunc = origIdentity
 	}
 }

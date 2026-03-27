@@ -137,14 +137,8 @@ func cmdWizardRun(args []string) error {
 		}
 	}
 
-	// 6. Add owner label (deferred cleanup removes it if we exit without review handoff)
-	storeAddLabel(beadID, "owner:"+wizardName)
+	// 6. Track whether review handoff completed (guards bead reopen on early exit)
 	handoffDone := false
-	defer func() {
-		if !handoffDone {
-			storeRemoveLabel(beadID, "owner:"+wizardName)
-		}
-	}()
 
 	// 7. Set initial phase label (standalone wizard only — apprentices under executor don't set phase labels)
 	if !reviewFix && !apprenticeMode {
@@ -291,10 +285,6 @@ func cmdWizardRun(args []string) error {
 	// Pre-existing integration-test failures (e.g. missing .beads/ in worktree)
 	// must not block the review handoff.
 	//
-	// handoffDone suppresses the deferred owner: removal. Set it true
-	// unconditionally once we enter handoff — the function already swapped
-	// owner: → implemented-by: before attempting the spawn, so the deferred
-	// cleanup must not try to remove a label that no longer exists.
 	if pushed {
 		if !testsPassed {
 			log("tests failed but branch pushed — proceeding to review")
@@ -915,8 +905,6 @@ func wizardCollectReviewHistory(beadID, wizardName string) string {
 // On spawn failure, review-ready and implemented-by stay in place so the
 // steward's detectReviewReady() can re-route the bead on the next cycle.
 func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string, ...interface{})) {
-	// Swap owner -> implemented-by
-	storeRemoveLabel(beadID, "owner:"+wizardName)
 	storeAddLabel(beadID, "implemented-by:"+wizardName)
 
 	// Add review labels

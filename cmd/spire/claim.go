@@ -15,9 +15,6 @@ var claimGetBeadFunc = storeGetBead
 // claimUpdateBeadFunc is a test-replaceable wrapper around storeUpdateBead.
 var claimUpdateBeadFunc = storeUpdateBead
 
-// claimAddLabelFunc is a test-replaceable wrapper around storeAddLabel.
-var claimAddLabelFunc = storeAddLabel
-
 // claimIdentityFunc is a test-replaceable wrapper around detectIdentity.
 var claimIdentityFunc = func(asFlag string) (string, error) { return detectIdentity(asFlag) }
 
@@ -74,11 +71,6 @@ func cmdClaim(args []string) error {
 		"assignee": identity,
 	}); err != nil {
 		return fmt.Errorf("claim %s: %w", id, err)
-	}
-
-	// Add owner label so spire watch can identify who is working the bead.
-	if identity != "" {
-		claimAddLabelFunc(id, "owner:"+identity)
 	}
 
 	// Output result as JSON for easy consumption by spire-work

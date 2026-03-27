@@ -474,10 +474,7 @@ func dismissCleanupBead(w localWizard) {
 		return
 	}
 
-	// Remove owner label.
-	storeRemoveLabel(w.BeadID, "owner:"+w.Name)
-
-	// Remove any other wizard labels.
+	// Remove wizard labels.
 	storeRemoveLabel(w.BeadID, "implemented-by:"+w.Name)
 	storeRemoveLabel(w.BeadID, "review-ready")
 	storeRemoveLabel(w.BeadID, "review-feedback")
@@ -548,7 +545,6 @@ func reapDeadWizard(w localWizard) {
 
 	// Clean up bead labels and reopen if orphaned.
 	if w.BeadID != "" {
-		storeRemoveLabel(w.BeadID, "owner:"+w.Name)
 		storeRemoveLabel(w.BeadID, "implemented-by:"+w.Name)
 		storeRemoveLabel(w.BeadID, "review-ready")
 		storeRemoveLabel(w.BeadID, "review-feedback")
