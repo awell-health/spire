@@ -325,6 +325,82 @@ type boardColDef struct {
 	beads []BoardBead
 }
 
+type boardTypeScope int
+
+const (
+	boardTypeAll boardTypeScope = iota
+	boardTypeTask
+	boardTypeBug
+	boardTypeEpic
+	boardTypeDesign
+	boardTypeDecision
+	boardTypeOther
+)
+
+var boardTypeScopeOrder = []boardTypeScope{
+	boardTypeAll,
+	boardTypeTask,
+	boardTypeBug,
+	boardTypeEpic,
+	boardTypeDesign,
+	boardTypeDecision,
+	boardTypeOther,
+}
+
+func (s boardTypeScope) next() boardTypeScope {
+	for i, candidate := range boardTypeScopeOrder {
+		if candidate == s {
+			return boardTypeScopeOrder[(i+1)%len(boardTypeScopeOrder)]
+		}
+	}
+	return boardTypeAll
+}
+
+func (s boardTypeScope) label() string {
+	switch s {
+	case boardTypeTask:
+		return "tasks"
+	case boardTypeBug:
+		return "bugs"
+	case boardTypeEpic:
+		return "epics"
+	case boardTypeDesign:
+		return "designs"
+	case boardTypeDecision:
+		return "decisions"
+	case boardTypeOther:
+		return "other"
+	default:
+		return "all"
+	}
+}
+
+func (s boardTypeScope) match(b BoardBead) bool {
+	switch s {
+	case boardTypeAll:
+		return true
+	case boardTypeTask:
+		return b.Type == "task"
+	case boardTypeBug:
+		return b.Type == "bug"
+	case boardTypeEpic:
+		return b.Type == "epic"
+	case boardTypeDesign:
+		return b.Type == "design"
+	case boardTypeDecision:
+		return b.Type == "decision"
+	case boardTypeOther:
+		switch b.Type {
+		case "task", "bug", "epic", "design", "decision":
+			return false
+		default:
+			return true
+		}
+	default:
+		return true
+	}
+}
+
 // boardActiveColumns returns the non-empty columns in board display order.
 // This is the authoritative ordered list used by both navigation and rendering.
 func boardActiveColumns(cols boardColumns) []boardColDef {
@@ -351,29 +427,34 @@ type boardPendingAction int
 
 const (
 	boardActionNone   boardPendingAction = iota
-	boardActionFocus  // print cmdFocus output, then relaunch
-	boardActionLogs   // tail wizard logs, then relaunch
-	boardActionSummon // summon a wizard for the bead, then relaunch
-	boardActionClaim  // claim the bead, then relaunch
+	boardActionFocus                     // print cmdFocus output, then relaunch
+	boardActionLogs                      // tail wizard logs, then relaunch
+	boardActionSummon                    // summon a wizard for the bead, then relaunch
+	boardActionClaim                     // claim the bead, then relaunch
 )
 
 type boardModel struct {
-	opts     boardOpts
-	cols     boardColumns
-	width    int
-	height   int
-	lastTick time.Time
-	quitting bool
-	selCol   int // selected column index into boardActiveColumns(cols)
-	selCard  int // selected card index within selCol
+	opts      boardOpts
+	cols      boardColumns
+	typeScope boardTypeScope
+	width     int
+	height    int
+	lastTick  time.Time
+	quitting  bool
+	selCol    int // selected column index into boardActiveColumns(cols)
+	selCard   int // selected card index within selCol
 	// Pending action: set before tea.Quit so runBoardTUI can execute it.
 	pendingAction boardPendingAction
 	pendingBeadID string
 }
 
+func (m boardModel) visibleCols() boardColumns {
+	return filterBoardTypeScope(m.cols, m.typeScope)
+}
+
 // clampSelection keeps selCol and selCard within valid bounds.
 func (m *boardModel) clampSelection() {
-	active := boardActiveColumns(m.cols)
+	active := boardActiveColumns(m.visibleCols())
 	if len(active) == 0 {
 		m.selCol = 0
 		m.selCard = 0
@@ -396,7 +477,7 @@ func (m *boardModel) clampSelection() {
 
 // selectedBead returns a pointer to the currently selected bead, or nil.
 func (m boardModel) selectedBead() *BoardBead {
-	active := boardActiveColumns(m.cols)
+	active := boardActiveColumns(m.visibleCols())
 	if m.selCol < 0 || m.selCol >= len(active) {
 		return nil
 	}
@@ -473,7 +554,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selCard--
 			m.clampSelection()
 
-		// Epic scoping toggle.
+			// Epic scoping toggle.
 		case "e":
 			if m.opts.epic != "" {
 				m.opts.epic = ""
@@ -487,6 +568,9 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if newCols, err := fetchBoard(m.opts); err == nil {
 				m.cols = newCols
 			}
+			m.clampSelection()
+		case "t":
+			m.typeScope = m.typeScope.next()
 			m.clampSelection()
 
 		// Actions on the selected bead.
@@ -538,10 +622,11 @@ func (m boardModel) View() string {
 		return ""
 	}
 
+	visibleCols := m.visibleCols()
 	colWidth := 30
 	if m.width > 0 {
 		// Fit columns to terminal width.
-		activeCols := countActiveCols(m.cols)
+		activeCols := countActiveCols(visibleCols)
 		if activeCols > 0 {
 			available := m.width - (activeCols-1)*2 // 2-char gap between columns
 			cw := available / activeCols
@@ -557,7 +642,7 @@ func (m boardModel) View() string {
 	var s strings.Builder
 
 	// Compute height budget before rendering any sections.
-	budget := calcHeightBudget(m.height, len(m.cols.Alerts), len(m.cols.Blocked), countActiveCols(m.cols))
+	budget := calcHeightBudget(m.height, len(visibleCols.Alerts), len(visibleCols.Blocked), countActiveCols(visibleCols))
 
 	// Header.
 	header := lipgloss.NewStyle().Bold(true).Render("Spire Board")
@@ -565,14 +650,14 @@ func (m boardModel) View() string {
 	s.WriteString(header + "  " + ts + "\n\n")
 
 	// Alerts (capped by budget).
-	if len(m.cols.Alerts) > 0 {
-		sortBeads(m.cols.Alerts)
+	if len(visibleCols.Alerts) > 0 {
+		sortBeads(visibleCols.Alerts)
 		alertStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-		s.WriteString(alertStyle.Render(fmt.Sprintf("⚠ ALERTS (%d)", len(m.cols.Alerts))) + "\n")
-		for i, a := range m.cols.Alerts {
+		s.WriteString(alertStyle.Render(fmt.Sprintf("⚠ ALERTS (%d)", len(visibleCols.Alerts))) + "\n")
+		for i, a := range visibleCols.Alerts {
 			if i >= budget.maxAlerts {
 				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(m.cols.Alerts)-budget.maxAlerts)) + "\n")
+				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Alerts)-budget.maxAlerts)) + "\n")
 				break
 			}
 			alertType := ""
@@ -587,7 +672,7 @@ func (m boardModel) View() string {
 	}
 
 	// Build column content.
-	active := boardActiveColumns(m.cols)
+	active := boardActiveColumns(visibleCols)
 
 	if len(active) > 0 {
 		// Render each column as a string.
@@ -627,14 +712,14 @@ func (m boardModel) View() string {
 	}
 
 	// Blocked (capped by budget).
-	if len(m.cols.Blocked) > 0 {
+	if len(visibleCols.Blocked) > 0 {
 		blockedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-		s.WriteString(blockedStyle.Render(fmt.Sprintf("BLOCKED (%d)", len(m.cols.Blocked))) + "\n")
+		s.WriteString(blockedStyle.Render(fmt.Sprintf("BLOCKED (%d)", len(visibleCols.Blocked))) + "\n")
 
-		for i, b := range m.cols.Blocked {
+		for i, b := range visibleCols.Blocked {
 			if i >= budget.maxBlocked {
 				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(m.cols.Blocked)-budget.maxBlocked)) + "\n")
+				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Blocked)-budget.maxBlocked)) + "\n")
 				break
 			}
 			blockers := blockingDepIDs(b)
@@ -650,11 +735,23 @@ func (m boardModel) View() string {
 	// Footer.
 	s.WriteString("\n")
 	footerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	scopeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	epicInfo := ""
 	if m.opts.epic != "" {
 		epicInfo = " • epic:" + m.opts.epic
 	}
-	s.WriteString(footerStyle.Render("j/k ↕  h/l ↔  e epic  s summon  f focus  c claim  L logs" + epicInfo + " • q quit • ↻ " + m.opts.interval.String()))
+	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  t type  e epic  s summon  f focus  c claim  L logs" + epicInfo + " • q quit • ↻ " + m.opts.interval.String())
+	rightFooter := scopeStyle.Render("showing " + m.typeScope.label())
+	if m.width > 0 {
+		gap := m.width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)
+		if gap > 1 {
+			s.WriteString(leftFooter)
+			s.WriteString(strings.Repeat(" ", gap))
+			s.WriteString(rightFooter)
+			return s.String()
+		}
+	}
+	s.WriteString(leftFooter + "  " + rightFooter)
 
 	return s.String()
 }
@@ -709,29 +806,7 @@ func addGaps(columns []string, colWidth int) []string {
 }
 
 func countActiveCols(cols boardColumns) int {
-	n := 0
-	if len(cols.Ready) > 0 {
-		n++
-	}
-	if len(cols.Design) > 0 {
-		n++
-	}
-	if len(cols.Plan) > 0 {
-		n++
-	}
-	if len(cols.Implement) > 0 {
-		n++
-	}
-	if len(cols.Review) > 0 {
-		n++
-	}
-	if len(cols.Merge) > 0 {
-		n++
-	}
-	if len(cols.Done) > 0 {
-		n++
-	}
-	return n
+	return len(boardActiveColumns(cols))
 }
 
 func priStr(p int) string {
@@ -849,6 +924,26 @@ func filterEpic(cols boardColumns, epicID string) boardColumns {
 	}
 }
 
+func filterBoardTypeScope(cols boardColumns, scope boardTypeScope) boardColumns {
+	if scope == boardTypeAll {
+		return cols
+	}
+	match := func(b BoardBead) bool {
+		return scope.match(b)
+	}
+	return boardColumns{
+		Alerts:    filterBeads(cols.Alerts, match),
+		Ready:     filterBeads(cols.Ready, match),
+		Design:    filterBeads(cols.Design, match),
+		Plan:      filterBeads(cols.Plan, match),
+		Implement: filterBeads(cols.Implement, match),
+		Review:    filterBeads(cols.Review, match),
+		Merge:     filterBeads(cols.Merge, match),
+		Done:      filterBeads(cols.Done, match),
+		Blocked:   filterBeads(cols.Blocked, match),
+	}
+}
+
 func filterBeads(beads []BoardBead, pred func(BoardBead) bool) []BoardBead {
 	var out []BoardBead
 	for _, b := range beads {
@@ -929,6 +1024,8 @@ func shortType(t string) string {
 		return "epic"
 	case "chore":
 		return "chore"
+	case "decision":
+		return "dec"
 	default:
 		return t
 	}
