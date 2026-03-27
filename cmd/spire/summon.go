@@ -249,7 +249,11 @@ func summonLocal(count int, targetIDs []string) error {
 	var candidates []Bead
 
 	reg := loadWizardRegistry()
+	before := len(reg.Wizards)
 	reg = cleanDeadWizards(reg)
+	if len(reg.Wizards) < before {
+		saveWizardRegistry(reg)
+	}
 
 	if len(targetIDs) > 0 {
 		// Look up each target bead directly.
@@ -520,12 +524,41 @@ func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
 			continue // placeholder entry with no real process — prune it
 		}
 		if !processAlive(w.PID) {
+			reapDeadWizard(w)
 			continue // dead
 		}
 		alive = append(alive, w)
 	}
 	reg.Wizards = alive
 	return reg
+}
+
+// reapDeadWizard cleans up stale state for a wizard whose process is no longer alive.
+// It removes the state file and cleans up bead labels so the bead can be re-summoned.
+func reapDeadWizard(w localWizard) {
+	// Delete executor state file.
+	statePath := executorStatePath(w.Name)
+	if err := os.Remove(statePath); err == nil {
+		fmt.Printf("reaped stale wizard %s for %s (removed state file)\n", w.Name, w.BeadID)
+	} else if !os.IsNotExist(err) {
+		fmt.Printf("reaped stale wizard %s for %s (state file: %s)\n", w.Name, w.BeadID, err)
+	} else {
+		fmt.Printf("reaped stale wizard %s for %s\n", w.Name, w.BeadID)
+	}
+
+	// Clean up bead labels and reopen if orphaned.
+	if w.BeadID != "" {
+		storeRemoveLabel(w.BeadID, "owner:"+w.Name)
+		storeRemoveLabel(w.BeadID, "implemented-by:"+w.Name)
+		storeRemoveLabel(w.BeadID, "review-ready")
+		storeRemoveLabel(w.BeadID, "review-feedback")
+		if w.Phase != "" {
+			storeRemoveLabel(w.BeadID, "phase:"+w.Phase)
+		}
+		if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err == nil {
+			fmt.Printf("  ↺ %s reopened\n", w.BeadID)
+		}
+	}
 }
 
 // wizardsForTower returns wizards matching the given tower (or all if tower is "").

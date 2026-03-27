@@ -320,7 +320,11 @@ func rosterFromBeads(timeout time.Duration) []RosterAgent {
 // rosterFromLocalWizards builds a roster from the local wizard registry (process mode).
 func rosterFromLocalWizards(timeout time.Duration) []RosterAgent {
 	reg := loadWizardRegistry()
+	before := len(reg.Wizards)
 	reg = cleanDeadWizards(reg)
+	if len(reg.Wizards) < before {
+		saveWizardRegistry(reg)
+	}
 
 	if len(reg.Wizards) == 0 {
 		return nil
