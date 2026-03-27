@@ -166,6 +166,48 @@ func (wc *WorktreeContext) EnsureRemoteRef(remote, ref string) {
 	exec.Command("git", "-C", wc.RepoPath, "fetch", remote, ref).Run()
 }
 
+// ConflictedFiles returns the list of files with merge conflicts (diff --name-only --diff-filter=U).
+func (wc *WorktreeContext) ConflictedFiles() (string, error) {
+	out, err := exec.Command("git", "-C", wc.Dir, "diff", "--name-only", "--diff-filter=U").Output()
+	if err != nil {
+		return "", fmt.Errorf("list conflicts: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// CommitMerge completes a merge commit using --no-edit (accepts the auto-generated message).
+func (wc *WorktreeContext) CommitMerge() error {
+	if out, err := exec.Command("git", "-C", wc.Dir, "commit", "--no-edit").CombinedOutput(); err != nil {
+		return fmt.Errorf("commit merge: %w\n%s", err, string(out))
+	}
+	return nil
+}
+
+// Rebase rebases the current branch onto the given base. env overrides the
+// process environment (use nil to inherit). Returns combined output and error.
+func (wc *WorktreeContext) Rebase(onto string, env []string) (string, error) {
+	cmd := exec.Command("git", "-C", wc.Dir, "rebase", onto)
+	if env != nil {
+		cmd.Env = env
+	}
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// RebaseAbort aborts an in-progress rebase. Safe to call even if no rebase is active.
+func (wc *WorktreeContext) RebaseAbort() {
+	exec.Command("git", "-C", wc.Dir, "rebase", "--abort").Run()
+}
+
+// DiffNameOnly returns the list of files changed between base and HEAD (--name-only).
+func (wc *WorktreeContext) DiffNameOnly(base string) (string, error) {
+	out, err := exec.Command("git", "-C", wc.Dir, "diff", base, "--name-only").Output()
+	if err != nil {
+		return "", fmt.Errorf("git diff --name-only %s: %w", base, err)
+	}
+	return string(out), nil
+}
+
 // Cleanup removes this worktree from git and deletes its directory.
 func (wc *WorktreeContext) Cleanup() {
 	if wc.Dir != "" {

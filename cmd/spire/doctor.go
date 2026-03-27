@@ -625,10 +625,8 @@ func checkRepoMigrationFor(cfg *SpireConfig, tower *TowerConfig) checkResult {
 			for _, inst := range missing {
 				repoURL := ""
 				if inst.Path != "" {
-					cmd := exec.Command("git", "-C", inst.Path, "remote", "get-url", "origin")
-					if urlOut, err := cmd.Output(); err == nil {
-						repoURL = strings.TrimSpace(string(urlOut))
-					}
+					rc := NewRepoContext(inst.Path)
+					repoURL = rc.RemoteURL("origin")
 				}
 				if repoURL == "" {
 					repoURL = "unknown"
@@ -1031,16 +1029,17 @@ func detectPrefixFromPath(repoPath string) string {
 // Returns one checkResult per stale branch found, plus one "all clear" result
 // if no stale branches exist.
 func checkStaleBranches(repoPath string) []checkResult {
+	rc := NewRepoContext(repoPath)
+
 	// List local branches matching feat/* and epic/*
-	out, err := exec.Command("git", "-C", repoPath, "branch", "--list", "feat/*", "epic/*", "--format=%(refname:short)").Output()
-	if err != nil {
+	branches := rc.ListBranches("feat/*", "epic/*")
+	if branches == nil {
 		// git not available or not a git repo — skip silently
 		return nil
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	var staleBranches []string
-	for _, branch := range lines {
+	for _, branch := range branches {
 		branch = strings.TrimSpace(branch)
 		if branch == "" {
 			continue
@@ -1081,16 +1080,13 @@ func checkStaleBranches(repoPath string) []checkResult {
 			Status: statusOutdated,
 			Detail: "bead is closed; branch should be deleted",
 			FixFunc: func() {
-				cmd := exec.Command("git", "-C", repoPath, "branch", "-d", b)
-				if out, err := cmd.CombinedOutput(); err != nil {
+				if err := rc.DeleteBranch(b); err != nil {
 					// Try force-delete if regular delete fails (unmerged branch)
-					cmd2 := exec.Command("git", "-C", repoPath, "branch", "-D", b)
-					if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-						fmt.Printf("    Failed to delete %s: %s\n", b, strings.TrimSpace(string(out2)))
+					if err2 := rc.ForceDeleteBranch(b); err2 != nil {
+						fmt.Printf("    Failed to delete %s: %s\n", b, err2)
 					} else {
 						fmt.Printf("    Deleted (force) %s\n", b)
 					}
-					_ = out
 				} else {
 					fmt.Printf("    Deleted %s\n", b)
 				}

@@ -191,14 +191,16 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 }
 
 // resolveConflicts invokes Claude to resolve merge conflicts in the working tree.
+// repoPath is actually the staging worktree directory (passed by MergeBranch callback).
 func (e *formulaExecutor) resolveConflicts(repoPath, childBranch string) error {
+	// Wrap the staging worktree dir in a WorktreeContext for git operations.
+	wc := &WorktreeContext{Dir: repoPath}
+
 	// Get the list of conflicted files
-	diffCmd := exec.Command("git", "-C", repoPath, "diff", "--name-only", "--diff-filter=U")
-	diffOut, err := diffCmd.Output()
+	conflictedFiles, err := wc.ConflictedFiles()
 	if err != nil {
-		return fmt.Errorf("list conflicts: %w", err)
+		return err
 	}
-	conflictedFiles := strings.TrimSpace(string(diffOut))
 	if conflictedFiles == "" {
 		return fmt.Errorf("no conflicted files found")
 	}
@@ -231,16 +233,14 @@ Do NOT commit — the merge commit will be created automatically.`,
 	}
 
 	// Verify all conflicts are resolved (no more conflict markers)
-	statusCmd := exec.Command("git", "-C", repoPath, "status", "--porcelain")
-	statusOut, _ := statusCmd.Output()
-	if strings.Contains(string(statusOut), "UU ") {
+	status := wc.StatusPorcelain()
+	if strings.Contains(status, "UU ") {
 		return fmt.Errorf("conflicts still unresolved after Claude")
 	}
 
 	// Complete the merge
-	commitCmd := exec.Command("git", "-C", repoPath, "commit", "--no-edit")
-	if out, commitErr := commitCmd.CombinedOutput(); commitErr != nil {
-		return fmt.Errorf("commit merge: %s\n%s", commitErr, string(out))
+	if err := wc.CommitMerge(); err != nil {
+		return err
 	}
 
 	e.log("  conflicts resolved by Claude")
