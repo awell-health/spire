@@ -217,45 +217,50 @@ func (e *formulaExecutor) Run() error {
 			return fmt.Errorf("phase %q not in formula %s", phase, e.formula.Name)
 		}
 
-		e.log("phase: %s (role: %s)", phase, pc.GetRole())
+		e.log("phase: %s (role: %s, behavior: %s)", phase, pc.GetRole(), pc.GetBehavior())
 		e.saveState()
 
-		// Merge phase has its own handler regardless of role.
-		if phase == "merge" {
-			if err := e.executeMerge(pc); err != nil {
-				e.closeAttempt("failure: merge: " + err.Error())
-				escalateHumanFailure(e.beadID, e.agentName, "merge-failure", err.Error())
-				return fmt.Errorf("phase merge: %w", err)
-			}
-			// Close the merge step bead on success.
-			e.transitionStepBead(phase, "")
-			e.closeAttempt("success: merged")
-			break // merge is terminal
-		}
-
 		var err error
-		switch pc.GetRole() {
-		case "human":
-			err = e.waitForHuman(phase)
-		case "apprentice":
-			if pc.GetDispatch() == "wave" {
-				err = e.executeWave(phase, pc)
-			} else {
-				err = e.executeDirect(phase, pc)
-			}
-		case "sage":
-			err = e.executeReview(phase, pc)
-		case "wizard":
-			err = e.executeWizard(phase, pc)
-		case "skip":
-			e.log("skipping phase %s", phase)
-		default:
-			err = fmt.Errorf("unknown role %q for phase %s", pc.GetRole(), phase)
-		}
 
-		if err != nil {
-			e.closeAttempt(fmt.Sprintf("failure: phase %s: %s", phase, err.Error()))
-			return fmt.Errorf("phase %s: %w", phase, err)
+		if behavior := pc.GetBehavior(); behavior != "" {
+			// Behavior-based dispatch takes priority over role-based dispatch.
+			var terminal bool
+			err, terminal = e.dispatchBehavior(phase, behavior, pc)
+			if err != nil {
+				e.closeAttempt(fmt.Sprintf("failure: %s (%s): %s", phase, behavior, err.Error()))
+				escalateHumanFailure(e.beadID, e.agentName, behavior+"-failure", err.Error())
+				return fmt.Errorf("phase %s (%s): %w", phase, behavior, err)
+			}
+			if terminal {
+				e.transitionStepBead(phase, "")
+				e.closeAttempt("success: " + behavior)
+				break
+			}
+		} else {
+			// Role-based dispatch (backwards compat: no behavior set in formula).
+			switch pc.GetRole() {
+			case "human":
+				err = e.waitForHuman(phase)
+			case "apprentice":
+				if pc.GetDispatch() == "wave" {
+					err = e.executeWave(phase, pc)
+				} else {
+					err = e.executeDirect(phase, pc)
+				}
+			case "sage":
+				err = e.executeReview(phase, pc)
+			case "wizard":
+				err = e.executeWizard(phase, pc)
+			case "skip":
+				e.log("skipping phase %s", phase)
+			default:
+				err = fmt.Errorf("unknown role %q for phase %s", pc.GetRole(), phase)
+			}
+
+			if err != nil {
+				e.closeAttempt(fmt.Sprintf("failure: phase %s: %s", phase, err.Error()))
+				return fmt.Errorf("phase %s: %w", phase, err)
+			}
 		}
 
 		// Advance to next phase
@@ -448,14 +453,26 @@ func (e *formulaExecutor) waitForHuman(phase string) error {
 // executeWizard handles phases where the wizard (orchestrator) acts directly.
 // The wizard invokes Claude for judgment/planning tasks rather than dispatching sub-agents.
 func (e *formulaExecutor) executeWizard(phase string, pc PhaseConfig) error {
-	switch phase {
-	case "design":
-		return e.wizardValidateDesign()
-	case "plan":
-		return e.wizardPlan(pc)
+	return e.wizardGeneric(phase, pc)
+}
+
+// dispatchBehavior routes a phase to its behavior handler.
+// Returns (err, terminal) where terminal=true means the phase loop should break after this phase.
+// Known behaviors: validate-design, generate-subtasks, enrich-subtasks, sage-review, merge-to-main.
+func (e *formulaExecutor) dispatchBehavior(phase, behavior string, pc PhaseConfig) (error, bool) {
+	switch behavior {
+	case "validate-design":
+		return e.wizardValidateDesign(), false
+	case "generate-subtasks":
+		return e.wizardPlan(pc), false
+	case "enrich-subtasks":
+		return e.wizardPlan(pc), false
+	case "sage-review":
+		return e.executeReview(phase, pc), false
+	case "merge-to-main":
+		return e.executeMerge(pc), true // terminal: merge ends the pipeline
 	default:
-		// Generic wizard phase: invoke Claude with bead context
-		return e.wizardGeneric(phase, pc)
+		return fmt.Errorf("unknown behavior %q for phase %s", behavior, phase), false
 	}
 }
 

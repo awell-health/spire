@@ -21,6 +21,7 @@ max_rounds = 3
 arbiter_model = "claude-opus-4-6"
 
 [phases.merge]
+behavior = "merge-to-main"
 strategy = "squash"
 auto = true
 

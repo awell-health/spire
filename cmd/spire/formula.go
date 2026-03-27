@@ -29,6 +29,7 @@ type PhaseConfig struct {
 	Context        []string        `toml:"context,omitempty"`
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
 	// Execution directives
+	Behavior      string `toml:"behavior,omitempty"`       // validate-design | generate-subtasks | enrich-subtasks | sage-review | merge-to-main
 	Role          string `toml:"role,omitempty"`           // human | apprentice | sage | wizard | skip
 	Dispatch      string `toml:"dispatch,omitempty"`       // direct | wave
 	VerdictOnly   bool   `toml:"verdict_only,omitempty"`   // sage: produce verdict only
@@ -64,6 +65,13 @@ func (pc PhaseConfig) GetRole() string {
 		return pc.Role
 	}
 	return "apprentice"
+}
+
+// GetBehavior returns the explicit behavior for this phase, or empty string if unset.
+// When non-empty, the executor dispatches on behavior before role-based dispatch.
+// Known behaviors: validate-design, generate-subtasks, enrich-subtasks, sage-review, merge-to-main.
+func (pc PhaseConfig) GetBehavior() string {
+	return pc.Behavior
 }
 
 // GetDispatch returns the dispatch mode, defaulting to "direct".
