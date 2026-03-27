@@ -48,7 +48,6 @@ func workshopReview(state *workshopState, spawner AgentBackend) error {
 	if containsLabel(bead, "review-approved") {
 		// Approved — transition to merge
 		log("review approved — transitioning to merge")
-		setPhase(epicID, "merge")
 		state.Phase = "merge"
 		return nil
 	}
@@ -126,14 +125,12 @@ Respond with ONLY a JSON object:
 			log("overriding sage — transitioning to merge")
 			storeRemoveLabel(epicID, "review-feedback")
 			storeAddLabel(epicID, "review-approved")
-			setPhase(epicID, "merge")
 			state.Phase = "merge"
 			return nil
 
 		default: // "agree", "partial", or unknown — re-implement with feedback
 			log("accepting feedback — dispatching review-fix")
 			storeRemoveLabel(epicID, "review-feedback")
-			setPhase(epicID, "implement")
 
 			// Spawn wizard-run --review-fix directly (subtasks are already closed,
 			// so the wave system would produce zero waves)
@@ -151,7 +148,6 @@ Respond with ONLY a JSON object:
 			}
 
 			// After fix, go back to review
-			setPhase(epicID, "review")
 			state.Phase = "review"
 			return nil
 		}

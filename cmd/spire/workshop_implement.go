@@ -111,7 +111,6 @@ func workshopImplement(state *workshopState, spawner AgentBackend) error {
 	}
 	if len(waves) == 0 {
 		log("no open subtasks — transitioning to review")
-		setPhase(epicID, "review")
 		state.Phase = "review"
 		return nil
 	}
@@ -211,7 +210,6 @@ func workshopImplement(state *workshopState, spawner AgentBackend) error {
 	}
 
 	log("all waves complete — transitioning to review")
-	setPhase(epicID, "review")
 	state.Phase = "review"
 	return nil
 }
