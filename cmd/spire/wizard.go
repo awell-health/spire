@@ -99,11 +99,12 @@ func cmdWizardRun(args []string) error {
 	branchName := strings.ReplaceAll(branchPattern, "{bead-id}", beadID)
 
 	// 3. Create git worktree
-	worktreeDir, err := wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName)
+	wc, err := wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}
-	defer wizardCleanup(worktreeDir, repoPath)
+	defer wc.Cleanup()
+	worktreeDir := wc.Dir // local alias for prompt file paths and logging
 	log("worktree: %s", worktreeDir)
 
 	// 4. Self-register in wizards.json
@@ -258,7 +259,7 @@ func cmdWizardRun(args []string) error {
 	testsPassed := wizardValidate(worktreeDir, repoCfg, log)
 
 	// 11. Commit and push
-	commitSHA, pushed := wizardCommitAndPush(worktreeDir, beadID, beadTitle, branchName, log)
+	commitSHA, pushed := wizardCommitAndPush(wc, beadID, beadTitle, log)
 
 	// 12. Update bead (comment)
 	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, pushed, testsPassed, log)
@@ -349,7 +350,9 @@ func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err
 // On first run it creates a new branch from baseBranch. On --review-fix
 // the branch already exists (pushed by the previous run), so it checks
 // out the existing branch instead of trying to create it again.
-func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string) (string, error) {
+//
+// Returns a WorktreeContext that must be used for all subsequent git operations.
+func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string) (*WorktreeContext, error) {
 	worktreeBase := filepath.Join(os.TempDir(), "spire-wizard", wizardName)
 	worktreeDir := filepath.Join(worktreeBase, beadID)
 
@@ -360,7 +363,7 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 	}
 
 	if err := os.MkdirAll(filepath.Dir(worktreeDir), 0755); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// Try creating worktree with new branch from base
@@ -370,15 +373,21 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 		exec.Command("git", "-C", repoPath, "fetch", "origin", branchName).Run()
 		cmd2 := exec.Command("git", "-C", repoPath, "worktree", "add", worktreeDir, branchName)
 		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			return "", fmt.Errorf("git worktree add: %s\n%s\n(retry with existing branch): %s\n%s", err, string(out), err2, string(out2))
+			return nil, fmt.Errorf("git worktree add: %s\n%s\n(retry with existing branch): %s\n%s", err, string(out), err2, string(out2))
 		}
+	}
+
+	wc := &WorktreeContext{
+		Dir:        worktreeDir,
+		Branch:     branchName,
+		BaseBranch: baseBranch,
+		RepoPath:   repoPath,
 	}
 
 	// Configure git user in worktree to the archmage identity so all commits
 	// are attributed to the archmage on GitHub. The wizard name goes in
-	// Co-Authored-By for traceability. Use --worktree so the setting is scoped
-	// to this worktree only and doesn't pollute the main repo's .git/config.
-	exec.Command("git", "-C", repoPath, "config", "extensions.worktreeConfig", "true").Run()
+	// Co-Authored-By for traceability. Uses WorktreeContext.ConfigureUser which
+	// scopes settings with --worktree so they don't pollute the main repo's config.
 	archName, archEmail := wizardName, wizardName+"@spire.local" // fallback
 	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
 		if tower.Archmage.Name != "" {
@@ -388,10 +397,9 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 			archEmail = tower.Archmage.Email
 		}
 	}
-	exec.Command("git", "-C", worktreeDir, "config", "--worktree", "user.name", archName).Run()
-	exec.Command("git", "-C", worktreeDir, "config", "--worktree", "user.email", archEmail).Run()
+	wc.ConfigureUser(archName, archEmail)
 
-	return worktreeDir, nil
+	return wc, nil
 }
 
 // wizardCaptureFocus runs `spire focus <bead-id>` and captures stdout.
@@ -649,88 +657,54 @@ func wizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 }
 
 // wizardCommitAndPush commits any changes and pushes the branch.
-func wizardCommitAndPush(dir, beadID, beadTitle, branchName string, log func(string, ...interface{})) (commitSHA string, pushed bool) {
-	// Check for uncommitted changes in the working tree.
-	statusCmd := exec.Command("git", "-C", dir, "status", "--porcelain")
-	statusOut, _ := statusCmd.Output()
-	hasUncommitted := len(strings.TrimSpace(string(statusOut))) > 0
-
-	// Also check if Claude already committed to the branch (clean worktree but new commits).
-	// Use main..HEAD (local ref), not origin/main — worktrees don't always have origin fetched.
-	baseBranch := "main"
-	if base := os.Getenv("SPIRE_BASE_BRANCH"); base != "" {
-		baseBranch = base
-	}
-	logCmd := exec.Command("git", "-C", dir, "log", baseBranch+"..HEAD", "--oneline")
-	logOut, _ := logCmd.Output()
-	hasNewCommits := len(strings.TrimSpace(string(logOut))) > 0
+// Uses WorktreeContext methods for all git operations — no raw exec.Command.
+func wizardCommitAndPush(wc *WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, pushed bool) {
+	hasUncommitted := wc.HasUncommittedChanges()
+	hasNewCommits := wc.HasNewCommits()
 
 	if !hasUncommitted && !hasNewCommits {
 		log("no changes to commit and no new commits on branch")
 		return "", false
 	}
 
-	// If Claude already committed and pushed, just report success.
+	// If Claude already committed, just push and report success.
 	if !hasUncommitted && hasNewCommits {
-		shaCmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
-		shaOut, _ := shaCmd.Output()
-		commitSHA = strings.TrimSpace(string(shaOut))
-		// Ensure the branch is pushed.
-		log("Claude already committed — pushing branch %s", branchName)
-		pushCmd := exec.Command("git", "-C", dir, "push", "-u", "origin", branchName)
-		pushCmd.Env = os.Environ()
-		if out, err := pushCmd.CombinedOutput(); err != nil {
-			log("git push failed: %s\n%s", err, string(out))
+		sha, _ := wc.HeadSHA()
+		commitSHA = sha
+		log("Claude already committed — pushing branch %s", wc.Branch)
+		if err := wc.Push("origin"); err != nil {
+			log("git push failed: %s", err)
 			return commitSHA, false
 		}
 		return commitSHA, true
 	}
 
-	// Remove prompt files before staging
-	os.Remove(filepath.Join(dir, ".spire-prompt.txt"))
-	os.Remove(filepath.Join(dir, ".spire-design-prompt.txt"))
-
-	// Stage all
-	if err := exec.Command("git", "-C", dir, "add", "-A").Run(); err != nil {
-		log("git add failed: %s", err)
-		return "", false
-	}
-
-	// Check if there's anything staged
-	diffCmd := exec.Command("git", "-C", dir, "diff", "--cached", "--quiet")
-	if diffCmd.Run() == nil {
-		log("nothing staged after git add")
-		return "", false
-	}
-
-	// Commit
+	// Commit (stages all, removes prompt files)
 	title := beadTitle
 	if title == "" {
 		title = "implement task"
 	}
-	// Lowercase first char, strip trailing period.
 	if len(title) > 0 {
 		title = strings.ToLower(title[:1]) + title[1:]
 	}
 	title = strings.TrimRight(title, ".")
 	msg := fmt.Sprintf("feat(%s): %s", beadID, title)
-	commitCmd := exec.Command("git", "-C", dir, "commit", "-m", msg)
-	if out, err := commitCmd.CombinedOutput(); err != nil {
-		log("git commit failed: %s\n%s", err, string(out))
+
+	sha, err := wc.Commit(msg)
+	if err != nil {
+		log("git commit failed: %s", err)
 		return "", false
 	}
-
-	// Get commit SHA
-	shaCmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
-	shaOut, _ := shaCmd.Output()
-	commitSHA = strings.TrimSpace(string(shaOut))
+	if sha == "" {
+		log("nothing staged after git add")
+		return "", false
+	}
+	commitSHA = sha
 
 	// Push
-	log("pushing branch %s", branchName)
-	pushCmd := exec.Command("git", "-C", dir, "push", "-u", "origin", branchName)
-	pushCmd.Env = os.Environ()
-	if out, err := pushCmd.CombinedOutput(); err != nil {
-		log("git push failed: %s\n%s", err, string(out))
+	log("pushing branch %s", wc.Branch)
+	if err := wc.Push("origin"); err != nil {
+		log("git push failed: %s", err)
 		return commitSHA, false
 	}
 
@@ -779,9 +753,11 @@ func wizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
 }
 
 // wizardCleanup removes the git worktree.
+// wizardCleanup is a legacy wrapper kept for any call sites that haven't
+// migrated to WorktreeContext.Cleanup() yet.
 func wizardCleanup(worktreeDir, repoPath string) {
-	exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", worktreeDir).Run()
-	os.RemoveAll(worktreeDir)
+	wc := WorktreeContext{Dir: worktreeDir, RepoPath: repoPath}
+	wc.Cleanup()
 }
 
 // --- Molecule helpers ---

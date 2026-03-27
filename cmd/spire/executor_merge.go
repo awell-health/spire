@@ -54,7 +54,7 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	}
 
 	// Review documentation for stale language before merging to main.
-	if docErr := e.reviewDocsForStaleness(mergeWt.Dir(), branch, baseBranch, pc); docErr != nil {
+	if docErr := e.reviewDocsForStaleness(mergeWt.Dir, branch, baseBranch, pc); docErr != nil {
 		e.log("warning: doc review: %s", docErr)
 	}
 
