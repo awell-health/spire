@@ -176,7 +176,9 @@ func cmdWizardReview(args []string) error {
 			storeAddComment(beadID, fmt.Sprintf("Review approved by %s (verdict-only)", reviewerName))
 			log("approved (verdict-only) — exiting")
 		} else {
-			reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
+			if err := reviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath, log); err != nil {
+				return fmt.Errorf("approval: %w", err)
+			}
 		}
 	case "request_changes":
 		if verdictOnly {
@@ -420,7 +422,11 @@ func parseReviewOutput(text string) (*Review, error) {
 
 // --- Verdict handlers ---
 
-func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, repoPath string, log func(string, ...interface{})) {
+// reviewHandleApproval handles an approved verdict: transitions to merge phase,
+// executes the terminal merge step, and closes the bead.
+//
+// Returns an error if the merge fails; the bead is left open so a human can diagnose.
+func reviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath string, log func(string, ...interface{})) error {
 	log("approved — closing review step")
 
 	// Remove review labels
@@ -429,8 +435,7 @@ func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, r
 
 	// Remove implemented-by label
 	bead, _ := storeGetBead(beadID)
-	implBy := hasLabel(bead, "implemented-by:")
-	if implBy != "" {
+	if implBy := hasLabel(bead, "implemented-by:"); implBy != "" {
 		storeRemoveLabel(beadID, "implemented-by:"+implBy)
 	}
 
@@ -444,25 +449,24 @@ func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, r
 	// Transition to merge phase
 	setPhase(beadID, "merge")
 
-	// --- Merge step ---
-	log("starting merge step")
-	if err := reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath, log); err != nil {
+	// Resolve build command from bead's formula
+	bead, _ = storeGetBead(beadID)
+	buildCmd := resolveBeadBuildCmd(bead)
+
+	// Terminal merge: rebase → build verify → ff-only merge → push → delete branch → close bead.
+	// DAG invariant enforced: branch is deleted before bead is closed.
+	log("executing terminal merge")
+	if err := terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd, log); err != nil {
 		log("merge failed: %s — bead left at review-approved", err)
 		storeAddComment(beadID, fmt.Sprintf("Auto-merge failed: %s", err))
-		return
+		return err
 	}
 
-	// Close merge molecule step and bead
+	// Close merge molecule step after successful merge
 	wizardCloseMoleculeStep(beadID, "merge")
-	storeRemoveLabel(beadID, "review-approved")
 	storeRemoveLabel(beadID, "test-failure")
-	storeRemoveLabel(beadID, "feat-branch:"+branch)
-	// Clear phase label on close (bead moves to Done via status=closed)
-	storeRemoveLabel(beadID, "phase:merge")
-	if err := storeCloseBead(beadID); err != nil {
-		log("warning: close bead: %s", err)
-	}
 	log("done — merged and closed")
+	return nil
 }
 
 // reviewMerge creates a PR for the feature branch and squash-merges it.
