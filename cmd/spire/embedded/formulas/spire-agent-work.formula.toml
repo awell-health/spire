@@ -3,6 +3,7 @@ description = "Standard agent work protocol: implement → review → merge. Des
 version = 2
 
 [phases.implement]
+behavior = "direct-implement"
 timeout = "15m"
 model = "claude-opus-4-6"
 role = "apprentice"
@@ -11,6 +12,7 @@ worktree = true
 context = ["CLAUDE.md", "PLAYBOOK.md"]
 
 [phases.review]
+behavior = "sage-review"
 timeout = "10m"
 model = "claude-opus-4-6"
 role = "sage"
@@ -21,6 +23,7 @@ max_rounds = 3
 arbiter_model = "claude-opus-4-6"
 
 [phases.merge]
+behavior = "merge-to-main"
 strategy = "squash"
 auto = true
 

@@ -3,6 +3,7 @@ description = "Quick bugfix: implement, review, merge. No design or plan phase."
 version = 2
 
 [phases.implement]
+behavior = "direct-implement"
 timeout = "10m"
 model = "claude-opus-4-6"
 role = "apprentice"
@@ -11,6 +12,7 @@ worktree = true
 context = ["CLAUDE.md"]
 
 [phases.review]
+behavior = "sage-review"
 timeout = "10m"
 model = "claude-opus-4-6"
 role = "sage"
@@ -21,6 +23,7 @@ max_rounds = 2
 arbiter_model = "claude-opus-4-6"
 
 [phases.merge]
+behavior = "merge-to-main"
 strategy = "squash"
 auto = true
 

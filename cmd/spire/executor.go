@@ -217,12 +217,13 @@ func (e *formulaExecutor) Run() error {
 			return fmt.Errorf("phase %q not in formula %s", phase, e.formula.Name)
 		}
 
-		e.log("phase: %s (role: %s)", phase, pc.GetRole())
+		behavior := pc.GetBehavior(phase)
+		e.log("phase: %s (role: %s, behavior: %s)", phase, pc.GetRole(), behavior)
 		e.saveState()
 
-		// Merge phase has its own handler regardless of role.
-		if phase == "merge" {
-			if err := e.executeMerge(pc); err != nil {
+		// Merge behaviors are terminal: merge branch into main then stop.
+		if isMergeBehavior(behavior) {
+			if err := e.executeMergeBehavior(behavior, pc); err != nil {
 				e.closeAttempt("failure: merge: " + err.Error())
 				escalateHumanFailure(e.beadID, e.agentName, "merge-failure", err.Error())
 				return fmt.Errorf("phase merge: %w", err)
@@ -234,23 +235,41 @@ func (e *formulaExecutor) Run() error {
 		}
 
 		var err error
-		switch pc.GetRole() {
-		case "human":
+		switch behavior {
+		case "validate-design", "validate-spec", "validate-approval", "validate-gate":
+			err = e.executeDesignBehavior(behavior, pc)
+		case "generate-subtasks", "enrich-subtasks", "import-plan":
+			err = e.executePlanBehavior(behavior, pc)
+		case "human-plan":
 			err = e.waitForHuman(phase)
-		case "apprentice":
-			if pc.GetDispatch() == "wave" {
-				err = e.executeWave(phase, pc)
-			} else {
-				err = e.executeDirect(phase, pc)
+		case "sage-review", "human-review", "ci-gate", "dual-review", "auto-approve":
+			err = e.executeReviewBehavior(behavior, phase, pc)
+		case "wave-implement":
+			err = e.executeWave(phase, pc)
+		case "direct-implement":
+			err = e.executeDirect(phase, pc)
+		case "":
+			// No behavior derived — fall back to role-based dispatch.
+			switch pc.GetRole() {
+			case "human":
+				err = e.waitForHuman(phase)
+			case "apprentice":
+				if pc.GetDispatch() == "wave" {
+					err = e.executeWave(phase, pc)
+				} else {
+					err = e.executeDirect(phase, pc)
+				}
+			case "sage":
+				err = e.executeReview(phase, pc)
+			case "wizard":
+				err = e.executeWizard(phase, pc)
+			case "skip":
+				e.log("skipping phase %s", phase)
+			default:
+				err = fmt.Errorf("unknown role %q for phase %s", pc.GetRole(), phase)
 			}
-		case "sage":
-			err = e.executeReview(phase, pc)
-		case "wizard":
-			err = e.executeWizard(phase, pc)
-		case "skip":
-			e.log("skipping phase %s", phase)
 		default:
-			err = fmt.Errorf("unknown role %q for phase %s", pc.GetRole(), phase)
+			err = fmt.Errorf("unknown behavior %q for phase %s", behavior, phase)
 		}
 
 		if err != nil {
@@ -445,13 +464,122 @@ func (e *formulaExecutor) waitForHuman(phase string) error {
 	return fmt.Errorf("waiting for human to complete %s phase", phase)
 }
 
-// executeWizard handles phases where the wizard (orchestrator) acts directly.
-// The wizard invokes Claude for judgment/planning tasks rather than dispatching sub-agents.
-func (e *formulaExecutor) executeWizard(phase string, pc PhaseConfig) error {
-	switch phase {
-	case "design":
+// isMergeBehavior reports whether a behavior is a merge-type behavior (terminal).
+func isMergeBehavior(behavior string) bool {
+	switch behavior {
+	case "merge-to-main", "pr-only", "pr-and-merge", "human-merge", "deploy":
+		return true
+	}
+	return false
+}
+
+// executeMergeBehavior dispatches the correct merge handler based on behavior.
+// All merge behaviors are terminal — the caller breaks out of the phase loop after this returns.
+func (e *formulaExecutor) executeMergeBehavior(behavior string, pc PhaseConfig) error {
+	switch behavior {
+	case "merge-to-main":
+		return e.executeMerge(pc)
+	case "pr-only":
+		// Create a PR but do not auto-merge — leave the branch open.
+		// Falls through to executeMerge until a dedicated handler is implemented.
+		return e.executeMerge(pc)
+	case "pr-and-merge":
+		// Create a PR and then merge it.
+		return e.executeMerge(pc)
+	case "human-merge":
+		return e.waitForHuman("merge")
+	case "deploy":
+		// Run deploy after merge. Falls through to executeMerge for now.
+		return e.executeMerge(pc)
+	default:
+		return fmt.Errorf("unknown merge behavior %q", behavior)
+	}
+}
+
+// executeDesignBehavior dispatches design-phase behaviors.
+func (e *formulaExecutor) executeDesignBehavior(behavior string, pc PhaseConfig) error {
+	switch behavior {
+	case "validate-design":
 		return e.wizardValidateDesign()
-	case "plan":
+	case "validate-spec":
+		// Validate that the bead has a linked spec document.
+		// Falls through to generic wizard until a dedicated handler is implemented.
+		return e.wizardGeneric("design", pc)
+	case "validate-approval":
+		// Validate that the bead has explicit human approval before proceeding.
+		return e.wizardGeneric("design", pc)
+	case "validate-gate":
+		// Generic gate: wizard checks a configurable condition.
+		return e.wizardGeneric("design", pc)
+	default:
+		return fmt.Errorf("unknown design behavior %q", behavior)
+	}
+}
+
+// executePlanBehavior dispatches plan-phase behaviors.
+func (e *formulaExecutor) executePlanBehavior(behavior string, pc PhaseConfig) error {
+	switch behavior {
+	case "generate-subtasks":
+		return e.wizardPlan(pc)
+	case "enrich-subtasks":
+		// Enrich existing subtasks with change specs without generating new ones.
+		children, err := e.childGetter(e.beadID)
+		if err != nil {
+			return fmt.Errorf("get children: %w", err)
+		}
+		if len(children) == 0 {
+			e.log("no children found to enrich")
+			return nil
+		}
+		bead, err := e.beadGetter(e.beadID)
+		if err != nil {
+			return fmt.Errorf("get bead: %w", err)
+		}
+		epicContext := fmt.Sprintf("Epic: %s\nTitle: %s\nDescription: %s\n", bead.ID, bead.Title, bead.Description)
+		return e.enrichSubtasksWithChangeSpecs(children, epicContext, "", pc)
+	case "import-plan":
+		// Import a pre-written plan from a bead comment or description.
+		// Falls through to wizardPlan for now (it handles existing children).
+		return e.wizardPlan(pc)
+	default:
+		return fmt.Errorf("unknown plan behavior %q", behavior)
+	}
+}
+
+// executeReviewBehavior dispatches review-phase behaviors.
+func (e *formulaExecutor) executeReviewBehavior(behavior, phase string, pc PhaseConfig) error {
+	switch behavior {
+	case "sage-review":
+		return e.executeReview(phase, pc)
+	case "human-review":
+		return e.waitForHuman(phase)
+	case "ci-gate":
+		// Run CI checks without a sage. Falls through to sage review until implemented.
+		return e.executeReview(phase, pc)
+	case "dual-review":
+		// Two sages must approve. Falls through to single sage review until implemented.
+		return e.executeReview(phase, pc)
+	case "auto-approve":
+		// Skip review entirely — advance without a sage or human gate.
+		e.log("auto-approve: skipping review for phase %s", phase)
+		return nil
+	default:
+		return fmt.Errorf("unknown review behavior %q", behavior)
+	}
+}
+
+// executeWizard handles phases where the wizard (orchestrator) acts directly.
+// Deprecated: new code should set behavior= in the formula and use the behavior
+// dispatch table in Run(). This function remains for phases that resolve to an
+// empty behavior (legacy formulas without an explicit behavior field that are also
+// not one of the standard phase names with known defaults).
+func (e *formulaExecutor) executeWizard(phase string, pc PhaseConfig) error {
+	// Dispatch on behavior if set; fall back to phase name for legacy callers.
+	behavior := pc.GetBehavior(phase)
+	switch behavior {
+	case "validate-design":
+		return e.wizardValidateDesign()
+	case "generate-subtasks":
 		return e.wizardPlan(pc)
 	default:
 		// Generic wizard phase: invoke Claude with bead context

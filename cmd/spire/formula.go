@@ -28,6 +28,15 @@ type PhaseConfig struct {
 	MaxTurns       int             `toml:"max_turns,omitempty"`
 	Context        []string        `toml:"context,omitempty"`
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
+	// Behavior declares what this phase does, decoupling execution from phase name.
+	// The executor dispatches on behavior first; if omitted, role-based dispatch applies.
+	//
+	// Design behaviors:   validate-design | validate-spec | validate-approval | validate-gate
+	// Plan behaviors:     generate-subtasks | enrich-subtasks | import-plan | human-plan
+	// Implement behaviors: direct-implement | wave-implement
+	// Review behaviors:   sage-review | human-review | ci-gate | dual-review | auto-approve
+	// Merge behaviors:    merge-to-main | pr-only | pr-and-merge | human-merge | deploy
+	Behavior string `toml:"behavior,omitempty"`
 	// Execution directives
 	Role          string `toml:"role,omitempty"`           // human | apprentice | sage | wizard | skip
 	Dispatch      string `toml:"dispatch,omitempty"`       // direct | wave
@@ -72,6 +81,48 @@ func (pc PhaseConfig) GetDispatch() string {
 		return pc.Dispatch
 	}
 	return "direct"
+}
+
+// GetBehavior returns the behavior for this phase, deriving backwards-compatible defaults
+// from the phase name and role when Behavior is not explicitly set.
+//
+// Callers pass the formula phase key (e.g. "design", "plan", "merge") so that legacy
+// formulas without a behavior field continue to work correctly.
+func (pc PhaseConfig) GetBehavior(phaseName string) string {
+	if pc.Behavior != "" {
+		return pc.Behavior
+	}
+	// Backwards-compatible defaults derived from phase name + role.
+	switch phaseName {
+	case "design":
+		if pc.GetRole() == "wizard" {
+			return "validate-design"
+		}
+	case "plan":
+		if pc.GetRole() == "wizard" {
+			return "generate-subtasks"
+		}
+		if pc.GetRole() == "human" {
+			return "human-plan"
+		}
+	case "merge":
+		return "merge-to-main"
+	case "review":
+		if pc.GetRole() == "sage" {
+			return "sage-review"
+		}
+		if pc.GetRole() == "human" {
+			return "human-review"
+		}
+	case "implement":
+		if pc.GetRole() == "apprentice" {
+			if pc.GetDispatch() == "wave" {
+				return "wave-implement"
+			}
+			return "direct-implement"
+		}
+	}
+	return ""
 }
 
 // GetMergeStrategy returns the merge strategy, defaulting to "squash".
