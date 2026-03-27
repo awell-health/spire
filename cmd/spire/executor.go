@@ -364,21 +364,23 @@ func (e *formulaExecutor) ensureStepBeads() error {
 
 	// Guard against crash-between-create-and-save: query existing step children
 	// from the graph and rebuild StepBeadIDs before creating new ones.
-	if children, err := e.childGetter(e.beadID); err != nil {
-		e.log("warning: query step children for reconciliation: %s (will create fresh)", err)
-	} else {
-		rebuilt := make(map[string]string)
-		for _, child := range children {
-			if containsLabel(child, "workflow-step") {
-				if phase := hasLabel(child, "step:"); phase != "" {
-					rebuilt[phase] = child.ID
+	if e.childGetter != nil {
+		if children, err := e.childGetter(e.beadID); err != nil {
+			e.log("warning: query step children for reconciliation: %s (will create fresh)", err)
+		} else {
+			rebuilt := make(map[string]string)
+			for _, child := range children {
+				if containsLabel(child, "workflow-step") {
+					if phase := hasLabel(child, "step:"); phase != "" {
+						rebuilt[phase] = child.ID
+					}
 				}
 			}
-		}
-		if len(rebuilt) > 0 {
-			e.state.StepBeadIDs = rebuilt
-			e.log("reconciled %d existing step beads from graph (skipping creation)", len(rebuilt))
-			return e.saveState()
+			if len(rebuilt) > 0 {
+				e.state.StepBeadIDs = rebuilt
+				e.log("reconciled %d existing step beads from graph (skipping creation)", len(rebuilt))
+				return e.saveState()
+			}
 		}
 	}
 
