@@ -320,8 +320,10 @@ func (e *formulaExecutor) ensureAttemptBead() error {
 
 	// Determine model and branch.
 	model := "unknown"
-	if pc, ok := e.formula.Phases[e.state.Phase]; ok && pc.Model != "" {
-		model = pc.Model
+	if e.formula != nil && e.formula.Phases != nil {
+		if pc, ok := e.formula.Phases[e.state.Phase]; ok && pc.Model != "" {
+			model = pc.Model
+		}
 	}
 	branch := e.state.StagingBranch
 	if branch == "" {
