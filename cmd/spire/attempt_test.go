@@ -544,10 +544,6 @@ func TestAttemptLifecycle_EndToEnd(t *testing.T) {
 
 // --- Helper: testable version of storeGetActiveAttempt ---
 
-// storeGetChildrenFunc is a test-replaceable function for storeGetChildren.
-// In production this stays at its default (storeGetChildren).
-var storeGetChildrenFunc = storeGetChildren
-
 // storeGetActiveAttemptTestable is a testable version that uses storeGetChildrenFunc.
 func storeGetActiveAttemptTestable(parentID string) (*Bead, error) {
 	children, err := storeGetChildrenFunc(parentID)
