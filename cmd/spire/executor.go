@@ -365,8 +365,8 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 	// Check for existing children (resume case)
 	children, _ := storeGetChildren(e.beadID)
 	if len(children) > 0 {
-		e.log("epic already has %d children — plan phase complete", len(children))
-		return nil
+		e.log("epic already has %d children — enriching with change specs", len(children))
+		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext.String(), pc)
 	}
 
 	prompt := fmt.Sprintf(`You are a Spire wizard planning an epic. Break the work into independent tasks that can be executed by parallel agents in isolated git worktrees.
@@ -524,6 +524,111 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 	}
 	storeAddComment(e.beadID, planSummary.String())
 
+	return nil
+}
+
+// enrichSubtasksWithChangeSpecs invokes Claude per subtask to produce a change spec
+// (which files, which functions, rough diff shape) and posts it as a comment on the subtask.
+func (e *formulaExecutor) enrichSubtasksWithChangeSpecs(children []Bead, epicContext, designContext string, pc PhaseConfig) error {
+	model := pc.Model
+	if model == "" {
+		model = "claude-opus-4-6"
+	}
+	maxTurns := pc.GetMaxTurns()
+
+	for _, child := range children {
+		// Skip already-enriched subtasks (has a change spec comment)
+		existingComments, _ := storeGetComments(child.ID)
+		alreadyEnriched := false
+		for _, c := range existingComments {
+			if strings.HasPrefix(c.Text, "Change spec:") {
+				alreadyEnriched = true
+				break
+			}
+		}
+		if alreadyEnriched {
+			e.log("subtask %s already has a change spec — skipping", child.ID)
+			continue
+		}
+
+		// Build subtask context including its own comments
+		var subtaskContext strings.Builder
+		subtaskContext.WriteString(fmt.Sprintf("Subtask ID: %s\nTitle: %s\nDescription: %s\n", child.ID, child.Title, child.Description))
+		for _, c := range existingComments {
+			subtaskContext.WriteString(fmt.Sprintf("[%s]: %s\n", c.Author, c.Text))
+		}
+
+		prompt := fmt.Sprintf(`You are a Spire wizard producing a change spec for a subtask. Your job is to analyze the subtask in context of the epic and design, then produce a precise, file-level specification of what code changes are needed.
+
+All context is provided below — do NOT read files.
+
+## Epic Context
+%s
+
+## Design Context
+%s
+
+## Subtask
+%s
+
+## Your output
+
+Produce a change spec with this structure:
+
+**Change spec: <subtask title>**
+
+**Files to modify:**
+- path/to/file.go — <what changes: add/modify function X, update struct Y, etc.>
+
+**Files to create:**
+- path/to/new_file.go — <purpose>
+
+**Key functions/types:**
+- <FunctionName>(args) — <what it does, signature if non-obvious>
+
+**Rough diff shape:**
+<Describe what the diff will look like: what's added, what's removed, what's changed. Be specific about function bodies, struct fields, interface methods. This is the single most important part — apprentices need to know exactly what to write.>
+
+**Data flow (if non-obvious):**
+<How data flows through the change — only include if the change involves multiple layers or non-obvious wiring.>
+
+**Do NOT touch:**
+<Files this subtask must not modify — handled by other tasks or unrelated.>
+
+Be precise and concrete. The apprentice implementing this task will only see this spec — they cannot see other tasks or ask questions.
+`, epicContext, designContext, subtaskContext.String())
+
+		e.log("generating change spec for %s: %s", child.ID, child.Title)
+		cmd := exec.Command("claude",
+			"--dangerously-skip-permissions",
+			"-p", prompt,
+			"--model", model,
+			"--output-format", "text",
+			"--max-turns", fmt.Sprintf("%d", maxTurns),
+		)
+		cmd.Dir = e.state.RepoPath
+		cmd.Env = os.Environ()
+		cmd.Stderr = os.Stderr
+		out, err := cmd.Output()
+		if err != nil {
+			e.log("warning: change spec for %s: %s", child.ID, err)
+			continue
+		}
+
+		spec := strings.TrimSpace(string(out))
+		if spec == "" {
+			e.log("warning: empty change spec for %s — skipping", child.ID)
+			continue
+		}
+
+		if commentErr := storeAddComment(child.ID, "Change spec:\n\n"+spec); commentErr != nil {
+			e.log("warning: post change spec for %s: %s", child.ID, commentErr)
+		} else {
+			e.log("posted change spec for %s", child.ID)
+		}
+	}
+
+	storeAddComment(e.beadID, fmt.Sprintf("Wizard: enriched %d subtasks with change specs.", len(children)))
 	return nil
 }
 
