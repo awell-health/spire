@@ -15,6 +15,11 @@ var claimGetBeadFunc = storeGetBead
 // claimUpdateBeadFunc is a test-replaceable wrapper around storeUpdateBead.
 var claimUpdateBeadFunc = storeUpdateBead
 
+// claimCreateAttemptFunc is a test-replaceable wrapper around storeCreateAttemptBead.
+// cmdClaim creates the attempt bead atomically as part of the claim so that
+// storeGetReadyWork and the steward see ownership immediately.
+var claimCreateAttemptFunc = storeCreateAttemptBead
+
 // claimIdentityFunc is a test-replaceable wrapper around detectIdentity.
 var claimIdentityFunc = func(asFlag string) (string, error) { return detectIdentity(asFlag) }
 
@@ -65,7 +70,24 @@ func cmdClaim(args []string) error {
 		}
 	}
 
-	// Claim it
+	// Create attempt bead atomically as part of the claim.
+	// This is the real ownership marker — storeGetReadyWork and the steward
+	// filter by attempt beads, not by in_progress status. Creating the
+	// attempt bead before flipping status closes the race window where two
+	// actors could both think they own the same bead.
+	attemptID := ""
+	if attempt == nil {
+		branch := fmt.Sprintf("feat/%s", id)
+		aid, aerr := claimCreateAttemptFunc(id, identity, "pending", branch)
+		if aerr != nil {
+			return fmt.Errorf("claim %s: create attempt bead: %w", id, aerr)
+		}
+		attemptID = aid
+	} else {
+		attemptID = attempt.ID
+	}
+
+	// Flip status to in_progress.
 	if err := claimUpdateBeadFunc(id, map[string]interface{}{
 		"status":   "in_progress",
 		"assignee": identity,
@@ -75,10 +97,11 @@ func cmdClaim(args []string) error {
 
 	// Output result as JSON for easy consumption by spire-work
 	result := map[string]string{
-		"id":     target.ID,
-		"title":  target.Title,
-		"type":   target.Type,
-		"status": "in_progress",
+		"id":      target.ID,
+		"title":   target.Title,
+		"type":    target.Type,
+		"status":  "in_progress",
+		"attempt": attemptID,
 	}
 	out, _ := json.Marshal(result)
 	fmt.Println(string(out))
