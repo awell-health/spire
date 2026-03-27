@@ -104,8 +104,6 @@ func main() {
 		err = cmdWizardRun(args)
 	case "wizard-review":
 		err = cmdWizardReview(args)
-	case "wizard-merge":
-		err = cmdWizardMerge(args)
 	case "execute":
 		err = cmdExecute(args)
 	case "doctor":
