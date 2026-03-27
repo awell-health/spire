@@ -29,6 +29,7 @@ type executorState struct {
 	BaseBranch    string                  `json:"base_branch,omitempty"`
 	RepoPath      string                  `json:"repo_path,omitempty"`
 	AttemptBeadID string                  `json:"attempt_bead_id,omitempty"`
+	StepBeadIDs   map[string]string       `json:"step_bead_ids,omitempty"` // phase name → step bead ID
 }
 
 // formulaExecutor drives a bead through its formula's phase pipeline.
@@ -50,6 +51,11 @@ type formulaExecutor struct {
 	attemptCreator       func(parentID, agentName, model, branch string) (string, error)
 	attemptCloser        func(attemptID, result string) error
 	activeAttemptGetter  func(parentID string) (*Bead, error)
+
+	// Step bead operations — injectable for testing.
+	stepCreator   func(parentID, stepName string) (string, error)
+	stepActivator func(stepID string) error
+	stepCloser    func(stepID string) error
 }
 
 // newExecutor creates a formula executor for a bead.
@@ -120,6 +126,9 @@ func newExecutor(beadID, agentName string, formula *FormulaV2, spawner AgentBack
 		attemptCreator:      storeCreateAttemptBead,
 		attemptCloser:       storeCloseAttemptBead,
 		activeAttemptGetter: storeGetActiveAttempt,
+		stepCreator:         storeCreateStepBead,
+		stepActivator:       storeActivateStepBead,
+		stepCloser:          storeCloseStepBead,
 	}, nil
 }
 
@@ -194,6 +203,12 @@ func (e *formulaExecutor) Run() error {
 		return fmt.Errorf("resolve branch state: %w", err)
 	}
 
+	// Create workflow step beads for each formula phase (or resume existing ones).
+	if err := e.ensureStepBeads(); err != nil {
+		e.log("warning: create step beads: %s", err)
+		// Non-fatal — proceed without step bead tracking.
+	}
+
 	for {
 		phase := e.state.Phase
 		pc, ok := e.formula.Phases[phase]
@@ -213,6 +228,8 @@ func (e *formulaExecutor) Run() error {
 				escalateHumanFailure(e.beadID, e.agentName, "merge-failure", err.Error())
 				return fmt.Errorf("phase merge: %w", err)
 			}
+			// Close the merge step bead on success.
+			e.transitionStepBead(phase, "")
 			e.closeAttempt("success: merged")
 			break // merge is terminal
 		}
@@ -243,9 +260,14 @@ func (e *formulaExecutor) Run() error {
 		}
 
 		// Advance to next phase
+		prevPhase := e.state.Phase
 		if !e.advancePhase() {
+			// Close the final step bead.
+			e.transitionStepBead(prevPhase, "")
 			break // no more phases
 		}
+		// Transition step beads: close previous, activate next.
+		e.transitionStepBead(prevPhase, e.state.Phase)
 
 		// Check if bead is closed
 		bead, err := storeGetBead(e.beadID)
@@ -323,6 +345,64 @@ func (e *formulaExecutor) closeAttempt(result string) {
 		e.log("warning: close attempt bead %s: %s", e.state.AttemptBeadID, err)
 	}
 	e.state.AttemptBeadID = ""
+}
+
+// ensureStepBeads creates workflow step beads for each enabled formula phase.
+// Called once at executor start. Idempotent — if StepBeadIDs is already populated
+// (from persisted state), this is a no-op.
+func (e *formulaExecutor) ensureStepBeads() error {
+	if len(e.state.StepBeadIDs) > 0 {
+		e.log("step beads already created (%d phases)", len(e.state.StepBeadIDs))
+		return nil
+	}
+
+	phases := e.formula.EnabledPhases()
+	if len(phases) == 0 {
+		return nil
+	}
+
+	e.state.StepBeadIDs = make(map[string]string, len(phases))
+	for i, phase := range phases {
+		id, err := e.stepCreator(e.beadID, phase)
+		if err != nil {
+			return fmt.Errorf("create step bead for %s: %w", phase, err)
+		}
+		e.state.StepBeadIDs[phase] = id
+		e.log("created step bead %s for phase %s", id, phase)
+
+		// Activate the first step bead (it matches the initial phase).
+		if i == 0 {
+			if err := e.stepActivator(id); err != nil {
+				e.log("warning: activate step bead %s: %s", id, err)
+			}
+		}
+	}
+
+	return e.saveState()
+}
+
+// transitionStepBead closes the previous phase's step bead and activates the new one.
+// Called on phase transitions. Idempotent for the current phase.
+func (e *formulaExecutor) transitionStepBead(prevPhase, newPhase string) {
+	if len(e.state.StepBeadIDs) == 0 {
+		return // no step beads created (legacy run)
+	}
+
+	// Close previous step bead.
+	if prevPhase != "" {
+		if prevID, ok := e.state.StepBeadIDs[prevPhase]; ok {
+			if err := e.stepCloser(prevID); err != nil {
+				e.log("warning: close step bead %s (%s): %s", prevID, prevPhase, err)
+			}
+		}
+	}
+
+	// Activate new step bead.
+	if newID, ok := e.state.StepBeadIDs[newPhase]; ok {
+		if err := e.stepActivator(newID); err != nil {
+			e.log("warning: activate step bead %s (%s): %s", newID, newPhase, err)
+		}
+	}
 }
 
 // waitForHuman blocks the executor until the human transitions the phase.
