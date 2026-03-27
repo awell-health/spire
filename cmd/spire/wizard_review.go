@@ -449,6 +449,7 @@ func reviewHandleApproval(beadID, reviewerName, beadTitle, branch, baseBranch, r
 	if err := reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath, log); err != nil {
 		log("merge failed: %s — bead left at review-approved", err)
 		storeAddComment(beadID, fmt.Sprintf("Auto-merge failed: %s", err))
+		escalateHumanFailure(beadID, reviewerName, "merge-failure", err.Error())
 		return
 	}
 
@@ -691,10 +692,10 @@ Decision meanings:
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		log("arbiter failed: %s — defaulting to discard", err)
-		storeAddComment(beadID, fmt.Sprintf("Arbiter failed: %s — closing bead", err))
-		storeAddLabel(beadID, "arbiter:discard")
-		return storeCloseBead(beadID)
+		log("arbiter failed: %s — escalating to archmage", err)
+		storeAddComment(beadID, fmt.Sprintf("Arbiter failed: %s — needs human resolution", err))
+		escalateHumanFailure(beadID, reviewerName, "arbiter-failure", err.Error())
+		return nil
 	}
 
 	// Parse arbiter response
@@ -732,7 +733,9 @@ Decision meanings:
 		}
 		repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
 		if err != nil {
-			return fmt.Errorf("arbiter merge: resolve repo: %w", err)
+			escalateHumanFailure(beadID, reviewerName, "repo-resolution",
+				fmt.Sprintf("arbiter merge: %s", err.Error()))
+			return nil
 		}
 		reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
 		return nil
@@ -750,10 +753,11 @@ Decision meanings:
 		}
 		repoPath, _, baseBranch, resolveErr := wizardResolveRepo(beadID)
 		if resolveErr != nil {
-			log("warning: split merge — could not resolve repo: %s", resolveErr)
-		} else {
-			reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
+			escalateHumanFailure(beadID, reviewerName, "repo-resolution",
+				fmt.Sprintf("arbiter split: %s", resolveErr.Error()))
+			return nil
 		}
+		reviewHandleApproval(beadID, reviewerName, bead.Title, branch, baseBranch, repoPath, log)
 
 		// Create child beads for remaining work.
 		for _, task := range decision.SplitTasks {
