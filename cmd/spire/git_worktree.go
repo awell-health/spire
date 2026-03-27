@@ -190,6 +190,22 @@ func (wc *WorktreeContext) CommitMerge() error {
 	return nil
 }
 
+// DiffNameOnly returns the list of file paths changed between the given ref and HEAD.
+func (wc *WorktreeContext) DiffNameOnly(ref string) ([]string, error) {
+	out, err := exec.Command("git", "-C", wc.Dir, "diff", ref, "--name-only").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff %s --name-only: %w", ref, err)
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+
 // Cleanup removes this worktree from git and deletes its directory.
 func (wc *WorktreeContext) Cleanup() {
 	if wc.Dir != "" {
