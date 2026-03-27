@@ -218,7 +218,6 @@ func (e *formulaExecutor) Run() error {
 		}
 
 		e.log("phase: %s (role: %s)", phase, pc.GetRole())
-		setPhase(e.beadID, phase)
 		e.saveState()
 
 		// Merge phase has its own handler regardless of role.
@@ -972,9 +971,8 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx, idx)
 				e.log("  dispatching %s for %s", name, beadID)
 
-				// Mark subtask as in_progress and set implement phase before dispatching
+				// Mark subtask as in_progress before dispatching
 				storeUpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
-				setPhase(beadID, "implement")
 
 				extraArgs := []string{"--apprentice"}
 				h, spawnErr := e.spawner.Spawn(SpawnConfig{
@@ -1257,7 +1255,6 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 
 		// Find the implement phase to re-execute
 		if implPC, ok := e.formula.Phases["implement"]; ok {
-			setPhase(e.beadID, "implement")
 			e.state.Phase = "implement"
 			e.saveState()
 
@@ -1297,7 +1294,6 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 			}
 
 			// Return to review
-			setPhase(e.beadID, phase)
 			e.state.Phase = phase
 			return e.executeReview(phase, pc) // recurse for next round
 		}
@@ -1483,7 +1479,6 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	// Close the bead
 	storeRemoveLabel(e.beadID, "review-approved")
 	storeRemoveLabel(e.beadID, "feat-branch:"+branch)
-	storeRemoveLabel(e.beadID, "phase:merge")
 	if err := storeCloseBead(e.beadID); err != nil {
 		e.log("warning: close bead: %s", err)
 	}

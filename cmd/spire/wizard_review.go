@@ -467,9 +467,6 @@ func reviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath str
 	wizardCloseMoleculeStep(beadID, "review")
 	storeAddComment(beadID, fmt.Sprintf("Review approved by %s", reviewerName))
 
-	// Transition to merge phase
-	setPhase(beadID, "merge")
-
 	// Resolve build command from bead's formula
 	bead, _ = storeGetBead(beadID)
 	buildCmd := resolveBeadBuildCmd(bead)
@@ -592,9 +589,6 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 		log("max review rounds (%d) reached — escalating to arbiter", revPolicy.MaxRounds)
 		return reviewEscalateToArbiter(beadID, reviewerName, review, revPolicy, log)
 	}
-
-	// Transition back to implement phase for review-fix
-	setPhase(beadID, "implement")
 
 	// Resolve wizard name: prefer implemented-by label, fall back to bead-based name.
 	bead, _ := storeGetBead(beadID)

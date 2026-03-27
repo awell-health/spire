@@ -140,12 +140,7 @@ func cmdWizardRun(args []string) error {
 	// 6. Track whether review handoff completed (guards bead reopen on early exit)
 	handoffDone := false
 
-	// 7. Set initial phase label (standalone wizard only — apprentices under executor don't set phase labels)
-	if !reviewFix && !apprenticeMode {
-		setPhase(beadID, "design")
-	}
-
-	// 8. Capture focus context
+	// 7. Capture focus context
 	log("assembling focus context")
 	focusContext, err := wizardCaptureFocus(beadID)
 	if err != nil {
@@ -176,11 +171,6 @@ func cmdWizardRun(args []string) error {
 
 		// Remove review-feedback label
 		storeRemoveLabel(beadID, "review-feedback")
-
-		// Transition to implement phase (standalone wizard only)
-		if !apprenticeMode {
-			setPhase(beadID, "implement")
-		}
 
 		// Update phase
 		wizardRegistryUpdate(wizardName, func(w *localWizard) {
@@ -240,11 +230,6 @@ func cmdWizardRun(args []string) error {
 
 			// Close design molecule step
 			wizardCloseMoleculeStep(beadID, "design")
-		}
-
-		// Transition to implement phase (standalone wizard only)
-		if !apprenticeMode {
-			setPhase(beadID, "implement")
 		}
 
 		// --- Implement phase ---
@@ -912,8 +897,6 @@ func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string,
 	storeAddLabel(beadID, "feat-branch:"+branchName)
 
 	// Transition to review phase
-	setPhase(beadID, "review")
-
 	// Register reviewer in wizard registry
 	reviewerName := wizardName + "-review"
 	wizardRegistryAdd(localWizard{

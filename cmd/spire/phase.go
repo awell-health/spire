@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -56,41 +55,6 @@ func getBoardBeadPhase(b BoardBead) string {
 		return "review r" + round
 	}
 	return phase
-}
-
-// setPhase atomically transitions a bead to a new phase.
-// Removes the old phase: label (if any) and adds the new one.
-// Idempotent: if the bead is already in the target phase, this is a no-op.
-func setPhase(beadID, phase string) error {
-	// Validate phase
-	if !isValidPhase(phase) {
-		return fmt.Errorf("invalid phase %q (valid: %v)", phase, validPhases)
-	}
-
-	// Get current bead to find existing phase label
-	bead, err := storeGetBead(beadID)
-	if err != nil {
-		return fmt.Errorf("setPhase %s: %w", beadID, err)
-	}
-
-	currentPhase := getPhase(bead)
-	if currentPhase == phase {
-		return nil // already in target phase
-	}
-
-	// Remove old phase label if present
-	if currentPhase != "" {
-		if err := storeRemoveLabel(beadID, "phase:"+currentPhase); err != nil {
-			return fmt.Errorf("setPhase remove old: %w", err)
-		}
-	}
-
-	// Add new phase label
-	if err := storeAddLabel(beadID, "phase:"+phase); err != nil {
-		return fmt.Errorf("setPhase add new: %w", err)
-	}
-
-	return nil
 }
 
 // isValidPhase checks if a phase name is one of the 5 universal phases.

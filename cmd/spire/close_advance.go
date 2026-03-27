@@ -109,11 +109,6 @@ func cmdAdvance(args []string) error {
 		}
 	}
 
-	// Transition to next phase.
-	if err := setPhase(id, nextPhase); err != nil {
-		return fmt.Errorf("advance %s to %s: %w", id, nextPhase, err)
-	}
-
 	fmt.Printf("%s: advanced to phase %s\n", id, nextPhase)
 	return nil
 }
