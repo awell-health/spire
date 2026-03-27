@@ -151,9 +151,8 @@ func applyDefaults(cfg *RepoConfig, dir string) {
 	if cfg.Agent.Model == "" {
 		cfg.Agent.Model = "claude-sonnet-4-6"
 	}
-	if cfg.Agent.MaxTurns == 0 {
-		cfg.Agent.MaxTurns = 30
-	}
+	// MaxTurns 0 means unlimited — the timeout is the only gate.
+	// Don't default to 30; let wizard.go handle the fallback.
 	if cfg.Agent.Stale == "" {
 		cfg.Agent.Stale = "10m"
 	}
@@ -243,8 +242,7 @@ func GenerateYAML(dir string) string {
 	s += "  # lint:\n"
 	s += "\n"
 	s += "agent:\n"
-	s += "  model: claude-sonnet-4-6\n"
-	s += "  max-turns: 30\n"
+	s += "  model: claude-opus-4-6\n"
 	s += "  stale: 10m\n"
 	s += "  timeout: 15m\n"
 	s += "\n"
@@ -285,7 +283,9 @@ func FormatResolved(cfg *RepoConfig) string {
 
 	s += "agent:\n"
 	s += "  model: " + cfg.Agent.Model + "\n"
-	s += "  max-turns: " + itoa(cfg.Agent.MaxTurns) + "\n"
+	if cfg.Agent.MaxTurns > 0 {
+		s += "  max-turns: " + itoa(cfg.Agent.MaxTurns) + "\n"
+	}
 	s += "  stale: " + cfg.Agent.Stale + "\n"
 	s += "  timeout: " + cfg.Agent.Timeout + "\n"
 
