@@ -48,6 +48,9 @@ func requireBd(t *testing.T) {
 // requireStore skips the test if the beads store is not available.
 func requireStore(t *testing.T) {
 	t.Helper()
+	if os.Getenv("SPIRE_INTEGRATION") == "" {
+		t.Skip("set SPIRE_INTEGRATION=1 to run integration tests (requires live dolt server)")
+	}
 	_, err := ensureStore()
 	if err != nil {
 		t.Skip("beads store not available, skipping integration test")
