@@ -90,29 +90,46 @@ func cmdSummon(args []string) error {
 
 func cmdDismiss(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire dismiss <N|--all>")
+		return fmt.Errorf("usage: spire dismiss <N|--all> [--targets <ids>]")
 	}
 
 	dismissAll := false
 	count := 0
+	var targets string
 
-	for _, arg := range args {
-		switch arg {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--all":
 			dismissAll = true
+		case "--targets":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--targets requires comma-separated bead IDs")
+			}
+			i++
+			targets = args[i]
 		default:
-			n, err := strconv.Atoi(arg)
+			n, err := strconv.Atoi(args[i])
 			if err != nil {
-				return fmt.Errorf("expected a number or --all, got %q", arg)
+				return fmt.Errorf("expected a number, --all, or --targets, got %q", args[i])
 			}
 			count = n
+		}
+	}
+
+	var targetIDs []string
+	if targets != "" {
+		for _, id := range strings.Split(targets, ",") {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				targetIDs = append(targetIDs, id)
+			}
 		}
 	}
 
 	if isK8sAvailable() {
 		return dismissK8s(count, dismissAll)
 	}
-	return dismissLocal(count, dismissAll)
+	return dismissLocal(count, dismissAll, targetIDs)
 }
 
 // --- k8s mode ---
@@ -343,7 +360,7 @@ func summonLocal(count int, targetIDs []string) error {
 	return nil
 }
 
-func dismissLocal(count int, all bool) error {
+func dismissLocal(count int, all bool, targets []string) error {
 	reg := loadWizardRegistry()
 	// Don't clean dead wizards first — we need them to clean up bead state.
 
@@ -366,6 +383,47 @@ func dismissLocal(count int, all bool) error {
 		} else {
 			other = append(other, w)
 		}
+	}
+
+	// When --targets is given, dismiss exactly those wizards by BeadID.
+	if len(targets) > 0 {
+		targetSet := make(map[string]bool, len(targets))
+		for _, id := range targets {
+			targetSet[id] = true
+		}
+
+		dismissed := 0
+		var remaining []localWizard
+		for _, w := range scoped {
+			if !targetSet[w.BeadID] {
+				remaining = append(remaining, w)
+				continue
+			}
+			alive := w.PID > 0 && processAlive(w.PID)
+			if alive {
+				if proc, err := os.FindProcess(w.PID); err == nil {
+					proc.Signal(os.Interrupt)
+				}
+			}
+			dismissCleanupBead(w)
+			if alive {
+				fmt.Printf("  %s%s%s dismissed (killed pid %d)\n", dim, w.Name, reset, w.PID)
+			} else {
+				fmt.Printf("  %s%s%s dismissed (was dead)\n", dim, w.Name, reset)
+			}
+			dismissed++
+			delete(targetSet, w.BeadID)
+		}
+
+		// Warn about any targets that weren't found.
+		for id := range targetSet {
+			fmt.Printf("  %s(warning: no wizard found for bead %s — skipped)%s\n", dim, id, reset)
+		}
+
+		reg.Wizards = append(other, remaining...)
+		saveWizardRegistry(reg)
+		fmt.Printf("\n%d wizard(s) dismissed.\n", dismissed)
+		return nil
 	}
 
 	if all {
