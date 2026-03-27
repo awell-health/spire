@@ -77,32 +77,37 @@ func (w *StagingWorktree) FetchBranch(remote, branch string) {
 // It fetches from origin first (since the apprentice may have pushed to remote),
 // then tries origin/childBranch, falling back to a local branch ref.
 // On merge conflict, resolver is called (if non-nil) to attempt resolution.
+//
+// Uses WorktreeContext.Merge/MergeAbort/StatusPorcelain for all in-worktree
+// git operations — FetchBranch is the only StagingWorktree-specific escape
+// hatch (WorktreeContext forbids fetch by design).
 func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, branch string) error) error {
 	w.log("  merging %s into %s", childBranch, w.Branch)
 
 	// Fetch in case the apprentice pushed to remote.
+	// FetchBranch lives on StagingWorktree because WorktreeContext enforces local-ref-only semantics.
 	w.FetchBranch("origin", childBranch)
 
 	// Try remote branch first, fall back to local.
 	branchRef := "origin/" + childBranch
-	if _, mergeErr := exec.Command("git", "-C", w.Dir, "merge", "--no-edit", branchRef).CombinedOutput(); mergeErr != nil {
+	if _, mergeErr := w.Merge(branchRef); mergeErr != nil {
 		branchRef = childBranch
-		if _, mergeErr2 := exec.Command("git", "-C", w.Dir, "merge", "--no-edit", branchRef).CombinedOutput(); mergeErr2 != nil {
+		if _, mergeErr2 := w.Merge(branchRef); mergeErr2 != nil {
 			// Check if git is in a conflict state.
-			statusOut, _ := exec.Command("git", "-C", w.Dir, "status", "--porcelain").Output()
-			if strings.Contains(string(statusOut), "UU ") || strings.Contains(string(statusOut), "AA ") {
+			status := w.StatusPorcelain()
+			if strings.Contains(status, "UU ") || strings.Contains(status, "AA ") {
 				if resolver != nil {
 					if resolveErr := resolver(w.Dir, childBranch); resolveErr != nil {
-						exec.Command("git", "-C", w.Dir, "merge", "--abort").Run()
+						w.MergeAbort()
 						return fmt.Errorf("conflict resolution failed: %w", resolveErr)
 					}
 					return nil
 				}
-				exec.Command("git", "-C", w.Dir, "merge", "--abort").Run()
+				w.MergeAbort()
 				return fmt.Errorf("merge conflict in %s: no resolver provided", childBranch)
 			}
 			// Not a conflict — some other merge error.
-			exec.Command("git", "-C", w.Dir, "merge", "--abort").Run()
+			w.MergeAbort()
 			return fmt.Errorf("merge failed: %w", mergeErr2)
 		}
 	}
@@ -142,6 +147,12 @@ func (w *StagingWorktree) RunTests(testStr string) error {
 // verifies build (buildStr) and tests (testStr) in that worktree — empty
 // strings skip the respective step — then retries the ff-only merge.
 // Never force-merges; returns an error if rebase fails.
+//
+// NOTE: Raw exec.Command calls in this method intentionally target w.RepoPath
+// (the main repository), not w.Dir (the staging worktree). These are main-repo
+// management operations (checkout baseBranch, pull, ff-only merge) that are
+// outside WorktreeContext's scope by design. The rebase operations target a
+// separate temporary worktree (rebaseWtPath) wrapped in its own WorktreeContext.
 func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr, testStr string) error {
 	// Ensure main worktree is on baseBranch.
 	if headOut, _ := exec.Command("git", "-C", w.RepoPath, "rev-parse", "--abbrev-ref", "HEAD").Output(); strings.TrimSpace(string(headOut)) != baseBranch {

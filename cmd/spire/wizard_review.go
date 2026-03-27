@@ -98,7 +98,12 @@ func cmdWizardReview(args []string) error {
 	}
 	log("reviewing %s branch %s", beadID, branch)
 
-	// 3. Create own worktree (before doing work, so failures don't leak the worktree)
+	// 3. Fetch baseBranch in the main repo before creating the worktree.
+	// Worktrees share refs with the main repo, so this makes origin/baseBranch
+	// available in the worktree without violating WorktreeContext's local-ref-only semantics.
+	exec.Command("git", "-C", repoPath, "fetch", "origin", baseBranch).Run()
+
+	// 4. Create own worktree (before adding review-assigned, so failures don't leak the label)
 	wc, err := reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
@@ -106,8 +111,7 @@ func cmdWizardReview(args []string) error {
 	defer wc.Cleanup()
 	log("worktree: %s", wc.Dir)
 
-	// 4. Get diff — fetch baseBranch at the review level (not via WorktreeContext)
-	exec.Command("git", "-C", wc.Dir, "fetch", "origin", baseBranch).Run()
+	// 5. Get diff using the baseBranch ref fetched above
 	diff, err := wc.DiffMergeBase("origin/" + baseBranch)
 	if err != nil {
 		return fmt.Errorf("get diff: %w", err)
@@ -524,7 +528,12 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 		return reviewEscalateToArbiter(beadID, reviewerName, review, revPolicy, log)
 	}
 
-	wizardName := "wizard-" + beadID
+	// Resolve wizard name: prefer implemented-by label, fall back to bead-based name.
+	bead, _ := storeGetBead(beadID)
+	wizardName := hasLabel(bead, "implemented-by:")
+	if wizardName == "" {
+		wizardName = "wizard-" + beadID
+	}
 
 	// Send feedback message
 	feedbackText := review.Summary
@@ -715,4 +724,60 @@ Decision meanings:
 	}
 }
 
+// cmdWizardMerge merges a review-approved bead: creates PR, squash-merges,
+// closes the merge molecule step, and closes the bead.
+//
+// Usage: spire wizard-merge <bead-id>
+func cmdWizardMerge(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: spire wizard-merge <bead-id>")
+	}
+
+	beadID := args[0]
+
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
+
+	log := func(format string, a ...interface{}) {
+		fmt.Fprintf(os.Stderr, "[merge] %s\n", fmt.Sprintf(format, a...))
+	}
+
+	// Verify bead is review-approved
+	bead, err := storeGetBead(beadID)
+	if err != nil {
+		return fmt.Errorf("get bead: %w", err)
+	}
+	if !containsLabel(bead, "review-approved") {
+		return fmt.Errorf("bead %s is not review-approved (labels: %v)", beadID, bead.Labels)
+	}
+
+	// Resolve branch and repo
+	branch := hasLabel(bead, "feat-branch:")
+	if branch == "" {
+		branch = fmt.Sprintf("feat/%s", beadID)
+	}
+
+	repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+
+	log("merging %s branch %s → %s", beadID, branch, baseBranch)
+
+	if err := reviewMerge(beadID, bead.Title, branch, baseBranch, repoPath, log); err != nil {
+		return err
+	}
+
+	// Close merge molecule step and bead
+	wizardCloseMoleculeStep(beadID, "merge")
+	storeRemoveLabel(beadID, "review-approved")
+	storeRemoveLabel(beadID, "test-failure")
+	storeRemoveLabel(beadID, "feat-branch:"+branch)
+	if err := storeCloseBead(beadID); err != nil {
+		log("warning: close bead: %s", err)
+	}
+	log("done — %s merged and closed", beadID)
+	return nil
+}
 
