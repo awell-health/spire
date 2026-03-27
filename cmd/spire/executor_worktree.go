@@ -249,6 +249,70 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 	return nil
 }
 
+// NewStagingWorktreeAt creates a staging worktree at a specific directory path.
+// Unlike NewStagingWorktree (which creates a temp dir), this places the worktree
+// at dir (e.g. .worktrees/<bead-id>), making it discoverable by all participants
+// in the epic lifecycle (wizard, sage, fix apprentice).
+//
+// The caller must call Close() when done. Close removes the git worktree and
+// the directory itself.
+func NewStagingWorktreeAt(repoPath, dir, branch, baseBranch string, log func(string, ...interface{})) (*StagingWorktree, error) {
+	// Clean up stale worktree at this path
+	if _, err := os.Stat(dir); err == nil {
+		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", dir).Run()
+		os.RemoveAll(dir)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
+		return nil, fmt.Errorf("create parent dir: %w", err)
+	}
+
+	if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", dir, branch).CombinedOutput(); wtErr != nil {
+		return nil, fmt.Errorf("worktree add %s at %s: %s\n%s", branch, dir, wtErr, string(out))
+	}
+
+	wc := WorktreeContext{
+		Dir:        dir,
+		Branch:     branch,
+		BaseBranch: baseBranch,
+		RepoPath:   repoPath,
+	}
+
+	// Configure git user in the staging worktree to the archmage identity.
+	archName, archEmail := "spire", "spire@spire.local" // fallback
+	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
+		if tower.Archmage.Name != "" {
+			archName = tower.Archmage.Name
+		}
+		if tower.Archmage.Email != "" {
+			archEmail = tower.Archmage.Email
+		}
+	}
+	wc.ConfigureUser(archName, archEmail)
+
+	return &StagingWorktree{
+		WorktreeContext: wc,
+		// tmpDir is empty — no temp dir to clean up. Close() handles
+		// git worktree removal; the dir itself is removed by git.
+		log: log,
+	}, nil
+}
+
+// ResumeStagingWorktree wraps an existing worktree directory in a StagingWorktree.
+// Used when resuming from persisted executor state — the worktree already exists
+// on disk and just needs to be wrapped for method access.
+func ResumeStagingWorktree(repoPath, dir, branch, baseBranch string, log func(string, ...interface{})) *StagingWorktree {
+	return &StagingWorktree{
+		WorktreeContext: WorktreeContext{
+			Dir:        dir,
+			Branch:     branch,
+			BaseBranch: baseBranch,
+			RepoPath:   repoPath,
+		},
+		log: log,
+	}
+}
+
 // Close removes the worktree from git and deletes its temp directory.
 // It is safe to call multiple times.
 func (w *StagingWorktree) Close() error {

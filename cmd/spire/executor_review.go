@@ -15,6 +15,12 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 		extraArgs = append(extraArgs, "--verdict-only")
 	}
 
+	// Pass the shared staging worktree to the sage so it reviews in the same
+	// worktree used for wave merges — no separate checkout needed.
+	if e.state.WorktreeDir != "" {
+		extraArgs = append(extraArgs, "--worktree-dir", e.state.WorktreeDir)
+	}
+
 	handle, err := e.spawner.Spawn(SpawnConfig{
 		Name:      sageName,
 		BeadID:    e.beadID,
@@ -107,20 +113,16 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 					return fmt.Errorf("review-fix apprentice failed: %w", waitErr)
 				}
 
-				// Merge fix branch into staging so the sage reviews the updated code.
-				// Without this, the fix lands on feat/<bead-id> but the staging branch
-				// (which gets merged to main) never gets the fix.
+				// Merge fix branch into the shared staging worktree so the sage
+				// reviews the updated code. The worktree persists across all phases.
 				if e.state.StagingBranch != "" {
 					fixBranch := fmt.Sprintf("feat/%s", e.beadID)
 					e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
-					// Use a temporary worktree — never checkout in main worktree.
-					fixWt, fixWtErr := NewStagingWorktree(e.state.RepoPath, e.state.StagingBranch, e.state.BaseBranch, fmt.Sprintf("spire-fix-merge-%s", e.beadID), e.log)
-					if fixWtErr != nil {
-						return fmt.Errorf("create fix-merge worktree: %w", fixWtErr)
+					stagingWt, wtErr := e.ensureStagingWorktree()
+					if wtErr != nil {
+						return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
 					}
-					mergeErr := fixWt.MergeBranch(fixBranch, e.resolveConflicts)
-					fixWt.Close()
-					if mergeErr != nil {
+					if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
 						return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
 					}
 				}

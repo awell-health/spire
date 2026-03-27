@@ -53,21 +53,18 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 	e.log("computed %d wave(s)", len(waves))
 
 	repoPath := e.state.RepoPath
-	stagingBranch := e.state.StagingBranch
 
-	// Create staging branch in a dedicated worktree — never checkout in main worktree.
+	// Use the single staging worktree shared across the entire executor lifecycle.
+	// ensureStagingWorktree creates it on first call, resumes from state on subsequent calls.
 	var stagingWt *StagingWorktree
-	if stagingBranch != "" {
-		e.log("creating staging branch %s", stagingBranch)
-		// Create the branch from current HEAD before adding the worktree.
-		exec.Command("git", "-C", repoPath, "branch", "-f", stagingBranch).Run()
+	if e.state.StagingBranch != "" {
 		var wtErr error
-		stagingWt, wtErr = NewStagingWorktree(repoPath, stagingBranch, e.state.BaseBranch, fmt.Sprintf("spire-staging-%s", e.beadID), e.log)
+		stagingWt, wtErr = e.ensureStagingWorktree()
 		if wtErr != nil {
-			return fmt.Errorf("create staging worktree: %w", wtErr)
+			return fmt.Errorf("ensure staging worktree: %w", wtErr)
 		}
-		defer stagingWt.Close()
-		storeAddLabel(e.beadID, "feat-branch:"+stagingBranch)
+		// Do NOT defer stagingWt.Close() — the worktree is shared across phases
+		// and cleaned up by Run() on exit.
 	}
 
 	startWave := e.state.Wave
@@ -152,7 +149,7 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 					continue
 				}
 				if mergeErr := stagingWt.MergeBranch(st.Branch, e.resolveConflicts); mergeErr != nil {
-					return fmt.Errorf("merge %s into %s: %w", st.Branch, stagingBranch, mergeErr)
+					return fmt.Errorf("merge %s into %s: %w", st.Branch, e.state.StagingBranch, mergeErr)
 				}
 			}
 		}

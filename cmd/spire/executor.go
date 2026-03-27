@@ -28,6 +28,7 @@ type executorState struct {
 	RepoPath      string                  `json:"repo_path,omitempty"`
 	AttemptBeadID string                  `json:"attempt_bead_id,omitempty"`
 	StepBeadIDs   map[string]string       `json:"step_bead_ids,omitempty"` // phase name → step bead ID
+	WorktreeDir   string                  `json:"worktree_dir,omitempty"`  // staging worktree directory path
 }
 
 // formulaExecutor drives a bead through its formula's phase pipeline.
@@ -54,6 +55,10 @@ type formulaExecutor struct {
 	stepCreator   func(parentID, stepName string) (string, error)
 	stepActivator func(stepID string) error
 	stepCloser    func(stepID string) error
+
+	// Single staging worktree shared across all phases (implement, review, merge).
+	// Created once by ensureStagingWorktree(), cleaned up by Run() on exit.
+	stagingWt *StagingWorktree
 }
 
 // newExecutor creates a formula executor for a bead.
@@ -166,9 +171,89 @@ func (e *formulaExecutor) resolveBranchState() error {
 		}
 	}
 
+	// Default staging branch to staging/<bead-id> if no formula override.
+	// Every branch in the system is traceable to a bead — no generic names.
+	if e.state.StagingBranch == "" {
+		e.state.StagingBranch = "staging/" + e.beadID
+	}
+
 	e.log("branch state resolved: repo=%s base=%s staging=%s",
 		e.state.RepoPath, e.state.BaseBranch, e.state.StagingBranch)
 	return e.saveState()
+}
+
+// ensureStagingWorktree creates or resumes the single staging worktree for the
+// entire executor lifecycle. The worktree is created at .worktrees/<bead-id>
+// relative to the repo path, on a branch named staging/<bead-id>.
+//
+// This worktree is shared across all phases: wave merges (implement), build
+// verification, doc review, sage review, fix apprentice, and the final merge.
+// The main worktree NEVER leaves the base branch.
+//
+// The worktree path is persisted in executor state and stored as a label on
+// the attempt bead so all participants can discover it.
+func (e *formulaExecutor) ensureStagingWorktree() (*StagingWorktree, error) {
+	// Return cached worktree if already initialized this session.
+	if e.stagingWt != nil {
+		return e.stagingWt, nil
+	}
+
+	stagingBranch := e.state.StagingBranch
+	if stagingBranch == "" {
+		return nil, fmt.Errorf("no staging branch configured")
+	}
+
+	repoPath := e.state.RepoPath
+
+	// Resume from persisted state if the worktree still exists on disk.
+	if e.state.WorktreeDir != "" {
+		if _, err := os.Stat(e.state.WorktreeDir); err == nil {
+			e.log("resuming staging worktree at %s", e.state.WorktreeDir)
+			e.stagingWt = ResumeStagingWorktree(repoPath, e.state.WorktreeDir, stagingBranch, e.state.BaseBranch, e.log)
+			return e.stagingWt, nil
+		}
+		// Stale state — will recreate below.
+		e.log("stale worktree state %s — recreating", e.state.WorktreeDir)
+		e.state.WorktreeDir = ""
+	}
+
+	// Create the staging branch from current HEAD before adding the worktree.
+	exec.Command("git", "-C", repoPath, "branch", "-f", stagingBranch).Run()
+
+	// Worktree dir: .worktrees/<bead-id> relative to repo path.
+	// Every worktree in the system is traceable to a bead.
+	wtDir := filepath.Join(repoPath, ".worktrees", e.beadID)
+
+	e.log("creating staging worktree at %s (branch: %s)", wtDir, stagingBranch)
+	wt, err := NewStagingWorktreeAt(repoPath, wtDir, stagingBranch, e.state.BaseBranch, e.log)
+	if err != nil {
+		return nil, fmt.Errorf("create staging worktree: %w", err)
+	}
+
+	e.stagingWt = wt
+	e.state.WorktreeDir = wtDir
+
+	// Store worktree path on attempt bead for discoverability.
+	if e.state.AttemptBeadID != "" {
+		storeAddLabel(e.state.AttemptBeadID, "worktree:"+wtDir)
+	}
+
+	// Add the feat-branch label for the staging branch.
+	storeAddLabel(e.beadID, "feat-branch:"+stagingBranch)
+
+	e.saveState()
+	return wt, nil
+}
+
+// closeStagingWorktree removes the staging worktree and cleans up state.
+// Called on executor exit (success or failure).
+func (e *formulaExecutor) closeStagingWorktree() {
+	if e.stagingWt != nil {
+		e.log("removing staging worktree at %s", e.stagingWt.Dir)
+		e.stagingWt.Close()
+		e.stagingWt = nil
+	}
+	e.state.WorktreeDir = ""
 }
 
 // Run drives the bead through its formula's phase pipeline until all phases
@@ -176,6 +261,10 @@ func (e *formulaExecutor) resolveBranchState() error {
 func (e *formulaExecutor) Run() error {
 	defer wizardRegistryRemove(e.agentName)
 	defer e.saveState()
+
+	// Clean up the staging worktree on exit. Deferred early so it runs
+	// before state save (defers execute LIFO).
+	defer e.closeStagingWorktree()
 
 	// Create attempt bead at start (or resume existing one).
 	if err := e.ensureAttemptBead(); err != nil {

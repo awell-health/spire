@@ -37,33 +37,33 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		mergeEnv = os.Environ()
 	}
 
-	// Run build verification and doc review in a staging worktree — never checkout
-	// branches in the main worktree.
+	// Use the single staging worktree shared across all executor phases.
+	// Build verification and doc review happen here — never checkout in main worktree.
 	buildStr := e.resolveBuildCommand(pc)
-	mergeWt, mergeWtErr := NewStagingWorktree(repoPath, branch, baseBranch, fmt.Sprintf("spire-merge-%s", e.beadID), e.log)
-	if mergeWtErr != nil {
-		return fmt.Errorf("create merge worktree for %s: %w", branch, mergeWtErr)
+	stagingWt, wtErr := e.ensureStagingWorktree()
+	if wtErr != nil {
+		return fmt.Errorf("ensure staging worktree for merge: %w", wtErr)
 	}
-	defer mergeWt.Close()
+	// Do NOT close the staging worktree here — Run() defers closeStagingWorktree().
 
 	if buildStr != "" {
 		e.log("verifying build on %s before merge: %s", branch, buildStr)
-		if buildErr := mergeWt.RunBuild(buildStr); buildErr != nil {
+		if buildErr := stagingWt.RunBuild(buildStr); buildErr != nil {
 			return fmt.Errorf("pre-merge build verification failed on %s: %w", branch, buildErr)
 		}
 	}
 
 	// Review documentation for stale language before merging to main.
-	if docErr := e.reviewDocsForStaleness(mergeWt.Dir, branch, baseBranch, pc); docErr != nil {
+	if docErr := e.reviewDocsForStaleness(stagingWt.Dir, branch, baseBranch, pc); docErr != nil {
 		e.log("warning: doc review: %s", docErr)
 	}
 
-	// ff-only merge into main, with rebase fallback if main has diverged.
-	// Build and test are re-verified after rebase using the same commands.
-	// MergeToMain handles all git checkout and worktree operations internally.
+	// ff-only merge into main FROM THE MAIN WORKTREE (never checkout in staging).
+	// If main has diverged, staging is rebased onto main in a temporary worktree,
+	// build/test re-verified, then ff-only retried. Never force merges.
 	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
 	testStr := e.resolveTestCommand(pc)
-	if mergeErr := mergeWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
+	if mergeErr := stagingWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
 		return mergeErr
 	}
 
