@@ -102,11 +102,6 @@ func cmdWizardReview(args []string) error {
 	}
 	log("reviewing %s branch %s", beadID, branch)
 
-	// 3. Fetch baseBranch in the main repo before creating the worktree.
-	// Worktrees share refs with the main repo, so this makes origin/baseBranch
-	// available in the worktree without violating WorktreeContext's local-ref-only semantics.
-	exec.Command("git", "-C", repoPath, "fetch", "origin", baseBranch).Run()
-
 	// 4. Use shared staging worktree if provided, otherwise create our own.
 	var wc *WorktreeContext
 	if worktreeDir != "" {
@@ -128,6 +123,9 @@ func cmdWizardReview(args []string) error {
 		defer wc.Cleanup()
 		log("worktree: %s", wc.Dir)
 	}
+
+	// Fetch baseBranch so origin/<baseBranch> is available for the diff.
+	wc.EnsureRemoteRef("origin", baseBranch)
 
 	// 5. Get diff using the baseBranch ref fetched above
 	diff, err := wc.DiffMergeBase("origin/" + baseBranch)

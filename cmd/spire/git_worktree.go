@@ -18,7 +18,6 @@ import (
 // Forbidden operations (these MUST NOT exist on WorktreeContext):
 //   - Checkout — worktrees don't switch branches
 //   - SetGlobalConfig — use --worktree flag instead
-//   - FetchOrigin — worktrees use local refs
 type WorktreeContext struct {
 	Dir        string // absolute path to this worktree
 	Branch     string // branch checked out in this worktree
@@ -158,6 +157,13 @@ func (wc *WorktreeContext) MergeAbort() {
 func (wc *WorktreeContext) StatusPorcelain() string {
 	out, _ := exec.Command("git", "-C", wc.Dir, "status", "--porcelain").Output()
 	return string(out)
+}
+
+// EnsureRemoteRef fetches a ref from a remote so it's available in this worktree.
+// Worktrees share refs with the main repo, so the fetch runs against RepoPath.
+// This is the ONLY operation that touches the remote — all other methods use local refs.
+func (wc *WorktreeContext) EnsureRemoteRef(remote, ref string) {
+	exec.Command("git", "-C", wc.RepoPath, "fetch", remote, ref).Run()
 }
 
 // Cleanup removes this worktree from git and deletes its directory.
