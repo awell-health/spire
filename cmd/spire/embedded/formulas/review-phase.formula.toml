@@ -3,10 +3,10 @@
 # Encodes the review DAG from docs/review-dag.md:
 #
 #   sage-review
-#     → fix      (verdict == request_changes AND round < max_rounds)
-#     → arbiter  (verdict == request_changes AND round >= max_rounds)
+#     → fix      (verdict == request_changes && round < max_rounds)
+#     → arbiter  (verdict == request_changes && round >= max_rounds)
 #   sage-review | arbiter → merge
-#     → merge    (verdict == approve OR arbiter_decision == merge OR arbiter_decision == split)
+#     → merge    (verdict == approve || arbiter_decision == merge || arbiter_decision == split)
 #   arbiter → discard
 #     → discard  (arbiter_decision == discard)
 #
@@ -16,8 +16,8 @@
 #
 # Step conditions use compound guards. ALL guards in a condition must hold
 # before a step fires. Missing a guard causes simultaneous step activation:
-#   - fix without round check: fix AND arbiter both fire when round >= max_rounds.
-#   - arbiter without verdict check: arbiter AND merge fire simultaneously on late approval.
+#   - fix without round check: fix && arbiter both fire when round >= max_rounds.
+#   - arbiter without verdict check: arbiter && merge fire simultaneously on late approval.
 
 name = "review-phase"
 description = "Review DAG: sage-review → fix/arbiter → merge/discard with terminal branch invariants"
@@ -45,7 +45,7 @@ role = "sage"
 [steps.fix]
 description = "Fix apprentice addresses review feedback within round budget"
 needs = ["sage-review"]
-condition = "verdict == request_changes AND round < max_rounds"
+condition = "verdict == request_changes && round < max_rounds"
 role = "apprentice"
 
 # Step 3: Arbiter. Compound guard: BOTH verdict AND round must hold.
@@ -53,7 +53,7 @@ role = "apprentice"
 [steps.arbiter]
 description = "Arbiter makes final decision once round budget is exhausted"
 needs = ["sage-review"]
-condition = "verdict == request_changes AND round >= max_rounds"
+condition = "verdict == request_changes && round >= max_rounds"
 role = "arbiter"
 
 # Step 4a: Merge. Terminal — branch merged to main and deleted.
@@ -61,7 +61,7 @@ role = "arbiter"
 [steps.merge]
 description = "Merge staging to main — terminal: branch merged and deleted"
 needs = ["sage-review", "arbiter"]
-condition = "verdict == approve OR arbiter_decision == merge OR arbiter_decision == split"
+condition = "verdict == approve || arbiter_decision == merge || arbiter_decision == split"
 terminal = true
 
 # Step 4b: Discard. Terminal — branch deleted without merging.
