@@ -250,34 +250,30 @@ func cmdWizardReview(args []string) error {
 
 func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (*WorktreeContext, error) {
 	worktreeDir := filepath.Join(os.TempDir(), "spire-review", reviewerName, beadID)
+	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
 
 	// Clean up stale worktree
 	if _, err := os.Stat(worktreeDir); err == nil {
-		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", worktreeDir).Run()
+		rc.ForceRemoveWorktree(worktreeDir)
 		os.RemoveAll(worktreeDir)
 	}
 
 	os.MkdirAll(filepath.Dir(worktreeDir), 0755)
 
 	// Fetch the branch from origin (done at the review level, not on WorktreeContext)
-	exec.Command("git", "-C", repoPath, "fetch", "origin", branch).Run()
+	rc.Fetch("origin", branch)
 
 	// Create worktree from the branch (not creating new branch)
-	cmd := exec.Command("git", "-C", repoPath, "worktree", "add", worktreeDir, "origin/"+branch)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	wc, err := rc.CreateWorktree(worktreeDir, "origin/"+branch)
+	if err != nil {
 		// Try with local branch name
-		cmd2 := exec.Command("git", "-C", repoPath, "worktree", "add", worktreeDir, branch)
-		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			return nil, fmt.Errorf("git worktree add: %s\n%s\n%s", err, string(out), string(out2))
+		wc, err = rc.CreateWorktree(worktreeDir, branch)
+		if err != nil {
+			return nil, fmt.Errorf("git worktree add: %w", err)
 		}
 	}
 
-	return &WorktreeContext{
-		Dir:        worktreeDir,
-		Branch:     branch,
-		BaseBranch: baseBranch,
-		RepoPath:   repoPath,
-	}, nil
+	return wc, nil
 }
 
 // --- Diff + test helpers ---

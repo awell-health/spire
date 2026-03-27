@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -68,13 +67,8 @@ func cmdUp(args []string) error {
 	} else {
 		// Ensure archmage identity (backfill from global git config for towers missing it).
 		// Use --global to avoid picking up repo-local config set by wizard agents.
-		var globalGitName, globalGitEmail string
-		if out, err := exec.Command("git", "config", "--global", "user.name").Output(); err == nil {
-			globalGitName = strings.TrimSpace(string(out))
-		}
-		if out, err := exec.Command("git", "config", "--global", "user.email").Output(); err == nil {
-			globalGitEmail = strings.TrimSpace(string(out))
-		}
+		globalGitName := gitConfigGet("--global", "user.name")
+		globalGitEmail := gitConfigGet("--global", "user.email")
 		for i, t := range towers {
 			if t.Archmage.Name == "" && globalGitName != "" {
 				towers[i].Archmage.Name = globalGitName

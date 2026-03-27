@@ -205,10 +205,9 @@ func listK8sWizards() []string {
 
 func createSpireAgentCR(name string) error {
 	// Detect repo URL from git remote.
-	repoURL := ""
-	if out, err := exec.Command("git", "config", "--get", "remote.origin.url").Output(); err == nil {
-		repoURL = strings.TrimSpace(string(out))
-	}
+	cwd, _ := os.Getwd()
+	rc := &RepoContext{Dir: cwd}
+	repoURL := rc.RemoteURL("origin")
 
 	manifest := fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1
 kind: SpireAgent
