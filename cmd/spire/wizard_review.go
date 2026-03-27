@@ -38,12 +38,16 @@ func cmdWizardReview(args []string) error {
 	beadID := args[0]
 	reviewerName := "reviewer"
 	verdictOnly := false
+	worktreeDir := ""
 	for i := 1; i < len(args); i++ {
 		if args[i] == "--name" && i+1 < len(args) {
 			i++
 			reviewerName = args[i]
 		} else if args[i] == "--verdict-only" {
 			verdictOnly = true
+		} else if args[i] == "--worktree-dir" && i+1 < len(args) {
+			i++
+			worktreeDir = args[i]
 		}
 	}
 	if os.Getenv("SPIRE_VERDICT_ONLY") == "1" {
@@ -103,13 +107,27 @@ func cmdWizardReview(args []string) error {
 	// available in the worktree without violating WorktreeContext's local-ref-only semantics.
 	exec.Command("git", "-C", repoPath, "fetch", "origin", baseBranch).Run()
 
-	// 4. Create own worktree (before adding review-assigned, so failures don't leak the label)
-	wc, err := reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
-	if err != nil {
-		return fmt.Errorf("create worktree: %w", err)
+	// 4. Use shared staging worktree if provided, otherwise create our own.
+	var wc *WorktreeContext
+	if worktreeDir != "" {
+		// Executor owns this worktree — we just wrap it for method access.
+		// Do NOT call Cleanup; the executor manages the lifecycle.
+		wc = &WorktreeContext{
+			Dir:        worktreeDir,
+			Branch:     branch,
+			BaseBranch: baseBranch,
+			RepoPath:   repoPath,
+		}
+		log("using shared worktree: %s", wc.Dir)
+	} else {
+		var wcErr error
+		wc, wcErr = reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
+		if wcErr != nil {
+			return fmt.Errorf("create worktree: %w", wcErr)
+		}
+		defer wc.Cleanup()
+		log("worktree: %s", wc.Dir)
 	}
-	defer wc.Cleanup()
-	log("worktree: %s", wc.Dir)
 
 	// 5. Get diff using the baseBranch ref fetched above
 	diff, err := wc.DiffMergeBase("origin/" + baseBranch)
