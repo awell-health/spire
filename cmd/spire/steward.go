@@ -457,21 +457,73 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 	return staleCount, shutdownCount
 }
 
-// detectReviewReady finds standalone tasks with the "review-ready" label
-// and spawns a reviewer via the backend.
+// detectReviewReady finds in_progress beads that need review routing.
+// A bead is ready for review when:
+//   - It has a closed implement step bead (from workflow molecule), AND
+//   - It has no review-round child beads (first review), OR all review-round
+//     beads are closed with verdict "approve" (re-review after merge failure)
+//   - It has no active (in_progress) review-round bead (review already running)
+//
+// This replaces the legacy label-based query (review-ready label).
 func detectReviewReady(dryRun bool, backend AgentBackend) {
-	reviewBeads, err := storeListBeads(beads.IssueFilter{Labels: []string{"review-ready"}, Status: statusPtr(beads.StatusInProgress)})
+	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] detectReviewReady: %s", err)
 		return
 	}
 
-	for _, b := range reviewBeads {
-		// Skip if already assigned for review.
-		if hasLabel(b, "review-assigned") != "" || containsLabel(b, "review-assigned") {
+	for _, b := range inProgress {
+		// Skip child beads (step beads, review-round beads, attempt beads).
+		if isStepBead(b) || isReviewRoundBead(b) || containsLabel(b, "attempt") {
 			continue
 		}
-		// Skip if already approved.
+
+		// Check if implement step is closed.
+		steps, sErr := storeGetStepBeads(b.ID)
+		if sErr != nil || len(steps) == 0 {
+			continue // no workflow molecule — not eligible
+		}
+		implClosed := false
+		for _, s := range steps {
+			if stepBeadPhaseName(s) == "implement" && s.Status == "closed" {
+				implClosed = true
+				break
+			}
+		}
+		if !implClosed {
+			continue
+		}
+
+		// Check review-round beads.
+		reviews, rErr := storeGetReviewBeads(b.ID)
+		if rErr != nil {
+			continue
+		}
+
+		// If there's an active (in_progress) review bead, a review is already running.
+		hasActiveReview := false
+		for _, r := range reviews {
+			if r.Status == "in_progress" {
+				hasActiveReview = true
+				break
+			}
+		}
+		if hasActiveReview {
+			continue
+		}
+
+		// If there are closed review beads, check the last one's verdict.
+		if len(reviews) > 0 {
+			lastReview := reviews[len(reviews)-1]
+			verdict := reviewBeadVerdict(lastReview)
+			// Only re-route if last verdict was "approve" (merge may have failed).
+			// "request_changes" is handled by detectReviewFeedback.
+			if verdict != "approve" {
+				continue
+			}
+		}
+
+		// Skip if already approved (label still present from verdict-only mode).
 		if containsLabel(b, "review-approved") {
 			continue
 		}
@@ -481,16 +533,9 @@ func detectReviewReady(dryRun bool, backend AgentBackend) {
 			continue
 		}
 
-		log.Printf("[steward] routing %s for standalone review", b.ID)
+		log.Printf("[steward] routing %s for review (round %d)", b.ID, len(reviews)+1)
 
-		// Mark as review-assigned so we don't double-route.
-		storeAddLabel(b.ID, "review-assigned")
-
-		implBy := hasLabel(b, "implemented-by:")
 		reviewerName := "reviewer-" + sanitizeK8sLabel(b.ID)
-		if implBy != "" {
-			reviewerName = implBy + "-review"
-		}
 
 		handle, spawnErr := backend.Spawn(SpawnConfig{
 			Name:    reviewerName,
@@ -500,25 +545,61 @@ func detectReviewReady(dryRun bool, backend AgentBackend) {
 		})
 		if spawnErr != nil {
 			log.Printf("[steward] failed to spawn reviewer for %s: %v", b.ID, spawnErr)
-			storeRemoveLabel(b.ID, "review-assigned")
 		} else {
 			log.Printf("[steward] spawned reviewer %s for %s (%s)", reviewerName, b.ID, handle.Identifier())
 		}
 	}
 }
 
-// detectReviewFeedback finds tasks with "review-feedback" label (without
-// "review-ready" or "review-assigned") and re-spawns a wizard to address feedback.
+// reviewBeadVerdict extracts the verdict string from a closed review-round bead's description.
+// The description format is "verdict: <value>\n\n<summary>".
+// Returns "" if the bead has no verdict or the description doesn't match the expected format.
+func reviewBeadVerdict(b Bead) string {
+	if b.Description == "" {
+		return ""
+	}
+	if strings.HasPrefix(b.Description, "verdict: ") {
+		line := b.Description
+		if idx := strings.Index(line, "\n"); idx >= 0 {
+			line = line[:idx]
+		}
+		return strings.TrimPrefix(line, "verdict: ")
+	}
+	return ""
+}
+
+// detectReviewFeedback finds in_progress beads whose last review-round bead
+// is closed with verdict "request_changes" and no active attempt bead (wizard
+// not already working on it). It re-spawns a wizard to address the feedback.
+//
+// This replaces the legacy label-based query (review-feedback label).
 func detectReviewFeedback(dryRun bool) {
-	feedbackBeads, err := storeListBeads(beads.IssueFilter{Labels: []string{"review-feedback"}, Status: statusPtr(beads.StatusInProgress)})
+	inProgress, err := storeListBeads(beads.IssueFilter{Status: statusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] detectReviewFeedback: %s", err)
 		return
 	}
 
-	for _, b := range feedbackBeads {
-		// Skip if already re-queued for review or reassigned.
-		if containsLabel(b, "review-ready") || containsLabel(b, "review-assigned") {
+	for _, b := range inProgress {
+		// Skip child beads.
+		if isStepBead(b) || isReviewRoundBead(b) || containsLabel(b, "attempt") {
+			continue
+		}
+
+		// Check review-round beads.
+		reviews, rErr := storeGetReviewBeads(b.ID)
+		if rErr != nil || len(reviews) == 0 {
+			continue
+		}
+
+		lastReview := reviews[len(reviews)-1]
+		// Must be closed with request_changes verdict.
+		if lastReview.Status != "closed" || reviewBeadVerdict(lastReview) != "request_changes" {
+			continue
+		}
+
+		// Skip if there's already an active attempt (wizard already working on it).
+		if attempt, aErr := storeGetActiveAttemptFunc(b.ID); aErr == nil && attempt != nil {
 			continue
 		}
 
@@ -527,15 +608,17 @@ func detectReviewFeedback(dryRun bool) {
 			continue
 		}
 
-		log.Printf("[steward] re-engaging wizard for %s (review feedback)", b.ID)
+		log.Printf("[steward] re-engaging wizard for %s (review feedback round %d)", b.ID, len(reviews))
 
-		// Find the wizard that owns the active attempt and send an assignment message.
-		owner := ""
-		if attempt, err := storeGetActiveAttemptFunc(b.ID); err == nil && attempt != nil {
-			owner = hasLabel(*attempt, "agent:")
-		}
-		if owner == "" {
-			owner = "wizard" // fallback
+		// Find the wizard owner from the last attempt or fall back.
+		owner := "wizard"
+		// Check wizard registry for a wizard associated with this bead.
+		reg := loadWizardRegistry()
+		for _, w := range reg.Wizards {
+			if w.BeadID == b.ID && w.Phase != "review" {
+				owner = w.Name
+				break
+			}
 		}
 
 		msg := fmt.Sprintf("Review feedback on %s: %s — please address feedback on the existing branch and push again", b.ID, b.Title)
@@ -549,9 +632,6 @@ func detectReviewFeedback(dryRun bool) {
 			log.Printf("[steward] failed to re-engage wizard for %s: %v", b.ID, err)
 			continue
 		}
-
-		// Remove review-feedback so we don't re-trigger, the wizard will add review-ready when done.
-		storeRemoveLabel(b.ID, "review-feedback")
 	}
 }
 
