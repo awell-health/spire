@@ -313,6 +313,67 @@ func ResumeStagingWorktree(repoPath, dir, branch, baseBranch string, log func(st
 	}
 }
 
+// --- Executor staging worktree lifecycle ---
+
+// ensureStagingWorktree creates or resumes the single staging worktree for the
+// entire executor lifecycle. Created once, shared across all phases (implement,
+// review, merge). The main worktree NEVER leaves the base branch.
+func (e *formulaExecutor) ensureStagingWorktree() (*StagingWorktree, error) {
+	if e.stagingWt != nil {
+		return e.stagingWt, nil
+	}
+
+	stagingBranch := e.state.StagingBranch
+	if stagingBranch == "" {
+		return nil, fmt.Errorf("no staging branch configured")
+	}
+
+	repoPath := e.state.RepoPath
+
+	// Resume from persisted state if the worktree still exists on disk.
+	if e.state.WorktreeDir != "" {
+		if _, err := os.Stat(e.state.WorktreeDir); err == nil {
+			e.log("resuming staging worktree at %s", e.state.WorktreeDir)
+			e.stagingWt = ResumeStagingWorktree(repoPath, e.state.WorktreeDir, stagingBranch, e.state.BaseBranch, e.log)
+			return e.stagingWt, nil
+		}
+		e.log("stale worktree state %s — recreating", e.state.WorktreeDir)
+		e.state.WorktreeDir = ""
+	}
+
+	// Create the staging branch from current HEAD.
+	exec.Command("git", "-C", repoPath, "branch", "-f", stagingBranch).Run()
+
+	// Worktree dir: .worktrees/<bead-id> — traceable to the bead.
+	wtDir := filepath.Join(repoPath, ".worktrees", e.beadID)
+
+	e.log("creating staging worktree at %s (branch: %s)", wtDir, stagingBranch)
+	wt, err := NewStagingWorktreeAt(repoPath, wtDir, stagingBranch, e.state.BaseBranch, e.log)
+	if err != nil {
+		return nil, fmt.Errorf("create staging worktree: %w", err)
+	}
+
+	e.stagingWt = wt
+	e.state.WorktreeDir = wtDir
+
+	if e.state.AttemptBeadID != "" {
+		storeAddLabel(e.state.AttemptBeadID, "worktree:"+wtDir)
+	}
+	storeAddLabel(e.beadID, "feat-branch:"+stagingBranch)
+	e.saveState()
+	return wt, nil
+}
+
+// closeStagingWorktree removes the staging worktree and cleans up state.
+func (e *formulaExecutor) closeStagingWorktree() {
+	if e.stagingWt != nil {
+		e.log("removing staging worktree at %s", e.stagingWt.Dir)
+		e.stagingWt.Close()
+		e.stagingWt = nil
+	}
+	e.state.WorktreeDir = ""
+}
+
 // Close removes the worktree from git and deletes its temp directory.
 // It is safe to call multiple times.
 func (w *StagingWorktree) Close() error {
