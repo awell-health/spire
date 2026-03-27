@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -23,38 +24,46 @@ func getPhase(b Bead) string {
 
 // getBoardBeadPhase returns the current phase of a BoardBead.
 // Checks for an active step bead first (primary), then falls back to phase:X label.
-// When phase is "review" and a review-round:N label is present, returns "review rN".
+// When phase is "review", annotates with the round count from review child beads.
 func getBoardBeadPhase(b BoardBead) string {
 	// Primary: check for active step bead.
 	if step, err := storeGetActiveStep(b.ID); err == nil && step != nil {
 		if name := stepBeadPhaseName(*step); name != "" {
-			phase := name
-			// Preserve review round annotation.
-			if phase == "review" {
-				for _, l := range b.Labels {
-					if strings.HasPrefix(l, "review-round:") {
-						return "review r" + l[len("review-round:"):]
-					}
-				}
+			if name == "review" {
+				return reviewPhaseLabel(b.ID)
 			}
-			return phase
+			return name
 		}
 	}
 	// Fallback: phase: label.
 	phase := ""
-	round := ""
 	for _, l := range b.Labels {
 		if strings.HasPrefix(l, "phase:") {
 			phase = l[len("phase:"):]
 		}
-		if strings.HasPrefix(l, "review-round:") {
-			round = l[len("review-round:"):]
-		}
 	}
-	if phase == "review" && round != "" {
-		return "review r" + round
+	if phase == "review" {
+		return reviewPhaseLabel(b.ID)
 	}
 	return phase
+}
+
+// reviewPhaseLabel returns "review rN" if N review child beads exist, else "review".
+func reviewPhaseLabel(id string) string {
+	reviews, err := storeGetReviewBeads(id)
+	if err != nil || len(reviews) == 0 {
+		return "review"
+	}
+	n := 0
+	for _, r := range reviews {
+		if rn := reviewRoundNumber(r); rn > n {
+			n = rn
+		}
+	}
+	if n == 0 {
+		n = len(reviews)
+	}
+	return fmt.Sprintf("review r%d", n)
 }
 
 // isValidPhase checks if a phase name is one of the 5 universal phases.
