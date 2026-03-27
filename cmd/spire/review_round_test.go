@@ -296,5 +296,47 @@ func TestWizardCollectReviewHistory_FallsBackToMessages(t *testing.T) {
 	_ = result
 }
 
+// --- reviewGetRound uses bead graph, not labels ---
+
+// TestReviewGetRound_WithoutLabels verifies that reviewGetRound counts
+// review-round child beads rather than reading review-round:N labels on the
+// parent. The parent bead has no review-round: labels; the count comes purely
+// from graph children.
+func TestReviewGetRound_WithoutLabels(t *testing.T) {
+	origGetChildren := storeGetChildrenFunc
+	defer func() { storeGetChildrenFunc = origGetChildren }()
+
+	// Two closed review beads, no review-round: labels on any parent.
+	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+		return []Bead{
+			{ID: "spi-p.1", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "sage:sage-1", "round:1"}, Parent: parentID},
+			{ID: "spi-p.2", Title: "review-round-2", Status: "closed", Labels: []string{"review-round", "sage:sage-1", "round:2"}, Parent: parentID},
+		}, nil
+	}
+
+	got := reviewGetRound("spi-p")
+	if got != 2 {
+		t.Errorf("reviewGetRound = %d, want 2 (should count review child beads, not labels)", got)
+	}
+}
+
+// TestReviewGetRound_NoReviewBeads verifies that reviewGetRound returns 0
+// when there are no review-round children (first review of the bead).
+func TestReviewGetRound_NoReviewBeads(t *testing.T) {
+	origGetChildren := storeGetChildrenFunc
+	defer func() { storeGetChildrenFunc = origGetChildren }()
+
+	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+		return []Bead{
+			{ID: "spi-p.1", Title: "attempt: wizard-1", Status: "closed", Labels: []string{"attempt"}, Parent: parentID},
+		}, nil
+	}
+
+	got := reviewGetRound("spi-p")
+	if got != 0 {
+		t.Errorf("reviewGetRound = %d, want 0 (no review beads)", got)
+	}
+}
+
 // Suppress unused import warning
 var _ = fmt.Sprintf

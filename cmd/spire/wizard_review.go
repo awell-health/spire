@@ -308,18 +308,11 @@ func reviewRunTests(worktreeDir string, cfg *repoconfig.RepoConfig) (string, err
 }
 
 func reviewGetRound(beadID string) int {
-	bead, err := storeGetBead(beadID)
+	reviews, err := storeGetReviewBeads(beadID)
 	if err != nil {
 		return 0
 	}
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "review-round:") {
-			n := 0
-			fmt.Sscanf(l[len("review-round:"):], "%d", &n)
-			return n
-		}
-	}
-	return 0
+	return len(reviews)
 }
 
 // --- Opus review ---
