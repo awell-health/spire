@@ -789,6 +789,10 @@ func (e *formulaExecutor) enrichSubtasksWithChangeSpecs(children []Bead, epicCon
 	enriched := 0
 
 	for _, child := range children {
+		// Skip internal DAG beads (step, attempt, review round) — not work items.
+		if isAttemptBead(child) || isStepBead(child) || isReviewRoundBead(child) {
+			continue
+		}
 		// Skip already-enriched subtasks (has a change spec comment)
 		existingComments, _ := e.commentGetter(child.ID)
 		alreadyEnriched := false

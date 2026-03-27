@@ -19,12 +19,18 @@ func computeWaves(epicID string) ([][]string, error) {
 		return nil, fmt.Errorf("get children: %w", err)
 	}
 
-	// Filter to open subtasks only.
+	// Filter to open subtasks only — exclude internal DAG beads
+	// (step beads, attempt beads, review round beads) which are
+	// child beads used for tracking, not work items.
 	var openIDs []string
 	for _, c := range children {
-		if c.Status != "closed" {
-			openIDs = append(openIDs, c.ID)
+		if c.Status == "closed" {
+			continue
 		}
+		if isAttemptBead(c) || isStepBead(c) || isReviewRoundBead(c) {
+			continue
+		}
+		openIDs = append(openIDs, c.ID)
 	}
 
 	if len(openIDs) == 0 {
