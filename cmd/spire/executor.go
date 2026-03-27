@@ -38,6 +38,14 @@ type formulaExecutor struct {
 	state     *executorState
 	spawner   AgentBackend
 	log       func(string, ...interface{})
+
+	// Injectable store/exec operations — set to real implementations by newExecutor.
+	// Replaced in tests to avoid requiring a live dolt server.
+	beadGetter    func(id string) (Bead, error)
+	childGetter   func(parentID string) ([]Bead, error)
+	commentGetter func(id string) ([]*beads.Comment, error)
+	commentAdder  func(id, text string) error
+	claudeRunner  func(args []string, dir string) ([]byte, error)
 }
 
 // newExecutor creates a formula executor for a bead.
@@ -94,6 +102,17 @@ func newExecutor(beadID, agentName string, formula *FormulaV2, spawner AgentBack
 		state:     state,
 		spawner:   spawner,
 		log:       log,
+		beadGetter:    storeGetBead,
+		childGetter:   storeGetChildren,
+		commentGetter: storeGetComments,
+		commentAdder:  storeAddComment,
+		claudeRunner: func(args []string, dir string) ([]byte, error) {
+			cmd := exec.Command("claude", args...)
+			cmd.Dir = dir
+			cmd.Env = os.Environ()
+			cmd.Stderr = os.Stderr
+			return cmd.Output()
+		},
 	}, nil
 }
 
@@ -368,7 +387,7 @@ func escalateHumanFailure(beadID, agentName, failureType, message string) {
 // wizardPlan reads the design bead(s) and invokes Claude to break the epic into subtasks.
 // It files the subtasks and posts the plan as a comment.
 func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
-	bead, err := storeGetBead(e.beadID)
+	bead, err := e.beadGetter(e.beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
@@ -387,7 +406,7 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 		if dep.Description != "" {
 			designContext.WriteString(dep.Description + "\n")
 		}
-		comments, _ := storeGetComments(dep.ID)
+		comments, _ := e.commentGetter(dep.ID)
 		for _, c := range comments {
 			designContext.WriteString(fmt.Sprintf("[%s]: %s\n", c.Author, c.Text))
 		}
@@ -396,13 +415,13 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 
 	// Also include epic description and comments
 	epicContext := fmt.Sprintf("Epic: %s\nTitle: %s\nDescription: %s\n", bead.ID, bead.Title, bead.Description)
-	epicComments, _ := storeGetComments(e.beadID)
+	epicComments, _ := e.commentGetter(e.beadID)
 	for _, c := range epicComments {
 		epicContext += fmt.Sprintf("[%s]: %s\n", c.Author, c.Text)
 	}
 
 	// Check for existing children (resume case)
-	children, _ := storeGetChildren(e.beadID)
+	children, _ := e.childGetter(e.beadID)
 	if len(children) > 0 {
 		e.log("epic already has %d children — enriching with change specs", len(children))
 		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext.String(), pc)
@@ -455,17 +474,13 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 
 	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for plan generation (max_turns=%d)", maxTurns)
-	cmd := exec.Command("claude",
+	out, err := e.claudeRunner([]string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
 		"--output-format", "text",
 		"--max-turns", fmt.Sprintf("%d", maxTurns),
-	)
-	cmd.Dir = e.state.RepoPath
-	cmd.Env = os.Environ()
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	}, e.state.RepoPath)
 	if err != nil {
 		return fmt.Errorf("claude plan: %w", err)
 	}
@@ -493,7 +508,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 
 	if len(tasks) == 0 {
 		e.log("Claude produced no parseable subtasks — posting raw output as comment")
-		storeAddComment(e.beadID, fmt.Sprintf("Wizard plan (raw):\n%s", string(out)))
+		e.commentAdder(e.beadID, fmt.Sprintf("Wizard plan (raw):\n%s", string(out)))
 		return fmt.Errorf("no subtasks parsed from plan output")
 	}
 
@@ -561,7 +576,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 		}
 		planSummary.WriteString(fmt.Sprintf("- %s: %s%s\n", id, t.Title, deps))
 	}
-	storeAddComment(e.beadID, planSummary.String())
+	e.commentAdder(e.beadID, planSummary.String())
 
 	return nil
 }
@@ -574,10 +589,11 @@ func (e *formulaExecutor) enrichSubtasksWithChangeSpecs(children []Bead, epicCon
 		model = "claude-opus-4-6"
 	}
 	maxTurns := pc.GetMaxTurns()
+	enriched := 0
 
 	for _, child := range children {
 		// Skip already-enriched subtasks (has a change spec comment)
-		existingComments, _ := storeGetComments(child.ID)
+		existingComments, _ := e.commentGetter(child.ID)
 		alreadyEnriched := false
 		for _, c := range existingComments {
 			if strings.HasPrefix(c.Text, "Change spec:") {
@@ -638,17 +654,13 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 `, epicContext, designContext, subtaskContext.String())
 
 		e.log("generating change spec for %s: %s", child.ID, child.Title)
-		cmd := exec.Command("claude",
+		out, err := e.claudeRunner([]string{
 			"--dangerously-skip-permissions",
 			"-p", prompt,
 			"--model", model,
 			"--output-format", "text",
 			"--max-turns", fmt.Sprintf("%d", maxTurns),
-		)
-		cmd.Dir = e.state.RepoPath
-		cmd.Env = os.Environ()
-		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
+		}, e.state.RepoPath)
 		if err != nil {
 			e.log("warning: change spec for %s: %s", child.ID, err)
 			continue
@@ -660,14 +672,15 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 			continue
 		}
 
-		if commentErr := storeAddComment(child.ID, "Change spec:\n\n"+spec); commentErr != nil {
+		if commentErr := e.commentAdder(child.ID, "Change spec:\n\n"+spec); commentErr != nil {
 			e.log("warning: post change spec for %s: %s", child.ID, commentErr)
 		} else {
 			e.log("posted change spec for %s", child.ID)
+			enriched++
 		}
 	}
 
-	storeAddComment(e.beadID, fmt.Sprintf("Wizard: enriched %d subtasks with change specs.", len(children)))
+	e.commentAdder(e.beadID, fmt.Sprintf("Wizard: enriched %d/%d subtasks with change specs.", enriched, len(children)))
 	return nil
 }
 
