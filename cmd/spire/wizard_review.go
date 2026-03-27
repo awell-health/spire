@@ -122,9 +122,9 @@ func cmdWizardReview(args []string) error {
 	testOutput := ""
 	if repoCfg != nil && repoCfg.Runtime.Test != "" {
 		log("running tests")
-		testErr := wc.RunCommand(repoCfg.Runtime.Test)
+		out, testErr := wc.RunCommandOutput(repoCfg.Runtime.Test)
+		testOutput = out
 		if testErr != nil {
-			testOutput = testErr.Error()
 			log("tests failed: %s", testErr)
 		}
 	}

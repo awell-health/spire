@@ -106,12 +106,9 @@ func (wc *WorktreeContext) RunCommand(cmdStr string) error {
 }
 
 // RunCommandOutput runs a command in the worktree directory and returns combined output.
+// The command is executed via "sh -c" for shell expansion, consistent with RunCommand.
 func (wc *WorktreeContext) RunCommandOutput(cmdStr string) (string, error) {
-	parts := strings.Fields(cmdStr)
-	if len(parts) == 0 {
-		return "", nil
-	}
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = wc.Dir
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
