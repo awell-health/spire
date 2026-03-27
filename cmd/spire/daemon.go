@@ -320,6 +320,13 @@ func runDoltSync(tower TowerConfig) {
 		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
 	}
 
+	// Commit pending changes before pulling — dolt cannot merge with uncommitted changes.
+	commitSQL := fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'daemon: auto-commit before sync', '--allow-empty')", tower.Database)
+	if _, err := rawDoltQuery(commitSQL); err != nil {
+		// Non-fatal: may fail if nothing to commit or dolt not configured.
+		// The --allow-empty flag prevents errors on clean working sets.
+	}
+
 	// Record pre-pull commit for ownership enforcement.
 	preCommit := getCurrentCommitHash(tower.Database)
 
