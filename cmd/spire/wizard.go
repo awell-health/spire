@@ -178,7 +178,7 @@ func cmdWizardRun(args []string) error {
 	// 8-9. Phase execution
 	if reviewFix {
 		// --review-fix path: skip design, collect feedback, implement with feedback
-		feedback := wizardCollectFeedback(beadID, wizardName)
+		feedback := wizardCollectReviewHistory(beadID, wizardName)
 
 		// Remove review-feedback label
 		storeRemoveLabel(beadID, "review-feedback")
@@ -878,6 +878,35 @@ func wizardCollectFeedback(beadID, wizardName string) string {
 		storeCloseBead(m.ID)
 	}
 	return strings.Join(parts, "\n---\n")
+}
+
+// wizardCollectReviewHistory collects structured review history from review-round beads,
+// falling back to message-based feedback if no review beads exist.
+func wizardCollectReviewHistory(beadID, wizardName string) string {
+	reviewBeads, err := storeGetReviewBeads(beadID)
+	if err == nil && len(reviewBeads) > 0 {
+		var buf strings.Builder
+		buf.WriteString("## Prior Review Rounds\n\n")
+		for _, rb := range reviewBeads {
+			roundNum := reviewRoundNumber(rb)
+			sage := hasLabel(rb, "sage:")
+			buf.WriteString(fmt.Sprintf("### Round %d (sage: %s, status: %s)\n", roundNum, sage, rb.Status))
+			if rb.Description != "" {
+				buf.WriteString(rb.Description)
+				buf.WriteString("\n")
+			}
+			buf.WriteString("\n")
+		}
+		// Also collect any message-based feedback (in case of hybrid state)
+		msgFeedback := wizardCollectFeedback(beadID, wizardName)
+		if msgFeedback != "" {
+			buf.WriteString("## Latest Feedback Message\n")
+			buf.WriteString(msgFeedback)
+		}
+		return buf.String()
+	}
+	// Fall back to message-based feedback
+	return wizardCollectFeedback(beadID, wizardName)
 }
 
 // --- Review handoff ---

@@ -143,8 +143,9 @@ func cmdWizardReview(args []string) error {
 		}
 	}
 
-	// 7. Get current review round
-	round := reviewGetRound(beadID)
+	// 7. Get current review round from existing review child beads
+	existingReviews, _ := storeGetReviewBeads(beadID)
+	round := len(existingReviews) + 1
 	log("review round: %d", round)
 
 	// 7b. Load formula for revision policy
@@ -156,13 +157,40 @@ func cmdWizardReview(args []string) error {
 		revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: "claude-opus-4-6"}
 	}
 
+	// 7c. Create review-round bead before dispatching review
+	reviewBeadID, rbErr := storeCreateReviewBead(beadID, reviewerName, round)
+	if rbErr != nil {
+		log("warning: create review bead: %s", rbErr)
+	}
+
 	// 8. Run Opus review
 	log("running Opus review")
 	review, err := reviewRunOpus(bead.Title, bead.Description, diff, testOutput, round)
 	if err != nil {
+		// Close review bead on failure
+		if reviewBeadID != "" {
+			storeCloseReviewBead(reviewBeadID, "error", err.Error())
+		}
 		return fmt.Errorf("opus review: %w", err)
 	}
 	log("verdict: %s — %s", review.Verdict, review.Summary)
+
+	// Close review-round bead with verdict
+	if reviewBeadID != "" {
+		var summaryBuf strings.Builder
+		summaryBuf.WriteString(review.Summary)
+		for _, issue := range review.Issues {
+			summaryBuf.WriteString(fmt.Sprintf("\n- [%s] %s", issue.Severity, issue.Message))
+			if issue.File != "" {
+				summaryBuf.WriteString(fmt.Sprintf(" (%s", issue.File))
+				if issue.Line > 0 {
+					summaryBuf.WriteString(fmt.Sprintf(":%d", issue.Line))
+				}
+				summaryBuf.WriteString(")")
+			}
+		}
+		storeCloseReviewBead(reviewBeadID, review.Verdict, summaryBuf.String())
+	}
 
 	// 9. Handle verdict
 	verdictHandled = true
@@ -185,12 +213,12 @@ func cmdWizardReview(args []string) error {
 			storeRemoveLabel(beadID, "review-ready")
 			storeRemoveLabel(beadID, "review-assigned")
 			storeAddLabel(beadID, "review-feedback")
-			if round > 0 {
-				storeRemoveLabel(beadID, fmt.Sprintf("review-round:%d", round))
+			if round > 1 {
+				storeRemoveLabel(beadID, fmt.Sprintf("review-round:%d", round-1))
 			}
-			storeAddLabel(beadID, fmt.Sprintf("review-round:%d", round+1))
+			storeAddLabel(beadID, fmt.Sprintf("review-round:%d", round))
 			var comment strings.Builder
-			comment.WriteString(fmt.Sprintf("Review round %d: request_changes — %s", round+1, review.Summary))
+			comment.WriteString(fmt.Sprintf("Review round %d: request_changes — %s", round, review.Summary))
 			for _, issue := range review.Issues {
 				comment.WriteString(fmt.Sprintf("\n- [%s] %s", issue.Severity, issue.Message))
 				if issue.File != "" {
@@ -349,8 +377,8 @@ Verdicts:
 		userPrompt.WriteString("\n```\n\n")
 	}
 
-	if round > 0 {
-		userPrompt.WriteString(fmt.Sprintf("## Review Context\nThis is review round %d. Focus on whether previously flagged issues have been addressed.\n", round+1))
+	if round > 1 {
+		userPrompt.WriteString(fmt.Sprintf("## Review Context\nThis is review round %d. Focus on whether previously flagged issues have been addressed.\n", round))
 	}
 
 	// Build full prompt for claude CLI
@@ -533,8 +561,7 @@ func reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, log fun
 }
 
 func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, revPolicy RevisionPolicy, log func(string, ...interface{})) error {
-	newRound := round + 1
-	log("requesting changes (round %d)", newRound)
+	log("requesting changes (round %d)", round)
 
 	// Remove review labels
 	storeRemoveLabel(beadID, "review-ready")
@@ -543,15 +570,15 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	// Add review-feedback
 	storeAddLabel(beadID, "review-feedback")
 
-	// Replace review-round label (remove old, add new)
-	if round > 0 {
-		storeRemoveLabel(beadID, fmt.Sprintf("review-round:%d", round))
+	// Replace review-round label for backwards compat (round is now 1-based)
+	if round > 1 {
+		storeRemoveLabel(beadID, fmt.Sprintf("review-round:%d", round-1))
 	}
-	storeAddLabel(beadID, fmt.Sprintf("review-round:%d", newRound))
+	storeAddLabel(beadID, fmt.Sprintf("review-round:%d", round))
 
 	// Post comment
 	var comment strings.Builder
-	comment.WriteString(fmt.Sprintf("Review round %d: request_changes — %s", newRound, review.Summary))
+	comment.WriteString(fmt.Sprintf("Review round %d: request_changes — %s", round, review.Summary))
 	if len(review.Issues) > 0 {
 		comment.WriteString("\n\nIssues:")
 		for _, issue := range review.Issues {
@@ -568,7 +595,7 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	storeAddComment(beadID, comment.String())
 
 	// Check if we've reached max review rounds — escalate to arbiter
-	if newRound >= revPolicy.MaxRounds {
+	if round >= revPolicy.MaxRounds {
 		log("max review rounds (%d) reached — escalating to arbiter", revPolicy.MaxRounds)
 		return reviewEscalateToArbiter(beadID, reviewerName, review, revPolicy, log)
 	}
@@ -636,7 +663,7 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 		}
 	}
 
-	log("done — re-engaged %s for round %d", wizardName, newRound)
+	log("done — re-engaged %s for round %d", wizardName, round)
 	return nil
 }
 
@@ -651,13 +678,26 @@ func reviewEscalateToArbiter(beadID, reviewerName string, lastReview *Review, po
 		return fmt.Errorf("arbiter: get bead: %w", err)
 	}
 
-	// Collect review history from comments
-	comments, _ := storeGetComments(beadID)
+	// Collect structured review history from review-round beads
+	reviewBeads, _ := storeGetReviewBeads(beadID)
 	var reviewHistory strings.Builder
-	for _, c := range comments {
-		if strings.Contains(c.Text, "Review round") || strings.Contains(c.Text, "review") {
-			reviewHistory.WriteString(c.Text)
-			reviewHistory.WriteString("\n---\n")
+	for _, rb := range reviewBeads {
+		roundNum := reviewRoundNumber(rb)
+		sage := hasLabel(rb, "sage:")
+		reviewHistory.WriteString(fmt.Sprintf("### Round %d (sage: %s, status: %s)\n", roundNum, sage, rb.Status))
+		if rb.Description != "" {
+			reviewHistory.WriteString(rb.Description)
+		}
+		reviewHistory.WriteString("\n---\n")
+	}
+	// Fall back to comment archaeology if no review beads found
+	if len(reviewBeads) == 0 {
+		comments, _ := storeGetComments(beadID)
+		for _, c := range comments {
+			if strings.Contains(c.Text, "Review round") || strings.Contains(c.Text, "review") {
+				reviewHistory.WriteString(c.Text)
+				reviewHistory.WriteString("\n---\n")
+			}
 		}
 	}
 

@@ -434,6 +434,10 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 		if isAttemptBead(b) {
 			continue
 		}
+		// Skip review-round beads (internal tracking, not assignable work)
+		if isReviewRoundBead(b) {
+			continue
+		}
 		// Skip workflow step beads (parent carries workflow:* label)
 		if b.Parent != "" {
 			parent, perr := storeGetBead(b.Parent)
@@ -619,6 +623,116 @@ func isAttemptBoardBead(b BoardBead) bool {
 		}
 	}
 	return false
+}
+
+// storeGetChildrenFunc is a test-replaceable function for storeGetChildren.
+// In production this stays at its default (storeGetChildren).
+var storeGetChildrenFunc = storeGetChildren
+
+// --- Review round bead helpers ---
+
+// storeCreateReviewBead creates a child review-round bead under parentID.
+// Sets status=in_progress and adds labels: review-round, sage:<sageName>, round:<N>.
+// The round number is determined by counting existing review children + 1.
+// Returns the review bead ID.
+func storeCreateReviewBead(parentID, sageName string, round int) (string, error) {
+	labels := []string{
+		"review-round",
+		fmt.Sprintf("sage:%s", sageName),
+		fmt.Sprintf("round:%d", round),
+	}
+	id, err := storeCreateBead(createOpts{
+		Title:    fmt.Sprintf("review-round-%d", round),
+		Priority: 3,
+		Type:     beads.TypeTask,
+		Labels:   labels,
+		Parent:   parentID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create review bead: %w", err)
+	}
+	// Transition to in_progress
+	if uerr := storeUpdateBead(id, map[string]interface{}{
+		"status": "in_progress",
+	}); uerr != nil {
+		return id, fmt.Errorf("set review bead in_progress: %w", uerr)
+	}
+	return id, nil
+}
+
+// storeCloseReviewBead closes a review-round bead and sets its description to verdict+summary.
+func storeCloseReviewBead(reviewID, verdict, summary string) error {
+	if reviewID == "" {
+		return nil
+	}
+	desc := fmt.Sprintf("verdict: %s\n\n%s", verdict, summary)
+	if err := storeUpdateBead(reviewID, map[string]interface{}{
+		"description": desc,
+	}); err != nil {
+		return fmt.Errorf("update review bead description: %w", err)
+	}
+	return storeCloseBead(reviewID)
+}
+
+// storeGetReviewBeads returns all review-round child beads of parentID,
+// ordered by creation time (via round label, ascending).
+func storeGetReviewBeads(parentID string) ([]Bead, error) {
+	children, err := storeGetChildrenFunc(parentID)
+	if err != nil {
+		return nil, err
+	}
+	var reviews []Bead
+	for _, child := range children {
+		if isReviewRoundBead(child) {
+			reviews = append(reviews, child)
+		}
+	}
+	// Sort by round number (extracted from round:<N> label).
+	// This gives creation-time ordering since round numbers are sequential.
+	for i := 0; i < len(reviews); i++ {
+		for j := i + 1; j < len(reviews); j++ {
+			ri := reviewRoundNumber(reviews[i])
+			rj := reviewRoundNumber(reviews[j])
+			if rj < ri {
+				reviews[i], reviews[j] = reviews[j], reviews[i]
+			}
+		}
+	}
+	return reviews, nil
+}
+
+// isReviewRoundBead returns true if the bead is a review-round bead
+// (has "review-round" label or title starts with "review-round-").
+func isReviewRoundBead(b Bead) bool {
+	if strings.HasPrefix(b.Title, "review-round-") {
+		return true
+	}
+	return containsLabel(b, "review-round")
+}
+
+// isReviewRoundBoardBead returns true if the BoardBead is a review-round bead.
+func isReviewRoundBoardBead(b BoardBead) bool {
+	if strings.HasPrefix(b.Title, "review-round-") {
+		return true
+	}
+	for _, l := range b.Labels {
+		if l == "review-round" {
+			return true
+		}
+	}
+	return false
+}
+
+// reviewRoundNumber extracts the round number from a review bead's round:<N> label.
+// Returns 0 if not found.
+func reviewRoundNumber(b Bead) int {
+	val := hasLabel(b, "round:")
+	if val == "" {
+		return 0
+	}
+	n := 0
+	fmt.Sscanf(val, "%d", &n)
+	return n
 }
 
 // storeCommitPending commits pending dolt changes. Requires pendingCommitter sub-interface.
