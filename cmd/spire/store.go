@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -449,8 +450,16 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 				continue
 			}
 		}
-		// Skip beads with an active attempt child (someone is already working)
-		if attempt, err := storeGetActiveAttempt(b.ID); err == nil && attempt != nil {
+		// Skip beads with an active attempt child (someone is already working).
+		// Fail closed: if storeGetActiveAttempt returns an error (e.g. multiple
+		// open attempts), quarantine the bead rather than treating it as ready.
+		attempt, aErr := storeGetActiveAttempt(b.ID)
+		if aErr != nil {
+			log.Printf("[store] quarantining %s (multiple open attempts): %v", b.ID, aErr)
+			storeRaiseCorruptedBeadAlert(b.ID, aErr)
+			continue
+		}
+		if attempt != nil {
 			continue
 		}
 		filtered = append(filtered, b)
@@ -636,6 +645,23 @@ var storeGetChildrenFunc = storeGetChildren
 // storeGetActiveAttemptFunc is a test-replaceable function for storeGetActiveAttempt.
 // In production this stays at its default (storeGetActiveAttempt).
 var storeGetActiveAttemptFunc = storeGetActiveAttempt
+
+// storeRaiseCorruptedBeadAlert creates a P0 alert bead flagging a bead with
+// multiple open attempt children (invariant violation). The caller should
+// already have logged the violation and excluded the bead from ready work.
+// Alert creation is best-effort: errors are logged, not propagated.
+func storeRaiseCorruptedBeadAlert(beadID string, violation error) {
+	msg := fmt.Sprintf("corrupted bead %s: %v", beadID, violation)
+	_, err := storeCreateBead(createOpts{
+		Title:    msg,
+		Priority: 0,
+		Type:     beads.TypeTask,
+		Labels:   []string{"alert:corrupted-bead", "ref:" + beadID},
+	})
+	if err != nil {
+		log.Printf("[store] failed to raise alert for corrupted bead %s: %v", beadID, err)
+	}
+}
 
 // --- Review round bead helpers ---
 

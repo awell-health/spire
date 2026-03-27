@@ -286,7 +286,15 @@ func stewardTowerCycle(cycleNum int, towerName string, dryRun, noAssign bool, ba
 		}
 		// Skip beads with an active attempt child (someone is already working).
 		// The attempt bead is the authority — owner: label is not used here.
-		if attempt, err := storeGetActiveAttemptFunc(bead.ID); err == nil && attempt != nil {
+		// Fail closed: if storeGetActiveAttemptFunc returns an error (e.g. multiple
+		// open attempts), skip assignment and raise an alert rather than assigning.
+		attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
+		if aErr != nil {
+			log.Printf("[steward] quarantining %s (multiple open attempts): %v", bead.ID, aErr)
+			storeRaiseCorruptedBeadAlert(bead.ID, aErr)
+			continue
+		}
+		if attempt != nil {
 			continue
 		}
 
@@ -428,7 +436,14 @@ func checkBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 
 		age := now.Sub(t)
 		owner := ""
-		if attempt, err := storeGetActiveAttemptFunc(b.ID); err == nil && attempt != nil {
+		attempt, aErr := storeGetActiveAttemptFunc(b.ID)
+		if aErr != nil {
+			// Invariant violation: multiple open attempts. Raise an alert and
+			// continue health checking with empty owner (Kill("") will fail
+			// gracefully if the shutdown threshold is also exceeded).
+			log.Printf("[steward] %s has multiple open attempts (invariant violation): %v", b.ID, aErr)
+			storeRaiseCorruptedBeadAlert(b.ID, aErr)
+		} else if attempt != nil {
 			owner = hasLabel(*attempt, "agent:")
 		}
 
@@ -599,7 +614,15 @@ func detectReviewFeedback(dryRun bool) {
 		}
 
 		// Skip if there's already an active attempt (wizard already working on it).
-		if attempt, aErr := storeGetActiveAttemptFunc(b.ID); aErr == nil && attempt != nil {
+		// Fail closed: if storeGetActiveAttemptFunc returns an error (e.g. multiple
+		// open attempts), skip re-engagement and raise an alert.
+		reEngageAttempt, reEngageErr := storeGetActiveAttemptFunc(b.ID)
+		if reEngageErr != nil {
+			log.Printf("[steward] quarantining %s (multiple open attempts): %v", b.ID, reEngageErr)
+			storeRaiseCorruptedBeadAlert(b.ID, reEngageErr)
+			continue
+		}
+		if reEngageAttempt != nil {
 			continue
 		}
 
