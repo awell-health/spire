@@ -33,6 +33,24 @@ func NewStagingWorktree(repoPath, branch, nameHint string, log func(string, ...i
 		os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("worktree add %s: %s\n%s", branch, wtErr, string(out))
 	}
+
+	// Configure git user in the staging worktree to the archmage identity so
+	// commits from conflict resolution or doc review are attributed correctly.
+	// Matches the pattern in wizard.go:377. Use --worktree so the setting is
+	// scoped to this worktree only and doesn't pollute the main repo's config.
+	exec.Command("git", "-C", repoPath, "config", "extensions.worktreeConfig", "true").Run()
+	archName, archEmail := "spire", "spire@spire.local" // fallback
+	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
+		if tower.Archmage.Name != "" {
+			archName = tower.Archmage.Name
+		}
+		if tower.Archmage.Email != "" {
+			archEmail = tower.Archmage.Email
+		}
+	}
+	exec.Command("git", "-C", dir, "config", "--worktree", "user.name", archName).Run()
+	exec.Command("git", "-C", dir, "config", "--worktree", "user.email", archEmail).Run()
+
 	return &StagingWorktree{
 		repoPath: repoPath,
 		branch:   branch,
