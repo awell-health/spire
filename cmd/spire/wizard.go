@@ -82,7 +82,7 @@ func cmdWizardRun(args []string) error {
 	}
 	maxTurns := repoCfg.Agent.MaxTurns
 	if maxTurns == 0 {
-		maxTurns = 30
+		maxTurns = 75
 	}
 	designTimeout := repoCfg.Agent.DesignTimeout
 	if designTimeout == "" {
