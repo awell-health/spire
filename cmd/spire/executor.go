@@ -574,6 +574,7 @@ func (e *formulaExecutor) enrichSubtasksWithChangeSpecs(children []Bead, epicCon
 		model = "claude-opus-4-6"
 	}
 	maxTurns := pc.GetMaxTurns()
+	enriched := 0
 
 	for _, child := range children {
 		// Skip already-enriched subtasks (has a change spec comment)
@@ -664,10 +665,11 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 			e.log("warning: post change spec for %s: %s", child.ID, commentErr)
 		} else {
 			e.log("posted change spec for %s", child.ID)
+			enriched++
 		}
 	}
 
-	storeAddComment(e.beadID, fmt.Sprintf("Wizard: enriched %d subtasks with change specs.", len(children)))
+	storeAddComment(e.beadID, fmt.Sprintf("Wizard: enriched %d/%d subtasks with change specs.", enriched, len(children)))
 	return nil
 }
 
