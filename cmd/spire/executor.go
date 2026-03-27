@@ -218,7 +218,6 @@ func (e *formulaExecutor) Run() error {
 		}
 
 		e.log("phase: %s (role: %s)", phase, pc.GetRole())
-		setPhase(e.beadID, phase)
 		e.saveState()
 
 		// Merge phase has its own handler regardless of role.
