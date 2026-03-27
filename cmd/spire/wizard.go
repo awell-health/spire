@@ -355,10 +355,11 @@ func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err
 func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string) (*WorktreeContext, error) {
 	worktreeBase := filepath.Join(os.TempDir(), "spire-wizard", wizardName)
 	worktreeDir := filepath.Join(worktreeBase, beadID)
+	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
 
 	// Clean up any stale worktree at this path
 	if _, err := os.Stat(worktreeDir); err == nil {
-		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", worktreeDir).Run()
+		rc.ForceRemoveWorktree(worktreeDir)
 		os.RemoveAll(worktreeDir)
 	}
 
@@ -367,21 +368,14 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 	}
 
 	// Try creating worktree with new branch from base
-	cmd := exec.Command("git", "-C", repoPath, "worktree", "add", "-b", branchName, worktreeDir, baseBranch)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	wc, err := rc.CreateWorktreeNewBranch(worktreeDir, branchName, baseBranch)
+	if err != nil {
 		// Branch may already exist (--review-fix path). Fetch and check out the existing branch.
-		exec.Command("git", "-C", repoPath, "fetch", "origin", branchName).Run()
-		cmd2 := exec.Command("git", "-C", repoPath, "worktree", "add", worktreeDir, branchName)
-		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			return nil, fmt.Errorf("git worktree add: %s\n%s\n(retry with existing branch): %s\n%s", err, string(out), err2, string(out2))
+		rc.Fetch("origin", branchName)
+		wc, err = rc.CreateWorktree(worktreeDir, branchName)
+		if err != nil {
+			return nil, fmt.Errorf("git worktree add: %w", err)
 		}
-	}
-
-	wc := &WorktreeContext{
-		Dir:        worktreeDir,
-		Branch:     branchName,
-		BaseBranch: baseBranch,
-		RepoPath:   repoPath,
 	}
 
 	// Configure git user in worktree to the archmage identity so all commits

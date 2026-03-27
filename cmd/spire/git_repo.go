@@ -148,3 +148,72 @@ func (rc *RepoContext) HeadSHA() string {
 	out, _ := rc.git("rev-parse", "HEAD").Output()
 	return strings.TrimSpace(string(out))
 }
+
+// Checkout checks out the given branch in the main repo.
+func (rc *RepoContext) Checkout(branch string) error {
+	if out, err := rc.git("checkout", branch).CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout %s: %w\n%s", branch, err, out)
+	}
+	return nil
+}
+
+// Fetch fetches a ref from the given remote.
+func (rc *RepoContext) Fetch(remote, ref string) error {
+	if out, err := rc.git("fetch", remote, ref).CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch %s %s: %w\n%s", remote, ref, err, out)
+	}
+	return nil
+}
+
+// PullFFOnly pulls a branch from the given remote using fast-forward only.
+func (rc *RepoContext) PullFFOnly(remote, branch string, env []string) error {
+	cmd := rc.git("pull", "--ff-only", remote, branch)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git pull --ff-only %s %s: %w\n%s", remote, branch, err, out)
+	}
+	return nil
+}
+
+// ForceRemoveWorktree force-removes a git worktree at the given directory.
+func (rc *RepoContext) ForceRemoveWorktree(dir string) error {
+	if out, err := rc.git("worktree", "remove", "--force", dir).CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree remove --force %s: %w\n%s", dir, err, out)
+	}
+	return nil
+}
+
+// CreateWorktreeNewBranch creates a new branch from startPoint and a worktree at dir,
+// returning a WorktreeContext for operations within it.
+func (rc *RepoContext) CreateWorktreeNewBranch(dir, newBranch, startPoint string) (*WorktreeContext, error) {
+	if out, err := rc.git("worktree", "add", "-b", newBranch, dir, startPoint).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git worktree add -b %s %s %s: %w\n%s", newBranch, dir, startPoint, err, out)
+	}
+	return &WorktreeContext{
+		Dir:        dir,
+		Branch:     newBranch,
+		BaseBranch: rc.BaseBranch,
+		RepoPath:   rc.Dir,
+	}, nil
+}
+
+// ForceBranch creates or resets a branch to current HEAD (git branch -f).
+func (rc *RepoContext) ForceBranch(name string) error {
+	if out, err := rc.git("branch", "-f", name).CombinedOutput(); err != nil {
+		return fmt.Errorf("git branch -f %s: %w\n%s", name, err, out)
+	}
+	return nil
+}
+
+// gitConfigGet reads a git config value. Pass extra args like "--global" before the key.
+// Returns "" if the key is not set or git fails.
+func gitConfigGet(args ...string) string {
+	cmdArgs := append([]string{"config"}, args...)
+	out, err := exec.Command("git", cmdArgs...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
