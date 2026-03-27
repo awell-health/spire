@@ -798,16 +798,16 @@ func categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		}
 
 		phase := getBoardBeadPhase(b)
-		switch phase {
-		case "design":
+		switch {
+		case phase == "design":
 			c.Design = append(c.Design, b)
-		case "plan":
+		case phase == "plan":
 			c.Plan = append(c.Plan, b)
-		case "implement":
+		case phase == "implement":
 			c.Implement = append(c.Implement, b)
-		case "review":
+		case strings.HasPrefix(phase, "review"):
 			c.Review = append(c.Review, b)
-		case "merge":
+		case phase == "merge":
 			c.Merge = append(c.Merge, b)
 		default:
 			// No phase label → Ready.

@@ -790,8 +790,9 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx, idx)
 				e.log("  dispatching %s for %s", name, beadID)
 
-				// Mark subtask as in_progress before dispatching
+				// Mark subtask as in_progress and set implement phase before dispatching
 				storeUpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
+				setPhase(beadID, "implement")
 
 				extraArgs := []string{"--apprentice"}
 				h, spawnErr := e.spawner.Spawn(SpawnConfig{
@@ -826,6 +827,9 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 				Status: "closed",
 				Branch: fmt.Sprintf("feat/%s", r.BeadID),
 				Agent:  r.Agent,
+			}
+			if err := storeCloseBead(r.BeadID); err != nil {
+				e.log("warning: close subtask %s: %s", r.BeadID, err)
 			}
 		}
 
@@ -1282,6 +1286,17 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	// Clean up the feature/staging branch
 	exec.Command("git", "-C", repoPath, "branch", "-d", branch).Run()
 	exec.Command("git", "-C", repoPath, "push", "origin", "--delete", branch).Run()
+
+	// Close any orphan subtasks that were not closed by the wave (e.g. skipped or failed).
+	if children, childErr := storeGetChildren(e.beadID); childErr == nil {
+		for _, child := range children {
+			if child.Status != "closed" {
+				if err := storeCloseBead(child.ID); err != nil {
+					e.log("warning: close orphan subtask %s: %s", child.ID, err)
+				}
+			}
+		}
+	}
 
 	// Close the bead
 	storeRemoveLabel(e.beadID, "review-approved")
