@@ -115,11 +115,13 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 					e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
 					// Use a temporary worktree — never checkout in main worktree.
 					fixWt, fixWtErr := NewStagingWorktree(e.state.RepoPath, e.state.StagingBranch, fmt.Sprintf("spire-fix-merge-%s", e.beadID), e.log)
-					if fixWtErr == nil {
-						if mergeErr := fixWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
-							e.log("warning: merge fix into staging: %s", mergeErr)
-						}
-						fixWt.Close()
+					if fixWtErr != nil {
+						return fmt.Errorf("create fix-merge worktree: %w", fixWtErr)
+					}
+					mergeErr := fixWt.MergeBranch(fixBranch, e.resolveConflicts)
+					fixWt.Close()
+					if mergeErr != nil {
+						return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
 					}
 				}
 			} else {
