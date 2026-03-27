@@ -289,6 +289,30 @@ agent won't.
 failed because the agent created new files but didn't delete from the
 original. The same bug happened 4 times.
 
+### 13. Packages enforce boundaries, not file names
+
+Every distinct concern lives in its own Go package under `pkg/`. The
+compiler enforces that packages don't reach into each other's internals.
+File-level separation (executor_design.go vs executor_plan.go) is
+organization. Package-level separation (pkg/executor vs pkg/store) is
+architecture. Both matter but only packages are enforced.
+
+Target package structure (see design bead spi-ud60n):
+
+| Package | What | Depends on |
+|---------|------|-----------|
+| `pkg/git` | RepoContext + WorktreeContext | os/exec only |
+| `pkg/store` | Bead persistence interface | beads library |
+| `pkg/formula` | Formula parsing + resolution | toml parser |
+| `pkg/config` | Tower + repo + credential config | os, json, yaml |
+| `pkg/agent` | Agent invocation (process/docker/k8s) | git, config |
+| `pkg/executor` | Formula execution engine | store, git, formula, agent |
+| `pkg/dolt` | Dolt server lifecycle + sync | config |
+| `pkg/integration` | Linear, webhooks, OAuth | store, config |
+| `cmd/spire` | CLI dispatch (thin) | everything (composition root) |
+
+No circular dependencies. Each package depends only downward.
+
 ## Code rules
 
 ### Use the store API, not bd subprocess
