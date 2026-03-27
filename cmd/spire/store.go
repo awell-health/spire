@@ -842,6 +842,25 @@ func stepBeadPhaseName(b Bead) string {
 	return hasLabel(b, "step:")
 }
 
+// storeGetLatestReviewVerdict returns the verdict from the latest closed review bead.
+// Returns "approve", "request_changes", or "" if no review bead is found.
+// The verdict is stored in the review bead's description as "verdict: <verdict>\n...".
+func storeGetLatestReviewVerdict(parentID string) string {
+	reviews, err := storeGetReviewBeads(parentID)
+	if err != nil || len(reviews) == 0 {
+		return ""
+	}
+	latest := reviews[len(reviews)-1]
+	if strings.HasPrefix(latest.Description, "verdict: ") {
+		verdictLine := latest.Description[len("verdict: "):]
+		if idx := strings.Index(verdictLine, "\n"); idx >= 0 {
+			verdictLine = verdictLine[:idx]
+		}
+		return strings.TrimSpace(verdictLine)
+	}
+	return ""
+}
+
 // storeCommitPending commits pending dolt changes. Requires pendingCommitter sub-interface.
 func storeCommitPending(message string) error {
 	store, err := ensureStore()
