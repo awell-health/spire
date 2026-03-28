@@ -84,7 +84,7 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 //  2. Labels the bead needs-human so spire board surfaces it
 //  3. Leaves the bead at its current phase
 //
-// Failure types: "merge-failure", "build-failure", "repo-resolution", "arbiter-failure"
+// Failure types: "merge-failure", "build-failure", "repo-resolution", "arbiter-failure", "review-fix-merge-conflict"
 func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *Deps) {
 	// Label needs-human so the board surfaces it in ALERTS.
 	deps.AddLabel(beadID, "needs-human")

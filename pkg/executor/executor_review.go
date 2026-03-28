@@ -122,9 +122,13 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 					e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
 					stagingWt, wtErr := e.ensureStagingWorktree()
 					if wtErr != nil {
+						EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
+							fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
 						return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
 					}
 					if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
+						EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
+							fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
 						return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
 					}
 				}
