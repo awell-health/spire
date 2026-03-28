@@ -7,6 +7,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
+	"github.com/awell-health/spire/pkg/steward"
 )
 
 func init() {

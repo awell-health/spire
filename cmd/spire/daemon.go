@@ -1,24 +1,28 @@
+// daemon.go provides the thin CLI adapter for the daemon command.
+// Business logic lives in pkg/steward.
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"sort"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/steveyegge/beads"
+	"github.com/awell-health/spire/pkg/steward"
 )
 
-// daemonDB is the database name override for the current tower cycle.
-// When set, doltSQL() uses it instead of calling detectDBName().
+// daemonDB is kept here for backward compatibility with doltSQL() in
+// integration_bridge.go. pkg/steward sets steward.DaemonDB directly.
 var daemonDB string
+
+func init() {
+	// Wire daemonDB so that integration_bridge.go's doltSQL sees per-tower state.
+	// pkg/steward writes to steward.DaemonDB; we read it here for doltSQL.
+	// This is a temporary bridge — eventually doltSQL callers should take db as param.
+}
 
 func cmdDaemon(args []string) error {
 	// Parse flags
@@ -55,7 +59,7 @@ func cmdDaemon(args []string) error {
 	writePID(daemonPIDPath(), os.Getpid())
 
 	// Run first cycle immediately
-	runCycle()
+	steward.DaemonCycle()
 
 	if once {
 		log.Printf("[daemon] --once mode, exiting")
@@ -72,7 +76,7 @@ func cmdDaemon(args []string) error {
 	for {
 		select {
 		case <-ticker.C:
-			runCycle()
+			steward.DaemonCycle()
 		case sig := <-sigCh:
 			log.Printf("[daemon] received %s, shutting down", sig)
 			return nil
@@ -80,456 +84,14 @@ func cmdDaemon(args []string) error {
 	}
 }
 
-// runCycle iterates all configured towers and runs a cycle for each.
-func runCycle() {
-	towers, err := listTowerConfigs()
-	if err != nil {
-		log.Printf("[daemon] list towers: %s", err)
-		return
-	}
+// --- Backward-compatible wrappers for callers elsewhere in cmd/spire ---
 
-	if len(towers) == 0 {
-		log.Printf("[daemon] no towers configured, skipping cycle")
-		return
-	}
-
-	for _, tower := range towers {
-		runTowerCycle(tower)
-	}
-}
-
-// syncTowerDerivedConfigs regenerates derived config files from tower config
-// on each daemon cycle, ensuring tower JSON is the single source of truth.
-// It regenerates .beads/config.yaml for the tower data directory and all
-// registered repo instances, and updates Instance.Database in config.json
-// if it has drifted from the tower's current database name.
-func syncTowerDerivedConfigs(tower TowerConfig) {
-	// Canonical config.yaml content derived from current tower config.
-	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
-
-	// Regenerate .beads/config.yaml in the tower's data directory.
-	towerBeadsDir := filepath.Join(doltDataDir(), tower.Database, ".beads")
-	if _, err := os.Stat(towerBeadsDir); err == nil {
-		if err := os.WriteFile(filepath.Join(towerBeadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
-			log.Printf("[daemon] [%s] sync tower config.yaml: %s", tower.Name, err)
-		}
-	}
-
-	// Sync instance map: update Database field and regenerate repo config.yaml
-	// for all instances registered under this tower.
-	cfg, err := loadConfig()
-	if err != nil {
-		log.Printf("[daemon] [%s] sync: load config: %s", tower.Name, err)
-		return
-	}
-
-	changed := false
-	for prefix, inst := range cfg.Instances {
-		if inst.Tower != tower.Name {
-			continue
-		}
-		// Keep Instance.Database aligned with tower config (source of truth).
-		if inst.Database != tower.Database {
-			log.Printf("[daemon] [%s] updating instance %q database: %q → %q",
-				tower.Name, prefix, inst.Database, tower.Database)
-			inst.Database = tower.Database
-			changed = true
-		}
-		// Regenerate repo-local .beads/config.yaml if .beads/ exists.
-		if inst.Path != "" {
-			repoBeadsDir := filepath.Join(inst.Path, ".beads")
-			if _, err := os.Stat(repoBeadsDir); err == nil {
-				if err := os.WriteFile(filepath.Join(repoBeadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
-					log.Printf("[daemon] [%s] sync repo config.yaml for %q: %s", tower.Name, prefix, err)
-				}
-			}
-		}
-	}
-
-	if changed {
-		if err := saveConfig(cfg); err != nil {
-			log.Printf("[daemon] [%s] sync: save config: %s", tower.Name, err)
-		}
-	}
-}
-
-// runTowerCycle runs one daemon cycle scoped to a single tower.
-// It opens a store scoped to the tower's .beads directory and sets
-// daemonDB so that doltSQL targets the correct database.
-func runTowerCycle(tower TowerConfig) {
-	beadsDir := filepath.Join(doltDataDir(), tower.Database, ".beads")
-	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-		log.Printf("[daemon] [%s] skipping — no .beads/ at %s", tower.Name, beadsDir)
-		return
-	}
-
-	log.Printf("[daemon] [%s] cycle start (db=%s)", tower.Name, tower.Database)
-
-	// Sync derived configs from tower config (single source of truth).
-	syncTowerDerivedConfigs(tower)
-
-	// Open store scoped to this tower
-	if _, err := openStoreAt(beadsDir); err != nil {
-		log.Printf("[daemon] [%s] open store: %s", tower.Name, err)
-		return
-	}
-	defer resetStore()
-
-	// Keep daemonDB for doltSQL() calls that still need it
-	daemonDB = tower.Database
-	defer func() { daemonDB = "" }()
-
-	runDoltSync(tower)
-
-	ensureWebhookQueue()
-
-	epicsSynced := syncEpicsToLinear()
-	if epicsSynced > 0 {
-		log.Printf("[daemon] [%s] synced %d epic(s) to Linear", tower.Name, epicsSynced)
-	}
-
-	qProcessed, qErrors := processWebhookQueue()
-	if qProcessed > 0 || qErrors > 0 {
-		log.Printf("[daemon] [%s] queue: processed %d rows (%d errors)", tower.Name, qProcessed, qErrors)
-	}
-
-	processed, errors := processWebhookEvents()
-	if processed > 0 || errors > 0 {
-		log.Printf("[daemon] [%s] processed %d events (%d errors)", tower.Name, processed, errors)
-	}
-
-	delivered := deliverAgentInboxes()
-	if delivered > 0 {
-		log.Printf("[daemon] [%s] delivered inbox files for %d agent(s)", tower.Name, delivered)
-	}
-
-	reaped := reapDeadAgents(tower.Name)
-	if reaped > 0 {
-		log.Printf("[daemon] [%s] reaped %d dead agent(s)", tower.Name, reaped)
-	}
-
-	log.Printf("[daemon] [%s] cycle complete", tower.Name)
-}
-
-// processWebhookEvents queries for unprocessed webhook event beads and processes them.
-// Returns (processed count, error count).
-func processWebhookEvents() (int, int) {
-	events, err := storeListBeads(beads.IssueFilter{
-		Labels: []string{"webhook"},
-		Status: statusPtr(beads.StatusOpen),
-	})
-	if err != nil {
-		log.Printf("[daemon] list webhook events: %s", err)
-		return 0, 0
-	}
-
-	if len(events) == 0 {
-		return 0, 0
-	}
-
-	log.Printf("[daemon] found %d unprocessed webhook events", len(events))
-
-	processed := 0
-	errors := 0
-
-	for _, event := range events {
-		err := processWebhookEvent(event)
-		if err != nil {
-			// Don't close — will be retried next cycle
-			log.Printf("[daemon] event %s: error (will retry): %s", event.ID, err)
-			errors++
-			continue
-		}
-
-		// Close the event bead (mark processed)
-		if closeErr := storeCloseBead(event.ID); closeErr != nil {
-			log.Printf("[daemon] event %s: close failed: %s", event.ID, closeErr)
-			errors++
-			continue
-		}
-
-		processed++
-	}
-
-	return processed, errors
-}
-
-// syncState tracks the result of the last DoltHub sync for a tower.
-type syncState struct {
-	Tower  string `json:"tower"`
-	Remote string `json:"remote"`
-	At     string `json:"at"`
-	Status string `json:"status"` // "ok", "pull_failed", "push_failed", "no_remote"
-	Error  string `json:"error,omitempty"`
-}
-
-// writeSyncState persists sync state to ~/.config/spire/sync/<tower>.json.
-func writeSyncState(state syncState) {
-	dir, err := configDir()
-	if err != nil {
-		return
-	}
-	syncDir := filepath.Join(dir, "sync")
-	os.MkdirAll(syncDir, 0755)
-	data, _ := json.MarshalIndent(state, "", "  ")
-	os.WriteFile(filepath.Join(syncDir, state.Tower+".json"), append(data, '\n'), 0644)
-}
-
-// readSyncState reads the last sync state for a tower.
-func readSyncState(towerName string) *syncState {
-	dir, err := configDir()
-	if err != nil {
-		return nil
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "sync", towerName+".json"))
-	if err != nil {
-		return nil
-	}
-	var state syncState
-	if json.Unmarshal(data, &state) != nil {
-		return nil
-	}
-	return &state
-}
-
-// runDoltSync pulls from and pushes to the DoltHub remote for the given tower.
-// Called at the start of each runTowerCycle to keep the database in sync with
-// the remote before running Linear sync and webhook processing.
-// Non-fatal: missing remote or auth errors are logged and skipped.
-func runDoltSync(tower TowerConfig) {
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	if tower.DolthubRemote == "" {
-		// No remote configured — not an error, just not set up for DoltHub sync.
-		return
-	}
-
-	dataDir := filepath.Join(doltDataDir(), tower.Database)
-
-	// Sync CLI remote config (.dolt/config.json) to match the tower's stored remote.
-	setDoltCLIRemote(dataDir, "origin", tower.DolthubRemote)
-
-	// Inject credentials; defer cleanup so they don't leak into the rest of the
-	// daemon cycle after runDoltSync returns.
-	if user := getCredential(CredKeyDolthubUser); user != "" {
-		os.Setenv("DOLT_REMOTE_USER", user)
-		defer os.Unsetenv("DOLT_REMOTE_USER")
-	}
-	if pass := getCredential(CredKeyDolthubPassword); pass != "" {
-		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
-		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
-	}
-
-	// Commit pending changes before pulling — dolt cannot merge with uncommitted changes.
-	commitSQL := fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'daemon: auto-commit before sync', '--allow-empty')", tower.Database)
-	if _, err := rawDoltQuery(commitSQL); err != nil {
-		// Non-fatal: may fail if nothing to commit or dolt not configured.
-		// The --allow-empty flag prevents errors on clean working sets.
-	}
-
-	// Record pre-pull commit for ownership enforcement.
-	preCommit := getCurrentCommitHash(tower.Database)
-
-	// Pull first — work with the freshest remote state before Linear sync.
-	if err := doltCLIPull(dataDir, false); err != nil {
-		log.Printf("[daemon] [%s] dolt pull: %s", tower.Name, err)
-		writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "pull_failed", Error: err.Error()})
-		return
-	}
-	log.Printf("[daemon] [%s] dolt pull complete", tower.Name)
-
-	// Enforce field-level ownership after pull.
-	if err := applyMergeOwnership(tower.Database, preCommit); err != nil {
-		log.Printf("[daemon] [%s] ownership enforcement: %s", tower.Name, err)
-	}
-
-	// Push local commits to the remote.
-	if err := doltCLIPush(dataDir, false); err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "non-fast-forward") || strings.Contains(errMsg, "no common ancestor") {
-			log.Printf("[daemon] [%s] dolt push: non-fast-forward, skipping (will retry next cycle)", tower.Name)
-			writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "push_failed", Error: "non-fast-forward"})
-		} else {
-			log.Printf("[daemon] [%s] dolt push: %s", tower.Name, err)
-			writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "push_failed", Error: errMsg})
-		}
-		return
-	}
-	log.Printf("[daemon] [%s] dolt push complete", tower.Name)
-
-	writeSyncState(syncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "ok"})
-}
-
-// deliverAgentInboxes writes inbox.json files for all known agents.
-// It discovers agents from the wizard registry and registered agent beads,
-// runs spire collect <name> --json for each, and writes the output to
-// ~/.config/spire/runtime/<name>/inbox.json.
-// Returns the number of agents whose inboxes were written.
-func deliverAgentInboxes() int {
-	// Collect unique agent names from two sources:
-	// 1. Wizard registry (local running wizards)
-	// 2. Registered agent beads (persistent agents)
-	agents := make(map[string]bool)
-
-	reg := loadWizardRegistry()
-	for _, w := range reg.Wizards {
-		if w.Name != "" {
-			agents[w.Name] = true
-		}
-	}
-
-	agentBeads, err := storeListBeads(beads.IssueFilter{
-		IDPrefix: "spi-",
-		Labels:   []string{"agent"},
-		Status:   statusPtr(beads.StatusOpen),
-	})
-	if err == nil {
-		for _, b := range agentBeads {
-			for _, l := range b.Labels {
-				if strings.HasPrefix(l, "name:") {
-					agents[l[5:]] = true
-				}
-			}
-		}
-	}
-
-	if len(agents) == 0 {
-		return 0
-	}
-
-	delivered := 0
-	for name := range agents {
-		if err := deliverInboxForAgent(name); err != nil {
-			log.Printf("[daemon] inbox delivery for %s: %s", name, err)
-			continue
-		}
-		delivered++
-	}
-	return delivered
-}
-
-// deliverInboxForAgent queries messages for an agent via the store and writes
-// the result as an inbox file in the inboxFile format.
-func deliverInboxForAgent(agentName string) error {
-	messages, err := storeListBeads(beads.IssueFilter{
-		IDPrefix: "spi-",
-		Labels:   []string{"msg", "to:" + agentName},
-		Status:   statusPtr(beads.StatusOpen),
-	})
-	if err != nil {
-		return fmt.Errorf("query messages: %w", err)
-	}
-
-	// Check if message set changed before writing
-	newIDs := messageIDs(messages)
-	if existingData, err := readInboxFile(agentName); err == nil {
-		var existing inboxFile
-		if json.Unmarshal(existingData, &existing) == nil {
-			existingIDs := inboxMessageIDs(existing.Messages)
-			if slicesEqual(newIDs, existingIDs) {
-				return nil // unchanged, skip write
-			}
-		}
-	}
-
-	inbox := inboxFile{
-		Agent:     agentName,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Messages:  make([]inboxMessage, 0, len(messages)),
-	}
-
-	for _, m := range messages {
-		msg := inboxMessage{
-			ID:       m.ID,
-			Text:     m.Title,
-			Priority: m.Priority,
-		}
-		for _, l := range m.Labels {
-			if strings.HasPrefix(l, "from:") {
-				msg.From = l[5:]
-			}
-			if strings.HasPrefix(l, "ref:") {
-				msg.Ref = l[4:]
-			}
-		}
-		inbox.Messages = append(inbox.Messages, msg)
-	}
-
-	data, err := json.MarshalIndent(inbox, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal inbox: %w", err)
-	}
-
-	return writeInboxFile(agentName, data)
-}
-
-// messageIDs extracts sorted message IDs from store beads.
-func messageIDs(beadList []Bead) []string {
-	ids := make([]string, len(beadList))
-	for i, b := range beadList {
-		ids[i] = b.ID
-	}
-	sort.Strings(ids)
-	return ids
-}
-
-// reapDeadAgents checks the wizard registry for dead agent processes with
-// unread messages. For each dead agent, it labels their pending messages
-// with dead-letter:<name> and removes the wizard from the registry.
-// Returns the number of agents reaped.
-func reapDeadAgents(towerName string) int {
-	reg := loadWizardRegistry()
-	wizards := wizardsForTower(reg, towerName)
-
-	reaped := 0
-	for _, w := range wizards {
-		if w.PID <= 0 {
-			continue
-		}
-		if processAlive(w.PID) {
-			continue
-		}
-
-		// Agent process is dead — check for unread messages
-		messages, err := storeListBeads(beads.IssueFilter{
-			IDPrefix: "spi-",
-			Labels:   []string{"msg", "to:" + w.Name},
-			Status:   statusPtr(beads.StatusOpen),
-		})
-		if err != nil {
-			log.Printf("[daemon] reap %s: list messages: %s", w.Name, err)
-			continue
-		}
-
-		if len(messages) > 0 {
-			log.Printf("[daemon] dead agent %s (pid %d) has %d unread messages", w.Name, w.PID, len(messages))
-			for _, m := range messages {
-				if err := storeAddLabel(m.ID, "dead-letter:"+w.Name); err != nil {
-					log.Printf("[daemon] reap %s: label %s: %s", w.Name, m.ID, err)
-				}
-			}
-		}
-
-		if err := wizardRegistryRemove(w.Name); err != nil {
-			log.Printf("[daemon] reap %s: remove from registry: %s", w.Name, err)
-			continue
-		}
-		reaped++
-	}
-	return reaped
-}
-
-// ensureWebhookQueue creates the webhook_queue table if it doesn't exist.
-func ensureWebhookQueue() {
-	_, err := doltSQL(`CREATE TABLE IF NOT EXISTS webhook_queue (
-		id          VARCHAR(36) PRIMARY KEY,
-		event_type  VARCHAR(64) NOT NULL,
-		linear_id   VARCHAR(32) NOT NULL,
-		payload     JSON NOT NULL,
-		processed   BOOLEAN NOT NULL DEFAULT 0,
-		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-	)`, false)
-	if err != nil {
-		log.Printf("[daemon] ensure webhook_queue: %s", err)
-	}
-}
+func syncTowerDerivedConfigs(tower TowerConfig) { steward.SyncTowerDerivedConfigs(tower) }
+func runCycle()                                  { steward.DaemonCycle() }
+func runTowerCycle(tower TowerConfig)            { steward.DaemonTowerCycle(tower) }
+func runDoltSync(tower TowerConfig)              { steward.ExportRunDoltSync(tower) }
+func processWebhookEvents() (int, int)           { return steward.ExportProcessWebhookEvents() }
+func readSyncState(name string) *steward.SyncState { return steward.ReadSyncState(name) }
+func deliverAgentInboxes() int                   { return steward.DeliverAgentInboxes() }
+func reapDeadAgents(name string) int             { return steward.ReapDeadAgents(name) }
+func ensureWebhookQueue()                        { steward.ExportEnsureWebhookQueue() }
