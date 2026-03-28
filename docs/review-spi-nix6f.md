@@ -36,9 +36,9 @@ Label writes for owner:, phase:, review-ready, review-feedback, review-assigned,
 | .6 | Migrate steward.go: owner: label → storeGetActiveAttempt | steward.go, steward_local_test.go, store.go |
 | .7 | Migrate webhook.go: owner: label → attempt bead query | webhook.go, webhook_test.go |
 | .8 | Migrate wizard_review.go: review-round: label → storeGetReviewBeads | wizard_review.go, review_round_test.go |
-| .9 | Remove setPhase + all 19 call sites (split from .4) | phase.go, executor.go, wizard.go, wizard_review.go, close_advance.go, workshop_implement.go, workshop_review.go |
+| .9 | Remove setPhase + all 19 call sites (split from .4) | phase.go, executor.go, wizard.go, wizard_review.go, close_advance.go, wizard_epic_implement.go, wizard_epic_review.go |
 | .10 | Remove owner: label writes (split from .4) | wizard.go, summon.go, claim.go |
-| .11 | Migrate steward review routing from labels to review beads + remove review-ready/feedback/assigned label writes (split from .4) | steward.go, wizard_review.go, wizard.go, terminal_steps.go, summon.go, executor.go, workshop_review.go |
+| .11 | Migrate steward review routing from labels to review beads + remove review-ready/feedback/assigned label writes (split from .4) | steward.go, wizard_review.go, wizard.go, terminal_steps.go, summon.go, executor.go, wizard_epic_review.go |
 | .12 | Remove implemented-by: and review-round: label writes (split from .4, closed — covered by .11) | (included in .11's changes) |
 
 ## Invariants to verify

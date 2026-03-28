@@ -148,7 +148,7 @@ kubectl get pods -n spire -l spire.awell.io/managed=true
 
 Each pod is named `spire-agent-{agent}-{bead-id}`. The pod has two containers:
 - `worker` — runs the agent entrypoint
-- `sidecar` — polls inbox and serves health checks
+- `familiar` — polls inbox and serves health checks
 
 ### Read pod logs
 
@@ -156,8 +156,8 @@ Each pod is named `spire-agent-{agent}-{bead-id}`. The pod has two containers:
 # Worker logs
 kubectl logs -n spire spire-agent-ci-worker-spi-a3f8 -c worker
 
-# Sidecar logs
-kubectl logs -n spire spire-agent-ci-worker-spi-a3f8 -c sidecar
+# Familiar logs
+kubectl logs -n spire spire-agent-ci-worker-spi-a3f8 -c familiar
 ```
 
 ### Check metrics
@@ -194,8 +194,8 @@ The agent must be `mode: managed`. Check `kubectl get spireagents -n spire -o ya
 **Worker fails immediately:**
 Check `SPIRE_REPO_URL` — the worker needs to clone a repo. Check that `GITHUB_TOKEN` is set if the repo is private. Look at worker logs: `kubectl logs <pod> -c worker`.
 
-**Sidecar not ready:**
-The sidecar needs to successfully run `spire collect` at least once. It runs in `/data` where beads state lives. If `/data/.beads` doesn't exist yet (worker hasn't initialized), the sidecar will retry.
+**Familiar not ready:**
+The familiar needs to successfully run `spire collect` at least once. It runs in `/data` where beads state lives. If `/data/.beads` doesn't exist yet (worker hasn't initialized), the familiar will retry.
 
 **Stale workloads not being reassigned:**
 Wait for the reassign threshold (default: 6h). Or reduce it: edit SpireConfig `spec.polling.reassignThreshold`.

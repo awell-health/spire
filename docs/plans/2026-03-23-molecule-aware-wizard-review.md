@@ -2,10 +2,14 @@
 
 **Goal:** Wizards follow the spire-agent-work molecule (design → implement →
 review → merge), close steps as they progress, and hand off to an Opus-powered
-review agent. Wizard exits after implementation; reviewer is a separate
+review agent (sage). Wizard exits after implementation; reviewer is a separate
 one-shot process. Both use the existing label-based review state machine.
 
 **Date:** 2026-03-23 (rev 7 — addresses round 6 review findings)
+
+> **Note (2026-03-28):** References to "artificer" in this plan refer to the
+> old `cmd/spire-artificer/` binary which has been removed. The wizard now
+> handles all orchestration. The review agent is the sage (`wizard-review`).
 
 ---
 

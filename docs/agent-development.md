@@ -269,8 +269,8 @@ The `spire focus` command assembles most of this automatically.
 ## Container agents (k8s)
 
 In Kubernetes, agents run as pods with two containers:
-- **wizard container**: runs `agent-entrypoint.sh` (or `spire-artificer` for epics)
-- **sidecar container**: runs `spire-sidecar` for messaging and health checks
+- **wizard container**: runs `agent-entrypoint.sh`
+- **familiar container**: runs `spire-sidecar` for messaging and health checks
 
 ### Communication protocol
 
@@ -278,13 +278,13 @@ Containers communicate via the shared `/comms` emptyDir volume:
 
 | File | Writer | Reader | Purpose |
 |------|--------|--------|---------|
-| `inbox.json` | sidecar | wizard | Messages from other agents |
-| `control` | sidecar | wizard | STOP, STEER, PAUSE, RESUME |
-| `result.json` | wizard | sidecar | Run outcome (triggers shutdown) |
-| `wizard-alive` | wizard | sidecar | Heartbeat (liveness) |
-| `heartbeat` | sidecar | operator | Sidecar liveness |
+| `inbox.json` | familiar | wizard | Messages from other agents |
+| `control` | familiar | wizard | STOP, STEER, PAUSE, RESUME |
+| `result.json` | wizard | familiar | Run outcome (triggers shutdown) |
+| `wizard-alive` | wizard | familiar | Heartbeat (liveness) |
+| `heartbeat` | familiar | operator | Familiar liveness |
 
-The wizard writes `result.json` when done. The sidecar detects this and exits, which triggers the operator to reap the pod.
+The wizard writes `result.json` when done. The familiar detects this and exits, which triggers the operator to reap the pod.
 
 ### Custom agent image
 
@@ -340,7 +340,7 @@ The operator monitors SpireAgent `status.phase`:
 | `Stale` | Exceeded `spire.yaml`'s `agent.stale` threshold |
 | `Offline` | Heartbeat timeout |
 
-The sidecar writes `heartbeat` every 30 seconds. The operator marks agents `Offline` if the heartbeat is too old.
+The familiar writes `heartbeat` every 30 seconds. The operator marks agents `Offline` if the heartbeat is too old.
 
 ---
 

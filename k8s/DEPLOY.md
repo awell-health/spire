@@ -39,7 +39,7 @@ Required secrets:
 - `ANTHROPIC_API_KEY_DEFAULT` — Anthropic API key for managed agents
 
 Optional:
-- `ANTHROPIC_API_KEY_HEAVY` — separate key for Opus-tier workloads (artificer)
+- `ANTHROPIC_API_KEY_HEAVY` — separate key for Opus-tier workloads (wizard)
 - `LINEAR_API_KEY` — for Linear epic sync
 
 ### 3. Update the beads-seed ConfigMap
@@ -96,7 +96,7 @@ make status
 Expected output:
 - `spire-dolt` pod — Running
 - `spire-operator` pod — Running
-- `spire-steward` pod — Running (2 containers: steward + sidecar)
+- `spire-steward` pod — Running (2 containers: steward + steward-sidecar)
 - SpireAgents — listed with phase Idle/Working
 
 ## Architecture
@@ -146,7 +146,7 @@ After code changes, the fastest path depends on what you changed:
 # Changed steward code or entrypoint:
 make steward        # ~15s (Go compile + load + restart)
 
-# Changed agent/artificer code or agent-entrypoint.sh:
+# Changed agent/wizard code or agent-entrypoint.sh:
 make agent          # ~15s (Go compile + load)
 # Then restart any running wizard pods or wait for next assignment
 

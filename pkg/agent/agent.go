@@ -43,7 +43,7 @@ type Spawner interface {
 }
 
 // Backend is the unified adapter for agent execution environments.
-// Every consumer (steward, workshop, status, logs) programs against this
+// Every consumer (steward, wizard, status, logs) programs against this
 // interface. Implementations exist for process and docker.
 //
 // Backend is a superset of Spawner — any function accepting
@@ -84,7 +84,7 @@ const (
 	// RoleSage is a per-review agent (wizard-review).
 	RoleSage SpawnRole = "sage"
 
-	// RoleWizard is a per-epic orchestrator (workshop).
+	// RoleWizard is the executor — handles full workflow for all workload types.
 	RoleWizard SpawnRole = "wizard"
 
 	// RoleExecutor is a formula-driven executor (execute).

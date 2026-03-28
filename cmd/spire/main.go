@@ -102,8 +102,8 @@ func main() {
 		err = cmdMetrics(args)
 	case "tower":
 		err = cmdTower(args)
-	case "workshop":
-		err = cmdWorkshop(args)
+	case "wizard-epic", "workshop":
+		err = cmdWizardEpic(args)
 	case "wizard-run":
 		err = cmdWizardRun(args)
 	case "wizard-review":
@@ -196,7 +196,7 @@ Work:
   advance <bead-id>     Advance bead to next formula phase (or close if at last phase)
   focus <bead-id>       Assemble read-only context for a task
   grok <bead-id>        Focus + live Linear context
-  workshop <epic-id>    Start wizard workshop for an epic
+  wizard-epic <epic-id>  Execute wizard epic orchestration
 
 Agents:
   summon [n]            Summon wizards (--targets <ids>, --auto)

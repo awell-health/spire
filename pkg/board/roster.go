@@ -109,7 +109,7 @@ func RosterFromK8s(timeout time.Duration) ([]RosterAgent, error) {
 	if names, err := exec.Command("kubectl", "get", "spireagent", "-n", "spire",
 		"-o", "jsonpath={.items[*].metadata.name}").Output(); err == nil {
 		for _, n := range strings.Fields(strings.TrimSpace(string(names))) {
-			if strings.HasPrefix(n, "wizard-") || strings.HasPrefix(n, "artificer") {
+			if strings.HasPrefix(n, "wizard-") {
 				agentNames = append(agentNames, n)
 			}
 		}
@@ -224,11 +224,6 @@ func RosterFromBeads(timeout time.Duration) []RosterAgent {
 		}
 
 		role := "wizard"
-		for _, l := range ab.Labels {
-			if strings.Contains(l, "artificer") {
-				role = "artificer"
-			}
-		}
 
 		agent := RosterAgent{
 			Name:         name,

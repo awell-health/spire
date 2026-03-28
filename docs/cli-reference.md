@@ -331,15 +331,17 @@ spire grok <bead-id>
 
 Like `spire focus` but also fetches the linked Linear issue for additional context (requires Linear integration).
 
-### `spire workshop`
+### `spire wizard-epic`
 
-Start a wizard workshop for an epic.
+Execute wizard epic orchestration.
 
 ```bash
-spire workshop <epic-id>
+spire wizard-epic <epic-id>
 ```
 
-Launches the artificer for long-running epic management. Used in k8s workshop pods; for local work, `spire summon` is the typical path.
+Runs the wizard in epic mode for long-running epic management. For local work, `spire summon` is the typical path.
+
+> **Note:** `workshop` remains as a deprecated alias for `wizard-epic`.
 
 ---
 

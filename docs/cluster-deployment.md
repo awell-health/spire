@@ -22,7 +22,7 @@ spire pull         <──  remote <────────────── s
                                                       |
                                                  wizard pods
                                                   ├── agent container
-                                                  └── sidecar container
+                                                  └── familiar container
 ```
 
 The cluster never creates a tower — it attaches to one you created locally. Developers file work locally, push to DoltHub, and the cluster picks it up.
@@ -355,7 +355,7 @@ kubectl get pods -n spire -l spire.awell.io/managed=true
 kubectl logs -n spire spire-agent-my-agent-spi-a3f8 -c wizard
 
 # Sidecar logs
-kubectl logs -n spire spire-agent-my-agent-spi-a3f8 -c sidecar
+kubectl logs -n spire spire-agent-my-agent-spi-a3f8 -c familiar
 ```
 
 ### Check workload status

@@ -13,8 +13,8 @@ CLAUDE.md tells you the rules. This file tells you the exact commands.
 | **Wizard** | Per-bead orchestrator | `spire summon N` | Driven by formula. Orchestrates the full lifecycle for any bead (task, bug, epic). Dispatches apprentices and sages as the formula requires |
 | **Apprentice** | Per-subtask implementer | dispatched by wizard | Writes code in a worktree. One-shot. Pure implementer (`--no-handoff`) |
 | **Sage** | Per-review agent | dispatched by wizard | Reviews implementation, produces verdict (`--verdict-only`). One-shot |
-| **Artificer** | Formula creator | `spire workshop` | Crafts and tests formulas. The workshop is the artificer's tool |
-| **Familiar** | Per-agent sidecar | daemon (local) / container (k8s) | Messaging infrastructure, inbox file delivery |
+| **Artificer** | Formula creator | Workshop CLI (not yet built) | Crafts and tests formulas (spells). Does NOT orchestrate epics or review code |
+| **Familiar** | Per-agent companion | daemon (local) / container (k8s) | Messaging infrastructure, inbox file delivery |
 
 A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration. A bug gets `spire-bugfix` (implement → review → merge). An epic gets `spire-epic` (plan → wave dispatch → review with judgment → merge). Same executor, different formula.
 
@@ -187,7 +187,7 @@ Override per-bead: `bd label add spi-abc "formula:spire-bugfix"`
 | claim, focus, board, roster | create, update, show, list |
 | send, collect, inbox, read (messages) | comments, labels, notes |
 | up, down, shutdown, status | dep, mol, formula, gate |
-| workshop, dismiss | close, reopen, children |
+| wizard-epic, dismiss | close, reopen, children |
 
 Rule of thumb: `spire` for coordination and agent lifecycle. `bd` for data operations on beads.
 
