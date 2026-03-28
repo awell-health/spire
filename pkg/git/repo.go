@@ -1,3 +1,13 @@
+// Package git provides the git abstraction layer for Spire. All git
+// operations go through one of three types:
+//
+//   - RepoContext: main repo operations (branches, worktrees, push, merge)
+//   - WorktreeContext: in-worktree operations (commit, diff, status, merge)
+//   - StagingWorktree: merge staging (embeds WorktreeContext, adds build/test/merge-to-main)
+//
+// This package has zero Spire-specific imports — only stdlib and os/exec.
+// Any project-specific behavior (e.g. archmage identity for commits) is
+// injected via parameters by the caller.
 package git
 
 import (

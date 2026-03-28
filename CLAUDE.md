@@ -107,13 +107,33 @@ bd list --json | jq '.[] | select(.id | startswith("api-"))'
 
 ## Code rules
 
-### Use the store API, not bdJSON
+### Package structure
 
-**Never use `bdJSON()` or shell out to `bd` for data access in new code.** Use the store API (`ensureStore()`, `storeListBoardBeads()`, `storeGetBlockedIssues()`, etc.) in `store.go`. The `bd` subprocess requires `.beads/` in the cwd, is slower, and breaks when run from other directories.
+Business logic lives in `pkg/` packages, not `cmd/spire/`. See
+SPIRE.md Principle 13 for the full package map and dependency rules.
 
-`bdJSON` is legacy — only `spire_test.go` still uses it. All production code paths (board, watch, roster, collect) have been migrated.
+| Package | What |
+|---------|------|
+| `pkg/store` | Bead persistence (queries, mutations, types) |
+| `pkg/config` | Tower, credentials, identity, keychain |
+| `pkg/formula` | Formula TOML parsing, phase pipeline |
+| `pkg/git` | RepoContext, WorktreeContext, StagingWorktree |
+| `pkg/dolt` | Dolt server lifecycle, push/pull/sync |
+| `pkg/agent` | Agent backends (process/docker), spawner |
+| `pkg/executor` | Formula execution engine (all phases) |
+| `pkg/integration` | Linear sync, webhooks, OAuth |
+| `cmd/spire` | CLI dispatch + bridge wiring only |
 
-For blocked/ready detection, use `storeGetBlockedIssues()` (calls `store.GetBlockedIssues()`) which returns blocker IDs. Do not use `hasBlockingDeps()` with dependency counts from `bd list`.
+### Use pkg/store, not bd subprocess
+
+**Never use `bdJSON()` or shell out to `bd` for data access in new code.**
+Use `pkg/store` directly: `store.GetBead()`, `store.ListBeads()`,
+`store.CreateBead()`, etc. Within `cmd/spire/`, bridge wrappers
+(`storeGetBead`, etc.) in `store_bridge.go` provide backward-compatible
+unexported names.
+
+For blocked/ready detection, use `store.GetBlockedIssues()` which
+returns blocker IDs.
 
 ### Every command must call resolveBeadsDir()
 
@@ -128,7 +148,8 @@ func cmdFoo(args []string) error {
 }
 ```
 
-`resolveBeadsDir()` checks: BEADS_DIR env → cwd walk → active tower instance → any instance.
+`resolveBeadsDir()` delegates to `config.ResolveBeadsDir()`. It checks:
+BEADS_DIR env -> cwd walk -> active tower instance -> any instance.
 
 ## DANGER — destructive commands
 

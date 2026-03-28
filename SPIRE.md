@@ -173,15 +173,17 @@ or would have prevented a bug we actually shipped.
 
 ### 1. All git operations go through WorktreeContext or RepoContext
 
-**NEVER use `exec.Command("git", ...)` directly.** Two types handle git:
+**NEVER use `exec.Command("git", ...)` directly.** Two types in `pkg/git/` handle git:
 
-- **WorktreeContext** (`git_worktree.go`) — operations INSIDE a worktree:
+- **`git.WorktreeContext`** (`pkg/git/worktree.go`) — operations INSIDE a worktree:
   commit, diff, merge, status, conflict resolution
-- **RepoContext** (`git_repo.go`) — operations on the MAIN REPO:
+- **`git.RepoContext`** (`pkg/git/repo.go`) — operations on the MAIN REPO:
   create/delete branches, create/remove worktrees, ff-only merge, push
+- **`git.StagingWorktree`** (`pkg/git/staging.go`) — embeds WorktreeContext for
+  merge staging: fetch branch, merge, build/test, merge to main
 
 If you need a git operation that doesn't exist on either type, add a
-method. Don't bypass the abstraction.
+method to `pkg/git/`. Don't bypass the abstraction.
 
 **Why:** Every worktree bug we hit (git config pollution, checkout in
 main repo, origin/main not fetched, stale worktrees) came from raw
@@ -297,29 +299,54 @@ File-level separation (executor_design.go vs executor_plan.go) is
 organization. Package-level separation (pkg/executor vs pkg/store) is
 architecture. Both matter but only packages are enforced.
 
-Target package structure (see design bead spi-ud60n):
+Package structure (landed in v0.22.0):
 
 | Package | What | Depends on |
 |---------|------|-----------|
-| `pkg/git` | RepoContext + WorktreeContext | os/exec only |
-| `pkg/store` | Bead persistence interface | beads library |
-| `pkg/formula` | Formula parsing + resolution | toml parser |
-| `pkg/config` | Tower + repo + credential config | os, json, yaml |
-| `pkg/agent` | Agent invocation (process/docker/k8s) | git, config |
-| `pkg/executor` | Formula execution engine | store, git, formula, agent |
-| `pkg/dolt` | Dolt server lifecycle + sync | config |
-| `pkg/integration` | Linear, webhooks, OAuth | store, config |
-| `cmd/spire` | CLI dispatch (thin) | everything (composition root) |
+| `pkg/store` | Bead persistence: types, queries, mutations, bead subtypes | beads library |
+| `pkg/config` | Tower identity, repo instances, credentials, keychain, identity detection | stdlib only |
+| `pkg/formula` | Formula TOML parsing, phase pipeline, layered resolution | toml parser, embedded |
+| `pkg/git` | RepoContext, WorktreeContext, StagingWorktree — pure git abstraction | os/exec only |
+| `pkg/dolt` | Dolt server lifecycle, binary management, push/pull/sync, merge ownership | config |
+| `pkg/agent` | Agent backends (process/docker), spawner, registry | config, dolt |
+| `pkg/executor` | Formula execution engine: design/plan/implement/review/merge phases | store, config, formula, git, agent |
+| `pkg/integration` | Linear epic sync, webhook handling, OAuth2 connect, HTTP server | store |
+| `cmd/spire` | CLI dispatch, flag parsing, bridge wiring (composition root) | everything |
 
-No circular dependencies. Each package depends only downward.
+No circular dependencies. Each package depends only downward. New code
+goes into the appropriate `pkg/` package, not `cmd/spire/`. The only
+code in `cmd/spire/` should be CLI adapters (flag parsing + delegation)
+and bridge files that wire cross-package callbacks.
 
 ## Code rules
 
-### Use the store API, not bd subprocess
+### Where new code goes
+
+New business logic goes into `pkg/`, not `cmd/spire/`:
+
+| If you're writing... | Put it in... |
+|---|---|
+| Bead queries, mutations, type helpers | `pkg/store/` |
+| Tower/config/credential/identity logic | `pkg/config/` |
+| Formula parsing or phase definitions | `pkg/formula/` |
+| Git operations (branch, worktree, merge) | `pkg/git/` |
+| Dolt server, binary, push/pull/sync | `pkg/dolt/` |
+| Agent spawn/kill/list/logs | `pkg/agent/` |
+| Executor phase handlers | `pkg/executor/` |
+| Linear sync, webhooks, OAuth | `pkg/integration/` |
+| CLI flag parsing + output formatting | `cmd/spire/` (thin adapter) |
+
+If unsure, check which package already has similar code. `cmd/spire/`
+should only contain CLI dispatch, bridge wiring, and surfaces not yet
+extracted (board TUI, steward, wizard, observability).
+
+### Use pkg/store, not bd subprocess
 
 **Never use `bdJSON()` or shell out to `bd` for data access in new code.**
-Use the store API in `store_queries.go`, `store_mutations.go`, and
-`store_beadtypes.go`.
+Use `pkg/store` directly: `store.GetBead()`, `store.ListBeads()`,
+`store.CreateBead()`, etc. The bridge wrappers in `cmd/spire/store_bridge.go`
+provide backward-compatible unexported names (`storeGetBead`, etc.) for
+existing `cmd/spire/` code.
 
 ### Every command must call resolveBeadsDir()
 
@@ -332,6 +359,22 @@ func cmdFoo(args []string) error {
 }
 ```
 
+`resolveBeadsDir()` is a bridge to `config.ResolveBeadsDir()`. It checks:
+BEADS_DIR env -> cwd walk -> active tower instance -> any instance.
+
+### Import rules
+
+Packages form a DAG. These imports are **forbidden** (would create cycles):
+
+- `pkg/store` must NOT import `pkg/config`, `pkg/dolt`, `pkg/agent`, `pkg/executor`
+- `pkg/config` must NOT import `pkg/store`, `pkg/dolt`
+- `pkg/git` must NOT import any `pkg/` package (pure stdlib only)
+- `pkg/formula` must NOT import `pkg/store`, `pkg/config`
+
+When a package needs something from a "higher" package, use a callback
+variable (see `store.BeadsDirResolver` and `config.DoltDataDirFunc`
+for examples).
+
 ### Verify before removing
 
 Before removing code, features, or references:
@@ -339,27 +382,9 @@ Before removing code, features, or references:
 - `grep` for function/type usage before deleting
 - Run `go build ./...` after every change
 
-### File organization
-
-The executor is split into focused files:
-
-| File | Responsibility |
-|------|----------------|
-| executor.go | Lifecycle core: Run, advancePhase, state |
-| executor_dag.go | Attempt + step bead tracking |
-| executor_design.go | Design validation |
-| executor_plan.go | Plan + change spec enrichment |
-| executor_implement.go | Wave dispatch + direct |
-| executor_review.go | Sage dispatch + fix cycle |
-| executor_merge.go | Merge to main + doc review |
-| executor_escalate.go | Human escalation + messaging |
-| executor_worktree.go | StagingWorktree abstraction |
-| git_worktree.go | WorktreeContext (in-worktree ops) |
-| git_repo.go | RepoContext (main repo ops) |
-
 ## DANGER — destructive commands
 
 - **NEVER run `bd init --force`** — wipes entire dolt history. No undo.
 - **NEVER run `bd init`** on a directory with an existing `.beads/` database.
 - **NEVER leave branches hanging** — every branch must be merged or deleted.
-- **NEVER use raw `exec.Command("git", ...)` outside git_worktree.go / git_repo.go.**
+- **NEVER use raw `exec.Command("git", ...)` outside `pkg/git/`.**

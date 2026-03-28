@@ -1,3 +1,8 @@
+// Package store provides bead persistence: types, queries, mutations, and
+// bead subtype helpers (attempts, steps, review rounds). It wraps the beads
+// library with Spire-specific semantics. pkg/store has no dependencies on
+// other Spire packages — cross-package wiring uses callback variables
+// (e.g. BeadsDirResolver) set by cmd/spire at init time.
 package store
 
 import (
