@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,7 @@ import (
 // (project_id, database), and pushes the registration to DoltHub.
 func cmdRegisterRepo(args []string) error {
 	var flagPrefix, flagRepoURL, flagBranch string
+	var flagYes bool
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--prefix" && i+1 < len(args):
@@ -36,12 +38,14 @@ func cmdRegisterRepo(args []string) error {
 			flagBranch = args[i]
 		case strings.HasPrefix(args[i], "--branch="):
 			flagBranch = strings.TrimPrefix(args[i], "--branch=")
+		case args[i] == "--yes" || args[i] == "-y":
+			flagYes = true
 		case args[i] == "--help" || args[i] == "-h":
 			printRegisterRepoUsage()
 			return nil
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				return fmt.Errorf("unknown flag: %s\nusage: spire repo add [path] [--prefix <pfx>] [--repo-url <url>] [--branch <branch>]", args[i])
+				return fmt.Errorf("unknown flag: %s\nusage: spire repo add [path] [--prefix <pfx>] [--repo-url <url>] [--branch <branch>] [--yes]", args[i])
 			}
 			// Positional path argument
 			if err := os.Chdir(args[i]); err != nil {
@@ -162,10 +166,16 @@ func cmdRegisterRepo(args []string) error {
 		return fmt.Errorf("save config: %w", err)
 	}
 
-	// --- Generate spire.yaml if missing ---
+	// --- Generate spire.yaml if missing (interactive) ---
 	spireYAMLPath := filepath.Join(cwd, "spire.yaml")
 	if _, err := os.Stat(spireYAMLPath); os.IsNotExist(err) {
-		content := repoconfig.GenerateYAML(cwd)
+		vals := repoconfig.DetectDefaults(cwd)
+
+		if !flagYes {
+			vals = promptSpireYAML(vals)
+		}
+
+		content := repoconfig.GenerateYAMLFromValues(vals)
 		if writeErr := os.WriteFile(spireYAMLPath, []byte(content), 0644); writeErr != nil {
 			fmt.Printf("  Warning: could not write spire.yaml: %s\n", writeErr)
 		} else {
@@ -214,6 +224,40 @@ func cmdRegisterRepo(args []string) error {
 	fmt.Printf("  spire up\n")
 
 	return nil
+}
+
+// --- Interactive spire.yaml setup ---
+
+// promptSpireYAML displays detected defaults and prompts the user to confirm
+// or override each field. Pressing Enter accepts the default shown in brackets.
+func promptSpireYAML(defaults repoconfig.YAMLValues) repoconfig.YAMLValues {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Printf("\n  Detected: %s\n\n", defaults.DetectedHint)
+
+	prompt := func(label, defaultVal string) string {
+		if defaultVal == "" {
+			fmt.Printf("  %s: ", label)
+		} else {
+			fmt.Printf("  %s [%s]: ", label, defaultVal)
+		}
+		line, _ := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return defaultVal
+		}
+		return line
+	}
+
+	defaults.Build = prompt("Build command", defaults.Build)
+	defaults.Test = prompt("Test command", defaults.Test)
+	defaults.Lint = prompt("Lint command", defaults.Lint)
+	defaults.Install = prompt("Install command", defaults.Install)
+	defaults.Model = prompt("Agent model", defaults.Model)
+	defaults.Timeout = prompt("Agent timeout", defaults.Timeout)
+
+	fmt.Println()
+	return defaults
 }
 
 // --- Auto-detection helpers ---
@@ -353,13 +397,19 @@ func printRegisterRepoUsage() {
 Register a repository under an existing tower. Detects prefix, repo URL,
 branch, and language automatically from the current (or given) directory.
 
+When generating spire.yaml, prompts interactively for build/test/lint/install
+commands and agent settings, showing auto-detected defaults. Press Enter to
+accept a default.
+
 Flags:
   --prefix <pfx>      Repo prefix (default: first 3 chars of directory name)
   --repo-url <url>    Git remote URL (default: git remote get-url origin)
   --branch <branch>   Default branch (default: current branch or "main")
+  --yes, -y           Accept all detected defaults without prompting (for CI)
 
 Examples:
   spire repo add
   spire repo add /path/to/my-repo
-  spire repo add --prefix web --repo-url https://github.com/org/web-app`)
+  spire repo add --prefix web --repo-url https://github.com/org/web-app
+  spire repo add --yes`)
 }

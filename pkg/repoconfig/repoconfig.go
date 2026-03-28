@@ -227,25 +227,104 @@ func detectRuntime(dir string) RuntimeConfig {
 // GenerateYAML renders a spire.yaml string from auto-detected defaults for
 // the given directory. Used by `spire repo add` to write a starter config.
 func GenerateYAML(dir string) string {
-	rt := detectRuntime(dir)
+	return GenerateYAMLFromValues(DetectDefaults(dir))
+}
 
-	install := rt.Install
+// YAMLValues holds the configurable fields for spire.yaml generation.
+// Used by GenerateYAMLFromValues to render the file.
+type YAMLValues struct {
+	Language string
+	Install  string
+	Test     string
+	Build    string
+	Lint     string
+	Model    string
+	Timeout  string
+	// DetectedHint is a human-readable string describing what was detected
+	// (e.g. "typescript (package.json + pnpm-lock.yaml)"). Informational only.
+	DetectedHint string
+}
+
+// DetectDefaults inspects the given directory and returns YAMLValues
+// populated with auto-detected defaults. Callers can override individual
+// fields before passing to GenerateYAMLFromValues.
+func DetectDefaults(dir string) YAMLValues {
+	rt := detectRuntime(dir)
+	return YAMLValues{
+		Language:     rt.Language,
+		Install:      rt.Install,
+		Test:         rt.Test,
+		Build:        rt.Build,
+		Lint:         rt.Lint,
+		Model:        "claude-opus-4-6",
+		Timeout:      "15m",
+		DetectedHint: detectHint(dir),
+	}
+}
+
+// detectHint returns a human-readable string describing what project markers
+// were found (e.g. "typescript (package.json + pnpm-lock.yaml)").
+func detectHint(dir string) string {
+	type marker struct {
+		file string
+		lang string
+	}
+	markers := []marker{
+		{"go.mod", "go"},
+		{"Cargo.toml", "rust"},
+		{"pyproject.toml", "python"},
+		{"requirements.txt", "python"},
+		{"package.json", "typescript"},
+	}
+
+	for _, m := range markers {
+		if !fileExists(filepath.Join(dir, m.file)) {
+			continue
+		}
+		files := m.file
+		// For Node.js, include lock file in the hint
+		if m.file == "package.json" {
+			switch {
+			case fileExists(filepath.Join(dir, "pnpm-lock.yaml")):
+				files += " + pnpm-lock.yaml"
+			case fileExists(filepath.Join(dir, "yarn.lock")):
+				files += " + yarn.lock"
+			case fileExists(filepath.Join(dir, "package-lock.json")):
+				files += " + package-lock.json"
+			}
+		}
+		return m.lang + " (" + files + ")"
+	}
+	return "unknown"
+}
+
+// GenerateYAMLFromValues renders a spire.yaml string from explicit values.
+func GenerateYAMLFromValues(v YAMLValues) string {
+	install := v.Install
 	if install == "" {
 		install = "# (none needed)"
 	}
 
 	var s string
 	s += "runtime:\n"
-	s += "  language: " + rt.Language + "\n"
+	s += "  language: " + v.Language + "\n"
 	s += "  install: " + install + "\n"
-	s += "  test: " + rt.Test + "\n"
-	s += "  # build:\n"
-	s += "  # lint:\n"
+	s += "  test: " + v.Test + "\n"
+	if v.Build != "" {
+		s += "  build: " + v.Build + "\n"
+	} else {
+		s += "  # build:\n"
+	}
+	if v.Lint != "" {
+		s += "  lint: " + v.Lint + "\n"
+	} else {
+		s += "  # lint:\n"
+	}
 	s += "\n"
 	s += "agent:\n"
-	s += "  model: claude-opus-4-6\n"
+	s += "  model: " + v.Model + "\n"
 	s += "  stale: 10m\n"
-	s += "  timeout: 15m\n"
+	s += "  timeout: " + v.Timeout + "\n"
 	s += "\n"
 	s += "branch:\n"
 	s += "  base: main\n"
