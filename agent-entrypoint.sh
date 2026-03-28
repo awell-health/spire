@@ -632,9 +632,9 @@ update_bead_state() {
       bd update "$BEAD_ID" --add-label "feat-branch:${BRANCH_NAME}" >/dev/null 2>&1 || true
       RUN_RESULT="success"
       RUN_SUMMARY="validated and pushed branch ${BRANCH_NAME} (review-ready)"
-      log "standalone task — marked review-ready, leaving bead open for artificer review"
+      log "standalone task — marked review-ready, leaving bead open for sage review"
     else
-      # Child of an epic: close normally, artificer handles review.
+      # Child of an epic: close normally, wizard handles review.
       if ! bd close "$BEAD_ID" --reason "Completed on branch ${BRANCH_NAME}" >/dev/null 2>&1; then
         RUN_RESULT="error"
         RUN_SUMMARY="branch pushed but failed to close bead ${BEAD_ID}"
