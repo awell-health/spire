@@ -125,6 +125,9 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 				if dirErr := e.executeDirect("implement", implPC); dirErr != nil {
 					return fmt.Errorf("review-fix direct failed: %w", dirErr)
 				}
+				// Note: executeDirect now handles merging feat/<bead-id> into
+				// the staging worktree internally, so no additional merge is
+				// needed here.
 			}
 
 			// Return to review
