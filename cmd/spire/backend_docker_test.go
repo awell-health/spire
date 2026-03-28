@@ -139,8 +139,8 @@ func TestDockerBackend_ListParsing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestDockerBackend_KillNoContainer verifies Kill returns an error when no
-// container is found for the given agent name. This works without Docker
-// because the docker ps command will either fail (no docker) or return empty.
+// container is found for the given agent name. Requires a reachable Docker
+// daemon (skipIfNoDocker gate).
 func TestDockerBackend_KillNoContainer(t *testing.T) {
 	skipIfNoDocker(t)
 	b := agent.NewDockerBackend()

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
@@ -157,7 +158,9 @@ func (b *DockerBackend) Kill(name string) error {
 // findContainer locates a container by the spire.agent=<name> label.
 // Returns the container ID or an error if not found.
 func (b *DockerBackend) findContainer(name string) (string, error) {
-	out, err := exec.Command(
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx,
 		"docker", "ps", "-a",
 		"--filter", fmt.Sprintf("label=spire.agent=%s", name),
 		"--format", "{{.ID}}",
