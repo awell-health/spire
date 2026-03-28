@@ -203,6 +203,131 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 	return nil
 }
 
+// executeSequential dispatches one subtask at a time, merging each to staging,
+// running an inline review and merge-to-main cycle before advancing to the next.
+// Each subtask builds on the previous one's merged code — no merge conflicts.
+// Ideal for serial extraction pipelines where each step depends on the previous.
+func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
+	waves, err := ComputeWaves(e.beadID, e.deps)
+	if err != nil {
+		return err
+	}
+	if len(waves) == 0 {
+		e.log("no open subtasks")
+		return nil
+	}
+
+	// Flatten waves into a single ordered list, preserving wave dependency order.
+	var subtasks []string
+	for _, wave := range waves {
+		subtasks = append(subtasks, wave...)
+	}
+
+	e.log("sequential dispatch: %d subtask(s) across %d wave(s)", len(subtasks), len(waves))
+
+	repoPath := e.state.RepoPath
+	baseBranch := e.state.BaseBranch
+	stagingBranch := e.state.StagingBranch
+
+	for i, subtaskID := range subtasks {
+		// Skip already completed subtasks (resume support).
+		if st, ok := e.state.Subtasks[subtaskID]; ok && (st.Status == "closed" || st.Status == "done") {
+			e.log("  %s already %s, skipping", subtaskID, st.Status)
+			continue
+		}
+
+		e.log("=== sequential step %d/%d: %s ===", i+1, len(subtasks), subtaskID)
+		e.deps.UpdateBead(subtaskID, map[string]interface{}{"status": "in_progress"})
+
+		// 1. Dispatch one apprentice for this subtask.
+		name := fmt.Sprintf("%s-seq-%d", e.agentName, i)
+		handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+			Name:      name,
+			BeadID:    subtaskID,
+			Role:      agent.RoleApprentice,
+			ExtraArgs: []string{"--apprentice"},
+		})
+		if spawnErr != nil {
+			return fmt.Errorf("spawn apprentice for %s: %w", subtaskID, spawnErr)
+		}
+		if waitErr := handle.Wait(); waitErr != nil {
+			return fmt.Errorf("apprentice %s failed: %w", subtaskID, waitErr)
+		}
+
+		featBranch := e.resolveBranch(subtaskID)
+		e.state.Subtasks[subtaskID] = SubtaskState{
+			Status: "done",
+			Branch: featBranch,
+			Agent:  name,
+		}
+		e.saveState()
+
+		// 2. Merge feat branch into staging.
+		stagingWt, wtErr := e.ensureStagingWorktree()
+		if wtErr != nil {
+			return fmt.Errorf("ensure staging worktree: %w", wtErr)
+		}
+		if mergeErr := stagingWt.MergeBranch(featBranch, e.resolveConflicts); mergeErr != nil {
+			return fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
+		}
+
+		// 3. Build verification on staging.
+		if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
+			e.log("verifying build for %s: %s", subtaskID, buildStr)
+			if buildErr := stagingWt.RunBuild(buildStr); buildErr != nil {
+				return fmt.Errorf("build verification failed for %s: %w", subtaskID, buildErr)
+			}
+		}
+
+		// 4. Inline review (if the formula has a review phase).
+		if reviewPC, ok := e.formula.Phases["review"]; ok {
+			e.log("inline review for %s", subtaskID)
+			if reviewErr := e.executeReview("review", reviewPC); reviewErr != nil {
+				return fmt.Errorf("inline review for %s: %w", subtaskID, reviewErr)
+			}
+		}
+
+		// 5. Inline merge: staging → main.
+		mergeEnv := os.Environ()
+		if tower, tErr := e.deps.ActiveTowerConfig(); tErr == nil && tower != nil {
+			mergeEnv = e.deps.ArchmageGitEnv(tower)
+		}
+
+		buildStr := e.resolveBuildCommand(pc)
+		testStr := e.resolveTestCommand(pc)
+		e.log("merging staging → %s for %s", baseBranch, subtaskID)
+		if mergeErr := stagingWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
+			return fmt.Errorf("merge staging → %s for %s: %w", baseBranch, subtaskID, mergeErr)
+		}
+
+		// Push main.
+		rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+		if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
+			return fmt.Errorf("push %s after %s: %w", baseBranch, subtaskID, pushErr)
+		}
+
+		// 6. Close subtask bead.
+		if closeErr := e.deps.CloseBead(subtaskID); closeErr != nil {
+			e.log("warning: close subtask %s: %s", subtaskID, closeErr)
+		}
+		e.state.Subtasks[subtaskID] = SubtaskState{
+			Status: "closed",
+			Branch: featBranch,
+			Agent:  name,
+		}
+		e.saveState()
+
+		// 7. Reset staging to main for next subtask.
+		// Close the current staging worktree, reset the staging branch to main,
+		// so the next iteration creates a fresh staging from the updated main.
+		e.closeStagingWorktree()
+		rc.ForceBranch(stagingBranch, baseBranch)
+		e.log("staging reset to %s — ready for next subtask", baseBranch)
+	}
+
+	return nil
+}
+
 // resolveConflicts invokes Claude to resolve merge conflicts in the working tree.
 func (e *Executor) resolveConflicts(repoPath, childBranch string) error {
 	wc := &spgit.WorktreeContext{Dir: repoPath}

@@ -249,9 +249,12 @@ func (e *Executor) Run() error {
 			case "human":
 				err = e.waitForHuman(phase)
 			case "apprentice":
-				if pc.GetDispatch() == "wave" {
+				switch pc.GetDispatch() {
+				case "wave":
 					err = e.executeWave(phase, pc)
-				} else {
+				case "sequential":
+					err = e.executeSequential(phase, pc)
+				default:
 					err = e.executeDirect(phase, pc)
 				}
 			case "sage":
