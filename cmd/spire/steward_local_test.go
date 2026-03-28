@@ -8,67 +8,31 @@ import (
 	"time"
 )
 
-// --- agentNames tests (replaces loadRoster tests) ---
+// --- Wrapper-level smoke tests ---
+// Full test coverage lives in pkg/steward/steward_test.go.
+// These verify the cmd/spire wrappers compile and delegate correctly.
 
-func TestAgentNames_Override(t *testing.T) {
+func TestAgentNames_Wrapper(t *testing.T) {
 	agents := []AgentInfo{
 		{Name: "wizard-1"},
 		{Name: "wizard-2"},
-	}
-	override := []string{"explicit-a", "explicit-b"}
-	got := agentNames(agents, override)
-	if len(got) != 2 || got[0] != "explicit-a" || got[1] != "explicit-b" {
-		t.Errorf("agentNames with override = %v, want [explicit-a explicit-b]", got)
-	}
-}
-
-func TestAgentNames_FromAgentInfo(t *testing.T) {
-	agents := []AgentInfo{
-		{Name: "wizard-1"},
-		{Name: "wizard-2"},
-		{Name: "wizard-1"}, // duplicate
 	}
 	got := agentNames(agents, nil)
-	if len(got) != 2 || got[0] != "wizard-1" || got[1] != "wizard-2" {
-		t.Errorf("agentNames = %v, want [wizard-1 wizard-2]", got)
+	if len(got) != 2 {
+		t.Errorf("agentNames = %v, want 2 items", got)
 	}
 }
 
-func TestAgentNames_Empty(t *testing.T) {
-	got := agentNames(nil, nil)
-	if len(got) != 0 {
-		t.Errorf("agentNames(nil, nil) = %v, want []", got)
-	}
-}
-
-// --- busySet tests (replaces findBusyAgents/localBusyAgents tests) ---
-
-func TestBusySet_AliveOnly(t *testing.T) {
+func TestBusySet_Wrapper(t *testing.T) {
 	agents := []AgentInfo{
 		{Name: "wizard-1", Alive: true},
 		{Name: "wizard-2", Alive: false},
-		{Name: "wizard-3", Alive: true},
 	}
 	busy := busySet(agents)
-	if !busy["wizard-1"] {
-		t.Error("expected wizard-1 to be busy (alive)")
-	}
-	if busy["wizard-2"] {
-		t.Error("expected wizard-2 to NOT be busy (dead)")
-	}
-	if !busy["wizard-3"] {
-		t.Error("expected wizard-3 to be busy (alive)")
+	if !busy["wizard-1"] || busy["wizard-2"] {
+		t.Errorf("busySet = %v, want wizard-1 busy, wizard-2 not", busy)
 	}
 }
-
-func TestBusySet_Empty(t *testing.T) {
-	busy := busySet(nil)
-	if len(busy) != 0 {
-		t.Errorf("busySet(nil) = %v, want empty", busy)
-	}
-}
-
-// --- loadLocalStewardConfig tests ---
 
 // chdirTemp changes the working directory to a new temp dir for the duration
 // of the test and restores it on cleanup.
@@ -86,90 +50,18 @@ func chdirTemp(t *testing.T) string {
 	return tmpDir
 }
 
-func TestLoadLocalStewardConfig_Defaults(t *testing.T) {
-	chdirTemp(t) // no spire.yaml in the temp dir
-
+func TestLoadLocalStewardConfig_Wrapper(t *testing.T) {
+	chdirTemp(t)
 	cfg := loadLocalStewardConfig()
-
 	if cfg.Model != "claude-sonnet-4-6" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "claude-sonnet-4-6")
-	}
-	if cfg.MaxTurns != 30 {
-		t.Errorf("MaxTurns = %d, want 30", cfg.MaxTurns)
+		t.Errorf("Model = %q, want default", cfg.Model)
 	}
 	if cfg.Timeout != 15*time.Minute {
 		t.Errorf("Timeout = %s, want 15m", cfg.Timeout)
 	}
-	if cfg.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q", cfg.BaseBranch, "main")
-	}
-	if cfg.BranchPattern != "feat/{bead-id}" {
-		t.Errorf("BranchPattern = %q, want %q", cfg.BranchPattern, "feat/{bead-id}")
-	}
 }
 
-func TestLoadLocalStewardConfig_Overrides(t *testing.T) {
-	dir := chdirTemp(t)
-
-	yaml := `agent:
-  model: claude-opus-4-6
-  max-turns: 50
-  timeout: 30m
-branch:
-  base: develop
-  pattern: "work/{bead-id}"
-`
-	if err := os.WriteFile(filepath.Join(dir, "spire.yaml"), []byte(yaml), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := loadLocalStewardConfig()
-
-	if cfg.Model != "claude-opus-4-6" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "claude-opus-4-6")
-	}
-	if cfg.MaxTurns != 50 {
-		t.Errorf("MaxTurns = %d, want 50", cfg.MaxTurns)
-	}
-	if cfg.Timeout != 30*time.Minute {
-		t.Errorf("Timeout = %s, want 30m", cfg.Timeout)
-	}
-	if cfg.BaseBranch != "develop" {
-		t.Errorf("BaseBranch = %q, want %q", cfg.BaseBranch, "develop")
-	}
-	if cfg.BranchPattern != "work/{bead-id}" {
-		t.Errorf("BranchPattern = %q, want %q", cfg.BranchPattern, "work/{bead-id}")
-	}
-}
-
-func TestLoadLocalStewardConfig_PartialOverride(t *testing.T) {
-	dir := chdirTemp(t)
-
-	// Only override model; everything else should stay at defaults.
-	yaml := `agent:
-  model: claude-haiku-4-5-20251001
-`
-	if err := os.WriteFile(filepath.Join(dir, "spire.yaml"), []byte(yaml), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := loadLocalStewardConfig()
-
-	if cfg.Model != "claude-haiku-4-5-20251001" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "claude-haiku-4-5-20251001")
-	}
-	// Remaining fields come from repoconfig defaults (same as loadLocalStewardConfig defaults).
-	if cfg.MaxTurns != 30 {
-		t.Errorf("MaxTurns = %d, want 30 (default)", cfg.MaxTurns)
-	}
-	if cfg.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q (default)", cfg.BaseBranch, "main")
-	}
-}
-
-// --- isWizardRunning tests ---
-
-func TestIsWizardRunning_NoPIDFile(t *testing.T) {
+func TestIsWizardRunning_Wrapper(t *testing.T) {
 	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
 	if isWizardRunning("nonexistent-wizard") {
 		t.Error("expected false for wizard with no PID file")
@@ -190,26 +82,32 @@ func TestIsWizardRunning_SelfPID(t *testing.T) {
 	}
 }
 
-func TestIsWizardRunning_DeadPID(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("SPIRE_DOLT_DIR", tmpDir)
+func TestLoadLocalStewardConfig_Overrides(t *testing.T) {
+	dir := chdirTemp(t)
 
-	name := "dead-wizard"
-	// PID 0 is never a valid process; processAlive returns false for it.
-	if err := writePID(wizardPIDPath(name), 0); err != nil {
+	yaml := `agent:
+  model: claude-opus-4-6
+  max-turns: 50
+  timeout: 30m
+branch:
+  base: develop
+  pattern: "work/{bead-id}"
+`
+	if err := os.WriteFile(filepath.Join(dir, "spire.yaml"), []byte(yaml), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	if isWizardRunning(name) {
-		t.Error("expected false for wizard with PID 0")
+	cfg := loadLocalStewardConfig()
+	if cfg.Model != "claude-opus-4-6" {
+		t.Errorf("Model = %q, want %q", cfg.Model, "claude-opus-4-6")
+	}
+	if cfg.MaxTurns != 50 {
+		t.Errorf("MaxTurns = %d, want 50", cfg.MaxTurns)
 	}
 }
 
-// --- Fail-closed: corrupted bead quarantine tests ---
+// --- Fail-closed tests verifying wrapper-level var injection ---
 
-// TestStewardAssignment_FailClosed_ExcludesAndAlerts verifies that when
-// storeGetActiveAttemptFunc returns an error (multiple open attempts), the bead
-// is excluded (shouldSkip=true) and storeRaiseCorruptedBeadAlertFunc is called.
 func TestStewardAssignment_FailClosed_ExcludesAndAlerts(t *testing.T) {
 	origAttempt := storeGetActiveAttemptFunc
 	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
@@ -228,8 +126,6 @@ func TestStewardAssignment_FailClosed_ExcludesAndAlerts(t *testing.T) {
 	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
 
 	bead := Bead{ID: "spi-corrupted", Title: "corrupted task", Status: "open"}
-
-	// Replicate the assignment-loop logic: fail closed on error.
 	attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
 	if aErr != nil {
 		storeRaiseCorruptedBeadAlertFunc(bead.ID, aErr)
@@ -237,84 +133,14 @@ func TestStewardAssignment_FailClosed_ExcludesAndAlerts(t *testing.T) {
 	shouldSkip := aErr != nil || attempt != nil
 
 	if !shouldSkip {
-		t.Error("expected corrupted bead to be excluded (shouldSkip=true)")
+		t.Error("expected corrupted bead to be excluded")
 	}
 	if len(alertedBeads) != 1 || alertedBeads[0] != "spi-corrupted" {
 		t.Errorf("expected alert for spi-corrupted, got %v", alertedBeads)
 	}
 }
 
-// TestStewardAssignment_FailClosed_CleanBeadUnaffected verifies that a bead
-// without corrupted attempts is NOT excluded or alerted.
-func TestStewardAssignment_FailClosed_CleanBeadUnaffected(t *testing.T) {
-	origAttempt := storeGetActiveAttemptFunc
-	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
-		return nil, nil // no active attempt, no error
-	}
-	defer func() { storeGetActiveAttemptFunc = origAttempt }()
-
-	var alertedBeads []string
-	origAlert := storeRaiseCorruptedBeadAlertFunc
-	storeRaiseCorruptedBeadAlertFunc = func(beadID string, err error) {
-		alertedBeads = append(alertedBeads, beadID)
-	}
-	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
-
-	bead := Bead{ID: "spi-clean", Title: "clean task", Status: "open"}
-
-	attempt, aErr := storeGetActiveAttemptFunc(bead.ID)
-	if aErr != nil {
-		storeRaiseCorruptedBeadAlertFunc(bead.ID, aErr)
-	}
-	shouldSkip := aErr != nil || attempt != nil
-
-	if shouldSkip {
-		t.Error("clean bead should not be excluded")
-	}
-	if len(alertedBeads) != 0 {
-		t.Errorf("expected no alerts for clean bead, got %v", alertedBeads)
-	}
-}
-
-// TestStewardReengage_FailClosed_SkipsAndAlerts verifies the re-engagement path:
-// when storeGetActiveAttemptFunc returns an error, re-engagement is skipped and
-// an alert is raised.
-func TestStewardReengage_FailClosed_SkipsAndAlerts(t *testing.T) {
-	origAttempt := storeGetActiveAttemptFunc
-	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
-		if parentID == "spi-reeng" {
-			return nil, fmt.Errorf("invariant violation: 3 open attempt beads for spi-reeng")
-		}
-		return nil, nil
-	}
-	defer func() { storeGetActiveAttemptFunc = origAttempt }()
-
-	var alertedBeads []string
-	origAlert := storeRaiseCorruptedBeadAlertFunc
-	storeRaiseCorruptedBeadAlertFunc = func(beadID string, err error) {
-		alertedBeads = append(alertedBeads, beadID)
-	}
-	defer func() { storeRaiseCorruptedBeadAlertFunc = origAlert }()
-
-	// Replicate the detectReviewFeedback re-engagement guard logic.
-	reEngageAttempt, reEngageErr := storeGetActiveAttemptFunc("spi-reeng")
-	if reEngageErr != nil {
-		storeRaiseCorruptedBeadAlertFunc("spi-reeng", reEngageErr)
-	}
-	shouldSkip := reEngageErr != nil || reEngageAttempt != nil
-
-	if !shouldSkip {
-		t.Error("expected corrupted bead to be skipped for re-engagement")
-	}
-	if len(alertedBeads) != 1 || alertedBeads[0] != "spi-reeng" {
-		t.Errorf("expected alert for spi-reeng, got %v", alertedBeads)
-	}
-}
-
-// TestRaiseCorruptedBeadAlert_Dedup verifies that storeRaiseCorruptedBeadAlert
-// does not create a duplicate alert when an open alert already exists for the bead.
 func TestRaiseCorruptedBeadAlert_Dedup(t *testing.T) {
-	// Track how many times the create function is called.
 	createCount := 0
 	origCreate := storeCreateAlertFunc
 	storeCreateAlertFunc = func(beadID, msg string) error {
@@ -323,7 +149,6 @@ func TestRaiseCorruptedBeadAlert_Dedup(t *testing.T) {
 	}
 	defer func() { storeCreateAlertFunc = origCreate }()
 
-	// First call: no existing alert.
 	origCheck := storeCheckExistingAlertFunc
 	storeCheckExistingAlertFunc = func(beadID string) bool { return false }
 	defer func() { storeCheckExistingAlertFunc = origCheck }()
@@ -333,86 +158,9 @@ func TestRaiseCorruptedBeadAlert_Dedup(t *testing.T) {
 		t.Errorf("expected 1 create on first call, got %d", createCount)
 	}
 
-	// Second call: alert now exists — dedup should suppress creation.
 	storeCheckExistingAlertFunc = func(beadID string) bool { return true }
 	storeRaiseCorruptedBeadAlert("spi-dup", fmt.Errorf("invariant violation"))
 	if createCount != 1 {
 		t.Errorf("expected still 1 create after dedup, got %d", createCount)
-	}
-}
-
-// TestRaiseCorruptedBeadAlert_DedupPerBead verifies dedup is scoped per-bead:
-// an existing alert for bead A does not suppress an alert for bead B.
-func TestRaiseCorruptedBeadAlert_DedupPerBead(t *testing.T) {
-	createCount := 0
-	origCreate := storeCreateAlertFunc
-	storeCreateAlertFunc = func(beadID, msg string) error {
-		createCount++
-		return nil
-	}
-	defer func() { storeCreateAlertFunc = origCreate }()
-
-	origCheck := storeCheckExistingAlertFunc
-	storeCheckExistingAlertFunc = func(beadID string) bool {
-		return beadID == "spi-a" // only spi-a has existing alert
-	}
-	defer func() { storeCheckExistingAlertFunc = origCheck }()
-
-	storeRaiseCorruptedBeadAlert("spi-a", fmt.Errorf("err")) // should be suppressed
-	storeRaiseCorruptedBeadAlert("spi-b", fmt.Errorf("err")) // should create
-
-	if createCount != 1 {
-		t.Errorf("expected 1 create (only spi-b), got %d", createCount)
-	}
-}
-
-// --- storeGetActiveAttemptFunc injection tests ---
-
-// TestStewardSkipsBeadWithAttemptChildNoOwnerLabel verifies that the steward's
-// assignment logic skips a bead that has an active attempt child, even when the
-// bead has no owner: label. The attempt bead is the authority.
-func TestStewardSkipsBeadWithAttemptChildNoOwnerLabel(t *testing.T) {
-	attemptBead := &Bead{
-		ID:     "spi-test.1",
-		Title:  "attempt: wizard-abc",
-		Status: "in_progress",
-		Labels: []string{"attempt", "agent:wizard-abc"},
-	}
-
-	orig := storeGetActiveAttemptFunc
-	storeGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
-		if parentID == "spi-test" {
-			return attemptBead, nil
-		}
-		return nil, nil
-	}
-	defer func() { storeGetActiveAttemptFunc = orig }()
-
-	// Bead has NO owner: label — authority comes from the attempt child only.
-	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
-
-	if hasLabel(bead, "owner:") != "" {
-		t.Fatal("test setup error: bead must not have owner: label")
-	}
-
-	attempt, err := storeGetActiveAttemptFunc(bead.ID)
-	if err != nil {
-		t.Fatalf("unexpected error from storeGetActiveAttemptFunc: %v", err)
-	}
-	if attempt == nil {
-		t.Fatal("expected active attempt to be found via attempt bead query")
-	}
-
-	// The assignment loop condition: skip if attempt != nil.
-	// This is what stewardTowerCycle does after removing the owner: label check.
-	shouldSkip := attempt != nil
-	if !shouldSkip {
-		t.Error("expected bead to be skipped (active attempt found)")
-	}
-
-	// Verify the agent name is readable from the attempt bead's agent: label.
-	agent := hasLabel(*attempt, "agent:")
-	if agent != "wizard-abc" {
-		t.Errorf("expected agent=wizard-abc, got %q", agent)
 	}
 }
