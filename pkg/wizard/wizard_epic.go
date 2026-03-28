@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-// CmdWizardEpic is the entry point for the spire workshop command.
-// Usage: spire workshop <epic-id>
+// CmdWizardEpic is the entry point for wizard epic orchestration.
+// Usage: spire wizard-epic <epic-id>
 func CmdWizardEpic(args []string, deps *Deps) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire workshop <epic-id>")
+		return fmt.Errorf("usage: spire wizard-epic <epic-id>")
 	}
 
 	epicID := args[0]

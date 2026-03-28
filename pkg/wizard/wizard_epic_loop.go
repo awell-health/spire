@@ -106,7 +106,7 @@ func EpicDesign(state *EpicState) error {
 	fmt.Fprintf(os.Stderr, "[wizard-epic] when design is complete, transition to plan:\n")
 	fmt.Fprintf(os.Stderr, "  bd label remove %s \"phase:design\"\n", state.EpicID)
 	fmt.Fprintf(os.Stderr, "  bd label add %s \"phase:plan\"\n", state.EpicID)
-	fmt.Fprintf(os.Stderr, "[wizard-epic] then re-run: spire workshop %s\n", state.EpicID)
+	fmt.Fprintf(os.Stderr, "[wizard-epic] then re-run: spire wizard-epic %s\n", state.EpicID)
 	return fmt.Errorf("waiting for archmage to complete design")
 }
 
@@ -117,7 +117,7 @@ func EpicPlan(state *EpicState) error {
 	fmt.Fprintf(os.Stderr, "[wizard-epic] break the epic into subtasks, then transition to implement:\n")
 	fmt.Fprintf(os.Stderr, "  bd label remove %s \"phase:plan\"\n", state.EpicID)
 	fmt.Fprintf(os.Stderr, "  bd label add %s \"phase:implement\"\n", state.EpicID)
-	fmt.Fprintf(os.Stderr, "[wizard-epic] then re-run: spire workshop %s\n", state.EpicID)
+	fmt.Fprintf(os.Stderr, "[wizard-epic] then re-run: spire wizard-epic %s\n", state.EpicID)
 	return fmt.Errorf("waiting for archmage to complete plan")
 }
 
