@@ -2,9 +2,11 @@ package board
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/steveyegge/beads"
+	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -58,6 +60,9 @@ func FetchDAGProgress(beadID string) *DAGProgress {
 				Status: s.Status,
 			})
 		}
+		sort.Slice(dag.Steps, func(i, j int) bool {
+			return phaseIndex(dag.Steps[i].Name) < phaseIndex(dag.Steps[j].Name)
+		})
 	}
 
 	// Active attempt.
@@ -106,6 +111,17 @@ func extractReviewVerdict(b Bead) string {
 		return strings.TrimPrefix(line, "verdict: ")
 	}
 	return ""
+}
+
+// phaseIndex returns the canonical position of a phase name.
+// Unknown phases sort to the end.
+func phaseIndex(name string) int {
+	for i, p := range formula.ValidPhases {
+		if p == name {
+			return i
+		}
+	}
+	return len(formula.ValidPhases)
 }
 
 // RenderPipelineANSI renders step beads as an inline ANSI pipeline.
