@@ -1,4 +1,4 @@
-package main
+package wizard
 
 import (
 	"encoding/json"
@@ -16,22 +16,8 @@ import (
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
-// Review is the structured output from a code review.
-type Review struct {
-	Verdict string        `json:"verdict"` // "approve", "request_changes"
-	Summary string        `json:"summary"`
-	Issues  []ReviewIssue `json:"issues,omitempty"`
-}
-
-// ReviewIssue represents a single issue found during review.
-type ReviewIssue struct {
-	File     string `json:"file"`
-	Line     int    `json:"line,omitempty"`
-	Severity string `json:"severity"` // "error", "warning"
-	Message  string `json:"message"`
-}
-
-func cmdWizardReview(args []string) error {
+// CmdWizardReview is the sage entry point for reviewing a bead's implementation.
+func CmdWizardReview(args []string, deps *Deps) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: spire wizard-review <bead-id> --name <name> [--verdict-only]")
 	}
@@ -61,7 +47,7 @@ func cmdWizardReview(args []string) error {
 
 	// Self-register in the wizard registry.
 	now := time.Now().UTC().Format(time.RFC3339)
-	wizardRegistryAdd(localWizard{
+	deps.RegistryAdd(Entry{
 		Name:           reviewerName,
 		PID:            os.Getpid(),
 		BeadID:         beadID,
@@ -69,7 +55,7 @@ func cmdWizardReview(args []string) error {
 		Phase:          "review",
 		PhaseStartedAt: now,
 	})
-	defer wizardRegistryRemove(reviewerName)
+	defer deps.RegistryRemove(reviewerName)
 
 	// Signal handler for cleanup. os.Exit skips defers, so we must
 	// replicate the registry cleanup here.
@@ -77,29 +63,29 @@ func cmdWizardReview(args []string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		wizardRegistryRemove(reviewerName)
+		deps.RegistryRemove(reviewerName)
 		os.Exit(1)
 	}()
 
-	if err := requireDolt(); err != nil {
+	if err := deps.RequireDolt(); err != nil {
 		return err
 	}
 
 	// 1. Resolve repo
-	repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
+	repoPath, _, baseBranch, err := deps.ResolveRepo(beadID)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
 
 	// 2. Get bead and resolve branch from labels
-	bead, err := storeGetBead(beadID)
+	bead, err := deps.GetBead(beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
-	branch := hasLabel(bead, "feat-branch:")
+	branch := deps.HasLabel(bead, "feat-branch:")
 	if branch == "" {
-		branch = resolveBranchForBead(beadID, repoPath)
+		branch = deps.ResolveBranch(beadID, repoPath)
 	}
 	log("reviewing %s branch %s", beadID, branch)
 
@@ -117,7 +103,7 @@ func cmdWizardReview(args []string) error {
 		log("using shared worktree: %s", wc.Dir)
 	} else {
 		var wcErr error
-		wc, wcErr = reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
+		wc, wcErr = ReviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
 		if wcErr != nil {
 			return fmt.Errorf("create worktree: %w", wcErr)
 		}
@@ -151,13 +137,13 @@ func cmdWizardReview(args []string) error {
 	}
 
 	// 7. Get current review round from existing review child beads
-	existingReviews, _ := storeGetReviewBeads(beadID)
+	existingReviews, _ := deps.GetReviewBeads(beadID)
 	round := len(existingReviews) + 1
 	log("review round: %d", round)
 
 	// 7b. Load formula for revision policy
 	var revPolicy RevisionPolicy
-	if formula, fErr := LoadFormulaByName("spire-agent-work"); fErr == nil {
+	if formula, fErr := deps.LoadFormulaByName("spire-agent-work"); fErr == nil {
 		revPolicy = formula.GetRevisionPolicy()
 	}
 	if revPolicy.MaxRounds == 0 {
@@ -165,18 +151,18 @@ func cmdWizardReview(args []string) error {
 	}
 
 	// 7c. Create review-round bead before dispatching review
-	reviewBeadID, rbErr := storeCreateReviewBead(beadID, reviewerName, round)
+	reviewBeadID, rbErr := deps.CreateReviewBead(beadID, reviewerName, round)
 	if rbErr != nil {
 		log("warning: create review bead: %s", rbErr)
 	}
 
 	// 8. Run Opus review
 	log("running Opus review")
-	review, err := reviewRunOpus(bead.Title, bead.Description, diff, testOutput, round)
+	review, err := ReviewRunOpus(bead.Title, bead.Description, diff, testOutput, round)
 	if err != nil {
 		// Close review bead on failure
 		if reviewBeadID != "" {
-			storeCloseReviewBead(reviewBeadID, "error", err.Error())
+			deps.CloseReviewBead(reviewBeadID, "error", err.Error())
 		}
 		return fmt.Errorf("opus review: %w", err)
 	}
@@ -196,7 +182,7 @@ func cmdWizardReview(args []string) error {
 				summaryBuf.WriteString(")")
 			}
 		}
-		storeCloseReviewBead(reviewBeadID, review.Verdict, summaryBuf.String())
+		deps.CloseReviewBead(reviewBeadID, review.Verdict, summaryBuf.String())
 	}
 
 	// 9. Handle verdict
@@ -205,11 +191,11 @@ func cmdWizardReview(args []string) error {
 		if verdictOnly {
 			// Verdict-only mode: post comment, exit. Don't merge or close.
 			// Review bead already closed with verdict above.
-			storeAddLabel(beadID, "review-approved")
-			storeAddComment(beadID, fmt.Sprintf("Review approved by %s (verdict-only)", reviewerName))
+			deps.AddLabel(beadID, "review-approved")
+			deps.AddComment(beadID, fmt.Sprintf("Review approved by %s (verdict-only)", reviewerName))
 			log("approved (verdict-only) — exiting")
 		} else {
-			if err := reviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath, log); err != nil {
+			if err := ReviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath, deps, log); err != nil {
 				return fmt.Errorf("approval: %w", err)
 			}
 		}
@@ -228,17 +214,17 @@ func cmdWizardReview(args []string) error {
 					comment.WriteString(")")
 				}
 			}
-			storeAddComment(beadID, comment.String())
+			deps.AddComment(beadID, comment.String())
 			log("request_changes (verdict-only) — exiting")
 		} else {
-			if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, log); err != nil {
+			if err := ReviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, deps, log); err != nil {
 				return err
 			}
 		}
 	default:
 		log("unexpected verdict: %s, treating as request_changes", review.Verdict)
 		if !verdictOnly {
-			if err := reviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, log); err != nil {
+			if err := ReviewHandleRequestChanges(beadID, reviewerName, review, round, revPolicy, deps, log); err != nil {
 				return err
 			}
 		}
@@ -249,7 +235,8 @@ func cmdWizardReview(args []string) error {
 
 // --- Worktree helpers ---
 
-func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (*spgit.WorktreeContext, error) {
+// ReviewCreateWorktree creates a worktree for the sage to review code in.
+func ReviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (*spgit.WorktreeContext, error) {
 	worktreeDir := filepath.Join(os.TempDir(), "spire-review", reviewerName, beadID)
 	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
 
@@ -279,8 +266,9 @@ func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch str
 
 // --- Diff + test helpers ---
 
-func reviewGetRound(beadID string) int {
-	reviews, err := storeGetReviewBeads(beadID)
+// ReviewGetRound returns the number of existing review-round beads.
+func ReviewGetRound(beadID string, deps *Deps) int {
+	reviews, err := deps.GetReviewBeads(beadID)
 	if err != nil {
 		return 0
 	}
@@ -289,7 +277,8 @@ func reviewGetRound(beadID string) int {
 
 // --- Opus review ---
 
-func reviewRunOpus(title, spec, diff, testOutput string, round int) (*Review, error) {
+// ReviewRunOpus runs an Opus-model code review on the given diff.
+func ReviewRunOpus(title, spec, diff, testOutput string, round int) (*Review, error) {
 	systemPrompt := `You are a senior staff engineer performing code review. You review diffs against specifications.
 
 Your job is to determine: does this implementation satisfy the specification?
@@ -358,10 +347,11 @@ Verdicts:
 		return nil, fmt.Errorf("claude review: %w", err)
 	}
 
-	return parseReviewOutput(string(out))
+	return ParseReviewOutput(string(out))
 }
 
-func parseReviewOutput(text string) (*Review, error) {
+// ParseReviewOutput parses the structured review output from the claude CLI.
+func ParseReviewOutput(text string) (*Review, error) {
 	text = strings.TrimSpace(text)
 
 	// Try direct JSON parse
@@ -415,45 +405,45 @@ func parseReviewOutput(text string) (*Review, error) {
 
 // --- Verdict handlers ---
 
-// reviewHandleApproval handles an approved verdict: transitions to merge phase,
+// ReviewHandleApproval handles an approved verdict: transitions to merge phase,
 // executes the terminal merge step, and closes the bead.
 //
 // Returns an error if the merge fails; the bead is left open so a human can diagnose.
-func reviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath string, log func(string, ...interface{})) error {
+func ReviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath string, deps *Deps, log func(string, ...interface{})) error {
 	log("approved — closing review step")
 
 	// Add review-approved (still needed for executor/workshop reads until those are migrated)
-	storeAddLabel(beadID, "review-approved")
+	deps.AddLabel(beadID, "review-approved")
 
 	// Close review molecule step
-	wizardCloseMoleculeStep(beadID, "review")
-	storeAddComment(beadID, fmt.Sprintf("Review approved by %s", reviewerName))
+	deps.CloseMoleculeStep(beadID, "review")
+	deps.AddComment(beadID, fmt.Sprintf("Review approved by %s", reviewerName))
 
 	// Resolve build command from bead's formula
-	bead, _ := storeGetBead(beadID)
-	buildCmd := resolveBeadBuildCmd(bead)
+	bead, _ := deps.GetBead(beadID)
+	buildCmd := deps.ResolveBeadBuildCmd(bead)
 
 	// Terminal merge: rebase → build verify → ff-only merge → push → delete branch → close bead.
 	// DAG invariant enforced: branch is deleted before bead is closed.
 	log("executing terminal merge")
-	if err := terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd, log); err != nil {
+	if err := deps.TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd, log); err != nil {
 		log("merge failed: %s — bead left at review-approved", err)
-		storeAddComment(beadID, fmt.Sprintf("Auto-merge failed: %s", err))
-		escalateHumanFailure(beadID, reviewerName, "merge-failure", err.Error())
+		deps.AddComment(beadID, fmt.Sprintf("Auto-merge failed: %s", err))
+		deps.EscalateHumanFailure(beadID, reviewerName, "merge-failure", err.Error())
 		return err
 	}
 
 	// Close merge molecule step after successful merge
-	wizardCloseMoleculeStep(beadID, "merge")
-	storeRemoveLabel(beadID, "test-failure")
+	deps.CloseMoleculeStep(beadID, "merge")
+	deps.RemoveLabel(beadID, "test-failure")
 	log("done — merged and closed")
 	return nil
 }
 
-// reviewMerge creates a PR for the feature branch and squash-merges it.
-func reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, log func(string, ...interface{})) error {
+// ReviewMerge creates a PR for the feature branch and squash-merges it.
+func ReviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, deps *Deps, log func(string, ...interface{})) error {
 	// Determine commit type from bead type
-	bead, _ := storeGetBead(beadID)
+	bead, _ := deps.GetBead(beadID)
 	commitType := "feat"
 	switch bead.Type {
 	case "bug":
@@ -490,7 +480,7 @@ func reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, log fun
 	} else {
 		prURL := strings.TrimSpace(string(createOut))
 		log("created PR: %s", prURL)
-		storeAddComment(beadID, fmt.Sprintf("PR created: %s", prURL))
+		deps.AddComment(beadID, fmt.Sprintf("PR created: %s", prURL))
 	}
 
 	// Squash-merge via gh CLI
@@ -507,12 +497,14 @@ func reviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, log fun
 		return fmt.Errorf("gh pr merge: %s — %s", err, strings.TrimSpace(string(mergeOut)))
 	}
 	log("merged successfully")
-	storeAddComment(beadID, fmt.Sprintf("Merged %s into %s (squash)", branch, baseBranch))
+	deps.AddComment(beadID, fmt.Sprintf("Merged %s into %s (squash)", branch, baseBranch))
 
 	return nil
 }
 
-func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, revPolicy RevisionPolicy, log func(string, ...interface{})) error {
+// ReviewHandleRequestChanges handles a request_changes verdict: posts comments,
+// spawns a wizard-run --review-fix, and returns.
+func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, revPolicy RevisionPolicy, deps *Deps, log func(string, ...interface{})) error {
 	log("requesting changes (round %d)", round)
 
 	// Review bead already closed with verdict above; no label writes needed.
@@ -533,17 +525,17 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 			}
 		}
 	}
-	storeAddComment(beadID, comment.String())
+	deps.AddComment(beadID, comment.String())
 
 	// Check if we've reached max review rounds — escalate to arbiter
 	if round >= revPolicy.MaxRounds {
 		log("max review rounds (%d) reached — escalating to arbiter", revPolicy.MaxRounds)
-		return reviewEscalateToArbiter(beadID, reviewerName, review, revPolicy, log)
+		return ReviewEscalateToArbiter(beadID, reviewerName, review, revPolicy, deps, log)
 	}
 
 	// Resolve wizard name: prefer implemented-by label, fall back to bead-based name.
-	bead, _ := storeGetBead(beadID)
-	wizardName := hasLabel(bead, "implemented-by:")
+	bead, _ := deps.GetBead(beadID)
+	wizardName := deps.HasLabel(bead, "implemented-by:")
 	if wizardName == "" {
 		wizardName = "wizard-" + beadID
 	}
@@ -571,7 +563,7 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 
 	// Register re-engaged wizard
 	reengageNow := time.Now().UTC().Format(time.RFC3339)
-	wizardRegistryAdd(localWizard{
+	deps.RegistryAdd(Entry{
 		Name:           wizardName,
 		PID:            0,
 		BeadID:         beadID,
@@ -582,8 +574,8 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 
 	// Spawn wizard-run --review-fix
 	log("spawning %s --review-fix", wizardName)
-	logDir := filepath.Join(doltGlobalDir(), "wizards")
-	backend := ResolveBackend("")
+	logDir := filepath.Join(deps.DoltGlobalDir(), "wizards")
+	backend := deps.ResolveBackend("")
 	handle, spawnErr := backend.Spawn(SpawnConfig{
 		Name:      wizardName,
 		BeadID:    beadID,
@@ -595,7 +587,7 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 		log("failed to spawn wizard: %s", spawnErr)
 	} else if id := handle.Identifier(); id != "" {
 		if pid, convErr := strconv.Atoi(id); convErr == nil {
-			wizardRegistryUpdate(wizardName, func(w *localWizard) {
+			deps.RegistryUpdate(wizardName, func(w *Entry) {
 				w.PID = pid
 			})
 		}
@@ -605,23 +597,23 @@ func reviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	return nil
 }
 
-// reviewEscalateToArbiter runs the arbiter model to make a final decision.
+// ReviewEscalateToArbiter runs the arbiter model to make a final decision.
 // Arbiter outcomes: merge (force-approve), discard (close as wontfix), split (child beads).
-func reviewEscalateToArbiter(beadID, reviewerName string, lastReview *Review, policy RevisionPolicy, log func(string, ...interface{})) error {
+func ReviewEscalateToArbiter(beadID, reviewerName string, lastReview *Review, policy RevisionPolicy, deps *Deps, log func(string, ...interface{})) error {
 	log("running arbiter (%s)", policy.ArbiterModel)
 
 	// Build arbiter prompt
-	bead, err := storeGetBead(beadID)
+	bead, err := deps.GetBead(beadID)
 	if err != nil {
 		return fmt.Errorf("arbiter: get bead: %w", err)
 	}
 
 	// Collect structured review history from review-round beads
-	reviewBeads, _ := storeGetReviewBeads(beadID)
+	reviewBeads, _ := deps.GetReviewBeads(beadID)
 	var reviewHistory strings.Builder
 	for _, rb := range reviewBeads {
-		roundNum := reviewRoundNumber(rb)
-		sage := hasLabel(rb, "sage:")
+		roundNum := deps.ReviewRoundNumber(rb)
+		sage := deps.HasLabel(rb, "sage:")
 		reviewHistory.WriteString(fmt.Sprintf("### Round %d (sage: %s, status: %s)\n", roundNum, sage, rb.Status))
 		if rb.Description != "" {
 			reviewHistory.WriteString(rb.Description)
@@ -630,7 +622,7 @@ func reviewEscalateToArbiter(beadID, reviewerName string, lastReview *Review, po
 	}
 	// Fall back to comment archaeology if no review beads found
 	if len(reviewBeads) == 0 {
-		comments, _ := storeGetComments(beadID)
+		comments, _ := deps.GetComments(beadID)
 		for _, c := range comments {
 			if strings.Contains(c.Text, "Review round") || strings.Contains(c.Text, "review") {
 				reviewHistory.WriteString(c.Text)
@@ -675,8 +667,8 @@ Decision meanings:
 	out, err := cmd.Output()
 	if err != nil {
 		log("arbiter failed: %s — escalating to archmage", err)
-		storeAddComment(beadID, fmt.Sprintf("Arbiter failed: %s — needs human resolution", err))
-		escalateHumanFailure(beadID, reviewerName, "arbiter-failure", err.Error())
+		deps.AddComment(beadID, fmt.Sprintf("Arbiter failed: %s — needs human resolution", err))
+		deps.EscalateHumanFailure(beadID, reviewerName, "arbiter-failure", err.Error())
 		return nil
 	}
 
@@ -701,56 +693,56 @@ Decision meanings:
 	}
 
 	log("arbiter decision: %s — %s", decision.Decision, decision.Reason)
-	storeAddComment(beadID, fmt.Sprintf("Arbiter decision: %s — %s", decision.Decision, decision.Reason))
-	storeAddLabel(beadID, "arbiter:"+decision.Decision)
+	deps.AddComment(beadID, fmt.Sprintf("Arbiter decision: %s — %s", decision.Decision, decision.Reason))
+	deps.AddLabel(beadID, "arbiter:"+decision.Decision)
 
 	switch decision.Decision {
 	case "merge":
 		// Force-approve: same terminal path as sage approve.
 		log("arbiter: force-approve, proceeding to merge")
-		branch := hasLabel(bead, "feat-branch:")
+		branch := deps.HasLabel(bead, "feat-branch:")
 		if branch == "" {
 			// Resolve repo first to load config from the correct directory.
-			rp, _, _, _ := wizardResolveRepo(beadID)
-			branch = resolveBranchForBead(beadID, rp)
+			rp, _, _, _ := deps.ResolveRepo(beadID)
+			branch = deps.ResolveBranch(beadID, rp)
 		}
-		repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
+		repoPath, _, baseBranch, err := deps.ResolveRepo(beadID)
 		if err != nil {
-			escalateHumanFailure(beadID, reviewerName, "repo-resolution",
+			deps.EscalateHumanFailure(beadID, reviewerName, "repo-resolution",
 				fmt.Sprintf("arbiter merge: %s", err.Error()))
 			return nil
 		}
-		reviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath, log)
+		ReviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath, deps, log)
 		return nil
 
 	case "split":
 		// Merge approved work, create child beads for remaining issues, close original.
-		// terminalSplit checks reviewHandleApproval error and aborts child-bead creation
+		// terminalSplit checks ReviewHandleApproval error and aborts child-bead creation
 		// if the merge fails — preventing child beads from being orphaned from unmerged code.
 		var tasks []SplitTask
 		for _, t := range decision.SplitTasks {
 			tasks = append(tasks, SplitTask{Title: t.Title, Description: t.Description})
 		}
-		return terminalSplit(beadID, reviewerName, tasks, log)
+		return deps.TerminalSplit(beadID, reviewerName, tasks, log)
 
 	default: // "discard" or unknown
 		// Delete branches and close as wontfix.
-		return terminalDiscard(beadID, log)
+		return deps.TerminalDiscard(beadID, log)
 	}
 }
 
-// cmdWizardMerge merges a review-approved bead: creates PR, squash-merges,
+// CmdWizardMerge merges a review-approved bead: creates PR, squash-merges,
 // closes the merge molecule step, and closes the bead.
 //
 // Usage: spire wizard-merge <bead-id>
-func cmdWizardMerge(args []string) error {
+func CmdWizardMerge(args []string, deps *Deps) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: spire wizard-merge <bead-id>")
 	}
 
 	beadID := args[0]
 
-	if d := resolveBeadsDir(); d != "" {
+	if d := deps.ResolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
 	}
 
@@ -759,39 +751,38 @@ func cmdWizardMerge(args []string) error {
 	}
 
 	// Verify bead is review-approved
-	bead, err := storeGetBead(beadID)
+	bead, err := deps.GetBead(beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
-	if !containsLabel(bead, "review-approved") {
+	if !deps.ContainsLabel(bead, "review-approved") {
 		return fmt.Errorf("bead %s is not review-approved (labels: %v)", beadID, bead.Labels)
 	}
 
 	// Resolve branch and repo
-	branch := hasLabel(bead, "feat-branch:")
-	repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
+	branch := deps.HasLabel(bead, "feat-branch:")
+	repoPath, _, baseBranch, err := deps.ResolveRepo(beadID)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
 	if branch == "" {
-		branch = resolveBranchForBead(beadID, repoPath)
+		branch = deps.ResolveBranch(beadID, repoPath)
 	}
 
 	log("merging %s branch %s → %s", beadID, branch, baseBranch)
 
-	if err := reviewMerge(beadID, bead.Title, branch, baseBranch, repoPath, log); err != nil {
+	if err := ReviewMerge(beadID, bead.Title, branch, baseBranch, repoPath, deps, log); err != nil {
 		return err
 	}
 
 	// Close merge molecule step and bead
-	wizardCloseMoleculeStep(beadID, "merge")
-	storeRemoveLabel(beadID, "review-approved")
-	storeRemoveLabel(beadID, "test-failure")
-	storeRemoveLabel(beadID, "feat-branch:"+branch)
-	if err := storeCloseBead(beadID); err != nil {
+	deps.CloseMoleculeStep(beadID, "merge")
+	deps.RemoveLabel(beadID, "review-approved")
+	deps.RemoveLabel(beadID, "test-failure")
+	deps.RemoveLabel(beadID, "feat-branch:"+branch)
+	if err := deps.CloseBead(beadID); err != nil {
 		log("warning: close bead: %s", err)
 	}
 	log("done — %s merged and closed", beadID)
 	return nil
 }
-

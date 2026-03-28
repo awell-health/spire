@@ -188,8 +188,8 @@ func bridgeReviewEscalateToArbiter(beadID, reviewerName string, lastReview *exec
 	return reviewEscalateToArbiter(beadID, reviewerName, r, policy, log)
 }
 
-// --- Type compatibility: Review is now in both executor and wizard_review.go ---
-// The cmd/spire Review type stays in wizard_review.go; executor.Review is separate.
+// --- Type compatibility: Review lives in pkg/wizard and pkg/executor as separate types ---
+// cmd/spire aliases wizard.Review via wizard_bridge.go; executor.Review is separate.
 // The bridge above handles conversion. pkg/executor callers use executor.Review.
 
 // executorResolveBranch loads spire.yaml from the bead's repo and resolves

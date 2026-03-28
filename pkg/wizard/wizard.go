@@ -1,4 +1,4 @@
-package main
+package wizard
 
 import (
 	"context"
@@ -18,12 +18,12 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-// cmdWizardRun is the internal entry point for a local wizard process.
+// CmdWizardRun is the internal entry point for a local wizard process.
 // It claims a bead, creates a worktree, runs design + implement phases,
 // validates, commits, pushes, updates the bead, and hands off to review.
 //
 // Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice]
-func cmdWizardRun(args []string) error {
+func CmdWizardRun(args []string, deps *Deps) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice]")
 	}
@@ -55,12 +55,12 @@ func cmdWizardRun(args []string) error {
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", wizardName, fmt.Sprintf(format, a...))
 	}
 
-	if err := requireDolt(); err != nil {
+	if err := deps.RequireDolt(); err != nil {
 		return err
 	}
 
 	// 2. Resolve repo for this bead (prefix -> repo URL + path)
-	repoPath, repoURL, baseBranch, err := wizardResolveRepo(beadID)
+	repoPath, repoURL, baseBranch, err := deps.ResolveRepo(beadID)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
@@ -100,7 +100,7 @@ func cmdWizardRun(args []string) error {
 	branchName := strings.ReplaceAll(branchPattern, "{bead-id}", beadID)
 
 	// 3. Create git worktree
-	wc, err := wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName)
+	wc, err := WizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName, deps)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}
@@ -110,7 +110,7 @@ func cmdWizardRun(args []string) error {
 
 	// 4. Self-register in wizards.json
 	now := time.Now().UTC().Format(time.RFC3339)
-	wizardRegistryAdd(localWizard{
+	deps.RegistryAdd(Entry{
 		Name:           wizardName,
 		PID:            os.Getpid(),
 		BeadID:         beadID,
@@ -119,14 +119,14 @@ func cmdWizardRun(args []string) error {
 		Phase:          "init",
 		PhaseStartedAt: now,
 	})
-	defer wizardRegistryRemove(wizardName)
+	defer deps.RegistryRemove(wizardName)
 
 	// Signal handler for clean unregister on interrupt
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		wizardRegistryRemove(wizardName)
+		deps.RegistryRemove(wizardName)
 		os.Exit(1)
 	}()
 
@@ -134,7 +134,7 @@ func cmdWizardRun(args []string) error {
 	os.Setenv("SPIRE_IDENTITY", wizardName)
 	if !reviewFix && !apprenticeMode {
 		log("claiming %s", beadID)
-		if err := cmdClaim([]string{beadID}); err != nil {
+		if err := deps.CmdClaim([]string{beadID}); err != nil {
 			return fmt.Errorf("claim: %w", err)
 		}
 	}
@@ -144,24 +144,24 @@ func cmdWizardRun(args []string) error {
 
 	// 7. Capture focus context
 	log("assembling focus context")
-	focusContext, err := wizardCaptureFocus(beadID)
+	focusContext, err := deps.CaptureFocus(beadID)
 	if err != nil {
 		log("warning: focus failed: %s", err)
 		focusContext = fmt.Sprintf("Bead %s — focus context unavailable", beadID)
 	}
 
 	// Get bead JSON and extract title
-	beadJSON, err := wizardGetBeadJSON(beadID)
+	beadJSON, err := deps.GetBeadJSON(beadID)
 	if err != nil {
 		log("warning: could not get bead JSON: %s", err)
 		beadJSON = "{}"
 	}
-	beadTitle := wizardExtractTitle(beadJSON)
+	beadTitle := WizardExtractTitle(beadJSON)
 
 	// Install dependencies
 	if repoCfg.Runtime.Install != "" {
 		log("installing dependencies: %s", repoCfg.Runtime.Install)
-		if err := wizardRunCmd(worktreeDir, repoCfg.Runtime.Install); err != nil {
+		if err := WizardRunCmd(worktreeDir, repoCfg.Runtime.Install); err != nil {
 			log("warning: install failed: %s", err)
 		}
 	}
@@ -169,17 +169,16 @@ func cmdWizardRun(args []string) error {
 	// 8-9. Phase execution
 	if reviewFix {
 		// --review-fix path: skip design, collect feedback, implement with feedback
-		feedback := wizardCollectReviewHistory(beadID, wizardName)
-
+		feedback := WizardCollectReviewHistory(beadID, wizardName, deps)
 
 		// Update phase
-		wizardRegistryUpdate(wizardName, func(w *localWizard) {
+		deps.RegistryUpdate(wizardName, func(w *Entry) {
 			w.Phase = "implement"
 			w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
 		})
 
 		// Build implement prompt with feedback
-		implPrompt := wizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
+		implPrompt := WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
 			model, maxTurns, timeout, repoCfg, focusContext, beadJSON, "", feedback)
 		implPromptPath := filepath.Join(worktreeDir, ".spire-prompt.txt")
 		if err := os.WriteFile(implPromptPath, []byte(implPrompt), 0644); err != nil {
@@ -189,25 +188,25 @@ func cmdWizardRun(args []string) error {
 		reviewFixTimeout := designTimeout // spec: review-fix gets 10m, not 15m
 		claudeStartedAt := time.Now()
 		log("starting implement phase with review feedback (timeout: %s)", reviewFixTimeout)
-		if err := wizardRunClaude(worktreeDir, implPromptPath, model, reviewFixTimeout, maxTurns); err != nil {
+		if err := WizardRunClaude(worktreeDir, implPromptPath, model, reviewFixTimeout, maxTurns); err != nil {
 			log("claude implement failed: %s", err)
 		}
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
 		// Close implement molecule step
-		wizardCloseMoleculeStep(beadID, "implement")
+		deps.CloseMoleculeStep(beadID, "implement")
 	} else {
 		// Normal path: design phase then implement phase
 
 		// --- Design phase (skipped in apprentice mode) ---
 		var designOutput string
 		if !apprenticeMode {
-			wizardRegistryUpdate(wizardName, func(w *localWizard) {
+			deps.RegistryUpdate(wizardName, func(w *Entry) {
 				w.Phase = "design"
 				w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
 			})
 
-			designPrompt := wizardBuildDesignPrompt(wizardName, beadID, repoCfg, focusContext, beadJSON)
+			designPrompt := WizardBuildDesignPrompt(wizardName, beadID, repoCfg, focusContext, beadJSON)
 			designPromptPath := filepath.Join(worktreeDir, ".spire-design-prompt.txt")
 			if err := os.WriteFile(designPromptPath, []byte(designPrompt), 0644); err != nil {
 				return fmt.Errorf("write design prompt: %w", err)
@@ -215,7 +214,7 @@ func cmdWizardRun(args []string) error {
 
 			designStartedAt := time.Now()
 			log("starting design phase (timeout: %s)", designTimeout)
-			designOutput, err = wizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
+			designOutput, err = WizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
 			if err != nil {
 				log("design phase failed: %s", err)
 			}
@@ -226,19 +225,19 @@ func cmdWizardRun(args []string) error {
 			os.WriteFile(designPath, []byte(designOutput), 0644)
 
 			// Post plan as bead comment
-			storeAddComment(beadID, fmt.Sprintf("Design plan:\n%s", designOutput))
+			deps.AddComment(beadID, fmt.Sprintf("Design plan:\n%s", designOutput))
 
 			// Close design molecule step
-			wizardCloseMoleculeStep(beadID, "design")
+			deps.CloseMoleculeStep(beadID, "design")
 		}
 
 		// --- Implement phase ---
-		wizardRegistryUpdate(wizardName, func(w *localWizard) {
+		deps.RegistryUpdate(wizardName, func(w *Entry) {
 			w.Phase = "implement"
 			w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
 		})
 
-		implPrompt := wizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
+		implPrompt := WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
 			model, maxTurns, timeout, repoCfg, focusContext, beadJSON, designOutput, "")
 		implPromptPath := filepath.Join(worktreeDir, ".spire-prompt.txt")
 		if err := os.WriteFile(implPromptPath, []byte(implPrompt), 0644); err != nil {
@@ -247,23 +246,23 @@ func cmdWizardRun(args []string) error {
 
 		claudeStartedAt := time.Now()
 		log("starting implement phase (timeout: %s)", timeout)
-		if err := wizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns); err != nil {
+		if err := WizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns); err != nil {
 			log("claude implement failed: %s", err)
 		}
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
 		// Close implement molecule step
-		wizardCloseMoleculeStep(beadID, "implement")
+		deps.CloseMoleculeStep(beadID, "implement")
 	}
 
 	// 10. Validate
-	testsPassed := wizardValidate(worktreeDir, repoCfg, log)
+	testsPassed := WizardValidate(worktreeDir, repoCfg, log)
 
 	// 11. Commit and push
-	commitSHA, pushed := wizardCommitAndPush(wc, beadID, beadTitle, log)
+	commitSHA, pushed := WizardCommitAndPush(wc, beadID, beadTitle, log)
 
 	// 12. Update bead (comment)
-	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, pushed, testsPassed, log)
+	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, pushed, testsPassed, deps, log)
 
 	// 13. Review handoff if pushed.
 	// Test failures are informational — the reviewer runs tests independently.
@@ -273,11 +272,11 @@ func cmdWizardRun(args []string) error {
 	if pushed {
 		if !testsPassed {
 			log("tests failed but branch pushed — proceeding to review")
-			storeAddLabel(beadID, "test-failure")
+			deps.AddLabel(beadID, "test-failure")
 		}
 		if !apprenticeMode {
 			handoffDone = true
-			wizardReviewHandoff(beadID, wizardName, branchName, log)
+			WizardReviewHandoff(beadID, wizardName, branchName, deps, log)
 		} else {
 			handoffDone = true
 			log("apprentice mode — skipping review handoff")
@@ -286,7 +285,7 @@ func cmdWizardRun(args []string) error {
 
 	// 14. If we didn't hand off, reopen the bead so it doesn't stay orphaned.
 	if !handoffDone {
-		storeUpdateBead(beadID, map[string]interface{}{"status": "open"})
+		deps.UpdateBead(beadID, map[string]interface{}{"status": "open"})
 		log("apprentice mode — bead reopened")
 	}
 
@@ -299,16 +298,16 @@ func cmdWizardRun(args []string) error {
 	if !testsPassed {
 		result = "test_failure"
 	}
-	wizardWriteResult(wizardName, beadID, result, branchName, commitSHA, elapsed, log)
+	WizardWriteResult(wizardName, beadID, result, branchName, commitSHA, elapsed, deps, log)
 
 	log("done (%.0fs total)", elapsed.Seconds())
 	return nil
 }
 
-// wizardResolveRepo finds the local repo path, remote URL, and base branch
+// ResolveRepo finds the local repo path, remote URL, and base branch
 // for a bead by matching its ID prefix against registered repos.
-func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err error) {
-	cfg, err := loadConfig()
+func ResolveRepo(beadID string, deps *Deps) (repoPath, repoURL, baseBranch string, err error) {
+	cfg, err := deps.LoadConfig()
 	if err != nil {
 		return "", "", "", err
 	}
@@ -325,12 +324,12 @@ func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err
 	}
 
 	// Query repos table for URL and branch
-	database, _ := resolveDatabase(cfg)
+	database, _ := deps.ResolveDatabase(cfg)
 	if database != "" && prefix != "" {
 		sql := fmt.Sprintf("SELECT repo_url, branch FROM `%s`.repos WHERE prefix = '%s'",
-			database, sqlEscape(prefix))
-		if out, err := rawDoltQuery(sql); err == nil {
-			rows := parseDoltRows(out, []string{"repo_url", "branch"})
+			database, deps.SQLEscape(prefix))
+		if out, err := deps.RawDoltQuery(sql); err == nil {
+			rows := deps.ParseDoltRows(out, []string{"repo_url", "branch"})
 			if len(rows) > 0 {
 				repoURL = rows[0]["repo_url"]
 				baseBranch = rows[0]["branch"]
@@ -347,10 +346,10 @@ func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err
 	return repoPath, repoURL, baseBranch, nil
 }
 
-// resolveBranchForBead resolves the branch name for a bead by loading
+// ResolveBranchForBead resolves the branch name for a bead by loading
 // spire.yaml from the given repoPath (or cwd if empty). Falls back to
 // "feat/<beadID>" if the config cannot be loaded.
-func resolveBranchForBead(beadID, repoPath string) string {
+func ResolveBranchForBead(beadID, repoPath string) string {
 	dir := repoPath
 	if dir == "" {
 		dir = "."
@@ -362,13 +361,13 @@ func resolveBranchForBead(beadID, repoPath string) string {
 	return cfg.ResolveBranch(beadID)
 }
 
-// wizardCreateWorktree creates a git worktree for the wizard to work in.
+// WizardCreateWorktree creates a git worktree for the wizard to work in.
 // On first run it creates a new branch from baseBranch. On --review-fix
 // the branch already exists (pushed by the previous run), so it checks
 // out the existing branch instead of trying to create it again.
 //
 // Returns a WorktreeContext that must be used for all subsequent git operations.
-func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string) (*spgit.WorktreeContext, error) {
+func WizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string, deps *Deps) (*spgit.WorktreeContext, error) {
 	worktreeBase := filepath.Join(os.TempDir(), "spire-wizard", wizardName)
 	worktreeDir := filepath.Join(worktreeBase, beadID)
 	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
@@ -399,7 +398,7 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 	// Co-Authored-By for traceability. Uses WorktreeContext.ConfigureUser which
 	// scopes settings with --worktree so they don't pollute the main repo's config.
 	archName, archEmail := wizardName, wizardName+"@spire.local" // fallback
-	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
+	if tower, tErr := deps.ActiveTowerConfig(); tErr == nil && tower != nil {
 		if tower.Archmage.Name != "" {
 			archName = tower.Archmage.Name
 		}
@@ -417,29 +416,9 @@ func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName s
 	return wc, nil
 }
 
-// wizardCaptureFocus runs `spire focus <bead-id>` and captures stdout.
-func wizardCaptureFocus(beadID string) (string, error) {
-	cmd := exec.Command(os.Args[0], "focus", beadID)
-	cmd.Env = os.Environ()
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
-
-// wizardGetBeadJSON runs `bd show <bead-id> --json` and captures stdout.
-func wizardGetBeadJSON(beadID string) (string, error) {
-	out, err := bd("show", beadID, "--json")
-	if err != nil {
-		return "", err
-	}
-	return out, nil
-}
-
-// wizardExtractTitle extracts the title from bd show --json output.
+// WizardExtractTitle extracts the title from bd show --json output.
 // The output is a JSON array of bead objects.
-func wizardExtractTitle(beadJSON string) string {
+func WizardExtractTitle(beadJSON string) string {
 	var parsed []struct {
 		Title string `json:"title"`
 	}
@@ -451,7 +430,8 @@ func wizardExtractTitle(beadJSON string) string {
 
 // --- Prompt builders ---
 
-func wizardBuildDesignPrompt(wizardName, beadID string, cfg *repoconfig.RepoConfig,
+// WizardBuildDesignPrompt builds the design phase prompt for the wizard.
+func WizardBuildDesignPrompt(wizardName, beadID string, cfg *repoconfig.RepoConfig,
 	focusContext, beadJSON string) string {
 
 	contextPaths := cfg.Context
@@ -486,7 +466,8 @@ Bead JSON:
 `, wizardName, beadID, contextBlock.String(), focusContext, beadJSON)
 }
 
-func wizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch, model string,
+// WizardBuildImplementPrompt builds the implement phase prompt for the wizard.
+func WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch, model string,
 	maxTurns int, timeout string, cfg *repoconfig.RepoConfig,
 	focusContext, beadJSON, designPlan, reviewFeedback string) string {
 
@@ -566,10 +547,10 @@ You are working in an isolated git worktree. Other agents may be working on rela
 		focusContext, beadJSON)
 }
 
-// wizardBuildClaudeArgs builds the common claude CLI arguments.
+// WizardBuildClaudeArgs builds the common claude CLI arguments.
 // maxTurns is passed as --max-turns to limit agent iterations.
 // Timeout enforcement is handled by the caller via context.WithTimeout.
-func wizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
+func WizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
 	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
@@ -583,15 +564,15 @@ func wizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
 	return args
 }
 
-// wizardRunClaude invokes the claude CLI in print mode (output goes to stderr).
+// WizardRunClaude invokes the claude CLI in print mode (output goes to stderr).
 // timeout enforces a hard process-level deadline via context.
-func wizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int) error {
+func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int) error {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
 		return fmt.Errorf("read prompt: %w", err)
 	}
 
-	args := wizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
+	args := WizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
 
 	dur, parseErr := time.ParseDuration(timeout)
 	if parseErr != nil {
@@ -609,15 +590,15 @@ func wizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	return cmd.Run()
 }
 
-// wizardRunClaudeCapture invokes the claude CLI and captures stdout.
+// WizardRunClaudeCapture invokes the claude CLI and captures stdout.
 // timeout enforces a hard process-level deadline via context.
-func wizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int) (string, error) {
+func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int) (string, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
 		return "", fmt.Errorf("read prompt: %w", err)
 	}
 
-	args := wizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
+	args := WizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
 
 	dur, parseErr := time.ParseDuration(timeout)
 	if parseErr != nil {
@@ -635,8 +616,8 @@ func wizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	return string(out), err
 }
 
-// wizardRunCmd runs a shell command in the given directory.
-func wizardRunCmd(dir, command string) error {
+// WizardRunCmd runs a shell command in the given directory.
+func WizardRunCmd(dir, command string) error {
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
@@ -645,25 +626,25 @@ func wizardRunCmd(dir, command string) error {
 	return cmd.Run()
 }
 
-// wizardValidate runs lint, build, and test commands from spire.yaml.
-func wizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...interface{})) bool {
+// WizardValidate runs lint, build, and test commands from spire.yaml.
+func WizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...interface{})) bool {
 	if cfg.Runtime.Lint != "" {
 		log("validating: lint")
-		if err := wizardRunCmd(dir, cfg.Runtime.Lint); err != nil {
+		if err := WizardRunCmd(dir, cfg.Runtime.Lint); err != nil {
 			log("lint failed: %s", err)
 			return false
 		}
 	}
 	if cfg.Runtime.Build != "" {
 		log("validating: build")
-		if err := wizardRunCmd(dir, cfg.Runtime.Build); err != nil {
+		if err := WizardRunCmd(dir, cfg.Runtime.Build); err != nil {
 			log("build failed: %s", err)
 			return false
 		}
 	}
 	if cfg.Runtime.Test != "" {
 		log("validating: test")
-		if err := wizardRunCmd(dir, cfg.Runtime.Test); err != nil {
+		if err := WizardRunCmd(dir, cfg.Runtime.Test); err != nil {
 			log("test failed: %s", err)
 			return false
 		}
@@ -671,9 +652,9 @@ func wizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 	return true
 }
 
-// wizardCommitAndPush commits any changes and pushes the branch.
+// WizardCommitAndPush commits any changes and pushes the branch.
 // Uses WorktreeContext methods for all git operations — no raw exec.Command.
-func wizardCommitAndPush(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, pushed bool) {
+func WizardCommitAndPush(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, pushed bool) {
 	hasUncommitted := wc.HasUncommittedChanges()
 	hasNewCommits := wc.HasNewCommits()
 
@@ -726,11 +707,11 @@ func wizardCommitAndPush(wc *spgit.WorktreeContext, beadID, beadTitle string, lo
 	return commitSHA, true
 }
 
-// wizardUpdateBead adds a comment to the bead. Labels are managed by wizardReviewHandoff.
-func wizardUpdateBead(beadID, wizardName, branchName, commitSHA string, pushed, testsPassed bool, log func(string, ...interface{})) {
+// wizardUpdateBead adds a comment to the bead. Labels are managed by WizardReviewHandoff.
+func wizardUpdateBead(beadID, wizardName, branchName, commitSHA string, pushed, testsPassed bool, deps *Deps, log func(string, ...interface{})) {
 	if !pushed {
 		note := fmt.Sprintf("Wizard %s finished without changes", wizardName)
-		storeAddComment(beadID, note)
+		deps.AddComment(beadID, note)
 		return
 	}
 
@@ -741,14 +722,14 @@ func wizardUpdateBead(beadID, wizardName, branchName, commitSHA string, pushed, 
 	if !testsPassed {
 		note += " (tests failed)"
 	}
-	storeAddComment(beadID, note)
+	deps.AddComment(beadID, note)
 }
 
-// wizardWriteResult writes a result JSON file for observability.
-func wizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
-	elapsed time.Duration, log func(string, ...interface{})) {
+// WizardWriteResult writes a result JSON file for observability.
+func WizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
+	elapsed time.Duration, deps *Deps, log func(string, ...interface{})) {
 
-	resultDir := filepath.Join(doltGlobalDir(), "wizards", wizardName)
+	resultDir := filepath.Join(deps.DoltGlobalDir(), "wizards", wizardName)
 	os.MkdirAll(resultDir, 0755)
 
 	data := map[string]interface{}{
@@ -767,21 +748,32 @@ func wizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
 	}
 }
 
-// wizardCleanup removes the git worktree.
-// wizardCleanup is a legacy wrapper kept for any call sites that haven't
+// WizardCleanup removes the git worktree.
+// WizardCleanup is a legacy wrapper kept for any call sites that haven't
 // migrated to WorktreeContext.Cleanup() yet.
-func wizardCleanup(worktreeDir, repoPath string) {
+func WizardCleanup(worktreeDir, repoPath string) {
 	wc := spgit.WorktreeContext{Dir: worktreeDir, RepoPath: repoPath}
 	wc.Cleanup()
 }
 
+// CaptureWizardFocus runs `spire focus <bead-id>` and captures stdout.
+func CaptureWizardFocus(beadID string) (string, error) {
+	cmd := exec.Command(os.Args[0], "focus", beadID)
+	cmd.Env = os.Environ()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // --- Molecule helpers ---
 
-// wizardFindMoleculeSteps finds the workflow molecule for a bead and returns
+// FindMoleculeSteps finds the workflow molecule for a bead and returns
 // step name -> step bead ID mapping.
-func wizardFindMoleculeSteps(beadID string) (string, map[string]string, error) {
+func FindMoleculeSteps(beadID string, deps *Deps) (string, map[string]string, error) {
 	// Find molecule by workflow:<beadID> label
-	mols, err := storeListBeads(beads.IssueFilter{
+	mols, err := deps.ListBeads(beads.IssueFilter{
 		IDPrefix: "spi-",
 		Labels:   []string{"workflow:" + beadID},
 	})
@@ -791,7 +783,7 @@ func wizardFindMoleculeSteps(beadID string) (string, map[string]string, error) {
 	molID := mols[0].ID
 
 	// Get children (the molecule steps)
-	children, err := storeGetChildren(molID)
+	children, err := deps.GetChildren(molID)
 	if err != nil {
 		return molID, nil, err
 	}
@@ -814,9 +806,9 @@ func wizardFindMoleculeSteps(beadID string) (string, map[string]string, error) {
 	return molID, steps, nil
 }
 
-// wizardCloseMoleculeStep closes a named step in the bead's workflow molecule.
-func wizardCloseMoleculeStep(beadID, stepName string) {
-	_, steps, err := wizardFindMoleculeSteps(beadID)
+// CloseMoleculeStep closes a named step in the bead's workflow molecule.
+func CloseMoleculeStep(beadID, stepName string, deps *Deps) {
+	_, steps, err := FindMoleculeSteps(beadID, deps)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: molecule step %s: %s\n", stepName, err)
 		return
@@ -826,16 +818,16 @@ func wizardCloseMoleculeStep(beadID, stepName string) {
 		fmt.Fprintf(os.Stderr, "warning: molecule step %s not found for %s\n", stepName, beadID)
 		return
 	}
-	if err := storeCloseBead(stepID); err != nil {
+	if err := deps.CloseBead(stepID); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: close molecule step %s (%s): %s\n", stepName, stepID, err)
 	}
 }
 
 // --- Feedback collection ---
 
-// wizardCollectFeedback collects review feedback messages addressed to this wizard for a bead.
-func wizardCollectFeedback(beadID, wizardName string) string {
-	messages, err := storeListBeads(beads.IssueFilter{
+// WizardCollectFeedback collects review feedback messages addressed to this wizard for a bead.
+func WizardCollectFeedback(beadID, wizardName string, deps *Deps) string {
+	messages, err := deps.ListBeads(beads.IssueFilter{
 		IDPrefix: "spi-",
 		Labels:   []string{"msg", "to:" + wizardName, "ref:" + beadID},
 	})
@@ -848,21 +840,21 @@ func wizardCollectFeedback(beadID, wizardName string) string {
 	for _, m := range messages {
 		parts = append(parts, m.Description)
 		// Close consumed message
-		storeCloseBead(m.ID)
+		deps.CloseBead(m.ID)
 	}
 	return strings.Join(parts, "\n---\n")
 }
 
-// wizardCollectReviewHistory collects structured review history from review-round beads,
+// WizardCollectReviewHistory collects structured review history from review-round beads,
 // falling back to message-based feedback if no review beads exist.
-func wizardCollectReviewHistory(beadID, wizardName string) string {
-	reviewBeads, err := storeGetReviewBeads(beadID)
+func WizardCollectReviewHistory(beadID, wizardName string, deps *Deps) string {
+	reviewBeads, err := deps.GetReviewBeads(beadID)
 	if err == nil && len(reviewBeads) > 0 {
 		var buf strings.Builder
 		buf.WriteString("## Prior Review Rounds\n\n")
 		for _, rb := range reviewBeads {
-			roundNum := reviewRoundNumber(rb)
-			sage := hasLabel(rb, "sage:")
+			roundNum := deps.ReviewRoundNumber(rb)
+			sage := deps.HasLabel(rb, "sage:")
 			buf.WriteString(fmt.Sprintf("### Round %d (sage: %s, status: %s)\n", roundNum, sage, rb.Status))
 			if rb.Description != "" {
 				buf.WriteString(rb.Description)
@@ -871,7 +863,7 @@ func wizardCollectReviewHistory(beadID, wizardName string) string {
 			buf.WriteString("\n")
 		}
 		// Also collect any message-based feedback (in case of hybrid state)
-		msgFeedback := wizardCollectFeedback(beadID, wizardName)
+		msgFeedback := WizardCollectFeedback(beadID, wizardName, deps)
 		if msgFeedback != "" {
 			buf.WriteString("## Latest Feedback Message\n")
 			buf.WriteString(msgFeedback)
@@ -879,21 +871,21 @@ func wizardCollectReviewHistory(beadID, wizardName string) string {
 		return buf.String()
 	}
 	// Fall back to message-based feedback
-	return wizardCollectFeedback(beadID, wizardName)
+	return WizardCollectFeedback(beadID, wizardName, deps)
 }
 
 // --- Review handoff ---
 
-// wizardReviewHandoff spawns a reviewer process for a bead.
+// WizardReviewHandoff spawns a reviewer process for a bead.
 // On spawn failure, the steward's detectReviewReady() will detect the bead
 // needs review via its closed implement step bead and re-route on the next cycle.
-func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string, ...interface{})) {
-	storeAddLabel(beadID, "feat-branch:"+branchName)
+func WizardReviewHandoff(beadID, wizardName, branchName string, deps *Deps, log func(string, ...interface{})) {
+	deps.AddLabel(beadID, "feat-branch:"+branchName)
 
 	// Transition to review phase
 	// Register reviewer in wizard registry
 	reviewerName := wizardName + "-review"
-	wizardRegistryAdd(localWizard{
+	deps.RegistryAdd(Entry{
 		Name:           reviewerName,
 		PID:            0, // will be set by the reviewer process
 		BeadID:         beadID,
@@ -903,7 +895,7 @@ func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string,
 	})
 
 	// Spawn reviewer
-	backend := ResolveBackend("")
+	backend := deps.ResolveBackend("")
 	handle, spawnErr := backend.Spawn(SpawnConfig{
 		Name:   reviewerName,
 		BeadID: beadID,
@@ -913,20 +905,20 @@ func wizardReviewHandoff(beadID, wizardName, branchName string, log func(string,
 		log("failed to spawn reviewer: %s — steward will detect via review beads", spawnErr)
 		// Remove the dead registry entry; the steward's detectReviewReady()
 		// will detect the bead needs review via its closed implement step bead.
-		wizardRegistryRemove(reviewerName)
-		storeAddComment(beadID, fmt.Sprintf("Local review spawn failed: %s — steward will re-route", spawnErr))
+		deps.RegistryRemove(reviewerName)
+		deps.AddComment(beadID, fmt.Sprintf("Local review spawn failed: %s — steward will re-route", spawnErr))
 		return
 	}
 
 	// Update registry with the identifier now that spawn succeeded.
 	if id := handle.Identifier(); id != "" {
 		if pid, err := strconv.Atoi(id); err == nil {
-			wizardRegistryUpdate(reviewerName, func(w *localWizard) {
+			deps.RegistryUpdate(reviewerName, func(w *Entry) {
 				w.PID = pid
 			})
 		}
 	}
 
 	log("review handoff complete, spawned %s (%s)", reviewerName, handle.Identifier())
-	// Self-unregister happens via defer in cmdWizardRun
+	// Self-unregister happens via defer in CmdWizardRun
 }
