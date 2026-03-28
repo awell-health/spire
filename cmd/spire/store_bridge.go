@@ -271,26 +271,8 @@ func isStepBoardBead(b BoardBead) bool {
 }
 
 // --- Conversion / filter helpers ---
-
-func issueToBead(issue *beads.Issue) Bead {
-	return store.IssueToBead(issue)
-}
-
-func issuesToBeads(issues []*beads.Issue) []Bead {
-	return store.IssuesToBeads(issues)
-}
-
-func issueToBoardBead(issue *beads.Issue) BoardBead {
-	return store.IssueToBoardBead(issue)
-}
-
-func issuesToBoardBeads(issues []*beads.Issue) []BoardBead {
-	return store.IssuesToBoardBeads(issues)
-}
-
-func findParentID(deps []*beads.Dependency) string {
-	return store.FindParentID(deps)
-}
+// Dead wrappers removed: issueToBead, issuesToBeads, issueToBoardBead,
+// issuesToBoardBeads, findParentID — no callers remain in cmd/spire.
 
 func statusPtr(s beads.Status) *beads.Status {
 	return store.StatusPtr(s)
@@ -308,9 +290,7 @@ func parseIssueType(s string) beads.IssueType {
 	return store.ParseIssueType(s)
 }
 
-func storeActor() string {
-	return store.Actor()
-}
+// storeActor removed — no callers in cmd/spire.
 
 // --- Label helpers ---
 

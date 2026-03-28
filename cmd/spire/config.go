@@ -44,17 +44,7 @@ func findInstanceByPath(cfg *SpireConfig, path string) *Instance {
 	return config.FindInstanceByPath(cfg, path)
 }
 
-func allPaths(inst *Instance) []string {
-	return config.AllPaths(inst)
-}
-
-func removeFromPaths(inst *Instance, path string) {
-	config.RemoveFromPaths(inst, path)
-}
-
-func resolveTowerConfig() (*config.TowerConfig, error) {
-	return config.ResolveTowerConfig()
-}
+// allPaths, removeFromPaths, resolveTowerConfig removed — no callers in cmd/spire.
 
 func resolveTowerConfigWith(cfg *SpireConfig) (*config.TowerConfig, error) {
 	return config.ResolveTowerConfigWith(cfg)
