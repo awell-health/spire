@@ -131,6 +131,10 @@ func (m Model) View() string {
 		return ""
 	}
 
+	if m.Inspecting {
+		return RenderInspector(m.InspectorData, m.Width, m.Height, m.InspectorScroll)
+	}
+
 	visibleCols := m.VisibleCols()
 	displayCols := m.DisplayColumns()
 	colWidth := 30
@@ -250,7 +254,7 @@ func (m Model) View() string {
 	if m.ShowAllCols {
 		colsHint = " [all]"
 	}
-	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  t type  H cols" + colsHint + "  f focus  s summon  c claim  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
+	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  Enter inspect  t type  H cols" + colsHint + "  f focus  s summon  c claim  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
 	rightFooter := scopeStyle.Render("showing " + m.TypeScope.Label())
 	if m.Width > 0 {
 		gap := m.Width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)

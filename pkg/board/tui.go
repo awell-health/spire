@@ -33,6 +33,11 @@ type Model struct {
 	PendingAction PendingAction
 	PendingBeadID string
 
+	// Inspector state.
+	Inspecting      bool           // true when the inspector pane is visible
+	InspectorData   InspectorData  // fetched detail data for the inspected bead
+	InspectorScroll int            // scroll offset within the inspector
+
 	// FetchBoardFn is called to refresh board data. Injected by the caller.
 	FetchBoardFn func(opts Opts) (Columns, error)
 	// FetchAgentsFn is called to refresh local agents. Injected by the caller.
@@ -137,10 +142,50 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Inspector mode: handle keys differently.
+		if m.Inspecting {
+			switch msg.String() {
+			case "esc", "q", "enter":
+				m.Inspecting = false
+				m.InspectorScroll = 0
+			case "ctrl+c":
+				m.Quitting = true
+				return m, tea.Quit
+			case "j", "down":
+				m.InspectorScroll++
+			case "k", "up":
+				m.InspectorScroll--
+				if m.InspectorScroll < 0 {
+					m.InspectorScroll = 0
+				}
+			case "g":
+				m.InspectorScroll = 0
+			case "G":
+				total := InspectorLineCount(m.InspectorData, m.Width)
+				maxVisible := m.Height - 2
+				if maxVisible < 5 {
+					maxVisible = 5
+				}
+				m.InspectorScroll = total - maxVisible
+				if m.InspectorScroll < 0 {
+					m.InspectorScroll = 0
+				}
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			m.Quitting = true
 			return m, tea.Quit
+
+		// Open inspector on Enter.
+		case "enter":
+			if bead := m.SelectedBead(); bead != nil {
+				m.Inspecting = true
+				m.InspectorScroll = 0
+				m.InspectorData = FetchInspectorData(*bead)
+			}
 
 		// Column navigation.
 		case "h", "left", "shift+tab":
@@ -220,16 +265,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 	case tickMsg:
-		if m.FetchBoardFn != nil {
+		if !m.Inspecting && m.FetchBoardFn != nil {
 			if cols, err := m.FetchBoardFn(m.Opts); err == nil {
 				m.Cols = cols
 			}
 		}
-		if m.FetchAgentsFn != nil {
+		if !m.Inspecting && m.FetchAgentsFn != nil {
 			m.Agents = m.FetchAgentsFn()
 		}
 		m.LastTick = time.Now()
-		m.ClampSelection()
+		if !m.Inspecting {
+			m.ClampSelection()
+		}
 		return m, tickCmd(m.Opts.Interval)
 	}
 	return m, nil
