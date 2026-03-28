@@ -18,7 +18,10 @@ model = "claude-opus-4-6"
 
 [phases.implement]
 timeout = "10m"
-model = "claude-opus-4-6"
+model = "claude-sonnet-4-6"
+model_policy = "adaptive"
+base_model = "claude-sonnet-4-6"
+escalation_model = "claude-opus-4-6"
 role = "apprentice"
 dispatch = "wave"
 staging_branch = "epic/{bead-id}"
