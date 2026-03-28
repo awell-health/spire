@@ -51,7 +51,7 @@ Single Go binary. Entry point for all operations.
 | Work        | `file`, `design`, `spec`, `claim`, `close`, `advance`, `focus`, `grok` |
 | Messaging   | `register`, `unregister`, `send`, `collect`, `read`, `inbox` |
 | Coordination| `steward`, `board`, `roster`, `summon`, `dismiss`, `watch`, `alert` |
-| Execution   | `wizard-run`, `wizard-review`, `wizard-merge`, `execute`, `workshop` |
+| Execution   | `wizard-run`, `wizard-review`, `wizard-merge`, `execute`, `wizard-epic` |
 | Observability| `logs`, `metrics`                                  |
 | Integrations| `connect`, `disconnect`, `serve`, `daemon`          |
 
@@ -120,9 +120,9 @@ Assignment modes:
 ### Steward Sidecar (`cmd/spire-steward-sidecar/`)
 
 LLM-powered message processor that runs alongside the steward in k8s.
-Distinct from the Familiar (per-agent sidecar): the steward-sidecar is
+Distinct from the familiar (per-agent companion): the steward-sidecar is
 an LLM-powered processor specific to the steward, whereas the familiar
-(`cmd/spire-sidecar/`) handles messaging and health for wizard/agent pods.
+(`cmd/spire-sidecar/`) handles messaging and health for wizard pods.
 Uses the Anthropic API with tool use to process messages sent to the steward.
 
 **Capabilities (via tools):**
@@ -156,7 +156,7 @@ bead. Routes by workload type:
 |-----------|---------------|--------------------|
 | task/*    | Wizard pod    | `agent-entrypoint.sh` (runs Claude Code) |
 | epic      | Wizard pod    | `agent-entrypoint.sh` (runs Claude Code) |
-| review    | Review pod    | `spire-artificer --mode=review --once`    |
+| review    | Wizard pod    | `spire wizard-review --once`              |
 
 Reaps completed/failed pods and removes work from the agent's CurrentWork
 list.
@@ -224,18 +224,22 @@ branch diff against the bead spec.
 - Revision rounds: if changes requested, wizard spawns a review-fix apprentice and re-reviews
 - Arbiter escalation: after max rounds, Claude Opus tie-break decides final action
 
-#### Artificer (`cmd/spire-artificer/`)
+#### Artificer (not yet built)
 
-Formula maker. Crafts and tests the formulas (spells) that wizards follow.
+Formula maker. Will craft and test the formulas (spells) that wizards
+follow, via the Workshop CLI. The artificer role is exclusively for
+formula creation — it does not orchestrate epics or review code.
 
-> **Current state (2026-03-27):** The artificer binary is being deprecated.
-> The wizard now handles all execution (including epics) both locally and
-> in k8s. Formula creation/management will move to the Workshop CLI.
+> **Current state (2026-03-28):** The old `cmd/spire-artificer/` binary
+> has been removed. The wizard now handles all execution (including epics
+> and reviews) both locally and in k8s. The artificer role will be
+> reintroduced when the Workshop CLI is built for formula management.
 
-#### Sidecar / Familiar (`cmd/spire-sidecar/`)
+#### Familiar (`cmd/spire-sidecar/`)
 
-Per-agent companion. Runs alongside wizard and artificer containers in
-every agent pod (k8s only).
+Per-agent companion (sidecar). Runs alongside wizard containers in
+every agent pod (k8s only). The directory name `cmd/spire-sidecar/`
+is an implementation detail; the user-facing name is "familiar."
 
 **Loops:**
 - Inbox polling: `spire collect --json` on interval, writes to `/comms/inbox.json`
@@ -331,7 +335,7 @@ that sync failures don't block work assignment.
 |         |               | config.yaml          |  |
 |         v               +----------------------+  |
 | +------------------+   +---------------------+   |
-| | wizard           |   | sidecar             |   |
+| | wizard           |   | familiar            |   |
 | | agent-entrypoint |   | spire-sidecar       |   |
 | | .sh              |   | :8080               |   |
 | | workdir:/workspace|  | workdir:/data        |   |
@@ -343,7 +347,7 @@ that sync failures don't block work assignment.
 ```
 
 Volumes:
-- `/comms` (emptyDir) -- filesystem-based IPC between wizard and sidecar
+- `/comms` (emptyDir) -- filesystem-based IPC between wizard and familiar
 - `/workspace` (emptyDir) -- git clone of the target repo
 - `/data` (emptyDir) -- beads state (`.beads/` seeded by initContainer)
 - `beads-seed` (ConfigMap) -- metadata.json, routes.jsonl, config.yaml
@@ -352,14 +356,12 @@ Volumes:
 > initialize `.beads/` state. Target: `bd init --stealth` or a committed
 > `metadata.json` in the repo eliminates the ConfigMap seeding step.
 
-### Workshop Pod (Epic) -- DEPRECATED
+### Wizard Pod (Epic)
 
-> **Being replaced by wizard pods.** The wizard now handles epic
-> orchestration in k8s the same way it does locally. Epic beads route to
-> wizard pods (see AgentMonitor routing table above).
-
-Previously ran `spire-artificer` as the main container. Uses the "heavy"
-API token (Opus) for code review.
+Epic beads route to wizard pods the same way task beads do (see
+AgentMonitor routing table above). The wizard handles epic orchestration
+in k8s the same way it does locally. Uses the "heavy" API token (Opus)
+for planning and review.
 
 ### Steward Pod
 
@@ -381,17 +383,17 @@ API token (Opus) for code review.
 
 Containers within a pod communicate via the shared `/comms` emptyDir:
 
-| File              | Writer   | Reader   | Purpose                        |
-|-------------------|----------|----------|--------------------------------|
-| `inbox.json`      | sidecar  | wizard   | Messages from other agents     |
-| `control`         | sidecar  | wizard   | STOP, STEER:msg, PAUSE, RESUME|
-| `steer`           | sidecar  | wizard   | Steering corrections (live)    |
-| `steer.log`       | wizard   | wizard   | Accumulated steering history   |
-| `stop`            | sidecar  | wizard   | Shutdown signal                |
-| `result.json`     | wizard   | sidecar  | Run outcome (triggers sidecar shutdown) |
-| `wizard-alive`    | wizard   | sidecar  | Heartbeat (liveness check)     |
-| `heartbeat`       | sidecar  | operator | Sidecar liveness               |
-| `bead.json`       | wizard   | sidecar  | Current work context           |
+| File              | Writer    | Reader    | Purpose                        |
+|-------------------|-----------|-----------|--------------------------------|
+| `inbox.json`      | familiar  | wizard    | Messages from other agents     |
+| `control`         | familiar  | wizard    | STOP, STEER:msg, PAUSE, RESUME|
+| `steer`           | familiar  | wizard    | Steering corrections (live)    |
+| `steer.log`       | wizard    | wizard    | Accumulated steering history   |
+| `stop`            | familiar  | wizard    | Shutdown signal                |
+| `result.json`     | wizard    | familiar  | Run outcome (triggers familiar shutdown) |
+| `wizard-alive`    | wizard    | familiar  | Heartbeat (liveness check)     |
+| `heartbeat`       | familiar  | operator  | Familiar liveness              |
+| `bead.json`       | wizard    | familiar  | Current work context           |
 | `prompt.txt`      | wizard   | wizard   | Assembled Claude prompt        |
 | `focus.txt`       | wizard   | wizard   | Spire focus output             |
 
@@ -537,11 +539,11 @@ spec:
    --> sets phase: Assigned, updates agent.CurrentWork
 
 6. AgentMonitor creates pod
-   wizard pod (or workshop/review pod based on type)
+   wizard pod (type determines formula: task, epic, review)
    --> pod runs: clone, claim, focus, implement, test, push
 
 7. Wizard completes
-   writes result.json, sidecar detects exit
+   writes result.json, familiar detects exit
    --> AgentMonitor reaps pod, removes from CurrentWork
 
 8. Status flows back
@@ -569,9 +571,9 @@ Contains `spire`, `spire-steward-sidecar`, `spire-operator`, `bd`, `dolt`,
 `kubectl`. Used for the steward pod and operator pod.
 
 **Agent image** (`Dockerfile.agent`):
-Contains `spire`, `spire-sidecar`, `spire-artificer`, `bd`, `dolt`,
-`claude` (Claude Code CLI), `gh`, Go, Node.js, Python. Used for wizard,
-workshop, and review pods. Runs as non-root user `wizard`.
+Contains `spire`, `spire-sidecar` (familiar), `bd`, `dolt`,
+`claude` (Claude Code CLI), `gh`, Go, Node.js, Python. Used for wizard
+pods (task, epic, and review workloads). Runs as non-root user `wizard`.
 
 ## k8s Resources
 
@@ -599,8 +601,8 @@ Managed via kustomize (`k8s/kustomization.yaml`):
 | Orchestrator  | Wizard     | Per-bead orchestrator, drives formula lifecycle  |
 | Implementer   | Apprentice | Writes code in isolated worktrees, one-shot     |
 | Reviewer      | Sage       | Reviews code, returns verdict, one-shot         |
-| Formula maker | Artificer  | Creates and manages formulas (spells) via the Workshop CLI |
-| Companion     | Familiar   | Per-agent sidecar for messaging and health      |
+| Formula maker | Artificer  | Creates and manages formulas (spells) via the Workshop CLI (not yet built) |
+| Companion     | Familiar   | Per-agent companion (sidecar) for messaging and health |
 | Dispute resolver | Arbiter | Resolves disputes when sage and apprentice disagree |
 | Formula tool  | Workshop   | CLI tool for formula creation and testing (not yet built) |
 | Database      | Archive    | Dolt database                                   |

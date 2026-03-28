@@ -84,7 +84,7 @@ For **managed** agents:
    - Remove the pod's bead ID from `agent.status.currentWork`
    - Delete the pod
 3. **Create**: for each bead ID in `currentWork` with no existing pod:
-   - Build pod spec with worker + sidecar containers
+   - Build pod spec with worker + familiar containers
    - Inject env vars, secrets, volume mounts
    - Create the pod
 4. **Clean**: for each pod whose bead ID is NOT in `currentWork`:
@@ -161,7 +161,7 @@ spec:
           mountPath: /data
       resources: {from agent.spec.resources}
 
-    - name: sidecar
+    - name: familiar
       image: {same as worker}
       command:
         - spire-sidecar

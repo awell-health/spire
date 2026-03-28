@@ -4,6 +4,10 @@
 **Plan:** `docs/plans/2026-03-23-molecule-aware-wizard-review.md` (rev 7)
 **Scope:** 5 implementation phases across ~10 files
 
+> **Note (2026-03-28):** References to "artificer" in this brief refer to the
+> old `cmd/spire-artificer/` binary which has been removed. The wizard now
+> handles all orchestration, and the sage handles reviews.
+
 ---
 
 ## What you're building

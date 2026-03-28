@@ -131,15 +131,19 @@ The tie-breaker. Invoked when a sage and apprentice cannot converge after the ma
 
 ### Artificer
 
-The formula maker. The artificer crafts and maintains spells (formulas) — the TOML-based recipes that wizards follow to drive beads through their lifecycle. It works at the Workshop, a dedicated CLI tool for authoring, validating, and testing formulas before they are published to the tower. The artificer does not orchestrate epics or review code — that is the wizard's and sage's domain.
+The formula maker. The artificer crafts and maintains spells (formulas) — the TOML-based recipes that wizards follow to drive beads through their lifecycle. It works at the Workshop, a dedicated CLI tool (not yet built) for authoring, validating, and testing formulas before they are published to the tower. The artificer does not orchestrate epics or review code — that is the wizard's and sage's domain.
 
-### Familiar (Sidecar)
+### Familiar
 
-A per-agent companion that runs alongside each wizard or apprentice. The familiar manages all communication between its agent and the Archive (the tower's Dolt database) — reading and writing beads, relaying messages, handling control signals (STOP, STEER, PAUSE, RESUME), posting liveness heartbeats, and serving health endpoints. In k8s it runs as a sidecar container; locally it runs as a goroutine within the agent process.
+A per-agent companion that runs alongside each wizard or apprentice. The familiar manages all communication between its agent and the Archive (the tower's Dolt database) — reading and writing beads, relaying messages, handling control signals (STOP, STEER, PAUSE, RESUME), posting liveness heartbeats, and serving health endpoints. In k8s it runs as a sidecar container (`cmd/spire-sidecar/`); locally it runs as a goroutine within the agent process.
 
 ### Workshop (CLI Tool)
 
 The Workshop is a dedicated CLI tool (not yet built) where the artificer creates, validates, and tests spells (formulas). It provides a local sandbox for iterating on formula definitions — phase pipelines, model requirements, context rules — before publishing them to the tower for wizards to consume.
+
+> **Note:** The `wizard-epic` command (formerly `workshop`) handles epic
+> orchestration and is distinct from the Workshop formula tool. The
+> `workshop` command name remains as a deprecated alias for `wizard-epic`.
 
 ## Sync Model
 

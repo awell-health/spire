@@ -3,6 +3,11 @@
 **Date**: 2026-03-21
 **Scope**: Full review of all K8s manifests, Go binaries, CRDs, operator controllers, bead lifecycle, and data flow.
 
+> **Note (2026-03-28):** This review predates the end-state naming convention.
+> "Artificer" below refers to what is now the **wizard** (orchestration) and
+> **sage** (review). "Workshop pod" is now **wizard pod**. "Sidecar" (per-agent)
+> is now **familiar**. The `cmd/spire-artificer/` binary has been removed.
+
 ---
 
 ## Actors
