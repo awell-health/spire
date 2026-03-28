@@ -1,12 +1,14 @@
-package main
+package executor
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/agent"
 )
 
 // executeReview dispatches a sage for review and handles the verdict.
-func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
+func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 	sageName := fmt.Sprintf("%s-sage", e.agentName)
 	e.log("dispatching sage %s", sageName)
 
@@ -16,15 +18,15 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 	}
 
 	// Pass the shared staging worktree to the sage so it reviews in the same
-	// worktree used for wave merges — no separate checkout needed.
+	// worktree used for wave merges.
 	if e.state.WorktreeDir != "" {
 		extraArgs = append(extraArgs, "--worktree-dir", e.state.WorktreeDir)
 	}
 
-	handle, err := e.spawner.Spawn(SpawnConfig{
+	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
 		Name:      sageName,
 		BeadID:    e.beadID,
-		Role:      RoleSage,
+		Role:      agent.RoleSage,
 		ExtraArgs: extraArgs,
 	})
 	if err != nil {
@@ -35,30 +37,30 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 	}
 
 	// Read verdict from review-round child beads.
-	bead, err := storeGetBead(e.beadID)
+	bead, err := e.deps.GetBead(e.beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
-	// Check review-approved label for backwards compat (verdict-only mode still sets it).
-	if containsLabel(bead, "review-approved") {
+	// Check review-approved label for backwards compat.
+	if e.deps.ContainsLabel(bead, "review-approved") {
 		e.log("approved")
-		return nil // advance to next phase (merge)
+		return nil
 	}
 
 	// Check review beads for verdict
-	reviews, _ := storeGetReviewBeads(e.beadID)
+	reviews, _ := e.deps.GetReviewBeads(e.beadID)
 	lastVerdict := ""
 	if len(reviews) > 0 {
 		lastReview := reviews[len(reviews)-1]
 		if lastReview.Status == "closed" {
-			lastVerdict = reviewBeadVerdict(lastReview)
+			lastVerdict = e.deps.ReviewBeadVerdict(lastReview)
 		}
 	}
 
 	if lastVerdict == "approve" {
 		e.log("approved (via review bead)")
-		return nil // advance to next phase (merge)
+		return nil
 	}
 
 	if lastVerdict == "request_changes" {
@@ -70,40 +72,34 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 		if e.state.ReviewRounds >= revPolicy.MaxRounds {
 			e.log("max rounds reached — escalating to arbiter")
 			lastReview := &Review{Verdict: "request_changes", Summary: "Max review rounds reached"}
-			return reviewEscalateToArbiter(e.beadID, sageName, lastReview, revPolicy, e.log)
+			return e.deps.ReviewEscalateToArbiter(e.beadID, sageName, lastReview, revPolicy, e.log)
 		}
 
-		// Judgment (if enabled): log agreement with sage
+		// Judgment (if enabled)
 		if pc.Judgment {
-			// Collect feedback from latest comment
-			comments, _ := storeGetComments(e.beadID)
+			comments, _ := e.deps.GetComments(e.beadID)
 			for i := len(comments) - 1; i >= 0; i-- {
 				if strings.Contains(comments[i].Text, "request_changes") || strings.Contains(comments[i].Text, "Review round") {
 					break
 				}
 			}
 
-			// Simple judgment: for now, always agree with sage
-			// TODO: invoke Claude for judgment when session management is implemented
 			e.log("judgment: agreeing with sage feedback")
-			storeAddComment(e.beadID, fmt.Sprintf("Executor judgment (round %d): agree — accepting sage feedback", e.state.ReviewRounds))
+			e.deps.AddComment(e.beadID, fmt.Sprintf("Executor judgment (round %d): agree — accepting sage feedback", e.state.ReviewRounds))
 		}
 
 		// Go back to implement phase
-
-		// Find the implement phase to re-execute
 		if implPC, ok := e.formula.Phases["implement"]; ok {
 			e.state.Phase = "implement"
 			e.saveState()
 
 			if implPC.GetDispatch() == "wave" {
-				// For wave mode: re-running waves won't help (subtasks closed).
 				// Spawn a single review-fix apprentice.
 				fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
-				fh, ferr := e.spawner.Spawn(SpawnConfig{
+				fh, ferr := e.deps.Spawner.Spawn(agent.SpawnConfig{
 					Name:      fixName,
 					BeadID:    e.beadID,
-					Role:      RoleApprentice,
+					Role:      agent.RoleApprentice,
 					ExtraArgs: []string{"--review-fix", "--apprentice"},
 				})
 				if ferr != nil {
@@ -113,8 +109,7 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 					return fmt.Errorf("review-fix apprentice failed: %w", waitErr)
 				}
 
-				// Merge fix branch into the shared staging worktree so the sage
-				// reviews the updated code. The worktree persists across all phases.
+				// Merge fix branch into the shared staging worktree.
 				if e.state.StagingBranch != "" {
 					fixBranch := fmt.Sprintf("feat/%s", e.beadID)
 					e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
@@ -140,7 +135,7 @@ func (e *formulaExecutor) executeReview(phase string, pc PhaseConfig) error {
 		return fmt.Errorf("no implement phase for review-fix cycle")
 	}
 
-	// Check if bead was closed by sage (shouldn't happen with verdict-only)
+	// Check if bead was closed by sage
 	if bead.Status == "closed" {
 		e.log("bead closed by sage")
 		return nil

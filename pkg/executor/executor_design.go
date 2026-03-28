@@ -1,4 +1,4 @@
-package main
+package executor
 
 import (
 	"fmt"
@@ -9,9 +9,9 @@ import (
 // wizardValidateDesign checks that the epic has a linked design bead (discovered-from dep) that is
 // closed and substantive. If missing or incomplete, labels the epic "needs-design"
 // and pauses. If complete, advances.
-func (e *formulaExecutor) wizardValidateDesign() error {
+func (e *Executor) wizardValidateDesign() error {
 	// Find linked design beads via discovered-from deps
-	deps, err := storeGetDepsWithMeta(e.beadID)
+	deps, err := e.deps.GetDepsWithMeta(e.beadID)
 	if err != nil {
 		return fmt.Errorf("get deps: %w", err)
 	}
@@ -37,10 +37,11 @@ func (e *formulaExecutor) wizardValidateDesign() error {
 
 	if len(designBeads) == 0 {
 		e.log("no linked design bead found — marking as needs-design")
-		storeAddLabel(e.beadID, "needs-design")
-		storeAddComment(e.beadID, "Wizard: no design bead linked. Create a design bead with `spire design`, then link it: `bd dep add "+e.beadID+" <design-id> --type discovered-from`")
-		wizardMessageArchmage(e.agentName, e.beadID,
-			fmt.Sprintf("Epic %s needs a design bead. No discovered-from dep found. Create one with `spire design`, then link it: `bd dep add %s <design-id> --type discovered-from`", e.beadID, e.beadID))
+		e.deps.AddLabel(e.beadID, "needs-design")
+		e.deps.AddComment(e.beadID, "Wizard: no design bead linked. Create a design bead with `spire design`, then link it: `bd dep add "+e.beadID+" <design-id> --type discovered-from`")
+		MessageArchmage(e.agentName, e.beadID,
+			fmt.Sprintf("Epic %s needs a design bead. No discovered-from dep found. Create one with `spire design`, then link it: `bd dep add %s <design-id> --type discovered-from`", e.beadID, e.beadID),
+			e.deps)
 		return fmt.Errorf("epic %s has no linked design bead — label needs-design added", e.beadID)
 	}
 
@@ -48,30 +49,32 @@ func (e *formulaExecutor) wizardValidateDesign() error {
 	for _, db := range designBeads {
 		if db.Status != "closed" {
 			e.log("design bead %s is still open — waiting for it to be closed", db.ID)
-			storeAddLabel(e.beadID, "needs-design")
-			storeAddComment(e.beadID, fmt.Sprintf("Wizard: design bead %s is still open. Close it when the design is settled.", db.ID))
-			wizardMessageArchmage(e.agentName, e.beadID,
-				fmt.Sprintf("Epic %s is blocked: design bead %s is still open. Close it when the design is settled.", e.beadID, db.ID))
+			e.deps.AddLabel(e.beadID, "needs-design")
+			e.deps.AddComment(e.beadID, fmt.Sprintf("Wizard: design bead %s is still open. Close it when the design is settled.", db.ID))
+			MessageArchmage(e.agentName, e.beadID,
+				fmt.Sprintf("Epic %s is blocked: design bead %s is still open. Close it when the design is settled.", e.beadID, db.ID),
+				e.deps)
 			return fmt.Errorf("design bead %s not yet closed", db.ID)
 		}
 	}
 
 	// Check that design bead has substance (at least one comment)
 	for _, db := range designBeads {
-		comments, _ := storeGetComments(db.ID)
+		comments, _ := e.deps.GetComments(db.ID)
 		if len(comments) == 0 && db.Description == "" {
 			e.log("design bead %s has no content — needs enrichment", db.ID)
-			storeAddLabel(e.beadID, "needs-design")
-			storeAddComment(e.beadID, fmt.Sprintf("Wizard: design bead %s exists but has no content. Add design decisions as comments before proceeding.", db.ID))
-			wizardMessageArchmage(e.agentName, e.beadID,
-				fmt.Sprintf("Epic %s is blocked: design bead %s has no content. Add design decisions as comments before proceeding.", e.beadID, db.ID))
+			e.deps.AddLabel(e.beadID, "needs-design")
+			e.deps.AddComment(e.beadID, fmt.Sprintf("Wizard: design bead %s exists but has no content. Add design decisions as comments before proceeding.", db.ID))
+			MessageArchmage(e.agentName, e.beadID,
+				fmt.Sprintf("Epic %s is blocked: design bead %s has no content. Add design decisions as comments before proceeding.", e.beadID, db.ID),
+				e.deps)
 			return fmt.Errorf("design bead %s has no content", db.ID)
 		}
 	}
 
 	// Design validated — remove needs-design label if present and log
-	storeRemoveLabel(e.beadID, "needs-design")
+	e.deps.RemoveLabel(e.beadID, "needs-design")
 	e.log("design validated: %d design bead(s) linked and closed", len(designBeads))
-	storeAddComment(e.beadID, fmt.Sprintf("Wizard: design validated — %d design bead(s) linked and closed. Advancing to plan.", len(designBeads)))
+	e.deps.AddComment(e.beadID, fmt.Sprintf("Wizard: design validated — %d design bead(s) linked and closed. Advancing to plan.", len(designBeads)))
 	return nil
 }

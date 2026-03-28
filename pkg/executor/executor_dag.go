@@ -1,15 +1,10 @@
-package main
+package executor
 
 import "fmt"
 
 // ensureAttemptBead reuses an existing attempt bead (typically created by cmdClaim)
 // or creates a new one if none exists.
-//
-// Claim→executor handoff: cmdClaim creates the attempt bead atomically at claim
-// time with model="" (unknown). When the executor starts, it finds that attempt
-// and updates the model label from the formula. This avoids duplicate attempts
-// while ensuring the model label is eventually correct.
-func (e *formulaExecutor) ensureAttemptBead() error {
+func (e *Executor) ensureAttemptBead() error {
 	// Determine model from formula for label updates.
 	model := "unknown"
 	if e.formula != nil && e.formula.Phases != nil {
@@ -20,7 +15,7 @@ func (e *formulaExecutor) ensureAttemptBead() error {
 
 	// If we already have an attempt bead from persisted state, verify it's still open.
 	if e.state.AttemptBeadID != "" {
-		b, err := e.beadGetter(e.state.AttemptBeadID)
+		b, err := e.deps.GetBead(e.state.AttemptBeadID)
 		if err == nil && (b.Status == "open" || b.Status == "in_progress") {
 			e.log("resuming existing attempt bead %s", e.state.AttemptBeadID)
 			e.ensureAttemptModelLabel(e.state.AttemptBeadID, b, model)
@@ -31,13 +26,13 @@ func (e *formulaExecutor) ensureAttemptBead() error {
 	}
 
 	// Check for an existing active attempt (e.g. created by cmdClaim).
-	existing, err := e.activeAttemptGetter(e.beadID)
+	existing, err := e.deps.GetActiveAttempt(e.beadID)
 	if err != nil {
 		return err // invariant violation
 	}
 	if existing != nil {
 		// Reuse if it belongs to this agent; reject if it belongs to another.
-		agent := hasLabel(*existing, "agent:")
+		agent := e.deps.HasLabel(*existing, "agent:")
 		if agent == e.agentName {
 			e.state.AttemptBeadID = existing.ID
 			e.log("reusing attempt bead %s (created by claim)", existing.ID)
@@ -53,7 +48,7 @@ func (e *formulaExecutor) ensureAttemptBead() error {
 		branch = fmt.Sprintf("feat/%s", e.beadID)
 	}
 
-	id, err := e.attemptCreator(e.beadID, e.agentName, model, branch)
+	id, err := e.deps.CreateAttemptBead(e.beadID, e.agentName, model, branch)
 	if err != nil {
 		return err
 	}
@@ -63,24 +58,22 @@ func (e *formulaExecutor) ensureAttemptBead() error {
 }
 
 // ensureAttemptModelLabel adds the model:<model> label to an attempt bead if
-// it's missing. This handles the claim→executor handoff where cmdClaim creates
-// the attempt with model="" (unknown at claim time) and the executor fills it
-// in once it has formula context.
-func (e *formulaExecutor) ensureAttemptModelLabel(attemptID string, b Bead, model string) {
+// it's missing.
+func (e *Executor) ensureAttemptModelLabel(attemptID string, b Bead, model string) {
 	if model == "" || model == "unknown" {
 		return
 	}
-	existingModel := hasLabel(b, "model:")
+	existingModel := e.deps.HasLabel(b, "model:")
 	if existingModel == model {
 		return // already correct
 	}
 	if existingModel != "" {
 		// Model label exists but is wrong — remove it first.
-		if err := storeRemoveLabel(attemptID, "model:"+existingModel); err != nil {
+		if err := e.deps.RemoveLabel(attemptID, "model:"+existingModel); err != nil {
 			e.log("warning: remove stale model label from %s: %s", attemptID, err)
 		}
 	}
-	if err := storeAddLabel(attemptID, "model:"+model); err != nil {
+	if err := e.deps.AddLabel(attemptID, "model:"+model); err != nil {
 		e.log("warning: add model label to attempt %s: %s", attemptID, err)
 	} else {
 		e.log("updated attempt %s model label to %s", attemptID, model)
@@ -88,23 +81,18 @@ func (e *formulaExecutor) ensureAttemptModelLabel(attemptID string, b Bead, mode
 }
 
 // closeAttempt closes the current attempt bead with the given result.
-// It is idempotent — safe to call even if the attempt is already closed.
-func (e *formulaExecutor) closeAttempt(result string) {
+func (e *Executor) closeAttempt(result string) {
 	if e.state.AttemptBeadID == "" {
 		return
 	}
-	if err := e.attemptCloser(e.state.AttemptBeadID, result); err != nil {
+	if err := e.deps.CloseAttemptBead(e.state.AttemptBeadID, result); err != nil {
 		e.log("warning: close attempt bead %s: %s", e.state.AttemptBeadID, err)
 	}
 	e.state.AttemptBeadID = ""
 }
 
 // ensureStepBeads creates workflow step beads for each enabled formula phase.
-// Called once at executor start. Idempotent in two ways:
-//  1. If StepBeadIDs is already populated (from persisted state), this is a no-op.
-//  2. If step beads already exist in the graph (crash between create and saveState),
-//     they are reconciled into StepBeadIDs rather than duplicated.
-func (e *formulaExecutor) ensureStepBeads() error {
+func (e *Executor) ensureStepBeads() error {
 	if len(e.state.StepBeadIDs) > 0 {
 		e.log("step beads already created (%d phases)", len(e.state.StepBeadIDs))
 		return nil
@@ -112,23 +100,21 @@ func (e *formulaExecutor) ensureStepBeads() error {
 
 	// Guard against crash-between-create-and-save: query existing step children
 	// from the graph and rebuild StepBeadIDs before creating new ones.
-	if e.childGetter != nil {
-		if children, err := e.childGetter(e.beadID); err != nil {
-			e.log("warning: query step children for reconciliation: %s (will create fresh)", err)
-		} else {
-			rebuilt := make(map[string]string)
-			for _, child := range children {
-				if containsLabel(child, "workflow-step") {
-					if phase := hasLabel(child, "step:"); phase != "" {
-						rebuilt[phase] = child.ID
-					}
+	if children, err := e.deps.GetChildren(e.beadID); err != nil {
+		e.log("warning: query step children for reconciliation: %s (will create fresh)", err)
+	} else {
+		rebuilt := make(map[string]string)
+		for _, child := range children {
+			if e.deps.ContainsLabel(child, "workflow-step") {
+				if phase := e.deps.HasLabel(child, "step:"); phase != "" {
+					rebuilt[phase] = child.ID
 				}
 			}
-			if len(rebuilt) > 0 {
-				e.state.StepBeadIDs = rebuilt
-				e.log("reconciled %d existing step beads from graph (skipping creation)", len(rebuilt))
-				return e.saveState()
-			}
+		}
+		if len(rebuilt) > 0 {
+			e.state.StepBeadIDs = rebuilt
+			e.log("reconciled %d existing step beads from graph (skipping creation)", len(rebuilt))
+			return e.saveState()
 		}
 	}
 
@@ -139,7 +125,7 @@ func (e *formulaExecutor) ensureStepBeads() error {
 
 	e.state.StepBeadIDs = make(map[string]string, len(phases))
 	for i, phase := range phases {
-		id, err := e.stepCreator(e.beadID, phase)
+		id, err := e.deps.CreateStepBead(e.beadID, phase)
 		if err != nil {
 			return fmt.Errorf("create step bead for %s: %w", phase, err)
 		}
@@ -148,7 +134,7 @@ func (e *formulaExecutor) ensureStepBeads() error {
 
 		// Activate the first step bead (it matches the initial phase).
 		if i == 0 {
-			if err := e.stepActivator(id); err != nil {
+			if err := e.deps.ActivateStepBead(id); err != nil {
 				e.log("warning: activate step bead %s: %s", id, err)
 			}
 		}
@@ -158,8 +144,7 @@ func (e *formulaExecutor) ensureStepBeads() error {
 }
 
 // transitionStepBead closes the previous phase's step bead and activates the new one.
-// Called on phase transitions. Idempotent for the current phase.
-func (e *formulaExecutor) transitionStepBead(prevPhase, newPhase string) {
+func (e *Executor) transitionStepBead(prevPhase, newPhase string) {
 	if len(e.state.StepBeadIDs) == 0 {
 		return // no step beads created (legacy run)
 	}
@@ -167,7 +152,7 @@ func (e *formulaExecutor) transitionStepBead(prevPhase, newPhase string) {
 	// Close previous step bead.
 	if prevPhase != "" {
 		if prevID, ok := e.state.StepBeadIDs[prevPhase]; ok {
-			if err := e.stepCloser(prevID); err != nil {
+			if err := e.deps.CloseStepBead(prevID); err != nil {
 				e.log("warning: close step bead %s (%s): %s", prevID, prevPhase, err)
 			}
 		}
@@ -175,7 +160,7 @@ func (e *formulaExecutor) transitionStepBead(prevPhase, newPhase string) {
 
 	// Activate new step bead.
 	if newID, ok := e.state.StepBeadIDs[newPhase]; ok {
-		if err := e.stepActivator(newID); err != nil {
+		if err := e.deps.ActivateStepBead(newID); err != nil {
 			e.log("warning: activate step bead %s (%s): %s", newID, newPhase, err)
 		}
 	}

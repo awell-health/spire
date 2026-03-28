@@ -1,4 +1,4 @@
-package main
+package executor
 
 import (
 	"fmt"
@@ -7,12 +7,14 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/steveyegge/beads"
 )
 
 // executeDirect spawns one apprentice for the bead.
-func (e *formulaExecutor) executeDirect(phase string, pc PhaseConfig) error {
+func (e *Executor) executeDirect(phase string, pc PhaseConfig) error {
 	apprenticeName := fmt.Sprintf("%s-impl", e.agentName)
 	e.log("dispatching apprentice %s", apprenticeName)
 
@@ -21,10 +23,10 @@ func (e *formulaExecutor) executeDirect(phase string, pc PhaseConfig) error {
 		extraArgs = append(extraArgs, "--apprentice")
 	}
 
-	handle, err := e.spawner.Spawn(SpawnConfig{
+	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
 		Name:      apprenticeName,
 		BeadID:    e.beadID,
-		Role:      RoleApprentice,
+		Role:      agent.RoleApprentice,
 		ExtraArgs: extraArgs,
 	})
 	if err != nil {
@@ -40,9 +42,9 @@ func (e *formulaExecutor) executeDirect(phase string, pc PhaseConfig) error {
 	return nil
 }
 
-// executeWave dispatches apprentices in parallel waves using computeWaves.
-func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
-	waves, err := computeWaves(e.beadID)
+// executeWave dispatches apprentices in parallel waves using ComputeWaves.
+func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
+	waves, err := ComputeWaves(e.beadID, e.deps)
 	if err != nil {
 		return err
 	}
@@ -56,7 +58,6 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 	repoPath := e.state.RepoPath
 
 	// Use the single staging worktree shared across the entire executor lifecycle.
-	// ensureStagingWorktree creates it on first call, resumes from state on subsequent calls.
 	var stagingWt *spgit.StagingWorktree
 	if e.state.StagingBranch != "" {
 		var wtErr error
@@ -96,13 +97,13 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 				e.log("  dispatching %s for %s", name, beadID)
 
 				// Mark subtask as in_progress before dispatching
-				storeUpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
+				e.deps.UpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
 
 				extraArgs := []string{"--apprentice"}
-				h, spawnErr := e.spawner.Spawn(SpawnConfig{
+				h, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
 					Name:      name,
 					BeadID:    beadID,
-					Role:      RoleApprentice,
+					Role:      agent.RoleApprentice,
 					ExtraArgs: extraArgs,
 				})
 				if spawnErr != nil {
@@ -121,15 +122,13 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		close(resultCh)
 
 		// Collect results (single-threaded — no race).
-		// Mark successful subtasks as "done" (apprentice finished) but do NOT
-		// close them yet — closing happens after merge + build verification.
 		var errs []string
 		for r := range resultCh {
 			if r.Err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %s", r.BeadID, r.Err))
 				continue
 			}
-			e.state.Subtasks[r.BeadID] = subtaskState{
+			e.state.Subtasks[r.BeadID] = SubtaskState{
 				Status: "done",
 				Branch: fmt.Sprintf("feat/%s", r.BeadID),
 				Agent:  r.Agent,
@@ -170,13 +169,12 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		}
 
 		// Close subtask beads AFTER successful merge and build verification.
-		// This ensures the bead graph stays accurate if merge or build fails.
 		for _, subtaskID := range wave {
 			st, ok := e.state.Subtasks[subtaskID]
 			if !ok || st.Status != "done" {
 				continue
 			}
-			if err := storeCloseBead(subtaskID); err != nil {
+			if err := e.deps.CloseBead(subtaskID); err != nil {
 				e.log("warning: close subtask %s: %s", subtaskID, err)
 			}
 			st.Status = "closed"
@@ -185,14 +183,11 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 		e.saveState()
 	}
 
-	// No need to switch branches — staging work happened in its own worktree.
-	// The main worktree stayed on the base branch the entire time.
-
 	return nil
 }
 
 // resolveConflicts invokes Claude to resolve merge conflicts in the working tree.
-func (e *formulaExecutor) resolveConflicts(repoPath, childBranch string) error {
+func (e *Executor) resolveConflicts(repoPath, childBranch string) error {
 	wc := &spgit.WorktreeContext{Dir: repoPath}
 
 	// Get the list of conflicted files
@@ -248,17 +243,12 @@ Do NOT commit — the merge commit will be created automatically.`,
 }
 
 // resolveBuildCommand returns the build command to use for verification.
-// Resolution order:
-//  1. Current phase's Build field
-//  2. Implement phase's Build field (build is most commonly configured there)
-//  3. Repo config runtime.build (spire.yaml)
-//  4. Empty string (no build verification)
-func (e *formulaExecutor) resolveBuildCommand(pc PhaseConfig) string {
+func (e *Executor) resolveBuildCommand(pc PhaseConfig) string {
 	// 1. Current phase config
 	if pc.Build != "" {
 		return pc.Build
 	}
-	// 2. Implement phase fallback (build commands live here for wave-based formulas)
+	// 2. Implement phase fallback
 	if impl, ok := e.formula.Phases["implement"]; ok && impl.Build != "" {
 		return impl.Build
 	}
@@ -270,12 +260,7 @@ func (e *formulaExecutor) resolveBuildCommand(pc PhaseConfig) string {
 }
 
 // resolveTestCommand returns the test command to use for verification.
-// Resolution order:
-//  1. Current phase's Test field
-//  2. Merge phase's Test field (test may be configured there)
-//  3. Repo config runtime.test (spire.yaml)
-//  4. Empty string (no test verification)
-func (e *formulaExecutor) resolveTestCommand(pc PhaseConfig) string {
+func (e *Executor) resolveTestCommand(pc PhaseConfig) string {
 	// 1. Current phase config
 	if pc.Test != "" {
 		return pc.Test
@@ -292,8 +277,7 @@ func (e *formulaExecutor) resolveTestCommand(pc PhaseConfig) string {
 }
 
 // runBuildCommand executes a build command string in the given repo directory.
-// The command is split on spaces and run directly (no shell).
-func (e *formulaExecutor) runBuildCommand(repoPath, buildStr string) error {
+func (e *Executor) runBuildCommand(repoPath, buildStr string) error {
 	parts := strings.Fields(buildStr)
 	if len(parts) == 0 {
 		return nil
@@ -308,4 +292,94 @@ func (e *formulaExecutor) runBuildCommand(repoPath, buildStr string) error {
 	}
 	e.log("build passed")
 	return nil
+}
+
+// ComputeWaves takes an epic ID and returns waves — groups of subtask IDs
+// that can be executed in parallel. Wave 0 has no deps, wave 1 depends
+// on wave 0, etc.
+func ComputeWaves(epicID string, deps *Deps) ([][]string, error) {
+	children, err := deps.GetChildren(epicID)
+	if err != nil {
+		return nil, fmt.Errorf("get children: %w", err)
+	}
+
+	// Filter to open subtasks only — exclude internal DAG beads.
+	var openIDs []string
+	for _, c := range children {
+		if c.Status == "closed" {
+			continue
+		}
+		if deps.IsAttemptBead(c) || deps.IsStepBead(c) || deps.IsReviewRoundBead(c) {
+			continue
+		}
+		openIDs = append(openIDs, c.ID)
+	}
+
+	if len(openIDs) == 0 {
+		return nil, nil
+	}
+
+	// Build a set of open child IDs for fast lookup.
+	childSet := make(map[string]bool)
+	for _, id := range openIDs {
+		childSet[id] = true
+	}
+
+	// Get blocked issues to determine dependencies.
+	blockedBeads, _ := deps.GetBlockedIssues(beads.WorkFilter{})
+
+	// Build dep map: childID -> []blockerIDs (only blockers that are also open children).
+	depMap := make(map[string][]string)
+	for _, bb := range blockedBeads {
+		if !childSet[bb.ID] {
+			continue
+		}
+		for _, dep := range bb.Dependencies {
+			blockerID := dep.DependsOnID
+			if childSet[blockerID] {
+				depMap[bb.ID] = append(depMap[bb.ID], blockerID)
+			}
+		}
+	}
+
+	// Topological sort into waves.
+	assigned := make(map[string]int) // ID -> wave number
+	var waves [][]string
+
+	for len(assigned) < len(openIDs) {
+		var wave []string
+		waveNum := len(waves)
+
+		for _, id := range openIDs {
+			if _, done := assigned[id]; done {
+				continue
+			}
+			ready := true
+			for _, dep := range depMap[id] {
+				if _, done := assigned[dep]; !done {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				wave = append(wave, id)
+			}
+		}
+
+		if len(wave) == 0 {
+			// Circular dependency or stuck — add remaining as final wave.
+			for _, id := range openIDs {
+				if _, done := assigned[id]; !done {
+					wave = append(wave, id)
+				}
+			}
+		}
+
+		for _, id := range wave {
+			assigned[id] = waveNum
+		}
+		waves = append(waves, wave)
+	}
+
+	return waves, nil
 }

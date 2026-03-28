@@ -20,11 +20,7 @@ type workshopState struct {
 	LastActionAt string                  `json:"last_action_at"`
 }
 
-type subtaskState struct {
-	Status string `json:"status"` // "open", "in_progress", "closed"
-	Branch string `json:"branch"`
-	Agent  string `json:"agent,omitempty"`
-}
+// subtaskState is defined in executor_bridge.go (from pkg/executor.SubtaskState)
 
 // cmdWorkshop is the entry point for the spire workshop command.
 // Usage: spire workshop <epic-id>

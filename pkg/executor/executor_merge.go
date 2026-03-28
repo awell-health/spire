@@ -1,4 +1,4 @@
-package main
+package executor
 
 import (
 	"fmt"
@@ -11,15 +11,13 @@ import (
 )
 
 // executeMerge handles the merge phase: ff-only merge of staging branch into main.
-// If main has moved ahead, it rebases the staging branch onto main in a temporary
-// worktree, re-verifies the build, then retries the ff-only merge. Never force merges.
-func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
-	bead, err := storeGetBead(e.beadID)
+func (e *Executor) executeMerge(pc PhaseConfig) error {
+	bead, err := e.deps.GetBead(e.beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
-	branch := hasLabel(bead, "feat-branch:")
+	branch := e.deps.HasLabel(bead, "feat-branch:")
 	if branch == "" {
 		if e.state.StagingBranch != "" {
 			branch = e.state.StagingBranch
@@ -33,20 +31,18 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 
 	// Load archmage identity for the push.
 	var mergeEnv []string
-	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
-		mergeEnv = archmageGitEnv(tower)
+	if tower, tErr := e.deps.ActiveTowerConfig(); tErr == nil && tower != nil {
+		mergeEnv = e.deps.ArchmageGitEnv(tower)
 	} else {
 		mergeEnv = os.Environ()
 	}
 
 	// Use the single staging worktree shared across all executor phases.
-	// Build verification and doc review happen here — never checkout in main worktree.
 	buildStr := e.resolveBuildCommand(pc)
 	stagingWt, wtErr := e.ensureStagingWorktree()
 	if wtErr != nil {
 		return fmt.Errorf("ensure staging worktree for merge: %w", wtErr)
 	}
-	// Do NOT close the staging worktree here — Run() defers closeStagingWorktree().
 
 	if buildStr != "" {
 		e.log("verifying build on %s before merge: %s", branch, buildStr)
@@ -60,9 +56,7 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 		e.log("warning: doc review: %s", docErr)
 	}
 
-	// ff-only merge into main FROM THE MAIN WORKTREE (never checkout in staging).
-	// If main has diverged, staging is rebased onto main in a temporary worktree,
-	// build/test re-verified, then ff-only retried. Never force merges.
+	// ff-only merge into main
 	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
 	testStr := e.resolveTestCommand(pc)
 	if mergeErr := stagingWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
@@ -80,11 +74,11 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	rc.DeleteBranch(branch)
 	rc.DeleteRemoteBranch("origin", branch)
 
-	// Close any orphan subtasks that were not closed by the wave (e.g. skipped or failed).
-	if children, childErr := storeGetChildren(e.beadID); childErr == nil {
+	// Close any orphan subtasks
+	if children, childErr := e.deps.GetChildren(e.beadID); childErr == nil {
 		for _, child := range children {
 			if child.Status != "closed" {
-				if err := storeCloseBead(child.ID); err != nil {
+				if err := e.deps.CloseBead(child.ID); err != nil {
 					e.log("warning: close orphan subtask %s: %s", child.ID, err)
 				}
 			}
@@ -92,9 +86,9 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 	}
 
 	// Close the bead
-	storeRemoveLabel(e.beadID, "review-approved")
-	storeRemoveLabel(e.beadID, "feat-branch:"+branch)
-	if err := storeCloseBead(e.beadID); err != nil {
+	e.deps.RemoveLabel(e.beadID, "review-approved")
+	e.deps.RemoveLabel(e.beadID, "feat-branch:"+branch)
+	if err := e.deps.CloseBead(e.beadID); err != nil {
 		e.log("warning: close bead: %s", err)
 	}
 	e.log("merged and closed")
@@ -102,12 +96,8 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 }
 
 // reviewDocsForStaleness checks documentation files modified on the staging branch
-// for stale language ("planned", "TODO", "not yet implemented", "will be") that
-// refers to functionality now present in the merged code. If stale docs are found,
-// Claude fixes them and commits the changes on the staging branch.
-func (e *formulaExecutor) reviewDocsForStaleness(repoPath, branch, baseBranch string, pc PhaseConfig) error {
-	// repoPath should be a worktree already on the staging branch.
-	// Find files changed relative to the base branch.
+// for stale language and fixes them.
+func (e *Executor) reviewDocsForStaleness(repoPath, branch, baseBranch string, pc PhaseConfig) error {
 	wc := &spgit.WorktreeContext{Dir: repoPath}
 	changedFiles, err := wc.DiffNameOnly(baseBranch)
 	if err != nil {
@@ -138,7 +128,6 @@ func (e *formulaExecutor) reviewDocsForStaleness(repoPath, branch, baseBranch st
 		case base == "CLAUDE.MD":
 			docFiles = append(docFiles, f)
 		case strings.HasSuffix(strings.ToLower(f), ".md") && strings.Contains(strings.ToLower(filepath.Dir(f)), "doc"):
-			// Any .md file under a docs/ directory
 			docFiles = append(docFiles, f)
 		}
 	}
@@ -150,7 +139,6 @@ func (e *formulaExecutor) reviewDocsForStaleness(repoPath, branch, baseBranch st
 
 	e.log("reviewing %d documentation file(s) for stale language: %s", len(docFiles), strings.Join(docFiles, ", "))
 
-	// Build a prompt that asks Claude to review and fix stale language.
 	prompt := fmt.Sprintf(`You are reviewing documentation files after code branches have been merged into a staging branch. Parallel workers wrote these docs against pre-merge code. Some docs may say "planned", "TODO", "not yet implemented", "will be added", "coming soon", or similar language for features that NOW EXIST in the merged code.
 
 Your job:
