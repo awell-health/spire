@@ -86,6 +86,8 @@ func main() {
 		err = cmdDismiss(args)
 	case "reset":
 		err = cmdReset(args)
+	case "trace":
+		err = cmdTrace(args)
 	case "watch":
 		err = cmdWatch(args)
 	case "alert":
@@ -207,6 +209,7 @@ Messaging:
 
 Observability:
   board [flags]         Interactive board TUI (--mine, --ready, --json)
+  trace <bead-id>       Execution DAG timeline (--json, --follow)
   watch                 Live-updating activity view
   metrics [flags]       Agent run metrics (--bead, --model, --json)
   alert [bead-id]       Alert on bead state changes
