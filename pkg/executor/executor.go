@@ -43,6 +43,12 @@ type Executor struct {
 	// Single staging worktree shared across all phases (implement, review, merge).
 	// Created once by ensureStagingWorktree(), cleaned up by Run() on exit.
 	stagingWt *spgit.StagingWorktree
+
+	// terminated is set to true on terminal success paths (merge complete,
+	// bead closed, all phases done). When true, the deferred saveState()
+	// removes state.json instead of writing it, preventing stale state
+	// from lingering after successful completion.
+	terminated bool
 }
 
 // New creates a formula executor for a bead.
@@ -221,6 +227,7 @@ func (e *Executor) Run() error {
 			}
 			e.transitionStepBead(phase, "")
 			e.closeAttempt("success: merged")
+			e.terminated = true
 			return nil // merge is terminal
 		case behavior == "skip":
 			e.log("skipping phase %s (behavior: skip)", phase)
@@ -235,6 +242,7 @@ func (e *Executor) Run() error {
 			}
 			e.transitionStepBead(phase, "")
 			e.closeAttempt("success: merged")
+			e.terminated = true
 			return nil // merge is terminal
 		case behavior == "":
 			switch pc.GetRole() {
@@ -283,14 +291,14 @@ func (e *Executor) Run() error {
 		if bead.Status == "closed" {
 			e.log("bead closed — exiting")
 			e.closeAttempt("success: bead closed")
+			e.terminated = true
 			return nil
 		}
 	}
 
 	e.log("all phases complete")
 	e.closeAttempt("success: all phases complete")
-	// Clean up state file on success to avoid stale state on agent name reuse
-	os.Remove(StatePath(e.agentName, e.deps.ConfigDir))
+	e.terminated = true
 	return nil
 }
 
@@ -346,6 +354,15 @@ func LoadState(agentName string, configDirFn func() (string, error)) (*State, er
 
 func (e *Executor) saveState() error {
 	path := StatePath(e.agentName, e.deps.ConfigDir)
+
+	// On terminal success paths, remove state.json instead of writing it.
+	// This prevents the deferred saveState() from re-creating the file
+	// after a terminal return has already cleaned up.
+	if e.terminated {
+		os.Remove(path)
+		return nil
+	}
+
 	os.MkdirAll(filepath.Dir(path), 0755)
 	e.state.LastActionAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(e.state, "", "  ")
