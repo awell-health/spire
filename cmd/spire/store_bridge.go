@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -50,9 +51,14 @@ var storeCreateAlertFunc = func(beadID, msg string) error {
 	return err
 }
 
-// init wires up the beads dir resolver so pkg/store can auto-initialize.
+// init wires up cross-package callbacks:
+//   - pkg/store.BeadsDirResolver  ← config.ResolveBeadsDir
+//   - pkg/config.DoltDataDirFunc  ← doltDataDir (from doltserver.go)
+//   - pkg/config.StoreConfigGetterFunc ← storeGetConfig (from this bridge)
 func init() {
 	store.BeadsDirResolver = resolveBeadsDir
+	config.DoltDataDirFunc = doltDataDir
+	config.StoreConfigGetterFunc = storeGetConfig
 }
 
 // --- Store lifecycle ---
