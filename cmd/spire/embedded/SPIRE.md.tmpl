@@ -47,18 +47,63 @@ bd dep add <epic-id> {{.Prefix}}-xxx --type discovered-from   # link design
 The wizard validates that epics have a closed `discovered-from` design
 bead before entering plan. Use `discovered-from` deps, not `ref:` labels.
 
-## Dependencies
+## Dependencies — prefer deps over labels
+
+Relationships between beads are expressed as **dependencies**, not labels.
+The dependency graph is the source of truth for ordering, provenance,
+and cross-references. Labels are for routing (messages) and display only.
+
+### When to use each type
+
+| Type | When | Example |
+|------|------|---------|
+| `blocks` | B can't start until A closes | `bd dep add spi-auth spi-schema --type blocks` |
+| `parent-child` | Subtask under an epic | `bd create "Subtask" -t task --parent spi-epic` |
+| `discovered-from` | This work came from that design/exploration | `bd dep add <epic> <design-bead> --type discovered-from` |
+| `caused-by` | This alert/bug was caused by that bead's failure | `bd dep add <alert> <source> --type caused-by` |
+| `supersedes` | This bead replaces an older one | `bd dep add <new> <old> --type supersedes` |
+| `related` | Cross-reference, no ordering | `bd dep add <a> <b> --type related` |
+| `validates` | This test/check validates that work | `bd dep add <test> <feature> --type validates` |
+
+### The development workflow is defined by the bead type
+
+The bead's **type** maps to a formula, which defines the phases the
+wizard drives. These are the defaults — override them per-bead with a
+`formula:<name>` label, or per-tower by dropping a TOML in `.beads/formulas/`:
+
+| Bead type | Default formula | Default phases |
+|-----------|----------------|----------------|
+| epic | `spire-epic` | design → plan → implement (waves) → review → merge |
+| bug | `spire-bugfix` | implement → review → merge |
+| task, feature, chore | `spire-agent-work` | implement → review → merge |
+| design | (none) | Not a work item. Close when settled, link via `discovered-from`. |
+
+Custom formulas can be created in the workshop (`spire workshop`).
+Override a built-in per-bead with a `formula:<name>` label, or per-tower
+by placing a TOML in `.beads/formulas/`.
+
+### Common patterns
 
 ```bash
-bd dep add <task-a> <task-b> --type blocks          # B blocks A
-bd create "Subtask" -t task --parent <epic-id>      # parent-child
-bd dep add <epic> <design> --type discovered-from   # provenance
-bd dep add <a> <b> --type related                   # cross-reference
-bd ready --json                                     # what's unblocked
-```
+# Epic with design: brainstorm → file → link → summon
+spire design "New auth system"                              # → {{.Prefix}}-abc
+bd comments add {{.Prefix}}-abc "Approach: OAuth2 + MFA..." # capture thinking
+bd update {{.Prefix}}-abc -s closed                         # design settled
+spire file "Auth overhaul" -t epic -p 1                     # → {{.Prefix}}-def
+bd dep add {{.Prefix}}-def {{.Prefix}}-abc --type discovered-from
+spire summon 1 --targets {{.Prefix}}-def                    # wizard validates design → plans → implements
 
-Types: `blocks`, `related`, `parent-child`, `discovered-from`,
-`caused-by`, `validates`, `supersedes`.
+# Task that blocks another
+spire file "Add user table" -t task -p 1                    # → {{.Prefix}}-111
+spire file "Add user API" -t task -p 1                      # → {{.Prefix}}-222
+bd dep add {{.Prefix}}-222 {{.Prefix}}-111 --type blocks    # API waits for table
+
+# Replacing old work with new
+bd dep add {{.Prefix}}-new {{.Prefix}}-old --type supersedes
+
+# Check what's ready to work (no open blockers)
+bd ready --json
+```
 
 ## Filing work
 
