@@ -1,5 +1,5 @@
 // Package repoconfig reads and resolves spire.yaml — repo-level configuration
-// that agents, the sidecar, the wizard, and the artificer all import to know
+// that agents, the sidecar, the wizard, and the familiar all import to know
 // how to install, test, build, and submit work for a given repository.
 package repoconfig
 
