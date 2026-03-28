@@ -1,11 +1,6 @@
-package main
+package executor
 
 // executor_worktree.go — Executor staging worktree lifecycle.
-//
-// StagingWorktree, NewStagingWorktree, NewStagingWorktreeAt, and
-// ResumeStagingWorktree have been extracted to pkg/git.
-// This file retains the formulaExecutor-specific methods that depend on
-// spire state (activeTowerConfig, storeAddLabel, etc.).
 
 import (
 	"fmt"
@@ -18,7 +13,7 @@ import (
 // ensureStagingWorktree creates or resumes the single staging worktree for the
 // entire executor lifecycle. Created once, shared across all phases (implement,
 // review, merge). The main worktree NEVER leaves the base branch.
-func (e *formulaExecutor) ensureStagingWorktree() (*spgit.StagingWorktree, error) {
+func (e *Executor) ensureStagingWorktree() (*spgit.StagingWorktree, error) {
 	if e.stagingWt != nil {
 		return e.stagingWt, nil
 	}
@@ -49,7 +44,7 @@ func (e *formulaExecutor) ensureStagingWorktree() (*spgit.StagingWorktree, error
 	wtDir := filepath.Join(repoPath, ".worktrees", e.beadID)
 
 	// Resolve archmage identity for git user config.
-	archName, archEmail := archmageIdentity()
+	archName, archEmail := ArchmageIdentity(e.deps)
 
 	e.log("creating staging worktree at %s (branch: %s)", wtDir, stagingBranch)
 	wt, err := spgit.NewStagingWorktreeAt(repoPath, wtDir, stagingBranch, e.state.BaseBranch, archName, archEmail, e.log)
@@ -61,15 +56,15 @@ func (e *formulaExecutor) ensureStagingWorktree() (*spgit.StagingWorktree, error
 	e.state.WorktreeDir = wtDir
 
 	if e.state.AttemptBeadID != "" {
-		storeAddLabel(e.state.AttemptBeadID, "worktree:"+wtDir)
+		e.deps.AddLabel(e.state.AttemptBeadID, "worktree:"+wtDir)
 	}
-	storeAddLabel(e.beadID, "feat-branch:"+stagingBranch)
+	e.deps.AddLabel(e.beadID, "feat-branch:"+stagingBranch)
 	e.saveState()
 	return wt, nil
 }
 
 // closeStagingWorktree removes the staging worktree and cleans up state.
-func (e *formulaExecutor) closeStagingWorktree() {
+func (e *Executor) closeStagingWorktree() {
 	if e.stagingWt != nil {
 		e.log("removing staging worktree at %s", e.stagingWt.Dir)
 		e.stagingWt.Close()
@@ -78,11 +73,11 @@ func (e *formulaExecutor) closeStagingWorktree() {
 	e.state.WorktreeDir = ""
 }
 
-// archmageIdentity returns the git user name and email from the active tower
+// ArchmageIdentity returns the git user name and email from the active tower
 // config, falling back to defaults if unavailable.
-func archmageIdentity() (name, email string) {
+func ArchmageIdentity(deps *Deps) (name, email string) {
 	name, email = "spire", "spire@spire.local"
-	if tower, tErr := activeTowerConfig(); tErr == nil && tower != nil {
+	if tower, tErr := deps.ActiveTowerConfig(); tErr == nil && tower != nil {
 		if tower.Archmage.Name != "" {
 			name = tower.Archmage.Name
 		}

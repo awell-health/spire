@@ -1,4 +1,4 @@
-package main
+package executor
 
 import (
 	"encoding/json"
@@ -11,16 +11,15 @@ import (
 )
 
 // wizardPlan reads the design bead(s) and invokes Claude to break the epic into subtasks.
-// It files the subtasks and posts the plan as a comment.
-func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
-	bead, err := e.beadGetter(e.beadID)
+func (e *Executor) wizardPlan(pc PhaseConfig) error {
+	bead, err := e.deps.GetBead(e.beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
 	// Collect design context from linked design beads (discovered-from deps)
 	var designContext strings.Builder
-	deps, _ := storeGetDepsWithMeta(e.beadID)
+	deps, _ := e.deps.GetDepsWithMeta(e.beadID)
 	for _, dep := range deps {
 		if dep.DependencyType != beads.DepDiscoveredFrom {
 			continue
@@ -32,7 +31,7 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 		if dep.Description != "" {
 			designContext.WriteString(dep.Description + "\n")
 		}
-		comments, _ := e.commentGetter(dep.ID)
+		comments, _ := e.deps.GetComments(dep.ID)
 		for _, c := range comments {
 			designContext.WriteString(fmt.Sprintf("[%s]: %s\n", c.Author, c.Text))
 		}
@@ -41,13 +40,13 @@ func (e *formulaExecutor) wizardPlan(pc PhaseConfig) error {
 
 	// Also include epic description and comments
 	epicContext := fmt.Sprintf("Epic: %s\nTitle: %s\nDescription: %s\n", bead.ID, bead.Title, bead.Description)
-	epicComments, _ := e.commentGetter(e.beadID)
+	epicComments, _ := e.deps.GetComments(e.beadID)
 	for _, c := range epicComments {
 		epicContext += fmt.Sprintf("[%s]: %s\n", c.Author, c.Text)
 	}
 
 	// Check for existing children (resume case)
-	children, _ := e.childGetter(e.beadID)
+	children, _ := e.deps.GetChildren(e.beadID)
 	if len(children) > 0 {
 		e.log("epic already has %d children — enriching with change specs", len(children))
 		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext.String(), pc)
@@ -100,7 +99,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 
 	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for plan generation (max_turns=%d)", maxTurns)
-	out, err := e.claudeRunner([]string{
+	out, err := e.deps.ClaudeRunner([]string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
@@ -111,7 +110,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 		return fmt.Errorf("claude plan: %w", err)
 	}
 
-	// Parse subtasks from output — extract JSON lines
+	// Parse subtasks from output
 	type planTask struct {
 		Title       string   `json:"title"`
 		Description string   `json:"description"`
@@ -134,13 +133,13 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 
 	if len(tasks) == 0 {
 		e.log("Claude produced no parseable subtasks — posting raw output as comment")
-		e.commentAdder(e.beadID, fmt.Sprintf("Wizard plan (raw):\n%s", string(out)))
+		e.deps.AddComment(e.beadID, fmt.Sprintf("Wizard plan (raw):\n%s", string(out)))
 		return fmt.Errorf("no subtasks parsed from plan output")
 	}
 
 	e.log("filing %d subtasks", len(tasks))
 
-	// Create subtasks — enrich descriptions with coordination metadata
+	// Create subtasks
 	titleToID := make(map[string]string)
 	for _, t := range tasks {
 		desc := t.Description
@@ -150,11 +149,11 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 		if len(t.DoNotTouch) > 0 {
 			desc += "\n\nDo NOT touch (handled by other tasks): " + strings.Join(t.DoNotTouch, ", ")
 		}
-		id, createErr := storeCreateBead(createOpts{
+		id, createErr := e.deps.CreateBead(CreateOpts{
 			Title:       t.Title,
 			Description: desc,
 			Priority:    bead.Priority,
-			Type:        parseIssueType("task"),
+			Type:        e.deps.ParseIssueType("task"),
 			Parent:      e.beadID,
 		})
 		if createErr != nil {
@@ -179,7 +178,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 			if !depOK {
 				continue
 			}
-			storeAddDep(taskID, depID)
+			e.deps.AddDep(taskID, depID)
 		}
 	}
 
@@ -188,7 +187,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 	planSummary.WriteString(fmt.Sprintf("Wizard plan: %d subtasks\n\n", len(tasks)))
 	for _, t := range tasks {
 		id := titleToID[t.Title]
-		deps := ""
+		depStr := ""
 		if len(t.Deps) > 0 {
 			var depIDs []string
 			for _, d := range t.Deps {
@@ -197,19 +196,18 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 				}
 			}
 			if len(depIDs) > 0 {
-				deps = " ← " + strings.Join(depIDs, ", ")
+				depStr = " ← " + strings.Join(depIDs, ", ")
 			}
 		}
-		planSummary.WriteString(fmt.Sprintf("- %s: %s%s\n", id, t.Title, deps))
+		planSummary.WriteString(fmt.Sprintf("- %s: %s%s\n", id, t.Title, depStr))
 	}
-	e.commentAdder(e.beadID, planSummary.String())
+	e.deps.AddComment(e.beadID, planSummary.String())
 
 	return nil
 }
 
-// enrichSubtasksWithChangeSpecs invokes Claude per subtask to produce a change spec
-// (which files, which functions, rough diff shape) and posts it as a comment on the subtask.
-func (e *formulaExecutor) enrichSubtasksWithChangeSpecs(children []Bead, epicContext, designContext string, pc PhaseConfig) error {
+// enrichSubtasksWithChangeSpecs invokes Claude per subtask to produce a change spec.
+func (e *Executor) enrichSubtasksWithChangeSpecs(children []Bead, epicContext, designContext string, pc PhaseConfig) error {
 	model := pc.Model
 	if model == "" {
 		model = "claude-opus-4-6"
@@ -218,12 +216,12 @@ func (e *formulaExecutor) enrichSubtasksWithChangeSpecs(children []Bead, epicCon
 	enriched := 0
 
 	for _, child := range children {
-		// Skip internal DAG beads (step, attempt, review round) — not work items.
-		if isAttemptBead(child) || isStepBead(child) || isReviewRoundBead(child) {
+		// Skip internal DAG beads.
+		if e.deps.IsAttemptBead(child) || e.deps.IsStepBead(child) || e.deps.IsReviewRoundBead(child) {
 			continue
 		}
-		// Skip already-enriched subtasks (has a change spec comment)
-		existingComments, _ := e.commentGetter(child.ID)
+		// Skip already-enriched subtasks
+		existingComments, _ := e.deps.GetComments(child.ID)
 		alreadyEnriched := false
 		for _, c := range existingComments {
 			if strings.HasPrefix(c.Text, "Change spec:") {
@@ -236,7 +234,7 @@ func (e *formulaExecutor) enrichSubtasksWithChangeSpecs(children []Bead, epicCon
 			continue
 		}
 
-		// Build subtask context including its own comments
+		// Build subtask context
 		var subtaskContext strings.Builder
 		subtaskContext.WriteString(fmt.Sprintf("Subtask ID: %s\nTitle: %s\nDescription: %s\n", child.ID, child.Title, child.Description))
 		for _, c := range existingComments {
@@ -284,7 +282,7 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 `, epicContext, designContext, subtaskContext.String())
 
 		e.log("generating change spec for %s: %s", child.ID, child.Title)
-		out, err := e.claudeRunner([]string{
+		out, err := e.deps.ClaudeRunner([]string{
 			"--dangerously-skip-permissions",
 			"-p", prompt,
 			"--model", model,
@@ -302,7 +300,7 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 			continue
 		}
 
-		if commentErr := e.commentAdder(child.ID, "Change spec:\n\n"+spec); commentErr != nil {
+		if commentErr := e.deps.AddComment(child.ID, "Change spec:\n\n"+spec); commentErr != nil {
 			e.log("warning: post change spec for %s: %s", child.ID, commentErr)
 		} else {
 			e.log("posted change spec for %s", child.ID)
@@ -310,19 +308,18 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 		}
 	}
 
-	e.commentAdder(e.beadID, fmt.Sprintf("Wizard: enriched %d/%d subtasks with change specs.", enriched, len(children)))
+	e.deps.AddComment(e.beadID, fmt.Sprintf("Wizard: enriched %d/%d subtasks with change specs.", enriched, len(children)))
 	return nil
 }
 
 // wizardGeneric handles a wizard phase by invoking Claude with the bead context.
-// Used for phases that don't have specific logic (future extensibility).
-func (e *formulaExecutor) wizardGeneric(phase string, pc PhaseConfig) error {
-	bead, err := storeGetBead(e.beadID)
+func (e *Executor) wizardGeneric(phase string, pc PhaseConfig) error {
+	bead, err := e.deps.GetBead(e.beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
-	focusContext, _ := wizardCaptureFocus(e.beadID)
+	focusContext, _ := e.deps.CaptureFocus(e.beadID)
 
 	model := pc.Model
 	if model == "" {
