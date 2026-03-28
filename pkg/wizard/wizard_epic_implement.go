@@ -8,13 +8,13 @@ import (
 	"sync"
 )
 
-// WorkshopImplement handles the implement phase of the wizard workshop.
+// EpicImplement handles the implement phase of the wizard epic orchestration.
 // It computes waves from the dependency graph, dispatches apprentices
 // in parallel worktrees, and merges their work back.
-func WorkshopImplement(state *WorkshopState, spawner Backend, deps *Deps) error {
+func EpicImplement(state *EpicState, spawner Backend, deps *Deps) error {
 	epicID := state.EpicID
 	log := func(format string, a ...interface{}) {
-		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)
+		fmt.Fprintf(os.Stderr, "[wizard-epic] "+format+"\n", a...)
 	}
 
 	waves, err := deps.ComputeWaves(epicID)
@@ -104,7 +104,7 @@ func WorkshopImplement(state *WorkshopState, spawner Backend, deps *Deps) error 
 			}
 		}
 
-		SaveWorkshopState(state, deps)
+		SaveEpicState(state, deps)
 
 		if len(errs) > 0 {
 			log("wave %d had %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))

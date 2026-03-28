@@ -1,5 +1,5 @@
 // Package wizard implements the wizard lifecycle: autonomous implementation
-// (wizard-run), code review (wizard-review / sage), and epic workshop
+// (wizard-run), code review (wizard-review / sage), and wizard epic
 // orchestration. All external dependencies are injected via the Deps struct
 // so this package has no dependency on cmd/spire internals.
 package wizard
@@ -49,8 +49,8 @@ type ReviewIssue struct {
 	Message  string `json:"message"`
 }
 
-// WorkshopState is the persistent state for a wizard workshop session.
-type WorkshopState struct {
+// EpicState is the persistent state for a wizard epic orchestration session.
+type EpicState struct {
 	EpicID       string                  `json:"epic_id"`
 	Phase        string                  `json:"phase"`
 	SessionID    string                  `json:"session_id,omitempty"`

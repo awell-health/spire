@@ -1,5 +1,5 @@
 // wizard_bridge.go wires pkg/wizard callbacks and provides thin CLI adapters
-// for wizard-run, wizard-review, wizard-merge, and workshop commands.
+// for wizard-run, wizard-review, wizard-merge, and wizard-epic commands.
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 
 type Review = wizard.Review
 type ReviewIssue = wizard.ReviewIssue
-type workshopState = wizard.WorkshopState
+type epicState = wizard.EpicState
 
 // --- Function aliases for backward compatibility ---
 // Other cmd/spire files (executor_bridge.go, formula_bridge.go) call these.
@@ -78,8 +78,8 @@ func cmdWizardMerge(args []string) error {
 	return wizard.CmdWizardMerge(args, buildWizardDeps())
 }
 
-func cmdWorkshop(args []string) error {
-	return wizard.CmdWorkshop(args, buildWizardDeps())
+func cmdWizardEpic(args []string) error {
+	return wizard.CmdWizardEpic(args, buildWizardDeps())
 }
 
 // --- Deps wiring ---
