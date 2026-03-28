@@ -7,6 +7,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
+	"github.com/awell-health/spire/pkg/steward"
 )
 
 func init() {
@@ -91,7 +92,11 @@ func cmdServe(args []string) error {
 // doltSQL runs a SQL query against the Dolt server and returns the output.
 // Delegates to pkg/dolt.SQL with the ambient daemonDB and detectDBName fallback.
 func doltSQL(query string, jsonOutput bool) (string, error) {
-	return dolt.SQL(query, jsonOutput, daemonDB, detectDBName)
+	db := steward.DaemonDB
+	if db == "" {
+		db = daemonDB
+	}
+	return dolt.SQL(query, jsonOutput, db, detectDBName)
 }
 
 // --- Delegation wrappers for daemon.go ---
