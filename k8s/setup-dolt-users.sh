@@ -12,7 +12,6 @@ gen_password() { openssl rand -base64 24 | tr -d '/+=' | head -c 24; }
 
 STEWARD_PASS=$(gen_password)
 WIZARD_PASS=$(gen_password)
-ARTIFICER_PASS=$(gen_password)
 ARCHIVIST_PASS=$(gen_password)
 JB_PASS=$(gen_password)
 
@@ -23,12 +22,10 @@ kubectl exec -n "$NAMESPACE" deploy/spire-dolt -c dolt -- sh -c "
 DOLT_CLI_PASSWORD='' dolt --host 127.0.0.1 --port $DOLT_PORT --user root --no-tls sql -q \"
 CREATE USER IF NOT EXISTS 'steward'@'%' IDENTIFIED BY '$STEWARD_PASS';
 CREATE USER IF NOT EXISTS 'wizard'@'%' IDENTIFIED BY '$WIZARD_PASS';
-CREATE USER IF NOT EXISTS 'artificer'@'%' IDENTIFIED BY '$ARTIFICER_PASS';
 CREATE USER IF NOT EXISTS 'archivist'@'%' IDENTIFIED BY '$ARCHIVIST_PASS';
 CREATE USER IF NOT EXISTS 'jb'@'%' IDENTIFIED BY '$JB_PASS';
 GRANT ALL ON *.* TO 'steward'@'%';
-GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON *.* TO 'wizard'@'%';
-GRANT ALL ON *.* TO 'artificer'@'%';
+GRANT ALL ON *.* TO 'wizard'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON *.* TO 'archivist'@'%';
 GRANT ALL ON *.* TO 'jb'@'%';
 \"
@@ -42,8 +39,6 @@ kubectl patch secret spire-credentials -n "$NAMESPACE" --type merge -p "{
     \"DOLT_REMOTE_PASSWORD_STEWARD\": \"$STEWARD_PASS\",
     \"DOLT_REMOTE_USER_WIZARD\": \"wizard\",
     \"DOLT_REMOTE_PASSWORD_WIZARD\": \"$WIZARD_PASS\",
-    \"DOLT_REMOTE_USER_ARTIFICER\": \"artificer\",
-    \"DOLT_REMOTE_PASSWORD_ARTIFICER\": \"$ARTIFICER_PASS\",
     \"DOLT_REMOTE_USER_ARCHIVIST\": \"archivist\",
     \"DOLT_REMOTE_PASSWORD_ARCHIVIST\": \"$ARCHIVIST_PASS\",
     \"DOLT_REMOTE_USER_JB\": \"jb\",
@@ -53,7 +48,7 @@ kubectl patch secret spire-credentials -n "$NAMESPACE" --type merge -p "{
 
 echo ""
 echo "=== Done ==="
-echo "Users: steward, wizard, artificer, archivist, jb"
+echo "Users: steward, wizard, archivist, jb"
 echo "Passwords stored in secret/$NAMESPACE/spire-credentials"
 echo ""
 echo "Your local credentials (save these):"
