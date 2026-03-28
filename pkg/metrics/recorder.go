@@ -16,7 +16,7 @@ type AgentRun struct {
 	EpicID             string `json:"epic_id,omitempty"`
 	AgentName          string `json:"agent_name,omitempty"`
 	Model              string `json:"model"`
-	Role               string `json:"role"` // "wizard" or "artificer"
+	Role               string `json:"role"` // "wizard" or "worker"
 	ContextTokensIn    int    `json:"context_tokens_in,omitempty"`
 	ContextTokensOut   int    `json:"context_tokens_out,omitempty"`
 	TotalTokens        int    `json:"total_tokens,omitempty"`
@@ -25,10 +25,10 @@ type AgentRun struct {
 	StartupSeconds     int    `json:"startup_seconds,omitempty"`
 	WorkingSeconds     int    `json:"working_seconds,omitempty"`
 	QueueSeconds       int    `json:"queue_seconds,omitempty"`    // bead filed → wizard assigned
-	ReviewSeconds      int    `json:"review_seconds,omitempty"`   // branch pushed → artificer verdict
+	ReviewSeconds      int    `json:"review_seconds,omitempty"`   // branch pushed → review verdict
 	Result             string `json:"result"`
 	ReviewRounds       int    `json:"review_rounds,omitempty"`
-	ArtificerVerdict    string `json:"artificer_verdict,omitempty"`
+	ReviewVerdict       string `json:"artificer_verdict,omitempty" db:"artificer_verdict"` // legacy column name
 	SpecFile           string `json:"spec_file,omitempty"`
 	SpecSizeTokens     int    `json:"spec_size_tokens,omitempty"`
 	FocusContextTokens int    `json:"focus_context_tokens,omitempty"`
@@ -115,9 +115,9 @@ func Record(run AgentRun) error {
 		cols = append(cols, "review_rounds")
 		vals = append(vals, itoa(run.ReviewRounds))
 	}
-	if run.ArtificerVerdict != "" {
+	if run.ReviewVerdict != "" {
 		cols = append(cols, "artificer_verdict")
-		vals = append(vals, esc(run.ArtificerVerdict))
+		vals = append(vals, esc(run.ReviewVerdict))
 	}
 	if run.SpecFile != "" {
 		cols = append(cols, "spec_file")

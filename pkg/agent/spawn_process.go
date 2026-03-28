@@ -114,7 +114,7 @@ func roleToSubcmd(role SpawnRole) (string, error) {
 	case RoleSage:
 		return "wizard-review", nil
 	case RoleWizard:
-		return "workshop", nil
+		return "wizard", nil
 	case RoleExecutor:
 		return "execute", nil
 	default:

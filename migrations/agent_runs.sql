@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     epic_id VARCHAR(64),
     agent_name VARCHAR(128),
     model VARCHAR(64) NOT NULL,
-    role VARCHAR(16) NOT NULL,  -- 'worker' or 'artificer'
+    role VARCHAR(16) NOT NULL,  -- 'worker' or 'wizard'
 
     -- Execution metrics
     context_tokens_in INT,
@@ -15,12 +15,12 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     startup_seconds INT,     -- pod start → claude start (clone, install, claim, focus)
     working_seconds INT,     -- claude start → claude done (the actual LLM work)
     queue_seconds INT,       -- bead filed → wizard assigned (time waiting in READY)
-    review_seconds INT,      -- branch pushed → artificer verdict (time in review)
+    review_seconds INT,      -- branch pushed → review verdict (time in review)
     result VARCHAR(32) NOT NULL,  -- success, test_failure, review_rejected, timeout, error, stopped
 
     -- Review metrics
     review_rounds INT DEFAULT 0,
-    artificer_verdict VARCHAR(32),  -- approve, request_changes, reject
+    artificer_verdict VARCHAR(32),  -- legacy column name; actual meaning is review_verdict (approve, request_changes, reject)
 
     -- Spec context
     spec_file VARCHAR(256),
