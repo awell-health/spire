@@ -1,4 +1,4 @@
-package main
+package integration
 
 import (
 	"bytes"
@@ -7,52 +7,51 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/steveyegge/beads"
 )
 
-// syncEpicsToLinear finds unsynced epics and creates Linear issues for them.
+// SyncEpicsToLinear finds unsynced epics and creates Linear issues for them.
 // Returns the number of epics synced.
-func syncEpicsToLinear() int {
-	apiKey := resolveLinearAPIKey()
+func SyncEpicsToLinear() int {
+	apiKey := ResolveLinearAPIKey()
 	if apiKey == "" {
 		return 0 // no Linear credentials, skip silently
 	}
 
-	teamID := resolveLinearTeamID()
+	teamID := ResolveLinearTeamID()
 	if teamID == "" {
 		return 0
 	}
 
-	projectID := resolveLinearProjectID()
+	projectID := ResolveLinearProjectID()
 
 	// List all epics (both open and closed, so we can close Linear issues too)
-	openEpics, err := storeListBeads(beads.IssueFilter{IssueType: issueTypePtr(beads.TypeEpic), Status: statusPtr(beads.StatusOpen)})
+	openEpics, err := StoreListBeads(beads.IssueFilter{IssueType: IssueTypePtr(beads.TypeEpic), Status: StatusPtr(beads.StatusOpen)})
 	if err != nil {
 		log.Printf("[epic-sync] list open epics: %s", err)
 		return 0
 	}
 
-	closedEpics, _ := storeListBeads(beads.IssueFilter{IssueType: issueTypePtr(beads.TypeEpic), Status: statusPtr(beads.StatusClosed)})
+	closedEpics, _ := StoreListBeads(beads.IssueFilter{IssueType: IssueTypePtr(beads.TypeEpic), Status: StatusPtr(beads.StatusClosed)})
 
 	synced := 0
 
-	// Sync new open epics → create Linear issues
+	// Sync new open epics -> create Linear issues
 	for _, epic := range openEpics {
-		if hasLabel(epic, "linear:") != "" {
+		if HasLabel(epic, "linear:") != "" {
 			continue
 		}
 
-		// Skip molecules (formula instances) — they have IDs like spi-mol-*
+		// Skip molecules (formula instances) -- they have IDs like spi-mol-*
 		if strings.Contains(epic.ID, "-mol-") {
 			continue
 		}
 
-		log.Printf("[epic-sync] new epic: %s — %q", epic.ID, epic.Title)
+		log.Printf("[epic-sync] new epic: %s -- %q", epic.ID, epic.Title)
 
-		issue, err := createLinearIssue(apiKey, teamID, projectID, epic)
+		issue, err := CreateLinearIssue(apiKey, teamID, projectID, epic)
 		if err != nil {
 			log.Printf("[epic-sync] failed to sync %s: %s", epic.ID, err)
 			continue
@@ -61,12 +60,12 @@ func syncEpicsToLinear() int {
 		log.Printf("[epic-sync] created Linear issue %s (%s)", issue.Identifier, issue.URL)
 
 		// Add linear: label to bead
-		if err = storeAddLabel(epic.ID, fmt.Sprintf("linear:%s", issue.Identifier)); err != nil {
+		if err = StoreAddLabel(epic.ID, fmt.Sprintf("linear:%s", issue.Identifier)); err != nil {
 			log.Printf("[epic-sync] label %s: %s", epic.ID, err)
 		}
 
 		// Add comment with Linear URL
-		if err = storeAddComment(epic.ID, fmt.Sprintf("Linear issue created: %s — %s", issue.Identifier, issue.URL)); err != nil {
+		if err = StoreAddComment(epic.ID, fmt.Sprintf("Linear issue created: %s -- %s", issue.Identifier, issue.URL)); err != nil {
 			log.Printf("[epic-sync] comment %s: %s", epic.ID, err)
 		}
 
@@ -74,7 +73,7 @@ func syncEpicsToLinear() int {
 	}
 
 	// Close Linear issues for closed beads epics
-	closed := closeLinearForClosedEpics(apiKey, teamID, closedEpics)
+	closed := CloseLinearForClosedEpics(apiKey, teamID, closedEpics)
 	synced += closed
 
 	if synced > 0 {
@@ -84,8 +83,8 @@ func syncEpicsToLinear() int {
 	return synced
 }
 
-// createLinearIssue creates a Linear issue from a beads epic via GraphQL.
-func createLinearIssue(apiKey, teamID, projectID string, epic Bead) (*LinearIssue, error) {
+// CreateLinearIssue creates a Linear issue from a beads epic via GraphQL.
+func CreateLinearIssue(apiKey, teamID, projectID string, epic Bead) (*LinearIssue, error) {
 	// Map beads priority (0=highest) to Linear priority (1=urgent, 4=low)
 	priorityMap := map[int]int{0: 1, 1: 2, 2: 3, 3: 4, 4: 4}
 	linearPriority := 3
@@ -93,7 +92,7 @@ func createLinearIssue(apiKey, teamID, projectID string, epic Bead) (*LinearIssu
 		linearPriority = p
 	}
 
-	description := buildLinearDescription(epic)
+	description := BuildLinearDescription(epic)
 
 	mutation := `
 		mutation IssueCreate($input: IssueCreateInput!) {
@@ -123,9 +122,9 @@ func createLinearIssue(apiKey, teamID, projectID string, epic Bead) (*LinearIssu
 		"variables": map[string]any{"input": input},
 	})
 
-	req, _ := http.NewRequest("POST", linearGraphQLURL, bytes.NewReader(reqBody))
+	req, _ := http.NewRequest("POST", LinearGraphQLURL, bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", linearAuthHeader(apiKey))
+	req.Header.Set("Authorization", LinearAuthHeader(apiKey))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -169,7 +168,8 @@ func createLinearIssue(apiKey, teamID, projectID string, epic Bead) (*LinearIssu
 	return result.Data.IssueCreate.Issue, nil
 }
 
-func buildLinearDescription(epic Bead) string {
+// BuildLinearDescription builds a Linear issue description from a beads epic.
+func BuildLinearDescription(epic Bead) string {
 	var lines []string
 
 	if epic.Description != "" {
@@ -192,27 +192,27 @@ func buildLinearDescription(epic Bead) string {
 	return strings.Join(lines, "\n")
 }
 
-// closeLinearForClosedEpics finds closed beads epics with a linear: label
+// CloseLinearForClosedEpics finds closed beads epics with a linear: label
 // and transitions the corresponding Linear issue to "Done" if it isn't already.
-func closeLinearForClosedEpics(apiKey, teamID string, closedEpics []Bead) int {
+func CloseLinearForClosedEpics(apiKey, teamID string, closedEpics []Bead) int {
 	closed := 0
 
 	// Resolve the "Done" state ID for this team (cached per daemon cycle)
 	doneStateID := ""
 
 	for _, epic := range closedEpics {
-		identifier := hasLabel(epic, "linear:")
+		identifier := HasLabel(epic, "linear:")
 		if identifier == "" {
 			continue
 		}
 
 		// Check if we already marked this as synced-closed
-		if hasLabel(epic, "linear-closed") != "" {
+		if HasLabel(epic, "linear-closed") != "" {
 			continue
 		}
 
 		// Fetch the Linear issue to check its current state
-		issue, err := fetchLinearIssue(apiKey, identifier)
+		issue, err := FetchLinearIssue(apiKey, identifier)
 		if err != nil {
 			log.Printf("[epic-sync] fetch %s: %s", identifier, err)
 			continue
@@ -225,13 +225,13 @@ func closeLinearForClosedEpics(apiKey, teamID string, closedEpics []Bead) int {
 		// Skip if already in a completed/cancelled state
 		if issue.State.Type == "completed" || issue.State.Type == "canceled" {
 			// Mark as synced so we don't check again
-			storeAddLabel(epic.ID, "linear-closed")
+			StoreAddLabel(epic.ID, "linear-closed")
 			continue
 		}
 
 		// Resolve the Done state if we haven't yet
 		if doneStateID == "" {
-			doneStateID, err = findDoneStateID(apiKey, teamID)
+			doneStateID, err = FindDoneStateID(apiKey, teamID)
 			if err != nil {
 				log.Printf("[epic-sync] could not find Done state: %s", err)
 				return closed
@@ -239,14 +239,14 @@ func closeLinearForClosedEpics(apiKey, teamID string, closedEpics []Bead) int {
 		}
 
 		// Transition the issue to Done
-		err = updateLinearIssueState(apiKey, issue.ID, doneStateID)
+		err = UpdateLinearIssueState(apiKey, issue.ID, doneStateID)
 		if err != nil {
 			log.Printf("[epic-sync] close %s (%s): %s", epic.ID, identifier, err)
 			continue
 		}
 
 		// Mark bead so we don't try again
-		storeAddLabel(epic.ID, "linear-closed")
+		StoreAddLabel(epic.ID, "linear-closed")
 
 		log.Printf("[epic-sync] closed Linear issue %s (epic %s closed)", identifier, epic.ID)
 		closed++
@@ -255,8 +255,8 @@ func closeLinearForClosedEpics(apiKey, teamID string, closedEpics []Bead) int {
 	return closed
 }
 
-// findDoneStateID fetches the "Done" (completed-type) workflow state for a team.
-func findDoneStateID(apiKey, teamID string) (string, error) {
+// FindDoneStateID fetches the "Done" (completed-type) workflow state for a team.
+func FindDoneStateID(apiKey, teamID string) (string, error) {
 	reqBody, _ := json.Marshal(map[string]any{
 		"query": `query($teamId: String!) {
 			team(id: $teamId) {
@@ -266,9 +266,9 @@ func findDoneStateID(apiKey, teamID string) (string, error) {
 		"variables": map[string]any{"teamId": teamID},
 	})
 
-	req, _ := http.NewRequest("POST", linearGraphQLURL, bytes.NewReader(reqBody))
+	req, _ := http.NewRequest("POST", LinearGraphQLURL, bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", linearAuthHeader(apiKey))
+	req.Header.Set("Authorization", LinearAuthHeader(apiKey))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -305,8 +305,8 @@ func findDoneStateID(apiKey, teamID string) (string, error) {
 	return "", fmt.Errorf("no completed-type state found for team %s", teamID)
 }
 
-// updateLinearIssueState transitions a Linear issue to a new state.
-func updateLinearIssueState(apiKey, issueID, stateID string) error {
+// UpdateLinearIssueState transitions a Linear issue to a new state.
+func UpdateLinearIssueState(apiKey, issueID, stateID string) error {
 	reqBody, _ := json.Marshal(map[string]any{
 		"query": `mutation($id: String!, $input: IssueUpdateInput!) {
 			issueUpdate(id: $id, input: $input) { success }
@@ -317,9 +317,9 @@ func updateLinearIssueState(apiKey, issueID, stateID string) error {
 		},
 	})
 
-	req, _ := http.NewRequest("POST", linearGraphQLURL, bytes.NewReader(reqBody))
+	req, _ := http.NewRequest("POST", LinearGraphQLURL, bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", linearAuthHeader(apiKey))
+	req.Header.Set("Authorization", LinearAuthHeader(apiKey))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -344,54 +344,4 @@ func updateLinearIssueState(apiKey, issueID, stateID string) error {
 	}
 
 	return nil
-}
-
-// linearAuthHeader returns the correct Authorization header value.
-// Personal API keys (lin_api_*) are sent bare; OAuth tokens get "Bearer " prefix.
-func linearAuthHeader(key string) string {
-	if strings.HasPrefix(key, "lin_api_") {
-		return key
-	}
-	if strings.HasPrefix(key, "Bearer ") {
-		return key
-	}
-	return "Bearer " + key
-}
-
-// resolveLinearAPIKey gets the Linear API key.
-// Priority: LINEAR_API_KEY env > keychain > bd config.
-func resolveLinearAPIKey() string {
-	if key := os.Getenv("LINEAR_API_KEY"); key != "" {
-		return key
-	}
-	if key, err := keychainGet("linear.access-token"); err == nil && key != "" {
-		return key
-	}
-	// Fall back to bd config (legacy)
-	return linearAPIKey()
-}
-
-// resolveLinearTeamID gets the Linear team ID.
-// Priority: LINEAR_TEAM_ID env > bd config.
-func resolveLinearTeamID() string {
-	if id := os.Getenv("LINEAR_TEAM_ID"); id != "" {
-		return id
-	}
-	out, _ := storeGetConfig("linear.team-id")
-	if out != "" {
-		return out
-	}
-	return ""
-}
-
-// resolveLinearProjectID gets the optional Linear project ID.
-func resolveLinearProjectID() string {
-	if id := os.Getenv("LINEAR_PROJECT_ID"); id != "" {
-		return id
-	}
-	out, _ := storeGetConfig("linear.project-id")
-	if out != "" {
-		return out
-	}
-	return ""
 }

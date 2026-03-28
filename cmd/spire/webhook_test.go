@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/awell-health/spire/pkg/integration"
+)
 
 // --- resolveWebhookRecipient tests ---
 
@@ -18,9 +22,9 @@ func TestWebhookRecipient_AttemptAgent(t *testing.T) {
 		Labels: []string{"owner:old-owner"},
 	}
 
-	got := resolveWebhookRecipient(attempt, epicBead)
+	got := integration.ResolveWebhookRecipient(attempt, epicBead)
 	if got != "wizard-impl" {
-		t.Errorf("resolveWebhookRecipient = %q, want wizard-impl", got)
+		t.Errorf("ResolveWebhookRecipient = %q, want wizard-impl", got)
 	}
 }
 
@@ -38,9 +42,9 @@ func TestWebhookRecipient_AttemptAgentOwnerMissing(t *testing.T) {
 		Labels: nil,
 	}
 
-	got := resolveWebhookRecipient(attempt, epicBead)
+	got := integration.ResolveWebhookRecipient(attempt, epicBead)
 	if got != "wizard-impl" {
-		t.Errorf("resolveWebhookRecipient = %q, want wizard-impl", got)
+		t.Errorf("ResolveWebhookRecipient = %q, want wizard-impl", got)
 	}
 }
 
@@ -58,9 +62,9 @@ func TestWebhookRecipient_AttemptAgentOwnerStale(t *testing.T) {
 		Labels: []string{"owner:wizard-stale"},
 	}
 
-	got := resolveWebhookRecipient(attempt, epicBead)
+	got := integration.ResolveWebhookRecipient(attempt, epicBead)
 	if got != "wizard-new" {
-		t.Errorf("resolveWebhookRecipient = %q, want wizard-new (not stale owner)", got)
+		t.Errorf("ResolveWebhookRecipient = %q, want wizard-new (not stale owner)", got)
 	}
 }
 
@@ -72,9 +76,9 @@ func TestWebhookRecipient_NoAttemptFallsBackToOwner(t *testing.T) {
 		Labels: []string{"owner:wizard-owner"},
 	}
 
-	got := resolveWebhookRecipient(nil, epicBead)
+	got := integration.ResolveWebhookRecipient(nil, epicBead)
 	if got != "wizard-owner" {
-		t.Errorf("resolveWebhookRecipient = %q, want wizard-owner", got)
+		t.Errorf("ResolveWebhookRecipient = %q, want wizard-owner", got)
 	}
 }
 
@@ -86,9 +90,9 @@ func TestWebhookRecipient_NoAttemptNoOwner(t *testing.T) {
 		Labels: nil,
 	}
 
-	got := resolveWebhookRecipient(nil, epicBead)
+	got := integration.ResolveWebhookRecipient(nil, epicBead)
 	if got != "" {
-		t.Errorf("resolveWebhookRecipient = %q, want empty string", got)
+		t.Errorf("ResolveWebhookRecipient = %q, want empty string", got)
 	}
 }
 
@@ -106,8 +110,8 @@ func TestWebhookRecipient_AttemptWithoutAgentLabel(t *testing.T) {
 		Labels: []string{"owner:wizard-fallback"},
 	}
 
-	got := resolveWebhookRecipient(attempt, epicBead)
+	got := integration.ResolveWebhookRecipient(attempt, epicBead)
 	if got != "wizard-fallback" {
-		t.Errorf("resolveWebhookRecipient = %q, want wizard-fallback", got)
+		t.Errorf("ResolveWebhookRecipient = %q, want wizard-fallback", got)
 	}
 }

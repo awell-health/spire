@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/integration"
 	"github.com/steveyegge/beads"
 )
 
@@ -572,23 +573,19 @@ func TestLinearToBeadsPriority(t *testing.T) {
 		{4, 3}, // low -> P3
 	}
 	for _, tt := range tests {
-		got := linearToBeadsPriority(tt.linear)
+		got := integration.LinearToBeadsPriority(tt.linear)
 		if got != tt.beads {
-			t.Errorf("linearToBeadsPriority(%d) = %d, want %d", tt.linear, got, tt.beads)
+			t.Errorf("LinearToBeadsPriority(%d) = %d, want %d", tt.linear, got, tt.beads)
 		}
 	}
 }
 
 func TestMapLabelsToRig(t *testing.T) {
 	// Set up test label maps (these are configurable via bd config in production)
-	origExact := labelRigMap
-	origPrefix := labelPrefixRigMap
-	labelRigMap = map[string]string{"Workstream: Platform": "awp"}
-	labelPrefixRigMap = map[string]string{"Panels": "pan", "Grove": "gro"}
-	defer func() {
-		labelRigMap = origExact
-		labelPrefixRigMap = origPrefix
-	}()
+	integration.ResetLabelMaps()
+	integration.LabelRigMap = map[string]string{"Workstream: Platform": "awp"}
+	integration.LabelPrefixRigMap = map[string]string{"Panels": "pan", "Grove": "gro"}
+	defer integration.ResetLabelMaps()
 
 	tests := []struct {
 		name   string
@@ -606,9 +603,9 @@ func TestMapLabelsToRig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, found := mapLabelsToRig(tt.labels)
+			got, found := integration.MapLabelsToRig(tt.labels)
 			if got != tt.want || found != tt.found {
-				t.Errorf("mapLabelsToRig(%v) = (%q, %v), want (%q, %v)", tt.labels, got, found, tt.want, tt.found)
+				t.Errorf("MapLabelsToRig(%v) = (%q, %v), want (%q, %v)", tt.labels, got, found, tt.want, tt.found)
 			}
 		})
 	}
@@ -627,9 +624,9 @@ func TestParseWebhookPayload(t *testing.T) {
 		}
 	}`
 
-	event, err := parseWebhookPayload(payload)
+	event, err := integration.ParseWebhookPayload(payload)
 	if err != nil {
-		t.Fatalf("parseWebhookPayload error: %v", err)
+		t.Fatalf("ParseWebhookPayload error: %v", err)
 	}
 	if event.Action != "update" {
 		t.Errorf("Action = %q, want %q", event.Action, "update")
@@ -650,14 +647,14 @@ func TestParseWebhookPayload(t *testing.T) {
 
 func TestParseWebhookPayloadMissingIdentifier(t *testing.T) {
 	payload := `{"action": "update", "type": "Issue", "data": {"title": "No ID"}}`
-	_, err := parseWebhookPayload(payload)
+	_, err := integration.ParseWebhookPayload(payload)
 	if err == nil {
 		t.Error("expected error for missing identifier")
 	}
 }
 
 func TestParseWebhookPayloadInvalid(t *testing.T) {
-	_, err := parseWebhookPayload("not json")
+	_, err := integration.ParseWebhookPayload("not json")
 	if err == nil {
 		t.Error("expected error for invalid JSON")
 	}
@@ -668,9 +665,9 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	requireStore(t)
 
 	// Set up label maps for this test
-	origPrefix := labelPrefixRigMap
-	labelPrefixRigMap = map[string]string{"Panels": "pan"}
-	defer func() { labelPrefixRigMap = origPrefix }()
+	integration.ResetLabelMaps()
+	integration.LabelPrefixRigMap = map[string]string{"Panels": "pan"}
+	defer integration.ResetLabelMaps()
 
 	// Ensure the "pan" rig route exists in routes.jsonl so bd can resolve --rig=pan.
 	// Walk up from CWD to find .beads/ (same resolution bd uses).

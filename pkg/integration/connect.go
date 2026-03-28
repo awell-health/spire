@@ -1,8 +1,7 @@
-package main
+package integration
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -22,33 +21,22 @@ import (
 )
 
 const (
-	linearClientID  = "9bf3045f8304d304e149599d11471426"
-	linearAuthURL   = "https://linear.app/oauth/authorize"
-	linearTokenURL  = "https://api.linear.app/oauth/token"
-	linearScopes    = "read,write,issues:create"
+	linearClientID = "9bf3045f8304d304e149599d11471426"
+	linearAuthURL  = "https://linear.app/oauth/authorize"
+	linearTokenURL = "https://api.linear.app/oauth/token"
+	linearScopes   = "read,write,issues:create"
 )
 
-func cmdConnect(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: spire connect <service>\n\nAvailable services:\n  linear    Connect to Linear for epic sync and webhooks")
-	}
-
-	switch args[0] {
-	case "linear":
-		return connectLinear()
-	default:
-		return fmt.Errorf("unknown service: %q\n\nAvailable services:\n  linear", args[0])
-	}
-}
-
-func connectLinear() error {
+// ConnectLinear runs the interactive Linear connection flow:
+// OAuth2 PKCE, team/project selection, webhook setup, credential storage.
+func ConnectLinear() error {
 	// Ensure store is open before config operations
-	if _, err := ensureStore(); err != nil {
+	if _, err := StoreEnsure(); err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
 
 	// Check if already connected
-	existingTeam, _ := storeGetConfig("linear.team-key")
+	existingTeam, _ := StoreGetConfig("linear.team-key")
 	if existingTeam != "" {
 		fmt.Printf("  Linear is already connected (team: %s).\n", existingTeam)
 		fmt.Print("  Reconnect? [y/N] ")
@@ -63,16 +51,16 @@ func connectLinear() error {
 	fmt.Println()
 	fmt.Println("  Opening Linear authorization in your browser...")
 
-	token, err := oauthPKCE()
+	token, err := OAuthPKCE()
 	if err != nil {
 		return fmt.Errorf("OAuth flow failed: %w", err)
 	}
 
-	fmt.Println("  ✓ Authenticated with Linear")
+	fmt.Println("  \u2713 Authenticated with Linear")
 	fmt.Println()
 
 	// Step 2: Fetch teams and pick one
-	teams, err := fetchLinearTeams(token)
+	teams, err := FetchLinearTeams(token)
 	if err != nil {
 		return fmt.Errorf("fetch teams: %w", err)
 	}
@@ -100,7 +88,7 @@ func connectLinear() error {
 	fmt.Println()
 
 	// Step 3: Optionally pick a project
-	projects, _ := fetchLinearProjects(token, team.ID)
+	projects, _ := FetchLinearProjects(token, team.ID)
 	var projectID string
 	if len(projects) > 0 {
 		fmt.Println("  Select a project (optional, enter to skip):")
@@ -135,44 +123,44 @@ func connectLinear() error {
 			webhookURL = strings.TrimSuffix(webhookURL, "/") + "/webhook"
 		}
 
-		secret, err := createLinearWebhook(token, team.ID, webhookURL)
+		secret, err := CreateLinearWebhook(token, team.ID, webhookURL)
 		if err != nil {
-			fmt.Printf("  ⚠ Webhook creation failed: %s\n", err)
+			fmt.Printf("  \u26a0 Webhook creation failed: %s\n", err)
 			fmt.Println("  (You can set it up manually in Linear settings)")
 		} else {
 			webhookSecret = secret
-			fmt.Printf("  ✓ Webhook created → %s\n", webhookURL)
+			fmt.Printf("  \u2713 Webhook created \u2192 %s\n", webhookURL)
 		}
 		fmt.Println()
 	}
 
 	// Step 5: Store credentials
-	// Token → keychain (secret, per-machine)
-	if err := keychainSet("linear.access-token", token); err != nil {
+	// Token -> keychain (secret, per-machine)
+	if err := KeychainSet("linear.access-token", token); err != nil {
 		// Fallback: warn but don't fail
-		fmt.Printf("  ⚠ Could not save token to keychain: %s\n", err)
+		fmt.Printf("  \u26a0 Could not save token to keychain: %s\n", err)
 		fmt.Println("  Set LINEAR_API_KEY env var instead.")
 	}
 
 	if webhookSecret != "" {
-		if err := keychainSet("linear.webhook-secret", webhookSecret); err != nil {
-			fmt.Printf("  ⚠ Could not save webhook secret to keychain: %s\n", err)
+		if err := KeychainSet("linear.webhook-secret", webhookSecret); err != nil {
+			fmt.Printf("  \u26a0 Could not save webhook secret to keychain: %s\n", err)
 			fmt.Printf("  Set LINEAR_WEBHOOK_SECRET=%s in your webhook deployment.\n", webhookSecret)
 		}
 	}
 
-	// Non-secret config → store config (shared via Dolt)
-	storeSetConfig("linear.team-id", team.ID)
-	storeSetConfig("linear.team-key", team.Key)
+	// Non-secret config -> store config (shared via Dolt)
+	StoreSetConfig("linear.team-id", team.ID)
+	StoreSetConfig("linear.team-key", team.Key)
 	if projectID != "" {
-		storeSetConfig("linear.project-id", projectID)
+		StoreSetConfig("linear.project-id", projectID)
 	}
 	if webhookURL != "" {
-		storeSetConfig("linear.webhook-url", webhookURL)
+		StoreSetConfig("linear.webhook-url", webhookURL)
 	}
 
 	fmt.Println()
-	fmt.Println("  ✓ Linear connected")
+	fmt.Println("  \u2713 Linear connected")
 	fmt.Printf("    Team: %s (%s)\n", team.Name, team.Key)
 	if webhookURL != "" {
 		fmt.Printf("    Webhook: %s\n", webhookURL)
@@ -184,9 +172,35 @@ func connectLinear() error {
 	return nil
 }
 
+// DisconnectLinear removes all Linear credentials and config.
+func DisconnectLinear() error {
+	// Ensure store is open before config operations
+	if _, err := StoreEnsure(); err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+
+	// Remove keychain entries
+	KeychainDelete("linear.access-token")
+	KeychainDelete("linear.webhook-secret")
+	fmt.Println("  \u2713 Token removed from keychain")
+
+	// Remove store config entries
+	StoreDeleteConfig("linear.team-id")
+	StoreDeleteConfig("linear.team-key")
+	StoreDeleteConfig("linear.project-id")
+	StoreDeleteConfig("linear.webhook-url")
+	fmt.Println("  \u2713 Config removed from beads")
+
+	fmt.Println()
+	fmt.Println("  Linear disconnected. Epic sync and webhooks are disabled.")
+
+	return nil
+}
+
 // --- OAuth2 PKCE flow ---
 
-func oauthPKCE() (string, error) {
+// OAuthPKCE runs the OAuth2 PKCE authorization flow and returns the access token.
+func OAuthPKCE() (string, error) {
 	// Generate PKCE code verifier + challenge
 	verifierBytes := make([]byte, 32)
 	rand.Read(verifierBytes)
@@ -220,7 +234,7 @@ func oauthPKCE() (string, error) {
 			return
 		}
 		if errParam := r.URL.Query().Get("error"); errParam != "" {
-			errCh <- fmt.Errorf("OAuth error: %s — %s", errParam, r.URL.Query().Get("error_description"))
+			errCh <- fmt.Errorf("OAuth error: %s \u2014 %s", errParam, r.URL.Query().Get("error_description"))
 			fmt.Fprintf(w, "<html><body><h2>Authorization failed</h2><p>%s</p><p>You can close this tab.</p></body></html>", errParam)
 			return
 		}
@@ -231,7 +245,7 @@ func oauthPKCE() (string, error) {
 			return
 		}
 		codeCh <- code
-		fmt.Fprint(w, "<html><body><h2>✓ Spire authorized</h2><p>You can close this tab and return to your terminal.</p></body></html>")
+		fmt.Fprint(w, "<html><body><h2>\u2713 Spire authorized</h2><p>You can close this tab and return to your terminal.</p></body></html>")
 	})
 
 	server := &http.Server{Handler: mux}
@@ -252,14 +266,14 @@ func oauthPKCE() (string, error) {
 	authURL := linearAuthURL + "?" + authParams.Encode()
 
 	// Open browser
-	openBrowser(authURL)
+	OpenBrowser(authURL)
 
 	fmt.Printf("  Waiting for authorization on localhost:%d...\n", port)
 
 	// Wait for callback (timeout after 5 minutes)
 	select {
 	case code := <-codeCh:
-		return exchangeCode(code, codeVerifier, redirectURI)
+		return ExchangeCode(code, codeVerifier, redirectURI)
 	case err := <-errCh:
 		return "", err
 	case <-time.After(5 * time.Minute):
@@ -267,7 +281,8 @@ func oauthPKCE() (string, error) {
 	}
 }
 
-func exchangeCode(code, codeVerifier, redirectURI string) (string, error) {
+// ExchangeCode exchanges an authorization code for an access token.
+func ExchangeCode(code, codeVerifier, redirectURI string) (string, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {linearClientID},
@@ -305,7 +320,8 @@ func exchangeCode(code, codeVerifier, redirectURI string) (string, error) {
 	return result.AccessToken, nil
 }
 
-func openBrowser(url string) {
+// OpenBrowser opens a URL in the system's default browser.
+func OpenBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -319,68 +335,17 @@ func openBrowser(url string) {
 	cmd.Run()
 }
 
-// --- Linear GraphQL helpers ---
+// --- Linear GraphQL helpers for connect flow ---
 
-type linearTeam struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Key  string `json:"key"`
-}
-
-type linearProject struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-func linearGraphQL(token, query string, variables map[string]any) (json.RawMessage, error) {
-	reqBody, _ := json.Marshal(map[string]any{
-		"query":     query,
-		"variables": variables,
-	})
-
-	req, _ := http.NewRequest("POST", linearGraphQLURL, bytes.NewReader(reqBody))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("linear API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("linear API %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Data   json.RawMessage `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Errors) > 0 {
-		msgs := make([]string, len(result.Errors))
-		for i, e := range result.Errors {
-			msgs[i] = e.Message
-		}
-		return nil, fmt.Errorf("graphql: %s", strings.Join(msgs, ", "))
-	}
-
-	return result.Data, nil
-}
-
-func fetchLinearTeams(token string) ([]linearTeam, error) {
-	data, err := linearGraphQL(token, `query { teams { nodes { id name key } } }`, nil)
+// FetchLinearTeams fetches all teams from the authenticated user's workspace.
+func FetchLinearTeams(token string) ([]LinearTeam, error) {
+	data, err := LinearGraphQL(token, `query { teams { nodes { id name key } } }`, nil)
 	if err != nil {
 		return nil, err
 	}
 	var result struct {
 		Teams struct {
-			Nodes []linearTeam `json:"nodes"`
+			Nodes []LinearTeam `json:"nodes"`
 		} `json:"teams"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
@@ -389,8 +354,9 @@ func fetchLinearTeams(token string) ([]linearTeam, error) {
 	return result.Teams.Nodes, nil
 }
 
-func fetchLinearProjects(token, teamID string) ([]linearProject, error) {
-	data, err := linearGraphQL(token, `
+// FetchLinearProjects fetches projects for a team.
+func FetchLinearProjects(token, teamID string) ([]LinearProject, error) {
+	data, err := LinearGraphQL(token, `
 		query($teamId: String!) {
 			team(id: $teamId) {
 				projects { nodes { id name } }
@@ -403,7 +369,7 @@ func fetchLinearProjects(token, teamID string) ([]linearProject, error) {
 	var result struct {
 		Team struct {
 			Projects struct {
-				Nodes []linearProject `json:"nodes"`
+				Nodes []LinearProject `json:"nodes"`
 			} `json:"projects"`
 		} `json:"team"`
 	}
@@ -413,8 +379,9 @@ func fetchLinearProjects(token, teamID string) ([]linearProject, error) {
 	return result.Team.Projects.Nodes, nil
 }
 
-func createLinearWebhook(token, teamID, webhookURL string) (string, error) {
-	data, err := linearGraphQL(token, `
+// CreateLinearWebhook creates a webhook subscription for a team.
+func CreateLinearWebhook(token, teamID, webhookURL string) (string, error) {
+	data, err := LinearGraphQL(token, `
 		mutation($input: WebhookCreateInput!) {
 			webhookCreate(input: $input) {
 				success
@@ -449,43 +416,4 @@ func createLinearWebhook(token, teamID, webhookURL string) (string, error) {
 		return "", fmt.Errorf("webhook creation failed")
 	}
 	return result.WebhookCreate.Webhook.Secret, nil
-}
-
-// --- Disconnect ---
-
-func cmdDisconnect(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: spire disconnect <service>")
-	}
-
-	switch args[0] {
-	case "linear":
-		return disconnectLinear()
-	default:
-		return fmt.Errorf("unknown service: %q", args[0])
-	}
-}
-
-func disconnectLinear() error {
-	// Ensure store is open before config operations
-	if _, err := ensureStore(); err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-
-	// Remove keychain entries
-	keychainDelete("linear.access-token")
-	keychainDelete("linear.webhook-secret")
-	fmt.Println("  ✓ Token removed from keychain")
-
-	// Remove store config entries
-	storeDeleteConfig("linear.team-id")
-	storeDeleteConfig("linear.team-key")
-	storeDeleteConfig("linear.project-id")
-	storeDeleteConfig("linear.webhook-url")
-	fmt.Println("  ✓ Config removed from beads")
-
-	fmt.Println()
-	fmt.Println("  Linear disconnected. Epic sync and webhooks are disabled.")
-
-	return nil
 }

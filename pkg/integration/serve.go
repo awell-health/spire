@@ -1,7 +1,8 @@
-package main
+package integration
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,40 +14,31 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-
-	"crypto/rand"
 )
 
-func cmdServe(args []string) error {
-	if err := requireDolt(); err != nil {
-		return err
-	}
+// RequireDoltFunc is called to verify dolt is available before starting the server.
+// Must be wired by the caller.
+var RequireDoltFunc func() error
 
-	port := "8080"
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--port":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--port requires a value")
-			}
-			i++
-			port = args[i]
-		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire serve [--port 8080]", args[i])
+// ServeWebhooks starts the HTTP server for webhook reception.
+// It listens on the given port and handles /webhook and /health endpoints.
+func ServeWebhooks(port string) error {
+	if RequireDoltFunc != nil {
+		if err := RequireDoltFunc(); err != nil {
+			return err
 		}
 	}
 
 	// Resolve webhook secret from keychain or env
-	secret := webhookSecret()
+	secret := ResolveWebhookSecret()
 	if secret == "" {
-		log.Printf("[serve] warning: no webhook secret configured — signature verification disabled")
+		log.Printf("[serve] warning: no webhook secret configured -- signature verification disabled")
 		log.Printf("[serve] run 'spire connect linear' or set LINEAR_WEBHOOK_SECRET env var")
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		handleWebhook(w, r, secret)
+		HandleWebhook(w, r, secret)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -75,7 +67,8 @@ func cmdServe(args []string) error {
 	return err
 }
 
-func handleWebhook(w http.ResponseWriter, r *http.Request, secret string) {
+// HandleWebhook processes an incoming Linear webhook HTTP request.
+func HandleWebhook(w http.ResponseWriter, r *http.Request, secret string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
@@ -95,7 +88,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request, secret string) {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
-		if !verifyHMAC(body, signature, secret) {
+		if !VerifyHMAC(body, signature, secret) {
 			log.Printf("[serve] invalid signature")
 			http.Error(w, `{"error":"invalid signature"}`, http.StatusUnauthorized)
 			return
@@ -123,13 +116,13 @@ func handleWebhook(w http.ResponseWriter, r *http.Request, secret string) {
 	}
 
 	eventType := payload.Type + "." + payload.Action
-	id := randomID()
+	id := RandomID()
 
 	// Write directly to local Dolt webhook_queue
-	_, err = doltSQL(
+	_, err = DoltSQL(
 		fmt.Sprintf(
 			"INSERT INTO webhook_queue (id, event_type, linear_id, payload, processed, created_at) VALUES ('%s', '%s', '%s', '%s', 0, NOW())",
-			escSQL(id), escSQL(eventType), escSQL(payload.Data.Identifier), escSQL(string(body)),
+			EscSQL(id), EscSQL(eventType), EscSQL(payload.Data.Identifier), EscSQL(string(body)),
 		),
 		false,
 	)
@@ -144,29 +137,35 @@ func handleWebhook(w http.ResponseWriter, r *http.Request, secret string) {
 	fmt.Fprintf(w, `{"ok":true,"id":"%s"}`, id)
 }
 
-func verifyHMAC(body []byte, signature, secret string) bool {
+// VerifyHMAC verifies a webhook signature using HMAC-SHA256.
+func VerifyHMAC(body []byte, signature, secret string) bool {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(signature), []byte(expected))
 }
 
-func escSQL(s string) string {
+// EscSQL escapes single quotes for SQL string literals.
+func EscSQL(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
 
-func randomID() string {
+// RandomID generates a random UUID-like identifier.
+func RandomID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
-// webhookSecret resolves the webhook signing secret.
+// ResolveWebhookSecret resolves the webhook signing secret.
 // Priority: LINEAR_WEBHOOK_SECRET env > system keychain.
-func webhookSecret() string {
+func ResolveWebhookSecret() string {
 	if s := os.Getenv("LINEAR_WEBHOOK_SECRET"); s != "" {
 		return s
 	}
-	s, _ := keychainGet("linear.webhook-secret")
-	return s
+	if KeychainGet != nil {
+		s, _ := KeychainGet("linear.webhook-secret")
+		return s
+	}
+	return ""
 }
