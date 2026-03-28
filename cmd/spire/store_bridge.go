@@ -33,22 +33,41 @@ var storeGetActiveAttemptFunc = storeGetActiveAttempt
 var storeRaiseCorruptedBeadAlertFunc = storeRaiseCorruptedBeadAlert
 
 // storeCheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
+// Uses related deps (not ref: labels) to find the link between alert and source bead.
 var storeCheckExistingAlertFunc = func(beadID string) bool {
-	existing, err := storeListBeads(beads.IssueFilter{
-		Labels: []string{"alert:corrupted-bead", "ref:" + beadID},
-	})
-	return err == nil && len(existing) > 0
+	dependents, err := storeGetDependentsWithMeta(beadID)
+	if err != nil {
+		return false
+	}
+	for _, dep := range dependents {
+		if dep.DependencyType == beads.DepRelated && dep.Status != beads.StatusClosed {
+			for _, l := range dep.Labels {
+				if l == "alert:corrupted-bead" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
-// storeCreateAlertFunc creates the alert bead for a corrupted bead.
+// storeCreateAlertFunc creates the alert bead for a corrupted bead and links it via a related dep.
 var storeCreateAlertFunc = func(beadID, msg string) error {
-	_, err := storeCreateBead(createOpts{
+	alertID, err := storeCreateBead(createOpts{
 		Title:    msg,
 		Priority: 0,
 		Type:     beads.TypeTask,
-		Labels:   []string{"alert:corrupted-bead", "ref:" + beadID},
+		Labels:   []string{"alert:corrupted-bead"},
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if alertID != "" {
+		if derr := storeAddDepTyped(alertID, beadID, "related"); derr != nil {
+			log.Printf("[store] warning: add related dep %s→%s: %s", alertID, beadID, derr)
+		}
+	}
+	return nil
 }
 
 // init wires up cross-package callbacks:
@@ -91,6 +110,10 @@ func storeListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) {
 
 func storeGetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
 	return store.GetDepsWithMeta(id)
+}
+
+func storeGetDependentsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	return store.GetDependentsWithMeta(id)
 }
 
 func storeGetConfig(key string) (string, error) {

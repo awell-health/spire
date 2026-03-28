@@ -78,35 +78,44 @@ func cmdResummon(args []string) error {
 	fmt.Printf("  %s✓ stripped needs-human from %s%s\n", green, beadID, reset)
 
 	// 5. Close any open alert beads that reference this bead (merge-failure, etc.).
-	closeRefAlerts(beadID)
+	closeRelatedAlerts(beadID)
 
 	// 6. Re-summon: spire summon 1 --targets <bead-id>
 	fmt.Printf("  re-summoning wizard for %s...\n", beadID)
 	return cmdSummon([]string{"1", "--targets", beadID})
 }
 
-// closeRefAlerts closes all open alert beads that reference the given bead ID
-// via a ref:<beadID> label. This prevents stale alerts (merge-failure, etc.)
+// closeRelatedAlerts closes all open alert beads that reference the given bead ID
+// via a related dep. This prevents stale alerts (merge-failure, etc.)
 // from lingering on the board after a successful re-summon.
-func closeRefAlerts(beadID string) {
-	open := beads.StatusOpen
-	alerts, err := storeListBeads(beads.IssueFilter{
-		Labels: []string{"ref:" + beadID},
-		Status: &open,
-	})
+func closeRelatedAlerts(beadID string) {
+	dependents, err := storeGetDependentsWithMeta(beadID)
 	if err != nil {
 		return
 	}
 
-	for _, a := range alerts {
+	for _, dep := range dependents {
+		if dep.DependencyType != beads.DepRelated {
+			continue
+		}
+		if dep.Status == beads.StatusClosed {
+			continue
+		}
 		// Only close beads that have an alert label.
-		if hasLabel(a, "alert:") == "" && !containsLabel(a, "alert") {
+		isAlert := false
+		for _, l := range dep.Labels {
+			if l == "alert" || strings.HasPrefix(l, "alert:") {
+				isAlert = true
+				break
+			}
+		}
+		if !isAlert {
 			continue
 		}
-		if err := storeCloseBead(a.ID); err != nil {
-			fmt.Printf("  %s(note: could not close alert %s: %s)%s\n", dim, a.ID, err, reset)
+		if err := storeCloseBead(dep.ID); err != nil {
+			fmt.Printf("  %s(note: could not close alert %s: %s)%s\n", dim, dep.ID, err, reset)
 			continue
 		}
-		fmt.Printf("  %s✓ closed alert %s%s\n", green, a.ID, reset)
+		fmt.Printf("  %s✓ closed alert %s%s\n", green, dep.ID, reset)
 	}
 }

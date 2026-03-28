@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/steveyegge/beads"
@@ -58,9 +59,6 @@ func cmdAlert(args []string) error {
 	} else {
 		labels = append(labels, "alert")
 	}
-	if refBead != "" {
-		labels = append(labels, "ref:"+refBead)
-	}
 
 	id, err := storeCreateBead(createOpts{
 		Title:    message,
@@ -70,6 +68,13 @@ func cmdAlert(args []string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("create alert: %w", err)
+	}
+
+	// Link alert to referenced bead via related dep (not ref: label).
+	if refBead != "" {
+		if derr := storeAddDepTyped(id, refBead, "related"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", id, refBead, derr)
+		}
 	}
 
 	fmt.Printf("Alert created: %s\n", id)

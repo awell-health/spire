@@ -10,15 +10,24 @@ import (
 // MessageArchmage sends a spire message to the archmage referencing the given bead.
 // Errors are logged but do not block the caller.
 func MessageArchmage(from, beadID, message string, deps *Deps) {
-	labels := []string{"msg", "to:archmage", "from:" + from, "ref:" + beadID}
-	if _, err := deps.CreateBead(CreateOpts{
+	labels := []string{"msg", "to:archmage", "from:" + from}
+	msgID, err := deps.CreateBead(CreateOpts{
 		Title:    message,
 		Priority: 1,
 		Type:     beads.TypeTask,
 		Prefix:   "spi",
 		Labels:   labels,
-	}); err != nil {
+	})
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: message archmage: %s\n", err)
+		return
+	}
+
+	// Link message to bead via related dep (not ref: label).
+	if msgID != "" && deps.AddDepTyped != nil {
+		if derr := deps.AddDepTyped(msgID, beadID, "related"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", msgID, beadID, derr)
+		}
 	}
 }
 
@@ -85,14 +94,22 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 	if len(alertTitle) > 200 {
 		alertTitle = alertTitle[:200]
 	}
-	alertLabels := []string{"alert:" + failureType, "ref:" + beadID}
-	if _, err := deps.CreateBead(CreateOpts{
+	alertLabels := []string{"alert:" + failureType}
+	alertID, err := deps.CreateBead(CreateOpts{
 		Title:    alertTitle,
 		Priority: 0,
 		Type:     beads.TypeTask,
 		Labels:   alertLabels,
-	}); err != nil {
+	})
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: escalate alert: %s\n", err)
+	}
+
+	// Link alert to bead via related dep (not ref: label).
+	if alertID != "" && deps.AddDepTyped != nil {
+		if derr := deps.AddDepTyped(alertID, beadID, "related"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", alertID, beadID, derr)
+		}
 	}
 
 	// Leave a comment on the bead so the history is clear.

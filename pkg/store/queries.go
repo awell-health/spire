@@ -190,6 +190,16 @@ func GetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
 	return result, nil
 }
 
+// GetDependentsWithMeta returns all beads that depend on the given bead, with dependency metadata.
+// This is the reverse of GetDepsWithMeta: it finds beads where the given bead is the dependency target.
+func GetDependentsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	s, ctx, err := getStore()
+	if err != nil {
+		return nil, err
+	}
+	return s.GetDependentsWithMetadata(ctx, id)
+}
+
 // GetComments returns comments for a bead.
 func GetComments(id string) ([]*beads.Comment, error) {
 	s, ctx, err := getStore()
