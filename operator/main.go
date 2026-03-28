@@ -29,14 +29,14 @@ func main() {
 		staleThreshold time.Duration
 		reassignAfter  time.Duration
 		offlineTimeout time.Duration
-		stewardImage     string
+		agentImage     string
 	)
 	flag.StringVar(&namespace, "namespace", "spire", "Namespace to watch")
 	flag.DurationVar(&interval, "interval", 2*time.Minute, "Poll interval")
 	flag.DurationVar(&staleThreshold, "stale-threshold", 4*time.Hour, "Time before marking work as stale")
 	flag.DurationVar(&reassignAfter, "reassign-after", 6*time.Hour, "Time before reassigning stale work")
 	flag.DurationVar(&offlineTimeout, "offline-timeout", 30*time.Minute, "Time before marking agent as offline")
-	flag.StringVar(&stewardImage, "steward-image", "ghcr.io/awell-health/spire-steward:latest", "Image for managed agent pods")
+	flag.StringVar(&agentImage, "agent-image", "ghcr.io/awell-health/spire-agent:latest", "Image for managed agent pods")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -78,7 +78,7 @@ func main() {
 		Namespace:      namespace,
 		Interval:       interval,
 		OfflineTimeout: offlineTimeout,
-		AgentImage:       stewardImage,
+		AgentImage:       agentImage,
 	}
 	if err := mgr.Add(monitor); err != nil {
 		log.Error(err, "unable to add agent monitor")
