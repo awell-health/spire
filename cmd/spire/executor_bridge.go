@@ -102,6 +102,7 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		AddLabel:         storeAddLabel,
 		RemoveLabel:      storeRemoveLabel,
 		AddDep:           storeAddDep,
+		AddDepTyped:      storeAddDepTyped,
 		GetDepsWithMeta:  storeGetDepsWithMeta,
 		GetBlockedIssues: storeGetBlockedIssues,
 		GetReviewBeads:   storeGetReviewBeads,

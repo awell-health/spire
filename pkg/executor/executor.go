@@ -275,6 +275,16 @@ func (e *Executor) Run() error {
 			return fmt.Errorf("phase %s: %w", phase, err)
 		}
 
+		// After implement phase: check if staging has any diff vs base.
+		// If the apprentice produced no code changes, skip review and escalate.
+		if pc.GetRole() == "apprentice" && e.stagingWt != nil && !e.stagingWt.HasNewCommits() {
+			e.log("implement phase produced no code changes — escalating")
+			EscalateEmptyImplement(e.beadID, e.agentName, e.deps)
+			e.closeAttempt("escalated: empty implement — no code changes")
+			e.terminated = true
+			return nil
+		}
+
 		// Advance to next phase
 		prevPhase := e.state.Phase
 		if !e.advancePhase() {

@@ -982,7 +982,8 @@ func TestRunFullPipeline_DirectImplementReviewMerge(t *testing.T) {
 	configDir := t.TempDir()
 	configDirFn := func() (string, error) { return configDir, nil }
 
-	// Create a feat branch so the staging worktree merge has something to merge.
+	// Create a feat branch with a commit so the staging worktree merge has
+	// something to merge (prevents empty-implement escalation).
 	runGit := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
@@ -992,7 +993,11 @@ func TestRunFullPipeline_DirectImplementReviewMerge(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	runGit("branch", "feat/spi-full")
+	runGit("checkout", "-b", "feat/spi-full")
+	os.WriteFile(filepath.Join(repoDir, "impl.go"), []byte("package impl\n"), 0644)
+	runGit("add", "-A")
+	runGit("commit", "-m", "feat: apprentice implementation")
+	runGit("checkout", "main")
 
 	phasesExecuted := []string{}
 

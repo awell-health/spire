@@ -22,6 +22,53 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 	}
 }
 
+// EscalateEmptyImplement handles the case where an apprentice completes the
+// implement phase but produces no code changes. Instead of advancing to
+// review (which would review nothing), it escalates immediately.
+//
+// Actions:
+//  1. Labels the bead needs-human
+//  2. Creates an alert bead linked via a "related" dep (not ref: label)
+//  3. Adds a comment explaining what happened
+//  4. Messages the archmage
+//
+// The bead stays at the implement phase so it can be resummon'd after the user
+// provides better context (design bead, improved description, etc.).
+func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
+	deps.AddLabel(beadID, "needs-human")
+
+	alertTitle := fmt.Sprintf("[empty-implement] %s: apprentice produced no code changes", beadID)
+	if len(alertTitle) > 200 {
+		alertTitle = alertTitle[:200]
+	}
+	alertLabels := []string{"alert:empty-implement"}
+	alertID, err := deps.CreateBead(CreateOpts{
+		Title:    alertTitle,
+		Priority: 0,
+		Type:     beads.TypeTask,
+		Labels:   alertLabels,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: escalate empty-implement alert: %s\n", err)
+	}
+
+	// Link alert to bead via related dep (not ref: label).
+	if alertID != "" && deps.AddDepTyped != nil {
+		if derr := deps.AddDepTyped(alertID, beadID, "related"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", alertID, beadID, derr)
+		}
+	}
+
+	deps.AddComment(beadID, fmt.Sprintf(
+		"Apprentice produced no code changes during implement phase.\n"+
+			"Bead left at implement for retry. Add a design bead, improve the description, or provide more context, then resummon.",
+	))
+
+	MessageArchmage(agentName, beadID,
+		fmt.Sprintf("Empty implement on %s: apprentice produced no code changes — needs human guidance", beadID),
+		deps)
+}
+
 // EscalateHumanFailure handles a terminal step failure in the review DAG.
 // It performs three actions:
 //  1. Creates an alert bead (surfaces in ALERTS on spire board)
