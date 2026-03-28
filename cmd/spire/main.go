@@ -86,6 +86,8 @@ func main() {
 		err = cmdDismiss(args)
 	case "reset":
 		err = cmdReset(args)
+	case "resummon":
+		err = cmdResummon(args)
 	case "trace":
 		err = cmdTrace(args)
 	case "watch":
@@ -198,6 +200,7 @@ Work:
 
 Agents:
   summon [n]            Summon wizards (--targets <ids>, --auto)
+  resummon <bead-id>    Clear timer + needs-human, re-summon wizard
   dismiss [n]           Dismiss wizards (--all)
   roster                List work by epic and agent status
 

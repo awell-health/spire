@@ -1,0 +1,81 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"syscall"
+	"time"
+)
+
+func cmdResummon(args []string) error {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
+		return fmt.Errorf("usage: spire resummon <bead-id>")
+	}
+
+	beadID := args[0]
+
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
+
+	// 1. Look up the bead and verify it has needs-human.
+	bead, err := storeGetBead(beadID)
+	if err != nil {
+		return fmt.Errorf("get bead %s: %w", beadID, err)
+	}
+
+	if !containsLabel(bead, "needs-human") {
+		return fmt.Errorf("%s does not have needs-human label — nothing to resummon", beadID)
+	}
+
+	// 2. Kill the old wizard process and remove its registry entry (clears timer).
+	reg := loadWizardRegistry()
+	wizardName := "wizard-" + beadID
+
+	for i := range reg.Wizards {
+		if reg.Wizards[i].BeadID == beadID {
+			w := reg.Wizards[i]
+			wizardName = w.Name
+
+			// Kill process if still alive.
+			if w.PID > 0 && processAlive(w.PID) {
+				if proc, err := os.FindProcess(w.PID); err == nil {
+					proc.Signal(syscall.SIGTERM)
+					deadline := time.Now().Add(3 * time.Second)
+					for time.Now().Before(deadline) {
+						time.Sleep(200 * time.Millisecond)
+						if !processAlive(w.PID) {
+							break
+						}
+					}
+					if processAlive(w.PID) {
+						proc.Signal(syscall.SIGKILL)
+					}
+				}
+				fmt.Printf("  %s killed old wizard (pid %d)%s\n", dim, w.PID, reset)
+			}
+
+			// Remove from registry.
+			reg.Wizards = append(reg.Wizards[:i], reg.Wizards[i+1:]...)
+			saveWizardRegistry(reg)
+			break
+		}
+	}
+
+	// 3. Remove executor state file so summon starts fresh.
+	statePath := executorStatePath(wizardName)
+	if err := os.Remove(statePath); err == nil {
+		fmt.Printf("  %scleared executor state%s\n", dim, reset)
+	}
+
+	// 4. Strip needs-human label.
+	if err := storeRemoveLabel(beadID, "needs-human"); err != nil {
+		return fmt.Errorf("remove needs-human label from %s: %w", beadID, err)
+	}
+	fmt.Printf("  %s✓ stripped needs-human from %s%s\n", green, beadID, reset)
+
+	// 5. Re-summon: spire summon 1 --targets <bead-id>
+	fmt.Printf("  re-summoning wizard for %s...\n", beadID)
+	return cmdSummon([]string{"1", "--targets", beadID})
+}
