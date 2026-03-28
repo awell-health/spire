@@ -111,11 +111,11 @@ You. The human. You write specs, file work, review what agents produce, and make
 
 ### Steward
 
-The global coordinator. One per tower. The steward reads the work graph continuously, identifies ready work (no open blockers, not claimed), assigns tasks to available agents, routes messages, and tracks overall progress. It does not write code. It orchestrates capacity.
+The global coordinator. One per tower. The steward reads the work graph continuously, identifies ready work (no open blockers, not claimed), summons wizards to handle it, routes messages between agents, and tracks overall progress. It does not write code. It orchestrates capacity — deciding which work to start and when, based on priority, dependencies, and available resources.
 
 ### Wizard
 
-The per-bead orchestrator. One per bead, ephemeral. A wizard is summoned to drive a bead through its formula lifecycle — validating design, generating a plan, dispatching apprentices to implement, consulting sages to review, and sealing the work with a merge. The wizard does not write code directly. It orchestrates the agents that do.
+The per-bead orchestrator. One per bead, ephemeral. A wizard is summoned to drive a bead through its spell (formula) lifecycle — validating design, generating a plan, dispatching apprentices to implement, consulting sages to review, and sealing the work with a merge. The wizard does not write code directly. It orchestrates the agents that do.
 
 ### Apprentice
 
@@ -125,13 +125,21 @@ The implementer. One-shot, ephemeral. An apprentice receives a task from a wizar
 
 The reviewer. One-shot, ephemeral. A sage reviews the implementation against the spec and returns a verdict: approve or request changes. If changes are needed, the wizard dispatches a fix apprentice and re-consults the sage. After max rounds, an arbiter (Claude Opus) breaks the tie.
 
+### Arbiter
+
+The tie-breaker. Invoked when a sage and apprentice cannot converge after the maximum number of review rounds. The arbiter (Claude Opus) examines the full review history, the spec, and the code, then renders a binding verdict: accept the implementation, accept the sage's objections, or prescribe a specific resolution. One-shot, ephemeral.
+
 ### Artificer
 
-The formula maker. Crafts and tests the formulas that wizards follow. In k8s, the artificer runs in a workshop pod for long-running epic management. Locally, the wizard + executor handle formula execution directly.
+The formula maker. The artificer crafts and maintains spells (formulas) — the TOML-based recipes that wizards follow to drive beads through their lifecycle. It works at the Workshop, a dedicated CLI tool for authoring, validating, and testing formulas before they are published to the tower. The artificer does not orchestrate epics or review code — that is the wizard's and sage's domain.
 
 ### Familiar (Sidecar)
 
-A per-agent companion that runs alongside each agent in k8s pods. The familiar handles inbox polling, control signals (STOP, STEER, PAUSE, RESUME), liveness heartbeats, and health endpoints. It is the agent's interface to the messaging layer.
+A per-agent companion that runs alongside each wizard or apprentice. The familiar manages all communication between its agent and the Archive (the tower's Dolt database) — reading and writing beads, relaying messages, handling control signals (STOP, STEER, PAUSE, RESUME), posting liveness heartbeats, and serving health endpoints. In k8s it runs as a sidecar container; locally it runs as a goroutine within the agent process.
+
+### Workshop (CLI Tool)
+
+The Workshop is a dedicated CLI tool (not yet built) where the artificer creates, validates, and tests spells (formulas). It provides a local sandbox for iterating on formula definitions — phase pipelines, model requirements, context rules — before publishing them to the tower for wizards to consume.
 
 ## Sync Model
 
