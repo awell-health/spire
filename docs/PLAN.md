@@ -2,7 +2,7 @@
 
 > From minikube prototype to `brew install spire`.
 
-This plan takes Spire from its current state (working k8s operator, steward, wizard/artificer agents on minikube, bd as external binary) to a production-ready open-source project that works locally first and scales to k8s for teams.
+This plan takes Spire from its current state (working k8s operator, steward, wizard agents on minikube, bd as external binary) to a production-ready open-source project that works locally first and scales to k8s for teams.
 
 ---
 
@@ -48,7 +48,7 @@ What works well and should not change:
 - Operator CRD design (SpireAgent, SpireWorkload)
 - DoltHub as sync intermediary
 - Formula-driven executor (design → plan → implement → review → merge)
-- RPG naming: archmage (user), wizard (orchestrator), apprentice (implementer), sage (reviewer)
+- RPG naming: archmage (user), steward (coordinator), wizard (executor), apprentice (implementer), sage (reviewer), artificer (formula maker)
 
 What remains:
 
