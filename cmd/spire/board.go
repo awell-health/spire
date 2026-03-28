@@ -126,6 +126,8 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 		if err := cmdLogs([]string{wizardName}); err != nil {
 			fmt.Fprintf(os.Stderr, "logs: %v\n", err)
 		}
+		fmt.Printf("\n%sPress Enter to return to board...%s ", board.Dim, board.Reset)
+		fmt.Scanln()
 		return true
 	}
 	return false
