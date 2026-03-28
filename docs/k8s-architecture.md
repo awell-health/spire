@@ -104,7 +104,7 @@ Pod: spire-agent-{agent-name}-{bead-id}
  ┌──────────────────────────────────────────────────┐
  │                                                  │
  │  ┌─────────────────┐   ┌──────────────────────┐ │
- │  │  worker          │   │  sidecar              │ │
+ │  │  worker          │   │  familiar             │ │
  │  │                  │   │                       │ │
  │  │  entrypoint.sh   │   │  spire-sidecar        │ │
  │  │  - clone repo    │   │  - poll inbox (10s)   │ │
@@ -119,7 +119,7 @@ Pod: spire-agent-{agent-name}-{bead-id}
  │           │                         │              │
  │  ┌────────┴─────────────────────────┴───────────┐ │
  │  │  Shared volumes:                              │ │
- │  │    /comms     — sidecar <-> worker protocol   │ │
+ │  │    /comms     — familiar <-> worker protocol  │ │
  │  │    /workspace — git repo clone                │ │
  │  │    /data      — beads state (.beads/)         │ │
  │  └──────────────────────────────────────────────┘ │
@@ -152,16 +152,16 @@ Runs `agent-entrypoint.sh`. Lifecycle:
 
 The entrypoint handles all failure modes:
 - **Timeout**: `timeout --signal=TERM` wraps the agent command; result = `timeout`
-- **Stop**: sidecar writes `/comms/stop`; monitor kills agent; result = `stopped`
+- **Stop**: familiar writes `/comms/stop`; monitor kills agent; result = `stopped`
 - **Test failure**: validation fails; result = `test_failure`
 - **Error**: any other failure; result = `error`
 - **No changes**: agent ran but produced nothing; result = `error`
 
 The `trap 'finalize "$?"' EXIT` at line 131 guarantees `result.json` is always written.
 
-### Sidecar container
+### Familiar container
 
-Runs `spire-sidecar`. Four concurrent loops:
+Runs `spire-sidecar` (the familiar). Four concurrent loops:
 
 | Loop | Interval | What it does |
 |------|----------|--------------|
@@ -173,22 +173,22 @@ Runs `spire-sidecar`. Four concurrent loops:
 HTTP endpoints:
 - `GET /healthz` — always 200
 - `GET /readyz` — 200 if at least one collect has succeeded and isn't stale
-- `GET /status` — JSON snapshot of sidecar state
+- `GET /status` — JSON snapshot of familiar state
 
 ### /comms file protocol
 
-The worker and sidecar communicate through files on the shared `/comms` volume:
+The worker and familiar communicate through files on the shared `/comms` volume:
 
 | File | Writer | Reader | Purpose |
 |------|--------|--------|---------|
-| `inbox.json` | sidecar | worker | Messages from `spire collect --json` |
-| `result.json` | worker | sidecar, operator | Final outcome (always written on exit) |
-| `worker-alive` | worker | sidecar | Heartbeat — touched every 5s |
-| `heartbeat` | sidecar | operator | Sidecar heartbeat — written every 30s |
-| `stop` | sidecar | worker | Shutdown signal |
-| `steer` | sidecar | worker | Course correction message |
+| `inbox.json` | familiar | worker | Messages from `spire collect --json` |
+| `result.json` | worker | familiar, operator | Final outcome (always written on exit) |
+| `worker-alive` | worker | familiar | Heartbeat — touched every 5s |
+| `heartbeat` | familiar | operator | Familiar heartbeat — written every 30s |
+| `stop` | familiar | worker | Shutdown signal |
+| `steer` | familiar | worker | Course correction message |
 | `steer.log` | worker | worker | Accumulated steer messages for agent context |
-| `control` | external | sidecar | Control commands (STOP, STEER:msg, PAUSE, RESUME) |
+| `control` | external | familiar | Control commands (STOP, STEER:msg, PAUSE, RESUME) |
 | `prompt.txt` | worker | worker | Generated agent prompt |
 | `focus.txt` | worker | worker | Output of `spire focus` |
 | `bead.json` | worker | worker | Output of `bd show --json` |
@@ -271,7 +271,7 @@ If no `spire.yaml` exists, `pkg/repoconfig` auto-detects the runtime:
 
 **`Dockerfile.mayor`** — the mayor/operator image. Contains `spire`, `bd`, `dolt`, `git`. Runs `k8s/entrypoint.sh` which initializes beads state, syncs from DoltHub, and starts `spire mayor`.
 
-**`Dockerfile.agent`** — the worker/sidecar image. Contains everything in the mayor image plus `spire-sidecar`, `claude` CLI, `gh`, `node`, `go`, `python`. Runs `agent-entrypoint.sh`.
+**`Dockerfile.agent`** — the worker/familiar image. Contains everything in the mayor image plus `spire-sidecar` (familiar), `claude` CLI, `gh`, `node`, `go`, `python`. Runs `agent-entrypoint.sh`.
 
 ## RBAC
 
@@ -293,7 +293,7 @@ The `agent_runs` Dolt table records every agent execution:
 | `id` | `run-{8hex}` |
 | `bead_id` | Which bead was worked on |
 | `model` | `claude-sonnet-4-6`, `claude-opus-4-6`, etc. |
-| `role` | `worker` or `artificer` |
+| `role` | `worker` or `wizard` |
 | `result` | `success`, `test_failure`, `timeout`, `stopped`, `error` |
 | `context_tokens_in/out` | Token usage |
 | `duration_seconds` | Wall time |
@@ -351,10 +351,10 @@ k8s/
   entrypoint.sh                    — mayor container entrypoint
   minikube-demo.sh                 — one-command local demo setup
 
-cmd/spire-sidecar/main.go         — sidecar binary
+cmd/spire-sidecar/main.go         — familiar binary
 agent-entrypoint.sh                — worker entrypoint
 Dockerfile.mayor                   — mayor/operator image
-Dockerfile.agent                   — worker/sidecar image
+Dockerfile.agent                   — worker/familiar image
 spire.yaml                         — this repo's own agent config
 pkg/repoconfig/repoconfig.go      — spire.yaml parser + auto-detection
 pkg/metrics/recorder.go            — agent_runs table writer

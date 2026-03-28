@@ -1,7 +1,13 @@
 # Spire Artificer — Opus-Powered PR Validation & Learning System
 
 **Date**: 2026-03-19
-**Status**: Design
+**Status**: Superseded
+
+> **Note (2026-03-28):** This design predates the end-state naming convention.
+> The "artificer" role described here has been split: epic orchestration and
+> code review are now handled by the **wizard** and **sage** respectively.
+> The artificer name is reserved for formula creation only (not yet built).
+> References to "artificer" below refer to what is now the wizard/sage.
 
 ## The model split
 

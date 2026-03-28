@@ -4,6 +4,11 @@
 **Status**: Design
 **Supersedes**: spire-autonomous-agents.md (v1 was too naive)
 
+> **Note (2026-03-28):** This design predates the end-state naming convention.
+> The "artificer" role described here has been split: epic orchestration is
+> now handled by the **wizard**, code review by the **sage**. The "sidecar"
+> is now called the **familiar**. See docs/ARCHITECTURE.md for current naming.
+
 ## The pod model
 
 Every agent is a **pod with three containers**:

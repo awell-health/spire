@@ -4,6 +4,10 @@
 **Goal**: Get spire working well enough to use it to track work on spire itself.
 **Prerequisite**: Architecture review at `docs/reviews/2026-03-21-k8s-architecture.md`
 
+> **Note (2026-03-28):** References to "artificer" in this plan refer to the
+> old `cmd/spire-artificer/` binary which has been removed. The wizard now
+> handles all orchestration, and the sage handles reviews.
+
 ---
 
 ## Issues Found

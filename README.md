@@ -32,8 +32,8 @@ Spire turns an engineer into the archmage of a tower — you write specs, file w
 | **Wizard** | Per-bead orchestrator. Driven by a formula (e.g. `spire-bugfix`, `spire-epic`). Dispatches apprentices and sages, seals the work. | `spire summon N` |
 | **Apprentice** | Per-subtask implementer. Writes code in an isolated worktree. One-shot, pure implementer. | dispatched by wizard |
 | **Sage** | Per-review agent. Reviews implementation against the spec, produces a verdict. One-shot. | dispatched by wizard |
-| **Artificer** | Formula maker. Crafts and tests the formulas that wizards follow. | `spire workshop` |
-| **Familiar** | Per-agent sidecar. Messaging infrastructure, inbox delivery, health checks. | daemon (local) / container (k8s) |
+| **Artificer** | Formula maker. Crafts and tests the formulas (spells) that wizards follow. | Workshop CLI (not yet built) |
+| **Familiar** | Per-agent companion. Messaging infrastructure, inbox delivery, health checks. | daemon (local) / container (k8s) |
 
 A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration: a bug gets `spire-bugfix` (implement → review → merge), an epic gets `spire-epic` (plan → wave dispatch → review → merge). Same executor, different formula.
 
@@ -224,7 +224,7 @@ spire status          # check what's running
 
 ## Kubernetes
 
-Spire runs on k8s for production workloads. The steward runs as an operator, wizards run as one-shot pods, the artificer runs in epic (workshop) pods.
+Spire runs on k8s for production workloads. The steward runs as an operator, wizards run as one-shot pods handling all workload types (tasks, epics, reviews).
 
 ```bash
 # Deploy to minikube
@@ -244,7 +244,6 @@ See [docs/k8s-architecture.md](docs/k8s-architecture.md) for the full deployment
 spire/
 ├── cmd/spire/             # CLI: board, roster, summon, watch, steward, etc.
 ├── cmd/spire-sidecar/     # Familiar: health, messaging, status endpoint
-├── cmd/spire-artificer/   # Artificer: Opus review, PR creation, merge queue
 ├── operator/              # k8s operator: pod lifecycle, workload assignment
 ├── pkg/metrics/           # Agent run recording
 ├── pkg/repoconfig/        # spire.yaml reader

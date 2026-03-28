@@ -6,7 +6,7 @@ When you summon wizards to work on an epic, you're managing a team. Like any tea
 
 ## What gets measured
 
-Every wizard and artificer run records a full lifecycle trace:
+Every wizard run records a full lifecycle trace:
 
 ```
 filed → queued → startup → working → review → merged
@@ -17,7 +17,7 @@ filed → queued → startup → working → review → merged
 | **Queue** | Bead sitting in READY, waiting for a wizard | Do you need more capacity? (`spire summon`) |
 | **Startup** | Clone repo, install deps, claim bead, build context | Is your image slow? Are deps heavy? |
 | **Working** | Claude is reading, writing, testing | Are your beads right-sized? |
-| **Review** | Artificer reads diff + spec, calls Opus | Is review a bottleneck? |
+| **Review** | Sage reads diff + spec, calls Opus | Is review a bottleneck? |
 | **Total** | End to end | The bill. |
 
 These map directly to the columns on `spire board`: Ready → Working → Review → Merged.
@@ -50,7 +50,7 @@ Track compliance to understand if your beads are right-sized. Too many shutdowns
 - **Schema**: [`migrations/agent_runs.sql`](../migrations/agent_runs.sql) — the `agent_runs` table definition
 - **Recorder**: [`pkg/metrics/recorder.go`](../pkg/metrics/recorder.go) — the `AgentRun` struct and `Record()` function
 - **Wizard timestamps**: [`agent-entrypoint.sh`](../agent-entrypoint.sh) — captures `STARTED_AT`, `CLAUDE_STARTED_AT`, writes `result.json`
-- **Artificer timestamps**: [`cmd/spire-artificer/comms.go`](../cmd/spire-artificer/comms.go) — `recordRun()` with review timing
+- **Review timestamps**: wizard review phase — `recordRun()` with review verdict timing
 - **Config**: [`spire.yaml`](../spire.yaml) — `agent.stale`, `agent.timeout`, `agent.max-turns`
 - **Defaults**: [`pkg/repoconfig/repoconfig.go`](../pkg/repoconfig/repoconfig.go) — `applyDefaults()`
 
@@ -74,7 +74,7 @@ bd sql "SELECT avg(startup_seconds), avg(working_seconds), avg(review_seconds) F
 |--------|---------|--------|
 | Startup > 60s | Image or deps are slow | Pre-bake deps in Docker image |
 | Queue > 5min | Not enough wizards | `spire summon` more capacity |
-| Review > 2min | Artificer is bottlenecked | Check Opus context size |
+| Review > 2min | Sage is bottlenecked | Check Opus context size |
 | Failure rate > 30% | Specs or beads are unclear | Improve specs, decompose beads |
 | Shutdowns > 10% | Beads too large for timeout | Smaller beads, or increase timeout |
 | Review rounds > 2 | Wizard and spec are misaligned | Better specs, or review the spec itself |

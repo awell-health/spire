@@ -4,6 +4,11 @@
 **Status**: Design
 **Builds on**: spire-product-vision.md, spire-autonomous-agents-v2.md, spire-artificer-design.md
 
+> **Note (2026-03-28):** This design predates the end-state naming convention.
+> References to "artificer" below refer to what is now the **wizard** (for
+> orchestration) and **sage** (for review). The "sidecar" is now called the
+> **familiar**. See docs/ARCHITECTURE.md for current naming.
+
 ## The experience
 
 The archmage files an epic and summons capacity. The tower handles the rest: the steward dispatches, wizards implement, the artificer reviews and merges. The archmage comes back whenever they want and sees exactly where things stand. When something needs their attention, the tower tells them — they don't have to ask.

@@ -48,7 +48,7 @@ What works well and should not change:
 - Operator CRD design (SpireAgent, SpireWorkload)
 - DoltHub as sync intermediary
 - Formula-driven executor (design → plan → implement → review → merge)
-- RPG naming: archmage (user), steward (coordinator), wizard (executor), apprentice (implementer), sage (reviewer), artificer (formula maker)
+- RPG naming: archmage (user), steward (coordinator), wizard (executor), apprentice (implementer), sage (reviewer), artificer (formula maker — not yet built)
 
 What remains:
 
