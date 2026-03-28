@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -37,6 +39,7 @@ type traceAgent struct {
 	Worktree string `json:"worktree,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Branch   string `json:"branch,omitempty"`
+	LogFile  string `json:"log_file,omitempty"`
 }
 
 type traceReview struct {
@@ -56,6 +59,7 @@ func cmdTrace(args []string) error {
 	var beadID string
 	flagJSON := false
 	flagFollow := false
+	logLines := 15
 	interval := 3 * time.Second
 
 	for i := 0; i < len(args); i++ {
@@ -74,6 +78,17 @@ func cmdTrace(args []string) error {
 				return fmt.Errorf("--interval: invalid duration %q", args[i])
 			}
 			interval = d
+		case "--log-lines":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--log-lines requires a number")
+			}
+			i++
+			n, err := fmt.Sscanf(args[i], "%d", &logLines)
+			if n != 1 || err != nil {
+				return fmt.Errorf("--log-lines: invalid number %q", args[i])
+			}
+		case "--no-log":
+			logLines = 0
 		case "--help", "-h":
 			printTraceUsage()
 			return nil
@@ -105,6 +120,7 @@ func cmdTrace(args []string) error {
 			return err
 		}
 		renderTrace(td)
+		renderWizardLog(td, logLines)
 		return nil
 	}
 
@@ -125,6 +141,7 @@ func cmdTrace(args []string) error {
 		} else {
 			board.ClearScreen()
 			renderTrace(td)
+			renderWizardLog(td, logLines)
 			fmt.Printf("\n%sUpdated: %s  (Ctrl-C to exit)%s\n", dim, time.Now().Format("15:04:05"), reset)
 		}
 	}
@@ -204,6 +221,14 @@ func buildTrace(beadID string) (*traceData, error) {
 					}
 					break
 				}
+			}
+			// Resolve log file path via agent backend.
+			backend := ResolveBackend("")
+			if rc, err := backend.Logs(ag.Name); err == nil {
+				if f, ok := rc.(*os.File); ok {
+					ag.LogFile = f.Name()
+				}
+				rc.Close()
 			}
 		}
 		td.Attempt = ag
@@ -427,20 +452,70 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%ds", s)
 }
 
+// renderWizardLog shows the last N lines of the active wizard's log file.
+func renderWizardLog(td *traceData, lines int) {
+	if lines <= 0 || td.Attempt == nil || td.Attempt.LogFile == "" {
+		return
+	}
+	tail, err := readLastLines(td.Attempt.LogFile, lines)
+	if err != nil || len(tail) == 0 {
+		return
+	}
+	fmt.Printf("%sWizard log%s (%s):\n", bold, reset, td.Attempt.LogFile)
+	fmt.Printf("%s", dim)
+	for _, line := range tail {
+		fmt.Printf("  %s\n", line)
+	}
+	fmt.Printf("%s\n", reset)
+}
+
+// readLastLines returns the last n lines from a file.
+func readLastLines(path string, n int) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	// Use a 256KB buffer to handle long log lines.
+	buf := make([]byte, 0, 256*1024)
+	scanner.Buffer(buf, 256*1024)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		// Keep a rolling window to avoid unbounded memory on large logs.
+		if len(lines) > n*2 {
+			lines = lines[len(lines)-n:]
+		}
+	}
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return nil, err
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines, nil
+}
+
 func printTraceUsage() {
 	fmt.Println(`Usage: spire trace <bead-id> [flags]
 
 Show the full execution DAG for a bead: pipeline steps, active agent,
-review history, and (for epics) subtask tree.
+review history, wizard log tail, and (for epics) subtask tree.
 
 Flags:
-  --json             Output as JSON
-  --follow, -f       Live-updating mode (clear and re-render)
-  --interval <dur>   Refresh interval in follow mode (default: 3s)
-  --help             Show this help
+  --json               Output as JSON
+  --follow, -f         Live-updating mode (clear and re-render)
+  --interval <dur>     Refresh interval in follow mode (default: 3s)
+  --log-lines <n>      Number of wizard log lines to show (default: 15)
+  --no-log             Suppress wizard log output
+  --help               Show this help
 
 Examples:
-  spire trace spi-abc          One-shot trace
-  spire trace spi-abc -f       Live follow mode
-  spire trace spi-abc --json   JSON output`)
+  spire trace spi-abc              One-shot trace with log tail
+  spire trace spi-abc -f           Live follow mode (log updates each cycle)
+  spire trace spi-abc --log-lines 30  Show more log lines
+  spire trace spi-abc --no-log     Trace without log output
+  spire trace spi-abc --json       JSON output (includes log_file path)`)
 }
