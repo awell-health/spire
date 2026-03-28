@@ -8,7 +8,6 @@
 cmd/spire/spire
 /spire
 /spire-sidecar
-/spire-artificer
 /spire-steward-sidecar
 
 # Claude Code worktrees
