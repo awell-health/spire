@@ -57,6 +57,8 @@ type RosterWorkItem struct {
 	Elapsed    time.Duration
 	Timeout    time.Duration
 	AgentNames []string
+	DAG        *DAGProgress      // executor DAG: steps, attempt, reviews
+	EpicSub    *EpicChildSummary // subtask progress for epics
 }
 
 // RosterEpicGroup groups work items by epic.
@@ -501,6 +503,13 @@ func BuildRosterWorkItems(agents []RosterAgent) []RosterWorkItem {
 	for _, entry := range byBead {
 		sort.Strings(entry.item.AgentNames)
 		entry.item.Phase, entry.item.Elapsed, entry.item.Timeout = RosterAgentCountdown(entry.primary)
+		// Fetch DAG progress for working items.
+		if entry.item.Status == "working" || entry.item.Status == "provisioning" {
+			entry.item.DAG = FetchDAGProgress(entry.item.BeadID)
+			if entry.item.EpicID == entry.item.BeadID {
+				entry.item.EpicSub = FetchEpicChildSummary(entry.item.BeadID)
+			}
+		}
 		items = append(items, entry.item)
 	}
 
@@ -729,7 +738,12 @@ func PrintRoster(s RosterSummary) {
 				if title == "" {
 					title = "Untitled bead"
 				}
-				fmt.Printf("  %s %-12s %s%s", icon, item.BeadID, phaseStr, Truncate(title, 52))
+				// Epic subtask progress inline.
+				epicProgress := ""
+				if item.EpicSub != nil {
+					epicProgress = " " + Dim + RenderEpicProgressANSI(item.EpicSub) + Reset
+				}
+				fmt.Printf("  %s %-12s %s%s%s", icon, item.BeadID, phaseStr, Truncate(title, 48), epicProgress)
 				if item.Elapsed > 0 {
 					if item.Timeout > 0 {
 						fmt.Printf("  %s", RenderCountdown(item.Elapsed, item.Timeout))
@@ -738,10 +752,24 @@ func PrintRoster(s RosterSummary) {
 					}
 				}
 				fmt.Println()
-				if len(item.AgentNames) == 1 {
+
+				// DAG: step pipeline.
+				if item.DAG != nil && len(item.DAG.Steps) > 0 {
+					fmt.Printf("      %s\n", RenderPipelineCompactANSI(item.DAG.Steps))
+				}
+
+				// DAG: active attempt.
+				if item.DAG != nil && item.DAG.Attempt != nil {
+					fmt.Printf("      %sattempt:%s %s\n", Dim, Reset, RenderAttemptANSI(item.DAG.Attempt))
+				} else if len(item.AgentNames) == 1 {
 					fmt.Printf("      %sagent:%s %s\n", Dim, Reset, item.AgentNames[0])
-				} else {
+				} else if len(item.AgentNames) > 1 {
 					fmt.Printf("      %sagent:%s %s %s(+%d helpers)%s\n", Dim, Reset, item.AgentNames[0], Dim, len(item.AgentNames)-1, Reset)
+				}
+
+				// DAG: review history.
+				if item.DAG != nil && len(item.DAG.Reviews) > 0 {
+					fmt.Printf("      %sreview:%s %s\n", Dim, Reset, RenderReviewSummaryANSI(item.DAG.Reviews))
 				}
 			}
 		}

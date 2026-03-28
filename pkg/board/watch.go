@@ -132,6 +132,15 @@ func RenderTowerWatch(deps WatchDeps) error {
 				b.ID,
 				Truncate(b.Title, 35),
 				Dim, elapsed, Reset)
+
+			// Show DAG progress inline.
+			dag := FetchDAGProgress(b.ID)
+			if dag != nil && len(dag.Steps) > 0 {
+				fmt.Printf("    %s\n", RenderPipelineCompactANSI(dag.Steps))
+			}
+			if dag != nil && len(dag.Reviews) > 0 {
+				fmt.Printf("    %sreview:%s %s\n", Dim, Reset, RenderReviewSummaryANSI(dag.Reviews))
+			}
 		}
 		fmt.Println()
 	}
@@ -212,8 +221,14 @@ func RenderEpicWatch(epicID string) error {
 	}
 	children = deduped
 
+	// Filter out internal DAG beads for counting.
 	done, working, blocked, ready := 0, 0, 0, 0
+	realTotal := 0
 	for _, b := range children {
+		if store.IsStepBoardBead(b) || store.IsAttemptBoardBead(b) || store.IsReviewRoundBoardBead(b) {
+			continue
+		}
+		realTotal++
 		switch b.Status {
 		case "closed":
 			done++
@@ -227,7 +242,7 @@ func RenderEpicWatch(epicID string) error {
 			}
 		}
 	}
-	total := len(children)
+	total := realTotal
 
 	fmt.Printf("%sEPIC: %s%s — %s (%d/%d done)\n",
 		Bold, epicID, Reset, Truncate(epic.Title, 50), done, total)
@@ -246,6 +261,11 @@ func RenderEpicWatch(epicID string) error {
 	fmt.Println()
 
 	for _, b := range children {
+		// Skip internal DAG beads (step, attempt, review).
+		if store.IsStepBoardBead(b) || store.IsAttemptBoardBead(b) || store.IsReviewRoundBoardBead(b) {
+			continue
+		}
+
 		icon := ""
 		detail := ""
 
@@ -274,6 +294,20 @@ func RenderEpicWatch(epicID string) error {
 
 		fmt.Printf("  %s %s %-12s %s  %s\n",
 			icon, PriorityStr(b.Priority), b.ID, Truncate(b.Title, 30), detail)
+
+		// Show DAG pipeline for in-progress children.
+		if b.Status == "in_progress" {
+			dag := FetchDAGProgress(b.ID)
+			if dag != nil && len(dag.Steps) > 0 {
+				fmt.Printf("    %s\n", RenderPipelineCompactANSI(dag.Steps))
+			}
+			if dag != nil && dag.Attempt != nil {
+				fmt.Printf("    %sattempt:%s %s\n", Dim, Reset, RenderAttemptANSI(dag.Attempt))
+			}
+			if dag != nil && len(dag.Reviews) > 0 {
+				fmt.Printf("    %sreview:%s %s\n", Dim, Reset, RenderReviewSummaryANSI(dag.Reviews))
+			}
+		}
 	}
 
 	return nil

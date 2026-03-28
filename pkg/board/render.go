@@ -289,6 +289,11 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 		shown = maxAgents
 	}
 	s.WriteString(headerStyle.Render(fmt.Sprintf("AGENTS (%d)", len(agents))) + "\n")
+
+	greenLG := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	cyanLG := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	dimLG := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
 	for i := 0; i < shown; i++ {
 		w := agents[i]
 		phase := w.Phase
@@ -317,11 +322,32 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 		if w.BeadID != "" {
 			beadPart = "  " + w.BeadID
 		}
-		line := fmt.Sprintf("  %-28s%s  %s  %s",
+
+		// Show compact DAG pipeline if available.
+		pipelineStr := ""
+		if w.BeadID != "" {
+			if dag := FetchDAGProgress(w.BeadID); dag != nil && len(dag.Steps) > 0 {
+				var icons []string
+				for _, step := range dag.Steps {
+					switch step.Status {
+					case "closed":
+						icons = append(icons, greenLG.Render("✅"))
+					case "in_progress":
+						icons = append(icons, cyanLG.Render("▶"))
+					default:
+						icons = append(icons, dimLG.Render("○"))
+					}
+				}
+				pipelineStr = "  " + strings.Join(icons, " ")
+			}
+		}
+
+		line := fmt.Sprintf("  %-28s%s  %s  %s%s",
 			name,
 			beadPart,
 			phaseStyle.Render(phase),
 			dimStyle.Render(elapsed),
+			pipelineStr,
 		)
 		s.WriteString(line + "\n")
 	}
@@ -363,8 +389,41 @@ func RenderCardStr(b BoardBead, color lipgloss.Color, width int, selected ...boo
 		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
 	}
 
+	// Show compact DAG pipeline for in-progress beads.
+	if b.Status == "in_progress" {
+		if pipeline := RenderPipelineLipgloss(b.ID, width-4); pipeline != "" {
+			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
+		}
+	}
+
 	s.WriteString("\n")
 	return s.String()
+}
+
+// RenderPipelineLipgloss renders a compact step pipeline using lipgloss styles.
+// Returns "" if the bead has no step beads.
+func RenderPipelineLipgloss(beadID string, maxWidth int) string {
+	dag := FetchDAGProgress(beadID)
+	if dag == nil || len(dag.Steps) == 0 {
+		return ""
+	}
+
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	cyanStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	dimLGStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	var parts []string
+	for _, step := range dag.Steps {
+		switch step.Status {
+		case "closed":
+			parts = append(parts, greenStyle.Render("✅"))
+		case "in_progress":
+			parts = append(parts, cyanStyle.Render("▶"))
+		default:
+			parts = append(parts, dimLGStyle.Render("○"))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // AddGaps pads each column string to colWidth and adds 2-char gaps.

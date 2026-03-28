@@ -31,17 +31,24 @@ type Columns struct {
 	Blocked   []BoardBead
 }
 
+// BoardBeadJSON wraps a BoardBead with optional DAG progress for JSON output.
+type BoardBeadJSON struct {
+	BoardBead
+	DAG     *DAGProgress      `json:"dag,omitempty"`
+	EpicSub *EpicChildSummary `json:"epic_subtasks,omitempty"`
+}
+
 // ColumnsJSON is the JSON-serializable version of Columns.
 type ColumnsJSON struct {
-	Alerts    []BoardBead `json:"alerts"`
-	Ready     []BoardBead `json:"ready"`
-	Design    []BoardBead `json:"design"`
-	Plan      []BoardBead `json:"plan"`
-	Implement []BoardBead `json:"implement"`
-	Review    []BoardBead `json:"review"`
-	Merge     []BoardBead `json:"merge"`
-	Done      []BoardBead `json:"done"`
-	Blocked   []BoardBead `json:"blocked"`
+	Alerts    []BoardBeadJSON `json:"alerts"`
+	Ready     []BoardBeadJSON `json:"ready"`
+	Design    []BoardBeadJSON `json:"design"`
+	Plan      []BoardBeadJSON `json:"plan"`
+	Implement []BoardBeadJSON `json:"implement"`
+	Review    []BoardBeadJSON `json:"review"`
+	Merge     []BoardBeadJSON `json:"merge"`
+	Done      []BoardBeadJSON `json:"done"`
+	Blocked   []BoardBeadJSON `json:"blocked"`
 }
 
 // Opts holds board command options shared between JSON output and TUI mode.
@@ -68,6 +75,29 @@ const (
 func NonNil(beads []BoardBead) []BoardBead {
 	if beads == nil {
 		return []BoardBead{}
+	}
+	return beads
+}
+
+// enrichBeadsJSON enriches BoardBeads with DAG progress for in_progress beads.
+func enrichBeadsJSON(beads []BoardBead) []BoardBeadJSON {
+	out := make([]BoardBeadJSON, len(beads))
+	for i, b := range beads {
+		out[i] = BoardBeadJSON{BoardBead: b}
+		if b.Status == "in_progress" {
+			out[i].DAG = FetchDAGProgress(b.ID)
+			if b.Type == "epic" {
+				out[i].EpicSub = FetchEpicChildSummary(b.ID)
+			}
+		}
+	}
+	return out
+}
+
+// nonNilJSON converts a nil slice to an empty slice for JSON serialization.
+func nonNilJSON(beads []BoardBeadJSON) []BoardBeadJSON {
+	if beads == nil {
+		return []BoardBeadJSON{}
 	}
 	return beads
 }
@@ -163,17 +193,20 @@ func ClearScreen() {
 	fmt.Print("\033[2J\033[H")
 }
 
-// ToJSON converts Columns to the JSON-serializable ColumnsJSON.
+// ToJSON converts Columns to the JSON-serializable ColumnsJSON with DAG progress.
 func (c Columns) ToJSON() ColumnsJSON {
+	enrich := func(beads []BoardBead) []BoardBeadJSON {
+		return nonNilJSON(enrichBeadsJSON(NonNil(beads)))
+	}
 	return ColumnsJSON{
-		Alerts:    NonNil(c.Alerts),
-		Ready:     NonNil(c.Ready),
-		Design:    NonNil(c.Design),
-		Plan:      NonNil(c.Plan),
-		Implement: NonNil(c.Implement),
-		Review:    NonNil(c.Review),
-		Merge:     NonNil(c.Merge),
-		Done:      NonNil(c.Done),
-		Blocked:   NonNil(c.Blocked),
+		Alerts:    enrich(c.Alerts),
+		Ready:     enrich(c.Ready),
+		Design:    enrich(c.Design),
+		Plan:      enrich(c.Plan),
+		Implement: enrich(c.Implement),
+		Review:    enrich(c.Review),
+		Merge:     enrich(c.Merge),
+		Done:      enrich(c.Done),
+		Blocked:   enrich(c.Blocked),
 	}
 }
