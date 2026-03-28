@@ -6,7 +6,7 @@ package main
 // invariant from docs/review-dag.md: every path ends with the branch either
 // merged to main or deleted. No hanging branches. No orphaned code.
 //
-// Step-graph formula types (FormulaStepGraph, StepConfig, etc.) live in formula.go.
+// Step-graph formula types (FormulaStepGraph, StepConfig, etc.) live in pkg/formula.
 
 import (
 	"fmt"

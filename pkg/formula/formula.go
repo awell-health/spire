@@ -1,4 +1,4 @@
-package main
+package formula
 
 import (
 	"fmt"
@@ -9,7 +9,6 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/awell-health/spire/cmd/spire/embedded"
-	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // FormulaV2 represents a v2 formula that configures the universal phase pipeline.
@@ -122,36 +121,7 @@ type StepConfig struct {
 	Terminal  bool     `toml:"terminal,omitempty"`  // step enforces branch-lifecycle invariant on completion
 }
 
-// ParseFormulaStepGraph parses a version 3 step-graph formula from TOML bytes.
-func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
-	var f FormulaStepGraph
-	if err := toml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parse step-graph formula: %w", err)
-	}
-	if f.Version != 3 {
-		return nil, fmt.Errorf("expected step-graph formula version 3, got %d", f.Version)
-	}
-	return &f, nil
-}
-
-// LoadReviewPhaseFormula loads the embedded review-phase step-graph formula.
-// Used by the executor to pour the review molecule on entering the review phase.
-func LoadReviewPhaseFormula() (*FormulaStepGraph, error) {
-	data, err := embedded.Formulas.ReadFile("formulas/review-phase.formula.toml")
-	if err != nil {
-		return nil, fmt.Errorf("embedded review-phase formula not found: %w", err)
-	}
-	return ParseFormulaStepGraph(data)
-}
-
-// LoadFormulaV2 reads and parses a v2 formula from a TOML file.
-func LoadFormulaV2(path string) (*FormulaV2, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read formula: %w", err)
-	}
-	return ParseFormulaV2(data)
-}
+// --- Parsing ---
 
 // ParseFormulaV2 parses v2 formula from TOML bytes.
 func ParseFormulaV2(data []byte) (*FormulaV2, error) {
@@ -164,18 +134,32 @@ func ParseFormulaV2(data []byte) (*FormulaV2, error) {
 	}
 	// Validate phase names
 	for name := range f.Phases {
-		if !isValidPhase(name) {
+		if !IsValidPhase(name) {
 			return nil, fmt.Errorf("unknown phase %q in formula", name)
 		}
 	}
 	return &f, nil
 }
 
+// ParseFormulaStepGraph parses a version 3 step-graph formula from TOML bytes.
+func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
+	var f FormulaStepGraph
+	if err := toml.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parse step-graph formula: %w", err)
+	}
+	if f.Version != 3 {
+		return nil, fmt.Errorf("expected step-graph formula version 3, got %d", f.Version)
+	}
+	return &f, nil
+}
+
+// --- FormulaV2 methods ---
+
 // EnabledPhases returns the ordered list of enabled phases for this formula.
-// Order follows validPhases (design, plan, implement, review, merge).
+// Order follows ValidPhases (design, plan, implement, review, merge).
 func (f *FormulaV2) EnabledPhases() []string {
 	var enabled []string
-	for _, p := range validPhases {
+	for _, p := range ValidPhases {
 		if _, ok := f.Phases[p]; ok {
 			enabled = append(enabled, p)
 		}
@@ -205,65 +189,15 @@ func (f *FormulaV2) GetRevisionPolicy() RevisionPolicy {
 	return RevisionPolicy{MaxRounds: 3, ArbiterModel: "claude-opus-4-6"}
 }
 
-// DefaultFormulaMap maps bead types to default formula names.
-// Can be overridden by tower config in the future.
-var DefaultFormulaMap = map[string]string{
-	"task":    "spire-agent-work",
-	"bug":     "spire-bugfix",
-	"epic":    "spire-epic",
-	"chore":   "spire-agent-work",
-	"feature": "spire-agent-work",
-}
+// --- Loading ---
 
-// ResolveFormula determines which formula to use for a bead.
-// Resolution order:
-//  1. Bead label formula:<name> (explicit override)
-//  2. Bead type → DefaultFormulaMap
-//  3. spire.yaml agent.formula
-//  4. Fall back to "spire-agent-work"
-func ResolveFormula(bead Bead) (*FormulaV2, error) {
-	name := resolveFormulaName(bead)
-	f, err := LoadFormulaByName(name)
+// LoadFormulaV2 reads and parses a v2 formula from a TOML file.
+func LoadFormulaV2(path string) (*FormulaV2, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		// If the resolved formula doesn't exist, fall back to default
-		if name != "spire-agent-work" {
-			f, err = LoadFormulaByName("spire-agent-work")
-			if err != nil {
-				return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
-			}
-			return f, nil
-		}
-		return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
+		return nil, fmt.Errorf("read formula: %w", err)
 	}
-	return f, nil
-}
-
-// resolveFormulaName returns the formula name for a bead without loading it.
-func resolveFormulaName(bead Bead) string {
-	// 1. Check bead labels for formula:<name>
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "formula:") {
-			return l[len("formula:"):]
-		}
-	}
-
-	// 2. Check bead type → formula mapping
-	if name, ok := DefaultFormulaMap[bead.Type]; ok {
-		return name
-	}
-
-	// 3. Check spire.yaml agent.formula
-	// Try bead's repo first, fall back to CWD
-	repoPath, _, _, _ := wizardResolveRepo(bead.ID)
-	if repoPath == "" {
-		repoPath = "."
-	}
-	if cfg, err := repoconfig.Load(repoPath); err == nil && cfg.Agent.Formula != "" {
-		return cfg.Agent.Formula
-	}
-
-	// 4. Default
-	return "spire-agent-work"
+	return ParseFormulaV2(data)
 }
 
 // FindFormula locates a formula file on disk in the .beads/formulas directory.
@@ -312,4 +246,87 @@ func LoadFormulaByName(name string) (*FormulaV2, error) {
 	}
 	// Fall back to embedded default
 	return LoadEmbeddedFormula(name)
+}
+
+// LoadReviewPhaseFormula loads the embedded review-phase step-graph formula.
+// Used by the executor to pour the review molecule on entering the review phase.
+func LoadReviewPhaseFormula() (*FormulaStepGraph, error) {
+	data, err := embedded.Formulas.ReadFile("formulas/review-phase.formula.toml")
+	if err != nil {
+		return nil, fmt.Errorf("embedded review-phase formula not found: %w", err)
+	}
+	return ParseFormulaStepGraph(data)
+}
+
+// --- Resolution ---
+
+// DefaultFormulaMap maps bead types to default formula names.
+// Can be overridden by tower config in the future.
+var DefaultFormulaMap = map[string]string{
+	"task":    "spire-agent-work",
+	"bug":     "spire-bugfix",
+	"epic":    "spire-epic",
+	"chore":   "spire-agent-work",
+	"feature": "spire-agent-work",
+}
+
+// BeadInfo carries the bead fields needed for formula resolution.
+// This avoids importing pkg/store into pkg/formula.
+type BeadInfo struct {
+	ID     string
+	Type   string
+	Labels []string
+}
+
+// RepoFormulaNameFunc is a callback that resolves a repo-level formula name
+// override for a bead. Returns the formula name or "" if none configured.
+// Injected by cmd/spire to bridge repoconfig + wizard logic.
+var RepoFormulaNameFunc func(beadID string) string
+
+// Resolve determines which formula to use for a bead.
+// Resolution order:
+//  1. Bead label formula:<name> (explicit override)
+//  2. Bead type -> DefaultFormulaMap
+//  3. RepoFormulaNameFunc callback (spire.yaml agent.formula)
+//  4. Fall back to "spire-agent-work"
+func Resolve(bead BeadInfo) (*FormulaV2, error) {
+	name := ResolveName(bead)
+	f, err := LoadFormulaByName(name)
+	if err != nil {
+		// If the resolved formula doesn't exist, fall back to default
+		if name != "spire-agent-work" {
+			f, err = LoadFormulaByName("spire-agent-work")
+			if err != nil {
+				return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
+			}
+			return f, nil
+		}
+		return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
+	}
+	return f, nil
+}
+
+// ResolveName returns the formula name for a bead without loading it.
+func ResolveName(bead BeadInfo) string {
+	// 1. Check bead labels for formula:<name>
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "formula:") {
+			return l[len("formula:"):]
+		}
+	}
+
+	// 2. Check bead type -> formula mapping
+	if name, ok := DefaultFormulaMap[bead.Type]; ok {
+		return name
+	}
+
+	// 3. Check repo-level formula via callback
+	if RepoFormulaNameFunc != nil {
+		if name := RepoFormulaNameFunc(bead.ID); name != "" {
+			return name
+		}
+	}
+
+	// 4. Default
+	return "spire-agent-work"
 }

@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// validPhases lists the 5 universal phases in order.
-var validPhases = []string{"design", "plan", "implement", "review", "merge"}
+// Phase definitions (validPhases, isValidPhase) live in pkg/formula
+// and are re-exported via formula_bridge.go.
 
 // getPhase returns the current phase of a bead.
 // Checks for an active step bead first (primary), then falls back to phase:X label.
@@ -64,14 +64,4 @@ func reviewPhaseLabel(id string) string {
 		n = len(reviews)
 	}
 	return fmt.Sprintf("review r%d", n)
-}
-
-// isValidPhase checks if a phase name is one of the 5 universal phases.
-func isValidPhase(phase string) bool {
-	for _, p := range validPhases {
-		if p == phase {
-			return true
-		}
-	}
-	return false
 }
