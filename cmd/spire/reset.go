@@ -256,6 +256,14 @@ func cmdReset(args []string) error {
 		}
 	}
 
-	fmt.Printf("%s reset to %s — ready for re-summon\n", beadID, toPhase)
+	fmt.Printf("%s reset to %s\n", beadID, toPhase)
+
+	// --- 7. Re-summon ---
+
+	fmt.Printf("  %s↑ re-summoning wizard for %s%s\n", cyan, beadID, reset)
+	if err := cmdSummon([]string{"1", "--targets", beadID}); err != nil {
+		return fmt.Errorf("re-summon %s: %w", beadID, err)
+	}
+
 	return nil
 }
