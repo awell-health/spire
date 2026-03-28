@@ -1,4 +1,4 @@
-package main
+package wizard
 
 import (
 	"fmt"
@@ -8,18 +8,16 @@ import (
 	"sync"
 )
 
-// computeWaves is defined in executor_bridge.go (delegates to pkg/executor.ComputeWaves).
-
-// workshopImplement handles the implement phase of the wizard workshop.
+// WorkshopImplement handles the implement phase of the wizard workshop.
 // It computes waves from the dependency graph, dispatches apprentices
 // in parallel worktrees, and merges their work back.
-func workshopImplement(state *workshopState, spawner AgentBackend) error {
+func WorkshopImplement(state *WorkshopState, spawner Backend, deps *Deps) error {
 	epicID := state.EpicID
 	log := func(format string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)
 	}
 
-	waves, err := computeWaves(epicID)
+	waves, err := deps.ComputeWaves(epicID)
 	if err != nil {
 		return err
 	}
@@ -36,7 +34,7 @@ func workshopImplement(state *workshopState, spawner AgentBackend) error {
 
 	startWave := state.Wave
 
-	repoPath, _, _, err := wizardResolveRepo(epicID)
+	repoPath, _, _, err := deps.ResolveRepo(epicID)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
@@ -99,14 +97,14 @@ func workshopImplement(state *workshopState, spawner AgentBackend) error {
 				errs = append(errs, fmt.Sprintf("%s: %s", r.BeadID, r.Err))
 				continue
 			}
-			state.Subtasks[r.BeadID] = subtaskState{
+			state.Subtasks[r.BeadID] = SubtaskState{
 				Status: "closed",
-				Branch: resolveBranchForBead(r.BeadID, repoPath),
+				Branch: deps.ResolveBranch(r.BeadID, repoPath),
 				Agent:  r.Agent,
 			}
 		}
 
-		saveWorkshopState(state)
+		SaveWorkshopState(state, deps)
 
 		if len(errs) > 0 {
 			log("wave %d had %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))

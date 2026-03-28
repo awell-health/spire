@@ -1,4 +1,4 @@
-package main
+package wizard
 
 import (
 	"encoding/json"
@@ -7,10 +7,10 @@ import (
 	"strings"
 )
 
-// workshopReview handles the review phase of the wizard workshop.
+// WorkshopReview handles the review phase of the wizard workshop.
 // It dispatches a sage (reviewer), waits for the verdict, and makes
 // judgment calls on review feedback.
-func workshopReview(state *workshopState, spawner AgentBackend) error {
+func WorkshopReview(state *WorkshopState, spawner Backend, deps *Deps) error {
 	epicID := state.EpicID
 	log := func(format string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)
@@ -38,25 +38,25 @@ func workshopReview(state *workshopState, spawner AgentBackend) error {
 
 	// 2. Read the verdict from review-round child beads.
 	// The sage (wizard-review) creates and closes review-round beads with verdicts.
-	bead, err := storeGetBead(epicID)
+	bead, err := deps.GetBead(epicID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
 	// Also check review-approved label for backwards compat (verdict-only mode still sets it).
-	if containsLabel(bead, "review-approved") {
+	if deps.ContainsLabel(bead, "review-approved") {
 		log("review approved — transitioning to merge")
 		state.Phase = "merge"
 		return nil
 	}
 
 	// Check review beads for verdict
-	reviews, _ := storeGetReviewBeads(epicID)
+	reviews, _ := deps.GetReviewBeads(epicID)
 	lastVerdict := ""
 	if len(reviews) > 0 {
 		lastReview := reviews[len(reviews)-1]
 		if lastReview.Status == "closed" {
-			lastVerdict = reviewBeadVerdict(lastReview)
+			lastVerdict = deps.ReviewBeadVerdict(lastReview)
 		}
 	}
 
@@ -73,7 +73,7 @@ func workshopReview(state *workshopState, spawner AgentBackend) error {
 
 		// Load revision policy from formula
 		var revPolicy RevisionPolicy
-		if formula, fErr := LoadFormulaByName("spire-agent-work"); fErr == nil {
+		if formula, fErr := deps.LoadFormulaByName("spire-agent-work"); fErr == nil {
 			revPolicy = formula.GetRevisionPolicy()
 		}
 		if revPolicy.MaxRounds == 0 {
@@ -88,11 +88,11 @@ func workshopReview(state *workshopState, spawner AgentBackend) error {
 				Verdict: "request_changes",
 				Summary: "Max review rounds reached",
 			}
-			return reviewEscalateToArbiter(epicID, sageName, lastReview, revPolicy, log)
+			return ReviewEscalateToArbiter(epicID, sageName, lastReview, revPolicy, deps, log)
 		}
 
 		// Collect the sage's feedback from comments
-		comments, _ := storeGetComments(epicID)
+		comments, _ := deps.GetComments(epicID)
 		var feedback string
 		for i := len(comments) - 1; i >= 0; i-- {
 			if strings.Contains(comments[i].Text, "Review round") || strings.Contains(comments[i].Text, "request_changes") {
@@ -117,7 +117,7 @@ Based on this feedback, decide:
 Respond with ONLY a JSON object:
 {"decision": "agree|disagree|partial", "reason": "brief explanation"}`, epicID, state.ReviewRounds, feedback)
 
-		judgment, err := workshopConsultClaude(state, judgmentPrompt)
+		judgment, err := WorkshopConsultClaude(state, judgmentPrompt)
 		if err != nil {
 			log("claude judgment failed: %s — defaulting to agree", err)
 			judgment = `{"decision": "agree", "reason": "judgment unavailable"}`
@@ -131,13 +131,13 @@ Respond with ONLY a JSON object:
 		json.Unmarshal([]byte(judgment), &decision)
 
 		log("judgment: %s — %s", decision.Decision, decision.Reason)
-		storeAddComment(epicID, fmt.Sprintf("Wizard judgment (round %d): %s — %s", state.ReviewRounds, decision.Decision, decision.Reason))
+		deps.AddComment(epicID, fmt.Sprintf("Wizard judgment (round %d): %s — %s", state.ReviewRounds, decision.Decision, decision.Reason))
 
 		switch decision.Decision {
 		case "disagree":
 			// Override the sage — proceed to merge
 			log("overriding sage — transitioning to merge")
-			storeAddLabel(epicID, "review-approved")
+			deps.AddLabel(epicID, "review-approved")
 			state.Phase = "merge"
 			return nil
 
@@ -174,7 +174,7 @@ Respond with ONLY a JSON object:
 	}
 
 	// Check current phase — sage may have transitioned
-	currentPhase := getPhase(bead)
+	currentPhase := deps.GetPhase(bead)
 	if currentPhase != "" && currentPhase != "review" {
 		log("phase changed to %s (sage transitioned)", currentPhase)
 		state.Phase = currentPhase

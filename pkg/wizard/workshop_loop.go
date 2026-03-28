@@ -1,4 +1,4 @@
-package main
+package wizard
 
 import (
 	"encoding/json"
@@ -8,30 +8,30 @@ import (
 	"strings"
 )
 
-// workshopLoop is the wizard's main event loop.
+// WorkshopLoop is the wizard's main event loop.
 // It dispatches to phase-specific handlers and saves state after each action.
-func workshopLoop(state *workshopState, spawner AgentBackend) error {
+func WorkshopLoop(state *WorkshopState, spawner Backend, deps *Deps) error {
 	for {
 		// Check inbox for messages between actions
-		workshopCheckInbox(state)
+		WorkshopCheckInbox(state, deps)
 
 		// Save state before each phase handler
-		if err := saveWorkshopState(state); err != nil {
+		if err := SaveWorkshopState(state, deps); err != nil {
 			return fmt.Errorf("save state: %w", err)
 		}
 
 		var err error
 		switch state.Phase {
 		case "design":
-			err = workshopDesign(state)
+			err = WorkshopDesign(state)
 		case "plan":
-			err = workshopPlan(state)
+			err = WorkshopPlan(state)
 		case "implement":
-			err = workshopImplement(state, spawner)
+			err = WorkshopImplement(state, spawner, deps)
 		case "review":
-			err = workshopReview(state, spawner)
+			err = WorkshopReview(state, spawner, deps)
 		case "merge":
-			err = workshopMerge(state)
+			err = WorkshopMerge(state, deps)
 		default:
 			return fmt.Errorf("unknown phase: %s", state.Phase)
 		}
@@ -41,27 +41,27 @@ func workshopLoop(state *workshopState, spawner AgentBackend) error {
 		}
 
 		// Check if epic is closed (done)
-		bead, err := storeGetBead(state.EpicID)
+		bead, err := deps.GetBead(state.EpicID)
 		if err != nil {
 			return fmt.Errorf("check epic: %w", err)
 		}
 		if bead.Status == "closed" {
 			fmt.Fprintf(os.Stderr, "[workshop] epic %s is closed — exiting\n", state.EpicID)
-			return saveWorkshopState(state)
+			return SaveWorkshopState(state, deps)
 		}
 	}
 }
 
-// workshopCheckInbox reads the local inbox file for any messages.
+// WorkshopCheckInbox reads the local inbox file for any messages.
 // Messages are logged but not acted on in this function — the phase
 // handlers decide what to do with them.
-func workshopCheckInbox(state *workshopState) []inboxMessage {
+func WorkshopCheckInbox(state *WorkshopState, deps *Deps) []InboxMessage {
 	agentName := "wizard-" + state.EpicID
-	data, err := readInboxFile(agentName)
+	data, err := deps.ReadInboxFile(agentName)
 	if err != nil {
 		return nil
 	}
-	var inbox inboxFile
+	var inbox InboxFile
 	if err := json.Unmarshal(data, &inbox); err != nil {
 		return nil
 	}
@@ -71,9 +71,9 @@ func workshopCheckInbox(state *workshopState) []inboxMessage {
 	return inbox.Messages
 }
 
-// workshopConsultClaude invokes Claude with the given prompt using --resume
+// WorkshopConsultClaude invokes Claude with the given prompt using --resume
 // for persistent context. Creates a new session on first call.
-func workshopConsultClaude(state *workshopState, prompt string) (string, error) {
+func WorkshopConsultClaude(state *WorkshopState, prompt string) (string, error) {
 	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
@@ -99,9 +99,9 @@ func workshopConsultClaude(state *workshopState, prompt string) (string, error) 
 	return strings.TrimSpace(string(out)), nil
 }
 
-// workshopDesign handles the design phase.
+// WorkshopDesign handles the design phase.
 // For now, this is human-driven — the wizard prints instructions and exits.
-func workshopDesign(state *workshopState) error {
+func WorkshopDesign(state *WorkshopState) error {
 	fmt.Fprintf(os.Stderr, "[workshop] design phase — this is archmage-driven\n")
 	fmt.Fprintf(os.Stderr, "[workshop] when design is complete, transition to plan:\n")
 	fmt.Fprintf(os.Stderr, "  bd label remove %s \"phase:design\"\n", state.EpicID)
@@ -110,9 +110,9 @@ func workshopDesign(state *workshopState) error {
 	return fmt.Errorf("waiting for archmage to complete design")
 }
 
-// workshopPlan handles the plan phase.
+// WorkshopPlan handles the plan phase.
 // For now, this is human-driven — the wizard prints instructions and exits.
-func workshopPlan(state *workshopState) error {
+func WorkshopPlan(state *WorkshopState) error {
 	fmt.Fprintf(os.Stderr, "[workshop] plan phase — this is archmage-driven\n")
 	fmt.Fprintf(os.Stderr, "[workshop] break the epic into subtasks, then transition to implement:\n")
 	fmt.Fprintf(os.Stderr, "  bd label remove %s \"phase:plan\"\n", state.EpicID)
@@ -121,22 +121,22 @@ func workshopPlan(state *workshopState) error {
 	return fmt.Errorf("waiting for archmage to complete plan")
 }
 
-// workshopMerge handles the merge phase.
-func workshopMerge(state *workshopState) error {
+// WorkshopMerge handles the merge phase.
+func WorkshopMerge(state *WorkshopState, deps *Deps) error {
 	fmt.Fprintf(os.Stderr, "[workshop] merge phase\n")
 
-	// Use the existing reviewMerge function from wizard_review.go
-	bead, err := storeGetBead(state.EpicID)
+	// Use the existing ReviewMerge function from wizard_review.go
+	bead, err := deps.GetBead(state.EpicID)
 	if err != nil {
 		return fmt.Errorf("get epic: %w", err)
 	}
 
-	branch := hasLabel(bead, "feat-branch:")
+	branch := deps.HasLabel(bead, "feat-branch:")
 	if branch == "" {
 		branch = fmt.Sprintf("epic/%s", state.EpicID)
 	}
 
-	repoPath, _, baseBranch, err := wizardResolveRepo(state.EpicID)
+	repoPath, _, baseBranch, err := deps.ResolveRepo(state.EpicID)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
@@ -145,13 +145,13 @@ func workshopMerge(state *workshopState) error {
 		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)
 	}
 
-	if err := reviewMerge(state.EpicID, bead.Title, branch, baseBranch, repoPath, log); err != nil {
+	if err := ReviewMerge(state.EpicID, bead.Title, branch, baseBranch, repoPath, deps, log); err != nil {
 		return fmt.Errorf("merge: %w", err)
 	}
 
 	// Close the epic
-	storeRemoveLabel(state.EpicID, "phase:merge")
-	if err := storeCloseBead(state.EpicID); err != nil {
+	deps.RemoveLabel(state.EpicID, "phase:merge")
+	if err := deps.CloseBead(state.EpicID); err != nil {
 		return fmt.Errorf("close epic: %w", err)
 	}
 
