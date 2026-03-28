@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"context"
@@ -14,42 +14,41 @@ var (
 	storeCtx    context.Context
 )
 
-// ensureStore opens a beads store if one isn't already open.
-// Uses BEADS_DIR env var or auto-discovers .beads/ directory.
-func ensureStore() (beads.Storage, error) {
+// Ensure opens a beads store at beadsDir if one isn't already open.
+// The caller is responsible for resolving beadsDir (e.g. via resolveBeadsDir).
+func Ensure(beadsDir string) (beads.Storage, error) {
 	if activeStore != nil {
 		return activeStore, nil
 	}
-	beadsDir := resolveBeadsDir()
 	if beadsDir == "" {
 		return nil, fmt.Errorf("no .beads directory found")
 	}
 	ctx := context.Background()
-	store, err := beads.OpenFromConfig(ctx, beadsDir)
+	s, err := beads.OpenFromConfig(ctx, beadsDir)
 	if err != nil {
 		return nil, fmt.Errorf("open beads store: %w", err)
 	}
-	activeStore = store
+	activeStore = s
 	storeCtx = ctx
-	return store, nil
+	return s, nil
 }
 
-// openStoreAt opens a beads store at a specific .beads directory.
+// OpenAt opens a beads store at a specific .beads directory.
 // Closes any existing store first.
-func openStoreAt(beadsDir string) (beads.Storage, error) {
-	resetStore()
+func OpenAt(beadsDir string) (beads.Storage, error) {
+	Reset()
 	ctx := context.Background()
-	store, err := beads.OpenFromConfig(ctx, beadsDir)
+	s, err := beads.OpenFromConfig(ctx, beadsDir)
 	if err != nil {
 		return nil, fmt.Errorf("open beads store at %s: %w", beadsDir, err)
 	}
-	activeStore = store
+	activeStore = s
 	storeCtx = ctx
-	return store, nil
+	return s, nil
 }
 
-// resetStore closes the active store.
-func resetStore() {
+// Reset closes the active store.
+func Reset() {
 	if activeStore != nil {
 		activeStore.Close()
 		activeStore = nil
@@ -57,16 +56,16 @@ func resetStore() {
 	}
 }
 
-// storeActor returns the actor identity for store operations.
-func storeActor() string {
+// Actor returns the actor identity for store operations.
+func Actor() string {
 	return "spire"
 }
 
 // --- Conversion helpers ---
 
-// issueToBead converts a beads.Issue to spire's lightweight Bead type.
-func issueToBead(issue *beads.Issue) Bead {
-	parent := findParentID(issue.Dependencies)
+// IssueToBead converts a beads.Issue to the lightweight Bead type.
+func IssueToBead(issue *beads.Issue) Bead {
+	parent := FindParentID(issue.Dependencies)
 	return Bead{
 		ID:          issue.ID,
 		Title:       issue.Title,
@@ -79,18 +78,18 @@ func issueToBead(issue *beads.Issue) Bead {
 	}
 }
 
-// issuesToBeads converts a slice of beads.Issue to spire's Bead type.
-func issuesToBeads(issues []*beads.Issue) []Bead {
+// IssuesToBeads converts a slice of beads.Issue to the Bead type.
+func IssuesToBeads(issues []*beads.Issue) []Bead {
 	result := make([]Bead, len(issues))
 	for i, issue := range issues {
-		result[i] = issueToBead(issue)
+		result[i] = IssueToBead(issue)
 	}
 	return result
 }
 
-// issueToBoardBead converts a beads.Issue to spire's BoardBead type.
-func issueToBoardBead(issue *beads.Issue) BoardBead {
-	parent := findParentID(issue.Dependencies)
+// IssueToBoardBead converts a beads.Issue to the BoardBead type.
+func IssueToBoardBead(issue *beads.Issue) BoardBead {
+	parent := FindParentID(issue.Dependencies)
 	var deps []BoardDep
 	for _, dep := range issue.Dependencies {
 		deps = append(deps, BoardDep{
@@ -115,17 +114,17 @@ func issueToBoardBead(issue *beads.Issue) BoardBead {
 	}
 }
 
-// issuesToBoardBeads converts a slice of beads.Issue to spire's BoardBead type.
-func issuesToBoardBeads(issues []*beads.Issue) []BoardBead {
+// IssuesToBoardBeads converts a slice of beads.Issue to the BoardBead type.
+func IssuesToBoardBeads(issues []*beads.Issue) []BoardBead {
 	result := make([]BoardBead, len(issues))
 	for i, issue := range issues {
-		result[i] = issueToBoardBead(issue)
+		result[i] = IssueToBoardBead(issue)
 	}
 	return result
 }
 
-// findParentID extracts the parent ID from a dependency list.
-func findParentID(deps []*beads.Dependency) string {
+// FindParentID extracts the parent ID from a dependency list.
+func FindParentID(deps []*beads.Dependency) string {
 	for _, dep := range deps {
 		if dep.Type == beads.DepParentChild {
 			return dep.DependsOnID
@@ -136,18 +135,18 @@ func findParentID(deps []*beads.Dependency) string {
 
 // --- Filter helpers ---
 
-// statusPtr returns a pointer to a beads.Status value.
-func statusPtr(s beads.Status) *beads.Status {
+// StatusPtr returns a pointer to a beads.Status value.
+func StatusPtr(s beads.Status) *beads.Status {
 	return &s
 }
 
-// issueTypePtr returns a pointer to a beads.IssueType value.
-func issueTypePtr(t beads.IssueType) *beads.IssueType {
+// IssueTypePtr returns a pointer to a beads.IssueType value.
+func IssueTypePtr(t beads.IssueType) *beads.IssueType {
 	return &t
 }
 
-// parseStatus converts a status string to a beads.Status.
-func parseStatus(s string) beads.Status {
+// ParseStatus converts a status string to a beads.Status.
+func ParseStatus(s string) beads.Status {
 	switch strings.ToLower(s) {
 	case "open":
 		return beads.StatusOpen
@@ -164,8 +163,8 @@ func parseStatus(s string) beads.Status {
 	}
 }
 
-// parseIssueType converts a type string to a beads.IssueType.
-func parseIssueType(s string) beads.IssueType {
+// ParseIssueType converts a type string to a beads.IssueType.
+func ParseIssueType(s string) beads.IssueType {
 	switch strings.ToLower(s) {
 	case "bug":
 		return beads.TypeBug
@@ -186,20 +185,20 @@ func parseIssueType(s string) beads.IssueType {
 
 // --- Local interfaces for sub-interface access ---
 
-// configDeleter provides DeleteConfig for config unset operations.
-type configDeleter interface {
+// ConfigDeleter provides DeleteConfig for config unset operations.
+type ConfigDeleter interface {
 	DeleteConfig(ctx context.Context, key string) error
 }
 
-// pendingCommitter provides CommitPending for dolt commit operations.
-type pendingCommitter interface {
+// PendingCommitter provides CommitPending for dolt commit operations.
+type PendingCommitter interface {
 	CommitPending(ctx context.Context, actor string) (bool, error)
 }
 
 // --- Create options ---
 
-// createOpts holds parameters for creating a bead via the store.
-type createOpts struct {
+// CreateOpts holds parameters for creating a bead via the store.
+type CreateOpts struct {
 	Title       string
 	Description string
 	Priority    int
@@ -209,3 +208,20 @@ type createOpts struct {
 	Prefix      string // sets Issue.PrefixOverride (the --rig equivalent)
 }
 
+// BeadsDirResolver is a function that resolves the .beads directory path.
+// Set this from the main package so pkg/store can auto-initialize on first use.
+var BeadsDirResolver func() string
+
+// getStore returns the active store, auto-initializing via BeadsDirResolver
+// if no store is open and a resolver has been set.
+func getStore() (beads.Storage, context.Context, error) {
+	if activeStore == nil && BeadsDirResolver != nil {
+		if _, err := Ensure(BeadsDirResolver()); err != nil {
+			return nil, nil, err
+		}
+	}
+	if activeStore == nil {
+		return nil, nil, fmt.Errorf("store not initialized — call Ensure() first")
+	}
+	return activeStore, storeCtx, nil
+}

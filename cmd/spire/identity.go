@@ -40,18 +40,7 @@ func parseAsFlag(args []string) (string, []string) {
 	return "", args
 }
 
-// Bead represents a beads issue from bd JSON output.
-// Note: bd show --json returns an array; use parseBead to handle this.
-type Bead struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Status      string   `json:"status"`
-	Priority    int      `json:"priority"`
-	Type        string   `json:"issue_type"`
-	Labels      []string `json:"labels"`
-	Parent      string   `json:"parent"`
-}
+// Bead is now defined in pkg/store — the type alias is in store_bridge.go.
 
 // detectDBName returns the Dolt database name for the current context.
 // Returns an error when the database cannot be determined unambiguously.

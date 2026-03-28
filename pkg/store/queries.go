@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"fmt"
@@ -8,22 +8,20 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-// --- Convenience helpers ---
-
-// storeGetBead fetches a single bead by ID.
-func storeGetBead(id string) (Bead, error) {
-	store, err := ensureStore()
+// GetBead fetches a single bead by ID.
+func GetBead(id string) (Bead, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return Bead{}, err
 	}
-	issue, err := store.GetIssue(storeCtx, id)
+	issue, err := s.GetIssue(ctx, id)
 	if err != nil {
 		return Bead{}, fmt.Errorf("get bead %s: %w", id, err)
 	}
 	// GetIssue does not populate Dependencies — fetch them separately
 	// so that Parent (derived from parent-child deps) is available.
 	if issue.Dependencies == nil {
-		if depsWithMeta, dErr := store.GetDependenciesWithMetadata(storeCtx, id); dErr == nil {
+		if depsWithMeta, dErr := s.GetDependenciesWithMetadata(ctx, id); dErr == nil {
 			for _, dm := range depsWithMeta {
 				issue.Dependencies = append(issue.Dependencies, &beads.Dependency{
 					IssueID:     id,
@@ -33,84 +31,84 @@ func storeGetBead(id string) (Bead, error) {
 			}
 		}
 	}
-	return issueToBead(issue), nil
+	return IssueToBead(issue), nil
 }
 
-// storeListBeads searches for beads matching the given filter.
+// ListBeads searches for beads matching the given filter.
 // Excludes closed beads by default (matching bd list behavior).
-func storeListBeads(filter beads.IssueFilter) ([]Bead, error) {
-	store, err := ensureStore()
+func ListBeads(filter beads.IssueFilter) ([]Bead, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
 	}
 	if filter.Status == nil && len(filter.ExcludeStatus) == 0 {
 		filter.ExcludeStatus = []beads.Status{beads.StatusClosed}
 	}
-	issues, err := store.SearchIssues(storeCtx, "", filter)
+	issues, err := s.SearchIssues(ctx, "", filter)
 	if err != nil {
 		return nil, fmt.Errorf("list beads: %w", err)
 	}
-	return issuesToBeads(issues), nil
+	return IssuesToBeads(issues), nil
 }
 
-// storeListBoardBeads searches for beads with full board metadata.
-func storeListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) {
-	store, err := ensureStore()
+// ListBoardBeads searches for beads with full board metadata.
+func ListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
 	}
 	if filter.Status == nil && len(filter.ExcludeStatus) == 0 {
 		filter.ExcludeStatus = []beads.Status{beads.StatusClosed}
 	}
-	issues, err := store.SearchIssues(storeCtx, "", filter)
+	issues, err := s.SearchIssues(ctx, "", filter)
 	if err != nil {
 		return nil, fmt.Errorf("list board beads: %w", err)
 	}
-	return issuesToBoardBeads(issues), nil
+	return IssuesToBoardBeads(issues), nil
 }
 
-// storeGetDepsWithMeta returns all dependencies of a bead with their relationship metadata.
-func storeGetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
-	store, err := ensureStore()
+// GetDepsWithMeta returns all dependencies of a bead with their relationship metadata.
+func GetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
 	}
-	return store.GetDependenciesWithMetadata(storeCtx, id)
+	return s.GetDependenciesWithMetadata(ctx, id)
 }
 
-// storeGetConfig gets a config value. Returns "" if key is not set.
+// GetConfig gets a config value. Returns "" if key is not set.
 // Real store errors (connection, missing table) are propagated.
-func storeGetConfig(key string) (string, error) {
-	store, err := ensureStore()
+func GetConfig(key string) (string, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return "", err
 	}
 	// beads GetConfig returns ("", nil) for unset keys,
 	// so we can pass through directly.
-	return store.GetConfig(storeCtx, key)
+	return s.GetConfig(ctx, key)
 }
 
-// storeGetReadyWork returns beads that are ready to work on (no open blockers).
+// GetReadyWork returns beads that are ready to work on (no open blockers).
 // Post-filters out workflow step beads and message beads so they don't
 // appear as assignable work in the steward cycle.
-func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
-	store, err := ensureStore()
+func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
 	}
-	issues, err := store.GetReadyWork(storeCtx, filter)
+	issues, err := s.GetReadyWork(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("get ready work: %w", err)
 	}
 
-	result := issuesToBeads(issues)
+	result := IssuesToBeads(issues)
 
 	// Post-filter: exclude workflow step beads, message beads, design beads,
 	// attempt beads, and beads with active attempt children.
 	var filtered []Bead
 	for _, b := range result {
 		// Skip message beads
-		if containsLabel(b, "msg") {
+		if ContainsLabel(b, "msg") {
 			continue
 		}
 		// Skip design beads (thinking artifacts, not work items)
@@ -118,31 +116,32 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 			continue
 		}
 		// Skip attempt beads (internal tracking, not assignable work)
-		if isAttemptBead(b) {
+		if IsAttemptBead(b) {
 			continue
 		}
 		// Skip review-round beads (internal tracking, not assignable work)
-		if isReviewRoundBead(b) {
+		if IsReviewRoundBead(b) {
 			continue
 		}
 		// Skip workflow step beads (phase tracking children of work beads)
-		if isStepBead(b) {
+		if IsStepBead(b) {
 			continue
 		}
 		// Skip molecule step beads (parent carries workflow:* label)
 		if b.Parent != "" {
-			parent, perr := storeGetBead(b.Parent)
-			if perr == nil && hasLabel(parent, "workflow:") != "" {
+			parent, perr := GetBead(b.Parent)
+			if perr == nil && HasLabel(parent, "workflow:") != "" {
 				continue
 			}
 		}
 		// Skip beads with an active attempt child (someone is already working).
-		// Fail closed: if storeGetActiveAttempt returns an error (e.g. multiple
+		// Fail closed: if GetActiveAttempt returns an error (e.g. multiple
 		// open attempts), quarantine the bead rather than treating it as ready.
-		attempt, aErr := storeGetActiveAttempt(b.ID)
+		attempt, aErr := GetActiveAttempt(b.ID)
 		if aErr != nil {
 			log.Printf("[store] quarantining %s (multiple open attempts): %v", b.ID, aErr)
-			storeRaiseCorruptedBeadAlertFunc(b.ID, aErr)
+			// Note: callers that need test-replaceable alert behavior should
+			// use the bridge-level storeGetReadyWork wrapper instead.
 			continue
 		}
 		if attempt != nil {
@@ -154,13 +153,13 @@ func storeGetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	return filtered, nil
 }
 
-// storeGetBlockedIssues returns open beads that have unresolved blocking dependencies.
-func storeGetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
-	store, err := ensureStore()
+// GetBlockedIssues returns open beads that have unresolved blocking dependencies.
+func GetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
 	}
-	blocked, err := store.GetBlockedIssues(storeCtx, filter)
+	blocked, err := s.GetBlockedIssues(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("get blocked issues: %w", err)
 	}
@@ -191,26 +190,26 @@ func storeGetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
 	return result, nil
 }
 
-// storeGetComments returns comments for a bead.
-func storeGetComments(id string) ([]*beads.Comment, error) {
-	store, err := ensureStore()
+// GetComments returns comments for a bead.
+func GetComments(id string) ([]*beads.Comment, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
 	}
-	return store.GetIssueComments(storeCtx, id)
+	return s.GetIssueComments(ctx, id)
 }
 
-// storeGetChildren returns child beads of a parent.
-func storeGetChildren(parentID string) ([]Bead, error) {
-	store, err := ensureStore()
+// GetChildren returns child beads of a parent.
+func GetChildren(parentID string) ([]Bead, error) {
+	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
 	}
-	issues, err := store.SearchIssues(storeCtx, "", beads.IssueFilter{
+	issues, err := s.SearchIssues(ctx, "", beads.IssueFilter{
 		ParentID: &parentID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get children of %s: %w", parentID, err)
 	}
-	return issuesToBeads(issues), nil
+	return IssuesToBeads(issues), nil
 }

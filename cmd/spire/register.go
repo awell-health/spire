@@ -84,22 +84,4 @@ func findAgentBead(name string) (string, error) {
 	return "", nil
 }
 
-// hasLabel checks if a bead has a label with the given prefix, returning the suffix.
-func hasLabel(b Bead, prefix string) string {
-	for _, l := range b.Labels {
-		if strings.HasPrefix(l, prefix) {
-			return l[len(prefix):]
-		}
-	}
-	return ""
-}
-
-// containsLabel checks if a bead has an exact label match.
-func containsLabel(b Bead, label string) bool {
-	for _, l := range b.Labels {
-		if l == label {
-			return true
-		}
-	}
-	return false
-}
+// hasLabel and containsLabel are now defined in pkg/store — wrappers are in store_bridge.go.
