@@ -209,7 +209,15 @@ func cmdReset(args []string) error {
 		// Before target → leave as-is (closed).
 	}
 
-	// --- 5. --hard: remove worktrees and delete branches ---
+	// --- 5. Set bead status to in_progress ---
+
+	if err := storeUpdateBead(beadID, map[string]interface{}{"status": "in_progress"}); err != nil {
+		fmt.Printf("  %s(note: could not set %s to in_progress: %s)%s\n", dim, beadID, err, reset)
+	} else {
+		fmt.Printf("  %s↺ %s set to in_progress%s\n", dim, beadID, reset)
+	}
+
+	// --- 6. --hard: remove worktrees and delete branches ---
 
 	if hard {
 		// Remove worktree directory.
