@@ -3,6 +3,8 @@ package executor
 import (
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +13,30 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/steveyegge/beads"
 )
+
+// initSeamTestRepo creates a temporary git repo with an initial commit on main.
+// Returns the repo directory path.
+func initSeamTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.name", "Test")
+	runGit("config", "user.email", "test@test.com")
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644)
+	runGit("add", "-A")
+	runGit("commit", "-m", "initial commit")
+	runGit("branch", "-M", "main")
+	return dir
+}
 
 // =============================================================================
 // Seam 1: wizardPlan() plan-bypass when only workflow-step children exist
@@ -952,8 +978,21 @@ func TestRunFullPipeline_SkipPhases(t *testing.T) {
 // implement -> review -> merge pipeline with direct dispatch.
 // This is the most common workflow for single-task beads.
 func TestRunFullPipeline_DirectImplementReviewMerge(t *testing.T) {
-	dir := t.TempDir()
-	configDirFn := func() (string, error) { return dir, nil }
+	repoDir := initSeamTestRepo(t)
+	configDir := t.TempDir()
+	configDirFn := func() (string, error) { return configDir, nil }
+
+	// Create a feat branch so the staging worktree merge has something to merge.
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("branch", "feat/spi-full")
 
 	phasesExecuted := []string{}
 
@@ -980,7 +1019,7 @@ func TestRunFullPipeline_DirectImplementReviewMerge(t *testing.T) {
 			return label == "review-approved"
 		},
 		ResolveRepo: func(beadID string) (string, string, string, error) {
-			return dir, "", "main", nil
+			return repoDir, "", "main", nil
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },

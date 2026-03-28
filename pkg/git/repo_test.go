@@ -98,8 +98,8 @@ func TestRepoContext_ForceBranch(t *testing.T) {
 	dir := initTestRepo(t)
 	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
 
-	// ForceBranch creates a new branch at current HEAD.
-	err := rc.ForceBranch("staging/test")
+	// ForceBranch creates a new branch at the given start point.
+	err := rc.ForceBranch("staging/test", "HEAD")
 	if err != nil {
 		t.Fatalf("ForceBranch: %v", err)
 	}
@@ -116,12 +116,11 @@ func TestRepoContext_ForceBranch(t *testing.T) {
 	}
 }
 
-// TestRepoContext_ForceBranch_AnchorsBug documents that ForceBranch anchors
-// to current HEAD, not to BaseBranch. This is the staging branch creation bug.
-//
-// TODO(spi-b8kf3): After the fix, ForceBranch should anchor to BaseBranch
-// when creating staging branches, not wherever HEAD happens to be.
-func TestRepoContext_ForceBranch_AnchorsBug(t *testing.T) {
+// TestRepoContext_ForceBranch_AnchorToBaseBranch verifies that ForceBranch
+// anchors to the explicit start-point parameter, fixing the old bug where
+// staging branches were always created from HEAD regardless of intent.
+// (Fixed in spi-mswj8: ForceBranch now takes an explicit startPoint.)
+func TestRepoContext_ForceBranch_AnchorToBaseBranch(t *testing.T) {
 	dir := initTestRepo(t)
 	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
 
@@ -132,11 +131,9 @@ func TestRepoContext_ForceBranch_AnchorsBug(t *testing.T) {
 	run(t, dir, "git", "add", "-A")
 	run(t, dir, "git", "commit", "-m", "feature commit")
 
-	featureSHA := rc.HeadSHA()
-
 	// Now HEAD is on feature/other, not main.
-	// ForceBranch creates staging branch from current HEAD (the feature branch).
-	err := rc.ForceBranch("staging/test")
+	// With the explicit startPoint, ForceBranch anchors to BaseBranch.
+	err := rc.ForceBranch("staging/test", rc.BaseBranch)
 	if err != nil {
 		t.Fatalf("ForceBranch: %v", err)
 	}
@@ -144,12 +141,9 @@ func TestRepoContext_ForceBranch_AnchorsBug(t *testing.T) {
 	stagingSHA := trimNewline(run(t, dir, "git", "rev-parse", "staging/test"))
 	mainSHA := trimNewline(run(t, dir, "git", "rev-parse", "main"))
 
-	// CURRENT BEHAVIOR (buggy): staging branch is at feature branch HEAD,
-	// not at main. The staging branch starts from the wrong point.
-	if stagingSHA == mainSHA {
-		t.Log("NOTE: staging branch matches main — the anchoring bug may have been fixed")
-	} else if stagingSHA == featureSHA {
-		t.Log("KNOWN BUG: ForceBranch created staging from feature HEAD, not main")
+	// With explicit startPoint=BaseBranch, staging should match main.
+	if stagingSHA != mainSHA {
+		t.Errorf("ForceBranch(startPoint=%q) SHA %q != main SHA %q", rc.BaseBranch, stagingSHA, mainSHA)
 	}
 }
 
