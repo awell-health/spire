@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/dolt"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
@@ -339,8 +340,9 @@ func validatePrefix(prefix string) error {
 // --- SQL helpers ---
 
 // sqlEscape escapes single quotes in a string for safe SQL insertion.
+// Delegates to pkg/dolt.SQLEscape.
 func sqlEscape(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+	return dolt.SQLEscape(s)
 }
 
 // --- Dolt helpers ---

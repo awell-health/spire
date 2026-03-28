@@ -3,8 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/dolt"
 )
 
 func cmdPull(args []string) error {
@@ -84,7 +85,7 @@ func runPull(remoteURL string, force bool) error {
 		}
 
 		// Also write the CLI remote directly into the data dir.
-		setDoltCLIRemote(dataDir, "origin", remoteURL)
+		dolt.SetCLIRemote(dataDir, "origin", remoteURL)
 	} else {
 		out, _ := bd("dolt", "remote", "list")
 		if !strings.Contains(out, "origin") {
@@ -92,7 +93,7 @@ func runPull(remoteURL string, force bool) error {
 		}
 		// Sync SQL remote to CLI config in case it was set via bd but not CLI.
 		if url := parseOriginURL(out); url != "" {
-			setDoltCLIRemote(dataDir, "origin", url)
+			dolt.SetCLIRemote(dataDir, "origin", url)
 		}
 	}
 
@@ -108,12 +109,12 @@ func runPull(remoteURL string, force bool) error {
 	dbName := readBeadsDBName()
 	preCommit := ""
 	if dbName != "" {
-		preCommit = getCurrentCommitHash(dbName)
+		preCommit = dolt.GetCurrentCommitHash(dbName)
 	}
 
 	// ── Pull via dolt CLI ─────────────────────────────────────────────────────
 	fmt.Println("  Pulling from origin...")
-	if err := doltCLIPull(dataDir, force); err != nil {
+	if err := dolt.CLIPull(dataDir, force); err != nil {
 		if !force && (strings.Contains(err.Error(), "non-fast-forward") ||
 			strings.Contains(err.Error(), "diverged") ||
 			strings.Contains(err.Error(), "conflicts") ||
@@ -132,7 +133,7 @@ func runPull(remoteURL string, force bool) error {
 
 	// ── Enforce field-level ownership ─────────────────────────────────────────
 	if dbName != "" && preCommit != "" {
-		if ownerErr := applyMergeOwnership(dbName, preCommit); ownerErr != nil {
+		if ownerErr := dolt.ApplyMergeOwnership(dbName, preCommit); ownerErr != nil {
 			fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
 		}
 	}
@@ -140,29 +141,5 @@ func runPull(remoteURL string, force bool) error {
 	fmt.Println("  Pull complete.")
 	fmt.Println()
 	bd("status") //nolint
-	return nil
-}
-
-// doltCLIPull runs `dolt pull origin main` directly from the database data
-// directory, inheriting the caller's environment so DOLT_REMOTE_USER /
-// DOLT_REMOTE_PASSWORD are available.
-func doltCLIPull(dataDir string, force bool) error {
-	bin := doltBin()
-	if bin == "" {
-		return fmt.Errorf("dolt not found — run spire up to install")
-	}
-
-	args := []string{"pull", "origin", "main"}
-	if force {
-		args = []string{"pull", "--force", "origin", "main"}
-	}
-
-	cmd := exec.Command(bin, args...)
-	cmd.Dir = dataDir
-	cmd.Env = os.Environ()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))
-	}
 	return nil
 }

@@ -3,8 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/dolt"
 )
 
 func cmdSync(args []string) error {
@@ -73,7 +74,7 @@ func runSync() error {
 	}
 	// Sync SQL remote to CLI config in case it was set via bd but not CLI.
 	if url := parseOriginURL(out); url != "" {
-		setDoltCLIRemote(dataDir, "origin", url)
+		dolt.SetCLIRemote(dataDir, "origin", url)
 	}
 
 	// ── Inject DoltHub credentials ────────────────────────────────────────────
@@ -90,7 +91,7 @@ func runSync() error {
 	dbName := readBeadsDBName()
 	preCommit := ""
 	if dbName != "" {
-		preCommit = getCurrentCommitHash(dbName)
+		preCommit = dolt.GetCurrentCommitHash(dbName)
 	}
 
 	// ── Three-way merge: fetch then merge ─────────────────────────────────────
@@ -98,12 +99,12 @@ func runSync() error {
 	// dolt fetch (updates remotes/origin/main) then dolt merge (three-way merge),
 	// which can reconcile commits from both sides without overwriting local history.
 	fmt.Println("  Fetching from origin...")
-	mergeOut, err := doltCLIFetchMerge(dataDir)
+	mergeOut, err := dolt.CLIFetchMerge(dataDir)
 	mergeHadConflicts := err != nil
 
 	// If merge produced conflicts, try automatic field-level resolution.
 	if mergeHadConflicts && dbName != "" {
-		resolved, resolveErr := resolveIssueConflicts(dbName)
+		resolved, resolveErr := dolt.ResolveIssueConflicts(dbName)
 		if resolveErr == nil && resolved > 0 {
 			fmt.Printf("  Auto-resolved %d conflict(s) with field-level ownership rules.\n", resolved)
 			err = nil // conflicts were resolved
@@ -125,11 +126,11 @@ func runSync() error {
 
 	// ── Scan for status regressions (skip conflict resolution — already done above) ──
 	if dbName != "" && preCommit != "" {
-		regressions, scanErr := scanClusterRegressions(dbName, preCommit)
+		regressions, scanErr := dolt.ScanClusterRegressions(dbName, preCommit)
 		if scanErr != nil {
 			fmt.Printf("  Warning: regression scan: %s\n", scanErr)
 		} else if len(regressions) > 0 {
-			if repairErr := repairClusterRegressions(dbName, regressions); repairErr != nil {
+			if repairErr := dolt.RepairClusterRegressions(dbName, regressions); repairErr != nil {
 				fmt.Printf("  Warning: repair regressions: %s\n", repairErr)
 			} else {
 				fmt.Printf("  Repaired %d status regression(s).\n", len(regressions))
@@ -141,36 +142,4 @@ func runSync() error {
 	fmt.Println()
 	bd("status") //nolint
 	return nil
-}
-
-// doltCLIFetchMerge performs a three-way merge by running dolt fetch followed
-// by dolt merge. Unlike dolt pull (fast-forward only), this can reconcile
-// diverged histories by creating a merge commit. Returns the merge output.
-func doltCLIFetchMerge(dataDir string) (string, error) {
-	bin := doltBin()
-	if bin == "" {
-		return "", fmt.Errorf("dolt not found — run spire up to install")
-	}
-
-	env := os.Environ()
-
-	// Step 1: fetch remote commits into remotes/origin/main.
-	fetchCmd := exec.Command(bin, "fetch", "origin", "main")
-	fetchCmd.Dir = dataDir
-	fetchCmd.Env = env
-	fetchOut, err := fetchCmd.CombinedOutput()
-	if err != nil {
-		return strings.TrimSpace(string(fetchOut)), fmt.Errorf("dolt fetch: %w\n%s", err, strings.TrimSpace(string(fetchOut)))
-	}
-
-	// Step 2: three-way merge into current branch.
-	mergeCmd := exec.Command(bin, "merge", "remotes/origin/main")
-	mergeCmd.Dir = dataDir
-	mergeCmd.Env = env
-	mergeOut, err := mergeCmd.CombinedOutput()
-	output := strings.TrimSpace(string(mergeOut))
-	if err != nil {
-		return output, fmt.Errorf("dolt merge: %w\n%s", err, output)
-	}
-	return output, nil
 }

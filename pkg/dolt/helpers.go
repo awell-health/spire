@@ -1,0 +1,121 @@
+package dolt
+
+import (
+	"fmt"
+	"strings"
+)
+
+// trimSpace trims whitespace from a string (internal helper to avoid
+// importing strings in every file just for TrimSpace).
+func trimSpace(s string) string {
+	return strings.TrimSpace(s)
+}
+
+// SQLEscape escapes single quotes in a string for safe SQL insertion.
+func SQLEscape(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// Coalesce returns the first non-empty string.
+func Coalesce(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// ExtractCountValue parses a COUNT(*) result from dolt tabular output.
+func ExtractCountValue(output string) int {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "+") || strings.HasPrefix(line, "| c") {
+			continue
+		}
+		if strings.HasPrefix(line, "|") {
+			for _, p := range strings.Split(line, "|") {
+				p = strings.TrimSpace(p)
+				if p != "" && p != "c" {
+					n := 0
+					fmt.Sscanf(p, "%d", &n)
+					return n
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// ParseDoltRows parses dolt's tabular output into a slice of maps keyed by column name.
+//
+// Expected format:
+//
+//	+--------+----------+
+//	| prefix | repo_url |
+//	+--------+----------+
+//	| spi    | https... |
+//	+--------+----------+
+//
+// Separator lines (+---+) and the header row (first | ... | line) are skipped.
+func ParseDoltRows(out string, columns []string) []map[string]string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+
+	var rows []map[string]string
+	headerSkipped := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "+") {
+			continue
+		}
+		// First pipe-delimited line is the header — skip it
+		if !headerSkipped {
+			headerSkipped = true
+			continue
+		}
+		// Parse data row
+		parts := strings.Split(line, "|")
+		var cells []string
+		for _, p := range parts {
+			cells = append(cells, strings.TrimSpace(p))
+		}
+		// Strip leading/trailing empty boundary cells from "| a | b |"
+		if len(cells) > 0 && cells[0] == "" {
+			cells = cells[1:]
+		}
+		if len(cells) > 0 && cells[len(cells)-1] == "" {
+			cells = cells[:len(cells)-1]
+		}
+
+		row := make(map[string]string)
+		for i, col := range columns {
+			if i < len(cells) {
+				row[col] = cells[i]
+			} else {
+				row[col] = ""
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// SQLNullableSet returns a SQL SET clause for a nullable field.
+//
+//   - authoritative = "NULL" -> field = NULL  (explicit clear, fallback ignored)
+//   - authoritative = "val"  -> field = 'val' (fallback ignored)
+//   - authoritative = ""     -> use fallback  (authoritative side absent from conflict)
+func SQLNullableSet(field, authoritative, fallback string) string {
+	if authoritative == "NULL" {
+		// Authoritative side explicitly set NULL — honor it.
+		return field + " = NULL"
+	}
+	if authoritative != "" {
+		return fmt.Sprintf("%s = '%s'", field, SQLEscape(authoritative))
+	}
+	// Authoritative side absent — use fallback.
+	if fallback == "" || fallback == "NULL" {
+		return field + " = NULL"
+	}
+	return fmt.Sprintf("%s = '%s'", field, SQLEscape(fallback))
+}
