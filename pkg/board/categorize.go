@@ -1,0 +1,327 @@
+package board
+
+import (
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/awell-health/spire/pkg/store"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// ColDef is a display column with a name, color, and bead slice.
+type ColDef struct {
+	Name  string
+	Color lipgloss.Color
+	Beads []BoardBead
+}
+
+// ActiveColumns returns the non-empty columns in board display order.
+// This is the authoritative ordered list used by both navigation and rendering.
+func ActiveColumns(cols Columns) []ColDef {
+	all := []ColDef{
+		{"READY", lipgloss.Color("2"), cols.Ready},
+		{"DESIGN", lipgloss.Color("4"), cols.Design},
+		{"PLAN", lipgloss.Color("6"), cols.Plan},
+		{"IMPLEMENT", lipgloss.Color("6"), cols.Implement},
+		{"REVIEW", lipgloss.Color("3"), cols.Review},
+		{"MERGE", lipgloss.Color("5"), cols.Merge},
+		{"DONE", lipgloss.Color("8"), cols.Done},
+	}
+	var active []ColDef
+	for _, c := range all {
+		if len(c.Beads) > 0 {
+			active = append(active, c)
+		}
+	}
+	return active
+}
+
+// CategorizeColumnsFromStore builds board columns from store API results.
+// blockedBeads come from GetBlockedIssues and already have blocker metadata.
+func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead, identity string) Columns {
+	var c Columns
+
+	isAlert := func(b BoardBead) bool {
+		for _, l := range b.Labels {
+			if l == "alert" || strings.HasPrefix(l, "alert:") {
+				return true
+			}
+		}
+		return false
+	}
+
+	skip := func(b BoardBead) bool {
+		for _, l := range b.Labels {
+			if strings.HasPrefix(l, "msg") || l == "template" || strings.HasPrefix(l, "agent") {
+				return true
+			}
+		}
+		if store.IsAttemptBoardBead(b) {
+			return true
+		}
+		if store.IsReviewRoundBoardBead(b) {
+			return true
+		}
+		if store.IsStepBoardBead(b) {
+			return true
+		}
+		return false
+	}
+
+	blockedIDs := make(map[string]bool, len(blockedBeads))
+	for _, b := range blockedBeads {
+		if skip(b) {
+			continue
+		}
+		blockedIDs[b.ID] = true
+		c.Blocked = append(c.Blocked, b)
+	}
+
+	for _, b := range openBeads {
+		if isAlert(b) && b.Status == "open" {
+			c.Alerts = append(c.Alerts, b)
+			continue
+		}
+		if skip(b) {
+			continue
+		}
+		if blockedIDs[b.ID] {
+			continue
+		}
+
+		phase := GetBoardBeadPhase(b)
+		switch {
+		case phase == "design":
+			c.Design = append(c.Design, b)
+		case phase == "plan":
+			c.Plan = append(c.Plan, b)
+		case phase == "implement":
+			c.Implement = append(c.Implement, b)
+		case strings.HasPrefix(phase, "review"):
+			c.Review = append(c.Review, b)
+		case phase == "merge":
+			c.Merge = append(c.Merge, b)
+		default:
+			c.Ready = append(c.Ready, b)
+		}
+	}
+
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, b := range closedBeads {
+		if skip(b) {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, b.UpdatedAt)
+		if err != nil {
+			t, err = time.Parse("2006-01-02 15:04:05", b.UpdatedAt)
+		}
+		if err == nil && t.After(cutoff) {
+			c.Done = append(c.Done, b)
+		}
+	}
+
+	return c
+}
+
+// FilterEpic filters columns to only contain beads matching the epic ID and its children.
+func FilterEpic(cols Columns, epicID string) Columns {
+	match := func(b BoardBead) bool {
+		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".")
+	}
+	return Columns{
+		Alerts:    FilterBeads(cols.Alerts, match),
+		Ready:     FilterBeads(cols.Ready, match),
+		Design:    FilterBeads(cols.Design, match),
+		Plan:      FilterBeads(cols.Plan, match),
+		Implement: FilterBeads(cols.Implement, match),
+		Review:    FilterBeads(cols.Review, match),
+		Merge:     FilterBeads(cols.Merge, match),
+		Done:      FilterBeads(cols.Done, match),
+		Blocked:   FilterBeads(cols.Blocked, match),
+	}
+}
+
+// TypeScope filters beads by their type.
+type TypeScope int
+
+const (
+	TypeAll TypeScope = iota
+	TypeTask
+	TypeBug
+	TypeEpic
+	TypeDesign
+	TypeDecision
+	TypeOther
+)
+
+// TypeScopeOrder is the ordered list of scopes for cycling.
+var TypeScopeOrder = []TypeScope{
+	TypeAll,
+	TypeTask,
+	TypeBug,
+	TypeEpic,
+	TypeDesign,
+	TypeDecision,
+	TypeOther,
+}
+
+// Next returns the next type scope in the cycle.
+func (s TypeScope) Next() TypeScope {
+	for i, candidate := range TypeScopeOrder {
+		if candidate == s {
+			return TypeScopeOrder[(i+1)%len(TypeScopeOrder)]
+		}
+	}
+	return TypeAll
+}
+
+// Label returns a human-readable label for the scope.
+func (s TypeScope) Label() string {
+	switch s {
+	case TypeTask:
+		return "tasks"
+	case TypeBug:
+		return "bugs"
+	case TypeEpic:
+		return "epics"
+	case TypeDesign:
+		return "designs"
+	case TypeDecision:
+		return "decisions"
+	case TypeOther:
+		return "other"
+	default:
+		return "all"
+	}
+}
+
+// Match checks if a bead matches the type scope.
+func (s TypeScope) Match(b BoardBead) bool {
+	switch s {
+	case TypeAll:
+		return true
+	case TypeTask:
+		return b.Type == "task"
+	case TypeBug:
+		return b.Type == "bug"
+	case TypeEpic:
+		return b.Type == "epic"
+	case TypeDesign:
+		return b.Type == "design"
+	case TypeDecision:
+		return b.Type == "decision"
+	case TypeOther:
+		switch b.Type {
+		case "task", "bug", "epic", "design", "decision":
+			return false
+		default:
+			return true
+		}
+	default:
+		return true
+	}
+}
+
+// FilterTypeScope filters columns to only contain beads matching the scope.
+func FilterTypeScope(cols Columns, scope TypeScope) Columns {
+	if scope == TypeAll {
+		return cols
+	}
+	match := func(b BoardBead) bool {
+		return scope.Match(b)
+	}
+	return Columns{
+		Alerts:    FilterBeads(cols.Alerts, match),
+		Ready:     FilterBeads(cols.Ready, match),
+		Design:    FilterBeads(cols.Design, match),
+		Plan:      FilterBeads(cols.Plan, match),
+		Implement: FilterBeads(cols.Implement, match),
+		Review:    FilterBeads(cols.Review, match),
+		Merge:     FilterBeads(cols.Merge, match),
+		Done:      FilterBeads(cols.Done, match),
+		Blocked:   FilterBeads(cols.Blocked, match),
+	}
+}
+
+// FilterBeads returns beads matching the predicate.
+func FilterBeads(beads []BoardBead, pred func(BoardBead) bool) []BoardBead {
+	var out []BoardBead
+	for _, b := range beads {
+		if pred(b) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// BeadOwnerLabel extracts the owner name from a bead's labels.
+func BeadOwnerLabel(b BoardBead) string {
+	for _, l := range b.Labels {
+		if strings.HasPrefix(l, "owner:") {
+			return l[6:]
+		}
+	}
+	return ""
+}
+
+// IsCurrentUser checks if a claimed-by identity matches the current user.
+func IsCurrentUser(claimedBy, identity string) bool {
+	if claimedBy == "" || identity == "" {
+		return false
+	}
+	return claimedBy == identity ||
+		strings.EqualFold(claimedBy, identity) ||
+		strings.Contains(claimedBy, identity)
+}
+
+// BlockingDepIDs returns the IDs of beads that block the given bead.
+func BlockingDepIDs(b BoardBead) []string {
+	var ids []string
+	for _, d := range b.Dependencies {
+		if d.Type == "blocks" {
+			ids = append(ids, d.DependsOnID)
+		}
+	}
+	return ids
+}
+
+// FilterOwned filters to beads owned by the given identity.
+func FilterOwned(beads []BoardBead, identity string) []BoardBead {
+	var out []BoardBead
+	for _, b := range beads {
+		claimedBy := BeadOwnerLabel(b)
+		if claimedBy == "" {
+			claimedBy = b.Owner
+		}
+		if IsCurrentUser(claimedBy, identity) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// SortBeads sorts beads by priority (ascending) then update time (most recent first).
+func SortBeads(beads []BoardBead) {
+	sort.Slice(beads, func(i, j int) bool {
+		if beads[i].Priority != beads[j].Priority {
+			return beads[i].Priority < beads[j].Priority
+		}
+		left := boardSortTime(beads[i])
+		right := boardSortTime(beads[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return beads[i].ID < beads[j].ID
+	})
+}
+
+func boardSortTime(b BoardBead) time.Time {
+	if t, ok := ParseBoardTime(b.UpdatedAt); ok {
+		return t
+	}
+	if t, ok := ParseBoardTime(b.CreatedAt); ok {
+		return t
+	}
+	return time.Time{}
+}

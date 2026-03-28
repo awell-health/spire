@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
 )
@@ -324,7 +325,7 @@ func TestBoard_FiltersStepBeads(t *testing.T) {
 	closedBeads := []BoardBead{}
 	blockedBeads := []BoardBead{}
 
-	cols := categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
+	cols := board.CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
 
 	allCols := [][]BoardBead{
 		cols.Ready, cols.Design, cols.Plan, cols.Implement,
