@@ -16,10 +16,9 @@ type ColDef struct {
 	Beads []BoardBead
 }
 
-// ActiveColumns returns the non-empty columns in board display order.
-// This is the authoritative ordered list used by both navigation and rendering.
-func ActiveColumns(cols Columns) []ColDef {
-	all := []ColDef{
+// AllColumns returns all phase columns in board display order, including empty ones.
+func AllColumns(cols Columns) []ColDef {
+	return []ColDef{
 		{"READY", lipgloss.Color("2"), cols.Ready},
 		{"DESIGN", lipgloss.Color("4"), cols.Design},
 		{"PLAN", lipgloss.Color("6"), cols.Plan},
@@ -28,8 +27,13 @@ func ActiveColumns(cols Columns) []ColDef {
 		{"MERGE", lipgloss.Color("5"), cols.Merge},
 		{"DONE", lipgloss.Color("8"), cols.Done},
 	}
+}
+
+// ActiveColumns returns the non-empty columns in board display order.
+// This is the authoritative ordered list used by both navigation and rendering.
+func ActiveColumns(cols Columns) []ColDef {
 	var active []ColDef
-	for _, c := range all {
+	for _, c := range AllColumns(cols) {
 		if len(c.Beads) > 0 {
 			active = append(active, c)
 		}

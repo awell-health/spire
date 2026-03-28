@@ -132,24 +132,22 @@ func (m Model) View() string {
 	}
 
 	visibleCols := m.VisibleCols()
+	displayCols := m.DisplayColumns()
 	colWidth := 30
-	if m.Width > 0 {
-		activeCols := CountActiveCols(visibleCols)
-		if activeCols > 0 {
-			available := m.Width - (activeCols-1)*2
-			cw := available / activeCols
-			if cw > 50 {
-				cw = 50
-			}
-			if cw > 20 {
-				colWidth = cw
-			}
+	if m.Width > 0 && len(displayCols) > 0 {
+		available := m.Width - (len(displayCols)-1)*2
+		cw := available / len(displayCols)
+		if cw > 50 {
+			cw = 50
+		}
+		if cw > 20 {
+			colWidth = cw
 		}
 	}
 
 	var s strings.Builder
 
-	budget := CalcHeightBudget(m.Height, len(visibleCols.Alerts), len(visibleCols.Blocked), CountActiveCols(visibleCols), len(m.Agents))
+	budget := CalcHeightBudget(m.Height, len(visibleCols.Alerts), len(visibleCols.Blocked), len(displayCols), len(m.Agents))
 
 	// Header.
 	header := lipgloss.NewStyle().Bold(true).Render("Spire Board")
@@ -179,11 +177,9 @@ func (m Model) View() string {
 	}
 
 	// Build column content.
-	active := ActiveColumns(visibleCols)
-
-	if len(active) > 0 {
-		rendered := make([]string, len(active))
-		for i, c := range active {
+	if len(displayCols) > 0 {
+		rendered := make([]string, len(displayCols))
+		for i, c := range displayCols {
 			var cb strings.Builder
 			headerStyle := lipgloss.NewStyle().Bold(true).Foreground(c.Color)
 			if i == m.SelCol {
@@ -250,7 +246,11 @@ func (m Model) View() string {
 	if m.Opts.Epic != "" {
 		epicInfo = " • epic:" + m.Opts.Epic
 	}
-	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  t type  f focus  s summon  c claim  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
+	colsHint := ""
+	if m.ShowAllCols {
+		colsHint = " [all]"
+	}
+	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  t type  H cols" + colsHint + "  f focus  s summon  c claim  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
 	rightFooter := scopeStyle.Render("showing " + m.TypeScope.Label())
 	if m.Width > 0 {
 		gap := m.Width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)

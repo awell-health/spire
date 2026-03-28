@@ -23,11 +23,12 @@ type Model struct {
 	Cols          Columns
 	Agents        []LocalAgent // alive local wizards from registry
 	TypeScope     TypeScope
+	ShowAllCols   bool // when true, show all phase columns including empty ones
 	Width         int
 	Height        int
 	LastTick      time.Time
 	Quitting      bool
-	SelCol        int // selected column index into ActiveColumns(cols)
+	SelCol        int // selected column index into DisplayColumns()
 	SelCard       int // selected card index within selCol
 	PendingAction PendingAction
 	PendingBeadID string
@@ -43,9 +44,18 @@ func (m Model) VisibleCols() Columns {
 	return FilterTypeScope(m.Cols, m.TypeScope)
 }
 
+// DisplayColumns returns the columns to display, respecting ShowAllCols toggle.
+func (m Model) DisplayColumns() []ColDef {
+	vis := m.VisibleCols()
+	if m.ShowAllCols {
+		return AllColumns(vis)
+	}
+	return ActiveColumns(vis)
+}
+
 // ClampSelection keeps SelCol and SelCard within valid bounds.
 func (m *Model) ClampSelection() {
-	active := ActiveColumns(m.VisibleCols())
+	active := m.DisplayColumns()
 	if len(active) == 0 {
 		m.SelCol = 0
 		m.SelCard = 0
@@ -67,7 +77,7 @@ func (m *Model) ClampSelection() {
 
 // SelectedBead returns a pointer to the currently selected bead, or nil.
 func (m Model) SelectedBead() *BoardBead {
-	active := ActiveColumns(m.VisibleCols())
+	active := m.DisplayColumns()
 	if m.SelCol < 0 || m.SelCol >= len(active) {
 		return nil
 	}
@@ -169,6 +179,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ClampSelection()
 		case "t":
 			m.TypeScope = m.TypeScope.Next()
+			m.ClampSelection()
+
+		// Toggle showing all phase columns (including empty).
+		case "H":
+			m.ShowAllCols = !m.ShowAllCols
 			m.ClampSelection()
 
 		// Actions on the selected bead.

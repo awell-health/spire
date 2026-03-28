@@ -206,3 +206,54 @@ func TestShortTypeDecision(t *testing.T) {
 		t.Fatalf("shortType(decision) = %q, want %q", got, "dec")
 	}
 }
+
+func TestAllColumnsIncludesEmpty(t *testing.T) {
+	cols := board.Columns{
+		Ready:     []BoardBead{{ID: "spi-1", Type: "task"}},
+		Implement: []BoardBead{{ID: "spi-2", Type: "task"}},
+	}
+	active := board.ActiveColumns(cols)
+	all := board.AllColumns(cols)
+	if len(active) != 2 {
+		t.Fatalf("expected 2 active columns, got %d", len(active))
+	}
+	if len(all) != 7 {
+		t.Fatalf("expected 7 total columns, got %d", len(all))
+	}
+}
+
+func TestShowAllColsToggle(t *testing.T) {
+	cols := board.Columns{
+		Ready: []BoardBead{{ID: "spi-1", Type: "task"}},
+	}
+	m := board.Model{Cols: cols}
+
+	// Default: only non-empty columns
+	display := m.DisplayColumns()
+	if len(display) != 1 {
+		t.Fatalf("expected 1 display column with ShowAllCols=false, got %d", len(display))
+	}
+
+	// Toggle on: all phase columns
+	m.ShowAllCols = true
+	display = m.DisplayColumns()
+	if len(display) != 7 {
+		t.Fatalf("expected 7 display columns with ShowAllCols=true, got %d", len(display))
+	}
+
+	// Selection should work with empty columns
+	m.SelCol = 3 // IMPLEMENT (empty)
+	m.ClampSelection()
+	bead := m.SelectedBead()
+	if bead != nil {
+		t.Fatalf("expected nil bead for empty column, got %v", bead)
+	}
+
+	// Navigate to READY (index 0) which has a bead
+	m.SelCol = 0
+	m.SelCard = 0
+	bead = m.SelectedBead()
+	if bead == nil || bead.ID != "spi-1" {
+		t.Fatalf("expected spi-1, got %v", bead)
+	}
+}
