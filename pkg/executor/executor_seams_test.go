@@ -1478,3 +1478,193 @@ func TestArchmageIdentity_FromTower(t *testing.T) {
 		t.Errorf("email = %q, want test@example.com", email)
 	}
 }
+
+// =============================================================================
+// Seam: empty-implement escalation
+//
+// When the implement phase completes but the staging branch has no diff vs base
+// (the apprentice produced no code changes), the executor should:
+// 1. Call EscalateEmptyImplement (label needs-human, create alert bead, add comment)
+// 2. NOT advance to review
+// 3. Set terminated = true (return nil, not error)
+// =============================================================================
+
+// TestRunPhaseLoop_EmptyImplementEscalates verifies that when the implement
+// phase produces no code changes (staging has no diff vs base), the executor
+// escalates immediately instead of advancing to review.
+func TestRunPhaseLoop_EmptyImplementEscalates(t *testing.T) {
+	repoDir := initSeamTestRepo(t)
+	configDir := t.TempDir()
+	configDirFn := func() (string, error) { return configDir, nil }
+
+	// Create a feat branch at the same commit as main (no new commits).
+	// This means the staging branch will have no diff vs base after merging,
+	// triggering empty-implement escalation.
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("branch", "feat/spi-empty")
+
+	var labelsAdded []string
+	var commentsAdded []string
+	var beadsCreated []CreateOpts
+	var depsAdded []string
+	var closedAttemptResult string
+	phasesExecuted := []string{}
+
+	deps := &Deps{
+		ConfigDir: configDirFn,
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		GetChildren: func(parentID string) ([]Bead, error) {
+			return nil, nil
+		},
+		GetActiveAttempt: func(parentID string) (*Bead, error) {
+			return nil, nil
+		},
+		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
+			return "spi-empty.attempt-1", nil
+		},
+		CloseAttemptBead: func(attemptID, result string) error {
+			closedAttemptResult = result
+			return nil
+		},
+		HasLabel:    func(b Bead, prefix string) string { return "" },
+		RemoveLabel: func(id, label string) error { return nil },
+		AddLabel: func(id, label string) error {
+			labelsAdded = append(labelsAdded, id+":"+label)
+			return nil
+		},
+		AddComment: func(id, text string) error {
+			commentsAdded = append(commentsAdded, text)
+			return nil
+		},
+		CreateBead: func(opts CreateOpts) (string, error) {
+			beadsCreated = append(beadsCreated, opts)
+			return "spi-alert-1", nil
+		},
+		AddDepTyped: func(issueID, dependsOnID, depType string) error {
+			depsAdded = append(depsAdded, issueID+"→"+dependsOnID+":"+depType)
+			return nil
+		},
+		ContainsLabel: func(b Bead, label string) bool { return false },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return repoDir, "", "main", nil
+		},
+		RegistryAdd:    func(entry agent.Entry) error { return nil },
+		RegistryRemove: func(name string) error { return nil },
+		CreateStepBead: func(parentID, stepName string) (string, error) {
+			return parentID + ".step-" + stepName, nil
+		},
+		ActivateStepBead: func(stepID string) error { return nil },
+		CloseStepBead:    func(stepID string) error { return nil },
+		CloseBead:        func(id string) error { return nil },
+		Spawner: &mockBackend{
+			spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+				phasesExecuted = append(phasesExecuted, string(cfg.Role))
+				return &mockHandle{}, nil
+			},
+		},
+		ActiveTowerConfig: func() (*config.TowerConfig, error) {
+			return nil, os.ErrNotExist
+		},
+		ArchmageGitEnv: func(tower *config.TowerConfig) []string {
+			return os.Environ()
+		},
+	}
+
+	f := &formula.FormulaV2{
+		Name:    "test-empty-impl",
+		Version: 2,
+		Phases: map[string]formula.PhaseConfig{
+			"implement": {Role: "apprentice"},
+			"review":    {Role: "sage"},
+		},
+	}
+
+	state := &State{
+		BeadID:    "spi-empty",
+		AgentName: "wizard-empty",
+		Formula:   "test-empty-impl",
+		Phase:     "implement",
+		Subtasks:  make(map[string]SubtaskState),
+	}
+
+	e := NewForTest("spi-empty", "wizard-empty", f, state, deps)
+
+	err := e.Run()
+	if err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// Verify terminated was set (state file would be cleaned up).
+	if !e.terminated {
+		t.Error("expected terminated=true after empty implement escalation")
+	}
+
+	// Verify only the implement phase was dispatched, NOT review.
+	if len(phasesExecuted) != 1 {
+		t.Errorf("expected 1 phase executed (implement only), got %d: %v", len(phasesExecuted), phasesExecuted)
+	}
+	if len(phasesExecuted) >= 1 && phasesExecuted[0] != "apprentice" {
+		t.Errorf("first phase role = %q, want apprentice", phasesExecuted[0])
+	}
+
+	// Verify needs-human label was added to the bead.
+	foundNeedsHuman := false
+	for _, l := range labelsAdded {
+		if l == "spi-empty:needs-human" {
+			foundNeedsHuman = true
+		}
+	}
+	if !foundNeedsHuman {
+		t.Errorf("expected needs-human label on bead, got labels: %v", labelsAdded)
+	}
+
+	// Verify an alert bead was created.
+	foundAlert := false
+	for _, opts := range beadsCreated {
+		for _, lbl := range opts.Labels {
+			if lbl == "alert:empty-implement" {
+				foundAlert = true
+			}
+		}
+	}
+	if !foundAlert {
+		t.Errorf("expected alert bead with alert:empty-implement label, got: %v", beadsCreated)
+	}
+
+	// Verify a related dep was added (alert → bead, not ref: label).
+	foundRelatedDep := false
+	for _, d := range depsAdded {
+		if d == "spi-alert-1→spi-empty:related" {
+			foundRelatedDep = true
+		}
+	}
+	if !foundRelatedDep {
+		t.Errorf("expected related dep spi-alert-1→spi-empty, got: %v", depsAdded)
+	}
+
+	// Verify a comment was added explaining the situation.
+	foundComment := false
+	for _, c := range commentsAdded {
+		if strings.Contains(c, "no code changes") {
+			foundComment = true
+		}
+	}
+	if !foundComment {
+		t.Errorf("expected comment about no code changes, got: %v", commentsAdded)
+	}
+
+	// Verify attempt was closed with escalation message, not success.
+	if !strings.Contains(closedAttemptResult, "escalat") {
+		t.Errorf("attempt result = %q, want to contain 'escalat'", closedAttemptResult)
+	}
+}
