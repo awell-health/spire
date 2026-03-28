@@ -178,9 +178,9 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		}
 
 		// Route by workload type:
-		//   epic   → workshop pod (artificer + sidecar)
-		//   review → review pod (artificer --mode=review, one-shot)
-		//   *      → wizard pod (wizard + sidecar)
+		//   epic   → wizard pod (wizard + familiar)
+		//   review → review pod (wizard --mode=review, one-shot)
+		//   *      → wizard pod (wizard + familiar)
 		var pod *corev1.Pod
 		switch wlType := m.getWorkloadType(ctx, beadID); wlType {
 		case "epic":
@@ -501,8 +501,8 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		branch = "main"
 	}
 
-	// Artificer environment.
-	artificerEnv := []corev1.EnvVar{
+	// Wizard environment.
+	wizardEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
 		{Name: "SPIRE_EPIC_ID", Value: beadID},
 		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
@@ -512,12 +512,12 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "ARTIFICER_MODEL", Value: "claude-opus-4-6"},
-		{Name: "ARTIFICER_MAX_REVIEW_ROUNDS", Value: "3"},
+		{Name: "WIZARD_MODEL", Value: "claude-opus-4-6"},
+		{Name: "WIZARD_MAX_REVIEW_ROUNDS", Value: "3"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
-	// Sidecar environment.
+	// Familiar (sidecar) environment.
 	sidecarEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
@@ -527,7 +527,7 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 
 	// Inject secrets from SpireConfig.
 	if cfg != nil {
-		// Opus token — prefer "heavy" token for the artificer, fall back to default.
+		// Opus token — prefer "heavy" token for the wizard, fall back to default.
 		tokenName := "heavy"
 		if _, ok := cfg.Spec.Tokens[tokenName]; !ok {
 			tokenName = agent.Spec.Token
@@ -539,14 +539,14 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 			}
 		}
 		if tokenRef, ok := cfg.Spec.Tokens[tokenName]; ok {
-			artificerEnv = append(artificerEnv,
+			wizardEnv = append(wizardEnv,
 				envFromSecret("ANTHROPIC_API_KEY", tokenRef.Secret, tokenRef.Key),
 			)
 		}
 
 		// GitHub token.
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
-			artificerEnv = append(artificerEnv,
+			wizardEnv = append(wizardEnv,
 				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
 			)
 		}
@@ -573,8 +573,8 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 				"spire.awell.io/agent":   agent.Name,
 				"spire.awell.io/bead":    beadID,
 				"spire.awell.io/managed": "true",
-				"spire.awell.io/role":    "artificer",
-				"app.kubernetes.io/name": "spire-workshop",
+				"spire.awell.io/role":    "wizard",
+				"app.kubernetes.io/name": "spire-wizard",
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -583,10 +583,10 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 			Volumes:        volumes,
 			Containers: []corev1.Container{
 				{
-					Name:    "artificer",
+					Name:    "wizard",
 					Image:   image,
-					Command: []string{"spire-artificer", fmt.Sprintf("--epic-id=%s", beadID)},
-					Env:     artificerEnv,
+					Command: []string{"spire", "wizard-epic", beadID},
+					Env:     wizardEnv,
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -658,8 +658,8 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 		branch = "main"
 	}
 
-	// Artificer environment.
-	artificerEnv := []corev1.EnvVar{
+	// Wizard environment.
+	wizardEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
 		{Name: "SPIRE_BEAD_ID", Value: beadID},
 		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
@@ -669,11 +669,11 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "ARTIFICER_MODEL", Value: "claude-opus-4-6"},
+		{Name: "WIZARD_MODEL", Value: "claude-opus-4-6"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
-	// Sidecar environment.
+	// Familiar (sidecar) environment.
 	sidecarEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
@@ -695,13 +695,13 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 			}
 		}
 		if tokenRef, ok := cfg.Spec.Tokens[tokenName]; ok {
-			artificerEnv = append(artificerEnv,
+			wizardEnv = append(wizardEnv,
 				envFromSecret("ANTHROPIC_API_KEY", tokenRef.Secret, tokenRef.Key),
 			)
 		}
 
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
-			artificerEnv = append(artificerEnv,
+			wizardEnv = append(wizardEnv,
 				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
 			)
 		}
@@ -738,15 +738,15 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 			Volumes:        volumes,
 			Containers: []corev1.Container{
 				{
-					Name:  "artificer",
+					Name:  "wizard",
 					Image: image,
 					Command: []string{
-						"spire-artificer",
+						"spire",
+						"wizard-review",
 						fmt.Sprintf("--bead-id=%s", beadID),
-						"--mode=review",
 						"--once",
 					},
-					Env: artificerEnv,
+					Env: wizardEnv,
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("100m"),
