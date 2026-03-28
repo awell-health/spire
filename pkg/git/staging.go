@@ -218,34 +218,22 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 		w.log("ff-only failed: %s — rebasing staging onto %s", err, baseBranch)
 	}
 
-	// ff-only failed — main has diverged. Rebase staging onto main in a
-	// temporary worktree so we don't disturb the main worktree's checkout.
-	rebaseTmp, err := os.MkdirTemp("", "spire-rebase-")
-	if err != nil {
-		return fmt.Errorf("create rebase temp dir: %w", err)
-	}
-	defer os.RemoveAll(rebaseTmp)
-
-	rebaseWtPath := filepath.Join(rebaseTmp, "staging")
-	rebaseWc, wtErr := rc.CreateWorktree(rebaseWtPath, w.Branch)
-	if wtErr != nil {
-		return fmt.Errorf("create rebase worktree: %w", wtErr)
-	}
-	defer rc.ForceRemoveWorktree(rebaseWtPath)
-
-	// Rebase the staging branch onto main (raw exec — WorktreeContext doesn't expose rebase).
-	w.log("rebasing %s onto %s in staging worktree", w.Branch, baseBranch)
-	rebaseCmd := exec.Command("git", "-C", rebaseWtPath, "rebase", baseBranch)
+	// ff-only failed — main has diverged. Rebase the staging branch onto
+	// baseBranch in-place in the existing staging worktree. We cannot create
+	// a second worktree for the same branch — git forbids two worktrees
+	// checking out the same branch simultaneously.
+	w.log("rebasing %s onto %s in place", w.Branch, baseBranch)
+	rebaseCmd := exec.Command("git", "-C", w.Dir, "rebase", baseBranch)
 	rebaseCmd.Env = os.Environ()
 	if out, rbErr := rebaseCmd.CombinedOutput(); rbErr != nil {
-		exec.Command("git", "-C", rebaseWtPath, "rebase", "--abort").Run()
+		exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
 		return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s", w.Branch, baseBranch, rbErr, string(out))
 	}
 
 	// Re-verify build in the staging worktree after rebase.
 	if buildStr != "" {
 		w.log("verifying build after rebase")
-		out, buildErr := rebaseWc.RunCommandOutput(buildStr)
+		out, buildErr := w.RunCommandOutput(buildStr)
 		if buildErr != nil {
 			return fmt.Errorf("build failed after rebase (aborting merge): %s\n%s", buildErr, out)
 		}
@@ -254,15 +242,11 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 	// Run tests after rebase.
 	if testStr != "" {
 		w.log("running tests after rebase")
-		out, testErr := rebaseWc.RunCommandOutput(testStr)
+		out, testErr := w.RunCommandOutput(testStr)
 		if testErr != nil {
 			return fmt.Errorf("tests failed after rebase (aborting merge): %s\n%s", testErr, out)
 		}
 	}
-
-	// Remove the rebase worktree before retrying the merge (the branch ref is
-	// already updated by the rebase — the worktree just holds a checkout).
-	rc.ForceRemoveWorktree(rebaseWtPath)
 
 	// Second attempt: ff-only should now succeed since staging was rebased.
 	w.log("retrying ff-only merge after rebase")
