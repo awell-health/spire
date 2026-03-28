@@ -137,7 +137,7 @@ func RenderPipelineCompactANSI(steps []DAGStep) string {
 func renderStepANSI(s DAGStep) string {
 	switch s.Status {
 	case "closed":
-		return Green + "[✅ " + s.Name + "]" + Reset
+		return Green + "[✓ " + s.Name + "]" + Reset
 	case "in_progress":
 		return Cyan + "[▶ " + s.Name + "]" + Reset
 	default:
@@ -148,7 +148,7 @@ func renderStepANSI(s DAGStep) string {
 func stepIconANSI(s DAGStep) string {
 	switch s.Status {
 	case "closed":
-		return Green + "✅" + Reset
+		return Green + "✓" + Reset
 	case "in_progress":
 		return Cyan + "▶" + Reset
 	default:

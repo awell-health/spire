@@ -331,7 +331,7 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 				for _, step := range dag.Steps {
 					switch step.Status {
 					case "closed":
-						icons = append(icons, greenLG.Render("✅"))
+						icons = append(icons, greenLG.Render("✓"))
 					case "in_progress":
 						icons = append(icons, cyanLG.Render("▶"))
 					default:
@@ -416,7 +416,7 @@ func RenderPipelineLipgloss(beadID string) string {
 	for _, step := range dag.Steps {
 		switch step.Status {
 		case "closed":
-			parts = append(parts, greenStyle.Render("✅"))
+			parts = append(parts, greenStyle.Render("✓"))
 		case "in_progress":
 			parts = append(parts, cyanStyle.Render("▶"))
 		default:
