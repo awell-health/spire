@@ -6,6 +6,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/steveyegge/beads"
 )
 
 func cmdResummon(args []string) error {
@@ -53,7 +55,7 @@ func cmdResummon(args []string) error {
 						proc.Signal(syscall.SIGKILL)
 					}
 				}
-				fmt.Printf("  %s killed old wizard (pid %d)%s\n", dim, w.PID, reset)
+				fmt.Printf("  %skilled old wizard (pid %d)%s\n", dim, w.PID, reset)
 			}
 
 			// Remove from registry.
@@ -75,7 +77,36 @@ func cmdResummon(args []string) error {
 	}
 	fmt.Printf("  %s✓ stripped needs-human from %s%s\n", green, beadID, reset)
 
-	// 5. Re-summon: spire summon 1 --targets <bead-id>
+	// 5. Close any open alert beads that reference this bead (merge-failure, etc.).
+	closeRefAlerts(beadID)
+
+	// 6. Re-summon: spire summon 1 --targets <bead-id>
 	fmt.Printf("  re-summoning wizard for %s...\n", beadID)
 	return cmdSummon([]string{"1", "--targets", beadID})
+}
+
+// closeRefAlerts closes all open alert beads that reference the given bead ID
+// via a ref:<beadID> label. This prevents stale alerts (merge-failure, etc.)
+// from lingering on the board after a successful re-summon.
+func closeRefAlerts(beadID string) {
+	open := beads.StatusOpen
+	alerts, err := storeListBeads(beads.IssueFilter{
+		Labels: []string{"ref:" + beadID},
+		Status: &open,
+	})
+	if err != nil {
+		return
+	}
+
+	for _, a := range alerts {
+		// Only close beads that have an alert label.
+		if hasLabel(a, "alert:") == "" && !containsLabel(a, "alert") {
+			continue
+		}
+		if err := storeCloseBead(a.ID); err != nil {
+			fmt.Printf("  %s(note: could not close alert %s: %s)%s\n", dim, a.ID, err, reset)
+			continue
+		}
+		fmt.Printf("  %s✓ closed alert %s%s\n", green, a.ID, reset)
+	}
 }
