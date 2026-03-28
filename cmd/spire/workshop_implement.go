@@ -101,7 +101,7 @@ func workshopImplement(state *workshopState, spawner AgentBackend) error {
 			}
 			state.Subtasks[r.BeadID] = subtaskState{
 				Status: "closed",
-				Branch: fmt.Sprintf("feat/%s", r.BeadID),
+				Branch: resolveBranchForBead(r.BeadID, repoPath),
 				Agent:  r.Agent,
 			}
 		}

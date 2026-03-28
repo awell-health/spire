@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // SidecarState tracks the sidecar's current operational state.
@@ -167,7 +169,11 @@ func (s *SidecarState) readWorkContext() *WorkContext {
 
 	// Infer branch from bead ID if not in result.
 	if wc.Branch == "" && wc.BeadID != "" {
-		wc.Branch = "feat/" + wc.BeadID
+		if cfg, err := repoconfig.Load("."); err == nil && cfg != nil {
+			wc.Branch = cfg.ResolveBranch(wc.BeadID)
+		} else {
+			wc.Branch = "feat/" + wc.BeadID
+		}
 	}
 
 	return wc

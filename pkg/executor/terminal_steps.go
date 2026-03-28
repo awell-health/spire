@@ -146,7 +146,11 @@ func TerminalSplit(beadID, reviewerName string, splitTasks []SplitTask, deps *De
 
 	branch := deps.HasLabel(bead, "feat-branch:")
 	if branch == "" {
-		branch = fmt.Sprintf("feat/%s", beadID)
+		if deps.ResolveBranch != nil {
+			branch = deps.ResolveBranch(beadID)
+		} else {
+			branch = "feat/" + beadID
+		}
 	}
 
 	repoPath, _, baseBranch, err := deps.ResolveRepo(beadID)
@@ -194,7 +198,11 @@ func TerminalDiscard(beadID string, deps *Deps, log func(string, ...interface{})
 
 	branch := deps.HasLabel(bead, "feat-branch:")
 	if branch == "" {
-		branch = fmt.Sprintf("feat/%s", beadID)
+		if deps.ResolveBranch != nil {
+			branch = deps.ResolveBranch(beadID)
+		} else {
+			branch = "feat/" + beadID
+		}
 	}
 
 	repoPath, _, _, resolveErr := deps.ResolveRepo(beadID)

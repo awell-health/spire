@@ -370,7 +370,7 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 		testResult := runTests(workspaceDir, cs.Branch, cfg)
 		if !testResult.Passed {
 			log.Printf("[artificer] tests failed on %s during %s", childID, testResult.Stage)
-			sendTestFailure(child, testResult) //nolint:errcheck
+			sendTestFailure(child, cs.Branch, testResult) //nolint:errcheck
 			recordRun(child, epicID, model, "test_failure", nil, tokenUsage{}, [3]int{}, reviewStart) //nolint:errcheck
 			cs.LastReviewedCommit = head
 			saveChildStates(stateDir, childStates)
@@ -419,7 +419,7 @@ func artificerCycle(workspaceDir, stateDir, epicID, model string, maxRounds int,
 				escalateToHuman(child, review, cs.ReviewRounds) //nolint:errcheck
 			} else {
 				log.Printf("[artificer] %s needs changes (round %d/%d)", childID, cs.ReviewRounds, maxRounds)
-				sendReviewToWizard(child, review) //nolint:errcheck
+				sendReviewToWizard(child, cs.Branch, review) //nolint:errcheck
 			}
 
 		case "reject":

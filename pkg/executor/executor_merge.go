@@ -22,7 +22,7 @@ func (e *Executor) executeMerge(pc PhaseConfig) error {
 		if e.state.StagingBranch != "" {
 			branch = e.state.StagingBranch
 		} else {
-			branch = fmt.Sprintf("feat/%s", e.beadID)
+			branch = e.resolveBranch(e.beadID)
 		}
 	}
 

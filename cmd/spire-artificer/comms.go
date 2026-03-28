@@ -14,19 +14,19 @@ import (
 )
 
 // sendTestFailure notifies the wizard that tests failed on their branch.
-func sendTestFailure(child Bead, result *TestResult) error {
-	msg := fmt.Sprintf("Tests failed on feat/%s during %s. Output:\n%s",
-		child.ID, result.Stage, truncate(result.Output, 2000))
+func sendTestFailure(child Bead, branch string, result *TestResult) error {
+	msg := fmt.Sprintf("Tests failed on %s during %s. Output:\n%s",
+		branch, result.Stage, truncate(result.Output, 2000))
 
 	agent := resolveWizardAgent(child)
 	return spireSend(agent, msg, child.ID, 1)
 }
 
 // sendReviewToWizard sends structured review feedback to the wizard.
-func sendReviewToWizard(child Bead, review *Review) error {
+func sendReviewToWizard(child Bead, branch string, review *Review) error {
 	reviewJSON, _ := json.MarshalIndent(review, "", "  ")
-	msg := fmt.Sprintf("Review for feat/%s: %s\n\n%s",
-		child.ID, review.Verdict, string(reviewJSON))
+	msg := fmt.Sprintf("Review for %s: %s\n\n%s",
+		branch, review.Verdict, string(reviewJSON))
 
 	agent := resolveWizardAgent(child)
 	return spireSend(agent, msg, child.ID, 1)

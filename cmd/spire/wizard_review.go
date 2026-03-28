@@ -99,7 +99,7 @@ func cmdWizardReview(args []string) error {
 
 	branch := hasLabel(bead, "feat-branch:")
 	if branch == "" {
-		branch = fmt.Sprintf("feat/%s", beadID)
+		branch = resolveBranchForBead(beadID, repoPath)
 	}
 	log("reviewing %s branch %s", beadID, branch)
 
@@ -710,7 +710,9 @@ Decision meanings:
 		log("arbiter: force-approve, proceeding to merge")
 		branch := hasLabel(bead, "feat-branch:")
 		if branch == "" {
-			branch = fmt.Sprintf("feat/%s", beadID)
+			// Resolve repo first to load config from the correct directory.
+			rp, _, _, _ := wizardResolveRepo(beadID)
+			branch = resolveBranchForBead(beadID, rp)
 		}
 		repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
 		if err != nil {
@@ -767,13 +769,12 @@ func cmdWizardMerge(args []string) error {
 
 	// Resolve branch and repo
 	branch := hasLabel(bead, "feat-branch:")
-	if branch == "" {
-		branch = fmt.Sprintf("feat/%s", beadID)
-	}
-
 	repoPath, _, baseBranch, err := wizardResolveRepo(beadID)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
+	}
+	if branch == "" {
+		branch = resolveBranchForBead(beadID, repoPath)
 	}
 
 	log("merging %s branch %s → %s", beadID, branch, baseBranch)

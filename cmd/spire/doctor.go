@@ -11,6 +11,7 @@ import (
 
 	bdpkg "github.com/awell-health/spire/pkg/bd"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // checkStatus represents the result of a single doctor check.
@@ -1025,14 +1026,23 @@ func detectPrefixFromPath(repoPath string) string {
 	return inst.Prefix
 }
 
-// checkStaleBranches scans local git branches matching feat/* and epic/*,
-// extracts the bead ID from each branch name, and warns if the bead is closed.
-// Returns one checkResult per stale branch found, plus one "all clear" result
-// if no stale branches exist.
+// checkStaleBranches scans local git branches matching the configured branch
+// pattern (from spire.yaml) and epic/*, extracts the bead ID from each branch
+// name, and warns if the bead is closed. Returns one checkResult per stale
+// branch found, plus one "all clear" result if no stale branches exist.
 func checkStaleBranches(repoPath string) []checkResult {
-	// List local branches matching feat/* and epic/*
 	rc := &spgit.RepoContext{Dir: repoPath}
-	featBranches := rc.ListBranches("feat/*")
+
+	// Load branch config to determine the correct glob and prefix.
+	cfg, _ := repoconfig.Load(repoPath)
+	if cfg == nil {
+		cfg = &repoconfig.RepoConfig{}
+	}
+	branchGlob := cfg.BranchGlob()
+	branchPrefix := cfg.BranchPrefix()
+
+	// List local branches matching the configured pattern and epic/*.
+	featBranches := rc.ListBranches(branchGlob)
 	epicBranches := rc.ListBranches("epic/*")
 	allBranches := append(featBranches, epicBranches...)
 	if len(allBranches) == 0 {
@@ -1040,18 +1050,22 @@ func checkStaleBranches(repoPath string) []checkResult {
 	}
 
 	var staleBranches []string
-	lines := allBranches
-	for _, branch := range lines {
+	for _, branch := range allBranches {
 		branch = strings.TrimSpace(branch)
 		if branch == "" {
 			continue
 		}
-		// Extract bead ID: feat/spi-70sa0 → spi-70sa0, epic/spi-70sa0 → spi-70sa0
+		// Extract bead ID using the configured prefix or epic/.
 		var beadID string
-		if after, ok := strings.CutPrefix(branch, "feat/"); ok {
-			beadID = after
-		} else if after, ok := strings.CutPrefix(branch, "epic/"); ok {
-			beadID = after
+		if branchPrefix != "" {
+			if after, ok := strings.CutPrefix(branch, branchPrefix); ok {
+				beadID = after
+			}
+		}
+		if beadID == "" {
+			if after, ok := strings.CutPrefix(branch, "epic/"); ok {
+				beadID = after
+			}
 		}
 		if beadID == "" {
 			continue

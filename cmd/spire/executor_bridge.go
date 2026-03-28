@@ -121,8 +121,9 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		RegistryRemove: func(name string) error { return wizardRegistryRemove(name) },
 
 		// Resolution
-		ResolveRepo: wizardResolveRepo,
-		GetPhase:    getPhase,
+		ResolveRepo:   wizardResolveRepo,
+		ResolveBranch: executorResolveBranch,
+		GetPhase:      getPhase,
 
 		// Tower / identity
 		ActiveTowerConfig: activeTowerConfig,
@@ -190,6 +191,16 @@ func bridgeReviewEscalateToArbiter(beadID, reviewerName string, lastReview *exec
 // --- Type compatibility: Review is now in both executor and wizard_review.go ---
 // The cmd/spire Review type stays in wizard_review.go; executor.Review is separate.
 // The bridge above handles conversion. pkg/executor callers use executor.Review.
+
+// executorResolveBranch loads spire.yaml from the bead's repo and resolves
+// the branch name. Used by the executor's Deps.ResolveBranch.
+func executorResolveBranch(beadID string) string {
+	repoPath, _, _, err := wizardResolveRepo(beadID)
+	if err != nil {
+		return "feat/" + beadID
+	}
+	return resolveBranchForBead(beadID, repoPath)
+}
 
 // --- Command entry point ---
 

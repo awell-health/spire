@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // claimGetBeadFunc is a test-replaceable wrapper around storeGetBead.
@@ -55,7 +57,7 @@ func cmdClaim(args []string) error {
 	// either reclaims it (same agent) or rejects the claim (different agent),
 	// narrowing the TOCTOU race window.
 	identity, _ := claimIdentityFunc("")
-	branch := fmt.Sprintf("feat/%s", id)
+	branch := resolveClaimBranch(id)
 	// Model is unknown at claim time — the executor updates the model label
 	// later when it has formula context.
 	attemptID, err := claimCreateAttemptFunc(id, identity, "", branch)
@@ -83,4 +85,15 @@ func cmdClaim(args []string) error {
 	fmt.Println(string(out))
 
 	return nil
+}
+
+// resolveClaimBranch loads spire.yaml from the current directory and resolves
+// the branch name for the given bead ID. Falls back to "feat/<id>" if the
+// config cannot be loaded.
+func resolveClaimBranch(beadID string) string {
+	cfg, err := repoconfig.Load(".")
+	if err != nil || cfg == nil {
+		return "feat/" + beadID
+	}
+	return cfg.ResolveBranch(beadID)
 }
