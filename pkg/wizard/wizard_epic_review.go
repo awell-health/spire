@@ -7,13 +7,13 @@ import (
 	"strings"
 )
 
-// WorkshopReview handles the review phase of the wizard workshop.
+// EpicReview handles the review phase of the wizard epic orchestration.
 // It dispatches a sage (reviewer), waits for the verdict, and makes
 // judgment calls on review feedback.
-func WorkshopReview(state *WorkshopState, spawner Backend, deps *Deps) error {
+func EpicReview(state *EpicState, spawner Backend, deps *Deps) error {
 	epicID := state.EpicID
 	log := func(format string, a ...interface{}) {
-		fmt.Fprintf(os.Stderr, "[workshop] "+format+"\n", a...)
+		fmt.Fprintf(os.Stderr, "[wizard-epic] "+format+"\n", a...)
 	}
 
 	// 1. Dispatch a sage (reviewer)
@@ -117,7 +117,7 @@ Based on this feedback, decide:
 Respond with ONLY a JSON object:
 {"decision": "agree|disagree|partial", "reason": "brief explanation"}`, epicID, state.ReviewRounds, feedback)
 
-		judgment, err := WorkshopConsultClaude(state, judgmentPrompt)
+		judgment, err := EpicConsultClaude(state, judgmentPrompt)
 		if err != nil {
 			log("claude judgment failed: %s — defaulting to agree", err)
 			judgment = `{"decision": "agree", "reason": "judgment unavailable"}`

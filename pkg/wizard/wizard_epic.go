@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// CmdWorkshop is the entry point for the spire workshop command.
+// CmdWizardEpic is the entry point for the spire workshop command.
 // Usage: spire workshop <epic-id>
-func CmdWorkshop(args []string, deps *Deps) error {
+func CmdWizardEpic(args []string, deps *Deps) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: spire workshop <epic-id>")
 	}
@@ -38,10 +38,10 @@ func CmdWorkshop(args []string, deps *Deps) error {
 		}
 	}
 
-	// Load or create workshop state
-	state, err := LoadWorkshopState(epicID, deps)
+	// Load or create epic state
+	state, err := LoadEpicState(epicID, deps)
 	if err != nil {
-		return fmt.Errorf("load workshop state: %w", err)
+		return fmt.Errorf("load epic state: %w", err)
 	}
 
 	if state == nil {
@@ -52,7 +52,7 @@ func CmdWorkshop(args []string, deps *Deps) error {
 		}
 
 		now := time.Now().UTC().Format(time.RFC3339)
-		state = &WorkshopState{
+		state = &EpicState{
 			EpicID:    epicID,
 			Phase:     phase,
 			Wave:      0,
@@ -61,27 +61,27 @@ func CmdWorkshop(args []string, deps *Deps) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "[workshop] starting for %s (phase: %s)\n", epicID, state.Phase)
+	fmt.Fprintf(os.Stderr, "[wizard-epic] starting for %s (phase: %s)\n", epicID, state.Phase)
 
 	backend := deps.ResolveBackend("")
-	return WorkshopLoop(state, backend, deps)
+	return EpicLoop(state, backend, deps)
 }
 
-// WorkshopRuntimeDir returns the directory for workshop runtime state.
-func WorkshopRuntimeDir(epicID string, deps *Deps) string {
+// EpicRuntimeDir returns the directory for epic runtime state.
+func EpicRuntimeDir(epicID string, deps *Deps) string {
 	dir, _ := deps.ConfigDir()
 	return filepath.Join(dir, "runtime", "wizard-"+epicID)
 }
 
-// WorkshopStatePath returns the path to the workshop state file.
-func WorkshopStatePath(epicID string, deps *Deps) string {
-	return filepath.Join(WorkshopRuntimeDir(epicID, deps), "state.json")
+// EpicStatePath returns the path to the epic state file.
+func EpicStatePath(epicID string, deps *Deps) string {
+	return filepath.Join(EpicRuntimeDir(epicID, deps), "state.json")
 }
 
-// LoadWorkshopState loads an existing workshop state from disk.
+// LoadEpicState loads an existing epic state from disk.
 // Returns (nil, nil) if no state file exists (new session).
-func LoadWorkshopState(epicID string, deps *Deps) (*WorkshopState, error) {
-	path := WorkshopStatePath(epicID, deps)
+func LoadEpicState(epicID string, deps *Deps) (*EpicState, error) {
+	path := EpicStatePath(epicID, deps)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -89,21 +89,21 @@ func LoadWorkshopState(epicID string, deps *Deps) (*WorkshopState, error) {
 		}
 		return nil, err
 	}
-	var state WorkshopState
+	var state EpicState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
 	return &state, nil
 }
 
-// SaveWorkshopState persists workshop state to disk.
-func SaveWorkshopState(state *WorkshopState, deps *Deps) error {
-	dir := WorkshopRuntimeDir(state.EpicID, deps)
+// SaveEpicState persists epic state to disk.
+func SaveEpicState(state *EpicState, deps *Deps) error {
+	dir := EpicRuntimeDir(state.EpicID, deps)
 	os.MkdirAll(dir, 0755)
 	state.LastActionAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(WorkshopStatePath(state.EpicID, deps), data, 0644)
+	return os.WriteFile(EpicStatePath(state.EpicID, deps), data, 0644)
 }
