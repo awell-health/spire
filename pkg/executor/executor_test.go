@@ -589,6 +589,140 @@ func TestComputeWaves(t *testing.T) {
 	}
 }
 
+// TestWizardPlanSkipsInternalDAGBeads verifies that wizardPlan does NOT
+// short-circuit into enrichSubtasksWithChangeSpecs when the only children
+// are internal DAG beads (step, attempt, review-round). This is the fix
+// for spi-xjcqs: ensureStepBeads/ensureAttemptBead create these children
+// BEFORE the plan phase runs, so without filtering, planning is always
+// skipped.
+func TestWizardPlanSkipsInternalDAGBeads(t *testing.T) {
+	planCalled := false
+	enrichCalled := false
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return t.TempDir(), nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Title: "Test epic", Priority: 1}, nil
+		},
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			return nil, nil
+		},
+		GetChildren: func(parentID string) ([]Bead, error) {
+			// Return only internal DAG beads — the kind created by
+			// ensureStepBeads and ensureAttemptBead before plan runs.
+			return []Bead{
+				{ID: parentID + ".step-design", Title: "design"},
+				{ID: parentID + ".step-plan", Title: "plan"},
+				{ID: parentID + ".step-implement", Title: "implement"},
+				{ID: parentID + ".step-review", Title: "review"},
+				{ID: parentID + ".step-merge", Title: "merge"},
+				{ID: parentID + ".attempt-1", Title: "attempt-1"},
+			}, nil
+		},
+		AddComment: func(id, text string) error { return nil },
+		CreateBead: func(opts CreateOpts) (string, error) {
+			return "spi-plan-child.1", nil
+		},
+		AddDep: func(issueID, depID string) error { return nil },
+		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+			// If Claude is invoked, planning was attempted (not skipped).
+			planCalled = true
+			return []byte(`{"title": "Subtask 1", "description": "Do the thing", "deps": [], "shared_files": [], "do_not_touch": []}`), nil
+		},
+		IsAttemptBead: func(b Bead) bool {
+			return b.Title == "attempt-1"
+		},
+		IsStepBead: func(b Bead) bool {
+			switch b.Title {
+			case "design", "plan", "implement", "review", "merge":
+				return true
+			}
+			return false
+		},
+		IsReviewRoundBead: func(b Bead) bool { return false },
+		ParseIssueType: func(s string) beads.IssueType {
+			return beads.IssueType(s)
+		},
+	}
+
+	state := &State{RepoPath: t.TempDir()}
+	e := NewForTest("spi-plan-dag", "wizard", nil, state, deps)
+
+	pc := formula.PhaseConfig{Model: "claude-sonnet-4-6"}
+	err := e.wizardPlan(pc)
+	if err != nil {
+		t.Fatalf("wizardPlan: %v", err)
+	}
+
+	if !planCalled {
+		t.Error("wizardPlan did not invoke Claude for planning — internal DAG beads were not filtered out")
+	}
+	_ = enrichCalled // enrichCalled would only be true if we had real children
+}
+
+// TestWizardPlanEnrichesRealChildren verifies that when real subtask
+// children exist alongside internal DAG beads, wizardPlan correctly
+// routes to enrichSubtasksWithChangeSpecs with only the real children.
+func TestWizardPlanEnrichesRealChildren(t *testing.T) {
+	enrichCalls := 0
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return t.TempDir(), nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Title: "Test epic", Priority: 1}, nil
+		},
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			return nil, nil
+		},
+		GetChildren: func(parentID string) ([]Bead, error) {
+			// Mix of internal DAG beads and real subtask children.
+			return []Bead{
+				{ID: parentID + ".step-design", Title: "design"},
+				{ID: parentID + ".step-plan", Title: "plan"},
+				{ID: parentID + ".1", Title: "Real subtask A"},
+				{ID: parentID + ".2", Title: "Real subtask B"},
+				{ID: parentID + ".attempt-1", Title: "attempt-1"},
+			}, nil
+		},
+		AddComment: func(id, text string) error { return nil },
+		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+			enrichCalls++
+			return []byte("**Change spec: test**"), nil
+		},
+		IsAttemptBead: func(b Bead) bool {
+			return b.Title == "attempt-1"
+		},
+		IsStepBead: func(b Bead) bool {
+			switch b.Title {
+			case "design", "plan", "implement", "review", "merge":
+				return true
+			}
+			return false
+		},
+		IsReviewRoundBead: func(b Bead) bool { return false },
+	}
+
+	state := &State{RepoPath: t.TempDir()}
+	e := NewForTest("spi-plan-mix", "wizard", nil, state, deps)
+
+	pc := formula.PhaseConfig{Model: "claude-opus-4-6"}
+	err := e.wizardPlan(pc)
+	if err != nil {
+		t.Fatalf("wizardPlan: %v", err)
+	}
+
+	// enrichSubtasksWithChangeSpecs should be called once per real child
+	if enrichCalls != 2 {
+		t.Errorf("enrichSubtasksWithChangeSpecs invoked Claude %d times, want 2 (one per real subtask)", enrichCalls)
+	}
+}
+
 // Suppress unused import warnings
 var (
 	_ = os.Getenv
