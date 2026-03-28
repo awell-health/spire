@@ -94,14 +94,15 @@ messages, comments, labels, dependencies.
 ### Steward (`cmd/spire/steward.go`)
 
 The work coordinator. Runs as `spire steward` (locally or in the steward
-pod in k8s).
+pod in k8s). Core responsibility: assigning ready work to agents by
+summoning wizards (locally via `spire summon`, in k8s via SpireWorkload CRs).
 
 **Cycle (every N minutes):**
 
 1. Commit local dolt changes
 2. Query ready beads (`bd ready`)
 3. Load agent roster (derived from the `repos` table in dolt)
-4. Assign ready beads to idle agents (round-robin by priority)
+4. Assign ready beads to idle agents by summoning wizards (round-robin by priority)
 5. Detect standalone tasks ready for review (`review-ready` label)
 6. Detect tasks with review feedback for wizard re-engagement
 7. Check bead health (stale warning at `agent.stale`, pod kill at `agent.timeout`)
@@ -116,10 +117,13 @@ Assignment modes:
 - **External agents**: steward sends an assignment message via `spire send`
 - **Managed agents (k8s)**: steward updates the SpireWorkload CR; the operator creates the pod
 
-### Steward Sidecar / Familiar (`cmd/spire-steward-sidecar/`)
+### Steward Sidecar (`cmd/spire-steward-sidecar/`)
 
-LLM-powered message processor that runs alongside the steward in k8s. Uses
-the Anthropic API with tool use to process messages sent to the steward.
+LLM-powered message processor that runs alongside the steward in k8s.
+Distinct from the Familiar (per-agent sidecar): the steward-sidecar is
+an LLM-powered processor specific to the steward, whereas the familiar
+(`cmd/spire-sidecar/`) handles messaging and health for wizard/agent pods.
+Uses the Anthropic API with tool use to process messages sent to the steward.
 
 **Capabilities (via tools):**
 - `list_beads`, `show_bead`, `update_bead`, `create_bead`, `close_bead`
@@ -151,7 +155,7 @@ bead. Routes by workload type:
 | Bead type | Pod type      | Main container     |
 |-----------|---------------|--------------------|
 | task/*    | Wizard pod    | `agent-entrypoint.sh` (runs Claude Code) |
-| epic      | Workshop pod  | `spire-artificer --epic-id=<id>`          |
+| epic      | Wizard pod    | `agent-entrypoint.sh` (runs Claude Code) |
 | review    | Review pod    | `spire-artificer --mode=review --once`    |
 
 Reaps completed/failed pods and removes work from the agent's CurrentWork
@@ -222,11 +226,11 @@ branch diff against the bead spec.
 
 #### Artificer (`cmd/spire-artificer/`)
 
-Formula maker (k8s mode). Crafts and tests the formulas that wizards follow.
-Also handles epic management and code review in k8s workshop pods.
+Formula maker. Crafts and tests the formulas (spells) that wizards follow.
 
-> **Current state (2026-03-26):** Locally, the wizard + executor handle
-> epic orchestration directly. The artificer binary is used in k8s only.
+> **Current state (2026-03-27):** The artificer binary is being deprecated.
+> The wizard now handles all execution (including epics) both locally and
+> in k8s. Formula creation/management will move to the Workshop CLI.
 
 #### Sidecar / Familiar (`cmd/spire-sidecar/`)
 
@@ -348,10 +352,14 @@ Volumes:
 > initialize `.beads/` state. Target: `bd init --stealth` or a committed
 > `metadata.json` in the repo eliminates the ConfigMap seeding step.
 
-### Workshop Pod (Epic)
+### Workshop Pod (Epic) -- DEPRECATED
 
-Same structure but the main container runs `spire-artificer` instead of
-`agent-entrypoint.sh`. Uses the "heavy" API token (Opus) for code review.
+> **Being replaced by wizard pods.** The wizard now handles epic
+> orchestration in k8s the same way it does locally. Epic beads route to
+> wizard pods (see AgentMonitor routing table above).
+
+Previously ran `spire-artificer` as the main container. Uses the "heavy"
+API token (Opus) for code review.
 
 ### Steward Pod
 
@@ -591,8 +599,9 @@ Managed via kustomize (`k8s/kustomization.yaml`):
 | Orchestrator  | Wizard     | Per-bead orchestrator, drives formula lifecycle  |
 | Implementer   | Apprentice | Writes code in isolated worktrees, one-shot     |
 | Reviewer      | Sage       | Reviews code, returns verdict, one-shot         |
-| Formula maker | Artificer  | Crafts formulas that wizards follow             |
+| Formula maker | Artificer  | Creates and manages formulas (spells) via the Workshop CLI |
 | Companion     | Familiar   | Per-agent sidecar for messaging and health      |
-| Epic pod      | Workshop   | Long-running epic management pod (k8s)          |
+| Dispute resolver | Arbiter | Resolves disputes when sage and apprentice disagree |
+| Formula tool  | Workshop   | CLI tool for formula creation and testing (not yet built) |
 | Database      | Archive    | Dolt database                                   |
 | Hub           | Tower      | A Spire coordination instance                   |
