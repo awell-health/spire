@@ -11,29 +11,7 @@ import (
 	"golang.org/x/term"
 )
 
-// BoardBead extends the standard Bead with fields needed for board display.
-type BoardBead struct {
-	ID              string     `json:"id"`
-	Title           string     `json:"title"`
-	Description     string     `json:"description"`
-	Status          string     `json:"status"`
-	Priority        int        `json:"priority"`
-	Type            string     `json:"issue_type"`
-	Owner           string     `json:"owner"`
-	CreatedAt       string     `json:"created_at"`
-	UpdatedAt       string     `json:"updated_at"`
-	Labels          []string   `json:"labels"`
-	Parent          string     `json:"parent"`
-	Dependencies    []BoardDep `json:"dependencies"`
-	DependencyCount int        `json:"dependency_count"`
-	DependentCount  int        `json:"dependent_count"`
-}
-
-type BoardDep struct {
-	IssueID     string `json:"issue_id"`
-	DependsOnID string `json:"depends_on_id"`
-	Type        string `json:"type"`
-}
+// BoardBead and BoardDep are now defined in pkg/store — type aliases are in store_bridge.go.
 
 type boardColumns struct {
 	Alerts    []BoardBead
