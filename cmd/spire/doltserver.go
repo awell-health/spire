@@ -21,11 +21,9 @@ func stewardPIDPath() string                               { return dolt.Steward
 func doltIsReachable() bool                                { return dolt.IsReachable() }
 func requireDolt() error                                   { return dolt.RequireDolt() }
 func doltServerStatus() (int, bool, bool)                  { return dolt.ServerStatus() }
-func ensureDoltIdentity()                                  { dolt.EnsureIdentity() }
-func doltWriteConfig() (string, error)                     { return dolt.WriteConfig() }
+// ensureDoltIdentity, doltWriteConfig, ensureDatabase removed — no callers in cmd/spire.
 func doltStart() (int, error)                              { return dolt.Start() }
 func doltStop() error                                      { return dolt.Stop() }
-func ensureDatabase(name string) error                     { return dolt.EnsureDatabase(name) }
 func stopProcess(pidPath string) (bool, error)             { return dolt.StopProcess(pidPath) }
 
 // CLI operation wrappers — used by daemon.go, register_repo.go, tower.go.

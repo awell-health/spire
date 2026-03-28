@@ -17,18 +17,11 @@ func linearAPIKey() string {
 	return integration.LinearAPIKey()
 }
 
-// linearGraphQLURL is kept as a package-level constant alias for callers that
-// reference it directly (none remain after extraction, but retained for safety).
-const linearGraphQLURL = integration.LinearGraphQLURL
+// linearGraphQLURL, linearAuthHeader removed — no callers in cmd/spire.
 
 // fetchLinearIssue delegates to pkg/integration.
 func fetchLinearIssue(apiKey, identifier string) (*LinearIssue, error) {
 	return integration.FetchLinearIssue(apiKey, identifier)
-}
-
-// linearAuthHeader delegates to pkg/integration.
-func linearAuthHeader(key string) string {
-	return integration.LinearAuthHeader(key)
 }
 
 // printLinearContext delegates to pkg/integration.

@@ -8,32 +8,20 @@ import (
 )
 
 // --- Type aliases ---
+// Dead aliases removed: PhaseConfig, FormulaVar, FormulaStepGraph, StepConfig.
 
 type FormulaV2 = formula.FormulaV2
-type PhaseConfig = formula.PhaseConfig
 type RevisionPolicy = formula.RevisionPolicy
-type FormulaVar = formula.FormulaVar
-type FormulaStepGraph = formula.FormulaStepGraph
-type StepConfig = formula.StepConfig
 
 // --- Variable aliases ---
-
-var (
-	validPhases       = formula.ValidPhases
-	DefaultFormulaMap = formula.DefaultFormulaMap
-)
+// Dead aliases removed: validPhases, DefaultFormulaMap, isValidPhase — no callers.
 
 // --- Function aliases ---
+// Dead aliases removed: ParseFormulaV2, ParseFormulaStepGraph, LoadFormulaV2,
+// FindFormula, LoadEmbeddedFormula, LoadReviewPhaseFormula — no callers.
 
 var (
-	isValidPhase          = formula.IsValidPhase
-	ParseFormulaV2        = formula.ParseFormulaV2
-	ParseFormulaStepGraph = formula.ParseFormulaStepGraph
-	LoadFormulaV2         = formula.LoadFormulaV2
-	FindFormula           = formula.FindFormula
-	LoadEmbeddedFormula   = formula.LoadEmbeddedFormula
-	LoadFormulaByName     = formula.LoadFormulaByName
-	LoadReviewPhaseFormula = formula.LoadReviewPhaseFormula
+	LoadFormulaByName = formula.LoadFormulaByName
 )
 
 // beadToInfo converts a Bead to formula.BeadInfo for pkg/formula calls.
