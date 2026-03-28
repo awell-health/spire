@@ -142,6 +142,7 @@ func TestDockerBackend_ListParsing(t *testing.T) {
 // container is found for the given agent name. This works without Docker
 // because the docker ps command will either fail (no docker) or return empty.
 func TestDockerBackend_KillNoContainer(t *testing.T) {
+	skipIfNoDocker(t)
 	b := agent.NewDockerBackend()
 	err := b.Kill("nonexistent-agent-xyz-" + time.Now().Format("20060102150405"))
 	if err == nil {

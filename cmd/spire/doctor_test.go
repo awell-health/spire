@@ -321,9 +321,7 @@ github-token=ghp_test
 // --- checkDocker tests ---
 
 func TestDoctorCheckDocker_Available(t *testing.T) {
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not available, skipping")
-	}
+	skipIfNoDocker(t)
 	r := checkDocker()
 	if !r.Optional {
 		t.Error("docker check should be marked as Optional")
