@@ -221,10 +221,11 @@ func (rc *RepoContext) CreateWorktreeNewBranch(dir, newBranch, startPoint string
 	}, nil
 }
 
-// ForceBranch creates or resets a branch to current HEAD (git branch -f).
-func (rc *RepoContext) ForceBranch(name string) error {
-	if out, err := rc.git("branch", "-f", name).CombinedOutput(); err != nil {
-		return fmt.Errorf("git branch -f %s: %w\n%s", name, err, out)
+// ForceBranch creates or resets a branch to the given startPoint (git branch -f <name> <startPoint>).
+// The startPoint is typically a branch name like "main" or a commit SHA.
+func (rc *RepoContext) ForceBranch(name, startPoint string) error {
+	if out, err := rc.git("branch", "-f", name, startPoint).CombinedOutput(); err != nil {
+		return fmt.Errorf("git branch -f %s %s: %w\n%s", name, startPoint, err, out)
 	}
 	return nil
 }

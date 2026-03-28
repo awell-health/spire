@@ -36,9 +36,9 @@ func (e *Executor) ensureStagingWorktree() (*spgit.StagingWorktree, error) {
 		e.state.WorktreeDir = ""
 	}
 
-	// Create the staging branch from current HEAD.
+	// Create the staging branch from the base branch (not HEAD, which may differ).
 	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: e.state.BaseBranch}
-	rc.ForceBranch(stagingBranch)
+	rc.ForceBranch(stagingBranch, e.state.BaseBranch)
 
 	// Worktree dir: .worktrees/<bead-id> — traceable to the bead.
 	wtDir := filepath.Join(repoPath, ".worktrees", e.beadID)
