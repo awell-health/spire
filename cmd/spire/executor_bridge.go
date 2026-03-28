@@ -10,6 +10,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
+	"github.com/awell-health/spire/pkg/metrics"
 )
 
 // --- Type aliases so existing cmd/spire code compiles unchanged ---
@@ -136,6 +137,9 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 
 		// Spawner
 		Spawner: spawner,
+
+		// Agent run recording
+		RecordAgentRun: metrics.Record,
 
 		// Claude runner
 		ClaudeRunner: func(args []string, dir string) ([]byte, error) {

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/awell-health/spire/pkg/integration"
+	"github.com/awell-health/spire/pkg/observability"
 	"github.com/steveyegge/beads"
 )
 
@@ -133,6 +134,21 @@ func cmdGrok(args []string) error {
 			} else {
 				fmt.Println(c.Text)
 			}
+		}
+		fmt.Println()
+	}
+
+	// Agent runs
+	runs, runErr := observability.RunsForBead(id)
+	if runErr == nil && len(runs) > 0 {
+		fmt.Printf("--- Agent Runs (%d) ---\n", len(runs))
+		for _, r := range runs {
+			model := observability.ToString(r["model"])
+			role := observability.ToString(r["role"])
+			result := observability.ToString(r["result"])
+			dur := observability.ToInt(r["duration_seconds"])
+			started := observability.ToString(r["started_at"])
+			fmt.Printf("  %-20s %-10s %-10s %4ds  %s\n", model, role, result, dur, started)
 		}
 		fmt.Println()
 	}

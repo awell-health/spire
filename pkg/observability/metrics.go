@@ -428,6 +428,17 @@ func ToString(v any) string {
 	}
 }
 
+// RunsForBead returns recent agent runs for a bead (up to 10).
+func RunsForBead(beadID string) ([]MetricsRow, error) {
+	query := fmt.Sprintf(`SELECT id, agent_name, model, role, result,
+		duration_seconds, started_at
+	FROM agent_runs
+	WHERE bead_id = '%s' OR epic_id = '%s'
+	ORDER BY started_at DESC
+	LIMIT 10`, SqlEsc(beadID), SqlEsc(beadID))
+	return QueryJSON(query)
+}
+
 // SqlEsc escapes single quotes for SQL string literals.
 func SqlEsc(s string) string {
 	return strings.ReplaceAll(s, "'", "''")

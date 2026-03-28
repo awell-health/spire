@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
@@ -23,6 +24,7 @@ func (e *Executor) executeDirect(phase string, pc PhaseConfig) error {
 		extraArgs = append(extraArgs, "--apprentice")
 	}
 
+	started := time.Now()
 	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
 		Name:      apprenticeName,
 		BeadID:    e.beadID,
@@ -33,9 +35,11 @@ func (e *Executor) executeDirect(phase string, pc PhaseConfig) error {
 		return fmt.Errorf("spawn apprentice: %w", err)
 	}
 
-	if err := handle.Wait(); err != nil {
-		e.log("apprentice failed: %s", err)
-		return fmt.Errorf("apprentice: %w", err)
+	waitErr := handle.Wait()
+	e.recordAgentRun(apprenticeName, e.beadID, "", pc.Model, "apprentice", started, waitErr)
+	if waitErr != nil {
+		e.log("apprentice failed: %s", waitErr)
+		return fmt.Errorf("apprentice: %w", waitErr)
 	}
 
 	e.log("apprentice completed")
@@ -117,6 +121,7 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 				e.deps.UpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
 
 				extraArgs := []string{"--apprentice"}
+				started := time.Now()
 				h, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
 					Name:      name,
 					BeadID:    beadID,
@@ -124,10 +129,13 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 					ExtraArgs: extraArgs,
 				})
 				if spawnErr != nil {
+					e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", started, spawnErr)
 					resultCh <- result{BeadID: beadID, Agent: name, Err: spawnErr}
 					return
 				}
-				if waitErr := h.Wait(); waitErr != nil {
+				waitErr := h.Wait()
+				e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", started, waitErr)
+				if waitErr != nil {
 					resultCh <- result{BeadID: beadID, Agent: name, Err: waitErr}
 					return
 				}
@@ -241,6 +249,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 
 		// 1. Dispatch one apprentice for this subtask.
 		name := fmt.Sprintf("%s-seq-%d", e.agentName, i)
+		started := time.Now()
 		handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
 			Name:      name,
 			BeadID:    subtaskID,
@@ -250,7 +259,9 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 		if spawnErr != nil {
 			return fmt.Errorf("spawn apprentice for %s: %w", subtaskID, spawnErr)
 		}
-		if waitErr := handle.Wait(); waitErr != nil {
+		waitErr := handle.Wait()
+		e.recordAgentRun(name, subtaskID, e.beadID, pc.Model, "apprentice", started, waitErr)
+		if waitErr != nil {
 			return fmt.Errorf("apprentice %s failed: %w", subtaskID, waitErr)
 		}
 

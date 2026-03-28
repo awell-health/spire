@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
 )
@@ -23,6 +24,7 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 		extraArgs = append(extraArgs, "--worktree-dir", e.state.WorktreeDir)
 	}
 
+	started := time.Now()
 	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
 		Name:      sageName,
 		BeadID:    e.beadID,
@@ -32,8 +34,10 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 	if err != nil {
 		return fmt.Errorf("spawn sage: %w", err)
 	}
-	if err := handle.Wait(); err != nil {
-		e.log("sage exited: %s — checking verdict", err)
+	waitErr := handle.Wait()
+	e.recordAgentRun(sageName, e.beadID, "", pc.Model, "sage", started, waitErr)
+	if waitErr != nil {
+		e.log("sage exited: %s — checking verdict", waitErr)
 	}
 
 	// Read verdict from review-round child beads.
@@ -96,6 +100,7 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 			if implPC.GetDispatch() == "wave" {
 				// Spawn a single review-fix apprentice.
 				fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
+				fixStarted := time.Now()
 				fh, ferr := e.deps.Spawner.Spawn(agent.SpawnConfig{
 					Name:      fixName,
 					BeadID:    e.beadID,
@@ -105,8 +110,10 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 				if ferr != nil {
 					return fmt.Errorf("spawn review-fix: %w", ferr)
 				}
-				if waitErr := fh.Wait(); waitErr != nil {
-					return fmt.Errorf("review-fix apprentice failed: %w", waitErr)
+				fixWaitErr := fh.Wait()
+				e.recordAgentRun(fixName, e.beadID, "", implPC.Model, "apprentice", fixStarted, fixWaitErr)
+				if fixWaitErr != nil {
+					return fmt.Errorf("review-fix apprentice failed: %w", fixWaitErr)
 				}
 
 				// Merge fix branch into the shared staging worktree.

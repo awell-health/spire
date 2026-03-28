@@ -10,6 +10,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/metrics"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -25,6 +26,7 @@ type (
 	Backend         = agent.Backend
 	SpawnConfig     = agent.SpawnConfig
 	TowerConfig     = config.TowerConfig
+	AgentRun        = metrics.AgentRun
 )
 
 // SubtaskState tracks the status of a subtask during wave execution.
@@ -104,6 +106,9 @@ type Deps struct {
 
 	// Spawner
 	Spawner Backend
+
+	// Agent run recording
+	RecordAgentRun func(run AgentRun) error
 
 	// Claude runner
 	ClaudeRunner func(args []string, dir string) ([]byte, error)
