@@ -589,6 +589,83 @@ func TestComputeWaves(t *testing.T) {
 	}
 }
 
+// TestSaveStateRemovesWhenTerminated verifies that saveState removes state.json
+// instead of writing it when the executor's terminated flag is set.
+func TestSaveStateRemovesWhenTerminated(t *testing.T) {
+	dir := t.TempDir()
+	configDirFn := func() (string, error) { return dir, nil }
+
+	deps := &Deps{ConfigDir: configDirFn}
+	state := &State{
+		BeadID:    "spi-term",
+		AgentName: "wizard-spi-term",
+		Formula:   "test",
+		Phase:     "merge",
+		Subtasks:  make(map[string]SubtaskState),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	e := NewForTest("spi-term", "wizard-spi-term", nil, state, deps)
+
+	// First, save state normally — file should exist.
+	if err := e.saveState(); err != nil {
+		t.Fatalf("saveState (normal): %v", err)
+	}
+	path := StatePath("wizard-spi-term", configDirFn)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Fatal("state.json should exist after normal save")
+	}
+
+	// Now set terminated and save again — file should be removed.
+	e.terminated = true
+	if err := e.saveState(); err != nil {
+		t.Fatalf("saveState (terminated): %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("state.json should be removed after terminated saveState")
+	}
+}
+
+// TestSaveStateWritesWhenNotTerminated verifies that saveState writes state.json
+// when terminated is false (the default).
+func TestSaveStateWritesWhenNotTerminated(t *testing.T) {
+	dir := t.TempDir()
+	configDirFn := func() (string, error) { return dir, nil }
+
+	deps := &Deps{ConfigDir: configDirFn}
+	state := &State{
+		BeadID:    "spi-live",
+		AgentName: "wizard-spi-live",
+		Formula:   "test",
+		Phase:     "implement",
+		Subtasks:  make(map[string]SubtaskState),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	e := NewForTest("spi-live", "wizard-spi-live", nil, state, deps)
+
+	// terminated is false by default — saveState should write.
+	if err := e.saveState(); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+	path := StatePath("wizard-spi-live", configDirFn)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Fatal("state.json should exist after normal save")
+	}
+
+	// Verify we can load it back.
+	loaded, err := LoadState("wizard-spi-live", configDirFn)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil state")
+	}
+	if loaded.BeadID != "spi-live" {
+		t.Errorf("BeadID = %q, want spi-live", loaded.BeadID)
+	}
+}
+
 // Suppress unused import warnings
 var (
 	_ = os.Getenv
