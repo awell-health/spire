@@ -34,7 +34,7 @@ type PhaseConfig struct {
 	Deploy   string `toml:"deploy,omitempty"` // deploy command (deploy behavior)
 	// Execution directives
 	Role     string `toml:"role,omitempty"`     // human | apprentice | sage | wizard | skip
-	Dispatch string `toml:"dispatch,omitempty"` // direct | wave
+	Dispatch string `toml:"dispatch,omitempty"` // direct | wave | sequential
 	VerdictOnly   bool   `toml:"verdict_only,omitempty"`   // sage: produce verdict only
 	Judgment      bool   `toml:"judgment,omitempty"`        // executor judges review feedback
 	StagingBranch string `toml:"staging_branch,omitempty"` // branch pattern for wave merges

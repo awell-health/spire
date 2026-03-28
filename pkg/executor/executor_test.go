@@ -2,6 +2,7 @@ package executor
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -797,6 +798,255 @@ func TestSaveStateWritesWhenNotTerminated(t *testing.T) {
 	}
 	if loaded.BeadID != "spi-live" {
 		t.Errorf("BeadID = %q, want spi-live", loaded.BeadID)
+	}
+}
+
+// TestExecuteSequential verifies that executeSequential dispatches subtasks
+// one at a time, in wave order, merging each to staging and closing each
+// subtask before advancing to the next.
+func TestExecuteSequential(t *testing.T) {
+	repoDir := initSeqTestRepo(t)
+	configDir := t.TempDir()
+	configDirFn := func() (string, error) { return configDir, nil }
+
+	var spawnOrder []string
+	var closedBeads []string
+
+	deps := &Deps{
+		ConfigDir: configDirFn,
+		GetChildren: func(parentID string) ([]Bead, error) {
+			return []Bead{
+				{ID: "seq-1", Status: "open"},
+				{ID: "seq-2", Status: "open"},
+				{ID: "seq-3", Status: "open"},
+			}, nil
+		},
+		GetBlockedIssues: func(filter beads.WorkFilter) ([]BoardBead, error) {
+			return nil, nil // no deps = all in wave 0
+		},
+		IsAttemptBead:     func(b Bead) bool { return false },
+		IsStepBead:        func(b Bead) bool { return false },
+		IsReviewRoundBead: func(b Bead) bool { return false },
+		UpdateBead: func(id string, updates map[string]interface{}) error {
+			return nil
+		},
+		CloseBead: func(id string) error {
+			closedBeads = append(closedBeads, id)
+			return nil
+		},
+		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
+		ArchmageGitEnv:    func(tower *TowerConfig) []string { return os.Environ() },
+		AddLabel:          func(id, label string) error { return nil },
+		RemoveLabel:       func(id, label string) error { return nil },
+		Spawner: &mockBackend{
+			spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+				spawnOrder = append(spawnOrder, cfg.BeadID)
+				// Simulate the apprentice creating a feat branch with a commit.
+				branch := "feat/" + cfg.BeadID
+				runGitIn(t, repoDir, "branch", branch)
+				return &mockHandle{}, nil
+			},
+		},
+	}
+
+	f := &formula.FormulaV2{
+		Name:    "test-sequential",
+		Version: 2,
+		Phases: map[string]formula.PhaseConfig{
+			"implement": {
+				Role:     "apprentice",
+				Dispatch: "sequential",
+			},
+		},
+	}
+
+	state := &State{
+		BeadID:        "spi-seq",
+		AgentName:     "wizard-seq",
+		Subtasks:      make(map[string]SubtaskState),
+		RepoPath:      repoDir,
+		BaseBranch:    "main",
+		StagingBranch: "staging/spi-seq",
+	}
+
+	e := NewForTest("spi-seq", "wizard-seq", f, state, deps)
+
+	pc := formula.PhaseConfig{
+		Role:     "apprentice",
+		Dispatch: "sequential",
+	}
+
+	err := e.executeSequential("implement", pc)
+
+	// With no real commits on feat branches, the merge is a no-op (already
+	// up to date). All 3 subtasks should be dispatched and closed.
+	if err != nil {
+		t.Fatalf("executeSequential error: %v", err)
+	}
+
+	// Verify all 3 subtasks were dispatched in order.
+	if len(spawnOrder) != 3 {
+		t.Fatalf("expected 3 spawns, got %d: %v", len(spawnOrder), spawnOrder)
+	}
+	for i, want := range []string{"seq-1", "seq-2", "seq-3"} {
+		if spawnOrder[i] != want {
+			t.Errorf("spawn[%d] = %q, want %q", i, spawnOrder[i], want)
+		}
+	}
+
+	// Verify all subtasks were closed.
+	if len(closedBeads) != 3 {
+		t.Fatalf("expected 3 closed beads, got %d: %v", len(closedBeads), closedBeads)
+	}
+
+	// Verify subtask states are all "closed".
+	for _, id := range []string{"seq-1", "seq-2", "seq-3"} {
+		st, ok := e.state.Subtasks[id]
+		if !ok {
+			t.Errorf("missing subtask state for %s", id)
+			continue
+		}
+		if st.Status != "closed" {
+			t.Errorf("subtask %s status = %q, want closed", id, st.Status)
+		}
+	}
+}
+
+// runGitIn runs a git command in the given directory.
+func runGitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+}
+
+// initSeqTestRepo creates a test repo with a bare remote for push tests.
+func initSeqTestRepo(t *testing.T) string {
+	t.Helper()
+	repoDir := initSeamTestRepo(t)
+	bareDir := t.TempDir()
+	runGitIn(t, bareDir, "init", "--bare")
+	runGitIn(t, repoDir, "remote", "add", "origin", bareDir)
+	runGitIn(t, repoDir, "push", "-u", "origin", "main")
+	return repoDir
+}
+
+// TestExecuteSequential_SkipsCompleted verifies that sequential dispatch
+// skips subtasks that are already marked as closed in the executor state.
+func TestExecuteSequential_SkipsCompleted(t *testing.T) {
+	repoDir := initSeqTestRepo(t)
+	configDir := t.TempDir()
+	configDirFn := func() (string, error) { return configDir, nil }
+
+	var spawnOrder []string
+
+	deps := &Deps{
+		ConfigDir: configDirFn,
+		GetChildren: func(parentID string) ([]Bead, error) {
+			return []Bead{
+				{ID: "seq-1", Status: "open"},
+				{ID: "seq-2", Status: "open"},
+			}, nil
+		},
+		GetBlockedIssues: func(filter beads.WorkFilter) ([]BoardBead, error) {
+			return nil, nil
+		},
+		IsAttemptBead:     func(b Bead) bool { return false },
+		IsStepBead:        func(b Bead) bool { return false },
+		IsReviewRoundBead: func(b Bead) bool { return false },
+		UpdateBead: func(id string, updates map[string]interface{}) error {
+			return nil
+		},
+		CloseBead:         func(id string) error { return nil },
+		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
+		ArchmageGitEnv:    func(tower *TowerConfig) []string { return os.Environ() },
+		AddLabel:          func(id, label string) error { return nil },
+		RemoveLabel:       func(id, label string) error { return nil },
+		Spawner: &mockBackend{
+			spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+				spawnOrder = append(spawnOrder, cfg.BeadID)
+				branch := "feat/" + cfg.BeadID
+				runGitIn(t, repoDir, "branch", branch)
+				return &mockHandle{}, nil
+			},
+		},
+	}
+
+	f := &formula.FormulaV2{
+		Name:    "test-sequential",
+		Version: 2,
+		Phases: map[string]formula.PhaseConfig{
+			"implement": {
+				Role:     "apprentice",
+				Dispatch: "sequential",
+			},
+		},
+	}
+
+	state := &State{
+		BeadID:     "spi-seq-skip",
+		AgentName:  "wizard-seq-skip",
+		Subtasks: map[string]SubtaskState{
+			"seq-1": {Status: "closed", Branch: "feat/seq-1", Agent: "old-agent"},
+		},
+		RepoPath:      repoDir,
+		BaseBranch:    "main",
+		StagingBranch: "staging/spi-seq-skip",
+	}
+
+	e := NewForTest("spi-seq-skip", "wizard-seq-skip", f, state, deps)
+
+	pc := formula.PhaseConfig{
+		Role:     "apprentice",
+		Dispatch: "sequential",
+	}
+
+	err := e.executeSequential("implement", pc)
+	if err != nil {
+		t.Fatalf("executeSequential error: %v", err)
+	}
+
+	// seq-1 should be skipped (already closed), only seq-2 should be spawned
+	if len(spawnOrder) != 1 {
+		t.Fatalf("expected 1 spawn (seq-1 skipped), got %d: %v", len(spawnOrder), spawnOrder)
+	}
+	if spawnOrder[0] != "seq-2" {
+		t.Errorf("first spawn should be seq-2 (skipping seq-1), got %q", spawnOrder[0])
+	}
+}
+
+// TestExecuteSequential_NoSubtasks verifies that sequential dispatch returns
+// nil when there are no open subtasks.
+func TestExecuteSequential_NoSubtasks(t *testing.T) {
+	dir := t.TempDir()
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetChildren: func(parentID string) ([]Bead, error) {
+			return nil, nil
+		},
+		GetBlockedIssues: func(filter beads.WorkFilter) ([]BoardBead, error) {
+			return nil, nil
+		},
+		IsAttemptBead:     func(b Bead) bool { return false },
+		IsStepBead:        func(b Bead) bool { return false },
+		IsReviewRoundBead: func(b Bead) bool { return false },
+	}
+
+	state := &State{
+		BeadID:    "spi-seq-empty",
+		AgentName: "wizard-seq-empty",
+		Subtasks:  make(map[string]SubtaskState),
+	}
+
+	e := NewForTest("spi-seq-empty", "wizard-seq-empty", nil, state, deps)
+	pc := formula.PhaseConfig{Dispatch: "sequential"}
+
+	err := e.executeSequential("implement", pc)
+	if err != nil {
+		t.Fatalf("expected nil error for no subtasks, got: %v", err)
 	}
 }
 
