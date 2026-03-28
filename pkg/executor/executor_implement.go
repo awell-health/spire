@@ -39,6 +39,23 @@ func (e *Executor) executeDirect(phase string, pc PhaseConfig) error {
 	}
 
 	e.log("apprentice completed")
+
+	// Merge the apprentice's feat branch into the staging worktree so that
+	// downstream phases (review, merge) operate on the actual changes.
+	// Without this, the staging branch stays at HEAD and the merge phase
+	// would merge an empty branch into main, silently losing all work.
+	if e.state.StagingBranch != "" {
+		featBranch := fmt.Sprintf("feat/%s", e.beadID)
+		e.log("merging %s into staging %s", featBranch, e.state.StagingBranch)
+		stagingWt, wtErr := e.ensureStagingWorktree()
+		if wtErr != nil {
+			return fmt.Errorf("ensure staging worktree for direct merge: %w", wtErr)
+		}
+		if mergeErr := stagingWt.MergeBranch(featBranch, e.resolveConflicts); mergeErr != nil {
+			return fmt.Errorf("merge %s into %s: %w", featBranch, e.state.StagingBranch, mergeErr)
+		}
+	}
+
 	return nil
 }
 
