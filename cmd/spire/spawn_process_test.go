@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"syscall"
 	"testing"
+
+	"github.com/awell-health/spire/pkg/agent"
 )
 
 // newTestHandle creates a processHandle wrapping a started command.
@@ -17,7 +19,7 @@ func newTestHandle(t *testing.T, name string, command string, args ...string) *p
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-	return &processHandle{name: name, cmd: cmd}
+	return agent.NewProcessHandle(name, cmd)
 }
 
 // --- processHandle tests ---
@@ -53,7 +55,7 @@ func TestProcessHandle_Alive_AfterWait(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	h := &processHandle{name: "done-agent", cmd: cmd}
+	h := agent.NewProcessHandle("done-agent", cmd)
 	if err := h.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,7 @@ func TestProcessHandle_Wait_Success(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	h := &processHandle{name: "ok-agent", cmd: cmd}
+	h := agent.NewProcessHandle("ok-agent", cmd)
 	if err := h.Wait(); err != nil {
 		t.Errorf("Wait() = %v, want nil", err)
 	}
@@ -78,7 +80,7 @@ func TestProcessHandle_Wait_Failure(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	h := &processHandle{name: "fail-agent", cmd: cmd}
+	h := agent.NewProcessHandle("fail-agent", cmd)
 	if err := h.Wait(); err == nil {
 		t.Error("Wait() = nil, want error for non-zero exit")
 	}
@@ -113,7 +115,7 @@ func TestProcessHandle_Signal_AfterExit(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	h := &processHandle{name: "exited-agent", cmd: cmd}
+	h := agent.NewProcessHandle("exited-agent", cmd)
 	h.Wait()
 
 	err := h.Signal(os.Interrupt)
@@ -123,8 +125,8 @@ func TestProcessHandle_Signal_AfterExit(t *testing.T) {
 }
 
 // --- NewSpawner factory tests ---
-// NewSpawner delegates to ResolveBackend, which returns AgentBackend shims.
-// These tests verify the returned value satisfies AgentSpawner (the old contract).
+// NewSpawner delegates to ResolveBackend, which returns Backend shims.
+// These tests verify the returned value satisfies Spawner (the old contract).
 
 func TestNewSpawner_Process(t *testing.T) {
 	s := NewSpawner("process")
@@ -169,7 +171,7 @@ func TestProcessSpawner_SpawnWithLogPath(t *testing.T) {
 
 	// Spawn "true" would require the binary to be spire. Instead, verify
 	// that an invalid role produces an error and a valid config at least
-	// attempts to start. The role→subcommand mapping is covered by
+	// attempts to start. The role->subcommand mapping is covered by
 	// TestProcessSpawner_InvalidRole. Here we verify log file creation.
 	_, err := s.Spawn(SpawnConfig{
 		Name:    "log-test",

@@ -1,77 +1,18 @@
+// backend.go provides backward-compatible wrappers delegating to pkg/agent.
+// cmd/spire callers continue to use unexported names; the real logic lives in
+// the agent package.
 package main
 
 import (
-	"io"
-	"log"
-	"os"
-	"time"
-
-	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/agent"
 )
 
-// AgentBackend is the unified adapter for agent execution environments.
-// Every consumer (steward, workshop, status, logs) programs against this
-// interface. Implementations exist for process, docker, and k8s.
-//
-// AgentBackend is a superset of AgentSpawner — any function accepting
-// AgentSpawner also accepts AgentBackend.
-type AgentBackend interface {
-	// Spawn starts an agent. Returns a handle for per-agent lifecycle.
-	Spawn(cfg SpawnConfig) (AgentHandle, error)
+// --- Type aliases so existing cmd/spire code compiles unchanged ---
 
-	// List returns all agents tracked by this backend.
-	List() ([]AgentInfo, error)
+type AgentBackend = agent.Backend
+type AgentInfo = agent.Info
 
-	// Logs returns a log stream for the named agent.
-	// Returns os.ErrNotExist if no logs are available.
-	Logs(name string) (io.ReadCloser, error)
-
-	// Kill force-stops an agent by name (when no handle is available).
-	Kill(name string) error
-}
-
-// AgentInfo is the backend-agnostic view of a running or recently-run agent.
-type AgentInfo struct {
-	Name       string    // agent name (e.g. "wizard-spi-abc")
-	BeadID     string    // bead being worked on
-	Phase      string    // current phase (e.g. "implement", "review")
-	Alive      bool      // true if the agent is still running
-	Identifier string    // opaque: PID, container ID, pod name
-	StartedAt  time.Time // when the agent was started
-}
-
-// ---------------------------------------------------------------------------
-// Compile-time interface checks
-// ---------------------------------------------------------------------------
-
-var _ AgentBackend = (*processBackend)(nil)
-var _ AgentBackend = (*dockerBackend)(nil)
-
-// ---------------------------------------------------------------------------
-// ResolveBackend returns an AgentBackend for the given backend name.
-//
-//   - "process" or "" → processBackend  (local OS processes)
-//   - "docker"        → dockerBackend   (Docker containers)
-//   - unknown         → log warning, fall back to process
-//
-// ResolveBackend replaces NewSpawner as the preferred factory.
-// ---------------------------------------------------------------------------
-
+// ResolveBackend returns a Backend for the given backend name.
 func ResolveBackend(name string) AgentBackend {
-	if name == "" {
-		// Auto-resolve: read from spire.yaml, then fall back to detection.
-		cwd, _ := os.Getwd()
-		if cfg, err := repoconfig.Load(cwd); err == nil && cfg.Agent.Backend != "" {
-			name = cfg.Agent.Backend
-		}
-	}
-	switch name {
-	case "process", "":
-		return newProcessBackend()
-	case "docker":
-		return newDockerBackend()
-	default:
-		log.Printf("[backend] unknown backend %q, falling back to process", name)
-		return newProcessBackend()
-	}
+	return agent.ResolveBackend(name)
 }

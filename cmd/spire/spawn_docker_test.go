@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/awell-health/spire/pkg/agent"
 )
 
 // --- dockerSpawner unit tests ---
@@ -27,29 +29,29 @@ func TestDockerSpawner_InvalidRole(t *testing.T) {
 
 func TestDockerSpawner_ResolvedImage_Default(t *testing.T) {
 	s := &dockerSpawner{}
-	if got := s.resolvedImage(); got != defaultDockerImage {
-		t.Errorf("resolvedImage() = %q, want %q", got, defaultDockerImage)
+	if got := s.ResolvedImage(); got != defaultDockerImage {
+		t.Errorf("ResolvedImage() = %q, want %q", got, defaultDockerImage)
 	}
 }
 
 func TestDockerSpawner_ResolvedImage_Override(t *testing.T) {
 	s := &dockerSpawner{Image: "my-custom-image:v1"}
-	if got := s.resolvedImage(); got != "my-custom-image:v1" {
-		t.Errorf("resolvedImage() = %q, want %q", got, "my-custom-image:v1")
+	if got := s.ResolvedImage(); got != "my-custom-image:v1" {
+		t.Errorf("ResolvedImage() = %q, want %q", got, "my-custom-image:v1")
 	}
 }
 
 func TestDockerSpawner_ResolvedNetwork_Default(t *testing.T) {
 	s := &dockerSpawner{}
-	if got := s.resolvedNetwork(); got != "host" {
-		t.Errorf("resolvedNetwork() = %q, want %q", got, "host")
+	if got := s.ResolvedNetwork(); got != "host" {
+		t.Errorf("ResolvedNetwork() = %q, want %q", got, "host")
 	}
 }
 
 func TestDockerSpawner_ResolvedNetwork_Override(t *testing.T) {
 	s := &dockerSpawner{Network: "bridge"}
-	if got := s.resolvedNetwork(); got != "bridge" {
-		t.Errorf("resolvedNetwork() = %q, want %q", got, "bridge")
+	if got := s.ResolvedNetwork(); got != "bridge" {
+		t.Errorf("ResolvedNetwork() = %q, want %q", got, "bridge")
 	}
 }
 
@@ -81,30 +83,30 @@ func TestNewSpawner_Docker(t *testing.T) {
 }
 
 func TestDockerHandle_Name(t *testing.T) {
-	h := &dockerHandle{name: "test-agent", containerID: "abc123"}
+	h := agent.NewDockerHandle("test-agent", "abc123")
 	if h.Name() != "test-agent" {
 		t.Errorf("Name() = %q, want %q", h.Name(), "test-agent")
 	}
 }
 
 func TestDockerHandle_Identifier(t *testing.T) {
-	h := &dockerHandle{name: "test-agent", containerID: "abc123def456"}
+	h := agent.NewDockerHandle("test-agent", "abc123def456")
 	if h.Identifier() != "abc123def456" {
 		t.Errorf("Identifier() = %q, want %q", h.Identifier(), "abc123def456")
 	}
 }
 
 func TestDockerHandle_Alive_AfterExited(t *testing.T) {
-	h := &dockerHandle{name: "test-agent", containerID: "abc123"}
-	h.exited.Store(true)
+	h := agent.NewDockerHandle("test-agent", "abc123")
+	h.SetExited()
 	if h.Alive() {
 		t.Error("Alive() = true after exited set, want false")
 	}
 }
 
 func TestDockerHandle_Signal_AfterExited(t *testing.T) {
-	h := &dockerHandle{name: "test-agent", containerID: "abc123"}
-	h.exited.Store(true)
+	h := agent.NewDockerHandle("test-agent", "abc123")
+	h.SetExited()
 	err := h.Signal(os.Interrupt)
 	if err == nil {
 		t.Error("Signal after exit should return error")

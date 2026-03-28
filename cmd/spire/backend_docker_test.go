@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/awell-health/spire/pkg/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -15,7 +17,7 @@ import (
 func TestDockerBackend_SatisfiesInterface(t *testing.T) {
 	var _ AgentBackend = (*dockerBackend)(nil) // compile-time
 	// Also verify at runtime.
-	var b interface{} = &dockerBackend{spawner: &dockerSpawner{}}
+	var b interface{} = agent.NewDockerBackend()
 	if _, ok := b.(AgentBackend); !ok {
 		t.Fatal("dockerBackend does not satisfy AgentBackend")
 	}
@@ -140,7 +142,7 @@ func TestDockerBackend_ListParsing(t *testing.T) {
 // container is found for the given agent name. This works without Docker
 // because the docker ps command will either fail (no docker) or return empty.
 func TestDockerBackend_KillNoContainer(t *testing.T) {
-	b := &dockerBackend{spawner: &dockerSpawner{}}
+	b := agent.NewDockerBackend()
 	err := b.Kill("nonexistent-agent-xyz-" + time.Now().Format("20060102150405"))
 	if err == nil {
 		t.Fatal("Kill should return an error when no container is found")
