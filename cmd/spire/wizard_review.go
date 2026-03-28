@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
@@ -103,11 +104,11 @@ func cmdWizardReview(args []string) error {
 	log("reviewing %s branch %s", beadID, branch)
 
 	// 4. Use shared staging worktree if provided, otherwise create our own.
-	var wc *WorktreeContext
+	var wc *spgit.WorktreeContext
 	if worktreeDir != "" {
 		// Executor owns this worktree — we just wrap it for method access.
 		// Do NOT call Cleanup; the executor manages the lifecycle.
-		wc = &WorktreeContext{
+		wc = &spgit.WorktreeContext{
 			Dir:        worktreeDir,
 			Branch:     branch,
 			BaseBranch: baseBranch,
@@ -248,9 +249,9 @@ func cmdWizardReview(args []string) error {
 
 // --- Worktree helpers ---
 
-func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (*WorktreeContext, error) {
+func reviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (*spgit.WorktreeContext, error) {
 	worktreeDir := filepath.Join(os.TempDir(), "spire-review", reviewerName, beadID)
-	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
 
 	// Clean up stale worktree
 	if _, err := os.Stat(worktreeDir); err == nil {

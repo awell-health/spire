@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/steveyegge/beads"
 )
 
@@ -206,7 +207,7 @@ func listK8sWizards() []string {
 func createSpireAgentCR(name string) error {
 	// Detect repo URL from git remote.
 	cwd, _ := os.Getwd()
-	rc := &RepoContext{Dir: cwd}
+	rc := &spgit.RepoContext{Dir: cwd}
 	repoURL := rc.RemoteURL("origin")
 
 	manifest := fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1

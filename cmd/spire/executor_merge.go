@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	spgit "github.com/awell-health/spire/pkg/git"
 )
 
 // executeMerge handles the merge phase: ff-only merge of staging branch into main.
@@ -69,7 +71,7 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 
 	// Push main (with archmage identity)
 	e.log("pushing %s", baseBranch)
-	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
 	if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
 		return fmt.Errorf("push %s: %w", baseBranch, pushErr)
 	}
@@ -106,7 +108,7 @@ func (e *formulaExecutor) executeMerge(pc PhaseConfig) error {
 func (e *formulaExecutor) reviewDocsForStaleness(repoPath, branch, baseBranch string, pc PhaseConfig) error {
 	// repoPath should be a worktree already on the staging branch.
 	// Find files changed relative to the base branch.
-	wc := &WorktreeContext{Dir: repoPath}
+	wc := &spgit.WorktreeContext{Dir: repoPath}
 	changedFiles, err := wc.DiffNameOnly(baseBranch)
 	if err != nil {
 		return fmt.Errorf("diff --name-only: %w", err)

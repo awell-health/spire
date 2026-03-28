@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
@@ -245,13 +246,13 @@ func detectPrefix(dir string) string {
 
 // detectRepoURL runs git remote get-url origin in the given directory.
 func detectRepoURL(dir string) string {
-	rc := &RepoContext{Dir: dir}
+	rc := &spgit.RepoContext{Dir: dir}
 	return rc.RemoteURL("origin")
 }
 
 // detectBranch runs git rev-parse --abbrev-ref HEAD in the given directory.
 func detectBranch(dir string) string {
-	rc := &RepoContext{Dir: dir}
+	rc := &spgit.RepoContext{Dir: dir}
 	b := rc.CurrentBranch()
 	if b == "" || b == "HEAD" {
 		return "main"
