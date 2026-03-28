@@ -9,9 +9,7 @@ package executor
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	spgit "github.com/awell-health/spire/pkg/git"
 )
@@ -28,88 +26,47 @@ func TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, deps *
 		mergeEnv = deps.ArchmageGitEnv(tower)
 	}
 
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	// 1. Resume or create a StagingWorktree for the feature branch.
+	//    This avoids the "branch already checked out" fatal error that occurs
+	//    when CreateWorktree is called for a branch that has an existing worktree.
+	wtDir := filepath.Join(repoPath, ".worktrees", beadID)
+	var stagingWt *spgit.StagingWorktree
 
-	// 1. Build verification on the staging/feature branch
+	if _, err := os.Stat(wtDir); err == nil {
+		log("resuming existing worktree at %s", wtDir)
+		stagingWt = spgit.ResumeStagingWorktree(repoPath, wtDir, branch, baseBranch, log)
+	} else {
+		archName, archEmail := ArchmageIdentity(deps)
+		log("creating staging worktree at %s (branch: %s)", wtDir, branch)
+		var wtErr error
+		stagingWt, wtErr = spgit.NewStagingWorktreeAt(repoPath, wtDir, branch, baseBranch, archName, archEmail, log)
+		if wtErr != nil {
+			return fmt.Errorf("create staging worktree: %w", wtErr)
+		}
+	}
+
+	// 2. Build verification in the staging worktree.
 	if buildCmd != "" {
 		log("verifying build on %s: %s", branch, buildCmd)
-		tmpDir, err := os.MkdirTemp("", fmt.Sprintf("spire-build-verify-%s-", beadID))
-		if err != nil {
-			return fmt.Errorf("create build verify dir: %w", err)
-		}
-		wtPath := filepath.Join(tmpDir, "verify")
-		wc, err := rc.CreateWorktree(wtPath, branch)
-		if err != nil {
-			os.RemoveAll(tmpDir)
-			return fmt.Errorf("create build verify worktree: %w", err)
-		}
-		parts := strings.Fields(buildCmd)
-		buildExec := exec.Command(parts[0], parts[1:]...)
-		buildExec.Dir = wc.Dir
-		buildExec.Env = os.Environ()
-		out, buildErr := buildExec.CombinedOutput()
-		// Clean up worktree before proceeding.
-		wc.Cleanup()
-		os.RemoveAll(tmpDir)
-		if buildErr != nil {
-			return fmt.Errorf("build failed on %s (aborting merge): %w\n%s", branch, buildErr, string(out))
+		if err := stagingWt.RunBuild(buildCmd); err != nil {
+			stagingWt.Close()
+			return fmt.Errorf("build failed on %s (aborting merge): %w", branch, err)
 		}
 	}
 
-	// 2. Fetch and ff-only merge to ensure base branch is up to date.
-	if err := rc.FetchWithEnv("origin", baseBranch, mergeEnv); err != nil {
-		log("warning: pull %s (fetch failed): %s", baseBranch, err)
-	} else if err := rc.MergeFFOnly("origin/"+baseBranch, mergeEnv); err != nil {
-		log("warning: pull %s: %s", baseBranch, err)
+	// 3. Delegate merge to MergeToMain — handles ff-only, rebase fallback,
+	//    and post-rebase build/test re-verification.
+	log("merging %s → %s via MergeToMain", branch, baseBranch)
+	if err := stagingWt.MergeToMain(baseBranch, mergeEnv, buildCmd, ""); err != nil {
+		stagingWt.Close()
+		return err
 	}
 
-	// 3. ff-only merge; on failure, rebase staging onto main and retry.
-	if err := rc.MergeFFOnly(branch, mergeEnv); err != nil {
-		log("ff-only failed — rebasing %s onto %s in temp worktree", branch, baseBranch)
-
-		tmpDir, err := os.MkdirTemp("", fmt.Sprintf("spire-rebase-%s-", beadID))
-		if err != nil {
-			return fmt.Errorf("create temp dir: %w", err)
-		}
-		defer os.RemoveAll(tmpDir)
-
-		wtPath := filepath.Join(tmpDir, "staging")
-		wc, err := rc.CreateWorktree(wtPath, branch)
-		if err != nil {
-			return fmt.Errorf("create staging worktree: %w", err)
-		}
-
-		rebaseOut, rbErr := wc.RunCommandOutput(fmt.Sprintf("git rebase %s", baseBranch))
-		if rbErr != nil {
-			wc.RunCommand("git rebase --abort")
-			wc.Cleanup()
-			return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s",
-				branch, baseBranch, rbErr, rebaseOut)
-		}
-
-		// Re-verify build after rebase.
-		if buildCmd != "" {
-			log("verifying build after rebase")
-			parts := strings.Fields(buildCmd)
-			buildAfter := exec.Command(parts[0], parts[1:]...)
-			buildAfter.Dir = wc.Dir
-			buildAfter.Env = os.Environ()
-			if out, buildErr := buildAfter.CombinedOutput(); buildErr != nil {
-				wc.Cleanup()
-				return fmt.Errorf("build failed after rebase (aborting merge): %w\n%s", buildErr, string(out))
-			}
-		}
-
-		// Remove worktree before retrying merge.
-		wc.Cleanup()
-
-		log("retrying ff-only merge after rebase")
-		if err := rc.MergeFFOnly(branch, mergeEnv); err != nil {
-			return fmt.Errorf("ff-only merge failed even after rebase (will not force merge): %w", err)
-		}
-	}
+	// Clean up the staging worktree after successful merge.
+	stagingWt.Close()
 
 	// 4. Push main.
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
 	log("pushing %s", baseBranch)
 	if err := rc.Push("origin", baseBranch, mergeEnv); err != nil {
 		return fmt.Errorf("push %s: %w", baseBranch, err)
