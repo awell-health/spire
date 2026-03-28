@@ -78,7 +78,7 @@ func main() {
 		Namespace:      namespace,
 		Interval:       interval,
 		OfflineTimeout: offlineTimeout,
-		StewardImage:     stewardImage,
+		AgentImage:       stewardImage,
 	}
 	if err := mgr.Add(monitor); err != nil {
 		log.Error(err, "unable to add agent monitor")
