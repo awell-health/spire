@@ -7,6 +7,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	spgit "github.com/awell-health/spire/pkg/git"
 )
 
 func cmdReset(args []string) error {
@@ -163,7 +165,7 @@ func isResetLabel(label string) bool {
 // resetDeleteBranch deletes a local git branch (best-effort, prints result).
 func resetDeleteBranch(branch string) {
 	cwd, _ := os.Getwd()
-	rc := &RepoContext{Dir: cwd}
+	rc := &spgit.RepoContext{Dir: cwd}
 	if err := rc.ForceDeleteBranch(branch); err != nil {
 		fmt.Printf("  %s(note: could not delete branch %s: %s)%s\n", dim, branch, err, reset)
 	} else {

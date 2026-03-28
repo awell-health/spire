@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
@@ -56,7 +57,7 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 
 	// Use the single staging worktree shared across the entire executor lifecycle.
 	// ensureStagingWorktree creates it on first call, resumes from state on subsequent calls.
-	var stagingWt *StagingWorktree
+	var stagingWt *spgit.StagingWorktree
 	if e.state.StagingBranch != "" {
 		var wtErr error
 		stagingWt, wtErr = e.ensureStagingWorktree()
@@ -192,7 +193,7 @@ func (e *formulaExecutor) executeWave(phase string, pc PhaseConfig) error {
 
 // resolveConflicts invokes Claude to resolve merge conflicts in the working tree.
 func (e *formulaExecutor) resolveConflicts(repoPath, childBranch string) error {
-	wc := &WorktreeContext{Dir: repoPath}
+	wc := &spgit.WorktreeContext{Dir: repoPath}
 
 	// Get the list of conflicted files
 	conflicted, err := wc.ConflictedFiles()

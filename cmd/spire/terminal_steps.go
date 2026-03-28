@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	spgit "github.com/awell-health/spire/pkg/git"
 )
 
 // SplitTask represents a follow-on task created when an arbiter decides to split a bead.
@@ -36,7 +38,7 @@ func terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, log fu
 		mergeEnv = archmageGitEnv(tower)
 	}
 
-	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
 
 	// 1. Build verification on the staging/feature branch — use a worktree
 	// instead of checking out in the main repo (fixes the checkout-in-main bug).
@@ -66,10 +68,8 @@ func terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, log fu
 	}
 
 	// 2. Fetch and ff-only merge to ensure base branch is up to date (best-effort).
-	fetchCmd := rc.git("fetch", "origin", baseBranch)
-	fetchCmd.Env = mergeEnv
-	if out, err := fetchCmd.CombinedOutput(); err != nil {
-		log("warning: pull %s (fetch failed): %s\n%s", baseBranch, err, string(out))
+	if err := rc.FetchWithEnv("origin", baseBranch, mergeEnv); err != nil {
+		log("warning: pull %s (fetch failed): %s", baseBranch, err)
 	} else if err := rc.MergeFFOnly("origin/"+baseBranch, mergeEnv); err != nil {
 		log("warning: pull %s: %s", baseBranch, err)
 	}
@@ -230,7 +230,7 @@ func terminalDiscard(beadID string, log func(string, ...interface{})) error {
 			beadID, branch)
 	}
 
-	rc := &RepoContext{Dir: repoPath}
+	rc := &spgit.RepoContext{Dir: repoPath}
 
 	// Delete local and remote branches BEFORE closing the bead (DAG invariant).
 	log("deleting branch %s (discard)", branch)

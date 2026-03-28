@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	bdpkg "github.com/awell-health/spire/pkg/bd"
+	spgit "github.com/awell-health/spire/pkg/git"
 )
 
 // checkStatus represents the result of a single doctor check.
@@ -625,7 +626,7 @@ func checkRepoMigrationFor(cfg *SpireConfig, tower *TowerConfig) checkResult {
 			for _, inst := range missing {
 				repoURL := ""
 				if inst.Path != "" {
-					rc := &RepoContext{Dir: inst.Path}
+					rc := &spgit.RepoContext{Dir: inst.Path}
 					repoURL = rc.RemoteURL("origin")
 				}
 				if repoURL == "" {
@@ -1030,7 +1031,7 @@ func detectPrefixFromPath(repoPath string) string {
 // if no stale branches exist.
 func checkStaleBranches(repoPath string) []checkResult {
 	// List local branches matching feat/* and epic/*
-	rc := &RepoContext{Dir: repoPath}
+	rc := &spgit.RepoContext{Dir: repoPath}
 	featBranches := rc.ListBranches("feat/*")
 	epicBranches := rc.ListBranches("epic/*")
 	allBranches := append(featBranches, epicBranches...)

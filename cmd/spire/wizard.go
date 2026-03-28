@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/steveyegge/beads"
 )
@@ -352,10 +353,10 @@ func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err
 // out the existing branch instead of trying to create it again.
 //
 // Returns a WorktreeContext that must be used for all subsequent git operations.
-func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string) (*WorktreeContext, error) {
+func wizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string) (*spgit.WorktreeContext, error) {
 	worktreeBase := filepath.Join(os.TempDir(), "spire-wizard", wizardName)
 	worktreeDir := filepath.Join(worktreeBase, beadID)
-	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
 
 	// Clean up any stale worktree at this path
 	if _, err := os.Stat(worktreeDir); err == nil {
@@ -657,7 +658,7 @@ func wizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 
 // wizardCommitAndPush commits any changes and pushes the branch.
 // Uses WorktreeContext methods for all git operations — no raw exec.Command.
-func wizardCommitAndPush(wc *WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, pushed bool) {
+func wizardCommitAndPush(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, pushed bool) {
 	hasUncommitted := wc.HasUncommittedChanges()
 	hasNewCommits := wc.HasNewCommits()
 
@@ -689,7 +690,7 @@ func wizardCommitAndPush(wc *WorktreeContext, beadID, beadTitle string, log func
 	title = strings.TrimRight(title, ".")
 	msg := fmt.Sprintf("feat(%s): %s", beadID, title)
 
-	sha, err := wc.Commit(msg)
+	sha, err := wc.Commit(msg, ".spire-prompt.txt", ".spire-design-prompt.txt")
 	if err != nil {
 		log("git commit failed: %s", err)
 		return "", false
@@ -755,7 +756,7 @@ func wizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
 // wizardCleanup is a legacy wrapper kept for any call sites that haven't
 // migrated to WorktreeContext.Cleanup() yet.
 func wizardCleanup(worktreeDir, repoPath string) {
-	wc := WorktreeContext{Dir: worktreeDir, RepoPath: repoPath}
+	wc := spgit.WorktreeContext{Dir: worktreeDir, RepoPath: repoPath}
 	wc.Cleanup()
 }
 

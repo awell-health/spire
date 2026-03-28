@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/steveyegge/beads"
 )
 
@@ -58,7 +59,7 @@ type formulaExecutor struct {
 
 	// Single staging worktree shared across all phases (implement, review, merge).
 	// Created once by ensureStagingWorktree(), cleaned up by Run() on exit.
-	stagingWt *StagingWorktree
+	stagingWt *spgit.StagingWorktree
 }
 
 // newExecutor creates a formula executor for a bead.
