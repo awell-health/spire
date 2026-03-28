@@ -45,7 +45,7 @@ func (e *Executor) ensureAttemptBead() error {
 	// No existing attempt — create one (direct executor invocation, not via claim).
 	branch := e.state.StagingBranch
 	if branch == "" {
-		branch = fmt.Sprintf("feat/%s", e.beadID)
+		branch = e.resolveBranch(e.beadID)
 	}
 
 	id, err := e.deps.CreateAttemptBead(e.beadID, e.agentName, model, branch)

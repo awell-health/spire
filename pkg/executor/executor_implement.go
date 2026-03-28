@@ -147,7 +147,7 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 			}
 			e.state.Subtasks[r.BeadID] = SubtaskState{
 				Status: "done",
-				Branch: fmt.Sprintf("feat/%s", r.BeadID),
+				Branch: e.resolveBranch(r.BeadID),
 				Agent:  r.Agent,
 			}
 		}

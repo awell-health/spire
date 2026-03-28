@@ -111,7 +111,7 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 
 				// Merge fix branch into the shared staging worktree.
 				if e.state.StagingBranch != "" {
-					fixBranch := fmt.Sprintf("feat/%s", e.beadID)
+					fixBranch := e.resolveBranch(e.beadID)
 					e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
 					stagingWt, wtErr := e.ensureStagingWorktree()
 					if wtErr != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -314,6 +315,48 @@ func FormatResolved(cfg *RepoConfig) string {
 	}
 
 	return s
+}
+
+// ResolveBranch returns the branch name for a bead by substituting {bead-id}
+// into the config's Branch.Pattern. If the pattern is empty, it falls back to
+// "feat/{bead-id}".
+func (c *RepoConfig) ResolveBranch(beadID string) string {
+	return ResolveBranchName(beadID, c.Branch.Pattern)
+}
+
+// ResolveBranchName substitutes {bead-id} into the given pattern.
+// If pattern is empty, it defaults to "feat/{bead-id}".
+func ResolveBranchName(beadID, pattern string) string {
+	if pattern == "" {
+		pattern = "feat/{bead-id}"
+	}
+	return strings.ReplaceAll(pattern, "{bead-id}", beadID)
+}
+
+// BranchGlob returns a glob pattern that matches branches created by the
+// configured Branch.Pattern. For example, "feat/{bead-id}" yields "feat/*".
+// Used by doctor.go to scan for stale branches regardless of the configured
+// pattern.
+func (c *RepoConfig) BranchGlob() string {
+	pattern := c.Branch.Pattern
+	if pattern == "" {
+		pattern = "feat/{bead-id}"
+	}
+	return strings.ReplaceAll(pattern, "{bead-id}", "*")
+}
+
+// BranchPrefix returns the static prefix before the {bead-id} placeholder, or
+// "" if the pattern has no prefix. Used to extract bead IDs from branch names.
+func (c *RepoConfig) BranchPrefix() string {
+	pattern := c.Branch.Pattern
+	if pattern == "" {
+		pattern = "feat/{bead-id}"
+	}
+	idx := strings.Index(pattern, "{bead-id}")
+	if idx < 0 {
+		return ""
+	}
+	return pattern[:idx]
 }
 
 func fileExists(path string) bool {

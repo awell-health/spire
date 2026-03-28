@@ -89,8 +89,9 @@ type Deps struct {
 	RegistryRemove func(name string) error
 
 	// Resolution
-	ResolveRepo func(beadID string) (repoPath, repoURL, baseBranch string, err error)
-	GetPhase    func(b Bead) string
+	ResolveRepo   func(beadID string) (repoPath, repoURL, baseBranch string, err error)
+	ResolveBranch func(beadID string) string // returns branch name from repoconfig pattern
+	GetPhase      func(b Bead) string
 
 	// Tower / identity
 	ActiveTowerConfig func() (*TowerConfig, error)

@@ -395,3 +395,12 @@ func (e *Executor) BeadID() string {
 func (e *Executor) AgentName() string {
 	return e.agentName
 }
+
+// resolveBranch returns the branch name for a bead using the injected
+// ResolveBranch dep, falling back to "feat/<beadID>" if the dep is nil.
+func (e *Executor) resolveBranch(beadID string) string {
+	if e.deps.ResolveBranch != nil {
+		return e.deps.ResolveBranch(beadID)
+	}
+	return "feat/" + beadID
+}

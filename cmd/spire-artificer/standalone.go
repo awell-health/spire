@@ -80,7 +80,7 @@ func reviewSingleBranch(workspaceDir, stateDir string, bead *Bead, branch, model
 	testResult := runTests(workspaceDir, branch, cfg)
 	if !testResult.Passed {
 		log.Printf("[review] tests failed on %s during %s", bead.ID, testResult.Stage)
-		sendTestFailure(*bead, testResult) //nolint:errcheck
+		sendTestFailure(*bead, branch, testResult) //nolint:errcheck
 		return "test_failure"
 	}
 
@@ -109,7 +109,7 @@ func reviewSingleBranch(workspaceDir, stateDir string, bead *Bead, branch, model
 		return handleStandaloneApproval(workspaceDir, bead, branch, review, cfg)
 
 	case "request_changes":
-		return handleStandaloneRequestChanges(bead, review)
+		return handleStandaloneRequestChanges(bead, branch, review)
 
 	case "reject":
 		return handleStandaloneRejection(bead, review)
@@ -227,11 +227,11 @@ func handleStandaloneApproval(workspaceDir string, bead *Bead, branch string, re
 }
 
 // handleStandaloneRequestChanges sends feedback to the wizard and updates labels.
-func handleStandaloneRequestChanges(bead *Bead, review *Review) string {
+func handleStandaloneRequestChanges(bead *Bead, branch string, review *Review) string {
 	log.Printf("[review] requesting changes on %s", bead.ID)
 
 	// Send review feedback to wizard.
-	sendReviewToWizard(*bead, review) //nolint:errcheck
+	sendReviewToWizard(*bead, branch, review) //nolint:errcheck
 
 	// Update labels: remove review-ready, add review-feedback.
 	bd("update", bead.ID, "--remove-label", "review-ready") //nolint:errcheck

@@ -347,6 +347,21 @@ func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err
 	return repoPath, repoURL, baseBranch, nil
 }
 
+// resolveBranchForBead resolves the branch name for a bead by loading
+// spire.yaml from the given repoPath (or cwd if empty). Falls back to
+// "feat/<beadID>" if the config cannot be loaded.
+func resolveBranchForBead(beadID, repoPath string) string {
+	dir := repoPath
+	if dir == "" {
+		dir = "."
+	}
+	cfg, err := repoconfig.Load(dir)
+	if err != nil || cfg == nil {
+		return "feat/" + beadID
+	}
+	return cfg.ResolveBranch(beadID)
+}
+
 // wizardCreateWorktree creates a git worktree for the wizard to work in.
 // On first run it creates a new branch from baseBranch. On --review-fix
 // the branch already exists (pushed by the previous run), so it checks
