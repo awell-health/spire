@@ -1,15 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 
+	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/steveyegge/beads"
 )
 
@@ -219,48 +217,9 @@ type webhookQueueRow struct {
 }
 
 // doltSQL runs a SQL query against the Dolt server and returns the output.
-// Uses dolt CLI with connection parameters from environment.
+// Delegates to pkg/dolt.SQL with the ambient daemonDB and detectDBName fallback.
 func doltSQL(query string, jsonOutput bool) (string, error) {
-	host := os.Getenv("BEADS_DOLT_SERVER_HOST")
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	port := os.Getenv("BEADS_DOLT_SERVER_PORT")
-	if port == "" {
-		port = "3307"
-	}
-
-	dbName := daemonDB
-	if dbName == "" {
-		var dbErr error
-		dbName, dbErr = detectDBName()
-		if dbErr != nil {
-			return "", fmt.Errorf("resolve database: %w", dbErr)
-		}
-	}
-
-	args := []string{
-		"--host", host,
-		"--port", port,
-		"--user", "root",
-		"--no-tls",
-		"--use-db", dbName,
-		"sql", "-q", query,
-	}
-	if jsonOutput {
-		args = append(args, "-r", "json")
-	}
-
-	cmd := exec.Command(doltBin(), args...)
-	cmd.Env = append(os.Environ(), "DOLT_CLI_PASSWORD=")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("dolt sql: %s\n%s", err, stderr.String())
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	return dolt.SQL(query, jsonOutput, daemonDB, detectDBName)
 }
 
 // processWebhookQueue reads unprocessed rows from webhook_queue,

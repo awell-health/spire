@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/dolt"
 )
 
 func cmdRepo(args []string) error {
@@ -244,53 +246,7 @@ func repoRemove(arg string) error {
 }
 
 // parseDoltRows parses MySQL-style tabular dolt SQL output into a slice of maps.
-// Dolt output format:
-//
-//	+--------+----------+
-//	| prefix | repo_url |
-//	+--------+----------+
-//	| spi    | https... |
-//	+--------+----------+
-//
-// Separator lines (+---+) and the header row (first | ... | line) are skipped.
+// Delegates to pkg/dolt.ParseDoltRows.
 func parseDoltRows(out string, columns []string) []map[string]string {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-
-	var rows []map[string]string
-	headerSkipped := false
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "+") {
-			continue
-		}
-		// First pipe-delimited line is the header — skip it
-		if !headerSkipped {
-			headerSkipped = true
-			continue
-		}
-		// Parse data row
-		parts := strings.Split(line, "|")
-		var cells []string
-		for _, p := range parts {
-			cells = append(cells, strings.TrimSpace(p))
-		}
-		// Strip leading/trailing empty boundary cells from "| a | b |"
-		if len(cells) > 0 && cells[0] == "" {
-			cells = cells[1:]
-		}
-		if len(cells) > 0 && cells[len(cells)-1] == "" {
-			cells = cells[:len(cells)-1]
-		}
-
-		row := make(map[string]string)
-		for i, col := range columns {
-			if i < len(cells) {
-				row[col] = cells[i]
-			} else {
-				row[col] = ""
-			}
-		}
-		rows = append(rows, row)
-	}
-	return rows
+	return dolt.ParseDoltRows(out, columns)
 }

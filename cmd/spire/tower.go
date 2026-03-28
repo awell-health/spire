@@ -13,6 +13,7 @@ import (
 
 	bdpkg "github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/dolt"
 )
 
 // --- Type aliases so existing cmd/spire code compiles unchanged ---
@@ -77,19 +78,9 @@ func must(s string, err error) string {
 // --- Functions that remain in cmd/spire (depend on dolt/bd/git/IO) ---
 
 // rawDoltQuery runs a SQL query against the dolt server without --use-db.
-// For bootstrap contexts (tower attach) where no ambient database context exists.
-// Queries must use fully-qualified table names (e.g. `dbname`.table).
+// Delegates to pkg/dolt.RawQuery.
 func rawDoltQuery(query string) (string, error) {
-	cmd := exec.Command(doltBin(),
-		"--host", doltHost(), "--port", doltPort(),
-		"--user", "root", "--no-tls",
-		"sql", "-q", query)
-	cmd.Env = append(os.Environ(), "DOLT_CLI_PASSWORD=")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("dolt sql: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-	return strings.TrimSpace(string(out)), nil
+	return dolt.RawQuery(query)
 }
 
 // promptArchmageIdentity prompts for the tower owner's identity.
