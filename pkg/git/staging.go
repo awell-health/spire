@@ -109,43 +109,76 @@ func (w *StagingWorktree) FetchBranch(remote, branch string) {
 	exec.Command("git", "-C", w.Dir, "fetch", remote, branch).Run()
 }
 
-// MergeBranch merges childBranch into this staging worktree's branch.
-// It fetches from origin first (since the apprentice may have pushed to remote),
-// then tries origin/childBranch, falling back to a local branch ref.
-// On merge conflict, resolver is called (if non-nil) to attempt resolution.
+// MergeBranch merges childBranch into this staging worktree's branch with
+// linear history (no merge commits). Strategy:
+//  1. Fetch the child branch from origin.
+//  2. Try ff-only merge — succeeds when staging hasn't diverged.
+//  3. If ff-only fails, rebase the child onto staging, then ff-only again.
 //
-// Uses WorktreeContext.Merge/MergeAbort/StatusPorcelain for all in-worktree
-// git operations — FetchBranch is the only StagingWorktree-specific escape
-// hatch (WorktreeContext forbids fetch by design).
+// On rebase conflict, resolver is called (if non-nil) to attempt resolution.
+// FetchBranch is the only StagingWorktree-specific escape hatch
+// (WorktreeContext forbids fetch by design).
 func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, branch string) error) error {
 	w.log("  merging %s into %s", childBranch, w.Branch)
 
 	// Fetch in case the apprentice pushed to remote.
-	// FetchBranch lives on StagingWorktree because WorktreeContext enforces local-ref-only semantics.
 	w.FetchBranch("origin", childBranch)
 
-	// Try remote branch first, fall back to local.
+	// Determine ref: prefer origin/, fall back to local.
 	branchRef := "origin/" + childBranch
-	if _, mergeErr := w.Merge(branchRef); mergeErr != nil {
+	if exec.Command("git", "-C", w.Dir, "rev-parse", "--verify", branchRef).Run() != nil {
 		branchRef = childBranch
-		if _, mergeErr2 := w.Merge(branchRef); mergeErr2 != nil {
-			// Check if git is in a conflict state.
-			status := w.StatusPorcelain()
-			if strings.Contains(status, "UU ") || strings.Contains(status, "AA ") {
-				if resolver != nil {
-					if resolveErr := resolver(w.Dir, childBranch); resolveErr != nil {
-						w.MergeAbort()
-						return fmt.Errorf("conflict resolution failed: %w", resolveErr)
-					}
-					return nil
+	}
+
+	// Step 1: Try fast-forward-only merge.
+	if err := w.MergeFFOnly(branchRef); err == nil {
+		return nil
+	}
+	w.log("  ff-only failed, rebasing %s onto %s", branchRef, w.Branch)
+
+	// Step 2: Rebase the child branch onto staging.
+	// This checks out branchRef (detached HEAD for remote refs), replays
+	// its commits on top of w.Branch, then we switch back and ff-only merge.
+	rebaseCmd := exec.Command("git", "-C", w.Dir, "rebase", w.Branch, branchRef)
+	rebaseCmd.Env = os.Environ()
+	if out, err := rebaseCmd.CombinedOutput(); err != nil {
+		// Check if rebase stopped due to conflicts.
+		status := w.StatusPorcelain()
+		if strings.Contains(status, "UU ") || strings.Contains(status, "AA ") {
+			if resolver != nil {
+				if resolveErr := resolver(w.Dir, childBranch); resolveErr != nil {
+					exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
+					return fmt.Errorf("conflict resolution failed during rebase: %w", resolveErr)
 				}
-				w.MergeAbort()
-				return fmt.Errorf("merge conflict in %s: no resolver provided", childBranch)
+				// Resolver succeeded — continue rebase.
+				contCmd := exec.Command("git", "-C", w.Dir, "rebase", "--continue")
+				contCmd.Env = os.Environ()
+				if contOut, contErr := contCmd.CombinedOutput(); contErr != nil {
+					exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
+					return fmt.Errorf("rebase --continue failed after resolution: %s\n%s", contErr, string(contOut))
+				}
+			} else {
+				exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
+				return fmt.Errorf("rebase conflict in %s: no resolver provided", childBranch)
 			}
-			// Not a conflict — some other merge error.
-			w.MergeAbort()
-			return fmt.Errorf("merge failed: %w", mergeErr2)
+		} else {
+			exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
+			return fmt.Errorf("rebase %s onto %s failed: %s\n%s", branchRef, w.Branch, err, string(out))
 		}
+	}
+
+	// Capture the rebased tip SHA (HEAD is now at the rebased result).
+	rebasedSHA, _ := exec.Command("git", "-C", w.Dir, "rev-parse", "HEAD").Output()
+	tip := strings.TrimSpace(string(rebasedSHA))
+
+	// Switch back to the staging branch.
+	if out, err := exec.Command("git", "-C", w.Dir, "checkout", w.Branch).CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout %s after rebase: %w\n%s", w.Branch, err, string(out))
+	}
+
+	// Step 3: ff-only merge the rebased commits — should succeed now.
+	if err := w.MergeFFOnly(tip); err != nil {
+		return fmt.Errorf("ff-only merge failed after rebase: %w", err)
 	}
 	return nil
 }

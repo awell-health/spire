@@ -152,6 +152,16 @@ func (wc *WorktreeContext) Merge(ref string) (string, error) {
 	return string(out), err
 }
 
+// MergeFFOnly performs a fast-forward-only merge of the given ref.
+// Returns an error if the merge cannot be completed as a fast-forward.
+func (wc *WorktreeContext) MergeFFOnly(ref string) error {
+	out, err := exec.Command("git", "-C", wc.Dir, "merge", "--ff-only", ref).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git merge --ff-only %s: %w\n%s", ref, err, string(out))
+	}
+	return nil
+}
+
 // MergeAbort aborts an in-progress merge. Safe to call even if no merge is active.
 func (wc *WorktreeContext) MergeAbort() {
 	exec.Command("git", "-C", wc.Dir, "merge", "--abort").Run()
