@@ -107,18 +107,18 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		}
 	}
 
-	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, b := range closedBeads {
 		if skip(b) {
 			continue
 		}
-		t, err := time.Parse(time.RFC3339, b.UpdatedAt)
-		if err != nil {
-			t, err = time.Parse("2006-01-02 15:04:05", b.UpdatedAt)
-		}
-		if err == nil && t.After(cutoff) {
-			c.Done = append(c.Done, b)
-		}
+		c.Done = append(c.Done, b)
+	}
+	// Most recently updated first, capped at 10.
+	sort.Slice(c.Done, func(i, j int) bool {
+		return c.Done[i].UpdatedAt > c.Done[j].UpdatedAt
+	})
+	if len(c.Done) > 10 {
+		c.Done = c.Done[:10]
 	}
 
 	return c

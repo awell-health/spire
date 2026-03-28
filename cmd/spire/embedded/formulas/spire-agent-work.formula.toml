@@ -3,7 +3,7 @@ description = "Standard agent work protocol: implement → review → merge. Des
 version = 2
 
 [phases.implement]
-timeout = "15m"
+timeout = "30m"
 model = "claude-opus-4-6"
 role = "apprentice"
 apprentice = true

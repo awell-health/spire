@@ -2,6 +2,7 @@ package board
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -16,8 +17,10 @@ func FetchBoard(opts Opts, identity string) (Columns, error) {
 		return Columns{}, fmt.Errorf("board: list open beads: %w", err)
 	}
 
+	closedCutoff := time.Now().Add(-24 * time.Hour)
 	closedBeads, _ := store.ListBoardBeads(beads.IssueFilter{
-		Status: store.StatusPtr(beads.StatusClosed),
+		Status:      store.StatusPtr(beads.StatusClosed),
+		ClosedAfter: &closedCutoff,
 	})
 
 	blockedBeads, _ := store.GetBlockedIssues(beads.WorkFilter{})
