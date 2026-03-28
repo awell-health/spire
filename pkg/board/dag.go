@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/steveyegge/beads"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -199,11 +200,11 @@ func reviewVerdictIconANSI(verdict string) string {
 
 // EpicChildSummary holds the subtask progress for an epic.
 type EpicChildSummary struct {
-	Total   int
-	Done    int
-	Working int
-	Blocked int
-	Ready   int
+	Total   int `json:"total"`
+	Done    int `json:"done"`
+	Working int `json:"working"`
+	Blocked int `json:"blocked"`
+	Ready   int `json:"ready"`
 }
 
 // FetchEpicChildSummary returns a count of subtask statuses for an epic.
@@ -212,6 +213,14 @@ func FetchEpicChildSummary(epicID string) *EpicChildSummary {
 	children, err := store.GetChildren(epicID)
 	if err != nil || len(children) == 0 {
 		return nil
+	}
+
+	// Build a set of blocked bead IDs so we can detect blocked children.
+	blockedSet := make(map[string]bool)
+	if blocked, err := store.GetBlockedIssues(beads.WorkFilter{}); err == nil {
+		for _, b := range blocked {
+			blockedSet[b.ID] = true
+		}
 	}
 
 	var s EpicChildSummary
@@ -226,7 +235,11 @@ func FetchEpicChildSummary(epicID string) *EpicChildSummary {
 		case "in_progress":
 			s.Working++
 		default:
-			s.Ready++
+			if blockedSet[c.ID] {
+				s.Blocked++
+			} else {
+				s.Ready++
+			}
 		}
 	}
 	if s.Total == 0 {

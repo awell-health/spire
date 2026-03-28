@@ -391,7 +391,7 @@ func RenderCardStr(b BoardBead, color lipgloss.Color, width int, selected ...boo
 
 	// Show compact DAG pipeline for in-progress beads.
 	if b.Status == "in_progress" {
-		if pipeline := RenderPipelineLipgloss(b.ID, width-4); pipeline != "" {
+		if pipeline := RenderPipelineLipgloss(b.ID); pipeline != "" {
 			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
 		}
 	}
@@ -402,7 +402,7 @@ func RenderCardStr(b BoardBead, color lipgloss.Color, width int, selected ...boo
 
 // RenderPipelineLipgloss renders a compact step pipeline using lipgloss styles.
 // Returns "" if the bead has no step beads.
-func RenderPipelineLipgloss(beadID string, maxWidth int) string {
+func RenderPipelineLipgloss(beadID string) string {
 	dag := FetchDAGProgress(beadID)
 	if dag == nil || len(dag.Steps) == 0 {
 		return ""
