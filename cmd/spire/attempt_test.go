@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/steveyegge/beads"
 )
@@ -383,7 +384,7 @@ func TestBoard_FiltersAttemptBeads(t *testing.T) {
 	closedBeads := []BoardBead{}
 	blockedBeads := []BoardBead{}
 
-	cols := categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
+	cols := board.CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
 
 	for _, col := range [][]BoardBead{cols.Ready, cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked, cols.Alerts} {
 		for _, b := range col {

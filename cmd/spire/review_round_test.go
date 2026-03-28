@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/awell-health/spire/pkg/board"
 )
 
 // --- storeCreateReviewBead + storeCloseReviewBead tests ---
@@ -214,7 +216,7 @@ func TestBoard_FiltersReviewRoundBeads(t *testing.T) {
 	closedBeads := []BoardBead{}
 	blockedBeads := []BoardBead{}
 
-	cols := categorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
+	cols := board.CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
 
 	// Review-round beads should be filtered out from all columns
 	for _, col := range [][]BoardBead{cols.Ready, cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked, cols.Alerts} {

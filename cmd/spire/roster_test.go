@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/awell-health/spire/pkg/board"
 )
 
 func TestBuildAttemptWorkMap_DeriveWorkFromAttemptBeads(t *testing.T) {
@@ -22,9 +24,9 @@ func TestBuildAttemptWorkMap_DeriveWorkFromAttemptBeads(t *testing.T) {
 			UpdatedAt: "2026-03-27T12:05:00Z",
 		},
 	}
-	ownerWork := map[string]BoardBead{} // no owner: labels
+	ownerWork := map[string]BoardBead{}
 
-	work, updatedAt := buildAttemptWorkMap(inProgress, ownerWork)
+	work, updatedAt := board.BuildAttemptWorkMap(inProgress, ownerWork)
 
 	if len(work) != 1 {
 		t.Fatalf("expected 1 entry in attemptWork, got %d", len(work))
@@ -66,7 +68,7 @@ func TestBuildAttemptWorkMap_SkipsIfCoveredByOwnerLabel(t *testing.T) {
 		"wizard-beta": inProgress[0],
 	}
 
-	work, _ := buildAttemptWorkMap(inProgress, ownerWork)
+	work, _ := board.BuildAttemptWorkMap(inProgress, ownerWork)
 	if len(work) != 0 {
 		t.Fatalf("expected no entries (agent covered by owner:), got %d", len(work))
 	}
@@ -79,20 +81,20 @@ func TestBuildAttemptWorkMap_SkipsAttemptWithMissingParent(t *testing.T) {
 			Title:     "attempt: wizard-gamma",
 			Status:    "in_progress",
 			Labels:    []string{"attempt", "agent:wizard-gamma"},
-			Parent:    "spi-orphan", // parent not in inProgress list
+			Parent:    "spi-orphan",
 			UpdatedAt: "2026-03-27T13:00:00Z",
 		},
 	}
 	ownerWork := map[string]BoardBead{}
 
-	work, _ := buildAttemptWorkMap(inProgress, ownerWork)
+	work, _ := board.BuildAttemptWorkMap(inProgress, ownerWork)
 	if len(work) != 0 {
 		t.Fatalf("expected no entries (parent not in inProgress), got %d", len(work))
 	}
 }
 
 func TestBuildRosterWorkItems_CollapsesProcessesByBead(t *testing.T) {
-	agents := []RosterAgent{
+	agents := []board.RosterAgent{
 		{
 			Name:      "wizard-spi-39u-impl",
 			Status:    "working",
@@ -115,7 +117,7 @@ func TestBuildRosterWorkItems_CollapsesProcessesByBead(t *testing.T) {
 		},
 	}
 
-	items := buildRosterWorkItems(agents)
+	items := board.BuildRosterWorkItems(agents)
 	if len(items) != 1 {
 		t.Fatalf("expected 1 work item, got %d", len(items))
 	}
@@ -145,7 +147,7 @@ func TestBuildRosterWorkItems_CollapsesProcessesByBead(t *testing.T) {
 }
 
 func TestGroupRosterWorkItemsByEpic_GroupsStandaloneSeparately(t *testing.T) {
-	items := []rosterWorkItem{
+	items := []board.RosterWorkItem{
 		{
 			BeadID:    "spi-yanq.1",
 			BeadTitle: "Remove broken summon targeting and group roster by epic",
@@ -160,7 +162,7 @@ func TestGroupRosterWorkItemsByEpic_GroupsStandaloneSeparately(t *testing.T) {
 		},
 	}
 
-	groups := groupRosterWorkItemsByEpic(items)
+	groups := board.GroupRosterWorkItemsByEpic(items)
 	if len(groups) != 2 {
 		t.Fatalf("expected 2 epic groups, got %d", len(groups))
 	}
