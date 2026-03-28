@@ -1,0 +1,262 @@
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// TowerConfig represents a tower's identity and configuration.
+type TowerConfig struct {
+	Name          string         `json:"name"`
+	ProjectID     string         `json:"project_id"`
+	HubPrefix     string         `json:"hub_prefix"`
+	DolthubRemote string         `json:"dolthub_remote,omitempty"`
+	Database      string         `json:"database"`
+	CreatedAt     string         `json:"created_at"`
+	Archmage      ArchmageConfig `json:"archmage,omitempty"`
+}
+
+// ArchmageConfig stores the tower owner's identity.
+// Used for merge commits so deployments and CI attribute to the right person.
+type ArchmageConfig struct {
+	Name  string `json:"name"`            // GitHub username (used by CI to validate workflows)
+	Email string `json:"email,omitempty"` // Git commit email
+}
+
+// TowerConfigDir returns ~/.config/spire/towers/, creating it if needed.
+func TowerConfigDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	td := filepath.Join(dir, "towers")
+	if err := os.MkdirAll(td, 0755); err != nil {
+		return "", err
+	}
+	return td, nil
+}
+
+// TowerConfigPath returns ~/.config/spire/towers/<name>.json.
+func TowerConfigPath(name string) (string, error) {
+	dir, err := TowerConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, name+".json"), nil
+}
+
+// LoadTowerConfig reads a tower config by name.
+func LoadTowerConfig(name string) (*TowerConfig, error) {
+	p, err := TowerConfigPath(name)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var tc TowerConfig
+	if err := json.Unmarshal(data, &tc); err != nil {
+		return nil, fmt.Errorf("parse tower config %s: %w", p, err)
+	}
+	return &tc, nil
+}
+
+// SaveTowerConfig writes a tower config to disk.
+func SaveTowerConfig(tower *TowerConfig) error {
+	p, err := TowerConfigPath(tower.Name)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(tower, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, append(data, '\n'), 0644)
+}
+
+// ListTowerConfigs reads all tower configs from the towers directory.
+func ListTowerConfigs() ([]TowerConfig, error) {
+	dir, err := TowerConfigDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var towers []TowerConfig
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var tc TowerConfig
+		if err := json.Unmarshal(data, &tc); err != nil {
+			continue
+		}
+		towers = append(towers, tc)
+	}
+	return towers, nil
+}
+
+// ActiveTowerConfig finds the tower for the current working directory
+// by looking up the Instance.Database and matching it to a tower config.
+func ActiveTowerConfig() (*TowerConfig, error) {
+	cwd, err := RealCwd()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	inst := FindInstanceByPath(cfg, cwd)
+	if inst == nil {
+		return nil, fmt.Errorf("no spire instance registered for %s", cwd)
+	}
+
+	towers, err := ListTowerConfigs()
+	if err != nil {
+		return nil, err
+	}
+	for i := range towers {
+		if towers[i].Database == inst.Database || towers[i].Database == "beads_"+inst.Database {
+			return &towers[i], nil
+		}
+	}
+	return nil, fmt.Errorf("no tower config found for database %q", inst.Database)
+}
+
+// TowerConfigForDatabase finds the tower owning a given database name.
+// Reuses the same matching logic as ActiveTowerConfig: exact match or beads_ prefix.
+func TowerConfigForDatabase(database string) (*TowerConfig, error) {
+	towers, err := ListTowerConfigs()
+	if err != nil {
+		return nil, err
+	}
+	for i := range towers {
+		if towers[i].Database == database || towers[i].Database == "beads_"+database {
+			return &towers[i], nil
+		}
+	}
+	return nil, fmt.Errorf("no tower config found for database %q", database)
+}
+
+// ReadBeadsProjectID reads project_id from a .beads/metadata.json file.
+// Used after bd init to adopt the identity that beads created.
+func ReadBeadsProjectID(beadsDir string) (string, error) {
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", metaPath, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", fmt.Errorf("parse %s: %w", metaPath, err)
+	}
+	pid, _ := meta["project_id"].(string)
+	if pid == "" {
+		return "", fmt.Errorf("no project_id in %s", metaPath)
+	}
+	return pid, nil
+}
+
+// DerivePrefixFromName extracts the first 3 lowercase alphanumeric characters from a name.
+func DerivePrefixFromName(name string) string {
+	var prefix []byte
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			prefix = append(prefix, byte(r))
+			if len(prefix) == 3 {
+				break
+			}
+		}
+	}
+	if len(prefix) == 0 {
+		return "hub"
+	}
+	return string(prefix)
+}
+
+// ArchmageGitEnv returns environment variables that set BOTH the git author
+// and committer identity to the archmage. This ensures all commits merged
+// to main are attributed to the archmage on GitHub (which shows author).
+func ArchmageGitEnv(tower *TowerConfig) []string {
+	env := os.Environ()
+	if tower.Archmage.Name != "" {
+		env = append(env, "GIT_AUTHOR_NAME="+tower.Archmage.Name)
+		env = append(env, "GIT_COMMITTER_NAME="+tower.Archmage.Name)
+	}
+	if tower.Archmage.Email != "" {
+		env = append(env, "GIT_AUTHOR_EMAIL="+tower.Archmage.Email)
+		env = append(env, "GIT_COMMITTER_EMAIL="+tower.Archmage.Email)
+	}
+	return env
+}
+
+// NameFromDolthubURL extracts the repo name from a DoltHub URL or org/repo string.
+func NameFromDolthubURL(input string) string {
+	input = strings.TrimSpace(input)
+	// Strip URL prefix if present
+	input = strings.TrimPrefix(input, "https://doltremoteapi.dolthub.com/")
+	input = strings.TrimPrefix(input, "https://www.dolthub.com/repositories/")
+	input = strings.TrimPrefix(input, "http://")
+	// Take the last path component
+	parts := strings.Split(input, "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-1]
+	}
+	if len(parts) == 1 && parts[0] != "" {
+		return parts[0]
+	}
+	return ""
+}
+
+// ExtractSQLValue extracts a single value from SQL output.
+// Handles tabular output from dolt sql -q by looking for data rows.
+func ExtractSQLValue(output string) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip header separators, empty lines, and column headers
+		if line == "" || strings.HasPrefix(line, "+") || strings.HasPrefix(line, "|") && strings.Contains(line, "value") {
+			continue
+		}
+		// Look for data row in pipe-delimited format: | value |
+		if strings.HasPrefix(line, "|") {
+			parts := strings.Split(line, "|")
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" && p != "value" && p != "COUNT(*)" {
+					return p
+				}
+			}
+		}
+	}
+	// Fallback: return the last non-empty line
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" && !strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "|") {
+			return line
+		}
+	}
+	return ""
+}
+
+// Must returns the value or empty string on error (for display purposes only).
+func Must(s string, err error) string {
+	if err != nil {
+		return ""
+	}
+	return s
+}
