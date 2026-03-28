@@ -45,8 +45,19 @@ func (e *Executor) wizardPlan(pc PhaseConfig) error {
 		epicContext += fmt.Sprintf("[%s]: %s\n", c.Author, c.Text)
 	}
 
-	// Check for existing children (resume case)
-	children, _ := e.deps.GetChildren(e.beadID)
+	// Check for existing children (resume case).
+	// Filter out internal DAG beads (step, attempt, review-round) that are
+	// created by ensureStepBeads/ensureAttemptBead before the plan phase runs.
+	// Without this filter, planning is always skipped because those beads
+	// make len(children) > 0 even when no real subtasks exist yet.
+	allChildren, _ := e.deps.GetChildren(e.beadID)
+	var children []Bead
+	for _, c := range allChildren {
+		if e.deps.IsAttemptBead(c) || e.deps.IsStepBead(c) || e.deps.IsReviewRoundBead(c) {
+			continue
+		}
+		children = append(children, c)
+	}
 	if len(children) > 0 {
 		e.log("epic already has %d children — enriching with change specs", len(children))
 		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext.String(), pc)
