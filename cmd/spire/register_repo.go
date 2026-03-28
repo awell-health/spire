@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -246,22 +245,14 @@ func detectPrefix(dir string) string {
 
 // detectRepoURL runs git remote get-url origin in the given directory.
 func detectRepoURL(dir string) string {
-	cmd := exec.Command("git", "-C", dir, "remote", "get-url", "origin")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	rc := &RepoContext{Dir: dir}
+	return rc.RemoteURL("origin")
 }
 
 // detectBranch runs git rev-parse --abbrev-ref HEAD in the given directory.
 func detectBranch(dir string) string {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
-	out, err := cmd.Output()
-	if err != nil {
-		return "main"
-	}
-	b := strings.TrimSpace(string(out))
+	rc := &RepoContext{Dir: dir}
+	b := rc.CurrentBranch()
 	if b == "" || b == "HEAD" {
 		return "main"
 	}

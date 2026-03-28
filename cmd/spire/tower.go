@@ -212,15 +212,10 @@ func promptArchmageIdentity() ArchmageConfig {
 	email = strings.TrimSpace(email)
 
 	if name == "" {
-		// Try to detect from git config
-		if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
-			name = strings.TrimSpace(string(out))
-		}
+		name = gitConfigGet("user.name")
 	}
 	if email == "" {
-		if out, err := exec.Command("git", "config", "user.email").Output(); err == nil {
-			email = strings.TrimSpace(string(out))
-		}
+		email = gitConfigGet("user.email")
 	}
 
 	return ArchmageConfig{Name: name, Email: email}

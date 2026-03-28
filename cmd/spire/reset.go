@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -163,9 +162,10 @@ func isResetLabel(label string) bool {
 
 // resetDeleteBranch deletes a local git branch (best-effort, prints result).
 func resetDeleteBranch(branch string) {
-	cmd := exec.Command("git", "branch", "-D", branch)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		fmt.Printf("  %s(note: could not delete branch %s: %s)%s\n", dim, branch, strings.TrimSpace(string(out)), reset)
+	cwd, _ := os.Getwd()
+	rc := &RepoContext{Dir: cwd}
+	if err := rc.ForceDeleteBranch(branch); err != nil {
+		fmt.Printf("  %s(note: could not delete branch %s: %s)%s\n", dim, branch, err, reset)
 	} else {
 		fmt.Printf("  %s✗ branch deleted: %s%s\n", dim, branch, reset)
 	}

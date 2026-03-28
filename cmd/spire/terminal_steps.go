@@ -36,38 +36,47 @@ func terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, log fu
 		mergeEnv = archmageGitEnv(tower)
 	}
 
-	// 1. Build verification on the staging/feature branch before touching main.
+	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+
+	// 1. Build verification on the staging/feature branch — use a worktree
+	// instead of checking out in the main repo (fixes the checkout-in-main bug).
 	if buildCmd != "" {
 		log("verifying build on %s: %s", branch, buildCmd)
-		if out, err := exec.Command("git", "-C", repoPath, "checkout", branch).CombinedOutput(); err != nil {
-			return fmt.Errorf("checkout %s for build verify: %s\n%s", branch, err, string(out))
+		tmpDir, err := os.MkdirTemp("", fmt.Sprintf("spire-build-verify-%s-", beadID))
+		if err != nil {
+			return fmt.Errorf("create build verify dir: %w", err)
+		}
+		wtPath := filepath.Join(tmpDir, "verify")
+		wc, err := rc.CreateWorktree(wtPath, branch)
+		if err != nil {
+			os.RemoveAll(tmpDir)
+			return fmt.Errorf("create build verify worktree: %w", err)
 		}
 		parts := strings.Fields(buildCmd)
 		buildExec := exec.Command(parts[0], parts[1:]...)
-		buildExec.Dir = repoPath
+		buildExec.Dir = wc.Dir
 		buildExec.Env = os.Environ()
-		if out, err := buildExec.CombinedOutput(); err != nil {
-			exec.Command("git", "-C", repoPath, "checkout", baseBranch).Run()
-			return fmt.Errorf("build failed on %s (aborting merge): %w\n%s", branch, err, string(out))
+		out, buildErr := buildExec.CombinedOutput()
+		// Clean up worktree before proceeding — branch must be free for later delete.
+		wc.Cleanup()
+		os.RemoveAll(tmpDir)
+		if buildErr != nil {
+			return fmt.Errorf("build failed on %s (aborting merge): %w\n%s", branch, buildErr, string(out))
 		}
 	}
 
-	// 2. Checkout main and pull to ensure it is up to date.
-	if out, err := exec.Command("git", "-C", repoPath, "checkout", baseBranch).CombinedOutput(); err != nil {
-		return fmt.Errorf("checkout %s: %s\n%s", baseBranch, err, string(out))
-	}
-	pullCmd := exec.Command("git", "-C", repoPath, "pull", "--ff-only", "origin", baseBranch)
-	pullCmd.Env = mergeEnv
-	if out, err := pullCmd.CombinedOutput(); err != nil {
-		log("warning: pull %s: %s\n%s", baseBranch, err, string(out))
+	// 2. Fetch and ff-only merge to ensure base branch is up to date (best-effort).
+	fetchCmd := rc.git("fetch", "origin", baseBranch)
+	fetchCmd.Env = mergeEnv
+	if out, err := fetchCmd.CombinedOutput(); err != nil {
+		log("warning: pull %s (fetch failed): %s\n%s", baseBranch, err, string(out))
+	} else if err := rc.MergeFFOnly("origin/"+baseBranch, mergeEnv); err != nil {
+		log("warning: pull %s: %s", baseBranch, err)
 	}
 
 	// 3. ff-only merge; on failure, rebase staging onto main in a temp worktree and retry.
-	ffCmd := exec.Command("git", "-C", repoPath, "merge", "--ff-only", branch)
-	ffCmd.Env = mergeEnv
-	if out, ffErr := ffCmd.CombinedOutput(); ffErr != nil {
+	if err := rc.MergeFFOnly(branch, mergeEnv); err != nil {
 		log("ff-only failed — rebasing %s onto %s in temp worktree", branch, baseBranch)
-		_ = out
 
 		tmpDir, err := os.MkdirTemp("", fmt.Sprintf("spire-rebase-%s-", beadID))
 		if err != nil {
@@ -76,17 +85,17 @@ func terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, log fu
 		defer os.RemoveAll(tmpDir)
 
 		wtPath := filepath.Join(tmpDir, "staging")
-		if out, wtErr := exec.Command("git", "-C", repoPath, "worktree", "add", wtPath, branch).CombinedOutput(); wtErr != nil {
-			return fmt.Errorf("create staging worktree: %s\n%s", wtErr, string(out))
+		wc, err := rc.CreateWorktree(wtPath, branch)
+		if err != nil {
+			return fmt.Errorf("create staging worktree: %w", err)
 		}
-		defer exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", wtPath).Run()
 
-		rebaseCmd := exec.Command("git", "-C", wtPath, "rebase", baseBranch)
-		rebaseCmd.Env = os.Environ()
-		if out, rbErr := rebaseCmd.CombinedOutput(); rbErr != nil {
-			exec.Command("git", "-C", wtPath, "rebase", "--abort").Run()
+		rebaseOut, rbErr := wc.RunCommandOutput(fmt.Sprintf("git rebase %s", baseBranch))
+		if rbErr != nil {
+			wc.RunCommand("git rebase --abort")
+			wc.Cleanup()
 			return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s",
-				branch, baseBranch, rbErr, string(out))
+				branch, baseBranch, rbErr, rebaseOut)
 		}
 
 		// Re-verify build after rebase.
@@ -94,36 +103,33 @@ func terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, log fu
 			log("verifying build after rebase")
 			parts := strings.Fields(buildCmd)
 			buildAfter := exec.Command(parts[0], parts[1:]...)
-			buildAfter.Dir = wtPath
+			buildAfter.Dir = wc.Dir
 			buildAfter.Env = os.Environ()
 			if out, buildErr := buildAfter.CombinedOutput(); buildErr != nil {
+				wc.Cleanup()
 				return fmt.Errorf("build failed after rebase (aborting merge): %w\n%s", buildErr, string(out))
 			}
 		}
 
-		exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", wtPath).Run()
+		// Remove worktree before retrying merge — branch must be free.
+		wc.Cleanup()
 
 		log("retrying ff-only merge after rebase")
-		ffCmd2 := exec.Command("git", "-C", repoPath, "merge", "--ff-only", branch)
-		ffCmd2.Env = mergeEnv
-		if out2, ffErr2 := ffCmd2.CombinedOutput(); ffErr2 != nil {
-			return fmt.Errorf("ff-only merge failed even after rebase (will not force merge): %s\n%s",
-				ffErr2, string(out2))
+		if err := rc.MergeFFOnly(branch, mergeEnv); err != nil {
+			return fmt.Errorf("ff-only merge failed even after rebase (will not force merge): %w", err)
 		}
 	}
 
 	// 4. Push main.
 	log("pushing %s", baseBranch)
-	pushCmd := exec.Command("git", "-C", repoPath, "push", "origin", baseBranch)
-	pushCmd.Env = mergeEnv
-	if out, pushErr := pushCmd.CombinedOutput(); pushErr != nil {
-		return fmt.Errorf("push %s: %s\n%s", baseBranch, pushErr, string(out))
+	if err := rc.Push("origin", baseBranch, mergeEnv); err != nil {
+		return fmt.Errorf("push %s: %w", baseBranch, err)
 	}
 
 	// 5. Delete branch — MUST happen before closing bead (DAG invariant).
 	log("deleting branch %s", branch)
-	exec.Command("git", "-C", repoPath, "branch", "-d", branch).Run()
-	exec.Command("git", "-C", repoPath, "push", "origin", "--delete", branch).Run()
+	rc.DeleteBranch(branch)
+	rc.DeleteRemoteBranch("origin", branch)
 
 	// 6. Close bead — only reached after branch is deleted.
 	storeRemoveLabel(beadID, "review-approved")
@@ -224,15 +230,17 @@ func terminalDiscard(beadID string, log func(string, ...interface{})) error {
 			beadID, branch)
 	}
 
+	rc := &RepoContext{Dir: repoPath}
+
 	// Delete local and remote branches BEFORE closing the bead (DAG invariant).
 	log("deleting branch %s (discard)", branch)
-	exec.Command("git", "-C", repoPath, "branch", "-D", branch).Run()
-	exec.Command("git", "-C", repoPath, "push", "origin", "--delete", branch).Run()
+	rc.ForceDeleteBranch(branch)
+	rc.DeleteRemoteBranch("origin", branch)
 
 	// Also delete epic branch if it exists.
 	epicBranch := fmt.Sprintf("epic/%s", beadID)
-	exec.Command("git", "-C", repoPath, "branch", "-D", epicBranch).Run()
-	exec.Command("git", "-C", repoPath, "push", "origin", "--delete", epicBranch).Run()
+	rc.ForceDeleteBranch(epicBranch)
+	rc.DeleteRemoteBranch("origin", epicBranch)
 	log("branches deleted")
 
 	// Close bead as wontfix — only reached after branch deletion attempted.
