@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/awell-health/spire/pkg/agent"
 )
 
 // TestBackendProcessSatisfiesInterface verifies processBackend
 // satisfies AgentBackend at runtime via type assertion.
 func TestBackendProcessSatisfiesInterface(t *testing.T) {
-	var b interface{} = &processBackend{spawner: &processSpawner{}}
+	var b interface{} = newProcessBackend()
 	if _, ok := b.(AgentBackend); !ok {
 		t.Fatal("processBackend does not satisfy AgentBackend")
 	}
@@ -23,7 +25,7 @@ func TestBackendProcessSatisfiesInterface(t *testing.T) {
 // TestBackendDockerSatisfiesInterface verifies dockerBackend
 // satisfies AgentBackend at runtime via type assertion.
 func TestBackendDockerSatisfiesInterface(t *testing.T) {
-	var b interface{} = &dockerBackend{spawner: &dockerSpawner{}}
+	var b interface{} = agent.NewDockerBackend()
 	if _, ok := b.(AgentBackend); !ok {
 		t.Fatal("dockerBackend does not satisfy AgentBackend")
 	}

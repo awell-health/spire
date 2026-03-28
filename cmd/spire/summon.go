@@ -11,24 +11,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/steveyegge/beads"
 )
 
-// wizardRegistry tracks locally summoned wizards.
-type wizardRegistry struct {
-	Wizards []localWizard `json:"wizards"`
-}
+// --- Type aliases for backward compatibility ---
 
-type localWizard struct {
-	Name           string `json:"name"`
-	PID            int    `json:"pid"`
-	BeadID         string `json:"bead_id"`
-	Worktree       string `json:"worktree"`
-	StartedAt      string `json:"started_at"`
-	Phase          string `json:"phase,omitempty"`
-	PhaseStartedAt string `json:"phase_started_at,omitempty"`
-	Tower          string `json:"tower,omitempty"`
+type wizardRegistry = agent.Registry
+type localWizard = agent.Entry
+
+// --- Registry function wrappers ---
+
+func wizardRegistryPath() string                              { return agent.RegistryPath() }
+func loadWizardRegistry() wizardRegistry                      { return agent.LoadRegistry() }
+func saveWizardRegistry(reg wizardRegistry)                   { agent.SaveRegistry(reg) }
+func wizardRegistryAdd(entry localWizard) error               { return agent.RegistryAdd(entry) }
+func wizardRegistryRemove(name string) error                  { return agent.RegistryRemove(name) }
+func wizardRegistryUpdate(name string, f func(*localWizard)) error {
+	return agent.RegistryUpdate(name, f)
+}
+func findLiveWizardForBead(reg wizardRegistry, beadID string) *localWizard {
+	return agent.FindLiveForBead(reg, beadID)
+}
+func wizardsForTower(reg wizardRegistry, tower string) []localWizard {
+	return agent.WizardsForTower(reg, tower)
 }
 
 func cmdSummon(args []string) error {
@@ -483,32 +490,6 @@ func dismissCleanupBead(w localWizard) {
 	}
 }
 
-func wizardRegistryPath() string {
-	dir, err := configDir()
-	if err != nil {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".config", "spire")
-	}
-	return filepath.Join(dir, "wizards.json")
-}
-
-func loadWizardRegistry() wizardRegistry {
-	var reg wizardRegistry
-	data, err := os.ReadFile(wizardRegistryPath())
-	if err != nil {
-		return reg
-	}
-	json.Unmarshal(data, &reg)
-	return reg
-}
-
-func saveWizardRegistry(reg wizardRegistry) {
-	path := wizardRegistryPath()
-	os.MkdirAll(filepath.Dir(path), 0755)
-	data, _ := json.MarshalIndent(reg, "", "  ")
-	os.WriteFile(path, data, 0644)
-}
-
 func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
 	var alive []localWizard
 	for _, w := range reg.Wizards {
@@ -547,127 +528,6 @@ func reapDeadWizard(w localWizard) {
 			fmt.Printf("  ↺ %s reopened\n", w.BeadID)
 		}
 	}
-}
-
-// wizardsForTower returns wizards matching the given tower (or all if tower is "").
-func wizardsForTower(reg wizardRegistry, tower string) []localWizard {
-	if tower == "" {
-		return reg.Wizards
-	}
-	var result []localWizard
-	for _, w := range reg.Wizards {
-		if w.Tower == tower {
-			result = append(result, w)
-		}
-	}
-	return result
-}
-
-// wizardRegistryLock acquires a file lock for the wizard registry.
-// Returns a cleanup function that releases the lock.
-func wizardRegistryLock() (func(), error) {
-	lockPath := wizardRegistryPath() + ".lock"
-	os.MkdirAll(filepath.Dir(lockPath), 0755)
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-		if err == nil {
-			f.Close()
-			return func() { os.Remove(lockPath) }, nil
-		}
-		if time.Now().After(deadline) {
-			// Force-remove stale lock and retry once
-			os.Remove(lockPath)
-			f, err = os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-			if err != nil {
-				return nil, fmt.Errorf("acquire registry lock: %w", err)
-			}
-			f.Close()
-			return func() { os.Remove(lockPath) }, nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// wizardRegistryAdd adds or replaces an entry in the wizard registry (file-locked).
-func wizardRegistryAdd(entry localWizard) error {
-	unlock, err := wizardRegistryLock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	reg := loadWizardRegistry()
-
-	// Deduplicate by name — replace if exists, append if new.
-	found := false
-	for i, w := range reg.Wizards {
-		if w.Name == entry.Name {
-			reg.Wizards[i] = entry
-			found = true
-			break
-		}
-	}
-	if !found {
-		reg.Wizards = append(reg.Wizards, entry)
-	}
-
-	saveWizardRegistry(reg)
-	return nil
-}
-
-// wizardRegistryRemove removes an entry by name from the wizard registry (file-locked).
-func wizardRegistryRemove(name string) error {
-	unlock, err := wizardRegistryLock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	reg := loadWizardRegistry()
-
-	var kept []localWizard
-	for _, w := range reg.Wizards {
-		if w.Name != name {
-			kept = append(kept, w)
-		}
-	}
-	reg.Wizards = kept
-
-	saveWizardRegistry(reg)
-	return nil
-}
-
-// wizardRegistryUpdate updates an entry by name using the provided function (file-locked).
-func wizardRegistryUpdate(name string, update func(*localWizard)) error {
-	unlock, err := wizardRegistryLock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	reg := loadWizardRegistry()
-
-	for i := range reg.Wizards {
-		if reg.Wizards[i].Name == name {
-			update(&reg.Wizards[i])
-			saveWizardRegistry(reg)
-			return nil
-		}
-	}
-	return fmt.Errorf("wizard %q not found in registry", name)
-}
-
-// findLiveWizardForBead returns the first registry entry for the given bead, or nil.
-// The caller is expected to have already cleaned dead wizards from the registry.
-func findLiveWizardForBead(reg wizardRegistry, beadID string) *localWizard {
-	for i := range reg.Wizards {
-		if reg.Wizards[i].BeadID == beadID {
-			return &reg.Wizards[i]
-		}
-	}
-	return nil
 }
 
 // scanOrphanedBeads returns beads that have executor state but no live wizard process.
