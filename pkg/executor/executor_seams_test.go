@@ -175,7 +175,7 @@ func TestWizardPlan_MixedChildren(t *testing.T) {
 	deps := &Deps{
 		ConfigDir: configDirFn,
 		GetBead: func(id string) (Bead, error) {
-			return Bead{ID: id, Title: "Test Epic", Description: "desc", Priority: 1}, nil
+			return Bead{ID: id, Title: "Test Epic", Description: "desc", Priority: 1, Type: "epic"}, nil
 		},
 		GetChildren: func(parentID string) ([]Bead, error) {
 			return mixedChildren, nil
@@ -252,7 +252,7 @@ func TestWizardPlan_OnlyRealChildren(t *testing.T) {
 	deps := &Deps{
 		ConfigDir: configDirFn,
 		GetBead: func(id string) (Bead, error) {
-			return Bead{ID: id, Title: "Test Epic", Description: "desc", Priority: 1}, nil
+			return Bead{ID: id, Title: "Test Epic", Description: "desc", Priority: 1, Type: "epic"}, nil
 		},
 		GetChildren: func(parentID string) ([]Bead, error) {
 			return realChildren, nil

@@ -1,6 +1,13 @@
 name = "spire-agent-work"
-description = "Standard agent work protocol: implement → review → merge. Design happens in design beads before the task is filed."
+description = "Standard agent work protocol: plan → implement → review → merge. Wizard validates approach before apprentice implements."
 version = 2
+
+[phases.plan]
+role = "wizard"
+timeout = "5m"
+model = "claude-opus-4-6"
+# Wizard validates approach, identifies key files, and posts an implementation
+# plan as a comment on the bead. Apprentice uses this plan during implement.
 
 [phases.implement]
 timeout = "30m"

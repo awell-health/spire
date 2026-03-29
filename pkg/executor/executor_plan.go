@@ -10,14 +10,124 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-// wizardPlan reads the design bead(s) and invokes Claude to break the epic into subtasks.
+// wizardPlan routes planning by bead type: epics get subtask breakdown,
+// standalone tasks get a focused implementation plan posted as a comment.
 func (e *Executor) wizardPlan(pc PhaseConfig) error {
 	bead, err := e.deps.GetBead(e.beadID)
 	if err != nil {
 		return fmt.Errorf("get bead: %w", err)
 	}
 
-	// Collect design context from linked design beads (discovered-from deps)
+	// Standalone tasks get a different planning path.
+	if bead.Type != "epic" {
+		return e.wizardPlanTask(bead, pc)
+	}
+
+	return e.wizardPlanEpic(bead, pc)
+}
+
+// wizardPlanTask validates the approach for a standalone task and posts a
+// focused implementation plan as a comment on the bead. The plan includes
+// key files, approach, and context that the apprentice will use during
+// the implement phase.
+func (e *Executor) wizardPlanTask(bead Bead, pc PhaseConfig) error {
+	// Check if a plan comment already exists (resume case).
+	existingComments, _ := e.deps.GetComments(e.beadID)
+	for _, c := range existingComments {
+		if strings.HasPrefix(c.Text, "Implementation plan:") {
+			e.log("task already has an implementation plan — skipping")
+			return nil
+		}
+	}
+
+	// Collect design context from linked design beads (discovered-from deps).
+	designContext := e.collectDesignContext()
+
+	// Build task context.
+	var taskContext strings.Builder
+	taskContext.WriteString(fmt.Sprintf("Bead: %s\nType: %s\nTitle: %s\nDescription: %s\n",
+		bead.ID, bead.Type, bead.Title, bead.Description))
+	for _, c := range existingComments {
+		taskContext.WriteString(fmt.Sprintf("[%s]: %s\n", c.Author, c.Text))
+	}
+
+	prompt := fmt.Sprintf(`You are a Spire wizard planning a standalone task. Your job is to validate the approach and produce a focused implementation plan that an apprentice agent will follow.
+
+Do NOT break this into subtasks unless the work genuinely requires parallel agents in isolated worktrees. Most tasks should be a single plan.
+
+All context is provided below — do NOT read files or run commands.
+
+## Task
+%s
+
+## Design Context
+%s
+
+## Planning rules
+
+1. Identify the key files that need to be modified or created.
+2. Describe the approach concisely — what changes, in what order, and why.
+3. Call out edge cases, gotchas, or non-obvious constraints the implementer should know.
+4. If the task is simple (e.g. a one-file bug fix), keep the plan short. Don't over-engineer.
+5. If the task genuinely needs to be split into subtasks (rare for standalone tasks), say so and explain why.
+
+## Output format
+
+Produce a plan in this structure:
+
+**Approach:** <1-2 sentence summary of the implementation strategy>
+
+**Key files:**
+- path/to/file.go — <what changes needed>
+
+**Steps:**
+1. <concrete implementation step>
+2. <concrete implementation step>
+...
+
+**Edge cases / gotchas:**
+- <anything non-obvious the implementer should watch for>
+
+**Validation:**
+- <how to verify the change works: commands, expected behavior>
+
+Be precise and actionable. The apprentice implementing this will use your plan as their primary guide.
+`, taskContext.String(), designContext)
+
+	model := pc.Model
+	if model == "" {
+		model = "claude-opus-4-6"
+	}
+
+	maxTurns := pc.GetMaxTurns()
+	e.log("invoking Claude for task plan (max_turns=%d)", maxTurns)
+	out, err := e.deps.ClaudeRunner([]string{
+		"--dangerously-skip-permissions",
+		"-p", prompt,
+		"--model", model,
+		"--output-format", "text",
+		"--max-turns", fmt.Sprintf("%d", maxTurns),
+	}, e.state.RepoPath)
+	if err != nil {
+		return fmt.Errorf("claude task plan: %w", err)
+	}
+
+	plan := strings.TrimSpace(string(out))
+	if plan == "" {
+		return fmt.Errorf("claude produced empty task plan")
+	}
+
+	// Post the plan as a comment on the bead.
+	if commentErr := e.deps.AddComment(e.beadID, "Implementation plan:\n\n"+plan); commentErr != nil {
+		return fmt.Errorf("post task plan comment: %w", commentErr)
+	}
+	e.log("posted implementation plan for %s", e.beadID)
+
+	return nil
+}
+
+// collectDesignContext gathers context from linked design beads (discovered-from deps).
+func (e *Executor) collectDesignContext() string {
 	var designContext strings.Builder
 	deps, _ := e.deps.GetDepsWithMeta(e.beadID)
 	for _, dep := range deps {
@@ -37,6 +147,13 @@ func (e *Executor) wizardPlan(pc PhaseConfig) error {
 		}
 		designContext.WriteString("\n")
 	}
+	return designContext.String()
+}
+
+// wizardPlanEpic reads the design bead(s) and invokes Claude to break the epic into subtasks.
+func (e *Executor) wizardPlanEpic(bead Bead, pc PhaseConfig) error {
+	// Collect design context from linked design beads (discovered-from deps)
+	designContext := e.collectDesignContext()
 
 	// Also include epic description and comments
 	epicContext := fmt.Sprintf("Epic: %s\nTitle: %s\nDescription: %s\n", bead.ID, bead.Title, bead.Description)
@@ -60,7 +177,7 @@ func (e *Executor) wizardPlan(pc PhaseConfig) error {
 	}
 	if len(children) > 0 {
 		e.log("epic already has %d children — enriching with change specs", len(children))
-		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext.String(), pc)
+		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext, pc)
 	}
 
 	prompt := fmt.Sprintf(`You are a Spire wizard planning an epic. Break the work into independent tasks that can be executed by parallel agents in isolated git worktrees.
@@ -101,7 +218,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 - "do_not_touch": files this task must NOT modify (handled by another task)
 - "deps": titles of tasks that must complete before this one starts
 - Tasks with no deps run in parallel (same wave)
-`, epicContext, designContext.String())
+`, epicContext, designContext)
 
 	model := pc.Model
 	if model == "" {

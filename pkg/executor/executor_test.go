@@ -673,7 +673,7 @@ func TestWizardPlanEnrichesRealChildren(t *testing.T) {
 	deps := &Deps{
 		ConfigDir: func() (string, error) { return t.TempDir(), nil },
 		GetBead: func(id string) (Bead, error) {
-			return Bead{ID: id, Title: "Test epic", Priority: 1}, nil
+			return Bead{ID: id, Title: "Test epic", Priority: 1, Type: "epic"}, nil
 		},
 		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
 			return nil, nil
