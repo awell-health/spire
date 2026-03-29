@@ -500,11 +500,11 @@ func (e *Executor) attemptBuildFix(waveIdx int, buildErr error, pc PhaseConfig) 
 			ExtraArgs: extraArgs,
 		})
 		if spawnErr != nil {
-			e.recordAgentRun(fixName, e.beadID, "", pc.Model, "apprentice", started, spawnErr)
+			e.recordAgentRun(fixName, e.beadID, e.beadID, pc.Model, "apprentice", started, spawnErr)
 			return fmt.Errorf("spawn build-fix apprentice (round %d): %w", round, spawnErr)
 		}
 		waitErr := handle.Wait()
-		e.recordAgentRun(fixName, e.beadID, "", pc.Model, "apprentice", started, waitErr)
+		e.recordAgentRun(fixName, e.beadID, e.beadID, pc.Model, "apprentice", started, waitErr)
 		if waitErr != nil {
 			e.log("build-fix apprentice failed (round %d): %s", round, waitErr)
 		}

@@ -20,8 +20,8 @@ type State struct {
 	Phase         string                  `json:"phase"`
 	Wave          int                     `json:"wave"`
 	Subtasks      map[string]SubtaskState `json:"subtasks"`
-	ReviewRounds   int                     `json:"review_rounds"`
-	BuildFixRounds int                     `json:"build_fix_rounds,omitempty"`
+	ReviewRounds  int                     `json:"review_rounds"`
+	BuildFixRounds int                    `json:"build_fix_rounds,omitempty"`
 	StartedAt     string                  `json:"started_at"`
 	LastActionAt  string                  `json:"last_action_at"`
 	StagingBranch string                  `json:"staging_branch,omitempty"`

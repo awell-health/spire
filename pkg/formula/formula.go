@@ -42,9 +42,9 @@ type PhaseConfig struct {
 	Auto          bool   `toml:"auto,omitempty"`           // auto-execute without human gate
 	Apprentice    bool   `toml:"apprentice,omitempty"`     // run as apprentice (no phase labels, no review handoff)
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
-	Build              string `toml:"build,omitempty"`                // build command to verify after wave/merge
-	Test               string `toml:"test,omitempty"`                 // test command to verify after rebase/merge
-	MaxBuildFixRounds  int    `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
+	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
+	Test          string `toml:"test,omitempty"`           // test command to verify after rebase/merge
+	MaxBuildFixRounds int `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
 }
 
 // GetBehavior returns the behavior override, or "" for role-based dispatch.
