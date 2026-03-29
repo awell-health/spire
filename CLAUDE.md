@@ -65,6 +65,16 @@ When you create a bead with `type=epic`, the daemon will:
 
 ### Epic hierarchy
 
+**IMPORTANT:** When creating tasks that belong to an epic, ALWAYS use `--parent`:
+
+```bash
+bd create "my subtask" -t task -p 1 --parent spi-xxx
+# → spi-xxx.1  (hierarchical ID, visible relationship)
+```
+
+Never create standalone tasks for epic subtasks — they get orphaned IDs
+with no visible connection to the epic.
+
 Use beads' hierarchical IDs for epic breakdown:
 
 ```bash
