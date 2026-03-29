@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ type InspectorData struct {
 	Phase       string
 	Comments    []*beads.Comment
 	Children    []Bead
+	ChildPhases map[string]string                    // phase for in-progress children
 	Deps        []*beads.IssueWithDependencyMetadata // what this bead depends on
 	Dependents  []*beads.IssueWithDependencyMetadata // what depends on this bead
 	DAG         *DAGProgress
@@ -55,6 +57,12 @@ func FetchInspectorData(b BoardBead) InspectorData {
 			visible = append(visible, c)
 		}
 		data.Children = visible
+		data.ChildPhases = make(map[string]string)
+		for _, c := range visible {
+			if c.Status == "in_progress" {
+				data.ChildPhases[c.ID] = GetPhase(c)
+			}
+		}
 	}
 	if deps, err := store.GetDepsWithMeta(b.ID); err == nil {
 		data.Deps = deps
@@ -81,6 +89,13 @@ func FetchInspectorData(b BoardBead) InspectorData {
 				}
 			}
 		}
+	}
+
+	// Messages: beads referencing this bead via ref: and msg labels.
+	if msgs, err := store.ListBoardBeads(beads.IssueFilter{
+		Labels: []string{"msg", "ref:" + b.ID},
+	}); err == nil {
+		data.Messages = msgs
 	}
 
 	// Wizard log content: read and cache here (not in View).
@@ -359,6 +374,78 @@ func wrapText(text string, maxWidth int) []string {
 	return result
 }
 
+// renderGroupedDeps renders dependencies grouped by type: blocked-by and blocks.
+// Discovered-from deps are omitted (shown in Design Context section).
+// Parent-child deps are omitted (shown in header).
+func renderGroupedDeps(data *InspectorData, contentWidth int) []string {
+	// Filter deps: exclude discovered-from and parent-child.
+	var blockedBy []*beads.IssueWithDependencyMetadata
+	for _, d := range data.Deps {
+		dt := string(d.DependencyType)
+		if dt == "discovered-from" || dt == "parent-child" {
+			continue
+		}
+		blockedBy = append(blockedBy, d)
+	}
+
+	// Filter dependents: exclude parent-child.
+	var blocks []*beads.IssueWithDependencyMetadata
+	for _, d := range data.Dependents {
+		if string(d.DependencyType) == "parent-child" {
+			continue
+		}
+		blocks = append(blocks, d)
+	}
+
+	total := len(blockedBy) + len(blocks)
+	if total == 0 {
+		return nil
+	}
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	var lines []string
+	lines = append(lines, "")
+	lines = append(lines, sectionHeader(fmt.Sprintf("Dependencies (%d)", total)))
+
+	if len(blockedBy) > 0 {
+		lines = append(lines, "  "+dimStyle.Render("Blocked by:"))
+		for _, d := range blockedBy {
+			lines = append(lines, "    "+depStatusIcon(string(d.Status))+" "+d.ID+" "+Truncate(d.Title, contentWidth-30))
+		}
+	}
+	if len(blocks) > 0 {
+		lines = append(lines, "  "+dimStyle.Render("Blocks:"))
+		for _, d := range blocks {
+			lines = append(lines, "    "+depStatusIcon(string(d.Status))+" "+d.ID+" "+Truncate(d.Title, contentWidth-30))
+		}
+	}
+
+	return lines
+}
+
+// depStatusIcon returns a colored status icon for dependencies.
+// Uses yellow for in_progress to distinguish from the cyan used elsewhere.
+func depStatusIcon(status string) string {
+	switch status {
+	case "closed":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("✓")
+	case "in_progress":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("▶")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("○")
+	}
+}
+
+// extractFromLabel extracts the sender from a message bead's "from:" label.
+func extractFromLabel(b BoardBead) string {
+	for _, l := range b.Labels {
+		if strings.HasPrefix(l, "from:") {
+			return l[5:]
+		}
+	}
+	return "system"
+}
+
 // inspectorDataMsg carries the result of an async inspector data fetch.
 type inspectorDataMsg struct {
 	Data *InspectorData
@@ -489,35 +576,67 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 			lines = append(lines, "  "+strings.Join(labelParts, "  "))
 		}
 
-		// Children.
+		// Design context.
+		if len(data.DesignBeads) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader("Design Context"))
+			for _, db := range data.DesignBeads {
+				statusIcon := statusIconStr(db.Status)
+				lines = append(lines, fmt.Sprintf("  %s %s  %s", statusIcon, db.ID, Truncate(db.Title, contentWidth-20)))
+				if db.Description != "" {
+					descLines := wrapText(db.Description, contentWidth-4)
+					maxPreview := 5
+					for i, dl := range descLines {
+						if i >= maxPreview {
+							lines = append(lines, "    "+dimStyle.Render("..."))
+							break
+						}
+						lines = append(lines, "    "+dl)
+					}
+				}
+			}
+		}
+
+		// Children (sorted: open/in_progress first, then closed).
 		if len(data.Children) > 0 {
+			sorted := make([]Bead, len(data.Children))
+			copy(sorted, data.Children)
+			sort.SliceStable(sorted, func(i, j int) bool {
+				iClosed := sorted[i].Status == "closed"
+				jClosed := sorted[j].Status == "closed"
+				if iClosed != jClosed {
+					return !iClosed
+				}
+				return false
+			})
 			lines = append(lines, "")
-			lines = append(lines, sectionHeader(fmt.Sprintf("Children (%d)", len(data.Children))))
-			for _, c := range data.Children {
+			lines = append(lines, sectionHeader(fmt.Sprintf("Children (%d)", len(sorted))))
+			for _, c := range sorted {
 				statusIcon := statusIconStr(c.Status)
-				lines = append(lines, fmt.Sprintf("  %s %s %s %s", statusIcon, c.ID, ShortType(c.Type), Truncate(c.Title, contentWidth-30)))
+				phase := ""
+				if data.ChildPhases != nil {
+					if p, ok := data.ChildPhases[c.ID]; ok && p != "" {
+						phase = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("["+p+"]")
+					}
+				}
+				lines = append(lines, fmt.Sprintf("  %s %s %s%s %s", statusIcon, c.ID, ShortType(c.Type), phase, Truncate(c.Title, contentWidth-35)))
 			}
 		}
 
-		// Dependencies (what this bead depends on).
-		if len(data.Deps) > 0 {
-			lines = append(lines, "")
-			lines = append(lines, sectionHeader(fmt.Sprintf("Dependencies (%d)", len(data.Deps))))
-			for _, d := range data.Deps {
-				depType := string(d.DependencyType)
-				statusIcon := statusIconStr(string(d.Status))
-				lines = append(lines, fmt.Sprintf("  %s %s [%s] %s", statusIcon, d.ID, depType, Truncate(d.Title, contentWidth-35)))
-			}
-		}
+		// Dependencies (grouped by type).
+		lines = append(lines, renderGroupedDeps(data, contentWidth)...)
 
-		// Dependents (what depends on this bead).
-		if len(data.Dependents) > 0 {
+		// Messages.
+		if len(data.Messages) > 0 {
 			lines = append(lines, "")
-			lines = append(lines, sectionHeader(fmt.Sprintf("Dependents (%d)", len(data.Dependents))))
-			for _, d := range data.Dependents {
-				depType := string(d.DependencyType)
-				statusIcon := statusIconStr(string(d.Status))
-				lines = append(lines, fmt.Sprintf("  %s %s [%s] %s", statusIcon, d.ID, depType, Truncate(d.Title, contentWidth-35)))
+			lines = append(lines, sectionHeader(fmt.Sprintf("Messages (%d)", len(data.Messages))))
+			for _, msg := range data.Messages {
+				from := extractFromLabel(msg)
+				ts := ""
+				if msg.CreatedAt != "" {
+					ts = " " + dimStyle.Render(TimeAgo(msg.CreatedAt))
+				}
+				lines = append(lines, fmt.Sprintf("  %s%s: %s", lipgloss.NewStyle().Bold(true).Render(from), ts, Truncate(msg.Title, contentWidth-30)))
 			}
 		}
 
@@ -543,43 +662,6 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 				}
 			}
 		}
-
-		// Messages.
-		if len(data.Messages) > 0 {
-			lines = append(lines, "")
-			lines = append(lines, sectionHeader(fmt.Sprintf("Messages (%d)", len(data.Messages))))
-			for _, msg := range data.Messages {
-				from := BeadOwnerLabel(msg)
-				if from == "" {
-					from = "system"
-				}
-				ts := ""
-				if msg.CreatedAt != "" {
-					ts = " " + dimStyle.Render(TimeAgo(msg.CreatedAt))
-				}
-				lines = append(lines, fmt.Sprintf("  %s%s: %s", lipgloss.NewStyle().Bold(true).Render(from), ts, Truncate(msg.Title, contentWidth-30)))
-			}
-		}
-
-		// Design context.
-		if len(data.DesignBeads) > 0 {
-			lines = append(lines, "")
-			lines = append(lines, sectionHeader("Design Context"))
-			for _, db := range data.DesignBeads {
-				statusIcon := statusIconStr(db.Status)
-				lines = append(lines, fmt.Sprintf("  %s %s  %s", statusIcon, db.ID, Truncate(db.Title, contentWidth-20)))
-				if db.Description != "" {
-					descLines := wrapText(db.Description, contentWidth-4)
-					for i, dl := range descLines {
-						if i >= 3 {
-							lines = append(lines, "    "+dimStyle.Render("..."))
-							break
-						}
-						lines = append(lines, "    "+dl)
-					}
-				}
-			}
-		}
 	}
 
 	if tab == InspectorTabLogs {
@@ -596,9 +678,7 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 				lines = append(lines, "  "+ll)
 			}
 		} else {
-			wizardName := "wizard-" + bb.ID
-			lines = append(lines, dimStyle.Render("  No log file found for "+wizardName))
-			lines = append(lines, dimStyle.Render("  (wizard may not be active)"))
+			lines = append(lines, dimStyle.Render("  No active wizard for "+bb.ID))
 		}
 	}
 
