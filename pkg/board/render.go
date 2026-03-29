@@ -147,7 +147,7 @@ func (m Model) View() string {
 			b = *bead
 			dag = m.Snapshot.DAGProgress[bead.ID]
 		}
-		return renderInspectorSnap(b, m.InspectorData, dag, m.Width, m.Height, m.InspectorScroll)
+		return renderInspectorSnap(b, m.InspectorData, dag, m.Width, m.Height, m.InspectorScroll, m.InspectorTab)
 	}
 
 	visibleCols := m.VisibleCols()
@@ -172,6 +172,11 @@ func (m Model) View() string {
 	header := lipgloss.NewStyle().Bold(true).Render("Spire Board")
 	ts := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.LastTick.Format("15:04:05"))
 	s.WriteString(header + "  " + ts + "\n\n")
+
+	// Search bar.
+	if searchBar := renderSearchBar(m.SearchQuery, m.SearchActive, m.Width); searchBar != "" {
+		s.WriteString(searchBar + "\n")
+	}
 
 	// Alerts (capped by budget).
 	if len(visibleCols.Alerts) > 0 {
@@ -306,11 +311,7 @@ func (m Model) View() string {
 	if m.ShowAllCols {
 		colsHint = " [all]"
 	}
-	resummonHint := ""
-	if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
-		resummonHint = "  r resummon"
-	}
-	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  Enter inspect  t type  H cols" + colsHint + "  f focus  s summon  c claim  d close" + resummonHint + "  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
+	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  Enter inspect  / search  s summon  u unsummon  r reset  x close  a actions  e epic" + epicInfo + "  H cols" + colsHint + " • q quit • ↻ " + m.Opts.Interval.String())
 	rightFooter := scopeStyle.Render("showing " + m.TypeScope.Label())
 	if m.Width > 0 {
 		gap := m.Width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)
@@ -330,11 +331,24 @@ func (m Model) View() string {
 		beadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 		footerParts = append(footerParts, beadStyle.Render(bead.ID+"  "+Truncate(bead.Title, 60)))
 	}
+	// Show inline action status.
+	if m.ActionStatus != "" {
+		statusStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+		footerParts = append(footerParts, statusStyle.Render(m.ActionStatus))
+	}
 	if len(footerParts) > 0 {
 		s.WriteString(strings.Join(footerParts, footerStyle.Render("  •  ")))
 	}
 
-	return s.String()
+	boardOutput := s.String()
+
+	// Action menu overlay: composite popup OVER the board (not replacing it).
+	if m.ActionMenuOpen {
+		popup := renderActionMenu(m.ActionMenuItems, m.ActionMenuCursor, m.ActionMenuBeadID, 35)
+		return overlayPopup(boardOutput, popup, m.Width, m.Height)
+	}
+
+	return boardOutput
 }
 
 // RenderAgentPanel renders a compact live agent status panel.
@@ -652,6 +666,54 @@ func RenderAgentPanelSnap(agents []LocalAgent, dagMap map[string]*DAGProgress, m
 		s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(agents)-maxAgents)) + "\n")
 	}
 	return s.String()
+}
+
+// overlayPopup composites a popup string over a background string, centering the
+// popup. This is used for the action menu overlay so the board remains visible.
+func overlayPopup(background, popup string, width, height int) string {
+	bgLines := strings.Split(background, "\n")
+	popupLines := strings.Split(popup, "\n")
+
+	// Pad background to fill height.
+	for len(bgLines) < height {
+		bgLines = append(bgLines, "")
+	}
+
+	popupW := 0
+	for _, pl := range popupLines {
+		if w := lipgloss.Width(pl); w > popupW {
+			popupW = w
+		}
+	}
+
+	// Center the popup.
+	startRow := (height - len(popupLines)) / 2
+	startCol := (width - popupW) / 2
+	if startRow < 0 {
+		startRow = 0
+	}
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	for i, pl := range popupLines {
+		row := startRow + i
+		if row >= len(bgLines) {
+			break
+		}
+		// Replace portion of the background line with popup line.
+		bg := bgLines[row]
+		// Use padding to position popup.
+		padded := strings.Repeat(" ", startCol) + pl
+		// If background is wider, keep the tail.
+		if lipgloss.Width(padded) < lipgloss.Width(bg) {
+			bgLines[row] = padded
+		} else {
+			bgLines[row] = padded
+		}
+	}
+
+	return strings.Join(bgLines, "\n")
 }
 
 // PriStr returns a priority label with lipgloss styling (for TUI rendering).

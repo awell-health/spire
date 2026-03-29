@@ -1,6 +1,7 @@
 package board
 
 import (
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,7 +17,13 @@ const (
 	ActionSummon                 // summon a wizard for the bead, then relaunch
 	ActionClaim                  // claim the bead, then relaunch
 	ActionResummon               // resummon a stuck bead (needs-human), then relaunch
-	ActionClose                  // close/dismiss the bead, then relaunch
+	ActionClose                  // close/dismiss the bead (inline via tea.Cmd)
+	ActionUnsummon               // dismiss active wizard (inline via tea.Cmd)
+	ActionResetSoft              // soft reset (inline via tea.Cmd)
+	ActionResetHard              // reset --hard (inline via tea.Cmd)
+	ActionGrok                   // deep focus grok (inline via tea.Cmd)
+	ActionTrace                  // DAG timeline trace (inline via tea.Cmd)
+	ActionAdvance                // advance to next phase (inline via tea.Cmd)
 )
 
 // Section identifies which vertical zone of the board the cursor is in.
@@ -59,6 +66,31 @@ type Model struct {
 
 	// FetchAgentsFn is called to refresh local agents. Injected by the caller.
 	FetchAgentsFn func() []LocalAgent
+
+	// Action menu overlay state.
+	ActionMenuOpen   bool
+	ActionMenuItems  []MenuAction
+	ActionMenuCursor int
+	ActionMenuBeadID string
+
+	// Search/filter state.
+	SearchActive bool   // true when user is typing a search query
+	SearchQuery  string // current search filter text
+
+	// Inspector tab (0=details, 1=logs).
+	InspectorTab int
+
+	// Vim gg key sequence: true after first g press, waiting for second key.
+	PendingG bool
+
+	// Inline action execution state.
+	ActionRunning    bool
+	ActionStatus     string    // transient status message shown in footer
+	ActionStatusTime time.Time // when status was set (for auto-clear)
+
+	// InlineActionFn executes an action within the TUI via tea.Cmd.
+	// Returns nil on success, error on failure.
+	InlineActionFn func(PendingAction, string) error
 }
 
 // VisibleCols returns the columns filtered by the current type scope.
@@ -66,9 +98,14 @@ func (m Model) VisibleCols() Columns {
 	return FilterTypeScope(m.Cols, m.TypeScope)
 }
 
-// DisplayColumns returns the columns to display, respecting ShowAllCols toggle.
+// DisplayColumns returns the columns to display, respecting ShowAllCols toggle
+// and search filter. This is the single filtering point for search — both
+// View() and navigation use these results.
 func (m Model) DisplayColumns() []ColDef {
 	vis := m.VisibleCols()
+	if m.SearchQuery != "" {
+		vis = FilterColumns(vis, m.SearchQuery)
+	}
 	if m.ShowAllCols {
 		return AllColumns(vis)
 	}
@@ -200,14 +237,16 @@ func tickCmd(interval time.Duration) tea.Cmd {
 
 // RunBoardTUI runs the board TUI in a loop, executing pending actions between launches.
 // actionFn is called when the TUI exits with a pending action; it returns true to relaunch.
-func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, actionFn func(PendingAction, string) bool) error {
+// inlineActionFn is used for actions that execute within the TUI via tea.Cmd (no exit-relaunch).
+func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, actionFn func(PendingAction, string) bool, inlineActionFn func(PendingAction, string) error) error {
 	for {
 		m := Model{
-			Opts:          opts,
-			Identity:      identity,
-			LastTick:      time.Now(),
-			SelSection:    SectionColumns,
-			FetchAgentsFn: fetchAgents,
+			Opts:           opts,
+			Identity:       identity,
+			LastTick:       time.Now(),
+			SelSection:     SectionColumns,
+			FetchAgentsFn:  fetchAgents,
+			InlineActionFn: inlineActionFn,
 		}
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		result, err := p.Run()
@@ -232,16 +271,166 @@ func (m Model) Init() tea.Cmd {
 	return fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
 }
 
+// actionResultMsg carries the result of an inline action executed via tea.Cmd.
+type actionResultMsg struct {
+	Action PendingAction
+	BeadID string
+	Err    error
+}
+
+// runInlineActionCmd returns a tea.Cmd that executes an action in a goroutine.
+func runInlineActionCmd(fn func(PendingAction, string) error, action PendingAction, beadID string) tea.Cmd {
+	return func() tea.Msg {
+		err := fn(action, beadID)
+		return actionResultMsg{Action: action, BeadID: beadID, Err: err}
+	}
+}
+
+// actionLabel returns a human-readable label for an action.
+func actionLabel(a PendingAction) string {
+	switch a {
+	case ActionUnsummon:
+		return "Unsummon"
+	case ActionResetSoft:
+		return "Reset"
+	case ActionResetHard:
+		return "Reset --hard"
+	case ActionGrok:
+		return "Grok"
+	case ActionTrace:
+		return "Trace"
+	case ActionAdvance:
+		return "Advance"
+	case ActionClose:
+		return "Close"
+	default:
+		return "Action"
+	}
+}
+
+// isInlineAction returns true if the action should execute within the TUI.
+func isInlineAction(a PendingAction) bool {
+	switch a {
+	case ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionAdvance, ActionClose:
+		return true
+	}
+	return false
+}
+
+// dispatchInlineAction dispatches an inline action via tea.Cmd if the Model has an InlineActionFn.
+func (m *Model) dispatchInlineAction(action PendingAction, beadID string) (Model, tea.Cmd) {
+	if m.InlineActionFn == nil {
+		// Fallback to exit-relaunch pattern if no inline fn provided.
+		m.PendingAction = action
+		m.PendingBeadID = beadID
+		m.Quitting = true
+		return *m, tea.Quit
+	}
+	m.ActionRunning = true
+	m.ActionStatus = actionLabel(action) + "..."
+	m.ActionStatusTime = time.Now()
+	return *m, runInlineActionCmd(m.InlineActionFn, action, beadID)
+}
+
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Action menu mode: absorb all keys.
+		if m.ActionMenuOpen {
+			switch msg.String() {
+			case "esc", "q":
+				m.ActionMenuOpen = false
+				return m, nil
+			case "j", "down":
+				if m.ActionMenuCursor < len(m.ActionMenuItems)-1 {
+					m.ActionMenuCursor++
+				}
+				return m, nil
+			case "k", "up":
+				if m.ActionMenuCursor > 0 {
+					m.ActionMenuCursor--
+				}
+				return m, nil
+			case "enter":
+				if m.ActionMenuCursor >= 0 && m.ActionMenuCursor < len(m.ActionMenuItems) {
+					item := m.ActionMenuItems[m.ActionMenuCursor]
+					m.ActionMenuOpen = false
+					if isInlineAction(item.ActionType) {
+						mm, cmd := m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
+						return mm, cmd
+					}
+					m.PendingAction = item.ActionType
+					m.PendingBeadID = m.ActionMenuBeadID
+					m.Quitting = true
+					return m, tea.Quit
+				}
+				return m, nil
+			default:
+				// Check shortcut key match.
+				for _, item := range m.ActionMenuItems {
+					if msg.String() == string(item.Key) {
+						m.ActionMenuOpen = false
+						if isInlineAction(item.ActionType) {
+							mm, cmd := m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
+							return mm, cmd
+						}
+						m.PendingAction = item.ActionType
+						m.PendingBeadID = m.ActionMenuBeadID
+						m.Quitting = true
+						return m, tea.Quit
+					}
+				}
+				return m, nil
+			}
+		}
+
+		// Search mode: absorb all keys.
+		if m.SearchActive {
+			switch msg.String() {
+			case "esc":
+				m.SearchActive = false
+				m.SearchQuery = ""
+				m.SelCard = 0
+				m.ColScroll = 0
+				m.ClampSelection()
+				return m, nil
+			case "enter":
+				m.SearchActive = false
+				return m, nil
+			case "backspace":
+				if len(m.SearchQuery) > 0 {
+					m.SearchQuery = m.SearchQuery[:len(m.SearchQuery)-1]
+				}
+				m.SelCard = 0
+				m.ColScroll = 0
+				m.ClampSelection()
+				return m, nil
+			case "ctrl+u":
+				m.SearchQuery = ""
+				m.SelCard = 0
+				m.ColScroll = 0
+				m.ClampSelection()
+				return m, nil
+			default:
+				// Append printable runes.
+				if len(msg.String()) == 1 && msg.String()[0] >= 32 {
+					m.SearchQuery += msg.String()
+					m.SelCard = 0
+					m.ColScroll = 0
+					m.ClampSelection()
+				}
+				return m, nil
+			}
+		}
+
 		// Inspector mode: handle keys differently.
 		if m.Inspecting {
 			switch msg.String() {
 			case "esc", "q", "enter":
 				m.Inspecting = false
 				m.InspectorScroll = 0
+				m.InspectorTab = 0
 				m.InspectorData = nil
 				m.InspectorLoading = false
 			case "ctrl+c":
@@ -262,7 +451,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.Snapshot != nil {
 						dag = m.Snapshot.DAGProgress[m.InspectorData.Bead.ID]
 					}
-					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width)
+					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab)
 					maxVisible := m.Height - 2
 					if maxVisible < 5 {
 						maxVisible = 5
@@ -272,29 +461,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.InspectorScroll = 0
 					}
 				}
+			case "tab":
+				m.InspectorTab++
+				if m.InspectorTab > 1 {
+					m.InspectorTab = 0
+				}
+				m.InspectorScroll = 0
+			case "shift+tab":
+				m.InspectorTab--
+				if m.InspectorTab < 0 {
+					m.InspectorTab = 1
+				}
+				m.InspectorScroll = 0
 			}
 			return m, nil
 		}
 
+		// Board mode: handle pending G for gg sequence.
+		if m.PendingG {
+			m.PendingG = false
+			if msg.String() == "g" {
+				m.SelCard = 0
+				m.ColScroll = 0
+				return m, nil
+			}
+			// Not gg — fall through to handle the key normally.
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
+			if m.SearchQuery != "" {
+				m.SearchQuery = ""
+				m.SelCard = 0
+				m.ColScroll = 0
+				m.ClampSelection()
+				return m, nil
+			}
 			m.Quitting = true
 			return m, tea.Quit
 
-		// Open inspector on Enter — dispatch async fetch.
-		case "enter":
+		// Open inspector on Enter or i.
+		case "enter", "i":
 			if bead := m.SelectedBead(); bead != nil {
 				m.Inspecting = true
 				m.InspectorScroll = 0
+				m.InspectorTab = 0
 				m.InspectorLoading = true
 				m.InspectorData = nil
 				return m, fetchInspectorCmd(*bead)
 			}
 
 		// Column navigation.
-		case "h", "left", "shift+tab":
+		case "h", "left":
 			if m.SelSection != SectionColumns {
-				// Jump into columns from alerts/blocked.
 				m.SelSection = SectionColumns
 				m.SelCard = 0
 				m.ColScroll = 0
@@ -305,7 +524,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ColScroll = 0
 				m.ClampSelection()
 			}
-		case "l", "right", "tab":
+		case "l", "right":
 			if m.SelSection != SectionColumns {
 				m.SelSection = SectionColumns
 				m.SelCard = 0
@@ -321,12 +540,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Card navigation (section-aware).
 		case "j", "down":
 			vis := m.VisibleCols()
+			if m.SearchQuery != "" {
+				vis = FilterColumns(vis, m.SearchQuery)
+			}
 			switch m.SelSection {
 			case SectionAlerts:
 				if m.SelCard+1 < len(vis.Alerts) {
 					m.SelCard++
 				} else {
-					// Past last alert → enter columns.
 					m.SelSection = SectionColumns
 					m.SelCard = 0
 					m.ColScroll = 0
@@ -343,7 +564,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ClampSelection()
 					m.ensureCardVisible(m.colMaxCards())
 				} else if len(vis.Blocked) > 0 {
-					// Past last card in column → enter blocked.
 					m.SelSection = SectionBlocked
 					m.SelCard = 0
 					m.ClampSelection()
@@ -355,6 +575,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "k", "up":
 			vis := m.VisibleCols()
+			if m.SearchQuery != "" {
+				vis = FilterColumns(vis, m.SearchQuery)
+			}
 			switch m.SelSection {
 			case SectionAlerts:
 				if m.SelCard > 0 {
@@ -366,7 +589,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ClampSelection()
 					m.ensureCardVisible(m.colMaxCards())
 				} else if len(vis.Alerts) > 0 {
-					// At top of column → enter alerts.
 					m.SelSection = SectionAlerts
 					m.SelCard = len(vis.Alerts) - 1
 					m.ClampSelection()
@@ -375,7 +597,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.SelCard > 0 {
 					m.SelCard--
 				} else {
-					// At top of blocked → return to columns.
 					m.SelSection = SectionColumns
 					active := m.DisplayColumns()
 					if m.SelCol >= 0 && m.SelCol < len(active) {
@@ -390,6 +611,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ClampSelection()
 					m.ensureCardVisible(m.colMaxCards())
 				}
+			}
+
+		// Vim gg: first g sets PendingG.
+		case "g":
+			m.PendingG = true
+			return m, nil
+
+		// Vim G: go to bottom of current column.
+		case "G":
+			active := m.DisplayColumns()
+			if m.SelSection == SectionColumns && m.SelCol >= 0 && m.SelCol < len(active) {
+				lastCard := len(active[m.SelCol].Beads) - 1
+				if lastCard < 0 {
+					lastCard = 0
+				}
+				m.SelCard = lastCard
+				m.ensureCardVisible(m.colMaxCards())
 			}
 
 		// Epic scoping toggle.
@@ -414,14 +652,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ShowAllCols = !m.ShowAllCols
 			m.ClampSelection()
 
-		// Actions on the selected bead.
-		case "f":
-			if bead := m.SelectedBead(); bead != nil {
-				m.PendingAction = ActionFocus
-				m.PendingBeadID = bead.ID
-				m.Quitting = true
-				return m, tea.Quit
-			}
+		// Summon wizard — exit-relaunch (spawns process).
 		case "s":
 			if bead := m.SelectedBead(); bead != nil {
 				m.PendingAction = ActionSummon
@@ -429,35 +660,65 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Quitting = true
 				return m, tea.Quit
 			}
-		case "c":
+
+		// Unsummon wizard — inline (only if bead has a wizard).
+		case "u":
 			if bead := m.SelectedBead(); bead != nil {
-				m.PendingAction = ActionClaim
-				m.PendingBeadID = bead.ID
-				m.Quitting = true
-				return m, tea.Quit
+				for _, a := range m.Agents {
+					if a.BeadID == bead.ID {
+						mm, cmd := m.dispatchInlineAction(ActionUnsummon, bead.ID)
+						return mm, cmd
+					}
+				}
 			}
-		case "L":
-			if bead := m.SelectedBead(); bead != nil {
-				m.PendingAction = ActionLogs
-				m.PendingBeadID = bead.ID
-				m.Quitting = true
-				return m, tea.Quit
-			}
-		case "r":
+
+		// Resummon — exit-relaunch (spawns process).
+		case "S":
 			if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
 				m.PendingAction = ActionResummon
 				m.PendingBeadID = bead.ID
 				m.Quitting = true
 				return m, tea.Quit
 			}
-		case "d":
-			if bead := m.SelectedBead(); bead != nil {
-				m.PendingAction = ActionClose
-				m.PendingBeadID = bead.ID
-				m.Quitting = true
-				return m, tea.Quit
+
+		// Reset — inline.
+		case "r":
+			if bead := m.SelectedBead(); bead != nil && bead.Status == "in_progress" {
+				mm, cmd := m.dispatchInlineAction(ActionResetSoft, bead.ID)
+				return mm, cmd
 			}
+
+		// Reset --hard — inline.
+		case "R":
+			if bead := m.SelectedBead(); bead != nil && bead.Status == "in_progress" {
+				mm, cmd := m.dispatchInlineAction(ActionResetHard, bead.ID)
+				return mm, cmd
+			}
+
+		// Close — inline.
+		case "x":
+			if bead := m.SelectedBead(); bead != nil {
+				mm, cmd := m.dispatchInlineAction(ActionClose, bead.ID)
+				return mm, cmd
+			}
+
+		// Action menu.
+		case "a":
+			if bead := m.SelectedBead(); bead != nil {
+				m.ActionMenuBeadID = bead.ID
+				m.ActionMenuItems = BuildActionMenu(bead, m.Agents)
+				m.ActionMenuCursor = 0
+				m.ActionMenuOpen = true
+				return m, nil
+			}
+
+		// Search.
+		case "/":
+			m.SearchActive = true
+			m.SearchQuery = ""
+			return m, nil
 		}
+
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
@@ -466,6 +727,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tickMsg:
 		m.LastTick = time.Now()
+		// Auto-clear action status after 5 seconds.
+		if m.ActionStatus != "" && time.Since(m.ActionStatusTime) > 5*time.Second {
+			m.ActionStatus = ""
+		}
 		if !m.Inspecting {
 			return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
 		}
@@ -486,6 +751,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.InspectorLoading = false
 		return m, nil
+	case actionResultMsg:
+		m.ActionRunning = false
+		if msg.Err != nil {
+			m.ActionStatus = fmt.Sprintf("%s failed: %v", actionLabel(msg.Action), msg.Err)
+		} else {
+			m.ActionStatus = fmt.Sprintf("%s: done", actionLabel(msg.Action))
+		}
+		m.ActionStatusTime = time.Now()
+		// Refresh board data after action completes.
+		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
 	}
 	return m, nil
 }
