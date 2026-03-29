@@ -454,7 +454,7 @@ Validation commands:
 
 Constraints:
 - Do not create a PR.
-- Prefer leaving file changes for the wrapper to commit.
+- Prefer leaving file changes for the wrapper to commit and push.
 - If ${STEER_LOG} has content, treat it as the latest steering input and check it before major decisions.
 - If ${STOP_PATH} appears, stop cleanly.
 
@@ -583,7 +583,7 @@ commit_if_needed() {
   git commit -m "$message" >/dev/null
 }
 
-commit_branch() {
+push_branch() {
   cd "$WORKSPACE_DIR" || fatal "failed to enter $WORKSPACE_DIR"
   if ! has_branch_work; then
     if [ "$RUN_RESULT" = "running" ]; then
@@ -597,8 +597,13 @@ commit_branch() {
     fi
     return 0
   fi
-  # Apprentices never push feature branches to origin.
-  # The wizard merges locally (worktree or shared PVC). Only main touches origin.
+  setup_github_auth
+  if ! git push -u origin "$BRANCH_NAME"; then
+    if [ "$RUN_RESULT" = "running" ]; then
+      RUN_RESULT="error"; RUN_SUMMARY="failed to push branch ${BRANCH_NAME}"
+    fi
+    return 0
+  fi
   COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
 }
 
@@ -613,7 +618,7 @@ update_bead_state() {
   if [ -z "$COMMIT_SHA" ]; then return 0; fi
   cd "$STATE_DIR" || fatal "failed to enter $STATE_DIR"
 
-  local note="Wizard ${AGENT_NAME} committed branch ${BRANCH_NAME}"
+  local note="Wizard ${AGENT_NAME} pushed branch ${BRANCH_NAME}"
   [ -n "$COMMIT_SHA" ] && note="${note} @ ${COMMIT_SHA}"
   [ "$RUN_RESULT" != "running" ] && note="${note} (result: ${RUN_RESULT})"
 
@@ -626,20 +631,20 @@ update_bead_state() {
       bd update "$BEAD_ID" --add-label "review-ready" >/dev/null 2>&1 || true
       bd update "$BEAD_ID" --add-label "feat-branch:${BRANCH_NAME}" >/dev/null 2>&1 || true
       RUN_RESULT="success"
-      RUN_SUMMARY="validated and committed branch ${BRANCH_NAME} (review-ready)"
+      RUN_SUMMARY="validated and pushed branch ${BRANCH_NAME} (review-ready)"
       log "standalone task — marked review-ready, leaving bead open for sage review"
     else
       # Child of an epic: close normally, sage handles review.
       if ! bd close "$BEAD_ID" --reason "Completed on branch ${BRANCH_NAME}" >/dev/null 2>&1; then
         RUN_RESULT="error"
-        RUN_SUMMARY="branch committed but failed to close bead ${BEAD_ID}"
+        RUN_SUMMARY="branch pushed but failed to close bead ${BEAD_ID}"
       fi
     fi
   fi
 
   if [ "$RUN_RESULT" = "running" ]; then
     RUN_RESULT="success"
-    RUN_SUMMARY="validated and committed branch ${BRANCH_NAME}"
+    RUN_SUMMARY="validated and pushed branch ${BRANCH_NAME}"
   fi
 }
 
@@ -658,7 +663,7 @@ main() {
   build_prompt
   run_agent_command
   run_validation
-  commit_branch
+  push_branch
   update_bead_state
 
   if [ "$RUN_RESULT" = "success" ]; then
