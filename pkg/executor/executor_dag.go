@@ -1,6 +1,11 @@
 package executor
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/awell-health/spire/pkg/formula"
+	"github.com/steveyegge/beads"
+)
 
 // ensureAttemptBead reuses an existing attempt bead (typically created by cmdClaim)
 // or creates a new one if none exists.
@@ -141,6 +146,112 @@ func (e *Executor) ensureStepBeads() error {
 	}
 
 	return e.saveState()
+}
+
+// --- Review sub-step bead management ---
+
+// ensureReviewSubStepBeads creates sub-step beads under the step:review bead
+// for each step in the review formula graph. Idempotent — skips steps that
+// already have beads.
+func (e *Executor) ensureReviewSubStepBeads(graph *formula.FormulaStepGraph) error {
+	// Find the step:review bead (parent for sub-steps).
+	reviewBeadID := e.state.StepBeadIDs["review"]
+	if reviewBeadID == "" {
+		// No step beads created (legacy run) — use main bead as parent.
+		reviewBeadID = e.beadID
+	}
+
+	if e.state.ReviewStepBeadIDs == nil {
+		e.state.ReviewStepBeadIDs = make(map[string]string)
+	}
+
+	// Reconcile from graph: check for existing sub-step beads.
+	if len(e.state.ReviewStepBeadIDs) == 0 {
+		if children, err := e.deps.GetChildren(reviewBeadID); err == nil {
+			for _, child := range children {
+				if e.deps.ContainsLabel(child, "review-substep") {
+					if stepName := e.deps.HasLabel(child, "step:"); stepName != "" {
+						e.state.ReviewStepBeadIDs[stepName] = child.ID
+					}
+				}
+			}
+			if len(e.state.ReviewStepBeadIDs) > 0 {
+				e.log("reconciled %d review sub-step beads from graph", len(e.state.ReviewStepBeadIDs))
+				return e.saveState()
+			}
+		}
+	}
+
+	if e.deps.CreateBead == nil {
+		e.log("warning: CreateBead dep not available, skipping review sub-step bead creation")
+		return nil
+	}
+
+	for stepName, stepCfg := range graph.Steps {
+		if _, exists := e.state.ReviewStepBeadIDs[stepName]; exists {
+			continue
+		}
+		title := stepCfg.Title
+		if title == "" {
+			title = stepName
+		}
+		id, err := e.deps.CreateBead(CreateOpts{
+			Title:    title,
+			Priority: 3,
+			Type:     beads.TypeTask,
+			Parent:   reviewBeadID,
+			Labels:   []string{"workflow-step", "step:" + stepName, "review-substep"},
+		})
+		if err != nil {
+			return fmt.Errorf("create review sub-step bead for %s: %w", stepName, err)
+		}
+		e.state.ReviewStepBeadIDs[stepName] = id
+		e.log("created review sub-step bead %s for %s", id, stepName)
+	}
+
+	return e.saveState()
+}
+
+// activateReviewSubStep sets a review sub-step bead to in_progress.
+func (e *Executor) activateReviewSubStep(stepName string) error {
+	beadID, ok := e.state.ReviewStepBeadIDs[stepName]
+	if !ok {
+		return nil // no sub-step beads created (test/legacy)
+	}
+	return e.deps.ActivateStepBead(beadID)
+}
+
+// closeReviewSubStep closes a review sub-step bead.
+func (e *Executor) closeReviewSubStep(stepName string) error {
+	beadID, ok := e.state.ReviewStepBeadIDs[stepName]
+	if !ok {
+		return nil // no sub-step beads created (test/legacy)
+	}
+	return e.deps.CloseStepBead(beadID)
+}
+
+// completedReviewSteps returns a map of step names to completion status
+// by checking the bead status for each review sub-step.
+func (e *Executor) completedReviewSteps() map[string]bool {
+	completed := make(map[string]bool)
+	for stepName, beadID := range e.state.ReviewStepBeadIDs {
+		b, err := e.deps.GetBead(beadID)
+		if err != nil {
+			continue
+		}
+		completed[stepName] = b.Status == "closed"
+	}
+	return completed
+}
+
+// resetReviewSubStep re-opens a review sub-step bead (sets status back to open).
+// Used by the fix→sage-review loop reset.
+func (e *Executor) resetReviewSubStep(stepName string) error {
+	beadID, ok := e.state.ReviewStepBeadIDs[stepName]
+	if !ok {
+		return nil // no sub-step beads created (test/legacy)
+	}
+	return e.deps.UpdateBead(beadID, map[string]interface{}{"status": "open"})
 }
 
 // transitionStepBead closes the previous phase's step bead and activates the new one.
