@@ -530,6 +530,7 @@ Also read CLAUDE.md and PLAYBOOK.md for repo conventions.
 ## Verification checklist
 
 <list specific invariants to verify — these catch correctness bugs>
+- If any function's deps usage changed (new GetBead, AddLabel, etc. calls), verify the test file updates mocks/stubs to match. Missing mock updates cause nil pointer dereference panics.
 
 ## Design completeness
 

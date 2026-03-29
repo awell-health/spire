@@ -288,6 +288,7 @@ Evaluate:
 2. Completeness: Are all requirements from the spec addressed?
 3. Quality: Is the code clean, well-tested, and maintainable?
 4. Edge cases: Are error paths and edge cases handled?
+5. Test consistency: If the diff changes function behavior, deps usage, or adds new store/deps calls, verify that corresponding test mocks and test setup are updated. Missing mock updates cause nil pointer panics at test time.
 
 Respond ONLY with a JSON object:
 {
