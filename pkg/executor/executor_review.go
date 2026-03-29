@@ -88,10 +88,11 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 		// Fix step: reset sage-review for re-evaluation, increment round.
 		if stepName == "fix" {
 			if err := e.resetReviewSubStep("sage-review"); err != nil {
-				e.log("warning: reset sage-review sub-step: %s", err)
+				return fmt.Errorf("reset sage-review sub-step: %w", err)
 			}
 			e.state.ReviewRounds++
 			ctx["round"] = strconv.Itoa(e.state.ReviewRounds)
+			e.saveState()
 		}
 	}
 }
