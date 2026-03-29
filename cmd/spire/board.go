@@ -134,6 +134,19 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 		fmt.Printf("\n%sPress Enter to return to board...%s ", board.Dim, board.Reset)
 		fmt.Scanln()
 		return true
+
+	case board.ActionClose:
+		fmt.Printf("\nClose bead %s? [y/N] ", beadID)
+		var answer string
+		fmt.Scanln(&answer)
+		if answer == "y" || answer == "Y" {
+			if err := storeCloseBead(beadID); err != nil {
+				fmt.Fprintf(os.Stderr, "close: %v\n", err)
+			} else {
+				fmt.Printf("Closed %s\n", beadID)
+			}
+		}
+		return true
 	}
 	return false
 }

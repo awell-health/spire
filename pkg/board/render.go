@@ -177,7 +177,12 @@ func (m Model) View() string {
 	if len(visibleCols.Alerts) > 0 {
 		SortBeads(visibleCols.Alerts)
 		alertStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-		s.WriteString(alertStyle.Render(fmt.Sprintf("⚠ ALERTS (%d)", len(visibleCols.Alerts))) + "\n")
+		alertHeaderStr := fmt.Sprintf("⚠ ALERTS (%d)", len(visibleCols.Alerts))
+		if m.SelSection == SectionAlerts {
+			alertHeaderStr = fmt.Sprintf("⚠ ALERTS (%d)", len(visibleCols.Alerts))
+			alertStyle = alertStyle.Underline(true)
+		}
+		s.WriteString(alertStyle.Render(alertHeaderStr) + "\n")
 		for i, a := range visibleCols.Alerts {
 			if i >= budget.MaxAlerts {
 				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -190,7 +195,12 @@ func (m Model) View() string {
 					alertType = "[" + l[6:] + "] "
 				}
 			}
-			s.WriteString(fmt.Sprintf("  %s %s%s\n", PriStr(a.Priority), alertType, a.Title))
+			if m.SelSection == SectionAlerts && i == m.SelCard {
+				cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
+				s.WriteString(fmt.Sprintf("%s %s %s%s\n", cursor, PriStr(a.Priority), alertType, a.Title))
+			} else {
+				s.WriteString(fmt.Sprintf("  %s %s%s\n", PriStr(a.Priority), alertType, a.Title))
+			}
 		}
 		s.WriteString("\n")
 	}
@@ -201,7 +211,7 @@ func (m Model) View() string {
 		for i, c := range displayCols {
 			var cb strings.Builder
 			headerStyle := lipgloss.NewStyle().Bold(true).Foreground(c.Color)
-			if i == m.SelCol {
+			if m.SelSection == SectionColumns && i == m.SelCol {
 				headerStyle = headerStyle.Underline(true)
 			}
 			cb.WriteString(headerStyle.Render(fmt.Sprintf("%s (%d)", c.Name, len(c.Beads))))
@@ -217,7 +227,7 @@ func (m Model) View() string {
 					cb.WriteString("\n")
 					break
 				}
-				isSelected := (i == m.SelCol && j == m.SelCard)
+				isSelected := (m.SelSection == SectionColumns && i == m.SelCol && j == m.SelCard)
 				if budget.Compact {
 					cb.WriteString(RenderCompactCard(b, c.Color, colWidth, isSelected))
 				} else {
@@ -236,6 +246,9 @@ func (m Model) View() string {
 	// Blocked (capped by budget).
 	if len(visibleCols.Blocked) > 0 {
 		blockedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+		if m.SelSection == SectionBlocked {
+			blockedStyle = blockedStyle.Underline(true)
+		}
 		s.WriteString(blockedStyle.Render(fmt.Sprintf("BLOCKED (%d)", len(visibleCols.Blocked))) + "\n")
 
 		for i, b := range visibleCols.Blocked {
@@ -250,7 +263,12 @@ func (m Model) View() string {
 				bStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 				blockerStr = " " + bStyle.Render("← "+strings.Join(blockers, ", "))
 			}
-			s.WriteString(fmt.Sprintf("  %s %s %s%s\n", PriStr(b.Priority), b.ID, Truncate(b.Title, 40), blockerStr))
+			if m.SelSection == SectionBlocked && i == m.SelCard {
+				cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
+				s.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursor, PriStr(b.Priority), b.ID, Truncate(b.Title, 40), blockerStr))
+			} else {
+				s.WriteString(fmt.Sprintf("  %s %s %s%s\n", PriStr(b.Priority), b.ID, Truncate(b.Title, 40), blockerStr))
+			}
 		}
 	}
 
@@ -275,7 +293,7 @@ func (m Model) View() string {
 	if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
 		resummonHint = "  r resummon"
 	}
-	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  Enter inspect  t type  H cols" + colsHint + "  f focus  s summon  c claim" + resummonHint + "  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
+	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  Enter inspect  t type  H cols" + colsHint + "  f focus  s summon  c claim  d close" + resummonHint + "  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
 	rightFooter := scopeStyle.Render("showing " + m.TypeScope.Label())
 	if m.Width > 0 {
 		gap := m.Width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)

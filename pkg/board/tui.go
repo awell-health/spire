@@ -16,6 +16,16 @@ const (
 	ActionSummon                 // summon a wizard for the bead, then relaunch
 	ActionClaim                  // claim the bead, then relaunch
 	ActionResummon               // resummon a stuck bead (needs-human), then relaunch
+	ActionClose                  // close/dismiss the bead, then relaunch
+)
+
+// Section identifies which vertical zone of the board the cursor is in.
+type Section int
+
+const (
+	SectionAlerts  Section = iota // alert beads above the columns
+	SectionColumns                // the main phase columns
+	SectionBlocked                // blocked beads below the columns
 )
 
 // Model is the Bubble Tea model for the board TUI.
@@ -30,8 +40,9 @@ type Model struct {
 	Height        int
 	LastTick      time.Time
 	Quitting      bool
-	SelCol        int // selected column index into DisplayColumns()
-	SelCard       int // selected card index within selCol
+	SelSection    Section // which vertical zone the cursor is in
+	SelCol        int     // selected column index into DisplayColumns()
+	SelCard       int     // selected card index within selCol
 	PendingAction PendingAction
 	PendingBeadID string
 
@@ -63,8 +74,40 @@ func (m Model) DisplayColumns() []ColDef {
 	return ActiveColumns(vis)
 }
 
-// ClampSelection keeps SelCol and SelCard within valid bounds.
+// ClampSelection keeps SelSection, SelCol, and SelCard within valid bounds.
 func (m *Model) ClampSelection() {
+	vis := m.VisibleCols()
+
+	// If current section is empty, fall through to columns.
+	if m.SelSection == SectionAlerts && len(vis.Alerts) == 0 {
+		m.SelSection = SectionColumns
+	}
+	if m.SelSection == SectionBlocked && len(vis.Blocked) == 0 {
+		m.SelSection = SectionColumns
+	}
+
+	switch m.SelSection {
+	case SectionAlerts:
+		n := len(vis.Alerts)
+		if m.SelCard < 0 {
+			m.SelCard = 0
+		}
+		if m.SelCard >= n {
+			m.SelCard = n - 1
+		}
+		return
+	case SectionBlocked:
+		n := len(vis.Blocked)
+		if m.SelCard < 0 {
+			m.SelCard = 0
+		}
+		if m.SelCard >= n {
+			m.SelCard = n - 1
+		}
+		return
+	}
+
+	// SectionColumns
 	active := m.DisplayColumns()
 	if len(active) == 0 {
 		m.SelCol = 0
@@ -87,15 +130,29 @@ func (m *Model) ClampSelection() {
 
 // SelectedBead returns a pointer to the currently selected bead, or nil.
 func (m Model) SelectedBead() *BoardBead {
-	active := m.DisplayColumns()
-	if m.SelCol < 0 || m.SelCol >= len(active) {
+	vis := m.VisibleCols()
+	switch m.SelSection {
+	case SectionAlerts:
+		if m.SelCard >= 0 && m.SelCard < len(vis.Alerts) {
+			return &vis.Alerts[m.SelCard]
+		}
 		return nil
-	}
-	beads := active[m.SelCol].Beads
-	if m.SelCard < 0 || m.SelCard >= len(beads) {
+	case SectionBlocked:
+		if m.SelCard >= 0 && m.SelCard < len(vis.Blocked) {
+			return &vis.Blocked[m.SelCard]
+		}
 		return nil
+	default: // SectionColumns
+		active := m.DisplayColumns()
+		if m.SelCol < 0 || m.SelCol >= len(active) {
+			return nil
+		}
+		beads := active[m.SelCol].Beads
+		if m.SelCard < 0 || m.SelCard >= len(beads) {
+			return nil
+		}
+		return &beads[m.SelCard]
 	}
-	return &beads[m.SelCard]
 }
 
 type tickMsg time.Time
@@ -112,6 +169,7 @@ func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, ac
 			Opts:          opts,
 			Identity:      identity,
 			LastTick:      time.Now(),
+			SelSection:    SectionColumns,
 			FetchAgentsFn: fetchAgents,
 		}
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -198,21 +256,96 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Column navigation.
 		case "h", "left", "shift+tab":
-			m.SelCol--
-			m.SelCard = 0
-			m.ClampSelection()
+			if m.SelSection != SectionColumns {
+				// Jump into columns from alerts/blocked.
+				m.SelSection = SectionColumns
+				m.SelCard = 0
+				m.ClampSelection()
+			} else {
+				m.SelCol--
+				m.SelCard = 0
+				m.ClampSelection()
+			}
 		case "l", "right", "tab":
-			m.SelCol++
-			m.SelCard = 0
-			m.ClampSelection()
+			if m.SelSection != SectionColumns {
+				m.SelSection = SectionColumns
+				m.SelCard = 0
+				m.ClampSelection()
+			} else {
+				m.SelCol++
+				m.SelCard = 0
+				m.ClampSelection()
+			}
 
-		// Card navigation.
+		// Card navigation (section-aware).
 		case "j", "down":
-			m.SelCard++
-			m.ClampSelection()
+			vis := m.VisibleCols()
+			switch m.SelSection {
+			case SectionAlerts:
+				if m.SelCard+1 < len(vis.Alerts) {
+					m.SelCard++
+				} else {
+					// Past last alert → enter columns.
+					m.SelSection = SectionColumns
+					m.SelCard = 0
+					m.ClampSelection()
+				}
+			case SectionColumns:
+				active := m.DisplayColumns()
+				maxCard := 0
+				if m.SelCol >= 0 && m.SelCol < len(active) {
+					maxCard = len(active[m.SelCol].Beads)
+				}
+				if m.SelCard+1 < maxCard {
+					m.SelCard++
+					m.ClampSelection()
+				} else if len(vis.Blocked) > 0 {
+					// Past last card in column → enter blocked.
+					m.SelSection = SectionBlocked
+					m.SelCard = 0
+					m.ClampSelection()
+				}
+			case SectionBlocked:
+				if m.SelCard+1 < len(vis.Blocked) {
+					m.SelCard++
+				}
+			}
 		case "k", "up":
-			m.SelCard--
-			m.ClampSelection()
+			vis := m.VisibleCols()
+			switch m.SelSection {
+			case SectionAlerts:
+				if m.SelCard > 0 {
+					m.SelCard--
+				}
+			case SectionColumns:
+				if m.SelCard > 0 {
+					m.SelCard--
+					m.ClampSelection()
+				} else if len(vis.Alerts) > 0 {
+					// At top of column → enter alerts.
+					m.SelSection = SectionAlerts
+					m.SelCard = len(vis.Alerts) - 1
+					m.ClampSelection()
+				}
+			case SectionBlocked:
+				if m.SelCard > 0 {
+					m.SelCard--
+				} else {
+					// At top of blocked → return to columns.
+					m.SelSection = SectionColumns
+					active := m.DisplayColumns()
+					if m.SelCol >= 0 && m.SelCol < len(active) {
+						lastCard := len(active[m.SelCol].Beads) - 1
+						if lastCard < 0 {
+							lastCard = 0
+						}
+						m.SelCard = lastCard
+					} else {
+						m.SelCard = 0
+					}
+					m.ClampSelection()
+				}
+			}
 
 		// Epic scoping toggle.
 		case "e":
@@ -268,6 +401,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
 				m.PendingAction = ActionResummon
+				m.PendingBeadID = bead.ID
+				m.Quitting = true
+				return m, tea.Quit
+			}
+		case "d":
+			if bead := m.SelectedBead(); bead != nil {
+				m.PendingAction = ActionClose
 				m.PendingBeadID = bead.ID
 				m.Quitting = true
 				return m, tea.Quit
