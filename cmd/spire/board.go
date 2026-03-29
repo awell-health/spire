@@ -129,6 +129,15 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 		fmt.Printf("\n%sPress Enter to return to board...%s ", board.Dim, board.Reset)
 		fmt.Scanln()
 		return true
+
+	case board.ActionResummon:
+		fmt.Println()
+		if err := cmdResummon([]string{beadID}); err != nil {
+			fmt.Fprintf(os.Stderr, "resummon: %v\n", err)
+		}
+		fmt.Printf("\n%sPress Enter to return to board...%s ", board.Dim, board.Reset)
+		fmt.Scanln()
+		return true
 	}
 	return false
 }

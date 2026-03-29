@@ -58,3 +58,13 @@ func ContainsLabel(b Bead, label string) bool {
 	}
 	return false
 }
+
+// HasLabel checks if a BoardBead has an exact label match.
+func (b BoardBead) HasLabel(label string) bool {
+	for _, l := range b.Labels {
+		if l == label {
+			return true
+		}
+	}
+	return false
+}

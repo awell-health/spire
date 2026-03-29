@@ -10,11 +10,12 @@ import (
 type PendingAction int
 
 const (
-	ActionNone   PendingAction = iota
-	ActionFocus                // print cmdFocus output, then relaunch
-	ActionLogs                 // tail wizard logs, then relaunch
-	ActionSummon               // summon a wizard for the bead, then relaunch
-	ActionClaim                // claim the bead, then relaunch
+	ActionNone     PendingAction = iota
+	ActionFocus                  // print cmdFocus output, then relaunch
+	ActionLogs                   // tail wizard logs, then relaunch
+	ActionSummon                 // summon a wizard for the bead, then relaunch
+	ActionClaim                  // claim the bead, then relaunch
+	ActionResummon               // resummon a stuck bead (needs-human), then relaunch
 )
 
 // Model is the Bubble Tea model for the board TUI.
@@ -277,6 +278,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "L":
 			if bead := m.SelectedBead(); bead != nil {
 				m.PendingAction = ActionLogs
+				m.PendingBeadID = bead.ID
+				m.Quitting = true
+				return m, tea.Quit
+			}
+		case "r":
+			if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
+				m.PendingAction = ActionResummon
 				m.PendingBeadID = bead.ID
 				m.Quitting = true
 				return m, tea.Quit

@@ -254,7 +254,11 @@ func (m Model) View() string {
 	if m.ShowAllCols {
 		colsHint = " [all]"
 	}
-	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  Enter inspect  t type  H cols" + colsHint + "  f focus  s summon  c claim  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
+	resummonHint := ""
+	if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
+		resummonHint = "  r resummon"
+	}
+	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  tab  Enter inspect  t type  H cols" + colsHint + "  f focus  s summon  c claim" + resummonHint + "  L logs  e epic" + epicInfo + " • q quit • ↻ " + m.Opts.Interval.String())
 	rightFooter := scopeStyle.Render("showing " + m.TypeScope.Label())
 	if m.Width > 0 {
 		gap := m.Width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)
