@@ -220,14 +220,31 @@ func (m Model) View() string {
 			cb.WriteString(sepStyle.Render(strings.Repeat("─", Min(colWidth, len(c.Name)+4))))
 			cb.WriteString("\n")
 
-			for j, b := range c.Beads {
+			// Apply scroll offset for the selected column only.
+			scrollOff := 0
+			if m.SelSection == SectionColumns && i == m.SelCol {
+				scrollOff = m.ColScroll
+			}
+			if scrollOff > len(c.Beads) {
+				scrollOff = len(c.Beads)
+			}
+
+			if scrollOff > 0 {
+				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+				cb.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d above", scrollOff)))
+				cb.WriteString("\n")
+			}
+
+			visible := c.Beads[scrollOff:]
+			for j, b := range visible {
 				if j >= budget.MaxCards {
+					remaining := len(c.Beads) - scrollOff - budget.MaxCards
 					dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-					cb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(c.Beads)-budget.MaxCards)))
+					cb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", remaining)))
 					cb.WriteString("\n")
 					break
 				}
-				isSelected := (m.SelSection == SectionColumns && i == m.SelCol && j == m.SelCard)
+				isSelected := (m.SelSection == SectionColumns && i == m.SelCol && (scrollOff+j) == m.SelCard)
 				if budget.Compact {
 					cb.WriteString(RenderCompactCard(b, c.Color, colWidth, isSelected))
 				} else {

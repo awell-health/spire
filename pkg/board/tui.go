@@ -43,6 +43,7 @@ type Model struct {
 	SelSection    Section // which vertical zone the cursor is in
 	SelCol        int     // selected column index into DisplayColumns()
 	SelCard       int     // selected card index within selCol
+	ColScroll     int     // scroll offset for the selected column (beads above viewport)
 	PendingAction PendingAction
 	PendingBeadID string
 
@@ -72,6 +73,30 @@ func (m Model) DisplayColumns() []ColDef {
 		return AllColumns(vis)
 	}
 	return ActiveColumns(vis)
+}
+
+// ensureCardVisible adjusts ColScroll so SelCard is within the visible window.
+func (m *Model) ensureCardVisible(maxCards int) {
+	if maxCards <= 0 {
+		return
+	}
+	if m.SelCard < m.ColScroll {
+		m.ColScroll = m.SelCard
+	}
+	if m.SelCard >= m.ColScroll+maxCards {
+		m.ColScroll = m.SelCard - maxCards + 1
+	}
+	if m.ColScroll < 0 {
+		m.ColScroll = 0
+	}
+}
+
+// colMaxCards computes MaxCards from the current board state.
+func (m *Model) colMaxCards() int {
+	vis := m.VisibleCols()
+	displayCols := m.DisplayColumns()
+	budget := CalcHeightBudget(m.Height, len(vis.Alerts), len(vis.Blocked), len(displayCols), len(m.Agents))
+	return budget.MaxCards
 }
 
 // ClampSelection keeps SelSection, SelCol, and SelCard within valid bounds.
@@ -123,9 +148,21 @@ func (m *Model) ClampSelection() {
 	n := len(active[m.SelCol].Beads)
 	if n == 0 {
 		m.SelCard = 0
+		m.ColScroll = 0
 		return
 	}
 	m.SelCard = ((m.SelCard % n) + n) % n
+
+	// Clamp ColScroll to valid range.
+	if m.ColScroll > m.SelCard {
+		m.ColScroll = m.SelCard
+	}
+	if m.ColScroll > n-1 {
+		m.ColScroll = n - 1
+	}
+	if m.ColScroll < 0 {
+		m.ColScroll = 0
+	}
 }
 
 // SelectedBead returns a pointer to the currently selected bead, or nil.
@@ -260,20 +297,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Jump into columns from alerts/blocked.
 				m.SelSection = SectionColumns
 				m.SelCard = 0
+				m.ColScroll = 0
 				m.ClampSelection()
 			} else {
 				m.SelCol--
 				m.SelCard = 0
+				m.ColScroll = 0
 				m.ClampSelection()
 			}
 		case "l", "right", "tab":
 			if m.SelSection != SectionColumns {
 				m.SelSection = SectionColumns
 				m.SelCard = 0
+				m.ColScroll = 0
 				m.ClampSelection()
 			} else {
 				m.SelCol++
 				m.SelCard = 0
+				m.ColScroll = 0
 				m.ClampSelection()
 			}
 
@@ -288,6 +329,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Past last alert → enter columns.
 					m.SelSection = SectionColumns
 					m.SelCard = 0
+					m.ColScroll = 0
 					m.ClampSelection()
 				}
 			case SectionColumns:
@@ -299,6 +341,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.SelCard+1 < maxCard {
 					m.SelCard++
 					m.ClampSelection()
+					m.ensureCardVisible(m.colMaxCards())
 				} else if len(vis.Blocked) > 0 {
 					// Past last card in column → enter blocked.
 					m.SelSection = SectionBlocked
@@ -321,6 +364,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.SelCard > 0 {
 					m.SelCard--
 					m.ClampSelection()
+					m.ensureCardVisible(m.colMaxCards())
 				} else if len(vis.Alerts) > 0 {
 					// At top of column → enter alerts.
 					m.SelSection = SectionAlerts
@@ -344,6 +388,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.SelCard = 0
 					}
 					m.ClampSelection()
+					m.ensureCardVisible(m.colMaxCards())
 				}
 			}
 
@@ -416,6 +461,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		if m.SelSection == SectionColumns {
+			m.ensureCardVisible(m.colMaxCards())
+		}
 	case tickMsg:
 		m.LastTick = time.Now()
 		if !m.Inspecting {
