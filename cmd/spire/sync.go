@@ -6,7 +6,24 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/spf13/cobra"
 )
+
+var syncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Three-way merge pull for diverged histories",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if merge, _ := cmd.Flags().GetBool("merge"); merge {
+			fullArgs = append(fullArgs, "--merge")
+		}
+		return cmdSync(fullArgs)
+	},
+}
+
+func init() {
+	syncCmd.Flags().Bool("merge", false, "Three-way merge pull")
+}
 
 func cmdSync(args []string) error {
 	merge := false

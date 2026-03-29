@@ -7,7 +7,52 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/spf13/cobra"
 )
+
+var repoCmd = &cobra.Command{
+	Use:   "repo",
+	Short: "Manage repository registrations",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// No subcommand: print usage
+		cmd.Help()
+		return nil
+	},
+}
+
+var repoAddCmd = &cobra.Command{
+	Use:   "add [path]",
+	Short: "Register a repo under a tower",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdRegisterRepo(args)
+	},
+}
+
+var repoListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List registered repos",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		jsonOut, _ := cmd.Flags().GetBool("json")
+		return repoList(jsonOut)
+	},
+}
+
+var repoRemoveCmd = &cobra.Command{
+	Use:   "remove <prefix>",
+	Short: "Remove a repo registration",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return repoRemove(args[0])
+	},
+}
+
+func init() {
+	repoListCmd.Flags().Bool("json", false, "Output as JSON")
+
+	repoCmd.AddCommand(repoAddCmd, repoListCmd, repoRemoveCmd)
+}
 
 func cmdRepo(args []string) error {
 	if len(args) == 0 {

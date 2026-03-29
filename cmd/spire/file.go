@@ -5,7 +5,61 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
+
+var fileCmd = &cobra.Command{
+	Use:   "file <title> [flags]",
+	Short: "Create a bead (--prefix, -t type, -p priority)",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Reconstruct args with flags for the existing parser
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("prefix"); v != "" {
+			fullArgs = append(fullArgs, "--prefix", v)
+		}
+		if v, _ := cmd.Flags().GetString("branch"); v != "" {
+			fullArgs = append(fullArgs, "--branch", v)
+		}
+		if v, _ := cmd.Flags().GetString("merge-mode"); v != "" {
+			fullArgs = append(fullArgs, "--merge-mode", v)
+		}
+		if v, _ := cmd.Flags().GetString("ref"); v != "" {
+			fullArgs = append(fullArgs, "--ref", v)
+		}
+		if v, _ := cmd.Flags().GetString("type"); v != "" {
+			fullArgs = append(fullArgs, "-t", v)
+		}
+		if cmd.Flags().Changed("priority") {
+			v, _ := cmd.Flags().GetInt("priority")
+			fullArgs = append(fullArgs, "-p", strconv.Itoa(v))
+		}
+		if v, _ := cmd.Flags().GetString("label"); v != "" {
+			fullArgs = append(fullArgs, "--label", v)
+		}
+		if v, _ := cmd.Flags().GetString("description"); v != "" {
+			fullArgs = append(fullArgs, "--description", v)
+		}
+		if v, _ := cmd.Flags().GetString("parent"); v != "" {
+			fullArgs = append(fullArgs, "--parent", v)
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdFile(fullArgs)
+	},
+}
+
+func init() {
+	fileCmd.Flags().String("prefix", "", "Repo prefix")
+	fileCmd.Flags().String("branch", "", "Feature branch name")
+	fileCmd.Flags().String("merge-mode", "", "Merge mode: merge or pr")
+	fileCmd.Flags().String("ref", "", "Design bead ID to link via discovered-from dep")
+	fileCmd.Flags().StringP("type", "t", "", "Bead type (task, bug, feature, epic, chore)")
+	fileCmd.Flags().IntP("priority", "p", 0, "Priority (0-4)")
+	fileCmd.Flags().String("label", "", "Comma-separated labels")
+	fileCmd.Flags().String("description", "", "Bead description")
+	fileCmd.Flags().String("parent", "", "Parent bead ID for hierarchical IDs")
+}
 
 func cmdFile(args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {

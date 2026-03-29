@@ -1,6 +1,19 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+var downCmd = &cobra.Command{
+	Use:   "down",
+	Short: "Stop daemon (dolt keeps running)",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdDown(args)
+	},
+}
 
 func cmdDown(args []string) error {
 	// Stop steward first (if running)

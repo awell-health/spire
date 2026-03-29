@@ -6,7 +6,36 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/wizard"
+	"github.com/spf13/cobra"
 )
+
+var wizardEpicCmd = &cobra.Command{
+	Use:    "wizard-epic <epic-id>",
+	Short:  "Execute wizard epic orchestration",
+	Hidden: true,
+	Args:   cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWizardEpic(args)
+	},
+}
+
+var wizardRunCmd = &cobra.Command{
+	Use:    "wizard-run",
+	Short:  "Internal: run wizard implementation phase",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWizardRun(args)
+	},
+}
+
+var wizardReviewCmd = &cobra.Command{
+	Use:    "wizard-review",
+	Short:  "Internal: run wizard review phase",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWizardReview(args)
+	},
+}
 
 // --- Type aliases for backward compatibility ---
 // These let existing cmd/spire code (executor_bridge, steward, etc.) continue

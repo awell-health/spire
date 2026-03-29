@@ -7,7 +7,40 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/spf13/cobra"
 )
+
+var inboxCmd = &cobra.Command{
+	Use:   "inbox [name]",
+	Short: "Read local inbox file (--check, --watch, --json)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Rebuild the original args list with flags for backward compat
+		var fullArgs []string
+		if check, _ := cmd.Flags().GetBool("check"); check {
+			fullArgs = append(fullArgs, "--check")
+		}
+		if watch, _ := cmd.Flags().GetBool("watch"); watch {
+			fullArgs = append(fullArgs, "--watch")
+		}
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		if timeout, _ := cmd.Flags().GetString("timeout"); timeout != "" {
+			fullArgs = append(fullArgs, "--timeout", timeout)
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdInbox(fullArgs)
+	},
+}
+
+func init() {
+	inboxCmd.Flags().Bool("check", false, "Silent check for new messages")
+	inboxCmd.Flags().Bool("watch", false, "Block until new messages appear")
+	inboxCmd.Flags().Bool("json", false, "Output as JSON")
+	inboxCmd.Flags().String("timeout", "", "Timeout for watch mode (e.g. 5m)")
+}
 
 // inboxMessage is a single message in the inbox file.
 type inboxMessage struct {

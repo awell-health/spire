@@ -6,7 +6,17 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/spf13/cobra"
 )
+
+var claimCmd = &cobra.Command{
+	Use:   "claim <bead-id>",
+	Short: "Pull, verify, claim, push (atomic)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdClaim(args)
+	},
+}
 
 // claimGetBeadFunc is a test-replaceable wrapper around storeGetBead.
 var claimGetBeadFunc = storeGetBead

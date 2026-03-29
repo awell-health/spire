@@ -5,8 +5,27 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
+
+var closeCmd = &cobra.Command{
+	Use:   "close <bead-id>",
+	Short: "Force-close a bead (remove phase labels, close molecule steps)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdClose(args)
+	},
+}
+
+var advanceCmd = &cobra.Command{
+	Use:   "advance <bead-id>",
+	Short: "Advance bead to next formula phase (or close if at last phase)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdAdvance(args)
+	},
+}
 
 // cmdClose implements `spire close <bead-id>`.
 // Force-closes a bead: removes phase labels, closes open molecule children, closes the bead.

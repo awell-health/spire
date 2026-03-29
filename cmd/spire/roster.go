@@ -8,7 +8,24 @@ import (
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/spf13/cobra"
 )
+
+var rosterCmd = &cobra.Command{
+	Use:   "roster",
+	Short: "List work by epic and agent status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		return cmdRoster(fullArgs)
+	},
+}
+
+func init() {
+	rosterCmd.Flags().Bool("json", false, "Output as JSON")
+}
 
 func cmdRoster(args []string) error {
 	if d := resolveBeadsDir(); d != "" {

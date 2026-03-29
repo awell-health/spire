@@ -3,118 +3,81 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 var version = "dev"
 
-func main() {
-	// Extract global --tower flag before dispatching to subcommands.
-	extractTowerFlag()
+func init() {
+	// --- Simple commands (no flags or minimal) ---
+	rootCmd.AddCommand(registerCmd)
+	rootCmd.AddCommand(unregisterCmd)
+	rootCmd.AddCommand(focusCmd)
+	rootCmd.AddCommand(grokCmd)
+	rootCmd.AddCommand(inboxCmd)
+	rootCmd.AddCommand(readCmd)
+	rootCmd.AddCommand(claimCmd)
+	rootCmd.AddCommand(closeCmd)
+	rootCmd.AddCommand(advanceCmd)
+	rootCmd.AddCommand(downCmd)
+	rootCmd.AddCommand(shutdownCmd)
+	rootCmd.AddCommand(statusCmd)
 
-	if len(os.Args) < 2 {
-		printUsage()
-		return
-	}
+	// --- Commands with flags ---
+	rootCmd.AddCommand(fileCmd)
+	rootCmd.AddCommand(designCmd)
+	rootCmd.AddCommand(specCmd)
+	rootCmd.AddCommand(sendCmd)
+	rootCmd.AddCommand(collectCmd)
+	rootCmd.AddCommand(boardCmd)
+	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(stewardCmd)
+	rootCmd.AddCommand(summonCmd)
+	rootCmd.AddCommand(dismissCmd)
+	rootCmd.AddCommand(resetCmd)
+	rootCmd.AddCommand(resummonCmd)
+	rootCmd.AddCommand(upCmd)
+	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(metricsCmd)
+	rootCmd.AddCommand(traceCmd)
+	rootCmd.AddCommand(watchCmd)
+	rootCmd.AddCommand(alertCmd)
+	rootCmd.AddCommand(rosterCmd)
+	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(pullCmd)
+	rootCmd.AddCommand(pushCmd)
+	rootCmd.AddCommand(syncCmd)
+	rootCmd.AddCommand(doctorCmd)
 
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	// --- Nested command groups ---
+	rootCmd.AddCommand(towerCmd)
+	rootCmd.AddCommand(repoCmd)
+	rootCmd.AddCommand(workshopCmd)
 
-	var err error
-	switch cmd {
-	case "register":
-		err = cmdRegister(args)
-	case "unregister":
-		err = cmdUnregister(args)
-	case "send":
-		err = cmdSend(args)
-	case "collect":
-		err = cmdCollect(args)
-	case "focus":
-		err = cmdFocus(args)
-	case "grok":
-		err = cmdGrok(args)
-	case "inbox":
-		err = cmdInbox(args)
-	case "read":
-		err = cmdRead(args)
-	case "connect":
-		err = cmdConnect(args)
-	case "disconnect":
-		err = cmdDisconnect(args)
-	case "serve":
-		err = cmdServe(args)
-	case "daemon":
-		err = cmdDaemon(args)
-	case "steward":
-		err = cmdSteward(args)
-	case "file":
-		err = cmdFile(args)
-	case "design":
-		err = cmdDesign(args)
-	case "spec":
-		err = cmdSpec(args)
-	case "close":
-		err = cmdClose(args)
-	case "advance":
-		err = cmdAdvance(args)
-	case "claim":
-		err = cmdClaim(args)
-	case "config":
-		err = cmdConfig(args)
-	case "push":
-		err = cmdPush(args)
-	case "pull":
-		err = cmdPull(args)
-	case "sync":
-		err = cmdSync(args)
-	case "repo":
-		err = cmdRepo(args)
-	case "up":
-		err = cmdUp(args)
-	case "down":
-		err = cmdDown(args)
-	case "shutdown":
-		err = cmdShutdown(args)
-	case "board":
-		err = cmdBoard(args)
-	case "roster":
-		err = cmdRoster(args)
-	case "summon":
-		err = cmdSummon(args)
-	case "dismiss":
-		err = cmdDismiss(args)
-	case "reset":
-		err = cmdReset(args)
-	case "resummon":
-		err = cmdResummon(args)
-	case "trace":
-		err = cmdTrace(args)
-	case "watch":
-		err = cmdWatch(args)
-	case "alert":
-		err = cmdAlert(args)
-	case "status":
-		err = cmdStatus(args)
-	case "logs":
-		err = cmdLogs(args)
-	case "metrics":
-		err = cmdMetrics(args)
-	case "tower":
-		err = cmdTower(args)
-	case "wizard-epic":
-		err = cmdWizardEpic(args)
-	case "workshop":
-		err = cmdWorkshop(args)
-	case "wizard-run":
-		err = cmdWizardRun(args)
-	case "wizard-review":
-		err = cmdWizardReview(args)
-	case "execute":
-		err = cmdExecute(args)
-	case "doctor":
-		err = cmdDoctor(args)
-	case "version":
+	// --- Integration commands ---
+	rootCmd.AddCommand(connectCmd)
+	rootCmd.AddCommand(disconnectCmd)
+	rootCmd.AddCommand(serveCmd)
+
+	// --- Internal / advanced ---
+	rootCmd.AddCommand(executeCmd)
+	rootCmd.AddCommand(wizardEpicCmd)
+	rootCmd.AddCommand(wizardRunCmd)
+	rootCmd.AddCommand(wizardReviewCmd)
+
+	// --- Version ---
+	rootCmd.AddCommand(versionCmd)
+
+	// --- Completion ---
+	rootCmd.AddCommand(completionCmd)
+}
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print version",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("spire", version)
 		binPath := doltResolvedBinPath()
 		if binPath == "" {
@@ -127,118 +90,49 @@ func main() {
 				fmt.Printf("dolt  v%s (%s)\n", v, binPath)
 			}
 		}
-		return
-	case "help", "--help", "-h":
-		printUsage()
-		return
-	default:
-		fmt.Fprintf(os.Stderr, "spire: unknown command %q\n", cmd)
-		printUsage()
-		os.Exit(1)
-	}
+		return nil
+	},
+}
 
-	if err != nil {
+var completionCmd = &cobra.Command{
+	Use:   "completion [bash|zsh|fish|powershell]",
+	Short: "Generate shell completion scripts",
+	Long: `Generate shell completion scripts for spire.
+
+To load completions:
+
+Bash:
+  $ source <(spire completion bash)
+
+Zsh:
+  $ spire completion zsh > "${fpath[1]}/_spire"
+
+Fish:
+  $ spire completion fish | source
+
+PowerShell:
+  PS> spire completion powershell | Out-String | Invoke-Expression`,
+	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+	Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+	DisableFlagsInUseLine: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		switch args[0] {
+		case "bash":
+			return rootCmd.GenBashCompletion(os.Stdout)
+		case "zsh":
+			return rootCmd.GenZshCompletion(os.Stdout)
+		case "fish":
+			return rootCmd.GenFishCompletion(os.Stdout, true)
+		case "powershell":
+			return rootCmd.GenPowerShellCompletionWithDesc(os.Stdout)
+		}
+		return nil
+	},
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "spire: %s\n", err)
 		os.Exit(1)
 	}
-}
-
-// extractTowerFlag removes --tower <name> from os.Args and sets SPIRE_TOWER env.
-// This allows any spire command to target a specific tower regardless of CWD or ActiveTower config.
-func extractTowerFlag() {
-	for i := 1; i < len(os.Args); i++ {
-		if os.Args[i] == "--tower" && i+1 < len(os.Args) {
-			os.Setenv("SPIRE_TOWER", os.Args[i+1])
-			os.Args = append(os.Args[:i], os.Args[i+2:]...)
-			return
-		}
-		if strings.HasPrefix(os.Args[i], "--tower=") {
-			os.Setenv("SPIRE_TOWER", strings.TrimPrefix(os.Args[i], "--tower="))
-			os.Args = append(os.Args[:i], os.Args[i+1:]...)
-			return
-		}
-	}
-}
-
-func printUsage() {
-	fmt.Println(`Usage: spire <command> [args]
-
-Global flags:
-  --tower <name>        Override active tower for this command
-
-Setup:
-  tower create          Create a new tower (--name, --dolthub, --prefix)
-  tower attach          Clone a tower from DoltHub (<url> [--name])
-  tower list            List configured towers
-  tower use <name>      Set the active tower
-  repo add [path]       Register a repo under a tower (--prefix, --repo-url, --branch)
-  repo list             List registered repos (--json)
-  repo remove <prefix>  Remove a repo
-  config <get|set|list> Read/write config values and credentials
-  doctor [--fix]        Health checks and auto-repair
-
-Sync:
-  push [url]            Push local database to DoltHub
-  pull [url]            Pull from DoltHub (fast-forward; --force to overwrite)
-  sync --merge          Three-way merge pull for diverged histories
-
-Lifecycle:
-  up                    Start dolt server + daemon (--interval)
-  down                  Stop daemon (dolt keeps running)
-  shutdown              Stop daemon + dolt server
-  status                Show services, agents, and work queue
-  logs [name]           Tail agent/system logs (--daemon, --dolt)
-
-Work:
-  file <title> [flags]  Create a bead (--prefix, -t type, -p priority)
-  design <title>        Create a design bead (brainstorm/exploration artifact)
-  spec <title> [flags]  Scaffold a spec and file it (--no-file, --break <id>)
-  claim <bead-id>       Pull, verify, claim, push (atomic)
-  close <bead-id>       Force-close a bead (remove phase labels, close molecule steps)
-  advance <bead-id>     Advance bead to next formula phase (or close if at last phase)
-  focus <bead-id>       Assemble read-only context for a task
-  grok <bead-id>        Focus + live Linear context
-  wizard-epic <epic-id>  Execute wizard epic orchestration
-
-Workshop:
-  workshop              Interactive formula exploration
-  workshop list         List available formulas (--custom, --embedded, --json)
-  workshop show <name>  Display formula with phase diagram
-  workshop validate <name>  Validate formula syntax and logic
-  workshop compose      Interactive formula builder
-  workshop dry-run <name>   Simulate formula execution (--json, --bead <id>)
-  workshop test <name>  Dry-run with full bead context (--bead <id>)
-  workshop publish <name>   Copy formula to tower's .beads/formulas/
-  workshop unpublish <name> Remove published formula
-
-Agents:
-  summon [n]            Summon wizards (--targets <ids>, --auto)
-  resummon <bead-id>    Clear timer + needs-human, re-summon wizard
-  dismiss [n]           Dismiss wizards (--all)
-  roster                List work by epic and agent status
-
-Messaging:
-  send <to> <message>   Send a message (--ref, --thread, --priority)
-  collect [name]        Check inbox for messages (DB query)
-  inbox [name]          Read local inbox file (--check, --watch, --json)
-  read <bead-id>        Mark a message as read
-
-Observability:
-  board [flags]         Interactive board TUI (--mine, --ready, --json)
-  trace <bead-id>       Execution DAG timeline (--json, --follow)
-  watch                 Live-updating activity view
-  metrics [flags]       Agent run metrics (--bead, --model, --json)
-  alert [bead-id]       Alert on bead state changes
-
-Advanced:
-  register <name>       Register an agent identity
-  unregister <name>     Unregister an agent identity
-  daemon                Run sync daemon (--interval, --once)
-  steward               Run work coordinator (--once, --dry-run)
-  serve                 Run webhook receiver (--port)
-  connect <service>     Connect an integration (linear)
-  disconnect <service>  Disconnect an integration
-
-  version               Print version
-  help                  Show this help`)
 }

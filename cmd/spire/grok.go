@@ -6,12 +6,22 @@ import (
 
 	"github.com/awell-health/spire/pkg/integration"
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
 
 // LinearIssue is a type alias for integration.LinearIssue, kept for backward
 // compatibility with callers in cmd/spire that reference the type.
 type LinearIssue = integration.LinearIssue
+
+var grokCmd = &cobra.Command{
+	Use:   "grok <bead-id>",
+	Short: "Focus + live Linear context",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdGrok(args)
+	},
+}
 
 // linearAPIKey delegates to pkg/integration.
 func linearAPIKey() string {

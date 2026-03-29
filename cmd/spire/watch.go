@@ -10,7 +10,30 @@ import (
 
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/spf13/cobra"
 )
+
+var watchCmd = &cobra.Command{
+	Use:   "watch [epic-id]",
+	Short: "Live-updating activity view",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("interval"); v != "" {
+			fullArgs = append(fullArgs, "--interval", v)
+		}
+		if once, _ := cmd.Flags().GetBool("once"); once {
+			fullArgs = append(fullArgs, "--once")
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdWatch(fullArgs)
+	},
+}
+
+func init() {
+	watchCmd.Flags().String("interval", "", "Refresh interval (e.g. 5s)")
+	watchCmd.Flags().Bool("once", false, "Print once and exit")
+}
 
 func cmdWatch(args []string) error {
 	if d := resolveBeadsDir(); d != "" {

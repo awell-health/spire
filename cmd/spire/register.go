@@ -4,8 +4,27 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
+
+var registerCmd = &cobra.Command{
+	Use:   "register <name> [context]",
+	Short: "Register an agent identity",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdRegister(args)
+	},
+}
+
+var unregisterCmd = &cobra.Command{
+	Use:   "unregister <name>",
+	Short: "Unregister an agent identity",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdUnregister(args)
+	},
+}
 
 func cmdRegister(args []string) error {
 	if len(args) < 1 {

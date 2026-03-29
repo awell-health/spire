@@ -12,7 +12,28 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/steward"
+	"github.com/spf13/cobra"
 )
+
+var daemonCmd = &cobra.Command{
+	Use:   "daemon",
+	Short: "Run sync daemon (--interval, --once)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("interval"); v != "" {
+			fullArgs = append(fullArgs, "--interval", v)
+		}
+		if once, _ := cmd.Flags().GetBool("once"); once {
+			fullArgs = append(fullArgs, "--once")
+		}
+		return cmdDaemon(fullArgs)
+	},
+}
+
+func init() {
+	daemonCmd.Flags().String("interval", "", "Sync interval (e.g. 2m, 30s)")
+	daemonCmd.Flags().Bool("once", false, "Run one cycle and exit")
+}
 
 // daemonDB is kept here for backward compatibility with doltSQL() in
 // integration_bridge.go. pkg/steward sets steward.DaemonDB directly.

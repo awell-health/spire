@@ -13,7 +13,31 @@ import (
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/metrics"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/spf13/cobra"
 )
+
+var executeCmd = &cobra.Command{
+	Use:    "execute <bead-id> [flags]",
+	Short:  "Internal: run formula executor",
+	Hidden: true,
+	Args:   cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		fullArgs = append(fullArgs, args...)
+		if v, _ := cmd.Flags().GetString("name"); v != "" {
+			fullArgs = append(fullArgs, "--name", v)
+		}
+		if v, _ := cmd.Flags().GetString("formula"); v != "" {
+			fullArgs = append(fullArgs, "--formula", v)
+		}
+		return cmdExecute(fullArgs)
+	},
+}
+
+func init() {
+	executeCmd.Flags().String("name", "", "Agent name override")
+	executeCmd.Flags().String("formula", "", "Formula name override")
+}
 
 // --- Type aliases so existing cmd/spire code compiles unchanged ---
 

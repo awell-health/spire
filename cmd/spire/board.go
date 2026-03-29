@@ -9,8 +9,41 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
+
+var boardCmd = &cobra.Command{
+	Use:   "board",
+	Short: "Interactive board TUI (--mine, --ready, --json)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if mine, _ := cmd.Flags().GetBool("mine"); mine {
+			fullArgs = append(fullArgs, "--mine")
+		}
+		if ready, _ := cmd.Flags().GetBool("ready"); ready {
+			fullArgs = append(fullArgs, "--ready")
+		}
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		if v, _ := cmd.Flags().GetString("interval"); v != "" {
+			fullArgs = append(fullArgs, "--interval", v)
+		}
+		if v, _ := cmd.Flags().GetString("epic"); v != "" {
+			fullArgs = append(fullArgs, "--epic", v)
+		}
+		return cmdBoard(fullArgs)
+	},
+}
+
+func init() {
+	boardCmd.Flags().Bool("mine", false, "Show only my beads")
+	boardCmd.Flags().Bool("ready", false, "Show only ready beads")
+	boardCmd.Flags().Bool("json", false, "Output as JSON")
+	boardCmd.Flags().String("interval", "", "Refresh interval (e.g. 5s)")
+	boardCmd.Flags().String("epic", "", "Filter by epic bead ID")
+}
 
 func cmdBoard(args []string) error {
 	if d := resolveBeadsDir(); d != "" {

@@ -8,9 +8,141 @@ import (
 
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/workshop"
+	"github.com/spf13/cobra"
 )
 
-// cmdWorkshop dispatches workshop subcommands.
+var workshopCmd = &cobra.Command{
+	Use:   "workshop",
+	Short: "Interactive formula exploration",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// If no subcommand, drop into interactive mode
+		if d := resolveBeadsDir(); d != "" {
+			os.Setenv("BEADS_DIR", d)
+		}
+		return workshop.Interactive()
+	},
+}
+
+var workshopListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available formulas",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if custom, _ := cmd.Flags().GetBool("custom"); custom {
+			fullArgs = append(fullArgs, "--custom")
+		}
+		if embedded, _ := cmd.Flags().GetBool("embedded"); embedded {
+			fullArgs = append(fullArgs, "--embedded")
+		}
+		if all, _ := cmd.Flags().GetBool("all"); all {
+			fullArgs = append(fullArgs, "--all")
+		}
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		return cmdWorkshopList(fullArgs)
+	},
+}
+
+var workshopShowCmd = &cobra.Command{
+	Use:     "show <name>",
+	Aliases: []string{"describe"},
+	Short:   "Display formula with phase diagram",
+	Args:    cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWorkshopShow(args)
+	},
+}
+
+var workshopValidateCmd = &cobra.Command{
+	Use:   "validate <name>",
+	Short: "Validate a formula",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWorkshopValidate(args)
+	},
+}
+
+var workshopComposeCmd = &cobra.Command{
+	Use:   "compose",
+	Short: "Interactive formula builder",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWorkshopCompose(args)
+	},
+}
+
+var workshopDryRunCmd = &cobra.Command{
+	Use:   "dry-run <name>",
+	Short: "Simulate formula execution (--json, --bead <id>)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		if v, _ := cmd.Flags().GetString("bead"); v != "" {
+			fullArgs = append(fullArgs, "--bead", v)
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdWorkshopDryRun(fullArgs)
+	},
+}
+
+var workshopTestCmd = &cobra.Command{
+	Use:   "test <name>",
+	Short: "Dry-run with full bead context (--bead <id>)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		if v, _ := cmd.Flags().GetString("bead"); v != "" {
+			fullArgs = append(fullArgs, "--bead", v)
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdWorkshopTest(fullArgs)
+	},
+}
+
+var workshopPublishCmd = &cobra.Command{
+	Use:   "publish <name>",
+	Short: "Copy formula to tower's .beads/formulas/",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWorkshopPublish(args)
+	},
+}
+
+var workshopUnpublishCmd = &cobra.Command{
+	Use:   "unpublish <name>",
+	Short: "Remove published formula",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWorkshopUnpublish(args)
+	},
+}
+
+func init() {
+	workshopListCmd.Flags().Bool("custom", false, "Show only custom formulas")
+	workshopListCmd.Flags().Bool("embedded", false, "Show only embedded formulas")
+	workshopListCmd.Flags().Bool("all", false, "Show all formulas")
+	workshopListCmd.Flags().Bool("json", false, "Output as JSON")
+
+	workshopDryRunCmd.Flags().Bool("json", false, "Output as JSON")
+	workshopDryRunCmd.Flags().String("bead", "", "Bead ID for context")
+
+	workshopTestCmd.Flags().Bool("json", false, "Output as JSON")
+	workshopTestCmd.Flags().String("bead", "", "Bead ID (required)")
+
+	workshopCmd.AddCommand(
+		workshopListCmd, workshopShowCmd, workshopValidateCmd,
+		workshopComposeCmd, workshopDryRunCmd, workshopTestCmd,
+		workshopPublishCmd, workshopUnpublishCmd,
+	)
+}
+
+// cmdWorkshop dispatches workshop subcommands (kept for backward compat).
 func cmdWorkshop(args []string) error {
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)

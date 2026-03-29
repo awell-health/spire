@@ -10,7 +10,30 @@ import (
 
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/spf13/cobra"
 )
+
+var resetCmd = &cobra.Command{
+	Use:   "reset <bead-id> [flags]",
+	Short: "Reset a bead's wizard state",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		fullArgs = append(fullArgs, args...)
+		if hard, _ := cmd.Flags().GetBool("hard"); hard {
+			fullArgs = append(fullArgs, "--hard")
+		}
+		if v, _ := cmd.Flags().GetString("to"); v != "" {
+			fullArgs = append(fullArgs, "--to", v)
+		}
+		return cmdReset(fullArgs)
+	},
+}
+
+func init() {
+	resetCmd.Flags().Bool("hard", false, "Hard reset (delete worktree and state)")
+	resetCmd.Flags().String("to", "", "Reset to a specific phase")
+}
 
 func cmdReset(args []string) error {
 	if len(args) == 0 {

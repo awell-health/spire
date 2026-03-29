@@ -13,6 +13,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
 
@@ -20,6 +21,56 @@ import (
 
 type wizardRegistry = agent.Registry
 type localWizard = agent.Entry
+
+var summonCmd = &cobra.Command{
+	Use:   "summon <N> [flags]",
+	Short: "Summon wizards (--targets <ids>, --auto)",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("targets"); v != "" {
+			fullArgs = append(fullArgs, "--targets", v)
+		}
+		if v, _ := cmd.Flags().GetString("target"); v != "" {
+			// Alias: --target maps to --targets
+			fullArgs = append(fullArgs, "--targets", v)
+		}
+		if auto, _ := cmd.Flags().GetBool("auto"); auto {
+			fullArgs = append(fullArgs, "--auto")
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdSummon(fullArgs)
+	},
+}
+
+var dismissCmd = &cobra.Command{
+	Use:   "dismiss <N|--all> [flags]",
+	Short: "Dismiss wizards (--all, --targets)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if all, _ := cmd.Flags().GetBool("all"); all {
+			fullArgs = append(fullArgs, "--all")
+		}
+		if v, _ := cmd.Flags().GetString("targets"); v != "" {
+			fullArgs = append(fullArgs, "--targets", v)
+		}
+		if v, _ := cmd.Flags().GetString("target"); v != "" {
+			fullArgs = append(fullArgs, "--targets", v)
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdDismiss(fullArgs)
+	},
+}
+
+func init() {
+	summonCmd.Flags().String("targets", "", "Comma-separated bead IDs to target")
+	summonCmd.Flags().String("target", "", "Alias for --targets")
+	summonCmd.Flags().Bool("auto", false, "Auto mode")
+
+	dismissCmd.Flags().Bool("all", false, "Dismiss all wizards")
+	dismissCmd.Flags().String("targets", "", "Comma-separated bead IDs to dismiss")
+	dismissCmd.Flags().String("target", "", "Alias for --targets")
+}
 
 // --- Registry function wrappers ---
 

@@ -5,8 +5,41 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
+
+var sendCmd = &cobra.Command{
+	Use:   "send <to> <message> [flags]",
+	Short: "Send a message (--ref, --thread, --priority)",
+	Args:  cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Reconstruct args with flags for existing parser
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("as"); v != "" {
+			fullArgs = append(fullArgs, "--as", v)
+		}
+		if v, _ := cmd.Flags().GetString("ref"); v != "" {
+			fullArgs = append(fullArgs, "--ref", v)
+		}
+		if v, _ := cmd.Flags().GetString("thread"); v != "" {
+			fullArgs = append(fullArgs, "--thread", v)
+		}
+		if cmd.Flags().Changed("priority") {
+			p, _ := cmd.Flags().GetInt("priority")
+			fullArgs = append(fullArgs, "-p", strconv.Itoa(p))
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdSend(fullArgs)
+	},
+}
+
+func init() {
+	sendCmd.Flags().String("as", "", "Override sender identity")
+	sendCmd.Flags().String("ref", "", "Bead ID reference")
+	sendCmd.Flags().String("thread", "", "Parent thread ID")
+	sendCmd.Flags().IntP("priority", "p", 3, "Priority (0-4)")
+}
 
 func cmdSend(args []string) error {
 	asFlag, args := parseAsFlag(args)

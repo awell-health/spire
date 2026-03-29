@@ -8,7 +8,43 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/spf13/cobra"
 )
+
+var logsCmd = &cobra.Command{
+	Use:   "logs [name]",
+	Short: "Tail agent/system logs (--daemon, --dolt)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if daemon, _ := cmd.Flags().GetBool("daemon"); daemon {
+			fullArgs = append(fullArgs, "--daemon")
+		}
+		if dolt, _ := cmd.Flags().GetBool("dolt"); dolt {
+			fullArgs = append(fullArgs, "--dolt")
+		}
+		if steward, _ := cmd.Flags().GetBool("steward"); steward {
+			fullArgs = append(fullArgs, "--steward")
+		}
+		if cmd.Flags().Changed("lines") {
+			n, _ := cmd.Flags().GetInt("lines")
+			fullArgs = append(fullArgs, "--lines", strconv.Itoa(n))
+		}
+		if noFollow, _ := cmd.Flags().GetBool("no-follow"); noFollow {
+			fullArgs = append(fullArgs, "--no-follow")
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdLogs(fullArgs)
+	},
+}
+
+func init() {
+	logsCmd.Flags().Bool("daemon", false, "Tail the daemon log")
+	logsCmd.Flags().Bool("dolt", false, "Tail the dolt server log")
+	logsCmd.Flags().Bool("steward", false, "Tail the steward log")
+	logsCmd.Flags().IntP("lines", "n", 50, "Number of historical lines to show")
+	logsCmd.Flags().Bool("no-follow", false, "Print lines and exit (don't follow)")
+}
 
 func cmdLogs(args []string) error {
 	// Parse flags.

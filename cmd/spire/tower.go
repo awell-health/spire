@@ -14,6 +14,7 @@ import (
 	bdpkg "github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/spf13/cobra"
 )
 
 // --- Type aliases so existing cmd/spire code compiles unchanged ---
@@ -279,7 +280,74 @@ func ensureCustomBeadTypes(beadsDir string) error {
 	return client.ConfigSet("types.custom", strings.Join(types, ","))
 }
 
-// cmdTower dispatches tower subcommands.
+var towerCmd = &cobra.Command{
+	Use:   "tower",
+	Short: "Manage towers",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdTowerList()
+	},
+}
+
+var towerCreateCmd = &cobra.Command{
+	Use:   "create",
+	Short: "Create a new tower",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("name"); v != "" {
+			fullArgs = append(fullArgs, "--name", v)
+		}
+		if v, _ := cmd.Flags().GetString("dolthub"); v != "" {
+			fullArgs = append(fullArgs, "--dolthub", v)
+		}
+		if v, _ := cmd.Flags().GetString("prefix"); v != "" {
+			fullArgs = append(fullArgs, "--prefix", v)
+		}
+		return cmdTowerCreate(fullArgs)
+	},
+}
+
+var towerAttachCmd = &cobra.Command{
+	Use:   "attach <dolthub-url>",
+	Short: "Clone a tower from DoltHub",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fullArgs := []string{args[0]}
+		if v, _ := cmd.Flags().GetString("name"); v != "" {
+			fullArgs = append(fullArgs, "--name", v)
+		}
+		return cmdTowerAttach(fullArgs)
+	},
+}
+
+var towerListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List configured towers",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdTowerList()
+	},
+}
+
+var towerUseCmd = &cobra.Command{
+	Use:   "use <name>",
+	Short: "Set the active tower",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdTowerUse(args[0])
+	},
+}
+
+func init() {
+	towerCreateCmd.Flags().String("name", "", "Tower name (required)")
+	towerCreateCmd.Flags().String("dolthub", "", "DoltHub remote (user/repo)")
+	towerCreateCmd.Flags().String("prefix", "", "Hub prefix")
+
+	towerAttachCmd.Flags().String("name", "", "Local name override")
+
+	towerCmd.AddCommand(towerCreateCmd, towerAttachCmd, towerListCmd, towerUseCmd)
+}
+
+// cmdTower dispatches tower subcommands (kept for backward compat with tests).
 func cmdTower(args []string) error {
 	if len(args) == 0 {
 		return cmdTowerList()

@@ -7,8 +7,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
+
+var resummonCmd = &cobra.Command{
+	Use:   "resummon <bead-id>",
+	Short: "Clear timer + needs-human, re-summon wizard",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdResummon(args)
+	},
+}
 
 func cmdResummon(args []string) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {

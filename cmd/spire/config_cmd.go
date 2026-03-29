@@ -7,7 +7,30 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/spf13/cobra"
 )
+
+var configCmd = &cobra.Command{
+	Use:   "config <get|set|list|repo> [key] [value]",
+	Short: "Read/write config values and credentials",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if repo, _ := cmd.Flags().GetBool("repo"); repo {
+			fullArgs = append(fullArgs, "--repo")
+		}
+		if unmask, _ := cmd.Flags().GetBool("unmask"); unmask {
+			fullArgs = append(fullArgs, "--unmask")
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdConfig(fullArgs)
+	},
+}
+
+func init() {
+	configCmd.Flags().Bool("repo", false, "Print resolved spire.yaml")
+	configCmd.Flags().Bool("unmask", false, "Show full credential values")
+}
 
 func cmdConfig(args []string) error {
 	if len(args) == 0 {

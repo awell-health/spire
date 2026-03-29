@@ -5,7 +5,44 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
+
+var designCmd = &cobra.Command{
+	Use:   "design <title> [flags]",
+	Short: "Create a design bead (brainstorm/exploration artifact)",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if cmd.Flags().Changed("priority") {
+			p, _ := cmd.Flags().GetInt("priority")
+			fullArgs = append(fullArgs, "-p", strconv.Itoa(p))
+		}
+		if v, _ := cmd.Flags().GetString("description"); v != "" {
+			fullArgs = append(fullArgs, "-d", v)
+		}
+		if v, _ := cmd.Flags().GetString("parent"); v != "" {
+			fullArgs = append(fullArgs, "--parent", v)
+		}
+		if v, _ := cmd.Flags().GetString("prefix"); v != "" {
+			fullArgs = append(fullArgs, "--prefix", v)
+		}
+		if v, _ := cmd.Flags().GetString("label"); v != "" {
+			fullArgs = append(fullArgs, "--label", v)
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdDesign(fullArgs)
+	},
+}
+
+func init() {
+	designCmd.Flags().IntP("priority", "p", 3, "Priority (0-4)")
+	designCmd.Flags().StringP("description", "d", "", "Description")
+	designCmd.Flags().String("parent", "", "Parent bead ID")
+	designCmd.Flags().String("prefix", "", "Repo prefix")
+	designCmd.Flags().String("label", "", "Comma-separated labels")
+}
 
 // cmdDesign creates a design bead — a thinking artifact for brainstorming
 // and exploration. Design beads capture the "why" and "why not" before

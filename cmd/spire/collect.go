@@ -6,8 +6,31 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
+
+var collectCmd = &cobra.Command{
+	Use:   "collect [name]",
+	Short: "Check inbox for messages (DB query)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		if v, _ := cmd.Flags().GetString("as"); v != "" {
+			fullArgs = append(fullArgs, "--as", v)
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdCollect(fullArgs)
+	},
+}
+
+func init() {
+	collectCmd.Flags().Bool("json", false, "Output as JSON")
+	collectCmd.Flags().String("as", "", "Override identity")
+}
 
 func cmdCollect(args []string) error {
 	if d := resolveBeadsDir(); d != "" {

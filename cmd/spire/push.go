@@ -6,7 +6,17 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/spf13/cobra"
 )
+
+var pushCmd = &cobra.Command{
+	Use:   "push [url]",
+	Short: "Push local database to DoltHub",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdPush(args)
+	},
+}
 
 func cmdPush(args []string) error {
 	remoteURL := ""

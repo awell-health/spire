@@ -7,7 +7,33 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/spf13/cobra"
 )
+
+var upCmd = &cobra.Command{
+	Use:   "up",
+	Short: "Start dolt server + daemon (--interval)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("interval"); v != "" {
+			fullArgs = append(fullArgs, "--interval", v)
+		}
+		if steward, _ := cmd.Flags().GetBool("steward"); steward {
+			fullArgs = append(fullArgs, "--steward")
+		}
+		if v, _ := cmd.Flags().GetString("backend"); v != "" {
+			fullArgs = append(fullArgs, "--backend", v)
+		}
+		return cmdUp(fullArgs)
+	},
+}
+
+func init() {
+	upCmd.Flags().String("interval", "", "Daemon sync interval (e.g. 2m)")
+	upCmd.Flags().Bool("steward", false, "Also start the steward")
+	upCmd.Flags().String("backend", "", "Agent backend: process, docker, or k8s")
+}
 
 func cmdUp(args []string) error {
 	// Parse flags

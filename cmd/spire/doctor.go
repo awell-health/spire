@@ -12,7 +12,24 @@ import (
 	bdpkg "github.com/awell-health/spire/pkg/bd"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/spf13/cobra"
 )
+
+var doctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Health checks and auto-repair",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if fix, _ := cmd.Flags().GetBool("fix"); fix {
+			fullArgs = append(fullArgs, "--fix")
+		}
+		return cmdDoctor(fullArgs)
+	},
+}
+
+func init() {
+	doctorCmd.Flags().Bool("fix", false, "Auto-fix issues")
+}
 
 // checkStatus represents the result of a single doctor check.
 type checkStatus int

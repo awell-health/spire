@@ -14,7 +14,48 @@ import (
 
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward"
+	"github.com/spf13/cobra"
 )
+
+var stewardCmd = &cobra.Command{
+	Use:   "steward",
+	Short: "Run work coordinator (--once, --dry-run)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("interval"); v != "" {
+			fullArgs = append(fullArgs, "--interval", v)
+		}
+		if v, _ := cmd.Flags().GetString("stale-threshold"); v != "" {
+			fullArgs = append(fullArgs, "--stale-threshold", v)
+		}
+		if once, _ := cmd.Flags().GetBool("once"); once {
+			fullArgs = append(fullArgs, "--once")
+		}
+		if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+			fullArgs = append(fullArgs, "--dry-run")
+		}
+		if noAssign, _ := cmd.Flags().GetBool("no-assign"); noAssign {
+			fullArgs = append(fullArgs, "--no-assign")
+		}
+		if v, _ := cmd.Flags().GetString("backend"); v != "" {
+			fullArgs = append(fullArgs, "--backend", v)
+		}
+		if v, _ := cmd.Flags().GetString("agents"); v != "" {
+			fullArgs = append(fullArgs, "--agents", v)
+		}
+		return cmdSteward(fullArgs)
+	},
+}
+
+func init() {
+	stewardCmd.Flags().String("interval", "", "Cycle interval (e.g. 2m, 30s)")
+	stewardCmd.Flags().String("stale-threshold", "", "Stale agent threshold")
+	stewardCmd.Flags().Bool("once", false, "Run one cycle and exit")
+	stewardCmd.Flags().Bool("dry-run", false, "Print actions without executing")
+	stewardCmd.Flags().Bool("no-assign", false, "Skip sending assignment messages")
+	stewardCmd.Flags().String("backend", "", "Agent backend: process, docker, or k8s")
+	stewardCmd.Flags().String("agents", "", "Comma-separated agent names")
+}
 
 // agentNames delegates to pkg/steward for backward compatibility.
 func agentNames(agents []AgentInfo, override []string) []string {

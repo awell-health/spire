@@ -1,6 +1,19 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+var readCmd = &cobra.Command{
+	Use:   "read <bead-id>",
+	Short: "Mark a message as read",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdRead(args)
+	},
+}
 
 func cmdRead(args []string) error {
 	if len(args) < 1 {

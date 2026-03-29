@@ -4,7 +4,32 @@ import (
 	"fmt"
 
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/spf13/cobra"
 )
+
+var metricsCmd = &cobra.Command{
+	Use:   "metrics",
+	Short: "Agent run metrics (--bead, --model, --json)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		if model, _ := cmd.Flags().GetBool("model"); model {
+			fullArgs = append(fullArgs, "--model")
+		}
+		if v, _ := cmd.Flags().GetString("bead"); v != "" {
+			fullArgs = append(fullArgs, "--bead", v)
+		}
+		return cmdMetrics(fullArgs)
+	},
+}
+
+func init() {
+	metricsCmd.Flags().Bool("json", false, "Output as JSON")
+	metricsCmd.Flags().Bool("model", false, "Show model breakdown")
+	metricsCmd.Flags().String("bead", "", "Show metrics for a specific bead")
+}
 
 func cmdMetrics(args []string) error {
 	var (

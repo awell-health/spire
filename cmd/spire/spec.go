@@ -6,9 +6,46 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
+
+var specCmd = &cobra.Command{
+	Use:   "spec <title> [flags]",
+	Short: "Scaffold a spec and file it (--no-file, --break <id>)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("type"); v != "" {
+			fullArgs = append(fullArgs, "-t", v)
+		}
+		if cmd.Flags().Changed("priority") {
+			p, _ := cmd.Flags().GetInt("priority")
+			fullArgs = append(fullArgs, "-p", strconv.Itoa(p))
+		}
+		if noFile, _ := cmd.Flags().GetBool("no-file"); noFile {
+			fullArgs = append(fullArgs, "--no-file")
+		}
+		if v, _ := cmd.Flags().GetString("break"); v != "" {
+			fullArgs = append(fullArgs, "--break", v)
+		}
+		if v, _ := cmd.Flags().GetString("dir"); v != "" {
+			fullArgs = append(fullArgs, "--dir", v)
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdSpec(fullArgs)
+	},
+}
+
+func init() {
+	specCmd.Flags().StringP("type", "t", "epic", "Bead type")
+	specCmd.Flags().IntP("priority", "p", 2, "Priority (0-4)")
+	specCmd.Flags().Bool("no-file", false, "Don't create a bead, just write the spec file")
+	specCmd.Flags().String("break", "", "Bead ID to break down")
+	specCmd.Flags().String("dir", "", "Output directory for spec file")
+}
 
 var specTemplate = `# Spec: %s
 

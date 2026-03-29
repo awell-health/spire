@@ -6,7 +6,26 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/spf13/cobra"
 )
+
+var pullCmd = &cobra.Command{
+	Use:   "pull [url]",
+	Short: "Pull from DoltHub (fast-forward; --force to overwrite)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if force, _ := cmd.Flags().GetBool("force"); force {
+			fullArgs = append(fullArgs, "--force")
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdPull(fullArgs)
+	},
+}
+
+func init() {
+	pullCmd.Flags().Bool("force", false, "Force overwrite local changes")
+}
 
 func cmdPull(args []string) error {
 	remoteURL := ""

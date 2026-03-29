@@ -5,8 +5,25 @@ import (
 	"os"
 
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
+
+var statusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show services, agents, and work queue",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		return cmdStatus(fullArgs)
+	},
+}
+
+func init() {
+	statusCmd.Flags().Bool("json", false, "Output as JSON")
+}
 
 func cmdStatus(args []string) error {
 	// Parse flags.

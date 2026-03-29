@@ -6,8 +6,18 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
+
+var focusCmd = &cobra.Command{
+	Use:   "focus <bead-id>",
+	Short: "Assemble read-only context for a task",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdFocus(args)
+	},
+}
 
 func cmdFocus(args []string) error {
 	if err := requireDolt(); err != nil {

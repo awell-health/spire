@@ -8,7 +8,42 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
 	"github.com/awell-health/spire/pkg/steward"
+	"github.com/spf13/cobra"
 )
+
+var connectCmd = &cobra.Command{
+	Use:   "connect <service>",
+	Short: "Connect an integration (linear)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdConnect(args)
+	},
+}
+
+var disconnectCmd = &cobra.Command{
+	Use:   "disconnect <service>",
+	Short: "Disconnect an integration",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdDisconnect(args)
+	},
+}
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Run webhook receiver (--port)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("port"); v != "" {
+			fullArgs = append(fullArgs, "--port", v)
+		}
+		return cmdServe(fullArgs)
+	},
+}
+
+func init() {
+	serveCmd.Flags().String("port", "8080", "Port to listen on")
+}
 
 func init() {
 	// Wire store callbacks

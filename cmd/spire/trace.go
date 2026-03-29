@@ -7,12 +7,49 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/awell-health/spire/pkg/board"
+	"github.com/spf13/cobra"
 )
+
+var traceCmd = &cobra.Command{
+	Use:   "trace [bead-id]",
+	Short: "Execution DAG timeline (--json, --follow)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			fullArgs = append(fullArgs, "--json")
+		}
+		if follow, _ := cmd.Flags().GetBool("follow"); follow {
+			fullArgs = append(fullArgs, "--follow")
+		}
+		if v, _ := cmd.Flags().GetString("interval"); v != "" {
+			fullArgs = append(fullArgs, "--interval", v)
+		}
+		if cmd.Flags().Changed("log-lines") {
+			n, _ := cmd.Flags().GetInt("log-lines")
+			fullArgs = append(fullArgs, "--log-lines", strconv.Itoa(n))
+		}
+		if noLog, _ := cmd.Flags().GetBool("no-log"); noLog {
+			fullArgs = append(fullArgs, "--no-log")
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdTrace(fullArgs)
+	},
+}
+
+func init() {
+	traceCmd.Flags().Bool("json", false, "Output as JSON")
+	traceCmd.Flags().BoolP("follow", "f", false, "Follow mode")
+	traceCmd.Flags().String("interval", "", "Refresh interval for follow mode")
+	traceCmd.Flags().Int("log-lines", 15, "Number of log lines to show")
+	traceCmd.Flags().Bool("no-log", false, "Suppress log output")
+}
 
 // traceData holds the assembled trace for a bead, used for both rendering and JSON output.
 type traceData struct {
