@@ -1,0 +1,219 @@
+package executor
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestMapResultValue(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"success", "success"},
+		{"test_failure", "test_failure"},
+		{"no_changes", "no_changes"},
+		{"timeout", "timeout"},
+		{"review_rejected", "review_rejected"},
+		{"empty_diff", "empty_diff"},
+		{"error", "error"},
+		{"", "success"},                              // empty → success
+		{"some_unknown_value", "some_unknown_value"},  // passthrough
+	}
+	for _, tt := range tests {
+		t.Run("input_"+tt.input, func(t *testing.T) {
+			got := mapResultValue(tt.input)
+			if got != tt.want {
+				t.Errorf("mapResultValue(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResultFromError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil error", nil, "success"},
+		{"killed signal", errors.New("signal: killed"), "timeout"},
+		{"terminated signal", errors.New("signal: terminated"), "timeout"},
+		{"generic error", errors.New("exit status 1"), "error"},
+		{"compound killed", errors.New("process exited: signal: killed (core dumped)"), "timeout"},
+		{"unrelated error", errors.New("permission denied"), "error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resultFromError(tt.err)
+			if got != tt.want {
+				t.Errorf("resultFromError(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadAgentResult(t *testing.T) {
+	t.Run("no AgentResultDir dep", func(t *testing.T) {
+		e := NewForTest("spi-test", "wizard-test", nil, nil, &Deps{})
+		got := e.readAgentResult("agent-foo")
+		if got != nil {
+			t.Errorf("expected nil when AgentResultDir is nil, got %+v", got)
+		}
+	})
+
+	t.Run("dir returns empty", func(t *testing.T) {
+		deps := &Deps{
+			AgentResultDir: func(name string) string { return "" },
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		got := e.readAgentResult("agent-foo")
+		if got != nil {
+			t.Errorf("expected nil when dir is empty, got %+v", got)
+		}
+	})
+
+	t.Run("file does not exist", func(t *testing.T) {
+		dir := t.TempDir()
+		deps := &Deps{
+			AgentResultDir: func(name string) string { return dir },
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		got := e.readAgentResult("agent-foo")
+		if got != nil {
+			t.Errorf("expected nil when result.json missing, got %+v", got)
+		}
+	})
+
+	t.Run("malformed JSON logs warning", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "result.json"), []byte("{bad json"), 0644)
+
+		var logged string
+		deps := &Deps{
+			AgentResultDir: func(name string) string { return dir },
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		e.log = func(fmt string, args ...interface{}) {
+			logged = fmt
+		}
+
+		got := e.readAgentResult("agent-foo")
+		if got != nil {
+			t.Errorf("expected nil on malformed JSON, got %+v", got)
+		}
+		if !strings.Contains(logged, "failed to parse") {
+			t.Errorf("expected warning log about parse failure, got %q", logged)
+		}
+	})
+
+	t.Run("valid result.json", func(t *testing.T) {
+		dir := t.TempDir()
+		ar := agentResultJSON{
+			Result:       "test_failure",
+			Branch:       "feat/spi-xyz",
+			Commit:       "abc123",
+			ElapsedS:     42,
+			TotalTokens:  5000,
+			ContextIn:    3000,
+			ContextOut:   2000,
+			FilesChanged: 3,
+			LinesAdded:   100,
+			LinesRemoved: 20,
+			Turns:        5,
+		}
+		data, _ := json.Marshal(ar)
+		os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+
+		deps := &Deps{
+			AgentResultDir: func(name string) string { return dir },
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+
+		got := e.readAgentResult("agent-foo")
+		if got == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if got.Result != "test_failure" {
+			t.Errorf("Result = %q, want %q", got.Result, "test_failure")
+		}
+		if got.TotalTokens != 5000 {
+			t.Errorf("TotalTokens = %d, want 5000", got.TotalTokens)
+		}
+		if got.FilesChanged != 3 {
+			t.Errorf("FilesChanged = %d, want 3", got.FilesChanged)
+		}
+		if got.Turns != 5 {
+			t.Errorf("Turns = %d, want 5", got.Turns)
+		}
+	})
+}
+
+func TestGitDiffStats(t *testing.T) {
+	t.Run("empty base branch", func(t *testing.T) {
+		fc, la, lr := gitDiffStats("/tmp", "", "feat/branch")
+		if fc != 0 || la != 0 || lr != 0 {
+			t.Errorf("expected zeros for empty base branch, got %d/%d/%d", fc, la, lr)
+		}
+	})
+
+	t.Run("empty feature branch", func(t *testing.T) {
+		fc, la, lr := gitDiffStats("/tmp", "main", "")
+		if fc != 0 || la != 0 || lr != 0 {
+			t.Errorf("expected zeros for empty feature branch, got %d/%d/%d", fc, la, lr)
+		}
+	})
+
+	t.Run("nonexistent repo path", func(t *testing.T) {
+		fc, la, lr := gitDiffStats("/nonexistent/path", "main", "feat/branch")
+		if fc != 0 || la != 0 || lr != 0 {
+			t.Errorf("expected zeros for nonexistent repo, got %d/%d/%d", fc, la, lr)
+		}
+	})
+
+	t.Run("real git repo with diff", func(t *testing.T) {
+		dir := t.TempDir()
+
+		gitRun := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %s failed: %v\n%s", args[0], err, out)
+			}
+		}
+
+		gitRun("init", "-b", "main")
+		gitRun("config", "user.email", "test@test.com")
+		gitRun("config", "user.name", "Test")
+
+		// Initial commit on main
+		os.WriteFile(filepath.Join(dir, "file.txt"), []byte("line1\n"), 0644)
+		gitRun("add", ".")
+		gitRun("commit", "-m", "init")
+
+		// Feature branch with changes
+		gitRun("checkout", "-b", "feat/test")
+		os.WriteFile(filepath.Join(dir, "file.txt"), []byte("line1\nline2\nline3\n"), 0644)
+		os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello\n"), 0644)
+		gitRun("add", ".")
+		gitRun("commit", "-m", "changes")
+
+		fc, la, lr := gitDiffStats(dir, "main", "feat/test")
+		if fc != 2 {
+			t.Errorf("FilesChanged = %d, want 2", fc)
+		}
+		if la != 3 { // 2 new lines in file.txt + 1 in new.txt
+			t.Errorf("LinesAdded = %d, want 3", la)
+		}
+		if lr != 0 {
+			t.Errorf("LinesRemoved = %d, want 0", lr)
+		}
+	})
+}

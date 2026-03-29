@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -95,6 +96,7 @@ func (e *Executor) readAgentResult(agentName string) *agentResultJSON {
 	}
 	var ar agentResultJSON
 	if err := json.Unmarshal(data, &ar); err != nil {
+		e.log("warning: %s/result.json exists but failed to parse: %s", agentName, err)
 		return nil
 	}
 	return &ar
@@ -129,11 +131,15 @@ func resultFromError(err error) string {
 
 // gitDiffStats computes files-changed, lines-added, lines-removed by running
 // git diff --numstat against the base branch. Returns zeros on any failure.
+// Best-effort: uses a 10-second timeout to avoid blocking the recorder if the
+// repo is large or branches don't exist.
 func gitDiffStats(repoPath, baseBranch, featureBranch string) (filesChanged, linesAdded, linesRemoved int) {
 	if baseBranch == "" || featureBranch == "" {
 		return
 	}
-	cmd := exec.Command("git", "diff", "--numstat", baseBranch+"..."+featureBranch)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "diff", "--numstat", baseBranch+"..."+featureBranch)
 	cmd.Dir = repoPath
 	out, err := cmd.Output()
 	if err != nil {
