@@ -5,9 +5,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/awell-health/spire/pkg/agent"
-	"github.com/awell-health/spire/pkg/store"
 )
 
 // --- Test helpers ---
@@ -39,20 +36,6 @@ func keyMsgStr(s string) tea.KeyMsg {
 func updateModel(m Model, msg tea.Msg) Model {
 	result, _ := m.Update(msg)
 	return result.(Model)
-}
-
-// makeBeads creates n BoardBeads with sequential IDs and given status.
-func makeBeads(n int, status, beadType string) []BoardBead {
-	beads := make([]BoardBead, n)
-	for i := range beads {
-		beads[i] = store.BoardBead{
-			ID:     beadType + "-" + string(rune('a'+i)),
-			Title:  beadType + " bead " + string(rune('A'+i)),
-			Status: status,
-			Type:   beadType,
-		}
-	}
-	return beads
 }
 
 // makeModel creates a Model with some columns populated for testing.
@@ -111,7 +94,7 @@ func TestBuildActionMenu(t *testing.T) {
 
 	t.Run("in_progress with wizard", func(t *testing.T) {
 		bead := &BoardBead{ID: "spi-002", Status: "in_progress", Type: "task"}
-		agents := []agent.Entry{{Name: "wizard-spi-002", BeadID: "spi-002"}}
+		agents := []LocalAgent{{Name: "wizard-spi-002", BeadID: "spi-002"}}
 		items := BuildActionMenu(bead, agents)
 
 		expectActions(t, items, []PendingAction{
@@ -167,7 +150,7 @@ func TestBuildActionMenu(t *testing.T) {
 
 	t.Run("shortcut keys are unique", func(t *testing.T) {
 		bead := &BoardBead{ID: "spi-005", Status: "in_progress", Type: "task", Labels: []string{"needs-human"}}
-		agents := []agent.Entry{{Name: "wizard-spi-005", BeadID: "spi-005"}}
+		agents := []LocalAgent{{Name: "wizard-spi-005", BeadID: "spi-005"}}
 		items := BuildActionMenu(bead, agents)
 
 		seen := make(map[rune]string)
