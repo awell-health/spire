@@ -109,9 +109,17 @@ func ListTowerConfigs() ([]TowerConfig, error) {
 	return towers, nil
 }
 
-// ActiveTowerConfig finds the tower for the current working directory
-// by looking up the Instance.Database and matching it to a tower config.
+// ActiveTowerConfig finds the tower for the current context.
+// If SPIRE_TOWER is set in the environment, it loads that tower directly —
+// this ensures subprocess chains (wizard → apprentice) inherit explicit tower
+// context instead of re-resolving from CWD.
+// Otherwise, falls back to CWD-based resolution via Instance.Database matching.
 func ActiveTowerConfig() (*TowerConfig, error) {
+	// Fast path: explicit tower from environment (set by parent spawner).
+	if name := os.Getenv("SPIRE_TOWER"); name != "" {
+		return LoadTowerConfig(name)
+	}
+
 	cwd, err := RealCwd()
 	if err != nil {
 		return nil, err

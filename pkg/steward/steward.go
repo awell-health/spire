@@ -279,6 +279,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 			Name:    agentName,
 			BeadID:  bead.ID,
 			Role:    agent.RoleApprentice,
+			Tower:   towerName,
 			LogPath: filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
 		})
 		if spawnErr != nil {
@@ -293,7 +294,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	}
 
 	// Step 4b: Detect standalone tasks ready for review.
-	DetectReviewReady(cfg.DryRun, cfg.Backend)
+	DetectReviewReady(cfg.DryRun, cfg.Backend, towerName)
 
 	// Step 4c: Detect tasks with review feedback that need wizard re-engagement.
 	DetectReviewFeedback(cfg.DryRun)
@@ -409,7 +410,7 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 //   - It has no active (in_progress) review-round bead (review already running)
 //
 // This replaces the legacy label-based query (review-ready label).
-func DetectReviewReady(dryRun bool, backend agent.Backend) {
+func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string) {
 	inProgress, err := store.ListBeads(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] detectReviewReady: %s", err)
@@ -485,6 +486,7 @@ func DetectReviewReady(dryRun bool, backend agent.Backend) {
 			Name:    reviewerName,
 			BeadID:  b.ID,
 			Role:    agent.RoleSage,
+			Tower:   towerName,
 			LogPath: filepath.Join(dolt.GlobalDir(), "wizards", reviewerName+".log"),
 		})
 		if spawnErr != nil {

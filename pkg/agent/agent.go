@@ -97,6 +97,7 @@ type SpawnConfig struct {
 	Name      string    // Agent name (e.g. "apprentice-spi-1dl-0")
 	BeadID    string    // Bead to work on
 	Role      SpawnRole // What kind of agent to run
+	Tower     string    // Tower name — injected as SPIRE_TOWER into subprocess env
 	ExtraArgs []string  // Additional args (e.g. "--review-fix")
 	LogPath   string    // Output destination (empty = inherit stderr)
 }

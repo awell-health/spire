@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 )
@@ -43,6 +44,21 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 
 	cmd := exec.Command(spireBin, args...)
 	cmd.Env = os.Environ()
+
+	// Inject SPIRE_TOWER into the child's env without mutating the process-global env.
+	if cfg.Tower != "" {
+		found := false
+		for i, e := range cmd.Env {
+			if strings.HasPrefix(e, "SPIRE_TOWER=") {
+				cmd.Env[i] = "SPIRE_TOWER=" + cfg.Tower
+				found = true
+				break
+			}
+		}
+		if !found {
+			cmd.Env = append(cmd.Env, "SPIRE_TOWER="+cfg.Tower)
+		}
+	}
 
 	if cfg.LogPath != "" {
 		os.MkdirAll(filepath.Dir(cfg.LogPath), 0755)

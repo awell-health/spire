@@ -385,17 +385,6 @@ func summonLocal(count int, targetIDs []string) error {
 		// Resolve formula for the bead — best-effort, fall back to default.
 		formulaName := resolveFormulaName(bead)
 
-		handle, err := backend.Spawn(SpawnConfig{
-			Name:      name,
-			BeadID:    bead.ID,
-			Role:      RoleExecutor,
-			LogPath:   filepath.Join(logDir, name+".log"),
-			ExtraArgs: []string{"--formula", formulaName},
-		})
-		if err != nil {
-			return fmt.Errorf("spawn %s: %w", name, err)
-		}
-
 		// Resolve tower for this wizard.
 		towerName := ""
 		if tc, err := activeTowerConfig(); err == nil {
@@ -404,6 +393,18 @@ func summonLocal(count int, targetIDs []string) error {
 			towerName = tName
 		} else if cfg, err := loadConfig(); err == nil && cfg.ActiveTower != "" {
 			towerName = cfg.ActiveTower
+		}
+
+		handle, err := backend.Spawn(SpawnConfig{
+			Name:      name,
+			BeadID:    bead.ID,
+			Role:      RoleExecutor,
+			Tower:     towerName,
+			LogPath:   filepath.Join(logDir, name+".log"),
+			ExtraArgs: []string{"--formula", formulaName},
+		})
+		if err != nil {
+			return fmt.Errorf("spawn %s: %w", name, err)
 		}
 
 		pid, _ := strconv.Atoi(handle.Identifier())

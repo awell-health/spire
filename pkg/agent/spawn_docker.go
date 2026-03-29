@@ -135,10 +135,16 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	}
 
 	// Inherit key environment variables.
-	for _, key := range []string{"BEADS_DIR", "SPIRE_TOWER", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"} {
+	for _, key := range []string{"BEADS_DIR", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"} {
 		if val := os.Getenv(key); val != "" {
 			args = append(args, "-e", fmt.Sprintf("%s=%s", key, val))
 		}
+	}
+	// SPIRE_TOWER: prefer explicit cfg.Tower, fall back to env.
+	if tower := cfg.Tower; tower != "" {
+		args = append(args, "-e", fmt.Sprintf("SPIRE_TOWER=%s", tower))
+	} else if val := os.Getenv("SPIRE_TOWER"); val != "" {
+		args = append(args, "-e", fmt.Sprintf("SPIRE_TOWER=%s", val))
 	}
 
 	// Extra volumes from config.
