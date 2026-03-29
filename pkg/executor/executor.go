@@ -204,6 +204,7 @@ func (e *Executor) Run() error {
 
 		e.log("phase: %s (role: %s)", phase, pc.GetRole())
 		e.saveState()
+		e.touchUpdatedLabel()
 
 		// Dispatch by behavior first (if set), then fall through to role.
 		var err error

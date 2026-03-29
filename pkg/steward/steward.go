@@ -39,6 +39,9 @@ import (
 // GetActiveAttemptFunc is a test-replaceable function for store.GetActiveAttempt.
 var GetActiveAttemptFunc = store.GetActiveAttempt
 
+// ListBeadsFunc is a test-replaceable function for store.ListBeads.
+var ListBeadsFunc = store.ListBeads
+
 // RaiseCorruptedBeadAlertFunc is a test-replaceable function for RaiseCorruptedBeadAlert.
 var RaiseCorruptedBeadAlertFunc = RaiseCorruptedBeadAlert
 
@@ -332,7 +335,7 @@ func BeadsDirForTower(towerName string) string {
 //
 // Returns (staleCount, shutdownCount).
 func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool, backend agent.Backend) (int, int) {
-	inProgress, err := store.ListBeads(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
+	inProgress, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] check health: %s", err)
 		return 0, 0

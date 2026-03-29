@@ -1485,6 +1485,108 @@ func TestBeadClosedExitCleansUpStepBeads(t *testing.T) {
 	}
 }
 
+// --- touchUpdatedLabel tests ---
+
+// TestTouchUpdatedLabel_AddsLabel verifies heartbeat label is written.
+func TestTouchUpdatedLabel_AddsLabel(t *testing.T) {
+	var addedLabels []string
+	var removedLabels []string
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return t.TempDir(), nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress", Labels: []string{}}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string {
+			for _, l := range b.Labels {
+				if len(l) > len(prefix) && l[:len(prefix)] == prefix {
+					return l[len(prefix):]
+				}
+			}
+			return ""
+		},
+		AddLabel: func(id, label string) error {
+			addedLabels = append(addedLabels, label)
+			return nil
+		},
+		RemoveLabel: func(id, label string) error {
+			removedLabels = append(removedLabels, label)
+			return nil
+		},
+	}
+
+	e := NewForTest("spi-heartbeat", "wizard-test", nil, &State{}, deps)
+	e.touchUpdatedLabel()
+
+	if len(addedLabels) != 1 {
+		t.Fatalf("expected 1 AddLabel call, got %d", len(addedLabels))
+	}
+	if len(addedLabels[0]) < len("updated:2006-01-02T") {
+		t.Errorf("label too short: %q", addedLabels[0])
+	}
+	if addedLabels[0][:8] != "updated:" {
+		t.Errorf("label = %q, want updated: prefix", addedLabels[0])
+	}
+	// Verify RFC3339 format
+	ts := addedLabels[0][8:]
+	if _, err := time.Parse(time.RFC3339, ts); err != nil {
+		t.Errorf("timestamp %q is not valid RFC3339: %v", ts, err)
+	}
+	if len(removedLabels) != 0 {
+		t.Errorf("expected no RemoveLabel calls (no prior label), got %v", removedLabels)
+	}
+}
+
+// TestTouchUpdatedLabel_RemovesOldLabel verifies old label is removed before adding new.
+func TestTouchUpdatedLabel_RemovesOldLabel(t *testing.T) {
+	oldTime := "2026-03-29T10:00:00Z"
+	var addedLabels []string
+	var removedLabels []string
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return t.TempDir(), nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress", Labels: []string{"updated:" + oldTime}}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string {
+			for _, l := range b.Labels {
+				if len(l) > len(prefix) && l[:len(prefix)] == prefix {
+					return l[len(prefix):]
+				}
+			}
+			return ""
+		},
+		AddLabel: func(id, label string) error {
+			addedLabels = append(addedLabels, label)
+			return nil
+		},
+		RemoveLabel: func(id, label string) error {
+			removedLabels = append(removedLabels, label)
+			return nil
+		},
+	}
+
+	e := NewForTest("spi-heartbeat2", "wizard-test", nil, &State{}, deps)
+	e.touchUpdatedLabel()
+
+	if len(removedLabels) != 1 {
+		t.Fatalf("expected 1 RemoveLabel call, got %d", len(removedLabels))
+	}
+	if removedLabels[0] != "updated:"+oldTime {
+		t.Errorf("removed = %q, want updated:%s", removedLabels[0], oldTime)
+	}
+	if len(addedLabels) != 1 {
+		t.Fatalf("expected 1 AddLabel call, got %d", len(addedLabels))
+	}
+	if addedLabels[0][:8] != "updated:" {
+		t.Errorf("added label = %q, want updated: prefix", addedLabels[0])
+	}
+	// New label should differ from old
+	if addedLabels[0] == "updated:"+oldTime {
+		t.Error("new timestamp should differ from old")
+	}
+}
+
 // Suppress unused import warnings
 var (
 	_ = os.Getenv

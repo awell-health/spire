@@ -2,6 +2,7 @@ package steward
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
 
 // --- AgentNames tests (replaces loadRoster tests) ---
@@ -367,6 +369,127 @@ func TestRaiseCorruptedBeadAlert_DedupPerBead(t *testing.T) {
 
 	if createCount != 1 {
 		t.Errorf("expected 1 create (only spi-b), got %d", createCount)
+	}
+}
+
+// --- CheckBeadHealth tests ---
+
+// fakeBackend implements agent.Backend for testing.
+type fakeBackend struct {
+	killed []string
+}
+
+func (f *fakeBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) { return nil, nil }
+func (f *fakeBackend) List() ([]agent.Info, error)                       { return nil, nil }
+func (f *fakeBackend) Logs(name string) (io.ReadCloser, error) {
+	return nil, os.ErrNotExist
+}
+func (f *fakeBackend) Kill(name string) error {
+	f.killed = append(f.killed, name)
+	return nil
+}
+
+func TestCheckBeadHealth_StaleIncrementsCount(t *testing.T) {
+	// Bead with updated: label 20 minutes ago.
+	staleTime := time.Now().Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-stale", Title: "stale task", Status: "in_progress", Labels: []string{"updated:" + staleTime}},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) { return nil, nil }
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	backend := &fakeBackend{}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+
+	if staleCount != 1 {
+		t.Errorf("staleCount = %d, want 1", staleCount)
+	}
+	if shutdownCount != 0 {
+		t.Errorf("shutdownCount = %d, want 0", shutdownCount)
+	}
+	if len(backend.killed) != 0 {
+		t.Errorf("expected no kills, got %v", backend.killed)
+	}
+}
+
+func TestCheckBeadHealth_ShutdownKillsAgent(t *testing.T) {
+	// Bead with updated: label 45 minutes ago (beyond shutdown threshold).
+	oldTime := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-old", Title: "old task", Status: "in_progress", Labels: []string{"updated:" + oldTime}},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-old.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-old"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-old" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	backend := &fakeBackend{}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+
+	if shutdownCount != 1 {
+		t.Errorf("shutdownCount = %d, want 1", shutdownCount)
+	}
+	if staleCount != 0 {
+		t.Errorf("staleCount = %d, want 0 (shutdown supersedes stale)", staleCount)
+	}
+	if len(backend.killed) != 1 || backend.killed[0] != "wizard-old" {
+		t.Errorf("killed = %v, want [wizard-old]", backend.killed)
+	}
+}
+
+func TestCheckBeadHealth_NoUpdatedLabelSkipped(t *testing.T) {
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-nolabel", Title: "no label", Status: "in_progress", Labels: []string{}},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	backend := &fakeBackend{}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+
+	if staleCount != 0 || shutdownCount != 0 {
+		t.Errorf("expected 0/0, got stale=%d shutdown=%d", staleCount, shutdownCount)
+	}
+}
+
+func TestCheckBeadHealth_ReviewApprovedSkipped(t *testing.T) {
+	// Bead with review-approved label should be skipped regardless of age.
+	oldTime := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-approved", Title: "approved", Status: "in_progress", Labels: []string{"review-approved", "updated:" + oldTime}},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	backend := &fakeBackend{}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+
+	if staleCount != 0 || shutdownCount != 0 {
+		t.Errorf("expected 0/0 for review-approved bead, got stale=%d shutdown=%d", staleCount, shutdownCount)
 	}
 }
 
