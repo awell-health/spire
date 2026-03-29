@@ -28,8 +28,9 @@ type State struct {
 	BaseBranch    string                  `json:"base_branch,omitempty"`
 	RepoPath      string                  `json:"repo_path,omitempty"`
 	AttemptBeadID string                  `json:"attempt_bead_id,omitempty"`
-	StepBeadIDs   map[string]string       `json:"step_bead_ids,omitempty"` // phase name → step bead ID
-	WorktreeDir   string                  `json:"worktree_dir,omitempty"`  // staging worktree directory path
+	StepBeadIDs       map[string]string       `json:"step_bead_ids,omitempty"`        // phase name → step bead ID
+	ReviewStepBeadIDs map[string]string       `json:"review_step_bead_ids,omitempty"` // formula step name → sub-step bead ID
+	WorktreeDir       string                  `json:"worktree_dir,omitempty"`         // staging worktree directory path
 }
 
 // Executor drives a bead through its formula's phase pipeline.
