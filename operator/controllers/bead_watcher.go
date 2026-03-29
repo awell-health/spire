@@ -2,17 +2,17 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/steveyegge/beads"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // BeadWatcher reads beads from the shared dolt server and reconciles SpireWorkload CRs.
@@ -22,15 +22,7 @@ type BeadWatcher struct {
 	Log       logr.Logger
 	Namespace string
 	Interval  time.Duration
-}
-
-type beadJSON struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Status   string   `json:"status"`
-	Priority int      `json:"priority"`
-	Type     string   `json:"type"`
-	Labels   []string `json:"labels"`
+	BeadsDir  string // path to .beads directory for store initialization
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -62,38 +54,24 @@ func (w *BeadWatcher) Run(ctx context.Context) {
 func (w *BeadWatcher) cycle(ctx context.Context) {
 	w.Log.V(1).Info("bead watcher cycle start")
 
+	// Ensure store is initialized
+	if _, err := store.Ensure(w.BeadsDir); err != nil {
+		w.Log.Error(err, "failed to initialize bead store", "beadsDir", w.BeadsDir)
+		return
+	}
+
 	// DoltHub remote sync (pull/push) is handled by the dedicated spire-syncer pod.
 	// The bead watcher reads directly from the shared dolt server.
 
-	// 1. Get ready beads
-	out, err := exec.CommandContext(ctx, "bd", "ready", "--json").Output()
+	// 1. Get ready beads — GetReadyWork already filters out workflow steps,
+	// message beads, design beads, attempt beads, and review rounds.
+	readyBeads, err := store.GetReadyWork(beads.WorkFilter{})
 	if err != nil {
-		w.Log.Error(err, "bd ready --json failed")
+		w.Log.Error(err, "store.GetReadyWork failed")
 		return
 	}
 
-	var beads []beadJSON
-	if err := json.Unmarshal(out, &beads); err != nil {
-		w.Log.Error(err, "failed to parse bd ready output")
-		return
-	}
-
-	// 2b. Filter out workflow step beads and message beads
-	var filteredBeads []beadJSON
-	for _, b := range beads {
-		// Skip message beads — not schedulable work
-		if hasBeadLabel(b.Labels, "msg") {
-			continue
-		}
-		// Skip workflow step beads (parent carries workflow:* label)
-		if isWorkflowStep(ctx, b.ID) {
-			continue
-		}
-		filteredBeads = append(filteredBeads, b)
-	}
-	beads = filteredBeads
-
-	// 3. Get existing workloads
+	// 2. Get existing workloads
 	var existing spirev1.SpireWorkloadList
 	if err := w.Client.List(ctx, &existing, client.InNamespace(w.Namespace)); err != nil {
 		w.Log.Error(err, "failed to list SpireWorkloads")
@@ -105,9 +83,9 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 		existingMap[existing.Items[i].Spec.BeadID] = &existing.Items[i]
 	}
 
-	// 4. Create SpireWorkloads for new ready beads
+	// 3. Create SpireWorkloads for new ready beads
 	created := 0
-	for _, bead := range beads {
+	for _, bead := range readyBeads {
 		if _, exists := existingMap[bead.ID]; exists {
 			continue // already tracked
 		}
@@ -149,27 +127,29 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 	}
 
 	// 4. Check for completed beads — update workloads that are done
-	allOut, err := exec.CommandContext(ctx, "bd", "list", "--status=closed", "--json").Output()
+	closedStatus := beads.StatusClosed
+	closedBeads, err := store.ListBeads(beads.IssueFilter{
+		Status: &closedStatus,
+	})
 	if err == nil {
-		var closedBeads []beadJSON
-		if json.Unmarshal(allOut, &closedBeads) == nil {
-			for _, cb := range closedBeads {
-				if wl, exists := existingMap[cb.ID]; exists {
-					if wl.Status.Phase != "Done" {
-						wl.Status.Phase = "Done"
-						wl.Status.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-						wl.Status.Message = "Bead closed"
-						w.Client.Status().Update(ctx, wl) //nolint
-					}
+		for _, cb := range closedBeads {
+			if wl, exists := existingMap[cb.ID]; exists {
+				if wl.Status.Phase != "Done" {
+					wl.Status.Phase = "Done"
+					wl.Status.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+					wl.Status.Message = "Bead closed"
+					w.Client.Status().Update(ctx, wl) //nolint
 				}
 			}
 		}
+	} else {
+		w.Log.Error(err, "store.ListBeads (closed) failed")
 	}
 
 	if created > 0 {
-		w.Log.Info("bead watcher cycle complete", "newWorkloads", created, "totalReady", len(beads))
+		w.Log.Info("bead watcher cycle complete", "newWorkloads", created, "totalReady", len(readyBeads))
 	} else {
-		w.Log.V(1).Info("bead watcher cycle complete", "totalReady", len(beads))
+		w.Log.V(1).Info("bead watcher cycle complete", "totalReady", len(readyBeads))
 	}
 }
 
@@ -186,64 +166,4 @@ func sanitizeName(beadID string) string {
 	name := strings.ToLower(beadID)
 	name = strings.ReplaceAll(name, ".", "-")
 	return fmt.Sprintf("bead-%s", name)
-}
-
-// hasBeadLabel checks if a label list contains an exact match.
-func hasBeadLabel(labels []string, label string) bool {
-	for _, l := range labels {
-		if l == label {
-			return true
-		}
-	}
-	return false
-}
-
-// isWorkflowStep checks if a bead is a child of a workflow molecule.
-// It uses `bd show --json` to inspect the bead's parent and check for
-// workflow:* labels on the parent.
-func isWorkflowStep(ctx context.Context, beadID string) bool {
-	// Get bead details via bd show
-	out, err := exec.CommandContext(ctx, "bd", "show", beadID, "--json").Output()
-	if err != nil {
-		return false
-	}
-	var shown []struct {
-		Dependencies []struct {
-			DependsOnID string `json:"depends_on_id"`
-			Type        string `json:"type"`
-		} `json:"dependencies"`
-	}
-	if err := json.Unmarshal(out, &shown); err != nil || len(shown) == 0 {
-		return false
-	}
-
-	// Find parent via parent_child dependency
-	parentID := ""
-	for _, dep := range shown[0].Dependencies {
-		if dep.Type == "parent_child" {
-			parentID = dep.DependsOnID
-			break
-		}
-	}
-	if parentID == "" {
-		return false
-	}
-
-	// Check if parent has workflow:* label
-	parentOut, err := exec.CommandContext(ctx, "bd", "show", parentID, "--json").Output()
-	if err != nil {
-		return false
-	}
-	var parents []struct {
-		Labels []string `json:"labels"`
-	}
-	if err := json.Unmarshal(parentOut, &parents); err != nil || len(parents) == 0 {
-		return false
-	}
-	for _, l := range parents[0].Labels {
-		if strings.HasPrefix(l, "workflow:") {
-			return true
-		}
-	}
-	return false
 }
