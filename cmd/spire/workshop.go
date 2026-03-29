@@ -25,8 +25,10 @@ func cmdWorkshop(args []string) error {
 		return cmdWorkshopShow(args[1:])
 	case "validate":
 		return cmdWorkshopValidate(args[1:])
+	case "compose":
+		return cmdWorkshopCompose(args[1:])
 	default:
-		return fmt.Errorf("workshop: unknown subcommand %q (try: list, show, validate)", args[0])
+		return fmt.Errorf("workshop: unknown subcommand %q (try: list, show, validate, compose)", args[0])
 	}
 }
 
