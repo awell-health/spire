@@ -10,7 +10,7 @@ Spire has a defined hierarchy of agent roles:
 
 | Role | What it does | How it runs |
 |------|-------------|-------------|
-| **Wizard** | Per-bead orchestrator. Drives the formula lifecycle. | `spire wizard-run <bead-id>` (local) or wizard pod (k8s) |
+| **Wizard** | Per-bead orchestrator. Drives the formula lifecycle. | `spire execute <bead-id>` (local, spawned by `summon`) or wizard pod (k8s) |
 | **Apprentice** | Implementer. Writes code in an isolated worktree. One-shot. | Dispatched by wizard |
 | **Sage** | Reviewer. Reviews code, returns a verdict. One-shot. | Dispatched by wizard |
 | **Steward** | Global coordinator. Assigns work, monitors health. | `spire steward` |
@@ -34,7 +34,7 @@ resolve repo → claim bead → load formula
     plan:   invoke Claude (Opus) to generate subtask breakdown
     implement: dispatch apprentice in worktree
     review: dispatch sage for verdict
-    merge: ff-only merge to main
+    merge: ff-only merge to the configured base branch
 → close bead → write result → exit
 ```
 
@@ -51,25 +51,35 @@ The formula is selected in this order (first match wins):
 Create `.beads/formulas/<name>.formula.toml` in your repo:
 
 ```toml
-formula = "my-workflow"
+name = "my-workflow"
+version = 1
 
 # Only the phases declared here exist for this formula.
 # Undeclared phases are skipped.
 
+[phases.plan]
+role = "wizard"
+timeout = "5m"
+model = "claude-opus-4-6"
+
 [phases.implement]
+role = "apprentice"
 timeout = "20m"
 model = "claude-sonnet-4-6"
 worktree = true           # run apprentice in isolated worktree
 
 [phases.review]
+role = "sage"
 timeout = "15m"
 model = "claude-opus-4-6"
+verdict_only = true
 
-[phases.review.revision]
+[phases.review.revision_policy]
 max_rounds = 3
-on_exhaust = "arbitrate"   # "approve", "discard", or "arbitrate"
+arbiter_model = "claude-opus-4-6"
 
 [phases.merge]
+strategy = "squash"
 auto = true
 ```
 
@@ -87,7 +97,7 @@ auto = true
 | Field | Type | Description |
 |-------|------|-------------|
 | `max_rounds` | int | Maximum review-fix cycles before escalation |
-| `on_exhaust` | string | Action when `max_rounds` hit: `approve`, `discard`, or `arbitrate` |
+| `arbiter_model` | string | Model to use when review rounds are exhausted |
 
 Apply the formula to a bead:
 
@@ -156,22 +166,22 @@ git push origin feat/spi-abc
 
 The branch name must match `spire.yaml`'s `branch.pattern` (default: `feat/{bead-id}`).
 
-### Creating a PR
+### Landing the change
 
 ```bash
-gh pr create \
-  --title "feat(spi-abc): implement the thing" \
-  --body "Implements spi-abc. ..."
+git checkout <base-branch>
+git merge --ff-only feat/spi-abc
+git push origin <base-branch>
 ```
 
-Or use `spire wizard-merge spi-abc` which handles the merge+close sequence.
+Replace `<base-branch>` with the repo's configured `branch.base`. This matches the built-in local executor path: after review passes, approved work lands on the repo's base branch.
 
 ### Reporting results
 
 Add a comment to the bead:
 
 ```bash
-bd comments add spi-abc "Implemented. PR at https://github.com/org/repo/pull/42"
+bd comments add spi-abc "Implemented and landed on the base branch."
 ```
 
 Close the bead when done:
@@ -222,7 +232,7 @@ If you want to extend the built-in wizard behavior, the core types are in `cmd/s
 bead, err := storeGetBead(id)
 beads, err := storeListBoardBeads(filter)
 err := storeAddComment(id, "Implementation complete")
-err := storeAddLabel(id, "review-ready")
+err := storeAddLabel(id, "needs-human")
 err := storeCloseBead(id)
 
 // Bad: subprocess
@@ -325,7 +335,7 @@ Wizard processes are tracked in `~/.config/spire/wizards.json`. The steward chec
 
 ```bash
 spire roster         # view all agents and their health
-spire logs wizard-1  # tail a specific agent's output
+spire logs wizard-spi-abc  # tail a specific agent's output
 ```
 
 ### Kubernetes
@@ -349,7 +359,7 @@ The familiar writes `heartbeat` every 30 seconds. The operator marks agents `Off
 ### Watch what a wizard is doing
 
 ```bash
-spire logs wizard-1    # tail wizard output
+spire logs wizard-spi-abc    # tail wizard output
 spire roster           # see phase and elapsed time
 spire board            # see what board column the bead is in
 ```
@@ -359,21 +369,21 @@ spire board            # see what board column the bead is in
 After a wizard runs, inspect the prompt it was given:
 
 ```bash
-cat /tmp/spire-wizard/wizard-1/spi-abc/.spire-prompt.txt
+cat /tmp/spire-wizard/wizard-spi-abc/spi-abc/.spire-prompt.txt
 ```
 
 ### Run a wizard manually (for debugging)
 
 ```bash
-spire wizard-run spi-abc --name debug-wizard
+spire execute spi-abc --name debug-wizard
 ```
 
-This runs synchronously in the foreground with full output, instead of as a background process.
+This runs the full executor synchronously in the foreground with full output, instead of as a background process.
 
 ### Check bead state
 
 ```bash
 bd show spi-abc --json      # full bead details
 bd comments spi-abc --json  # read wizard comments
-bd label list spi-abc       # check phase labels
+spire trace spi-abc         # inspect workflow steps and timing
 ```

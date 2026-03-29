@@ -1,8 +1,8 @@
 # Spire
 
-A coordination hub for AI agents. File work, let agents execute it, review and merge.
+A coordination hub for AI agents. File work, let agents execute it, and review what lands.
 
-Spire turns an engineer into the archmage of a tower — you write specs, file work, and review what agents produce. The tower handles execution: the steward dispatches, wizards orchestrate, apprentices implement, sages review. You don't write the code. You steer. You review. You make the architecture calls.
+Spire turns an engineer into the archmage of a tower — you write specs, file work, and review what agents produce. The tower handles execution: the steward dispatches, wizards orchestrate, apprentices implement, sages review, and approved changes land on your repo's base branch. You don't write the code. You steer. You review. You make the architecture calls.
 
 ```
                          ╔═══════════╗
@@ -27,15 +27,15 @@ Spire turns an engineer into the archmage of a tower — you write specs, file w
 
 | Role | What | Entry point |
 |------|------|-------------|
-| **Archmage** | You. Writes specs, files work, reviews PRs, makes architecture calls. | — |
+| **Archmage** | You. Writes specs, files work, reviews code, makes architecture calls. | — |
 | **Steward** | Global coordinator. Capacity planning, scheduling, dispatches wizards to ready beads. | `spire steward` |
 | **Wizard** | Per-bead orchestrator. Driven by a formula (e.g. `spire-bugfix`, `spire-epic`). Dispatches apprentices and sages, seals the work. | `spire summon N` |
 | **Apprentice** | Per-subtask implementer. Writes code in an isolated worktree. One-shot, pure implementer. | dispatched by wizard |
 | **Sage** | Per-review agent. Reviews implementation against the spec, produces a verdict. One-shot. | dispatched by wizard |
-| **Artificer** | Formula maker. Crafts and tests the formulas (spells) that wizards follow. | Workshop CLI (not yet built) |
+| **Artificer** | Formula maker. Crafts and tests the formulas (spells) that wizards follow. | `spire workshop` |
 | **Familiar** | Per-agent companion. Messaging infrastructure, inbox delivery, health checks. | daemon (local) / container (k8s) |
 
-A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration: a bug gets `spire-bugfix` (implement → review → merge), an epic gets `spire-epic` (plan → wave dispatch → review → merge). Same executor, different formula.
+A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration: a bug gets `spire-bugfix` (plan → implement → review → merge), a task gets `spire-agent-work` (plan → implement → review → merge), and an epic gets `spire-epic` (design → plan → wave dispatch → review → merge). Same executor, different formula.
 
 ## Why Spire
 
@@ -53,7 +53,7 @@ Before setting up Spire, you'll need:
 |-------------|---------|---------------|
 | `claude` CLI | Runs agent sessions | Install via `npm install -g @anthropic-ai/claude-code` |
 | Anthropic API key | Powers agent LLM calls | [console.anthropic.com](https://console.anthropic.com) |
-| GitHub token (PAT or SSH key) | Repo operations (clone, branch, PR) | GitHub → Settings → Developer settings |
+| GitHub token (PAT or SSH key) | Repo operations (clone, branch, push) | GitHub → Settings → Developer settings |
 | DoltHub account (free) | Remote sync of bead state | [dolthub.com](https://www.dolthub.com) |
 
 ## Quick start
@@ -86,6 +86,8 @@ spire summon 3
 spire watch
 ```
 
+The default local path is process-based: `spire summon` starts executor processes on your laptop, and approved work is landed by merging to the repo's base branch.
+
 ### The formula lifecycle
 
 The primary onboarding story for non-trivial work is: **design → plan → implement → review → merge**.
@@ -100,7 +102,7 @@ spire file "Add MFA support" -t task -p 2 --parent spi-abc
 bd dep add spi-abc.2 spi-abc.1    # MFA depends on OAuth2
 
 # 3. Summon capacity — wizards claim ready beads and drive them through
-#    implement → review → merge using the bead's formula
+#    plan → implement → review → merge using the bead's formula
 spire summon 3
 
 # 4. Watch the board: Ready → Working → Review → Merged
@@ -195,36 +197,34 @@ runtime:
   lint: pnpm lint
 
 agent:
+  backend: process
   model: claude-sonnet-4-6
   max-turns: 30
   stale: 10m
   timeout: 15m
 
 branch:
-  base: main        # note: executor currently hardcodes main (tracked in spi-cqsy)
+  base: main
   pattern: "feat/{bead-id}"
-
-pr:
-  auto-merge: false
-  reviewers: ["jb"]
-  labels: ["agent-generated"]
 ```
+
+`pr:` settings still exist in the schema for GitHub-oriented workflows, but the default local executor path lands approved work directly onto `branch.base`.
 
 ### Services
 
 ```bash
 spire up              # start dolt server + daemon (Linear sync, webhook processing)
-spire up --steward    # also run the steward for autonomous work dispatch
+spire up --steward    # also start a steward process for automatic assignment
 spire down            # stop daemon (dolt keeps running)
 spire shutdown        # stop everything (daemon + dolt)
 spire status          # check what's running
 ```
 
-`spire up` without `--steward` starts infrastructure only — you manage capacity manually with `spire summon`. Add `--steward` to enable the autonomous dispatch loop. Process mode is the default execution backend for local agents.
+`spire up` without `--steward` starts infrastructure only — you manage capacity manually with `spire summon`. Add `--steward` to run the coordinator loop as a separate sibling process. Process mode is the default execution backend for local agents, and `spire summon` remains the primary local capacity control.
 
 ## Kubernetes
 
-Spire runs on k8s for production workloads. The steward runs as an operator, wizards run as one-shot pods handling all workload types (tasks, epics, reviews).
+Spire runs on k8s for production workloads. The steward runs alongside the operator, and wizards run as one-shot pods handling all workload types (tasks, epics, reviews).
 
 ```bash
 # Deploy to minikube
@@ -250,7 +250,7 @@ spire/
 ├── k8s/                   # Manifests, CRDs, entrypoints
 ├── agent-entrypoint.sh    # Wizard pod lifecycle
 ├── docs/
-│   ├── getting-started.md # Laptop setup, first task, first PR
+│   ├── getting-started.md # Laptop setup, first task, first landed change
 │   ├── cli-reference.md   # All commands documented
 │   ├── spire-yaml.md      # spire.yaml configuration reference
 │   ├── agent-development.md # Build custom agents
@@ -264,7 +264,7 @@ spire/
 
 | Component | Technology | Role |
 |-----------|-----------|------|
-| CLI | Go (stdlib) | Single binary — all commands |
+| CLI | Go (stdlib) | Single CLI surface — all commands |
 | Database | [Dolt](https://github.com/dolthub/dolt) | Git-native SQL — versioned state |
 | Work tracking | [beads](https://github.com/steveyegge/beads) | Dependency-aware, agent-optimized |
 | Review | Claude Opus (1M context) | Spec-aware code review |
@@ -272,9 +272,13 @@ spire/
 
 ## The shift
 
-Six months ago you wrote code all day. Now you write specs, review PRs, and steer agents. You didn't become a manager — you became a technical director. You still understand every line. You still catch bugs in review. You still make the architecture calls. But your hands are on the steering wheel, not the keyboard.
+Six months ago you wrote code all day. Now you write specs, review landed changes, and steer agents. You didn't become a manager — you became a technical director. You still understand every line. You still catch bugs in review. You still make the architecture calls. But your hands are on the steering wheel, not the keyboard.
 
 Spire is the operating system for that shift.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution workflow.
 
 ## License
 

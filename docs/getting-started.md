@@ -1,6 +1,6 @@
 # Getting Started with Spire
 
-This guide walks you through setting up Spire on your laptop, filing your first task, and getting an agent to open a pull request for it.
+This guide walks you through setting up Spire on your laptop, filing your first task, and getting an agent to land a change for it.
 
 ## What you'll need
 
@@ -8,7 +8,7 @@ This guide walks you through setting up Spire on your laptop, filing your first 
 |-------------|---------|---------------|
 | `spire` binary | The CLI for everything | `brew tap awell-health/tap && brew install spire` |
 | Anthropic API key | Powers agent LLM calls | [console.anthropic.com](https://console.anthropic.com) |
-| GitHub token (PAT) | Repo operations (clone, branch, PR) | GitHub → Settings → Developer settings → Personal access tokens |
+| GitHub token (PAT) | Repo operations (clone, branch, push) | GitHub → Settings → Developer settings → Personal access tokens |
 | DoltHub account | Remote sync of bead state | [dolthub.com](https://www.dolthub.com) (free) |
 
 Your GitHub token needs the `repo` and `workflow` scopes.
@@ -133,7 +133,7 @@ spire watch
 
 ## Step 6: Summon a wizard
 
-A **wizard** is an AI agent that claims a bead, implements it, and opens a pull request.
+A **wizard** is an AI agent that claims a bead, drives the bead's formula, and lands approved work.
 
 ```bash
 spire summon 1
@@ -141,42 +141,48 @@ spire summon 1
 
 This:
 1. Finds the highest-priority ready bead
-2. Creates a git worktree at `/tmp/spire-wizard/wizard-1/<bead-id>`
+2. Starts an executor process in an isolated worktree
 3. Claims the bead (prevents double-work)
-4. Loads context via `spire focus`
-5. Runs Claude Code to implement the task
+4. Loads context and resolves the bead's formula
+5. Runs the formula phases (`plan` → `implement` → `review` → `merge` for normal work)
 6. Validates with lint, build, and test commands from `spire.yaml`
-7. Pushes a branch and opens a pull request
+7. Pushes the approved result to the repo's base branch and closes the bead
 
 Watch the wizard work:
 
 ```bash
 spire roster          # show wizard status and progress
-spire logs wizard-1   # tail wizard log output
+spire logs wizard-<bead-id>   # tail a specific wizard log
 spire board           # see the bead move from READY → IMPLEMENT → REVIEW → DONE
 ```
 
 ---
 
-## Step 7: Review the PR
+## Step 7: Review what landed
 
-When the wizard finishes, it opens a pull request on GitHub. The PR includes:
-- The implementation
-- A link to the bead in the description
+When the wizard finishes, the default local executor path has already
+merged the approved result onto your repo's base branch. Review the
+landed diff however you normally inspect changes:
 
-Review the PR as you would any other. If you need changes, comment on the PR. The wizard monitors for review feedback and can re-implement based on your comments.
+```bash
+git log --oneline -1
+git show
+spire board
+```
 
-When you're satisfied, merge the PR. The bead closes automatically.
+The important implementation detail is that the default local path does
+not open a GitHub PR. It uses sage review inside Spire, then lands the
+change directly by merging to `branch.base`.
 
 ---
 
 ## What just happened
 
 ```
-You filed a bead → Wizard claimed it → Wizard implemented it → Wizard opened a PR → You reviewed and merged
+You filed a bead → Wizard claimed it → Wizard planned + implemented it → Sage reviewed it → The executor merged it
 ```
 
-The wizard followed the `spire-agent-work` formula: implement → review → merge. For more complex work, use epics with the `spire-epic` formula, which includes planning, wave dispatch, and sage review.
+The wizard followed the `spire-agent-work` formula: plan → implement → review → merge. For more complex work, use epics with the `spire-epic` formula, which includes design validation, planning, wave dispatch, and sage review.
 
 ---
 

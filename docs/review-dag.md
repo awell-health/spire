@@ -3,7 +3,7 @@
 The review phase is the most complex part of the formula lifecycle. This
 document maps every path through it and enforces a single invariant:
 
-> **Every path ends with the branch either merged to main or deleted.
+> **Every path ends with the branch either merged to the base branch or deleted.
 > No hanging branches. No orphaned code.**
 
 ## The DAG
@@ -27,10 +27,10 @@ flowchart TD
 
     subgraph merge_main ["Merge Path"]
         direction TB
-        m1[Rebase staging onto main]
+        m1[Rebase staging onto base branch]
         m1 --> m2[Run build verification]
-        m2 --> m3[ff-only merge → main]
-        m3 --> m4[Push main]
+        m2 --> m3[ff-only merge → base branch]
+        m3 --> m4[Push base branch]
         m4 --> m5[Delete staging branch]
         m5 --> m6[Delete remote branch]
         m6 --> m7[Close bead ✓]
@@ -48,7 +48,7 @@ flowchart TD
 
     subgraph a_split ["Arbiter: Split"]
         direction TB
-        as1[Merge staging → main]
+        as1[Merge staging → base branch]
         as1 --> as2[Create child beads for remaining work]
         as2 --> as3[Delete staging branch]
         as3 --> as4[Delete remote branch]
@@ -76,9 +76,9 @@ are no others.
 
 | Path | Branch | Bead | Child beads |
 |------|--------|------|-------------|
-| Sage approves → merge | Merged to main, deleted | Closed | — |
-| Arbiter: merge | Merged to main, deleted | Closed | — |
-| Arbiter: split | Merged to main, deleted | Closed | Created for remaining work |
+| Sage approves → merge | Merged to base branch, deleted | Closed | — |
+| Arbiter: merge | Merged to base branch, deleted | Closed | — |
+| Arbiter: split | Merged to base branch, deleted | Closed | Created for remaining work |
 | Arbiter: discard | Deleted (not merged) | Closed (wontfix) | — |
 
 ### The invariant
@@ -99,10 +99,10 @@ The happy path. Sage reviews the staging branch diff, returns `approve`.
 
 ```
 sage: approve
-  → rebase staging onto main
+  → rebase staging onto base branch
   → build verification (go build / go test)
-  → git merge --ff-only staging → main
-  → git push origin main
+  → git merge --ff-only staging → base branch
+  → git push origin <base-branch>
   → git branch -D staging (local)
   → git push origin --delete staging (remote)
   → close bead
@@ -149,7 +149,7 @@ was previously broken — it closed the bead without merging.**
 
 ```
 arbiter: split
-  → merge staging → main (the approved work ships)
+  → merge staging → base branch (the approved work ships)
   → create child beads for remaining work
   → delete staging branch (local + remote)
   → close original bead
@@ -189,7 +189,7 @@ review:     sage reads the branch
             staging branch accumulates fixes
 
 terminal:   branch is EITHER:
-            - merged to main (approve, arbiter:merge, arbiter:split)
+            - merged to the base branch (approve, arbiter:merge, arbiter:split)
             - deleted without merge (arbiter:discard)
             NEVER left hanging.
 ```
@@ -200,7 +200,7 @@ terminal:   branch is EITHER:
 |---------|----------|
 | Merge conflict during ff-only | Rebase staging onto main, retry merge |
 | Build verification fails | Log error, leave bead at review-approved, do NOT delete branch |
-| `gh pr create` fails | Log error, leave bead at review-approved |
+| Push to base branch fails | Log error, leave bead at review-approved |
 | Branch delete fails | Log warning, continue (non-fatal) |
 | Arbiter fails to respond | Default to discard (delete branch, close bead) |
 

@@ -113,9 +113,9 @@ The `spire file`, `spire claim`, and `spire close` commands wrap `bd` with addit
 
 | Role | What it does |
 |------|-------------|
-| **Wizard** | Implements a task end-to-end: claims bead → writes code → opens PR |
+| **Wizard** | Drives a bead end-to-end: claims bead → plans → dispatches work → lands approved change |
 | **Sage** | Reviews wizard output, approves or requests changes |
-| **Artificer** | Manages epics: breaks them into tasks, dispatches waves of wizards |
+| **Artificer** | Creates and tests formulas with `spire workshop` |
 | **Steward** | Cluster coordinator: reads the ready queue, creates workloads, assigns agents |
 
 ### How agents work
@@ -123,7 +123,7 @@ The `spire file`, `spire claim`, and `spire close` commands wrap `bd` with addit
 1. Agent reads the ready queue (`bd ready --json`)
 2. Claims a bead (`spire claim <id>`) — atomic pull-claim-push
 3. Assembles context (`spire focus <id>`)
-4. Executes the bead's formula (implement → review → merge)
+4. Executes the bead's formula (plan → implement → review → merge for standard work)
 5. Reports results, closes the bead
 
 ### Summoning agents locally
@@ -244,7 +244,7 @@ spec:
   schedule: "*/2 * * * *"
 ```
 
-Or configure the steward to handle sync as part of its work cycle (`spec.syncer.enabled: true` in values.yaml).
+Or enable the chart's syncer directly (`syncer.enabled: true` in values.yaml).
 
 ---
 
@@ -255,9 +255,9 @@ You create a tower (Dolt database, pushed to DoltHub)
   └── You register repos (each gets a prefix)
        └── You file beads (work items in the graph)
             └── You run spire up (daemon starts syncing)
-                 └── Steward reads ready queue
-                      └── Wizard claims bead, implements, opens PR
-                           └── Bead closes on merge
+                 └── You summon capacity (or run the steward)
+                      └── Wizard claims bead, implements, and gets reviewed
+                           └── Approved work merges to the base branch and the bead closes
 ```
 
 For deeper reading:

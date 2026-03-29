@@ -181,15 +181,16 @@ Use when a fast-forward pull fails due to diverged history (e.g., two machines f
 Start the dolt server and sync daemon.
 
 ```bash
-spire up [--interval 2m] [--steward]
+spire up [--interval 2m] [--steward] [--backend process|docker|k8s]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--interval` | Daemon sync interval (default: `2m`) |
-| `--steward` | Also run the steward for autonomous work dispatch |
+| `--steward` | Also start a steward companion process |
+| `--backend` | Backend for the steward to use (`process`, `docker`, `k8s`) |
 
-`spire up` without `--steward` starts infrastructure only. Add `--steward` to enable autonomous work dispatch. Running it again when already up shows current status.
+`spire up` without `--steward` starts infrastructure only. Add `--steward` to run the coordinator loop as a sibling process. `spire summon` remains the common local way to add capacity.
 
 ### `spire down`
 
@@ -340,8 +341,6 @@ spire wizard-epic <epic-id>
 ```
 
 Runs the wizard in epic mode for long-running epic management. For local work, `spire summon` is the typical path.
-
-> **Note:** `workshop` remains as a deprecated alias for `wizard-epic`.
 
 ---
 
@@ -539,7 +538,7 @@ Run the work coordinator.
 spire steward [--once] [--dry-run]
 ```
 
-The steward queries ready beads, checks capacity, and assigns work. In k8s, it creates SpireWorkload CRDs. Locally, it's a planning layer — actual spawning is via `spire summon`.
+The steward queries ready beads, checks capacity, and assigns work. In k8s, it creates SpireWorkload CRDs. Locally, it coordinates against the configured backend and roster, but `spire summon` remains the primary manual entry point.
 
 ### `spire serve`
 
@@ -587,7 +586,8 @@ These commands are used internally by wizards and are not part of the normal use
 
 | Command | Description |
 |---------|-------------|
-| `spire wizard-run <bead-id>` | Run a wizard for a bead (spawned by `summon`) |
+| `spire execute <bead-id>` | Run the full formula executor (spawned by `summon`) |
+| `spire wizard-run <bead-id>` | Run an apprentice implementation step |
 | `spire wizard-review` | Run a sage review step |
 | `spire wizard-merge` | Run a merge step |
-| `spire execute <bead-id>` | Execute a single formula phase |
+| `spire wizard-epic <epic-id>` | Run the legacy epic orchestrator command |

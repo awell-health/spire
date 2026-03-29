@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart TD
-    summon([spire summon]) --> spawn[spawn wizard-run]
+    summon([spire summon]) --> spawn[spawn execute]
 
     spawn --> attempt["🔵 create attempt bead"]
     attempt --> steps["🔵 create step beads<br/>(implement, review, merge)"]
@@ -47,14 +47,14 @@ flowchart TD
 
     arbiter --> arb_decision{decision?}
     arb_decision -->|merge| merge_start
-    arb_decision -->|split| split["merge staging → main<br/>🔵 create child beads<br/>✅ close bead"]
+    arb_decision -->|split| split["merge staging → base branch<br/>🔵 create child beads<br/>✅ close bead"]
     arb_decision -->|discard| discard["delete branches<br/>✅ close as wontfix"]
 
     merge_start["▶ activate step:merge"]
-    merge_start --> rebase[rebase staging onto main]
+    merge_start --> rebase[rebase staging onto base branch]
     rebase --> build_verify[build verification]
-    build_verify --> ff[git merge --ff-only → main]
-    ff --> push_main[push main<br/>archmage identity]
+    build_verify --> ff[git merge --ff-only → base branch]
+    ff --> push_main[push base branch<br/>archmage identity]
     push_main --> delete_branch[delete staging branch]
     delete_branch --> close_merge["✅ close step:merge"]
     close_merge --> close_bead["✅ close bead"]
@@ -80,7 +80,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    summon([spire summon]) --> spawn[spawn wizard-run]
+    summon([spire summon]) --> spawn[spawn execute]
 
     spawn --> attempt["🔵 create attempt bead"]
     attempt --> steps["🔵 create step beads<br/>(design, plan, implement, review, merge)"]

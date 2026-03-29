@@ -1,7 +1,7 @@
 # Spire Local Mode
 
-**Status**: Implemented (Phase 2 MVP landed 2026-03-23, formula system 2026-03-26)
-**Date**: 2026-03-21 (updated 2026-03-26)
+**Status**: Implemented (Phase 2 MVP landed 2026-03-23, formula system 2026-03-26, docs refreshed 2026-03-29)
+**Date**: 2026-03-21 (updated 2026-03-29)
 
 Spire runs locally on a developer's laptop. No Kubernetes, no cloud
 infrastructure. Install the binary, create a tower, register repos, file
@@ -13,11 +13,11 @@ work, and agents execute it locally.
 
 | Dependency | Purpose | Required |
 |------------|---------|----------|
-| `spire` binary (includes `bd`) | CLI for all operations | Yes |
+| `spire` CLI (`bd` is still a separate dependency today) | CLI for all operations | Yes |
 | Docker | Running agents in containers | No (process mode available) |
 | DoltHub account (free) | Remote sync of bead state | Yes |
 | Anthropic API key | LLM agent execution | Yes |
-| GitHub access (PAT or SSH key) | Repo operations (clone, branch, PR) | Yes |
+| GitHub access (PAT or SSH key) | Repo operations (clone, branch, push) | Yes |
 
 ---
 
@@ -29,8 +29,9 @@ work, and agents execute it locally.
 brew install spire
 ```
 
-Single binary. Ships with `bd` embedded. No runtime dependencies beyond
-Docker (optional).
+Single CLI entry point. Today the supported Homebrew install provides
+`spire` plus the `beads` dependency; `bd` is still subprocess-backed under
+the hood. Docker remains optional.
 
 ### 2. Configure credentials
 
@@ -126,29 +127,28 @@ spire up
 
 Starts a single background daemon that:
 - Runs the dolt SQL server (localhost:3307)
-- Runs the steward (work coordinator) on a 2-minute cycle
 - Syncs with DoltHub on interval (default 2 minutes)
-- Spawns agents locally when work is ready
-- Provides a health endpoint (`localhost:8080/status`)
+- Runs Linear sync and webhook queue processing
+- Optionally starts the steward as a sibling process when `--steward` is passed
 
-Only one `spire up` is allowed at a time. Running it again shows current
-status.
+`spire up` is best-effort idempotent today: if services are already
+running, it will usually report that state and reuse them.
 
 **Exists today**: `spire up` starts the dolt server and a daemon process.
 The daemon runs DoltHub sync (pull + push), Linear epic sync, and webhook
-queue processing. The steward runs as a separate command (`spire steward`).
-Local agent execution works via `spire summon` (see below).
+queue processing. `spire up --steward` also starts the steward, but as a
+separate sibling process rather than a merged loop. Local agent execution
+works via `spire summon` (see below).
 
-**Not yet built**: Unified daemon that includes the steward loop
-(`spire up --steward`). Docker agent mode. Single-instance enforcement.
-Health endpoint.
+**Not yet built**: Unified single-process daemon/steward. Single-instance
+enforcement. Health endpoint.
 
 ### 7. Monitor
 
 ```
 spire status          # tower status, agent activity, sync state
 spire logs            # follow daemon + agent logs
-spire logs wizard-1   # specific agent
+spire logs wizard-spi-abc   # specific agent
 spire board           # interactive board TUI
 spire board --json    # machine-readable board for agents/scripts
 spire roster          # who's in the tower, what they're working on
@@ -163,14 +163,14 @@ elapsed time, and progress bars. `spire watch` provides a live-updating
 terminal view. `spire logs [wizard-name]` tails wizard log output.
 `spire metrics` shows agent performance summary with DORA metrics.
 
-**Not yet built**: Richer `spire status` output showing agent activity
-and sync state.
+**Not yet built**: Deeper sync history, backend-specific health details,
+and more operational drill-down in `spire status`.
 
 ---
 
 ## Local Agent Execution
 
-### Docker mode (not yet implemented locally)
+### Docker mode (available, not the default local path)
 
 Agents run as Docker containers with:
 - An ephemeral workspace — the agent clones the repo inside the container
@@ -178,50 +178,57 @@ Agents run as Docker containers with:
   variables (from `~/.config/spire/credentials` or env var overrides)
 - Network access for git operations and LLM API calls
 - One container per wizard, isolated from each other
-- No host repo mount — this matches how k8s already works
+- Host config and repo paths mounted into the container for local execution
 
 Container lifecycle:
-1. Steward identifies ready work and idle wizard slots
-2. Daemon pulls the agent image (`spire-agent:latest`)
+1. `spire summon` (or a steward using the Docker backend) selects ready work
+2. Spire starts the agent image (`ghcr.io/awell-health/spire-agent:latest`
+   by default, overrideable in `spire.yaml`)
 3. Container starts with the bead ID, repo URL, and branch as arguments
-4. Agent runs: `git clone <repo-url> -b <branch> /workspace`, then
-   `spire claim <bead-id>`, then `spire focus <bead-id>`, then executes
-   the work using Claude Code
-5. On completion, the agent pushes results (git push + spire push),
-   container exits; daemon collects the result
+4. The container runs the same internal Spire subcommand graph used
+   locally (`execute`, `wizard-run`, or `wizard-review`, depending on role)
+5. On completion, the container exits and Spire can inspect it via Docker
+   metadata and streamed logs
 
-**Not yet built**: Local Docker container spawning via `spire summon`.
-Image management (pull/build). Container lifecycle tracking. Docker
-images exist and work in k8s — local Docker spawning is the gap.
+Configure Docker mode in `spire.yaml`:
+
+```yaml
+agent:
+  backend: docker
+```
+
+**Exists today**: Backend resolution for `docker`, `docker run` spawning,
+container labels for discovery, and log streaming. Process mode remains
+the best-tested and default local path.
+
+**Still rough**: Image management UX, restart policy, and richer health
+surfacing in `spire status`.
 
 ### Process mode (default)
 
 Agents run as local processes. Faster startup, easier debugging. This
-is the default and only local execution mode.
+is the default local execution mode.
 
 ```
 spire summon 3        # spawns 3 wizard processes
 spire roster          # shows wizard status + progress bar
 ```
 
-Each wizard runs as a background process (`spire wizard-run <bead-id>`)
-in its own git worktree:
+Each summoned wizard runs as a background executor process
+(`spire execute <bead-id>`) with isolated worktrees underneath it:
 
 1. `spire summon N` queries ready beads, picks the top N by priority
-2. For each bead, spawns `spire wizard-run <bead-id> --name wizard-N`
-3. The wizard process:
+2. For each bead, spawns `spire execute <bead-id> --name wizard-<bead-id>`
+3. The executor process:
    - Resolves the repo from the bead's prefix (repos table)
-   - Creates a git worktree at `/tmp/spire-wizard/<name>/<bead-id>`
    - Claims the bead (`spire claim`)
-   - Captures focus context (`spire focus`)
-   - Loads `spire.yaml` for model, timeout, validation commands
-   - Builds a prompt (mirrors `agent-entrypoint.sh` format)
-   - Runs `claude --dangerously-skip-permissions -p <prompt> --model <model>`
-   - Validates: lint, build, test (from spire.yaml)
-   - Commits and pushes branch `feat/<bead-id>`
-   - Updates the bead with results (comment, review-ready label)
+   - Captures focus context and resolves the bead's formula
+   - Creates a staging worktree and dispatches apprentice/sage subprocesses as needed
+   - Runs the formula phases (`plan` → `implement` → `review` → `merge` for standard work)
+   - Validates with repo commands from `spire.yaml`
+   - Pushes the approved result to the repo's base branch and closes the bead
    - Writes `result.json` for observability
-   - Cleans up the worktree
+   - Cleans up staging and per-phase worktrees
 4. Process PIDs tracked in `~/.config/spire/wizards.json`
 5. Logs written to `~/.local/share/spire/wizards/<name>.log`
 
@@ -291,7 +298,7 @@ DoltHub is the remote store. Local dolt is the working copy.
 - **Append-only fields**: `comments` and `messages` are append-only. Rows
   are never updated or deleted, only inserted.
 
-The daemon commits and pushes after each steward cycle. Multiple machines
+The daemon pulls then pushes on each sync cycle. Multiple machines
 running against the same DoltHub remote must coordinate via the steward
 (one active steward at a time).
 
@@ -318,7 +325,7 @@ spire roster                      # work grouped by epic, plus agent process sta
 ```
 
 **Implemented**: `spire summon` queries ready beads, spawns one
-`spire wizard-run` process per bead, tracks PIDs in `wizards.json`.
+`spire execute` process per bead, tracks PIDs in `wizards.json`.
 `spire dismiss` sends SIGINT to wizard processes. `spire roster` shows
 local wizard status with elapsed time and progress bars. k8s mode
 creates/deletes SpireAgent CRDs.
@@ -345,7 +352,7 @@ creates/deletes SpireAgent CRDs.
 | `spire register` / `unregister` | Agent registration |
 | `spire board` | Interactive Bubble Tea TUI with phase columns and auto-refresh |
 | `spire roster` | Work grouped by epic, agent processes with elapsed time/progress |
-| `spire summon` / `dismiss` | Wizard spawning (local: process mode; k8s: CRDs) |
+| `spire summon` / `dismiss` | Wizard/executor spawning (local: process default, Docker optional; k8s: CRDs) |
 | `spire watch` | Live-updating terminal view |
 | `spire logs` | CLI log reader for wizard and daemon logs |
 | `spire metrics` | Agent performance summary with DORA metrics |
@@ -363,7 +370,7 @@ creates/deletes SpireAgent CRDs.
 | Dolt lifecycle | Auto-download binary, version pinning, managed server start/stop |
 | Docker agent images | `Dockerfile.agent`, `Dockerfile.steward` |
 | goreleaser + CI | Cross-compile, GitHub Actions test/release, SHA256 checksums |
-| Homebrew tap | `awell-health/tap` with `bd` and `dolt` as dependencies |
+| Homebrew tap | `awell-health/tap` with `beads` as a dependency; `dolt` is auto-managed by Spire |
 | `spire version` | Prints spire version + managed dolt version and path |
 | Smoke test | Docker-based smoke test (`test/smoke/Dockerfile`) validates fresh install |
 
@@ -373,19 +380,19 @@ creates/deletes SpireAgent CRDs.
 |-----------|-------------|------------|
 | `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Deferred (spi-770) |
 | Unified daemon | Merge steward loop into `spire up --steward` | Nothing |
-| Docker agent spawning | Start/stop/monitor agent containers locally | Nothing |
 | Single-daemon enforcement | Prevent multiple `spire up` from racing | Nothing |
-| Cobra CLI migration | `--flag=value` syntax, `--help` on all commands | spi-7ywn |
+| Docker backend hardening | Better health/restart/image UX for local containers | Nothing |
+| Richer status output | Show sync health and backend detail in one place | Nothing |
 | Spire TUI interactivity | Board navigation, inspector pane, in-TUI actions | spi-1syd |
 
 ---
 
 ## Design Constraints
 
-1. **Single binary**. Everything ships as `spire` with `bd` embedded. Dolt
-   is NOT embedded but spire manages its lifecycle — auto-downloads dolt if
-   missing and starts/stops the dolt server. The user does not need to
-   install dolt separately.
+1. **Single install surface**. Spire aims to feel like one tool even though
+   `bd` is still a separate binary today. Dolt is NOT embedded, but Spire
+   manages its lifecycle — auto-downloads dolt if missing and starts/stops
+   the dolt server. The user does not need to install dolt separately.
 
 2. **Offline-first**. All operations work against the local dolt database.
    DoltHub sync is background and best-effort. Filing beads, claiming work,
@@ -400,6 +407,6 @@ creates/deletes SpireAgent CRDs.
    (`ANTHROPIC_API_KEY`, `DOLT_REMOTE_PASSWORD`) override file-based
    credentials for CI and containers.
 
-5. **Docker optional**. Process mode (`--mode=process`) is a first-class
-   alternative. Some users will not have Docker. Process mode is also better
-   for debugging and development.
+5. **Docker optional**. Process mode is the first-class default. Some users
+   will not have Docker. Process mode is also better for debugging and
+   development; set `agent.backend: docker` when you want containers.

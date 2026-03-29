@@ -39,6 +39,10 @@ Spire ships a Helm chart at `helm/spire/`. The chart deploys:
 - SpireConfig CRD (cluster singleton configuration)
 - SpireAgent CRDs (per-repo agent definitions)
 
+Today those `SpireAgent` definitions are still explicit in chart values.
+The operator does not yet derive them automatically from the tower's
+`repos` table.
+
 **Requirements:**
 
 - Helm 3.x: `brew install helm`
@@ -222,7 +226,7 @@ All configurable values are documented in `helm/spire/values.yaml`. Key values:
 | `dolthub.user` | `""` | DoltHub username (required) |
 | `dolthub.password` | `""` | DoltHub token (required) |
 | `anthropic.apiKey` | `""` | Anthropic API key (required) |
-| `github.token` | `""` | GitHub PAT (required for agents to open PRs) |
+| `github.token` | `""` | GitHub PAT (required for repo clone/push operations) |
 | `beads.prefix` | `spi` | Hub bead prefix |
 | `steward.interval` | `2m` | Steward sync interval |
 | `spireConfig.polling.staleThreshold` | `4h` | Mark workload stale after this |

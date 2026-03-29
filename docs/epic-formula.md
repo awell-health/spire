@@ -102,5 +102,5 @@ flowchart TD
 [phases.plan]       # wizard invokes Claude to break epic into subtasks
 [phases.implement]  # apprentices in parallel waves, staging branch
 [phases.review]     # sage with up to 3 revision rounds
-[phases.merge]      # auto squash-merge to main
+[phases.merge]      # auto squash-merge to the configured base branch
 ```

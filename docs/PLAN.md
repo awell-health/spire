@@ -6,11 +6,11 @@ This plan takes Spire from its current state (working k8s operator, steward, wiz
 
 ---
 
-## Current State (updated 2026-03-26)
+## Current State (updated 2026-03-29)
 
 What exists today:
 
-- `spire` CLI with 42 subcommands (Go, single package in `cmd/spire/`)
+- `spire` CLI with a Cobra-based command tree and broad command surface in `cmd/spire/`
 - `bd` called via `pkg/bd` subprocess wrapper (clean Client interface, callers isolated) and store API (`store.go`)
 - `spire tower create` and `spire tower attach` — full tower bootstrap and second-machine attach
 - `spire repo add` — writes to dolt `repos` table, validates prefix uniqueness, pushes to DoltHub
@@ -21,9 +21,10 @@ What exists today:
 - Instance config in `~/.config/spire/config.json` (local cache, dolt is source of truth)
 - k8s operator with CRDs: SpireAgent, SpireWorkload, SpireConfig
 - Steward runs as k8s deployment or local process via `spire steward`
-- Local agent execution via `spire summon` — wizard processes with worktrees, formula-driven lifecycle
+- Local agent execution via `spire summon` — process backend by default, Docker backend available, formula-driven lifecycle
 - Formula system: 3 built-in formulas (`spire-epic`, `spire-bugfix`, `spire-agent-work`) with layered resolution
 - Executor drives formula phases: design → plan → implement (wave dispatch) → review (sage) → merge
+- Workshop CLI: `workshop list/show/validate/compose/dry-run/test/publish/unpublish`
 - `spire board` — interactive Bubble Tea TUI with phase columns, auto-refresh
 - `spire roster` — work grouped by epic, agent processes with elapsed time/progress
 - `spire watch` — live tower status
@@ -36,9 +37,10 @@ What exists today:
 - goreleaser config and GitHub Actions CI (build, test, release on tag)
 - `spire doctor` with 11 checks in 3 categories, `--fix` auto-repair
 - `spire push` / `spire pull` with credential injection
-- Homebrew tap (`awell-health/tap`) with `bd` and `dolt` as dependencies
+- Homebrew tap (`awell-health/tap`) with `beads` as a dependency; `dolt` is auto-managed
 - Archmage identity in tower config for merge commit attribution
 - Smoke test suite (`test/smoke/Dockerfile`)
+- Helm chart under `helm/spire` for cluster deployment, with explicit `SpireAgent` CRs rendered from values
 
 What works well and should not change:
 
@@ -48,14 +50,14 @@ What works well and should not change:
 - Operator CRD design (SpireAgent, SpireWorkload)
 - DoltHub as sync intermediary
 - Formula-driven executor (design → plan → implement → review → merge)
-- RPG naming: archmage (user), steward (coordinator), wizard (executor), apprentice (implementer), sage (reviewer), artificer (formula maker — not yet built)
+- RPG naming: archmage (user), steward (coordinator), wizard (executor), apprentice (implementer), sage (reviewer), artificer (formula maker via Workshop)
 
 What remains:
 
 - `bd` as embedded Go library (deferred — subprocess wrapper + store API ships first)
-- Docker agent spawning (process mode is the working default)
 - Unified daemon (steward loop integrated into `spire up`)
-- Cobra migration for CLI flag parsing (hand-rolled parser doesn't support `--flag=value` or `--help`)
+- Single-daemon enforcement / richer service health reporting
+- Repos-table-derived cluster agent configs (today Helm renders explicit `SpireAgent` CRs)
 
 ---
 
@@ -75,7 +77,7 @@ Work items:
 - [ ] Add `go.mod` dependency: `github.com/awell-health/beads`
 - [ ] Replace all `bd()`, `bdJSON()`, `bdSilent()` calls in `cmd/spire/bd.go` with direct library calls
 - [ ] Remove the subprocess wrapper; keep the same function signatures for minimal diff
-- [ ] Ensure `spire version` reports both spire and embedded bd versions
+- [ ] If bd is embedded later, ensure `spire version` reports both spire and bd versions
 - [ ] Fallback: if library extraction proves too invasive, bundle the `bd` binary inside the spire binary using `embed` and extract to a temp dir at runtime. This is worse but ships faster.
 
 **Risk:** bd's internal state management (database connections, caching) may not compose cleanly as a library. Spike this first -- spend 2 days on a proof-of-concept before committing to the approach.
@@ -91,7 +93,7 @@ spire tower create --name my-team [--dolthub org/repo]
 ```
 
 Work items:
-- [x] Initialize dolt database with beads schema (calls embedded bd)
+- [x] Initialize dolt database with beads schema (calls bd via the subprocess wrapper)
 - [x] Generate tower identity: `project_id` (UUID), `name`, auto-assigned hub prefix
 - [x] Write tower metadata to dolt `metadata` table
 - [x] If `--dolthub` provided: create DoltHub repo (reuse `ensureDoltHubDB()`), set remote, push
@@ -204,7 +206,7 @@ Work items:
 - [x] goreleaser config: cross-compile for darwin/linux, amd64/arm64
 - [x] GitHub Actions workflow: test on push, release on tag
 - [x] Homebrew tap: `awell-health/homebrew-spire` repo created; goreleaser `.goreleaser.yml` points at it
-- [x] Formula installs `spire` binary only -- dolt is auto-managed, not a Homebrew dependency
+- [x] Formula installs `spire` and depends on Homebrew `beads`; dolt is auto-managed, not a Homebrew dependency
 - [x] `spire version` prints spire version + managed dolt version and path (or "not installed")
 - [x] SHA256 checksums in release artifacts
 
@@ -249,11 +251,11 @@ Container-based agent execution. Each wizard task gets its own container.
 Work items:
 - [x] Agent image Dockerfile exists (`Dockerfile.agent`)
 - [x] Agent image includes: Go, Node, Python, git, dolt, bd, spire, claude-code CLI
-- [ ] Steward creates container per assignment (currently only k8s operator does this)
-- [ ] Local Docker spawning from `spire summon` or daemon
-- [ ] Container lifecycle tracking from the daemon
+- [ ] Steward-first Docker scheduling is a first-class local workflow
+- [x] Local Docker spawning from `spire summon` or steward backend selection
+- [ ] Rich container lifecycle / restart / health tracking from the daemon
 
-**Status (2026-03-26):** Docker images and k8s pod spawning work. Local Docker spawning is not implemented — process mode is the default and only local execution mode.
+**Status (2026-03-29):** Docker backend resolution and local `docker run` spawning exist. Process mode remains the default and best-tested local workflow, and steward-driven Docker scheduling is not the common path yet.
 
 ### 2.3 Process agent spawning
 
@@ -272,9 +274,9 @@ Work items:
 - [x] Formula-driven lifecycle (design → plan → implement → review → merge)
 - [x] Wave dispatch for epics (parallel apprentices per dependency wave)
 - [x] Sage review with revision rounds and arbiter escalation
-- [x] Auto-merge to main with ff-only + rebase retry
+- [x] Auto-merge to the configured base branch with ff-only + rebase retry
 
-**Status (2026-03-26):** Complete. This is the primary local execution path. `spire summon` spawns wizards, the executor drives formula phases, apprentices run in parallel worktrees, sages review, and the wizard merges to main.
+**Status (2026-03-26):** Complete. This is the primary local execution path. `spire summon` spawns wizards, the executor drives formula phases, apprentices run in parallel worktrees, sages review, and the wizard merges to the configured base branch.
 
 ### 2.4 `spire status` and `spire logs`
 
@@ -299,10 +301,11 @@ Work items:
 - [x] `spire up` starts: dolt server, daemon (Linear sync + DoltHub sync + webhook processing)
 - [x] `spire down` stops daemon (dolt stays for other repos)
 - [x] `spire shutdown` stops daemon + dolt
-- [ ] `spire up --steward` integrates the steward loop into the daemon
+- [x] `spire up --steward` starts a steward companion process
+- [ ] `spire up --steward` integrates the steward loop into the daemon process itself
 - [ ] Single-daemon enforcement (prevent multiple `spire up` from racing)
 
-**Status (2026-03-26):** Partial. `spire up/down/shutdown` manage dolt + daemon. Steward still runs as a separate process via `spire steward`. Manual capacity via `spire summon` is the primary workflow.
+**Status (2026-03-29):** Partial. `spire up/down/shutdown` manage dolt + daemon, and `spire up --steward` starts a sibling steward process. The unified single-process daemon remains future work. Manual capacity via `spire summon` is still the primary local workflow.
 
 ---
 
@@ -375,14 +378,16 @@ Work items:
 Replace the current kustomize manifests in `k8s/` with a proper Helm chart.
 
 Work items:
-- [ ] `charts/spire/` with `Chart.yaml`, `values.yaml`, templates
-- [ ] `values.yaml` inputs: dolthub URL, dolthub credentials secret, anthropic key secret, github token secret, tower name
+- [x] `helm/spire/` with `Chart.yaml`, `values.yaml`, templates
+- [x] `values.yaml` inputs: dolthub URL, dolthub credentials, anthropic key, github token, tower settings
 - [ ] Bootstrap job: `spire tower attach <dolthub-url>` (not create -- tower already exists)
-- [ ] Deployments: dolt-server, steward, operator, syncer
-- [ ] CRDs: SpireAgent, SpireWorkload, SpireConfig (existing definitions in `operator/api/v1alpha1/`)
-- [ ] PVCs: dolt data, beads seed
-- [ ] Service accounts and RBAC
+- [x] Deployments/templates: dolt, steward, operator, optional syncer
+- [x] CRDs: SpireAgent, SpireWorkload, SpireConfig
+- [x] PVCs: dolt data, steward state
+- [x] Service accounts and RBAC
 - [ ] Optional ingress for webhook receiver
+
+**Status (2026-03-29):** Partial. The Helm chart is real and usable today. It still relies on explicit `agents:` values that render `SpireAgent` CRs; repos-table-derived agent config remains future work.
 
 ### 4.2 Operator reads repos table
 
@@ -431,11 +436,11 @@ Work items:
 - [x] DORA metrics section
 - [x] spire.yaml configuration reference
 - [x] k8s overview
-- [ ] Links to contributing guide and license (blocked on 5.3)
-- [ ] Verify all doc links resolve (some may reference unwritten guides)
-- [ ] Remove references to features that don't exist yet or are aspirational
+- [x] Links to contributing guide and license
+- [x] Verify all doc links resolve
+- [x] Remove references to features that don't exist yet or are aspirational
 
-**Status (2026-03-26):** README is comprehensive (277 lines). Needs a cleanup pass to remove aspirational claims and verify doc links.
+**Status (2026-03-29):** README is launch-ready after a cleanup pass for implementation drift, links, and present-day command behavior.
 
 ### 5.2 Documentation
 
@@ -446,26 +451,26 @@ Work items:
 - [x] epic-formula.md — Mermaid diagram of epic lifecycle
 - [x] metrics.md — DORA metrics, lifecycle tracing, performance signals
 - [x] k8s-architecture.md — operator, CRDs, pod architecture, RBAC
-- [ ] CLI reference (auto-generated from help text)
-- [ ] Troubleshooting and FAQ
-- [ ] Agent development guide (how to build custom agents)
+- [x] CLI reference
+- [x] Troubleshooting and FAQ
+- [x] Agent development guide (how to build custom agents)
 
 ### 5.3 License and contributing
 
-- [ ] Apache 2.0 license (standard for Go infrastructure projects)
-- [ ] CONTRIBUTING.md with development setup, PR process, code style
+- [x] Apache 2.0 license (standard for Go infrastructure projects)
+- [x] CONTRIBUTING.md with development setup, PR process, code style
 - [ ] DCO (Developer Certificate of Origin) sign-off requirement
 
 ### 5.4 CI/CD
 
-- [ ] GitHub Actions: lint, test, build on every push
-- [ ] goreleaser on tag push: build binaries, create GitHub release, update Homebrew tap
+- [x] GitHub Actions: lint, test, build on every push
+- [x] goreleaser on tag push: build binaries, create GitHub release, update Homebrew tap
 - [ ] Container image build and push to ghcr.io on release
 - [ ] Helm chart publish to OCI registry or GitHub Pages
 
 ### 5.5 Demo
 
-- [ ] Terminal recording (asciinema or vhs): install, tower create, register repo, file task, agent opens PR
+- [ ] Terminal recording (asciinema or vhs): install, tower create, register repo, file task, agent lands a change
 - [ ] Under 60 seconds
 - [ ] Embedded in README
 

@@ -1,6 +1,6 @@
 # spire.yaml Configuration Reference
 
-`spire.yaml` lives in the root of each registered repo. It tells wizards how to work in that repo: which model to use, how to run tests, how to name branches, and which files to read before starting.
+`spire.yaml` lives in the root of each registered repo. It tells wizards how to work in that repo: which backend and model to use, how to run tests, how to name branches, and which files to read before starting.
 
 When `spire repo add` is run, `spire.yaml` is generated automatically if one doesn't exist. You can edit it at any time.
 
@@ -17,6 +17,7 @@ runtime:
   install: ""              # optional: run before test/build/lint
 
 agent:
+  backend: process
   model: claude-sonnet-4-6
   max-turns: 30
   stale: 10m
@@ -45,7 +46,7 @@ Controls how the wizard validates its work.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `language` | string | Repository language. Auto-detected if omitted. Values: `go`, `typescript`, `python`, `rust`. |
+| `language` | string | Repository language. Auto-detected if omitted. Values: `go`, `typescript`, `python`, `rust`, `unknown`. |
 | `test` | string | Command to run tests. Run after implementation. |
 | `build` | string | Command to build the project. Run after tests. |
 | `lint` | string | Command to lint the project. Run first. |
@@ -73,10 +74,12 @@ Controls how wizards run.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `backend` | string | `process` | Execution backend: `process`, `docker`, or `k8s`. |
 | `model` | string | `claude-sonnet-4-6` | Claude model for implementation. |
 | `max-turns` | int | `30` | Claude Code turn limit per phase. |
 | `stale` | duration | `10m` | Steward warning threshold. After this time, steward flags the wizard as stale. |
 | `timeout` | duration | `15m` | Hard kill threshold. Steward terminates the wizard after this time. |
+| `design-timeout` | duration | unset | Optional override for the design phase timeout. |
 | `formula` | string | (by bead type) | Default formula to use. Overrides bead-type mapping but is overridden by bead labels. |
 
 **Model values:** Any Claude model identifier — `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`.
@@ -84,6 +87,18 @@ Controls how wizards run.
 **Timeout behavior:** The `stale` threshold generates a warning in `spire roster`. The `timeout` threshold sends SIGKILL and marks the bead as failed. Both are calculated from when the wizard starts working, not from when the bead was filed.
 
 **Per-phase overrides:** Individual formula phases can override the model and timeout. See [formulas](#formulas) below.
+
+**Docker backend options:** When `backend: docker`, Spire also reads the nested `agent.docker` block:
+
+```yaml
+agent:
+  backend: docker
+  docker:
+    image: ghcr.io/awell-health/spire-agent:latest
+    network: host
+    extra-volumes: []
+    extra-env: []
+```
 
 ---
 
@@ -93,7 +108,7 @@ Controls how wizards manage git branches.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `base` | string | `main` | Base branch for pull requests. |
+| `base` | string | `main` | Base branch the executor lands approved work into. |
 | `pattern` | string | `feat/{bead-id}` | Branch name pattern. `{bead-id}` is replaced with the actual bead ID. |
 
 **Branch pattern variables:**
@@ -115,14 +130,18 @@ branch:
 
 ## `pr`
 
-Controls pull request behavior.
+Controls GitHub PR metadata for PR-oriented workflows.
+
+The current default local executor path does **not** open PRs. It lands
+approved work by merging directly to `branch.base`. The `pr:` block is
+still part of the schema for GitHub-oriented flows and future landing
+paths.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `auto-merge` | bool | `false` | Merge PR automatically after sage approval. If false, the wizard creates the PR but waits for human merge. |
+| `auto-merge` | bool | `false` | Advisory flag for PR-oriented workflows. Not used by the default local executor path. |
 | `reviewers` | list | `[]` | GitHub usernames to request as reviewers. |
 | `labels` | list | `["agent-generated"]` | Labels to add to the PR. |
-| `draft` | bool | `false` | Create PRs as drafts. |
 
 ---
 
@@ -155,8 +174,8 @@ Formulas determine the phase pipeline a wizard follows. The mapping is automatic
 
 | Bead type | Formula | Phases |
 |-----------|---------|--------|
-| `task`, `feature`, `chore` | `spire-agent-work` | implement → review → merge |
-| `bug` | `spire-bugfix` | implement → review → merge |
+| `task`, `feature`, `chore` | `spire-agent-work` | plan → implement → review → merge |
+| `bug` | `spire-bugfix` | plan → implement → review → merge |
 | `epic` | `spire-epic` | design → plan → implement → review → merge |
 
 **Override per-repo** (affects all beads in this repo unless the bead has a label):
@@ -182,22 +201,32 @@ bd label add spi-abc "formula:spire-bugfix"
 Formula files use TOML:
 
 ```toml
-formula = "my-custom"
+name = "my-custom"
+version = 1
+
+[phases.plan]
+role = "wizard"
+timeout = "5m"
+model = "claude-opus-4-6"
 
 [phases.implement]
+role = "apprentice"
 timeout = "20m"
-model = "claude-opus-4-6"
+model = "claude-sonnet-4-6"
 worktree = true
 
 [phases.review]
+role = "sage"
 timeout = "15m"
 model = "claude-opus-4-6"
+verdict_only = true
 
-[phases.review.revision]
+[phases.review.revision_policy]
 max_rounds = 3
-on_exhaust = "arbitrate"   # or "approve", "discard"
+arbiter_model = "claude-opus-4-6"
 
 [phases.merge]
+strategy = "squash"
 auto = true
 ```
 
@@ -212,9 +241,9 @@ When `spire.yaml` is absent, Spire infers settings from the repo:
 | File found | Detected language | Default test command |
 |------------|-------------------|----------------------|
 | `go.mod` | `go` | `go test ./...` |
-| `package.json` | `typescript` or `javascript` | `npm test` or `pnpm test` |
+| `package.json` | `typescript` | `npm test` or `pnpm test` |
 | `Cargo.toml` | `rust` | `cargo test` |
-| `pyproject.toml` or `setup.py` | `python` | `pytest` |
+| `pyproject.toml` or `requirements.txt` | `python` | `pytest` |
 
 Auto-detection is best-effort. For reliable behavior, commit an explicit `spire.yaml`.
 

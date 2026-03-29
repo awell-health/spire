@@ -4,7 +4,7 @@ Spire is an AI agent coordination system. It manages a shared work graph
 (beads), routes work to autonomous agents, and synchronizes state across
 local machines and Kubernetes clusters via DoltHub.
 
-> **Living document.** Updated 2026-03-26. Where the current implementation
+> **Living document.** Updated 2026-03-29. Where the current implementation
 > differs from the target, inline callouts note the gap.
 
 ## Deployment Modes
@@ -13,8 +13,9 @@ Spire runs in three configurations. All share the same work graph, sync
 protocol, and agent protocol.
 
 **Local** -- Developer laptop. The `spire` CLI manages a local Dolt server
-and daemon. Agents run as local processes via `spire summon` (each wizard
-is a `spire wizard-run` subprocess working in its own git worktree).
+and daemon. Agents run as local processes via `spire summon` (each summoned
+wizard is a `spire execute` subprocess that orchestrates worktrees and review
+steps).
 
 **Cluster** -- Kubernetes. The operator watches CRDs and spins up agent
 pods. A shared Dolt Deployment holds the work graph. A syncer pod handles
@@ -68,7 +69,7 @@ Spire shells out to the `bd` binary for all work graph mutations.
 | Table      | Purpose                                                    |
 |------------|------------------------------------------------------------|
 | `issues`   | id, title, description, status, priority, type, owner, parent, timestamps |
-| `labels`   | issue_id, label -- routing (`msg`, `to:<agent>`, `from:<agent>`, `ref:<bead-id>`), metadata (`owner:`, `review-ready`, `feat-branch:`) |
+| `labels`   | issue_id, label -- routing (`msg`, `to:<agent>`, `from:<agent>`, `ref:<bead-id>`), metadata (`feat-branch:`, `updated:`, `needs-human`) |
 | `deps`     | blocked, blocker -- dependency graph                       |
 | `comments` | issue_id, author, body, created_at                         |
 | `metadata` | key-value store (project_id, config)                       |
@@ -101,17 +102,17 @@ summoning wizards (locally via `spire summon`, in k8s via SpireWorkload CRs).
 
 1. Commit local dolt changes
 2. Query ready beads (`bd ready`)
-3. Load agent roster (derived from the `repos` table in dolt)
-4. Assign ready beads to idle agents by summoning wizards (round-robin by priority)
-5. Detect standalone tasks ready for review (`review-ready` label)
+3. Load agent roster via the selected backend (`backend.List()`) or explicit `--agents`
+4. Assign ready beads to idle agents (round-robin by priority)
+5. Detect standalone tasks ready for review (via workflow/review child beads)
 6. Detect tasks with review feedback for wizard re-engagement
 7. Check bead health (stale warning at `agent.stale`, pod kill at `agent.timeout`)
 
 > **Current state (2026-03-26):** In k8s, the operator watches SpireAgent
-> CRDs for the roster. Locally, `spire summon` drives agent lifecycle
-> directly — no steward assignment needed. Target: the operator reads the
-> `repos` table directly and derives agent configurations; SpireAgent CRDs
-> are auto-generated or eliminated.
+> CRDs for the roster. Locally, `spire summon` still drives the common
+> execution path directly. The future direction is for the operator to read
+> the `repos` table directly and derive agent configurations; today
+> `SpireAgent` CRDs remain explicit.
 
 Assignment modes:
 - **External agents**: steward sends an assignment message via `spire send`
@@ -175,9 +176,9 @@ list.
 
 Per-bead orchestrator. Drives the formula lifecycle for a single bead.
 
-**Local**: `spire wizard-run <bead-id>` runs as a background process
-spawned by `spire summon`. For epics, the wizard dispatches apprentices
-in parallel worktrees and consults sages for review.
+**Local**: `spire execute <bead-id>` runs as the background executor
+spawned by `spire summon`. It dispatches apprentices and sages as needed
+for the bead's formula.
 
 **k8s**: Runs in a wizard pod (`agent-entrypoint.sh`). Clones the repo
 inside the container.
@@ -190,7 +191,7 @@ Lifecycle:
      plan:   invoke Claude (Opus) to generate subtask breakdown
      implement: dispatch apprentices in parallel waves (worktrees)
      review: dispatch sage for verdict (approve / request changes)
-     merge:  ff-only merge staging branch to main
+     merge:  ff-only merge staging branch to the configured base branch
   -> close bead -> write result -> exit
 ```
 
@@ -224,16 +225,15 @@ branch diff against the bead spec.
 - Revision rounds: if changes requested, wizard spawns a review-fix apprentice and re-reviews
 - Arbiter escalation: after max rounds, Claude Opus tie-break decides final action
 
-#### Artificer (not yet built)
+#### Artificer
 
-Formula maker. Will craft and test the formulas (spells) that wizards
+Formula maker. Crafts and tests the formulas (spells) that wizards
 follow, via the Workshop CLI. The artificer role is exclusively for
 formula creation — it does not orchestrate epics or review code.
 
-> **Current state (2026-03-28):** The old `cmd/spire-artificer/` binary
-> has been removed. The wizard now handles all execution (including epics
-> and reviews) both locally and in k8s. The artificer role will be
-> reintroduced when the Workshop CLI is built for formula management.
+> **Current state (2026-03-29):** The old `cmd/spire-artificer/` binary
+> has been removed. Formula work now lives in `spire workshop`, while the
+> executor handles task, bug, and epic execution both locally and in k8s.
 
 #### Familiar (`cmd/spire-sidecar/`)
 
@@ -249,19 +249,19 @@ is an implementation detail; the user-facing name is "familiar."
 
 **Health endpoints:** `/healthz`, `/readyz`, `/status` (JSON snapshot including work context)
 
-### Formula System (`cmd/spire/formula.go`, `cmd/spire/executor.go`)
+### Formula System (`pkg/formula/`, `pkg/executor/`)
 
 Formulas define the phase pipeline a wizard follows for a given bead type.
 Each formula is a TOML file declaring ordered phases with role, model,
 timeout, and behavior configuration.
 
-**Built-in formulas** (embedded in binary at `cmd/spire/embedded/formulas/`):
+**Built-in formulas** (embedded in binary at `pkg/formula/embedded/formulas/`):
 
 | Formula | Bead types | Phases | Description |
 |---------|-----------|--------|-------------|
 | `spire-epic` | epic | design → plan → implement → review → merge | Full lifecycle with design validation, Opus planning, wave dispatch, sage review |
-| `spire-bugfix` | bug | implement → review → merge | Quick fix: single apprentice, sage review, auto-merge |
-| `spire-agent-work` | task, feature, chore | implement → review → merge | Standard work: single apprentice, sage review, auto-merge |
+| `spire-bugfix` | bug | plan → implement → review → merge | Quick fix: wizard plan, single apprentice, sage review, auto-merge |
+| `spire-agent-work` | task, feature, chore | plan → implement → review → merge | Standard work: wizard plan, single apprentice, sage review, auto-merge |
 
 **Bead type → formula mapping:**
 
@@ -292,7 +292,7 @@ precedence over the embedded default.
 [phases.plan]       # wizard invokes Claude Opus to generate subtask breakdown
 [phases.implement]  # apprentices in parallel waves, each in a worktree
 [phases.review]     # sage reviews staging branch, verdict-only
-[phases.merge]      # ff-only merge staging branch to main
+[phases.merge]      # ff-only merge staging branch to the configured base branch
 ```
 
 See [epic-formula.md](epic-formula.md) for the full lifecycle diagram.
@@ -601,9 +601,9 @@ Managed via kustomize (`k8s/kustomization.yaml`):
 | Orchestrator  | Wizard     | Per-bead orchestrator, drives formula lifecycle  |
 | Implementer   | Apprentice | Writes code in isolated worktrees, one-shot     |
 | Reviewer      | Sage       | Reviews code, returns verdict, one-shot         |
-| Formula maker | Artificer  | Creates and manages formulas (spells) via the Workshop CLI (not yet built) |
+| Formula maker | Artificer  | Creates and manages formulas (spells) via `spire workshop` |
 | Companion     | Familiar   | Per-agent companion (sidecar) for messaging and health |
 | Dispute resolver | Arbiter | Resolves disputes when sage and apprentice disagree |
-| Formula tool  | Workshop   | CLI tool for formula creation and testing (not yet built) |
+| Formula tool  | Workshop   | CLI tool for formula creation, testing, and publishing |
 | Database      | Archive    | Dolt database                                   |
 | Hub           | Tower      | A Spire coordination instance                   |

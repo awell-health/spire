@@ -2,13 +2,13 @@
 
 > An open-source coordination hub for AI engineering agents.
 
-You file work. Agents implement it. PRs appear on your repos.
+You file work. Agents implement it. Changes land on your repos.
 
 ---
 
 ## What Spire Is
 
-Spire is infrastructure for directing AI agents to do real engineering work. You describe what you want built -- features, bug fixes, tasks -- and AI agents clone your repos, write code, and open pull requests.
+Spire is infrastructure for directing AI agents to do real engineering work. You describe what you want built -- features, bug fixes, tasks -- and AI agents clone your repos, write code, and land reviewed changes.
 
 It is not a chatbot. It is not a copilot. It is a work system: a structured graph of tasks, a protocol for agent coordination, and a sync layer that lets multiple developers and multiple agents collaborate on the same body of work from anywhere.
 
@@ -42,7 +42,7 @@ Each registered repo gets a unique prefix within the tower. Bead IDs include the
 
 ### 1. Local-first, cluster-optional
 
-Spire works on a laptop. `brew install spire && spire up` gets you a running tower with a local Dolt database, a steward, and agent execution via Docker or subprocesses. Kubernetes is for teams that need persistent agents, autoscaling, and managed infrastructure. It is never required.
+Spire works on a laptop. `brew install spire && spire up && spire summon 1` gets you a running tower with a local Dolt database, a daemon, and agent execution via subprocesses by default. Kubernetes is for teams that need persistent agents, autoscaling, and managed infrastructure. It is never required.
 
 ### 2. User-first bootstrap
 
@@ -58,7 +58,7 @@ No direct connectivity is needed between your laptop and a cluster. DoltHub medi
 
 ### 5. Open protocol
 
-Beads and Spire define how agents coordinate: how work is filed, claimed, executed, and completed. The protocol is open. Anyone can build agents that speak it, storage backends that host it, or integrations that extend it. Spire ships with opinionated defaults (Anthropic models, DoltHub sync, GitHub PRs) but none of these are locked in.
+Beads and Spire define how agents coordinate: how work is filed, claimed, executed, and completed. The protocol is open. Anyone can build agents that speak it, storage backends that host it, or integrations that extend it. Spire ships with opinionated defaults (Anthropic models, DoltHub sync, GitHub integration) but none of these are locked in.
 
 ## The 5-Minute Experience
 
@@ -68,34 +68,35 @@ spire tower create --name my-team
 spire repo add
 spire file "Add dark mode" -t feature -p 2
 spire up
+spire summon 1
 ```
 
-Five commands from zero to an AI agent opening a PR on your repo.
+A short path from zero to an AI agent run on your repo.
 
-`spire tower create` initializes a Dolt database and pushes it to DoltHub. `spire repo add` scans the current directory, assigns a prefix, and records the repo in the tower. `spire file` creates a bead. `spire up` starts the steward, which reads the work graph, finds the new task, spawns a wizard agent, and the wizard clones the repo, implements the feature, and opens a pull request.
+`spire tower create` initializes a Dolt database and pushes it to DoltHub. `spire repo add` scans the current directory, assigns a prefix, and records the repo in the tower. `spire file` creates a bead. `spire up` starts the local Dolt server and daemon. `spire summon` provides local capacity by starting an executor, which runs the bead's formula and lands approved work onto the repo's base branch. `spire up --steward` can also start the coordinator loop, but explicit `summon` is still the common local entry point.
 
-You watch the PR appear. You review it. You merge it. The bead closes.
+You watch the board move. Sages review the implementation. Approved work merges to the repo's base branch. The bead closes.
 
 ## Architecture Layers
 
 | Layer | What it is | Where it runs |
 |-------|-----------|---------------|
-| **Spire Core** | Single binary: tower management, bead graph (bd), agent protocol, sync, CLI | Everywhere |
-| **Spire Local** | Local steward, agent spawning (Docker/processes), background daemon | Laptop |
-| **Spire Cluster** | Operator, managed agent pods, persistent steward, autoscaling, PVCs | Kubernetes |
+| **Spire Core** | Core CLI surface: tower management, bd-backed work graph, agent protocol, sync | Everywhere |
+| **Spire Local** | Local daemon, optional steward, agent spawning (process default, Docker optional) | Laptop |
+| **Spire Cluster** | Operator, steward, managed agent pods, autoscaling, PVCs | Kubernetes |
 | **Spire Hosted** | Managed towers, team dashboard, GitHub App (future) | Cloud |
 
 ### Spire Core
 
-The `spire` binary embeds `bd` (the beads CLI) and adds tower management, repo registration, agent messaging, and DoltHub sync. It is the only dependency. It compiles to a single static binary for macOS and Linux.
+The `spire` CLI wraps `bd` (the beads CLI) today and adds tower management, repo registration, agent messaging, and DoltHub sync. The supported install path ships `bd` alongside `spire`; the user-facing command surface is still a single tool.
 
 ### Spire Local
 
-On a laptop, `spire up` starts a local Dolt server and a steward process. The steward watches the work graph and spawns agents as needed. Agents run as Docker containers (default) or child processes. All state lives in `~/.config/spire/` and the local Dolt data directory.
+On a laptop, `spire up` starts a local Dolt server and daemon. `spire up --steward` also starts the steward as a sibling process. Agents run as child processes by default, with a Docker backend available when configured. All state lives in `~/.config/spire/` and the local Dolt data directory.
 
 ### Spire Cluster
 
-In Kubernetes, Spire deploys via a Helm chart. The operator watches the tower's repos table and manages agent pods. The steward runs as a persistent deployment. Wizard pods are ephemeral -- one per task, terminated on completion. A syncer pod handles DoltHub push/pull on interval. Secrets (API keys, GitHub tokens) are stored in Kubernetes secrets.
+In Kubernetes, Spire deploys via a Helm chart. The chart currently renders explicit `SpireAgent` objects, and the operator manages pods from those CRs. The steward runs as a persistent deployment. Wizard pods are ephemeral -- one per task, terminated on completion. A syncer pod can handle DoltHub push/pull on interval. Secrets (API keys, GitHub tokens) are stored in Kubernetes secrets.
 
 ### Spire Hosted (Future)
 
@@ -131,7 +132,7 @@ The tie-breaker. Invoked when a sage and apprentice cannot converge after the ma
 
 ### Artificer
 
-The formula maker. The artificer crafts and maintains spells (formulas) — the TOML-based recipes that wizards follow to drive beads through their lifecycle. It works at the Workshop, a dedicated CLI tool (not yet built) for authoring, validating, and testing formulas before they are published to the tower. The artificer does not orchestrate epics or review code — that is the wizard's and sage's domain.
+The formula maker. The artificer crafts and maintains spells (formulas) — the TOML-based recipes that wizards follow to drive beads through their lifecycle. It works at the Workshop CLI (`spire workshop`) for authoring, validating, testing, and publishing formulas before they are used by the tower. The artificer does not orchestrate epics or review code — that is the wizard's and sage's domain.
 
 ### Familiar
 
@@ -139,11 +140,7 @@ A per-agent companion that runs alongside each wizard or apprentice. The familia
 
 ### Workshop (CLI Tool)
 
-The Workshop is a dedicated CLI tool (not yet built) where the artificer creates, validates, and tests spells (formulas). It provides a local sandbox for iterating on formula definitions — phase pipelines, model requirements, context rules — before publishing them to the tower for wizards to consume.
-
-> **Note:** The `wizard-epic` command (formerly `workshop`) handles epic
-> orchestration and is distinct from the Workshop formula tool. The
-> `workshop` command name remains as a deprecated alias for `wizard-epic`.
+The Workshop is the dedicated CLI where the artificer creates, validates, and tests spells (formulas). It provides a local sandbox for iterating on formula definitions — phase pipelines, model requirements, context rules — before publishing them to the tower for wizards to consume.
 
 ## Sync Model
 
@@ -180,7 +177,7 @@ Spire requires credentials for three services:
 | Service | Purpose | Credential key |
 |---------|---------|---------------|
 | DoltHub | Database sync | `dolt_remote_user` / `dolt_remote_password` |
-| GitHub | Repo access, PRs | `github_token` (PAT v1), GitHub App (v2) |
+| GitHub | Repo access, branch pushes | `github_token` (PAT v1), GitHub App (v2) |
 | Anthropic | LLM agent execution | `anthropic_api_key` |
 
 On a laptop, credentials are stored in `~/.config/spire/credentials` (chmod 600). This file is the canonical credential store. Environment variables (`DOLT_REMOTE_USER`, `ANTHROPIC_API_KEY`, etc.) can override file-based credentials for CI/CD and ephemeral environments, but they are not the primary storage mechanism. In a cluster, credentials are stored in Kubernetes secrets and mounted into agent pods.
@@ -193,19 +190,19 @@ Tower-level secrets are scoped to the tower. A developer attaching to a tower br
 
 The single-developer, single-laptop experience. Everything works offline except DoltHub sync.
 
-- Single `spire` binary with embedded `bd`
+- Single `spire` CLI with a stable `bd` wrapper boundary
 - `spire tower create` / `spire tower attach`
-- Local agent execution via Docker
+- Local agent execution via subprocesses by default (Docker optional)
 - DoltHub sync with `spire push` / `spire pull`
 - `spire file` / `spire claim` / `spire focus` workflow
-- Steward assigns work from the local graph
+- Steward and `spire summon` both work against the local graph
 
 ### Phase 2: Cluster
 
 Persistent infrastructure for teams that want always-on agents.
 
 - Helm chart for Kubernetes deployment
-- Operator with auto-discovery from the tower's repos table
+- Operator with explicit `SpireAgent` CRDs today; repos-table auto-derivation remains future
 - Persistent steward deployment
 - Ephemeral wizard pods (one per task, auto-terminated)
 - Syncer pod for continuous DoltHub sync
@@ -237,6 +234,6 @@ The transition from open-source tool to product offering, while keeping the core
 
 The gap between "AI can write code" and "AI ships features" is coordination. Today's AI coding tools are reactive -- they wait for you to ask. Spire is proactive. You describe the work. Agents execute it. The work graph ensures nothing falls through the cracks.
 
-This is not about replacing developers. It is about giving every developer a team of agents that can handle the backlog while they focus on the work that requires human judgment. File the task, review the PR, ship the feature. The middle part -- the implementation grind -- is what agents are for.
+This is not about replacing developers. It is about giving every developer a team of agents that can handle the backlog while they focus on the work that requires human judgment. File the task, review the result, ship the feature. The middle part -- the implementation grind -- is what agents are for.
 
 Spire makes that real, today, on your laptop, with your repos, under your control.

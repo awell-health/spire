@@ -110,19 +110,20 @@ Then re-summon:
 spire summon 1 --targets spi-abc
 ```
 
-### Wizard completed but no PR was created
+### Wizard completed but the change did not land
 
 Check the wizard's output:
 
 ```bash
 spire logs wizard-1
-cat ~/.local/share/spire/wizards/wizard-1.log | grep -i "pr\|pull request\|github"
+cat ~/.local/share/spire/wizards/wizard-1.log | grep -i "merge\|push\|branch\|github"
 ```
 
 Common causes:
 - GitHub token lacks `repo` scope: regenerate at GitHub → Settings → Developer settings
-- Branch already exists: wizard couldn't push
-- `pr.auto-merge: false` in `spire.yaml` and wizard merged locally
+- Push to the base branch was rejected (branch protection, auth, or diverged history)
+- Build or test verification failed during the merge phase
+- `branch.base` in `spire.yaml` points at the wrong landing branch
 
 ### Wizard keeps failing on tests
 
@@ -156,9 +157,9 @@ bd comments spi-abc --json | jq '.[-3:]'  # last 3 comments
 
 The sage's comments explain what it wants changed. If the sage is wrong or too strict, you can override:
 
-1. Merge the PR manually (bypassing the sage)
+1. Add a bead comment clarifying the intent or expected behavior
 2. Lower `max_rounds` in the formula to trigger arbiter escalation faster
-3. Adjust the bead description to clarify intent
+3. If you want to take over manually, land the fix yourself and then close or reopen the bead
 
 ### "no .beads/ directory found"
 
@@ -210,10 +211,7 @@ Two machines filed beads without syncing first. Fix:
 spire sync --merge
 ```
 
-This runs a three-way merge. If there are conflicts, they are resolved by field-level ownership rules:
-- Status fields (`status`, `owner`) → cluster/newest wins
-- Content fields (`title`, `description`, `priority`) → user wins
-- Append-only fields (`comments`, `messages`) → union, no conflicts
+This runs a three-way merge. Spire's intended conflict model is field-level ownership, but the automated post-merge fixups are still incomplete. After a merge, inspect the resulting bead state before continuing.
 
 ### DoltHub push returns 403
 
@@ -263,17 +261,17 @@ bd list --json | wc -l     # count beads
 
 ### Board columns don't match expected state
 
-The board reads phase labels from beads. A bead's column is determined by its `phase:X` label:
+The board primarily reads active workflow-step beads and only falls back to `phase:X` labels:
 
 ```bash
 bd label list spi-abc     # check phase labels
 ```
 
-To manually move a bead to a column:
+To inspect or advance a bead:
 
 ```bash
-bd label remove spi-abc "phase:implement"
-bd label add spi-abc "phase:review"
+spire trace spi-abc
+spire advance spi-abc
 ```
 
 ### `spire watch` exits immediately
@@ -401,12 +399,12 @@ This starts an OAuth2 flow. When connected:
 - The Linear issue includes the bead ID and links back to the tower
 - Status changes in Linear are NOT synced back to beads (Linear is for PM tracking; beads are the source of truth for structure)
 
-### What happens if a wizard opens a bad PR?
+### What happens if a wizard lands a bad change?
 
-Close the PR on GitHub. The bead will remain in its current state. To re-file the work:
+If the change already landed on the base branch, revert or follow up in git first. Then reopen or re-file the work in Spire:
 
 ```bash
-# Reset the bead
+# Reopen the bead
 bd update spi-abc --status open
 bd update spi-abc --owner ""
 
