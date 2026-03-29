@@ -328,18 +328,22 @@ func (m Model) View() string {
 		s.WriteString(leftFooter + "  " + rightFooter)
 	}
 	s.WriteString("\n")
-	var footerParts []string
-	if bead := m.SelectedBead(); bead != nil {
-		beadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-		footerParts = append(footerParts, beadStyle.Render(bead.ID+"  "+Truncate(bead.Title, 60)))
-	}
-	// Show inline action status.
-	if m.ActionStatus != "" {
-		statusStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-		footerParts = append(footerParts, statusStyle.Render(m.ActionStatus))
-	}
-	if len(footerParts) > 0 {
-		s.WriteString(strings.Join(footerParts, footerStyle.Render("  •  ")))
+	if m.Cmdline.Active {
+		s.WriteString(RenderCmdline(m.Cmdline, m.Width))
+	} else {
+		var footerParts []string
+		if bead := m.SelectedBead(); bead != nil {
+			beadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+			footerParts = append(footerParts, beadStyle.Render(bead.ID+"  "+Truncate(bead.Title, 60)))
+		}
+		// Show inline action status.
+		if m.ActionStatus != "" {
+			statusStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+			footerParts = append(footerParts, statusStyle.Render(m.ActionStatus))
+		}
+		if len(footerParts) > 0 {
+			s.WriteString(strings.Join(footerParts, footerStyle.Render("  •  ")))
+		}
 	}
 
 	boardOutput := s.String()

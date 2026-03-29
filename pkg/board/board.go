@@ -8,6 +8,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/spf13/cobra"
 )
 
 // Type aliases for convenience within pkg/board.
@@ -57,6 +58,7 @@ type Opts struct {
 	Ready    bool
 	Epic     string
 	Interval time.Duration
+	RootCmd  *cobra.Command // root cobra command for command mode completion/execution
 }
 
 // ANSI color codes for static terminal output (used by watch, roster, actions).

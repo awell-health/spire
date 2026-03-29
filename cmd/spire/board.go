@@ -119,6 +119,8 @@ func cmdBoard(args []string) error {
 		return executeInlineAction(action, beadID)
 	}
 
+	opts.RootCmd = rootCmd
+
 	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn, inlineActionFn)
 }
 

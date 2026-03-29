@@ -2,9 +2,11 @@ package board
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/spf13/cobra"
 )
 
 // PendingAction identifies an action to run after the TUI exits.
@@ -98,6 +100,10 @@ type Model struct {
 	ConfirmBeadID string
 	ConfirmPrompt string
 	ConfirmDanger DangerLevel
+
+	// Command mode state.
+	Cmdline     CmdlineState   // vim-style command line state
+	CmdlineRoot *cobra.Command // root cobra command for parsing/completion
 }
 
 // VisibleCols returns the columns filtered by the current type scope.
@@ -254,6 +260,7 @@ func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, ac
 			SelSection:     SectionColumns,
 			FetchAgentsFn:  fetchAgents,
 			InlineActionFn: inlineActionFn,
+			CmdlineRoot:    opts.RootCmd,
 		}
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		result, err := p.Run()
@@ -317,6 +324,33 @@ func actionLabel(a PendingAction) string {
 	default:
 		return "Action"
 	}
+}
+
+// cmdlineDoneMsg carries the result of a command-line execution.
+type cmdlineDoneMsg struct {
+	output string
+	err    error
+}
+
+// updateCmdline handles keypresses while command mode is active.
+func (m Model) updateCmdline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	newState, done, execCmd := HandleCmdlineKey(m.Cmdline, msg, m.CmdlineRoot)
+	m.Cmdline = newState
+	if done {
+		m.Cmdline.Active = false
+		if execCmd != "" {
+			m.Cmdline.History = append(m.Cmdline.History, execCmd)
+			m.ActionRunning = true
+			m.ActionStatus = "Running: " + execCmd
+			m.ActionStatusTime = time.Now()
+			rootCmd := m.CmdlineRoot
+			return m, func() tea.Msg {
+				output, err := ExecuteCmd(rootCmd, execCmd)
+				return cmdlineDoneMsg{output: output, err: err}
+			}
+		}
+	}
+	return m, nil
 }
 
 // isInlineAction returns true if the action should execute within the TUI.
@@ -467,6 +501,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+		}
+
+		// Command mode: absorb all keys.
+		if m.Cmdline.Active {
+			return m.updateCmdline(msg)
 		}
 
 		// Search mode: absorb all keys.
@@ -808,6 +847,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+		// Command mode.
+		case ":":
+			m.Cmdline = CmdlineState{Active: true, History: m.Cmdline.History, HistIdx: -1, CompIdx: -1}
+			return m, nil
+
 		// Search.
 		case "/":
 			m.SearchActive = true
@@ -856,6 +900,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.ActionStatusTime = time.Now()
 		// Refresh board data after action completes.
+		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+	case cmdlineDoneMsg:
+		m.ActionRunning = false
+		if msg.err != nil {
+			m.ActionStatus = fmt.Sprintf("Error: %v", msg.err)
+		} else if msg.output != "" {
+			// Truncate to first line for status display.
+			line := msg.output
+			if idx := strings.Index(line, "\n"); idx >= 0 {
+				line = line[:idx]
+			}
+			if len(line) > 80 {
+				line = line[:77] + "..."
+			}
+			m.ActionStatus = line
+		} else {
+			m.ActionStatus = "Done"
+		}
+		m.ActionStatusTime = time.Now()
 		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
 	}
 	return m, nil
