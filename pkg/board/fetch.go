@@ -171,7 +171,7 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 		}
 		var s EpicChildSummary
 		for _, c := range children {
-			if store.IsStepBead(c) || store.IsAttemptBead(c) || store.IsReviewRoundBead(c) {
+			if store.IsStepBead(c) || store.IsAttemptBead(c) || store.IsReviewRoundBead(c) || store.IsFormulaTemplateBead(c) {
 				continue
 			}
 			s.Total++

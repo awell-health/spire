@@ -70,6 +70,9 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		if store.IsStepBoardBead(b) {
 			return true
 		}
+		if store.IsFormulaTemplateBoardBead(b) {
+			return true
+		}
 		return false
 	}
 
@@ -155,6 +158,9 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 			return true
 		}
 		if store.IsStepBoardBead(b) {
+			return true
+		}
+		if store.IsFormulaTemplateBoardBead(b) {
 			return true
 		}
 		return false

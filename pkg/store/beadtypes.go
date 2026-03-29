@@ -329,6 +329,19 @@ func IsStepBoardBead(b BoardBead) bool {
 	return false
 }
 
+// --- Formula template bead helpers ---
+
+// IsFormulaTemplateBead returns true if the bead is a formula template bead
+// (has unresolved template variables like {{task}} in the title).
+func IsFormulaTemplateBead(b Bead) bool {
+	return strings.Contains(b.Title, "{{")
+}
+
+// IsFormulaTemplateBoardBead returns true if the BoardBead is a formula template bead.
+func IsFormulaTemplateBoardBead(b BoardBead) bool {
+	return strings.Contains(b.Title, "{{")
+}
+
 // ReviewRoundNumber extracts the round number from a review bead's round:<N> label.
 // Returns 0 if not found.
 func ReviewRoundNumber(b Bead) int {
