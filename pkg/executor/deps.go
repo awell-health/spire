@@ -110,6 +110,10 @@ type Deps struct {
 	// Agent run recording
 	RecordAgentRun func(run AgentRun) error
 
+	// AgentResultDir returns the directory containing result.json for the named agent.
+	// Path: <doltGlobalDir>/wizards/<agentName>
+	AgentResultDir func(agentName string) string
+
 	// Claude runner
 	ClaudeRunner func(args []string, dir string) ([]byte, error)
 

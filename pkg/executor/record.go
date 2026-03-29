@@ -1,17 +1,43 @@
 package executor
 
-import "time"
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// agentResultJSON matches the structure of result.json written by apprentices/sages.
+type agentResultJSON struct {
+	Result     string `json:"result"`
+	Branch     string `json:"branch"`
+	Commit     string `json:"commit"`
+	ElapsedS   int    `json:"elapsed_s"`
+	// Extended fields (populated when available)
+	TotalTokens  int `json:"total_tokens,omitempty"`
+	ContextIn    int `json:"context_tokens_in,omitempty"`
+	ContextOut   int `json:"context_tokens_out,omitempty"`
+	FilesChanged int `json:"files_changed,omitempty"`
+	LinesAdded   int `json:"lines_added,omitempty"`
+	LinesRemoved int `json:"lines_removed,omitempty"`
+	Turns        int `json:"turns,omitempty"`
+}
 
 // recordAgentRun records an agent run to the agent_runs table.
 // Safe to call even when RecordAgentRun is nil (tests, legacy callers).
+//
+// After the agent exits, it reads the agent's result.json to capture the
+// actual outcome (test_failure, no_changes, etc.) rather than just
+// spawn success/failure. Also populates review rounds from executor state
+// and computes git diff stats when possible.
 func (e *Executor) recordAgentRun(name, beadID, epicID, model, role string, started time.Time, spawnErr error) {
 	if e.deps.RecordAgentRun == nil {
 		return
 	}
-	result := "success"
-	if spawnErr != nil {
-		result = "error"
-	}
+
 	completed := time.Now()
 	run := AgentRun{
 		BeadID:          beadID,
@@ -19,12 +45,115 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role string, star
 		AgentName:       name,
 		Model:           model,
 		Role:            role,
-		Result:          result,
 		DurationSeconds: int(completed.Sub(started).Seconds()),
 		StartedAt:       started.Format(time.RFC3339),
 		CompletedAt:     completed.Format(time.RFC3339),
+		ReviewRounds:    e.state.ReviewRounds,
 	}
+
+	// Try to read the agent's result.json for actual outcome and metrics.
+	if ar := e.readAgentResult(name); ar != nil {
+		run.Result = mapResultValue(ar.Result)
+		run.TotalTokens = ar.TotalTokens
+		run.ContextTokensIn = ar.ContextIn
+		run.ContextTokensOut = ar.ContextOut
+		run.FilesChanged = ar.FilesChanged
+		run.LinesAdded = ar.LinesAdded
+		run.LinesRemoved = ar.LinesRemoved
+		run.Turns = ar.Turns
+	} else {
+		// No result.json available — derive result from the process error.
+		run.Result = resultFromError(spawnErr)
+	}
+
+	// Compute git diff stats as fallback when result.json didn't provide them.
+	if run.FilesChanged == 0 && run.Result == "success" && e.state.RepoPath != "" {
+		fc, la, lr := gitDiffStats(e.state.RepoPath, e.state.BaseBranch, e.resolveBranch(beadID))
+		run.FilesChanged = fc
+		run.LinesAdded = la
+		run.LinesRemoved = lr
+	}
+
 	if err := e.deps.RecordAgentRun(run); err != nil {
 		e.log("warning: record agent run: %s", err)
 	}
+}
+
+// readAgentResult reads the result.json written by the named agent.
+// Returns nil if the file doesn't exist, the dep is not wired, or parsing fails.
+func (e *Executor) readAgentResult(agentName string) *agentResultJSON {
+	if e.deps.AgentResultDir == nil {
+		return nil
+	}
+	dir := e.deps.AgentResultDir(agentName)
+	if dir == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "result.json"))
+	if err != nil {
+		return nil
+	}
+	var ar agentResultJSON
+	if err := json.Unmarshal(data, &ar); err != nil {
+		return nil
+	}
+	return &ar
+}
+
+// mapResultValue normalizes result.json result strings to canonical values
+// stored in the agent_runs table.
+func mapResultValue(raw string) string {
+	switch raw {
+	case "success", "test_failure", "no_changes", "timeout",
+		"review_rejected", "empty_diff", "error":
+		return raw
+	case "":
+		return "success"
+	default:
+		return raw
+	}
+}
+
+// resultFromError derives a result string from a process error when no
+// result.json is available.
+func resultFromError(err error) string {
+	if err == nil {
+		return "success"
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "signal: killed") || strings.Contains(msg, "signal: terminated") {
+		return "timeout"
+	}
+	return "error"
+}
+
+// gitDiffStats computes files-changed, lines-added, lines-removed by running
+// git diff --numstat against the base branch. Returns zeros on any failure.
+func gitDiffStats(repoPath, baseBranch, featureBranch string) (filesChanged, linesAdded, linesRemoved int) {
+	if baseBranch == "" || featureBranch == "" {
+		return
+	}
+	cmd := exec.Command("git", "diff", "--numstat", baseBranch+"..."+featureBranch)
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+		filesChanged++
+		if a, err := strconv.Atoi(parts[0]); err == nil {
+			linesAdded += a
+		}
+		if r, err := strconv.Atoi(parts[1]); err == nil {
+			linesRemoved += r
+		}
+	}
+	return
 }

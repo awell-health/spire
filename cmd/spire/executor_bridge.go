@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
@@ -140,6 +141,9 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 
 		// Agent run recording
 		RecordAgentRun: metrics.Record,
+		AgentResultDir: func(agentName string) string {
+			return filepath.Join(doltGlobalDir(), "wizards", agentName)
+		},
 
 		// Claude runner
 		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
