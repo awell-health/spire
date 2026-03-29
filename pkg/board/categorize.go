@@ -128,6 +128,100 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 	return c
 }
 
+// CategorizeWithPhases builds board columns using a pre-computed phase map and blocked map
+// instead of making per-bead DB calls. Same logic as CategorizeColumnsFromStore.
+func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[string][]string, phaseMap map[string]string, identity string) Columns {
+	var c Columns
+
+	isAlert := func(b BoardBead) bool {
+		for _, l := range b.Labels {
+			if l == "alert" || strings.HasPrefix(l, "alert:") {
+				return true
+			}
+		}
+		return false
+	}
+
+	skip := func(b BoardBead) bool {
+		for _, l := range b.Labels {
+			if strings.HasPrefix(l, "msg") || l == "template" || strings.HasPrefix(l, "agent") {
+				return true
+			}
+		}
+		if store.IsAttemptBoardBead(b) {
+			return true
+		}
+		if store.IsReviewRoundBoardBead(b) {
+			return true
+		}
+		if store.IsStepBoardBead(b) {
+			return true
+		}
+		return false
+	}
+
+	// Build blocked set from blockedMap keys.
+	blockedIDs := make(map[string]bool, len(blockedMap))
+	for id := range blockedMap {
+		blockedIDs[id] = true
+	}
+
+	// Add blocked beads from open beads that appear in blockedMap.
+	for _, b := range openBeads {
+		if skip(b) {
+			continue
+		}
+		if blockedIDs[b.ID] {
+			c.Blocked = append(c.Blocked, b)
+		}
+	}
+
+	for _, b := range openBeads {
+		if isAlert(b) && b.Status == "open" {
+			c.Alerts = append(c.Alerts, b)
+			continue
+		}
+		if skip(b) {
+			continue
+		}
+		if blockedIDs[b.ID] {
+			continue
+		}
+
+		phase := phaseMap[b.ID]
+		switch {
+		case phase == "design":
+			c.Design = append(c.Design, b)
+		case phase == "plan":
+			c.Plan = append(c.Plan, b)
+		case phase == "implement":
+			c.Implement = append(c.Implement, b)
+		case strings.HasPrefix(phase, "review"):
+			c.Review = append(c.Review, b)
+		case phase == "merge":
+			c.Merge = append(c.Merge, b)
+		default:
+			c.Ready = append(c.Ready, b)
+		}
+	}
+
+	for _, b := range closedBeads {
+		if skip(b) {
+			continue
+		}
+		c.Done = append(c.Done, b)
+	}
+	// Most recently updated first, capped at 10.
+	sort.Slice(c.Done, func(i, j int) bool {
+		return c.Done[i].UpdatedAt > c.Done[j].UpdatedAt
+	})
+	if len(c.Done) > 10 {
+		c.Done = c.Done[:10]
+	}
+
+	return c
+}
+
 // FilterEpic filters columns to only contain beads matching the epic ID and its children.
 func FilterEpic(cols Columns, epicID string) Columns {
 	match := func(b BoardBead) bool {
