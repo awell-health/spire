@@ -124,6 +124,103 @@ func phaseIndex(name string) int {
 	return len(formula.ValidPhases)
 }
 
+// FetchDAGProgressFromChildren builds DAGProgress from a pre-fetched children
+// slice instead of querying the store per bead. The filtering logic mirrors
+// store.GetStepBeads, store.GetActiveAttempt, and store.GetReviewBeads.
+func FetchDAGProgressFromChildren(beadID string, children []store.Bead) *DAGProgress {
+	var dag DAGProgress
+	hasData := false
+
+	// Step beads (pipeline phases) — mirrors store.GetStepBeads filter.
+	var steps []store.Bead
+	for _, c := range children {
+		if store.IsStepBead(c) {
+			steps = append(steps, c)
+		}
+	}
+	if len(steps) > 0 {
+		hasData = true
+		for _, s := range steps {
+			name := store.StepBeadPhaseName(s)
+			if name == "" {
+				continue
+			}
+			dag.Steps = append(dag.Steps, DAGStep{
+				Name:   name,
+				Status: s.Status,
+			})
+		}
+		sort.Slice(dag.Steps, func(i, j int) bool {
+			return phaseIndex(dag.Steps[i].Name) < phaseIndex(dag.Steps[j].Name)
+		})
+	}
+
+	// Active attempt — mirrors store.GetActiveAttempt filter.
+	var active []store.Bead
+	for _, c := range children {
+		if (c.Status == "open" || c.Status == "in_progress") && store.IsAttemptBead(c) {
+			active = append(active, c)
+		}
+	}
+	if len(active) == 1 {
+		hasData = true
+		a := active[0]
+		ag := &DAGAttempt{ID: a.ID}
+		ag.Agent = store.HasLabel(a, "agent:")
+		ag.Model = store.HasLabel(a, "model:")
+		ag.Branch = store.HasLabel(a, "branch:")
+		dag.Attempt = ag
+	}
+
+	// Review beads — mirrors store.GetReviewBeads filter + sort.
+	var reviews []store.Bead
+	for _, c := range children {
+		if store.IsReviewRoundBead(c) {
+			reviews = append(reviews, c)
+		}
+	}
+	if len(reviews) > 0 {
+		// Sort by round number ascending (same as store.GetReviewBeads).
+		for i := 0; i < len(reviews); i++ {
+			for j := i + 1; j < len(reviews); j++ {
+				ri := store.ReviewRoundNumber(reviews[i])
+				rj := store.ReviewRoundNumber(reviews[j])
+				if rj < ri {
+					reviews[i], reviews[j] = reviews[j], reviews[i]
+				}
+			}
+		}
+		hasData = true
+		for _, r := range reviews {
+			rn := store.ReviewRoundNumber(r)
+			verdict := extractReviewVerdict(r)
+			dag.Reviews = append(dag.Reviews, DAGReview{
+				Round:   rn,
+				Status:  r.Status,
+				Verdict: verdict,
+			})
+		}
+	}
+
+	if !hasData {
+		return nil
+	}
+	return &dag
+}
+
+// BuildDAGProgressMap builds a DAGProgress map for multiple beads using
+// pre-fetched children data. Only includes entries with meaningful data.
+func BuildDAGProgressMap(beadIDs []string, childrenMap map[string][]store.Bead) map[string]*DAGProgress {
+	result := make(map[string]*DAGProgress)
+	for _, id := range beadIDs {
+		dag := FetchDAGProgressFromChildren(id, childrenMap[id])
+		if dag != nil && len(dag.Steps) > 0 {
+			result[id] = dag
+		}
+	}
+	return result
+}
+
 // RenderPipelineANSI renders step beads as an inline ANSI pipeline.
 // Example: [✅ design] → [▶ plan] → [○ implement] → [○ review] → [○ merge]
 func RenderPipelineANSI(steps []DAGStep) string {
