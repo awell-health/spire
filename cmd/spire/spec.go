@@ -14,8 +14,9 @@ import (
 )
 
 var specCmd = &cobra.Command{
-	Use:   "spec <title> [flags]",
+	Use:   "spec [title] [flags]",
 	Short: "Scaffold a spec and file it (--no-file, --break <id>)",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var fullArgs []string
 		if v, _ := cmd.Flags().GetString("type"); v != "" {

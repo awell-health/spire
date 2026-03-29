@@ -28,12 +28,17 @@ var summonCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var fullArgs []string
-		if v, _ := cmd.Flags().GetString("targets"); v != "" {
-			fullArgs = append(fullArgs, "--targets", v)
+		targets, _ := cmd.Flags().GetString("targets")
+		target, _ := cmd.Flags().GetString("target")
+		if targets != "" && target != "" {
+			return fmt.Errorf("--target and --targets are aliases; use one or the other, not both")
 		}
-		if v, _ := cmd.Flags().GetString("target"); v != "" {
+		if targets != "" {
+			fullArgs = append(fullArgs, "--targets", targets)
+		}
+		if target != "" {
 			// Alias: --target maps to --targets
-			fullArgs = append(fullArgs, "--targets", v)
+			fullArgs = append(fullArgs, "--targets", target)
 		}
 		if auto, _ := cmd.Flags().GetBool("auto"); auto {
 			fullArgs = append(fullArgs, "--auto")
@@ -51,11 +56,16 @@ var dismissCmd = &cobra.Command{
 		if all, _ := cmd.Flags().GetBool("all"); all {
 			fullArgs = append(fullArgs, "--all")
 		}
-		if v, _ := cmd.Flags().GetString("targets"); v != "" {
-			fullArgs = append(fullArgs, "--targets", v)
+		targets, _ := cmd.Flags().GetString("targets")
+		target, _ := cmd.Flags().GetString("target")
+		if targets != "" && target != "" {
+			return fmt.Errorf("--target and --targets are aliases; use one or the other, not both")
 		}
-		if v, _ := cmd.Flags().GetString("target"); v != "" {
-			fullArgs = append(fullArgs, "--targets", v)
+		if targets != "" {
+			fullArgs = append(fullArgs, "--targets", targets)
+		}
+		if target != "" {
+			fullArgs = append(fullArgs, "--targets", target)
 		}
 		fullArgs = append(fullArgs, args...)
 		return cmdDismiss(fullArgs)

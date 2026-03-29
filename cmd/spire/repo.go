@@ -25,7 +25,21 @@ var repoAddCmd = &cobra.Command{
 	Short: "Register a repo under a tower",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cmdRegisterRepo(args)
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("prefix"); v != "" {
+			fullArgs = append(fullArgs, "--prefix", v)
+		}
+		if v, _ := cmd.Flags().GetString("repo-url"); v != "" {
+			fullArgs = append(fullArgs, "--repo-url", v)
+		}
+		if v, _ := cmd.Flags().GetString("branch"); v != "" {
+			fullArgs = append(fullArgs, "--branch", v)
+		}
+		if yes, _ := cmd.Flags().GetBool("yes"); yes {
+			fullArgs = append(fullArgs, "--yes")
+		}
+		fullArgs = append(fullArgs, args...)
+		return cmdRegisterRepo(fullArgs)
 	},
 }
 
@@ -49,6 +63,11 @@ var repoRemoveCmd = &cobra.Command{
 }
 
 func init() {
+	repoAddCmd.Flags().String("prefix", "", "Repo prefix (default: first 3 chars of directory name)")
+	repoAddCmd.Flags().String("repo-url", "", "Git remote URL (default: git remote get-url origin)")
+	repoAddCmd.Flags().String("branch", "", "Default branch (default: current branch or \"main\")")
+	repoAddCmd.Flags().BoolP("yes", "y", false, "Accept all detected defaults without prompting")
+
 	repoListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	repoCmd.AddCommand(repoAddCmd, repoListCmd, repoRemoveCmd)
