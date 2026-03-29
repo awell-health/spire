@@ -233,8 +233,22 @@ func TestTransitionStepBead(t *testing.T) {
 	var closed []string
 	var activated []string
 
+	// Step beads: design is in_progress (about to close), implement and review are open.
+	stepStatuses := map[string]string{
+		"spi-trans.step-1": "in_progress",
+		"spi-trans.step-2": "open",
+		"spi-trans.step-3": "open",
+	}
+
 	deps := &Deps{
 		ConfigDir: func() (string, error) { return t.TempDir(), nil },
+		GetBead: func(id string) (Bead, error) {
+			status := stepStatuses[id]
+			if status == "" {
+				status = "open"
+			}
+			return Bead{ID: id, Status: status}, nil
+		},
 		CloseStepBead: func(stepID string) error {
 			closed = append(closed, stepID)
 			return nil
@@ -1091,7 +1105,9 @@ func TestMergeOrphanLoopSkipsInternalBeads(t *testing.T) {
 			}
 			return ""
 		},
+		AddLabel:          func(id, label string) error { return nil },
 		RemoveLabel:       func(id, label string) error { return nil },
+		ResolveBranch:     func(beadID string) string { return "feat/" + beadID },
 		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
 		ArchmageGitEnv:    func(tower *TowerConfig) []string { return os.Environ() },
 		IsAttemptBead: func(b Bead) bool {
@@ -1388,19 +1404,23 @@ func TestBeadClosedExitCleansUpStepBeads(t *testing.T) {
 		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
 		ArchmageGitEnv:    func(tower *TowerConfig) []string { return os.Environ() },
 		// Direct dispatch — simulates implement phase completing.
+		// The Spawner mock triggers the external close (executeDirect uses Spawner, not ClaudeRunner).
 		Spawner: &mockBackend{
 			spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+				if !phaseExecuted {
+					phaseExecuted = true
+					parentStatus = "closed"
+				}
 				return &mockHandle{}, nil
 			},
 		},
 		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
-			// After "implement" runs, mark parent as externally closed.
-			if !phaseExecuted {
-				phaseExecuted = true
-				parentStatus = "closed"
-			}
 			return []byte("done"), nil
 		},
+		GetReviewBeads: func(parentID string) ([]Bead, error) {
+			return nil, nil
+		},
+		ReviewBeadVerdict: func(b Bead) string { return "" },
 		AgentResultDir: func(name string) string { return dir },
 		CaptureFocus:   func(beadID string) (string, error) { return "focus context", nil },
 		HasLabel:       func(b Bead, prefix string) string { return "" },
