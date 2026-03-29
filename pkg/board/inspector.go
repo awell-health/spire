@@ -317,33 +317,6 @@ func fetchInspectorCmd(b BoardBead) tea.Cmd {
 	}
 }
 
-// RenderPipelineFromDAG renders a compact step pipeline from pre-fetched DAG data.
-// This is the pure equivalent of RenderPipelineLipgloss — no DB calls.
-// NOTE: The parallel render task (spi-ff00t) also defines this in render.go;
-// the merger should deduplicate after both branches land.
-func RenderPipelineFromDAG(dag *DAGProgress) string {
-	if dag == nil || len(dag.Steps) == 0 {
-		return ""
-	}
-
-	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	cyanStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	dimLGStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-
-	var parts []string
-	for _, step := range dag.Steps {
-		switch step.Status {
-		case "closed":
-			parts = append(parts, greenStyle.Render("✓"))
-		case "in_progress":
-			parts = append(parts, cyanStyle.Render("▶"))
-		default:
-			parts = append(parts, dimLGStyle.Render("○"))
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
 // renderInspectorSnap renders the inspector using pre-fetched data and DAG progress.
 // It produces the same visual output as RenderInspector but reads from params
 // instead of calling the DB, making it safe to call from View().
