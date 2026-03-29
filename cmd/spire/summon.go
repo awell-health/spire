@@ -481,6 +481,9 @@ func dismissCleanupBead(w localWizard) {
 		return
 	}
 
+	// Close any open alert beads that reference this bead.
+	closeRelatedAlerts(w.BeadID)
+
 	// Reopen if still in_progress.
 	if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err != nil {
 		// Not fatal — bead may already be open or closed.
