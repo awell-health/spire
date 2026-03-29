@@ -22,10 +22,10 @@ import (
 // It claims a bead, creates a worktree, runs design + implement phases,
 // validates, commits, updates the bead, and hands off to review.
 //
-// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice]
+// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice] [--build-fix] [--worktree-dir <path>]
 func CmdWizardRun(args []string, deps *Deps) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice]")
+		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice] [--build-fix] [--worktree-dir <path>]")
 	}
 
 	// 1. Parse args
@@ -33,6 +33,8 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	wizardName := "wizard"
 	reviewFix := false
 	apprenticeMode := false
+	buildFixMode := false
+	worktreeDirOverride := ""
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--name":
@@ -44,6 +46,13 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			reviewFix = true
 		case "--apprentice":
 			apprenticeMode = true
+		case "--build-fix":
+			buildFixMode = true
+		case "--worktree-dir":
+			if i+1 < len(args) {
+				i++
+				worktreeDirOverride = args[i]
+			}
 		}
 	}
 	if os.Getenv("SPIRE_APPRENTICE") == "1" {
@@ -53,6 +62,13 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	startedAt := time.Now()
 	log := func(format string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", wizardName, fmt.Sprintf(format, a...))
+	}
+
+	// --- Build-fix mode: early return path ---
+	// The executor spawns the apprentice with --build-fix --apprentice --worktree-dir <path>.
+	// The apprentice works directly in the existing staging worktree to fix build errors.
+	if buildFixMode {
+		return cmdBuildFix(beadID, wizardName, worktreeDirOverride, startedAt, deps, log)
 	}
 
 	if err := deps.RequireDolt(); err != nil {
@@ -302,6 +318,138 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	log("done (%.0fs total)", elapsed.Seconds())
 	return nil
+}
+
+// cmdBuildFix handles the --build-fix apprentice mode. The executor writes
+// .build-error.log to the staging worktree and spawns the apprentice with
+// --build-fix --apprentice --worktree-dir <path>. This function reads the
+// error log, invokes Claude to fix the build errors, verifies the build,
+// and commits the fix directly in the staging worktree.
+func cmdBuildFix(beadID, wizardName, worktreeDir string, startedAt time.Time,
+	deps *Deps, log func(string, ...interface{})) error {
+
+	if worktreeDir == "" {
+		return fmt.Errorf("--build-fix requires --worktree-dir")
+	}
+
+	log("build-fix mode: working in staging worktree %s", worktreeDir)
+
+	// Read the build error log written by the executor.
+	errFile := filepath.Join(worktreeDir, ".build-error.log")
+	buildErrBytes, err := os.ReadFile(errFile)
+	if err != nil {
+		return fmt.Errorf("read .build-error.log: %w", err)
+	}
+	buildErr := string(buildErrBytes)
+	log("build error:\n%s", buildErr)
+
+	// Load repo config from the worktree (it's a copy of the repo).
+	repoCfg, err := repoconfig.Load(worktreeDir)
+	if err != nil {
+		log("warning: could not load spire.yaml: %s (using defaults)", err)
+		repoCfg = &repoconfig.RepoConfig{}
+	}
+
+	model := repoCfg.Agent.Model
+	if model == "" {
+		model = "claude-sonnet-4-6"
+	}
+	maxTurns := repoCfg.Agent.MaxTurns
+	if maxTurns == 0 {
+		maxTurns = 30 // build fixes should be quick
+	}
+	buildFixTimeout := "5m"
+
+	// Resolve the build command for verification after fix.
+	buildCmd := repoCfg.Runtime.Build
+
+	// Build the prompt.
+	prompt := wizardBuildBuildFixPrompt(wizardName, beadID, buildErr, buildCmd, repoCfg)
+	promptPath := filepath.Join(worktreeDir, ".spire-prompt.txt")
+	if err := os.WriteFile(promptPath, []byte(prompt), 0644); err != nil {
+		return fmt.Errorf("write build-fix prompt: %w", err)
+	}
+
+	// Run Claude to fix the build errors.
+	claudeStartedAt := time.Now()
+	log("starting build-fix phase (timeout: %s)", buildFixTimeout)
+	if err := WizardRunClaude(worktreeDir, promptPath, model, buildFixTimeout, maxTurns); err != nil {
+		log("claude build-fix failed: %s", err)
+	}
+	log("build-fix finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
+
+	// Clean up the prompt file.
+	os.Remove(promptPath)
+
+	// Commit any changes.
+	// Create a lightweight WorktreeContext for committing (we don't own this
+	// worktree, so Cleanup is a no-op — the executor manages the lifecycle).
+	wc := &spgit.WorktreeContext{Dir: worktreeDir}
+	commitSHA, committed := WizardCommit(wc, beadID, "fix build errors", log)
+
+	if committed {
+		log("build-fix committed: %s", commitSHA)
+	} else {
+		log("build-fix: no changes to commit")
+	}
+
+	// Write result for the executor to read.
+	elapsed := time.Since(startedAt)
+	result := "success"
+	if !committed {
+		result = "no_changes"
+	}
+	WizardWriteResult(wizardName, beadID, result, "", commitSHA, elapsed, deps, log)
+
+	log("build-fix done (%.0fs total)", elapsed.Seconds())
+	return nil
+}
+
+// wizardBuildBuildFixPrompt builds a focused prompt for fixing build errors
+// in a staging worktree.
+func wizardBuildBuildFixPrompt(wizardName, beadID, buildErr, buildCmd string, cfg *repoconfig.RepoConfig) string {
+	contextPaths := cfg.Context
+	if len(contextPaths) == 0 {
+		contextPaths = []string{"CLAUDE.md"}
+	}
+	var contextBlock strings.Builder
+	for _, p := range contextPaths {
+		fmt.Fprintf(&contextBlock, "- %s\n", p)
+	}
+
+	buildCmdStr := buildCmd
+	if buildCmdStr == "" {
+		buildCmdStr = "go build ./..."
+	}
+
+	return fmt.Sprintf(`You are Spire build-fix apprentice %s.
+
+You are working in a staging worktree where multiple branches have been merged together.
+The merged code fails to build. Your ONLY job is to fix the build errors.
+
+## Build error
+`+"```"+`
+%s
+`+"```"+`
+
+## Instructions
+1. Read the build error output above carefully.
+2. Identify the source files causing the errors.
+3. Fix the compilation errors. Common causes after merging:
+   - Duplicate function/type definitions
+   - Missing imports
+   - Signature mismatches (a function was changed in one branch but callers were in another)
+   - Missing or conflicting type definitions
+4. Run the build command to verify your fix: %s
+5. COMMIT your changes with message: fix(%s): resolve build errors in staging worktree
+
+## Rules
+- Fix ONLY build errors. Do NOT refactor, improve, or change any other code.
+- Do NOT revert changes from other branches. Reconcile conflicts by making both sides work together.
+- If a function was added by one branch and a caller was added by another, make them compatible.
+- Read the repo context if you need to understand conventions:
+%s
+`, wizardName, buildErr, buildCmdStr, beadID, contextBlock.String())
 }
 
 // ResolveRepo finds the local repo path, remote URL, and base branch
