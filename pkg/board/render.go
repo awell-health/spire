@@ -236,7 +236,7 @@ func (m Model) View() string {
 
 			if scrollOff > 0 {
 				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-				cb.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d above", scrollOff)))
+				cb.WriteString(dimStyle.Render(fmt.Sprintf("  ↑%d more", scrollOff)))
 				cb.WriteString("\n")
 			}
 
@@ -244,9 +244,11 @@ func (m Model) View() string {
 			for j, b := range visible {
 				if j >= budget.MaxCards {
 					remaining := len(c.Beads) - scrollOff - budget.MaxCards
-					dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-					cb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", remaining)))
-					cb.WriteString("\n")
+					if remaining > 0 {
+						dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+						cb.WriteString(dimStyle.Render(fmt.Sprintf("  ↓%d more", remaining)))
+						cb.WriteString("\n")
+					}
 					break
 				}
 				isSelected := (m.SelSection == SectionColumns && i == m.SelCol && (scrollOff+j) == m.SelCard)
@@ -345,6 +347,12 @@ func (m Model) View() string {
 	// Action menu overlay: composite popup OVER the board (not replacing it).
 	if m.ActionMenuOpen {
 		popup := renderActionMenu(m.ActionMenuItems, m.ActionMenuCursor, m.ActionMenuBeadID, 35)
+		return overlayPopup(boardOutput, popup, m.Width, m.Height)
+	}
+
+	// Confirmation dialog overlay.
+	if m.ConfirmOpen {
+		popup := renderConfirmPopup(m.ConfirmPrompt, m.ConfirmDanger)
 		return overlayPopup(boardOutput, popup, m.Width, m.Height)
 	}
 
@@ -666,6 +674,26 @@ func RenderAgentPanelSnap(agents []LocalAgent, dagMap map[string]*DAGProgress, m
 		s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(agents)-maxAgents)) + "\n")
 	}
 	return s.String()
+}
+
+// renderConfirmPopup renders a small confirmation dialog box.
+func renderConfirmPopup(prompt string, danger DangerLevel) string {
+	borderColor := lipgloss.Color("6")
+	promptStyle := lipgloss.NewStyle()
+	if danger == DangerDestructive {
+		borderColor = lipgloss.Color("1")
+		promptStyle = promptStyle.Foreground(lipgloss.Color("1"))
+	}
+
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	content := promptStyle.Render(prompt) + "\n" + hintStyle.Render("[y/n]")
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1)
+
+	return boxStyle.Render(content)
 }
 
 // overlayPopup composites a popup string over a background string, centering the

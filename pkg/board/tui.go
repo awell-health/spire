@@ -91,6 +91,13 @@ type Model struct {
 	// InlineActionFn executes an action within the TUI via tea.Cmd.
 	// Returns nil on success, error on failure.
 	InlineActionFn func(PendingAction, string) error
+
+	// Confirmation dialog state.
+	ConfirmOpen   bool
+	ConfirmAction PendingAction
+	ConfirmBeadID string
+	ConfirmPrompt string
+	ConfirmDanger DangerLevel
 }
 
 // VisibleCols returns the columns filtered by the current type scope.
@@ -289,6 +296,10 @@ func runInlineActionCmd(fn func(PendingAction, string) error, action PendingActi
 // actionLabel returns a human-readable label for an action.
 func actionLabel(a PendingAction) string {
 	switch a {
+	case ActionSummon:
+		return "Summon"
+	case ActionResummon:
+		return "Resummon"
 	case ActionUnsummon:
 		return "Unsummon"
 	case ActionResetSoft:
@@ -311,14 +322,66 @@ func actionLabel(a PendingAction) string {
 // isInlineAction returns true if the action should execute within the TUI.
 func isInlineAction(a PendingAction) bool {
 	switch a {
-	case ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionAdvance, ActionClose:
+	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionAdvance, ActionClose:
 		return true
 	}
 	return false
 }
 
+// confirmPromptForAction returns the confirmation prompt text for an action.
+func confirmPromptForAction(action PendingAction, beadID string) string {
+	switch action {
+	case ActionClose:
+		return fmt.Sprintf("Close %s?", beadID)
+	case ActionUnsummon:
+		return fmt.Sprintf("Dismiss wizard for %s?", beadID)
+	case ActionResetSoft:
+		return fmt.Sprintf("Reset %s?", beadID)
+	case ActionResetHard:
+		return fmt.Sprintf("Hard reset %s? This is destructive.", beadID)
+	default:
+		return fmt.Sprintf("%s %s?", actionLabel(action), beadID)
+	}
+}
+
+// dangerForAction returns the danger level for an action.
+func dangerForAction(action PendingAction) DangerLevel {
+	switch action {
+	case ActionResetHard:
+		return DangerDestructive
+	case ActionClose, ActionUnsummon, ActionResetSoft:
+		return DangerConfirm
+	default:
+		return DangerNone
+	}
+}
+
+// updateConfirm handles key input in the confirmation dialog.
+func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		action := m.ConfirmAction
+		beadID := m.ConfirmBeadID
+		m.ConfirmOpen = false
+		if m.ActionRunning {
+			return m, nil
+		}
+		m.ActionRunning = true
+		m.ActionStatus = actionLabel(action) + "..."
+		m.ActionStatusTime = time.Now()
+		return m, runInlineActionCmd(m.InlineActionFn, action, beadID)
+	case "n", "N", "esc":
+		m.ConfirmOpen = false
+		return m, nil
+	}
+	return m, nil
+}
+
 // dispatchInlineAction dispatches an inline action via tea.Cmd if the Model has an InlineActionFn.
 func (m *Model) dispatchInlineAction(action PendingAction, beadID string) (Model, tea.Cmd) {
+	if m.ActionRunning {
+		return *m, nil
+	}
 	if m.InlineActionFn == nil {
 		// Fallback to exit-relaunch pattern if no inline fn provided.
 		m.PendingAction = action
@@ -336,6 +399,11 @@ func (m *Model) dispatchInlineAction(action PendingAction, beadID string) (Model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Confirmation dialog: absorb all keys.
+		if m.ConfirmOpen {
+			return m.updateConfirm(msg)
+		}
+
 		// Action menu mode: absorb all keys.
 		if m.ActionMenuOpen {
 			switch msg.String() {
@@ -357,6 +425,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					item := m.ActionMenuItems[m.ActionMenuCursor]
 					m.ActionMenuOpen = false
 					if isInlineAction(item.ActionType) {
+						if item.Danger != DangerNone {
+							m.ConfirmOpen = true
+							m.ConfirmAction = item.ActionType
+							m.ConfirmBeadID = m.ActionMenuBeadID
+							m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID)
+							m.ConfirmDanger = item.Danger
+							return m, nil
+						}
 						mm, cmd := m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
 						return mm, cmd
 					}
@@ -372,6 +448,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if msg.String() == string(item.Key) {
 						m.ActionMenuOpen = false
 						if isInlineAction(item.ActionType) {
+							if item.Danger != DangerNone {
+								m.ConfirmOpen = true
+								m.ConfirmAction = item.ActionType
+								m.ConfirmBeadID = m.ActionMenuBeadID
+								m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID)
+								m.ConfirmDanger = item.Danger
+								return m, nil
+							}
 							mm, cmd := m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
 							return mm, cmd
 						}
@@ -520,9 +604,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ClampSelection()
 			} else {
 				m.SelCol--
-				m.SelCard = 0
 				m.ColScroll = 0
 				m.ClampSelection()
+				m.ensureCardVisible(m.colMaxCards())
 			}
 		case "l", "right":
 			if m.SelSection != SectionColumns {
@@ -532,9 +616,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ClampSelection()
 			} else {
 				m.SelCol++
-				m.SelCard = 0
 				m.ColScroll = 0
 				m.ClampSelection()
+				m.ensureCardVisible(m.colMaxCards())
 			}
 
 		// Card navigation (section-aware).
@@ -652,54 +736,66 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ShowAllCols = !m.ShowAllCols
 			m.ClampSelection()
 
-		// Summon wizard — exit-relaunch (spawns process).
+		// Summon wizard — inline.
 		case "s":
 			if bead := m.SelectedBead(); bead != nil {
-				m.PendingAction = ActionSummon
-				m.PendingBeadID = bead.ID
-				m.Quitting = true
-				return m, tea.Quit
+				mm, cmd := m.dispatchInlineAction(ActionSummon, bead.ID)
+				return mm, cmd
 			}
 
-		// Unsummon wizard — inline (only if bead has a wizard).
+		// Unsummon wizard — confirm, then inline (only if bead has a wizard).
 		case "u":
 			if bead := m.SelectedBead(); bead != nil {
 				for _, a := range m.Agents {
 					if a.BeadID == bead.ID {
-						mm, cmd := m.dispatchInlineAction(ActionUnsummon, bead.ID)
-						return mm, cmd
+						m.ConfirmOpen = true
+						m.ConfirmAction = ActionUnsummon
+						m.ConfirmBeadID = bead.ID
+						m.ConfirmPrompt = confirmPromptForAction(ActionUnsummon, bead.ID)
+						m.ConfirmDanger = DangerConfirm
+						return m, nil
 					}
 				}
 			}
 
-		// Resummon — exit-relaunch (spawns process).
+		// Resummon — inline.
 		case "S":
 			if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
-				m.PendingAction = ActionResummon
-				m.PendingBeadID = bead.ID
-				m.Quitting = true
-				return m, tea.Quit
+				mm, cmd := m.dispatchInlineAction(ActionResummon, bead.ID)
+				return mm, cmd
 			}
 
-		// Reset — inline.
+		// Reset — confirm, then inline.
 		case "r":
 			if bead := m.SelectedBead(); bead != nil && bead.Status == "in_progress" {
-				mm, cmd := m.dispatchInlineAction(ActionResetSoft, bead.ID)
-				return mm, cmd
+				m.ConfirmOpen = true
+				m.ConfirmAction = ActionResetSoft
+				m.ConfirmBeadID = bead.ID
+				m.ConfirmPrompt = confirmPromptForAction(ActionResetSoft, bead.ID)
+				m.ConfirmDanger = DangerConfirm
+				return m, nil
 			}
 
-		// Reset --hard — inline.
+		// Reset --hard — confirm, then inline.
 		case "R":
 			if bead := m.SelectedBead(); bead != nil && bead.Status == "in_progress" {
-				mm, cmd := m.dispatchInlineAction(ActionResetHard, bead.ID)
-				return mm, cmd
+				m.ConfirmOpen = true
+				m.ConfirmAction = ActionResetHard
+				m.ConfirmBeadID = bead.ID
+				m.ConfirmPrompt = confirmPromptForAction(ActionResetHard, bead.ID)
+				m.ConfirmDanger = DangerDestructive
+				return m, nil
 			}
 
-		// Close — inline.
+		// Close — confirm, then inline.
 		case "x":
 			if bead := m.SelectedBead(); bead != nil {
-				mm, cmd := m.dispatchInlineAction(ActionClose, bead.ID)
-				return mm, cmd
+				m.ConfirmOpen = true
+				m.ConfirmAction = ActionClose
+				m.ConfirmBeadID = bead.ID
+				m.ConfirmPrompt = confirmPromptForAction(ActionClose, bead.ID)
+				m.ConfirmDanger = DangerConfirm
+				return m, nil
 			}
 
 		// Action menu.

@@ -192,6 +192,10 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 // Returns nil on success, error on failure.
 func executeInlineAction(action board.PendingAction, beadID string) error {
 	switch action {
+	case board.ActionSummon:
+		return summonLocal(1, []string{beadID})
+	case board.ActionResummon:
+		return cmdResummon([]string{beadID})
 	case board.ActionUnsummon:
 		return cmdDismiss([]string{"1", "--targets", beadID})
 	case board.ActionResetSoft:
