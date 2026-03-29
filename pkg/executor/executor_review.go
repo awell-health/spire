@@ -41,8 +41,17 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 	}
 
 	// 5. Walk loop.
+	// localCompleted tracks step completion in-memory. This is essential when
+	// ReviewStepBeadIDs is empty (test/legacy runs where CreateBead is nil),
+	// because completedReviewSteps() returns an empty map in that case.
+	// Without this, the walker re-dispatches the entry step forever.
+	localCompleted := make(map[string]bool)
 	for {
 		completed := e.completedReviewSteps()
+		// Merge in-memory tracking (covers test/legacy runs without sub-step beads).
+		for k, v := range localCompleted {
+			completed[k] = v
+		}
 		next, err := formula.NextSteps(graph, completed, ctx)
 		if err != nil {
 			return fmt.Errorf("review graph walk error: %w", err)
@@ -85,11 +94,15 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 			return fmt.Errorf("close review sub-step %s: %w", stepName, err)
 		}
 
+		// Mark step completed in local tracker.
+		localCompleted[stepName] = true
+
 		// Fix step: reset sage-review for re-evaluation, increment round.
 		if stepName == "fix" {
 			if err := e.resetReviewSubStep("sage-review"); err != nil {
 				return fmt.Errorf("reset sage-review sub-step: %w", err)
 			}
+			delete(localCompleted, "sage-review")
 			e.state.ReviewRounds++
 			ctx["round"] = strconv.Itoa(e.state.ReviewRounds)
 			e.saveState()
@@ -245,6 +258,11 @@ func (e *Executor) executeTerminalStep(stepName string, cfg formula.StepConfig) 
 		mergePC := PhaseConfig{}
 		if pc, ok := e.formula.Phases["merge"]; ok {
 			mergePC = pc
+		}
+		// Respect skip behavior/role for merge (e.g., in tests without git infrastructure).
+		if mergePC.GetBehavior() == "skip" || mergePC.GetRole() == "skip" {
+			e.log("skipping terminal merge step (behavior/role: skip)")
+			return nil
 		}
 		return e.executeMerge(mergePC)
 	case "discard":

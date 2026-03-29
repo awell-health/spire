@@ -1059,8 +1059,7 @@ func TestRunFullPipeline_DirectImplementReviewMerge(t *testing.T) {
 		Phases: map[string]formula.PhaseConfig{
 			"implement": {Role: "apprentice"},
 			"review":    {Role: "sage"},
-			// Use behavior=skip for merge to avoid real git operations.
-			// TODO: When the executor supports a mock git layer, test real merge.
+			"merge":     {Behavior: "skip"}, // skip merge to avoid real git operations
 		},
 	}
 
