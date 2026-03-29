@@ -97,12 +97,16 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 		// Mark step completed in local tracker.
 		localCompleted[stepName] = true
 
-		// Fix step: reset sage-review for re-evaluation, increment round.
+		// Fix step: reset both sage-review and fix beads for the next
+		// review cycle, then increment the round counter and persist.
 		if stepName == "fix" {
 			if err := e.resetReviewSubStep("sage-review"); err != nil {
 				return fmt.Errorf("reset sage-review sub-step: %w", err)
 			}
 			delete(localCompleted, "sage-review")
+			if err := e.resetReviewSubStep("fix"); err != nil {
+				return fmt.Errorf("reset fix sub-step: %w", err)
+			}
 			e.state.ReviewRounds++
 			ctx["round"] = strconv.Itoa(e.state.ReviewRounds)
 			e.saveState()
@@ -159,8 +163,10 @@ func (e *Executor) dispatchSageReview(cfg formula.StepConfig, pc PhaseConfig) er
 		e.log("sage exited: %s — checking verdict", waitErr)
 	}
 
-	// Judgment: if enabled, add executor-judgment comment agreeing with sage feedback.
-	if pc.Judgment {
+	// Judgment: if enabled, add executor-judgment comment on request_changes only.
+	// (Old behavior: judgment comments were only added for request_changes verdicts.)
+	verdict := e.readVerdict()
+	if pc.Judgment && verdict == "request_changes" {
 		e.log("judgment: agreeing with sage feedback")
 		e.deps.AddComment(e.beadID, fmt.Sprintf(
 			"Executor judgment (round %d): agree — accepting sage feedback",
