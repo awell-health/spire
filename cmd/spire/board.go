@@ -82,7 +82,11 @@ func cmdBoard(args []string) error {
 		return executeBoardAction(action, beadID)
 	}
 
-	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn)
+	inlineActionFn := func(action board.PendingAction, beadID string) error {
+		return executeInlineAction(action, beadID)
+	}
+
+	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn, inlineActionFn)
 }
 
 // executeBoardAction runs the pending action on the raw terminal after the TUI exits.
@@ -149,5 +153,27 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 		return true
 	}
 	return false
+}
+
+// executeInlineAction runs an action within the TUI via tea.Cmd (no exit-relaunch).
+// Returns nil on success, error on failure.
+func executeInlineAction(action board.PendingAction, beadID string) error {
+	switch action {
+	case board.ActionUnsummon:
+		return cmdDismiss([]string{"1", "--targets", beadID})
+	case board.ActionResetSoft:
+		return cmdReset([]string{beadID})
+	case board.ActionResetHard:
+		return cmdReset([]string{beadID, "--hard"})
+	case board.ActionGrok:
+		return cmdGrok([]string{beadID})
+	case board.ActionTrace:
+		return cmdTrace([]string{beadID})
+	case board.ActionAdvance:
+		return cmdAdvance([]string{beadID})
+	case board.ActionClose:
+		return storeCloseBead(beadID)
+	}
+	return fmt.Errorf("unknown inline action: %d", action)
 }
 

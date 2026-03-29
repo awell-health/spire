@@ -2,6 +2,8 @@ package board
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -9,18 +11,28 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/steveyegge/beads"
 
+	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/store"
+)
+
+// Inspector tab constants.
+const (
+	InspectorTabDetails = 0
+	InspectorTabLogs    = 1
 )
 
 // InspectorData holds the fetched detail data for the inspector pane.
 type InspectorData struct {
-	Bead       BoardBead
-	Phase      string
-	Comments   []*beads.Comment
-	Children   []Bead
-	Deps       []*beads.IssueWithDependencyMetadata // what this bead depends on
-	Dependents []*beads.IssueWithDependencyMetadata // what depends on this bead
-	DAG        *DAGProgress
+	Bead        BoardBead
+	Phase       string
+	Comments    []*beads.Comment
+	Children    []Bead
+	Deps        []*beads.IssueWithDependencyMetadata // what this bead depends on
+	Dependents  []*beads.IssueWithDependencyMetadata // what depends on this bead
+	DAG         *DAGProgress
+	Messages    []BoardBead // messages referencing this bead
+	DesignBeads []BoardBead // design beads linked via discovered-from deps
+	LogContent  string      // cached wizard log content (loaded in FetchInspectorData, not View)
 }
 
 // FetchInspectorData loads all detail data for a bead from the store.
@@ -51,6 +63,39 @@ func FetchInspectorData(b BoardBead) InspectorData {
 		data.Dependents = dependents
 	}
 	data.DAG = FetchDAGProgress(b.ID)
+
+	// Design beads: look through deps for discovered-from links.
+	if data.Deps != nil {
+		for _, dep := range data.Deps {
+			if string(dep.DependencyType) == "discovered-from" {
+				if bb, err := store.GetBead(dep.ID); err == nil {
+					data.DesignBeads = append(data.DesignBeads, BoardBead{
+						ID:          bb.ID,
+						Title:       bb.Title,
+						Description: bb.Description,
+						Status:      bb.Status,
+						Priority:    bb.Priority,
+						Type:        bb.Type,
+						Labels:      bb.Labels,
+					})
+				}
+			}
+		}
+	}
+
+	// Wizard log content: read and cache here (not in View).
+	wizardName := "wizard-" + b.ID
+	logDir := filepath.Join(dolt.GlobalDir(), "wizards")
+	candidates := []string{
+		filepath.Join(logDir, wizardName+".log"),
+		filepath.Join(logDir, wizardName+"-fix.log"),
+	}
+	for _, path := range candidates {
+		if content, err := os.ReadFile(path); err == nil {
+			data.LogContent = string(content)
+			break
+		}
+	}
 
 	return data
 }
@@ -239,11 +284,11 @@ func InspectorLineCount(data InspectorData, width int) int {
 }
 
 // inspectorLineCountSnap counts inspector lines using the pure renderInspectorSnap function.
-func inspectorLineCountSnap(data *InspectorData, dag *DAGProgress, width int) int {
+func inspectorLineCountSnap(data *InspectorData, dag *DAGProgress, width, tab int) int {
 	if data == nil {
 		return 3
 	}
-	full := renderInspectorSnap(data.Bead, data, dag, width, 10000, 0)
+	full := renderInspectorSnap(data.Bead, data, dag, width, 10000, 0, tab)
 	return strings.Count(full, "\n") + 1
 }
 
@@ -332,7 +377,8 @@ func fetchInspectorCmd(b BoardBead) tea.Cmd {
 // It produces the same visual output as RenderInspector but reads from params
 // instead of calling the DB, making it safe to call from View().
 // If data is nil, returns a "Loading..." placeholder.
-func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, width, height, scrollOffset int) string {
+// The tab parameter selects the active tab (0=details, 1=logs).
+func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, width, height, scrollOffset, tab int) string {
 	if data == nil {
 		headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -352,133 +398,207 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 	// Header bar.
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	lines = append(lines, headerStyle.Render("INSPECTOR")+"  "+dimStyle.Render("Esc to close"))
+	lines = append(lines, headerStyle.Render("INSPECTOR")+"  "+dimStyle.Render("Esc to close  Tab to switch"))
 	lines = append(lines, strings.Repeat("─", Min(contentWidth, 60)))
+
+	// Tab bar.
+	activeTabStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Underline(true)
+	inactiveTabStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	tabs := []string{"Details", "Logs"}
+	var tabParts []string
+	for i, t := range tabs {
+		if i == tab {
+			tabParts = append(tabParts, activeTabStyle.Render("["+t+"]"))
+		} else {
+			tabParts = append(tabParts, inactiveTabStyle.Render("["+t+"]"))
+		}
+	}
+	lines = append(lines, strings.Join(tabParts, "  "))
+	lines = append(lines, "")
 
 	bb := data.Bead
 
-	// Title + ID.
-	titleStyle := lipgloss.NewStyle().Bold(true)
-	lines = append(lines, titleStyle.Render(bb.ID)+"  "+PriStr(bb.Priority)+"  "+ShortType(bb.Type))
-	lines = append(lines, titleStyle.Render(bb.Title))
-	lines = append(lines, "")
-
-	// Status / Phase / Owner.
-	statusLine := "Status: " + renderStatus(bb.Status)
-	if data.Phase != "" {
-		statusLine += "  Phase: " + lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(data.Phase)
-	}
-	lines = append(lines, statusLine)
-
-	owner := BeadOwnerLabel(bb)
-	if owner != "" {
-		lines = append(lines, "Owner: "+lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Render(owner))
-	}
-	if bb.Parent != "" {
-		lines = append(lines, "Parent: "+dimStyle.Render(bb.Parent))
-	}
-	timeParts := []string{}
-	if bb.CreatedAt != "" {
-		timeParts = append(timeParts, "Created: "+formatInspectorTime(bb.CreatedAt))
-	}
-	if bb.UpdatedAt != "" {
-		timeParts = append(timeParts, "Updated: "+formatInspectorTime(bb.UpdatedAt))
-	}
-	if len(timeParts) > 0 {
-		lines = append(lines, dimStyle.Render(strings.Join(timeParts, "  ")))
-	}
-
-	// DAG pipeline — use pre-fetched dag param instead of calling DB.
-	if dag != nil && len(dag.Steps) > 0 {
+	if tab == InspectorTabDetails {
+		// Title + ID.
+		titleStyle := lipgloss.NewStyle().Bold(true)
+		lines = append(lines, titleStyle.Render(bb.ID)+"  "+PriStr(bb.Priority)+"  "+ShortType(bb.Type))
+		lines = append(lines, titleStyle.Render(bb.Title))
 		lines = append(lines, "")
-		lines = append(lines, sectionHeader("Pipeline"))
-		lines = append(lines, "  "+RenderPipelineFromDAG(dag))
-		if dag.Attempt != nil {
-			a := dag.Attempt
-			parts := []string{lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(a.Agent)}
-			if a.Model != "" {
-				parts = append(parts, dimStyle.Render(a.Model))
+
+		// Status / Phase / Owner.
+		statusLine := "Status: " + renderStatus(bb.Status)
+		if data.Phase != "" {
+			statusLine += "  Phase: " + lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(data.Phase)
+		}
+		lines = append(lines, statusLine)
+
+		owner := BeadOwnerLabel(bb)
+		if owner != "" {
+			lines = append(lines, "Owner: "+lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Render(owner))
+		}
+		if bb.Parent != "" {
+			lines = append(lines, "Parent: "+dimStyle.Render(bb.Parent))
+		}
+		timeParts := []string{}
+		if bb.CreatedAt != "" {
+			timeParts = append(timeParts, "Created: "+formatInspectorTime(bb.CreatedAt))
+		}
+		if bb.UpdatedAt != "" {
+			timeParts = append(timeParts, "Updated: "+formatInspectorTime(bb.UpdatedAt))
+		}
+		if len(timeParts) > 0 {
+			lines = append(lines, dimStyle.Render(strings.Join(timeParts, "  ")))
+		}
+
+		// DAG pipeline — use pre-fetched dag param instead of calling DB.
+		if dag != nil && len(dag.Steps) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader("Pipeline"))
+			lines = append(lines, "  "+RenderPipelineFromDAG(dag))
+			if dag.Attempt != nil {
+				a := dag.Attempt
+				parts := []string{lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(a.Agent)}
+				if a.Model != "" {
+					parts = append(parts, dimStyle.Render(a.Model))
+				}
+				if a.Branch != "" {
+					parts = append(parts, dimStyle.Render(a.Branch))
+				}
+				lines = append(lines, "  Attempt: "+strings.Join(parts, " "))
 			}
-			if a.Branch != "" {
-				parts = append(parts, dimStyle.Render(a.Branch))
+		}
+
+		// Description.
+		if bb.Description != "" {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader("Description"))
+			for _, dl := range wrapText(bb.Description, contentWidth-2) {
+				lines = append(lines, "  "+dl)
 			}
-			lines = append(lines, "  Attempt: "+strings.Join(parts, " "))
+		}
+
+		// Labels.
+		if len(bb.Labels) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader("Labels"))
+			labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+			var labelParts []string
+			for _, l := range bb.Labels {
+				labelParts = append(labelParts, labelStyle.Render(l))
+			}
+			lines = append(lines, "  "+strings.Join(labelParts, "  "))
+		}
+
+		// Children.
+		if len(data.Children) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader(fmt.Sprintf("Children (%d)", len(data.Children))))
+			for _, c := range data.Children {
+				statusIcon := statusIconStr(c.Status)
+				lines = append(lines, fmt.Sprintf("  %s %s %s %s", statusIcon, c.ID, ShortType(c.Type), Truncate(c.Title, contentWidth-30)))
+			}
+		}
+
+		// Dependencies (what this bead depends on).
+		if len(data.Deps) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader(fmt.Sprintf("Dependencies (%d)", len(data.Deps))))
+			for _, d := range data.Deps {
+				depType := string(d.DependencyType)
+				statusIcon := statusIconStr(string(d.Status))
+				lines = append(lines, fmt.Sprintf("  %s %s [%s] %s", statusIcon, d.ID, depType, Truncate(d.Title, contentWidth-35)))
+			}
+		}
+
+		// Dependents (what depends on this bead).
+		if len(data.Dependents) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader(fmt.Sprintf("Dependents (%d)", len(data.Dependents))))
+			for _, d := range data.Dependents {
+				depType := string(d.DependencyType)
+				statusIcon := statusIconStr(string(d.Status))
+				lines = append(lines, fmt.Sprintf("  %s %s [%s] %s", statusIcon, d.ID, depType, Truncate(d.Title, contentWidth-35)))
+			}
+		}
+
+		// Comments.
+		if len(data.Comments) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader(fmt.Sprintf("Comments (%d)", len(data.Comments))))
+			for i, c := range data.Comments {
+				author := c.Author
+				if author == "" {
+					author = "unknown"
+				}
+				ts := ""
+				if !c.CreatedAt.IsZero() {
+					ts = " " + dimStyle.Render(TimeAgo(c.CreatedAt.Format(time.RFC3339)))
+				}
+				lines = append(lines, fmt.Sprintf("  %s%s:", lipgloss.NewStyle().Bold(true).Render(author), ts))
+				for _, tl := range wrapText(c.Text, contentWidth-4) {
+					lines = append(lines, "    "+tl)
+				}
+				if i < len(data.Comments)-1 {
+					lines = append(lines, "")
+				}
+			}
+		}
+
+		// Messages.
+		if len(data.Messages) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader(fmt.Sprintf("Messages (%d)", len(data.Messages))))
+			for _, msg := range data.Messages {
+				from := BeadOwnerLabel(msg)
+				if from == "" {
+					from = "system"
+				}
+				ts := ""
+				if msg.CreatedAt != "" {
+					ts = " " + dimStyle.Render(TimeAgo(msg.CreatedAt))
+				}
+				lines = append(lines, fmt.Sprintf("  %s%s: %s", lipgloss.NewStyle().Bold(true).Render(from), ts, Truncate(msg.Title, contentWidth-30)))
+			}
+		}
+
+		// Design context.
+		if len(data.DesignBeads) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader("Design Context"))
+			for _, db := range data.DesignBeads {
+				statusIcon := statusIconStr(db.Status)
+				lines = append(lines, fmt.Sprintf("  %s %s  %s", statusIcon, db.ID, Truncate(db.Title, contentWidth-20)))
+				if db.Description != "" {
+					descLines := wrapText(db.Description, contentWidth-4)
+					for i, dl := range descLines {
+						if i >= 3 {
+							lines = append(lines, "    "+dimStyle.Render("..."))
+							break
+						}
+						lines = append(lines, "    "+dl)
+					}
+				}
+			}
 		}
 	}
 
-	// Description.
-	if bb.Description != "" {
+	if tab == InspectorTabLogs {
+		lines = append(lines, sectionHeader("Wizard Logs"))
 		lines = append(lines, "")
-		lines = append(lines, sectionHeader("Description"))
-		for _, dl := range wrapText(bb.Description, contentWidth-2) {
-			lines = append(lines, "  "+dl)
-		}
-	}
-
-	// Labels.
-	if len(bb.Labels) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, sectionHeader("Labels"))
-		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
-		var labelParts []string
-		for _, l := range bb.Labels {
-			labelParts = append(labelParts, labelStyle.Render(l))
-		}
-		lines = append(lines, "  "+strings.Join(labelParts, "  "))
-	}
-
-	// Children.
-	if len(data.Children) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, sectionHeader(fmt.Sprintf("Children (%d)", len(data.Children))))
-		for _, c := range data.Children {
-			statusIcon := statusIconStr(c.Status)
-			lines = append(lines, fmt.Sprintf("  %s %s %s %s", statusIcon, c.ID, ShortType(c.Type), Truncate(c.Title, contentWidth-30)))
-		}
-	}
-
-	// Dependencies (what this bead depends on).
-	if len(data.Deps) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, sectionHeader(fmt.Sprintf("Dependencies (%d)", len(data.Deps))))
-		for _, d := range data.Deps {
-			depType := string(d.DependencyType)
-			statusIcon := statusIconStr(string(d.Status))
-			lines = append(lines, fmt.Sprintf("  %s %s [%s] %s", statusIcon, d.ID, depType, Truncate(d.Title, contentWidth-35)))
-		}
-	}
-
-	// Dependents (what depends on this bead).
-	if len(data.Dependents) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, sectionHeader(fmt.Sprintf("Dependents (%d)", len(data.Dependents))))
-		for _, d := range data.Dependents {
-			depType := string(d.DependencyType)
-			statusIcon := statusIconStr(string(d.Status))
-			lines = append(lines, fmt.Sprintf("  %s %s [%s] %s", statusIcon, d.ID, depType, Truncate(d.Title, contentWidth-35)))
-		}
-	}
-
-	// Comments.
-	if len(data.Comments) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, sectionHeader(fmt.Sprintf("Comments (%d)", len(data.Comments))))
-		for i, c := range data.Comments {
-			author := c.Author
-			if author == "" {
-				author = "unknown"
+		if data.LogContent != "" {
+			logLines := strings.Split(data.LogContent, "\n")
+			start := 0
+			if len(logLines) > 50 {
+				start = len(logLines) - 50
+				lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... showing last 50 of %d lines", len(logLines))))
 			}
-			ts := ""
-			if !c.CreatedAt.IsZero() {
-				ts = " " + dimStyle.Render(TimeAgo(c.CreatedAt.Format(time.RFC3339)))
+			for _, ll := range logLines[start:] {
+				lines = append(lines, "  "+ll)
 			}
-			lines = append(lines, fmt.Sprintf("  %s%s:", lipgloss.NewStyle().Bold(true).Render(author), ts))
-			for _, tl := range wrapText(c.Text, contentWidth-4) {
-				lines = append(lines, "    "+tl)
-			}
-			if i < len(data.Comments)-1 {
-				lines = append(lines, "")
-			}
+		} else {
+			wizardName := "wizard-" + bb.ID
+			lines = append(lines, dimStyle.Render("  No log file found for "+wizardName))
+			lines = append(lines, dimStyle.Render("  (wizard may not be active)"))
 		}
 	}
 
