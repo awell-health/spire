@@ -93,6 +93,21 @@ func cmdUp(args []string) error {
 		} else {
 			fmt.Printf("ok (%d tower(s))\n", len(towers))
 		}
+
+		// Ensure agent_runs + golden_prompts tables exist (idempotent)
+		fmt.Print("agent_runs table: ")
+		arWarned := 0
+		for _, t := range towers {
+			if err := ensureAgentRunsTable(t.Database); err != nil {
+				fmt.Printf("\n  warning: %s: %s", t.Database, err)
+				arWarned++
+			}
+		}
+		if arWarned > 0 {
+			fmt.Println()
+		} else {
+			fmt.Printf("ok (%d tower(s))\n", len(towers))
+		}
 	}
 
 	// Step 2.5: Clean dead wizards from registry and remove stale state files.
@@ -218,5 +233,17 @@ func cmdUp(args []string) error {
 		}
 	}
 
+	return nil
+}
+
+// ensureAgentRunsTable creates the agent_runs and golden_prompts tables if they
+// don't exist. Idempotent — safe to call on every startup.
+func ensureAgentRunsTable(database string) error {
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, agentRunsTableSQL)); err != nil {
+		return fmt.Errorf("create agent_runs: %w", err)
+	}
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, goldenPromptsTableSQL)); err != nil {
+		return fmt.Errorf("create golden_prompts: %w", err)
+	}
 	return nil
 }

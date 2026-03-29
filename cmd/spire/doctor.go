@@ -100,6 +100,9 @@ func cmdDoctor(args []string) error {
 	for _, tower := range towers {
 		tc := tower // capture for closures
 		categories[1].Checks = append(categories[1].Checks, checkTowerBeadsDirFor(&tc))
+		if doltIsReachable() {
+			categories[1].Checks = append(categories[1].Checks, checkAgentRunsTable(&tc))
+		}
 		if doltIsReachable() && len(cfg.Instances) > 0 {
 			categories[1].Checks = append(categories[1].Checks, checkRepoMigrationFor(cfg, &tc))
 		}
@@ -222,6 +225,9 @@ func cmdDoctor(args []string) error {
 	for _, tower := range reTowers {
 		tc := tower
 		reCategories[1].Checks = append(reCategories[1].Checks, checkTowerBeadsDirFor(&tc))
+		if doltIsReachable() {
+			reCategories[1].Checks = append(reCategories[1].Checks, checkAgentRunsTable(&tc))
+		}
 		if doltIsReachable() && len(reCfg.Instances) > 0 {
 			reCategories[1].Checks = append(reCategories[1].Checks, checkRepoMigrationFor(reCfg, &tc))
 		}
@@ -544,6 +550,36 @@ func checkTowerBeadsDirFor(tower *TowerConfig) checkResult {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// checkAgentRunsTable checks if the agent_runs and golden_prompts tables exist
+// in the tower database. If missing, the fix creates them.
+func checkAgentRunsTable(tower *TowerConfig) checkResult {
+	name := fmt.Sprintf("agent_runs table [%s]", tower.Name)
+
+	// Probe by selecting from agent_runs — if the table doesn't exist dolt returns an error.
+	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.agent_runs", tower.Database)
+	_, err := rawDoltQuery(query)
+	if err == nil {
+		return checkResult{
+			Name:   name,
+			Status: statusOK,
+			Detail: "exists",
+		}
+	}
+
+	return checkResult{
+		Name:   name,
+		Status: statusMissing,
+		Detail: "agent_runs table not found — metrics pipeline broken",
+		FixFunc: func() {
+			if fixErr := ensureAgentRunsTable(tower.Database); fixErr != nil {
+				fmt.Printf("    Failed to create agent_runs tables: %s\n", fixErr)
+			} else {
+				fmt.Println("    agent_runs + golden_prompts tables created")
+			}
+		},
+	}
 }
 
 // checkRepoMigrationFor checks if local config instances are missing from the
