@@ -169,7 +169,11 @@ func (m Model) View() string {
 	budget := CalcHeightBudget(m.Height, len(visibleCols.Alerts), len(visibleCols.Blocked), len(displayCols), len(m.Agents))
 
 	// Header.
-	header := lipgloss.NewStyle().Bold(true).Render("Spire Board")
+	headerTitle := "Spire Board"
+	if m.Opts.TowerName != "" {
+		headerTitle = "Spire Board \u2022 " + m.Opts.TowerName
+	}
+	header := lipgloss.NewStyle().Bold(true).Render(headerTitle)
 	ts := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.LastTick.Format("15:04:05"))
 	s.WriteString(header + "  " + ts + "\n\n")
 
@@ -313,7 +317,7 @@ func (m Model) View() string {
 	if m.ShowAllCols {
 		colsHint = " [all]"
 	}
-	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  Enter inspect  / search  s summon  u unsummon  r reset  x close  a actions  e epic" + epicInfo + "  H cols" + colsHint + " • q quit • ↻ " + m.Opts.Interval.String())
+	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  Enter inspect  / search  s summon  u unsummon  r reset  x close  a actions  e epic" + epicInfo + "  T tower  H cols" + colsHint + " • q quit • ↻ " + m.Opts.Interval.String())
 	rightFooter := scopeStyle.Render("showing " + m.TypeScope.Label())
 	if m.Width > 0 {
 		gap := m.Width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)
@@ -351,6 +355,12 @@ func (m Model) View() string {
 	// Action menu overlay: composite popup OVER the board (not replacing it).
 	if m.ActionMenuOpen {
 		popup := renderActionMenu(m.ActionMenuItems, m.ActionMenuCursor, m.ActionMenuBeadID, 35)
+		return overlayPopup(boardOutput, popup, m.Width, m.Height)
+	}
+
+	// Tower switcher overlay.
+	if m.TowerSwitcherOpen {
+		popup := renderTowerSwitcher(m.TowerSwitcherItems, m.TowerSwitcherCursor, 35)
 		return overlayPopup(boardOutput, popup, m.Width, m.Height)
 	}
 

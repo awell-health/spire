@@ -54,11 +54,17 @@ type ColumnsJSON struct {
 
 // Opts holds board command options shared between JSON output and TUI mode.
 type Opts struct {
-	Mine     bool
-	Ready    bool
-	Epic     string
-	Interval time.Duration
-	RootCmd  *cobra.Command // root cobra command for command mode completion/execution
+	Mine      bool
+	Ready     bool
+	Epic      string
+	Interval  time.Duration
+	RootCmd   *cobra.Command // root cobra command for command mode completion/execution
+	TowerName string         // current tower name (shown in header)
+
+	// ListTowersFn returns available towers for the T-key switcher. Injected by caller.
+	ListTowersFn func() []TowerItem
+	// SwitchTowerFn handles env changes when switching towers. Returns new name or error.
+	SwitchTowerFn func(towerName string) (string, error)
 }
 
 // ANSI color codes for static terminal output (used by watch, roster, actions).

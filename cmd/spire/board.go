@@ -90,6 +90,39 @@ func cmdBoard(args []string) error {
 
 	identity, _ := config.DetectIdentity("")
 
+	// Resolve current tower name for header display.
+	if tower, err := config.ResolveTowerConfig(); err == nil && tower != nil {
+		opts.TowerName = tower.Name
+	}
+
+	// Inject tower list function for the T-key switcher.
+	opts.ListTowersFn = func() []board.TowerItem {
+		towers, err := config.ListTowerConfigs()
+		if err != nil {
+			return nil
+		}
+		items := make([]board.TowerItem, len(towers))
+		for i, t := range towers {
+			items[i] = board.TowerItem{
+				Name:     t.Name,
+				Database: t.Database,
+				Active:   t.Name == opts.TowerName,
+			}
+		}
+		return items
+	}
+
+	// Inject tower switch function.
+	opts.SwitchTowerFn = func(towerName string) (string, error) {
+		os.Setenv("SPIRE_TOWER", towerName)
+		os.Unsetenv("BEADS_DIR")
+		if d := resolveBeadsDir(); d != "" {
+			os.Setenv("BEADS_DIR", d)
+		}
+		opts.TowerName = towerName
+		return towerName, nil
+	}
+
 	if flagJSON {
 		cols, err := board.FetchBoard(opts, identity)
 		if err != nil {

@@ -104,6 +104,11 @@ type Model struct {
 	// Command mode state.
 	Cmdline     CmdlineState   // vim-style command line state
 	CmdlineRoot *cobra.Command // root cobra command for parsing/completion
+
+	// Tower switcher overlay state.
+	TowerSwitcherOpen   bool
+	TowerSwitcherItems  []TowerItem
+	TowerSwitcherCursor int
 }
 
 // VisibleCols returns the columns filtered by the current type scope.
@@ -503,6 +508,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Tower switcher overlay: absorb all keys.
+		if m.TowerSwitcherOpen {
+			switch msg.String() {
+			case "esc", "q":
+				m.TowerSwitcherOpen = false
+				return m, nil
+			case "j", "down":
+				if m.TowerSwitcherCursor < len(m.TowerSwitcherItems)-1 {
+					m.TowerSwitcherCursor++
+				}
+				return m, nil
+			case "k", "up":
+				if m.TowerSwitcherCursor > 0 {
+					m.TowerSwitcherCursor--
+				}
+				return m, nil
+			case "enter":
+				if m.TowerSwitcherCursor >= 0 && m.TowerSwitcherCursor < len(m.TowerSwitcherItems) {
+					selected := m.TowerSwitcherItems[m.TowerSwitcherCursor]
+					m.TowerSwitcherOpen = false
+					if selected.Name == m.Opts.TowerName {
+						return m, nil // already on this tower
+					}
+					if m.Opts.SwitchTowerFn != nil {
+						if name, err := m.Opts.SwitchTowerFn(selected.Name); err == nil {
+							m.Opts.TowerName = name
+							m.Snapshot = nil
+							m.SelCol = 0
+							m.SelCard = 0
+							m.ColScroll = 0
+							m.SelSection = SectionColumns
+							return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+						}
+					}
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// Command mode: absorb all keys.
 		if m.Cmdline.Active {
 			return m.updateCmdline(msg)
@@ -769,6 +814,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t":
 			m.TypeScope = m.TypeScope.Next()
 			m.ClampSelection()
+
+		// Tower switcher.
+		case "T":
+			if m.Opts.ListTowersFn != nil {
+				items := m.Opts.ListTowersFn()
+				if len(items) > 1 {
+					m.TowerSwitcherOpen = true
+					m.TowerSwitcherCursor = 0
+					m.TowerSwitcherItems = items
+				}
+			}
+			return m, nil
 
 		// Toggle showing all phase columns (including empty).
 		case "H":
