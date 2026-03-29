@@ -42,8 +42,9 @@ type PhaseConfig struct {
 	Auto          bool   `toml:"auto,omitempty"`           // auto-execute without human gate
 	Apprentice    bool   `toml:"apprentice,omitempty"`     // run as apprentice (no phase labels, no review handoff)
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
-	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
-	Test          string `toml:"test,omitempty"`           // test command to verify after rebase/merge
+	Build              string `toml:"build,omitempty"`                // build command to verify after wave/merge
+	Test               string `toml:"test,omitempty"`                 // test command to verify after rebase/merge
+	MaxBuildFixRounds  int    `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
 }
 
 // GetBehavior returns the behavior override, or "" for role-based dispatch.
@@ -80,6 +81,14 @@ func (pc PhaseConfig) GetMergeStrategy() string {
 		return pc.MergeStrategy
 	}
 	return "squash"
+}
+
+// GetMaxBuildFixRounds returns the max build-fix attempts per wave, defaulting to 2.
+func (pc PhaseConfig) GetMaxBuildFixRounds() int {
+	if pc.MaxBuildFixRounds > 0 {
+		return pc.MaxBuildFixRounds
+	}
+	return 2
 }
 
 // RevisionPolicy configures review loop behavior (review phase only).

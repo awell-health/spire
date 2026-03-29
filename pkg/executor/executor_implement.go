@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -189,7 +190,12 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 				buildErr = e.runBuildCommand(repoPath, buildStr)
 			}
 			if buildErr != nil {
-				return fmt.Errorf("build verification failed after wave %d: %w", waveIdx, buildErr)
+				fixErr := e.attemptBuildFix(waveIdx, buildErr, pc)
+				if fixErr != nil {
+					EscalateHumanFailure(e.beadID, e.agentName, "build-failure",
+						fmt.Sprintf("wave %d build fix failed after retries: %s", waveIdx, fixErr), e.deps)
+					return fmt.Errorf("build verification failed after wave %d (fix exhausted): %w", waveIdx, fixErr)
+				}
 			}
 		}
 
@@ -286,7 +292,12 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 		if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
 			e.log("verifying build for %s: %s", subtaskID, buildStr)
 			if buildErr := stagingWt.RunBuild(buildStr); buildErr != nil {
-				return fmt.Errorf("build verification failed for %s: %w", subtaskID, buildErr)
+				fixErr := e.attemptBuildFix(i, buildErr, pc)
+				if fixErr != nil {
+					EscalateHumanFailure(e.beadID, e.agentName, "build-failure",
+						fmt.Sprintf("sequential step %s build fix failed after retries: %s", subtaskID, fixErr), e.deps)
+					return fmt.Errorf("build verification failed for %s (fix exhausted): %w", subtaskID, fixErr)
+				}
 			}
 		}
 
@@ -445,6 +456,88 @@ func (e *Executor) runBuildCommand(repoPath, buildStr string) error {
 	}
 	e.log("build passed")
 	return nil
+}
+
+// attemptBuildFix dispatches a build-fix apprentice in the staging worktree to
+// fix compilation errors after a wave merge. Retries up to MaxBuildFixRounds
+// (default 2). Returns nil on success, error if all attempts are exhausted.
+//
+// The fix apprentice works directly in the staging worktree (not on a separate
+// branch) because the build error only manifests in the combined merged state.
+func (e *Executor) attemptBuildFix(waveIdx int, buildErr error, pc PhaseConfig) error {
+	maxRounds := pc.GetMaxBuildFixRounds()
+	buildErrMsg := buildErr.Error()
+
+	for round := 1; round <= maxRounds; round++ {
+		e.state.BuildFixRounds++
+		e.log("build-fix round %d/%d for wave %d", round, maxRounds, waveIdx)
+
+		// Write build error to a temp file in the staging worktree for the apprentice.
+		wtDir := e.state.WorktreeDir
+		if wtDir == "" {
+			return fmt.Errorf("no staging worktree dir for build-fix")
+		}
+		errFile := filepath.Join(wtDir, ".build-error.log")
+		if writeErr := os.WriteFile(errFile, []byte(buildErrMsg), 0644); writeErr != nil {
+			e.log("warning: write build error file: %s", writeErr)
+		}
+
+		// Also add a comment on the bead for audit trail.
+		e.deps.AddComment(e.beadID, fmt.Sprintf(
+			"Build fix round %d/%d (wave %d):\n```\n%s\n```",
+			round, maxRounds, waveIdx, buildErrMsg,
+		))
+
+		// Spawn a build-fix apprentice in the staging worktree.
+		fixName := fmt.Sprintf("%s-buildfix-%d-%d", e.agentName, waveIdx, round)
+		extraArgs := []string{"--build-fix", "--apprentice", "--worktree-dir", wtDir}
+
+		started := time.Now()
+		handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+			Name:      fixName,
+			BeadID:    e.beadID,
+			Role:      agent.RoleApprentice,
+			ExtraArgs: extraArgs,
+		})
+		if spawnErr != nil {
+			e.recordAgentRun(fixName, e.beadID, "", pc.Model, "apprentice", started, spawnErr)
+			return fmt.Errorf("spawn build-fix apprentice (round %d): %w", round, spawnErr)
+		}
+		waitErr := handle.Wait()
+		e.recordAgentRun(fixName, e.beadID, "", pc.Model, "apprentice", started, waitErr)
+		if waitErr != nil {
+			e.log("build-fix apprentice failed (round %d): %s", round, waitErr)
+		}
+
+		// Clean up the error file.
+		os.Remove(errFile)
+
+		// Re-verify the build in the staging worktree.
+		buildStr := e.resolveBuildCommand(pc)
+		if buildStr == "" {
+			return nil // no build command means nothing to verify
+		}
+
+		e.log("re-verifying build after fix round %d: %s", round, buildStr)
+		var reBuildErr error
+		if e.stagingWt != nil {
+			reBuildErr = e.stagingWt.RunBuild(buildStr)
+		} else {
+			reBuildErr = e.runBuildCommand(e.state.RepoPath, buildStr)
+		}
+		if reBuildErr == nil {
+			e.log("build-fix succeeded on round %d", round)
+			e.saveState()
+			return nil
+		}
+
+		// Update buildErrMsg for next round.
+		buildErrMsg = reBuildErr.Error()
+		e.log("build still failing after fix round %d: %s", round, buildErrMsg)
+		e.saveState()
+	}
+
+	return fmt.Errorf("build fix exhausted after %d rounds: %s", maxRounds, buildErrMsg)
 }
 
 // ComputeWaves takes an epic ID and returns waves — groups of subtask IDs
