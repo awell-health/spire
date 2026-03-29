@@ -72,10 +72,6 @@ func cmdBoard(args []string) error {
 		return fmt.Errorf("spire board now launches the interactive TUI by default; use `spire board --json` for non-interactive output")
 	}
 
-	fetchBoard := func(o board.Opts) (board.Columns, error) {
-		return board.FetchBoard(o, identity)
-	}
-
 	fetchAgents := func() []board.LocalAgent {
 		reg := agent.LoadRegistry()
 		reg = cleanDeadWizards(reg)
@@ -86,7 +82,7 @@ func cmdBoard(args []string) error {
 		return executeBoardAction(action, beadID)
 	}
 
-	return board.RunBoardTUI(opts, fetchBoard, fetchAgents, actionFn)
+	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn)
 }
 
 // executeBoardAction runs the pending action on the raw terminal after the TUI exits.

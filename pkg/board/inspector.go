@@ -230,9 +230,20 @@ func RenderInspector(data InspectorData, width, height, scrollOffset int) string
 }
 
 // InspectorLineCount returns the total number of lines the inspector would render.
+//
+// Deprecated: uses RenderInspector which makes DB calls. Use inspectorLineCountSnap instead.
 func InspectorLineCount(data InspectorData, width int) int {
 	// Render and count — simpler than duplicating line-counting logic.
 	full := RenderInspector(data, width, 10000, 0)
+	return strings.Count(full, "\n") + 1
+}
+
+// inspectorLineCountSnap counts inspector lines using the pure renderInspectorSnap function.
+func inspectorLineCountSnap(data *InspectorData, dag *DAGProgress, width int) int {
+	if data == nil {
+		return 3
+	}
+	full := renderInspectorSnap(data.Bead, data, dag, width, 10000, 0)
 	return strings.Count(full, "\n") + 1
 }
 

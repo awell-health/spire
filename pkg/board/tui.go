@@ -23,6 +23,7 @@ type Model struct {
 	Opts          Opts
 	Cols          Columns
 	Agents        []LocalAgent // alive local wizards from registry
+	Identity      string       // user identity for snapshot fetching
 	TypeScope     TypeScope
 	ShowAllCols   bool // when true, show all phase columns including empty ones
 	Width         int
@@ -34,13 +35,16 @@ type Model struct {
 	PendingAction PendingAction
 	PendingBeadID string
 
-	// Inspector state.
-	Inspecting      bool           // true when the inspector pane is visible
-	InspectorData   InspectorData  // fetched detail data for the inspected bead
-	InspectorScroll int            // scroll offset within the inspector
+	// Snapshot holds the pre-fetched board state assembled in the background.
+	// View() reads from this struct — no I/O during render.
+	Snapshot *BoardSnapshot
 
-	// FetchBoardFn is called to refresh board data. Injected by the caller.
-	FetchBoardFn func(opts Opts) (Columns, error)
+	// Inspector state.
+	Inspecting      bool            // true when the inspector pane is visible
+	InspectorData   *InspectorData  // fetched detail data (nil when loading)
+	InspectorLoading bool           // true while async fetch is in progress
+	InspectorScroll int             // scroll offset within the inspector
+
 	// FetchAgentsFn is called to refresh local agents. Injected by the caller.
 	FetchAgentsFn func() []LocalAgent
 }
@@ -100,45 +104,14 @@ func tickCmd(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-// boardDataMsg carries asynchronously fetched board data back to Update().
-type boardDataMsg struct {
-	Cols   Columns
-	Agents []LocalAgent
-}
-
-// fetchBoardCmd returns a tea.Cmd that fetches board data in a goroutine
-// and sends the result back as a boardDataMsg. This keeps the event loop
-// responsive while the DB queries run.
-func fetchBoardCmd(opts Opts, fetchBoard func(Opts) (Columns, error), fetchAgents func() []LocalAgent) tea.Cmd {
-	return func() tea.Msg {
-		var cols Columns
-		if fetchBoard != nil {
-			if c, err := fetchBoard(opts); err == nil {
-				cols = c
-			}
-		}
-		var agents []LocalAgent
-		if fetchAgents != nil {
-			agents = fetchAgents()
-		}
-		return boardDataMsg{Cols: cols, Agents: agents}
-	}
-}
-
 // RunBoardTUI runs the board TUI in a loop, executing pending actions between launches.
 // actionFn is called when the TUI exits with a pending action; it returns true to relaunch.
-func RunBoardTUI(opts Opts, fetchBoard func(Opts) (Columns, error), fetchAgents func() []LocalAgent, actionFn func(PendingAction, string) bool) error {
+func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, actionFn func(PendingAction, string) bool) error {
 	for {
-		cols, err := fetchBoard(opts)
-		if err != nil {
-			return err
-		}
 		m := Model{
 			Opts:          opts,
-			Cols:          cols,
-			Agents:        fetchAgents(),
+			Identity:      identity,
 			LastTick:      time.Now(),
-			FetchBoardFn:  fetchBoard,
 			FetchAgentsFn: fetchAgents,
 		}
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -161,7 +134,7 @@ func RunBoardTUI(opts Opts, fetchBoard func(Opts) (Columns, error), fetchAgents 
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tickCmd(m.Opts.Interval)
+	return fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
 }
 
 // Update implements tea.Model.
@@ -174,6 +147,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "q", "enter":
 				m.Inspecting = false
 				m.InspectorScroll = 0
+				m.InspectorData = nil
+				m.InspectorLoading = false
 			case "ctrl+c":
 				m.Quitting = true
 				return m, tea.Quit
@@ -187,14 +162,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "g":
 				m.InspectorScroll = 0
 			case "G":
-				total := InspectorLineCount(m.InspectorData, m.Width)
-				maxVisible := m.Height - 2
-				if maxVisible < 5 {
-					maxVisible = 5
-				}
-				m.InspectorScroll = total - maxVisible
-				if m.InspectorScroll < 0 {
-					m.InspectorScroll = 0
+				if m.InspectorData != nil {
+					var dag *DAGProgress
+					if m.Snapshot != nil {
+						dag = m.Snapshot.DAGProgress[m.InspectorData.Bead.ID]
+					}
+					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width)
+					maxVisible := m.Height - 2
+					if maxVisible < 5 {
+						maxVisible = 5
+					}
+					m.InspectorScroll = total - maxVisible
+					if m.InspectorScroll < 0 {
+						m.InspectorScroll = 0
+					}
 				}
 			}
 			return m, nil
@@ -205,12 +186,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Quitting = true
 			return m, tea.Quit
 
-		// Open inspector on Enter.
+		// Open inspector on Enter — dispatch async fetch.
 		case "enter":
 			if bead := m.SelectedBead(); bead != nil {
 				m.Inspecting = true
 				m.InspectorScroll = 0
-				m.InspectorData = FetchInspectorData(*bead)
+				m.InspectorLoading = true
+				m.InspectorData = nil
+				return m, fetchInspectorCmd(*bead)
 			}
 
 		// Column navigation.
@@ -243,7 +226,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.ClampSelection()
-			return m, fetchBoardCmd(m.Opts, m.FetchBoardFn, m.FetchAgentsFn)
+			return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
 		case "t":
 			m.TypeScope = m.TypeScope.Next()
 			m.ClampSelection()
@@ -296,16 +279,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.LastTick = time.Now()
 		if !m.Inspecting {
-			return m, fetchBoardCmd(m.Opts, m.FetchBoardFn, m.FetchAgentsFn)
+			return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
 		}
 		return m, tickCmd(m.Opts.Interval)
-	case boardDataMsg:
-		m.Cols = msg.Cols
-		m.Agents = msg.Agents
+	case snapshotMsg:
+		if msg.Err == nil && msg.Snap != nil {
+			m.Snapshot = msg.Snap
+			m.Cols = msg.Snap.Columns
+			m.Agents = msg.Snap.Agents
+		}
 		if !m.Inspecting {
 			m.ClampSelection()
 		}
 		return m, tickCmd(m.Opts.Interval)
+	case inspectorDataMsg:
+		if msg.Err == nil && msg.Data != nil {
+			m.InspectorData = msg.Data
+		}
+		m.InspectorLoading = false
+		return m, nil
 	}
 	return m, nil
 }

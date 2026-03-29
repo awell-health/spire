@@ -126,13 +126,28 @@ func RenderCompactCard(b BoardBead, color lipgloss.Color, width int, selected bo
 }
 
 // View implements tea.Model for the board TUI.
+// This is a pure function — ZERO store/DB calls. All data comes from m.Snapshot.
 func (m Model) View() string {
 	if m.Quitting {
 		return ""
 	}
 
+	// Show loading screen until first snapshot arrives.
+	if m.Snapshot == nil {
+		return "Loading..."
+	}
+
 	if m.Inspecting {
-		return RenderInspector(m.InspectorData, m.Width, m.Height, m.InspectorScroll)
+		b := BoardBead{}
+		var dag *DAGProgress
+		if m.InspectorData != nil {
+			b = m.InspectorData.Bead
+			dag = m.InspectorData.DAG
+		} else if bead := m.SelectedBead(); bead != nil {
+			b = *bead
+			dag = m.Snapshot.DAGProgress[bead.ID]
+		}
+		return renderInspectorSnap(b, m.InspectorData, dag, m.Width, m.Height, m.InspectorScroll)
 	}
 
 	visibleCols := m.VisibleCols()
@@ -206,7 +221,9 @@ func (m Model) View() string {
 				if budget.Compact {
 					cb.WriteString(RenderCompactCard(b, c.Color, colWidth, isSelected))
 				} else {
-					cb.WriteString(RenderCardStr(b, c.Color, colWidth, isSelected))
+					phase := m.Snapshot.PhaseMap[b.ID]
+					dag := m.Snapshot.DAGProgress[b.ID]
+					cb.WriteString(RenderCardStrSnap(b, phase, dag, c.Color, colWidth, isSelected))
 				}
 			}
 			rendered[i] = cb.String()
@@ -239,7 +256,7 @@ func (m Model) View() string {
 
 	// Agent panel (capped by budget).
 	if budget.MaxAgents > 0 && len(m.Agents) > 0 {
-		s.WriteString(RenderAgentPanel(m.Agents, budget.MaxAgents))
+		s.WriteString(RenderAgentPanelSnap(m.Agents, m.Snapshot.DAGProgress, budget.MaxAgents))
 	}
 
 	// Footer.
