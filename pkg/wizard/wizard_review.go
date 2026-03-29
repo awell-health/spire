@@ -293,6 +293,7 @@ Evaluate:
 3. Quality: Is the code clean, well-tested, and maintainable?
 4. Edge cases: Are error paths and edge cases handled?
 5. Test consistency: If the diff changes function behavior, deps usage, or adds new store/deps calls, verify that corresponding test mocks and test setup are updated. Missing mock updates cause nil pointer panics at test time.
+6. Test coverage: New or significantly modified functions must have corresponding test coverage in the diff. If the diff adds or changes exported functions, unexported business-logic functions, or branching logic, look for test additions/updates that exercise those paths. Issue "request_changes" if significant new code has no tests. Exception: pure I/O glue code (main(), CLI flag wiring, signal handlers, process lifecycle) does not require unit tests.
 
 Respond ONLY with a JSON object:
 {
@@ -303,7 +304,7 @@ Respond ONLY with a JSON object:
 
 Verdicts:
 - "approve": Implementation satisfies the spec. Minor style issues are OK.
-- "request_changes": Implementation has fixable issues. List them.`
+- "request_changes": Implementation has fixable issues, OR significant new/modified code lacks test coverage.`
 
 	var userPrompt strings.Builder
 	userPrompt.WriteString("## Task\n")
