@@ -99,6 +99,31 @@ func tickCmd(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
+// boardDataMsg carries asynchronously fetched board data back to Update().
+type boardDataMsg struct {
+	Cols   Columns
+	Agents []LocalAgent
+}
+
+// fetchBoardCmd returns a tea.Cmd that fetches board data in a goroutine
+// and sends the result back as a boardDataMsg. This keeps the event loop
+// responsive while the DB queries run.
+func fetchBoardCmd(opts Opts, fetchBoard func(Opts) (Columns, error), fetchAgents func() []LocalAgent) tea.Cmd {
+	return func() tea.Msg {
+		var cols Columns
+		if fetchBoard != nil {
+			if c, err := fetchBoard(opts); err == nil {
+				cols = c
+			}
+		}
+		var agents []LocalAgent
+		if fetchAgents != nil {
+			agents = fetchAgents()
+		}
+		return boardDataMsg{Cols: cols, Agents: agents}
+	}
+}
+
 // RunBoardTUI runs the board TUI in a loop, executing pending actions between launches.
 // actionFn is called when the TUI exits with a pending action; it returns true to relaunch.
 func RunBoardTUI(opts Opts, fetchBoard func(Opts) (Columns, error), fetchAgents func() []LocalAgent, actionFn func(PendingAction, string) bool) error {
@@ -216,12 +241,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.Opts.Epic = bead.Parent
 				}
 			}
-			if m.FetchBoardFn != nil {
-				if newCols, err := m.FetchBoardFn(m.Opts); err == nil {
-					m.Cols = newCols
-				}
-			}
 			m.ClampSelection()
+			return m, fetchBoardCmd(m.Opts, m.FetchBoardFn, m.FetchAgentsFn)
 		case "t":
 			m.TypeScope = m.TypeScope.Next()
 			m.ClampSelection()
@@ -265,15 +286,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 	case tickMsg:
-		if !m.Inspecting && m.FetchBoardFn != nil {
-			if cols, err := m.FetchBoardFn(m.Opts); err == nil {
-				m.Cols = cols
-			}
-		}
-		if !m.Inspecting && m.FetchAgentsFn != nil {
-			m.Agents = m.FetchAgentsFn()
-		}
 		m.LastTick = time.Now()
+		if !m.Inspecting {
+			return m, fetchBoardCmd(m.Opts, m.FetchBoardFn, m.FetchAgentsFn)
+		}
+		return m, tickCmd(m.Opts.Interval)
+	case boardDataMsg:
+		m.Cols = msg.Cols
+		m.Agents = msg.Agents
 		if !m.Inspecting {
 			m.ClampSelection()
 		}
