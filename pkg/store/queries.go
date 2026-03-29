@@ -223,3 +223,28 @@ func GetChildren(parentID string) ([]Bead, error) {
 	}
 	return IssuesToBeads(issues), nil
 }
+
+// GetChildrenBatch fetches children for multiple parent IDs and returns them
+// grouped by parent ID. It reuses the same SearchIssues + ParentID filter logic
+// as GetChildren, ensuring identically-structured Bead values.
+func GetChildrenBatch(parentIDs []string) (map[string][]Bead, error) {
+	if len(parentIDs) == 0 {
+		return map[string][]Bead{}, nil
+	}
+	s, ctx, err := getStore()
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string][]Bead, len(parentIDs))
+	for _, pid := range parentIDs {
+		pid := pid
+		issues, err := s.SearchIssues(ctx, "", beads.IssueFilter{
+			ParentID: &pid,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get children of %s: %w", pid, err)
+		}
+		result[pid] = IssuesToBeads(issues)
+	}
+	return result, nil
+}
