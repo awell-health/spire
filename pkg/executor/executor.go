@@ -197,6 +197,7 @@ func (e *Executor) Run() error {
 		phase := e.state.Phase
 		pc, ok := e.formula.Phases[phase]
 		if !ok {
+			e.closeAllOpenStepBeads()
 			e.closeAttempt(fmt.Sprintf("failure: unknown phase %q", phase))
 			return fmt.Errorf("phase %q not in formula %s", phase, e.formula.Name)
 		}
@@ -223,6 +224,7 @@ func (e *Executor) Run() error {
 			e.log("auto-approve: skipping review")
 		case behavior == "merge-to-main":
 			if mergeErr := e.executeMerge(pc); mergeErr != nil {
+				e.closeAllOpenStepBeads()
 				e.closeAttempt("failure: merge: " + mergeErr.Error())
 				EscalateHumanFailure(e.beadID, e.agentName, "merge-failure", mergeErr.Error(), e.deps)
 				return fmt.Errorf("phase %s: %w", phase, mergeErr)
@@ -238,6 +240,7 @@ func (e *Executor) Run() error {
 		case behavior == "" && phase == "merge":
 			// Default merge behavior when no behavior set
 			if mergeErr := e.executeMerge(pc); mergeErr != nil {
+				e.closeAllOpenStepBeads()
 				e.closeAttempt("failure: merge: " + mergeErr.Error())
 				EscalateHumanFailure(e.beadID, e.agentName, "merge-failure", mergeErr.Error(), e.deps)
 				return fmt.Errorf("phase merge: %w", mergeErr)
@@ -273,6 +276,7 @@ func (e *Executor) Run() error {
 		}
 
 		if err != nil {
+			e.closeAllOpenStepBeads()
 			e.closeAttempt(fmt.Sprintf("failure: phase %s: %s", phase, err.Error()))
 			return fmt.Errorf("phase %s: %w", phase, err)
 		}
@@ -282,6 +286,7 @@ func (e *Executor) Run() error {
 		if phase == "implement" && e.stagingWt != nil && !e.stagingWt.HasNewCommits() {
 			e.log("implement phase produced no code changes — escalating")
 			EscalateEmptyImplement(e.beadID, e.agentName, e.deps)
+			e.closeAllOpenStepBeads()
 			e.closeAttempt("escalated: empty implement — no code changes")
 			e.terminated = true
 			return nil
@@ -297,14 +302,16 @@ func (e *Executor) Run() error {
 		// Transition step beads: close previous, activate next.
 		e.transitionStepBead(prevPhase, e.state.Phase)
 
-		// Check if bead is closed
+		// Check if bead is closed (e.g. by executeMerge from within review phase).
 		bead, err := e.deps.GetBead(e.beadID)
 		if err != nil {
+			e.closeAllOpenStepBeads()
 			e.closeAttempt("failure: check bead: " + err.Error())
 			return fmt.Errorf("check bead: %w", err)
 		}
 		if bead.Status == "closed" {
 			e.log("bead closed — exiting")
+			e.closeAllOpenStepBeads()
 			e.closeAttempt("success: bead closed")
 			e.terminated = true
 			return nil
