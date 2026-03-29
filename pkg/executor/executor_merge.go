@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // executeMerge handles the merge phase: ff-only merge of staging branch into main.
@@ -160,10 +161,7 @@ Documentation files to review:
 
 IMPORTANT: Only fix genuinely stale language where the described feature now exists in code. Do NOT remove TODOs for things that are actually still pending. Be conservative — when in doubt, leave it alone.`, strings.Join(docFiles, "\n"))
 
-	model := pc.Model
-	if model == "" {
-		model = "claude-sonnet-4-6"
-	}
+	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
 
 	cmd := exec.Command("claude",
 		"--dangerously-skip-permissions",

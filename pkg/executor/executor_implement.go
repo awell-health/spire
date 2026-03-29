@@ -380,7 +380,7 @@ Do NOT commit — the merge commit will be created automatically.`,
 	cmd := exec.Command("claude",
 		"--dangerously-skip-permissions",
 		"-p", prompt,
-		"--model", "claude-sonnet-4-6",
+		"--model", repoconfig.ResolveModel("", e.repoModel()),
 		"--max-turns", "10",
 	)
 	cmd.Dir = repoPath

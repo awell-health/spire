@@ -89,26 +89,14 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		repoCfg = &repoconfig.RepoConfig{}
 	}
 
-	model := repoCfg.Agent.Model
-	if model == "" {
-		model = "claude-sonnet-4-6"
-	}
-	timeout := repoCfg.Agent.Timeout
-	if timeout == "" {
-		timeout = "15m"
-	}
+	model := repoconfig.ResolveModel("", repoCfg.Agent.Model)
+	timeout := repoconfig.ResolveTimeout("", repoCfg.Agent.Timeout, repoconfig.DefaultTimeout)
 	maxTurns := repoCfg.Agent.MaxTurns
 	if maxTurns == 0 {
 		maxTurns = 75
 	}
-	designTimeout := repoCfg.Agent.DesignTimeout
-	if designTimeout == "" {
-		designTimeout = "10m"
-	}
-	branchPattern := repoCfg.Branch.Pattern
-	if branchPattern == "" {
-		branchPattern = "feat/{bead-id}"
-	}
+	designTimeout := repoconfig.ResolveDesignTimeout(repoCfg.Agent.DesignTimeout)
+	branchPattern := repoconfig.ResolveBranchPattern(repoCfg.Branch.Pattern)
 	if repoCfg.Branch.Base != "" {
 		baseBranch = repoCfg.Branch.Base
 	}

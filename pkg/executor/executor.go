@@ -443,3 +443,15 @@ func (e *Executor) resolveBranch(beadID string) string {
 	}
 	return "feat/" + beadID
 }
+
+// repoModel returns the agent model from the repo config, or "" if unavailable.
+func (e *Executor) repoModel() string {
+	if e.deps.RepoConfig == nil {
+		return ""
+	}
+	cfg := e.deps.RepoConfig()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Agent.Model
+}

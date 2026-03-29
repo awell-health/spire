@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // EpicReview handles the review phase of the wizard epic orchestration.
@@ -77,7 +79,7 @@ func EpicReview(state *EpicState, spawner Backend, deps *Deps) error {
 			revPolicy = formula.GetRevisionPolicy()
 		}
 		if revPolicy.MaxRounds == 0 {
-			revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: "claude-opus-4-6"}
+			revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: repoconfig.DefaultReviewModel}
 		}
 
 		// Check if we've hit max rounds

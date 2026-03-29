@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/steveyegge/beads"
 )
 
@@ -94,10 +95,7 @@ Produce a plan in this structure:
 Be precise and actionable. The apprentice implementing this will use your plan as their primary guide.
 `, taskContext.String(), designContext)
 
-	model := pc.Model
-	if model == "" {
-		model = "claude-opus-4-6"
-	}
+	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
 
 	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for task plan (max_turns=%d)", maxTurns)
@@ -220,10 +218,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 - Tasks with no deps run in parallel (same wave)
 `, epicContext, designContext)
 
-	model := pc.Model
-	if model == "" {
-		model = "claude-sonnet-4-6"
-	}
+	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
 
 	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for plan generation (max_turns=%d)", maxTurns)
@@ -336,10 +331,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 
 // enrichSubtasksWithChangeSpecs invokes Claude per subtask to produce a change spec.
 func (e *Executor) enrichSubtasksWithChangeSpecs(children []Bead, epicContext, designContext string, pc PhaseConfig) error {
-	model := pc.Model
-	if model == "" {
-		model = "claude-opus-4-6"
-	}
+	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
 	maxTurns := pc.GetMaxTurns()
 	enriched := 0
 
@@ -449,10 +441,7 @@ func (e *Executor) wizardGeneric(phase string, pc PhaseConfig) error {
 
 	focusContext, _ := e.deps.CaptureFocus(e.beadID)
 
-	model := pc.Model
-	if model == "" {
-		model = "claude-sonnet-4-6"
-	}
+	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
 
 	prompt := fmt.Sprintf(`You are a Spire wizard handling the %s phase for bead %s.
 

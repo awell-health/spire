@@ -11,6 +11,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/metrics"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -103,6 +104,7 @@ type Deps struct {
 	// Config
 	ConfigDir      func() (string, error)
 	ResolveFormula func(b Bead) (*FormulaV2, error)
+	RepoConfig     func() *repoconfig.RepoConfig // nil-safe; returns nil if unavailable
 
 	// Spawner
 	Spawner Backend

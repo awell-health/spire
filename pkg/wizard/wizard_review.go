@@ -147,7 +147,7 @@ func CmdWizardReview(args []string, deps *Deps) error {
 		revPolicy = formula.GetRevisionPolicy()
 	}
 	if revPolicy.MaxRounds == 0 {
-		revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: "claude-opus-4-6"}
+		revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: repoconfig.DefaultReviewModel}
 	}
 
 	// 7c. Create review-round bead before dispatching review
@@ -278,7 +278,11 @@ func ReviewGetRound(beadID string, deps *Deps) int {
 // --- Opus review ---
 
 // ReviewRunOpus runs an Opus-model code review on the given diff.
-func ReviewRunOpus(title, spec, diff, testOutput string, round int) (*Review, error) {
+func ReviewRunOpus(title, spec, diff, testOutput string, round int, model ...string) (*Review, error) {
+	reviewModel := repoconfig.DefaultReviewModel
+	if len(model) > 0 && model[0] != "" {
+		reviewModel = model[0]
+	}
 	systemPrompt := `You are a senior staff engineer performing code review. You review diffs against specifications.
 
 Your job is to determine: does this implementation satisfy the specification?
@@ -340,7 +344,7 @@ Verdicts:
 	fullPrompt := fmt.Sprintf("System: %s\n\n%s", systemPrompt, userPrompt.String())
 
 	// Run claude with Opus model
-	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-p", fullPrompt, "--model", "claude-opus-4-6", "--output-format", "text")
+	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-p", fullPrompt, "--model", reviewModel, "--output-format", "text")
 	cmd.Env = os.Environ()
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()

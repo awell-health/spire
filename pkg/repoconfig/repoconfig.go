@@ -148,31 +148,10 @@ func applyDefaults(cfg *RepoConfig, dir string) {
 		cfg.Runtime.Test = detected.Test
 	}
 
-	// Agent defaults
-	if cfg.Agent.Model == "" {
-		cfg.Agent.Model = "claude-sonnet-4-6"
-	}
-	// MaxTurns 0 means unlimited — the timeout is the only gate.
-	// Don't default to 30; let wizard.go handle the fallback.
-	if cfg.Agent.Stale == "" {
-		cfg.Agent.Stale = "10m"
-	}
-	if cfg.Agent.Timeout == "" {
-		cfg.Agent.Timeout = "15m"
-	}
-	if cfg.Agent.DesignTimeout == "" {
-		cfg.Agent.DesignTimeout = "10m"
-	}
-
-	// Branch defaults
-	if cfg.Branch.Base == "" {
-		cfg.Branch.Base = "main"
-	}
-	if cfg.Branch.Pattern == "" {
-		cfg.Branch.Pattern = "feat/{bead-id}"
-	}
-
-	// PR defaults: auto-merge defaults to false (zero value), so nothing to do
+	// Policy defaults (model, stale, timeout, branch) are NOT set here.
+	// Load() returns zero values for unset fields; consumers use the
+	// Resolve*() functions from resolve.go to apply the precedence chain
+	// (formula phase > spire.yaml > system default).
 }
 
 // detectRuntime inspects the given directory for known project files and
@@ -256,8 +235,8 @@ func DetectDefaults(dir string) YAMLValues {
 		Test:         rt.Test,
 		Build:        rt.Build,
 		Lint:         rt.Lint,
-		Model:        "claude-opus-4-6",
-		Timeout:      "15m",
+		Model:        DefaultModel,
+		Timeout:      DefaultTimeout,
 		DetectedHint: detectHint(dir),
 	}
 }
@@ -362,16 +341,16 @@ func FormatResolved(cfg *RepoConfig) string {
 	}
 
 	s += "agent:\n"
-	s += "  model: " + cfg.Agent.Model + "\n"
+	s += "  model: " + ResolveModel("", cfg.Agent.Model) + "\n"
 	if cfg.Agent.MaxTurns > 0 {
 		s += "  max-turns: " + itoa(cfg.Agent.MaxTurns) + "\n"
 	}
-	s += "  stale: " + cfg.Agent.Stale + "\n"
-	s += "  timeout: " + cfg.Agent.Timeout + "\n"
+	s += "  stale: " + ResolveStale(cfg.Agent.Stale) + "\n"
+	s += "  timeout: " + ResolveTimeout("", cfg.Agent.Timeout, DefaultTimeout) + "\n"
 
 	s += "branch:\n"
-	s += "  base: " + cfg.Branch.Base + "\n"
-	s += "  pattern: " + cfg.Branch.Pattern + "\n"
+	s += "  base: " + ResolveBranchBase(cfg.Branch.Base) + "\n"
+	s += "  pattern: " + ResolveBranchPattern(cfg.Branch.Pattern) + "\n"
 
 	s += "pr:\n"
 	if cfg.PR.AutoMerge {
@@ -407,7 +386,7 @@ func (c *RepoConfig) ResolveBranch(beadID string) string {
 // If pattern is empty, it defaults to "feat/{bead-id}".
 func ResolveBranchName(beadID, pattern string) string {
 	if pattern == "" {
-		pattern = "feat/{bead-id}"
+		pattern = DefaultBranchPattern
 	}
 	return strings.ReplaceAll(pattern, "{bead-id}", beadID)
 }
@@ -419,7 +398,7 @@ func ResolveBranchName(beadID, pattern string) string {
 func (c *RepoConfig) BranchGlob() string {
 	pattern := c.Branch.Pattern
 	if pattern == "" {
-		pattern = "feat/{bead-id}"
+		pattern = DefaultBranchPattern
 	}
 	return strings.ReplaceAll(pattern, "{bead-id}", "*")
 }
@@ -429,7 +408,7 @@ func (c *RepoConfig) BranchGlob() string {
 func (c *RepoConfig) BranchPrefix() string {
 	pattern := c.Branch.Pattern
 	if pattern == "" {
-		pattern = "feat/{bead-id}"
+		pattern = DefaultBranchPattern
 	}
 	idx := strings.Index(pattern, "{bead-id}")
 	if idx < 0 {

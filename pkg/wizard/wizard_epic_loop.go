@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // EpicLoop is the wizard's main event loop for epic orchestration.
@@ -77,7 +79,7 @@ func EpicConsultClaude(state *EpicState, prompt string) (string, error) {
 	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
-		"--model", "claude-opus-4-6",
+		"--model", repoconfig.DefaultReviewModel,
 		"--output-format", "text",
 	}
 

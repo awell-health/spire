@@ -12,6 +12,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/metrics"
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // --- Type aliases so existing cmd/spire code compiles unchanged ---
@@ -135,6 +136,14 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		// Config
 		ConfigDir:      configDir,
 		ResolveFormula: ResolveFormula,
+		RepoConfig: func() *repoconfig.RepoConfig {
+			// Best-effort: load from the bead's repo. Returns nil if unavailable.
+			cfg, err := repoconfig.Load(".")
+			if err != nil {
+				return nil
+			}
+			return cfg
+		},
 
 		// Spawner
 		Spawner: spawner,
