@@ -100,12 +100,16 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 			if implPC.GetDispatch() == "wave" {
 				// Spawn a single review-fix apprentice.
 				fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
+				fixArgs := []string{"--review-fix", "--apprentice"}
+				if e.state.WorktreeDir != "" {
+					fixArgs = append(fixArgs, "--worktree-dir", e.state.WorktreeDir)
+				}
 				fixStarted := time.Now()
 				fh, ferr := e.deps.Spawner.Spawn(agent.SpawnConfig{
 					Name:      fixName,
 					BeadID:    e.beadID,
 					Role:      agent.RoleApprentice,
-					ExtraArgs: []string{"--review-fix", "--apprentice"},
+					ExtraArgs: fixArgs,
 				})
 				if ferr != nil {
 					return fmt.Errorf("spawn review-fix: %w", ferr)
