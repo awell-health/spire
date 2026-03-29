@@ -111,24 +111,19 @@ func (w *StagingWorktree) FetchBranch(remote, branch string) {
 
 // MergeBranch merges childBranch into this staging worktree's branch with
 // linear history (no merge commits). Strategy:
-//  1. Fetch the child branch from origin.
-//  2. Try ff-only merge — succeeds when staging hasn't diverged.
-//  3. If ff-only fails, rebase the child onto staging, then ff-only again.
+//  1. Try ff-only merge — succeeds when staging hasn't diverged.
+//  2. If ff-only fails, rebase the child onto staging, then ff-only again.
+//
+// Apprentices never push feature branches to origin — branches are local
+// only (worktree in local mode, shared PVC in k8s mode). MergeBranch uses
+// local refs exclusively.
 //
 // On rebase conflict, resolver is called (if non-nil) to attempt resolution.
-// FetchBranch is the only StagingWorktree-specific escape hatch
-// (WorktreeContext forbids fetch by design).
 func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, branch string) error) error {
 	w.log("  merging %s into %s", childBranch, w.Branch)
 
-	// Fetch in case the apprentice pushed to remote.
-	w.FetchBranch("origin", childBranch)
-
-	// Determine ref: prefer origin/, fall back to local.
-	branchRef := "origin/" + childBranch
-	if exec.Command("git", "-C", w.Dir, "rev-parse", "--verify", branchRef).Run() != nil {
-		branchRef = childBranch
-	}
+	// Use local branch ref directly — apprentices don't push to origin.
+	branchRef := childBranch
 
 	// Step 1: Try fast-forward-only merge.
 	if err := w.MergeFFOnly(branchRef); err == nil {

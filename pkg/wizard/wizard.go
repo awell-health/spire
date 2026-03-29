@@ -20,7 +20,7 @@ import (
 
 // CmdWizardRun is the internal entry point for a local wizard process.
 // It claims a bead, creates a worktree, runs design + implement phases,
-// validates, commits, pushes, updates the bead, and hands off to review.
+// validates, commits, updates the bead, and hands off to review.
 //
 // Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice]
 func CmdWizardRun(args []string, deps *Deps) error {
@@ -258,20 +258,20 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	// 10. Validate
 	testsPassed := WizardValidate(worktreeDir, repoCfg, log)
 
-	// 11. Commit and push
-	commitSHA, pushed := WizardCommitAndPush(wc, beadID, beadTitle, log)
+	// 11. Commit
+	commitSHA, committed := WizardCommit(wc, beadID, beadTitle, log)
 
 	// 12. Update bead (comment)
-	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, pushed, testsPassed, deps, log)
+	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, committed, testsPassed, deps, log)
 
-	// 13. Review handoff if pushed.
+	// 13. Review handoff if committed.
 	// Test failures are informational — the reviewer runs tests independently.
 	// Pre-existing integration-test failures (e.g. missing .beads/ in worktree)
 	// must not block the review handoff.
 	//
-	if pushed {
+	if committed {
 		if !testsPassed {
-			log("tests failed but branch pushed — proceeding to review")
+			log("tests failed but branch committed — proceeding to review")
 			deps.AddLabel(beadID, "test-failure")
 		}
 		if !apprenticeMode {
@@ -292,7 +292,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	// 15. Write result
 	elapsed := time.Since(startedAt)
 	result := "success"
-	if !pushed {
+	if !committed {
 		result = "no_changes"
 	}
 	if !testsPassed {
@@ -363,7 +363,7 @@ func ResolveBranchForBead(beadID, repoPath string) string {
 
 // WizardCreateWorktree creates a git worktree for the wizard to work in.
 // On first run it creates a new branch from baseBranch. On --review-fix
-// the branch already exists (pushed by the previous run), so it checks
+// the branch already exists (committed by the previous run), so it checks
 // out the existing branch instead of trying to create it again.
 //
 // Returns a WorktreeContext that must be used for all subsequent git operations.
@@ -652,9 +652,11 @@ func WizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 	return true
 }
 
-// WizardCommitAndPush commits any changes and pushes the branch.
-// Uses WorktreeContext methods for all git operations — no raw exec.Command.
-func WizardCommitAndPush(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, pushed bool) {
+// WizardCommit commits any changes on the branch.
+// Apprentices never push feature branches to origin — the wizard merges
+// locally from the worktree (local mode) or shared PVC (k8s mode).
+// Only the final main merge touches origin.
+func WizardCommit(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, committed bool) {
 	hasUncommitted := wc.HasUncommittedChanges()
 	hasNewCommits := wc.HasNewCommits()
 
@@ -663,16 +665,11 @@ func WizardCommitAndPush(wc *spgit.WorktreeContext, beadID, beadTitle string, lo
 		return "", false
 	}
 
-	// If Claude already committed, just push and report success.
+	// If Claude already committed, report success.
 	if !hasUncommitted && hasNewCommits {
 		sha, _ := wc.HeadSHA()
-		commitSHA = sha
-		log("Claude already committed — pushing branch %s", wc.Branch)
-		if err := wc.Push("origin"); err != nil {
-			log("git push failed: %s", err)
-			return commitSHA, false
-		}
-		return commitSHA, true
+		log("Claude already committed on branch %s", wc.Branch)
+		return sha, true
 	}
 
 	// Commit (stages all, removes prompt files)
@@ -695,27 +692,19 @@ func WizardCommitAndPush(wc *spgit.WorktreeContext, beadID, beadTitle string, lo
 		log("nothing staged after git add")
 		return "", false
 	}
-	commitSHA = sha
 
-	// Push
-	log("pushing branch %s", wc.Branch)
-	if err := wc.Push("origin"); err != nil {
-		log("git push failed: %s", err)
-		return commitSHA, false
-	}
-
-	return commitSHA, true
+	return sha, true
 }
 
 // wizardUpdateBead adds a comment to the bead. Labels are managed by WizardReviewHandoff.
-func wizardUpdateBead(beadID, wizardName, branchName, commitSHA string, pushed, testsPassed bool, deps *Deps, log func(string, ...interface{})) {
-	if !pushed {
+func wizardUpdateBead(beadID, wizardName, branchName, commitSHA string, committed, testsPassed bool, deps *Deps, log func(string, ...interface{})) {
+	if !committed {
 		note := fmt.Sprintf("Wizard %s finished without changes", wizardName)
 		deps.AddComment(beadID, note)
 		return
 	}
 
-	note := fmt.Sprintf("Wizard %s pushed branch %s", wizardName, branchName)
+	note := fmt.Sprintf("Wizard %s committed branch %s", wizardName, branchName)
 	if commitSHA != "" {
 		note += fmt.Sprintf(" @ %s", commitSHA[:min(len(commitSHA), 8)])
 	}
