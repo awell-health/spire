@@ -1668,3 +1668,275 @@ func TestRunPhaseLoop_EmptyImplementEscalates(t *testing.T) {
 		t.Errorf("attempt result = %q, want to contain 'escalat'", closedAttemptResult)
 	}
 }
+
+// =============================================================================
+// Seam: wizardPlanTask() — standalone task planning path
+//
+// wizardPlanTask() is invoked for non-epic beads. It collects context,
+// invokes Claude for a plan, and posts the result as an "Implementation plan:"
+// comment. These tests cover the three key paths: happy, resume, empty plan.
+// =============================================================================
+
+// TestWizardPlanTask_HappyPath verifies that a non-epic bead invokes Claude
+// and posts an "Implementation plan:" comment on the bead.
+func TestWizardPlanTask_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+
+	claudeRunnerCalled := false
+	var postedComment string
+	var postedCommentBeadID string
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Title: "Fix auth bug", Description: "Token refresh fails", Type: "task", Priority: 2}, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			return nil, nil // no existing comments
+		},
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil // no design deps
+		},
+		AddComment: func(id, text string) error {
+			postedCommentBeadID = id
+			postedComment = text
+			return nil
+		},
+		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+			claudeRunnerCalled = true
+			return []byte("**Approach:** Fix the token refresh logic\n\n**Key files:**\n- auth.go"), nil
+		},
+	}
+
+	state := &State{
+		BeadID:    "spi-task1",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-task1", "wizard-test", nil, state, deps)
+	pc := formula.PhaseConfig{Role: "wizard", Model: "claude-opus-4-6"}
+
+	err := e.wizardPlan(pc)
+	if err != nil {
+		t.Fatalf("wizardPlan returned error: %v", err)
+	}
+
+	if !claudeRunnerCalled {
+		t.Error("ClaudeRunner was not called — task plan generation should invoke Claude")
+	}
+
+	if postedCommentBeadID != "spi-task1" {
+		t.Errorf("comment posted to %q, want %q", postedCommentBeadID, "spi-task1")
+	}
+
+	if !strings.HasPrefix(postedComment, "Implementation plan:") {
+		t.Errorf("comment does not start with 'Implementation plan:', got: %q", postedComment)
+	}
+
+	if !strings.Contains(postedComment, "Fix the token refresh logic") {
+		t.Errorf("comment does not contain Claude's plan output, got: %q", postedComment)
+	}
+}
+
+// TestWizardPlanTask_Resume verifies that when an "Implementation plan:" comment
+// already exists, wizardPlanTask skips Claude invocation and returns nil.
+func TestWizardPlanTask_Resume(t *testing.T) {
+	dir := t.TempDir()
+
+	claudeRunnerCalled := false
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Title: "Fix auth bug", Type: "task", Priority: 2}, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			return []*beads.Comment{
+				{ID: "c1", IssueID: id, Author: "wizard", Text: "Implementation plan:\n\n**Approach:** Fix the thing"},
+			}, nil
+		},
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+		AddComment: func(id, text string) error {
+			t.Error("AddComment should not be called on resume")
+			return nil
+		},
+		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+			claudeRunnerCalled = true
+			return nil, nil
+		},
+	}
+
+	state := &State{
+		BeadID:    "spi-task2",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-task2", "wizard-test", nil, state, deps)
+	pc := formula.PhaseConfig{Role: "wizard", Model: "claude-opus-4-6"}
+
+	err := e.wizardPlan(pc)
+	if err != nil {
+		t.Fatalf("wizardPlan returned error: %v", err)
+	}
+
+	if claudeRunnerCalled {
+		t.Error("ClaudeRunner should not be called when plan comment already exists")
+	}
+}
+
+// TestWizardPlanTask_EmptyPlan verifies that when Claude returns an empty plan,
+// wizardPlanTask returns an error.
+func TestWizardPlanTask_EmptyPlan(t *testing.T) {
+	dir := t.TempDir()
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Title: "Fix auth bug", Type: "task", Priority: 2}, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			return nil, nil
+		},
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+		AddComment: func(id, text string) error {
+			t.Error("AddComment should not be called when plan is empty")
+			return nil
+		},
+		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+			return []byte("   \n  \n  "), nil // whitespace-only output
+		},
+	}
+
+	state := &State{
+		BeadID:    "spi-task3",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-task3", "wizard-test", nil, state, deps)
+	pc := formula.PhaseConfig{Role: "wizard", Model: "claude-opus-4-6"}
+
+	err := e.wizardPlan(pc)
+	if err == nil {
+		t.Fatal("wizardPlan should return error when Claude produces empty plan")
+	}
+
+	if !strings.Contains(err.Error(), "empty task plan") {
+		t.Errorf("error = %q, want to contain 'empty task plan'", err.Error())
+	}
+}
+
+// =============================================================================
+// Seam: collectDesignContext() — shared helper for design context assembly
+//
+// collectDesignContext() is used by both wizardPlanTask and wizardPlanEpic.
+// It filters deps to discovered-from + design type, then assembles context
+// from titles, descriptions, and comments.
+// =============================================================================
+
+// TestCollectDesignContext verifies that design beads linked via discovered-from
+// deps are assembled into context text.
+func TestCollectDesignContext(t *testing.T) {
+	dir := t.TempDir()
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-des1", Title: "Auth redesign", Description: "Use OAuth2 flow", IssueType: "design"},
+					DependencyType: beads.DepDiscoveredFrom,
+				},
+				{
+					Issue:          beads.Issue{ID: "spi-des2", Title: "Not a design", Description: "Some task", IssueType: "task"},
+					DependencyType: beads.DepDiscoveredFrom,
+				},
+				{
+					Issue:          beads.Issue{ID: "spi-des3", Title: "Related design", Description: "Unrelated", IssueType: "design"},
+					DependencyType: beads.DepBlocks, // not discovered-from
+				},
+			}, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			if id == "spi-des1" {
+				return []*beads.Comment{
+					{ID: "c1", IssueID: id, Author: "archmage", Text: "Use PKCE flow"},
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+
+	state := &State{
+		BeadID:    "spi-ctx",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-ctx", "wizard-test", nil, state, deps)
+	result := e.collectDesignContext()
+
+	// Should include the discovered-from design bead.
+	if !strings.Contains(result, "spi-des1") {
+		t.Errorf("result should contain design bead spi-des1, got: %q", result)
+	}
+	if !strings.Contains(result, "Auth redesign") {
+		t.Errorf("result should contain design bead title, got: %q", result)
+	}
+	if !strings.Contains(result, "Use OAuth2 flow") {
+		t.Errorf("result should contain design bead description, got: %q", result)
+	}
+	if !strings.Contains(result, "Use PKCE flow") {
+		t.Errorf("result should contain design bead comment, got: %q", result)
+	}
+
+	// Should NOT include non-design dep (spi-des2 is a task, not design).
+	if strings.Contains(result, "spi-des2") {
+		t.Errorf("result should not contain non-design bead spi-des2, got: %q", result)
+	}
+
+	// Should NOT include non-discovered-from dep (spi-des3 is blocks, not discovered-from).
+	if strings.Contains(result, "spi-des3") {
+		t.Errorf("result should not contain non-discovered-from bead spi-des3, got: %q", result)
+	}
+}
+
+// TestCollectDesignContext_NoDeps verifies that collectDesignContext returns
+// an empty string when there are no discovered-from design deps.
+func TestCollectDesignContext_NoDeps(t *testing.T) {
+	dir := t.TempDir()
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			return nil, nil
+		},
+	}
+
+	state := &State{
+		BeadID:    "spi-nodeps",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-nodeps", "wizard-test", nil, state, deps)
+	result := e.collectDesignContext()
+
+	if result != "" {
+		t.Errorf("expected empty design context, got: %q", result)
+	}
+}
