@@ -449,6 +449,159 @@ func CountActiveCols(cols Columns) int {
 	return len(ActiveColumns(cols))
 }
 
+// RenderPipelineFromDAG renders a compact step pipeline from a pre-fetched DAGProgress.
+// Same visual output as RenderPipelineLipgloss but without calling FetchDAGProgress.
+// Returns "" if dag is nil or has no steps.
+func RenderPipelineFromDAG(dag *DAGProgress) string {
+	if dag == nil || len(dag.Steps) == 0 {
+		return ""
+	}
+
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	cyanStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	dimLGStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	var parts []string
+	for _, step := range dag.Steps {
+		switch step.Status {
+		case "closed":
+			parts = append(parts, greenStyle.Render("✓"))
+		case "in_progress":
+			parts = append(parts, cyanStyle.Render("▶"))
+		default:
+			parts = append(parts, dimLGStyle.Render("○"))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// RenderCardStrSnap renders a single bead card as a multi-line string for a column,
+// using pre-fetched phase and DAG progress instead of calling the database.
+// Same visual output as RenderCardStr.
+func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, color lipgloss.Color, width int, selected ...bool) string {
+	titleWidth := width - 4
+	if titleWidth < 10 {
+		titleWidth = 10
+	}
+
+	typeStr := ShortType(b.Type)
+	if phase != "" {
+		typeStr += " [" + phase + "]"
+	}
+
+	isSel := len(selected) > 0 && selected[0]
+	var s strings.Builder
+	if isSel {
+		cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
+		s.WriteString(fmt.Sprintf("%s %s %s %s\n", cursor, PriStr(b.Priority), b.ID, typeStr))
+	} else {
+		s.WriteString(fmt.Sprintf("%s %s %s\n", PriStr(b.Priority), b.ID, typeStr))
+	}
+	s.WriteString(fmt.Sprintf("  %s\n", Truncate(b.Title, titleWidth)))
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	colorStyle := lipgloss.NewStyle().Foreground(color)
+
+	owner := BeadOwnerLabel(b)
+	if owner != "" {
+		s.WriteString(fmt.Sprintf("  %s %s\n", colorStyle.Render(owner), dimStyle.Render(TimeAgo(b.UpdatedAt))))
+	} else {
+		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
+	}
+
+	// Show compact DAG pipeline for in-progress beads.
+	if b.Status == "in_progress" {
+		if pipeline := RenderPipelineFromDAG(dag); pipeline != "" {
+			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
+		}
+	}
+
+	s.WriteString("\n")
+	return s.String()
+}
+
+// RenderAgentPanelSnap renders a compact live agent status panel using pre-fetched
+// DAG progress data instead of calling FetchDAGProgress per agent.
+// Same visual output as RenderAgentPanel.
+func RenderAgentPanelSnap(agents []LocalAgent, dagMap map[string]*DAGProgress, maxAgents int) string {
+	var s strings.Builder
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	phaseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+
+	shown := len(agents)
+	if shown > maxAgents {
+		shown = maxAgents
+	}
+	s.WriteString(headerStyle.Render(fmt.Sprintf("AGENTS (%d)", len(agents))) + "\n")
+
+	greenLG := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	cyanLG := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	dimLG := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	for i := 0; i < shown; i++ {
+		w := agents[i]
+		phase := w.Phase
+		if phase == "" {
+			phase = "working"
+		}
+		elapsed := ""
+		if t, err := time.Parse(time.RFC3339, w.StartedAt); err == nil {
+			d := time.Since(t).Round(time.Second)
+			h := int(d.Hours())
+			m := int(d.Minutes()) % 60
+			sec := int(d.Seconds()) % 60
+			if h > 0 {
+				elapsed = fmt.Sprintf("%dh%02dm", h, m)
+			} else if m > 0 {
+				elapsed = fmt.Sprintf("%dm%02ds", m, sec)
+			} else {
+				elapsed = fmt.Sprintf("%ds", sec)
+			}
+		}
+		name := w.Name
+		if len(name) > 28 {
+			name = name[:27] + "…"
+		}
+		beadPart := ""
+		if w.BeadID != "" {
+			beadPart = "  " + w.BeadID
+		}
+
+		// Show compact DAG pipeline if available (from pre-fetched dagMap).
+		pipelineStr := ""
+		if w.BeadID != "" {
+			if dag, ok := dagMap[w.BeadID]; ok && dag != nil && len(dag.Steps) > 0 {
+				var icons []string
+				for _, step := range dag.Steps {
+					switch step.Status {
+					case "closed":
+						icons = append(icons, greenLG.Render("✓"))
+					case "in_progress":
+						icons = append(icons, cyanLG.Render("▶"))
+					default:
+						icons = append(icons, dimLG.Render("○"))
+					}
+				}
+				pipelineStr = "  " + strings.Join(icons, " ")
+			}
+		}
+
+		line := fmt.Sprintf("  %-28s%s  %s  %s%s",
+			name,
+			beadPart,
+			phaseStyle.Render(phase),
+			dimStyle.Render(elapsed),
+			pipelineStr,
+		)
+		s.WriteString(line + "\n")
+	}
+	if len(agents) > maxAgents {
+		s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(agents)-maxAgents)) + "\n")
+	}
+	return s.String()
+}
+
 // PriStr returns a priority label with lipgloss styling (for TUI rendering).
 func PriStr(p int) string {
 	label := fmt.Sprintf("P%d", p)
