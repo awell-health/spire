@@ -105,10 +105,11 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 		fmt.Fprintf(os.Stderr, "warning: escalate alert: %s\n", err)
 	}
 
-	// Link alert to bead via related dep (not ref: label).
+	// Link alert to source bead via caused-by dep so closing the source
+	// bead can cascade-close this alert automatically.
 	if alertID != "" && deps.AddDepTyped != nil {
-		if derr := deps.AddDepTyped(alertID, beadID, "related"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", alertID, beadID, derr)
+		if derr := deps.AddDepTyped(alertID, beadID, "caused-by"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", alertID, beadID, derr)
 		}
 	}
 

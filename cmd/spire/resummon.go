@@ -86,7 +86,7 @@ func cmdResummon(args []string) error {
 }
 
 // closeRelatedAlerts closes all open alert beads that reference the given bead ID
-// via a related dep. This prevents stale alerts (merge-failure, etc.)
+// via a related or caused-by dep. This prevents stale alerts (merge-failure, etc.)
 // from lingering on the board after a successful re-summon.
 func closeRelatedAlerts(beadID string) {
 	dependents, err := storeGetDependentsWithMeta(beadID)
@@ -95,7 +95,7 @@ func closeRelatedAlerts(beadID string) {
 	}
 
 	for _, dep := range dependents {
-		if dep.DependencyType != beads.DepRelated {
+		if dep.DependencyType != beads.DepRelated && dep.DependencyType != "caused-by" {
 			continue
 		}
 		if dep.Status == beads.StatusClosed {

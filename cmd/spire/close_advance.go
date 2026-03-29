@@ -47,8 +47,46 @@ func cmdClose(args []string) error {
 		return fmt.Errorf("close %s: %w", id, err)
 	}
 
+	// Cascade-close: close any open alert beads linked via caused-by dep.
+	closeCausedByAlerts(id)
+
 	fmt.Printf("closed %s\n", id)
 	return nil
+}
+
+// closeCausedByAlerts closes open alert beads that have a caused-by dep on the
+// given bead. This ensures alert beads are automatically cleaned up when the
+// source bead they were triggered by is closed. Only cascades one level.
+func closeCausedByAlerts(beadID string) {
+	dependents, err := storeGetDependentsWithMeta(beadID)
+	if err != nil {
+		return
+	}
+
+	for _, dep := range dependents {
+		if dep.DependencyType != "caused-by" {
+			continue
+		}
+		if dep.Status == beads.StatusClosed {
+			continue
+		}
+		// Only close beads that have an alert label.
+		isAlert := false
+		for _, l := range dep.Labels {
+			if l == "alert" || strings.HasPrefix(l, "alert:") {
+				isAlert = true
+				break
+			}
+		}
+		if !isAlert {
+			continue
+		}
+		if err := storeCloseBead(dep.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cascade-close alert %s: %s\n", dep.ID, err)
+			continue
+		}
+		fmt.Printf("  auto-closed alert %s\n", dep.ID)
+	}
 }
 
 // cmdAdvance implements `spire advance <bead-id>`.

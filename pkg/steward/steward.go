@@ -46,25 +46,29 @@ var RaiseCorruptedBeadAlertFunc = RaiseCorruptedBeadAlert
 var GetChildrenFunc = store.GetChildren
 
 // CheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
-// Uses related deps (not ref: labels) to find the link between alert and source bead.
+// Checks both caused-by (current) and related (legacy) deps to find the link.
 var CheckExistingAlertFunc = func(beadID string) bool {
 	dependents, err := store.GetDependentsWithMeta(beadID)
 	if err != nil {
 		return false
 	}
 	for _, dep := range dependents {
-		if dep.DependencyType == beads.DepRelated && dep.Status != beads.StatusClosed {
-			for _, l := range dep.Labels {
-				if l == "alert:corrupted-bead" {
-					return true
-				}
+		if dep.DependencyType != "caused-by" && dep.DependencyType != beads.DepRelated {
+			continue
+		}
+		if dep.Status == beads.StatusClosed {
+			continue
+		}
+		for _, l := range dep.Labels {
+			if l == "alert:corrupted-bead" {
+				return true
 			}
 		}
 	}
 	return false
 }
 
-// CreateAlertFunc creates the alert bead for a corrupted bead and links it via a related dep.
+// CreateAlertFunc creates the alert bead for a corrupted bead and links it via a caused-by dep.
 var CreateAlertFunc = func(beadID, msg string) error {
 	alertID, err := store.CreateBead(store.CreateOpts{
 		Title:    msg,
@@ -76,8 +80,8 @@ var CreateAlertFunc = func(beadID, msg string) error {
 		return err
 	}
 	if alertID != "" {
-		if derr := store.AddDepTyped(alertID, beadID, "related"); derr != nil {
-			log.Printf("[store] warning: add related dep %s→%s: %s", alertID, beadID, derr)
+		if derr := store.AddDepTyped(alertID, beadID, "caused-by"); derr != nil {
+			log.Printf("[store] warning: add caused-by dep %s→%s: %s", alertID, beadID, derr)
 		}
 	}
 	return nil
