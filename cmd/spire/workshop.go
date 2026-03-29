@@ -17,8 +17,7 @@ func cmdWorkshop(args []string) error {
 	}
 
 	if len(args) == 0 {
-		printWorkshopUsage()
-		return nil
+		return workshop.Interactive()
 	}
 
 	switch args[0] {
@@ -38,8 +37,11 @@ func cmdWorkshop(args []string) error {
 		return cmdWorkshopPublish(args[1:])
 	case "unpublish":
 		return cmdWorkshopUnpublish(args[1:])
+	case "help", "--help", "-h":
+		printWorkshopUsage()
+		return nil
 	default:
-		return fmt.Errorf("workshop: unknown subcommand %q\n\nRun 'spire workshop' for usage", args[0])
+		return fmt.Errorf("workshop: unknown subcommand %q\n\nRun 'spire workshop help' for usage", args[0])
 	}
 }
 
@@ -291,11 +293,15 @@ func cmdWorkshopTest(args []string) error {
 	}
 
 	loadBead := func(id string) (workshop.BeadInfo, error) {
+		b, err := storeGetBead(id)
+		if err != nil {
+			return workshop.BeadInfo{}, err
+		}
 		return workshop.BeadInfo{
-			ID:     bead.ID,
-			Type:   bead.Type,
-			Labels: bead.Labels,
-			Title:  bead.Title,
+			ID:     b.ID,
+			Type:   b.Type,
+			Labels: b.Labels,
+			Title:  b.Title,
 		}, nil
 	}
 

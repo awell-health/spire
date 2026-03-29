@@ -8,7 +8,7 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 
-	"github.com/awell-health/spire/cmd/spire/embedded"
+	"github.com/awell-health/spire/pkg/formula/embedded"
 )
 
 // FormulaV2 represents a v2 formula that configures the universal phase pipeline.

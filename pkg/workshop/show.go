@@ -10,7 +10,7 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 
-	"github.com/awell-health/spire/cmd/spire/embedded"
+	"github.com/awell-health/spire/pkg/formula/embedded"
 	"github.com/awell-health/spire/pkg/formula"
 )
 

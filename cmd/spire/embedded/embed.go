@@ -1,12 +1,9 @@
-// Package embedded provides default formulas and templates compiled into the spire binary.
-// Formulas serve as fallbacks when no on-disk formula override exists.
+// Package embedded provides templates compiled into the spire binary.
 // Templates are used by scaffolding commands (repo add, doctor --fix).
+// Note: formula embeds live in pkg/formula/embedded to avoid pkg→cmd imports.
 package embedded
 
-import "embed"
-
-//go:embed formulas/*.formula.toml
-var Formulas embed.FS
+import _ "embed"
 
 //go:embed SPIRE.md.tmpl
 var SpireMDTemplate string

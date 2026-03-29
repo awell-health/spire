@@ -205,6 +205,11 @@ Workshop:
   workshop list         List available formulas (--custom, --embedded, --json)
   workshop show <name>  Display formula with phase diagram
   workshop validate <name>  Validate formula syntax and logic
+  workshop compose      Interactive formula builder
+  workshop dry-run <name>   Simulate formula execution (--json, --bead <id>)
+  workshop test <name>  Dry-run with full bead context (--bead <id>)
+  workshop publish <name>   Copy formula to tower's .beads/formulas/
+  workshop unpublish <name> Remove published formula
 
 Agents:
   summon [n]            Summon wizards (--targets <ids>, --auto)

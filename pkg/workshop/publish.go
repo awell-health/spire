@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/awell-health/spire/cmd/spire/embedded"
+	"github.com/awell-health/spire/pkg/formula/embedded"
 	"github.com/awell-health/spire/pkg/formula"
 )
 
