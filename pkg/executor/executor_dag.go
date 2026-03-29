@@ -255,24 +255,53 @@ func (e *Executor) resetReviewSubStep(stepName string) error {
 }
 
 // transitionStepBead closes the previous phase's step bead and activates the new one.
+// Idempotent: skips close if the bead is already closed, skips activate if already
+// in_progress or closed. This is defense-in-depth — the primary fix is that each
+// subsystem only closes beads it owns.
 func (e *Executor) transitionStepBead(prevPhase, newPhase string) {
 	if len(e.state.StepBeadIDs) == 0 {
 		return // no step beads created (legacy run)
 	}
 
-	// Close previous step bead.
+	// Close previous step bead (idempotent — skip if already closed).
 	if prevPhase != "" {
 		if prevID, ok := e.state.StepBeadIDs[prevPhase]; ok {
-			if err := e.deps.CloseStepBead(prevID); err != nil {
-				e.log("warning: close step bead %s (%s): %s", prevID, prevPhase, err)
+			if b, err := e.deps.GetBead(prevID); err == nil && b.Status == "closed" {
+				e.log("step bead %s (%s) already closed — skipping", prevID, prevPhase)
+			} else {
+				if err := e.deps.CloseStepBead(prevID); err != nil {
+					e.log("warning: close step bead %s (%s): %s", prevID, prevPhase, err)
+				}
 			}
 		}
 	}
 
-	// Activate new step bead.
-	if newID, ok := e.state.StepBeadIDs[newPhase]; ok {
-		if err := e.deps.ActivateStepBead(newID); err != nil {
-			e.log("warning: activate step bead %s (%s): %s", newID, newPhase, err)
+	// Activate new step bead (skip if already closed or in_progress).
+	if newPhase != "" {
+		if newID, ok := e.state.StepBeadIDs[newPhase]; ok {
+			if b, err := e.deps.GetBead(newID); err == nil && (b.Status == "closed" || b.Status == "in_progress") {
+				// Already closed (e.g. parent bead merged) or already active — no-op.
+			} else {
+				if err := e.deps.ActivateStepBead(newID); err != nil {
+					e.log("warning: activate step bead %s (%s): %s", newID, newPhase, err)
+				}
+			}
+		}
+	}
+}
+
+// closeAllOpenStepBeads closes all step beads that are not already closed.
+// Used on exit paths (bead externally closed, error) to prevent leaked step beads.
+func (e *Executor) closeAllOpenStepBeads() {
+	for phase, stepID := range e.state.StepBeadIDs {
+		b, err := e.deps.GetBead(stepID)
+		if err != nil {
+			continue
+		}
+		if b.Status != "closed" {
+			if err := e.deps.CloseStepBead(stepID); err != nil {
+				e.log("warning: close step bead %s (%s): %s", stepID, phase, err)
+			}
 		}
 	}
 }

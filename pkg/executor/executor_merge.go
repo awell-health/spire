@@ -74,13 +74,19 @@ func (e *Executor) executeMerge(pc PhaseConfig) error {
 	rc.DeleteBranch(branch)
 	rc.DeleteRemoteBranch("origin", branch)
 
-	// Close any orphan subtasks
+	// Close orphan subtask beads only — skip beads owned by other executor
+	// subsystems (step beads, attempt beads, review-round beads). Those have
+	// their own dedicated close paths (transitionStepBead, closeAttempt, etc.).
 	if children, childErr := e.deps.GetChildren(e.beadID); childErr == nil {
 		for _, child := range children {
-			if child.Status != "closed" {
-				if err := e.deps.CloseBead(child.ID); err != nil {
-					e.log("warning: close orphan subtask %s: %s", child.ID, err)
-				}
+			if child.Status == "closed" {
+				continue
+			}
+			if e.deps.IsAttemptBead(child) || e.deps.IsStepBead(child) || e.deps.IsReviewRoundBead(child) {
+				continue
+			}
+			if err := e.deps.CloseBead(child.ID); err != nil {
+				e.log("warning: close orphan subtask %s: %s", child.ID, err)
 			}
 		}
 	}
