@@ -276,7 +276,7 @@ var DefaultFormulaMap = map[string]string{
 	"bug":     "spire-bugfix",
 	"epic":    "spire-epic",
 	"chore":   "spire-agent-work",
-	"feature": "spire-agent-work",
+	"feature": "spire-epic",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.
