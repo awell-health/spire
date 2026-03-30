@@ -230,6 +230,48 @@ The transition from open-source tool to product offering, while keeping the core
 
 ---
 
+## Open Questions
+
+### Observability before flexibility
+
+Spire is infrastructure for agentic development workflows. Before making
+the phase pipeline fully extensible (custom phases, user-defined step
+graphs, pluggable tools), we need deep observability into what the
+existing pipeline produces.
+
+Questions we can't answer yet:
+
+- **Formula versioning and metrics**: "We're on v3 of spire-bugfix. How
+  does it compare to v2? Are review rounds down? Is cost per task
+  improving?" The agent_runs table captures per-run metrics, but there's
+  no formula version tracking — we can't correlate metrics to formula
+  changes.
+
+- **How opinionated should the graph be?** Spire currently prescribes a
+  fixed phase pipeline (design → plan → implement → review → merge).
+  Should users be able to define arbitrary phase graphs? Or should Spire
+  own the pipeline and focus on making it observable, letting users
+  configure behavior within each phase (model, timeout, validation) but
+  not the structure itself?
+
+- **Primitives vs opinions**: The phase pipeline decomposes into
+  primitives — LLM invocation, agent spawn, git operations, bead
+  mutations, validation, gates. Making these composable enables
+  flexibility. But infrastructure that's too flexible becomes hard to
+  observe — you can't build dashboards for arbitrary graphs. The tension:
+  more flexibility vs deeper observability.
+
+- **What to measure**: Token cost per phase. Review round efficiency
+  (how often does the fix cycle actually improve the code?). Formula
+  evolution over time. Time-to-merge by task type. These metrics should
+  drive formula tuning before we add extensibility.
+
+Resolution: invest in observability first. Measure what the current
+pipeline does well and badly. Let the data inform which extension points
+matter. Don't add flexibility until we can measure its impact.
+
+---
+
 ## Why This Matters
 
 The gap between "AI can write code" and "AI ships features" is coordination. Today's AI coding tools are reactive -- they wait for you to ask. Spire is proactive. You describe the work. Agents execute it. The work graph ensures nothing falls through the cracks.
