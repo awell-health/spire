@@ -29,6 +29,8 @@ const (
 	ActionTrace                  // DAG timeline trace (inline via tea.Cmd)
 	ActionAdvance                // advance to next phase (inline via tea.Cmd)
 	ActionApprove                // approve a needs-human bead (remove label, inline via tea.Cmd)
+	ActionApproveDesign          // approve a needs-human design bead (close it, inline via tea.Cmd)
+	ActionRejectDesign           // reject a design bead with feedback comment (inline via tea.Cmd)
 )
 
 // Section identifies which vertical zone of the board the cursor is in.
@@ -97,6 +99,14 @@ type Model struct {
 	// InlineActionFn executes an action within the TUI via tea.Cmd.
 	// Returns nil on success, error on failure.
 	InlineActionFn func(PendingAction, string) error
+
+	// RejectDesignFn adds a rejection comment to a design bead. Injected by the caller.
+	RejectDesignFn func(beadID, feedback string) error
+
+	// Feedback input state for design bead rejection.
+	FeedbackActive  bool   // true when feedback text input is shown
+	FeedbackInput   string // current text
+	FeedbackBeadID  string // bead to add the comment to
 
 	// Confirmation dialog state.
 	ConfirmOpen   bool
@@ -260,7 +270,11 @@ func tickCmd(interval time.Duration) tea.Cmd {
 // RunBoardTUI runs the board TUI in a loop, executing pending actions between launches.
 // actionFn is called when the TUI exits with a pending action; it returns true to relaunch.
 // inlineActionFn is used for actions that execute within the TUI via tea.Cmd (no exit-relaunch).
-func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, actionFn func(PendingAction, string) bool, inlineActionFn func(PendingAction, string) error) error {
+func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, actionFn func(PendingAction, string) bool, inlineActionFn func(PendingAction, string) error, rejectDesignFn ...func(string, string) error) error {
+	var rejectFn func(string, string) error
+	if len(rejectDesignFn) > 0 {
+		rejectFn = rejectDesignFn[0]
+	}
 	for {
 		m := Model{
 			Opts:           opts,
@@ -269,6 +283,7 @@ func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, ac
 			SelSection:     SectionColumns,
 			FetchAgentsFn:  fetchAgents,
 			InlineActionFn: inlineActionFn,
+			RejectDesignFn: rejectFn,
 			CmdlineRoot:    opts.RootCmd,
 		}
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -332,6 +347,10 @@ func actionLabel(a PendingAction) string {
 		return "Close"
 	case ActionApprove:
 		return "Approve"
+	case ActionApproveDesign:
+		return "Approve design"
+	case ActionRejectDesign:
+		return "Reject design"
 	default:
 		return "Action"
 	}
@@ -367,7 +386,7 @@ func (m Model) updateCmdline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // isInlineAction returns true if the action should execute within the TUI.
 func isInlineAction(a PendingAction) bool {
 	switch a {
-	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionAdvance, ActionClose, ActionApprove:
+	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionAdvance, ActionClose, ActionApprove, ActionApproveDesign:
 		return true
 	}
 	return false
@@ -397,6 +416,8 @@ func confirmPromptForAction(action PendingAction, beadID, title string) string {
 		return fmt.Sprintf("Close %s?", label)
 	case ActionApprove:
 		return fmt.Sprintf("Approve design %s?", label)
+	case ActionApproveDesign:
+		return fmt.Sprintf("Approve design %s?", label)
 	case ActionUnsummon:
 		return fmt.Sprintf("Dismiss wizard for %s?", label)
 	case ActionResetSoft:
@@ -413,7 +434,7 @@ func dangerForAction(action PendingAction) DangerLevel {
 	switch action {
 	case ActionResetHard:
 		return DangerDestructive
-	case ActionClose, ActionUnsummon, ActionResetSoft, ActionApprove:
+	case ActionClose, ActionUnsummon, ActionResetSoft, ActionApprove, ActionApproveDesign:
 		return DangerConfirm
 	default:
 		return DangerNone
@@ -474,6 +495,96 @@ func copyToClipboard(text string) error {
 	return cmd.Run()
 }
 
+
+// dispatchMenuAction handles an action selected from the action menu.
+// ActionRejectDesign gets special treatment: it opens the inspector + feedback input.
+func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
+	if item.ActionType == ActionRejectDesign {
+		// Open inspector and activate feedback input.
+		m.Inspecting = true
+		m.InspectorScroll = 0
+		m.InspectorTab = 0
+		m.FeedbackActive = true
+		m.FeedbackInput = ""
+		m.FeedbackBeadID = m.ActionMenuBeadID
+		m.InspectorLoading = true
+		m.InspectorData = nil
+		if bead := m.SelectedBead(); bead != nil {
+			return *m, fetchInspectorCmd(*bead)
+		}
+		return *m, nil
+	}
+	if isInlineAction(item.ActionType) {
+		if item.Danger != DangerNone {
+			m.ConfirmOpen = true
+			m.ConfirmAction = item.ActionType
+			m.ConfirmBeadID = m.ActionMenuBeadID
+			m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID, m.ActionMenuBeadTitle)
+			m.ConfirmDanger = item.Danger
+			return *m, nil
+		}
+		return m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
+	}
+	m.PendingAction = item.ActionType
+	m.PendingBeadID = m.ActionMenuBeadID
+	m.Quitting = true
+	return *m, tea.Quit
+}
+
+// rejectDesignResultMsg carries the result of a design rejection action.
+type rejectDesignResultMsg struct {
+	BeadID string
+	Err    error
+}
+
+// updateFeedbackInput handles keypresses in the feedback text input mode.
+func (m Model) updateFeedbackInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.FeedbackActive = false
+		m.FeedbackInput = ""
+		m.FeedbackBeadID = ""
+		return m, nil
+	case "enter":
+		feedback := strings.TrimSpace(m.FeedbackInput)
+		if feedback == "" {
+			m.ActionStatus = "Feedback required"
+			m.ActionStatusTime = time.Now()
+			return m, nil
+		}
+		beadID := m.FeedbackBeadID
+		m.FeedbackActive = false
+		m.FeedbackInput = ""
+		m.FeedbackBeadID = ""
+		m.ActionRunning = true
+		m.ActionStatus = "Rejecting design..."
+		m.ActionStatusTime = time.Now()
+		rejectFn := m.RejectDesignFn
+		return m, func() tea.Msg {
+			var err error
+			if rejectFn != nil {
+				err = rejectFn(beadID, feedback)
+			} else {
+				err = fmt.Errorf("reject design not available")
+			}
+			return rejectDesignResultMsg{BeadID: beadID, Err: err}
+		}
+	case "backspace":
+		if len(m.FeedbackInput) > 0 {
+			m.FeedbackInput = m.FeedbackInput[:len(m.FeedbackInput)-1]
+		}
+		return m, nil
+	case "ctrl+u":
+		m.FeedbackInput = ""
+		return m, nil
+	default:
+		if len(msg.String()) == 1 && msg.String()[0] >= 32 {
+			m.FeedbackInput += msg.String()
+		}
+		return m, nil
+	}
+}
+
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -503,22 +614,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.ActionMenuCursor >= 0 && m.ActionMenuCursor < len(m.ActionMenuItems) {
 					item := m.ActionMenuItems[m.ActionMenuCursor]
 					m.ActionMenuOpen = false
-					if isInlineAction(item.ActionType) {
-						if item.Danger != DangerNone {
-							m.ConfirmOpen = true
-							m.ConfirmAction = item.ActionType
-							m.ConfirmBeadID = m.ActionMenuBeadID
-							m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID, m.ActionMenuBeadTitle)
-							m.ConfirmDanger = item.Danger
-							return m, nil
-						}
-						mm, cmd := m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
-						return mm, cmd
-					}
-					m.PendingAction = item.ActionType
-					m.PendingBeadID = m.ActionMenuBeadID
-					m.Quitting = true
-					return m, tea.Quit
+					return m.dispatchMenuAction(item)
 				}
 				return m, nil
 			default:
@@ -526,22 +622,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for _, item := range m.ActionMenuItems {
 					if msg.String() == string(item.Key) {
 						m.ActionMenuOpen = false
-						if isInlineAction(item.ActionType) {
-							if item.Danger != DangerNone {
-								m.ConfirmOpen = true
-								m.ConfirmAction = item.ActionType
-								m.ConfirmBeadID = m.ActionMenuBeadID
-								m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID, m.ActionMenuBeadTitle)
-								m.ConfirmDanger = item.Danger
-								return m, nil
-							}
-							mm, cmd := m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
-							return mm, cmd
-						}
-						m.PendingAction = item.ActionType
-						m.PendingBeadID = m.ActionMenuBeadID
-						m.Quitting = true
-						return m, tea.Quit
+						return m.dispatchMenuAction(item)
 					}
 				}
 				return m, nil
@@ -634,7 +715,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Inspector mode: handle keys differently.
 		if m.Inspecting {
+			// Feedback input mode: absorb all keys.
+			if m.FeedbackActive {
+				return m.updateFeedbackInput(msg)
+			}
+
+			// Check if inspected bead is a design bead with needs-human.
+			isReviewableDesign := false
+			if m.InspectorData != nil {
+				ib := m.InspectorData.Bead
+				isReviewableDesign = ib.Type == "design" && ib.HasLabel("needs-human")
+			}
+
 			switch msg.String() {
+			case "y":
+				if isReviewableDesign {
+					beadID := m.InspectorData.Bead.ID
+					title := m.InspectorData.Bead.Title
+					m.ConfirmOpen = true
+					m.ConfirmAction = ActionApproveDesign
+					m.ConfirmBeadID = beadID
+					m.ConfirmPrompt = confirmPromptForAction(ActionApproveDesign, beadID, title)
+					m.ConfirmDanger = DangerConfirm
+					return m, nil
+				}
+				// Fallback: copy bead ID to clipboard.
+				if m.InspectorData != nil {
+					if err := copyToClipboard(m.InspectorData.Bead.ID); err != nil {
+						m.ActionStatus = fmt.Sprintf("clipboard error: %v", err)
+					} else {
+						m.ActionStatus = fmt.Sprintf("copied: %s", m.InspectorData.Bead.ID)
+					}
+					m.ActionStatusTime = time.Now()
+				}
+			case "n":
+				if isReviewableDesign {
+					m.FeedbackActive = true
+					m.FeedbackInput = ""
+					m.FeedbackBeadID = m.InspectorData.Bead.ID
+					return m, nil
+				}
 			case "esc", "q", "enter":
 				m.Inspecting = false
 				m.InspectorScroll = 0
@@ -668,15 +788,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.InspectorScroll < 0 {
 						m.InspectorScroll = 0
 					}
-				}
-			case "y":
-				if m.InspectorData != nil {
-					if err := copyToClipboard(m.InspectorData.Bead.ID); err != nil {
-						m.ActionStatus = fmt.Sprintf("clipboard error: %v", err)
-					} else {
-						m.ActionStatus = fmt.Sprintf("copied: %s", m.InspectorData.Bead.ID)
-					}
-					m.ActionStatusTime = time.Now()
 				}
 			case "tab":
 				m.InspectorTab++
@@ -1019,6 +1130,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.ActionStatusTime = time.Now()
 		// Refresh board data after action completes.
+		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+	case rejectDesignResultMsg:
+		m.ActionRunning = false
+		if msg.Err != nil {
+			m.ActionStatus = fmt.Sprintf("Reject design failed: %v", msg.Err)
+		} else {
+			m.ActionStatus = "Design rejected"
+		}
+		m.ActionStatusTime = time.Now()
 		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
 	case cmdlineDoneMsg:
 		m.ActionRunning = false

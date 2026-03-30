@@ -154,7 +154,11 @@ func cmdBoard(args []string) error {
 
 	opts.RootCmd = rootCmd
 
-	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn, inlineActionFn)
+	rejectDesignFn := func(beadID, feedback string) error {
+		return storeAddComment(beadID, "Design rejected: "+feedback)
+	}
+
+	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn, inlineActionFn, rejectDesignFn)
 }
 
 // executeBoardAction runs the pending action on the raw terminal after the TUI exits.
@@ -262,6 +266,9 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 	case board.ActionApprove:
 		// Approve a needs-human design bead: remove the label and close it.
 		_ = storeRemoveLabel(beadID, "needs-human")
+		return storeCloseBead(beadID)
+	case board.ActionApproveDesign:
+		// Approve a design bead: close it (signals acceptance).
 		return storeCloseBead(beadID)
 	}
 	return fmt.Errorf("unknown inline action: %d", action)

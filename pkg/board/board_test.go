@@ -168,6 +168,84 @@ func TestBuildActionMenu(t *testing.T) {
 			t.Errorf("expected nil for nil bead, got %v", items)
 		}
 	})
+
+	t.Run("design bead with needs-human shows approve/reject", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-010", Status: "in_progress", Type: "design", Labels: []string{"needs-human"}}
+		items := BuildActionMenu(bead, nil)
+
+		hasApproveDesign := false
+		hasRejectDesign := false
+		for _, item := range items {
+			if item.ActionType == ActionApproveDesign {
+				hasApproveDesign = true
+				if item.Danger != DangerConfirm {
+					t.Errorf("ApproveDesign should be DangerConfirm, got %d", item.Danger)
+				}
+			}
+			if item.ActionType == ActionRejectDesign {
+				hasRejectDesign = true
+				if item.Danger != DangerNone {
+					t.Errorf("RejectDesign should be DangerNone, got %d", item.Danger)
+				}
+			}
+		}
+		if !hasApproveDesign {
+			t.Error("expected ApproveDesign action for design bead with needs-human")
+		}
+		if !hasRejectDesign {
+			t.Error("expected RejectDesign action for design bead with needs-human")
+		}
+	})
+
+	t.Run("open design bead with needs-human shows approve/reject", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-011", Status: "open", Type: "design", Labels: []string{"needs-human"}}
+		items := BuildActionMenu(bead, nil)
+
+		hasApproveDesign := false
+		hasRejectDesign := false
+		for _, item := range items {
+			if item.ActionType == ActionApproveDesign {
+				hasApproveDesign = true
+			}
+			if item.ActionType == ActionRejectDesign {
+				hasRejectDesign = true
+			}
+		}
+		if !hasApproveDesign {
+			t.Error("expected ApproveDesign for open design bead with needs-human")
+		}
+		if !hasRejectDesign {
+			t.Error("expected RejectDesign for open design bead with needs-human")
+		}
+	})
+
+	t.Run("non-design bead with needs-human does not show design actions", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-012", Status: "in_progress", Type: "task", Labels: []string{"needs-human"}}
+		items := BuildActionMenu(bead, nil)
+
+		for _, item := range items {
+			if item.ActionType == ActionApproveDesign {
+				t.Error("non-design bead should not have ApproveDesign action")
+			}
+			if item.ActionType == ActionRejectDesign {
+				t.Error("non-design bead should not have RejectDesign action")
+			}
+		}
+	})
+
+	t.Run("design bead without needs-human does not show design actions", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-013", Status: "in_progress", Type: "design"}
+		items := BuildActionMenu(bead, nil)
+
+		for _, item := range items {
+			if item.ActionType == ActionApproveDesign {
+				t.Error("design bead without needs-human should not have ApproveDesign action")
+			}
+			if item.ActionType == ActionRejectDesign {
+				t.Error("design bead without needs-human should not have RejectDesign action")
+			}
+		}
+	})
 }
 
 func expectActions(t *testing.T, items []MenuAction, expected []PendingAction) {

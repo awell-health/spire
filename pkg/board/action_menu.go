@@ -42,11 +42,21 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 
 	var items []MenuAction
 
+	isDesign := bead.Type == "design"
+
 	switch bead.Status {
 	case "open":
+		if isDesign && needsHuman {
+			items = append(items, MenuAction{Key: 'y', Label: "Approve design", Danger: DangerConfirm, ActionType: ActionApproveDesign})
+			items = append(items, MenuAction{Key: 'n', Label: "Reject with feedback", Danger: DangerNone, ActionType: ActionRejectDesign})
+		}
 		items = append(items, MenuAction{Key: 's', Label: "Summon wizard", Danger: DangerNone, ActionType: ActionSummon})
 		items = append(items, MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose})
 	case "in_progress":
+		if isDesign && needsHuman {
+			items = append(items, MenuAction{Key: 'y', Label: "Approve design", Danger: DangerConfirm, ActionType: ActionApproveDesign})
+			items = append(items, MenuAction{Key: 'n', Label: "Reject with feedback", Danger: DangerNone, ActionType: ActionRejectDesign})
+		}
 		if needsHuman {
 			items = append(items, MenuAction{Key: 'Y', Label: "Approve (close)", Danger: DangerConfirm, ActionType: ActionApprove})
 			items = append(items, MenuAction{Key: 'S', Label: "Resummon", Danger: DangerNone, ActionType: ActionResummon})

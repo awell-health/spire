@@ -147,7 +147,15 @@ func (m Model) View() string {
 			b = *bead
 			dag = m.Snapshot.DAGProgress[bead.ID]
 		}
-		return renderInspectorSnap(b, m.InspectorData, dag, m.Width, m.Height, m.InspectorScroll, m.InspectorTab)
+		inspectorHeight := m.Height
+		if m.FeedbackActive {
+			inspectorHeight -= 1 // reserve one line for feedback input bar
+		}
+		result := renderInspectorSnap(b, m.InspectorData, dag, m.Width, inspectorHeight, m.InspectorScroll, m.InspectorTab)
+		if m.FeedbackActive {
+			result += "\n" + RenderFeedbackInput(m.FeedbackInput, m.Width)
+		}
+		return result
 	}
 
 	visibleCols := m.VisibleCols()

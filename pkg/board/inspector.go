@@ -485,7 +485,11 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 	// Header bar.
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	lines = append(lines, headerStyle.Render("INSPECTOR")+"  "+dimStyle.Render("Esc to close  Tab to switch"))
+	headerHint := "Esc to close  Tab to switch"
+	if b.Type == "design" && b.HasLabel("needs-human") {
+		headerHint = "y Approve  n Reject  Esc close  Tab switch"
+	}
+	lines = append(lines, headerStyle.Render("INSPECTOR")+"  "+dimStyle.Render(headerHint))
 	lines = append(lines, strings.Repeat("─", Min(contentWidth, 60)))
 
 	// Tab bar.
@@ -709,4 +713,27 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 	}
 
 	return result
+}
+
+// RenderFeedbackInput renders the feedback text input bar for design bead rejection.
+func RenderFeedbackInput(input string, width int) string {
+	promptStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+	inputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("7")).Foreground(lipgloss.Color("0"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	prompt := promptStyle.Render("Feedback: ")
+	cursor := cursorStyle.Render(" ")
+	hint := dimStyle.Render("  Enter submit • Esc cancel")
+
+	maxInput := width - 30
+	if maxInput < 20 {
+		maxInput = 20
+	}
+	displayInput := input
+	if len(displayInput) > maxInput {
+		displayInput = displayInput[len(displayInput)-maxInput:]
+	}
+
+	return prompt + inputStyle.Render(displayInput) + cursor + hint
 }
