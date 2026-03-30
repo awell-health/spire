@@ -259,6 +259,63 @@ func TestRenderPhaseMetrics_JSON(t *testing.T) {
 	}
 }
 
+func TestPercentile(t *testing.T) {
+	tests := []struct {
+		name   string
+		vals   []float64
+		p      float64
+		want   float64
+		approx bool // allow small floating-point tolerance
+	}{
+		{"empty", nil, 0.5, 0, false},
+		{"single", []float64{5}, 0.5, 5, false},
+		{"single p90", []float64{5}, 0.9, 5, false},
+		{"two values p50", []float64{1, 3}, 0.5, 2, false},
+		{"three values p50", []float64{1, 2, 3}, 0.5, 2, false},
+		{"four values p90", []float64{1, 2, 3, 100}, 0.9, 70.9, true},
+		{"ten values p50", []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 0.5, 5.5, false},
+		{"ten values p90", []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 0.9, 9.1, true},
+		{"p0", []float64{1, 2, 3}, 0.0, 1, false},
+		{"p100", []float64{1, 2, 3}, 1.0, 3, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := percentile(tt.vals, tt.p)
+			if tt.approx {
+				diff := got - tt.want
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff > 0.2 {
+					t.Errorf("percentile(%v, %.2f) = %.2f, want ~%.2f (diff %.2f)", tt.vals, tt.p, got, tt.want, diff)
+				}
+			} else {
+				if got != tt.want {
+					t.Errorf("percentile(%v, %.2f) = %f, want %f", tt.vals, tt.p, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestAvg(t *testing.T) {
+	tests := []struct {
+		vals []float64
+		want float64
+	}{
+		{nil, 0},
+		{[]float64{10}, 10},
+		{[]float64{1, 2, 3}, 2},
+		{[]float64{0, 100}, 50},
+	}
+	for _, tt := range tests {
+		got := avg(tt.vals)
+		if got != tt.want {
+			t.Errorf("avg(%v) = %f, want %f", tt.vals, got, tt.want)
+		}
+	}
+}
+
 func TestRenderPhaseMetrics_CostSource(t *testing.T) {
 	// When total_cost is 0, should use estimated cost from tokens.
 	rows := []MetricsRow{

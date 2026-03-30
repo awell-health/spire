@@ -519,3 +519,305 @@ func RunsForBead(beadID string) ([]MetricsRow, error) {
 func SqlEsc(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
+
+// DORAResult holds all four DORA metrics for JSON output.
+type DORAResult struct {
+	DeploymentFrequency []DORAWeekCount `json:"deployment_frequency"`
+	LeadTime            *DORAStats      `json:"lead_time"`
+	ChangeFailureRate   *DORAFailRate   `json:"change_failure_rate"`
+	MTTR                *DORAStats      `json:"mttr"`
+}
+
+// DORAWeekCount is a single week's merge count.
+type DORAWeekCount struct {
+	Week   string `json:"week"`
+	Merged int    `json:"merged"`
+}
+
+// DORAStats holds avg/p50/p90 and count.
+type DORAStats struct {
+	AvgHours float64 `json:"avg_hours"`
+	P50Hours float64 `json:"p50_hours"`
+	P90Hours float64 `json:"p90_hours"`
+	Count    int     `json:"count"`
+}
+
+// DORAFailRate holds change failure rate data.
+type DORAFailRate struct {
+	TotalClosed int     `json:"total_closed"`
+	Failures    int     `json:"failures"`
+	Rate        float64 `json:"rate"`
+}
+
+// MetricsDORA computes and displays DORA metrics from the bead graph.
+func MetricsDORA(jsonOut bool) error {
+	result := &DORAResult{}
+
+	// 1. Deployment Frequency — merges per week (last 28 days)
+	dfQuery := `SELECT
+		YEARWEEK(closed_at, 1) as week,
+		COUNT(*) as merged
+	FROM issues
+	WHERE status = 'closed'
+		AND closed_at IS NOT NULL
+		AND issue_type NOT IN ('design', 'epic')
+		AND closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
+	GROUP BY YEARWEEK(closed_at, 1)
+	ORDER BY week`
+
+	dfRows, err := QueryJSON(dfQuery)
+	if err != nil {
+		return fmt.Errorf("dora deployment frequency: %w", err)
+	}
+	for _, row := range dfRows {
+		yw := ToString(row["week"])
+		// YEARWEEK returns YYYYWW integer; format as YYYY-Wnn
+		if len(yw) >= 6 {
+			yw = yw[:4] + "-W" + yw[4:]
+		}
+		result.DeploymentFrequency = append(result.DeploymentFrequency, DORAWeekCount{
+			Week:   yw,
+			Merged: ToInt(row["merged"]),
+		})
+	}
+
+	// 2. Lead Time for Changes — hours from created_at to closed_at
+	ltQuery := `SELECT
+		TIMESTAMPDIFF(HOUR, created_at, closed_at) as lead_time_hours
+	FROM issues
+	WHERE status = 'closed'
+		AND closed_at IS NOT NULL
+		AND issue_type NOT IN ('design', 'epic')
+		AND closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
+	ORDER BY lead_time_hours`
+
+	ltRows, err := QueryJSON(ltQuery)
+	if err != nil {
+		return fmt.Errorf("dora lead time: %w", err)
+	}
+	if len(ltRows) > 0 {
+		vals := make([]float64, len(ltRows))
+		for i, row := range ltRows {
+			vals[i] = ToFloat(row["lead_time_hours"])
+		}
+		result.LeadTime = &DORAStats{
+			AvgHours: avg(vals),
+			P50Hours: percentile(vals, 0.50),
+			P90Hours: percentile(vals, 0.90),
+			Count:    len(vals),
+		}
+	}
+
+	// 3. Change Failure Rate — needs-human label OR review_rounds > 2
+	// Run two separate queries to handle agent_runs table possibly missing.
+	cfrBaseQuery := `SELECT COUNT(DISTINCT id) as total_closed
+	FROM issues
+	WHERE status = 'closed'
+		AND closed_at IS NOT NULL
+		AND issue_type NOT IN ('design', 'epic')
+		AND closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)`
+
+	cfrBaseRows, err := QueryJSON(cfrBaseQuery)
+	if err != nil {
+		return fmt.Errorf("dora cfr base: %w", err)
+	}
+	totalClosed := ToInt(FirstOr(cfrBaseRows)["total_closed"])
+
+	// Beads with needs-human label
+	cfrLabelQuery := `SELECT COUNT(DISTINCT i.id) as failures
+	FROM issues i
+	JOIN labels l ON l.issue_id = i.id AND l.label = 'needs-human'
+	WHERE i.status = 'closed'
+		AND i.closed_at IS NOT NULL
+		AND i.issue_type NOT IN ('design', 'epic')
+		AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)`
+
+	labelRows, err := QueryJSON(cfrLabelQuery)
+	if err != nil {
+		return fmt.Errorf("dora cfr labels: %w", err)
+	}
+	labelFailures := ToInt(FirstOr(labelRows)["failures"])
+
+	// Beads with review_rounds > 2 (agent_runs may not exist)
+	cfrRunsQuery := `SELECT COUNT(DISTINCT ar.bead_id) as failures
+	FROM agent_runs ar
+	JOIN issues i ON i.id = ar.bead_id
+	WHERE i.status = 'closed'
+		AND i.closed_at IS NOT NULL
+		AND i.issue_type NOT IN ('design', 'epic')
+		AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
+		AND ar.review_rounds > 2`
+
+	runsRows, err := QueryJSON(cfrRunsQuery)
+	if err != nil {
+		// agent_runs table may not exist — ignore
+		runsRows = nil
+	}
+	runsFailures := ToInt(FirstOr(runsRows)["failures"])
+
+	// Combine: count distinct failures from either source.
+	// Use a union query for accurate distinct count if both sources work.
+	failures := labelFailures
+	if runsFailures > 0 {
+		// For accuracy, run a union query
+		cfrUnionQuery := `SELECT COUNT(*) as failures FROM (
+			SELECT DISTINCT i.id
+			FROM issues i
+			JOIN labels l ON l.issue_id = i.id AND l.label = 'needs-human'
+			WHERE i.status = 'closed'
+				AND i.closed_at IS NOT NULL
+				AND i.issue_type NOT IN ('design', 'epic')
+				AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
+			UNION
+			SELECT DISTINCT ar.bead_id as id
+			FROM agent_runs ar
+			JOIN issues i ON i.id = ar.bead_id
+			WHERE i.status = 'closed'
+				AND i.closed_at IS NOT NULL
+				AND i.issue_type NOT IN ('design', 'epic')
+				AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
+				AND ar.review_rounds > 2
+		) combined`
+
+		unionRows, uerr := QueryJSON(cfrUnionQuery)
+		if uerr == nil && len(unionRows) > 0 {
+			failures = ToInt(FirstOr(unionRows)["failures"])
+		}
+		// fallback: just add them (may overcount slightly)
+		if uerr != nil {
+			failures = labelFailures + runsFailures
+		}
+	}
+
+	if totalClosed > 0 {
+		result.ChangeFailureRate = &DORAFailRate{
+			TotalClosed: totalClosed,
+			Failures:    failures,
+			Rate:        float64(failures) * 100 / float64(totalClosed),
+		}
+	}
+
+	// 4. Mean Time to Recovery — needs-human escalation to close
+	mttrQuery := `SELECT
+		i.id,
+		TIMESTAMPDIFF(HOUR, MIN(c.created_at), i.closed_at) as recovery_hours
+	FROM issues i
+	JOIN labels l ON l.issue_id = i.id AND l.label = 'needs-human'
+	JOIN comments c ON c.issue_id = i.id AND c.text LIKE '%needs-human%'
+	WHERE i.status = 'closed'
+		AND i.closed_at IS NOT NULL
+		AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
+	GROUP BY i.id, i.closed_at
+	ORDER BY recovery_hours`
+
+	mttrRows, err := QueryJSON(mttrQuery)
+	if err != nil {
+		// If the query fails (e.g. no labels/comments tables), just skip MTTR
+		mttrRows = nil
+	}
+	if len(mttrRows) > 0 {
+		vals := make([]float64, len(mttrRows))
+		for i, row := range mttrRows {
+			vals[i] = ToFloat(row["recovery_hours"])
+		}
+		result.MTTR = &DORAStats{
+			AvgHours: avg(vals),
+			P50Hours: percentile(vals, 0.50),
+			P90Hours: percentile(vals, 0.90),
+			Count:    len(vals),
+		}
+	}
+
+	// Render
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
+	}
+
+	return renderDORAText(result)
+}
+
+func renderDORAText(r *DORAResult) error {
+	fmt.Println("DORA Metrics (last 28 days)")
+	fmt.Println()
+
+	// Deployment Frequency
+	fmt.Println("Deployment Frequency:")
+	if len(r.DeploymentFrequency) == 0 {
+		fmt.Printf("  %s(no merges in period)%s\n", Dim, Reset)
+	} else {
+		var total int
+		for _, wk := range r.DeploymentFrequency {
+			fmt.Printf("  %-12s %d merges\n", wk.Week+":", wk.Merged)
+			total += wk.Merged
+		}
+		avgPerWeek := float64(total) / float64(len(r.DeploymentFrequency))
+		fmt.Printf("  Avg: %.1f merges/week\n", avgPerWeek)
+	}
+	fmt.Println()
+
+	// Lead Time
+	fmt.Println("Lead Time for Changes:")
+	if r.LeadTime == nil {
+		fmt.Printf("  %s(no data)%s\n", Dim, Reset)
+	} else {
+		fmt.Printf("  Avg: %.1fh   P50: %.1fh   P90: %.1fh   (%d beads)\n",
+			r.LeadTime.AvgHours, r.LeadTime.P50Hours, r.LeadTime.P90Hours, r.LeadTime.Count)
+	}
+	fmt.Println()
+
+	// Change Failure Rate
+	fmt.Println("Change Failure Rate:")
+	if r.ChangeFailureRate == nil {
+		fmt.Printf("  %s(no data)%s\n", Dim, Reset)
+	} else {
+		fmt.Printf("  %d of %d (%.0f%%) required human intervention\n",
+			r.ChangeFailureRate.Failures, r.ChangeFailureRate.TotalClosed,
+			r.ChangeFailureRate.Rate)
+	}
+	fmt.Println()
+
+	// MTTR
+	fmt.Println("Mean Time to Recovery:")
+	if r.MTTR == nil {
+		fmt.Printf("  %s(no escalations in period)%s\n", Dim, Reset)
+	} else {
+		fmt.Printf("  Avg: %.1fh   P50: %.1fh   (%d incidents)\n",
+			r.MTTR.AvgHours, r.MTTR.P50Hours, r.MTTR.Count)
+	}
+
+	return nil
+}
+
+// percentile computes the p-th percentile from a sorted slice using linear interpolation.
+// p must be between 0 and 1. The input slice must be sorted in ascending order.
+func percentile(sorted []float64, p float64) float64 {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	if n == 1 {
+		return sorted[0]
+	}
+	// Use the "exclusive" method: rank = p * (n + 1)
+	rank := p * float64(n-1)
+	lower := int(rank)
+	if lower >= n-1 {
+		return sorted[n-1]
+	}
+	frac := rank - float64(lower)
+	return sorted[lower] + frac*(sorted[lower+1]-sorted[lower])
+}
+
+// avg computes the arithmetic mean of a float64 slice.
+func avg(vals []float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range vals {
+		sum += v
+	}
+	return sum / float64(len(vals))
+}
