@@ -372,6 +372,106 @@ func TestRaiseCorruptedBeadAlert_DedupPerBead(t *testing.T) {
 	}
 }
 
+// --- CleanUpdatedLabels tests ---
+
+func TestCleanUpdatedLabels_CleansMatchingLabels(t *testing.T) {
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-a", Labels: []string{"updated:2026-03-30T01:00:00Z", "other-label"}},
+			{ID: "spi-b", Labels: []string{"updated:2026-03-29T12:00:00Z"}},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	var removed []string
+	origRemove := RemoveLabelFunc
+	RemoveLabelFunc = func(id, label string) error {
+		removed = append(removed, id+"="+label)
+		return nil
+	}
+	defer func() { RemoveLabelFunc = origRemove }()
+
+	cleaned := CleanUpdatedLabels()
+	if cleaned != 2 {
+		t.Errorf("cleaned = %d, want 2", cleaned)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("removed = %v, want 2 entries", removed)
+	}
+	if removed[0] != "spi-a=updated:2026-03-30T01:00:00Z" {
+		t.Errorf("removed[0] = %q, want spi-a=updated:2026-03-30T01:00:00Z", removed[0])
+	}
+	if removed[1] != "spi-b=updated:2026-03-29T12:00:00Z" {
+		t.Errorf("removed[1] = %q, want spi-b=updated:2026-03-29T12:00:00Z", removed[1])
+	}
+}
+
+func TestCleanUpdatedLabels_SkipsBeadsWithoutLabel(t *testing.T) {
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-no-label", Labels: []string{"other-label"}},
+			{ID: "spi-also-clean", Labels: nil},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	var removed []string
+	origRemove := RemoveLabelFunc
+	RemoveLabelFunc = func(id, label string) error {
+		removed = append(removed, id)
+		return nil
+	}
+	defer func() { RemoveLabelFunc = origRemove }()
+
+	cleaned := CleanUpdatedLabels()
+	if cleaned != 0 {
+		t.Errorf("cleaned = %d, want 0", cleaned)
+	}
+	if len(removed) != 0 {
+		t.Errorf("expected no RemoveLabel calls, got %v", removed)
+	}
+}
+
+func TestCleanUpdatedLabels_ListErrorReturnsZero(t *testing.T) {
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	cleaned := CleanUpdatedLabels()
+	if cleaned != 0 {
+		t.Errorf("cleaned = %d, want 0 on list error", cleaned)
+	}
+}
+
+func TestCleanUpdatedLabels_RemoveLabelErrorContinues(t *testing.T) {
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-fail", Labels: []string{"updated:2026-03-30T01:00:00Z"}},
+			{ID: "spi-ok", Labels: []string{"updated:2026-03-30T02:00:00Z"}},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	origRemove := RemoveLabelFunc
+	RemoveLabelFunc = func(id, label string) error {
+		if id == "spi-fail" {
+			return fmt.Errorf("remove failed")
+		}
+		return nil
+	}
+	defer func() { RemoveLabelFunc = origRemove }()
+
+	cleaned := CleanUpdatedLabels()
+	if cleaned != 1 {
+		t.Errorf("cleaned = %d, want 1 (spi-fail should error, spi-ok should succeed)", cleaned)
+	}
+}
+
 // --- CheckBeadHealth tests ---
 
 // fakeBackend implements agent.Backend for testing.

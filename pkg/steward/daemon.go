@@ -108,6 +108,9 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 		log.Printf("[daemon] [%s] reaped %d dead agent(s)", tower.Name, reaped)
 	}
 
+	// Remove stale updated:<timestamp> labels left by the old heartbeat mechanism.
+	CleanUpdatedLabels()
+
 	log.Printf("[daemon] [%s] cycle complete", tower.Name)
 }
 

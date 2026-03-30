@@ -48,6 +48,9 @@ var RaiseCorruptedBeadAlertFunc = RaiseCorruptedBeadAlert
 // GetChildrenFunc is a test-replaceable function for store.GetChildren.
 var GetChildrenFunc = store.GetChildren
 
+// RemoveLabelFunc is a test-replaceable function for store.RemoveLabel.
+var RemoveLabelFunc = store.RemoveLabel
+
 // CheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.
 var CheckExistingAlertFunc = func(beadID string) bool {
@@ -419,7 +422,7 @@ func CleanUpdatedLabels() int {
 		if label == "" {
 			continue
 		}
-		if err := store.RemoveLabel(b.ID, "updated:"+label); err != nil {
+		if err := RemoveLabelFunc(b.ID, "updated:"+label); err != nil {
 			log.Printf("[steward] clean updated label from %s: %s", b.ID, err)
 			continue
 		}
