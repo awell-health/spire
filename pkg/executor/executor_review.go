@@ -48,6 +48,15 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 	// entry to seed the initial state — after that, localCompleted drives
 	// the walker. This avoids stale bead reads after resetReviewSubStep.
 	localCompleted := e.completedReviewSteps() // seed from bead graph on entry
+
+	// Resume: if sage-review was completed in a prior session, the verdict
+	// is already persisted in bead labels/review beads. Pre-read it so the
+	// walker can route to fix/arbiter/merge without re-dispatching sage.
+	if localCompleted["sage-review"] {
+		ctx["verdict"] = e.readVerdict()
+		ctx["arbiter_decision"] = e.readArbiterDecision()
+	}
+
 	for {
 		next, err := formula.NextSteps(graph, localCompleted, ctx)
 		if err != nil {

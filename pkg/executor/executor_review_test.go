@@ -298,3 +298,439 @@ func TestReviewWalker_FixResetCorrectness(t *testing.T) {
 		}
 	}
 }
+
+// --- Edge case tests ---
+
+// TestReviewWalker_SageExitError verifies that the walker continues when
+// the sage process exits with an error but the verdict is still readable.
+func TestReviewWalker_SageExitError(t *testing.T) {
+	env := setupReviewTest(t, map[int]string{0: "approve"}, "")
+
+	// Override spawner: sage returns waitErr but verdict labels are set.
+	sageCount := 0
+	env.executor.deps.Spawner = &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			env.dispatched = append(env.dispatched, cfg)
+			if cfg.Role == agent.RoleSage {
+				sageCount++
+				delete(env.labels, "review-approved")
+				env.labels["review-approved"] = true
+				env.currentVerdict = "approve"
+				return &mockHandle{waitErr: fmt.Errorf("sage crashed")}, nil
+			}
+			return &mockHandle{}, nil
+		},
+	}
+
+	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	if err != nil {
+		t.Fatalf("executeReview should succeed despite sage exit error: %v", err)
+	}
+
+	roles := env.dispatchedRoles()
+	if len(roles) != 1 || roles[0] != agent.RoleSage {
+		t.Fatalf("expected [sage], got %v", roles)
+	}
+	if env.executor.state.ReviewRounds != 0 {
+		t.Errorf("ReviewRounds = %d, want 0", env.executor.state.ReviewRounds)
+	}
+}
+
+// TestReviewWalker_SageErrorNoVerdict verifies that the walker returns a
+// "review graph stuck" error when the sage crashes and no verdict is available.
+func TestReviewWalker_SageErrorNoVerdict(t *testing.T) {
+	env := setupReviewTest(t, nil, "")
+
+	// Override spawner: sage crashes, no verdict labels set.
+	env.executor.deps.Spawner = &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			env.dispatched = append(env.dispatched, cfg)
+			if cfg.Role == agent.RoleSage {
+				// Don't set any verdict labels or currentVerdict.
+				return &mockHandle{waitErr: fmt.Errorf("sage crashed")}, nil
+			}
+			return &mockHandle{}, nil
+		},
+	}
+	// Ensure GetReviewBeads returns nothing (no persisted verdict).
+	env.executor.deps.GetReviewBeads = func(parentID string) ([]Bead, error) {
+		return nil, nil
+	}
+
+	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	if err == nil {
+		t.Fatal("expected error from executeReview, got nil")
+	}
+	if !strings.Contains(err.Error(), "review graph stuck") {
+		t.Errorf("expected 'review graph stuck' error, got: %v", err)
+	}
+}
+
+// TestReviewWalker_FixApprenticeError verifies that the walker continues
+// to the next sage round when the fix apprentice exits with an error.
+func TestReviewWalker_FixApprenticeError(t *testing.T) {
+	env := setupReviewTest(t, map[int]string{
+		0: "request_changes",
+		1: "approve",
+	}, "")
+
+	// Override spawner: apprentice returns waitErr, sage works normally.
+	sageCount := 0
+	env.executor.deps.Spawner = &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			env.dispatched = append(env.dispatched, cfg)
+			if cfg.Role == agent.RoleSage {
+				round := sageCount
+				sageCount++
+				verdict := "approve"
+				if v, ok := map[int]string{0: "request_changes", 1: "approve"}[round]; ok {
+					verdict = v
+				}
+				delete(env.labels, "review-approved")
+				if verdict == "approve" {
+					env.labels["review-approved"] = true
+				}
+				env.currentVerdict = verdict
+				return &mockHandle{}, nil
+			}
+			if cfg.Role == agent.RoleApprentice {
+				return &mockHandle{waitErr: fmt.Errorf("fix apprentice failed")}, nil
+			}
+			return &mockHandle{}, nil
+		},
+	}
+
+	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	if err != nil {
+		t.Fatalf("executeReview should succeed despite fix error: %v", err)
+	}
+
+	// sage (round 0), apprentice (fix, errors), sage (round 1, approves), merge (terminal).
+	roles := env.dispatchedRoles()
+	expected := []agent.SpawnRole{agent.RoleSage, agent.RoleApprentice, agent.RoleSage}
+	if len(roles) != len(expected) {
+		t.Fatalf("expected %d dispatches, got %d: %v", len(expected), len(roles), roles)
+	}
+	for i, want := range expected {
+		if roles[i] != want {
+			t.Errorf("dispatch[%d] = %v, want %v", i, roles[i], want)
+		}
+	}
+	if env.executor.state.ReviewRounds != 1 {
+		t.Errorf("ReviewRounds = %d, want 1", env.executor.state.ReviewRounds)
+	}
+}
+
+// TestReviewWalker_StaleSubStepBeadsReopened verifies that ensureReviewSubStepBeads
+// reopens closed sub-step beads from a prior run via GetChildren reconciliation.
+func TestReviewWalker_StaleSubStepBeadsReopened(t *testing.T) {
+	env := setupReviewTest(t, map[int]string{0: "approve"}, "")
+
+	// Track bead statuses and activation calls.
+	beadStatuses := map[string]string{
+		"stale-sage-review": "closed",
+		"stale-fix":         "closed",
+		"stale-arbiter":     "closed",
+		"stale-merge":       "closed",
+		"stale-discard":     "closed",
+	}
+	var activatedBeads []string
+
+	// Override GetChildren to return stale closed children.
+	env.executor.deps.GetChildren = func(parentID string) ([]Bead, error) {
+		return []Bead{
+			{ID: "stale-sage-review", Status: "closed", Labels: []string{"review-substep", "step:sage-review"}},
+			{ID: "stale-fix", Status: "closed", Labels: []string{"review-substep", "step:fix"}},
+			{ID: "stale-arbiter", Status: "closed", Labels: []string{"review-substep", "step:arbiter"}},
+			{ID: "stale-merge", Status: "closed", Labels: []string{"review-substep", "step:merge"}},
+			{ID: "stale-discard", Status: "closed", Labels: []string{"review-substep", "step:discard"}},
+		}, nil
+	}
+
+	// Override GetBead to use beadStatuses for sub-step beads.
+	env.executor.deps.GetBead = func(id string) (Bead, error) {
+		b := Bead{ID: id, Status: "in_progress"}
+		if s, ok := beadStatuses[id]; ok {
+			b.Status = s
+		}
+		// Main bead: include labels from env.labels.
+		if id == "test-bead" {
+			for l := range env.labels {
+				if !strings.HasPrefix(l, "_") {
+					b.Labels = append(b.Labels, l)
+				}
+			}
+		}
+		return b, nil
+	}
+
+	// Track ActivateStepBead calls and update mock status.
+	env.executor.deps.ActivateStepBead = func(stepID string) error {
+		activatedBeads = append(activatedBeads, stepID)
+		beadStatuses[stepID] = "in_progress"
+		return nil
+	}
+
+	// Start with empty ReviewStepBeadIDs to trigger GetChildren reconciliation.
+	env.executor.state.ReviewStepBeadIDs = make(map[string]string)
+
+	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	if err != nil {
+		t.Fatalf("executeReview returned error: %v", err)
+	}
+
+	// Verify all 5 stale beads were reopened during reconciliation.
+	staleIDs := []string{"stale-sage-review", "stale-fix", "stale-arbiter", "stale-merge", "stale-discard"}
+	for _, id := range staleIDs {
+		found := false
+		for _, a := range activatedBeads {
+			if a == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("stale bead %s was not reopened via ActivateStepBead", id)
+		}
+	}
+
+	// Verify the review completed (sage approve → merge).
+	roles := env.dispatchedRoles()
+	if len(roles) != 1 || roles[0] != agent.RoleSage {
+		t.Fatalf("expected [sage], got %v", roles)
+	}
+}
+
+// --- Stress test ---
+
+// TestReviewWalker_ThreeRoundsStress verifies 3 full review rounds with
+// different verdicts, checking round counter, dispatch sequence, and
+// sub-step bead lifecycle at each step.
+func TestReviewWalker_ThreeRoundsStress(t *testing.T) {
+	env := setupReviewTest(t, map[int]string{
+		0: "request_changes",
+		1: "request_changes",
+		2: "approve",
+	}, "")
+
+	// Pre-populate ReviewStepBeadIDs for sub-step lifecycle tracking.
+	env.executor.state.ReviewStepBeadIDs = map[string]string{
+		"sage-review": "sub-sage",
+		"fix":         "sub-fix",
+		"arbiter":     "sub-arbiter",
+		"merge":       "sub-merge",
+		"discard":     "sub-discard",
+	}
+
+	var activations, closes []string
+	env.executor.deps.ActivateStepBead = func(stepID string) error {
+		activations = append(activations, stepID)
+		return nil
+	}
+	env.executor.deps.CloseStepBead = func(stepID string) error {
+		closes = append(closes, stepID)
+		return nil
+	}
+
+	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	if err != nil {
+		t.Fatalf("executeReview returned error: %v", err)
+	}
+
+	// Verify dispatch sequence: sage, fix, sage, fix, sage (then merge terminal).
+	roles := env.dispatchedRoles()
+	expected := []agent.SpawnRole{
+		agent.RoleSage, agent.RoleApprentice,
+		agent.RoleSage, agent.RoleApprentice,
+		agent.RoleSage,
+	}
+	if len(roles) != len(expected) {
+		t.Fatalf("expected %d dispatches, got %d: %v", len(expected), len(roles), roles)
+	}
+	for i, want := range expected {
+		if roles[i] != want {
+			t.Errorf("dispatch[%d] = %v, want %v", i, roles[i], want)
+		}
+	}
+
+	if env.executor.state.ReviewRounds != 2 {
+		t.Errorf("ReviewRounds = %d, want 2", env.executor.state.ReviewRounds)
+	}
+	if env.arbiterCalled {
+		t.Error("arbiter should not be called when final round approves")
+	}
+
+	// Verify sub-step bead lifecycle:
+	// sage-review: activated 3 times (rounds 0, 1, 2), closed 3 times
+	// fix: activated 2 times (rounds 0, 1), closed 2 times
+	// merge: activated 1 time (terminal), closed 1 time (after terminal exec)
+	if n := countStr(activations, "sub-sage"); n != 3 {
+		t.Errorf("sage-review activated %d times, want 3", n)
+	}
+	if n := countStr(closes, "sub-sage"); n != 3 {
+		t.Errorf("sage-review closed %d times, want 3", n)
+	}
+	if n := countStr(activations, "sub-fix"); n != 2 {
+		t.Errorf("fix activated %d times, want 2", n)
+	}
+	if n := countStr(closes, "sub-fix"); n != 2 {
+		t.Errorf("fix closed %d times, want 2", n)
+	}
+	if n := countStr(activations, "sub-merge"); n != 1 {
+		t.Errorf("merge activated %d times, want 1", n)
+	}
+	if n := countStr(closes, "sub-merge"); n != 1 {
+		t.Errorf("merge closed %d times, want 1", n)
+	}
+}
+
+// --- Resume tests ---
+
+// TestReviewWalker_ResumeAfterSage verifies that a wizard resuming after
+// sage-review completed (but before fix) picks up from the correct step.
+// Sage should NOT be re-dispatched; fix should be the first dispatch.
+func TestReviewWalker_ResumeAfterSage(t *testing.T) {
+	env := setupReviewTest(t, map[int]string{
+		0: "approve", // first sage dispatch in this test (round 1) approves
+	}, "")
+
+	// Pre-populate sub-step beads: sage-review is closed (completed in prior session).
+	env.executor.state.ReviewStepBeadIDs = map[string]string{
+		"sage-review": "sub-sage",
+		"fix":         "sub-fix",
+		"arbiter":     "sub-arbiter",
+		"merge":       "sub-merge",
+		"discard":     "sub-discard",
+	}
+	beadStatuses := map[string]string{
+		"sub-sage": "closed", // sage ran in prior session
+	}
+
+	// Override GetBead: sub-step beads use beadStatuses, main bead uses env.labels.
+	env.executor.deps.GetBead = func(id string) (Bead, error) {
+		if id == "test-bead" {
+			b := Bead{ID: id, Status: "in_progress"}
+			for l := range env.labels {
+				if !strings.HasPrefix(l, "_") {
+					b.Labels = append(b.Labels, l)
+				}
+			}
+			return b, nil
+		}
+		status := "in_progress"
+		if s, ok := beadStatuses[id]; ok {
+			status = s
+		}
+		return Bead{ID: id, Status: status}, nil
+	}
+
+	// GetReviewBeads returns the prior sage's verdict (request_changes).
+	env.executor.deps.GetReviewBeads = func(parentID string) ([]Bead, error) {
+		return []Bead{{
+			ID:     "prior-review",
+			Status: "closed",
+			Labels: []string{"verdict:request_changes"},
+		}}, nil
+	}
+
+	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	if err != nil {
+		t.Fatalf("executeReview returned error: %v", err)
+	}
+
+	// First dispatch should be apprentice (fix), NOT sage.
+	// Then sage (round 1, approves), then merge (terminal, no spawn).
+	roles := env.dispatchedRoles()
+	expected := []agent.SpawnRole{agent.RoleApprentice, agent.RoleSage}
+	if len(roles) != len(expected) {
+		t.Fatalf("expected %d dispatches, got %d: %v", len(expected), len(roles), roles)
+	}
+	for i, want := range expected {
+		if roles[i] != want {
+			t.Errorf("dispatch[%d] = %v, want %v", i, roles[i], want)
+		}
+	}
+
+	if env.executor.state.ReviewRounds != 1 {
+		t.Errorf("ReviewRounds = %d, want 1", env.executor.state.ReviewRounds)
+	}
+}
+
+// TestReviewWalker_ResumeAfterSageMaxRounds verifies that resuming after sage
+// when round >= max_rounds triggers the arbiter instead of fix.
+func TestReviewWalker_ResumeAfterSageMaxRounds(t *testing.T) {
+	env := setupReviewTest(t, nil, "merge")
+
+	// Set round to 3 (>= max_rounds=3) — arbiter should trigger.
+	env.executor.state.ReviewRounds = 3
+
+	// Pre-populate sub-step beads: sage-review is closed.
+	env.executor.state.ReviewStepBeadIDs = map[string]string{
+		"sage-review": "sub-sage",
+		"fix":         "sub-fix",
+		"arbiter":     "sub-arbiter",
+		"merge":       "sub-merge",
+		"discard":     "sub-discard",
+	}
+	beadStatuses := map[string]string{
+		"sub-sage": "closed",
+	}
+
+	env.executor.deps.GetBead = func(id string) (Bead, error) {
+		if id == "test-bead" {
+			b := Bead{ID: id, Status: "in_progress"}
+			for l := range env.labels {
+				if !strings.HasPrefix(l, "_") {
+					b.Labels = append(b.Labels, l)
+				}
+			}
+			return b, nil
+		}
+		status := "in_progress"
+		if s, ok := beadStatuses[id]; ok {
+			status = s
+		}
+		return Bead{ID: id, Status: status}, nil
+	}
+
+	// Prior sage verdict: request_changes.
+	env.executor.deps.GetReviewBeads = func(parentID string) ([]Bead, error) {
+		return []Bead{{
+			ID:     "prior-review",
+			Status: "closed",
+			Labels: []string{"verdict:request_changes"},
+		}}, nil
+	}
+
+	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	if err != nil {
+		t.Fatalf("executeReview returned error: %v", err)
+	}
+
+	// Sage should NOT be dispatched (already completed).
+	// Arbiter fires via ReviewEscalateToArbiter (not spawner), then merge terminal.
+	roles := env.dispatchedRoles()
+	if len(roles) != 0 {
+		t.Fatalf("expected 0 spawner dispatches (arbiter uses dep, not spawner), got %d: %v", len(roles), roles)
+	}
+
+	if !env.arbiterCalled {
+		t.Error("expected ReviewEscalateToArbiter to be called")
+	}
+
+	// Round counter unchanged (no fix step).
+	if env.executor.state.ReviewRounds != 3 {
+		t.Errorf("ReviewRounds = %d, want 3", env.executor.state.ReviewRounds)
+	}
+}
+
+// countStr counts occurrences of val in slice.
+func countStr(slice []string, val string) int {
+	n := 0
+	for _, s := range slice {
+		if s == val {
+			n++
+		}
+	}
+	return n
+}
