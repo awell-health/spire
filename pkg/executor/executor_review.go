@@ -41,23 +41,18 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 	}
 
 	// 5. Walk loop.
-	// localCompleted tracks step completion in-memory. This is essential when
-	// ReviewStepBeadIDs is empty (test/legacy runs where CreateBead is nil),
-	// because completedReviewSteps() returns an empty map in that case.
-	// Without this, the walker re-dispatches the entry step forever.
-	localCompleted := make(map[string]bool)
+	// localCompleted is the SOLE source of truth for step completion within
+	// a review cycle. Bead status (completedReviewSteps) is only used on
+	// entry to seed the initial state — after that, localCompleted drives
+	// the walker. This avoids stale bead reads after resetReviewSubStep.
+	localCompleted := e.completedReviewSteps() // seed from bead graph on entry
 	for {
-		completed := e.completedReviewSteps()
-		// Merge in-memory tracking (covers test/legacy runs without sub-step beads).
-		for k, v := range localCompleted {
-			completed[k] = v
-		}
-		next, err := formula.NextSteps(graph, completed, ctx)
+		next, err := formula.NextSteps(graph, localCompleted, ctx)
 		if err != nil {
 			return fmt.Errorf("review graph walk error: %w", err)
 		}
 		if len(next) == 0 {
-			return fmt.Errorf("review graph stuck: no next steps, completed=%v, ctx=%v", completed, ctx)
+			return fmt.Errorf("review graph stuck: no next steps, completed=%v, ctx=%v", localCompleted, ctx)
 		}
 
 		stepName := next[0] // review is sequential — take first ready step
@@ -107,6 +102,7 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 			if err := e.resetReviewSubStep("fix"); err != nil {
 				return fmt.Errorf("reset fix sub-step: %w", err)
 			}
+			delete(localCompleted, "fix")
 			e.state.ReviewRounds++
 			ctx["round"] = strconv.Itoa(e.state.ReviewRounds)
 			e.saveState()
