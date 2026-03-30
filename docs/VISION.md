@@ -270,6 +270,30 @@ Resolution: invest in observability first. Measure what the current
 pipeline does well and badly. Let the data inform which extension points
 matter. Don't add flexibility until we can measure its impact.
 
+### Autonomous exploration ("YOLO mode")
+
+What if an agent could file its own beads? A meta-agent gets a broad
+goal ("make spire faster", "explore authentication"), reads the codebase,
+and generates work items — tasks, bugs, design beads — that go through
+the normal pipeline. The meta-agent is a strategist; wizards execute.
+
+This is the most powerful and most dangerous capability. Key questions:
+
+- **Guardrails**: How do you prevent runaway bead filing? Budget limits
+  (max beads, max cost)? Human approval gates before execution? Beads
+  filed as `needs-human` by default?
+- **Tools**: The meta-agent needs the spire API (create beads, summon
+  wizards, monitor progress). The MCP tools (`spire_focus`,
+  `spire_send`, `spire_collect`) are the surface.
+- **Feedback loop**: The meta-agent monitors the beads it filed. If a
+  wizard fails, the meta-agent adjusts strategy. This is closed-loop
+  autonomous engineering.
+- **Trust gradient**: Start with "propose only" (agent suggests beads,
+  human approves), graduate to "file and execute" as trust builds.
+
+Not ready to design yet. Capture the concept, revisit after the
+observability and formula flexibility questions are resolved.
+
 ---
 
 ## Why This Matters
