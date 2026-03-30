@@ -128,7 +128,7 @@ func (e *Executor) dispatchReviewAgent(stepName string, cfg formula.StepConfig, 
 // [Review fix #5: preserves judgment path from old executeReview]
 func (e *Executor) dispatchSageReview(cfg formula.StepConfig, pc PhaseConfig) error {
 	sageName := fmt.Sprintf("%s-sage", e.agentName)
-	e.log("dispatching sage %s", sageName)
+	e.log("dispatching sage on %s (worktree: %s)", e.state.StagingBranch, e.state.WorktreeDir)
 
 	extraArgs := []string{}
 	if cfg.VerdictOnly || pc.VerdictOnly {
@@ -188,6 +188,8 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 
 	if implPC.GetDispatch() == "wave" {
 		fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
+		fixBranchName := e.resolveBranch(e.beadID)
+		e.log("dispatching fix apprentice on %s (worktree: %s)", fixBranchName, e.state.WorktreeDir)
 		fixArgs := []string{"--review-fix", "--apprentice"}
 		if e.state.WorktreeDir != "" {
 			fixArgs = append(fixArgs, "--worktree-dir", e.state.WorktreeDir)
@@ -222,17 +224,22 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 					fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
 				return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
 			}
+			preMergeSHA, _ := stagingWt.HeadSHA()
 			if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
 				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
 					fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
 				return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
 			}
+			postMergeSHA, _ := stagingWt.HeadSHA()
+			e.log("merged %s (commit %s) into %s → %s", fixBranch, preMergeSHA, e.state.StagingBranch, postMergeSHA)
 		}
 	} else {
 		// Direct dispatch: spawn a fix apprentice in the staging worktree,
 		// same as the wave path. executeDirect would start fresh from main
 		// with no knowledge of the sage feedback — causing an infinite loop.
 		fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
+		fixBranchName := e.resolveBranch(e.beadID)
+		e.log("dispatching fix apprentice on %s (worktree: %s)", fixBranchName, e.state.WorktreeDir)
 		fixArgs := []string{"--review-fix", "--apprentice"}
 		if e.state.WorktreeDir != "" {
 			fixArgs = append(fixArgs, "--worktree-dir", e.state.WorktreeDir)
@@ -270,11 +277,14 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 					fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
 				return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
 			}
+			preMergeSHA, _ := stagingWt.HeadSHA()
 			if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
 				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
 					fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
 				return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
 			}
+			postMergeSHA, _ := stagingWt.HeadSHA()
+			e.log("merged %s (commit %s) into %s → %s", fixBranch, preMergeSHA, e.state.StagingBranch, postMergeSHA)
 		}
 	}
 
@@ -324,13 +334,16 @@ func (e *Executor) readVerdict() string {
 		return ""
 	}
 	if e.deps.ContainsLabel(bead, "review-approved") {
+		e.log("sage verdict: approve (read from review label on %s)", e.beadID)
 		return "approve"
 	}
 	reviews, _ := e.deps.GetReviewBeads(e.beadID)
 	if len(reviews) > 0 {
 		lastReview := reviews[len(reviews)-1]
 		if lastReview.Status == "closed" {
-			return e.deps.ReviewBeadVerdict(lastReview)
+			verdict := e.deps.ReviewBeadVerdict(lastReview)
+			e.log("sage verdict: %s (read from review bead %s)", verdict, lastReview.ID)
+			return verdict
 		}
 	}
 	return ""
