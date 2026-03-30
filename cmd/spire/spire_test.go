@@ -1140,3 +1140,100 @@ func TestIntegrationStatus(t *testing.T) {
 		t.Fatalf("cmdStatus error: %v", err)
 	}
 }
+
+// TestSpireMigrationsNoDuplicates verifies no duplicate table+column entries
+// exist in spireMigrations.
+func TestSpireMigrationsNoDuplicates(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, m := range spireMigrations {
+		key := m.table + "." + m.column
+		if seen[key] {
+			t.Errorf("duplicate migration entry: %s", key)
+		}
+		seen[key] = true
+	}
+}
+
+// TestSpireMigrationsValidTables ensures all migrations reference known tables.
+func TestSpireMigrationsValidTables(t *testing.T) {
+	validTables := map[string]bool{
+		"agent_runs":     true,
+		"golden_prompts": true,
+	}
+	for _, m := range spireMigrations {
+		if !validTables[m.table] {
+			t.Errorf("migration references unknown table %q (column %s)", m.table, m.column)
+		}
+		if m.column == "" {
+			t.Error("migration has empty column name")
+		}
+		if m.ddl == "" {
+			t.Error("migration has empty ddl")
+		}
+		if !strings.HasPrefix(m.ddl, "ADD COLUMN") {
+			t.Errorf("migration ddl for %s.%s should start with 'ADD COLUMN', got %q", m.table, m.column, m.ddl)
+		}
+	}
+}
+
+// TestSpireMigrationsCoversAllColumns verifies that every column in the
+// CREATE TABLE statements has a corresponding migration entry.
+func TestSpireMigrationsCoversAllColumns(t *testing.T) {
+	// Extract column names from spireMigrations, grouped by table.
+	migrated := make(map[string]map[string]bool)
+	for _, m := range spireMigrations {
+		if migrated[m.table] == nil {
+			migrated[m.table] = make(map[string]bool)
+		}
+		migrated[m.table][m.column] = true
+	}
+
+	// agent_runs expected columns (from agentRunsTableSQL)
+	agentRunsCols := []string{
+		"id", "bead_id", "epic_id", "agent_name", "model", "role", "phase",
+		"context_tokens_in", "context_tokens_out", "total_tokens", "turns",
+		"duration_seconds", "startup_seconds", "working_seconds", "queue_seconds",
+		"review_seconds", "result", "review_rounds", "artificer_verdict",
+		"review_step", "review_round", "spec_file", "spec_size_tokens",
+		"focus_context_tokens", "files_changed", "lines_added", "lines_removed",
+		"tests_added", "tests_passed", "system_prompt_hash", "golden_run",
+		"cost_usd", "started_at", "completed_at",
+	}
+	for _, col := range agentRunsCols {
+		if !migrated["agent_runs"][col] {
+			t.Errorf("agent_runs column %q has no migration entry", col)
+		}
+	}
+
+	// golden_prompts expected columns (from goldenPromptsTableSQL)
+	goldenCols := []string{
+		"run_id", "bead_id", "system_prompt", "spec_excerpt",
+		"focus_context", "tags", "context_tokens",
+	}
+	for _, col := range goldenCols {
+		if !migrated["golden_prompts"][col] {
+			t.Errorf("golden_prompts column %q has no migration entry", col)
+		}
+	}
+}
+
+// TestIntegrationMigrateSpireTablesIdempotent verifies that migrateSpireTables
+// can be called twice without error.
+func TestIntegrationMigrateSpireTablesIdempotent(t *testing.T) {
+	requireStore(t)
+
+	tower, err := activeTowerConfig()
+	if err != nil {
+		t.Skip("no active tower, skipping")
+	}
+
+	// First call — should succeed.
+	if err := migrateSpireTables(tower.Database); err != nil {
+		t.Fatalf("first migrateSpireTables call failed: %v", err)
+	}
+
+	// Second call — should also succeed (idempotent).
+	if err := migrateSpireTables(tower.Database); err != nil {
+		t.Fatalf("second migrateSpireTables call failed: %v", err)
+	}
+}

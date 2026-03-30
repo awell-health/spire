@@ -122,11 +122,11 @@ func cmdUp(args []string) error {
 			fmt.Printf("ok (%d tower(s))\n", len(towers))
 		}
 
-		// Ensure agent_runs + golden_prompts tables exist (idempotent)
-		fmt.Print("agent_runs table: ")
+		// Ensure agent_runs + golden_prompts tables exist and columns are up-to-date
+		fmt.Print("spire tables: ")
 		arWarned := 0
 		for _, t := range towers {
-			if err := ensureAgentRunsTable(t.Database); err != nil {
+			if err := migrateSpireTables(t.Database); err != nil {
 				fmt.Printf("\n  warning: %s: %s", t.Database, err)
 				arWarned++
 			}
@@ -264,10 +264,13 @@ func cmdUp(args []string) error {
 	return nil
 }
 
-// ensureAgentRunsTable creates the agent_runs and golden_prompts tables if they
-// don't exist. Idempotent — safe to call on every startup.
-// Also runs schema migrations for existing tables (e.g. adding the phase column).
-func ensureAgentRunsTable(database string) error {
+// migrateSpireTables creates the agent_runs and golden_prompts tables if they
+// don't exist, then runs column migrations for any missing columns.
+// Idempotent — safe to call on every startup.
+//
+// ensureAgentRunsTable is kept as an alias for backward compatibility.
+func migrateSpireTables(database string) error {
+	// Create tables if they don't exist (initial schema).
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, agentRunsTableSQL)); err != nil {
 		return fmt.Errorf("create agent_runs: %w", err)
 	}
@@ -275,15 +278,43 @@ func ensureAgentRunsTable(database string) error {
 		return fmt.Errorf("create golden_prompts: %w", err)
 	}
 
-	// Migration 002: add phase column if it doesn't exist.
-	// Use SHOW COLUMNS to check for the phase column — more robust than
-	// querying information_schema and parsing JSON serialization.
-	out, err := rawDoltQuery(fmt.Sprintf("USE `%s`; SHOW COLUMNS FROM agent_runs LIKE 'phase'", database))
-	if err == nil && !strings.Contains(out, "phase") {
-		if _, alterErr := rawDoltQuery(fmt.Sprintf("USE `%s`; ALTER TABLE agent_runs ADD COLUMN phase VARCHAR(16) AFTER role", database)); alterErr != nil {
-			log.Printf("warning: migration 002 ALTER TABLE: %s", alterErr)
-		} else if _, idxErr := rawDoltQuery(fmt.Sprintf("USE `%s`; CREATE INDEX idx_agent_runs_phase ON agent_runs (phase)", database)); idxErr != nil {
-			log.Printf("warning: migration 002 CREATE INDEX: %s", idxErr)
+	// Run column migrations — each entry checks SHOW COLUMNS and adds if missing.
+	for _, m := range spireMigrations {
+		if err := ensureColumn(database, m); err != nil {
+			log.Printf("warning: migration %s.%s: %s", m.table, m.column, err)
+		}
+	}
+
+	return nil
+}
+
+// ensureAgentRunsTable is the old name for migrateSpireTables, kept for
+// backward compatibility with doctor.go and any other callers.
+var ensureAgentRunsTable = migrateSpireTables
+
+// ensureColumn checks whether a column exists in a table and adds it if missing.
+// Uses SHOW COLUMNS LIKE to detect presence (MySQL 8.0 / Dolt compatible).
+// If the column already exists, this is a no-op.
+func ensureColumn(database string, m columnMigration) error {
+	out, err := rawDoltQuery(fmt.Sprintf("USE `%s`; SHOW COLUMNS FROM %s LIKE '%s'", database, m.table, m.column))
+	if err != nil {
+		// Table may not exist yet — not fatal for migration purposes.
+		return nil
+	}
+	if strings.Contains(out, m.column) {
+		// Column already exists — nothing to do.
+		return nil
+	}
+
+	// Column is missing — add it.
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; ALTER TABLE %s %s", database, m.table, m.ddl)); err != nil {
+		return fmt.Errorf("ALTER TABLE %s %s: %w", m.table, m.ddl, err)
+	}
+
+	// Create index if specified. Errors are non-fatal (index may already exist).
+	if m.index != "" {
+		if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, m.index)); err != nil {
+			log.Printf("warning: index for %s.%s: %s", m.table, m.column, err)
 		}
 	}
 
