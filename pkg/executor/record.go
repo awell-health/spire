@@ -54,6 +54,27 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		ReviewRounds:    e.state.ReviewRounds,
 	}
 
+	// Populate context fields from executor state.
+	if e.formula != nil {
+		run.FormulaName = e.formula.Name
+		run.FormulaVersion = e.formula.Version
+	}
+	run.WaveIndex = e.state.Wave
+
+	// Bead type — swallow errors (bead may be deleted or unavailable in tests).
+	if e.deps.GetBead != nil && beadID != "" {
+		if b, err := e.deps.GetBead(beadID); err == nil {
+			run.BeadType = b.Type
+		}
+	}
+
+	// Tower name — swallow errors (unavailable in test contexts).
+	if e.deps.ActiveTowerConfig != nil {
+		if tc, err := e.deps.ActiveTowerConfig(); err == nil && tc != nil {
+			run.Tower = tc.Name
+		}
+	}
+
 	// Try to read the agent's result.json for actual outcome and metrics.
 	if ar := e.readAgentResult(name); ar != nil {
 		run.Result = mapResultValue(ar.Result)
@@ -65,9 +86,21 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		run.LinesRemoved = ar.LinesRemoved
 		run.Turns = ar.Turns
 		run.CostUSD = ar.CostUSD
+		// Branch and commit from agent result take priority.
+		if ar.Branch != "" {
+			run.Branch = ar.Branch
+		}
+		if ar.Commit != "" {
+			run.CommitSHA = ar.Commit
+		}
 	} else {
 		// No result.json available — derive result from the process error.
 		run.Result = resultFromError(spawnErr)
+	}
+
+	// Fall back to staging branch if result didn't provide a branch.
+	if run.Branch == "" && e.state.StagingBranch != "" {
+		run.Branch = e.state.StagingBranch
 	}
 
 	// Compute git diff stats as fallback when result.json didn't provide them.

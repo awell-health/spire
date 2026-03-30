@@ -18,6 +18,14 @@ type AgentRun struct {
 	Model              string `json:"model"`
 	Role               string `json:"role"`  // "wizard" or "worker"
 	Phase              string `json:"phase,omitempty"` // "implement", "review", "build-fix", "review-fix"
+	FormulaName        string `json:"formula_name,omitempty"`
+	FormulaVersion     int    `json:"formula_version,omitempty"`
+	Branch             string `json:"branch,omitempty"`
+	CommitSHA          string `json:"commit_sha,omitempty"`
+	BeadType           string `json:"bead_type,omitempty"`
+	Tower              string `json:"tower,omitempty"`
+	ParentRunID        string `json:"parent_run_id,omitempty"`
+	WaveIndex          int    `json:"wave_index,omitempty"`
 	ContextTokensIn    int    `json:"context_tokens_in,omitempty"`
 	ContextTokensOut   int    `json:"context_tokens_out,omitempty"`
 	TotalTokens        int    `json:"total_tokens,omitempty"`
@@ -72,6 +80,38 @@ func Record(run AgentRun) error {
 	if run.Phase != "" {
 		cols = append(cols, "phase")
 		vals = append(vals, esc(run.Phase))
+	}
+	if run.FormulaName != "" {
+		cols = append(cols, "formula_name")
+		vals = append(vals, esc(run.FormulaName))
+	}
+	if run.FormulaVersion > 0 {
+		cols = append(cols, "formula_version")
+		vals = append(vals, itoa(run.FormulaVersion))
+	}
+	if run.Branch != "" {
+		cols = append(cols, "branch")
+		vals = append(vals, esc(run.Branch))
+	}
+	if run.CommitSHA != "" {
+		cols = append(cols, "commit_sha")
+		vals = append(vals, esc(run.CommitSHA))
+	}
+	if run.BeadType != "" {
+		cols = append(cols, "bead_type")
+		vals = append(vals, esc(run.BeadType))
+	}
+	if run.Tower != "" {
+		cols = append(cols, "tower")
+		vals = append(vals, esc(run.Tower))
+	}
+	if run.ParentRunID != "" {
+		cols = append(cols, "parent_run_id")
+		vals = append(vals, esc(run.ParentRunID))
+	}
+	if run.WaveIndex > 0 {
+		cols = append(cols, "wave_index")
+		vals = append(vals, itoa(run.WaveIndex))
 	}
 	if run.EpicID != "" {
 		cols = append(cols, "epic_id")

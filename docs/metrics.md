@@ -68,6 +68,60 @@ Or query directly:
 bd sql "SELECT avg(startup_seconds), avg(working_seconds), avg(review_seconds) FROM agent_runs WHERE result='success'"
 ```
 
+## Context-enriched queries
+
+Each agent run now records the formula, branch, bead type, tower, and wave it belonged to. This unlocks slicing by any of those dimensions.
+
+### Formula tracking — success rate by formula
+
+```sql
+SELECT formula_name, formula_version,
+       COUNT(*) AS runs,
+       SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END) AS ok,
+       ROUND(100.0 * SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END) / COUNT(*), 1) AS success_pct
+FROM agent_runs
+WHERE formula_name IS NOT NULL
+GROUP BY formula_name, formula_version
+ORDER BY success_pct ASC;
+```
+
+### Bead type reliability — failure rate by issue type
+
+```sql
+SELECT bead_type,
+       COUNT(*) AS runs,
+       ROUND(100.0 * SUM(CASE WHEN result != 'success' THEN 1 ELSE 0 END) / COUNT(*), 1) AS fail_pct,
+       ROUND(AVG(duration_seconds), 0) AS avg_duration_s
+FROM agent_runs
+WHERE bead_type IS NOT NULL
+GROUP BY bead_type
+ORDER BY fail_pct DESC;
+```
+
+### Tower cost allocation
+
+```sql
+SELECT tower,
+       COUNT(*) AS runs,
+       ROUND(SUM(cost_usd), 2) AS total_cost,
+       ROUND(AVG(cost_usd), 4) AS avg_cost
+FROM agent_runs
+WHERE tower IS NOT NULL
+GROUP BY tower
+ORDER BY total_cost DESC;
+```
+
+### Audit trail — full context for a specific bead
+
+```sql
+SELECT id, phase, formula_name, formula_version, branch, commit_sha,
+       bead_type, tower, wave_index, result, cost_usd, duration_seconds,
+       started_at
+FROM agent_runs
+WHERE bead_id = 'spi-xxxx'
+ORDER BY started_at;
+```
+
 ## What to watch
 
 | Signal | Meaning | Action |

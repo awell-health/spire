@@ -7,6 +7,16 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     role VARCHAR(16) NOT NULL,  -- 'worker' or 'wizard'
     phase VARCHAR(16),          -- 'implement', 'review', 'build-fix', 'review-fix'
 
+    -- Context fields
+    formula_name VARCHAR(64),
+    formula_version INT,
+    branch VARCHAR(128),
+    commit_sha VARCHAR(40),
+    bead_type VARCHAR(32),
+    tower VARCHAR(64),
+    parent_run_id VARCHAR(32),
+    wave_index INT,
+
     -- Execution metrics
     context_tokens_in INT,
     context_tokens_out INT,
@@ -50,7 +60,10 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     INDEX idx_result (result),
     INDEX idx_golden (golden_run),
     INDEX idx_model (model),
-    INDEX idx_phase (phase)
+    INDEX idx_phase (phase),
+    INDEX idx_formula (formula_name),
+    INDEX idx_bead_type (bead_type),
+    INDEX idx_tower (tower)
 );
 
 CREATE TABLE IF NOT EXISTS golden_prompts (
