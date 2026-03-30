@@ -151,6 +151,7 @@ func TestWizardWriteResultIncludesMetrics(t *testing.T) {
 		"context_tokens_out": 2000,
 		"total_tokens":       5000,
 		"turns":              5,
+		"cost_usd":           0.12,
 	}
 	for key, want := range checks {
 		got, ok := result[key].(float64)

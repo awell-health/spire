@@ -261,7 +261,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		if runErr != nil {
 			log("claude implement failed: %s", runErr)
 		}
-		accMetrics = metrics
+		accMetrics = accMetrics.Add(metrics)
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
 		// Close implement molecule step
@@ -954,6 +954,7 @@ func WizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
 		"context_tokens_out": metrics.OutputTokens,
 		"total_tokens":       metrics.TotalTokens,
 		"turns":              metrics.Turns,
+		"cost_usd":           metrics.CostUSD,
 	}
 	out, _ := json.MarshalIndent(data, "", "  ")
 	resultPath := filepath.Join(resultDir, "result.json")
