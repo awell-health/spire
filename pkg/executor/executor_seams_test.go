@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
@@ -1907,6 +1908,368 @@ func TestCollectDesignContext(t *testing.T) {
 	// Should NOT include non-discovered-from dep (spi-des3 is blocks, not discovered-from).
 	if strings.Contains(result, "spi-des3") {
 		t.Errorf("result should not contain non-discovered-from bead spi-des3, got: %q", result)
+	}
+}
+
+// =============================================================================
+// Seam: wizardValidateDesign — auto-create, poll-until-closed, poll-until-enriched
+//
+// wizardValidateDesign now polls instead of exiting when a design bead is
+// missing, open, or empty. It auto-creates a design bead if none exists.
+// =============================================================================
+
+// TestWizardValidateDesign_CreatesDesignBead verifies that when no design bead
+// exists, wizardValidateDesign auto-creates one, links it via discovered-from,
+// adds comments, labels needs-human, and messages the archmage. On the second
+// poll iteration, the newly created bead is found closed with content → returns nil.
+func TestWizardValidateDesign_CreatesDesignBead(t *testing.T) {
+	dir := t.TempDir()
+
+	var (
+		designBeadOpts   *CreateOpts
+		addDepTypedCalls []struct{ issue, dep, depType string }
+		addedLabels      []struct{ id, label string }
+		addedComments    []struct{ id, text string }
+		messageCount     int
+	)
+
+	pollCount := 0
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			pollCount++
+			if pollCount <= 1 {
+				// First poll: no design beads.
+				return nil, nil
+			}
+			// Second poll: design bead exists, closed, with content.
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue: beads.Issue{
+						ID:          "spi-design-new",
+						Title:       "Design: spi-epic1",
+						Description: "Design decisions here",
+						IssueType:   "design",
+						Status:      "closed",
+					},
+					DependencyType: beads.DepDiscoveredFrom,
+				},
+			}, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			if id == "spi-design-new" {
+				return []*beads.Comment{{ID: "c1", IssueID: id, Text: "PKCE flow"}}, nil
+			}
+			return nil, nil
+		},
+		CreateBead: func(opts CreateOpts) (string, error) {
+			// Check if it's a message (has msg label) vs a design bead.
+			for _, l := range opts.Labels {
+				if l == "msg" {
+					messageCount++
+					return "spi-msg-1", nil
+				}
+			}
+			// Design bead creation.
+			copied := opts
+			designBeadOpts = &copied
+			return "spi-design-new", nil
+		},
+		AddDepTyped: func(issueID, dependsOnID, depType string) error {
+			addDepTypedCalls = append(addDepTypedCalls, struct{ issue, dep, depType string }{issueID, dependsOnID, depType})
+			return nil
+		},
+		AddDep: func(issueID, dependsOnID string) error { return nil },
+		AddComment: func(id, text string) error {
+			addedComments = append(addedComments, struct{ id, text string }{id, text})
+			return nil
+		},
+		AddLabel: func(id, label string) error {
+			addedLabels = append(addedLabels, struct{ id, label string }{id, label})
+			return nil
+		},
+		RemoveLabel:    func(id, label string) error { return nil },
+		ParseIssueType: func(s string) beads.IssueType { return beads.IssueType(s) },
+	}
+
+	state := &State{
+		BeadID:    "spi-epic1",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-epic1", "wizard-test", nil, state, deps)
+	e.designPollInterval = time.Millisecond
+
+	err := e.wizardValidateDesign()
+	if err != nil {
+		t.Fatalf("wizardValidateDesign returned error: %v", err)
+	}
+
+	// Verify CreateBead was called with type=design.
+	if designBeadOpts == nil {
+		t.Fatal("CreateBead was never called for design bead")
+	}
+	if string(designBeadOpts.Type) != "design" {
+		t.Errorf("CreateBead type = %q, want %q", designBeadOpts.Type, "design")
+	}
+
+	// Verify discovered-from dep was added.
+	if len(addDepTypedCalls) == 0 {
+		t.Fatal("AddDepTyped was not called")
+	}
+	dep := addDepTypedCalls[0]
+	if dep.issue != "spi-epic1" || dep.dep != "spi-design-new" || dep.depType != "discovered-from" {
+		t.Errorf("AddDepTyped(%q, %q, %q), want (spi-epic1, spi-design-new, discovered-from)",
+			dep.issue, dep.dep, dep.depType)
+	}
+
+	// Verify needs-human label was added to the epic.
+	foundNeedsHuman := false
+	for _, l := range addedLabels {
+		if l.id == "spi-epic1" && l.label == "needs-human" {
+			foundNeedsHuman = true
+			break
+		}
+	}
+	if !foundNeedsHuman {
+		t.Error("needs-human label was not added to epic")
+	}
+
+	// Verify comments were added to both the epic and the design bead.
+	epicCommented, designCommented := false, false
+	for _, c := range addedComments {
+		if c.id == "spi-epic1" && strings.Contains(c.text, "auto-created") {
+			epicCommented = true
+		}
+		if c.id == "spi-design-new" && strings.Contains(c.text, "auto-created") {
+			designCommented = true
+		}
+	}
+	if !epicCommented {
+		t.Error("epic was not commented about auto-created design bead")
+	}
+	if !designCommented {
+		t.Error("design bead was not commented")
+	}
+
+	// Verify archmage was messaged.
+	if messageCount == 0 {
+		t.Error("archmage was not messaged")
+	}
+}
+
+// TestWizardValidateDesign_WaitsForOpenDesign verifies that when a design bead
+// exists but is open, wizardValidateDesign polls until it's closed with content.
+func TestWizardValidateDesign_WaitsForOpenDesign(t *testing.T) {
+	dir := t.TempDir()
+
+	pollCount := 0
+	var addedLabels []string
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			pollCount++
+			status := beads.Status("open")
+			if pollCount >= 2 {
+				status = "closed"
+			}
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue: beads.Issue{
+						ID:          "spi-des1",
+						Title:       "Auth design",
+						Description: "Use OAuth2",
+						IssueType:   "design",
+						Status:      status,
+					},
+					DependencyType: beads.DepDiscoveredFrom,
+				},
+			}, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			return []*beads.Comment{{ID: "c1", IssueID: id, Text: "Some content"}}, nil
+		},
+		AddComment: func(id, text string) error { return nil },
+		AddLabel: func(id, label string) error {
+			addedLabels = append(addedLabels, label)
+			return nil
+		},
+		RemoveLabel: func(id, label string) error { return nil },
+		CreateBead: func(opts CreateOpts) (string, error) {
+			return "spi-msg-1", nil // for archmage message
+		},
+		AddDep:         func(issueID, dependsOnID string) error { return nil },
+		ParseIssueType: func(s string) beads.IssueType { return beads.IssueType(s) },
+	}
+
+	state := &State{
+		BeadID:    "spi-epic2",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-epic2", "wizard-test", nil, state, deps)
+	e.designPollInterval = time.Millisecond
+
+	err := e.wizardValidateDesign()
+	if err != nil {
+		t.Fatalf("wizardValidateDesign returned error: %v", err)
+	}
+
+	// Should have polled at least twice.
+	if pollCount < 2 {
+		t.Errorf("pollCount = %d, want >= 2", pollCount)
+	}
+
+	// Verify needs-human label was added while waiting.
+	found := false
+	for _, l := range addedLabels {
+		if l == "needs-human" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("needs-human label was not added while waiting for open design bead")
+	}
+}
+
+// TestWizardValidateDesign_WaitsForEmptyDesign verifies that when a design bead
+// is closed but has no content, wizardValidateDesign polls until it has content.
+func TestWizardValidateDesign_WaitsForEmptyDesign(t *testing.T) {
+	dir := t.TempDir()
+
+	pollCount := 0
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			pollCount++
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue: beads.Issue{
+						ID:        "spi-des1",
+						Title:     "Auth design",
+						IssueType: "design",
+						Status:    "closed",
+						// Description intentionally empty.
+					},
+					DependencyType: beads.DepDiscoveredFrom,
+				},
+			}, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			if pollCount >= 2 {
+				// Second poll: content added.
+				return []*beads.Comment{{ID: "c1", IssueID: id, Text: "Design decisions"}}, nil
+			}
+			// First poll: no comments.
+			return nil, nil
+		},
+		AddComment:  func(id, text string) error { return nil },
+		AddLabel:    func(id, label string) error { return nil },
+		RemoveLabel: func(id, label string) error { return nil },
+		CreateBead: func(opts CreateOpts) (string, error) {
+			return "spi-msg-1", nil
+		},
+		AddDep:         func(issueID, dependsOnID string) error { return nil },
+		ParseIssueType: func(s string) beads.IssueType { return beads.IssueType(s) },
+	}
+
+	state := &State{
+		BeadID:    "spi-epic3",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-epic3", "wizard-test", nil, state, deps)
+	e.designPollInterval = time.Millisecond
+
+	err := e.wizardValidateDesign()
+	if err != nil {
+		t.Fatalf("wizardValidateDesign returned error: %v", err)
+	}
+
+	// Should have polled at least twice (first: empty, second: has content).
+	if pollCount < 2 {
+		t.Errorf("pollCount = %d, want >= 2", pollCount)
+	}
+}
+
+// TestWizardValidateDesign_HappyPath verifies that when a closed design bead
+// with content already exists, wizardValidateDesign returns immediately.
+func TestWizardValidateDesign_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+
+	pollCount := 0
+	removedLabels := []string{}
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			pollCount++
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue: beads.Issue{
+						ID:          "spi-des1",
+						Title:       "Auth design",
+						Description: "Solid design",
+						IssueType:   "design",
+						Status:      "closed",
+					},
+					DependencyType: beads.DepDiscoveredFrom,
+				},
+			}, nil
+		},
+		GetComments: func(id string) ([]*beads.Comment, error) {
+			return []*beads.Comment{{ID: "c1", IssueID: id, Text: "PKCE flow"}}, nil
+		},
+		AddComment: func(id, text string) error { return nil },
+		AddLabel:   func(id, label string) error { return nil },
+		RemoveLabel: func(id, label string) error {
+			removedLabels = append(removedLabels, label)
+			return nil
+		},
+		ParseIssueType: func(s string) beads.IssueType { return beads.IssueType(s) },
+	}
+
+	state := &State{
+		BeadID:    "spi-epic4",
+		AgentName: "wizard-test",
+		Subtasks:  make(map[string]SubtaskState),
+		RepoPath:  dir,
+	}
+
+	e := NewForTest("spi-epic4", "wizard-test", nil, state, deps)
+	e.designPollInterval = time.Millisecond
+
+	err := e.wizardValidateDesign()
+	if err != nil {
+		t.Fatalf("wizardValidateDesign returned error: %v", err)
+	}
+
+	// Should return on first poll — no waiting needed.
+	if pollCount != 1 {
+		t.Errorf("pollCount = %d, want 1 (should return immediately)", pollCount)
+	}
+
+	// Verify both needs-human and needs-design labels are removed on advance.
+	wantRemoved := map[string]bool{"needs-human": false, "needs-design": false}
+	for _, l := range removedLabels {
+		if _, ok := wantRemoved[l]; ok {
+			wantRemoved[l] = true
+		}
+	}
+	for label, found := range wantRemoved {
+		if !found {
+			t.Errorf("label %q was not removed on advance", label)
+		}
 	}
 }
 

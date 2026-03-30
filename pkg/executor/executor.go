@@ -51,6 +51,11 @@ type Executor struct {
 	// removes state.json instead of writing it, preventing stale state
 	// from lingering after successful completion.
 	terminated bool
+
+	// designPollInterval controls how long wizardValidateDesign sleeps between
+	// poll iterations. Defaults to 30s in production; set to a small value in
+	// tests to avoid blocking.
+	designPollInterval time.Duration
 }
 
 // New creates a formula executor for a bead.
@@ -101,12 +106,13 @@ func New(beadID, agentName string, formula *FormulaV2, deps *Deps) (*Executor, e
 	})
 
 	return &Executor{
-		beadID:    beadID,
-		agentName: agentName,
-		formula:   formula,
-		state:     state,
-		deps:      deps,
-		log:       log,
+		beadID:             beadID,
+		agentName:          agentName,
+		formula:            formula,
+		state:              state,
+		deps:               deps,
+		log:                log,
+		designPollInterval: 30 * time.Second,
 	}, nil
 }
 
