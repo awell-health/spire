@@ -3,6 +3,7 @@ package board
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -429,6 +430,8 @@ func renderCompletionPopup(completions []string, selected int) string {
 
 // ExecuteCmd runs a command string using the cobra command tree.
 // Returns output string and error.
+// Redirects os.Stdout/Stderr to prevent garbling the TUI alt-screen,
+// since many commands use fmt.Printf instead of cmd.OutOrStdout().
 func ExecuteCmd(rootCmd *cobra.Command, input string) (string, error) {
 	if rootCmd == nil {
 		return "", fmt.Errorf("no command root available")
@@ -439,6 +442,16 @@ func ExecuteCmd(rootCmd *cobra.Command, input string) (string, error) {
 		return "", nil
 	}
 
+	// Capture os.Stdout/Stderr — commands use fmt.Printf, not cobra's output.
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	os.Stderr = w
+	defer func() {
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+	}()
+
 	var outBuf, errBuf bytes.Buffer
 	rootCmd.SetOut(&outBuf)
 	rootCmd.SetErr(&errBuf)
@@ -446,10 +459,16 @@ func ExecuteCmd(rootCmd *cobra.Command, input string) (string, error) {
 
 	err := rootCmd.Execute()
 
+	// Close the write end and read captured output.
+	w.Close()
+	var captured bytes.Buffer
+	captured.ReadFrom(r)
+	r.Close()
+
 	rootCmd.SetOut(nil)
 	rootCmd.SetErr(nil)
 
-	output := outBuf.String()
+	output := captured.String() + outBuf.String()
 	if errOutput := errBuf.String(); errOutput != "" {
 		if output != "" {
 			output += "\n"
