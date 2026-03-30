@@ -538,6 +538,7 @@ func dismissLocal(count int, all bool, targets []string) error {
 }
 
 // dismissCleanupBead removes the owner label and reopens the bead if it's still in_progress.
+// Does NOT reopen closed beads — they were closed intentionally.
 func dismissCleanupBead(w localWizard) {
 	if w.BeadID == "" {
 		return
@@ -546,9 +547,15 @@ func dismissCleanupBead(w localWizard) {
 	// Close any open alert beads that reference this bead.
 	closeRelatedAlerts(w.BeadID)
 
-	// Reopen if still in_progress.
+	// Only reopen beads that are not closed (in_progress or open).
+	bead, err := storeGetBead(w.BeadID)
+	if err != nil {
+		return
+	}
+	if bead.Status == "closed" {
+		return // intentionally closed — do not reopen
+	}
 	if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err != nil {
-		// Not fatal — bead may already be open or closed.
 		fmt.Printf("  %s(note: could not reopen %s: %s)%s\n", dim, w.BeadID, err, reset)
 	} else {
 		fmt.Printf("  %s↺ %s reopened%s\n", yellow, w.BeadID, reset)
@@ -584,13 +591,17 @@ func reapDeadWizard(w localWizard) {
 		fmt.Printf("reaped stale wizard %s for %s\n", w.Name, w.BeadID)
 	}
 
-	// Clean up bead labels and reopen if orphaned.
+	// Clean up bead labels and reopen if orphaned — but NOT if intentionally closed.
 	if w.BeadID != "" {
 		if w.Phase != "" {
 			storeRemoveLabel(w.BeadID, "phase:"+w.Phase)
 		}
-		if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err == nil {
-			fmt.Printf("  ↺ %s reopened\n", w.BeadID)
+		// Only reopen beads that are still in_progress (wizard died mid-work).
+		// Do NOT reopen closed beads — they were closed intentionally.
+		if bead, err := storeGetBead(w.BeadID); err == nil && bead.Status != "closed" {
+			if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err == nil {
+				fmt.Printf("  ↺ %s reopened\n", w.BeadID)
+			}
 		}
 	}
 }
