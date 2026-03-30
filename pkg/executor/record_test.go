@@ -185,11 +185,14 @@ func TestRecordAgentRunPopulatesCostAndReviewRounds(t *testing.T) {
 
 	state := &State{ReviewRounds: 2}
 	e := NewForTest("spi-test", "wizard-test", nil, state, deps)
-	e.recordAgentRun("test-agent", "spi-test", "", "claude-sonnet-4-6", "apprentice",
+	e.recordAgentRun("test-agent", "spi-test", "", "claude-sonnet-4-6", "apprentice", "implement",
 		time.Now().Add(-30*time.Second), nil)
 
 	if recorded == nil {
 		t.Fatal("RecordAgentRun was not called")
+	}
+	if recorded.Phase != "implement" {
+		t.Errorf("Phase = %q, want %q", recorded.Phase, "implement")
 	}
 	if recorded.ReviewRounds != 2 {
 		t.Errorf("ReviewRounds = %d, want 2", recorded.ReviewRounds)

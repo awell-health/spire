@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -264,6 +265,7 @@ func cmdUp(args []string) error {
 
 // ensureAgentRunsTable creates the agent_runs and golden_prompts tables if they
 // don't exist. Idempotent — safe to call on every startup.
+// Also runs schema migrations for existing tables (e.g. adding the phase column).
 func ensureAgentRunsTable(database string) error {
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, agentRunsTableSQL)); err != nil {
 		return fmt.Errorf("create agent_runs: %w", err)
@@ -271,5 +273,13 @@ func ensureAgentRunsTable(database string) error {
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, goldenPromptsTableSQL)); err != nil {
 		return fmt.Errorf("create golden_prompts: %w", err)
 	}
+
+	// Migration 002: add phase column if it doesn't exist.
+	out, err := rawDoltQuery(fmt.Sprintf("USE `%s`; SELECT COUNT(*) AS cnt FROM information_schema.columns WHERE table_name='agent_runs' AND column_name='phase'", database))
+	if err == nil && !strings.Contains(out, "\"1\"") && !strings.Contains(out, "cnt\":1") {
+		rawDoltQuery(fmt.Sprintf("USE `%s`; ALTER TABLE agent_runs ADD COLUMN phase VARCHAR(16) AFTER role", database))
+		rawDoltQuery(fmt.Sprintf("USE `%s`; CREATE INDEX idx_agent_runs_phase ON agent_runs (phase)", database))
+	}
+
 	return nil
 }

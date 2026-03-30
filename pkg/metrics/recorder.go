@@ -16,7 +16,8 @@ type AgentRun struct {
 	EpicID             string `json:"epic_id,omitempty"`
 	AgentName          string `json:"agent_name,omitempty"`
 	Model              string `json:"model"`
-	Role               string `json:"role"` // "wizard" or "worker"
+	Role               string `json:"role"`  // "wizard" or "worker"
+	Phase              string `json:"phase,omitempty"` // "implement", "review", "build-fix", "review-fix"
 	ContextTokensIn    int    `json:"context_tokens_in,omitempty"`
 	ContextTokensOut   int    `json:"context_tokens_out,omitempty"`
 	TotalTokens        int    `json:"total_tokens,omitempty"`
@@ -68,6 +69,10 @@ func Record(run AgentRun) error {
 		esc(run.Result), esc(run.StartedAt),
 	}
 
+	if run.Phase != "" {
+		cols = append(cols, "phase")
+		vals = append(vals, esc(run.Phase))
+	}
 	if run.EpicID != "" {
 		cols = append(cols, "epic_id")
 		vals = append(vals, esc(run.EpicID))

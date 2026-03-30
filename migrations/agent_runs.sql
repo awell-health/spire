@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     agent_name VARCHAR(128),
     model VARCHAR(64) NOT NULL,
     role VARCHAR(16) NOT NULL,  -- 'worker' or 'wizard'
+    phase VARCHAR(16),          -- 'implement', 'review', 'build-fix', 'review-fix'
 
     -- Execution metrics
     context_tokens_in INT,
@@ -48,7 +49,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     INDEX idx_epic (epic_id),
     INDEX idx_result (result),
     INDEX idx_golden (golden_run),
-    INDEX idx_model (model)
+    INDEX idx_model (model),
+    INDEX idx_phase (phase)
 );
 
 CREATE TABLE IF NOT EXISTS golden_prompts (

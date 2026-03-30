@@ -140,6 +140,70 @@ func MetricsSummary(jsonOut bool) error {
 	return nil
 }
 
+// MetricsPhase shows a per-phase breakdown for the last 7 days.
+func MetricsPhase(jsonOut bool) error {
+	query := `SELECT
+		phase,
+		COUNT(*) as total,
+		SUM(CASE WHEN result='success' THEN 1 ELSE 0 END) as succeeded,
+		AVG(duration_seconds) as avg_duration,
+		SUM(COALESCE(context_tokens_in,0)) as total_tokens_in,
+		SUM(COALESCE(context_tokens_out,0)) as total_tokens_out,
+		SUM(COALESCE(cost_usd,0)) as total_cost
+	FROM agent_runs
+	WHERE phase IS NOT NULL
+		AND started_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+	GROUP BY phase
+	ORDER BY total DESC`
+
+	rows, err := QueryJSON(query)
+	if err != nil {
+		return fmt.Errorf("metrics: %w", err)
+	}
+
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rows)
+	}
+
+	if len(rows) == 0 {
+		fmt.Printf("%s(no per-phase data yet — phase tracking starts with new runs)%s\n", Dim, Reset)
+		return nil
+	}
+
+	fmt.Println("Per-phase breakdown (this week):")
+	fmt.Println()
+	fmt.Printf("  %-14s %5s %8s %10s %10s\n", "PHASE", "RUNS", "SUCCESS", "AVG DUR", "COST")
+	fmt.Printf("  %-14s %5s %8s %10s %10s\n", "─────", "────", "───────", "───────", "────")
+	for _, row := range rows {
+		phase := ToString(row["phase"])
+		total := ToInt(row["total"])
+		succeeded := ToInt(row["succeeded"])
+		rate := Pct(succeeded, total)
+		avgDur := ToFloat(row["avg_duration"])
+		tokIn := ToInt(row["total_tokens_in"])
+		tokOut := ToInt(row["total_tokens_out"])
+		cost := EstimateCost(tokIn, tokOut, "")
+		// Prefer recorded cost_usd if available.
+		if rc := ToFloat(row["total_cost"]); rc > 0 {
+			cost = rc
+		}
+		fmt.Printf("  %-14s %5d %8s %8.0fs %9s\n",
+			phase, total, rate, avgDur, fmtCost(cost))
+	}
+
+	return nil
+}
+
+// fmtCost formats a USD cost for display.
+func fmtCost(cost float64) string {
+	if cost < 1 {
+		return fmt.Sprintf("$%.2f", cost)
+	}
+	return fmt.Sprintf("$%.0f", cost)
+}
+
 // MetricsBead shows metrics for a specific bead or epic.
 func MetricsBead(beadID string, jsonOut bool) error {
 	query := fmt.Sprintf(`SELECT
@@ -157,7 +221,7 @@ func MetricsBead(beadID string, jsonOut bool) error {
 	WHERE bead_id = '%s' OR epic_id = '%s'`,
 		SqlEsc(beadID), SqlEsc(beadID))
 
-	runsQuery := fmt.Sprintf(`SELECT id, bead_id, model, role, result, review_rounds,
+	runsQuery := fmt.Sprintf(`SELECT id, bead_id, model, role, phase, result, review_rounds,
 		context_tokens_in, context_tokens_out, duration_seconds, started_at
 	FROM agent_runs
 	WHERE bead_id = '%s' OR epic_id = '%s'
@@ -208,10 +272,15 @@ func MetricsBead(beadID string, jsonOut bool) error {
 		fmt.Println()
 		fmt.Println("  Recent runs:")
 		for _, r := range runsRows {
-			fmt.Printf("    %-14s %-10s %-8s %-18s rounds=%d  %s\n",
+			phase := ToString(r["phase"])
+			if phase == "" {
+				phase = "-"
+			}
+			fmt.Printf("    %-14s %-10s %-8s %-12s %-18s rounds=%d  %s\n",
 				ToString(r["id"]),
 				ToString(r["model"]),
 				ToString(r["role"]),
+				phase,
 				ToString(r["result"]),
 				ToInt(r["review_rounds"]),
 				ToString(r["started_at"]),

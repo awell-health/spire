@@ -35,7 +35,7 @@ type agentResultJSON struct {
 // actual outcome (test_failure, no_changes, etc.) rather than just
 // spawn success/failure. Also populates review rounds from executor state
 // and computes git diff stats when possible.
-func (e *Executor) recordAgentRun(name, beadID, epicID, model, role string, started time.Time, spawnErr error) {
+func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase string, started time.Time, spawnErr error) {
 	if e.deps.RecordAgentRun == nil {
 		return
 	}
@@ -47,6 +47,7 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role string, star
 		AgentName:       name,
 		Model:           model,
 		Role:            role,
+		Phase:           phase,
 		DurationSeconds: int(completed.Sub(started).Seconds()),
 		StartedAt:       started.Format(time.RFC3339),
 		CompletedAt:     completed.Format(time.RFC3339),

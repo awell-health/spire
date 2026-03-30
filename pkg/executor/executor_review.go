@@ -154,7 +154,7 @@ func (e *Executor) dispatchSageReview(cfg formula.StepConfig, pc PhaseConfig) er
 		return fmt.Errorf("spawn sage: %w", err)
 	}
 	waitErr := handle.Wait()
-	e.recordAgentRun(sageName, e.beadID, "", model, "sage", started, waitErr)
+	e.recordAgentRun(sageName, e.beadID, "", model, "sage", "review", started, waitErr)
 	if waitErr != nil {
 		e.log("sage exited: %s — checking verdict", waitErr)
 	}
@@ -207,7 +207,7 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		if model == "" {
 			model = implPC.Model
 		}
-		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", fixStarted, fixWaitErr)
+		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr)
 		if fixWaitErr != nil {
 			e.log("review-fix apprentice exited with error (will still attempt merge): %s", fixWaitErr)
 		}
@@ -252,7 +252,7 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		if model == "" {
 			model = implPC.Model
 		}
-		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", fixStarted, fixWaitErr)
+		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr)
 		if fixWaitErr != nil {
 			// Log but don't abort — the apprentice may have committed work even
 			// though tests failed (pre-existing failures). Attempt the merge anyway;

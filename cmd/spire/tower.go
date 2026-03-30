@@ -127,6 +127,7 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     agent_name VARCHAR(128),
     model VARCHAR(64) NOT NULL,
     role VARCHAR(16) NOT NULL,
+    phase VARCHAR(16),
     context_tokens_in INT,
     context_tokens_out INT,
     total_tokens INT,
@@ -156,7 +157,8 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     INDEX idx_epic (epic_id),
     INDEX idx_result (result),
     INDEX idx_golden (golden_run),
-    INDEX idx_model (model)
+    INDEX idx_model (model),
+    INDEX idx_phase (phase)
 )`
 
 const goldenPromptsTableSQL = `CREATE TABLE IF NOT EXISTS golden_prompts (

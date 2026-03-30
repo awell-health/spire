@@ -37,7 +37,7 @@ func (e *Executor) executeDirect(phase string, pc PhaseConfig) error {
 	}
 
 	waitErr := handle.Wait()
-	e.recordAgentRun(apprenticeName, e.beadID, "", pc.Model, "apprentice", started, waitErr)
+	e.recordAgentRun(apprenticeName, e.beadID, "", pc.Model, "apprentice", "implement", started, waitErr)
 	if waitErr != nil {
 		e.log("apprentice failed: %s", waitErr)
 		return fmt.Errorf("apprentice: %w", waitErr)
@@ -130,12 +130,12 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 					ExtraArgs: extraArgs,
 				})
 				if spawnErr != nil {
-					e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", started, spawnErr)
+					e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", "implement", started, spawnErr)
 					resultCh <- result{BeadID: beadID, Agent: name, Err: spawnErr}
 					return
 				}
 				waitErr := h.Wait()
-				e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", started, waitErr)
+				e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", "implement", started, waitErr)
 				if waitErr != nil {
 					resultCh <- result{BeadID: beadID, Agent: name, Err: waitErr}
 					return
@@ -266,7 +266,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 			return fmt.Errorf("spawn apprentice for %s: %w", subtaskID, spawnErr)
 		}
 		waitErr := handle.Wait()
-		e.recordAgentRun(name, subtaskID, e.beadID, pc.Model, "apprentice", started, waitErr)
+		e.recordAgentRun(name, subtaskID, e.beadID, pc.Model, "apprentice", "implement", started, waitErr)
 		if waitErr != nil {
 			return fmt.Errorf("apprentice %s failed: %w", subtaskID, waitErr)
 		}
@@ -500,11 +500,11 @@ func (e *Executor) attemptBuildFix(waveIdx int, buildErr error, pc PhaseConfig) 
 			ExtraArgs: extraArgs,
 		})
 		if spawnErr != nil {
-			e.recordAgentRun(fixName, e.beadID, e.beadID, pc.Model, "apprentice", started, spawnErr)
+			e.recordAgentRun(fixName, e.beadID, e.beadID, pc.Model, "apprentice", "build-fix", started, spawnErr)
 			return fmt.Errorf("spawn build-fix apprentice (round %d): %w", round, spawnErr)
 		}
 		waitErr := handle.Wait()
-		e.recordAgentRun(fixName, e.beadID, e.beadID, pc.Model, "apprentice", started, waitErr)
+		e.recordAgentRun(fixName, e.beadID, e.beadID, pc.Model, "apprentice", "build-fix", started, waitErr)
 		if waitErr != nil {
 			e.log("build-fix apprentice failed (round %d): %s", round, waitErr)
 		}
