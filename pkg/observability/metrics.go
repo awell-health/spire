@@ -15,9 +15,7 @@ type MetricsRow = map[string]any
 
 // MetricsSummary shows today + this week overview.
 func MetricsSummary(jsonOut bool) error {
-	// Use UTC_DATE() instead of CURDATE() because started_at is stored as
-	// RFC3339 in UTC. Using CURDATE() (server-local time) caused "0 tasks
-	// completed today" when the server timezone didn't match UTC.
+	// Dolt does not support UTC_DATE(). CURDATE() uses server-local time.
 	todayQuery := `SELECT
 		COUNT(*) as total,
 		SUM(CASE WHEN result='success' THEN 1 ELSE 0 END) as succeeded,
@@ -25,7 +23,7 @@ func MetricsSummary(jsonOut bool) error {
 		SUM(COALESCE(context_tokens_in,0)) as total_tokens_in,
 		SUM(COALESCE(context_tokens_out,0)) as total_tokens_out
 	FROM agent_runs
-	WHERE DATE(started_at) = UTC_DATE()`
+	WHERE DATE(started_at) = CURDATE()`
 
 	weekQuery := `SELECT
 		COUNT(*) as total,
@@ -33,11 +31,11 @@ func MetricsSummary(jsonOut bool) error {
 		SUM(COALESCE(context_tokens_in,0)) as total_tokens_in,
 		SUM(COALESCE(context_tokens_out,0)) as total_tokens_out
 	FROM agent_runs
-	WHERE started_at >= DATE_SUB(UTC_DATE(), INTERVAL 7 DAY)`
+	WHERE started_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`
 
 	breakdownQuery := `SELECT result, COUNT(*) as cnt
 	FROM agent_runs
-	WHERE started_at >= DATE_SUB(UTC_DATE(), INTERVAL 7 DAY)
+	WHERE started_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
 	GROUP BY result
 	ORDER BY cnt DESC`
 
@@ -47,7 +45,7 @@ func MetricsSummary(jsonOut bool) error {
 		SUM(CASE WHEN result='success' THEN 1 ELSE 0 END) as succeeded
 	FROM agent_runs
 	WHERE spec_file IS NOT NULL AND spec_file != ''
-		AND started_at >= DATE_SUB(UTC_DATE(), INTERVAL 30 DAY)
+		AND started_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
 	GROUP BY spec_file
 	HAVING total >= 3
 	ORDER BY (succeeded * 100 / total) DESC
@@ -241,7 +239,7 @@ func MetricsModel(jsonOut bool) error {
 		SUM(COALESCE(context_tokens_out,0)) as total_tokens_out,
 		AVG(duration_seconds) as avg_duration
 	FROM agent_runs
-	WHERE started_at >= DATE_SUB(UTC_DATE(), INTERVAL 7 DAY)
+	WHERE started_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
 	GROUP BY model, role
 	ORDER BY total DESC`
 
