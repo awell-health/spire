@@ -31,19 +31,13 @@ func IsInK8s() bool {
 
 // LoadLocalConfig reads agent configuration from spire.yaml,
 // walking up from the current working directory.
-// Returns sensible defaults when no config file is found.
+// Zero values mean "unset" — the consumer (wizard.go, repoconfig) decides defaults.
 //
 // Tower config (e.g. ~/.config/spire/towers/<name>.json) is intentionally not
 // read here: its schema is not yet defined. When a tower config format is
 // specified, this function should check it as a fallback after spire.yaml.
 func LoadLocalConfig() *LocalConfig {
-	cfg := &LocalConfig{
-		Model:         "claude-sonnet-4-6",
-		MaxTurns:      30,
-		Timeout:       15 * time.Minute,
-		BaseBranch:    "main",
-		BranchPattern: "feat/{bead-id}",
-	}
+	cfg := &LocalConfig{}
 
 	cwd, _ := os.Getwd()
 	rc, err := repoconfig.Load(cwd)
@@ -51,23 +45,15 @@ func LoadLocalConfig() *LocalConfig {
 		return cfg
 	}
 
-	if rc.Agent.Model != "" {
-		cfg.Model = rc.Agent.Model
-	}
-	if rc.Agent.MaxTurns > 0 {
-		cfg.MaxTurns = rc.Agent.MaxTurns
-	}
+	cfg.Model = rc.Agent.Model
+	cfg.MaxTurns = rc.Agent.MaxTurns
 	if rc.Agent.Timeout != "" {
 		if d, err := time.ParseDuration(rc.Agent.Timeout); err == nil {
 			cfg.Timeout = d
 		}
 	}
-	if rc.Branch.Base != "" {
-		cfg.BaseBranch = rc.Branch.Base
-	}
-	if rc.Branch.Pattern != "" {
-		cfg.BranchPattern = rc.Branch.Pattern
-	}
+	cfg.BaseBranch = rc.Branch.Base
+	cfg.BranchPattern = rc.Branch.Pattern
 
 	return cfg
 }

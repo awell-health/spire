@@ -92,25 +92,25 @@ func chdirTemp(t *testing.T) string {
 	return tmpDir
 }
 
-func TestLoadLocalConfig_Defaults(t *testing.T) {
+func TestLoadLocalConfig_NoConfig_ZeroValues(t *testing.T) {
 	chdirTemp(t) // no spire.yaml in the temp dir
 
 	cfg := LoadLocalConfig()
 
-	if cfg.Model != "claude-sonnet-4-6" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "claude-sonnet-4-6")
+	if cfg.Model != "" {
+		t.Errorf("Model = %q, want zero value", cfg.Model)
 	}
-	if cfg.MaxTurns != 30 {
-		t.Errorf("MaxTurns = %d, want 30", cfg.MaxTurns)
+	if cfg.MaxTurns != 0 {
+		t.Errorf("MaxTurns = %d, want 0", cfg.MaxTurns)
 	}
-	if cfg.Timeout != 15*time.Minute {
-		t.Errorf("Timeout = %s, want 15m", cfg.Timeout)
+	if cfg.Timeout != 0 {
+		t.Errorf("Timeout = %s, want 0", cfg.Timeout)
 	}
-	if cfg.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q", cfg.BaseBranch, "main")
+	if cfg.BaseBranch != "" {
+		t.Errorf("BaseBranch = %q, want zero value", cfg.BaseBranch)
 	}
-	if cfg.BranchPattern != "feat/{bead-id}" {
-		t.Errorf("BranchPattern = %q, want %q", cfg.BranchPattern, "feat/{bead-id}")
+	if cfg.BranchPattern != "" {
+		t.Errorf("BranchPattern = %q, want zero value", cfg.BranchPattern)
 	}
 }
 
@@ -151,7 +151,7 @@ branch:
 func TestLoadLocalConfig_PartialOverride(t *testing.T) {
 	dir := chdirTemp(t)
 
-	// Only override model; everything else should stay at defaults.
+	// Only override model; everything else should be zero (unset).
 	yaml := `agent:
   model: claude-haiku-4-5-20251001
 `
@@ -164,12 +164,12 @@ func TestLoadLocalConfig_PartialOverride(t *testing.T) {
 	if cfg.Model != "claude-haiku-4-5-20251001" {
 		t.Errorf("Model = %q, want %q", cfg.Model, "claude-haiku-4-5-20251001")
 	}
-	// Remaining fields come from repoconfig defaults (same as LoadLocalConfig defaults).
-	if cfg.MaxTurns != 30 {
-		t.Errorf("MaxTurns = %d, want 30 (default)", cfg.MaxTurns)
+	// Remaining fields are zero — consumer decides defaults.
+	if cfg.MaxTurns != 0 {
+		t.Errorf("MaxTurns = %d, want 0 (unset)", cfg.MaxTurns)
 	}
-	if cfg.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q (default)", cfg.BaseBranch, "main")
+	if cfg.BaseBranch != "" {
+		t.Errorf("BaseBranch = %q, want zero value (unset)", cfg.BaseBranch)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // --- Wrapper-level smoke tests ---
@@ -53,11 +52,11 @@ func chdirTemp(t *testing.T) string {
 func TestLoadLocalStewardConfig_Wrapper(t *testing.T) {
 	chdirTemp(t)
 	cfg := loadLocalStewardConfig()
-	if cfg.Model != "claude-sonnet-4-6" {
-		t.Errorf("Model = %q, want default", cfg.Model)
+	if cfg.Model != "" {
+		t.Errorf("Model = %q, want zero value (no config)", cfg.Model)
 	}
-	if cfg.Timeout != 15*time.Minute {
-		t.Errorf("Timeout = %s, want 15m", cfg.Timeout)
+	if cfg.Timeout != 0 {
+		t.Errorf("Timeout = %s, want 0 (no config)", cfg.Timeout)
 	}
 }
 
