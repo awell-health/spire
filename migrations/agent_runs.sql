@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     -- Prompt capture
     system_prompt_hash VARCHAR(64),
     golden_run BOOLEAN DEFAULT FALSE,
+    cost_usd DECIMAL(10,4),
 
     -- Timestamps
     started_at DATETIME NOT NULL,

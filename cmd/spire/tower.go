@@ -149,6 +149,7 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     tests_passed BOOLEAN,
     system_prompt_hash VARCHAR(64),
     golden_run BOOLEAN DEFAULT FALSE,
+    cost_usd DECIMAL(10,4),
     started_at DATETIME NOT NULL,
     completed_at DATETIME,
     INDEX idx_bead (bead_id),
