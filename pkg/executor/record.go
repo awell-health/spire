@@ -18,13 +18,14 @@ type agentResultJSON struct {
 	Commit     string `json:"commit"`
 	ElapsedS   int    `json:"elapsed_s"`
 	// Extended fields (populated when available)
-	TotalTokens  int `json:"total_tokens,omitempty"`
-	ContextIn    int `json:"context_tokens_in,omitempty"`
-	ContextOut   int `json:"context_tokens_out,omitempty"`
-	FilesChanged int `json:"files_changed,omitempty"`
-	LinesAdded   int `json:"lines_added,omitempty"`
-	LinesRemoved int `json:"lines_removed,omitempty"`
-	Turns        int `json:"turns,omitempty"`
+	TotalTokens  int     `json:"total_tokens,omitempty"`
+	ContextIn    int     `json:"context_tokens_in,omitempty"`
+	ContextOut   int     `json:"context_tokens_out,omitempty"`
+	FilesChanged int     `json:"files_changed,omitempty"`
+	LinesAdded   int     `json:"lines_added,omitempty"`
+	LinesRemoved int     `json:"lines_removed,omitempty"`
+	Turns        int     `json:"turns,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
 }
 
 // recordAgentRun records an agent run to the agent_runs table.
@@ -62,6 +63,7 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role string, star
 		run.LinesAdded = ar.LinesAdded
 		run.LinesRemoved = ar.LinesRemoved
 		run.Turns = ar.Turns
+		run.CostUSD = ar.CostUSD
 	} else {
 		// No result.json available — derive result from the process error.
 		run.Result = resultFromError(spawnErr)

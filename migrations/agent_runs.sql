@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     context_tokens_out INT,
     total_tokens INT,
     turns INT,
+    cost_usd DOUBLE,
     duration_seconds INT,
     startup_seconds INT,     -- pod start → claude start (clone, install, claim, focus)
     working_seconds INT,     -- claude start → claude done (the actual LLM work)

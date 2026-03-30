@@ -290,7 +290,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			if err != nil {
 				log("design phase failed: %s", err)
 			}
-			accMetrics = designMetrics
+			accMetrics = accMetrics.Add(designMetrics)
 			log("design finished (%.0fs)", time.Since(designStartedAt).Seconds())
 
 			// Write DESIGN.md

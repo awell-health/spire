@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMapResultValue(t *testing.T) {
@@ -126,6 +127,7 @@ func TestReadAgentResult(t *testing.T) {
 			LinesAdded:   100,
 			LinesRemoved: 20,
 			Turns:        5,
+			CostUSD:      0.12,
 		}
 		data, _ := json.Marshal(ar)
 		os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
@@ -151,7 +153,59 @@ func TestReadAgentResult(t *testing.T) {
 		if got.Turns != 5 {
 			t.Errorf("Turns = %d, want 5", got.Turns)
 		}
+		if got.CostUSD != 0.12 {
+			t.Errorf("CostUSD = %f, want 0.12", got.CostUSD)
+		}
 	})
+}
+
+func TestRecordAgentRunPopulatesCostAndReviewRounds(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write result.json with cost and token data.
+	ar := agentResultJSON{
+		Result:      "success",
+		TotalTokens: 5000,
+		ContextIn:   3000,
+		ContextOut:  2000,
+		Turns:       5,
+		CostUSD:     0.12,
+	}
+	data, _ := json.Marshal(ar)
+	os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+
+	var recorded *AgentRun
+	deps := &Deps{
+		AgentResultDir: func(name string) string { return dir },
+		RecordAgentRun: func(run AgentRun) error {
+			recorded = &run
+			return nil
+		},
+	}
+
+	state := &State{ReviewRounds: 2}
+	e := NewForTest("spi-test", "wizard-test", nil, state, deps)
+	e.recordAgentRun("test-agent", "spi-test", "", "claude-sonnet-4-6", "apprentice",
+		time.Now().Add(-30*time.Second), nil)
+
+	if recorded == nil {
+		t.Fatal("RecordAgentRun was not called")
+	}
+	if recorded.ReviewRounds != 2 {
+		t.Errorf("ReviewRounds = %d, want 2", recorded.ReviewRounds)
+	}
+	if recorded.CostUSD != 0.12 {
+		t.Errorf("CostUSD = %f, want 0.12", recorded.CostUSD)
+	}
+	if recorded.TotalTokens != 5000 {
+		t.Errorf("TotalTokens = %d, want 5000", recorded.TotalTokens)
+	}
+	if recorded.ContextTokensIn != 3000 {
+		t.Errorf("ContextTokensIn = %d, want 3000", recorded.ContextTokensIn)
+	}
+	if recorded.ContextTokensOut != 2000 {
+		t.Errorf("ContextTokensOut = %d, want 2000", recorded.ContextTokensOut)
+	}
 }
 
 func TestGitDiffStats(t *testing.T) {

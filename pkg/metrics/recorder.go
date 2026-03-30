@@ -20,8 +20,9 @@ type AgentRun struct {
 	ContextTokensIn    int    `json:"context_tokens_in,omitempty"`
 	ContextTokensOut   int    `json:"context_tokens_out,omitempty"`
 	TotalTokens        int    `json:"total_tokens,omitempty"`
-	Turns              int    `json:"turns,omitempty"`
-	DurationSeconds    int    `json:"duration_seconds,omitempty"`
+	Turns              int     `json:"turns,omitempty"`
+	CostUSD            float64 `json:"cost_usd,omitempty"`
+	DurationSeconds    int     `json:"duration_seconds,omitempty"`
 	StartupSeconds     int    `json:"startup_seconds,omitempty"`
 	WorkingSeconds     int    `json:"working_seconds,omitempty"`
 	QueueSeconds       int    `json:"queue_seconds,omitempty"`    // bead filed → wizard assigned
@@ -90,6 +91,10 @@ func Record(run AgentRun) error {
 	if run.Turns > 0 {
 		cols = append(cols, "turns")
 		vals = append(vals, itoa(run.Turns))
+	}
+	if run.CostUSD > 0 {
+		cols = append(cols, "cost_usd")
+		vals = append(vals, ftoa(run.CostUSD))
 	}
 	if run.DurationSeconds > 0 {
 		cols = append(cols, "duration_seconds")
@@ -211,4 +216,9 @@ func esc(s string) string {
 // itoa converts an int to its string representation (no quoting).
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// ftoa converts a float64 to its string representation (no quoting).
+func ftoa(f float64) string {
+	return fmt.Sprintf("%g", f)
 }
