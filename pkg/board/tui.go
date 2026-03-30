@@ -73,7 +73,8 @@ type Model struct {
 	ActionMenuOpen   bool
 	ActionMenuItems  []MenuAction
 	ActionMenuCursor int
-	ActionMenuBeadID string
+	ActionMenuBeadID    string
+	ActionMenuBeadTitle string
 
 	// Search/filter state.
 	SearchActive bool   // true when user is typing a search query
@@ -367,19 +368,35 @@ func isInlineAction(a PendingAction) bool {
 	return false
 }
 
+// truncateTitle truncates a title to maxLen characters, appending "…" if truncated.
+func truncateTitle(title string, maxLen int) string {
+	if len(title) <= maxLen {
+		return title
+	}
+	if maxLen <= 1 {
+		return "…"
+	}
+	return title[:maxLen-1] + "…"
+}
+
 // confirmPromptForAction returns the confirmation prompt text for an action.
-func confirmPromptForAction(action PendingAction, beadID string) string {
+// If title is non-empty, it is appended after the bead ID for context.
+func confirmPromptForAction(action PendingAction, beadID, title string) string {
+	label := beadID
+	if title != "" {
+		label = fmt.Sprintf("%s: %s", beadID, truncateTitle(title, 50))
+	}
 	switch action {
 	case ActionClose:
-		return fmt.Sprintf("Close %s?", beadID)
+		return fmt.Sprintf("Close %s?", label)
 	case ActionUnsummon:
-		return fmt.Sprintf("Dismiss wizard for %s?", beadID)
+		return fmt.Sprintf("Dismiss wizard for %s?", label)
 	case ActionResetSoft:
-		return fmt.Sprintf("Reset %s?", beadID)
+		return fmt.Sprintf("Reset %s?", label)
 	case ActionResetHard:
-		return fmt.Sprintf("Hard reset %s? This is destructive.", beadID)
+		return fmt.Sprintf("Hard reset %s? This is destructive.", label)
 	default:
-		return fmt.Sprintf("%s %s?", actionLabel(action), beadID)
+		return fmt.Sprintf("%s %s?", actionLabel(action), label)
 	}
 }
 
@@ -468,7 +485,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.ConfirmOpen = true
 							m.ConfirmAction = item.ActionType
 							m.ConfirmBeadID = m.ActionMenuBeadID
-							m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID)
+							m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID, m.ActionMenuBeadTitle)
 							m.ConfirmDanger = item.Danger
 							return m, nil
 						}
@@ -491,7 +508,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								m.ConfirmOpen = true
 								m.ConfirmAction = item.ActionType
 								m.ConfirmBeadID = m.ActionMenuBeadID
-								m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID)
+								m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID, m.ActionMenuBeadTitle)
 								m.ConfirmDanger = item.Danger
 								return m, nil
 							}
@@ -847,7 +864,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.ConfirmOpen = true
 						m.ConfirmAction = ActionUnsummon
 						m.ConfirmBeadID = bead.ID
-						m.ConfirmPrompt = confirmPromptForAction(ActionUnsummon, bead.ID)
+						m.ConfirmPrompt = confirmPromptForAction(ActionUnsummon, bead.ID, bead.Title)
 						m.ConfirmDanger = DangerConfirm
 						return m, nil
 					}
@@ -867,7 +884,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ConfirmOpen = true
 				m.ConfirmAction = ActionResetSoft
 				m.ConfirmBeadID = bead.ID
-				m.ConfirmPrompt = confirmPromptForAction(ActionResetSoft, bead.ID)
+				m.ConfirmPrompt = confirmPromptForAction(ActionResetSoft, bead.ID, bead.Title)
 				m.ConfirmDanger = DangerConfirm
 				return m, nil
 			}
@@ -878,7 +895,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ConfirmOpen = true
 				m.ConfirmAction = ActionResetHard
 				m.ConfirmBeadID = bead.ID
-				m.ConfirmPrompt = confirmPromptForAction(ActionResetHard, bead.ID)
+				m.ConfirmPrompt = confirmPromptForAction(ActionResetHard, bead.ID, bead.Title)
 				m.ConfirmDanger = DangerDestructive
 				return m, nil
 			}
@@ -889,7 +906,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ConfirmOpen = true
 				m.ConfirmAction = ActionClose
 				m.ConfirmBeadID = bead.ID
-				m.ConfirmPrompt = confirmPromptForAction(ActionClose, bead.ID)
+				m.ConfirmPrompt = confirmPromptForAction(ActionClose, bead.ID, bead.Title)
 				m.ConfirmDanger = DangerConfirm
 				return m, nil
 			}
@@ -898,6 +915,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			if bead := m.SelectedBead(); bead != nil {
 				m.ActionMenuBeadID = bead.ID
+				m.ActionMenuBeadTitle = bead.Title
 				m.ActionMenuItems = BuildActionMenu(bead, m.Agents)
 				m.ActionMenuCursor = 0
 				m.ActionMenuOpen = true
