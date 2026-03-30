@@ -134,9 +134,7 @@ func (e *Executor) resolveBranchState() error {
 	if repoPath == "" {
 		repoPath = "."
 	}
-	if baseBranch == "" {
-		baseBranch = "main"
-	}
+	// baseBranch default ("main") is set by ResolveRepo — no duplicate fallback here.
 
 	e.state.RepoPath = repoPath
 	e.state.BaseBranch = baseBranch

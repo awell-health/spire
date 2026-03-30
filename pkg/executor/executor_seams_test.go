@@ -670,7 +670,7 @@ func TestResolveBranchState_EmptyRepoPathDefaults(t *testing.T) {
 	deps := &Deps{
 		ConfigDir: func() (string, error) { return dir, nil },
 		ResolveRepo: func(beadID string) (string, string, string, error) {
-			return "", "", "", nil // all empty
+			return "", "", "main", nil // empty repo/url, default base branch (matches real ResolveRepo)
 		},
 	}
 
