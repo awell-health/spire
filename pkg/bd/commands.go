@@ -74,7 +74,7 @@ func buildListArgs(opts ListOpts) []string {
 		args = append(args, "--label", opts.Label)
 	}
 	if opts.Rig != "" {
-		args = append(args, "--rig="+opts.Rig)
+		args = append(args, "--prefix="+opts.Rig)
 	}
 	return args
 }

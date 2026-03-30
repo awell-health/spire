@@ -250,7 +250,7 @@ func TestListArgs(t *testing.T) {
 				Label:  "agent",
 				Rig:    "spi",
 			},
-			wantArgs: []string{"list", "--status=in_progress", "--type", "epic", "--label", "agent", "--rig=spi", "--json"},
+			wantArgs: []string{"list", "--status=in_progress", "--type", "epic", "--label", "agent", "--prefix=spi", "--json"},
 		},
 	}
 

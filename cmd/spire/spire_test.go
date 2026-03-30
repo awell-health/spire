@@ -552,7 +552,7 @@ func TestIntegrationBdJSON(t *testing.T) {
 	requireBd(t)
 
 	var result []json.RawMessage
-	err := bdJSON(&result, "list", "--rig=spi")
+	err := bdJSON(&result, "list", "--prefix=spi")
 	if err != nil {
 		t.Fatalf("bdJSON error: %v", err)
 	}
@@ -669,7 +669,7 @@ func TestIntegrationProcessWebhookEvent(t *testing.T) {
 	integration.LabelPrefixRigMap = map[string]string{"Panels": "pan"}
 	defer integration.ResetLabelMaps()
 
-	// Ensure the "pan" rig route exists in routes.jsonl so bd can resolve --rig=pan.
+	// Ensure the "pan" rig route exists in routes.jsonl so bd can resolve --prefix=pan.
 	// Walk up from CWD to find .beads/ (same resolution bd uses).
 	routesPath := findBeadsFile(t, "routes.jsonl")
 	origRoutes, readErr := os.ReadFile(routesPath)
