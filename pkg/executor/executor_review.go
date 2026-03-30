@@ -213,7 +213,7 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		}
 		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", fixStarted, fixWaitErr)
 		if fixWaitErr != nil {
-			return fmt.Errorf("review-fix apprentice failed: %w", fixWaitErr)
+			e.log("review-fix apprentice exited with error (will still attempt merge): %s", fixWaitErr)
 		}
 
 		// Merge fix branch into the shared staging worktree.
@@ -258,7 +258,10 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		}
 		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", fixStarted, fixWaitErr)
 		if fixWaitErr != nil {
-			return fmt.Errorf("review-fix apprentice failed: %w", fixWaitErr)
+			// Log but don't abort — the apprentice may have committed work even
+			// though tests failed (pre-existing failures). Attempt the merge anyway;
+			// the sage will judge whether the fix is sufficient.
+			e.log("review-fix apprentice exited with error (will still attempt merge): %s", fixWaitErr)
 		}
 
 		// Merge fix branch into staging.
