@@ -147,6 +147,12 @@ func HandleCmdlineKey(state CmdlineState, msg tea.KeyMsg, rootCmd *cobra.Command
 		newState.clearCompletions()
 		return newState, false, ""
 
+	case tea.KeySpace:
+		newState.Input = newState.Input[:newState.CursorPos] + " " + newState.Input[newState.CursorPos:]
+		newState.CursorPos++
+		newState.clearCompletions()
+		return newState, false, ""
+
 	case tea.KeyRunes:
 		ch := msg.String()
 		newState.Input = newState.Input[:newState.CursorPos] + ch + newState.Input[newState.CursorPos:]
