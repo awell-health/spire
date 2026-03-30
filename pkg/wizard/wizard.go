@@ -913,6 +913,14 @@ func WizardCommit(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(
 		return "", false
 	}
 	if sha == "" {
+		// Fallback: Claude may have committed real changes while leftover
+		// prompt files (now cleaned) were the only uncommitted content.
+		// Re-check HasNewCommits after the failed commit attempt.
+		if fallback, ferr := wc.HasNewCommits(); ferr == nil && fallback {
+			fsha, _ := wc.HeadSHA()
+			log("nothing staged, but Claude committed on branch %s — using existing commit", wc.Branch)
+			return fsha, true
+		}
 		log("nothing staged after git add")
 		return "", false
 	}
