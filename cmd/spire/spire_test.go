@@ -549,7 +549,7 @@ func TestIntegrationFocus(t *testing.T) {
 
 // TestIntegrationBdJSON tests the bdJSON helper with a real bd call.
 func TestIntegrationBdJSON(t *testing.T) {
-	requireBd(t)
+	requireStore(t)
 
 	var result []json.RawMessage
 	err := bdJSON(&result, "list", "--prefix=spi")
@@ -1133,8 +1133,8 @@ func TestStopProcessStalePID(t *testing.T) {
 }
 
 func TestIntegrationStatus(t *testing.T) {
-	// cmdStatus is self-contained — no store or bd dependency.
-	// spire status should not error regardless of running state
+	// cmdStatus touches live dolt server (doltServerStatus, storeGetReadyWork, etc.)
+	requireStore(t)
 	err := cmdStatus(nil)
 	if err != nil {
 		t.Fatalf("cmdStatus error: %v", err)

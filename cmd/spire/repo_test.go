@@ -101,6 +101,7 @@ func writeTowerConfig(t *testing.T, dir, name, database string) {
 
 func TestResolveDatabase_NoTowers(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SPIRE_TOWER", "")
 	cfg := &SpireConfig{Instances: map[string]*Instance{}}
 
 	db, ambiguous := resolveDatabase(cfg)
@@ -115,6 +116,7 @@ func TestResolveDatabase_NoTowers(t *testing.T) {
 func TestResolveDatabase_SingleTower(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 	writeTowerConfig(t, home, "solo", "beads_solo")
 
 	cfg := &SpireConfig{Instances: map[string]*Instance{}}
@@ -130,6 +132,7 @@ func TestResolveDatabase_SingleTower(t *testing.T) {
 func TestResolveDatabase_MultipleTowersNoActive(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 	writeTowerConfig(t, home, "alpha", "beads_alpha")
 	writeTowerConfig(t, home, "beta", "beads_beta")
 
@@ -146,6 +149,7 @@ func TestResolveDatabase_MultipleTowersNoActive(t *testing.T) {
 func TestResolveDatabase_MultipleTowersWithActive(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 	writeTowerConfig(t, home, "alpha", "beads_alpha")
 	writeTowerConfig(t, home, "beta", "beads_beta")
 
@@ -165,6 +169,7 @@ func TestResolveDatabase_MultipleTowersWithActive(t *testing.T) {
 func TestTowerUse(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 	writeTowerConfig(t, home, "alpha", "beads_alpha")
 	writeTowerConfig(t, home, "beta", "beads_beta")
 
@@ -209,6 +214,7 @@ func TestResolveRemoveDatabase_PrefersTowerConfig(t *testing.T) {
 	// even if inst.Database is different (stale cache).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 	writeTowerConfig(t, home, "current", "beads_current")
 
 	cfg := &SpireConfig{
@@ -233,6 +239,7 @@ func TestResolveRemoveDatabase_FallsToCachedDatabase(t *testing.T) {
 	// When inst.Tower is empty, fall back to inst.Database.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 
 	cfg := &SpireConfig{
 		Instances: map[string]*Instance{
@@ -255,6 +262,7 @@ func TestResolveRemoveDatabase_FallsToGlobalResolution(t *testing.T) {
 	// Unknown prefix (not in Instances) falls back to global resolution.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 	writeTowerConfig(t, home, "solo", "beads_solo")
 
 	cfg := &SpireConfig{Instances: map[string]*Instance{}}
@@ -271,6 +279,7 @@ func TestResolveRemoveDatabase_AmbiguousError(t *testing.T) {
 	// Multiple towers, no active, unknown prefix → ambiguous error.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 	writeTowerConfig(t, home, "alpha", "beads_alpha")
 	writeTowerConfig(t, home, "beta", "beads_beta")
 
@@ -285,6 +294,7 @@ func TestResolveRemoveDatabase_NoTowerNoInstance(t *testing.T) {
 	// No towers, no matching instance → unresolvable error.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_TOWER", "")
 
 	cfg := &SpireConfig{Instances: map[string]*Instance{}}
 	_, err := resolveRemoveDatabase(cfg, "unknown")
