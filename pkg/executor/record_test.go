@@ -211,6 +211,300 @@ func TestRecordAgentRunPopulatesCostAndReviewRounds(t *testing.T) {
 	}
 }
 
+func TestRecordAgentRunContextFields(t *testing.T) {
+	t.Run("formula populates FormulaName and FormulaVersion", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+		}
+		formula := &FormulaV2{Name: "spire-agent-work", Version: 3}
+		e := NewForTest("spi-test", "wizard-test", formula, nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.FormulaName != "spire-agent-work" {
+			t.Errorf("FormulaName = %q, want %q", recorded.FormulaName, "spire-agent-work")
+		}
+		if recorded.FormulaVersion != 3 {
+			t.Errorf("FormulaVersion = %d, want 3", recorded.FormulaVersion)
+		}
+	})
+
+	t.Run("nil formula leaves FormulaName and FormulaVersion empty", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.FormulaName != "" {
+			t.Errorf("FormulaName = %q, want empty", recorded.FormulaName)
+		}
+		if recorded.FormulaVersion != 0 {
+			t.Errorf("FormulaVersion = %d, want 0", recorded.FormulaVersion)
+		}
+	})
+
+	t.Run("GetBead populates BeadType", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+			GetBead: func(id string) (Bead, error) {
+				return Bead{ID: id, Type: "epic"}, nil
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "wizard", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.BeadType != "epic" {
+			t.Errorf("BeadType = %q, want %q", recorded.BeadType, "epic")
+		}
+	})
+
+	t.Run("GetBead error leaves BeadType empty", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+			GetBead: func(id string) (Bead, error) {
+				return Bead{}, errors.New("bead not found")
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "wizard", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.BeadType != "" {
+			t.Errorf("BeadType = %q, want empty", recorded.BeadType)
+		}
+	})
+
+	t.Run("ActiveTowerConfig populates Tower", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+			ActiveTowerConfig: func() (*TowerConfig, error) {
+				return &TowerConfig{Name: "my-team"}, nil
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.Tower != "my-team" {
+			t.Errorf("Tower = %q, want %q", recorded.Tower, "my-team")
+		}
+	})
+
+	t.Run("ActiveTowerConfig error leaves Tower empty", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+			ActiveTowerConfig: func() (*TowerConfig, error) {
+				return nil, errors.New("no tower configured")
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.Tower != "" {
+			t.Errorf("Tower = %q, want empty", recorded.Tower)
+		}
+	})
+
+	t.Run("Branch from result.json takes priority over StagingBranch", func(t *testing.T) {
+		dir := t.TempDir()
+		ar := agentResultJSON{Result: "success", Branch: "feat/from-result", Commit: "abc123"}
+		data, _ := json.Marshal(ar)
+		os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+			AgentResultDir: func(name string) string { return dir },
+		}
+		state := &State{StagingBranch: "staging/spi-test"}
+		e := NewForTest("spi-test", "wizard-test", nil, state, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.Branch != "feat/from-result" {
+			t.Errorf("Branch = %q, want %q", recorded.Branch, "feat/from-result")
+		}
+		if recorded.CommitSHA != "abc123" {
+			t.Errorf("CommitSHA = %q, want %q", recorded.CommitSHA, "abc123")
+		}
+	})
+
+	t.Run("Branch falls back to StagingBranch when result has no branch", func(t *testing.T) {
+		dir := t.TempDir()
+		ar := agentResultJSON{Result: "success"}
+		data, _ := json.Marshal(ar)
+		os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+			AgentResultDir: func(name string) string { return dir },
+		}
+		state := &State{StagingBranch: "staging/spi-test"}
+		e := NewForTest("spi-test", "wizard-test", nil, state, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.Branch != "staging/spi-test" {
+			t.Errorf("Branch = %q, want %q", recorded.Branch, "staging/spi-test")
+		}
+	})
+
+	t.Run("Branch empty when no result and no StagingBranch", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.Branch != "" {
+			t.Errorf("Branch = %q, want empty", recorded.Branch)
+		}
+	})
+
+	t.Run("WaveIndex from state.Wave", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+		}
+		state := &State{Wave: 3}
+		e := NewForTest("spi-test", "wizard-test", nil, state, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.WaveIndex != 3 {
+			t.Errorf("WaveIndex = %d, want 3", recorded.WaveIndex)
+		}
+	})
+
+	t.Run("all context fields populated together", func(t *testing.T) {
+		dir := t.TempDir()
+		ar := agentResultJSON{Result: "success", Branch: "feat/full-test", Commit: "def456"}
+		data, _ := json.Marshal(ar)
+		os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) error {
+				recorded = &run
+				return nil
+			},
+			AgentResultDir: func(name string) string { return dir },
+			GetBead: func(id string) (Bead, error) {
+				return Bead{ID: id, Type: "task"}, nil
+			},
+			ActiveTowerConfig: func() (*TowerConfig, error) {
+				return &TowerConfig{Name: "prod-tower"}, nil
+			},
+		}
+		formula := &FormulaV2{Name: "spire-agent-work", Version: 2}
+		state := &State{Wave: 1, StagingBranch: "staging/fallback"}
+		e := NewForTest("spi-test", "wizard-test", formula, state, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "wizard", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.FormulaName != "spire-agent-work" {
+			t.Errorf("FormulaName = %q, want %q", recorded.FormulaName, "spire-agent-work")
+		}
+		if recorded.FormulaVersion != 2 {
+			t.Errorf("FormulaVersion = %d, want 2", recorded.FormulaVersion)
+		}
+		if recorded.Branch != "feat/full-test" {
+			t.Errorf("Branch = %q, want %q", recorded.Branch, "feat/full-test")
+		}
+		if recorded.CommitSHA != "def456" {
+			t.Errorf("CommitSHA = %q, want %q", recorded.CommitSHA, "def456")
+		}
+		if recorded.BeadType != "task" {
+			t.Errorf("BeadType = %q, want %q", recorded.BeadType, "task")
+		}
+		if recorded.Tower != "prod-tower" {
+			t.Errorf("Tower = %q, want %q", recorded.Tower, "prod-tower")
+		}
+		if recorded.WaveIndex != 1 {
+			t.Errorf("WaveIndex = %d, want 1", recorded.WaveIndex)
+		}
+		if recorded.ParentRunID != "" {
+			t.Errorf("ParentRunID = %q, want empty (deferred)", recorded.ParentRunID)
+		}
+	})
+}
+
 func TestGitDiffStats(t *testing.T) {
 	t.Run("empty base branch", func(t *testing.T) {
 		fc, la, lr := gitDiffStats("/tmp", "", "feat/branch")

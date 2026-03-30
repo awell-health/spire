@@ -75,6 +75,9 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		}
 	}
 
+	// TODO: populate ParentRunID — requires callers to thread the parent run ID
+	// through to recordAgentRun. Deferred to a follow-up (Tier 2, spi-md5mv).
+
 	// Try to read the agent's result.json for actual outcome and metrics.
 	if ar := e.readAgentResult(name); ar != nil {
 		run.Result = mapResultValue(ar.Result)
