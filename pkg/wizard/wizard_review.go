@@ -23,6 +23,7 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	}
 
 	beadID := args[0]
+	startedAt := time.Now()
 	reviewerName := "reviewer"
 	verdictOnly := false
 	worktreeDir := ""
@@ -158,7 +159,7 @@ func CmdWizardReview(args []string, deps *Deps) error {
 
 	// 8. Run Opus review
 	log("running Opus review")
-	review, err := ReviewRunOpus(bead.Title, bead.Description, diff, testOutput, round)
+	review, reviewMetrics, err := ReviewRunOpus(bead.Title, bead.Description, diff, testOutput, round)
 	if err != nil {
 		// Close review bead on failure
 		if reviewBeadID != "" {
@@ -167,6 +168,10 @@ func CmdWizardReview(args []string, deps *Deps) error {
 		return fmt.Errorf("opus review: %w", err)
 	}
 	log("verdict: %s — %s", review.Verdict, review.Summary)
+
+	// Write result.json for the sage (metrics + verdict)
+	reviewElapsed := time.Since(startedAt)
+	WizardWriteResult(reviewerName, beadID, review.Verdict, "", "", reviewElapsed, reviewMetrics, deps, log)
 
 	// Close review-round bead with verdict
 	if reviewBeadID != "" {
@@ -278,7 +283,8 @@ func ReviewGetRound(beadID string, deps *Deps) int {
 // --- Opus review ---
 
 // ReviewRunOpus runs an Opus-model code review on the given diff.
-func ReviewRunOpus(title, spec, diff, testOutput string, round int, model ...string) (*Review, error) {
+// Returns the parsed review, token usage metrics, and any error.
+func ReviewRunOpus(title, spec, diff, testOutput string, round int, model ...string) (*Review, ClaudeMetrics, error) {
 	reviewModel := repoconfig.DefaultReviewModel
 	if len(model) > 0 && model[0] != "" {
 		reviewModel = model[0]
@@ -344,16 +350,23 @@ Verdicts:
 	// Build full prompt for claude CLI
 	fullPrompt := fmt.Sprintf("System: %s\n\n%s", systemPrompt, userPrompt.String())
 
-	// Run claude with Opus model
-	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-p", fullPrompt, "--model", reviewModel, "--output-format", "text")
+	// Run claude with Opus model using JSON output for metrics capture
+	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-p", fullPrompt, "--model", reviewModel, "--output-format", "json")
 	cmd.Env = os.Environ()
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("claude review: %w", err)
+		return nil, ClaudeMetrics{}, fmt.Errorf("claude review: %w", err)
 	}
 
-	return ParseReviewOutput(string(out))
+	resultText, metrics := parseClaudeResultJSON(out)
+	// Fall back to raw output if parsing didn't find a result event
+	if resultText == "" {
+		resultText = string(out)
+	}
+
+	review, parseErr := ParseReviewOutput(resultText)
+	return review, metrics, parseErr
 }
 
 // ParseReviewOutput parses the structured review output from the claude CLI.

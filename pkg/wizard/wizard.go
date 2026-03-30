@@ -1,9 +1,11 @@
 package wizard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,6 +19,68 @@ import (
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/steveyegge/beads"
 )
+
+// ClaudeMetrics captures token usage and cost from a Claude CLI invocation.
+type ClaudeMetrics struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+	Turns        int
+	CostUSD      float64
+}
+
+// Add returns the sum of two ClaudeMetrics values.
+func (m ClaudeMetrics) Add(other ClaudeMetrics) ClaudeMetrics {
+	return ClaudeMetrics{
+		InputTokens:  m.InputTokens + other.InputTokens,
+		OutputTokens: m.OutputTokens + other.OutputTokens,
+		TotalTokens:  m.TotalTokens + other.TotalTokens,
+		Turns:        m.Turns + other.Turns,
+		CostUSD:      m.CostUSD + other.CostUSD,
+	}
+}
+
+// parseClaudeResultJSON scans Claude CLI JSON output for the result event
+// and extracts the text result and usage metrics. Returns zero metrics on
+// any parse failure (best effort, never errors).
+func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetrics) {
+	lines := bytes.Split(output, []byte("\n"))
+	// Scan in reverse — the result event is typically the last line.
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		if !bytes.Contains(line, []byte(`"type"`)) {
+			continue
+		}
+		var evt struct {
+			Type         string  `json:"type"`
+			Result       string  `json:"result"`
+			NumTurns     int     `json:"num_turns"`
+			TotalCostUSD float64 `json:"total_cost_usd"`
+			Usage        struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(line, &evt); err != nil {
+			continue
+		}
+		if evt.Type == "result" {
+			resultText = evt.Result
+			metrics = ClaudeMetrics{
+				InputTokens:  evt.Usage.InputTokens,
+				OutputTokens: evt.Usage.OutputTokens,
+				TotalTokens:  evt.Usage.InputTokens + evt.Usage.OutputTokens,
+				Turns:        evt.NumTurns,
+				CostUSD:      evt.TotalCostUSD,
+			}
+			return
+		}
+	}
+	return
+}
 
 // CmdWizardRun is the internal entry point for a local wizard process.
 // It claims a bead, creates a worktree, runs design + implement phases,
@@ -171,6 +235,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	}
 
 	// 8-9. Phase execution
+	var accMetrics ClaudeMetrics
 	if reviewFix {
 		// --review-fix path: skip design, collect feedback, implement with feedback
 		feedback := WizardCollectReviewHistory(beadID, wizardName, deps)
@@ -192,9 +257,11 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		reviewFixTimeout := designTimeout // spec: review-fix gets 10m, not 15m
 		claudeStartedAt := time.Now()
 		log("starting implement phase with review feedback (timeout: %s)", reviewFixTimeout)
-		if err := WizardRunClaude(worktreeDir, implPromptPath, model, reviewFixTimeout, maxTurns); err != nil {
-			log("claude implement failed: %s", err)
+		metrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, reviewFixTimeout, maxTurns)
+		if runErr != nil {
+			log("claude implement failed: %s", runErr)
 		}
+		accMetrics = metrics
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
 		// Close implement molecule step
@@ -218,10 +285,12 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 			designStartedAt := time.Now()
 			log("starting design phase (timeout: %s)", designTimeout)
-			designOutput, err = WizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
+			var designMetrics ClaudeMetrics
+			designOutput, designMetrics, err = WizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
 			if err != nil {
 				log("design phase failed: %s", err)
 			}
+			accMetrics = designMetrics
 			log("design finished (%.0fs)", time.Since(designStartedAt).Seconds())
 
 			// Write DESIGN.md
@@ -250,9 +319,11 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 		claudeStartedAt := time.Now()
 		log("starting implement phase (timeout: %s)", timeout)
-		if err := WizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns); err != nil {
-			log("claude implement failed: %s", err)
+		implMetrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns)
+		if runErr != nil {
+			log("claude implement failed: %s", runErr)
 		}
+		accMetrics = accMetrics.Add(implMetrics)
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
 		// Close implement molecule step
@@ -302,7 +373,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	if !testsPassed {
 		result = "test_failure"
 	}
-	WizardWriteResult(wizardName, beadID, result, branchName, commitSHA, elapsed, deps, log)
+	WizardWriteResult(wizardName, beadID, result, branchName, commitSHA, elapsed, accMetrics, deps, log)
 
 	log("done (%.0fs total)", elapsed.Seconds())
 	return nil
@@ -361,8 +432,9 @@ func cmdBuildFix(beadID, wizardName, worktreeDir string, startedAt time.Time,
 	// Run Claude to fix the build errors.
 	claudeStartedAt := time.Now()
 	log("starting build-fix phase (timeout: %s)", buildFixTimeout)
-	if err := WizardRunClaude(worktreeDir, promptPath, model, buildFixTimeout, maxTurns); err != nil {
-		log("claude build-fix failed: %s", err)
+	buildFixMetrics, runErr := WizardRunClaude(worktreeDir, promptPath, model, buildFixTimeout, maxTurns)
+	if runErr != nil {
+		log("claude build-fix failed: %s", runErr)
 	}
 	log("build-fix finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
@@ -387,7 +459,7 @@ func cmdBuildFix(beadID, wizardName, worktreeDir string, startedAt time.Time,
 	if !committed {
 		result = "no_changes"
 	}
-	WizardWriteResult(wizardName, beadID, result, "", commitSHA, elapsed, deps, log)
+	WizardWriteResult(wizardName, beadID, result, "", commitSHA, elapsed, buildFixMetrics, deps, log)
 
 	log("build-fix done (%.0fs total)", elapsed.Seconds())
 	return nil
@@ -691,6 +763,7 @@ func WizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
+		"--output-format", "json",
 	}
 	// 0 means unlimited — omit the flag so Claude has no turn ceiling.
 	// The timeout is the real gate.
@@ -700,12 +773,13 @@ func WizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
 	return args
 }
 
-// WizardRunClaude invokes the claude CLI in print mode (output goes to stderr).
+// WizardRunClaude invokes the claude CLI in print mode (output teed to stderr).
+// Returns token usage metrics parsed from the JSON result event.
 // timeout enforces a hard process-level deadline via context.
-func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int) error {
+func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int) (ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
-		return fmt.Errorf("read prompt: %w", err)
+		return ClaudeMetrics{}, fmt.Errorf("read prompt: %w", err)
 	}
 
 	args := WizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
@@ -720,18 +794,23 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = worktreeDir
 	cmd.Env = os.Environ()
-	cmd.Stdout = os.Stderr // wizard output goes to stderr (stdout is for JSON results)
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stderr, &buf)
 	cmd.Stderr = os.Stderr
 
-	return cmd.Run()
+	runErr := cmd.Run()
+	_, metrics := parseClaudeResultJSON(buf.Bytes())
+	return metrics, runErr
 }
 
-// WizardRunClaudeCapture invokes the claude CLI and captures stdout.
+// WizardRunClaudeCapture invokes the claude CLI and captures the text result.
+// Returns the result text extracted from the JSON result event, token usage
+// metrics, and any execution error. Falls back to raw output if JSON parsing fails.
 // timeout enforces a hard process-level deadline via context.
-func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int) (string, error) {
+func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int) (string, ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
-		return "", fmt.Errorf("read prompt: %w", err)
+		return "", ClaudeMetrics{}, fmt.Errorf("read prompt: %w", err)
 	}
 
 	args := WizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
@@ -748,8 +827,13 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	cmd.Env = os.Environ()
 	cmd.Stderr = os.Stderr
 
-	out, err := cmd.Output()
-	return string(out), err
+	out, runErr := cmd.Output()
+	resultText, metrics := parseClaudeResultJSON(out)
+	// Fall back to raw output if parsing didn't find a result event
+	if resultText == "" {
+		resultText = string(out)
+	}
+	return resultText, metrics, runErr
 }
 
 // WizardRunCmd runs a shell command in the given directory.
@@ -851,20 +935,25 @@ func wizardUpdateBead(beadID, wizardName, branchName, commitSHA string, committe
 }
 
 // WizardWriteResult writes a result JSON file for observability.
+// Includes token usage metrics when available (non-zero).
 func WizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
-	elapsed time.Duration, deps *Deps, log func(string, ...interface{})) {
+	elapsed time.Duration, metrics ClaudeMetrics, deps *Deps, log func(string, ...interface{})) {
 
 	resultDir := filepath.Join(deps.DoltGlobalDir(), "wizards", wizardName)
 	os.MkdirAll(resultDir, 0755)
 
 	data := map[string]interface{}{
-		"wizard":    wizardName,
-		"bead_id":   beadID,
-		"result":    result,
-		"branch":    branchName,
-		"commit":    commitSHA,
-		"elapsed_s": int(elapsed.Seconds()),
-		"completed": time.Now().UTC().Format(time.RFC3339),
+		"wizard":             wizardName,
+		"bead_id":            beadID,
+		"result":             result,
+		"branch":             branchName,
+		"commit":             commitSHA,
+		"elapsed_s":          int(elapsed.Seconds()),
+		"completed":          time.Now().UTC().Format(time.RFC3339),
+		"context_tokens_in":  metrics.InputTokens,
+		"context_tokens_out": metrics.OutputTokens,
+		"total_tokens":       metrics.TotalTokens,
+		"turns":              metrics.Turns,
 	}
 	out, _ := json.MarshalIndent(data, "", "  ")
 	resultPath := filepath.Join(resultDir, "result.json")
