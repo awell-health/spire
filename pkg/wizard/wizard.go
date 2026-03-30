@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -550,6 +551,7 @@ func ResolveRepo(beadID string, deps *Deps) (repoPath, repoURL, baseBranch strin
 	}
 	if baseBranch == "" {
 		baseBranch = "main"
+		log.Printf("[resolve] base branch not configured for prefix %q — defaulting to %q", prefix, baseBranch)
 	}
 	return repoPath, repoURL, baseBranch, nil
 }
