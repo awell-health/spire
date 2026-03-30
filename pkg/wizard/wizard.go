@@ -168,7 +168,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	branchName := strings.ReplaceAll(branchPattern, "{bead-id}", beadID)
 
 	// 3. Create git worktree
-	wc, err := WizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName, deps)
+	wc, err := WizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName, deps, log)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}
@@ -575,10 +575,10 @@ func ResolveBranchForBead(beadID, repoPath string) string {
 // out the existing branch instead of trying to create it again.
 //
 // Returns a WorktreeContext that must be used for all subsequent git operations.
-func WizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string, deps *Deps) (*spgit.WorktreeContext, error) {
+func WizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName string, deps *Deps, log func(string, ...any)) (*spgit.WorktreeContext, error) {
 	worktreeBase := filepath.Join(os.TempDir(), "spire-wizard", wizardName)
 	worktreeDir := filepath.Join(worktreeBase, beadID)
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: log}
 
 	// Clean up any stale worktree at this path
 	if _, err := os.Stat(worktreeDir); err == nil {

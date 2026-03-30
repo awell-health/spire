@@ -25,8 +25,16 @@ import (
 // RepoContext owns the worktree lifecycle: CreateWorktree produces a
 // *WorktreeContext, establishing the ownership chain.
 type RepoContext struct {
-	Dir        string // absolute path to main repo root
-	BaseBranch string // e.g. "main"
+	Dir        string              // absolute path to main repo root
+	BaseBranch string              // e.g. "main"
+	Log        func(string, ...any) // optional structured logger; nil = silent
+}
+
+// logf logs a message if a logger is set. Nil-safe.
+func (rc *RepoContext) logf(format string, args ...any) {
+	if rc.Log != nil {
+		rc.Log(format, args...)
+	}
 }
 
 // git builds an exec.Cmd for a git command rooted at rc.Dir.
@@ -96,11 +104,13 @@ func (rc *RepoContext) CreateWorktree(dir, branch string) (*WorktreeContext, err
 	if out, err := rc.git("worktree", "add", dir, branch).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git worktree add %s %s: %w\n%s", dir, branch, err, out)
 	}
+	rc.logf("created worktree at %s on branch %s", dir, branch)
 	return &WorktreeContext{
 		Dir:        dir,
 		Branch:     branch,
 		BaseBranch: rc.BaseBranch,
 		RepoPath:   rc.Dir,
+		Log:        rc.Log,
 	}, nil
 }
 
@@ -109,6 +119,7 @@ func (rc *RepoContext) RemoveWorktree(dir string) error {
 	if out, err := rc.git("worktree", "remove", dir).CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree remove %s: %w\n%s", dir, err, out)
 	}
+	rc.logf("removed worktree at %s", dir)
 	return nil
 }
 
@@ -135,6 +146,7 @@ func (rc *RepoContext) Push(remote, branch string, env []string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git push %s %s: %w\n%s", remote, branch, err, out)
 	}
+	rc.logf("pushed %s to %s", branch, remote)
 	return nil
 }
 
@@ -164,6 +176,7 @@ func (rc *RepoContext) Checkout(branch string) error {
 	if out, err := rc.git("checkout", branch).CombinedOutput(); err != nil {
 		return fmt.Errorf("git checkout %s: %w\n%s", branch, err, out)
 	}
+	rc.logf("checkout %s", branch)
 	return nil
 }
 
@@ -213,11 +226,13 @@ func (rc *RepoContext) CreateWorktreeNewBranch(dir, newBranch, startPoint string
 	if out, err := rc.git("worktree", "add", "-b", newBranch, dir, startPoint).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git worktree add -b %s %s %s: %w\n%s", newBranch, dir, startPoint, err, out)
 	}
+	rc.logf("created worktree at %s on new branch %s from %s", dir, newBranch, startPoint)
 	return &WorktreeContext{
 		Dir:        dir,
 		Branch:     newBranch,
 		BaseBranch: rc.BaseBranch,
 		RepoPath:   rc.Dir,
+		Log:        rc.Log,
 	}, nil
 }
 
@@ -227,6 +242,7 @@ func (rc *RepoContext) ForceBranch(name, startPoint string) error {
 	if out, err := rc.git("branch", "-f", name, startPoint).CombinedOutput(); err != nil {
 		return fmt.Errorf("git branch -f %s %s: %w\n%s", name, startPoint, err, out)
 	}
+	rc.logf("force branch %s at %s", name, startPoint)
 	return nil
 }
 

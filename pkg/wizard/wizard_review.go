@@ -100,11 +100,12 @@ func CmdWizardReview(args []string, deps *Deps) error {
 			Branch:     branch,
 			BaseBranch: baseBranch,
 			RepoPath:   repoPath,
+			Log:        log,
 		}
 		log("using shared worktree: %s", wc.Dir)
 	} else {
 		var wcErr error
-		wc, wcErr = ReviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch)
+		wc, wcErr = ReviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch, log)
 		if wcErr != nil {
 			return fmt.Errorf("create worktree: %w", wcErr)
 		}
@@ -241,9 +242,9 @@ func CmdWizardReview(args []string, deps *Deps) error {
 // --- Worktree helpers ---
 
 // ReviewCreateWorktree creates a worktree for the sage to review code in.
-func ReviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string) (*spgit.WorktreeContext, error) {
+func ReviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch string, log func(string, ...any)) (*spgit.WorktreeContext, error) {
 	worktreeDir := filepath.Join(os.TempDir(), "spire-review", reviewerName, beadID)
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: log}
 
 	// Clean up stale worktree
 	if _, err := os.Stat(worktreeDir); err == nil {

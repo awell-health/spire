@@ -18,7 +18,6 @@ import (
 type StagingWorktree struct {
 	WorktreeContext        // embedded — all git ops go through this
 	tmpDir          string // temp directory parent (cleaned up on Close)
-	log             func(string, ...interface{})
 }
 
 // NewStagingWorktree creates a new temporary git worktree checking out branch.
@@ -33,7 +32,7 @@ func NewStagingWorktree(repoPath, branch, baseBranch, nameHint, userName, userEm
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 	dir := filepath.Join(tmpDir, "wt")
-	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: log}
 	wcPtr, wtErr := rc.CreateWorktree(dir, branch)
 	if wtErr != nil {
 		os.RemoveAll(tmpDir)
@@ -46,7 +45,6 @@ func NewStagingWorktree(repoPath, branch, baseBranch, nameHint, userName, userEm
 	return &StagingWorktree{
 		WorktreeContext: wc,
 		tmpDir:         tmpDir,
-		log:            log,
 	}, nil
 }
 
@@ -59,7 +57,7 @@ func NewStagingWorktree(repoPath, branch, baseBranch, nameHint, userName, userEm
 // The caller must call Close() when done. Close removes the git worktree and
 // the directory itself.
 func NewStagingWorktreeAt(repoPath, dir, branch, baseBranch, userName, userEmail string, log func(string, ...interface{})) (*StagingWorktree, error) {
-	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: log}
 
 	// Clean up stale worktree at this path
 	if _, err := os.Stat(dir); err == nil {
@@ -83,7 +81,6 @@ func NewStagingWorktreeAt(repoPath, dir, branch, baseBranch, userName, userEmail
 		WorktreeContext: wc,
 		// tmpDir is empty — no temp dir to clean up. Close() handles
 		// git worktree removal; the dir itself is removed by git.
-		log: log,
 	}, nil
 }
 
@@ -97,8 +94,8 @@ func ResumeStagingWorktree(repoPath, dir, branch, baseBranch string, log func(st
 			Branch:     branch,
 			BaseBranch: baseBranch,
 			RepoPath:   repoPath,
+			Log:        log,
 		},
-		log: log,
 	}
 }
 
@@ -120,7 +117,7 @@ func (w *StagingWorktree) FetchBranch(remote, branch string) {
 //
 // On rebase conflict, resolver is called (if non-nil) to attempt resolution.
 func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, branch string) error) error {
-	w.log("  merging %s into %s", childBranch, w.Branch)
+	w.logf("  merging %s into %s", childBranch, w.Branch)
 
 	// Use local branch ref directly — apprentices don't push to origin.
 	branchRef := childBranch
@@ -129,7 +126,7 @@ func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, bra
 	if err := w.MergeFFOnly(branchRef); err == nil {
 		return nil
 	}
-	w.log("  ff-only failed, rebasing %s onto %s", branchRef, w.Branch)
+	w.logf("  ff-only failed, rebasing %s onto %s", branchRef, w.Branch)
 
 	// Step 2: Rebase the child branch onto staging.
 	// This checks out branchRef (detached HEAD for remote refs), replays
@@ -183,10 +180,10 @@ func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, bra
 func (w *StagingWorktree) RunBuild(buildStr string) error {
 	out, err := w.RunCommandOutput(buildStr)
 	if err != nil {
-		w.log("build failed: %s\n%s", err, out)
+		w.logf("build failed: %s\n%s", err, out)
 		return fmt.Errorf("%s: %w\n%s", buildStr, err, out)
 	}
-	w.log("build passed")
+	w.logf("build passed")
 	return nil
 }
 
@@ -195,10 +192,10 @@ func (w *StagingWorktree) RunBuild(buildStr string) error {
 func (w *StagingWorktree) RunTests(testStr string) error {
 	out, err := w.RunCommandOutput(testStr)
 	if err != nil {
-		w.log("tests failed: %s\n%s", err, out)
+		w.logf("tests failed: %s\n%s", err, out)
 		return fmt.Errorf("%s: %w\n%s", testStr, err, out)
 	}
-	w.log("tests passed")
+	w.logf("tests passed")
 	return nil
 }
 
@@ -216,7 +213,7 @@ func (w *StagingWorktree) RunTests(testStr string) error {
 // through RepoContext. The rebase operations target a temporary worktree and
 // remain as raw exec.Command calls since WorktreeContext doesn't expose rebase.
 func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr, testStr string) error {
-	rc := &RepoContext{Dir: w.RepoPath, BaseBranch: baseBranch}
+	rc := &RepoContext{Dir: w.RepoPath, BaseBranch: baseBranch, Log: w.Log}
 
 	// Ensure main worktree is on baseBranch.
 	if rc.CurrentBranch() != baseBranch {
@@ -227,7 +224,7 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 
 	// Pull baseBranch to be up to date.
 	if pullErr := rc.PullFFOnly("origin", baseBranch, env); pullErr != nil {
-		w.log("warning: pull %s: %s", baseBranch, pullErr)
+		w.logf("warning: pull %s: %s", baseBranch, pullErr)
 	}
 
 	// Belt-and-suspenders: verify we're still on baseBranch after the pull.
@@ -237,20 +234,20 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 		}
 	}
 
-	w.log("ff-only merge %s → %s (committer: archmage)", w.Branch, baseBranch)
+	w.logf("ff-only merge %s → %s (committer: archmage)", w.Branch, baseBranch)
 
 	// First attempt: fast-forward only merge.
 	if err := rc.MergeFFOnly(w.Branch, env); err == nil {
 		return nil // success — done
 	} else {
-		w.log("ff-only failed: %s — rebasing staging onto %s", err, baseBranch)
+		w.logf("ff-only failed: %s — rebasing staging onto %s", err, baseBranch)
 	}
 
 	// ff-only failed — main has diverged. Rebase the staging branch onto
 	// baseBranch in-place in the existing staging worktree. We cannot create
 	// a second worktree for the same branch — git forbids two worktrees
 	// checking out the same branch simultaneously.
-	w.log("rebasing %s onto %s in place", w.Branch, baseBranch)
+	w.logf("rebasing %s onto %s in place", w.Branch, baseBranch)
 	rebaseCmd := exec.Command("git", "-C", w.Dir, "rebase", baseBranch)
 	rebaseCmd.Env = os.Environ()
 	if out, rbErr := rebaseCmd.CombinedOutput(); rbErr != nil {
@@ -260,7 +257,7 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 
 	// Re-verify build in the staging worktree after rebase.
 	if buildStr != "" {
-		w.log("verifying build after rebase")
+		w.logf("verifying build after rebase")
 		out, buildErr := w.RunCommandOutput(buildStr)
 		if buildErr != nil {
 			return fmt.Errorf("build failed after rebase (aborting merge): %s\n%s", buildErr, out)
@@ -269,7 +266,7 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 
 	// Run tests after rebase.
 	if testStr != "" {
-		w.log("running tests after rebase")
+		w.logf("running tests after rebase")
 		out, testErr := w.RunCommandOutput(testStr)
 		if testErr != nil {
 			return fmt.Errorf("tests failed after rebase (aborting merge): %s\n%s", testErr, out)
@@ -277,7 +274,7 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 	}
 
 	// Second attempt: ff-only should now succeed since staging was rebased.
-	w.log("retrying ff-only merge after rebase")
+	w.logf("retrying ff-only merge after rebase")
 	if err := rc.MergeFFOnly(w.Branch, env); err != nil {
 		return fmt.Errorf("ff-only merge failed even after rebase (will not force merge): %w", err)
 	}
@@ -288,7 +285,7 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 // It is safe to call multiple times.
 func (w *StagingWorktree) Close() error {
 	if w.Dir != "" {
-		rc := &RepoContext{Dir: w.RepoPath}
+		rc := &RepoContext{Dir: w.RepoPath, Log: w.Log}
 		rc.ForceRemoveWorktree(w.Dir)
 		w.Dir = ""
 	}

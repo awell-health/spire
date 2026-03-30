@@ -66,7 +66,7 @@ func (e *Executor) executeMerge(pc PhaseConfig) error {
 
 	// Push main (with archmage identity)
 	e.log("pushing %s", baseBranch)
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: e.log}
 	if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
 		return fmt.Errorf("push %s: %w", baseBranch, pushErr)
 	}

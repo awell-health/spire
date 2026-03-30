@@ -19,10 +19,18 @@ import (
 //   - Checkout — worktrees don't switch branches
 //   - SetGlobalConfig — use --worktree flag instead
 type WorktreeContext struct {
-	Dir        string // absolute path to this worktree
-	Branch     string // branch checked out in this worktree
-	BaseBranch string // the branch this was forked from (e.g. "main")
-	RepoPath   string // the main repo (for worktree management only)
+	Dir        string              // absolute path to this worktree
+	Branch     string              // branch checked out in this worktree
+	BaseBranch string              // the branch this was forked from (e.g. "main")
+	RepoPath   string              // the main repo (for worktree management only)
+	Log        func(string, ...any) // optional structured logger; nil = silent
+}
+
+// logf logs a message if a logger is set. Nil-safe.
+func (wc *WorktreeContext) logf(format string, args ...any) {
+	if wc.Log != nil {
+		wc.Log(format, args...)
+	}
 }
 
 // Commit stages all changes and commits with the given message.
@@ -53,7 +61,11 @@ func (wc *WorktreeContext) Commit(msg string, cleanFiles ...string) (string, err
 		return "", fmt.Errorf("git commit: %w\n%s", err, string(out))
 	}
 
-	return wc.HeadSHA()
+	sha, err := wc.HeadSHA()
+	if err == nil {
+		wc.logf("committed %s on branch %s in %s", sha, wc.Branch, wc.Dir)
+	}
+	return sha, err
 }
 
 // Push pushes the worktree's branch to the given remote.
@@ -159,6 +171,7 @@ func (wc *WorktreeContext) MergeFFOnly(ref string) error {
 	if err != nil {
 		return fmt.Errorf("git merge --ff-only %s: %w\n%s", ref, err, string(out))
 	}
+	wc.logf("ff-only merge %s into %s", ref, wc.Branch)
 	return nil
 }
 

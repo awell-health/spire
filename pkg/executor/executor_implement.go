@@ -323,7 +323,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 		}
 
 		// Push main.
-		rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+		rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: e.log}
 		if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
 			return fmt.Errorf("push %s after %s: %w", baseBranch, subtaskID, pushErr)
 		}

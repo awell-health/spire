@@ -1,9 +1,11 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -486,6 +488,85 @@ func TestWorktreeContext_CommitCleanFiles(t *testing.T) {
 	// Verify prompt.txt was removed.
 	if _, err := os.Stat(filepath.Join(wtDir, "prompt.txt")); !os.IsNotExist(err) {
 		t.Error("prompt.txt should have been removed before commit")
+	}
+}
+
+// =============================================================================
+// Logging tests
+// =============================================================================
+
+func TestRepoContext_LogPropagation(t *testing.T) {
+	dir := initTestRepo(t)
+
+	var logs []string
+	logger := func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+
+	rc := &RepoContext{Dir: dir, BaseBranch: "main", Log: logger}
+
+	// CreateWorktreeNewBranch should log and propagate Log to WorktreeContext
+	wtDir := filepath.Join(t.TempDir(), "log-wt")
+	wc, err := rc.CreateWorktreeNewBranch(wtDir, "log-test", "main")
+	if err != nil {
+		t.Fatalf("CreateWorktreeNewBranch: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wtDir)
+
+	if wc.Log == nil {
+		t.Fatal("Log should be propagated from RepoContext to WorktreeContext")
+	}
+
+	// WorktreeContext.Commit should log
+	wc.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wtDir, "logged.txt"), "content\n")
+	sha, err := wc.Commit("test commit for logging")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if sha == "" {
+		t.Fatal("Commit should return non-empty SHA")
+	}
+
+	// Verify expected log messages
+	if len(logs) < 2 {
+		t.Fatalf("expected at least 2 log messages, got %d: %v", len(logs), logs)
+	}
+
+	// First log: worktree creation
+	if !strings.Contains(logs[0], "created worktree") || !strings.Contains(logs[0], "log-test") {
+		t.Errorf("expected worktree creation log, got: %s", logs[0])
+	}
+
+	// Second log: commit
+	if !strings.Contains(logs[1], "committed") || !strings.Contains(logs[1], sha) {
+		t.Errorf("expected commit log with SHA %s, got: %s", sha, logs[1])
+	}
+}
+
+func TestRepoContext_NilLogIsSilent(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Operations should succeed silently with nil Log
+	rc.CreateBranch("nil-log-test")
+	wtDir := filepath.Join(t.TempDir(), "nil-log-wt")
+	wc, err := rc.CreateWorktree(wtDir, "nil-log-test")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wtDir)
+
+	if wc.Log != nil {
+		t.Error("nil Log should propagate as nil")
+	}
+
+	// Commit should work fine with nil Log
+	wc.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wtDir, "file.txt"), "content\n")
+	_, err = wc.Commit("nil log commit")
+	if err != nil {
+		t.Fatalf("Commit with nil Log: %v", err)
 	}
 }
 

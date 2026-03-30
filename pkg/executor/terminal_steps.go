@@ -66,7 +66,7 @@ func TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, deps *
 	stagingWt.Close()
 
 	// 4. Push main.
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: log}
 	log("pushing %s", baseBranch)
 	if err := rc.Push("origin", baseBranch, mergeEnv); err != nil {
 		return fmt.Errorf("push %s: %w", baseBranch, err)
@@ -168,7 +168,7 @@ func TerminalDiscard(beadID string, deps *Deps, log func(string, ...interface{})
 			beadID, branch)
 	}
 
-	rc := &spgit.RepoContext{Dir: repoPath}
+	rc := &spgit.RepoContext{Dir: repoPath, Log: log}
 
 	// Delete local and remote branches BEFORE closing the bead (DAG invariant).
 	log("deleting branch %s (discard)", branch)
