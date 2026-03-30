@@ -2,7 +2,9 @@ package executor
 
 import (
 	"fmt"
+	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
@@ -128,7 +130,7 @@ func (e *Executor) dispatchReviewAgent(stepName string, cfg formula.StepConfig, 
 // [Review fix #5: preserves judgment path from old executeReview]
 func (e *Executor) dispatchSageReview(cfg formula.StepConfig, pc PhaseConfig) error {
 	sageName := fmt.Sprintf("%s-sage", e.agentName)
-	e.log("dispatching sage on %s (worktree: %s)", e.state.StagingBranch, e.state.WorktreeDir)
+	e.log("dispatching sage %s on %s (worktree: %s)", sageName, e.state.StagingBranch, e.state.WorktreeDir)
 
 	extraArgs := []string{}
 	if cfg.VerdictOnly || pc.VerdictOnly {
@@ -224,14 +226,14 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 					fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
 				return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
 			}
-			preMergeSHA, _ := stagingWt.HeadSHA()
+			fixBranchSHA, _ := revParseBranch(stagingWt.Dir, fixBranch)
 			if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
 				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
 					fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
 				return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
 			}
 			postMergeSHA, _ := stagingWt.HeadSHA()
-			e.log("merged %s (commit %s) into %s → %s", fixBranch, preMergeSHA, e.state.StagingBranch, postMergeSHA)
+			e.log("merged %s (commit %s) into %s → %s", fixBranch, fixBranchSHA, e.state.StagingBranch, postMergeSHA)
 		}
 	} else {
 		// Direct dispatch: spawn a fix apprentice in the staging worktree,
@@ -277,14 +279,14 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 					fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
 				return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
 			}
-			preMergeSHA, _ := stagingWt.HeadSHA()
+			fixBranchSHA, _ := revParseBranch(stagingWt.Dir, fixBranch)
 			if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
 				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
 					fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
 				return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
 			}
 			postMergeSHA, _ := stagingWt.HeadSHA()
-			e.log("merged %s (commit %s) into %s → %s", fixBranch, preMergeSHA, e.state.StagingBranch, postMergeSHA)
+			e.log("merged %s (commit %s) into %s → %s", fixBranch, fixBranchSHA, e.state.StagingBranch, postMergeSHA)
 		}
 	}
 
@@ -363,5 +365,14 @@ func (e *Executor) readArbiterDecision() string {
 		return "merge"
 	}
 	return ""
+}
+
+// revParseBranch resolves the SHA of a branch ref from a given git directory.
+func revParseBranch(dir, branch string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", branch).Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse %s: %w", branch, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
