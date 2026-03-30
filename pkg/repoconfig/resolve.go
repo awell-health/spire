@@ -91,3 +91,13 @@ func ResolveDesignTimeout(repoDesignTimeout string) string {
 	}
 	return DefaultDesignTimeout
 }
+
+// ResolveDesignRequireApproval returns whether design beads require human
+// approval. Returns true (the default) when the pointer is nil (config
+// section absent or field omitted).
+func ResolveDesignRequireApproval(ptr *bool) bool {
+	if ptr != nil {
+		return *ptr
+	}
+	return true
+}

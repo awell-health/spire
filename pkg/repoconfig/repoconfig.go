@@ -19,7 +19,17 @@ type RepoConfig struct {
 	Agent   AgentConfig   `yaml:"agent"`
 	Branch  BranchConfig  `yaml:"branch"`
 	PR      PRConfig      `yaml:"pr"`
+	Design  DesignConfig  `yaml:"design"`
 	Context []string      `yaml:"context"`
+}
+
+// DesignConfig controls design bead creation behaviour.
+type DesignConfig struct {
+	// RequireApproval controls whether design beads are created with
+	// in_progress status and a needs-human label (default: true).
+	// When false, design beads are created as open without needs-human —
+	// useful for automated pipelines where the agent closes its own designs.
+	RequireApproval *bool `yaml:"require_approval"`
 }
 
 // RuntimeConfig describes how to install, test, build, and lint the repo.
@@ -314,6 +324,9 @@ func GenerateYAMLFromValues(v YAMLValues) string {
 	s += "  # reviewers: []\n"
 	s += "  # labels: []\n"
 	s += "\n"
+	s += "design:\n"
+	s += "  require_approval: true  # set false for automated pipelines\n"
+	s += "\n"
 	s += "context:\n"
 	s += "  - CLAUDE.md\n"
 	s += "  - SPIRE.md\n"
@@ -363,6 +376,13 @@ func FormatResolved(cfg *RepoConfig) string {
 	}
 	if len(cfg.PR.Labels) > 0 {
 		s += "  labels: [" + joinStrings(cfg.PR.Labels) + "]\n"
+	}
+
+	s += "design:\n"
+	if ResolveDesignRequireApproval(cfg.Design.RequireApproval) {
+		s += "  require_approval: true\n"
+	} else {
+		s += "  require_approval: false\n"
 	}
 
 	if len(cfg.Context) > 0 {

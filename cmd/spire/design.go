@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -143,6 +144,24 @@ Workflow:
 	id, err := storeCreateBead(opts)
 	if err != nil {
 		return fmt.Errorf("design: %w", err)
+	}
+
+	// Apply design approval gate: set in_progress + needs-human by default.
+	// Load repo config (best-effort — missing config defaults to require_approval: true).
+	requireApproval := true
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		if rc, rcErr := repoconfig.Load(cwd); rcErr == nil {
+			requireApproval = repoconfig.ResolveDesignRequireApproval(rc.Design.RequireApproval)
+		}
+	}
+
+	if requireApproval {
+		if err := storeUpdateBead(id, map[string]interface{}{"status": "in_progress"}); err != nil {
+			return fmt.Errorf("design: set in_progress: %w", err)
+		}
+		if err := storeAddLabel(id, "needs-human"); err != nil {
+			return fmt.Errorf("design: add needs-human label: %w", err)
+		}
 	}
 
 	fmt.Println(id)
