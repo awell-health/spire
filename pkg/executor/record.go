@@ -28,6 +28,17 @@ type agentResultJSON struct {
 	CostUSD      float64 `json:"cost_usd,omitempty"`
 }
 
+// recordOpt is a functional option for recordAgentRun.
+type recordOpt func(*AgentRun)
+
+// withReviewStep annotates an agent run with per-step review metadata.
+func withReviewStep(step string, round int) recordOpt {
+	return func(r *AgentRun) {
+		r.ReviewStep = step
+		r.ReviewRound = round
+	}
+}
+
 // recordAgentRun records an agent run to the agent_runs table.
 // Safe to call even when RecordAgentRun is nil (tests, legacy callers).
 //
@@ -35,7 +46,7 @@ type agentResultJSON struct {
 // actual outcome (test_failure, no_changes, etc.) rather than just
 // spawn success/failure. Also populates review rounds from executor state
 // and computes git diff stats when possible.
-func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase string, started time.Time, spawnErr error) {
+func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase string, started time.Time, spawnErr error, opts ...recordOpt) {
 	if e.deps.RecordAgentRun == nil {
 		return
 	}
@@ -112,6 +123,11 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		run.FilesChanged = fc
 		run.LinesAdded = la
 		run.LinesRemoved = lr
+	}
+
+	// Apply functional options (e.g., review step/round metadata).
+	for _, opt := range opts {
+		opt(&run)
 	}
 
 	if err := e.deps.RecordAgentRun(run); err != nil {

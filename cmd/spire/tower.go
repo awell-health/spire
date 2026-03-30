@@ -140,6 +140,8 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     result VARCHAR(32) NOT NULL,
     review_rounds INT DEFAULT 0,
     artificer_verdict VARCHAR(32),
+    review_step VARCHAR(16),
+    review_round INT,
     spec_file VARCHAR(256),
     spec_size_tokens INT,
     focus_context_tokens INT,

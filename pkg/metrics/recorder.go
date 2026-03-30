@@ -3,10 +3,13 @@ package metrics
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // AgentRun represents a single agent execution record stored in the agent_runs table.
@@ -39,6 +42,8 @@ type AgentRun struct {
 	Result             string `json:"result"`
 	ReviewRounds       int    `json:"review_rounds,omitempty"`
 	ReviewVerdict       string `json:"artificer_verdict,omitempty" db:"artificer_verdict"` // legacy column name
+	ReviewStep         string `json:"review_step,omitempty"`                               // "sage-review", "fix", "arbiter"
+	ReviewRound        int    `json:"review_round,omitempty"`                              // 1-indexed round within the review cycle
 	SpecFile           string `json:"spec_file,omitempty"`
 	SpecSizeTokens     int    `json:"spec_size_tokens,omitempty"`
 	FocusContextTokens int    `json:"focus_context_tokens,omitempty"`
@@ -169,6 +174,14 @@ func Record(run AgentRun) error {
 		cols = append(cols, "artificer_verdict")
 		vals = append(vals, esc(run.ReviewVerdict))
 	}
+	if run.ReviewStep != "" {
+		cols = append(cols, "review_step")
+		vals = append(vals, esc(run.ReviewStep))
+	}
+	if run.ReviewRound > 0 {
+		cols = append(cols, "review_round")
+		vals = append(vals, itoa(run.ReviewRound))
+	}
 	if run.SpecFile != "" {
 		cols = append(cols, "spec_file")
 		vals = append(vals, esc(run.SpecFile))
@@ -226,6 +239,129 @@ func Record(run AgentRun) error {
 func MarkGolden(runID string) error {
 	query := fmt.Sprintf("UPDATE agent_runs SET golden_run = TRUE WHERE id = %s", esc(runID))
 	return bdSQL(query)
+}
+
+// ReviewRoundMetrics holds per-round durations and verdict info.
+type ReviewRoundMetrics struct {
+	Round         int           `json:"round"`
+	SageDuration  time.Duration `json:"sage_duration"`
+	FixDuration   time.Duration `json:"fix_duration"`
+	SageVerdict   string        `json:"sage_verdict,omitempty"`   // verdict after sage review this round
+}
+
+// ReviewCycleMetrics aggregates review efficiency data for a bead.
+type ReviewCycleMetrics struct {
+	BeadID       string               `json:"bead_id"`
+	TotalRounds  int                  `json:"total_rounds"`
+	TotalDuration time.Duration       `json:"total_duration"` // first sage start → last step end
+	Rounds       []ReviewRoundMetrics `json:"rounds"`
+	HadArbiter   bool                 `json:"had_arbiter"`
+	ArbiterDuration time.Duration     `json:"arbiter_duration,omitempty"`
+}
+
+// GetReviewCycleMetrics queries agent_runs for per-step review data and returns
+// structured metrics for the given bead. Returns nil with no error if no review
+// steps exist.
+func GetReviewCycleMetrics(beadID string) (*ReviewCycleMetrics, error) {
+	query := fmt.Sprintf(
+		`SELECT review_round, review_step, started_at, completed_at, result `+
+			`FROM agent_runs WHERE bead_id = %s AND review_step IS NOT NULL `+
+			`ORDER BY review_round, started_at`,
+		esc(beadID),
+	)
+
+	out, err := bdSQLOutput(sql2csv(query)...)
+	if err != nil {
+		return nil, fmt.Errorf("query review metrics: %w", err)
+	}
+	if out == "" {
+		return nil, nil
+	}
+
+	r := csv.NewReader(strings.NewReader(out))
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("parse review metrics CSV: %w", err)
+	}
+
+	// Skip header row if present.
+	if len(records) > 0 && records[0][0] == "review_round" {
+		records = records[1:]
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	m := &ReviewCycleMetrics{BeadID: beadID}
+	roundMap := make(map[int]*ReviewRoundMetrics)
+
+	var earliest, latest time.Time
+
+	for _, row := range records {
+		if len(row) < 5 {
+			continue
+		}
+		round, _ := strconv.Atoi(row[0])
+		step := row[1]
+		startedAt, _ := time.Parse(time.RFC3339, row[2])
+		completedAt, _ := time.Parse(time.RFC3339, row[3])
+		result := row[4]
+		dur := completedAt.Sub(startedAt)
+
+		// Track overall time span.
+		if earliest.IsZero() || startedAt.Before(earliest) {
+			earliest = startedAt
+		}
+		if completedAt.After(latest) {
+			latest = completedAt
+		}
+
+		switch step {
+		case "sage-review":
+			rm, ok := roundMap[round]
+			if !ok {
+				rm = &ReviewRoundMetrics{Round: round}
+				roundMap[round] = rm
+			}
+			rm.SageDuration = dur
+			rm.SageVerdict = result
+		case "fix":
+			rm, ok := roundMap[round]
+			if !ok {
+				rm = &ReviewRoundMetrics{Round: round}
+				roundMap[round] = rm
+			}
+			rm.FixDuration = dur
+		case "arbiter":
+			m.HadArbiter = true
+			m.ArbiterDuration = dur
+		}
+	}
+
+	// Flatten round map to sorted slice.
+	maxRound := 0
+	for r := range roundMap {
+		if r > maxRound {
+			maxRound = r
+		}
+	}
+	for i := 1; i <= maxRound; i++ {
+		if rm, ok := roundMap[i]; ok {
+			m.Rounds = append(m.Rounds, *rm)
+		}
+	}
+
+	m.TotalRounds = len(m.Rounds)
+	if !earliest.IsZero() && !latest.IsZero() {
+		m.TotalDuration = latest.Sub(earliest)
+	}
+
+	return m, nil
+}
+
+// sql2csv returns the args for bdSQLOutput to produce CSV output.
+func sql2csv(query string) []string {
+	return []string{"-r", "csv", query}
 }
 
 // bdSQL executes a SQL statement via bd sql.

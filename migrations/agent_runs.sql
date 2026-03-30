@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     -- Review metrics
     review_rounds INT DEFAULT 0,
     artificer_verdict VARCHAR(32),  -- legacy column name; actual meaning is review_verdict (approve, request_changes, reject)
+    review_step VARCHAR(16),        -- per-step discriminator: sage-review, fix, arbiter
+    review_round INT,               -- 1-indexed round within the review cycle
 
     -- Spec context
     spec_file VARCHAR(256),

@@ -165,7 +165,8 @@ func (e *Executor) dispatchSageReview(cfg formula.StepConfig, pc PhaseConfig) er
 		return fmt.Errorf("spawn sage: %w", err)
 	}
 	waitErr := handle.Wait()
-	e.recordAgentRun(sageName, e.beadID, "", model, "sage", "review", started, waitErr)
+	e.recordAgentRun(sageName, e.beadID, "", model, "sage", "review", started, waitErr,
+		withReviewStep("sage-review", e.state.ReviewRounds+1))
 	if waitErr != nil {
 		e.log("sage exited: %s — checking verdict", waitErr)
 	}
@@ -220,7 +221,8 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		if model == "" {
 			model = implPC.Model
 		}
-		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr)
+		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr,
+			withReviewStep("fix", e.state.ReviewRounds+1))
 		if fixWaitErr != nil {
 			e.log("review-fix apprentice exited with error (will still attempt merge): %s", fixWaitErr)
 		}
@@ -270,7 +272,8 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		if model == "" {
 			model = implPC.Model
 		}
-		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr)
+		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr,
+			withReviewStep("fix", e.state.ReviewRounds+1))
 		if fixWaitErr != nil {
 			// Log but don't abort — the apprentice may have committed work even
 			// though tests failed (pre-existing failures). Attempt the merge anyway;
@@ -309,12 +312,20 @@ func (e *Executor) dispatchArbiter(cfg formula.StepConfig) error {
 	revPolicy := e.formula.GetRevisionPolicy()
 
 	// Use formula step's model override if set.
-	if cfg.Model != "" {
-		revPolicy.ArbiterModel = cfg.Model
+	model := cfg.Model
+	if model != "" {
+		revPolicy.ArbiterModel = model
+	}
+	if model == "" {
+		model = revPolicy.ArbiterModel
 	}
 
 	lastReview := &Review{Verdict: "request_changes", Summary: "Max review rounds reached"}
-	return e.deps.ReviewEscalateToArbiter(e.beadID, sageName, lastReview, revPolicy, e.log)
+	started := time.Now()
+	err := e.deps.ReviewEscalateToArbiter(e.beadID, sageName, lastReview, revPolicy, e.log)
+	e.recordAgentRun(sageName, e.beadID, "", model, "arbiter", "review", started, err,
+		withReviewStep("arbiter", e.state.ReviewRounds+1))
+	return err
 }
 
 // executeTerminalStep dispatches to TerminalMerge or TerminalDiscard.
