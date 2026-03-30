@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
@@ -13,8 +14,12 @@ import (
 
 // executeMerge handles the merge phase: ff-only merge of staging branch into main.
 func (e *Executor) executeMerge(pc PhaseConfig) error {
+	started := time.Now()
+	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
+
 	bead, err := e.deps.GetBead(e.beadID)
 	if err != nil {
+		e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, err)
 		return fmt.Errorf("get bead: %w", err)
 	}
 
@@ -42,12 +47,14 @@ func (e *Executor) executeMerge(pc PhaseConfig) error {
 	buildStr := e.resolveBuildCommand(pc)
 	stagingWt, wtErr := e.ensureStagingWorktree()
 	if wtErr != nil {
+		e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, wtErr)
 		return fmt.Errorf("ensure staging worktree for merge: %w", wtErr)
 	}
 
 	if buildStr != "" {
 		e.log("verifying build on %s before merge: %s", branch, buildStr)
 		if buildErr := stagingWt.RunBuild(buildStr); buildErr != nil {
+			e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, buildErr)
 			return fmt.Errorf("pre-merge build verification failed on %s: %w", branch, buildErr)
 		}
 	}
@@ -61,6 +68,7 @@ func (e *Executor) executeMerge(pc PhaseConfig) error {
 	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
 	testStr := e.resolveTestCommand(pc)
 	if mergeErr := stagingWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
+		e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, mergeErr)
 		return mergeErr
 	}
 
@@ -68,6 +76,7 @@ func (e *Executor) executeMerge(pc PhaseConfig) error {
 	e.log("pushing %s", baseBranch)
 	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: e.log}
 	if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
+		e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, pushErr)
 		return fmt.Errorf("push %s: %w", baseBranch, pushErr)
 	}
 
@@ -98,6 +107,7 @@ func (e *Executor) executeMerge(pc PhaseConfig) error {
 	if err := e.deps.CloseBead(e.beadID); err != nil {
 		e.log("warning: close bead: %s", err)
 	}
+	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, nil)
 	e.log("merged and closed")
 	return nil
 }

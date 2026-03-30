@@ -161,21 +161,27 @@ func MetricsPhase(jsonOut bool) error {
 		return fmt.Errorf("metrics: %w", err)
 	}
 
+	return RenderPhaseMetrics(rows, jsonOut, os.Stdout)
+}
+
+// RenderPhaseMetrics formats phase metrics rows for display.
+// Exported for testing — callers outside observability should use MetricsPhase.
+func RenderPhaseMetrics(rows []MetricsRow, jsonOut bool, w *os.File) error {
 	if jsonOut {
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(rows)
 	}
 
 	if len(rows) == 0 {
-		fmt.Printf("%s(no per-phase data yet — phase tracking starts with new runs)%s\n", Dim, Reset)
+		fmt.Fprintf(w, "%s(no per-phase data yet — phase tracking starts with new runs)%s\n", Dim, Reset)
 		return nil
 	}
 
-	fmt.Println("Per-phase breakdown (this week):")
-	fmt.Println()
-	fmt.Printf("  %-14s %5s %8s %10s %10s\n", "PHASE", "RUNS", "SUCCESS", "AVG DUR", "COST")
-	fmt.Printf("  %-14s %5s %8s %10s %10s\n", "─────", "────", "───────", "───────", "────")
+	fmt.Fprintln(w, "Per-phase breakdown (this week):")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %-14s %5s %8s %10s %10s\n", "PHASE", "RUNS", "SUCCESS", "AVG DUR", "COST")
+	fmt.Fprintf(w, "  %-14s %5s %8s %10s %10s\n", "─────", "────", "───────", "───────", "────")
 	for _, row := range rows {
 		phase := ToString(row["phase"])
 		total := ToInt(row["total"])
@@ -189,7 +195,7 @@ func MetricsPhase(jsonOut bool) error {
 		if rc := ToFloat(row["total_cost"]); rc > 0 {
 			cost = rc
 		}
-		fmt.Printf("  %-14s %5d %8s %8.0fs %9s\n",
+		fmt.Fprintf(w, "  %-14s %5d %8s %8.0fs %9s\n",
 			phase, total, rate, avgDur, fmtCost(cost))
 	}
 

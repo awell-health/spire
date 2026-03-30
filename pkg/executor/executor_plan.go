@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/steveyegge/beads"
@@ -99,6 +100,7 @@ Be precise and actionable. The apprentice implementing this will use your plan a
 
 	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for task plan (max_turns=%d)", maxTurns)
+	started := time.Now()
 	out, err := e.deps.ClaudeRunner([]string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
@@ -106,6 +108,7 @@ Be precise and actionable. The apprentice implementing this will use your plan a
 		"--output-format", "text",
 		"--max-turns", fmt.Sprintf("%d", maxTurns),
 	}, e.state.RepoPath)
+	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude task plan: %w", err)
 	}
@@ -222,6 +225,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 
 	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for plan generation (max_turns=%d)", maxTurns)
+	started := time.Now()
 	out, err := e.deps.ClaudeRunner([]string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
@@ -229,6 +233,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 		"--output-format", "text",
 		"--max-turns", fmt.Sprintf("%d", maxTurns),
 	}, e.state.RepoPath)
+	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude plan: %w", err)
 	}

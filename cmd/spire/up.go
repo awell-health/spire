@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -275,10 +276,15 @@ func ensureAgentRunsTable(database string) error {
 	}
 
 	// Migration 002: add phase column if it doesn't exist.
-	out, err := rawDoltQuery(fmt.Sprintf("USE `%s`; SELECT COUNT(*) AS cnt FROM information_schema.columns WHERE table_name='agent_runs' AND column_name='phase'", database))
-	if err == nil && !strings.Contains(out, "\"1\"") && !strings.Contains(out, "cnt\":1") {
-		rawDoltQuery(fmt.Sprintf("USE `%s`; ALTER TABLE agent_runs ADD COLUMN phase VARCHAR(16) AFTER role", database))
-		rawDoltQuery(fmt.Sprintf("USE `%s`; CREATE INDEX idx_agent_runs_phase ON agent_runs (phase)", database))
+	// Use SHOW COLUMNS to check for the phase column — more robust than
+	// querying information_schema and parsing JSON serialization.
+	out, err := rawDoltQuery(fmt.Sprintf("USE `%s`; SHOW COLUMNS FROM agent_runs LIKE 'phase'", database))
+	if err == nil && !strings.Contains(out, "phase") {
+		if _, alterErr := rawDoltQuery(fmt.Sprintf("USE `%s`; ALTER TABLE agent_runs ADD COLUMN phase VARCHAR(16) AFTER role", database)); alterErr != nil {
+			log.Printf("warning: migration 002 ALTER TABLE: %s", alterErr)
+		} else if _, idxErr := rawDoltQuery(fmt.Sprintf("USE `%s`; CREATE INDEX idx_agent_runs_phase ON agent_runs (phase)", database)); idxErr != nil {
+			log.Printf("warning: migration 002 CREATE INDEX: %s", idxErr)
+		}
 	}
 
 	return nil

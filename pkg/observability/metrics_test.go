@@ -2,6 +2,8 @@ package observability
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +124,174 @@ func TestSqlEsc(t *testing.T) {
 	want := "it''s a test"
 	if got != want {
 		t.Errorf("SqlEsc = %q, want %q", got, want)
+	}
+}
+
+func TestFmtCost(t *testing.T) {
+	tests := []struct {
+		cost float64
+		want string
+	}{
+		{0.0, "$0.00"},
+		{0.05, "$0.05"},
+		{0.99, "$0.99"},
+		{1.0, "$1"},
+		{1.50, "$2"},
+		{42.0, "$42"},
+		{100.7, "$101"},
+	}
+	for _, tt := range tests {
+		got := fmtCost(tt.cost)
+		if got != tt.want {
+			t.Errorf("fmtCost(%v) = %q, want %q", tt.cost, got, tt.want)
+		}
+	}
+}
+
+func TestRenderPhaseMetrics_Empty(t *testing.T) {
+	// Empty rows should print the "no data" message.
+	f, err := os.CreateTemp("", "metrics-test-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+
+	if err := RenderPhaseMetrics(nil, false, f); err != nil {
+		t.Fatalf("RenderPhaseMetrics(nil) = %v", err)
+	}
+
+	f.Seek(0, 0)
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	out := string(buf[:n])
+
+	if !strings.Contains(out, "no per-phase data yet") {
+		t.Errorf("expected empty message, got: %q", out)
+	}
+}
+
+func TestRenderPhaseMetrics_Text(t *testing.T) {
+	rows := []MetricsRow{
+		{
+			"phase":           "implement",
+			"total":           float64(10),
+			"succeeded":       float64(8),
+			"avg_duration":    float64(120),
+			"total_tokens_in": float64(0),
+			"total_tokens_out": float64(0),
+			"total_cost":      float64(5.50),
+		},
+		{
+			"phase":           "review",
+			"total":           float64(4),
+			"succeeded":       float64(4),
+			"avg_duration":    float64(60),
+			"total_tokens_in": float64(0),
+			"total_tokens_out": float64(0),
+			"total_cost":      float64(0.75),
+		},
+	}
+
+	f, err := os.CreateTemp("", "metrics-test-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+
+	if err := RenderPhaseMetrics(rows, false, f); err != nil {
+		t.Fatalf("RenderPhaseMetrics = %v", err)
+	}
+
+	f.Seek(0, 0)
+	buf := make([]byte, 8192)
+	n, _ := f.Read(buf)
+	out := string(buf[:n])
+
+	if !strings.Contains(out, "implement") {
+		t.Errorf("expected 'implement' in output, got: %q", out)
+	}
+	if !strings.Contains(out, "review") {
+		t.Errorf("expected 'review' in output, got: %q", out)
+	}
+	if !strings.Contains(out, "80%") {
+		t.Errorf("expected '80%%' success rate for implement, got: %q", out)
+	}
+	if !strings.Contains(out, "100%") {
+		t.Errorf("expected '100%%' success rate for review, got: %q", out)
+	}
+	// total_cost > 0 should be preferred over estimated cost
+	if !strings.Contains(out, "$6") {
+		t.Errorf("expected cost '$6' for implement (from recorded cost), got: %q", out)
+	}
+	if !strings.Contains(out, "$0.75") {
+		t.Errorf("expected cost '$0.75' for review (from recorded cost), got: %q", out)
+	}
+}
+
+func TestRenderPhaseMetrics_JSON(t *testing.T) {
+	rows := []MetricsRow{
+		{"phase": "plan", "total": float64(2)},
+	}
+
+	f, err := os.CreateTemp("", "metrics-test-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+
+	if err := RenderPhaseMetrics(rows, true, f); err != nil {
+		t.Fatalf("RenderPhaseMetrics JSON = %v", err)
+	}
+
+	f.Seek(0, 0)
+	var decoded []MetricsRow
+	if err := json.NewDecoder(f).Decode(&decoded); err != nil {
+		t.Fatalf("JSON decode: %v", err)
+	}
+	if len(decoded) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(decoded))
+	}
+	if ToString(decoded[0]["phase"]) != "plan" {
+		t.Errorf("expected phase=plan, got %v", decoded[0]["phase"])
+	}
+}
+
+func TestRenderPhaseMetrics_CostSource(t *testing.T) {
+	// When total_cost is 0, should use estimated cost from tokens.
+	rows := []MetricsRow{
+		{
+			"phase":            "implement",
+			"total":            float64(1),
+			"succeeded":        float64(1),
+			"avg_duration":     float64(60),
+			"total_tokens_in":  float64(1_000_000),
+			"total_tokens_out": float64(100_000),
+			"total_cost":       float64(0), // no recorded cost
+		},
+	}
+
+	f, err := os.CreateTemp("", "metrics-test-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+
+	if err := RenderPhaseMetrics(rows, false, f); err != nil {
+		t.Fatalf("RenderPhaseMetrics = %v", err)
+	}
+
+	f.Seek(0, 0)
+	buf := make([]byte, 8192)
+	n, _ := f.Read(buf)
+	out := string(buf[:n])
+
+	// With 1M in tokens and 100K out tokens at sonnet rates ($3/M in, $15/M out):
+	// cost = 3.0 + 1.5 = $4.50 → formatted as "$4" (>= $1, $%.0f rounds half-to-even)
+	if !strings.Contains(out, "$4") {
+		t.Errorf("expected estimated cost '$4' when total_cost=0, got: %q", out)
 	}
 }
