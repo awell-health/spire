@@ -10,28 +10,30 @@ import (
 )
 
 var wizardEpicCmd = &cobra.Command{
-	Use:    "wizard-epic <epic-id>",
-	Short:  "Execute wizard epic orchestration",
-	Hidden: true,
-	Args:   cobra.MinimumNArgs(1),
+	Use:                "wizard-epic <epic-id>",
+	Short:              "Execute wizard epic orchestration",
+	Hidden:             true,
+	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmdWizardEpic(args)
 	},
 }
 
 var wizardRunCmd = &cobra.Command{
-	Use:    "wizard-run",
-	Short:  "Internal: run wizard implementation phase",
-	Hidden: true,
+	Use:                "wizard-run",
+	Short:              "Internal: run wizard implementation phase",
+	Hidden:             true,
+	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmdWizardRun(args)
 	},
 }
 
 var wizardReviewCmd = &cobra.Command{
-	Use:    "wizard-review",
-	Short:  "Internal: run wizard review phase",
-	Hidden: true,
+	Use:                "wizard-review",
+	Short:              "Internal: run wizard review phase",
+	Hidden:             true,
+	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmdWizardReview(args)
 	},
