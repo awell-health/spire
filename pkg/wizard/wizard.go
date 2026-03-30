@@ -917,7 +917,11 @@ func WizardCommit(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(
 		// prompt files (now cleaned) were the only uncommitted content.
 		// Re-check HasNewCommits after the failed commit attempt.
 		if fallback, ferr := wc.HasNewCommits(); ferr == nil && fallback {
-			fsha, _ := wc.HeadSHA()
+			fsha, herr := wc.HeadSHA()
+			if herr != nil {
+				log("nothing staged and could not read HEAD: %s", herr)
+				return "", false
+			}
 			log("nothing staged, but Claude committed on branch %s — using existing commit", wc.Branch)
 			return fsha, true
 		}
