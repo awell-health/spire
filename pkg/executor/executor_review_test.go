@@ -12,10 +12,11 @@ import (
 
 // reviewTestEnv bundles the executor, dispatch log, and assertions for review walker tests.
 type reviewTestEnv struct {
-	executor   *Executor
-	dispatched []agent.SpawnConfig
-	labels     map[string]bool
-	arbiterCalled bool
+	executor       *Executor
+	dispatched     []agent.SpawnConfig
+	labels         map[string]bool
+	currentVerdict string // latest sage verdict, set by spawnFn — avoids map key accumulation bugs
+	arbiterCalled  bool
 }
 
 // setupReviewTest creates an executor wired with mock deps for testing executeReview.
@@ -48,9 +49,9 @@ func setupReviewTest(t *testing.T, verdicts map[int]string, arbiterDecision stri
 				if verdict == "approve" {
 					env.labels["review-approved"] = true
 				}
-				// Store current verdict for GetReviewBeads.
-				env.labels["_current_verdict"] = true
-				env.labels["_verdict_value_"+verdict] = true
+				// Store current verdict in a dedicated field — avoids stale
+				// _verdict_value_* label accumulation and Go map iteration flakiness.
+				env.currentVerdict = verdict
 			}
 			return &mockHandle{}, nil
 		},
@@ -74,15 +75,12 @@ func setupReviewTest(t *testing.T, verdicts map[int]string, arbiterDecision stri
 		},
 		GetReviewBeads: func(parentID string) ([]Bead, error) {
 			// Return a closed review bead with the latest verdict.
-			for k := range env.labels {
-				if strings.HasPrefix(k, "_verdict_value_") {
-					verdict := strings.TrimPrefix(k, "_verdict_value_")
-					return []Bead{{
-						ID:     "review-round",
-						Status: "closed",
-						Labels: []string{"verdict:" + verdict},
-					}}, nil
-				}
+			if env.currentVerdict != "" {
+				return []Bead{{
+					ID:     "review-round",
+					Status: "closed",
+					Labels: []string{"verdict:" + env.currentVerdict},
+				}}, nil
 			}
 			return nil, nil
 		},
