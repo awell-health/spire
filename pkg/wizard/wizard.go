@@ -878,7 +878,11 @@ func WizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 // Only the final main merge touches origin.
 func WizardCommit(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, committed bool) {
 	hasUncommitted := wc.HasUncommittedChanges()
-	hasNewCommits := wc.HasNewCommits()
+	hasNewCommits, err := wc.HasNewCommits()
+	if err != nil {
+		log("warning: could not check for new commits: %s — assuming commits exist", err)
+		hasNewCommits = true // err on the side of not losing work
+	}
 
 	if !hasUncommitted && !hasNewCommits {
 		log("no changes to commit and no new commits on branch")

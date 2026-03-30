@@ -389,7 +389,11 @@ func TestWorktreeContext_HasNewCommits(t *testing.T) {
 	defer rc.ForceRemoveWorktree(wtDir)
 
 	// Initially no new commits.
-	if wc.HasNewCommits() {
+	hasNew, err := wc.HasNewCommits()
+	if err != nil {
+		t.Fatalf("HasNewCommits error: %v", err)
+	}
+	if hasNew {
 		t.Error("should have no new commits initially")
 	}
 
@@ -401,8 +405,22 @@ func TestWorktreeContext_HasNewCommits(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if !wc.HasNewCommits() {
+	hasNew, err = wc.HasNewCommits()
+	if err != nil {
+		t.Fatalf("HasNewCommits error: %v", err)
+	}
+	if !hasNew {
 		t.Error("should have new commits after committing")
+	}
+
+	// Error path: invalid BaseBranch should return an error, not false.
+	wc.BaseBranch = "nonexistent-ref"
+	hasNew, err = wc.HasNewCommits()
+	if err == nil {
+		t.Error("expected error for invalid BaseBranch, got nil")
+	}
+	if hasNew {
+		t.Error("expected false when error is returned")
 	}
 }
 

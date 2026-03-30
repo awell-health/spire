@@ -81,10 +81,13 @@ func (wc *WorktreeContext) Push(remote string) error {
 // HasNewCommits returns true if there are commits on HEAD that are not on
 // BaseBranch. Uses local refs only — no origin/ prefix — because worktrees
 // don't always have origin fetched.
-func (wc *WorktreeContext) HasNewCommits() bool {
+func (wc *WorktreeContext) HasNewCommits() (bool, error) {
 	logCmd := exec.Command("git", "-C", wc.Dir, "log", wc.BaseBranch+"..HEAD", "--oneline")
-	out, _ := logCmd.Output()
-	return len(strings.TrimSpace(string(out))) > 0
+	out, err := logCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git log %s..HEAD: %w", wc.BaseBranch, err)
+	}
+	return len(strings.TrimSpace(string(out))) > 0, nil
 }
 
 // Diff returns the diff between the given base ref and HEAD.

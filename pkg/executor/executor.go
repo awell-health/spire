@@ -283,13 +283,19 @@ func (e *Executor) Run() error {
 
 		// After implement phase: check if staging has any diff vs base.
 		// If the apprentice produced no code changes, skip review and escalate.
-		if phase == "implement" && e.stagingWt != nil && !e.stagingWt.HasNewCommits() {
-			e.log("implement phase produced no code changes — escalating")
-			EscalateEmptyImplement(e.beadID, e.agentName, e.deps)
-			e.closeAllOpenStepBeads()
-			e.closeAttempt("escalated: empty implement — no code changes")
-			e.terminated = true
-			return nil
+		if phase == "implement" && e.stagingWt != nil {
+			hasNew, err := e.stagingWt.HasNewCommits()
+			if err != nil {
+				e.log("warning: could not check for new commits: %s", err)
+				// Don't escalate — assume commits may exist
+			} else if !hasNew {
+				e.log("implement phase produced no code changes — escalating")
+				EscalateEmptyImplement(e.beadID, e.agentName, e.deps)
+				e.closeAllOpenStepBeads()
+				e.closeAttempt("escalated: empty implement — no code changes")
+				e.terminated = true
+				return nil
+			}
 		}
 
 		// Advance to next phase
