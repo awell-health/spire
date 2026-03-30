@@ -2,6 +2,8 @@ package board
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -457,6 +459,21 @@ func (m *Model) dispatchInlineAction(action PendingAction, beadID string) (Model
 	return *m, runInlineActionCmd(m.InlineActionFn, action, beadID)
 }
 
+// copyToClipboard pipes text to the system clipboard command.
+func copyToClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "linux":
+		cmd = exec.Command("xclip", "-selection", "clipboard")
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -651,6 +668,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.InspectorScroll < 0 {
 						m.InspectorScroll = 0
 					}
+				}
+			case "y":
+				if m.InspectorData != nil {
+					if err := copyToClipboard(m.InspectorData.Bead.ID); err != nil {
+						m.ActionStatus = fmt.Sprintf("clipboard error: %v", err)
+					} else {
+						m.ActionStatus = fmt.Sprintf("copied: %s", m.InspectorData.Bead.ID)
+					}
+					m.ActionStatusTime = time.Now()
 				}
 			case "tab":
 				m.InspectorTab++
@@ -931,6 +957,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Command mode.
 		case ":":
 			m.Cmdline = CmdlineState{Active: true, History: m.Cmdline.History, HistIdx: -1, CompIdx: -1}
+			return m, nil
+
+		// Copy bead ID to clipboard.
+		case "y":
+			if bead := m.SelectedBead(); bead != nil {
+				if err := copyToClipboard(bead.ID); err != nil {
+					m.ActionStatus = fmt.Sprintf("clipboard error: %v", err)
+				} else {
+					m.ActionStatus = fmt.Sprintf("copied: %s", bead.ID)
+				}
+				m.ActionStatusTime = time.Now()
+			}
 			return m, nil
 
 		// Search.
