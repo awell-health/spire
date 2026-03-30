@@ -850,6 +850,108 @@ func TestTypeScopeCycle(t *testing.T) {
 	}
 }
 
+// --- TestSkipBead ---
+
+func TestSkipBead(t *testing.T) {
+	tests := []struct {
+		name   string
+		bead   BoardBead
+		expect bool
+	}{
+		{
+			name:   "review-substep label is skipped",
+			bead:   BoardBead{ID: "spi-100", Title: "Discard branch", Labels: []string{"review-substep"}},
+			expect: true,
+		},
+		{
+			name:   "alert:merge-failure label is skipped",
+			bead:   BoardBead{ID: "spi-101", Title: "Merge failure alert", Labels: []string{"alert:merge-failure"}},
+			expect: true,
+		},
+		{
+			name:   "bare alert label is skipped",
+			bead:   BoardBead{ID: "spi-102", Title: "Some alert", Labels: []string{"alert"}},
+			expect: true,
+		},
+		{
+			name:   "msg label is skipped",
+			bead:   BoardBead{ID: "spi-103", Title: "A message", Labels: []string{"msg"}},
+			expect: true,
+		},
+		{
+			name:   "workflow-step label is skipped",
+			bead:   BoardBead{ID: "spi-104", Title: "step:implement", Labels: []string{"workflow-step", "step:implement"}},
+			expect: true,
+		},
+		{
+			name:   "attempt bead is skipped",
+			bead:   BoardBead{ID: "spi-105", Title: "attempt: wizard-spi-xxx", Labels: []string{"attempt"}},
+			expect: true,
+		},
+		{
+			name:   "normal task bead is not skipped",
+			bead:   BoardBead{ID: "spi-106", Title: "Fix auth bug", Type: "task", Labels: []string{"team:alpha"}},
+			expect: false,
+		},
+		{
+			name:   "bead with no labels is not skipped",
+			bead:   BoardBead{ID: "spi-107", Title: "Simple task", Type: "task"},
+			expect: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := skipBead(tc.bead)
+			if got != tc.expect {
+				t.Errorf("skipBead(%s) = %v, want %v", tc.bead.ID, got, tc.expect)
+			}
+		})
+	}
+}
+
+// --- TestCategorizeFiltersAlerts ---
+
+func TestCategorizeFiltersAlerts(t *testing.T) {
+	t.Run("alert beads with non-open status do not leak into phase columns", func(t *testing.T) {
+		openBeads := []BoardBead{
+			{ID: "spi-200", Title: "Normal task", Status: "open", Type: "task"},
+			{ID: "spi-201", Title: "In-progress alert", Status: "in_progress", Type: "task", Labels: []string{"alert:merge-failure"}},
+		}
+		cols := CategorizeColumnsFromStore(openBeads, nil, nil, "test@test.dev")
+		if len(cols.Ready) != 1 || cols.Ready[0].ID != "spi-200" {
+			t.Errorf("expected only spi-200 in Ready, got %v", cols.Ready)
+		}
+		if len(cols.Alerts) != 0 {
+			t.Errorf("expected no alerts (status is in_progress, not open), got %v", cols.Alerts)
+		}
+	})
+
+	t.Run("open alert beads route to Alerts column", func(t *testing.T) {
+		openBeads := []BoardBead{
+			{ID: "spi-300", Title: "Open alert", Status: "open", Type: "task", Labels: []string{"alert:build-failure"}},
+		}
+		cols := CategorizeColumnsFromStore(openBeads, nil, nil, "test@test.dev")
+		if len(cols.Alerts) != 1 || cols.Alerts[0].ID != "spi-300" {
+			t.Errorf("expected spi-300 in Alerts, got %v", cols.Alerts)
+		}
+		if len(cols.Ready) != 0 {
+			t.Errorf("expected no Ready beads, got %v", cols.Ready)
+		}
+	})
+
+	t.Run("review-substep beads are filtered from all columns", func(t *testing.T) {
+		openBeads := []BoardBead{
+			{ID: "spi-400", Title: "Arbiter", Status: "open", Type: "task", Labels: []string{"review-substep"}},
+			{ID: "spi-401", Title: "Real task", Status: "open", Type: "task"},
+		}
+		cols := CategorizeColumnsFromStore(openBeads, nil, nil, "test@test.dev")
+		if len(cols.Ready) != 1 || cols.Ready[0].ID != "spi-401" {
+			t.Errorf("expected only spi-401 in Ready, got %v", cols.Ready)
+		}
+	})
+}
+
 // --- TestCalcHeightBudget ---
 
 func TestCalcHeightBudget(t *testing.T) {

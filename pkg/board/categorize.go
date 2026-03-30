@@ -41,44 +41,55 @@ func ActiveColumns(cols Columns) []ColDef {
 	return active
 }
 
+// skipBead returns true if a bead is an internal DAG artifact that should not
+// appear in user-facing board columns (Ready, Implement, etc.). Alert beads
+// are also caught here so they don't leak into phase columns when their status
+// is not "open" or when they appear in the blocked-beads loop.
+func skipBead(b BoardBead) bool {
+	for _, l := range b.Labels {
+		if strings.HasPrefix(l, "msg") || l == "template" || strings.HasPrefix(l, "agent") {
+			return true
+		}
+		if l == "review-substep" {
+			return true
+		}
+		if l == "alert" || strings.HasPrefix(l, "alert:") {
+			return true
+		}
+	}
+	if store.IsAttemptBoardBead(b) {
+		return true
+	}
+	if store.IsReviewRoundBoardBead(b) {
+		return true
+	}
+	if store.IsStepBoardBead(b) {
+		return true
+	}
+	if store.IsFormulaTemplateBoardBead(b) {
+		return true
+	}
+	return false
+}
+
+// isAlertBead returns true if the bead has an alert or alert:* label.
+func isAlertBead(b BoardBead) bool {
+	for _, l := range b.Labels {
+		if l == "alert" || strings.HasPrefix(l, "alert:") {
+			return true
+		}
+	}
+	return false
+}
+
 // CategorizeColumnsFromStore builds board columns from store API results.
 // blockedBeads come from GetBlockedIssues and already have blocker metadata.
 func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead, identity string) Columns {
 	var c Columns
 
-	isAlert := func(b BoardBead) bool {
-		for _, l := range b.Labels {
-			if l == "alert" || strings.HasPrefix(l, "alert:") {
-				return true
-			}
-		}
-		return false
-	}
-
-	skip := func(b BoardBead) bool {
-		for _, l := range b.Labels {
-			if strings.HasPrefix(l, "msg") || l == "template" || strings.HasPrefix(l, "agent") {
-				return true
-			}
-		}
-		if store.IsAttemptBoardBead(b) {
-			return true
-		}
-		if store.IsReviewRoundBoardBead(b) {
-			return true
-		}
-		if store.IsStepBoardBead(b) {
-			return true
-		}
-		if store.IsFormulaTemplateBoardBead(b) {
-			return true
-		}
-		return false
-	}
-
 	blockedIDs := make(map[string]bool, len(blockedBeads))
 	for _, b := range blockedBeads {
-		if skip(b) {
+		if skipBead(b) {
 			continue
 		}
 		blockedIDs[b.ID] = true
@@ -86,11 +97,11 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 	}
 
 	for _, b := range openBeads {
-		if isAlert(b) && b.Status == "open" {
+		if isAlertBead(b) && b.Status == "open" {
 			c.Alerts = append(c.Alerts, b)
 			continue
 		}
-		if skip(b) {
+		if skipBead(b) {
 			continue
 		}
 		if blockedIDs[b.ID] {
@@ -115,7 +126,7 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 	}
 
 	for _, b := range closedBeads {
-		if skip(b) {
+		if skipBead(b) {
 			continue
 		}
 		c.Done = append(c.Done, b)
@@ -136,36 +147,6 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[string][]string, phaseMap map[string]string, identity string) Columns {
 	var c Columns
 
-	isAlert := func(b BoardBead) bool {
-		for _, l := range b.Labels {
-			if l == "alert" || strings.HasPrefix(l, "alert:") {
-				return true
-			}
-		}
-		return false
-	}
-
-	skip := func(b BoardBead) bool {
-		for _, l := range b.Labels {
-			if strings.HasPrefix(l, "msg") || l == "template" || strings.HasPrefix(l, "agent") {
-				return true
-			}
-		}
-		if store.IsAttemptBoardBead(b) {
-			return true
-		}
-		if store.IsReviewRoundBoardBead(b) {
-			return true
-		}
-		if store.IsStepBoardBead(b) {
-			return true
-		}
-		if store.IsFormulaTemplateBoardBead(b) {
-			return true
-		}
-		return false
-	}
-
 	// Build blocked set from blockedMap keys.
 	blockedIDs := make(map[string]bool, len(blockedMap))
 	for id := range blockedMap {
@@ -174,7 +155,7 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 
 	// Add blocked beads from open beads that appear in blockedMap.
 	for _, b := range openBeads {
-		if skip(b) {
+		if skipBead(b) {
 			continue
 		}
 		if blockedIDs[b.ID] {
@@ -183,11 +164,11 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 	}
 
 	for _, b := range openBeads {
-		if isAlert(b) && b.Status == "open" {
+		if isAlertBead(b) && b.Status == "open" {
 			c.Alerts = append(c.Alerts, b)
 			continue
 		}
-		if skip(b) {
+		if skipBead(b) {
 			continue
 		}
 		if blockedIDs[b.ID] {
@@ -212,7 +193,7 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 	}
 
 	for _, b := range closedBeads {
-		if skip(b) {
+		if skipBead(b) {
 			continue
 		}
 		c.Done = append(c.Done, b)
