@@ -233,9 +233,49 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 			}
 		}
 	} else {
-		// Direct dispatch fallback.
-		if err := e.executeDirect("implement", implPC); err != nil {
-			return fmt.Errorf("review-fix direct failed: %w", err)
+		// Direct dispatch: spawn a fix apprentice in the staging worktree,
+		// same as the wave path. executeDirect would start fresh from main
+		// with no knowledge of the sage feedback — causing an infinite loop.
+		fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
+		fixArgs := []string{"--review-fix", "--apprentice"}
+		if e.state.WorktreeDir != "" {
+			fixArgs = append(fixArgs, "--worktree-dir", e.state.WorktreeDir)
+		}
+		fixStarted := time.Now()
+		fh, ferr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+			Name:      fixName,
+			BeadID:    e.beadID,
+			Role:      agent.RoleApprentice,
+			ExtraArgs: fixArgs,
+		})
+		if ferr != nil {
+			return fmt.Errorf("spawn review-fix: %w", ferr)
+		}
+		fixWaitErr := fh.Wait()
+		model := cfg.Model
+		if model == "" {
+			model = implPC.Model
+		}
+		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", fixStarted, fixWaitErr)
+		if fixWaitErr != nil {
+			return fmt.Errorf("review-fix apprentice failed: %w", fixWaitErr)
+		}
+
+		// Merge fix branch into staging.
+		if e.state.StagingBranch != "" {
+			fixBranch := e.resolveBranch(e.beadID)
+			e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
+			stagingWt, wtErr := e.ensureStagingWorktree()
+			if wtErr != nil {
+				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
+					fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
+				return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
+			}
+			if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
+				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
+					fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
+				return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
+			}
 		}
 	}
 
