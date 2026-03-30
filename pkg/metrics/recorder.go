@@ -253,10 +253,15 @@ type ReviewRoundMetrics struct {
 type ReviewCycleMetrics struct {
 	BeadID       string               `json:"bead_id"`
 	TotalRounds  int                  `json:"total_rounds"`
-	TotalDuration time.Duration       `json:"total_duration"` // first sage start → last step end
+	// TotalDuration spans from the first sage-review start to the last review step
+	// (sage-review, fix, or arbiter) end. This intentionally covers only the review
+	// cycle itself — the terminal merge/discard step is not a review step and is
+	// excluded. Use the bead's overall timestamps for end-to-end duration.
+	TotalDuration time.Duration       `json:"total_duration"`
 	Rounds       []ReviewRoundMetrics `json:"rounds"`
 	HadArbiter   bool                 `json:"had_arbiter"`
 	ArbiterDuration time.Duration     `json:"arbiter_duration,omitempty"`
+	ParseErrors  int                  `json:"parse_errors,omitempty"` // count of rows with malformed round/timestamp data
 }
 
 // GetReviewCycleMetrics queries agent_runs for per-step review data and returns
@@ -278,7 +283,15 @@ func GetReviewCycleMetrics(beadID string) (*ReviewCycleMetrics, error) {
 		return nil, nil
 	}
 
-	r := csv.NewReader(strings.NewReader(out))
+	return parseReviewCycleMetrics(beadID, out)
+}
+
+// parseReviewCycleMetrics parses CSV output from the review metrics query into
+// structured metrics. Exported for testing. Returns nil with no error if the CSV
+// contains no data rows. Rows with malformed round numbers or timestamps are
+// counted in ParseErrors and skipped.
+func parseReviewCycleMetrics(beadID string, csvData string) (*ReviewCycleMetrics, error) {
+	r := csv.NewReader(strings.NewReader(csvData))
 	records, err := r.ReadAll()
 	if err != nil {
 		return nil, fmt.Errorf("parse review metrics CSV: %w", err)
@@ -299,12 +312,25 @@ func GetReviewCycleMetrics(beadID string) (*ReviewCycleMetrics, error) {
 
 	for _, row := range records {
 		if len(row) < 5 {
+			m.ParseErrors++
 			continue
 		}
-		round, _ := strconv.Atoi(row[0])
+		round, err := strconv.Atoi(row[0])
+		if err != nil {
+			m.ParseErrors++
+			continue
+		}
 		step := row[1]
-		startedAt, _ := time.Parse(time.RFC3339, row[2])
-		completedAt, _ := time.Parse(time.RFC3339, row[3])
+		startedAt, err := time.Parse(time.RFC3339, row[2])
+		if err != nil {
+			m.ParseErrors++
+			continue
+		}
+		completedAt, err := time.Parse(time.RFC3339, row[3])
+		if err != nil {
+			m.ParseErrors++
+			continue
+		}
 		result := row[4]
 		dur := completedAt.Sub(startedAt)
 
@@ -340,9 +366,9 @@ func GetReviewCycleMetrics(beadID string) (*ReviewCycleMetrics, error) {
 
 	// Flatten round map to sorted slice.
 	maxRound := 0
-	for r := range roundMap {
-		if r > maxRound {
-			maxRound = r
+	for rnd := range roundMap {
+		if rnd > maxRound {
+			maxRound = rnd
 		}
 	}
 	for i := 1; i <= maxRound; i++ {

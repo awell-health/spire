@@ -11,6 +11,33 @@ import (
 	"time"
 )
 
+func TestWithReviewStep(t *testing.T) {
+	tests := []struct {
+		name      string
+		step      string
+		round     int
+		wantStep  string
+		wantRound int
+	}{
+		{"sage-review round 1", "sage-review", 1, "sage-review", 1},
+		{"fix round 2", "fix", 2, "fix", 2},
+		{"arbiter round 3", "arbiter", 3, "arbiter", 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var run AgentRun
+			opt := withReviewStep(tt.step, tt.round)
+			opt(&run)
+			if run.ReviewStep != tt.wantStep {
+				t.Errorf("ReviewStep = %q, want %q", run.ReviewStep, tt.wantStep)
+			}
+			if run.ReviewRound != tt.wantRound {
+				t.Errorf("ReviewRound = %d, want %d", run.ReviewRound, tt.wantRound)
+			}
+		})
+	}
+}
+
 func TestMapResultValue(t *testing.T) {
 	tests := []struct {
 		input string
