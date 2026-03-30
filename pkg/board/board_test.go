@@ -976,3 +976,95 @@ func TestCalcHeightBudget(t *testing.T) {
 		}
 	})
 }
+
+// --- TestTruncateTitle ---
+
+func TestTruncateTitle(t *testing.T) {
+	tests := []struct {
+		name   string
+		title  string
+		maxLen int
+		want   string
+	}{
+		{name: "shorter than max", title: "hello", maxLen: 10, want: "hello"},
+		{name: "exactly at max", title: "hello", maxLen: 5, want: "hello"},
+		{name: "longer than max", title: "hello world", maxLen: 8, want: "hello w…"},
+		{name: "maxLen 0", title: "hello", maxLen: 0, want: "…"},
+		{name: "maxLen 1", title: "hello", maxLen: 1, want: "…"},
+		{name: "empty title", title: "", maxLen: 10, want: ""},
+		{name: "multi-byte rune boundary", title: "café résumé", maxLen: 5, want: "café…"},
+		{name: "emoji boundary", title: "🎉🎊🎈🎁", maxLen: 3, want: "🎉🎊…"},
+		{name: "all emoji shorter", title: "🎉🎊", maxLen: 5, want: "🎉🎊"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateTitle(tc.title, tc.maxLen)
+			if got != tc.want {
+				t.Errorf("truncateTitle(%q, %d) = %q, want %q", tc.title, tc.maxLen, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- TestConfirmPromptForAction ---
+
+func TestConfirmPromptForAction(t *testing.T) {
+	tests := []struct {
+		name   string
+		action PendingAction
+		beadID string
+		title  string
+		want   string
+	}{
+		{
+			name:   "close with empty title shows ID only",
+			action: ActionClose,
+			beadID: "spi-001",
+			title:  "",
+			want:   "Close spi-001?",
+		},
+		{
+			name:   "close with title shows ID and title",
+			action: ActionClose,
+			beadID: "spi-001",
+			title:  "Fix auth bug",
+			want:   "Close spi-001: Fix auth bug?",
+		},
+		{
+			name:   "unsummon with title",
+			action: ActionUnsummon,
+			beadID: "spi-002",
+			title:  "Some task",
+			want:   "Dismiss wizard for spi-002: Some task?",
+		},
+		{
+			name:   "reset soft with empty title",
+			action: ActionResetSoft,
+			beadID: "spi-003",
+			title:  "",
+			want:   "Reset spi-003?",
+		},
+		{
+			name:   "reset hard with title",
+			action: ActionResetHard,
+			beadID: "spi-004",
+			title:  "Important task",
+			want:   "Hard reset spi-004: Important task? This is destructive.",
+		},
+		{
+			name:   "long title is truncated",
+			action: ActionClose,
+			beadID: "spi-005",
+			title:  "This is a very long title that should definitely be truncated to fit the dialog",
+			want:   "Close spi-005: This is a very long title that should definitely …?",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := confirmPromptForAction(tc.action, tc.beadID, tc.title)
+			if got != tc.want {
+				t.Errorf("confirmPromptForAction(%d, %q, %q) = %q, want %q", tc.action, tc.beadID, tc.title, got, tc.want)
+			}
+		})
+	}
+}

@@ -368,15 +368,16 @@ func isInlineAction(a PendingAction) bool {
 	return false
 }
 
-// truncateTitle truncates a title to maxLen characters, appending "…" if truncated.
+// truncateTitle truncates a title to maxLen runes, appending "…" if truncated.
 func truncateTitle(title string, maxLen int) string {
-	if len(title) <= maxLen {
+	runes := []rune(title)
+	if len(runes) <= maxLen {
 		return title
 	}
 	if maxLen <= 1 {
 		return "…"
 	}
-	return title[:maxLen-1] + "…"
+	return string(runes[:maxLen-1]) + "…"
 }
 
 // confirmPromptForAction returns the confirmation prompt text for an action.
