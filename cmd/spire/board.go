@@ -224,8 +224,22 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 }
 
 // executeInlineAction runs an action within the TUI via tea.Cmd (no exit-relaunch).
+// Captures stdout/stderr to prevent garbling the TUI's alt-screen.
 // Returns nil on success, error on failure.
 func executeInlineAction(action board.PendingAction, beadID string) error {
+	// Redirect stdout/stderr to discard during inline execution.
+	// The TUI owns the terminal — command output would garble the alt-screen.
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	devNull, _ := os.Open(os.DevNull)
+	if devNull != nil {
+		os.Stdout = devNull
+		os.Stderr = devNull
+		defer func() {
+			os.Stdout = oldStdout
+			os.Stderr = oldStderr
+			devNull.Close()
+		}()
+	}
 	switch action {
 	case board.ActionSummon:
 		return summonLocal(1, []string{beadID})
