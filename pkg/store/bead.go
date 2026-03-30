@@ -12,6 +12,7 @@ type Bead struct {
 	Type        string   `json:"issue_type"`
 	Labels      []string `json:"labels"`
 	Parent      string   `json:"parent"`
+	UpdatedAt   string   `json:"updated_at"`
 }
 
 // BoardBead extends Bead with full board metadata (owner, timestamps, deps).

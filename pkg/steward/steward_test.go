@@ -390,12 +390,12 @@ func (f *fakeBackend) Kill(name string) error {
 }
 
 func TestCheckBeadHealth_StaleIncrementsCount(t *testing.T) {
-	// Bead with updated: label 20 minutes ago.
+	// Bead updated 20 minutes ago.
 	staleTime := time.Now().Add(-20 * time.Minute).UTC().Format(time.RFC3339)
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		return []store.Bead{
-			{ID: "spi-stale", Title: "stale task", Status: "in_progress", Labels: []string{"updated:" + staleTime}},
+			{ID: "spi-stale", Title: "stale task", Status: "in_progress", UpdatedAt: staleTime},
 		}, nil
 	}
 	defer func() { ListBeadsFunc = origList }()
@@ -419,12 +419,12 @@ func TestCheckBeadHealth_StaleIncrementsCount(t *testing.T) {
 }
 
 func TestCheckBeadHealth_ShutdownKillsAgent(t *testing.T) {
-	// Bead with updated: label 45 minutes ago (beyond shutdown threshold).
+	// Bead updated 45 minutes ago (beyond shutdown threshold).
 	oldTime := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		return []store.Bead{
-			{ID: "spi-old", Title: "old task", Status: "in_progress", Labels: []string{"updated:" + oldTime}},
+			{ID: "spi-old", Title: "old task", Status: "in_progress", UpdatedAt: oldTime},
 		}, nil
 	}
 	defer func() { ListBeadsFunc = origList }()
@@ -457,11 +457,11 @@ func TestCheckBeadHealth_ShutdownKillsAgent(t *testing.T) {
 	}
 }
 
-func TestCheckBeadHealth_NoUpdatedLabelSkipped(t *testing.T) {
+func TestCheckBeadHealth_NoUpdatedAtSkipped(t *testing.T) {
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		return []store.Bead{
-			{ID: "spi-nolabel", Title: "no label", Status: "in_progress", Labels: []string{}},
+			{ID: "spi-nolabel", Title: "no label", Status: "in_progress"},
 		}, nil
 	}
 	defer func() { ListBeadsFunc = origList }()
@@ -480,7 +480,7 @@ func TestCheckBeadHealth_ReviewApprovedSkipped(t *testing.T) {
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		return []store.Bead{
-			{ID: "spi-approved", Title: "approved", Status: "in_progress", Labels: []string{"review-approved", "updated:" + oldTime}},
+			{ID: "spi-approved", Title: "approved", Status: "in_progress", Labels: []string{"review-approved"}, UpdatedAt: oldTime},
 		}, nil
 	}
 	defer func() { ListBeadsFunc = origList }()

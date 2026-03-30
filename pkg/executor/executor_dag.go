@@ -2,7 +2,6 @@ package executor
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/steveyegge/beads"
@@ -83,32 +82,6 @@ func (e *Executor) ensureAttemptModelLabel(attemptID string, b Bead, model strin
 		e.log("warning: add model label to attempt %s: %s", attemptID, err)
 	} else {
 		e.log("updated attempt %s model label to %s", attemptID, model)
-	}
-}
-
-// touchUpdatedLabel writes an updated:<RFC3339> heartbeat label on the parent
-// bead. The steward's CheckBeadHealth reads this label to detect stale/timed-out
-// executors. Follows the remove-then-add pattern used by ensureAttemptModelLabel.
-// All errors are non-fatal (logged as warnings, never fail execution).
-func (e *Executor) touchUpdatedLabel() {
-	bead, err := e.deps.GetBead(e.beadID)
-	if err != nil {
-		e.log("warning: touchUpdatedLabel get bead: %s", err)
-		return
-	}
-
-	// Remove existing updated: label if present.
-	existing := e.deps.HasLabel(bead, "updated:")
-	if existing != "" {
-		if err := e.deps.RemoveLabel(e.beadID, "updated:"+existing); err != nil {
-			e.log("warning: touchUpdatedLabel remove old label: %s", err)
-		}
-	}
-
-	// Add new updated: label with current timestamp.
-	now := time.Now().UTC().Format(time.RFC3339)
-	if err := e.deps.AddLabel(e.beadID, "updated:"+now); err != nil {
-		e.log("warning: touchUpdatedLabel add label: %s", err)
 	}
 }
 

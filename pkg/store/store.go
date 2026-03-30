@@ -80,6 +80,7 @@ func IssueToBead(issue *beads.Issue) Bead {
 		Type:        string(issue.IssueType),
 		Labels:      issue.Labels,
 		Parent:      parent,
+		UpdatedAt:   issue.UpdatedAt.Format(time.RFC3339),
 	}
 }
 

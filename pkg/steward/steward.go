@@ -351,14 +351,13 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 			continue
 		}
 
-		updatedAt := store.HasLabel(b, "updated:")
-		if updatedAt == "" {
+		if b.UpdatedAt == "" {
 			continue
 		}
 
-		t, err := time.Parse(time.RFC3339, updatedAt)
+		t, err := time.Parse(time.RFC3339, b.UpdatedAt)
 		if err != nil {
-			t, err = time.Parse("2006-01-02 15:04:05", updatedAt)
+			t, err = time.Parse("2006-01-02 15:04:05", b.UpdatedAt)
 			if err != nil {
 				continue
 			}
@@ -400,6 +399,36 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 	}
 
 	return staleCount, shutdownCount
+}
+
+// CleanUpdatedLabels removes stale updated:<timestamp> labels from open/in_progress
+// beads. These labels were written by the old touchUpdatedLabel() heartbeat mechanism
+// and are no longer used — CheckBeadHealth now reads b.UpdatedAt directly.
+func CleanUpdatedLabels() int {
+	all, err := ListBeadsFunc(beads.IssueFilter{
+		ExcludeStatus: []beads.Status{beads.StatusClosed},
+	})
+	if err != nil {
+		log.Printf("[steward] clean updated labels: list beads: %s", err)
+		return 0
+	}
+
+	cleaned := 0
+	for _, b := range all {
+		label := store.HasLabel(b, "updated:")
+		if label == "" {
+			continue
+		}
+		if err := store.RemoveLabel(b.ID, "updated:"+label); err != nil {
+			log.Printf("[steward] clean updated label from %s: %s", b.ID, err)
+			continue
+		}
+		cleaned++
+	}
+	if cleaned > 0 {
+		log.Printf("[steward] cleaned %d stale updated: labels", cleaned)
+	}
+	return cleaned
 }
 
 // DetectReviewReady finds in_progress beads that need review routing.
