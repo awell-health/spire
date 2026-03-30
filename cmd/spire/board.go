@@ -259,6 +259,10 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 		return cmdAdvance([]string{beadID})
 	case board.ActionClose:
 		return storeCloseBead(beadID)
+	case board.ActionApprove:
+		// Approve a needs-human design bead: remove the label and close it.
+		_ = storeRemoveLabel(beadID, "needs-human")
+		return storeCloseBead(beadID)
 	}
 	return fmt.Errorf("unknown inline action: %d", action)
 }

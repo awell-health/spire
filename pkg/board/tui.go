@@ -26,6 +26,7 @@ const (
 	ActionGrok                   // deep focus grok (inline via tea.Cmd)
 	ActionTrace                  // DAG timeline trace (inline via tea.Cmd)
 	ActionAdvance                // advance to next phase (inline via tea.Cmd)
+	ActionApprove                // approve a needs-human bead (remove label, inline via tea.Cmd)
 )
 
 // Section identifies which vertical zone of the board the cursor is in.
@@ -327,6 +328,8 @@ func actionLabel(a PendingAction) string {
 		return "Advance"
 	case ActionClose:
 		return "Close"
+	case ActionApprove:
+		return "Approve"
 	default:
 		return "Action"
 	}
@@ -362,7 +365,7 @@ func (m Model) updateCmdline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // isInlineAction returns true if the action should execute within the TUI.
 func isInlineAction(a PendingAction) bool {
 	switch a {
-	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionAdvance, ActionClose:
+	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionAdvance, ActionClose, ActionApprove:
 		return true
 	}
 	return false
@@ -390,6 +393,8 @@ func confirmPromptForAction(action PendingAction, beadID, title string) string {
 	switch action {
 	case ActionClose:
 		return fmt.Sprintf("Close %s?", label)
+	case ActionApprove:
+		return fmt.Sprintf("Approve design %s?", label)
 	case ActionUnsummon:
 		return fmt.Sprintf("Dismiss wizard for %s?", label)
 	case ActionResetSoft:
@@ -406,7 +411,7 @@ func dangerForAction(action PendingAction) DangerLevel {
 	switch action {
 	case ActionResetHard:
 		return DangerDestructive
-	case ActionClose, ActionUnsummon, ActionResetSoft:
+	case ActionClose, ActionUnsummon, ActionResetSoft, ActionApprove:
 		return DangerConfirm
 	default:
 		return DangerNone

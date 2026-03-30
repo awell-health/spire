@@ -577,13 +577,19 @@ func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, color lipglo
 		typeStr += " [" + phase + "]"
 	}
 
+	// Visual tag for beads awaiting human approval.
+	needsHumanTag := ""
+	if b.HasLabel("needs-human") {
+		needsHumanTag = " " + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")).Render("[needs-human]")
+	}
+
 	isSel := len(selected) > 0 && selected[0]
 	var s strings.Builder
 	if isSel {
 		cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
-		s.WriteString(fmt.Sprintf("%s %s %s %s\n", cursor, PriStr(b.Priority), b.ID, typeStr))
+		s.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursor, PriStr(b.Priority), b.ID, typeStr, needsHumanTag))
 	} else {
-		s.WriteString(fmt.Sprintf("%s %s %s\n", PriStr(b.Priority), b.ID, typeStr))
+		s.WriteString(fmt.Sprintf("%s %s %s%s\n", PriStr(b.Priority), b.ID, typeStr, needsHumanTag))
 	}
 	s.WriteString(fmt.Sprintf("  %s\n", Truncate(b.Title, titleWidth)))
 

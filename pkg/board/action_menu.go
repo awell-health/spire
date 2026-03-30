@@ -48,6 +48,7 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 		items = append(items, MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose})
 	case "in_progress":
 		if needsHuman {
+			items = append(items, MenuAction{Key: 'Y', Label: "Approve (close)", Danger: DangerConfirm, ActionType: ActionApprove})
 			items = append(items, MenuAction{Key: 'S', Label: "Resummon", Danger: DangerNone, ActionType: ActionResummon})
 		}
 		if hasWizard {

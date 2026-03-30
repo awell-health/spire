@@ -129,6 +129,28 @@ func TestResolveDesignTimeout(t *testing.T) {
 	}
 }
 
+func TestResolveDesignRequireApproval(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	tests := []struct {
+		name string
+		ptr  *bool
+		want bool
+	}{
+		{"nil → true (default)", nil, true},
+		{"ptr-to-true → true", boolPtr(true), true},
+		{"ptr-to-false → false", boolPtr(false), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveDesignRequireApproval(tt.ptr)
+			if got != tt.want {
+				t.Errorf("ResolveDesignRequireApproval(%v) = %v, want %v", tt.ptr, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestLoadSparseYAMLReturnsZeroValues verifies that Load() on a sparse spire.yaml
 // returns zero values for policy fields (model, stale, timeout, branch).
 func TestLoadSparseYAMLReturnsZeroValues(t *testing.T) {
