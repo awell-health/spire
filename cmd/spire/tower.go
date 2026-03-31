@@ -227,6 +227,16 @@ var spireMigrations = []columnMigration{
 	{table: "agent_runs", column: "started_at", ddl: "ADD COLUMN started_at DATETIME NOT NULL"},
 	{table: "agent_runs", column: "completed_at", ddl: "ADD COLUMN completed_at DATETIME"},
 
+	// --- agent_runs context fields (spi-md5mv) ---
+	{table: "agent_runs", column: "formula_name", ddl: "ADD COLUMN formula_name VARCHAR(64)"},
+	{table: "agent_runs", column: "formula_version", ddl: "ADD COLUMN formula_version INT"},
+	{table: "agent_runs", column: "branch", ddl: "ADD COLUMN branch VARCHAR(128)"},
+	{table: "agent_runs", column: "commit_sha", ddl: "ADD COLUMN commit_sha VARCHAR(64)"},
+	{table: "agent_runs", column: "bead_type", ddl: "ADD COLUMN bead_type VARCHAR(32)"},
+	{table: "agent_runs", column: "tower", ddl: "ADD COLUMN tower VARCHAR(64)"},
+	{table: "agent_runs", column: "parent_run_id", ddl: "ADD COLUMN parent_run_id VARCHAR(32)"},
+	{table: "agent_runs", column: "wave_index", ddl: "ADD COLUMN wave_index INT"},
+
 	// --- golden_prompts columns (in table order) ---
 	{table: "golden_prompts", column: "run_id", ddl: "ADD COLUMN run_id VARCHAR(32) NOT NULL PRIMARY KEY"},
 	{table: "golden_prompts", column: "bead_id", ddl: "ADD COLUMN bead_id VARCHAR(64) NOT NULL"},
