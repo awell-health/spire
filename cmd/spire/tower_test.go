@@ -590,6 +590,247 @@ func TestAttachBootstrapThenRegisterRepoClient(t *testing.T) {
 	}
 }
 
+// --- cmdTowerRemove tests ---
+
+// setupTowerRemoveEnv creates an isolated environment with tower config(s) and global config.
+// Returns the temp dir path.
+func setupTowerRemoveEnv(t *testing.T, towers []*TowerConfig, cfg *SpireConfig) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("SPIRE_CONFIG_DIR", filepath.Join(tmpDir, ".config", "spire"))
+	t.Setenv("DOLT_DATA_DIR", filepath.Join(tmpDir, "dolt-data"))
+	for _, tower := range towers {
+		if err := saveTowerConfig(tower); err != nil {
+			t.Fatalf("save tower %q: %v", tower.Name, err)
+		}
+	}
+	if cfg != nil {
+		if err := saveConfig(cfg); err != nil {
+			t.Fatalf("save config: %v", err)
+		}
+	}
+	return tmpDir
+}
+
+func TestCmdTowerRemove_NotFound(t *testing.T) {
+	setupTowerRemoveEnv(t, nil, nil)
+
+	err := cmdTowerRemove("nonexistent", true)
+	if err == nil {
+		t.Fatal("expected error for nonexistent tower")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestCmdTowerRemove_LastTowerWithoutForce(t *testing.T) {
+	tower := &TowerConfig{
+		Name:      "only-tower",
+		ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "onl",
+		Database:  "beads_onl",
+		CreatedAt: "2026-03-21T10:00:00Z",
+	}
+	setupTowerRemoveEnv(t, []*TowerConfig{tower}, nil)
+
+	err := cmdTowerRemove("only-tower", false)
+	if err == nil {
+		t.Fatal("expected error when removing last tower without --force")
+	}
+	if !strings.Contains(err.Error(), "last tower") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Tower config should still exist.
+	if _, loadErr := loadTowerConfig("only-tower"); loadErr != nil {
+		t.Errorf("tower config should still exist: %v", loadErr)
+	}
+}
+
+func TestCmdTowerRemove_NonInteractiveWithoutForce(t *testing.T) {
+	t1 := &TowerConfig{
+		Name: "alpha", ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "alp", Database: "beads_alp", CreatedAt: "2026-03-21T10:00:00Z",
+	}
+	t2 := &TowerConfig{
+		Name: "beta", ProjectID: "11111111-2222-4333-8444-555555555555",
+		HubPrefix: "bet", Database: "beads_bet", CreatedAt: "2026-03-21T11:00:00Z",
+	}
+	setupTowerRemoveEnv(t, []*TowerConfig{t1, t2}, nil)
+
+	// In test environment, stdin is not a terminal, so this should refuse.
+	err := cmdTowerRemove("alpha", false)
+	if err == nil {
+		t.Fatal("expected error when stdin is not a terminal and --force not set")
+	}
+	if !strings.Contains(err.Error(), "not a terminal") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Tower config should still exist.
+	if _, loadErr := loadTowerConfig("alpha"); loadErr != nil {
+		t.Errorf("tower config should still exist: %v", loadErr)
+	}
+}
+
+func TestCmdTowerRemove_ForceLastTower(t *testing.T) {
+	tower := &TowerConfig{
+		Name:      "solo",
+		ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "sol",
+		Database:  "beads_sol",
+		CreatedAt: "2026-03-21T10:00:00Z",
+	}
+	// First create tower config only, then set up config with paths.
+	tmpDir := setupTowerRemoveEnv(t, []*TowerConfig{tower}, nil)
+
+	// Create the repo directory and .beads/ dir so cleanup can find it.
+	repoBeads := filepath.Join(tmpDir, "web", ".beads")
+	os.MkdirAll(repoBeads, 0755)
+	os.WriteFile(filepath.Join(repoBeads, "metadata.json"), []byte(`{}`), 0644)
+
+	// Save config with the correct tmpDir-based path.
+	if err := saveConfig(&SpireConfig{
+		ActiveTower: "solo",
+		Instances: map[string]*Instance{
+			"web": {
+				Path:     filepath.Join(tmpDir, "web"),
+				Prefix:   "web",
+				Database: "beads_sol",
+				Tower:    "solo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	err := cmdTowerRemove("solo", true)
+	if err != nil {
+		t.Fatalf("expected success with --force: %v", err)
+	}
+
+	// Tower config should be gone.
+	if _, loadErr := loadTowerConfig("solo"); loadErr == nil {
+		t.Error("tower config should have been removed")
+	}
+
+	// Active tower should be cleared.
+	cfg, loadErr := loadConfig()
+	if loadErr != nil {
+		t.Fatalf("load config: %v", loadErr)
+	}
+	if cfg.ActiveTower != "" {
+		t.Errorf("active tower should be empty, got %q", cfg.ActiveTower)
+	}
+
+	// Instance should be removed.
+	if _, ok := cfg.Instances["web"]; ok {
+		t.Error("instance 'web' should have been removed")
+	}
+
+	// .beads/ directory should be removed.
+	if _, statErr := os.Stat(repoBeads); statErr == nil {
+		t.Error(".beads/ directory should have been removed")
+	}
+}
+
+func TestCmdTowerRemove_ForceMultipleTowers(t *testing.T) {
+	t1 := &TowerConfig{
+		Name: "alpha", ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "alp", Database: "beads_alp", CreatedAt: "2026-03-21T10:00:00Z",
+	}
+	t2 := &TowerConfig{
+		Name: "beta", ProjectID: "11111111-2222-4333-8444-555555555555",
+		HubPrefix: "bet", Database: "beads_bet", CreatedAt: "2026-03-21T11:00:00Z",
+	}
+	setupTowerRemoveEnv(t, []*TowerConfig{t1, t2}, &SpireConfig{
+		ActiveTower: "beta",
+		Instances: map[string]*Instance{
+			"web": {Path: "/tmp/web", Prefix: "web", Database: "beads_alp", Tower: "alpha"},
+			"api": {Path: "/tmp/api", Prefix: "api", Database: "beads_bet", Tower: "beta"},
+		},
+	})
+
+	// Remove alpha — should only remove alpha's instances, leave beta's.
+	err := cmdTowerRemove("alpha", true)
+	if err != nil {
+		t.Fatalf("remove alpha: %v", err)
+	}
+
+	// Alpha tower config gone.
+	if _, loadErr := loadTowerConfig("alpha"); loadErr == nil {
+		t.Error("alpha tower config should be removed")
+	}
+
+	// Beta still exists.
+	if _, loadErr := loadTowerConfig("beta"); loadErr != nil {
+		t.Errorf("beta tower config should still exist: %v", loadErr)
+	}
+
+	// Global config: only beta's instance should remain.
+	cfg, loadErr := loadConfig()
+	if loadErr != nil {
+		t.Fatalf("load config: %v", loadErr)
+	}
+	if _, ok := cfg.Instances["web"]; ok {
+		t.Error("instance 'web' (alpha) should have been removed")
+	}
+	if _, ok := cfg.Instances["api"]; !ok {
+		t.Error("instance 'api' (beta) should still exist")
+	}
+	// Active tower should NOT be cleared (was beta, not alpha).
+	if cfg.ActiveTower != "beta" {
+		t.Errorf("active tower should still be %q, got %q", "beta", cfg.ActiveTower)
+	}
+}
+
+func TestCmdTowerRemove_InvalidDatabaseName(t *testing.T) {
+	tower := &TowerConfig{
+		Name:      "bad-db",
+		ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "bad",
+		Database:  "beads`; DROP TABLE users; --",
+		CreatedAt: "2026-03-21T10:00:00Z",
+	}
+	t2 := &TowerConfig{
+		Name: "other", ProjectID: "11111111-2222-4333-8444-555555555555",
+		HubPrefix: "oth", Database: "beads_oth", CreatedAt: "2026-03-21T11:00:00Z",
+	}
+	setupTowerRemoveEnv(t, []*TowerConfig{tower, t2}, nil)
+
+	err := cmdTowerRemove("bad-db", true)
+	if err == nil {
+		t.Fatal("expected error for invalid database name")
+	}
+	if !strings.Contains(err.Error(), "invalid database name") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestIsValidDatabaseName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"beads_hub", true},
+		{"beads-test", true},
+		{"BeadsDB123", true},
+		{"", false},
+		{"beads`injection", false},
+		{"db; DROP TABLE", false},
+		{"name with spaces", false},
+		{"name\ttab", false},
+	}
+	for _, tc := range tests {
+		got := isValidDatabaseName(tc.name)
+		if got != tc.want {
+			t.Errorf("isValidDatabaseName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestInstanceTowerOmitEmpty(t *testing.T) {
 	// Instance without Tower should omit the field in JSON (backward compat)
 	cfg := &SpireConfig{

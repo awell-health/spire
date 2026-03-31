@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -18,6 +19,14 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
+
+// validDBNameRe matches safe dolt database names (alphanumeric + underscore + hyphen).
+var validDBNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// isValidDatabaseName checks that a database name is safe for interpolation into SQL.
+func isValidDatabaseName(name string) bool {
+	return name != "" && validDBNameRe.MatchString(name)
+}
 
 // --- Type aliases so existing cmd/spire code compiles unchanged ---
 
@@ -938,17 +947,18 @@ func cmdTowerRemove(name string, force bool) error {
 		return fmt.Errorf("refusing to remove the last tower without --force")
 	}
 
-	// 3. Confirmation prompt (skip if --force or stdin is not a terminal).
+	// 3. Confirmation prompt — require --force in non-interactive contexts.
 	if !force {
-		if term.IsTerminal(int(os.Stdin.Fd())) {
-			fmt.Printf("Remove tower %q? This will drop the database and all beads.\nType the tower name to confirm: ", name)
-			reader := bufio.NewReader(os.Stdin)
-			input, _ := reader.ReadString('\n')
-			input = strings.TrimSpace(input)
-			if input != name {
-				fmt.Println("Aborted — tower name did not match.")
-				return nil
-			}
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return fmt.Errorf("refusing to remove tower %q without --force (stdin is not a terminal)", name)
+		}
+		fmt.Printf("Remove tower %q? This will drop the database and all beads.\nType the tower name to confirm: ", name)
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input != name {
+			fmt.Println("Aborted — tower name did not match.")
+			return nil
 		}
 	}
 
@@ -988,6 +998,9 @@ func cmdTowerRemove(name string, force bool) error {
 
 	// 5. Drop the dolt database.
 	dbDropped := false
+	if !isValidDatabaseName(tower.Database) {
+		return fmt.Errorf("refusing to drop database: invalid database name %q in tower config", tower.Database)
+	}
 	if doltIsReachable() {
 		if _, dropErr := rawDoltQuery(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", tower.Database)); dropErr != nil {
 			fmt.Printf("  warning: could not drop database %s: %s\n", tower.Database, dropErr)
@@ -1007,14 +1020,17 @@ func cmdTowerRemove(name string, force bool) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	var removedPrefixes []string
+	var removedBeadsDirs int
 	for key, inst := range cfg.Instances {
 		if inst.Tower == name {
 			removedPrefixes = append(removedPrefixes, inst.Prefix)
-			// Clean up .beads/ directories in repo paths.
+			// Clean up .beads/ metadata directories in repo paths.
+			// These are lightweight metadata dirs pointing to the now-dropped database.
 			for _, p := range config.AllPaths(inst) {
 				beadsDir := filepath.Join(p, ".beads")
 				if info, statErr := os.Stat(beadsDir); statErr == nil && info.IsDir() {
 					os.RemoveAll(beadsDir)
+					removedBeadsDirs++
 				}
 			}
 			delete(cfg.Instances, key)
@@ -1025,12 +1041,13 @@ func cmdTowerRemove(name string, force bool) error {
 		summary = append(summary, fmt.Sprintf("Removed %d registered repo(s) (%s)",
 			len(removedPrefixes), strings.Join(removedPrefixes, ", ")))
 	}
+	if removedBeadsDirs > 0 {
+		summary = append(summary, fmt.Sprintf("Cleaned up %d .beads/ metadata dir(s) from repo paths", removedBeadsDirs))
+	}
 
 	// 7. Clear active tower if it was this one.
-	clearedActive := false
 	if cfg.ActiveTower == name {
 		cfg.ActiveTower = ""
-		clearedActive = true
 		summary = append(summary, fmt.Sprintf("Cleared active tower (was %q)", name))
 	}
 
@@ -1052,7 +1069,6 @@ func cmdTowerRemove(name string, force bool) error {
 	if !dbDropped {
 		fmt.Println("\n  Note: database was not dropped (dolt server was not reachable).")
 	}
-	_ = clearedActive // used in summary above
 
 	return nil
 }
