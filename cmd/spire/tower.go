@@ -309,6 +309,7 @@ func bootstrapRepoBeadsDir(beadsDir string, tower *TowerConfig, prefix string) e
 func ensureCustomBeadTypes(beadsDir string) error {
 	client := bdpkg.NewClient()
 	client.BeadsDir = beadsDir
+	client.Sandbox = true // remote may not be configured yet — don't let auto-push hang
 
 	// Read current custom types to avoid clobbering user additions.
 	current, err := client.ConfigGet("types.custom")

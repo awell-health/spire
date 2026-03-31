@@ -29,6 +29,10 @@ type Client struct {
 	// Verbose enables command logging. Defaults to SPIRE_BD_LOG env var.
 	Verbose bool
 
+	// Sandbox disables auto-sync (--sandbox flag). Use during tower create
+	// and other bootstrap operations where the remote may not be configured.
+	Sandbox bool
+
 	// Logger is used for verbose logging. Defaults to the standard logger.
 	Logger *log.Logger
 }
@@ -60,6 +64,9 @@ func (c *Client) exec(args ...string) (string, error) {
 	}
 	start := time.Now()
 
+	if c.Sandbox {
+		args = append([]string{"--sandbox"}, args...)
+	}
 	cmd := exec.Command(c.BinPath, args...)
 	if c.BeadsDir != "" {
 		cmd.Env = append(os.Environ(), "BEADS_DIR="+c.BeadsDir)
