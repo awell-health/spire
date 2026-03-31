@@ -611,6 +611,9 @@ type DORAOpts struct {
 }
 
 // failureResults are attempt results counted as failures for DORA metrics.
+// This deliberately includes "error" and "test_failure" beyond the spec's
+// "failure or timeout" — these represent agent infrastructure errors and
+// test suite failures that are equally indicative of change quality issues.
 var failureResults = map[string]bool{
 	"failure": true, "timeout": true, "error": true, "test_failure": true,
 }
@@ -672,12 +675,20 @@ func MetricsDORA(opts DORAOpts) error {
 		return fmt.Errorf("dora: fetch children: %w", err)
 	}
 
-	// --- Classify children and extract attempt results ---
-	type attemptInfo struct {
-		bead   store.BoardBead
-		result string
-	}
+	result := computeDORA(parents, childMap, opts)
+	return renderDORAOutput(result, opts)
+}
 
+// attemptInfo pairs a BoardBead with its extracted result string.
+type attemptInfo struct {
+	bead   store.BoardBead
+	result string
+}
+
+// computeDORA computes all DORA and DAG metrics from pre-fetched parent beads
+// and their children. Separated from MetricsDORA for testability.
+func computeDORA(parents []store.BoardBead, childMap map[string][]store.BoardBead, opts DORAOpts) *DORAResult {
+	// --- Classify children and extract attempt results ---
 	parentAttempts := make(map[string][]attemptInfo)
 	parentReviews := make(map[string][]store.BoardBead)
 	parentSteps := make(map[string][]store.BoardBead)
@@ -972,7 +983,7 @@ func MetricsDORA(opts DORAOpts) error {
 		}
 	}
 
-	return renderDORAOutput(result, opts)
+	return result
 }
 
 func renderDORAOutput(result *DORAResult, opts DORAOpts) error {

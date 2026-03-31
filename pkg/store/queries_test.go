@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads"
 )
@@ -146,5 +148,116 @@ func TestGetChildrenBatch_Error(t *testing.T) {
 	expected := "get children of bad-parent: database connection lost"
 	if got := err.Error(); got != expected {
 		t.Errorf("expected error %q, got %q", expected, got)
+	}
+}
+
+// --- GetChildrenBoardBatch tests ---
+
+func TestGetChildrenBoardBatch_Empty(t *testing.T) {
+	// Should return empty map without querying — no store needed.
+	result, err := GetChildrenBoardBatch([]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil empty map, got nil")
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(result))
+	}
+}
+
+func TestGetChildrenBoardBatch_NilInput(t *testing.T) {
+	result, err := GetChildrenBoardBatch(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil empty map, got nil")
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(result))
+	}
+}
+
+func TestGetChildrenBoardBatch_Grouped(t *testing.T) {
+	now := time.Now()
+	earlier := now.Add(-1 * time.Hour)
+	closed := now.Add(-30 * time.Minute)
+
+	mock := &mockStorage{
+		issues: map[string][]*beads.Issue{
+			"parent-1": {
+				{
+					ID:        "child-1a",
+					Title:     "attempt: wizard",
+					Status:    beads.StatusClosed,
+					IssueType: beads.TypeTask,
+					CreatedAt: earlier,
+					UpdatedAt: now,
+					ClosedAt:  &closed,
+					Labels:    []string{"attempt", "result:success"},
+				},
+			},
+			"parent-2": {
+				{
+					ID:        "child-2a",
+					Title:     "review-round-1",
+					Status:    beads.StatusOpen,
+					IssueType: beads.TypeTask,
+					CreatedAt: earlier,
+					UpdatedAt: now,
+				},
+			},
+		},
+	}
+	setTestStore(t, mock)
+
+	result, err := GetChildrenBoardBatch([]string{"parent-1", "parent-2", "parent-3"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// parent-1 should have 1 child with timestamps populated.
+	if len(result["parent-1"]) != 1 {
+		t.Fatalf("parent-1: expected 1 child, got %d", len(result["parent-1"]))
+	}
+	bb := result["parent-1"][0]
+	if bb.ID != "child-1a" {
+		t.Errorf("expected ID child-1a, got %s", bb.ID)
+	}
+	if bb.CreatedAt == "" {
+		t.Error("expected CreatedAt to be populated")
+	}
+	if bb.ClosedAt == "" {
+		t.Error("expected ClosedAt to be populated for closed issue")
+	}
+	if bb.Title != "attempt: wizard" {
+		t.Errorf("expected title 'attempt: wizard', got %q", bb.Title)
+	}
+
+	// parent-2 should have 1 child.
+	if len(result["parent-2"]) != 1 {
+		t.Fatalf("parent-2: expected 1 child, got %d", len(result["parent-2"]))
+	}
+	if result["parent-2"][0].ClosedAt != "" {
+		t.Errorf("expected empty ClosedAt for open issue, got %q", result["parent-2"][0].ClosedAt)
+	}
+
+	// parent-3 should have empty slice.
+	if len(result["parent-3"]) != 0 {
+		t.Errorf("parent-3: expected 0 children, got %d", len(result["parent-3"]))
+	}
+}
+
+func TestGetChildrenBoardBatch_Error(t *testing.T) {
+	setTestStore(t, &mockErrorStorage{})
+
+	_, err := GetChildrenBoardBatch([]string{"good-parent", "bad-parent"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "bad-parent") {
+		t.Errorf("expected error to mention bad-parent, got %q", err.Error())
 	}
 }

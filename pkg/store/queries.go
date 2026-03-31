@@ -251,6 +251,11 @@ func GetChildrenBatch(parentIDs []string) (map[string][]Bead, error) {
 
 // GetChildrenBoardBatch fetches children as BoardBeads for multiple parent IDs.
 // Returns full timestamp data (CreatedAt, UpdatedAt, ClosedAt) needed for metrics.
+//
+// NOTE: This performs N+1 queries (one SearchIssues per parent), consistent with
+// GetChildrenBatch. For typical DORA windows (28 days) this is acceptable, but
+// could be slow with hundreds of parents. A batch filter at the storage layer
+// would be the fix if this becomes a bottleneck.
 func GetChildrenBoardBatch(parentIDs []string) (map[string][]BoardBead, error) {
 	if len(parentIDs) == 0 {
 		return map[string][]BoardBead{}, nil
