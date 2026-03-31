@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	bdpkg "github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // --- Type aliases so existing cmd/spire code compiles unchanged ---
@@ -416,6 +418,16 @@ var towerUseCmd = &cobra.Command{
 	},
 }
 
+var towerRemoveCmd = &cobra.Command{
+	Use:   "remove <name>",
+	Short: "Remove a tower and drop its database",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		force, _ := cmd.Flags().GetBool("force")
+		return cmdTowerRemove(args[0], force)
+	},
+}
+
 func init() {
 	towerCreateCmd.Flags().String("name", "", "Tower name (required)")
 	towerCreateCmd.Flags().String("dolthub", "", "DoltHub remote (user/repo)")
@@ -423,7 +435,9 @@ func init() {
 
 	towerAttachCmd.Flags().String("name", "", "Local name override")
 
-	towerCmd.AddCommand(towerCreateCmd, towerAttachCmd, towerListCmd, towerUseCmd)
+	towerRemoveCmd.Flags().Bool("force", false, "Force removal (skip confirmation, allow removing last tower)")
+
+	towerCmd.AddCommand(towerCreateCmd, towerAttachCmd, towerListCmd, towerUseCmd, towerRemoveCmd)
 }
 
 // cmdTower dispatches tower subcommands (kept for backward compat with tests).
@@ -443,8 +457,19 @@ func cmdTower(args []string) error {
 			return fmt.Errorf("usage: spire tower use <name>")
 		}
 		return cmdTowerUse(args[1])
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: spire tower remove <name> [--force]")
+		}
+		force := false
+		for _, a := range args[2:] {
+			if a == "--force" {
+				force = true
+			}
+		}
+		return cmdTowerRemove(args[1], force)
 	default:
-		return fmt.Errorf("unknown tower subcommand: %q\nusage: spire tower <create|attach|list|use>", args[0])
+		return fmt.Errorf("unknown tower subcommand: %q\nusage: spire tower <create|attach|list|use|remove>", args[0])
 	}
 }
 
@@ -893,5 +918,141 @@ func cmdTowerUse(name string) error {
 	}
 
 	fmt.Printf("Active tower set to %q\n", name)
+	return nil
+}
+
+// cmdTowerRemove removes a tower: kills wizards, drops database, removes config and instances.
+func cmdTowerRemove(name string, force bool) error {
+	// 1. Load tower config — verify it exists.
+	tower, err := loadTowerConfig(name)
+	if err != nil {
+		return fmt.Errorf("tower %q not found", name)
+	}
+
+	// 2. Check if this is the last tower.
+	towers, err := listTowerConfigs()
+	if err != nil {
+		return fmt.Errorf("list towers: %w", err)
+	}
+	if len(towers) == 1 && !force {
+		return fmt.Errorf("refusing to remove the last tower without --force")
+	}
+
+	// 3. Confirmation prompt (skip if --force or stdin is not a terminal).
+	if !force {
+		if term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Printf("Remove tower %q? This will drop the database and all beads.\nType the tower name to confirm: ", name)
+			reader := bufio.NewReader(os.Stdin)
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(input)
+			if input != name {
+				fmt.Println("Aborted — tower name did not match.")
+				return nil
+			}
+		}
+	}
+
+	// Track what was done for the summary.
+	var summary []string
+
+	// 4. Kill running wizards for this tower.
+	wizardsKilled := 0
+	reg := loadWizardRegistry()
+	reg = cleanDeadWizards(reg)
+	var remaining []localWizard
+	for _, w := range reg.Wizards {
+		if w.Tower == name {
+			if w.PID > 0 && processAlive(w.PID) {
+				if proc, findErr := os.FindProcess(w.PID); findErr == nil {
+					proc.Signal(syscall.SIGTERM)
+					// Wait briefly for graceful shutdown.
+					deadline := time.Now().Add(3 * time.Second)
+					for time.Now().Before(deadline) {
+						if !processAlive(w.PID) {
+							break
+						}
+						time.Sleep(100 * time.Millisecond)
+					}
+					wizardsKilled++
+				}
+			}
+		} else {
+			remaining = append(remaining, w)
+		}
+	}
+	if wizardsKilled > 0 {
+		reg.Wizards = remaining
+		saveWizardRegistry(reg)
+		summary = append(summary, fmt.Sprintf("Killed %d running wizard(s)", wizardsKilled))
+	}
+
+	// 5. Drop the dolt database.
+	dbDropped := false
+	if doltIsReachable() {
+		if _, dropErr := rawDoltQuery(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", tower.Database)); dropErr != nil {
+			fmt.Printf("  warning: could not drop database %s: %s\n", tower.Database, dropErr)
+		} else {
+			dbDropped = true
+			summary = append(summary, fmt.Sprintf("Dropped database %s", tower.Database))
+		}
+	} else {
+		fmt.Printf("  warning: dolt server not reachable — database %s may need manual cleanup\n", tower.Database)
+		fmt.Printf("  hint: start dolt with 'spire up' and re-run, or remove %s/%s/ manually\n",
+			doltDataDir(), tower.Database)
+	}
+
+	// 6. Remove instance entries and .beads/ directories.
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	var removedPrefixes []string
+	for key, inst := range cfg.Instances {
+		if inst.Tower == name {
+			removedPrefixes = append(removedPrefixes, inst.Prefix)
+			// Clean up .beads/ directories in repo paths.
+			for _, p := range config.AllPaths(inst) {
+				beadsDir := filepath.Join(p, ".beads")
+				if info, statErr := os.Stat(beadsDir); statErr == nil && info.IsDir() {
+					os.RemoveAll(beadsDir)
+				}
+			}
+			delete(cfg.Instances, key)
+		}
+	}
+	if len(removedPrefixes) > 0 {
+		sort.Strings(removedPrefixes)
+		summary = append(summary, fmt.Sprintf("Removed %d registered repo(s) (%s)",
+			len(removedPrefixes), strings.Join(removedPrefixes, ", ")))
+	}
+
+	// 7. Clear active tower if it was this one.
+	clearedActive := false
+	if cfg.ActiveTower == name {
+		cfg.ActiveTower = ""
+		clearedActive = true
+		summary = append(summary, fmt.Sprintf("Cleared active tower (was %q)", name))
+	}
+
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	// 8. Delete tower config file.
+	if err := config.DeleteTowerConfig(name); err != nil {
+		return fmt.Errorf("delete tower config: %w", err)
+	}
+	summary = append(summary, fmt.Sprintf("Deleted tower config"))
+
+	// 9. Print summary.
+	fmt.Printf("\nRemoved tower %q:\n", name)
+	for _, s := range summary {
+		fmt.Printf("  - %s\n", s)
+	}
+	if !dbDropped {
+		fmt.Println("\n  Note: database was not dropped (dolt server was not reachable).")
+	}
+	_ = clearedActive // used in summary above
+
 	return nil
 }

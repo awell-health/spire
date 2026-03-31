@@ -109,6 +109,19 @@ func ListTowerConfigs() ([]TowerConfig, error) {
 	return towers, nil
 }
 
+// DeleteTowerConfig removes a tower's config file from disk.
+// Returns nil if the file does not exist (idempotent).
+func DeleteTowerConfig(name string) error {
+	p, err := TowerConfigPath(name)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // ActiveTowerConfig finds the tower for the current context.
 // If SPIRE_TOWER is set in the environment, it loads that tower directly —
 // this ensures subprocess chains (wizard → apprentice) inherit explicit tower
