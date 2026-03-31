@@ -58,6 +58,8 @@ Before setting up Spire, you'll need:
 
 ## Quick start
 
+![Spire demo](demo.gif)
+
 ```bash
 # Install
 brew tap awell-health/tap && brew install spire
@@ -87,6 +89,10 @@ spire watch
 ```
 
 The default local path is process-based: `spire summon` starts executor processes on your laptop, and approved work is landed by merging to the repo's base branch.
+
+Every step is traceable — `spire trace` shows the full execution DAG for any bead:
+
+![Spire trace](demo-trace.png)
 
 ### The formula lifecycle
 
