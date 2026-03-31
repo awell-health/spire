@@ -26,6 +26,7 @@ type BoardBead struct {
 	Owner           string     `json:"owner"`
 	CreatedAt       string     `json:"created_at"`
 	UpdatedAt       string     `json:"updated_at"`
+	ClosedAt        string     `json:"closed_at,omitempty"`
 	Labels          []string   `json:"labels"`
 	Parent          string     `json:"parent"`
 	Dependencies    []BoardDep `json:"dependencies"`
@@ -68,4 +69,14 @@ func (b BoardBead) HasLabel(label string) bool {
 		}
 	}
 	return false
+}
+
+// HasLabelPrefix checks if a BoardBead has a label with the given prefix, returning the suffix.
+func (b BoardBead) HasLabelPrefix(prefix string) string {
+	for _, l := range b.Labels {
+		if strings.HasPrefix(l, prefix) {
+			return l[len(prefix):]
+		}
+	}
+	return ""
 }

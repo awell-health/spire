@@ -248,3 +248,27 @@ func GetChildrenBatch(parentIDs []string) (map[string][]Bead, error) {
 	}
 	return result, nil
 }
+
+// GetChildrenBoardBatch fetches children as BoardBeads for multiple parent IDs.
+// Returns full timestamp data (CreatedAt, UpdatedAt, ClosedAt) needed for metrics.
+func GetChildrenBoardBatch(parentIDs []string) (map[string][]BoardBead, error) {
+	if len(parentIDs) == 0 {
+		return map[string][]BoardBead{}, nil
+	}
+	s, ctx, err := getStore()
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string][]BoardBead, len(parentIDs))
+	for _, pid := range parentIDs {
+		pid := pid
+		issues, err := s.SearchIssues(ctx, "", beads.IssueFilter{
+			ParentID: &pid,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get children of %s: %w", pid, err)
+		}
+		result[pid] = IssuesToBoardBeads(issues)
+	}
+	return result, nil
+}

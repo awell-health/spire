@@ -109,15 +109,45 @@ func CreateAttemptBeadAtomic(parentID, agentName, model, branch string) (string,
 	return CreateAttemptBead(parentID, agentName, model, branch)
 }
 
-// CloseAttemptBead closes an attempt bead and adds a result comment.
+// CloseAttemptBead closes an attempt bead, adds a result: label, and adds a result comment.
 func CloseAttemptBead(attemptID, result string) error {
 	if attemptID == "" {
 		return nil
 	}
 	if result != "" {
+		AddLabel(attemptID, "result:"+result)
 		AddComment(attemptID, result)
 	}
 	return CloseBead(attemptID)
+}
+
+// knownAttemptResults are the valid result values written by CloseAttemptBead.
+var knownAttemptResults = map[string]bool{
+	"success": true, "failure": true, "timeout": true, "error": true,
+	"test_failure": true, "review_rejected": true, "stopped": true,
+}
+
+// AttemptResult extracts the result string from an attempt bead.
+// Checks for a result: label first (fast path for new data), then falls back
+// to the last comment that matches a known result value (legacy data).
+// Returns "" if no result found.
+func AttemptResult(b Bead) string {
+	if v := HasLabel(b, "result:"); v != "" {
+		return v
+	}
+	// Fallback: check comments for legacy attempt beads that lack the label.
+	comments, err := GetComments(b.ID)
+	if err != nil || len(comments) == 0 {
+		return ""
+	}
+	// Walk backwards — the result comment is typically the last one.
+	for i := len(comments) - 1; i >= 0; i-- {
+		body := strings.TrimSpace(comments[i].Text)
+		if knownAttemptResults[body] {
+			return body
+		}
+	}
+	return ""
 }
 
 // IsAttemptBead returns true if the bead is an attempt bead

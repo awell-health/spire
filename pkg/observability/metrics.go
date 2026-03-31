@@ -6,8 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
 
 // MetricsRow holds a single row from agent_runs queries.
@@ -520,12 +525,19 @@ func SqlEsc(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
 
-// DORAResult holds all four DORA metrics for JSON output.
+// DORAResult holds DORA metrics and additional DAG-derived metrics.
 type DORAResult struct {
-	DeploymentFrequency []DORAWeekCount `json:"deployment_frequency"`
-	LeadTime            *DORAStats      `json:"lead_time"`
-	ChangeFailureRate   *DORAFailRate   `json:"change_failure_rate"`
-	MTTR                *DORAStats      `json:"mttr"`
+	// Classic DORA four
+	DeploymentFrequency []DORAWeekCount  `json:"deployment_frequency"`
+	LeadTime            *DORAStats       `json:"lead_time"`
+	ChangeFailureRate   *DORAFailRate    `json:"change_failure_rate"`
+	MTTR                *DORAStats       `json:"mttr"`
+	// DAG metrics
+	RetryRate      *RetryStats      `json:"retry_rate,omitempty"`
+	ReviewFriction *ReviewStats     `json:"review_friction,omitempty"`
+	EscalationRate *EscalationStats `json:"escalation_rate,omitempty"`
+	ModelEfficiency []ModelStats    `json:"model_efficiency,omitempty"`
+	PhaseDuration  []PhaseStats     `json:"phase_duration,omitempty"`
 }
 
 // DORAWeekCount is a single week's merge count.
@@ -544,208 +556,442 @@ type DORAStats struct {
 
 // DORAFailRate holds change failure rate data.
 type DORAFailRate struct {
-	TotalClosed int     `json:"total_closed"`
-	Failures    int     `json:"failures"`
-	Rate        float64 `json:"rate"`
+	TotalAttempts int     `json:"total_attempts"`
+	Failures      int     `json:"failures"`
+	Rate          float64 `json:"rate"`
 }
 
-// MetricsDORA computes and displays DORA metrics from the bead graph.
-func MetricsDORA(jsonOut bool) error {
-	result := &DORAResult{}
+// RetryStats holds retry rate metrics.
+type RetryStats struct {
+	TotalParents  int     `json:"total_parents"`
+	TotalAttempts int     `json:"total_attempts"`
+	AvgAttempts   float64 `json:"avg_attempts"`
+	MaxAttempts   int     `json:"max_attempts"`
+}
 
-	// 1. Deployment Frequency — merges per week (last 28 days)
-	dfQuery := `SELECT
-		YEARWEEK(closed_at, 1) as week,
-		COUNT(*) as merged
-	FROM issues
-	WHERE status = 'closed'
-		AND closed_at IS NOT NULL
-		AND issue_type NOT IN ('design', 'epic')
-		AND closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
-	GROUP BY YEARWEEK(closed_at, 1)
-	ORDER BY week`
+// ReviewStats holds review friction metrics.
+type ReviewStats struct {
+	TotalReviews   int     `json:"total_reviews"`
+	AvgPerParent   float64 `json:"avg_per_parent"`
+	AvgDurationH   float64 `json:"avg_duration_hours"`
+	P50DurationH   float64 `json:"p50_duration_hours"`
+	ParentsWithRev int     `json:"parents_with_reviews"`
+}
 
-	dfRows, err := QueryJSON(dfQuery)
-	if err != nil {
-		return fmt.Errorf("dora deployment frequency: %w", err)
+// EscalationStats holds arbiter escalation metrics.
+type EscalationStats struct {
+	TotalParents int     `json:"total_parents"`
+	Escalated    int     `json:"escalated"`
+	Rate         float64 `json:"rate"`
+}
+
+// ModelStats holds per-model success rate.
+type ModelStats struct {
+	Model      string  `json:"model"`
+	Total      int     `json:"total"`
+	Succeeded  int     `json:"succeeded"`
+	SuccessRate float64 `json:"success_rate"`
+}
+
+// PhaseStats holds per-phase duration metrics.
+type PhaseStats struct {
+	Phase      string  `json:"phase"`
+	Count      int     `json:"count"`
+	AvgHours   float64 `json:"avg_hours"`
+	P50Hours   float64 `json:"p50_hours"`
+	P90Hours   float64 `json:"p90_hours"`
+}
+
+// DORAOpts controls what MetricsDORA computes and renders.
+type DORAOpts struct {
+	JSONOut    bool
+	BeadID     string // scope to a single parent bead
+	ShowModel  bool   // include model efficiency breakdown
+	ShowPhase  bool   // include phase duration breakdown
+}
+
+// failureResults are attempt results counted as failures for DORA metrics.
+var failureResults = map[string]bool{
+	"failure": true, "timeout": true, "error": true, "test_failure": true,
+}
+
+// MetricsDORA computes and displays DORA metrics from the bead DAG.
+// All data is derived from attempt, review-round, and step child beads —
+// no SQL queries against issues/labels tables.
+func MetricsDORA(opts DORAOpts) error {
+	type parentData struct {
+		parent   store.BoardBead
+		children []store.BoardBead
 	}
-	for _, row := range dfRows {
-		yw := ToString(row["week"])
-		// YEARWEEK returns YYYYWW integer; format as YYYY-Wnn
-		if len(yw) >= 6 {
-			yw = yw[:4] + "-W" + yw[4:]
+
+	// --- Fetch parent beads ---
+	var parents []store.BoardBead
+	if opts.BeadID != "" {
+		// Single-bead mode: use the specified bead as the sole parent.
+		all, err := store.ListBoardBeads(beads.IssueFilter{
+			IDs: []string{opts.BeadID},
+		})
+		if err != nil {
+			return fmt.Errorf("dora: fetch bead %s: %w", opts.BeadID, err)
 		}
-		result.DeploymentFrequency = append(result.DeploymentFrequency, DORAWeekCount{
-			Week:   yw,
-			Merged: ToInt(row["merged"]),
+		parents = all
+	} else {
+		cutoff := time.Now().AddDate(0, 0, -28)
+		all, err := store.ListBoardBeads(beads.IssueFilter{
+			Status:      store.StatusPtr(beads.StatusClosed),
+			ClosedAfter: &cutoff,
+		})
+		if err != nil {
+			return fmt.Errorf("dora: fetch closed beads: %w", err)
+		}
+		// Filter out non-work bead types (design, epic, attempt, review-round, step).
+		skipTypes := map[string]bool{"design": true, "epic": true}
+		for _, b := range all {
+			if skipTypes[b.Type] {
+				continue
+			}
+			if store.IsAttemptBoardBead(b) || store.IsReviewRoundBoardBead(b) || store.IsStepBoardBead(b) {
+				continue
+			}
+			parents = append(parents, b)
+		}
+	}
+
+	if len(parents) == 0 {
+		result := &DORAResult{}
+		return renderDORAOutput(result, opts)
+	}
+
+	// --- Batch-fetch children as BoardBeads (for timestamps) ---
+	parentIDs := make([]string, len(parents))
+	for i, p := range parents {
+		parentIDs[i] = p.ID
+	}
+	childMap, err := store.GetChildrenBoardBatch(parentIDs)
+	if err != nil {
+		return fmt.Errorf("dora: fetch children: %w", err)
+	}
+
+	// --- Classify children and extract attempt results ---
+	type attemptInfo struct {
+		bead   store.BoardBead
+		result string
+	}
+
+	parentAttempts := make(map[string][]attemptInfo)
+	parentReviews := make(map[string][]store.BoardBead)
+	parentSteps := make(map[string][]store.BoardBead)
+
+	for _, p := range parents {
+		children := childMap[p.ID]
+		for _, c := range children {
+			if store.IsAttemptBoardBead(c) {
+				// Extract result from label, fall back to comments for legacy data.
+				res := c.HasLabelPrefix("result:")
+				if res == "" {
+					// Convert to lightweight Bead for AttemptResult helper.
+					lb := store.Bead{ID: c.ID, Labels: c.Labels}
+					res = store.AttemptResult(lb)
+				}
+				parentAttempts[p.ID] = append(parentAttempts[p.ID], attemptInfo{bead: c, result: res})
+			} else if store.IsReviewRoundBoardBead(c) {
+				parentReviews[p.ID] = append(parentReviews[p.ID], c)
+			} else if store.IsStepBoardBead(c) {
+				parentSteps[p.ID] = append(parentSteps[p.ID], c)
+			}
+		}
+		// Sort attempts by UpdatedAt ascending for ordering.
+		atts := parentAttempts[p.ID]
+		sort.Slice(atts, func(i, j int) bool {
+			return atts[i].bead.UpdatedAt < atts[j].bead.UpdatedAt
 		})
 	}
 
-	// 2. Lead Time for Changes — hours from created_at to closed_at
-	ltQuery := `SELECT
-		TIMESTAMPDIFF(HOUR, created_at, closed_at) as lead_time_hours
-	FROM issues
-	WHERE status = 'closed'
-		AND closed_at IS NOT NULL
-		AND issue_type NOT IN ('design', 'epic')
-		AND closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
-	ORDER BY lead_time_hours`
+	// --- Compute metrics ---
+	result := &DORAResult{}
 
-	ltRows, err := QueryJSON(ltQuery)
-	if err != nil {
-		return fmt.Errorf("dora lead time: %w", err)
-	}
-	if len(ltRows) > 0 {
-		vals := make([]float64, len(ltRows))
-		for i, row := range ltRows {
-			vals[i] = ToFloat(row["lead_time_hours"])
+	// 1. Deployment Frequency — parents whose last attempt result=success, grouped by week.
+	weekCounts := map[string]int{}
+	var successParents []store.BoardBead
+	for _, p := range parents {
+		atts := parentAttempts[p.ID]
+		if len(atts) == 0 {
+			continue // skip parents with no attempts (pre-DAG beads)
 		}
+		last := atts[len(atts)-1]
+		if last.result == "success" {
+			successParents = append(successParents, p)
+			// Use ClosedAt for week grouping; fall back to UpdatedAt.
+			ts := p.ClosedAt
+			if ts == "" {
+				ts = p.UpdatedAt
+			}
+			wk := weekKey(ts)
+			weekCounts[wk]++
+		}
+	}
+	// Sort weeks and build result.
+	weeks := sortedKeys(weekCounts)
+	for _, wk := range weeks {
+		result.DeploymentFrequency = append(result.DeploymentFrequency, DORAWeekCount{
+			Week:   wk,
+			Merged: weekCounts[wk],
+		})
+	}
+
+	// 2. Lead Time — first attempt CreatedAt → last successful attempt UpdatedAt.
+	var leadTimes []float64
+	for _, p := range successParents {
+		atts := parentAttempts[p.ID]
+		if len(atts) == 0 {
+			continue
+		}
+		first := atts[0].bead
+		// Find last successful attempt.
+		var lastSuccess *store.BoardBead
+		for i := len(atts) - 1; i >= 0; i-- {
+			if atts[i].result == "success" {
+				lastSuccess = &atts[i].bead
+				break
+			}
+		}
+		if lastSuccess == nil {
+			continue
+		}
+		start := parseTime(first.CreatedAt)
+		// Use ClosedAt of the last successful attempt if available, else UpdatedAt.
+		endTS := lastSuccess.ClosedAt
+		if endTS == "" {
+			endTS = lastSuccess.UpdatedAt
+		}
+		end := parseTime(endTS)
+		if !start.IsZero() && !end.IsZero() && end.After(start) {
+			leadTimes = append(leadTimes, end.Sub(start).Hours())
+		}
+	}
+	sortFloats(leadTimes)
+	if len(leadTimes) > 0 {
 		result.LeadTime = &DORAStats{
-			AvgHours: avg(vals),
-			P50Hours: percentile(vals, 0.50),
-			P90Hours: percentile(vals, 0.90),
-			Count:    len(vals),
+			AvgHours: avg(leadTimes),
+			P50Hours: percentile(leadTimes, 0.50),
+			P90Hours: percentile(leadTimes, 0.90),
+			Count:    len(leadTimes),
 		}
 	}
 
-	// 3. Change Failure Rate — needs-human label OR review_rounds > 2
-	// Run two separate queries to handle agent_runs table possibly missing.
-	cfrBaseQuery := `SELECT COUNT(DISTINCT id) as total_closed
-	FROM issues
-	WHERE status = 'closed'
-		AND closed_at IS NOT NULL
-		AND issue_type NOT IN ('design', 'epic')
-		AND closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)`
-
-	cfrBaseRows, err := QueryJSON(cfrBaseQuery)
-	if err != nil {
-		return fmt.Errorf("dora cfr base: %w", err)
-	}
-	totalClosed := ToInt(FirstOr(cfrBaseRows)["total_closed"])
-
-	// Beads with needs-human label
-	cfrLabelQuery := `SELECT COUNT(DISTINCT i.id) as failures
-	FROM issues i
-	JOIN labels l ON l.issue_id = i.id AND l.label = 'needs-human'
-	WHERE i.status = 'closed'
-		AND i.closed_at IS NOT NULL
-		AND i.issue_type NOT IN ('design', 'epic')
-		AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)`
-
-	labelRows, err := QueryJSON(cfrLabelQuery)
-	if err != nil {
-		return fmt.Errorf("dora cfr labels: %w", err)
-	}
-	labelFailures := ToInt(FirstOr(labelRows)["failures"])
-
-	// Beads with review_rounds > 2 (agent_runs may not exist)
-	cfrRunsQuery := `SELECT COUNT(DISTINCT ar.bead_id) as failures
-	FROM agent_runs ar
-	JOIN issues i ON i.id = ar.bead_id
-	WHERE i.status = 'closed'
-		AND i.closed_at IS NOT NULL
-		AND i.issue_type NOT IN ('design', 'epic')
-		AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
-		AND ar.review_rounds > 2`
-
-	runsRows, err := QueryJSON(cfrRunsQuery)
-	if err != nil {
-		// agent_runs table may not exist — ignore
-		runsRows = nil
-	}
-	runsFailures := ToInt(FirstOr(runsRows)["failures"])
-
-	// Combine: count distinct failures from either source.
-	// Use a union query for accurate distinct count if both sources work.
-	failures := labelFailures
-	if runsFailures > 0 {
-		// For accuracy, run a union query
-		cfrUnionQuery := `SELECT COUNT(*) as failures FROM (
-			SELECT DISTINCT i.id
-			FROM issues i
-			JOIN labels l ON l.issue_id = i.id AND l.label = 'needs-human'
-			WHERE i.status = 'closed'
-				AND i.closed_at IS NOT NULL
-				AND i.issue_type NOT IN ('design', 'epic')
-				AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
-			UNION
-			SELECT DISTINCT ar.bead_id as id
-			FROM agent_runs ar
-			JOIN issues i ON i.id = ar.bead_id
-			WHERE i.status = 'closed'
-				AND i.closed_at IS NOT NULL
-				AND i.issue_type NOT IN ('design', 'epic')
-				AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
-				AND ar.review_rounds > 2
-		) combined`
-
-		unionRows, uerr := QueryJSON(cfrUnionQuery)
-		if uerr == nil && len(unionRows) > 0 {
-			failures = ToInt(FirstOr(unionRows)["failures"])
-		}
-		// fallback: just add them (may overcount slightly)
-		if uerr != nil {
-			failures = labelFailures + runsFailures
+	// 3. Change Failure Rate — failed attempts / total attempts.
+	var totalAttempts, failedAttempts int
+	for _, atts := range parentAttempts {
+		for _, a := range atts {
+			totalAttempts++
+			if failureResults[a.result] {
+				failedAttempts++
+			}
 		}
 	}
-
-	if totalClosed > 0 {
+	if totalAttempts > 0 {
 		result.ChangeFailureRate = &DORAFailRate{
-			TotalClosed: totalClosed,
-			Failures:    failures,
-			Rate:        float64(failures) * 100 / float64(totalClosed),
+			TotalAttempts: totalAttempts,
+			Failures:      failedAttempts,
+			Rate:          float64(failedAttempts) * 100 / float64(totalAttempts),
 		}
 	}
 
-	// 4. Mean Time to Recovery — needs-human escalation to close
-	mttrQuery := `SELECT
-		i.id,
-		TIMESTAMPDIFF(HOUR, MIN(c.created_at), i.closed_at) as recovery_hours
-	FROM issues i
-	JOIN labels l ON l.issue_id = i.id AND l.label = 'needs-human'
-	JOIN comments c ON c.issue_id = i.id AND c.text LIKE '%needs-human%'
-	WHERE i.status = 'closed'
-		AND i.closed_at IS NOT NULL
-		AND i.closed_at >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
-	GROUP BY i.id, i.closed_at
-	ORDER BY recovery_hours`
-
-	mttrRows, err := QueryJSON(mttrQuery)
-	if err != nil {
-		// If the query fails (e.g. no labels/comments tables), just skip MTTR
-		mttrRows = nil
-	}
-	if len(mttrRows) > 0 {
-		vals := make([]float64, len(mttrRows))
-		for i, row := range mttrRows {
-			vals[i] = ToFloat(row["recovery_hours"])
+	// 4. MTTR — time between a failed attempt closing and the next successful attempt on same parent.
+	var recoveryTimes []float64
+	for _, p := range parents {
+		atts := parentAttempts[p.ID]
+		for i := 0; i < len(atts)-1; i++ {
+			if !failureResults[atts[i].result] {
+				continue
+			}
+			// Find next successful attempt.
+			for j := i + 1; j < len(atts); j++ {
+				if atts[j].result == "success" {
+					failEnd := parseTime(atts[i].bead.ClosedAt)
+					if failEnd.IsZero() {
+						failEnd = parseTime(atts[i].bead.UpdatedAt)
+					}
+					successEnd := parseTime(atts[j].bead.ClosedAt)
+					if successEnd.IsZero() {
+						successEnd = parseTime(atts[j].bead.UpdatedAt)
+					}
+					if !failEnd.IsZero() && !successEnd.IsZero() && successEnd.After(failEnd) {
+						recoveryTimes = append(recoveryTimes, successEnd.Sub(failEnd).Hours())
+					}
+					break
+				}
+			}
 		}
+	}
+	sortFloats(recoveryTimes)
+	if len(recoveryTimes) > 0 {
 		result.MTTR = &DORAStats{
-			AvgHours: avg(vals),
-			P50Hours: percentile(vals, 0.50),
-			P90Hours: percentile(vals, 0.90),
-			Count:    len(vals),
+			AvgHours: avg(recoveryTimes),
+			P50Hours: percentile(recoveryTimes, 0.50),
+			P90Hours: percentile(recoveryTimes, 0.90),
+			Count:    len(recoveryTimes),
 		}
 	}
 
-	// Render
-	if jsonOut {
+	// 5. Retry Rate — attempts per parent.
+	parentsWithAttempts := 0
+	maxAttempts := 0
+	for _, atts := range parentAttempts {
+		if len(atts) == 0 {
+			continue
+		}
+		parentsWithAttempts++
+		if len(atts) > maxAttempts {
+			maxAttempts = len(atts)
+		}
+	}
+	if parentsWithAttempts > 0 {
+		result.RetryRate = &RetryStats{
+			TotalParents:  parentsWithAttempts,
+			TotalAttempts: totalAttempts,
+			AvgAttempts:   float64(totalAttempts) / float64(parentsWithAttempts),
+			MaxAttempts:   maxAttempts,
+		}
+	}
+
+	// 6. Review Friction — review-round count and avg time open.
+	var reviewDurations []float64
+	totalReviews := 0
+	parentsWithReviews := 0
+	for _, reviews := range parentReviews {
+		if len(reviews) == 0 {
+			continue
+		}
+		parentsWithReviews++
+		totalReviews += len(reviews)
+		for _, r := range reviews {
+			start := parseTime(r.CreatedAt)
+			endTS := r.ClosedAt
+			if endTS == "" {
+				endTS = r.UpdatedAt
+			}
+			end := parseTime(endTS)
+			if !start.IsZero() && !end.IsZero() && end.After(start) {
+				reviewDurations = append(reviewDurations, end.Sub(start).Hours())
+			}
+		}
+	}
+	sortFloats(reviewDurations)
+	if totalReviews > 0 {
+		avgPerParent := float64(totalReviews) / float64(len(parents))
+		result.ReviewFriction = &ReviewStats{
+			TotalReviews:   totalReviews,
+			AvgPerParent:   avgPerParent,
+			AvgDurationH:   avg(reviewDurations),
+			P50DurationH:   percentile(reviewDurations, 0.50),
+			ParentsWithRev: parentsWithReviews,
+		}
+	}
+
+	// 7. Escalation Rate — arbiter step beads activated.
+	escalated := 0
+	for _, steps := range parentSteps {
+		for _, s := range steps {
+			phase := s.HasLabelPrefix("step:")
+			if phase == "arbiter" && s.Status != "open" {
+				escalated++
+				break // count each parent only once
+			}
+		}
+	}
+	if len(parents) > 0 {
+		result.EscalationRate = &EscalationStats{
+			TotalParents: len(parents),
+			Escalated:    escalated,
+			Rate:         float64(escalated) * 100 / float64(len(parents)),
+		}
+	}
+
+	// 8. Model Efficiency — success rate by model label on attempt beads.
+	if opts.ShowModel {
+		modelTotal := map[string]int{}
+		modelSuccess := map[string]int{}
+		for _, atts := range parentAttempts {
+			for _, a := range atts {
+				model := a.bead.HasLabelPrefix("model:")
+				if model == "" {
+					model = "unknown"
+				}
+				modelTotal[model]++
+				if a.result == "success" {
+					modelSuccess[model]++
+				}
+			}
+		}
+		for _, m := range sortedKeys(modelTotal) {
+			total := modelTotal[m]
+			succeeded := modelSuccess[m]
+			result.ModelEfficiency = append(result.ModelEfficiency, ModelStats{
+				Model:       m,
+				Total:       total,
+				Succeeded:   succeeded,
+				SuccessRate: float64(succeeded) * 100 / float64(total),
+			})
+		}
+	}
+
+	// 9. Phase Duration — step bead open duration by phase.
+	if opts.ShowPhase {
+		phaseDurations := map[string][]float64{}
+		for _, steps := range parentSteps {
+			for _, s := range steps {
+				if s.Status != "closed" {
+					continue
+				}
+				phase := s.HasLabelPrefix("step:")
+				if phase == "" {
+					continue
+				}
+				start := parseTime(s.CreatedAt)
+				endTS := s.ClosedAt
+				if endTS == "" {
+					endTS = s.UpdatedAt
+				}
+				end := parseTime(endTS)
+				if !start.IsZero() && !end.IsZero() && end.After(start) {
+					phaseDurations[phase] = append(phaseDurations[phase], end.Sub(start).Hours())
+				}
+			}
+		}
+		for _, phase := range sortedKeys(phaseDurations) {
+			vals := phaseDurations[phase]
+			sortFloats(vals)
+			result.PhaseDuration = append(result.PhaseDuration, PhaseStats{
+				Phase:    phase,
+				Count:    len(vals),
+				AvgHours: avg(vals),
+				P50Hours: percentile(vals, 0.50),
+				P90Hours: percentile(vals, 0.90),
+			})
+		}
+	}
+
+	return renderDORAOutput(result, opts)
+}
+
+func renderDORAOutput(result *DORAResult, opts DORAOpts) error {
+	if opts.JSONOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(result)
 	}
-
-	return renderDORAText(result)
+	return renderDORAText(result, opts)
 }
 
-func renderDORAText(r *DORAResult) error {
+func renderDORAText(r *DORAResult, opts DORAOpts) error {
 	fmt.Println("DORA Metrics (last 28 days)")
 	fmt.Println()
 
 	// Deployment Frequency
 	fmt.Println("Deployment Frequency:")
 	if len(r.DeploymentFrequency) == 0 {
-		fmt.Printf("  %s(no merges in period)%s\n", Dim, Reset)
+		fmt.Printf("  %s(no successful deployments in period)%s\n", Dim, Reset)
 	} else {
 		var total int
 		for _, wk := range r.DeploymentFrequency {
@@ -772,8 +1018,8 @@ func renderDORAText(r *DORAResult) error {
 	if r.ChangeFailureRate == nil {
 		fmt.Printf("  %s(no data)%s\n", Dim, Reset)
 	} else {
-		fmt.Printf("  %d of %d (%.0f%%) required human intervention\n",
-			r.ChangeFailureRate.Failures, r.ChangeFailureRate.TotalClosed,
+		fmt.Printf("  %d of %d attempts failed (%.0f%%)\n",
+			r.ChangeFailureRate.Failures, r.ChangeFailureRate.TotalAttempts,
 			r.ChangeFailureRate.Rate)
 	}
 	fmt.Println()
@@ -781,13 +1027,102 @@ func renderDORAText(r *DORAResult) error {
 	// MTTR
 	fmt.Println("Mean Time to Recovery:")
 	if r.MTTR == nil {
-		fmt.Printf("  %s(no escalations in period)%s\n", Dim, Reset)
+		fmt.Printf("  %s(no recovery events in period)%s\n", Dim, Reset)
 	} else {
-		fmt.Printf("  Avg: %.1fh   P50: %.1fh   (%d incidents)\n",
-			r.MTTR.AvgHours, r.MTTR.P50Hours, r.MTTR.Count)
+		fmt.Printf("  Avg: %.1fh   P50: %.1fh   P90: %.1fh   (%d recoveries)\n",
+			r.MTTR.AvgHours, r.MTTR.P50Hours, r.MTTR.P90Hours, r.MTTR.Count)
+	}
+	fmt.Println()
+
+	// Retry Rate
+	fmt.Println("Retry Rate:")
+	if r.RetryRate == nil {
+		fmt.Printf("  %s(no data)%s\n", Dim, Reset)
+	} else {
+		fmt.Printf("  %.1f attempts/bead avg   max %d   (%d beads, %d attempts)\n",
+			r.RetryRate.AvgAttempts, r.RetryRate.MaxAttempts,
+			r.RetryRate.TotalParents, r.RetryRate.TotalAttempts)
+	}
+	fmt.Println()
+
+	// Review Friction
+	fmt.Println("Review Friction:")
+	if r.ReviewFriction == nil {
+		fmt.Printf("  %s(no reviews in period)%s\n", Dim, Reset)
+	} else {
+		fmt.Printf("  %.1f reviews/bead avg   avg duration %.1fh   P50 %.1fh   (%d reviews across %d beads)\n",
+			r.ReviewFriction.AvgPerParent, r.ReviewFriction.AvgDurationH,
+			r.ReviewFriction.P50DurationH, r.ReviewFriction.TotalReviews,
+			r.ReviewFriction.ParentsWithRev)
+	}
+	fmt.Println()
+
+	// Escalation Rate
+	fmt.Println("Escalation Rate:")
+	if r.EscalationRate == nil {
+		fmt.Printf("  %s(no data)%s\n", Dim, Reset)
+	} else {
+		fmt.Printf("  %d of %d beads escalated to arbiter (%.0f%%)\n",
+			r.EscalationRate.Escalated, r.EscalationRate.TotalParents,
+			r.EscalationRate.Rate)
+	}
+
+	// Model Efficiency (only with --model)
+	if opts.ShowModel && len(r.ModelEfficiency) > 0 {
+		fmt.Println()
+		fmt.Println("Model Efficiency:")
+		for _, m := range r.ModelEfficiency {
+			fmt.Printf("  %-30s %d/%d (%.0f%% success)\n",
+				m.Model, m.Succeeded, m.Total, m.SuccessRate)
+		}
+	}
+
+	// Phase Duration (only with --phase)
+	if opts.ShowPhase && len(r.PhaseDuration) > 0 {
+		fmt.Println()
+		fmt.Println("Phase Duration:")
+		fmt.Printf("  %-14s %5s %8s %8s %8s\n", "PHASE", "COUNT", "AVG", "P50", "P90")
+		fmt.Printf("  %-14s %5s %8s %8s %8s\n", "─────", "─────", "───", "───", "───")
+		for _, p := range r.PhaseDuration {
+			fmt.Printf("  %-14s %5d %7.1fh %7.1fh %7.1fh\n",
+				p.Phase, p.Count, p.AvgHours, p.P50Hours, p.P90Hours)
+		}
 	}
 
 	return nil
+}
+
+// --- helpers ---
+
+// parseTime parses an RFC3339 timestamp string. Returns zero time on failure.
+func parseTime(s string) time.Time {
+	t, _ := time.Parse(time.RFC3339, s)
+	return t
+}
+
+// weekKey returns a YYYY-Wnn week key from an RFC3339 timestamp.
+func weekKey(ts string) string {
+	t := parseTime(ts)
+	if t.IsZero() {
+		return "unknown"
+	}
+	y, w := t.ISOWeek()
+	return fmt.Sprintf("%d-W%02d", y, w)
+}
+
+// sortedKeys returns the sorted keys of a map.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// sortFloats sorts a float64 slice in place (ascending).
+func sortFloats(vals []float64) {
+	sort.Float64s(vals)
 }
 
 // percentile computes the p-th percentile from a sorted slice using linear interpolation.
@@ -800,7 +1135,6 @@ func percentile(sorted []float64, p float64) float64 {
 	if n == 1 {
 		return sorted[0]
 	}
-	// Use the "exclusive" method: rank = p * (n + 1)
 	rank := p * float64(n-1)
 	lower := int(rank)
 	if lower >= n-1 {

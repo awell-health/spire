@@ -104,6 +104,10 @@ func IssueToBoardBead(issue *beads.Issue) BoardBead {
 			Type:        string(dep.Type),
 		})
 	}
+	var closedAt string
+	if issue.ClosedAt != nil {
+		closedAt = issue.ClosedAt.Format(time.RFC3339)
+	}
 	return BoardBead{
 		ID:           issue.ID,
 		Title:        issue.Title,
@@ -114,6 +118,7 @@ func IssueToBoardBead(issue *beads.Issue) BoardBead {
 		Owner:        issue.Owner,
 		CreatedAt:    issue.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:    issue.UpdatedAt.Format(time.RFC3339),
+		ClosedAt:     closedAt,
 		Labels:       issue.Labels,
 		Parent:       parent,
 		Dependencies: deps,

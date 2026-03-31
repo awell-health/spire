@@ -68,6 +68,14 @@ func cmdMetrics(args []string) error {
 		}
 	}
 
+	if flagDORA {
+		return observability.MetricsDORA(observability.DORAOpts{
+			JSONOut:   flagJSON,
+			BeadID:    flagBead,
+			ShowModel: flagModel,
+			ShowPhase: flagPhase,
+		})
+	}
 	if flagBead != "" {
 		return observability.MetricsBead(flagBead, flagJSON)
 	}
@@ -76,9 +84,6 @@ func cmdMetrics(args []string) error {
 	}
 	if flagPhase {
 		return observability.MetricsPhase(flagJSON)
-	}
-	if flagDORA {
-		return observability.MetricsDORA(flagJSON)
 	}
 	return observability.MetricsSummary(flagJSON)
 }
