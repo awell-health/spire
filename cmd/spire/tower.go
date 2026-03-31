@@ -620,6 +620,15 @@ func cmdTowerCreate(args []string) error {
 		return fmt.Errorf("create golden_prompts table: %w", err)
 	}
 
+	// bd init set issue_prefix in the embedded dolt, but the server has its
+	// own working set. Ensure issue_prefix exists on the server so that
+	// beads.CreateIssue (in server mode) can generate IDs.
+	if _, err := rawDoltQuery(fmt.Sprintf(
+		"USE `%s`; INSERT INTO metadata (`key`, value) VALUES ('issue_prefix', '%s') ON DUPLICATE KEY UPDATE value = '%s'",
+		database, sqlEscape(prefix), sqlEscape(prefix))); err != nil {
+		return fmt.Errorf("set issue_prefix on server: %w", err)
+	}
+
 	// Commit via dolt server stored procedures
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'tower: initialize %s')", database, sqlEscape(tower.Name))); err != nil {
 		return fmt.Errorf("dolt commit: %w", err)
