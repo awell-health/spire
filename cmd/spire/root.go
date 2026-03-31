@@ -18,6 +18,7 @@ Setup:
   tower create          Create a new tower (--name, --dolthub, --prefix)
   tower attach          Clone a tower from DoltHub (<url> [--name])
   tower list            List configured towers
+  tower remove <name>   Remove a tower (--force)
   tower use <name>      Set the active tower
   repo add [path]       Register a repo under a tower (--prefix, --repo-url, --branch)
   repo list             List registered repos (--json)
