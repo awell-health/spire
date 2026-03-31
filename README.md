@@ -2,26 +2,9 @@
 
 A coordination hub for AI agents. File work, let agents execute it, and review what lands.
 
-Spire turns an engineer into the archmage of a tower — you write specs, file work, and review what agents produce. The tower handles execution: the steward dispatches, wizards orchestrate, apprentices implement, sages review, and approved changes land on your repo's base branch. You don't write the code. You steer. You review. You make the architecture calls.
+![Spire demo](demo.gif)
 
-```
-                         ╔═══════════╗
-                         ║   SPIRE   ║
-                         ╠═══════════╣
-                         ║ Archmage  ║  ← you
-                         ║ (specs,   ║
-                         ║  reviews, ║
-                         ║  steers)  ║
-                         ╠═══════════╣
-                         ║ Steward   ║  ← dispatches wizards
-                         ╠═══════════╣
-                         ║ Wizard    ║  ← orchestrates per bead
-                         ║ ┌────────┐║
-                         ║ │Apprent.║║  ← writes code
-                         ║ │ Sage   ║║  ← reviews code
-                         ║ └────────┘║
-                         ╚═══════════╝
-```
+Spire turns an engineer into the archmage of a tower — you write specs, file work, and review what agents produce. The tower handles execution: the steward dispatches, wizards orchestrate, apprentices implement, sages review, and approved changes land on your repo's base branch. You don't write the code. You steer. You review. You make the architecture calls.
 
 ## The roles
 
@@ -57,8 +40,6 @@ Before setting up Spire, you'll need:
 | DoltHub account (free) | Remote sync of bead state | [dolthub.com](https://www.dolthub.com) |
 
 ## Quick start
-
-![Spire demo](demo.gif)
 
 ```bash
 # Install
