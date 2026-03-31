@@ -563,9 +563,25 @@ func cmdTowerCreate(args []string) error {
 		return fmt.Errorf("read tower identity after init: %w", err)
 	}
 
+	// bd init writes metadata.json with dolt_mode=embedded. Overwrite to use
+	// server mode so spire (via beads.OpenFromConfig) connects to the running
+	// dolt server instead of opening the embedded database directly.
+	beadsMeta := map[string]any{
+		"database":      "dolt",
+		"backend":       "dolt",
+		"dolt_mode":     "server",
+		"dolt_database": database,
+	}
+	if projectID != "" {
+		beadsMeta["project_id"] = projectID
+	}
+	metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), append(metaBytes, '\n'), 0644); err != nil {
+		return fmt.Errorf("write .beads/metadata.json: %w", err)
+	}
+
 	// bd init writes a default config.yaml. Overwrite with dolt server connection
-	// so subsequent bd commands can connect. The database name lives in metadata.json
-	// (written by bd init --database), not config.yaml.
+	// so subsequent bd commands can connect.
 	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		return fmt.Errorf("write .beads/config.yaml: %w", err)
