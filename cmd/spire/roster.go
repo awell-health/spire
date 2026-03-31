@@ -69,7 +69,7 @@ func cmdRoster(args []string) error {
 			saveWizardRegistry(wizardRegistry{Wizards: agents})
 		},
 		CleanDeadWizards: func(agents []board.LocalAgent) []board.LocalAgent {
-			reg := cleanDeadWizards(wizardRegistry{Wizards: agents})
+			reg := cleanDeadWizards(wizardRegistry{Wizards: agents}, false)
 			return reg.Wizards
 		},
 		ProcessAlive: func(pid int) bool {

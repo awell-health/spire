@@ -142,7 +142,7 @@ func cmdUp(args []string) error {
 	fmt.Print("dead wizard cleanup: ")
 	{
 		reg := loadWizardRegistry()
-		cleaned := cleanDeadWizards(reg)
+		cleaned := cleanDeadWizards(reg, false)
 		if len(reg.Wizards) > len(cleaned.Wizards) {
 			saveWizardRegistry(cleaned)
 			fmt.Printf("reaped %d defunct process(es)\n", len(reg.Wizards)-len(cleaned.Wizards))
