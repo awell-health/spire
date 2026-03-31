@@ -130,6 +130,7 @@ func TerminalSplit(beadID, reviewerName string, splitTasks []SplitTask, deps *De
 			Priority:    bead.Priority,
 			Type:        deps.ParseIssueType(bead.Type),
 			Parent:      beadID,
+			Prefix:      prefixFromBeadID(beadID),
 		})
 		if cerr != nil {
 			log("warning: create split task %q: %s", task.Title, cerr)

@@ -7,6 +7,8 @@
 package executor
 
 import (
+	"strings"
+
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
@@ -140,4 +142,13 @@ type Deps struct {
 	ContainsLabel  func(b Bead, label string) bool
 	ParseIssueType func(s string) beads.IssueType
 	ResolveBeadBuildCmd func(b Bead) string
+}
+
+// prefixFromBeadID extracts the repo prefix from a bead ID (e.g. "ope-p6k" -> "ope").
+// Returns empty string if the ID has no dash.
+func prefixFromBeadID(id string) string {
+	if idx := strings.Index(id, "-"); idx > 0 {
+		return id[:idx]
+	}
+	return ""
 }

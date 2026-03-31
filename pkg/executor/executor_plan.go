@@ -283,6 +283,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 			Priority:    bead.Priority,
 			Type:        e.deps.ParseIssueType("task"),
 			Parent:      e.beadID,
+			Prefix:      prefixFromBeadID(e.beadID),
 		})
 		if createErr != nil {
 			e.log("warning: create subtask %q: %s", t.Title, createErr)
