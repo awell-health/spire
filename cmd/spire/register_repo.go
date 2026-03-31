@@ -155,6 +155,9 @@ func cmdRegisterRepo(args []string) error {
 		return err
 	}
 
+	// --- Ensure .beads/ is in repo .gitignore ---
+	ensureGitignoreEntry(cwd, ".beads/")
+
 	// --- Register in global config ---
 	cfg.Instances[prefix] = &Instance{
 		Path:     cwd,
@@ -387,6 +390,26 @@ func validatePrefix(prefix string) error {
 // Delegates to pkg/dolt.SQLEscape.
 func sqlEscape(s string) string {
 	return dolt.SQLEscape(s)
+}
+
+// ensureGitignoreEntry appends an entry to the repo's .gitignore if not already present.
+func ensureGitignoreEntry(repoDir, entry string) {
+	gitignorePath := filepath.Join(repoDir, ".gitignore")
+	content, _ := os.ReadFile(gitignorePath)
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return // already there
+		}
+	}
+	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if len(content) > 0 && !strings.HasSuffix(string(content), "\n") {
+		f.WriteString("\n")
+	}
+	f.WriteString(entry + "\n")
 }
 
 // --- Dolt helpers ---
