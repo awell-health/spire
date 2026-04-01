@@ -86,6 +86,28 @@ This command:
 database, generates tower identity, creates repos table, optionally
 pushes to DoltHub, and writes tower config.
 
+### 3b. Join an existing tower (teammates)
+
+```
+spire tower attach awell/awell
+```
+
+Teammates who didn't create the tower use `tower attach` to join.
+This command:
+1. Clones the tower's Dolt database from DoltHub
+2. Restarts the local dolt server so it discovers the new database
+3. Reads tower identity (`project_id`, prefix) from the cloned data
+4. Bootstraps `.beads/` workspace and registers custom bead types
+5. Writes tower config to `~/.config/spire/towers/<name>.json`
+
+The argument is the DoltHub `org/repo` or full URL. The tower name
+is derived from the repo name (override with `--name`).
+
+**Exists today**: `spire tower attach` is fully implemented. Clones
+from DoltHub, reads identity via local dolt SQL (no server dependency
+for the initial read), restarts server for downstream operations, and
+writes local config.
+
 ### 4. Register a repo
 
 ```

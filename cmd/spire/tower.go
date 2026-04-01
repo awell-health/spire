@@ -855,6 +855,15 @@ func cmdTowerAttach(args []string) error {
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
 
+	// Restart the dolt server so it discovers the freshly cloned database.
+	// Without this, bd commands in bootstrapTowerBeadsDir fail because the
+	// server doesn't hot-reload new directories in its data dir.
+	fmt.Println("restarting dolt server to pick up cloned database...")
+	doltStop()
+	if _, err := doltStart(); err != nil {
+		return fmt.Errorf("restart dolt server: %w", err)
+	}
+
 	// Materialize the tower's .beads workspace in the cloned data dir.
 	beadsDir := filepath.Join(dataDir, dbName, ".beads")
 	if err := bootstrapTowerBeadsDir(beadsDir, tower); err != nil {
