@@ -215,6 +215,15 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 		fmt.Scanln()
 		return true
 
+	case board.ActionGrok:
+		fmt.Println()
+		if err := cmdGrok([]string{beadID}); err != nil {
+			fmt.Fprintf(os.Stderr, "grok: %v\n", err)
+		}
+		fmt.Printf("\n%sPress Enter to return to board...%s ", board.Dim, board.Reset)
+		fmt.Scanln()
+		return true
+
 	case board.ActionClose:
 		fmt.Printf("\nClose bead %s? [y/N] ", beadID)
 		var answer string
@@ -259,8 +268,6 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 		return cmdReset([]string{beadID})
 	case board.ActionResetHard:
 		return cmdReset([]string{beadID, "--hard"})
-	case board.ActionGrok:
-		return cmdGrok([]string{beadID})
 	case board.ActionTrace:
 		return cmdTrace([]string{beadID})
 	case board.ActionAdvance:
