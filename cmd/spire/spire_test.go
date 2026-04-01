@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/awell-health/spire/pkg/integration"
+	"github.com/awell-health/spire/pkg/steward"
 	"github.com/steveyegge/beads"
 )
 
@@ -1235,5 +1236,42 @@ func TestIntegrationMigrateSpireTablesIdempotent(t *testing.T) {
 	// Second call — should also succeed (idempotent).
 	if err := migrateSpireTables(tower.Database); err != nil {
 		t.Fatalf("second migrateSpireTables call failed: %v", err)
+	}
+}
+
+// TestDoltSQLBridge_DaemonDBOverridesDetect verifies that the doltSQL() bridge
+// reads steward.DaemonDB instead of falling through to detectDBName().
+// This is a regression test for spi-v6bex: after pkg/steward extraction,
+// integration_bridge.go must check steward.DaemonDB before the local daemonDB.
+func TestDoltSQLBridge_DaemonDBOverridesDetect(t *testing.T) {
+	// Isolate environment so detectDBName() has no way to resolve a database.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SPIRE_IDENTITY", "")
+	t.Setenv("BEADS_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	// Set steward.DaemonDB to simulate what DaemonTowerCycle does.
+	oldDaemonDB := steward.DaemonDB
+	steward.DaemonDB = "tower_regression_db"
+	defer func() { steward.DaemonDB = oldDaemonDB }()
+
+	// Clear the local daemonDB variable (the legacy fallback).
+	oldLocalDB := daemonDB
+	daemonDB = ""
+	defer func() { daemonDB = oldLocalDB }()
+
+	// Call the bridge function.
+	_, err := doltSQL("SELECT 1", false)
+
+	// We don't expect the query to succeed (no dolt server running in tests),
+	// but if the error mentions "resolve database" or "no database name", it
+	// means the bridge ignored steward.DaemonDB and fell through to detectDBName().
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "resolve database") || strings.Contains(errMsg, "no database name") {
+			t.Fatalf("doltSQL() fell through to detectDBName() instead of using steward.DaemonDB: %v", err)
+		}
+		// Any other error (dolt binary not found, connection refused, etc.) is
+		// expected — it means the bridge correctly used the explicit database name.
 	}
 }
