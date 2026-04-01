@@ -175,6 +175,18 @@ func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, bra
 	return nil
 }
 
+// RunInstall runs installStr as a command in the worktree directory.
+// Used to install dependencies (e.g. "pnpm install") before build verification.
+func (w *StagingWorktree) RunInstall(installStr string) error {
+	out, err := w.RunCommandOutput(installStr)
+	if err != nil {
+		w.logf("install failed: %s\n%s", err, out)
+		return fmt.Errorf("%s: %w\n%s", installStr, err, out)
+	}
+	w.logf("install passed")
+	return nil
+}
+
 // RunBuild runs buildStr as a command in the worktree directory.
 // buildStr is split on spaces and run directly (no shell).
 func (w *StagingWorktree) RunBuild(buildStr string) error {
