@@ -68,7 +68,8 @@ func (e *Executor) executeDirect(phase string, pc PhaseConfig) error {
 func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 	waves, err := ComputeWaves(e.beadID, e.deps)
 	if err != nil {
-		return err
+		EscalateHumanFailure(e.beadID, e.agentName, "invalid-plan-cycle", err.Error(), e.deps)
+		return fmt.Errorf("implement phase aborted: %w", err)
 	}
 	if len(waves) == 0 {
 		e.log("no open subtasks")
@@ -224,7 +225,8 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 	waves, err := ComputeWaves(e.beadID, e.deps)
 	if err != nil {
-		return err
+		EscalateHumanFailure(e.beadID, e.agentName, "invalid-plan-cycle", err.Error(), e.deps)
+		return fmt.Errorf("implement phase aborted: %w", err)
 	}
 	if len(waves) == 0 {
 		e.log("no open subtasks")
@@ -613,12 +615,14 @@ func ComputeWaves(epicID string, deps *Deps) ([][]string, error) {
 		}
 
 		if len(wave) == 0 {
-			// Circular dependency or stuck — add remaining as final wave.
+			// Dependency cycle detected — fail closed.
+			var stuck []string
 			for _, id := range openIDs {
 				if _, done := assigned[id]; !done {
-					wave = append(wave, id)
+					stuck = append(stuck, id)
 				}
 			}
+			return nil, fmt.Errorf("dependency cycle detected among beads: %v", stuck)
 		}
 
 		for _, id := range wave {
