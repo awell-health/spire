@@ -8,7 +8,8 @@ Before starting work, read these files in order to understand the system:
 2. `docs/LOCAL.md` — local execution model, setup, wizard lifecycle
 3. `docs/PLAN.md` — current roadmap and priorities
 4. `docs/ARCHITECTURE.md` — components, data model, agent roles, pod architecture
-5. `docs/VISION.md` — product direction and design philosophy
+5. `docs/ZFC.md` — MUST-READ: Zero Framework Cognition boundaries; Spire is orchestration, not local product reasoning
+6. `docs/VISION.md` — product direction and design philosophy
 
 These are not optional. Agents that skip this context produce work that conflicts with the system's design.
 
