@@ -812,24 +812,16 @@ func cmdTowerAttach(args []string) error {
 		}
 	}
 
-	// Nudge the dolt server to pick up the newly cloned database.
-	// dolt servers don't hot-reload new directories in the data dir;
-	// CREATE DATABASE IF NOT EXISTS makes the server aware of it.
-	if _, err := rawDoltQuery(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dbName)); err != nil {
-		// Non-fatal: the server may already know about it, or it may load it
-		// lazily. The query below will surface the real error if needed.
-		fmt.Printf("  note: could not register cloned db with server: %s\n", err)
-	}
-
-	// Read tower identity from cloned database using raw dolt CLI.
-	// No --use-db: on a clean machine DetectDBName() would fail since no
-	// tower is configured yet. Fully-qualified queries against dbName instead.
+	// Read tower identity from the cloned directory using local dolt SQL.
+	// The running dolt server doesn't auto-discover freshly cloned databases,
+	// so we query the on-disk data directly instead of going through the server.
+	cloneDir := filepath.Join(dataDir, dbName)
 	fmt.Println("reading tower identity...")
 
 	var projectID, hubPrefix string
 
 	// Try to read project_id from metadata
-	metaOut, err := rawDoltQuery(fmt.Sprintf("SELECT `value` FROM `%s`.metadata WHERE `key` = '_project_id'", dbName))
+	metaOut, err := dolt.LocalQuery(cloneDir, "SELECT `value` FROM metadata WHERE `key` = '_project_id'")
 	if err == nil {
 		projectID = extractSQLValue(metaOut)
 	}
@@ -838,7 +830,7 @@ func cmdTowerAttach(args []string) error {
 	}
 
 	// Try to read prefix from config
-	prefixOut, err := rawDoltQuery(fmt.Sprintf("SELECT `value` FROM `%s`.metadata WHERE `key` = 'prefix'", dbName))
+	prefixOut, err := dolt.LocalQuery(cloneDir, "SELECT `value` FROM metadata WHERE `key` = 'prefix'")
 	if err == nil {
 		hubPrefix = extractSQLValue(prefixOut)
 	}
@@ -848,7 +840,7 @@ func cmdTowerAttach(args []string) error {
 	}
 
 	// Get bead count for display
-	countOut, _ := rawDoltQuery(fmt.Sprintf("SELECT COUNT(*) FROM `%s`.issues", dbName))
+	countOut, _ := dolt.LocalQuery(cloneDir, "SELECT COUNT(*) FROM issues")
 	beadCount := extractSQLValue(countOut)
 	if beadCount == "" {
 		beadCount = "0"

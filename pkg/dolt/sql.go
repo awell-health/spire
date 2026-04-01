@@ -57,6 +57,31 @@ func SQL(query string, jsonOutput bool, dbName string, detectDBFn func() (string
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// LocalQuery runs a SQL query directly against a dolt database directory,
+// without connecting to the server. Used during tower attach when the server
+// hasn't loaded the freshly cloned database yet.
+func LocalQuery(dataDir, query string) (string, error) {
+	cmd := exec.Command(Bin(), "sql", "-q", query)
+	cmd.Dir = dataDir
+	// Strip credential env vars so dolt uses the local embedded engine
+	// instead of trying password auth against a server.
+	var env []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "DOLT_CLI_PASSWORD=") ||
+			strings.HasPrefix(e, "DOLT_REMOTE_PASSWORD=") ||
+			strings.HasPrefix(e, "DOLT_REMOTE_USER=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("dolt sql (local): %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // RawQuery runs a SQL query against the dolt server without --use-db.
 // For bootstrap contexts (tower attach) where no ambient database context exists.
 // Queries must use fully-qualified table names (e.g. `dbname`.table).
