@@ -280,8 +280,6 @@ func (e *Executor) Run() error {
 				}
 			case "sage":
 				err = e.executeReview(phase, pc)
-			case "wizard":
-				err = e.executeWizard(phase, pc)
 			case "skip":
 				e.log("skipping phase %s", phase)
 			default:
@@ -356,18 +354,6 @@ func (e *Executor) waitForHuman(phase string) error {
 		e.log("  bd label add %s \"phase:%s\"", e.beadID, next)
 	}
 	return fmt.Errorf("waiting for human to complete %s phase", phase)
-}
-
-// executeWizard handles phases where the wizard (orchestrator) acts directly.
-func (e *Executor) executeWizard(phase string, pc PhaseConfig) error {
-	switch phase {
-	case "design":
-		return e.wizardValidateDesign()
-	case "plan":
-		return fmt.Errorf("plan phase must declare a behavior (epic-plan or task-plan) in the formula; role-based dispatch is no longer supported")
-	default:
-		return e.wizardGeneric(phase, pc)
-	}
 }
 
 // --- State persistence ---

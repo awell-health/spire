@@ -3,8 +3,6 @@ package executor
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -421,38 +419,3 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 	return nil
 }
 
-// wizardGeneric handles a wizard phase by invoking Claude with the bead context.
-func (e *Executor) wizardGeneric(phase string, pc PhaseConfig) error {
-	bead, err := e.deps.GetBead(e.beadID)
-	if err != nil {
-		return fmt.Errorf("get bead: %w", err)
-	}
-
-	focusContext, _ := e.deps.CaptureFocus(e.beadID)
-
-	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
-
-	prompt := fmt.Sprintf(`You are a Spire wizard handling the %s phase for bead %s.
-
-Task: %s
-Description: %s
-
-Focus context:
-%s
-
-Complete this phase and output your results.`, phase, bead.ID, bead.Title, bead.Description, focusContext)
-
-	maxTurns := pc.GetMaxTurns()
-	cmd := exec.Command("claude",
-		"--dangerously-skip-permissions",
-		"-p", prompt,
-		"--model", model,
-		"--output-format", "text",
-		"--max-turns", fmt.Sprintf("%d", maxTurns),
-	)
-	cmd.Dir = e.state.RepoPath
-	cmd.Env = os.Environ()
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
