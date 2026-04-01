@@ -318,7 +318,7 @@ func summonLocal(count int, targetIDs []string) error {
 
 	reg := loadWizardRegistry()
 	before := len(reg.Wizards)
-	reg = cleanDeadWizards(reg)
+	reg = cleanDeadWizards(reg, false)
 	if len(reg.Wizards) < before {
 		saveWizardRegistry(reg)
 	}
@@ -562,14 +562,14 @@ func dismissCleanupBead(w localWizard) {
 	}
 }
 
-func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
+func cleanDeadWizards(reg wizardRegistry, quiet bool) wizardRegistry {
 	var alive []localWizard
 	for _, w := range reg.Wizards {
 		if w.PID <= 0 {
 			continue // placeholder entry with no real process — prune it
 		}
 		if !processAlive(w.PID) {
-			reapDeadWizard(w)
+			reapDeadWizard(w, quiet)
 			continue // dead
 		}
 		alive = append(alive, w)
@@ -580,15 +580,22 @@ func cleanDeadWizards(reg wizardRegistry) wizardRegistry {
 
 // reapDeadWizard cleans up stale state for a wizard whose process is no longer alive.
 // It removes the state file and cleans up bead labels so the bead can be re-summoned.
-func reapDeadWizard(w localWizard) {
+// When quiet is true, stdout output is suppressed (for TUI and JSON output paths).
+func reapDeadWizard(w localWizard, quiet bool) {
 	// Delete executor state file.
 	statePath := executorStatePath(w.Name)
 	if err := os.Remove(statePath); err == nil {
-		fmt.Printf("reaped stale wizard %s for %s (removed state file)\n", w.Name, w.BeadID)
+		if !quiet {
+			fmt.Printf("reaped stale wizard %s for %s (removed state file)\n", w.Name, w.BeadID)
+		}
 	} else if !os.IsNotExist(err) {
-		fmt.Printf("reaped stale wizard %s for %s (state file: %s)\n", w.Name, w.BeadID, err)
+		if !quiet {
+			fmt.Printf("reaped stale wizard %s for %s (state file: %s)\n", w.Name, w.BeadID, err)
+		}
 	} else {
-		fmt.Printf("reaped stale wizard %s for %s\n", w.Name, w.BeadID)
+		if !quiet {
+			fmt.Printf("reaped stale wizard %s for %s\n", w.Name, w.BeadID)
+		}
 	}
 
 	// Clean up bead labels and reopen if orphaned — but NOT if intentionally closed.
@@ -600,7 +607,9 @@ func reapDeadWizard(w localWizard) {
 		// Do NOT reopen closed beads — they were closed intentionally.
 		if bead, err := storeGetBead(w.BeadID); err == nil && bead.Status != "closed" {
 			if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err == nil {
-				fmt.Printf("  ↺ %s reopened\n", w.BeadID)
+				if !quiet {
+					fmt.Printf("  ↺ %s reopened\n", w.BeadID)
+				}
 			}
 		}
 	}

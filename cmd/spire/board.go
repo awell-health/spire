@@ -140,7 +140,11 @@ func cmdBoard(args []string) error {
 
 	fetchAgents := func() []board.LocalAgent {
 		reg := agent.LoadRegistry()
-		reg = cleanDeadWizards(reg)
+		before := len(reg.Wizards)
+		reg = cleanDeadWizards(reg, true)
+		if len(reg.Wizards) < before {
+			saveWizardRegistry(reg)
+		}
 		return reg.Wizards
 	}
 
