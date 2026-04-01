@@ -163,3 +163,149 @@ func TestWizardCommit_FallbackNotTriggeredWithoutClaudeCommit(t *testing.T) {
 		t.Errorf("expected empty SHA, got %q", sha)
 	}
 }
+
+// setupStagingWorktree creates a worktree with pre-existing commits (simulating
+// a staging branch) and returns a resumed WorktreeContext with StartSHA set.
+func setupStagingWorktree(t *testing.T, branch string) *spgit.WorktreeContext {
+	t.Helper()
+	repoDir := t.TempDir()
+
+	gitRun(t, repoDir, "init")
+	gitRun(t, repoDir, "config", "user.name", "Test")
+	gitRun(t, repoDir, "config", "user.email", "test@test.com")
+
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# Test\n"), 0644)
+	gitRun(t, repoDir, "add", "-A")
+	gitRun(t, repoDir, "commit", "-m", "initial commit")
+	gitRun(t, repoDir, "branch", "-M", "main")
+
+	// Create feature branch and worktree
+	gitRun(t, repoDir, "branch", branch)
+	wtDir := filepath.Join(t.TempDir(), "wt")
+	gitRun(t, repoDir, "worktree", "add", wtDir, branch)
+
+	// Configure user in worktree
+	gitRun(t, wtDir, "config", "user.name", "Test")
+	gitRun(t, wtDir, "config", "user.email", "test@test.com")
+
+	// Add a pre-existing commit (simulates previous wave merge)
+	os.WriteFile(filepath.Join(wtDir, "wave1.go"), []byte("package main\n"), 0644)
+	gitRun(t, wtDir, "add", "-A")
+	gitRun(t, wtDir, "commit", "-m", "wave merge: prior work")
+
+	// Resume with session baseline (captures HEAD after pre-existing commit)
+	wc, err := spgit.ResumeWorktreeContext(wtDir, branch, "main", repoDir, nil)
+	if err != nil {
+		t.Fatalf("ResumeWorktreeContext: %v", err)
+	}
+	wc.ConfigureUser("Test", "test@test.com")
+	return wc
+}
+
+// TestWizardCommit_NoOpBuildFixInStaging is the regression test for spi-8de7f:
+// A no-op build-fix in a staging worktree with pre-existing commits must report
+// no_changes (committed=false), not success.
+//
+// Before this fix, the bare WorktreeContext had no StartSHA, so HasNewCommits
+// did BaseBranch..HEAD which included pre-existing commits, causing WizardCommit
+// to report "Claude already committed."
+func TestWizardCommit_NoOpBuildFixInStaging(t *testing.T) {
+	wc := setupStagingWorktree(t, "staging/noop-build")
+
+	// No changes made — the "build fix" did nothing.
+	sha, committed := WizardCommit(wc, "test-staging-001", "fix build errors", noopLog)
+	if committed {
+		t.Error("expected committed=false for no-op build-fix in staging")
+	}
+	if sha != "" {
+		t.Errorf("expected empty SHA, got %q", sha)
+	}
+}
+
+// TestWizardCommit_NoOpReviewFixInStaging is the regression test for spi-8de7f:
+// A no-op review-fix in a staging worktree must report no_changes.
+func TestWizardCommit_NoOpReviewFixInStaging(t *testing.T) {
+	wc := setupStagingWorktree(t, "staging/noop-review")
+
+	// No changes made — the "review fix" did nothing.
+	sha, committed := WizardCommit(wc, "test-staging-002", "review fix test", noopLog)
+	if committed {
+		t.Error("expected committed=false for no-op review-fix in staging")
+	}
+	if sha != "" {
+		t.Errorf("expected empty SHA, got %q", sha)
+	}
+}
+
+// TestWizardCommit_RealCommitInStaging verifies that a real commit in a staging
+// worktree with pre-existing commits is correctly detected as committed.
+func TestWizardCommit_RealCommitInStaging(t *testing.T) {
+	wc := setupStagingWorktree(t, "staging/real-commit")
+
+	// Make a real change (simulates successful fix).
+	os.WriteFile(filepath.Join(wc.Dir, "fix.go"), []byte("package main\n\nfunc fix() {}\n"), 0644)
+
+	sha, committed := WizardCommit(wc, "test-staging-003", "Fix build errors", noopLog)
+	if !committed {
+		t.Error("expected committed=true for real changes in staging")
+	}
+	if sha == "" {
+		t.Error("expected non-empty SHA for real commit")
+	}
+}
+
+// TestWizardCommit_ClaudeCommittedInStaging verifies that Claude's own commit
+// in a staging session is correctly detected (Claude committed, nothing
+// uncommitted left).
+func TestWizardCommit_ClaudeCommittedInStaging(t *testing.T) {
+	wc := setupStagingWorktree(t, "staging/claude-commit")
+
+	// Simulate Claude committing directly during this session.
+	os.WriteFile(filepath.Join(wc.Dir, "claude-fix.go"), []byte("package main\n"), 0644)
+	gitRun(t, wc.Dir, "add", "-A")
+	gitRun(t, wc.Dir, "commit", "-m", "feat: claude fix")
+	expectedSHA := gitRun(t, wc.Dir, "rev-parse", "HEAD")
+
+	sha, committed := WizardCommit(wc, "test-staging-004", "staging claude commit", noopLog)
+	if !committed {
+		t.Error("expected committed=true when Claude committed in staging session")
+	}
+	if sha != expectedSHA {
+		t.Errorf("expected SHA %q, got %q", expectedSHA, sha)
+	}
+}
+
+// TestWizardCommit_ErrorDoesNotAssumeCommits verifies that comparison errors
+// do not cause WizardCommit to falsely report "Claude already committed."
+// This was a bug: the old code did `hasNewCommits = true` on error.
+func TestWizardCommit_ErrorDoesNotAssumeCommits(t *testing.T) {
+	repoDir := t.TempDir()
+	gitRun(t, repoDir, "init")
+	gitRun(t, repoDir, "config", "user.name", "Test")
+	gitRun(t, repoDir, "config", "user.email", "test@test.com")
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# Test\n"), 0644)
+	gitRun(t, repoDir, "add", "-A")
+	gitRun(t, repoDir, "commit", "-m", "initial commit")
+	gitRun(t, repoDir, "branch", "-M", "main")
+
+	gitRun(t, repoDir, "branch", "feat/error-test")
+	wtDir := filepath.Join(t.TempDir(), "wt")
+	gitRun(t, repoDir, "worktree", "add", wtDir, "feat/error-test")
+
+	// Construct WorktreeContext with an invalid StartSHA to trigger an error.
+	wc := &spgit.WorktreeContext{
+		Dir:        wtDir,
+		Branch:     "feat/error-test",
+		BaseBranch: "",      // empty
+		StartSHA:   "bogus", // invalid SHA — will cause git log error
+		RepoPath:   repoDir,
+	}
+
+	sha, committed := WizardCommit(wc, "test-error", "error test", noopLog)
+	if committed {
+		t.Error("expected committed=false when comparison errors occur (should not assume commits exist)")
+	}
+	if sha != "" {
+		t.Errorf("expected empty SHA, got %q", sha)
+	}
+}

@@ -423,6 +423,14 @@ func cmdBuildFix(beadID, wizardName, worktreeDir string, startedAt time.Time,
 	// Resolve the build command for verification after fix.
 	buildCmd := repoCfg.Runtime.Build
 
+	// Capture session baseline BEFORE Claude runs. If Claude commits during
+	// the run, StartSHA..HEAD will detect the new commit. Capturing after
+	// Claude runs would set StartSHA == HEAD, hiding Claude's commit.
+	wc, wcErr := spgit.ResumeWorktreeContext(worktreeDir, "", "", "", log)
+	if wcErr != nil {
+		return fmt.Errorf("resume worktree context: %w", wcErr)
+	}
+
 	// Build the prompt.
 	prompt := wizardBuildBuildFixPrompt(wizardName, beadID, buildErr, buildCmd, repoCfg)
 	promptPath := filepath.Join(worktreeDir, ".spire-prompt.txt")
@@ -442,10 +450,6 @@ func cmdBuildFix(beadID, wizardName, worktreeDir string, startedAt time.Time,
 	// Clean up the prompt file.
 	os.Remove(promptPath)
 
-	// Commit any changes.
-	// Create a lightweight WorktreeContext for committing (we don't own this
-	// worktree, so Cleanup is a no-op — the executor manages the lifecycle).
-	wc := &spgit.WorktreeContext{Dir: worktreeDir}
 	commitSHA, committed := WizardCommit(wc, beadID, "fix build errors", log)
 
 	if committed {
@@ -880,10 +884,16 @@ func WizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 // Only the final main merge touches origin.
 func WizardCommit(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(string, ...interface{})) (commitSHA string, committed bool) {
 	hasUncommitted := wc.HasUncommittedChanges()
-	hasNewCommits, err := wc.HasNewCommits()
+
+	// Use session-scoped commit detection (StartSHA..HEAD) when available,
+	// falling back to BaseBranch..HEAD for legacy callers.
+	hasNewCommits, err := wc.HasNewCommitsSinceStart()
 	if err != nil {
-		log("warning: could not check for new commits: %s — assuming commits exist", err)
-		hasNewCommits = true // err on the side of not losing work
+		// Never convert comparison errors into "Claude already committed."
+		// A comparison error means we cannot determine commit state — report
+		// it as no commits, not as success.
+		log("warning: could not check for new commits: %s — treating as no commits", err)
+		hasNewCommits = false
 	}
 
 	if !hasUncommitted && !hasNewCommits {
@@ -917,8 +927,8 @@ func WizardCommit(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(
 	if sha == "" {
 		// Fallback: Claude may have committed real changes while leftover
 		// prompt files (now cleaned) were the only uncommitted content.
-		// Re-check HasNewCommits after the failed commit attempt.
-		if fallback, ferr := wc.HasNewCommits(); ferr == nil && fallback {
+		// Re-check using session-scoped detection after the clean attempt.
+		if fallback, ferr := wc.HasNewCommitsSinceStart(); ferr == nil && fallback {
 			fsha, herr := wc.HeadSHA()
 			if herr != nil {
 				log("nothing staged and could not read HEAD: %s", herr)

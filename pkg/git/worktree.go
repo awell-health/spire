@@ -23,6 +23,7 @@ type WorktreeContext struct {
 	Branch     string              // branch checked out in this worktree
 	BaseBranch string              // the branch this was forked from (e.g. "main")
 	RepoPath   string              // the main repo (for worktree management only)
+	StartSHA   string              // HEAD SHA captured at session start (for session-scoped commit detection)
 	Log        func(string, ...any) // optional structured logger; nil = silent
 }
 
@@ -86,6 +87,28 @@ func (wc *WorktreeContext) HasNewCommits() (bool, error) {
 	out, err := logCmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("git log %s..HEAD: %w", wc.BaseBranch, err)
+	}
+	return len(strings.TrimSpace(string(out))) > 0, nil
+}
+
+// HasNewCommitsSinceStart returns true if there are commits on HEAD that were
+// not present at session start. When StartSHA is set, it compares StartSHA..HEAD
+// (session-scoped detection). When StartSHA is empty, it falls back to
+// BaseBranch..HEAD (the original HasNewCommits behavior).
+//
+// On any comparison error, returns (false, err) — never assumes commits exist.
+func (wc *WorktreeContext) HasNewCommitsSinceStart() (bool, error) {
+	base := wc.StartSHA
+	if base == "" {
+		base = wc.BaseBranch
+	}
+	if base == "" {
+		return false, fmt.Errorf("no StartSHA or BaseBranch set for commit comparison")
+	}
+	logCmd := exec.Command("git", "-C", wc.Dir, "log", base+"..HEAD", "--oneline")
+	out, err := logCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git log %s..HEAD: %w", base, err)
 	}
 	return len(strings.TrimSpace(string(out))) > 0, nil
 }

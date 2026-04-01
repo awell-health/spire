@@ -93,16 +93,15 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	// 4. Use shared staging worktree if provided, otherwise create our own.
 	var wc *spgit.WorktreeContext
 	if worktreeDir != "" {
-		// Executor owns this worktree — we just wrap it for method access.
-		// Do NOT call Cleanup; the executor manages the lifecycle.
-		wc = &spgit.WorktreeContext{
-			Dir:        worktreeDir,
-			Branch:     branch,
-			BaseBranch: baseBranch,
-			RepoPath:   repoPath,
-			Log:        log,
+		// Executor owns this worktree — we just wrap it for method access
+		// with a session baseline. Do NOT call Cleanup; the executor manages
+		// the lifecycle.
+		var wcErr error
+		wc, wcErr = spgit.ResumeWorktreeContext(worktreeDir, branch, baseBranch, repoPath, log)
+		if wcErr != nil {
+			return fmt.Errorf("resume worktree context: %w", wcErr)
 		}
-		log("using shared worktree: %s", wc.Dir)
+		log("using shared worktree: %s (session baseline: %s)", wc.Dir, wc.StartSHA)
 	} else {
 		var wcErr error
 		wc, wcErr = ReviewCreateWorktree(repoPath, beadID, reviewerName, baseBranch, branch, log)

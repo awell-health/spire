@@ -87,13 +87,23 @@ func NewStagingWorktreeAt(repoPath, dir, branch, baseBranch, userName, userEmail
 // ResumeStagingWorktree wraps an existing worktree directory in a StagingWorktree.
 // Used when resuming from persisted executor state — the worktree already exists
 // on disk and just needs to be wrapped for method access.
+//
+// Captures HEAD SHA as StartSHA for session-scoped commit detection. If HEAD
+// cannot be read (e.g. worktree is corrupt), StartSHA is left empty and
+// callers fall back to BaseBranch..HEAD comparison.
 func ResumeStagingWorktree(repoPath, dir, branch, baseBranch string, log func(string, ...interface{})) *StagingWorktree {
+	// Capture session baseline if the worktree exists.
+	var startSHA string
+	if out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output(); err == nil {
+		startSHA = strings.TrimSpace(string(out))
+	}
 	return &StagingWorktree{
 		WorktreeContext: WorktreeContext{
 			Dir:        dir,
 			Branch:     branch,
 			BaseBranch: baseBranch,
 			RepoPath:   repoPath,
+			StartSHA:   startSHA,
 			Log:        log,
 		},
 	}
