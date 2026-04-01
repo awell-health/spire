@@ -276,7 +276,7 @@ var DefaultFormulaMap = map[string]string{
 	"bug":     "spire-bugfix",
 	"epic":    "spire-epic",
 	"chore":   "spire-agent-work",
-	"feature": "spire-epic",
+	"feature": "spire-agent-work",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.
@@ -295,8 +295,8 @@ var RepoFormulaNameFunc func(beadID string) string
 // Resolve determines which formula to use for a bead.
 // Resolution order:
 //  1. Bead label formula:<name> (explicit override)
-//  2. Bead type -> DefaultFormulaMap
-//  3. RepoFormulaNameFunc callback (spire.yaml agent.formula)
+//  2. RepoFormulaNameFunc callback (spire.yaml agent.formula)
+//  3. Bead type -> DefaultFormulaMap
 //  4. Fall back to "spire-agent-work"
 func Resolve(bead BeadInfo) (*FormulaV2, error) {
 	name := ResolveName(bead)
@@ -316,6 +316,7 @@ func Resolve(bead BeadInfo) (*FormulaV2, error) {
 }
 
 // ResolveName returns the formula name for a bead without loading it.
+// Resolution order: label override > repo config (spire.yaml) > compiled-in map > fallback.
 func ResolveName(bead BeadInfo) string {
 	// 1. Check bead labels for formula:<name>
 	for _, l := range bead.Labels {
@@ -324,16 +325,16 @@ func ResolveName(bead BeadInfo) string {
 		}
 	}
 
-	// 2. Check bead type -> formula mapping
-	if name, ok := DefaultFormulaMap[bead.Type]; ok {
-		return name
-	}
-
-	// 3. Check repo-level formula via callback
+	// 2. Check repo-level formula via callback (spire.yaml agent.formula)
 	if RepoFormulaNameFunc != nil {
 		if name := RepoFormulaNameFunc(bead.ID); name != "" {
 			return name
 		}
+	}
+
+	// 3. Check bead type -> formula mapping
+	if name, ok := DefaultFormulaMap[bead.Type]; ok {
+		return name
 	}
 
 	// 4. Default
