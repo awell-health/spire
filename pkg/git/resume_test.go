@@ -283,6 +283,56 @@ func TestNoOpInStaging_ReportsNoChanges(t *testing.T) {
 	}
 }
 
+// TestResumeWorktreeContext_DetectsBranch verifies that passing "" for branch
+// causes ResumeWorktreeContext to read the checked-out branch from the worktree.
+func TestResumeWorktreeContext_DetectsBranch(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	rc.CreateBranch("staging/detect-me")
+	wtDir := filepath.Join(t.TempDir(), "detect-wt")
+	_, err := rc.CreateWorktree(wtDir, "staging/detect-me")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wtDir)
+
+	// Resume with "" for branch — should detect "staging/detect-me".
+	wc, err := ResumeWorktreeContext(wtDir, "", "main", dir, nil)
+	if err != nil {
+		t.Fatalf("ResumeWorktreeContext: %v", err)
+	}
+
+	if wc.Branch != "staging/detect-me" {
+		t.Errorf("Branch = %q, want %q", wc.Branch, "staging/detect-me")
+	}
+}
+
+// TestResumeWorktreeContext_ExplicitBranchPreserved verifies that an explicit
+// branch argument is used as-is (no detection override).
+func TestResumeWorktreeContext_ExplicitBranchPreserved(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	rc.CreateBranch("staging/explicit")
+	wtDir := filepath.Join(t.TempDir(), "explicit-wt")
+	_, err := rc.CreateWorktree(wtDir, "staging/explicit")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wtDir)
+
+	// Resume with explicit branch — should use it, not detect.
+	wc, err := ResumeWorktreeContext(wtDir, "my-override", "main", dir, nil)
+	if err != nil {
+		t.Fatalf("ResumeWorktreeContext: %v", err)
+	}
+
+	if wc.Branch != "my-override" {
+		t.Errorf("Branch = %q, want %q", wc.Branch, "my-override")
+	}
+}
+
 // writeFile helper is already defined in repo_test.go in this package.
 // initTestRepo, run, trimNewline are also reused from repo_test.go.
 // These are in the same package so they're available here.

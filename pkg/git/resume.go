@@ -6,19 +6,13 @@ import (
 	"strings"
 )
 
-// ResumeWorktreeContext wraps an existing worktree directory in a WorktreeContext
-// with all fields populated, including a session baseline (StartSHA). This is
-// the canonical way for wizard code to obtain a WorktreeContext for an already-
-// existing worktree (e.g. staging worktrees, shared review worktrees).
+// ResumeWorktreeContext opens an existing worktree directory and returns a
+// WorktreeContext with all fields populated. It reads the current HEAD SHA
+// as StartSHA (session baseline for scoped commit detection) and, when
+// branch is "", detects the checked-out branch from the worktree.
 //
-// The caller does NOT own the worktree lifecycle — Cleanup() should not be
-// called on the returned context (the executor or staging manager owns it).
-//
-// StartSHA is captured as the current HEAD SHA at call time, providing a session
-// baseline: "did THIS apprentice add a commit during THIS run?" Downstream
-// callers (e.g. WizardCommit) use HasNewCommitsSinceStart() which compares
-// StartSHA..HEAD instead of BaseBranch..HEAD, avoiding false positives on
-// reused staging worktrees where BaseBranch..HEAD is already non-empty.
+// The returned context does not own the worktree — the caller that created
+// the worktree is responsible for its lifecycle.
 func ResumeWorktreeContext(dir, branch, baseBranch, repoPath string, log func(string, ...any)) (*WorktreeContext, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("ResumeWorktreeContext: dir is required")
@@ -30,6 +24,15 @@ func ResumeWorktreeContext(dir, branch, baseBranch, repoPath string, log func(st
 		return nil, fmt.Errorf("ResumeWorktreeContext: capture HEAD: %w", err)
 	}
 	startSHA := strings.TrimSpace(string(out))
+
+	// Detect the checked-out branch when the caller passes "".
+	if branch == "" {
+		branchOut, branchErr := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+		if branchErr != nil {
+			return nil, fmt.Errorf("ResumeWorktreeContext: detect branch: %w", branchErr)
+		}
+		branch = strings.TrimSpace(string(branchOut))
+	}
 
 	return &WorktreeContext{
 		Dir:        dir,

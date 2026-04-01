@@ -198,108 +198,114 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		e.state.Phase = "review"
 	}()
 
-	if implPC.GetDispatch() == "wave" {
-		fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
-		fixBranchName := e.resolveBranch(e.beadID)
-		e.log("dispatching fix apprentice on %s (worktree: %s)", fixBranchName, e.state.WorktreeDir)
-		fixArgs := []string{"--review-fix", "--apprentice"}
-		if e.state.WorktreeDir != "" {
-			fixArgs = append(fixArgs, "--worktree-dir", e.state.WorktreeDir)
-		}
-		fixStarted := time.Now()
-		fh, ferr := e.deps.Spawner.Spawn(agent.SpawnConfig{
-			Name:      fixName,
-			BeadID:    e.beadID,
-			Role:      agent.RoleApprentice,
-			ExtraArgs: fixArgs,
-		})
-		if ferr != nil {
-			return fmt.Errorf("spawn review-fix: %w", ferr)
-		}
-		fixWaitErr := fh.Wait()
-		model := cfg.Model
-		if model == "" {
-			model = implPC.Model
-		}
-		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr,
-			withReviewStep("fix", e.state.ReviewRounds+1))
-		if fixWaitErr != nil {
-			e.log("review-fix apprentice exited with error (will still attempt merge): %s", fixWaitErr)
-		}
+	// When the executor has a persisted staging worktree, run the fix directly
+	// in it rather than spawning a subprocess that branches from main. Check
+	// WorktreeDir (persisted state), not e.stagingWt (in-memory pointer) —
+	// on a resumed executor, e.stagingWt may be nil even though the worktree
+	// exists on disk. fixInStaging hydrates it via ensureStagingWorktree().
+	if e.state.WorktreeDir != "" {
+		return e.fixInStaging(cfg, implPC)
+	}
 
-		// Merge fix branch into the shared staging worktree.
-		if e.state.StagingBranch != "" {
-			fixBranch := e.resolveBranch(e.beadID)
-			e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
-			stagingWt, wtErr := e.ensureStagingWorktree()
-			if wtErr != nil {
-				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
-					fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
-				return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
-			}
-			fixBranchSHA, _ := revParseBranch(stagingWt.Dir, fixBranch)
-			if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
-				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
-					fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
-				return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
-			}
-			postMergeSHA, _ := stagingWt.HeadSHA()
-			e.log("merged %s (commit %s) into %s → %s", fixBranch, fixBranchSHA, e.state.StagingBranch, postMergeSHA)
-		}
-	} else {
-		// Direct dispatch: spawn a fix apprentice in the staging worktree,
-		// same as the wave path. executeDirect would start fresh from main
-		// with no knowledge of the sage feedback — causing an infinite loop.
-		fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
-		fixBranchName := e.resolveBranch(e.beadID)
-		e.log("dispatching fix apprentice on %s (worktree: %s)", fixBranchName, e.state.WorktreeDir)
-		fixArgs := []string{"--review-fix", "--apprentice"}
-		if e.state.WorktreeDir != "" {
-			fixArgs = append(fixArgs, "--worktree-dir", e.state.WorktreeDir)
-		}
-		fixStarted := time.Now()
-		fh, ferr := e.deps.Spawner.Spawn(agent.SpawnConfig{
-			Name:      fixName,
-			BeadID:    e.beadID,
-			Role:      agent.RoleApprentice,
-			ExtraArgs: fixArgs,
-		})
-		if ferr != nil {
-			return fmt.Errorf("spawn review-fix: %w", ferr)
-		}
-		fixWaitErr := fh.Wait()
-		model := cfg.Model
-		if model == "" {
-			model = implPC.Model
-		}
-		e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr,
-			withReviewStep("fix", e.state.ReviewRounds+1))
-		if fixWaitErr != nil {
-			// Log but don't abort — the apprentice may have committed work even
-			// though tests failed (pre-existing failures). Attempt the merge anyway;
-			// the sage will judge whether the fix is sufficient.
-			e.log("review-fix apprentice exited with error (will still attempt merge): %s", fixWaitErr)
-		}
+	// No staging worktree — spawn a fix apprentice on a feature branch.
+	return e.fixViaSubprocess(cfg, implPC)
+}
 
-		// Merge fix branch into staging.
-		if e.state.StagingBranch != "" {
-			fixBranch := e.resolveBranch(e.beadID)
-			e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
-			stagingWt, wtErr := e.ensureStagingWorktree()
-			if wtErr != nil {
-				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
-					fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
-				return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
-			}
-			fixBranchSHA, _ := revParseBranch(stagingWt.Dir, fixBranch)
-			if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
-				EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
-					fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
-				return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
-			}
-			postMergeSHA, _ := stagingWt.HeadSHA()
-			e.log("merged %s (commit %s) into %s → %s", fixBranch, fixBranchSHA, e.state.StagingBranch, postMergeSHA)
+// fixInStaging spawns a wizard-run subprocess in the executor's staging worktree.
+// The wizard owns the full apprentice lifecycle (install, prompt, Claude with
+// timeout, validation, commit via pkg/git). The executor owns only the policy:
+// use the staging worktree, skip the post-fix merge.
+func (e *Executor) fixInStaging(cfg formula.StepConfig, implPC PhaseConfig) error {
+	// Hydrate the staging worktree if needed (resumed executor has WorktreeDir
+	// persisted in state but e.stagingWt may be nil).
+	if _, wtErr := e.ensureStagingWorktree(); wtErr != nil {
+		return fmt.Errorf("ensure staging worktree for review-fix: %w", wtErr)
+	}
+
+	fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
+	e.log("dispatching review-fix in staging worktree %s", e.stagingWt.Dir)
+
+	// Spawn wizard-run --review-fix --apprentice --worktree-dir <staging>.
+	// The wizard resumes the worktree via pkg/git.ResumeWorktreeContext,
+	// captures a session baseline, runs Claude with repo-configured timeout
+	// and turns, validates (lint/build/test), and commits — all without
+	// creating branches or managing worktree lifecycle.
+	fixArgs := []string{"--review-fix", "--apprentice", "--worktree-dir", e.stagingWt.Dir}
+	fixStarted := time.Now()
+	fh, ferr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+		Name:      fixName,
+		BeadID:    e.beadID,
+		Role:      agent.RoleApprentice,
+		ExtraArgs: fixArgs,
+	})
+	if ferr != nil {
+		return fmt.Errorf("spawn review-fix: %w", ferr)
+	}
+	fixWaitErr := fh.Wait()
+
+	model := cfg.Model
+	if model == "" {
+		model = implPC.Model
+	}
+	e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr,
+		withReviewStep("fix", e.state.ReviewRounds+1))
+	if fixWaitErr != nil {
+		e.log("review-fix apprentice exited with error: %s", fixWaitErr)
+	}
+
+	// The wizard committed directly on the staging branch — no merge needed.
+	e.log("fix committed on staging — skipping merge")
+	return nil
+}
+
+// fixViaSubprocess spawns a fix apprentice as a wizard-run subprocess on a
+// feature branch, then merges the result into the staging worktree.
+func (e *Executor) fixViaSubprocess(cfg formula.StepConfig, implPC PhaseConfig) error {
+	fixName := fmt.Sprintf("%s-fix-%d", e.agentName, e.state.ReviewRounds)
+	fixBranchName := e.resolveBranch(e.beadID)
+	e.log("dispatching fix apprentice on %s", fixBranchName)
+
+	fixArgs := []string{"--review-fix", "--apprentice"}
+
+	fixStarted := time.Now()
+	fh, ferr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+		Name:      fixName,
+		BeadID:    e.beadID,
+		Role:      agent.RoleApprentice,
+		ExtraArgs: fixArgs,
+	})
+	if ferr != nil {
+		return fmt.Errorf("spawn review-fix: %w", ferr)
+	}
+	fixWaitErr := fh.Wait()
+	model := cfg.Model
+	if model == "" {
+		model = implPC.Model
+	}
+	e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr,
+		withReviewStep("fix", e.state.ReviewRounds+1))
+	if fixWaitErr != nil {
+		e.log("review-fix apprentice exited with error: %s", fixWaitErr)
+	}
+
+	// Merge fix branch into the staging worktree.
+	if e.state.StagingBranch != "" {
+		fixBranch := e.resolveBranch(e.beadID)
+		e.log("merging fix branch %s into staging %s", fixBranch, e.state.StagingBranch)
+		stagingWt, wtErr := e.ensureStagingWorktree()
+		if wtErr != nil {
+			EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
+				fmt.Sprintf("ensure staging worktree for fix merge: %s", wtErr), e.deps)
+			return fmt.Errorf("ensure staging worktree for fix merge: %w", wtErr)
 		}
+		fixBranchSHA, _ := revParseBranch(stagingWt.Dir, fixBranch)
+		if mergeErr := stagingWt.MergeBranch(fixBranch, e.resolveConflicts); mergeErr != nil {
+			EscalateHumanFailure(e.beadID, e.agentName, "review-fix-merge-conflict",
+				fmt.Sprintf("merge fix branch %s into staging %s: %s", fixBranch, e.state.StagingBranch, mergeErr), e.deps)
+			return fmt.Errorf("merge fix branch %s into staging %s: %w", fixBranch, e.state.StagingBranch, mergeErr)
+		}
+		postMergeSHA, _ := stagingWt.HeadSHA()
+		e.log("merged %s (commit %s) into %s → %s", fixBranch, fixBranchSHA, e.state.StagingBranch, postMergeSHA)
 	}
 
 	return nil

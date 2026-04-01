@@ -50,8 +50,7 @@ func NewStagingWorktree(repoPath, branch, baseBranch, nameHint, userName, userEm
 
 // NewStagingWorktreeAt creates a staging worktree at a specific directory path.
 // Unlike NewStagingWorktree (which creates a temp dir), this places the worktree
-// at dir (e.g. .worktrees/<bead-id>), making it discoverable by all participants
-// in the epic lifecycle (wizard, sage, fix apprentice).
+// at dir, making it discoverable by other processes that know the path.
 // userName and userEmail configure the git identity in the worktree.
 //
 // The caller must call Close() when done. Close removes the git worktree and
@@ -85,8 +84,7 @@ func NewStagingWorktreeAt(repoPath, dir, branch, baseBranch, userName, userEmail
 }
 
 // ResumeStagingWorktree wraps an existing worktree directory in a StagingWorktree.
-// Used when resuming from persisted executor state — the worktree already exists
-// on disk and just needs to be wrapped for method access.
+// The worktree already exists on disk and just needs to be wrapped for method access.
 //
 // Captures HEAD SHA as StartSHA for session-scoped commit detection. If HEAD
 // cannot be read (e.g. worktree is corrupt), StartSHA is left empty and
@@ -121,15 +119,13 @@ func (w *StagingWorktree) FetchBranch(remote, branch string) {
 //  1. Try ff-only merge — succeeds when staging hasn't diverged.
 //  2. If ff-only fails, rebase the child onto staging, then ff-only again.
 //
-// Apprentices never push feature branches to origin — branches are local
-// only (worktree in local mode, shared PVC in k8s mode). MergeBranch uses
-// local refs exclusively.
+// All branch refs are local — MergeBranch does not fetch or push.
 //
 // On rebase conflict, resolver is called (if non-nil) to attempt resolution.
 func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, branch string) error) error {
 	w.logf("  merging %s into %s", childBranch, w.Branch)
 
-	// Use local branch ref directly — apprentices don't push to origin.
+	// Use local branch ref directly — no remote fetching.
 	branchRef := childBranch
 
 	// Step 1: Try fast-forward-only merge.

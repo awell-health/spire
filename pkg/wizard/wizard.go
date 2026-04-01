@@ -168,13 +168,35 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	branchName := strings.ReplaceAll(branchPattern, "{bead-id}", beadID)
 
-	// 3. Create git worktree
-	wc, err := WizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName, deps, log)
-	if err != nil {
-		return fmt.Errorf("create worktree: %w", err)
+	// 3. Create or resume git worktree.
+	var wc *spgit.WorktreeContext
+	if reviewFix && worktreeDirOverride != "" {
+		// The executor provided a staging worktree. Resume it via pkg/git —
+		// captures a session baseline (StartSHA) and detects the actual checked-
+		// out branch. Pass "" for branch so pkg/git reads it from the worktree.
+		// The worktree is borrowed, not owned: no Cleanup, no branch creation.
+		var wcErr error
+		wc, wcErr = spgit.ResumeWorktreeContext(worktreeDirOverride, "", baseBranch, repoPath, log)
+		if wcErr != nil {
+			return fmt.Errorf("resume staging worktree: %w", wcErr)
+		}
+		// Use the actual branch from the worktree (e.g. staging/spi-xxx) for
+		// prompts, bead comments, result.json, and agent_runs.Branch.
+		branchName = wc.Branch
+		log("using borrowed staging worktree: %s (branch: %s, baseline: %s)", wc.Dir, branchName, wc.StartSHA)
+
+		// Remove .beads/ so Claude's test runs and exploratory commands don't
+		// touch the production database — same safeguard as WizardCreateWorktree.
+		os.RemoveAll(filepath.Join(wc.Dir, ".beads"))
+	} else {
+		var wcErr error
+		wc, wcErr = WizardCreateWorktree(repoPath, beadID, wizardName, baseBranch, branchName, deps, log)
+		if wcErr != nil {
+			return fmt.Errorf("create worktree: %w", wcErr)
+		}
+		defer wc.Cleanup()
 	}
-	defer wc.Cleanup()
-	worktreeDir := wc.Dir // local alias for prompt file paths and logging
+	worktreeDir := wc.Dir
 	log("worktree: %s", worktreeDir)
 
 	// 4. Self-register in wizards.json
