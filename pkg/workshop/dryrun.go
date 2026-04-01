@@ -146,8 +146,10 @@ func describePhase(sim PhaseSimulation) string {
 	switch sim.Behavior {
 	case "validate-design":
 		return "Wizard validates linked design bead is closed and substantive"
-	case "generate-subtasks":
+	case "epic-plan":
 		return "Wizard invokes Claude to break epic into child tasks"
+	case "task-plan":
+		return "Wizard invokes Claude to produce a focused implementation plan"
 	case "sage-review":
 		return "Sage reviews staging branch diff, returns verdict (approve/request_changes)"
 	case "merge-to-main":

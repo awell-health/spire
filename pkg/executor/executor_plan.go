@@ -12,22 +12,6 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-// wizardPlan routes planning by bead type: epics get subtask breakdown,
-// standalone tasks get a focused implementation plan posted as a comment.
-func (e *Executor) wizardPlan(pc PhaseConfig) error {
-	bead, err := e.deps.GetBead(e.beadID)
-	if err != nil {
-		return fmt.Errorf("get bead: %w", err)
-	}
-
-	// Standalone tasks get a different planning path.
-	if bead.Type != "epic" {
-		return e.wizardPlanTask(bead, pc)
-	}
-
-	return e.wizardPlanEpic(bead, pc)
-}
-
 // wizardPlanTask validates the approach for a standalone task and posts a
 // focused implementation plan as a comment on the bead. The plan includes
 // key files, approach, and context that the apprentice will use during

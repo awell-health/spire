@@ -135,8 +135,9 @@ func TestWizardPlan_OnlyStepBeadChildren(t *testing.T) {
 
 	e := NewForTest("spi-plan", "wizard-test", f, state, deps)
 	pc := formula.PhaseConfig{Role: "wizard", Model: "claude-sonnet-4-6"}
+	bead, _ := deps.GetBead("spi-plan")
 
-	err := e.wizardPlan(pc)
+	err := e.wizardPlanEpic(bead, pc)
 
 	// CURRENT BEHAVIOR (buggy): wizardPlan sees 3 step-bead children,
 	// enters the enrichment path, and enrichSubtasksWithChangeSpecs skips
@@ -223,8 +224,9 @@ func TestWizardPlan_MixedChildren(t *testing.T) {
 
 	e := NewForTest("spi-mix", "wizard-test", nil, state, deps)
 	pc := formula.PhaseConfig{Model: "claude-sonnet-4-6"}
+	bead, _ := deps.GetBead("spi-mix")
 
-	err := e.wizardPlan(pc)
+	err := e.wizardPlanEpic(bead, pc)
 
 	if err != nil {
 		t.Fatalf("wizardPlan returned error: %v", err)
@@ -285,8 +287,9 @@ func TestWizardPlan_OnlyRealChildren(t *testing.T) {
 
 	e := NewForTest("spi-real", "wizard-test", nil, state, deps)
 	pc := formula.PhaseConfig{Model: "claude-sonnet-4-6"}
+	bead, _ := deps.GetBead("spi-real")
 
-	err := e.wizardPlan(pc)
+	err := e.wizardPlanEpic(bead, pc)
 
 	if err != nil {
 		t.Fatalf("wizardPlan returned error: %v", err)
@@ -1717,10 +1720,11 @@ func TestWizardPlanTask_HappyPath(t *testing.T) {
 
 	e := NewForTest("spi-task1", "wizard-test", nil, state, deps)
 	pc := formula.PhaseConfig{Role: "wizard", Model: "claude-opus-4-6"}
+	bead, _ := deps.GetBead("spi-task1")
 
-	err := e.wizardPlan(pc)
+	err := e.wizardPlanTask(bead, pc)
 	if err != nil {
-		t.Fatalf("wizardPlan returned error: %v", err)
+		t.Fatalf("wizardPlanTask returned error: %v", err)
 	}
 
 	if !claudeRunnerCalled {
@@ -1779,10 +1783,11 @@ func TestWizardPlanTask_Resume(t *testing.T) {
 
 	e := NewForTest("spi-task2", "wizard-test", nil, state, deps)
 	pc := formula.PhaseConfig{Role: "wizard", Model: "claude-opus-4-6"}
+	bead, _ := deps.GetBead("spi-task2")
 
-	err := e.wizardPlan(pc)
+	err := e.wizardPlanTask(bead, pc)
 	if err != nil {
-		t.Fatalf("wizardPlan returned error: %v", err)
+		t.Fatalf("wizardPlanTask returned error: %v", err)
 	}
 
 	if claudeRunnerCalled {
@@ -1824,10 +1829,11 @@ func TestWizardPlanTask_EmptyPlan(t *testing.T) {
 
 	e := NewForTest("spi-task3", "wizard-test", nil, state, deps)
 	pc := formula.PhaseConfig{Role: "wizard", Model: "claude-opus-4-6"}
+	bead, _ := deps.GetBead("spi-task3")
 
-	err := e.wizardPlan(pc)
+	err := e.wizardPlanTask(bead, pc)
 	if err == nil {
-		t.Fatal("wizardPlan should return error when Claude produces empty plan")
+		t.Fatal("wizardPlanTask should return error when Claude produces empty plan")
 	}
 
 	if !strings.Contains(err.Error(), "empty task plan") {

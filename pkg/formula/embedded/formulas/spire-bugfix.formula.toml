@@ -4,6 +4,7 @@ version = 2
 
 [phases.plan]
 role = "wizard"
+behavior = "task-plan"
 timeout = "3m"
 model = "claude-opus-4-6"
 # Wizard validates the bugfix approach and posts a focused plan as a comment.

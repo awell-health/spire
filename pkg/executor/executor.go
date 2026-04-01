@@ -217,8 +217,20 @@ func (e *Executor) Run() error {
 		// --- Behavior-based dispatch (formula-driven) ---
 		case behavior == "validate-design":
 			err = e.wizardValidateDesign()
-		case behavior == "generate-subtasks":
-			err = e.wizardPlan(pc)
+		case behavior == "epic-plan":
+			bead, berr := e.deps.GetBead(e.beadID)
+			if berr != nil {
+				err = fmt.Errorf("get bead for epic-plan: %w", berr)
+			} else {
+				err = e.wizardPlanEpic(bead, pc)
+			}
+		case behavior == "task-plan":
+			bead, berr := e.deps.GetBead(e.beadID)
+			if berr != nil {
+				err = fmt.Errorf("get bead for task-plan: %w", berr)
+			} else {
+				err = e.wizardPlanTask(bead, pc)
+			}
 		case behavior == "enrich-subtasks":
 			children, _ := e.deps.GetChildren(e.beadID)
 			err = e.enrichSubtasksWithChangeSpecs(children, "", "", pc)
@@ -352,7 +364,7 @@ func (e *Executor) executeWizard(phase string, pc PhaseConfig) error {
 	case "design":
 		return e.wizardValidateDesign()
 	case "plan":
-		return e.wizardPlan(pc)
+		return fmt.Errorf("plan phase must declare a behavior (epic-plan or task-plan) in the formula; role-based dispatch is no longer supported")
 	default:
 		return e.wizardGeneric(phase, pc)
 	}

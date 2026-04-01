@@ -667,9 +667,10 @@ func TestWizardPlanSkipsInternalDAGBeads(t *testing.T) {
 	e := NewForTest("spi-plan-dag", "wizard", nil, state, deps)
 
 	pc := formula.PhaseConfig{Model: "claude-sonnet-4-6"}
-	err := e.wizardPlan(pc)
+	bead, _ := deps.GetBead("spi-plan-dag")
+	err := e.wizardPlanEpic(bead, pc)
 	if err != nil {
-		t.Fatalf("wizardPlan: %v", err)
+		t.Fatalf("wizardPlanEpic: %v", err)
 	}
 
 	if !planCalled {
@@ -727,9 +728,10 @@ func TestWizardPlanEnrichesRealChildren(t *testing.T) {
 	e := NewForTest("spi-plan-mix", "wizard", nil, state, deps)
 
 	pc := formula.PhaseConfig{Model: "claude-opus-4-6"}
-	err := e.wizardPlan(pc)
+	bead, _ := deps.GetBead("spi-plan-mix")
+	err := e.wizardPlanEpic(bead, pc)
 	if err != nil {
-		t.Fatalf("wizardPlan: %v", err)
+		t.Fatalf("wizardPlanEpic: %v", err)
 	}
 
 	// enrichSubtasksWithChangeSpecs should be called once per real child

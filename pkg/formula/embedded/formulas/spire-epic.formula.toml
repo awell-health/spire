@@ -10,6 +10,7 @@ timeout = "1m"
 
 [phases.plan]
 role = "wizard"
+behavior = "epic-plan"
 timeout = "10m"
 model = "claude-opus-4-6"
 # Wizard invokes Claude (Opus) with all context inline to generate subtask breakdown.

@@ -112,7 +112,7 @@ func KnownModels() []string {
 
 // KnownBehaviors returns the list of known behavior overrides.
 func KnownBehaviors() []string {
-	return []string{"validate-design", "sage-review", "merge-to-main", "deploy", "skip"}
+	return []string{"validate-design", "epic-plan", "task-plan", "sage-review", "merge-to-main", "deploy", "skip"}
 }
 
 // KnownRoles returns the list of known phase roles.

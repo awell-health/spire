@@ -4,6 +4,7 @@ version = 2
 
 [phases.plan]
 role = "wizard"
+behavior = "task-plan"
 timeout = "5m"
 model = "claude-opus-4-6"
 # Wizard validates approach, identifies key files, and posts an implementation
