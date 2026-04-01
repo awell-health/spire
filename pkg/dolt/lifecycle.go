@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -32,13 +33,14 @@ func ManagedBinPath() string {
 }
 
 // ResolvedBinPath returns the dolt binary to use.
-// Priority: 1) managed binary if it exists, 2) PATH lookup, 3) empty string.
+// Priority: 1) managed binary if version OK, 2) PATH binary if version OK, 3) empty string.
+// An outdated managed binary does not shadow a valid system binary.
 func ResolvedBinPath() string {
 	managed := ManagedBinPath()
-	if _, err := os.Stat(managed); err == nil {
+	if _, err := os.Stat(managed); err == nil && VersionOK(managed) {
 		return managed
 	}
-	if p, err := exec.LookPath("dolt"); err == nil {
+	if p, err := exec.LookPath("dolt"); err == nil && VersionOK(p) {
 		return p
 	}
 	return ""
@@ -71,13 +73,36 @@ func InstalledVersion(binPath string) (string, error) {
 	return "", fmt.Errorf("could not parse dolt version from output: %s", strings.TrimSpace(string(out)))
 }
 
-// VersionOK checks if the dolt binary at binPath matches the required version.
+// VersionOK checks if the dolt binary at binPath meets the minimum required version.
 func VersionOK(binPath string) bool {
 	v, err := InstalledVersion(binPath)
 	if err != nil {
 		return false
 	}
-	return v == RequiredVersion
+	return semverAtLeast(v, RequiredVersion)
+}
+
+// semverAtLeast returns true if version >= minimum, comparing major.minor.patch numerically.
+func semverAtLeast(version, minimum string) bool {
+	parse := func(s string) (int, int, int) {
+		parts := strings.SplitN(s, ".", 3)
+		if len(parts) != 3 {
+			return 0, 0, 0
+		}
+		major, _ := strconv.Atoi(parts[0])
+		minor, _ := strconv.Atoi(parts[1])
+		patch, _ := strconv.Atoi(parts[2])
+		return major, minor, patch
+	}
+	vMaj, vMin, vPat := parse(version)
+	mMaj, mMin, mPat := parse(minimum)
+	if vMaj != mMaj {
+		return vMaj > mMaj
+	}
+	if vMin != mMin {
+		return vMin > mMin
+	}
+	return vPat >= mPat
 }
 
 // DownloadURL constructs the download URL for the current platform.

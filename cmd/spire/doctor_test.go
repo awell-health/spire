@@ -16,14 +16,37 @@ func TestDoctorCheckDoltBinary_SystemPath(t *testing.T) {
 		t.Skip("dolt not in PATH, skipping")
 	}
 	r := checkDoltBinary()
-	// Status depends on whether the system dolt matches the required version
-	if doltVersionOK(sysPath) {
+
+	// checkDoltBinary checks the managed binary first, then system PATH.
+	// Determine expected status based on whichever binary the function finds first.
+	managedPath := filepath.Join(doltGlobalDir(), "bin", "dolt")
+	managedExists := false
+	if info, statErr := os.Stat(managedPath); statErr == nil && !info.IsDir() {
+		managedExists = true
+	}
+
+	if managedExists && doltVersionOK(managedPath) {
+		// Managed binary is correct — function returns OK without checking system PATH.
 		if r.Status != statusOK {
-			t.Errorf("expected statusOK for correct version, got %s: %s", r.Status, r.Detail)
+			t.Errorf("expected statusOK for correct managed binary, got %s: %s", r.Status, r.Detail)
+		}
+	} else if managedExists {
+		// Managed binary exists but wrong version.
+		if r.Status != statusOutdated {
+			t.Errorf("expected statusOutdated for outdated managed binary, got %s: %s", r.Status, r.Detail)
+		}
+		if r.FixFunc == nil {
+			t.Error("expected non-nil FixFunc for outdated managed dolt")
+		}
+	} else if doltVersionOK(sysPath) {
+		// No managed binary, system binary is correct.
+		if r.Status != statusOK {
+			t.Errorf("expected statusOK for correct system version, got %s: %s", r.Status, r.Detail)
 		}
 	} else {
+		// No managed binary, system binary is wrong version.
 		if r.Status != statusOutdated {
-			t.Errorf("expected statusOutdated for wrong version, got %s: %s", r.Status, r.Detail)
+			t.Errorf("expected statusOutdated for wrong system version, got %s: %s", r.Status, r.Detail)
 		}
 		if r.FixFunc == nil {
 			t.Error("expected non-nil FixFunc for outdated system dolt")
@@ -66,9 +89,9 @@ func TestDoctorCheckDoltBinary_ManagedPath_WrongVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a fake dolt script with the wrong version
+	// Create a fake dolt script with an older version
 	fakeDolt := filepath.Join(binDir, "dolt")
-	script := "#!/bin/sh\necho 'dolt version 1.99.0'\n"
+	script := "#!/bin/sh\necho 'dolt version 0.50.0'\n"
 	if err := os.WriteFile(fakeDolt, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}

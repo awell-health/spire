@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -281,11 +282,20 @@ func bootstrapTowerBeadsDir(beadsDir string, tower *TowerConfig) error {
 		return fmt.Errorf("create .beads/: %w", err)
 	}
 
+	// Remove stale dolt-server.port — beads resolves port as:
+	//   env var > dolt-server.port > config.yaml > metadata.json
+	// A stale port file would override everything we write below.
+	os.Remove(filepath.Join(beadsDir, "dolt-server.port"))
+
+	// Including dolt_server_port triggers ServerModeExternal in beads, which
+	// suppresses auto-start — preventing beads from launching a shadow dolt.
+	serverPort, _ := strconv.Atoi(doltPort())
 	beadsMeta := map[string]any{
-		"database":      "dolt",
-		"backend":       "dolt",
-		"dolt_mode":     "server",
-		"dolt_database": tower.Database,
+		"database":         "dolt",
+		"backend":          "dolt",
+		"dolt_mode":        "server",
+		"dolt_database":    tower.Database,
+		"dolt_server_port": serverPort,
 	}
 	if tower.ProjectID != "" {
 		beadsMeta["project_id"] = tower.ProjectID
@@ -581,11 +591,16 @@ func cmdTowerCreate(args []string) error {
 
 	// bd init writes metadata.json with dolt_mode=embedded. Overwrite to server
 	// mode so beads.OpenFromConfig connects to spire's dolt server.
+	// Including dolt_server_port triggers ServerModeExternal in beads, which
+	// suppresses auto-start — preventing beads from launching a shadow dolt
+	// if spire's server is temporarily unreachable.
+	serverPort, _ := strconv.Atoi(doltPort())
 	beadsMeta := map[string]any{
-		"database":      "dolt",
-		"backend":       "dolt",
-		"dolt_mode":     "server",
-		"dolt_database": database,
+		"database":         "dolt",
+		"backend":          "dolt",
+		"dolt_mode":        "server",
+		"dolt_database":    database,
+		"dolt_server_port": serverPort,
 	}
 	if projectID != "" {
 		beadsMeta["project_id"] = projectID
