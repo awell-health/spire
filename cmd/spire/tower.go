@@ -658,8 +658,10 @@ func cmdTowerCreate(args []string) error {
 		return fmt.Errorf("set issue_prefix on server: %w", err)
 	}
 
-	// Commit via dolt server stored procedures
-	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'tower: initialize %s')", database, sqlEscape(tower.Name))); err != nil {
+	// Commit via dolt server stored procedures.
+	// Use --allow-empty: bd init may have already committed the tables,
+	// leaving nothing new to stage.
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('--allow-empty', '-m', 'tower: initialize %s')", database, sqlEscape(tower.Name))); err != nil {
 		return fmt.Errorf("dolt commit: %w", err)
 	}
 
@@ -808,6 +810,15 @@ func cmdTowerAttach(args []string) error {
 		} else {
 			return fmt.Errorf("clone from DoltHub: %s\n%s", err, outStr)
 		}
+	}
+
+	// Nudge the dolt server to pick up the newly cloned database.
+	// dolt servers don't hot-reload new directories in the data dir;
+	// CREATE DATABASE IF NOT EXISTS makes the server aware of it.
+	if _, err := rawDoltQuery(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dbName)); err != nil {
+		// Non-fatal: the server may already know about it, or it may load it
+		// lazily. The query below will surface the real error if needed.
+		fmt.Printf("  note: could not register cloned db with server: %s\n", err)
 	}
 
 	// Read tower identity from cloned database using raw dolt CLI.
