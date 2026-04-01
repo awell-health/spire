@@ -936,7 +936,7 @@ func cmdTowerUse(name string) error {
 	// Warn about running wizards for the old tower.
 	if cfg.ActiveTower != "" && cfg.ActiveTower != name {
 		reg := loadWizardRegistry()
-		reg = cleanDeadWizards(reg)
+		reg = cleanDeadWizards(reg, false)
 		var running []localWizard
 		for _, w := range reg.Wizards {
 			// Check if wizard's bead prefix matches old tower's instances.
@@ -1007,7 +1007,7 @@ func cmdTowerRemove(name string, force bool) error {
 	// 4. Kill running wizards for this tower.
 	wizardsKilled := 0
 	reg := loadWizardRegistry()
-	reg = cleanDeadWizards(reg)
+	reg = cleanDeadWizards(reg, false)
 	var remaining []localWizard
 	for _, w := range reg.Wizards {
 		if w.Tower == name {
