@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -467,6 +468,21 @@ func (e *Executor) runBuildCommand(repoPath, buildStr string) error {
 // The fix apprentice works directly in the staging worktree (not on a separate
 // branch) because the build error only manifests in the combined merged state.
 func (e *Executor) attemptBuildFix(waveIdx int, buildErr error, pc PhaseConfig) error {
+	// Check the build-failure policy from formula config.
+	policy := pc.GetOnBuildFailure()
+	switch policy {
+	case "escalate":
+		EscalateHumanFailure(e.beadID, e.agentName, "build-failure",
+			fmt.Sprintf("build failed (on_build_failure=escalate): %s", buildErr), e.deps)
+		return fmt.Errorf("build failed (on_build_failure=escalate): %w", buildErr)
+	case "fail":
+		return fmt.Errorf("build failed (on_build_failure=fail): %w", buildErr)
+	case "retry":
+		// fall through to existing retry loop
+	default:
+		log.Printf("WARN: unknown on_build_failure policy %q, defaulting to retry", policy)
+	}
+
 	maxRounds := pc.GetMaxBuildFixRounds()
 	buildErrMsg := buildErr.Error()
 

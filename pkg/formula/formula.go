@@ -44,7 +44,8 @@ type PhaseConfig struct {
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
 	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
 	Test          string `toml:"test,omitempty"`           // test command to verify after rebase/merge
-	MaxBuildFixRounds int `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
+	MaxBuildFixRounds int    `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
+	OnBuildFailure    string `toml:"on_build_failure,omitempty"`     // "retry" (default) | "escalate" | "fail"
 }
 
 // GetBehavior returns the behavior override, or "" for role-based dispatch.
@@ -89,6 +90,14 @@ func (pc PhaseConfig) GetMaxBuildFixRounds() int {
 		return pc.MaxBuildFixRounds
 	}
 	return 2
+}
+
+// GetOnBuildFailure returns the build-failure policy, defaulting to "retry".
+func (pc PhaseConfig) GetOnBuildFailure() string {
+	if pc.OnBuildFailure != "" {
+		return pc.OnBuildFailure
+	}
+	return "retry"
 }
 
 // RevisionPolicy configures review loop behavior (review phase only).
