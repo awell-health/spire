@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -71,13 +72,36 @@ func InstalledVersion(binPath string) (string, error) {
 	return "", fmt.Errorf("could not parse dolt version from output: %s", strings.TrimSpace(string(out)))
 }
 
-// VersionOK checks if the dolt binary at binPath matches the required version.
+// VersionOK checks if the dolt binary at binPath meets the minimum required version.
 func VersionOK(binPath string) bool {
 	v, err := InstalledVersion(binPath)
 	if err != nil {
 		return false
 	}
-	return v == RequiredVersion
+	return semverAtLeast(v, RequiredVersion)
+}
+
+// semverAtLeast returns true if version >= minimum, comparing major.minor.patch numerically.
+func semverAtLeast(version, minimum string) bool {
+	parse := func(s string) (int, int, int) {
+		parts := strings.SplitN(s, ".", 3)
+		if len(parts) != 3 {
+			return 0, 0, 0
+		}
+		major, _ := strconv.Atoi(parts[0])
+		minor, _ := strconv.Atoi(parts[1])
+		patch, _ := strconv.Atoi(parts[2])
+		return major, minor, patch
+	}
+	vMaj, vMin, vPat := parse(version)
+	mMaj, mMin, mPat := parse(minimum)
+	if vMaj != mMaj {
+		return vMaj > mMaj
+	}
+	if vMin != mMin {
+		return vMin > mMin
+	}
+	return vPat >= mPat
 }
 
 // DownloadURL constructs the download URL for the current platform.

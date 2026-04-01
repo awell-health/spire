@@ -133,6 +133,16 @@ func TestDoltVersionOK(t *testing.T) {
 		t.Error("doltVersionOK returned true for wrong version")
 	}
 
+	// Binary with newer version (should be OK — minimum version check)
+	newerBin := filepath.Join(tmpDir, "dolt-newer")
+	script = "#!/bin/sh\necho 'dolt version 99.0.0'\n"
+	if err := os.WriteFile(newerBin, []byte(script), 0755); err != nil {
+		t.Fatalf("write newer binary: %v", err)
+	}
+	if !doltVersionOK(newerBin) {
+		t.Error("doltVersionOK returned false for newer version")
+	}
+
 	// Non-existent binary
 	if doltVersionOK("/nonexistent/dolt") {
 		t.Error("doltVersionOK returned true for non-existent binary")
