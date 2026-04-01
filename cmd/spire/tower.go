@@ -571,9 +571,31 @@ func cmdTowerCreate(args []string) error {
 		return fmt.Errorf("read tower identity after init: %w", err)
 	}
 
-	// bd init writes a default config.yaml. Overwrite with dolt server connection
-	// so subsequent bd commands can connect. The database name lives in metadata.json
-	// (written by bd init --database), not config.yaml.
+	// bd init may auto-start an embedded dolt server and write dolt-server.port
+	// with a random port. The beads library resolves port as:
+	//   BEADS_DOLT_SERVER_PORT env > dolt-server.port file > config.yaml
+	// Remove the stale port file so it can't override spire's server port,
+	// and pin the env var so all subsequent beads operations hit spire's server.
+	os.Remove(filepath.Join(beadsDir, "dolt-server.port"))
+	os.Setenv("BEADS_DOLT_SERVER_PORT", doltPort())
+
+	// bd init writes metadata.json with dolt_mode=embedded. Overwrite to server
+	// mode so beads.OpenFromConfig connects to spire's dolt server.
+	beadsMeta := map[string]any{
+		"database":      "dolt",
+		"backend":       "dolt",
+		"dolt_mode":     "server",
+		"dolt_database": database,
+	}
+	if projectID != "" {
+		beadsMeta["project_id"] = projectID
+	}
+	metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), append(metaBytes, '\n'), 0644); err != nil {
+		return fmt.Errorf("write .beads/metadata.json: %w", err)
+	}
+
+	// bd init writes a default config.yaml. Overwrite with dolt server connection.
 	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		return fmt.Errorf("write .beads/config.yaml: %w", err)
@@ -610,6 +632,15 @@ func cmdTowerCreate(args []string) error {
 	}
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, goldenPromptsTableSQL)); err != nil {
 		return fmt.Errorf("create golden_prompts table: %w", err)
+	}
+
+	// bd init wrote issue_prefix to the embedded dolt's config table, but spire's
+	// server has its own working set. Ensure issue_prefix exists on the server so
+	// beads.CreateIssue (in server mode) can generate IDs.
+	if _, err := rawDoltQuery(fmt.Sprintf(
+		"USE `%s`; INSERT INTO config (`key`, value) VALUES ('issue_prefix', '%s') ON DUPLICATE KEY UPDATE value = '%s'",
+		database, sqlEscape(prefix), sqlEscape(prefix))); err != nil {
+		return fmt.Errorf("set issue_prefix on server: %w", err)
 	}
 
 	// Commit via dolt server stored procedures

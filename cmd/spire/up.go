@@ -88,6 +88,11 @@ func cmdUp(args []string) error {
 		fmt.Printf("started (pid %d, port %s)\n", newPID, doltPort())
 	}
 
+	// Pin spire's dolt port as the authoritative port for all beads operations.
+	// The beads library resolves port as: BEADS_DOLT_SERVER_PORT env > dolt-server.port file > config.yaml.
+	// Setting the env var ensures child processes (daemon, steward, bd) always hit spire's server.
+	os.Setenv("BEADS_DOLT_SERVER_PORT", doltPort())
+
 	// Step 2: Ensure tower configs are healthy.
 	towers, _ := listTowerConfigs()
 	if len(towers) == 0 {
@@ -103,6 +108,17 @@ func cmdUp(args []string) error {
 				towers[i].Archmage.Email = globalGitEmail
 				saveTowerConfig(&towers[i])
 				fmt.Printf("archmage identity: backfilled from global git config (%s <%s>)\n", towers[i].Archmage.Name, towers[i].Archmage.Email)
+			}
+		}
+
+		// Remove stale dolt-server.port files from tower .beads/ dirs.
+		// bd init or beads auto-start can leave these behind, causing the beads
+		// library to connect to a shadow dolt server instead of spire's.
+		for _, t := range towers {
+			portFile := filepath.Join(doltDataDir(), t.Database, ".beads", "dolt-server.port")
+			if _, err := os.Stat(portFile); err == nil {
+				os.Remove(portFile)
+				fmt.Printf("removed stale %s/.beads/dolt-server.port\n", t.Database)
 			}
 		}
 
