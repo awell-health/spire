@@ -33,13 +33,14 @@ func ManagedBinPath() string {
 }
 
 // ResolvedBinPath returns the dolt binary to use.
-// Priority: 1) managed binary if it exists, 2) PATH lookup, 3) empty string.
+// Priority: 1) managed binary if version OK, 2) PATH binary if version OK, 3) empty string.
+// An outdated managed binary does not shadow a valid system binary.
 func ResolvedBinPath() string {
 	managed := ManagedBinPath()
-	if _, err := os.Stat(managed); err == nil {
+	if _, err := os.Stat(managed); err == nil && VersionOK(managed) {
 		return managed
 	}
-	if p, err := exec.LookPath("dolt"); err == nil {
+	if p, err := exec.LookPath("dolt"); err == nil && VersionOK(p) {
 		return p
 	}
 	return ""

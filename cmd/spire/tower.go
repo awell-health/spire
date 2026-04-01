@@ -282,6 +282,11 @@ func bootstrapTowerBeadsDir(beadsDir string, tower *TowerConfig) error {
 		return fmt.Errorf("create .beads/: %w", err)
 	}
 
+	// Remove stale dolt-server.port — beads resolves port as:
+	//   env var > dolt-server.port > config.yaml > metadata.json
+	// A stale port file would override everything we write below.
+	os.Remove(filepath.Join(beadsDir, "dolt-server.port"))
+
 	// Including dolt_server_port triggers ServerModeExternal in beads, which
 	// suppresses auto-start — preventing beads from launching a shadow dolt.
 	serverPort, _ := strconv.Atoi(doltPort())
