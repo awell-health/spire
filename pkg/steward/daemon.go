@@ -293,16 +293,25 @@ func runDoltSync(tower config.TowerConfig) {
 	preCommit := dolt.GetCurrentCommitHash(tower.Database)
 
 	// Pull first — work with the freshest remote state before Linear sync.
-	if err := dolt.CLIPull(dataDir, false); err != nil {
-		log.Printf("[daemon] [%s] dolt pull: %s", tower.Name, err)
-		WriteSyncState(SyncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "pull_failed", Error: err.Error()})
-		return
+	pullErr := dolt.CLIPull(dataDir, false)
+	if pullErr != nil {
+		log.Printf("[daemon] [%s] dolt pull: %s", tower.Name, pullErr)
+	} else {
+		log.Printf("[daemon] [%s] dolt pull complete", tower.Name)
 	}
-	log.Printf("[daemon] [%s] dolt pull complete", tower.Name)
 
-	// Enforce field-level ownership after pull.
+	// Enforce field-level ownership after pull — this resolves merge conflicts
+	// using field-level ownership rules. Must run even (especially) when the
+	// pull reports conflicts, since CLIPull returns an error for conflicts
+	// but the data is still merged into the working set.
 	if err := dolt.ApplyMergeOwnership(tower.Database, preCommit); err != nil {
 		log.Printf("[daemon] [%s] ownership enforcement: %s", tower.Name, err)
+	}
+
+	// If the pull failed for a reason other than merge conflicts, bail.
+	if pullErr != nil && !strings.Contains(pullErr.Error(), "CONFLICT") && !strings.Contains(pullErr.Error(), "conflict") {
+		WriteSyncState(SyncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "pull_failed", Error: pullErr.Error()})
+		return
 	}
 
 	// Push local commits to the remote.
