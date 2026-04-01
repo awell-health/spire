@@ -44,8 +44,9 @@ type PhaseConfig struct {
 	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
 	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
 	Test          string `toml:"test,omitempty"`           // test command to verify after rebase/merge
-	MaxBuildFixRounds int    `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
-	OnBuildFailure    string `toml:"on_build_failure,omitempty"`     // "retry" (default) | "escalate" | "fail"
+	MaxBuildFixRounds int      `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
+	OnBuildFailure    string   `toml:"on_build_failure,omitempty"`     // "retry" (default) | "escalate" | "fail"
+	DocPatterns       []string `toml:"doc_patterns" json:"doc_patterns,omitempty"` // glob patterns for doc files to review on merge
 }
 
 // GetBehavior returns the behavior override, or "" for role-based dispatch.

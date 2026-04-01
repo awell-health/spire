@@ -47,6 +47,7 @@ arbiter_model = "claude-opus-4-6"
 strategy = "squash"
 staging_branch = "epic/{bead-id}"
 auto = true
+doc_patterns = ["README.md", "PLAYBOOK.md", "ARCHITECTURE.md", "VISION.md", "PLAN.md", "LOCAL.md", "CLAUDE.md", "docs/*.md"]
 
 [vars.task]
 description = "The epic bead ID"

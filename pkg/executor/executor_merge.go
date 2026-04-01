@@ -121,30 +121,20 @@ func (e *Executor) reviewDocsForStaleness(repoPath, branch, baseBranch string, p
 		return fmt.Errorf("diff --name-only: %w", err)
 	}
 
-	// Filter for documentation files.
+	// If no doc patterns configured, skip doc review entirely.
+	if len(pc.DocPatterns) == 0 {
+		e.log("no doc_patterns configured — skipping doc review")
+		return nil
+	}
+
+	// Filter for documentation files matching configured patterns.
 	var docFiles []string
 	for _, f := range changedFiles {
 		f = strings.TrimSpace(f)
 		if f == "" {
 			continue
 		}
-		base := strings.ToUpper(filepath.Base(f))
-		switch {
-		case base == "README.MD":
-			docFiles = append(docFiles, f)
-		case base == "PLAYBOOK.MD":
-			docFiles = append(docFiles, f)
-		case base == "ARCHITECTURE.MD":
-			docFiles = append(docFiles, f)
-		case base == "VISION.MD":
-			docFiles = append(docFiles, f)
-		case base == "PLAN.MD":
-			docFiles = append(docFiles, f)
-		case base == "LOCAL.MD":
-			docFiles = append(docFiles, f)
-		case base == "CLAUDE.MD":
-			docFiles = append(docFiles, f)
-		case strings.HasSuffix(strings.ToLower(f), ".md") && strings.Contains(strings.ToLower(filepath.Dir(f)), "doc"):
+		if matchesDocPatterns(f, pc.DocPatterns) {
 			docFiles = append(docFiles, f)
 		}
 	}
@@ -190,4 +180,20 @@ IMPORTANT: Only fix genuinely stale language where the described feature now exi
 
 	e.log("documentation review complete")
 	return nil
+}
+
+// matchesDocPatterns returns true if path matches any of the given glob patterns.
+func matchesDocPatterns(path string, patterns []string) bool {
+	for _, p := range patterns {
+		if matched, _ := filepath.Match(p, path); matched {
+			return true
+		}
+		// Also match against the base filename for bare patterns like "README.md".
+		if !strings.Contains(p, "/") {
+			if matched, _ := filepath.Match(p, filepath.Base(path)); matched {
+				return true
+			}
+		}
+	}
+	return false
 }
