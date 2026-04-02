@@ -271,12 +271,16 @@ func cmdReset(args []string) error {
 			fmt.Printf("  %s✗ in-repo worktree removed: %s%s\n", dim, inRepoWt, reset)
 		}
 
-		// Delete matching branches: epic/<bead-id>, feat/<bead-id>, feat/<bead-id>.*
+		// Delete matching branches: epic/<bead-id>, feat/<bead-id>, feat/<bead-id>.*, staging/<bead-id>
 		rc := &spgit.RepoContext{Dir: cwd}
+		// Prune stale worktree refs so branch deletion succeeds even if the
+		// worktree directory was already removed above.
+		rc.PruneWorktrees()
 		branchPatterns := []string{
 			"epic/" + beadID,
 			"feat/" + beadID,
 			"feat/" + beadID + ".*",
+			"staging/" + beadID,
 		}
 		for _, pattern := range branchPatterns {
 			branches := rc.ListBranches(pattern)

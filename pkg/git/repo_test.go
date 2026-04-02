@@ -588,6 +588,136 @@ func TestRepoContext_NilLogIsSilent(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// CommitsAhead / PruneWorktrees tests
+// =============================================================================
+
+func TestRepoContext_CommitsAhead(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create a staging branch from main and add commits.
+	rc.CreateBranch("staging/test")
+	run(t, dir, "git", "checkout", "staging/test")
+	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-m", "first staging commit")
+	writeFile(t, filepath.Join(dir, "b.txt"), "b\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-m", "second staging commit")
+	run(t, dir, "git", "checkout", "main")
+
+	ahead, err := rc.CommitsAhead("staging/test", "main")
+	if err != nil {
+		t.Fatalf("CommitsAhead: %v", err)
+	}
+	if ahead != 2 {
+		t.Errorf("CommitsAhead = %d, want 2", ahead)
+	}
+
+	// Same branch should be 0 ahead.
+	ahead, err = rc.CommitsAhead("main", "main")
+	if err != nil {
+		t.Fatalf("CommitsAhead same branch: %v", err)
+	}
+	if ahead != 0 {
+		t.Errorf("CommitsAhead(main, main) = %d, want 0", ahead)
+	}
+
+	// Invalid ref should return error.
+	_, err = rc.CommitsAhead("nonexistent", "main")
+	if err == nil {
+		t.Error("expected error for nonexistent branch")
+	}
+}
+
+func TestRepoContext_PruneWorktrees(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create a branch and worktree, then remove the worktree directory
+	// without git worktree remove (simulating a crash/reset).
+	rc.CreateBranch("staging/prune-test")
+	wtDir := filepath.Join(t.TempDir(), "prune-wt")
+	_, err := rc.CreateWorktree(wtDir, "staging/prune-test")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	// Manually remove the worktree directory (simulating crash).
+	os.RemoveAll(wtDir)
+
+	// Prune should clean up the stale reference.
+	if err := rc.PruneWorktrees(); err != nil {
+		t.Fatalf("PruneWorktrees: %v", err)
+	}
+
+	// Now we should be able to create a worktree on the same branch.
+	wtDir2 := filepath.Join(t.TempDir(), "prune-wt-2")
+	wc, err := rc.CreateWorktree(wtDir2, "staging/prune-test")
+	if err != nil {
+		t.Fatalf("CreateWorktree after prune: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wc.Dir)
+}
+
+func TestRepoContext_PruneWorktrees_RecoveryStagingBranch(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create staging branch with commits ahead of main.
+	rc.ForceBranch("staging/spi-recover", "main")
+	wtDir := filepath.Join(t.TempDir(), "recovery-wt")
+	wc, err := rc.CreateWorktree(wtDir, "staging/spi-recover")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	// Add a commit in the worktree.
+	wc.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wtDir, "staged-work.txt"), "important work\n")
+	sha, err := wc.Commit("staged work commit")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if sha == "" {
+		t.Fatal("expected non-empty SHA from commit")
+	}
+
+	// Simulate crash: remove worktree directory without git worktree remove.
+	os.RemoveAll(wtDir)
+
+	// Verify branch still exists with commits ahead.
+	if !rc.BranchExists("staging/spi-recover") {
+		t.Fatal("staging branch should still exist after worktree dir removal")
+	}
+	ahead, err := rc.CommitsAhead("staging/spi-recover", "main")
+	if err != nil {
+		t.Fatalf("CommitsAhead: %v", err)
+	}
+	if ahead != 1 {
+		t.Errorf("staging branch should be 1 commit ahead, got %d", ahead)
+	}
+
+	// Prune stale refs and recreate the worktree from the surviving branch.
+	rc.PruneWorktrees()
+	wtDir2 := filepath.Join(t.TempDir(), "recovery-wt-2")
+	wc2, err := rc.CreateWorktree(wtDir2, "staging/spi-recover")
+	if err != nil {
+		t.Fatalf("CreateWorktree after recovery: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wc2.Dir)
+
+	// Verify the recovered worktree has the staged work.
+	content, err := os.ReadFile(filepath.Join(wtDir2, "staged-work.txt"))
+	if err != nil {
+		t.Fatalf("staged-work.txt should exist in recovered worktree: %v", err)
+	}
+	if string(content) != "important work\n" {
+		t.Errorf("staged-work.txt content = %q, want %q", string(content), "important work\n")
+	}
+}
+
 // Helper to trim trailing newlines from command output.
 func trimNewline(s string) string {
 	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {

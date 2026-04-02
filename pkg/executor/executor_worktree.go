@@ -36,9 +36,24 @@ func (e *Executor) ensureStagingWorktree() (*spgit.StagingWorktree, error) {
 		e.state.WorktreeDir = ""
 	}
 
-	// Create the staging branch from the base branch (not HEAD, which may differ).
+	// Check if the staging branch already exists with commits ahead of base.
+	// This handles recovery after resummon/reset-to-merge where state.json and
+	// the worktree directory were deleted but the staging branch survives.
 	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: e.state.BaseBranch, Log: e.log}
-	rc.ForceBranch(stagingBranch, e.state.BaseBranch)
+	if rc.BranchExists(stagingBranch) {
+		ahead, _ := rc.CommitsAhead(stagingBranch, e.state.BaseBranch)
+		if ahead > 0 {
+			e.log("recovering staging branch %s (%d commits ahead of %s)", stagingBranch, ahead, e.state.BaseBranch)
+			// Prune stale worktree refs so git worktree add succeeds.
+			rc.PruneWorktrees()
+		} else {
+			// Branch exists but at base — reset is harmless.
+			rc.ForceBranch(stagingBranch, e.state.BaseBranch)
+		}
+	} else {
+		// Branch doesn't exist — create from base.
+		rc.ForceBranch(stagingBranch, e.state.BaseBranch)
+	}
 
 	// Worktree dir: .worktrees/<bead-id> — traceable to the bead.
 	wtDir := filepath.Join(repoPath, ".worktrees", e.beadID)
