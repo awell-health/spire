@@ -159,7 +159,8 @@ func runPull(remoteURL string, force bool) error {
 		}
 		if merge {
 			fmt.Println("  Merge conflicts resolved via field-level ownership.")
-		} else if !hard {
+		} else {
+			// hard+force (force pull still failed) or unknown error — propagate.
 			return fmt.Errorf("dolt pull: %w", pullErr)
 		}
 	}
