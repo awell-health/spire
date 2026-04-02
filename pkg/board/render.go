@@ -61,31 +61,33 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, interruptedCount, bl
 		}
 	}
 
+	// BLOCKED and INTERRUPTED share the same vertical space (rendered side-by-side).
+	// Allocate a single pool and deduct from available only once.
 	maxInterrupted := 0
-	if interruptedCount > 0 {
-		maxInterrupted = available / 5
-		if maxInterrupted < 1 {
-			maxInterrupted = 1
-		}
-		if maxInterrupted > interruptedCount {
-			maxInterrupted = interruptedCount
-		}
-		available -= maxInterrupted + 2
-		if available < 4 {
-			available = 4
-		}
-	}
-
 	maxBlocked := 0
-	if blockedCount > 0 {
-		maxBlocked = available / 5
-		if maxBlocked < 1 {
-			maxBlocked = 1
+	if blockedCount > 0 || interruptedCount > 0 {
+		maxLower := available / 5
+		if maxLower < 1 {
+			maxLower = 1
 		}
-		if maxBlocked > blockedCount {
-			maxBlocked = blockedCount
+		if blockedCount > 0 {
+			maxBlocked = maxLower
+			if maxBlocked > blockedCount {
+				maxBlocked = blockedCount
+			}
 		}
-		available -= maxBlocked + 2
+		if interruptedCount > 0 {
+			maxInterrupted = maxLower
+			if maxInterrupted > interruptedCount {
+				maxInterrupted = interruptedCount
+			}
+		}
+		// Deduct the taller of the two from available (they share vertical space).
+		deduct := maxBlocked
+		if maxInterrupted > deduct {
+			deduct = maxInterrupted
+		}
+		available -= deduct + 2
 		if available < 4 {
 			available = 4
 		}
@@ -264,38 +266,6 @@ func (m Model) View() string {
 		s.WriteString("\n")
 	}
 
-	// Interrupted (capped by budget) — between alerts and phase columns.
-	if len(visibleCols.Interrupted) > 0 {
-		SortBeads(visibleCols.Interrupted)
-		intStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-		intHeaderStr := fmt.Sprintf("⚠ INTERRUPTED (%d)", len(visibleCols.Interrupted))
-		if m.SelSection == SectionInterrupted {
-			intStyle = intStyle.Underline(true)
-		}
-		s.WriteString(intStyle.Render(intHeaderStr) + "\n")
-		for i, b := range visibleCols.Interrupted {
-			if i >= budget.MaxInterrupted {
-				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Interrupted)-budget.MaxInterrupted)) + "\n")
-				break
-			}
-			intType := ""
-			for _, l := range b.Labels {
-				if strings.HasPrefix(l, "interrupted:") {
-					intType = "[" + l[len("interrupted:"):] + "] "
-					break
-				}
-			}
-			if m.SelSection == SectionInterrupted && i == m.SelCard {
-				cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
-				s.WriteString(fmt.Sprintf("%s %s %s%s: %s\n", cursor, PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
-			} else {
-				s.WriteString(fmt.Sprintf("  %s %s%s: %s\n", PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
-			}
-		}
-		s.WriteString("\n")
-	}
-
 	// Build column content.
 	if len(displayCols) > 0 {
 		rendered := make([]string, len(displayCols))
@@ -353,32 +323,99 @@ func (m Model) View() string {
 		s.WriteString("\n")
 	}
 
-	// Blocked (capped by budget).
-	if len(visibleCols.Blocked) > 0 {
-		blockedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-		if m.SelSection == SectionBlocked {
-			blockedStyle = blockedStyle.Underline(true)
-		}
-		s.WriteString(blockedStyle.Render(fmt.Sprintf("BLOCKED (%d)", len(visibleCols.Blocked))) + "\n")
+	// Lower area: BLOCKED and INTERRUPTED side-by-side.
+	hasBlocked := len(visibleCols.Blocked) > 0
+	hasInterrupted := len(visibleCols.Interrupted) > 0
+	if hasBlocked || hasInterrupted {
+		selLower := m.SelSection == SectionLower
 
-		for i, b := range visibleCols.Blocked {
-			if i >= budget.MaxBlocked {
-				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Blocked)-budget.MaxBlocked)) + "\n")
-				break
+		// Compute sub-column width.
+		lowerWidth := m.Width
+		if lowerWidth <= 0 {
+			lowerWidth = 80
+		}
+		bothPresent := hasBlocked && hasInterrupted
+		subColWidth := lowerWidth
+		if bothPresent {
+			subColWidth = lowerWidth/2 - 2
+		}
+		if subColWidth < 20 {
+			subColWidth = 20
+		}
+
+		// Build BLOCKED column.
+		var blockedStr string
+		if hasBlocked {
+			var bb strings.Builder
+			blockedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+			if selLower && m.SelLowerCol == 0 {
+				blockedStyle = blockedStyle.Underline(true)
 			}
-			blockers := BlockingDepIDs(b)
-			blockerStr := ""
-			if len(blockers) > 0 {
-				bStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-				blockerStr = " " + bStyle.Render("← "+strings.Join(blockers, ", "))
+			bb.WriteString(blockedStyle.Render(fmt.Sprintf("BLOCKED (%d)", len(visibleCols.Blocked))) + "\n")
+			for i, b := range visibleCols.Blocked {
+				if i >= budget.MaxBlocked {
+					dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+					bb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Blocked)-budget.MaxBlocked)) + "\n")
+					break
+				}
+				blockers := BlockingDepIDs(b)
+				blockerStr := ""
+				if len(blockers) > 0 {
+					bStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+					blockerStr = " " + bStyle.Render("← "+strings.Join(blockers, ", "))
+				}
+				if selLower && m.SelLowerCol == 0 && i == m.SelCard {
+					cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
+					bb.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursor, PriStr(b.Priority), b.ID, Truncate(b.Title, 40), blockerStr))
+				} else {
+					bb.WriteString(fmt.Sprintf("  %s %s %s%s\n", PriStr(b.Priority), b.ID, Truncate(b.Title, 40), blockerStr))
+				}
 			}
-			if m.SelSection == SectionBlocked && i == m.SelCard {
-				cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
-				s.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursor, PriStr(b.Priority), b.ID, Truncate(b.Title, 40), blockerStr))
-			} else {
-				s.WriteString(fmt.Sprintf("  %s %s %s%s\n", PriStr(b.Priority), b.ID, Truncate(b.Title, 40), blockerStr))
+			blockedStr = bb.String()
+		}
+
+		// Build INTERRUPTED column.
+		var interruptedStr string
+		if hasInterrupted {
+			SortBeads(visibleCols.Interrupted)
+			var ib strings.Builder
+			intStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+			if selLower && m.SelLowerCol == 1 {
+				intStyle = intStyle.Underline(true)
 			}
+			ib.WriteString(intStyle.Render(fmt.Sprintf("⚠ INTERRUPTED (%d)", len(visibleCols.Interrupted))) + "\n")
+			for i, b := range visibleCols.Interrupted {
+				if i >= budget.MaxInterrupted {
+					dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+					ib.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Interrupted)-budget.MaxInterrupted)) + "\n")
+					break
+				}
+				intType := ""
+				for _, l := range b.Labels {
+					if strings.HasPrefix(l, "interrupted:") {
+						intType = "[" + l[len("interrupted:"):] + "] "
+						break
+					}
+				}
+				if selLower && m.SelLowerCol == 1 && i == m.SelCard {
+					cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
+					ib.WriteString(fmt.Sprintf("%s %s %s%s: %s\n", cursor, PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
+				} else {
+					ib.WriteString(fmt.Sprintf("  %s %s%s: %s\n", PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
+				}
+			}
+			interruptedStr = ib.String()
+		}
+
+		// Join side-by-side or render single section.
+		if bothPresent {
+			leftStyle := lipgloss.NewStyle().Width(subColWidth + 2)
+			s.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(blockedStr), interruptedStr))
+			s.WriteString("\n")
+		} else if hasBlocked {
+			s.WriteString(blockedStr)
+		} else {
+			s.WriteString(interruptedStr)
 		}
 	}
 
