@@ -409,6 +409,14 @@ Do NOT commit — the merge commit will be created automatically.`,
 	return nil
 }
 
+// resolveInstallCommand returns the install command from repo config.
+func (e *Executor) resolveInstallCommand() string {
+	if cfg, err := repoconfig.Load(e.state.RepoPath); err == nil && cfg.Runtime.Install != "" {
+		return cfg.Runtime.Install
+	}
+	return ""
+}
+
 // resolveBuildCommand returns the build command to use for verification.
 func (e *Executor) resolveBuildCommand(pc PhaseConfig) string {
 	// 1. Current phase config

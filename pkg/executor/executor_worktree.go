@@ -55,6 +55,15 @@ func (e *Executor) ensureStagingWorktree() (*spgit.StagingWorktree, error) {
 	e.stagingWt = wt
 	e.state.WorktreeDir = wtDir
 
+	// Install dependencies in the fresh worktree (mirrors wizard.go behavior).
+	// Skipped on resume — dependencies are already installed.
+	if installStr := e.resolveInstallCommand(); installStr != "" {
+		e.log("installing dependencies in staging: %s", installStr)
+		if err := wt.RunInstall(installStr); err != nil {
+			e.log("warning: staging install failed: %s", err)
+		}
+	}
+
 	if e.state.AttemptBeadID != "" {
 		e.deps.AddLabel(e.state.AttemptBeadID, "worktree:"+wtDir)
 	}
