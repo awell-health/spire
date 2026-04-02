@@ -11,6 +11,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
+	formulaPkg "github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/metrics"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/spf13/cobra"
@@ -54,6 +55,12 @@ type SplitTask = executor.SplitTask
 func newExecutor(beadID, agentName string, formula *FormulaV2, spawner AgentBackend) (*formulaExecutor, error) {
 	deps := buildExecutorDeps(spawner)
 	return executor.New(beadID, agentName, formula, deps)
+}
+
+// newGraphExecutor creates a v3 graph executor for a bead, wiring up all dependencies.
+func newGraphExecutor(beadID, agentName string, graph *formulaPkg.FormulaStepGraph, spawner AgentBackend) (*formulaExecutor, error) {
+	deps := buildExecutorDeps(spawner)
+	return executor.NewGraph(beadID, agentName, graph, deps)
 }
 
 // loadExecutorState loads executor state from disk.
@@ -246,6 +253,28 @@ func executorResolveBranch(beadID string) string {
 
 // --- Command entry point ---
 
+// claimBeadIfNeeded claims the bead if it's not already in progress and
+// no existing executor state exists. Extracted from cmdExecute to avoid
+// duplicating the claim logic across v2/v3 paths.
+func claimBeadIfNeeded(beadID, agentName string) {
+	// Check for existing v2 state.
+	existingState, _ := loadExecutorState(agentName)
+	if existingState != nil {
+		return // resuming — don't re-claim
+	}
+	// Check for existing v3 graph state.
+	existingGraphState, _ := executor.LoadGraphState(agentName, configDir)
+	if existingGraphState != nil {
+		return // resuming — don't re-claim
+	}
+	// Fresh start: claim bead if not already in progress.
+	bead, _ := storeGetBead(beadID)
+	if bead.Status != "in_progress" {
+		os.Setenv("SPIRE_IDENTITY", agentName)
+		cmdClaim([]string{beadID}) // best-effort
+	}
+}
+
 // cmdExecute is the internal entry point for the formula executor.
 // Usage: spire execute <bead-id> [--name <name>] [--formula <name>]
 func cmdExecute(args []string) error {
@@ -276,47 +305,58 @@ func cmdExecute(args []string) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	// Resolve formula
-	var formula *FormulaV2
-	var err error
+	// Resolve formula — check for v3 graph formulas first, fall back to v2.
+	spawner := ResolveBackend("")
+
 	if formulaName != "" {
-		formula, err = LoadFormulaByName(formulaName)
+		// Explicit formula name: try loading as v3 step-graph first, then v2.
+		if graph, gErr := formulaPkg.LoadStepGraphByName(formulaName); gErr == nil {
+			claimBeadIfNeeded(beadID, agentName)
+			ex, execErr := newGraphExecutor(beadID, agentName, graph, spawner)
+			if execErr != nil {
+				return execErr
+			}
+			return ex.Run()
+		}
+		formula, err := LoadFormulaByName(formulaName)
 		if err != nil {
 			return fmt.Errorf("load formula %s: %w", formulaName, err)
 		}
-	} else {
-		bead, berr := storeGetBead(beadID)
-		if berr != nil {
-			return fmt.Errorf("get bead: %w", berr)
+		claimBeadIfNeeded(beadID, agentName)
+		ex, execErr := newExecutor(beadID, agentName, formula, spawner)
+		if execErr != nil {
+			return execErr
 		}
-		formula, err = ResolveFormula(bead)
+		return ex.Run()
 	}
+
+	// No explicit formula: resolve from bead type/labels, supporting v3 opt-in.
+	bead, berr := storeGetBead(beadID)
+	if berr != nil {
+		return fmt.Errorf("get bead: %w", berr)
+	}
+
+	bi := beadToInfo(bead)
+	anyFormula, version, err := formulaPkg.ResolveAny(bi)
 	if err != nil {
-		return fmt.Errorf("load formula: %w", err)
+		return fmt.Errorf("resolve formula: %w", err)
 	}
 
-	// Skip claim when resuming an existing executor session.
-	existingState, stateErr := loadExecutorState(agentName)
-	if stateErr != nil {
-		return fmt.Errorf("load state: %w", stateErr)
-	}
-	if existingState == nil {
-		// Fresh start: claim bead if not already in progress.
-		bead, _ := storeGetBead(beadID)
-		if bead.Status != "in_progress" {
-			os.Setenv("SPIRE_IDENTITY", agentName)
-			if cerr := cmdClaim([]string{beadID}); cerr != nil {
-				return fmt.Errorf("claim: %w", cerr)
-			}
+	claimBeadIfNeeded(beadID, agentName)
+
+	if version == 3 {
+		graph := anyFormula.(*formulaPkg.FormulaStepGraph)
+		ex, execErr := newGraphExecutor(beadID, agentName, graph, spawner)
+		if execErr != nil {
+			return execErr
 		}
+		return ex.Run()
 	}
 
-	spawner := ResolveBackend("")
-
+	formula := anyFormula.(*FormulaV2)
 	ex, execErr := newExecutor(beadID, agentName, formula, spawner)
 	if execErr != nil {
 		return execErr
 	}
-
 	return ex.Run()
 }

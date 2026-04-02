@@ -1,0 +1,101 @@
+# spire-agent-work-v3.formula.toml — v3 lifecycle graph for standard agent work.
+#
+# Migrates the v2 spire-agent-work formula (plan → implement → review → merge)
+# to a declared step graph. The executor interprets this graph generically
+# instead of embedding phase/behavior dispatch logic.
+#
+# Behavioral differences from v2:
+#   - Review is delegated to the review-phase sub-graph via graph.run,
+#     rather than being driven by the executor's executeReview method.
+#   - Merge and close are separate terminal steps with conditional routing
+#     based on review outcome (merge vs discard).
+#   - Workspace (feature worktree) is declared explicitly, not inferred
+#     from phase config flags (worktree=true, apprentice=true).
+
+name = "spire-agent-work-v3"
+description = "Standard agent work: plan → implement → review → merge, as a v3 step graph"
+version = 3
+entry = "plan"
+
+[vars.bead_id]
+type = "bead_id"
+description = "The bead being worked on"
+required = true
+
+[vars.base_branch]
+description = "Base branch to merge into"
+default = "main"
+
+[vars.max_review_rounds]
+description = "Maximum review rounds before arbiter escalation"
+default = "3"
+
+# --- Workspaces ---
+
+[workspaces.feature]
+kind = "owned_worktree"
+branch = "feat/{vars.bead_id}"
+base = "{vars.base_branch}"
+scope = "run"
+cleanup = "terminal"
+
+# --- Steps ---
+
+# Step 1: Wizard plans the implementation.
+[steps.plan]
+kind = "op"
+action = "wizard.run"
+flow = "task-plan"
+title = "Plan implementation"
+
+# Step 2: Apprentice implements the plan in an isolated worktree.
+[steps.implement]
+kind = "op"
+action = "wizard.run"
+flow = "implement"
+needs = ["plan"]
+workspace = "feature"
+title = "Implement changes"
+
+# Step 3: Review via the review-phase sub-graph (sage → fix/arbiter → merge/discard).
+[steps.review]
+kind = "call"
+action = "graph.run"
+needs = ["implement"]
+workspace = "feature"
+graph = "review-phase"
+title = "Review changes"
+
+# Step 4a: Merge to main — fires when review outcome is merge.
+[steps.merge]
+kind = "op"
+action = "git.merge_to_main"
+needs = ["review"]
+workspace = "feature"
+title = "Merge to main"
+[steps.merge.with]
+strategy = "squash"
+[steps.merge.when]
+all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
+
+# Step 5a: Close bead after successful merge.
+[steps.close]
+kind = "op"
+action = "bead.finish"
+needs = ["merge"]
+terminal = true
+title = "Close bead"
+[steps.close.with]
+status = "closed"
+
+# Step 4b: Discard — fires when review outcome is discard.
+[steps.discard]
+kind = "op"
+action = "bead.finish"
+needs = ["review"]
+terminal = true
+title = "Discard branch"
+[steps.discard.with]
+status = "discard"
+[steps.discard.when]
+all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "discard" }]

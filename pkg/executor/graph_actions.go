@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/steveyegge/beads"
 )
@@ -21,15 +22,20 @@ type ActionResult struct {
 type ActionHandler func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult
 
 // actionRegistry maps opcode strings to handler functions.
+// graph.run is registered in init() to break the initialization cycle
+// (actionGraphRun → RunNestedGraph → dispatchAction → actionRegistry).
 var actionRegistry = map[string]ActionHandler{
 	"wizard.run":             actionWizardRun,
 	"check.design-linked":   actionCheckDesignLinked,
 	"beads.materialize_plan": actionMaterializePlan,
 	"dispatch.children":     actionDispatchChildren,
 	"verify.run":            actionVerifyRun,
-	"graph.run":             actionGraphRun,
 	"git.merge_to_main":     actionMergeToMain,
 	"bead.finish":           actionBeadFinish,
+}
+
+func init() {
+	actionRegistry["graph.run"] = actionGraphRun
 }
 
 // dispatchAction looks up step.Action in the action registry and calls the handler.
@@ -326,16 +332,108 @@ func actionVerifyRun(e *Executor, stepName string, step StepConfig, state *Graph
 	return ActionResult{Outputs: map[string]string{"status": "pass", "result": "passed"}}
 }
 
-// --- Stubs (to be implemented in later tasks) ---
-
-// actionMaterializePlan will be implemented in a future task.
-func actionMaterializePlan(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	return ActionResult{Error: fmt.Errorf("not yet implemented: beads.materialize_plan")}
-}
-
 // actionDispatchChildren is implemented in action_dispatch.go.
 
-// actionGraphRun will be implemented after review graph becomes formula-selectable (spi-whcii.8).
+// actionMaterializePlan verifies that child beads were created by the
+// preceding wizard plan step (epic-plan or task-plan). In the v2 flow, the
+// wizard's epic-plan behavior BOTH generates the plan AND creates child beads
+// in a single step. The materialize action confirms children exist and reports
+// the count — it does not re-create them.
+//
+// This step exists to make the dependency between planning and dispatch
+// explicit in the graph: dispatch.children needs children to exist, and
+// this step gates that with a clear error if planning failed to produce any.
+func actionMaterializePlan(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	allChildren, err := e.deps.GetChildren(e.beadID)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("get children for %s: %w", e.beadID, err)}
+	}
+
+	// Filter out internal DAG beads (step, attempt, review-round) that
+	// are created by ensureStepBeads/ensureAttemptBead, not by planning.
+	var realChildren []Bead
+	for _, c := range allChildren {
+		if e.deps.IsAttemptBead(c) || e.deps.IsStepBead(c) || e.deps.IsReviewRoundBead(c) {
+			continue
+		}
+		realChildren = append(realChildren, c)
+	}
+
+	if len(realChildren) == 0 {
+		return ActionResult{Error: fmt.Errorf("no subtask beads found for %s — plan step may have failed to create children", e.beadID)}
+	}
+
+	e.log("materialize: found %d subtask(s) for %s", len(realChildren), e.beadID)
+
+	outputs := map[string]string{
+		"status":     "pass",
+		"child_count": fmt.Sprintf("%d", len(realChildren)),
+	}
+	return ActionResult{Outputs: outputs}
+}
+
+// actionGraphRun executes a nested step-graph formula as a sub-graph within
+// the current executor. It loads the named graph, runs the interpreter loop
+// inline (without the deferred cleanup that RunGraph applies), and captures
+// the terminal step's outputs for the parent graph to route on.
+//
+// Key design decisions:
+//   - Uses RunNestedGraph (not RunGraph) to avoid deferred cleanup of the
+//     parent's staging worktree, registry entry, and graph state file.
+//   - The nested graph gets its own GraphState with a derived agent name
+//     (parent-stepName) so state files don't collide.
+//   - Parent vars are copied into the sub-state so review-phase can access
+//     max_review_rounds, branch, etc.
+//   - The terminal step name from the sub-graph becomes the "outcome" output,
+//     which parent steps route on (e.g. steps.review.outputs.outcome == "merge").
 func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	return ActionResult{Error: fmt.Errorf("not yet implemented: graph.run")}
+	graphName := step.Graph
+	if graphName == "" {
+		graphName = step.With["graph"]
+	}
+	if graphName == "" {
+		return ActionResult{Error: fmt.Errorf("graph.run: no graph name specified")}
+	}
+
+	// Load the nested graph formula.
+	subGraph, err := formula.LoadStepGraphByName(graphName)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("load nested graph %q: %w", graphName, err)}
+	}
+
+	// Create a sub-state for the nested graph.
+	subAgentName := e.agentName + "-" + stepName
+	subState := NewGraphState(subGraph, e.beadID, subAgentName)
+
+	// Copy parent vars into sub-state (e.g. max_review_rounds, base_branch).
+	for k, v := range state.Vars {
+		subState.Vars[k] = v
+	}
+
+	// Copy branch/workspace info so the sub-graph can resolve its workspace.
+	subState.RepoPath = state.RepoPath
+	subState.BaseBranch = state.BaseBranch
+	subState.StagingBranch = state.StagingBranch
+	subState.WorktreeDir = state.WorktreeDir
+
+	// Run the nested graph using the isolated interpreter (no deferred cleanup).
+	runErr := e.RunNestedGraph(subGraph, subState)
+
+	// Capture outputs from the terminal step that completed.
+	outputs := make(map[string]string)
+	for name, ss := range subState.Steps {
+		if ss.Status == "completed" && formula.IsTerminal(subGraph, name) {
+			outputs["outcome"] = name
+			for k, v := range ss.Outputs {
+				outputs[k] = v
+			}
+			break
+		}
+	}
+
+	if runErr != nil {
+		return ActionResult{Outputs: outputs, Error: runErr}
+	}
+
+	return ActionResult{Outputs: outputs}
 }

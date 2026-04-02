@@ -1,0 +1,117 @@
+# spire-epic-v3.formula.toml — v3 lifecycle graph for epic work.
+#
+# Migrates the v2 spire-epic formula (design → plan → implement(wave) →
+# review(judgment) → merge) to a declared step graph.
+#
+# Behavioral differences from v2:
+#   - Design validation is a declared check.design-linked step, not a
+#     behavior override on the design phase.
+#   - Plan (wizard.run flow=epic-plan) creates subtasks. The materialize
+#     step verifies children exist and reports the count.
+#   - Implementation delegates to the epic-implement-phase sub-graph via
+#     graph.run, which handles dispatch.children + verify + merge + close.
+#   - Review is delegated to the review-phase sub-graph via graph.run.
+#   - Merge/close/discard are conditional terminal steps based on review outcome.
+#   - Workspace (staging worktree) is declared explicitly with epic/ prefix.
+
+name = "spire-epic-v3"
+description = "Epic lifecycle: design-check → plan → materialize → implement → review → merge, as a v3 step graph"
+version = 3
+entry = "design-check"
+
+[vars.bead_id]
+type = "bead_id"
+description = "The epic bead being worked on"
+required = true
+
+[vars.base_branch]
+description = "Base branch to merge into"
+default = "main"
+
+[vars.max_review_rounds]
+description = "Maximum review rounds before arbiter escalation"
+default = "3"
+
+# --- Workspaces ---
+
+[workspaces.staging]
+kind = "staging"
+branch = "epic/{vars.bead_id}"
+base = "{vars.base_branch}"
+scope = "run"
+cleanup = "terminal"
+
+# --- Steps ---
+
+# Step 1: Validate that the epic has a linked, closed design bead.
+[steps.design-check]
+kind = "op"
+action = "check.design-linked"
+title = "Validate design linkage"
+
+# Step 2: Wizard generates the epic plan and creates subtask beads.
+[steps.plan]
+kind = "op"
+action = "wizard.run"
+flow = "epic-plan"
+needs = ["design-check"]
+title = "Plan epic subtasks"
+
+# Step 3: Verify that child beads were created by the plan step.
+[steps.materialize]
+kind = "op"
+action = "beads.materialize_plan"
+needs = ["plan"]
+title = "Verify subtask materialization"
+
+# Step 4: Dispatch children in waves via the epic-implement-phase sub-graph.
+[steps.implement]
+kind = "call"
+action = "graph.run"
+needs = ["materialize"]
+workspace = "staging"
+graph = "epic-implement-phase"
+title = "Implement epic subtasks"
+
+# Step 5: Review via the review-phase sub-graph.
+[steps.review]
+kind = "call"
+action = "graph.run"
+needs = ["implement"]
+workspace = "staging"
+graph = "review-phase"
+title = "Review epic changes"
+
+# Step 6a: Merge staging to main — fires when review outcome is merge.
+[steps.merge]
+kind = "op"
+action = "git.merge_to_main"
+needs = ["review"]
+workspace = "staging"
+title = "Merge to main"
+[steps.merge.with]
+strategy = "squash"
+[steps.merge.when]
+all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
+
+# Step 7a: Close epic bead after successful merge.
+[steps.close]
+kind = "op"
+action = "bead.finish"
+needs = ["merge"]
+terminal = true
+title = "Close epic"
+[steps.close.with]
+status = "closed"
+
+# Step 6b: Discard — fires when review outcome is discard.
+[steps.discard]
+kind = "op"
+action = "bead.finish"
+needs = ["review"]
+terminal = true
+title = "Discard epic"
+[steps.discard.with]
+status = "discard"
+[steps.discard.when]
+all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "discard" }]

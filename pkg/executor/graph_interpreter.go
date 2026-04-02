@@ -138,6 +138,75 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	}
 }
 
+// RunNestedGraph runs a step-graph formula as a nested sub-graph within the
+// current executor. Unlike RunGraph, it does NOT:
+//   - Remove the parent's registry entry
+//   - Close the parent's staging worktree
+//   - Create or close attempt beads
+//   - Remove graph state files on terminal success
+//
+// This method is used by actionGraphRun to execute sub-graphs (e.g. the
+// review-phase graph called from spire-agent-work-v3) without interfering
+// with the parent graph's lifecycle.
+func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) error {
+	// Resolve branch state for the sub-graph (usually inherited from parent).
+	if state.RepoPath == "" || state.BaseBranch == "" {
+		if err := e.resolveGraphBranchState(state); err != nil {
+			return fmt.Errorf("nested: resolve branch state: %w", err)
+		}
+	}
+
+	// Main interpreter loop — same logic as RunGraph but without cleanup.
+	for {
+		ctx := e.buildConditionContext(state)
+		completed := e.completedStepsFromState(state)
+		ready, err := formula.NextSteps(graph, completed, ctx)
+		if err != nil {
+			return fmt.Errorf("nested graph walk: %w", err)
+		}
+
+		if len(ready) == 0 {
+			for name, ss := range state.Steps {
+				if ss.Status == "completed" && formula.IsTerminal(graph, name) {
+					return nil
+				}
+			}
+			return fmt.Errorf("nested graph stuck: no ready steps and no terminal completed (steps=%v)", summarizeSteps(state.Steps))
+		}
+
+		stepName := ready[0]
+		stepCfg := graph.Steps[stepName]
+
+		state.ActiveStep = stepName
+		ss := state.Steps[stepName]
+		ss.Status = "active"
+		ss.StartedAt = time.Now().UTC().Format(time.RFC3339)
+		state.Steps[stepName] = ss
+
+		e.log("nested step: %s (action: %s)", stepName, stepCfg.Action)
+
+		result := e.dispatchAction(stepName, stepCfg, state)
+
+		if result.Error != nil {
+			ss = state.Steps[stepName]
+			ss.Status = "failed"
+			ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+			state.Steps[stepName] = ss
+			return fmt.Errorf("nested step %s failed: %w", stepName, result.Error)
+		}
+
+		ss = state.Steps[stepName]
+		ss.Status = "completed"
+		ss.Outputs = result.Outputs
+		ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+		state.Steps[stepName] = ss
+
+		if formula.IsTerminal(graph, stepName) {
+			return nil
+		}
+	}
+}
+
 // buildConditionContext flattens the GraphState into the map[string]string
 // that formula.EvalCondition / formula.NextSteps consume.
 func (e *Executor) buildConditionContext(state *GraphState) map[string]string {
