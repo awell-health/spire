@@ -89,7 +89,7 @@ Be precise and actionable. The apprentice implementing this will use your plan a
 		"--model", model,
 		"--output-format", "text",
 		"--max-turns", fmt.Sprintf("%d", maxTurns),
-	}, e.state.RepoPath)
+	}, e.effectiveRepoPath())
 	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude task plan: %w", err)
@@ -214,7 +214,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 		"--model", model,
 		"--output-format", "text",
 		"--max-turns", fmt.Sprintf("%d", maxTurns),
-	}, e.state.RepoPath)
+	}, e.effectiveRepoPath())
 	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude plan: %w", err)
@@ -395,7 +395,7 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 			"--model", model,
 			"--output-format", "text",
 			"--max-turns", fmt.Sprintf("%d", maxTurns),
-		}, e.state.RepoPath)
+		}, e.effectiveRepoPath())
 		if err != nil {
 			e.log("warning: change spec for %s: %s", child.ID, err)
 			continue

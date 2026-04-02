@@ -52,8 +52,22 @@ func (e *Executor) dispatchAction(stepName string, step StepConfig, state *Graph
 
 // --- Real implementations ---
 
+// effectiveRepoPath returns the repo path from the v2 state or v3 graph state,
+// whichever is available. This allows plan methods (which historically used
+// e.state.RepoPath) to work in both v2 and v3 execution contexts.
+func (e *Executor) effectiveRepoPath() string {
+	if e.state != nil && e.state.RepoPath != "" {
+		return e.state.RepoPath
+	}
+	if e.graphState != nil {
+		return e.graphState.RepoPath
+	}
+	return "."
+}
+
 // actionWizardRun maps step.Flow to the existing wizard dispatch: calls
-// e.deps.Spawner.Spawn() with the appropriate role and args based on step.Flow.
+// e.deps.Spawner.Spawn() with the appropriate role and args based on step.Flow,
+// or invokes executor planning methods directly for plan flows.
 func actionWizardRun(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	flow := step.Flow
 	if flow == "" {
@@ -61,6 +75,10 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 	}
 
 	switch flow {
+	case "task-plan":
+		return actionPlanTask(e, stepName, step, state)
+	case "epic-plan":
+		return actionPlanEpic(e, stepName, step, state)
 	case "implement":
 		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, nil)
 	case "sage-review":
@@ -79,9 +97,50 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		}
 		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
 	default:
-		// For task-plan, epic-plan, and other flows, spawn with wizard role.
 		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, nil)
 	}
+}
+
+// actionPlanTask routes the "task-plan" flow to the executor's inline planning
+// method, which invokes Claude to produce an implementation plan comment.
+func actionPlanTask(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	bead, err := e.deps.GetBead(e.beadID)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("get bead for task plan: %w", err)}
+	}
+
+	pc := PhaseConfig{
+		Model:    step.Model,
+		Timeout:  step.Timeout,
+		MaxTurns: 3, // planning is brief
+	}
+
+	if err := e.wizardPlanTask(bead, pc); err != nil {
+		return ActionResult{Error: fmt.Errorf("task plan: %w", err)}
+	}
+
+	return ActionResult{Outputs: map[string]string{"status": "planned"}}
+}
+
+// actionPlanEpic routes the "epic-plan" flow to the executor's inline planning
+// method, which invokes Claude to break the epic into subtasks and create child beads.
+func actionPlanEpic(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	bead, err := e.deps.GetBead(e.beadID)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("get bead for epic plan: %w", err)}
+	}
+
+	pc := PhaseConfig{
+		Model:    step.Model,
+		Timeout:  step.Timeout,
+		MaxTurns: 5, // epic planning needs more turns
+	}
+
+	if err := e.wizardPlanEpic(bead, pc); err != nil {
+		return ActionResult{Error: fmt.Errorf("epic plan: %w", err)}
+	}
+
+	return ActionResult{Outputs: map[string]string{"status": "planned"}}
 }
 
 // wizardRunSpawn is the common spawn logic for wizard.run actions.

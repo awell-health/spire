@@ -6,6 +6,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/steveyegge/beads"
 )
 
 // testGraphDeps returns mock deps suitable for graph interpreter tests.
@@ -755,6 +756,165 @@ func TestActionMaterializePlan_WithChildren(t *testing.T) {
 	}
 	if result.Outputs["status"] != "pass" {
 		t.Errorf("expected status=pass, got %s", result.Outputs["status"])
+	}
+}
+
+// --- Test: actionWizardRun routes task-plan flow ---
+
+func TestActionWizardRun_TaskPlan(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var claudeCalledWith []string
+	var commentAdded string
+
+	deps.GetComments = func(id string) ([]*beads.Comment, error) {
+		return nil, nil
+	}
+	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return nil, nil
+	}
+	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+		claudeCalledWith = args
+		return []byte("**Approach:** Do the thing\n\n**Steps:**\n1. Change foo.go"), nil
+	}
+	deps.AddComment = func(id, text string) error {
+		commentAdded = text
+		return nil
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	// Set graphState so effectiveRepoPath() returns something sensible.
+	exec.graphState = &GraphState{RepoPath: "/tmp/test-repo"}
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "task-plan",
+		Model:  "test-model",
+	}
+	state := &GraphState{RepoPath: "/tmp/test-repo"}
+
+	result := actionWizardRun(exec, "plan", step, state)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "planned" {
+		t.Errorf("expected status=planned, got %s", result.Outputs["status"])
+	}
+
+	// Verify Claude was invoked (not a subprocess spawn).
+	if len(claudeCalledWith) == 0 {
+		t.Fatal("expected ClaudeRunner to be called")
+	}
+
+	// Verify a plan comment was posted.
+	if commentAdded == "" {
+		t.Error("expected a comment to be added with the plan")
+	}
+	if !containsSubstr(commentAdded, "Implementation plan:") {
+		t.Errorf("expected comment to start with 'Implementation plan:', got: %s", commentAdded)
+	}
+}
+
+// --- Test: actionWizardRun routes epic-plan flow ---
+
+func TestActionWizardRun_EpicPlan(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var claudeCalledWith []string
+	var createdBeads []string
+	var commentAdded string
+
+	deps.GetComments = func(id string) ([]*beads.Comment, error) {
+		return nil, nil
+	}
+	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return nil, nil
+	}
+	deps.IsAttemptBead = func(b Bead) bool { return false }
+	deps.IsStepBead = func(b Bead) bool { return false }
+	deps.IsReviewRoundBead = func(b Bead) bool { return false }
+	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+		claudeCalledWith = args
+		// Return two subtask JSON lines.
+		return []byte(`{"title": "Task A", "description": "Do A", "deps": [], "shared_files": [], "do_not_touch": []}
+{"title": "Task B", "description": "Do B", "deps": ["Task A"], "shared_files": [], "do_not_touch": []}`), nil
+	}
+	beadCounter := 0
+	deps.CreateBead = func(opts CreateOpts) (string, error) {
+		beadCounter++
+		createdBeads = append(createdBeads, opts.Title)
+		return fmt.Sprintf("spi-test.%d", beadCounter), nil
+	}
+	deps.AddDep = func(issueID, dependsOnID string) error { return nil }
+	deps.AddComment = func(id, text string) error {
+		if id == "spi-test" {
+			commentAdded = text
+		}
+		return nil
+	}
+	deps.ParseIssueType = func(s string) beads.IssueType {
+		return beads.IssueType(s)
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	exec.graphState = &GraphState{RepoPath: "/tmp/test-repo"}
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "epic-plan",
+		Model:  "test-model",
+	}
+	state := &GraphState{RepoPath: "/tmp/test-repo"}
+
+	result := actionWizardRun(exec, "plan", step, state)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "planned" {
+		t.Errorf("expected status=planned, got %s", result.Outputs["status"])
+	}
+
+	// Verify Claude was invoked inline.
+	if len(claudeCalledWith) == 0 {
+		t.Fatal("expected ClaudeRunner to be called")
+	}
+
+	// Verify subtask beads were created.
+	if len(createdBeads) != 2 {
+		t.Fatalf("expected 2 subtasks created, got %d: %v", len(createdBeads), createdBeads)
+	}
+	if createdBeads[0] != "Task A" || createdBeads[1] != "Task B" {
+		t.Errorf("expected [Task A, Task B], got %v", createdBeads)
+	}
+
+	// Verify plan summary was posted.
+	if commentAdded == "" {
+		t.Error("expected a plan summary comment")
+	}
+	if !containsSubstr(commentAdded, "Wizard plan:") {
+		t.Errorf("expected 'Wizard plan:' in comment, got: %s", commentAdded)
+	}
+}
+
+// --- Test: effectiveRepoPath ---
+
+func TestEffectiveRepoPath_GraphState(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	exec.graphState = &GraphState{RepoPath: "/path/from/graph"}
+
+	if got := exec.effectiveRepoPath(); got != "/path/from/graph" {
+		t.Errorf("effectiveRepoPath() = %q, want /path/from/graph", got)
+	}
+}
+
+func TestEffectiveRepoPath_FallbackToDot(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	// Neither state nor graphState is set (graphState is nil from no graph).
+
+	if got := exec.effectiveRepoPath(); got != "." {
+		t.Errorf("effectiveRepoPath() = %q, want \".\"", got)
 	}
 }
 
