@@ -2,8 +2,10 @@ package git
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,8 +87,13 @@ func TestMergeToMain_RebaseSucceeds(t *testing.T) {
 	}
 }
 
-// TestMergeToMain_RaceResolvedOnRetry simulates main advancing between rebase
-// and ff-only merge. The retry loop should detect this and re-rebase.
+// TestMergeToMain_RaceResolvedOnRetry deterministically simulates a merge race:
+// main advances during the first retry (via the test command), causing ff-only
+// to fail. On the second retry, main doesn't advance, so ff-only succeeds.
+//
+// Mechanism: testStr is a shell command that commits to main on the first call
+// only (tracked via a flag file). This advances main between rebase and ff-only
+// in the first retry, but not in subsequent retries.
 func TestMergeToMain_RaceResolvedOnRetry(t *testing.T) {
 	dir := initTestRepo(t)
 	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
@@ -102,7 +109,7 @@ func TestMergeToMain_RaceResolvedOnRetry(t *testing.T) {
 	writeFile(t, filepath.Join(wtDir, "feature.txt"), "feature work\n")
 	wc.Commit("feature commit")
 
-	// Advance main so the first ff-only fails.
+	// Advance main to force the initial ff-only to fail.
 	writeFile(t, filepath.Join(dir, "main1.txt"), "main advance 1\n")
 	run(t, dir, "git", "add", "-A")
 	run(t, dir, "git", "commit", "-m", "main advance 1")
@@ -111,38 +118,75 @@ func TestMergeToMain_RaceResolvedOnRetry(t *testing.T) {
 		WorktreeContext: *wc,
 	}
 
-	// Intercept: after the first ff-only fails and the rebase succeeds,
-	// advance main again before the retry merge. We do this by hooking
-	// MergeFFOnly via a wrapper RepoContext that advances main on the
-	// second call.
-	//
-	// Since we can't hook directly, we simulate the race by advancing main
-	// after the first ff-only failure happens. MergeToMain will:
-	// 1. First ff-only → fails (main diverged)
-	// 2. Attempt 1: pull + rebase + ff-only → we need this to fail too
-	//
-	// To make attempt 1's ff-only fail, advance main between setting up
-	// the test and calling MergeToMain, then advance main again after
-	// MergeToMain's first rebase pull. Since this is local (no remote),
-	// the pull won't see the advance, so we advance main directly.
-	//
-	// Actually, simpler approach: advance main twice and call MergeToMain.
-	// Without a remote, pull is a no-op. The first rebase onto the initial
-	// main advance will succeed but the ff-only will fail if main moved
-	// again. Since there's no remote, pull won't help — so we need to
-	// advance main between the rebase and merge within the same process.
-	//
-	// The cleanest test: advance main enough that the first attempt rebases
-	// but we then commit to main again before the merge. But since
-	// MergeToMain is synchronous, we can't interleave. Instead, test that
-	// after the initial divergence, a single rebase cycle is sufficient
-	// (which is the common case). The "race exhausts retries" test below
-	// covers the pathological case.
+	// testStr: on the first call, commit to main (advancing it during the
+	// retry window). On subsequent calls, the flag file exists so no advance.
+	flagFile := filepath.Join(t.TempDir(), "race-flag")
+	testCmd := fmt.Sprintf(
+		`if [ ! -f %q ]; then git -C %q commit --allow-empty -m "race advance" && touch %q; fi`,
+		flagFile, dir, flagFile,
+	)
 
-	// This test validates that MergeToMain successfully handles the simple
-	// divergence case (main advanced once, single rebase cycle resolves it).
-	if err := sw.MergeToMain("main", nil, "", ""); err != nil {
-		t.Fatalf("MergeToMain: %v", err)
+	err = sw.MergeToMain("main", nil, "", testCmd)
+	if err != nil {
+		t.Fatalf("MergeToMain should succeed after race resolved on retry, got: %v", err)
+	}
+
+	// Verify main has the feature file.
+	if _, err := exec.Command("git", "-C", dir, "cat-file", "-e", "HEAD:feature.txt").Output(); err != nil {
+		t.Error("main should contain feature.txt after merge")
+	}
+}
+
+// TestMergeToMain_RaceExhaustsRetries deterministically exercises the
+// ErrMergeRace return path. The test command advances main on EVERY call,
+// so every retry's ff-only merge fails — the race is never resolved.
+//
+// Mechanism: testStr is a shell command that unconditionally commits to main.
+// After rebase, the test command runs and advances main, then ff-only fails
+// because main has a commit that staging doesn't have. This repeats for
+// maxMergeAttempts iterations, then ErrMergeRace is returned.
+func TestMergeToMain_RaceExhaustsRetries(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create staging with a commit.
+	rc.CreateBranch("staging/test")
+	wtDir := filepath.Join(t.TempDir(), "staging-wt")
+	wc, err := rc.CreateWorktree(wtDir, "staging/test")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	wc.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wtDir, "feature.txt"), "feature work\n")
+	wc.Commit("feature commit")
+
+	// Advance main to force the initial ff-only to fail.
+	writeFile(t, filepath.Join(dir, "diverge.txt"), "diverge\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-m", "initial divergence")
+
+	sw := &StagingWorktree{
+		WorktreeContext: *wc,
+	}
+
+	// testStr: unconditionally advance main on every call. This ensures the
+	// ff-only merge fails after every rebase because main always has a commit
+	// that staging doesn't.
+	testCmd := fmt.Sprintf(
+		`git -C %q commit --allow-empty -m "race advance"`,
+		dir,
+	)
+
+	err = sw.MergeToMain("main", nil, "", testCmd)
+	if err == nil {
+		t.Fatal("expected ErrMergeRace, got nil")
+	}
+	if !errors.Is(err, ErrMergeRace) {
+		t.Fatalf("expected ErrMergeRace, got: %v", err)
+	}
+	// Verify the error message includes the attempt count.
+	if !strings.Contains(err.Error(), fmt.Sprintf("%d", maxMergeAttempts)) {
+		t.Errorf("error should mention attempt count %d, got: %s", maxMergeAttempts, err.Error())
 	}
 }
 
@@ -179,115 +223,8 @@ func TestMergeToMain_RebaseConflictIsTerminal(t *testing.T) {
 	if errors.Is(err, ErrMergeRace) {
 		t.Errorf("rebase conflict should NOT return ErrMergeRace, got: %v", err)
 	}
-	// Verify the error mentions rebase failure.
-	if got := err.Error(); !contains(got, "rebase") {
-		t.Errorf("expected error to mention rebase, got: %s", got)
-	}
-}
-
-// TestMergeToMain_ErrMergeRace_Exhausted verifies that ErrMergeRace is
-// returned when all retry attempts are exhausted. We simulate this by
-// using a custom MergeToMain-like flow where ff-only always fails.
-func TestMergeToMain_ErrMergeRace_Exhausted(t *testing.T) {
-	// Verify the sentinel error is usable with errors.Is.
-	wrapped := errors.New("ff-only merge failed after 3 rebase attempts (will not force merge): merge race: main advanced during landing")
-	_ = wrapped // just verify the type exists and the constant is defined
-
-	// Verify ErrMergeRace identity.
-	if !errors.Is(ErrMergeRace, ErrMergeRace) {
-		t.Error("ErrMergeRace should match itself via errors.Is")
-	}
-
-	// Verify maxMergeAttempts is set reasonably.
-	if maxMergeAttempts < 2 || maxMergeAttempts > 10 {
-		t.Errorf("maxMergeAttempts = %d, expected 2..10", maxMergeAttempts)
-	}
-}
-
-// TestMergeToMain_RaceExhaustsRetries creates a scenario where main keeps
-// advancing, exhausting all retry attempts and producing ErrMergeRace.
-// Since MergeToMain is synchronous and we can't interleave commits during
-// its execution, we create enough divergence that the local-only pull
-// (which is a no-op without a remote) can never bring main up to date
-// after each rebase.
-func TestMergeToMain_RaceExhaustsRetries(t *testing.T) {
-	// Create a "remote" bare repo so pulls actually fetch new commits.
-	bareDir := t.TempDir()
-	run(t, bareDir, "git", "init", "--bare")
-
-	// Create the main repo, push initial commit to the bare remote.
-	dir := initTestRepo(t)
-	run(t, dir, "git", "remote", "add", "origin", bareDir)
-	run(t, dir, "git", "push", "-u", "origin", "main")
-
-	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
-
-	// Create staging with a commit.
-	rc.CreateBranch("staging/test")
-	wtDir := filepath.Join(t.TempDir(), "staging-wt")
-	wc, err := rc.CreateWorktree(wtDir, "staging/test")
-	if err != nil {
-		t.Fatalf("CreateWorktree: %v", err)
-	}
-	wc.ConfigureUser("Test", "test@test.com")
-	writeFile(t, filepath.Join(wtDir, "feature.txt"), "feature work\n")
-	wc.Commit("feature commit")
-
-	// Clone the remote into a second repo to simulate a competing agent.
-	competitorDir := t.TempDir()
-	run(t, competitorDir, "git", "clone", bareDir, "repo")
-	competitorRepo := filepath.Join(competitorDir, "repo")
-	run(t, competitorRepo, "git", "config", "user.name", "Competitor")
-	run(t, competitorRepo, "git", "config", "user.email", "competitor@test.com")
-
-	// Advance main via the competitor for each attempt. We push enough
-	// commits that each pull+rebase+merge cycle sees a new main.
-	// MergeToMain does maxMergeAttempts iterations, plus the initial ff-only.
-	// We need main to advance after each pull.
-	for i := 0; i < maxMergeAttempts+1; i++ {
-		writeFile(t, filepath.Join(competitorRepo, "race.txt"),
-			"competitor advance "+string(rune('A'+i))+"\n")
-		run(t, competitorRepo, "git", "add", "-A")
-		run(t, competitorRepo, "git", "commit", "-m",
-			"competitor advance "+string(rune('A'+i)))
-		run(t, competitorRepo, "git", "push", "origin", "main")
-	}
-
-	// Now main in the local repo is behind the remote. The initial pull in
-	// MergeToMain will fetch the first batch. But the competitor has pushed
-	// more commits, so each retry's pull will see new advances... except
-	// all competitor commits are already pushed. The pull on each retry
-	// will fetch them all at once, and after one successful rebase the
-	// ff-only should succeed.
-	//
-	// To truly exhaust retries, we need main to advance DURING each retry.
-	// Since we can't do that synchronously, we'll verify the error type
-	// is correct by creating a scenario where rebase succeeds but ff-only
-	// always fails — which happens when someone else merges to main between
-	// our rebase and our ff-only.
-	//
-	// The most reliable approach: use a git hook on the main repo that
-	// advances main whenever a merge is attempted. But that's fragile.
-	//
-	// Instead, let's test the contract: after initial divergence, if the
-	// single rebase cycle works, MergeToMain succeeds. The ErrMergeRace
-	// sentinel and maxMergeAttempts constant are verified above.
-
-	sw := &StagingWorktree{
-		WorktreeContext: *wc,
-	}
-
-	// This should succeed: all competitor commits are already in the remote,
-	// so the first pull gets them all, rebase once, and ff-only succeeds.
-	err = sw.MergeToMain("main", nil, "", "")
-	if err != nil {
-		// If it failed, verify it's ErrMergeRace (which is the correct
-		// behavior if main kept advancing).
-		if !errors.Is(err, ErrMergeRace) {
-			t.Fatalf("expected ErrMergeRace or success, got: %v", err)
-		}
-		// ErrMergeRace is acceptable — it means the retry logic ran.
-		t.Logf("got expected ErrMergeRace: %v", err)
+	if !strings.Contains(err.Error(), "rebase") {
+		t.Errorf("expected error to mention rebase, got: %s", err.Error())
 	}
 }
 
@@ -356,20 +293,7 @@ func TestMergeToMain_BuildFailureIsTerminal(t *testing.T) {
 	if errors.Is(err, ErrMergeRace) {
 		t.Error("build failure should NOT return ErrMergeRace")
 	}
-	if got := err.Error(); !contains(got, "build failed") {
-		t.Errorf("expected error to mention build failure, got: %s", got)
+	if !strings.Contains(err.Error(), "build failed") {
+		t.Errorf("expected error to mention build failure, got: %s", err.Error())
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
