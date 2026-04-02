@@ -180,7 +180,7 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 
 	case board.ActionSummon:
 		fmt.Println()
-		if err := summonLocal(1, []string{beadID}); err != nil {
+		if err := summonLocal(1, []string{beadID}, ""); err != nil {
 			fmt.Fprintf(os.Stderr, "summon: %v\n", err)
 		}
 		fmt.Printf("\n%sPress Enter to return to board...%s ", board.Dim, board.Reset)
@@ -250,7 +250,7 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 	}
 	switch action {
 	case board.ActionSummon:
-		return summonLocal(1, []string{beadID})
+		return summonLocal(1, []string{beadID}, "")
 	case board.ActionResummon:
 		return cmdResummon([]string{beadID})
 	case board.ActionUnsummon:
