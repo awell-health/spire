@@ -98,6 +98,40 @@ func TestScanOrphanedBeads_SkipsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestCmdSummon_DispatchInvalidMode(t *testing.T) {
+	err := cmdSummon([]string{"1", "--dispatch", "bogus"})
+	if err == nil {
+		t.Fatal("expected error for invalid dispatch mode")
+	}
+	if !strings.Contains(err.Error(), "invalid dispatch mode") {
+		t.Fatalf("expected invalid dispatch mode error, got %v", err)
+	}
+}
+
+func TestCmdSummon_DispatchMissingArg(t *testing.T) {
+	err := cmdSummon([]string{"1", "--dispatch"})
+	if err == nil {
+		t.Fatal("expected error when --dispatch has no argument")
+	}
+	if !strings.Contains(err.Error(), "--dispatch requires a mode") {
+		t.Fatalf("expected missing mode error, got %v", err)
+	}
+}
+
+func TestCmdSummon_DispatchValidModes(t *testing.T) {
+	for _, mode := range []string{"sequential", "wave", "direct"} {
+		t.Run(mode, func(t *testing.T) {
+			// Valid modes pass validation but will fail later when hitting
+			// the store (no dolt server). We just verify they don't fail
+			// at the dispatch validation step.
+			err := cmdSummon([]string{"1", "--dispatch", mode})
+			if err != nil && strings.Contains(err.Error(), "invalid dispatch mode") {
+				t.Fatalf("mode %q should be valid, got: %v", mode, err)
+			}
+		})
+	}
+}
+
 // TestScanOrphanedBeads_DeduplicatesBeadID counts each bead only once even if
 // multiple agents have state for it.
 func TestScanOrphanedBeads_DeduplicatesBeadID(t *testing.T) {

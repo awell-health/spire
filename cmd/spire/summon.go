@@ -393,7 +393,9 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 			// Remove any existing dispatch: label to ensure at most one.
 			for _, l := range bead.Labels {
 				if strings.HasPrefix(l, "dispatch:") {
-					storeRemoveLabel(bead.ID, l)
+					if err := storeRemoveLabel(bead.ID, l); err != nil {
+						return fmt.Errorf("remove existing dispatch label %q for %s: %w", l, bead.ID, err)
+					}
 				}
 			}
 			if err := storeAddLabel(bead.ID, "dispatch:"+dispatch); err != nil {
