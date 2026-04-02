@@ -17,19 +17,7 @@ var alertCmd = &cobra.Command{
 	Short: "Alert on bead state changes",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var fullArgs []string
-		if v, _ := cmd.Flags().GetString("ref"); v != "" {
-			fullArgs = append(fullArgs, "--ref", v)
-		}
-		if v, _ := cmd.Flags().GetString("type"); v != "" {
-			fullArgs = append(fullArgs, "--type", v)
-		}
-		if cmd.Flags().Changed("priority") {
-			p, _ := cmd.Flags().GetInt("priority")
-			fullArgs = append(fullArgs, "-p", strconv.Itoa(p))
-		}
-		fullArgs = append(fullArgs, args...)
-		return cmdAlert(fullArgs)
+		return cmdAlert(alertCLIArgs(cmd, args))
 	},
 }
 
@@ -37,6 +25,21 @@ func init() {
 	alertCmd.Flags().String("ref", "", "Bead ID to link to")
 	alertCmd.Flags().String("type", "", "Alert type")
 	alertCmd.Flags().IntP("priority", "p", 1, "Priority (0-4)")
+}
+
+func alertCLIArgs(cmd *cobra.Command, args []string) []string {
+	fullArgs := append([]string{}, args...)
+	if v, _ := cmd.Flags().GetString("ref"); v != "" {
+		fullArgs = append(fullArgs, "--ref", v)
+	}
+	if v, _ := cmd.Flags().GetString("type"); v != "" {
+		fullArgs = append(fullArgs, "--type", v)
+	}
+	if cmd.Flags().Changed("priority") {
+		p, _ := cmd.Flags().GetInt("priority")
+		fullArgs = append(fullArgs, "-p", strconv.Itoa(p))
+	}
+	return fullArgs
 }
 
 // cmdAlert creates an alert bead that surfaces at the top of the board.
