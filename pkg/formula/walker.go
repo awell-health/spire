@@ -41,14 +41,12 @@ func NextSteps(graph *FormulaStepGraph, completed map[string]bool, ctx map[strin
 	return ready, nil
 }
 
-// EntryStep returns the step name with an empty needs list (the entry point).
-// If graph.Entry is set, it takes precedence over scanning for needless steps.
+// EntryStep returns the entry step name. If the graph declares an explicit
+// Entry field, that is returned. Otherwise, the step with an empty needs
+// list (the implicit entry point) is returned.
 func EntryStep(graph *FormulaStepGraph) string {
 	if graph.Entry != "" {
-		if _, ok := graph.Steps[graph.Entry]; ok {
-			return graph.Entry
-		}
-		return ""
+		return graph.Entry
 	}
 	for name, step := range graph.Steps {
 		if len(step.Needs) == 0 {

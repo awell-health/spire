@@ -136,13 +136,13 @@ type OutputDecl struct {
 // the executor pours this formula as a molecule, creating step beads, then walks the graph
 // — closing each step bead as it progresses.
 type FormulaStepGraph struct {
-	Name        string                       `toml:"name"`
-	Description string                       `toml:"description"`
-	Version     int                          `toml:"version"`
-	Entry       string                       `toml:"entry,omitempty"`
-	Steps       map[string]StepConfig        `toml:"steps"`
-	Workspaces  map[string]WorkspaceDecl     `toml:"workspaces"`
-	Vars        map[string]FormulaVar        `toml:"vars"`
+	Name        string                   `toml:"name"`
+	Description string                   `toml:"description"`
+	Version     int                      `toml:"version"`
+	Entry       string                   `toml:"entry,omitempty"` // explicit entry step (falls back to EntryStep())
+	Steps       map[string]StepConfig    `toml:"steps"`
+	Workspaces  map[string]WorkspaceDecl `toml:"workspaces"`
+	Vars        map[string]FormulaVar    `toml:"vars"`
 }
 
 // StepConfig configures a single step in a FormulaStepGraph.
@@ -157,16 +157,15 @@ type StepConfig struct {
 	Needs     []string `toml:"needs,omitempty"`     // predecessor steps (OR semantics: any one satisfies)
 	Condition string   `toml:"condition,omitempty"` // runtime gate, e.g. "verdict == request_changes"
 	Terminal  bool     `toml:"terminal,omitempty"`  // step enforces branch-lifecycle invariant on completion
-
-	// New v3 fields
-	Kind      string               `toml:"kind,omitempty"`      // "op" | "dispatch" | "call"
-	Action    string               `toml:"action,omitempty"`    // executor opcode
+	// v3 action fields
+	Kind      string               `toml:"kind,omitempty"`      // op | dispatch | call
+	Action    string               `toml:"action,omitempty"`    // executor opcode: wizard.run, git.merge_to_main, etc.
 	When      *StructuredCondition `toml:"when,omitempty"`      // structured replacement for Condition
-	Workspace string               `toml:"workspace,omitempty"` // ref to declared workspace name
-	With      map[string]string    `toml:"with,omitempty"`      // typed action inputs
-	Produces  []string             `toml:"produces,omitempty"`  // declared output names
+	Workspace string               `toml:"workspace,omitempty"` // named workspace reference
+	With      map[string]string    `toml:"with,omitempty"`      // typed inputs for the action
+	Produces  []string             `toml:"produces,omitempty"`  // declared output keys
 	Retry     *RetryPolicy         `toml:"retry,omitempty"`     // optional retry policy
-	Flow      string               `toml:"flow,omitempty"`      // wizard.run flow name
+	Flow      string               `toml:"flow,omitempty"`      // for wizard.run: task-plan, implement, etc.
 	Graph     string               `toml:"graph,omitempty"`     // graph.run: nested graph formula name
 }
 
@@ -208,6 +207,28 @@ func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
 		return nil, fmt.Errorf("validate step-graph formula: %w", err)
 	}
 	return &f, nil
+}
+
+// ParseFormulaAny peeks at the version field and parses as V2 or V3.
+// Returns the parsed formula (either *FormulaV2 or *FormulaStepGraph),
+// the version number, and any error.
+func ParseFormulaAny(data []byte) (interface{}, int, error) {
+	var peek struct {
+		Version int `toml:"version"`
+	}
+	if err := toml.Unmarshal(data, &peek); err != nil {
+		return nil, 0, fmt.Errorf("peek version: %w", err)
+	}
+	switch peek.Version {
+	case 2:
+		f, err := ParseFormulaV2(data)
+		return f, 2, err
+	case 3:
+		f, err := ParseFormulaStepGraph(data)
+		return f, 3, err
+	default:
+		return nil, 0, fmt.Errorf("unsupported formula version %d", peek.Version)
+	}
 }
 
 // --- FormulaV2 methods ---

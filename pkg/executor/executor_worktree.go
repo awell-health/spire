@@ -85,7 +85,12 @@ func (e *Executor) closeStagingWorktree() {
 		e.stagingWt.Close()
 		e.stagingWt = nil
 	}
-	e.state.WorktreeDir = ""
+	if e.state != nil {
+		e.state.WorktreeDir = ""
+	}
+	if e.graphState != nil {
+		e.graphState.WorktreeDir = ""
+	}
 }
 
 // ArchmageIdentity returns the git user name and email from the active tower

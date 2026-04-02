@@ -47,11 +47,14 @@ type State struct {
 	Counters   map[string]int            `json:"counters,omitempty"`
 }
 
-// Executor drives a bead through its formula's phase pipeline.
+// Executor drives a bead through its formula's phase pipeline (v2) or step
+// graph (v3). When graph is non-nil, Run() delegates to RunGraph().
 type Executor struct {
 	beadID    string
 	agentName string
-	formula   *FormulaV2
+	formula   *FormulaV2         // v2 phase pipeline (nil when running v3)
+	graph     *FormulaStepGraph  // v3 step graph (nil when running v2)
+	graphState *GraphState       // v3 state (nil when running v2)
 	state     *State
 	deps      *Deps
 	log       func(string, ...interface{})
@@ -133,6 +136,42 @@ func New(beadID, agentName string, formula *FormulaV2, deps *Deps) (*Executor, e
 	}, nil
 }
 
+// NewGraph creates a v3 graph executor for a bead. It loads or creates
+// GraphState, registers with the wizard registry, and returns an executor
+// with the graph path active (formula is nil).
+func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*Executor, error) {
+	log := func(format string, a ...interface{}) {
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", agentName, fmt.Sprintf(format, a...))
+	}
+
+	// Load or create graph state.
+	state, err := LoadGraphState(agentName, deps.ConfigDir)
+	if err != nil {
+		return nil, fmt.Errorf("load graph state: %w", err)
+	}
+	if state == nil {
+		state = NewGraphState(graph, beadID, agentName)
+	}
+
+	// Register with wizard registry.
+	deps.RegistryAdd(agent.Entry{
+		Name:      agentName,
+		PID:       os.Getpid(),
+		BeadID:    beadID,
+		StartedAt: state.StartedAt,
+		Phase:     "graph:" + state.ActiveStep,
+	})
+
+	return &Executor{
+		beadID:     beadID,
+		agentName:  agentName,
+		graph:      graph,
+		graphState: state,
+		deps:       deps,
+		log:        log,
+	}, nil
+}
+
 // resolveBranchState resolves repo path, base branch, and staging branch once
 // and stores them in the executor state. All git operations read from state
 // instead of computing these independently.
@@ -176,8 +215,12 @@ func (e *Executor) resolveBranchState() error {
 }
 
 // Run drives the bead through its formula's phase pipeline until all phases
-// are complete or the bead is closed.
+// are complete or the bead is closed. For v3 graphs, delegates to RunGraph.
 func (e *Executor) Run() error {
+	if e.graph != nil {
+		return e.RunGraph(e.graph, e.graphState)
+	}
+
 	defer e.deps.RegistryRemove(e.agentName)
 	defer e.saveState()
 
@@ -460,6 +503,16 @@ func (e *Executor) nextPhase(current string) string {
 // State returns the executor's current state. Used by tests.
 func (e *Executor) State() *State {
 	return e.state
+}
+
+// GraphState returns the executor's v3 graph state. Used by tests.
+func (e *Executor) GraphSt() *GraphState {
+	return e.graphState
+}
+
+// Terminated returns whether the executor reached a terminal state.
+func (e *Executor) Terminated() bool {
+	return e.terminated
 }
 
 // BeadID returns the executor's bead ID.
