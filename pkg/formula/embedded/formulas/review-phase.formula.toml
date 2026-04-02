@@ -3,8 +3,8 @@
 # Encodes the review DAG from docs/review-dag.md:
 #
 #   sage-review
-#     -> fix      (verdict == request_changes && round < max_rounds)
-#     -> arbiter  (verdict == request_changes && round >= max_rounds)
+#     -> fix      (verdict == request_changes && review_round < max_review_rounds)
+#     -> arbiter  (verdict == request_changes && review_round >= max_review_rounds)
 #   sage-review | arbiter -> merge
 #     -> merge    (verdict == approve || arbiter_decision == merge || arbiter_decision == split)
 #   arbiter -> discard
@@ -16,8 +16,11 @@
 #
 # Step conditions use compound guards. ALL guards in a condition must hold
 # before a step fires. Missing a guard causes simultaneous step activation:
-#   - fix without round check: fix && arbiter both fire when round >= max_rounds.
+#   - fix without round check: fix && arbiter both fire when round >= max_review_rounds.
 #   - arbiter without verdict check: arbiter && merge fire simultaneously on late approval.
+#
+# Action fields: each step declares an action for the v3 graph.run interpreter.
+# The role fields are preserved for backward compat with the v2 review DAG walker.
 
 name = "review-phase"
 description = "Review DAG: sage-review -> fix/arbiter -> merge/discard with terminal branch invariants"
@@ -31,12 +34,15 @@ required = true
 description = "Staging branch (feat/<bead-id> or epic/<bead-id>)"
 required = true
 
-[vars.max_rounds]
+[vars.max_review_rounds]
 description = "Maximum review rounds before arbiter escalation"
 default = "3"
 
 # Step 1: Sage reviews the staging branch. No condition — always the entry point.
 [steps.sage-review]
+kind = "op"
+action = "wizard.run"
+flow = "sage-review"
 description = "Sage reviews staging branch diff"
 role = "sage"
 title = "Sage review"
@@ -45,11 +51,14 @@ model = "claude-opus-4-6"
 verdict_only = true
 
 # Step 2: Fix apprentice. Compound guard: BOTH verdict AND round must hold.
-# round check prevents fix and arbiter from firing simultaneously when round >= max_rounds.
+# round check prevents fix and arbiter from firing simultaneously when round >= max_review_rounds.
 [steps.fix]
+kind = "op"
+action = "wizard.run"
+flow = "review-fix"
 description = "Fix apprentice addresses review feedback within round budget"
 needs = ["sage-review"]
-condition = "verdict == request_changes && round < max_rounds"
+condition = "verdict == request_changes && review_round < max_review_rounds"
 role = "apprentice"
 title = "Fix: address sage review feedback"
 timeout = "15m"
@@ -58,9 +67,12 @@ model = "claude-opus-4-6"
 # Step 3: Arbiter. Compound guard: BOTH verdict AND round must hold.
 # verdict check prevents arbiter and merge from firing simultaneously on a late-round approval.
 [steps.arbiter]
+kind = "op"
+action = "wizard.run"
+flow = "sage-review"
 description = "Arbiter makes final decision once round budget is exhausted"
 needs = ["sage-review"]
-condition = "verdict == request_changes && round >= max_rounds"
+condition = "verdict == request_changes && review_round >= max_review_rounds"
 role = "arbiter"
 title = "Arbiter: break review deadlock"
 timeout = "10m"
@@ -69,6 +81,8 @@ model = "claude-opus-4-6"
 # Step 4a: Merge. Terminal — branch merged to main and deleted.
 # Fires when sage approves OR arbiter force-approves OR arbiter splits (partial merge).
 [steps.merge]
+kind = "op"
+action = "git.merge_to_main"
 description = "Merge staging to main — terminal: branch merged and deleted"
 needs = ["sage-review", "arbiter"]
 condition = "verdict == approve || arbiter_decision == merge || arbiter_decision == split"
@@ -78,11 +92,15 @@ title = "Merge to main"
 # Step 4b: Discard. Terminal — branch deleted without merging.
 # Fires only when arbiter explicitly discards. Bead closed as wontfix.
 [steps.discard]
+kind = "op"
+action = "bead.finish"
 description = "Delete branch without merging — terminal: branch deleted, bead closed wontfix"
 needs = ["arbiter"]
 condition = "arbiter_decision == discard"
 terminal = true
 title = "Discard branch"
+[steps.discard.with]
+status = "discard"
 
 # --- Typed outputs ---
 # Outer graphs route mechanically on these. See docs/v3-formula.md.

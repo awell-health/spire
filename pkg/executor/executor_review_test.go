@@ -300,12 +300,14 @@ func TestReviewWalker_FixResetCorrectness(t *testing.T) {
 	}
 
 	// Simulate: sage-review completed with request_changes, fix completed, both cleared.
-	// Round incremented to 1, max_rounds=3 => should return sage-review.
+	// Round incremented to 1, max_review_rounds=3 => should return sage-review.
 	localCompleted := map[string]bool{}
 	ctx := map[string]string{
-		"verdict":    "request_changes",
-		"round":      "1",
-		"max_rounds": "3",
+		"verdict":           "request_changes",
+		"round":             "1",
+		"review_round":      "1",
+		"max_review_rounds": "3",
+		"max_rounds":        "3",
 	}
 
 	next, err := formula.NextSteps(graph, localCompleted, ctx)
