@@ -275,6 +275,98 @@ func TestWizardCommit_ClaudeCommittedInStaging(t *testing.T) {
 	}
 }
 
+// setupFreshWorktreeFromNonBase creates a repo with a staging branch that has
+// extra commits, then creates a FRESH worktree (using pkg/git constructors)
+// from that staging branch. Unlike setupStagingWorktree which uses
+// ResumeWorktreeContext, this uses CreateWorktreeNewBranch — testing the
+// spi-6y22y fix where fresh worktrees now capture StartSHA.
+func setupFreshWorktreeFromNonBase(t *testing.T, childBranch string) *spgit.WorktreeContext {
+	t.Helper()
+	repoDir := t.TempDir()
+
+	gitRun(t, repoDir, "init")
+	gitRun(t, repoDir, "config", "user.name", "Test")
+	gitRun(t, repoDir, "config", "user.email", "test@test.com")
+
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# Test\n"), 0644)
+	gitRun(t, repoDir, "add", "-A")
+	gitRun(t, repoDir, "commit", "-m", "initial commit")
+	gitRun(t, repoDir, "branch", "-M", "main")
+
+	// Create a staging branch with extra commits not on main.
+	gitRun(t, repoDir, "branch", "staging/epic")
+	gitRun(t, repoDir, "checkout", "staging/epic")
+	os.WriteFile(filepath.Join(repoDir, "wave1.go"), []byte("package main\n"), 0644)
+	gitRun(t, repoDir, "add", "-A")
+	gitRun(t, repoDir, "commit", "-m", "wave merge: prior work")
+	gitRun(t, repoDir, "checkout", "main")
+
+	// Create a fresh worktree from the staging branch using the constructor.
+	rc := &spgit.RepoContext{Dir: repoDir, BaseBranch: "main"}
+	wtDir := filepath.Join(t.TempDir(), "wt")
+	wc, err := rc.CreateWorktreeNewBranch(wtDir, childBranch, "staging/epic")
+	if err != nil {
+		t.Fatalf("CreateWorktreeNewBranch: %v", err)
+	}
+	wc.ConfigureUser("Test", "test@test.com")
+	return wc
+}
+
+// TestWizardCommit_NoOpFreshWorktreeFromNonBase is the regression test for
+// spi-6y22y: a fresh worktree (not resumed) created from a non-base branch
+// (staging/epic) with no session work must report committed=false.
+//
+// Before spi-6y22y, fresh worktrees had no StartSHA, so HasNewCommitsSinceStart
+// fell back to BaseBranch..HEAD which included the staging commits and
+// incorrectly reported "Claude already committed."
+func TestWizardCommit_NoOpFreshWorktreeFromNonBase(t *testing.T) {
+	wc := setupFreshWorktreeFromNonBase(t, "feat/fresh-noop")
+
+	sha, committed := WizardCommit(wc, "test-fresh-001", "no-op from staging", noopLog)
+	if committed {
+		t.Error("expected committed=false for no-op fresh worktree from non-base start")
+	}
+	if sha != "" {
+		t.Errorf("expected empty SHA, got %q", sha)
+	}
+}
+
+// TestWizardCommit_RealCommitFreshWorktreeFromNonBase verifies that real work
+// in a fresh worktree from a non-base start is correctly detected.
+func TestWizardCommit_RealCommitFreshWorktreeFromNonBase(t *testing.T) {
+	wc := setupFreshWorktreeFromNonBase(t, "feat/fresh-real")
+
+	os.WriteFile(filepath.Join(wc.Dir, "new-feature.go"), []byte("package main\n\nfunc feature() {}\n"), 0644)
+
+	sha, committed := WizardCommit(wc, "test-fresh-002", "real work from staging", noopLog)
+	if !committed {
+		t.Error("expected committed=true for real changes in fresh worktree from non-base start")
+	}
+	if sha == "" {
+		t.Error("expected non-empty SHA")
+	}
+}
+
+// TestWizardCommit_ClaudeCommittedFreshWorktreeFromNonBase verifies that Claude's
+// own commit in a fresh worktree from a non-base start is correctly detected.
+func TestWizardCommit_ClaudeCommittedFreshWorktreeFromNonBase(t *testing.T) {
+	wc := setupFreshWorktreeFromNonBase(t, "feat/fresh-claude")
+
+	// Simulate Claude committing directly during this session.
+	os.WriteFile(filepath.Join(wc.Dir, "claude-work.go"), []byte("package main\n"), 0644)
+	gitRun(t, wc.Dir, "add", "-A")
+	gitRun(t, wc.Dir, "commit", "-m", "feat: claude work")
+	expectedSHA := gitRun(t, wc.Dir, "rev-parse", "HEAD")
+
+	sha, committed := WizardCommit(wc, "test-fresh-003", "claude commit from staging", noopLog)
+	if !committed {
+		t.Error("expected committed=true when Claude committed in fresh worktree from non-base start")
+	}
+	if sha != expectedSHA {
+		t.Errorf("expected SHA %q, got %q", expectedSHA, sha)
+	}
+}
+
 // TestWizardCommit_ErrorDoesNotAssumeCommits verifies that comparison errors
 // do not cause WizardCommit to falsely report "Claude already committed."
 // This was a bug: the old code did `hasNewCommits = true` on error.

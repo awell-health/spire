@@ -94,7 +94,10 @@ func (wc *WorktreeContext) HasNewCommits() (bool, error) {
 // HasNewCommitsSinceStart returns true if there are commits on HEAD that were
 // not present at session start. When StartSHA is set, it compares StartSHA..HEAD
 // (session-scoped detection). When StartSHA is empty, it falls back to
-// BaseBranch..HEAD (the original HasNewCommits behavior).
+// BaseBranch..HEAD (the original HasNewCommits behavior). The fallback exists
+// only for callers that manually construct a WorktreeContext without using the
+// constructors (CreateWorktree, CreateWorktreeNewBranch, ResumeWorktreeContext)
+// — all constructors now capture StartSHA at creation time.
 //
 // On any comparison error, returns (false, err) — never assumes commits exist.
 func (wc *WorktreeContext) HasNewCommitsSinceStart() (bool, error) {
