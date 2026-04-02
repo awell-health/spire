@@ -1,0 +1,15 @@
+go build ./cmd/spire/: exit status 1
+# github.com/awell-health/spire/pkg/executor
+pkg/executor/workspace.go:16:6: WorkspaceState redeclared in this block
+	pkg/executor/graph_state.go:46:6: other declaration of WorkspaceState
+pkg/executor/workspace.go:30:6: StepState redeclared in this block
+	pkg/executor/graph_state.go:38:6: other declaration of StepState
+pkg/executor/workspace.go:47:4: unknown field Name in struct literal of type WorkspaceState
+pkg/executor/workspace.go:50:4: unknown field BaseBranch in struct literal of type WorkspaceState
+pkg/executor/workspace.go:51:4: unknown field Status in struct literal of type WorkspaceState
+pkg/executor/workspace.go:52:4: unknown field Scope in struct literal of type WorkspaceState
+pkg/executor/workspace.go:53:4: unknown field Ownership in struct literal of type WorkspaceState
+pkg/executor/workspace.go:54:4: unknown field Cleanup in struct literal of type WorkspaceState
+pkg/executor/workspace.go:79:6: ws.Status undefined (type WorkspaceState has no field or method Status)
+pkg/executor/workspace.go:85:8: ws.Status undefined (type WorkspaceState has no field or method Status)
+pkg/executor/workspace.go:85:8: too many errors
