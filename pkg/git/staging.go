@@ -1,12 +1,23 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+// ErrMergeRace is returned when the base branch advances during the
+// rebase→verify→merge window and all retry attempts are exhausted.
+// Callers can check for this with errors.Is to distinguish a retryable
+// race from a terminal failure (e.g. rebase conflict).
+var ErrMergeRace = errors.New("merge race: main advanced during landing")
+
+// maxMergeAttempts is the number of rebase→verify→ff-only cycles
+// MergeToMain will attempt before returning ErrMergeRace.
+const maxMergeAttempts = 3
 
 // StagingWorktree manages a temporary git worktree for staging operations.
 // It is the single point responsible for git worktree create/remove and
@@ -242,49 +253,63 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 
 	w.logf("ff-only merge %s → %s (committer: archmage)", w.Branch, baseBranch)
 
-	// First attempt: fast-forward only merge.
+	// First attempt: fast-forward only merge (common case — no rebase needed).
 	if err := rc.MergeFFOnly(w.Branch, env); err == nil {
 		return nil // success — done
 	} else {
 		w.logf("ff-only failed: %s — rebasing staging onto %s", err, baseBranch)
 	}
 
-	// ff-only failed — main has diverged. Rebase the staging branch onto
-	// baseBranch in-place in the existing staging worktree. We cannot create
-	// a second worktree for the same branch — git forbids two worktrees
-	// checking out the same branch simultaneously.
-	w.logf("rebasing %s onto %s in place", w.Branch, baseBranch)
-	rebaseCmd := exec.Command("git", "-C", w.Dir, "rebase", baseBranch)
-	rebaseCmd.Env = os.Environ()
-	if out, rbErr := rebaseCmd.CombinedOutput(); rbErr != nil {
-		exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
-		return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s", w.Branch, baseBranch, rbErr, string(out))
-	}
+	// ff-only failed — main has diverged. Enter a bounded retry loop:
+	// pull main → rebase → verify build/tests → ff-only merge.
+	// If main advances again during verification, loop again.
+	for attempt := 0; attempt < maxMergeAttempts; attempt++ {
+		if attempt > 0 {
+			w.logf("merge race detected, retry %d/%d", attempt+1, maxMergeAttempts)
+		}
 
-	// Re-verify build in the staging worktree after rebase.
-	if buildStr != "" {
-		w.logf("verifying build after rebase")
-		out, buildErr := w.RunCommandOutput(buildStr)
-		if buildErr != nil {
-			return fmt.Errorf("build failed after rebase (aborting merge): %s\n%s", buildErr, out)
+		// Re-pull baseBranch to pick up any advances since last attempt.
+		if pullErr := rc.PullFFOnly("origin", baseBranch, env); pullErr != nil {
+			w.logf("warning: pull %s (attempt %d): %s", baseBranch, attempt+1, pullErr)
+		}
+
+		// Rebase staging onto the (possibly updated) baseBranch in-place.
+		w.logf("rebasing %s onto %s in place (attempt %d)", w.Branch, baseBranch, attempt+1)
+		rebaseCmd := exec.Command("git", "-C", w.Dir, "rebase", baseBranch)
+		rebaseCmd.Env = os.Environ()
+		if out, rbErr := rebaseCmd.CombinedOutput(); rbErr != nil {
+			exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
+			return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s", w.Branch, baseBranch, rbErr, string(out))
+		}
+
+		// Re-verify build after rebase.
+		if buildStr != "" {
+			w.logf("verifying build after rebase (attempt %d)", attempt+1)
+			out, buildErr := w.RunCommandOutput(buildStr)
+			if buildErr != nil {
+				return fmt.Errorf("build failed after rebase (aborting merge): %s\n%s", buildErr, out)
+			}
+		}
+
+		// Re-verify tests after rebase.
+		if testStr != "" {
+			w.logf("running tests after rebase (attempt %d)", attempt+1)
+			out, testErr := w.RunCommandOutput(testStr)
+			if testErr != nil {
+				return fmt.Errorf("tests failed after rebase (aborting merge): %s\n%s", testErr, out)
+			}
+		}
+
+		// Attempt ff-only merge — succeeds unless main advanced again.
+		w.logf("retrying ff-only merge after rebase (attempt %d)", attempt+1)
+		if err := rc.MergeFFOnly(w.Branch, env); err == nil {
+			return nil
+		} else {
+			w.logf("ff-only failed again (attempt %d): %s", attempt+1, err)
 		}
 	}
 
-	// Run tests after rebase.
-	if testStr != "" {
-		w.logf("running tests after rebase")
-		out, testErr := w.RunCommandOutput(testStr)
-		if testErr != nil {
-			return fmt.Errorf("tests failed after rebase (aborting merge): %s\n%s", testErr, out)
-		}
-	}
-
-	// Second attempt: ff-only should now succeed since staging was rebased.
-	w.logf("retrying ff-only merge after rebase")
-	if err := rc.MergeFFOnly(w.Branch, env); err != nil {
-		return fmt.Errorf("ff-only merge failed even after rebase (will not force merge): %w", err)
-	}
-	return nil
+	return fmt.Errorf("ff-only merge failed after %d rebase attempts (will not force merge): %w", maxMergeAttempts, ErrMergeRace)
 }
 
 // Close removes the worktree from git and deletes its temp directory.
