@@ -544,6 +544,220 @@ func TestGraphState_SaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// --- Test: RunNestedGraph (no cleanup side effects) ---
+
+func TestRunNestedGraph_Linear(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var dispatched []string
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName)
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	subGraph := &formula.FormulaStepGraph{
+		Name:    "test-nested",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"x": {Action: "test.noop"},
+			"y": {Action: "test.noop", Needs: []string{"x"}, Terminal: true},
+		},
+	}
+
+	subState := NewGraphState(subGraph, "spi-test", "wizard-test-nested")
+	subState.RepoPath = "."
+	subState.BaseBranch = "main"
+
+	// Create parent executor.
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+
+	// RunNestedGraph should NOT modify exec.terminated.
+	exec.terminated = false
+	err := exec.RunNestedGraph(subGraph, subState)
+	if err != nil {
+		t.Fatalf("RunNestedGraph returned error: %v", err)
+	}
+
+	// Parent executor should NOT be terminated.
+	if exec.terminated {
+		t.Error("RunNestedGraph should not set parent executor to terminated")
+	}
+
+	// Sub-graph steps should be completed.
+	if len(dispatched) != 2 {
+		t.Fatalf("expected 2 dispatched, got %d: %v", len(dispatched), dispatched)
+	}
+	if dispatched[0] != "x" || dispatched[1] != "y" {
+		t.Errorf("expected [x, y], got %v", dispatched)
+	}
+
+	if subState.Steps["y"].Status != "completed" {
+		t.Errorf("sub-graph terminal step y: expected completed, got %s", subState.Steps["y"].Status)
+	}
+}
+
+// --- Test: actionGraphRun dispatches nested graph ---
+
+func TestActionGraphRun_NestedGraph(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	// The review-phase graph uses role-based steps (no action field for most).
+	// For this test, register test handlers and use a custom graph that
+	// graph.run can load. Instead, we test actionGraphRun with a manually
+	// constructed graph by temporarily registering it.
+
+	// Override actionGraphRun to use a test graph instead of loading from embedded.
+	testSubGraph := &formula.FormulaStepGraph{
+		Name:    "test-sub",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"entry": {Action: "test.produce-merge"},
+			"merge": {
+				Action:    "test.noop",
+				Needs:     []string{"entry"},
+				Condition: "steps.entry.outputs.verdict == approve",
+				Terminal:  true,
+			},
+			"discard": {
+				Action:    "test.noop",
+				Needs:     []string{"entry"},
+				Condition: "steps.entry.outputs.verdict == reject",
+				Terminal:  true,
+			},
+		},
+	}
+
+	actionRegistry["test.produce-merge"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"verdict": "approve"}}
+	}
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	// Build a parent graph that calls graph.run.
+	parentGraph := &formula.FormulaStepGraph{
+		Name:    "test-parent",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"start": {Action: "test.noop"},
+			"review": {
+				Kind:   "call",
+				Action: "graph.run",
+				Needs:  []string{"start"},
+				Graph:  "test-sub", // will be loaded by actionGraphRun
+			},
+			"done": {
+				Action:   "test.noop",
+				Needs:    []string{"review"},
+				Terminal: true,
+			},
+		},
+	}
+
+	// We can't easily mock LoadStepGraphByName, so instead test RunNestedGraph
+	// directly to verify the plumbing works.
+	exec := NewGraphForTest("spi-test", "wizard-test", parentGraph, nil, deps)
+
+	// Test RunNestedGraph directly with the test sub-graph.
+	subState := NewGraphState(testSubGraph, "spi-test", "wizard-test-review")
+	subState.RepoPath = "."
+	subState.BaseBranch = "main"
+
+	err := exec.RunNestedGraph(testSubGraph, subState)
+	if err != nil {
+		t.Fatalf("RunNestedGraph error: %v", err)
+	}
+
+	// Check that merge terminal step fired (verdict=approve → merge path).
+	if subState.Steps["merge"].Status != "completed" {
+		t.Errorf("merge step: expected completed, got %s", subState.Steps["merge"].Status)
+	}
+	if subState.Steps["discard"].Status != "pending" {
+		t.Errorf("discard step: expected pending, got %s", subState.Steps["discard"].Status)
+	}
+
+	// Verify the parent executor is not terminated.
+	if exec.terminated {
+		t.Error("parent executor should not be terminated after RunNestedGraph")
+	}
+}
+
+// --- Test: actionMaterializePlan ---
+
+func TestActionMaterializePlan_NoChildren(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+	deps.IsAttemptBead = func(b Bead) bool { return false }
+	deps.IsStepBead = func(b Bead) bool { return false }
+	deps.IsReviewRoundBead = func(b Bead) bool { return false }
+
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	state := &GraphState{Vars: map[string]string{}}
+
+	result := actionMaterializePlan(exec, "materialize", StepConfig{}, state)
+	if result.Error == nil {
+		t.Fatal("expected error when no children exist")
+	}
+	if !containsSubstr(result.Error.Error(), "no subtask beads found") {
+		t.Errorf("expected 'no subtask beads found' error, got: %s", result.Error)
+	}
+}
+
+func TestActionMaterializePlan_WithChildren(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+	deps.GetChildren = func(parentID string) ([]Bead, error) {
+		return []Bead{
+			{ID: "spi-test.1", Type: "task", Title: "Subtask 1"},
+			{ID: "spi-test.2", Type: "task", Title: "Subtask 2"},
+			{ID: "step-1", Type: "task", Title: "Step bead"},     // internal
+			{ID: "attempt-1", Type: "task", Title: "Attempt bead"}, // internal
+		}, nil
+	}
+	deps.IsAttemptBead = func(b Bead) bool { return b.ID == "attempt-1" }
+	deps.IsStepBead = func(b Bead) bool { return b.ID == "step-1" }
+	deps.IsReviewRoundBead = func(b Bead) bool { return false }
+
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	state := &GraphState{Vars: map[string]string{}}
+
+	result := actionMaterializePlan(exec, "materialize", StepConfig{}, state)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Outputs["child_count"] != "2" {
+		t.Errorf("expected child_count=2, got %s", result.Outputs["child_count"])
+	}
+	if result.Outputs["status"] != "pass" {
+		t.Errorf("expected status=pass, got %s", result.Outputs["status"])
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
 }

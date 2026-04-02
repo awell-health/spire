@@ -44,6 +44,13 @@ func resolveFormulaName(bead Bead) string {
 	return formula.ResolveName(beadToInfo(bead))
 }
 
+// ResolveFormulaAny resolves either a v2 or v3 formula for a bead.
+// Returns the formula (either *FormulaV2 or *formula.FormulaStepGraph),
+// the version number, and any error.
+func ResolveFormulaAny(bead Bead) (interface{}, int, error) {
+	return formula.ResolveAny(beadToInfo(bead))
+}
+
 // init wires up the repo-level formula name callback so pkg/formula
 // can resolve spire.yaml agent.formula without importing pkg/config
 // or cmd/spire internals.

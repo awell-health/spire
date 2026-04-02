@@ -363,7 +363,7 @@ func LoadEmbeddedStepGraph(name string) (*FormulaStepGraph, error) {
 
 // --- Resolution ---
 
-// DefaultFormulaMap maps bead types to default formula names.
+// DefaultFormulaMap maps bead types to default v2 formula names.
 // Can be overridden by tower config in the future.
 var DefaultFormulaMap = map[string]string{
 	"task":    "spire-agent-work",
@@ -371,6 +371,17 @@ var DefaultFormulaMap = map[string]string{
 	"epic":    "spire-epic",
 	"chore":   "spire-agent-work",
 	"feature": "spire-agent-work",
+}
+
+// DefaultV3FormulaMap maps bead types to default v3 formula names.
+// Used by ResolveAny when a v3 formula is explicitly requested via
+// the "formula-version:3" label on a bead.
+var DefaultV3FormulaMap = map[string]string{
+	"task":    "spire-agent-work-v3",
+	"bug":     "spire-bugfix-v3",
+	"epic":    "spire-epic-v3",
+	"chore":   "spire-agent-work-v3",
+	"feature": "spire-agent-work-v3",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.
@@ -433,4 +444,99 @@ func ResolveName(bead BeadInfo) string {
 
 	// 4. Default
 	return "spire-agent-work"
+}
+
+// WantsV3 returns true if the bead has a "formula-version:3" label,
+// indicating the executor should use the v3 formula variant.
+func WantsV3(bead BeadInfo) bool {
+	for _, l := range bead.Labels {
+		if l == "formula-version:3" {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveV3Name returns the v3 formula name for a bead without loading it.
+// Resolution order: formula:<name> label > v3 default map > fallback.
+func ResolveV3Name(bead BeadInfo) string {
+	// 1. Check bead labels for formula:<name> (explicit override)
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "formula:") {
+			return l[len("formula:"):]
+		}
+	}
+
+	// 2. Check repo-level formula via callback
+	if RepoFormulaNameFunc != nil {
+		if name := RepoFormulaNameFunc(bead.ID); name != "" {
+			return name
+		}
+	}
+
+	// 3. Check bead type -> v3 formula mapping
+	if name, ok := DefaultV3FormulaMap[bead.Type]; ok {
+		return name
+	}
+
+	// 4. Default
+	return "spire-agent-work-v3"
+}
+
+// ResolveV3 determines which v3 formula to use for a bead.
+// Returns nil and an error if no v3 formula can be found.
+func ResolveV3(bead BeadInfo) (*FormulaStepGraph, error) {
+	name := ResolveV3Name(bead)
+	g, err := LoadStepGraphByName(name)
+	if err != nil {
+		// Fall back to default v3 formula
+		if name != "spire-agent-work-v3" {
+			g, err = LoadStepGraphByName("spire-agent-work-v3")
+			if err != nil {
+				return nil, fmt.Errorf("resolve v3 formula for %s: %w", bead.ID, err)
+			}
+			return g, nil
+		}
+		return nil, fmt.Errorf("resolve v3 formula for %s: %w", bead.ID, err)
+	}
+	return g, nil
+}
+
+// ResolveAny determines which formula to use for a bead, supporting both
+// v2 and v3 formulas. It returns either a *FormulaV2 or *FormulaStepGraph,
+// the version number, and any error.
+//
+// Resolution order:
+//  1. If the bead has a "formula-version:3" label, resolve as v3.
+//  2. If the bead has a "formula:<name>" label naming a v3 formula, load it.
+//  3. Otherwise, fall back to v2 resolution (Resolve).
+func ResolveAny(bead BeadInfo) (interface{}, int, error) {
+	// Check if v3 is explicitly requested.
+	if WantsV3(bead) {
+		g, err := ResolveV3(bead)
+		if err != nil {
+			return nil, 0, err
+		}
+		return g, 3, nil
+	}
+
+	// Check if the formula:<name> label points to a v3 formula.
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "formula:") {
+			name := l[len("formula:"):]
+			// Try loading as v3 first (step-graph), then fall back to v2.
+			if g, err := LoadStepGraphByName(name); err == nil {
+				return g, 3, nil
+			}
+			// Fall through to v2 resolution.
+			break
+		}
+	}
+
+	// Default: v2 resolution.
+	f, err := Resolve(bead)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f, 2, nil
 }
