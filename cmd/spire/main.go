@@ -37,6 +37,7 @@ func init() {
 	rootCmd.AddCommand(dismissCmd)
 	rootCmd.AddCommand(resetCmd)
 	rootCmd.AddCommand(resummonCmd)
+	rootCmd.AddCommand(recoverCmd)
 	rootCmd.AddCommand(upCmd)
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(metricsCmd)
