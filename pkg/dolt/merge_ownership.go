@@ -96,6 +96,21 @@ func ApplyMergeOwnership(dbName, preCommit string) error {
 	return nil
 }
 
+// HasUnresolvedConflicts checks whether unresolved Dolt conflicts exist on the
+// issues table. Returns the conflict row count and any error. If the conflict
+// table does not exist (no conflicts), returns 0, nil.
+func HasUnresolvedConflicts(dbName string) (int, error) {
+	countQ := fmt.Sprintf("SELECT COUNT(*) AS c FROM `%s`.dolt_conflicts_issues", dbName)
+	out, err := sqlWithDB(dbName, countQ)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "doesn't exist") {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return ExtractCountValue(out), nil
+}
+
 // ResolveIssueConflicts reads dolt_conflicts_issues and applies field-level
 // ownership rules to produce resolved rows. Only deletes conflict rows that
 // were successfully resolved; unresolved rows remain for manual intervention.

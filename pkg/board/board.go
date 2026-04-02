@@ -40,6 +40,13 @@ type BoardBeadJSON struct {
 	EpicSub *EpicChildSummary `json:"epic_subtasks,omitempty"`
 }
 
+// BoardJSON is the top-level JSON envelope for board output.
+// It wraps column data with optional system-level warnings.
+type BoardJSON struct {
+	ColumnsJSON
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 // ColumnsJSON is the JSON-serializable version of Columns.
 type ColumnsJSON struct {
 	Alerts      []BoardBeadJSON `json:"alerts"`

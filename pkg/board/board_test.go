@@ -2,6 +2,7 @@ package board
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -1034,21 +1035,21 @@ func TestCategorizeFiltersAlerts(t *testing.T) {
 
 func TestCalcHeightBudget(t *testing.T) {
 	t.Run("zero height returns permissive defaults", func(t *testing.T) {
-		b := CalcHeightBudget(0, 0, 0, 0, 3, 0)
+		b := CalcHeightBudget(0, 0, 0, 0, 0, 3, 0)
 		if b.MaxCards != 99 {
 			t.Errorf("expected MaxCards=99 for zero height, got %d", b.MaxCards)
 		}
 	})
 
 	t.Run("positive height computes budget", func(t *testing.T) {
-		b := CalcHeightBudget(40, 0, 0, 0, 3, 0)
+		b := CalcHeightBudget(40, 0, 0, 0, 0, 3, 0)
 		if b.MaxCards <= 0 {
 			t.Errorf("expected MaxCards > 0, got %d", b.MaxCards)
 		}
 	})
 
 	t.Run("very small height still works", func(t *testing.T) {
-		b := CalcHeightBudget(10, 0, 0, 0, 1, 0)
+		b := CalcHeightBudget(10, 0, 0, 0, 0, 1, 0)
 		if b.MaxCards < 1 {
 			t.Errorf("expected MaxCards >= 1, got %d", b.MaxCards)
 		}
@@ -1211,3 +1212,122 @@ func TestInterruptedBeadCategorization(t *testing.T) {
 		}
 	})
 }
+
+// --- TestConflictWarnings ---
+
+func TestBoardResultWarnings(t *testing.T) {
+	t.Run("empty warnings omitted from JSON", func(t *testing.T) {
+		result := BoardResult{Columns: Columns{}}
+		bj := BoardJSON{
+			ColumnsJSON: result.Columns.ToJSON(),
+			Warnings:    result.Warnings,
+		}
+		if bj.Warnings != nil {
+			t.Errorf("expected nil warnings (omitempty), got %v", bj.Warnings)
+		}
+	})
+
+	t.Run("warnings present in JSON envelope", func(t *testing.T) {
+		result := BoardResult{
+			Columns:  Columns{Ready: []BoardBead{{ID: "spi-1", Type: "task", Title: "test"}}},
+			Warnings: []string{"dolt-conflict: 2 unresolved conflict(s) in issues table — run `spire pull` to resolve"},
+		}
+		bj := BoardJSON{
+			ColumnsJSON: result.Columns.ToJSON(),
+			Warnings:    result.Warnings,
+		}
+		if len(bj.Warnings) != 1 {
+			t.Fatalf("expected 1 warning, got %d", len(bj.Warnings))
+		}
+		if len(bj.Ready) != 1 {
+			t.Errorf("expected 1 ready bead alongside warning, got %d", len(bj.Ready))
+		}
+	})
+
+	t.Run("conflict with empty columns", func(t *testing.T) {
+		result := BoardResult{
+			Warnings: []string{"dolt-conflict: 5 unresolved conflict(s) in issues table — run `spire pull` to resolve"},
+		}
+		bj := BoardJSON{
+			ColumnsJSON: result.Columns.ToJSON(),
+			Warnings:    result.Warnings,
+		}
+		if len(bj.Warnings) != 1 {
+			t.Fatalf("expected 1 warning, got %d", len(bj.Warnings))
+		}
+		if len(bj.Ready) != 0 {
+			t.Errorf("expected 0 ready beads, got %d", len(bj.Ready))
+		}
+	})
+}
+
+func TestSnapshotWarningsRendered(t *testing.T) {
+	t.Run("TUI renders warnings above alerts", func(t *testing.T) {
+		m := makeModel()
+		m.Snapshot = &BoardSnapshot{
+			Columns: m.Cols,
+			Warnings: []string{
+				"dolt-conflict: 3 unresolved conflict(s) in issues table — run `spire pull` to resolve",
+			},
+			DAGProgress: map[string]*DAGProgress{},
+			PhaseMap:    map[string]string{},
+		}
+		view := m.View()
+		if !strings.Contains(view, "SYSTEM WARNINGS") {
+			t.Error("expected SYSTEM WARNINGS header in view output")
+		}
+		if !strings.Contains(view, "dolt-conflict") {
+			t.Error("expected dolt-conflict warning text in view output")
+		}
+	})
+
+	t.Run("TUI renders no warnings when empty", func(t *testing.T) {
+		m := makeModel()
+		m.Snapshot = &BoardSnapshot{
+			Columns:     m.Cols,
+			DAGProgress: map[string]*DAGProgress{},
+			PhaseMap:    map[string]string{},
+		}
+		view := m.View()
+		if strings.Contains(view, "SYSTEM WARNINGS") {
+			t.Error("unexpected SYSTEM WARNINGS header when no warnings")
+		}
+	})
+
+	t.Run("TUI renders with warnings and no data", func(t *testing.T) {
+		m := Model{Width: 120, Height: 40, Identity: "test@test.dev"}
+		m.Snapshot = &BoardSnapshot{
+			Warnings:    []string{"dolt-conflict: 1 unresolved conflict(s) in issues table — run `spire pull` to resolve"},
+			DAGProgress: map[string]*DAGProgress{},
+			PhaseMap:    map[string]string{},
+		}
+		view := m.View()
+		if !strings.Contains(view, "SYSTEM WARNINGS") {
+			t.Error("expected SYSTEM WARNINGS even with empty columns")
+		}
+	})
+}
+
+func TestCalcHeightBudgetWarnings(t *testing.T) {
+	t.Run("warnings allocated in budget", func(t *testing.T) {
+		b := CalcHeightBudget(50, 2, 0, 0, 0, 4, 0)
+		if b.MaxWarnings != 2 {
+			t.Errorf("expected MaxWarnings=2, got %d", b.MaxWarnings)
+		}
+	})
+
+	t.Run("zero warnings no allocation", func(t *testing.T) {
+		b := CalcHeightBudget(50, 0, 0, 0, 0, 4, 0)
+		if b.MaxWarnings != 0 {
+			t.Errorf("expected MaxWarnings=0, got %d", b.MaxWarnings)
+		}
+	})
+
+	t.Run("warnings with non-TTY", func(t *testing.T) {
+		b := CalcHeightBudget(0, 3, 0, 0, 0, 4, 0)
+		if b.MaxWarnings != 3 {
+			t.Errorf("expected MaxWarnings=3 for non-TTY, got %d", b.MaxWarnings)
+		}
+	})
+}
+

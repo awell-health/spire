@@ -7,7 +7,7 @@ import (
 )
 
 func TestCalcHeightBudget_NoTerminal(t *testing.T) {
-	b := board.CalcHeightBudget(0, 3, 0, 5, 4, 0)
+	b := board.CalcHeightBudget(0, 0, 3, 0, 5, 4, 0)
 	if b.MaxCards < 10 {
 		t.Errorf("expected permissive maxCards for non-TTY, got %d", b.MaxCards)
 	}
@@ -23,7 +23,7 @@ func TestCalcHeightBudget_NoTerminal(t *testing.T) {
 }
 
 func TestCalcHeightBudget_TallTerminal(t *testing.T) {
-	b := board.CalcHeightBudget(50, 0, 0, 0, 4, 0)
+	b := board.CalcHeightBudget(50, 0, 0, 0, 0, 4, 0)
 	if b.Compact {
 		t.Errorf("expected compact=false for tall terminal, got compact=true (maxCards=%d)", b.MaxCards)
 	}
@@ -33,7 +33,7 @@ func TestCalcHeightBudget_TallTerminal(t *testing.T) {
 }
 
 func TestCalcHeightBudget_ShortTerminal(t *testing.T) {
-	b := board.CalcHeightBudget(12, 0, 0, 0, 4, 0)
+	b := board.CalcHeightBudget(12, 0, 0, 0, 0, 4, 0)
 	if !b.Compact {
 		t.Errorf("expected compact=true for 12-row terminal, got compact=false (maxCards=%d)", b.MaxCards)
 	}
@@ -43,7 +43,7 @@ func TestCalcHeightBudget_ShortTerminal(t *testing.T) {
 }
 
 func TestCalcHeightBudget_AlertsCapped(t *testing.T) {
-	b := board.CalcHeightBudget(30, 10, 0, 0, 4, 0)
+	b := board.CalcHeightBudget(30, 0, 10, 0, 0, 4, 0)
 	if b.MaxAlerts >= 10 {
 		t.Errorf("expected maxAlerts < 10 for 30-row terminal with 10 alerts, got %d", b.MaxAlerts)
 	}
@@ -53,7 +53,7 @@ func TestCalcHeightBudget_AlertsCapped(t *testing.T) {
 }
 
 func TestCalcHeightBudget_BlockedCapped(t *testing.T) {
-	b := board.CalcHeightBudget(30, 0, 0, 10, 4, 0)
+	b := board.CalcHeightBudget(30, 0, 0, 0, 10, 4, 0)
 	if b.MaxBlocked >= 10 {
 		t.Errorf("expected maxBlocked < 10 for 30-row terminal with 10 blocked, got %d", b.MaxBlocked)
 	}
@@ -63,7 +63,7 @@ func TestCalcHeightBudget_BlockedCapped(t *testing.T) {
 }
 
 func TestCalcHeightBudget_AlertsAndBlockedFewItems(t *testing.T) {
-	b := board.CalcHeightBudget(50, 2, 0, 3, 4, 0)
+	b := board.CalcHeightBudget(50, 0, 2, 0, 3, 4, 0)
 	if b.MaxAlerts > 2 {
 		t.Errorf("maxAlerts should not exceed alertCount=2, got %d", b.MaxAlerts)
 	}
@@ -73,7 +73,7 @@ func TestCalcHeightBudget_AlertsAndBlockedFewItems(t *testing.T) {
 }
 
 func TestCalcHeightBudget_AgentsCapped(t *testing.T) {
-	b := board.CalcHeightBudget(50, 0, 0, 0, 4, 8)
+	b := board.CalcHeightBudget(50, 0, 0, 0, 0, 4, 8)
 	if b.MaxAgents > 5 {
 		t.Errorf("maxAgents should not exceed 5, got %d", b.MaxAgents)
 	}
@@ -83,9 +83,19 @@ func TestCalcHeightBudget_AgentsCapped(t *testing.T) {
 }
 
 func TestCalcHeightBudget_AgentsZeroWhenNoAgents(t *testing.T) {
-	b := board.CalcHeightBudget(50, 0, 0, 0, 4, 0)
+	b := board.CalcHeightBudget(50, 0, 0, 0, 0, 4, 0)
 	if b.MaxAgents != 0 {
 		t.Errorf("maxAgents should be 0 when agentCount=0, got %d", b.MaxAgents)
+	}
+}
+
+func TestCalcHeightBudget_WarningsAllocated(t *testing.T) {
+	b := board.CalcHeightBudget(50, 2, 3, 0, 0, 4, 0)
+	if b.MaxWarnings != 2 {
+		t.Errorf("maxWarnings should be 2, got %d", b.MaxWarnings)
+	}
+	if b.MaxAlerts != 3 {
+		t.Errorf("maxAlerts should be 3, got %d", b.MaxAlerts)
 	}
 }
 

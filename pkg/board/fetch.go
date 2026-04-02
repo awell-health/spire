@@ -2,21 +2,63 @@ package board
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
+// BoardResult wraps board columns with optional system warnings.
+type BoardResult struct {
+	Columns  Columns
+	Warnings []string
+}
+
+// checkDoltConflicts detects unresolved Dolt conflicts and returns a warning
+// string if any exist. Returns "", nil when there are no conflicts or when the
+// database name cannot be resolved (non-fatal).
+func checkDoltConflicts() (string, error) {
+	dbName, err := config.DetectDBName()
+	if err != nil || dbName == "" {
+		return "", nil // can't check — not an error
+	}
+	count, err := dolt.HasUnresolvedConflicts(dbName)
+	if err != nil {
+		return "", err
+	}
+	if count > 0 {
+		return fmt.Sprintf("dolt-conflict: %d unresolved conflict(s) in issues table — run `spire pull` to resolve", count), nil
+	}
+	return "", nil
+}
+
 // FetchBoard loads beads from the store and categorizes them into board columns.
-func FetchBoard(opts Opts, identity string) (Columns, error) {
+// Detects unresolved Dolt conflicts and surfaces them as warnings instead of
+// failing the entire load.
+func FetchBoard(opts Opts, identity string) (BoardResult, error) {
+	var warnings []string
+
+	// Check for Dolt conflicts before store reads.
+	if w, err := checkDoltConflicts(); err != nil {
+		log.Printf("[board] conflict check: %s", err)
+	} else if w != "" {
+		warnings = append(warnings, w)
+	}
+
 	openBeads, err := store.ListBoardBeads(beads.IssueFilter{
 		ExcludeStatus: []beads.Status{beads.StatusClosed},
 	})
 	if err != nil {
-		return Columns{}, fmt.Errorf("board: list open beads: %w", err)
+		// If conflicts exist, degrade gracefully instead of hard-failing.
+		if len(warnings) > 0 {
+			return BoardResult{Warnings: warnings}, nil
+		}
+		return BoardResult{}, fmt.Errorf("board: list open beads: %w", err)
 	}
 
 	closedCutoff := time.Now().Add(-24 * time.Hour)
@@ -60,7 +102,7 @@ func FetchBoard(opts Opts, identity string) (Columns, error) {
 	SortBeads(cols.Done)
 	SortBeads(cols.Blocked)
 
-	return cols, nil
+	return BoardResult{Columns: cols, Warnings: warnings}, nil
 }
 
 // snapshotMsg carries the result of a background snapshot fetch.
@@ -80,11 +122,25 @@ func fetchSnapshotCmd(opts Opts, identity string, fetchAgents func() []LocalAgen
 // fetchSnapshot assembles a complete BoardSnapshot in a single pass with minimal
 // DB queries: 3 bulk bead queries + 1 GetChildrenBatch = 4 total.
 func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) (*BoardSnapshot, error) {
+	var warnings []string
+
+	// Check for Dolt conflicts before store reads.
+	if w, err := checkDoltConflicts(); err != nil {
+		log.Printf("[board] snapshot conflict check: %s", err)
+	} else if w != "" {
+		warnings = append(warnings, w)
+	}
+
 	// 1. Bulk-fetch beads — same store calls as FetchBoard.
 	openBeads, err := store.ListBoardBeads(beads.IssueFilter{
 		ExcludeStatus: []beads.Status{beads.StatusClosed},
 	})
 	if err != nil {
+		// If conflicts detected, return a minimal snapshot with the warning
+		// instead of nil (which leaves the TUI stuck on "Loading...").
+		if len(warnings) > 0 {
+			return &BoardSnapshot{Warnings: warnings, FetchedAt: time.Now()}, nil
+		}
 		return nil, fmt.Errorf("snapshot: list open beads: %w", err)
 	}
 
@@ -200,6 +256,7 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 		EpicSummary: epicSummary,
 		Agents:      fetchAgents(),
 		PhaseMap:    phaseMap,
+		Warnings:    warnings,
 		FetchedAt:   time.Now(),
 	}
 
