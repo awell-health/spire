@@ -133,11 +133,21 @@ func runPull(remoteURL string, force bool) error {
 
 	// ── Pull via dolt CLI ─────────────────────────────────────────────────────
 	fmt.Println("  Pulling from origin...")
-	if err := dolt.CLIPull(dataDir, force); err != nil {
-		if !force && (strings.Contains(err.Error(), "non-fast-forward") ||
-			strings.Contains(err.Error(), "diverged") ||
-			strings.Contains(err.Error(), "conflicts") ||
-			strings.Contains(err.Error(), "cannot merge")) {
+	pullErr := dolt.CLIPull(dataDir, force)
+
+	// ── Enforce field-level ownership ─────────────────────────────────────────
+	// Must run even when pull reports conflicts, since CLIPull merges data
+	// into the working set before returning the conflict error.
+	if dbName != "" && preCommit != "" {
+		if ownerErr := dolt.ApplyMergeOwnership(dbName, preCommit); ownerErr != nil {
+			fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
+		}
+	}
+
+	// ── Classify pull errors after ownership enforcement ──────────────────────
+	if pullErr != nil {
+		hard, merge := classifyPullError(pullErr.Error())
+		if hard && !force {
 			fmt.Println("  Pull failed — histories have diverged.")
 			fmt.Println()
 			fmt.Println("  To attempt a three-way merge (preserves both sides), run:")
@@ -147,13 +157,10 @@ func runPull(remoteURL string, force bool) error {
 			fmt.Println("    spire pull --force")
 			return fmt.Errorf("pull failed (diverged histories)")
 		}
-		return fmt.Errorf("dolt pull: %w", err)
-	}
-
-	// ── Enforce field-level ownership ─────────────────────────────────────────
-	if dbName != "" && preCommit != "" {
-		if ownerErr := dolt.ApplyMergeOwnership(dbName, preCommit); ownerErr != nil {
-			fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
+		if merge {
+			fmt.Println("  Merge conflicts resolved via field-level ownership.")
+		} else if !hard {
+			return fmt.Errorf("dolt pull: %w", pullErr)
 		}
 	}
 
@@ -161,4 +168,20 @@ func runPull(remoteURL string, force bool) error {
 	fmt.Println()
 	bd("status") //nolint
 	return nil
+}
+
+// classifyPullError categorises a dolt pull error message.
+// Returns (hard, merge) where hard means a diverged-history rejection
+// (no data merged) and merge means a merge conflict (data merged into
+// working set, resolvable by ownership).
+func classifyPullError(errMsg string) (hard, merge bool) {
+	if strings.Contains(errMsg, "non-fast-forward") ||
+		strings.Contains(errMsg, "diverged") {
+		return true, false
+	}
+	if strings.Contains(errMsg, "conflict") || strings.Contains(errMsg, "CONFLICT") ||
+		strings.Contains(errMsg, "cannot merge") {
+		return false, true
+	}
+	return false, false
 }
