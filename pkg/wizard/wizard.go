@@ -90,7 +90,7 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 // Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice] [--build-fix] [--worktree-dir <path>]
 func CmdWizardRun(args []string, deps *Deps) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice] [--build-fix] [--worktree-dir <path>]")
+		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice] [--build-fix] [--worktree-dir <path>] [--start-ref <ref>]")
 	}
 
 	// 1. Parse args
@@ -100,6 +100,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	apprenticeMode := false
 	buildFixMode := false
 	worktreeDirOverride := ""
+	startRef := ""
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--name":
@@ -117,6 +118,11 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			if i+1 < len(args) {
 				i++
 				worktreeDirOverride = args[i]
+			}
+		case "--start-ref":
+			if i+1 < len(args) {
+				i++
+				startRef = args[i]
 			}
 		}
 	}
@@ -167,6 +173,14 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	}
 
 	branchName := strings.ReplaceAll(branchPattern, "{bead-id}", beadID)
+
+	// Override start point when the executor passes --start-ref (e.g. staging
+	// branch tip for later-wave children). This replaces baseBranch as the
+	// start point for CreateWorktreeNewBranch without changing anything else.
+	if startRef != "" {
+		log("using start-ref override: %s (was: %s)", startRef, baseBranch)
+		baseBranch = startRef
+	}
 
 	// 3. Create or resume git worktree.
 	var wc *spgit.WorktreeContext

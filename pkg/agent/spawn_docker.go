@@ -97,6 +97,9 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 
 	// Build the entrypoint command.
 	entryCmd := []string{"spire", subcmd, cfg.BeadID, "--name", cfg.Name}
+	if cfg.StartRef != "" {
+		entryCmd = append(entryCmd, "--start-ref", cfg.StartRef)
+	}
 	entryCmd = append(entryCmd, cfg.ExtraArgs...)
 
 	// Container name includes agent name for uniqueness across retries/rounds.

@@ -93,6 +93,12 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 		// and cleaned up by Run() on exit.
 	}
 
+	// startRef tracks the integration ref for child worktrees. Empty for wave 0
+	// (children start from the repo base branch). After each wave's merge into
+	// staging, updated to the staging HEAD SHA so later-wave children start from
+	// the current integration state instead of stale main.
+	var startRef string
+
 	startWave := e.state.Wave
 	for waveIdx := startWave; waveIdx < len(waves); waveIdx++ {
 		wave := waves[waveIdx]
@@ -130,6 +136,7 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 					BeadID:    beadID,
 					Role:      agent.RoleApprentice,
 					ExtraArgs: extraArgs,
+					StartRef:  startRef,
 				})
 				if spawnErr != nil {
 					e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", "implement", started, spawnErr)
@@ -179,6 +186,13 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 				if mergeErr := stagingWt.MergeBranch(st.Branch, e.resolveConflicts); mergeErr != nil {
 					return fmt.Errorf("merge %s into %s: %w", st.Branch, e.state.StagingBranch, mergeErr)
 				}
+			}
+
+			// Update startRef to the staging HEAD so the next wave's children
+			// branch from the current integration state, not from stale main.
+			if sha, err := stagingWt.HeadSHA(); err == nil && sha != "" {
+				startRef = sha
+				e.log("next wave start-ref: %s", startRef)
 			}
 		}
 
@@ -246,6 +260,12 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 	baseBranch := e.state.BaseBranch
 	stagingBranch := e.state.StagingBranch
 
+	// startRef tracks the integration ref for child worktrees. Empty for step 0
+	// (children start from the repo base branch). After each step's merge-to-main
+	// and push, updated to the base branch HEAD so the next child starts from the
+	// current integrated code.
+	var startRef string
+
 	for i, subtaskID := range subtasks {
 		// Skip already completed subtasks (resume support).
 		if st, ok := e.state.Subtasks[subtaskID]; ok && (st.Status == "closed" || st.Status == "done") {
@@ -264,6 +284,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 			BeadID:    subtaskID,
 			Role:      agent.RoleApprentice,
 			ExtraArgs: []string{"--apprentice"},
+			StartRef:  startRef,
 		})
 		if spawnErr != nil {
 			return fmt.Errorf("spawn apprentice for %s: %w", subtaskID, spawnErr)
@@ -329,6 +350,13 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 		rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: e.log}
 		if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
 			return fmt.Errorf("push %s after %s: %w", baseBranch, subtaskID, pushErr)
+		}
+
+		// Update startRef to the base branch HEAD so the next child starts from
+		// the current integrated code, not from the pre-merge base.
+		startRef = rc.HeadSHA()
+		if startRef != "" {
+			e.log("next sequential start-ref: %s", startRef)
 		}
 
 		// 6. Close subtask bead.

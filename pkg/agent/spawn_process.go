@@ -40,6 +40,9 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	}
 
 	args := []string{subcmd, cfg.BeadID, "--name", cfg.Name}
+	if cfg.StartRef != "" {
+		args = append(args, "--start-ref", cfg.StartRef)
+	}
 	args = append(args, cfg.ExtraArgs...)
 
 	cmd := exec.Command(spireBin, args...)
