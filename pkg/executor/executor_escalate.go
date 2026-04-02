@@ -37,7 +37,7 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 //
 // Actions:
 //  1. Labels the bead needs-human
-//  2. Creates an alert bead linked via a "related" dep (not ref: label)
+//  2. Creates an alert bead linked via a "caused-by" dep (not ref: label)
 //  3. Adds a comment explaining what happened
 //  4. Messages the archmage
 //
@@ -62,10 +62,11 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 		fmt.Fprintf(os.Stderr, "warning: escalate empty-implement alert: %s\n", err)
 	}
 
-	// Link alert to bead via related dep (not ref: label).
+	// Link alert to source bead via caused-by dep so closing the source
+	// bead can cascade-close this alert automatically.
 	if alertID != "" && deps.AddDepTyped != nil {
-		if derr := deps.AddDepTyped(alertID, beadID, "related"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", alertID, beadID, derr)
+		if derr := deps.AddDepTyped(alertID, beadID, "caused-by"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", alertID, beadID, derr)
 		}
 	}
 

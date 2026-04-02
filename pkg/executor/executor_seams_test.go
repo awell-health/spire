@@ -1655,15 +1655,15 @@ func TestRunPhaseLoop_EmptyImplementEscalates(t *testing.T) {
 		t.Errorf("expected alert bead with alert:empty-implement label, got: %v", beadsCreated)
 	}
 
-	// Verify a related dep was added (alert → bead, not ref: label).
-	foundRelatedDep := false
+	// Verify a caused-by dep was added (alert → bead, not ref: label).
+	foundCausedByDep := false
 	for _, d := range depsAdded {
-		if d == "spi-alert-1→spi-empty:related" {
-			foundRelatedDep = true
+		if d == "spi-alert-1→spi-empty:caused-by" {
+			foundCausedByDep = true
 		}
 	}
-	if !foundRelatedDep {
-		t.Errorf("expected related dep spi-alert-1→spi-empty, got: %v", depsAdded)
+	if !foundCausedByDep {
+		t.Errorf("expected caused-by dep spi-alert-1→spi-empty, got: %v", depsAdded)
 	}
 
 	// Verify a comment was added explaining the situation.
