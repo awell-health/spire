@@ -83,3 +83,23 @@ needs = ["arbiter"]
 condition = "arbiter_decision == discard"
 terminal = true
 title = "Discard branch"
+
+# --- Typed outputs ---
+# Outer graphs route mechanically on these. See docs/v3-formula.md.
+
+[outputs.outcome]
+type = "enum"
+values = ["merge", "discard"]
+description = "Terminal review outcome — which terminal step fired"
+
+[outputs.verdict]
+type = "string"
+description = "Last sage verdict (approve or request_changes)"
+
+[outputs.arbiter_decision]
+type = "string"
+description = "Arbiter decision if escalated (merge, split, or discard)"
+
+[outputs.rounds_used]
+type = "int"
+description = "Number of review rounds completed"

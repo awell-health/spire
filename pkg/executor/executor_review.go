@@ -15,21 +15,25 @@ import (
 // formula-driven step graph walk. The review-phase formula declares the
 // step graph (sage-review, fix, arbiter, merge, discard) with compound
 // condition guards; the walker evaluates conditions at runtime.
-func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
-	// 1. Load the review step-graph formula.
-	graph, err := formula.LoadReviewPhaseFormula()
+func (e *Executor) executeReview(phase string, pc PhaseConfig) (*GraphResult, error) {
+	// 1. Load the review step-graph formula (formula-selectable via pc.Graph).
+	graphName := pc.Graph
+	if graphName == "" {
+		graphName = "review-phase"
+	}
+	graph, err := formula.LoadStepGraphByName(graphName)
 	if err != nil {
-		return fmt.Errorf("load review formula: %w", err)
+		return nil, fmt.Errorf("load review formula: %w", err)
 	}
 
 	// 2. Validate graph structure.
 	if err := formula.ValidateGraph(graph); err != nil {
-		return fmt.Errorf("invalid review formula: %w", err)
+		return nil, fmt.Errorf("invalid review formula: %w", err)
 	}
 
 	// 3. Pour sub-step beads (idempotent).
 	if err := e.ensureReviewSubStepBeads(graph); err != nil {
-		return fmt.Errorf("ensure review sub-step beads: %w", err)
+		return nil, fmt.Errorf("ensure review sub-step beads: %w", err)
 	}
 
 	// 4. Build initial condition context.
@@ -60,10 +64,10 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 	for {
 		next, err := formula.NextSteps(graph, localCompleted, ctx)
 		if err != nil {
-			return fmt.Errorf("review graph walk error: %w", err)
+			return nil, fmt.Errorf("review graph walk error: %w", err)
 		}
 		if len(next) == 0 {
-			return fmt.Errorf("review graph stuck: no next steps, completed=%v, ctx=%v", localCompleted, ctx)
+			return nil, fmt.Errorf("review graph stuck: no next steps, completed=%v, ctx=%v", localCompleted, ctx)
 		}
 
 		stepName := next[0] // review is sequential — take first ready step
@@ -71,24 +75,34 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 
 		// Activate sub-step bead. [Review fix #1: check error]
 		if err := e.activateReviewSubStep(stepName); err != nil {
-			return fmt.Errorf("activate review sub-step %s: %w", stepName, err)
+			return nil, fmt.Errorf("activate review sub-step %s: %w", stepName, err)
 		}
 
 		// Terminal steps: execute FIRST, then close on success.
 		// [Review fix #3: close after successful execution, not before]
 		if formula.IsTerminal(graph, stepName) {
 			if err := e.executeTerminalStep(stepName, stepCfg); err != nil {
-				return fmt.Errorf("terminal step %s failed: %w", stepName, err)
+				return nil, fmt.Errorf("terminal step %s failed: %w", stepName, err)
 			}
 			if err := e.closeReviewSubStep(stepName); err != nil {
-				return fmt.Errorf("close terminal sub-step %s: %w", stepName, err)
+				return nil, fmt.Errorf("close terminal sub-step %s: %w", stepName, err)
 			}
-			return nil
+			result := &GraphResult{
+				GraphName:    graphName,
+				TerminalStep: stepName,
+				Outputs: map[string]string{
+					"outcome":          stepName,
+					"verdict":          ctx["verdict"],
+					"arbiter_decision": ctx["arbiter_decision"],
+					"rounds_used":      ctx["round"],
+				},
+			}
+			return result, nil
 		}
 
 		// Dispatch agent for this step.
 		if err := e.dispatchReviewAgent(stepName, stepCfg, pc); err != nil {
-			return fmt.Errorf("review step %s failed: %w", stepName, err)
+			return nil, fmt.Errorf("review step %s failed: %w", stepName, err)
 		}
 
 		// Read results and update context.
@@ -97,7 +111,7 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 
 		// Close sub-step bead. [Review fix #2: check error]
 		if err := e.closeReviewSubStep(stepName); err != nil {
-			return fmt.Errorf("close review sub-step %s: %w", stepName, err)
+			return nil, fmt.Errorf("close review sub-step %s: %w", stepName, err)
 		}
 
 		// Mark step completed in local tracker.
@@ -107,11 +121,11 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 		// review cycle, then increment the round counter and persist.
 		if stepName == "fix" {
 			if err := e.resetReviewSubStep("sage-review"); err != nil {
-				return fmt.Errorf("reset sage-review sub-step: %w", err)
+				return nil, fmt.Errorf("reset sage-review sub-step: %w", err)
 			}
 			delete(localCompleted, "sage-review")
 			if err := e.resetReviewSubStep("fix"); err != nil {
-				return fmt.Errorf("reset fix sub-step: %w", err)
+				return nil, fmt.Errorf("reset fix sub-step: %w", err)
 			}
 			delete(localCompleted, "fix")
 			e.state.ReviewRounds++

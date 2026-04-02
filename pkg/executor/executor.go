@@ -12,6 +12,15 @@ import (
 	spgit "github.com/awell-health/spire/pkg/git"
 )
 
+// GraphResult is the typed return from executing a step-graph formula.
+// It captures which terminal step fired and the declared output values,
+// so outer workflows can route mechanically without inspecting ad hoc state.
+type GraphResult struct {
+	GraphName    string            `json:"graph_name"`
+	TerminalStep string            `json:"terminal_step"`
+	Outputs      map[string]string `json:"outputs"`
+}
+
 // State is the persistent state for a formula executor.
 type State struct {
 	BeadID        string                  `json:"bead_id"`
@@ -31,6 +40,7 @@ type State struct {
 	StepBeadIDs       map[string]string       `json:"step_bead_ids,omitempty"`        // phase name → step bead ID
 	ReviewStepBeadIDs map[string]string       `json:"review_step_bead_ids,omitempty"` // formula step name → sub-step bead ID
 	WorktreeDir       string                  `json:"worktree_dir,omitempty"`         // staging worktree directory path
+	LastGraphResult   *GraphResult            `json:"last_graph_result,omitempty"`
 }
 
 // Executor drives a bead through its formula's phase pipeline.
@@ -235,7 +245,12 @@ func (e *Executor) Run() error {
 			children, _ := e.deps.GetChildren(e.beadID)
 			err = e.enrichSubtasksWithChangeSpecs(children, "", "", pc)
 		case behavior == "sage-review":
-			err = e.executeReview(phase, pc)
+			var graphResult *GraphResult
+			graphResult, err = e.executeReview(phase, pc)
+			if err == nil && graphResult != nil {
+				e.state.LastGraphResult = graphResult
+				e.saveState()
+			}
 		case behavior == "auto-approve":
 			e.log("auto-approve: skipping review")
 		case behavior == "merge-to-main":
@@ -279,7 +294,12 @@ func (e *Executor) Run() error {
 					err = e.executeDirect(phase, pc)
 				}
 			case "sage":
-				err = e.executeReview(phase, pc)
+				var graphResult *GraphResult
+				graphResult, err = e.executeReview(phase, pc)
+				if err == nil && graphResult != nil {
+					e.state.LastGraphResult = graphResult
+					e.saveState()
+				}
 			case "skip":
 				e.log("skipping phase %s", phase)
 			default:

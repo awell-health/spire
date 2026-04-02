@@ -307,7 +307,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 		// 4. Inline review (if the formula has a review phase).
 		if reviewPC, ok := e.formula.Phases["review"]; ok {
 			e.log("inline review for %s", subtaskID)
-			if reviewErr := e.executeReview("review", reviewPC); reviewErr != nil {
+			if _, reviewErr := e.executeReview("review", reviewPC); reviewErr != nil {
 				return fmt.Errorf("inline review for %s: %w", subtaskID, reviewErr)
 			}
 		}

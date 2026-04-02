@@ -2,6 +2,8 @@ package executor
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -169,7 +171,7 @@ func TestReviewWalker_SingleRoundApprove(t *testing.T) {
 		0: "approve",
 	}, "")
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	result, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview returned error: %v", err)
 	}
@@ -186,6 +188,20 @@ func TestReviewWalker_SingleRoundApprove(t *testing.T) {
 	if env.executor.state.ReviewRounds != 0 {
 		t.Errorf("ReviewRounds = %d, want 0", env.executor.state.ReviewRounds)
 	}
+
+	// Verify GraphResult.
+	if result == nil {
+		t.Fatal("expected non-nil GraphResult")
+	}
+	if result.TerminalStep != "merge" {
+		t.Errorf("TerminalStep = %q, want %q", result.TerminalStep, "merge")
+	}
+	if result.Outputs["verdict"] != "approve" {
+		t.Errorf("Outputs[verdict] = %q, want %q", result.Outputs["verdict"], "approve")
+	}
+	if result.GraphName != "review-phase" {
+		t.Errorf("GraphName = %q, want %q", result.GraphName, "review-phase")
+	}
 }
 
 func TestReviewWalker_OneFixThenApprove(t *testing.T) {
@@ -194,7 +210,7 @@ func TestReviewWalker_OneFixThenApprove(t *testing.T) {
 		1: "approve",
 	}, "")
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	result, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview returned error: %v", err)
 	}
@@ -214,6 +230,13 @@ func TestReviewWalker_OneFixThenApprove(t *testing.T) {
 	if env.executor.state.ReviewRounds != 1 {
 		t.Errorf("ReviewRounds = %d, want 1", env.executor.state.ReviewRounds)
 	}
+
+	if result == nil {
+		t.Fatal("expected non-nil GraphResult")
+	}
+	if result.TerminalStep != "merge" {
+		t.Errorf("TerminalStep = %q, want %q", result.TerminalStep, "merge")
+	}
 }
 
 func TestReviewWalker_MaxRoundsArbiterMerge(t *testing.T) {
@@ -224,7 +247,7 @@ func TestReviewWalker_MaxRoundsArbiterMerge(t *testing.T) {
 		3: "request_changes", // sage fires once more after 3rd fix reset; arbiter needs sage-review completed
 	}, "merge")
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	result, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview returned error: %v", err)
 	}
@@ -254,6 +277,17 @@ func TestReviewWalker_MaxRoundsArbiterMerge(t *testing.T) {
 
 	if env.executor.state.ReviewRounds != 3 {
 		t.Errorf("ReviewRounds = %d, want 3", env.executor.state.ReviewRounds)
+	}
+
+	// Verify GraphResult.
+	if result == nil {
+		t.Fatal("expected non-nil GraphResult")
+	}
+	if result.Outputs["arbiter_decision"] != "merge" {
+		t.Errorf("Outputs[arbiter_decision] = %q, want %q", result.Outputs["arbiter_decision"], "merge")
+	}
+	if result.Outputs["rounds_used"] != "3" {
+		t.Errorf("Outputs[rounds_used] = %q, want %q", result.Outputs["rounds_used"], "3")
 	}
 }
 
@@ -322,7 +356,7 @@ func TestReviewWalker_SageExitError(t *testing.T) {
 		},
 	}
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	_, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview should succeed despite sage exit error: %v", err)
 	}
@@ -357,12 +391,15 @@ func TestReviewWalker_SageErrorNoVerdict(t *testing.T) {
 		return nil, nil
 	}
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	result, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err == nil {
 		t.Fatal("expected error from executeReview, got nil")
 	}
 	if !strings.Contains(err.Error(), "review graph stuck") {
 		t.Errorf("expected 'review graph stuck' error, got: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result on error, got %+v", result)
 	}
 }
 
@@ -400,7 +437,7 @@ func TestReviewWalker_FixApprenticeError(t *testing.T) {
 		},
 	}
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	_, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview should succeed despite fix error: %v", err)
 	}
@@ -474,7 +511,7 @@ func TestReviewWalker_StaleSubStepBeadsReopened(t *testing.T) {
 	// Start with empty ReviewStepBeadIDs to trigger GetChildren reconciliation.
 	env.executor.state.ReviewStepBeadIDs = make(map[string]string)
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	_, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview returned error: %v", err)
 	}
@@ -532,7 +569,7 @@ func TestReviewWalker_ThreeRoundsStress(t *testing.T) {
 		return nil
 	}
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	_, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview returned error: %v", err)
 	}
@@ -633,7 +670,7 @@ func TestReviewWalker_ResumeAfterSage(t *testing.T) {
 		}}, nil
 	}
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	_, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview returned error: %v", err)
 	}
@@ -702,7 +739,7 @@ func TestReviewWalker_ResumeAfterSageMaxRounds(t *testing.T) {
 		}}, nil
 	}
 
-	err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	_, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
 	if err != nil {
 		t.Fatalf("executeReview returned error: %v", err)
 	}
@@ -721,6 +758,145 @@ func TestReviewWalker_ResumeAfterSageMaxRounds(t *testing.T) {
 	// Round counter unchanged (no fix step).
 	if env.executor.state.ReviewRounds != 3 {
 		t.Errorf("ReviewRounds = %d, want 3", env.executor.state.ReviewRounds)
+	}
+}
+
+// TestReviewWalker_CustomGraphName verifies that executeReview loads a custom
+// step-graph formula from disk when PhaseConfig.Graph is set.
+func TestReviewWalker_CustomGraphName(t *testing.T) {
+	env := setupReviewTest(t, map[int]string{
+		0: "approve",
+	}, "")
+
+	// Create a custom formula on disk that is a copy of review-phase.
+	tmpDir := t.TempDir()
+	formulaDir := filepath.Join(tmpDir, "formulas")
+	os.MkdirAll(formulaDir, 0755)
+
+	// Load the embedded review-phase formula content and write it as custom-review.
+	embeddedGraph, err := formula.LoadReviewPhaseFormula()
+	if err != nil {
+		t.Fatalf("load embedded review formula: %v", err)
+	}
+	_ = embeddedGraph // just verify it loads
+
+	// Write a minimal custom step-graph formula.
+	customTOML := `name = "custom-review"
+description = "Custom review graph for testing"
+version = 3
+
+[vars.bead_id]
+description = "The bead being reviewed"
+required = true
+
+[vars.branch]
+description = "Staging branch"
+required = true
+
+[vars.max_rounds]
+description = "Maximum review rounds"
+default = "3"
+
+[steps.sage-review]
+description = "Sage reviews staging branch diff"
+role = "sage"
+title = "Sage review"
+timeout = "10m"
+model = "claude-opus-4-6"
+verdict_only = true
+
+[steps.fix]
+description = "Fix apprentice addresses review feedback"
+needs = ["sage-review"]
+condition = "verdict == request_changes && round < max_rounds"
+role = "apprentice"
+title = "Fix"
+timeout = "15m"
+
+[steps.arbiter]
+description = "Arbiter makes final decision"
+needs = ["sage-review"]
+condition = "verdict == request_changes && round >= max_rounds"
+role = "arbiter"
+title = "Arbiter"
+timeout = "10m"
+
+[steps.merge]
+description = "Merge staging to main"
+needs = ["sage-review", "arbiter"]
+condition = "verdict == approve || arbiter_decision == merge || arbiter_decision == split"
+terminal = true
+title = "Merge to main"
+
+[steps.discard]
+description = "Delete branch without merging"
+needs = ["arbiter"]
+condition = "arbiter_decision == discard"
+terminal = true
+title = "Discard branch"
+
+[outputs.outcome]
+type = "enum"
+values = ["merge", "discard"]
+description = "Terminal review outcome"
+`
+	if err := os.WriteFile(filepath.Join(formulaDir, "custom-review.formula.toml"), []byte(customTOML), 0644); err != nil {
+		t.Fatalf("write custom formula: %v", err)
+	}
+
+	// Set BEADS_DIR so FindFormula resolves the custom formula.
+	t.Setenv("BEADS_DIR", tmpDir)
+
+	result, err := env.executor.executeReview("review", formula.PhaseConfig{
+		Role:  "sage",
+		Graph: "custom-review",
+	})
+	if err != nil {
+		t.Fatalf("executeReview with custom graph returned error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil GraphResult")
+	}
+	if result.GraphName != "custom-review" {
+		t.Errorf("GraphName = %q, want %q", result.GraphName, "custom-review")
+	}
+	if result.TerminalStep != "merge" {
+		t.Errorf("TerminalStep = %q, want %q", result.TerminalStep, "merge")
+	}
+}
+
+// TestReviewWalker_GraphResultOutputs verifies that all four output fields
+// are populated in the GraphResult after a single-round approve flow.
+func TestReviewWalker_GraphResultOutputs(t *testing.T) {
+	env := setupReviewTest(t, map[int]string{
+		0: "approve",
+	}, "")
+
+	result, err := env.executor.executeReview("review", formula.PhaseConfig{Role: "sage"})
+	if err != nil {
+		t.Fatalf("executeReview returned error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil GraphResult")
+	}
+
+	// Verify all four output fields exist.
+	for _, key := range []string{"outcome", "verdict", "arbiter_decision", "rounds_used"} {
+		if _, ok := result.Outputs[key]; !ok {
+			t.Errorf("missing output key %q in GraphResult.Outputs", key)
+		}
+	}
+
+	if result.Outputs["outcome"] != "merge" {
+		t.Errorf("Outputs[outcome] = %q, want %q", result.Outputs["outcome"], "merge")
+	}
+	if result.Outputs["verdict"] != "approve" {
+		t.Errorf("Outputs[verdict] = %q, want %q", result.Outputs["verdict"], "approve")
+	}
+	// arbiter_decision should be empty (no arbiter invoked).
+	if result.Outputs["rounds_used"] != "0" {
+		t.Errorf("Outputs[rounds_used] = %q, want %q", result.Outputs["rounds_used"], "0")
 	}
 }
 

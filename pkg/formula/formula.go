@@ -47,6 +47,7 @@ type PhaseConfig struct {
 	MaxBuildFixRounds int      `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
 	OnBuildFailure    string   `toml:"on_build_failure,omitempty"`     // "retry" (default) | "escalate" | "fail"
 	DocPatterns       []string `toml:"doc_patterns" json:"doc_patterns,omitempty"` // glob patterns for doc files to review on merge
+	Graph             string   `toml:"graph,omitempty"`                            // step-graph formula name for graph-based phases (e.g. review)
 }
 
 // GetBehavior returns the behavior override, or "" for role-based dispatch.
@@ -122,19 +123,27 @@ type FormulaVar struct {
 	Default     string `toml:"default,omitempty"`
 }
 
+// OutputDecl declares a graph output that terminal steps populate into GraphResult.Outputs.
+type OutputDecl struct {
+	Type        string   `toml:"type"`                  // "string", "enum", "int"
+	Description string   `toml:"description,omitempty"`
+	Values      []string `toml:"values,omitempty"` // valid values for enum type
+}
+
 // FormulaStepGraph is a version 3 formula that declares a step graph with conditional routing.
 // Unlike FormulaV2 (which declares sequential phases), FormulaStepGraph declares individual
 // steps with dependency edges and runtime conditions. Used for the review phase molecule:
 // the executor pours this formula as a molecule, creating step beads, then walks the graph
 // — closing each step bead as it progresses.
 type FormulaStepGraph struct {
-	Name        string                       `toml:"name"`
-	Description string                       `toml:"description"`
-	Version     int                          `toml:"version"`
-	Entry       string                       `toml:"entry,omitempty"`      // explicit entry step name
-	Steps       map[string]StepConfig        `toml:"steps"`
-	Vars        map[string]FormulaVar        `toml:"vars"`
-	Workspaces  map[string]WorkspaceDecl     `toml:"workspaces,omitempty"` // named workspace declarations
+	Name        string                    `toml:"name"`
+	Description string                    `toml:"description"`
+	Version     int                       `toml:"version"`
+	Entry       string                    `toml:"entry,omitempty"`      // explicit entry step name
+	Steps       map[string]StepConfig     `toml:"steps"`
+	Vars        map[string]FormulaVar     `toml:"vars"`
+	Outputs     map[string]OutputDecl     `toml:"outputs"`
+	Workspaces  map[string]WorkspaceDecl  `toml:"workspaces,omitempty"` // named workspace declarations
 }
 
 // StepConfig configures a single step in a FormulaStepGraph.
@@ -295,9 +304,34 @@ func LoadFormulaByName(name string) (*FormulaV2, error) {
 // LoadReviewPhaseFormula loads the embedded review-phase step-graph formula.
 // Used by the executor to pour the review molecule on entering the review phase.
 func LoadReviewPhaseFormula() (*FormulaStepGraph, error) {
-	data, err := embedded.Formulas.ReadFile("formulas/review-phase.formula.toml")
+	return LoadStepGraphByName("review-phase")
+}
+
+// LoadStepGraphByName loads a step-graph formula with layered resolution:
+//  1. On-disk (.beads/formulas/<name>.formula.toml) — user/project override
+//  2. Embedded default (compiled into binary)
+func LoadStepGraphByName(name string) (*FormulaStepGraph, error) {
+	if path, err := FindFormula(name); err == nil {
+		return LoadStepGraphFromFile(path)
+	}
+	return LoadEmbeddedStepGraph(name)
+}
+
+// LoadStepGraphFromFile reads and parses a step-graph formula from a TOML file.
+func LoadStepGraphFromFile(path string) (*FormulaStepGraph, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("embedded review-phase formula not found: %w", err)
+		return nil, fmt.Errorf("read step graph: %w", err)
+	}
+	return ParseFormulaStepGraph(data)
+}
+
+// LoadEmbeddedStepGraph loads a step-graph formula from the embedded defaults.
+func LoadEmbeddedStepGraph(name string) (*FormulaStepGraph, error) {
+	filename := "formulas/" + name + ".formula.toml"
+	data, err := embedded.Formulas.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("embedded step graph %q not found", name)
 	}
 	return ParseFormulaStepGraph(data)
 }
