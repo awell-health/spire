@@ -234,6 +234,28 @@ func TestBuildActionMenu(t *testing.T) {
 		}
 	})
 
+	t.Run("open non-design bead with needs-human shows resummon", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-014", Status: "open", Type: "task", Labels: []string{"needs-human"}}
+		items := BuildActionMenu(bead, nil)
+
+		hasApprove := false
+		hasResummon := false
+		for _, item := range items {
+			if item.ActionType == ActionApprove {
+				hasApprove = true
+			}
+			if item.ActionType == ActionResummon {
+				hasResummon = true
+			}
+		}
+		if !hasApprove {
+			t.Error("expected Approve action for open needs-human bead")
+		}
+		if !hasResummon {
+			t.Error("expected Resummon action for open needs-human bead")
+		}
+	})
+
 	t.Run("design bead without needs-human does not show design actions", func(t *testing.T) {
 		bead := &BoardBead{ID: "spi-013", Status: "in_progress", Type: "design"}
 		items := BuildActionMenu(bead, nil)

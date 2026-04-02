@@ -57,10 +57,6 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 			items = append(items, MenuAction{Key: 'y', Label: "Approve design", Danger: DangerConfirm, ActionType: ActionApproveDesign})
 			items = append(items, MenuAction{Key: 'n', Label: "Reject with feedback", Danger: DangerNone, ActionType: ActionRejectDesign})
 		}
-		if needsHuman {
-			items = append(items, MenuAction{Key: 'Y', Label: "Approve (close)", Danger: DangerConfirm, ActionType: ActionApprove})
-			items = append(items, MenuAction{Key: 'S', Label: "Resummon", Danger: DangerNone, ActionType: ActionResummon})
-		}
 		if hasWizard {
 			items = append(items, MenuAction{Key: 'L', Label: "Tail logs", Danger: DangerNone, ActionType: ActionLogs})
 			items = append(items, MenuAction{Key: 'u', Label: "Unsummon wizard", Danger: DangerConfirm, ActionType: ActionUnsummon})
@@ -76,6 +72,12 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 		)
 	case "closed":
 		// minimal actions for closed beads
+	}
+
+	// Non-design beads with needs-human: show Approve/Resummon for open and in_progress.
+	if needsHuman && !isDesign && (bead.Status == "open" || bead.Status == "in_progress") {
+		items = append(items, MenuAction{Key: 'Y', Label: "Approve (close)", Danger: DangerConfirm, ActionType: ActionApprove})
+		items = append(items, MenuAction{Key: 'S', Label: "Resummon", Danger: DangerNone, ActionType: ActionResummon})
 	}
 
 	// Always available.
