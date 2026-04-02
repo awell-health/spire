@@ -37,13 +37,18 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) (*GraphResult, er
 	}
 
 	// 4. Build initial condition context.
+	// Prefer max_review_rounds (v3 var name), fall back to max_rounds (v2 compat).
 	maxRounds := "3"
-	if v, ok := graph.Vars["max_rounds"]; ok && v.Default != "" {
+	if v, ok := graph.Vars["max_review_rounds"]; ok && v.Default != "" {
+		maxRounds = v.Default
+	} else if v, ok := graph.Vars["max_rounds"]; ok && v.Default != "" {
 		maxRounds = v.Default
 	}
 	ctx := map[string]string{
-		"round":      strconv.Itoa(e.state.ReviewRounds),
-		"max_rounds": maxRounds,
+		"round":             strconv.Itoa(e.state.ReviewRounds),
+		"review_round":      strconv.Itoa(e.state.ReviewRounds),
+		"max_review_rounds": maxRounds,
+		"max_rounds":        maxRounds, // v2 compat: conditions may use either name
 	}
 
 	// 5. Walk loop.
@@ -130,6 +135,7 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) (*GraphResult, er
 			delete(localCompleted, "fix")
 			e.state.ReviewRounds++
 			ctx["round"] = strconv.Itoa(e.state.ReviewRounds)
+			ctx["review_round"] = strconv.Itoa(e.state.ReviewRounds)
 			e.saveState()
 		}
 	}
