@@ -1,0 +1,55 @@
+name = "v3-review-test"
+description = "Review DAG test fixture — copy of review-phase for isolated parsing tests"
+version = 3
+
+[vars.bead_id]
+description = "The bead being reviewed"
+required = true
+
+[vars.branch]
+description = "Staging branch"
+required = true
+
+[vars.max_rounds]
+description = "Maximum review rounds before arbiter escalation"
+default = "3"
+
+[steps.sage-review]
+description = "Sage reviews staging branch diff"
+role = "sage"
+title = "Sage review"
+timeout = "10m"
+model = "claude-opus-4-6"
+verdict_only = true
+
+[steps.fix]
+description = "Fix apprentice addresses review feedback within round budget"
+needs = ["sage-review"]
+condition = "verdict == request_changes && round < max_rounds"
+role = "apprentice"
+title = "Fix: address sage review feedback"
+timeout = "15m"
+model = "claude-opus-4-6"
+
+[steps.arbiter]
+description = "Arbiter makes final decision once round budget is exhausted"
+needs = ["sage-review"]
+condition = "verdict == request_changes && round >= max_rounds"
+role = "arbiter"
+title = "Arbiter: break review deadlock"
+timeout = "10m"
+model = "claude-opus-4-6"
+
+[steps.merge]
+description = "Merge staging to main"
+needs = ["sage-review", "arbiter"]
+condition = "verdict == approve || arbiter_decision == merge || arbiter_decision == split"
+terminal = true
+title = "Merge to main"
+
+[steps.discard]
+description = "Delete branch without merging"
+needs = ["arbiter"]
+condition = "arbiter_decision == discard"
+terminal = true
+title = "Discard branch"

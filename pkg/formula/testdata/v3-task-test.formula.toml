@@ -1,0 +1,56 @@
+name = "v3-task-test"
+version = 3
+entry = "plan"
+
+[vars.bead_id]
+required = true
+type = "bead_id"
+
+[workspaces.feature]
+kind = "owned_worktree"
+branch = "feat/{vars.bead_id}"
+base = "main"
+scope = "run"
+cleanup = "terminal"
+
+[steps.plan]
+kind = "op"
+action = "wizard.run"
+flow = "task-plan"
+title = "Plan"
+
+[steps.implement]
+kind = "op"
+action = "wizard.run"
+flow = "implement"
+needs = ["plan"]
+workspace = "feature"
+title = "Implement"
+
+[steps.review]
+kind = "call"
+action = "graph.run"
+needs = ["implement"]
+graph = "review-phase"
+workspace = "feature"
+title = "Review"
+
+[steps.merge]
+kind = "op"
+action = "git.merge_to_main"
+needs = ["review"]
+terminal = true
+title = "Merge"
+[steps.merge.when]
+all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
+
+[steps.discard]
+kind = "op"
+action = "bead.finish"
+needs = ["review"]
+terminal = true
+title = "Discard"
+[steps.discard.with]
+status = "discard"
+[steps.discard.when]
+all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "discard" }]
