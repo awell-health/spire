@@ -52,9 +52,9 @@ func cmdClose(args []string) error {
 	// Close open molecule children (workflow steps).
 	closeMoleculeChildren(id)
 
-	// Remove any phase: label from the bead.
+	// Remove phase: and interrupted: labels from the bead.
 	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "phase:") {
+		if strings.HasPrefix(l, "phase:") || strings.HasPrefix(l, "interrupted:") {
 			if err := storeRemoveLabel(id, l); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: remove label %s from %s: %s\n", l, id, err)
 			}

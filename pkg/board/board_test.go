@@ -1034,21 +1034,21 @@ func TestCategorizeFiltersAlerts(t *testing.T) {
 
 func TestCalcHeightBudget(t *testing.T) {
 	t.Run("zero height returns permissive defaults", func(t *testing.T) {
-		b := CalcHeightBudget(0, 0, 0, 3, 0)
+		b := CalcHeightBudget(0, 0, 0, 0, 3, 0)
 		if b.MaxCards != 99 {
 			t.Errorf("expected MaxCards=99 for zero height, got %d", b.MaxCards)
 		}
 	})
 
 	t.Run("positive height computes budget", func(t *testing.T) {
-		b := CalcHeightBudget(40, 0, 0, 3, 0)
+		b := CalcHeightBudget(40, 0, 0, 0, 3, 0)
 		if b.MaxCards <= 0 {
 			t.Errorf("expected MaxCards > 0, got %d", b.MaxCards)
 		}
 	})
 
 	t.Run("very small height still works", func(t *testing.T) {
-		b := CalcHeightBudget(10, 0, 0, 1, 0)
+		b := CalcHeightBudget(10, 0, 0, 0, 1, 0)
 		if b.MaxCards < 1 {
 			t.Errorf("expected MaxCards >= 1, got %d", b.MaxCards)
 		}
@@ -1145,4 +1145,69 @@ func TestConfirmPromptForAction(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- TestInterruptedBeadCategorization ---
+
+func TestInterruptedBeadCategorization(t *testing.T) {
+	t.Run("interrupted bead routes to Interrupted not Ready", func(t *testing.T) {
+		open := []BoardBead{
+			{ID: "spi-int", Title: "Failed merge", Status: "in_progress", Type: "task", Priority: 1,
+				Labels: []string{"interrupted:merge-failure", "needs-human"}},
+			{ID: "spi-ok", Title: "Normal task", Status: "open", Type: "task", Priority: 2},
+		}
+		cols := CategorizeColumnsFromStore(open, nil, nil, "test@test.dev")
+		if len(cols.Interrupted) != 1 || cols.Interrupted[0].ID != "spi-int" {
+			t.Errorf("expected spi-int in Interrupted, got: %v", cols.Interrupted)
+		}
+		if len(cols.Ready) != 1 || cols.Ready[0].ID != "spi-ok" {
+			t.Errorf("expected spi-ok in Ready, got: %v", cols.Ready)
+		}
+	})
+
+	t.Run("needs-human without interrupted is NOT routed to Interrupted", func(t *testing.T) {
+		// Design approval gate: needs-human alone should stay in normal phase routing.
+		open := []BoardBead{
+			{ID: "spi-design", Title: "Design review", Status: "in_progress", Type: "design", Priority: 1,
+				Labels: []string{"needs-human", "phase:design"}},
+		}
+		phaseMap := map[string]string{"spi-design": "design"}
+		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
+		if len(cols.Interrupted) != 0 {
+			t.Errorf("design bead with needs-human should NOT be in Interrupted, got: %v", cols.Interrupted)
+		}
+		if len(cols.Design) != 1 {
+			t.Errorf("design bead should be in Design column, got: %v", cols.Design)
+		}
+	})
+
+	t.Run("interrupted takes priority over phase routing", func(t *testing.T) {
+		open := []BoardBead{
+			{ID: "spi-stuck", Title: "Stuck in implement", Status: "in_progress", Type: "task", Priority: 1,
+				Labels: []string{"interrupted:build-failure", "needs-human", "phase:implement"}},
+		}
+		phaseMap := map[string]string{"spi-stuck": "implement"}
+		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
+		if len(cols.Interrupted) != 1 || cols.Interrupted[0].ID != "spi-stuck" {
+			t.Errorf("interrupted bead should be in Interrupted, got: %v", cols.Interrupted)
+		}
+		if len(cols.Implement) != 0 {
+			t.Errorf("interrupted bead should NOT be in Implement, got: %v", cols.Implement)
+		}
+	})
+
+	t.Run("CategorizeWithPhases also routes interrupted", func(t *testing.T) {
+		open := []BoardBead{
+			{ID: "spi-fail", Title: "Repo failure", Status: "in_progress", Type: "feature", Priority: 0,
+				Labels: []string{"interrupted:repo-resolution"}},
+		}
+		phaseMap := map[string]string{"spi-fail": "review"}
+		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
+		if len(cols.Interrupted) != 1 || cols.Interrupted[0].ID != "spi-fail" {
+			t.Errorf("expected spi-fail in Interrupted, got: %v", cols.Interrupted)
+		}
+		if len(cols.Review) != 0 {
+			t.Errorf("interrupted bead should NOT be in Review, got: %v", cols.Review)
+		}
+	})
 }

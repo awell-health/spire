@@ -21,15 +21,16 @@ type LocalAgent = agent.Entry
 
 // Columns holds beads categorized into board columns.
 type Columns struct {
-	Alerts    []BoardBead
-	Ready     []BoardBead
-	Design    []BoardBead
-	Plan      []BoardBead
-	Implement []BoardBead
-	Review    []BoardBead
-	Merge     []BoardBead
-	Done      []BoardBead
-	Blocked   []BoardBead
+	Alerts      []BoardBead
+	Interrupted []BoardBead // parent beads with an interrupted:* label (escalated failures)
+	Ready       []BoardBead
+	Design      []BoardBead
+	Plan        []BoardBead
+	Implement   []BoardBead
+	Review      []BoardBead
+	Merge       []BoardBead
+	Done        []BoardBead
+	Blocked     []BoardBead
 }
 
 // BoardBeadJSON wraps a BoardBead with optional DAG progress for JSON output.
@@ -41,15 +42,16 @@ type BoardBeadJSON struct {
 
 // ColumnsJSON is the JSON-serializable version of Columns.
 type ColumnsJSON struct {
-	Alerts    []BoardBeadJSON `json:"alerts"`
-	Ready     []BoardBeadJSON `json:"ready"`
-	Design    []BoardBeadJSON `json:"design"`
-	Plan      []BoardBeadJSON `json:"plan"`
-	Implement []BoardBeadJSON `json:"implement"`
-	Review    []BoardBeadJSON `json:"review"`
-	Merge     []BoardBeadJSON `json:"merge"`
-	Done      []BoardBeadJSON `json:"done"`
-	Blocked   []BoardBeadJSON `json:"blocked"`
+	Alerts      []BoardBeadJSON `json:"alerts"`
+	Interrupted []BoardBeadJSON `json:"interrupted"`
+	Ready       []BoardBeadJSON `json:"ready"`
+	Design      []BoardBeadJSON `json:"design"`
+	Plan        []BoardBeadJSON `json:"plan"`
+	Implement   []BoardBeadJSON `json:"implement"`
+	Review      []BoardBeadJSON `json:"review"`
+	Merge       []BoardBeadJSON `json:"merge"`
+	Done        []BoardBeadJSON `json:"done"`
+	Blocked     []BoardBeadJSON `json:"blocked"`
 }
 
 // Opts holds board command options shared between JSON output and TUI mode.
@@ -207,14 +209,15 @@ func (c Columns) ToJSON() ColumnsJSON {
 		return nonNilJSON(enrichBeadsJSON(NonNil(beads)))
 	}
 	return ColumnsJSON{
-		Alerts:    enrich(c.Alerts),
-		Ready:     enrich(c.Ready),
-		Design:    enrich(c.Design),
-		Plan:      enrich(c.Plan),
-		Implement: enrich(c.Implement),
-		Review:    enrich(c.Review),
-		Merge:     enrich(c.Merge),
-		Done:      enrich(c.Done),
-		Blocked:   enrich(c.Blocked),
+		Alerts:      enrich(c.Alerts),
+		Interrupted: enrich(c.Interrupted),
+		Ready:       enrich(c.Ready),
+		Design:      enrich(c.Design),
+		Plan:        enrich(c.Plan),
+		Implement:   enrich(c.Implement),
+		Review:      enrich(c.Review),
+		Merge:       enrich(c.Merge),
+		Done:        enrich(c.Done),
+		Blocked:     enrich(c.Blocked),
 	}
 }

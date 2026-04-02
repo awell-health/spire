@@ -1631,6 +1631,17 @@ func TestRunPhaseLoop_EmptyImplementEscalates(t *testing.T) {
 		t.Errorf("expected needs-human label on bead, got labels: %v", labelsAdded)
 	}
 
+	// Verify interrupted:empty-implement label was added alongside needs-human.
+	foundInterrupted := false
+	for _, l := range labelsAdded {
+		if l == "spi-empty:interrupted:empty-implement" {
+			foundInterrupted = true
+		}
+	}
+	if !foundInterrupted {
+		t.Errorf("expected interrupted:empty-implement label on bead, got labels: %v", labelsAdded)
+	}
+
 	// Verify an alert bead was created.
 	foundAlert := false
 	for _, opts := range beadsCreated {
@@ -1669,6 +1680,78 @@ func TestRunPhaseLoop_EmptyImplementEscalates(t *testing.T) {
 	// Verify attempt was closed with escalation message, not success.
 	if !strings.Contains(closedAttemptResult, "escalat") {
 		t.Errorf("attempt result = %q, want to contain 'escalat'", closedAttemptResult)
+	}
+}
+
+// TestEscalateHumanFailure_InterruptedLabel verifies that EscalateHumanFailure
+// adds an interrupted:<failureType> label alongside needs-human.
+func TestEscalateHumanFailure_InterruptedLabel(t *testing.T) {
+	var labelsAdded []string
+	var beadsCreated []CreateOpts
+	var depsAdded []string
+
+	deps := &Deps{
+		AddLabel: func(id, label string) error {
+			labelsAdded = append(labelsAdded, id+":"+label)
+			return nil
+		},
+		AddComment: func(id, text string) error { return nil },
+		CreateBead: func(opts CreateOpts) (string, error) {
+			beadsCreated = append(beadsCreated, opts)
+			return "spi-alert-hf", nil
+		},
+		AddDepTyped: func(issueID, dependsOnID, depType string) error {
+			depsAdded = append(depsAdded, issueID+"→"+dependsOnID+":"+depType)
+			return nil
+		},
+	}
+
+	EscalateHumanFailure("spi-test", "wizard-test", "merge-failure", "merge conflict", deps)
+
+	// Verify needs-human label.
+	foundNeedsHuman := false
+	for _, l := range labelsAdded {
+		if l == "spi-test:needs-human" {
+			foundNeedsHuman = true
+		}
+	}
+	if !foundNeedsHuman {
+		t.Errorf("expected needs-human label, got: %v", labelsAdded)
+	}
+
+	// Verify interrupted:<failureType> label.
+	foundInterrupted := false
+	for _, l := range labelsAdded {
+		if l == "spi-test:interrupted:merge-failure" {
+			foundInterrupted = true
+		}
+	}
+	if !foundInterrupted {
+		t.Errorf("expected interrupted:merge-failure label, got: %v", labelsAdded)
+	}
+
+	// Verify alert bead was created with correct label.
+	foundAlert := false
+	for _, opts := range beadsCreated {
+		for _, lbl := range opts.Labels {
+			if lbl == "alert:merge-failure" {
+				foundAlert = true
+			}
+		}
+	}
+	if !foundAlert {
+		t.Errorf("expected alert bead with alert:merge-failure label, got: %v", beadsCreated)
+	}
+
+	// Verify caused-by dep was added.
+	foundDep := false
+	for _, d := range depsAdded {
+		if d == "spi-alert-hf→spi-test:caused-by" {
+			foundDep = true
+		}
+	}
+	if !foundDep {
+		t.Errorf("expected caused-by dep, got: %v", depsAdded)
 	}
 }
 

@@ -10,22 +10,23 @@ import (
 
 // HeightBudgetResult holds the computed layout parameters for the board.
 type HeightBudgetResult struct {
-	MaxCards   int  // max cards to show per column
-	Compact    bool // use 1-line compact cards instead of 4-line cards
-	MaxAlerts  int  // max alert lines to show
-	MaxBlocked int  // max blocked lines to show
-	MaxAgents  int  // max agent lines to show in the agent panel (0 = hidden)
+	MaxCards       int  // max cards to show per column
+	Compact        bool // use 1-line compact cards instead of 4-line cards
+	MaxAlerts      int  // max alert lines to show
+	MaxInterrupted int  // max interrupted lines to show
+	MaxBlocked     int  // max blocked lines to show
+	MaxAgents      int  // max agent lines to show in the agent panel (0 = hidden)
 }
 
 // CalcHeightBudget computes card limits based on terminal height.
 // Returns permissive defaults when termHeight is zero (non-TTY or unknown).
-func CalcHeightBudget(termHeight, alertCount, blockedCount, colCount, agentCount int) HeightBudgetResult {
+func CalcHeightBudget(termHeight, alertCount, interruptedCount, blockedCount, colCount, agentCount int) HeightBudgetResult {
 	if termHeight <= 0 {
 		maxAg := agentCount
 		if maxAg > 5 {
 			maxAg = 5
 		}
-		return HeightBudgetResult{MaxCards: 99, MaxAlerts: alertCount, MaxBlocked: 8, MaxAgents: maxAg}
+		return HeightBudgetResult{MaxCards: 99, MaxAlerts: alertCount, MaxInterrupted: interruptedCount, MaxBlocked: 8, MaxAgents: maxAg}
 	}
 
 	const fixed = 7
@@ -44,6 +45,21 @@ func CalcHeightBudget(termHeight, alertCount, blockedCount, colCount, agentCount
 			maxAlerts = alertCount
 		}
 		available -= maxAlerts + 2
+		if available < 4 {
+			available = 4
+		}
+	}
+
+	maxInterrupted := 0
+	if interruptedCount > 0 {
+		maxInterrupted = available / 5
+		if maxInterrupted < 1 {
+			maxInterrupted = 1
+		}
+		if maxInterrupted > interruptedCount {
+			maxInterrupted = interruptedCount
+		}
+		available -= maxInterrupted + 2
 		if available < 4 {
 			available = 4
 		}
@@ -94,11 +110,12 @@ func CalcHeightBudget(termHeight, alertCount, blockedCount, colCount, agentCount
 	}
 
 	return HeightBudgetResult{
-		MaxCards:   maxCards,
-		Compact:    compact,
-		MaxAlerts:  maxAlerts,
-		MaxBlocked: maxBlocked,
-		MaxAgents:  maxAgents,
+		MaxCards:       maxCards,
+		Compact:        compact,
+		MaxAlerts:      maxAlerts,
+		MaxInterrupted: maxInterrupted,
+		MaxBlocked:     maxBlocked,
+		MaxAgents:      maxAgents,
 	}
 }
 
@@ -174,7 +191,7 @@ func (m Model) View() string {
 
 	var s strings.Builder
 
-	budget := CalcHeightBudget(m.Height, len(visibleCols.Alerts), len(visibleCols.Blocked), len(displayCols), len(m.Agents))
+	budget := CalcHeightBudget(m.Height, len(visibleCols.Alerts), len(visibleCols.Interrupted), len(visibleCols.Blocked), len(displayCols), len(m.Agents))
 
 	// Header.
 	headerTitle := "Spire Board"
@@ -217,6 +234,38 @@ func (m Model) View() string {
 				s.WriteString(fmt.Sprintf("%s %s %s%s\n", cursor, PriStr(a.Priority), alertType, a.Title))
 			} else {
 				s.WriteString(fmt.Sprintf("  %s %s%s\n", PriStr(a.Priority), alertType, a.Title))
+			}
+		}
+		s.WriteString("\n")
+	}
+
+	// Interrupted (capped by budget) — between alerts and phase columns.
+	if len(visibleCols.Interrupted) > 0 {
+		SortBeads(visibleCols.Interrupted)
+		intStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+		intHeaderStr := fmt.Sprintf("⚠ INTERRUPTED (%d)", len(visibleCols.Interrupted))
+		if m.SelSection == SectionInterrupted {
+			intStyle = intStyle.Underline(true)
+		}
+		s.WriteString(intStyle.Render(intHeaderStr) + "\n")
+		for i, b := range visibleCols.Interrupted {
+			if i >= budget.MaxInterrupted {
+				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+				s.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Interrupted)-budget.MaxInterrupted)) + "\n")
+				break
+			}
+			intType := ""
+			for _, l := range b.Labels {
+				if strings.HasPrefix(l, "interrupted:") {
+					intType = "[" + l[len("interrupted:"):] + "] "
+					break
+				}
+			}
+			if m.SelSection == SectionInterrupted && i == m.SelCard {
+				cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
+				s.WriteString(fmt.Sprintf("%s %s %s%s: %s\n", cursor, PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
+			} else {
+				s.WriteString(fmt.Sprintf("  %s %s%s: %s\n", PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
 			}
 		}
 		s.WriteString("\n")
