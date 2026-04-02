@@ -41,6 +41,10 @@ type State struct {
 	ReviewStepBeadIDs map[string]string       `json:"review_step_bead_ids,omitempty"` // formula step name → sub-step bead ID
 	WorktreeDir       string                  `json:"worktree_dir,omitempty"`         // staging worktree directory path
 	LastGraphResult   *GraphResult            `json:"last_graph_result,omitempty"`
+	// v3 graph runtime state — coexist with v2 fields until migration is complete.
+	Workspaces map[string]WorkspaceState `json:"workspaces,omitempty"`
+	StepStates map[string]StepState      `json:"step_states,omitempty"`
+	Counters   map[string]int            `json:"counters,omitempty"`
 }
 
 // Executor drives a bead through its formula's phase pipeline.
@@ -97,12 +101,15 @@ func New(beadID, agentName string, formula *FormulaV2, deps *Deps) (*Executor, e
 			}
 		}
 		state = &State{
-			BeadID:    beadID,
-			AgentName: agentName,
-			Formula:   formula.Name,
-			Phase:     phase,
-			Subtasks:  make(map[string]SubtaskState),
-			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			BeadID:     beadID,
+			AgentName:  agentName,
+			Formula:    formula.Name,
+			Phase:      phase,
+			Subtasks:   make(map[string]SubtaskState),
+			Workspaces: make(map[string]WorkspaceState),
+			StepStates: make(map[string]StepState),
+			Counters:   make(map[string]int),
+			StartedAt:  time.Now().UTC().Format(time.RFC3339),
 		}
 	}
 

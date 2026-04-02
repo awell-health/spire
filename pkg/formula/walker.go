@@ -145,10 +145,18 @@ func ValidateGraph(graph *FormulaStepGraph) error {
 		return fmt.Errorf("step graph has no terminal steps")
 	}
 
-	// Validate workspace declarations.
-	if graph.Workspaces != nil {
+	// Validate workspace references: every step.workspace must exist in graph.Workspaces.
+	for name, step := range graph.Steps {
+		if step.Workspace != "" {
+			if _, ok := graph.Workspaces[step.Workspace]; !ok {
+				return fmt.Errorf("step %q references workspace %q which is not declared", name, step.Workspace)
+			}
+		}
+	}
+	// Validate workspace declarations themselves.
+	if len(graph.Workspaces) > 0 {
 		if err := ValidateWorkspaces(graph.Workspaces); err != nil {
-			return err
+			return fmt.Errorf("workspace validation: %w", err)
 		}
 	}
 

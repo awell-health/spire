@@ -136,14 +136,13 @@ type OutputDecl struct {
 // the executor pours this formula as a molecule, creating step beads, then walks the graph
 // — closing each step bead as it progresses.
 type FormulaStepGraph struct {
-	Name        string                    `toml:"name"`
-	Description string                    `toml:"description"`
-	Version     int                       `toml:"version"`
-	Entry       string                    `toml:"entry,omitempty"`      // explicit entry step name
-	Steps       map[string]StepConfig     `toml:"steps"`
-	Vars        map[string]FormulaVar     `toml:"vars"`
-	Outputs     map[string]OutputDecl     `toml:"outputs"`
-	Workspaces  map[string]WorkspaceDecl  `toml:"workspaces,omitempty"` // named workspace declarations
+	Name        string                       `toml:"name"`
+	Description string                       `toml:"description"`
+	Version     int                          `toml:"version"`
+	Entry       string                       `toml:"entry,omitempty"`
+	Steps       map[string]StepConfig        `toml:"steps"`
+	Workspaces  map[string]WorkspaceDecl     `toml:"workspaces"`
+	Vars        map[string]FormulaVar        `toml:"vars"`
 }
 
 // StepConfig configures a single step in a FormulaStepGraph.
@@ -199,6 +198,11 @@ func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
 	}
 	if f.Version != 3 {
 		return nil, fmt.Errorf("expected step-graph formula version 3, got %d", f.Version)
+	}
+	// Apply defaults to workspace declarations.
+	for name, ws := range f.Workspaces {
+		DefaultWorkspaceDecl(&ws)
+		f.Workspaces[name] = ws
 	}
 	if err := ValidateGraph(&f); err != nil {
 		return nil, fmt.Errorf("validate step-graph formula: %w", err)
