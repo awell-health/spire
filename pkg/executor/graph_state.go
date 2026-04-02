@@ -42,7 +42,7 @@ type StepState struct {
 	CompletedAt string            `json:"completed_at,omitempty"`
 }
 
-// WorkspaceState tracks the runtime state of a declared workspace.
+// WorkspaceState is the persisted runtime state for a single declared workspace.
 type WorkspaceState struct {
 	Name       string `json:"name,omitempty"`        // matches the key in formula [workspaces]
 	Kind       string `json:"kind,omitempty"`         // resolved kind from WorkspaceDecl

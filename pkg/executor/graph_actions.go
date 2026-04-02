@@ -2,9 +2,12 @@ package executor
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/steveyegge/beads"
 )
 
@@ -148,74 +151,189 @@ func actionCheckDesignLinked(e *Executor, stepName string, step StepConfig, stat
 	return ActionResult{Outputs: map[string]string{"design_ref": designRef}}
 }
 
-// actionBeadFinish reads step.With["status"] and closes/discards the bead accordingly.
+// actionBeadFinish closes the bead and sets executor to terminated.
+// Reads With parameters:
+//
+//	status: "closed" | "done" | "wontfix" | "discard" (default: "closed")
+//	outcome: alias for status (used by some formulas)
+//
+// For epic formulas, also closes orphan subtask beads.
 func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	status := step.With["status"]
+	if status == "" {
+		status = step.With["outcome"]
+	}
+
 	switch status {
-	case "closed", "done", "":
+	case "closed", "done", "success", "":
+		// Close orphan subtask beads (for epic formulas).
+		if children, childErr := e.deps.GetChildren(e.beadID); childErr == nil {
+			for _, child := range children {
+				if child.Status == "closed" {
+					continue
+				}
+				if e.deps.IsAttemptBead(child) || e.deps.IsStepBead(child) || e.deps.IsReviewRoundBead(child) {
+					continue
+				}
+				if err := e.deps.CloseBead(child.ID); err != nil {
+					e.log("warning: close orphan subtask %s: %s", child.ID, err)
+				}
+			}
+		}
+
+		// Close the main bead.
 		if err := e.deps.CloseBead(e.beadID); err != nil {
 			return ActionResult{Error: fmt.Errorf("close bead: %w", err)}
 		}
+
+		// Close the attempt bead.
+		if state.AttemptBeadID != "" {
+			if err := e.deps.CloseAttemptBead(state.AttemptBeadID, "success: "+stepName); err != nil {
+				e.log("warning: close attempt bead: %s", err)
+			}
+			state.AttemptBeadID = ""
+		}
+
+		e.terminated = true
 		return ActionResult{Outputs: map[string]string{"status": "closed"}}
+
 	case "wontfix", "discard":
 		if err := TerminalDiscard(e.beadID, e.deps, e.log); err != nil {
 			return ActionResult{Error: fmt.Errorf("terminal discard: %w", err)}
 		}
+		e.terminated = true
 		return ActionResult{Outputs: map[string]string{"status": "discarded"}}
+
+	case "escalate":
+		EscalateHumanFailure(e.beadID, e.agentName, "bead-finish-escalate",
+			"formula requested escalation", e.deps)
+		return ActionResult{Outputs: map[string]string{"status": "escalated"}}
+
 	default:
 		return ActionResult{Error: fmt.Errorf("unknown bead.finish status %q", status)}
 	}
 }
 
-// actionMergeToMain wraps executeMerge(), returning the merge result.
+// actionMergeToMain lands the staging branch onto the base branch.
+// Reads With parameters:
+//
+//	strategy: "squash" | "merge" | "rebase" (default: "squash")
+//	build: pre-merge build verification command (optional)
+//	test: pre-merge test verification command (optional)
+//	doc_patterns: comma-separated glob patterns for doc review (optional)
+//
+// Does NOT close beads — that's bead.finish.
 func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	mergePC := PhaseConfig{}
-	if e.formula != nil {
-		if pc, ok := e.formula.Phases["merge"]; ok {
-			mergePC = pc
+	stagingWt, err := e.ensureGraphStagingWorktree(state)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("ensure staging worktree for merge: %w", err)}
+	}
+
+	buildStr := step.With["build"]
+	testStr := step.With["test"]
+
+	// Pre-merge build verification.
+	if buildStr != "" {
+		e.log("verifying build before merge: %s", buildStr)
+		if buildErr := stagingWt.RunBuild(buildStr); buildErr != nil {
+			return ActionResult{Error: fmt.Errorf("pre-merge build verification failed: %w", buildErr)}
 		}
 	}
 
-	if mergeErr := e.executeMerge(mergePC); mergeErr != nil {
+	// Doc review (optional).
+	if docPatterns := step.With["doc_patterns"]; docPatterns != "" {
+		patterns := strings.Split(docPatterns, ",")
+		pc := PhaseConfig{DocPatterns: patterns, Model: step.Model}
+		if docErr := e.reviewDocsForStaleness(stagingWt.Dir, state.StagingBranch, state.BaseBranch, pc); docErr != nil {
+			e.log("warning: doc review: %s", docErr)
+		}
+	}
+
+	// Merge staging -> main.
+	mergeEnv := os.Environ()
+	if tower, tErr := e.deps.ActiveTowerConfig(); tErr == nil && tower != nil {
+		mergeEnv = e.deps.ArchmageGitEnv(tower)
+	}
+
+	e.log("merging %s -> %s", state.StagingBranch, state.BaseBranch)
+	if mergeErr := stagingWt.MergeToMain(state.BaseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
 		return ActionResult{Error: fmt.Errorf("merge to main: %w", mergeErr)}
 	}
+
+	// Push main.
+	rc := &spgit.RepoContext{Dir: state.RepoPath, BaseBranch: state.BaseBranch, Log: e.log}
+	if pushErr := rc.Push("origin", state.BaseBranch, mergeEnv); pushErr != nil {
+		return ActionResult{Error: fmt.Errorf("push %s: %w", state.BaseBranch, pushErr)}
+	}
+
+	// Clean up branches (best-effort).
+	rc.DeleteBranch(state.StagingBranch)
+	rc.DeleteRemoteBranch("origin", state.StagingBranch)
 
 	return ActionResult{Outputs: map[string]string{"merged": "true"}}
 }
 
-// actionVerifyRun runs a build/test command from step.With["command"].
+// actionVerifyRun runs build and/or test commands in the declared workspace.
+// Reads With parameters:
+//
+//	command: single command string (backward compat)
+//	build: build command string (optional)
+//	test: test command string (optional)
+//
+// Produces: status ("pass"/"fail"), error_log (error message if failed)
 func actionVerifyRun(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	command := step.With["command"]
-	if command == "" {
-		return ActionResult{Outputs: map[string]string{"result": "skipped"}}
+	// Support both "command" (backward compat) and separate "build"/"test" params.
+	buildCmd := step.With["build"]
+	testCmd := step.With["test"]
+	if buildCmd == "" && testCmd == "" {
+		buildCmd = step.With["command"]
+	}
+	if buildCmd == "" && testCmd == "" {
+		return ActionResult{Outputs: map[string]string{"status": "pass", "result": "skipped"}}
 	}
 
-	stagingWt, err := e.ensureStagingWorktree()
+	stagingWt, err := e.ensureGraphStagingWorktree(state)
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("ensure staging worktree: %w", err)}
 	}
 
-	if buildErr := stagingWt.RunBuild(command); buildErr != nil {
-		return ActionResult{
-			Outputs: map[string]string{"result": "failed"},
-			Error:   fmt.Errorf("verify command failed: %w", buildErr),
+	// Run build command.
+	if buildCmd != "" {
+		if buildErr := stagingWt.RunBuild(buildCmd); buildErr != nil {
+			return ActionResult{
+				Outputs: map[string]string{
+					"status":    "fail",
+					"result":    "failed",
+					"error_log": buildErr.Error(),
+				},
+			}
 		}
 	}
 
-	return ActionResult{Outputs: map[string]string{"result": "passed"}}
+	// Run test command.
+	if testCmd != "" {
+		if testErr := stagingWt.RunBuild(testCmd); testErr != nil {
+			return ActionResult{
+				Outputs: map[string]string{
+					"status":    "fail",
+					"result":    "failed",
+					"error_log": testErr.Error(),
+				},
+			}
+		}
+	}
+
+	return ActionResult{Outputs: map[string]string{"status": "pass", "result": "passed"}}
 }
 
 // --- Stubs (to be implemented in later tasks) ---
 
-// actionMaterializePlan will be implemented in spi-whcii.5.
+// actionMaterializePlan will be implemented in a future task.
 func actionMaterializePlan(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	return ActionResult{Error: fmt.Errorf("not yet implemented: beads.materialize_plan")}
 }
 
-// actionDispatchChildren will be implemented in spi-whcii.5.
-func actionDispatchChildren(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	return ActionResult{Error: fmt.Errorf("not yet implemented: dispatch.children")}
-}
+// actionDispatchChildren is implemented in action_dispatch.go.
 
 // actionGraphRun will be implemented after review graph becomes formula-selectable (spi-whcii.8).
 func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {

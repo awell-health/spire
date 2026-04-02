@@ -1,0 +1,94 @@
+# epic-implement-phase.formula.toml — Declarative epic implementation lifecycle (v3).
+#
+# Replaces the v2 dispatch=wave + hardcoded build-fix loop with a declared
+# step graph. The executor interprets this graph generically instead of
+# embedding wave/sequential/direct logic in hidden branches.
+#
+# Data flow:
+#   dispatch-children → verify-build → merge-to-main → bead-finish
+#
+# The build-fix loop (verify → fix → re-verify) requires interpreter loop
+# support which will be added in spi-whcii.6. For now, build failures in
+# the verify step cause the graph to fail, which the executor escalates.
+
+name = "epic-implement-phase"
+description = "Declarative epic implementation: dispatch children in waves, verify build, merge to main"
+version = 3
+
+[vars.bead_id]
+type = "bead_id"
+description = "The epic bead being implemented"
+required = true
+
+[vars.max_build_fix_rounds]
+type = "int"
+description = "Maximum build-fix attempts (reserved for loop support)"
+default = "2"
+
+# --- Workspaces ---
+
+[workspaces.staging]
+kind = "staging"
+branch = "staging/{vars.bead_id}"
+base = "main"
+scope = "run"
+cleanup = "terminal"
+
+# --- Steps ---
+
+# Step 1: Dispatch child beads in dependency waves.
+# ComputeWaves topologically sorts subtasks and spawns parallel apprentices
+# per wave, merging each wave's branches into the staging worktree.
+[steps.dispatch-children]
+kind = "dispatch"
+action = "dispatch.children"
+workspace = "staging"
+title = "Dispatch child beads"
+[steps.dispatch-children.with]
+strategy = "dependency-wave"
+
+# Step 2: Verify build in the staging worktree after all children merge.
+[steps.verify-build]
+kind = "op"
+action = "verify.run"
+needs = ["dispatch-children"]
+workspace = "staging"
+title = "Verify build"
+produces = ["status"]
+[steps.verify-build.with]
+build = "go build ./..."
+
+# Step 3: Merge staging branch to main.
+# Only fires when verify-build passes (status == pass).
+[steps.merge-to-main]
+kind = "op"
+action = "git.merge_to_main"
+needs = ["verify-build"]
+title = "Merge to main"
+[steps.merge-to-main.with]
+strategy = "squash"
+
+# Step 4: Close the bead and all orphan subtasks. Terminal step.
+[steps.bead-finish]
+kind = "op"
+action = "bead.finish"
+needs = ["merge-to-main"]
+terminal = true
+title = "Close bead"
+[steps.bead-finish.with]
+status = "closed"
+
+# --- Outputs ---
+
+[outputs.dispatch_status]
+type = "string"
+description = "Result of child dispatch (pass/fail)"
+
+[outputs.build_status]
+type = "enum"
+values = ["pass", "fail"]
+description = "Result of build verification"
+
+[outputs.merged]
+type = "string"
+description = "Whether merge to main succeeded"

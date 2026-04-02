@@ -199,7 +199,9 @@ func (e *Executor) dispatchSageReview(cfg formula.StepConfig, pc PhaseConfig) er
 }
 
 // dispatchFix spawns an apprentice to address review feedback.
-// [Review fix #4: supports both wave-style and direct dispatch]
+// Workspace-declaration-driven: if the step declares a workspace or the
+// executor has a persisted staging worktree, fixes run in staging. Otherwise
+// the fix runs via a subprocess on a feature branch.
 func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 	implPC, ok := e.formula.Phases["implement"]
 	if !ok {
@@ -212,11 +214,15 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		e.state.Phase = "review"
 	}()
 
-	// When the executor has a persisted staging worktree, run the fix directly
-	// in it rather than spawning a subprocess that branches from main. Check
-	// WorktreeDir (persisted state), not e.stagingWt (in-memory pointer) —
-	// on a resumed executor, e.stagingWt may be nil even though the worktree
-	// exists on disk. fixInStaging hydrates it via ensureStagingWorktree().
+	// Workspace-declaration-driven routing: if the step declares a workspace,
+	// resolve it and fix in that workspace. This replaces the previous
+	// state-sniffing approach (checking e.state.WorktreeDir).
+	if cfg.Workspace != "" {
+		return e.fixInStaging(cfg, implPC)
+	}
+
+	// Backward compat: if no workspace declared but a staging worktree exists
+	// in persisted state, use it.
 	if e.state.WorktreeDir != "" {
 		return e.fixInStaging(cfg, implPC)
 	}

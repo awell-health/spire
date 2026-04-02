@@ -78,6 +78,66 @@ func (e *Executor) ensureStagingWorktree() (*spgit.StagingWorktree, error) {
 	return wt, nil
 }
 
+// ensureGraphStagingWorktree creates or resumes the staging worktree for v3
+// graph execution. Mirrors ensureStagingWorktree() but reads from GraphState
+// instead of State (which is nil in v3 mode).
+func (e *Executor) ensureGraphStagingWorktree(state *GraphState) (*spgit.StagingWorktree, error) {
+	if e.stagingWt != nil {
+		return e.stagingWt, nil
+	}
+
+	stagingBranch := state.StagingBranch
+	if stagingBranch == "" {
+		return nil, fmt.Errorf("no staging branch configured in graph state")
+	}
+
+	repoPath := state.RepoPath
+
+	// Resume from persisted state if the worktree still exists on disk.
+	if state.WorktreeDir != "" {
+		if _, err := os.Stat(state.WorktreeDir); err == nil {
+			e.log("resuming staging worktree at %s", state.WorktreeDir)
+			e.stagingWt = spgit.ResumeStagingWorktree(repoPath, state.WorktreeDir, stagingBranch, state.BaseBranch, e.log)
+			return e.stagingWt, nil
+		}
+		e.log("stale worktree state %s — recreating", state.WorktreeDir)
+		state.WorktreeDir = ""
+	}
+
+	// Check if the staging branch already exists with commits ahead of base.
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: state.BaseBranch, Log: e.log}
+	if rc.BranchExists(stagingBranch) {
+		ahead, _ := rc.CommitsAhead(stagingBranch, state.BaseBranch)
+		if ahead > 0 {
+			e.log("recovering staging branch %s (%d commits ahead of %s)", stagingBranch, ahead, state.BaseBranch)
+			rc.PruneWorktrees()
+		} else {
+			rc.ForceBranch(stagingBranch, state.BaseBranch)
+		}
+	} else {
+		rc.ForceBranch(stagingBranch, state.BaseBranch)
+	}
+
+	wtDir := filepath.Join(repoPath, ".worktrees", e.beadID)
+	archName, archEmail := ArchmageIdentity(e.deps)
+
+	e.log("creating staging worktree at %s (branch: %s)", wtDir, stagingBranch)
+	wt, err := spgit.NewStagingWorktreeAt(repoPath, wtDir, stagingBranch, state.BaseBranch, archName, archEmail, e.log)
+	if err != nil {
+		return nil, fmt.Errorf("create staging worktree: %w", err)
+	}
+
+	e.stagingWt = wt
+	state.WorktreeDir = wtDir
+
+	if state.AttemptBeadID != "" {
+		e.deps.AddLabel(state.AttemptBeadID, "worktree:"+wtDir)
+	}
+	e.deps.AddLabel(e.beadID, "feat-branch:"+stagingBranch)
+	state.Save(e.agentName, e.deps.ConfigDir)
+	return wt, nil
+}
+
 // closeStagingWorktree removes the staging worktree and cleans up state.
 func (e *Executor) closeStagingWorktree() {
 	if e.stagingWt != nil {
