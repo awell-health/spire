@@ -37,9 +37,10 @@ const (
 type Section int
 
 const (
-	SectionAlerts  Section = iota // alert beads above the columns
-	SectionColumns                // the main phase columns
-	SectionBlocked                // blocked beads below the columns
+	SectionAlerts      Section = iota // alert beads above the columns
+	SectionInterrupted                // interrupted beads (between alerts and columns)
+	SectionColumns                    // the main phase columns
+	SectionBlocked                    // blocked beads below the columns
 )
 
 // Model is the Bubble Tea model for the board TUI.
@@ -164,7 +165,7 @@ func (m *Model) ensureCardVisible(maxCards int) {
 func (m *Model) colMaxCards() int {
 	vis := m.VisibleCols()
 	displayCols := m.DisplayColumns()
-	budget := CalcHeightBudget(m.Height, len(vis.Alerts), len(vis.Blocked), len(displayCols), len(m.Agents))
+	budget := CalcHeightBudget(m.Height, len(vis.Alerts), len(vis.Interrupted), len(vis.Blocked), len(displayCols), len(m.Agents))
 	return budget.MaxCards
 }
 
@@ -174,6 +175,9 @@ func (m *Model) ClampSelection() {
 
 	// If current section is empty, fall through to columns.
 	if m.SelSection == SectionAlerts && len(vis.Alerts) == 0 {
+		m.SelSection = SectionInterrupted
+	}
+	if m.SelSection == SectionInterrupted && len(vis.Interrupted) == 0 {
 		m.SelSection = SectionColumns
 	}
 	if m.SelSection == SectionBlocked && len(vis.Blocked) == 0 {
@@ -183,6 +187,15 @@ func (m *Model) ClampSelection() {
 	switch m.SelSection {
 	case SectionAlerts:
 		n := len(vis.Alerts)
+		if m.SelCard < 0 {
+			m.SelCard = 0
+		}
+		if m.SelCard >= n {
+			m.SelCard = n - 1
+		}
+		return
+	case SectionInterrupted:
+		n := len(vis.Interrupted)
 		if m.SelCard < 0 {
 			m.SelCard = 0
 		}
@@ -241,6 +254,11 @@ func (m Model) SelectedBead() *BoardBead {
 	case SectionAlerts:
 		if m.SelCard >= 0 && m.SelCard < len(vis.Alerts) {
 			return &vis.Alerts[m.SelCard]
+		}
+		return nil
+	case SectionInterrupted:
+		if m.SelCard >= 0 && m.SelCard < len(vis.Interrupted) {
+			return &vis.Interrupted[m.SelCard]
 		}
 		return nil
 	case SectionBlocked:
@@ -866,6 +884,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		// Card navigation (section-aware).
+		// Flow: Alerts → Interrupted → Columns → Blocked
 		case "j", "down":
 			vis := m.VisibleCols()
 			if m.SearchQuery != "" {
@@ -874,6 +893,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.SelSection {
 			case SectionAlerts:
 				if m.SelCard+1 < len(vis.Alerts) {
+					m.SelCard++
+				} else if len(vis.Interrupted) > 0 {
+					m.SelSection = SectionInterrupted
+					m.SelCard = 0
+					m.ClampSelection()
+				} else {
+					m.SelSection = SectionColumns
+					m.SelCard = 0
+					m.ColScroll = 0
+					m.ClampSelection()
+				}
+			case SectionInterrupted:
+				if m.SelCard+1 < len(vis.Interrupted) {
 					m.SelCard++
 				} else {
 					m.SelSection = SectionColumns
@@ -911,11 +943,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.SelCard > 0 {
 					m.SelCard--
 				}
+			case SectionInterrupted:
+				if m.SelCard > 0 {
+					m.SelCard--
+				} else if len(vis.Alerts) > 0 {
+					m.SelSection = SectionAlerts
+					m.SelCard = len(vis.Alerts) - 1
+					m.ClampSelection()
+				}
 			case SectionColumns:
 				if m.SelCard > 0 {
 					m.SelCard--
 					m.ClampSelection()
 					m.ensureCardVisible(m.colMaxCards())
+				} else if len(vis.Interrupted) > 0 {
+					m.SelSection = SectionInterrupted
+					m.SelCard = len(vis.Interrupted) - 1
+					m.ClampSelection()
 				} else if len(vis.Alerts) > 0 {
 					m.SelSection = SectionAlerts
 					m.SelCard = len(vis.Alerts) - 1

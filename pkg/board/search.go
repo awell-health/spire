@@ -16,15 +16,16 @@ func FilterColumns(cols Columns, query string) Columns {
 		return matchesSearch(b, query)
 	}
 	return Columns{
-		Alerts:    FilterBeads(cols.Alerts, match),
-		Ready:     FilterBeads(cols.Ready, match),
-		Design:    FilterBeads(cols.Design, match),
-		Plan:      FilterBeads(cols.Plan, match),
-		Implement: FilterBeads(cols.Implement, match),
-		Review:    FilterBeads(cols.Review, match),
-		Merge:     FilterBeads(cols.Merge, match),
-		Done:      FilterBeads(cols.Done, match),
-		Blocked:   FilterBeads(cols.Blocked, match),
+		Alerts:      FilterBeads(cols.Alerts, match),
+		Interrupted: FilterBeads(cols.Interrupted, match),
+		Ready:       FilterBeads(cols.Ready, match),
+		Design:      FilterBeads(cols.Design, match),
+		Plan:        FilterBeads(cols.Plan, match),
+		Implement:   FilterBeads(cols.Implement, match),
+		Review:      FilterBeads(cols.Review, match),
+		Merge:       FilterBeads(cols.Merge, match),
+		Done:        FilterBeads(cols.Done, match),
+		Blocked:     FilterBeads(cols.Blocked, match),
 	}
 }
 

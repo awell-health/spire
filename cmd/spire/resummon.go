@@ -87,6 +87,17 @@ func cmdResummon(args []string) error {
 	}
 	fmt.Printf("  %s✓ stripped needs-human from %s%s\n", green, beadID, reset)
 
+	// 4b. Strip any interrupted:* labels so stale failure state doesn't linger.
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "interrupted:") {
+			if err := storeRemoveLabel(beadID, l); err != nil {
+				fmt.Printf("  %s(note: could not remove %s from %s: %s)%s\n", dim, l, beadID, err, reset)
+			} else {
+				fmt.Printf("  %s✓ cleared %s from %s%s\n", green, l, beadID, reset)
+			}
+		}
+	}
+
 	// 5. Close any open alert beads that reference this bead (merge-failure, etc.).
 	closeRelatedAlerts(beadID)
 

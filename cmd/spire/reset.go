@@ -134,6 +134,17 @@ func cmdReset(args []string) error {
 		return fmt.Errorf("get bead %s: %w", beadID, err)
 	}
 
+	// Strip interrupted:* and needs-human labels — reset fully clears stuck state.
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "interrupted:") || l == "needs-human" {
+			if err := storeRemoveLabel(beadID, l); err != nil {
+				fmt.Printf("  %s(note: could not remove %s from %s: %s)%s\n", dim, l, beadID, err, reset)
+			} else {
+				fmt.Printf("  %s✓ cleared %s from %s%s\n", green, l, beadID, reset)
+			}
+		}
+	}
+
 	f, err := ResolveFormula(bead)
 	if err != nil {
 		return fmt.Errorf("resolve formula for %s: %w", beadID, err)

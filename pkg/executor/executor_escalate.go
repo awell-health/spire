@@ -45,6 +45,7 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 // provides better context (design bead, improved description, etc.).
 func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 	deps.AddLabel(beadID, "needs-human")
+	deps.AddLabel(beadID, "interrupted:empty-implement")
 
 	alertTitle := fmt.Sprintf("[empty-implement] %s: apprentice produced no code changes", beadID)
 	if len(alertTitle) > 200 {
@@ -88,6 +89,10 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *Deps) {
 	// Label needs-human so the board surfaces it in ALERTS.
 	deps.AddLabel(beadID, "needs-human")
+	// Explicit interrupted signal with failure type for board consumption.
+	// This is separate from needs-human so design approval gates (which use
+	// needs-human alone) are not confused with interrupted/error states.
+	deps.AddLabel(beadID, "interrupted:"+failureType)
 
 	// Create an alert bead that surfaces at the top of the board.
 	alertTitle := fmt.Sprintf("[%s] %s: %s", failureType, beadID, message)
