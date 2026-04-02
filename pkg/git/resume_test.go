@@ -333,6 +333,141 @@ func TestResumeWorktreeContext_ExplicitBranchPreserved(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Fresh worktree session baseline tests (spi-6y22y)
+// =============================================================================
+
+// TestCreateWorktree_CapturesStartSHA verifies that CreateWorktree sets StartSHA
+// on the returned WorktreeContext.
+func TestCreateWorktree_CapturesStartSHA(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	rc.CreateBranch("feat/fresh-baseline")
+	wtDir := filepath.Join(t.TempDir(), "fresh-wt")
+	wc, err := rc.CreateWorktree(wtDir, "feat/fresh-baseline")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wtDir)
+
+	if wc.StartSHA == "" {
+		t.Fatal("expected StartSHA to be set on fresh worktree")
+	}
+
+	// StartSHA should match the worktree's HEAD.
+	expectedSHA := trimNewline(run(t, wtDir, "git", "rev-parse", "HEAD"))
+	if wc.StartSHA != expectedSHA {
+		t.Errorf("StartSHA = %q, want %q", wc.StartSHA, expectedSHA)
+	}
+}
+
+// TestCreateWorktreeNewBranch_CapturesStartSHA verifies that CreateWorktreeNewBranch
+// sets StartSHA on the returned WorktreeContext.
+func TestCreateWorktreeNewBranch_CapturesStartSHA(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	wtDir := filepath.Join(t.TempDir(), "newbranch-wt")
+	wc, err := rc.CreateWorktreeNewBranch(wtDir, "feat/new-baseline", "main")
+	if err != nil {
+		t.Fatalf("CreateWorktreeNewBranch: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wtDir)
+
+	if wc.StartSHA == "" {
+		t.Fatal("expected StartSHA to be set on fresh worktree (new branch)")
+	}
+
+	expectedSHA := trimNewline(run(t, wtDir, "git", "rev-parse", "HEAD"))
+	if wc.StartSHA != expectedSHA {
+		t.Errorf("StartSHA = %q, want %q", wc.StartSHA, expectedSHA)
+	}
+}
+
+// TestFreshWorktree_NonBaseStart_NoOpDetection is the core regression test for
+// spi-6y22y: a fresh worktree created from a non-base start point (e.g. a
+// staging branch with extra commits) must report HasNewCommitsSinceStart=false
+// when no work is done in the session.
+func TestFreshWorktree_NonBaseStart_NoOpDetection(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create a staging branch with extra commits not on main.
+	rc.CreateBranch("staging/epic")
+	run(t, dir, "git", "checkout", "staging/epic")
+	writeFile(t, filepath.Join(dir, "wave1.txt"), "wave 1 work\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-m", "wave merge: prior work")
+	run(t, dir, "git", "checkout", "main")
+
+	// Create a fresh worktree from the staging branch (non-base start).
+	wtDir := filepath.Join(t.TempDir(), "fresh-nonbase-wt")
+	wc, err := rc.CreateWorktreeNewBranch(wtDir, "feat/child-task", "staging/epic")
+	if err != nil {
+		t.Fatalf("CreateWorktreeNewBranch: %v", err)
+	}
+	defer rc.ForceRemoveWorktree(wtDir)
+
+	// BaseBranch..HEAD would show commits (the wave merge), but
+	// StartSHA..HEAD should show NO commits (no work done this session).
+	hasOld, err := wc.HasNewCommits()
+	if err != nil {
+		t.Fatalf("HasNewCommits: %v", err)
+	}
+	if !hasOld {
+		t.Fatal("precondition: HasNewCommits (BaseBranch..HEAD) should be true for non-base start")
+	}
+
+	hasNew, err := wc.HasNewCommitsSinceStart()
+	if err != nil {
+		t.Fatalf("HasNewCommitsSinceStart: %v", err)
+	}
+	if hasNew {
+		t.Error("expected HasNewCommitsSinceStart=false on fresh worktree with no session work")
+	}
+
+	// Now make a commit — should be detected.
+	wc.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wtDir, "session-work.txt"), "session\n")
+	if _, cerr := wc.Commit("session commit"); cerr != nil {
+		t.Fatalf("Commit: %v", cerr)
+	}
+
+	hasNew, err = wc.HasNewCommitsSinceStart()
+	if err != nil {
+		t.Fatalf("HasNewCommitsSinceStart after commit: %v", err)
+	}
+	if !hasNew {
+		t.Error("expected HasNewCommitsSinceStart=true after session commit")
+	}
+}
+
+// TestNewStagingWorktree_InheritsStartSHA verifies that staging worktrees
+// created via NewStagingWorktree inherit StartSHA from CreateWorktree.
+func TestNewStagingWorktree_InheritsStartSHA(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create a branch for the staging worktree.
+	rc.CreateBranch("staging/inherit")
+
+	sw, err := NewStagingWorktree(dir, "staging/inherit", "main", "spire-test", "Test", "test@test.com", nil)
+	if err != nil {
+		t.Fatalf("NewStagingWorktree: %v", err)
+	}
+	defer sw.Close()
+
+	if sw.StartSHA == "" {
+		t.Fatal("expected StartSHA to be set on staging worktree created via NewStagingWorktree")
+	}
+
+	expectedSHA := trimNewline(run(t, sw.Dir, "git", "rev-parse", "HEAD"))
+	if sw.StartSHA != expectedSHA {
+		t.Errorf("StartSHA = %q, want %q", sw.StartSHA, expectedSHA)
+	}
+}
+
 // writeFile helper is already defined in repo_test.go in this package.
 // initTestRepo, run, trimNewline are also reused from repo_test.go.
 // These are in the same package so they're available here.

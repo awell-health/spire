@@ -98,18 +98,38 @@ func (rc *RepoContext) ListBranches(pattern string) []string {
 	return branches
 }
 
+// captureHEAD returns the HEAD SHA of the given directory. Used to capture
+// session baselines immediately after worktree creation.
+func captureHEAD(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD in %s: %w", dir, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // CreateWorktree creates a new git worktree at dir on the given branch,
-// returning a WorktreeContext for operations within it.
+// returning a WorktreeContext for operations within it. Captures a session
+// baseline (StartSHA) so callers can detect commits made during this session.
 func (rc *RepoContext) CreateWorktree(dir, branch string) (*WorktreeContext, error) {
 	if out, err := rc.git("worktree", "add", dir, branch).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git worktree add %s %s: %w\n%s", dir, branch, err, out)
 	}
 	rc.logf("created worktree at %s on branch %s", dir, branch)
+
+	var startSHA string
+	if sha, err := captureHEAD(dir); err != nil {
+		rc.logf("warning: could not capture session baseline: %s", err)
+	} else {
+		startSHA = sha
+	}
+
 	return &WorktreeContext{
 		Dir:        dir,
 		Branch:     branch,
 		BaseBranch: rc.BaseBranch,
 		RepoPath:   rc.Dir,
+		StartSHA:   startSHA,
 		Log:        rc.Log,
 	}, nil
 }
@@ -221,17 +241,27 @@ func (rc *RepoContext) ForceRemoveWorktree(dir string) error {
 }
 
 // CreateWorktreeNewBranch creates a new branch from startPoint and a worktree at dir,
-// returning a WorktreeContext for operations within it.
+// returning a WorktreeContext for operations within it. Captures a session
+// baseline (StartSHA) so callers can detect commits made during this session.
 func (rc *RepoContext) CreateWorktreeNewBranch(dir, newBranch, startPoint string) (*WorktreeContext, error) {
 	if out, err := rc.git("worktree", "add", "-b", newBranch, dir, startPoint).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git worktree add -b %s %s %s: %w\n%s", newBranch, dir, startPoint, err, out)
 	}
 	rc.logf("created worktree at %s on new branch %s from %s", dir, newBranch, startPoint)
+
+	var startSHA string
+	if sha, err := captureHEAD(dir); err != nil {
+		rc.logf("warning: could not capture session baseline: %s", err)
+	} else {
+		startSHA = sha
+	}
+
 	return &WorktreeContext{
 		Dir:        dir,
 		Branch:     newBranch,
 		BaseBranch: rc.BaseBranch,
 		RepoPath:   rc.Dir,
+		StartSHA:   startSHA,
 		Log:        rc.Log,
 	}, nil
 }

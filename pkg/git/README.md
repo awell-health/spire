@@ -30,7 +30,7 @@ Git worktree, branch, and repository operations for Spire.
 | Function | When to use |
 |----------|-------------|
 | `RepoContext{Dir: path}` | You need to manage branches or create worktrees from the main repo. |
-| `rc.CreateWorktreeNewBranch(...)` | You're starting fresh work on a new branch. |
+| `rc.CreateWorktreeNewBranch(...)` | You're starting fresh work on a new branch. Captures a session baseline. |
 | `ResumeWorktreeContext(dir, ...)` | You need to work in an existing worktree you don't own. Captures a session baseline. Detects the branch if you pass `""`. |
 | `NewStagingWorktree(...)` | You need a temporary staging worktree (creates a temp dir). |
 | `NewStagingWorktreeAt(...)` | You need a staging worktree at a known path (discoverable by other processes). |
