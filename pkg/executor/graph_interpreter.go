@@ -21,6 +21,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		}
 	}()
 	defer e.closeStagingWorktree()
+	defer e.releaseGraphRunWorkspaces(state)
 
 	// Ensure attempt bead (reuse existing ensureAttemptBead-like pattern for graph state).
 	if err := e.ensureGraphAttemptBead(state); err != nil {
@@ -40,6 +41,34 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		e.closeGraphAttempt(state, "failure: repo-resolution: "+err.Error())
 		EscalateHumanFailure(e.beadID, e.agentName, "repo-resolution", err.Error(), e.deps)
 		return fmt.Errorf("resolve branch state: %w", err)
+	}
+
+	// Initialize vars from formula defaults (only on fresh state).
+	if len(state.Vars) == 0 && graph.Vars != nil {
+		for name, v := range graph.Vars {
+			if v.Default != "" {
+				state.Vars[name] = v.Default
+			}
+		}
+		// Always set bead_id var.
+		state.Vars["bead_id"] = e.beadID
+	}
+
+	// Initialize workspace states from formula declarations.
+	if graph.Workspaces != nil && len(state.Workspaces) == 0 {
+		for name, decl := range graph.Workspaces {
+			formula.DefaultWorkspaceDecl(&decl)
+			state.Workspaces[name] = WorkspaceState{
+				Name:       name,
+				Kind:       decl.Kind,
+				Branch:     decl.Branch,
+				BaseBranch: decl.Base,
+				Status:     "pending",
+				Scope:      decl.Scope,
+				Ownership:  decl.Ownership,
+				Cleanup:    decl.Cleanup,
+			}
+		}
 	}
 
 	// Ensure step beads for each graph step.
@@ -153,6 +182,33 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 	if state.RepoPath == "" || state.BaseBranch == "" {
 		if err := e.resolveGraphBranchState(state); err != nil {
 			return fmt.Errorf("nested: resolve branch state: %w", err)
+		}
+	}
+
+	// Initialize vars from formula defaults (only on fresh state).
+	if len(state.Vars) == 0 && graph.Vars != nil {
+		for name, v := range graph.Vars {
+			if v.Default != "" {
+				state.Vars[name] = v.Default
+			}
+		}
+		state.Vars["bead_id"] = e.beadID
+	}
+
+	// Initialize workspace states from formula declarations.
+	if graph.Workspaces != nil && len(state.Workspaces) == 0 {
+		for name, decl := range graph.Workspaces {
+			formula.DefaultWorkspaceDecl(&decl)
+			state.Workspaces[name] = WorkspaceState{
+				Name:       name,
+				Kind:       decl.Kind,
+				Branch:     decl.Branch,
+				BaseBranch: decl.Base,
+				Status:     "pending",
+				Scope:      decl.Scope,
+				Ownership:  decl.Ownership,
+				Cleanup:    decl.Cleanup,
+			}
 		}
 	}
 

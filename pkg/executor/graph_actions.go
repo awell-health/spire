@@ -60,27 +60,45 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		flow = step.With["flow"]
 	}
 
+	// Resolve workspace dir from step declaration or fall back to state.WorktreeDir.
+	wsDir := state.WorktreeDir
+	if step.Workspace != "" {
+		dir, err := e.resolveGraphWorkspace(step.Workspace, state)
+		if err != nil {
+			return ActionResult{Error: fmt.Errorf("resolve workspace %q for %s: %w", step.Workspace, stepName, err)}
+		}
+		wsDir = dir
+	}
+
 	switch flow {
 	case "implement":
-		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, nil)
+		var extraArgs []string
+		if wsDir != "" {
+			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
+		}
+		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
 	case "sage-review":
 		extraArgs := []string{}
 		if step.VerdictOnly {
 			extraArgs = append(extraArgs, "--verdict-only")
 		}
-		if state.WorktreeDir != "" {
-			extraArgs = append(extraArgs, "--worktree-dir", state.WorktreeDir)
+		if wsDir != "" {
+			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
 		return wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs)
 	case "review-fix":
 		extraArgs := []string{"--review-fix", "--apprentice"}
-		if state.WorktreeDir != "" {
-			extraArgs = append(extraArgs, "--worktree-dir", state.WorktreeDir)
+		if wsDir != "" {
+			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
 		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
 	default:
 		// For task-plan, epic-plan, and other flows, spawn with wizard role.
-		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, nil)
+		var extraArgs []string
+		if wsDir != "" {
+			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
+		}
+		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
 	}
 }
 
@@ -230,9 +248,21 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 //
 // Does NOT close beads — that's bead.finish.
 func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	stagingWt, err := e.ensureGraphStagingWorktree(state)
-	if err != nil {
-		return ActionResult{Error: fmt.Errorf("ensure staging worktree for merge: %w", err)}
+	// Resolve workspace: prefer step-declared workspace, fall back to staging worktree.
+	var stagingWt *spgit.StagingWorktree
+	if step.Workspace != "" {
+		dir, wsErr := e.resolveGraphWorkspace(step.Workspace, state)
+		if wsErr != nil {
+			return ActionResult{Error: fmt.Errorf("resolve workspace %q for merge: %w", step.Workspace, wsErr)}
+		}
+		ws := state.Workspaces[step.Workspace]
+		stagingWt = spgit.ResumeStagingWorktree(state.RepoPath, dir, ws.Branch, ws.BaseBranch, e.log)
+	} else {
+		var err error
+		stagingWt, err = e.ensureGraphStagingWorktree(state)
+		if err != nil {
+			return ActionResult{Error: fmt.Errorf("ensure staging worktree for merge: %w", err)}
+		}
 	}
 
 	buildStr := step.With["build"]
@@ -298,9 +328,21 @@ func actionVerifyRun(e *Executor, stepName string, step StepConfig, state *Graph
 		return ActionResult{Outputs: map[string]string{"status": "pass", "result": "skipped"}}
 	}
 
-	stagingWt, err := e.ensureGraphStagingWorktree(state)
-	if err != nil {
-		return ActionResult{Error: fmt.Errorf("ensure staging worktree: %w", err)}
+	// Resolve workspace: prefer step-declared workspace, fall back to staging worktree.
+	var stagingWt *spgit.StagingWorktree
+	if step.Workspace != "" {
+		dir, wsErr := e.resolveGraphWorkspace(step.Workspace, state)
+		if wsErr != nil {
+			return ActionResult{Error: fmt.Errorf("resolve workspace %q for verify: %w", step.Workspace, wsErr)}
+		}
+		stagingWt = spgit.ResumeStagingWorktree(state.RepoPath, dir,
+			state.Workspaces[step.Workspace].Branch, state.Workspaces[step.Workspace].BaseBranch, e.log)
+	} else {
+		var err error
+		stagingWt, err = e.ensureGraphStagingWorktree(state)
+		if err != nil {
+			return ActionResult{Error: fmt.Errorf("ensure staging worktree: %w", err)}
+		}
 	}
 
 	// Run build command.
