@@ -77,7 +77,7 @@ func cmdClose(args []string) error {
 // given bead. This ensures alert beads are automatically cleaned up when the
 // source bead they were triggered by is closed. Only cascades one level.
 func closeCausedByAlerts(beadID string) {
-	dependents, err := storeGetDependentsWithMeta(beadID)
+	dependents, err := storeGetDependentsWithMetaFunc(beadID)
 	if err != nil {
 		return
 	}
@@ -100,7 +100,7 @@ func closeCausedByAlerts(beadID string) {
 		if !isAlert {
 			continue
 		}
-		if err := storeCloseBead(dep.ID); err != nil {
+		if err := storeCloseBeadFunc(dep.ID); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: cascade-close alert %s: %s\n", dep.ID, err)
 			continue
 		}

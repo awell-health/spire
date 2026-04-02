@@ -32,6 +32,12 @@ var storeGetActiveAttemptFunc = storeGetActiveAttempt
 // storeRaiseCorruptedBeadAlertFunc is a test-replaceable function for storeRaiseCorruptedBeadAlert.
 var storeRaiseCorruptedBeadAlertFunc = storeRaiseCorruptedBeadAlert
 
+// storeGetDependentsWithMetaFunc is a test-replaceable function for storeGetDependentsWithMeta.
+var storeGetDependentsWithMetaFunc = storeGetDependentsWithMeta
+
+// storeCloseBeadFunc is a test-replaceable function for storeCloseBead.
+var storeCloseBeadFunc = storeCloseBead
+
 // storeCheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.
 var storeCheckExistingAlertFunc = func(beadID string) bool {
