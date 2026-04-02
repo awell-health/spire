@@ -43,6 +43,9 @@ var summonCmd = &cobra.Command{
 		if auto, _ := cmd.Flags().GetBool("auto"); auto {
 			fullArgs = append(fullArgs, "--auto")
 		}
+		if dispatch, _ := cmd.Flags().GetString("dispatch"); dispatch != "" {
+			fullArgs = append(fullArgs, "--dispatch", dispatch)
+		}
 		fullArgs = append(fullArgs, args...)
 		return cmdSummon(fullArgs)
 	},
@@ -76,6 +79,8 @@ func init() {
 	summonCmd.Flags().String("targets", "", "Comma-separated bead IDs to target")
 	summonCmd.Flags().String("target", "", "Alias for --targets")
 	summonCmd.Flags().Bool("auto", false, "Auto mode")
+	summonCmd.Flags().String("dispatch", "", "Override dispatch mode: sequential, wave, or direct (persists as dispatch:<mode> label; omit to use formula default)")
+
 
 	dismissCmd.Flags().Bool("all", false, "Dismiss all wizards")
 	dismissCmd.Flags().String("targets", "", "Comma-separated bead IDs to dismiss")
@@ -101,12 +106,13 @@ func wizardsForTower(reg wizardRegistry, tower string) []localWizard {
 
 func cmdSummon(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire summon <N> [--targets <ids>] [--auto]")
+		return fmt.Errorf("usage: spire summon <N> [--targets <ids>] [--auto] [--dispatch <mode>]")
 	}
 
 	var count int
 	var targets string
 	var auto bool
+	var dispatch string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -118,14 +124,30 @@ func cmdSummon(args []string) error {
 			}
 			i++
 			targets = args[i]
+		case "--dispatch":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--dispatch requires a mode: sequential, wave, or direct")
+			}
+			i++
+			dispatch = args[i]
 		case "--auto":
 			auto = true
 		default:
 			n, err := strconv.Atoi(args[i])
 			if err != nil {
-				return fmt.Errorf("expected a number, got %q\nusage: spire summon <N> [--targets <ids>] [--auto]", args[i])
+				return fmt.Errorf("expected a number, got %q\nusage: spire summon <N> [--targets <ids>] [--auto] [--dispatch <mode>]", args[i])
 			}
 			count = n
+		}
+	}
+
+	// Validate dispatch mode if provided.
+	if dispatch != "" {
+		switch dispatch {
+		case "sequential", "wave", "direct":
+			// valid
+		default:
+			return fmt.Errorf("invalid dispatch mode %q: must be sequential, wave, or direct", dispatch)
 		}
 	}
 
@@ -154,7 +176,7 @@ func cmdSummon(args []string) error {
 	if isK8sAvailable() {
 		return summonK8s(count)
 	}
-	return summonLocal(count, targetIDs)
+	return summonLocal(count, targetIDs, dispatch)
 }
 
 func cmdDismiss(args []string) error {
@@ -313,7 +335,7 @@ func deleteSpireAgentCR(name string) error {
 
 // --- Local mode ---
 
-func summonLocal(count int, targetIDs []string) error {
+func summonLocal(count int, targetIDs []string, dispatch string) error {
 	var candidates []Bead
 
 	reg := loadWizardRegistry()
@@ -363,6 +385,22 @@ func summonLocal(count int, targetIDs []string) error {
 	if count > len(candidates) {
 		fmt.Printf("Only %d ready bead(s) available (requested %d).\n", len(candidates), count)
 		count = len(candidates)
+	}
+
+	// Persist dispatch override as a label on each target bead.
+	if dispatch != "" {
+		for _, bead := range candidates[:count] {
+			// Remove any existing dispatch: label to ensure at most one.
+			for _, l := range bead.Labels {
+				if strings.HasPrefix(l, "dispatch:") {
+					storeRemoveLabel(bead.ID, l)
+				}
+			}
+			if err := storeAddLabel(bead.ID, "dispatch:"+dispatch); err != nil {
+				return fmt.Errorf("persist dispatch override for %s: %w", bead.ID, err)
+			}
+			fmt.Printf("  %s → dispatch override: %s%s\n", bead.ID, dispatch, reset)
+		}
 	}
 
 	logDir := filepath.Join(doltGlobalDir(), "wizards")

@@ -292,7 +292,9 @@ func (e *Executor) Run() error {
 			case "human":
 				err = e.waitForHuman(phase)
 			case "apprentice":
-				switch pc.GetDispatch() {
+				dispatchMode, dispatchSource := e.resolveDispatch(pc)
+				e.log("dispatch mode: %s (source: %s)", dispatchMode, dispatchSource)
+				switch dispatchMode {
 				case "wave":
 					err = e.executeWave(phase, pc)
 				case "sequential":
@@ -489,4 +491,26 @@ func (e *Executor) repoModel() string {
 		return ""
 	}
 	return cfg.Agent.Model
+}
+
+// resolveDispatch returns the effective dispatch mode and its source.
+// It checks for a dispatch:<mode> label override on the bead first;
+// if none is found, it falls back to the formula's per-phase dispatch.
+func (e *Executor) resolveDispatch(pc PhaseConfig) (mode, source string) {
+	bead, err := e.deps.GetBead(e.beadID)
+	if err == nil {
+		var found []string
+		for _, l := range bead.Labels {
+			if strings.HasPrefix(l, "dispatch:") {
+				found = append(found, l[len("dispatch:"):])
+			}
+		}
+		if len(found) > 1 {
+			e.log("warning: multiple dispatch: labels found, using first (%s)", found[0])
+		}
+		if len(found) > 0 {
+			return found[0], "override"
+		}
+	}
+	return pc.GetDispatch(), "formula"
 }
