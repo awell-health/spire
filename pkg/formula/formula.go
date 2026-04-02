@@ -107,9 +107,17 @@ type RevisionPolicy struct {
 	ArbiterModel string `toml:"arbiter_model,omitempty"`
 }
 
+// RetryPolicy configures retry behavior for a v3 step.
+type RetryPolicy struct {
+	Max    int    `toml:"max"`              // maximum retry attempts
+	Action string `toml:"action,omitempty"` // opcode to run on retry (e.g. "wizard.run")
+	Flow   string `toml:"flow,omitempty"`   // flow for retry action (e.g. "build-fix")
+}
+
 // FormulaVar defines a variable accepted by the formula.
 type FormulaVar struct {
 	Description string `toml:"description"`
+	Type        string `toml:"type,omitempty"` // "string" (default), "int", "bool", "bead_id"
 	Required    bool   `toml:"required"`
 	Default     string `toml:"default,omitempty"`
 }
@@ -120,16 +128,19 @@ type FormulaVar struct {
 // the executor pours this formula as a molecule, creating step beads, then walks the graph
 // — closing each step bead as it progresses.
 type FormulaStepGraph struct {
-	Name        string                `toml:"name"`
-	Description string                `toml:"description"`
-	Version     int                   `toml:"version"`
-	Steps       map[string]StepConfig `toml:"steps"`
-	Vars        map[string]FormulaVar `toml:"vars"`
+	Name        string                       `toml:"name"`
+	Description string                       `toml:"description"`
+	Version     int                          `toml:"version"`
+	Entry       string                       `toml:"entry,omitempty"`      // explicit entry step name
+	Steps       map[string]StepConfig        `toml:"steps"`
+	Vars        map[string]FormulaVar        `toml:"vars"`
+	Workspaces  map[string]WorkspaceDecl     `toml:"workspaces,omitempty"` // named workspace declarations
 }
 
 // StepConfig configures a single step in a FormulaStepGraph.
 type StepConfig struct {
-	Role        string   `toml:"role"`                   // sage | apprentice | arbiter | executor
+	// Existing fields — kept for backward compat with current review formulas.
+	Role        string   `toml:"role,omitempty"`         // sage | apprentice | arbiter | executor (optional in v3 opcode steps)
 	Title       string   `toml:"title,omitempty"`        // human-readable title for the step bead
 	Timeout     string   `toml:"timeout,omitempty"`      // e.g. "10m"
 	Model       string   `toml:"model,omitempty"`        // model override for agent phases
@@ -138,6 +149,17 @@ type StepConfig struct {
 	Needs     []string `toml:"needs,omitempty"`     // predecessor steps (OR semantics: any one satisfies)
 	Condition string   `toml:"condition,omitempty"` // runtime gate, e.g. "verdict == request_changes"
 	Terminal  bool     `toml:"terminal,omitempty"`  // step enforces branch-lifecycle invariant on completion
+
+	// New v3 fields
+	Kind      string               `toml:"kind,omitempty"`      // "op" | "dispatch" | "call"
+	Action    string               `toml:"action,omitempty"`    // executor opcode
+	When      *StructuredCondition `toml:"when,omitempty"`      // structured replacement for Condition
+	Workspace string               `toml:"workspace,omitempty"` // ref to declared workspace name
+	With      map[string]string    `toml:"with,omitempty"`      // typed action inputs
+	Produces  []string             `toml:"produces,omitempty"`  // declared output names
+	Retry     *RetryPolicy         `toml:"retry,omitempty"`     // optional retry policy
+	Flow      string               `toml:"flow,omitempty"`      // wizard.run flow name
+	Graph     string               `toml:"graph,omitempty"`     // graph.run: nested graph formula name
 }
 
 // --- Parsing ---
@@ -168,6 +190,9 @@ func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
 	}
 	if f.Version != 3 {
 		return nil, fmt.Errorf("expected step-graph formula version 3, got %d", f.Version)
+	}
+	if err := ValidateGraph(&f); err != nil {
+		return nil, fmt.Errorf("validate step-graph formula: %w", err)
 	}
 	return &f, nil
 }
