@@ -9,16 +9,34 @@ import (
 	"strconv"
 	"strings"
 
+	toml "github.com/pelletier/go-toml/v2"
+
 	"github.com/awell-health/spire/pkg/formula"
 )
 
 // ComposeInteractive walks the user through building a formula interactively.
 // Returns the built formula, TOML bytes, and any error.
+// If the user selects v3, delegates to ComposeInteractiveV3 internally.
 func ComposeInteractive(name string, in io.Reader, out io.Writer) (*formula.FormulaV2, []byte, error) {
 	reader := bufio.NewReader(in)
-	builder := NewBuilder(name)
 
 	fmt.Fprintf(out, "\nSpire Workshop — composing formula %q\n\n", name)
+
+	// Ask formula version up front
+	verIdx, err := promptChoice(reader, out, "Formula version", []string{"v2 (phase pipeline)", "v3 (step graph)"}, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	if verIdx == 1 {
+		// v3: delegate to ComposeInteractiveV3 and return nil FormulaV2
+		_, tomlBytes, err := ComposeInteractiveV3(name, in, out)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, tomlBytes, nil
+	}
+
+	builder := NewBuilder(name)
 
 	// Step 1: description
 	desc := promptString(reader, out, "Description", "")
@@ -197,9 +215,199 @@ func ComposeInteractive(name string, in io.Reader, out io.Writer) (*formula.Form
 	}
 }
 
-// validateBuiltFormula runs validation on in-memory TOML bytes using the v2 validator.
+// validateBuiltFormula detects version and validates with the correct validator.
 func validateBuiltFormula(data []byte) ([]Issue, error) {
-	return validateV2(data), nil
+	var hdr struct {
+		Version int `toml:"version"`
+	}
+	if err := toml.Unmarshal(data, &hdr); err != nil {
+		return nil, fmt.Errorf("invalid TOML: %w", err)
+	}
+	switch hdr.Version {
+	case 3:
+		return validateV3(data), nil
+	default:
+		return validateV2(data), nil
+	}
+}
+
+// ComposeInteractiveV3 walks the user through building a v3 step-graph formula.
+// Returns the built graph, TOML bytes, and any error.
+func ComposeInteractiveV3(name string, in io.Reader, out io.Writer) (*formula.FormulaStepGraph, []byte, error) {
+	reader := bufio.NewReader(in)
+	gb := NewGraphBuilder(name)
+
+	fmt.Fprintf(out, "\nSpire Workshop — composing v3 formula %q\n\n", name)
+
+	// Description
+	desc := promptString(reader, out, "Description", "")
+	gb.SetDescription(desc)
+
+	// Workspaces
+	fmt.Fprintf(out, "\n=== Workspaces ===\n")
+	fmt.Fprintf(out, "Add workspaces (empty name to finish):\n")
+	for {
+		wsName := promptString(reader, out, "  Workspace name", "")
+		if wsName == "" {
+			break
+		}
+		kinds := KnownWorkspaceKinds()
+		kindIdx, err := promptChoice(reader, out, "  Kind", kinds, 0)
+		if err != nil {
+			return nil, nil, err
+		}
+		ws := formula.WorkspaceDecl{Kind: kinds[kindIdx]}
+		if ws.Kind != formula.WorkspaceKindRepo {
+			ws.Branch = promptString(reader, out, "  Branch template", "")
+			ws.Base = promptString(reader, out, "  Base branch", "")
+		}
+		scopes := KnownWorkspaceScopes()
+		scopeIdx, _ := promptChoice(reader, out, "  Scope", scopes, 1) // default "run"
+		ws.Scope = scopes[scopeIdx]
+		ownerships := KnownWorkspaceOwnerships()
+		ownIdx, _ := promptChoice(reader, out, "  Ownership", ownerships, 0)
+		ws.Ownership = ownerships[ownIdx]
+		cleanups := KnownWorkspaceCleanups()
+		cleanIdx, _ := promptChoice(reader, out, "  Cleanup", cleanups, 1) // default "terminal"
+		ws.Cleanup = cleanups[cleanIdx]
+
+		if err := gb.AddWorkspace(wsName, ws); err != nil {
+			fmt.Fprintf(out, "  Error: %v\n", err)
+			continue
+		}
+	}
+
+	// Variables
+	fmt.Fprintf(out, "\n=== Variables ===\n")
+	fmt.Fprintf(out, "Add variables (empty name to finish):\n")
+	for {
+		varName := promptString(reader, out, "  Variable name", "")
+		if varName == "" {
+			break
+		}
+		varTypes := KnownVarTypes()
+		typeIdx, _ := promptChoice(reader, out, "  Type", varTypes, 1) // default "string"
+		varDesc := promptString(reader, out, "  Description", "")
+		varRequired := promptBool(reader, out, "  Required", true)
+		varDefault := promptString(reader, out, "  Default value", "")
+		gb.AddVar(varName, formula.FormulaVar{
+			Type:        varTypes[typeIdx],
+			Description: varDesc,
+			Required:    varRequired,
+			Default:     varDefault,
+		})
+	}
+
+	// Steps
+	fmt.Fprintf(out, "\n=== Steps ===\n")
+	fmt.Fprintf(out, "Add steps (empty name to finish):\n")
+	for {
+		stepName := promptString(reader, out, "  Step name", "")
+		if stepName == "" {
+			break
+		}
+		cfg := formula.StepConfig{}
+
+		kinds := KnownStepKinds()
+		kindIdx, _ := promptChoice(reader, out, "  Kind", kinds, 0)
+		cfg.Kind = kinds[kindIdx]
+
+		actions := append([]string{"(none)"}, KnownActions()...)
+		actIdx, _ := promptChoice(reader, out, "  Action", actions, 0)
+		if actIdx > 0 {
+			cfg.Action = actions[actIdx]
+		}
+
+		if cfg.Action == formula.OpcodeWizardRun {
+			cfg.Flow = promptString(reader, out, "  Flow", "")
+		}
+		if cfg.Kind == formula.StepKindCall {
+			cfg.Graph = promptString(reader, out, "  Graph name", "")
+		}
+
+		cfg.Workspace = promptString(reader, out, "  Workspace ref", "")
+
+		needsStr := promptString(reader, out, "  Needs (comma-separated)", "")
+		if needsStr != "" {
+			for _, n := range strings.Split(needsStr, ",") {
+				n = strings.TrimSpace(n)
+				if n != "" {
+					cfg.Needs = append(cfg.Needs, n)
+				}
+			}
+		}
+
+		producesStr := promptString(reader, out, "  Produces (comma-separated)", "")
+		if producesStr != "" {
+			for _, p := range strings.Split(producesStr, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					cfg.Produces = append(cfg.Produces, p)
+				}
+			}
+		}
+
+		cfg.Terminal = promptBool(reader, out, "  Terminal", false)
+
+		if err := gb.AddStep(stepName, cfg); err != nil {
+			fmt.Fprintf(out, "  Error: %v\n", err)
+			continue
+		}
+	}
+
+	// Build and review
+	tomlBytes, err := gb.MarshalTOML()
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal formula: %w", err)
+	}
+
+	g, err := gb.Build()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for {
+		fmt.Fprintf(out, "\n--- Generated TOML ---\n%s\n", tomlBytes)
+		choice, err := promptChoice(reader, out, "Action", []string{"save", "validate", "quit"}, 0)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		switch choice {
+		case 0: // save
+			path, err := saveDraft(name, tomlBytes)
+			if err != nil {
+				return nil, nil, fmt.Errorf("save draft: %w", err)
+			}
+			fmt.Fprintf(out, "Formula saved to %s\n", path)
+			return g, tomlBytes, nil
+
+		case 1: // validate
+			issues, err := validateBuiltFormula(tomlBytes)
+			if err != nil {
+				fmt.Fprintf(out, "Validation error: %v\n", err)
+				continue
+			}
+			if len(issues) == 0 {
+				fmt.Fprintf(out, "No issues found.\n")
+			} else {
+				for _, iss := range issues {
+					prefix := "ERROR"
+					if iss.Level == "warning" {
+						prefix = "WARN "
+					}
+					if iss.Phase != "" {
+						fmt.Fprintf(out, "  %s [%s] %s\n", prefix, iss.Phase, iss.Message)
+					} else {
+						fmt.Fprintf(out, "  %s %s\n", prefix, iss.Message)
+					}
+				}
+			}
+
+		case 2: // quit
+			return g, tomlBytes, nil
+		}
+	}
 }
 
 // --- Prompt helpers ---

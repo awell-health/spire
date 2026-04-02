@@ -90,9 +90,10 @@ func TestPromptMultiSelect(t *testing.T) {
 }
 
 func TestComposeInteractive_BasicFlow(t *testing.T) {
-	// Simulate: description, bead type (task=1), phase selection (confirm defaults),
+	// Simulate: version (v2=1), description, bead type (task=1), phase selection (confirm defaults),
 	// per-phase config (accept all defaults), no vars, quit
 	lines := []string{
+		"1",                // formula version: v2
 		"My test formula",  // description
 		"1",                // bead type: task
 		"",                 // confirm default phase selection
@@ -152,6 +153,7 @@ func TestComposeInteractive_BasicFlow(t *testing.T) {
 func TestComposeInteractive_EpicType(t *testing.T) {
 	// Select epic type — should include all 5 phases by default
 	lines := []string{
+		"1",                // formula version: v2
 		"Epic formula",     // description
 		"4",                // bead type: epic
 		"",                 // confirm default phase selection (all 5)
