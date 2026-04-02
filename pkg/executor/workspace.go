@@ -241,6 +241,170 @@ func (e *Executor) releaseRunWorkspaces() error {
 	return nil
 }
 
+// --- Graph (v3) workspace helpers ---
+// These methods operate on GraphState.Workspaces (the v3 path) instead of
+// the v2 State.Workspaces field. They mirror the v2 resolveWorkspace /
+// releaseWorkspace logic but accept an explicit *GraphState parameter so
+// the v2 State does not need to be populated.
+
+// resolveGraphWorkspace looks up a workspace name in the graph state, creates
+// or resumes the corresponding git workspace, updates the GraphState entry,
+// and returns the workspace directory path.
+func (e *Executor) resolveGraphWorkspace(name string, state *GraphState) (string, error) {
+	ws, ok := state.Workspaces[name]
+	if !ok {
+		return "", fmt.Errorf("workspace %q not found in graph state", name)
+	}
+
+	// For repo kind, set Dir to the main repo path and return.
+	if ws.Kind == formula.WorkspaceKindRepo {
+		ws.Dir = state.RepoPath
+		ws.Status = "active"
+		state.Workspaces[name] = ws
+		return ws.Dir, nil
+	}
+
+	// Active + scope=run → already resolved, return existing Dir.
+	if ws.Status == "active" && ws.Scope == formula.WorkspaceScopeRun && ws.Dir != "" {
+		return ws.Dir, nil
+	}
+
+	// Active + scope=step should not happen.
+	if ws.Status == "active" && ws.Scope == formula.WorkspaceScopeStep {
+		return "", fmt.Errorf("workspace %q (scope=step) is still active — should have been released", name)
+	}
+
+	// Pending → create fresh workspace.
+	if ws.Status != "pending" {
+		return "", fmt.Errorf("workspace %q has unexpected status %q", name, ws.Status)
+	}
+
+	branch := e.resolveGraphWorkspaceBranch(ws.Branch, state)
+	baseBranch := ws.BaseBranch
+	if baseBranch == "" {
+		baseBranch = state.BaseBranch
+	} else {
+		baseBranch = e.resolveGraphWorkspaceBranch(baseBranch, state)
+	}
+
+	dir := ws.Dir
+	if dir == "" {
+		dir = filepath.Join(state.RepoPath, ".worktrees", e.beadID+"-"+name)
+	}
+
+	archName, archEmail := ArchmageIdentity(e.deps)
+
+	switch ws.Kind {
+	case formula.WorkspaceKindBorrowedWorktree:
+		wc, err := spgit.ResumeWorktreeContext(dir, branch, baseBranch, state.RepoPath, e.log)
+		if err != nil {
+			return "", fmt.Errorf("resume borrowed workspace %q: %w", name, err)
+		}
+		ws.Dir = dir
+		ws.Branch = branch
+		ws.BaseBranch = baseBranch
+		ws.StartSHA = wc.StartSHA
+		ws.Status = "active"
+		state.Workspaces[name] = ws
+		return dir, nil
+
+	case formula.WorkspaceKindOwnedWorktree, formula.WorkspaceKindStaging:
+		rc := &spgit.RepoContext{Dir: state.RepoPath, BaseBranch: baseBranch, Log: e.log}
+		if err := rc.ForceBranch(branch, baseBranch); err != nil {
+			return "", fmt.Errorf("create branch for workspace %q: %w", name, err)
+		}
+
+		sw, err := spgit.NewStagingWorktreeAt(
+			state.RepoPath, dir, branch, baseBranch,
+			archName, archEmail, e.log,
+		)
+		if err != nil {
+			return "", fmt.Errorf("create workspace %q: %w", name, err)
+		}
+		startSHA := captureHeadSHA(sw.Dir)
+		sw.StartSHA = startSHA
+		ws.Dir = dir
+		ws.Branch = branch
+		ws.BaseBranch = baseBranch
+		ws.StartSHA = startSHA
+		ws.Status = "active"
+		state.Workspaces[name] = ws
+		return dir, nil
+
+	default:
+		return "", fmt.Errorf("workspace %q: unsupported kind %q for creation", name, ws.Kind)
+	}
+}
+
+// resolveGraphWorkspaceBranch interpolates a branch pattern using graph state
+// vars (e.g. "staging/{vars.bead_id}" → "staging/spi-abc").
+func (e *Executor) resolveGraphWorkspaceBranch(pattern string, state *GraphState) string {
+	if pattern == "" {
+		return ""
+	}
+	r := strings.NewReplacer(
+		"{vars.bead_id}", e.beadID,
+		"{vars.base_branch}", state.BaseBranch,
+	)
+	return r.Replace(pattern)
+}
+
+// releaseGraphRunWorkspaces releases all run-scoped workspaces in the graph state.
+// Called as a deferred cleanup in RunGraph.
+func (e *Executor) releaseGraphRunWorkspaces(state *GraphState) {
+	for name, ws := range state.Workspaces {
+		if ws.Scope == formula.WorkspaceScopeRun && ws.Status == "active" {
+			if err := e.releaseGraphWorkspace(name, state); err != nil {
+				e.log("warning: release graph workspace %s: %s", name, err)
+			}
+		}
+	}
+}
+
+// releaseGraphWorkspace applies the cleanup policy for a graph workspace.
+func (e *Executor) releaseGraphWorkspace(name string, state *GraphState) error {
+	ws, ok := state.Workspaces[name]
+	if !ok {
+		return fmt.Errorf("workspace %q not found in graph state", name)
+	}
+	if ws.Status == "closed" {
+		return nil
+	}
+
+	// Borrowed workspaces: mark closed but never remove the worktree.
+	if ws.Ownership == "borrowed" {
+		ws.Status = "closed"
+		state.Workspaces[name] = ws
+		return nil
+	}
+
+	// Repo kind: just mark closed.
+	if ws.Kind == formula.WorkspaceKindRepo {
+		ws.Status = "closed"
+		state.Workspaces[name] = ws
+		return nil
+	}
+
+	shouldRemove := false
+	switch ws.Cleanup {
+	case formula.WorkspaceCleanupAlways:
+		shouldRemove = true
+	case formula.WorkspaceCleanupTerminal:
+		shouldRemove = e.terminated
+	case formula.WorkspaceCleanupNever:
+		shouldRemove = false
+	}
+
+	if shouldRemove && ws.Dir != "" {
+		sw := spgit.ResumeStagingWorktree(state.RepoPath, ws.Dir, ws.Branch, ws.BaseBranch, e.log)
+		sw.Close()
+	}
+
+	ws.Status = "closed"
+	state.Workspaces[name] = ws
+	return nil
+}
+
 // captureHeadSHA reads the current HEAD SHA in the given directory.
 func captureHeadSHA(dir string) string {
 	if out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output(); err == nil {

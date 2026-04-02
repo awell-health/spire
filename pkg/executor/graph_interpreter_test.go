@@ -918,6 +918,258 @@ func TestEffectiveRepoPath_FallbackToDot(t *testing.T) {
 	}
 }
 
+// --- Test: Vars initialized from formula defaults ---
+
+func TestRunGraph_VarsInitializedFromFormula(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	var capturedVars map[string]string
+	actionRegistry["test.capture-vars"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		capturedVars = make(map[string]string)
+		for k, v := range state.Vars {
+			capturedVars[k] = v
+		}
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-vars-init",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"entry": {Action: "test.capture-vars", Terminal: true},
+		},
+		Vars: map[string]formula.FormulaVar{
+			"max_review_rounds": {Default: "3", Type: "int", Description: "max review rounds"},
+			"target_branch":     {Default: "main", Type: "string", Description: "target branch"},
+			"no_default":        {Type: "string", Description: "no default value", Required: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-vars", "wizard-vars", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	// Verify vars were initialized from defaults.
+	if capturedVars["max_review_rounds"] != "3" {
+		t.Errorf("max_review_rounds = %q, want %q", capturedVars["max_review_rounds"], "3")
+	}
+	if capturedVars["target_branch"] != "main" {
+		t.Errorf("target_branch = %q, want %q", capturedVars["target_branch"], "main")
+	}
+	// Vars with no default should not be set.
+	if _, ok := capturedVars["no_default"]; ok {
+		t.Errorf("no_default should not be set, got %q", capturedVars["no_default"])
+	}
+	// bead_id should always be set.
+	if capturedVars["bead_id"] != "spi-vars" {
+		t.Errorf("bead_id = %q, want %q", capturedVars["bead_id"], "spi-vars")
+	}
+}
+
+// --- Test: Workspaces initialized from formula declarations ---
+
+func TestRunGraph_WorkspacesInitializedFromFormula(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	var capturedWorkspaces map[string]WorkspaceState
+	actionRegistry["test.capture-ws"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		capturedWorkspaces = make(map[string]WorkspaceState)
+		for k, v := range state.Workspaces {
+			capturedWorkspaces[k] = v
+		}
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-ws-init",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"entry": {Action: "test.capture-ws", Terminal: true},
+		},
+		Workspaces: map[string]formula.WorkspaceDecl{
+			"staging": {
+				Kind:   "staging",
+				Branch: "staging/{vars.bead_id}",
+				Base:   "{vars.base_branch}",
+			},
+			"repo": {
+				Kind: "repo",
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-ws", "wizard-ws", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	// Verify staging workspace was initialized with defaults applied.
+	staging, ok := capturedWorkspaces["staging"]
+	if !ok {
+		t.Fatal("staging workspace not found in state")
+	}
+	if staging.Kind != "staging" {
+		t.Errorf("staging.Kind = %q, want %q", staging.Kind, "staging")
+	}
+	if staging.Branch != "staging/{vars.bead_id}" {
+		t.Errorf("staging.Branch = %q, want %q", staging.Branch, "staging/{vars.bead_id}")
+	}
+	if staging.Status != "pending" {
+		t.Errorf("staging.Status = %q, want %q", staging.Status, "pending")
+	}
+	// Defaults should have been applied.
+	if staging.Scope != "run" {
+		t.Errorf("staging.Scope = %q, want %q (default)", staging.Scope, "run")
+	}
+	if staging.Ownership != "owned" {
+		t.Errorf("staging.Ownership = %q, want %q (default)", staging.Ownership, "owned")
+	}
+	if staging.Cleanup != "terminal" {
+		t.Errorf("staging.Cleanup = %q, want %q (default)", staging.Cleanup, "terminal")
+	}
+
+	// Verify repo workspace.
+	repo, ok := capturedWorkspaces["repo"]
+	if !ok {
+		t.Fatal("repo workspace not found in state")
+	}
+	if repo.Kind != "repo" {
+		t.Errorf("repo.Kind = %q, want %q", repo.Kind, "repo")
+	}
+	if repo.Status != "pending" {
+		t.Errorf("repo.Status = %q, want %q", repo.Status, "pending")
+	}
+}
+
+// --- Test: Resume preserves existing vars and workspaces ---
+
+func TestRunGraph_ResumePreservesVarsAndWorkspaces(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	var capturedVars map[string]string
+	var capturedWorkspaces map[string]WorkspaceState
+	actionRegistry["test.capture-state"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		capturedVars = make(map[string]string)
+		for k, v := range state.Vars {
+			capturedVars[k] = v
+		}
+		capturedWorkspaces = make(map[string]WorkspaceState)
+		for k, v := range state.Workspaces {
+			capturedWorkspaces[k] = v
+		}
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-resume-state",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.capture-state"},
+			"b": {Action: "test.capture-state", Needs: []string{"a"}, Terminal: true},
+		},
+		Vars: map[string]formula.FormulaVar{
+			"max_rounds": {Default: "3", Type: "int"},
+		},
+		Workspaces: map[string]formula.WorkspaceDecl{
+			"staging": {Kind: "staging", Branch: "staging/{vars.bead_id}"},
+		},
+	}
+
+	// Pre-populate state as if resuming mid-execution.
+	state := NewGraphState(graph, "spi-resume", "wizard-resume")
+	state.Steps["a"] = StepState{
+		Status:  "completed",
+		Outputs: map[string]string{"done": "true"},
+	}
+	// Set vars as if they were initialized in a previous run.
+	state.Vars["max_rounds"] = "5" // overridden from default of "3"
+	state.Vars["bead_id"] = "spi-resume"
+	state.Vars["custom"] = "value" // extra var set at runtime
+	// Set workspace as if it was resolved in a previous run.
+	state.Workspaces["staging"] = WorkspaceState{
+		Name:   "staging",
+		Kind:   "staging",
+		Branch: "staging/spi-resume",
+		Dir:    "/tmp/some-worktree",
+		Status: "active",
+		Scope:  "run",
+	}
+
+	exec := NewGraphForTest("spi-resume", "wizard-resume", graph, state, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	// Vars should be preserved (not re-initialized from defaults).
+	if capturedVars["max_rounds"] != "5" {
+		t.Errorf("max_rounds = %q, want %q (preserved, not reset to default)", capturedVars["max_rounds"], "5")
+	}
+	if capturedVars["bead_id"] != "spi-resume" {
+		t.Errorf("bead_id = %q, want %q", capturedVars["bead_id"], "spi-resume")
+	}
+	if capturedVars["custom"] != "value" {
+		t.Errorf("custom = %q, want %q (preserved)", capturedVars["custom"], "value")
+	}
+
+	// Workspaces should be preserved (not re-initialized).
+	ws, ok := capturedWorkspaces["staging"]
+	if !ok {
+		t.Fatal("staging workspace not found after resume")
+	}
+	if ws.Dir != "/tmp/some-worktree" {
+		t.Errorf("staging.Dir = %q, want %q (preserved)", ws.Dir, "/tmp/some-worktree")
+	}
+	if ws.Status != "active" {
+		t.Errorf("staging.Status = %q, want %q (preserved)", ws.Status, "active")
+	}
+	if ws.Branch != "staging/spi-resume" {
+		t.Errorf("staging.Branch = %q, want %q (preserved)", ws.Branch, "staging/spi-resume")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
 }
