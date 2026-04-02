@@ -12,26 +12,6 @@ import (
 	spgit "github.com/awell-health/spire/pkg/git"
 )
 
-// WorkspaceState is the persisted runtime state for a single declared workspace.
-type WorkspaceState struct {
-	Name       string `json:"name"`                  // matches the key in formula [workspaces]
-	Kind       string `json:"kind"`                  // resolved kind from WorkspaceDecl
-	Dir        string `json:"dir,omitempty"`         // absolute path (worktree types only)
-	Branch     string `json:"branch,omitempty"`      // resolved branch name
-	BaseBranch string `json:"base_branch,omitempty"` // resolved base branch
-	StartSHA   string `json:"start_sha,omitempty"`   // session baseline SHA
-	Status     string `json:"status"`                // "pending", "active", "closed"
-	Scope      string `json:"scope"`                 // "run" or "step"
-	Ownership  string `json:"ownership"`             // "owned" or "borrowed"
-	Cleanup    string `json:"cleanup"`               // "always", "terminal", "never"
-}
-
-// StepState is the persisted runtime state for a single step in a v3 graph.
-type StepState struct {
-	Status  string            `json:"status"`            // "pending", "running", "done", "failed", "skipped"
-	Outputs map[string]string `json:"outputs,omitempty"` // declared outputs populated at completion
-}
-
 // InitWorkspaceStates initializes State.Workspaces from a formula's workspace
 // declarations. Each declared workspace gets a "pending" WorkspaceState entry.
 // Called once when starting a v3 formula execution.

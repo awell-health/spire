@@ -44,9 +44,16 @@ type StepState struct {
 
 // WorkspaceState tracks the runtime state of a declared workspace.
 type WorkspaceState struct {
-	Dir    string `json:"dir,omitempty"`
-	Branch string `json:"branch,omitempty"`
-	Kind   string `json:"kind,omitempty"`
+	Name       string `json:"name,omitempty"`        // matches the key in formula [workspaces]
+	Kind       string `json:"kind,omitempty"`         // resolved kind from WorkspaceDecl
+	Dir        string `json:"dir,omitempty"`          // absolute path (worktree types only)
+	Branch     string `json:"branch,omitempty"`       // resolved branch name
+	BaseBranch string `json:"base_branch,omitempty"`  // resolved base branch
+	StartSHA   string `json:"start_sha,omitempty"`    // session baseline SHA
+	Status     string `json:"status,omitempty"`       // "pending", "active", "closed"
+	Scope      string `json:"scope,omitempty"`        // "run" or "step"
+	Ownership  string `json:"ownership,omitempty"`    // "owned" or "borrowed"
+	Cleanup    string `json:"cleanup,omitempty"`      // "always", "terminal", "never"
 }
 
 // NewGraphState creates a fresh GraphState from a graph definition, initializing
