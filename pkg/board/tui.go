@@ -165,7 +165,11 @@ func (m *Model) ensureCardVisible(maxCards int) {
 func (m *Model) colMaxCards() int {
 	vis := m.VisibleCols()
 	displayCols := m.DisplayColumns()
-	budget := CalcHeightBudget(m.Height, len(vis.Alerts), len(vis.Interrupted), len(vis.Blocked), len(displayCols), len(m.Agents))
+	warningCount := 0
+	if m.Snapshot != nil {
+		warningCount = len(m.Snapshot.Warnings)
+	}
+	budget := CalcHeightBudget(m.Height, warningCount, len(vis.Alerts), len(vis.Interrupted), len(vis.Blocked), len(displayCols), len(m.Agents))
 	return budget.MaxCards
 }
 

@@ -10,5 +10,6 @@ type BoardSnapshot struct {
 	EpicSummary map[string]*EpicChildSummary
 	Agents      []LocalAgent
 	PhaseMap    map[string]string // beadID -> phase string (for render)
+	Warnings    []string          // transient system-level alerts (e.g. dolt conflicts)
 	FetchedAt   time.Time
 }

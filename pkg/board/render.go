@@ -12,6 +12,7 @@ import (
 type HeightBudgetResult struct {
 	MaxCards       int  // max cards to show per column
 	Compact        bool // use 1-line compact cards instead of 4-line cards
+	MaxWarnings    int  // max warning lines to show (system-level, above alerts)
 	MaxAlerts      int  // max alert lines to show
 	MaxInterrupted int  // max interrupted lines to show
 	MaxBlocked     int  // max blocked lines to show
@@ -20,19 +21,29 @@ type HeightBudgetResult struct {
 
 // CalcHeightBudget computes card limits based on terminal height.
 // Returns permissive defaults when termHeight is zero (non-TTY or unknown).
-func CalcHeightBudget(termHeight, alertCount, interruptedCount, blockedCount, colCount, agentCount int) HeightBudgetResult {
+func CalcHeightBudget(termHeight, warningCount, alertCount, interruptedCount, blockedCount, colCount, agentCount int) HeightBudgetResult {
 	if termHeight <= 0 {
 		maxAg := agentCount
 		if maxAg > 5 {
 			maxAg = 5
 		}
-		return HeightBudgetResult{MaxCards: 99, MaxAlerts: alertCount, MaxInterrupted: interruptedCount, MaxBlocked: 8, MaxAgents: maxAg}
+		return HeightBudgetResult{MaxCards: 99, MaxWarnings: warningCount, MaxAlerts: alertCount, MaxInterrupted: interruptedCount, MaxBlocked: 8, MaxAgents: maxAg}
 	}
 
 	const fixed = 7
 	available := termHeight - fixed
 	if available < 4 {
 		available = 4
+	}
+
+	// Warnings get priority allocation — they explain missing data.
+	maxWarnings := 0
+	if warningCount > 0 {
+		maxWarnings = warningCount // show all warnings (typically 1-2)
+		available -= maxWarnings + 2
+		if available < 4 {
+			available = 4
+		}
 	}
 
 	maxAlerts := 0
@@ -112,6 +123,7 @@ func CalcHeightBudget(termHeight, alertCount, interruptedCount, blockedCount, co
 	return HeightBudgetResult{
 		MaxCards:       maxCards,
 		Compact:        compact,
+		MaxWarnings:    maxWarnings,
 		MaxAlerts:      maxAlerts,
 		MaxInterrupted: maxInterrupted,
 		MaxBlocked:     maxBlocked,
@@ -191,7 +203,7 @@ func (m Model) View() string {
 
 	var s strings.Builder
 
-	budget := CalcHeightBudget(m.Height, len(visibleCols.Alerts), len(visibleCols.Interrupted), len(visibleCols.Blocked), len(displayCols), len(m.Agents))
+	budget := CalcHeightBudget(m.Height, len(m.Snapshot.Warnings), len(visibleCols.Alerts), len(visibleCols.Interrupted), len(visibleCols.Blocked), len(displayCols), len(m.Agents))
 
 	// Header.
 	headerTitle := "Spire Board"
@@ -205,6 +217,19 @@ func (m Model) View() string {
 	// Search bar.
 	if searchBar := renderSearchBar(m.SearchQuery, m.SearchActive, m.Width); searchBar != "" {
 		s.WriteString(searchBar + "\n")
+	}
+
+	// System warnings (dolt conflicts, etc.) — above alerts, red/bold.
+	if len(m.Snapshot.Warnings) > 0 {
+		warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+		s.WriteString(warnStyle.Render(fmt.Sprintf("⚠ SYSTEM WARNINGS (%d)", len(m.Snapshot.Warnings))) + "\n")
+		for i, w := range m.Snapshot.Warnings {
+			if i >= budget.MaxWarnings {
+				break
+			}
+			s.WriteString(warnStyle.Render("  "+w) + "\n")
+		}
+		s.WriteString("\n")
 	}
 
 	// Alerts (capped by budget).

@@ -124,11 +124,14 @@ func cmdBoard(args []string) error {
 	}
 
 	if flagJSON {
-		cols, err := board.FetchBoard(opts, identity)
+		result, err := board.FetchBoard(opts, identity)
 		if err != nil {
 			return err
 		}
-		out := cols.ToJSON()
+		out := board.BoardJSON{
+			ColumnsJSON: result.Columns.ToJSON(),
+			Warnings:    result.Warnings,
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(out)
