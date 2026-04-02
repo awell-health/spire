@@ -9,6 +9,9 @@ import (
 	"github.com/steveyegge/beads"
 )
 
+var alertCreateBead = storeCreateBead
+var alertAddDepTyped = storeAddDepTyped
+
 var alertCmd = &cobra.Command{
 	Use:   "alert <message> [flags]",
 	Short: "Alert on bead state changes",
@@ -88,7 +91,7 @@ func cmdAlert(args []string) error {
 		labels = append(labels, "alert")
 	}
 
-	id, err := storeCreateBead(createOpts{
+	id, err := alertCreateBead(createOpts{
 		Title:    message,
 		Priority: priority,
 		Type:     beads.TypeTask,
@@ -98,10 +101,11 @@ func cmdAlert(args []string) error {
 		return fmt.Errorf("create alert: %w", err)
 	}
 
-	// Link alert to referenced bead via related dep (not ref: label).
+	// Link alert to referenced bead via caused-by dep so recovery and close
+	// flows can treat manually created alerts the same way as executor alerts.
 	if refBead != "" {
-		if derr := storeAddDepTyped(id, refBead, "related"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", id, refBead, derr)
+		if derr := alertAddDepTyped(id, refBead, "caused-by"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", id, refBead, derr)
 		}
 	}
 
