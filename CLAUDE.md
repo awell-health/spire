@@ -13,6 +13,21 @@ Before starting work, read these files in order to understand the system:
 
 These are not optional. Agents that skip this context produce work that conflicts with the system's design.
 
+## Package README rule
+
+Before changing code under `pkg/`, read that package's `README.md` if one
+exists. These package READMEs define local ownership boundaries and are
+mandatory context for implementation agents.
+
+Current package READMEs exist in:
+
+- `pkg/executor/README.md`
+- `pkg/wizard/README.md`
+- `pkg/git/README.md`
+- `pkg/steward/README.md`
+- `pkg/formula/README.md`
+- `pkg/workshop/README.md`
+
 ## Overview
 
 Spire is a coordination hub for AI agents across repositories. Multiple repos register here, each with their own prefix. Epics created here are automatically mirrored to Linear by the daemon.
