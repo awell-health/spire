@@ -5,11 +5,12 @@
 # embedding wave/sequential/direct logic in hidden branches.
 #
 # Data flow:
-#   dispatch-children → verify-build → merge-to-main → bead-finish
+#   dispatch-children → verify-build ─┬─[pass]→ merge-to-main → bead-finish
+#                                      └─[fail]→ build-failed (escalate)
 #
 # The build-fix loop (verify → fix → re-verify) requires interpreter loop
-# support which will be added in spi-whcii.6. For now, build failures in
-# the verify step cause the graph to fail, which the executor escalates.
+# support which will be added in spi-whcii.6. For now, build failures
+# route to the build-failed terminal which escalates to the wizard.
 
 name = "epic-implement-phase"
 description = "Declarative epic implementation: dispatch children in waves, verify build, merge to main"
@@ -67,6 +68,22 @@ needs = ["verify-build"]
 title = "Merge to main"
 [steps.merge-to-main.with]
 strategy = "squash"
+[steps.merge-to-main.when]
+all = [{ left = "steps.verify-build.outputs.status", op = "eq", right = "pass" }]
+
+# Step 3b: Escalate on build failure.
+# Only fires when verify-build fails (status == fail). Terminal — the graph
+# ends here so merge-to-main never executes after a failed build.
+[steps.build-failed]
+kind = "op"
+action = "bead.finish"
+needs = ["verify-build"]
+terminal = true
+title = "Build verification failed"
+[steps.build-failed.with]
+status = "escalate"
+[steps.build-failed.when]
+all = [{ left = "steps.verify-build.outputs.status", op = "eq", right = "fail" }]
 
 # Step 4: Close the bead and all orphan subtasks. Terminal step.
 [steps.bead-finish]
