@@ -98,6 +98,18 @@ func cmdResummon(args []string) error {
 		}
 	}
 
+	// 4c. Strip any dispatch:* override labels so resummon uses formula defaults
+	// unless the user explicitly passes --dispatch on the next summon.
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "dispatch:") {
+			if err := storeRemoveLabel(beadID, l); err != nil {
+				fmt.Printf("  %s(note: could not remove %s from %s: %s)%s\n", dim, l, beadID, err, reset)
+			} else {
+				fmt.Printf("  %s✓ cleared %s from %s%s\n", green, l, beadID, reset)
+			}
+		}
+	}
+
 	// 5. Close any open alert beads that reference this bead (merge-failure, etc.).
 	closeRelatedAlerts(beadID)
 
