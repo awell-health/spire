@@ -276,6 +276,30 @@ func (rc *RepoContext) ForceBranch(name, startPoint string) error {
 	return nil
 }
 
+// CommitsAhead returns the number of commits branch has ahead of base.
+// Returns 0 if either ref is invalid or an error occurs.
+func (rc *RepoContext) CommitsAhead(branch, base string) (int, error) {
+	out, err := rc.git("rev-list", "--count", base+".."+branch).Output()
+	if err != nil {
+		return 0, fmt.Errorf("git rev-list --count %s..%s: %w", base, branch, err)
+	}
+	var n int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &n); err != nil {
+		return 0, fmt.Errorf("parse rev-list count: %w", err)
+	}
+	return n, nil
+}
+
+// PruneWorktrees runs git worktree prune to clean stale worktree references.
+// This is needed when a worktree directory is removed without git worktree remove,
+// leaving orphaned entries in .git/worktrees/ that block git worktree add.
+func (rc *RepoContext) PruneWorktrees() error {
+	if out, err := rc.git("worktree", "prune").CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree prune: %w\n%s", err, out)
+	}
+	return nil
+}
+
 // ConfigGet reads a git config value. Pass extra args like "--global" before the key.
 // Returns "" if the key is not set or git fails.
 func ConfigGet(args ...string) string {
