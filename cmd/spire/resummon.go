@@ -110,7 +110,7 @@ func cmdResummon(args []string) error {
 // via a related or caused-by dep. This prevents stale alerts (merge-failure, etc.)
 // from lingering on the board after a successful re-summon.
 func closeRelatedAlerts(beadID string) {
-	dependents, err := storeGetDependentsWithMeta(beadID)
+	dependents, err := storeGetDependentsWithMetaFunc(beadID)
 	if err != nil {
 		return
 	}
@@ -133,7 +133,7 @@ func closeRelatedAlerts(beadID string) {
 		if !isAlert {
 			continue
 		}
-		if err := storeCloseBead(dep.ID); err != nil {
+		if err := storeCloseBeadFunc(dep.ID); err != nil {
 			fmt.Printf("  %s(note: could not close alert %s: %s)%s\n", dim, dep.ID, err, reset)
 			continue
 		}
