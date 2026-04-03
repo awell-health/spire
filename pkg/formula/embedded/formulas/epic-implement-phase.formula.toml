@@ -5,15 +5,15 @@
 # embedding wave/sequential/direct logic in hidden branches.
 #
 # Data flow:
-#   dispatch-children → verify-build ─┬─[pass]→ merge-to-main → bead-finish
-#                                      └─[fail]→ build-failed (escalate)
+#   dispatch-children → verify-build ─┬─[pass]→ verified (noop terminal)
+#                                      └─[fail]→ build-failed (noop terminal)
 #
 # The build-fix loop (verify → fix → re-verify) requires interpreter loop
 # support which will be added in spi-whcii.6. For now, build failures
 # route to the build-failed terminal which escalates to the wizard.
 
 name = "epic-implement-phase"
-description = "Declarative epic implementation: dispatch children in waves, verify build, merge to main"
+description = "Declarative epic implementation: dispatch children in waves, verify build, signal readiness for review"
 version = 3
 
 [vars.bead_id]
@@ -59,24 +59,27 @@ produces = ["status"]
 [steps.verify-build.with]
 build = "go build ./..."
 
-# Step 3: Merge staging branch to main.
-# Only fires when verify-build passes (status == pass).
-[steps.merge-to-main]
+# Step 3a: Signal success — parent graph performs review and merge.
+# Uses noop because epic-implement-phase is a nested sub-graph: the parent
+# formula (spire-epic-v3) is responsible for review and the real merge via
+# its own git.merge_to_main step, keyed on steps.implement.outputs.outcome == "verified".
+[steps.verified]
 kind = "op"
-action = "git.merge_to_main"
+action = "noop"
 needs = ["verify-build"]
-title = "Merge to main"
-[steps.merge-to-main.with]
-strategy = "squash"
-[steps.merge-to-main.when]
+terminal = true
+title = "Build verified — ready for review"
+description = "Signal success — parent graph performs review and merge"
+[steps.verified.when]
 all = [{ left = "steps.verify-build.outputs.status", op = "eq", right = "pass" }]
 
 # Step 3b: Escalate on build failure.
 # Only fires when verify-build fails (status == fail). Terminal — the graph
-# ends here so merge-to-main never executes after a failed build.
+# ends here so verified never executes after a failed build.
+# Uses noop because the parent graph handles escalation.
 [steps.build-failed]
 kind = "op"
-action = "bead.finish"
+action = "noop"
 needs = ["verify-build"]
 terminal = true
 title = "Build verification failed"
@@ -84,16 +87,6 @@ title = "Build verification failed"
 status = "escalate"
 [steps.build-failed.when]
 all = [{ left = "steps.verify-build.outputs.status", op = "eq", right = "fail" }]
-
-# Step 4: Close the bead and all orphan subtasks. Terminal step.
-[steps.bead-finish]
-kind = "op"
-action = "bead.finish"
-needs = ["merge-to-main"]
-terminal = true
-title = "Close bead"
-[steps.bead-finish.with]
-status = "closed"
 
 # --- Outputs ---
 
@@ -106,6 +99,7 @@ type = "enum"
 values = ["pass", "fail"]
 description = "Result of build verification"
 
-[outputs.merged]
-type = "string"
-description = "Whether merge to main succeeded"
+[outputs.outcome]
+type = "enum"
+values = ["verified", "build-failed"]
+description = "Terminal outcome for parent routing"

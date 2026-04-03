@@ -104,19 +104,19 @@ func TestNextSteps_Epic_FullSequence(t *testing.T) {
 			wantStep:  "implement",
 		},
 		{
-			// implement succeeded — outcome=bead-finish gates review.
+			// implement succeeded — outcome=verified gates review.
 			completed: map[string]bool{"design-check": true, "plan": true, "materialize": true, "implement": true},
-			ctx:       map[string]string{"steps.implement.outputs.outcome": "bead-finish"},
+			ctx:       map[string]string{"steps.implement.outputs.outcome": "verified"},
 			wantStep:  "review",
 		},
 		{
 			completed: map[string]bool{"design-check": true, "plan": true, "materialize": true, "implement": true, "review": true},
-			ctx:       map[string]string{"steps.implement.outputs.outcome": "bead-finish", "steps.review.outputs.outcome": "merge"},
+			ctx:       map[string]string{"steps.implement.outputs.outcome": "verified", "steps.review.outputs.outcome": "merge"},
 			wantStep:  "merge",
 		},
 		{
 			completed: map[string]bool{"design-check": true, "plan": true, "materialize": true, "implement": true, "review": true, "merge": true},
-			ctx:       map[string]string{"steps.implement.outputs.outcome": "bead-finish", "steps.review.outputs.outcome": "merge"},
+			ctx:       map[string]string{"steps.implement.outputs.outcome": "verified", "steps.review.outputs.outcome": "merge"},
 			wantStep:  "close",
 		},
 	}
@@ -133,7 +133,7 @@ func TestNextSteps_Epic_FullSequence(t *testing.T) {
 
 	// Also test the discard branch.
 	completed := map[string]bool{"design-check": true, "plan": true, "materialize": true, "implement": true, "review": true}
-	ctx := map[string]string{"steps.implement.outputs.outcome": "bead-finish", "steps.review.outputs.outcome": "discard"}
+	ctx := map[string]string{"steps.implement.outputs.outcome": "verified", "steps.review.outputs.outcome": "discard"}
 	next, err := NextSteps(g, completed, ctx)
 	if err != nil {
 		t.Fatalf("discard: NextSteps: %v", err)
@@ -156,7 +156,7 @@ func TestNextSteps_Epic_ImplementSuccess_ReviewReady(t *testing.T) {
 		"implement":    true,
 	}
 	ctx := map[string]string{
-		"steps.implement.outputs.outcome": "bead-finish",
+		"steps.implement.outputs.outcome": "verified",
 	}
 	ready, err := NextSteps(g, completed, ctx)
 	if err != nil {

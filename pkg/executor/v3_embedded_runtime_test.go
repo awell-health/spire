@@ -325,12 +325,12 @@ func TestEmbeddedRuntime_AgentWorkV3_WorkspaceInitialized(t *testing.T) {
 
 // --- Test 5: epic-implement-phase verify/merge routing ---
 
-// TestEmbeddedRuntime_EpicImplement_NoMergeAfterFailedVerify is a
+// TestEmbeddedRuntime_EpicImplement_NoVerifiedAfterFailedVerify is a
 // duplicate-check: this exact scenario is covered in
 // v3_verify_routing_test.go. We verify the embedded formula still loads
 // and the routing works — if the existing test already covers this,
 // this serves as a cross-check from the embedded-runtime perspective.
-func TestEmbeddedRuntime_EpicImplement_NoMergeAfterFailedVerify(t *testing.T) {
+func TestEmbeddedRuntime_EpicImplement_NoVerifiedAfterFailedVerify(t *testing.T) {
 	graph, err := formula.LoadEmbeddedStepGraph("epic-implement-phase")
 	if err != nil {
 		t.Fatalf("load epic-implement-phase: %v", err)
@@ -351,8 +351,8 @@ func TestEmbeddedRuntime_EpicImplement_NoMergeAfterFailedVerify(t *testing.T) {
 	}
 
 	for _, s := range ready {
-		if s == "merge-to-main" {
-			t.Error("merge-to-main should NOT be ready after failed verify")
+		if s == "verified" {
+			t.Error("verified should NOT be ready after failed verify")
 		}
 	}
 

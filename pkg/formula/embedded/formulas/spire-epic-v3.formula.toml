@@ -9,7 +9,7 @@
 #   - Plan (wizard.run flow=epic-plan) creates subtasks. The materialize
 #     step verifies children exist and reports the count.
 #   - Implementation delegates to the epic-implement-phase sub-graph via
-#     graph.run, which handles dispatch.children + verify + merge + close.
+#     graph.run, which handles dispatch.children + verify and signals readiness for review.
 #   - Review is delegated to the review-phase sub-graph via graph.run.
 #   - Merge/close/discard are conditional terminal steps based on review outcome.
 #   - Workspace (staging worktree) is declared explicitly with epic/ prefix.
@@ -83,7 +83,7 @@ title = "Implementation failed — escalate"
 [steps.implement-failed.with]
 status = "escalate"
 [steps.implement-failed.when]
-all = [{ left = "steps.implement.outputs.outcome", op = "ne", right = "bead-finish" }]
+all = [{ left = "steps.implement.outputs.outcome", op = "ne", right = "verified" }]
 
 # Step 5: Review via the review-phase sub-graph.
 [steps.review]
@@ -94,7 +94,7 @@ workspace = "staging"
 graph = "review-phase"
 title = "Review epic changes"
 [steps.review.when]
-all = [{ left = "steps.implement.outputs.outcome", op = "eq", right = "bead-finish" }]
+all = [{ left = "steps.implement.outputs.outcome", op = "eq", right = "verified" }]
 
 # Step 6a: Merge staging to main — fires when review outcome is merge.
 [steps.merge]
