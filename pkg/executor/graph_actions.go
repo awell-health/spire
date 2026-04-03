@@ -633,6 +633,23 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 		}
 	} else {
 		e.log("resuming nested graph %s from persisted state (active: %s)", subAgentName, subState.ActiveStep)
+
+		// Always refresh WorktreeDir from the parent's workspace on resume.
+		// The parent workspace is the source of truth — the nested graph
+		// borrows it but doesn't own it. The persisted value may be empty
+		// (process died before resolution) or stale (worktree recreated).
+		if step.Workspace != "" {
+			if ws, ok := state.Workspaces[step.Workspace]; ok && ws.Dir != "" {
+				subState.WorktreeDir = ws.Dir
+			} else {
+				dir, err := e.resolveGraphWorkspace(step.Workspace, state)
+				if err != nil {
+					e.log("warning: resolve workspace %q on resume: %s", step.Workspace, err)
+				} else {
+					subState.WorktreeDir = dir
+				}
+			}
+		}
 	}
 
 	// Run the nested graph using the isolated interpreter (saves after each step).

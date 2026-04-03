@@ -967,6 +967,134 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace(t *testi
 	}
 }
 
+// TestGraphRun_ReviewPhase_ResumeRepairsWorktreeDir verifies that when a
+// nested graph sub-state is resumed with an empty WorktreeDir, actionGraphRun
+// repairs it from the parent's workspace before re-entering the nested graph.
+func TestGraphRun_ReviewPhase_ResumeRepairsWorktreeDir(t *testing.T) {
+	dir := t.TempDir()
+	agentName := "wizard-resume-test"
+
+	var spawnConfigs []agent.SpawnConfig
+	backend := &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			spawnConfigs = append(spawnConfigs, cfg)
+			return &mockHandle{}, nil
+		},
+	}
+
+	// Pre-write result.json for the sage-review spawn.
+	// wizardRunSpawn uses e.agentName + "-" + stepName, and e.agentName
+	// is the parent executor's name (not the nested sub-agent name).
+	sageSpawnName := agentName + "-sage-review"
+	sageResultDir := filepath.Join(dir, sageSpawnName)
+	os.MkdirAll(sageResultDir, 0755)
+	sageResult, _ := json.Marshal(map[string]interface{}{
+		"result":  "approve",
+		"bead_id": "spi-resume",
+	})
+	os.WriteFile(filepath.Join(sageResultDir, "result.json"), sageResult, 0644)
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		Spawner:   backend,
+		AgentResultDir: func(name string) string {
+			return filepath.Join(dir, name)
+		},
+		RecordAgentRun: func(run AgentRun) error { return nil },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return dir, "", "main", nil
+		},
+	}
+
+	parentGraph := &formula.FormulaStepGraph{
+		Name:    "test-resume-parent",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"review": {
+				Action:    "graph.run",
+				Graph:     "review-phase",
+				Workspace: "staging",
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-resume", agentName, parentGraph, nil, deps)
+
+	state := exec.graphState
+	state.RepoPath = dir
+	state.BaseBranch = "main"
+	state.StagingBranch = "staging/spi-resume"
+	state.Vars["bead_id"] = "spi-resume"
+	state.Vars["max_review_rounds"] = "3"
+
+	// Parent workspace with Dir resolved.
+	state.Workspaces["staging"] = WorkspaceState{
+		Name:       "staging",
+		Kind:       "repo",
+		Dir:        dir,
+		Branch:     "epic/spi-resume",
+		BaseBranch: "main",
+		Status:     "active",
+		Scope:      "run",
+	}
+
+	// Pre-persist a nested sub-state with EMPTY WorktreeDir to simulate
+	// a resumed sub-state that was persisted before workspace resolution.
+	subAgentName := agentName + "-review"
+	reviewGraph, err := formula.LoadStepGraphByName("review-phase")
+	if err != nil {
+		t.Fatalf("load review-phase: %v", err)
+	}
+	subState := NewGraphState(reviewGraph, "spi-resume", subAgentName)
+	subState.RepoPath = dir
+	subState.BaseBranch = "main"
+	subState.StagingBranch = "staging/spi-resume"
+	subState.WorktreeDir = "" // <-- the bug: empty on resume
+	subState.Vars["bead_id"] = "spi-resume"
+	subState.Vars["max_review_rounds"] = "3"
+	if saveErr := subState.Save(subAgentName, deps.ConfigDir); saveErr != nil {
+		t.Fatalf("save sub-state: %v", saveErr)
+	}
+
+	step := StepConfig{
+		Action:    "graph.run",
+		Graph:     "review-phase",
+		Workspace: "staging",
+	}
+
+	result := actionGraphRun(exec, "review", step, state)
+	if result.Error != nil {
+		t.Fatalf("actionGraphRun returned error: %v", result.Error)
+	}
+
+	// Find the sage-review spawn and verify --worktree-dir.
+	var sageConfig *agent.SpawnConfig
+	for i := range spawnConfigs {
+		if spawnConfigs[i].Role == agent.RoleSage {
+			sageConfig = &spawnConfigs[i]
+			break
+		}
+	}
+	if sageConfig == nil {
+		t.Fatal("sage-review was not spawned")
+	}
+
+	foundWorktreeDir := ""
+	for i, arg := range sageConfig.ExtraArgs {
+		if arg == "--worktree-dir" && i+1 < len(sageConfig.ExtraArgs) {
+			foundWorktreeDir = sageConfig.ExtraArgs[i+1]
+			break
+		}
+	}
+	if foundWorktreeDir == "" {
+		t.Errorf("sage-review spawn missing --worktree-dir on resume; ExtraArgs = %v\n"+
+			"The resume path must repair empty WorktreeDir from the parent workspace.",
+			sageConfig.ExtraArgs)
+	} else if foundWorktreeDir != dir {
+		t.Errorf("sage-review --worktree-dir = %q, want %q", foundWorktreeDir, dir)
+	}
+}
+
 // --- Conflict resolver turn budget tests ---
 
 // TestBuildConflictResolverArgs_WithMaxTurns verifies that when a non-zero
