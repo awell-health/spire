@@ -159,6 +159,11 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		// 7. Check terminal.
 		if formula.IsTerminal(graph, stepName) {
 			e.terminated = true
+			// Save parent state before cleaning up nested state (crash-safe ordering).
+			state.Save(e.agentName, e.deps.ConfigDir)
+			if stepCfg.Action == "graph.run" {
+				RemoveGraphState(e.agentName+"-"+stepName, e.deps.ConfigDir)
+			}
 			e.closeGraphAttempt(state, "success: terminal step "+stepName)
 			return nil
 		}
@@ -185,6 +190,15 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 
 		// 9. Persist and loop.
 		state.Save(e.agentName, e.deps.ConfigDir)
+
+		// 10. Clean up nested graph state files after the parent save is durable.
+		// This is crash-safe: the parent step is already recorded as completed,
+		// so if the process dies here, the nested file is orphaned (harmless)
+		// but the parent won't re-run the step.
+		if stepCfg.Action == "graph.run" {
+			nestedAgentName := e.agentName + "-" + stepName
+			RemoveGraphState(nestedAgentName, e.deps.ConfigDir)
+		}
 	}
 }
 
