@@ -1174,6 +1174,96 @@ func TestRunGraph_ResumePreservesVarsAndWorkspaces(t *testing.T) {
 	}
 }
 
+func TestRunNestedGraph_InitializesMissingDeclaredWorkspaces(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	var capturedWorkspaces map[string]WorkspaceState
+	actionRegistry["test.capture-ws"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		capturedWorkspaces = make(map[string]WorkspaceState)
+		for k, v := range state.Workspaces {
+			capturedWorkspaces[k] = v
+		}
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-nested-missing-workspaces",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"entry": {Action: "test.capture-ws", Terminal: true},
+		},
+		Workspaces: map[string]formula.WorkspaceDecl{
+			"staging": {
+				Kind:   formula.WorkspaceKindStaging,
+				Branch: "epic/{vars.bead_id}",
+				Base:   "{vars.base_branch}",
+			},
+			"scratch": {
+				Kind:   formula.WorkspaceKindOwnedWorktree,
+				Branch: "scratch/{vars.bead_id}",
+				Base:   "{vars.base_branch}",
+			},
+		},
+	}
+
+	state := NewGraphState(graph, "spi-nested", "wizard-nested")
+	state.RepoPath = "."
+	state.BaseBranch = "main"
+	state.StagingBranch = "epic/spi-nested"
+	state.Vars["bead_id"] = "spi-nested"
+	state.Workspaces["staging"] = WorkspaceState{
+		Name:       "staging",
+		Kind:       formula.WorkspaceKindStaging,
+		Dir:        "/tmp/spi-nested-staging",
+		Branch:     "epic/spi-nested",
+		BaseBranch: "main",
+		Status:     "active",
+		Scope:      formula.WorkspaceScopeRun,
+		Ownership:  "owned",
+		Cleanup:    formula.WorkspaceCleanupTerminal,
+	}
+
+	exec := NewGraphForTest("spi-nested", "wizard-nested", graph, state, deps)
+	if err := exec.RunNestedGraph(graph, state); err != nil {
+		t.Fatalf("RunNestedGraph returned error: %v", err)
+	}
+
+	staging, ok := capturedWorkspaces["staging"]
+	if !ok {
+		t.Fatal("missing propagated staging workspace")
+	}
+	if staging.Dir != "/tmp/spi-nested-staging" {
+		t.Errorf("staging.Dir = %q, want %q", staging.Dir, "/tmp/spi-nested-staging")
+	}
+
+	scratch, ok := capturedWorkspaces["scratch"]
+	if !ok {
+		t.Fatal("missing initialized scratch workspace")
+	}
+	if scratch.Kind != formula.WorkspaceKindOwnedWorktree {
+		t.Errorf("scratch.Kind = %q, want %q", scratch.Kind, formula.WorkspaceKindOwnedWorktree)
+	}
+	if scratch.Status != "pending" {
+		t.Errorf("scratch.Status = %q, want %q", scratch.Status, "pending")
+	}
+	if scratch.Branch != "scratch/{vars.bead_id}" {
+		t.Errorf("scratch.Branch = %q, want %q", scratch.Branch, "scratch/{vars.bead_id}")
+	}
+}
+
 // --- Test: Step failure emits node-scoped result with metadata ---
 
 func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {

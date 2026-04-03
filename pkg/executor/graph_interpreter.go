@@ -38,7 +38,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	}()
 
 	// Resolve branch state.
-	if err := e.resolveGraphBranchState(state); err != nil {
+	if err := e.resolveGraphBranchState(graph, state); err != nil {
 		e.closeGraphAttempt(state, "failure: repo-resolution: "+err.Error())
 		EscalateHumanFailure(e.beadID, e.agentName, "repo-resolution", err.Error(), e.deps)
 		return fmt.Errorf("resolve branch state: %w", err)
@@ -55,22 +55,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		state.Vars["bead_id"] = e.beadID
 	}
 
-	// Initialize workspace states from formula declarations.
-	if graph.Workspaces != nil && len(state.Workspaces) == 0 {
-		for name, decl := range graph.Workspaces {
-			formula.DefaultWorkspaceDecl(&decl)
-			state.Workspaces[name] = WorkspaceState{
-				Name:       name,
-				Kind:       decl.Kind,
-				Branch:     decl.Branch,
-				BaseBranch: decl.Base,
-				Status:     "pending",
-				Scope:      decl.Scope,
-				Ownership:  decl.Ownership,
-				Cleanup:    decl.Cleanup,
-			}
-		}
-	}
+	e.initMissingGraphWorkspaces(graph, state)
 
 	// Ensure step beads for each graph step.
 	if err := e.ensureGraphStepBeads(graph, state); err != nil {
@@ -265,7 +250,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) error {
 	// Resolve branch state for the sub-graph (usually inherited from parent).
 	if state.RepoPath == "" || state.BaseBranch == "" {
-		if err := e.resolveGraphBranchState(state); err != nil {
+		if err := e.resolveGraphBranchState(graph, state); err != nil {
 			return fmt.Errorf("nested: resolve branch state: %w", err)
 		}
 	}
@@ -280,22 +265,7 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 		state.Vars["bead_id"] = e.beadID
 	}
 
-	// Initialize workspace states from formula declarations.
-	if graph.Workspaces != nil && len(state.Workspaces) == 0 {
-		for name, decl := range graph.Workspaces {
-			formula.DefaultWorkspaceDecl(&decl)
-			state.Workspaces[name] = WorkspaceState{
-				Name:       name,
-				Kind:       decl.Kind,
-				Branch:     decl.Branch,
-				BaseBranch: decl.Base,
-				Status:     "pending",
-				Scope:      decl.Scope,
-				Ownership:  decl.Ownership,
-				Cleanup:    decl.Cleanup,
-			}
-		}
-	}
+	e.initMissingGraphWorkspaces(graph, state)
 
 	// Main interpreter loop — same logic as RunGraph but without cleanup.
 	for {
@@ -464,9 +434,13 @@ func (e *Executor) closeGraphAttempt(state *GraphState, result string) {
 }
 
 // resolveGraphBranchState resolves repo path, base branch, and staging branch
-// for graph execution.
-func (e *Executor) resolveGraphBranchState(state *GraphState) error {
+// for graph execution. When the graph declares a staging workspace, its branch
+// is the source of truth for StagingBranch.
+func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *GraphState) error {
 	if state.RepoPath != "" && state.BaseBranch != "" {
+		if state.StagingBranch == "" {
+			state.StagingBranch = e.resolveDeclaredGraphStagingBranch(graph, state)
+		}
 		e.log("branch state loaded from persisted graph state: repo=%s base=%s staging=%s",
 			state.RepoPath, state.BaseBranch, state.StagingBranch)
 		return nil
@@ -484,12 +458,90 @@ func (e *Executor) resolveGraphBranchState(state *GraphState) error {
 	state.BaseBranch = baseBranch
 
 	if state.StagingBranch == "" {
+		state.StagingBranch = e.resolveDeclaredGraphStagingBranch(graph, state)
+	}
+	if state.StagingBranch == "" {
 		state.StagingBranch = "staging/" + e.beadID
 	}
 
 	e.log("branch state resolved: repo=%s base=%s staging=%s",
 		state.RepoPath, state.BaseBranch, state.StagingBranch)
 	return nil
+}
+
+func (e *Executor) resolveDeclaredGraphStagingBranch(graph *FormulaStepGraph, state *GraphState) string {
+	if graph == nil || len(graph.Workspaces) == 0 {
+		return ""
+	}
+
+	if decl, ok := graph.Workspaces["staging"]; ok {
+		formula.DefaultWorkspaceDecl(&decl)
+		if decl.Kind == formula.WorkspaceKindStaging && decl.Branch != "" {
+			return e.resolveGraphWorkspaceBranch(decl.Branch, state)
+		}
+	}
+
+	for _, decl := range graph.Workspaces {
+		formula.DefaultWorkspaceDecl(&decl)
+		if decl.Kind == formula.WorkspaceKindStaging && decl.Branch != "" {
+			return e.resolveGraphWorkspaceBranch(decl.Branch, state)
+		}
+	}
+
+	return ""
+}
+
+func (e *Executor) initMissingGraphWorkspaces(graph *FormulaStepGraph, state *GraphState) {
+	if graph == nil || len(graph.Workspaces) == 0 {
+		return
+	}
+	if state.Workspaces == nil {
+		state.Workspaces = make(map[string]WorkspaceState)
+	}
+
+	for name, decl := range graph.Workspaces {
+		formula.DefaultWorkspaceDecl(&decl)
+		ws, ok := state.Workspaces[name]
+		if !ok {
+			state.Workspaces[name] = WorkspaceState{
+				Name:       name,
+				Kind:       decl.Kind,
+				Branch:     decl.Branch,
+				BaseBranch: decl.Base,
+				Status:     "pending",
+				Scope:      decl.Scope,
+				Ownership:  decl.Ownership,
+				Cleanup:    decl.Cleanup,
+			}
+			continue
+		}
+
+		if ws.Name == "" {
+			ws.Name = name
+		}
+		if ws.Kind == "" {
+			ws.Kind = decl.Kind
+		}
+		if ws.Branch == "" {
+			ws.Branch = decl.Branch
+		}
+		if ws.BaseBranch == "" {
+			ws.BaseBranch = decl.Base
+		}
+		if ws.Status == "" {
+			ws.Status = "pending"
+		}
+		if ws.Scope == "" {
+			ws.Scope = decl.Scope
+		}
+		if ws.Ownership == "" {
+			ws.Ownership = decl.Ownership
+		}
+		if ws.Cleanup == "" {
+			ws.Cleanup = decl.Cleanup
+		}
+		state.Workspaces[name] = ws
+	}
 }
 
 // ensureGraphStepBeads creates step beads for each graph step (idempotent).

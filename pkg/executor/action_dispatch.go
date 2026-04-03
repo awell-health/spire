@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 )
 
@@ -38,10 +39,37 @@ func actionDispatchChildren(e *Executor, stepName string, step StepConfig, state
 	}
 	resolver := e.conflictResolver(conflictMaxTurns)
 
-	// Resolve staging worktree from graph state.
-	stagingWt, err := e.ensureGraphStagingWorktree(state)
-	if err != nil {
-		return ActionResult{Error: fmt.Errorf("resolve workspace for dispatch: %w", err)}
+	// Resolve staging worktree from the step's declared workspace when present.
+	// This keeps dispatch aligned with the actual integration workspace branch
+	// instead of assuming state.StagingBranch is the right ref.
+	var stagingWt *spgit.StagingWorktree
+	var err error
+	if step.Workspace != "" {
+		dir, wsErr := e.resolveGraphWorkspace(step.Workspace, state)
+		if wsErr != nil {
+			return ActionResult{Error: fmt.Errorf("resolve workspace %q for dispatch: %w", step.Workspace, wsErr)}
+		}
+		ws := state.Workspaces[step.Workspace]
+		state.WorktreeDir = dir
+		if ws.Kind == formula.WorkspaceKindStaging {
+			stagingWt, err = e.ensureGraphStagingWorktree(state)
+			if err != nil {
+				return ActionResult{Error: fmt.Errorf("ensure staging workspace %q for dispatch: %w", step.Workspace, err)}
+			}
+		} else {
+			if ws.Branch != "" {
+				state.StagingBranch = ws.Branch
+			}
+			if ws.BaseBranch != "" {
+				state.BaseBranch = ws.BaseBranch
+			}
+			stagingWt = spgit.ResumeStagingWorktree(state.RepoPath, dir, ws.Branch, ws.BaseBranch, e.log)
+		}
+	} else {
+		stagingWt, err = e.ensureGraphStagingWorktree(state)
+		if err != nil {
+			return ActionResult{Error: fmt.Errorf("resolve workspace for dispatch: %w", err)}
+		}
 	}
 
 	model := step.Model

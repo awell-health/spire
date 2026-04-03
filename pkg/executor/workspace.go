@@ -264,6 +264,42 @@ func (e *Executor) resolveGraphWorkspace(name string, state *GraphState) (string
 		return ws.Dir, nil
 	}
 
+	if ws.Kind == formula.WorkspaceKindStaging {
+		branch := e.resolveGraphWorkspaceBranch(ws.Branch, state)
+		baseBranch := ws.BaseBranch
+		if baseBranch == "" {
+			baseBranch = state.BaseBranch
+		} else {
+			baseBranch = e.resolveGraphWorkspaceBranch(baseBranch, state)
+		}
+		if branch != "" {
+			state.StagingBranch = branch
+		}
+		if baseBranch != "" {
+			state.BaseBranch = baseBranch
+		}
+		if ws.Dir == "" {
+			ws.Dir = filepath.Join(state.RepoPath, ".worktrees", e.beadID+"-"+name)
+			state.Workspaces[name] = ws
+		}
+
+		sw, err := e.ensureGraphStagingWorktree(state)
+		if err != nil {
+			return "", fmt.Errorf("ensure staging workspace %q: %w", name, err)
+		}
+
+		ws = state.Workspaces[name]
+		ws.Name = name
+		ws.Kind = formula.WorkspaceKindStaging
+		ws.Dir = sw.Dir
+		ws.Branch = state.StagingBranch
+		ws.BaseBranch = state.BaseBranch
+		ws.StartSHA = sw.StartSHA
+		ws.Status = "active"
+		state.Workspaces[name] = ws
+		return sw.Dir, nil
+	}
+
 	// Active + scope=run → already resolved, return existing Dir.
 	if ws.Status == "active" && ws.Scope == formula.WorkspaceScopeRun && ws.Dir != "" {
 		return ws.Dir, nil

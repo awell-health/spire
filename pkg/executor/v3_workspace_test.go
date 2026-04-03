@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/awell-health/spire/pkg/formula"
@@ -233,4 +235,115 @@ func TestV3Workspace_EpicImplementDeclaredWorkspaces(t *testing.T) {
 	if staging.Branch != "staging/{vars.bead_id}" {
 		t.Errorf("branch = %q, want %q", staging.Branch, "staging/{vars.bead_id}")
 	}
+}
+
+func TestV3Workspace_ResolveGraphBranchState_UsesDeclaredStagingBranch(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-epic-workspace-branch",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"entry": {Action: "noop", Terminal: true},
+		},
+		Workspaces: map[string]formula.WorkspaceDecl{
+			"staging": {
+				Kind:   formula.WorkspaceKindStaging,
+				Branch: "epic/{vars.bead_id}",
+				Base:   "{vars.base_branch}",
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-epic", "wizard-epic", graph, nil, deps)
+	if err := exec.resolveGraphBranchState(graph, exec.graphState); err != nil {
+		t.Fatalf("resolveGraphBranchState: %v", err)
+	}
+
+	if exec.graphState.StagingBranch != "epic/spi-epic" {
+		t.Fatalf("StagingBranch = %q, want %q", exec.graphState.StagingBranch, "epic/spi-epic")
+	}
+}
+
+func TestV3Workspace_ResolveGraphWorkspace_StagingPersistsAndResumes(t *testing.T) {
+	repoDir := initSeamTestRepo(t)
+	configDir := t.TempDir()
+	configDirFn := func() (string, error) { return configDir, nil }
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-staging-persist",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"entry": {Action: "noop", Terminal: true},
+		},
+		Workspaces: map[string]formula.WorkspaceDecl{
+			"staging": {
+				Kind:   formula.WorkspaceKindStaging,
+				Branch: "epic/{vars.bead_id}",
+				Base:   "{vars.base_branch}",
+			},
+		},
+	}
+
+	deps := &Deps{
+		ConfigDir: configDirFn,
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return repoDir, "", "main", nil
+		},
+		AddLabel: func(id, label string) error { return nil },
+		ActiveTowerConfig: func() (*TowerConfig, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+
+	exec := NewGraphForTest("spi-resume", "wizard-resume", graph, nil, deps)
+	state := exec.graphState
+	state.RepoPath = repoDir
+	state.BaseBranch = "main"
+	state.Vars["bead_id"] = "spi-resume"
+	exec.initMissingGraphWorkspaces(graph, state)
+
+	if err := exec.resolveGraphBranchState(graph, state); err != nil {
+		t.Fatalf("resolveGraphBranchState: %v", err)
+	}
+
+	dir, err := exec.resolveGraphWorkspace("staging", state)
+	if err != nil {
+		t.Fatalf("resolveGraphWorkspace create: %v", err)
+	}
+	wantDir := filepath.Join(repoDir, ".worktrees", "spi-resume-staging")
+	if dir != wantDir {
+		t.Fatalf("staging dir = %q, want %q", dir, wantDir)
+	}
+
+	loaded, err := LoadGraphState("wizard-resume", configDirFn)
+	if err != nil {
+		t.Fatalf("load graph state: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected persisted graph state after staging workspace creation")
+	}
+	if loaded.WorktreeDir != wantDir {
+		t.Fatalf("persisted WorktreeDir = %q, want %q", loaded.WorktreeDir, wantDir)
+	}
+	if got := loaded.Workspaces["staging"].Branch; got != "epic/spi-resume" {
+		t.Fatalf("persisted staging branch = %q, want %q", got, "epic/spi-resume")
+	}
+
+	testFile := filepath.Join(dir, "wave.txt")
+	if err := os.WriteFile(testFile, []byte("wave\n"), 0644); err != nil {
+		t.Fatalf("write wave file: %v", err)
+	}
+	runGitIn(t, dir, "add", "wave.txt")
+	runGitIn(t, dir, "commit", "-m", "wave progress")
+
+	exec2 := NewGraphForTest("spi-resume", "wizard-resume", graph, loaded, deps)
+	dir2, err := exec2.resolveGraphWorkspace("staging", loaded)
+	if err != nil {
+		t.Fatalf("resolveGraphWorkspace resume: %v", err)
+	}
+	if dir2 != wantDir {
+		t.Fatalf("resumed staging dir = %q, want %q", dir2, wantDir)
+	}
+	runGitIn(t, dir2, "cat-file", "-e", "HEAD:wave.txt")
 }

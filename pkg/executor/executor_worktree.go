@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 )
 
@@ -105,10 +106,12 @@ func (e *Executor) ensureGraphStagingWorktree(state *GraphState) (*spgit.Staging
 					ws.Dir = state.WorktreeDir
 					ws.Branch = stagingBranch
 					ws.BaseBranch = state.BaseBranch
+					ws.StartSHA = e.stagingWt.StartSHA
 					state.Workspaces[name] = ws
 					break
 				}
 			}
+			state.Save(e.agentName, e.deps.ConfigDir)
 			return e.stagingWt, nil
 		}
 		e.log("stale worktree state %s — recreating", state.WorktreeDir)
@@ -130,6 +133,12 @@ func (e *Executor) ensureGraphStagingWorktree(state *GraphState) (*spgit.Staging
 	}
 
 	wtDir := filepath.Join(repoPath, ".worktrees", e.beadID)
+	for _, ws := range state.Workspaces {
+		if ws.Kind == formula.WorkspaceKindStaging && ws.Dir != "" {
+			wtDir = ws.Dir
+			break
+		}
+	}
 	archName, archEmail := ArchmageIdentity(e.deps)
 
 	e.log("creating staging worktree at %s (branch: %s)", wtDir, stagingBranch)
@@ -144,11 +153,12 @@ func (e *Executor) ensureGraphStagingWorktree(state *GraphState) (*spgit.Staging
 	// Sync the workspace state so resolveGraphWorkspace finds this worktree
 	// as "active" instead of trying to recreate it.
 	for name, ws := range state.Workspaces {
-		if ws.Kind == "staging" && ws.Status == "pending" {
+		if ws.Kind == "staging" && (ws.Status == "pending" || ws.Dir == "" || ws.Branch == "" || ws.BaseBranch == "") {
 			ws.Status = "active"
 			ws.Dir = wtDir
 			ws.Branch = stagingBranch
 			ws.BaseBranch = state.BaseBranch
+			ws.StartSHA = wt.StartSHA
 			state.Workspaces[name] = ws
 			break
 		}

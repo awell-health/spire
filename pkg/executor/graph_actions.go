@@ -607,48 +607,25 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 			subState.Vars[k] = v
 		}
 
-		// Copy branch/workspace info so the sub-graph can resolve its workspace.
+		// Copy branch/workspace info so the sub-graph can resolve the same
+		// integration surface the parent step is already using.
 		subState.RepoPath = state.RepoPath
 		subState.BaseBranch = state.BaseBranch
 		subState.StagingBranch = state.StagingBranch
-
-		// Resolve the active workspace dir from the parent step's declared workspace.
-		// If the workspace Dir was already populated (e.g. by a prior wizard.run
-		// step), use it directly. Otherwise, resolve the workspace to create or
-		// resume it — this handles the case where all prior steps using this
-		// workspace were graph.run (which don't resolve workspaces themselves),
-		// as happens in spire-epic-v3 where both implement and review steps are
-		// nested graphs sharing the parent's staging workspace.
 		subState.WorktreeDir = state.WorktreeDir
-		if step.Workspace != "" {
-			if ws, ok := state.Workspaces[step.Workspace]; ok && ws.Dir != "" {
-				subState.WorktreeDir = ws.Dir
-			} else {
-				dir, err := e.resolveGraphWorkspace(step.Workspace, state)
-				if err != nil {
-					return ActionResult{Error: fmt.Errorf("resolve workspace %q for graph.run %s: %w", step.Workspace, stepName, err)}
-				}
-				subState.WorktreeDir = dir
-			}
+		if err := e.propagateGraphRunWorkspace(step, state, subState); err != nil {
+			return ActionResult{Error: fmt.Errorf("resolve workspace %q for graph.run %s: %w", step.Workspace, stepName, err)}
 		}
 	} else {
 		e.log("resuming nested graph %s from persisted state (active: %s)", subAgentName, subState.ActiveStep)
 
-		// Always refresh WorktreeDir from the parent's workspace on resume.
-		// The parent workspace is the source of truth — the nested graph
-		// borrows it but doesn't own it. The persisted value may be empty
-		// (process died before resolution) or stale (worktree recreated).
-		if step.Workspace != "" {
-			if ws, ok := state.Workspaces[step.Workspace]; ok && ws.Dir != "" {
-				subState.WorktreeDir = ws.Dir
-			} else {
-				dir, err := e.resolveGraphWorkspace(step.Workspace, state)
-				if err != nil {
-					e.log("warning: resolve workspace %q on resume: %s", step.Workspace, err)
-				} else {
-					subState.WorktreeDir = dir
-				}
-			}
+		// Always refresh branch and workspace info from the parent state.
+		subState.RepoPath = state.RepoPath
+		subState.BaseBranch = state.BaseBranch
+		subState.StagingBranch = state.StagingBranch
+		subState.WorktreeDir = state.WorktreeDir
+		if err := e.propagateGraphRunWorkspace(step, state, subState); err != nil {
+			e.log("warning: resolve workspace %q on resume: %s", step.Workspace, err)
 		}
 	}
 
@@ -679,4 +656,39 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 	// up nested state files after its own save (crash-safe ordering).
 
 	return ActionResult{Outputs: outputs}
+}
+
+func (e *Executor) propagateGraphRunWorkspace(step StepConfig, parentState, subState *GraphState) error {
+	if step.Workspace == "" {
+		return nil
+	}
+
+	ws, ok := parentState.Workspaces[step.Workspace]
+	if !ok || ws.Dir == "" {
+		dir, err := e.resolveGraphWorkspace(step.Workspace, parentState)
+		if err != nil {
+			return err
+		}
+		ws = parentState.Workspaces[step.Workspace]
+		if ws.Dir == "" {
+			ws.Dir = dir
+		}
+	}
+
+	subState.WorktreeDir = ws.Dir
+	if subState.Workspaces == nil {
+		subState.Workspaces = make(map[string]WorkspaceState)
+	}
+	subState.Workspaces[step.Workspace] = ws
+
+	if step.Workspace == "staging" || ws.Kind == formula.WorkspaceKindStaging {
+		if ws.Branch != "" {
+			subState.StagingBranch = ws.Branch
+		}
+		if ws.BaseBranch != "" {
+			subState.BaseBranch = ws.BaseBranch
+		}
+	}
+
+	return nil
 }

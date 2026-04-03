@@ -961,6 +961,20 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace(t *testi
 		t.Errorf("sage-review --worktree-dir = %q, want %q (repo path)", foundWorktreeDir, dir)
 	}
 
+	subState, err := LoadGraphState(agentName+"-review", deps.ConfigDir)
+	if err != nil {
+		t.Fatalf("load nested graph state: %v", err)
+	}
+	if subState == nil {
+		t.Fatal("nested graph state missing")
+	}
+	if subState.StagingBranch != "epic/spi-epic" {
+		t.Fatalf("nested StagingBranch = %q, want %q", subState.StagingBranch, "epic/spi-epic")
+	}
+	if got := subState.Workspaces["staging"].Branch; got != "epic/spi-epic" {
+		t.Fatalf("nested staging workspace branch = %q, want %q", got, "epic/spi-epic")
+	}
+
 	// Verify the review outcome.
 	if result.Outputs["outcome"] != "merge" {
 		t.Errorf("outcome = %q, want %q", result.Outputs["outcome"], "merge")
@@ -1093,6 +1107,20 @@ func TestGraphRun_ReviewPhase_ResumeRepairsWorktreeDir(t *testing.T) {
 	} else if foundWorktreeDir != dir {
 		t.Errorf("sage-review --worktree-dir = %q, want %q", foundWorktreeDir, dir)
 	}
+
+	loadedSubState, err := LoadGraphState(subAgentName, deps.ConfigDir)
+	if err != nil {
+		t.Fatalf("load resumed nested graph state: %v", err)
+	}
+	if loadedSubState == nil {
+		t.Fatal("resumed nested graph state missing")
+	}
+	if loadedSubState.StagingBranch != "epic/spi-resume" {
+		t.Fatalf("resumed nested StagingBranch = %q, want %q", loadedSubState.StagingBranch, "epic/spi-resume")
+	}
+	if got := loadedSubState.Workspaces["staging"].Branch; got != "epic/spi-resume" {
+		t.Fatalf("resumed nested staging workspace branch = %q, want %q", got, "epic/spi-resume")
+	}
 }
 
 // --- Conflict resolver turn budget tests ---
@@ -1181,4 +1209,3 @@ func TestActionDispatchChildren_ParsesConflictMaxTurns(t *testing.T) {
 		})
 	}
 }
-
