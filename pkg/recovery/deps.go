@@ -1,5 +1,7 @@
 package recovery
 
+import "github.com/awell-health/spire/pkg/store"
+
 // DepBead is the minimal bead projection needed by recovery.
 // Callers map from their store.Bead to this type.
 type DepBead struct {
@@ -47,4 +49,7 @@ type Deps struct {
 
 	// Repo resolution — returns (repoPath, baseBranch, err).
 	ResolveRepo func(beadID string) (string, string, error)
+
+	// Prior recovery lookups — queries closed recovery beads by structured metadata.
+	ListRecoveryLearnings func(filter store.RecoveryLookupFilter) ([]store.RecoveryLearning, error)
 }

@@ -3,10 +3,42 @@ package store
 import (
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/steveyegge/beads"
 )
+
+// RecoveryLookupFilter specifies criteria for querying closed recovery beads.
+// All string fields are optional; empty string means no filter on that field.
+type RecoveryLookupFilter struct {
+	FailureClass     string
+	FailureSignature string
+	SourceBead       string
+	SourceFormula    string
+	SourceStep       string
+	ResolutionKind   string
+	LearningKey      string
+	Reusable         *bool
+	Limit            int // 0 = default (10)
+}
+
+// RecoveryLearning is a read model for a closed recovery bead's durable outputs,
+// populated from bead metadata written by the recovery document/finish lifecycle.
+type RecoveryLearning struct {
+	BeadID             string
+	FailureClass       string
+	FailureSignature   string
+	SourceBead         string
+	SourceFormula      string
+	SourceStep         string
+	ResolutionKind     string
+	VerificationStatus string
+	LearningKey        string
+	Reusable           bool
+	ResolvedAt         string
+	LearningSummary    string // from learning_summary metadata key
+}
 
 // GetBead fetches a single bead by ID.
 func GetBead(id string) (Bead, error) {
@@ -276,4 +308,87 @@ func GetChildrenBoardBatch(parentIDs []string) (map[string][]BoardBead, error) {
 		result[pid] = IssuesToBoardBeads(issues)
 	}
 	return result, nil
+}
+
+// ListClosedRecoveryBeads queries closed recovery beads matching the given filter.
+// Filter fields are applied as exact-match predicates against bead metadata.
+// Results are ordered by resolved_at descending. Default limit is 10 when 0.
+func ListClosedRecoveryBeads(filter RecoveryLookupFilter) ([]RecoveryLearning, error) {
+	// Build metadata filter from non-empty fields.
+	meta := make(map[string]string)
+	if filter.FailureClass != "" {
+		meta["failure_class"] = filter.FailureClass
+	}
+	if filter.FailureSignature != "" {
+		meta["failure_signature"] = filter.FailureSignature
+	}
+	if filter.SourceBead != "" {
+		meta["source_bead"] = filter.SourceBead
+	}
+	if filter.SourceFormula != "" {
+		meta["source_formula"] = filter.SourceFormula
+	}
+	if filter.SourceStep != "" {
+		meta["source_step"] = filter.SourceStep
+	}
+	if filter.ResolutionKind != "" {
+		meta["resolution_kind"] = filter.ResolutionKind
+	}
+	if filter.LearningKey != "" {
+		meta["learning_key"] = filter.LearningKey
+	}
+	if filter.Reusable != nil {
+		if *filter.Reusable {
+			meta["reusable"] = "true"
+		} else {
+			meta["reusable"] = "false"
+		}
+	}
+
+	recoveryType := beads.IssueType("recovery")
+	closedStatus := beads.StatusClosed
+	results, err := ListBeadsByMetadata(meta, func(f *beads.IssueFilter) {
+		f.IssueType = &recoveryType
+		f.Status = &closedStatus
+		f.ExcludeStatus = nil // override default exclusion of closed
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list closed recovery beads: %w", err)
+	}
+
+	// Hydrate RecoveryLearning from each bead's metadata.
+	var learnings []RecoveryLearning
+	for _, b := range results {
+		rl := RecoveryLearning{
+			BeadID:             b.ID,
+			FailureClass:       b.Meta("failure_class"),
+			FailureSignature:   b.Meta("failure_signature"),
+			SourceBead:         b.Meta("source_bead"),
+			SourceFormula:      b.Meta("source_formula"),
+			SourceStep:         b.Meta("source_step"),
+			ResolutionKind:     b.Meta("resolution_kind"),
+			VerificationStatus: b.Meta("verification_status"),
+			LearningKey:        b.Meta("learning_key"),
+			Reusable:           b.Meta("reusable") == "true",
+			ResolvedAt:         b.Meta("resolved_at"),
+			LearningSummary:    b.Meta("learning_summary"),
+		}
+		learnings = append(learnings, rl)
+	}
+
+	// Sort by resolved_at descending (ISO dates sort lexically).
+	sort.Slice(learnings, func(i, j int) bool {
+		return learnings[i].ResolvedAt > learnings[j].ResolvedAt
+	})
+
+	// Apply limit.
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if len(learnings) > limit {
+		learnings = learnings[:limit]
+	}
+
+	return learnings, nil
 }

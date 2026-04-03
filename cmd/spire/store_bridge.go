@@ -149,6 +149,10 @@ func storeGetChildren(parentID string) ([]Bead, error) {
 	return store.GetChildren(parentID)
 }
 
+func storeListRecoveryLearnings(filter store.RecoveryLookupFilter) ([]store.RecoveryLearning, error) {
+	return store.ListClosedRecoveryBeads(filter)
+}
+
 // --- Mutations (delegate to pkg/store) ---
 
 func storeCreateBead(opts createOpts) (string, error) {

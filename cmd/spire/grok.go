@@ -6,6 +6,8 @@ import (
 
 	"github.com/awell-health/spire/pkg/integration"
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
@@ -101,6 +103,13 @@ func cmdGrok(args []string) error {
 			fmt.Printf("Description: %s\n", dep.Description)
 		}
 		fmt.Println()
+	}
+
+	// Closed recovery history — surface prior learnings regardless of interruption status.
+	if closedSection, err := recovery.SurfaceRecoveryContext(id, &recovery.Deps{
+		ListRecoveryLearnings: storeListRecoveryLearnings,
+	}, store.RecoveryLookupFilter{}); err == nil && closedSection != "" {
+		fmt.Print(closedSection)
 	}
 
 	// Messages that reference this bead
