@@ -56,6 +56,12 @@ func ResolveFormulaAny(bead Bead) (interface{}, int, error) {
 	return formula.ResolveAny(beadToInfo(bead))
 }
 
+// ResolveFormulaV3 resolves a v3 step-graph formula for a bead.
+// Returns nil and an error if no v3 formula can be found.
+func ResolveFormulaV3(bead Bead) (*formula.FormulaStepGraph, error) {
+	return formula.ResolveV3(beadToInfo(bead))
+}
+
 // init wires up the repo-level formula name callback so pkg/formula
 // can resolve spire.yaml agent.formula without importing pkg/config
 // or cmd/spire internals.

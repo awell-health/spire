@@ -3,8 +3,12 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/awell-health/spire/pkg/executor"
+	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/observability"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
@@ -35,13 +39,28 @@ func cmdFocus(args []string) error {
 		return fmt.Errorf("focus %s: %w", id, err)
 	}
 
-	// 2. Determine current phase
+	// 2. Resolve formula version: v3 graph or v2 phase pipeline.
+	anyFormula, version, _ := ResolveFormulaAny(target)
+
+	if version == 3 {
+		return focusV3(target, anyFormula.(*formula.FormulaStepGraph))
+	}
+
+	// v2 path (legacy)
+	return focusV2(target, anyFormula)
+}
+
+// focusV2 renders the legacy v2 phase-based focus output.
+func focusV2(target Bead, anyFormula interface{}) error {
+	id := target.ID
 	phase := getPhase(target)
 
-	// 3. Try to load formula (optional — enriches context)
-	formula, _ := ResolveFormula(target)
+	var f *FormulaV2
+	if anyFormula != nil {
+		f, _ = anyFormula.(*FormulaV2)
+	}
 
-	// 4. Basic bead info (always shown)
+	// Basic bead info
 	fmt.Printf("--- Task %s ---\n", target.ID)
 	fmt.Printf("Title: %s\n", target.Title)
 	fmt.Printf("Status: %s\n", target.Status)
@@ -54,9 +73,9 @@ func cmdFocus(args []string) error {
 	}
 	fmt.Println()
 
-	// 5. Show enabled phases from formula
-	if formula != nil {
-		enabled := formula.EnabledPhases()
+	// Show enabled phases from formula
+	if f != nil {
+		enabled := f.EnabledPhases()
 		fmt.Printf("--- Workflow Phases ---\n")
 		for _, p := range enabled {
 			marker := "  "
@@ -68,9 +87,9 @@ func cmdFocus(args []string) error {
 		fmt.Println()
 	}
 
-	// 6. Phase-specific context
-	if formula != nil && phase != "" {
-		if pc, ok := formula.Phases[phase]; ok {
+	// Phase-specific context
+	if f != nil && phase != "" {
+		if pc, ok := f.Phases[phase]; ok {
 			if len(pc.Context) > 0 {
 				fmt.Printf("--- Phase Context (%s) ---\n", phase)
 				fmt.Printf("Context paths: %s\n", strings.Join(pc.Context, ", "))
@@ -85,7 +104,105 @@ func cmdFocus(args []string) error {
 		}
 	}
 
-	// 7a. Recovery work section for interrupted beads.
+	// Shared tail sections
+	focusTail(target, id)
+	return nil
+}
+
+// focusV3 renders the v3 step-graph based focus output.
+func focusV3(target Bead, graph *formula.FormulaStepGraph) error {
+	id := target.ID
+
+	// --- Load graph state ---
+	wizardName := resolveWizardName(id)
+	gs, _ := executor.LoadGraphState(wizardName, configDir)
+
+	// --- Determine interrupted status ---
+	interrupted := isInterruptedBead(target.Labels)
+	interruptLabel := ""
+	if interrupted {
+		interruptLabel = getInterruptLabel(target.Labels)
+	}
+
+	// --- Header ---
+	fmt.Printf("--- Task %s ---\n", target.ID)
+	fmt.Printf("Title: %s\n", target.Title)
+	fmt.Printf("Status: %s\n", target.Status)
+	fmt.Printf("Priority: P%d\n", target.Priority)
+	fmt.Printf("Formula: %s\n", graph.Name)
+	if target.Description != "" {
+		fmt.Printf("Description: %s\n", target.Description)
+	}
+	if interrupted {
+		fmt.Printf("!! INTERRUPTED: %s\n", interruptLabel)
+	}
+	fmt.Println()
+
+	// --- Step Graph ---
+	fmt.Printf("--- Step Graph ---\n")
+	ordered := topoSortSteps(graph)
+	for _, stepName := range ordered {
+		stepCfg := graph.Steps[stepName]
+		renderStepLine(stepName, stepCfg, gs)
+	}
+	fmt.Println()
+
+	// --- Workspace section ---
+	if gs != nil && len(gs.Workspaces) > 0 {
+		fmt.Printf("--- Workspace ---\n")
+		for name, ws := range gs.Workspaces {
+			wsStatus := ws.Status
+			if wsStatus == "" {
+				wsStatus = "pending"
+			}
+			fmt.Printf("  %s: %s (%s, %s)\n", name, ws.Branch, ws.Kind, wsStatus)
+		}
+		fmt.Println()
+	}
+
+	// --- Failure Context (interrupted beads only) ---
+	if interrupted && gs != nil {
+		failedStep, failedState := findFailedStep(gs)
+		if failedStep != "" {
+			fmt.Printf("--- Failure Context ---\n")
+			fmt.Printf("  Step: %s\n", failedStep)
+			stepCfg, ok := graph.Steps[failedStep]
+			if ok {
+				if stepCfg.Action != "" {
+					fmt.Printf("  Action: %s\n", stepCfg.Action)
+				}
+				if stepCfg.Flow != "" {
+					fmt.Printf("  Flow: %s\n", stepCfg.Flow)
+				}
+				if stepCfg.Workspace != "" {
+					fmt.Printf("  Workspace: %s\n", stepCfg.Workspace)
+				}
+			}
+			if errMsg, ok := failedState.Outputs["error"]; ok {
+				fmt.Printf("  Error: %s\n", errMsg)
+			}
+			fmt.Println()
+		}
+
+		// --- Recovery Options ---
+		fmt.Printf("--- Recovery Options ---\n")
+		if failedStep != "" {
+			fmt.Printf("  spire reset --to %s %s   # retry from failed step\n", failedStep, id)
+		}
+		fmt.Printf("  spire reset --hard %s          # full restart\n", id)
+		fmt.Printf("  spire resummon %s               # restart from scratch\n", id)
+		fmt.Println()
+	}
+
+	// Shared tail sections
+	focusTail(target, id)
+	return nil
+}
+
+// focusTail renders sections common to both v2 and v3: recovery work,
+// related deps, messages, thread context, comments, and agent runs.
+func focusTail(target Bead, id string) {
+	// Recovery work section for interrupted beads.
 	if isInterruptedBead(target.Labels) {
 		dependents, dErr := storeGetDependentsWithMetaFunc(id)
 		if dErr == nil {
@@ -95,7 +212,7 @@ func cmdFocus(args []string) error {
 		}
 	}
 
-	// 7b. Related beads (from dependency graph)
+	// Related beads (from dependency graph)
 	relDeps, relErr := storeGetDepsWithMeta(id)
 	if relErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load related deps for %s: %v\n", id, relErr)
@@ -113,7 +230,7 @@ func cmdFocus(args []string) error {
 		fmt.Println()
 	}
 
-	// 8. Messages referencing this bead
+	// Messages referencing this bead
 	referrers, _ := storeListBeads(beads.IssueFilter{IDPrefix: "spi-", Labels: []string{"msg", "ref:" + id}, Status: statusPtr(beads.StatusOpen)})
 	for _, m := range referrers {
 		from := hasLabel(m, "from:")
@@ -125,7 +242,7 @@ func cmdFocus(args []string) error {
 		fmt.Println()
 	}
 
-	// 9. Thread context (parent + siblings)
+	// Thread context (parent + siblings)
 	if target.Parent != "" {
 		parentBead, parentErr := storeGetBead(target.Parent)
 		if parentErr == nil {
@@ -144,7 +261,7 @@ func cmdFocus(args []string) error {
 		}
 	}
 
-	// 10. Comments
+	// Comments
 	comments, commErr := storeGetComments(id)
 	if commErr == nil && len(comments) > 0 {
 		fmt.Printf("--- Comments (%d) ---\n", len(comments))
@@ -158,7 +275,7 @@ func cmdFocus(args []string) error {
 		fmt.Println()
 	}
 
-	// 11. Agent runs
+	// Agent runs
 	runs, runErr := observability.RunsForBead(id)
 	if runErr == nil && len(runs) > 0 {
 		fmt.Printf("--- Agent Runs (%d) ---\n", len(runs))
@@ -172,8 +289,208 @@ func cmdFocus(args []string) error {
 		}
 		fmt.Println()
 	}
+}
 
-	return nil
+// --- Step graph rendering helpers ---
+
+// renderStepLine prints a single step line for the focus step graph display.
+func renderStepLine(name string, stepCfg formula.StepConfig, gs *executor.GraphState) {
+	status := "pending"
+	indicator := "."
+	detail := ""
+
+	if gs != nil {
+		if ss, ok := gs.Steps[name]; ok {
+			status = ss.Status
+			if status == "" {
+				status = "pending"
+			}
+			detail = formatStepDetail(ss)
+		}
+	}
+
+	prefix := "  "
+	switch status {
+	case "completed":
+		indicator = "\xe2\x9c\x93" // check mark
+	case "active":
+		indicator = "\xe2\x97\x8f" // filled circle
+		prefix = "\xe2\x86\x92 "   // arrow prefix for active
+	case "failed":
+		indicator = "\xe2\x9c\x97" // X mark
+	case "skipped":
+		indicator = "-"
+	default: // pending
+		indicator = "."
+	}
+
+	condition := formatStepCondition(stepCfg)
+
+	line := fmt.Sprintf("%s%-14s %s %-10s", prefix, name, indicator, status)
+	if detail != "" {
+		line += "  " + detail
+	}
+	if condition != "" {
+		line += "  " + condition
+	}
+	fmt.Println(line)
+}
+
+// formatStepDetail returns duration and completed count for a step.
+func formatStepDetail(ss executor.StepState) string {
+	var parts []string
+	if ss.StartedAt != "" && ss.CompletedAt != "" {
+		dur := parseDuration(ss.StartedAt, ss.CompletedAt)
+		if dur != "" {
+			parts = append(parts, "("+dur+")")
+		}
+	}
+	if ss.CompletedCount > 1 {
+		parts = append(parts, fmt.Sprintf("x%d", ss.CompletedCount))
+	}
+	return strings.Join(parts, " ")
+}
+
+// formatStepCondition returns a summary of the step's condition/when clause.
+func formatStepCondition(stepCfg formula.StepConfig) string {
+	if stepCfg.Terminal {
+		cond := "[terminal"
+		if stepCfg.When != nil || stepCfg.Condition != "" {
+			cond += ", when: " + conditionSummary(stepCfg)
+		}
+		cond += "]"
+		return cond
+	}
+	if stepCfg.When != nil || stepCfg.Condition != "" {
+		return "[when: " + conditionSummary(stepCfg) + "]"
+	}
+	return ""
+}
+
+// conditionSummary returns a short human-readable summary of a step's condition.
+func conditionSummary(stepCfg formula.StepConfig) string {
+	if stepCfg.When != nil {
+		var parts []string
+		for _, p := range stepCfg.When.All {
+			parts = append(parts, fmt.Sprintf("%s %s %s", shortKey(p.Left), p.Op, p.Right))
+		}
+		for _, p := range stepCfg.When.Any {
+			parts = append(parts, fmt.Sprintf("%s %s %s", shortKey(p.Left), p.Op, p.Right))
+		}
+		return strings.Join(parts, " && ")
+	}
+	if stepCfg.Condition != "" {
+		return stepCfg.Condition
+	}
+	return ""
+}
+
+// shortKey trims a dotted key to the last two segments for readability.
+// e.g. "steps.review.outputs.outcome" -> "outcome"
+func shortKey(key string) string {
+	parts := strings.Split(key, ".")
+	if len(parts) > 1 {
+		return parts[len(parts)-1]
+	}
+	return key
+}
+
+// topoSortSteps returns step names in topological order (dependencies before dependents).
+func topoSortSteps(graph *formula.FormulaStepGraph) []string {
+	// Build in-degree map and adjacency list.
+	inDegree := make(map[string]int, len(graph.Steps))
+	dependents := make(map[string][]string, len(graph.Steps))
+	for name := range graph.Steps {
+		inDegree[name] = 0
+	}
+	for name, step := range graph.Steps {
+		for _, need := range step.Needs {
+			dependents[need] = append(dependents[need], name)
+			inDegree[name]++
+		}
+	}
+
+	// Kahn's algorithm with lexicographic tie-breaking for determinism.
+	var queue []string
+	for name, deg := range inDegree {
+		if deg == 0 {
+			queue = append(queue, name)
+		}
+	}
+	sort.Strings(queue)
+
+	var result []string
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		result = append(result, node)
+
+		var next []string
+		for _, dep := range dependents[node] {
+			inDegree[dep]--
+			if inDegree[dep] == 0 {
+				next = append(next, dep)
+			}
+		}
+		sort.Strings(next)
+		queue = append(queue, next...)
+	}
+
+	return result
+}
+
+// parseDuration parses RFC3339 timestamps and returns a human-readable duration.
+func parseDuration(startStr, endStr string) string {
+	start, err := time.Parse(time.RFC3339, startStr)
+	if err != nil {
+		return ""
+	}
+	end, err := time.Parse(time.RFC3339, endStr)
+	if err != nil {
+		return ""
+	}
+	d := end.Sub(start)
+	if d < time.Second {
+		return "<1s"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// findFailedStep finds the first failed step in the graph state.
+func findFailedStep(gs *executor.GraphState) (string, executor.StepState) {
+	for name, ss := range gs.Steps {
+		if ss.Status == "failed" {
+			return name, ss
+		}
+	}
+	return "", executor.StepState{}
+}
+
+// resolveWizardName determines the wizard name for a bead.
+// Checks the wizard registry first, falls back to the convention.
+func resolveWizardName(beadID string) string {
+	reg := loadWizardRegistry()
+	wiz := findLiveWizardForBead(reg, beadID)
+	if wiz != nil {
+		return wiz.Name
+	}
+	return "wizard-" + beadID
+}
+
+// getInterruptLabel returns the value after "interrupted:" from the bead's labels.
+func getInterruptLabel(labels []string) string {
+	for _, l := range labels {
+		if strings.HasPrefix(l, "interrupted:") {
+			return l[len("interrupted:"):]
+		}
+	}
+	return ""
 }
 
 // isInterruptedBead returns true if any label starts with "interrupted:".
@@ -196,7 +513,7 @@ func formatRecoverySection(dependents []*beads.IssueWithDependencyMetadata) stri
 		if string(dep.Status) == "closed" {
 			continue
 		}
-		return fmt.Sprintf("--- Recovery work ---\n  %s  %s  (%s)\n\n", dep.ID, dep.Title, dep.Status)
+		return fmt.Sprintf("--- Recovery Work ---\n  %s  %s  (%s)\n\n", dep.ID, dep.Title, dep.Status)
 	}
 	return ""
 }
