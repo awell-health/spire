@@ -168,7 +168,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	}
 	designTimeout := repoconfig.ResolveDesignTimeout(repoCfg.Agent.DesignTimeout)
 	branchPattern := repoconfig.ResolveBranchPattern(repoCfg.Branch.Pattern)
-	if repoCfg.Branch.Base != "" {
+	if repoCfg.Branch.Base != "" && baseBranch == "" {
 		baseBranch = repoCfg.Branch.Base
 	}
 

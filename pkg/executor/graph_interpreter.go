@@ -457,6 +457,16 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 	state.RepoPath = repoPath
 	state.BaseBranch = baseBranch
 
+	// Bead-level base-branch override (from spire file --branch) takes
+	// precedence over repo defaults. Mirrors the v2 resolveBranchState
+	// logic in executor.go.
+	if bead, berr := e.deps.GetBead(e.beadID); berr == nil {
+		if bb := e.deps.HasLabel(bead, "base-branch:"); bb != "" {
+			e.log("using bead base-branch override: %s (was: %s)", bb, state.BaseBranch)
+			state.BaseBranch = bb
+		}
+	}
+
 	if state.StagingBranch == "" {
 		state.StagingBranch = e.resolveDeclaredGraphStagingBranch(graph, state)
 	}

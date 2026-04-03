@@ -1496,3 +1496,109 @@ func containsSubstr(s, substr string) bool {
 	}
 	return false
 }
+
+// --- Test: resolveGraphBranchState respects bead base-branch label ---
+
+func TestResolveGraphBranchState_BeadLabelOverride(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// ResolveRepo returns "main" as the default base branch.
+	deps.ResolveRepo = func(beadID string) (string, string, string, error) {
+		return "/tmp/repo", "", "main", nil
+	}
+
+	// Bead has a base-branch:develop label from spire file --branch.
+	deps.HasLabel = func(b Bead, prefix string) string {
+		if prefix == "base-branch:" {
+			return "develop"
+		}
+		return ""
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-branch-override",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-bb", "wizard-bb", graph, nil, deps)
+	err := exec.resolveGraphBranchState(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("resolveGraphBranchState: %v", err)
+	}
+
+	if exec.graphState.BaseBranch != "develop" {
+		t.Errorf("BaseBranch = %q, want %q", exec.graphState.BaseBranch, "develop")
+	}
+}
+
+func TestResolveGraphBranchState_NoLabelUsesRepoDefault(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	deps.ResolveRepo = func(beadID string) (string, string, string, error) {
+		return "/tmp/repo", "", "main", nil
+	}
+
+	// No base-branch label on bead.
+	deps.HasLabel = func(b Bead, prefix string) string { return "" }
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-no-override",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-no", "wizard-no", graph, nil, deps)
+	err := exec.resolveGraphBranchState(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("resolveGraphBranchState: %v", err)
+	}
+
+	if exec.graphState.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q", exec.graphState.BaseBranch, "main")
+	}
+}
+
+func TestResolveGraphBranchState_ResumeSkipsOverride(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// HasLabel should NOT be called on resume path.
+	labelCalled := false
+	deps.HasLabel = func(b Bead, prefix string) string {
+		if prefix == "base-branch:" {
+			labelCalled = true
+			return "develop"
+		}
+		return ""
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-resume",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop", Terminal: true},
+		},
+	}
+
+	// Pre-populate state to simulate resume.
+	exec := NewGraphForTest("spi-res", "wizard-res", graph, nil, deps)
+	exec.graphState.RepoPath = "/tmp/repo"
+	exec.graphState.BaseBranch = "main"
+	exec.graphState.StagingBranch = "staging/spi-res"
+
+	err := exec.resolveGraphBranchState(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("resolveGraphBranchState: %v", err)
+	}
+
+	if labelCalled {
+		t.Error("base-branch label check should be skipped on resume")
+	}
+	if exec.graphState.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q (resume should preserve)", exec.graphState.BaseBranch, "main")
+	}
+}
