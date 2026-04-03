@@ -191,6 +191,8 @@ func ParseIssueType(s string) beads.IssueType {
 		return beads.TypeChore
 	case "design":
 		return beads.IssueType("design")
+	case "recovery":
+		return beads.IssueType("recovery")
 	default:
 		return beads.TypeTask
 	}

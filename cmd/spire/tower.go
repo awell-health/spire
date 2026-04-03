@@ -269,7 +269,7 @@ var spireMigrations = []columnMigration{
 
 // requiredCustomTypes are the bead types that Spire registers on every tower.
 // These supplement bd's built-in types (task, bug, feature, epic, chore).
-var requiredCustomTypes = []string{"design"}
+var requiredCustomTypes = []string{"design", "recovery"}
 
 // ensureBootstrapCustomTypesFn exists so bootstrap helpers can be tested
 // without shelling out to the real bd binary.

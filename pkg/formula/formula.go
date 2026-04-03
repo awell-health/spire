@@ -305,13 +305,25 @@ func LoadEmbeddedStepGraph(name string) (*FormulaStepGraph, error) {
 
 // --- Resolution ---
 
+// DefaultFormulaMap maps bead types to default v2 formula names.
+// Can be overridden by tower config in the future.
+var DefaultFormulaMap = map[string]string{
+	"task":     "spire-agent-work",
+	"bug":      "spire-bugfix",
+	"epic":     "spire-epic",
+	"chore":    "spire-agent-work",
+	"feature":  "spire-agent-work",
+	"recovery": "spire-recovery-work",
+}
+
 // DefaultV3FormulaMap maps bead types to default v3 formula names.
 var DefaultV3FormulaMap = map[string]string{
-	"task":    "spire-agent-work-v3",
-	"bug":     "spire-bugfix-v3",
-	"epic":    "spire-epic-v3",
-	"chore":   "spire-agent-work-v3",
-	"feature": "spire-agent-work-v3",
+	"task":     "spire-agent-work-v3",
+	"bug":      "spire-bugfix-v3",
+	"epic":     "spire-epic-v3",
+	"chore":    "spire-agent-work-v3",
+	"feature":  "spire-agent-work-v3",
+	"recovery": "spire-recovery-work-v3",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.

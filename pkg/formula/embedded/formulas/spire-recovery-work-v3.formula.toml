@@ -1,0 +1,81 @@
+# spire-recovery-work-v3.formula.toml — v3 lifecycle graph for recovery workflows.
+#
+# Recovery beads are first-class self-healing workflows. This formula defines
+# the step graph for bounded remediation: collect context, design a fix,
+# plan actions, remediate, verify, document learnings, and finish.
+#
+# Step prompts are placeholder stubs — full implementation is in spi-j12j9.3.
+
+name = "spire-recovery-work-v3"
+description = "Recovery workflow: collect_context → design → plan → remediate → verify → document → finish"
+version = 3
+entry = "collect_context"
+
+[vars.bead_id]
+type = "bead_id"
+description = "The recovery bead being worked on"
+required = true
+
+[vars.base_branch]
+description = "Base branch for any remediation branches"
+default = "main"
+
+# --- Steps ---
+
+# Step 1: Mechanically gather interrupted labels, attempt history, linked recovery
+# beads, git/runtime state, and prior closed recovery learnings.
+[steps.collect_context]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-collect-context"
+title = "Collect recovery context"
+
+# Step 2: Surface relevant prior learnings and frame the current failure clearly.
+[steps.design]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-design"
+needs = ["collect_context"]
+title = "Design recovery approach"
+
+# Step 3: Choose bounded remediation actions.
+[steps.plan]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-plan"
+needs = ["design"]
+title = "Plan remediation actions"
+
+# Step 4: Execute the chosen remediation actions.
+[steps.remediate]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-remediate"
+needs = ["plan"]
+title = "Execute remediation"
+
+# Step 5: Confirm the system or bead is healthy again.
+[steps.verify]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-verify"
+needs = ["remediate"]
+title = "Verify recovery"
+
+# Step 6: Write durable learnings back onto the recovery bead.
+[steps.document]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-document"
+needs = ["verify"]
+title = "Document learnings"
+
+# Step 7: Close the recovery bead or escalate with updated context.
+[steps.finish]
+kind = "op"
+action = "bead.finish"
+needs = ["document"]
+terminal = true
+title = "Finish recovery"
+[steps.finish.with]
+status = "closed"

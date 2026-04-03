@@ -54,7 +54,7 @@ func init() {
 	fileCmd.Flags().String("branch", "", "Feature branch name")
 	fileCmd.Flags().String("merge-mode", "", "Merge mode: merge or pr")
 	fileCmd.Flags().String("ref", "", "Design bead ID to link via discovered-from dep")
-	fileCmd.Flags().StringP("type", "t", "", "Bead type (task, bug, feature, epic, chore)")
+	fileCmd.Flags().StringP("type", "t", "", "Bead type (task, bug, feature, epic, chore, recovery)")
 	fileCmd.Flags().IntP("priority", "p", 0, "Priority (0-4)")
 	fileCmd.Flags().String("label", "", "Comma-separated labels")
 	fileCmd.Flags().String("description", "", "Bead description")
