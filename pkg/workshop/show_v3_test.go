@@ -138,6 +138,168 @@ func TestRenderV3_FullEpicFormula(t *testing.T) {
 	}
 }
 
+func TestRenderV3_DAGSection(t *testing.T) {
+	output := renderV3(&formula.FormulaStepGraph{
+		Name:    "dag-test",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"plan": {
+				Kind:   formula.StepKindOp,
+				Action: formula.OpcodeWizardRun,
+				Flow:   "task-plan",
+			},
+			"implement": {
+				Kind:   formula.StepKindOp,
+				Action: formula.OpcodeWizardRun,
+				Flow:   "implement",
+				Needs:  []string{"plan"},
+			},
+			"review": {
+				Kind:  formula.StepKindCall,
+				Graph: "review-phase",
+				Needs: []string{"implement"},
+			},
+			"merge": {
+				Kind:   formula.StepKindOp,
+				Action: formula.OpcodeGitMergeToMain,
+				Needs:  []string{"review"},
+				When: &formula.StructuredCondition{
+					All: []formula.Predicate{
+						{Left: "outcome", Op: "eq", Right: "merge"},
+					},
+				},
+			},
+			"close": {
+				Kind:     formula.StepKindOp,
+				Action:   formula.OpcodeBeadFinish,
+				Needs:    []string{"merge"},
+				Terminal: true,
+			},
+			"discard": {
+				Kind:     formula.StepKindOp,
+				Action:   formula.OpcodeBeadFinish,
+				Needs:    []string{"review"},
+				Terminal: true,
+				When: &formula.StructuredCondition{
+					All: []formula.Predicate{
+						{Left: "outcome", Op: "eq", Right: "discard"},
+					},
+				},
+			},
+		},
+	}, "test")
+
+	// Must have Graph: section
+	if !strings.Contains(output, "Graph:") {
+		t.Fatalf("missing Graph section in output:\n%s", output)
+	}
+
+	// Must contain tree connectors
+	if !strings.Contains(output, "\u2514\u2500") { // └─
+		t.Fatalf("missing tree connector in output:\n%s", output)
+	}
+
+	// Must mark entry and terminal
+	if !strings.Contains(output, "[entry]") {
+		t.Fatalf("missing [entry] marker in output:\n%s", output)
+	}
+	if !strings.Contains(output, "[terminal") {
+		t.Fatalf("missing [terminal] marker in output:\n%s", output)
+	}
+
+	// Must show nested graph reference
+	if !strings.Contains(output, "(-> review-phase)") {
+		t.Fatalf("missing graph reference in output:\n%s", output)
+	}
+
+	// Must show when condition
+	if !strings.Contains(output, "when: outcome == merge") {
+		t.Fatalf("missing when condition in output:\n%s", output)
+	}
+}
+
+func TestRenderDAG_WithResetCycle(t *testing.T) {
+	// Build a graph with a cycle: sage-review -> fix -> sage-review (back-edge)
+	f := &formula.FormulaStepGraph{
+		Name:    "cycle-test",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"sage-review": {
+				Kind:   formula.StepKindOp,
+				Action: formula.OpcodeWizardRun,
+				Flow:   "sage-review",
+			},
+			"fix": {
+				Kind:  formula.StepKindOp,
+				Needs: []string{"sage-review"},
+				When: &formula.StructuredCondition{
+					All: []formula.Predicate{
+						{Left: "verdict", Op: "eq", Right: "request_changes"},
+					},
+				},
+			},
+			"fix-review": {
+				Kind:  formula.StepKindOp,
+				Needs: []string{"fix"},
+			},
+			"merge": {
+				Kind:     formula.StepKindOp,
+				Needs:    []string{"sage-review", "fix-review"},
+				Terminal: true,
+				When: &formula.StructuredCondition{
+					All: []formula.Predicate{
+						{Left: "verdict", Op: "eq", Right: "approve"},
+					},
+				},
+			},
+		},
+	}
+
+	var b strings.Builder
+	renderDAG(&b, f)
+	output := b.String()
+
+	// Must contain the graph
+	if !strings.Contains(output, "Graph:") {
+		t.Fatalf("missing Graph section in output:\n%s", output)
+	}
+
+	// Must show all step names
+	if !strings.Contains(output, "sage-review") {
+		t.Fatalf("missing sage-review in output:\n%s", output)
+	}
+	if !strings.Contains(output, "fix") {
+		t.Fatalf("missing fix in output:\n%s", output)
+	}
+	if !strings.Contains(output, "merge") {
+		t.Fatalf("missing merge in output:\n%s", output)
+	}
+}
+
+func TestRenderDAG_EmbeddedReviewPhase(t *testing.T) {
+	g, err := formula.LoadReviewPhaseFormula()
+	if err != nil {
+		t.Fatalf("load review-phase: %v", err)
+	}
+
+	var b strings.Builder
+	renderDAG(&b, g)
+	output := b.String()
+
+	if !strings.Contains(output, "Graph:") {
+		t.Fatalf("missing Graph section:\n%s", output)
+	}
+	if !strings.Contains(output, "sage-review") {
+		t.Fatalf("missing sage-review:\n%s", output)
+	}
+	if !strings.Contains(output, "[entry]") {
+		t.Fatalf("missing entry marker:\n%s", output)
+	}
+	if !strings.Contains(output, "[terminal") {
+		t.Fatalf("missing terminal marker:\n%s", output)
+	}
+}
+
 func TestRenderWhenPredicate_AllAndAny(t *testing.T) {
 	when := &formula.StructuredCondition{
 		All: []formula.Predicate{

@@ -8,147 +8,23 @@ import (
 	"sort"
 	"strings"
 
-	toml "github.com/pelletier/go-toml/v2"
-
-	"github.com/awell-health/spire/pkg/formula/embedded"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/formula/embedded"
 )
 
 // Show loads a formula by name and returns a human-readable rendering
-// with header info and phase/step diagram.
+// with header info and step-graph DAG diagram.
 func Show(name string) (string, error) {
 	data, source, err := loadRawFormula(name)
 	if err != nil {
 		return "", err
 	}
 
-	var hdr formulaHeader
-	if err := toml.Unmarshal(data, &hdr); err != nil {
-		return "", fmt.Errorf("parse formula header: %w", err)
+	f, err := formula.ParseFormulaStepGraph(data)
+	if err != nil {
+		return "", fmt.Errorf("parse v3 formula: %w", err)
 	}
-
-	switch hdr.Version {
-	case 2:
-		f, err := formula.ParseFormulaV2(data)
-		if err != nil {
-			return "", fmt.Errorf("parse v2 formula: %w", err)
-		}
-		return renderV2(f, source), nil
-	case 3:
-		f, err := formula.ParseFormulaStepGraph(data)
-		if err != nil {
-			return "", fmt.Errorf("parse v3 formula: %w", err)
-		}
-		return renderV3(f, source), nil
-	default:
-		return "", fmt.Errorf("unsupported formula version %d", hdr.Version)
-	}
-}
-
-// renderV2 produces a human-readable display of a v2 phase-pipeline formula.
-func renderV2(f *formula.FormulaV2, source string) string {
-	var b strings.Builder
-
-	// Header
-	fmt.Fprintf(&b, "%s (v%d)", f.Name, f.Version)
-	if f.Description != "" {
-		fmt.Fprintf(&b, " — %s", f.Description)
-	}
-	b.WriteString("\n")
-	fmt.Fprintf(&b, "Source: %s\n", source)
-
-	// Pipeline diagram
-	phases := f.EnabledPhases()
-	if len(phases) > 0 {
-		b.WriteString("\nPipeline:\n")
-		fmt.Fprintf(&b, "  %s\n", strings.Join(phases, " → "))
-	}
-
-	// Per-phase details
-	for _, phaseName := range phases {
-		pc := f.Phases[phaseName]
-		b.WriteString("\n")
-		fmt.Fprintf(&b, "  [%s]\n", phaseName)
-
-		if role := pc.GetRole(); role != "apprentice" || pc.Role != "" {
-			fmt.Fprintf(&b, "    role:     %s\n", pc.GetRole())
-		}
-		if pc.Model != "" {
-			fmt.Fprintf(&b, "    model:    %s\n", pc.Model)
-		}
-		if pc.Timeout != "" {
-			fmt.Fprintf(&b, "    timeout:  %s\n", pc.Timeout)
-		}
-		if pc.MaxTurns > 0 {
-			fmt.Fprintf(&b, "    turns:    %d\n", pc.MaxTurns)
-		}
-		if dispatch := pc.GetDispatch(); dispatch != "direct" {
-			fmt.Fprintf(&b, "    dispatch: %s\n", dispatch)
-		}
-		if pc.StagingBranch != "" {
-			fmt.Fprintf(&b, "    staging:  %s\n", pc.StagingBranch)
-		}
-		if pc.MergeStrategy != "" {
-			fmt.Fprintf(&b, "    strategy: %s\n", pc.MergeStrategy)
-		}
-		if pc.Worktree {
-			fmt.Fprintf(&b, "    worktree: true\n")
-		}
-		if pc.Apprentice {
-			fmt.Fprintf(&b, "    apprentice: true\n")
-		}
-		if pc.Auto {
-			fmt.Fprintf(&b, "    auto:     true\n")
-		}
-		if pc.VerdictOnly {
-			fmt.Fprintf(&b, "    verdict_only: true\n")
-		}
-		if pc.Judgment {
-			fmt.Fprintf(&b, "    judgment:  true\n")
-		}
-		if pc.Behavior != "" {
-			fmt.Fprintf(&b, "    behavior: %s\n", pc.Behavior)
-		}
-		if pc.Build != "" {
-			fmt.Fprintf(&b, "    build:    %s\n", pc.Build)
-		}
-		if pc.Test != "" {
-			fmt.Fprintf(&b, "    test:     %s\n", pc.Test)
-		}
-		if pc.RevisionPolicy != nil {
-			fmt.Fprintf(&b, "    revision_policy:\n")
-			fmt.Fprintf(&b, "      max_rounds:    %d\n", pc.RevisionPolicy.MaxRounds)
-			if pc.RevisionPolicy.ArbiterModel != "" {
-				fmt.Fprintf(&b, "      arbiter_model: %s\n", pc.RevisionPolicy.ArbiterModel)
-			}
-		}
-		if len(pc.Context) > 0 {
-			fmt.Fprintf(&b, "    context:  %s\n", strings.Join(pc.Context, ", "))
-		}
-	}
-
-	// Variables
-	if len(f.Vars) > 0 {
-		b.WriteString("\nVariables:\n")
-		names := make([]string, 0, len(f.Vars))
-		for n := range f.Vars {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			v := f.Vars[n]
-			req := ""
-			if v.Required {
-				req = " (required)"
-			}
-			fmt.Fprintf(&b, "  %s%s — %s\n", n, req, v.Description)
-			if v.Default != "" {
-				fmt.Fprintf(&b, "    default: %s\n", v.Default)
-			}
-		}
-	}
-
-	return b.String()
+	return renderV3(f, source), nil
 }
 
 // renderV3 produces a human-readable display of a v3 step-graph formula.
@@ -166,7 +42,10 @@ func renderV3(f *formula.FormulaStepGraph, source string) string {
 	// Workspace declarations
 	renderV3Workspaces(&b, f.Workspaces)
 
-	// Determine order: entry first, then by depth (BFS-ish)
+	// ASCII DAG rendering
+	renderDAG(&b, f)
+
+	// Detailed step listing
 	entry := formula.EntryStep(f)
 	ordered := topologicalOrder(f, entry)
 
@@ -180,6 +59,128 @@ func renderV3(f *formula.FormulaStepGraph, source string) string {
 	renderV3Vars(&b, f.Vars)
 
 	return b.String()
+}
+
+// renderDAG produces an ASCII tree-style rendering of the step graph.
+// It walks the graph from the entry step using buildSuccessorMap, rendering
+// box-drawing characters for the tree structure:
+//
+//	plan [entry]
+//	 └─ implement
+//	     └─ review (-> review-phase)
+//	         ├─ merge [when: outcome == merge]
+//	         │   └─ close [terminal]
+//	         └─ discard [terminal, when: outcome == discard]
+func renderDAG(b *strings.Builder, f *formula.FormulaStepGraph) {
+	entry := formula.EntryStep(f)
+	if entry == "" {
+		return
+	}
+
+	successors := buildSuccessorMap(f)
+
+	b.WriteString("\nGraph:\n")
+
+	// Track visited to detect back-edges (resets/cycles)
+	visited := make(map[string]bool)
+	dagRenderNode(b, f, entry, "  ", true, true, visited, successors)
+}
+
+// dagAnnotation builds the annotation string for a DAG node.
+func dagAnnotation(f *formula.FormulaStepGraph, name string, step formula.StepConfig) string {
+	var annotations []string
+
+	if name == formula.EntryStep(f) {
+		annotations = append(annotations, "entry")
+	}
+	if step.Terminal {
+		annotations = append(annotations, "terminal")
+	}
+	if step.When != nil {
+		annotations = append(annotations, "when: "+renderWhenPredicate(step.When))
+	} else if step.Condition != "" {
+		annotations = append(annotations, "when: "+step.Condition)
+	}
+
+	if len(annotations) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(annotations, ", ") + "]"
+}
+
+// dagRenderNode recursively renders a step and its successors as a tree.
+func dagRenderNode(b *strings.Builder, f *formula.FormulaStepGraph, name string, prefix string, isLast bool, isRoot bool, visited map[string]bool, successors map[string][]string) {
+	step := f.Steps[name]
+
+	// Build the connector
+	var connector string
+	if isRoot {
+		connector = ""
+	} else if isLast {
+		connector = "└─ "
+	} else {
+		connector = "├─ "
+	}
+
+	// Nested graph reference
+	graphRef := ""
+	if step.Graph != "" {
+		graphRef = fmt.Sprintf(" (-> %s)", step.Graph)
+	}
+
+	annotationStr := dagAnnotation(f, name, step)
+
+	fmt.Fprintf(b, "%s%s%s%s%s\n", prefix, connector, name, graphRef, annotationStr)
+
+	// Cycle detection: if we already visited this node, don't recurse
+	if visited[name] {
+		return
+	}
+	visited[name] = true
+
+	// Determine child prefix for continuation lines
+	var childPrefix string
+	if isRoot {
+		childPrefix = prefix
+	} else if isLast {
+		childPrefix = prefix + "    "
+	} else {
+		childPrefix = prefix + "│   "
+	}
+
+	succs := successors[name]
+
+	// Separate forward edges from back-edges (cycles/resets)
+	var forwardSuccs []string
+	var resetTargets []string
+	for _, s := range succs {
+		if visited[s] {
+			resetTargets = append(resetTargets, s)
+		} else {
+			forwardSuccs = append(forwardSuccs, s)
+		}
+	}
+
+	// Total children = forward successors + optional reset line
+	totalChildren := len(forwardSuccs)
+	if len(resetTargets) > 0 {
+		totalChildren++
+	}
+
+	// Render forward successors first
+	childIdx := 0
+	for _, s := range forwardSuccs {
+		childIdx++
+		isLastChild := childIdx == totalChildren
+		dagRenderNode(b, f, s, childPrefix, isLastChild, false, visited, successors)
+	}
+
+	// Render reset back-edges as a note at the end
+	if len(resetTargets) > 0 {
+		fmt.Fprintf(b, "%s└─ (resets: %s)\n", childPrefix, strings.Join(resetTargets, ", "))
+	}
+
+	delete(visited, name)
 }
 
 // renderV3Workspaces renders the workspace declarations section.

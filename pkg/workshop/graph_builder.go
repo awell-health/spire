@@ -290,8 +290,8 @@ func writeWhenCondition(buf *bytes.Buffer, stepName string, when *formula.Struct
 	}
 }
 
-// formatStringSliceQuoted wraps each element in quotes and joins with commas.
-func formatStringSliceQuoted(ss []string) string {
+// formatStringSlice formats a string slice as TOML inline array content.
+func formatStringSlice(ss []string) string {
 	quoted := make([]string, len(ss))
 	for i, s := range ss {
 		quoted[i] = fmt.Sprintf("%q", s)

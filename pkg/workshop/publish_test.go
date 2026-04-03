@@ -9,12 +9,12 @@ import (
 func TestPublish(t *testing.T) {
 	tempDir := t.TempDir()
 
-	dest, err := Publish("spire-agent-work", tempDir)
+	dest, err := Publish("spire-agent-work-v3", tempDir)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	expected := filepath.Join(tempDir, "formulas", "spire-agent-work.formula.toml")
+	expected := filepath.Join(tempDir, "formulas", "spire-agent-work-v3.formula.toml")
 	if dest != expected {
 		t.Errorf("dest: got %q, want %q", dest, expected)
 	}
@@ -43,7 +43,7 @@ func TestPublishCreatesFormulasDir(t *testing.T) {
 		t.Fatal("formulas/ should not exist before publish")
 	}
 
-	_, err := Publish("spire-agent-work", tempDir)
+	_, err := Publish("spire-agent-work-v3", tempDir)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestPublishCreatesFormulasDir(t *testing.T) {
 }
 
 func TestPublishEmptyBeadsDir(t *testing.T) {
-	_, err := Publish("spire-agent-work", "")
+	_, err := Publish("spire-agent-work-v3", "")
 	if err == nil {
 		t.Fatal("expected error for empty beadsDir")
 	}
@@ -77,7 +77,7 @@ func TestUnpublish(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Publish first
-	dest, err := Publish("spire-agent-work", tempDir)
+	dest, err := Publish("spire-agent-work-v3", tempDir)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestUnpublish(t *testing.T) {
 	}
 
 	// Unpublish
-	err = Unpublish("spire-agent-work", tempDir)
+	err = Unpublish("spire-agent-work-v3", tempDir)
 	if err != nil {
 		t.Fatalf("Unpublish: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestUnpublishNonexistent(t *testing.T) {
 }
 
 func TestUnpublishEmptyBeadsDir(t *testing.T) {
-	err := Unpublish("spire-agent-work", "")
+	err := Unpublish("spire-agent-work-v3", "")
 	if err == nil {
 		t.Fatal("expected error for empty beadsDir")
 	}
@@ -119,25 +119,25 @@ func TestIsPublished(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Before publish
-	if IsPublished("spire-agent-work", tempDir) {
+	if IsPublished("spire-agent-work-v3", tempDir) {
 		t.Error("should not be published before Publish()")
 	}
 
 	// After publish
-	_, err := Publish("spire-agent-work", tempDir)
+	_, err := Publish("spire-agent-work-v3", tempDir)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if !IsPublished("spire-agent-work", tempDir) {
+	if !IsPublished("spire-agent-work-v3", tempDir) {
 		t.Error("should be published after Publish()")
 	}
 
 	// After unpublish
-	err = Unpublish("spire-agent-work", tempDir)
+	err = Unpublish("spire-agent-work-v3", tempDir)
 	if err != nil {
 		t.Fatalf("Unpublish: %v", err)
 	}
-	if IsPublished("spire-agent-work", tempDir) {
+	if IsPublished("spire-agent-work-v3", tempDir) {
 		t.Error("should not be published after Unpublish()")
 	}
 }

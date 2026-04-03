@@ -304,13 +304,13 @@ func cmdWorkshopValidate(args []string) error {
 	return nil
 }
 
-// cmdWorkshopDryRun handles: spire workshop dry-run <name> [--json] [--bead <id>]
+// cmdWorkshopDryRun handles: spire workshop dry-run <name> [--json]
 func cmdWorkshopDryRun(args []string) error {
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	var name, beadID string
+	var name string
 	var jsonOutput bool
 
 	for i := 0; i < len(args); i++ {
@@ -318,11 +318,10 @@ func cmdWorkshopDryRun(args []string) error {
 		case "--json":
 			jsonOutput = true
 		case "--bead":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--bead requires a value")
+			// Accept but ignore for backward compat
+			if i+1 < len(args) {
+				i++
 			}
-			i++
-			beadID = args[i]
 		default:
 			if name == "" && !strings.HasPrefix(args[i], "-") {
 				name = args[i]
@@ -333,31 +332,15 @@ func cmdWorkshopDryRun(args []string) error {
 	}
 
 	if name == "" {
-		return fmt.Errorf("usage: spire workshop dry-run <name> [--json] [--bead <id>]")
+		return fmt.Errorf("usage: spire workshop dry-run <name> [--json]")
 	}
 
-	f, err := formula.LoadFormulaByName(name)
+	g, err := formula.LoadStepGraphByName(name)
 	if err != nil {
 		return fmt.Errorf("load formula %q: %w", name, err)
 	}
 
-	var loadBead func(string) (workshop.BeadInfo, error)
-	if beadID != "" {
-		loadBead = func(id string) (workshop.BeadInfo, error) {
-			b, err := storeGetBead(id)
-			if err != nil {
-				return workshop.BeadInfo{}, err
-			}
-			return workshop.BeadInfo{
-				ID:     b.ID,
-				Type:   b.Type,
-				Labels: b.Labels,
-				Title:  b.Title,
-			}, nil
-		}
-	}
-
-	result, err := workshop.DryRun(f, beadID, loadBead)
+	result, err := workshop.DryRunStepGraph(g)
 	if err != nil {
 		return fmt.Errorf("dry-run: %w", err)
 	}
@@ -371,7 +354,7 @@ func cmdWorkshopDryRun(args []string) error {
 		return nil
 	}
 
-	printDryRunResult(result)
+	printStepGraphResult(result)
 	return nil
 }
 
@@ -407,7 +390,7 @@ func cmdWorkshopTest(args []string) error {
 		return fmt.Errorf("usage: spire workshop test <name> --bead <id>")
 	}
 
-	f, err := formula.LoadFormulaByName(name)
+	g, err := formula.LoadStepGraphByName(name)
 	if err != nil {
 		return fmt.Errorf("load formula %q: %w", name, err)
 	}
@@ -424,41 +407,13 @@ func cmdWorkshopTest(args []string) error {
 		fmt.Fprintf(os.Stderr, "Note: bead %s would normally use formula %q (you specified %q)\n\n", beadID, resolvedName, name)
 	}
 
-	loadBead := func(id string) (workshop.BeadInfo, error) {
-		b, err := storeGetBead(id)
-		if err != nil {
-			return workshop.BeadInfo{}, err
-		}
-		return workshop.BeadInfo{
-			ID:     b.ID,
-			Type:   b.Type,
-			Labels: b.Labels,
-			Title:  b.Title,
-		}, nil
-	}
-
-	result, err := workshop.DryRun(f, beadID, loadBead)
+	result, err := workshop.DryRunStepGraph(g)
 	if err != nil {
 		return fmt.Errorf("dry-run: %w", err)
 	}
 
-	// Also simulate review step graph if review phase is enabled
-	var stepResult *workshop.StepGraphSimulation
-	if f.PhaseEnabled("review") {
-		if g, err := formula.LoadReviewPhaseFormula(); err == nil {
-			stepResult, _ = workshop.DryRunStepGraph(g)
-		}
-	}
-
 	if jsonOutput {
-		out := struct {
-			DryRun    *workshop.DryRunResult       `json:"dry_run"`
-			ReviewDAG *workshop.StepGraphSimulation `json:"review_dag,omitempty"`
-		}{
-			DryRun:    result,
-			ReviewDAG: stepResult,
-		}
-		data, err := json.MarshalIndent(out, "", "  ")
+		data, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal result: %w", err)
 		}
@@ -467,13 +422,7 @@ func cmdWorkshopTest(args []string) error {
 	}
 
 	fmt.Printf("Test: %s against bead %s (%s, type=%s)\n\n", name, beadID, bead.Title, bead.Type)
-	printDryRunResult(result)
-
-	if stepResult != nil {
-		fmt.Println()
-		printStepGraphResult(stepResult)
-	}
-
+	printStepGraphResult(result)
 	return nil
 }
 
@@ -519,58 +468,6 @@ func cmdWorkshopUnpublish(args []string) error {
 
 	fmt.Printf("Unpublished %s — beads will fall back to embedded default\n", name)
 	return nil
-}
-
-// printDryRunResult renders a human-readable dry-run report.
-func printDryRunResult(r *workshop.DryRunResult) {
-	fmt.Printf("Formula: %s (v%d)\n", r.Formula, r.Version)
-	fmt.Printf("Phases: %s\n\n", strings.Join(r.EnabledPhases, " → "))
-
-	for _, p := range r.Phases {
-		fmt.Printf("[%s]\n", p.Name)
-
-		var details []string
-		details = append(details, "Role: "+p.Role)
-		if p.Model != "" {
-			details = append(details, "Model: "+p.Model)
-		}
-		if p.Timeout != "" {
-			details = append(details, "Timeout: "+p.Timeout)
-		}
-		fmt.Printf("  %s\n", strings.Join(details, " | "))
-
-		var extras []string
-		if p.Dispatch != "" && p.Dispatch != "direct" {
-			extras = append(extras, "Dispatch: "+p.Dispatch)
-		}
-		if p.Worktree {
-			extras = append(extras, "Worktree: yes")
-		}
-		if p.MaxBuildFixRounds > 0 {
-			extras = append(extras, fmt.Sprintf("Build-fix rounds: %d", p.MaxBuildFixRounds))
-		}
-		if p.StagingBranch != "" {
-			extras = append(extras, "Staging: "+p.StagingBranch)
-		}
-		if p.Auto {
-			extras = append(extras, "Auto: yes")
-		}
-		if p.Strategy != "" && p.Strategy != "squash" {
-			extras = append(extras, "Strategy: "+p.Strategy)
-		}
-		if len(extras) > 0 {
-			fmt.Printf("  %s\n", strings.Join(extras, " | "))
-		}
-
-		fmt.Printf("  → %s\n\n", p.Description)
-	}
-
-	if len(r.Errors) > 0 {
-		fmt.Println("Errors:")
-		for _, e := range r.Errors {
-			fmt.Printf("  - %s\n", e)
-		}
-	}
 }
 
 // printStepGraphResult renders a human-readable step graph simulation.
