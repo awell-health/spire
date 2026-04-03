@@ -293,6 +293,89 @@ func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeC
 	deps.AddComment(recoveryID, ctx)
 }
 
+// executorRecoveryDeps adapts executor.Deps to recovery.RecoveryDeps for use
+// by the document/finish/verify recovery lifecycle functions.
+type executorRecoveryDeps struct {
+	deps *Deps
+}
+
+func (d executorRecoveryDeps) GetBead(id string) (recovery.DepBead, error) {
+	b, err := d.deps.GetBead(id)
+	if err != nil {
+		return recovery.DepBead{}, err
+	}
+	return recovery.DepBead{
+		ID:     b.ID,
+		Title:  b.Title,
+		Status: b.Status,
+		Labels: b.Labels,
+		Parent: b.Parent,
+	}, nil
+}
+
+func (d executorRecoveryDeps) GetDependentsWithMeta(id string) ([]recovery.DepDependent, error) {
+	if d.deps.GetDependentsWithMeta == nil {
+		return nil, nil
+	}
+	items, err := d.deps.GetDependentsWithMeta(id)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]recovery.DepDependent, len(items))
+	for i, item := range items {
+		result[i] = recovery.DepDependent{
+			ID:             item.ID,
+			Title:          item.Title,
+			Status:         string(item.Status),
+			Labels:         item.Labels,
+			DependencyType: string(item.DependencyType),
+		}
+	}
+	return result, nil
+}
+
+func (d executorRecoveryDeps) UpdateBead(id string, meta map[string]interface{}) error {
+	if d.deps.UpdateBead == nil {
+		return nil
+	}
+	return d.deps.UpdateBead(id, meta)
+}
+
+func (d executorRecoveryDeps) AddComment(id, text string) error {
+	if d.deps.AddComment == nil {
+		return nil
+	}
+	return d.deps.AddComment(id, text)
+}
+
+func (d executorRecoveryDeps) CloseBead(id string) error {
+	if d.deps.CloseBead == nil {
+		return nil
+	}
+	return d.deps.CloseBead(id)
+}
+
+// recoveryDepsFromExecutor wraps executor Deps into a recovery.RecoveryDeps.
+func recoveryDepsFromExecutor(deps *Deps) recovery.RecoveryDeps {
+	return executorRecoveryDeps{deps: deps}
+}
+
+// DocumentRecovery is the executor-side entry point for writing durable
+// recovery learning metadata and narrative onto a recovery bead.
+// Called from formula phase dispatch at the document phase.
+func DocumentRecovery(beadID string, learning recovery.RecoveryLearning, deps *Deps) error {
+	rd := recoveryDepsFromExecutor(deps)
+	return recovery.DocumentLearning(rd, beadID, learning)
+}
+
+// ExecutorFinishRecovery is the executor-side entry point for finalizing a
+// recovery bead: documents the learning, adds a close comment, and closes
+// the bead. Called from formula phase dispatch at the finish phase.
+func ExecutorFinishRecovery(beadID string, learning recovery.RecoveryLearning, deps *Deps) error {
+	rd := recoveryDepsFromExecutor(deps)
+	return recovery.FinishRecovery(rd, beadID, learning)
+}
+
 func buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx string) string {
 	s := fmt.Sprintf(
 		"Recovery work surface for interrupted bead %s.\n"+

@@ -5,6 +5,8 @@
 // recovery decisions.
 package recovery
 
+import "time"
+
 // FailureClass categorizes the interruption reason from an interrupted:* label.
 type FailureClass string
 
@@ -86,12 +88,58 @@ type AlertInfo struct {
 	Label string `json:"label"` // alert:* label
 }
 
+// ResolutionKind classifies how a recovery was resolved.
+type ResolutionKind string
+
+const (
+	ResolutionResetHard ResolutionKind = "reset-hard"
+	ResolutionRebase    ResolutionKind = "rebase"
+	ResolutionResummon  ResolutionKind = "resummon"
+	ResolutionManual    ResolutionKind = "manual"
+	ResolutionUnknown   ResolutionKind = "unknown"
+)
+
+// VerificationStatus classifies the health of the source bead after recovery.
+type VerificationStatus string
+
+const (
+	VerifyHealthy  VerificationStatus = "healthy"
+	VerifyDegraded VerificationStatus = "degraded"
+	VerifyUnknown  VerificationStatus = "unknown"
+)
+
+// RecoveryLearning is the durable projection written at document/finish time.
+// It captures what failed, what was tried, and what fixed it so future
+// recoveries can reuse the learning.
+type RecoveryLearning struct {
+	ResolutionKind     ResolutionKind
+	VerificationStatus VerificationStatus
+	LearningKey        string    // short slug for dedup lookups, e.g. "implement-merge-conflict"
+	Reusable           bool      // true if this learning applies to future similar failures
+	ResolvedAt         time.Time
+	Narrative          string    // human-readable: what failed, what was tried, what fixed it
+}
+
+// RecoveryDeps abstracts store operations needed by the verify/document/finish
+// recovery lifecycle. Satisfied by executor-side adapters wrapping executor.Deps.
+type RecoveryDeps interface {
+	GetBead(id string) (DepBead, error)
+	GetDependentsWithMeta(id string) ([]DepDependent, error)
+	UpdateBead(id string, meta map[string]interface{}) error
+	AddComment(id, text string) error
+	CloseBead(id string) error
+}
+
 // VerifyResult is the post-recovery verification check.
 type VerifyResult struct {
-	Clean           bool     `json:"clean"`
-	InterruptLabels []string `json:"interrupt_labels,omitempty"` // any remaining interrupted:* labels
-	NeedsHuman      bool     `json:"needs_human"`
-	AlertsOpen      int      `json:"alerts_open"`
+	Clean           bool               `json:"clean"`
+	Healthy         bool               `json:"healthy"`
+	Status          VerificationStatus `json:"status"`
+	Reason          string             `json:"reason,omitempty"`
+	Checks          []string           `json:"checks,omitempty"`
+	InterruptLabels []string           `json:"interrupt_labels,omitempty"` // any remaining interrupted:* labels
+	NeedsHuman      bool               `json:"needs_human"`
+	AlertsOpen      int                `json:"alerts_open"`
 }
 
 // Exit codes for --auto mode (steward signals).
