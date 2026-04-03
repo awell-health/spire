@@ -15,6 +15,7 @@ func DocumentLearning(deps RecoveryDeps, beadID string, learning RecoveryLearnin
 		KeyLearningKey:        learning.LearningKey,
 		KeyReusable:           strconv.FormatBool(learning.Reusable),
 		KeyResolvedAt:         learning.ResolvedAt.UTC().Format(time.RFC3339),
+		KeyLearningSummary:    learning.LearningSummary,
 	}
 	if err := deps.UpdateBead(beadID, meta); err != nil {
 		return fmt.Errorf("document learning metadata: %w", err)

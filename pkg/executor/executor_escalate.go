@@ -239,6 +239,8 @@ func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeC
 		fmt.Fprintf(os.Stderr, "warning: dedupe recovery bead for %s: %s\n", parentID, err)
 	}
 	if found {
+		// Re-seed structured metadata idempotently (SetBeadMetadataMap merges).
+		seedRecoveryMetadata(existingID, parentID, failureType, nodeCtx)
 		// Append full context comment to existing recovery bead.
 		ctx := buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx)
 		deps.AddComment(existingID, ctx)
@@ -287,6 +289,9 @@ func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeC
 			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", recoveryID, parentID, derr)
 		}
 	}
+
+	// Seed structured metadata (separate call — CreateOpts has no Metadata field).
+	seedRecoveryMetadata(recoveryID, parentID, failureType, nodeCtx)
 
 	// Seed with context comment.
 	ctx := buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx)
@@ -374,6 +379,42 @@ func DocumentRecovery(beadID string, learning recovery.RecoveryLearning, deps *D
 func ExecutorFinishRecovery(beadID string, learning recovery.RecoveryLearning, deps *Deps) error {
 	rd := recoveryDepsFromExecutor(deps)
 	return recovery.FinishRecovery(rd, beadID, learning)
+}
+
+// seedRecoveryMetadata writes the structured source-context fields onto a
+// recovery bead's issue metadata. Errors are logged but non-fatal — the bead
+// is still useful even without all metadata.
+func seedRecoveryMetadata(recoveryID, parentID, failureType, nodeCtx string) {
+	if recoveryID == "" {
+		return
+	}
+
+	stepName := ""
+	if nodeCtx != "" {
+		for _, part := range strings.Fields(nodeCtx) {
+			if strings.HasPrefix(part, "step=") {
+				stepName = strings.TrimPrefix(part, "step=")
+				break
+			}
+		}
+	}
+
+	// Build a stable failure signature from available context.
+	sig := failureType
+	if stepName != "" {
+		sig = failureType + ":" + stepName
+	}
+
+	meta := recovery.RecoveryMetadata{
+		FailureClass:     failureType,
+		SourceBead:       parentID,
+		SourceStep:       stepName,
+		FailureSignature: sig,
+		// SourceFormula is not available at this call site — seeded as empty.
+	}
+	if err := meta.Apply(recoveryID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: seed recovery metadata on %s: %s\n", recoveryID, err)
+	}
 }
 
 func buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx string) string {

@@ -320,6 +320,9 @@ func doAnnotateResolution(e *Executor, req recovery.RecoveryActionRequest) recov
 	if v := req.Params["verification_status"]; v != "" {
 		meta[recovery.KeyVerificationStatus] = v
 	}
+	if v := req.Params["learning_summary"]; v != "" {
+		meta[recovery.KeyLearningSummary] = v
+	}
 
 	e.log("recovery: annotate-resolution on %s (%d fields)", req.BeadID, len(meta))
 

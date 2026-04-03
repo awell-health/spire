@@ -118,6 +118,7 @@ type RecoveryLearning struct {
 	Reusable           bool      // true if this learning applies to future similar failures
 	ResolvedAt         time.Time
 	Narrative          string    // human-readable: what failed, what was tried, what fixed it
+	LearningSummary    string    // short structured summary for metadata queries
 }
 
 // RecoveryDeps abstracts store operations needed by the verify/document/finish
