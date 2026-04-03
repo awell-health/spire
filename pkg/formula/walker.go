@@ -46,7 +46,10 @@ func NextSteps(graph *FormulaStepGraph, completed map[string]bool, ctx map[strin
 // list (the implicit entry point) is returned.
 func EntryStep(graph *FormulaStepGraph) string {
 	if graph.Entry != "" {
-		return graph.Entry
+		if _, ok := graph.Steps[graph.Entry]; ok {
+			return graph.Entry
+		}
+		return ""
 	}
 	for name, step := range graph.Steps {
 		if len(step.Needs) == 0 {
@@ -158,8 +161,12 @@ func ValidateGraph(graph *FormulaStepGraph) error {
 			}
 		}
 	}
-	// Validate workspace declarations themselves.
+	// Apply defaults and validate workspace declarations.
 	if len(graph.Workspaces) > 0 {
+		for name, ws := range graph.Workspaces {
+			DefaultWorkspaceDecl(&ws)
+			graph.Workspaces[name] = ws
+		}
 		if err := ValidateWorkspaces(graph.Workspaces); err != nil {
 			return fmt.Errorf("workspace validation: %w", err)
 		}

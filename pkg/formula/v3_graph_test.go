@@ -150,7 +150,11 @@ func TestNextSteps_Review_ConditionalBranching(t *testing.T) {
 
 	t.Run("approve goes to merge", func(t *testing.T) {
 		completed := map[string]bool{"sage-review": true}
-		ctx := map[string]string{"verdict": "approve"}
+		ctx := map[string]string{
+			"steps.sage-review.outputs.verdict": "approve",
+			"steps.sage-review.completed_count": "1",
+			"vars.max_review_rounds":            "3",
+		}
 		next, err := NextSteps(g, completed, ctx)
 		if err != nil {
 			t.Fatalf("NextSteps: %v", err)
@@ -162,7 +166,11 @@ func TestNextSteps_Review_ConditionalBranching(t *testing.T) {
 
 	t.Run("request_changes round<max goes to fix", func(t *testing.T) {
 		completed := map[string]bool{"sage-review": true}
-		ctx := map[string]string{"verdict": "request_changes", "round": "1", "max_rounds": "3"}
+		ctx := map[string]string{
+			"steps.sage-review.outputs.verdict": "request_changes",
+			"steps.sage-review.completed_count": "1",
+			"vars.max_review_rounds":            "3",
+		}
 		next, err := NextSteps(g, completed, ctx)
 		if err != nil {
 			t.Fatalf("NextSteps: %v", err)
@@ -174,7 +182,11 @@ func TestNextSteps_Review_ConditionalBranching(t *testing.T) {
 
 	t.Run("request_changes round>=max goes to arbiter", func(t *testing.T) {
 		completed := map[string]bool{"sage-review": true}
-		ctx := map[string]string{"verdict": "request_changes", "round": "3", "max_rounds": "3"}
+		ctx := map[string]string{
+			"steps.sage-review.outputs.verdict": "request_changes",
+			"steps.sage-review.completed_count": "3",
+			"vars.max_review_rounds":            "3",
+		}
 		next, err := NextSteps(g, completed, ctx)
 		if err != nil {
 			t.Fatalf("NextSteps: %v", err)
@@ -187,10 +199,10 @@ func TestNextSteps_Review_ConditionalBranching(t *testing.T) {
 	t.Run("arbiter merge goes to merge terminal", func(t *testing.T) {
 		completed := map[string]bool{"sage-review": true, "arbiter": true}
 		ctx := map[string]string{
-			"verdict":          "request_changes",
-			"round":            "3",
-			"max_rounds":       "3",
-			"arbiter_decision": "merge",
+			"steps.sage-review.outputs.verdict":      "request_changes",
+			"steps.sage-review.completed_count":      "3",
+			"vars.max_review_rounds":                 "3",
+			"steps.arbiter.outputs.arbiter_decision": "merge",
 		}
 		next, err := NextSteps(g, completed, ctx)
 		if err != nil {
@@ -204,10 +216,10 @@ func TestNextSteps_Review_ConditionalBranching(t *testing.T) {
 	t.Run("arbiter discard goes to discard terminal", func(t *testing.T) {
 		completed := map[string]bool{"sage-review": true, "arbiter": true}
 		ctx := map[string]string{
-			"verdict":          "request_changes",
-			"round":            "3",
-			"max_rounds":       "3",
-			"arbiter_decision": "discard",
+			"steps.sage-review.outputs.verdict":      "request_changes",
+			"steps.sage-review.completed_count":      "3",
+			"vars.max_review_rounds":                 "3",
+			"steps.arbiter.outputs.arbiter_decision": "discard",
 		}
 		next, err := NextSteps(g, completed, ctx)
 		if err != nil {

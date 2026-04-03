@@ -460,7 +460,7 @@ func TestValidateGraph_WorkspaceKindRequired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for workspace with no kind")
 	}
-	if !strings.Contains(err.Error(), "kind is required") {
+	if !strings.Contains(err.Error(), "invalid kind") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
