@@ -5,6 +5,107 @@ import (
 	"testing"
 )
 
+func TestParseStepContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		result     string
+		wantNil    bool
+		wantStep   string
+		wantAction string
+		wantFlow   string
+		wantWS     string
+	}{
+		{
+			name:       "v3 node-scoped result",
+			result:     "failure: step implement action=wizard.run flow=implement workspace=feature: subprocess exited",
+			wantStep:   "implement",
+			wantAction: "wizard.run",
+			wantFlow:   "implement",
+			wantWS:     "feature",
+		},
+		{
+			name:       "v3 action only",
+			result:     "failure: step plan action=wizard.run: plan failed",
+			wantStep:   "plan",
+			wantAction: "wizard.run",
+		},
+		{
+			name:    "v2 phase result",
+			result:  "failure: phase implement: error",
+			wantNil: true,
+		},
+		{
+			name:    "empty result",
+			result:  "",
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := parseStepContext(tt.result)
+			if tt.wantNil {
+				if sc != nil {
+					t.Errorf("expected nil, got %+v", sc)
+				}
+				return
+			}
+			if sc == nil {
+				t.Fatal("expected non-nil StepContext")
+			}
+			if sc.StepName != tt.wantStep {
+				t.Errorf("StepName = %q, want %q", sc.StepName, tt.wantStep)
+			}
+			if sc.Action != tt.wantAction {
+				t.Errorf("Action = %q, want %q", sc.Action, tt.wantAction)
+			}
+			if sc.Flow != tt.wantFlow {
+				t.Errorf("Flow = %q, want %q", sc.Flow, tt.wantFlow)
+			}
+			if sc.Workspace != tt.wantWS {
+				t.Errorf("Workspace = %q, want %q", sc.Workspace, tt.wantWS)
+			}
+		})
+	}
+}
+
+func TestDiagnose_StepContext(t *testing.T) {
+	deps := mockDeps()
+	deps.GetChildren = func(parentID string) ([]DepBead, error) {
+		return []DepBead{
+			{
+				ID:     parentID + ".a1",
+				Status: "closed",
+				Labels: []string{
+					"attempt",
+					"agent:wizard-" + parentID,
+					"result:failure: step implement action=wizard.run flow=implement workspace=feature: subprocess exited",
+				},
+			},
+		}, nil
+	}
+
+	diag, err := Diagnose("spi-v3test", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+	if diag.StepContext == nil {
+		t.Fatal("expected non-nil StepContext")
+	}
+	if diag.StepContext.StepName != "implement" {
+		t.Errorf("StepName = %q, want %q", diag.StepContext.StepName, "implement")
+	}
+	if diag.StepContext.Action != "wizard.run" {
+		t.Errorf("Action = %q, want %q", diag.StepContext.Action, "wizard.run")
+	}
+	if diag.StepContext.Flow != "implement" {
+		t.Errorf("Flow = %q, want %q", diag.StepContext.Flow, "implement")
+	}
+	if diag.StepContext.Workspace != "feature" {
+		t.Errorf("Workspace = %q, want %q", diag.StepContext.Workspace, "feature")
+	}
+}
+
 // mockDeps returns a Deps with sensible defaults for testing.
 func mockDeps() *Deps {
 	return &Deps{

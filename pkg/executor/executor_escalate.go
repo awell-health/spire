@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/steveyegge/beads"
 )
@@ -128,5 +129,62 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 	// Direct message to archmage.
 	MessageArchmage(agentName, beadID,
 		fmt.Sprintf("Terminal failure on %s (%s): %s", beadID, failureType, message),
+		deps)
+}
+
+// EscalateGraphStepFailure is the v3-aware variant of EscalateHumanFailure.
+// It includes step-scoped metadata (step name, action, flow, workspace) in
+// the interruption label, alert title, comment, and message.
+func EscalateGraphStepFailure(beadID, agentName, failureType, message string, stepName, action, flow, workspace string, deps *Deps) {
+	// Labels: same as EscalateHumanFailure — interrupt type is still the classification key.
+	deps.AddLabel(beadID, "needs-human")
+	deps.AddLabel(beadID, "interrupted:"+failureType)
+
+	// Build node-scoped context string.
+	var ctx []string
+	if stepName != "" {
+		ctx = append(ctx, "step="+stepName)
+	}
+	if action != "" {
+		ctx = append(ctx, "action="+action)
+	}
+	if flow != "" {
+		ctx = append(ctx, "flow="+flow)
+	}
+	if workspace != "" {
+		ctx = append(ctx, "workspace="+workspace)
+	}
+	stepCtx := strings.Join(ctx, " ")
+
+	// Alert title includes node context.
+	alertTitle := fmt.Sprintf("[%s] %s: %s (%s)", failureType, beadID, message, stepCtx)
+	if len(alertTitle) > 200 {
+		alertTitle = alertTitle[:200]
+	}
+	alertLabels := []string{"alert:" + failureType}
+	alertID, err := deps.CreateBead(CreateOpts{
+		Title:    alertTitle,
+		Priority: 0,
+		Type:     beads.TypeTask,
+		Labels:   alertLabels,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: escalate alert: %s\n", err)
+	}
+
+	if alertID != "" && deps.AddDepTyped != nil {
+		if derr := deps.AddDepTyped(alertID, beadID, "caused-by"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", alertID, beadID, derr)
+		}
+	}
+
+	// Comment uses node-scoped wording.
+	deps.AddComment(beadID, fmt.Sprintf(
+		"Escalated to archmage: %s — %s\nNode context: %s\nBranch and bead left intact for diagnosis.",
+		failureType, message, stepCtx,
+	))
+
+	MessageArchmage(agentName, beadID,
+		fmt.Sprintf("Terminal failure on %s (%s) at %s: %s", beadID, failureType, stepCtx, message),
 		deps)
 }
