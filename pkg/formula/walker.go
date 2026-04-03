@@ -137,6 +137,13 @@ func ValidateGraph(graph *FormulaStepGraph) error {
 				}
 			}
 		}
+
+		// Validate resets targets exist in the graph.
+		for _, target := range step.Resets {
+			if _, ok := graph.Steps[target]; !ok {
+				return fmt.Errorf("step %q: resets target %q does not exist", name, target)
+			}
+		}
 	}
 
 	if terminalCount == 0 {

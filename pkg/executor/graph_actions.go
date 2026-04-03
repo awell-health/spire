@@ -105,17 +105,16 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
 		result := wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs)
-		// Promote the review verdict into state vars and outputs so review-phase
-		// conditions (bare "verdict == approve") can route on it. The generic
-		// result field from wizard-review carries the verdict.
+		// Promote the review verdict into outputs so the formula can route on
+		// steps.sage-review.outputs.verdict. The generic result field from
+		// wizard-review carries the verdict string.
 		verdict := result.Outputs["result"]
 		if verdict == "approve" || verdict == "request_changes" {
 			result.Outputs["verdict"] = verdict
-			state.Vars["verdict"] = verdict
 		}
-		// Increment review_round counter for round-based condition routing.
-		state.Counters["review_round"]++
-		state.Vars["review_round"] = fmt.Sprintf("%d", state.Counters["review_round"])
+		// Note: review_round is no longer mutated here. The interpreter tracks
+		// completed_count mechanically for every step; the formula routes on
+		// steps.sage-review.completed_count instead.
 		return result
 	case "review-fix":
 		extraArgs := []string{"--review-fix", "--apprentice"}
@@ -220,12 +219,6 @@ func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state 
 		if decision == "" && e.deps.ContainsLabel(bead, "review-approved") {
 			decision = "merge"
 		}
-	}
-
-	// Promote arbiter_decision into state vars so review-phase conditions
-	// (bare "arbiter_decision == merge") can route on it.
-	if decision != "" {
-		state.Vars["arbiter_decision"] = decision
 	}
 
 	return ActionResult{Outputs: map[string]string{

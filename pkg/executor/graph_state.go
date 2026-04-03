@@ -36,10 +36,11 @@ type GraphState struct {
 
 // StepState tracks the status and outputs of a single graph step.
 type StepState struct {
-	Status      string            `json:"status"` // pending, active, completed, failed, skipped
-	Outputs     map[string]string `json:"outputs,omitempty"`
-	StartedAt   string            `json:"started_at,omitempty"`
-	CompletedAt string            `json:"completed_at,omitempty"`
+	Status         string            `json:"status"` // pending, active, completed, failed, skipped
+	Outputs        map[string]string `json:"outputs,omitempty"`
+	StartedAt      string            `json:"started_at,omitempty"`
+	CompletedAt    string            `json:"completed_at,omitempty"`
+	CompletedCount int               `json:"completed_count,omitempty"` // mechanical counter: how many times this step has completed
 }
 
 // WorkspaceState is the persisted runtime state for a single declared workspace.

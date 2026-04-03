@@ -49,6 +49,10 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) (*GraphResult, er
 		"review_round":      strconv.Itoa(e.state.ReviewRounds),
 		"max_review_rounds": maxRounds,
 		"max_rounds":        maxRounds, // v2 compat: conditions may use either name
+		// v3 structured condition paths — the review-phase formula uses
+		// steps.sage-review.completed_count and steps.X.outputs.Y in when clauses.
+		"steps.sage-review.completed_count": strconv.Itoa(e.state.ReviewRounds),
+		"vars.max_review_rounds":            maxRounds,
 	}
 
 	// 5. Walk loop.
@@ -64,6 +68,9 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) (*GraphResult, er
 	if localCompleted["sage-review"] {
 		ctx["verdict"] = e.readVerdict()
 		ctx["arbiter_decision"] = e.readArbiterDecision()
+		// Sync to structured paths for v3 when conditions.
+		ctx["steps.sage-review.outputs.verdict"] = ctx["verdict"]
+		ctx["steps.arbiter.outputs.arbiter_decision"] = ctx["arbiter_decision"]
 	}
 
 	for {
@@ -110,9 +117,11 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) (*GraphResult, er
 			return nil, fmt.Errorf("review step %s failed: %w", stepName, err)
 		}
 
-		// Read results and update context.
+		// Read results and update context (both bare and structured paths).
 		ctx["verdict"] = e.readVerdict()
 		ctx["arbiter_decision"] = e.readArbiterDecision()
+		ctx["steps.sage-review.outputs.verdict"] = ctx["verdict"]
+		ctx["steps.arbiter.outputs.arbiter_decision"] = ctx["arbiter_decision"]
 
 		// Close sub-step bead. [Review fix #2: check error]
 		if err := e.closeReviewSubStep(stepName); err != nil {
@@ -136,6 +145,7 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) (*GraphResult, er
 			e.state.ReviewRounds++
 			ctx["round"] = strconv.Itoa(e.state.ReviewRounds)
 			ctx["review_round"] = strconv.Itoa(e.state.ReviewRounds)
+			ctx["steps.sage-review.completed_count"] = strconv.Itoa(e.state.ReviewRounds)
 			e.saveState()
 		}
 	}
