@@ -613,10 +613,22 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 		subState.StagingBranch = state.StagingBranch
 
 		// Resolve the active workspace dir from the parent step's declared workspace.
+		// If the workspace Dir was already populated (e.g. by a prior wizard.run
+		// step), use it directly. Otherwise, resolve the workspace to create or
+		// resume it — this handles the case where all prior steps using this
+		// workspace were graph.run (which don't resolve workspaces themselves),
+		// as happens in spire-epic-v3 where both implement and review steps are
+		// nested graphs sharing the parent's staging workspace.
 		subState.WorktreeDir = state.WorktreeDir
 		if step.Workspace != "" {
 			if ws, ok := state.Workspaces[step.Workspace]; ok && ws.Dir != "" {
 				subState.WorktreeDir = ws.Dir
+			} else {
+				dir, err := e.resolveGraphWorkspace(step.Workspace, state)
+				if err != nil {
+					return ActionResult{Error: fmt.Errorf("resolve workspace %q for graph.run %s: %w", step.Workspace, stepName, err)}
+				}
+				subState.WorktreeDir = dir
 			}
 		}
 	} else {
