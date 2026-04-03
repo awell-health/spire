@@ -117,6 +117,22 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		// completed_count mechanically for every step; the formula routes on
 		// steps.sage-review.completed_count instead.
 		return result
+	case "recovery-verify":
+		var extraArgs []string
+		if wsDir != "" {
+			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
+		}
+		result := wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
+		// Promote the result field to verification_status so the formula can
+		// route on steps.verify.outputs.verification_status. The apprentice
+		// writes a generic "result" field (e.g. "pass" or "fail") to
+		// result.json; the agentResultJSON struct only surfaces Result,
+		// Branch, Commit — no arbitrary fields. This mirrors the sage-review
+		// pattern that promotes result → verdict.
+		if v := result.Outputs["result"]; v == "pass" || v == "fail" {
+			result.Outputs["verification_status"] = v
+		}
+		return result
 	case "review-fix":
 		extraArgs := []string{"--review-fix", "--apprentice"}
 		if wsDir != "" {
@@ -335,7 +351,7 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 	}
 
 	switch status {
-	case "closed", "done", "success", "":
+	case "closed", "done", "success", "resolved", "":
 		// Close orphan subtask beads (for epic formulas).
 		if children, childErr := e.deps.GetChildren(e.beadID); childErr == nil {
 			for _, child := range children {

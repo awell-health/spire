@@ -105,7 +105,7 @@ terminal = true
 title = "Escalate unresolved recovery"
 
 [steps.escalate.with]
-status = "escalated"
+status = "escalate"
 
 [steps.escalate.when]
 all = [{ left = "steps.verify.outputs.verification_status", op = "ne", right = "pass" }]

@@ -1209,3 +1209,227 @@ func TestActionDispatchChildren_ParsesConflictMaxTurns(t *testing.T) {
 		})
 	}
 }
+
+// --- Recovery formula lifecycle regression tests ---
+
+// TestBeadFinish_ResolvedStatus verifies that bead.finish with status="resolved"
+// (used by the recovery formula's finish step) closes the bead via the success
+// path, not the unknown-status error path.
+func TestBeadFinish_ResolvedStatus(t *testing.T) {
+	dir := t.TempDir()
+	var closedBeadID string
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetChildren: func(parentID string) ([]Bead, error) {
+			return nil, nil
+		},
+		CloseBead: func(id string) error {
+			closedBeadID = id
+			return nil
+		},
+		CloseAttemptBead: func(attemptID, result string) error {
+			return nil
+		},
+		IsAttemptBead:     func(b Bead) bool { return false },
+		IsStepBead:        func(b Bead) bool { return false },
+		IsReviewRoundBead: func(b Bead) bool { return false },
+		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+		AddComment: func(id, text string) error { return nil },
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-recovery-finish",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"finish": {Action: "bead.finish"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-recovery-test", "wizard-recovery", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "bead.finish",
+		With:   map[string]string{"status": "resolved"},
+	}
+
+	result := actionBeadFinish(exec, "finish", step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("actionBeadFinish with status=resolved returned error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "closed" {
+		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "closed")
+	}
+	if closedBeadID != "spi-recovery-test" {
+		t.Errorf("CloseBead called with %q, want %q", closedBeadID, "spi-recovery-test")
+	}
+}
+
+// TestBeadFinish_EscalateStatus verifies that bead.finish with status="escalate"
+// (the verb form used by the recovery formula's escalate step) triggers the
+// escalation path, not the unknown-status error path.
+func TestBeadFinish_EscalateStatus(t *testing.T) {
+	dir := t.TempDir()
+	var addedLabels []string
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		AddLabel: func(id, label string) error {
+			addedLabels = append(addedLabels, label)
+			return nil
+		},
+		AddComment: func(id, text string) error { return nil },
+		CreateBead: func(opts CreateOpts) (string, error) {
+			return "spi-alert-test", nil
+		},
+		AddDepTyped: func(issueID, dependsOnID, depType string) error {
+			return nil
+		},
+		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-recovery-escalate",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"escalate": {Action: "bead.finish"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-recovery-test", "wizard-recovery", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "bead.finish",
+		With:   map[string]string{"status": "escalate"},
+	}
+
+	result := actionBeadFinish(exec, "escalate", step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("actionBeadFinish with status=escalate returned error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "escalated" {
+		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "escalated")
+	}
+	// Verify escalation labels were applied.
+	foundNeedsHuman := false
+	for _, l := range addedLabels {
+		if l == "needs-human" {
+			foundNeedsHuman = true
+		}
+	}
+	if !foundNeedsHuman {
+		t.Errorf("expected needs-human label, got labels: %v", addedLabels)
+	}
+}
+
+// TestRecoveryVerify_PromotesResultToVerificationStatus verifies that the
+// recovery-verify flow promotes result.json's "result" field to
+// outputs["verification_status"], mirroring the sage-review → verdict pattern.
+// Without this promotion, the formula routing condition
+// steps.verify.outputs.verification_status would never match.
+func TestRecoveryVerify_PromotesResultToVerificationStatus(t *testing.T) {
+	dir := t.TempDir()
+	agentName := "wizard-recovery-test"
+	stepName := "verify"
+	spawnName := agentName + "-" + stepName
+
+	// Pre-write result.json with result="pass" (the apprentice writes this).
+	resultDir := filepath.Join(dir, spawnName)
+	os.MkdirAll(resultDir, 0755)
+	resultData, _ := json.Marshal(map[string]interface{}{
+		"result":  "pass",
+		"bead_id": "spi-recovery-test",
+	})
+	os.WriteFile(filepath.Join(resultDir, "result.json"), resultData, 0644)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-recovery-verify",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			stepName: {Action: "wizard.run", Flow: "recovery-verify"},
+		},
+	}
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		Spawner:   &sageVerdictMockBackend{},
+		AgentResultDir: func(name string) string {
+			return filepath.Join(dir, name)
+		},
+		RecordAgentRun: func(run AgentRun) error { return nil },
+	}
+
+	exec := NewGraphForTest("spi-recovery-test", agentName, graph, nil, deps)
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "recovery-verify",
+	}
+
+	result := actionWizardRun(exec, stepName, step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("actionWizardRun(recovery-verify) returned error: %v", result.Error)
+	}
+
+	// The key assertion: verification_status must be promoted from result.
+	if result.Outputs["verification_status"] != "pass" {
+		t.Errorf("outputs[verification_status] = %q, want %q", result.Outputs["verification_status"], "pass")
+	}
+	if result.Outputs["result"] != "pass" {
+		t.Errorf("outputs[result] = %q, want %q", result.Outputs["result"], "pass")
+	}
+}
+
+// TestRecoveryVerify_FailPromotesVerificationStatus verifies that result="fail"
+// is also promoted to verification_status, enabling the escalate routing path.
+func TestRecoveryVerify_FailPromotesVerificationStatus(t *testing.T) {
+	dir := t.TempDir()
+	agentName := "wizard-recovery-test"
+	stepName := "verify"
+	spawnName := agentName + "-" + stepName
+
+	resultDir := filepath.Join(dir, spawnName)
+	os.MkdirAll(resultDir, 0755)
+	resultData, _ := json.Marshal(map[string]interface{}{
+		"result":  "fail",
+		"bead_id": "spi-recovery-test",
+	})
+	os.WriteFile(filepath.Join(resultDir, "result.json"), resultData, 0644)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-recovery-verify-fail",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			stepName: {Action: "wizard.run", Flow: "recovery-verify"},
+		},
+	}
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		Spawner:   &sageVerdictMockBackend{},
+		AgentResultDir: func(name string) string {
+			return filepath.Join(dir, name)
+		},
+		RecordAgentRun: func(run AgentRun) error { return nil },
+	}
+
+	exec := NewGraphForTest("spi-recovery-test", agentName, graph, nil, deps)
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "recovery-verify",
+	}
+
+	result := actionWizardRun(exec, stepName, step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("actionWizardRun(recovery-verify) returned error: %v", result.Error)
+	}
+
+	if result.Outputs["verification_status"] != "fail" {
+		t.Errorf("outputs[verification_status] = %q, want %q", result.Outputs["verification_status"], "fail")
+	}
+}
