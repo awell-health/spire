@@ -145,7 +145,7 @@ func actionPlanTask(e *Executor, stepName string, step StepConfig, state *GraphS
 	pc := PhaseConfig{
 		Model:    step.Model,
 		Timeout:  step.Timeout,
-		MaxTurns: 3, // planning is brief
+		MaxTurns: step.MaxTurns, // formula-declared; 0 = unlimited/timeout-gated
 	}
 
 	if err := e.wizardPlanTask(bead, pc); err != nil {
@@ -166,7 +166,7 @@ func actionPlanEpic(e *Executor, stepName string, step StepConfig, state *GraphS
 	pc := PhaseConfig{
 		Model:    step.Model,
 		Timeout:  step.Timeout,
-		MaxTurns: 5, // epic planning needs more turns
+		MaxTurns: step.MaxTurns, // formula-declared; 0 = unlimited/timeout-gated
 	}
 
 	if err := e.wizardPlanEpic(bead, pc); err != nil {
