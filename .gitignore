@@ -48,4 +48,4 @@ dist/
 .beads/metadata.json
 .beads/routes.jsonl
 .beads/interactions.jsonl
-.beads/.beads-credential-key
+.beads/.beads-credential-key.beads/
