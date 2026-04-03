@@ -77,7 +77,7 @@ func TestNextSteps_Epic_FullSequence(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	// Walk through each step of the epic formula.
+	// Walk through each step of the epic formula (success path).
 	steps := []struct {
 		completed map[string]bool
 		ctx       map[string]string
@@ -104,18 +104,19 @@ func TestNextSteps_Epic_FullSequence(t *testing.T) {
 			wantStep:  "implement",
 		},
 		{
+			// implement succeeded — outcome=bead-finish gates review.
 			completed: map[string]bool{"design-check": true, "plan": true, "materialize": true, "implement": true},
-			ctx:       map[string]string{},
+			ctx:       map[string]string{"steps.implement.outputs.outcome": "bead-finish"},
 			wantStep:  "review",
 		},
 		{
 			completed: map[string]bool{"design-check": true, "plan": true, "materialize": true, "implement": true, "review": true},
-			ctx:       map[string]string{"steps.review.outputs.outcome": "merge"},
+			ctx:       map[string]string{"steps.implement.outputs.outcome": "bead-finish", "steps.review.outputs.outcome": "merge"},
 			wantStep:  "merge",
 		},
 		{
 			completed: map[string]bool{"design-check": true, "plan": true, "materialize": true, "implement": true, "review": true, "merge": true},
-			ctx:       map[string]string{"steps.review.outputs.outcome": "merge"},
+			ctx:       map[string]string{"steps.implement.outputs.outcome": "bead-finish", "steps.review.outputs.outcome": "merge"},
 			wantStep:  "close",
 		},
 	}
@@ -132,13 +133,79 @@ func TestNextSteps_Epic_FullSequence(t *testing.T) {
 
 	// Also test the discard branch.
 	completed := map[string]bool{"design-check": true, "plan": true, "materialize": true, "implement": true, "review": true}
-	ctx := map[string]string{"steps.review.outputs.outcome": "discard"}
+	ctx := map[string]string{"steps.implement.outputs.outcome": "bead-finish", "steps.review.outputs.outcome": "discard"}
 	next, err := NextSteps(g, completed, ctx)
 	if err != nil {
 		t.Fatalf("discard: NextSteps: %v", err)
 	}
 	if len(next) != 1 || next[0] != "discard" {
 		t.Fatalf("discard: expected [discard], got %v", next)
+	}
+}
+
+func TestNextSteps_Epic_ImplementSuccess_ReviewReady(t *testing.T) {
+	g, err := LoadEmbeddedStepGraph("spire-epic-v3")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	completed := map[string]bool{
+		"design-check": true,
+		"plan":         true,
+		"materialize":  true,
+		"implement":    true,
+	}
+	ctx := map[string]string{
+		"steps.implement.outputs.outcome": "bead-finish",
+	}
+	ready, err := NextSteps(g, completed, ctx)
+	if err != nil {
+		t.Fatalf("NextSteps: %v", err)
+	}
+	if len(ready) != 1 || ready[0] != "review" {
+		t.Fatalf("expected [review], got %v", ready)
+	}
+}
+
+func TestNextSteps_Epic_ImplementFailed_ReviewBlocked(t *testing.T) {
+	g, err := LoadEmbeddedStepGraph("spire-epic-v3")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	completed := map[string]bool{
+		"design-check": true,
+		"plan":         true,
+		"materialize":  true,
+		"implement":    true,
+	}
+	ctx := map[string]string{
+		"steps.implement.outputs.outcome": "build-failed",
+	}
+	ready, err := NextSteps(g, completed, ctx)
+	if err != nil {
+		t.Fatalf("NextSteps: %v", err)
+	}
+
+	// implement-failed should be ready; review should NOT be ready.
+	hasImplementFailed := false
+	hasReview := false
+	for _, s := range ready {
+		if s == "implement-failed" {
+			hasImplementFailed = true
+		}
+		if s == "review" {
+			hasReview = true
+		}
+	}
+	if !hasImplementFailed {
+		t.Errorf("expected implement-failed to be ready, got %v", ready)
+	}
+	if hasReview {
+		t.Errorf("review must NOT be ready when implement outcome is build-failed, got %v", ready)
+	}
+	if len(ready) != 1 {
+		t.Errorf("expected exactly 1 ready step [implement-failed], got %v", ready)
 	}
 }
 
