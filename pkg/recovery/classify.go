@@ -24,6 +24,8 @@ func classifyInterruptLabel(label string) FailureClass {
 		return FailRepoResolution
 	case "arbiter-failure", "arbiter":
 		return FailArbiter
+	case "step-failure":
+		return FailStepFailure
 	default:
 		return FailUnknown
 	}
@@ -91,6 +93,13 @@ func buildActions(fc FailureClass, beadID string, attemptCount int, git *GitStat
 			actions = append(actions, resetToAction(beadID, "review"))
 		}
 		actions = append(actions, closeAction(beadID))
+
+	case FailStepFailure:
+		// v3 graph step failure — diagnosis.StepContext has node details.
+		if branchAvailable {
+			actions = append(actions, resummonAction(beadID))
+		}
+		actions = append(actions, resetHardAction(beadID))
 
 	default: // FailUnknown
 		if branchAvailable {

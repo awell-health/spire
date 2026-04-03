@@ -15,6 +15,7 @@ const (
 	FailReviewFix      FailureClass = "review-fix"
 	FailRepoResolution FailureClass = "repo-resolution"
 	FailArbiter        FailureClass = "arbiter"
+	FailStepFailure    FailureClass = "step-failure" // v3 graph step failure
 	FailUnknown        FailureClass = "unknown"
 )
 

@@ -1182,6 +1182,24 @@ func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {
 		return nil
 	}
 
+	// Track escalation: labels added and alert beads created.
+	var addedLabels []string
+	deps.AddLabel = func(id, label string) error {
+		addedLabels = append(addedLabels, label)
+		return nil
+	}
+	var createdAlerts []string
+	deps.CreateBead = func(opts CreateOpts) (string, error) {
+		createdAlerts = append(createdAlerts, opts.Title)
+		return "alert-1", nil
+	}
+	var addedComments []string
+	deps.AddComment = func(id, text string) error {
+		addedComments = append(addedComments, text)
+		return nil
+	}
+	deps.AddDepTyped = func(from, to, depType string) error { return nil }
+
 	origRegistry := make(map[string]ActionHandler)
 	for k, v := range actionRegistry {
 		origRegistry[k] = v
@@ -1239,6 +1257,44 @@ func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {
 	}
 	if !strings.Contains(capturedResult, "workspace=feature") {
 		t.Errorf("expected result to contain 'workspace=feature', got: %s", capturedResult)
+	}
+
+	// Verify escalation: parent bead gets needs-human + interrupted:step-failure.
+	hasNeedsHuman := false
+	hasInterrupted := false
+	for _, l := range addedLabels {
+		if l == "needs-human" {
+			hasNeedsHuman = true
+		}
+		if l == "interrupted:step-failure" {
+			hasInterrupted = true
+		}
+	}
+	if !hasNeedsHuman {
+		t.Errorf("expected needs-human label on parent bead, got labels: %v", addedLabels)
+	}
+	if !hasInterrupted {
+		t.Errorf("expected interrupted:step-failure label on parent bead, got labels: %v", addedLabels)
+	}
+
+	// Verify alert bead was created with node-scoped context.
+	if len(createdAlerts) == 0 {
+		t.Fatal("expected alert bead to be created")
+	}
+	alertTitle := createdAlerts[0]
+	if !strings.Contains(alertTitle, "step=implement") {
+		t.Errorf("expected alert title to contain 'step=implement', got: %s", alertTitle)
+	}
+	if !strings.Contains(alertTitle, "action=test.fail") {
+		t.Errorf("expected alert title to contain 'action=test.fail', got: %s", alertTitle)
+	}
+
+	// Verify comment includes node context.
+	if len(addedComments) == 0 {
+		t.Fatal("expected comment on parent bead")
+	}
+	if !strings.Contains(addedComments[0], "Node context:") {
+		t.Errorf("expected comment to contain 'Node context:', got: %s", addedComments[0])
 	}
 }
 

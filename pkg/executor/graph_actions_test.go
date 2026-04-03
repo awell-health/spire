@@ -93,8 +93,8 @@ func TestActionPlanTask_FormulaMaxTurns(t *testing.T) {
 }
 
 // TestActionPlanTask_ZeroMaxTurns verifies that when the formula does not
-// declare max_turns (Go zero value), actionPlanTask passes 0 through —
-// it does NOT invent a hardcoded budget.
+// declare max_turns (Go zero value), the --max-turns flag is omitted entirely —
+// the executor does NOT invent a hardcoded budget.
 func TestActionPlanTask_ZeroMaxTurns(t *testing.T) {
 	deps, capturedArgs := planTestDeps(t)
 
@@ -125,8 +125,8 @@ func TestActionPlanTask_ZeroMaxTurns(t *testing.T) {
 	}
 
 	maxTurns := extractMaxTurns((*capturedArgs)[0])
-	if maxTurns != "0" {
-		t.Errorf("expected --max-turns 0 (not hardcoded 3), got %q", maxTurns)
+	if maxTurns != "" {
+		t.Errorf("expected --max-turns flag absent (unset), but got --max-turns %q", maxTurns)
 	}
 }
 
@@ -180,8 +180,8 @@ func TestActionPlanEpic_FormulaMaxTurns(t *testing.T) {
 }
 
 // TestActionPlanEpic_ZeroMaxTurns verifies that when the formula does not
-// declare max_turns, actionPlanEpic passes 0 — it does NOT invent a
-// hardcoded budget like 5.
+// declare max_turns, the --max-turns flag is omitted entirely — the executor
+// does NOT invent a hardcoded budget like 5.
 func TestActionPlanEpic_ZeroMaxTurns(t *testing.T) {
 	deps, capturedArgs := planTestDeps(t)
 	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
@@ -223,8 +223,8 @@ func TestActionPlanEpic_ZeroMaxTurns(t *testing.T) {
 	}
 
 	maxTurns := extractMaxTurns((*capturedArgs)[0])
-	if maxTurns != "0" {
-		t.Errorf("expected --max-turns 0 (not hardcoded 5), got %q", maxTurns)
+	if maxTurns != "" {
+		t.Errorf("expected --max-turns flag absent (unset), but got --max-turns %q", maxTurns)
 	}
 }
 

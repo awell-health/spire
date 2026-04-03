@@ -83,13 +83,16 @@ Be precise and actionable. The apprentice implementing this will use your plan a
 	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for task plan (max_turns=%d)", maxTurns)
 	started := time.Now()
-	out, err := e.deps.ClaudeRunner([]string{
+	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
 		"--output-format", "text",
-		"--max-turns", fmt.Sprintf("%d", maxTurns),
-	}, e.effectiveRepoPath())
+	}
+	if maxTurns > 0 {
+		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
+	}
+	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
 	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude task plan: %w", err)
@@ -208,13 +211,16 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for plan generation (max_turns=%d)", maxTurns)
 	started := time.Now()
-	out, err := e.deps.ClaudeRunner([]string{
+	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
 		"--output-format", "text",
-		"--max-turns", fmt.Sprintf("%d", maxTurns),
-	}, e.effectiveRepoPath())
+	}
+	if maxTurns > 0 {
+		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
+	}
+	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
 	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude plan: %w", err)
@@ -389,13 +395,16 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 `, epicContext, designContext, subtaskContext.String())
 
 		e.log("generating change spec for %s: %s", child.ID, child.Title)
-		out, err := e.deps.ClaudeRunner([]string{
+		csArgs := []string{
 			"--dangerously-skip-permissions",
 			"-p", prompt,
 			"--model", model,
 			"--output-format", "text",
-			"--max-turns", fmt.Sprintf("%d", maxTurns),
-		}, e.effectiveRepoPath())
+		}
+		if maxTurns > 0 {
+			csArgs = append(csArgs, "--max-turns", fmt.Sprintf("%d", maxTurns))
+		}
+		out, err := e.deps.ClaudeRunner(csArgs, e.effectiveRepoPath())
 		if err != nil {
 			e.log("warning: change spec for %s: %s", child.ID, err)
 			continue

@@ -152,6 +152,12 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			}
 			resultMsg := strings.Join(resultParts, " ") + ": " + result.Error.Error()
 			e.closeGraphAttempt(state, resultMsg)
+
+			// Escalate to archmage with node-scoped context so the parent bead
+			// gets needs-human + interrupted:* labels and an alert bead.
+			EscalateGraphStepFailure(e.beadID, e.agentName, "step-failure",
+				result.Error.Error(), stepName, stepCfg.Action, stepCfg.Flow, stepCfg.Workspace, e.deps)
+
 			return fmt.Errorf("step %s failed: %w", stepName, result.Error)
 		}
 

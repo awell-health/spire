@@ -517,6 +517,7 @@ func TestClassify_AllModes(t *testing.T) {
 		{"interrupted:repo-resolution", FailRepoResolution},
 		{"interrupted:arbiter-failure", FailArbiter},
 		{"interrupted:arbiter", FailArbiter},
+		{"interrupted:step-failure", FailStepFailure},
 		{"interrupted:something-else", FailUnknown},
 		{"not-an-interrupt", FailUnknown},
 	}
