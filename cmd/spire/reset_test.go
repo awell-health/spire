@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/awell-health/spire/pkg/executor"
@@ -240,6 +241,88 @@ func TestResetV3_ChildProcessing(t *testing.T) {
 }
 
 // --- computeStepsToReset unit tests (pure function, no store needed) ---
+
+func TestCleanupInternalDAGChildren_SoftClosesInternalArtifacts(t *testing.T) {
+	origClose := storeCloseBeadFunc
+	origDelete := storeDeleteBeadFunc
+	defer func() {
+		storeCloseBeadFunc = origClose
+		storeDeleteBeadFunc = origDelete
+	}()
+
+	var closedIDs, deletedIDs []string
+	storeCloseBeadFunc = func(id string) error {
+		closedIDs = append(closedIDs, id)
+		return nil
+	}
+	storeDeleteBeadFunc = func(id string) error {
+		deletedIDs = append(deletedIDs, id)
+		return nil
+	}
+
+	children := []Bead{
+		{ID: "spi-step", Title: "step:implement", Status: "in_progress", Labels: []string{"workflow-step", "step:implement"}},
+		{ID: "spi-attempt", Title: "attempt: wizard", Status: "open", Labels: []string{"attempt", "agent:wizard"}},
+		{ID: "spi-review", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "round:1"}},
+		{ID: "spi-task", Title: "real subtask", Status: "open"},
+	}
+
+	counts := cleanupInternalDAGChildren(children, false)
+
+	if !reflect.DeepEqual(closedIDs, []string{"spi-step", "spi-attempt"}) {
+		t.Fatalf("closed IDs = %v, want [spi-step spi-attempt]", closedIDs)
+	}
+	if len(deletedIDs) != 0 {
+		t.Fatalf("deleted IDs = %v, want none", deletedIDs)
+	}
+	if counts.ClosedSteps != 1 || counts.ClosedAttempts != 1 || counts.ClosedReviewRounds != 0 {
+		t.Fatalf("unexpected close counts: %+v", counts)
+	}
+	if counts.DeletedSteps != 0 || counts.DeletedAttempts != 0 || counts.DeletedReviewRounds != 0 {
+		t.Fatalf("unexpected delete counts: %+v", counts)
+	}
+}
+
+func TestCleanupInternalDAGChildren_HardDeletesInternalArtifacts(t *testing.T) {
+	origClose := storeCloseBeadFunc
+	origDelete := storeDeleteBeadFunc
+	defer func() {
+		storeCloseBeadFunc = origClose
+		storeDeleteBeadFunc = origDelete
+	}()
+
+	var closedIDs, deletedIDs []string
+	storeCloseBeadFunc = func(id string) error {
+		closedIDs = append(closedIDs, id)
+		return nil
+	}
+	storeDeleteBeadFunc = func(id string) error {
+		deletedIDs = append(deletedIDs, id)
+		return nil
+	}
+
+	children := []Bead{
+		{ID: "spi-step", Title: "step:implement", Status: "closed", Labels: []string{"workflow-step", "step:implement"}},
+		{ID: "spi-attempt", Title: "attempt: wizard", Status: "in_progress", Labels: []string{"attempt", "agent:wizard"}},
+		{ID: "spi-review", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "round:1"}},
+		{ID: "spi-task", Title: "real subtask", Status: "open"},
+	}
+
+	counts := cleanupInternalDAGChildren(children, true)
+
+	if len(closedIDs) != 0 {
+		t.Fatalf("closed IDs = %v, want none", closedIDs)
+	}
+	if !reflect.DeepEqual(deletedIDs, []string{"spi-step", "spi-attempt", "spi-review"}) {
+		t.Fatalf("deleted IDs = %v, want [spi-step spi-attempt spi-review]", deletedIDs)
+	}
+	if counts.DeletedSteps != 1 || counts.DeletedAttempts != 1 || counts.DeletedReviewRounds != 1 {
+		t.Fatalf("unexpected delete counts: %+v", counts)
+	}
+	if counts.ClosedSteps != 0 || counts.ClosedAttempts != 0 || counts.ClosedReviewRounds != 0 {
+		t.Fatalf("unexpected close counts: %+v", counts)
+	}
+}
 
 func TestComputeStepsToReset_LinearChain(t *testing.T) {
 	// A → B → C: resetting B should include B and C.

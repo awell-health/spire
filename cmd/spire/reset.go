@@ -263,6 +263,11 @@ func cmdReset(args []string) error {
 		// Before target → leave as-is (closed).
 	}
 
+	if hard {
+		counts := cleanupInternalDAGChildren(children, true)
+		logInternalDAGCleanup(counts)
+	}
+
 	// --- 5. Set bead status to in_progress ---
 
 	if err := storeUpdateBead(beadID, map[string]interface{}{"status": "in_progress"}); err != nil {
@@ -295,7 +300,8 @@ func cmdReset(args []string) error {
 
 // resetV3 performs a full reset for v3 (step-graph) formulas.
 // Mirrors the manual reset procedure: clear graph state, clean git artifacts,
-// close step/attempt beads, reopen subtask children, reset the epic bead.
+// remove internal execution artifacts on hard reset, reopen subtask children,
+// and reset the epic bead.
 func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 	// --- 1. Remove v3 graph state files (parent + nested) ---
 	removeGraphStateFiles(wizardName)
@@ -322,9 +328,7 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		}
 	}
 
-	closedSteps := 0
-	closedAttempts := 0
-	closedReviewRounds := 0
+	counts := cleanupInternalDAGChildren(children, hard)
 	reopenedChildren := 0
 
 	for _, child := range children {
@@ -332,21 +336,7 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		if linkedIDs[child.ID] {
 			continue
 		}
-
-		if isStepBead(child) || isAttemptBead(child) || isReviewRoundBead(child) {
-			// Internal DAG beads: close them. They'll be recreated on re-summon.
-			// TODO: delete instead of close when store.DeleteBead is available.
-			if child.Status != "closed" {
-				if err := storeCloseBead(child.ID); err != nil {
-					fmt.Printf("  %s(note: could not close %s: %s)%s\n", dim, child.ID, err, reset)
-				} else if isStepBead(child) {
-					closedSteps++
-				} else if isReviewRoundBead(child) {
-					closedReviewRounds++
-				} else {
-					closedAttempts++
-				}
-			}
+		if isInternalDAGBead(child) {
 			continue
 		}
 
@@ -360,15 +350,7 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		}
 	}
 
-	if closedSteps > 0 {
-		fmt.Printf("  %s✗ closed %d step beads%s\n", dim, closedSteps, reset)
-	}
-	if closedAttempts > 0 {
-		fmt.Printf("  %s✗ closed %d attempt beads%s\n", dim, closedAttempts, reset)
-	}
-	if closedReviewRounds > 0 {
-		fmt.Printf("  %s✗ closed %d review-round beads%s\n", dim, closedReviewRounds, reset)
-	}
+	logInternalDAGCleanup(counts)
 	if reopenedChildren > 0 {
 		fmt.Printf("  %s↺ reopened %d subtask children%s\n", yellow, reopenedChildren, reset)
 	}
@@ -599,6 +581,92 @@ func computeStepsToReset(graph *formula.FormulaStepGraph, targetStep string) map
 		}
 	}
 	return result
+}
+
+type internalDAGCleanupCounts struct {
+	DeletedSteps        int
+	DeletedAttempts     int
+	DeletedReviewRounds int
+	ClosedSteps         int
+	ClosedAttempts      int
+	ClosedReviewRounds  int
+}
+
+func isInternalDAGBead(b Bead) bool {
+	return isStepBead(b) || isAttemptBead(b) || isReviewRoundBead(b)
+}
+
+func cleanupInternalDAGChildren(children []Bead, hard bool) internalDAGCleanupCounts {
+	var counts internalDAGCleanupCounts
+
+	for _, child := range children {
+		kind := ""
+		switch {
+		case isStepBead(child):
+			kind = "step"
+		case isReviewRoundBead(child):
+			kind = "review"
+		case isAttemptBead(child):
+			kind = "attempt"
+		default:
+			continue
+		}
+
+		if hard {
+			if err := storeDeleteBeadFunc(child.ID); err != nil {
+				fmt.Printf("  %s(note: could not delete %s: %s)%s\n", dim, child.ID, err, reset)
+				continue
+			}
+			switch kind {
+			case "step":
+				counts.DeletedSteps++
+			case "review":
+				counts.DeletedReviewRounds++
+			case "attempt":
+				counts.DeletedAttempts++
+			}
+			continue
+		}
+
+		if child.Status == "closed" {
+			continue
+		}
+		if err := storeCloseBeadFunc(child.ID); err != nil {
+			fmt.Printf("  %s(note: could not close %s: %s)%s\n", dim, child.ID, err, reset)
+			continue
+		}
+		switch kind {
+		case "step":
+			counts.ClosedSteps++
+		case "review":
+			counts.ClosedReviewRounds++
+		case "attempt":
+			counts.ClosedAttempts++
+		}
+	}
+
+	return counts
+}
+
+func logInternalDAGCleanup(counts internalDAGCleanupCounts) {
+	if counts.DeletedSteps > 0 {
+		fmt.Printf("  %s✗ deleted %d step beads%s\n", dim, counts.DeletedSteps, reset)
+	}
+	if counts.DeletedAttempts > 0 {
+		fmt.Printf("  %s✗ deleted %d attempt beads%s\n", dim, counts.DeletedAttempts, reset)
+	}
+	if counts.DeletedReviewRounds > 0 {
+		fmt.Printf("  %s✗ deleted %d review-round beads%s\n", dim, counts.DeletedReviewRounds, reset)
+	}
+	if counts.ClosedSteps > 0 {
+		fmt.Printf("  %s✗ closed %d step beads%s\n", dim, counts.ClosedSteps, reset)
+	}
+	if counts.ClosedAttempts > 0 {
+		fmt.Printf("  %s✗ closed %d attempt beads%s\n", dim, counts.ClosedAttempts, reset)
+	}
+	if counts.ClosedReviewRounds > 0 {
+		fmt.Printf("  %s✗ closed %d review-round beads%s\n", dim, counts.ClosedReviewRounds, reset)
+	}
 }
 
 // mapKeys returns the keys of a map as a sorted slice.

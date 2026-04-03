@@ -38,6 +38,9 @@ var storeGetDependentsWithMetaFunc = storeGetDependentsWithMeta
 // storeCloseBeadFunc is a test-replaceable function for storeCloseBead.
 var storeCloseBeadFunc = storeCloseBead
 
+// storeDeleteBeadFunc is a test-replaceable function for storeDeleteBead.
+var storeDeleteBeadFunc = storeDeleteBead
+
 // storeCheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.
 var storeCheckExistingAlertFunc = func(beadID string) bool {
@@ -162,6 +165,10 @@ func storeAddDepTyped(issueID, dependsOnID, depType string) error {
 
 func storeCloseBead(id string) error {
 	return store.CloseBead(id)
+}
+
+func storeDeleteBead(id string) error {
+	return store.DeleteBead(id)
 }
 
 func storeUpdateBead(id string, updates map[string]interface{}) error {

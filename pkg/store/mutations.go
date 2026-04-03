@@ -69,6 +69,15 @@ func CloseBead(id string) error {
 	return s.CloseIssue(ctx, id, "", Actor(), "")
 }
 
+// DeleteBead permanently deletes a bead and its associated data.
+func DeleteBead(id string) error {
+	s, ctx, err := getStore()
+	if err != nil {
+		return err
+	}
+	return s.DeleteIssue(ctx, id)
+}
+
 // UpdateBead updates a bead's fields.
 func UpdateBead(id string, updates map[string]interface{}) error {
 	s, ctx, err := getStore()
