@@ -12,6 +12,7 @@ import (
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/spf13/cobra"
 )
 
@@ -240,7 +241,12 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		fmt.Printf("  %s↺ %s set to open%s\n", yellow, beadID, reset)
 	}
 
-	// --- 5. Git cleanup (hard reset: worktrees + branches) ---
+	// --- 5. Close related recovery beads ---
+	if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "reset (v3)"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
+	}
+
+	// --- 6. Git cleanup (hard reset: worktrees + branches) ---
 	if hard {
 		resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName)
 	}
@@ -388,6 +394,11 @@ func softResetV3(beadID, targetStep, wizardName string) error {
 		}
 		if closedSteps > 0 {
 			fmt.Printf("  %s✗ closed %d step beads%s\n", dim, closedSteps, reset)
+		}
+
+		// --- 7b. Close related recovery beads ---
+		if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "reset --to (v3)"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
 		}
 
 		// --- 8. Save updated graph state ---

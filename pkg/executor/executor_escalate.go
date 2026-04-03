@@ -6,8 +6,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/steveyegge/beads"
 )
+
+// executorBeadOps adapts executor.Deps to recovery.BeadOps.
+type executorBeadOps struct {
+	deps *Deps
+}
+
+func (o executorBeadOps) GetDependentsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	if o.deps.GetDependentsWithMeta == nil {
+		return nil, nil
+	}
+	return o.deps.GetDependentsWithMeta(id)
+}
+
+func (o executorBeadOps) AddComment(id, text string) error {
+	if o.deps.AddComment == nil {
+		return nil
+	}
+	return o.deps.AddComment(id, text)
+}
+
+func (o executorBeadOps) CloseBead(id string) error {
+	if o.deps.CloseBead == nil {
+		return nil
+	}
+	return o.deps.CloseBead(id)
+}
 
 // MessageArchmage sends a spire message to the archmage referencing the given bead.
 // Errors are logged but do not block the caller.
@@ -196,50 +223,68 @@ func EscalateGraphStepFailure(beadID, agentName, failureType, message string, st
 	createOrUpdateRecoveryBead(beadID, agentName, failureType, message, stepCtx, deps)
 }
 
-// createOrUpdateRecoveryBead creates an open P0 recovery work surface for an
-// interrupted parent bead. If an open recovery bead already exists (identified
-// by a "recovery-for" dep pointing to parentID), the existing bead is updated
-// with a new context comment instead of creating a duplicate.
+// createOrUpdateRecoveryBead creates a first-class type=recovery bead for an
+// interrupted parent bead. Dedupe is failure-class-scoped: if an open recovery
+// bead already exists for parentID with the same failure_class label, the
+// existing bead is updated with a new incident comment instead of creating a
+// duplicate. New beads are linked via a caused-by dep (replacing the legacy
+// recovery-for dep). Both new and legacy links are recognized during dedupe
+// for backward compatibility.
 func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeCtx string, deps *Deps) {
-	// Dedup: check for existing open recovery bead.
-	if deps.GetDependentsWithMeta != nil {
-		dependents, err := deps.GetDependentsWithMeta(parentID)
-		if err == nil {
-			for _, dep := range dependents {
-				if dep.DependencyType != "recovery-for" {
-					continue
-				}
-				if dep.Status == "closed" {
-					continue
-				}
-				// Found open recovery bead — update comment and return.
-				ctx := buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx)
-				deps.AddComment(dep.ID, ctx)
-				return
+	ops := executorBeadOps{deps}
+
+	// Failure-class-scoped dedupe.
+	existingID, found, err := recovery.DedupeRecoveryBead(ops, parentID, failureType)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: dedupe recovery bead for %s: %s\n", parentID, err)
+	}
+	if found {
+		// Append full context comment to existing recovery bead.
+		ctx := buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx)
+		deps.AddComment(existingID, ctx)
+		return
+	}
+
+	// Build description with structured metadata block.
+	stepName := ""
+	if nodeCtx != "" {
+		// Extract step name from nodeCtx ("step=foo action=bar ...").
+		for _, part := range strings.Fields(nodeCtx) {
+			if strings.HasPrefix(part, "step=") {
+				stepName = strings.TrimPrefix(part, "step=")
+				break
 			}
 		}
 	}
+	desc := fmt.Sprintf(
+		"failure_class: %s\nsource_bead: %s\nsource_step: %s\n\n%s",
+		failureType, parentID, stepName, message,
+	)
+	if nodeCtx != "" {
+		desc += "\nContext: " + nodeCtx
+	}
 
-	// Create new recovery bead.
+	// Create type=recovery bead.
 	title := fmt.Sprintf("[recovery] %s: %s", parentID, failureType)
 	if len(title) > 200 {
 		title = title[:200]
 	}
 	recoveryID, err := deps.CreateBead(CreateOpts{
-		Title:    title,
-		Priority: 0,
-		Type:     beads.TypeTask,
-		Labels:   []string{"recovery-bead"},
+		Title:       title,
+		Priority:    1,
+		Type:        beads.IssueType("recovery"),
+		Labels:      []string{"recovery-bead", "failure_class:" + failureType},
+		Description: desc,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: create recovery bead for %s: %s\n", parentID, err)
 		return
 	}
 
-	// Link recovery bead to parent via typed dep.
+	// Link via caused-by dep.
 	if recoveryID != "" && deps.AddDepTyped != nil {
-		if derr := deps.AddDepTyped(recoveryID, parentID, "recovery-for"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: add recovery-for dep %s→%s: %s\n", recoveryID, parentID, derr)
+		if derr := deps.AddDepTyped(recoveryID, parentID, "caused-by"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", recoveryID, parentID, derr)
 		}
 	}
 

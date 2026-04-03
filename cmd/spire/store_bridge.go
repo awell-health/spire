@@ -284,6 +284,25 @@ func storeRaiseCorruptedBeadAlert(beadID string, violation error) {
 	}
 }
 
+// --- Recovery BeadOps adapter ---
+
+// storeBridgeOps implements recovery.BeadOps by delegating to store bridge
+// functions. Used by resummon, reset, and other CLI paths that need to close
+// recovery beads.
+type storeBridgeOps struct{}
+
+func (storeBridgeOps) GetDependentsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	return storeGetDependentsWithMeta(id)
+}
+
+func (storeBridgeOps) AddComment(id, text string) error {
+	return storeAddComment(id, text)
+}
+
+func (storeBridgeOps) CloseBead(id string) error {
+	return storeCloseBead(id)
+}
+
 // --- Predicates ---
 
 func isAttemptBead(b Bead) bool {

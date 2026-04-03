@@ -9,6 +9,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/steveyegge/beads"
 )
 
@@ -353,6 +354,11 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 		// Close the main bead.
 		if err := e.deps.CloseBead(e.beadID); err != nil {
 			return ActionResult{Error: fmt.Errorf("close bead: %w", err)}
+		}
+
+		// Close related recovery beads.
+		if err := recovery.CloseRelatedRecoveryBeads(executorBeadOps{e.deps}, e.beadID, "bead finished successfully"); err != nil {
+			e.log("warning: close recovery beads: %v", err)
 		}
 
 		// Close the attempt bead.

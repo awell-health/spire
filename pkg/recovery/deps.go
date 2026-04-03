@@ -38,6 +38,10 @@ type Deps struct {
 	CheckWorktreeExists func(dir string) bool
 	CheckWorktreeDirty  func(dir string) bool
 
+	// Mutations
+	AddComment func(id, text string) error
+	CloseBead  func(id string) error
+
 	// Wizard registry
 	LookupRegistry func(beadID string) (name string, pid int, alive bool, err error)
 

@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
@@ -115,6 +116,11 @@ func cmdResummon(args []string) error {
 
 	// 5. Close any open alert beads that reference this bead (merge-failure, etc.).
 	closeRelatedAlerts(beadID)
+
+	// 5b. Close any open recovery beads linked to this bead.
+	if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "resummon"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
+	}
 
 	// 6. Re-summon: spire summon 1 --targets <bead-id>
 	fmt.Printf("  re-summoning wizard for %s...\n", beadID)

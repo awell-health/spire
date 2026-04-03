@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
@@ -107,6 +108,12 @@ func (e *Executor) executeMerge(pc PhaseConfig) error {
 	if err := e.deps.CloseBead(e.beadID); err != nil {
 		e.log("warning: close bead: %s", err)
 	}
+
+	// Close related recovery beads.
+	if err := recovery.CloseRelatedRecoveryBeads(executorBeadOps{e.deps}, e.beadID, "merged successfully"); err != nil {
+		e.log("warning: close recovery beads: %v", err)
+	}
+
 	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, nil)
 	e.log("merged and closed")
 	return nil

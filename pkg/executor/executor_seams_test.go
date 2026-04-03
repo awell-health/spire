@@ -1759,7 +1759,7 @@ func TestEscalateHumanFailure_InterruptedLabel(t *testing.T) {
 }
 
 // TestEscalateHumanFailure_RecoveryBead verifies that EscalateHumanFailure
-// creates a recovery bead with recovery-bead label and recovery-for dep.
+// creates a type=recovery bead with recovery-bead + failure_class labels and caused-by dep.
 func TestEscalateHumanFailure_RecoveryBead(t *testing.T) {
 	var beadsCreated []CreateOpts
 	var depsAdded []string
@@ -1789,14 +1789,27 @@ func TestEscalateHumanFailure_RecoveryBead(t *testing.T) {
 
 	EscalateHumanFailure("spi-test", "wizard-test", "merge-failure", "merge conflict", deps)
 
-	// Verify a recovery bead was created with recovery-bead label.
+	// Verify a recovery bead was created with recovery-bead label and type=recovery.
 	foundRecoveryBead := false
 	for _, opts := range beadsCreated {
 		for _, lbl := range opts.Labels {
 			if lbl == "recovery-bead" {
 				foundRecoveryBead = true
-				if opts.Priority != 0 {
-					t.Errorf("expected recovery bead priority 0, got %d", opts.Priority)
+				if opts.Priority != 1 {
+					t.Errorf("expected recovery bead priority 1, got %d", opts.Priority)
+				}
+				if string(opts.Type) != "recovery" {
+					t.Errorf("expected recovery bead type=recovery, got %s", opts.Type)
+				}
+				// Verify failure_class label.
+				hasFC := false
+				for _, l := range opts.Labels {
+					if l == "failure_class:merge-failure" {
+						hasFC = true
+					}
+				}
+				if !hasFC {
+					t.Errorf("expected failure_class:merge-failure label, got: %v", opts.Labels)
 				}
 			}
 		}
@@ -1805,15 +1818,15 @@ func TestEscalateHumanFailure_RecoveryBead(t *testing.T) {
 		t.Errorf("expected recovery bead with recovery-bead label, got: %v", beadsCreated)
 	}
 
-	// Verify recovery-for dep was added.
+	// Verify caused-by dep was added (not recovery-for).
 	foundRecoveryDep := false
 	for _, d := range depsAdded {
-		if d == "spi-recovery-1→spi-test:recovery-for" {
+		if d == "spi-recovery-1→spi-test:caused-by" {
 			foundRecoveryDep = true
 		}
 	}
 	if !foundRecoveryDep {
-		t.Errorf("expected recovery-for dep, got: %v", depsAdded)
+		t.Errorf("expected caused-by dep, got: %v", depsAdded)
 	}
 
 	// Verify a context comment was added to the recovery bead.
@@ -1829,8 +1842,8 @@ func TestEscalateHumanFailure_RecoveryBead(t *testing.T) {
 }
 
 // TestEscalateHumanFailure_RecoveryBead_Dedup verifies that a second escalation
-// on the same parent reuses the existing open recovery bead instead of creating
-// a duplicate.
+// on the same parent with the same failure class reuses the existing open
+// recovery bead instead of creating a duplicate.
 func TestEscalateHumanFailure_RecoveryBead_Dedup(t *testing.T) {
 	var beadsCreated []CreateOpts
 	var commentsAdded []string
@@ -1847,10 +1860,14 @@ func TestEscalateHumanFailure_RecoveryBead_Dedup(t *testing.T) {
 		},
 		AddDepTyped: func(issueID, dependsOnID, depType string) error { return nil },
 		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
-			// Return an existing open recovery bead.
+			// Return an existing open recovery bead with matching failure_class label.
 			return []*beads.IssueWithDependencyMetadata{
 				{
-					Issue:          beads.Issue{ID: "spi-existing-recovery", Status: "open"},
+					Issue: beads.Issue{
+						ID:     "spi-existing-recovery",
+						Status: "open",
+						Labels: []string{"recovery-bead", "failure_class:build-failure"},
+					},
 					DependencyType: "recovery-for",
 				},
 			}, nil
