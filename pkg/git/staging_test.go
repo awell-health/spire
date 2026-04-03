@@ -297,3 +297,73 @@ func TestMergeToMain_BuildFailureIsTerminal(t *testing.T) {
 		t.Errorf("expected error to mention build failure, got: %s", err.Error())
 	}
 }
+
+// =============================================================================
+// MergeBranch tests
+// =============================================================================
+
+// TestMergeBranch_RebaseSucceedsWhileChildBranchIsCheckedOutElsewhere verifies
+// that the staging rebase path does not require mutating the child branch ref.
+// This mirrors epic wave dispatch, where child feature branches may still be
+// checked out in their own worktrees when the staging branch integrates them.
+func TestMergeBranch_RebaseSucceedsWhileChildBranchIsCheckedOutElsewhere(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	stageDir := filepath.Join(t.TempDir(), "staging-wt")
+	if err := rc.ForceBranch("staging/spi-j12j9", "main"); err != nil {
+		t.Fatalf("ForceBranch staging: %v", err)
+	}
+	stageWC, err := rc.CreateWorktree(stageDir, "staging/spi-j12j9")
+	if err != nil {
+		t.Fatalf("CreateWorktree staging: %v", err)
+	}
+	stageWC.ConfigureUser("Test", "test@test.com")
+	sw := &StagingWorktree{WorktreeContext: *stageWC}
+
+	wt1Dir := filepath.Join(t.TempDir(), "child-1")
+	wt1, err := rc.CreateWorktreeNewBranch(wt1Dir, "feat/spi-j12j9.1", "main")
+	if err != nil {
+		t.Fatalf("CreateWorktreeNewBranch child 1: %v", err)
+	}
+	wt1.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wt1Dir, "child1.txt"), "child 1\n")
+	if _, err := wt1.Commit("child 1"); err != nil {
+		t.Fatalf("Commit child 1: %v", err)
+	}
+	child1Head := trimNewline(run(t, wt1Dir, "git", "rev-parse", "HEAD"))
+
+	wt2Dir := filepath.Join(t.TempDir(), "child-2")
+	wt2, err := rc.CreateWorktreeNewBranch(wt2Dir, "feat/spi-j12j9.2", "main")
+	if err != nil {
+		t.Fatalf("CreateWorktreeNewBranch child 2: %v", err)
+	}
+	wt2.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wt2Dir, "child2.txt"), "child 2\n")
+	if _, err := wt2.Commit("child 2"); err != nil {
+		t.Fatalf("Commit child 2: %v", err)
+	}
+
+	// First child merges as a fast-forward. Second child requires the rebase
+	// path because staging has advanced, but its branch remains checked out in
+	// its own worktree throughout the test.
+	if err := sw.MergeBranch("feat/spi-j12j9.2", nil); err != nil {
+		t.Fatalf("MergeBranch child 2: %v", err)
+	}
+	if err := sw.MergeBranch("feat/spi-j12j9.1", nil); err != nil {
+		t.Fatalf("MergeBranch child 1 via rebase path: %v", err)
+	}
+
+	if _, err := exec.Command("git", "-C", stageDir, "cat-file", "-e", "HEAD:child1.txt").Output(); err != nil {
+		t.Error("staging should contain child1.txt after merge")
+	}
+	if _, err := exec.Command("git", "-C", stageDir, "cat-file", "-e", "HEAD:child2.txt").Output(); err != nil {
+		t.Error("staging should contain child2.txt after merge")
+	}
+
+	// The child branch remains intact in its original worktree; staging
+	// integration should not have to rewrite it in-place.
+	if got := trimNewline(run(t, wt1Dir, "git", "rev-parse", "HEAD")); got != child1Head {
+		t.Fatalf("child branch HEAD changed in its own worktree: got %s want %s", got, child1Head)
+	}
+}

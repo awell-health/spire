@@ -145,10 +145,22 @@ func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, bra
 	}
 	w.logf("  ff-only failed, rebasing %s onto %s", branchRef, w.Branch)
 
-	// Step 2: Rebase the child branch onto staging.
-	// This checks out branchRef (detached HEAD for remote refs), replays
-	// its commits on top of w.Branch, then we switch back and ff-only merge.
-	rebaseCmd := exec.Command("git", "-C", w.Dir, "rebase", w.Branch, branchRef)
+	// Step 2: Rebase the child tip onto the current staging tip using detached
+	// HEADs. Rebasing the branch name directly is fragile: it can fail if the
+	// child branch is still checked out in another worktree, and some git
+	// setups do not reliably resolve the staging branch name here. Using SHAs
+	// keeps the rebase local to this worktree and avoids mutating the child ref.
+	stagingTip, err := w.HeadSHA()
+	if err != nil {
+		return fmt.Errorf("read staging tip before rebase: %w", err)
+	}
+	childTipOut, err := exec.Command("git", "-C", w.Dir, "rev-parse", branchRef).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("resolve child branch %s: %w\n%s", branchRef, err, string(childTipOut))
+	}
+	childTip := strings.TrimSpace(string(childTipOut))
+
+	rebaseCmd := exec.Command("git", "-C", w.Dir, "rebase", stagingTip, childTip)
 	rebaseCmd.Env = os.Environ()
 	if out, err := rebaseCmd.CombinedOutput(); err != nil {
 		// Check if rebase stopped due to conflicts.
@@ -172,7 +184,7 @@ func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, bra
 			}
 		} else {
 			exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
-			return fmt.Errorf("rebase %s onto %s failed: %s\n%s", branchRef, w.Branch, err, string(out))
+			return fmt.Errorf("rebase %s onto %s failed: %s\n%s", branchRef, stagingTip, err, string(out))
 		}
 	}
 
