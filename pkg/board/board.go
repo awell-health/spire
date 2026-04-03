@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -33,11 +34,19 @@ type Columns struct {
 	Blocked     []BoardBead
 }
 
-// RecoveryRef identifies an open recovery bead linked to an interrupted parent.
-type RecoveryRef struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
+// RecoveryRef is an alias for recovery.RecoveryRef, avoiding duplicate definitions.
+type RecoveryRef = recovery.RecoveryRef
+
+// DepRecord holds dependent metadata needed for recovery ref lookup.
+type DepRecord struct {
+	ID             string
+	Title          string
+	Status         string
+	DependencyType string
 }
+
+// GetDependentsFunc retrieves dependents with metadata for a bead ID.
+type GetDependentsFunc func(beadID string) ([]DepRecord, error)
 
 // BoardBeadJSON wraps a BoardBead with optional DAG progress for JSON output.
 type BoardBeadJSON struct {
@@ -218,17 +227,18 @@ func ClearScreen() {
 }
 
 // FetchRecoveryRef looks up the first open recovery-for dependent for a bead.
+// getDeps is injected for testability — use StoreDeps() for production callers.
 // Returns nil if no open recovery bead exists.
-func FetchRecoveryRef(beadID string) *RecoveryRef {
-	deps, err := store.GetDependentsWithMeta(beadID)
+func FetchRecoveryRef(beadID string, getDeps GetDependentsFunc) *RecoveryRef {
+	deps, err := getDeps(beadID)
 	if err != nil {
 		return nil
 	}
 	for _, dep := range deps {
-		if string(dep.DependencyType) != "recovery-for" {
+		if dep.DependencyType != "recovery-for" {
 			continue
 		}
-		if string(dep.Status) == "closed" {
+		if dep.Status == "closed" {
 			continue
 		}
 		return &RecoveryRef{ID: dep.ID, Title: dep.Title}
@@ -236,8 +246,29 @@ func FetchRecoveryRef(beadID string) *RecoveryRef {
 	return nil
 }
 
+// StoreDeps returns a GetDependentsFunc backed by the store package.
+func StoreDeps() GetDependentsFunc {
+	return func(beadID string) ([]DepRecord, error) {
+		deps, err := store.GetDependentsWithMeta(beadID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]DepRecord, len(deps))
+		for i, d := range deps {
+			out[i] = DepRecord{
+				ID:             d.ID,
+				Title:          d.Title,
+				Status:         string(d.Status),
+				DependencyType: string(d.DependencyType),
+			}
+		}
+		return out, nil
+	}
+}
+
 // ToJSON converts Columns to the JSON-serializable ColumnsJSON with DAG progress.
-func (c Columns) ToJSON() ColumnsJSON {
+// recoveryRefs provides pre-fetched recovery refs for interrupted beads (may be nil).
+func (c Columns) ToJSON(recoveryRefs map[string]*RecoveryRef) ColumnsJSON {
 	enrich := func(beads []BoardBead) []BoardBeadJSON {
 		return nonNilJSON(enrichBeadsJSON(NonNil(beads)))
 	}
@@ -253,9 +284,11 @@ func (c Columns) ToJSON() ColumnsJSON {
 		Done:        enrich(c.Done),
 		Blocked:     enrich(c.Blocked),
 	}
-	// Enrich interrupted beads with linked recovery refs.
-	for i := range cj.Interrupted {
-		cj.Interrupted[i].RecoveryBead = FetchRecoveryRef(cj.Interrupted[i].ID)
+	// Enrich interrupted beads with pre-fetched recovery refs.
+	if recoveryRefs != nil {
+		for i := range cj.Interrupted {
+			cj.Interrupted[i].RecoveryBead = recoveryRefs[cj.Interrupted[i].ID]
+		}
 	}
 	return cj
 }

@@ -1241,7 +1241,7 @@ func TestBoardResultWarnings(t *testing.T) {
 	t.Run("empty warnings omitted from JSON", func(t *testing.T) {
 		result := BoardResult{Columns: Columns{}}
 		bj := BoardJSON{
-			ColumnsJSON: result.Columns.ToJSON(),
+			ColumnsJSON: result.Columns.ToJSON(nil),
 			Warnings:    result.Warnings,
 		}
 		if bj.Warnings != nil {
@@ -1255,7 +1255,7 @@ func TestBoardResultWarnings(t *testing.T) {
 			Warnings: []string{"dolt-conflict: 2 unresolved conflict(s) in issues table — run `spire pull` to resolve"},
 		}
 		bj := BoardJSON{
-			ColumnsJSON: result.Columns.ToJSON(),
+			ColumnsJSON: result.Columns.ToJSON(nil),
 			Warnings:    result.Warnings,
 		}
 		if len(bj.Warnings) != 1 {
@@ -1271,7 +1271,7 @@ func TestBoardResultWarnings(t *testing.T) {
 			Warnings: []string{"dolt-conflict: 5 unresolved conflict(s) in issues table — run `spire pull` to resolve"},
 		}
 		bj := BoardJSON{
-			ColumnsJSON: result.Columns.ToJSON(),
+			ColumnsJSON: result.Columns.ToJSON(nil),
 			Warnings:    result.Warnings,
 		}
 		if len(bj.Warnings) != 1 {
@@ -1349,6 +1349,128 @@ func TestCalcHeightBudgetWarnings(t *testing.T) {
 		b := CalcHeightBudget(0, 3, 0, 0, 0, 4, 0)
 		if b.MaxWarnings != 3 {
 			t.Errorf("expected MaxWarnings=3 for non-TTY, got %d", b.MaxWarnings)
+		}
+	})
+}
+
+// --- TestFetchRecoveryRef ---
+
+func TestFetchRecoveryRef(t *testing.T) {
+	t.Run("returns first open recovery-for dependent", func(t *testing.T) {
+		getDeps := func(id string) ([]DepRecord, error) {
+			return []DepRecord{
+				{ID: "other-1", Title: "unrelated", Status: "open", DependencyType: "caused-by"},
+				{ID: "rec-1", Title: "recovery: merge-failure", Status: "open", DependencyType: "recovery-for"},
+				{ID: "rec-2", Title: "recovery: second", Status: "open", DependencyType: "recovery-for"},
+			}, nil
+		}
+		ref := FetchRecoveryRef("spi-parent", getDeps)
+		if ref == nil {
+			t.Fatal("expected non-nil RecoveryRef")
+		}
+		if ref.ID != "rec-1" {
+			t.Errorf("expected rec-1, got %s", ref.ID)
+		}
+		if ref.Title != "recovery: merge-failure" {
+			t.Errorf("expected title 'recovery: merge-failure', got %s", ref.Title)
+		}
+	})
+
+	t.Run("skips closed recovery beads", func(t *testing.T) {
+		getDeps := func(id string) ([]DepRecord, error) {
+			return []DepRecord{
+				{ID: "rec-closed", Title: "closed recovery", Status: "closed", DependencyType: "recovery-for"},
+				{ID: "rec-open", Title: "open recovery", Status: "open", DependencyType: "recovery-for"},
+			}, nil
+		}
+		ref := FetchRecoveryRef("spi-parent", getDeps)
+		if ref == nil {
+			t.Fatal("expected non-nil RecoveryRef")
+		}
+		if ref.ID != "rec-open" {
+			t.Errorf("expected rec-open, got %s", ref.ID)
+		}
+	})
+
+	t.Run("returns nil when all recovery beads closed", func(t *testing.T) {
+		getDeps := func(id string) ([]DepRecord, error) {
+			return []DepRecord{
+				{ID: "rec-1", Title: "closed", Status: "closed", DependencyType: "recovery-for"},
+			}, nil
+		}
+		ref := FetchRecoveryRef("spi-parent", getDeps)
+		if ref != nil {
+			t.Errorf("expected nil, got %+v", ref)
+		}
+	})
+
+	t.Run("returns nil when no recovery-for deps", func(t *testing.T) {
+		getDeps := func(id string) ([]DepRecord, error) {
+			return []DepRecord{
+				{ID: "alert-1", Title: "alert", Status: "open", DependencyType: "caused-by"},
+			}, nil
+		}
+		ref := FetchRecoveryRef("spi-parent", getDeps)
+		if ref != nil {
+			t.Errorf("expected nil, got %+v", ref)
+		}
+	})
+
+	t.Run("returns nil when no dependents", func(t *testing.T) {
+		getDeps := func(id string) ([]DepRecord, error) {
+			return nil, nil
+		}
+		ref := FetchRecoveryRef("spi-parent", getDeps)
+		if ref != nil {
+			t.Errorf("expected nil, got %+v", ref)
+		}
+	})
+
+	t.Run("returns nil on error", func(t *testing.T) {
+		getDeps := func(id string) ([]DepRecord, error) {
+			return nil, fmt.Errorf("store unavailable")
+		}
+		ref := FetchRecoveryRef("spi-parent", getDeps)
+		if ref != nil {
+			t.Errorf("expected nil on error, got %+v", ref)
+		}
+	})
+}
+
+// --- TestToJSON_RecoveryRefs ---
+
+func TestToJSON_RecoveryRefs(t *testing.T) {
+	t.Run("enriches interrupted beads with pre-fetched refs", func(t *testing.T) {
+		cols := Columns{
+			Interrupted: []BoardBead{
+				{ID: "spi-int1", Title: "interrupted1", Status: "in_progress", Type: "task", Labels: []string{"interrupted:merge-failure"}},
+				{ID: "spi-int2", Title: "interrupted2", Status: "in_progress", Type: "task", Labels: []string{"interrupted:build-failure"}},
+			},
+		}
+		refs := map[string]*RecoveryRef{
+			"spi-int1": {ID: "spi-rec1", Title: "recovery for int1"},
+		}
+		cj := cols.ToJSON(refs)
+		if cj.Interrupted[0].RecoveryBead == nil {
+			t.Fatal("expected RecoveryBead on spi-int1")
+		}
+		if cj.Interrupted[0].RecoveryBead.ID != "spi-rec1" {
+			t.Errorf("expected spi-rec1, got %s", cj.Interrupted[0].RecoveryBead.ID)
+		}
+		if cj.Interrupted[1].RecoveryBead != nil {
+			t.Errorf("expected nil RecoveryBead on spi-int2, got %+v", cj.Interrupted[1].RecoveryBead)
+		}
+	})
+
+	t.Run("nil refs leaves RecoveryBead nil", func(t *testing.T) {
+		cols := Columns{
+			Interrupted: []BoardBead{
+				{ID: "spi-int1", Title: "interrupted1", Status: "in_progress", Type: "task", Labels: []string{"interrupted:merge-failure"}},
+			},
+		}
+		cj := cols.ToJSON(nil)
+		if cj.Interrupted[0].RecoveryBead != nil {
+			t.Errorf("expected nil RecoveryBead with nil refs, got %+v", cj.Interrupted[0].RecoveryBead)
 		}
 	})
 }

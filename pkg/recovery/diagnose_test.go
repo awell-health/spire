@@ -551,3 +551,170 @@ func TestDiagnose_ReviewFixMergeConflict(t *testing.T) {
 		t.Errorf("expected FailReviewFix, got %s", diag.FailureMode)
 	}
 }
+
+// --- TestFindLinkedBeads ---
+
+func TestFindLinkedBeads(t *testing.T) {
+	t.Run("alert-only dependents", func(t *testing.T) {
+		deps := &Deps{
+			GetDependentsWithMeta: func(id string) ([]DepDependent, error) {
+				return []DepDependent{
+					{ID: "alert-1", Status: "open", Labels: []string{"alert:merge-failure"}, DependencyType: "caused-by"},
+					{ID: "alert-2", Status: "open", Labels: []string{"alert:build-failure"}, DependencyType: "caused-by"},
+				}, nil
+			},
+		}
+		alerts, recovery := findLinkedBeads("spi-parent", deps)
+		if len(alerts) != 2 {
+			t.Errorf("expected 2 alerts, got %d", len(alerts))
+		}
+		if recovery != nil {
+			t.Errorf("expected nil recovery, got %+v", recovery)
+		}
+	})
+
+	t.Run("recovery-only dependents", func(t *testing.T) {
+		deps := &Deps{
+			GetDependentsWithMeta: func(id string) ([]DepDependent, error) {
+				return []DepDependent{
+					{ID: "rec-1", Status: "open", Title: "recovery: merge-failure", DependencyType: "recovery-for"},
+				}, nil
+			},
+		}
+		alerts, recovery := findLinkedBeads("spi-parent", deps)
+		if len(alerts) != 0 {
+			t.Errorf("expected 0 alerts, got %d", len(alerts))
+		}
+		if recovery == nil {
+			t.Fatal("expected non-nil recovery")
+		}
+		if recovery.ID != "rec-1" {
+			t.Errorf("expected rec-1, got %s", recovery.ID)
+		}
+	})
+
+	t.Run("mixed alert and recovery dependents", func(t *testing.T) {
+		deps := &Deps{
+			GetDependentsWithMeta: func(id string) ([]DepDependent, error) {
+				return []DepDependent{
+					{ID: "alert-1", Status: "open", Labels: []string{"alert:merge-failure"}, DependencyType: "caused-by"},
+					{ID: "rec-1", Status: "open", Title: "recovery: merge-failure", DependencyType: "recovery-for"},
+					{ID: "other-1", Status: "open", Labels: []string{"unrelated"}, DependencyType: "related"},
+				}, nil
+			},
+		}
+		alerts, recovery := findLinkedBeads("spi-parent", deps)
+		if len(alerts) != 1 {
+			t.Errorf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].ID != "alert-1" {
+			t.Errorf("expected alert-1, got %s", alerts[0].ID)
+		}
+		if recovery == nil {
+			t.Fatal("expected non-nil recovery")
+		}
+		if recovery.ID != "rec-1" {
+			t.Errorf("expected rec-1, got %s", recovery.ID)
+		}
+	})
+
+	t.Run("closed recovery beads are skipped", func(t *testing.T) {
+		deps := &Deps{
+			GetDependentsWithMeta: func(id string) ([]DepDependent, error) {
+				return []DepDependent{
+					{ID: "rec-closed", Status: "closed", Title: "old recovery", DependencyType: "recovery-for"},
+				}, nil
+			},
+		}
+		alerts, recovery := findLinkedBeads("spi-parent", deps)
+		if len(alerts) != 0 {
+			t.Errorf("expected 0 alerts, got %d", len(alerts))
+		}
+		if recovery != nil {
+			t.Errorf("expected nil recovery for closed bead, got %+v", recovery)
+		}
+	})
+
+	t.Run("first open recovery bead wins", func(t *testing.T) {
+		deps := &Deps{
+			GetDependentsWithMeta: func(id string) ([]DepDependent, error) {
+				return []DepDependent{
+					{ID: "rec-closed", Status: "closed", Title: "old recovery", DependencyType: "recovery-for"},
+					{ID: "rec-first", Status: "open", Title: "first open", DependencyType: "recovery-for"},
+					{ID: "rec-second", Status: "open", Title: "second open", DependencyType: "recovery-for"},
+				}, nil
+			},
+		}
+		_, recovery := findLinkedBeads("spi-parent", deps)
+		if recovery == nil {
+			t.Fatal("expected non-nil recovery")
+		}
+		if recovery.ID != "rec-first" {
+			t.Errorf("expected rec-first (first open), got %s", recovery.ID)
+		}
+	})
+
+	t.Run("nil GetDependentsWithMeta returns nil", func(t *testing.T) {
+		deps := &Deps{}
+		alerts, recovery := findLinkedBeads("spi-parent", deps)
+		if alerts != nil {
+			t.Errorf("expected nil alerts, got %v", alerts)
+		}
+		if recovery != nil {
+			t.Errorf("expected nil recovery, got %+v", recovery)
+		}
+	})
+
+	t.Run("error returns nil", func(t *testing.T) {
+		deps := &Deps{
+			GetDependentsWithMeta: func(id string) ([]DepDependent, error) {
+				return nil, fmt.Errorf("store error")
+			},
+		}
+		alerts, recovery := findLinkedBeads("spi-parent", deps)
+		if alerts != nil {
+			t.Errorf("expected nil alerts on error, got %v", alerts)
+		}
+		if recovery != nil {
+			t.Errorf("expected nil recovery on error, got %+v", recovery)
+		}
+	})
+}
+
+// --- TestDiagnose_RecoveryBead ---
+
+func TestDiagnose_RecoveryBead(t *testing.T) {
+	deps := mockDeps()
+	deps.GetDependentsWithMeta = func(id string) ([]DepDependent, error) {
+		return []DepDependent{
+			{ID: "alert-1", Status: "open", Labels: []string{"alert:merge-failure"}, DependencyType: "caused-by"},
+			{ID: "rec-1", Status: "open", Title: "recovery: merge-failure", DependencyType: "recovery-for"},
+		}, nil
+	}
+
+	diag, err := Diagnose("spi-rec-test", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+	if len(diag.AlertBeads) != 1 {
+		t.Errorf("expected 1 alert, got %d", len(diag.AlertBeads))
+	}
+	if diag.RecoveryBead == nil {
+		t.Fatal("expected non-nil RecoveryBead")
+	}
+	if diag.RecoveryBead.ID != "rec-1" {
+		t.Errorf("expected rec-1, got %s", diag.RecoveryBead.ID)
+	}
+}
+
+func TestDiagnose_NoRecoveryBead(t *testing.T) {
+	deps := mockDeps()
+	// Default mockDeps returns no dependents — no recovery bead.
+	diag, err := Diagnose("spi-no-rec", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+	if diag.RecoveryBead != nil {
+		t.Errorf("expected nil RecoveryBead, got %+v", diag.RecoveryBead)
+	}
+}

@@ -128,8 +128,16 @@ func cmdBoard(args []string) error {
 		if err != nil {
 			return err
 		}
+		// Pre-fetch recovery refs for interrupted beads.
+		recoveryRefs := make(map[string]*board.RecoveryRef)
+		getDeps := board.StoreDeps()
+		for _, b := range result.Columns.Interrupted {
+			if ref := board.FetchRecoveryRef(b.ID, getDeps); ref != nil {
+				recoveryRefs[b.ID] = ref
+			}
+		}
 		out := board.BoardJSON{
-			ColumnsJSON: result.Columns.ToJSON(),
+			ColumnsJSON: result.Columns.ToJSON(recoveryRefs),
 			Warnings:    result.Warnings,
 		}
 		enc := json.NewEncoder(os.Stdout)

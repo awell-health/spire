@@ -86,27 +86,11 @@ func cmdFocus(args []string) error {
 	}
 
 	// 7a. Recovery work section for interrupted beads.
-	isInterrupted := false
-	for _, l := range target.Labels {
-		if strings.HasPrefix(l, "interrupted:") {
-			isInterrupted = true
-			break
-		}
-	}
-	if isInterrupted {
-		dependents, dErr := storeGetDependentsWithMeta(id)
+	if isInterruptedBead(target.Labels) {
+		dependents, dErr := storeGetDependentsWithMetaFunc(id)
 		if dErr == nil {
-			for _, dep := range dependents {
-				if string(dep.DependencyType) != "recovery-for" {
-					continue
-				}
-				if string(dep.Status) == "closed" {
-					continue
-				}
-				fmt.Printf("--- Recovery work ---\n")
-				fmt.Printf("  %s  %s  (%s)\n", dep.ID, dep.Title, dep.Status)
-				fmt.Println()
-				break // only show first open recovery bead
+			if section := formatRecoverySection(dependents); section != "" {
+				fmt.Print(section)
 			}
 		}
 	}
@@ -190,4 +174,29 @@ func cmdFocus(args []string) error {
 	}
 
 	return nil
+}
+
+// isInterruptedBead returns true if any label starts with "interrupted:".
+func isInterruptedBead(labels []string) bool {
+	for _, l := range labels {
+		if strings.HasPrefix(l, "interrupted:") {
+			return true
+		}
+	}
+	return false
+}
+
+// formatRecoverySection returns the formatted recovery work section for display,
+// or "" if no open recovery-for dependent exists.
+func formatRecoverySection(dependents []*beads.IssueWithDependencyMetadata) string {
+	for _, dep := range dependents {
+		if string(dep.DependencyType) != "recovery-for" {
+			continue
+		}
+		if string(dep.Status) == "closed" {
+			continue
+		}
+		return fmt.Sprintf("--- Recovery work ---\n  %s  %s  (%s)\n\n", dep.ID, dep.Title, dep.Status)
+	}
+	return ""
 }

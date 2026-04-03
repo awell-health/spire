@@ -251,8 +251,9 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 
 	// 8. Fetch recovery refs for interrupted beads.
 	recoveryRefs := make(map[string]*RecoveryRef)
+	getDeps := StoreDeps()
 	for _, b := range cols.Interrupted {
-		if ref := FetchRecoveryRef(b.ID); ref != nil {
+		if ref := FetchRecoveryRef(b.ID, getDeps); ref != nil {
 			recoveryRefs[b.ID] = ref
 		}
 	}
