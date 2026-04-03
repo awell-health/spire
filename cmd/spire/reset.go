@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -288,6 +289,10 @@ func cmdReset(args []string) error {
 	return nil
 }
 
+// TODO(spi-tph8j): audit resummon, recover, close-advance, and summon resume
+// detection for the same v2 phase assumptions that were fixed here. See spi-xig2d
+// for the full audit of every v2 assumption in those files.
+
 // resetV3 performs a full reset for v3 (step-graph) formulas.
 // Mirrors the manual reset procedure: clear graph state, clean git artifacts,
 // close step/attempt beads, reopen subtask children, reset the epic bead.
@@ -530,6 +535,8 @@ func softResetV3(beadID, targetStep, wizardName string) error {
 			if stepBeadID == "" {
 				continue
 			}
+			// Annotate the closure with a reset reason before closing.
+			_ = storeAddComment(stepBeadID, fmt.Sprintf("Closed by soft-reset --to %s (step rewound to pending)", targetStep))
 			if err := storeCloseBead(stepBeadID); err != nil {
 				fmt.Printf("  %s(note: could not close step bead %s for %s: %s)%s\n", dim, stepBeadID, stepName, err, reset)
 			} else {
@@ -600,14 +607,7 @@ func mapKeys(m map[string]bool) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	// Sort for deterministic output.
-	for i := 0; i < len(keys); i++ {
-		for j := i + 1; j < len(keys); j++ {
-			if keys[j] < keys[i] {
-				keys[i], keys[j] = keys[j], keys[i]
-			}
-		}
-	}
+	sort.Strings(keys)
 	return keys
 }
 
