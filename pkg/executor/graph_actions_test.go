@@ -3,6 +3,7 @@ package executor
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -448,6 +449,192 @@ func TestWizardRunSpawnSucceedsWithResultJSONDespiteWaitErr(t *testing.T) {
 	}
 	if result.Outputs["branch"] != "feat/spi-test" {
 		t.Errorf("expected outputs[branch]=%q, got %q", "feat/spi-test", result.Outputs["branch"])
+	}
+}
+
+// --- Sage review verdict promotion tests ---
+
+// sageVerdictMockBackend implements agent.Backend for sage-review verdict tests.
+type sageVerdictMockBackend struct {
+	// onSpawn is called when Spawn is invoked; lets tests write result.json
+	// before Wait returns.
+	onSpawn func(cfg agent.SpawnConfig)
+}
+
+func (b *sageVerdictMockBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
+	if b.onSpawn != nil {
+		b.onSpawn(cfg)
+	}
+	return &sageVerdictMockHandle{}, nil
+}
+func (b *sageVerdictMockBackend) List() ([]agent.Info, error)       { return nil, nil }
+func (b *sageVerdictMockBackend) Logs(name string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
+func (b *sageVerdictMockBackend) Kill(name string) error            { return nil }
+
+type sageVerdictMockHandle struct{}
+
+func (h *sageVerdictMockHandle) Wait() error           { return nil }
+func (h *sageVerdictMockHandle) Signal(os.Signal) error { return nil }
+func (h *sageVerdictMockHandle) Alive() bool            { return false }
+func (h *sageVerdictMockHandle) Name() string           { return "mock-sage" }
+func (h *sageVerdictMockHandle) Identifier() string     { return "mock-id" }
+
+// TestSageReview_ApproveVerdictPromotion verifies the full round-trip:
+// when a sage writes result.json with "approve" (the no-diff path), the
+// executor reads it back via readAgentResult and promotes it to
+// outputs["verdict"] = "approve" so the review graph can route to merge.
+func TestSageReview_ApproveVerdictPromotion(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-write the result.json that the sage would produce.
+	// The agent name is "<executor-agent>-<step-name>".
+	agentName := "wizard-test-sage-review"
+	resultDir := filepath.Join(dir, agentName)
+	os.MkdirAll(resultDir, 0755)
+
+	resultData, _ := json.Marshal(map[string]interface{}{
+		"result":  "approve",
+		"branch":  "",
+		"commit":  "",
+		"wizard":  agentName,
+		"bead_id": "spi-test",
+	})
+	os.WriteFile(filepath.Join(resultDir, "result.json"), resultData, 0644)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-review-verdict",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"sage-review": {Action: "wizard.run", Flow: "sage-review"},
+		},
+	}
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		Spawner: &sageVerdictMockBackend{},
+		AgentResultDir: func(name string) string {
+			return filepath.Join(dir, name)
+		},
+		RecordAgentRun: func(run AgentRun) error { return nil },
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	state := exec.graphState
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "sage-review",
+	}
+
+	result := actionWizardRun(exec, "sage-review", step, state)
+	if result.Error != nil {
+		t.Fatalf("actionWizardRun returned error: %v", result.Error)
+	}
+
+	// The key assertion: verdict must be promoted from result to outputs.
+	if result.Outputs["verdict"] != "approve" {
+		t.Errorf("outputs[verdict] = %q, want %q", result.Outputs["verdict"], "approve")
+	}
+	if result.Outputs["result"] != "approve" {
+		t.Errorf("outputs[result] = %q, want %q", result.Outputs["result"], "approve")
+	}
+}
+
+// TestSageReview_RequestChangesVerdictPromotion verifies that request_changes
+// is also promoted to outputs["verdict"].
+func TestSageReview_RequestChangesVerdictPromotion(t *testing.T) {
+	dir := t.TempDir()
+
+	agentName := "wizard-test-sage-review"
+	resultDir := filepath.Join(dir, agentName)
+	os.MkdirAll(resultDir, 0755)
+
+	resultData, _ := json.Marshal(map[string]interface{}{
+		"result":  "request_changes",
+		"bead_id": "spi-test",
+	})
+	os.WriteFile(filepath.Join(resultDir, "result.json"), resultData, 0644)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-review-verdict-rc",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"sage-review": {Action: "wizard.run", Flow: "sage-review"},
+		},
+	}
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		Spawner: &sageVerdictMockBackend{},
+		AgentResultDir: func(name string) string {
+			return filepath.Join(dir, name)
+		},
+		RecordAgentRun: func(run AgentRun) error { return nil },
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	state := exec.graphState
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "sage-review",
+	}
+
+	result := actionWizardRun(exec, "sage-review", step, state)
+	if result.Error != nil {
+		t.Fatalf("actionWizardRun returned error: %v", result.Error)
+	}
+
+	if result.Outputs["verdict"] != "request_changes" {
+		t.Errorf("outputs[verdict] = %q, want %q", result.Outputs["verdict"], "request_changes")
+	}
+}
+
+// TestSageReview_NoResultJSON_NoVerdict verifies that when no result.json
+// exists (process succeeded but wrote nothing), verdict is NOT set. This
+// was the original bug: the review graph gets stuck because no verdict
+// output exists.
+func TestSageReview_NoResultJSON_NoVerdict(t *testing.T) {
+	dir := t.TempDir()
+
+	// Do NOT write result.json — simulate the old no-diff bug.
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-review-verdict-missing",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"sage-review": {Action: "wizard.run", Flow: "sage-review"},
+		},
+	}
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		Spawner: &sageVerdictMockBackend{},
+		AgentResultDir: func(name string) string {
+			return filepath.Join(dir, name)
+		},
+		RecordAgentRun: func(run AgentRun) error { return nil },
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	state := exec.graphState
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "sage-review",
+	}
+
+	result := actionWizardRun(exec, "sage-review", step, state)
+	if result.Error != nil {
+		t.Fatalf("actionWizardRun returned error: %v", result.Error)
+	}
+
+	// Without result.json, result is "success" and verdict is not promoted.
+	if result.Outputs["result"] != "success" {
+		t.Errorf("outputs[result] = %q, want %q", result.Outputs["result"], "success")
+	}
+	if v, ok := result.Outputs["verdict"]; ok {
+		t.Errorf("outputs[verdict] should not be set, got %q", v)
 	}
 }
 
