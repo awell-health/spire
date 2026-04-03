@@ -579,32 +579,38 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 		return ActionResult{Error: fmt.Errorf("load nested graph %q: %w", graphName, err)}
 	}
 
-	// Create a sub-state for the nested graph.
+	// Load or create sub-state for the nested graph.
+	// On resume, the sub-state may already be persisted from a prior interrupted run.
 	subAgentName := e.agentName + "-" + stepName
-	subState := NewGraphState(subGraph, e.beadID, subAgentName)
-
-	// Copy parent vars into sub-state (e.g. max_review_rounds, base_branch).
-	for k, v := range state.Vars {
-		subState.Vars[k] = v
+	subState, loadErr := LoadGraphState(subAgentName, e.deps.ConfigDir)
+	if loadErr != nil {
+		e.log("warning: load nested graph state for %s: %s (starting fresh)", subAgentName, loadErr)
 	}
+	if subState == nil {
+		subState = NewGraphState(subGraph, e.beadID, subAgentName)
 
-	// Copy branch/workspace info so the sub-graph can resolve its workspace.
-	subState.RepoPath = state.RepoPath
-	subState.BaseBranch = state.BaseBranch
-	subState.StagingBranch = state.StagingBranch
-
-	// Resolve the active workspace dir from the parent step's declared workspace.
-	// This ensures nested graphs (e.g. review-phase called from a step with
-	// workspace="feature") inherit the correct runtime workspace, not just the
-	// legacy state.WorktreeDir field.
-	subState.WorktreeDir = state.WorktreeDir // fallback to legacy field
-	if step.Workspace != "" {
-		if ws, ok := state.Workspaces[step.Workspace]; ok && ws.Dir != "" {
-			subState.WorktreeDir = ws.Dir
+		// Copy parent vars into sub-state (e.g. max_review_rounds, base_branch).
+		for k, v := range state.Vars {
+			subState.Vars[k] = v
 		}
+
+		// Copy branch/workspace info so the sub-graph can resolve its workspace.
+		subState.RepoPath = state.RepoPath
+		subState.BaseBranch = state.BaseBranch
+		subState.StagingBranch = state.StagingBranch
+
+		// Resolve the active workspace dir from the parent step's declared workspace.
+		subState.WorktreeDir = state.WorktreeDir
+		if step.Workspace != "" {
+			if ws, ok := state.Workspaces[step.Workspace]; ok && ws.Dir != "" {
+				subState.WorktreeDir = ws.Dir
+			}
+		}
+	} else {
+		e.log("resuming nested graph %s from persisted state (active: %s)", subAgentName, subState.ActiveStep)
 	}
 
-	// Run the nested graph using the isolated interpreter (no deferred cleanup).
+	// Run the nested graph using the isolated interpreter (saves after each step).
 	runErr := e.RunNestedGraph(subGraph, subState)
 
 	// Capture outputs from the terminal step that completed.
@@ -620,8 +626,13 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 	}
 
 	if runErr != nil {
+		// Sub-state was saved after each step by RunNestedGraph.
+		// On interrupt/failure it persists for resume.
 		return ActionResult{Outputs: outputs, Error: runErr}
 	}
+
+	// Terminal success — remove persisted sub-state so it doesn't linger.
+	RemoveGraphState(subAgentName, e.deps.ConfigDir)
 
 	return ActionResult{Outputs: outputs}
 }
