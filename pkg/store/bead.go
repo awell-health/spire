@@ -4,34 +4,52 @@ import "strings"
 
 // Bead represents a beads issue — the lightweight projection used throughout spire.
 type Bead struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Status      string   `json:"status"`
-	Priority    int      `json:"priority"`
-	Type        string   `json:"issue_type"`
-	Labels      []string `json:"labels"`
-	Parent      string   `json:"parent"`
-	UpdatedAt   string   `json:"updated_at"`
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Status      string            `json:"status"`
+	Priority    int               `json:"priority"`
+	Type        string            `json:"issue_type"`
+	Labels      []string          `json:"labels"`
+	Parent      string            `json:"parent"`
+	UpdatedAt   string            `json:"updated_at"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
+// Meta returns the metadata value for key, or "" if not set.
+func (b Bead) Meta(key string) string {
+	if b.Metadata == nil {
+		return ""
+	}
+	return b.Metadata[key]
 }
 
 // BoardBead extends Bead with full board metadata (owner, timestamps, deps).
 type BoardBead struct {
-	ID              string     `json:"id"`
-	Title           string     `json:"title"`
-	Description     string     `json:"description"`
-	Status          string     `json:"status"`
-	Priority        int        `json:"priority"`
-	Type            string     `json:"issue_type"`
-	Owner           string     `json:"owner"`
-	CreatedAt       string     `json:"created_at"`
-	UpdatedAt       string     `json:"updated_at"`
-	ClosedAt        string     `json:"closed_at,omitempty"`
-	Labels          []string   `json:"labels"`
-	Parent          string     `json:"parent"`
-	Dependencies    []BoardDep `json:"dependencies"`
-	DependencyCount int        `json:"dependency_count"`
-	DependentCount  int        `json:"dependent_count"`
+	ID              string            `json:"id"`
+	Title           string            `json:"title"`
+	Description     string            `json:"description"`
+	Status          string            `json:"status"`
+	Priority        int               `json:"priority"`
+	Type            string            `json:"issue_type"`
+	Owner           string            `json:"owner"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	ClosedAt        string            `json:"closed_at,omitempty"`
+	Labels          []string          `json:"labels"`
+	Parent          string            `json:"parent"`
+	Dependencies    []BoardDep        `json:"dependencies"`
+	DependencyCount int               `json:"dependency_count"`
+	DependentCount  int               `json:"dependent_count"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+}
+
+// Meta returns the metadata value for key, or "" if not set.
+func (b BoardBead) Meta(key string) string {
+	if b.Metadata == nil {
+		return ""
+	}
+	return b.Metadata[key]
 }
 
 // BoardDep represents a dependency edge on a board bead.
