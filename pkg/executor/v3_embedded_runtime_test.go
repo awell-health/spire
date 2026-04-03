@@ -129,13 +129,10 @@ func TestEmbeddedRuntime_GraphRunReviewPhase(t *testing.T) {
 		}
 		return ActionResult{Outputs: map[string]string{"result": "success"}}
 	}
-	actionRegistry["git.merge_to_main"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	// review-phase terminals now use noop (parent graph handles real side effects).
+	actionRegistry["noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 		nestedDispatched = append(nestedDispatched, stepName)
-		return ActionResult{Outputs: map[string]string{"merged": "true"}}
-	}
-	actionRegistry["bead.finish"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-		nestedDispatched = append(nestedDispatched, stepName)
-		return ActionResult{Outputs: map[string]string{"status": "closed"}}
+		return ActionResult{Outputs: map[string]string{"status": "done"}}
 	}
 
 	// Build a parent graph that calls graph.run with review-phase.

@@ -32,6 +32,7 @@ var actionRegistry = map[string]ActionHandler{
 	"verify.run":            actionVerifyRun,
 	"git.merge_to_main":     actionMergeToMain,
 	"bead.finish":           actionBeadFinish,
+	"noop":                  actionNoop,
 }
 
 func init() {
@@ -103,13 +104,27 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
-		return wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs)
+		result := wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs)
+		// Promote the review verdict into state vars and outputs so review-phase
+		// conditions (bare "verdict == approve") can route on it. The generic
+		// result field from wizard-review carries the verdict.
+		verdict := result.Outputs["result"]
+		if verdict == "approve" || verdict == "request_changes" {
+			result.Outputs["verdict"] = verdict
+			state.Vars["verdict"] = verdict
+		}
+		// Increment review_round counter for round-based condition routing.
+		state.Counters["review_round"]++
+		state.Vars["review_round"] = fmt.Sprintf("%d", state.Counters["review_round"])
+		return result
 	case "review-fix":
 		extraArgs := []string{"--review-fix", "--apprentice"}
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
 		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
+	case "arbiter":
+		return actionArbiterEscalate(e, stepName, step, state)
 	default:
 		// For other flows, spawn with apprentice role + workspace if declared.
 		var extraArgs []string
@@ -160,6 +175,63 @@ func actionPlanEpic(e *Executor, stepName string, step StepConfig, state *GraphS
 	}
 
 	return ActionResult{Outputs: map[string]string{"status": "planned"}}
+}
+
+// actionArbiterEscalate routes the "arbiter" flow to the executor's arbiter
+// escalation logic. The v2 dispatchArbiter uses e.formula and e.state which
+// are nil in v3 graph mode, so this builds a RevisionPolicy from the graph
+// state vars and calls ReviewEscalateToArbiter directly.
+func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	sageName := fmt.Sprintf("%s-sage", e.agentName)
+
+	// Build revision policy from graph vars and step config.
+	arbiterModel := step.Model
+	if arbiterModel == "" {
+		arbiterModel = "claude-opus-4-6"
+	}
+	maxRounds := 3
+	if mr, ok := state.Vars["max_review_rounds"]; ok {
+		if v, err := fmt.Sscanf(mr, "%d", &maxRounds); v == 0 || err != nil {
+			maxRounds = 3
+		}
+	}
+
+	revPolicy := RevisionPolicy{
+		MaxRounds:    maxRounds,
+		ArbiterModel: arbiterModel,
+	}
+
+	lastReview := &Review{Verdict: "request_changes", Summary: "Max review rounds reached"}
+	started := time.Now()
+	err := e.deps.ReviewEscalateToArbiter(e.beadID, sageName, lastReview, revPolicy, e.log)
+
+	reviewRound := state.Counters["review_round"]
+	e.recordAgentRun(sageName, e.beadID, "", arbiterModel, "arbiter", "review", started, err,
+		withReviewStep("arbiter", reviewRound+1))
+
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("arbiter escalation: %w", err)}
+	}
+
+	// Read arbiter decision from bead labels.
+	decision := ""
+	if bead, bErr := e.deps.GetBead(e.beadID); bErr == nil {
+		decision = e.deps.HasLabel(bead, "arbiter-decision:")
+		if decision == "" && e.deps.ContainsLabel(bead, "review-approved") {
+			decision = "merge"
+		}
+	}
+
+	// Promote arbiter_decision into state vars so review-phase conditions
+	// (bare "arbiter_decision == merge") can route on it.
+	if decision != "" {
+		state.Vars["arbiter_decision"] = decision
+	}
+
+	return ActionResult{Outputs: map[string]string{
+		"arbiter_decision": decision,
+		"result":           "escalated",
+	}}
 }
 
 // wizardRunSpawn is the common spawn logic for wizard.run actions.
@@ -239,6 +311,13 @@ func actionCheckDesignLinked(e *Executor, stepName string, step StepConfig, stat
 // Reads With parameters:
 //
 //	status: "closed" | "done" | "wontfix" | "discard" (default: "closed")
+// actionNoop is a no-op action that completes immediately with success.
+// Used for terminal signal steps in nested graphs (e.g. review-phase merge/discard
+// terminals) where the parent graph is responsible for the real side effects.
+func actionNoop(_ *Executor, _ string, _ StepConfig, _ *GraphState) ActionResult {
+	return ActionResult{Outputs: map[string]string{"status": "done"}}
+}
+
 //	outcome: alias for status (used by some formulas)
 //
 // For epic formulas, also closes orphan subtask beads.
@@ -308,8 +387,11 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 //
 // Does NOT close beads — that's bead.finish.
 func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	// Resolve workspace: prefer step-declared workspace, fall back to staging worktree.
+	// Resolve workspace and determine the actual branch being merged.
+	// When a step declares a workspace, use that workspace's branch for merge
+	// operations and cleanup. Fall back to state.StagingBranch for legacy paths.
 	var stagingWt *spgit.StagingWorktree
+	mergeBranch := state.StagingBranch // default for legacy/unresolved
 	if step.Workspace != "" {
 		dir, wsErr := e.resolveGraphWorkspace(step.Workspace, state)
 		if wsErr != nil {
@@ -317,6 +399,7 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 		}
 		ws := state.Workspaces[step.Workspace]
 		stagingWt = spgit.ResumeStagingWorktree(state.RepoPath, dir, ws.Branch, ws.BaseBranch, e.log)
+		mergeBranch = ws.Branch
 	} else {
 		var err error
 		stagingWt, err = e.ensureGraphStagingWorktree(state)
@@ -340,18 +423,18 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 	if docPatterns := step.With["doc_patterns"]; docPatterns != "" {
 		patterns := strings.Split(docPatterns, ",")
 		pc := PhaseConfig{DocPatterns: patterns, Model: step.Model}
-		if docErr := e.reviewDocsForStaleness(stagingWt.Dir, state.StagingBranch, state.BaseBranch, pc); docErr != nil {
+		if docErr := e.reviewDocsForStaleness(stagingWt.Dir, mergeBranch, state.BaseBranch, pc); docErr != nil {
 			e.log("warning: doc review: %s", docErr)
 		}
 	}
 
-	// Merge staging -> main.
+	// Merge workspace branch -> main.
 	mergeEnv := os.Environ()
 	if tower, tErr := e.deps.ActiveTowerConfig(); tErr == nil && tower != nil {
 		mergeEnv = e.deps.ArchmageGitEnv(tower)
 	}
 
-	e.log("merging %s -> %s", state.StagingBranch, state.BaseBranch)
+	e.log("merging %s -> %s", mergeBranch, state.BaseBranch)
 	if mergeErr := stagingWt.MergeToMain(state.BaseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
 		return ActionResult{Error: fmt.Errorf("merge to main: %w", mergeErr)}
 	}
@@ -362,9 +445,9 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 		return ActionResult{Error: fmt.Errorf("push %s: %w", state.BaseBranch, pushErr)}
 	}
 
-	// Clean up branches (best-effort).
-	rc.DeleteBranch(state.StagingBranch)
-	rc.DeleteRemoteBranch("origin", state.StagingBranch)
+	// Clean up the actual branch that was merged (best-effort).
+	rc.DeleteBranch(mergeBranch)
+	rc.DeleteRemoteBranch("origin", mergeBranch)
 
 	return ActionResult{Outputs: map[string]string{"merged": "true"}}
 }
@@ -516,7 +599,17 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 	subState.RepoPath = state.RepoPath
 	subState.BaseBranch = state.BaseBranch
 	subState.StagingBranch = state.StagingBranch
-	subState.WorktreeDir = state.WorktreeDir
+
+	// Resolve the active workspace dir from the parent step's declared workspace.
+	// This ensures nested graphs (e.g. review-phase called from a step with
+	// workspace="feature") inherit the correct runtime workspace, not just the
+	// legacy state.WorktreeDir field.
+	subState.WorktreeDir = state.WorktreeDir // fallback to legacy field
+	if step.Workspace != "" {
+		if ws, ok := state.Workspaces[step.Workspace]; ok && ws.Dir != "" {
+			subState.WorktreeDir = ws.Dir
+		}
+	}
 
 	// Run the nested graph using the isolated interpreter (no deferred cleanup).
 	runErr := e.RunNestedGraph(subGraph, subState)

@@ -386,13 +386,22 @@ func (e *Executor) releaseGraphWorkspace(name string, state *GraphState) error {
 	}
 
 	shouldRemove := false
+	shouldClose := true
 	switch ws.Cleanup {
 	case formula.WorkspaceCleanupAlways:
 		shouldRemove = true
 	case formula.WorkspaceCleanupTerminal:
 		shouldRemove = e.terminated
+		// When cleanup="terminal" and the executor did NOT terminate (interrupt/
+		// failure), leave the workspace "active" so resume can find and reuse it.
+		// Marking it "closed" would poison resume: resolveGraphWorkspace rejects
+		// any status other than "pending" or "active".
+		if !e.terminated {
+			shouldClose = false
+		}
 	case formula.WorkspaceCleanupNever:
 		shouldRemove = false
+		shouldClose = false
 	}
 
 	if shouldRemove && ws.Dir != "" {
@@ -400,8 +409,10 @@ func (e *Executor) releaseGraphWorkspace(name string, state *GraphState) error {
 		sw.Close()
 	}
 
-	ws.Status = "closed"
-	state.Workspaces[name] = ws
+	if shouldClose {
+		ws.Status = "closed"
+		state.Workspaces[name] = ws
+	}
 	return nil
 }
 

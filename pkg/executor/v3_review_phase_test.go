@@ -27,8 +27,8 @@ func TestReviewPhase_LoadsWithActions(t *testing.T) {
 		"sage-review": "wizard.run",
 		"fix":         "wizard.run",
 		"arbiter":     "wizard.run",
-		"merge":       "git.merge_to_main",
-		"discard":     "bead.finish",
+		"merge":       "noop",
+		"discard":     "noop",
 	}
 
 	for stepName, wantAction := range expectedActions {
@@ -50,7 +50,7 @@ func TestReviewPhase_LoadsWithActions(t *testing.T) {
 	expectedFlows := map[string]string{
 		"sage-review": "sage-review",
 		"fix":         "review-fix",
-		"arbiter":     "sage-review",
+		"arbiter":     "arbiter",
 	}
 	for stepName, wantFlow := range expectedFlows {
 		step := graph.Steps[stepName]
@@ -59,10 +59,11 @@ func TestReviewPhase_LoadsWithActions(t *testing.T) {
 		}
 	}
 
-	// Verify discard has with.status = "discard".
-	discardStep := graph.Steps["discard"]
-	if discardStep.With == nil || discardStep.With["status"] != "discard" {
-		t.Errorf("discard step with.status = %q, want %q", discardStep.With["status"], "discard")
+	// Verify terminals use noop (parent graph handles real side effects).
+	for _, termName := range []string{"merge", "discard"} {
+		if !graph.Steps[termName].Terminal {
+			t.Errorf("step %q should be terminal", termName)
+		}
 	}
 }
 
