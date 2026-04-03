@@ -73,6 +73,18 @@ workspace = "staging"
 graph = "epic-implement-phase"
 title = "Implement epic subtasks"
 
+# Step 4b: Escalate when implementation failed (build failure, etc).
+[steps.implement-failed]
+kind = "op"
+action = "bead.finish"
+needs = ["implement"]
+terminal = true
+title = "Implementation failed — escalate"
+[steps.implement-failed.with]
+status = "escalate"
+[steps.implement-failed.when]
+all = [{ left = "steps.implement.outputs.outcome", op = "ne", right = "bead-finish" }]
+
 # Step 5: Review via the review-phase sub-graph.
 [steps.review]
 kind = "call"
@@ -81,6 +93,8 @@ needs = ["implement"]
 workspace = "staging"
 graph = "review-phase"
 title = "Review epic changes"
+[steps.review.when]
+all = [{ left = "steps.implement.outputs.outcome", op = "eq", right = "bead-finish" }]
 
 # Step 6a: Merge staging to main — fires when review outcome is merge.
 [steps.merge]
