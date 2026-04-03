@@ -115,13 +115,34 @@ func extractReviewVerdict(b Bead) string {
 
 // phaseIndex returns the canonical position of a phase name.
 // Unknown phases sort to the end.
+// v3StepOrder defines the canonical display order for v3 graph step names.
+// Steps not in this list are sorted after known steps, alphabetically.
+var v3StepOrder = map[string]int{
+	"design-check": 0,
+	"design":       0,
+	"plan":         1,
+	"materialize":  2,
+	"implement":    3,
+	"verify":       4,
+	"verify-build": 4,
+	"review":       5,
+	"merge":        6,
+	"close":        7,
+	"discard":      7,
+}
+
 func phaseIndex(name string) int {
+	// Try v2 phase ordering first.
 	for i, p := range formula.ValidPhases {
 		if p == name {
 			return i
 		}
 	}
-	return len(formula.ValidPhases)
+	// Try v3 step ordering.
+	if idx, ok := v3StepOrder[name]; ok {
+		return idx
+	}
+	return 99
 }
 
 // FetchDAGProgressFromChildren builds DAGProgress from a pre-fetched children
