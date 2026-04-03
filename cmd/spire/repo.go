@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/spf13/cobra"
 )
@@ -75,6 +76,22 @@ var repoSetCmd = &cobra.Command{
 	},
 }
 
+var repoBindCmd = &cobra.Command{
+	Use:   "bind <prefix> [path]",
+	Short: "Bind a local checkout to a shared repo prefix, or skip/unmanage it on this machine",
+	Long: `Adopt a shared repo registration by binding a local checkout path to it.
+This does not modify the shared tower state — it records this machine's
+relationship to an already-registered prefix.
+
+Examples:
+  spire repo bind api ./api           bind ./api as the local checkout for prefix api
+  spire repo bind api --skip          mark api as intentionally skipped on this machine
+  spire repo bind api --unmanaged     mark api as unmanaged on this machine`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdRepoBind(args, cmd)
+	},
+}
+
 func init() {
 	repoAddCmd.Flags().String("prefix", "", "Repo prefix (default: first 3 chars of directory name)")
 	repoAddCmd.Flags().String("repo-url", "", "Git remote URL (default: git remote get-url origin)")
@@ -86,7 +103,10 @@ func init() {
 	repoSetCmd.Flags().StringVar(&setRepoURL, "repo-url", "", "New remote URL for the shared repo registration")
 	repoSetCmd.Flags().StringVar(&setBranch, "branch", "", "New shared default base branch")
 
-	repoCmd.AddCommand(repoAddCmd, repoListCmd, repoRemoveCmd, repoSetCmd)
+	repoBindCmd.Flags().Bool("skip", false, "Mark this repo as skipped on this machine")
+	repoBindCmd.Flags().Bool("unmanaged", false, "Mark this repo as unmanaged on this machine")
+
+	repoCmd.AddCommand(repoAddCmd, repoListCmd, repoRemoveCmd, repoSetCmd, repoBindCmd)
 }
 
 func cmdRepo(args []string) error {
@@ -106,6 +126,8 @@ func cmdRepo(args []string) error {
 			}
 		}
 		return repoList(jsonOut)
+	case "bind":
+		return repoBindCmd.RunE(repoBindCmd, args[1:])
 	case "remove":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: spire repo remove <prefix>")
@@ -138,6 +160,7 @@ Manage repository registrations under a tower.
 
 Commands:
   add [path]          Register a repo (--prefix, --repo-url, --branch)
+  bind <prefix> [path] Bind a local checkout to a shared repo prefix
   list                List registered repos (--json)
   remove <prefix>     Remove a repo registration
   set <prefix>        Update shared repo fields (--repo-url, --branch)
@@ -176,12 +199,23 @@ func repoList(jsonOut bool) error {
 				return nil
 			}
 			if jsonOut {
+				for _, r := range rows {
+					state, localPath := config.LocalBindingForPrefix(cfg, r["prefix"])
+					r["local_state"] = string(state)
+					r["local_path"] = localPath
+				}
 				data, _ := json.MarshalIndent(rows, "", "  ")
 				fmt.Println(string(data))
 			} else {
-				fmt.Printf("%-10s %-50s %-10s %-12s %s\n", "PREFIX", "REPO", "BRANCH", "LANGUAGE", "REGISTERED BY")
+				fmt.Printf("%-10s %-50s %-10s %-12s %-16s %s\n", "PREFIX", "REPO", "BRANCH", "LANGUAGE", "LOCAL STATE", "REGISTERED BY")
 				for _, r := range rows {
-					fmt.Printf("%-10s %-50s %-10s %-12s %s\n", r["prefix"], r["repo_url"], r["branch"], r["language"], r["registered_by"])
+					state, localPath := config.LocalBindingForPrefix(cfg, r["prefix"])
+					localCol := string(state)
+					if state == config.LocalRepoStateBound && localPath != "" {
+						localCol = "bound → " + localPath
+					}
+					fmt.Printf("%-10s %-50s %-10s %-12s %-16s %s\n",
+						r["prefix"], r["repo_url"], r["branch"], r["language"], localCol, r["registered_by"])
 				}
 			}
 			return nil
