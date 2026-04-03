@@ -50,7 +50,7 @@ func TestReviewPhase_LoadsWithActions(t *testing.T) {
 	expectedFlows := map[string]string{
 		"sage-review": "sage-review",
 		"fix":         "review-fix",
-		"arbiter":     "sage-review",
+		"arbiter":     "arbiter",
 	}
 	for stepName, wantFlow := range expectedFlows {
 		step := graph.Steps[stepName]
