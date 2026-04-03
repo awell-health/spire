@@ -387,28 +387,48 @@ func graphStatePath(agentName string) string {
 }
 
 // removeGraphStateFiles removes the v3 graph state for a wizard and all its
-// nested sub-executors (apprentice, sage, etc.).
+// nested sub-executors (apprentice, sage, etc.). Prints progress to stdout.
 func removeGraphStateFiles(wizardName string) {
+	doRemoveGraphStateFiles(wizardName, false)
+}
+
+// removeGraphStateFilesQuiet is like removeGraphStateFiles but suppresses output.
+// Returns true if any graph state file was removed.
+func removeGraphStateFilesQuiet(wizardName string) bool {
+	return doRemoveGraphStateFiles(wizardName, true)
+}
+
+// doRemoveGraphStateFiles removes v3 graph state (parent + nested) and optionally
+// nested v2 state files. Returns true if any file was removed.
+func doRemoveGraphStateFiles(wizardName string, quiet bool) bool {
+	removed := false
+
 	// Remove parent graph state.
 	gsPath := graphStatePath(wizardName)
 	if err := os.Remove(gsPath); err == nil {
-		fmt.Printf("  %s✗ graph state removed%s\n", dim, reset)
+		removed = true
+		if !quiet {
+			fmt.Printf("  %s✗ graph state removed%s\n", dim, reset)
+		}
 	}
 
 	// Remove nested graph states: wizard-<name>-* directories.
 	dir, err := configDir()
 	if err != nil {
-		return
+		return removed
 	}
 	runtimeDir := filepath.Join(dir, "runtime")
 	pattern := filepath.Join(runtimeDir, wizardName+"-*", "graph_state.json")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		return
+		return removed
 	}
 	for _, m := range matches {
 		if err := os.Remove(m); err == nil {
-			fmt.Printf("  %s✗ nested graph state removed: %s%s\n", dim, filepath.Base(filepath.Dir(m)), reset)
+			removed = true
+			if !quiet {
+				fmt.Printf("  %s✗ nested graph state removed: %s%s\n", dim, filepath.Base(filepath.Dir(m)), reset)
+			}
 		}
 	}
 
@@ -417,9 +437,14 @@ func removeGraphStateFiles(wizardName string) {
 	v2Matches, _ := filepath.Glob(v2Pattern)
 	for _, m := range v2Matches {
 		if err := os.Remove(m); err == nil {
-			fmt.Printf("  %s✗ nested v2 state removed: %s%s\n", dim, filepath.Base(filepath.Dir(m)), reset)
+			removed = true
+			if !quiet {
+				fmt.Printf("  %s✗ nested v2 state removed: %s%s\n", dim, filepath.Base(filepath.Dir(m)), reset)
+			}
 		}
 	}
+
+	return removed
 }
 
 // resetCleanWorktreesAndBranches removes worktrees and branches for a bead.

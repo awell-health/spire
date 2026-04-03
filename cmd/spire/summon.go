@@ -634,12 +634,8 @@ func reapDeadWizard(w localWizard, quiet bool) {
 		removedV2 = true
 	}
 
-	// Delete v3 graph state files (parent + nested).
-	gsPath := graphStatePath(w.Name)
-	removedV3 := false
-	if err := os.Remove(gsPath); err == nil {
-		removedV3 = true
-	}
+	// Delete v3 graph state files (parent + nested sub-executors).
+	removedV3 := removeGraphStateFilesQuiet(w.Name)
 
 	if !quiet {
 		switch {

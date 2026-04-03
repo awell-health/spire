@@ -141,7 +141,6 @@ func cmdAdvance(args []string) error {
 		// v3 formulas use step graphs — advance is not meaningful in the
 		// same way as v2 linear phases. The graph executor handles step
 		// transitions. For manual advance, just close the bead.
-		_ = anyFormula
 		fmt.Printf("%s: v3 formula — closing (use executor for step transitions)\n", id)
 		return cmdClose([]string{id})
 	}
