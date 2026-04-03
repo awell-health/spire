@@ -123,9 +123,10 @@ func TestEmbeddedRuntime_GraphRunReviewPhase(t *testing.T) {
 	actionRegistry["wizard.run"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 		nestedDispatched = append(nestedDispatched, stepName)
 		if step.Flow == "sage-review" {
-			// Simulate sage approving — set verdict in state vars.
-			state.Vars["verdict"] = "approve"
-			return ActionResult{Outputs: map[string]string{"result": "success", "verdict": "approve"}}
+			// Simulate sage approving. The verdict is in outputs; the interpreter
+			// stores it in ss.Outputs and the condition context exposes it as
+			// steps.sage-review.outputs.verdict for routing.
+			return ActionResult{Outputs: map[string]string{"result": "approve", "verdict": "approve"}}
 		}
 		return ActionResult{Outputs: map[string]string{"result": "success"}}
 	}
@@ -523,6 +524,215 @@ func TestEmbeddedRuntime_AllV3Formulas_StepsHaveActions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- Test 9: Review loop (request_changes -> fix -> sage-review) ---
+
+// TestEmbeddedRuntime_ReviewPhase_FixLoop verifies that the review-phase
+// graph correctly loops through request_changes -> fix -> sage-review using
+// formula-declared resets and completed_count routing, not hidden counter
+// mutation. This is the ZFC-compliant review loop.
+func TestEmbeddedRuntime_ReviewPhase_FixLoop(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+	deps.GetComments = func(id string) ([]*beads.Comment, error) { return nil, nil }
+	deps.AddComment = func(id, text string) error { return nil }
+	deps.IsAttemptBead = func(b Bead) bool { return false }
+	deps.IsStepBead = func(b Bead) bool { return false }
+	deps.IsReviewRoundBead = func(b Bead) bool { return false }
+	deps.CloseBead = func(id string) error { return nil }
+
+	restore := saveAndRestoreRegistry(t)
+	defer restore()
+
+	// Track dispatch order.
+	var dispatched []string
+	sageCallCount := 0
+
+	actionRegistry["wizard.run"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName+":"+step.Flow)
+		if step.Flow == "sage-review" {
+			sageCallCount++
+			if sageCallCount == 1 {
+				// First review: reject.
+				return ActionResult{Outputs: map[string]string{"verdict": "request_changes"}}
+			}
+			// Second review: approve.
+			return ActionResult{Outputs: map[string]string{"verdict": "approve"}}
+		}
+		if step.Flow == "review-fix" {
+			return ActionResult{Outputs: map[string]string{"result": "fixed"}}
+		}
+		return ActionResult{Outputs: map[string]string{"result": "success"}}
+	}
+	actionRegistry["noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName+":noop")
+		return ActionResult{Outputs: map[string]string{"status": "done"}}
+	}
+
+	// Build parent graph that calls graph.run(review-phase).
+	parentGraph := &formula.FormulaStepGraph{
+		Name: "test-review-loop", Version: 3, Entry: "review",
+		Vars: map[string]formula.FormulaVar{
+			"bead_id":           {Required: true, Type: "bead_id"},
+			"max_review_rounds": {Default: "3"},
+		},
+		Steps: map[string]formula.StepConfig{
+			"review": {Kind: "call", Action: "graph.run", Graph: "review-phase", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-loop-test", "wizard-loop-test", parentGraph, nil, deps)
+	runErr := exec.RunGraph(parentGraph, exec.graphState)
+	if runErr != nil {
+		t.Fatalf("RunGraph: %v", runErr)
+	}
+
+	// Verify the loop executed:
+	// sage-review (reject) -> fix -> sage-review (approve) -> merge
+	if sageCallCount != 2 {
+		t.Errorf("sage-review was called %d times, want 2 (reject then approve)", sageCallCount)
+	}
+
+	// Check dispatch order contains the loop.
+	expectedSequence := []string{
+		"sage-review:sage-review", // round 1: reject
+		"fix:review-fix",          // fix
+		"sage-review:sage-review", // round 2: approve
+		"merge:noop",              // terminal
+	}
+	if len(dispatched) < len(expectedSequence) {
+		t.Fatalf("dispatched = %v, want at least %v", dispatched, expectedSequence)
+	}
+	for i, want := range expectedSequence {
+		if i >= len(dispatched) || dispatched[i] != want {
+			t.Errorf("dispatched[%d] = %q, want %q (full: %v)", i, dispatched[i], want, dispatched)
+		}
+	}
+
+	// Verify parent got outcome=merge.
+	reviewStep := exec.graphState.Steps["review"]
+	if outcome := reviewStep.Outputs["outcome"]; outcome != "merge" {
+		t.Errorf("parent outcome = %q, want %q", outcome, "merge")
+	}
+}
+
+// TestEmbeddedRuntime_ReviewPhase_ArbiterAfterMaxRounds verifies that
+// the arbiter path fires after completed_count reaches max_review_rounds.
+func TestEmbeddedRuntime_ReviewPhase_ArbiterAfterMaxRounds(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+	deps.GetComments = func(id string) ([]*beads.Comment, error) { return nil, nil }
+	deps.AddComment = func(id, text string) error { return nil }
+	deps.IsAttemptBead = func(b Bead) bool { return false }
+	deps.IsStepBead = func(b Bead) bool { return false }
+	deps.IsReviewRoundBead = func(b Bead) bool { return false }
+	deps.CloseBead = func(id string) error { return nil }
+	deps.HasLabel = func(b Bead, prefix string) string { return "" }
+	deps.ContainsLabel = func(b Bead, label string) bool { return false }
+	deps.ReviewEscalateToArbiter = func(beadID, reviewerName string, lastReview *Review, policy RevisionPolicy, log func(string, ...interface{})) error {
+		return nil
+	}
+	deps.RecordAgentRun = func(run AgentRun) error { return nil }
+
+	restore := saveAndRestoreRegistry(t)
+	defer restore()
+
+	var dispatched []string
+	sageCallCount := 0
+
+	actionRegistry["wizard.run"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName+":"+step.Flow)
+		if step.Flow == "sage-review" {
+			sageCallCount++
+			// Always reject.
+			return ActionResult{Outputs: map[string]string{"verdict": "request_changes"}}
+		}
+		if step.Flow == "review-fix" {
+			return ActionResult{Outputs: map[string]string{"result": "fixed"}}
+		}
+		if step.Flow == "arbiter" {
+			return ActionResult{Outputs: map[string]string{"arbiter_decision": "merge"}}
+		}
+		return ActionResult{Outputs: map[string]string{"result": "success"}}
+	}
+	actionRegistry["noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName+":noop")
+		return ActionResult{Outputs: map[string]string{"status": "done"}}
+	}
+
+	parentGraph := &formula.FormulaStepGraph{
+		Name: "test-review-arbiter", Version: 3, Entry: "review",
+		Vars: map[string]formula.FormulaVar{
+			"bead_id":           {Required: true, Type: "bead_id"},
+			"max_review_rounds": {Default: "2"}, // low threshold for test
+		},
+		Steps: map[string]formula.StepConfig{
+			"review": {Kind: "call", Action: "graph.run", Graph: "review-phase", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-arbiter-test", "wizard-arbiter-test", parentGraph, nil, deps)
+	runErr := exec.RunGraph(parentGraph, exec.graphState)
+	if runErr != nil {
+		t.Fatalf("RunGraph: %v", runErr)
+	}
+
+	// With max_review_rounds=2: sage-review(1, reject) -> fix -> sage-review(2, reject) -> arbiter -> merge
+	if sageCallCount != 2 {
+		t.Errorf("sage-review was called %d times, want 2", sageCallCount)
+	}
+
+	// Arbiter should appear in dispatched.
+	hasArbiter := false
+	for _, d := range dispatched {
+		if d == "arbiter:arbiter" {
+			hasArbiter = true
+		}
+	}
+	if !hasArbiter {
+		t.Errorf("arbiter not dispatched, got: %v", dispatched)
+	}
+
+	// Verify parent got outcome=merge (arbiter decided merge).
+	reviewStep := exec.graphState.Steps["review"]
+	if outcome := reviewStep.Outputs["outcome"]; outcome != "merge" {
+		t.Errorf("parent outcome = %q, want %q", outcome, "merge")
+	}
+}
+
+// TestEmbeddedRuntime_CompletedCountPersistsAcrossResume verifies that
+// step completed_count survives save/load resume.
+func TestEmbeddedRuntime_CompletedCountPersistsAcrossResume(t *testing.T) {
+	dir := t.TempDir()
+	configDir := func() (string, error) { return dir, nil }
+
+	state := &GraphState{
+		BeadID:    "spi-resume-test",
+		AgentName: "wizard-resume-test",
+		Formula:   "test",
+		Steps: map[string]StepState{
+			"step-a": {Status: "completed", CompletedCount: 3},
+			"step-b": {Status: "pending", CompletedCount: 0},
+		},
+		Counters:   make(map[string]int),
+		Workspaces: make(map[string]WorkspaceState),
+		Vars:       make(map[string]string),
+	}
+
+	if err := state.Save("wizard-resume-test", configDir); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := LoadGraphState("wizard-resume-test", configDir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if loaded.Steps["step-a"].CompletedCount != 3 {
+		t.Errorf("step-a completed_count = %d, want 3", loaded.Steps["step-a"].CompletedCount)
+	}
+	if loaded.Steps["step-b"].CompletedCount != 0 {
+		t.Errorf("step-b completed_count = %d, want 0", loaded.Steps["step-b"].CompletedCount)
 	}
 }
 

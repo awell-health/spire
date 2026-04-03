@@ -165,6 +165,7 @@ type StepConfig struct {
 	With      map[string]string    `toml:"with,omitempty"`      // typed inputs for the action
 	Produces  []string             `toml:"produces,omitempty"`  // declared output keys
 	Retry     *RetryPolicy         `toml:"retry,omitempty"`     // optional retry policy
+	Resets    []string             `toml:"resets,omitempty"`    // steps to reset to pending after this step completes
 	Flow      string               `toml:"flow,omitempty"`      // for wizard.run: task-plan, implement, etc.
 	Graph     string               `toml:"graph,omitempty"`     // graph.run: nested graph formula name
 }

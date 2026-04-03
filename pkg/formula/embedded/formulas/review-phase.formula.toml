@@ -3,21 +3,22 @@
 # Encodes the review DAG from docs/review-dag.md:
 #
 #   sage-review
-#     -> fix      (verdict == request_changes && review_round < max_review_rounds)
-#     -> arbiter  (verdict == request_changes && review_round >= max_review_rounds)
+#     -> fix      (verdict == request_changes && completed_count < max_review_rounds)
+#     -> arbiter  (verdict == request_changes && completed_count >= max_review_rounds)
 #   sage-review | arbiter -> merge
 #     -> merge    (verdict == approve || arbiter_decision == merge || arbiter_decision == split)
 #   arbiter -> discard
 #     -> discard  (arbiter_decision == discard)
 #
+# Loop mechanics:
+#   fix declares resets = ["sage-review", "fix"]. After fix completes, the
+#   interpreter resets both steps to pending — enabling a new sage-review round.
+#   sage-review.completed_count tracks how many rounds have completed.
+#   The formula routes on this mechanical fact, not hidden counter mutation.
+#
 # Terminal invariant (docs/review-dag.md):
 #   Every path ends with the branch either merged to main or deleted.
 #   No hanging branches. No orphaned code.
-#
-# Step conditions use compound guards. ALL guards in a condition must hold
-# before a step fires. Missing a guard causes simultaneous step activation:
-#   - fix without round check: fix && arbiter both fire when round >= max_review_rounds.
-#   - arbiter without verdict check: arbiter && merge fire simultaneously on late approval.
 #
 # Action fields: each step declares an action for the v3 graph.run interpreter.
 # The role fields are preserved for backward compat with the v2 review DAG walker.
@@ -50,33 +51,41 @@ timeout = "10m"
 model = "claude-opus-4-6"
 verdict_only = true
 
-# Step 2: Fix apprentice. Compound guard: BOTH verdict AND round must hold.
-# round check prevents fix and arbiter from firing simultaneously when round >= max_review_rounds.
+# Step 2: Fix apprentice. Routes when sage rejects AND round budget remains.
+# After fix completes, resets sage-review and fix to pending for re-review.
 [steps.fix]
 kind = "op"
 action = "wizard.run"
 flow = "review-fix"
 description = "Fix apprentice addresses review feedback within round budget"
 needs = ["sage-review"]
-condition = "verdict == request_changes && review_round < max_review_rounds"
 role = "apprentice"
 title = "Fix: address sage review feedback"
 timeout = "15m"
 model = "claude-opus-4-6"
+resets = ["sage-review", "fix"]
+[steps.fix.when]
+all = [
+  { left = "steps.sage-review.outputs.verdict", op = "eq", right = "request_changes" },
+  { left = "steps.sage-review.completed_count", op = "lt", right = "vars.max_review_rounds" },
+]
 
-# Step 3: Arbiter. Compound guard: BOTH verdict AND round must hold.
-# verdict check prevents arbiter and merge from firing simultaneously on a late-round approval.
+# Step 3: Arbiter. Routes when sage rejects AND round budget is exhausted.
 [steps.arbiter]
 kind = "op"
 action = "wizard.run"
 flow = "arbiter"
 description = "Arbiter makes final decision once round budget is exhausted"
 needs = ["sage-review"]
-condition = "verdict == request_changes && review_round >= max_review_rounds"
 role = "arbiter"
 title = "Arbiter: break review deadlock"
 timeout = "10m"
 model = "claude-opus-4-6"
+[steps.arbiter.when]
+all = [
+  { left = "steps.sage-review.outputs.verdict", op = "eq", right = "request_changes" },
+  { left = "steps.sage-review.completed_count", op = "ge", right = "vars.max_review_rounds" },
+]
 
 # Step 4a: Merge signal. Terminal — signals that review approved the work.
 # Uses noop because review-phase is a nested sub-graph: the parent formula
@@ -88,9 +97,14 @@ kind = "op"
 action = "noop"
 description = "Signal merge outcome — parent graph performs the actual merge"
 needs = ["sage-review", "arbiter"]
-condition = "verdict == approve || arbiter_decision == merge || arbiter_decision == split"
 terminal = true
 title = "Merge to main"
+[steps.merge.when]
+any = [
+  { left = "steps.sage-review.outputs.verdict", op = "eq", right = "approve" },
+  { left = "steps.arbiter.outputs.arbiter_decision", op = "eq", right = "merge" },
+  { left = "steps.arbiter.outputs.arbiter_decision", op = "eq", right = "split" },
+]
 
 # Step 4b: Discard signal. Terminal — signals that arbiter discarded the work.
 # Uses noop for the same reason as merge: parent graph handles the real bead.finish.
@@ -99,10 +113,10 @@ kind = "op"
 action = "noop"
 description = "Signal discard outcome — parent graph performs the actual discard"
 needs = ["arbiter"]
-condition = "arbiter_decision == discard"
 terminal = true
 title = "Discard branch"
-status = "discard"
+[steps.discard.when]
+all = [{ left = "steps.arbiter.outputs.arbiter_decision", op = "eq", right = "discard" }]
 
 # --- Typed outputs ---
 # Outer graphs route mechanically on these. See docs/v3-formula.md.

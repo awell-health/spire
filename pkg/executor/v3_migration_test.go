@@ -113,17 +113,18 @@ func TestMigration_ReviewPhaseUnchanged(t *testing.T) {
 		if (len(step.Needs) > 0) != expect.hasNeeds {
 			t.Errorf("step %q: has needs = %v, want %v", name, len(step.Needs) > 0, expect.hasNeeds)
 		}
-		if (step.Condition != "") != expect.hasCond {
-			t.Errorf("step %q: has condition = %v, want %v", name, step.Condition != "", expect.hasCond)
+		hasCondition := step.Condition != "" || step.When != nil
+		if hasCondition != expect.hasCond {
+			t.Errorf("step %q: has condition = %v, want %v", name, hasCondition, expect.hasCond)
 		}
 	}
 
-	// Specific condition checks.
-	if g.Steps["fix"].Condition == "" {
-		t.Error("fix should have a condition")
+	// Specific condition checks: fix and merge must have routing conditions.
+	if g.Steps["fix"].Condition == "" && g.Steps["fix"].When == nil {
+		t.Error("fix should have a condition (string or structured when)")
 	}
-	if g.Steps["merge"].Condition == "" {
-		t.Error("merge should have a condition")
+	if g.Steps["merge"].Condition == "" && g.Steps["merge"].When == nil {
+		t.Error("merge should have a condition (string or structured when)")
 	}
 }
 

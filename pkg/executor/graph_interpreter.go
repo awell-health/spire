@@ -146,6 +146,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		ss.Status = "completed"
 		ss.Outputs = result.Outputs
 		ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+		ss.CompletedCount++
 		state.Steps[stepName] = ss
 
 		// 6. Close step bead.
@@ -162,7 +163,27 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			return nil
 		}
 
-		// 8. Persist and loop.
+		// 8. Apply formula-declared resets: set named steps back to pending.
+		// This enables loops (e.g. fix resets sage-review and fix for re-review).
+		for _, target := range stepCfg.Resets {
+			ts := state.Steps[target]
+			ts.Status = "pending"
+			ts.Outputs = nil
+			ts.StartedAt = ""
+			ts.CompletedAt = ""
+			// CompletedCount is preserved — it's a mechanical fact, not reset.
+			state.Steps[target] = ts
+			e.log("reset step %s to pending (declared by %s)", target, stepName)
+
+			// Reopen step bead if tracked.
+			if stepBeadID, ok := state.StepBeadIDs[target]; ok {
+				if err := e.deps.ActivateStepBead(stepBeadID); err != nil {
+					e.log("warning: reopen step bead %s (%s): %s", stepBeadID, target, err)
+				}
+			}
+		}
+
+		// 9. Persist and loop.
 		state.Save(e.agentName, e.deps.ConfigDir)
 	}
 }
@@ -255,10 +276,22 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 		ss.Status = "completed"
 		ss.Outputs = result.Outputs
 		ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+		ss.CompletedCount++
 		state.Steps[stepName] = ss
 
 		if formula.IsTerminal(graph, stepName) {
 			return nil
+		}
+
+		// Apply formula-declared resets (same as RunGraph).
+		for _, target := range stepCfg.Resets {
+			ts := state.Steps[target]
+			ts.Status = "pending"
+			ts.Outputs = nil
+			ts.StartedAt = ""
+			ts.CompletedAt = ""
+			state.Steps[target] = ts
+			e.log("nested: reset step %s to pending (declared by %s)", target, stepName)
 		}
 	}
 }
@@ -273,8 +306,9 @@ func (e *Executor) buildConditionContext(state *GraphState) map[string]string {
 		for k, v := range ss.Outputs {
 			ctx[fmt.Sprintf("steps.%s.outputs.%s", name, k)] = v
 		}
-		// Also expose step status.
+		// Also expose step status and completed_count.
 		ctx[fmt.Sprintf("steps.%s.status", name)] = ss.Status
+		ctx[fmt.Sprintf("steps.%s.completed_count", name)] = strconv.Itoa(ss.CompletedCount)
 	}
 
 	// Flatten counters: "state.counters.X" -> value, plus short-form.
