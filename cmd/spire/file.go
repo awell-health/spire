@@ -51,7 +51,7 @@ var fileCmd = &cobra.Command{
 
 func init() {
 	fileCmd.Flags().String("prefix", "", "Repo prefix")
-	fileCmd.Flags().String("branch", "", "Feature branch name")
+	fileCmd.Flags().String("branch", "", "Base branch override for execution")
 	fileCmd.Flags().String("merge-mode", "", "Merge mode: merge or pr")
 	fileCmd.Flags().String("ref", "", "Design bead ID to link via discovered-from dep")
 	fileCmd.Flags().StringP("type", "t", "", "Bead type (task, bug, feature, epic, chore, recovery)")
@@ -63,7 +63,7 @@ func init() {
 
 func cmdFile(args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Println("usage: spire file <title> [--prefix <prefix>] [--branch <name>] [--merge-mode <merge|pr>] [--ref <design-bead-id>] [bd create flags...]")
+		fmt.Println("usage: spire file <title> [--prefix <prefix>] [--branch <base-branch>] [--merge-mode <merge|pr>] [--ref <design-bead-id>] [bd create flags...]")
 		return nil
 	}
 
@@ -210,8 +210,8 @@ func cmdFile(args []string) error {
 
 	// Add branch and merge-mode labels if provided.
 	if branch != "" {
-		if lerr := storeAddLabel(id, "branch:"+branch); lerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to add branch label: %v\n", lerr)
+		if lerr := storeAddLabel(id, "base-branch:"+branch); lerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to add base-branch label: %v\n", lerr)
 		}
 	}
 	if mergeMode != "" {

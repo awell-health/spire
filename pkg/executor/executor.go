@@ -195,6 +195,17 @@ func (e *Executor) resolveBranchState() error {
 	e.state.RepoPath = repoPath
 	e.state.BaseBranch = baseBranch
 
+	// Bead-level base-branch override (from spire file --branch) takes
+	// precedence over repo defaults. This ensures the executor respects
+	// the branch intent stamped at filing time without mutating the
+	// tower-wide repo default.
+	if bead, berr := e.deps.GetBead(e.beadID); berr == nil {
+		if bb := e.deps.HasLabel(bead, "base-branch:"); bb != "" {
+			e.log("using bead base-branch override: %s (was: %s)", bb, e.state.BaseBranch)
+			e.state.BaseBranch = bb
+		}
+	}
+
 	// Resolve staging branch from the implement phase config (if any).
 	for _, phaseName := range e.formula.EnabledPhases() {
 		pc, ok := e.formula.Phases[phaseName]

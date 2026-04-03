@@ -172,6 +172,15 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		baseBranch = repoCfg.Branch.Base
 	}
 
+	// Bead-level base-branch override (from spire file --branch) takes
+	// precedence over repo config and tower defaults.
+	if bead, berr := deps.GetBead(beadID); berr == nil {
+		if bb := deps.HasLabel(bead, "base-branch:"); bb != "" {
+			log("using bead base-branch override: %s (was: %s)", bb, baseBranch)
+			baseBranch = bb
+		}
+	}
+
 	branchName := strings.ReplaceAll(branchPattern, "{bead-id}", beadID)
 
 	// Override start point when the executor passes --start-ref (e.g. staging
