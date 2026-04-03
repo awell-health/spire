@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,9 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/spf13/cobra"
 )
+
+var setRepoURL string
+var setBranch string
 
 var repoCmd = &cobra.Command{
 	Use:   "repo",
@@ -62,6 +66,15 @@ var repoRemoveCmd = &cobra.Command{
 	},
 }
 
+var repoSetCmd = &cobra.Command{
+	Use:   "set <prefix>",
+	Short: "Update shared repo fields (repo-url, branch) for an existing prefix",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return repoSet(args[0], setRepoURL, setBranch)
+	},
+}
+
 func init() {
 	repoAddCmd.Flags().String("prefix", "", "Repo prefix (default: first 3 chars of directory name)")
 	repoAddCmd.Flags().String("repo-url", "", "Git remote URL (default: git remote get-url origin)")
@@ -70,7 +83,10 @@ func init() {
 
 	repoListCmd.Flags().Bool("json", false, "Output as JSON")
 
-	repoCmd.AddCommand(repoAddCmd, repoListCmd, repoRemoveCmd)
+	repoSetCmd.Flags().StringVar(&setRepoURL, "repo-url", "", "New remote URL for the shared repo registration")
+	repoSetCmd.Flags().StringVar(&setBranch, "branch", "", "New shared default base branch")
+
+	repoCmd.AddCommand(repoAddCmd, repoListCmd, repoRemoveCmd, repoSetCmd)
 }
 
 func cmdRepo(args []string) error {
@@ -95,6 +111,18 @@ func cmdRepo(args []string) error {
 			return fmt.Errorf("usage: spire repo remove <prefix>")
 		}
 		return repoRemove(args[1])
+	case "set":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: spire repo set <prefix> [--repo-url <url>] [--branch <branch>]")
+		}
+		fs := flag.NewFlagSet("repo set", flag.ContinueOnError)
+		var u, b string
+		fs.StringVar(&u, "repo-url", "", "")
+		fs.StringVar(&b, "branch", "", "")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		return repoSet(args[1], u, b)
 	case "--help", "-h", "help":
 		printRepoUsage()
 		return nil
@@ -112,6 +140,7 @@ Commands:
   add [path]          Register a repo (--prefix, --repo-url, --branch)
   list                List registered repos (--json)
   remove <prefix>     Remove a repo registration
+  set <prefix>        Update shared repo fields (--repo-url, --branch)
 
 Run 'spire repo add --help' for details on registration.`)
 }
@@ -248,6 +277,62 @@ func resolveRemoveDatabase(cfg *SpireConfig, prefix string) (string, error) {
 		return "", fmt.Errorf("cannot resolve tower for prefix %q — run 'spire tower use <name>' to set the active tower", prefix)
 	}
 	return db, nil
+}
+
+// repoSet updates shared repo fields (repo_url, branch) for an existing prefix
+// in the tower's repos table. This mutates tower-wide shared state only — it does
+// not touch machine-local config or binding state.
+func repoSet(prefix, newURL, newBranch string) error {
+	if newURL == "" && newBranch == "" {
+		return fmt.Errorf("nothing to update: specify --repo-url and/or --branch")
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	database, ambiguous := resolveDatabase(cfg)
+	if ambiguous {
+		return fmt.Errorf("multiple towers found; set SPIRE_TOWER or run: spire tower use <name>")
+	}
+	if database == "" {
+		return fmt.Errorf("no tower found; run spire tower create or spire tower attach")
+	}
+
+	// Verify the prefix is registered
+	checkSQL := fmt.Sprintf(
+		"SELECT prefix FROM `%s`.repos WHERE prefix = '%s'",
+		database, sqlEscape(prefix),
+	)
+	out, err := rawDoltQuery(checkSQL)
+	if err != nil {
+		return fmt.Errorf("could not verify %q in repos table: %w", prefix, err)
+	}
+	rows := parseDoltRows(out, []string{"prefix"})
+	if len(rows) == 0 {
+		return fmt.Errorf("repo %q not registered in tower", prefix)
+	}
+
+	// Build SET clause from provided fields only
+	var parts []string
+	if newURL != "" {
+		parts = append(parts, fmt.Sprintf("repo_url = '%s'", sqlEscape(newURL)))
+	}
+	if newBranch != "" {
+		parts = append(parts, fmt.Sprintf("branch = '%s'", sqlEscape(newBranch)))
+	}
+
+	updateSQL := fmt.Sprintf(
+		"UPDATE `%s`.repos SET %s WHERE prefix = '%s'",
+		database, strings.Join(parts, ", "), sqlEscape(prefix),
+	)
+	if _, err := rawDoltQuery(updateSQL); err != nil {
+		return fmt.Errorf("update repo %q: %w", prefix, err)
+	}
+
+	fmt.Printf("repo %q updated in tower\n", prefix)
+	return nil
 }
 
 // repoRemove removes a repo from both the dolt repos table and local config.
