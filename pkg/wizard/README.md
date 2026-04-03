@@ -11,7 +11,7 @@ In practice, `pkg/wizard` owns:
 - sage entrypoints (`wizard-review`)
 - prompt assembly for those subprocesses
 - Claude invocation, timeout handling, validation, commit, and result writing
-- worktree preparation for a single subprocess, including borrowed-worktree vs owned-worktree handling
+- worktree preparation for a single subprocess — owns a fresh worktree when self-managed, or resumes a borrowed worktree via `--worktree-dir` (now honored for all modes: implement, review-fix, build-fix)
 - review-round bead creation/closure and review-specific handoff behavior
 - legacy `wizard-epic` helpers that predate the formula executor
 
@@ -21,7 +21,7 @@ In practice, `pkg/wizard` owns:
 - **Apprentice execution**: implementation, review-fix, and build-fix flows in `wizard-run`.
 - **Sage execution**: diff review, test execution, verdict production, and review bead updates in `wizard-review`.
 - **Prompt and validation mechanics**: prompt text, Claude CLI invocation, timeout enforcement, lint/build/test validation, and commit logic for one subprocess.
-- **Per-process workspace handling**: create a fresh worktree when this process owns it, or resume a borrowed worktree when the caller already chose the workspace.
+- **Per-process workspace handling**: create a fresh worktree when self-managed, or resume a borrowed worktree when the caller (typically the v3 graph executor) passes `--worktree-dir`. This flag is honored for all modes — implementation, review-fix, and build-fix — not just review-fix.
 - **Legacy epic helpers**: `wizard-epic` and related files still live here.
 
 ## What this package does NOT own
@@ -43,12 +43,13 @@ Examples:
 - The wizard performs the review-fix once that workspace decision has already been made.
 - The executor decides whether to skip a post-fix merge.
 - The wizard does not make that decision; it just implements, validates, and commits.
+- The executor may pass `--worktree-dir` for any mode (implement, review-fix, build-fix); the wizard resumes that workspace without owning its lifecycle.
 
 ## Key entrypoints
 
 | Entry point | Purpose |
 |-------------|---------|
-| `CmdWizardRun` | Apprentice subprocess entrypoint for normal implementation, review-fix, and borrowed-worktree flows. |
+| `CmdWizardRun` | Apprentice subprocess entrypoint for implementation, review-fix, and build-fix. Honors `--worktree-dir` for all modes — the v3 executor passes a managed workspace when the graph declares one. |
 | `cmdBuildFix` | Specialized build-fix apprentice path working directly in an existing worktree. |
 | `CmdWizardReview` | Sage subprocess entrypoint for reviewing a diff and producing a verdict. |
 | `ReviewHandleApproval` | Review-side terminal handoff when the sage approves. |
@@ -58,7 +59,7 @@ Examples:
 
 1. **Use `pkg/git` for worktree and branch semantics.** `pkg/wizard` may choose between "create" and "resume", but it should not hand-roll git mechanics.
 2. **Keep this package focused on one subprocess at a time.** If the change is about the bead-level phase graph, routing policy, or cross-phase coordination, it probably belongs in `pkg/executor`.
-3. **Borrowed worktrees are not owned here.** If the caller supplied `--worktree-dir`, this package must not clean it up or create/switch branches inside it.
+3. **Borrowed worktrees are not owned here.** If the caller supplied `--worktree-dir` (common in v3 graph execution for all modes, not just review-fix), this package must not clean it up or create/switch branches inside it.
 4. **Preserve the existing apprentice contract.** If you add a new apprentice mode, keep prompt, timeout, validation, commit, and `result.json` behavior consistent unless the change is intentional and documented.
 5. **Treat `wizard-epic` as legacy-specialized code.** New formula-lifecycle work should usually extend `pkg/executor`, not the older epic loop, unless you are explicitly maintaining that command.
 
