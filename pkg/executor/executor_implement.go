@@ -26,7 +26,7 @@ func (e *Executor) executeDirect(phase string, pc PhaseConfig) error {
 			return fmt.Errorf("ensure staging worktree for direct: %w", wtErr)
 		}
 	}
-	return e.dispatchDirectCore(stagingWt, pc.Model)
+	return e.dispatchDirectCore(stagingWt, pc.Model, e.resolveConflicts)
 }
 
 // executeWave dispatches apprentices in parallel waves using ComputeWaves.
@@ -55,7 +55,7 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 	}
 
 	// Dispatch all waves via extracted core logic.
-	results, dispErr := e.dispatchWaveCore(waves, stagingWt, pc.Model)
+	results, dispErr := e.dispatchWaveCore(waves, stagingWt, pc.Model, e.resolveConflicts)
 
 	// Update v2 subtask state from results.
 	for _, cr := range results {
@@ -253,7 +253,25 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 }
 
 // resolveConflicts invokes Claude to resolve merge conflicts in the working tree.
+// This is the backward-compatible entry point used by v2 callers; it omits
+// --max-turns entirely (no invented budget).
 func (e *Executor) resolveConflicts(repoPath, childBranch string) error {
+	return e.resolveConflictsWithBudget(repoPath, childBranch, 0)
+}
+
+// conflictResolver returns a conflict-resolution callback with the given turn
+// budget. If maxTurns is 0, the --max-turns flag is omitted entirely so the
+// executor does not invent a value that should be formula-declared.
+func (e *Executor) conflictResolver(maxTurns int) func(string, string) error {
+	return func(repoPath, childBranch string) error {
+		return e.resolveConflictsWithBudget(repoPath, childBranch, maxTurns)
+	}
+}
+
+// resolveConflictsWithBudget invokes Claude to resolve merge conflicts.
+// If maxTurns > 0, --max-turns is passed to the Claude CLI; otherwise the flag
+// is omitted (letting the CLI's own default or timeout govern).
+func (e *Executor) resolveConflictsWithBudget(repoPath, childBranch string, maxTurns int) error {
 	wc := &spgit.WorktreeContext{Dir: repoPath}
 
 	// Get the list of conflicted files
@@ -279,12 +297,8 @@ Do NOT commit — the merge commit will be created automatically.`,
 		childBranch, childBranch, conflictedFiles)
 
 	// Invoke Claude to resolve
-	cmd := exec.Command("claude",
-		"--dangerously-skip-permissions",
-		"-p", prompt,
-		"--model", repoconfig.ResolveModel("", e.repoModel()),
-		"--max-turns", "10",
-	)
+	args := buildConflictResolverArgs(prompt, repoconfig.ResolveModel("", e.repoModel()), maxTurns)
+	cmd := exec.Command("claude", args...)
 	cmd.Dir = repoPath
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stderr
@@ -306,6 +320,21 @@ Do NOT commit — the merge commit will be created automatically.`,
 
 	e.log("  conflicts resolved by Claude")
 	return nil
+}
+
+// buildConflictResolverArgs constructs the Claude CLI args for conflict
+// resolution. If maxTurns > 0, --max-turns is included; otherwise it is
+// omitted so the executor does not invent a turn budget.
+func buildConflictResolverArgs(prompt, model string, maxTurns int) []string {
+	args := []string{
+		"--dangerously-skip-permissions",
+		"-p", prompt,
+		"--model", model,
+	}
+	if maxTurns > 0 {
+		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
+	}
+	return args
 }
 
 // resolveBuildCommand returns the build command to use for verification.
