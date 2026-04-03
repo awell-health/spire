@@ -50,13 +50,10 @@ func cmdReset(args []string) error {
 			hard = true
 		case "--to":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--to requires a phase name")
+				return fmt.Errorf("--to requires a step/phase name")
 			}
 			i++
 			toPhase = args[i]
-			if !formula.IsValidPhase(toPhase) {
-				return fmt.Errorf("invalid phase %q (valid: %s)", toPhase, strings.Join(formula.ValidPhases, ", "))
-			}
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return fmt.Errorf("unknown flag %q\nusage: spire reset <bead-id> [--to <phase>] [--hard]", args[i])
@@ -66,7 +63,11 @@ func cmdReset(args []string) error {
 	}
 
 	if beadID == "" {
-		return fmt.Errorf("usage: spire reset <bead-id> [--to <phase>] [--hard]")
+		return fmt.Errorf("usage: spire reset <bead-id> [--to <step>] [--hard]")
+	}
+
+	if hard && toPhase != "" {
+		return fmt.Errorf("cannot use --hard and --to together: --hard deletes all state, --to rewinds to a specific step")
 	}
 
 	if d := resolveBeadsDir(); d != "" {
@@ -154,12 +155,17 @@ func cmdReset(args []string) error {
 
 	if version == 3 {
 		if toPhase != "" {
-			return fmt.Errorf("--to is not supported for v3 formulas; use --hard to fully reset")
+			return softResetV3(beadID, toPhase, wizardName)
 		}
 		return resetV3(beadID, hard, wizardName, worktreePath)
 	}
 
 	// --- v2 path (unchanged) ---
+
+	// Validate --to phase for v2 formulas.
+	if toPhase != "" && !formula.IsValidPhase(toPhase) {
+		return fmt.Errorf("invalid phase %q (valid: %s)", toPhase, strings.Join(formula.ValidPhases, ", "))
+	}
 
 	f := anyFormula.(*FormulaV2)
 
@@ -295,24 +301,43 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		fmt.Printf("  %s✗ v2 state file also removed%s\n", dim, reset)
 	}
 
-	// --- 2. Process children: close step/attempt beads, reopen subtask children ---
+	// --- 2. Process children: close internal DAG beads, reopen subtask children ---
 	children, err := storeGetChildren(beadID)
 	if err != nil {
 		return fmt.Errorf("get children for %s: %w", beadID, err)
 	}
 
+	// Build set of linked bead IDs (discovered-from deps) — never touch these.
+	linkedIDs := make(map[string]bool)
+	if deps, err := storeGetDepsWithMeta(beadID); err == nil {
+		for _, dep := range deps {
+			if dep.DependencyType == "discovered-from" {
+				linkedIDs[dep.ID] = true
+			}
+		}
+	}
+
 	closedSteps := 0
 	closedAttempts := 0
+	closedReviewRounds := 0
 	reopenedChildren := 0
 
 	for _, child := range children {
-		if isStepBead(child) || isAttemptBead(child) {
-			// Step and attempt beads: close them. They'll be recreated on re-summon.
+		// Never touch discovered-from linked beads (design beads, etc.).
+		if linkedIDs[child.ID] {
+			continue
+		}
+
+		if isStepBead(child) || isAttemptBead(child) || isReviewRoundBead(child) {
+			// Internal DAG beads: close them. They'll be recreated on re-summon.
+			// TODO: delete instead of close when store.DeleteBead is available.
 			if child.Status != "closed" {
 				if err := storeCloseBead(child.ID); err != nil {
 					fmt.Printf("  %s(note: could not close %s: %s)%s\n", dim, child.ID, err, reset)
 				} else if isStepBead(child) {
 					closedSteps++
+				} else if isReviewRoundBead(child) {
+					closedReviewRounds++
 				} else {
 					closedAttempts++
 				}
@@ -321,8 +346,7 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		}
 
 		// Subtask children (task/feature/etc.): reopen them so the epic can re-dispatch.
-		if child.Status != "open" && child.Status != "closed" {
-			// Only reopen in_progress children — leave closed ones alone (they completed successfully).
+		if child.Status != "open" {
 			if err := storeUpdateBead(child.ID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
 				fmt.Printf("  %s(note: could not reopen subtask %s: %s)%s\n", dim, child.ID, err, reset)
 			} else {
@@ -336,6 +360,9 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 	}
 	if closedAttempts > 0 {
 		fmt.Printf("  %s✗ closed %d attempt beads%s\n", dim, closedAttempts, reset)
+	}
+	if closedReviewRounds > 0 {
+		fmt.Printf("  %s✗ closed %d review-round beads%s\n", dim, closedReviewRounds, reset)
 	}
 	if reopenedChildren > 0 {
 		fmt.Printf("  %s↺ reopened %d subtask children%s\n", yellow, reopenedChildren, reset)
@@ -379,6 +406,209 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 	}
 
 	return nil
+}
+
+// softResetV3 rewinds a v3 bead's graph state to a specific step and everything
+// after it, preserving completed steps before the target. Closes step beads for
+// reset steps (preserving audit trail), deletes nested graph state for those
+// steps, and cleans up step-scoped workspaces.
+func softResetV3(beadID, targetStep, wizardName string) error {
+	// --- 1. Load and validate formula ---
+	bead, err := storeGetBead(beadID)
+	if err != nil {
+		return fmt.Errorf("get bead %s: %w", beadID, err)
+	}
+
+	anyFormula, version, err := ResolveFormulaAny(bead)
+	if err != nil {
+		return fmt.Errorf("resolve formula for %s: %w", beadID, err)
+	}
+	if version != 3 {
+		return fmt.Errorf("--to with v3 logic called on v%d formula", version)
+	}
+	graph := anyFormula.(*formula.FormulaStepGraph)
+
+	// Validate target step exists in the formula.
+	if _, ok := graph.Steps[targetStep]; !ok {
+		var validSteps []string
+		for name := range graph.Steps {
+			validSteps = append(validSteps, name)
+		}
+		return fmt.Errorf("step %q not found in formula %s (valid steps: %s)",
+			targetStep, graph.Name, strings.Join(validSteps, ", "))
+	}
+
+	// --- 2. Compute steps to reset (target + all transitive dependents) ---
+	stepsToReset := computeStepsToReset(graph, targetStep)
+
+	fmt.Printf("  %sresetting steps: %s%s\n", dim, strings.Join(mapKeys(stepsToReset), ", "), reset)
+
+	// --- 3. Load graph state ---
+	gs, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil {
+		return fmt.Errorf("load graph state for %s: %w", wizardName, err)
+	}
+	if gs == nil {
+		fmt.Printf("  %s(no graph state found — nothing to rewind)%s\n", dim, reset)
+		goto resummon
+	}
+
+	{
+		// --- 4. Rewind step states ---
+		resetCount := 0
+		for stepName := range stepsToReset {
+			ss, ok := gs.Steps[stepName]
+			if !ok {
+				continue
+			}
+			ss.Status = "pending"
+			ss.Outputs = nil
+			ss.StartedAt = ""
+			ss.CompletedAt = ""
+			// Preserve CompletedCount — it's mechanical and never reset.
+			gs.Steps[stepName] = ss
+			resetCount++
+		}
+		if resetCount > 0 {
+			fmt.Printf("  %s↺ rewound %d step(s) to pending%s\n", yellow, resetCount, reset)
+		}
+
+		// Clear active step if it's in the reset set.
+		if stepsToReset[gs.ActiveStep] {
+			gs.ActiveStep = ""
+		}
+
+		// --- 5. Workspace cleanup (step-scoped only) ---
+		cwd, _ := os.Getwd()
+		rc := &spgit.RepoContext{Dir: cwd}
+		for stepName := range stepsToReset {
+			stepCfg, ok := graph.Steps[stepName]
+			if !ok || stepCfg.Workspace == "" {
+				continue
+			}
+			ws, ok := gs.Workspaces[stepCfg.Workspace]
+			if !ok {
+				continue
+			}
+			// Only clean step-scoped workspaces — run-scoped ones are shared.
+			if ws.Scope != formula.WorkspaceScopeStep {
+				continue
+			}
+			if ws.Dir != "" {
+				rc.ForceRemoveWorktree(ws.Dir)
+				rc.PruneWorktrees()
+				fmt.Printf("  %s✗ removed worktree: %s%s\n", dim, ws.Dir, reset)
+			}
+			if ws.Branch != "" {
+				if err := rc.ForceDeleteBranch(ws.Branch); err == nil {
+					fmt.Printf("  %s✗ deleted branch: %s%s\n", dim, ws.Branch, reset)
+				}
+			}
+			delete(gs.Workspaces, stepCfg.Workspace)
+		}
+
+		// --- 6. Delete nested graph state for reset steps ---
+		dir, _ := configDir()
+		if dir != "" {
+			runtimeDir := filepath.Join(dir, "runtime")
+			for stepName := range stepsToReset {
+				nestedName := wizardName + "-" + stepName
+				nestedPath := filepath.Join(runtimeDir, nestedName, "graph_state.json")
+				if err := os.Remove(nestedPath); err == nil {
+					fmt.Printf("  %s✗ nested graph state removed: %s%s\n", dim, nestedName, reset)
+				}
+				// Also remove nested v2 state.json.
+				nestedV2Path := filepath.Join(runtimeDir, nestedName, "state.json")
+				os.Remove(nestedV2Path)
+			}
+		}
+
+		// --- 7. Close step beads for reset steps (preserves audit trail) ---
+		closedSteps := 0
+		for stepName := range stepsToReset {
+			stepBeadID := gs.StepBeadIDs[stepName]
+			if stepBeadID == "" {
+				continue
+			}
+			if err := storeCloseBead(stepBeadID); err != nil {
+				fmt.Printf("  %s(note: could not close step bead %s for %s: %s)%s\n", dim, stepBeadID, stepName, err, reset)
+			} else {
+				closedSteps++
+			}
+		}
+		if closedSteps > 0 {
+			fmt.Printf("  %s✗ closed %d step beads%s\n", dim, closedSteps, reset)
+		}
+
+		// --- 8. Save updated graph state ---
+		if err := gs.Save(wizardName, configDir); err != nil {
+			return fmt.Errorf("save graph state: %w", err)
+		}
+		fmt.Printf("  %s✓ graph state saved%s\n", green, reset)
+	}
+
+	// --- 9. Set bead to in_progress (it was interrupted, summon will resume) ---
+	if err := storeUpdateBead(beadID, map[string]interface{}{"status": "in_progress"}); err != nil {
+		fmt.Printf("  %s(note: could not set %s to in_progress: %s)%s\n", dim, beadID, err, reset)
+	} else {
+		fmt.Printf("  %s↺ %s set to in_progress%s\n", dim, beadID, reset)
+	}
+
+resummon:
+	fmt.Printf("%s soft-reset to step %q (v3)\n", beadID, targetStep)
+
+	// --- 10. Re-summon ---
+	fmt.Printf("  %s↑ re-summoning wizard for %s%s\n", cyan, beadID, reset)
+	if err := cmdSummon([]string{"1", "--targets", beadID}); err != nil {
+		return fmt.Errorf("re-summon %s: %w", beadID, err)
+	}
+
+	return nil
+}
+
+// computeStepsToReset builds the set of steps that need resetting: the target
+// step plus all steps that transitively depend on it (forward reachability in
+// the dependency graph).
+func computeStepsToReset(graph *formula.FormulaStepGraph, targetStep string) map[string]bool {
+	// Build forward adjacency: step → steps that need it.
+	forward := make(map[string][]string)
+	for name, step := range graph.Steps {
+		for _, need := range step.Needs {
+			forward[need] = append(forward[need], name)
+		}
+	}
+
+	// BFS from target step.
+	result := map[string]bool{targetStep: true}
+	queue := []string{targetStep}
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+		for _, dep := range forward[curr] {
+			if !result[dep] {
+				result[dep] = true
+				queue = append(queue, dep)
+			}
+		}
+	}
+	return result
+}
+
+// mapKeys returns the keys of a map as a sorted slice.
+func mapKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// Sort for deterministic output.
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[j] < keys[i] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	return keys
 }
 
 // graphStatePath returns the v3 graph_state.json path for a given agent name.
