@@ -16,18 +16,6 @@ type Issue struct {
 	Message string `json:"message"`
 }
 
-var validRoles = map[string]bool{
-	"human": true, "apprentice": true, "sage": true, "wizard": true, "skip": true,
-}
-
-var validDispatch = map[string]bool{
-	"direct": true, "wave": true, "sequential": true,
-}
-
-var validStrategy = map[string]bool{
-	"squash": true, "merge": true, "rebase": true,
-}
-
 var validStepRoles = map[string]bool{
 	"sage": true, "apprentice": true, "arbiter": true, "executor": true,
 	"human": true, "wizard": true, "skip": true,
@@ -52,23 +40,8 @@ func Validate(name string) ([]Issue, error) {
 		return issues, nil
 	}
 
-	// Level 2: version detection
-	ver, _ := raw["version"].(int64)
-	switch int(ver) {
-	case 2:
-		issues = append(issues, Issue{Level: "error", Message: "v2 formulas are no longer supported; migrate to v3"})
-	case 3:
-		issues = append(issues, validateV3(data)...)
-	default:
-		issues = append(issues, Issue{Level: "error", Message: fmt.Sprintf("unsupported or missing formula version: %v", raw["version"])})
-	}
-
+	issues = append(issues, validateV3(data)...)
 	return issues, nil
-}
-
-// validateV2 is a no-op — v2 formulas are no longer supported.
-func validateV2(_ []byte) []Issue {
-	return []Issue{{Level: "error", Message: "v2 formulas are no longer supported; migrate to v3"}}
 }
 
 func validateV3(data []byte) []Issue {

@@ -6,13 +6,6 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 )
 
-func TestDryRunNilFormula(t *testing.T) {
-	_, err := DryRun(nil, "", nil)
-	if err == nil {
-		t.Fatal("expected error for nil formula")
-	}
-}
-
 func TestDryRunStepGraph(t *testing.T) {
 	g, err := formula.LoadReviewPhaseFormula()
 	if err != nil {
@@ -95,54 +88,86 @@ func TestDryRunStepGraphNil(t *testing.T) {
 	}
 }
 
-func TestDescribePhase(t *testing.T) {
+func TestDryRunStepGraph_EmbeddedV3Formulas(t *testing.T) {
 	tests := []struct {
-		name string
-		sim  PhaseSimulation
-		want string
+		name          string
+		minSteps      int
+		expectEntry   bool
+		expectTerminal bool
 	}{
 		{
-			name: "validate-design behavior",
-			sim:  PhaseSimulation{Behavior: "validate-design"},
-			want: "Wizard validates linked design bead is closed and substantive",
+			name:           "spire-agent-work-v3",
+			minSteps:       3,
+			expectEntry:    true,
+			expectTerminal: true,
 		},
 		{
-			name: "skip role",
-			sim:  PhaseSimulation{Role: "skip"},
-			want: "Phase skipped",
+			name:           "spire-bugfix-v3",
+			minSteps:       3,
+			expectEntry:    true,
+			expectTerminal: true,
 		},
 		{
-			name: "human role",
-			sim:  PhaseSimulation{Role: "human"},
-			want: "Blocks until human transitions phase",
-		},
-		{
-			name: "apprentice wave",
-			sim:  PhaseSimulation{Role: "apprentice", Dispatch: "wave"},
-			want: "Parallel apprentice wave dispatch with staging branch merges",
-		},
-		{
-			name: "apprentice direct",
-			sim:  PhaseSimulation{Role: "apprentice", Dispatch: "direct"},
-			want: "Single apprentice implements in worktree",
-		},
-		{
-			name: "sage verdict only",
-			sim:  PhaseSimulation{Role: "sage", VerdictOnly: true},
-			want: "Sage reviews diff and returns verdict only (no edits)",
-		},
-		{
-			name: "wizard",
-			sim:  PhaseSimulation{Role: "wizard"},
-			want: "Wizard invokes Claude for planning/validation",
+			name:           "spire-epic-v3",
+			minSteps:       4,
+			expectEntry:    true,
+			expectTerminal: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := describePhase(tt.sim)
-			if got != tt.want {
-				t.Errorf("describePhase: got %q, want %q", got, tt.want)
+			g, err := formula.LoadEmbeddedStepGraph(tt.name)
+			if err != nil {
+				t.Fatalf("load embedded step graph %q: %v", tt.name, err)
+			}
+
+			result, err := DryRunStepGraph(g)
+			if err != nil {
+				t.Fatalf("DryRunStepGraph: %v", err)
+			}
+
+			if result.Formula != tt.name {
+				t.Errorf("formula name: got %q, want %q", result.Formula, tt.name)
+			}
+			if result.Version != 3 {
+				t.Errorf("version: got %d, want 3", result.Version)
+			}
+			if len(result.Steps) < tt.minSteps {
+				t.Errorf("steps: got %d, want at least %d", len(result.Steps), tt.minSteps)
+			}
+
+			if tt.expectEntry && result.Entry == "" {
+				t.Error("expected non-empty entry step")
+			}
+
+			if tt.expectTerminal {
+				hasTerminal := false
+				for _, step := range result.Steps {
+					if step.Terminal {
+						hasTerminal = true
+						break
+					}
+				}
+				if !hasTerminal {
+					t.Error("expected at least one terminal step")
+				}
+			}
+
+			// Every step should have a description
+			for _, step := range result.Steps {
+				if step.Description == "" {
+					t.Errorf("step %q has empty description", step.Name)
+				}
+			}
+
+			// Should have at least one path
+			if len(result.Paths) == 0 {
+				t.Error("no execution paths found")
+			}
+
+			if len(result.Errors) > 0 {
+				t.Errorf("unexpected errors: %v", result.Errors)
 			}
 		})
 	}

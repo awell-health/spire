@@ -8,35 +8,23 @@ import (
 	"sort"
 	"strings"
 
-	toml "github.com/pelletier/go-toml/v2"
-
-	"github.com/awell-health/spire/pkg/formula/embedded"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/formula/embedded"
 )
 
 // Show loads a formula by name and returns a human-readable rendering
-// with header info and phase/step diagram.
+// with header info and step-graph DAG diagram.
 func Show(name string) (string, error) {
 	data, source, err := loadRawFormula(name)
 	if err != nil {
 		return "", err
 	}
 
-	var hdr formulaHeader
-	if err := toml.Unmarshal(data, &hdr); err != nil {
-		return "", fmt.Errorf("parse formula header: %w", err)
+	f, err := formula.ParseFormulaStepGraph(data)
+	if err != nil {
+		return "", fmt.Errorf("parse v3 formula: %w", err)
 	}
-
-	switch hdr.Version {
-	case 3:
-		f, err := formula.ParseFormulaStepGraph(data)
-		if err != nil {
-			return "", fmt.Errorf("parse v3 formula: %w", err)
-		}
-		return renderV3(f, source), nil
-	default:
-		return "", fmt.Errorf("unsupported formula version %d", hdr.Version)
-	}
+	return renderV3(f, source), nil
 }
 
 // renderV3 produces a human-readable display of a v3 step-graph formula.
@@ -54,7 +42,10 @@ func renderV3(f *formula.FormulaStepGraph, source string) string {
 	// Workspace declarations
 	renderV3Workspaces(&b, f.Workspaces)
 
-	// Determine order: entry first, then by depth (BFS-ish)
+	// ASCII DAG rendering
+	renderDAG(&b, f)
+
+	// Detailed step listing
 	entry := formula.EntryStep(f)
 	ordered := topologicalOrder(f, entry)
 
@@ -68,6 +59,128 @@ func renderV3(f *formula.FormulaStepGraph, source string) string {
 	renderV3Vars(&b, f.Vars)
 
 	return b.String()
+}
+
+// renderDAG produces an ASCII tree-style rendering of the step graph.
+// It walks the graph from the entry step using buildSuccessorMap, rendering
+// box-drawing characters for the tree structure:
+//
+//	plan [entry]
+//	 └─ implement
+//	     └─ review (-> review-phase)
+//	         ├─ merge [when: outcome == merge]
+//	         │   └─ close [terminal]
+//	         └─ discard [terminal, when: outcome == discard]
+func renderDAG(b *strings.Builder, f *formula.FormulaStepGraph) {
+	entry := formula.EntryStep(f)
+	if entry == "" {
+		return
+	}
+
+	successors := buildSuccessorMap(f)
+
+	b.WriteString("\nGraph:\n")
+
+	// Track visited to detect back-edges (resets/cycles)
+	visited := make(map[string]bool)
+	dagRenderNode(b, f, entry, "  ", true, true, visited, successors)
+}
+
+// dagAnnotation builds the annotation string for a DAG node.
+func dagAnnotation(f *formula.FormulaStepGraph, name string, step formula.StepConfig) string {
+	var annotations []string
+
+	if name == formula.EntryStep(f) {
+		annotations = append(annotations, "entry")
+	}
+	if step.Terminal {
+		annotations = append(annotations, "terminal")
+	}
+	if step.When != nil {
+		annotations = append(annotations, "when: "+renderWhenPredicate(step.When))
+	} else if step.Condition != "" {
+		annotations = append(annotations, "when: "+step.Condition)
+	}
+
+	if len(annotations) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(annotations, ", ") + "]"
+}
+
+// dagRenderNode recursively renders a step and its successors as a tree.
+func dagRenderNode(b *strings.Builder, f *formula.FormulaStepGraph, name string, prefix string, isLast bool, isRoot bool, visited map[string]bool, successors map[string][]string) {
+	step := f.Steps[name]
+
+	// Build the connector
+	var connector string
+	if isRoot {
+		connector = ""
+	} else if isLast {
+		connector = "└─ "
+	} else {
+		connector = "├─ "
+	}
+
+	// Nested graph reference
+	graphRef := ""
+	if step.Graph != "" {
+		graphRef = fmt.Sprintf(" (-> %s)", step.Graph)
+	}
+
+	annotationStr := dagAnnotation(f, name, step)
+
+	fmt.Fprintf(b, "%s%s%s%s%s\n", prefix, connector, name, graphRef, annotationStr)
+
+	// Cycle detection: if we already visited this node, don't recurse
+	if visited[name] {
+		return
+	}
+	visited[name] = true
+
+	// Determine child prefix for continuation lines
+	var childPrefix string
+	if isRoot {
+		childPrefix = prefix
+	} else if isLast {
+		childPrefix = prefix + "    "
+	} else {
+		childPrefix = prefix + "│   "
+	}
+
+	succs := successors[name]
+
+	// Separate forward edges from back-edges (cycles/resets)
+	var forwardSuccs []string
+	var resetTargets []string
+	for _, s := range succs {
+		if visited[s] {
+			resetTargets = append(resetTargets, s)
+		} else {
+			forwardSuccs = append(forwardSuccs, s)
+		}
+	}
+
+	// Total children = forward successors + optional reset line
+	totalChildren := len(forwardSuccs)
+	if len(resetTargets) > 0 {
+		totalChildren++
+	}
+
+	// Render forward successors first
+	childIdx := 0
+	for _, s := range forwardSuccs {
+		childIdx++
+		isLastChild := childIdx == totalChildren
+		dagRenderNode(b, f, s, childPrefix, isLastChild, false, visited, successors)
+	}
+
+	// Render reset back-edges as a note at the end
+	if len(resetTargets) > 0 {
+		fmt.Fprintf(b, "%s└─ (resets: %s)\n", childPrefix, strings.Join(resetTargets, ", "))
+	}
+
+	delete(visited, name)
 }
 
 // renderV3Workspaces renders the workspace declarations section.

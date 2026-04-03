@@ -21,7 +21,7 @@ type FormulaInfo struct {
 	Description string   `json:"description"`
 	Version     int      `json:"version"`
 	Source      string   `json:"source"`               // "embedded" or "custom"
-	Phases      []string `json:"phases"`                // v2: enabled phases; v3: step names
+	Phases      []string `json:"phases"`                // step names
 	Workspaces  []string `json:"workspaces,omitempty"`  // v3: declared workspace names
 }
 
@@ -111,24 +111,21 @@ func parseFormulaInfo(name string, data []byte, source string) FormulaInfo {
 		Source:      source,
 	}
 
-	switch hdr.Version {
-	case 3:
-		if f, err := formula.ParseFormulaStepGraph(data); err == nil {
-			steps := make([]string, 0, len(f.Steps))
-			for s := range f.Steps {
-				steps = append(steps, s)
-			}
-			sort.Strings(steps)
-			info.Phases = steps
+	if f, err := formula.ParseFormulaStepGraph(data); err == nil {
+		steps := make([]string, 0, len(f.Steps))
+		for s := range f.Steps {
+			steps = append(steps, s)
+		}
+		sort.Strings(steps)
+		info.Phases = steps
 
-			if len(f.Workspaces) > 0 {
-				ws := make([]string, 0, len(f.Workspaces))
-				for w := range f.Workspaces {
-					ws = append(ws, w)
-				}
-				sort.Strings(ws)
-				info.Workspaces = ws
+		if len(f.Workspaces) > 0 {
+			ws := make([]string, 0, len(f.Workspaces))
+			for w := range f.Workspaces {
+				ws = append(ws, w)
 			}
+			sort.Strings(ws)
+			info.Workspaces = ws
 		}
 	}
 
