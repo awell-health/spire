@@ -152,6 +152,7 @@ type StepConfig struct {
 	Title       string   `toml:"title,omitempty"`        // human-readable title for the step bead
 	Timeout     string   `toml:"timeout,omitempty"`      // e.g. "10m"
 	Model       string   `toml:"model,omitempty"`        // model override for agent phases
+	MaxTurns    int      `toml:"max_turns,omitempty"`    // turn budget for agent invocations (0 = unlimited/timeout-gated)
 	VerdictOnly bool     `toml:"verdict_only,omitempty"` // sage: produce verdict only, no edits
 	// Graph edges
 	Needs     []string `toml:"needs,omitempty"`     // predecessor steps (OR semantics: any one satisfies)
