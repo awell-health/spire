@@ -18,6 +18,7 @@ const (
 	OpcodeGitMergeToMain        = "git.merge_to_main"
 	OpcodeBeadFinish            = "bead.finish"
 	OpcodeNoop                  = "noop"
+	OpcodeRecoveryExecute       = "recovery.execute"
 )
 
 // ValidOpcodes is the set of recognized executor opcodes.
@@ -31,6 +32,7 @@ var ValidOpcodes = map[string]bool{
 	OpcodeGitMergeToMain:       true,
 	OpcodeBeadFinish:           true,
 	OpcodeNoop:                 true,
+	OpcodeRecoveryExecute:      true,
 }
 
 // ValidOpcode returns true if the opcode is in the recognized set.
