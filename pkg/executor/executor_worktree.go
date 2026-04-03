@@ -98,6 +98,17 @@ func (e *Executor) ensureGraphStagingWorktree(state *GraphState) (*spgit.Staging
 		if _, err := os.Stat(state.WorktreeDir); err == nil {
 			e.log("resuming staging worktree at %s", state.WorktreeDir)
 			e.stagingWt = spgit.ResumeStagingWorktree(repoPath, state.WorktreeDir, stagingBranch, state.BaseBranch, e.log)
+			// Sync workspace state on resume too.
+			for name, ws := range state.Workspaces {
+				if ws.Kind == "staging" && (ws.Status == "pending" || ws.Dir == "") {
+					ws.Status = "active"
+					ws.Dir = state.WorktreeDir
+					ws.Branch = stagingBranch
+					ws.BaseBranch = state.BaseBranch
+					state.Workspaces[name] = ws
+					break
+				}
+			}
 			return e.stagingWt, nil
 		}
 		e.log("stale worktree state %s — recreating", state.WorktreeDir)
@@ -129,6 +140,19 @@ func (e *Executor) ensureGraphStagingWorktree(state *GraphState) (*spgit.Staging
 
 	e.stagingWt = wt
 	state.WorktreeDir = wtDir
+
+	// Sync the workspace state so resolveGraphWorkspace finds this worktree
+	// as "active" instead of trying to recreate it.
+	for name, ws := range state.Workspaces {
+		if ws.Kind == "staging" && ws.Status == "pending" {
+			ws.Status = "active"
+			ws.Dir = wtDir
+			ws.Branch = stagingBranch
+			ws.BaseBranch = state.BaseBranch
+			state.Workspaces[name] = ws
+			break
+		}
+	}
 
 	if state.AttemptBeadID != "" {
 		e.deps.AddLabel(state.AttemptBeadID, "worktree:"+wtDir)
