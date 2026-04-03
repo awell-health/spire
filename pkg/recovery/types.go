@@ -18,6 +18,14 @@ const (
 	FailUnknown        FailureClass = "unknown"
 )
 
+// StepContext captures the v3 graph step that failed, if available.
+type StepContext struct {
+	StepName  string `json:"step_name"`
+	Action    string `json:"action,omitempty"`
+	Flow      string `json:"flow,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+}
+
 // Diagnosis is the complete diagnostic report for an interrupted parent bead.
 type Diagnosis struct {
 	BeadID            string           `json:"bead_id"`
@@ -28,6 +36,7 @@ type Diagnosis struct {
 	Phase             string           `json:"phase,omitempty"`              // current phase:* label value
 	AttemptCount      int              `json:"attempt_count"`                // total attempts on this bead
 	LastAttemptResult string           `json:"last_attempt_result,omitempty"` // result label from most recent closed attempt
+	StepContext       *StepContext     `json:"step_context,omitempty"`       // v3: which graph step failed
 	Runtime           *RuntimeState    `json:"runtime,omitempty"`            // executor state if available
 	Git               *GitState        `json:"git,omitempty"`                // branch/worktree existence
 	AlertBeads        []AlertInfo      `json:"alert_beads,omitempty"`        // related alert bead IDs + labels

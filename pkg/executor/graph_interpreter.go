@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/formula"
@@ -138,7 +139,19 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				e.deps.CloseStepBead(stepBeadID)
 			}
 
-			e.closeGraphAttempt(state, fmt.Sprintf("failure: step %s: %s", stepName, result.Error))
+			// Build node-scoped result with step metadata.
+			resultParts := []string{fmt.Sprintf("failure: step %s", stepName)}
+			if stepCfg.Action != "" {
+				resultParts = append(resultParts, fmt.Sprintf("action=%s", stepCfg.Action))
+			}
+			if stepCfg.Flow != "" {
+				resultParts = append(resultParts, fmt.Sprintf("flow=%s", stepCfg.Flow))
+			}
+			if stepCfg.Workspace != "" {
+				resultParts = append(resultParts, fmt.Sprintf("workspace=%s", stepCfg.Workspace))
+			}
+			resultMsg := strings.Join(resultParts, " ") + ": " + result.Error.Error()
+			e.closeGraphAttempt(state, resultMsg)
 			return fmt.Errorf("step %s failed: %w", stepName, result.Error)
 		}
 

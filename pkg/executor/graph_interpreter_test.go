@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/awell-health/spire/pkg/agent"
@@ -1167,6 +1168,77 @@ func TestRunGraph_ResumePreservesVarsAndWorkspaces(t *testing.T) {
 	}
 	if ws.Branch != "staging/spi-resume" {
 		t.Errorf("staging.Branch = %q, want %q (preserved)", ws.Branch, "staging/spi-resume")
+	}
+}
+
+// --- Test: Step failure emits node-scoped result with metadata ---
+
+func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var capturedResult string
+	deps.CloseAttemptBead = func(attemptID, result string) error {
+		capturedResult = result
+		return nil
+	}
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.ok"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"status": "done"}}
+	}
+	actionRegistry["test.fail"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Error: fmt.Errorf("subprocess exited with code 1")}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-node-scoped",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"prepare": {Action: "test.ok"},
+			"implement": {
+				Action:    "test.fail",
+				Flow:      "implement",
+				Workspace: "feature",
+				Needs:     []string{"prepare"},
+			},
+			"done": {
+				Action:   "noop",
+				Needs:    []string{"implement"},
+				Terminal: true,
+			},
+		},
+	}
+
+	exec := NewGraphForTest("test-bead", "test-agent", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err == nil {
+		t.Fatal("expected error from failing step")
+	}
+
+	// Verify the attempt result includes node-scoped metadata.
+	if !strings.Contains(capturedResult, "step implement") {
+		t.Errorf("expected result to contain 'step implement', got: %s", capturedResult)
+	}
+	if !strings.Contains(capturedResult, "action=test.fail") {
+		t.Errorf("expected result to contain 'action=test.fail', got: %s", capturedResult)
+	}
+	if !strings.Contains(capturedResult, "flow=implement") {
+		t.Errorf("expected result to contain 'flow=implement', got: %s", capturedResult)
+	}
+	if !strings.Contains(capturedResult, "workspace=feature") {
+		t.Errorf("expected result to contain 'workspace=feature', got: %s", capturedResult)
 	}
 }
 

@@ -43,6 +43,12 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 	// 3. Count attempts and get latest result.
 	attemptCount, lastResult := countAttempts(beadID, deps)
 
+	// Parse v3 step context from the attempt result if available.
+	var stepContext *StepContext
+	if lastResult != "" {
+		stepContext = parseStepContext(lastResult)
+	}
+
 	// 4. Find alert beads via dependents.
 	alertBeads := findAlertBeads(beadID, deps)
 
@@ -93,6 +99,7 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 		Phase:             phaseLabel,
 		AttemptCount:      attemptCount,
 		LastAttemptResult: lastResult,
+		StepContext:       stepContext,
 		Runtime:           runtime,
 		Git:               gitState,
 		AlertBeads:        alertBeads,
@@ -238,4 +245,42 @@ func checkGitState(beadID string, bead DepBead, runtime *RuntimeState, deps *Dep
 	}
 
 	return gs
+}
+
+// parseStepContext extracts v3 node-scoped step context from an attempt result string.
+// Expected format: "failure: step <name> action=<action> flow=<flow> workspace=<ws>: <error>"
+func parseStepContext(result string) *StepContext {
+	if !strings.Contains(result, "step ") {
+		return nil
+	}
+	idx := strings.Index(result, "step ")
+	if idx < 0 {
+		return nil
+	}
+	rest := result[idx+5:] // after "step "
+
+	sc := &StepContext{}
+	// Parse step name (first token before space or colon).
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		return nil
+	}
+	sc.StepName = strings.TrimSuffix(parts[0], ":")
+
+	// Parse key=value pairs. Trim trailing colons that appear when the
+	// key=value token immediately precedes the ": <error>" separator.
+	for _, p := range parts[1:] {
+		if strings.HasPrefix(p, "action=") {
+			sc.Action = strings.TrimSuffix(strings.TrimPrefix(p, "action="), ":")
+		} else if strings.HasPrefix(p, "flow=") {
+			sc.Flow = strings.TrimSuffix(strings.TrimPrefix(p, "flow="), ":")
+		} else if strings.HasPrefix(p, "workspace=") {
+			sc.Workspace = strings.TrimSuffix(strings.TrimPrefix(p, "workspace="), ":")
+		}
+	}
+
+	if sc.StepName == "" {
+		return nil
+	}
+	return sc
 }

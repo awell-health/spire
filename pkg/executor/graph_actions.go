@@ -361,8 +361,8 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 		return ActionResult{Outputs: map[string]string{"status": "discarded"}}
 
 	case "escalate":
-		EscalateHumanFailure(e.beadID, e.agentName, "bead-finish-escalate",
-			"formula requested escalation", e.deps)
+		EscalateGraphStepFailure(e.beadID, e.agentName, "bead-finish-escalate",
+			"formula requested escalation", stepName, step.Action, step.Flow, step.Workspace, e.deps)
 		return ActionResult{Outputs: map[string]string{"status": "escalated"}}
 
 	default:
