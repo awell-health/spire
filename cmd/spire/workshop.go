@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/workshop"
 	"github.com/spf13/cobra"
 )
@@ -305,176 +304,15 @@ func cmdWorkshopValidate(args []string) error {
 }
 
 // cmdWorkshopDryRun handles: spire workshop dry-run <name> [--json] [--bead <id>]
+// V2 formula dry-run is no longer supported.
 func cmdWorkshopDryRun(args []string) error {
-	if d := resolveBeadsDir(); d != "" {
-		os.Setenv("BEADS_DIR", d)
-	}
-
-	var name, beadID string
-	var jsonOutput bool
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--json":
-			jsonOutput = true
-		case "--bead":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--bead requires a value")
-			}
-			i++
-			beadID = args[i]
-		default:
-			if name == "" && !strings.HasPrefix(args[i], "-") {
-				name = args[i]
-			} else {
-				return fmt.Errorf("unexpected argument: %s", args[i])
-			}
-		}
-	}
-
-	if name == "" {
-		return fmt.Errorf("usage: spire workshop dry-run <name> [--json] [--bead <id>]")
-	}
-
-	f, err := formula.LoadFormulaByName(name)
-	if err != nil {
-		return fmt.Errorf("load formula %q: %w", name, err)
-	}
-
-	var loadBead func(string) (workshop.BeadInfo, error)
-	if beadID != "" {
-		loadBead = func(id string) (workshop.BeadInfo, error) {
-			b, err := storeGetBead(id)
-			if err != nil {
-				return workshop.BeadInfo{}, err
-			}
-			return workshop.BeadInfo{
-				ID:     b.ID,
-				Type:   b.Type,
-				Labels: b.Labels,
-				Title:  b.Title,
-			}, nil
-		}
-	}
-
-	result, err := workshop.DryRun(f, beadID, loadBead)
-	if err != nil {
-		return fmt.Errorf("dry-run: %w", err)
-	}
-
-	if jsonOutput {
-		data, err := json.MarshalIndent(result, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal result: %w", err)
-		}
-		fmt.Println(string(data))
-		return nil
-	}
-
-	printDryRunResult(result)
-	return nil
+	return fmt.Errorf("v2 formula dry-run removed; use v3 step-graph formulas")
 }
 
 // cmdWorkshopTest handles: spire workshop test <name> --bead <id>
+// V2 formula test is no longer supported.
 func cmdWorkshopTest(args []string) error {
-	if d := resolveBeadsDir(); d != "" {
-		os.Setenv("BEADS_DIR", d)
-	}
-
-	var name, beadID string
-	var jsonOutput bool
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--json":
-			jsonOutput = true
-		case "--bead":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--bead requires a value")
-			}
-			i++
-			beadID = args[i]
-		default:
-			if name == "" && !strings.HasPrefix(args[i], "-") {
-				name = args[i]
-			} else {
-				return fmt.Errorf("unexpected argument: %s", args[i])
-			}
-		}
-	}
-
-	if name == "" || beadID == "" {
-		return fmt.Errorf("usage: spire workshop test <name> --bead <id>")
-	}
-
-	f, err := formula.LoadFormulaByName(name)
-	if err != nil {
-		return fmt.Errorf("load formula %q: %w", name, err)
-	}
-
-	// Load actual bead
-	bead, err := storeGetBead(beadID)
-	if err != nil {
-		return fmt.Errorf("load bead %s: %w", beadID, err)
-	}
-
-	// Check formula resolution: what formula would this bead normally use?
-	resolvedName := resolveFormulaName(bead)
-	if resolvedName != name {
-		fmt.Fprintf(os.Stderr, "Note: bead %s would normally use formula %q (you specified %q)\n\n", beadID, resolvedName, name)
-	}
-
-	loadBead := func(id string) (workshop.BeadInfo, error) {
-		b, err := storeGetBead(id)
-		if err != nil {
-			return workshop.BeadInfo{}, err
-		}
-		return workshop.BeadInfo{
-			ID:     b.ID,
-			Type:   b.Type,
-			Labels: b.Labels,
-			Title:  b.Title,
-		}, nil
-	}
-
-	result, err := workshop.DryRun(f, beadID, loadBead)
-	if err != nil {
-		return fmt.Errorf("dry-run: %w", err)
-	}
-
-	// Also simulate review step graph if review phase is enabled
-	var stepResult *workshop.StepGraphSimulation
-	if f.PhaseEnabled("review") {
-		if g, err := formula.LoadReviewPhaseFormula(); err == nil {
-			stepResult, _ = workshop.DryRunStepGraph(g)
-		}
-	}
-
-	if jsonOutput {
-		out := struct {
-			DryRun    *workshop.DryRunResult       `json:"dry_run"`
-			ReviewDAG *workshop.StepGraphSimulation `json:"review_dag,omitempty"`
-		}{
-			DryRun:    result,
-			ReviewDAG: stepResult,
-		}
-		data, err := json.MarshalIndent(out, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal result: %w", err)
-		}
-		fmt.Println(string(data))
-		return nil
-	}
-
-	fmt.Printf("Test: %s against bead %s (%s, type=%s)\n\n", name, beadID, bead.Title, bead.Type)
-	printDryRunResult(result)
-
-	if stepResult != nil {
-		fmt.Println()
-		printStepGraphResult(stepResult)
-	}
-
-	return nil
+	return fmt.Errorf("v2 formula test removed; use v3 step-graph formulas")
 }
 
 // cmdWorkshopPublish handles: spire workshop publish <name>

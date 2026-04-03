@@ -112,10 +112,6 @@ func parseFormulaInfo(name string, data []byte, source string) FormulaInfo {
 	}
 
 	switch hdr.Version {
-	case 2:
-		if f, err := formula.ParseFormulaV2(data); err == nil {
-			info.Phases = f.EnabledPhases()
-		}
 	case 3:
 		if f, err := formula.ParseFormulaStepGraph(data); err == nil {
 			steps := make([]string, 0, len(f.Steps))

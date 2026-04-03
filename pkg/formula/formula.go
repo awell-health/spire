@@ -173,24 +173,6 @@ type StepConfig struct {
 
 // --- Parsing ---
 
-// ParseFormulaV2 parses v2 formula from TOML bytes.
-func ParseFormulaV2(data []byte) (*FormulaV2, error) {
-	var f FormulaV2
-	if err := toml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parse formula v2: %w", err)
-	}
-	if f.Version != 2 {
-		return nil, fmt.Errorf("expected formula version 2, got %d", f.Version)
-	}
-	// Validate phase names
-	for name := range f.Phases {
-		if !IsValidPhase(name) {
-			return nil, fmt.Errorf("unknown phase %q in formula", name)
-		}
-	}
-	return &f, nil
-}
-
 // ParseFormulaStepGraph parses a version 3 step-graph formula from TOML bytes.
 func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
 	var f FormulaStepGraph
@@ -211,26 +193,15 @@ func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
 	return &f, nil
 }
 
-// ParseFormulaAny peeks at the version field and parses as V2 or V3.
-// Returns the parsed formula (either *FormulaV2 or *FormulaStepGraph),
-// the version number, and any error.
+// ParseFormulaAny parses a v3 step-graph formula from TOML bytes.
+// Returns the parsed *FormulaStepGraph, version 3, and any error.
+// V2 formulas are no longer supported; use ParseFormulaStepGraph directly.
 func ParseFormulaAny(data []byte) (interface{}, int, error) {
-	var peek struct {
-		Version int `toml:"version"`
+	f, err := ParseFormulaStepGraph(data)
+	if err != nil {
+		return nil, 0, err
 	}
-	if err := toml.Unmarshal(data, &peek); err != nil {
-		return nil, 0, fmt.Errorf("peek version: %w", err)
-	}
-	switch peek.Version {
-	case 2:
-		f, err := ParseFormulaV2(data)
-		return f, 2, err
-	case 3:
-		f, err := ParseFormulaStepGraph(data)
-		return f, 3, err
-	default:
-		return nil, 0, fmt.Errorf("unsupported formula version %d", peek.Version)
-	}
+	return f, 3, nil
 }
 
 // --- FormulaV2 methods ---
@@ -271,15 +242,6 @@ func (f *FormulaV2) GetRevisionPolicy() RevisionPolicy {
 
 // --- Loading ---
 
-// LoadFormulaV2 reads and parses a v2 formula from a TOML file.
-func LoadFormulaV2(path string) (*FormulaV2, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read formula: %w", err)
-	}
-	return ParseFormulaV2(data)
-}
-
 // FindFormula locates a formula file on disk in the .beads/formulas directory.
 // Returns empty string and error if not found on disk — callers should
 // fall back to LoadEmbeddedFormula for built-in defaults.
@@ -304,28 +266,6 @@ func FindFormula(name string) (string, error) {
 		return "", fmt.Errorf("formula %q not found at %s", name, path)
 	}
 	return path, nil
-}
-
-// LoadEmbeddedFormula loads a formula from the embedded defaults compiled into the binary.
-func LoadEmbeddedFormula(name string) (*FormulaV2, error) {
-	filename := "formulas/" + name + ".formula.toml"
-	data, err := embedded.Formulas.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("embedded formula %q not found", name)
-	}
-	return ParseFormulaV2(data)
-}
-
-// LoadFormulaByName loads a formula with layered resolution:
-//  1. On-disk (.beads/formulas/ or ~/.beads/formulas/) — user/project override
-//  2. Embedded default (compiled into binary)
-func LoadFormulaByName(name string) (*FormulaV2, error) {
-	// Try disk first (project or user override)
-	if path, err := FindFormula(name); err == nil {
-		return LoadFormulaV2(path)
-	}
-	// Fall back to embedded default
-	return LoadEmbeddedFormula(name)
 }
 
 // LoadReviewPhaseFormula loads the embedded review-phase step-graph formula.
@@ -365,19 +305,7 @@ func LoadEmbeddedStepGraph(name string) (*FormulaStepGraph, error) {
 
 // --- Resolution ---
 
-// DefaultFormulaMap maps bead types to default v2 formula names.
-// Can be overridden by tower config in the future.
-var DefaultFormulaMap = map[string]string{
-	"task":    "spire-agent-work",
-	"bug":     "spire-bugfix",
-	"epic":    "spire-epic",
-	"chore":   "spire-agent-work",
-	"feature": "spire-agent-work",
-}
-
 // DefaultV3FormulaMap maps bead types to default v3 formula names.
-// Used by ResolveAny when a v3 formula is explicitly requested via
-// the "formula-version:3" label on a bead.
 var DefaultV3FormulaMap = map[string]string{
 	"task":    "spire-agent-work-v3",
 	"bug":     "spire-bugfix-v3",
@@ -398,66 +326,6 @@ type BeadInfo struct {
 // override for a bead. Returns the formula name or "" if none configured.
 // Injected by cmd/spire to bridge repoconfig + wizard logic.
 var RepoFormulaNameFunc func(beadID string) string
-
-// Resolve determines which formula to use for a bead.
-// Resolution order:
-//  1. Bead label formula:<name> (explicit override)
-//  2. RepoFormulaNameFunc callback (spire.yaml agent.formula)
-//  3. Bead type -> DefaultFormulaMap
-//  4. Fall back to "spire-agent-work"
-func Resolve(bead BeadInfo) (*FormulaV2, error) {
-	name := ResolveName(bead)
-	f, err := LoadFormulaByName(name)
-	if err != nil {
-		// If the resolved formula doesn't exist, fall back to default
-		if name != "spire-agent-work" {
-			f, err = LoadFormulaByName("spire-agent-work")
-			if err != nil {
-				return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
-			}
-			return f, nil
-		}
-		return nil, fmt.Errorf("resolve formula for %s: %w", bead.ID, err)
-	}
-	return f, nil
-}
-
-// ResolveName returns the formula name for a bead without loading it.
-// Resolution order: label override > repo config (spire.yaml) > compiled-in map > fallback.
-func ResolveName(bead BeadInfo) string {
-	// 1. Check bead labels for formula:<name>
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "formula:") {
-			return l[len("formula:"):]
-		}
-	}
-
-	// 2. Check repo-level formula via callback (spire.yaml agent.formula)
-	if RepoFormulaNameFunc != nil {
-		if name := RepoFormulaNameFunc(bead.ID); name != "" {
-			return name
-		}
-	}
-
-	// 3. Check bead type -> formula mapping
-	if name, ok := DefaultFormulaMap[bead.Type]; ok {
-		return name
-	}
-
-	// 4. Default
-	return "spire-agent-work"
-}
-
-// WantsV2 returns true if the bead has a "formula-version:2" label,
-// explicitly requesting the legacy v2 phase pipeline.
-func WantsV2(bead BeadInfo) bool {
-	for _, l := range bead.Labels {
-		if l == "formula-version:2" {
-			return true
-		}
-	}
-	return false
-}
 
 // ResolveV3Name returns the v3 formula name for a bead without loading it.
 // Resolution order: formula:<name> label > v3 default map > fallback.
@@ -504,40 +372,10 @@ func ResolveV3(bead BeadInfo) (*FormulaStepGraph, error) {
 	return g, nil
 }
 
-// ResolveAny determines which formula to use for a bead, supporting both
-// v2 and v3 formulas. It returns either a *FormulaV2 or *FormulaStepGraph,
-// the version number, and any error.
-//
-// Resolution order:
-//  1. If the bead has a "formula-version:2" label, resolve as v2 (legacy opt-in).
-//  2. If the bead has a "formula:<name>" label, try v3 then v2.
-//  3. Default: v3 resolution.
+// ResolveAny determines which v3 formula to use for a bead.
+// Returns a *FormulaStepGraph, version 3, and any error.
+// V2 formulas are no longer supported; all beads resolve to v3.
 func ResolveAny(bead BeadInfo) (interface{}, int, error) {
-	// Check if v2 is explicitly requested (legacy opt-in).
-	if WantsV2(bead) {
-		f, err := Resolve(bead)
-		if err != nil {
-			return nil, 0, err
-		}
-		return f, 2, nil
-	}
-
-	// Check if the formula:<name> label points to a specific formula.
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "formula:") {
-			name := l[len("formula:"):]
-			// Try v3 first, fall back to v2.
-			if g, err := LoadStepGraphByName(name); err == nil {
-				return g, 3, nil
-			}
-			if f, err := LoadFormulaByName(name); err == nil {
-				return f, 2, nil
-			}
-			break
-		}
-	}
-
-	// Default: v3 resolution.
 	g, err := ResolveV3(bead)
 	if err != nil {
 		return nil, 0, err

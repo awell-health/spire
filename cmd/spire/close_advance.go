@@ -131,54 +131,11 @@ func cmdAdvance(args []string) error {
 		return fmt.Errorf("bead %s is already closed", id)
 	}
 
-	// Resolve the formula — detect v2 vs v3.
-	anyFormula, version, err := ResolveFormulaAny(bead)
-	if err != nil {
-		return fmt.Errorf("resolve formula for %s: %w", id, err)
-	}
-
-	if version == 3 {
-		// v3 formulas use step graphs — advance is not meaningful in the
-		// same way as v2 linear phases. The graph executor handles step
-		// transitions. For manual advance, just close the bead.
-		fmt.Printf("%s: v3 formula — closing (use executor for step transitions)\n", id)
-		return cmdClose([]string{id})
-	}
-
-	// v2 path.
-	f := anyFormula.(*FormulaV2)
-
-	enabled := f.EnabledPhases()
-	if len(enabled) == 0 {
-		return fmt.Errorf("formula has no enabled phases")
-	}
-
-	currentPhase := getPhase(bead)
-
-	// Find the next phase.
-	nextPhase := ""
-	if currentPhase == "" {
-		// No current phase — advance to first enabled phase.
-		nextPhase = enabled[0]
-	} else {
-		for i, p := range enabled {
-			if p == currentPhase {
-				if i+1 < len(enabled) {
-					nextPhase = enabled[i+1]
-				}
-				// else: already at last phase — nextPhase stays ""
-				break
-			}
-		}
-		if nextPhase == "" && currentPhase != "" {
-			// Either already at last phase or phase not in formula — close.
-			fmt.Printf("%s: at last phase (%s), closing\n", id, currentPhase)
-			return cmdClose([]string{id})
-		}
-	}
-
-	fmt.Printf("%s: advanced to phase %s\n", id, nextPhase)
-	return nil
+	// All formulas are v3 step graphs — advance is not meaningful in the
+	// same way as v2 linear phases. The graph executor handles step
+	// transitions. For manual advance, just close the bead.
+	fmt.Printf("%s: v3 formula — closing (use executor for step transitions)\n", id)
+	return cmdClose([]string{id})
 }
 
 // closeMoleculeChildren finds the workflow molecule for a bead (if any) and

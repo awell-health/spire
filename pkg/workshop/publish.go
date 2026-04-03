@@ -44,10 +44,6 @@ func Publish(name string, beadsDir string) (string, error) {
 		return "", fmt.Errorf("formula %q: invalid TOML: %w", name, err)
 	}
 	switch hdr.Version {
-	case 2:
-		if _, err := formula.ParseFormulaV2(data); err != nil {
-			return "", fmt.Errorf("formula %q is invalid: %w", name, err)
-		}
 	case 3:
 		if _, err := formula.ParseFormulaStepGraph(data); err != nil {
 			return "", fmt.Errorf("formula %q is invalid: %w", name, err)

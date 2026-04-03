@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	formulaPkg "github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/observability"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
@@ -38,10 +39,7 @@ func cmdFocus(args []string) error {
 	// 2. Determine current phase
 	phase := getPhase(target)
 
-	// 3. Try to load formula (optional — enriches context)
-	formula, _ := ResolveFormula(target)
-
-	// 4. Basic bead info (always shown)
+	// 3. Basic bead info (always shown)
 	fmt.Printf("--- Task %s ---\n", target.ID)
 	fmt.Printf("Title: %s\n", target.Title)
 	fmt.Printf("Status: %s\n", target.Status)
@@ -54,35 +52,21 @@ func cmdFocus(args []string) error {
 	}
 	fmt.Println()
 
-	// 5. Show enabled phases from formula
-	if formula != nil {
-		enabled := formula.EnabledPhases()
-		fmt.Printf("--- Workflow Phases ---\n")
-		for _, p := range enabled {
+	// 4. Show v3 formula steps if available
+	if graph, err := formulaPkg.ResolveV3(beadToInfo(target)); err == nil {
+		fmt.Printf("--- Workflow Steps (%s) ---\n", graph.Name)
+		for name, step := range graph.Steps {
 			marker := "  "
-			if p == phase {
-				marker = "→ "
+			if step.Terminal {
+				marker = "* "
 			}
-			fmt.Printf("%s%s\n", marker, p)
+			if step.Action != "" {
+				fmt.Printf("%s%s (%s)\n", marker, name, step.Action)
+			} else {
+				fmt.Printf("%s%s\n", marker, name)
+			}
 		}
 		fmt.Println()
-	}
-
-	// 6. Phase-specific context
-	if formula != nil && phase != "" {
-		if pc, ok := formula.Phases[phase]; ok {
-			if len(pc.Context) > 0 {
-				fmt.Printf("--- Phase Context (%s) ---\n", phase)
-				fmt.Printf("Context paths: %s\n", strings.Join(pc.Context, ", "))
-				if pc.Timeout != "" {
-					fmt.Printf("Timeout: %s\n", pc.Timeout)
-				}
-				if pc.Model != "" {
-					fmt.Printf("Model: %s\n", pc.Model)
-				}
-				fmt.Println()
-			}
-		}
 	}
 
 	// 7a. Recovery work section for interrupted beads.

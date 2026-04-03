@@ -59,21 +59,22 @@ func TestResolveAny_DefaultV3(t *testing.T) {
 	}
 }
 
-func TestResolveAny_V2Label(t *testing.T) {
+func TestResolveAny_V2LabelIgnored(t *testing.T) {
+	// V2 labels are now ignored — all beads resolve to v3.
 	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula-version:2"}}
 	f, v, err := ResolveAny(bead)
 	if err != nil {
 		t.Fatalf("ResolveAny: %v", err)
 	}
-	if v != 2 {
-		t.Errorf("expected version 2, got %d", v)
+	if v != 3 {
+		t.Errorf("expected version 3 (v2 removed), got %d", v)
 	}
-	fv2, ok := f.(*FormulaV2)
+	fv3, ok := f.(*FormulaStepGraph)
 	if !ok {
-		t.Fatalf("expected *FormulaV2, got %T", f)
+		t.Fatalf("expected *FormulaStepGraph, got %T", f)
 	}
-	if fv2.Name != "spire-agent-work" {
-		t.Errorf("expected spire-agent-work, got %s", fv2.Name)
+	if fv3.Name != "spire-agent-work-v3" {
+		t.Errorf("expected spire-agent-work-v3, got %s", fv3.Name)
 	}
 }
 
@@ -95,21 +96,24 @@ func TestResolveAny_ExplicitV3Formula(t *testing.T) {
 	}
 }
 
-func TestResolveAny_ExplicitV2Formula(t *testing.T) {
+func TestResolveAny_ExplicitV2FormulaFallback(t *testing.T) {
+	// Requesting a v2 formula by name now falls back to v3 default
+	// since v2 embedded formulas have been removed.
 	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula:spire-agent-work"}}
 	f, v, err := ResolveAny(bead)
 	if err != nil {
 		t.Fatalf("ResolveAny: %v", err)
 	}
-	if v != 2 {
-		t.Errorf("expected version 2, got %d", v)
+	// Should fall back to default v3 formula since "spire-agent-work" v3 doesn't exist
+	if v != 3 {
+		t.Errorf("expected version 3, got %d", v)
 	}
-	fv2, ok := f.(*FormulaV2)
+	fv3, ok := f.(*FormulaStepGraph)
 	if !ok {
-		t.Fatalf("expected *FormulaV2, got %T", f)
+		t.Fatalf("expected *FormulaStepGraph, got %T", f)
 	}
-	if fv2.Name != "spire-agent-work" {
-		t.Errorf("expected spire-agent-work, got %s", fv2.Name)
+	if fv3.Name != "spire-agent-work-v3" {
+		t.Errorf("expected spire-agent-work-v3, got %s", fv3.Name)
 	}
 }
 
@@ -136,21 +140,6 @@ func TestResolveV3_ByType(t *testing.T) {
 				t.Errorf("expected %s, got %s", tt.expectedName, g.Name)
 			}
 		})
-	}
-}
-
-func TestWantsV2(t *testing.T) {
-	if WantsV2(BeadInfo{Labels: nil}) {
-		t.Error("nil labels should not want v2")
-	}
-	if WantsV2(BeadInfo{Labels: []string{"something-else"}}) {
-		t.Error("unrelated label should not want v2")
-	}
-	if !WantsV2(BeadInfo{Labels: []string{"formula-version:2"}}) {
-		t.Error("formula-version:2 label should want v2")
-	}
-	if WantsV2(BeadInfo{Labels: []string{"formula-version:3"}}) {
-		t.Error("formula-version:3 label should not want v2")
 	}
 }
 
