@@ -198,24 +198,35 @@ func repoList(jsonOut bool) error {
 				}
 				return nil
 			}
+
+			// Load local bindings from tower config.
+			var bindings map[string]*config.LocalRepoBinding
+			if tc, err := towerConfigForDatabase(database); err == nil && tc.LocalBindings != nil {
+				bindings = tc.LocalBindings
+			}
+
 			if jsonOut {
+				// Merge binding state into each row for JSON output.
 				for _, r := range rows {
-					state, localPath := config.LocalBindingForPrefix(cfg, r["prefix"])
-					r["local_state"] = string(state)
-					r["local_path"] = localPath
+					if b := bindings[r["prefix"]]; b != nil {
+						r["local_state"] = b.State
+						r["local_path"] = b.LocalPath
+					}
 				}
 				data, _ := json.MarshalIndent(rows, "", "  ")
 				fmt.Println(string(data))
 			} else {
-				fmt.Printf("%-10s %-50s %-10s %-12s %-16s %s\n", "PREFIX", "REPO", "BRANCH", "LANGUAGE", "LOCAL STATE", "REGISTERED BY")
+				fmt.Printf("%-10s %-50s %-10s %-12s %s\n", "PREFIX", "REPO", "BRANCH", "LANGUAGE", "LOCAL")
 				for _, r := range rows {
-					state, localPath := config.LocalBindingForPrefix(cfg, r["prefix"])
-					localCol := string(state)
-					if state == config.LocalRepoStateBound && localPath != "" {
-						localCol = "bound → " + localPath
+					local := "—"
+					if b := bindings[r["prefix"]]; b != nil {
+						if b.State == "bound" && b.LocalPath != "" {
+							local = fmt.Sprintf("bound (%s)", b.LocalPath)
+						} else {
+							local = b.State
+						}
 					}
-					fmt.Printf("%-10s %-50s %-10s %-12s %-16s %s\n",
-						r["prefix"], r["repo_url"], r["branch"], r["language"], localCol, r["registered_by"])
+					fmt.Printf("%-10s %-50s %-10s %-12s %s\n", r["prefix"], r["repo_url"], r["branch"], r["language"], local)
 				}
 			}
 			return nil

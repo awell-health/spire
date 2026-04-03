@@ -908,6 +908,12 @@ func cmdTowerAttach(args []string) error {
 		return fmt.Errorf("save tower config: %w", err)
 	}
 
+	// Walk shared repos and prompt for local bind/skip/unmanaged decisions.
+	if err := walkSharedReposForBind(tower); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not walk shared repos: %v\n", err)
+		// non-fatal: attach succeeded, reconcile can run later
+	}
+
 	// Set as active tower in global config
 	cfg, cfgErr := loadConfig()
 	if cfgErr == nil {
@@ -1229,5 +1235,91 @@ func cmdTowerSet(args []string) error {
 	}
 
 	fmt.Printf("tower %q updated:\n%s\n", tower.Name, strings.Join(changed, "\n"))
+	return nil
+}
+
+// walkSharedReposForBind runs an interactive post-attach flow: queries the shared
+// repos table and prompts the user to bind a local path, skip, or mark unmanaged
+// for each newly discovered repo.
+func walkSharedReposForBind(tower *TowerConfig) error {
+	if !isValidDatabaseName(tower.Database) {
+		return nil
+	}
+
+	sql := fmt.Sprintf("SELECT prefix, repo_url, branch FROM `%s`.repos ORDER BY prefix", tower.Database)
+	out, err := rawDoltQuery(sql)
+	if err != nil {
+		// Dolt unreachable or no repos table — not an error.
+		return nil
+	}
+
+	rows := parseDoltRows(out, []string{"prefix", "repo_url", "branch"})
+	if len(rows) == 0 {
+		return nil
+	}
+
+	if tower.LocalBindings == nil {
+		tower.LocalBindings = make(map[string]*config.LocalRepoBinding)
+	}
+
+	// Filter to only new repos (not already in LocalBindings).
+	var newRows []map[string]string
+	for _, r := range rows {
+		if _, exists := tower.LocalBindings[r["prefix"]]; !exists {
+			newRows = append(newRows, r)
+		}
+	}
+	if len(newRows) == 0 {
+		return nil
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("\nShared repos in tower %q:\n", tower.Name)
+	fmt.Println("  For each repo, enter a local path to bind, 's' to skip, or 'u' for unmanaged.")
+	fmt.Println()
+
+	changed := false
+	for _, r := range newRows {
+		prefix := r["prefix"]
+		repoURL := r["repo_url"]
+		branch := r["branch"]
+		if branch == "" {
+			branch = "main"
+		}
+
+		fmt.Printf("  %s  %s  (default branch: %s)\n", prefix, repoURL, branch)
+		fmt.Print("  → bind path / s(kip) / u(nmanaged): ")
+
+		line, _ := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+
+		binding := &config.LocalRepoBinding{
+			Prefix:       prefix,
+			RepoURL:      repoURL,
+			SharedBranch: branch,
+			DiscoveredAt: time.Now(),
+		}
+
+		switch strings.ToLower(line) {
+		case "s", "skip":
+			binding.State = "skipped"
+		case "u", "unmanaged":
+			binding.State = "unmanaged"
+		case "":
+			binding.State = "unbound"
+		default:
+			// Treat as a local filesystem path.
+			binding.State = "bound"
+			binding.LocalPath = line
+			binding.BoundAt = time.Now()
+		}
+
+		tower.LocalBindings[prefix] = binding
+		changed = true
+	}
+
+	if changed {
+		return saveTowerConfig(tower)
+	}
 	return nil
 }

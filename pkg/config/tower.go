@@ -6,17 +6,32 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // TowerConfig represents a tower's identity and configuration.
 type TowerConfig struct {
-	Name          string         `json:"name"`
-	ProjectID     string         `json:"project_id"`
-	HubPrefix     string         `json:"hub_prefix"`
-	DolthubRemote string         `json:"dolthub_remote,omitempty"`
-	Database      string         `json:"database"`
-	CreatedAt     string         `json:"created_at"`
-	Archmage      ArchmageConfig `json:"archmage,omitempty"`
+	Name          string                       `json:"name"`
+	ProjectID     string                       `json:"project_id"`
+	HubPrefix     string                       `json:"hub_prefix"`
+	DolthubRemote string                       `json:"dolthub_remote,omitempty"`
+	Database      string                       `json:"database"`
+	CreatedAt     string                       `json:"created_at"`
+	Archmage      ArchmageConfig               `json:"archmage,omitempty"`
+	LocalBindings map[string]*LocalRepoBinding `json:"local_bindings,omitempty"`
+}
+
+// LocalRepoBinding records machine-local state for a shared tower repo.
+// States: "unbound" (discovered, no local path yet), "bound" (has local path),
+// "skipped" (user deferred), "unmanaged" (permanently excluded on this machine).
+type LocalRepoBinding struct {
+	Prefix       string    `json:"prefix"`
+	LocalPath    string    `json:"local_path,omitempty"`
+	State        string    `json:"state"` // unbound | bound | skipped | unmanaged
+	RepoURL      string    `json:"repo_url,omitempty"`
+	SharedBranch string    `json:"shared_branch,omitempty"`
+	DiscoveredAt time.Time `json:"discovered_at,omitempty"`
+	BoundAt      time.Time `json:"bound_at,omitempty"`
 }
 
 // ArchmageConfig stores the tower owner's identity.

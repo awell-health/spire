@@ -27,31 +27,11 @@ var DoltDataDirFunc func() string
 // so pkg/config's identity detection can read the store without importing pkg/store.
 var StoreConfigGetterFunc func(key string) (string, error)
 
-// LocalRepoState describes this machine's relationship to a shared repo registration.
-type LocalRepoState string
-
-const (
-	LocalRepoStateBound     LocalRepoState = "bound"
-	LocalRepoStateSkipped   LocalRepoState = "skipped"
-	LocalRepoStateUnmanaged LocalRepoState = "unmanaged"
-	LocalRepoStateUnbound   LocalRepoState = "unbound"
-)
-
-// LocalRepoBinding records machine-local state for a shared repo prefix.
-// It is stored in SpireConfig.RepoBindings and never written to the shared dolt repos table.
-type LocalRepoBinding struct {
-	Prefix string         `json:"prefix"`
-	Path   string         `json:"path,omitempty"`
-	State  LocalRepoState `json:"state"`
-	Note   string         `json:"note,omitempty"`
-}
-
 // SpireConfig is the global Spire configuration stored at ~/.config/spire/config.json.
 type SpireConfig struct {
 	Shell        ShellConfig          `json:"shell"`
 	Instances    map[string]*Instance `json:"instances"`
 	ActiveTower  string               `json:"active_tower,omitempty"` // name of active tower
-	RepoBindings map[string]*LocalRepoBinding `json:"repo_bindings,omitempty"`
 	MCPServer    string               `json:"mcp_server_path,omitempty"`
 	EditorCursor *bool                `json:"editor_cursor,omitempty"` // default: true
 	EditorClaude *bool                `json:"editor_claude,omitempty"` // default: true
@@ -183,18 +163,6 @@ func FindInstanceByPath(cfg *SpireConfig, path string) *Instance {
 		}
 	}
 	return nil
-}
-
-// LocalBindingForPrefix returns the effective local state for a shared repo prefix.
-// It checks RepoBindings first, then falls back to Instances for backward compat.
-func LocalBindingForPrefix(cfg *SpireConfig, prefix string) (LocalRepoState, string) {
-	if b, ok := cfg.RepoBindings[prefix]; ok {
-		return b.State, b.Path
-	}
-	if inst, ok := cfg.Instances[prefix]; ok {
-		return LocalRepoStateBound, inst.Path
-	}
-	return LocalRepoStateUnbound, ""
 }
 
 // AllPaths returns all registered paths for an instance (primary + worktrees).

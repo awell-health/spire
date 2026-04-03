@@ -54,18 +54,22 @@ func cmdRepoBind(args []string, cmd *cobra.Command) error {
 	sharedRepoURL := rows[0]["repo_url"]
 	sharedBranch := rows[0]["branch"]
 
-	// Ensure the cfg map is initialised.
-	if cfg.RepoBindings == nil {
-		cfg.RepoBindings = make(map[string]*config.LocalRepoBinding)
+	// Resolve tower config so we can update LocalBindings.
+	tower, err := config.ResolveTowerConfig()
+	if err != nil {
+		return fmt.Errorf("resolve tower: %w", err)
+	}
+	if tower.LocalBindings == nil {
+		tower.LocalBindings = make(map[string]*config.LocalRepoBinding)
 	}
 
 	switch {
 	case skipFlag:
-		cfg.RepoBindings[prefix] = &config.LocalRepoBinding{
+		tower.LocalBindings[prefix] = &config.LocalRepoBinding{
 			Prefix: prefix,
-			State:  config.LocalRepoStateSkipped,
+			State:  "skipped",
 		}
-		if err := saveConfig(cfg); err != nil {
+		if err := config.SaveTowerConfig(tower); err != nil {
 			return err
 		}
 		fmt.Printf("Marked %s as skipped on this machine.\n", prefix)
@@ -74,11 +78,11 @@ func cmdRepoBind(args []string, cmd *cobra.Command) error {
 		return nil
 
 	case unmanagedFlag:
-		cfg.RepoBindings[prefix] = &config.LocalRepoBinding{
+		tower.LocalBindings[prefix] = &config.LocalRepoBinding{
 			Prefix: prefix,
-			State:  config.LocalRepoStateUnmanaged,
+			State:  "unmanaged",
 		}
-		if err := saveConfig(cfg); err != nil {
+		if err := config.SaveTowerConfig(tower); err != nil {
 			return err
 		}
 		fmt.Printf("Marked %s as unmanaged on this machine.\n", prefix)
@@ -102,18 +106,22 @@ func cmdRepoBind(args []string, cmd *cobra.Command) error {
 		return fmt.Errorf("%s does not appear to be a git repository", absPath)
 	}
 
-	// Resolve the tower config so we can bootstrap .beads/.
-	tower, err := config.ResolveTowerConfig()
-	if err != nil {
-		return fmt.Errorf("resolve tower: %w", err)
-	}
-
 	// Bootstrap .beads/ in the local path (idempotent — safe to re-run).
 	beadsDir := filepath.Join(absPath, ".beads")
 	if err := bootstrapRepoBeadsDir(beadsDir, tower, prefix); err != nil {
 		return fmt.Errorf("bootstrap .beads: %w", err)
 	}
 	ensureGitignoreEntry(absPath, ".beads/")
+
+	// Write to tower.LocalBindings as the canonical local state record.
+	tower.LocalBindings[prefix] = &config.LocalRepoBinding{
+		Prefix:    prefix,
+		LocalPath: absPath,
+		State:     "bound",
+	}
+	if err := config.SaveTowerConfig(tower); err != nil {
+		return err
+	}
 
 	// Write to cfg.Instances for backward compat (code paths that range over Instances).
 	cfg.Instances[prefix] = &Instance{
@@ -122,14 +130,6 @@ func cmdRepoBind(args []string, cmd *cobra.Command) error {
 		Database: tower.Database,
 		Tower:    tower.Name,
 	}
-
-	// Write to cfg.RepoBindings as the explicit local state record.
-	cfg.RepoBindings[prefix] = &config.LocalRepoBinding{
-		Prefix: prefix,
-		Path:   absPath,
-		State:  config.LocalRepoStateBound,
-	}
-
 	if err := saveConfig(cfg); err != nil {
 		return err
 	}

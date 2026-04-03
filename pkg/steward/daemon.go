@@ -68,6 +68,11 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 	// Sync derived configs from tower config (single source of truth).
 	SyncTowerDerivedConfigs(tower)
 
+	// Reconcile shared repos: detect newly added repos and log notices.
+	if err := reconcileSharedRepos(tower); err != nil {
+		log.Printf("[daemon] [%s] reconcileSharedRepos: %v", tower.Name, err)
+	}
+
 	// Open store scoped to this tower
 	if _, err := store.OpenAt(beadsDir); err != nil {
 		log.Printf("[daemon] [%s] open store: %s", tower.Name, err)
@@ -559,4 +564,65 @@ func ensureWebhookQueue() {
 	if err != nil {
 		log.Printf("[daemon] ensure webhook_queue: %s", err)
 	}
+}
+
+// reconcileSharedRepos diffs the shared repos table against the tower's local
+// bindings and creates "unbound" entries for newly discovered repos.
+// Idempotent: skipped/unmanaged/bound repos are not re-prompted.
+func reconcileSharedRepos(tower config.TowerConfig) error {
+	sql := fmt.Sprintf("SELECT prefix, repo_url, branch FROM `%s`.repos ORDER BY prefix", tower.Database)
+	out, err := dolt.RawQuery(sql)
+	if err != nil {
+		// Dolt unreachable or no repos table — skip silently; next cycle will retry.
+		return nil
+	}
+
+	rows := dolt.ParseDoltRows(out, []string{"prefix", "repo_url", "branch"})
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// Load fresh tower config from disk to get current LocalBindings.
+	updated, err := config.LoadTowerConfig(tower.Name)
+	if err != nil {
+		return fmt.Errorf("load tower config: %w", err)
+	}
+	if updated.LocalBindings == nil {
+		updated.LocalBindings = make(map[string]*config.LocalRepoBinding)
+	}
+
+	changed := false
+	for _, r := range rows {
+		prefix := r["prefix"]
+		repoURL := r["repo_url"]
+		branch := r["branch"]
+
+		binding, exists := updated.LocalBindings[prefix]
+		if !exists {
+			// Newly discovered shared repo — add as unbound.
+			updated.LocalBindings[prefix] = &config.LocalRepoBinding{
+				Prefix:       prefix,
+				State:        "unbound",
+				RepoURL:      repoURL,
+				SharedBranch: branch,
+				DiscoveredAt: time.Now(),
+			}
+			log.Printf("[spire] new shared repo discovered: %s  %s  (branch: %s)", prefix, repoURL, branch)
+			log.Printf("  → run 'spire repo bind %s /local/path' to bind, or 'spire repo skip %s' to skip", prefix, prefix)
+			changed = true
+			continue
+		}
+
+		if binding.State == "unbound" {
+			// Reminder for unbound repos.
+			log.Printf("[spire] unbound shared repo: %s  %s  (branch: %s)", prefix, repoURL, branch)
+			log.Printf("  → run 'spire repo bind %s /local/path' to bind, or 'spire repo skip %s' to skip", prefix, prefix)
+		}
+		// bound, skipped, unmanaged — silent.
+	}
+
+	if changed {
+		return config.SaveTowerConfig(updated)
+	}
+	return nil
 }
