@@ -12,6 +12,15 @@ import (
 	spgit "github.com/awell-health/spire/pkg/git"
 )
 
+// GraphResult is the typed return from executing a step-graph formula.
+// It captures which terminal step fired and the declared output values,
+// so outer workflows can route mechanically without inspecting ad hoc state.
+type GraphResult struct {
+	GraphName    string            `json:"graph_name"`
+	TerminalStep string            `json:"terminal_step"`
+	Outputs      map[string]string `json:"outputs"`
+}
+
 // State is the persistent state for a formula executor.
 type State struct {
 	BeadID        string                  `json:"bead_id"`
@@ -31,13 +40,21 @@ type State struct {
 	StepBeadIDs       map[string]string       `json:"step_bead_ids,omitempty"`        // phase name → step bead ID
 	ReviewStepBeadIDs map[string]string       `json:"review_step_bead_ids,omitempty"` // formula step name → sub-step bead ID
 	WorktreeDir       string                  `json:"worktree_dir,omitempty"`         // staging worktree directory path
+	LastGraphResult   *GraphResult            `json:"last_graph_result,omitempty"`
+	// v3 graph runtime state — coexist with v2 fields until migration is complete.
+	Workspaces map[string]WorkspaceState `json:"workspaces,omitempty"`
+	StepStates map[string]StepState      `json:"step_states,omitempty"`
+	Counters   map[string]int            `json:"counters,omitempty"`
 }
 
-// Executor drives a bead through its formula's phase pipeline.
+// Executor drives a bead through its formula's phase pipeline (v2) or step
+// graph (v3). When graph is non-nil, Run() delegates to RunGraph().
 type Executor struct {
 	beadID    string
 	agentName string
-	formula   *FormulaV2
+	formula   *FormulaV2         // v2 phase pipeline (nil when running v3)
+	graph     *FormulaStepGraph  // v3 step graph (nil when running v2)
+	graphState *GraphState       // v3 state (nil when running v2)
 	state     *State
 	deps      *Deps
 	log       func(string, ...interface{})
@@ -87,12 +104,15 @@ func New(beadID, agentName string, formula *FormulaV2, deps *Deps) (*Executor, e
 			}
 		}
 		state = &State{
-			BeadID:    beadID,
-			AgentName: agentName,
-			Formula:   formula.Name,
-			Phase:     phase,
-			Subtasks:  make(map[string]SubtaskState),
-			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			BeadID:     beadID,
+			AgentName:  agentName,
+			Formula:    formula.Name,
+			Phase:      phase,
+			Subtasks:   make(map[string]SubtaskState),
+			Workspaces: make(map[string]WorkspaceState),
+			StepStates: make(map[string]StepState),
+			Counters:   make(map[string]int),
+			StartedAt:  time.Now().UTC().Format(time.RFC3339),
 		}
 	}
 
@@ -113,6 +133,42 @@ func New(beadID, agentName string, formula *FormulaV2, deps *Deps) (*Executor, e
 		deps:               deps,
 		log:                log,
 		designPollInterval: 30 * time.Second,
+	}, nil
+}
+
+// NewGraph creates a v3 graph executor for a bead. It loads or creates
+// GraphState, registers with the wizard registry, and returns an executor
+// with the graph path active (formula is nil).
+func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*Executor, error) {
+	log := func(format string, a ...interface{}) {
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", agentName, fmt.Sprintf(format, a...))
+	}
+
+	// Load or create graph state.
+	state, err := LoadGraphState(agentName, deps.ConfigDir)
+	if err != nil {
+		return nil, fmt.Errorf("load graph state: %w", err)
+	}
+	if state == nil {
+		state = NewGraphState(graph, beadID, agentName)
+	}
+
+	// Register with wizard registry.
+	deps.RegistryAdd(agent.Entry{
+		Name:      agentName,
+		PID:       os.Getpid(),
+		BeadID:    beadID,
+		StartedAt: state.StartedAt,
+		Phase:     "graph:" + state.ActiveStep,
+	})
+
+	return &Executor{
+		beadID:     beadID,
+		agentName:  agentName,
+		graph:      graph,
+		graphState: state,
+		deps:       deps,
+		log:        log,
 	}, nil
 }
 
@@ -159,8 +215,12 @@ func (e *Executor) resolveBranchState() error {
 }
 
 // Run drives the bead through its formula's phase pipeline until all phases
-// are complete or the bead is closed.
+// are complete or the bead is closed. For v3 graphs, delegates to RunGraph.
 func (e *Executor) Run() error {
+	if e.graph != nil {
+		return e.RunGraph(e.graph, e.graphState)
+	}
+
 	defer e.deps.RegistryRemove(e.agentName)
 	defer e.saveState()
 
@@ -235,7 +295,12 @@ func (e *Executor) Run() error {
 			children, _ := e.deps.GetChildren(e.beadID)
 			err = e.enrichSubtasksWithChangeSpecs(children, "", "", pc)
 		case behavior == "sage-review":
-			err = e.executeReview(phase, pc)
+			var graphResult *GraphResult
+			graphResult, err = e.executeReview(phase, pc)
+			if err == nil && graphResult != nil {
+				e.state.LastGraphResult = graphResult
+				e.saveState()
+			}
 		case behavior == "auto-approve":
 			e.log("auto-approve: skipping review")
 		case behavior == "merge-to-main":
@@ -281,7 +346,12 @@ func (e *Executor) Run() error {
 					err = e.executeDirect(phase, pc)
 				}
 			case "sage":
-				err = e.executeReview(phase, pc)
+				var graphResult *GraphResult
+				graphResult, err = e.executeReview(phase, pc)
+				if err == nil && graphResult != nil {
+					e.state.LastGraphResult = graphResult
+					e.saveState()
+				}
 			case "skip":
 				e.log("skipping phase %s", phase)
 			default:
@@ -433,6 +503,16 @@ func (e *Executor) nextPhase(current string) string {
 // State returns the executor's current state. Used by tests.
 func (e *Executor) State() *State {
 	return e.state
+}
+
+// GraphState returns the executor's v3 graph state. Used by tests.
+func (e *Executor) GraphSt() *GraphState {
+	return e.graphState
+}
+
+// Terminated returns whether the executor reached a terminal state.
+func (e *Executor) Terminated() bool {
+	return e.terminated
 }
 
 // BeadID returns the executor's bead ID.

@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
@@ -16,56 +15,23 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-// executeDirect spawns one apprentice for the bead.
+// executeDirect spawns one apprentice for the bead. V2 compat wrapper around
+// dispatchDirectCore.
 func (e *Executor) executeDirect(phase string, pc PhaseConfig) error {
-	apprenticeName := fmt.Sprintf("%s-impl", e.agentName)
-	e.log("dispatching apprentice %s", apprenticeName)
-
-	extraArgs := []string{}
-	if pc.Apprentice {
-		extraArgs = append(extraArgs, "--apprentice")
-	}
-
-	started := time.Now()
-	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
-		Name:      apprenticeName,
-		BeadID:    e.beadID,
-		Role:      agent.RoleApprentice,
-		ExtraArgs: extraArgs,
-	})
-	if err != nil {
-		return fmt.Errorf("spawn apprentice: %w", err)
-	}
-
-	waitErr := handle.Wait()
-	e.recordAgentRun(apprenticeName, e.beadID, "", pc.Model, "apprentice", "implement", started, waitErr)
-	if waitErr != nil {
-		e.log("apprentice failed: %s", waitErr)
-		return fmt.Errorf("apprentice: %w", waitErr)
-	}
-
-	e.log("apprentice completed")
-
-	// Merge the apprentice's feat branch into the staging worktree so that
-	// downstream phases (review, merge) operate on the actual changes.
-	// Without this, the staging branch stays at HEAD and the merge phase
-	// would merge an empty branch into main, silently losing all work.
+	var stagingWt *spgit.StagingWorktree
 	if e.state.StagingBranch != "" {
-		featBranch := fmt.Sprintf("feat/%s", e.beadID)
-		e.log("merging %s into staging %s", featBranch, e.state.StagingBranch)
-		stagingWt, wtErr := e.ensureStagingWorktree()
+		var wtErr error
+		stagingWt, wtErr = e.ensureStagingWorktree()
 		if wtErr != nil {
-			return fmt.Errorf("ensure staging worktree for direct merge: %w", wtErr)
-		}
-		if mergeErr := stagingWt.MergeBranch(featBranch, e.resolveConflicts); mergeErr != nil {
-			return fmt.Errorf("merge %s into %s: %w", featBranch, e.state.StagingBranch, mergeErr)
+			return fmt.Errorf("ensure staging worktree for direct: %w", wtErr)
 		}
 	}
-
-	return nil
+	return e.dispatchDirectCore(stagingWt, pc.Model)
 }
 
 // executeWave dispatches apprentices in parallel waves using ComputeWaves.
+// V2 compat wrapper that delegates to dispatchWaveCore and adds build verification,
+// build-fix retry, and subtask closing.
 func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 	waves, err := ComputeWaves(e.beadID, e.deps)
 	if err != nil {
@@ -77,11 +43,8 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 		return nil
 	}
 
-	e.log("computed %d wave(s)", len(waves))
-
 	repoPath := e.state.RepoPath
 
-	// Use the single staging worktree shared across the entire executor lifecycle.
 	var stagingWt *spgit.StagingWorktree
 	if e.state.StagingBranch != "" {
 		var wtErr error
@@ -89,154 +52,69 @@ func (e *Executor) executeWave(phase string, pc PhaseConfig) error {
 		if wtErr != nil {
 			return fmt.Errorf("ensure staging worktree: %w", wtErr)
 		}
-		// Do NOT defer stagingWt.Close() — the worktree is shared across phases
-		// and cleaned up by Run() on exit.
 	}
 
-	// startRef tracks the integration ref for child worktrees. Empty for wave 0
-	// (children start from the repo base branch). After each wave's merge into
-	// staging, updated to the staging HEAD SHA so later-wave children start from
-	// the current integration state instead of stale main.
-	var startRef string
+	// Dispatch all waves via extracted core logic.
+	results, dispErr := e.dispatchWaveCore(waves, stagingWt, pc.Model)
 
-	startWave := e.state.Wave
-	for waveIdx := startWave; waveIdx < len(waves); waveIdx++ {
-		wave := waves[waveIdx]
-		e.state.Wave = waveIdx
-		e.log("=== wave %d: %d subtask(s) ===", waveIdx, len(wave))
-
-		type result struct {
-			BeadID string
-			Agent  string
-			Err    error
+	// Update v2 subtask state from results.
+	for _, cr := range results {
+		if cr.Err != nil {
+			continue
 		}
-
-		var wg sync.WaitGroup
-		resultCh := make(chan result, len(wave))
-
-		for i, subtaskID := range wave {
-			if st, ok := e.state.Subtasks[subtaskID]; ok && (st.Status == "closed" || st.Status == "done") {
-				e.log("  %s already %s, skipping", subtaskID, st.Status)
-				continue
-			}
-
-			wg.Add(1)
-			go func(idx int, beadID string) {
-				defer wg.Done()
-				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx, idx)
-				e.log("  dispatching %s for %s", name, beadID)
-
-				// Mark subtask as in_progress before dispatching
-				e.deps.UpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
-
-				extraArgs := []string{"--apprentice"}
-				started := time.Now()
-				h, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
-					Name:      name,
-					BeadID:    beadID,
-					Role:      agent.RoleApprentice,
-					ExtraArgs: extraArgs,
-					StartRef:  startRef,
-				})
-				if spawnErr != nil {
-					e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", "implement", started, spawnErr)
-					resultCh <- result{BeadID: beadID, Agent: name, Err: spawnErr}
-					return
-				}
-				waitErr := h.Wait()
-				e.recordAgentRun(name, beadID, e.beadID, pc.Model, "apprentice", "implement", started, waitErr)
-				if waitErr != nil {
-					resultCh <- result{BeadID: beadID, Agent: name, Err: waitErr}
-					return
-				}
-				resultCh <- result{BeadID: beadID, Agent: name}
-			}(i, subtaskID)
+		e.state.Subtasks[cr.BeadID] = SubtaskState{
+			Status: "done",
+			Branch: cr.Branch,
+			Agent:  cr.Agent,
 		}
+	}
+	e.saveState()
 
-		wg.Wait()
-		close(resultCh)
+	if dispErr != nil {
+		return dispErr
+	}
 
-		// Collect results (single-threaded — no race).
-		var errs []string
-		for r := range resultCh {
-			if r.Err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %s", r.BeadID, r.Err))
-				continue
-			}
-			e.state.Subtasks[r.BeadID] = SubtaskState{
-				Status: "done",
-				Branch: e.resolveBranch(r.BeadID),
-				Agent:  r.Agent,
-			}
-		}
-
-		e.saveState()
-
-		if len(errs) > 0 {
-			e.log("wave %d: %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))
-		}
-
-		// Merge child branches into staging worktree
+	// V2: build verification + build-fix retry (stays for v2 formulas).
+	if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
+		e.log("verifying build after dispatch: %s", buildStr)
+		var buildErr error
 		if stagingWt != nil {
-			for _, subtaskID := range wave {
-				st, ok := e.state.Subtasks[subtaskID]
-				if !ok || st.Status != "done" || st.Branch == "" {
-					continue
-				}
-				if mergeErr := stagingWt.MergeBranch(st.Branch, e.resolveConflicts); mergeErr != nil {
-					return fmt.Errorf("merge %s into %s: %w", st.Branch, e.state.StagingBranch, mergeErr)
-				}
-			}
-
-			// Update startRef to the staging HEAD so the next wave's children
-			// branch from the current integration state, not from stale main.
-			if sha, err := stagingWt.HeadSHA(); err == nil && sha != "" {
-				startRef = sha
-				e.log("next wave start-ref: %s", startRef)
+			buildErr = stagingWt.RunBuild(buildStr)
+		} else {
+			buildErr = e.runBuildCommand(repoPath, buildStr)
+		}
+		if buildErr != nil {
+			fixErr := e.attemptBuildFix(e.state.Wave, buildErr, pc)
+			if fixErr != nil {
+				EscalateHumanFailure(e.beadID, e.agentName, "build-failure",
+					fmt.Sprintf("build fix failed after retries: %s", fixErr), e.deps)
+				return fmt.Errorf("build verification failed (fix exhausted): %w", fixErr)
 			}
 		}
-
-		// Verify build in the staging worktree (or main repo if no staging branch).
-		if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
-			e.log("verifying build after wave %d: %s", waveIdx, buildStr)
-			var buildErr error
-			if stagingWt != nil {
-				buildErr = stagingWt.RunBuild(buildStr)
-			} else {
-				buildErr = e.runBuildCommand(repoPath, buildStr)
-			}
-			if buildErr != nil {
-				fixErr := e.attemptBuildFix(waveIdx, buildErr, pc)
-				if fixErr != nil {
-					EscalateHumanFailure(e.beadID, e.agentName, "build-failure",
-						fmt.Sprintf("wave %d build fix failed after retries: %s", waveIdx, fixErr), e.deps)
-					return fmt.Errorf("build verification failed after wave %d (fix exhausted): %w", waveIdx, fixErr)
-				}
-			}
-		}
-
-		// Close subtask beads AFTER successful merge and build verification.
-		for _, subtaskID := range wave {
-			st, ok := e.state.Subtasks[subtaskID]
-			if !ok || st.Status != "done" {
-				continue
-			}
-			if err := e.deps.CloseBead(subtaskID); err != nil {
-				e.log("warning: close subtask %s: %s", subtaskID, err)
-			}
-			st.Status = "closed"
-			e.state.Subtasks[subtaskID] = st
-		}
-		e.saveState()
 	}
+
+	// Close subtask beads AFTER successful merge and build verification.
+	for _, cr := range results {
+		if cr.Err != nil {
+			continue
+		}
+		if closeErr := e.deps.CloseBead(cr.BeadID); closeErr != nil {
+			e.log("warning: close subtask %s: %s", cr.BeadID, closeErr)
+		}
+		if st, ok := e.state.Subtasks[cr.BeadID]; ok {
+			st.Status = "closed"
+			e.state.Subtasks[cr.BeadID] = st
+		}
+	}
+	e.saveState()
 
 	return nil
 }
 
 // executeSequential dispatches one subtask at a time, merging each to staging,
 // running an inline review and merge-to-main cycle before advancing to the next.
-// Each subtask builds on the previous one's merged code — no merge conflicts.
-// Ideal for serial extraction pipelines where each step depends on the previous.
+// V2 compat wrapper that delegates to per-subtask dispatch and adds inline
+// review, merge-to-main, and subtask closing.
 func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 	waves, err := ComputeWaves(e.beadID, e.deps)
 	if err != nil {
@@ -248,7 +126,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 		return nil
 	}
 
-	// Flatten waves into a single ordered list, preserving wave dependency order.
+	// Flatten waves into a single ordered list.
 	var subtasks []string
 	for _, wave := range waves {
 		subtasks = append(subtasks, wave...)
@@ -259,7 +137,6 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 	repoPath := e.state.RepoPath
 	baseBranch := e.state.BaseBranch
 	stagingBranch := e.state.StagingBranch
-
 	// startRef tracks the integration ref for child worktrees. Empty for step 0
 	// (children start from the repo base branch). After each step's merge-to-main
 	// and push, updated to the base branch HEAD so the next child starts from the
@@ -267,7 +144,6 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 	var startRef string
 
 	for i, subtaskID := range subtasks {
-		// Skip already completed subtasks (resume support).
 		if st, ok := e.state.Subtasks[subtaskID]; ok && (st.Status == "closed" || st.Status == "done") {
 			e.log("  %s already %s, skipping", subtaskID, st.Status)
 			continue
@@ -276,7 +152,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 		e.log("=== sequential step %d/%d: %s ===", i+1, len(subtasks), subtaskID)
 		e.deps.UpdateBead(subtaskID, map[string]interface{}{"status": "in_progress"})
 
-		// 1. Dispatch one apprentice for this subtask.
+		// 1. Dispatch one apprentice.
 		name := fmt.Sprintf("%s-seq-%d", e.agentName, i)
 		started := time.Now()
 		handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
@@ -312,7 +188,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 			return fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 		}
 
-		// 3. Build verification on staging.
+		// 3. Build verification.
 		if buildStr := e.resolveBuildCommand(pc); buildStr != "" {
 			e.log("verifying build for %s: %s", subtaskID, buildStr)
 			if buildErr := stagingWt.RunBuild(buildStr); buildErr != nil {
@@ -325,15 +201,15 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 			}
 		}
 
-		// 4. Inline review (if the formula has a review phase).
+		// 4. Inline review.
 		if reviewPC, ok := e.formula.Phases["review"]; ok {
 			e.log("inline review for %s", subtaskID)
-			if reviewErr := e.executeReview("review", reviewPC); reviewErr != nil {
+			if _, reviewErr := e.executeReview("review", reviewPC); reviewErr != nil {
 				return fmt.Errorf("inline review for %s: %w", subtaskID, reviewErr)
 			}
 		}
 
-		// 5. Inline merge: staging → main.
+		// 5. Inline merge: staging -> main.
 		mergeEnv := os.Environ()
 		if tower, tErr := e.deps.ActiveTowerConfig(); tErr == nil && tower != nil {
 			mergeEnv = e.deps.ArchmageGitEnv(tower)
@@ -341,19 +217,16 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 
 		buildStr := e.resolveBuildCommand(pc)
 		testStr := e.resolveTestCommand(pc)
-		e.log("merging staging → %s for %s", baseBranch, subtaskID)
+		e.log("merging staging -> %s for %s", baseBranch, subtaskID)
 		if mergeErr := stagingWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
-			return fmt.Errorf("merge staging → %s for %s: %w", baseBranch, subtaskID, mergeErr)
+			return fmt.Errorf("merge staging -> %s for %s: %w", baseBranch, subtaskID, mergeErr)
 		}
 
-		// Push main.
 		rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: e.log}
 		if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
 			return fmt.Errorf("push %s after %s: %w", baseBranch, subtaskID, pushErr)
 		}
 
-		// Update startRef to the base branch HEAD so the next child starts from
-		// the current integrated code, not from the pre-merge base.
 		startRef = rc.HeadSHA()
 		if startRef != "" {
 			e.log("next sequential start-ref: %s", startRef)
@@ -370,9 +243,7 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 		}
 		e.saveState()
 
-		// 7. Reset staging to main for next subtask.
-		// Close the current staging worktree, reset the staging branch to main,
-		// so the next iteration creates a fresh staging from the updated main.
+		// 7. Reset staging for next subtask.
 		e.closeStagingWorktree()
 		rc.ForceBranch(stagingBranch, baseBranch)
 		e.log("staging reset to %s — ready for next subtask", baseBranch)

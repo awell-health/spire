@@ -20,8 +20,9 @@ type FormulaInfo struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Version     int      `json:"version"`
-	Source      string   `json:"source"` // "embedded" or "custom"
-	Phases      []string `json:"phases"` // v2: enabled phases; v3: step names
+	Source      string   `json:"source"`               // "embedded" or "custom"
+	Phases      []string `json:"phases"`                // v2: enabled phases; v3: step names
+	Workspaces  []string `json:"workspaces,omitempty"`  // v3: declared workspace names
 }
 
 // formulaHeader is used for lightweight TOML parsing of just the header fields.
@@ -123,6 +124,15 @@ func parseFormulaInfo(name string, data []byte, source string) FormulaInfo {
 			}
 			sort.Strings(steps)
 			info.Phases = steps
+
+			if len(f.Workspaces) > 0 {
+				ws := make([]string, 0, len(f.Workspaces))
+				for w := range f.Workspaces {
+					ws = append(ws, w)
+				}
+				sort.Strings(ws)
+				info.Workspaces = ws
+			}
 		}
 	}
 

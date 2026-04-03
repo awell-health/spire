@@ -18,16 +18,18 @@ import (
 
 // Type aliases re-exported for callers that need them.
 type (
-	Bead            = store.Bead
-	BoardBead       = store.BoardBead
-	CreateOpts      = store.CreateOpts
-	FormulaV2       = formula.FormulaV2
-	PhaseConfig     = formula.PhaseConfig
-	RevisionPolicy  = formula.RevisionPolicy
-	Backend         = agent.Backend
-	SpawnConfig     = agent.SpawnConfig
-	TowerConfig     = config.TowerConfig
-	AgentRun        = metrics.AgentRun
+	Bead              = store.Bead
+	BoardBead         = store.BoardBead
+	CreateOpts        = store.CreateOpts
+	FormulaV2         = formula.FormulaV2
+	FormulaStepGraph  = formula.FormulaStepGraph
+	StepConfig        = formula.StepConfig
+	PhaseConfig       = formula.PhaseConfig
+	RevisionPolicy    = formula.RevisionPolicy
+	Backend           = agent.Backend
+	SpawnConfig       = agent.SpawnConfig
+	TowerConfig       = config.TowerConfig
+	AgentRun          = metrics.AgentRun
 )
 
 // SubtaskState tracks the status of a subtask during wave execution.

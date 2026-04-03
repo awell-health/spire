@@ -62,15 +62,22 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		DurationSeconds: int(completed.Sub(started).Seconds()),
 		StartedAt:       started.Format(time.RFC3339),
 		CompletedAt:     completed.Format(time.RFC3339),
-		ReviewRounds:    e.state.ReviewRounds,
+	}
+	if e.state != nil {
+		run.ReviewRounds = e.state.ReviewRounds
 	}
 
 	// Populate context fields from executor state.
 	if e.formula != nil {
 		run.FormulaName = e.formula.Name
 		run.FormulaVersion = e.formula.Version
+	} else if e.graph != nil {
+		run.FormulaName = e.graph.Name
+		run.FormulaVersion = e.graph.Version
 	}
-	run.WaveIndex = e.state.Wave
+	if e.state != nil {
+		run.WaveIndex = e.state.Wave
+	}
 
 	// Bead type — swallow errors (bead may be deleted or unavailable in tests).
 	if e.deps.GetBead != nil && beadID != "" {
@@ -113,13 +120,25 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 	}
 
 	// Fall back to staging branch if result didn't provide a branch.
-	if run.Branch == "" && e.state.StagingBranch != "" {
-		run.Branch = e.state.StagingBranch
+	stagingBranch := ""
+	repoPath := ""
+	baseBranch := ""
+	if e.state != nil {
+		stagingBranch = e.state.StagingBranch
+		repoPath = e.state.RepoPath
+		baseBranch = e.state.BaseBranch
+	} else if e.graphState != nil {
+		stagingBranch = e.graphState.StagingBranch
+		repoPath = e.graphState.RepoPath
+		baseBranch = e.graphState.BaseBranch
+	}
+	if run.Branch == "" && stagingBranch != "" {
+		run.Branch = stagingBranch
 	}
 
 	// Compute git diff stats as fallback when result.json didn't provide them.
-	if run.FilesChanged == 0 && run.Result == "success" && e.state.RepoPath != "" {
-		fc, la, lr := gitDiffStats(e.state.RepoPath, e.state.BaseBranch, e.resolveBranch(beadID))
+	if run.FilesChanged == 0 && run.Result == "success" && repoPath != "" {
+		fc, la, lr := gitDiffStats(repoPath, baseBranch, e.resolveBranch(beadID))
 		run.FilesChanged = fc
 		run.LinesAdded = la
 		run.LinesRemoved = lr

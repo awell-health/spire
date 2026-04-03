@@ -163,6 +163,9 @@ func renderV3(f *formula.FormulaStepGraph, source string) string {
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "Source: %s\n", source)
 
+	// Workspace declarations
+	renderV3Workspaces(&b, f.Workspaces)
+
 	// Determine order: entry first, then by depth (BFS-ish)
 	entry := formula.EntryStep(f)
 	ordered := topologicalOrder(f, entry)
@@ -170,59 +173,194 @@ func renderV3(f *formula.FormulaStepGraph, source string) string {
 	b.WriteString("\nSteps:\n")
 	for _, name := range ordered {
 		step := f.Steps[name]
-		markers := ""
-		if name == entry {
-			markers += " [entry]"
-		}
-		if step.Terminal {
-			markers += " [terminal]"
-		}
-		fmt.Fprintf(&b, "\n  %s%s\n", name, markers)
-		if step.Role != "" {
-			fmt.Fprintf(&b, "    role:      %s\n", step.Role)
-		}
-		if step.Title != "" {
-			fmt.Fprintf(&b, "    title:     %s\n", step.Title)
-		}
-		if step.Model != "" {
-			fmt.Fprintf(&b, "    model:     %s\n", step.Model)
-		}
-		if step.Timeout != "" {
-			fmt.Fprintf(&b, "    timeout:   %s\n", step.Timeout)
-		}
-		if step.VerdictOnly {
-			fmt.Fprintf(&b, "    verdict_only: true\n")
-		}
-		if len(step.Needs) > 0 {
-			fmt.Fprintf(&b, "    needs:     %s\n", strings.Join(step.Needs, ", "))
-		}
-		if step.Condition != "" {
-			fmt.Fprintf(&b, "    condition: %s\n", step.Condition)
-		}
+		renderV3Step(&b, name, step, entry)
 	}
 
 	// Variables
-	if len(f.Vars) > 0 {
-		b.WriteString("\nVariables:\n")
-		names := make([]string, 0, len(f.Vars))
-		for n := range f.Vars {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			v := f.Vars[n]
-			req := ""
-			if v.Required {
-				req = " (required)"
-			}
-			fmt.Fprintf(&b, "  %s%s — %s\n", n, req, v.Description)
-			if v.Default != "" {
-				fmt.Fprintf(&b, "    default: %s\n", v.Default)
-			}
-		}
-	}
+	renderV3Vars(&b, f.Vars)
 
 	return b.String()
+}
+
+// renderV3Workspaces renders the workspace declarations section.
+func renderV3Workspaces(b *strings.Builder, workspaces map[string]formula.WorkspaceDecl) {
+	if len(workspaces) == 0 {
+		return
+	}
+	b.WriteString("\nWorkspaces:\n")
+	names := make([]string, 0, len(workspaces))
+	for n := range workspaces {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ws := workspaces[name]
+		fmt.Fprintf(b, "\n  %s\n", name)
+		fmt.Fprintf(b, "    kind:      %s\n", ws.Kind)
+		if ws.Branch != "" {
+			fmt.Fprintf(b, "    branch:    %s\n", ws.Branch)
+		}
+		if ws.Base != "" {
+			fmt.Fprintf(b, "    base:      %s\n", ws.Base)
+		}
+		if ws.Scope != "" {
+			fmt.Fprintf(b, "    scope:     %s\n", ws.Scope)
+		}
+		if ws.Ownership != "" {
+			fmt.Fprintf(b, "    ownership: %s\n", ws.Ownership)
+		}
+		if ws.Cleanup != "" {
+			fmt.Fprintf(b, "    cleanup:   %s\n", ws.Cleanup)
+		}
+	}
+}
+
+// renderV3Vars renders variables with type field.
+func renderV3Vars(b *strings.Builder, vars map[string]formula.FormulaVar) {
+	if len(vars) == 0 {
+		return
+	}
+	b.WriteString("\nVariables:\n")
+	names := make([]string, 0, len(vars))
+	for n := range vars {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		v := vars[n]
+		req := ""
+		if v.Required {
+			req = " (required)"
+		}
+		typStr := ""
+		if v.Type != "" {
+			typStr = fmt.Sprintf(" [%s]", v.Type)
+		}
+		fmt.Fprintf(b, "  %s%s%s — %s\n", n, typStr, req, v.Description)
+		if v.Default != "" {
+			fmt.Fprintf(b, "    default: %s\n", v.Default)
+		}
+	}
+}
+
+// renderV3Step renders one step with all v3 fields.
+func renderV3Step(b *strings.Builder, name string, step formula.StepConfig, entry string) {
+	markers := ""
+	if name == entry {
+		markers += " [entry]"
+	}
+	if step.Terminal {
+		markers += " [terminal]"
+	}
+	fmt.Fprintf(b, "\n  %s%s\n", name, markers)
+
+	if step.Kind != "" {
+		fmt.Fprintf(b, "    kind:      %s\n", step.Kind)
+	}
+	if step.Action != "" {
+		fmt.Fprintf(b, "    action:    %s\n", step.Action)
+	}
+	if step.Flow != "" {
+		fmt.Fprintf(b, "    flow:      %s\n", step.Flow)
+	}
+	if step.Role != "" {
+		fmt.Fprintf(b, "    role:      %s\n", step.Role)
+	}
+	if step.Title != "" {
+		fmt.Fprintf(b, "    title:     %s\n", step.Title)
+	}
+	if step.Model != "" {
+		fmt.Fprintf(b, "    model:     %s\n", step.Model)
+	}
+	if step.Timeout != "" {
+		fmt.Fprintf(b, "    timeout:   %s\n", step.Timeout)
+	}
+	if step.VerdictOnly {
+		fmt.Fprintf(b, "    verdict_only: true\n")
+	}
+	if step.Workspace != "" {
+		fmt.Fprintf(b, "    workspace: %s\n", step.Workspace)
+	}
+	if len(step.Needs) > 0 {
+		fmt.Fprintf(b, "    needs:     %s\n", strings.Join(step.Needs, ", "))
+	}
+	if step.Condition != "" {
+		fmt.Fprintf(b, "    condition: %s\n", step.Condition)
+	}
+	if step.When != nil {
+		fmt.Fprintf(b, "    when:      %s\n", renderWhenPredicate(step.When))
+	}
+	if len(step.Produces) > 0 {
+		fmt.Fprintf(b, "    produces:  %s\n", strings.Join(step.Produces, ", "))
+	}
+	if len(step.With) > 0 {
+		keys := make([]string, 0, len(step.With))
+		for k := range step.With {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(b, "    with.%-5s %s\n", k+":", step.With[k])
+		}
+	}
+	if step.Graph != "" {
+		fmt.Fprintf(b, "    graph:     %s\n", step.Graph)
+	}
+	if step.Retry != nil {
+		fmt.Fprintf(b, "    retry:     max=%d", step.Retry.Max)
+		if step.Retry.Action != "" {
+			fmt.Fprintf(b, " action=%s", step.Retry.Action)
+		}
+		if step.Retry.Flow != "" {
+			fmt.Fprintf(b, " flow=%s", step.Retry.Flow)
+		}
+		b.WriteString("\n")
+	}
+}
+
+// renderWhenPredicate converts a structured condition to a human-readable string.
+func renderWhenPredicate(when *formula.StructuredCondition) string {
+	if when == nil {
+		return ""
+	}
+	var parts []string
+	for _, p := range when.All {
+		parts = append(parts, fmt.Sprintf("%s %s %s", p.Left, opSymbol(p.Op), p.Right))
+	}
+	allStr := strings.Join(parts, " AND ")
+
+	if len(when.Any) > 0 {
+		var anyParts []string
+		for _, p := range when.Any {
+			anyParts = append(anyParts, fmt.Sprintf("%s %s %s", p.Left, opSymbol(p.Op), p.Right))
+		}
+		anyStr := strings.Join(anyParts, " OR ")
+		if allStr != "" {
+			return allStr + " AND (" + anyStr + ")"
+		}
+		return anyStr
+	}
+	return allStr
+}
+
+// opSymbol converts a predicate operator to its symbol form.
+func opSymbol(op string) string {
+	switch op {
+	case "eq":
+		return "=="
+	case "ne":
+		return "!="
+	case "lt":
+		return "<"
+	case "gt":
+		return ">"
+	case "le":
+		return "<="
+	case "ge":
+		return ">="
+	default:
+		return op
+	}
 }
 
 // topologicalOrder returns step names in a BFS traversal from the entry point,

@@ -28,7 +28,7 @@ func NextSteps(graph *FormulaStepGraph, completed map[string]bool, ctx map[strin
 				continue
 			}
 		}
-		ok, err := EvalCondition(step.Condition, ctx)
+		ok, err := EvalStepCondition(step, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("step %q condition: %w", name, err)
 		}
@@ -41,8 +41,13 @@ func NextSteps(graph *FormulaStepGraph, completed map[string]bool, ctx map[strin
 	return ready, nil
 }
 
-// EntryStep returns the step name with an empty needs list (the entry point).
+// EntryStep returns the entry step name. If the graph declares an explicit
+// Entry field, that is returned. Otherwise, the step with an empty needs
+// list (the implicit entry point) is returned.
 func EntryStep(graph *FormulaStepGraph) string {
+	if graph.Entry != "" {
+		return graph.Entry
+	}
 	for name, step := range graph.Steps {
 		if len(step.Needs) == 0 {
 			return name
@@ -61,21 +66,35 @@ func IsTerminal(graph *FormulaStepGraph, stepName string) bool {
 
 // ValidateGraph checks that a step graph is well-formed:
 //   - At least one step exists
-//   - Exactly one entry point (step with no needs)
+//   - Exactly one entry point (step with no needs, or explicit Entry)
 //   - All referenced needs exist
 //   - No self-references in needs
 //   - At least one terminal step
+//   - v3 fields: valid step kinds, opcodes, workspace refs, var types, condition exclusion
 func ValidateGraph(graph *FormulaStepGraph) error {
 	if len(graph.Steps) == 0 {
 		return fmt.Errorf("step graph has no steps")
 	}
 
-	entryCount := 0
+	// Entry point validation: explicit Entry field takes precedence.
+	if graph.Entry != "" {
+		if _, ok := graph.Steps[graph.Entry]; !ok {
+			return fmt.Errorf("explicit entry %q does not exist in steps", graph.Entry)
+		}
+	} else {
+		entryCount := 0
+		for _, step := range graph.Steps {
+			if len(step.Needs) == 0 {
+				entryCount++
+			}
+		}
+		if entryCount != 1 {
+			return fmt.Errorf("step graph must have exactly one entry point, found %d", entryCount)
+		}
+	}
+
 	terminalCount := 0
 	for name, step := range graph.Steps {
-		if len(step.Needs) == 0 {
-			entryCount++
-		}
 		if step.Terminal {
 			terminalCount++
 		}
@@ -87,13 +106,70 @@ func ValidateGraph(graph *FormulaStepGraph) error {
 				return fmt.Errorf("step %q needs %q which does not exist", name, need)
 			}
 		}
+
+		// v3 field validation — only triggers when new fields are populated.
+		if step.Kind != "" && !ValidStepKind(step.Kind) {
+			return fmt.Errorf("step %q: invalid kind %q", name, step.Kind)
+		}
+		if step.Action != "" && !ValidOpcode(step.Action) {
+			return fmt.Errorf("step %q: invalid action %q", name, step.Action)
+		}
+		if step.Workspace != "" && graph.Workspaces != nil {
+			if _, ok := graph.Workspaces[step.Workspace]; !ok {
+				return fmt.Errorf("step %q: workspace %q not declared", name, step.Workspace)
+			}
+		}
+		if step.Workspace != "" && graph.Workspaces == nil {
+			return fmt.Errorf("step %q: workspace %q referenced but no workspaces declared", name, step.Workspace)
+		}
+		if step.When != nil && step.Condition != "" {
+			return fmt.Errorf("step %q: declares both when and condition; use only one", name)
+		}
+		if step.When != nil {
+			for i, p := range step.When.All {
+				if !ValidPredicateOp(p.Op) {
+					return fmt.Errorf("step %q: when.all[%d] invalid op %q", name, i, p.Op)
+				}
+			}
+			for i, p := range step.When.Any {
+				if !ValidPredicateOp(p.Op) {
+					return fmt.Errorf("step %q: when.any[%d] invalid op %q", name, i, p.Op)
+				}
+			}
+		}
+
+		// Validate resets targets exist in the graph.
+		for _, target := range step.Resets {
+			if _, ok := graph.Steps[target]; !ok {
+				return fmt.Errorf("step %q: resets target %q does not exist", name, target)
+			}
+		}
 	}
 
-	if entryCount != 1 {
-		return fmt.Errorf("step graph must have exactly one entry point, found %d", entryCount)
-	}
 	if terminalCount == 0 {
 		return fmt.Errorf("step graph has no terminal steps")
+	}
+
+	// Validate workspace references: every step.workspace must exist in graph.Workspaces.
+	for name, step := range graph.Steps {
+		if step.Workspace != "" {
+			if _, ok := graph.Workspaces[step.Workspace]; !ok {
+				return fmt.Errorf("step %q references workspace %q which is not declared", name, step.Workspace)
+			}
+		}
+	}
+	// Validate workspace declarations themselves.
+	if len(graph.Workspaces) > 0 {
+		if err := ValidateWorkspaces(graph.Workspaces); err != nil {
+			return fmt.Errorf("workspace validation: %w", err)
+		}
+	}
+
+	// Validate var types.
+	for name, v := range graph.Vars {
+		if v.Type != "" && !ValidVarType(v.Type) {
+			return fmt.Errorf("var %q: invalid type %q", name, v.Type)
+		}
 	}
 
 	return nil

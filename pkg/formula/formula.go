@@ -47,6 +47,7 @@ type PhaseConfig struct {
 	MaxBuildFixRounds int      `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
 	OnBuildFailure    string   `toml:"on_build_failure,omitempty"`     // "retry" (default) | "escalate" | "fail"
 	DocPatterns       []string `toml:"doc_patterns" json:"doc_patterns,omitempty"` // glob patterns for doc files to review on merge
+	Graph             string   `toml:"graph,omitempty"`                            // step-graph formula name for graph-based phases (e.g. review)
 }
 
 // GetBehavior returns the behavior override, or "" for role-based dispatch.
@@ -107,11 +108,26 @@ type RevisionPolicy struct {
 	ArbiterModel string `toml:"arbiter_model,omitempty"`
 }
 
+// RetryPolicy configures retry behavior for a v3 step.
+type RetryPolicy struct {
+	Max    int    `toml:"max"`              // maximum retry attempts
+	Action string `toml:"action,omitempty"` // opcode to run on retry (e.g. "wizard.run")
+	Flow   string `toml:"flow,omitempty"`   // flow for retry action (e.g. "build-fix")
+}
+
 // FormulaVar defines a variable accepted by the formula.
 type FormulaVar struct {
 	Description string `toml:"description"`
+	Type        string `toml:"type,omitempty"` // "string" (default), "int", "bool", "bead_id"
 	Required    bool   `toml:"required"`
 	Default     string `toml:"default,omitempty"`
+}
+
+// OutputDecl declares a graph output that terminal steps populate into GraphResult.Outputs.
+type OutputDecl struct {
+	Type        string   `toml:"type"`                  // "string", "enum", "int"
+	Description string   `toml:"description,omitempty"`
+	Values      []string `toml:"values,omitempty"` // valid values for enum type
 }
 
 // FormulaStepGraph is a version 3 formula that declares a step graph with conditional routing.
@@ -120,16 +136,19 @@ type FormulaVar struct {
 // the executor pours this formula as a molecule, creating step beads, then walks the graph
 // — closing each step bead as it progresses.
 type FormulaStepGraph struct {
-	Name        string                `toml:"name"`
-	Description string                `toml:"description"`
-	Version     int                   `toml:"version"`
-	Steps       map[string]StepConfig `toml:"steps"`
-	Vars        map[string]FormulaVar `toml:"vars"`
+	Name        string                   `toml:"name"`
+	Description string                   `toml:"description"`
+	Version     int                      `toml:"version"`
+	Entry       string                   `toml:"entry,omitempty"` // explicit entry step (falls back to EntryStep())
+	Steps       map[string]StepConfig    `toml:"steps"`
+	Workspaces  map[string]WorkspaceDecl `toml:"workspaces"`
+	Vars        map[string]FormulaVar    `toml:"vars"`
 }
 
 // StepConfig configures a single step in a FormulaStepGraph.
 type StepConfig struct {
-	Role        string   `toml:"role"`                   // sage | apprentice | arbiter | executor
+	// Existing fields — kept for backward compat with current review formulas.
+	Role        string   `toml:"role,omitempty"`         // sage | apprentice | arbiter | executor (optional in v3 opcode steps)
 	Title       string   `toml:"title,omitempty"`        // human-readable title for the step bead
 	Timeout     string   `toml:"timeout,omitempty"`      // e.g. "10m"
 	Model       string   `toml:"model,omitempty"`        // model override for agent phases
@@ -138,6 +157,17 @@ type StepConfig struct {
 	Needs     []string `toml:"needs,omitempty"`     // predecessor steps (OR semantics: any one satisfies)
 	Condition string   `toml:"condition,omitempty"` // runtime gate, e.g. "verdict == request_changes"
 	Terminal  bool     `toml:"terminal,omitempty"`  // step enforces branch-lifecycle invariant on completion
+	// v3 action fields
+	Kind      string               `toml:"kind,omitempty"`      // op | dispatch | call
+	Action    string               `toml:"action,omitempty"`    // executor opcode: wizard.run, git.merge_to_main, etc.
+	When      *StructuredCondition `toml:"when,omitempty"`      // structured replacement for Condition
+	Workspace string               `toml:"workspace,omitempty"` // named workspace reference
+	With      map[string]string    `toml:"with,omitempty"`      // typed inputs for the action
+	Produces  []string             `toml:"produces,omitempty"`  // declared output keys
+	Retry     *RetryPolicy         `toml:"retry,omitempty"`     // optional retry policy
+	Resets    []string             `toml:"resets,omitempty"`    // steps to reset to pending after this step completes
+	Flow      string               `toml:"flow,omitempty"`      // for wizard.run: task-plan, implement, etc.
+	Graph     string               `toml:"graph,omitempty"`     // graph.run: nested graph formula name
 }
 
 // --- Parsing ---
@@ -169,7 +199,37 @@ func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
 	if f.Version != 3 {
 		return nil, fmt.Errorf("expected step-graph formula version 3, got %d", f.Version)
 	}
+	// Apply defaults to workspace declarations.
+	for name, ws := range f.Workspaces {
+		DefaultWorkspaceDecl(&ws)
+		f.Workspaces[name] = ws
+	}
+	if err := ValidateGraph(&f); err != nil {
+		return nil, fmt.Errorf("validate step-graph formula: %w", err)
+	}
 	return &f, nil
+}
+
+// ParseFormulaAny peeks at the version field and parses as V2 or V3.
+// Returns the parsed formula (either *FormulaV2 or *FormulaStepGraph),
+// the version number, and any error.
+func ParseFormulaAny(data []byte) (interface{}, int, error) {
+	var peek struct {
+		Version int `toml:"version"`
+	}
+	if err := toml.Unmarshal(data, &peek); err != nil {
+		return nil, 0, fmt.Errorf("peek version: %w", err)
+	}
+	switch peek.Version {
+	case 2:
+		f, err := ParseFormulaV2(data)
+		return f, 2, err
+	case 3:
+		f, err := ParseFormulaStepGraph(data)
+		return f, 3, err
+	default:
+		return nil, 0, fmt.Errorf("unsupported formula version %d", peek.Version)
+	}
 }
 
 // --- FormulaV2 methods ---
@@ -270,16 +330,41 @@ func LoadFormulaByName(name string) (*FormulaV2, error) {
 // LoadReviewPhaseFormula loads the embedded review-phase step-graph formula.
 // Used by the executor to pour the review molecule on entering the review phase.
 func LoadReviewPhaseFormula() (*FormulaStepGraph, error) {
-	data, err := embedded.Formulas.ReadFile("formulas/review-phase.formula.toml")
+	return LoadStepGraphByName("review-phase")
+}
+
+// LoadStepGraphByName loads a step-graph formula with layered resolution:
+//  1. On-disk (.beads/formulas/<name>.formula.toml) — user/project override
+//  2. Embedded default (compiled into binary)
+func LoadStepGraphByName(name string) (*FormulaStepGraph, error) {
+	if path, err := FindFormula(name); err == nil {
+		return LoadStepGraphFromFile(path)
+	}
+	return LoadEmbeddedStepGraph(name)
+}
+
+// LoadStepGraphFromFile reads and parses a step-graph formula from a TOML file.
+func LoadStepGraphFromFile(path string) (*FormulaStepGraph, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("embedded review-phase formula not found: %w", err)
+		return nil, fmt.Errorf("read step graph: %w", err)
+	}
+	return ParseFormulaStepGraph(data)
+}
+
+// LoadEmbeddedStepGraph loads a step-graph formula from the embedded defaults.
+func LoadEmbeddedStepGraph(name string) (*FormulaStepGraph, error) {
+	filename := "formulas/" + name + ".formula.toml"
+	data, err := embedded.Formulas.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("embedded step graph %q not found", name)
 	}
 	return ParseFormulaStepGraph(data)
 }
 
 // --- Resolution ---
 
-// DefaultFormulaMap maps bead types to default formula names.
+// DefaultFormulaMap maps bead types to default v2 formula names.
 // Can be overridden by tower config in the future.
 var DefaultFormulaMap = map[string]string{
 	"task":    "spire-agent-work",
@@ -287,6 +372,17 @@ var DefaultFormulaMap = map[string]string{
 	"epic":    "spire-epic",
 	"chore":   "spire-agent-work",
 	"feature": "spire-agent-work",
+}
+
+// DefaultV3FormulaMap maps bead types to default v3 formula names.
+// Used by ResolveAny when a v3 formula is explicitly requested via
+// the "formula-version:3" label on a bead.
+var DefaultV3FormulaMap = map[string]string{
+	"task":    "spire-agent-work-v3",
+	"bug":     "spire-bugfix-v3",
+	"epic":    "spire-epic-v3",
+	"chore":   "spire-agent-work-v3",
+	"feature": "spire-agent-work-v3",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.
@@ -349,4 +445,99 @@ func ResolveName(bead BeadInfo) string {
 
 	// 4. Default
 	return "spire-agent-work"
+}
+
+// WantsV3 returns true if the bead has a "formula-version:3" label,
+// indicating the executor should use the v3 formula variant.
+func WantsV3(bead BeadInfo) bool {
+	for _, l := range bead.Labels {
+		if l == "formula-version:3" {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveV3Name returns the v3 formula name for a bead without loading it.
+// Resolution order: formula:<name> label > v3 default map > fallback.
+func ResolveV3Name(bead BeadInfo) string {
+	// 1. Check bead labels for formula:<name> (explicit override)
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "formula:") {
+			return l[len("formula:"):]
+		}
+	}
+
+	// 2. Check repo-level formula via callback
+	if RepoFormulaNameFunc != nil {
+		if name := RepoFormulaNameFunc(bead.ID); name != "" {
+			return name
+		}
+	}
+
+	// 3. Check bead type -> v3 formula mapping
+	if name, ok := DefaultV3FormulaMap[bead.Type]; ok {
+		return name
+	}
+
+	// 4. Default
+	return "spire-agent-work-v3"
+}
+
+// ResolveV3 determines which v3 formula to use for a bead.
+// Returns nil and an error if no v3 formula can be found.
+func ResolveV3(bead BeadInfo) (*FormulaStepGraph, error) {
+	name := ResolveV3Name(bead)
+	g, err := LoadStepGraphByName(name)
+	if err != nil {
+		// Fall back to default v3 formula
+		if name != "spire-agent-work-v3" {
+			g, err = LoadStepGraphByName("spire-agent-work-v3")
+			if err != nil {
+				return nil, fmt.Errorf("resolve v3 formula for %s: %w", bead.ID, err)
+			}
+			return g, nil
+		}
+		return nil, fmt.Errorf("resolve v3 formula for %s: %w", bead.ID, err)
+	}
+	return g, nil
+}
+
+// ResolveAny determines which formula to use for a bead, supporting both
+// v2 and v3 formulas. It returns either a *FormulaV2 or *FormulaStepGraph,
+// the version number, and any error.
+//
+// Resolution order:
+//  1. If the bead has a "formula-version:3" label, resolve as v3.
+//  2. If the bead has a "formula:<name>" label naming a v3 formula, load it.
+//  3. Otherwise, fall back to v2 resolution (Resolve).
+func ResolveAny(bead BeadInfo) (interface{}, int, error) {
+	// Check if v3 is explicitly requested.
+	if WantsV3(bead) {
+		g, err := ResolveV3(bead)
+		if err != nil {
+			return nil, 0, err
+		}
+		return g, 3, nil
+	}
+
+	// Check if the formula:<name> label points to a v3 formula.
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "formula:") {
+			name := l[len("formula:"):]
+			// Try loading as v3 first (step-graph), then fall back to v2.
+			if g, err := LoadStepGraphByName(name); err == nil {
+				return g, 3, nil
+			}
+			// Fall through to v2 resolution.
+			break
+		}
+	}
+
+	// Default: v2 resolution.
+	f, err := Resolve(bead)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f, 2, nil
 }

@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/awell-health/spire/pkg/formula/embedded"
+	toml "github.com/pelletier/go-toml/v2"
+
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/formula/embedded"
 )
 
 // Publish copies a formula TOML file to the tower's .beads/formulas/ directory.
@@ -34,9 +36,24 @@ func Publish(name string, beadsDir string) (string, error) {
 		}
 	}
 
-	// Validate: parse to ensure well-formed TOML
-	if _, err := formula.ParseFormulaV2(data); err != nil {
-		return "", fmt.Errorf("formula %q is invalid: %w", name, err)
+	// Detect version and validate with the correct parser
+	var hdr struct {
+		Version int `toml:"version"`
+	}
+	if err := toml.Unmarshal(data, &hdr); err != nil {
+		return "", fmt.Errorf("formula %q: invalid TOML: %w", name, err)
+	}
+	switch hdr.Version {
+	case 2:
+		if _, err := formula.ParseFormulaV2(data); err != nil {
+			return "", fmt.Errorf("formula %q is invalid: %w", name, err)
+		}
+	case 3:
+		if _, err := formula.ParseFormulaStepGraph(data); err != nil {
+			return "", fmt.Errorf("formula %q is invalid: %w", name, err)
+		}
+	default:
+		return "", fmt.Errorf("formula %q: unsupported version %d", name, hdr.Version)
 	}
 
 	// Ensure target directory exists

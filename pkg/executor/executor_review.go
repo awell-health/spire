@@ -15,31 +15,44 @@ import (
 // formula-driven step graph walk. The review-phase formula declares the
 // step graph (sage-review, fix, arbiter, merge, discard) with compound
 // condition guards; the walker evaluates conditions at runtime.
-func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
-	// 1. Load the review step-graph formula.
-	graph, err := formula.LoadReviewPhaseFormula()
+func (e *Executor) executeReview(phase string, pc PhaseConfig) (*GraphResult, error) {
+	// 1. Load the review step-graph formula (formula-selectable via pc.Graph).
+	graphName := pc.Graph
+	if graphName == "" {
+		graphName = "review-phase"
+	}
+	graph, err := formula.LoadStepGraphByName(graphName)
 	if err != nil {
-		return fmt.Errorf("load review formula: %w", err)
+		return nil, fmt.Errorf("load review formula: %w", err)
 	}
 
 	// 2. Validate graph structure.
 	if err := formula.ValidateGraph(graph); err != nil {
-		return fmt.Errorf("invalid review formula: %w", err)
+		return nil, fmt.Errorf("invalid review formula: %w", err)
 	}
 
 	// 3. Pour sub-step beads (idempotent).
 	if err := e.ensureReviewSubStepBeads(graph); err != nil {
-		return fmt.Errorf("ensure review sub-step beads: %w", err)
+		return nil, fmt.Errorf("ensure review sub-step beads: %w", err)
 	}
 
 	// 4. Build initial condition context.
+	// Prefer max_review_rounds (v3 var name), fall back to max_rounds (v2 compat).
 	maxRounds := "3"
-	if v, ok := graph.Vars["max_rounds"]; ok && v.Default != "" {
+	if v, ok := graph.Vars["max_review_rounds"]; ok && v.Default != "" {
+		maxRounds = v.Default
+	} else if v, ok := graph.Vars["max_rounds"]; ok && v.Default != "" {
 		maxRounds = v.Default
 	}
 	ctx := map[string]string{
-		"round":      strconv.Itoa(e.state.ReviewRounds),
-		"max_rounds": maxRounds,
+		"round":             strconv.Itoa(e.state.ReviewRounds),
+		"review_round":      strconv.Itoa(e.state.ReviewRounds),
+		"max_review_rounds": maxRounds,
+		"max_rounds":        maxRounds, // v2 compat: conditions may use either name
+		// v3 structured condition paths — the review-phase formula uses
+		// steps.sage-review.completed_count and steps.X.outputs.Y in when clauses.
+		"steps.sage-review.completed_count": strconv.Itoa(e.state.ReviewRounds),
+		"vars.max_review_rounds":            maxRounds,
 	}
 
 	// 5. Walk loop.
@@ -55,15 +68,18 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 	if localCompleted["sage-review"] {
 		ctx["verdict"] = e.readVerdict()
 		ctx["arbiter_decision"] = e.readArbiterDecision()
+		// Sync to structured paths for v3 when conditions.
+		ctx["steps.sage-review.outputs.verdict"] = ctx["verdict"]
+		ctx["steps.arbiter.outputs.arbiter_decision"] = ctx["arbiter_decision"]
 	}
 
 	for {
 		next, err := formula.NextSteps(graph, localCompleted, ctx)
 		if err != nil {
-			return fmt.Errorf("review graph walk error: %w", err)
+			return nil, fmt.Errorf("review graph walk error: %w", err)
 		}
 		if len(next) == 0 {
-			return fmt.Errorf("review graph stuck: no next steps, completed=%v, ctx=%v", localCompleted, ctx)
+			return nil, fmt.Errorf("review graph stuck: no next steps, completed=%v, ctx=%v", localCompleted, ctx)
 		}
 
 		stepName := next[0] // review is sequential — take first ready step
@@ -71,33 +87,45 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 
 		// Activate sub-step bead. [Review fix #1: check error]
 		if err := e.activateReviewSubStep(stepName); err != nil {
-			return fmt.Errorf("activate review sub-step %s: %w", stepName, err)
+			return nil, fmt.Errorf("activate review sub-step %s: %w", stepName, err)
 		}
 
 		// Terminal steps: execute FIRST, then close on success.
 		// [Review fix #3: close after successful execution, not before]
 		if formula.IsTerminal(graph, stepName) {
 			if err := e.executeTerminalStep(stepName, stepCfg); err != nil {
-				return fmt.Errorf("terminal step %s failed: %w", stepName, err)
+				return nil, fmt.Errorf("terminal step %s failed: %w", stepName, err)
 			}
 			if err := e.closeReviewSubStep(stepName); err != nil {
-				return fmt.Errorf("close terminal sub-step %s: %w", stepName, err)
+				return nil, fmt.Errorf("close terminal sub-step %s: %w", stepName, err)
 			}
-			return nil
+			result := &GraphResult{
+				GraphName:    graphName,
+				TerminalStep: stepName,
+				Outputs: map[string]string{
+					"outcome":          stepName,
+					"verdict":          ctx["verdict"],
+					"arbiter_decision": ctx["arbiter_decision"],
+					"rounds_used":      ctx["round"],
+				},
+			}
+			return result, nil
 		}
 
 		// Dispatch agent for this step.
 		if err := e.dispatchReviewAgent(stepName, stepCfg, pc); err != nil {
-			return fmt.Errorf("review step %s failed: %w", stepName, err)
+			return nil, fmt.Errorf("review step %s failed: %w", stepName, err)
 		}
 
-		// Read results and update context.
+		// Read results and update context (both bare and structured paths).
 		ctx["verdict"] = e.readVerdict()
 		ctx["arbiter_decision"] = e.readArbiterDecision()
+		ctx["steps.sage-review.outputs.verdict"] = ctx["verdict"]
+		ctx["steps.arbiter.outputs.arbiter_decision"] = ctx["arbiter_decision"]
 
 		// Close sub-step bead. [Review fix #2: check error]
 		if err := e.closeReviewSubStep(stepName); err != nil {
-			return fmt.Errorf("close review sub-step %s: %w", stepName, err)
+			return nil, fmt.Errorf("close review sub-step %s: %w", stepName, err)
 		}
 
 		// Mark step completed in local tracker.
@@ -107,15 +135,17 @@ func (e *Executor) executeReview(phase string, pc PhaseConfig) error {
 		// review cycle, then increment the round counter and persist.
 		if stepName == "fix" {
 			if err := e.resetReviewSubStep("sage-review"); err != nil {
-				return fmt.Errorf("reset sage-review sub-step: %w", err)
+				return nil, fmt.Errorf("reset sage-review sub-step: %w", err)
 			}
 			delete(localCompleted, "sage-review")
 			if err := e.resetReviewSubStep("fix"); err != nil {
-				return fmt.Errorf("reset fix sub-step: %w", err)
+				return nil, fmt.Errorf("reset fix sub-step: %w", err)
 			}
 			delete(localCompleted, "fix")
 			e.state.ReviewRounds++
 			ctx["round"] = strconv.Itoa(e.state.ReviewRounds)
+			ctx["review_round"] = strconv.Itoa(e.state.ReviewRounds)
+			ctx["steps.sage-review.completed_count"] = strconv.Itoa(e.state.ReviewRounds)
 			e.saveState()
 		}
 	}
@@ -185,7 +215,9 @@ func (e *Executor) dispatchSageReview(cfg formula.StepConfig, pc PhaseConfig) er
 }
 
 // dispatchFix spawns an apprentice to address review feedback.
-// [Review fix #4: supports both wave-style and direct dispatch]
+// Workspace-declaration-driven: if the step declares a workspace or the
+// executor has a persisted staging worktree, fixes run in staging. Otherwise
+// the fix runs via a subprocess on a feature branch.
 func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 	implPC, ok := e.formula.Phases["implement"]
 	if !ok {
@@ -198,11 +230,15 @@ func (e *Executor) dispatchFix(cfg formula.StepConfig, pc PhaseConfig) error {
 		e.state.Phase = "review"
 	}()
 
-	// When the executor has a persisted staging worktree, run the fix directly
-	// in it rather than spawning a subprocess that branches from main. Check
-	// WorktreeDir (persisted state), not e.stagingWt (in-memory pointer) —
-	// on a resumed executor, e.stagingWt may be nil even though the worktree
-	// exists on disk. fixInStaging hydrates it via ensureStagingWorktree().
+	// Workspace-declaration-driven routing: if the step declares a workspace,
+	// resolve it and fix in that workspace. This replaces the previous
+	// state-sniffing approach (checking e.state.WorktreeDir).
+	if cfg.Workspace != "" {
+		return e.fixInStaging(cfg, implPC)
+	}
+
+	// Backward compat: if no workspace declared but a staging worktree exists
+	// in persisted state, use it.
 	if e.state.WorktreeDir != "" {
 		return e.fixInStaging(cfg, implPC)
 	}
