@@ -20,4 +20,9 @@ pr:
 context:
   - CLAUDE.md
   - SPIRE.md
-  - docs/superpowers/specs/
+  - docs/ZFC.md
+  - pkg/executor/README.md
+  - pkg/formula/README.md
+  - pkg/wizard/README.md
+  - pkg/git/README.md
+  - pkg/workshop/README.md

@@ -193,7 +193,15 @@ agent:
 branch:
   base: main
   pattern: "feat/{bead-id}"
+
+context:
+  - CLAUDE.md
+  - docs/ZFC.md
+  - pkg/executor/README.md
+  - pkg/formula/README.md
 ```
+
+The `context` list declares files that every agent must read before starting work — regardless of which formula is running. This is how you enforce repo-wide required reading (boundary docs, architecture constraints, coding standards) without embedding it in the formula. Falls back to `["CLAUDE.md"]` if omitted.
 
 `pr:` settings still exist in the schema for GitHub-oriented workflows, but the default local executor path lands approved work directly onto `branch.base`.
 
