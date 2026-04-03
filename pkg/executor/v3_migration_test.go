@@ -174,14 +174,14 @@ func TestMigration_V3FormulaResolution(t *testing.T) {
 		wantVersion int
 	}{
 		{
-			name:        "default task resolves to v2",
+			name:        "default task resolves to v3",
 			bead:        formula.BeadInfo{ID: "spi-test", Type: "task"},
-			wantVersion: 2,
+			wantVersion: 3,
 		},
 		{
-			name:        "formula-version:3 label resolves to v3",
-			bead:        formula.BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula-version:3"}},
-			wantVersion: 3,
+			name:        "formula-version:2 label resolves to v2",
+			bead:        formula.BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula-version:2"}},
+			wantVersion: 2,
 		},
 		{
 			name:        "explicit v3 formula label resolves to v3",
@@ -194,24 +194,24 @@ func TestMigration_V3FormulaResolution(t *testing.T) {
 			wantVersion: 2,
 		},
 		{
-			name:        "bug type resolves to v2 by default",
+			name:        "bug type resolves to v3 by default",
 			bead:        formula.BeadInfo{ID: "spi-test", Type: "bug"},
-			wantVersion: 2,
-		},
-		{
-			name:        "bug type with v3 label resolves to v3",
-			bead:        formula.BeadInfo{ID: "spi-test", Type: "bug", Labels: []string{"formula-version:3"}},
 			wantVersion: 3,
 		},
 		{
-			name:        "epic type resolves to v2 by default",
+			name:        "bug type with v2 label resolves to v2",
+			bead:        formula.BeadInfo{ID: "spi-test", Type: "bug", Labels: []string{"formula-version:2"}},
+			wantVersion: 2,
+		},
+		{
+			name:        "epic type resolves to v3 by default",
 			bead:        formula.BeadInfo{ID: "spi-test", Type: "epic"},
-			wantVersion: 2,
+			wantVersion: 3,
 		},
 		{
-			name:        "epic type with v3 label resolves to v3",
-			bead:        formula.BeadInfo{ID: "spi-test", Type: "epic", Labels: []string{"formula-version:3"}},
-			wantVersion: 3,
+			name:        "epic type with v2 label resolves to v2",
+			bead:        formula.BeadInfo{ID: "spi-test", Type: "epic", Labels: []string{"formula-version:2"}},
+			wantVersion: 2,
 		},
 	}
 

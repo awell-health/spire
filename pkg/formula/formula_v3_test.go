@@ -41,26 +41,8 @@ func TestLoadStepGraphByName_FallsBackToEmbedded(t *testing.T) {
 	}
 }
 
-func TestResolveAny_DefaultV2(t *testing.T) {
+func TestResolveAny_DefaultV3(t *testing.T) {
 	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: nil}
-	f, v, err := ResolveAny(bead)
-	if err != nil {
-		t.Fatalf("ResolveAny: %v", err)
-	}
-	if v != 2 {
-		t.Errorf("expected version 2, got %d", v)
-	}
-	fv2, ok := f.(*FormulaV2)
-	if !ok {
-		t.Fatalf("expected *FormulaV2, got %T", f)
-	}
-	if fv2.Name != "spire-agent-work" {
-		t.Errorf("expected spire-agent-work, got %s", fv2.Name)
-	}
-}
-
-func TestResolveAny_V3Label(t *testing.T) {
-	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula-version:3"}}
 	f, v, err := ResolveAny(bead)
 	if err != nil {
 		t.Fatalf("ResolveAny: %v", err)
@@ -74,6 +56,24 @@ func TestResolveAny_V3Label(t *testing.T) {
 	}
 	if fv3.Name != "spire-agent-work-v3" {
 		t.Errorf("expected spire-agent-work-v3, got %s", fv3.Name)
+	}
+}
+
+func TestResolveAny_V2Label(t *testing.T) {
+	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula-version:2"}}
+	f, v, err := ResolveAny(bead)
+	if err != nil {
+		t.Fatalf("ResolveAny: %v", err)
+	}
+	if v != 2 {
+		t.Errorf("expected version 2, got %d", v)
+	}
+	fv2, ok := f.(*FormulaV2)
+	if !ok {
+		t.Fatalf("expected *FormulaV2, got %T", f)
+	}
+	if fv2.Name != "spire-agent-work" {
+		t.Errorf("expected spire-agent-work, got %s", fv2.Name)
 	}
 }
 
@@ -139,18 +139,18 @@ func TestResolveV3_ByType(t *testing.T) {
 	}
 }
 
-func TestWantsV3(t *testing.T) {
-	if WantsV3(BeadInfo{Labels: nil}) {
-		t.Error("nil labels should not want v3")
+func TestWantsV2(t *testing.T) {
+	if WantsV2(BeadInfo{Labels: nil}) {
+		t.Error("nil labels should not want v2")
 	}
-	if WantsV3(BeadInfo{Labels: []string{"something-else"}}) {
-		t.Error("unrelated label should not want v3")
+	if WantsV2(BeadInfo{Labels: []string{"something-else"}}) {
+		t.Error("unrelated label should not want v2")
 	}
-	if !WantsV3(BeadInfo{Labels: []string{"formula-version:3"}}) {
-		t.Error("formula-version:3 label should want v3")
+	if !WantsV2(BeadInfo{Labels: []string{"formula-version:2"}}) {
+		t.Error("formula-version:2 label should want v2")
 	}
-	if !WantsV3(BeadInfo{Labels: []string{"other", "formula-version:3", "more"}}) {
-		t.Error("formula-version:3 among other labels should want v3")
+	if WantsV2(BeadInfo{Labels: []string{"formula-version:3"}}) {
+		t.Error("formula-version:3 label should not want v2")
 	}
 }
 

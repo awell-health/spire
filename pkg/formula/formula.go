@@ -447,11 +447,11 @@ func ResolveName(bead BeadInfo) string {
 	return "spire-agent-work"
 }
 
-// WantsV3 returns true if the bead has a "formula-version:3" label,
-// indicating the executor should use the v3 formula variant.
-func WantsV3(bead BeadInfo) bool {
+// WantsV2 returns true if the bead has a "formula-version:2" label,
+// explicitly requesting the legacy v2 phase pipeline.
+func WantsV2(bead BeadInfo) bool {
 	for _, l := range bead.Labels {
-		if l == "formula-version:3" {
+		if l == "formula-version:2" {
 			return true
 		}
 	}
@@ -508,36 +508,38 @@ func ResolveV3(bead BeadInfo) (*FormulaStepGraph, error) {
 // the version number, and any error.
 //
 // Resolution order:
-//  1. If the bead has a "formula-version:3" label, resolve as v3.
-//  2. If the bead has a "formula:<name>" label naming a v3 formula, load it.
-//  3. Otherwise, fall back to v2 resolution (Resolve).
+//  1. If the bead has a "formula-version:2" label, resolve as v2 (legacy opt-in).
+//  2. If the bead has a "formula:<name>" label, try v3 then v2.
+//  3. Default: v3 resolution.
 func ResolveAny(bead BeadInfo) (interface{}, int, error) {
-	// Check if v3 is explicitly requested.
-	if WantsV3(bead) {
-		g, err := ResolveV3(bead)
+	// Check if v2 is explicitly requested (legacy opt-in).
+	if WantsV2(bead) {
+		f, err := Resolve(bead)
 		if err != nil {
 			return nil, 0, err
 		}
-		return g, 3, nil
+		return f, 2, nil
 	}
 
-	// Check if the formula:<name> label points to a v3 formula.
+	// Check if the formula:<name> label points to a specific formula.
 	for _, l := range bead.Labels {
 		if strings.HasPrefix(l, "formula:") {
 			name := l[len("formula:"):]
-			// Try loading as v3 first (step-graph), then fall back to v2.
+			// Try v3 first, fall back to v2.
 			if g, err := LoadStepGraphByName(name); err == nil {
 				return g, 3, nil
 			}
-			// Fall through to v2 resolution.
+			if f, err := LoadFormulaByName(name); err == nil {
+				return f, 2, nil
+			}
 			break
 		}
 	}
 
-	// Default: v2 resolution.
-	f, err := Resolve(bead)
+	// Default: v3 resolution.
+	g, err := ResolveV3(bead)
 	if err != nil {
 		return nil, 0, err
 	}
-	return f, 2, nil
+	return g, 3, nil
 }
