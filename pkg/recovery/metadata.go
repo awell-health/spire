@@ -5,9 +5,10 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
 
-// Metadata key constants — single source of truth for all recovery metadata labels.
+// Metadata key constants — single source of truth for all recovery metadata keys.
 const (
 	KeyFailureClass       = "failure_class"
 	KeyFailureSignature   = "failure_signature"
@@ -89,36 +90,29 @@ func (r RecoveryMetadata) ToMap() map[string]string {
 	return m
 }
 
-// Apply writes all non-zero RecoveryMetadata fields onto the bead.
+// Apply writes all non-zero RecoveryMetadata fields onto the bead's issue
+// metadata via the store metadata API.
 func (r RecoveryMetadata) Apply(beadID string) error {
 	return store.SetBeadMetadataMap(beadID, r.ToMap())
 }
 
-// GetRecoveryLearnings returns closed recovery beads that are dependents of
-// parentBeadID (via "caused-by" or "recovery-for" dep for backward compat)
-// and have reusable=true. Results are ordered by resolved_at desc (most recent first).
-func GetRecoveryLearnings(parentBeadID string) ([]store.Bead, error) {
-	deps, err := store.GetDependentsWithMeta(parentBeadID)
+// GetRecoveryLearnings returns closed recovery beads whose metadata identifies
+// them as reusable learnings for sourceBeadID. The query uses structured
+// metadata filters (source_bead + reusable) rather than dependency traversal.
+// Results are ordered by resolved_at desc (most recent first).
+func GetRecoveryLearnings(sourceBeadID string) ([]store.Bead, error) {
+	closedStatus := store.StatusPtr(beads.StatusClosed)
+	learnings, err := store.ListBeadsByMetadata(
+		map[string]string{
+			KeySourceBead: sourceBeadID,
+			KeyReusable:   "true",
+		},
+		func(f *beads.IssueFilter) {
+			f.Status = closedStatus
+		},
+	)
 	if err != nil {
 		return nil, err
-	}
-	var learnings []store.Bead
-	for _, dep := range deps {
-		depType := string(dep.DependencyType)
-		if depType != "caused-by" && depType != "recovery-for" {
-			continue
-		}
-		if string(dep.Status) != "closed" {
-			continue
-		}
-		b, err := store.GetBead(dep.ID)
-		if err != nil {
-			continue
-		}
-		if b.Meta(KeyReusable) != "true" {
-			continue
-		}
-		learnings = append(learnings, b)
 	}
 	sort.Slice(learnings, func(i, j int) bool {
 		ti, _ := time.Parse(time.RFC3339, learnings[i].Meta(KeyResolvedAt))
@@ -129,16 +123,30 @@ func GetRecoveryLearnings(parentBeadID string) ([]store.Bead, error) {
 }
 
 // FindMatchingLearning returns the most recent closed recovery bead for
-// parentBeadID whose failure_class matches fc, or nil if none found.
-func FindMatchingLearning(parentBeadID string, fc FailureClass) (*store.Bead, error) {
-	learnings, err := GetRecoveryLearnings(parentBeadID)
+// sourceBeadID whose failure_class matches fc, or nil if none found.
+func FindMatchingLearning(sourceBeadID string, fc FailureClass) (*store.Bead, error) {
+	closedStatus := store.StatusPtr(beads.StatusClosed)
+	learnings, err := store.ListBeadsByMetadata(
+		map[string]string{
+			KeySourceBead:   sourceBeadID,
+			KeyReusable:     "true",
+			KeyFailureClass: string(fc),
+		},
+		func(f *beads.IssueFilter) {
+			f.Status = closedStatus
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
-	for i := range learnings {
-		if learnings[i].Meta(KeyFailureClass) == string(fc) {
-			return &learnings[i], nil
-		}
+	if len(learnings) == 0 {
+		return nil, nil
 	}
-	return nil, nil
+	// Sort by resolved_at desc and return the most recent.
+	sort.Slice(learnings, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, learnings[i].Meta(KeyResolvedAt))
+		tj, _ := time.Parse(time.RFC3339, learnings[j].Meta(KeyResolvedAt))
+		return ti.After(tj)
+	})
+	return &learnings[0], nil
 }

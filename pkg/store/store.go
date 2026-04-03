@@ -81,7 +81,7 @@ func IssueToBead(issue *beads.Issue) Bead {
 		Labels:      issue.Labels,
 		Parent:      parent,
 		UpdatedAt:   issue.UpdatedAt.Format(time.RFC3339),
-		Metadata:    metadataFromLabels(issue.Labels),
+		Metadata:    metadataFromJSON(issue.Metadata),
 	}
 }
 
@@ -123,7 +123,7 @@ func IssueToBoardBead(issue *beads.Issue) BoardBead {
 		Labels:       issue.Labels,
 		Parent:       parent,
 		Dependencies: deps,
-		Metadata:     metadataFromLabels(issue.Labels),
+		Metadata:     metadataFromJSON(issue.Metadata),
 	}
 }
 

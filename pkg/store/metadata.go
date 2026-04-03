@@ -1,76 +1,114 @@
 package store
 
-import "strings"
+import (
+	"encoding/json"
+	"fmt"
 
-// recoveryMetadataKeys is the set of label-prefix keys treated as structured metadata.
-// Extend this set as new metadata keys are defined.
-var recoveryMetadataKeys = map[string]bool{
-	"failure_class":       true,
-	"failure_signature":   true,
-	"source_bead":         true,
-	"source_formula":      true,
-	"source_step":         true,
-	"resolution_kind":     true,
-	"verification_status": true,
-	"learning_key":        true,
-	"reusable":            true,
-	"resolved_at":         true,
-}
+	"github.com/steveyegge/beads"
+)
 
-// metadataFromLabels extracts structured key:value labels into a map.
-// Only keys in recoveryMetadataKeys are included.
-func metadataFromLabels(labels []string) map[string]string {
-	m := make(map[string]string)
-	for _, l := range labels {
-		idx := strings.Index(l, ":")
-		if idx < 0 {
-			continue
-		}
-		key := l[:idx]
-		if recoveryMetadataKeys[key] {
-			m[key] = l[idx+1:]
-		}
+// metadataFromJSON decodes a json.RawMessage into a flat string map.
+// Returns nil if the input is nil, empty, or not a JSON object.
+func metadataFromJSON(raw json.RawMessage) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
 	}
 	if len(m) == 0 {
 		return nil
 	}
-	return m
+	result := make(map[string]string, len(m))
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			result[k] = val
+		case bool:
+			if val {
+				result[k] = "true"
+			} else {
+				result[k] = "false"
+			}
+		case float64:
+			result[k] = fmt.Sprintf("%v", val)
+		case nil:
+			// skip nil values
+		default:
+			// For complex types, marshal back to JSON string
+			b, err := json.Marshal(val)
+			if err == nil {
+				result[k] = string(b)
+			}
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// metadataToJSON encodes a flat string map into a json.RawMessage.
+// Returns nil if the map is nil or empty.
+func metadataToJSON(m map[string]string) json.RawMessage {
+	if len(m) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // GetBeadMetadata returns structured metadata for beadID.
-// It fetches the bead and extracts labels whose key is in recoveryMetadataKeys.
 func GetBeadMetadata(id string) (map[string]string, error) {
 	b, err := GetBead(id)
 	if err != nil {
 		return nil, err
 	}
-	return metadataFromLabels(b.Labels), nil
+	return b.Metadata, nil
 }
 
-// SetBeadMetadata upserts a single structured metadata key on a bead.
-// It removes any existing label with the same prefix, then writes key:value.
+// SetBeadMetadata upserts a single metadata key on a bead via the issue
+// metadata JSON field.
 func SetBeadMetadata(id, key, value string) error {
-	b, err := GetBead(id)
+	return SetBeadMetadataMap(id, map[string]string{key: value})
+}
+
+// SetBeadMetadataMap merges the given key-value pairs into the bead's issue
+// metadata and writes the result via UpdateIssue. Existing keys not in m are
+// preserved.
+func SetBeadMetadataMap(id string, m map[string]string) error {
+	if len(m) == 0 {
+		return nil
+	}
+	existing, err := GetBeadMetadata(id)
 	if err != nil {
 		return err
 	}
-	for _, l := range b.Labels {
-		if strings.HasPrefix(l, key+":") {
-			if rerr := RemoveLabel(id, l); rerr != nil {
-				return rerr
-			}
-			break
-		}
+	merged := make(map[string]string)
+	for k, v := range existing {
+		merged[k] = v
 	}
-	return AddLabel(id, key+":"+value)
+	for k, v := range m {
+		merged[k] = v
+	}
+	raw := metadataToJSON(merged)
+	return UpdateBead(id, map[string]interface{}{"metadata": raw})
 }
 
-// SetBeadMetadataMap calls SetBeadMetadata for each key in m.
-func SetBeadMetadataMap(id string, m map[string]string) error {
-	for k, v := range m {
-		if err := SetBeadMetadata(id, k, v); err != nil {
-			return err
-		}
+// ListBeadsByMetadata searches for beads whose issue metadata matches the
+// given key-value pairs (AND semantics). The optional modFn callbacks allow
+// callers to set additional filter fields (status, type, etc.) before the
+// query executes.
+func ListBeadsByMetadata(meta map[string]string, modFn ...func(*beads.IssueFilter)) ([]Bead, error) {
+	filter := beads.IssueFilter{
+		MetadataFields: meta,
 	}
-	return nil
+	for _, fn := range modFn {
+		fn(&filter)
+	}
+	return ListBeads(filter)
 }
