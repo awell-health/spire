@@ -631,8 +631,10 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 		return ActionResult{Outputs: outputs, Error: runErr}
 	}
 
-	// Terminal success — remove persisted sub-state so it doesn't linger.
-	RemoveGraphState(subAgentName, e.deps.ConfigDir)
+	// Do NOT remove nested state here — the parent has not yet durably saved
+	// this step as completed. If the process dies between here and the parent
+	// save, the nested progress would be lost. The parent interpreter cleans
+	// up nested state files after its own save (crash-safe ordering).
 
 	return ActionResult{Outputs: outputs}
 }
