@@ -32,6 +32,7 @@ var actionRegistry = map[string]ActionHandler{
 	"verify.run":            actionVerifyRun,
 	"git.merge_to_main":     actionMergeToMain,
 	"bead.finish":           actionBeadFinish,
+	"noop":                  actionNoop,
 }
 
 func init() {
@@ -103,7 +104,19 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
-		return wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs)
+		result := wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs)
+		// Promote the review verdict into state vars and outputs so review-phase
+		// conditions (bare "verdict == approve") can route on it. The generic
+		// result field from wizard-review carries the verdict.
+		verdict := result.Outputs["result"]
+		if verdict == "approve" || verdict == "request_changes" {
+			result.Outputs["verdict"] = verdict
+			state.Vars["verdict"] = verdict
+		}
+		// Increment review_round counter for round-based condition routing.
+		state.Counters["review_round"]++
+		state.Vars["review_round"] = fmt.Sprintf("%d", state.Counters["review_round"])
+		return result
 	case "review-fix":
 		extraArgs := []string{"--review-fix", "--apprentice"}
 		if wsDir != "" {
@@ -209,6 +222,12 @@ func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state 
 		}
 	}
 
+	// Promote arbiter_decision into state vars so review-phase conditions
+	// (bare "arbiter_decision == merge") can route on it.
+	if decision != "" {
+		state.Vars["arbiter_decision"] = decision
+	}
+
 	return ActionResult{Outputs: map[string]string{
 		"arbiter_decision": decision,
 		"result":           "escalated",
@@ -292,6 +311,13 @@ func actionCheckDesignLinked(e *Executor, stepName string, step StepConfig, stat
 // Reads With parameters:
 //
 //	status: "closed" | "done" | "wontfix" | "discard" (default: "closed")
+// actionNoop is a no-op action that completes immediately with success.
+// Used for terminal signal steps in nested graphs (e.g. review-phase merge/discard
+// terminals) where the parent graph is responsible for the real side effects.
+func actionNoop(_ *Executor, _ string, _ StepConfig, _ *GraphState) ActionResult {
+	return ActionResult{Outputs: map[string]string{"status": "done"}}
+}
+
 //	outcome: alias for status (used by some formulas)
 //
 // For epic formulas, also closes orphan subtask beads.
@@ -361,8 +387,11 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 //
 // Does NOT close beads — that's bead.finish.
 func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	// Resolve workspace: prefer step-declared workspace, fall back to staging worktree.
+	// Resolve workspace and determine the actual branch being merged.
+	// When a step declares a workspace, use that workspace's branch for merge
+	// operations and cleanup. Fall back to state.StagingBranch for legacy paths.
 	var stagingWt *spgit.StagingWorktree
+	mergeBranch := state.StagingBranch // default for legacy/unresolved
 	if step.Workspace != "" {
 		dir, wsErr := e.resolveGraphWorkspace(step.Workspace, state)
 		if wsErr != nil {
@@ -370,6 +399,7 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 		}
 		ws := state.Workspaces[step.Workspace]
 		stagingWt = spgit.ResumeStagingWorktree(state.RepoPath, dir, ws.Branch, ws.BaseBranch, e.log)
+		mergeBranch = ws.Branch
 	} else {
 		var err error
 		stagingWt, err = e.ensureGraphStagingWorktree(state)
@@ -393,18 +423,18 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 	if docPatterns := step.With["doc_patterns"]; docPatterns != "" {
 		patterns := strings.Split(docPatterns, ",")
 		pc := PhaseConfig{DocPatterns: patterns, Model: step.Model}
-		if docErr := e.reviewDocsForStaleness(stagingWt.Dir, state.StagingBranch, state.BaseBranch, pc); docErr != nil {
+		if docErr := e.reviewDocsForStaleness(stagingWt.Dir, mergeBranch, state.BaseBranch, pc); docErr != nil {
 			e.log("warning: doc review: %s", docErr)
 		}
 	}
 
-	// Merge staging -> main.
+	// Merge workspace branch -> main.
 	mergeEnv := os.Environ()
 	if tower, tErr := e.deps.ActiveTowerConfig(); tErr == nil && tower != nil {
 		mergeEnv = e.deps.ArchmageGitEnv(tower)
 	}
 
-	e.log("merging %s -> %s", state.StagingBranch, state.BaseBranch)
+	e.log("merging %s -> %s", mergeBranch, state.BaseBranch)
 	if mergeErr := stagingWt.MergeToMain(state.BaseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
 		return ActionResult{Error: fmt.Errorf("merge to main: %w", mergeErr)}
 	}
@@ -415,9 +445,9 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 		return ActionResult{Error: fmt.Errorf("push %s: %w", state.BaseBranch, pushErr)}
 	}
 
-	// Clean up branches (best-effort).
-	rc.DeleteBranch(state.StagingBranch)
-	rc.DeleteRemoteBranch("origin", state.StagingBranch)
+	// Clean up the actual branch that was merged (best-effort).
+	rc.DeleteBranch(mergeBranch)
+	rc.DeleteRemoteBranch("origin", mergeBranch)
 
 	return ActionResult{Outputs: map[string]string{"merged": "true"}}
 }

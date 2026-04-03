@@ -78,28 +78,30 @@ title = "Arbiter: break review deadlock"
 timeout = "10m"
 model = "claude-opus-4-6"
 
-# Step 4a: Merge. Terminal — branch merged to main and deleted.
-# Fires when sage approves OR arbiter force-approves OR arbiter splits (partial merge).
+# Step 4a: Merge signal. Terminal — signals that review approved the work.
+# Uses noop because review-phase is a nested sub-graph: the parent formula
+# (spire-agent-work-v3, spire-epic-v3) is responsible for the real merge via
+# its own git.merge_to_main step, keyed on steps.review.outputs.outcome == "merge".
+# The v2 review walker ignores the action field and dispatches via executeTerminalStep.
 [steps.merge]
 kind = "op"
-action = "git.merge_to_main"
-description = "Merge staging to main — terminal: branch merged and deleted"
+action = "noop"
+description = "Signal merge outcome — parent graph performs the actual merge"
 needs = ["sage-review", "arbiter"]
 condition = "verdict == approve || arbiter_decision == merge || arbiter_decision == split"
 terminal = true
 title = "Merge to main"
 
-# Step 4b: Discard. Terminal — branch deleted without merging.
-# Fires only when arbiter explicitly discards. Bead closed as wontfix.
+# Step 4b: Discard signal. Terminal — signals that arbiter discarded the work.
+# Uses noop for the same reason as merge: parent graph handles the real bead.finish.
 [steps.discard]
 kind = "op"
-action = "bead.finish"
-description = "Delete branch without merging — terminal: branch deleted, bead closed wontfix"
+action = "noop"
+description = "Signal discard outcome — parent graph performs the actual discard"
 needs = ["arbiter"]
 condition = "arbiter_decision == discard"
 terminal = true
 title = "Discard branch"
-[steps.discard.with]
 status = "discard"
 
 # --- Typed outputs ---

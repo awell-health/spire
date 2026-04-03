@@ -17,6 +17,7 @@ const (
 	OpcodeGraphRun              = "graph.run"
 	OpcodeGitMergeToMain        = "git.merge_to_main"
 	OpcodeBeadFinish            = "bead.finish"
+	OpcodeNoop                  = "noop"
 )
 
 // ValidOpcodes is the set of recognized executor opcodes.
@@ -29,6 +30,7 @@ var ValidOpcodes = map[string]bool{
 	OpcodeGraphRun:             true,
 	OpcodeGitMergeToMain:       true,
 	OpcodeBeadFinish:           true,
+	OpcodeNoop:                 true,
 }
 
 // ValidOpcode returns true if the opcode is in the recognized set.
