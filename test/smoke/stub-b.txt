@@ -1,0 +1,3 @@
+Stub task B (spi-5k7hh.2) — processed by v3 runtime pipeline.
+This file exists to verify that the v3 epic workflow can process
+stub subtasks end-to-end (plan -> implement -> review -> merge).
