@@ -121,7 +121,10 @@ func CmdWizardReview(args []string, deps *Deps) error {
 		return fmt.Errorf("get diff: %w", err)
 	}
 	if diff == "" {
-		log("no diff found, nothing to review")
+		log("no diff found — approving (nothing to review)")
+		// Write an explicit approve verdict so v3 review graphs can route.
+		reviewElapsed := time.Since(startedAt)
+		WizardWriteResult(reviewerName, beadID, "approve", "", "", reviewElapsed, ClaudeMetrics{}, deps, log)
 		return nil
 	}
 
