@@ -483,6 +483,10 @@ func TestResolveBranchState_DefaultStagingBranch(t *testing.T) {
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return dir, "https://example.com/repo.git", "main", nil
 		},
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string { return "" },
 	}
 
 	f := &formula.FormulaV2{
@@ -531,6 +535,10 @@ func TestResolveBranchState_CustomStagingBranch(t *testing.T) {
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return dir, "", "main", nil
 		},
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string { return "" },
 	}
 
 	f := &formula.FormulaV2{
@@ -574,6 +582,10 @@ func TestResolveBranchState_StagingBranchOnNonImplementPhase(t *testing.T) {
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return dir, "", "develop", nil
 		},
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string { return "" },
 	}
 
 	f := &formula.FormulaV2{
@@ -675,6 +687,10 @@ func TestResolveBranchState_EmptyRepoPathDefaults(t *testing.T) {
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return "", "", "main", nil // empty repo/url, default base branch (matches real ResolveRepo)
 		},
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string { return "" },
 	}
 
 	f := &formula.FormulaV2{
