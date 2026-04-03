@@ -324,6 +324,146 @@ func TestCleanupInternalDAGChildren_HardDeletesInternalArtifacts(t *testing.T) {
 	}
 }
 
+func TestDeleteInternalDAGBeadsRecursive_DeletesAllInternalAndDescendants(t *testing.T) {
+	origDelete := storeDeleteBeadFunc
+	origGetChildren := storeGetChildrenFunc
+	defer func() {
+		storeDeleteBeadFunc = origDelete
+		storeGetChildrenFunc = origGetChildren
+	}()
+
+	var deletedIDs []string
+	storeDeleteBeadFunc = func(id string) error {
+		deletedIDs = append(deletedIDs, id)
+		return nil
+	}
+
+	// Simulate nested children: step bead has a nested attempt child.
+	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+		if parentID == "spi-step" {
+			return []Bead{
+				{ID: "spi-nested-attempt", Title: "attempt: nested", Labels: []string{"attempt"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	children := []Bead{
+		{ID: "spi-step", Title: "step:implement", Status: "closed", Labels: []string{"workflow-step", "step:implement"}},
+		{ID: "spi-attempt", Title: "attempt: wizard", Status: "in_progress", Labels: []string{"attempt", "agent:wizard"}},
+		{ID: "spi-review", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "round:1"}},
+		{ID: "spi-task", Title: "real subtask", Status: "open"},
+	}
+
+	counts := deleteInternalDAGBeadsRecursive(children)
+
+	// The nested attempt under spi-step should be deleted first (bottom-up),
+	// then the step, attempt, and review-round beads.
+	if len(deletedIDs) != 4 {
+		t.Fatalf("deleted IDs = %v, want 4 deletions", deletedIDs)
+	}
+	// spi-nested-attempt must come before spi-step (bottom-up ordering).
+	nestedIdx, stepIdx := -1, -1
+	for i, id := range deletedIDs {
+		if id == "spi-nested-attempt" {
+			nestedIdx = i
+		}
+		if id == "spi-step" {
+			stepIdx = i
+		}
+	}
+	if nestedIdx == -1 || stepIdx == -1 {
+		t.Fatalf("expected both spi-nested-attempt and spi-step in deleted IDs: %v", deletedIDs)
+	}
+	if nestedIdx >= stepIdx {
+		t.Errorf("nested attempt (idx %d) should be deleted before step (idx %d)", nestedIdx, stepIdx)
+	}
+
+	if counts.DeletedSteps != 1 || counts.DeletedAttempts != 1 || counts.DeletedReviewRounds != 1 {
+		t.Fatalf("unexpected delete counts: %+v", counts)
+	}
+}
+
+func TestDeleteInternalDAGBeadsRecursive_SkipsRealSubtasks(t *testing.T) {
+	origDelete := storeDeleteBeadFunc
+	origGetChildren := storeGetChildrenFunc
+	defer func() {
+		storeDeleteBeadFunc = origDelete
+		storeGetChildrenFunc = origGetChildren
+	}()
+
+	var deletedIDs []string
+	storeDeleteBeadFunc = func(id string) error {
+		deletedIDs = append(deletedIDs, id)
+		return nil
+	}
+	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
+		return nil, nil
+	}
+
+	children := []Bead{
+		{ID: "spi-task1", Title: "real subtask 1", Status: "in_progress"},
+		{ID: "spi-task2", Title: "real subtask 2", Status: "open"},
+	}
+
+	counts := deleteInternalDAGBeadsRecursive(children)
+
+	if len(deletedIDs) != 0 {
+		t.Fatalf("deleted IDs = %v, want none (real subtasks should be skipped)", deletedIDs)
+	}
+	if counts.DeletedSteps != 0 || counts.DeletedAttempts != 0 || counts.DeletedReviewRounds != 0 {
+		t.Fatalf("unexpected delete counts: %+v", counts)
+	}
+}
+
+func TestIsProtectedByLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		bead   Bead
+		expect bool
+	}{
+		{
+			name:   "recovery-bead label",
+			bead:   Bead{ID: "spi-rec", Labels: []string{"recovery-bead", "type:recovery"}},
+			expect: true,
+		},
+		{
+			name:   "alert label",
+			bead:   Bead{ID: "spi-alert", Labels: []string{"alert:corrupted-bead"}},
+			expect: true,
+		},
+		{
+			name:   "alert merge-failure label",
+			bead:   Bead{ID: "spi-alert2", Labels: []string{"alert:merge-failure"}},
+			expect: true,
+		},
+		{
+			name:   "normal step bead",
+			bead:   Bead{ID: "spi-step", Labels: []string{"workflow-step", "step:implement"}},
+			expect: false,
+		},
+		{
+			name:   "normal subtask",
+			bead:   Bead{ID: "spi-task", Labels: nil},
+			expect: false,
+		},
+		{
+			name:   "attempt bead",
+			bead:   Bead{ID: "spi-att", Labels: []string{"attempt", "agent:wizard"}},
+			expect: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isProtectedByLabel(tt.bead)
+			if got != tt.expect {
+				t.Errorf("isProtectedByLabel(%s) = %v, want %v", tt.bead.ID, got, tt.expect)
+			}
+		})
+	}
+}
+
 func TestComputeStepsToReset_LinearChain(t *testing.T) {
 	// A → B → C: resetting B should include B and C.
 	graph := &formula.FormulaStepGraph{

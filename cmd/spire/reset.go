@@ -180,24 +180,28 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		return fmt.Errorf("get children for %s: %w", beadID, err)
 	}
 
-	// Build set of linked bead IDs (discovered-from deps) — never touch these.
-	linkedIDs := make(map[string]bool)
-	if deps, err := storeGetDepsWithMeta(beadID); err == nil {
-		for _, dep := range deps {
-			if dep.DependencyType == "discovered-from" {
-				linkedIDs[dep.ID] = true
-			}
+	// Build set of protected bead IDs — never touch these during reset.
+	// Includes design beads (discovered-from), recovery beads, and alert beads.
+	protectedIDs := buildProtectedBeadIDs(beadID, children)
+
+	// Filter out protected children before processing.
+	var processable []Bead
+	for _, child := range children {
+		if !protectedIDs[child.ID] {
+			processable = append(processable, child)
 		}
 	}
 
-	counts := cleanupInternalDAGChildren(children, hard)
+	var counts internalDAGCleanupCounts
+	if hard {
+		counts = deleteInternalDAGBeadsRecursive(processable)
+	} else {
+		counts = cleanupInternalDAGChildren(processable, false)
+	}
+	logInternalDAGCleanup(counts)
 	reopenedChildren := 0
 
-	for _, child := range children {
-		// Never touch discovered-from linked beads (design beads, etc.).
-		if linkedIDs[child.ID] {
-			continue
-		}
+	for _, child := range processable {
 		if isInternalDAGBead(child) {
 			continue
 		}
@@ -211,8 +215,6 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 			}
 		}
 	}
-
-	logInternalDAGCleanup(counts)
 	if reopenedChildren > 0 {
 		fmt.Printf("  %s↺ reopened %d subtask children%s\n", yellow, reopenedChildren, reset)
 	}
@@ -615,6 +617,110 @@ func doRemoveGraphStateFiles(wizardName string, quiet bool) bool {
 	}
 
 	return removed
+}
+
+// buildProtectedBeadIDs builds a set of bead IDs that should never be touched
+// during reset. This includes:
+//   - Design beads (linked via discovered-from deps)
+//   - Recovery beads (linked via recovery-for or caused-by deps, or with recovery-bead label)
+//   - Alert beads (linked via caused-by deps with alert:* label, or children with alert:* label)
+func buildProtectedBeadIDs(beadID string, children []Bead) map[string]bool {
+	protectedIDs := make(map[string]bool)
+
+	// Design beads: linked as dependencies via discovered-from.
+	if deps, err := storeGetDepsWithMeta(beadID); err == nil {
+		for _, dep := range deps {
+			if dep.DependencyType == "discovered-from" {
+				protectedIDs[dep.ID] = true
+			}
+		}
+	}
+
+	// Recovery and alert beads: linked as dependents via recovery-for or caused-by.
+	if dependents, err := storeGetDependentsWithMeta(beadID); err == nil {
+		for _, dep := range dependents {
+			if dep.DependencyType == "recovery-for" || dep.DependencyType == "caused-by" {
+				protectedIDs[dep.ID] = true
+			}
+		}
+	}
+
+	// Belt-and-suspenders: protect children with recovery-bead or alert:* labels
+	// even if they weren't found via dependency edges.
+	for _, child := range children {
+		if isProtectedByLabel(child) {
+			protectedIDs[child.ID] = true
+		}
+	}
+
+	return protectedIDs
+}
+
+// isProtectedByLabel returns true if a bead should be protected from reset
+// based on its labels (recovery-bead or alert:* labels).
+func isProtectedByLabel(b Bead) bool {
+	for _, l := range b.Labels {
+		if l == "recovery-bead" {
+			return true
+		}
+		if strings.HasPrefix(l, "alert:") {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteInternalDAGBeadsRecursive deletes all internal DAG beads and their
+// descendants. For nested internal beads (e.g., attempt children under step beads),
+// it deletes bottom-up (leaves first) to avoid orphaned children.
+func deleteInternalDAGBeadsRecursive(children []Bead) internalDAGCleanupCounts {
+	var counts internalDAGCleanupCounts
+
+	for _, child := range children {
+		kind := ""
+		switch {
+		case isStepBead(child):
+			kind = "step"
+		case isReviewRoundBead(child):
+			kind = "review"
+		case isAttemptBead(child):
+			kind = "attempt"
+		default:
+			continue
+		}
+
+		// Recursively delete descendants first (bottom-up).
+		deleteBeadDescendants(child.ID)
+
+		if err := storeDeleteBeadFunc(child.ID); err != nil {
+			fmt.Printf("  %s(note: could not delete %s: %s)%s\n", dim, child.ID, err, reset)
+			continue
+		}
+		switch kind {
+		case "step":
+			counts.DeletedSteps++
+		case "review":
+			counts.DeletedReviewRounds++
+		case "attempt":
+			counts.DeletedAttempts++
+		}
+	}
+
+	return counts
+}
+
+// deleteBeadDescendants recursively deletes all children of a bead.
+// Used to clean up nested internal DAG beads before deleting their parent.
+// Uses storeGetChildrenFunc for testability.
+func deleteBeadDescendants(parentID string) {
+	children, err := storeGetChildrenFunc(parentID)
+	if err != nil || len(children) == 0 {
+		return
+	}
+	for _, child := range children {
+		deleteBeadDescendants(child.ID)
+		_ = storeDeleteBeadFunc(child.ID)
+	}
 }
 
 // resetCleanWorktreesAndBranches removes worktrees and branches for a bead.
