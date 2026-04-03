@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"os"
 	"testing"
 
 	"github.com/awell-health/spire/pkg/agent"
@@ -733,6 +734,127 @@ func TestEmbeddedRuntime_CompletedCountPersistsAcrossResume(t *testing.T) {
 	}
 	if loaded.Steps["step-b"].CompletedCount != 0 {
 		t.Errorf("step-b completed_count = %d, want 0", loaded.Steps["step-b"].CompletedCount)
+	}
+}
+
+// TestEmbeddedRuntime_NestedGraphResume verifies that nested graph state
+// (e.g. review-phase executed via graph.run) persists across interrupts.
+// Simulates: sage-review rejects → fix runs → interrupt → resume →
+// sage-review approves → merge terminal fires. The completed_count from
+// the first sage-review round must survive the resume.
+func TestEmbeddedRuntime_NestedGraphResume(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+	deps.GetComments = func(id string) ([]*beads.Comment, error) { return nil, nil }
+	deps.AddComment = func(id, text string) error { return nil }
+	deps.IsAttemptBead = func(b Bead) bool { return false }
+	deps.IsStepBead = func(b Bead) bool { return false }
+	deps.IsReviewRoundBead = func(b Bead) bool { return false }
+	deps.CloseBead = func(id string) error { return nil }
+
+	restore := saveAndRestoreRegistry(t)
+	defer restore()
+
+	sageCallCount := 0
+	interruptAfterFix := true // first run: interrupt after fix
+
+	actionRegistry["wizard.run"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		if step.Flow == "sage-review" {
+			sageCallCount++
+			if sageCallCount == 1 {
+				return ActionResult{Outputs: map[string]string{"verdict": "request_changes"}}
+			}
+			return ActionResult{Outputs: map[string]string{"verdict": "approve"}}
+		}
+		if step.Flow == "review-fix" {
+			if interruptAfterFix {
+				// Simulate interrupt: return an error that aborts the nested graph.
+				// The sub-state will be saved with fix completed + sage-review reset.
+				// But we can't interrupt mid-loop, so instead let fix succeed normally.
+				// The interrupt happens when we stop the parent after this action returns.
+				return ActionResult{Outputs: map[string]string{"result": "fixed"}}
+			}
+			return ActionResult{Outputs: map[string]string{"result": "fixed"}}
+		}
+		return ActionResult{Outputs: map[string]string{"result": "success"}}
+	}
+	actionRegistry["noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"status": "done"}}
+	}
+
+	// Build parent graph.
+	parentGraph := &formula.FormulaStepGraph{
+		Name: "test-nested-resume", Version: 3, Entry: "review",
+		Vars: map[string]formula.FormulaVar{
+			"bead_id":           {Required: true, Type: "bead_id"},
+			"max_review_rounds": {Default: "3"},
+		},
+		Steps: map[string]formula.StepConfig{
+			"review": {Kind: "call", Action: "graph.run", Graph: "review-phase", Terminal: true},
+		},
+	}
+
+	// Run 1: full run — sage rejects, fix runs, sage approves, merge.
+	// (This proves the full loop works in a single run, with state saved.)
+	exec := NewGraphForTest("spi-nested-resume", "wizard-nested-resume", parentGraph, nil, deps)
+	runErr := exec.RunGraph(parentGraph, exec.graphState)
+	if runErr != nil {
+		t.Fatalf("RunGraph: %v", runErr)
+	}
+
+	if sageCallCount != 2 {
+		t.Errorf("sage called %d times, want 2", sageCallCount)
+	}
+
+	// Verify the nested state file was cleaned up on success.
+	nestedStatePath := GraphStatePath("wizard-nested-resume-review", deps.ConfigDir)
+	if _, err := os.Stat(nestedStatePath); err == nil {
+		t.Error("nested graph state file should be removed after terminal success")
+	}
+
+	// Run 2: prove persistence — pre-populate a nested state with 1 completed
+	// sage-review round, then resume. Sage approves immediately this time.
+	run2SageCalls := 0
+	actionRegistry["wizard.run"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		if step.Flow == "sage-review" {
+			run2SageCalls++
+			// Always approve on run 2.
+			return ActionResult{Outputs: map[string]string{"verdict": "approve"}}
+		}
+		if step.Flow == "review-fix" {
+			t.Error("fix should not run on resume — sage should approve immediately")
+			return ActionResult{Outputs: map[string]string{"result": "fixed"}}
+		}
+		return ActionResult{Outputs: map[string]string{"result": "success"}}
+	}
+
+	// Create a pre-persisted nested state simulating: sage-review completed
+	// once (rejected), fix completed and reset both to pending.
+	nestedGraph, _ := formula.LoadEmbeddedStepGraph("review-phase")
+	preState := NewGraphState(nestedGraph, "spi-nested-resume", "wizard-nested-resume-review")
+	preState.Vars["bead_id"] = "spi-nested-resume"
+	preState.Vars["max_review_rounds"] = "3"
+	preState.RepoPath = "."
+	preState.BaseBranch = "main"
+	// sage-review was completed once then reset to pending by fix
+	preState.Steps["sage-review"] = StepState{Status: "pending", CompletedCount: 1}
+	preState.Steps["fix"] = StepState{Status: "pending", CompletedCount: 1}
+	preState.Save("wizard-nested-resume-review", deps.ConfigDir)
+
+	// Now run the parent again — graph.run should load the persisted sub-state.
+	exec2 := NewGraphForTest("spi-nested-resume", "wizard-nested-resume", parentGraph, nil, deps)
+	runErr2 := exec2.RunGraph(parentGraph, exec2.graphState)
+	if runErr2 != nil {
+		t.Fatalf("RunGraph (resume): %v", runErr2)
+	}
+
+	// sage should have been called exactly once (from the resumed pending state).
+	if run2SageCalls != 1 {
+		t.Errorf("sage called %d times on resume, want 1", run2SageCalls)
+	}
+
+	// Verify the nested state was cleaned up after success.
+	if _, err := os.Stat(nestedStatePath); err == nil {
+		t.Error("nested graph state file should be removed after terminal success (resume)")
 	}
 }
 

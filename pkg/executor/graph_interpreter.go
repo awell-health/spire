@@ -269,6 +269,7 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 			ss.Status = "failed"
 			ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			state.Steps[stepName] = ss
+			state.Save(state.AgentName, e.deps.ConfigDir) // persist failure for resume
 			return fmt.Errorf("nested step %s failed: %w", stepName, result.Error)
 		}
 
@@ -280,6 +281,8 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 		state.Steps[stepName] = ss
 
 		if formula.IsTerminal(graph, stepName) {
+			// Persist final state before returning (caller removes on success).
+			state.Save(state.AgentName, e.deps.ConfigDir)
 			return nil
 		}
 
@@ -293,6 +296,9 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 			state.Steps[target] = ts
 			e.log("nested: reset step %s to pending (declared by %s)", target, stepName)
 		}
+
+		// Persist after each step so nested graph progress survives interrupts.
+		state.Save(state.AgentName, e.deps.ConfigDir)
 	}
 }
 
