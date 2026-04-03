@@ -116,15 +116,6 @@ func New(beadID, agentName string, formula *FormulaV2, deps *Deps) (*Executor, e
 		}
 	}
 
-	// Register with wizard registry for inbox delivery
-	deps.RegistryAdd(agent.Entry{
-		Name:      agentName,
-		PID:       os.Getpid(),
-		BeadID:    beadID,
-		StartedAt: state.StartedAt,
-		Phase:     state.Phase,
-	})
-
 	return &Executor{
 		beadID:             beadID,
 		agentName:          agentName,
@@ -152,15 +143,6 @@ func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*E
 	if state == nil {
 		state = NewGraphState(graph, beadID, agentName)
 	}
-
-	// Register with wizard registry.
-	deps.RegistryAdd(agent.Entry{
-		Name:      agentName,
-		PID:       os.Getpid(),
-		BeadID:    beadID,
-		StartedAt: state.StartedAt,
-		Phase:     "graph:" + state.ActiveStep,
-	})
 
 	return &Executor{
 		beadID:     beadID,
@@ -232,6 +214,17 @@ func (e *Executor) Run() error {
 		return e.RunGraph(e.graph, e.graphState)
 	}
 
+	// Register with wizard registry inside Run() — paired with the deferred
+	// RegistryRemove below so registration and cleanup are always atomic.
+	// Previously in New(), where a failure between New() and Run() would
+	// orphan the registry entry.
+	e.deps.RegistryAdd(agent.Entry{
+		Name:      e.agentName,
+		PID:       os.Getpid(),
+		BeadID:    e.beadID,
+		StartedAt: e.state.StartedAt,
+		Phase:     e.state.Phase,
+	})
 	defer e.deps.RegistryRemove(e.agentName)
 	defer e.saveState()
 
@@ -246,12 +239,26 @@ func (e *Executor) Run() error {
 	}
 
 	// Ensure attempt is closed on all exit paths (success, failure, panic).
+	// The recover-then-repanic guard ensures that even if another defer or
+	// the function body panics, the attempt bead and step beads are still
+	// cleaned up before the panic propagates.
 	defer func() {
+		var panicVal interface{}
+		if r := recover(); r != nil {
+			panicVal = r
+			e.log("executor cleanup panic: %v", r)
+		}
+		if !e.terminated {
+			e.closeAllOpenStepBeads()
+		}
 		if e.state.AttemptBeadID != "" {
 			if cerr := e.deps.CloseAttemptBead(e.state.AttemptBeadID, "executor exited"); cerr != nil {
 				e.log("warning: close attempt bead: %s", cerr)
 			}
 			e.state.AttemptBeadID = ""
+		}
+		if panicVal != nil {
+			panic(panicVal)
 		}
 	}()
 

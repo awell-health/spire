@@ -2,10 +2,12 @@ package executor
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
 )
 
@@ -13,6 +15,15 @@ import (
 // actions, collecting outputs, persisting state, and detecting terminal steps.
 // It replaces the v2 phase loop for formulas that declare a step graph.
 func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
+	// Register with wizard registry inside RunGraph() — paired with the deferred
+	// RegistryRemove below so registration and cleanup are always atomic.
+	e.deps.RegistryAdd(agent.Entry{
+		Name:      e.agentName,
+		PID:       os.Getpid(),
+		BeadID:    e.beadID,
+		StartedAt: state.StartedAt,
+		Phase:     "graph:" + state.ActiveStep,
+	})
 	defer e.deps.RegistryRemove(e.agentName)
 	defer func() {
 		if e.terminated {
@@ -28,12 +39,26 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	if err := e.ensureGraphAttemptBead(state); err != nil {
 		e.log("warning: create attempt bead: %s", err)
 	}
+	// The recover-then-repanic guard ensures that even if another defer or
+	// the function body panics, the attempt bead and step beads are still
+	// cleaned up before the panic propagates.
 	defer func() {
+		var panicVal interface{}
+		if r := recover(); r != nil {
+			panicVal = r
+			e.log("executor cleanup panic: %v", r)
+		}
+		if !e.terminated {
+			e.closeAllOpenGraphStepBeads(state)
+		}
 		if state.AttemptBeadID != "" {
 			if cerr := e.deps.CloseAttemptBead(state.AttemptBeadID, "executor exited"); cerr != nil {
 				e.log("warning: close attempt bead: %s", cerr)
 			}
 			state.AttemptBeadID = ""
+		}
+		if panicVal != nil {
+			panic(panicVal)
 		}
 	}()
 

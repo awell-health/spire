@@ -300,8 +300,38 @@ func (e *Executor) transitionStepBead(prevPhase, newPhase string) {
 	}
 }
 
+// closeAllOpenGraphStepBeads closes all open step beads from a v3 graph state.
+// Adds an "interrupted:executor-exit" label to in-progress beads before closing
+// so retry logic knows these were not intentionally closed.
+func (e *Executor) closeAllOpenGraphStepBeads(state *GraphState) {
+	if state == nil {
+		return
+	}
+	for stepName, stepID := range state.StepBeadIDs {
+		if stepID == "" {
+			continue
+		}
+		b, err := e.deps.GetBead(stepID)
+		if err != nil {
+			continue
+		}
+		if b.Status != "closed" {
+			if b.Status == "in_progress" {
+				if err := e.deps.AddLabel(stepID, "interrupted:executor-exit"); err != nil {
+					e.log("warning: label graph step bead %s (%s) interrupted: %s", stepID, stepName, err)
+				}
+			}
+			if err := e.deps.CloseStepBead(stepID); err != nil {
+				e.log("warning: close graph step bead %s (%s): %s", stepID, stepName, err)
+			}
+		}
+	}
+}
+
 // closeAllOpenStepBeads closes all step beads that are not already closed.
 // Used on exit paths (bead externally closed, error) to prevent leaked step beads.
+// Adds an "interrupted" label to in-progress beads before closing so retry logic
+// knows these were not intentionally closed.
 func (e *Executor) closeAllOpenStepBeads() {
 	for phase, stepID := range e.state.StepBeadIDs {
 		b, err := e.deps.GetBead(stepID)
@@ -309,6 +339,11 @@ func (e *Executor) closeAllOpenStepBeads() {
 			continue
 		}
 		if b.Status != "closed" {
+			if b.Status == "in_progress" {
+				if err := e.deps.AddLabel(stepID, "interrupted:executor-exit"); err != nil {
+					e.log("warning: label step bead %s (%s) interrupted: %s", stepID, phase, err)
+				}
+			}
 			if err := e.deps.CloseStepBead(stepID); err != nil {
 				e.log("warning: close step bead %s (%s): %s", stepID, phase, err)
 			}

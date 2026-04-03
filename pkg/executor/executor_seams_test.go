@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -2547,5 +2548,319 @@ func TestCollectDesignContext_NoDeps(t *testing.T) {
 
 	if result != "" {
 		t.Errorf("expected empty design context, got: %q", result)
+	}
+}
+
+// =============================================================================
+// Seam: Wave executor exit cleanup — orphaned-open-attempt / empty-registry
+//
+// Bug: wave executor disappears after startup, leaving attempt bead open and
+// registry empty. Root cause: deferred CloseAttemptBead can be skipped if a
+// prior defer panics, or if RegistryAdd was in the constructor but RegistryRemove
+// only runs inside Run/RunGraph.
+//
+// These tests verify the invariant: after executor exit (success or failure),
+// RegistryRemove is called AND CloseAttemptBead is called.
+// =============================================================================
+
+// TestWaveExecutorExitCleansUpRegistry_V2 verifies that when a v2 executor
+// fails during startup (repo resolution error), both RegistryRemove and
+// CloseAttemptBead are called — preventing the orphaned-open-attempt / empty-registry bug.
+func TestWaveExecutorExitCleansUpRegistry_V2(t *testing.T) {
+	configDir := t.TempDir()
+	configDirFn := func() (string, error) { return configDir, nil }
+
+	registryAddCalled := false
+	registryRemoveCalled := false
+	var closedAttemptID string
+	var closedAttemptResult string
+
+	deps := &Deps{
+		ConfigDir: configDirFn,
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		GetChildren: func(parentID string) ([]Bead, error) {
+			return nil, nil
+		},
+		GetActiveAttempt: func(parentID string) (*Bead, error) {
+			return nil, nil
+		},
+		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
+			return "spi-wave.attempt-1", nil
+		},
+		CloseAttemptBead: func(attemptID, result string) error {
+			closedAttemptID = attemptID
+			closedAttemptResult = result
+			return nil
+		},
+		HasLabel:      func(b Bead, prefix string) string { return "" },
+		AddLabel:      func(id, label string) error { return nil },
+		RemoveLabel:   func(id, label string) error { return nil },
+		ContainsLabel: func(b Bead, label string) bool { return false },
+		// ResolveRepo fails — simulates the early-exit path that leaves
+		// the attempt bead open and registry orphaned.
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return "", "", "", fmt.Errorf("simulated repo resolution failure")
+		},
+		RegistryAdd: func(entry agent.Entry) error {
+			registryAddCalled = true
+			return nil
+		},
+		RegistryRemove: func(name string) error {
+			registryRemoveCalled = true
+			return nil
+		},
+		UpdateBead: func(id string, updates map[string]interface{}) error { return nil },
+		CreateBead: func(opts CreateOpts) (string, error) {
+			return "spi-wave.alert-1", nil
+		},
+		CreateStepBead: func(parentID, stepName string) (string, error) {
+			return parentID + ".step-" + stepName, nil
+		},
+		ActivateStepBead: func(stepID string) error { return nil },
+		CloseStepBead:    func(stepID string) error { return nil },
+		AddDep:           func(issueID, dependsOnID string) error { return nil },
+		AddDepTyped:      func(issueID, dependsOnID, depType string) error { return nil },
+		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+		Spawner:           &mockBackend{},
+		CloseMoleculeStep: func(beadID, stepName string) {},
+		AddComment:        func(id, text string) error { return nil },
+	}
+
+	f := &formula.FormulaV2{
+		Name:    "test-wave",
+		Version: 2,
+		Phases: map[string]formula.PhaseConfig{
+			"implement": {Role: "apprentice", Dispatch: "wave"},
+		},
+	}
+
+	state := &State{
+		BeadID:    "spi-wave",
+		AgentName: "wizard-wave",
+		Formula:   "test-wave",
+		Phase:     "implement",
+		Subtasks:  make(map[string]SubtaskState),
+	}
+
+	e := NewForTest("spi-wave", "wizard-wave", f, state, deps)
+
+	err := e.Run()
+	// Expect an error from the failed repo resolution.
+	if err == nil {
+		t.Fatal("expected error from repo resolution failure, got nil")
+	}
+
+	// INVARIANT: RegistryAdd must have been called.
+	if !registryAddCalled {
+		t.Error("RegistryAdd was not called — registry entry was never created")
+	}
+
+	// INVARIANT: RegistryRemove must have been called.
+	if !registryRemoveCalled {
+		t.Error("RegistryRemove was not called — registry entry is orphaned")
+	}
+
+	// INVARIANT: CloseAttemptBead must have been called with the attempt ID.
+	if closedAttemptID != "spi-wave.attempt-1" {
+		t.Errorf("CloseAttemptBead called with %q, want %q", closedAttemptID, "spi-wave.attempt-1")
+	}
+	if closedAttemptResult == "" {
+		t.Error("CloseAttemptBead result is empty — attempt was not closed")
+	}
+}
+
+// TestGraphExecutorExitCleansUpRegistry verifies that when a v3 graph executor
+// fails during startup (repo resolution error), both RegistryRemove and
+// CloseAttemptBead are called — preventing the orphaned-open-attempt / empty-registry bug.
+func TestGraphExecutorExitCleansUpRegistry(t *testing.T) {
+	configDir := t.TempDir()
+	configDirFn := func() (string, error) { return configDir, nil }
+
+	registryAddCalled := false
+	registryRemoveCalled := false
+	var closedAttemptID string
+	var closedAttemptResult string
+
+	deps := &Deps{
+		ConfigDir: configDirFn,
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		GetChildren: func(parentID string) ([]Bead, error) {
+			return nil, nil
+		},
+		GetActiveAttempt: func(parentID string) (*Bead, error) {
+			return nil, nil
+		},
+		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
+			return "spi-graph.attempt-1", nil
+		},
+		CloseAttemptBead: func(attemptID, result string) error {
+			closedAttemptID = attemptID
+			closedAttemptResult = result
+			return nil
+		},
+		HasLabel:      func(b Bead, prefix string) string { return "" },
+		AddLabel:      func(id, label string) error { return nil },
+		RemoveLabel:   func(id, label string) error { return nil },
+		ContainsLabel: func(b Bead, label string) bool { return false },
+		// ResolveRepo fails — simulates the early-exit path.
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return "", "", "", fmt.Errorf("simulated repo resolution failure")
+		},
+		RegistryAdd: func(entry agent.Entry) error {
+			registryAddCalled = true
+			return nil
+		},
+		RegistryRemove: func(name string) error {
+			registryRemoveCalled = true
+			return nil
+		},
+		UpdateBead: func(id string, updates map[string]interface{}) error { return nil },
+		CreateBead: func(opts CreateOpts) (string, error) {
+			return "spi-graph.alert-1", nil
+		},
+		CreateStepBead:   func(parentID, stepName string) (string, error) { return "", nil },
+		ActivateStepBead: func(stepID string) error { return nil },
+		CloseStepBead:    func(stepID string) error { return nil },
+		AddDep:           func(issueID, dependsOnID string) error { return nil },
+		AddDepTyped:      func(issueID, dependsOnID, depType string) error { return nil },
+		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
+		Spawner:           &mockBackend{},
+		CloseMoleculeStep: func(beadID, stepName string) {},
+		AddComment:        func(id, text string) error { return nil },
+	}
+
+	// Minimal v3 graph.
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-graph",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {
+				Action: "noop",
+			},
+			"done": {
+				Needs:    []string{"implement"},
+				Action:   "noop",
+				Terminal: true,
+			},
+		},
+		Entry: "implement",
+	}
+
+	state := NewGraphState(graph, "spi-graph", "wizard-graph")
+
+	e := NewGraphForTest("spi-graph", "wizard-graph", graph, state, deps)
+
+	err := e.RunGraph(graph, state)
+	// Expect an error from the failed repo resolution.
+	if err == nil {
+		t.Fatal("expected error from repo resolution failure, got nil")
+	}
+
+	// INVARIANT: RegistryAdd must have been called.
+	if !registryAddCalled {
+		t.Error("RegistryAdd was not called")
+	}
+
+	// INVARIANT: RegistryRemove must have been called.
+	if !registryRemoveCalled {
+		t.Error("RegistryRemove was not called — registry entry is orphaned")
+	}
+
+	// INVARIANT: CloseAttemptBead must have been called.
+	if closedAttemptID != "spi-graph.attempt-1" {
+		t.Errorf("CloseAttemptBead called with %q, want %q", closedAttemptID, "spi-graph.attempt-1")
+	}
+	if closedAttemptResult == "" {
+		t.Error("CloseAttemptBead result is empty — attempt was not closed")
+	}
+}
+
+// TestExecutorExitCleansUpOnPanic verifies that when a deferred cleanup
+// function panics, the attempt bead is still closed via the recover guard.
+func TestExecutorExitCleansUpOnPanic(t *testing.T) {
+	dir := t.TempDir()
+	configDirFn := func() (string, error) { return dir, nil }
+
+	registryRemoveCalled := false
+	var closedAttemptResult string
+
+	deps := &Deps{
+		ConfigDir: configDirFn,
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		GetChildren: func(parentID string) ([]Bead, error) {
+			return nil, nil
+		},
+		GetActiveAttempt: func(parentID string) (*Bead, error) {
+			return nil, nil
+		},
+		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
+			return "spi-panic.attempt-1", nil
+		},
+		CloseAttemptBead: func(attemptID, result string) error {
+			closedAttemptResult = result
+			return nil
+		},
+		HasLabel:      func(b Bead, prefix string) string { return "" },
+		AddLabel:      func(id, label string) error { return nil },
+		RemoveLabel:   func(id, label string) error { return nil },
+		ContainsLabel: func(b Bead, label string) bool { return false },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return dir, "", "main", nil
+		},
+		RegistryAdd: func(entry agent.Entry) error { return nil },
+		RegistryRemove: func(name string) error {
+			registryRemoveCalled = true
+			return nil
+		},
+		UpdateBead:       func(id string, updates map[string]interface{}) error { return nil },
+		CreateStepBead:   func(parentID, stepName string) (string, error) { return "", nil },
+		ActivateStepBead: func(stepID string) error { return nil },
+		CloseStepBead:    func(stepID string) error { return nil },
+		Spawner:          &mockBackend{},
+	}
+
+	f := &formula.FormulaV2{
+		Name:    "test-panic",
+		Version: 2,
+		Phases: map[string]formula.PhaseConfig{
+			"implement": {Role: "skip"},
+		},
+	}
+
+	state := &State{
+		BeadID:        "spi-panic",
+		AgentName:     "wizard-panic",
+		Formula:       "test-panic",
+		Phase:         "implement",
+		Subtasks:      make(map[string]SubtaskState),
+		AttemptBeadID: "spi-panic.attempt-1",
+		RepoPath:      dir,
+		BaseBranch:    "main",
+	}
+
+	e := NewForTest("spi-panic", "wizard-panic", f, state, deps)
+
+	// Run should complete normally (skip phase), closing the attempt bead.
+	err := e.Run()
+	if err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// Verify the attempt was closed.
+	if closedAttemptResult == "" {
+		t.Error("CloseAttemptBead was never called — attempt bead is orphaned")
+	}
+	if !registryRemoveCalled {
+		t.Error("RegistryRemove was not called")
 	}
 }
