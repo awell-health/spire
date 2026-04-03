@@ -110,6 +110,8 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
 		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
+	case "arbiter":
+		return actionArbiterEscalate(e, stepName, step, state)
 	default:
 		// For other flows, spawn with apprentice role + workspace if declared.
 		var extraArgs []string
@@ -160,6 +162,57 @@ func actionPlanEpic(e *Executor, stepName string, step StepConfig, state *GraphS
 	}
 
 	return ActionResult{Outputs: map[string]string{"status": "planned"}}
+}
+
+// actionArbiterEscalate routes the "arbiter" flow to the executor's arbiter
+// escalation logic. The v2 dispatchArbiter uses e.formula and e.state which
+// are nil in v3 graph mode, so this builds a RevisionPolicy from the graph
+// state vars and calls ReviewEscalateToArbiter directly.
+func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	sageName := fmt.Sprintf("%s-sage", e.agentName)
+
+	// Build revision policy from graph vars and step config.
+	arbiterModel := step.Model
+	if arbiterModel == "" {
+		arbiterModel = "claude-opus-4-6"
+	}
+	maxRounds := 3
+	if mr, ok := state.Vars["max_review_rounds"]; ok {
+		if v, err := fmt.Sscanf(mr, "%d", &maxRounds); v == 0 || err != nil {
+			maxRounds = 3
+		}
+	}
+
+	revPolicy := RevisionPolicy{
+		MaxRounds:    maxRounds,
+		ArbiterModel: arbiterModel,
+	}
+
+	lastReview := &Review{Verdict: "request_changes", Summary: "Max review rounds reached"}
+	started := time.Now()
+	err := e.deps.ReviewEscalateToArbiter(e.beadID, sageName, lastReview, revPolicy, e.log)
+
+	reviewRound := state.Counters["review_round"]
+	e.recordAgentRun(sageName, e.beadID, "", arbiterModel, "arbiter", "review", started, err,
+		withReviewStep("arbiter", reviewRound+1))
+
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("arbiter escalation: %w", err)}
+	}
+
+	// Read arbiter decision from bead labels.
+	decision := ""
+	if bead, bErr := e.deps.GetBead(e.beadID); bErr == nil {
+		decision = e.deps.HasLabel(bead, "arbiter-decision:")
+		if decision == "" && e.deps.ContainsLabel(bead, "review-approved") {
+			decision = "merge"
+		}
+	}
+
+	return ActionResult{Outputs: map[string]string{
+		"arbiter_decision": decision,
+		"result":           "escalated",
+	}}
 }
 
 // wizardRunSpawn is the common spawn logic for wizard.run actions.
@@ -516,7 +569,17 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 	subState.RepoPath = state.RepoPath
 	subState.BaseBranch = state.BaseBranch
 	subState.StagingBranch = state.StagingBranch
-	subState.WorktreeDir = state.WorktreeDir
+
+	// Resolve the active workspace dir from the parent step's declared workspace.
+	// This ensures nested graphs (e.g. review-phase called from a step with
+	// workspace="feature") inherit the correct runtime workspace, not just the
+	// legacy state.WorktreeDir field.
+	subState.WorktreeDir = state.WorktreeDir // fallback to legacy field
+	if step.Workspace != "" {
+		if ws, ok := state.Workspaces[step.Workspace]; ok && ws.Dir != "" {
+			subState.WorktreeDir = ws.Dir
+		}
+	}
 
 	// Run the nested graph using the isolated interpreter (no deferred cleanup).
 	runErr := e.RunNestedGraph(subGraph, subState)
