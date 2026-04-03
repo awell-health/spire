@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -227,6 +228,9 @@ func buildTrace(beadID string) (*traceData, error) {
 			Status: string(s.Status),
 		})
 	}
+	sort.Slice(td.Steps, func(i, j int) bool {
+		return board.PhaseIndex(td.Steps[i].Name) < board.PhaseIndex(td.Steps[j].Name)
+	})
 
 	// Active attempt.
 	attempt, _ := storeGetActiveAttemptFunc(beadID)

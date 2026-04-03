@@ -131,6 +131,12 @@ var v3StepOrder = map[string]int{
 	"discard":      7,
 }
 
+// PhaseIndex returns the display order for a step/phase name.
+// Exported for use by cmd/spire/trace.go and other renderers.
+func PhaseIndex(name string) int {
+	return phaseIndex(name)
+}
+
 func phaseIndex(name string) int {
 	// Try v2 phase ordering first.
 	for i, p := range formula.ValidPhases {
