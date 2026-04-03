@@ -91,7 +91,7 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 	case "epic-plan":
 		return actionPlanEpic(e, stepName, step, state)
 	case "implement":
-		var extraArgs []string
+		extraArgs := []string{"--apprentice"}
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
@@ -262,6 +262,13 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 
 	model := step.Model
 	e.recordAgentRun(spawnName, e.beadID, "", model, string(role), stepName, started, waitErr)
+
+	// Propagate child process failure as a node error. If result.json
+	// reported a non-error result, trust it (the process wrote results
+	// before exiting). Otherwise, the node must fail.
+	if waitErr != nil && outputs["result"] != "success" {
+		return ActionResult{Outputs: outputs, Error: fmt.Errorf("subprocess %s exited: %w", stepName, waitErr)}
+	}
 
 	return ActionResult{Outputs: outputs}
 }
