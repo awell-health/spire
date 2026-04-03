@@ -239,7 +239,10 @@ func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeC
 		fmt.Fprintf(os.Stderr, "warning: dedupe recovery bead for %s: %s\n", parentID, err)
 	}
 	if found {
-		// Re-seed structured metadata idempotently (SetBeadMetadataMap merges).
+		// Re-seed structured metadata idempotently. Safe because
+		// store.SetBeadMetadataMap merges into existing metadata (read-modify-write),
+		// so fields set by later lifecycle phases (resolution_kind, verification_status, etc.)
+		// are preserved.
 		seedRecoveryMetadata(existingID, parentID, failureType, nodeCtx)
 		// Append full context comment to existing recovery bead.
 		ctx := buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx)
@@ -381,14 +384,9 @@ func ExecutorFinishRecovery(beadID string, learning recovery.RecoveryLearning, d
 	return recovery.FinishRecovery(rd, beadID, learning)
 }
 
-// seedRecoveryMetadata writes the structured source-context fields onto a
-// recovery bead's issue metadata. Errors are logged but non-fatal — the bead
-// is still useful even without all metadata.
-func seedRecoveryMetadata(recoveryID, parentID, failureType, nodeCtx string) {
-	if recoveryID == "" {
-		return
-	}
-
+// buildSeedMetadata constructs the RecoveryMetadata to seed on a recovery bead
+// from the available escalation context. Pure logic — no side effects.
+func buildSeedMetadata(parentID, failureType, nodeCtx string) recovery.RecoveryMetadata {
 	stepName := ""
 	if nodeCtx != "" {
 		for _, part := range strings.Fields(nodeCtx) {
@@ -405,13 +403,31 @@ func seedRecoveryMetadata(recoveryID, parentID, failureType, nodeCtx string) {
 		sig = failureType + ":" + stepName
 	}
 
-	meta := recovery.RecoveryMetadata{
+	return recovery.RecoveryMetadata{
 		FailureClass:     failureType,
 		SourceBead:       parentID,
 		SourceStep:       stepName,
 		FailureSignature: sig,
-		// SourceFormula is not available at this call site — seeded as empty.
+		// TODO(source_formula): The Escalate* functions receive deps but not
+		// the executor's formula reference. To populate SourceFormula, either
+		// thread the formula name through the Escalate call chain or add a
+		// FormulaName field to Deps. Until then, source_formula is seeded
+		// empty. The lookup surface (GetRecoveryLearnings, FindMatchingLearning)
+		// currently filters by source_bead + failure_class, not source_formula,
+		// so this gap does not affect present queries.
 	}
+}
+
+// seedRecoveryMetadata writes the structured source-context fields onto a
+// recovery bead's issue metadata via store.SetBeadMetadataMap (which merges
+// into existing metadata, preserving fields set by later lifecycle phases).
+// Errors are logged but non-fatal — the bead is still useful even without
+// all metadata.
+func seedRecoveryMetadata(recoveryID, parentID, failureType, nodeCtx string) {
+	if recoveryID == "" {
+		return
+	}
+	meta := buildSeedMetadata(parentID, failureType, nodeCtx)
 	if err := meta.Apply(recoveryID); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seed recovery metadata on %s: %s\n", recoveryID, err)
 	}
