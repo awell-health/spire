@@ -89,6 +89,52 @@ func validateV3(data []byte) []Issue {
 	issues = append(issues, validateV3Workspaces(f)...)
 	issues = append(issues, validateV3Vars(f)...)
 
+	// Recovery-formula-specific checks (structural: presence of parent_bead var).
+	if isRecoveryFormula(f) {
+		// parent_bead must be type bead_id
+		if pb, ok := f.Vars["parent_bead"]; ok && pb.Type != "" && pb.Type != "bead_id" {
+			issues = append(issues, Issue{
+				Level:   "error",
+				Message: "recovery formula var 'parent_bead' must have type bead_id",
+			})
+		}
+		// failure_class should be declared
+		if _, ok := f.Vars["failure_class"]; !ok {
+			issues = append(issues, Issue{
+				Level:   "warning",
+				Message: "recovery formula should declare var 'failure_class' for prior-learning lookup",
+			})
+		}
+		// document step should exist — without it, learnings are not persisted
+		hasDocument := false
+		for name := range f.Steps {
+			if name == "document" {
+				hasDocument = true
+				break
+			}
+		}
+		if !hasDocument {
+			issues = append(issues, Issue{
+				Level:   "warning",
+				Message: "recovery formula has no 'document' step; durable learnings will not be written back onto the bead",
+			})
+		}
+		// at least one terminal step should call bead.finish
+		hasFinish := false
+		for _, step := range f.Steps {
+			if step.Terminal && step.Action == "bead.finish" {
+				hasFinish = true
+				break
+			}
+		}
+		if !hasFinish {
+			issues = append(issues, Issue{
+				Level:   "warning",
+				Message: "recovery formula has no terminal bead.finish step; recovery bead will not be closed",
+			})
+		}
+	}
+
 	return issues
 }
 
@@ -222,6 +268,14 @@ func validateV3Produces(stepName string, step formula.StepConfig) []Issue {
 		}
 	}
 	return issues
+}
+
+// isRecoveryFormula returns true when a formula declares a parent_bead var,
+// which is the structural marker for recovery formulas. This covers both the
+// base spire-recovery-v3 and any future specialized recovery variants.
+func isRecoveryFormula(f *formula.FormulaStepGraph) bool {
+	_, ok := f.Vars["parent_bead"]
+	return ok
 }
 
 // tryParseCondition validates condition syntax without evaluating it.

@@ -323,7 +323,7 @@ var DefaultV3FormulaMap = map[string]string{
 	"epic":     "spire-epic-v3",
 	"chore":    "spire-agent-work-v3",
 	"feature":  "spire-agent-work-v3",
-	"recovery": "spire-recovery-work-v3",
+	"recovery": "spire-recovery-v3",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.

@@ -1,0 +1,111 @@
+# spire-recovery-v3.formula.toml — v3 lifecycle graph for recovery workflows.
+#
+# Recovery beads are first-class self-healing workflows. This formula defines
+# the step graph for bounded remediation: collect context, design a fix,
+# plan actions, remediate, verify, document learnings, and finish or escalate.
+#
+# Two terminal paths: finish (verification passed) and escalate (verification failed).
+# The document step fires only when verification passes.
+
+name = "spire-recovery-v3"
+description = "Recovery workflow: collect context, design and plan remediation, remediate, verify, document learnings, and finish or escalate"
+version = 3
+entry = "collect_context"
+
+[vars.bead_id]
+type = "bead_id"
+description = "The recovery bead being worked on"
+required = true
+
+[vars.parent_bead]
+type = "bead_id"
+description = "The bead that encountered the failure"
+required = true
+
+[vars.failure_class]
+type = "string"
+description = "Failure classification (e.g. implement-merge-conflict, build-failure)"
+required = true
+
+[vars.base_branch]
+description = "Base branch for any git operations"
+default = "main"
+
+# --- Steps ---
+
+# Step 1: Mechanically gather interrupted labels, attempt history, linked recovery
+# beads, git/runtime state, and prior closed recovery learnings.
+[steps.collect_context]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-collect"
+title = "Collect failure context and prior recovery learnings"
+
+# Step 2: Surface relevant prior learnings and frame the current failure clearly.
+[steps.design]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-design"
+needs = ["collect_context"]
+title = "Frame the failure and design remediation approach"
+
+# Step 3: Choose bounded remediation actions.
+[steps.plan]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-plan"
+needs = ["design"]
+title = "Plan bounded remediation actions"
+
+# Step 4: Execute the chosen remediation actions.
+[steps.remediate]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-remediate"
+needs = ["plan"]
+title = "Execute remediation"
+
+# Step 5: Confirm the system or bead is healthy again.
+[steps.verify]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-verify"
+needs = ["remediate"]
+title = "Verify recovery"
+produces = ["verification_status"]
+
+# Step 6: Write durable learnings back onto the recovery bead (only on pass).
+[steps.document]
+kind = "op"
+action = "wizard.run"
+flow = "recovery-document"
+needs = ["verify"]
+title = "Write durable learnings back onto the recovery bead"
+
+[steps.document.when]
+all = [{ left = "steps.verify.outputs.verification_status", op = "eq", right = "pass" }]
+
+# Step 7a: Close resolved recovery bead (after documentation).
+[steps.finish]
+kind = "op"
+action = "bead.finish"
+needs = ["document"]
+terminal = true
+title = "Close resolved recovery bead"
+
+[steps.finish.with]
+status = "resolved"
+
+# Step 7b: Escalate unresolved recovery (verification did not pass).
+[steps.escalate]
+kind = "op"
+action = "bead.finish"
+needs = ["verify"]
+terminal = true
+title = "Escalate unresolved recovery"
+
+[steps.escalate.with]
+status = "escalated"
+
+[steps.escalate.when]
+all = [{ left = "steps.verify.outputs.verification_status", op = "ne", right = "pass" }]

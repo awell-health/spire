@@ -20,6 +20,14 @@ func ComposeInteractive(name string, in io.Reader, out io.Writer) (*formula.Form
 
 	fmt.Fprintf(out, "\nSpire Workshop — composing v3 formula %q\n\n", name)
 
+	// Bead type — selects defaults and pre-population
+	beadTypes := []string{"task", "bug", "feature", "epic", "chore", "design", "recovery"}
+	btIdx, err := promptChoice(reader, out, "Target bead type", beadTypes, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	beadType := beadTypes[btIdx]
+
 	// Description
 	desc := promptString(reader, out, "Description", "")
 	gb.SetDescription(desc)
@@ -77,6 +85,29 @@ func ComposeInteractive(name string, in io.Reader, out io.Writer) (*formula.Form
 			Required:    varRequired,
 			Default:     varDefault,
 		})
+	}
+
+	// Pre-populate recovery steps when composing for recovery bead type
+	if beadType == "recovery" {
+		fmt.Fprintf(out, "\n=== Pre-populated recovery steps ===\n")
+		for _, s := range RecoveryStepDefaults() {
+			cfg := formula.StepConfig{
+				Kind:   "op",
+				Action: s.Flow,
+				Title:  s.Title,
+			}
+			if s.Flow != "bead.finish" {
+				cfg.Action = "wizard.run"
+				cfg.Flow = s.Flow
+			} else {
+				cfg.Action = "bead.finish"
+			}
+			if err := gb.AddStep(s.Name, cfg); err != nil {
+				fmt.Fprintf(out, "  Warning: %v\n", err)
+			} else {
+				fmt.Fprintf(out, "  + %s (%s)\n", s.Name, s.Title)
+			}
+		}
 	}
 
 	// Steps
