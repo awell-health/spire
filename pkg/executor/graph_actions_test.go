@@ -695,3 +695,274 @@ func TestSageReview_NoResultJSON_NoVerdict(t *testing.T) {
 	}
 }
 
+// TestGraphRun_ReviewPhase_PropagatesWorktreeDir verifies the critical path:
+// when a parent graph step declares workspace="feature" and dispatches a
+// review-phase nested graph via graph.run, the sage-review step inside the
+// nested graph receives --worktree-dir pointing to the parent's feature
+// workspace directory.
+//
+// This is the bug from spi-b34i5: without correct propagation, the sage
+// tries to create a new worktree on the staging branch, which fails because
+// the worktree already exists from the implement step.
+func TestGraphRun_ReviewPhase_PropagatesWorktreeDir(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a fake workspace directory to represent the parent's feature workspace.
+	featureDir := filepath.Join(dir, "feature-worktree")
+	os.MkdirAll(featureDir, 0755)
+
+	// Capture all spawn configs for inspection.
+	var spawnConfigs []agent.SpawnConfig
+	agentName := "wizard-test"
+
+	backend := &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			spawnConfigs = append(spawnConfigs, cfg)
+			return &mockHandle{}, nil
+		},
+	}
+
+	// Pre-write result.json for the sage-review spawn.
+	// wizardRunSpawn uses spawnName = e.agentName + "-" + stepName.
+	// e.agentName is still the parent executor's agent name ("wizard-test"),
+	// so the sage spawn name is "wizard-test-sage-review".
+	sageSpawnName := agentName + "-sage-review"
+	sageResultDir := filepath.Join(dir, sageSpawnName)
+	os.MkdirAll(sageResultDir, 0755)
+	sageResult, _ := json.Marshal(map[string]interface{}{
+		"result":  "approve",
+		"bead_id": "spi-test",
+	})
+	os.WriteFile(filepath.Join(sageResultDir, "result.json"), sageResult, 0644)
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		Spawner:   backend,
+		AgentResultDir: func(name string) string {
+			return filepath.Join(dir, name)
+		},
+		RecordAgentRun: func(run AgentRun) error { return nil },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return dir, "", "main", nil
+		},
+	}
+
+	// Build the parent graph with a review step that declares workspace="feature"
+	// and dispatches graph.run for review-phase.
+	parentGraph := &formula.FormulaStepGraph{
+		Name:    "test-parent",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"review": {
+				Action:    "graph.run",
+				Graph:     "review-phase",
+				Workspace: "feature",
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", agentName, parentGraph, nil, deps)
+
+	// Set up parent graph state with the feature workspace populated.
+	state := exec.graphState
+	state.RepoPath = dir
+	state.BaseBranch = "main"
+	state.StagingBranch = "staging/spi-test"
+	state.Vars["bead_id"] = "spi-test"
+	state.Vars["max_review_rounds"] = "3"
+	state.Workspaces["feature"] = WorkspaceState{
+		Name:   "feature",
+		Kind:   "owned_worktree",
+		Dir:    featureDir,
+		Branch: "feat/spi-test",
+		Status: "active",
+		Scope:  "run",
+	}
+
+	// Call actionGraphRun directly with the review step.
+	step := StepConfig{
+		Action:    "graph.run",
+		Graph:     "review-phase",
+		Workspace: "feature",
+	}
+
+	result := actionGraphRun(exec, "review", step, state)
+	if result.Error != nil {
+		t.Fatalf("actionGraphRun returned error: %v", result.Error)
+	}
+
+	// Verify the sage-review step was spawned.
+	if len(spawnConfigs) == 0 {
+		t.Fatal("no agents were spawned — expected at least sage-review")
+	}
+
+	// Find the sage-review spawn and check --worktree-dir.
+	var sageConfig *agent.SpawnConfig
+	for i := range spawnConfigs {
+		if spawnConfigs[i].Role == agent.RoleSage {
+			sageConfig = &spawnConfigs[i]
+			break
+		}
+	}
+	if sageConfig == nil {
+		t.Fatal("sage-review was not spawned")
+	}
+
+	// Verify --worktree-dir is present and points to the feature workspace dir.
+	foundWorktreeDir := ""
+	for i, arg := range sageConfig.ExtraArgs {
+		if arg == "--worktree-dir" && i+1 < len(sageConfig.ExtraArgs) {
+			foundWorktreeDir = sageConfig.ExtraArgs[i+1]
+			break
+		}
+	}
+	if foundWorktreeDir == "" {
+		t.Errorf("sage-review spawn missing --worktree-dir; ExtraArgs = %v", sageConfig.ExtraArgs)
+	} else if foundWorktreeDir != featureDir {
+		t.Errorf("sage-review --worktree-dir = %q, want %q", foundWorktreeDir, featureDir)
+	}
+
+	// Verify the review outcome was captured.
+	if result.Outputs["outcome"] != "merge" {
+		t.Errorf("outcome = %q, want %q", result.Outputs["outcome"], "merge")
+	}
+}
+
+// TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace verifies
+// the bug scenario from spi-b34i5: when the parent graph declares a workspace
+// on the graph.run step but that workspace's Dir was never resolved by a prior
+// wizard.run step (as happens in spire-epic-v3 where implement is also a
+// graph.run), actionGraphRun must still resolve the workspace and propagate the
+// Dir to the nested subState.
+//
+// Without the fix, the nested review-phase graph's sage-review step does NOT
+// receive --worktree-dir, causing it to create a new worktree that collides
+// with the existing one.
+func TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	agentName := "wizard-epic-test"
+
+	// Capture all spawn configs for inspection.
+	var spawnConfigs []agent.SpawnConfig
+	backend := &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			spawnConfigs = append(spawnConfigs, cfg)
+			return &mockHandle{}, nil
+		},
+	}
+
+	// Pre-write result.json for the sage-review spawn.
+	sageSpawnName := agentName + "-sage-review"
+	sageResultDir := filepath.Join(dir, sageSpawnName)
+	os.MkdirAll(sageResultDir, 0755)
+	sageResult, _ := json.Marshal(map[string]interface{}{
+		"result":  "approve",
+		"bead_id": "spi-epic",
+	})
+	os.WriteFile(filepath.Join(sageResultDir, "result.json"), sageResult, 0644)
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		Spawner:   backend,
+		AgentResultDir: func(name string) string {
+			return filepath.Join(dir, name)
+		},
+		RecordAgentRun: func(run AgentRun) error { return nil },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return dir, "", "main", nil
+		},
+	}
+
+	parentGraph := &formula.FormulaStepGraph{
+		Name:    "test-epic-parent",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"review": {
+				Action:    "graph.run",
+				Graph:     "review-phase",
+				Workspace: "staging",
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-epic", agentName, parentGraph, nil, deps)
+
+	state := exec.graphState
+	state.RepoPath = dir
+	state.BaseBranch = "main"
+	state.StagingBranch = "staging/spi-epic"
+	state.Vars["bead_id"] = "spi-epic"
+	state.Vars["max_review_rounds"] = "3"
+
+	// Simulate the epic scenario: the "staging" workspace was initialized by
+	// RunGraph's workspace init (from the parent formula's [workspaces.staging]),
+	// but its Dir was NEVER resolved because no prior wizard.run step used it.
+	// The implement step was a graph.run that created its own nested workspace.
+	//
+	// Use kind "repo" so resolveGraphWorkspace just sets Dir to RepoPath
+	// without requiring real git operations (the real scenario uses "staging"
+	// kind, but the resolution behavior is what we're testing, not git ops).
+	state.Workspaces["staging"] = WorkspaceState{
+		Name:       "staging",
+		Kind:       "repo",
+		Branch:     "epic/spi-epic",
+		BaseBranch: "main",
+		Status:     "pending",
+		Scope:      "run",
+		Ownership:  "owned",
+		Cleanup:    "terminal",
+		// Dir is intentionally empty — this is the bug scenario.
+	}
+
+	step := StepConfig{
+		Action:    "graph.run",
+		Graph:     "review-phase",
+		Workspace: "staging",
+	}
+
+	result := actionGraphRun(exec, "review", step, state)
+	if result.Error != nil {
+		t.Fatalf("actionGraphRun returned error: %v", result.Error)
+	}
+
+	// Verify the sage-review step was spawned.
+	if len(spawnConfigs) == 0 {
+		t.Fatal("no agents were spawned — expected at least sage-review")
+	}
+
+	// Find the sage-review spawn.
+	var sageConfig *agent.SpawnConfig
+	for i := range spawnConfigs {
+		if spawnConfigs[i].Role == agent.RoleSage {
+			sageConfig = &spawnConfigs[i]
+			break
+		}
+	}
+	if sageConfig == nil {
+		t.Fatal("sage-review was not spawned")
+	}
+
+	// Verify --worktree-dir is present and non-empty.
+	foundWorktreeDir := ""
+	for i, arg := range sageConfig.ExtraArgs {
+		if arg == "--worktree-dir" && i+1 < len(sageConfig.ExtraArgs) {
+			foundWorktreeDir = sageConfig.ExtraArgs[i+1]
+			break
+		}
+	}
+	if foundWorktreeDir == "" {
+		t.Errorf("sage-review spawn missing --worktree-dir; ExtraArgs = %v\n"+
+			"This is the spi-b34i5 bug: when the parent workspace Dir is unresolved,\n"+
+			"actionGraphRun must resolve it before passing to the nested graph.",
+			sageConfig.ExtraArgs)
+	} else if foundWorktreeDir != dir {
+		// With kind="repo", resolveGraphWorkspace sets Dir to state.RepoPath.
+		t.Errorf("sage-review --worktree-dir = %q, want %q (repo path)", foundWorktreeDir, dir)
+	}
+
+	// Verify the review outcome.
+	if result.Outputs["outcome"] != "merge" {
+		t.Errorf("outcome = %q, want %q", result.Outputs["outcome"], "merge")
+	}
+}
+
