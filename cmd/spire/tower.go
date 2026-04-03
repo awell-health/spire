@@ -1273,6 +1273,12 @@ func walkSharedReposForBind(tower *TowerConfig) error {
 		return nil
 	}
 
+	// Load global config for Instance registration during bind.
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Printf("\nShared repos in tower %q:\n", tower.Name)
 	fmt.Println("  For each repo, enter a local path to bind, 's' to skip, or 'u' for unmanaged.")
@@ -1293,32 +1299,54 @@ func walkSharedReposForBind(tower *TowerConfig) error {
 		line, _ := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
 
-		binding := &config.LocalRepoBinding{
-			Prefix:       prefix,
-			RepoURL:      repoURL,
-			SharedBranch: branch,
-			DiscoveredAt: time.Now(),
-		}
-
 		switch strings.ToLower(line) {
 		case "s", "skip":
-			binding.State = "skipped"
+			tower.LocalBindings[prefix] = &config.LocalRepoBinding{
+				Prefix:       prefix,
+				RepoURL:      repoURL,
+				SharedBranch: branch,
+				State:        "skipped",
+				DiscoveredAt: time.Now(),
+			}
 		case "u", "unmanaged":
-			binding.State = "unmanaged"
+			tower.LocalBindings[prefix] = &config.LocalRepoBinding{
+				Prefix:       prefix,
+				RepoURL:      repoURL,
+				SharedBranch: branch,
+				State:        "unmanaged",
+				DiscoveredAt: time.Now(),
+			}
 		case "":
-			binding.State = "unbound"
+			tower.LocalBindings[prefix] = &config.LocalRepoBinding{
+				Prefix:       prefix,
+				RepoURL:      repoURL,
+				SharedBranch: branch,
+				State:        "unbound",
+				DiscoveredAt: time.Now(),
+			}
 		default:
-			// Treat as a local filesystem path.
-			binding.State = "bound"
-			binding.LocalPath = line
-			binding.BoundAt = time.Now()
+			// Treat as a local filesystem path — perform real bind with bootstrap.
+			if err := performRepoBind(tower, cfg, prefix, line, repoURL, branch); err != nil {
+				fmt.Fprintf(os.Stderr, "  warning: could not bind %s: %v\n", prefix, err)
+				fmt.Fprintf(os.Stderr, "  → run 'spire repo bind %s /path' manually to retry\n", prefix)
+				tower.LocalBindings[prefix] = &config.LocalRepoBinding{
+					Prefix:       prefix,
+					RepoURL:      repoURL,
+					SharedBranch: branch,
+					State:        "unbound",
+					DiscoveredAt: time.Now(),
+				}
+			} else {
+				fmt.Printf("  ✓ bound %s → %s\n", prefix, tower.LocalBindings[prefix].LocalPath)
+			}
 		}
-
-		tower.LocalBindings[prefix] = binding
 		changed = true
 	}
 
 	if changed {
+		if err := saveConfig(cfg); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
 		return saveTowerConfig(tower)
 	}
 	return nil

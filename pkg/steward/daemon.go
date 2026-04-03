@@ -618,7 +618,37 @@ func reconcileSharedRepos(tower config.TowerConfig) error {
 			log.Printf("[spire] unbound shared repo: %s  %s  (branch: %s)", prefix, repoURL, branch)
 			log.Printf("  → run 'spire repo bind %s /local/path' to bind, or 'spire repo skip %s' to skip", prefix, prefix)
 		}
-		// bound, skipped, unmanaged — silent.
+
+		// Detect improperly bound repos: state=bound but missing .beads/
+		// bootstrap or Instance registration. Reset to unbound so the user
+		// gets re-prompted to run a real bind.
+		if binding.State == "bound" {
+			needsRebind := false
+			if binding.LocalPath == "" {
+				needsRebind = true
+			} else if _, err := os.Stat(filepath.Join(binding.LocalPath, ".beads", "metadata.json")); err != nil {
+				needsRebind = true
+			}
+			if !needsRebind {
+				// Check that a global Instance is registered for this prefix.
+				if globalCfg, gErr := config.Load(); gErr == nil {
+					if _, ok := globalCfg.Instances[prefix]; !ok {
+						needsRebind = true
+					}
+				}
+			}
+			if needsRebind {
+				log.Printf("[spire] repo %s marked bound but not properly bootstrapped — resetting to unbound", prefix)
+				if binding.LocalPath != "" {
+					log.Printf("  → run 'spire repo bind %s %s' to fix", prefix, binding.LocalPath)
+				} else {
+					log.Printf("  → run 'spire repo bind %s /local/path' to fix", prefix)
+				}
+				binding.State = "unbound"
+				changed = true
+			}
+		}
+		// skipped, unmanaged — silent.
 	}
 
 	if changed {
