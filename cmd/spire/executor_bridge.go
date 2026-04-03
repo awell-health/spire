@@ -111,7 +111,12 @@ func escalateHumanFailure(beadID, agentName, failureType, message string) {
 // --- Helper: resolveBeadBuildCmd ---
 
 func resolveBeadBuildCmd(bead Bead) string {
-	return executor.ResolveBeadBuildCmd(bead, ResolveFormula)
+	// V2 formula resolution removed; ResolveBeadBuildCmd returns "" for
+	// beads without a v2 formula.  Build commands in v3 are declared via
+	// step-graph vars / repo config, not formula phases.
+	return executor.ResolveBeadBuildCmd(bead, func(_ Bead) (*FormulaV2, error) {
+		return nil, fmt.Errorf("v2 formula resolution removed")
+	})
 }
 
 // --- Helper: archmageIdentity ---
@@ -167,7 +172,9 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 
 		// Config
 		ConfigDir:      configDir,
-		ResolveFormula: ResolveFormula,
+		ResolveFormula: func(_ Bead) (*FormulaV2, error) {
+			return nil, fmt.Errorf("v2 formula resolution removed")
+		},
 		RepoConfig: func() *repoconfig.RepoConfig {
 			// Best-effort: load from the bead's repo. Returns nil if unavailable.
 			cfg, err := repoconfig.Load(".")
@@ -306,47 +313,15 @@ func cmdExecute(args []string) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	// Resolve formula — check for v3 graph formulas first, fall back to v2.
+	// All formulas are v3 step-graph formulas.
 	spawner := ResolveBackend("")
 
 	if formulaName != "" {
-		// Explicit formula name: try loading as v3 step-graph first, then v2.
-		if graph, gErr := formulaPkg.LoadStepGraphByName(formulaName); gErr == nil {
-			claimBeadIfNeeded(beadID, agentName)
-			ex, execErr := newGraphExecutor(beadID, agentName, graph, spawner)
-			if execErr != nil {
-				return execErr
-			}
-			return ex.Run()
-		}
-		formula, err := LoadFormulaByName(formulaName)
-		if err != nil {
-			return fmt.Errorf("load formula %s: %w", formulaName, err)
+		graph, gErr := formulaPkg.LoadStepGraphByName(formulaName)
+		if gErr != nil {
+			return fmt.Errorf("load formula %s: %w", formulaName, gErr)
 		}
 		claimBeadIfNeeded(beadID, agentName)
-		ex, execErr := newExecutor(beadID, agentName, formula, spawner)
-		if execErr != nil {
-			return execErr
-		}
-		return ex.Run()
-	}
-
-	// No explicit formula: resolve from bead type/labels, supporting v3 opt-in.
-	bead, berr := storeGetBead(beadID)
-	if berr != nil {
-		return fmt.Errorf("get bead: %w", berr)
-	}
-
-	bi := beadToInfo(bead)
-	anyFormula, version, err := formulaPkg.ResolveAny(bi)
-	if err != nil {
-		return fmt.Errorf("resolve formula: %w", err)
-	}
-
-	claimBeadIfNeeded(beadID, agentName)
-
-	if version == 3 {
-		graph := anyFormula.(*formulaPkg.FormulaStepGraph)
 		ex, execErr := newGraphExecutor(beadID, agentName, graph, spawner)
 		if execErr != nil {
 			return execErr
@@ -354,8 +329,21 @@ func cmdExecute(args []string) error {
 		return ex.Run()
 	}
 
-	formula := anyFormula.(*FormulaV2)
-	ex, execErr := newExecutor(beadID, agentName, formula, spawner)
+	// No explicit formula: resolve v3 from bead type/labels.
+	bead, berr := storeGetBead(beadID)
+	if berr != nil {
+		return fmt.Errorf("get bead: %w", berr)
+	}
+
+	bi := beadToInfo(bead)
+	anyFormula, _, err := formulaPkg.ResolveAny(bi)
+	if err != nil {
+		return fmt.Errorf("resolve formula: %w", err)
+	}
+
+	graph := anyFormula.(*formulaPkg.FormulaStepGraph)
+	claimBeadIfNeeded(beadID, agentName)
+	ex, execErr := newGraphExecutor(beadID, agentName, graph, spawner)
 	if execErr != nil {
 		return execErr
 	}

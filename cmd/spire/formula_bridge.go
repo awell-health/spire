@@ -8,21 +8,9 @@ import (
 )
 
 // --- Type aliases ---
-// Dead aliases removed: PhaseConfig, FormulaVar, FormulaStepGraph, StepConfig.
 
 type FormulaV2 = formula.FormulaV2
 type RevisionPolicy = formula.RevisionPolicy
-
-// --- Variable aliases ---
-// Dead aliases removed: validPhases, DefaultFormulaMap, isValidPhase — no callers.
-
-// --- Function aliases ---
-// Dead aliases removed: ParseFormulaV2, ParseFormulaStepGraph, LoadFormulaV2,
-// FindFormula, LoadEmbeddedFormula, LoadReviewPhaseFormula — no callers.
-
-var (
-	LoadFormulaByName = formula.LoadFormulaByName
-)
 
 // beadToInfo converts a Bead to formula.BeadInfo for pkg/formula calls.
 func beadToInfo(b Bead) formula.BeadInfo {
@@ -33,25 +21,13 @@ func beadToInfo(b Bead) formula.BeadInfo {
 	}
 }
 
-// ResolveFormula determines which formula to use for a bead.
-// Delegates to formula.Resolve, converting Bead -> formula.BeadInfo.
-func ResolveFormula(bead Bead) (*FormulaV2, error) {
-	return formula.Resolve(beadToInfo(bead))
-}
-
-// resolveFormulaName returns the formula name for a bead without loading it.
-// Uses ResolveAny to respect the v3-default resolution order.
+// resolveFormulaName returns the v3 formula name for a bead without loading it.
 func resolveFormulaName(bead Bead) string {
-	info := beadToInfo(bead)
-	if formula.WantsV2(info) {
-		return formula.ResolveName(info)
-	}
-	return formula.ResolveV3Name(info)
+	return formula.ResolveV3Name(beadToInfo(bead))
 }
 
-// ResolveFormulaAny resolves either a v2 or v3 formula for a bead.
-// Returns the formula (either *FormulaV2 or *formula.FormulaStepGraph),
-// the version number, and any error.
+// ResolveFormulaAny resolves a v3 formula for a bead.
+// Returns the formula (*formula.FormulaStepGraph), version 3, and any error.
 func ResolveFormulaAny(bead Bead) (interface{}, int, error) {
 	return formula.ResolveAny(beadToInfo(bead))
 }

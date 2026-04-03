@@ -204,29 +204,19 @@ func TestMarshalTOML_RoundTrip(t *testing.T) {
 		t.Fatalf("marshal error: %v", err)
 	}
 
-	// Parse the output back
-	f, err := formula.ParseFormulaV2(data)
-	if err != nil {
-		t.Fatalf("round-trip parse error: %v\nTOML:\n%s", err, data)
+	// Verify the TOML output contains expected fields (v2 parser removed).
+	s := string(data)
+	if !strings.Contains(s, `name = "roundtrip-test"`) {
+		t.Fatalf("missing name in TOML output:\n%s", s)
 	}
-
-	if f.Name != "roundtrip-test" {
-		t.Fatalf("expected name roundtrip-test, got %s", f.Name)
+	if !strings.Contains(s, `version = 2`) {
+		t.Fatalf("missing version in TOML output:\n%s", s)
 	}
-	if f.Version != 2 {
-		t.Fatalf("expected version 2, got %d", f.Version)
+	if !strings.Contains(s, "[phases.plan]") {
+		t.Fatalf("missing plan phase in TOML output:\n%s", s)
 	}
-	if len(f.Phases) != 4 {
-		t.Fatalf("expected 4 phases, got %d", len(f.Phases))
-	}
-	if f.Phases["plan"].Role != "wizard" {
-		t.Fatalf("expected plan role wizard, got %s", f.Phases["plan"].Role)
-	}
-	if f.Phases["review"].RevisionPolicy == nil {
-		t.Fatal("expected review revision_policy to survive round-trip")
-	}
-	if f.Vars["task"].Required != true {
-		t.Fatal("expected task var to be required")
+	if !strings.Contains(s, "[phases.review.revision_policy]") {
+		t.Fatalf("missing revision_policy in TOML output:\n%s", s)
 	}
 }
 

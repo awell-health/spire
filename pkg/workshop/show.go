@@ -28,12 +28,6 @@ func Show(name string) (string, error) {
 	}
 
 	switch hdr.Version {
-	case 2:
-		f, err := formula.ParseFormulaV2(data)
-		if err != nil {
-			return "", fmt.Errorf("parse v2 formula: %w", err)
-		}
-		return renderV2(f, source), nil
 	case 3:
 		f, err := formula.ParseFormulaStepGraph(data)
 		if err != nil {
@@ -43,112 +37,6 @@ func Show(name string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported formula version %d", hdr.Version)
 	}
-}
-
-// renderV2 produces a human-readable display of a v2 phase-pipeline formula.
-func renderV2(f *formula.FormulaV2, source string) string {
-	var b strings.Builder
-
-	// Header
-	fmt.Fprintf(&b, "%s (v%d)", f.Name, f.Version)
-	if f.Description != "" {
-		fmt.Fprintf(&b, " — %s", f.Description)
-	}
-	b.WriteString("\n")
-	fmt.Fprintf(&b, "Source: %s\n", source)
-
-	// Pipeline diagram
-	phases := f.EnabledPhases()
-	if len(phases) > 0 {
-		b.WriteString("\nPipeline:\n")
-		fmt.Fprintf(&b, "  %s\n", strings.Join(phases, " → "))
-	}
-
-	// Per-phase details
-	for _, phaseName := range phases {
-		pc := f.Phases[phaseName]
-		b.WriteString("\n")
-		fmt.Fprintf(&b, "  [%s]\n", phaseName)
-
-		if role := pc.GetRole(); role != "apprentice" || pc.Role != "" {
-			fmt.Fprintf(&b, "    role:     %s\n", pc.GetRole())
-		}
-		if pc.Model != "" {
-			fmt.Fprintf(&b, "    model:    %s\n", pc.Model)
-		}
-		if pc.Timeout != "" {
-			fmt.Fprintf(&b, "    timeout:  %s\n", pc.Timeout)
-		}
-		if pc.MaxTurns > 0 {
-			fmt.Fprintf(&b, "    turns:    %d\n", pc.MaxTurns)
-		}
-		if dispatch := pc.GetDispatch(); dispatch != "direct" {
-			fmt.Fprintf(&b, "    dispatch: %s\n", dispatch)
-		}
-		if pc.StagingBranch != "" {
-			fmt.Fprintf(&b, "    staging:  %s\n", pc.StagingBranch)
-		}
-		if pc.MergeStrategy != "" {
-			fmt.Fprintf(&b, "    strategy: %s\n", pc.MergeStrategy)
-		}
-		if pc.Worktree {
-			fmt.Fprintf(&b, "    worktree: true\n")
-		}
-		if pc.Apprentice {
-			fmt.Fprintf(&b, "    apprentice: true\n")
-		}
-		if pc.Auto {
-			fmt.Fprintf(&b, "    auto:     true\n")
-		}
-		if pc.VerdictOnly {
-			fmt.Fprintf(&b, "    verdict_only: true\n")
-		}
-		if pc.Judgment {
-			fmt.Fprintf(&b, "    judgment:  true\n")
-		}
-		if pc.Behavior != "" {
-			fmt.Fprintf(&b, "    behavior: %s\n", pc.Behavior)
-		}
-		if pc.Build != "" {
-			fmt.Fprintf(&b, "    build:    %s\n", pc.Build)
-		}
-		if pc.Test != "" {
-			fmt.Fprintf(&b, "    test:     %s\n", pc.Test)
-		}
-		if pc.RevisionPolicy != nil {
-			fmt.Fprintf(&b, "    revision_policy:\n")
-			fmt.Fprintf(&b, "      max_rounds:    %d\n", pc.RevisionPolicy.MaxRounds)
-			if pc.RevisionPolicy.ArbiterModel != "" {
-				fmt.Fprintf(&b, "      arbiter_model: %s\n", pc.RevisionPolicy.ArbiterModel)
-			}
-		}
-		if len(pc.Context) > 0 {
-			fmt.Fprintf(&b, "    context:  %s\n", strings.Join(pc.Context, ", "))
-		}
-	}
-
-	// Variables
-	if len(f.Vars) > 0 {
-		b.WriteString("\nVariables:\n")
-		names := make([]string, 0, len(f.Vars))
-		for n := range f.Vars {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			v := f.Vars[n]
-			req := ""
-			if v.Required {
-				req = " (required)"
-			}
-			fmt.Fprintf(&b, "  %s%s — %s\n", n, req, v.Description)
-			if v.Default != "" {
-				fmt.Fprintf(&b, "    default: %s\n", v.Default)
-			}
-		}
-	}
-
-	return b.String()
 }
 
 // renderV3 produces a human-readable display of a v3 step-graph formula.

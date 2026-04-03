@@ -1,23 +1,23 @@
 # pkg/formula
 
-Runtime formula schema and graph semantics.
+Runtime formula schema and graph semantics (v3-only).
 
 This package defines the data structures and low-level evaluation behavior
 that the executor consumes. It is the runtime contract between formula
 authoring (`pkg/workshop`) and formula execution (`pkg/executor`).
 
-It supports two formula versions:
-- **v3 step-graph formulas** — the default runtime model. `ResolveAny`
-  resolves to v3 unless the bead carries a `formula-version:2` label.
-- **v2 phase-pipeline formulas** — legacy sequential phases, opt-in via
-  the `formula-version:2` label.
+All formulas are **v3 step-graph formulas**. V2 phase-pipeline resolution,
+parsing, and embedded formulas have been removed. The `FormulaV2` and
+`PhaseConfig` types remain temporarily for the executor's v2 pipeline code
+(pending full v2 executor removal).
 
 ## What this package owns
 
-- **Formula data structures**: `FormulaV2`, `FormulaStepGraph`, phase config,
-  step config, vars, revision policy, and output declarations.
-- **Parsing and loading**: TOML parsing (`ParseFormulaV2`, `ParseFormulaStepGraph`,
-  `ParseFormulaAny`), embedded formula loading, and name resolution.
+- **Formula data structures**: `FormulaStepGraph`, `StepConfig`, `FormulaVar`,
+  `RevisionPolicy`, `WorkspaceDecl`, `OutputDecl`, and legacy `FormulaV2`/`PhaseConfig`
+  (retained for executor compatibility).
+- **Parsing and loading**: TOML parsing (`ParseFormulaStepGraph`, `ParseFormulaAny`),
+  embedded formula loading, and v3 name resolution.
 - **Graph semantics**: step readiness (`NextSteps`), entry detection (`EntryStep`),
   terminal detection (`IsTerminal`), and graph validation (`ValidateGraph`).
 - **Condition evaluation**: legacy string conditions (`EvalCondition`) and typed
@@ -29,8 +29,7 @@ It supports two formula versions:
   (`op`, `dispatch`, `call`), and the `noop` sentinel opcode (`opcode.go`).
 - **Formula variable schema**: `FormulaVar` with typed variable validation
   (`string`, `int`, `bool`, `bead_id`).
-- **Runtime defaults**: built-in formulas, default formula maps, and version-aware
-  resolution (`ResolveAny`).
+- **Runtime defaults**: built-in v3 formulas and v3-only resolution (`ResolveAny`, `ResolveV3`).
 
 ## What this package does NOT own
 
@@ -55,14 +54,11 @@ If it is only a UI, authoring, or explanation concern, it should stay in
 
 ## Current state
 
-V3 formulas now declare the full workflow graph with workspaces, typed
+V3 formulas declare the full workflow graph with workspaces, typed
 variables, conditional routing (`StructuredCondition`), reset loops
 (`StepConfig.Resets`), and nested sub-graphs (`graph.run`). All bead types
-(task, bug, epic, chore, feature) have v3 embedded formulas and `ResolveAny`
-defaults to v3 resolution.
-
-V2 phase-pipeline formulas remain available as a legacy opt-in via the
-`formula-version:2` label.
+(task, bug, epic, chore, feature) have v3 embedded formulas. `ResolveAny`
+resolves exclusively to v3.
 
 Remaining gap: some executor policy (e.g., retry orchestration details) is
 not yet fully formula-declared.
@@ -75,7 +71,6 @@ behind the v3 execution model.
 | Type / function | Purpose |
 |-----------------|---------|
 | **Data structures** | |
-| `FormulaV2` | Legacy phase-pipeline formula model. |
 | `FormulaStepGraph` | Graph-based v3 formula model with `Workspaces`, `Vars`, explicit `Entry`, and conditional step routing. |
 | `StepConfig` | Single step in a graph: `Kind`, `Action`, `When`, `Workspace`, `With`, `Produces`, `Retry`, `Resets`, `Flow`, `Graph`. |
 | `StepConfig.Resets` | Steps to reset to pending after this step completes (enables review loops). |
@@ -83,20 +78,20 @@ behind the v3 execution model.
 | `WorkspaceDecl` | Named workspace declaration with kind/branch/base/scope/ownership/cleanup. |
 | `StructuredCondition` | Typed predicate condition: `All` (AND) + `Any` (OR) of `Predicate` structs. |
 | `OutputDecl` | Declares graph outputs that terminal steps populate into `GraphResult.Outputs`. |
+| `RevisionPolicy` | Review loop configuration (max rounds, arbiter model). Used by v3 arbiter actions. |
+| `FormulaV2` | Legacy phase-pipeline model (retained for executor v2 compat, pending removal). |
+| `PhaseConfig` | Legacy phase configuration (retained for executor v2 compat, pending removal). |
 | **Parsing and loading** | |
-| `ParseFormulaAny` | Version-peeking parser: returns `*FormulaV2` or `*FormulaStepGraph` + version int. |
-| `ParseFormulaV2` | Parse v2 formula from TOML bytes. |
 | `ParseFormulaStepGraph` | Parse v3 step-graph formula from TOML bytes (applies workspace defaults, runs `ValidateGraph`). |
-| `LoadFormulaByName` | Layered v2 resolution: on-disk override → embedded default. |
-| `LoadStepGraphByName` | Layered v3 resolution: on-disk override → embedded default. |
+| `ParseFormulaAny` | Parses v3 formula from TOML bytes. Returns `*FormulaStepGraph`. |
+| `LoadStepGraphByName` | Layered v3 resolution: on-disk override -> embedded default. |
 | `LoadEmbeddedStepGraph` | Load a v3 formula from embedded defaults compiled into the binary. |
 | `LoadReviewPhaseFormula` | Convenience loader for the embedded review-phase graph. |
 | **Resolution** | |
-| `ResolveAny` | Default resolution path — v3 by default, v2 only when `formula-version:2` label present. |
+| `ResolveAny` | Default resolution path -- v3 only. Returns `*FormulaStepGraph`. |
 | `ResolveV3` | Explicit v3 resolution for a bead. |
-| `Resolve` | Legacy v2-only resolution for a bead. |
-| `DefaultV3FormulaMap` | Bead-type → v3 formula name mapping (task→`spire-agent-work-v3`, etc.). |
-| `DefaultFormulaMap` | Bead-type → v2 formula name mapping (legacy). |
+| `ResolveV3Name` | Returns the v3 formula name for a bead without loading it. |
+| `DefaultV3FormulaMap` | Bead-type -> v3 formula name mapping (task->`spire-agent-work-v3`, etc.). |
 | **Graph semantics** | |
 | `NextSteps` | Determine which graph steps are ready given `completed map[string]bool` and condition context. |
 | `EntryStep` | Return the graph's entry step (explicit `Entry` field or implicit no-needs step). |
@@ -104,7 +99,7 @@ behind the v3 execution model.
 | `ValidateGraph` | Structural validation: needs refs, self-refs, entry/terminal counts, resets targets, workspace refs, opcode validity, step kind validity, `When`/`Condition` exclusion, predicate ops, var types. |
 | `ValidateWorkspaces` | Workspace declaration validation: kind, scope, ownership, cleanup, kind-specific rules. |
 | **Conditions** | |
-| `EvalStepCondition` | Unified entry point — dispatches to `When` (structured) or `Condition` (string), errors if both set. |
+| `EvalStepCondition` | Unified entry point -- dispatches to `When` (structured) or `Condition` (string), errors if both set. |
 | `EvalStructuredCondition` | Evaluate a `StructuredCondition` against a dotted-key context map. |
 | `EvalCondition` | Evaluate legacy string condition expressions (`==`, `!=`, `<`, `>`, `&&`, `\|\|`). |
 | **Opcodes and kinds** | |
@@ -115,8 +110,8 @@ behind the v3 execution model.
 
 ## Embedded v3 formulas
 
-The `embedded/formulas/` directory contains built-in formulas compiled into the
-binary. V3 formulas and their default mappings:
+The `embedded/formulas/` directory contains built-in v3 formulas compiled into
+the binary:
 
 | Formula | Default for | Purpose |
 |---------|-------------|---------|
