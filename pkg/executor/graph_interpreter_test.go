@@ -1301,6 +1301,99 @@ func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {
 	}
 }
 
+// --- Test: Terminal success reconciles sibling step beads ---
+
+func TestRunGraph_TerminalReconcilesSiblingStepBeads(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// Track which step beads were closed.
+	var closedStepBeads []string
+	deps.CloseStepBead = func(stepID string) error {
+		closedStepBeads = append(closedStepBeads, stepID)
+		return nil
+	}
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"decision": "merge"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-reconcile",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"decide": {Action: "test.noop"},
+			"merge": {
+				Action:    "test.noop",
+				Needs:     []string{"decide"},
+				Condition: "steps.decide.outputs.decision == merge",
+				Terminal:  true,
+			},
+			"discard": {
+				Action:    "test.noop",
+				Needs:     []string{"decide"},
+				Condition: "steps.decide.outputs.decision == discard",
+				Terminal:  true,
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	if !exec.terminated {
+		t.Error("expected executor to be terminated")
+	}
+
+	// The merge path was taken: decide + merge step beads were closed via normal flow.
+	// The discard step bead should also have been closed by the reconcile loop.
+	discardBeadID := exec.graphState.StepBeadIDs["discard"]
+	if discardBeadID == "" {
+		t.Fatal("expected discard step bead to have been created")
+	}
+
+	found := false
+	for _, id := range closedStepBeads {
+		if id == discardBeadID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected discard step bead %s to be closed by reconcile, closed beads: %v",
+			discardBeadID, closedStepBeads)
+	}
+
+	// Verify merge step bead was also closed (via normal close, not reconcile).
+	mergeBeadID := exec.graphState.StepBeadIDs["merge"]
+	mergeFound := false
+	for _, id := range closedStepBeads {
+		if id == mergeBeadID {
+			mergeFound = true
+			break
+		}
+	}
+	if !mergeFound {
+		t.Errorf("expected merge step bead %s to be closed, closed beads: %v",
+			mergeBeadID, closedStepBeads)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
 }

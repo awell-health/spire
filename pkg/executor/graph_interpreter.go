@@ -96,6 +96,17 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			// Check if any terminal step completed -> success.
 			for name, ss := range state.Steps {
 				if ss.Status == "completed" && formula.IsTerminal(graph, name) {
+					// Reconcile: close remaining step beads (same as inline terminal path).
+					for sn, sid := range state.StepBeadIDs {
+						if sn == name || sid == "" {
+							continue
+						}
+						if s := state.Steps[sn]; s.Status != "completed" && s.Status != "failed" {
+							if err := e.deps.CloseStepBead(sid); err != nil {
+								e.log("warning: reconcile step bead %s (%s): %s", sid, sn, err)
+							}
+						}
+					}
 					e.terminated = true
 					e.closeGraphAttempt(state, "success: terminal step "+name)
 					return nil
@@ -182,6 +193,21 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 
 		// 7. Check terminal.
 		if formula.IsTerminal(graph, stepName) {
+			// Reconcile: close all remaining step beads that didn't execute.
+			for name, sid := range state.StepBeadIDs {
+				if name == stepName {
+					continue // already closed above
+				}
+				if sid == "" {
+					continue
+				}
+				ss := state.Steps[name]
+				if ss.Status != "completed" && ss.Status != "failed" {
+					if err := e.deps.CloseStepBead(sid); err != nil {
+						e.log("warning: reconcile step bead %s (%s): %s", sid, name, err)
+					}
+				}
+			}
 			e.terminated = true
 			// Save parent state before cleaning up nested state (crash-safe ordering).
 			state.Save(e.agentName, e.deps.ConfigDir)
@@ -319,6 +345,8 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 		state.Steps[stepName] = ss
 
 		if formula.IsTerminal(graph, stepName) {
+			// Nested graphs don't create step beads (ensureGraphStepBeads is
+			// only called by RunGraph), so no reconciliation needed here.
 			// Persist final state before returning (caller removes on success).
 			state.Save(state.AgentName, e.deps.ConfigDir)
 			return nil
