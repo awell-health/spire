@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/spf13/cobra"
@@ -349,20 +350,28 @@ func buildRecoveryDeps() *recovery.Deps {
 			return result, nil
 		},
 		LoadExecutorState: func(agentName string) (*recovery.RuntimeState, error) {
+			// Try v2 state first.
 			state, err := loadExecutorState(agentName)
-			if err != nil {
-				return nil, err
+			if err == nil && state != nil {
+				return &recovery.RuntimeState{
+					Phase:         state.Phase,
+					Wave:          state.Wave,
+					StagingBranch: state.StagingBranch,
+					AttemptBeadID: state.AttemptBeadID,
+					StepBeadIDs:   state.StepBeadIDs,
+				}, nil
 			}
-			if state == nil {
-				return nil, fmt.Errorf("no state")
+			// Try v3 graph state.
+			gs, gsErr := executor.LoadGraphState(agentName, configDir)
+			if gsErr == nil && gs != nil {
+				return &recovery.RuntimeState{
+					Phase:         gs.ActiveStep,
+					StagingBranch: gs.StagingBranch,
+					AttemptBeadID: gs.AttemptBeadID,
+					StepBeadIDs:   gs.StepBeadIDs,
+				}, nil
 			}
-			return &recovery.RuntimeState{
-				Phase:         state.Phase,
-				Wave:          state.Wave,
-				StagingBranch: state.StagingBranch,
-				AttemptBeadID: state.AttemptBeadID,
-				StepBeadIDs:   state.StepBeadIDs,
-			}, nil
+			return nil, fmt.Errorf("no state")
 		},
 		LookupRegistry: func(beadID string) (string, int, bool, error) {
 			reg := loadWizardRegistry()

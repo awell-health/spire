@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/spf13/cobra"
@@ -145,10 +146,22 @@ func cmdReset(args []string) error {
 		}
 	}
 
-	f, err := ResolveFormula(bead)
+	// Detect formula version: v2 or v3.
+	anyFormula, version, err := ResolveFormulaAny(bead)
 	if err != nil {
 		return fmt.Errorf("resolve formula for %s: %w", beadID, err)
 	}
+
+	if version == 3 {
+		if toPhase != "" {
+			return fmt.Errorf("--to is not supported for v3 formulas; use --hard to fully reset")
+		}
+		return resetV3(beadID, hard, wizardName, worktreePath)
+	}
+
+	// --- v2 path (unchanged) ---
+
+	f := anyFormula.(*FormulaV2)
 
 	enabled := f.EnabledPhases()
 	if len(enabled) == 0 {
@@ -254,44 +267,7 @@ func cmdReset(args []string) error {
 	// --- 6. --hard: remove worktrees and delete branches ---
 
 	if hard {
-		// Remove worktree directory.
-		if worktreePath == "" {
-			worktreePath = filepath.Join(os.TempDir(), "spire-wizard", wizardName, beadID)
-		}
-		if err := os.RemoveAll(worktreePath); err == nil {
-			fmt.Printf("  %s✗ worktree removed: %s%s\n", dim, worktreePath, reset)
-		} else if !os.IsNotExist(err) {
-			fmt.Printf("  %s(note: could not remove worktree %s: %s)%s\n", dim, worktreePath, err, reset)
-		}
-
-		// Also remove .worktrees/<bead-id> if it exists (in-repo worktree).
-		cwd, _ := os.Getwd()
-		inRepoWt := filepath.Join(cwd, ".worktrees", beadID)
-		if err := os.RemoveAll(inRepoWt); err == nil {
-			fmt.Printf("  %s✗ in-repo worktree removed: %s%s\n", dim, inRepoWt, reset)
-		}
-
-		// Delete matching branches: epic/<bead-id>, feat/<bead-id>, feat/<bead-id>.*, staging/<bead-id>
-		rc := &spgit.RepoContext{Dir: cwd}
-		// Prune stale worktree refs so branch deletion succeeds even if the
-		// worktree directory was already removed above.
-		rc.PruneWorktrees()
-		branchPatterns := []string{
-			"epic/" + beadID,
-			"feat/" + beadID,
-			"feat/" + beadID + ".*",
-			"staging/" + beadID,
-		}
-		for _, pattern := range branchPatterns {
-			branches := rc.ListBranches(pattern)
-			for _, branch := range branches {
-				if err := rc.ForceDeleteBranch(branch); err != nil {
-					fmt.Printf("  %s(note: could not delete branch %s: %s)%s\n", dim, branch, err, reset)
-				} else {
-					fmt.Printf("  %s✗ branch deleted: %s%s\n", dim, branch, reset)
-				}
-			}
-		}
+		resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName)
 	}
 
 	fmt.Printf("%s reset to %s\n", beadID, toPhase)
@@ -304,4 +280,195 @@ func cmdReset(args []string) error {
 	}
 
 	return nil
+}
+
+// resetV3 performs a full reset for v3 (step-graph) formulas.
+// Mirrors the manual reset procedure: clear graph state, clean git artifacts,
+// close step/attempt beads, reopen subtask children, reset the epic bead.
+func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
+	// --- 1. Remove v3 graph state files (parent + nested) ---
+	removeGraphStateFiles(wizardName)
+
+	// Also remove v2 state.json if it exists (belt and suspenders).
+	statePath := executorStatePath(wizardName)
+	if err := os.Remove(statePath); err == nil {
+		fmt.Printf("  %s✗ v2 state file also removed%s\n", dim, reset)
+	}
+
+	// --- 2. Process children: close step/attempt beads, reopen subtask children ---
+	children, err := storeGetChildren(beadID)
+	if err != nil {
+		return fmt.Errorf("get children for %s: %w", beadID, err)
+	}
+
+	closedSteps := 0
+	closedAttempts := 0
+	reopenedChildren := 0
+
+	for _, child := range children {
+		if isStepBead(child) || isAttemptBead(child) {
+			// Step and attempt beads: close them. They'll be recreated on re-summon.
+			if child.Status != "closed" {
+				if err := storeCloseBead(child.ID); err != nil {
+					fmt.Printf("  %s(note: could not close %s: %s)%s\n", dim, child.ID, err, reset)
+				} else if isStepBead(child) {
+					closedSteps++
+				} else {
+					closedAttempts++
+				}
+			}
+			continue
+		}
+
+		// Subtask children (task/feature/etc.): reopen them so the epic can re-dispatch.
+		if child.Status != "open" && child.Status != "closed" {
+			// Only reopen in_progress children — leave closed ones alone (they completed successfully).
+			if err := storeUpdateBead(child.ID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
+				fmt.Printf("  %s(note: could not reopen subtask %s: %s)%s\n", dim, child.ID, err, reset)
+			} else {
+				reopenedChildren++
+			}
+		}
+	}
+
+	if closedSteps > 0 {
+		fmt.Printf("  %s✗ closed %d step beads%s\n", dim, closedSteps, reset)
+	}
+	if closedAttempts > 0 {
+		fmt.Printf("  %s✗ closed %d attempt beads%s\n", dim, closedAttempts, reset)
+	}
+	if reopenedChildren > 0 {
+		fmt.Printf("  %s↺ reopened %d subtask children%s\n", yellow, reopenedChildren, reset)
+	}
+
+	// --- 3. Strip labels from the bead ---
+	bead, err := storeGetBead(beadID)
+	if err != nil {
+		return fmt.Errorf("get bead %s: %w", beadID, err)
+	}
+	for _, l := range bead.Labels {
+		if strings.HasPrefix(l, "feat-branch:") ||
+			strings.HasPrefix(l, "interrupted:") ||
+			l == "needs-human" {
+			if err := storeRemoveLabel(beadID, l); err != nil {
+				fmt.Printf("  %s(note: could not remove %s: %s)%s\n", dim, l, err, reset)
+			} else {
+				fmt.Printf("  %s✓ cleared %s%s\n", green, l, reset)
+			}
+		}
+	}
+
+	// --- 4. Reset bead status to open (not in_progress — summon will claim it) ---
+	if err := storeUpdateBead(beadID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
+		fmt.Printf("  %s(note: could not set %s to open: %s)%s\n", dim, beadID, err, reset)
+	} else {
+		fmt.Printf("  %s↺ %s set to open%s\n", yellow, beadID, reset)
+	}
+
+	// --- 5. Git cleanup (hard reset: worktrees + branches) ---
+	if hard {
+		resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName)
+	}
+
+	fmt.Printf("%s reset (v3)\n", beadID)
+
+	// --- 6. Re-summon ---
+	fmt.Printf("  %s↑ re-summoning wizard for %s%s\n", cyan, beadID, reset)
+	if err := cmdSummon([]string{"1", "--targets", beadID}); err != nil {
+		return fmt.Errorf("re-summon %s: %w", beadID, err)
+	}
+
+	return nil
+}
+
+// graphStatePath returns the v3 graph_state.json path for a given agent name.
+func graphStatePath(agentName string) string {
+	return executor.GraphStatePath(agentName, configDir)
+}
+
+// removeGraphStateFiles removes the v3 graph state for a wizard and all its
+// nested sub-executors (apprentice, sage, etc.).
+func removeGraphStateFiles(wizardName string) {
+	// Remove parent graph state.
+	gsPath := graphStatePath(wizardName)
+	if err := os.Remove(gsPath); err == nil {
+		fmt.Printf("  %s✗ graph state removed%s\n", dim, reset)
+	}
+
+	// Remove nested graph states: wizard-<name>-* directories.
+	dir, err := configDir()
+	if err != nil {
+		return
+	}
+	runtimeDir := filepath.Join(dir, "runtime")
+	pattern := filepath.Join(runtimeDir, wizardName+"-*", "graph_state.json")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if err := os.Remove(m); err == nil {
+			fmt.Printf("  %s✗ nested graph state removed: %s%s\n", dim, filepath.Base(filepath.Dir(m)), reset)
+		}
+	}
+
+	// Also glob nested state.json (v2 nested executors).
+	v2Pattern := filepath.Join(runtimeDir, wizardName+"-*", "state.json")
+	v2Matches, _ := filepath.Glob(v2Pattern)
+	for _, m := range v2Matches {
+		if err := os.Remove(m); err == nil {
+			fmt.Printf("  %s✗ nested v2 state removed: %s%s\n", dim, filepath.Base(filepath.Dir(m)), reset)
+		}
+	}
+}
+
+// resetCleanWorktreesAndBranches removes worktrees and branches for a bead.
+// Shared between v2 hard-reset and v3 hard-reset paths.
+func resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName string) {
+	// Remove worktree directory.
+	if worktreePath == "" {
+		worktreePath = filepath.Join(os.TempDir(), "spire-wizard", wizardName, beadID)
+	}
+	if err := os.RemoveAll(worktreePath); err == nil {
+		fmt.Printf("  %s✗ worktree removed: %s%s\n", dim, worktreePath, reset)
+	} else if !os.IsNotExist(err) {
+		fmt.Printf("  %s(note: could not remove worktree %s: %s)%s\n", dim, worktreePath, err, reset)
+	}
+
+	// Also remove .worktrees/<bead-id> if it exists (in-repo worktree).
+	cwd, _ := os.Getwd()
+	inRepoWt := filepath.Join(cwd, ".worktrees", beadID)
+	if err := os.RemoveAll(inRepoWt); err == nil {
+		fmt.Printf("  %s✗ in-repo worktree removed: %s%s\n", dim, inRepoWt, reset)
+	}
+
+	// Also remove .worktrees/<bead-id>-* (feature worktrees for subtasks).
+	wtMatches, _ := filepath.Glob(filepath.Join(cwd, ".worktrees", beadID+"-*"))
+	for _, m := range wtMatches {
+		if err := os.RemoveAll(m); err == nil {
+			fmt.Printf("  %s✗ subtask worktree removed: %s%s\n", dim, filepath.Base(m), reset)
+		}
+	}
+
+	// Delete matching branches: epic/<bead-id>, feat/<bead-id>, feat/<bead-id>.*, staging/<bead-id>
+	rc := &spgit.RepoContext{Dir: cwd}
+	// Prune stale worktree refs so branch deletion succeeds even if the
+	// worktree directory was already removed above.
+	rc.PruneWorktrees()
+	branchPatterns := []string{
+		"epic/" + beadID,
+		"feat/" + beadID,
+		"feat/" + beadID + ".*",
+		"staging/" + beadID,
+	}
+	for _, pattern := range branchPatterns {
+		branches := rc.ListBranches(pattern)
+		for _, branch := range branches {
+			if err := rc.ForceDeleteBranch(branch); err != nil {
+				fmt.Printf("  %s(note: could not delete branch %s: %s)%s\n", dim, branch, err, reset)
+			} else {
+				fmt.Printf("  %s✗ branch deleted: %s%s\n", dim, branch, reset)
+			}
+		}
+	}
 }

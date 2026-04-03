@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
@@ -420,7 +421,9 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 		}
 
 		// Check for existing executor state to determine resume vs fresh start.
+		// Check both v2 state.json and v3 graph_state.json.
 		existingState, _ := loadExecutorState(name)
+		existingGraphState, _ := executor.LoadGraphState(name, configDir)
 
 		// Resolve formula for the bead — best-effort, fall back to default.
 		formulaName := resolveFormulaName(bead)
@@ -460,7 +463,9 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 			log.Printf("warning: registry add for %s: %v", name, err)
 		}
 
-		if existingState != nil && existingState.Phase != "" {
+		if existingGraphState != nil && existingGraphState.ActiveStep != "" {
+			fmt.Printf("  %s%s%s → resuming %s from %s step (v3) [%s] formula=%s\n", cyan, name, reset, bead.ID, existingGraphState.ActiveStep, handle.Identifier(), formulaName)
+		} else if existingState != nil && existingState.Phase != "" {
 			fmt.Printf("  %s%s%s → resuming %s from %s phase [%s] formula=%s\n", cyan, name, reset, bead.ID, existingState.Phase, handle.Identifier(), formulaName)
 		} else {
 			fmt.Printf("  %s%s%s → starting %s (%s) [%s] formula=%s\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier(), formulaName)
@@ -622,18 +627,29 @@ func cleanDeadWizards(reg wizardRegistry, quiet bool) wizardRegistry {
 // It removes the state file and cleans up bead labels so the bead can be re-summoned.
 // When quiet is true, stdout output is suppressed (for TUI and JSON output paths).
 func reapDeadWizard(w localWizard, quiet bool) {
-	// Delete executor state file.
+	// Delete v2 executor state file.
 	statePath := executorStatePath(w.Name)
+	removedV2 := false
 	if err := os.Remove(statePath); err == nil {
-		if !quiet {
-			fmt.Printf("reaped stale wizard %s for %s (removed state file)\n", w.Name, w.BeadID)
-		}
-	} else if !os.IsNotExist(err) {
-		if !quiet {
-			fmt.Printf("reaped stale wizard %s for %s (state file: %s)\n", w.Name, w.BeadID, err)
-		}
-	} else {
-		if !quiet {
+		removedV2 = true
+	}
+
+	// Delete v3 graph state files (parent + nested).
+	gsPath := graphStatePath(w.Name)
+	removedV3 := false
+	if err := os.Remove(gsPath); err == nil {
+		removedV3 = true
+	}
+
+	if !quiet {
+		switch {
+		case removedV2 && removedV3:
+			fmt.Printf("reaped stale wizard %s for %s (removed v2+v3 state)\n", w.Name, w.BeadID)
+		case removedV2:
+			fmt.Printf("reaped stale wizard %s for %s (removed v2 state)\n", w.Name, w.BeadID)
+		case removedV3:
+			fmt.Printf("reaped stale wizard %s for %s (removed v3 state)\n", w.Name, w.BeadID)
+		default:
 			fmt.Printf("reaped stale wizard %s for %s\n", w.Name, w.BeadID)
 		}
 	}
@@ -689,22 +705,35 @@ func scanOrphanedBeads(liveReg wizardRegistry) []Bead {
 			continue
 		}
 
+		// Check v2 state.json first.
+		var beadID string
 		statePath := filepath.Join(runtimeDir, agentName, "state.json")
 		data, err := os.ReadFile(statePath)
-		if err != nil {
-			continue
-		}
-		var state executorState
-		if err := json.Unmarshal(data, &state); err != nil {
-			continue
+		if err == nil {
+			var state executorState
+			if err := json.Unmarshal(data, &state); err == nil {
+				beadID = state.BeadID
+			}
 		}
 
-		if state.BeadID == "" || seen[state.BeadID] {
+		// Check v3 graph_state.json if v2 didn't yield a bead ID.
+		if beadID == "" {
+			gsPath := filepath.Join(runtimeDir, agentName, "graph_state.json")
+			gsData, err := os.ReadFile(gsPath)
+			if err == nil {
+				var gs executor.GraphState
+				if err := json.Unmarshal(gsData, &gs); err == nil {
+					beadID = gs.BeadID
+				}
+			}
+		}
+
+		if beadID == "" || seen[beadID] {
 			continue
 		}
-		seen[state.BeadID] = true
+		seen[beadID] = true
 
-		bead, err := storeGetBead(state.BeadID)
+		bead, err := storeGetBead(beadID)
 		if err != nil {
 			continue
 		}

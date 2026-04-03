@@ -131,13 +131,25 @@ func cmdAdvance(args []string) error {
 		return fmt.Errorf("bead %s is already closed", id)
 	}
 
-	// Resolve the formula for this bead.
-	formula, err := ResolveFormula(bead)
+	// Resolve the formula — detect v2 vs v3.
+	anyFormula, version, err := ResolveFormulaAny(bead)
 	if err != nil {
 		return fmt.Errorf("resolve formula for %s: %w", id, err)
 	}
 
-	enabled := formula.EnabledPhases()
+	if version == 3 {
+		// v3 formulas use step graphs — advance is not meaningful in the
+		// same way as v2 linear phases. The graph executor handles step
+		// transitions. For manual advance, just close the bead.
+		_ = anyFormula
+		fmt.Printf("%s: v3 formula — closing (use executor for step transitions)\n", id)
+		return cmdClose([]string{id})
+	}
+
+	// v2 path.
+	f := anyFormula.(*FormulaV2)
+
+	enabled := f.EnabledPhases()
 	if len(enabled) == 0 {
 		return fmt.Errorf("formula has no enabled phases")
 	}
