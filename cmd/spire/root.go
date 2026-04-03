@@ -44,7 +44,6 @@ Work:
   spec <title> [flags]  Scaffold a spec and file it (--no-file, --break <id>)
   claim <bead-id>       Pull, verify, claim, push (atomic)
   close <bead-id>       Force-close a bead (remove phase labels, close molecule steps)
-  advance <bead-id>     Advance bead to next formula phase (or close if at last phase)
   focus <bead-id>       Assemble read-only context for a task
   grok <bead-id>        Focus + live Linear context
   wizard-epic <epic-id>  Execute wizard epic orchestration

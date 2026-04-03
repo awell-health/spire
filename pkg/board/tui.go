@@ -27,7 +27,6 @@ const (
 	ActionResetHard              // reset --hard (inline via tea.Cmd)
 	ActionGrok                   // deep focus grok (inline via tea.Cmd)
 	ActionTrace                  // DAG timeline trace (inline via tea.Cmd)
-	ActionAdvance                // advance to next phase (inline via tea.Cmd)
 	ActionApprove                // approve a needs-human bead (remove label, inline via tea.Cmd)
 	ActionApproveDesign          // approve a needs-human design bead (close it, inline via tea.Cmd)
 	ActionRejectDesign           // reject a design bead with feedback comment (inline via tea.Cmd)
@@ -367,8 +366,6 @@ func actionLabel(a PendingAction) string {
 		return "Grok"
 	case ActionTrace:
 		return "Trace"
-	case ActionAdvance:
-		return "Advance"
 	case ActionClose:
 		return "Close"
 	case ActionApprove:
@@ -412,7 +409,7 @@ func (m Model) updateCmdline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // isInlineAction returns true if the action should execute within the TUI.
 func isInlineAction(a PendingAction) bool {
 	switch a {
-	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionAdvance, ActionClose, ActionApprove, ActionApproveDesign:
+	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionClose, ActionApprove, ActionApproveDesign:
 		return true
 	}
 	return false

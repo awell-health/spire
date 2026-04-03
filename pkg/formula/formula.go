@@ -327,20 +327,38 @@ type BeadInfo struct {
 // Injected by cmd/spire to bridge repoconfig + wizard logic.
 var RepoFormulaNameFunc func(beadID string) string
 
+// legacyV2NameMap translates v2 formula names to their v3 equivalents.
+// Used when a bead label or repo config references a v2 name.
+var legacyV2NameMap = map[string]string{
+	"spire-agent-work": "spire-agent-work-v3",
+	"spire-bugfix":     "spire-bugfix-v3",
+	"spire-epic":       "spire-epic-v3",
+}
+
+// translateLegacyName returns the v3 equivalent if name is a known v2 formula,
+// otherwise returns name unchanged.
+func translateLegacyName(name string) string {
+	if v3, ok := legacyV2NameMap[name]; ok {
+		return v3
+	}
+	return name
+}
+
 // ResolveV3Name returns the v3 formula name for a bead without loading it.
-// Resolution order: formula:<name> label > v3 default map > fallback.
+// Resolution order: formula:<name> label > repo config > bead type map > fallback.
+// Legacy v2 names (e.g. "spire-bugfix") are translated to v3 equivalents.
 func ResolveV3Name(bead BeadInfo) string {
 	// 1. Check bead labels for formula:<name> (explicit override)
 	for _, l := range bead.Labels {
 		if strings.HasPrefix(l, "formula:") {
-			return l[len("formula:"):]
+			return translateLegacyName(l[len("formula:"):])
 		}
 	}
 
 	// 2. Check repo-level formula via callback
 	if RepoFormulaNameFunc != nil {
 		if name := RepoFormulaNameFunc(bead.ID); name != "" {
-			return name
+			return translateLegacyName(name)
 		}
 	}
 
@@ -359,9 +377,13 @@ func ResolveV3(bead BeadInfo) (*FormulaStepGraph, error) {
 	name := ResolveV3Name(bead)
 	g, err := LoadStepGraphByName(name)
 	if err != nil {
-		// Fall back to default v3 formula
-		if name != "spire-agent-work-v3" {
-			g, err = LoadStepGraphByName("spire-agent-work-v3")
+		// Fall back to bead-type default, not blindly to spire-agent-work-v3.
+		typeName, ok := DefaultV3FormulaMap[bead.Type]
+		if !ok {
+			typeName = "spire-agent-work-v3"
+		}
+		if name != typeName {
+			g, err = LoadStepGraphByName(typeName)
 			if err != nil {
 				return nil, fmt.Errorf("resolve v3 formula for %s: %w", bead.ID, err)
 			}

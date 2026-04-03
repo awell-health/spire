@@ -302,16 +302,6 @@ spire close <bead-id>
 
 Removes phase labels, closes molecule steps, and sets status to `closed`. Use for work you're abandoning or that was completed outside the normal flow.
 
-### `spire advance`
-
-Advance a bead to the next formula phase.
-
-```bash
-spire advance <bead-id>
-```
-
-Moves the bead forward one phase in its formula (e.g., `implement` → `review`). Closes the bead if it's at the last phase.
-
 ### `spire focus`
 
 Assemble read-only context for a task.

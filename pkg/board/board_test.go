@@ -100,7 +100,7 @@ func TestBuildActionMenu(t *testing.T) {
 
 		expectActions(t, items, []PendingAction{
 			ActionLogs, ActionUnsummon, ActionResetSoft, ActionResetHard,
-			ActionAdvance, ActionClose, ActionGrok, ActionTrace,
+			ActionClose, ActionGrok, ActionTrace,
 		})
 
 		// Verify Reset --hard is DangerDestructive.

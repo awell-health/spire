@@ -267,6 +267,8 @@ func describeStep(sim StepSimulation) string {
 
 // buildSuccessorMap builds a map from step name to its successors.
 // A step S2 is a successor of S1 if S1 appears in S2's Needs list.
+// Reset edges are also included: if step X declares resets = ["Y", "Z"],
+// then Y and Z are successors of X (back-edges enabling review loops).
 func buildSuccessorMap(g *formula.FormulaStepGraph) map[string][]string {
 	succs := make(map[string][]string)
 
@@ -281,6 +283,10 @@ func buildSuccessorMap(g *formula.FormulaStepGraph) map[string][]string {
 		step := g.Steps[name]
 		for _, need := range step.Needs {
 			succs[need] = append(succs[need], name)
+		}
+		// Reset edges: step X resets Y means X -> Y (back-edge).
+		for _, target := range step.Resets {
+			succs[name] = append(succs[name], target)
 		}
 	}
 	return succs

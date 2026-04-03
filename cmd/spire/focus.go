@@ -39,74 +39,14 @@ func cmdFocus(args []string) error {
 		return fmt.Errorf("focus %s: %w", id, err)
 	}
 
-	// 2. Resolve formula version: v3 graph or v2 phase pipeline.
-	anyFormula, version, _ := ResolveFormulaAny(target)
-
-	if version == 3 {
-		return focusV3(target, anyFormula.(*formula.FormulaStepGraph))
-	}
-
-	// v2 path (legacy)
-	return focusV2(target, anyFormula)
-}
-
-// focusV2 renders the legacy v2 phase-based focus output.
-func focusV2(target Bead, anyFormula interface{}) error {
-	id := target.ID
-	phase := getPhase(target)
-
-	var f *FormulaV2
+	// 2. Resolve formula (v3 only).
+	anyFormula, _, _ := ResolveFormulaAny(target)
+	var graph *formula.FormulaStepGraph
 	if anyFormula != nil {
-		f, _ = anyFormula.(*FormulaV2)
+		graph, _ = anyFormula.(*formula.FormulaStepGraph)
 	}
 
-	// Basic bead info
-	fmt.Printf("--- Task %s ---\n", target.ID)
-	fmt.Printf("Title: %s\n", target.Title)
-	fmt.Printf("Status: %s\n", target.Status)
-	fmt.Printf("Priority: P%d\n", target.Priority)
-	if phase != "" {
-		fmt.Printf("Phase: %s\n", phase)
-	}
-	if target.Description != "" {
-		fmt.Printf("Description: %s\n", target.Description)
-	}
-	fmt.Println()
-
-	// Show enabled phases from formula
-	if f != nil {
-		enabled := f.EnabledPhases()
-		fmt.Printf("--- Workflow Phases ---\n")
-		for _, p := range enabled {
-			marker := "  "
-			if p == phase {
-				marker = "→ "
-			}
-			fmt.Printf("%s%s\n", marker, p)
-		}
-		fmt.Println()
-	}
-
-	// Phase-specific context
-	if f != nil && phase != "" {
-		if pc, ok := f.Phases[phase]; ok {
-			if len(pc.Context) > 0 {
-				fmt.Printf("--- Phase Context (%s) ---\n", phase)
-				fmt.Printf("Context paths: %s\n", strings.Join(pc.Context, ", "))
-				if pc.Timeout != "" {
-					fmt.Printf("Timeout: %s\n", pc.Timeout)
-				}
-				if pc.Model != "" {
-					fmt.Printf("Model: %s\n", pc.Model)
-				}
-				fmt.Println()
-			}
-		}
-	}
-
-	// Shared tail sections
-	focusTail(target, id)
-	return nil
+	return focusV3(target, graph)
 }
 
 // focusV3 renders the v3 step-graph based focus output.
@@ -129,7 +69,9 @@ func focusV3(target Bead, graph *formula.FormulaStepGraph) error {
 	fmt.Printf("Title: %s\n", target.Title)
 	fmt.Printf("Status: %s\n", target.Status)
 	fmt.Printf("Priority: P%d\n", target.Priority)
-	fmt.Printf("Formula: %s\n", graph.Name)
+	if graph != nil {
+		fmt.Printf("Formula: %s\n", graph.Name)
+	}
 	if target.Description != "" {
 		fmt.Printf("Description: %s\n", target.Description)
 	}
@@ -139,13 +81,15 @@ func focusV3(target Bead, graph *formula.FormulaStepGraph) error {
 	fmt.Println()
 
 	// --- Step Graph ---
-	fmt.Printf("--- Step Graph ---\n")
-	ordered := topoSortSteps(graph)
-	for _, stepName := range ordered {
-		stepCfg := graph.Steps[stepName]
-		renderStepLine(stepName, stepCfg, gs)
+	if graph != nil {
+		fmt.Printf("--- Step Graph ---\n")
+		ordered := topoSortSteps(graph)
+		for _, stepName := range ordered {
+			stepCfg := graph.Steps[stepName]
+			renderStepLine(stepName, stepCfg, gs)
+		}
+		fmt.Println()
 	}
-	fmt.Println()
 
 	// --- Workspace section ---
 	if gs != nil && len(gs.Workspaces) > 0 {
@@ -199,7 +143,7 @@ func focusV3(target Bead, graph *formula.FormulaStepGraph) error {
 	return nil
 }
 
-// focusTail renders sections common to both v2 and v3: recovery work,
+// focusTail renders shared context sections: recovery work,
 // related deps, messages, thread context, comments, and agent runs.
 func focusTail(target Bead, id string) {
 	// Recovery work section for interrupted beads.

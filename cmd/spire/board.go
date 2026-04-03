@@ -274,8 +274,6 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 		return cmdGrok([]string{beadID})
 	case board.ActionTrace:
 		return cmdTrace([]string{beadID})
-	case board.ActionAdvance:
-		return cmdAdvance([]string{beadID})
 	case board.ActionClose:
 		return storeCloseBead(beadID)
 	case board.ActionApprove:

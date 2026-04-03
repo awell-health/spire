@@ -267,11 +267,11 @@ The board primarily reads active workflow-step beads and only falls back to `pha
 bd label list spi-abc     # check phase labels
 ```
 
-To inspect or advance a bead:
+To inspect a bead or retry a failed step:
 
 ```bash
 spire trace spi-abc
-spire advance spi-abc
+spire reset --to <step> spi-abc
 ```
 
 ### `spire watch` exits immediately

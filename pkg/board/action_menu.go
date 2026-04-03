@@ -67,7 +67,6 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 		items = append(items,
 			MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
 			MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
-			MenuAction{Key: 'A', Label: "Advance phase", Danger: DangerNone, ActionType: ActionAdvance},
 			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
 		)
 	case "closed":

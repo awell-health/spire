@@ -18,14 +18,6 @@ var closeCmd = &cobra.Command{
 	},
 }
 
-var advanceCmd = &cobra.Command{
-	Use:   "advance <bead-id>",
-	Short: "Advance bead to next formula phase (or close if at last phase)",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return cmdAdvance(args)
-	},
-}
 
 // cmdClose implements `spire close <bead-id>`.
 // Force-closes a bead: removes phase labels, closes open molecule children, closes the bead.
@@ -108,35 +100,6 @@ func closeCausedByAlerts(beadID string) {
 	}
 }
 
-// cmdAdvance implements `spire advance <bead-id>`.
-// Advances the bead to the next phase in its formula's enabled phases.
-// If already at the last enabled phase, closes the bead.
-// If the bead has no phase label, advances to the first enabled phase.
-func cmdAdvance(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: spire advance <bead-id>")
-	}
-	id := args[0]
-
-	if d := resolveBeadsDir(); d != "" {
-		os.Setenv("BEADS_DIR", d)
-	}
-
-	bead, err := storeGetBead(id)
-	if err != nil {
-		return fmt.Errorf("bead %s not found: %w", id, err)
-	}
-
-	if bead.Status == "closed" {
-		return fmt.Errorf("bead %s is already closed", id)
-	}
-
-	// All formulas are v3 step graphs — advance is not meaningful in the
-	// same way as v2 linear phases. The graph executor handles step
-	// transitions. For manual advance, just close the bead.
-	fmt.Printf("%s: v3 formula — closing (use executor for step transitions)\n", id)
-	return cmdClose([]string{id})
-}
 
 // closeMoleculeChildren finds the workflow molecule for a bead (if any) and
 // closes all open step children, then closes the molecule itself.
