@@ -5,6 +5,7 @@ package executor
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,17 @@ func actionDispatchChildren(e *Executor, stepName string, step StepConfig, state
 		strategy = "direct"
 	}
 
+	// Parse formula-declared conflict_max_turns.  When unset (empty string),
+	// conflictMaxTurns stays 0 and the --max-turns flag is omitted entirely —
+	// the executor does not invent a turn budget.
+	var conflictMaxTurns int
+	if raw := step.With["conflict_max_turns"]; raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			conflictMaxTurns = v
+		}
+	}
+	resolver := e.conflictResolver(conflictMaxTurns)
+
 	// Resolve staging worktree from graph state.
 	stagingWt, err := e.ensureGraphStagingWorktree(state)
 	if err != nil {
@@ -44,7 +56,7 @@ func actionDispatchChildren(e *Executor, stepName string, step StepConfig, state
 			e.log("no open subtasks for dispatch")
 			return ActionResult{Outputs: map[string]string{"status": "pass", "dispatched": "0"}}
 		}
-		results, dispErr := e.dispatchWaveCore(waves, stagingWt, model)
+		results, dispErr := e.dispatchWaveCore(waves, stagingWt, model, resolver)
 		return buildDispatchResult(results, dispErr)
 
 	case "sequential":
@@ -61,11 +73,11 @@ func actionDispatchChildren(e *Executor, stepName string, step StepConfig, state
 		for _, wave := range waves {
 			subtasks = append(subtasks, wave...)
 		}
-		results, dispErr := e.dispatchSequentialCore(subtasks, stagingWt, model)
+		results, dispErr := e.dispatchSequentialCore(subtasks, stagingWt, model, resolver)
 		return buildDispatchResult(results, dispErr)
 
 	case "direct":
-		dispErr := e.dispatchDirectCore(stagingWt, model)
+		dispErr := e.dispatchDirectCore(stagingWt, model, resolver)
 		if dispErr != nil {
 			return ActionResult{
 				Outputs: map[string]string{"status": "fail"},
@@ -118,7 +130,7 @@ type childResult struct {
 // branches into staging before proceeding to the next wave. This is the
 // extracted core logic from executeWave — it does NOT include build verification,
 // build-fix retry, or subtask closing (those are separate formula steps in v3).
-func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWorktree, model string) ([]childResult, error) {
+func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error) ([]childResult, error) {
 	e.log("dispatching %d wave(s)", len(waves))
 
 	var allResults []childResult
@@ -199,7 +211,7 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 				if cr.Err != nil || cr.Branch == "" {
 					continue
 				}
-				if mergeErr := stagingWt.MergeBranch(cr.Branch, e.resolveConflicts); mergeErr != nil {
+				if mergeErr := stagingWt.MergeBranch(cr.Branch, resolver); mergeErr != nil {
 					return allResults, fmt.Errorf("merge %s into staging: %w", cr.Branch, mergeErr)
 				}
 			}
@@ -219,7 +231,7 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 // staging before advancing. This is the extracted core logic from
 // executeSequential — it does NOT include inline review, inline merge-to-main,
 // or subtask closing (those are separate formula steps in v3).
-func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.StagingWorktree, model string) ([]childResult, error) {
+func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error) ([]childResult, error) {
 	e.log("sequential dispatch: %d subtask(s)", len(subtasks))
 
 	var allResults []childResult
@@ -260,7 +272,7 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 
 		// Merge feat branch into staging.
 		if stagingWt != nil {
-			if mergeErr := stagingWt.MergeBranch(featBranch, e.resolveConflicts); mergeErr != nil {
+			if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
 				return allResults, fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 			}
 			// Update startRef for next child.
@@ -276,7 +288,7 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 
 // dispatchDirectCore spawns one apprentice for the bead, then merges the
 // feat branch into staging. Extracted from executeDirect.
-func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model string) error {
+func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error) error {
 	apprenticeName := fmt.Sprintf("%s-impl", e.agentName)
 	e.log("dispatching apprentice %s", apprenticeName)
 
@@ -305,7 +317,7 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 	if stagingWt != nil {
 		featBranch := fmt.Sprintf("feat/%s", e.beadID)
 		e.log("merging %s into staging", featBranch)
-		if mergeErr := stagingWt.MergeBranch(featBranch, e.resolveConflicts); mergeErr != nil {
+		if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
 			return fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 		}
 	}
