@@ -76,8 +76,9 @@ type Deps struct {
 	RemoveLabel      func(id, label string) error
 	AddDep           func(issueID, dependsOnID string) error
 	AddDepTyped      func(issueID, dependsOnID, depType string) error
-	GetDepsWithMeta  func(id string) ([]*beads.IssueWithDependencyMetadata, error)
-	GetBlockedIssues func(filter beads.WorkFilter) ([]BoardBead, error)
+	GetDepsWithMeta       func(id string) ([]*beads.IssueWithDependencyMetadata, error)
+	GetDependentsWithMeta func(id string) ([]*beads.IssueWithDependencyMetadata, error)
+	GetBlockedIssues      func(filter beads.WorkFilter) ([]BoardBead, error)
 	GetReviewBeads   func(parentID string) ([]Bead, error)
 
 	// Attempt operations

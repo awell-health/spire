@@ -1704,6 +1704,9 @@ func TestEscalateHumanFailure_InterruptedLabel(t *testing.T) {
 			depsAdded = append(depsAdded, issueID+"→"+dependsOnID+":"+depType)
 			return nil
 		},
+		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil
+		},
 	}
 
 	EscalateHumanFailure("spi-test", "wizard-test", "merge-failure", "merge conflict", deps)
@@ -1752,6 +1755,128 @@ func TestEscalateHumanFailure_InterruptedLabel(t *testing.T) {
 	}
 	if !foundDep {
 		t.Errorf("expected caused-by dep, got: %v", depsAdded)
+	}
+}
+
+// TestEscalateHumanFailure_RecoveryBead verifies that EscalateHumanFailure
+// creates a recovery bead with recovery-bead label and recovery-for dep.
+func TestEscalateHumanFailure_RecoveryBead(t *testing.T) {
+	var beadsCreated []CreateOpts
+	var depsAdded []string
+	var commentsAdded []string
+
+	deps := &Deps{
+		AddLabel:   func(id, label string) error { return nil },
+		AddComment: func(id, text string) error {
+			commentsAdded = append(commentsAdded, id+":"+text)
+			return nil
+		},
+		CreateBead: func(opts CreateOpts) (string, error) {
+			beadsCreated = append(beadsCreated, opts)
+			if len(opts.Labels) > 0 && opts.Labels[0] == "recovery-bead" {
+				return "spi-recovery-1", nil
+			}
+			return "spi-alert-1", nil
+		},
+		AddDepTyped: func(issueID, dependsOnID, depType string) error {
+			depsAdded = append(depsAdded, issueID+"→"+dependsOnID+":"+depType)
+			return nil
+		},
+		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return nil, nil // no existing recovery bead
+		},
+	}
+
+	EscalateHumanFailure("spi-test", "wizard-test", "merge-failure", "merge conflict", deps)
+
+	// Verify a recovery bead was created with recovery-bead label.
+	foundRecoveryBead := false
+	for _, opts := range beadsCreated {
+		for _, lbl := range opts.Labels {
+			if lbl == "recovery-bead" {
+				foundRecoveryBead = true
+				if opts.Priority != 0 {
+					t.Errorf("expected recovery bead priority 0, got %d", opts.Priority)
+				}
+			}
+		}
+	}
+	if !foundRecoveryBead {
+		t.Errorf("expected recovery bead with recovery-bead label, got: %v", beadsCreated)
+	}
+
+	// Verify recovery-for dep was added.
+	foundRecoveryDep := false
+	for _, d := range depsAdded {
+		if d == "spi-recovery-1→spi-test:recovery-for" {
+			foundRecoveryDep = true
+		}
+	}
+	if !foundRecoveryDep {
+		t.Errorf("expected recovery-for dep, got: %v", depsAdded)
+	}
+
+	// Verify a context comment was added to the recovery bead.
+	foundRecoveryComment := false
+	for _, c := range commentsAdded {
+		if strings.HasPrefix(c, "spi-recovery-1:") && strings.Contains(c, "Recovery work surface") {
+			foundRecoveryComment = true
+		}
+	}
+	if !foundRecoveryComment {
+		t.Errorf("expected recovery comment on recovery bead, got: %v", commentsAdded)
+	}
+}
+
+// TestEscalateHumanFailure_RecoveryBead_Dedup verifies that a second escalation
+// on the same parent reuses the existing open recovery bead instead of creating
+// a duplicate.
+func TestEscalateHumanFailure_RecoveryBead_Dedup(t *testing.T) {
+	var beadsCreated []CreateOpts
+	var commentsAdded []string
+
+	deps := &Deps{
+		AddLabel:   func(id, label string) error { return nil },
+		AddComment: func(id, text string) error {
+			commentsAdded = append(commentsAdded, id+":"+text)
+			return nil
+		},
+		CreateBead: func(opts CreateOpts) (string, error) {
+			beadsCreated = append(beadsCreated, opts)
+			return "spi-alert-2", nil
+		},
+		AddDepTyped: func(issueID, dependsOnID, depType string) error { return nil },
+		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			// Return an existing open recovery bead.
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-existing-recovery", Status: "open"},
+					DependencyType: "recovery-for",
+				},
+			}, nil
+		},
+	}
+
+	EscalateHumanFailure("spi-test", "wizard-test", "build-failure", "build broke", deps)
+
+	// Verify NO new recovery bead was created (only the alert bead).
+	for _, opts := range beadsCreated {
+		for _, lbl := range opts.Labels {
+			if lbl == "recovery-bead" {
+				t.Errorf("should not create a new recovery bead when one exists, got: %v", opts)
+			}
+		}
+	}
+
+	// Verify a comment was added to the existing recovery bead.
+	foundUpdate := false
+	for _, c := range commentsAdded {
+		if strings.HasPrefix(c, "spi-existing-recovery:") && strings.Contains(c, "Recovery work surface") {
+			foundUpdate = true
+		}
+	}
+	if !foundUpdate {
+		t.Errorf("expected recovery comment on existing recovery bead, got: %v", commentsAdded)
 	}
 }
 

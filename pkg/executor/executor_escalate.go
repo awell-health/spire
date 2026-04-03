@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/steveyegge/beads"
 )
@@ -79,6 +80,8 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 	MessageArchmage(agentName, beadID,
 		fmt.Sprintf("Empty implement on %s: apprentice produced no code changes — needs human guidance", beadID),
 		deps)
+
+	createOrUpdateRecoveryBead(beadID, agentName, "empty-implement", "apprentice produced no code changes", "", deps)
 }
 
 // EscalateHumanFailure handles a terminal step failure in the review DAG.
@@ -130,6 +133,8 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 	MessageArchmage(agentName, beadID,
 		fmt.Sprintf("Terminal failure on %s (%s): %s", beadID, failureType, message),
 		deps)
+
+	createOrUpdateRecoveryBead(beadID, agentName, failureType, message, "", deps)
 }
 
 // EscalateGraphStepFailure is the v3-aware variant of EscalateHumanFailure.
@@ -187,4 +192,72 @@ func EscalateGraphStepFailure(beadID, agentName, failureType, message string, st
 	MessageArchmage(agentName, beadID,
 		fmt.Sprintf("Terminal failure on %s (%s) at %s: %s", beadID, failureType, stepCtx, message),
 		deps)
+
+	createOrUpdateRecoveryBead(beadID, agentName, failureType, message, stepCtx, deps)
+}
+
+// createOrUpdateRecoveryBead creates an open P0 recovery work surface for an
+// interrupted parent bead. If an open recovery bead already exists (identified
+// by a "recovery-for" dep pointing to parentID), the existing bead is updated
+// with a new context comment instead of creating a duplicate.
+func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeCtx string, deps *Deps) {
+	// Dedup: check for existing open recovery bead.
+	if deps.GetDependentsWithMeta != nil {
+		dependents, err := deps.GetDependentsWithMeta(parentID)
+		if err == nil {
+			for _, dep := range dependents {
+				if dep.DependencyType != "recovery-for" {
+					continue
+				}
+				if dep.Status == "closed" {
+					continue
+				}
+				// Found open recovery bead — update comment and return.
+				ctx := buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx)
+				deps.AddComment(dep.ID, ctx)
+				return
+			}
+		}
+	}
+
+	// Create new recovery bead.
+	title := fmt.Sprintf("[recovery] %s: %s", parentID, failureType)
+	if len(title) > 200 {
+		title = title[:200]
+	}
+	recoveryID, err := deps.CreateBead(CreateOpts{
+		Title:    title,
+		Priority: 0,
+		Type:     beads.TypeTask,
+		Labels:   []string{"recovery-bead"},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: create recovery bead for %s: %s\n", parentID, err)
+		return
+	}
+
+	// Link recovery bead to parent via typed dep.
+	if recoveryID != "" && deps.AddDepTyped != nil {
+		if derr := deps.AddDepTyped(recoveryID, parentID, "recovery-for"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: add recovery-for dep %s→%s: %s\n", recoveryID, parentID, derr)
+		}
+	}
+
+	// Seed with context comment.
+	ctx := buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx)
+	deps.AddComment(recoveryID, ctx)
+}
+
+func buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx string) string {
+	s := fmt.Sprintf(
+		"Recovery work surface for interrupted bead %s.\n"+
+			"Failure: %s\nMessage: %s\nAgent: %s\nTime: %s",
+		parentID, failureType, message, agentName,
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	if nodeCtx != "" {
+		s += "\nContext: " + nodeCtx
+	}
+	s += fmt.Sprintf("\n\nOperate on %s (not this bead) for resummon/reset.", parentID)
+	return s
 }
