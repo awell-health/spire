@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -455,6 +456,31 @@ var towerRemoveCmd = &cobra.Command{
 	},
 }
 
+var towerSetCmd = &cobra.Command{
+	Use:   "set",
+	Short: "Update mutable tower config fields",
+	Long: `Update local tower configuration fields without editing the JSON file directly.
+Only local config fields are mutable: dolthub remote and archmage identity.
+Shared repo registrations and shared default base branches live in the tower
+database and are not affected by this command.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var fullArgs []string
+		if v, _ := cmd.Flags().GetString("tower"); v != "" {
+			fullArgs = append(fullArgs, "--tower", v)
+		}
+		if v, _ := cmd.Flags().GetString("dolthub"); v != "" {
+			fullArgs = append(fullArgs, "--dolthub", v)
+		}
+		if v, _ := cmd.Flags().GetString("archmage-name"); v != "" {
+			fullArgs = append(fullArgs, "--archmage-name", v)
+		}
+		if v, _ := cmd.Flags().GetString("archmage-email"); v != "" {
+			fullArgs = append(fullArgs, "--archmage-email", v)
+		}
+		return cmdTowerSet(fullArgs)
+	},
+}
+
 func init() {
 	towerCreateCmd.Flags().String("name", "", "Tower name (required)")
 	towerCreateCmd.Flags().String("dolthub", "", "DoltHub remote (user/repo)")
@@ -464,7 +490,12 @@ func init() {
 
 	towerRemoveCmd.Flags().Bool("force", false, "Force removal (skip confirmation, allow removing last tower)")
 
-	towerCmd.AddCommand(towerCreateCmd, towerAttachCmd, towerListCmd, towerUseCmd, towerRemoveCmd)
+	towerSetCmd.Flags().String("tower", "", "Target tower name (default: resolved from context)")
+	towerSetCmd.Flags().String("dolthub", "", "New DoltHub remote (user/repo or full URL)")
+	towerSetCmd.Flags().String("archmage-name", "", "New archmage GitHub username")
+	towerSetCmd.Flags().String("archmage-email", "", "New archmage git email")
+
+	towerCmd.AddCommand(towerCreateCmd, towerAttachCmd, towerListCmd, towerUseCmd, towerRemoveCmd, towerSetCmd)
 }
 
 // cmdTower dispatches tower subcommands (kept for backward compat with tests).
@@ -495,8 +526,10 @@ func cmdTower(args []string) error {
 			}
 		}
 		return cmdTowerRemove(args[1], force)
+	case "set":
+		return cmdTowerSet(args[1:])
 	default:
-		return fmt.Errorf("unknown tower subcommand: %q\nusage: spire tower <create|attach|list|use|remove>", args[0])
+		return fmt.Errorf("unknown tower subcommand: %q\nusage: spire tower <create|attach|list|use|remove|set>", args[0])
 	}
 }
 
@@ -1136,5 +1169,65 @@ func cmdTowerRemove(name string, force bool) error {
 		fmt.Println("\n  Note: database was not dropped (dolt server was not reachable).")
 	}
 
+	return nil
+}
+
+// cmdTowerSet updates mutable fields on an existing tower config.
+func cmdTowerSet(args []string) error {
+	flags := flag.NewFlagSet("tower set", flag.ContinueOnError)
+	towerName := flags.String("tower", "", "Target tower name")
+	dolthub := flags.String("dolthub", "", "New DoltHub remote")
+	archmageName := flags.String("archmage-name", "", "New archmage GitHub username")
+	archmageEmail := flags.String("archmage-email", "", "New archmage git email")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	// Require at least one mutation flag.
+	if *dolthub == "" && *archmageName == "" && *archmageEmail == "" {
+		return fmt.Errorf("usage: spire tower set [--tower <name>] --dolthub <remote> | --archmage-name <name> | --archmage-email <email>\nat least one field flag is required")
+	}
+
+	// Resolve target tower.
+	var tower *TowerConfig
+	if *towerName != "" {
+		t, err := loadTowerConfig(*towerName)
+		if err != nil {
+			return fmt.Errorf("tower %q not found: %w", *towerName, err)
+		}
+		tower = t
+	} else {
+		cfg, err := loadConfig()
+		if err != nil {
+			return fmt.Errorf("could not load spire config: %w", err)
+		}
+		t, err := resolveTowerConfigWith(cfg)
+		if err != nil {
+			return fmt.Errorf("could not resolve tower: %w\nHint: use --tower <name> to target a specific tower", err)
+		}
+		tower = t
+	}
+
+	// Apply mutations.
+	var changed []string
+	if *dolthub != "" {
+		tower.DolthubRemote = *dolthub
+		changed = append(changed, fmt.Sprintf("  dolthub_remote = %s", *dolthub))
+	}
+	if *archmageName != "" {
+		tower.Archmage.Name = *archmageName
+		changed = append(changed, fmt.Sprintf("  archmage.name  = %s", *archmageName))
+	}
+	if *archmageEmail != "" {
+		tower.Archmage.Email = *archmageEmail
+		changed = append(changed, fmt.Sprintf("  archmage.email = %s", *archmageEmail))
+	}
+
+	// Persist.
+	if err := saveTowerConfig(tower); err != nil {
+		return fmt.Errorf("failed to save tower config: %w", err)
+	}
+
+	fmt.Printf("tower %q updated:\n%s\n", tower.Name, strings.Join(changed, "\n"))
 	return nil
 }
