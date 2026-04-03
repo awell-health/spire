@@ -452,6 +452,63 @@ func TestWizardRunSpawnSucceedsWithResultJSONDespiteWaitErr(t *testing.T) {
 	}
 }
 
+// TestWizardRunSpawnTrustsApproveResultDespiteWaitErr verifies that when a
+// sage-review writes result.json with result="approve" and then exits non-zero,
+// the executor trusts the declared output. This is the ZFC contract: the
+// executor does not reinterpret subprocess results.
+func TestWizardRunSpawnTrustsApproveResultDespiteWaitErr(t *testing.T) {
+	agentName := "wizard-test"
+	stepName := "sage-review"
+	spawnName := agentName + "-" + stepName
+
+	resultDir := t.TempDir()
+	ar := agentResultJSON{Result: "approve"}
+	data, _ := json.Marshal(ar)
+	os.WriteFile(filepath.Join(resultDir, "result.json"), data, 0644)
+
+	backend := &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			return &mockHandle{waitErr: errors.New("signal: killed")}, nil
+		},
+	}
+
+	dir := t.TempDir()
+	deps := &Deps{
+		Spawner:   backend,
+		ConfigDir: func() (string, error) { return dir, nil },
+		AgentResultDir: func(name string) string {
+			if name == spawnName {
+				return resultDir
+			}
+			return ""
+		},
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-approve-despite-kill",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			stepName: {Action: "wizard.run", Flow: "sage-review"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", agentName, graph, nil, deps)
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "sage-review",
+	}
+
+	result := wizardRunSpawn(exec, stepName, step, exec.graphState, agent.RoleSage, nil)
+
+	if result.Error != nil {
+		t.Fatalf("expected nil Error when result.json reports approve, got: %v", result.Error)
+	}
+	if result.Outputs["result"] != "approve" {
+		t.Errorf("expected outputs[result]=%q, got %q", "approve", result.Outputs["result"])
+	}
+}
+
 // --- Sage review verdict promotion tests ---
 
 // sageVerdictMockBackend implements agent.Backend for sage-review verdict tests.

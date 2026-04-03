@@ -244,9 +244,14 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 
 	waitErr := handle.Wait()
 
-	// Read result.json for outputs.
+	// Read result.json for outputs. If the child wrote result.json, trust
+	// its declared output as the node's terminal value — regardless of
+	// waitErr. The child may exit non-zero after writing (e.g. signal
+	// during cleanup) but its declared result is authoritative.
 	outputs := make(map[string]string)
+	hasResultJSON := false
 	if ar := e.readAgentResult(spawnName); ar != nil {
+		hasResultJSON = true
 		outputs["result"] = ar.Result
 		if ar.Branch != "" {
 			outputs["branch"] = ar.Branch
@@ -263,10 +268,11 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 	model := step.Model
 	e.recordAgentRun(spawnName, e.beadID, "", model, string(role), stepName, started, waitErr)
 
-	// Propagate child process failure as a node error. If result.json
-	// reported a non-error result, trust it (the process wrote results
-	// before exiting). Otherwise, the node must fail.
-	if waitErr != nil && outputs["result"] != "success" {
+	// Propagate child process failure as a node error only when no
+	// result.json was written. If the child declared its output, trust
+	// it mechanically — the executor does not reinterpret subprocess
+	// results.
+	if waitErr != nil && !hasResultJSON {
 		return ActionResult{Outputs: outputs, Error: fmt.Errorf("subprocess %s exited: %w", stepName, waitErr)}
 	}
 
