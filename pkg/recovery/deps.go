@@ -13,6 +13,7 @@ type DepBead struct {
 // DepDependent represents a dependent bead with its dependency type.
 type DepDependent struct {
 	ID             string
+	Title          string
 	Status         string
 	Labels         []string
 	DependencyType string

@@ -249,15 +249,24 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 		}
 	}
 
-	// 8-10. Assemble the snapshot.
+	// 8. Fetch recovery refs for interrupted beads.
+	recoveryRefs := make(map[string]*RecoveryRef)
+	for _, b := range cols.Interrupted {
+		if ref := FetchRecoveryRef(b.ID); ref != nil {
+			recoveryRefs[b.ID] = ref
+		}
+	}
+
+	// 9-10. Assemble the snapshot.
 	snap := &BoardSnapshot{
-		Columns:     cols,
-		DAGProgress: dagProgress,
-		EpicSummary: epicSummary,
-		Agents:      fetchAgents(),
-		PhaseMap:    phaseMap,
-		Warnings:    warnings,
-		FetchedAt:   time.Now(),
+		Columns:      cols,
+		DAGProgress:  dagProgress,
+		EpicSummary:  epicSummary,
+		RecoveryRefs: recoveryRefs,
+		Agents:       fetchAgents(),
+		PhaseMap:     phaseMap,
+		Warnings:     warnings,
+		FetchedAt:    time.Now(),
 	}
 
 	return snap, nil

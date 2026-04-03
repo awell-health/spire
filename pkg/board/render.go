@@ -403,6 +403,13 @@ func (m Model) View() string {
 				} else {
 					ib.WriteString(fmt.Sprintf("  %s %s%s: %s\n", PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
 				}
+				// Show linked open recovery bead (if any) as an indented sub-line.
+				if m.Snapshot != nil && m.Snapshot.RecoveryRefs != nil {
+					if ref := m.Snapshot.RecoveryRefs[b.ID]; ref != nil {
+						recStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+						ib.WriteString(recStyle.Render(fmt.Sprintf("    recovery → %s", ref.ID)) + "\n")
+					}
+				}
 			}
 			interruptedStr = ib.String()
 		}

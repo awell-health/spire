@@ -49,8 +49,8 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 		stepContext = parseStepContext(lastResult)
 	}
 
-	// 4. Find alert beads via dependents.
-	alertBeads := findAlertBeads(beadID, deps)
+	// 4. Find alert beads and recovery bead via dependents (single query).
+	alertBeads, recoveryBead := findLinkedBeads(beadID, deps)
 
 	// 5. Load executor state (best-effort).
 	var runtime *RuntimeState
@@ -103,6 +103,7 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 		Runtime:           runtime,
 		Git:               gitState,
 		AlertBeads:        alertBeads,
+		RecoveryBead:      recoveryBead,
 		WizardRunning:     wizardRunning,
 		WizardName:        wizardName,
 		Actions:           actions,
@@ -143,18 +144,27 @@ func countAttempts(parentID string, deps *Deps) (int, string) {
 	return count, latestResult
 }
 
-// findAlertBeads finds alert beads linked to the parent via caused-by or related deps.
-func findAlertBeads(parentID string, deps *Deps) []AlertInfo {
+// findLinkedBeads finds alert beads and the first open recovery bead linked to
+// the parent via dependents. Uses a single GetDependentsWithMeta call.
+func findLinkedBeads(parentID string, deps *Deps) ([]AlertInfo, *RecoveryRef) {
 	if deps.GetDependentsWithMeta == nil {
-		return nil
+		return nil, nil
 	}
 	dependents, err := deps.GetDependentsWithMeta(parentID)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	var alerts []AlertInfo
+	var recoveryRef *RecoveryRef
 	for _, dep := range dependents {
+		// Check for recovery-for dependent (first open one wins).
+		if dep.DependencyType == "recovery-for" && dep.Status != "closed" && recoveryRef == nil {
+			recoveryRef = &RecoveryRef{ID: dep.ID, Title: dep.Title}
+			continue
+		}
+
+		// Check for alert beads.
 		if dep.DependencyType != "caused-by" && dep.DependencyType != "related" {
 			continue
 		}
@@ -171,7 +181,7 @@ func findAlertBeads(parentID string, deps *Deps) []AlertInfo {
 			}
 		}
 	}
-	return alerts
+	return alerts, recoveryRef
 }
 
 // findAgentName extracts the agent name from the latest attempt's agent:* label.

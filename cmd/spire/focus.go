@@ -85,7 +85,33 @@ func cmdFocus(args []string) error {
 		}
 	}
 
-	// 7. Related beads (from dependency graph)
+	// 7a. Recovery work section for interrupted beads.
+	isInterrupted := false
+	for _, l := range target.Labels {
+		if strings.HasPrefix(l, "interrupted:") {
+			isInterrupted = true
+			break
+		}
+	}
+	if isInterrupted {
+		dependents, dErr := storeGetDependentsWithMeta(id)
+		if dErr == nil {
+			for _, dep := range dependents {
+				if string(dep.DependencyType) != "recovery-for" {
+					continue
+				}
+				if string(dep.Status) == "closed" {
+					continue
+				}
+				fmt.Printf("--- Recovery work ---\n")
+				fmt.Printf("  %s  %s  (%s)\n", dep.ID, dep.Title, dep.Status)
+				fmt.Println()
+				break // only show first open recovery bead
+			}
+		}
+	}
+
+	// 7b. Related beads (from dependency graph)
 	relDeps, relErr := storeGetDepsWithMeta(id)
 	if relErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load related deps for %s: %v\n", id, relErr)

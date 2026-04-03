@@ -234,6 +234,9 @@ func printDiagnosis(diag *recovery.Diagnosis) {
 	fmt.Printf("  Title:    %s\n", diag.Title)
 	fmt.Printf("  Status:   %s\n", diag.Status)
 	fmt.Printf("  Failure:  %s%s%s (%s)\n", red, diag.FailureMode, reset, diag.InterruptLabel)
+	if diag.RecoveryBead != nil {
+		fmt.Printf("  Recovery: %s%s%s  %s\n", cyan, diag.RecoveryBead.ID, reset, diag.RecoveryBead.Title)
+	}
 	if diag.Phase != "" {
 		fmt.Printf("  Phase:    %s\n", diag.Phase)
 	}
@@ -337,6 +340,7 @@ func buildRecoveryDeps() *recovery.Deps {
 			for i, d := range deps {
 				result[i] = recovery.DepDependent{
 					ID:             d.ID,
+					Title:          d.Title,
 					Status:         string(d.Status),
 					Labels:         d.Labels,
 					DependencyType: string(d.DependencyType),

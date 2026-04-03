@@ -27,6 +27,12 @@ type StepContext struct {
 	Workspace string `json:"workspace,omitempty"`
 }
 
+// RecoveryRef identifies an open recovery bead linked to an interrupted parent.
+type RecoveryRef struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
 // Diagnosis is the complete diagnostic report for an interrupted parent bead.
 type Diagnosis struct {
 	BeadID            string           `json:"bead_id"`
@@ -41,6 +47,7 @@ type Diagnosis struct {
 	Runtime           *RuntimeState    `json:"runtime,omitempty"`            // executor state if available
 	Git               *GitState        `json:"git,omitempty"`                // branch/worktree existence
 	AlertBeads        []AlertInfo      `json:"alert_beads,omitempty"`        // related alert bead IDs + labels
+	RecoveryBead      *RecoveryRef     `json:"recovery_bead,omitempty"`      // open recovery-for dependent if present
 	WizardRunning     bool             `json:"wizard_running"`
 	WizardName        string           `json:"wizard_name,omitempty"`
 	Actions           []RecoveryAction `json:"actions"`

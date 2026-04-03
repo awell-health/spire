@@ -33,11 +33,18 @@ type Columns struct {
 	Blocked     []BoardBead
 }
 
+// RecoveryRef identifies an open recovery bead linked to an interrupted parent.
+type RecoveryRef struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
 // BoardBeadJSON wraps a BoardBead with optional DAG progress for JSON output.
 type BoardBeadJSON struct {
 	BoardBead
-	DAG     *DAGProgress      `json:"dag,omitempty"`
-	EpicSub *EpicChildSummary `json:"epic_subtasks,omitempty"`
+	DAG          *DAGProgress      `json:"dag,omitempty"`
+	EpicSub      *EpicChildSummary `json:"epic_subtasks,omitempty"`
+	RecoveryBead *RecoveryRef      `json:"recovery_bead,omitempty"`
 }
 
 // BoardJSON is the top-level JSON envelope for board output.
@@ -210,12 +217,31 @@ func ClearScreen() {
 	fmt.Print("\033[2J\033[H")
 }
 
+// FetchRecoveryRef looks up the first open recovery-for dependent for a bead.
+// Returns nil if no open recovery bead exists.
+func FetchRecoveryRef(beadID string) *RecoveryRef {
+	deps, err := store.GetDependentsWithMeta(beadID)
+	if err != nil {
+		return nil
+	}
+	for _, dep := range deps {
+		if string(dep.DependencyType) != "recovery-for" {
+			continue
+		}
+		if string(dep.Status) == "closed" {
+			continue
+		}
+		return &RecoveryRef{ID: dep.ID, Title: dep.Title}
+	}
+	return nil
+}
+
 // ToJSON converts Columns to the JSON-serializable ColumnsJSON with DAG progress.
 func (c Columns) ToJSON() ColumnsJSON {
 	enrich := func(beads []BoardBead) []BoardBeadJSON {
 		return nonNilJSON(enrichBeadsJSON(NonNil(beads)))
 	}
-	return ColumnsJSON{
+	cj := ColumnsJSON{
 		Alerts:      enrich(c.Alerts),
 		Interrupted: enrich(c.Interrupted),
 		Ready:       enrich(c.Ready),
@@ -227,4 +253,9 @@ func (c Columns) ToJSON() ColumnsJSON {
 		Done:        enrich(c.Done),
 		Blocked:     enrich(c.Blocked),
 	}
+	// Enrich interrupted beads with linked recovery refs.
+	for i := range cj.Interrupted {
+		cj.Interrupted[i].RecoveryBead = FetchRecoveryRef(cj.Interrupted[i].ID)
+	}
+	return cj
 }
