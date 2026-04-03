@@ -1,8 +1,13 @@
 package executor
 
 import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/steveyegge/beads"
 )
@@ -280,5 +285,169 @@ terminal = true
 			t.Errorf("expected MaxTurns=0 (not set), got %d", step.MaxTurns)
 		}
 	})
+}
+
+// --- Tests for implement flow --apprentice and wizardRunSpawn error propagation ---
+
+// TestImplementFlowIncludesApprenticeFlag verifies that the "implement" flow
+// passes --apprentice to the spawned wizard subprocess, preventing the child
+// wizard from re-claiming the bead.
+func TestImplementFlowIncludesApprenticeFlag(t *testing.T) {
+	var captured agent.SpawnConfig
+	backend := &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			captured = cfg
+			return &mockHandle{}, nil
+		},
+	}
+
+	dir := t.TempDir()
+	deps := &Deps{
+		Spawner:   backend,
+		ConfigDir: func() (string, error) { return dir, nil },
+		// No AgentResultDir — readAgentResult returns nil, which is fine.
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-implement",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {Action: "wizard.run", Flow: "implement"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "implement",
+	}
+
+	result := actionWizardRun(exec, "implement", step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("actionWizardRun returned error: %v", result.Error)
+	}
+
+	// Check that --apprentice is present in ExtraArgs.
+	found := false
+	for _, arg := range captured.ExtraArgs {
+		if arg == "--apprentice" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --apprentice in ExtraArgs, got %v", captured.ExtraArgs)
+	}
+
+	// Also verify the role is apprentice.
+	if captured.Role != agent.RoleApprentice {
+		t.Errorf("expected role %q, got %q", agent.RoleApprentice, captured.Role)
+	}
+}
+
+// TestWizardRunSpawnFailsOnChildExit verifies that wizardRunSpawn returns an
+// ActionResult with a non-nil Error when the child process exits non-zero and
+// there is no result.json.
+func TestWizardRunSpawnFailsOnChildExit(t *testing.T) {
+	backend := &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			return &mockHandle{waitErr: errors.New("exit status 1")}, nil
+		},
+	}
+
+	dir := t.TempDir()
+	deps := &Deps{
+		Spawner:   backend,
+		ConfigDir: func() (string, error) { return dir, nil },
+		// No AgentResultDir — no result.json present.
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-fail",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {Action: "wizard.run", Flow: "implement"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "implement",
+	}
+	state := exec.graphState
+
+	result := wizardRunSpawn(exec, "implement", step, state, agent.RoleApprentice, []string{"--apprentice"})
+
+	if result.Error == nil {
+		t.Fatal("expected non-nil Error when child process exits non-zero, got nil")
+	}
+	if result.Outputs["result"] != "error" {
+		t.Errorf("expected outputs[result]=%q, got %q", "error", result.Outputs["result"])
+	}
+}
+
+// TestWizardRunSpawnSucceedsWithResultJSONDespiteWaitErr verifies the edge
+// case where the child process wrote result.json with result="success" but then
+// got killed (waitErr != nil). The node should NOT fail because the work was done.
+func TestWizardRunSpawnSucceedsWithResultJSONDespiteWaitErr(t *testing.T) {
+	agentName := "wizard-test"
+	stepName := "implement"
+	spawnName := agentName + "-" + stepName
+
+	// Set up a temp dir with result.json reporting success.
+	resultDir := t.TempDir()
+	ar := agentResultJSON{Result: "success", Branch: "feat/spi-test", Commit: "abc123"}
+	data, _ := json.Marshal(ar)
+	os.WriteFile(filepath.Join(resultDir, "result.json"), data, 0644)
+
+	backend := &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			return &mockHandle{waitErr: errors.New("signal: killed")}, nil
+		},
+	}
+
+	dir := t.TempDir()
+	deps := &Deps{
+		Spawner:   backend,
+		ConfigDir: func() (string, error) { return dir, nil },
+		AgentResultDir: func(name string) string {
+			if name == spawnName {
+				return resultDir
+			}
+			return ""
+		},
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-success-despite-kill",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			stepName: {Action: "wizard.run", Flow: "implement"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", agentName, graph, nil, deps)
+
+	step := StepConfig{
+		Action: "wizard.run",
+		Flow:   "implement",
+	}
+	state := exec.graphState
+
+	result := wizardRunSpawn(exec, stepName, step, state, agent.RoleApprentice, []string{"--apprentice"})
+
+	// The node should succeed because result.json says "success".
+	if result.Error != nil {
+		t.Fatalf("expected nil Error when result.json reports success, got: %v", result.Error)
+	}
+	if result.Outputs["result"] != "success" {
+		t.Errorf("expected outputs[result]=%q, got %q", "success", result.Outputs["result"])
+	}
+	if result.Outputs["branch"] != "feat/spi-test" {
+		t.Errorf("expected outputs[branch]=%q, got %q", "feat/spi-test", result.Outputs["branch"])
+	}
 }
 
