@@ -40,8 +40,13 @@ func ResolveFormula(bead Bead) (*FormulaV2, error) {
 }
 
 // resolveFormulaName returns the formula name for a bead without loading it.
+// Uses ResolveAny to respect the v3-default resolution order.
 func resolveFormulaName(bead Bead) string {
-	return formula.ResolveName(beadToInfo(bead))
+	info := beadToInfo(bead)
+	if formula.WantsV2(info) {
+		return formula.ResolveName(info)
+	}
+	return formula.ResolveV3Name(info)
 }
 
 // ResolveFormulaAny resolves either a v2 or v3 formula for a bead.
