@@ -48,6 +48,9 @@ func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 		AddLabel:    func(id, label string) error { return nil },
 		RemoveLabel: func(id, label string) error { return nil },
 		CloseBead:   func(id string) error { return nil },
+		CreateBead:  func(opts CreateOpts) (string, error) { return "alert-1", nil },
+		AddComment:  func(id, text string) error { return nil },
+		AddDepTyped: func(from, to, depType string) error { return nil },
 	}
 
 	return deps, actionLog

@@ -87,6 +87,8 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		ready, err := formula.NextSteps(graph, completed, ctx)
 		if err != nil {
 			e.closeGraphAttempt(state, "failure: graph-walk: "+err.Error())
+			EscalateHumanFailure(e.beadID, e.agentName, "step-failure",
+				"graph walk: "+err.Error(), e.deps)
 			return fmt.Errorf("graph walk: %w", err)
 		}
 
@@ -99,8 +101,11 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 					return nil
 				}
 			}
-			e.closeGraphAttempt(state, "failure: graph stuck")
-			return fmt.Errorf("graph stuck: no ready steps and no terminal completed (steps=%v)", summarizeSteps(state.Steps))
+			stuckMsg := fmt.Sprintf("graph stuck: no ready steps and no terminal completed (steps=%v)", summarizeSteps(state.Steps))
+			e.closeGraphAttempt(state, "failure: "+stuckMsg)
+			EscalateHumanFailure(e.beadID, e.agentName, "step-failure",
+				stuckMsg, e.deps)
+			return fmt.Errorf("%s", stuckMsg)
 		}
 
 		stepName := ready[0] // take first ready step (sequential for now)
