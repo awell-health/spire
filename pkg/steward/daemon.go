@@ -68,11 +68,6 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 	// Sync derived configs from tower config (single source of truth).
 	SyncTowerDerivedConfigs(tower)
 
-	// Reconcile shared repos: detect newly added repos and log notices.
-	if err := reconcileSharedRepos(tower); err != nil {
-		log.Printf("[daemon] [%s] reconcileSharedRepos: %v", tower.Name, err)
-	}
-
 	// Open store scoped to this tower
 	if _, err := store.OpenAt(beadsDir); err != nil {
 		log.Printf("[daemon] [%s] open store: %s", tower.Name, err)
@@ -85,6 +80,11 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 	defer func() { DaemonDB = "" }()
 
 	runDoltSync(tower)
+
+	// Reconcile shared repos after Dolt sync so remotely shared repos are visible in the current cycle.
+	if err := reconcileSharedRepos(tower); err != nil {
+		log.Printf("[daemon] [%s] reconcileSharedRepos: %v", tower.Name, err)
+	}
 
 	ensureWebhookQueue()
 
