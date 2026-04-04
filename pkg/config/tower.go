@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -39,6 +40,22 @@ type LocalRepoBinding struct {
 type ArchmageConfig struct {
 	Name  string `json:"name"`            // GitHub username (used by CI to validate workflows)
 	Email string `json:"email,omitempty"` // Git commit email
+}
+
+// OLAPPath returns the path to this tower's DuckDB analytics database.
+// The file lives under XDG_DATA_HOME/spire/<tower-slug>/analytics.db.
+func (t TowerConfig) OLAPPath() string {
+	slug := strings.ToLower(regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(t.Name, "-"))
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		slug = "default"
+	}
+	base := os.Getenv("XDG_DATA_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(base, "spire", slug, "analytics.db")
 }
 
 // TowerConfigDir returns ~/.config/spire/towers/, creating it if needed.

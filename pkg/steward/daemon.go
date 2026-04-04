@@ -2,6 +2,7 @@ package steward
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,10 +12,13 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
+
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
+	"github.com/awell-health/spire/pkg/olap"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -81,6 +85,11 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 	defer func() { DaemonDB = "" }()
 
 	runDoltSync(tower)
+
+	// ETL agent_runs from Dolt into the local DuckDB OLAP store.
+	if err := syncToOLAP(tower); err != nil {
+		log.Printf("[daemon] [%s] olap sync: %v (non-fatal)", tower.Name, err)
+	}
 
 	// Reconcile shared repos after Dolt sync so remotely shared repos are visible in the current cycle.
 	if err := reconcileSharedRepos(tower); err != nil {
@@ -550,6 +559,40 @@ func ReapDeadAgents(towerName string) int {
 		reaped++
 	}
 	return reaped
+}
+
+// syncToOLAP performs incremental ETL from Dolt agent_runs into the tower's
+// local DuckDB analytics database. Non-fatal: errors are logged by the caller.
+func syncToOLAP(tower config.TowerConfig) error {
+	olapPath := tower.OLAPPath()
+	if err := os.MkdirAll(filepath.Dir(olapPath), 0700); err != nil {
+		return err
+	}
+	db, err := olap.Open(olapPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s", dolt.Host(), dolt.Port(), tower.Database)
+	doltConn, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return err
+	}
+	defer doltConn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	etl := olap.NewETL(db)
+	n, err := etl.Sync(ctx, doltConn)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		log.Printf("[daemon] [%s] olap: synced %d agent_runs rows", tower.Name, n)
+	}
+	return nil
 }
 
 // ExportRunDoltSync exposes runDoltSync for backward-compatible callers in cmd/spire.
