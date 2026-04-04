@@ -301,11 +301,19 @@ func runDoltSync(tower config.TowerConfig) {
 	// Pull first — work with the freshest remote state before Linear sync.
 	// Use a per-operation 60s timeout so a slow/unreachable DoltHub doesn't
 	// block the daemon indefinitely (the bug this fixes).
+	// TODO: consider exponential backoff on repeated failures to avoid
+	// hammering a down DoltHub every cycle (currently retries every ~2min).
 	pullCtx, pullCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer pullCancel()
 	pullErr := dolt.CLIPull(pullCtx, dataDir, false)
 	if pullErr != nil {
 		log.Printf("[daemon] [%s] dolt pull: %s", tower.Name, pullErr)
+		// Non-conflict errors (including timeouts) → persist failure state and bail.
+		// Conflict errors fall through to ownership enforcement below.
+		if !strings.Contains(pullErr.Error(), "CONFLICT") && !strings.Contains(pullErr.Error(), "conflict") {
+			WriteSyncState(SyncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "pull_failed", Error: pullErr.Error()})
+			return
+		}
 	} else {
 		log.Printf("[daemon] [%s] dolt pull complete", tower.Name)
 	}
@@ -316,12 +324,6 @@ func runDoltSync(tower config.TowerConfig) {
 	// but the data is still merged into the working set.
 	if err := dolt.ApplyMergeOwnership(tower.Database, preCommit); err != nil {
 		log.Printf("[daemon] [%s] ownership enforcement: %s", tower.Name, err)
-	}
-
-	// If the pull failed for a reason other than merge conflicts, bail.
-	if pullErr != nil && !strings.Contains(pullErr.Error(), "CONFLICT") && !strings.Contains(pullErr.Error(), "conflict") {
-		WriteSyncState(SyncState{Tower: tower.Name, Remote: tower.DolthubRemote, At: now, Status: "pull_failed", Error: pullErr.Error()})
-		return
 	}
 
 	// Push local commits to the remote.
