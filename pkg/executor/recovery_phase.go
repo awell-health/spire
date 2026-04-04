@@ -11,6 +11,7 @@ import (
 
 func init() {
 	actionRegistry["recovery.execute"] = actionRecoveryExecute
+	actionRegistry["recovery.decide"] = actionRecoveryDecide
 }
 
 // actionRecoveryExecute is the ActionHandler for the "recovery.execute" opcode.

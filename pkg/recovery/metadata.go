@@ -128,6 +128,34 @@ func GetRecoveryLearnings(sourceBeadID string) ([]store.Bead, error) {
 	return learnings, nil
 }
 
+// GetCrossBeadLearnings returns up to limit reusable learnings for failureClass
+// across ALL beads (not scoped to a single source bead). Results are ordered by
+// resolved_at DESC so the most recent patterns appear first.
+func GetCrossBeadLearnings(failureClass string, limit int) ([]store.Bead, error) {
+	closedStatus := store.StatusPtr(beads.StatusClosed)
+	learnings, err := store.ListBeadsByMetadata(
+		map[string]string{
+			KeyFailureClass: failureClass,
+			KeyReusable:     "true",
+		},
+		func(f *beads.IssueFilter) {
+			f.Status = closedStatus
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(learnings, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, learnings[i].Meta(KeyResolvedAt))
+		tj, _ := time.Parse(time.RFC3339, learnings[j].Meta(KeyResolvedAt))
+		return ti.After(tj)
+	})
+	if limit > 0 && len(learnings) > limit {
+		learnings = learnings[:limit]
+	}
+	return learnings, nil
+}
+
 // FindMatchingLearning returns the most recent closed recovery bead for
 // sourceBeadID whose failure_class matches fc, or nil if none found.
 func FindMatchingLearning(sourceBeadID string, fc FailureClass) (*store.Bead, error) {

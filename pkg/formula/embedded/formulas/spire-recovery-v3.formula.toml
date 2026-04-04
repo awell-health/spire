@@ -45,19 +45,53 @@ title = "Verify source bead is still interrupted"
 [steps.collect_context.with]
 action = "verify-clean"
 
-# Step 2: Attempt remediation — resummon the source bead (clear interrupts,
-# set to open for re-assignment). This is the default recovery action for most
-# failure classes. If a more targeted action is needed, a repo-level formula
-# can override this step with reset-to-step or reset.
+# Step 2: Agent decision — Claude chooses the best recovery action from the
+# ranked list produced by Diagnose, informed by per-bead and cross-bead learnings.
+[steps.decide]
+kind = "op"
+action = "recovery.decide"
+needs = ["collect_context"]
+title = "Agent decision: choose recovery action"
+
+# Step 3a: Execute remediation — action chosen by the decide step.
+# Only fires when decide chose a concrete action (not needs-human, escalate, or do-nothing).
 [steps.remediate]
 kind = "op"
 action = "recovery.execute"
-needs = ["collect_context"]
-title = "Execute remediation — resummon source bead"
+needs = ["decide"]
+title = "Execute remediation"
 [steps.remediate.with]
-action = "resummon"
+action = "{{ steps.decide.outputs.chosen_action }}"
 [steps.remediate.when]
-all = [{ left = "steps.collect_context.outputs.verification_status", op = "eq", right = "dirty" }]
+all = [
+    { left = "steps.decide.outputs.needs_human", op = "eq", right = "false" },
+    { left = "steps.decide.outputs.chosen_action", op = "ne", right = "do-nothing" },
+    { left = "steps.decide.outputs.chosen_action", op = "ne", right = "escalate" },
+]
+
+# Step 3b: Halt — decide flagged low confidence or needs_human.
+[steps.needs_human_halt]
+kind = "op"
+action = "recovery.execute"
+needs = ["decide"]
+title = "Halt — needs human review"
+[steps.needs_human_halt.with]
+action = "escalate"
+reason = "recovery agent flagged needs_human (low confidence)"
+[steps.needs_human_halt.when]
+all = [{ left = "steps.decide.outputs.needs_human", op = "eq", right = "true" }]
+
+# Step 3c: Direct escalate — decide chose escalation.
+[steps.escalate_chosen]
+kind = "op"
+action = "recovery.execute"
+needs = ["decide"]
+title = "Escalate — agent chose escalation"
+[steps.escalate_chosen.with]
+action = "escalate"
+reason = "recovery agent chose escalation"
+[steps.escalate_chosen.when]
+all = [{ left = "steps.decide.outputs.chosen_action", op = "eq", right = "escalate" }]
 
 # Step 3: Verify the source bead is clean after remediation.
 [steps.verify]
@@ -77,7 +111,7 @@ needs = ["verify"]
 title = "Document resolution learnings"
 [steps.document.with]
 action = "annotate-resolution"
-resolution_kind = "resummon"
+resolution_kind = "{{ steps.decide.outputs.chosen_action }}"
 reusable = "true"
 [steps.document.when]
 all = [{ left = "steps.verify.outputs.verification_status", op = "eq", right = "clean" }]

@@ -5,8 +5,10 @@ go 1.26
 require (
 	charm.land/lipgloss/v2 v2.0.2
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/anthropics/anthropic-sdk-go v1.30.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/go-sql-driver/mysql v1.9.3
+	github.com/marcboeker/go-duckdb v1.8.5
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -43,7 +45,6 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/marcboeker/go-duckdb v1.8.5 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.20 // indirect
@@ -58,6 +59,10 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
