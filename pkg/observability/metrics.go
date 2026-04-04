@@ -615,7 +615,8 @@ type DORAOpts struct {
 // "failure or timeout" — these represent agent infrastructure errors and
 // test suite failures that are equally indicative of change quality issues.
 var failureResults = map[string]bool{
-	"failure": true, "timeout": true, "error": true, "test_failure": true,
+	"failure": true, "timeout": true, "error": true,
+	"test_failure": true, "review_rejected": true,
 }
 
 // MetricsDORA computes and displays DORA metrics from the bead DAG.
@@ -721,24 +722,24 @@ func computeDORA(parents []store.BoardBead, childMap map[string][]store.BoardBea
 	// --- Compute metrics ---
 	result := &DORAResult{}
 
-	// 1. Deployment Frequency — parents whose last attempt result=success, grouped by week.
+	// 1. Merge Frequency — every closed parent bead is a merge event, grouped by week.
 	weekCounts := map[string]int{}
 	var successParents []store.BoardBead
 	for _, p := range parents {
+		// Every closed parent bead = a merge event.
+		ts := p.ClosedAt
+		if ts == "" {
+			ts = p.UpdatedAt
+		}
+		weekCounts[weekKey(ts)]++
+
+		// Track successful-attempt parents separately for lead time.
 		atts := parentAttempts[p.ID]
 		if len(atts) == 0 {
-			continue // skip parents with no attempts (pre-DAG beads)
+			continue
 		}
-		last := atts[len(atts)-1]
-		if last.result == "success" {
+		if atts[len(atts)-1].result == "success" {
 			successParents = append(successParents, p)
-			// Use ClosedAt for week grouping; fall back to UpdatedAt.
-			ts := p.ClosedAt
-			if ts == "" {
-				ts = p.UpdatedAt
-			}
-			wk := weekKey(ts)
-			weekCounts[wk]++
 		}
 	}
 	// Sort weeks and build result.
@@ -890,7 +891,7 @@ func computeDORA(parents []store.BoardBead, childMap map[string][]store.BoardBea
 	}
 	sortFloats(reviewDurations)
 	if totalReviews > 0 {
-		avgPerParent := float64(totalReviews) / float64(len(parents))
+		avgPerParent := float64(totalReviews) / float64(parentsWithReviews)
 		result.ReviewFriction = &ReviewStats{
 			TotalReviews:   totalReviews,
 			AvgPerParent:   avgPerParent,
@@ -999,10 +1000,10 @@ func renderDORAText(r *DORAResult, opts DORAOpts) error {
 	fmt.Println("DORA Metrics (last 28 days)")
 	fmt.Println()
 
-	// Deployment Frequency
-	fmt.Println("Deployment Frequency:")
+	// Merge Frequency
+	fmt.Println("Merge Frequency:")
 	if len(r.DeploymentFrequency) == 0 {
-		fmt.Printf("  %s(no successful deployments in period)%s\n", Dim, Reset)
+		fmt.Printf("  %s(no merges in period)%s\n", Dim, Reset)
 	} else {
 		var total int
 		for _, wk := range r.DeploymentFrequency {

@@ -13,7 +13,7 @@ func ts(base time.Time, hoursOffset float64) string {
 	return base.Add(time.Duration(hoursOffset * float64(time.Hour))).Format(time.RFC3339)
 }
 
-func TestComputeDORA_DeploymentFrequency(t *testing.T) {
+func TestComputeDORA_MergeFrequency(t *testing.T) {
 	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC) // a Wednesday
 
 	parents := []store.BoardBead{
@@ -36,16 +36,16 @@ func TestComputeDORA_DeploymentFrequency(t *testing.T) {
 
 	result := computeDORA(parents, childMap, DORAOpts{})
 
-	// Only p1 and p2 have last attempt = success.
+	// All 3 closed parents count as merges regardless of attempt result.
 	if len(result.DeploymentFrequency) == 0 {
-		t.Fatal("expected deployment frequency data")
+		t.Fatal("expected merge frequency data")
 	}
 	total := 0
 	for _, wk := range result.DeploymentFrequency {
 		total += wk.Merged
 	}
-	if total != 2 {
-		t.Errorf("expected 2 successful deployments, got %d", total)
+	if total != 3 {
+		t.Errorf("expected 3 merges, got %d", total)
 	}
 }
 
@@ -181,16 +181,21 @@ func TestComputeDORA_RetryRate(t *testing.T) {
 func TestComputeDORA_ReviewFriction(t *testing.T) {
 	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
 
+	// p2 has no reviews — must NOT dilute AvgPerParent.
 	parents := []store.BoardBead{
 		{ID: "p1", Status: "closed", ClosedAt: ts(base, 10)},
+		{ID: "p2", Status: "closed", ClosedAt: ts(base, 11)},
 	}
 
-	// 2 review rounds: first lasted 1h, second lasted 0.5h.
+	// 2 review rounds on p1: first lasted 1h, second lasted 0.5h. p2 has no reviews.
 	childMap := map[string][]store.BoardBead{
 		"p1": {
 			{ID: "a1", Title: "attempt: w1", Labels: []string{"attempt", "result:success"}, UpdatedAt: ts(base, 0)},
 			{ID: "r1", Title: "review-round-1", Labels: []string{"review-round", "round:1"}, Status: "closed", CreatedAt: ts(base, 1), UpdatedAt: ts(base, 2), ClosedAt: ts(base, 2)},
 			{ID: "r2", Title: "review-round-2", Labels: []string{"review-round", "round:2"}, Status: "closed", CreatedAt: ts(base, 3), UpdatedAt: ts(base, 3.5), ClosedAt: ts(base, 3.5)},
+		},
+		"p2": {
+			{ID: "a2", Title: "attempt: w2", Labels: []string{"attempt", "result:success"}, UpdatedAt: ts(base, 11)},
 		},
 	}
 
@@ -205,6 +210,13 @@ func TestComputeDORA_ReviewFriction(t *testing.T) {
 	// Avg duration = (1h + 0.5h) / 2 = 0.75h
 	if math.Abs(result.ReviewFriction.AvgDurationH-0.75) > 0.1 {
 		t.Errorf("expected avg duration ~0.75h, got %.2fh", result.ReviewFriction.AvgDurationH)
+	}
+	// AvgPerParent = 2 reviews / 1 parent-with-reviews = 2.0 (NOT 1.0 = 2/2)
+	if math.Abs(result.ReviewFriction.AvgPerParent-2.0) > 0.01 {
+		t.Errorf("expected AvgPerParent 2.0, got %.2f", result.ReviewFriction.AvgPerParent)
+	}
+	if result.ReviewFriction.ParentsWithRev != 1 {
+		t.Errorf("expected ParentsWithRev=1, got %d", result.ReviewFriction.ParentsWithRev)
 	}
 }
 
@@ -340,6 +352,46 @@ func TestComputeDORA_EmptyParents(t *testing.T) {
 	}
 }
 
+func TestComputeDORA_MergeFrequency_PreDAGBead(t *testing.T) {
+	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
+	parents := []store.BoardBead{
+		{ID: "p1", Status: "closed", ClosedAt: ts(base, 0)},
+	}
+	childMap := map[string][]store.BoardBead{
+		"p1": {}, // no attempt children — pre-DAG bead
+	}
+	result := computeDORA(parents, childMap, DORAOpts{})
+	if len(result.DeploymentFrequency) == 0 {
+		t.Fatal("expected merge frequency data for pre-DAG closed bead")
+	}
+	if result.DeploymentFrequency[0].Merged != 1 {
+		t.Errorf("expected 1 merge, got %d", result.DeploymentFrequency[0].Merged)
+	}
+}
+
+func TestComputeDORA_ChangeFailureRate_ReviewRejected(t *testing.T) {
+	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
+	parents := []store.BoardBead{
+		{ID: "p1", Status: "closed", ClosedAt: ts(base, 2)},
+	}
+	childMap := map[string][]store.BoardBead{
+		"p1": {
+			{ID: "a1", Title: "attempt: w1", Labels: []string{"attempt", "result:review_rejected"}, UpdatedAt: ts(base, 1)},
+			{ID: "a2", Title: "attempt: w1", Labels: []string{"attempt", "result:success"}, UpdatedAt: ts(base, 2)},
+		},
+	}
+	result := computeDORA(parents, childMap, DORAOpts{})
+	if result.ChangeFailureRate == nil {
+		t.Fatal("expected change failure rate data")
+	}
+	if result.ChangeFailureRate.TotalAttempts != 2 {
+		t.Errorf("expected 2 total attempts, got %d", result.ChangeFailureRate.TotalAttempts)
+	}
+	if result.ChangeFailureRate.Failures != 1 {
+		t.Errorf("expected 1 failure (review_rejected), got %d", result.ChangeFailureRate.Failures)
+	}
+}
+
 func TestComputeDORA_ParentsWithNoAttempts(t *testing.T) {
 	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
 
@@ -352,9 +404,12 @@ func TestComputeDORA_ParentsWithNoAttempts(t *testing.T) {
 
 	result := computeDORA(parents, childMap, DORAOpts{})
 
-	// No attempts → no deployment frequency, no lead time, no failure rate.
-	if len(result.DeploymentFrequency) != 0 {
-		t.Error("expected empty deployment frequency for parent with no attempts")
+	// No attempts → still counts as merge (closed parent = merge), but no lead time, no failure rate.
+	if len(result.DeploymentFrequency) == 0 {
+		t.Fatal("expected merge frequency data for parent with no attempts")
+	}
+	if result.DeploymentFrequency[0].Merged != 1 {
+		t.Errorf("expected 1 merge, got %d", result.DeploymentFrequency[0].Merged)
 	}
 	if result.LeadTime != nil {
 		t.Error("expected nil lead time for parent with no attempts")
