@@ -311,6 +311,9 @@ func migrateSpireTables(database string) error {
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, formulasTableSQL)); err != nil {
 		return fmt.Errorf("create formulas: %w", err)
 	}
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, recoveryLearningsTableSQL)); err != nil {
+		return fmt.Errorf("create recovery_learnings: %w", err)
+	}
 
 	// Run column migrations — each entry checks SHOW COLUMNS and adds if missing.
 	for _, m := range spireMigrations {

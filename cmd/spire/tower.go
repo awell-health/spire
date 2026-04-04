@@ -206,6 +206,21 @@ const goldenPromptsTableSQL = `CREATE TABLE IF NOT EXISTS golden_prompts (
     CONSTRAINT fk_run FOREIGN KEY (run_id) REFERENCES agent_runs(id)
 )`
 
+const recoveryLearningsTableSQL = `CREATE TABLE IF NOT EXISTS recovery_learnings (
+    id              VARCHAR(32) PRIMARY KEY,
+    recovery_bead   VARCHAR(64) NOT NULL,
+    source_bead     VARCHAR(64) NOT NULL,
+    failure_class   VARCHAR(64) NOT NULL,
+    failure_sig     VARCHAR(128),
+    resolution_kind VARCHAR(32) NOT NULL,
+    outcome         VARCHAR(16) NOT NULL,
+    learning_summary TEXT,
+    reusable        BOOLEAN DEFAULT TRUE,
+    resolved_at     DATETIME NOT NULL,
+    INDEX idx_recovery_learnings_class (failure_class),
+    INDEX idx_recovery_learnings_source (source_bead, failure_class)
+)`
+
 // columnMigration describes a single column that must exist in a Spire table.
 // The migration loop uses SHOW COLUMNS to check existence, then ALTER TABLE
 // ADD COLUMN if missing. This is idempotent and safe to run on every startup.
@@ -283,6 +298,18 @@ var spireMigrations = []columnMigration{
 
 	// --- formulas columns (spi-1xa1t) ---
 	{table: "formulas", column: "version", ddl: "ADD COLUMN version INT NOT NULL DEFAULT 1"},
+
+	// --- recovery_learnings columns (spi-o7sry) ---
+	{table: "recovery_learnings", column: "id", ddl: "ADD COLUMN id VARCHAR(32) NOT NULL PRIMARY KEY"},
+	{table: "recovery_learnings", column: "recovery_bead", ddl: "ADD COLUMN recovery_bead VARCHAR(64) NOT NULL"},
+	{table: "recovery_learnings", column: "source_bead", ddl: "ADD COLUMN source_bead VARCHAR(64) NOT NULL"},
+	{table: "recovery_learnings", column: "failure_class", ddl: "ADD COLUMN failure_class VARCHAR(64) NOT NULL", index: "CREATE INDEX IF NOT EXISTS idx_recovery_learnings_class ON recovery_learnings (failure_class)"},
+	{table: "recovery_learnings", column: "failure_sig", ddl: "ADD COLUMN failure_sig VARCHAR(128)"},
+	{table: "recovery_learnings", column: "resolution_kind", ddl: "ADD COLUMN resolution_kind VARCHAR(32) NOT NULL"},
+	{table: "recovery_learnings", column: "outcome", ddl: "ADD COLUMN outcome VARCHAR(16) NOT NULL"},
+	{table: "recovery_learnings", column: "learning_summary", ddl: "ADD COLUMN learning_summary TEXT"},
+	{table: "recovery_learnings", column: "reusable", ddl: "ADD COLUMN reusable BOOLEAN DEFAULT TRUE"},
+	{table: "recovery_learnings", column: "resolved_at", ddl: "ADD COLUMN resolved_at DATETIME NOT NULL"},
 }
 
 // requiredCustomTypes are the bead types that Spire registers on every tower.

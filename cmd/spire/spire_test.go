@@ -1181,9 +1181,10 @@ func TestSpireMigrationsNoDuplicates(t *testing.T) {
 // TestSpireMigrationsValidTables ensures all migrations reference known tables.
 func TestSpireMigrationsValidTables(t *testing.T) {
 	validTables := map[string]bool{
-		"agent_runs":     true,
-		"golden_prompts": true,
-		"formulas":       true,
+		"agent_runs":          true,
+		"golden_prompts":      true,
+		"formulas":            true,
+		"recovery_learnings":  true,
 	}
 	for _, m := range spireMigrations {
 		if !validTables[m.table] {
@@ -1238,6 +1239,17 @@ func TestSpireMigrationsCoversAllColumns(t *testing.T) {
 	for _, col := range goldenCols {
 		if !migrated["golden_prompts"][col] {
 			t.Errorf("golden_prompts column %q has no migration entry", col)
+		}
+	}
+
+	// recovery_learnings expected columns (from recoveryLearningsTableSQL)
+	recoveryLearningsCols := []string{
+		"id", "recovery_bead", "source_bead", "failure_class", "failure_sig",
+		"resolution_kind", "outcome", "learning_summary", "reusable", "resolved_at",
+	}
+	for _, col := range recoveryLearningsCols {
+		if !migrated["recovery_learnings"][col] {
+			t.Errorf("recovery_learnings column %q has no migration entry", col)
 		}
 	}
 }
