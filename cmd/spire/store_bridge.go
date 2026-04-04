@@ -374,3 +374,37 @@ func reviewRoundNumber(b Bead) int {
 func stepBeadPhaseName(b Bead) string {
 	return store.StepBeadPhaseName(b)
 }
+
+// --- Tower formula bridge (delegate to pkg/store with DB from active store) ---
+
+func storeGetTowerFormula(name string) (string, error) {
+	db, err := storeTowerDB()
+	if err != nil {
+		return "", err
+	}
+	return store.GetTowerFormula(db, name)
+}
+
+func storeListTowerFormulas() ([]store.TowerFormula, error) {
+	db, err := storeTowerDB()
+	if err != nil {
+		return nil, err
+	}
+	return store.ListTowerFormulas(db)
+}
+
+func storePublishTowerFormula(name, content, desc, author string) error {
+	db, err := storeTowerDB()
+	if err != nil {
+		return err
+	}
+	return store.PublishTowerFormula(db, name, content, desc, author)
+}
+
+func storeRemoveTowerFormula(name string) error {
+	db, err := storeTowerDB()
+	if err != nil {
+		return err
+	}
+	return store.RemoveTowerFormula(db, name)
+}

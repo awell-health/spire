@@ -54,6 +54,7 @@ func init() {
 	rootCmd.AddCommand(towerCmd)
 	rootCmd.AddCommand(repoCmd)
 	rootCmd.AddCommand(workshopCmd)
+	rootCmd.AddCommand(formulaCmd)
 
 	// --- Integration commands ---
 	rootCmd.AddCommand(connectCmd)
