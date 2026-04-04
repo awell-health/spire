@@ -1304,6 +1304,7 @@ func TestCloseAllOpenStepBeads(t *testing.T) {
 			closedIDs = append(closedIDs, stepID)
 			return nil
 		},
+		AddLabel: func(id, label string) error { return nil },
 	}
 
 	state := &State{
