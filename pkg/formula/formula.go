@@ -2,6 +2,7 @@ package formula
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,14 +275,55 @@ func LoadReviewPhaseFormula() (*FormulaStepGraph, error) {
 	return LoadStepGraphByName("review-phase")
 }
 
+// TowerFetcher is an optional injection point for tower-level formula lookup.
+// When set, it is called with a formula name and returns the TOML content
+// from the tower's dolt database. Set by cmd/spire at startup to avoid an
+// import cycle between pkg/formula and pkg/store.
+// Nil-safe: skipped when unset.
+var TowerFetcher func(name string) (string, error)
+
 // LoadStepGraphByName loads a step-graph formula with layered resolution:
 //  1. On-disk (.beads/formulas/<name>.formula.toml) — user/project override
-//  2. Embedded default (compiled into binary)
+//  2. Tower-level (dolt database, via TowerFetcher)
+//  3. Embedded default (compiled into binary)
 func LoadStepGraphByName(name string) (*FormulaStepGraph, error) {
+	g, _, err := LoadStepGraphByNameWithSource(name)
+	return g, err
+}
+
+// LoadStepGraphByNameWithSource loads a step-graph formula and returns its
+// source: "repo", "tower", or "embedded". Used by agent_runs tracking to
+// record formula provenance.
+func LoadStepGraphByNameWithSource(name string) (*FormulaStepGraph, string, error) {
+	// --- tier 1: repo-level (.beads/formulas/) ---
 	if path, err := FindFormula(name); err == nil {
-		return LoadStepGraphFromFile(path)
+		g, err := LoadStepGraphFromFile(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("repo formula %q: %w", name, err)
+		}
+		return g, "repo", nil
 	}
-	return LoadEmbeddedStepGraph(name)
+
+	// --- tier 2: tower-level (dolt database) ---
+	if TowerFetcher != nil {
+		if content, err := TowerFetcher(name); err == nil && content != "" {
+			g, err := ParseFormulaStepGraph([]byte(content))
+			if err != nil {
+				// Malformed tower formula — log and fall through, don't hard-fail.
+				log.Printf("warn: tower formula %q invalid, falling through: %v", name, err)
+			} else {
+				return g, "tower", nil
+			}
+		}
+		// TowerFetcher returning error (dolt unreachable) → silent fall-through.
+	}
+
+	// --- tier 3: embedded defaults ---
+	g, err := LoadEmbeddedStepGraph(name)
+	if err != nil {
+		return nil, "", fmt.Errorf("formula %q not found in repo, tower, or embedded", name)
+	}
+	return g, "embedded", nil
 }
 
 // LoadStepGraphFromFile reads and parses a step-graph formula from a TOML file.
