@@ -1,6 +1,7 @@
 package steward
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -298,7 +299,11 @@ func runDoltSync(tower config.TowerConfig) {
 	preCommit := dolt.GetCurrentCommitHash(tower.Database)
 
 	// Pull first — work with the freshest remote state before Linear sync.
-	pullErr := dolt.CLIPull(dataDir, false)
+	// Use a per-operation 60s timeout so a slow/unreachable DoltHub doesn't
+	// block the daemon indefinitely (the bug this fixes).
+	pullCtx, pullCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer pullCancel()
+	pullErr := dolt.CLIPull(pullCtx, dataDir, false)
 	if pullErr != nil {
 		log.Printf("[daemon] [%s] dolt pull: %s", tower.Name, pullErr)
 	} else {
@@ -320,7 +325,10 @@ func runDoltSync(tower config.TowerConfig) {
 	}
 
 	// Push local commits to the remote.
-	if err := dolt.CLIPush(dataDir, false); err != nil {
+	// Separate 60s timeout so a slow pull doesn't eat into the push budget.
+	pushCtx, pushCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer pushCancel()
+	if err := dolt.CLIPush(pushCtx, dataDir, false); err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "non-fast-forward") || strings.Contains(errMsg, "no common ancestor") {
 			log.Printf("[daemon] [%s] dolt push: non-fast-forward, skipping (will retry next cycle)", tower.Name)

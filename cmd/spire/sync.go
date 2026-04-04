@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -116,7 +117,7 @@ func runSync() error {
 	// dolt fetch (updates remotes/origin/main) then dolt merge (three-way merge),
 	// which can reconcile commits from both sides without overwriting local history.
 	fmt.Println("  Fetching from origin...")
-	mergeOut, err := dolt.CLIFetchMerge(dataDir)
+	mergeOut, err := dolt.CLIFetchMerge(context.Background(), dataDir)
 	mergeHadConflicts := err != nil
 
 	// If merge produced conflicts, try automatic field-level resolution.

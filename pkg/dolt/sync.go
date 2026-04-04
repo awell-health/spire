@@ -1,6 +1,7 @@
 package dolt
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,7 +11,8 @@ import (
 // CLIFetchMerge performs a three-way merge by running dolt fetch followed
 // by dolt merge. Unlike dolt pull (fast-forward only), this can reconcile
 // diverged histories by creating a merge commit. Returns the merge output.
-func CLIFetchMerge(dataDir string) (string, error) {
+// The context controls the deadline for both fetch and merge subcommands.
+func CLIFetchMerge(ctx context.Context, dataDir string) (string, error) {
 	bin := Bin()
 	if bin == "" {
 		return "", fmt.Errorf("dolt not found — run spire up to install")
@@ -19,7 +21,7 @@ func CLIFetchMerge(dataDir string) (string, error) {
 	env := os.Environ()
 
 	// Step 1: fetch remote commits into remotes/origin/main.
-	fetchCmd := exec.Command(bin, "fetch", "origin", "main")
+	fetchCmd := exec.CommandContext(ctx, bin, "fetch", "origin", "main")
 	fetchCmd.Dir = dataDir
 	fetchCmd.Env = env
 	fetchOut, err := fetchCmd.CombinedOutput()
@@ -28,7 +30,7 @@ func CLIFetchMerge(dataDir string) (string, error) {
 	}
 
 	// Step 2: three-way merge into current branch.
-	mergeCmd := exec.Command(bin, "merge", "remotes/origin/main")
+	mergeCmd := exec.CommandContext(ctx, bin, "merge", "remotes/origin/main")
 	mergeCmd.Dir = dataDir
 	mergeCmd.Env = env
 	mergeOut, err := mergeCmd.CombinedOutput()

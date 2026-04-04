@@ -1,6 +1,7 @@
 package dolt
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,8 +10,9 @@ import (
 
 // CLIPush runs `dolt push origin main` directly from the database data
 // directory, inheriting the caller's environment so DOLT_REMOTE_USER /
-// DOLT_REMOTE_PASSWORD are available.
-func CLIPush(dataDir string, force bool) error {
+// DOLT_REMOTE_PASSWORD are available. The context controls the command
+// deadline — use context.WithTimeout to prevent indefinite hangs.
+func CLIPush(ctx context.Context, dataDir string, force bool) error {
 	bin := Bin()
 	if bin == "" {
 		return fmt.Errorf("dolt not found — run spire up to install")
@@ -21,7 +23,7 @@ func CLIPush(dataDir string, force bool) error {
 		args = []string{"push", "--force", "origin", "main"}
 	}
 
-	cmd := exec.Command(bin, args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dataDir
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()

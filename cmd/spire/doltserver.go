@@ -4,6 +4,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/awell-health/spire/pkg/dolt"
 )
 
@@ -26,9 +28,10 @@ func doltStart() (int, error)                              { return dolt.Start()
 func doltStop() error                                      { return dolt.Stop() }
 func stopProcess(pidPath string) (bool, error)             { return dolt.StopProcess(pidPath) }
 
-// CLI operation wrappers — used by daemon.go, register_repo.go, tower.go.
-func doltCLIPush(dataDir string, force bool) error         { return dolt.CLIPush(dataDir, force) }
-func doltCLIPull(dataDir string, force bool) error         { return dolt.CLIPull(dataDir, force) }
-func doltCLIFetchMerge(dataDir string) (string, error)     { return dolt.CLIFetchMerge(dataDir) }
+// CLI operation wrappers — used by register_repo.go, tower.go, sync.go, etc.
+// These pass context.Background() since CLI callers rely on Ctrl-C, not timeouts.
+func doltCLIPush(dataDir string, force bool) error         { return dolt.CLIPush(context.Background(), dataDir, force) }
+func doltCLIPull(dataDir string, force bool) error         { return dolt.CLIPull(context.Background(), dataDir, force) }
+func doltCLIFetchMerge(dataDir string) (string, error)     { return dolt.CLIFetchMerge(context.Background(), dataDir) }
 func setDoltCLIRemote(dataDir, name, url string)           { dolt.SetCLIRemote(dataDir, name, url) }
 func ensureDoltHubDB(remoteURL string) error               { return dolt.EnsureDoltHubDB(remoteURL) }

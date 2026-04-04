@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -133,7 +134,7 @@ func runPull(remoteURL string, force bool) error {
 
 	// ── Pull via dolt CLI ─────────────────────────────────────────────────────
 	fmt.Println("  Pulling from origin...")
-	pullErr := dolt.CLIPull(dataDir, force)
+	pullErr := dolt.CLIPull(context.Background(), dataDir, force)
 
 	// ── Enforce field-level ownership ─────────────────────────────────────────
 	// Must run even when pull reports conflicts, since CLIPull merges data

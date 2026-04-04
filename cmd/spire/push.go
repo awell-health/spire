@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -125,10 +126,10 @@ func runPush(remoteURL string) error {
 	// reads DOLT_REMOTE_USER/DOLT_REMOTE_PASSWORD directly. This is the
 	// standard bootstrap path for local-first operation.
 	fmt.Println("  Pushing to origin...")
-	if err := dolt.CLIPush(dataDir, false); err != nil {
+	if err := dolt.CLIPush(context.Background(), dataDir, false); err != nil {
 		if strings.Contains(err.Error(), "non-fast-forward") || strings.Contains(err.Error(), "no common ancestor") {
 			fmt.Println("  Divergent history — retrying with --force...")
-			if err2 := dolt.CLIPush(dataDir, true); err2 != nil {
+			if err2 := dolt.CLIPush(context.Background(), dataDir, true); err2 != nil {
 				return fmt.Errorf("dolt push (force): %w", err2)
 			}
 		} else {
