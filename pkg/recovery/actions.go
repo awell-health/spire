@@ -12,6 +12,12 @@ const (
 	ActionVerifyClean        RecoveryActionKind = "verify-clean"
 	ActionAnnotateResolution RecoveryActionKind = "annotate-resolution"
 	ActionEscalate           RecoveryActionKind = "escalate"
+
+	// Agentic recovery actions (v3 formula: collect_context → decide → execute → verify → learn → finish).
+	ActionCollectContext RecoveryActionKind = "collect_context"
+	ActionDecide         RecoveryActionKind = "decide"
+	ActionLearn          RecoveryActionKind = "learn"
+	ActionFinish         RecoveryActionKind = "finish"
 )
 
 // KnownActions is the bounded set of recovery actions the executor recognizes.
@@ -23,6 +29,10 @@ var KnownActions = map[RecoveryActionKind]bool{
 	ActionVerifyClean:        true,
 	ActionAnnotateResolution: true,
 	ActionEscalate:           true,
+	ActionCollectContext:     true,
+	ActionDecide:             true,
+	ActionLearn:              true,
+	ActionFinish:             true,
 }
 
 // RecoveryActionRequest is the structured input for a recovery action dispatch.

@@ -299,11 +299,11 @@ var spireMigrations = []columnMigration{
 	// --- formulas columns (spi-1xa1t) ---
 	{table: "formulas", column: "version", ddl: "ADD COLUMN version INT NOT NULL DEFAULT 1"},
 
-	// --- recovery_learnings columns (spi-36i9f) ---
-	{table: "recovery_learnings", column: "id", ddl: "ADD COLUMN id VARCHAR(32) PRIMARY KEY"},
+	// --- recovery_learnings columns (spi-f8pga) ---
+	{table: "recovery_learnings", column: "id", ddl: "ADD COLUMN id VARCHAR(32) NOT NULL PRIMARY KEY"},
 	{table: "recovery_learnings", column: "recovery_bead", ddl: "ADD COLUMN recovery_bead VARCHAR(64) NOT NULL"},
-	{table: "recovery_learnings", column: "source_bead", ddl: "ADD COLUMN source_bead VARCHAR(64) NOT NULL"},
-	{table: "recovery_learnings", column: "failure_class", ddl: "ADD COLUMN failure_class VARCHAR(64) NOT NULL", index: "CREATE INDEX idx_failure_class ON recovery_learnings (failure_class)"},
+	{table: "recovery_learnings", column: "source_bead", ddl: "ADD COLUMN source_bead VARCHAR(64) NOT NULL", index: "CREATE INDEX IF NOT EXISTS idx_source_bead ON recovery_learnings (source_bead, failure_class)"},
+	{table: "recovery_learnings", column: "failure_class", ddl: "ADD COLUMN failure_class VARCHAR(64) NOT NULL", index: "CREATE INDEX IF NOT EXISTS idx_failure_class ON recovery_learnings (failure_class)"},
 	{table: "recovery_learnings", column: "failure_sig", ddl: "ADD COLUMN failure_sig VARCHAR(128)"},
 	{table: "recovery_learnings", column: "resolution_kind", ddl: "ADD COLUMN resolution_kind VARCHAR(32) NOT NULL"},
 	{table: "recovery_learnings", column: "outcome", ddl: "ADD COLUMN outcome VARCHAR(16) NOT NULL"},

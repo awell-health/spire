@@ -1,14 +1,14 @@
 package executor
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/recovery"
-	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -37,6 +37,18 @@ func actionRecoveryExecute(e *Executor, stepName string, step StepConfig, state 
 	actionKind := step.With["action"]
 	if actionKind == "" {
 		return ActionResult{Error: fmt.Errorf("recovery.execute step %q missing required with.action", stepName)}
+	}
+
+	// Agentic recovery steps: handle directly with full graph context.
+	switch actionKind {
+	case "collect_context":
+		return handleCollectContext(e, stepName, step, state)
+	case "decide":
+		return handleDecide(e, stepName, step, state)
+	case "learn":
+		return handleLearn(e, stepName, step, state)
+	case "finish":
+		return handleFinish(e, stepName, step, state)
 	}
 
 	// Resolve source bead ID: prefer explicit param, fall back to recovery bead metadata.
@@ -376,178 +388,588 @@ func failResult(kind recovery.RecoveryActionKind, msg string) recovery.RecoveryA
 	}
 }
 
-// learnOutput is the structured JSON output from the Claude learn prompt.
-type learnOutput struct {
+// ---------------------------------------------------------------------------
+// Agentic recovery handlers (spi-f8pga)
+//
+// These implement the 6-step agentic recovery formula:
+//   collect_context → decide → execute → verify → learn → finish
+//
+// collect_context and decide/learn involve Claude calls; execute and verify
+// delegate to existing mechanical handlers; finish always closes the bead.
+// ---------------------------------------------------------------------------
+
+// CollectContextResult is the structured output of the collect_context step.
+type CollectContextResult struct {
+	Diagnosis      *recovery.Diagnosis       `json:"diagnosis"`
+	RankedActions  []recovery.RecoveryAction `json:"ranked_actions"`
+	BeadLearnings  []store.RecoveryLearning  `json:"bead_learnings"`
+	CrossLearnings []store.RecoveryLearning  `json:"cross_bead_learnings"`
+}
+
+// DecideResult is the structured output of the decide step (Claude response).
+type DecideResult struct {
+	ChosenAction string  `json:"chosen_action"`
+	Confidence   float64 `json:"confidence"`
+	Reasoning    string  `json:"reasoning"`
+	NeedsHuman   bool    `json:"needs_human"`
+}
+
+// LearnResult is the structured output of the learn step (Claude response).
+type LearnResult struct {
 	LearningSummary string `json:"learning_summary"`
 	ResolutionKind  string `json:"resolution_kind"`
 	Reusable        bool   `json:"reusable"`
 }
 
 // actionRecoveryLearn is the ActionHandler for the "recovery.learn" opcode.
-// It calls Claude to generate a learning summary from the recovery workflow's
-// prior steps, then writes the learning to both bead metadata (narrative layer)
-// and the recovery_learnings table (index layer for cross-bead queries).
-//
-// Best-effort: if Claude fails, returns a warning output rather than an Error
-// so the graph can proceed to the finish step and close the bead.
+// Delegates to handleLearn for the agentic v3 recovery formula.
 func actionRecoveryLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	// 1. Extract inputs from prior step outputs.
-	sourceBead := stepOutput(state, "collect_context", "source_bead_id")
-	failureClass := stepOutput(state, "collect_context", "failure_class")
-	failureSig := stepOutput(state, "collect_context", "failure_sig")
-	actionTaken := stepOutput(state, "remediate", "action")
-	if actionTaken == "" {
-		actionTaken = stepOutput(state, "remediate", "resolution_kind")
+	return handleLearn(e, stepName, step, state)
+}
+// handleCollectContext assembles diagnosis JSON + prior learnings from the
+// recovery_learnings table (per-bead and cross-bead). This is mechanical —
+// no Claude call. Writes CollectContextResult JSON to step outputs.
+func handleCollectContext(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	// Resolve source bead from recovery bead metadata.
+	sourceBeadID := resolveSourceBead(e, step)
+	if sourceBeadID == "" {
+		return ActionResult{Error: fmt.Errorf("collect_context: cannot resolve source bead")}
 	}
-	verifyOutcome := stepOutput(state, "verify", "verification_status")
-	recoveryBeadID := e.beadID
 
-	// Fall back to bead metadata for values not in step outputs.
-	if sourceBead == "" || failureClass == "" {
-		if bead, err := e.deps.GetBead(recoveryBeadID); err == nil {
-			if sourceBead == "" {
-				sourceBead = bead.Meta(recovery.KeySourceBead)
-			}
-			if failureClass == "" {
-				failureClass = bead.Meta(recovery.KeyFailureClass)
-			}
-			if failureSig == "" {
-				failureSig = bead.Meta(recovery.KeyFailureSignature)
-			}
+	failureClass := ""
+	if state != nil && state.Vars != nil {
+		failureClass = state.Vars["failure_class"]
+	}
+	if failureClass == "" {
+		if bead, err := e.deps.GetBead(e.beadID); err == nil {
+			failureClass = bead.Meta(recovery.KeyFailureClass)
 		}
 	}
 
-	// 2. Build Claude prompt.
-	prompt := buildLearnPrompt(sourceBead, failureClass, failureSig, actionTaken, verifyOutcome)
+	// Build recovery.Deps adapter from executor deps and call Diagnose.
+	recDeps := executorToRecoveryDeps(e)
+	diag, diagErr := recovery.Diagnose(sourceBeadID, recDeps)
 
-	// 3. Call Claude (single-shot).
-	model := repoconfig.ResolveModel(step.Model, e.repoModel())
+	// If diagnosis fails, we still continue with partial context.
+	var rankedActions []recovery.RecoveryAction
+	if diagErr == nil && diag != nil {
+		rankedActions = diag.Actions
+		if failureClass == "" {
+			failureClass = string(diag.FailureMode)
+		}
+	} else {
+		e.log("recovery: collect_context diagnosis failed (continuing with partial context): %v", diagErr)
+	}
+
+	// Query per-bead learnings via bead metadata (existing approach).
+	beadLearnings := queryBeadLearnings(sourceBeadID, failureClass)
+
+	// Query cross-bead learnings.
+	crossLearnings := queryCrossBeadLearnings(failureClass, 5)
+
+	result := CollectContextResult{
+		Diagnosis:      diag,
+		RankedActions:  rankedActions,
+		BeadLearnings:  beadLearnings,
+		CrossLearnings: crossLearnings,
+	}
+
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("collect_context: marshal result: %w", err)}
+	}
+
+	e.log("recovery: collect_context for %s (failure_class=%s, %d ranked actions, %d bead learnings, %d cross learnings)",
+		sourceBeadID, failureClass, len(rankedActions), len(beadLearnings), len(crossLearnings))
+
+	outputs := map[string]string{
+		"status":                 "success",
+		"collect_context_result": string(resultJSON),
+		"failure_class":          failureClass,
+		"source_bead":            sourceBeadID,
+	}
+
+	// Also output verification_status if diagnosis available (for already-clean detection).
+	if diag != nil {
+		hasInterrupt := false
+		for _, a := range diag.Actions {
+			if a.Name != "" {
+				hasInterrupt = true
+				break
+			}
+		}
+		if !hasInterrupt && diag.InterruptLabel == "" {
+			outputs["verification_status"] = "clean"
+		} else {
+			outputs["verification_status"] = "dirty"
+		}
+	}
+
+	return ActionResult{Outputs: outputs}
+}
+
+// handleDecide calls Claude with the collect_context result to choose a
+// recovery action. Outputs chosen_action, confidence, reasoning, needs_human.
+func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	// Read collect_context result from previous step outputs.
+	var contextJSON string
+	if state != nil {
+		if ss, ok := state.Steps["collect_context"]; ok {
+			contextJSON = ss.Outputs["collect_context_result"]
+		}
+	}
+	if contextJSON == "" {
+		return ActionResult{Error: fmt.Errorf("decide: no collect_context_result in step outputs")}
+	}
+
+	var ccResult CollectContextResult
+	if err := json.Unmarshal([]byte(contextJSON), &ccResult); err != nil {
+		return ActionResult{Error: fmt.Errorf("decide: unmarshal collect_context_result: %w", err)}
+	}
+
+	// Build Claude prompt.
+	prompt := buildDecidePrompt(ccResult)
+
+	// Call Claude.
+	if e.deps.ClaudeRunner == nil {
+		return ActionResult{Error: fmt.Errorf("decide: ClaudeRunner not available")}
+	}
+
 	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
-		"--model", model,
 		"--output-format", "text",
 		"--max-turns", "1",
 	}
-	raw, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
+
+	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
 	if err != nil {
-		e.log("warning: learn step claude call failed: %s", err)
-		return ActionResult{Outputs: map[string]string{
-			"status":  "warning",
-			"warning": fmt.Sprintf("claude call failed: %s", err),
-		}}
+		return ActionResult{Error: fmt.Errorf("decide: claude call failed: %w", err)}
 	}
 
-	// 4. Parse structured JSON output.
-	var out learnOutput
-	rawStr := strings.TrimSpace(string(raw))
-	// Extract JSON from Claude response (may be wrapped in markdown code blocks).
-	jsonStr := extractJSON(rawStr)
-	if err := json.Unmarshal([]byte(jsonStr), &out); err != nil {
-		e.log("warning: learn step parse output failed: %s (raw: %s)", err, rawStr)
-		// Fall back to reasonable defaults from available data.
-		out.LearningSummary = rawStr
-		out.ResolutionKind = actionTaken
-		out.Reusable = verifyOutcome == "clean"
+	// Parse Claude's JSON response.
+	var result DecideResult
+	if err := parseJSONFromClaude(out, &result); err != nil {
+		return ActionResult{Error: fmt.Errorf("decide: parse claude response: %w", err)}
 	}
 
-	// Override reusable based on verify outcome: dirty outcomes are not reusable.
-	if verifyOutcome == "dirty" {
-		out.Reusable = false
+	// Apply confidence threshold.
+	if result.Confidence < 0.7 {
+		result.NeedsHuman = true
 	}
 
-	// 5. Write to bead metadata (narrative layer).
-	meta := map[string]string{
-		recovery.KeyLearningSummary: out.LearningSummary,
-		recovery.KeyResolutionKind:  out.ResolutionKind,
-		recovery.KeyOutcome:         verifyOutcome,
-		recovery.KeyReusable:        strconv.FormatBool(out.Reusable),
-		recovery.KeyResolvedAt:      time.Now().UTC().Format(time.RFC3339),
-	}
-	if err := store.SetBeadMetadataMap(recoveryBeadID, meta); err != nil {
-		e.log("warning: learn step write metadata failed: %s", err)
+	outputs := map[string]string{
+		"status":        "success",
+		"chosen_action": result.ChosenAction,
+		"confidence":    fmt.Sprintf("%.2f", result.Confidence),
+		"reasoning":     result.Reasoning,
+		"needs_human":   fmt.Sprintf("%t", result.NeedsHuman),
 	}
 
-	// 6. Write to recovery_learnings table (index layer).
-	// Best-effort: if this fails but metadata succeeded, continue to finish.
-	if e.deps.WriteRecoveryLearning != nil {
-		l := store.RecoveryLearningRecord{
-			RecoveryBead:    recoveryBeadID,
-			SourceBead:      sourceBead,
-			FailureClass:    failureClass,
-			FailureSig:      failureSig,
-			ResolutionKind:  out.ResolutionKind,
-			Outcome:         verifyOutcome,
-			LearningSummary: out.LearningSummary,
-			Reusable:        out.Reusable,
+	// If needs_human, set bead status and write comment.
+	if result.NeedsHuman {
+		_ = e.deps.AddLabel(e.beadID, "needs-human")
+		_ = e.deps.AddComment(e.beadID, fmt.Sprintf(
+			"Recovery decide: needs human intervention.\n\nChosen action: %s\nConfidence: %.2f\nReasoning: %s",
+			result.ChosenAction, result.Confidence, result.Reasoning,
+		))
+		e.log("recovery: decide needs-human (confidence=%.2f, action=%s)", result.Confidence, result.ChosenAction)
+	} else {
+		e.log("recovery: decide chose %q (confidence=%.2f)", result.ChosenAction, result.Confidence)
+	}
+
+	return ActionResult{Outputs: outputs}
+}
+
+// handleLearn calls Claude with the action taken and verify outcome to extract
+// a learning. Writes to both bead metadata and the recovery_learnings table.
+func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	// Read decide result and verify outcome from step outputs.
+	var chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig string
+	if state != nil {
+		if ds, ok := state.Steps["decide"]; ok {
+			chosenAction = ds.Outputs["chosen_action"]
+			confidence = ds.Outputs["confidence"]
+			reasoning = ds.Outputs["reasoning"]
 		}
-		learningID, writeErr := e.deps.WriteRecoveryLearning(l)
-		if writeErr != nil {
-			e.log("warning: learn step write table failed: %s", writeErr)
-		} else {
-			// Write the learning ID back to metadata for cross-referencing.
-			_ = store.SetBeadMetadata(recoveryBeadID, recovery.KeyLearningID, learningID)
+		if vs, ok := state.Steps["verify"]; ok {
+			verifyOutcome = vs.Outputs["verification_status"]
+		}
+		if cs, ok := state.Steps["collect_context"]; ok {
+			failureClass = cs.Outputs["failure_class"]
 		}
 	}
+
+	if verifyOutcome == "" {
+		verifyOutcome = "unknown"
+	}
+
+	// Get failure signature from recovery bead metadata.
+	if bead, err := e.deps.GetBead(e.beadID); err == nil {
+		if failureClass == "" {
+			failureClass = bead.Meta(recovery.KeyFailureClass)
+		}
+		failureSig = bead.Meta(recovery.KeyFailureSignature)
+	}
+
+	// Build Claude prompt.
+	prompt := buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig)
+
+	// Call Claude.
+	if e.deps.ClaudeRunner == nil {
+		return ActionResult{Error: fmt.Errorf("learn: ClaudeRunner not available")}
+	}
+
+	args := []string{
+		"--dangerously-skip-permissions",
+		"-p", prompt,
+		"--output-format", "text",
+		"--max-turns", "1",
+	}
+
+	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("learn: claude call failed: %w", err)}
+	}
+
+	var result LearnResult
+	if err := parseJSONFromClaude(out, &result); err != nil {
+		return ActionResult{Error: fmt.Errorf("learn: parse claude response: %w", err)}
+	}
+
+	now := time.Now().UTC()
+	outcome := "clean"
+	if verifyOutcome != "clean" {
+		outcome = "dirty"
+	}
+
+	// 1. Write to bead metadata via existing path.
+	metaMap := map[string]string{
+		recovery.KeyLearningSummary: result.LearningSummary,
+		recovery.KeyResolutionKind: result.ResolutionKind,
+		recovery.KeyResolvedAt:     now.Format(time.RFC3339),
+	}
+	if result.Reusable {
+		metaMap[recovery.KeyReusable] = "true"
+	}
+	metaMap[recovery.KeyVerificationStatus] = outcome
+	if err := store.SetBeadMetadataMap(e.beadID, metaMap); err != nil {
+		e.log("recovery: learn: write bead metadata: %s", err)
+	}
+
+	// 2. Write to recovery_learnings SQL table.
+	sourceBeadID := resolveSourceBead(e, step)
+	learningRow := store.RecoveryLearningRow{
+		ID:              generateLearningID(),
+		RecoveryBead:    e.beadID,
+		SourceBead:      sourceBeadID,
+		FailureClass:    failureClass,
+		FailureSig:      failureSig,
+		ResolutionKind:  result.ResolutionKind,
+		Outcome:         outcome,
+		LearningSummary: result.LearningSummary,
+		Reusable:        result.Reusable,
+		ResolvedAt:      now,
+	}
+	if err := store.WriteRecoveryLearningAuto(learningRow); err != nil {
+		// Non-fatal: the bead metadata write is the primary record.
+		e.log("recovery: learn: write to recovery_learnings table: %s", err)
+	}
+
+	e.log("recovery: learn: %s (resolution=%s, outcome=%s, reusable=%t)",
+		result.LearningSummary, result.ResolutionKind, outcome, result.Reusable)
 
 	return ActionResult{Outputs: map[string]string{
-		"resolution_kind":  out.ResolutionKind,
-		"outcome":          verifyOutcome,
-		"learning_summary": out.LearningSummary,
+		"status":           "success",
+		"learning_summary": result.LearningSummary,
+		"resolution_kind":  result.ResolutionKind,
+		"outcome":          outcome,
+		"reusable":         fmt.Sprintf("%t", result.Reusable),
 	}}
 }
 
-// stepOutput reads a named output from a prior step's state.
-func stepOutput(state *GraphState, stepName, key string) string {
-	if state == nil || state.Steps == nil {
-		return ""
-	}
-	ss, ok := state.Steps[stepName]
-	if !ok {
-		return ""
-	}
-	if ss.Outputs == nil {
-		return ""
-	}
-	return ss.Outputs[key]
-}
-
-// extractJSON extracts a JSON object from a string that may contain markdown
-// code fences or surrounding text. Returns the original string if no JSON found.
-func extractJSON(s string) string {
-	// Try to find JSON object directly.
-	if start := strings.Index(s, "{"); start >= 0 {
-		if end := strings.LastIndex(s, "}"); end > start {
-			return s[start : end+1]
+// handleFinish closes the recovery bead unconditionally. Writes a closing
+// comment summarizing the action taken and outcome.
+func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	// Gather summary from step outputs.
+	var chosenAction, outcome, reasoning string
+	var needsHuman bool
+	if state != nil {
+		if ds, ok := state.Steps["decide"]; ok {
+			chosenAction = ds.Outputs["chosen_action"]
+			reasoning = ds.Outputs["reasoning"]
+			needsHuman = ds.Outputs["needs_human"] == "true"
+		}
+		if ls, ok := state.Steps["learn"]; ok {
+			outcome = ls.Outputs["outcome"]
+		}
+		if outcome == "" {
+			if vs, ok := state.Steps["verify"]; ok {
+				if vs.Outputs["verification_status"] == "clean" {
+					outcome = "clean"
+				} else {
+					outcome = "dirty"
+				}
+			}
 		}
 	}
-	return s
+
+	if chosenAction == "" {
+		chosenAction = "unknown"
+	}
+	if outcome == "" {
+		outcome = "unknown"
+	}
+
+	// Build closing comment.
+	var comment strings.Builder
+	comment.WriteString("Recovery closed.\n")
+	comment.WriteString(fmt.Sprintf("Action: %s\n", chosenAction))
+	comment.WriteString(fmt.Sprintf("Outcome: %s\n", outcome))
+	if needsHuman {
+		comment.WriteString("Human intervention was requested.\n")
+	}
+	if reasoning != "" {
+		comment.WriteString(fmt.Sprintf("Reasoning: %s\n", reasoning))
+	}
+
+	_ = e.deps.AddComment(e.beadID, comment.String())
+
+	// Close recovery bead unconditionally.
+	if err := e.deps.CloseBead(e.beadID); err != nil {
+		e.log("recovery: finish: close bead %s: %s", e.beadID, err)
+		return ActionResult{
+			Outputs: map[string]string{"status": "failed"},
+			Error:   fmt.Errorf("finish: close recovery bead: %w", err),
+		}
+	}
+
+	e.log("recovery: finish: closed %s (action=%s, outcome=%s, needs_human=%t)",
+		e.beadID, chosenAction, outcome, needsHuman)
+
+	return ActionResult{Outputs: map[string]string{
+		"status":  "success",
+		"action":  chosenAction,
+		"outcome": outcome,
+	}}
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions for agentic recovery
+// ---------------------------------------------------------------------------
+
+// resolveSourceBead resolves the source bead ID from step params or bead metadata.
+func resolveSourceBead(e *Executor, step StepConfig) string {
+	if id := step.With["source_bead_id"]; id != "" {
+		return id
+	}
+	if bead, err := e.deps.GetBead(e.beadID); err == nil {
+		return bead.Meta(recovery.KeySourceBead)
+	}
+	return ""
+}
+
+// executorToRecoveryDeps builds a recovery.Deps from executor.Deps.
+// Some fields are left nil — Diagnose handles nil-safe.
+func executorToRecoveryDeps(e *Executor) *recovery.Deps {
+	return &recovery.Deps{
+		GetBead: func(id string) (recovery.DepBead, error) {
+			b, err := e.deps.GetBead(id)
+			if err != nil {
+				return recovery.DepBead{}, err
+			}
+			return recovery.DepBead{
+				ID: b.ID, Title: b.Title, Status: b.Status,
+				Labels: b.Labels, Parent: b.Parent,
+			}, nil
+		},
+		GetChildren: func(parentID string) ([]recovery.DepBead, error) {
+			children, err := e.deps.GetChildren(parentID)
+			if err != nil {
+				return nil, err
+			}
+			result := make([]recovery.DepBead, len(children))
+			for i, c := range children {
+				result[i] = recovery.DepBead{
+					ID: c.ID, Title: c.Title, Status: c.Status,
+					Labels: c.Labels, Parent: c.Parent,
+				}
+			}
+			return result, nil
+		},
+		GetDependentsWithMeta: func(id string) ([]recovery.DepDependent, error) {
+			if e.deps.GetDependentsWithMeta == nil {
+				return nil, nil
+			}
+			deps, err := e.deps.GetDependentsWithMeta(id)
+			if err != nil {
+				return nil, err
+			}
+			result := make([]recovery.DepDependent, len(deps))
+			for i, d := range deps {
+				result[i] = recovery.DepDependent{
+					ID:             d.ID,
+					Title:          d.Title,
+					Status:         string(d.Status),
+					Labels:         d.Labels,
+					DependencyType: string(d.DependencyType),
+				}
+			}
+			return result, nil
+		},
+		AddComment: e.deps.AddComment,
+		CloseBead:  e.deps.CloseBead,
+		// LoadExecutorState, CheckBranch*, LookupRegistry, ResolveRepo left nil.
+		// Diagnose handles nil-safe for these optional capabilities.
+	}
+}
+
+// queryBeadLearnings queries per-bead learnings from closed recovery beads.
+// Uses the existing bead-metadata approach via store.ListClosedRecoveryBeads.
+func queryBeadLearnings(sourceBeadID, failureClass string) []store.RecoveryLearning {
+	reusable := true
+	filter := store.RecoveryLookupFilter{
+		SourceBead:   sourceBeadID,
+		FailureClass: failureClass,
+		Reusable:     &reusable,
+		Limit:        10,
+	}
+	learnings, err := store.ListClosedRecoveryBeads(filter)
+	if err != nil {
+		return nil
+	}
+	return learnings
+}
+
+// queryCrossBeadLearnings queries cross-bead learnings for a failure class.
+func queryCrossBeadLearnings(failureClass string, limit int) []store.RecoveryLearning {
+	reusable := true
+	filter := store.RecoveryLookupFilter{
+		FailureClass: failureClass,
+		Reusable:     &reusable,
+		Limit:        limit,
+	}
+	learnings, err := store.ListClosedRecoveryBeads(filter)
+	if err != nil {
+		return nil
+	}
+	return learnings
+}
+
+// buildDecidePrompt constructs the Claude prompt for the decide step.
+func buildDecidePrompt(cc CollectContextResult) string {
+	var b strings.Builder
+	b.WriteString("You are a recovery decision agent for Spire, an AI agent coordination system.\n\n")
+	b.WriteString("A bead (work item) has been interrupted and needs recovery. Analyze the diagnosis and choose the best recovery action.\n\n")
+
+	// Diagnosis context.
+	if cc.Diagnosis != nil {
+		diagJSON, _ := json.MarshalIndent(cc.Diagnosis, "", "  ")
+		b.WriteString("## Diagnosis\n```json\n")
+		b.Write(diagJSON)
+		b.WriteString("\n```\n\n")
+	}
+
+	// Ranked actions.
+	if len(cc.RankedActions) > 0 {
+		b.WriteString("## Available Actions (mechanically ranked)\n```json\n")
+		actJSON, _ := json.MarshalIndent(cc.RankedActions, "", "  ")
+		b.Write(actJSON)
+		b.WriteString("\n```\n\n")
+	}
+
+	// Bead learnings.
+	if len(cc.BeadLearnings) > 0 {
+		b.WriteString("## Prior experience with this exact bead\n```json\n")
+		blJSON, _ := json.MarshalIndent(cc.BeadLearnings, "", "  ")
+		b.Write(blJSON)
+		b.WriteString("\n```\n\n")
+	}
+
+	// Cross-bead learnings.
+	if len(cc.CrossLearnings) > 0 {
+		b.WriteString("## Similar incidents across the system (lower weight)\n```json\n")
+		clJSON, _ := json.MarshalIndent(cc.CrossLearnings, "", "  ")
+		b.Write(clJSON)
+		b.WriteString("\n```\n\n")
+	}
+
+	b.WriteString("## Instructions\n")
+	b.WriteString("Choose a recovery action. Output ONLY a JSON object with these fields:\n")
+	b.WriteString("- `chosen_action`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\"\n")
+	b.WriteString("- `confidence`: 0.0 to 1.0 — how confident you are this action will resolve the issue\n")
+	b.WriteString("- `reasoning`: brief explanation of why you chose this action\n")
+	b.WriteString("- `needs_human`: set to true if confidence < 0.7\n\n")
+	b.WriteString("\"do_nothing\" is valid if the source bead already appears clean.\n\n")
+	b.WriteString("Output ONLY the JSON object, no markdown fences, no explanation outside the JSON.\n")
+
+	return b.String()
 }
 
 // buildLearnPrompt constructs the Claude prompt for the learn step.
-func buildLearnPrompt(sourceBead, failureClass, failureSig, actionTaken, verifyOutcome string) string {
-	return fmt.Sprintf(`You are analyzing a recovery workflow outcome to generate a learning record.
+func buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig string) string {
+	var b strings.Builder
+	b.WriteString("You are a recovery learning agent for Spire, an AI agent coordination system.\n\n")
+	b.WriteString("A recovery action was taken. Analyze the result and extract a learning for future incidents.\n\n")
 
-## Recovery Context
-- Source bead: %s
-- Failure class: %s
-- Failure signature: %s
-- Action taken: %s
-- Verify outcome: %s
+	b.WriteString("## Recovery Context\n")
+	b.WriteString(fmt.Sprintf("- Chosen action: %s\n", chosenAction))
+	b.WriteString(fmt.Sprintf("- Confidence: %s\n", confidence))
+	b.WriteString(fmt.Sprintf("- Reasoning: %s\n", reasoning))
+	b.WriteString(fmt.Sprintf("- Verify outcome: %s\n", verifyOutcome))
+	b.WriteString(fmt.Sprintf("- Failure class: %s\n", failureClass))
+	if failureSig != "" {
+		b.WriteString(fmt.Sprintf("- Failure signature: %s\n", failureSig))
+	}
+	b.WriteString("\n")
 
-## Instructions
+	b.WriteString("## Instructions\n")
+	b.WriteString("Output ONLY a JSON object with these fields:\n")
+	b.WriteString("- `learning_summary`: concise description of what happened and what worked or didn't\n")
+	b.WriteString("- `resolution_kind`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\"\n")
+	b.WriteString("- `reusable`: true if this learning applies to future similar failures, false otherwise\n\n")
+	b.WriteString("Output ONLY the JSON object, no markdown fences, no explanation outside the JSON.\n")
 
-Based on the recovery context above, produce a concise learning record. Respond with ONLY a JSON object (no markdown, no code fences, no explanation):
-
-{
-  "learning_summary": "<concise narrative: what failed, what was tried, what happened — 1-3 sentences>",
-  "resolution_kind": "<one of: resummon, reset, do-nothing, escalated>",
-  "reusable": <true if the action worked (outcome=clean), false if it didn't (outcome=dirty)>
+	return b.String()
 }
 
-Rules:
-- learning_summary should be useful to future recovery workflows encountering the same failure class
-- resolution_kind should match the action that was actually taken
-- Set reusable to false when the outcome is "dirty" (the action didn't resolve the issue)
-- Be factual and brief — this is a machine-readable record, not a report`, sourceBead, failureClass, failureSig, actionTaken, verifyOutcome)
+// parseJSONFromClaude extracts a JSON object from Claude's output, handling
+// potential markdown fences and surrounding text.
+func parseJSONFromClaude(out []byte, v interface{}) error {
+	text := strings.TrimSpace(string(out))
+
+	// Strip markdown fences if present.
+	if strings.HasPrefix(text, "```") {
+		lines := strings.Split(text, "\n")
+		var jsonLines []string
+		inBlock := false
+		for _, line := range lines {
+			if strings.HasPrefix(line, "```") {
+				inBlock = !inBlock
+				continue
+			}
+			if inBlock {
+				jsonLines = append(jsonLines, line)
+			}
+		}
+		text = strings.Join(jsonLines, "\n")
+	}
+
+	// Find JSON object boundaries.
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start >= 0 && end > start {
+		text = text[start : end+1]
+	}
+
+	return json.Unmarshal([]byte(text), v)
+}
+
+// generateLearningID creates a random ID for a recovery learning row.
+func generateLearningID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("rl-%d", time.Now().UnixNano())
+	}
+	return "rl-" + hex.EncodeToString(b)
 }

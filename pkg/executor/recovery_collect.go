@@ -59,7 +59,11 @@ func actionRecoveryCollectContext(e *Executor, stepName string, step StepConfig,
 	}
 
 	// 4. Cross-bead learnings: reusable learnings for the same failure class, any source.
-	crossBeadLearnings, crossErr := store.QueryCrossBeadLearnings(failureClass, 5)
+	crossBeadLearnings, crossErr := store.ListClosedRecoveryBeads(store.RecoveryLookupFilter{
+		FailureClass: failureClass,
+		Reusable:     &reusableTrue,
+		Limit:        5,
+	})
 	if crossErr != nil {
 		e.log("recovery: cross-bead learnings query failed: %s", crossErr)
 	}

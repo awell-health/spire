@@ -1,18 +1,22 @@
-# spire-recovery-v3.formula.toml — v3 lifecycle graph for recovery workflows.
+# spire-recovery-v3.formula.toml — v3 agentic recovery lifecycle.
 #
-# Recovery beads are first-class self-healing workflows. This formula defines
-# the step graph for bounded remediation: collect context, diagnose, choose an
-# action (resummon/reset/reset-to-step), execute it, verify, document, finish.
+# Recovery beads are first-class self-healing workflows with Claude-driven
+# decision making and cross-bead learning. This formula defines the 6-step
+# graph: collect_context → decide → execute → verify → learn → finish.
 #
-# All steps use `recovery.execute` — the bounded action dispatcher — NOT
-# `wizard.run`. Recovery steps operate on the SOURCE bead's state (labels,
-# status) rather than spawning apprentice-style agents with worktrees.
+# The decide and learn steps are agentic (Claude calls). Execute and verify
+# use the existing mechanical recovery.execute dispatcher. Finish always
+# closes the recovery bead regardless of outcome.
 #
-# Two terminal paths: finish (verification passed) and escalate (verification failed).
-# The document step fires only when verification passes.
+# Two terminal paths:
+#   Happy:       collect_context → decide → execute → verify → learn → finish
+#   Needs-human: collect_context → decide → finish_needs_human
+#
+# The decide step sets needs_human=true when confidence < 0.7. Downstream
+# steps (execute, verify, learn) are gated on needs_human != true.
 
 name = "spire-recovery-v3"
-description = "Recovery workflow: collect context, diagnose, remediate, verify, document learnings, and finish or escalate"
+description = "Agentic recovery: Claude-driven decide + learn steps, always-close lifecycle"
 version = 3
 entry = "collect_context"
 
@@ -28,7 +32,7 @@ required = true
 
 [vars.failure_class]
 type = "string"
-description = "Failure classification (e.g. implement-merge-conflict, build-failure)"
+description = "Failure classification (e.g. empty-implement, build-failure)"
 required = true
 
 [vars.base_branch]
@@ -37,114 +41,72 @@ default = "main"
 
 # --- Steps ---
 
-# Step 1: Mechanically gather diagnosis, ranked actions, and prior learnings.
-# No Claude invocation — purely mechanical context assembly.
+# Step 1: Collect diagnosis context + prior learnings (mechanical, no Claude).
 [steps.collect_context]
 kind = "op"
-action = "recovery.collect_context"
-title = "Collect recovery context"
+action = "recovery.execute"
+title = "Collect diagnosis context and prior learnings"
+[steps.collect_context.with]
+action = "collect_context"
 
-# Step 2: Agent decision — Claude chooses the best recovery action from the
-# ranked list produced by Diagnose, informed by per-bead and cross-bead learnings.
+# Step 2: Claude-driven decision — choose recovery action.
 [steps.decide]
 kind = "op"
-action = "recovery.decide"
+action = "recovery.execute"
 needs = ["collect_context"]
-title = "Agent decision: choose recovery action"
+title = "Claude-driven recovery decision"
+[steps.decide.with]
+action = "decide"
 
-# Step 3a: Execute remediation — action chosen by the decide step.
-# Only fires when decide chose a concrete action (not needs-human, escalate, or do-nothing).
-[steps.remediate]
+# Step 3: Execute the chosen recovery action (mechanical dispatch).
+# Skipped if decide set needs_human=true.
+[steps.execute]
 kind = "op"
 action = "recovery.execute"
 needs = ["decide"]
-title = "Execute remediation"
-[steps.remediate.with]
-action = "{{ steps.decide.outputs.chosen_action }}"
-[steps.remediate.when]
-all = [
-    { left = "steps.decide.outputs.needs_human", op = "eq", right = "false" },
-    { left = "steps.decide.outputs.chosen_action", op = "ne", right = "do-nothing" },
-    { left = "steps.decide.outputs.chosen_action", op = "ne", right = "escalate" },
-]
+title = "Execute chosen recovery action"
+[steps.execute.with]
+action = "execute"
+[steps.execute.when]
+all = [{ left = "steps.decide.outputs.needs_human", op = "ne", right = "true" }]
 
-# Step 3b: Halt — decide flagged low confidence or needs_human.
-[steps.needs_human_halt]
-kind = "op"
-action = "recovery.execute"
-needs = ["decide"]
-title = "Halt — needs human review"
-[steps.needs_human_halt.with]
-action = "escalate"
-reason = "recovery agent flagged needs_human (low confidence)"
-[steps.needs_human_halt.when]
-all = [{ left = "steps.decide.outputs.needs_human", op = "eq", right = "true" }]
-
-# Step 3c: Direct escalate — decide chose escalation.
-[steps.escalate_chosen]
-kind = "op"
-action = "recovery.execute"
-needs = ["decide"]
-title = "Escalate — agent chose escalation"
-[steps.escalate_chosen.with]
-action = "escalate"
-reason = "recovery agent chose escalation"
-[steps.escalate_chosen.when]
-all = [{ left = "steps.decide.outputs.chosen_action", op = "eq", right = "escalate" }]
-
-# Step 3: Verify the source bead is clean after remediation.
+# Step 4: Verify source bead health after remediation.
 [steps.verify]
 kind = "op"
 action = "recovery.execute"
-needs = ["remediate"]
-title = "Verify recovery — check source bead health"
+needs = ["execute"]
+title = "Verify source bead health"
 produces = ["verification_status"]
 [steps.verify.with]
 action = "verify-clean"
 
-# Step 4: Record learnings via Claude (only on clean verification).
-# Calls Claude to generate a learning summary, writes to bead metadata and
-# recovery_learnings table. Best-effort: if Claude fails, the step returns a
-# warning output and the graph proceeds to finish.
+# Step 5: Claude-driven learning extraction.
 [steps.learn]
 kind = "op"
 action = "recovery.learn"
 needs = ["verify"]
-title = "Record recovery learnings"
-[steps.learn.when]
-all = [{ left = "steps.verify.outputs.verification_status", op = "eq", right = "clean" }]
+title = "Claude-driven learning extraction"
+[steps.learn.with]
+action = "learn"
 
-# Step 5a: Close resolved recovery bead (after learning).
+# Step 6a: Close recovery bead (happy path — after learning).
 [steps.finish]
 kind = "op"
-action = "bead.finish"
+action = "recovery.execute"
 needs = ["learn"]
 terminal = true
-title = "Close resolved recovery bead"
+title = "Close recovery bead"
 [steps.finish.with]
-status = "resolved"
+action = "finish"
 
-# Step 5b: Escalate if source bead was already clean (nothing to do).
-[steps.already_clean]
-kind = "op"
-action = "bead.finish"
-needs = ["collect_context"]
-terminal = true
-title = "Source bead already clean — close recovery bead"
-[steps.already_clean.with]
-status = "resolved"
-[steps.already_clean.when]
-all = [{ left = "steps.collect_context.outputs.verification_status", op = "eq", right = "clean" }]
-
-# Step 5c: Escalate unresolved recovery (verification did not pass after remediation).
-[steps.escalate]
+# Step 6b: Close recovery bead (needs-human path — after decide).
+[steps.finish_needs_human]
 kind = "op"
 action = "recovery.execute"
-needs = ["verify"]
+needs = ["decide"]
 terminal = true
-title = "Escalate unresolved recovery"
-[steps.escalate.with]
-action = "escalate"
-reason = "recovery remediation did not resolve the interrupted state"
-[steps.escalate.when]
-all = [{ left = "steps.verify.outputs.verification_status", op = "ne", right = "clean" }]
+title = "Close recovery bead (needs human)"
+[steps.finish_needs_human.with]
+action = "finish"
+[steps.finish_needs_human.when]
+all = [{ left = "steps.decide.outputs.needs_human", op = "eq", right = "true" }]
