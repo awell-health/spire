@@ -184,6 +184,15 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     INDEX idx_phase (phase)
 )`
 
+const formulasTableSQL = `CREATE TABLE IF NOT EXISTS formulas (
+    name         VARCHAR(128) NOT NULL PRIMARY KEY,
+    content      TEXT NOT NULL,
+    description  VARCHAR(512),
+    published_by VARCHAR(64),
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+)`
+
 const goldenPromptsTableSQL = `CREATE TABLE IF NOT EXISTS golden_prompts (
     run_id VARCHAR(32) PRIMARY KEY,
     bead_id VARCHAR(64) NOT NULL,
@@ -680,6 +689,9 @@ func cmdTowerCreate(args []string) error {
 	}
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, goldenPromptsTableSQL)); err != nil {
 		return fmt.Errorf("create golden_prompts table: %w", err)
+	}
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, formulasTableSQL)); err != nil {
+		return fmt.Errorf("create formulas table: %w", err)
 	}
 
 	// bd init wrote issue_prefix to the embedded dolt's config table, but spire's
