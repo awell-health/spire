@@ -2,8 +2,14 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/awell-health/spire/pkg/olap"
 	"github.com/spf13/cobra"
 )
 
@@ -85,5 +91,40 @@ func cmdMetrics(args []string) error {
 	if flagPhase {
 		return observability.MetricsPhase(flagJSON)
 	}
-	return observability.MetricsSummary(flagJSON)
+	if err := observability.MetricsSummary(flagJSON); err != nil {
+		return err
+	}
+	appendFormulaComparison()
+	return nil
+}
+
+func appendFormulaComparison() {
+	tc, err := config.ActiveTowerConfig()
+	if err != nil {
+		return
+	}
+	adb, err := olap.Open(tc.OLAPPath())
+	if err != nil {
+		return
+	}
+	defer adb.Close()
+
+	since := time.Now().AddDate(0, -3, 0) // 90-day window
+	rows, err := adb.QueryFormulaPerformance(since)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	renderFormulaComparison(os.Stdout, rows)
+}
+
+func renderFormulaComparison(w io.Writer, rows []olap.FormulaStats) {
+	fmt.Fprintln(w, "\nFormula Performance (last 90 days)")
+	fmt.Fprintf(w, "%-28s %-10s %5s  %8s  %9s  %7s  %8s\n",
+		"Formula", "Version", "Runs", "Success%", "Avg Cost", "Rounds", "30d Runs")
+	fmt.Fprintln(w, strings.Repeat("─", 80))
+	for _, r := range rows {
+		fmt.Fprintf(w, "%-28s %-10s %5d  %7.1f%%  $%7.4f  %7.1f  %8d\n",
+			r.FormulaName, r.FormulaVersion, r.TotalRuns,
+			r.SuccessRate, r.AvgCostUSD, r.AvgReviewRounds, r.RunsLast30d)
+	}
 }

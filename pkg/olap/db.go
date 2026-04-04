@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
@@ -56,4 +57,55 @@ func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.
 // SqlDB returns the raw *sql.DB for direct read queries (e.g. spire metrics).
 func (d *DB) SqlDB() *sql.DB {
 	return d.db
+}
+
+// FormulaStats holds aggregated performance data for a formula name+version pair.
+type FormulaStats struct {
+	FormulaName     string
+	FormulaVersion  string
+	TotalRuns       int
+	Successes       int
+	SuccessRate     float64 // 0–100
+	AvgCostUSD      float64
+	AvgReviewRounds float64
+	RunsLast30d     int
+}
+
+// QueryFormulaPerformance returns aggregated stats per formula name and version
+// for all runs with started_at >= since.
+func (d *DB) QueryFormulaPerformance(since time.Time) ([]FormulaStats, error) {
+	const q = `
+		SELECT
+			formula_name,
+			COALESCE(formula_version, 'unknown')                   AS formula_version,
+			COUNT(*)                                                AS total_runs,
+			SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END)    AS successes,
+			ROUND(100.0 * SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END)
+				/ NULLIF(COUNT(*), 0), 1)                          AS success_rate,
+			ROUND(COALESCE(AVG(cost_usd), 0), 4)                   AS avg_cost_usd,
+			ROUND(COALESCE(AVG(review_rounds), 0), 1)              AS avg_review_rounds,
+			SUM(CASE WHEN started_at >= CURRENT_TIMESTAMP - INTERVAL 30 DAY THEN 1 ELSE 0 END) AS runs_last_30d
+		FROM agent_runs_olap
+		WHERE formula_name IS NOT NULL
+		  AND formula_name != ''
+		  AND started_at >= ?
+		GROUP BY formula_name, formula_version
+		ORDER BY total_runs DESC
+	`
+	rows, err := d.db.QueryContext(context.Background(), q, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FormulaStats
+	for rows.Next() {
+		var s FormulaStats
+		if err := rows.Scan(&s.FormulaName, &s.FormulaVersion, &s.TotalRuns,
+			&s.Successes, &s.SuccessRate, &s.AvgCostUSD,
+			&s.AvgReviewRounds, &s.RunsLast30d); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
