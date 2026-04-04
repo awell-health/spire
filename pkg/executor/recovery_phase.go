@@ -16,6 +16,7 @@ func init() {
 	actionRegistry["recovery.execute"] = actionRecoveryExecute
 	actionRegistry["recovery.decide"] = actionRecoveryDecide
 	actionRegistry["recovery.learn"] = actionRecoveryLearn
+	actionRegistry["recovery.collect_context"] = actionRecoveryCollectContext
 }
 
 // actionRecoveryExecute is the ActionHandler for the "recovery.execute" opcode.

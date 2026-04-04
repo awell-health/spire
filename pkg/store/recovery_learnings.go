@@ -40,3 +40,21 @@ func WriteRecoveryLearning(db *sql.DB, l RecoveryLearningRecord) (string, error)
 	}
 	return l.ID, nil
 }
+
+// QueryCrossBeadLearnings returns up to limit reusable learnings matching the
+// given failure class, across ALL source beads, most recent first.
+//
+// This queries bead metadata on closed recovery beads. When the
+// recovery_learnings table is populated by the learn step, this function
+// can be upgraded to use direct SQL for better performance.
+func QueryCrossBeadLearnings(failureClass string, limit int) ([]RecoveryLearning, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	reusable := true
+	return ListClosedRecoveryBeads(RecoveryLookupFilter{
+		FailureClass: failureClass,
+		Reusable:     &reusable,
+		Limit:        limit,
+	})
+}

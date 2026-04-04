@@ -37,13 +37,12 @@ default = "main"
 
 # --- Steps ---
 
-# Step 1: Verify the source bead is still interrupted (not already fixed).
+# Step 1: Mechanically gather diagnosis, ranked actions, and prior learnings.
+# No Claude invocation — purely mechanical context assembly.
 [steps.collect_context]
 kind = "op"
-action = "recovery.execute"
-title = "Verify source bead is still interrupted"
-[steps.collect_context.with]
-action = "verify-clean"
+action = "recovery.collect_context"
+title = "Collect recovery context"
 
 # Step 2: Agent decision — Claude chooses the best recovery action from the
 # ranked list produced by Diagnose, informed by per-bead and cross-bead learnings.

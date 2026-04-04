@@ -24,10 +24,10 @@ default = "main"
 
 # Step 1: Mechanically gather interrupted labels, attempt history, linked recovery
 # beads, git/runtime state, and prior closed recovery learnings.
+# No Claude invocation — purely mechanical assembly of diagnosis + learnings.
 [steps.collect_context]
 kind = "op"
-action = "wizard.run"
-flow = "recovery-collect-context"
+action = "recovery.collect_context"
 title = "Collect recovery context"
 
 # Step 2: Surface relevant prior learnings and frame the current failure clearly.

@@ -195,7 +195,6 @@ const formulasTableSQL = `CREATE TABLE IF NOT EXISTS formulas (
     updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 )`
 
-// recovery_learnings baseline — all columns in the initial DDL, no ALTER TABLE needed.
 const recoveryLearningsTableSQL = `CREATE TABLE IF NOT EXISTS recovery_learnings (
     id              VARCHAR(32) PRIMARY KEY,
     recovery_bead   VARCHAR(64) NOT NULL,
@@ -207,8 +206,8 @@ const recoveryLearningsTableSQL = `CREATE TABLE IF NOT EXISTS recovery_learnings
     learning_summary TEXT,
     reusable        BOOLEAN DEFAULT TRUE,
     resolved_at     DATETIME NOT NULL,
-    INDEX idx_rl_failure_class (failure_class),
-    INDEX idx_rl_source_bead (source_bead, failure_class)
+    INDEX idx_failure_class (failure_class),
+    INDEX idx_source_bead (source_bead, failure_class)
 )`
 
 const goldenPromptsTableSQL = `CREATE TABLE IF NOT EXISTS golden_prompts (
@@ -300,11 +299,11 @@ var spireMigrations = []columnMigration{
 	// --- formulas columns (spi-1xa1t) ---
 	{table: "formulas", column: "version", ddl: "ADD COLUMN version INT NOT NULL DEFAULT 1"},
 
-	// --- recovery_learnings columns (spi-rxc9o baseline) ---
-	{table: "recovery_learnings", column: "id", ddl: "ADD COLUMN id VARCHAR(32) NOT NULL PRIMARY KEY"},
+	// --- recovery_learnings columns (spi-36i9f) ---
+	{table: "recovery_learnings", column: "id", ddl: "ADD COLUMN id VARCHAR(32) PRIMARY KEY"},
 	{table: "recovery_learnings", column: "recovery_bead", ddl: "ADD COLUMN recovery_bead VARCHAR(64) NOT NULL"},
 	{table: "recovery_learnings", column: "source_bead", ddl: "ADD COLUMN source_bead VARCHAR(64) NOT NULL"},
-	{table: "recovery_learnings", column: "failure_class", ddl: "ADD COLUMN failure_class VARCHAR(64) NOT NULL", index: "CREATE INDEX idx_rl_failure_class ON recovery_learnings (failure_class)"},
+	{table: "recovery_learnings", column: "failure_class", ddl: "ADD COLUMN failure_class VARCHAR(64) NOT NULL", index: "CREATE INDEX idx_failure_class ON recovery_learnings (failure_class)"},
 	{table: "recovery_learnings", column: "failure_sig", ddl: "ADD COLUMN failure_sig VARCHAR(128)"},
 	{table: "recovery_learnings", column: "resolution_kind", ddl: "ADD COLUMN resolution_kind VARCHAR(32) NOT NULL"},
 	{table: "recovery_learnings", column: "outcome", ddl: "ADD COLUMN outcome VARCHAR(16) NOT NULL"},
