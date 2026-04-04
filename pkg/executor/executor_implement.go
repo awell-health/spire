@@ -166,7 +166,8 @@ func (e *Executor) executeSequential(phase string, pc PhaseConfig) error {
 			return fmt.Errorf("spawn apprentice for %s: %w", subtaskID, spawnErr)
 		}
 		waitErr := handle.Wait()
-		e.recordAgentRun(name, subtaskID, e.beadID, pc.Model, "apprentice", "implement", started, waitErr)
+		e.recordAgentRun(name, subtaskID, e.beadID, pc.Model, "apprentice", "implement", started, waitErr,
+			withParentRun(e.currentRunID))
 		if waitErr != nil {
 			return fmt.Errorf("apprentice %s failed: %w", subtaskID, waitErr)
 		}

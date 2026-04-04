@@ -130,7 +130,7 @@ func setupReviewTest(t *testing.T, verdicts map[int]string, arbiterDecision stri
 			}
 			return ""
 		},
-		RecordAgentRun: func(run metrics.AgentRun) error { return nil },
+		RecordAgentRun: func(run metrics.AgentRun) (string, error) { return "", nil },
 		Spawner:        backend,
 	}
 

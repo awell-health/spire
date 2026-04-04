@@ -573,7 +573,7 @@ func TestSageReview_ApproveVerdictPromotion(t *testing.T) {
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
@@ -627,7 +627,7 @@ func TestSageReview_RequestChangesVerdictPromotion(t *testing.T) {
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
@@ -671,7 +671,7 @@ func TestSageReview_NoResultJSON_NoVerdict(t *testing.T) {
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
@@ -742,7 +742,7 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir(t *testing.T) {
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return dir, "", "main", nil
 		},
@@ -868,7 +868,7 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace(t *testi
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return dir, "", "main", nil
 		},
@@ -1014,7 +1014,7 @@ func TestGraphRun_ReviewPhase_ResumeRepairsWorktreeDir(t *testing.T) {
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return dir, "", "main", nil
 		},
@@ -1360,7 +1360,7 @@ func TestRecoveryVerify_PromotesResultToVerificationStatus(t *testing.T) {
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	exec := NewGraphForTest("spi-recovery-test", agentName, graph, nil, deps)
@@ -1414,7 +1414,7 @@ func TestRecoveryVerify_FailPromotesVerificationStatus(t *testing.T) {
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	exec := NewGraphForTest("spi-recovery-test", agentName, graph, nil, deps)

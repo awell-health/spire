@@ -195,12 +195,14 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 					StartRef:  startRef,
 				})
 				if spawnErr != nil {
-					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr)
+					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr,
+						withParentRun(e.currentRunID))
 					resultCh <- waveResult{BeadID: beadID, Agent: name, Err: spawnErr}
 					return
 				}
 				waitErr := h.Wait()
-				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, waitErr)
+				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, waitErr,
+					withParentRun(e.currentRunID))
 				if waitErr != nil {
 					resultCh <- waveResult{BeadID: beadID, Agent: name, Err: waitErr}
 					return
@@ -279,11 +281,13 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 			StartRef:  startRef,
 		})
 		if spawnErr != nil {
-			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, spawnErr)
+			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
+				withParentRun(e.currentRunID))
 			return allResults, fmt.Errorf("spawn apprentice for %s: %w", subtaskID, spawnErr)
 		}
 		waitErr := handle.Wait()
-		e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, waitErr)
+		e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, waitErr,
+			withParentRun(e.currentRunID))
 
 		featBranch := e.resolveBranch(subtaskID)
 		cr := childResult{
@@ -328,12 +332,14 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 		ExtraArgs: []string{"--apprentice"},
 	})
 	if err != nil {
-		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, err)
+		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, err,
+			withParentRun(e.currentRunID))
 		return fmt.Errorf("spawn apprentice: %w", err)
 	}
 
 	waitErr := handle.Wait()
-	e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, waitErr)
+	e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, waitErr,
+		withParentRun(e.currentRunID))
 	if waitErr != nil {
 		e.log("apprentice failed: %s", waitErr)
 		return fmt.Errorf("apprentice: %w", waitErr)

@@ -113,7 +113,7 @@ type Deps struct {
 	Spawner Backend
 
 	// Agent run recording
-	RecordAgentRun func(run AgentRun) error
+	RecordAgentRun func(run AgentRun) (string, error)
 
 	// AgentResultDir returns the directory containing result.json for the named agent.
 	// Path: <doltGlobalDir>/wizards/<agentName>

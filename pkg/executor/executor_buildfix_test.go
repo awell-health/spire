@@ -31,7 +31,7 @@ func TestAttemptBuildFix_SucceedsFirstRound(t *testing.T) {
 			commentTexts = append(commentTexts, text)
 			return nil
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	state := &State{
@@ -103,7 +103,7 @@ fi
 			},
 		},
 		AddComment:     func(id, text string) error { return nil },
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	state := &State{
@@ -159,7 +159,7 @@ func TestAttemptBuildFix_AllRoundsExhausted(t *testing.T) {
 			},
 		},
 		AddComment:     func(id, text string) error { return nil },
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	state := &State{
@@ -208,7 +208,7 @@ func TestAttemptBuildFix_SpawnFailure(t *testing.T) {
 			},
 		},
 		AddComment:     func(id, text string) error { return nil },
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	state := &State{
@@ -256,7 +256,7 @@ func TestAttemptBuildFix_EmptyWorktreeDir(t *testing.T) {
 			},
 		},
 		AddComment:     func(id, text string) error { return nil },
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	state := &State{

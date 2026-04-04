@@ -60,6 +60,10 @@ type Executor struct {
 	deps      *Deps
 	log       func(string, ...interface{})
 
+	// currentRunID is the run ID of this executor's own agent_run record.
+	// Used as ParentRunID for child spawns (apprentice, sage).
+	currentRunID string
+
 	// Single staging worktree shared across all phases (implement, review, merge).
 	// Created once by ensureStagingWorktree(), cleaned up by Run() on exit.
 	stagingWt *spgit.StagingWorktree
@@ -275,6 +279,10 @@ func (e *Executor) Run() error {
 		e.log("warning: create step beads: %s", err)
 		// Non-fatal — proceed without step bead tracking.
 	}
+
+	// Record the executor's own top-level run before any child spawns,
+	// so e.currentRunID is available as ParentRunID for child agent runs.
+	e.currentRunID = e.recordAgentRun(e.agentName, e.beadID, "", e.repoModel(), "wizard", "execute", time.Now(), nil)
 
 	for {
 		phase := e.state.Phase

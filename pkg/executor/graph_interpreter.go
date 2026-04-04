@@ -87,6 +87,10 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		e.log("warning: create graph step beads: %s", err)
 	}
 
+	// Record the executor's own top-level run before any child spawns,
+	// so e.currentRunID is available as ParentRunID for child agent runs.
+	e.currentRunID = e.recordAgentRun(e.agentName, e.beadID, "", e.repoModel(), "wizard", "execute", time.Now(), nil)
+
 	// Main interpreter loop.
 	for {
 		// 1. Build condition context from state.

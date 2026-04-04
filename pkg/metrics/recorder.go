@@ -78,7 +78,8 @@ func GenerateID() string {
 }
 
 // Record inserts an AgentRun into the agent_runs table via bd sql.
-func Record(run AgentRun) error {
+// Returns the run ID (generated if not set) and any error from the SQL insert.
+func Record(run AgentRun) (string, error) {
 	if run.ID == "" {
 		run.ID = GenerateID()
 	}
@@ -249,7 +250,7 @@ func Record(run AgentRun) error {
 		strings.Join(vals, ", "),
 	)
 
-	return bdSQL(query)
+	return run.ID, bdSQL(query)
 }
 
 // MarkGolden sets golden_run=TRUE for the given run ID.

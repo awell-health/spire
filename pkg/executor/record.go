@@ -53,6 +53,14 @@ func phaseToBucket(phase string) string {
 	}
 }
 
+// withParentRun sets the parent run ID on an agent run, linking it to the
+// executor's own run record for parent-child observability.
+func withParentRun(parentRunID string) recordOpt {
+	return func(r *AgentRun) {
+		r.ParentRunID = parentRunID
+	}
+}
+
 // recordAgentRun records an agent run to the agent_runs table.
 // Safe to call even when RecordAgentRun is nil (tests, legacy callers).
 //
@@ -60,9 +68,9 @@ func phaseToBucket(phase string) string {
 // actual outcome (test_failure, no_changes, etc.) rather than just
 // spawn success/failure. Also populates review rounds from executor state
 // and computes git diff stats when possible.
-func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase string, started time.Time, spawnErr error, opts ...recordOpt) {
+func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase string, started time.Time, spawnErr error, opts ...recordOpt) string {
 	if e.deps.RecordAgentRun == nil {
-		return
+		return ""
 	}
 
 	completed := time.Now()
@@ -113,9 +121,6 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 			run.Tower = tc.Name
 		}
 	}
-
-	// TODO: populate ParentRunID — requires callers to thread the parent run ID
-	// through to recordAgentRun. Deferred to a follow-up (Tier 2, spi-md5mv).
 
 	// Try to read the agent's result.json for actual outcome and metrics.
 	if ar := e.readAgentResult(name); ar != nil {
@@ -170,9 +175,11 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		opt(&run)
 	}
 
-	if err := e.deps.RecordAgentRun(run); err != nil {
+	id, err := e.deps.RecordAgentRun(run)
+	if err != nil {
 		e.log("warning: record agent run: %s", err)
 	}
+	return id
 }
 
 // readAgentResult reads the result.json written by the named agent.

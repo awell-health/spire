@@ -204,9 +204,9 @@ func TestRecordAgentRunPopulatesCostAndReviewRounds(t *testing.T) {
 	var recorded *AgentRun
 	deps := &Deps{
 		AgentResultDir: func(name string) string { return dir },
-		RecordAgentRun: func(run AgentRun) error {
+		RecordAgentRun: func(run AgentRun) (string, error) {
 			recorded = &run
-			return nil
+			return "", nil
 		},
 	}
 
@@ -242,9 +242,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 	t.Run("formula populates FormulaName and FormulaVersion", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 		}
 		formula := &FormulaV2{Name: "spire-agent-work", Version: 3}
@@ -266,9 +266,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 	t.Run("nil formula leaves FormulaName and FormulaVersion empty", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 		}
 		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
@@ -289,9 +289,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 	t.Run("GetBead populates BeadType", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 			GetBead: func(id string) (Bead, error) {
 				return Bead{ID: id, Type: "epic"}, nil
@@ -312,9 +312,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 	t.Run("GetBead error leaves BeadType empty", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 			GetBead: func(id string) (Bead, error) {
 				return Bead{}, errors.New("bead not found")
@@ -335,9 +335,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 	t.Run("ActiveTowerConfig populates Tower", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 			ActiveTowerConfig: func() (*TowerConfig, error) {
 				return &TowerConfig{Name: "my-team"}, nil
@@ -358,9 +358,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 	t.Run("ActiveTowerConfig error leaves Tower empty", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 			ActiveTowerConfig: func() (*TowerConfig, error) {
 				return nil, errors.New("no tower configured")
@@ -386,9 +386,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 			AgentResultDir: func(name string) string { return dir },
 		}
@@ -416,9 +416,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 			AgentResultDir: func(name string) string { return dir },
 		}
@@ -438,9 +438,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 	t.Run("Branch empty when no result and no StagingBranch", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 		}
 		e := NewForTest("spi-test", "wizard-test", nil, nil, deps)
@@ -458,9 +458,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 	t.Run("WaveIndex from state.Wave", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 		}
 		state := &State{Wave: 3}
@@ -484,9 +484,9 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 
 		var recorded *AgentRun
 		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) error {
+			RecordAgentRun: func(run AgentRun) (string, error) {
 				recorded = &run
-				return nil
+				return "", nil
 			},
 			AgentResultDir: func(name string) string { return dir },
 			GetBead: func(id string) (Bead, error) {

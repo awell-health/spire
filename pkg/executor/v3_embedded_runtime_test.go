@@ -633,7 +633,7 @@ func TestEmbeddedRuntime_ReviewPhase_ArbiterAfterMaxRounds(t *testing.T) {
 	deps.ReviewEscalateToArbiter = func(beadID, reviewerName string, lastReview *Review, policy RevisionPolicy, log func(string, ...interface{})) error {
 		return nil
 	}
-	deps.RecordAgentRun = func(run AgentRun) error { return nil }
+	deps.RecordAgentRun = func(run AgentRun) (string, error) { return "", nil }
 
 	restore := saveAndRestoreRegistry(t)
 	defer restore()

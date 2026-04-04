@@ -63,7 +63,7 @@ func TestExecuteWave_StartRefPropagation(t *testing.T) {
 		},
 		UpdateBead:     func(id string, u map[string]interface{}) error { return nil },
 		CloseBead:      func(id string) error { return nil },
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 		IsAttemptBead:     func(b Bead) bool { return false },
 		IsStepBead:        func(b Bead) bool { return false },
 		IsReviewRoundBead: func(b Bead) bool { return false },
@@ -160,7 +160,7 @@ func TestExecuteSequential_StartRefPropagation(t *testing.T) {
 		},
 		UpdateBead:     func(id string, u map[string]interface{}) error { return nil },
 		CloseBead:      func(id string) error { return nil },
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 		AddLabel:       func(id, l string) error { return nil },
 		RemoveLabel:    func(id, l string) error { return nil },
 		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
@@ -226,7 +226,7 @@ func TestExecuteDirect_NoStartRef(t *testing.T) {
 				return &mockHandle{}, nil
 			},
 		},
-		RecordAgentRun: func(run AgentRun) error { return nil },
+		RecordAgentRun: func(run AgentRun) (string, error) { return "", nil },
 	}
 
 	state := &State{

@@ -196,7 +196,8 @@ func (e *Executor) dispatchSageReview(cfg formula.StepConfig, pc PhaseConfig) er
 	}
 	waitErr := handle.Wait()
 	e.recordAgentRun(sageName, e.beadID, "", model, "sage", "review", started, waitErr,
-		withReviewStep("sage-review", e.state.ReviewRounds+1))
+		withReviewStep("sage-review", e.state.ReviewRounds+1),
+		withParentRun(e.currentRunID))
 	if waitErr != nil {
 		e.log("sage exited: %s — checking verdict", waitErr)
 	}
@@ -284,7 +285,8 @@ func (e *Executor) fixInStaging(cfg formula.StepConfig, implPC PhaseConfig) erro
 		model = implPC.Model
 	}
 	e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr,
-		withReviewStep("fix", e.state.ReviewRounds+1))
+		withReviewStep("fix", e.state.ReviewRounds+1),
+		withParentRun(e.currentRunID))
 	if fixWaitErr != nil {
 		e.log("review-fix apprentice exited with error: %s", fixWaitErr)
 	}
@@ -319,7 +321,8 @@ func (e *Executor) fixViaSubprocess(cfg formula.StepConfig, implPC PhaseConfig) 
 		model = implPC.Model
 	}
 	e.recordAgentRun(fixName, e.beadID, "", model, "apprentice", "review-fix", fixStarted, fixWaitErr,
-		withReviewStep("fix", e.state.ReviewRounds+1))
+		withReviewStep("fix", e.state.ReviewRounds+1),
+		withParentRun(e.currentRunID))
 	if fixWaitErr != nil {
 		e.log("review-fix apprentice exited with error: %s", fixWaitErr)
 	}
@@ -366,7 +369,8 @@ func (e *Executor) dispatchArbiter(cfg formula.StepConfig) error {
 	started := time.Now()
 	err := e.deps.ReviewEscalateToArbiter(e.beadID, sageName, lastReview, revPolicy, e.log)
 	e.recordAgentRun(sageName, e.beadID, "", model, "arbiter", "review", started, err,
-		withReviewStep("arbiter", e.state.ReviewRounds+1))
+		withReviewStep("arbiter", e.state.ReviewRounds+1),
+		withParentRun(e.currentRunID))
 	return err
 }
 
