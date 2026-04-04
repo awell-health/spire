@@ -1160,6 +1160,7 @@ func TestSpireMigrationsValidTables(t *testing.T) {
 	validTables := map[string]bool{
 		"agent_runs":     true,
 		"golden_prompts": true,
+		"formulas":       true,
 	}
 	for _, m := range spireMigrations {
 		if !validTables[m.table] {

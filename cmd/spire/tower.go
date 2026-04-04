@@ -187,6 +187,7 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
 
 const formulasTableSQL = `CREATE TABLE IF NOT EXISTS formulas (
     name         VARCHAR(128) NOT NULL PRIMARY KEY,
+    version      INT NOT NULL DEFAULT 1,
     content      TEXT NOT NULL,
     description  VARCHAR(512),
     published_by VARCHAR(64),
@@ -277,6 +278,9 @@ var spireMigrations = []columnMigration{
 	{table: "golden_prompts", column: "focus_context", ddl: "ADD COLUMN focus_context TEXT"},
 	{table: "golden_prompts", column: "tags", ddl: "ADD COLUMN tags JSON"},
 	{table: "golden_prompts", column: "context_tokens", ddl: "ADD COLUMN context_tokens INT"},
+
+	// --- formulas columns (spi-1xa1t) ---
+	{table: "formulas", column: "version", ddl: "ADD COLUMN version INT NOT NULL DEFAULT 1"},
 }
 
 // requiredCustomTypes are the bead types that Spire registers on every tower.

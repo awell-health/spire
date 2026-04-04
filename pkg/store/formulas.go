@@ -9,6 +9,7 @@ import (
 // Formulas are shared across all machines attached to the tower via dolt sync.
 type TowerFormula struct {
 	Name        string
+	Version     int
 	Content     string
 	Description string
 	PublishedBy string
@@ -33,7 +34,7 @@ func GetTowerFormula(db *sql.DB, name string) (string, error) {
 // ListTowerFormulas returns all tower formulas ordered by name.
 func ListTowerFormulas(db *sql.DB) ([]TowerFormula, error) {
 	rows, err := db.Query(
-		`SELECT name, content, description, published_by, created_at, updated_at
+		`SELECT name, version, content, description, published_by, created_at, updated_at
 		 FROM formulas ORDER BY name`,
 	)
 	if err != nil {
@@ -43,7 +44,7 @@ func ListTowerFormulas(db *sql.DB) ([]TowerFormula, error) {
 	var out []TowerFormula
 	for rows.Next() {
 		var f TowerFormula
-		if err := rows.Scan(&f.Name, &f.Content, &f.Description,
+		if err := rows.Scan(&f.Name, &f.Version, &f.Content, &f.Description,
 			&f.PublishedBy, &f.CreatedAt, &f.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -54,12 +55,13 @@ func ListTowerFormulas(db *sql.DB) ([]TowerFormula, error) {
 
 // PublishTowerFormula upserts a formula into the tower database.
 // If a formula with the given name already exists, its content, description,
-// published_by, and updated_at are overwritten.
+// published_by, and updated_at are overwritten, and version is incremented.
 func PublishTowerFormula(db *sql.DB, name, content, desc, author string) error {
 	_, err := db.Exec(
-		`INSERT INTO formulas (name, content, description, published_by, updated_at)
-		 VALUES (?, ?, ?, ?, NOW())
+		`INSERT INTO formulas (name, version, content, description, published_by, updated_at)
+		 VALUES (?, 1, ?, ?, ?, NOW())
 		 ON DUPLICATE KEY UPDATE
+		     version      = version + 1,
 		     content      = VALUES(content),
 		     description  = VALUES(description),
 		     published_by = VALUES(published_by),

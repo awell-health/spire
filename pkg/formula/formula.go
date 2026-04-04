@@ -283,8 +283,8 @@ func LoadReviewPhaseFormula() (*FormulaStepGraph, error) {
 var TowerFetcher func(name string) (string, error)
 
 // LoadStepGraphByName loads a step-graph formula with layered resolution:
-//  1. On-disk (.beads/formulas/<name>.formula.toml) — user/project override
-//  2. Tower-level (dolt database, via TowerFetcher)
+//  1. Tower-level (dolt database, via TowerFetcher) — shared team defaults
+//  2. On-disk (.beads/formulas/<name>.formula.toml) — repo-level customization
 //  3. Embedded default (compiled into binary)
 func LoadStepGraphByName(name string) (*FormulaStepGraph, error) {
 	g, _, err := LoadStepGraphByNameWithSource(name)
@@ -292,19 +292,10 @@ func LoadStepGraphByName(name string) (*FormulaStepGraph, error) {
 }
 
 // LoadStepGraphByNameWithSource loads a step-graph formula and returns its
-// source: "repo", "tower", or "embedded". Used by agent_runs tracking to
+// source: "tower", "repo", or "embedded". Used by agent_runs tracking to
 // record formula provenance.
 func LoadStepGraphByNameWithSource(name string) (*FormulaStepGraph, string, error) {
-	// --- tier 1: repo-level (.beads/formulas/) ---
-	if path, err := FindFormula(name); err == nil {
-		g, err := LoadStepGraphFromFile(path)
-		if err != nil {
-			return nil, "", fmt.Errorf("repo formula %q: %w", name, err)
-		}
-		return g, "repo", nil
-	}
-
-	// --- tier 2: tower-level (dolt database) ---
+	// --- tier 1: tower-level (dolt database) ---
 	if TowerFetcher != nil {
 		if content, err := TowerFetcher(name); err == nil && content != "" {
 			g, err := ParseFormulaStepGraph([]byte(content))
@@ -318,10 +309,19 @@ func LoadStepGraphByNameWithSource(name string) (*FormulaStepGraph, string, erro
 		// TowerFetcher returning error (dolt unreachable) → silent fall-through.
 	}
 
+	// --- tier 2: repo-level (.beads/formulas/) ---
+	if path, err := FindFormula(name); err == nil {
+		g, err := LoadStepGraphFromFile(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("repo formula %q: %w", name, err)
+		}
+		return g, "repo", nil
+	}
+
 	// --- tier 3: embedded defaults ---
 	g, err := LoadEmbeddedStepGraph(name)
 	if err != nil {
-		return nil, "", fmt.Errorf("formula %q not found in repo, tower, or embedded", name)
+		return nil, "", fmt.Errorf("formula %q not found in tower, repo, or embedded", name)
 	}
 	return g, "embedded", nil
 }

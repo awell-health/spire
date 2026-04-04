@@ -1,6 +1,11 @@
 package formula
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/awell-health/spire/pkg/formula/embedded"
+)
 
 func TestLoadEmbeddedStepGraph_AllV3Formulas(t *testing.T) {
 	names := []string{
@@ -215,5 +220,126 @@ func TestV3FormulaGraph_Epic(t *testing.T) {
 	// Check workspace.
 	if _, ok := g.Workspaces["staging"]; !ok {
 		t.Error("missing workspace 'staging'")
+	}
+}
+
+// validTowerTOML returns a valid v3 formula TOML string for use in tower
+// fetcher tests. It reads the embedded spire-agent-work-v3 formula.
+func validTowerTOML(t *testing.T) string {
+	t.Helper()
+	data, err := embedded.Formulas.ReadFile("formulas/spire-agent-work-v3.formula.toml")
+	if err != nil {
+		t.Fatalf("read embedded formula: %v", err)
+	}
+	return string(data)
+}
+
+// setTowerFetcher installs a TowerFetcher for the duration of a test.
+func setTowerFetcher(t *testing.T, fn func(string) (string, error)) {
+	t.Helper()
+	prev := TowerFetcher
+	TowerFetcher = fn
+	t.Cleanup(func() { TowerFetcher = prev })
+}
+
+func TestLoadStepGraphByNameWithSource_TowerWins(t *testing.T) {
+	toml := validTowerTOML(t)
+	setTowerFetcher(t, func(name string) (string, error) {
+		if name == "spire-agent-work-v3" {
+			return toml, nil
+		}
+		return "", errors.New("not found")
+	})
+
+	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if source != "tower" {
+		t.Errorf("expected source=tower, got %q", source)
+	}
+	if g.Name != "spire-agent-work-v3" {
+		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	}
+}
+
+func TestLoadStepGraphByNameWithSource_FallsToEmbedded_NoTower(t *testing.T) {
+	// TowerFetcher is nil — should fall through to embedded.
+	setTowerFetcher(t, nil)
+
+	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if source != "embedded" {
+		t.Errorf("expected source=embedded, got %q", source)
+	}
+	if g.Name != "spire-agent-work-v3" {
+		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	}
+}
+
+func TestLoadStepGraphByNameWithSource_TowerError_FallsThrough(t *testing.T) {
+	// TowerFetcher returns error (dolt unreachable) — should fall through.
+	setTowerFetcher(t, func(name string) (string, error) {
+		return "", errors.New("connection refused")
+	})
+
+	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if source != "embedded" {
+		t.Errorf("expected source=embedded, got %q", source)
+	}
+	if g.Name != "spire-agent-work-v3" {
+		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	}
+}
+
+func TestLoadStepGraphByNameWithSource_MalformedTower_FallsThrough(t *testing.T) {
+	// Tower returns invalid TOML — should log warning and fall through.
+	setTowerFetcher(t, func(name string) (string, error) {
+		return "this is not valid TOML {{{{", nil
+	})
+
+	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if source != "embedded" {
+		t.Errorf("expected source=embedded after malformed tower, got %q", source)
+	}
+	if g.Name != "spire-agent-work-v3" {
+		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	}
+}
+
+func TestLoadStepGraphByNameWithSource_TowerMiss_FallsThrough(t *testing.T) {
+	// Tower returns empty content — should fall through to embedded.
+	setTowerFetcher(t, func(name string) (string, error) {
+		return "", nil // empty = not found
+	})
+
+	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if source != "embedded" {
+		t.Errorf("expected source=embedded, got %q", source)
+	}
+	if g.Name != "spire-agent-work-v3" {
+		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	}
+}
+
+func TestLoadStepGraphByNameWithSource_NotFoundAnywhere(t *testing.T) {
+	setTowerFetcher(t, func(name string) (string, error) {
+		return "", errors.New("not found")
+	})
+
+	_, _, err := LoadStepGraphByNameWithSource("nonexistent-formula-xyz")
+	if err == nil {
+		t.Fatal("expected error for nonexistent formula")
 	}
 }
