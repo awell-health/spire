@@ -1,17 +1,21 @@
 package executor
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 )
 
 func init() {
 	actionRegistry["recovery.execute"] = actionRecoveryExecute
 	actionRegistry["recovery.decide"] = actionRecoveryDecide
+	actionRegistry["recovery.learn"] = actionRecoveryLearn
 }
 
 // actionRecoveryExecute is the ActionHandler for the "recovery.execute" opcode.
@@ -369,4 +373,180 @@ func failResult(kind recovery.RecoveryActionKind, msg string) recovery.RecoveryA
 		Success: false,
 		Error:   msg,
 	}
+}
+
+// learnOutput is the structured JSON output from the Claude learn prompt.
+type learnOutput struct {
+	LearningSummary string `json:"learning_summary"`
+	ResolutionKind  string `json:"resolution_kind"`
+	Reusable        bool   `json:"reusable"`
+}
+
+// actionRecoveryLearn is the ActionHandler for the "recovery.learn" opcode.
+// It calls Claude to generate a learning summary from the recovery workflow's
+// prior steps, then writes the learning to both bead metadata (narrative layer)
+// and the recovery_learnings table (index layer for cross-bead queries).
+//
+// Best-effort: if Claude fails, returns a warning output rather than an Error
+// so the graph can proceed to the finish step and close the bead.
+func actionRecoveryLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	// 1. Extract inputs from prior step outputs.
+	sourceBead := stepOutput(state, "collect_context", "source_bead_id")
+	failureClass := stepOutput(state, "collect_context", "failure_class")
+	failureSig := stepOutput(state, "collect_context", "failure_sig")
+	actionTaken := stepOutput(state, "remediate", "action")
+	if actionTaken == "" {
+		actionTaken = stepOutput(state, "remediate", "resolution_kind")
+	}
+	verifyOutcome := stepOutput(state, "verify", "verification_status")
+	recoveryBeadID := e.beadID
+
+	// Fall back to bead metadata for values not in step outputs.
+	if sourceBead == "" || failureClass == "" {
+		if bead, err := e.deps.GetBead(recoveryBeadID); err == nil {
+			if sourceBead == "" {
+				sourceBead = bead.Meta(recovery.KeySourceBead)
+			}
+			if failureClass == "" {
+				failureClass = bead.Meta(recovery.KeyFailureClass)
+			}
+			if failureSig == "" {
+				failureSig = bead.Meta(recovery.KeyFailureSignature)
+			}
+		}
+	}
+
+	// 2. Build Claude prompt.
+	prompt := buildLearnPrompt(sourceBead, failureClass, failureSig, actionTaken, verifyOutcome)
+
+	// 3. Call Claude (single-shot).
+	model := repoconfig.ResolveModel(step.Model, e.repoModel())
+	args := []string{
+		"--dangerously-skip-permissions",
+		"-p", prompt,
+		"--model", model,
+		"--output-format", "text",
+		"--max-turns", "1",
+	}
+	raw, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
+	if err != nil {
+		e.log("warning: learn step claude call failed: %s", err)
+		return ActionResult{Outputs: map[string]string{
+			"status":  "warning",
+			"warning": fmt.Sprintf("claude call failed: %s", err),
+		}}
+	}
+
+	// 4. Parse structured JSON output.
+	var out learnOutput
+	rawStr := strings.TrimSpace(string(raw))
+	// Extract JSON from Claude response (may be wrapped in markdown code blocks).
+	jsonStr := extractJSON(rawStr)
+	if err := json.Unmarshal([]byte(jsonStr), &out); err != nil {
+		e.log("warning: learn step parse output failed: %s (raw: %s)", err, rawStr)
+		// Fall back to reasonable defaults from available data.
+		out.LearningSummary = rawStr
+		out.ResolutionKind = actionTaken
+		out.Reusable = verifyOutcome == "clean"
+	}
+
+	// Override reusable based on verify outcome: dirty outcomes are not reusable.
+	if verifyOutcome == "dirty" {
+		out.Reusable = false
+	}
+
+	// 5. Write to bead metadata (narrative layer).
+	meta := map[string]string{
+		recovery.KeyLearningSummary: out.LearningSummary,
+		recovery.KeyResolutionKind:  out.ResolutionKind,
+		recovery.KeyOutcome:         verifyOutcome,
+		recovery.KeyReusable:        strconv.FormatBool(out.Reusable),
+		recovery.KeyResolvedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := store.SetBeadMetadataMap(recoveryBeadID, meta); err != nil {
+		e.log("warning: learn step write metadata failed: %s", err)
+	}
+
+	// 6. Write to recovery_learnings table (index layer).
+	// Best-effort: if this fails but metadata succeeded, continue to finish.
+	if e.deps.WriteRecoveryLearning != nil {
+		l := store.RecoveryLearningRecord{
+			RecoveryBead:    recoveryBeadID,
+			SourceBead:      sourceBead,
+			FailureClass:    failureClass,
+			FailureSig:      failureSig,
+			ResolutionKind:  out.ResolutionKind,
+			Outcome:         verifyOutcome,
+			LearningSummary: out.LearningSummary,
+			Reusable:        out.Reusable,
+		}
+		learningID, writeErr := e.deps.WriteRecoveryLearning(l)
+		if writeErr != nil {
+			e.log("warning: learn step write table failed: %s", writeErr)
+		} else {
+			// Write the learning ID back to metadata for cross-referencing.
+			_ = store.SetBeadMetadata(recoveryBeadID, recovery.KeyLearningID, learningID)
+		}
+	}
+
+	return ActionResult{Outputs: map[string]string{
+		"resolution_kind":  out.ResolutionKind,
+		"outcome":          verifyOutcome,
+		"learning_summary": out.LearningSummary,
+	}}
+}
+
+// stepOutput reads a named output from a prior step's state.
+func stepOutput(state *GraphState, stepName, key string) string {
+	if state == nil || state.Steps == nil {
+		return ""
+	}
+	ss, ok := state.Steps[stepName]
+	if !ok {
+		return ""
+	}
+	if ss.Outputs == nil {
+		return ""
+	}
+	return ss.Outputs[key]
+}
+
+// extractJSON extracts a JSON object from a string that may contain markdown
+// code fences or surrounding text. Returns the original string if no JSON found.
+func extractJSON(s string) string {
+	// Try to find JSON object directly.
+	if start := strings.Index(s, "{"); start >= 0 {
+		if end := strings.LastIndex(s, "}"); end > start {
+			return s[start : end+1]
+		}
+	}
+	return s
+}
+
+// buildLearnPrompt constructs the Claude prompt for the learn step.
+func buildLearnPrompt(sourceBead, failureClass, failureSig, actionTaken, verifyOutcome string) string {
+	return fmt.Sprintf(`You are analyzing a recovery workflow outcome to generate a learning record.
+
+## Recovery Context
+- Source bead: %s
+- Failure class: %s
+- Failure signature: %s
+- Action taken: %s
+- Verify outcome: %s
+
+## Instructions
+
+Based on the recovery context above, produce a concise learning record. Respond with ONLY a JSON object (no markdown, no code fences, no explanation):
+
+{
+  "learning_summary": "<concise narrative: what failed, what was tried, what happened — 1-3 sentences>",
+  "resolution_kind": "<one of: resummon, reset, do-nothing, escalated>",
+  "reusable": <true if the action worked (outcome=clean), false if it didn't (outcome=dirty)>
+}
+
+Rules:
+- learning_summary should be useful to future recovery workflows encountering the same failure class
+- resolution_kind should match the action that was actually taken
+- Set reusable to false when the outcome is "dirty" (the action didn't resolve the issue)
+- Be factual and brief — this is a machine-readable record, not a report`, sourceBead, failureClass, failureSig, actionTaken, verifyOutcome)
 }

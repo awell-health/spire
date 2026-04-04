@@ -103,24 +103,23 @@ produces = ["verification_status"]
 [steps.verify.with]
 action = "verify-clean"
 
-# Step 4: Document learnings (only on success).
-[steps.document]
+# Step 4: Record learnings via Claude (only on clean verification).
+# Calls Claude to generate a learning summary, writes to bead metadata and
+# recovery_learnings table. Best-effort: if Claude fails, the step returns a
+# warning output and the graph proceeds to finish.
+[steps.learn]
 kind = "op"
-action = "recovery.execute"
+action = "recovery.learn"
 needs = ["verify"]
-title = "Document resolution learnings"
-[steps.document.with]
-action = "annotate-resolution"
-resolution_kind = "{{ steps.decide.outputs.chosen_action }}"
-reusable = "true"
-[steps.document.when]
+title = "Record recovery learnings"
+[steps.learn.when]
 all = [{ left = "steps.verify.outputs.verification_status", op = "eq", right = "clean" }]
 
-# Step 5a: Close resolved recovery bead (after documentation).
+# Step 5a: Close resolved recovery bead (after learning).
 [steps.finish]
 kind = "op"
 action = "bead.finish"
-needs = ["document"]
+needs = ["learn"]
 terminal = true
 title = "Close resolved recovery bead"
 [steps.finish.with]

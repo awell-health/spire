@@ -1,48 +1,42 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"time"
 )
 
-// FindLearningsByFailureClass returns reusable learnings across all source beads
-// for the given failure class, ordered by recency. Used for cross-bead pattern
-// matching during collect_context — labeled as "similar incidents" in the decide prompt.
-func FindLearningsByFailureClass(db *sql.DB, failureClass string, limit int) ([]RecoveryLearning, error) {
-	if limit <= 0 || limit > 20 {
-		limit = 5
+// generateLearningID produces a short hex ID with a "lrn-" prefix.
+func generateLearningID() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "lrn-00000000"
 	}
-	rows, err := db.Query(`
-		SELECT id, recovery_bead, source_bead, failure_class, failure_sig,
-		       resolution_kind, outcome, learning_summary, reusable, resolved_at
-		FROM recovery_learnings
-		WHERE failure_class = ? AND reusable = TRUE
-		ORDER BY resolved_at DESC
-		LIMIT ?`,
-		failureClass, limit)
-	if err != nil {
-		return nil, fmt.Errorf("FindLearningsByFailureClass: %w", err)
-	}
-	defer rows.Close()
-	return scanRecoveryLearnings(rows)
+	return "lrn-" + hex.EncodeToString(b)
 }
 
-// scanRecoveryLearnings scans rows from the recovery_learnings table into
-// RecoveryLearning structs. Shared by all recovery_learnings query functions.
-func scanRecoveryLearnings(rows *sql.Rows) ([]RecoveryLearning, error) {
-	var out []RecoveryLearning
-	for rows.Next() {
-		var rl RecoveryLearning
-		var id int
-		var outcome string
-		if err := rows.Scan(
-			&id, &rl.BeadID, &rl.SourceBead, &rl.FailureClass,
-			&rl.FailureSignature, &rl.ResolutionKind, &outcome,
-			&rl.LearningSummary, &rl.Reusable, &rl.ResolvedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan recovery learning: %w", err)
-		}
-		out = append(out, rl)
+// WriteRecoveryLearning inserts a recovery learning record into the
+// recovery_learnings table. If ID is empty, one is generated. If ResolvedAt
+// is zero, it defaults to now. Returns the record ID.
+func WriteRecoveryLearning(db *sql.DB, l RecoveryLearningRecord) (string, error) {
+	if l.ID == "" {
+		l.ID = generateLearningID()
 	}
-	return out, rows.Err()
+	if l.ResolvedAt.IsZero() {
+		l.ResolvedAt = time.Now().UTC()
+	}
+	_, err := db.Exec(`
+		INSERT INTO recovery_learnings
+			(id, recovery_bead, source_bead, failure_class, failure_sig,
+			 resolution_kind, outcome, learning_summary, reusable, resolved_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.ID, l.RecoveryBead, l.SourceBead, l.FailureClass, l.FailureSig,
+		l.ResolutionKind, l.Outcome, l.LearningSummary, l.Reusable, l.ResolvedAt,
+	)
+	if err != nil {
+		return "", fmt.Errorf("insert recovery_learnings: %w", err)
+	}
+	return l.ID, nil
 }

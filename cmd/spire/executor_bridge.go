@@ -188,7 +188,8 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		Spawner: spawner,
 
 		// Agent run recording
-		RecordAgentRun: metrics.Record,
+		RecordAgentRun:        metrics.Record,
+		WriteRecoveryLearning: storeWriteRecoveryLearning,
 		AgentResultDir: func(agentName string) string {
 			return filepath.Join(doltGlobalDir(), "wizards", agentName)
 		},

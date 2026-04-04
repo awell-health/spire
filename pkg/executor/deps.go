@@ -115,6 +115,9 @@ type Deps struct {
 	// Agent run recording
 	RecordAgentRun func(run AgentRun) (string, error)
 
+	// Recovery learning recording
+	WriteRecoveryLearning func(l store.RecoveryLearningRecord) (string, error)
+
 	// AgentResultDir returns the directory containing result.json for the named agent.
 	// Path: <doltGlobalDir>/wizards/<agentName>
 	AgentResultDir func(agentName string) string

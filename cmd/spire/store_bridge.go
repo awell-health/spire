@@ -408,3 +408,11 @@ func storeRemoveTowerFormula(name string) error {
 	}
 	return store.RemoveTowerFormula(db, name)
 }
+
+func storeWriteRecoveryLearning(l store.RecoveryLearningRecord) (string, error) {
+	db, err := storeTowerDB()
+	if err != nil {
+		return "", err
+	}
+	return store.WriteRecoveryLearning(db, l)
+}

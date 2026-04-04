@@ -21,6 +21,8 @@ const (
 	KeyReusable           = "reusable"
 	KeyResolvedAt         = "resolved_at"
 	KeyLearningSummary    = "learning_summary"
+	KeyOutcome            = "learning_outcome"   // "clean" / "dirty"
+	KeyLearningID         = "learning_id"        // FK into recovery_learnings table
 )
 
 // RecoveryMetadata is the typed projection of recovery-specific bead metadata.
@@ -37,6 +39,8 @@ type RecoveryMetadata struct {
 	Reusable           bool
 	ResolvedAt         string // RFC3339; empty if unresolved
 	LearningSummary    string
+	Outcome            string // "clean" / "dirty"
+	LearningID         string // FK into recovery_learnings table
 }
 
 // RecoveryMetadataFromBead extracts RecoveryMetadata from a bead's Metadata map.
@@ -53,6 +57,8 @@ func RecoveryMetadataFromBead(b store.Bead) RecoveryMetadata {
 		Reusable:           b.Meta(KeyReusable) == "true",
 		ResolvedAt:         b.Meta(KeyResolvedAt),
 		LearningSummary:    b.Meta(KeyLearningSummary),
+		Outcome:            b.Meta(KeyOutcome),
+		LearningID:         b.Meta(KeyLearningID),
 	}
 }
 
@@ -92,6 +98,12 @@ func (r RecoveryMetadata) ToMap() map[string]string {
 	}
 	if r.LearningSummary != "" {
 		m[KeyLearningSummary] = r.LearningSummary
+	}
+	if r.Outcome != "" {
+		m[KeyOutcome] = r.Outcome
+	}
+	if r.LearningID != "" {
+		m[KeyLearningID] = r.LearningID
 	}
 	return m
 }
