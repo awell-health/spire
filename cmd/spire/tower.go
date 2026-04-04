@@ -170,6 +170,7 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     completed_at DATETIME,
     formula_name VARCHAR(64),
     formula_version INT,
+    formula_source VARCHAR(16),
     branch VARCHAR(128),
     commit_sha VARCHAR(64),
     bead_type VARCHAR(32),
@@ -260,6 +261,7 @@ var spireMigrations = []columnMigration{
 	// --- agent_runs context fields (spi-md5mv) ---
 	{table: "agent_runs", column: "formula_name", ddl: "ADD COLUMN formula_name VARCHAR(64)"},
 	{table: "agent_runs", column: "formula_version", ddl: "ADD COLUMN formula_version INT"},
+	{table: "agent_runs", column: "formula_source", ddl: "ADD COLUMN formula_source VARCHAR(16)"},
 	{table: "agent_runs", column: "branch", ddl: "ADD COLUMN branch VARCHAR(128)"},
 	{table: "agent_runs", column: "commit_sha", ddl: "ADD COLUMN commit_sha VARCHAR(64)"},
 	{table: "agent_runs", column: "bead_type", ddl: "ADD COLUMN bead_type VARCHAR(32)"},

@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// Formula source constants identify where a formula was loaded from.
+const (
+	FormulaSourceEmbedded = "embedded"
+	FormulaSourceRepo     = "repo"
+	FormulaSourceTower    = "tower"
+)
+
 // AgentRun represents a single agent execution record stored in the agent_runs table.
 type AgentRun struct {
 	ID                 string `json:"id"`
@@ -23,6 +30,7 @@ type AgentRun struct {
 	Phase              string `json:"phase,omitempty"` // "implement", "review", "build-fix", "review-fix"
 	FormulaName        string `json:"formula_name,omitempty"`
 	FormulaVersion     int    `json:"formula_version,omitempty"`
+	FormulaSource      string `json:"formula_source,omitempty"` // "embedded", "repo", or "tower"
 	Branch             string `json:"branch,omitempty"`
 	CommitSHA          string `json:"commit_sha,omitempty"`
 	BeadType           string `json:"bead_type,omitempty"`
@@ -93,6 +101,10 @@ func Record(run AgentRun) error {
 	if run.FormulaVersion > 0 {
 		cols = append(cols, "formula_version")
 		vals = append(vals, itoa(run.FormulaVersion))
+	}
+	if run.FormulaSource != "" {
+		cols = append(cols, "formula_source")
+		vals = append(vals, esc(run.FormulaSource))
 	}
 	if run.Branch != "" {
 		cols = append(cols, "branch")

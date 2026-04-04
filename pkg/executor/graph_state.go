@@ -15,8 +15,9 @@ import (
 type GraphState struct {
 	BeadID     string                     `json:"bead_id"`
 	AgentName  string                     `json:"agent_name"`
-	Formula    string                     `json:"formula"`
-	Entry      string                     `json:"entry"`
+	Formula       string                  `json:"formula"`
+	FormulaSource string                  `json:"formula_source,omitempty"` // "embedded", "repo", or "tower"
+	Entry         string                  `json:"entry"`
 	Steps      map[string]StepState       `json:"steps"`
 	Counters   map[string]int             `json:"counters"`
 	Workspaces map[string]WorkspaceState  `json:"workspaces"`

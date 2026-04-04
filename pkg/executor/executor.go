@@ -26,6 +26,7 @@ type State struct {
 	BeadID        string                  `json:"bead_id"`
 	AgentName     string                  `json:"agent_name"`
 	Formula       string                  `json:"formula"`
+	FormulaSource string                  `json:"formula_source,omitempty"` // "embedded", "repo", or "tower"
 	Phase         string                  `json:"phase"`
 	Wave          int                     `json:"wave"`
 	Subtasks      map[string]SubtaskState `json:"subtasks"`
@@ -514,6 +515,18 @@ func (e *Executor) nextPhase(current string) string {
 		}
 	}
 	return ""
+}
+
+// SetFormulaSource sets the formula provenance ("embedded", "repo", or "tower")
+// on both v2 and v3 state, so it is persisted across phases and included in
+// agent run records. Callers set this after NewGraph/New returns and before Run.
+func (e *Executor) SetFormulaSource(source string) {
+	if e.state != nil {
+		e.state.FormulaSource = source
+	}
+	if e.graphState != nil {
+		e.graphState.FormulaSource = source
+	}
 }
 
 // --- Accessors for testing ---

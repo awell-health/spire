@@ -77,6 +77,12 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 	}
 	if e.state != nil {
 		run.WaveIndex = e.state.Wave
+		if e.state.FormulaSource != "" {
+			run.FormulaSource = e.state.FormulaSource
+		}
+	}
+	if run.FormulaSource == "" && e.graphState != nil && e.graphState.FormulaSource != "" {
+		run.FormulaSource = e.graphState.FormulaSource
 	}
 
 	// Bead type — swallow errors (bead may be deleted or unavailable in tests).
