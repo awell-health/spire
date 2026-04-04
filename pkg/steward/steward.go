@@ -101,6 +101,7 @@ type StewardConfig struct {
 	StaleThreshold    time.Duration
 	ShutdownThreshold time.Duration
 	AgentList         []string
+	MetricsPort       int // 0 = disabled; non-zero = start HTTP metrics server
 }
 
 // AgentNames extracts agent names from an agent.Info slice.

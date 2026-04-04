@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +28,9 @@ var upCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("backend"); v != "" {
 			fullArgs = append(fullArgs, "--backend", v)
 		}
+		if v, _ := cmd.Flags().GetInt("metrics-port"); v > 0 {
+			fullArgs = append(fullArgs, "--metrics-port", strconv.Itoa(v))
+		}
 		return cmdUp(fullArgs)
 	},
 }
@@ -35,6 +39,7 @@ func init() {
 	upCmd.Flags().String("interval", "", "Daemon sync interval (e.g. 2m)")
 	upCmd.Flags().Bool("steward", false, "Also start the steward")
 	upCmd.Flags().String("backend", "", "Agent backend: process, docker, or k8s")
+	upCmd.Flags().Int("metrics-port", 0, "Expose Prometheus metrics on this port (k8s mode; 0=disabled)")
 }
 
 func cmdUp(args []string) error {
@@ -42,6 +47,7 @@ func cmdUp(args []string) error {
 	interval := "2m"
 	startSteward := false
 	backendName := ""
+	metricsPort := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--interval":
@@ -58,8 +64,14 @@ func cmdUp(args []string) error {
 			}
 			i++
 			backendName = args[i]
+		case "--metrics-port":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--metrics-port requires a port number")
+			}
+			i++
+			metricsPort = args[i]
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire up [--interval 2m] [--steward] [--backend process|docker|k8s]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire up [--interval 2m] [--steward] [--backend process|docker|k8s] [--metrics-port 9090]", args[i])
 		}
 	}
 
@@ -239,6 +251,9 @@ func cmdUp(args []string) error {
 			stewardArgs := []string{"steward", "--interval", interval}
 			if backendName != "" {
 				stewardArgs = append(stewardArgs, "--backend", backendName)
+			}
+			if metricsPort != "" {
+				stewardArgs = append(stewardArgs, "--metrics-port", metricsPort)
 			}
 
 			cmd := exec.Command(spireBin, stewardArgs...)

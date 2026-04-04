@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward"
@@ -43,6 +47,9 @@ var stewardCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("agents"); v != "" {
 			fullArgs = append(fullArgs, "--agents", v)
 		}
+		if v, _ := cmd.Flags().GetInt("metrics-port"); v > 0 {
+			fullArgs = append(fullArgs, "--metrics-port", strconv.Itoa(v))
+		}
 		return cmdSteward(fullArgs)
 	},
 }
@@ -55,6 +62,7 @@ func init() {
 	stewardCmd.Flags().Bool("no-assign", false, "Skip sending assignment messages")
 	stewardCmd.Flags().String("backend", "", "Agent backend: process, docker, or k8s")
 	stewardCmd.Flags().String("agents", "", "Comma-separated agent names")
+	stewardCmd.Flags().Int("metrics-port", 0, "Expose Prometheus metrics on this port (0=disabled)")
 }
 
 // agentNames delegates to pkg/steward for backward compatibility.
@@ -75,6 +83,7 @@ func cmdSteward(args []string) error {
 	dryRun := false
 	noAssign := false // skip sending assignment messages (managed agents get work via operator)
 	backendName := "" // default: auto-resolve from ResolveBackend
+	metricsPort := 0  // 0 = disabled
 	var agentList []string
 
 	for i := 0; i < len(args); i++ {
@@ -141,8 +150,18 @@ func cmdSteward(args []string) error {
 					agentList = append(agentList, a)
 				}
 			}
+		case "--metrics-port":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--metrics-port requires a port number")
+			}
+			i++
+			p, pErr := strconv.Atoi(args[i])
+			if pErr != nil || p < 0 || p > 65535 {
+				return fmt.Errorf("--metrics-port: invalid port %q", args[i])
+			}
+			metricsPort = p
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 15m] [--backend process|docker|k8s] [--agents a,b,c]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 15m] [--backend process|docker|k8s] [--agents a,b,c] [--metrics-port 9090]", args[i])
 		}
 	}
 
@@ -192,6 +211,24 @@ func cmdSteward(args []string) error {
 		StaleThreshold:    staleThreshold,
 		ShutdownThreshold: shutdownThreshold,
 		AgentList:         agentList,
+		MetricsPort:       metricsPort,
+	}
+
+	// Start metrics server if configured.
+	var metricsServer *steward.MetricsServer
+	if metricsPort > 0 {
+		dsn := fmt.Sprintf("root:@tcp(%s:%s)/", doltHost(), doltPort())
+		metricsDB, dbErr := sql.Open("mysql", dsn)
+		if dbErr != nil {
+			log.Printf("[steward] metrics db open: %s (metrics disabled)", dbErr)
+		} else {
+			metricsServer = steward.NewMetricsServer(metricsPort, metricsDB)
+			if err := metricsServer.Start(); err != nil {
+				log.Printf("[steward] metrics server: %s (metrics disabled)", err)
+				metricsDB.Close()
+				metricsServer = nil
+			}
+		}
 	}
 
 	cycleNum := 1
@@ -201,6 +238,9 @@ func cmdSteward(args []string) error {
 	cycleNum++
 
 	if once {
+		if metricsServer != nil {
+			metricsServer.Stop(context.Background())
+		}
 		return nil
 	}
 
@@ -218,6 +258,9 @@ func cmdSteward(args []string) error {
 			cycleNum++
 		case sig := <-sigCh:
 			log.Printf("[steward] received %s, shutting down after %d cycles", sig, cycleNum-1)
+			if metricsServer != nil {
+				metricsServer.Stop(context.Background())
+			}
 			return nil
 		}
 	}
