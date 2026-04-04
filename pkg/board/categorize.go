@@ -1,18 +1,19 @@
 package board
 
 import (
+	"image/color"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/store"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // ColDef is a display column with a name, color, and bead slice.
 type ColDef struct {
 	Name  string
-	Color lipgloss.Color
+	Color color.Color
 	Beads []BoardBead
 }
 

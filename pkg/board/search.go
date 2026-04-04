@@ -3,7 +3,7 @@ package board
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // FilterColumns returns a new Columns struct with beads filtered by search query.

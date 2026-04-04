@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	github.com/awell-health/spire v0.0.0
 	github.com/go-logr/logr v1.4.3
-	github.com/steveyegge/beads v0.63.3
+	github.com/steveyegge/beads v1.0.0
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
 	k8s.io/client-go v0.35.3

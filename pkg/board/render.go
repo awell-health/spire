@@ -2,10 +2,11 @@ package board
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // HeightBudgetResult holds the computed layout parameters for the board.
@@ -134,7 +135,7 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, interruptedCount, bl
 }
 
 // RenderCompactCard renders a single bead as a one-line string for TUI columns.
-func RenderCompactCard(b BoardBead, color lipgloss.Color, width int, selected bool) string {
+func RenderCompactCard(b BoardBead, clr color.Color, width int, selected bool) string {
 	titleWidth := width - 26
 	if titleWidth < 15 {
 		titleWidth = 15
@@ -143,7 +144,7 @@ func RenderCompactCard(b BoardBead, color lipgloss.Color, width int, selected bo
 	owner := BeadOwnerLabel(b)
 	ownerStr := ""
 	if owner != "" {
-		ownerStr = " " + lipgloss.NewStyle().Foreground(color).Render(owner)
+		ownerStr = " " + lipgloss.NewStyle().Foreground(clr).Render(owner)
 	}
 	line := fmt.Sprintf("%s %s %s %s%s %s",
 		PriStr(b.Priority), b.ID, ShortType(b.Type),
@@ -580,7 +581,7 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 }
 
 // RenderCardStr renders a single bead card as a multi-line string for a column.
-func RenderCardStr(b BoardBead, color lipgloss.Color, width int, selected ...bool) string {
+func RenderCardStr(b BoardBead, clr color.Color, width int, selected ...bool) string {
 	titleWidth := width - 4
 	if titleWidth < 10 {
 		titleWidth = 10
@@ -602,7 +603,7 @@ func RenderCardStr(b BoardBead, color lipgloss.Color, width int, selected ...boo
 	s.WriteString(fmt.Sprintf("  %s\n", Truncate(b.Title, titleWidth)))
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	colorStyle := lipgloss.NewStyle().Foreground(color)
+	colorStyle := lipgloss.NewStyle().Foreground(clr)
 
 	owner := BeadOwnerLabel(b)
 	if owner != "" {
@@ -692,7 +693,7 @@ func RenderPipelineFromDAG(dag *DAGProgress) string {
 // RenderCardStrSnap renders a single bead card as a multi-line string for a column,
 // using pre-fetched phase and DAG progress instead of calling the database.
 // Same visual output as RenderCardStr.
-func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, color lipgloss.Color, width int, selected ...bool) string {
+func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, clr color.Color, width int, selected ...bool) string {
 	titleWidth := width - 4
 	if titleWidth < 10 {
 		titleWidth = 10
@@ -720,7 +721,7 @@ func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, color lipglo
 	s.WriteString(fmt.Sprintf("  %s\n", Truncate(b.Title, titleWidth)))
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	colorStyle := lipgloss.NewStyle().Foreground(color)
+	colorStyle := lipgloss.NewStyle().Foreground(clr)
 
 	owner := BeadOwnerLabel(b)
 	if owner != "" {
