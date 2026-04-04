@@ -27,7 +27,8 @@ type AgentRun struct {
 	AgentName          string `json:"agent_name,omitempty"`
 	Model              string `json:"model"`
 	Role               string `json:"role"`  // "wizard" or "worker"
-	Phase              string `json:"phase,omitempty"` // "implement", "review", "build-fix", "review-fix"
+	Phase              string `json:"phase,omitempty"`        // "implement", "review", "build-fix", "review-fix"
+	PhaseBucket        string `json:"phase_bucket,omitempty"` // "design", "implement", "review"
 	FormulaName        string `json:"formula_name,omitempty"`
 	FormulaVersion     int    `json:"formula_version,omitempty"`
 	FormulaSource      string `json:"formula_source,omitempty"` // "embedded", "repo", or "tower"
@@ -93,6 +94,10 @@ func Record(run AgentRun) error {
 	if run.Phase != "" {
 		cols = append(cols, "phase")
 		vals = append(vals, esc(run.Phase))
+	}
+	if run.PhaseBucket != "" {
+		cols = append(cols, "phase_bucket")
+		vals = append(vals, esc(run.PhaseBucket))
 	}
 	if run.FormulaName != "" {
 		cols = append(cols, "formula_name")

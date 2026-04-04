@@ -39,6 +39,20 @@ func withReviewStep(step string, round int) recordOpt {
 	}
 }
 
+// phaseToBucket maps fine-grained phase names to high-level attribution buckets.
+func phaseToBucket(phase string) string {
+	switch phase {
+	case "implement", "build-fix":
+		return "implement"
+	case "review", "review-fix":
+		return "review"
+	case "validate-design", "enrich-subtasks", "auto-approve", "skip", "waitForHuman":
+		return "design"
+	default:
+		return ""
+	}
+}
+
 // recordAgentRun records an agent run to the agent_runs table.
 // Safe to call even when RecordAgentRun is nil (tests, legacy callers).
 //
@@ -59,6 +73,7 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		Model:           model,
 		Role:            role,
 		Phase:           phase,
+		PhaseBucket:     phaseToBucket(phase),
 		DurationSeconds: int(completed.Sub(started).Seconds()),
 		StartedAt:       started.Format(time.RFC3339),
 		CompletedAt:     completed.Format(time.RFC3339),

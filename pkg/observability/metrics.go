@@ -215,6 +215,60 @@ func fmtCost(cost float64) string {
 	return fmt.Sprintf("$%.0f", cost)
 }
 
+// PhaseBucketRow holds per-bucket token and cost totals for a single bead.
+type PhaseBucketRow struct {
+	Bucket    string  `json:"bucket"`
+	TokensIn  int     `json:"tokens_in"`
+	TokensOut int     `json:"tokens_out"`
+	CostUSD   float64 `json:"cost_usd"`
+}
+
+// MetricsPhaseBuckets returns per-phase-bucket token and cost totals for a bead.
+func MetricsPhaseBuckets(beadID string) ([]PhaseBucketRow, error) {
+	query := fmt.Sprintf(`SELECT
+		phase_bucket,
+		COALESCE(SUM(context_tokens_in),0)  AS tokens_in,
+		COALESCE(SUM(context_tokens_out),0) AS tokens_out,
+		COALESCE(SUM(cost_usd),0)           AS cost_usd
+	FROM agent_runs
+	WHERE bead_id = '%s'
+	  AND phase_bucket IS NOT NULL
+	GROUP BY phase_bucket
+	ORDER BY FIELD(phase_bucket, 'design', 'implement', 'review')`,
+		SqlEsc(beadID))
+
+	rows, err := QueryJSON(query)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []PhaseBucketRow
+	for _, row := range rows {
+		result = append(result, PhaseBucketRow{
+			Bucket:    ToString(row["phase_bucket"]),
+			TokensIn:  ToInt(row["tokens_in"]),
+			TokensOut: ToInt(row["tokens_out"]),
+			CostUSD:   ToFloat(row["cost_usd"]),
+		})
+	}
+	return result, nil
+}
+
+// fmtTokens formats a token count with comma separators.
+func fmtTokens(n int) string {
+	s := strconv.Itoa(n)
+	if len(s) <= 3 {
+		return s
+	}
+	var parts []string
+	for len(s) > 3 {
+		parts = append([]string{s[len(s)-3:]}, parts...)
+		s = s[:len(s)-3]
+	}
+	parts = append([]string{s}, parts...)
+	return strings.Join(parts, ",")
+}
+
 // MetricsBead shows metrics for a specific bead or epic.
 func MetricsBead(beadID string, jsonOut bool) error {
 	query := fmt.Sprintf(`SELECT
@@ -248,10 +302,16 @@ func MetricsBead(beadID string, jsonOut bool) error {
 		return fmt.Errorf("metrics: %w", err)
 	}
 
+	// Fetch per-phase-bucket breakdown (non-fatal on error).
+	buckets, _ := MetricsPhaseBuckets(beadID)
+
 	if jsonOut {
 		out := map[string]any{
 			"summary": FirstOr(rows),
 			"runs":    runsRows,
+		}
+		if len(buckets) > 0 {
+			out["phase_buckets"] = buckets
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -274,6 +334,19 @@ func MetricsBead(beadID string, jsonOut bool) error {
 	fmt.Printf("  Avg duration: %.0fs\n", avgDur)
 	fmt.Printf("  Total tokens: %dK in, %dK out\n", tokensIn/1000, tokensOut/1000)
 	fmt.Printf("  Est. cost: $%.2f\n", cost)
+
+	// Render per-phase-bucket breakdown if available.
+	if len(buckets) > 0 {
+		fmt.Println()
+		for _, b := range buckets {
+			fmt.Printf("  %s  %-10s %6s in  / %6s out  — %s%s\n",
+				Dim, b.Bucket+":", fmtTokens(b.TokensIn), fmtTokens(b.TokensOut), fmtCost(b.CostUSD), Reset)
+		}
+		fmt.Printf("  %s  ─────────────────────────────────────────%s\n", Dim, Reset)
+		fmt.Printf("  %s  %-10s %6s in  / %6s out  — %s%s\n",
+			Dim, "total:", fmtTokens(tokensIn), fmtTokens(tokensOut), fmtCost(cost), Reset)
+	}
+
 	fmt.Printf("  Files changed: %d, +%d/-%d lines\n",
 		ToInt(summary["total_files"]),
 		ToInt(summary["total_added"]),
