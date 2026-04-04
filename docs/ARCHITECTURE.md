@@ -4,7 +4,7 @@ Spire is an AI agent coordination system. It manages a shared work graph
 (beads), routes work to autonomous agents, and synchronizes state across
 local machines and Kubernetes clusters via DoltHub.
 
-> **Living document.** Updated 2026-03-29. Where the current implementation
+> **Living document.** Updated 2026-04-03. Where the current implementation
 > differs from the target, inline callouts note the gap.
 
 ## Deployment Modes
@@ -74,6 +74,7 @@ Spire shells out to the `bd` binary for all work graph mutations.
 | `comments` | issue_id, author, body, created_at                         |
 | `metadata` | key-value store (project_id, config)                       |
 | `repos`    | prefix, repo_url, branch, runtime, registered_by, registered_at |
+| `formulas` | name, version, content, description, published_by, created_at, updated_at |
 
 Key operations: `create`, `update`, `close`, `list`, `show`, `ready`
 (returns beads with no open blockers), `dep add`, `children`, `dolt commit`,
@@ -92,27 +93,28 @@ SQL database with git-like version control. The shared state layer.
 The database holds ALL shared state: beads, repos, agent registrations,
 messages, comments, labels, dependencies.
 
-### Steward (`cmd/spire/steward.go`)
+### Steward (`pkg/steward/`, `cmd/spire/steward.go`)
 
 The work coordinator. Runs as `spire steward` (locally or in the steward
-pod in k8s). Core responsibility: assigning ready work to agents by
-summoning wizards (locally via `spire summon`, in k8s via SpireWorkload CRs).
+pod in k8s). The steward actively assigns work, spawns agents, routes
+reviews, and monitors health.
 
 **Cycle (every N minutes):**
 
 1. Commit local dolt changes
-2. Query ready beads (`bd ready`)
-3. Load agent roster via the selected backend (`backend.List()`) or explicit `--agents`
-4. Assign ready beads to idle agents (round-robin by priority)
-5. Detect standalone tasks ready for review (via workflow/review child beads)
-6. Detect tasks with review feedback for wizard re-engagement
-7. Check bead health (stale warning at `agent.stale`, pod kill at `agent.timeout`)
+2. Query ready beads via `store.GetReadyWork()`
+3. Load agent roster via the selected backend (`backend.List()`) and compute idle capacity
+4. Assign ready beads to idle agents (round-robin by priority) -- sends assignment message via `spire send`, then spawns agent directly via `backend.Spawn()`
+5. Detect standalone tasks ready for review -- spawns reviewer agents (`RoleSage`) for beads with closed implement steps
+6. Detect review feedback -- re-engages original wizard when last review verdict is `request_changes`
+7. Check bead health (stale warning at `agent.stale`, kill at `agent.timeout`)
 
-> **Current state (2026-03-26):** In k8s, the operator watches SpireAgent
-> CRDs for the roster. Locally, `spire summon` still drives the common
-> execution path directly. The future direction is for the operator to read
-> the `repos` table directly and derive agent configurations; today
-> `SpireAgent` CRDs remain explicit.
+> **Current state (2026-04-03):** The steward runs as a sibling process
+> via `spire up --steward`. V1.0 target: merge into the daemon as a
+> unified single process. Locally, `spire summon` remains available for
+> manual capacity alongside steward-driven assignment. In k8s, the
+> operator watches SpireAgent CRDs; the target is for the operator to
+> read the `repos` table directly and derive agent configurations.
 
 Assignment modes:
 - **External agents**: steward sends an assignment message via `spire send`
@@ -251,49 +253,81 @@ is an implementation detail; the user-facing name is "familiar."
 
 ### Formula System (`pkg/formula/`, `pkg/executor/`)
 
-Formulas define the phase pipeline a wizard follows for a given bead type.
-Each formula is a TOML file declaring ordered phases with role, model,
-timeout, and behavior configuration.
+Formulas define the step graph a wizard follows for a given bead type.
+Each formula is a v3 TOML file declaring steps with actions, conditions,
+opcodes, and behavior configuration. The executor interprets the graph
+at runtime, advancing steps based on conditions and persisting state
+for crash-safe resume.
 
 **Built-in formulas** (embedded in binary at `pkg/formula/embedded/formulas/`):
 
-| Formula | Bead types | Phases | Description |
-|---------|-----------|--------|-------------|
-| `spire-epic` | epic | design → plan → implement → review → merge | Full lifecycle with design validation, Opus planning, wave dispatch, sage review |
-| `spire-bugfix` | bug | plan → implement → review → merge | Quick fix: wizard plan, single apprentice, sage review, auto-merge |
-| `spire-agent-work` | task, feature, chore | plan → implement → review → merge | Standard work: wizard plan, single apprentice, sage review, auto-merge |
+| Formula | Bead types | Steps | Description |
+|---------|-----------|-------|-------------|
+| `spire-epic-v3` | epic | design-check → plan → materialize → implement → review → merge → close | Full lifecycle with design validation, Opus planning, child dispatch, sage review, nestable review loops |
+| `spire-bugfix-v3` | bug | plan → implement → review → merge → close | Quick fix: wizard plan, single apprentice, sage review, auto-merge |
+| `spire-agent-work-v3` | task, feature, chore | plan → implement → review → merge → close | Standard work: wizard plan, single apprentice, sage review, auto-merge |
+| `spire-recovery-v3` | recovery | collect → design → plan → remediate → verify → document → close | Recovery lifecycle with prior-learning lookup and durable learning projection |
+| `review-phase` | (sub-graph) | sage-review → arbiter → fix → merge → discard | Nestable review loop, invoked by parent formulas |
+| `epic-implement-phase` | (sub-graph) | dispatch-children → merge-staging → verify | Epic child dispatch with staging integration |
 
 **Bead type → formula mapping:**
 
 ```
-epic    → spire-epic
-bug     → spire-bugfix
-task    → spire-agent-work
-feature → spire-agent-work
-chore   → spire-agent-work
-(fallback) → spire-agent-work
+epic     → spire-epic-v3
+bug      → spire-bugfix-v3
+task     → spire-agent-work-v3
+feature  → spire-agent-work-v3
+chore    → spire-agent-work-v3
+recovery → spire-recovery-v3
+(fallback) → spire-agent-work-v3
 ```
 
-**Layered resolution** (first match wins):
+**Name resolution** (determines which formula name to load):
 
 1. Label `formula:<name>` on the bead (explicit override)
 2. Bead type mapping (table above)
-3. `.beads/formulas/<name>.formula.toml` (tower-level customization)
-4. Embedded formulas (built into the binary)
 
-This means teams can override formulas per-tower without modifying the
-binary. A custom `spire-epic.formula.toml` in `.beads/formulas/` takes
-precedence over the embedded default.
+**Content resolution** (determines where to load the formula content):
 
-**Phase configuration** (from `spire-epic.formula.toml`):
+1. Tower-level -- query `formulas` table in dolt (shared team defaults, synced via daemon)
+2. Repo-level -- `.beads/formulas/<name>.formula.toml` (per-repo customization)
+3. Embedded -- compiled into the binary (built-in defaults)
+
+Tower provides shared defaults across all repos in a tower. Repo
+overrides tower for local customization. Embedded is the fallback.
+Teams can publish custom formulas via `spire formula publish` and they
+propagate to all machines attached to the tower.
+
+**V3 step graph structure** (from `spire-epic-v3.formula.toml`):
 
 ```toml
-[phases.design]     # wizard validates linked design bead (pure Go, no LLM)
-[phases.plan]       # wizard invokes Claude Opus to generate subtask breakdown
-[phases.implement]  # apprentices in parallel waves, each in a worktree
-[phases.review]     # sage reviews staging branch, verdict-only
-[phases.merge]      # ff-only merge staging branch to the configured base branch
+[steps.design-check]
+action = "design.validate"   # pure Go, no LLM
+
+[steps.plan]
+action = "plan.generate"     # wizard invokes Claude Opus
+depends_on = ["design-check"]
+
+[steps.implement]
+action = "graph.run"         # nested sub-graph (epic-implement-phase)
+depends_on = ["plan"]
+
+[steps.review]
+action = "graph.run"         # nested sub-graph (review-phase)
+depends_on = ["implement"]
+condition = "steps.implement.outputs.result == 'success'"
+
+[steps.merge]
+action = "bead.finish"       # ff-only merge to configured base branch
+depends_on = ["review"]
+condition = "steps.review.outputs.verdict == 'approve'"
 ```
+
+Steps declare dependencies, conditions, and actions. The graph
+interpreter resolves ready steps, executes them, evaluates conditions,
+and persists state after each step for resumability. Sub-graphs
+(`graph.run`) nest arbitrarily -- the review phase is itself a step
+graph with sage-review, arbiter, fix, merge, and discard steps.
 
 See [epic-formula.md](epic-formula.md) for the full lifecycle diagram.
 

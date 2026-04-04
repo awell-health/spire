@@ -10,6 +10,35 @@ import (
 	"github.com/steveyegge/beads"
 )
 
+// prefixFromID extracts the repo prefix from a bead ID (e.g. "ml" from "ml-3fz").
+func prefixFromID(id string) string {
+	if i := strings.Index(id, "-"); i > 0 {
+		return id[:i]
+	}
+	return ""
+}
+
+// isRecoveryBead returns true if the bead is itself a recovery bead,
+// used as a circuit breaker to prevent cascading escalations.
+func isRecoveryBead(beadID string, deps *Deps) bool {
+	if deps.GetBead == nil {
+		return false
+	}
+	b, err := deps.GetBead(beadID)
+	if err != nil {
+		return false
+	}
+	if b.Type == "recovery" {
+		return true
+	}
+	for _, l := range b.Labels {
+		if l == "recovery-bead" {
+			return true
+		}
+	}
+	return false
+}
+
 // executorBeadOps adapts executor.Deps to recovery.BeadOps.
 type executorBeadOps struct {
 	deps *Deps
@@ -73,9 +102,18 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 // The bead stays at the implement phase so it can be resummon'd after the user
 // provides better context (design bead, improved description, etc.).
 func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
+	// Circuit breaker: don't cascade if this is already a recovery bead.
+	if isRecoveryBead(beadID, deps) {
+		deps.AddLabel(beadID, "needs-human")
+		deps.AddLabel(beadID, "interrupted:empty-implement")
+		deps.AddComment(beadID, "Empty implement on recovery bead — escalation suppressed to prevent cascade.")
+		return
+	}
+
 	deps.AddLabel(beadID, "needs-human")
 	deps.AddLabel(beadID, "interrupted:empty-implement")
 
+	prefix := prefixFromID(beadID)
 	alertTitle := fmt.Sprintf("[empty-implement] %s: apprentice produced no code changes", beadID)
 	if len(alertTitle) > 200 {
 		alertTitle = alertTitle[:200]
@@ -86,6 +124,7 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 		Priority: 0,
 		Type:     beads.TypeTask,
 		Labels:   alertLabels,
+		Prefix:   prefix,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: escalate empty-implement alert: %s\n", err)
@@ -119,12 +158,24 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 //
 // Failure types: "merge-failure", "build-failure", "repo-resolution", "arbiter-failure", "review-fix-merge-conflict"
 func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *Deps) {
+	// Circuit breaker: don't cascade if this is already a recovery bead.
+	if isRecoveryBead(beadID, deps) {
+		deps.AddLabel(beadID, "needs-human")
+		deps.AddLabel(beadID, "interrupted:"+failureType)
+		deps.AddComment(beadID, fmt.Sprintf(
+			"Failure on recovery bead (%s): %s — escalation suppressed to prevent cascade.",
+			failureType, message))
+		return
+	}
+
 	// Label needs-human so the board surfaces it in ALERTS.
 	deps.AddLabel(beadID, "needs-human")
 	// Explicit interrupted signal with failure type for board consumption.
 	// This is separate from needs-human so design approval gates (which use
 	// needs-human alone) are not confused with interrupted/error states.
 	deps.AddLabel(beadID, "interrupted:"+failureType)
+
+	prefix := prefixFromID(beadID)
 
 	// Create an alert bead that surfaces at the top of the board.
 	alertTitle := fmt.Sprintf("[%s] %s: %s", failureType, beadID, message)
@@ -137,6 +188,7 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 		Priority: 0,
 		Type:     beads.TypeTask,
 		Labels:   alertLabels,
+		Prefix:   prefix,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: escalate alert: %s\n", err)
@@ -168,9 +220,21 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 // It includes step-scoped metadata (step name, action, flow, workspace) in
 // the interruption label, alert title, comment, and message.
 func EscalateGraphStepFailure(beadID, agentName, failureType, message string, stepName, action, flow, workspace string, deps *Deps) {
+	// Circuit breaker: don't cascade if this is already a recovery bead.
+	if isRecoveryBead(beadID, deps) {
+		deps.AddLabel(beadID, "needs-human")
+		deps.AddLabel(beadID, "interrupted:"+failureType)
+		deps.AddComment(beadID, fmt.Sprintf(
+			"Failure on recovery bead (%s): %s — escalation suppressed to prevent cascade.",
+			failureType, message))
+		return
+	}
+
 	// Labels: same as EscalateHumanFailure — interrupt type is still the classification key.
 	deps.AddLabel(beadID, "needs-human")
 	deps.AddLabel(beadID, "interrupted:"+failureType)
+
+	prefix := prefixFromID(beadID)
 
 	// Build node-scoped context string.
 	var ctx []string
@@ -199,6 +263,7 @@ func EscalateGraphStepFailure(beadID, agentName, failureType, message string, st
 		Priority: 0,
 		Type:     beads.TypeTask,
 		Labels:   alertLabels,
+		Prefix:   prefix,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: escalate alert: %s\n", err)
@@ -280,6 +345,7 @@ func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeC
 		Type:        beads.IssueType("recovery"),
 		Labels:      []string{"recovery-bead", "failure_class:" + failureType},
 		Description: desc,
+		Prefix:      prefixFromID(parentID),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: create recovery bead for %s: %s\n", parentID, err)

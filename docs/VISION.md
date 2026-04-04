@@ -186,47 +186,41 @@ Tower-level secrets are scoped to the tower. A developer attaching to a tower br
 
 ## Roadmap
 
-### Phase 1: Local Experience
+### Shipped: Local Experience + V3 Engine
 
-The single-developer, single-laptop experience. Everything works offline except DoltHub sync.
+The single-developer, single-laptop experience is complete. The v3 graph
+executor is the only execution engine. Tower-level formula sharing,
+recovery beads, and an interactive board TUI are all live.
 
-- Single `spire` CLI with a stable `bd` wrapper boundary
-- `spire tower create` / `spire tower attach`
-- Local agent execution via subprocesses by default (Docker optional)
-- DoltHub sync with `spire push` / `spire pull`
-- `spire file` / `spire claim` / `spire focus` workflow
-- Steward and `spire summon` both work against the local graph
+- Single `spire` CLI with `bd` subprocess wrapper and `pkg/store` API
+- `spire tower create` / `spire tower attach` / `spire repo add`
+- Local agent execution via subprocesses (Docker optional)
+- DoltHub sync with `spire push` / `spire pull` and daemon auto-sync
+- `spire file` / `spire claim` / `spire focus` / `spire summon` workflow
+- V3 graph executor with declarative step graphs, conditions, nestable sub-graphs
+- Tower-level formulas stored in dolt, synced across machines
+- Recovery as a first-class bead type with prior-learning lookup
+- Interactive board TUI with cursor navigation, inline actions, inspector pane
 
-### Phase 2: Cluster
+### V1.0: Production-Ready Open Source
 
-Persistent infrastructure for teams that want always-on agents.
+- Complete v2 dead code removal
+- Operational steward (unified daemon, concurrency limits, ready-gate workflow)
+- Kubernetes / Helm operational (bootstrap job, repos-table-derived agents)
+- Workshop as a Claude Code skill (formula design, simulation, testing)
+- Multi-mode TUI (Board, Agents, Workshop, Messages, Metrics via Tab)
+- Multi-backend agent support (Claude Code, Codex CLI, Cursor CLI)
 
-- Helm chart for Kubernetes deployment
-- Operator with explicit `SpireAgent` CRDs today; repos-table auto-derivation remains future
-- Persistent steward deployment
-- Ephemeral wizard pods (one per task, auto-terminated)
-- Syncer pod for continuous DoltHub sync
-- Provider-agnostic file storage (GCS, S3, local PVC)
+See [PLAN.md](PLAN.md) for the full v1.0 roadmap.
 
-### Phase 3: Multiplayer
-
-Multiple developers sharing a tower and collaborating on work.
-
-- Shared repo registration with prefix uniqueness enforcement
-- Multi-developer attach flow (`spire tower attach <dolthub-url>`)
-- Agent messaging across developers (`spire send` / `spire collect`)
-- Conflict resolution documentation and tooling
-- Notification hooks (Slack, email, webhooks)
-
-### Phase 4: Product
-
-The transition from open-source tool to product offering, while keeping the core open.
+### Post-V1.0: Product
 
 - Hosted towers (managed DoltHub + managed compute)
 - Web dashboard for work graph visualization
 - GitHub App for zero-config repo registration
 - Team features: audit logs, RBAC, approval gates
 - Usage analytics and cost tracking for LLM spend
+- MCP tool surface for formula extensibility
 
 ---
 
@@ -235,40 +229,38 @@ The transition from open-source tool to product offering, while keeping the core
 ### Observability before flexibility
 
 Spire is infrastructure for agentic development workflows. Before making
-the phase pipeline fully extensible (custom phases, user-defined step
-graphs, pluggable tools), we need deep observability into what the
-existing pipeline produces.
+the pipeline fully extensible with custom tools and MCP integrations, we
+need deep observability into what the existing pipeline produces.
 
-Questions we can't answer yet:
+**Resolved in v0.30-v0.32:**
 
-- **Formula versioning and metrics**: "We're on v3 of spire-bugfix. How
-  does it compare to v2? Are review rounds down? Is cost per task
-  improving?" The agent_runs table captures per-run metrics, but there's
-  no formula version tracking — we can't correlate metrics to formula
-  changes.
+- **Formula versioning and metrics**: Tower-level formulas are stored in
+  dolt with full commit history. The `agent_runs` table now tracks
+  `formula_name`, `formula_version`, and `formula_source` (tower, repo,
+  or embedded). Correlation between formula changes and agent performance
+  is now possible.
 
-- **How opinionated should the graph be?** Spire currently prescribes a
-  fixed phase pipeline (design → plan → implement → review → merge).
-  Should users be able to define arbitrary phase graphs? Or should Spire
-  own the pipeline and focus on making it observable, letting users
-  configure behavior within each phase (model, timeout, validation) but
-  not the structure itself?
+- **How opinionated should the graph be?** Resolved: v3 step graphs are
+  fully declarative and user-definable. Users author arbitrary step
+  graphs via the Workshop CLI (`spire workshop`). Spire provides
+  opinionated built-in formulas but does not lock in the structure.
+  Steps declare actions, conditions, dependencies, and opcodes —
+  composable primitives with observable structure.
 
-- **Primitives vs opinions**: The phase pipeline decomposes into
-  primitives — LLM invocation, agent spawn, git operations, bead
-  mutations, validation, gates. Making these composable enables
-  flexibility. But infrastructure that's too flexible becomes hard to
-  observe — you can't build dashboards for arbitrary graphs. The tension:
-  more flexibility vs deeper observability.
+**Still open:**
 
-- **What to measure**: Token cost per phase. Review round efficiency
-  (how often does the fix cycle actually improve the code?). Formula
-  evolution over time. Time-to-merge by task type. These metrics should
-  drive formula tuning before we add extensibility.
+- **What to measure**: Token cost per step. Review round efficiency.
+  Formula evolution over time. Time-to-merge by task type and formula.
+  The `agent_runs` table captures per-run metrics, but dashboards and
+  trend analysis are not built yet. These metrics should drive formula
+  tuning before we add tool extensibility.
 
-Resolution: invest in observability first. Measure what the current
-pipeline does well and badly. Let the data inform which extension points
-matter. Don't add flexibility until we can measure its impact.
+- **Primitives vs opinions**: The v3 graph resolved this toward
+  "composable primitives with observable structure." But the next
+  question is: should formulas be able to invoke external tools (MCP
+  servers, custom scripts, webhooks)? This is deferred past v1.0 until
+  we have enough observability data to know which extension points
+  matter.
 
 ### Autonomous exploration ("YOLO mode")
 

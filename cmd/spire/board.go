@@ -9,6 +9,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -116,6 +117,7 @@ func cmdBoard(args []string) error {
 	opts.SwitchTowerFn = func(towerName string) (string, error) {
 		os.Setenv("SPIRE_TOWER", towerName)
 		os.Unsetenv("BEADS_DIR")
+		store.Reset() // close existing store so next fetch re-opens against new tower
 		if d := resolveBeadsDir(); d != "" {
 			os.Setenv("BEADS_DIR", d)
 		}

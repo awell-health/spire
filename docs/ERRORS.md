@@ -174,6 +174,16 @@ A `summon` after `dismiss` may pick up stale executor state.
 Rewinds a bead's execution to a specific phase and re-summons. This is a
 deeper reset than `resummon` — it can rewind to any phase in the formula.
 
+**Intention:**
+- `resummon` means "retry the interrupted run with the existing plan/output
+  shape intact."
+- `reset --to <phase>` means "start fresh from that phase boundary." It is a
+  phase replay, not a resume.
+- For epics and other plan-producing formulas, current `reset` behavior treats
+  open plan-output child beads as disposable execution artifacts. They are
+  closed before the replay so the next run does not inherit stale, duplicated,
+  or partially executed child work.
+
 **Preconditions:**
 - `--to <phase>` must name a valid, enabled phase in the formula. If omitted,
   defaults to the first enabled phase (effectively a full restart).
@@ -197,6 +207,12 @@ deeper reset than `resummon` — it can rewind to any phase in the formula.
   a build issue, or `--to plan` to re-plan).
 - The bead is in an inconsistent label state where `resummon` refuses.
 - You want a clean start without destroying worktrees and branches.
+
+**When not to use:**
+- You want to preserve the current subtask tree and simply retry the current
+  interrupted phase. Use `resummon` for that.
+- You want to keep existing plan-output child beads open while retrying
+  `implement`. Current `reset` semantics intentionally do not preserve them.
 
 ---
 
@@ -303,7 +319,9 @@ Terminal build or test failure after all review-fix retries.
 1. Check `interrupted:build-failure` on the parent bead.
 2. Read the wizard logs (`spire logs <wizard-name>`) and the alert bead for details.
 3. Fix the underlying build issue — this might mean updating deps, fixing flaky tests, or adjusting the bead description.
-4. Run `spire resummon <id>` to retry, or `spire reset <id> --to implement` to start the implement phase fresh.
+4. Run `spire resummon <id>` to retry with the current subtask tree intact, or
+   `spire reset <id> --to implement` to start the implement phase fresh and
+   discard open plan-output child beads.
 
 ### Empty implement
 
@@ -363,6 +381,11 @@ A wizard process died without cleaning up (crash, OOM, machine reboot).
 - **`reset` closes subtask children**: A phase rewind invalidates the plan, so
   plan-output subtasks are closed. Step beads are rewound (not closed) — they
   track formula progress.
+
+- **`reset --to implement` is still a fresh replay**: On epics, this can close
+  open child subtasks that were never attempted yet. That is intentional under
+  the current model: `reset` restarts the phase boundary, while `resummon`
+  preserves the existing plan/subtask tree.
 
 - **Alert beads after `reset`**: `resummon` and `dismiss` auto-close alert
   beads, but `reset` does not. After `reset`, stale alerts may linger on the

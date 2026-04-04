@@ -1,7 +1,7 @@
 # Spire Local Mode
 
-**Status**: Implemented (Phase 2 MVP landed 2026-03-23, formula system 2026-03-26, docs refreshed 2026-03-29)
-**Date**: 2026-03-21 (updated 2026-03-29)
+**Status**: Implemented (Phase 2 MVP landed 2026-03-23, v3 engine 2026-03-30, docs refreshed 2026-04-03)
+**Date**: 2026-03-21 (updated 2026-04-03)
 
 Spire runs locally on a developer's laptop. No Kubernetes, no cloud
 infrastructure. Install the binary, create a tower, register repos, file
@@ -179,14 +179,29 @@ spire watch           # live-updating view of all activity
 
 **Exists today**: `spire status` shows dolt server and daemon PID/state.
 `spire board` opens an interactive Bubble Tea TUI with phase columns
-(READY, DESIGN, PLAN, IMPLEMENT, REVIEW, MERGE, DONE) and auto-refresh.
+(ALERTS, INTERRUPTED, READY, DESIGN, PLAN, IMPLEMENT, REVIEW, MERGE,
+DONE, BLOCKED) and background auto-refresh. The board is fully
+interactive:
+
+- Cursor navigation (arrow keys / vim hjkl) across sections and columns
+- Inline actions: `s` summon, `S` resummon, `u` unsummon, `r`/`R` reset,
+  `x` close, `y`/`Y` approve, `n` reject with feedback
+- Inspector pane (`I`): drill-down with details tab (bead info, DAG
+  progress, children, dependencies) and logs tab (wizard log streaming)
+- Command mode (`:`): vim-style with tab completion via Cobra
+- Search/filter (`/`): semantic filtering of beads
+- Epic scoping (`e`): toggle epic filter
+- Tower switcher (`T`): multi-tower support
+- Grok (`g`): deep focus on selected bead
+- Trace (`t`): DAG timeline view
+
 `spire roster` shows work grouped by epic with agent process status,
 elapsed time, and progress bars. `spire watch` provides a live-updating
 terminal view. `spire logs [wizard-name]` tails wizard log output.
 `spire metrics` shows agent performance summary with DORA metrics.
 
-**Not yet built**: Deeper sync history, backend-specific health details,
-and more operational drill-down in `spire status`.
+**V1.0 target**: Multi-mode TUI with Tab switching between Board, Agents,
+Workshop, Messages, and Metrics views.
 
 ---
 
@@ -385,8 +400,10 @@ creates/deletes SpireAgent CRDs.
 | `spire connect linear` | Linear OAuth2 integration |
 | `spire daemon` | Background process: DoltHub sync + Linear sync + webhook processing |
 | `spire doctor` | 11 checks in 3 categories, `--fix` auto-repair |
-| Formula system | 3 built-in formulas (`spire-epic`, `spire-bugfix`, `spire-agent-work`) with layered resolution |
-| Executor | Drives formula phases: design → plan → implement (waves) → review (sage) → merge |
+| V3 formula system | Built-in v3 step-graph formulas (epic, bugfix, agent-work, recovery) with tower -> repo -> embedded resolution |
+| V3 graph executor | Drives declarative step graphs with conditions, opcodes, nestable sub-graphs, crash-safe resume |
+| Tower formula sharing | `spire formula list/show/publish/remove` — formulas in dolt, synced via daemon |
+| Recovery system | First-class recovery bead type with dedicated formula, structured metadata, prior-learning lookup |
 | Archmage identity | Tower config stores user identity for merge commit attribution |
 | Credential storage | File-based (`~/.config/spire/credentials`, chmod 600), env var overrides |
 | Dolt lifecycle | Auto-download binary, version pinning, managed server start/stop |
@@ -396,16 +413,17 @@ creates/deletes SpireAgent CRDs.
 | `spire version` | Prints spire version + managed dolt version and path |
 | Smoke test | Docker-based smoke test (`test/smoke/Dockerfile`) validates fresh install |
 
-### Needs to be built
+### V1.0 remaining work
 
-| Component | Description | Blocked by |
-|-----------|-------------|------------|
+| Component | Description | Priority |
+|-----------|-------------|----------|
+| Complete v2 removal | Remove remaining v2 code paths in cmd/spire/, pkg/wizard, pkg/board, tests | 1 |
+| Unified daemon | Merge steward loop into `spire up` as single process | 1 |
+| Single-daemon enforcement | Prevent multiple `spire up` from racing | 1 |
+| Multi-mode TUI | Tab-based switching: Board, Agents, Workshop, Messages, Metrics | 2 |
+| Multi-backend support | Codex CLI and Cursor CLI as alternative agent backends | 2 |
+| Workshop skill | Claude Code skill for formula design, simulation, testing, installation | 2 |
 | `bd` embedded in `spire` | Single binary distribution (no separate `bd` install) | Deferred (spi-770) |
-| Unified daemon | Merge steward loop into `spire up --steward` | Nothing |
-| Single-daemon enforcement | Prevent multiple `spire up` from racing | Nothing |
-| Docker backend hardening | Better health/restart/image UX for local containers | Nothing |
-| Richer status output | Show sync health and backend detail in one place | Nothing |
-| Spire TUI interactivity | Board navigation, inspector pane, in-TUI actions | spi-1syd |
 
 ---
 

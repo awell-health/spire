@@ -56,8 +56,9 @@ needs = ["dispatch-children"]
 workspace = "staging"
 title = "Verify build"
 produces = ["status"]
-[steps.verify-build.with]
-build = "go build ./..."
+# build/test commands resolved at runtime from spire.yaml (runtime.build, runtime.test).
+# Formula-level overrides via [steps.verify-build.with] build = "..." are supported
+# but should only be used in repo-level formulas, not embedded defaults.
 
 # Step 3a: Signal success — parent graph performs review and merge.
 # Uses noop because epic-implement-phase is a nested sub-graph: the parent

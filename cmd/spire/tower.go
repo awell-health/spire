@@ -269,6 +269,8 @@ var spireMigrations = []columnMigration{
 	{table: "agent_runs", column: "tower", ddl: "ADD COLUMN tower VARCHAR(64)"},
 	{table: "agent_runs", column: "parent_run_id", ddl: "ADD COLUMN parent_run_id VARCHAR(32)"},
 	{table: "agent_runs", column: "wave_index", ddl: "ADD COLUMN wave_index INT"},
+	{table: "agent_runs", column: "phase_bucket", ddl: "ADD COLUMN phase_bucket VARCHAR(32)"},
+	{table: "agent_runs", column: "timing_bucket", ddl: "ADD COLUMN timing_bucket VARCHAR(32)"},
 
 	// --- golden_prompts columns (in table order) ---
 	{table: "golden_prompts", column: "run_id", ddl: "ADD COLUMN run_id VARCHAR(32) NOT NULL PRIMARY KEY"},
@@ -322,7 +324,7 @@ func bootstrapTowerBeadsDir(beadsDir string, tower *TowerConfig) error {
 		return fmt.Errorf("write .beads/metadata.json: %w", err)
 	}
 
-	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
+	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\nauto_push: false\n", doltHost(), doltPort())
 	configPath := filepath.Join(beadsDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
 		return fmt.Errorf("write .beads/config.yaml: %w", err)
@@ -361,6 +363,11 @@ func bootstrapRepoBeadsDir(beadsDir string, tower *TowerConfig, prefix string) e
 
 // ensureCustomBeadTypes registers Spire's required custom bead types in the
 // given .beads directory. Idempotent — merges with any existing custom types.
+//
+// Writes both the config string (types.custom) AND the normalized custom_types
+// table. The embedded dolt SetConfig does not sync the table (only
+// DoltStore.SetConfig does), so we must populate it explicitly to avoid
+// validation failures when CreateIssue reads custom_types first.
 func ensureCustomBeadTypes(beadsDir string) error {
 	client := bdpkg.NewClient()
 	client.BeadsDir = beadsDir
@@ -401,7 +408,23 @@ func ensureCustomBeadTypes(beadsDir string) error {
 	}
 	sort.Strings(types)
 
-	return client.ConfigSet("types.custom", strings.Join(types, ","))
+	if err := client.ConfigSet("types.custom", strings.Join(types, ",")); err != nil {
+		return err
+	}
+
+	// Sync the normalized custom_types table. The embedded dolt store's
+	// SetConfig only writes the config row — it does not sync the table
+	// (unlike DoltStore.SetConfig which has a sync hook). Without this,
+	// CreateIssue reads an empty custom_types table and rejects custom types.
+	for _, t := range types {
+		// INSERT IGNORE: idempotent — skips if row already exists.
+		if _, err := client.DoltSQL(fmt.Sprintf(
+			"INSERT IGNORE INTO custom_types (name) VALUES ('%s')", t)); err != nil {
+			return fmt.Errorf("sync custom_types table: %w", err)
+		}
+	}
+
+	return nil
 }
 
 var towerCmd = &cobra.Command{
@@ -659,7 +682,7 @@ func cmdTowerCreate(args []string) error {
 	}
 
 	// bd init writes a default config.yaml. Overwrite with dolt server connection.
-	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\n", doltHost(), doltPort())
+	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\nauto_push: false\n", doltHost(), doltPort())
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		return fmt.Errorf("write .beads/config.yaml: %w", err)
 	}

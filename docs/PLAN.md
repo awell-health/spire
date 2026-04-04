@@ -1,561 +1,265 @@
-# Implementation Plan: Spire Open-Source Release
+# Spire v1.0 Roadmap
 
-> From minikube prototype to `brew install spire`.
-
-This plan takes Spire from its current state (working k8s operator, steward, wizard agents on minikube, bd as external binary) to a production-ready open-source project that works locally first and scales to k8s for teams.
+> From working v3 engine to production-ready open-source release.
 
 ---
 
-## Current State (updated 2026-03-29)
+## Current State (v0.32.0, 2026-04-03)
 
-What exists today:
+Spire is a working local-first coordination hub for AI engineering agents.
+The v3 graph executor is the only execution engine. V2 is partially
+removed. Local execution is solid. The Helm chart and operator are
+v3-aligned. The system handles epics, standalone tasks, bugs, recovery
+beads, and tower-level formula sharing.
 
-- `spire` CLI with a Cobra-based command tree and broad command surface in `cmd/spire/`
-- `bd` called via `pkg/bd` subprocess wrapper (clean Client interface, callers isolated) and store API (`store.go`)
-- `spire tower create` and `spire tower attach` — full tower bootstrap and second-machine attach
-- `spire repo add` — writes to dolt `repos` table, validates prefix uniqueness, pushes to DoltHub
-- Credential management — `~/.config/spire/credentials` (chmod 600), env var overrides
-- Dolt lifecycle — auto-download binary, managed server start/stop, version pinning
-- Local dolt server lifecycle managed by `spire up/down/shutdown`
-- Tower configs stored in `~/.config/spire/towers/<name>.json`
-- Instance config in `~/.config/spire/config.json` (local cache, dolt is source of truth)
-- k8s operator with CRDs: SpireAgent, SpireWorkload, SpireConfig
-- Steward runs as k8s deployment or local process via `spire steward`
-- Local agent execution via `spire summon` — process backend by default, Docker backend available, formula-driven lifecycle
-- Formula system: 3 built-in formulas (`spire-epic`, `spire-bugfix`, `spire-agent-work`) with layered resolution
-- Executor drives formula phases: design → plan → implement (wave dispatch) → review (sage) → merge
-- Workshop CLI: `workshop list/show/validate/compose/dry-run/test/publish/unpublish`
-- `spire board` — interactive Bubble Tea TUI with phase columns, auto-refresh
-- `spire roster` — work grouped by epic, agent processes with elapsed time/progress
-- `spire watch` — live tower status
-- `spire logs` — CLI log reader for wizard and daemon logs
-- `spire metrics` — agent performance summary (DORA metrics, lifecycle traces)
-- `spire dismiss` — graceful wizard shutdown
-- `spire alert` — priority alerts with bead references
-- `spire design` — create design beads for brainstorming before filing tasks
-- Daemon with DoltHub sync (pull + push on interval), Linear epic sync, webhook processing
-- goreleaser config and GitHub Actions CI (build, test, release on tag)
-- `spire doctor` with 11 checks in 3 categories, `--fix` auto-repair
-- `spire push` / `spire pull` with credential injection
-- Homebrew tap (`awell-health/tap`) with `beads` as a dependency; `dolt` is auto-managed
-- Archmage identity in tower config for merge commit attribution
-- Smoke test suite (`test/smoke/Dockerfile`)
-- Helm chart under `helm/spire` for cluster deployment, with explicit `SpireAgent` CRs rendered from values
+### What shipped: v0.28 to v0.32
 
-What works well and should not change:
+| Version | Theme | Key changes |
+|---------|-------|-------------|
+| v0.29.0 | Reliability | Tower attach/daemon fixes, merge race handling, interrupted-work recovery UX (alerts, resummon, approval-gated repair) |
+| v0.30.0 | Formula v3 engine | Graph interpreter, declarative step graphs with conditions and opcodes, nestable review loops, crash-safe resume, all built-in formulas migrated |
+| v0.31.0 | V2 removal + recovery | V2 formula/workshop/focus stripped; recovery became first-class bead type with dedicated formula, structured metadata, prior-learning lookup |
+| v0.32.0 | Tower formula sharing | Formulas stored in dolt and synced via daemon; `spire formula list/show/publish/remove` CLI; resolution chain updated to tower -> repo -> embedded |
 
-- The steward cycle (assess, assign, stale-check, push)
-- Bead-based messaging (`spire send/collect`)
-- `spire.yaml` repo config with runtime auto-detection
-- Operator CRD design (SpireAgent, SpireWorkload)
-- DoltHub as sync intermediary
-- Formula-driven executor (design → plan → implement → review → merge)
-- RPG naming: archmage (user), steward (coordinator), wizard (executor), apprentice (implementer), sage (reviewer), artificer (formula maker via Workshop)
+### What works today
 
-What remains:
-
-- `bd` as embedded Go library (deferred — subprocess wrapper + store API ships first)
-- Unified daemon (steward loop integrated into `spire up`)
-- Single-daemon enforcement / richer service health reporting
-- Repos-table-derived cluster agent configs (today Helm renders explicit `SpireAgent` CRs)
+- **V3 graph executor** -- declarative step graphs with conditions, opcodes, nestable review loops, crash-safe resume
+- **Tower-level formula sharing** -- formulas in dolt, synced across machines, CLI for publish/list/show/remove
+- **Formula resolution** -- tower -> repo -> embedded (first match wins)
+- **Recovery system** -- first-class recovery bead type with dedicated formula, structured metadata, prior-learning lookup
+- **Built-in v3 formulas** -- spire-epic-v3, spire-agent-work-v3, spire-bugfix-v3, spire-recovery-v3, plus review-phase and epic-implement-phase sub-graphs
+- **Interactive board TUI** -- Bubble Tea with cursor navigation, inline actions (summon/reset/close/approve/reject), inspector pane, command mode, tower switcher, search/filter
+- **Local agent execution** -- `spire summon` spawns wizard executors; apprentices work in isolated worktrees; sages review; arbiters break ties
+- **Steward** -- active work assignment (round-robin to idle agents), review routing, re-engagement on feedback, health monitoring
+- **Full CLI surface** -- tower management, repo registration, work filing, agent messaging, observability (board/roster/watch/logs/metrics)
+- **Helm chart + operator** -- v3-aligned CRDs (SpireAgent, SpireWorkload, SpireConfig), agent/steward/dolt/syncer templates
+- **CI/CD** -- goreleaser, GitHub Actions, Homebrew tap
 
 ---
 
-## Phase 1: Foundation
+## V1.0 Priorities
 
-**Goal:** `brew install spire && spire tower create && spire file "task" -t task -p 2` works end-to-end on a clean machine.
-
-### 1.1 Embed bd into spire binary
-
-The highest-risk item. Currently `bd` is a separate Go binary in the beads repo, called via `exec.Command("bd", args...)` from ~15 call sites in spire.
-
-**Approach:** Import bd as a Go library. The beads repo already has a clean package structure. Extract the core into an importable `pkg/beads` package with a programmatic API, then call it directly instead of shelling out.
-
-Work items:
-- [x] **Shipped:** `pkg/bd` subprocess wrapper with `Client` struct, `BeadsDir`, `RunDir` fields — callers are fully isolated behind clean interfaces
-- [ ] In the beads repo, extract `pkg/beads` with functions: `Create()`, `List()`, `Show()`, `Update()`, `Close()`, `Ready()`, `Count()`, `Status()`, `Export()`, `Import()`, `DoltSQL()`, `VCCommit()`, `VCStatus()`
-- [ ] Add `go.mod` dependency: `github.com/awell-health/beads`
-- [ ] Replace all `bd()`, `bdJSON()`, `bdSilent()` calls in `cmd/spire/bd.go` with direct library calls
-- [ ] Remove the subprocess wrapper; keep the same function signatures for minimal diff
-- [ ] If bd is embedded later, ensure `spire version` reports both spire and bd versions
-- [ ] Fallback: if library extraction proves too invasive, bundle the `bd` binary inside the spire binary using `embed` and extract to a temp dir at runtime. This is worse but ships faster.
-
-**Risk:** bd's internal state management (database connections, caching) may not compose cleanly as a library. Spike this first -- spend 2 days on a proof-of-concept before committing to the approach.
-
-**Status (2026-03-22):** Deferred. The subprocess wrapper means zero callers change when this lands. Can run in parallel with Phase 2.
-
-### 1.2 `spire tower create`
-
-New command. Replaces the current manual bootstrap (run `bd init`, configure dolt, push to DoltHub, set up config).
+Eight workstreams. Items 1, 2, 4, 6, 7, and 8 can run in parallel.
+Item 3 benefits from the unified daemon (item 2). Item 5 benefits from
+the workshop skill (item 4) and observability (item 7) for its modes.
 
 ```
-spire tower create --name my-team [--dolthub org/repo]
+1. V2 Removal ─────────────────────── (independent)
+
+2. Operational Steward ─────────────── (independent)
+        |
+        v
+3. K8s / Helm ──────────────────────── (benefits from unified daemon)
+
+4. Workshop Skill ──────────────────── (independent)
+        |
+        v
+5. Multi-Mode TUI ─────────────────── (workshop + observability feed into this)
+
+6. Multi-Backend ───────────────────── (independent)
+
+7. Observability ───────────────────── (independent, feeds into TUI metrics mode)
+
+8. CI Pipeline ─────────────────────── (independent, gates all other work)
 ```
 
-Work items:
-- [x] Initialize dolt database with beads schema (calls bd via the subprocess wrapper)
-- [x] Generate tower identity: `project_id` (UUID), `name`, auto-assigned hub prefix
-- [x] Write tower metadata to dolt `metadata` table
-- [x] If `--dolthub` provided: create DoltHub repo (reuse `ensureDoltHubDB()`), set remote, push
-- [x] Write tower config to `~/.config/spire/towers/<name>.json`
-- [x] Create `repos` table in dolt (see 1.5)
-- [x] Update `~/.config/spire/config.json` to reference the tower
-
-**Status (2026-03-22):** Complete.
-
-### 1.3 `spire tower attach`
-
-New command. Second developer joins an existing tower.
-
-```
-spire tower attach <dolthub-url> [--name local-name]
-```
-
-Work items:
-- [x] Clone database from DoltHub using dolt CLI directly
-- [x] Read tower identity from cloned database (raw dolt queries, no ambient db context)
-- [x] Bootstrap `.beads/` in cloned data dir (metadata.json + config.yaml)
-- [x] Write local tower config
-- [x] Start local dolt server if not running
-- [x] Print tower summary (name, prefix, repo count, bead count)
-
-**Status (2026-03-22):** Complete.
-
-### 1.4 Credential management
-
-Replace scattered env vars with a structured credential store. Credentials live in `~/.config/spire/credentials` (chmod 600, not JSON -- flat key=value file). Environment variables override file values, so CI/CD pipelines can inject secrets without touching the filesystem.
-
-```
-spire config set anthropic-key sk-...
-spire config set github-token ghp_...
-spire config set dolthub-user myuser
-spire config set dolthub-password dolt_token_...
-```
-
-Work items:
-- [x] Store credentials in `~/.config/spire/credentials` (chmod 600, flat key=value format)
-- [x] Read credentials from file; env vars override file values (not fallback -- override)
-- [x] `spire config get <key>` reads a credential (masked by default, `--unmask` to show)
-- [x] `spire config list` shows all configured credentials (masked)
-- [x] Inject credentials into agent environments (Docker, process, k8s secrets)
-- [x] CI/CD pattern: set `SPIRE_ANTHROPIC_KEY`, `SPIRE_GITHUB_TOKEN`, etc. -- no file needed
-
-**Status (2026-03-22):** Complete.
-
-### 1.5 Repos table in dolt
-
-Move repo registration from local-only config (`~/.config/spire/config.json`) into the shared dolt database. The `repos` table in dolt is THE source of truth for all repo registrations -- the operator reads it to auto-create SpireAgent CRDs, and all tower participants see the same repos.
-
-Schema:
-```sql
-CREATE TABLE repos (
-    prefix       VARCHAR(16) PRIMARY KEY,
-    repo_url     VARCHAR(512) NOT NULL,
-    branch       VARCHAR(128) NOT NULL DEFAULT 'main',
-    language     VARCHAR(32),
-    registered_by VARCHAR(64),
-    registered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-Work items:
-- [x] Create `repos` table in `spire tower create`
-- [x] `spire repo add` writes to dolt `repos` table (not just local config)
-- [x] Validate prefix uniqueness against shared state
-- [x] Keep local config as a cache/overlay -- read from dolt, write to both
-- [ ] Migration: `spire doctor --fix` migrates existing local-only registrations to dolt (see 1.9)
-
-**Status (2026-03-22):** Complete (except doctor --fix migration, tracked in 1.9).
-
-### 1.6 `spire repo add`
-
-Repo registration. Registers a repo under an existing tower.
-
-```
-spire repo add [--prefix web] [--repo-url https://github.com/org/repo]
-```
-
-Work items:
-- [x] Auto-detect prefix from directory name (existing logic)
-- [x] Auto-detect repo URL from git remote
-- [x] Auto-detect runtime from `spire.yaml` or file detection
-- [x] Write to dolt `repos` table (via bdpkg.Client with explicit tower BeadsDir)
-- [x] Write `.beads/` directory in repo root
-- [x] Generate `spire.yaml` if missing (existing logic in `repoconfig.GenerateYAML`)
-- [x] Push registration to DoltHub
-- [x] Resolve tower identity from database, not ActiveTower
-
-**Status (2026-03-22):** Complete.
-
-### 1.7 Dolt lifecycle management
-
-Spire manages the dolt binary -- the user does NOT run `brew install dolt` separately. Dolt is a managed dependency, not an embedded one: spire auto-downloads the correct dolt binary if not present, and manages the server start/stop lifecycle.
-
-Work items:
-- [x] On first run (or `spire doctor --fix`), auto-download dolt binary to `~/.local/share/spire/bin/dolt`
-- [x] Platform detection: download correct binary for darwin/linux, amd64/arm64
-- [x] Version pinning: spire knows which dolt version it requires, downloads that specific version
-- [x] `spire up` starts dolt server using the managed binary (existing behavior, but now from managed path)
-- [x] `spire doctor` checks dolt version, offers to upgrade if stale
-
-**Status (2026-03-22):** Complete.
-
-### 1.8 Homebrew formula and release pipeline
-
-Work items:
-- [x] goreleaser config: cross-compile for darwin/linux, amd64/arm64
-- [x] GitHub Actions workflow: test on push, release on tag
-- [x] Homebrew tap: `awell-health/homebrew-spire` repo created; goreleaser `.goreleaser.yml` points at it
-- [x] Formula installs `spire` and depends on Homebrew `beads`; dolt is auto-managed, not a Homebrew dependency
-- [x] `spire version` prints spire version + managed dolt version and path (or "not installed")
-- [x] SHA256 checksums in release artifacts
-
-**Status (2026-03-22):** Complete. Tap repo created, goreleaser reconciled (duplicate `.goreleaser.yaml` removed, `.goreleaser.yml` v2 is canonical), `spire version` prints both versions.
-
-### 1.9 `spire doctor` expansion
-
-`spire doctor` already exists. Expand it to validate the full local setup.
-
-- [x] Check dolt installed and correct version (managed binary, not system-installed)
-- [x] Check tower config exists and points to valid database
-- [x] Check tower .beads/ data dir exists (metadata.json + config.yaml)
-- [x] Check credentials configured (anthropic, github, dolthub)
-- [x] Check credential file permissions (0600)
-- [x] Check Docker available (for agent spawning)
-- [x] `--fix` flag auto-repairs: download dolt binary, start dolt server, fix credential perms, regenerate .beads/
-
-**Status (2026-03-22):** Complete. 11 checks in 3 categories. `--fix` auto-repairs system and tower issues.
-
----
-
-## Phase 2: Local Agent Execution
-
-**Goal:** `spire up` spawns a steward that assigns work to agents running as Docker containers or local processes on the developer's laptop.
-
-### 2.1 Local steward adaptation
-
-The steward (`cmd/spire/steward.go`) runs locally via `spire steward`.
-
-Work items:
-- [x] Local mode is the default (no `--mode` flag needed)
-- [x] Reads agent config from `spire.yaml` and tower config
-- [x] Track running agents via PID files (`wizards.json`)
-- [ ] Integrate agent spawning into the steward cycle (currently manual via `spire summon`)
-
-**Status (2026-03-26):** Steward runs locally. Agent spawning is via `spire summon` (manual), not steward-driven. Steward still runs separately from the daemon.
-
-### 2.2 Docker agent spawning
-
-Container-based agent execution. Each wizard task gets its own container.
-
-Work items:
-- [x] Agent image Dockerfile exists (`Dockerfile.agent`)
-- [x] Agent image includes: Go, Node, Python, git, dolt, bd, spire, claude-code CLI
-- [ ] Steward-first Docker scheduling is a first-class local workflow
-- [x] Local Docker spawning from `spire summon` or steward backend selection
-- [ ] Rich container lifecycle / restart / health tracking from the daemon
-
-**Status (2026-03-29):** Docker backend resolution and local `docker run` spawning exist. Process mode remains the default and best-tested local workflow, and steward-driven Docker scheduling is not the common path yet.
-
-### 2.3 Process agent spawning
-
-The default local execution mode. Each wizard runs as a local process in its own git worktree.
-
-```
-spire summon 3        # spawns 3 wizard processes
-spire summon --targets spi-abc,spi-def  # exact bead IDs
-```
-
-Work items:
-- [x] Spawn `claude` CLI as subprocess with appropriate flags
-- [x] Each wizard works in an isolated git worktree
-- [x] Inject credentials via environment
-- [x] PID tracking and timeout enforcement
-- [x] Formula-driven lifecycle (design → plan → implement → review → merge)
-- [x] Wave dispatch for epics (parallel apprentices per dependency wave)
-- [x] Sage review with revision rounds and arbiter escalation
-- [x] Auto-merge to the configured base branch with ff-only + rebase retry
-
-**Status (2026-03-26):** Complete. This is the primary local execution path. `spire summon` spawns wizards, the executor drives formula phases, apprentices run in parallel worktrees, sages review, and the wizard merges to the configured base branch.
-
-### 2.4 `spire status` and `spire logs`
-
-Make the local experience observable.
-
-Work items:
-- [x] `spire status`: dolt server state, daemon state, PID/reachability
-- [x] `spire logs [wizard-name]`: tail wizard log output
-- [x] `spire board`: interactive TUI with phase columns, auto-refresh
-- [x] `spire roster`: work grouped by epic, agent process status with elapsed time
-- [x] `spire watch`: live tower status
-- [x] `spire metrics`: agent performance summary
-- [x] Log data written to `~/.local/share/spire/wizards/`
-
-**Status (2026-03-26):** Complete. `spire logs`, `spire board`, `spire roster`, `spire watch`, and `spire metrics` all implemented.
-
-### 2.5 Integrate `spire up` with steward
-
-Currently `spire up` starts dolt + daemon. Steward runs separately.
-
-Work items:
-- [x] `spire up` starts: dolt server, daemon (Linear sync + DoltHub sync + webhook processing)
-- [x] `spire down` stops daemon (dolt stays for other repos)
-- [x] `spire shutdown` stops daemon + dolt
-- [x] `spire up --steward` starts a steward companion process
-- [ ] `spire up --steward` integrates the steward loop into the daemon process itself
-- [ ] Single-daemon enforcement (prevent multiple `spire up` from racing)
-
-**Status (2026-03-29):** Partial. `spire up/down/shutdown` manage dolt + daemon, and `spire up --steward` starts a sibling steward process. The unified single-process daemon remains future work. Manual capacity via `spire summon` is still the primary local workflow.
-
----
-
-## Phase 3: Sync and Multiplayer
-
-**Goal:** Dev A and Dev B both run `spire tower attach`, file work, and see each other's beads and agent results.
-
-### 3.1 `spire pull`
-
-Counterpart to `spire push`. Canonical command surface: `tower create`, `tower attach`, `repo add`, `push`, `pull`.
-
-Work items:
-- [x] `spire pull`: wrapper around dolt pull with credential injection
-- [x] Use CLI-based pull (like `doltCLIPush` but for pull) to inherit env credentials
-- [x] Handle non-fast-forward gracefully with `--force` flag
-- [x] Background daemon calls `spire pull` + `spire push` on interval
-
-**Status (2026-03-26):** Complete. Manual push/pull and daemon auto-sync both work.
-
-### 3.2 Background sync daemon
-
-The daemon handles bidirectional DoltHub sync alongside Linear and webhook processing.
-
-Work items:
-- [x] `runDoltSync()` in `daemon.go` — pull from DoltHub, then push
-- [x] Called in `runTowerCycle()` on each daemon interval
-- [x] Configurable interval (existing `--interval` flag)
-- [ ] Report sync status in `spire status` (last pull time, last push time, sync errors)
-- [ ] Conflict detection: log warnings when merge produces unexpected results
-
-**Status (2026-03-26):** Core sync implemented and running on every daemon cycle. Status reporting and conflict detection remain.
-
-### 3.3 Merge ownership enforcement
-
-**Core design decision (decided, needs implementation).** This is not future work or speculative -- it is the foundation of the sync model. Field-level ownership determines who wins on merge conflicts:
-
-- **Cluster owns status fields:** `status`, `owner`, `assignee`. The cluster/daemon is authoritative. Stale local state must never regress these.
-- **User owns content fields:** `title`, `description`, `priority`, `type`. The user is authoritative. Cluster never overwrites these.
-- **Append-only fields:** `comments`, `messages`. Both sides append. No overwrites, no deletes during merge.
-
-Work items:
-- [ ] Annotate each column in the beads schema with its ownership class (status/content/append-only)
-- [ ] Implement post-merge fixup: after pull, scan for status regressions and restore cluster values for status fields
-- [ ] Preserve user values for content fields when cluster has a stale copy
-- [ ] Append-only merge for comments and messages (union of both sides, ordered by timestamp)
-- [ ] Test harness: concurrent writers modifying the same bead, verify correct field wins per ownership class
-
-### 3.4 Prefix uniqueness enforcement
-
-Prevent two developers from registering the same prefix.
-
-Work items:
-- [x] `spire repo add` checks repos table before writing
-- [x] Check `repos` table for existing prefix
-- [x] If conflict: clear error message with the conflicting repo URL
-- [x] Race condition resolution: first-push-wins (dolt merge detects the duplicate row, reject on push)
-
-**Status (2026-03-22):** Complete. Shipped as part of Phase 1 (spi-n1aa.1).
-
----
-
-## Phase 4: Production Cluster
-
-**Goal:** `helm install spire` deploys a working cluster that adopts an existing tower from DoltHub.
-
-> **Note:** Cluster-first bootstrap is explicitly out of scope for v1. The flow is: user creates tower locally (`tower create`) -> builds backlog -> `helm install` attaches to the existing tower. The cluster never creates a tower from scratch.
-
-### 4.1 Helm chart
-
-Replace the current kustomize manifests in `k8s/` with a proper Helm chart.
-
-Work items:
-- [x] `helm/spire/` with `Chart.yaml`, `values.yaml`, templates
-- [x] `values.yaml` inputs: dolthub URL, dolthub credentials, anthropic key, github token, tower settings
-- [ ] Bootstrap job: `spire tower attach <dolthub-url>` (not create -- tower already exists)
-- [x] Deployments/templates: dolt, steward, operator, optional syncer
-- [x] CRDs: SpireAgent, SpireWorkload, SpireConfig
-- [x] PVCs: dolt data, steward state
-- [x] Service accounts and RBAC
+### 1. Complete V2 Removal
+
+V2 formula types, resolution, and embedded formulas were removed in
+v0.31.0. But v2 code paths remain in `cmd/spire/` bridge files,
+`pkg/wizard`, `pkg/board`, and ~60 test functions across 15 files.
+
+- [ ] `cmd/spire/` bridge cleanup -- remove v2 fallbacks in executor_bridge.go, formula_bridge.go, close_advance.go, reset.go, summon.go, resummon.go, recover.go (7 files)
+- [ ] `pkg/wizard/deps.go` -- remove FormulaV2 alias and LoadFormulaByName dep
+- [ ] `pkg/board/dag.go` -- remove v2 phaseIndex fallback
+- [ ] Test mass deletion -- ~60 test functions across 15 files that exercise v2 paths
+- [ ] Rename `-v3` formula files to canonical names (drop suffix)
+- [ ] Delete remaining v2 embedded TOML files (spire-recovery-work.formula.toml)
+
+### 2. Operational Steward
+
+The steward already assigns work, spawns agents, routes reviews, and
+monitors health. But it runs as a sibling process, has no concurrency
+limits, and spawning is immediate/eager with no wave batching.
+
+- [ ] Unified daemon -- merge steward loop into `spire up` (single process, not sibling)
+- [ ] Single-daemon enforcement -- prevent multiple `spire up` from racing
+- [ ] Ready-gate workflow -- beads start as `open` (drafting); explicit `spire ready <id>` or status change marks them for steward pickup. The steward must never auto-assign beads that haven't been marked ready, so users can create and refine work before it enters the queue.
+- [ ] Per-tower concurrency limits -- `max_concurrent` config in tower settings
+- [ ] Wave batching -- group ready work assignment into configurable waves
+- [ ] Capacity reporting -- show active agents, queue depth, concurrency headroom in `spire status`
+- [ ] Steward health endpoint -- liveness/readiness for monitoring
+
+### 3. Kubernetes / Helm Operational
+
+The Helm chart and operator are v3-aligned with clean CRDs. The main
+gaps are cluster bootstrap and the operator reading the repos table.
+
+- [ ] Bootstrap job -- `spire tower attach <dolthub-url>` as a Helm hook on install
+- [ ] Operator reads repos table -- auto-derive SpireAgent CRs from dolt repos table
+- [ ] Image version alignment -- Dockerfiles should track latest beads release
+- [ ] Syncer pod formalization -- configurable via SpireConfig CR, health reporting
+- [ ] End-to-end cluster smoke test -- tower attach -> file work -> agent executes -> bead closes
 - [ ] Optional ingress for webhook receiver
 
-**Status (2026-03-29):** Partial. The Helm chart is real and usable today. It still relies on explicit `agents:` values that render `SpireAgent` CRs; repos-table-derived agent config remains future work.
+### 4. Workshop Skill
 
-### 4.2 Operator reads repos table
+The Workshop CLI (`spire workshop`) handles formula authoring, validation,
+dry-run, and publishing. Make this accessible as a Claude Code skill so
+agents can help humans design, simulate, test, and install formulas.
 
-The dolt `repos` table is THE source of truth for repo registration. The operator reads it and auto-creates agent configurations. SpireAgent CRDs are derived from the repos table, not manually managed.
+- [ ] Workshop skill definition -- conversational interface for formula design
+- [ ] Formula review -- agent reads a formula, explains the step graph, identifies issues
+- [ ] Formula simulation -- dry-run with synthetic bead context, report expected behavior
+- [ ] Formula testing -- run test harness, report results
+- [ ] Formula installation -- validate and publish to tower or repo
+- [ ] Template library -- common patterns (bugfix, feature, epic) as starting points
 
-Work items:
-- [ ] Operator polls dolt `repos` table on interval (or watches via dolt diff)
-- [ ] New repo in `repos` table -> operator auto-creates SpireAgent CR (derived, not manually authored)
-- [ ] Agent image determined by `language` field in repos table (or per-repo override in `spire.yaml`)
-- [ ] No manual SpireAgent YAML -- all agent CRs are operator-managed, sourced from `repos` table
-- [ ] Reconcile loop: repo removed from table -> operator marks agent offline and cleans up CR
-- [ ] Operator labels managed CRs (e.g., `spire.io/managed-by=repos-table`) to distinguish from any manual overrides
+### 5. Multi-Mode TUI
 
-### 4.3 Cluster-local dolt syncs with DoltHub
+The board is already highly interactive (navigation, inline actions,
+inspector, command mode). The next step is a multi-mode terminal
+experience where Tab switches between views. Core motivation: "who is
+working what" is not visible enough today.
 
-Formalize the syncer pod pattern (currently ad-hoc in `k8s/syncer.yaml`).
+- [ ] Tab-based mode switching -- Board | Agents | Workshop | Messages | Metrics
+- [ ] Agent mode -- who is working what, live status, log streaming, capacity view
+- [ ] Workshop mode -- formula browser, inline editing, dry-run, publish
+- [ ] Messages mode -- inbox, threaded conversations, send/reply
+- [ ] Metrics mode -- DORA metrics, formula performance, cost tracking
+- [ ] Mode-aware command palette -- actions contextual to the active mode
 
-Work items:
-- [ ] Syncer runs `spire pull` + `spire push` on interval
-- [ ] Configurable via SpireConfig CR (interval, remote URL)
-- [ ] Health checks: syncer reports last-sync time to SpireConfig status
-- [ ] Handles credential rotation (reads from k8s secret on each cycle)
+### 6. Multi-Backend Agent Support
 
-### 4.4 Agent image registry
+Spire currently dispatches agents via Claude Code CLI. Support Codex CLI
+and Cursor CLI as alternative backends.
 
-Work items:
-- [ ] Default agent image published to `ghcr.io/awell-health/spire-agent`
-- [ ] Image includes: standard toolchains, spire binary, claude-code CLI
-- [ ] Per-repo custom images specified in `repos` table or SpireAgent CR
-- [ ] Operator pulls image spec from agent config
+- [ ] Backend abstraction -- extract Claude-specific dispatch into a pluggable interface
+- [ ] Codex CLI backend -- spawn, monitor, collect results
+- [ ] Cursor CLI backend -- spawn, monitor, collect results
+- [ ] Backend selection -- per-repo in `spire.yaml`, per-formula in step declarations, per-summon via flag
+- [ ] Model mapping -- formula model declarations map to backend-specific model identifiers
+- [ ] Result normalization -- all backends produce the same result.json contract
 
----
+### 7. Observability
 
-## Phase 5: Polish and Launch
+The agent_runs table captures per-run metrics (tokens, cost, timing,
+code changes, review rounds, formula provenance). But several recording
+gaps exist, the DORA metrics display has bugs, and the data that IS
+collected isn't surfaced well enough to drive formula tuning or
+operational decisions.
 
-**Goal:** Public GitHub release with documentation, CI, and a clear getting-started path.
+**Recording gaps -- data not captured:**
 
-### 5.1 README.md
+- [ ] Record all phases -- validate-design, enrich-subtasks, auto-approve, skip, and waitForHuman phases never call recordAgentRun; execution time in these phases is invisible
+- [ ] Populate timing buckets -- startup_seconds, working_seconds, queue_seconds, review_seconds fields exist in agent_runs but are never written
+- [ ] Parent-child run linkage -- ParentRunID is always empty; impossible to trace which wizard spawned which apprentice or reconstruct wave parallelism
+- [ ] Per-phase token breakdown -- design vs implement tokens are accumulated together; no way to attribute cost to individual phases
+- [ ] Fix build-fix timing -- multiple retry rounds share the same start timestamp, producing inaccurate durations
 
-- [x] One-paragraph pitch
-- [x] Roles table with entry points
-- [x] ASCII architecture diagram
-- [x] Quickstart (tower create, repo add, file, up, summon, watch)
-- [x] Formula lifecycle section
-- [x] Archmage toolkit (board, roster, watch, summon, file, alert, send)
-- [x] DORA metrics section
-- [x] spire.yaml configuration reference
-- [x] k8s overview
-- [x] Links to contributing guide and license
-- [x] Verify all doc links resolve
-- [x] Remove references to features that don't exist yet or are aspirational
+**Display and query bugs:**
 
-**Status (2026-03-29):** README is launch-ready after a cleanup pass for implementation drift, links, and present-day command behavior.
+- [ ] Fix DORA deployment frequency -- shows "no successful deployments" despite successful merges landing on main
+- [ ] Fix review friction -- shows 0.0 reviews/bead when review rounds are clearly happening
+- [ ] Fix change failure rate -- shows 0% which likely undercounts failures
+- [ ] Surface per-step timing in metrics views (data exists in agent_runs but isn't shown)
 
-### 5.2 Documentation
+**New metrics to build:**
 
-- [x] VISION.md — strategic overview, core concepts, design principles, roadmap
-- [x] ARCHITECTURE.md — components, data model, pod architecture, sync model
-- [x] LOCAL.md — local execution model, setup flow, directory structure
-- [x] PLAN.md — implementation phases with dependency graph and risk register
-- [x] epic-formula.md — Mermaid diagram of epic lifecycle
-- [x] metrics.md — DORA metrics, lifecycle tracing, performance signals
-- [x] k8s-architecture.md — operator, CRDs, pod architecture, RBAC
-- [x] CLI reference
-- [x] Troubleshooting and FAQ
-- [x] Agent development guide (how to build custom agents)
+- [ ] Formula performance comparison -- success rate, cost, and review rounds by formula name + version; answer "is v3 of spire-bugfix better than v2?"
+- [ ] Cost breakdown -- per-tower, per-repo, per-formula, per-phase cost attribution
+- [ ] Queue time tracking -- time from bead filed to wizard assigned (requires steward coordination)
+- [ ] Wave efficiency -- parallel vs sequential execution metrics for epic child dispatch
+- [ ] Trend lines -- week-over-week success rate, cost per task, review friction
 
-### 5.3 License and contributing
+### 8. CI Pipeline
 
-- [x] Apache 2.0 license (standard for Go infrastructure projects)
-- [x] CONTRIBUTING.md with development setup, PR process, code style
-- [ ] DCO (Developer Certificate of Origin) sign-off requirement
+The existing CI (`ci.yml`) runs build, test, and vet on PRs. Not enough
+for a v1.0 gate.
 
-### 5.4 CI/CD
-
-- [x] GitHub Actions: lint, test, build on every push
-- [x] goreleaser on tag push: build binaries, create GitHub release, update Homebrew tap
-- [ ] Container image build and push to ghcr.io on release
-- [ ] Helm chart publish to OCI registry or GitHub Pages
-
-### 5.5 Demo
-
-- [ ] Terminal recording (asciinema or vhs): install, tower create, register repo, file task, agent lands a change
-- [ ] Under 60 seconds
-- [ ] Embedded in README
+- [ ] Integration tests -- `SPIRE_INTEGRATION=1` env var gates tests that need a live dolt server; CI spins up dolt as a service container
+- [ ] Smoke tests -- wire `test/smoke/Dockerfile` into CI; full install-to-bead-close lifecycle
+- [ ] Lint -- `golangci-lint` or equivalent
+- [ ] Race detection -- `go test -race`
+- [ ] Cross-compile -- build all release targets (darwin/linux, amd64/arm64) to catch platform issues
+- [ ] Test coverage reporting
 
 ---
 
-## Dependency Graph
+## Not V1.0
 
-```
-Phase 1 (Foundation)
-  1.1 embed bd ─────┐
-                     ├─> 1.2 tower create ──> 1.3 tower attach
-  1.4 credentials ──┘         │
-                              v
-                        1.5 repos table ──> 1.6 repo add
-                              │
-  1.7 dolt lifecycle ─────────┘ (needed by tower create)
-  1.8 homebrew ───────────────── (parallel, needs 1.1 + 1.7)
-  1.9 doctor ───────────────── (parallel)
+Captured but explicitly deferred:
 
-Phase 2 (Local Execution) — depends on Phase 1 complete
-  2.1 local steward ─┬─> 2.2 docker spawn
-                     ├─> 2.3 process spawn
-                     └─> 2.5 integrate with spire up
-  2.4 status/logs ──── (parallel)
-
-Phase 3 (Multiplayer) — depends on Phase 1 complete, Phase 2 optional
-  3.1 spire pull ────> 3.2 background sync
-  3.3 merge ownership ── (parallel)
-  3.4 prefix uniqueness ── (depends on 1.5)
-
-Phase 4 (Cluster) — depends on Phase 1, Phase 3
-  4.1 helm chart ────> 4.2 operator repos table
-                  ────> 4.3 cluster sync
-                  ────> 4.4 image registry
-
-Phase 5 (Launch) — depends on Phase 1, Phase 2
-  All items parallel. Can start README/docs during Phase 2.
-```
-
-Phases 2 and 3 can run in parallel after Phase 1 completes. Phase 4 depends on the sync model being solid (Phase 3). Phase 5 starts incrementally as features land.
+| Item | Why deferred |
+|------|-------------|
+| MCP tools / agent-authored tools | Needs observability foundation first |
+| Hosted towers (managed compute) | Only pursue if open-source gains adoption |
+| GitHub App integration | PAT works for v1; App for multi-org in v2 |
+| bd as embedded Go library | Subprocess wrapper + store API ships first (spi-770) |
+| Autonomous exploration | Needs trust gradient and guardrails design |
+| Field-level merge ownership | Design decided, implementation when multi-machine conflicts are real |
 
 ---
 
 ## Risk Register
 
-### 1. bd embedding (Phase 1.1) -- HIGH
+### 1. V2 removal breaks implicit consumers -- LOW
 
-The entire plan depends on shipping a single binary. If bd cannot be cleanly extracted as a Go library, the fallback (embedding the binary via `go:embed`) adds complexity to the build and a runtime extraction step. **Mitigation:** Spike the library extraction in a 2-day timebox before committing to the full plan.
+V2 code paths in `cmd/spire/` may have callers that aren't obvious from
+the dead code analysis. **Mitigation:** Full test suite after each
+removal pass. The analysis identifies all FormulaV2 references.
 
-### 2. Dolt merge semantics (Phase 3.3) -- MEDIUM
+### 2. Steward concurrency under load -- MEDIUM
 
-Multi-writer conflicts on the same bead are the hardest sync problem. The ownership model is decided (cluster owns status, user owns content, append-only for comments/messages), but dolt's three-way merge may not handle field-level ownership rules natively. **Mitigation:** Build a test harness with two concurrent writers early in Phase 1. Implement post-merge fixup: read both sides, apply ownership rules per field class, write winner.
+Adding concurrency limits and wave batching introduces scheduling
+complexity: partial waves, agent crashes mid-wave, priority changes
+during execution. **Mitigation:** Start with simple `max_concurrent`
+limit. Add wave batching only if needed.
 
-### 3. Agent reliability in local mode (Phase 2.2) -- MEDIUM
+### 3. Operator repos-table derivation -- MEDIUM
 
-k8s handles restarts, health checks, and resource limits for agent pods. Local Docker mode needs equivalent resilience built from scratch. **Mitigation:** Start with simple timeout-and-kill. Add health checks and restart logic iteratively. Process mode (2.3) is the escape hatch for debugging.
+Switching from explicit SpireAgent CRDs to repos-table derivation
+changes the contract. **Mitigation:** Support both modes during
+transition. CRDs remain the override mechanism.
 
-### 4. DoltHub rate limits (Phase 3.2) -- LOW
+### 4. Multi-backend dispatch divergence -- HIGH
 
-Frequent push/pull from multiple developers could hit DoltHub fair-use limits. **Mitigation:** Default sync interval is 2 minutes (existing). Document DoltHub's limits. Add exponential backoff on 429 responses.
+Codex and Cursor CLIs have different invocation patterns, output formats,
+and failure modes. The result normalization layer may need per-backend
+quirks. **Mitigation:** Claude backend is the reference implementation.
+Extract the interface, then add Codex/Cursor. Accept that some formula
+features may be backend-specific.
 
-### 5. Agent image size (Phase 2.2, 4.4) -- LOW
+### 5. Multi-mode TUI complexity -- MEDIUM
 
-An image with Go, Node, Python, git, dolt, and claude-code will be large (>2GB). **Mitigation:** Multi-stage build. Offer slim variants per language. Local process mode avoids the image entirely.
+Tab-based mode switching with shared state across modes is significant UI
+engineering. **Mitigation:** Ship modes incrementally. Board mode exists.
+Add Agent mode first (highest user need), then others.
 
 ---
 
 ## Decision Log
 
-Decisions that are already made and should not be revisited:
+### Made
 
 | Decision | Rationale |
 |----------|-----------|
+| V3 graph executor is the only executor | V2 removed in v0.31.0. No backward compatibility. |
+| Tower -> repo -> embedded resolution | Tower provides shared team defaults. Repo overrides locally. |
+| Recovery as first-class bead type | Recovery beads get structured metadata, dedicated formulas, prior-learning lookup. |
+| Formula sharing via dolt | Tower formulas sync automatically via daemon. Full history via dolt. |
 | User-first bootstrap | Tower exists before cluster. Developer builds backlog, cluster adopts it. |
-| DoltHub as sync layer | No direct connectivity between laptop and cluster. Versioned, mergeable, auditable. |
-| Explicit sync (push/pull) | Developer controls when state moves. Daemon is convenience, not requirement. |
+| DoltHub as sync layer | No direct laptop-cluster connectivity. Versioned, mergeable, auditable. |
 | Single binary | One install, one upgrade, one thing in PATH. |
-| Tower-scoped prefixes | Bead IDs are globally unique within a tower. No cross-tower conflicts. |
-| Merge ownership | Cluster owns status, user owns content. Prevents status regressions from stale local state. |
-| Apache 2.0 license | Standard for Go infrastructure. Permissive. Compatible with enterprise use. |
+| Tower-scoped prefixes | Bead IDs globally unique within a tower. |
+| Apache 2.0 license | Standard for Go infrastructure. Permissive. Enterprise-compatible. |
 
-Decisions that are deferred:
+### Deferred
 
 | Decision | Depends on | Notes |
 |----------|-----------|-------|
-| bd as library vs embedded binary | Phase 1.1 spike | Library is preferred. Embedded binary is fallback. |
-| GitHub App vs PAT | Phase 5 or later | PAT for v1. GitHub App for multi-org access in v2. |
-| Hosted offering | Post-launch traction | Only pursue if open-source gains adoption. |
+| bd as library vs embedded binary | Adoption | Library preferred; subprocess wrapper works |
+| GitHub App vs PAT | Post-v1.0 | PAT for v1. App for multi-org. |
+| Hosted offering | Post-launch traction | Only if open-source gains adoption |
+| MCP tool surface | Observability | Measure formula performance before adding extensibility |
+| Merge ownership enforcement | Multiplayer adoption | Design decided; implement when multi-machine conflicts are real |

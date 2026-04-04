@@ -497,6 +497,15 @@ func actionVerifyRun(e *Executor, stepName string, step StepConfig, state *Graph
 	if buildCmd == "" && testCmd == "" {
 		buildCmd = step.With["command"]
 	}
+	// Fall back to spire.yaml runtime config. The embedded formulas intentionally
+	// omit build/test commands — spire.yaml is the source of truth for how a repo
+	// builds and tests.
+	if buildCmd == "" && testCmd == "" {
+		if rc := e.deps.RepoConfig(); rc != nil {
+			buildCmd = rc.Runtime.Build
+			testCmd = rc.Runtime.Test
+		}
+	}
 	if buildCmd == "" && testCmd == "" {
 		return ActionResult{Outputs: map[string]string{"status": "pass", "result": "skipped"}}
 	}

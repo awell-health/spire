@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -770,12 +769,7 @@ func TestWebhookSignatureVerification(t *testing.T) {
 }
 
 func TestIntegrationDoltSQL(t *testing.T) {
-	// Skip if dolt is not available
-	_, err := exec.LookPath("dolt")
-	if err != nil {
-		t.Skip("dolt not available, skipping")
-	}
-	requireBd(t)
+	requireStore(t)
 
 	out, err := doltSQL("SELECT 1 AS n", true)
 	if err != nil {
@@ -787,16 +781,29 @@ func TestIntegrationDoltSQL(t *testing.T) {
 }
 
 func TestIntegrationProcessWebhookQueue(t *testing.T) {
-	requireBd(t)
+	requireStore(t)
 
-	// Skip if dolt is not available
-	_, err := exec.LookPath("dolt")
-	if err != nil {
-		t.Skip("dolt not available, skipping")
+	// Set up label maps for rig resolution.
+	integration.ResetLabelMaps()
+	integration.LabelPrefixRigMap = map[string]string{"Panels": "pan"}
+	defer integration.ResetLabelMaps()
+
+	// Ensure the "pan" rig route exists so bd can resolve --prefix=pan.
+	routesPath := findBeadsFile(t, "routes.jsonl")
+	origRoutes, readErr := os.ReadFile(routesPath)
+	if readErr != nil {
+		t.Fatalf("read routes.jsonl: %v", readErr)
+	}
+	panRoute := `{"prefix":"pan-","path":"."}`
+	if !strings.Contains(string(origRoutes), panRoute) {
+		if err := os.WriteFile(routesPath, append(origRoutes, []byte(panRoute+"\n")...), 0644); err != nil {
+			t.Fatalf("write routes.jsonl: %v", err)
+		}
+		defer os.WriteFile(routesPath, origRoutes, 0644)
 	}
 
-	// Create the webhook_queue table if needed
-	_, err = doltSQL(`CREATE TABLE IF NOT EXISTS webhook_queue (
+	// Create the webhook_queue table if needed.
+	_, err := doltSQL(`CREATE TABLE IF NOT EXISTS webhook_queue (
 		id VARCHAR(36) PRIMARY KEY,
 		event_type VARCHAR(64) NOT NULL,
 		linear_id VARCHAR(32) NOT NULL,
@@ -808,7 +815,7 @@ func TestIntegrationProcessWebhookQueue(t *testing.T) {
 		t.Fatalf("create webhook_queue table: %v", err)
 	}
 
-	// Insert a test row
+	// Insert a test row.
 	testID := fmt.Sprintf("test-queue-%d", os.Getpid())
 	payload := `{"action":"create","type":"Issue","data":{"id":"uuid-queue","identifier":"AWE-77","title":"Queue test epic","priority":1,"labels":[{"name":"Panels - Test"}]}}`
 	escapedPayload := strings.ReplaceAll(payload, "'", "''")
@@ -819,8 +826,11 @@ func TestIntegrationProcessWebhookQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert queue row: %v", err)
 	}
+	t.Cleanup(func() {
+		doltSQL(fmt.Sprintf("DELETE FROM webhook_queue WHERE id = '%s'", testID), false)
+	})
 
-	// Process the queue
+	// Process the queue.
 	processed, errors := processWebhookQueue()
 	if errors > 0 {
 		t.Errorf("processWebhookQueue had %d errors", errors)
@@ -829,7 +839,7 @@ func TestIntegrationProcessWebhookQueue(t *testing.T) {
 		t.Error("processWebhookQueue processed 0 rows")
 	}
 
-	// Verify the queue row is marked processed
+	// Verify the queue row is marked processed.
 	out, err := doltSQL(
 		fmt.Sprintf("SELECT processed FROM webhook_queue WHERE id = '%s'", testID),
 		true,
@@ -841,8 +851,21 @@ func TestIntegrationProcessWebhookQueue(t *testing.T) {
 		t.Errorf("queue row not marked processed: %s", out)
 	}
 
-	// Clean up
-	doltSQL(fmt.Sprintf("DELETE FROM webhook_queue WHERE id = '%s'", testID), false)
+	// Clean up any beads created by the queue processor.
+	eventBeads, _ := storeListBeads(beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"webhook", "linear:AWE-77"},
+	})
+	for _, b := range eventBeads {
+		registerBeadCleanup(t, b.ID)
+	}
+	epicBeads, _ := storeListBeads(beads.IssueFilter{
+		IDPrefix: "pan-",
+		Labels:   []string{"linear:AWE-77"},
+	})
+	for _, b := range epicBeads {
+		registerBeadCleanup(t, b.ID)
+	}
 }
 
 // --- Grok / Linear API tests ---
