@@ -63,6 +63,8 @@ type AgentRun struct {
 	TestsPassed        bool   `json:"tests_passed,omitempty"`
 	SystemPromptHash   string `json:"system_prompt_hash,omitempty"`
 	GoldenRun          bool   `json:"golden_run,omitempty"`
+	TimingBucket       string `json:"timing_bucket,omitempty"`
+	SkipReason         string `json:"skip_reason,omitempty"`
 	StartedAt          string `json:"started_at"`
 	CompletedAt        string `json:"completed_at,omitempty"`
 }
@@ -239,6 +241,14 @@ func Record(run AgentRun) (string, error) {
 	if run.GoldenRun {
 		cols = append(cols, "golden_run")
 		vals = append(vals, "TRUE")
+	}
+	if run.TimingBucket != "" {
+		cols = append(cols, "timing_bucket")
+		vals = append(vals, esc(run.TimingBucket))
+	}
+	if run.SkipReason != "" {
+		cols = append(cols, "skip_reason")
+		vals = append(vals, esc(run.SkipReason))
 	}
 	if run.CompletedAt != "" {
 		cols = append(cols, "completed_at")

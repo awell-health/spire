@@ -319,8 +319,10 @@ func (e *Executor) Run() error {
 				err = e.wizardPlanTask(bead, pc)
 			}
 		case behavior == "enrich-subtasks":
+			enrichStarted := time.Now()
 			children, _ := e.deps.GetChildren(e.beadID)
 			err = e.enrichSubtasksWithChangeSpecs(children, "", "", pc)
+			e.recordAgentRun(e.agentName, e.beadID, "", pc.Model, "wizard", "enrich-subtasks", enrichStarted, err)
 		case behavior == "sage-review":
 			var graphResult *GraphResult
 			graphResult, err = e.executeReview(phase, pc)
@@ -330,6 +332,9 @@ func (e *Executor) Run() error {
 			}
 		case behavior == "auto-approve":
 			e.log("auto-approve: skipping review")
+			e.recordAgentRun(e.agentName, e.beadID, "", "", "wizard", "auto-approve", time.Now(), nil,
+				withResult("skipped"),
+				withSkipReason("auto-approve: no human review required by formula config"))
 		case behavior == "merge-to-main":
 			if mergeErr := e.executeMerge(pc); mergeErr != nil {
 				e.closeAllOpenStepBeads()
@@ -343,6 +348,9 @@ func (e *Executor) Run() error {
 			return nil // merge is terminal
 		case behavior == "skip":
 			e.log("skipping phase %s (behavior: skip)", phase)
+			e.recordAgentRun(e.agentName, e.beadID, "", "", "wizard", phase, time.Now(), nil,
+				withResult("skipped"),
+				withSkipReason(fmt.Sprintf("behavior: skip for phase %s", phase)))
 
 		// --- Role-based dispatch (legacy / default) ---
 		case behavior == "" && phase == "merge":
@@ -381,6 +389,9 @@ func (e *Executor) Run() error {
 				}
 			case "skip":
 				e.log("skipping phase %s", phase)
+				e.recordAgentRun(e.agentName, e.beadID, "", "", "wizard", phase, time.Now(), nil,
+					withResult("skipped"),
+					withSkipReason(fmt.Sprintf("role: skip for phase %s", phase)))
 			default:
 				err = fmt.Errorf("unknown role %q for phase %s", pc.GetRole(), phase)
 			}
@@ -445,6 +456,7 @@ func (e *Executor) Run() error {
 
 // waitForHuman blocks the executor until the human transitions the phase.
 func (e *Executor) waitForHuman(phase string) error {
+	started := time.Now()
 	e.log("phase %s requires human action", phase)
 	e.log("when ready, transition the phase and re-run:")
 	e.log("  bd label remove %s \"phase:%s\"", e.beadID, phase)
@@ -452,7 +464,10 @@ func (e *Executor) waitForHuman(phase string) error {
 	if next != "" {
 		e.log("  bd label add %s \"phase:%s\"", e.beadID, next)
 	}
-	return fmt.Errorf("waiting for human to complete %s phase", phase)
+	waitErr := fmt.Errorf("waiting for human to complete %s phase", phase)
+	e.recordAgentRun(e.agentName, e.beadID, "", "", "wizard", phase, started, waitErr,
+		withResult("waiting"))
+	return waitErr
 }
 
 // --- State persistence ---

@@ -10,7 +10,12 @@ import (
 // wizardValidateDesign checks that the epic has a linked design bead (discovered-from dep) that is
 // closed and substantive. If missing, it auto-creates one and waits. If open or empty, it polls
 // until the design bead is closed with content, then advances to the plan phase.
-func (e *Executor) wizardValidateDesign() error {
+func (e *Executor) wizardValidateDesign() (retErr error) {
+	started := time.Now()
+	defer func() {
+		e.recordAgentRun(e.agentName, e.beadID, "", "", "wizard", "validate-design", started, retErr)
+	}()
+
 	interval := e.designPollInterval
 	if interval == 0 {
 		interval = 30 * time.Second

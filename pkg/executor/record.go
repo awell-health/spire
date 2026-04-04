@@ -61,6 +61,36 @@ func withParentRun(parentRunID string) recordOpt {
 	}
 }
 
+// withResult overrides the auto-derived result string.
+func withResult(result string) recordOpt {
+	return func(r *AgentRun) {
+		r.Result = result
+	}
+}
+
+// withSkipReason sets the skip reason on the run record.
+func withSkipReason(reason string) recordOpt {
+	return func(r *AgentRun) {
+		r.SkipReason = reason
+	}
+}
+
+// populateTimingBucket returns the bucket label for a given duration.
+func populateTimingBucket(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < 5*time.Minute:
+		return "1-5m"
+	case d < 30*time.Minute:
+		return "5-30m"
+	case d < 2*time.Hour:
+		return "30m-2h"
+	default:
+		return ">2h"
+	}
+}
+
 // recordAgentRun records an agent run to the agent_runs table.
 // Safe to call even when RecordAgentRun is nil (tests, legacy callers).
 //
@@ -169,6 +199,9 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		run.LinesAdded = la
 		run.LinesRemoved = lr
 	}
+
+	// Auto-compute timing bucket from duration.
+	run.TimingBucket = populateTimingBucket(completed.Sub(started))
 
 	// Apply functional options (e.g., review step/round metadata).
 	for _, opt := range opts {
