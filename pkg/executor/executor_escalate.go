@@ -296,6 +296,10 @@ func EscalateGraphStepFailure(beadID, agentName, failureType, message string, st
 // recovery-for dep). Both new and legacy links are recognized during dedupe
 // for backward compatibility.
 func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeCtx string, deps *Deps) {
+	// Check for relapse: if a prior "clean" recovery exists for this source +
+	// failure class within 24h, mark it as relapsed before proceeding.
+	checkAndMarkRelapse(parentID, failureType, deps)
+
 	ops := executorBeadOps{deps}
 
 	// Failure-class-scoped dedupe.

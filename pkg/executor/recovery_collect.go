@@ -2,8 +2,11 @@ package executor
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -71,7 +74,10 @@ func actionRecoveryCollectContext(e *Executor, stepName string, step StepConfig,
 	// Filter out per-bead entries from cross-bead to avoid double-counting.
 	crossBeadLearnings = filterOutSourceBead(crossBeadLearnings, sourceBeadID)
 
-	// 5. Assemble RecoveryContext.
+	// 5. Read wizard log tail (best-effort).
+	wizardLogTail := readWizardLogTail(diag.WizardName)
+
+	// 6. Assemble RecoveryContext.
 	rc := &RecoveryContext{
 		SourceBeadID:       sourceBeadID,
 		FailureClass:       failureClass,
@@ -80,9 +86,10 @@ func actionRecoveryCollectContext(e *Executor, stepName string, step StepConfig,
 		RankedActions:      diag.Actions,
 		PerBeadLearnings:   perBeadLearnings,
 		CrossBeadLearnings: crossBeadLearnings,
+		WizardLogTail:      wizardLogTail,
 	}
 
-	// 6. Write bead comment with recovery context markdown.
+	// 7. Write bead comment with recovery context markdown.
 	md := "## Recovery Context\n\n" + rc.ToMarkdown()
 	if e.deps.AddComment != nil {
 		if err := e.deps.AddComment(e.beadID, md); err != nil {
@@ -90,7 +97,7 @@ func actionRecoveryCollectContext(e *Executor, stepName string, step StepConfig,
 		}
 	}
 
-	// 7. Stash JSON in state.Vars for in-process access by the decide step.
+	// 8. Stash JSON in state.Vars for in-process access by the decide step.
 	if rcJSON, jsonErr := rc.ToJSON(); jsonErr == nil {
 		if state.Vars == nil {
 			state.Vars = make(map[string]string)
@@ -98,7 +105,7 @@ func actionRecoveryCollectContext(e *Executor, stepName string, step StepConfig,
 		state.Vars["recovery_context"] = string(rcJSON)
 	}
 
-	// 8. Determine verification_status for downstream routing.
+	// 9. Determine verification_status for downstream routing.
 	// If diagnosis failed due to "no interrupted:* label" the source is clean.
 	verificationStatus := "dirty"
 	if diagErr != nil && strings.Contains(diagErr.Error(), "no interrupted") {
@@ -187,6 +194,36 @@ func buildExecutorRecoveryDeps(e *Executor) *recovery.Deps {
 		},
 		// Git checks and registry lookup left nil — Diagnose handles nil gracefully.
 	}
+}
+
+// readWizardLogTail reads the last ~100 lines of a wizard's log file.
+// Best-effort: returns empty string if the wizard name is empty, the file
+// doesn't exist, or reading fails. Tries both <name>.log and wizard-<name>.log
+// naming patterns in the wizards subdirectory of dolt.GlobalDir().
+func readWizardLogTail(wizardName string) string {
+	if wizardName == "" {
+		return ""
+	}
+
+	wizardDir := filepath.Join(dolt.GlobalDir(), "wizards")
+	candidates := []string{
+		filepath.Join(wizardDir, wizardName+".log"),
+		filepath.Join(wizardDir, "wizard-"+wizardName+".log"),
+	}
+
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		const maxLines = 100
+		if len(lines) > maxLines {
+			lines = lines[len(lines)-maxLines:]
+		}
+		return strings.Join(lines, "\n")
+	}
+	return ""
 }
 
 // filterOutSourceBead removes entries whose SourceBead matches the given ID,

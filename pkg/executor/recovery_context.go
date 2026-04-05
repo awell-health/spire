@@ -20,6 +20,7 @@ type RecoveryContext struct {
 	RankedActions      []recovery.RecoveryAction `json:"ranked_actions"`
 	PerBeadLearnings   []store.RecoveryLearning `json:"per_bead_learnings"`
 	CrossBeadLearnings []store.RecoveryLearning `json:"cross_bead_learnings"`
+	WizardLogTail      string                   `json:"wizard_log_tail,omitempty"`
 }
 
 // ToMarkdown renders the recovery context as markdown suitable for Claude prompt
@@ -118,6 +119,17 @@ func (rc *RecoveryContext) ToMarkdown() string {
 			}
 			sb.WriteString("\n")
 		}
+	}
+
+	// ## Wizard Log (last 100 lines)
+	if rc.WizardLogTail != "" {
+		sb.WriteString("\n## Wizard Log (last 100 lines)\n\n")
+		sb.WriteString("```\n")
+		sb.WriteString(rc.WizardLogTail)
+		if !strings.HasSuffix(rc.WizardLogTail, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```\n")
 	}
 
 	return sb.String()

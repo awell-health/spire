@@ -417,14 +417,16 @@ type CollectContextResult struct {
 	RankedActions  []recovery.RecoveryAction `json:"ranked_actions"`
 	BeadLearnings  []store.RecoveryLearning  `json:"bead_learnings"`
 	CrossLearnings []store.RecoveryLearning  `json:"cross_bead_learnings"`
+	WizardLogTail  string                    `json:"wizard_log_tail,omitempty"`
 }
 
 // DecideResult is the structured output of the decide step (Claude response).
 type DecideResult struct {
-	ChosenAction string  `json:"chosen_action"`
-	Confidence   float64 `json:"confidence"`
-	Reasoning    string  `json:"reasoning"`
-	NeedsHuman   bool    `json:"needs_human"`
+	ChosenAction    string  `json:"chosen_action"`
+	Confidence      float64 `json:"confidence"`
+	Reasoning       string  `json:"reasoning"`
+	NeedsHuman      bool    `json:"needs_human"`
+	ExpectedOutcome string  `json:"expected_outcome"`
 }
 
 // LearnResult is the structured output of the learn step (Claude response).
@@ -465,14 +467,19 @@ func handleCollectContext(e *Executor, stepName string, step StepConfig, state *
 
 	// If diagnosis fails, we still continue with partial context.
 	var rankedActions []recovery.RecoveryAction
+	var wizardName string
 	if diagErr == nil && diag != nil {
 		rankedActions = diag.Actions
+		wizardName = diag.WizardName
 		if failureClass == "" {
 			failureClass = string(diag.FailureMode)
 		}
 	} else {
 		e.log("recovery: collect_context diagnosis failed (continuing with partial context): %v", diagErr)
 	}
+
+	// Read wizard log tail (best-effort).
+	wizardLogTail := readWizardLogTail(wizardName)
 
 	// Query per-bead learnings via bead metadata (existing approach).
 	beadLearnings := queryBeadLearnings(sourceBeadID, failureClass)
@@ -485,6 +492,7 @@ func handleCollectContext(e *Executor, stepName string, step StepConfig, state *
 		RankedActions:  rankedActions,
 		BeadLearnings:  beadLearnings,
 		CrossLearnings: crossLearnings,
+		WizardLogTail:  wizardLogTail,
 	}
 
 	resultJSON, err := json.Marshal(result)
@@ -572,19 +580,27 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 	}
 
 	outputs := map[string]string{
-		"status":        "success",
-		"chosen_action": result.ChosenAction,
-		"confidence":    fmt.Sprintf("%.2f", result.Confidence),
-		"reasoning":     result.Reasoning,
-		"needs_human":   fmt.Sprintf("%t", result.NeedsHuman),
+		"status":           "success",
+		"chosen_action":    result.ChosenAction,
+		"confidence":       fmt.Sprintf("%.2f", result.Confidence),
+		"reasoning":        result.Reasoning,
+		"needs_human":      fmt.Sprintf("%t", result.NeedsHuman),
+		"expected_outcome": result.ExpectedOutcome,
+	}
+
+	// Store expected_outcome on recovery bead metadata for downstream comparison.
+	if result.ExpectedOutcome != "" {
+		_ = store.SetBeadMetadataMap(e.beadID, map[string]string{
+			recovery.KeyExpectedOutcome: result.ExpectedOutcome,
+		})
 	}
 
 	// If needs_human, set bead status and write comment.
 	if result.NeedsHuman {
 		_ = e.deps.AddLabel(e.beadID, "needs-human")
 		_ = e.deps.AddComment(e.beadID, fmt.Sprintf(
-			"Recovery decide: needs human intervention.\n\nChosen action: %s\nConfidence: %.2f\nReasoning: %s",
-			result.ChosenAction, result.Confidence, result.Reasoning,
+			"Recovery decide: needs human intervention.\n\nChosen action: %s\nConfidence: %.2f\nReasoning: %s\nExpected outcome: %s",
+			result.ChosenAction, result.Confidence, result.Reasoning, result.ExpectedOutcome,
 		))
 		e.log("recovery: decide needs-human (confidence=%.2f, action=%s)", result.Confidence, result.ChosenAction)
 	} else {
@@ -598,12 +614,13 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 // a learning. Writes to both bead metadata and the recovery_learnings table.
 func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Read decide result and verify outcome from step outputs.
-	var chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig string
+	var chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome string
 	if state != nil {
 		if ds, ok := state.Steps["decide"]; ok {
 			chosenAction = ds.Outputs["chosen_action"]
 			confidence = ds.Outputs["confidence"]
 			reasoning = ds.Outputs["reasoning"]
+			expectedOutcome = ds.Outputs["expected_outcome"]
 		}
 		if vs, ok := state.Steps["verify"]; ok {
 			verifyOutcome = vs.Outputs["verification_status"]
@@ -626,7 +643,7 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 	}
 
 	// Build Claude prompt.
-	prompt := buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig)
+	prompt := buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome)
 
 	// Call Claude.
 	if e.deps.ClaudeRunner == nil {
@@ -666,6 +683,9 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 		metaMap[recovery.KeyReusable] = "true"
 	}
 	metaMap[recovery.KeyVerificationStatus] = outcome
+	if expectedOutcome != "" {
+		metaMap[recovery.KeyExpectedOutcome] = expectedOutcome
+	}
 	if err := store.SetBeadMetadataMap(e.beadID, metaMap); err != nil {
 		e.log("recovery: learn: write bead metadata: %s", err)
 	}
@@ -683,6 +703,7 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 		LearningSummary: result.LearningSummary,
 		Reusable:        result.Reusable,
 		ResolvedAt:      now,
+		ExpectedOutcome: expectedOutcome,
 	}
 	if err := store.WriteRecoveryLearningAuto(learningRow); err != nil {
 		// Non-fatal: the bead metadata write is the primary record.
@@ -883,6 +904,18 @@ func buildDecidePrompt(cc CollectContextResult) string {
 		b.WriteString("\n```\n\n")
 	}
 
+	// Wizard log output.
+	if cc.WizardLogTail != "" {
+		b.WriteString("## Wizard Log Output (last ~100 lines)\n")
+		b.WriteString("This is the actual output from the wizard that failed. Use it to understand WHY the failure occurred.\n\n")
+		b.WriteString("```\n")
+		b.WriteString(cc.WizardLogTail)
+		if !strings.HasSuffix(cc.WizardLogTail, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("```\n\n")
+	}
+
 	// Ranked actions.
 	if len(cc.RankedActions) > 0 {
 		b.WriteString("## Available Actions (mechanically ranked)\n```json\n")
@@ -912,7 +945,23 @@ func buildDecidePrompt(cc CollectContextResult) string {
 	b.WriteString("- `chosen_action`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\"\n")
 	b.WriteString("- `confidence`: 0.0 to 1.0 — how confident you are this action will resolve the issue\n")
 	b.WriteString("- `reasoning`: brief explanation of why you chose this action\n")
-	b.WriteString("- `needs_human`: set to true if confidence < 0.7\n\n")
+	b.WriteString("- `needs_human`: set to true if confidence < 0.7\n")
+	b.WriteString("- `expected_outcome`: what you expect to happen after this action is taken. Include: what should succeed, how to verify it worked, and under what conditions this action would be the wrong choice.\n\n")
+
+	// Log-referencing reasoning requirements.
+	if cc.WizardLogTail != "" {
+		b.WriteString("### CRITICAL: Log-Based Reasoning\n")
+		b.WriteString("Wizard log output is available above. Your reasoning MUST reference specific errors or output lines from the log.\n")
+		b.WriteString("Distinguish between:\n")
+		b.WriteString("- **Infrastructure failures** (missing commands, env setup, dependency install) that resummon/reset may fix\n")
+		b.WriteString("- **Code-level failures** (test assertions, missing env vars, type errors) that require code changes and resummon CANNOT fix\n\n")
+	}
+
+	// Relapse awareness.
+	b.WriteString("### Relapse Awareness\n")
+	b.WriteString("If prior learnings show outcome=\"relapsed\" for an action on this bead, do NOT choose that action again unless you can explain from the log why this time is different.\n")
+	b.WriteString("A \"relapsed\" outcome means a prior recovery with that action appeared to succeed but the bead failed again with the same failure class within 24 hours.\n\n")
+
 	b.WriteString("\"do_nothing\" is valid if the source bead already appears clean.\n\n")
 	b.WriteString("Output ONLY the JSON object, no markdown fences, no explanation outside the JSON.\n")
 
@@ -920,7 +969,7 @@ func buildDecidePrompt(cc CollectContextResult) string {
 }
 
 // buildLearnPrompt constructs the Claude prompt for the learn step.
-func buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig string) string {
+func buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome string) string {
 	var b strings.Builder
 	b.WriteString("You are a recovery learning agent for Spire, an AI agent coordination system.\n\n")
 	b.WriteString("A recovery action was taken. Analyze the result and extract a learning for future incidents.\n\n")
@@ -936,11 +985,21 @@ func buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failur
 	}
 	b.WriteString("\n")
 
+	if expectedOutcome != "" {
+		b.WriteString("## Expected Outcome (from decide step)\n")
+		b.WriteString(fmt.Sprintf("The decide agent predicted: %s\n\n", expectedOutcome))
+	}
+
 	b.WriteString("## Instructions\n")
 	b.WriteString("Output ONLY a JSON object with these fields:\n")
 	b.WriteString("- `learning_summary`: concise description of what happened and what worked or didn't\n")
 	b.WriteString("- `resolution_kind`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\"\n")
 	b.WriteString("- `reusable`: true if this learning applies to future similar failures, false otherwise\n\n")
+
+	if expectedOutcome != "" {
+		b.WriteString("Compare the actual outcome against the expected outcome. If they diverge, note this in the learning summary.\n\n")
+	}
+
 	b.WriteString("Output ONLY the JSON object, no markdown fences, no explanation outside the JSON.\n")
 
 	return b.String()

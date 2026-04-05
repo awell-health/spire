@@ -38,6 +38,7 @@ type RecoveryLearning struct {
 	Reusable           bool
 	ResolvedAt         string
 	LearningSummary    string // from learning_summary metadata key
+	Outcome            string // from learning_outcome metadata key ("clean"/"dirty"/"relapsed")
 }
 
 // GetBead fetches a single bead by ID.
@@ -372,6 +373,7 @@ func ListClosedRecoveryBeads(filter RecoveryLookupFilter) ([]RecoveryLearning, e
 			Reusable:           b.Meta("reusable") == "true",
 			ResolvedAt:         b.Meta("resolved_at"),
 			LearningSummary:    b.Meta("learning_summary"),
+			Outcome:            b.Meta("learning_outcome"),
 		}
 		learnings = append(learnings, rl)
 	}
