@@ -45,6 +45,19 @@ func actionRecoveryExecute(e *Executor, stepName string, step StepConfig, state 
 		return handleCollectContext(e, stepName, step, state)
 	case "decide":
 		return handleDecide(e, stepName, step, state)
+	case "execute":
+		// Read chosen_action from the decide step's output.
+		if state != nil {
+			if ds, ok := state.Steps["decide"]; ok {
+				if chosen := ds.Outputs["chosen_action"]; chosen != "" {
+					actionKind = chosen
+					e.log("recovery: execute using decide output: %s", actionKind)
+				}
+			}
+		}
+		if actionKind == "execute" {
+			return ActionResult{Error: fmt.Errorf("recovery execute: no chosen_action from decide step")}
+		}
 	case "learn":
 		return handleLearn(e, stepName, step, state)
 	case "finish":
