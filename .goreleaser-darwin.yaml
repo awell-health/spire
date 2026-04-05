@@ -18,23 +18,26 @@ archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
-homebrew_casks:
-  - binaries:
-      - spire
-    repository:
+brews:
+  - repository:
       owner: awell-health
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/awell-health/spire"
     description: "Coordination hub for AI agents across repositories"
+    license: "Apache-2.0"
     dependencies:
-      - formula: beads
+      - name: beads
+    install: |
+      bin.install "spire"
     caveats: |
       To get started with Spire:
         1. Create a tower:    spire tower create --name my-team
         2. Register a repo:   cd ~/your-repo && spire repo add
         3. Start services:    spire up
         4. File your first task: spire file "My first task" -t task -p 2
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/spire version")
 
 checksum:
   name_template: "checksums_darwin.txt"
