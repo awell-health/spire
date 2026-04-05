@@ -206,6 +206,7 @@ const recoveryLearningsTableSQL = `CREATE TABLE IF NOT EXISTS recovery_learnings
     learning_summary TEXT,
     reusable        BOOLEAN DEFAULT TRUE,
     resolved_at     DATETIME NOT NULL,
+    expected_outcome TEXT,
     INDEX idx_failure_class (failure_class),
     INDEX idx_source_bead (source_bead, failure_class)
 )`
@@ -310,6 +311,9 @@ var spireMigrations = []columnMigration{
 	{table: "recovery_learnings", column: "learning_summary", ddl: "ADD COLUMN learning_summary TEXT"},
 	{table: "recovery_learnings", column: "reusable", ddl: "ADD COLUMN reusable BOOLEAN DEFAULT TRUE"},
 	{table: "recovery_learnings", column: "resolved_at", ddl: "ADD COLUMN resolved_at DATETIME NOT NULL"},
+
+	// --- recovery_learnings: expected_outcome (spi-4mb51) ---
+	{table: "recovery_learnings", column: "expected_outcome", ddl: "ADD COLUMN expected_outcome TEXT"},
 }
 
 // requiredCustomTypes are the bead types that Spire registers on every tower.

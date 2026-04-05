@@ -589,8 +589,8 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 	}
 
 	// Store expected_outcome on recovery bead metadata for downstream comparison.
-	if result.ExpectedOutcome != "" {
-		_ = store.SetBeadMetadataMap(e.beadID, map[string]string{
+	if result.ExpectedOutcome != "" && e.deps.SetBeadMetadata != nil {
+		_ = e.deps.SetBeadMetadata(e.beadID, map[string]string{
 			recovery.KeyExpectedOutcome: result.ExpectedOutcome,
 		})
 	}

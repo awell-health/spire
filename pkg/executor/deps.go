@@ -138,6 +138,9 @@ type Deps struct {
 	IsStepBead       func(b Bead) bool
 	IsReviewRoundBead func(b Bead) bool
 
+	// Metadata
+	SetBeadMetadata func(id string, meta map[string]string) error
+
 	// Label / type helpers
 	HasLabel       func(b Bead, prefix string) string
 	ContainsLabel  func(b Bead, label string) bool

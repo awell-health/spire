@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,18 +205,60 @@ func readWizardLogTail(wizardName string) string {
 	if wizardName == "" {
 		return ""
 	}
-
 	wizardDir := filepath.Join(dolt.GlobalDir(), "wizards")
+	return readWizardLogTailFrom(wizardDir, wizardName)
+}
+
+// readWizardLogTailFrom reads the last ~100 lines from a wizard log file in
+// the given directory. Tries both <name>.log and wizard-<name>.log naming
+// patterns. Caps the file read at 2MB to avoid memory pressure from large logs.
+func readWizardLogTailFrom(wizardDir, wizardName string) string {
+	if wizardName == "" {
+		return ""
+	}
+
 	candidates := []string{
 		filepath.Join(wizardDir, wizardName+".log"),
 		filepath.Join(wizardDir, "wizard-"+wizardName+".log"),
 	}
 
+	const maxReadBytes = 2 * 1024 * 1024 // 2MB cap
+
 	for _, path := range candidates {
-		data, err := os.ReadFile(path)
+		f, err := os.Open(path)
 		if err != nil {
 			continue
 		}
+
+		// Stat to determine file size; read only the tail if large.
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			continue
+		}
+
+		var data []byte
+		if info.Size() > maxReadBytes {
+			// Seek to the last 2MB of the file.
+			if _, err := f.Seek(-maxReadBytes, 2); err != nil {
+				f.Close()
+				continue
+			}
+			data = make([]byte, maxReadBytes)
+			n, readErr := f.Read(data)
+			f.Close()
+			if readErr != nil && n == 0 {
+				continue
+			}
+			data = data[:n]
+		} else {
+			data, err = io.ReadAll(f)
+			f.Close()
+			if err != nil {
+				continue
+			}
+		}
+
 		lines := strings.Split(string(data), "\n")
 		const maxLines = 100
 		if len(lines) > maxLines {

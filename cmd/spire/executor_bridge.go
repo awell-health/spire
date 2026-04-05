@@ -14,6 +14,7 @@ import (
 	formulaPkg "github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/metrics"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -217,6 +218,9 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		IsAttemptBead:     isAttemptBead,
 		IsStepBead:        isStepBead,
 		IsReviewRoundBead: isReviewRoundBead,
+
+		// Metadata
+		SetBeadMetadata: store.SetBeadMetadataMap,
 
 		// Label / type helpers
 		HasLabel:            hasLabel,
