@@ -62,4 +62,4 @@ jobs:
             -f tag="${{ steps.detect.outputs.version }}" \
             -f notes="${{ steps.detect.outputs.notes }}"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CONTENTS_AND_WORKFLOWS_TOKEN }}
