@@ -527,6 +527,26 @@ func actionVerifyRun(e *Executor, stepName string, step StepConfig, state *Graph
 		}
 	}
 
+	// Run install command (e.g. pnpm install) before build/test.
+	// Staging worktrees are fresh checkouts with no node_modules.
+	installCmd := step.With["install"]
+	if installCmd == "" {
+		if rc := e.deps.RepoConfig(); rc != nil {
+			installCmd = rc.Runtime.Install
+		}
+	}
+	if installCmd != "" {
+		if installErr := stagingWt.RunBuild(installCmd); installErr != nil {
+			return ActionResult{
+				Outputs: map[string]string{
+					"status":    "fail",
+					"result":    "failed",
+					"error_log": "install failed: " + installErr.Error(),
+				},
+			}
+		}
+	}
+
 	// Run build command.
 	if buildCmd != "" {
 		if buildErr := stagingWt.RunBuild(buildCmd); buildErr != nil {

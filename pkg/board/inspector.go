@@ -13,6 +13,7 @@ import (
 	"github.com/steveyegge/beads"
 
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -578,6 +579,68 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 				labelParts = append(labelParts, labelStyle.Render(l))
 			}
 			lines = append(lines, "  "+strings.Join(labelParts, "  "))
+		}
+
+		// Recovery metadata — only for recovery beads.
+		if bb.Type == "recovery" {
+			lines = append(lines, "")
+			lines = append(lines, sectionHeader("Recovery"))
+
+			sourceBead := bb.Meta(recovery.KeySourceBead)
+			if sourceBead != "" {
+				sourceTitle := ""
+				if sb, err := store.GetBead(sourceBead); err == nil {
+					sourceTitle = sb.Title
+				}
+				lines = append(lines, fmt.Sprintf("  Source: %s  %s", sourceBead, dimStyle.Render(Truncate(sourceTitle, contentWidth-30))))
+			}
+
+			if fc := bb.Meta(recovery.KeyFailureClass); fc != "" {
+				lines = append(lines, "  Failure: "+lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(fc))
+			}
+			if step := bb.Meta(recovery.KeySourceStep); step != "" {
+				lines = append(lines, "  Step: "+step)
+			}
+			if res := bb.Meta(recovery.KeyResolutionKind); res != "" {
+				lines = append(lines, "  Resolution: "+lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(res))
+			}
+			if vs := bb.Meta(recovery.KeyVerificationStatus); vs != "" {
+				color := "2" // green
+				if vs != "clean" {
+					color = "1" // red
+				}
+				lines = append(lines, "  Verification: "+lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(vs))
+			}
+			if summary := bb.Meta(recovery.KeyLearningSummary); summary != "" {
+				lines = append(lines, "  Learning: "+dimStyle.Render(Truncate(summary, contentWidth-12)))
+			}
+
+			// Prior recoveries for the same source bead.
+			if sourceBead != "" {
+				if learnings, err := recovery.GetRecoveryLearnings(sourceBead); err == nil && len(learnings) > 0 {
+					// Don't count self.
+					var prior []store.Bead
+					for _, l := range learnings {
+						if l.ID != bb.ID {
+							prior = append(prior, l)
+						}
+					}
+					if len(prior) > 0 {
+						lines = append(lines, fmt.Sprintf("  Prior: %d recovery bead(s) for %s", len(prior), sourceBead))
+						for _, p := range prior {
+							rm := recovery.RecoveryMetadataFromBead(p)
+							detail := rm.FailureClass
+							if rm.ResolutionKind != "" {
+								detail += " → " + rm.ResolutionKind
+							}
+							if rm.VerificationStatus != "" {
+								detail += " (" + rm.VerificationStatus + ")"
+							}
+							lines = append(lines, "    "+dimStyle.Render(p.ID+"  "+detail))
+						}
+					}
+				}
+			}
 		}
 
 		// Design context.
