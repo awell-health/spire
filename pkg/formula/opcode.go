@@ -19,20 +19,26 @@ const (
 	OpcodeBeadFinish            = "bead.finish"
 	OpcodeNoop                  = "noop"
 	OpcodeRecoveryExecute       = "recovery.execute"
+	OpcodeRecoveryDecide        = "recovery.decide"
+	OpcodeRecoveryLearn         = "recovery.learn"
+	OpcodeRecoveryCollectContext = "recovery.collect_context"
 )
 
 // ValidOpcodes is the set of recognized executor opcodes.
 var ValidOpcodes = map[string]bool{
-	OpcodeCheckDesignLinked:    true,
-	OpcodeWizardRun:            true,
-	OpcodeBeadsMaterializePlan: true,
-	OpcodeDispatchChildren:     true,
-	OpcodeVerifyRun:            true,
-	OpcodeGraphRun:             true,
-	OpcodeGitMergeToMain:       true,
-	OpcodeBeadFinish:           true,
-	OpcodeNoop:                 true,
-	OpcodeRecoveryExecute:      true,
+	OpcodeCheckDesignLinked:      true,
+	OpcodeWizardRun:              true,
+	OpcodeBeadsMaterializePlan:   true,
+	OpcodeDispatchChildren:       true,
+	OpcodeVerifyRun:              true,
+	OpcodeGraphRun:               true,
+	OpcodeGitMergeToMain:         true,
+	OpcodeBeadFinish:             true,
+	OpcodeNoop:                   true,
+	OpcodeRecoveryExecute:        true,
+	OpcodeRecoveryDecide:         true,
+	OpcodeRecoveryLearn:          true,
+	OpcodeRecoveryCollectContext: true,
 }
 
 // ValidOpcode returns true if the opcode is in the recognized set.

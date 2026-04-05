@@ -1,13 +1,13 @@
+version: 2
 project_name: spire
 
 builds:
   - main: ./cmd/spire
     binary: spire
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
     goos:
       - darwin
-      - linux
     goarch:
       - amd64
       - arm64
@@ -15,21 +15,20 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
-brews:
-  - repository:
+homebrew_casks:
+  - binaries:
+      - spire
+    repository:
       owner: awell-health
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/awell-health/spire"
     description: "Coordination hub for AI agents across repositories"
-    license: "Apache-2.0"
     dependencies:
-      - name: beads
-    install: |
-      bin.install "spire"
+      - formula: beads
     caveats: |
       To get started with Spire:
         1. Create a tower:    spire tower create --name my-team
@@ -37,19 +36,8 @@ brews:
         3. Start services:    spire up
         4. File your first task: spire file "My first task" -t task -p 2
 
-      For AI agents:
-        spire summon 3                       # Summon wizards to work ready beads
-        spire summon 1 --targets spi-abc     # Target a specific bead
-        spire board --json                   # Machine-readable board state
-        spire roster --json                  # Agent status as JSON
-        spire collect --json                 # Check agent inbox
-
-      Docs: https://github.com/awell-health/spire
-    test: |
-      assert_match version.to_s, shell_output("#{bin}/spire version")
-
 checksum:
-  name_template: "checksums.txt"
+  name_template: "checksums_darwin.txt"
 
 release:
   github:
