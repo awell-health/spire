@@ -1,0 +1,31 @@
+version: 2
+project_name: spire
+
+builds:
+  - main: ./cmd/spire
+    binary: spire
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    overrides:
+      - goos: linux
+        goarch: arm64
+        env:
+          - CC=aarch64-linux-gnu-gcc
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums_linux.txt"
+
+# No release — the darwin job creates the release and we append to it.
+release:
+  disable: true

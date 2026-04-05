@@ -1,31 +1,52 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.34.0)"
+        required: true
+      notes:
+        description: "Path to release notes file (e.g. releases/v0.34.0.md)"
+        required: false
 
 permissions:
   contents: write
   packages: write
 
 jobs:
-  test:
+  build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Run tests
-        run: go test ./pkg/... ./cmd/spire/... -run "Test[^I]" -count=1 -timeout 120s
+      - name: Install arm64 cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean --config .goreleaser-linux.yaml ${{ inputs.notes && format('--release-notes {0}', inputs.notes) || '--skip=announce' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: dist/*.tar.gz
 
-  release:
-    needs: test
-    runs-on: ubuntu-latest
+  build-darwin:
+    runs-on: macos-latest
+    needs: build-linux
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
@@ -33,7 +54,16 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          args: release --clean
+          args: release --clean --config .goreleaser-darwin.yaml ${{ inputs.notes && format('--release-notes {0}', inputs.notes) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.CONTENTS_AND_WORKFLOWS_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.CONTENTS_AND_WORKFLOWS_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: linux-dist
+      - name: Upload Linux binaries to release
+        run: |
+          gh release upload "${{ inputs.tag }}" linux-dist/*.tar.gz --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

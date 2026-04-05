@@ -6,11 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -20,3 +25,41 @@ jobs:
         run: go test ./pkg/... ./cmd/spire/... -count=1 -timeout 120s
       - name: Vet
         run: go vet ./...
+
+  tag-and-release:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect unreleased version
+        id: detect
+        run: |
+          for f in releases/v*.md; do
+            [ -f "$f" ] || continue
+            version="$(basename "$f" .md)"
+            if ! git tag -l "$version" | grep -q .; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              echo "notes=$f" >> "$GITHUB_OUTPUT"
+              echo "Found unreleased version: $version"
+              exit 0
+            fi
+          done
+          echo "No unreleased versions found"
+      - name: Create tag
+        if: steps.detect.outputs.version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.detect.outputs.version }}"
+          git push origin "${{ steps.detect.outputs.version }}"
+      - name: Trigger release
+        if: steps.detect.outputs.version
+        run: |
+          gh workflow run release.yml \
+            -f tag="${{ steps.detect.outputs.version }}" \
+            -f notes="${{ steps.detect.outputs.notes }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
