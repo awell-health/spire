@@ -141,7 +141,11 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		case phase == "merge":
 			c.Merge = append(c.Merge, b)
 		default:
-			c.Ready = append(c.Ready, b)
+			// Subtasks belong to their parent epic — don't surface them
+			// independently on the ready board.
+			if b.Parent == "" {
+				c.Ready = append(c.Ready, b)
+			}
 		}
 	}
 
@@ -212,7 +216,9 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		case phase == "merge":
 			c.Merge = append(c.Merge, b)
 		default:
-			c.Ready = append(c.Ready, b)
+			if b.Parent == "" {
+				c.Ready = append(c.Ready, b)
+			}
 		}
 	}
 
