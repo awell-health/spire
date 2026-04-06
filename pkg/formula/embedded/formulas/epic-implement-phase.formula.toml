@@ -8,9 +8,9 @@
 #   dispatch-children → verify-build ─┬─[pass]→ verified (noop terminal)
 #                                      └─[fail]→ build-failed (noop terminal)
 #
-# The build-fix loop (verify → fix → re-verify) requires interpreter loop
-# support which will be added in spi-whcii.6. For now, build failures
-# route to the build-failed terminal which escalates to the wizard.
+# Build verification at the epic level catches integration failures after
+# merging waves. Individual apprentices also gate on build via WizardBuildGate
+# before exiting, so most build errors are caught before reaching this step.
 
 name = "epic-implement-phase"
 description = "Declarative epic implementation: dispatch children in waves, verify build, signal readiness for review"

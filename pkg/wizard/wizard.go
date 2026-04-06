@@ -378,23 +378,30 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		deps.CloseMoleculeStep(beadID, "implement")
 	}
 
-	// 10. Validate
-	testsPassed := WizardValidate(worktreeDir, repoCfg, log)
-
-	// 11. Commit
+	// 10. Commit
 	commitSHA, committed := WizardCommit(wc, beadID, beadTitle, log)
 
-	// 12. Update bead (comment)
+	// 11. Build gate — the apprentice can't go home until the build passes.
+	// On failure, invokes Claude to fix build errors, up to N rounds.
+	buildPassed := WizardBuildGate(wc, beadID, beadTitle, worktreeDir, model, repoCfg, &accMetrics, log)
+
+	// 12. Run tests (informational only — does not gate completion).
+	testsPassed := true
+	if repoCfg.Runtime.Test != "" {
+		log("validating: test")
+		if err := WizardRunCmd(worktreeDir, repoCfg.Runtime.Test); err != nil {
+			log("test failed: %s (informational)", err)
+			testsPassed = false
+		}
+	}
+
+	// 13. Update bead (comment)
 	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, committed, testsPassed, deps, log)
 
-	// 13. Review handoff if committed.
-	// Test failures are informational — the reviewer runs tests independently.
-	// Pre-existing integration-test failures (e.g. missing .beads/ in worktree)
-	// must not block the review handoff.
-	//
-	if committed {
+	// 14. Review handoff if committed and build passes.
+	if committed && buildPassed {
 		if !testsPassed {
-			log("tests failed but branch committed — proceeding to review")
+			log("tests failed but build passed — proceeding")
 			deps.AddLabel(beadID, "test-failure")
 		}
 		if !apprenticeMode {
@@ -404,21 +411,26 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			handoffDone = true
 			log("apprentice mode — skipping review handoff")
 		}
+	} else if !buildPassed {
+		log("build failed — apprentice cannot hand off")
+		deps.AddLabel(beadID, "build-failure")
 	}
 
-	// 14. If we didn't hand off, reopen the bead so it doesn't stay orphaned.
+	// 15. If we didn't hand off, reopen the bead so it doesn't stay orphaned.
 	if !handoffDone {
 		deps.UpdateBead(beadID, map[string]interface{}{"status": "open"})
 		log("apprentice mode — bead reopened")
 	}
 
-	// 15. Write result
+	// 16. Write result
 	elapsed := time.Since(startedAt)
 	result := "success"
 	if !committed {
 		result = "no_changes"
 	}
-	if !testsPassed {
+	if !buildPassed {
+		result = "build_failure"
+	} else if !testsPassed {
 		result = "test_failure"
 	}
 	WizardWriteResult(wizardName, beadID, result, branchName, commitSHA, elapsed, accMetrics, deps, log)
@@ -788,7 +800,7 @@ You are working in an isolated git worktree. Other agents may be working on rela
 2. Do NOT create a PR, merge, push, or touch other branches. The orchestrator handles that.
 3. Do NOT modify files listed as "do_not_touch" in the task description — another agent handles those.
 4. If the task description says to create types/interfaces that other tasks will use, make them complete and well-documented.
-5. COMMIT YOUR WORK before running validation. The orchestrator runs tests independently — your job is to produce code, not fix pre-existing test issues. If build fails, fix compilation errors. If tests fail on code you wrote, try to fix it. If tests fail on code you didn't write, IGNORE IT and commit anyway.
+5. COMMIT YOUR WORK before running validation. Your code MUST build — the orchestrator will verify this and send you back to fix build errors if it doesn't. If tests fail on code you wrote, try to fix it. If tests fail on code you didn't write, IGNORE IT and commit anyway.
 6. If you CANNOT complete the full task as described, commit what you have and report what's missing as a comment on the bead. Partial work committed is ALWAYS better than no work committed.
 7. Do NOT revert your changes. Do NOT undo work you've done. If something isn't working, commit what you have — the reviewer will sort it out.
 
@@ -899,6 +911,15 @@ func WizardRunCmd(dir, command string) error {
 	return cmd.Run()
 }
 
+// WizardRunCmdCapture runs a shell command and returns combined stdout+stderr.
+func WizardRunCmdCapture(dir, command string) (string, error) {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Dir = dir
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 // WizardValidate runs lint, build, and test commands from spire.yaml.
 func WizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...interface{})) bool {
 	if cfg.Runtime.Lint != "" {
@@ -923,6 +944,127 @@ func WizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 		}
 	}
 	return true
+}
+
+// DefaultMaxBuildFixRounds is the default number of build-fix attempts before giving up.
+const DefaultMaxBuildFixRounds = 2
+
+// WizardBuildGate runs the build command and, on failure, enters a fix loop:
+// invoke Claude with the build error, re-commit, re-build, up to maxRounds.
+// Returns true if the build passes (immediately or after fixes).
+func WizardBuildGate(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, model string,
+	cfg *repoconfig.RepoConfig, accMetrics *ClaudeMetrics, log func(string, ...interface{})) bool {
+
+	buildCmd := cfg.Runtime.Build
+	if buildCmd == "" {
+		log("build-gate: no build command configured — skipping")
+		return true
+	}
+
+	// Initial build check.
+	log("build-gate: running build")
+	buildOut, buildErr := WizardRunCmdCapture(worktreeDir, buildCmd)
+	if buildErr == nil {
+		log("build-gate: build passed")
+		return true
+	}
+	log("build-gate: build failed:\n%s", buildOut)
+
+	maxRounds := DefaultMaxBuildFixRounds
+	if model == "" {
+		model = "claude-sonnet-4-6"
+	}
+	maxTurns := cfg.Agent.MaxTurns
+	if maxTurns == 0 {
+		maxTurns = 30
+	}
+	buildFixTimeout := "5m"
+
+	for round := 1; round <= maxRounds; round++ {
+		log("build-gate: fix round %d/%d", round, maxRounds)
+
+		// Build a focused prompt with the error output.
+		prompt := wizardBuildGateFixPrompt(beadID, buildCmd, buildOut, cfg)
+		promptPath := filepath.Join(worktreeDir, ".spire-build-fix-prompt.txt")
+		if err := os.WriteFile(promptPath, []byte(prompt), 0644); err != nil {
+			log("build-gate: failed to write prompt: %s", err)
+			return false
+		}
+
+		// Invoke Claude to fix.
+		fixMetrics, runErr := WizardRunClaude(worktreeDir, promptPath, model, buildFixTimeout, maxTurns)
+		if accMetrics != nil {
+			*accMetrics = accMetrics.Add(fixMetrics)
+		}
+		os.Remove(promptPath)
+		if runErr != nil {
+			log("build-gate: claude fix failed: %s", runErr)
+		}
+
+		// Commit whatever Claude produced.
+		commitSHA, committed := WizardCommit(wc, beadID, beadTitle, log)
+		if committed {
+			log("build-gate: fix committed: %s", commitSHA)
+		}
+
+		// Re-run build.
+		log("build-gate: re-running build")
+		buildOut, buildErr = WizardRunCmdCapture(worktreeDir, buildCmd)
+		if buildErr == nil {
+			log("build-gate: build passed after fix round %d", round)
+			return true
+		}
+		log("build-gate: still failing:\n%s", buildOut)
+	}
+
+	log("build-gate: exhausted %d fix rounds — build still fails", maxRounds)
+	return false
+}
+
+// wizardBuildGateFixPrompt builds a focused prompt for fixing build errors
+// in the apprentice's own worktree (not staging).
+func wizardBuildGateFixPrompt(beadID, buildCmd, buildErr string, cfg *repoconfig.RepoConfig) string {
+	contextPaths := cfg.Context
+	if len(contextPaths) == 0 {
+		contextPaths = []string{"CLAUDE.md"}
+	}
+	var contextBlock strings.Builder
+	for _, p := range contextPaths {
+		fmt.Fprintf(&contextBlock, "- %s\n", p)
+	}
+
+	buildCmdStr := buildCmd
+	if buildCmdStr == "" {
+		buildCmdStr = "go build ./..."
+	}
+
+	return fmt.Sprintf(`You are a Spire build-fix agent.
+
+Your code does not build. Fix the build errors below.
+
+## Build command
+%s
+
+## Build error
+`+"```"+`
+%s
+`+"```"+`
+
+## Instructions
+1. Read the build error output above carefully.
+2. Identify the source files causing the errors.
+3. Fix the compilation errors.
+4. Run the build command to verify your fix: %s
+5. COMMIT your changes with message: fix(%s): resolve build errors
+
+## Rules
+- Fix ONLY build errors. Do NOT refactor, improve, or change any other code.
+- Do NOT revert prior work — fix forward.
+- Do NOT create new files unless absolutely necessary to resolve the error.
+- Keep changes minimal — the smallest diff that makes the build pass.
+
+## Repo context paths
+%s`, buildCmdStr, buildErr, buildCmdStr, beadID, contextBlock.String())
 }
 
 // WizardCommit commits any changes on the branch.
