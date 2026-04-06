@@ -61,7 +61,7 @@ func FetchBoard(opts Opts, identity string) (BoardResult, error) {
 		return BoardResult{}, fmt.Errorf("board: list open beads: %w", err)
 	}
 
-	closedCutoff := time.Now().Add(-24 * time.Hour)
+	closedCutoff := time.Now().Add(-7 * 24 * time.Hour)
 	closedBeads, _ := store.ListBoardBeads(beads.IssueFilter{
 		Status:      store.StatusPtr(beads.StatusClosed),
 		ClosedAfter: &closedCutoff,
@@ -144,7 +144,7 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 		return nil, fmt.Errorf("snapshot: list open beads: %w", err)
 	}
 
-	closedCutoff := time.Now().Add(-24 * time.Hour)
+	closedCutoff := time.Now().Add(-7 * 24 * time.Hour)
 	closedBeads, _ := store.ListBoardBeads(beads.IssueFilter{
 		Status:      store.StatusPtr(beads.StatusClosed),
 		ClosedAfter: &closedCutoff,
