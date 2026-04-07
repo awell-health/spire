@@ -949,11 +949,25 @@ func WizardValidate(dir string, cfg *repoconfig.RepoConfig, log func(string, ...
 // DefaultMaxBuildFixRounds is the default number of build-fix attempts before giving up.
 const DefaultMaxBuildFixRounds = 2
 
+// BuildRunFunc runs a build command in a directory and returns output + error.
+type BuildRunFunc func(dir, cmd string) (string, error)
+
+// AgentRunFunc invokes a Claude agent and returns metrics.
+type AgentRunFunc func(dir, promptPath, model, timeout string, maxTurns int) (ClaudeMetrics, error)
+
 // WizardBuildGate runs the build command and, on failure, enters a fix loop:
 // invoke Claude with the build error, re-commit, re-build, up to maxRounds.
 // Returns true if the build passes (immediately or after fixes).
 func WizardBuildGate(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, model string,
 	cfg *repoconfig.RepoConfig, accMetrics *ClaudeMetrics, log func(string, ...interface{})) bool {
+	return wizardBuildGateImpl(wc, beadID, beadTitle, worktreeDir, model, cfg, accMetrics, log,
+		WizardRunCmdCapture, WizardRunClaude)
+}
+
+// wizardBuildGateImpl is the testable implementation of WizardBuildGate.
+func wizardBuildGateImpl(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, model string,
+	cfg *repoconfig.RepoConfig, accMetrics *ClaudeMetrics, log func(string, ...interface{}),
+	runBuild BuildRunFunc, runAgent AgentRunFunc) bool {
 
 	buildCmd := cfg.Runtime.Build
 	if buildCmd == "" {
@@ -963,7 +977,7 @@ func WizardBuildGate(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, 
 
 	// Initial build check.
 	log("build-gate: running build")
-	buildOut, buildErr := WizardRunCmdCapture(worktreeDir, buildCmd)
+	buildOut, buildErr := runBuild(worktreeDir, buildCmd)
 	if buildErr == nil {
 		log("build-gate: build passed")
 		return true
@@ -992,7 +1006,7 @@ func WizardBuildGate(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, 
 		}
 
 		// Invoke Claude to fix.
-		fixMetrics, runErr := WizardRunClaude(worktreeDir, promptPath, model, buildFixTimeout, maxTurns)
+		fixMetrics, runErr := runAgent(worktreeDir, promptPath, model, buildFixTimeout, maxTurns)
 		if accMetrics != nil {
 			*accMetrics = accMetrics.Add(fixMetrics)
 		}
@@ -1009,7 +1023,7 @@ func WizardBuildGate(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, 
 
 		// Re-run build.
 		log("build-gate: re-running build")
-		buildOut, buildErr = WizardRunCmdCapture(worktreeDir, buildCmd)
+		buildOut, buildErr = runBuild(worktreeDir, buildCmd)
 		if buildErr == nil {
 			log("build-gate: build passed after fix round %d", round)
 			return true
