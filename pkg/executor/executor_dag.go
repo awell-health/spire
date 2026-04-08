@@ -210,6 +210,7 @@ func (e *Executor) ensureReviewSubStepBeads(graph *formula.FormulaStepGraph) err
 			Priority: 3,
 			Type:     beads.TypeTask,
 			Parent:   reviewBeadID,
+			Prefix:   prefixFromBeadID(e.beadID),
 			Labels:   []string{"workflow-step", "step:" + stepName, "review-substep"},
 		})
 		if err != nil {

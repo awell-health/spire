@@ -64,6 +64,7 @@ func (e *Executor) wizardValidateDesign() (retErr error) {
 					Title:    designTitle,
 					Priority: 1,
 					Type:     e.deps.ParseIssueType("design"),
+					Prefix:   prefixFromBeadID(e.beadID),
 				})
 				if err != nil {
 					return fmt.Errorf("create design bead: %w", err)
