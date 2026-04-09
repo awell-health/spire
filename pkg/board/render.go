@@ -141,15 +141,30 @@ func RenderCompactCard(b BoardBead, clr color.Color, width int, selected bool) s
 		titleWidth = 15
 	}
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	isDeferred := b.Status == "deferred"
 	owner := BeadOwnerLabel(b)
 	ownerStr := ""
 	if owner != "" {
 		ownerStr = " " + lipgloss.NewStyle().Foreground(clr).Render(owner)
 	}
-	line := fmt.Sprintf("%s %s %s %s%s %s",
-		PriStr(b.Priority), b.ID, ShortType(b.Type),
-		Truncate(b.Title, titleWidth), ownerStr,
-		dimStyle.Render(TimeAgo(b.UpdatedAt)))
+	var line string
+	if isDeferred {
+		// Dim the entire line for deferred beads.
+		titleWidth -= 11 // account for " [deferred]"
+		if titleWidth < 10 {
+			titleWidth = 10
+		}
+		line = fmt.Sprintf("%s %s %s %s%s %s %s",
+			PriStr(b.Priority), dimStyle.Render(b.ID), dimStyle.Render(ShortType(b.Type)),
+			dimStyle.Render(Truncate(b.Title, titleWidth)), ownerStr,
+			dimStyle.Render(TimeAgo(b.UpdatedAt)),
+			dimStyle.Render("[deferred]"))
+	} else {
+		line = fmt.Sprintf("%s %s %s %s%s %s",
+			PriStr(b.Priority), b.ID, ShortType(b.Type),
+			Truncate(b.Title, titleWidth), ownerStr,
+			dimStyle.Render(TimeAgo(b.UpdatedAt)))
+	}
 	if selected {
 		cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
 		return cursor + " " + line + "\n"
@@ -444,7 +459,7 @@ func (m Model) View() string {
 	if m.ShowAllCols {
 		colsHint = " [all]"
 	}
-	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  Enter inspect  / search  s summon  u unsummon  r reset  x close  a actions  e epic" + epicInfo + "  T tower  H cols" + colsHint + " • q quit • ↻ " + m.Opts.Interval.String())
+	leftFooter := footerStyle.Render("j/k ↕  h/l ↔  Enter inspect  / search  s summon  u unsummon  r reset  x close  d defer  a actions  e epic" + epicInfo + "  T tower  H cols" + colsHint + " • q quit • ↻ " + m.Opts.Interval.String())
 	rightFooter := scopeStyle.Render("showing " + m.TypeScope.Label())
 	if m.Width > 0 {
 		gap := m.Width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)
@@ -699,28 +714,44 @@ func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, clr color.Co
 		titleWidth = 10
 	}
 
+	isDeferred := b.Status == "deferred"
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
 	typeStr := ShortType(b.Type)
 	if phase != "" {
 		typeStr += " [" + phase + "]"
 	}
 
-	// Visual tag for beads awaiting human approval.
-	needsHumanTag := ""
-	if b.HasLabel("needs-human") {
-		needsHumanTag = " " + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")).Render("[needs-human]")
+	// Visual tags for special states.
+	statusTag := ""
+	if isDeferred {
+		statusTag = " " + dimStyle.Render("[deferred]")
+	} else if b.HasLabel("needs-human") {
+		statusTag = " " + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")).Render("[needs-human]")
 	}
 
 	isSel := len(selected) > 0 && selected[0]
 	var s strings.Builder
 	if isSel {
 		cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
-		s.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursor, PriStr(b.Priority), b.ID, typeStr, needsHumanTag))
+		if isDeferred {
+			s.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursor, PriStr(b.Priority), dimStyle.Render(b.ID), dimStyle.Render(typeStr), statusTag))
+		} else {
+			s.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursor, PriStr(b.Priority), b.ID, typeStr, statusTag))
+		}
 	} else {
-		s.WriteString(fmt.Sprintf("%s %s %s%s\n", PriStr(b.Priority), b.ID, typeStr, needsHumanTag))
+		if isDeferred {
+			s.WriteString(fmt.Sprintf("%s %s %s%s\n", PriStr(b.Priority), dimStyle.Render(b.ID), dimStyle.Render(typeStr), statusTag))
+		} else {
+			s.WriteString(fmt.Sprintf("%s %s %s%s\n", PriStr(b.Priority), b.ID, typeStr, statusTag))
+		}
 	}
-	s.WriteString(fmt.Sprintf("  %s\n", Truncate(b.Title, titleWidth)))
+	if isDeferred {
+		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(Truncate(b.Title, titleWidth))))
+	} else {
+		s.WriteString(fmt.Sprintf("  %s\n", Truncate(b.Title, titleWidth)))
+	}
 
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	colorStyle := lipgloss.NewStyle().Foreground(clr)
 
 	owner := BeadOwnerLabel(b)

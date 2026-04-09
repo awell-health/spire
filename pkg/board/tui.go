@@ -30,6 +30,7 @@ const (
 	ActionApprove                // approve a needs-human bead (remove label, inline via tea.Cmd)
 	ActionApproveDesign          // approve a needs-human design bead (close it, inline via tea.Cmd)
 	ActionRejectDesign           // reject a design bead with feedback comment (inline via tea.Cmd)
+	ActionDefer                  // toggle deferred status (inline via tea.Cmd)
 )
 
 // Section identifies which vertical zone of the board the cursor is in.
@@ -374,6 +375,8 @@ func actionLabel(a PendingAction) string {
 		return "Approve design"
 	case ActionRejectDesign:
 		return "Reject design"
+	case ActionDefer:
+		return "Defer"
 	default:
 		return "Action"
 	}
@@ -409,7 +412,7 @@ func (m Model) updateCmdline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // isInlineAction returns true if the action should execute within the TUI.
 func isInlineAction(a PendingAction) bool {
 	switch a {
-	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionClose, ActionApprove, ActionApproveDesign:
+	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionClose, ActionApprove, ActionApproveDesign, ActionDefer:
 		return true
 	}
 	return false
@@ -1111,6 +1114,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ConfirmPrompt = confirmPromptForAction(ActionClose, bead.ID, bead.Title)
 				m.ConfirmDanger = DangerConfirm
 				return m, nil
+			}
+
+		// Defer/undefer toggle.
+		case "d":
+			if bead := m.SelectedBead(); bead != nil {
+				// Only toggle on ready (open) or deferred beads.
+				if bead.Status == "open" || bead.Status == "deferred" {
+					mm, cmd := m.dispatchInlineAction(ActionDefer, bead.ID)
+					return mm, cmd
+				}
 			}
 
 		// Action menu.

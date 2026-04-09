@@ -51,7 +51,7 @@ func FetchBoard(opts Opts, identity string) (BoardResult, error) {
 	}
 
 	openBeads, err := store.ListBoardBeads(beads.IssueFilter{
-		ExcludeStatus: []beads.Status{beads.StatusClosed, beads.StatusDeferred},
+		ExcludeStatus: []beads.Status{beads.StatusClosed},
 	})
 	if err != nil {
 		// If conflicts exist, degrade gracefully instead of hard-failing.
@@ -133,7 +133,7 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 
 	// 1. Bulk-fetch beads — same store calls as FetchBoard.
 	openBeads, err := store.ListBoardBeads(beads.IssueFilter{
-		ExcludeStatus: []beads.Status{beads.StatusClosed, beads.StatusDeferred},
+		ExcludeStatus: []beads.Status{beads.StatusClosed},
 	})
 	if err != nil {
 		// If conflicts detected, return a minimal snapshot with the warning

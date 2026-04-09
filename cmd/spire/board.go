@@ -285,6 +285,17 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 	case board.ActionApproveDesign:
 		// Approve a design bead: close it (signals acceptance).
 		return storeCloseBead(beadID)
+	case board.ActionDefer:
+		// Toggle deferred status: open → deferred, deferred → open.
+		b, err := storeGetBead(beadID)
+		if err != nil {
+			return fmt.Errorf("defer: get bead: %w", err)
+		}
+		newStatus := "deferred"
+		if b.Status == "deferred" {
+			newStatus = "open"
+		}
+		return storeUpdateBead(beadID, map[string]interface{}{"status": newStatus})
 	}
 	return fmt.Errorf("unknown inline action: %d", action)
 }

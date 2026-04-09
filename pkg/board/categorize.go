@@ -128,6 +128,14 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 			continue
 		}
 
+		// Deferred beads land in Ready (sorted to bottom by SortBeads).
+		if b.Status == "deferred" {
+			if b.Parent == "" {
+				c.Ready = append(c.Ready, b)
+			}
+			continue
+		}
+
 		phase := GetBoardBeadPhase(b)
 		switch {
 		case phase == "design":
@@ -200,6 +208,14 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		}
 		if isInterruptedBead(b) {
 			c.Interrupted = append(c.Interrupted, b)
+			continue
+		}
+
+		// Deferred beads land in Ready (sorted to bottom by SortBeads).
+		if b.Status == "deferred" {
+			if b.Parent == "" {
+				c.Ready = append(c.Ready, b)
+			}
 			continue
 		}
 
@@ -419,8 +435,14 @@ func FilterOwned(beads []BoardBead, identity string) []BoardBead {
 }
 
 // SortBeads sorts beads by priority (ascending) then update time (most recent first).
+// Deferred beads are always sorted to the bottom, after all non-deferred beads.
 func SortBeads(beads []BoardBead) {
 	sort.Slice(beads, func(i, j int) bool {
+		iDeferred := beads[i].Status == "deferred"
+		jDeferred := beads[j].Status == "deferred"
+		if iDeferred != jDeferred {
+			return !iDeferred // non-deferred sorts before deferred
+		}
 		if beads[i].Priority != beads[j].Priority {
 			return beads[i].Priority < beads[j].Priority
 		}
