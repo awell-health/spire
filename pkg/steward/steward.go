@@ -18,6 +18,7 @@ package steward
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -47,6 +48,12 @@ var RaiseCorruptedBeadAlertFunc = RaiseCorruptedBeadAlert
 
 // GetChildrenFunc is a test-replaceable function for store.GetChildren.
 var GetChildrenFunc = store.GetChildren
+
+// GetBeadFunc is a test-replaceable function for store.GetBead.
+var GetBeadFunc = store.GetBead
+
+// GetCommentsFunc is a test-replaceable function for store.GetComments.
+var GetCommentsFunc = store.GetComments
 
 // RemoveLabelFunc is a test-replaceable function for store.RemoveLabel.
 var RemoveLabelFunc = store.RemoveLabel
@@ -302,6 +309,11 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 
 	// Step 4c: Detect tasks with review feedback that need wizard re-engagement.
 	DetectReviewFeedback(cfg.DryRun)
+
+	// Step 4d: Sweep hooked graph steps.
+	if hookedCount := SweepHookedSteps(cfg.DryRun, cfg.Backend, towerName); hookedCount > 0 {
+		log.Printf("[steward] %shooked sweep: re-summoned %d wizard(s)", prefix, hookedCount)
+	}
 
 	// Step 5: Stale + shutdown check.
 	staleCount, shutdownCount := CheckBeadHealth(cfg.StaleThreshold, cfg.ShutdownThreshold, cfg.DryRun, cfg.Backend)
@@ -618,6 +630,121 @@ func DetectReviewFeedback(dryRun bool) {
 			continue
 		}
 	}
+}
+
+// SweepHookedSteps finds graph states with hooked steps and re-summons
+// wizards when the hooked condition is resolved (e.g., design bead closed).
+func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string) int {
+	// 1. Enumerate runtime directory.
+	cfgDir, err := config.Dir()
+	if err != nil {
+		log.Printf("[steward] hooked sweep: config dir: %s", err)
+		return 0
+	}
+	runtimeDir := filepath.Join(cfgDir, "runtime")
+	entries, err := os.ReadDir(runtimeDir)
+	if err != nil {
+		return 0 // no runtime dir yet
+	}
+
+	resummoned := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		agentName := entry.Name()
+
+		// 2. Load graph state JSON.
+		gsPath := filepath.Join(runtimeDir, agentName, "graph_state.json")
+		data, err := os.ReadFile(gsPath)
+		if err != nil {
+			continue // no graph state or v2 agent
+		}
+
+		// Use a minimal struct to avoid importing pkg/executor.
+		var gs struct {
+			BeadID string `json:"bead_id"`
+			Steps  map[string]struct {
+				Status  string            `json:"status"`
+				Outputs map[string]string `json:"outputs"`
+			} `json:"steps"`
+		}
+		if err := json.Unmarshal(data, &gs); err != nil {
+			continue
+		}
+
+		// 3. Find hooked steps.
+		for stepName, ss := range gs.Steps {
+			if ss.Status != "hooked" {
+				continue
+			}
+
+			// 4. Resolve the hooked condition.
+			// Currently only check.design-linked uses hooked status.
+			// Look for design_ref in step outputs.
+			designRef := ss.Outputs["design_ref"]
+			if designRef == "" {
+				log.Printf("[steward] hooked sweep: %s step %s has no design_ref output, skipping", agentName, stepName)
+				continue
+			}
+
+			// Check if design bead is now closed with content.
+			designBead, err := GetBeadFunc(designRef)
+			if err != nil {
+				log.Printf("[steward] hooked sweep: get design bead %s: %s", designRef, err)
+				continue
+			}
+			if designBead.Status != "closed" {
+				continue // still waiting
+			}
+			comments, _ := GetCommentsFunc(designRef)
+			if len(comments) == 0 && designBead.Description == "" {
+				continue // closed but empty
+			}
+
+			log.Printf("[steward] hooked sweep: design bead %s resolved for %s step %s", designRef, agentName, stepName)
+
+			if dryRun {
+				log.Printf("[steward] [dry-run] would reset step %s and re-summon %s", stepName, agentName)
+				continue
+			}
+
+			// 5. Reset hooked step to pending.
+			// Re-read, modify, and write back the full graph state.
+			var fullGS map[string]interface{}
+			json.Unmarshal(data, &fullGS) // data is the raw bytes from step 2
+			if stepsMap, ok := fullGS["steps"].(map[string]interface{}); ok {
+				if stepMap, ok := stepsMap[stepName].(map[string]interface{}); ok {
+					stepMap["status"] = "pending"
+					delete(stepMap, "outputs")
+					delete(stepMap, "started_at")
+					delete(stepMap, "completed_at")
+				}
+			}
+			updated, _ := json.MarshalIndent(fullGS, "", "  ")
+			if err := os.WriteFile(gsPath, updated, 0644); err != nil {
+				log.Printf("[steward] hooked sweep: write graph state %s: %s", gsPath, err)
+				continue
+			}
+
+			// 6. Re-summon wizard.
+			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+				Name:    agentName,
+				BeadID:  gs.BeadID,
+				Role:    agent.RoleApprentice,
+				Tower:   towerName,
+				LogPath: filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
+			})
+			if spawnErr != nil {
+				log.Printf("[steward] hooked sweep: spawn %s: %s", agentName, spawnErr)
+			} else if handle != nil {
+				log.Printf("[steward] hooked sweep: re-summoned %s for %s (%s)", agentName, gs.BeadID, handle.Identifier())
+			}
+			resummoned++
+			break // one hooked step per agent is enough
+		}
+	}
+	return resummoned
 }
 
 // GetReviewBeads returns review-round child beads for a parent, sorted by round number.

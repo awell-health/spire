@@ -1,6 +1,7 @@
 package steward
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -640,5 +641,191 @@ func TestStewardSkipsBeadWithAttemptChildNoOwnerLabel(t *testing.T) {
 	agentName := store.HasLabel(*attempt, "agent:")
 	if agentName != "wizard-abc" {
 		t.Errorf("expected agent=wizard-abc, got %q", agentName)
+	}
+}
+
+// --- SweepHookedSteps tests ---
+
+// spawnTrackingBackend records Spawn calls for assertion.
+type spawnTrackingBackend struct {
+	spawns []agent.SpawnConfig
+}
+
+func (b *spawnTrackingBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
+	b.spawns = append(b.spawns, cfg)
+	return &fakeHandle{id: cfg.Name}, nil
+}
+func (b *spawnTrackingBackend) List() ([]agent.Info, error)       { return nil, nil }
+func (b *spawnTrackingBackend) Logs(name string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
+func (b *spawnTrackingBackend) Kill(name string) error            { return nil }
+
+type fakeHandle struct{ id string }
+
+func (h *fakeHandle) Wait() error                { return nil }
+func (h *fakeHandle) Signal(sig os.Signal) error { return nil }
+func (h *fakeHandle) Alive() bool                { return true }
+func (h *fakeHandle) Name() string               { return h.id }
+func (h *fakeHandle) Identifier() string         { return h.id }
+
+// writeGraphState creates a runtime/<agentName>/graph_state.json under cfgDir.
+func writeGraphState(t *testing.T, cfgDir, agentName string, gs interface{}) {
+	t.Helper()
+	dir := filepath.Join(cfgDir, "runtime", agentName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(gs, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "graph_state.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSweepHookedSteps_ResolvesDesign(t *testing.T) {
+	// Set up temp config dir.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	// Write graph state with a hooked step.
+	gs := map[string]interface{}{
+		"bead_id": "spi-test1",
+		"steps": map[string]interface{}{
+			"check.design-linked": map[string]interface{}{
+				"status": "hooked",
+				"outputs": map[string]string{
+					"design_ref": "spi-design1",
+				},
+			},
+			"implement": map[string]interface{}{
+				"status": "pending",
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-test1", gs)
+
+	// Mock store: design bead is closed with content.
+	origGetBead := GetBeadFunc
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		if id == "spi-design1" {
+			return store.Bead{
+				ID:          "spi-design1",
+				Status:      "closed",
+				Description: "Design decisions documented here.",
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	defer func() { GetBeadFunc = origGetBead }()
+
+	origGetComments := GetCommentsFunc
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) {
+		return nil, nil
+	}
+	defer func() { GetCommentsFunc = origGetComments }()
+
+	backend := &spawnTrackingBackend{}
+	count := SweepHookedSteps(false, backend, "test-tower")
+
+	if count != 1 {
+		t.Errorf("SweepHookedSteps returned %d, want 1", count)
+	}
+
+	// Verify graph state was updated.
+	data, err := os.ReadFile(filepath.Join(cfgDir, "runtime", "wizard-test1", "graph_state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	json.Unmarshal(data, &updated)
+	stepsMap := updated["steps"].(map[string]interface{})
+	step := stepsMap["check.design-linked"].(map[string]interface{})
+	if step["status"] != "pending" {
+		t.Errorf("step status = %q, want pending", step["status"])
+	}
+	if _, hasOutputs := step["outputs"]; hasOutputs {
+		t.Error("step outputs should have been deleted")
+	}
+
+	// Verify backend.Spawn was called correctly.
+	if len(backend.spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1", len(backend.spawns))
+	}
+	sc := backend.spawns[0]
+	if sc.Name != "wizard-test1" {
+		t.Errorf("spawn name = %q, want wizard-test1", sc.Name)
+	}
+	if sc.BeadID != "spi-test1" {
+		t.Errorf("spawn bead = %q, want spi-test1", sc.BeadID)
+	}
+	if sc.Role != agent.RoleApprentice {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleApprentice)
+	}
+}
+
+func TestSweepHookedSteps_SkipsOpenDesign(t *testing.T) {
+	// Set up temp config dir.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	// Write graph state with a hooked step.
+	gs := map[string]interface{}{
+		"bead_id": "spi-test2",
+		"steps": map[string]interface{}{
+			"check.design-linked": map[string]interface{}{
+				"status": "hooked",
+				"outputs": map[string]string{
+					"design_ref": "spi-design2",
+				},
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-test2", gs)
+
+	// Mock store: design bead is still open.
+	origGetBead := GetBeadFunc
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		if id == "spi-design2" {
+			return store.Bead{
+				ID:     "spi-design2",
+				Status: "open",
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	defer func() { GetBeadFunc = origGetBead }()
+
+	origGetComments := GetCommentsFunc
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) {
+		return nil, nil
+	}
+	defer func() { GetCommentsFunc = origGetComments }()
+
+	backend := &spawnTrackingBackend{}
+	count := SweepHookedSteps(false, backend, "test-tower")
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0", count)
+	}
+
+	// Verify graph state is unchanged.
+	data, err := os.ReadFile(filepath.Join(cfgDir, "runtime", "wizard-test2", "graph_state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unchanged map[string]interface{}
+	json.Unmarshal(data, &unchanged)
+	stepsMap := unchanged["steps"].(map[string]interface{})
+	step := stepsMap["check.design-linked"].(map[string]interface{})
+	if step["status"] != "hooked" {
+		t.Errorf("step status = %q, want hooked (unchanged)", step["status"])
+	}
+
+	// Verify no spawn.
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
 	}
 }
