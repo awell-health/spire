@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Spire context injection hook for Claude Code.
 # Reads the hook event from stdin and outputs additionalContext.
-
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 EVENT=$(cat 2>/dev/null || true)
