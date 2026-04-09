@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
@@ -176,37 +175,25 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 
 		// 5. Record outputs and update state.
 		if result.Error != nil {
+			// Park the step as hooked (not failed) so the resolve→steward→re-summon
+			// flow can retry it. The graph loop will detect hooked steps and exit
+			// gracefully without a second escalation.
 			ss = state.Steps[stepName]
-			ss.Status = "failed"
-			ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+			ss.Status = "hooked"
+			// Do NOT set CompletedAt — the step is parked, not completed.
 			state.Steps[stepName] = ss
+			state.ActiveStep = "" // clear so graph detects parking
 			state.Save(e.agentName, e.deps.ConfigDir)
 
-			// Close step bead on failure.
-			if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
-				e.deps.CloseStepBead(stepBeadID)
-			}
-
-			// Build node-scoped result with step metadata.
-			resultParts := []string{fmt.Sprintf("failure: step %s", stepName)}
-			if stepCfg.Action != "" {
-				resultParts = append(resultParts, fmt.Sprintf("action=%s", stepCfg.Action))
-			}
-			if stepCfg.Flow != "" {
-				resultParts = append(resultParts, fmt.Sprintf("flow=%s", stepCfg.Flow))
-			}
-			if stepCfg.Workspace != "" {
-				resultParts = append(resultParts, fmt.Sprintf("workspace=%s", stepCfg.Workspace))
-			}
-			resultMsg := strings.Join(resultParts, " ") + ": " + result.Error.Error()
-			e.closeGraphAttempt(state, resultMsg)
+			// Do NOT close the step bead — it stays open for retry.
 
 			// Escalate to archmage with node-scoped context so the parent bead
 			// gets needs-human + interrupted:* labels and an alert bead.
 			EscalateGraphStepFailure(e.beadID, e.agentName, "step-failure",
 				result.Error.Error(), stepName, stepCfg.Action, stepCfg.Flow, stepCfg.Workspace, e.deps)
 
-			return fmt.Errorf("step %s failed: %w", stepName, result.Error)
+			e.log("step %s failed — hooked for recovery, continuing graph loop", stepName)
+			continue
 		}
 
 		if result.Hooked {
