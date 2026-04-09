@@ -122,7 +122,10 @@ func cmdResummon(args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
 	}
 
-	// 6. Re-summon: spire summon 1 --targets <bead-id>
+	// 6. Warn that no recovery learning is recorded.
+	fmt.Fprintf(os.Stderr, "\n⚠ No recovery learning recorded. To capture what you did for future recoveries, use:\n  spire resolve %s \"what you did\"\n\n", beadID)
+
+	// 7. Re-summon: spire summon 1 --targets <bead-id>
 	fmt.Printf("  re-summoning wizard for %s...\n", beadID)
 	return cmdSummon([]string{"1", "--targets", beadID})
 }
