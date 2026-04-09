@@ -77,8 +77,9 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 		// minimal actions for closed beads
 	}
 
-	// Non-design beads with needs-human: show Approve/Resummon for open and in_progress.
+	// Non-design beads with needs-human: show Resolve/Approve/Resummon for open and in_progress.
 	if needsHuman && !isDesign && (bead.Status == "open" || bead.Status == "in_progress") {
+		items = append(items, MenuAction{Key: 'v', Label: "Resolve (record learning)", Danger: DangerConfirm, ActionType: ActionResolve})
 		items = append(items, MenuAction{Key: 'Y', Label: "Approve (close)", Danger: DangerConfirm, ActionType: ActionApprove})
 		items = append(items, MenuAction{Key: 'S', Label: "Resummon", Danger: DangerNone, ActionType: ActionResummon})
 	}

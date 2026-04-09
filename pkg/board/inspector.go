@@ -800,3 +800,26 @@ func RenderFeedbackInput(input string, width int) string {
 
 	return prompt + inputStyle.Render(displayInput) + cursor + hint
 }
+
+// RenderResolveInput renders the resolve text input bar for needs-human bead resolution.
+func RenderResolveInput(input string, width int) string {
+	promptStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+	inputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("7")).Foreground(lipgloss.Color("0"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	prompt := promptStyle.Render("Resolve: ")
+	cursor := cursorStyle.Render(" ")
+	hint := dimStyle.Render("  Enter submit • Esc cancel")
+
+	maxInput := width - 30
+	if maxInput < 20 {
+		maxInput = 20
+	}
+	displayInput := input
+	if len(displayInput) > maxInput {
+		displayInput = displayInput[len(displayInput)-maxInput:]
+	}
+
+	return prompt + inputStyle.Render(displayInput) + cursor + hint
+}

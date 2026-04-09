@@ -198,9 +198,15 @@ func (m Model) View() string {
 		if m.FeedbackActive {
 			inspectorHeight -= 1 // reserve one line for feedback input bar
 		}
+		if m.ResolveActive {
+			inspectorHeight -= 1 // reserve one line for resolve input bar
+		}
 		result := renderInspectorSnap(b, m.InspectorData, dag, m.Width, inspectorHeight, m.InspectorScroll, m.InspectorTab)
 		if m.FeedbackActive {
 			result += "\n" + RenderFeedbackInput(m.FeedbackInput, m.Width)
+		}
+		if m.ResolveActive {
+			result += "\n" + RenderResolveInput(m.ResolveInput, m.Width)
 		}
 		return result
 	}

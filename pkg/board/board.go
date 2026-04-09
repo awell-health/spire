@@ -90,6 +90,8 @@ type Opts struct {
 	ListTowersFn func() []TowerItem
 	// SwitchTowerFn handles env changes when switching towers. Returns new name or error.
 	SwitchTowerFn func(towerName string) (string, error)
+	// ResolveFn resolves a needs-human bead with a recovery learning comment.
+	ResolveFn func(beadID, comment string) error
 }
 
 // ANSI color codes for static terminal output (used by watch, roster, actions).

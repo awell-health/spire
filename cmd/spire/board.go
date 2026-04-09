@@ -175,6 +175,10 @@ func cmdBoard(args []string) error {
 		return storeAddComment(beadID, "Design rejected: "+feedback)
 	}
 
+	opts.ResolveFn = func(beadID, comment string) error {
+		return resolveSourceBead(beadID, comment, false)
+	}
+
 	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn, inlineActionFn, rejectDesignFn)
 }
 

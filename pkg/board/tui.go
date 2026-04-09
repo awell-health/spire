@@ -31,6 +31,7 @@ const (
 	ActionApproveDesign          // approve a needs-human design bead (close it, inline via tea.Cmd)
 	ActionRejectDesign           // reject a design bead with feedback comment (inline via tea.Cmd)
 	ActionDefer                  // toggle deferred status (inline via tea.Cmd)
+	ActionResolve                // resolve a needs-human bead with recovery learning (inline via tea.Cmd)
 )
 
 // Section identifies which vertical zone of the board the cursor is in.
@@ -108,6 +109,12 @@ type Model struct {
 	FeedbackActive  bool   // true when feedback text input is shown
 	FeedbackInput   string // current text
 	FeedbackBeadID  string // bead to add the comment to
+
+	// Resolve input state for needs-human bead resolution.
+	ResolveFn      func(beadID, comment string) error
+	ResolveActive  bool
+	ResolveInput   string
+	ResolveBeadID  string
 
 	// Confirmation dialog state.
 	ConfirmOpen   bool
@@ -310,6 +317,7 @@ func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, ac
 			FetchAgentsFn:  fetchAgents,
 			InlineActionFn: inlineActionFn,
 			RejectDesignFn: rejectFn,
+			ResolveFn:      opts.ResolveFn,
 			CmdlineRoot:    opts.RootCmd,
 		}
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -377,6 +385,8 @@ func actionLabel(a PendingAction) string {
 		return "Reject design"
 	case ActionDefer:
 		return "Defer"
+	case ActionResolve:
+		return "Resolve"
 	default:
 		return "Action"
 	}
@@ -523,8 +533,23 @@ func copyToClipboard(text string) error {
 
 
 // dispatchMenuAction handles an action selected from the action menu.
-// ActionRejectDesign gets special treatment: it opens the inspector + feedback input.
+// ActionRejectDesign and ActionResolve get special treatment: they open the inspector + text input.
 func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
+	if item.ActionType == ActionResolve {
+		// Open inspector and activate resolve input.
+		m.Inspecting = true
+		m.InspectorScroll = 0
+		m.InspectorTab = 0
+		m.ResolveActive = true
+		m.ResolveInput = ""
+		m.ResolveBeadID = m.ActionMenuBeadID
+		m.InspectorLoading = true
+		m.InspectorData = nil
+		if bead := m.SelectedBead(); bead != nil {
+			return *m, fetchInspectorCmd(*bead)
+		}
+		return *m, nil
+	}
 	if item.ActionType == ActionRejectDesign {
 		// Open inspector and activate feedback input.
 		m.Inspecting = true
@@ -559,6 +584,12 @@ func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
 
 // rejectDesignResultMsg carries the result of a design rejection action.
 type rejectDesignResultMsg struct {
+	BeadID string
+	Err    error
+}
+
+// resolveResultMsg carries the result of a resolve action.
+type resolveResultMsg struct {
 	BeadID string
 	Err    error
 }
@@ -606,6 +637,54 @@ func (m Model) updateFeedbackInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		if len(msg.String()) == 1 && msg.String()[0] >= 32 {
 			m.FeedbackInput += msg.String()
+		}
+		return m, nil
+	}
+}
+
+// updateResolveInput handles keypresses in the resolve text input mode.
+func (m Model) updateResolveInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.ResolveActive = false
+		m.ResolveInput = ""
+		m.ResolveBeadID = ""
+		return m, nil
+	case "enter":
+		comment := strings.TrimSpace(m.ResolveInput)
+		if comment == "" {
+			m.ActionStatus = "Resolution comment required"
+			m.ActionStatusTime = time.Now()
+			return m, nil
+		}
+		beadID := m.ResolveBeadID
+		m.ResolveActive = false
+		m.ResolveInput = ""
+		m.ResolveBeadID = ""
+		m.ActionRunning = true
+		m.ActionStatus = "Resolving..."
+		m.ActionStatusTime = time.Now()
+		resolveFn := m.ResolveFn
+		return m, func() tea.Msg {
+			var err error
+			if resolveFn != nil {
+				err = resolveFn(beadID, comment)
+			} else {
+				err = fmt.Errorf("resolve not available")
+			}
+			return resolveResultMsg{BeadID: beadID, Err: err}
+		}
+	case "backspace":
+		if len(m.ResolveInput) > 0 {
+			m.ResolveInput = m.ResolveInput[:len(m.ResolveInput)-1]
+		}
+		return m, nil
+	case "ctrl+u":
+		m.ResolveInput = ""
+		return m, nil
+	default:
+		if len(msg.String()) == 1 && msg.String()[0] >= 32 {
+			m.ResolveInput += msg.String()
 		}
 		return m, nil
 	}
@@ -744,6 +823,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Feedback input mode: absorb all keys.
 			if m.FeedbackActive {
 				return m.updateFeedbackInput(msg)
+			}
+
+			// Resolve input mode: absorb all keys.
+			if m.ResolveActive {
+				return m.updateResolveInput(msg)
 			}
 
 			// Check if inspected bead is a design bead with needs-human.
@@ -1209,6 +1293,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ActionStatus = fmt.Sprintf("Reject design failed: %v", msg.Err)
 		} else {
 			m.ActionStatus = "Design rejected"
+		}
+		m.ActionStatusTime = time.Now()
+		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+	case resolveResultMsg:
+		m.ActionRunning = false
+		if msg.Err != nil {
+			m.ActionStatus = fmt.Sprintf("Resolve failed: %v", msg.Err)
+		} else {
+			m.ActionStatus = "Resolved"
 		}
 		m.ActionStatusTime = time.Now()
 		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
