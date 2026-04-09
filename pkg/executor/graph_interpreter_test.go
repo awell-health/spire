@@ -1602,3 +1602,132 @@ func TestResolveGraphBranchState_ResumeSkipsOverride(t *testing.T) {
 		t.Errorf("BaseBranch = %q, want %q (resume should preserve)", exec.graphState.BaseBranch, "main")
 	}
 }
+
+// --- Test: Hooked step parks graph safely ---
+
+func TestRunGraph_HookedParksSafely(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.hook"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Hooked: true, Outputs: map[string]string{"design_ref": "spi-design1"}}
+	}
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-hooked",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.hook"},
+			"b": {Action: "test.noop", Needs: []string{"a"}},
+			"c": {Action: "test.noop", Needs: []string{"b"}, Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	// Step a should be hooked.
+	if ss := exec.graphState.Steps["a"]; ss.Status != "hooked" {
+		t.Errorf("step a: expected hooked, got %s", ss.Status)
+	}
+	// Steps b and c should still be pending.
+	if ss := exec.graphState.Steps["b"]; ss.Status != "pending" {
+		t.Errorf("step b: expected pending, got %s", ss.Status)
+	}
+	if ss := exec.graphState.Steps["c"]; ss.Status != "pending" {
+		t.Errorf("step c: expected pending, got %s", ss.Status)
+	}
+	// Executor should NOT be terminated (graph is parked, not finished).
+	if exec.terminated {
+		t.Error("expected executor to NOT be terminated (graph is parked)")
+	}
+}
+
+// --- Test: Hooked resume after external reset ---
+
+func TestRunGraph_HookedResumeAfterReset(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-hooked-resume",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop"},
+			"b": {Action: "test.noop", Needs: []string{"a"}, Terminal: true},
+		},
+	}
+
+	// First run: pre-set step a as hooked (simulating a previously parked graph).
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec.graphState.Steps["a"] = StepState{Status: "hooked", Outputs: map[string]string{"design_ref": "spi-d1"}}
+
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("first RunGraph (parked) returned error: %v", err)
+	}
+	// Graph should park without escalation.
+	if exec.terminated {
+		t.Error("first run: expected executor to NOT be terminated (graph is parked)")
+	}
+	if ss := exec.graphState.Steps["a"]; ss.Status != "hooked" {
+		t.Errorf("first run: step a expected hooked, got %s", ss.Status)
+	}
+
+	// Externally reset step a to pending (simulating steward sweep).
+	ss := exec.graphState.Steps["a"]
+	ss.Status = "pending"
+	ss.Outputs = nil
+	exec.graphState.Steps["a"] = ss
+
+	// Second run: step a should now execute and complete.
+	exec2 := NewGraphForTest("spi-test", "wizard-test", graph, exec.graphState, deps)
+	err = exec2.RunGraph(graph, exec2.graphState)
+	if err != nil {
+		t.Fatalf("second RunGraph (resumed) returned error: %v", err)
+	}
+
+	if !exec2.terminated {
+		t.Error("second run: expected executor to be terminated")
+	}
+	if ss := exec2.graphState.Steps["a"]; ss.Status != "completed" {
+		t.Errorf("second run: step a expected completed, got %s", ss.Status)
+	}
+	if ss := exec2.graphState.Steps["b"]; ss.Status != "completed" {
+		t.Errorf("second run: step b expected completed, got %s", ss.Status)
+	}
+}

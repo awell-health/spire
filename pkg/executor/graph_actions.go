@@ -17,6 +17,7 @@ import (
 type ActionResult struct {
 	Outputs map[string]string
 	Error   error
+	Hooked  bool
 }
 
 // ActionHandler is the signature for a graph action handler.

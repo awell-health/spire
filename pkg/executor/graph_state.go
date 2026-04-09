@@ -37,7 +37,7 @@ type GraphState struct {
 
 // StepState tracks the status and outputs of a single graph step.
 type StepState struct {
-	Status         string            `json:"status"` // pending, active, completed, failed, skipped
+	Status         string            `json:"status"` // pending, active, completed, failed, hooked, skipped
 	Outputs        map[string]string `json:"outputs,omitempty"`
 	StartedAt      string            `json:"started_at,omitempty"`
 	CompletedAt    string            `json:"completed_at,omitempty"`

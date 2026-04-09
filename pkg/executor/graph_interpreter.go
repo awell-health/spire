@@ -106,6 +106,16 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			return fmt.Errorf("graph walk: %w", err)
 		}
 
+		// Filter out hooked steps — they are parked, not ready for dispatch.
+		var filteredReady []string
+		for _, name := range ready {
+			if ss, ok := state.Steps[name]; ok && ss.Status == "hooked" {
+				continue
+			}
+			filteredReady = append(filteredReady, name)
+		}
+		ready = filteredReady
+
 		if len(ready) == 0 {
 			// Check if any terminal step completed -> success.
 			for name, ss := range state.Steps {
@@ -123,6 +133,14 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 					}
 					e.terminated = true
 					e.closeGraphAttempt(state, "success: terminal step "+name)
+					return nil
+				}
+			}
+			// Check if graph is parked (hooked steps present).
+			for _, ss := range state.Steps {
+				if ss.Status == "hooked" {
+					e.log("graph parked: hooked step(s) present, exiting without escalation")
+					e.closeGraphAttempt(state, "parked: hooked steps")
 					return nil
 				}
 			}
@@ -189,6 +207,18 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				result.Error.Error(), stepName, stepCfg.Action, stepCfg.Flow, stepCfg.Workspace, e.deps)
 
 			return fmt.Errorf("step %s failed: %w", stepName, result.Error)
+		}
+
+		if result.Hooked {
+			ss = state.Steps[stepName]
+			ss.Status = "hooked"
+			ss.Outputs = result.Outputs
+			state.Steps[stepName] = ss
+			state.ActiveStep = ""
+			state.Save(e.agentName, e.deps.ConfigDir)
+			e.log("step %s hooked — graph parked", stepName)
+			e.closeGraphAttempt(state, "parked: step "+stepName+" hooked")
+			return nil // graceful exit, not an error
 		}
 
 		ss = state.Steps[stepName]
