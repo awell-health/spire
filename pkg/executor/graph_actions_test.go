@@ -1433,3 +1433,200 @@ func TestRecoveryVerify_FailPromotesVerificationStatus(t *testing.T) {
 		t.Errorf("outputs[verification_status] = %q, want %q", result.Outputs["verification_status"], "fail")
 	}
 }
+
+// --- Tests for actionCheckDesignLinked with auto_create ---
+
+// TestCheckDesignLinked_AutoCreateNoDesign verifies that when auto_create is true
+// and no design bead exists, the action creates one and returns Hooked.
+func TestCheckDesignLinked_AutoCreateNoDesign(t *testing.T) {
+	deps, _ := planTestDeps(t)
+
+	var createBeadCalled bool
+	var createdOpts CreateOpts
+	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return nil, nil // no deps
+	}
+	deps.CreateBead = func(opts CreateOpts) (string, error) {
+		// Distinguish design bead creation from archmage message creation.
+		for _, l := range opts.Labels {
+			if l == "msg" {
+				return "spi-msg-1", nil
+			}
+		}
+		createBeadCalled = true
+		createdOpts = opts
+		return "spi-design-new", nil
+	}
+	deps.AddDepTyped = func(issueID, dependsOnID, depType string) error {
+		return nil
+	}
+	deps.ParseIssueType = func(s string) beads.IssueType { return beads.IssueType(s) }
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-design-check",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"design-check": {Action: "check.design-linked"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-epic1", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "check.design-linked",
+		With:   map[string]string{"auto_create": "true"},
+	}
+
+	result := actionCheckDesignLinked(exec, "design-check", step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("expected no error, got: %v", result.Error)
+	}
+	if !result.Hooked {
+		t.Error("expected Hooked=true when auto-creating design bead")
+	}
+	if !createBeadCalled {
+		t.Error("expected CreateBead to be called")
+	}
+	if string(createdOpts.Type) != "design" {
+		t.Errorf("expected CreateBead type=design, got %q", createdOpts.Type)
+	}
+	if result.Outputs["design_ref"] != "spi-design-new" {
+		t.Errorf("expected design_ref=spi-design-new, got %q", result.Outputs["design_ref"])
+	}
+}
+
+// TestCheckDesignLinked_AutoCreateOpenDesign verifies that when auto_create is true
+// and an open design bead exists, the action returns Hooked without creating a new bead.
+func TestCheckDesignLinked_AutoCreateOpenDesign(t *testing.T) {
+	deps, _ := planTestDeps(t)
+
+	var createBeadCalled bool
+	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return []*beads.IssueWithDependencyMetadata{
+			{
+				Issue: beads.Issue{
+					ID:        "spi-des1",
+					Title:     "Design: spi-epic1",
+					IssueType: "design",
+					Status:    "open",
+				},
+				DependencyType: beads.DepDiscoveredFrom,
+			},
+		}, nil
+	}
+	deps.CreateBead = func(opts CreateOpts) (string, error) {
+		createBeadCalled = true
+		return "spi-should-not", nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-design-check-open",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"design-check": {Action: "check.design-linked"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-epic1", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "check.design-linked",
+		With:   map[string]string{"auto_create": "true"},
+	}
+
+	result := actionCheckDesignLinked(exec, "design-check", step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("expected no error, got: %v", result.Error)
+	}
+	if !result.Hooked {
+		t.Error("expected Hooked=true for open design bead with auto_create")
+	}
+	if createBeadCalled {
+		t.Error("expected CreateBead NOT to be called for existing open design bead")
+	}
+	if result.Outputs["design_ref"] != "spi-des1" {
+		t.Errorf("expected design_ref=spi-des1, got %q", result.Outputs["design_ref"])
+	}
+}
+
+// TestCheckDesignLinked_NoAutoCreateNoDesign verifies that without auto_create,
+// a missing design bead causes a hard error (preserves existing behavior).
+func TestCheckDesignLinked_NoAutoCreateNoDesign(t *testing.T) {
+	deps, _ := planTestDeps(t)
+
+	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return nil, nil // no deps
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-design-check-no-auto",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"design-check": {Action: "check.design-linked"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-epic1", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "check.design-linked",
+		// No auto_create — default hard-fail behavior.
+	}
+
+	result := actionCheckDesignLinked(exec, "design-check", step, exec.graphState)
+	if result.Error == nil {
+		t.Fatal("expected error when no design bead and auto_create is not set")
+	}
+	if result.Hooked {
+		t.Error("expected Hooked=false when auto_create is not set")
+	}
+}
+
+// TestCheckDesignLinked_ClosedDesignWithContent verifies that a closed design bead
+// with content passes successfully without hooking.
+func TestCheckDesignLinked_ClosedDesignWithContent(t *testing.T) {
+	deps, _ := planTestDeps(t)
+
+	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return []*beads.IssueWithDependencyMetadata{
+			{
+				Issue: beads.Issue{
+					ID:          "spi-des1",
+					Title:       "Design: auth overhaul",
+					Description: "Use OAuth2 with PKCE flow",
+					IssueType:   "design",
+					Status:      "closed",
+				},
+				DependencyType: beads.DepDiscoveredFrom,
+			},
+		}, nil
+	}
+	deps.GetComments = func(id string) ([]*beads.Comment, error) {
+		return []*beads.Comment{{ID: "c1", IssueID: id, Text: "Design notes"}}, nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-design-check-closed",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"design-check": {Action: "check.design-linked"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-epic1", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "check.design-linked",
+	}
+
+	result := actionCheckDesignLinked(exec, "design-check", step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("expected no error, got: %v", result.Error)
+	}
+	if result.Hooked {
+		t.Error("expected Hooked=false for closed design bead with content")
+	}
+	if result.Outputs["design_ref"] != "spi-des1" {
+		t.Errorf("expected design_ref=spi-des1, got %q", result.Outputs["design_ref"])
+	}
+}

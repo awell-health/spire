@@ -48,6 +48,7 @@ cleanup = "terminal"
 kind = "op"
 action = "check.design-linked"
 title = "Validate design linkage"
+with = { auto_create = "true" }
 
 # Step 2: Wizard generates the epic plan and creates subtask beads.
 [steps.plan]

@@ -301,36 +301,84 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 
 // actionCheckDesignLinked extracts the design validation logic into a
 // self-contained check that verifies design beads are linked and closed.
+// When auto_create is "true", missing or unready design beads cause a Hooked
+// result (graph parks) instead of a hard error.
 func actionCheckDesignLinked(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	autoCreate := step.With["auto_create"] == "true"
+
 	deps, err := e.deps.GetDepsWithMeta(e.beadID)
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("get deps: %w", err)}
 	}
 
+	// Find existing design bead via discovered-from dep.
 	var designRef string
+	var designOpen bool
+	var designEmpty bool
 	for _, dep := range deps {
-		if dep.DependencyType != beads.DepDiscoveredFrom {
+		if dep.DependencyType != beads.DepDiscoveredFrom || dep.IssueType != "design" {
 			continue
-		}
-		if dep.IssueType != "design" {
-			continue
-		}
-		if string(dep.Status) != "closed" {
-			return ActionResult{Error: fmt.Errorf("design bead %s is not closed", dep.ID)}
-		}
-		// Check for content.
-		comments, _ := e.deps.GetComments(dep.ID)
-		if len(comments) == 0 && dep.Description == "" {
-			return ActionResult{Error: fmt.Errorf("design bead %s has no content", dep.ID)}
 		}
 		designRef = dep.ID
+		if string(dep.Status) != "closed" {
+			designOpen = true
+			break
+		}
+		comments, _ := e.deps.GetComments(dep.ID)
+		if len(comments) == 0 && dep.Description == "" {
+			designEmpty = true
+			break
+		}
+		// Design bead exists, closed, has content — success.
+		return ActionResult{Outputs: map[string]string{"design_ref": designRef}}
 	}
 
+	// No design bead found.
 	if designRef == "" {
-		return ActionResult{Error: fmt.Errorf("no linked design bead found (discovered-from dep with type=design)")}
+		if !autoCreate {
+			return ActionResult{Error: fmt.Errorf("no linked design bead found (discovered-from dep with type=design)")}
+		}
+		// Auto-create design bead.
+		newID, err := e.deps.CreateBead(CreateOpts{
+			Title:  "Design: " + e.beadID,
+			Type:   e.deps.ParseIssueType("design"),
+			Labels: []string{"needs-human"},
+		})
+		if err != nil {
+			return ActionResult{Error: fmt.Errorf("create design bead: %w", err)}
+		}
+		// Link via discovered-from dep (epic depends on design).
+		if err := e.deps.AddDepTyped(e.beadID, newID, "discovered-from"); err != nil {
+			e.log("warning: link design bead %s: %s", newID, err)
+		}
+		// Comment on both beads.
+		e.deps.AddComment(e.beadID, fmt.Sprintf("Auto-created design bead %s — awaiting human design input.", newID))
+		e.deps.AddComment(newID, fmt.Sprintf("Created automatically for epic %s. Please add design content and close when ready.", e.beadID))
+		// Message archmage.
+		e.sendArchmageMessage(fmt.Sprintf("Design bead %s created for epic %s — needs human design input.", newID, e.beadID))
+		return ActionResult{Hooked: true, Outputs: map[string]string{"design_ref": newID}}
 	}
 
+	// Design bead exists but is open or empty.
+	if designOpen || designEmpty {
+		if !autoCreate {
+			if designOpen {
+				return ActionResult{Error: fmt.Errorf("design bead %s is not closed", designRef)}
+			}
+			return ActionResult{Error: fmt.Errorf("design bead %s has no content", designRef)}
+		}
+		// Design bead exists but not ready — hook and wait.
+		return ActionResult{Hooked: true, Outputs: map[string]string{"design_ref": designRef}}
+	}
+
+	// Should not reach here.
 	return ActionResult{Outputs: map[string]string{"design_ref": designRef}}
+}
+
+// sendArchmageMessage sends a message to the archmage about this bead.
+// Uses the existing MessageArchmage pattern from executor_escalate.go.
+func (e *Executor) sendArchmageMessage(msg string) {
+	MessageArchmage(e.agentName, e.beadID, msg, e.deps)
 }
 
 // actionBeadFinish closes the bead and sets executor to terminated.
