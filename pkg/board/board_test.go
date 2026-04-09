@@ -1475,3 +1475,103 @@ func TestToJSON_RecoveryRefs(t *testing.T) {
 	})
 }
 
+// --- TestCategorizeWithPhases_DeferredBeads ---
+
+func TestCategorizeWithPhases_DeferredBeads(t *testing.T) {
+	t.Run("deferred top-level bead lands in Ready", func(t *testing.T) {
+		openBeads := []BoardBead{
+			{ID: "spi-d1", Title: "deferred task", Status: "deferred", Type: "task", Priority: 2},
+			{ID: "spi-r1", Title: "regular task", Status: "open", Type: "task", Priority: 1},
+		}
+		phaseMap := map[string]string{}
+		blockedMap := map[string][]string{}
+
+		cols := CategorizeWithPhases(openBeads, nil, blockedMap, phaseMap, "test")
+
+		if len(cols.Ready) != 2 {
+			t.Fatalf("expected 2 beads in Ready, got %d", len(cols.Ready))
+		}
+		foundDeferred := false
+		for _, b := range cols.Ready {
+			if b.ID == "spi-d1" {
+				foundDeferred = true
+			}
+		}
+		if !foundDeferred {
+			t.Error("expected deferred bead spi-d1 in Ready column")
+		}
+	})
+
+	t.Run("deferred child bead excluded from Ready", func(t *testing.T) {
+		openBeads := []BoardBead{
+			{ID: "spi-d2", Title: "deferred child", Status: "deferred", Type: "task", Parent: "spi-epic"},
+		}
+		phaseMap := map[string]string{}
+		blockedMap := map[string][]string{}
+
+		cols := CategorizeWithPhases(openBeads, nil, blockedMap, phaseMap, "test")
+
+		if len(cols.Ready) != 0 {
+			t.Errorf("expected 0 beads in Ready (child beads excluded), got %d", len(cols.Ready))
+		}
+	})
+}
+
+// --- TestSortBeads_DeferredToBottom ---
+
+func TestSortBeads_DeferredToBottom(t *testing.T) {
+	t.Run("deferred beads sort after non-deferred", func(t *testing.T) {
+		beads := []BoardBead{
+			{ID: "spi-d1", Title: "deferred low prio", Status: "deferred", Priority: 0, UpdatedAt: "2026-04-01T00:00:00Z"},
+			{ID: "spi-r1", Title: "regular high prio", Status: "open", Priority: 3, UpdatedAt: "2026-01-01T00:00:00Z"},
+			{ID: "spi-r2", Title: "regular low prio", Status: "open", Priority: 1, UpdatedAt: "2026-03-01T00:00:00Z"},
+			{ID: "spi-d2", Title: "deferred task", Status: "deferred", Priority: 1, UpdatedAt: "2026-04-01T00:00:00Z"},
+		}
+
+		SortBeads(beads)
+
+		// Non-deferred should come first (sorted by priority then time).
+		if beads[0].ID != "spi-r2" {
+			t.Errorf("position 0: expected spi-r2 (prio 1), got %s (prio %d)", beads[0].ID, beads[0].Priority)
+		}
+		if beads[1].ID != "spi-r1" {
+			t.Errorf("position 1: expected spi-r1 (prio 3), got %s (prio %d)", beads[1].ID, beads[1].Priority)
+		}
+		// Deferred should come last (sorted by priority then time among themselves).
+		if beads[2].ID != "spi-d1" {
+			t.Errorf("position 2: expected spi-d1 (deferred prio 0), got %s", beads[2].ID)
+		}
+		if beads[3].ID != "spi-d2" {
+			t.Errorf("position 3: expected spi-d2 (deferred prio 1), got %s", beads[3].ID)
+		}
+	})
+
+	t.Run("all deferred preserves priority order", func(t *testing.T) {
+		beads := []BoardBead{
+			{ID: "spi-d3", Title: "prio 2", Status: "deferred", Priority: 2, UpdatedAt: "2026-01-01T00:00:00Z"},
+			{ID: "spi-d1", Title: "prio 0", Status: "deferred", Priority: 0, UpdatedAt: "2026-01-01T00:00:00Z"},
+			{ID: "spi-d2", Title: "prio 1", Status: "deferred", Priority: 1, UpdatedAt: "2026-01-01T00:00:00Z"},
+		}
+
+		SortBeads(beads)
+
+		if beads[0].Priority != 0 || beads[1].Priority != 1 || beads[2].Priority != 2 {
+			t.Errorf("expected priority order [0,1,2], got [%d,%d,%d]",
+				beads[0].Priority, beads[1].Priority, beads[2].Priority)
+		}
+	})
+
+	t.Run("no deferred preserves normal sort", func(t *testing.T) {
+		beads := []BoardBead{
+			{ID: "spi-r2", Title: "prio 2", Status: "open", Priority: 2, UpdatedAt: "2026-01-01T00:00:00Z"},
+			{ID: "spi-r1", Title: "prio 1", Status: "open", Priority: 1, UpdatedAt: "2026-01-01T00:00:00Z"},
+		}
+
+		SortBeads(beads)
+
+		if beads[0].ID != "spi-r1" || beads[1].ID != "spi-r2" {
+			t.Errorf("expected [spi-r1, spi-r2], got [%s, %s]", beads[0].ID, beads[1].ID)
+		}
+	})
+}
+

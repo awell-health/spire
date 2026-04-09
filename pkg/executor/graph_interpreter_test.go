@@ -1661,6 +1661,154 @@ func TestRunGraph_HookedParksSafely(t *testing.T) {
 	}
 }
 
+// --- Test: Step failure sets hooked status and exits gracefully ---
+
+func TestRunGraph_FailedStepSetsHooked(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var dispatched []string
+	var escalateCalls int
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.fail"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName)
+		return ActionResult{Error: fmt.Errorf("step %s failed", stepName)}
+	}
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName)
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	// Track escalation calls via deps.AddLabel (needs-human is added by escalation).
+	deps.AddLabel = func(id, label string) error {
+		if label == "needs-human" {
+			escalateCalls++
+		}
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-fail-hooked",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"build": {Action: "test.fail"},
+			"test":  {Action: "test.noop", Needs: []string{"build"}},
+			"merge": {Action: "test.noop", Needs: []string{"test"}, Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+
+	// Should exit gracefully (no error) — graph is parked, not stuck.
+	if err != nil {
+		t.Fatalf("expected nil error (parked graph), got: %v", err)
+	}
+
+	// The failing step should be hooked, not failed.
+	buildStep := exec.graphState.Steps["build"]
+	if buildStep.Status != "hooked" {
+		t.Errorf("build step: expected hooked, got %s", buildStep.Status)
+	}
+	// CompletedAt should NOT be set for hooked steps.
+	if buildStep.CompletedAt != "" {
+		t.Errorf("build step: expected empty CompletedAt, got %s", buildStep.CompletedAt)
+	}
+
+	// Downstream steps should remain pending (never dispatched).
+	if exec.graphState.Steps["test"].Status != "pending" {
+		t.Errorf("test step: expected pending, got %s", exec.graphState.Steps["test"].Status)
+	}
+	if exec.graphState.Steps["merge"].Status != "pending" {
+		t.Errorf("merge step: expected pending, got %s", exec.graphState.Steps["merge"].Status)
+	}
+
+	// Executor should NOT be terminated (graph is parked).
+	if exec.terminated {
+		t.Error("expected executor NOT to be terminated")
+	}
+
+	// The failing step should be dispatched exactly once (no infinite loop).
+	buildCount := 0
+	for _, name := range dispatched {
+		if name == "build" {
+			buildCount++
+		}
+	}
+	if buildCount != 1 {
+		t.Errorf("expected build dispatched once, got %d times (dispatched: %v)", buildCount, dispatched)
+	}
+
+	// Escalation should fire exactly once.
+	if escalateCalls != 1 {
+		t.Errorf("expected exactly 1 escalation call, got %d", escalateCalls)
+	}
+}
+
+// --- Test: Multiple step failures, escalation fires once per step ---
+
+func TestRunGraph_FailedStepNoInfiniteLoop(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	dispatchCount := 0
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	// The step always fails — if hooked logic is wrong, this will loop forever.
+	actionRegistry["test.fail"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatchCount++
+		if dispatchCount > 10 {
+			t.Fatalf("dispatch count exceeded 10 — likely infinite loop")
+		}
+		return ActionResult{Error: fmt.Errorf("always fails")}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-no-loop",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.fail", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("expected nil error (parked), got: %v", err)
+	}
+
+	// Should have been dispatched exactly once.
+	if dispatchCount != 1 {
+		t.Errorf("expected 1 dispatch, got %d", dispatchCount)
+	}
+	if exec.graphState.Steps["a"].Status != "hooked" {
+		t.Errorf("expected step a to be hooked, got %s", exec.graphState.Steps["a"].Status)
+	}
+}
+
 // --- Test: Hooked resume after external reset ---
 
 func TestRunGraph_HookedResumeAfterReset(t *testing.T) {

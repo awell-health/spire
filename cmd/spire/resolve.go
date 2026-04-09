@@ -170,7 +170,7 @@ func resolveCleanWorktrees(beadID string) {
 	matches, _ := filepath.Glob(wtPath)
 	for _, m := range matches {
 		if err := os.RemoveAll(m); err == nil {
-			fmt.Printf("  %s✗ worktree removed: %s%s\n", dim, m, reset)
+			fmt.Printf("  %s✓ worktree removed: %s%s\n", dim, m, reset)
 		}
 	}
 
@@ -178,14 +178,14 @@ func resolveCleanWorktrees(beadID string) {
 	cwd, _ := os.Getwd()
 	inRepoWt := filepath.Join(cwd, ".worktrees", beadID)
 	if err := os.RemoveAll(inRepoWt); err == nil {
-		fmt.Printf("  %s✗ in-repo worktree removed: %s%s\n", dim, inRepoWt, reset)
+		fmt.Printf("  %s✓ in-repo worktree removed: %s%s\n", dim, inRepoWt, reset)
 	}
 
 	// Remove subtask worktrees
 	wtMatches, _ := filepath.Glob(filepath.Join(cwd, ".worktrees", beadID+"-*"))
 	for _, m := range wtMatches {
 		if err := os.RemoveAll(m); err == nil {
-			fmt.Printf("  %s✗ subtask worktree removed: %s%s\n", dim, filepath.Base(m), reset)
+			fmt.Printf("  %s✓ subtask worktree removed: %s%s\n", dim, filepath.Base(m), reset)
 		}
 	}
 }
