@@ -115,10 +115,10 @@ func promptArchmageIdentity() ArchmageConfig {
 	email = strings.TrimSpace(email)
 
 	if name == "" {
-		name = gitConfigGet("user.name")
+		name = gitConfigGet("--global", "user.name")
 	}
 	if email == "" {
-		email = gitConfigGet("user.email")
+		email = gitConfigGet("--global", "user.email")
 	}
 
 	return ArchmageConfig{Name: name, Email: email}
