@@ -28,7 +28,7 @@ func RenderWatch(epicID string, deps WatchDeps) error {
 // RenderTowerWatch shows all active work across the tower.
 func RenderTowerWatch(deps WatchDeps) error {
 	allBeads, err := store.ListBoardBeads(beads.IssueFilter{
-		ExcludeStatus: []beads.Status{beads.StatusClosed},
+		ExcludeStatus: []beads.Status{beads.StatusClosed, beads.StatusDeferred},
 	})
 	if err != nil {
 		return fmt.Errorf("watch: %w", err)
@@ -168,7 +168,7 @@ func RenderTowerWatch(deps WatchDeps) error {
 // RenderEpicWatch shows progress for a specific epic and its children.
 func RenderEpicWatch(epicID string) error {
 	allBeads, err := store.ListBoardBeads(beads.IssueFilter{
-		ExcludeStatus: []beads.Status{beads.StatusClosed},
+		ExcludeStatus: []beads.Status{beads.StatusClosed, beads.StatusDeferred},
 	})
 	if err != nil {
 		return fmt.Errorf("watch: %w", err)

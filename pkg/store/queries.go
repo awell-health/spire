@@ -136,10 +136,14 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 
 	result := IssuesToBeads(issues)
 
-	// Post-filter: exclude workflow step beads, message beads, design beads,
-	// attempt beads, and beads with active attempt children.
+	// Post-filter: exclude deferred beads, workflow step beads, message beads,
+	// design beads, attempt beads, and beads with active attempt children.
 	var filtered []Bead
 	for _, b := range result {
+		// Skip deferred beads (held back from agents until explicitly undeferred)
+		if b.Status == "deferred" {
+			continue
+		}
 		// Skip message beads
 		if ContainsLabel(b, "msg") {
 			continue
