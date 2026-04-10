@@ -193,6 +193,14 @@ func ParseIssueType(s string) beads.IssueType {
 		return beads.IssueType("design")
 	case "recovery":
 		return beads.IssueType("recovery")
+	case "message":
+		return beads.IssueType("message")
+	case "step":
+		return beads.IssueType("step")
+	case "attempt":
+		return beads.IssueType("attempt")
+	case "review":
+		return beads.IssueType("review")
 	default:
 		return beads.TypeTask
 	}

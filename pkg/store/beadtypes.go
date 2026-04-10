@@ -61,7 +61,7 @@ func CreateAttemptBead(parentID, agentName, model, branch string) (string, error
 	id, err := CreateBead(CreateOpts{
 		Title:    "attempt: " + agentName,
 		Priority: 3,
-		Type:     beads.TypeTask,
+		Type:     beads.IssueType("attempt"),
 		Labels:   labels,
 		Parent:   parentID,
 	})
@@ -187,7 +187,7 @@ func CreateReviewBead(parentID, sageName string, round int) (string, error) {
 	id, err := CreateBead(CreateOpts{
 		Title:    fmt.Sprintf("review-round-%d", round),
 		Priority: 3,
-		Type:     beads.TypeTask,
+		Type:     beads.IssueType("review"),
 		Labels:   labels,
 		Parent:   parentID,
 	})
@@ -211,7 +211,7 @@ func CreateStepBead(parentID, stepName string) (string, error) {
 	id, err := CreateBead(CreateOpts{
 		Title:    "step:" + stepName,
 		Priority: 3,
-		Type:     beads.TypeTask,
+		Type:     beads.IssueType("step"),
 		Labels:   labels,
 		Parent:   parentID,
 	})
