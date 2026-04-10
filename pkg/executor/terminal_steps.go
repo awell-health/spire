@@ -57,7 +57,7 @@ func TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, deps *
 	// 3. Delegate merge to MergeToMain — handles ff-only, rebase fallback,
 	//    and post-rebase build/test re-verification.
 	log("merging %s → %s via MergeToMain", branch, baseBranch)
-	if err := stagingWt.MergeToMain(baseBranch, mergeEnv, buildCmd, ""); err != nil {
+	if err := stagingWt.MergeToMain(baseBranch, mergeEnv, buildCmd, "", nil); err != nil {
 		stagingWt.Close()
 		return err
 	}

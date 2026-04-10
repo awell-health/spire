@@ -19,6 +19,12 @@ var ErrMergeRace = errors.New("merge race: main advanced during landing")
 // MergeToMain will attempt before returning ErrMergeRace.
 const maxMergeAttempts = 3
 
+// hasRebaseConflicts reports whether git status (porcelain format) indicates
+// unresolved merge/rebase conflicts. UU = both modified, AA = both added.
+func hasRebaseConflicts(status string) bool {
+	return strings.Contains(status, "UU ") || strings.Contains(status, "AA ")
+}
+
 // StagingWorktree manages a temporary git worktree for staging operations.
 // It is the single point responsible for git worktree create/remove and
 // main-worktree branch switching, ensuring the main worktree stays on its
@@ -165,22 +171,13 @@ func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, bra
 	if out, err := rebaseCmd.CombinedOutput(); err != nil {
 		// Check if rebase stopped due to conflicts.
 		status := w.StatusPorcelain()
-		if strings.Contains(status, "UU ") || strings.Contains(status, "AA ") {
-			if resolver != nil {
-				if resolveErr := resolver(w.Dir, childBranch); resolveErr != nil {
-					exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
-					return fmt.Errorf("conflict resolution failed during rebase: %w", resolveErr)
-				}
-				// Resolver succeeded — continue rebase.
-				contCmd := exec.Command("git", "-C", w.Dir, "rebase", "--continue")
-				contCmd.Env = os.Environ()
-				if contOut, contErr := contCmd.CombinedOutput(); contErr != nil {
-					exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
-					return fmt.Errorf("rebase --continue failed after resolution: %s\n%s", contErr, string(contOut))
-				}
-			} else {
+		if hasRebaseConflicts(status) {
+			if resolver == nil {
 				exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
 				return fmt.Errorf("rebase conflict in %s: no resolver provided", childBranch)
+			}
+			if resolveErr := resolveRebaseConflicts(w.Dir, childBranch, resolver, w.logf); resolveErr != nil {
+				return resolveErr
 			}
 		} else {
 			exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
@@ -202,6 +199,46 @@ func (w *StagingWorktree) MergeBranch(childBranch string, resolver func(dir, bra
 		return fmt.Errorf("ff-only merge failed after rebase: %w", err)
 	}
 	return nil
+}
+
+// resolveRebaseConflicts handles a rebase that has stopped due to merge conflicts.
+// It loops: call resolver → rebase --continue → check for new conflicts → repeat
+// until the rebase completes or the resolver fails. Called after the initial
+// rebase command has returned an error and the caller has confirmed conflicts
+// are present (via hasRebaseConflicts).
+//
+// dir is the worktree directory in a mid-rebase state. branch is the logical
+// branch name passed to the resolver for context.
+func resolveRebaseConflicts(dir, branch string, resolver func(dir, branch string) error, logf func(string, ...any)) error {
+	for {
+		if logf != nil {
+			logf("  resolving rebase conflicts for %s", branch)
+		}
+		if resolveErr := resolver(dir, branch); resolveErr != nil {
+			exec.Command("git", "-C", dir, "rebase", "--abort").Run()
+			return fmt.Errorf("conflict resolution failed during rebase: %w", resolveErr)
+		}
+
+		// Resolver succeeded — continue the rebase. May stop again if the
+		// next commit in a multi-commit rebase also conflicts.
+		contCmd := exec.Command("git", "-C", dir, "rebase", "--continue")
+		contCmd.Env = os.Environ()
+		contOut, contErr := contCmd.CombinedOutput()
+		if contErr == nil {
+			return nil // rebase completed
+		}
+
+		// Check if rebase --continue stopped on new conflicts (next commit).
+		wc := &WorktreeContext{Dir: dir}
+		status := wc.StatusPorcelain()
+		if hasRebaseConflicts(status) {
+			continue // loop to resolve the next batch
+		}
+
+		// Non-conflict error (e.g., empty commit after resolution).
+		exec.Command("git", "-C", dir, "rebase", "--abort").Run()
+		return fmt.Errorf("rebase --continue failed after resolution: %s\n%s", contErr, string(contOut))
+	}
 }
 
 // RunBuild runs buildStr as a command in the worktree directory.
@@ -238,10 +275,15 @@ func (w *StagingWorktree) RunTests(testStr string) error {
 // strings skip the respective step — then retries the ff-only merge.
 // Never force-merges; returns an error if rebase fails.
 //
+// resolver, when non-nil, is called to resolve merge conflicts during rebase.
+// If nil, rebase conflicts are terminal errors (backward-compatible behavior).
+// When a resolver is provided and conflicts occur, the function will attempt
+// resolution and retry up to maxMergeAttempts times before returning ErrMergeRace.
+//
 // NOTE: Main-repo operations (checkout, pull, merge, worktree lifecycle) go
 // through RepoContext. The rebase operations target a temporary worktree and
 // remain as raw exec.Command calls since WorktreeContext doesn't expose rebase.
-func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr, testStr string) error {
+func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr, testStr string, resolver func(dir, branch string) error) error {
 	rc := &RepoContext{Dir: w.RepoPath, BaseBranch: baseBranch, Log: w.Log}
 
 	// Ensure main worktree is on baseBranch.
@@ -290,8 +332,22 @@ func (w *StagingWorktree) MergeToMain(baseBranch string, env []string, buildStr,
 		rebaseCmd := exec.Command("git", "-C", w.Dir, "rebase", baseBranch)
 		rebaseCmd.Env = os.Environ()
 		if out, rbErr := rebaseCmd.CombinedOutput(); rbErr != nil {
-			exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
-			return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s", w.Branch, baseBranch, rbErr, string(out))
+			// Check if rebase stopped due to conflicts.
+			status := w.StatusPorcelain()
+			if hasRebaseConflicts(status) {
+				if resolver == nil {
+					exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
+					return fmt.Errorf("rebase %s onto %s hit conflicts (no resolver, aborting): %s\n%s", w.Branch, baseBranch, rbErr, string(out))
+				}
+				if resolveErr := resolveRebaseConflicts(w.Dir, w.Branch, resolver, w.logf); resolveErr != nil {
+					w.logf("conflict resolution failed (attempt %d): %s", attempt+1, resolveErr)
+					continue // try next attempt
+				}
+				// Resolution succeeded, fall through to build/test verification.
+			} else {
+				exec.Command("git", "-C", w.Dir, "rebase", "--abort").Run()
+				return fmt.Errorf("rebase %s onto %s failed (aborting, will not force merge): %s\n%s", w.Branch, baseBranch, rbErr, string(out))
+			}
 		}
 
 		// Re-verify build after rebase.

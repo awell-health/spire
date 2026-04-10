@@ -3,6 +3,7 @@ package git
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,7 @@ func TestMergeToMain_HappyPath(t *testing.T) {
 	}
 
 	// main hasn't moved — ff-only should succeed on first attempt.
-	if err := sw.MergeToMain("main", nil, "", ""); err != nil {
+	if err := sw.MergeToMain("main", nil, "", "", nil); err != nil {
 		t.Fatalf("MergeToMain: %v", err)
 	}
 
@@ -74,7 +75,7 @@ func TestMergeToMain_RebaseSucceeds(t *testing.T) {
 	}
 
 	// ff-only will fail, then rebase + retry should succeed.
-	if err := sw.MergeToMain("main", nil, "", ""); err != nil {
+	if err := sw.MergeToMain("main", nil, "", "", nil); err != nil {
 		t.Fatalf("MergeToMain: %v", err)
 	}
 
@@ -126,7 +127,7 @@ func TestMergeToMain_RaceResolvedOnRetry(t *testing.T) {
 		flagFile, dir, flagFile,
 	)
 
-	err = sw.MergeToMain("main", nil, "", testCmd)
+	err = sw.MergeToMain("main", nil, "", testCmd, nil)
 	if err != nil {
 		t.Fatalf("MergeToMain should succeed after race resolved on retry, got: %v", err)
 	}
@@ -177,7 +178,7 @@ func TestMergeToMain_RaceExhaustsRetries(t *testing.T) {
 		dir,
 	)
 
-	err = sw.MergeToMain("main", nil, "", testCmd)
+	err = sw.MergeToMain("main", nil, "", testCmd, nil)
 	if err == nil {
 		t.Fatal("expected ErrMergeRace, got nil")
 	}
@@ -216,7 +217,7 @@ func TestMergeToMain_RebaseConflictIsTerminal(t *testing.T) {
 		WorktreeContext: *wc,
 	}
 
-	err = sw.MergeToMain("main", nil, "", "")
+	err = sw.MergeToMain("main", nil, "", "", nil)
 	if err == nil {
 		t.Fatal("expected error for rebase conflict, got nil")
 	}
@@ -255,7 +256,7 @@ func TestMergeToMain_WithBuildAndTest(t *testing.T) {
 	}
 
 	// Use "true" as both build and test commands (always succeeds).
-	if err := sw.MergeToMain("main", nil, "true", "true"); err != nil {
+	if err := sw.MergeToMain("main", nil, "true", "true", nil); err != nil {
 		t.Fatalf("MergeToMain with build/test: %v", err)
 	}
 }
@@ -286,7 +287,7 @@ func TestMergeToMain_BuildFailureIsTerminal(t *testing.T) {
 	}
 
 	// Use "false" as build command (always fails).
-	err = sw.MergeToMain("main", nil, "false", "")
+	err = sw.MergeToMain("main", nil, "false", "", nil)
 	if err == nil {
 		t.Fatal("expected error for build failure, got nil")
 	}
@@ -295,6 +296,186 @@ func TestMergeToMain_BuildFailureIsTerminal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "build failed") {
 		t.Errorf("expected error to mention build failure, got: %s", err.Error())
+	}
+}
+
+// testConflictResolver returns a resolver that removes conflict markers (keeping
+// both sides), stages the files, and commits — matching the production resolver's
+// contract (resolve + stage + CommitMerge).
+func testConflictResolver(t *testing.T) func(string, string) error {
+	t.Helper()
+	return func(dir, branch string) error {
+		wc := &WorktreeContext{Dir: dir}
+		files, err := wc.ConflictedFiles()
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			path := filepath.Join(dir, f)
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			resolved := resolveTestConflictMarkers(string(content))
+			if err := os.WriteFile(path, []byte(resolved), 0644); err != nil {
+				return err
+			}
+		}
+		if out, err := exec.Command("git", "-C", dir, "add", "-A").CombinedOutput(); err != nil {
+			return fmt.Errorf("git add: %w\n%s", err, out)
+		}
+		return wc.CommitMerge()
+	}
+}
+
+// resolveTestConflictMarkers strips git conflict markers, keeping both sides.
+func resolveTestConflictMarkers(content string) string {
+	lines := strings.Split(content, "\n")
+	var result []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "<<<<<<<") ||
+			strings.HasPrefix(line, "=======") ||
+			strings.HasPrefix(line, ">>>>>>>") {
+			continue
+		}
+		result = append(result, line)
+	}
+	return strings.Join(result, "\n")
+}
+
+// TestMergeToMain_ConflictResolvedByResolver verifies that when a rebase hits
+// conflicts and a resolver is provided, the resolver is called, conflicts are
+// resolved, and the merge succeeds.
+func TestMergeToMain_ConflictResolvedByResolver(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create staging with a commit that edits README.md.
+	rc.CreateBranch("staging/test")
+	wtDir := filepath.Join(t.TempDir(), "staging-wt")
+	wc, err := rc.CreateWorktree(wtDir, "staging/test")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	wc.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wtDir, "README.md"), "staging version\n")
+	wc.Commit("staging edit README")
+
+	// Advance main with a conflicting edit to the same file.
+	writeFile(t, filepath.Join(dir, "README.md"), "main version\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-m", "main edit README")
+
+	sw := &StagingWorktree{WorktreeContext: *wc}
+
+	resolver := testConflictResolver(t)
+	if err := sw.MergeToMain("main", nil, "", "", resolver); err != nil {
+		t.Fatalf("MergeToMain with resolver: %v", err)
+	}
+
+	// Verify main has content from both branches.
+	mainContent := run(t, dir, "git", "show", "HEAD:README.md")
+	if !strings.Contains(mainContent, "main version") || !strings.Contains(mainContent, "staging version") {
+		t.Errorf("expected both versions in merged README.md, got: %s", mainContent)
+	}
+}
+
+// TestMergeToMain_ResolverFailureExhaustsRetries verifies that when the resolver
+// fails on every attempt, all maxMergeAttempts are tried before returning ErrMergeRace.
+func TestMergeToMain_ResolverFailureExhaustsRetries(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	rc.CreateBranch("staging/test")
+	wtDir := filepath.Join(t.TempDir(), "staging-wt")
+	wc, err := rc.CreateWorktree(wtDir, "staging/test")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	wc.ConfigureUser("Test", "test@test.com")
+	writeFile(t, filepath.Join(wtDir, "README.md"), "staging version\n")
+	wc.Commit("staging edit README")
+
+	// Advance main with a conflicting edit.
+	writeFile(t, filepath.Join(dir, "README.md"), "main version\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-m", "main edit README")
+
+	sw := &StagingWorktree{WorktreeContext: *wc}
+
+	// Resolver that always fails.
+	attempts := 0
+	failResolver := func(dir, branch string) error {
+		attempts++
+		return fmt.Errorf("intentional failure")
+	}
+
+	err = sw.MergeToMain("main", nil, "", "", failResolver)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrMergeRace) {
+		t.Fatalf("expected ErrMergeRace, got: %v", err)
+	}
+	if attempts != maxMergeAttempts {
+		t.Errorf("expected %d resolver attempts, got %d", maxMergeAttempts, attempts)
+	}
+}
+
+// TestMergeToMain_MultiCommitConflictsResolved verifies that a multi-commit
+// rebase where each commit conflicts is resolved by calling the resolver
+// multiple times (once per conflicting commit).
+func TestMergeToMain_MultiCommitConflictsResolved(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create staging branch with two commits, each editing a different file.
+	rc.CreateBranch("staging/test")
+	wtDir := filepath.Join(t.TempDir(), "staging-wt")
+	wc, err := rc.CreateWorktree(wtDir, "staging/test")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	wc.ConfigureUser("Test", "test@test.com")
+
+	// Commit 1: edit README.md.
+	writeFile(t, filepath.Join(wtDir, "README.md"), "staging readme\n")
+	run(t, wtDir, "git", "add", "-A")
+	run(t, wtDir, "git", "commit", "-m", "staging commit 1: readme")
+
+	// Commit 2: create file2.txt.
+	writeFile(t, filepath.Join(wtDir, "file2.txt"), "staging file2\n")
+	run(t, wtDir, "git", "add", "-A")
+	run(t, wtDir, "git", "commit", "-m", "staging commit 2: file2")
+
+	// Advance main with conflicting edits to BOTH files.
+	writeFile(t, filepath.Join(dir, "README.md"), "main readme\n")
+	writeFile(t, filepath.Join(dir, "file2.txt"), "main file2\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-m", "main conflicting edits")
+
+	sw := &StagingWorktree{WorktreeContext: *wc}
+
+	resolver := testConflictResolver(t)
+	resolverCalls := 0
+	countingResolver := func(dir, branch string) error {
+		resolverCalls++
+		return resolver(dir, branch)
+	}
+
+	if err := sw.MergeToMain("main", nil, "", "", countingResolver); err != nil {
+		t.Fatalf("MergeToMain with multi-commit conflicts: %v", err)
+	}
+
+	// Resolver should be called at least twice (once per conflicting commit).
+	if resolverCalls < 2 {
+		t.Errorf("expected resolver to be called at least 2 times, got %d", resolverCalls)
+	}
+
+	// Verify main has content from the staging branch.
+	readmeContent := run(t, dir, "git", "show", "HEAD:README.md")
+	if !strings.Contains(readmeContent, "staging readme") {
+		t.Errorf("expected staging readme in merged content, got: %s", readmeContent)
 	}
 }
 

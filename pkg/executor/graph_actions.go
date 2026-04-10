@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -561,6 +562,16 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 	buildStr := step.With["build"]
 	testStr := step.With["test"]
 
+	// Parse conflict_max_turns for the resolver turn budget.
+	// Default to 5 turns so conflict resolution is bounded.
+	conflictMaxTurns := 5
+	if raw := step.With["conflict_max_turns"]; raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			conflictMaxTurns = v
+		}
+	}
+	resolver := e.conflictResolver(conflictMaxTurns)
+
 	// Pre-merge build verification.
 	if buildStr != "" {
 		e.log("verifying build before merge: %s", buildStr)
@@ -584,7 +595,7 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 	}
 
 	e.log("merging %s -> %s", mergeBranch, state.BaseBranch)
-	if mergeErr := stagingWt.MergeToMain(state.BaseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
+	if mergeErr := stagingWt.MergeToMain(state.BaseBranch, mergeEnv, buildStr, testStr, resolver); mergeErr != nil {
 		return ActionResult{Error: fmt.Errorf("merge to main: %w", mergeErr)}
 	}
 
