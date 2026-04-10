@@ -163,7 +163,12 @@ func runPull(remoteURL string, force bool) error {
 		if merge {
 			if ownerErr != nil {
 				// Ownership enforcement failed — check if conflicts persist.
-				if remaining, _ := dolt.HasUnresolvedConflicts(dbName); remaining > 0 {
+				remaining, conflictErr := dolt.HasUnresolvedConflicts(dbName)
+				if conflictErr != nil {
+					// Cannot verify conflict state — assume unresolved.
+					return fmt.Errorf("ownership enforcement failed and conflict state unknown: %w", ownerErr)
+				}
+				if remaining > 0 {
 					return fmt.Errorf("merge conflicts remain (%d unresolved): %w", remaining, ownerErr)
 				}
 			}

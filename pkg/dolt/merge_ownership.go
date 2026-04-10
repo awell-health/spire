@@ -112,8 +112,9 @@ func HasUnresolvedConflicts(dbName string) (int, error) {
 }
 
 // ResolveIssueConflicts reads dolt_conflicts_issues and applies field-level
-// ownership rules to produce resolved rows. Only deletes conflict rows that
-// were successfully resolved; unresolved rows remain for manual intervention.
+// ownership rules to produce resolved rows. All conflict resolutions are
+// applied atomically in a single transaction — either every conflict is
+// resolved and committed, or none are (the transaction is rolled back).
 // Returns the number of conflicts resolved.
 func ResolveIssueConflicts(dbName string) (int, error) {
 	// Check if the conflicts table has any rows.
