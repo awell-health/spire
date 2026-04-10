@@ -7,15 +7,16 @@ import (
 	"context"
 
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/process"
 )
 
 func doltDataDir() string                                  { return dolt.DataDir() }
 func doltGlobalDir() string                                { return dolt.GlobalDir() }
 func doltPort() string                                     { return dolt.Port() }
 func doltHost() string                                     { return dolt.Host() }
-func readPID(path string) int                              { return dolt.ReadPID(path) }
-func writePID(path string, pid int) error                  { return dolt.WritePID(path, pid) }
-func processAlive(pid int) bool                            { return dolt.ProcessAlive(pid) }
+func readPID(path string) int                              { return process.ReadPID(path) }
+func writePID(path string, pid int) error                  { return process.WritePID(path, pid) }
+func processAlive(pid int) bool                            { return process.ProcessAlive(pid) }
 func doltBin() string                                      { return dolt.Bin() }
 func doltPIDPath() string                                  { return dolt.DoltPIDPath() }
 func daemonPIDPath() string                                { return dolt.DaemonPIDPath() }
@@ -26,7 +27,7 @@ func doltServerStatus() (int, bool, bool)                  { return dolt.ServerS
 // ensureDoltIdentity, doltWriteConfig, ensureDatabase removed — no callers in cmd/spire.
 func doltStart() (int, error)                              { return dolt.Start() }
 func doltStop() error                                      { return dolt.Stop() }
-func stopProcess(pidPath string) (bool, error)             { return dolt.StopProcess(pidPath) }
+func stopProcess(pidPath string) (bool, error)             { return process.StopProcess(pidPath) }
 
 // CLI operation wrappers — used by register_repo.go, tower.go, sync.go, etc.
 // These pass context.Background() since CLI callers rely on Ctrl-C, not timeouts.

@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/process"
 	"github.com/spf13/cobra"
 )
 
@@ -200,31 +200,19 @@ func cmdUp(args []string) error {
 			os.Remove(daemonPIDPath())
 		}
 
-		cmd := exec.Command(spireBin, "daemon", "--interval", interval)
-		cmd.Dir, _ = os.Getwd()
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		cmd.Env = os.Environ()
-
-		// Redirect daemon output to log files in global dir
-		logFile, _ := os.OpenFile(filepath.Join(gd, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		errFile, _ := os.OpenFile(filepath.Join(gd, "daemon.error.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		cmd.Stdout = logFile
-		cmd.Stderr = errFile
-
-		if err := cmd.Start(); err != nil {
+		cwd, _ := os.Getwd()
+		newPID, err := process.SpawnBackground(process.SpawnOpts{
+			Name:    "daemon",
+			Bin:     spireBin,
+			Args:    []string{"daemon", "--interval", interval},
+			Dir:     cwd,
+			Env:     os.Environ(),
+			LogDir:  gd,
+			PIDPath: daemonPIDPath(),
+		})
+		if err != nil {
 			fmt.Printf("error: %s\n", err)
 			return fmt.Errorf("cannot start daemon: %w", err)
-		}
-
-		newPID := cmd.Process.Pid
-		writePID(daemonPIDPath(), newPID)
-		cmd.Process.Release()
-
-		if logFile != nil {
-			logFile.Close()
-		}
-		if errFile != nil {
-			errFile.Close()
 		}
 
 		// Brief wait to confirm it stayed alive
@@ -256,30 +244,19 @@ func cmdUp(args []string) error {
 				stewardArgs = append(stewardArgs, "--metrics-port", metricsPort)
 			}
 
-			cmd := exec.Command(spireBin, stewardArgs...)
-			cmd.Dir, _ = os.Getwd()
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-			cmd.Env = os.Environ()
-
-			logFile, _ := os.OpenFile(filepath.Join(gd, "steward.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			errFile, _ := os.OpenFile(filepath.Join(gd, "steward.error.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			cmd.Stdout = logFile
-			cmd.Stderr = errFile
-
-			if err := cmd.Start(); err != nil {
+			cwd, _ := os.Getwd()
+			newPID, err := process.SpawnBackground(process.SpawnOpts{
+				Name:    "steward",
+				Bin:     spireBin,
+				Args:    stewardArgs,
+				Dir:     cwd,
+				Env:     os.Environ(),
+				LogDir:  gd,
+				PIDPath: stewardPIDPath(),
+			})
+			if err != nil {
 				fmt.Printf("error: %s\n", err)
 				return fmt.Errorf("cannot start steward: %w", err)
-			}
-
-			newPID := cmd.Process.Pid
-			writePID(stewardPIDPath(), newPID)
-			cmd.Process.Release()
-
-			if logFile != nil {
-				logFile.Close()
-			}
-			if errFile != nil {
-				errFile.Close()
 			}
 
 			// Brief wait to confirm it stayed alive

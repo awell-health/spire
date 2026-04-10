@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+
+	"github.com/awell-health/spire/pkg/process"
 )
 
 // DataDir returns the dolt database directory.
@@ -200,33 +202,16 @@ func Start() (int, error) {
 		}
 	}
 
-	cmd := exec.Command(binPath, "sql-server", "--config", configPath)
-	cmd.Dir = dataDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	// Redirect output to log files in global dir (shared across repos)
-	gd := GlobalDir()
-	logFile, _ := os.OpenFile(filepath.Join(gd, "dolt.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	errFile, _ := os.OpenFile(filepath.Join(gd, "dolt.error.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	cmd.Stdout = logFile
-	cmd.Stderr = errFile
-
-	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("start dolt: %w", err)
-	}
-
-	newPID := cmd.Process.Pid
-	WritePID(DoltPIDPath(), newPID)
-
-	// Release the process so it continues after we exit
-	cmd.Process.Release()
-
-	// Close log file handles (the child process has its own references)
-	if logFile != nil {
-		logFile.Close()
-	}
-	if errFile != nil {
-		errFile.Close()
+	newPID, err := process.SpawnBackground(process.SpawnOpts{
+		Name:    "dolt",
+		Bin:     binPath,
+		Args:    []string{"sql-server", "--config", configPath},
+		Dir:     dataDir,
+		LogDir:  GlobalDir(),
+		PIDPath: DoltPIDPath(),
+	})
+	if err != nil {
+		return 0, err
 	}
 
 	// Wait for port to become reachable
