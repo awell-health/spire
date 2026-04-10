@@ -94,6 +94,15 @@ type Opts struct {
 	ResolveFn func(beadID, comment string) error
 }
 
+// ViewMode identifies which tabbed view is active on the board.
+type ViewMode int
+
+const (
+	ViewBoard  ViewMode = iota // main phase columns (default)
+	ViewAlerts                 // alerts fullscreen
+	ViewLower                  // blocked + interrupted fullscreen
+)
+
 // ANSI color codes for static terminal output (used by watch, roster, actions).
 const (
 	Bold    = "\033[1m"

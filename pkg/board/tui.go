@@ -56,8 +56,9 @@ type Model struct {
 	Height        int
 	LastTick      time.Time
 	Quitting      bool
-	SelSection    Section // which vertical zone the cursor is in
-	SelCol        int     // selected column index into DisplayColumns()
+	SelSection    Section   // which vertical zone the cursor is in
+	ViewMode      ViewMode  // active tabbed view (board, alerts, lower)
+	SelCol        int       // selected column index into DisplayColumns()
 	SelCard       int     // selected card index within selCol
 	SelLowerCol   int     // 0 = BLOCKED, 1 = INTERRUPTED (within SectionLower)
 	ColScroll     int     // scroll offset for the selected column (beads above viewport)
@@ -171,13 +172,13 @@ func (m *Model) ensureCardVisible(maxCards int) {
 
 // colMaxCards computes MaxCards from the current board state.
 func (m *Model) colMaxCards() int {
-	vis := m.VisibleCols()
 	displayCols := m.DisplayColumns()
 	warningCount := 0
 	if m.Snapshot != nil {
 		warningCount = len(m.Snapshot.Warnings)
 	}
-	budget := CalcHeightBudget(m.Height, warningCount, len(vis.Alerts), len(vis.Interrupted), len(vis.Blocked), len(displayCols), len(m.Agents))
+	// In board view, columns get all vertical space (no alerts/lower deductions).
+	budget := CalcHeightBudget(m.Height, warningCount, 0, 0, 0, len(displayCols), len(m.Agents))
 	return budget.MaxCards
 }
 
@@ -185,12 +186,14 @@ func (m *Model) colMaxCards() int {
 func (m *Model) ClampSelection() {
 	vis := m.VisibleCols()
 
-	// If current section is empty, fall through to columns.
-	if m.SelSection == SectionAlerts && len(vis.Alerts) == 0 {
+	// Force SelSection to match the active ViewMode.
+	switch m.ViewMode {
+	case ViewAlerts:
+		m.SelSection = SectionAlerts
+	case ViewBoard:
 		m.SelSection = SectionColumns
-	}
-	if m.SelSection == SectionLower && len(vis.Blocked) == 0 && len(vis.Interrupted) == 0 {
-		m.SelSection = SectionColumns
+	case ViewLower:
+		m.SelSection = SectionLower
 	}
 
 	switch m.SelSection {
@@ -956,56 +959,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Column navigation.
 		case "h", "left":
-			if m.SelSection == SectionLower {
+			switch m.SelSection {
+			case SectionLower:
 				vis := m.VisibleCols()
 				if m.SelLowerCol == 1 && len(vis.Blocked) > 0 {
 					m.SelLowerCol = 0
 					m.SelCard = 0
 					m.ClampSelection()
-				} else {
-					m.SelSection = SectionColumns
-					m.SelCard = 0
-					m.ColScroll = 0
-					m.ClampSelection()
 				}
-			} else if m.SelSection != SectionColumns {
-				m.SelSection = SectionColumns
-				m.SelCard = 0
-				m.ColScroll = 0
-				m.ClampSelection()
-			} else {
+			case SectionColumns:
 				m.SelCol--
 				m.ColScroll = 0
 				m.ClampSelection()
 				m.ensureCardVisible(m.colMaxCards())
 			}
 		case "l", "right":
-			if m.SelSection == SectionLower {
+			switch m.SelSection {
+			case SectionLower:
 				vis := m.VisibleCols()
 				if m.SelLowerCol == 0 && len(vis.Interrupted) > 0 {
 					m.SelLowerCol = 1
 					m.SelCard = 0
 					m.ClampSelection()
-				} else {
-					m.SelSection = SectionColumns
-					m.SelCard = 0
-					m.ColScroll = 0
-					m.ClampSelection()
 				}
-			} else if m.SelSection != SectionColumns {
-				m.SelSection = SectionColumns
-				m.SelCard = 0
-				m.ColScroll = 0
-				m.ClampSelection()
-			} else {
+			case SectionColumns:
 				m.SelCol++
 				m.ColScroll = 0
 				m.ClampSelection()
 				m.ensureCardVisible(m.colMaxCards())
 			}
 
-		// Card navigation (section-aware).
-		// Flow: Alerts → Columns → Lower (blocked + interrupted side-by-side)
+		// Card navigation (within active view mode — no cross-section flow).
 		case "j", "down":
 			vis := m.VisibleCols()
 			if m.SearchQuery != "" {
@@ -1015,11 +999,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case SectionAlerts:
 				if m.SelCard+1 < len(vis.Alerts) {
 					m.SelCard++
-				} else {
-					m.SelSection = SectionColumns
-					m.SelCard = 0
-					m.ColScroll = 0
-					m.ClampSelection()
 				}
 			case SectionColumns:
 				active := m.DisplayColumns()
@@ -1031,15 +1010,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.SelCard++
 					m.ClampSelection()
 					m.ensureCardVisible(m.colMaxCards())
-				} else if len(vis.Blocked) > 0 || len(vis.Interrupted) > 0 {
-					m.SelSection = SectionLower
-					m.SelCard = 0
-					if len(vis.Blocked) > 0 {
-						m.SelLowerCol = 0
-					} else {
-						m.SelLowerCol = 1
-					}
-					m.ClampSelection()
 				}
 			case SectionLower:
 				var items []BoardBead
@@ -1053,10 +1023,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "k", "up":
-			vis := m.VisibleCols()
-			if m.SearchQuery != "" {
-				vis = FilterColumns(vis, m.SearchQuery)
-			}
 			switch m.SelSection {
 			case SectionAlerts:
 				if m.SelCard > 0 {
@@ -1067,28 +1033,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.SelCard--
 					m.ClampSelection()
 					m.ensureCardVisible(m.colMaxCards())
-				} else if len(vis.Alerts) > 0 {
-					m.SelSection = SectionAlerts
-					m.SelCard = len(vis.Alerts) - 1
-					m.ClampSelection()
 				}
 			case SectionLower:
 				if m.SelCard > 0 {
 					m.SelCard--
-				} else {
-					m.SelSection = SectionColumns
-					active := m.DisplayColumns()
-					if m.SelCol >= 0 && m.SelCol < len(active) {
-						lastCard := len(active[m.SelCol].Beads) - 1
-						if lastCard < 0 {
-							lastCard = 0
-						}
-						m.SelCard = lastCard
-					} else {
-						m.SelCard = 0
-					}
-					m.ClampSelection()
-					m.ensureCardVisible(m.colMaxCards())
 				}
 			}
 
@@ -1241,6 +1189,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.ActionStatusTime = time.Now()
 			}
+			return m, nil
+
+		// Cycle view mode.
+		case "tab":
+			m.ViewMode++
+			if m.ViewMode > ViewLower {
+				m.ViewMode = ViewBoard
+			}
+			m.SelCard = 0
+			m.ColScroll = 0
+			m.ClampSelection()
+			return m, nil
+		case "shift+tab":
+			if m.ViewMode == ViewBoard {
+				m.ViewMode = ViewLower
+			} else {
+				m.ViewMode--
+			}
+			m.SelCard = 0
+			m.ColScroll = 0
+			m.ClampSelection()
 			return m, nil
 
 		// Search.
