@@ -24,7 +24,7 @@ type wizardRegistry = agent.Registry
 type localWizard = agent.Entry
 
 var summonCmd = &cobra.Command{
-	Use:   "summon <N> [flags]",
+	Use:   "summon <bead-id>... | <N> [flags]",
 	Short: "Summon wizards (--targets <ids>, --auto)",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -107,13 +107,14 @@ func wizardsForTower(reg wizardRegistry, tower string) []localWizard {
 
 func cmdSummon(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire summon <N> [--targets <ids>] [--auto] [--dispatch <mode>]")
+		return fmt.Errorf("usage: spire summon <bead-id>... | <N> [--targets <ids>] [--auto] [--dispatch <mode>]")
 	}
 
 	var count int
 	var targets string
 	var auto bool
 	var dispatch string
+	var targetIDs []string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -134,11 +135,16 @@ func cmdSummon(args []string) error {
 		case "--auto":
 			auto = true
 		default:
-			n, err := strconv.Atoi(args[i])
-			if err != nil {
-				return fmt.Errorf("expected a number, got %q\nusage: spire summon <N> [--targets <ids>] [--auto] [--dispatch <mode>]", args[i])
+			if strings.Contains(args[i], "-") {
+				// Looks like a bead ID (e.g. spi-xxx)
+				targetIDs = append(targetIDs, args[i])
+			} else {
+				n, err := strconv.Atoi(args[i])
+				if err != nil {
+					return fmt.Errorf("expected a bead ID or number, got %q\nusage: spire summon <bead-id>... | <N> [--targets <ids>] [--auto] [--dispatch <mode>]", args[i])
+				}
+				count = n
 			}
-			count = n
 		}
 	}
 
@@ -157,8 +163,17 @@ func cmdSummon(args []string) error {
 		return nil
 	}
 
+	// Positional bead IDs and --targets are mutually exclusive.
+	if len(targetIDs) > 0 && targets != "" {
+		return fmt.Errorf("cannot combine positional bead IDs with --targets")
+	}
+
+	// Positional bead IDs: infer count from the number of IDs.
+	if len(targetIDs) > 0 {
+		count = len(targetIDs)
+	}
+
 	// If --targets provided, split and pass directly.
-	var targetIDs []string
 	if targets != "" {
 		for _, id := range strings.Split(targets, ",") {
 			id = strings.TrimSpace(id)
