@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
 )
 
@@ -220,17 +219,11 @@ func (e *Executor) Run() error {
 	}
 
 	// Register with wizard registry inside Run() — paired with the deferred
-	// RegistryRemove below so registration and cleanup are always atomic.
+	// cleanup below so registration and cleanup are always atomic.
 	// Previously in New(), where a failure between New() and Run() would
 	// orphan the registry entry.
-	e.deps.RegistryAdd(agent.Entry{
-		Name:      e.agentName,
-		PID:       os.Getpid(),
-		BeadID:    e.beadID,
-		StartedAt: e.state.StartedAt,
-		Phase:     e.state.Phase,
-	})
-	defer e.deps.RegistryRemove(e.agentName)
+	cleanup := e.deps.RegisterSelf(e.agentName, e.beadID, e.state.Phase)
+	defer cleanup()
 	defer e.saveState()
 
 	// Clean up the staging worktree on exit. Deferred early so it runs

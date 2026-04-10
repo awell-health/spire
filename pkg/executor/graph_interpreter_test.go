@@ -43,6 +43,7 @@ func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 		ResolveBranch: func(beadID string) string { return "feat/" + beadID },
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		HasLabel: func(b Bead, prefix string) string { return "" },
 		ContainsLabel: func(b Bead, label string) bool { return false },
 		AddLabel:    func(id, label string) error { return nil },

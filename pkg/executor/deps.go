@@ -94,6 +94,7 @@ type Deps struct {
 	// Agent registry
 	RegistryAdd    func(entry agent.Entry) error
 	RegistryRemove func(name string) error
+	RegisterSelf   func(name, beadID, phase string) func()
 
 	// Resolution
 	ResolveRepo   func(beadID string) (repoPath, repoURL, baseBranch string, err error)

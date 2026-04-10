@@ -757,6 +757,7 @@ func TestStateCleanupOnSuccess(t *testing.T) {
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateStepBead: func(parentID, stepName string) (string, error) {
 			return parentID + "." + stepName, nil
 		},
@@ -843,6 +844,7 @@ func TestStatePersistenceAcrossPhases(t *testing.T) {
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateStepBead: func(parentID, stepName string) (string, error) {
 			return parentID + "." + stepName, nil
 		},
@@ -944,6 +946,7 @@ func TestRunFullPipeline_SkipPhases(t *testing.T) {
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateStepBead: func(parentID, stepName string) (string, error) {
 			return parentID + ".step-" + stepName, nil
 		},
@@ -1049,6 +1052,7 @@ func TestRunFullPipeline_DirectImplementReviewMerge(t *testing.T) {
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateStepBead: func(parentID, stepName string) (string, error) {
 			return parentID + ".step-" + stepName, nil
 		},
@@ -1146,6 +1150,7 @@ func TestRunPhaseLoop_BeadClosedMidRun(t *testing.T) {
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateStepBead: func(parentID, stepName string) (string, error) {
 			return parentID + ".step-" + stepName, nil
 		},
@@ -1212,6 +1217,7 @@ func TestRunPhaseLoop_UnknownPhaseError(t *testing.T) {
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateStepBead: func(parentID, stepName string) (string, error) {
 			return parentID + ".step-" + stepName, nil
 		},
@@ -1276,6 +1282,7 @@ func TestRunPhaseLoop_BehaviorDispatch(t *testing.T) {
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateStepBead: func(parentID, stepName string) (string, error) {
 			return parentID + ".step-" + stepName, nil
 		},
@@ -1580,6 +1587,7 @@ func TestRunPhaseLoop_EmptyImplementEscalates(t *testing.T) {
 		},
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateStepBead: func(parentID, stepName string) (string, error) {
 			return parentID + ".step-" + stepName, nil
 		},
@@ -2611,6 +2619,10 @@ func TestWaveExecutorExitCleansUpRegistry_V2(t *testing.T) {
 			registryRemoveCalled = true
 			return nil
 		},
+		RegisterSelf: func(name, beadID, phase string) func() {
+			registryAddCalled = true
+			return func() { registryRemoveCalled = true }
+		},
 		UpdateBead: func(id string, updates map[string]interface{}) error { return nil },
 		CreateBead: func(opts CreateOpts) (string, error) {
 			return "spi-wave.alert-1", nil
@@ -2720,6 +2732,10 @@ func TestGraphExecutorExitCleansUpRegistry(t *testing.T) {
 			registryRemoveCalled = true
 			return nil
 		},
+		RegisterSelf: func(name, beadID, phase string) func() {
+			registryAddCalled = true
+			return func() { registryRemoveCalled = true }
+		},
 		UpdateBead: func(id string, updates map[string]interface{}) error { return nil },
 		CreateBead: func(opts CreateOpts) (string, error) {
 			return "spi-graph.alert-1", nil
@@ -2821,6 +2837,9 @@ func TestExecutorExitCleansUpOnPanic(t *testing.T) {
 		RegistryRemove: func(name string) error {
 			registryRemoveCalled = true
 			return nil
+		},
+		RegisterSelf: func(name, beadID, phase string) func() {
+			return func() { registryRemoveCalled = true }
 		},
 		UpdateBead:       func(id string, updates map[string]interface{}) error { return nil },
 		CreateStepBead:   func(parentID, stepName string) (string, error) { return "", nil },

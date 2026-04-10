@@ -47,16 +47,8 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	}
 
 	// Self-register in the wizard registry.
-	now := time.Now().UTC().Format(time.RFC3339)
-	deps.RegistryAdd(Entry{
-		Name:           reviewerName,
-		PID:            os.Getpid(),
-		BeadID:         beadID,
-		StartedAt:      now,
-		Phase:          "review",
-		PhaseStartedAt: now,
-	})
-	defer deps.RegistryRemove(reviewerName)
+	regCleanup := deps.RegisterSelf(reviewerName, beadID, "review")
+	defer regCleanup()
 
 	// Signal handler for cleanup. os.Exit skips defers, so we must
 	// replicate the registry cleanup here.
@@ -64,7 +56,7 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		deps.RegistryRemove(reviewerName)
+		regCleanup()
 		os.Exit(1)
 	}()
 

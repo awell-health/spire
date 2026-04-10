@@ -1386,8 +1386,9 @@ func TestBeadClosedExitCleansUpStepBeads(t *testing.T) {
 		GetPhase:      func(b Bead) string { return "" },
 		ResolveRepo:   func(beadID string) (string, string, string, error) { return dir, "", "main", nil },
 		ResolveBranch: func(beadID string) string { return "feat/" + beadID },
-		RegistryAdd:   func(entry agent.Entry) error { return nil },
+		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
+		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
 		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
 			return "attempt-1", nil
 		},

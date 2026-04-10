@@ -152,6 +152,25 @@ func RegistryUpdate(name string, update func(*Entry)) error {
 	return fmt.Errorf("wizard %q not found in registry", name)
 }
 
+// RegisterSelf registers the current process in the wizard registry and returns
+// a cleanup function that removes it. Call cleanup via defer.
+func RegisterSelf(name, beadID, phase string, opts ...func(*Entry)) func() {
+	now := time.Now().UTC().Format(time.RFC3339)
+	entry := Entry{
+		Name:           name,
+		PID:            os.Getpid(),
+		BeadID:         beadID,
+		StartedAt:      now,
+		Phase:          phase,
+		PhaseStartedAt: now,
+	}
+	for _, opt := range opts {
+		opt(&entry)
+	}
+	RegistryAdd(entry)
+	return func() { RegistryRemove(name) }
+}
+
 // FindLiveForBead returns the first registry entry for the given bead, or nil.
 // The caller is expected to have already cleaned dead wizards from the registry.
 func FindLiveForBead(reg Registry, beadID string) *Entry {

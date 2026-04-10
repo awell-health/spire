@@ -2,11 +2,9 @@ package executor
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"time"
 
-	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
 )
 
@@ -15,15 +13,9 @@ import (
 // It replaces the v2 phase loop for formulas that declare a step graph.
 func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	// Register with wizard registry inside RunGraph() — paired with the deferred
-	// RegistryRemove below so registration and cleanup are always atomic.
-	e.deps.RegistryAdd(agent.Entry{
-		Name:      e.agentName,
-		PID:       os.Getpid(),
-		BeadID:    e.beadID,
-		StartedAt: state.StartedAt,
-		Phase:     "graph:" + state.ActiveStep,
-	})
-	defer e.deps.RegistryRemove(e.agentName)
+	// cleanup below so registration and cleanup are always atomic.
+	regCleanup := e.deps.RegisterSelf(e.agentName, e.beadID, "graph:"+state.ActiveStep)
+	defer regCleanup()
 	defer func() {
 		if e.terminated {
 			RemoveGraphState(e.agentName, e.deps.ConfigDir)

@@ -225,24 +225,17 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	log("worktree: %s", worktreeDir)
 
 	// 4. Self-register in wizards.json
-	now := time.Now().UTC().Format(time.RFC3339)
-	deps.RegistryAdd(Entry{
-		Name:           wizardName,
-		PID:            os.Getpid(),
-		BeadID:         beadID,
-		Worktree:       worktreeDir,
-		StartedAt:      now,
-		Phase:          "init",
-		PhaseStartedAt: now,
+	regCleanup := deps.RegisterSelf(wizardName, beadID, "init", func(e *Entry) {
+		e.Worktree = worktreeDir
 	})
-	defer deps.RegistryRemove(wizardName)
+	defer regCleanup()
 
 	// Signal handler for clean unregister on interrupt
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		deps.RegistryRemove(wizardName)
+		regCleanup()
 		os.Exit(1)
 	}()
 
