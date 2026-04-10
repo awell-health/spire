@@ -41,10 +41,8 @@ type OutputDecl struct {
 }
 
 // FormulaStepGraph is a version 3 formula that declares a step graph with conditional routing.
-// Unlike FormulaV2 (which declares sequential phases), FormulaStepGraph declares individual
-// steps with dependency edges and runtime conditions. Used for the review phase molecule:
-// the executor pours this formula as a molecule, creating step beads, then walks the graph
-// — closing each step bead as it progresses.
+// Each step declares dependency edges and runtime conditions rather than following a fixed
+// phase pipeline. The executor walks the graph — closing each step bead as it progresses.
 type FormulaStepGraph struct {
 	Name        string                   `toml:"name"`
 	Description string                   `toml:"description"`

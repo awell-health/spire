@@ -16,8 +16,8 @@ thing deciding what role should run next for the bead.
 
 ## What this package owns
 
-- **Formula execution**: walk the bead through a formula's step graph (v3) or phase pipeline (v2).
-- **Persistent execution state**: `graph_state.json` (v3: per-step states, counters, workspace states, vars) or `state.json` (v2: phase, wave, review rounds).
+- **Formula execution**: walk the bead through a formula's step graph.
+- **Persistent execution state**: `graph_state.json` (per-step states, counters, workspace states, vars) and `state.json` (agent run recording context).
 - **Bead-level orchestration policy**: direct vs wave implementation, review-fix routing, build-fix retries, merge behavior, and terminal-step handling.
 - **Action dispatch**: registry of opcodes (`wizard.run`, `graph.run`, `git.merge_to_main`, etc.) mapped to handler functions.
 - **Nested graph execution**: sub-graph state persistence, crash-safe cleanup after parent save.
@@ -61,8 +61,8 @@ If you find yourself adding prompt text, Claude CLI flags, timeout policy, or co
 
 | Type / function          | Purpose |
 |--------------------------|---------|
-| `Executor`               | In-memory driver for one bead's lifecycle (v2 or v3). |
-| `GraphState`             | v3 persistent state: per-step status, counters, workspace states, vars. |
+| `Executor`               | In-memory driver for one bead's lifecycle. |
+| `GraphState`             | Persistent state: per-step status, counters, workspace states, vars. |
 | `StepState`              | Per-step tracking: status, outputs, CompletedCount (mechanical, never reset). |
 | `WorkspaceState`         | Runtime state for a declared workspace (kind, dir, scope, cleanup). |
 | `ActionResult`           | Return type from action handlers (outputs + error). |
@@ -73,9 +73,8 @@ If you find yourself adding prompt text, Claude CLI flags, timeout policy, or co
 | `resolveGraphWorkspace`  | Create or resume a declared workspace by kind and scope. |
 | `buildConditionContext`  | Flatten GraphState into a map for formula condition evaluation. |
 | `NewGraphForTest`        | Test constructor: bypasses registry and state loading. |
-| `State`                  | v2 persistent state (phase, wave, review rounds). Coexists with GraphState during transition. |
-| `New`                    | Construct or resume a v2 executor. |
-| `Run`                    | Entry point: delegates to `RunGraph` (v3) or v2 phase loop based on which formula is loaded. |
+| `State`                  | Legacy persistent state (phase, wave, review rounds). Used for agent run recording. |
+| `Run`                    | Entry point: delegates to `RunGraph`. |
 
 ## v3 graph runtime
 
@@ -134,12 +133,10 @@ but skips parent-level cleanup (registry removal, staging close, attempt beads).
 Parent cleanup of nested state files happens after the parent save — this
 ordering is crash-safe.
 
-### v2/v3 coexistence
+### Runtime state
 
-`Executor.Run()` checks `e.graph != nil` and delegates to `RunGraph`; otherwise
-it runs the v2 phase loop. `State` carries parallel v3 fields during the
-transition. Both paths share `recordAgentRun` and staging worktree
-infrastructure.
+`Executor.Run()` delegates to `RunGraph`. `State` carries legacy fields
+(phase, wave, review rounds) used by `recordAgentRun` for metrics recording.
 
 ## Practical rules
 

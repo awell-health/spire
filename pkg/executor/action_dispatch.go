@@ -155,9 +155,9 @@ type childResult struct {
 }
 
 // dispatchWaveCore executes children in dependency waves, merging each wave's
-// branches into staging before proceeding to the next wave. This is the
-// extracted core logic from executeWave — it does NOT include build verification,
-// build-fix retry, or subtask closing (those are separate formula steps in v3).
+// branches into staging before proceeding to the next wave. It does NOT include
+// build verification, build-fix retry, or subtask closing (those are separate
+// formula steps).
 func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error) ([]childResult, error) {
 	e.log("dispatching %d wave(s)", len(waves))
 
@@ -258,9 +258,8 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 }
 
 // dispatchSequentialCore executes children one at a time, merging each into
-// staging before advancing. This is the extracted core logic from
-// executeSequential — it does NOT include inline review, inline merge-to-main,
-// or subtask closing (those are separate formula steps in v3).
+// staging before advancing. It does NOT include inline review, inline
+// merge-to-main, or subtask closing (those are separate formula steps).
 func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error) ([]childResult, error) {
 	e.log("sequential dispatch: %d subtask(s)", len(subtasks))
 
@@ -319,7 +318,7 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 }
 
 // dispatchDirectCore spawns one apprentice for the bead, then merges the
-// feat branch into staging. Extracted from executeDirect.
+// feat branch into staging.
 func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error) error {
 	apprenticeName := fmt.Sprintf("%s-impl", e.agentName)
 	e.log("dispatching apprentice %s", apprenticeName)

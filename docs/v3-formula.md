@@ -74,8 +74,7 @@ Does not own:
 
 ## Proposed Runtime Shape
 
-The current split between `FormulaV2` and `FormulaStepGraph` should converge
-into one graph-based runtime model.
+The runtime uses a single graph-based model (`FormulaStepGraph`).
 
 ```toml
 name = "spire-epic-v3"

@@ -7,15 +7,12 @@ that the executor consumes. It is the runtime contract between formula
 authoring (`pkg/workshop`) and formula execution (`pkg/executor`).
 
 All formulas are **v3 step-graph formulas**. V2 phase-pipeline resolution,
-parsing, and embedded formulas have been removed. The `FormulaV2` and
-`PhaseConfig` types remain temporarily for the executor's v2 pipeline code
-(pending full v2 executor removal).
+parsing, and embedded formulas have been removed.
 
 ## What this package owns
 
 - **Formula data structures**: `FormulaStepGraph`, `StepConfig`, `FormulaVar`,
-  `RevisionPolicy`, `WorkspaceDecl`, `OutputDecl`, and legacy `FormulaV2`/`PhaseConfig`
-  (retained for executor compatibility).
+  `RevisionPolicy`, `WorkspaceDecl`, `OutputDecl`.
 - **Parsing and loading**: TOML parsing (`ParseFormulaStepGraph`, `ParseFormulaAny`),
   embedded formula loading, and v3 name resolution.
 - **Graph semantics**: step readiness (`NextSteps`), entry detection (`EntryStep`),
@@ -79,8 +76,6 @@ behind the v3 execution model.
 | `StructuredCondition` | Typed predicate condition: `All` (AND) + `Any` (OR) of `Predicate` structs. |
 | `OutputDecl` | Declares graph outputs that terminal steps populate into `GraphResult.Outputs`. |
 | `RevisionPolicy` | Review loop configuration (max rounds, arbiter model). Used by v3 arbiter actions. |
-| `FormulaV2` | Legacy phase-pipeline model (retained for executor v2 compat, pending removal). |
-| `PhaseConfig` | Legacy phase configuration (retained for executor v2 compat, pending removal). |
 | **Parsing and loading** | |
 | `ParseFormulaStepGraph` | Parse v3 step-graph formula from TOML bytes (applies workspace defaults, runs `ValidateGraph`). |
 | `ParseFormulaAny` | Parses v3 formula from TOML bytes. Returns `*FormulaStepGraph`. |

@@ -41,14 +41,13 @@ type State struct {
 	ReviewStepBeadIDs map[string]string       `json:"review_step_bead_ids,omitempty"` // formula step name → sub-step bead ID
 	WorktreeDir       string                  `json:"worktree_dir,omitempty"`         // staging worktree directory path
 	LastGraphResult   *GraphResult            `json:"last_graph_result,omitempty"`
-	// v3 graph runtime state — coexist with v2 fields until migration is complete.
+	// v3 graph runtime state.
 	Workspaces map[string]WorkspaceState `json:"workspaces,omitempty"`
 	StepStates map[string]StepState      `json:"step_states,omitempty"`
 	Counters   map[string]int            `json:"counters,omitempty"`
 }
 
-// Executor drives a bead through its formula's phase pipeline (v2) or step
-// graph (v3). When graph is non-nil, Run() delegates to RunGraph().
+// Executor drives a bead through its formula's step graph.
 type Executor struct {
 	beadID    string
 	agentName string
@@ -115,7 +114,7 @@ func (e *Executor) Run() error {
 	return e.RunGraph(e.graph, e.graphState)
 }
 
-// saveState persists the v2 executor state to disk.
+// saveState persists the executor state to disk.
 func (e *Executor) saveState() error {
 	if e.state == nil {
 		return nil
@@ -161,8 +160,8 @@ func LoadState(agentName string, configDirFn func() (string, error)) (*State, er
 }
 
 // SetFormulaSource sets the formula provenance ("embedded", "repo", or "tower")
-// on both v2 and v3 state, so it is persisted across phases and included in
-// agent run records. Callers set this after NewGraph/New returns and before Run.
+// so it is persisted across phases and included in agent run records.
+// Callers set this after NewGraph returns and before Run.
 func (e *Executor) SetFormulaSource(source string) {
 	if e.state != nil {
 		e.state.FormulaSource = source
