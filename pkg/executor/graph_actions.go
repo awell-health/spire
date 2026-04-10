@@ -255,6 +255,7 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 		Name:      spawnName,
 		BeadID:    e.beadID,
 		Role:      role,
+		Provider:  e.resolveStepProvider(step),
 		ExtraArgs: extraArgs,
 	})
 	if err != nil {

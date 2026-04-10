@@ -25,7 +25,6 @@ type FormulaV2 struct {
 type PhaseConfig struct {
 	Timeout        string          `toml:"timeout,omitempty"`
 	Model          string          `toml:"model,omitempty"`
-	Provider       string          `toml:"provider,omitempty"` // AI provider override for this phase (claude, codex, cursor)
 	MaxTurns       int             `toml:"max_turns,omitempty"`
 	Context        []string        `toml:"context,omitempty"`
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`

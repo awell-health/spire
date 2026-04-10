@@ -53,6 +53,34 @@ func TestResolveTimeout(t *testing.T) {
 	}
 }
 
+func TestResolveProvider(t *testing.T) {
+	tests := []struct {
+		name            string
+		stepProvider    string
+		formulaProvider string
+		repoProvider    string
+		want            string
+	}{
+		{"all empty → claude default", "", "", "", DefaultProvider},
+		{"repo set → repo value", "", "", "codex", "codex"},
+		{"formula set → formula value", "", "cursor", "", "cursor"},
+		{"step set → step value", "codex", "", "", "codex"},
+		{"step wins over formula", "codex", "cursor", "", "codex"},
+		{"step wins over repo", "codex", "", "cursor", "codex"},
+		{"formula wins over repo", "", "cursor", "codex", "cursor"},
+		{"step wins over all", "codex", "cursor", "claude", "codex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveProvider(tt.stepProvider, tt.formulaProvider, tt.repoProvider)
+			if got != tt.want {
+				t.Errorf("ResolveProvider(%q, %q, %q) = %q, want %q",
+					tt.stepProvider, tt.formulaProvider, tt.repoProvider, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveStale(t *testing.T) {
 	tests := []struct {
 		name      string
