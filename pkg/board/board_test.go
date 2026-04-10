@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -1753,5 +1754,281 @@ func TestSortBeads_DeferredToBottom(t *testing.T) {
 			t.Errorf("expected [spi-r1, spi-r2], got [%s, %s]", beads[0].ID, beads[1].ID)
 		}
 	})
+}
+
+// --- ViewMode / Tab cycling tests ---
+
+func TestTabCyclesViewMode(t *testing.T) {
+	m := makeModel()
+
+	// Default is ViewBoard.
+	if m.ViewMode != ViewBoard {
+		t.Fatalf("expected ViewBoard default, got %d", m.ViewMode)
+	}
+
+	// Tab: Board -> Alerts.
+	m = updateModel(m, keyMsgStr("tab"))
+	if m.ViewMode != ViewAlerts {
+		t.Errorf("after 1st tab: expected ViewAlerts, got %d", m.ViewMode)
+	}
+
+	// Tab: Alerts -> Lower.
+	m = updateModel(m, keyMsgStr("tab"))
+	if m.ViewMode != ViewLower {
+		t.Errorf("after 2nd tab: expected ViewLower, got %d", m.ViewMode)
+	}
+
+	// Tab: Lower -> Board (wrap).
+	m = updateModel(m, keyMsgStr("tab"))
+	if m.ViewMode != ViewBoard {
+		t.Errorf("after 3rd tab: expected ViewBoard (wrap), got %d", m.ViewMode)
+	}
+}
+
+func TestShiftTabCyclesViewModeBackward(t *testing.T) {
+	m := makeModel()
+
+	// Shift+Tab: Board -> Lower (backward wrap).
+	m = updateModel(m, keyMsgStr("shift+tab"))
+	if m.ViewMode != ViewLower {
+		t.Errorf("after shift+tab from Board: expected ViewLower, got %d", m.ViewMode)
+	}
+
+	// Shift+Tab: Lower -> Alerts.
+	m = updateModel(m, keyMsgStr("shift+tab"))
+	if m.ViewMode != ViewAlerts {
+		t.Errorf("after shift+tab from Lower: expected ViewAlerts, got %d", m.ViewMode)
+	}
+
+	// Shift+Tab: Alerts -> Board.
+	m = updateModel(m, keyMsgStr("shift+tab"))
+	if m.ViewMode != ViewBoard {
+		t.Errorf("after shift+tab from Alerts: expected ViewBoard, got %d", m.ViewMode)
+	}
+}
+
+func TestTabResetsSelCardAndColScroll(t *testing.T) {
+	// Use a model with alerts so ViewAlerts has cards to select.
+	m := makeModel()
+	m.Cols.Alerts = []BoardBead{
+		{ID: "spi-a1", Title: "Alert", Status: "open", Type: "task", Priority: 0, Labels: []string{"alert:test"}},
+	}
+	m.Snapshot.Columns.Alerts = m.Cols.Alerts
+	m.SelCard = 2
+	m.ColScroll = 1
+
+	m = updateModel(m, keyMsgStr("tab"))
+	if m.SelCard != 0 {
+		t.Errorf("expected SelCard=0 after tab, got %d", m.SelCard)
+	}
+	if m.ColScroll != 0 {
+		t.Errorf("expected ColScroll=0 after tab, got %d", m.ColScroll)
+	}
+}
+
+func TestClampSelectionForcesSection(t *testing.T) {
+	m := makeModel()
+
+	// ViewAlerts -> SelSection must be SectionAlerts.
+	m.ViewMode = ViewAlerts
+	m.SelSection = SectionColumns // intentionally wrong
+	m.ClampSelection()
+	if m.SelSection != SectionAlerts {
+		t.Errorf("ClampSelection with ViewAlerts: expected SectionAlerts, got %d", m.SelSection)
+	}
+
+	// ViewBoard -> SelSection must be SectionColumns.
+	m.ViewMode = ViewBoard
+	m.SelSection = SectionAlerts // intentionally wrong
+	m.ClampSelection()
+	if m.SelSection != SectionColumns {
+		t.Errorf("ClampSelection with ViewBoard: expected SectionColumns, got %d", m.SelSection)
+	}
+
+	// ViewLower -> SelSection must be SectionLower.
+	m.ViewMode = ViewLower
+	m.SelSection = SectionColumns // intentionally wrong
+	m.ClampSelection()
+	if m.SelSection != SectionLower {
+		t.Errorf("ClampSelection with ViewLower: expected SectionLower, got %d", m.SelSection)
+	}
+}
+
+func TestJKStaysWithinViewMode(t *testing.T) {
+	// In ViewAlerts, j/k should not cross into SectionColumns.
+	cols := Columns{
+		Alerts: []BoardBead{
+			{ID: "spi-a1", Title: "Alert 1", Status: "open", Type: "task", Priority: 0, Labels: []string{"alert:test"}},
+			{ID: "spi-a2", Title: "Alert 2", Status: "open", Type: "task", Priority: 1, Labels: []string{"alert:test"}},
+		},
+		Ready: []BoardBead{
+			{ID: "spi-r1", Title: "Ready 1", Status: "open", Type: "task", Priority: 1},
+		},
+	}
+	m := Model{
+		Cols:       cols,
+		Width:      120,
+		Height:     40,
+		SelSection: SectionAlerts,
+		ViewMode:   ViewAlerts,
+		Snapshot: &BoardSnapshot{
+			Columns:     cols,
+			DAGProgress: map[string]*DAGProgress{},
+			PhaseMap:    map[string]string{},
+		},
+	}
+
+	// Move down to second alert.
+	m = updateModel(m, keyMsg('j'))
+	if m.SelCard != 1 {
+		t.Errorf("expected SelCard=1, got %d", m.SelCard)
+	}
+	if m.SelSection != SectionAlerts {
+		t.Errorf("expected SectionAlerts after j, got %d", m.SelSection)
+	}
+
+	// Move down again — should NOT leave SectionAlerts.
+	m = updateModel(m, keyMsg('j'))
+	if m.SelSection != SectionAlerts {
+		t.Errorf("j at bottom of alerts should stay in SectionAlerts, got %d", m.SelSection)
+	}
+	if m.SelCard != 1 {
+		t.Errorf("j at bottom of alerts should keep SelCard=1, got %d", m.SelCard)
+	}
+}
+
+func TestRenderTabSidebar(t *testing.T) {
+	t.Run("active tab is highlighted", func(t *testing.T) {
+		sidebar := renderTabSidebar(ViewBoard, 3, 2)
+		if !strings.Contains(sidebar, "BOARD") {
+			t.Error("sidebar should contain BOARD label")
+		}
+		if !strings.Contains(sidebar, "ALERTS") {
+			t.Error("sidebar should contain ALERTS label")
+		}
+		if !strings.Contains(sidebar, "BLOCKED") {
+			t.Error("sidebar should contain BLOCKED label")
+		}
+	})
+
+	t.Run("counts shown when non-zero", func(t *testing.T) {
+		sidebar := renderTabSidebar(ViewAlerts, 5, 0)
+		if !strings.Contains(sidebar, "ALERTS (5)") {
+			t.Error("sidebar should show ALERTS (5) when alertCount=5")
+		}
+		if strings.Contains(sidebar, "BLOCKED (") {
+			t.Error("sidebar should not show count for BLOCKED when lowerCount=0")
+		}
+	})
+}
+
+func TestViewRendersActiveMode(t *testing.T) {
+	cols := Columns{
+		Alerts: []BoardBead{
+			{ID: "spi-a1", Title: "Test Alert", Status: "open", Type: "task", Priority: 0, Labels: []string{"alert:test"}},
+		},
+		Ready: []BoardBead{
+			{ID: "spi-r1", Title: "Ready Task", Status: "open", Type: "task", Priority: 1},
+		},
+		Blocked: []BoardBead{
+			{ID: "spi-b1", Title: "Blocked Task", Status: "open", Type: "task", Priority: 2, Labels: []string{}},
+		},
+	}
+	m := Model{
+		Cols:       cols,
+		Width:      120,
+		Height:     40,
+		SelSection: SectionColumns,
+		ViewMode:   ViewBoard,
+		Opts:       Opts{Interval: 5 * time.Second},
+		Snapshot: &BoardSnapshot{
+			Columns:     cols,
+			DAGProgress: map[string]*DAGProgress{},
+			PhaseMap:    map[string]string{},
+		},
+	}
+
+	t.Run("ViewBoard shows columns not alerts", func(t *testing.T) {
+		output := m.View()
+		if !strings.Contains(output, "Ready Task") {
+			t.Error("ViewBoard should show column content like 'Ready Task'")
+		}
+		// Sidebar should be present.
+		if !strings.Contains(output, "BOARD") {
+			t.Error("ViewBoard should render the tab sidebar with BOARD label")
+		}
+	})
+
+	t.Run("ViewAlerts shows alerts", func(t *testing.T) {
+		m2 := m
+		m2.ViewMode = ViewAlerts
+		m2.SelSection = SectionAlerts
+		output := m2.View()
+		if !strings.Contains(output, "Test Alert") {
+			t.Error("ViewAlerts should show alert content")
+		}
+		if !strings.Contains(output, "ALERTS") {
+			t.Error("ViewAlerts should render the tab sidebar with ALERTS label")
+		}
+	})
+
+	t.Run("ViewLower shows blocked", func(t *testing.T) {
+		m3 := m
+		m3.ViewMode = ViewLower
+		m3.SelSection = SectionLower
+		output := m3.View()
+		if !strings.Contains(output, "Blocked Task") {
+			t.Error("ViewLower should show blocked content")
+		}
+	})
+
+	t.Run("ViewAlerts empty shows placeholder", func(t *testing.T) {
+		m4 := m
+		m4.ViewMode = ViewAlerts
+		m4.SelSection = SectionAlerts
+		emptyCols := Columns{}
+		m4.Cols = emptyCols
+		m4.Snapshot = &BoardSnapshot{
+			Columns:     emptyCols,
+			DAGProgress: map[string]*DAGProgress{},
+			PhaseMap:    map[string]string{},
+		}
+		output := m4.View()
+		if !strings.Contains(output, "No alerts") {
+			t.Error("ViewAlerts with no alerts should show 'No alerts' placeholder")
+		}
+	})
+
+	t.Run("ViewLower empty shows placeholder", func(t *testing.T) {
+		m5 := m
+		m5.ViewMode = ViewLower
+		m5.SelSection = SectionLower
+		emptyCols := Columns{}
+		m5.Cols = emptyCols
+		m5.Snapshot = &BoardSnapshot{
+			Columns:     emptyCols,
+			DAGProgress: map[string]*DAGProgress{},
+			PhaseMap:    map[string]string{},
+		}
+		output := m5.View()
+		if !strings.Contains(output, "No blocked or interrupted") {
+			t.Error("ViewLower with empty data should show placeholder")
+		}
+	})
+}
+
+func TestInspectorTabNotAffectedByViewMode(t *testing.T) {
+	m := makeModel()
+	m.Inspecting = true
+	m.InspectorTab = 0
+
+	// Tab in inspector should toggle InspectorTab, not ViewMode.
+	m = updateModel(m, keyMsgStr("tab"))
+	if m.InspectorTab != 1 {
+		t.Errorf("tab in inspector should toggle InspectorTab, got %d", m.InspectorTab)
+	}
+	if m.ViewMode != ViewBoard {
+		t.Errorf("tab in inspector should not change ViewMode, got %d", m.ViewMode)
+	}
 }
 
