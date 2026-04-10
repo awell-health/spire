@@ -29,7 +29,8 @@ func main() {
 		staleThreshold time.Duration
 		reassignAfter  time.Duration
 		offlineTimeout time.Duration
-		stewardImage     string
+		stewardImage   string
+		beadsDir       string
 	)
 	flag.StringVar(&namespace, "namespace", "spire", "Namespace to watch")
 	flag.DurationVar(&interval, "interval", 2*time.Minute, "Poll interval")
@@ -37,6 +38,7 @@ func main() {
 	flag.DurationVar(&reassignAfter, "reassign-after", 6*time.Hour, "Time before reassigning stale work")
 	flag.DurationVar(&offlineTimeout, "offline-timeout", 30*time.Minute, "Time before marking agent as offline")
 	flag.StringVar(&stewardImage, "steward-image", "ghcr.io/awell-health/spire-steward:latest", "Image for managed agent pods")
+	flag.StringVar(&beadsDir, "beads-dir", "", "Path to .beads directory for scheduling validation (optional)")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -53,11 +55,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Bead discovery is handled by the bead bridge (runs in the steward pod).
-	// The bridge creates SpireWorkload CRs from ready beads via kubectl.
-	// The operator only manages CRs — no dolt dependency.
-
-	// Workload assigner — matches pending workloads to agents
+	// Workload assigner — matches pending workloads to agents.
+	// When beads-dir is set, the assigner validates pending workloads against
+	// the shared scheduling policy (store.GetSchedulableWork) before assigning.
 	assigner := &controllers.WorkloadAssigner{
 		Client:            mgr.GetClient(),
 		Log:               log.WithName("workload-assigner"),
@@ -65,6 +65,7 @@ func main() {
 		Interval:          interval,
 		StaleThreshold:    staleThreshold,
 		ReassignThreshold: reassignAfter,
+		BeadsDir:          beadsDir,
 	}
 	if err := mgr.Add(assigner); err != nil {
 		log.Error(err, "unable to add workload assigner")

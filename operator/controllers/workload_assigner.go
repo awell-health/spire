@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/steveyegge/beads"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // WorkloadAssigner matches pending SpireWorkloads to available SpireAgents.
@@ -21,6 +23,7 @@ type WorkloadAssigner struct {
 	Interval           time.Duration
 	StaleThreshold     time.Duration
 	ReassignThreshold  time.Duration
+	BeadsDir           string // path to .beads directory for store validation
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -68,13 +71,30 @@ func (a *WorkloadAssigner) cycle(ctx context.Context) {
 		agentMap[agent.Name] = agent
 	}
 
-	// 3. Assign pending workloads
+	// 3. Validate pending workloads against the shared scheduling policy.
+	// Uses store.GetSchedulableWork to ensure the same eligibility rules
+	// (msg/template/active-attempt filtering) are applied here, preventing
+	// drift between the bead watcher, steward, and this assigner.
+	schedulable := a.getSchedulableSet()
+
+	// 4. Assign pending workloads
 	// Sort by priority (lower = more urgent)
 	var pending []*spirev1.SpireWorkload
 	for i := range workloads.Items {
 		wl := &workloads.Items[i]
 		switch wl.Status.Phase {
 		case "Pending", "":
+			// If the store is available, validate the bead is still schedulable.
+			// If the store isn't available (schedulable == nil), fall through and
+			// assign based on CRD state alone (graceful degradation).
+			if schedulable != nil && !schedulable[wl.Spec.BeadID] {
+				a.Log.Info("workload bead no longer schedulable, cancelling",
+					"bead", wl.Spec.BeadID)
+				wl.Status.Phase = "Cancelled"
+				wl.Status.Message = "Bead no longer schedulable (scheduling policy)"
+				a.Client.Status().Update(ctx, wl) //nolint
+				continue
+			}
 			pending = append(pending, wl)
 		case "Assigned", "InProgress", "Stale":
 			a.checkStale(ctx, wl)
@@ -93,6 +113,35 @@ func (a *WorkloadAssigner) cycle(ctx context.Context) {
 
 		a.assign(ctx, wl, agent)
 	}
+}
+
+// getSchedulableSet returns a set of bead IDs that are currently schedulable
+// according to the shared scheduling policy in store.GetSchedulableWork.
+// Returns nil if the store is not available (graceful degradation).
+func (a *WorkloadAssigner) getSchedulableSet() map[string]bool {
+	if a.BeadsDir != "" {
+		if _, err := store.Ensure(a.BeadsDir); err != nil {
+			a.Log.Error(err, "failed to initialize bead store for scheduling validation")
+			return nil
+		}
+	}
+
+	result, err := store.GetSchedulableWork(beads.WorkFilter{})
+	if err != nil {
+		a.Log.Error(err, "store.GetSchedulableWork failed, skipping validation")
+		return nil
+	}
+
+	// Log quarantined beads at Error level.
+	for _, q := range result.Quarantined {
+		a.Log.Error(q.Error, "quarantined bead (multiple open attempts)", "beadId", q.ID)
+	}
+
+	set := make(map[string]bool, len(result.Schedulable))
+	for _, b := range result.Schedulable {
+		set[b.ID] = true
+	}
+	return set
 }
 
 func (a *WorkloadAssigner) selectAgent(agents []spirev1.SpireAgent, wl *spirev1.SpireWorkload) *spirev1.SpireAgent {
