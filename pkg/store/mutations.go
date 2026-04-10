@@ -60,6 +60,15 @@ func AddDepTyped(issueID, dependsOnID, depType string) error {
 	return s.AddDependency(ctx, dep, Actor())
 }
 
+// RemoveDep removes a dependency between two beads.
+func RemoveDep(issueID, dependsOnID string) error {
+	s, ctx, err := getStore()
+	if err != nil {
+		return err
+	}
+	return s.RemoveDependency(ctx, issueID, dependsOnID, Actor())
+}
+
 // CloseBead closes a bead.
 func CloseBead(id string) error {
 	s, ctx, err := getStore()

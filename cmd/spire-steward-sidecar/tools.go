@@ -29,6 +29,7 @@ var (
 	storeCloseBead     = store.CloseBead
 	storeAddComment    = store.AddComment
 	storeAddDep        = store.AddDep
+	storeRemoveDep     = store.RemoveDep
 )
 
 // StewardTools implements ToolExecutor for the steward sidecar.
@@ -389,6 +390,14 @@ func (t *StewardTools) updateBead(input json.RawMessage) (string, error) {
 		}
 	}
 	if params.Parent != "" {
+		// Remove existing parent-child dep to avoid multi-parent ambiguity.
+		if deps, err := storeGetDepsWithMeta(params.ID); err == nil {
+			for _, d := range deps {
+				if d.DependencyType == beads.DepParentChild {
+					_ = storeRemoveDep(params.ID, d.ID)
+				}
+			}
+		}
 		if err := storeAddDepTyped(params.ID, params.Parent, string(beads.DepParentChild)); err != nil {
 			return "", fmt.Errorf("set parent %s for %s: %w", params.Parent, params.ID, err)
 		}
