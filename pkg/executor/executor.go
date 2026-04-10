@@ -48,22 +48,29 @@ type State struct {
 	Counters   map[string]int            `json:"counters,omitempty"`
 }
 
-// Executor drives a bead through its formula's step graph (v3).
+// Executor drives a bead through its formula's phase pipeline (v2) or step
+// graph (v3). When graph is non-nil, Run() delegates to RunGraph().
 type Executor struct {
 	beadID    string
 	agentName string
-	graph      *FormulaStepGraph // v3 step graph
-	graphState *GraphState       // v3 state
-	deps       *Deps
-	log        func(string, ...interface{})
+	formula   *FormulaV2         // v2 phase pipeline (nil when running v3)
+	graph     *FormulaStepGraph  // v3 step graph (nil when running v2)
+	graphState *GraphState       // v3 state (nil when running v2)
+	state     *State
+	deps      *Deps
+	log       func(string, ...interface{})
 
 	// currentRunID is the run ID of this executor's own agent_run record.
 	// Used as ParentRunID for child spawns (apprentice, sage).
 	currentRunID string
 
+	// Single staging worktree shared across all phases (implement, review, merge).
+	// Created once by ensureStagingWorktree(), cleaned up by Run() on exit.
+	stagingWt *spgit.StagingWorktree
+
 	// terminated is set to true on terminal success paths (merge complete,
-	// bead closed, all phases done). When true, the graph state file is
-	// removed instead of persisted.
+	// bead closed, all phases done). When true, the deferred saveState()
+	// removes state.json instead of writing it.
 	terminated bool
 
 	// designPollInterval controls how long wizardValidateDesign sleeps between
@@ -108,6 +115,49 @@ func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*E
 // Run drives the bead through its formula's step graph.
 func (e *Executor) Run() error {
 	return e.RunGraph(e.graph, e.graphState)
+}
+
+// saveState persists the v2 executor state to disk.
+func (e *Executor) saveState() error {
+	if e.state == nil {
+		return nil
+	}
+	path := StatePath(e.agentName, e.deps.ConfigDir)
+	if e.terminated {
+		os.Remove(path)
+		return nil
+	}
+	os.MkdirAll(filepath.Dir(path), 0755)
+	e.state.LastActionAt = time.Now().UTC().Format(time.RFC3339)
+	data, err := json.MarshalIndent(e.state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// advancePhase moves to the next enabled phase in the formula.
+func (e *Executor) advancePhase() bool {
+	next := e.nextPhase(e.state.Phase)
+	if next == "" {
+		return false
+	}
+	e.state.Phase = next
+	return true
+}
+
+// nextPhase returns the next enabled phase after the given one, or "".
+func (e *Executor) nextPhase(current string) string {
+	if e.formula == nil {
+		return ""
+	}
+	enabled := e.formula.EnabledPhases()
+	for i, p := range enabled {
+		if p == current && i+1 < len(enabled) {
+			return enabled[i+1]
+		}
+	}
+	return ""
 }
 
 // --- State persistence ---
