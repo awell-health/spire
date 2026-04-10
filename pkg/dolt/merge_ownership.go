@@ -166,8 +166,15 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 		return 0, nil
 	}
 
+	// Build a single SQL batch with autocommit disabled so that writes
+	// succeed even when dolt has unresolved conflicts (autocommit mode
+	// rejects writes in that state). All statements run in one CLI
+	// process to preserve the session/transaction context.
+	var stmts []string
+	stmts = append(stmts, "SET @@autocommit = 0")
+	stmts = append(stmts, fmt.Sprintf("USE `%s`", dbName))
+
 	resolved := 0
-	var resolvedIDs []string
 	for _, row := range rows {
 		id := Coalesce(row["our_id"], row["their_id"], row["base_id"])
 		if id == "" {
@@ -189,16 +196,15 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 			fmt.Sprintf("issue_type = '%s'", SQLEscape(Coalesce(row["our_issue_type"], row["their_issue_type"]))),
 		}
 
-		updateSQL := fmt.Sprintf("UPDATE `%s`.issues SET %s WHERE id = '%s'",
-			dbName, strings.Join(updates, ", "), SQLEscape(id))
-		if _, err := sqlWithDB(dbName, updateSQL); err != nil {
-			log.Printf("[ownership] update %s: %s", id, err)
-			continue // leave this conflict row for manual resolution
-		}
+		escapedID := SQLEscape(id)
+		stmts = append(stmts, fmt.Sprintf("UPDATE issues SET %s WHERE id = '%s'",
+			strings.Join(updates, ", "), escapedID))
+		stmts = append(stmts, fmt.Sprintf(
+			"DELETE FROM dolt_conflicts_issues WHERE our_id = '%s' OR their_id = '%s' OR base_id = '%s'",
+			escapedID, escapedID, escapedID))
 
-		log.Printf("[ownership] resolved conflict: %s (cluster: status=%s, user: title=%q)",
+		log.Printf("[ownership] resolving conflict: %s (cluster: status=%s, user: title=%q)",
 			id, Coalesce(row["their_status"], "?"), Coalesce(row["our_title"], "?"))
-		resolvedIDs = append(resolvedIDs, id)
 		resolved++
 	}
 
@@ -206,20 +212,12 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 		return 0, nil
 	}
 
-	// Delete only the conflict rows we actually resolved.
-	for _, id := range resolvedIDs {
-		deleteSQL := fmt.Sprintf(
-			"DELETE FROM `%s`.dolt_conflicts_issues WHERE our_id = '%s' OR their_id = '%s' OR base_id = '%s'",
-			dbName, SQLEscape(id), SQLEscape(id), SQLEscape(id))
-		if _, err := sqlWithDB(dbName, deleteSQL); err != nil {
-			log.Printf("[ownership] delete conflict %s: %s", id, err)
-		}
-	}
+	stmts = append(stmts, "CALL DOLT_ADD('-A')")
+	stmts = append(stmts, fmt.Sprintf("CALL DOLT_COMMIT('-m', 'spire: field-level merge resolution (%d conflicts)')", resolved))
 
-	commitSQL := fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'spire: field-level merge resolution (%d conflicts)')",
-		dbName, resolved)
-	if _, err := RawQuery(commitSQL); err != nil {
-		return resolved, fmt.Errorf("commit resolution: %w", err)
+	batch := strings.Join(stmts, "; ")
+	if _, err := RawQuery(batch); err != nil {
+		return 0, fmt.Errorf("resolve conflicts: %w", err)
 	}
 
 	return resolved, nil

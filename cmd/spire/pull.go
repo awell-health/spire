@@ -139,8 +139,10 @@ func runPull(remoteURL string, force bool) error {
 	// ── Enforce field-level ownership ─────────────────────────────────────────
 	// Must run even when pull reports conflicts, since CLIPull merges data
 	// into the working set before returning the conflict error.
+	var ownerErr error
 	if dbName != "" && preCommit != "" {
-		if ownerErr := dolt.ApplyMergeOwnership(dbName, preCommit); ownerErr != nil {
+		ownerErr = dolt.ApplyMergeOwnership(dbName, preCommit)
+		if ownerErr != nil {
 			fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
 		}
 	}
@@ -159,6 +161,12 @@ func runPull(remoteURL string, force bool) error {
 			return fmt.Errorf("pull failed (diverged histories)")
 		}
 		if merge {
+			if ownerErr != nil {
+				// Ownership enforcement failed — check if conflicts persist.
+				if remaining, _ := dolt.HasUnresolvedConflicts(dbName); remaining > 0 {
+					return fmt.Errorf("merge conflicts remain (%d unresolved): %w", remaining, ownerErr)
+				}
+			}
 			fmt.Println("  Merge conflicts resolved via field-level ownership.")
 		} else {
 			// hard+force (force pull still failed) or unknown error — propagate.
