@@ -17,14 +17,11 @@
 package steward
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +54,9 @@ var GetCommentsFunc = store.GetComments
 
 // RemoveLabelFunc is a test-replaceable function for store.RemoveLabel.
 var RemoveLabelFunc = store.RemoveLabel
+
+// SendMessageFunc creates a message bead. Test-replaceable.
+var SendMessageFunc = sendMessage
 
 // CheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.
@@ -269,13 +269,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 
 		// Send assignment message (for external/unmanaged agents).
 		msg := fmt.Sprintf("Please claim and work on %s: %s", bead.ID, bead.Title)
-		sendArgs := []string{
-			"send", agentName, msg,
-			"--ref", bead.ID,
-			"-p", strconv.Itoa(bead.Priority),
-			"--as", "steward",
-		}
-		_, sendErr := RunSpire(sendArgs...)
+		_, sendErr := SendMessageFunc(agentName, "steward", msg, bead.ID, bead.Priority)
 		if sendErr != nil {
 			log.Printf("[steward] %ssend failed: %s → %s: %s", prefix, bead.ID, agentName, sendErr)
 			continue
@@ -619,13 +613,7 @@ func DetectReviewFeedback(dryRun bool) {
 		}
 
 		msg := fmt.Sprintf("Review feedback on %s: %s — please address feedback on the existing branch and push again", b.ID, b.Title)
-		sendArgs := []string{
-			"send", owner, msg,
-			"--ref", b.ID,
-			"-p", strconv.Itoa(b.Priority),
-			"--as", "steward",
-		}
-		if _, err := RunSpire(sendArgs...); err != nil {
+		if _, err := SendMessageFunc(owner, "steward", msg, b.ID, b.Priority); err != nil {
 			log.Printf("[steward] failed to re-engage wizard for %s: %v", b.ID, err)
 			continue
 		}
@@ -808,21 +796,17 @@ func SanitizeK8sLabel(s string) string {
 // is handled by the syncer pod, not the steward cycle.
 func pushState() {}
 
-// RunSpire runs a spire subcommand by calling the spire binary.
-func RunSpire(args ...string) (string, error) {
-	// Find our own binary path to call ourselves
-	exe, err := os.Executable()
-	if err != nil {
-		exe = "spire"
+// sendMessage creates a message bead with the appropriate labels.
+func sendMessage(to, from, body, ref string, priority int) (string, error) {
+	labels := []string{"msg", "to:" + to, "from:" + from}
+	if ref != "" {
+		labels = append(labels, "ref:"+ref)
 	}
-
-	cmd := exec.Command(exe, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("spire %s: %s\n%s", strings.Join(args, " "), err, stderr.String())
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	return store.CreateBead(store.CreateOpts{
+		Title:    body,
+		Priority: priority,
+		Type:     beads.TypeTask,
+		Prefix:   "spi",
+		Labels:   labels,
+	})
 }

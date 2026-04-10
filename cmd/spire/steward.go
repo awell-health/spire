@@ -268,8 +268,7 @@ func cmdSteward(args []string) error {
 
 // --- Backward-compatible wrappers for callers elsewhere in cmd/spire ---
 
-func sanitizeK8sLabel(s string) string       { return steward.SanitizeK8sLabel(s) }
-func pushState()                              {}
-func runSpire(args ...string) (string, error) { return steward.RunSpire(args...) }
-func reviewBeadVerdict(b Bead) string         { return steward.ReviewBeadVerdict(b) }
+func sanitizeK8sLabel(s string) string { return steward.SanitizeK8sLabel(s) }
+func pushState()                       {}
+func reviewBeadVerdict(b Bead) string  { return steward.ReviewBeadVerdict(b) }
 func beadsDirForTower(name string) string     { return steward.BeadsDirForTower(name) }
