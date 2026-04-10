@@ -1043,17 +1043,17 @@ func TestSkipBead(t *testing.T) {
 		},
 		{
 			name:   "msg label is skipped",
-			bead:   BoardBead{ID: "spi-103", Title: "A message", Labels: []string{"msg"}},
+			bead:   BoardBead{ID: "spi-103", Title: "A message", Type: "message", Labels: []string{"msg"}},
 			expect: true,
 		},
 		{
 			name:   "workflow-step label is skipped",
-			bead:   BoardBead{ID: "spi-104", Title: "step:implement", Labels: []string{"workflow-step", "step:implement"}},
+			bead:   BoardBead{ID: "spi-104", Title: "step:implement", Type: "step", Labels: []string{"workflow-step", "step:implement"}},
 			expect: true,
 		},
 		{
 			name:   "attempt bead is skipped",
-			bead:   BoardBead{ID: "spi-105", Title: "attempt: wizard-spi-xxx", Labels: []string{"attempt"}},
+			bead:   BoardBead{ID: "spi-105", Title: "attempt: wizard-spi-xxx", Type: "attempt", Labels: []string{"attempt"}},
 			expect: true,
 		},
 		{
