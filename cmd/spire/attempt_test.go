@@ -190,7 +190,7 @@ func TestExecutor_CreatesAttemptBead(t *testing.T) {
 		AgentName:     "wizard-test",
 		StagingBranch: "feat/spi-test",
 	}
-	e := executor.NewForTest("spi-test", "wizard-test", nil, state, deps)
+	e := executor.NewForTest("spi-test", "wizard-test", state, deps)
 
 	// Run() calls ensureAttemptBead internally, but we can't call it directly.
 	// Verify indirectly: after Run with minimal formula that fails immediately,
@@ -226,7 +226,7 @@ func TestExecutor_ClosesAttemptOnSuccess(t *testing.T) {
 	state := &executorState{
 		AttemptBeadID: "spi-close-test.attempt-1",
 	}
-	e := executor.NewForTest("spi-close-test", "wizard-close", nil, state, deps)
+	e := executor.NewForTest("spi-close-test", "wizard-close", state, deps)
 
 	// closeAttempt is unexported — verify through deps
 	_ = e
@@ -249,7 +249,7 @@ func TestExecutor_CloseAttemptNoop_WhenEmpty(t *testing.T) {
 	deps := &executor.Deps{
 		ConfigDir: func() (string, error) { return t.TempDir(), nil },
 	}
-	e := executor.NewForTest("spi-noop", "wizard-noop", nil, state, deps)
+	e := executor.NewForTest("spi-noop", "wizard-noop", state, deps)
 	if e.State().AttemptBeadID != "" {
 		t.Error("AttemptBeadID should be empty")
 	}
@@ -287,7 +287,7 @@ func TestExecutor_ResumesExistingAttempt(t *testing.T) {
 		AgentName:     "wizard-resume",
 		AttemptBeadID: "spi-resume.attempt-1",
 	}
-	e := executor.NewForTest("spi-resume", "wizard-resume", nil, state, deps)
+	e := executor.NewForTest("spi-resume", "wizard-resume", state, deps)
 
 	// The attempt is already in state — creator should not be called during construction
 	_ = e
@@ -485,7 +485,7 @@ func TestAttemptLifecycle_EndToEnd(t *testing.T) {
 	// Create executor with deps wiring.
 	// Since ensureAttemptBead and closeAttempt are unexported methods on Executor,
 	// we verify the lifecycle through the Deps callbacks directly.
-	e := executor.NewForTest("spi-e2e", "wizard-e2e", nil, state, deps)
+	e := executor.NewForTest("spi-e2e", "wizard-e2e", state, deps)
 	_ = e
 
 	// Step 1: Create attempt via deps

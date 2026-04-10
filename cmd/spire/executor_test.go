@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/executor"
-	"github.com/awell-health/spire/pkg/formula"
 	"github.com/steveyegge/beads"
 )
 
@@ -48,7 +47,7 @@ func TestLoadExecutorStateReturnsStateWhenPresent(t *testing.T) {
 	deps := &executor.Deps{
 		ConfigDir: configDir,
 	}
-	ex := executor.NewForTest(saved.BeadID, agentName, nil, saved, deps)
+	ex := executor.NewForTest(saved.BeadID, agentName, saved, deps)
 	// saveState is unexported — use the state file path directly
 	_ = ex // state is written via the helper below
 
@@ -153,7 +152,7 @@ func newTestExecutor(t *testing.T, beadData Bead, children []Bead) (*formulaExec
 		ParseIssueType:    parseIssueType,
 	}
 	state := &executorState{RepoPath: t.TempDir()}
-	e := executor.NewForTest(beadData.ID, "wizard-test", nil, state, deps)
+	e := executor.NewForTest(beadData.ID, "wizard-test", state, deps)
 	return e, cs
 }
 
@@ -238,16 +237,14 @@ func TestWizardPlanEnrichesWhenChildrenExist(t *testing.T) {
 		ParseIssueType:    parseIssueType,
 	}
 	state := e.State()
-	e = executor.NewForTest(epic.ID, "wizard-test", nil, state, deps)
+	e = executor.NewForTest(epic.ID, "wizard-test", state, deps)
 
-	pc := formula.PhaseConfig{Model: "claude-opus-4-6"}
 	// wizardPlan is unexported on Executor — need to test via the exported interface.
 	// Since wizardPlan is called from Run(), and we can't easily run the full loop
 	// in a test, we'll test enrichment indirectly.
 	// Actually, wizardPlan and enrichSubtasksWithChangeSpecs are unexported methods
 	// on the Executor. We need to expose them for testing.
 	// For now, skip this test if the method isn't callable.
-	_ = pc
 	_ = e
 
 	// Claude must be invoked once per child subtask.
@@ -317,23 +314,13 @@ func TestEnsureStepBeadsReconcileFromGraph(t *testing.T) {
 		IsReviewRoundBead: isReviewRoundBead,
 	}
 
-	f := &formula.FormulaV2{
-		Name:    "test-formula",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"implement": {Role: "apprentice"},
-			"review":    {Role: "sage"},
-			"merge":     {Role: "wizard"},
-		},
-	}
-
 	state := &executorState{
 		BeadID:    epic.ID,
 		AgentName: "wizard-test",
 		Subtasks:  make(map[string]subtaskState),
 	}
 
-	e := executor.NewForTest(epic.ID, "wizard-test", f, state, deps)
+	e := executor.NewForTest(epic.ID, "wizard-test", state, deps)
 
 	// ensureStepBeads is called during Run(), but we can trigger it through
 	// the test helper. Since it's unexported, we test via Run() behavior or

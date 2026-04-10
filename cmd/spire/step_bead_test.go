@@ -7,7 +7,6 @@ import (
 
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/executor"
-	"github.com/awell-health/spire/pkg/formula"
 )
 
 // --- storeCreateStepBead + storeCloseStepBead tests ---
@@ -131,16 +130,8 @@ func TestExecutor_CreatesStepBeads(t *testing.T) {
 	created := make(map[string]string) // phase -> id
 	nextID := 1
 
-	f := &formula.FormulaV2{
-		Name:    "test-formula",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"design":    {Role: "wizard"},
-			"implement": {Role: "apprentice"},
-			"review":    {Role: "sage"},
-			"merge":     {Role: "skip"},
-		},
-	}
+	// Phases that the executor would create step beads for.
+	phases := []string{"design", "implement", "review", "merge"}
 
 	deps := &executor.Deps{
 		ConfigDir: func() (string, error) { return dir, nil },
@@ -171,12 +162,11 @@ func TestExecutor_CreatesStepBeads(t *testing.T) {
 		AgentName: "wizard-pour",
 	}
 
-	e := executor.NewForTest("spi-pour", "wizard-pour", f, state, deps)
+	e := executor.NewForTest("spi-pour", "wizard-pour", state, deps)
 
 	// ensureStepBeads is called from Run(). Since it's unexported, verify
 	// through the deps wiring. Create step beads directly.
-	enabledPhases := f.EnabledPhases()
-	for _, phase := range enabledPhases {
+	for _, phase := range phases {
 		id, err := deps.CreateStepBead("spi-pour", phase)
 		if err != nil {
 			t.Fatalf("create step bead for %s: %v", phase, err)
@@ -185,10 +175,10 @@ func TestExecutor_CreatesStepBeads(t *testing.T) {
 		e.State().StepBeadIDs[phase] = id
 	}
 
-	if len(created) != len(enabledPhases) {
-		t.Errorf("created %d step beads, want %d", len(created), len(enabledPhases))
+	if len(created) != len(phases) {
+		t.Errorf("created %d step beads, want %d", len(created), len(phases))
 	}
-	for _, phase := range enabledPhases {
+	for _, phase := range phases {
 		if _, ok := created[phase]; !ok {
 			t.Errorf("no step bead created for phase %s", phase)
 		}
@@ -218,15 +208,7 @@ func TestExecutor_EnsureStepBeads_Idempotent(t *testing.T) {
 		},
 	}
 
-	f := &formula.FormulaV2{
-		Name:    "test-formula",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"implement": {Role: "apprentice"},
-		},
-	}
-
-	_ = executor.NewForTest("spi-resume", "wizard-resume", f, state, deps)
+	_ = executor.NewForTest("spi-resume", "wizard-resume", state, deps)
 
 	// StepBeadIDs is already populated — creator should not be called.
 	if creatorCalled {
@@ -293,7 +275,7 @@ func TestExecutor_TransitionStepBead_FinalClose(t *testing.T) {
 		},
 	}
 
-	_ = executor.NewForTest("spi-final", "wizard-final", nil, state, deps)
+	_ = executor.NewForTest("spi-final", "wizard-final", state, deps)
 
 	// Final close simulation
 	deps.CloseStepBead(state.StepBeadIDs["merge"])
