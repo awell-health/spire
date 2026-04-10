@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
@@ -95,7 +96,7 @@ func cmdStatus(args []string) error {
 		}
 		if ipErr == nil {
 			for _, b := range inProgressBeads {
-				if containsLabel(b, "msg") {
+				if store.IsInternalBead(b) {
 					continue
 				}
 				wq.InProgressCount++

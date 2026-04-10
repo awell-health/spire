@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads"
 )
 
 var sendCmd = &cobra.Command{
@@ -104,7 +105,7 @@ func cmdSend(args []string) error {
 	id, err := storeCreateBead(createOpts{
 		Title:    message,
 		Priority: priority,
-		Type:     parseIssueType("message"),
+		Type:     beads.IssueType("message"),
 		Prefix:   "spi",
 		Labels:   labels,
 		Parent:   thread,
