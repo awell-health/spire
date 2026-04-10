@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/process"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -145,6 +146,28 @@ func cmdUp(args []string) error {
 			}
 		}
 		if warned > 0 {
+			fmt.Println()
+		} else {
+			fmt.Printf("ok (%d tower(s))\n", len(towers))
+		}
+
+		// Migrate label-identified beads to proper internal types
+		fmt.Print("internal type migration: ")
+		migWarned := 0
+		for _, t := range towers {
+			beadsDir := filepath.Join(doltDataDir(), t.Database, ".beads")
+			if _, err := store.OpenAt(beadsDir); err != nil {
+				fmt.Printf("\n  warning: %s: %s", t.Database, err)
+				migWarned++
+				continue
+			}
+			if err := store.MigrateInternalTypes(); err != nil {
+				fmt.Printf("\n  warning: %s: %s", t.Database, err)
+				migWarned++
+			}
+		}
+		store.Reset()
+		if migWarned > 0 {
 			fmt.Println()
 		} else {
 			fmt.Printf("ok (%d tower(s))\n", len(towers))
