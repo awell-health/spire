@@ -1335,22 +1335,24 @@ func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {
 
 	exec := NewGraphForTest("test-bead", "test-agent", graph, nil, deps)
 	err := exec.RunGraph(graph, exec.graphState)
-	if err == nil {
-		t.Fatal("expected error from failing step")
+	if err != nil {
+		t.Fatalf("expected nil error (hooked park), got: %v", err)
 	}
 
-	// Verify the attempt result includes node-scoped metadata.
-	if !strings.Contains(capturedResult, "step implement") {
-		t.Errorf("expected result to contain 'step implement', got: %s", capturedResult)
+	// Verify the step is hooked (not failed) after escalation.
+	if ss, ok := exec.graphState.Steps["implement"]; !ok || ss.Status != "hooked" {
+		status := "missing"
+		if ok {
+			status = ss.Status
+		}
+		t.Errorf("expected implement step status=hooked, got %s", status)
 	}
-	if !strings.Contains(capturedResult, "action=test.fail") {
-		t.Errorf("expected result to contain 'action=test.fail', got: %s", capturedResult)
-	}
-	if !strings.Contains(capturedResult, "flow=implement") {
-		t.Errorf("expected result to contain 'flow=implement', got: %s", capturedResult)
-	}
-	if !strings.Contains(capturedResult, "workspace=feature") {
-		t.Errorf("expected result to contain 'workspace=feature', got: %s", capturedResult)
+
+	// Failed steps are now hooked (parked), so the attempt result is the
+	// park message rather than node-scoped metadata. The node-scoped info
+	// goes through EscalateGraphStepFailure (labels/alerts), not the attempt result.
+	if !strings.Contains(capturedResult, "parked") {
+		t.Errorf("expected result to contain 'parked', got: %s", capturedResult)
 	}
 
 	// Verify escalation: parent bead gets needs-human + interrupted:step-failure.

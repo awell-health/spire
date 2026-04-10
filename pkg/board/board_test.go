@@ -76,7 +76,7 @@ func TestBuildActionMenu(t *testing.T) {
 		bead := &BoardBead{ID: "spi-001", Status: "open", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
-		expectActions(t, items, []PendingAction{ActionSummon, ActionClose, ActionGrok, ActionTrace})
+		expectActions(t, items, []PendingAction{ActionSummon, ActionDefer, ActionClose, ActionGrok, ActionTrace})
 
 		// Verify danger levels.
 		for _, item := range items {
