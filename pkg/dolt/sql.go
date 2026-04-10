@@ -82,6 +82,25 @@ func LocalQuery(dataDir, query string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// InteractiveSQL starts an interactive dolt SQL shell connected to the given database.
+// Stdin, stdout, and stderr are passed through so the user gets a real terminal session.
+func InteractiveSQL(dbName string) error {
+	args := []string{
+		"--host", Host(),
+		"--port", Port(),
+		"--user", "root",
+		"--no-tls",
+		"--use-db", dbName,
+		"sql",
+	}
+	cmd := exec.Command(Bin(), args...)
+	cmd.Env = append(os.Environ(), "DOLT_CLI_PASSWORD=")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // RawQuery runs a SQL query against the dolt server without --use-db.
 // For bootstrap contexts (tower attach) where no ambient database context exists.
 // Queries must use fully-qualified table names (e.g. `dbname`.table).

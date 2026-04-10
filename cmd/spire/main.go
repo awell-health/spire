@@ -22,6 +22,7 @@ func init() {
 	rootCmd.AddCommand(downCmd)
 	rootCmd.AddCommand(shutdownCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(sqlCmd)
 
 	// --- Commands with flags ---
 	rootCmd.AddCommand(fileCmd)
