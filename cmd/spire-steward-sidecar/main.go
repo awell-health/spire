@@ -14,6 +14,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 const systemPrompt = `You are the steward's sidecar — an intelligent message router and coordinator for the Spire agent system. You process messages sent to the steward and translate them into bead operations.
@@ -86,6 +90,15 @@ func main() {
 	if err := os.MkdirAll(*commsDir, 0755); err != nil {
 		log.Fatalf("failed to create comms dir: %v", err)
 	}
+
+	// Wire up store initialization (same pattern as cmd/spire/store_bridge.go).
+	store.BeadsDirResolver = config.ResolveBeadsDir
+	config.DoltDataDirFunc = dolt.DataDir
+	config.StoreConfigGetterFunc = store.GetConfig
+	if _, err := store.Ensure(config.ResolveBeadsDir()); err != nil {
+		log.Printf("[steward-sidecar] store init: %v (tools will retry on first use)", err)
+	}
+	defer store.Reset()
 
 	// Align project_id before the first inbox poll — ensures metadata.json
 	// matches the dolt server even after restarts that change the ID.

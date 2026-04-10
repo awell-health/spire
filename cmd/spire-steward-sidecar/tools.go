@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
+
+	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
 
 // StewardTools implements ToolExecutor for the steward sidecar.
@@ -279,39 +282,44 @@ func (t *StewardTools) listBeads(input json.RawMessage) (string, error) {
 	}
 	json.Unmarshal(input, &params)
 
-	args := []string{"list", "--json"}
+	// If filtering by parent, use GetChildren for an exact match.
+	if params.Parent != "" {
+		children, err := store.GetChildren(params.Parent)
+		if err != nil {
+			return "", fmt.Errorf("list children of %s: %w", params.Parent, err)
+		}
+		return marshalJSON(children)
+	}
+
+	filter := beads.IssueFilter{}
 	if params.Status != "" {
-		args = append(args, "--status="+params.Status)
+		s := store.ParseStatus(params.Status)
+		filter.Status = &s
+		// When explicitly requesting closed, override the default exclusion.
+		if s == beads.StatusClosed {
+			filter.ExcludeStatus = nil
+		}
 	}
 	if params.Labels != "" {
-		args = append(args, "--label", params.Labels)
-	}
-
-	out, err := runBD(args...)
-	if err != nil {
-		return "", err
-	}
-
-	// If filtering by parent, do client-side filtering.
-	if params.Parent != "" && out != "" {
-		var beads []json.RawMessage
-		if json.Unmarshal([]byte(out), &beads) == nil {
-			var filtered []json.RawMessage
-			for _, b := range beads {
-				var bead struct {
-					ID string `json:"id"`
-				}
-				json.Unmarshal(b, &bead)
-				if strings.HasPrefix(bead.ID, params.Parent+".") {
-					filtered = append(filtered, b)
-				}
-			}
-			result, _ := json.Marshal(filtered)
-			return string(result), nil
+		filter.Labels = strings.Split(params.Labels, ",")
+		for i := range filter.Labels {
+			filter.Labels[i] = strings.TrimSpace(filter.Labels[i])
 		}
 	}
 
-	return out, nil
+	results, err := store.ListBeads(filter)
+	if err != nil {
+		return "", fmt.Errorf("list beads: %w", err)
+	}
+	return marshalJSON(results)
+}
+
+// showBeadResult composes the full show output for an LLM tool call.
+type showBeadResult struct {
+	store.Bead
+	Comments     []*beads.Comment                          `json:"comments,omitempty"`
+	Dependencies []*beads.IssueWithDependencyMetadata      `json:"dependencies,omitempty"`
+	Children     []store.Bead                              `json:"children,omitempty"`
 }
 
 func (t *StewardTools) showBead(input json.RawMessage) (string, error) {
@@ -319,7 +327,23 @@ func (t *StewardTools) showBead(input json.RawMessage) (string, error) {
 		ID string `json:"id"`
 	}
 	json.Unmarshal(input, &params)
-	return runBD("show", params.ID, "--json")
+
+	bead, err := store.GetBead(params.ID)
+	if err != nil {
+		return "", fmt.Errorf("show bead %s: %w", params.ID, err)
+	}
+
+	comments, _ := store.GetComments(params.ID)
+	deps, _ := store.GetDepsWithMeta(params.ID)
+	children, _ := store.GetChildren(params.ID)
+
+	result := showBeadResult{
+		Bead:         bead,
+		Comments:     comments,
+		Dependencies: deps,
+		Children:     children,
+	}
+	return marshalJSON(result)
 }
 
 func (t *StewardTools) updateBead(input json.RawMessage) (string, error) {
@@ -332,21 +356,28 @@ func (t *StewardTools) updateBead(input json.RawMessage) (string, error) {
 	}
 	json.Unmarshal(input, &params)
 
-	args := []string{"update", params.ID}
 	for _, l := range params.AddLabels {
-		args = append(args, "--add-label", l)
+		if err := store.AddLabel(params.ID, l); err != nil {
+			return "", fmt.Errorf("add label %q to %s: %w", l, params.ID, err)
+		}
 	}
 	for _, l := range params.RemoveLabels {
-		args = append(args, "--remove-label", l)
+		if err := store.RemoveLabel(params.ID, l); err != nil {
+			return "", fmt.Errorf("remove label %q from %s: %w", l, params.ID, err)
+		}
 	}
 	if params.Priority != nil {
-		args = append(args, "-p", fmt.Sprintf("%d", *params.Priority))
+		if err := store.UpdateBead(params.ID, map[string]interface{}{"priority": *params.Priority}); err != nil {
+			return "", fmt.Errorf("update priority for %s: %w", params.ID, err)
+		}
 	}
 	if params.Parent != "" {
-		args = append(args, "--parent", params.Parent)
+		if err := store.AddDepTyped(params.ID, params.Parent, string(beads.DepParentChild)); err != nil {
+			return "", fmt.Errorf("set parent %s for %s: %w", params.Parent, params.ID, err)
+		}
 	}
 
-	return runBD(args...)
+	return fmt.Sprintf("Updated %s", params.ID), nil
 }
 
 func (t *StewardTools) createBead(input json.RawMessage) (string, error) {
@@ -360,18 +391,18 @@ func (t *StewardTools) createBead(input json.RawMessage) (string, error) {
 	}
 	json.Unmarshal(input, &params)
 
-	args := []string{"create", params.Title, "-t", params.Type, "-p", fmt.Sprintf("%d", params.Priority)}
-	if params.Parent != "" {
-		args = append(args, "--parent", params.Parent)
+	id, err := store.CreateBead(store.CreateOpts{
+		Title:       params.Title,
+		Description: params.Description,
+		Priority:    params.Priority,
+		Type:        store.ParseIssueType(params.Type),
+		Labels:      params.Labels,
+		Parent:      params.Parent,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create bead: %w", err)
 	}
-	if params.Description != "" {
-		args = append(args, "--description", params.Description)
-	}
-	if len(params.Labels) > 0 {
-		args = append(args, "--labels", strings.Join(params.Labels, ","))
-	}
-
-	return runBD(args...)
+	return fmt.Sprintf("Created %s", id), nil
 }
 
 func (t *StewardTools) closeBead(input json.RawMessage) (string, error) {
@@ -379,7 +410,11 @@ func (t *StewardTools) closeBead(input json.RawMessage) (string, error) {
 		ID string `json:"id"`
 	}
 	json.Unmarshal(input, &params)
-	return runBD("close", params.ID)
+
+	if err := store.CloseBead(params.ID); err != nil {
+		return "", fmt.Errorf("close bead %s: %w", params.ID, err)
+	}
+	return fmt.Sprintf("Closed %s", params.ID), nil
 }
 
 func (t *StewardTools) addComment(input json.RawMessage) (string, error) {
@@ -388,7 +423,11 @@ func (t *StewardTools) addComment(input json.RawMessage) (string, error) {
 		Comment string `json:"comment"`
 	}
 	json.Unmarshal(input, &params)
-	return runBD("comments", "add", params.ID, params.Comment)
+
+	if err := store.AddComment(params.ID, params.Comment); err != nil {
+		return "", fmt.Errorf("add comment to %s: %w", params.ID, err)
+	}
+	return fmt.Sprintf("Comment added to %s", params.ID), nil
 }
 
 func (t *StewardTools) sendMessage(input json.RawMessage) (string, error) {
@@ -417,17 +456,27 @@ func (t *StewardTools) getRoster(_ json.RawMessage) (string, error) {
 	// Get roster from k8s or bead registrations.
 	roster, err := runKubectl("get", "spireagent", "-n", "spire", "-o", "json")
 	if err != nil {
-		// Fallback: bead-based roster.
-		roster, err = runBD("list", "--label", "agent", "--status=open", "--json")
+		// Fallback: bead-based roster via store API.
+		openStatus := beads.StatusOpen
+		agents, err := store.ListBeads(beads.IssueFilter{
+			Labels: []string{"agent"},
+			Status: &openStatus,
+		})
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("list agent beads: %w", err)
 		}
+		rosterJSON, _ := marshalJSON(agents)
+		roster = rosterJSON
 	}
 
-	// Get busy agents.
-	busy, _ := runBD("list", "--status=in_progress", "--json")
+	// Get busy agents via store API.
+	inProgressStatus := beads.StatusInProgress
+	busyBeads, _ := store.ListBeads(beads.IssueFilter{
+		Status: &inProgressStatus,
+	})
+	busyJSON, _ := marshalJSON(busyBeads)
 
-	return fmt.Sprintf("Roster:\n%s\n\nIn-progress work:\n%s", roster, busy), nil
+	return fmt.Sprintf("Roster:\n%s\n\nIn-progress work:\n%s", roster, busyJSON), nil
 }
 
 func (t *StewardTools) steerWizard(input json.RawMessage) (string, error) {
@@ -464,43 +513,33 @@ func (t *StewardTools) addDependency(input json.RawMessage) (string, error) {
 		Blocker string `json:"blocker"`
 	}
 	json.Unmarshal(input, &params)
-	return runBD("dep", "add", params.Blocked, params.Blocker)
+
+	if err := store.AddDep(params.Blocked, params.Blocker); err != nil {
+		return "", fmt.Errorf("add dep %s→%s: %w", params.Blocked, params.Blocker, err)
+	}
+	return fmt.Sprintf("Dependency added: %s blocked by %s", params.Blocked, params.Blocker), nil
 }
 
 func (t *StewardTools) listAgentsWork(_ json.RawMessage) (string, error) {
-	return runBD("list", "--status=in_progress", "--json")
+	inProgressStatus := beads.StatusInProgress
+	results, err := store.ListBeads(beads.IssueFilter{
+		Status: &inProgressStatus,
+	})
+	if err != nil {
+		return "", fmt.Errorf("list in-progress beads: %w", err)
+	}
+	return marshalJSON(results)
 }
 
-// --- Command helpers ---
+// --- Helpers ---
 
-// bdVerbose gates bd command logging. Background services set SPIRE_BD_LOG=1;
-// interactive CLI stays quiet unless the user opts in.
-var bdVerbose = os.Getenv("SPIRE_BD_LOG") != ""
-
-func runBD(args ...string) (string, error) {
-	label := "bd " + strings.Join(args, " ")
-	if bdVerbose {
-		log.Printf("[bd] exec: %s", label)
+// marshalJSON serializes a value to a JSON string for LLM tool responses.
+func marshalJSON(v any) (string, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("marshal JSON: %w", err)
 	}
-	start := time.Now()
-
-	cmd := exec.Command("bd", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		errStr := strings.TrimSpace(stderr.String())
-		if bdVerbose {
-			log.Printf("[bd] FAIL (%.1fs): %s — %s", time.Since(start).Seconds(), label, errStr)
-		}
-		return "", fmt.Errorf("bd %s: %w\n%s", strings.Join(args, " "), err, errStr)
-	}
-
-	out := strings.TrimSpace(stdout.String())
-	if bdVerbose {
-		log.Printf("[bd] OK (%.1fs): %s — %d bytes", time.Since(start).Seconds(), label, len(out))
-	}
-	return out, nil
+	return string(data), nil
 }
 
 func runSpire(args ...string) (string, error) {
@@ -547,30 +586,30 @@ func ensureProjectID() {
 	localPID, _ := meta["project_id"].(string)
 	log.Printf("[project-id] local: %s", localPID)
 
-	host := os.Getenv("DOLT_HOST")
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	port := os.Getenv("DOLT_PORT")
-	if port == "" {
-		port = "3306"
+	dbName := os.Getenv("BEADS_RIG")
+	if dbName == "" {
+		dbName = "spi"
 	}
 
-	out, err := exec.Command("dolt", "sql",
-		"--host", host, "--port", port,
-		"--user", "root", "-p", "", "--no-tls",
-		"-q", "USE spi; SELECT value FROM metadata WHERE `key`='_project_id'",
-		"-r", "csv").Output()
+	out, err := doltSQL(
+		fmt.Sprintf("SELECT value FROM metadata WHERE `key`='_project_id'"),
+		false, dbName)
 	if err != nil {
-		log.Printf("[project-id] cannot query server at %s:%s: %s", host, port, err)
+		log.Printf("[project-id] cannot query server: %s", err)
 		return
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+
+	// dolt.SQL returns tabular text; the CSV path was using "-r csv" which
+	// produces "value\n<actual>". The default output is a table. Parse the
+	// last non-empty line as the value.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) < 2 {
-		log.Printf("[project-id] unexpected server response: %s", string(out))
+		log.Printf("[project-id] unexpected server response: %s", out)
 		return
 	}
 	serverPID := strings.TrimSpace(lines[len(lines)-1])
+	// Strip table formatting borders if present (e.g. "| <value> |").
+	serverPID = strings.Trim(serverPID, "| ")
 	log.Printf("[project-id] server: %s", serverPID)
 
 	if localPID == serverPID {
@@ -586,4 +625,11 @@ func ensureProjectID() {
 		return
 	}
 	log.Printf("[project-id] realigned successfully")
+}
+
+// doltSQL wraps dolt.SQL from pkg/dolt. Declared as a var for testability.
+var doltSQL = doltSQLImpl
+
+func doltSQLImpl(query string, jsonOutput bool, dbName string) (string, error) {
+	return dolt.SQL(query, jsonOutput, dbName, nil)
 }
