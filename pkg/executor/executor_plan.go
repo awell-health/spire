@@ -14,7 +14,7 @@ import (
 // focused implementation plan as a comment on the bead. The plan includes
 // key files, approach, and context that the apprentice will use during
 // the implement phase.
-func (e *Executor) wizardPlanTask(bead Bead, pc PhaseConfig) error {
+func (e *Executor) wizardPlanTask(bead Bead, model string, maxTurns int) error {
 	// Check if a plan comment already exists (resume case).
 	existingComments, _ := e.deps.GetComments(e.beadID)
 	for _, c := range existingComments {
@@ -78,22 +78,21 @@ Produce a plan in this structure:
 Be precise and actionable. The apprentice implementing this will use your plan as their primary guide.
 `, taskContext.String(), designContext)
 
-	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
+	resolvedModel := repoconfig.ResolveModel(model, e.repoModel())
 
-	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for task plan (max_turns=%d)", maxTurns)
 	started := time.Now()
 	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
-		"--model", model,
+		"--model", resolvedModel,
 		"--output-format", "text",
 	}
 	if maxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 	}
 	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
-	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "plan", started, err)
+	e.recordAgentRun(e.agentName, e.beadID, "", resolvedModel, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude task plan: %w", err)
 	}
@@ -137,7 +136,7 @@ func (e *Executor) collectDesignContext() string {
 }
 
 // wizardPlanEpic reads the design bead(s) and invokes Claude to break the epic into subtasks.
-func (e *Executor) wizardPlanEpic(bead Bead, pc PhaseConfig) error {
+func (e *Executor) wizardPlanEpic(bead Bead, model string, maxTurns int) error {
 	// Collect design context from linked design beads (discovered-from deps)
 	designContext := e.collectDesignContext()
 
@@ -163,7 +162,7 @@ func (e *Executor) wizardPlanEpic(bead Bead, pc PhaseConfig) error {
 	}
 	if len(children) > 0 {
 		e.log("epic already has %d children — enriching with change specs", len(children))
-		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext, pc)
+		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext, model, maxTurns)
 	}
 
 	prompt := fmt.Sprintf(`You are a Spire wizard planning an epic. Break the work into independent tasks that can be executed by parallel agents in isolated git worktrees.
@@ -206,22 +205,21 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 - Tasks with no deps run in parallel (same wave)
 `, epicContext, designContext)
 
-	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
+	resolvedModel := repoconfig.ResolveModel(model, e.repoModel())
 
-	maxTurns := pc.GetMaxTurns()
 	e.log("invoking Claude for plan generation (max_turns=%d)", maxTurns)
 	started := time.Now()
 	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
-		"--model", model,
+		"--model", resolvedModel,
 		"--output-format", "text",
 	}
 	if maxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 	}
 	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
-	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "plan", started, err)
+	e.recordAgentRun(e.agentName, e.beadID, "", resolvedModel, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude plan: %w", err)
 	}
@@ -323,9 +321,8 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 }
 
 // enrichSubtasksWithChangeSpecs invokes Claude per subtask to produce a change spec.
-func (e *Executor) enrichSubtasksWithChangeSpecs(children []Bead, epicContext, designContext string, pc PhaseConfig) error {
-	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
-	maxTurns := pc.GetMaxTurns()
+func (e *Executor) enrichSubtasksWithChangeSpecs(children []Bead, epicContext, designContext, model string, maxTurns int) error {
+	resolvedModel := repoconfig.ResolveModel(model, e.repoModel())
 	enriched := 0
 
 	for _, child := range children {
@@ -398,7 +395,7 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 		csArgs := []string{
 			"--dangerously-skip-permissions",
 			"-p", prompt,
-			"--model", model,
+			"--model", resolvedModel,
 			"--output-format", "text",
 		}
 		if maxTurns > 0 {

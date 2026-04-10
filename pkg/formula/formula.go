@@ -12,97 +12,6 @@ import (
 	"github.com/awell-health/spire/pkg/formula/embedded"
 )
 
-// FormulaV2 represents a v2 formula that configures the universal phase pipeline.
-type FormulaV2 struct {
-	Name        string                 `toml:"name"`
-	Description string                 `toml:"description"`
-	Version     int                    `toml:"version"`
-	Phases      map[string]PhaseConfig `toml:"phases"`
-	Vars        map[string]FormulaVar  `toml:"vars"`
-}
-
-// PhaseConfig configures a single phase in the pipeline.
-type PhaseConfig struct {
-	Timeout        string          `toml:"timeout,omitempty"`
-	Model          string          `toml:"model,omitempty"`
-	MaxTurns       int             `toml:"max_turns,omitempty"`
-	Context        []string        `toml:"context,omitempty"`
-	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
-	// Behavior override — dispatched before role. When set, the executor
-	// calls the named behavior handler instead of role-based dispatch.
-	// See docs/wizard-workflow-dag.md for available behaviors per phase.
-	Behavior string `toml:"behavior,omitempty"`
-	Deploy   string `toml:"deploy,omitempty"` // deploy command (deploy behavior)
-	// Execution directives
-	Role     string `toml:"role,omitempty"`     // human | apprentice | sage | wizard | skip
-	Dispatch string `toml:"dispatch,omitempty"` // direct | wave | sequential
-	VerdictOnly   bool   `toml:"verdict_only,omitempty"`   // sage: produce verdict only
-	Judgment      bool   `toml:"judgment,omitempty"`        // executor judges review feedback
-	StagingBranch string `toml:"staging_branch,omitempty"` // branch pattern for wave merges
-	MergeStrategy string `toml:"strategy,omitempty"`       // squash | merge | rebase
-	Auto          bool   `toml:"auto,omitempty"`           // auto-execute without human gate
-	Apprentice    bool   `toml:"apprentice,omitempty"`     // run as apprentice (no phase labels, no review handoff)
-	Worktree      bool   `toml:"worktree,omitempty"`       // run in isolated worktree
-	Build         string `toml:"build,omitempty"`          // build command to verify after wave/merge
-	Test          string `toml:"test,omitempty"`           // test command to verify after rebase/merge
-	MaxBuildFixRounds int      `toml:"max_build_fix_rounds,omitempty"` // max build-fix attempts per wave (default 2)
-	OnBuildFailure    string   `toml:"on_build_failure,omitempty"`     // "retry" (default) | "escalate" | "fail"
-	DocPatterns       []string `toml:"doc_patterns" json:"doc_patterns,omitempty"` // glob patterns for doc files to review on merge
-	Graph             string   `toml:"graph,omitempty"`                            // step-graph formula name for graph-based phases (e.g. review)
-}
-
-// GetBehavior returns the behavior override, or "" for role-based dispatch.
-func (pc PhaseConfig) GetBehavior() string {
-	return pc.Behavior
-}
-
-// GetMaxTurns returns the max turns for this phase.
-// Returns 0 (unlimited) if not set in the formula — the timeout is the gate.
-// Set max_turns explicitly in the formula TOML to enforce a turn budget.
-func (pc PhaseConfig) GetMaxTurns() int {
-	return pc.MaxTurns
-}
-
-// GetRole returns the phase role, defaulting to "apprentice".
-func (pc PhaseConfig) GetRole() string {
-	if pc.Role != "" {
-		return pc.Role
-	}
-	return "apprentice"
-}
-
-// GetDispatch returns the dispatch mode, defaulting to "direct".
-func (pc PhaseConfig) GetDispatch() string {
-	if pc.Dispatch != "" {
-		return pc.Dispatch
-	}
-	return "direct"
-}
-
-// GetMergeStrategy returns the merge strategy, defaulting to "squash".
-func (pc PhaseConfig) GetMergeStrategy() string {
-	if pc.MergeStrategy != "" {
-		return pc.MergeStrategy
-	}
-	return "squash"
-}
-
-// GetMaxBuildFixRounds returns the max build-fix attempts per wave, defaulting to 2.
-func (pc PhaseConfig) GetMaxBuildFixRounds() int {
-	if pc.MaxBuildFixRounds > 0 {
-		return pc.MaxBuildFixRounds
-	}
-	return 2
-}
-
-// GetOnBuildFailure returns the build-failure policy, defaulting to "retry".
-func (pc PhaseConfig) GetOnBuildFailure() string {
-	if pc.OnBuildFailure != "" {
-		return pc.OnBuildFailure
-	}
-	return "retry"
-}
-
 // RevisionPolicy configures review loop behavior (review phase only).
 type RevisionPolicy struct {
 	MaxRounds    int    `toml:"max_rounds"`
@@ -196,52 +105,6 @@ func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
 	return &f, nil
 }
 
-// ParseFormulaAny parses a v3 step-graph formula from TOML bytes.
-// Returns the parsed *FormulaStepGraph, version 3, and any error.
-// V2 formulas are no longer supported; use ParseFormulaStepGraph directly.
-func ParseFormulaAny(data []byte) (interface{}, int, error) {
-	f, err := ParseFormulaStepGraph(data)
-	if err != nil {
-		return nil, 0, err
-	}
-	return f, 3, nil
-}
-
-// --- FormulaV2 methods ---
-
-// EnabledPhases returns the ordered list of enabled phases for this formula.
-// Order follows ValidPhases (design, plan, implement, review, merge).
-func (f *FormulaV2) EnabledPhases() []string {
-	var enabled []string
-	for _, p := range ValidPhases {
-		if _, ok := f.Phases[p]; ok {
-			enabled = append(enabled, p)
-		}
-	}
-	return enabled
-}
-
-// PhaseEnabled checks if a specific phase is enabled in this formula.
-func (f *FormulaV2) PhaseEnabled(phase string) bool {
-	_, ok := f.Phases[phase]
-	return ok
-}
-
-// GetRevisionPolicy returns the revision policy for the review phase.
-// Returns default values if not configured.
-func (f *FormulaV2) GetRevisionPolicy() RevisionPolicy {
-	if review, ok := f.Phases["review"]; ok && review.RevisionPolicy != nil {
-		rp := *review.RevisionPolicy
-		if rp.MaxRounds == 0 {
-			rp.MaxRounds = 3
-		}
-		if rp.ArbiterModel == "" {
-			rp.ArbiterModel = "claude-opus-4-6"
-		}
-		return rp
-	}
-	return RevisionPolicy{MaxRounds: 3, ArbiterModel: "claude-opus-4-6"}
-}
 
 // --- Loading ---
 
@@ -349,17 +212,6 @@ func LoadEmbeddedStepGraph(name string) (*FormulaStepGraph, error) {
 
 // --- Resolution ---
 
-// DefaultFormulaMap maps bead types to default v2 formula names.
-// Can be overridden by tower config in the future.
-var DefaultFormulaMap = map[string]string{
-	"task":     "spire-agent-work",
-	"bug":      "spire-bugfix",
-	"epic":     "spire-epic",
-	"chore":    "spire-agent-work",
-	"feature":  "spire-agent-work",
-	"recovery": "spire-recovery-work",
-}
-
 // DefaultV3FormulaMap maps bead types to default v3 formula names.
 var DefaultV3FormulaMap = map[string]string{
 	"task":     "spire-agent-work-v3",
@@ -450,13 +302,3 @@ func ResolveV3(bead BeadInfo) (*FormulaStepGraph, error) {
 	return g, nil
 }
 
-// ResolveAny determines which v3 formula to use for a bead.
-// Returns a *FormulaStepGraph, version 3, and any error.
-// V2 formulas are no longer supported; all beads resolve to v3.
-func ResolveAny(bead BeadInfo) (interface{}, int, error) {
-	g, err := ResolveV3(bead)
-	if err != nil {
-		return nil, 0, err
-	}
-	return g, 3, nil
-}

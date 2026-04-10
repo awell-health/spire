@@ -160,13 +160,7 @@ func actionPlanTask(e *Executor, stepName string, step StepConfig, state *GraphS
 		return ActionResult{Error: fmt.Errorf("get bead for task plan: %w", err)}
 	}
 
-	pc := PhaseConfig{
-		Model:    step.Model,
-		Timeout:  step.Timeout,
-		MaxTurns: step.MaxTurns, // formula-declared; 0 = unlimited/timeout-gated
-	}
-
-	if err := e.wizardPlanTask(bead, pc); err != nil {
+	if err := e.wizardPlanTask(bead, step.Model, step.MaxTurns); err != nil {
 		return ActionResult{Error: fmt.Errorf("task plan: %w", err)}
 	}
 
@@ -181,13 +175,7 @@ func actionPlanEpic(e *Executor, stepName string, step StepConfig, state *GraphS
 		return ActionResult{Error: fmt.Errorf("get bead for epic plan: %w", err)}
 	}
 
-	pc := PhaseConfig{
-		Model:    step.Model,
-		Timeout:  step.Timeout,
-		MaxTurns: step.MaxTurns, // formula-declared; 0 = unlimited/timeout-gated
-	}
-
-	if err := e.wizardPlanEpic(bead, pc); err != nil {
+	if err := e.wizardPlanEpic(bead, step.Model, step.MaxTurns); err != nil {
 		return ActionResult{Error: fmt.Errorf("epic plan: %w", err)}
 	}
 
@@ -501,10 +489,9 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 	}
 
 	// Doc review (optional).
-	if docPatterns := step.With["doc_patterns"]; docPatterns != "" {
-		patterns := strings.Split(docPatterns, ",")
-		pc := PhaseConfig{DocPatterns: patterns, Model: step.Model}
-		if docErr := e.reviewDocsForStaleness(stagingWt.Dir, mergeBranch, state.BaseBranch, pc); docErr != nil {
+	if docPatternsStr := step.With["doc_patterns"]; docPatternsStr != "" {
+		patterns := strings.Split(docPatternsStr, ",")
+		if docErr := e.reviewDocsForStaleness(stagingWt.Dir, mergeBranch, state.BaseBranch, patterns, step.Model); docErr != nil {
 			e.log("warning: doc review: %s", docErr)
 		}
 	}

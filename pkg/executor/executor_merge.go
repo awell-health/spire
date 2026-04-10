@@ -2,126 +2,17 @@ package executor
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	spgit "github.com/awell-health/spire/pkg/git"
-	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
-// executeMerge handles the merge phase: ff-only merge of staging branch into main.
-func (e *Executor) executeMerge(pc PhaseConfig) error {
-	started := time.Now()
-	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
-
-	bead, err := e.deps.GetBead(e.beadID)
-	if err != nil {
-		e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, err)
-		return fmt.Errorf("get bead: %w", err)
-	}
-
-	branch := e.deps.HasLabel(bead, "feat-branch:")
-	if branch == "" {
-		if e.state.StagingBranch != "" {
-			branch = e.state.StagingBranch
-		} else {
-			branch = e.resolveBranch(e.beadID)
-		}
-	}
-
-	repoPath := e.state.RepoPath
-	baseBranch := e.state.BaseBranch
-
-	// Load archmage identity for the push.
-	var mergeEnv []string
-	if tower, tErr := e.deps.ActiveTowerConfig(); tErr == nil && tower != nil {
-		mergeEnv = e.deps.ArchmageGitEnv(tower)
-	} else {
-		mergeEnv = os.Environ()
-	}
-
-	// Use the single staging worktree shared across all executor phases.
-	buildStr := e.resolveBuildCommand(pc)
-	stagingWt, wtErr := e.ensureStagingWorktree()
-	if wtErr != nil {
-		e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, wtErr)
-		return fmt.Errorf("ensure staging worktree for merge: %w", wtErr)
-	}
-
-	if buildStr != "" {
-		e.log("verifying build on %s before merge: %s", branch, buildStr)
-		if buildErr := stagingWt.RunBuild(buildStr); buildErr != nil {
-			e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, buildErr)
-			return fmt.Errorf("pre-merge build verification failed on %s: %w", branch, buildErr)
-		}
-	}
-
-	// Review documentation for stale language before merging to main.
-	if docErr := e.reviewDocsForStaleness(stagingWt.Dir, branch, baseBranch, pc); docErr != nil {
-		e.log("warning: doc review: %s", docErr)
-	}
-
-	// ff-only merge into main
-	e.log("merging %s → %s (local, committer: archmage)", branch, baseBranch)
-	testStr := e.resolveTestCommand(pc)
-	if mergeErr := stagingWt.MergeToMain(baseBranch, mergeEnv, buildStr, testStr); mergeErr != nil {
-		e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, mergeErr)
-		return mergeErr
-	}
-
-	// Push main (with archmage identity)
-	e.log("pushing %s", baseBranch)
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: e.log}
-	if pushErr := rc.Push("origin", baseBranch, mergeEnv); pushErr != nil {
-		e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, pushErr)
-		return fmt.Errorf("push %s: %w", baseBranch, pushErr)
-	}
-
-	// Clean up the feature/staging branch (best-effort)
-	rc.DeleteBranch(branch)
-	rc.DeleteRemoteBranch("origin", branch)
-
-	// Close orphan subtask beads only — skip beads owned by other executor
-	// subsystems (step beads, attempt beads, review-round beads). Those have
-	// their own dedicated close paths (transitionStepBead, closeAttempt, etc.).
-	if children, childErr := e.deps.GetChildren(e.beadID); childErr == nil {
-		for _, child := range children {
-			if child.Status == "closed" {
-				continue
-			}
-			if e.deps.IsAttemptBead(child) || e.deps.IsStepBead(child) || e.deps.IsReviewRoundBead(child) {
-				continue
-			}
-			if err := e.deps.CloseBead(child.ID); err != nil {
-				e.log("warning: close orphan subtask %s: %s", child.ID, err)
-			}
-		}
-	}
-
-	// Close the bead
-	e.deps.RemoveLabel(e.beadID, "review-approved")
-	e.deps.RemoveLabel(e.beadID, "feat-branch:"+branch)
-	if err := e.deps.CloseBead(e.beadID); err != nil {
-		e.log("warning: close bead: %s", err)
-	}
-
-	// Close related recovery beads.
-	if err := recovery.CloseRelatedRecoveryBeads(executorBeadOps{e.deps}, e.beadID, "merged successfully"); err != nil {
-		e.log("warning: close recovery beads: %v", err)
-	}
-
-	e.recordAgentRun(e.agentName, e.beadID, "", model, "wizard", "merge", started, nil)
-	e.log("merged and closed")
-	return nil
-}
-
 // reviewDocsForStaleness checks documentation files modified on the staging branch
 // for stale language and fixes them.
-func (e *Executor) reviewDocsForStaleness(repoPath, branch, baseBranch string, pc PhaseConfig) error {
+func (e *Executor) reviewDocsForStaleness(repoPath, branch, baseBranch string, docPatterns []string, model string) error {
 	wc := &spgit.WorktreeContext{Dir: repoPath}
 	changedFiles, err := wc.DiffNameOnly(baseBranch)
 	if err != nil {
@@ -129,7 +20,7 @@ func (e *Executor) reviewDocsForStaleness(repoPath, branch, baseBranch string, p
 	}
 
 	// If no doc patterns configured, skip doc review entirely.
-	if len(pc.DocPatterns) == 0 {
+	if len(docPatterns) == 0 {
 		e.log("no doc_patterns configured — skipping doc review")
 		return nil
 	}
@@ -141,7 +32,7 @@ func (e *Executor) reviewDocsForStaleness(repoPath, branch, baseBranch string, p
 		if f == "" {
 			continue
 		}
-		if matchesDocPatterns(f, pc.DocPatterns) {
+		if matchesDocPatterns(f, docPatterns) {
 			docFiles = append(docFiles, f)
 		}
 	}
@@ -168,12 +59,12 @@ Documentation files to review:
 
 IMPORTANT: Only fix genuinely stale language where the described feature now exists in code. Do NOT remove TODOs for things that are actually still pending. Be conservative — when in doubt, leave it alone.`, strings.Join(docFiles, "\n"))
 
-	model := repoconfig.ResolveModel(pc.Model, e.repoModel())
+	resolvedModel := repoconfig.ResolveModel(model, e.repoModel())
 
 	cmd := exec.Command("claude",
 		"--dangerously-skip-permissions",
 		"-p", prompt,
-		"--model", model,
+		"--model", resolvedModel,
 		"--output-format", "text",
 		"--max-turns", "3",
 	)
