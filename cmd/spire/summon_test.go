@@ -195,6 +195,13 @@ func TestCmdSummon_DispatchMissingArg(t *testing.T) {
 }
 
 func TestCmdSummon_DispatchValidModes(t *testing.T) {
+	// Point BEADS_DIR at an empty temp dir and reset the store so that
+	// storeGetReadyWork fails fast ("no .beads directory found" or
+	// immediate open error) instead of hanging on a dolt connection.
+	tmp := t.TempDir()
+	t.Setenv("BEADS_DIR", tmp)
+	resetStore()
+
 	for _, mode := range []string{"sequential", "wave", "direct"} {
 		t.Run(mode, func(t *testing.T) {
 			// Valid modes pass validation but will fail later when hitting
@@ -205,6 +212,142 @@ func TestCmdSummon_DispatchValidModes(t *testing.T) {
 				t.Fatalf("mode %q should be valid, got: %v", mode, err)
 			}
 		})
+	}
+}
+
+// --- Status gate tests for summonLocal ---
+
+// TestSummonLocal_RejectsClosedBead verifies that summonLocal returns an error
+// when a directly-targeted bead has status "closed".
+func TestSummonLocal_RejectsClosedBead(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	orig := storeGetBeadFunc
+	defer func() { storeGetBeadFunc = orig }()
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "closed", Title: "test"}, nil
+	}
+
+	err := summonLocal(1, []string{"spi-closed"}, "")
+	if err == nil {
+		t.Fatal("expected error for closed bead")
+	}
+	if !strings.Contains(err.Error(), "spi-closed is closed") {
+		t.Fatalf("expected closed error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "reopen it first") {
+		t.Fatalf("expected actionable hint, got: %v", err)
+	}
+}
+
+// TestSummonLocal_RejectsDoneBead verifies that summonLocal returns an error
+// when a directly-targeted bead has status "done".
+func TestSummonLocal_RejectsDoneBead(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	orig := storeGetBeadFunc
+	defer func() { storeGetBeadFunc = orig }()
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "done", Title: "test"}, nil
+	}
+
+	err := summonLocal(1, []string{"spi-done"}, "")
+	if err == nil {
+		t.Fatal("expected error for done bead")
+	}
+	if !strings.Contains(err.Error(), "spi-done is closed") {
+		t.Fatalf("expected closed error for done status, got: %v", err)
+	}
+}
+
+// TestSummonLocal_RejectsDeferredBead verifies that summonLocal returns an error
+// when a directly-targeted bead has status "deferred".
+func TestSummonLocal_RejectsDeferredBead(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	orig := storeGetBeadFunc
+	defer func() { storeGetBeadFunc = orig }()
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "deferred", Title: "test"}, nil
+	}
+
+	err := summonLocal(1, []string{"spi-deferred"}, "")
+	if err == nil {
+		t.Fatal("expected error for deferred bead")
+	}
+	if !strings.Contains(err.Error(), "spi-deferred is deferred") {
+		t.Fatalf("expected deferred error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "set to open first") {
+		t.Fatalf("expected actionable hint, got: %v", err)
+	}
+}
+
+// TestSummonLocal_AllowsOpenBead verifies that open beads pass the status gate.
+// The function will proceed past status checking and fail later (no DB), which
+// confirms the gate did not reject the bead.
+func TestSummonLocal_AllowsOpenBead(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	orig := storeGetBeadFunc
+	defer func() { storeGetBeadFunc = orig }()
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "open", Title: "test"}, nil
+	}
+
+	err := summonLocal(1, []string{"spi-open"}, "")
+	// Should NOT get a status rejection error. It will fail later
+	// (no formula, no DB, etc.) but that's fine — we're testing the gate.
+	if err != nil && (strings.Contains(err.Error(), "is closed") || strings.Contains(err.Error(), "is deferred")) {
+		t.Fatalf("open bead should not be rejected by status gate, got: %v", err)
+	}
+}
+
+// TestSummonLocal_AllowsInProgressBead verifies that in_progress beads pass the status gate.
+func TestSummonLocal_AllowsInProgressBead(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	orig := storeGetBeadFunc
+	defer func() { storeGetBeadFunc = orig }()
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "in_progress", Title: "test"}, nil
+	}
+
+	err := summonLocal(1, []string{"spi-wip"}, "")
+	if err != nil && (strings.Contains(err.Error(), "is closed") || strings.Contains(err.Error(), "is deferred")) {
+		t.Fatalf("in_progress bead should not be rejected by status gate, got: %v", err)
+	}
+}
+
+// TestSummonLocal_RejectsMultipleTargets_FirstBadFails verifies that when
+// multiple targets are provided, the first invalid one causes an immediate error.
+func TestSummonLocal_RejectsMultipleTargets_FirstBadFails(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	orig := storeGetBeadFunc
+	defer func() { storeGetBeadFunc = orig }()
+
+	callCount := 0
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		callCount++
+		if id == "spi-good" {
+			return Bead{ID: id, Status: "open", Title: "good"}, nil
+		}
+		return Bead{ID: id, Status: "closed", Title: "bad"}, nil
+	}
+
+	err := summonLocal(2, []string{"spi-good", "spi-bad"}, "")
+	if err == nil {
+		t.Fatal("expected error when second target is closed")
+	}
+	if !strings.Contains(err.Error(), "spi-bad is closed") {
+		t.Fatalf("expected closed error for spi-bad, got: %v", err)
 	}
 }
 

@@ -371,7 +371,7 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 	if len(targetIDs) > 0 {
 		// Look up each target bead directly.
 		for _, id := range targetIDs {
-			bead, err := storeGetBead(id)
+			bead, err := storeGetBeadFunc(id)
 			if err != nil {
 				return fmt.Errorf("target %s: %w", id, err)
 			}

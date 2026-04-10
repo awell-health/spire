@@ -26,6 +26,9 @@ type createOpts = store.CreateOpts
 // storeGetChildrenFunc is a test-replaceable function for storeGetChildren.
 var storeGetChildrenFunc = storeGetChildren
 
+// storeGetBeadFunc is a test-replaceable function for storeGetBead.
+var storeGetBeadFunc = storeGetBead
+
 // storeGetActiveAttemptFunc is a test-replaceable function for storeGetActiveAttempt.
 var storeGetActiveAttemptFunc = storeGetActiveAttempt
 
