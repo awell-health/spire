@@ -11,7 +11,7 @@ func TestRecoveryMetadata_ToMap_RoundTrip(t *testing.T) {
 		FailureClass:       "merge-failure",
 		FailureSignature:   "merge-failure:implement",
 		SourceBead:         "spi-abc",
-		SourceFormula:      "spire-agent-work-v3",
+		SourceFormula:      "task-default",
 		SourceStep:         "implement",
 		ResolutionKind:     "resummon",
 		VerificationStatus: "healthy",

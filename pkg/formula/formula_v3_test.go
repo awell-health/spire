@@ -9,11 +9,11 @@ import (
 
 func TestLoadEmbeddedStepGraph_AllV3Formulas(t *testing.T) {
 	names := []string{
-		"review-phase",
-		"epic-implement-phase",
-		"spire-agent-work-v3",
-		"spire-bugfix-v3",
-		"spire-epic-v3",
+		"subgraph-review",
+		"subgraph-implement",
+		"task-default",
+		"bug-default",
+		"epic-default",
 	}
 
 	for _, name := range names {
@@ -37,88 +37,57 @@ func TestLoadEmbeddedStepGraph_AllV3Formulas(t *testing.T) {
 
 func TestLoadStepGraphByName_FallsBackToEmbedded(t *testing.T) {
 	// LoadStepGraphByName should find embedded formulas.
-	g, err := LoadStepGraphByName("spire-agent-work-v3")
+	g, err := LoadStepGraphByName("task-default")
 	if err != nil {
 		t.Fatalf("LoadStepGraphByName: %v", err)
 	}
-	if g.Name != "spire-agent-work-v3" {
-		t.Errorf("expected spire-agent-work-v3, got %s", g.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected task-default, got %s", g.Name)
 	}
 }
 
-func TestResolveAny_DefaultV3(t *testing.T) {
+func TestResolveV3_Default(t *testing.T) {
 	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: nil}
-	f, v, err := ResolveAny(bead)
+	g, err := ResolveV3(bead)
 	if err != nil {
-		t.Fatalf("ResolveAny: %v", err)
+		t.Fatalf("ResolveV3: %v", err)
 	}
-	if v != 3 {
-		t.Errorf("expected version 3, got %d", v)
-	}
-	fv3, ok := f.(*FormulaStepGraph)
-	if !ok {
-		t.Fatalf("expected *FormulaStepGraph, got %T", f)
-	}
-	if fv3.Name != "spire-agent-work-v3" {
-		t.Errorf("expected spire-agent-work-v3, got %s", fv3.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected task-default, got %s", g.Name)
 	}
 }
 
-func TestResolveAny_V2LabelIgnored(t *testing.T) {
-	// V2 labels are now ignored — all beads resolve to v3.
+func TestResolveV3_V2LabelIgnored(t *testing.T) {
 	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula-version:2"}}
-	f, v, err := ResolveAny(bead)
+	g, err := ResolveV3(bead)
 	if err != nil {
-		t.Fatalf("ResolveAny: %v", err)
+		t.Fatalf("ResolveV3: %v", err)
 	}
-	if v != 3 {
-		t.Errorf("expected version 3 (v2 removed), got %d", v)
-	}
-	fv3, ok := f.(*FormulaStepGraph)
-	if !ok {
-		t.Fatalf("expected *FormulaStepGraph, got %T", f)
-	}
-	if fv3.Name != "spire-agent-work-v3" {
-		t.Errorf("expected spire-agent-work-v3, got %s", fv3.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected task-default, got %s", g.Name)
 	}
 }
 
-func TestResolveAny_ExplicitV3Formula(t *testing.T) {
-	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula:spire-epic-v3"}}
-	f, v, err := ResolveAny(bead)
+func TestResolveV3_ExplicitFormula(t *testing.T) {
+	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula:epic-default"}}
+	g, err := ResolveV3(bead)
 	if err != nil {
-		t.Fatalf("ResolveAny: %v", err)
+		t.Fatalf("ResolveV3: %v", err)
 	}
-	if v != 3 {
-		t.Errorf("expected version 3, got %d", v)
-	}
-	fv3, ok := f.(*FormulaStepGraph)
-	if !ok {
-		t.Fatalf("expected *FormulaStepGraph, got %T", f)
-	}
-	if fv3.Name != "spire-epic-v3" {
-		t.Errorf("expected spire-epic-v3, got %s", fv3.Name)
+	if g.Name != "epic-default" {
+		t.Errorf("expected epic-default, got %s", g.Name)
 	}
 }
 
-func TestResolveAny_ExplicitV2FormulaFallback(t *testing.T) {
-	// Requesting a v2 formula by name now falls back to v3 default
-	// since v2 embedded formulas have been removed.
+func TestResolveV3_LegacyNameTranslation(t *testing.T) {
+	// Legacy v2 formula name should resolve via legacyV2NameMap to task-default.
 	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula:spire-agent-work"}}
-	f, v, err := ResolveAny(bead)
+	g, err := ResolveV3(bead)
 	if err != nil {
-		t.Fatalf("ResolveAny: %v", err)
+		t.Fatalf("ResolveV3: %v", err)
 	}
-	// Should fall back to default v3 formula since "spire-agent-work" v3 doesn't exist
-	if v != 3 {
-		t.Errorf("expected version 3, got %d", v)
-	}
-	fv3, ok := f.(*FormulaStepGraph)
-	if !ok {
-		t.Fatalf("expected *FormulaStepGraph, got %T", f)
-	}
-	if fv3.Name != "spire-agent-work-v3" {
-		t.Errorf("expected spire-agent-work-v3, got %s", fv3.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected task-default, got %s", g.Name)
 	}
 }
 
@@ -127,11 +96,11 @@ func TestResolveV3_ByType(t *testing.T) {
 		beadType     string
 		expectedName string
 	}{
-		{"task", "spire-agent-work-v3"},
-		{"bug", "spire-bugfix-v3"},
-		{"epic", "spire-epic-v3"},
-		{"chore", "spire-agent-work-v3"},
-		{"feature", "spire-agent-work-v3"},
+		{"task", "task-default"},
+		{"bug", "bug-default"},
+		{"epic", "epic-default"},
+		{"chore", "chore-default"},
+		{"feature", "task-default"},
 	}
 
 	for _, tt := range tests {
@@ -148,9 +117,9 @@ func TestResolveV3_ByType(t *testing.T) {
 	}
 }
 
-// TestV3FormulaGraph_AgentWork validates the structure of the spire-agent-work-v3 formula.
+// TestV3FormulaGraph_AgentWork validates the structure of the task-default formula.
 func TestV3FormulaGraph_AgentWork(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-agent-work-v3")
+	g, err := LoadEmbeddedStepGraph("task-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -188,9 +157,9 @@ func TestV3FormulaGraph_AgentWork(t *testing.T) {
 	}
 }
 
-// TestV3FormulaGraph_Epic validates the structure of the spire-epic-v3 formula.
+// TestV3FormulaGraph_Epic validates the structure of the epic-default formula.
 func TestV3FormulaGraph_Epic(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-epic-v3")
+	g, err := LoadEmbeddedStepGraph("epic-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -224,10 +193,10 @@ func TestV3FormulaGraph_Epic(t *testing.T) {
 }
 
 // validTowerTOML returns a valid v3 formula TOML string for use in tower
-// fetcher tests. It reads the embedded spire-agent-work-v3 formula.
+// fetcher tests. It reads the embedded task-default formula.
 func validTowerTOML(t *testing.T) string {
 	t.Helper()
-	data, err := embedded.Formulas.ReadFile("formulas/spire-agent-work-v3.formula.toml")
+	data, err := embedded.Formulas.ReadFile("formulas/task-default.formula.toml")
 	if err != nil {
 		t.Fatalf("read embedded formula: %v", err)
 	}
@@ -245,21 +214,21 @@ func setTowerFetcher(t *testing.T, fn func(string) (string, error)) {
 func TestLoadStepGraphByNameWithSource_TowerWins(t *testing.T) {
 	toml := validTowerTOML(t)
 	setTowerFetcher(t, func(name string) (string, error) {
-		if name == "spire-agent-work-v3" {
+		if name == "task-default" {
 			return toml, nil
 		}
 		return "", errors.New("not found")
 	})
 
-	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	g, source, err := LoadStepGraphByNameWithSource("task-default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if source != "tower" {
 		t.Errorf("expected source=tower, got %q", source)
 	}
-	if g.Name != "spire-agent-work-v3" {
-		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected name=task-default, got %q", g.Name)
 	}
 }
 
@@ -267,15 +236,15 @@ func TestLoadStepGraphByNameWithSource_FallsToEmbedded_NoTower(t *testing.T) {
 	// TowerFetcher is nil — should fall through to embedded.
 	setTowerFetcher(t, nil)
 
-	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	g, source, err := LoadStepGraphByNameWithSource("task-default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if source != "embedded" {
 		t.Errorf("expected source=embedded, got %q", source)
 	}
-	if g.Name != "spire-agent-work-v3" {
-		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected name=task-default, got %q", g.Name)
 	}
 }
 
@@ -285,15 +254,15 @@ func TestLoadStepGraphByNameWithSource_TowerError_FallsThrough(t *testing.T) {
 		return "", errors.New("connection refused")
 	})
 
-	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	g, source, err := LoadStepGraphByNameWithSource("task-default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if source != "embedded" {
 		t.Errorf("expected source=embedded, got %q", source)
 	}
-	if g.Name != "spire-agent-work-v3" {
-		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected name=task-default, got %q", g.Name)
 	}
 }
 
@@ -303,15 +272,15 @@ func TestLoadStepGraphByNameWithSource_MalformedTower_FallsThrough(t *testing.T)
 		return "this is not valid TOML {{{{", nil
 	})
 
-	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	g, source, err := LoadStepGraphByNameWithSource("task-default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if source != "embedded" {
 		t.Errorf("expected source=embedded after malformed tower, got %q", source)
 	}
-	if g.Name != "spire-agent-work-v3" {
-		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected name=task-default, got %q", g.Name)
 	}
 }
 
@@ -321,15 +290,15 @@ func TestLoadStepGraphByNameWithSource_TowerMiss_FallsThrough(t *testing.T) {
 		return "", nil // empty = not found
 	})
 
-	g, source, err := LoadStepGraphByNameWithSource("spire-agent-work-v3")
+	g, source, err := LoadStepGraphByNameWithSource("task-default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if source != "embedded" {
 		t.Errorf("expected source=embedded, got %q", source)
 	}
-	if g.Name != "spire-agent-work-v3" {
-		t.Errorf("expected name=spire-agent-work-v3, got %q", g.Name)
+	if g.Name != "task-default" {
+		t.Errorf("expected name=task-default, got %q", g.Name)
 	}
 }
 

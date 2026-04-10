@@ -272,7 +272,7 @@ func validateV3Produces(stepName string, step formula.StepConfig) []Issue {
 
 // isRecoveryFormula returns true when a formula declares a parent_bead var,
 // which is the structural marker for recovery formulas. This covers both the
-// base spire-recovery-v3 and any future specialized recovery variants.
+// base recovery-default and any future specialized recovery variants.
 func isRecoveryFormula(f *formula.FormulaStepGraph) bool {
 	_, ok := f.Vars["parent_bead"]
 	return ok

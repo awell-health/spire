@@ -9,7 +9,7 @@ import (
 func TestDryRunStepGraph(t *testing.T) {
 	g, err := formula.LoadReviewPhaseFormula()
 	if err != nil {
-		t.Fatalf("load review-phase formula: %v", err)
+		t.Fatalf("load subgraph-review formula: %v", err)
 	}
 
 	result, err := DryRunStepGraph(g)
@@ -17,8 +17,8 @@ func TestDryRunStepGraph(t *testing.T) {
 		t.Fatalf("DryRunStepGraph: %v", err)
 	}
 
-	if result.Formula != "review-phase" {
-		t.Errorf("formula: got %q, want %q", result.Formula, "review-phase")
+	if result.Formula != "subgraph-review" {
+		t.Errorf("formula: got %q, want %q", result.Formula, "subgraph-review")
 	}
 	if result.Version != 3 {
 		t.Errorf("version: got %d, want 3", result.Version)
@@ -96,19 +96,19 @@ func TestDryRunStepGraph_EmbeddedV3Formulas(t *testing.T) {
 		expectTerminal bool
 	}{
 		{
-			name:           "spire-agent-work-v3",
+			name:           "task-default",
 			minSteps:       3,
 			expectEntry:    true,
 			expectTerminal: true,
 		},
 		{
-			name:           "spire-bugfix-v3",
+			name:           "bug-default",
 			minSteps:       3,
 			expectEntry:    true,
 			expectTerminal: true,
 		},
 		{
-			name:           "spire-epic-v3",
+			name:           "epic-default",
 			minSteps:       4,
 			expectEntry:    true,
 			expectTerminal: true,

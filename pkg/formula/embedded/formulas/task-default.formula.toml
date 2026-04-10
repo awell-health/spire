@@ -1,19 +1,13 @@
-# spire-agent-work-v3.formula.toml — v3 lifecycle graph for standard agent work.
+# task-default.formula.toml — default lifecycle graph for task/feature work.
 #
-# Migrates the v2 spire-agent-work formula (plan → implement → review → merge)
-# to a declared step graph. The executor interprets this graph generically
-# instead of embedding phase/behavior dispatch logic.
+# Flow: plan → implement → review → merge/discard
 #
-# Behavioral differences from v2:
-#   - Review is delegated to the review-phase sub-graph via graph.run,
-#     rather than being driven by the executor's executeReview method.
-#   - Merge and close are separate terminal steps with conditional routing
-#     based on review outcome (merge vs discard).
-#   - Workspace (feature worktree) is declared explicitly, not inferred
-#     from phase config flags (worktree=true, apprentice=true).
+# Review is delegated to the subgraph-review sub-graph via graph.run.
+# Merge and close are conditional terminal steps based on review outcome.
+# Workspace (feature worktree) is declared explicitly.
 
-name = "spire-agent-work-v3"
-description = "Standard agent work: plan → implement → review → merge, as a v3 step graph"
+name = "task-default"
+description = "Standard agent work: plan → implement → review → merge"
 version = 3
 entry = "plan"
 
@@ -57,13 +51,13 @@ needs = ["plan"]
 workspace = "feature"
 title = "Implement changes"
 
-# Step 3: Review via the review-phase sub-graph (sage → fix/arbiter → merge/discard).
+# Step 3: Review via the subgraph-review sub-graph (sage → fix/arbiter → merge/discard).
 [steps.review]
 kind = "call"
 action = "graph.run"
 needs = ["implement"]
 workspace = "feature"
-graph = "review-phase"
+graph = "subgraph-review"
 title = "Review changes"
 
 # Step 4a: Merge to main — fires when review outcome is merge.

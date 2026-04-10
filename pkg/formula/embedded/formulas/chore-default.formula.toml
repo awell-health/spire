@@ -1,0 +1,132 @@
+# chore-default.formula.toml — default lifecycle graph for chores.
+#
+# Chores are small maintenance tasks where the goal is to do the work
+# correctly and leave documentation behind so the next person (or agent)
+# knows how to handle the same kind of chore.
+#
+# Flow: research → implement → review → document → merge → close
+#
+# The research step investigates the problem and existing docs before
+# any code changes. The document step updates docs/wiki/ after review
+# so the knowledge persists.
+
+name = "chore-default"
+description = "Chore lifecycle: research → implement → review → document → merge → close"
+version = 3
+entry = "research"
+
+[vars.bead_id]
+type = "bead_id"
+description = "The chore bead being worked on"
+required = true
+
+[vars.base_branch]
+description = "Base branch to merge into"
+default = "main"
+
+[vars.max_review_rounds]
+description = "Maximum review rounds before arbiter escalation"
+default = "3"
+
+# --- Workspaces ---
+
+[workspaces.feature]
+kind = "owned_worktree"
+branch = "feat/{vars.bead_id}"
+base = "{vars.base_branch}"
+scope = "run"
+cleanup = "terminal"
+
+# --- Steps ---
+
+# Step 1: Research the problem — read existing docs, prior work, related code.
+[steps.research]
+kind = "op"
+action = "wizard.run"
+flow = "implement"
+title = "Research problem and existing docs"
+[steps.research.with]
+prompt = """
+You are researching a chore before any implementation begins.
+
+1. Read docs/wiki/ for existing documentation related to this task
+2. Read the bead description and any linked beads for full context
+3. Search the codebase for related patterns, prior art, and conventions
+4. Write a brief research summary as a comment on the bead
+
+Do NOT make code changes in this step — research and document your findings only.
+Output your summary to stdout.
+"""
+
+# Step 2: Implement the chore in an isolated worktree.
+[steps.implement]
+kind = "op"
+action = "wizard.run"
+flow = "implement"
+needs = ["research"]
+workspace = "feature"
+title = "Implement changes"
+
+# Step 3: Review via the review-phase sub-graph.
+[steps.review]
+kind = "call"
+action = "graph.run"
+needs = ["implement"]
+workspace = "feature"
+graph = "subgraph-review"
+title = "Review changes"
+
+# Step 4: Document what was done — update docs/wiki/ with learnings.
+[steps.document]
+kind = "op"
+action = "wizard.run"
+flow = "implement"
+needs = ["review"]
+workspace = "feature"
+title = "Update documentation"
+[steps.document.with]
+prompt = """
+The chore implementation has been reviewed and approved. Now document what was done.
+
+1. Check if docs/wiki/ exists — create it if not
+2. Create or update a wiki page relevant to this chore (e.g. docs/wiki/<topic>.md)
+3. Document: what the chore was, why it was needed, what changed, and how to handle similar work in the future
+4. Keep it concise and practical — this is for the next person (or agent) who encounters the same kind of task
+5. Commit the documentation changes
+
+Focus only on documentation — do not change any code.
+"""
+[steps.document.when]
+all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
+
+# Step 5a: Merge to main after documentation is updated.
+[steps.merge]
+kind = "op"
+action = "git.merge_to_main"
+needs = ["document"]
+workspace = "feature"
+title = "Merge to main"
+[steps.merge.with]
+strategy = "squash"
+
+# Step 6a: Close bead after successful merge.
+[steps.close]
+kind = "op"
+action = "bead.finish"
+needs = ["merge"]
+terminal = true
+title = "Close chore"
+[steps.close.with]
+status = "closed"
+
+# Step 5b: Discard — fires when review outcome is discard.
+[steps.discard]
+kind = "op"
+action = "bead.finish"
+needs = ["review"]
+terminal = true
+title = "Discard chore"
+[steps.discard.with]
+status = "discard"
+[steps.discard.when]
+all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "discard" }]

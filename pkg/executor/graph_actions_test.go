@@ -698,7 +698,7 @@ func TestSageReview_NoResultJSON_NoVerdict(t *testing.T) {
 
 // TestGraphRun_ReviewPhase_PropagatesWorktreeDir verifies the critical path:
 // when a parent graph step declares workspace="feature" and dispatches a
-// review-phase nested graph via graph.run, the sage-review step inside the
+// subgraph-review nested graph via graph.run, the sage-review step inside the
 // nested graph receives --worktree-dir pointing to the parent's feature
 // workspace directory.
 //
@@ -749,14 +749,14 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir(t *testing.T) {
 	}
 
 	// Build the parent graph with a review step that declares workspace="feature"
-	// and dispatches graph.run for review-phase.
+	// and dispatches graph.run for subgraph-review.
 	parentGraph := &formula.FormulaStepGraph{
 		Name:    "test-parent",
 		Version: 3,
 		Steps: map[string]formula.StepConfig{
 			"review": {
 				Action:    "graph.run",
-				Graph:     "review-phase",
+				Graph:     "subgraph-review",
 				Workspace: "feature",
 			},
 		},
@@ -783,7 +783,7 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir(t *testing.T) {
 	// Call actionGraphRun directly with the review step.
 	step := StepConfig{
 		Action:    "graph.run",
-		Graph:     "review-phase",
+		Graph:     "subgraph-review",
 		Workspace: "feature",
 	}
 
@@ -832,11 +832,11 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir(t *testing.T) {
 // TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace verifies
 // the bug scenario from spi-b34i5: when the parent graph declares a workspace
 // on the graph.run step but that workspace's Dir was never resolved by a prior
-// wizard.run step (as happens in spire-epic-v3 where implement is also a
+// wizard.run step (as happens in epic-default where implement is also a
 // graph.run), actionGraphRun must still resolve the workspace and propagate the
 // Dir to the nested subState.
 //
-// Without the fix, the nested review-phase graph's sage-review step does NOT
+// Without the fix, the nested subgraph-review graph's sage-review step does NOT
 // receive --worktree-dir, causing it to create a new worktree that collides
 // with the existing one.
 func TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace(t *testing.T) {
@@ -880,7 +880,7 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace(t *testi
 		Steps: map[string]formula.StepConfig{
 			"review": {
 				Action:    "graph.run",
-				Graph:     "review-phase",
+				Graph:     "subgraph-review",
 				Workspace: "staging",
 			},
 		},
@@ -917,7 +917,7 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace(t *testi
 
 	step := StepConfig{
 		Action:    "graph.run",
-		Graph:     "review-phase",
+		Graph:     "subgraph-review",
 		Workspace: "staging",
 	}
 
@@ -1026,7 +1026,7 @@ func TestGraphRun_ReviewPhase_ResumeRepairsWorktreeDir(t *testing.T) {
 		Steps: map[string]formula.StepConfig{
 			"review": {
 				Action:    "graph.run",
-				Graph:     "review-phase",
+				Graph:     "subgraph-review",
 				Workspace: "staging",
 			},
 		},
@@ -1055,9 +1055,9 @@ func TestGraphRun_ReviewPhase_ResumeRepairsWorktreeDir(t *testing.T) {
 	// Pre-persist a nested sub-state with EMPTY WorktreeDir to simulate
 	// a resumed sub-state that was persisted before workspace resolution.
 	subAgentName := agentName + "-review"
-	reviewGraph, err := formula.LoadStepGraphByName("review-phase")
+	reviewGraph, err := formula.LoadStepGraphByName("subgraph-review")
 	if err != nil {
-		t.Fatalf("load review-phase: %v", err)
+		t.Fatalf("load subgraph-review: %v", err)
 	}
 	subState := NewGraphState(reviewGraph, "spi-resume", subAgentName)
 	subState.RepoPath = dir
@@ -1072,7 +1072,7 @@ func TestGraphRun_ReviewPhase_ResumeRepairsWorktreeDir(t *testing.T) {
 
 	step := StepConfig{
 		Action:    "graph.run",
-		Graph:     "review-phase",
+		Graph:     "subgraph-review",
 		Workspace: "staging",
 	}
 

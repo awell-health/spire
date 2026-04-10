@@ -1,18 +1,10 @@
-# spire-bugfix-v3.formula.toml — v3 lifecycle graph for bugfix work.
+# bug-default.formula.toml — default lifecycle graph for bugfix work.
 #
-# Migrates the v2 spire-bugfix formula (plan → implement → review → merge)
-# to a declared step graph. Same structure as spire-agent-work-v3 but with
-# bugfix-appropriate defaults: max_review_rounds=2 and shorter timeouts.
-#
-# Behavioral differences from v2:
-#   - Review is delegated to the review-phase sub-graph via graph.run,
-#     rather than being driven by the executor's executeReview method.
-#   - Merge and close are separate terminal steps with conditional routing.
-#   - Workspace declared explicitly instead of inferred from phase config.
-#   - max_review_rounds=2 is a declared var, not hardcoded in revision_policy.
+# Same structure as task-default but with bugfix-appropriate defaults:
+# max_review_rounds=2 and shorter timeouts.
 
-name = "spire-bugfix-v3"
-description = "Quick bugfix: plan → implement → review → merge, as a v3 step graph"
+name = "bug-default"
+description = "Quick bugfix: plan → implement → review → merge"
 version = 3
 entry = "plan"
 
@@ -40,14 +32,12 @@ cleanup = "terminal"
 
 # --- Steps ---
 
-# Step 1: Wizard plans the bugfix.
 [steps.plan]
 kind = "op"
 action = "wizard.run"
 flow = "task-plan"
 title = "Plan bugfix"
 
-# Step 2: Apprentice implements the fix in an isolated worktree.
 [steps.implement]
 kind = "op"
 action = "wizard.run"
@@ -56,16 +46,14 @@ needs = ["plan"]
 workspace = "feature"
 title = "Implement bugfix"
 
-# Step 3: Review via the review-phase sub-graph.
 [steps.review]
 kind = "call"
 action = "graph.run"
 needs = ["implement"]
 workspace = "feature"
-graph = "review-phase"
+graph = "subgraph-review"
 title = "Review bugfix"
 
-# Step 4a: Merge to main — fires when review outcome is merge.
 [steps.merge]
 kind = "op"
 action = "git.merge_to_main"
@@ -77,7 +65,6 @@ strategy = "squash"
 [steps.merge.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
 
-# Step 5a: Close bead after successful merge.
 [steps.close]
 kind = "op"
 action = "bead.finish"
@@ -87,7 +74,6 @@ title = "Close bead"
 [steps.close.with]
 status = "closed"
 
-# Step 4b: Discard — fires when review outcome is discard.
 [steps.discard]
 kind = "op"
 action = "bead.finish"

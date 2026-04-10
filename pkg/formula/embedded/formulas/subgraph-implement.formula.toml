@@ -1,4 +1,4 @@
-# epic-implement-phase.formula.toml — Declarative epic implementation lifecycle (v3).
+# subgraph-implement.formula.toml — epic implementation sub-graph.
 #
 # Replaces the v2 dispatch=wave + hardcoded build-fix loop with a declared
 # step graph. The executor interprets this graph generically instead of
@@ -12,7 +12,7 @@
 # merging waves. Individual apprentices also gate on build via WizardBuildGate
 # before exiting, so most build errors are caught before reaching this step.
 
-name = "epic-implement-phase"
+name = "subgraph-implement"
 description = "Declarative epic implementation: dispatch children in waves, verify build, signal readiness for review"
 version = 3
 
@@ -61,8 +61,8 @@ produces = ["status"]
 # but should only be used in repo-level formulas, not embedded defaults.
 
 # Step 3a: Signal success — parent graph performs review and merge.
-# Uses noop because epic-implement-phase is a nested sub-graph: the parent
-# formula (spire-epic-v3) is responsible for review and the real merge via
+# Uses noop because subgraph-implement is a nested sub-graph: the parent
+# formula (epic-default) is responsible for review and the real merge via
 # its own git.merge_to_main step, keyed on steps.implement.outputs.outcome == "verified".
 [steps.verified]
 kind = "op"

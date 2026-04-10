@@ -1,21 +1,9 @@
-# spire-recovery-v3.formula.toml — v3 agentic recovery lifecycle.
+# recovery-default.formula.toml — default agentic recovery lifecycle.
 #
-# Recovery beads are first-class self-healing workflows with Claude-driven
-# decision making and cross-bead learning. This formula defines the 6-step
-# graph: collect_context → decide → execute → verify → learn → finish.
-#
-# The decide and learn steps are agentic (Claude calls). Execute and verify
-# use the existing mechanical recovery.execute dispatcher. Finish always
-# closes the recovery bead regardless of outcome.
-#
-# Two terminal paths:
-#   Happy:       collect_context → decide → execute → verify → learn → finish
-#   Needs-human: collect_context → decide → finish_needs_human
-#
-# The decide step sets needs_human=true when confidence < 0.7. Downstream
-# steps (execute, verify, learn) are gated on needs_human != true.
+# collect_context → decide → execute → verify → learn → finish
+# Needs-human path: collect_context → decide → finish_needs_human
 
-name = "spire-recovery-v3"
+name = "recovery-default"
 description = "Agentic recovery: Claude-driven decide + learn steps, always-close lifecycle"
 version = 3
 entry = "collect_context"

@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// reviewGraph builds a test fixture mirroring review-phase.formula.toml.
+// reviewGraph builds a test fixture mirroring subgraph-review.formula.toml.
 func reviewGraph() *FormulaStepGraph {
 	return &FormulaStepGraph{
-		Name:    "review-phase",
+		Name:    "subgraph-review",
 		Version: 3,
 		Steps: map[string]StepConfig{
 			"sage-review": {Role: "sage", Title: "Sage review"},

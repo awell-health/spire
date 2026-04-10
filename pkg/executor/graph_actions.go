@@ -376,7 +376,7 @@ func (e *Executor) sendArchmageMessage(msg string) {
 //
 //	status: "closed" | "done" | "wontfix" | "discard" (default: "closed")
 // actionNoop is a no-op action that completes immediately with success.
-// Used for terminal signal steps in nested graphs (e.g. review-phase merge/discard
+// Used for terminal signal steps in nested graphs (e.g. subgraph-review merge/discard
 // terminals) where the parent graph is responsible for the real side effects.
 func actionNoop(_ *Executor, _ string, _ StepConfig, _ *GraphState) ActionResult {
 	return ActionResult{Outputs: map[string]string{"status": "done"}}
@@ -664,7 +664,7 @@ func actionMaterializePlan(e *Executor, stepName string, step StepConfig, state 
 //     parent's staging worktree, registry entry, and graph state file.
 //   - The nested graph gets its own GraphState with a derived agent name
 //     (parent-stepName) so state files don't collide.
-//   - Parent vars are copied into the sub-state so review-phase can access
+//   - Parent vars are copied into the sub-state so subgraph-review can access
 //     max_review_rounds, branch, etc.
 //   - The terminal step name from the sub-graph becomes the "outcome" output,
 //     which parent steps route on (e.g. steps.review.outputs.outcome == "merge").

@@ -5,7 +5,7 @@ import "testing"
 // --- NextSteps tests using real embedded formulas ---
 
 func TestNextSteps_AgentWork_EntryPoint(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-agent-work-v3")
+	g, err := LoadEmbeddedStepGraph("task-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestNextSteps_AgentWork_EntryPoint(t *testing.T) {
 }
 
 func TestNextSteps_AgentWork_AfterPlan(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-agent-work-v3")
+	g, err := LoadEmbeddedStepGraph("task-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestNextSteps_AgentWork_AfterPlan(t *testing.T) {
 }
 
 func TestNextSteps_AgentWork_AfterReview_Merge(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-agent-work-v3")
+	g, err := LoadEmbeddedStepGraph("task-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestNextSteps_AgentWork_AfterReview_Merge(t *testing.T) {
 }
 
 func TestNextSteps_AgentWork_AfterReview_Discard(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-agent-work-v3")
+	g, err := LoadEmbeddedStepGraph("task-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestNextSteps_AgentWork_AfterReview_Discard(t *testing.T) {
 }
 
 func TestNextSteps_Epic_FullSequence(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-epic-v3")
+	g, err := LoadEmbeddedStepGraph("epic-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestNextSteps_Epic_FullSequence(t *testing.T) {
 }
 
 func TestNextSteps_Epic_ImplementSuccess_ReviewReady(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-epic-v3")
+	g, err := LoadEmbeddedStepGraph("epic-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestNextSteps_Epic_ImplementSuccess_ReviewReady(t *testing.T) {
 }
 
 func TestNextSteps_Epic_ImplementFailed_ReviewBlocked(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("spire-epic-v3")
+	g, err := LoadEmbeddedStepGraph("epic-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestNextSteps_Epic_ImplementFailed_ReviewBlocked(t *testing.T) {
 }
 
 func TestNextSteps_Review_ConditionalBranching(t *testing.T) {
-	g, err := LoadEmbeddedStepGraph("review-phase")
+	g, err := LoadEmbeddedStepGraph("subgraph-review")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -300,11 +300,11 @@ func TestNextSteps_Review_ConditionalBranching(t *testing.T) {
 
 func TestValidateGraph_AllEmbeddedV3(t *testing.T) {
 	names := []string{
-		"review-phase",
-		"epic-implement-phase",
-		"spire-agent-work-v3",
-		"spire-bugfix-v3",
-		"spire-epic-v3",
+		"subgraph-review",
+		"subgraph-implement",
+		"task-default",
+		"bug-default",
+		"epic-default",
 	}
 
 	for _, name := range names {

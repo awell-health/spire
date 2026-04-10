@@ -1,5 +1,5 @@
 name = "v3-review-test"
-description = "Review DAG test fixture — copy of review-phase for isolated parsing tests"
+description = "Review DAG test fixture — copy of subgraph-review for isolated parsing tests"
 version = 3
 
 [vars.bead_id]

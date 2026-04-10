@@ -10,11 +10,11 @@ import (
 
 func TestMigration_V3FormulasLoadCleanly(t *testing.T) {
 	v3Names := []string{
-		"review-phase",
-		"epic-implement-phase",
-		"spire-agent-work-v3",
-		"spire-bugfix-v3",
-		"spire-epic-v3",
+		"subgraph-review",
+		"subgraph-implement",
+		"task-default",
+		"bug-default",
+		"epic-default",
 	}
 
 	for _, name := range v3Names {
@@ -40,7 +40,7 @@ func TestMigration_V3FormulasLoadCleanly(t *testing.T) {
 // --- Review phase structure preserved ---
 
 func TestMigration_ReviewPhaseUnchanged(t *testing.T) {
-	g, err := formula.LoadEmbeddedStepGraph("review-phase")
+	g, err := formula.LoadEmbeddedStepGraph("subgraph-review")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestMigration_V3FormulaResolution(t *testing.T) {
 		},
 		{
 			name: "explicit v3 formula label resolves to v3",
-			bead: formula.BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula:spire-agent-work-v3"}},
+			bead: formula.BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula:task-default"}},
 		},
 		{
 			name: "bug type resolves to v3",

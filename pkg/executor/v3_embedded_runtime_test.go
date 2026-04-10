@@ -12,21 +12,21 @@ import (
 // --- Test 1: Plan step routes to inline planning, not subprocess spawn ---
 
 // TestEmbeddedRuntime_AgentWorkV3_PlanExecutesPlanning proves that the
-// spire-agent-work-v3 plan step (wizard.run flow=task-plan) invokes the
+// task-default plan step (wizard.run flow=task-plan) invokes the
 // executor's inline ClaudeRunner planning path rather than spawning a
 // subprocess. This catches the regression where plan steps were incorrectly
 // dispatched through wizardRunSpawn instead of actionPlanTask.
 func TestEmbeddedRuntime_AgentWorkV3_PlanExecutesPlanning(t *testing.T) {
 	// Load the REAL embedded formula to verify its plan step configuration.
-	embedded, err := formula.LoadEmbeddedStepGraph("spire-agent-work-v3")
+	embedded, err := formula.LoadEmbeddedStepGraph("task-default")
 	if err != nil {
-		t.Fatalf("LoadEmbeddedStepGraph(spire-agent-work-v3): %v", err)
+		t.Fatalf("LoadEmbeddedStepGraph(task-default): %v", err)
 	}
 
 	// Verify the plan step uses wizard.run with flow=task-plan.
 	planStep, ok := embedded.Steps["plan"]
 	if !ok {
-		t.Fatal("plan step not found in spire-agent-work-v3")
+		t.Fatal("plan step not found in task-default")
 	}
 	if planStep.Action != "wizard.run" {
 		t.Errorf("plan action = %q, want %q", planStep.Action, "wizard.run")
@@ -93,11 +93,11 @@ func TestEmbeddedRuntime_AgentWorkV3_PlanExecutesPlanning(t *testing.T) {
 	}
 }
 
-// --- Test 2: graph.run loads and dispatches review-phase sub-graph ---
+// --- Test 2: graph.run loads and dispatches subgraph-review sub-graph ---
 
 // TestEmbeddedRuntime_GraphRunReviewPhase proves that the graph.run action
-// can load the embedded review-phase formula and execute it as a nested
-// sub-graph. This catches regressions where review-phase steps lack action
+// can load the embedded subgraph-review formula and execute it as a nested
+// sub-graph. This catches regressions where subgraph-review steps lack action
 // fields (making them incompatible with graph.run's dispatchAction).
 func TestEmbeddedRuntime_GraphRunReviewPhase(t *testing.T) {
 	deps, _ := testGraphDeps(t)
@@ -119,7 +119,7 @@ func TestEmbeddedRuntime_GraphRunReviewPhase(t *testing.T) {
 	restore := saveAndRestoreRegistry(t)
 	defer restore()
 
-	// Override all actions the review-phase uses so we don't need real git/spawner.
+	// Override all actions the subgraph-review uses so we don't need real git/spawner.
 	// sage-review (wizard.run flow=sage-review) -> approve verdict
 	actionRegistry["wizard.run"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 		nestedDispatched = append(nestedDispatched, stepName)
@@ -131,13 +131,13 @@ func TestEmbeddedRuntime_GraphRunReviewPhase(t *testing.T) {
 		}
 		return ActionResult{Outputs: map[string]string{"result": "success"}}
 	}
-	// review-phase terminals now use noop (parent graph handles real side effects).
+	// subgraph-review terminals now use noop (parent graph handles real side effects).
 	actionRegistry["noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 		nestedDispatched = append(nestedDispatched, stepName)
 		return ActionResult{Outputs: map[string]string{"status": "done"}}
 	}
 
-	// Build a parent graph that calls graph.run with review-phase.
+	// Build a parent graph that calls graph.run with subgraph-review.
 	parentGraph := &formula.FormulaStepGraph{
 		Name:    "test-parent-review",
 		Version: 3,
@@ -147,7 +147,7 @@ func TestEmbeddedRuntime_GraphRunReviewPhase(t *testing.T) {
 			"max_review_rounds": {Default: "3"},
 		},
 		Steps: map[string]formula.StepConfig{
-			"review": {Kind: "call", Action: "graph.run", Graph: "review-phase", Terminal: true},
+			"review": {Kind: "call", Action: "graph.run", Graph: "subgraph-review", Terminal: true},
 		},
 	}
 
@@ -159,7 +159,7 @@ func TestEmbeddedRuntime_GraphRunReviewPhase(t *testing.T) {
 
 	// Verify the nested graph was loaded and dispatched steps.
 	if len(nestedDispatched) == 0 {
-		t.Fatal("no steps dispatched in nested review-phase graph")
+		t.Fatal("no steps dispatched in nested subgraph-review graph")
 	}
 
 	// sage-review should have been dispatched.
@@ -190,32 +190,32 @@ func TestEmbeddedRuntime_GraphRunReviewPhase(t *testing.T) {
 	}
 }
 
-// --- Test 3: spire-bugfix-v3 review-round override ---
+// --- Test 3: bug-default review-round override ---
 
 // TestEmbeddedRuntime_BugfixV3_ReviewRoundOverride proves that
-// spire-bugfix-v3 declares max_review_rounds=2 (not 3 like agent-work-v3),
+// bug-default declares max_review_rounds=2 (not 3 like agent-work-v3),
 // and that the var initializes correctly in GraphState. This catches the
 // regression where bugfix-specific review behavior was not properly
 // expressed as a formula var override.
 func TestEmbeddedRuntime_BugfixV3_ReviewRoundOverride(t *testing.T) {
-	bugfix, err := formula.LoadEmbeddedStepGraph("spire-bugfix-v3")
+	bugfix, err := formula.LoadEmbeddedStepGraph("bug-default")
 	if err != nil {
-		t.Fatalf("LoadEmbeddedStepGraph(spire-bugfix-v3): %v", err)
+		t.Fatalf("LoadEmbeddedStepGraph(bug-default): %v", err)
 	}
 
 	// Verify the formula declares max_review_rounds=2.
 	v, ok := bugfix.Vars["max_review_rounds"]
 	if !ok {
-		t.Fatal("max_review_rounds var not found in spire-bugfix-v3")
+		t.Fatal("max_review_rounds var not found in bug-default")
 	}
 	if v.Default != "2" {
 		t.Errorf("bugfix max_review_rounds default = %q, want %q", v.Default, "2")
 	}
 
 	// Compare with agent-work-v3 which should have default=3.
-	agentWork, err := formula.LoadEmbeddedStepGraph("spire-agent-work-v3")
+	agentWork, err := formula.LoadEmbeddedStepGraph("task-default")
 	if err != nil {
-		t.Fatalf("LoadEmbeddedStepGraph(spire-agent-work-v3): %v", err)
+		t.Fatalf("LoadEmbeddedStepGraph(task-default): %v", err)
 	}
 	awVar := agentWork.Vars["max_review_rounds"]
 	if awVar.Default != "3" {
@@ -244,7 +244,7 @@ func TestEmbeddedRuntime_BugfixV3_ReviewRoundOverride(t *testing.T) {
 // --- Test 4: Workspace initialization from formula declarations ---
 
 // TestEmbeddedRuntime_AgentWorkV3_WorkspaceInitialized proves that
-// spire-agent-work-v3's workspace declarations are correctly initialized
+// task-default's workspace declarations are correctly initialized
 // into GraphState by the graph interpreter. This catches the regression
 // where workspaces were not populated from formula declarations.
 func TestEmbeddedRuntime_AgentWorkV3_WorkspaceInitialized(t *testing.T) {
@@ -264,7 +264,7 @@ func TestEmbeddedRuntime_AgentWorkV3_WorkspaceInitialized(t *testing.T) {
 	var capturedWorkspaces map[string]WorkspaceState
 
 	// Use the REAL embedded formula.
-	embedded, err := formula.LoadEmbeddedStepGraph("spire-agent-work-v3")
+	embedded, err := formula.LoadEmbeddedStepGraph("task-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestEmbeddedRuntime_AgentWorkV3_WorkspaceInitialized(t *testing.T) {
 	}
 }
 
-// --- Test 5: epic-implement-phase verify/merge routing ---
+// --- Test 5: subgraph-implement verify/merge routing ---
 
 // TestEmbeddedRuntime_EpicImplement_NoVerifiedAfterFailedVerify is a
 // duplicate-check: this exact scenario is covered in
@@ -331,9 +331,9 @@ func TestEmbeddedRuntime_AgentWorkV3_WorkspaceInitialized(t *testing.T) {
 // and the routing works — if the existing test already covers this,
 // this serves as a cross-check from the embedded-runtime perspective.
 func TestEmbeddedRuntime_EpicImplement_NoVerifiedAfterFailedVerify(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("epic-implement-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-implement")
 	if err != nil {
-		t.Fatalf("load epic-implement-phase: %v", err)
+		t.Fatalf("load subgraph-implement: %v", err)
 	}
 
 	// Simulate: dispatch-children completed, verify-build completed with status=fail.
@@ -370,7 +370,7 @@ func TestEmbeddedRuntime_EpicImplement_NoVerifiedAfterFailedVerify(t *testing.T)
 // --- Test 6: Full embedded formula RunGraph with real action dispatch ---
 
 // TestEmbeddedRuntime_AgentWorkV3_FullGraphWithMocks exercises the REAL
-// spire-agent-work-v3 formula graph end-to-end with mocked actions. This
+// task-default formula graph end-to-end with mocked actions. This
 // proves the entire embedded formula can be loaded, interpreted, and
 // driven to a terminal step without any synthetic test.* actions in the
 // formula itself — only the action handlers are mocked.
@@ -414,7 +414,7 @@ func TestEmbeddedRuntime_AgentWorkV3_FullGraphWithMocks(t *testing.T) {
 	}
 	actionRegistry["graph.run"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 		dispatched = append(dispatched, stepName)
-		// Simulate review-phase completing with merge outcome.
+		// Simulate subgraph-review completing with merge outcome.
 		return ActionResult{Outputs: map[string]string{"outcome": "merge", "merged": "true"}}
 	}
 	actionRegistry["git.merge_to_main"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
@@ -429,7 +429,7 @@ func TestEmbeddedRuntime_AgentWorkV3_FullGraphWithMocks(t *testing.T) {
 	}
 
 	// Load and run the REAL embedded formula.
-	graph, err := formula.LoadEmbeddedStepGraph("spire-agent-work-v3")
+	graph, err := formula.LoadEmbeddedStepGraph("task-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -464,13 +464,13 @@ func TestEmbeddedRuntime_AgentWorkV3_FullGraphWithMocks(t *testing.T) {
 	}
 }
 
-// --- Test 7: spire-epic-v3 design-check routes to real action ---
+// --- Test 7: epic-default design-check routes to real action ---
 
-// TestEmbeddedRuntime_EpicV3_DesignCheckAction proves that spire-epic-v3's
+// TestEmbeddedRuntime_EpicV3_DesignCheckAction proves that epic-default's
 // design-check step uses the check.design-linked action. This catches
 // regressions where the entry step's action is missing or misnamed.
 func TestEmbeddedRuntime_EpicV3_DesignCheckAction(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("spire-epic-v3")
+	graph, err := formula.LoadEmbeddedStepGraph("epic-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -497,11 +497,11 @@ func TestEmbeddedRuntime_EpicV3_DesignCheckAction(t *testing.T) {
 // runtime error that was previously a regression.
 func TestEmbeddedRuntime_AllV3Formulas_StepsHaveActions(t *testing.T) {
 	formulas := []string{
-		"spire-agent-work-v3",
-		"spire-bugfix-v3",
-		"spire-epic-v3",
-		"review-phase",
-		"epic-implement-phase",
+		"task-default",
+		"bug-default",
+		"epic-default",
+		"subgraph-review",
+		"subgraph-implement",
 	}
 
 	for _, name := range formulas {
@@ -530,7 +530,7 @@ func TestEmbeddedRuntime_AllV3Formulas_StepsHaveActions(t *testing.T) {
 
 // --- Test 9: Review loop (request_changes -> fix -> sage-review) ---
 
-// TestEmbeddedRuntime_ReviewPhase_FixLoop verifies that the review-phase
+// TestEmbeddedRuntime_ReviewPhase_FixLoop verifies that the subgraph-review
 // graph correctly loops through request_changes -> fix -> sage-review using
 // formula-declared resets and completed_count routing, not hidden counter
 // mutation. This is the ZFC-compliant review loop.
@@ -571,7 +571,7 @@ func TestEmbeddedRuntime_ReviewPhase_FixLoop(t *testing.T) {
 		return ActionResult{Outputs: map[string]string{"status": "done"}}
 	}
 
-	// Build parent graph that calls graph.run(review-phase).
+	// Build parent graph that calls graph.run(subgraph-review).
 	parentGraph := &formula.FormulaStepGraph{
 		Name: "test-review-loop", Version: 3, Entry: "review",
 		Vars: map[string]formula.FormulaVar{
@@ -579,7 +579,7 @@ func TestEmbeddedRuntime_ReviewPhase_FixLoop(t *testing.T) {
 			"max_review_rounds": {Default: "3"},
 		},
 		Steps: map[string]formula.StepConfig{
-			"review": {Kind: "call", Action: "graph.run", Graph: "review-phase", Terminal: true},
+			"review": {Kind: "call", Action: "graph.run", Graph: "subgraph-review", Terminal: true},
 		},
 	}
 
@@ -668,7 +668,7 @@ func TestEmbeddedRuntime_ReviewPhase_ArbiterAfterMaxRounds(t *testing.T) {
 			"max_review_rounds": {Default: "2"}, // low threshold for test
 		},
 		Steps: map[string]formula.StepConfig{
-			"review": {Kind: "call", Action: "graph.run", Graph: "review-phase", Terminal: true},
+			"review": {Kind: "call", Action: "graph.run", Graph: "subgraph-review", Terminal: true},
 		},
 	}
 
@@ -738,7 +738,7 @@ func TestEmbeddedRuntime_CompletedCountPersistsAcrossResume(t *testing.T) {
 }
 
 // TestEmbeddedRuntime_NestedGraphResume verifies that nested graph state
-// (e.g. review-phase executed via graph.run) persists across interrupts.
+// (e.g. subgraph-review executed via graph.run) persists across interrupts.
 // Simulates: sage-review rejects → fix runs → interrupt → resume →
 // sage-review approves → merge terminal fires. The completed_count from
 // the first sage-review round must survive the resume.
@@ -789,7 +789,7 @@ func TestEmbeddedRuntime_NestedGraphResume(t *testing.T) {
 			"max_review_rounds": {Default: "3"},
 		},
 		Steps: map[string]formula.StepConfig{
-			"review": {Kind: "call", Action: "graph.run", Graph: "review-phase", Terminal: true},
+			"review": {Kind: "call", Action: "graph.run", Graph: "subgraph-review", Terminal: true},
 		},
 	}
 
@@ -829,7 +829,7 @@ func TestEmbeddedRuntime_NestedGraphResume(t *testing.T) {
 
 	// Create a pre-persisted nested state simulating: sage-review completed
 	// once (rejected), fix completed and reset both to pending.
-	nestedGraph, _ := formula.LoadEmbeddedStepGraph("review-phase")
+	nestedGraph, _ := formula.LoadEmbeddedStepGraph("subgraph-review")
 	preState := NewGraphState(nestedGraph, "spi-nested-resume", "wizard-nested-resume-review")
 	preState.Vars["bead_id"] = "spi-nested-resume"
 	preState.Vars["max_review_rounds"] = "3"

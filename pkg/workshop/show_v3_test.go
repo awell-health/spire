@@ -156,7 +156,7 @@ func TestRenderV3_DAGSection(t *testing.T) {
 			},
 			"review": {
 				Kind:  formula.StepKindCall,
-				Graph: "review-phase",
+				Graph: "subgraph-review",
 				Needs: []string{"implement"},
 			},
 			"merge": {
@@ -208,7 +208,7 @@ func TestRenderV3_DAGSection(t *testing.T) {
 	}
 
 	// Must show nested graph reference
-	if !strings.Contains(output, "(-> review-phase)") {
+	if !strings.Contains(output, "(-> subgraph-review)") {
 		t.Fatalf("missing graph reference in output:\n%s", output)
 	}
 
@@ -279,7 +279,7 @@ func TestRenderDAG_WithResetCycle(t *testing.T) {
 func TestRenderDAG_EmbeddedReviewPhase(t *testing.T) {
 	g, err := formula.LoadReviewPhaseFormula()
 	if err != nil {
-		t.Fatalf("load review-phase: %v", err)
+		t.Fatalf("load subgraph-review: %v", err)
 	}
 
 	var b strings.Builder

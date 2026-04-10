@@ -14,7 +14,7 @@ import (
 // the v2 State type. Here we test the v3 GraphState path used by the graph
 // interpreter.
 func TestV3Workspace_InitFromFormula(t *testing.T) {
-	g, err := formula.LoadEmbeddedStepGraph("spire-agent-work-v3")
+	g, err := formula.LoadEmbeddedStepGraph("task-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestV3Workspace_AllKindsHaveDefaults(t *testing.T) {
 // TestV3Workspace_EpicFormulaDeclaredWorkspaces validates the workspace
 // declarations in the epic v3 formula.
 func TestV3Workspace_EpicFormulaDeclaredWorkspaces(t *testing.T) {
-	g, err := formula.LoadEmbeddedStepGraph("spire-epic-v3")
+	g, err := formula.LoadEmbeddedStepGraph("epic-default")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -214,9 +214,9 @@ func TestV3Workspace_EpicFormulaDeclaredWorkspaces(t *testing.T) {
 }
 
 // TestV3Workspace_EpicImplementDeclaredWorkspaces validates workspace
-// declarations in the epic-implement-phase formula.
+// declarations in the subgraph-implement formula.
 func TestV3Workspace_EpicImplementDeclaredWorkspaces(t *testing.T) {
-	g, err := formula.LoadEmbeddedStepGraph("epic-implement-phase")
+	g, err := formula.LoadEmbeddedStepGraph("subgraph-implement")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}

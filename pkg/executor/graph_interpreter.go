@@ -283,7 +283,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 //   - Remove graph state files on terminal success
 //
 // This method is used by actionGraphRun to execute sub-graphs (e.g. the
-// review-phase graph called from spire-agent-work-v3) without interfering
+// subgraph-review graph called from task-default) without interfering
 // with the parent graph's lifecycle.
 func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) error {
 	// Resolve branch state for the sub-graph (usually inherited from parent).

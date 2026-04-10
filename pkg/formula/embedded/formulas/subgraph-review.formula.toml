@@ -1,4 +1,4 @@
-# review-phase.formula.toml — Review DAG as a step-graph formula (v3).
+# subgraph-review.formula.toml — Review DAG as a step-graph sub-graph.
 #
 # Encodes the review DAG from docs/review-dag.md:
 #
@@ -23,7 +23,7 @@
 # Action fields: each step declares an action for the v3 graph.run interpreter.
 # The role fields are preserved for backward compat with the v2 review DAG walker.
 
-name = "review-phase"
+name = "subgraph-review"
 description = "Review DAG: sage-review -> fix/arbiter -> merge/discard with terminal branch invariants"
 version = 3
 
@@ -88,8 +88,8 @@ all = [
 ]
 
 # Step 4a: Merge signal. Terminal — signals that review approved the work.
-# Uses noop because review-phase is a nested sub-graph: the parent formula
-# (spire-agent-work-v3, spire-epic-v3) is responsible for the real merge via
+# Uses noop because subgraph-review is a nested sub-graph: the parent formula
+# (task-default, epic-default) is responsible for the real merge via
 # its own git.merge_to_main step, keyed on steps.review.outputs.outcome == "merge".
 # The v2 review walker ignores the action field and dispatches via executeTerminalStep.
 [steps.merge]

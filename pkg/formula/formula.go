@@ -134,10 +134,10 @@ func FindFormula(name string) (string, error) {
 	return path, nil
 }
 
-// LoadReviewPhaseFormula loads the embedded review-phase step-graph formula.
+// LoadReviewPhaseFormula loads the subgraph-review step-graph formula.
 // Used by the executor to pour the review molecule on entering the review phase.
 func LoadReviewPhaseFormula() (*FormulaStepGraph, error) {
-	return LoadStepGraphByName("review-phase")
+	return LoadStepGraphByName("subgraph-review")
 }
 
 // TowerFetcher is an optional injection point for tower-level formula lookup.
@@ -214,12 +214,12 @@ func LoadEmbeddedStepGraph(name string) (*FormulaStepGraph, error) {
 
 // DefaultV3FormulaMap maps bead types to default v3 formula names.
 var DefaultV3FormulaMap = map[string]string{
-	"task":     "spire-agent-work-v3",
-	"bug":      "spire-bugfix-v3",
-	"epic":     "spire-epic-v3",
-	"chore":    "spire-agent-work-v3",
-	"feature":  "spire-agent-work-v3",
-	"recovery": "spire-recovery-v3",
+	"task":     "task-default",
+	"bug":      "bug-default",
+	"epic":     "epic-default",
+	"chore":    "chore-default",
+	"feature":  "task-default",
+	"recovery": "recovery-default",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.
@@ -238,9 +238,17 @@ var RepoFormulaNameFunc func(beadID string) string
 // legacyV2NameMap translates v2 formula names to their v3 equivalents.
 // Used when a bead label or repo config references a v2 name.
 var legacyV2NameMap = map[string]string{
-	"spire-agent-work": "spire-agent-work-v3",
-	"spire-bugfix":     "spire-bugfix-v3",
-	"spire-epic":       "spire-epic-v3",
+	// v2 names
+	"spire-agent-work": "task-default",
+	"spire-bugfix":     "bug-default",
+	"spire-epic":       "epic-default",
+	// v3 names (backward compat for existing bead labels)
+	"spire-agent-work-v3":  "task-default",
+	"spire-bugfix-v3":      "bug-default",
+	"spire-epic-v3":        "epic-default",
+	"spire-recovery-v3":    "recovery-default",
+	"review-phase":         "subgraph-review",
+	"epic-implement-phase": "subgraph-implement",
 }
 
 // translateLegacyName returns the v3 equivalent if name is a known v2 formula,
@@ -276,7 +284,7 @@ func ResolveV3Name(bead BeadInfo) string {
 	}
 
 	// 4. Default
-	return "spire-agent-work-v3"
+	return "task-default"
 }
 
 // ResolveV3 determines which v3 formula to use for a bead.
@@ -285,10 +293,10 @@ func ResolveV3(bead BeadInfo) (*FormulaStepGraph, error) {
 	name := ResolveV3Name(bead)
 	g, err := LoadStepGraphByName(name)
 	if err != nil {
-		// Fall back to bead-type default, not blindly to spire-agent-work-v3.
+		// Fall back to bead-type default, not blindly to task-default.
 		typeName, ok := DefaultV3FormulaMap[bead.Type]
 		if !ok {
-			typeName = "spire-agent-work-v3"
+			typeName = "task-default"
 		}
 		if name != typeName {
 			g, err = LoadStepGraphByName(typeName)

@@ -31,7 +31,7 @@ title = "Implement"
 kind = "call"
 action = "graph.run"
 needs = ["implement"]
-graph = "review-phase"
+graph = "subgraph-review"
 workspace = "feature"
 title = "Review"
 

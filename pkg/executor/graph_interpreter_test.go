@@ -634,7 +634,7 @@ func TestActionGraphRun_NestedGraph(t *testing.T) {
 		}
 	}()
 
-	// The review-phase graph uses role-based steps (no action field for most).
+	// The subgraph-review graph uses role-based steps (no action field for most).
 	// For this test, register test handlers and use a custom graph that
 	// graph.run can load. Instead, we test actionGraphRun with a manually
 	// constructed graph by temporarily registering it.

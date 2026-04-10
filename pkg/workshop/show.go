@@ -67,7 +67,7 @@ func renderV3(f *formula.FormulaStepGraph, source string) string {
 //
 //	plan [entry]
 //	 └─ implement
-//	     └─ review (-> review-phase)
+//	     └─ review (-> subgraph-review)
 //	         ├─ merge [when: outcome == merge]
 //	         │   └─ close [terminal]
 //	         └─ discard [terminal, when: outcome == discard]

@@ -7,11 +7,11 @@ import (
 )
 
 // TestEpicImplementPhase_ValidatesCleanly verifies that the embedded
-// epic-implement-phase formula still parses and validates after edits.
+// subgraph-implement formula still parses and validates after edits.
 func TestEpicImplementPhase_ValidatesCleanly(t *testing.T) {
-	_, err := formula.LoadEmbeddedStepGraph("epic-implement-phase")
+	_, err := formula.LoadEmbeddedStepGraph("subgraph-implement")
 	if err != nil {
-		t.Fatalf("epic-implement-phase should validate cleanly: %v", err)
+		t.Fatalf("subgraph-implement should validate cleanly: %v", err)
 	}
 }
 
@@ -19,9 +19,9 @@ func TestEpicImplementPhase_ValidatesCleanly(t *testing.T) {
 // does NOT become ready when verify-build completes with status=fail, and
 // that the build-failed terminal fires instead.
 func TestEpicImplementPhase_NoVerifiedAfterFailedVerify(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("epic-implement-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-implement")
 	if err != nil {
-		t.Fatalf("load epic-implement-phase: %v", err)
+		t.Fatalf("load subgraph-implement: %v", err)
 	}
 
 	// Simulate: dispatch-children completed, verify-build completed with status=fail
@@ -61,9 +61,9 @@ func TestEpicImplementPhase_NoVerifiedAfterFailedVerify(t *testing.T) {
 // becomes ready when verify-build completes with status=pass, and that
 // build-failed does NOT fire.
 func TestEpicImplementPhase_VerifiedAfterPassedVerify(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("epic-implement-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-implement")
 	if err != nil {
-		t.Fatalf("load epic-implement-phase: %v", err)
+		t.Fatalf("load subgraph-implement: %v", err)
 	}
 
 	completed := map[string]bool{
@@ -100,30 +100,30 @@ func TestEpicImplementPhase_VerifiedAfterPassedVerify(t *testing.T) {
 
 // TestEpicV3_ReviewBeforeMerge proves that epic review happens before
 // merge-to-main in the v3 epic lifecycle. This is the regression test for
-// spi-77g23: the nested epic-implement-phase must NOT merge to main — only
-// the parent spire-epic-v3 merges, and only after review.
+// spi-77g23: the nested subgraph-implement must NOT merge to main — only
+// the parent epic-default merges, and only after review.
 func TestEpicV3_ReviewBeforeMerge(t *testing.T) {
 	// 1. Load both embedded formulas.
-	implGraph, err := formula.LoadEmbeddedStepGraph("epic-implement-phase")
+	implGraph, err := formula.LoadEmbeddedStepGraph("subgraph-implement")
 	if err != nil {
-		t.Fatalf("load epic-implement-phase: %v", err)
+		t.Fatalf("load subgraph-implement: %v", err)
 	}
-	epicGraph, err := formula.LoadEmbeddedStepGraph("spire-epic-v3")
+	epicGraph, err := formula.LoadEmbeddedStepGraph("epic-default")
 	if err != nil {
-		t.Fatalf("load spire-epic-v3: %v", err)
+		t.Fatalf("load epic-default: %v", err)
 	}
 
-	// 2. epic-implement-phase must have NO step with action git.merge_to_main.
+	// 2. subgraph-implement must have NO step with action git.merge_to_main.
 	for name, step := range implGraph.Steps {
 		if step.Action == "git.merge_to_main" {
-			t.Errorf("epic-implement-phase step %q has action git.merge_to_main — nested graph must not merge", name)
+			t.Errorf("subgraph-implement step %q has action git.merge_to_main — nested graph must not merge", name)
 		}
 	}
 
-	// 3. spire-epic-v3 step ordering: implement needs materialize, review needs implement, merge needs review.
+	// 3. epic-default step ordering: implement needs materialize, review needs implement, merge needs review.
 	implementStep, ok := epicGraph.Steps["implement"]
 	if !ok {
-		t.Fatal("spire-epic-v3 missing 'implement' step")
+		t.Fatal("epic-default missing 'implement' step")
 	}
 	if !containsStr(implementStep.Needs, "materialize") {
 		t.Errorf("implement step should need 'materialize', got needs=%v", implementStep.Needs)
@@ -131,7 +131,7 @@ func TestEpicV3_ReviewBeforeMerge(t *testing.T) {
 
 	reviewStep, ok := epicGraph.Steps["review"]
 	if !ok {
-		t.Fatal("spire-epic-v3 missing 'review' step")
+		t.Fatal("epic-default missing 'review' step")
 	}
 	if !containsStr(reviewStep.Needs, "implement") {
 		t.Errorf("review step should need 'implement', got needs=%v", reviewStep.Needs)
@@ -139,13 +139,13 @@ func TestEpicV3_ReviewBeforeMerge(t *testing.T) {
 
 	mergeStep, ok := epicGraph.Steps["merge"]
 	if !ok {
-		t.Fatal("spire-epic-v3 missing 'merge' step")
+		t.Fatal("epic-default missing 'merge' step")
 	}
 	if !containsStr(mergeStep.Needs, "review") {
 		t.Errorf("merge step should need 'review', got needs=%v", mergeStep.Needs)
 	}
 
-	// 4. spire-epic-v3 has exactly one step with action git.merge_to_main, and it needs review.
+	// 4. epic-default has exactly one step with action git.merge_to_main, and it needs review.
 	mergeCount := 0
 	for name, step := range epicGraph.Steps {
 		if step.Action == "git.merge_to_main" {
@@ -156,7 +156,7 @@ func TestEpicV3_ReviewBeforeMerge(t *testing.T) {
 		}
 	}
 	if mergeCount != 1 {
-		t.Errorf("spire-epic-v3 should have exactly 1 git.merge_to_main step, got %d", mergeCount)
+		t.Errorf("epic-default should have exactly 1 git.merge_to_main step, got %d", mergeCount)
 	}
 
 	// 5. Review step condition routes on steps.implement.outputs.outcome == "verified".

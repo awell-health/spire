@@ -6,12 +6,12 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 )
 
-// TestReviewPhase_LoadsWithActions verifies that the embedded review-phase
+// TestReviewPhase_LoadsWithActions verifies that the embedded subgraph-review
 // formula loads successfully and all steps have action fields defined.
 func TestReviewPhase_LoadsWithActions(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("review-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-review")
 	if err != nil {
-		t.Fatalf("LoadEmbeddedStepGraph(review-phase): %v", err)
+		t.Fatalf("LoadEmbeddedStepGraph(subgraph-review): %v", err)
 	}
 
 	if graph.Version != 3 {
@@ -58,9 +58,9 @@ func TestReviewPhase_LoadsWithActions(t *testing.T) {
 // TestReviewPhase_FixDeclaresResets verifies that the fix step declares
 // resets for sage-review and fix, enabling the review loop.
 func TestReviewPhase_FixDeclaresResets(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("review-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-review")
 	if err != nil {
-		t.Fatalf("load review-phase: %v", err)
+		t.Fatalf("load subgraph-review: %v", err)
 	}
 
 	fix := graph.Steps["fix"]
@@ -77,9 +77,9 @@ func TestReviewPhase_FixDeclaresResets(t *testing.T) {
 
 // TestReviewPhase_SageApprove_MergeReady verifies approve routes to merge.
 func TestReviewPhase_SageApprove_MergeReady(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("review-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-review")
 	if err != nil {
-		t.Fatalf("load review-phase: %v", err)
+		t.Fatalf("load subgraph-review: %v", err)
 	}
 
 	completed := map[string]bool{"sage-review": true}
@@ -110,9 +110,9 @@ func TestReviewPhase_SageApprove_MergeReady(t *testing.T) {
 
 // TestReviewPhase_SageReject_FixReady verifies reject with round budget routes to fix.
 func TestReviewPhase_SageReject_FixReady(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("review-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-review")
 	if err != nil {
-		t.Fatalf("load review-phase: %v", err)
+		t.Fatalf("load subgraph-review: %v", err)
 	}
 
 	completed := map[string]bool{"sage-review": true}
@@ -143,9 +143,9 @@ func TestReviewPhase_SageReject_FixReady(t *testing.T) {
 
 // TestReviewPhase_MaxRounds_ArbiterReady verifies exhausted round budget routes to arbiter.
 func TestReviewPhase_MaxRounds_ArbiterReady(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("review-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-review")
 	if err != nil {
-		t.Fatalf("load review-phase: %v", err)
+		t.Fatalf("load subgraph-review: %v", err)
 	}
 
 	completed := map[string]bool{"sage-review": true}
@@ -176,9 +176,9 @@ func TestReviewPhase_MaxRounds_ArbiterReady(t *testing.T) {
 
 // TestReviewPhase_VarNameAlignment verifies max_review_rounds is the var name.
 func TestReviewPhase_VarNameAlignment(t *testing.T) {
-	graph, err := formula.LoadEmbeddedStepGraph("review-phase")
+	graph, err := formula.LoadEmbeddedStepGraph("subgraph-review")
 	if err != nil {
-		t.Fatalf("load review-phase: %v", err)
+		t.Fatalf("load subgraph-review: %v", err)
 	}
 
 	v, ok := graph.Vars["max_review_rounds"]
