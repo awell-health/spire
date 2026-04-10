@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // GraphResult is the typed return from executing a step-graph formula.
@@ -597,6 +598,28 @@ func (e *Executor) repoModel() string {
 		return ""
 	}
 	return cfg.Agent.Model
+}
+
+// repoProvider returns the agent provider from the repo config, or "" if unavailable.
+func (e *Executor) repoProvider() string {
+	if e.deps.RepoConfig == nil {
+		return ""
+	}
+	cfg := e.deps.RepoConfig()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Agent.Provider
+}
+
+// resolveStepProvider returns the resolved AI provider for a step, applying the
+// precedence chain: step provider > formula provider > repo config provider > "claude".
+func (e *Executor) resolveStepProvider(step StepConfig) string {
+	var formulaProvider string
+	if e.graph != nil {
+		formulaProvider = e.graph.Provider
+	}
+	return repoconfig.ResolveProvider(step.Provider, formulaProvider, e.repoProvider())
 }
 
 // resolveDispatch returns the effective dispatch mode and its source.

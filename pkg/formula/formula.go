@@ -25,6 +25,7 @@ type FormulaV2 struct {
 type PhaseConfig struct {
 	Timeout        string          `toml:"timeout,omitempty"`
 	Model          string          `toml:"model,omitempty"`
+	Provider       string          `toml:"provider,omitempty"` // AI provider override for this phase (claude, codex, cursor)
 	MaxTurns       int             `toml:"max_turns,omitempty"`
 	Context        []string        `toml:"context,omitempty"`
 	RevisionPolicy *RevisionPolicy `toml:"revision_policy,omitempty"`
@@ -140,7 +141,8 @@ type FormulaStepGraph struct {
 	Name        string                   `toml:"name"`
 	Description string                   `toml:"description"`
 	Version     int                      `toml:"version"`
-	Entry       string                   `toml:"entry,omitempty"` // explicit entry step (falls back to EntryStep())
+	Provider    string                   `toml:"provider,omitempty"` // formula-level default AI provider (claude, codex, cursor)
+	Entry       string                   `toml:"entry,omitempty"`    // explicit entry step (falls back to EntryStep())
 	Steps       map[string]StepConfig    `toml:"steps"`
 	Workspaces  map[string]WorkspaceDecl `toml:"workspaces"`
 	Vars        map[string]FormulaVar    `toml:"vars"`
@@ -153,6 +155,7 @@ type StepConfig struct {
 	Title       string   `toml:"title,omitempty"`        // human-readable title for the step bead
 	Timeout     string   `toml:"timeout,omitempty"`      // e.g. "10m"
 	Model       string   `toml:"model,omitempty"`        // model override for agent phases
+	Provider    string   `toml:"provider,omitempty"`     // per-step AI provider override (claude, codex, cursor)
 	MaxTurns    int      `toml:"max_turns,omitempty"`    // turn budget for agent invocations (0 = unlimited/timeout-gated)
 	VerdictOnly bool     `toml:"verdict_only,omitempty"` // sage: produce verdict only, no edits
 	// Graph edges

@@ -63,6 +63,21 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 		}
 	}
 
+	// Inject SPIRE_PROVIDER into the child's env (same pattern as SPIRE_TOWER).
+	if cfg.Provider != "" {
+		found := false
+		for i, e := range cmd.Env {
+			if strings.HasPrefix(e, "SPIRE_PROVIDER=") {
+				cmd.Env[i] = "SPIRE_PROVIDER=" + cfg.Provider
+				found = true
+				break
+			}
+		}
+		if !found {
+			cmd.Env = append(cmd.Env, "SPIRE_PROVIDER="+cfg.Provider)
+		}
+	}
+
 	if cfg.LogPath != "" {
 		os.MkdirAll(filepath.Dir(cfg.LogPath), 0755)
 		logFile, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)

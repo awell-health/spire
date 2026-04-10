@@ -98,6 +98,7 @@ type SpawnConfig struct {
 	BeadID    string    // Bead to work on
 	Role      SpawnRole // What kind of agent to run
 	Tower     string    // Tower name — injected as SPIRE_TOWER into subprocess env
+	Provider  string    // AI provider override (claude, codex, cursor) — injected as SPIRE_PROVIDER into subprocess env
 	ExtraArgs []string  // Additional args (e.g. "--review-fix")
 	LogPath   string    // Output destination (empty = inherit stderr)
 	StartRef  string    // Git ref (SHA or branch) for the child worktree start point. Empty = use repo base branch.

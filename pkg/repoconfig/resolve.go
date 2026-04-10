@@ -26,6 +26,9 @@ const (
 	// DefaultBranchPattern is the default branch naming pattern.
 	DefaultBranchPattern = "feat/{bead-id}"
 
+	// DefaultProvider is the default AI provider for agent work.
+	DefaultProvider = "claude"
+
 	// DefaultStaleDuration is DefaultStale as a time.Duration.
 	DefaultStaleDuration = 10 * time.Minute
 
@@ -43,6 +46,21 @@ func ResolveModel(phaseModel, repoModel string) string {
 		return repoModel
 	}
 	return DefaultModel
+}
+
+// ResolveProvider returns the first non-empty value in the precedence chain:
+// step provider > formula provider > spire.yaml provider > system default ("claude").
+func ResolveProvider(stepProvider, formulaProvider, repoProvider string) string {
+	if stepProvider != "" {
+		return stepProvider
+	}
+	if formulaProvider != "" {
+		return formulaProvider
+	}
+	if repoProvider != "" {
+		return repoProvider
+	}
+	return DefaultProvider
 }
 
 // ResolveTimeout returns the first non-empty value in the precedence chain:
