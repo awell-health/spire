@@ -56,8 +56,9 @@ func skipBead(b BoardBead) bool {
 	if store.InternalTypes[b.Type] {
 		return true
 	}
-	// Recovery beads are not user work — they're internal tracking.
-	if b.Type == "recovery" {
+	// Recovery beads with needs-human are shown (archmage must act on them).
+	// Other recovery beads are internal tracking.
+	if b.Type == "recovery" && !b.HasLabel("needs-human") {
 		return true
 	}
 	// Label-based fallback for beads not yet migrated to internal types.
