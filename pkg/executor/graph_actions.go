@@ -703,6 +703,7 @@ func actionGraphRun(e *Executor, stepName string, step StepConfig, state *GraphS
 	}
 	if subState == nil {
 		subState = NewGraphState(subGraph, e.beadID, subAgentName)
+		subState.TowerName = state.TowerName // inherit tower scope from parent
 
 		// Copy parent vars into sub-state (e.g. max_review_rounds, base_branch).
 		for k, v := range state.Vars {

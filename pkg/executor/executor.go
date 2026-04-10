@@ -146,6 +146,12 @@ func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*E
 	}
 	if state == nil {
 		state = NewGraphState(graph, beadID, agentName)
+		// Tag with tower name so sweep/resolve can filter by tower.
+		if deps.ActiveTowerConfig != nil {
+			if tc, err := deps.ActiveTowerConfig(); err == nil && tc != nil {
+				state.TowerName = tc.Name
+			}
+		}
 	}
 
 	return &Executor{

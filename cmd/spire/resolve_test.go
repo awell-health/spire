@@ -336,7 +336,7 @@ func TestResolveResetHookedSteps_NoGraphState(t *testing.T) {
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
 	// Should not panic or error — just print a warning.
-	resolveResetHookedSteps("spi-nonexistent")
+	resolveResetHookedSteps("spi-nonexistent", "test-tower")
 }
 
 // TestResolveResetHookedSteps_MultipleHooked verifies that all hooked steps
@@ -363,7 +363,7 @@ func TestResolveResetHookedSteps_MultipleHooked(t *testing.T) {
 	data, _ := json.MarshalIndent(gs, "", "  ")
 	os.WriteFile(filepath.Join(runtimeDir, "graph_state.json"), data, 0644)
 
-	resolveResetHookedSteps("spi-multi")
+	resolveResetHookedSteps("spi-multi", "")
 
 	data, _ = os.ReadFile(filepath.Join(runtimeDir, "graph_state.json"))
 	var updated executor.GraphState
@@ -386,6 +386,58 @@ func TestResolveResetHookedSteps_MultipleHooked(t *testing.T) {
 	}
 	if updated.Steps["step-c"].Status != "completed" {
 		t.Error("step-c should remain completed")
+	}
+}
+
+// TestResolveResetHookedSteps_TowerScoped verifies that resolveResetHookedSteps
+// skips graph states belonging to a different tower.
+func TestResolveResetHookedSteps_TowerScoped(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	// Create two graph states for the same bead ID but different towers.
+	agentAwell := "wizard-spi-tower-a"
+	agentMlti := "wizard-ml-tower-b"
+	beadID := "spi-tower-test"
+
+	for _, tc := range []struct {
+		agent string
+		tower string
+	}{
+		{agentAwell, "awell"},
+		{agentMlti, "mlti"},
+	} {
+		dir := filepath.Join(tmp, "runtime", tc.agent)
+		os.MkdirAll(dir, 0755)
+		gs := executor.GraphState{
+			BeadID:    beadID,
+			AgentName: tc.agent,
+			TowerName: tc.tower,
+			Steps: map[string]executor.StepState{
+				"implement": {Status: "hooked", StartedAt: "t1"},
+			},
+		}
+		data, _ := json.MarshalIndent(gs, "", "  ")
+		os.WriteFile(filepath.Join(dir, "graph_state.json"), data, 0644)
+	}
+
+	// Resolve as tower "awell" — should only reset the awell agent's step.
+	resolveResetHookedSteps(beadID, "awell")
+
+	// Check awell agent was reset.
+	data, _ := os.ReadFile(filepath.Join(tmp, "runtime", agentAwell, "graph_state.json"))
+	var awellGS executor.GraphState
+	json.Unmarshal(data, &awellGS)
+	if awellGS.Steps["implement"].Status != "pending" {
+		t.Errorf("awell step status = %q, want pending", awellGS.Steps["implement"].Status)
+	}
+
+	// Check mlti agent was NOT reset.
+	data, _ = os.ReadFile(filepath.Join(tmp, "runtime", agentMlti, "graph_state.json"))
+	var mltiGS executor.GraphState
+	json.Unmarshal(data, &mltiGS)
+	if mltiGS.Steps["implement"].Status != "hooked" {
+		t.Errorf("mlti step status = %q, want hooked (unchanged)", mltiGS.Steps["implement"].Status)
 	}
 }
 

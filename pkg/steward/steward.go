@@ -638,13 +638,20 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string) int 
 
 		// Use a minimal struct to avoid importing pkg/executor.
 		var gs struct {
-			BeadID string `json:"bead_id"`
-			Steps  map[string]struct {
+			BeadID    string `json:"bead_id"`
+			TowerName string `json:"tower_name"`
+			Steps     map[string]struct {
 				Status  string            `json:"status"`
 				Outputs map[string]string `json:"outputs"`
 			} `json:"steps"`
 		}
 		if err := json.Unmarshal(data, &gs); err != nil {
+			continue
+		}
+
+		// Skip graph states belonging to a different tower.
+		// Empty TowerName means legacy (pre-migration) — sweep from any tower.
+		if gs.TowerName != "" && gs.TowerName != towerName {
 			continue
 		}
 

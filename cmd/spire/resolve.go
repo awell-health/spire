@@ -142,7 +142,11 @@ func resolveSourceBead(beadID, comment string, closeSource bool) error {
 		resolveCleanWorktrees(beadID)
 		fmt.Printf("  %s✓ Source bead closed. No re-summon needed.%s\n", green, reset)
 	} else {
-		resolveResetHookedSteps(beadID)
+		towerName := ""
+		if tc, err := config.ActiveTowerConfig(); err == nil && tc != nil {
+			towerName = tc.Name
+		}
+		resolveResetHookedSteps(beadID, towerName)
 	}
 
 	// Step 6: Summary
@@ -191,7 +195,8 @@ func resolveCleanWorktrees(beadID string) {
 }
 
 // resolveResetHookedSteps finds the graph state for a bead and resets any hooked steps to pending.
-func resolveResetHookedSteps(beadID string) {
+// It filters by towerName to avoid cross-tower interference.
+func resolveResetHookedSteps(beadID, towerName string) {
 	dir, err := config.Dir()
 	if err != nil {
 		fmt.Printf("  %s⚠ could not find config dir: %s%s\n", yellow, err, reset)
@@ -218,6 +223,11 @@ func resolveResetHookedSteps(beadID string) {
 			continue
 		}
 		if gs.BeadID != beadID {
+			continue
+		}
+		// Skip graph states belonging to a different tower.
+		// Empty TowerName means legacy (pre-migration) — resolve from any tower.
+		if gs.TowerName != "" && towerName != "" && gs.TowerName != towerName {
 			continue
 		}
 		found = true

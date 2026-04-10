@@ -829,3 +829,90 @@ func TestSweepHookedSteps_SkipsOpenDesign(t *testing.T) {
 		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
 	}
 }
+
+func TestSweepHookedSteps_TowerScoped(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	// Write two graph states: one for tower "awell", one for tower "mlti".
+	gsAwell := map[string]interface{}{
+		"bead_id":    "spi-awell1",
+		"tower_name": "awell",
+		"steps": map[string]interface{}{
+			"check.design-linked": map[string]interface{}{
+				"status":  "hooked",
+				"outputs": map[string]string{"design_ref": "spi-design-a"},
+			},
+		},
+	}
+	gsMlti := map[string]interface{}{
+		"bead_id":    "ml-mlti1",
+		"tower_name": "mlti",
+		"steps": map[string]interface{}{
+			"check.design-linked": map[string]interface{}{
+				"status":  "hooked",
+				"outputs": map[string]string{"design_ref": "ml-design-b"},
+			},
+		},
+	}
+	// Legacy state with no tower_name — should be swept by any tower.
+	gsLegacy := map[string]interface{}{
+		"bead_id": "spi-legacy1",
+		"steps": map[string]interface{}{
+			"check.design-linked": map[string]interface{}{
+				"status":  "hooked",
+				"outputs": map[string]string{"design_ref": "spi-design-legacy"},
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-awell1", gsAwell)
+	writeGraphState(t, cfgDir, "wizard-mlti1", gsMlti)
+	writeGraphState(t, cfgDir, "wizard-legacy1", gsLegacy)
+
+	// Mock store: all design beads are closed with content.
+	origGetBead := GetBeadFunc
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		return store.Bead{ID: id, Status: "closed", Description: "done"}, nil
+	}
+	defer func() { GetBeadFunc = origGetBead }()
+
+	origGetComments := GetCommentsFunc
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) {
+		return nil, nil
+	}
+	defer func() { GetCommentsFunc = origGetComments }()
+
+	// Sweep as tower "awell" — should process awell + legacy, skip mlti.
+	backend := &spawnTrackingBackend{}
+	count := SweepHookedSteps(false, backend, "awell")
+
+	if count != 2 {
+		t.Errorf("SweepHookedSteps returned %d, want 2", count)
+	}
+
+	// Verify only awell and legacy agents were spawned.
+	spawnedNames := make(map[string]bool)
+	for _, sc := range backend.spawns {
+		spawnedNames[sc.Name] = true
+	}
+	if !spawnedNames["wizard-awell1"] {
+		t.Error("expected wizard-awell1 to be spawned")
+	}
+	if !spawnedNames["wizard-legacy1"] {
+		t.Error("expected wizard-legacy1 to be spawned (legacy, no tower_name)")
+	}
+	if spawnedNames["wizard-mlti1"] {
+		t.Error("wizard-mlti1 should NOT have been spawned (wrong tower)")
+	}
+
+	// Verify mlti graph state is unchanged (still hooked).
+	data, _ := os.ReadFile(filepath.Join(cfgDir, "runtime", "wizard-mlti1", "graph_state.json"))
+	var mltiState map[string]interface{}
+	json.Unmarshal(data, &mltiState)
+	mltiSteps := mltiState["steps"].(map[string]interface{})
+	mltiStep := mltiSteps["check.design-linked"].(map[string]interface{})
+	if mltiStep["status"] != "hooked" {
+		t.Errorf("mlti step status = %q, want hooked (unchanged)", mltiStep["status"])
+	}
+}

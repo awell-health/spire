@@ -29,6 +29,7 @@ type GraphState struct {
 	LastActionAt  string            `json:"last_action_at"`
 	StagingBranch string            `json:"staging_branch,omitempty"`
 	BaseBranch    string            `json:"base_branch,omitempty"`
+	TowerName     string            `json:"tower_name,omitempty"`
 	RepoPath      string            `json:"repo_path,omitempty"`
 	AttemptBeadID string            `json:"attempt_bead_id,omitempty"`
 	StepBeadIDs   map[string]string `json:"step_bead_ids,omitempty"`
