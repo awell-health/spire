@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -872,8 +873,10 @@ func executorToRecoveryDeps(e *Executor) *recovery.Deps {
 	}
 }
 
-// queryBeadLearnings queries per-bead learnings from closed recovery beads.
-// Uses the existing bead-metadata approach via store.ListClosedRecoveryBeads.
+// queryBeadLearnings queries per-bead learnings from both bead metadata and the
+// SQL recovery_learnings table. The SQL table is canonical (human learnings from
+// `spire resolve` are written there only); bead metadata is the fallback for
+// older learnings written before the table existed.
 func queryBeadLearnings(sourceBeadID, failureClass string) []store.RecoveryLearning {
 	reusable := true
 	filter := store.RecoveryLookupFilter{
@@ -882,14 +885,22 @@ func queryBeadLearnings(sourceBeadID, failureClass string) []store.RecoveryLearn
 		Reusable:     &reusable,
 		Limit:        10,
 	}
-	learnings, err := store.ListClosedRecoveryBeads(filter)
+	metaLearnings, err := store.ListClosedRecoveryBeads(filter)
 	if err != nil {
-		return nil
+		metaLearnings = nil
 	}
-	return learnings
+
+	// Query SQL recovery_learnings table (canonical source for human learnings).
+	var sqlRows []store.RecoveryLearningRow
+	if sourceBeadID != "" && failureClass != "" {
+		sqlRows, _ = store.GetBeadLearningsAuto(sourceBeadID, failureClass)
+	}
+
+	return mergeLearnings(metaLearnings, sqlRows, 10)
 }
 
-// queryCrossBeadLearnings queries cross-bead learnings for a failure class.
+// queryCrossBeadLearnings queries cross-bead learnings from both bead metadata
+// and the SQL recovery_learnings table, merging and deduplicating the results.
 func queryCrossBeadLearnings(failureClass string, limit int) []store.RecoveryLearning {
 	reusable := true
 	filter := store.RecoveryLookupFilter{
@@ -897,11 +908,71 @@ func queryCrossBeadLearnings(failureClass string, limit int) []store.RecoveryLea
 		Reusable:     &reusable,
 		Limit:        limit,
 	}
-	learnings, err := store.ListClosedRecoveryBeads(filter)
+	metaLearnings, err := store.ListClosedRecoveryBeads(filter)
 	if err != nil {
-		return nil
+		metaLearnings = nil
 	}
-	return learnings
+
+	// Query SQL recovery_learnings table (canonical source for human learnings).
+	var sqlRows []store.RecoveryLearningRow
+	if failureClass != "" {
+		sqlRows, _ = store.GetCrossBeadLearningsAuto(failureClass, limit)
+	}
+
+	return mergeLearnings(metaLearnings, sqlRows, limit)
+}
+
+// sqlRowToLearning converts a SQL RecoveryLearningRow to the RecoveryLearning
+// read model used by the decide and relapse paths.
+func sqlRowToLearning(row store.RecoveryLearningRow) store.RecoveryLearning {
+	return store.RecoveryLearning{
+		BeadID:           row.RecoveryBead,
+		FailureClass:     row.FailureClass,
+		FailureSignature: row.FailureSig,
+		SourceBead:       row.SourceBead,
+		ResolutionKind:   row.ResolutionKind,
+		Reusable:         row.Reusable,
+		ResolvedAt:       row.ResolvedAt.UTC().Format(time.RFC3339),
+		LearningSummary:  row.LearningSummary,
+		Outcome:          row.Outcome,
+	}
+}
+
+// mergeLearnings combines bead-metadata learnings with SQL-sourced learnings,
+// deduplicating by recovery bead ID. SQL wins as the canonical source — if
+// both sources have a learning for the same recovery bead, the SQL version is kept.
+func mergeLearnings(metaLearnings []store.RecoveryLearning, sqlRows []store.RecoveryLearningRow, limit int) []store.RecoveryLearning {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	// Start with SQL learnings (canonical).
+	seen := make(map[string]bool, len(sqlRows))
+	var merged []store.RecoveryLearning
+	for _, row := range sqlRows {
+		l := sqlRowToLearning(row)
+		merged = append(merged, l)
+		seen[l.BeadID] = true
+	}
+
+	// Add metadata learnings not already covered by SQL.
+	for _, l := range metaLearnings {
+		if !seen[l.BeadID] {
+			merged = append(merged, l)
+			seen[l.BeadID] = true
+		}
+	}
+
+	// Sort by resolved_at descending.
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].ResolvedAt > merged[j].ResolvedAt
+	})
+
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+
+	return merged
 }
 
 // buildDecidePrompt constructs the Claude prompt for the decide step.

@@ -25,11 +25,37 @@ func defaultRelapseDeps(deps *Deps) relapseDeps {
 		addComment = deps.AddComment
 	}
 	return relapseDeps{
-		listLearnings:    store.ListClosedRecoveryBeads,
+		listLearnings:    mergedListLearnings,
 		setMetadata:      store.SetBeadMetadataMap,
 		updateOutcomeSQL: store.UpdateLearningOutcomeAuto,
 		addComment:       addComment,
 	}
+}
+
+// mergedListLearnings combines bead-metadata and SQL-sourced recovery learnings
+// so that relapse detection sees human-authored learnings from `spire resolve`.
+func mergedListLearnings(filter store.RecoveryLookupFilter) ([]store.RecoveryLearning, error) {
+	metaLearnings, err := store.ListClosedRecoveryBeads(filter)
+	if err != nil {
+		metaLearnings = nil
+	}
+
+	var sqlRows []store.RecoveryLearningRow
+	if filter.SourceBead != "" && filter.FailureClass != "" {
+		sqlRows, _ = store.GetBeadLearningsAuto(filter.SourceBead, filter.FailureClass)
+	} else if filter.FailureClass != "" {
+		limit := filter.Limit
+		if limit <= 0 {
+			limit = 5
+		}
+		sqlRows, _ = store.GetCrossBeadLearningsAuto(filter.FailureClass, limit)
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	return mergeLearnings(metaLearnings, sqlRows, limit), nil
 }
 
 // checkAndMarkRelapse detects when a prior "clean" recovery for the same source
