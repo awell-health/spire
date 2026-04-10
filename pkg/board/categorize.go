@@ -56,7 +56,15 @@ func skipBead(b BoardBead) bool {
 	if store.InternalTypes[b.Type] {
 		return true
 	}
+	// Recovery beads are not user work — they're internal tracking.
+	if b.Type == "recovery" {
+		return true
+	}
+	// Label-based fallback for beads not yet migrated to internal types.
 	for _, l := range b.Labels {
+		if l == "msg" || l == "attempt" || l == "review-round" || l == "workflow-step" {
+			return true
+		}
 		if l == "template" || strings.HasPrefix(l, "agent") {
 			return true
 		}
