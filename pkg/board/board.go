@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
@@ -93,8 +95,8 @@ type Opts struct {
 	// TermContentFn fetches content for the terminal pane overlay.
 	// Takes beadID and returns rendered content string.
 	TermContentFn func(beadID string) (string, error)
-	// SwitchTowerFn switches the active tower context. Injected by caller.
-	SwitchTowerFn func(towerName string) (string, error)
+	// TowerNames lists available tower names for the RootModel tower switcher.
+	TowerNames []string
 }
 
 // ViewMode identifies which tabbed view is active on the board.
@@ -305,4 +307,92 @@ func (c Columns) ToJSON(recoveryRefs map[string]*RecoveryRef) ColumnsJSON {
 		}
 	}
 	return cj
+}
+
+// RunBoard runs the multi-mode board TUI with RootModel wrapping all modes.
+// actionFn is called when the TUI exits with a pending action; it returns true to relaunch.
+func RunBoard(opts Opts, identity string, fetchAgents func() []LocalAgent, actionFn func(PendingAction, string) bool, inlineActionFn func(PendingAction, string) error, rejectDesignFn ...func(string, string) error) error {
+	var rejectFn func(string, string) error
+	if len(rejectDesignFn) > 0 {
+		rejectFn = rejectDesignFn[0]
+	}
+
+	beadsDir := resolveBeadsDirForBoard()
+
+	for {
+		boardMode, err := NewBoardMode(BoardModeOpts{
+			BeadsDir:       beadsDir,
+			Opts:           opts,
+			Identity:       identity,
+			FetchAgentsFn:  fetchAgents,
+			InlineActionFn: inlineActionFn,
+			RejectDesignFn: rejectFn,
+		})
+		if err != nil {
+			return err
+		}
+
+		agentsMode := NewAgentsMode(opts.TowerName)
+		workshopMode := NewWorkshopMode()
+		messagesMode := NewMessagesMode()
+		metricsMode := NewMetricsMode()
+
+		root := NewRootModel(RootOpts{
+			TowerName:  opts.TowerName,
+			Identity:   identity,
+			BeadsDir:   beadsDir,
+			Modes:      []Mode{boardMode, agentsMode, workshopMode, messagesMode, metricsMode},
+			TowerNames: opts.TowerNames,
+		})
+
+		p := tea.NewProgram(root, tea.WithAltScreen())
+		_, err = p.Run()
+		if err != nil {
+			return err
+		}
+
+		// Check RootModel for pending action (exit-relaunch pattern).
+		if pa := root.PendingAction(); pa != nil {
+			action := parsePendingAction(pa.Action)
+			beadID := ""
+			if len(pa.Args) > 0 {
+				beadID = pa.Args[0]
+			}
+			if action != ActionNone && actionFn(action, beadID) {
+				continue
+			}
+			break
+		}
+
+		// Also check BoardMode's own pending action for backward compatibility.
+		if boardMode.PendingAction != ActionNone {
+			if !actionFn(boardMode.PendingAction, boardMode.PendingBeadID) {
+				break
+			}
+			continue
+		}
+
+		break
+	}
+	return nil
+}
+
+// parsePendingAction converts a string action name to a PendingAction.
+func parsePendingAction(s string) PendingAction {
+	switch s {
+	case "focus":
+		return ActionFocus
+	case "logs":
+		return ActionLogs
+	case "summon":
+		return ActionSummon
+	case "claim":
+		return ActionClaim
+	case "resummon":
+		return ActionResummon
+	case "close":
+		return ActionClose
+	default:
+		return ActionNone
+	}
 }

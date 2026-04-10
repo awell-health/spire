@@ -9,7 +9,6 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
-	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -96,7 +95,7 @@ func cmdBoard(args []string) error {
 		opts.TowerName = tower.Name
 	}
 
-	// Inject tower list function for the T-key switcher.
+	// Inject tower list function for the T-key switcher (used by BoardMode internally).
 	opts.ListTowersFn = func() []board.TowerItem {
 		towers, err := config.ListTowerConfigs()
 		if err != nil {
@@ -113,16 +112,11 @@ func cmdBoard(args []string) error {
 		return items
 	}
 
-	// Inject tower switch function.
-	opts.SwitchTowerFn = func(towerName string) (string, error) {
-		os.Setenv("SPIRE_TOWER", towerName)
-		os.Unsetenv("BEADS_DIR")
-		store.Reset() // close existing store so next fetch re-opens against new tower
-		if d := resolveBeadsDir(); d != "" {
-			os.Setenv("BEADS_DIR", d)
+	// Resolve available tower names for the RootModel tower switcher.
+	if towers, err := config.ListTowerConfigs(); err == nil {
+		for _, t := range towers {
+			opts.TowerNames = append(opts.TowerNames, t.Name)
 		}
-		opts.TowerName = towerName
-		return towerName, nil
 	}
 
 	if flagJSON {
@@ -183,7 +177,7 @@ func cmdBoard(args []string) error {
 		return renderTraceForBoard(beadID)
 	}
 
-	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn, inlineActionFn, rejectDesignFn)
+	return board.RunBoard(opts, identity, fetchAgents, actionFn, inlineActionFn, rejectDesignFn)
 }
 
 // executeBoardAction runs the pending action on the raw terminal after the TUI exits.
