@@ -343,8 +343,20 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 	staleCount, shutdownCount := 0, 0
 
 	for _, b := range inProgress {
-		// Skip review-approved beads — they're parked waiting for merge
+		// Skip internal tracking beads — only top-level work beads need health checks.
 		if store.ContainsLabel(b, "review-approved") {
+			continue
+		}
+		if store.IsAttemptBead(b) || store.IsStepBead(b) || store.IsReviewRoundBead(b) {
+			continue
+		}
+		if store.ContainsLabel(b, "msg") {
+			continue
+		}
+		if store.HasLabel(b, "workflow:") != "" {
+			continue
+		}
+		if b.Parent != "" {
 			continue
 		}
 
