@@ -136,6 +136,11 @@ type Deps struct {
 	IsStepBead       func(b Bead) bool
 	IsReviewRoundBead func(b Bead) bool
 
+	// HardResetBead performs a full destructive reset: kills wizard, deletes
+	// worktree, branches, graph state, internal DAG beads, and sets bead to open.
+	// Wired from cmd/spire where the git/config/registry machinery lives.
+	HardResetBead func(beadID string) error
+
 	// Metadata
 	SetBeadMetadata func(id string, meta map[string]string) error
 

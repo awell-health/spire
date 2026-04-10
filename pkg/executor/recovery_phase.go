@@ -131,7 +131,10 @@ func ExecuteRecoveryAction(e *Executor, req recovery.RecoveryActionRequest) reco
 
 	switch req.Kind {
 	case recovery.ActionReset:
-		return doReset(e, req)
+		// Legacy "reset" action is now equivalent to "resummon" (soft relabel only).
+		return doResummon(e, req)
+	case recovery.ActionResetHard:
+		return doResetHard(e, req)
 	case recovery.ActionResetToStep:
 		return doResetToStep(e, req)
 	case recovery.ActionResummon:
@@ -151,38 +154,28 @@ func ExecuteRecoveryAction(e *Executor, req recovery.RecoveryActionRequest) reco
 	}
 }
 
-// doReset performs a hard reset on the source bead: clears interrupt labels,
-// removes needs-human, and sets status back to open. The bead is then available
-// for re-assignment by the steward.
-func doReset(e *Executor, req recovery.RecoveryActionRequest) recovery.RecoveryActionResult {
+// doResetHard performs a full destructive reset on the source bead via the
+// injected HardResetBead callback: kills wizard process, deletes worktree,
+// branches, graph state, internal DAG beads, strips labels, and sets the bead
+// to open. The callback lives in cmd/spire because it needs registry and git
+// access that pkg/executor cannot import.
+func doResetHard(e *Executor, req recovery.RecoveryActionRequest) recovery.RecoveryActionResult {
 	if req.SourceBeadID == "" {
-		return failResult(req.Kind, "source_bead_id is required for reset")
+		return failResult(req.Kind, "source_bead_id is required for reset-hard")
+	}
+	if e.deps.HardResetBead == nil {
+		return failResult(req.Kind, "HardResetBead dep not wired")
+	}
+	if err := e.deps.HardResetBead(req.SourceBeadID); err != nil {
+		return failResult(req.Kind, fmt.Sprintf("hard reset %s: %v", req.SourceBeadID, err))
 	}
 
-	bead, err := e.deps.GetBead(req.SourceBeadID)
-	if err != nil {
-		return failResult(req.Kind, fmt.Sprintf("get source bead: %v", err))
-	}
-
-	// Remove interrupt and needs-human labels.
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "interrupted:") {
-			_ = e.deps.RemoveLabel(req.SourceBeadID, l)
-		}
-	}
-	_ = e.deps.RemoveLabel(req.SourceBeadID, "needs-human")
-
-	// Set source bead back to open.
-	if err := e.deps.UpdateBead(req.SourceBeadID, map[string]interface{}{"status": "open"}); err != nil {
-		return failResult(req.Kind, fmt.Sprintf("update source bead status: %v", err))
-	}
-
-	e.log("recovery: reset %s to open", req.SourceBeadID)
+	e.log("recovery: reset-hard %s", req.SourceBeadID)
 
 	return recovery.RecoveryActionResult{
 		Kind:           req.Kind,
 		Success:        true,
-		Output:         fmt.Sprintf("reset %s to open", req.SourceBeadID),
+		Output:         fmt.Sprintf("hard reset %s: worktree, branches, graph state, internal beads deleted", req.SourceBeadID),
 		ResolutionKind: "reset-hard",
 		Metadata: map[string]string{
 			recovery.KeyResolutionKind: "reset-hard",
@@ -1027,7 +1020,7 @@ func buildDecidePrompt(cc CollectContextResult) string {
 
 	b.WriteString("## Instructions\n")
 	b.WriteString("Choose a recovery action. Output ONLY a JSON object with these fields:\n")
-	b.WriteString("- `chosen_action`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\"\n")
+	b.WriteString("- `chosen_action`: one of \"resummon\", \"reset-hard\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\"\n")
 	b.WriteString("- `confidence`: 0.0 to 1.0 — how confident you are this action will resolve the issue\n")
 	b.WriteString("- `reasoning`: brief explanation of why you chose this action\n")
 	b.WriteString("- `needs_human`: set to true if confidence < 0.7\n")
@@ -1047,7 +1040,12 @@ func buildDecidePrompt(cc CollectContextResult) string {
 	b.WriteString("If prior learnings show outcome=\"relapsed\" for an action on this bead, do NOT choose that action again unless you can explain from the log why this time is different.\n")
 	b.WriteString("A \"relapsed\" outcome means a prior recovery with that action appeared to succeed but the bead failed again with the same failure class within 24 hours.\n\n")
 
-	b.WriteString("\"do_nothing\" is valid if the source bead already appears clean.\n\n")
+	b.WriteString("### Action Guide\n")
+	b.WriteString("- `resummon`: Soft reset — clears interrupt labels, sets bead to open. Wizard resumes on the SAME branch with existing code. Use for transient/infrastructure failures.\n")
+	b.WriteString("- `reset-hard`: Destructive reset — kills wizard, deletes worktree, branches, graph state, and internal DAG beads. Fresh start from scratch. Use when code is fundamentally broken and resuming would repeat the same mistakes.\n")
+	b.WriteString("- `reset_to_step`: Rewinds to a specific step. Use for targeted re-execution of a single phase.\n")
+	b.WriteString("- `escalate`: Marks for human intervention. Use when confidence is low or the problem is outside agent capability.\n")
+	b.WriteString("- `do_nothing`: Valid if the source bead already appears clean.\n\n")
 	b.WriteString("Output ONLY the JSON object, no markdown fences, no explanation outside the JSON.\n")
 
 	return b.String()

@@ -200,6 +200,9 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		IsStepBead:        isStepBead,
 		IsReviewRoundBead: isReviewRoundBead,
 
+		// Hard reset (destructive: kills wizard, deletes worktree/branches/state/beads)
+		HardResetBead: hardResetBeadCore,
+
 		// Metadata
 		SetBeadMetadata: store.SetBeadMetadataMap,
 

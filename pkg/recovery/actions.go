@@ -6,7 +6,8 @@ package recovery
 type RecoveryActionKind string
 
 const (
-	ActionReset              RecoveryActionKind = "reset"
+	ActionReset              RecoveryActionKind = "reset"     // Deprecated: use ActionResummon. Kept for formula compat; dispatches to resummon.
+	ActionResetHard          RecoveryActionKind = "reset-hard"
 	ActionResetToStep        RecoveryActionKind = "reset-to-step"
 	ActionResummon           RecoveryActionKind = "resummon"
 	ActionVerifyClean        RecoveryActionKind = "verify-clean"
@@ -24,6 +25,7 @@ const (
 // Any action not in this set is rejected at dispatch time.
 var KnownActions = map[RecoveryActionKind]bool{
 	ActionReset:              true,
+	ActionResetHard:          true,
 	ActionResetToStep:        true,
 	ActionResummon:           true,
 	ActionVerifyClean:        true,

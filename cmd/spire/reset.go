@@ -160,31 +160,73 @@ func cmdReset(args []string) error {
 // detection for the same v2 phase assumptions that were fixed here. See spi-xig2d
 // for the full audit of every v2 assumption in those files.
 
-// resetV3 performs a full reset for v3 (step-graph) formulas.
-// Mirrors the manual reset procedure: clear graph state, clean git artifacts,
-// remove internal execution artifacts on hard reset, reopen subtask children,
-// and reset the epic bead.
-func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
-	// --- 1. Remove v3 graph state files (parent + nested) ---
-	removeGraphStateFiles(wizardName)
-
-	// Also remove v2 state.json if it exists (belt and suspenders).
-	statePath := executorStatePath(wizardName)
-	if err := os.Remove(statePath); err == nil {
-		fmt.Printf("  %s✗ v2 state file also removed%s\n", dim, reset)
+// hardResetBeadCore performs the destructive core of a hard reset: kills wizard,
+// removes graph state, deletes internal DAG beads, strips labels, sets bead to
+// open, and cleans up worktrees/branches. Does NOT close recovery beads (the
+// caller may itself be a recovery bead) and does NOT re-summon (the caller
+// controls what happens after reset).
+//
+// This function is exposed as the executor.Deps.HardResetBead callback so the
+// recovery executor can invoke a full hard reset from within a recovery formula.
+func hardResetBeadCore(beadID string) error {
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
 	}
 
-	// --- 2. Process children: close internal DAG beads, reopen subtask children ---
+	// --- 1. Kill wizard process if alive + remove registry entry ---
+	reg := loadWizardRegistry()
+	var wizardName string
+	var worktreePath string
+	for i := range reg.Wizards {
+		if reg.Wizards[i].BeadID == beadID {
+			wiz := &reg.Wizards[i]
+			wizardName = wiz.Name
+			worktreePath = wiz.Worktree
+
+			if wiz.PID > 0 && processAlive(wiz.PID) {
+				if proc, err := os.FindProcess(wiz.PID); err == nil {
+					proc.Signal(syscall.SIGTERM)
+					deadline := time.Now().Add(5 * time.Second)
+					for time.Now().Before(deadline) {
+						time.Sleep(200 * time.Millisecond)
+						if !processAlive(wiz.PID) {
+							break
+						}
+					}
+					if processAlive(wiz.PID) {
+						proc.Signal(syscall.SIGKILL)
+					}
+				}
+			}
+
+			var remaining []localWizard
+			for _, w := range reg.Wizards {
+				if w.BeadID != beadID {
+					remaining = append(remaining, w)
+				}
+			}
+			reg.Wizards = remaining
+			saveWizardRegistry(reg)
+			break
+		}
+	}
+	if wizardName == "" {
+		wizardName = "wizard-" + beadID
+	}
+
+	// --- 2. Remove graph state files (v3 parent + nested + v2) ---
+	removeGraphStateFiles(wizardName)
+	statePath := executorStatePath(wizardName)
+	os.Remove(statePath) // v2 belt-and-suspenders
+
+	// --- 3. Delete internal DAG beads (with protected-set filtering) ---
 	children, err := storeGetChildren(beadID)
 	if err != nil {
 		return fmt.Errorf("get children for %s: %w", beadID, err)
 	}
 
-	// Build set of protected bead IDs — never touch these during reset.
-	// Includes design beads (discovered-from), recovery beads, and alert beads.
 	protectedIDs := buildProtectedBeadIDs(beadID, children)
 
-	// Filter out protected children before processing.
 	var processable []Bead
 	for _, child := range children {
 		if !protectedIDs[child.ID] {
@@ -192,21 +234,15 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		}
 	}
 
-	var counts internalDAGCleanupCounts
-	if hard {
-		counts = deleteInternalDAGBeadsRecursive(processable)
-	} else {
-		counts = cleanupInternalDAGChildren(processable, false)
-	}
+	counts := deleteInternalDAGBeadsRecursive(processable)
 	logInternalDAGCleanup(counts)
-	reopenedChildren := 0
 
+	// Reopen subtask children so the epic can re-dispatch.
+	reopenedChildren := 0
 	for _, child := range processable {
 		if isInternalDAGBead(child) {
 			continue
 		}
-
-		// Subtask children (task/feature/etc.): reopen them so the epic can re-dispatch.
 		if child.Status != "open" {
 			if err := storeUpdateBead(child.ID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
 				fmt.Printf("  %s(note: could not reopen subtask %s: %s)%s\n", dim, child.ID, err, reset)
@@ -219,7 +255,7 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		fmt.Printf("  %s↺ reopened %d subtask children%s\n", yellow, reopenedChildren, reset)
 	}
 
-	// --- 3. Strip labels from the bead ---
+	// --- 4. Strip labels ---
 	bead, err := storeGetBead(beadID)
 	if err != nil {
 		return fmt.Errorf("get bead %s: %w", beadID, err)
@@ -236,26 +272,104 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		}
 	}
 
-	// --- 4. Reset bead status to open (not in_progress — summon will claim it) ---
+	// --- 5. Set bead status to open, clear assignee ---
 	if err := storeUpdateBead(beadID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
 		fmt.Printf("  %s(note: could not set %s to open: %s)%s\n", dim, beadID, err, reset)
 	} else {
 		fmt.Printf("  %s↺ %s set to open%s\n", yellow, beadID, reset)
 	}
 
-	// --- 5. Close related recovery beads ---
+	// --- 6. Git cleanup: worktrees + branches ---
+	resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName)
+
+	return nil
+}
+
+// resetV3 performs a full reset for v3 (step-graph) formulas.
+// Delegates destructive work to hardResetBeadCore when hard=true, then
+// handles recovery-bead closure and re-summoning.
+func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
+	if hard {
+		if err := hardResetBeadCore(beadID); err != nil {
+			return err
+		}
+	} else {
+		// --- Soft reset path (no worktree/branch deletion) ---
+
+		// 1. Remove v3 graph state files (parent + nested).
+		removeGraphStateFiles(wizardName)
+		statePath := executorStatePath(wizardName)
+		if err := os.Remove(statePath); err == nil {
+			fmt.Printf("  %s✗ v2 state file also removed%s\n", dim, reset)
+		}
+
+		// 2. Process children: close internal DAG beads, reopen subtask children.
+		children, err := storeGetChildren(beadID)
+		if err != nil {
+			return fmt.Errorf("get children for %s: %w", beadID, err)
+		}
+
+		protectedIDs := buildProtectedBeadIDs(beadID, children)
+		var processable []Bead
+		for _, child := range children {
+			if !protectedIDs[child.ID] {
+				processable = append(processable, child)
+			}
+		}
+
+		counts := cleanupInternalDAGChildren(processable, false)
+		logInternalDAGCleanup(counts)
+		reopenedChildren := 0
+
+		for _, child := range processable {
+			if isInternalDAGBead(child) {
+				continue
+			}
+			if child.Status != "open" {
+				if err := storeUpdateBead(child.ID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
+					fmt.Printf("  %s(note: could not reopen subtask %s: %s)%s\n", dim, child.ID, err, reset)
+				} else {
+					reopenedChildren++
+				}
+			}
+		}
+		if reopenedChildren > 0 {
+			fmt.Printf("  %s↺ reopened %d subtask children%s\n", yellow, reopenedChildren, reset)
+		}
+
+		// 3. Strip labels from the bead.
+		bead, err := storeGetBead(beadID)
+		if err != nil {
+			return fmt.Errorf("get bead %s: %w", beadID, err)
+		}
+		for _, l := range bead.Labels {
+			if strings.HasPrefix(l, "feat-branch:") ||
+				strings.HasPrefix(l, "interrupted:") ||
+				l == "needs-human" {
+				if err := storeRemoveLabel(beadID, l); err != nil {
+					fmt.Printf("  %s(note: could not remove %s: %s)%s\n", dim, l, err, reset)
+				} else {
+					fmt.Printf("  %s✓ cleared %s%s\n", green, l, reset)
+				}
+			}
+		}
+
+		// 4. Reset bead status to open.
+		if err := storeUpdateBead(beadID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
+			fmt.Printf("  %s(note: could not set %s to open: %s)%s\n", dim, beadID, err, reset)
+		} else {
+			fmt.Printf("  %s↺ %s set to open%s\n", yellow, beadID, reset)
+		}
+	}
+
+	// --- Close related recovery beads (both soft and hard paths) ---
 	if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "reset (v3)"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
 	}
 
-	// --- 6. Git cleanup (hard reset: worktrees + branches) ---
-	if hard {
-		resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName)
-	}
-
 	fmt.Printf("%s reset (v3)\n", beadID)
 
-	// --- 6. Re-summon ---
+	// --- Re-summon ---
 	fmt.Printf("  %s↑ re-summoning wizard for %s%s\n", cyan, beadID, reset)
 	if err := cmdSummon([]string{"1", "--targets", beadID}); err != nil {
 		return fmt.Errorf("re-summon %s: %w", beadID, err)
