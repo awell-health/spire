@@ -412,11 +412,12 @@ func actionHumanApprove(e *Executor, stepName string, step StepConfig, state *Gr
 	hasAwaitingApproval := e.deps.ContainsLabel(bead, "awaiting-approval")
 	hasNeedsHuman := e.deps.ContainsLabel(bead, "needs-human")
 
-	// Case 1: awaiting-approval gone → approval received, gate passed.
-	// This covers both the clean path (spire approve removes both labels)
-	// and the edge case where only awaiting-approval was removed.
+	// Case 1: needs-human present but awaiting-approval gone.
+	// This is an INCONSISTENT STATE — spire approve removes both labels
+	// atomically, so this means someone manually removed only awaiting-approval.
+	// Treat as approved to avoid blocking the graph, but log a warning.
 	if !hasAwaitingApproval && hasNeedsHuman {
-		// Inconsistent state — treat as approved (spire approve removes both).
+		e.log("warning: human.approve inconsistent labels for %s: needs-human present but awaiting-approval missing — treating as approved", e.beadID)
 		return ActionResult{Outputs: map[string]string{"status": "approved"}}
 	}
 	if !hasAwaitingApproval && !hasNeedsHuman {

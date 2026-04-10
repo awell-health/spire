@@ -916,3 +916,180 @@ func TestSweepHookedSteps_TowerScoped(t *testing.T) {
 		t.Errorf("mlti step status = %q, want hooked (unchanged)", mltiStep["status"])
 	}
 }
+
+// --- SweepHookedSteps human.approve tests ---
+
+func TestSweepHookedSteps_HumanApprove_LabelsPresent_Skips(t *testing.T) {
+	// When awaiting-approval and needs-human labels are still present,
+	// the sweep should NOT resolve the hooked step.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	// Graph state with a hooked step that has NO design_ref (human.approve path).
+	gs := map[string]interface{}{
+		"bead_id": "spi-approve1",
+		"steps": map[string]interface{}{
+			"approve": map[string]interface{}{
+				"status":  "hooked",
+				"outputs": map[string]string{},
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-approve1", gs)
+
+	// Mock store: bead still has both approval labels.
+	origGetBead := GetBeadFunc
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		if id == "spi-approve1" {
+			return store.Bead{
+				ID:     "spi-approve1",
+				Status: "in_progress",
+				Labels: []string{"needs-human", "awaiting-approval"},
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	defer func() { GetBeadFunc = origGetBead }()
+
+	backend := &spawnTrackingBackend{}
+	count := SweepHookedSteps(false, backend, "test-tower")
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0 (labels still present)", count)
+	}
+
+	// Verify graph state is unchanged (still hooked).
+	data, err := os.ReadFile(filepath.Join(cfgDir, "runtime", "wizard-approve1", "graph_state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unchanged map[string]interface{}
+	json.Unmarshal(data, &unchanged)
+	stepsMap := unchanged["steps"].(map[string]interface{})
+	step := stepsMap["approve"].(map[string]interface{})
+	if step["status"] != "hooked" {
+		t.Errorf("step status = %q, want hooked (unchanged)", step["status"])
+	}
+
+	// Verify no spawn.
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
+	}
+}
+
+func TestSweepHookedSteps_HumanApprove_LabelsCleared_Resolves(t *testing.T) {
+	// When both awaiting-approval and needs-human labels have been cleared
+	// (by spire approve), the sweep should resolve the hooked step and re-summon.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	// Graph state with a hooked step that has NO design_ref (human.approve path).
+	gs := map[string]interface{}{
+		"bead_id": "spi-approve2",
+		"steps": map[string]interface{}{
+			"approve": map[string]interface{}{
+				"status":  "hooked",
+				"outputs": map[string]string{},
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-approve2", gs)
+
+	// Mock store: bead has labels cleared (spire approve ran).
+	origGetBead := GetBeadFunc
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		if id == "spi-approve2" {
+			return store.Bead{
+				ID:     "spi-approve2",
+				Status: "in_progress",
+				Labels: []string{}, // both labels removed
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	defer func() { GetBeadFunc = origGetBead }()
+
+	backend := &spawnTrackingBackend{}
+	count := SweepHookedSteps(false, backend, "test-tower")
+
+	if count != 1 {
+		t.Errorf("SweepHookedSteps returned %d, want 1", count)
+	}
+
+	// Verify graph state was updated (step reset to pending).
+	data, err := os.ReadFile(filepath.Join(cfgDir, "runtime", "wizard-approve2", "graph_state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	json.Unmarshal(data, &updated)
+	stepsMap := updated["steps"].(map[string]interface{})
+	step := stepsMap["approve"].(map[string]interface{})
+	if step["status"] != "pending" {
+		t.Errorf("step status = %q, want pending", step["status"])
+	}
+	if _, hasOutputs := step["outputs"]; hasOutputs {
+		t.Error("step outputs should have been deleted")
+	}
+
+	// Verify backend.Spawn was called correctly.
+	if len(backend.spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1", len(backend.spawns))
+	}
+	sc := backend.spawns[0]
+	if sc.Name != "wizard-approve2" {
+		t.Errorf("spawn name = %q, want wizard-approve2", sc.Name)
+	}
+	if sc.BeadID != "spi-approve2" {
+		t.Errorf("spawn bead = %q, want spi-approve2", sc.BeadID)
+	}
+	if sc.Role != agent.RoleApprentice {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleApprentice)
+	}
+}
+
+func TestSweepHookedSteps_HumanApprove_OnlyNeedsHumanPresent_Skips(t *testing.T) {
+	// When needs-human is still present (even if awaiting-approval is gone),
+	// the sweep should skip — at least one label remains.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	gs := map[string]interface{}{
+		"bead_id": "spi-approve3",
+		"steps": map[string]interface{}{
+			"approve": map[string]interface{}{
+				"status":  "hooked",
+				"outputs": map[string]string{},
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-approve3", gs)
+
+	// Mock store: bead still has needs-human but awaiting-approval is gone.
+	origGetBead := GetBeadFunc
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		if id == "spi-approve3" {
+			return store.Bead{
+				ID:     "spi-approve3",
+				Status: "in_progress",
+				Labels: []string{"needs-human"}, // only needs-human remains
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	defer func() { GetBeadFunc = origGetBead }()
+
+	backend := &spawnTrackingBackend{}
+	count := SweepHookedSteps(false, backend, "test-tower")
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0 (needs-human still present)", count)
+	}
+
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
+	}
+}
