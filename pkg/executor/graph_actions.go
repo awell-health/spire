@@ -567,8 +567,8 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 	testStr := step.With["test"]
 
 	// Parse conflict_max_turns for the resolver turn budget.
-	// Default to 5 turns so conflict resolution is bounded.
-	conflictMaxTurns := 5
+	// Default to 25 turns — complex rebases need room to read files and resolve.
+	conflictMaxTurns := 25
 	if raw := step.With["conflict_max_turns"]; raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil {
 			conflictMaxTurns = v
