@@ -65,6 +65,12 @@ type AgentRun struct {
 	GoldenRun          bool   `json:"golden_run,omitempty"`
 	TimingBucket       string `json:"timing_bucket,omitempty"`
 	SkipReason         string `json:"skip_reason,omitempty"`
+	FailureClass       string `json:"failure_class,omitempty"`      // timeout, build_fail, test_fail, review_reject, merge_conflict, escalation, unknown
+	AttemptNumber      int    `json:"attempt_number,omitempty"`     // which attempt (from StepState.CompletedCount)
+	RecoveryBeadID     string `json:"recovery_bead_id,omitempty"`   // link to recovery bead if this run is a recovery
+	ReadCalls          int    `json:"read_calls,omitempty"`         // count of Read tool invocations
+	EditCalls          int    `json:"edit_calls,omitempty"`         // count of Edit + Write tool invocations
+	ToolCallsJSON      string `json:"tool_calls_json,omitempty"`    // full {"Read": 12, "Edit": 3, ...} blob
 	StartedAt          string `json:"started_at"`
 	CompletedAt        string `json:"completed_at,omitempty"`
 }
@@ -249,6 +255,30 @@ func Record(run AgentRun) (string, error) {
 	if run.SkipReason != "" {
 		cols = append(cols, "skip_reason")
 		vals = append(vals, esc(run.SkipReason))
+	}
+	if run.FailureClass != "" {
+		cols = append(cols, "failure_class")
+		vals = append(vals, esc(run.FailureClass))
+	}
+	if run.AttemptNumber > 0 {
+		cols = append(cols, "attempt_number")
+		vals = append(vals, itoa(run.AttemptNumber))
+	}
+	if run.RecoveryBeadID != "" {
+		cols = append(cols, "recovery_bead_id")
+		vals = append(vals, esc(run.RecoveryBeadID))
+	}
+	if run.ReadCalls > 0 {
+		cols = append(cols, "read_calls")
+		vals = append(vals, itoa(run.ReadCalls))
+	}
+	if run.EditCalls > 0 {
+		cols = append(cols, "edit_calls")
+		vals = append(vals, itoa(run.EditCalls))
+	}
+	if run.ToolCallsJSON != "" {
+		cols = append(cols, "tool_calls_json")
+		vals = append(vals, esc(run.ToolCallsJSON))
 	}
 	if run.CompletedAt != "" {
 		cols = append(cols, "completed_at")

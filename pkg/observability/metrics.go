@@ -1240,3 +1240,257 @@ func avg(vals []float64) float64 {
 	}
 	return sum / float64(len(vals))
 }
+
+// --- Stream 1: Failure and retry visibility ---
+
+// RetryRow holds per-phase retry counts.
+type RetryRow struct {
+	Phase        string `json:"phase"`
+	TotalRuns    int    `json:"total_runs"`
+	Retries      int    `json:"retries"`       // runs with attempt_number > 1
+	MaxAttempts  int    `json:"max_attempts"`
+}
+
+// MetricsRetry returns steps with retries (attempt_number > 1), grouped by phase.
+func MetricsRetry() ([]RetryRow, error) {
+	query := `SELECT
+		phase,
+		COUNT(*) as total_runs,
+		SUM(CASE WHEN attempt_number > 1 THEN 1 ELSE 0 END) as retries,
+		MAX(COALESCE(attempt_number, 1)) as max_attempts
+	FROM agent_runs
+	WHERE phase IS NOT NULL
+		AND started_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+	GROUP BY phase
+	HAVING retries > 0
+	ORDER BY retries DESC`
+
+	rows, err := QueryJSON(query)
+	if err != nil {
+		return nil, err
+	}
+	var result []RetryRow
+	for _, r := range rows {
+		result = append(result, RetryRow{
+			Phase:       ToString(r["phase"]),
+			TotalRuns:   ToInt(r["total_runs"]),
+			Retries:     ToInt(r["retries"]),
+			MaxAttempts: ToInt(r["max_attempts"]),
+		})
+	}
+	return result, nil
+}
+
+// FailureBreakdownRow holds per-failure-class counts.
+type FailureBreakdownRow struct {
+	FailureClass string `json:"failure_class"`
+	Count        int    `json:"count"`
+	Phase        string `json:"phase"`
+}
+
+// MetricsFailureBreakdown returns failure counts grouped by failure_class and phase.
+func MetricsFailureBreakdown() ([]FailureBreakdownRow, error) {
+	query := `SELECT
+		COALESCE(failure_class, 'none') as failure_class,
+		phase,
+		COUNT(*) as cnt
+	FROM agent_runs
+	WHERE failure_class IS NOT NULL AND failure_class != ''
+		AND started_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+	GROUP BY failure_class, phase
+	ORDER BY cnt DESC`
+
+	rows, err := QueryJSON(query)
+	if err != nil {
+		return nil, err
+	}
+	var result []FailureBreakdownRow
+	for _, r := range rows {
+		result = append(result, FailureBreakdownRow{
+			FailureClass: ToString(r["failure_class"]),
+			Phase:        ToString(r["phase"]),
+			Count:        ToInt(r["cnt"]),
+		})
+	}
+	return result, nil
+}
+
+// --- Stream 2: Step duration surfacing ---
+
+// StepDurationRow holds per-step timing for a bead's graph execution.
+type StepDurationRow struct {
+	Step       string  `json:"step"`
+	Status     string  `json:"status"`
+	DurationS  float64 `json:"duration_seconds"`
+	Attempts   int     `json:"attempts"`
+}
+
+// MetricsStepDurations reads graph state JSON for a bead and extracts per-step
+// StartedAt/CompletedAt to return a duration breakdown. This doesn't need the
+// agent_runs table — the data lives in the graph state on disk.
+func MetricsStepDurations(beadID string) ([]StepDurationRow, error) {
+	// Query agent_runs for per-step records with timing data.
+	query := fmt.Sprintf(`SELECT
+		phase as step,
+		result as status,
+		COALESCE(duration_seconds, 0) as duration_s,
+		COALESCE(attempt_number, 1) as attempts
+	FROM agent_runs
+	WHERE (bead_id = '%s' OR epic_id = '%s')
+		AND phase IS NOT NULL
+	ORDER BY started_at ASC`,
+		SqlEsc(beadID), SqlEsc(beadID))
+
+	rows, err := QueryJSON(query)
+	if err != nil {
+		return nil, err
+	}
+	var result []StepDurationRow
+	for _, r := range rows {
+		result = append(result, StepDurationRow{
+			Step:      ToString(r["step"]),
+			Status:    ToString(r["status"]),
+			DurationS: ToFloat(r["duration_s"]),
+			Attempts:  ToInt(r["attempts"]),
+		})
+	}
+	return result, nil
+}
+
+// --- Stream 3: Tool call tracking ---
+
+// ToolUsageRow holds average tool calls per phase.
+type ToolUsageRow struct {
+	Phase       string  `json:"phase"`
+	AvgReads    float64 `json:"avg_reads"`
+	AvgEdits    float64 `json:"avg_edits"`
+	TotalRuns   int     `json:"total_runs"`
+	MaxReads    int     `json:"max_reads"`
+}
+
+// MetricsToolUsage returns average read/edit tool calls per phase for the last 30 days.
+func MetricsToolUsage() ([]ToolUsageRow, error) {
+	query := `SELECT
+		phase,
+		AVG(COALESCE(read_calls, 0)) as avg_reads,
+		AVG(COALESCE(edit_calls, 0)) as avg_edits,
+		COUNT(*) as total_runs,
+		MAX(COALESCE(read_calls, 0)) as max_reads
+	FROM agent_runs
+	WHERE phase IS NOT NULL
+		AND (read_calls IS NOT NULL OR edit_calls IS NOT NULL)
+		AND started_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+	GROUP BY phase
+	ORDER BY avg_reads DESC`
+
+	rows, err := QueryJSON(query)
+	if err != nil {
+		return nil, err
+	}
+	var result []ToolUsageRow
+	for _, r := range rows {
+		result = append(result, ToolUsageRow{
+			Phase:     ToString(r["phase"]),
+			AvgReads:  ToFloat(r["avg_reads"]),
+			AvgEdits:  ToFloat(r["avg_edits"]),
+			TotalRuns: ToInt(r["total_runs"]),
+			MaxReads:  ToInt(r["max_reads"]),
+		})
+	}
+	return result, nil
+}
+
+// ThrashingRun identifies runs with abnormally high read counts.
+type ThrashingRun struct {
+	RunID     string `json:"run_id"`
+	BeadID    string `json:"bead_id"`
+	Phase     string `json:"phase"`
+	ReadCalls int    `json:"read_calls"`
+	EditCalls int    `json:"edit_calls"`
+}
+
+// MetricsThrashingDetection flags runs where read_calls > 100 (potential thrashing).
+func MetricsThrashingDetection() ([]ThrashingRun, error) {
+	query := `SELECT
+		id, bead_id, phase,
+		COALESCE(read_calls, 0) as read_calls,
+		COALESCE(edit_calls, 0) as edit_calls
+	FROM agent_runs
+	WHERE read_calls > 100
+		AND started_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+	ORDER BY read_calls DESC
+	LIMIT 20`
+
+	rows, err := QueryJSON(query)
+	if err != nil {
+		return nil, err
+	}
+	var result []ThrashingRun
+	for _, r := range rows {
+		result = append(result, ThrashingRun{
+			RunID:     ToString(r["id"]),
+			BeadID:    ToString(r["bead_id"]),
+			Phase:     ToString(r["phase"]),
+			ReadCalls: ToInt(r["read_calls"]),
+			EditCalls: ToInt(r["edit_calls"]),
+		})
+	}
+	return result, nil
+}
+
+// --- Stream 4: Bug causality ---
+
+// BugCausalityRow holds a source bead and its bug count.
+type BugCausalityRow struct {
+	SourceBeadID string `json:"source_bead_id"`
+	SourceTitle  string `json:"source_title"`
+	BugCount     int    `json:"bug_count"`
+	FormulaName  string `json:"formula_name,omitempty"`
+}
+
+// MetricsBugCausality returns top beads that produced the most bugs (via caused-by deps)
+// in the last N days. Uses the store API to query dep relationships.
+func MetricsBugCausality(days int) ([]BugCausalityRow, error) {
+	if days <= 0 {
+		days = 30
+	}
+	// Find recent bug beads.
+	bugFilter := store.BugFilter("bug", days)
+	bugs, err := store.ListBeads(bugFilter)
+	if err != nil {
+		return nil, fmt.Errorf("list bug beads: %w", err)
+	}
+
+	// For each bug, look up its caused-by deps.
+	sourceCount := make(map[string]int)
+	sourceTitles := make(map[string]string)
+	for _, bug := range bugs {
+		causers, err := store.GetCausedByDeps(bug.ID)
+		if err != nil {
+			continue // skip on error
+		}
+		for _, causer := range causers {
+			sourceCount[causer.ID]++
+			if _, ok := sourceTitles[causer.ID]; !ok {
+				sourceTitles[causer.ID] = causer.Title
+			}
+		}
+	}
+
+	// Build result sorted by bug count descending.
+	var result []BugCausalityRow
+	for id, count := range sourceCount {
+		result = append(result, BugCausalityRow{
+			SourceBeadID: id,
+			SourceTitle:  sourceTitles[id],
+			BugCount:     count,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].BugCount > result[j].BugCount
+	})
+	if len(result) > 5 {
+		result = result[:5]
+	}
+	return result, nil
+}

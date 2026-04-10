@@ -21,32 +21,61 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-// ClaudeMetrics captures token usage and cost from a Claude CLI invocation.
+// ClaudeMetrics captures token usage, cost, and tool call counts from a Claude CLI invocation.
 type ClaudeMetrics struct {
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
 	Turns        int
 	CostUSD      float64
+	ToolCalls    map[string]int // tool_name → invocation count (e.g. {"Read": 12, "Edit": 3})
 }
 
 // Add returns the sum of two ClaudeMetrics values.
 func (m ClaudeMetrics) Add(other ClaudeMetrics) ClaudeMetrics {
-	return ClaudeMetrics{
+	merged := ClaudeMetrics{
 		InputTokens:  m.InputTokens + other.InputTokens,
 		OutputTokens: m.OutputTokens + other.OutputTokens,
 		TotalTokens:  m.TotalTokens + other.TotalTokens,
 		Turns:        m.Turns + other.Turns,
 		CostUSD:      m.CostUSD + other.CostUSD,
 	}
+	// Merge tool call maps.
+	if len(m.ToolCalls) > 0 || len(other.ToolCalls) > 0 {
+		merged.ToolCalls = make(map[string]int)
+		for k, v := range m.ToolCalls {
+			merged.ToolCalls[k] += v
+		}
+		for k, v := range other.ToolCalls {
+			merged.ToolCalls[k] += v
+		}
+	}
+	return merged
 }
 
 // parseClaudeResultJSON scans Claude CLI JSON output for the result event
-// and extracts the text result and usage metrics. Returns zero metrics on
-// any parse failure (best effort, never errors).
+// and extracts the text result, usage metrics, and tool call counts.
+// Returns zero metrics on any parse failure (best effort, never errors).
 func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetrics) {
 	lines := bytes.Split(output, []byte("\n"))
-	// Scan in reverse — the result event is typically the last line.
+
+	// Forward scan to count tool_use events by tool name.
+	toolCalls := make(map[string]int)
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || !bytes.Contains(line, []byte(`"type"`)) {
+			continue
+		}
+		var evt struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(line, &evt) == nil && evt.Type == "tool_use" && evt.Name != "" {
+			toolCalls[evt.Name]++
+		}
+	}
+
+	// Reverse scan for the result event (typically the last line).
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := bytes.TrimSpace(lines[i])
 		if len(line) == 0 {
@@ -76,6 +105,9 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 				TotalTokens:  evt.Usage.InputTokens + evt.Usage.OutputTokens,
 				Turns:        evt.NumTurns,
 				CostUSD:      evt.TotalCostUSD,
+			}
+			if len(toolCalls) > 0 {
+				metrics.ToolCalls = toolCalls
 			}
 			return
 		}
@@ -1258,6 +1290,9 @@ func WizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
 		"total_tokens":       metrics.TotalTokens,
 		"turns":              metrics.Turns,
 		"cost_usd":           metrics.CostUSD,
+	}
+	if len(metrics.ToolCalls) > 0 {
+		data["tool_calls"] = metrics.ToolCalls
 	}
 	out, _ := json.MarshalIndent(data, "", "  ")
 	resultPath := filepath.Join(resultDir, "result.json")

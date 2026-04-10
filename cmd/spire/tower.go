@@ -177,12 +177,21 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     tower VARCHAR(64),
     parent_run_id VARCHAR(32),
     wave_index INT,
+    timing_bucket VARCHAR(32),
+    skip_reason VARCHAR(128),
+    failure_class VARCHAR(32),
+    attempt_number INT,
+    recovery_bead_id VARCHAR(32),
+    read_calls INT,
+    edit_calls INT,
+    tool_calls_json TEXT,
     INDEX idx_bead (bead_id),
     INDEX idx_epic (epic_id),
     INDEX idx_result (result),
     INDEX idx_golden (golden_run),
     INDEX idx_model (model),
-    INDEX idx_phase (phase)
+    INDEX idx_phase (phase),
+    INDEX idx_failure_class (failure_class)
 )`
 
 const formulasTableSQL = `CREATE TABLE IF NOT EXISTS formulas (
@@ -287,6 +296,15 @@ var spireMigrations = []columnMigration{
 	{table: "agent_runs", column: "wave_index", ddl: "ADD COLUMN wave_index INT"},
 	{table: "agent_runs", column: "phase_bucket", ddl: "ADD COLUMN phase_bucket VARCHAR(32)"},
 	{table: "agent_runs", column: "timing_bucket", ddl: "ADD COLUMN timing_bucket VARCHAR(32)"},
+
+	// --- agent_runs metrics columns (spi-btz6q) ---
+	{table: "agent_runs", column: "skip_reason", ddl: "ADD COLUMN skip_reason VARCHAR(128)"},
+	{table: "agent_runs", column: "failure_class", ddl: "ADD COLUMN failure_class VARCHAR(32)", index: "CREATE INDEX IF NOT EXISTS idx_failure_class ON agent_runs (failure_class)"},
+	{table: "agent_runs", column: "attempt_number", ddl: "ADD COLUMN attempt_number INT"},
+	{table: "agent_runs", column: "recovery_bead_id", ddl: "ADD COLUMN recovery_bead_id VARCHAR(32)"},
+	{table: "agent_runs", column: "read_calls", ddl: "ADD COLUMN read_calls INT"},
+	{table: "agent_runs", column: "edit_calls", ddl: "ADD COLUMN edit_calls INT"},
+	{table: "agent_runs", column: "tool_calls_json", ddl: "ADD COLUMN tool_calls_json TEXT"},
 
 	// --- golden_prompts columns (in table order) ---
 	{table: "golden_prompts", column: "run_id", ddl: "ADD COLUMN run_id VARCHAR(32) NOT NULL PRIMARY KEY"},

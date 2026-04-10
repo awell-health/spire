@@ -37,6 +37,13 @@ kind = "op"
 action = "wizard.run"
 flow = "task-plan"
 title = "Plan bugfix"
+[steps.plan.with]
+extra_instructions = """
+IMPORTANT: Before planning the fix, identify which commit or bead introduced this bug.
+Once identified, create a caused-by dependency:
+  bd dep add {vars.bead_id} <causing-bead-id> --type caused-by
+If the causing bead cannot be determined, note this in the plan and proceed without the link.
+"""
 
 [steps.implement]
 kind = "op"

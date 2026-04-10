@@ -385,3 +385,61 @@ func ListClosedRecoveryBeads(filter RecoveryLookupFilter) ([]RecoveryLearning, e
 
 	return learnings, nil
 }
+
+// BugFilter returns an IssueFilter for bug beads created in the last N days.
+// Includes closed beads (bugs are often closed quickly after filing).
+func BugFilter(bugType string, days int) beads.IssueFilter {
+	t := beads.IssueType(bugType)
+	since := time.Now().AddDate(0, 0, -days)
+	return beads.IssueFilter{
+		IssueType:     &t,
+		ExcludeStatus: nil, // include closed bugs
+		CreatedAfter:  &since,
+	}
+}
+
+// DepCausedBy is the dependency type for bug causality tracking.
+// A caused-by dep links a bug bead to the work bead that introduced the bug.
+const DepCausedBy = "caused-by"
+
+// GetCausedByDeps returns the beads that caused the given bug bead.
+// Returns beads linked via caused-by dependency type.
+func GetCausedByDeps(bugBeadID string) ([]Bead, error) {
+	deps, err := GetDepsWithMeta(bugBeadID)
+	if err != nil {
+		return nil, fmt.Errorf("get caused-by deps for %s: %w", bugBeadID, err)
+	}
+	var causing []Bead
+	for _, d := range deps {
+		if string(d.DependencyType) == DepCausedBy {
+			b, err := GetBead(d.ID)
+			if err != nil {
+				continue // skip unavailable beads
+			}
+			causing = append(causing, b)
+		}
+	}
+	return causing, nil
+}
+
+// GetBugsCausedBy returns bug beads that have a caused-by dep pointing to the given bead.
+// This is the reverse lookup: "which bugs did this work bead introduce?"
+func GetBugsCausedBy(sourceBeadID string) ([]Bead, error) {
+	dependents, err := GetDependentsWithMeta(sourceBeadID)
+	if err != nil {
+		return nil, fmt.Errorf("get bugs caused by %s: %w", sourceBeadID, err)
+	}
+	var bugs []Bead
+	for _, d := range dependents {
+		if string(d.DependencyType) == DepCausedBy {
+			b, err := GetBead(d.ID)
+			if err != nil {
+				continue
+			}
+			if b.Type == "bug" {
+				bugs = append(bugs, b)
+			}
+		}
+	}
+	return bugs, nil
+}
