@@ -67,7 +67,6 @@ IMPORTANT: Only fix genuinely stale language where the described feature now exi
 		"-p", prompt,
 		"--model", resolvedModel,
 		"--output-format", "text",
-		"--max-turns", "3",
 	)
 	cmd.Dir = repoPath
 	cmd.Env = os.Environ()
