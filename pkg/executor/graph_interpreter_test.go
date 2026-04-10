@@ -1611,6 +1611,21 @@ func TestResolveGraphBranchState_ResumeSkipsOverride(t *testing.T) {
 func TestRunGraph_HookedParksSafely(t *testing.T) {
 	deps, _ := testGraphDeps(t)
 
+	// Track step bead closures and interruption labels to verify the defer
+	// cleanup does NOT close step beads when the graph parks on a hooked step.
+	var closedStepBeads []string
+	var interruptLabels []string
+	deps.CloseStepBead = func(stepID string) error {
+		closedStepBeads = append(closedStepBeads, stepID)
+		return nil
+	}
+	deps.AddLabel = func(id, label string) error {
+		if label == "interrupted:executor-exit" {
+			interruptLabels = append(interruptLabels, id)
+		}
+		return nil
+	}
+
 	origRegistry := make(map[string]ActionHandler)
 	for k, v := range actionRegistry {
 		origRegistry[k] = v
@@ -1661,6 +1676,14 @@ func TestRunGraph_HookedParksSafely(t *testing.T) {
 	// Executor should NOT be terminated (graph is parked, not finished).
 	if exec.terminated {
 		t.Error("expected executor to NOT be terminated (graph is parked)")
+	}
+	// Step beads must NOT be closed when graph parks — board reads step bead
+	// status for column placement (GetBoardBeadPhase via GetActiveStep).
+	if len(closedStepBeads) > 0 {
+		t.Errorf("expected no step beads closed on park, but got: %v", closedStepBeads)
+	}
+	if len(interruptLabels) > 0 {
+		t.Errorf("expected no interrupted:executor-exit labels on park, but got: %v", interruptLabels)
 	}
 }
 

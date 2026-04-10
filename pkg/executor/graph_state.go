@@ -128,6 +128,16 @@ func (s *GraphState) Save(agentName string, configDirFn func() (string, error)) 
 	return os.WriteFile(path, data, 0644)
 }
 
+// HasHookedSteps returns true if any step in the graph has status "hooked".
+func (s *GraphState) HasHookedSteps() bool {
+	for _, ss := range s.Steps {
+		if ss.Status == "hooked" {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveGraphState deletes the graph state file on terminal success.
 func RemoveGraphState(agentName string, configDirFn func() (string, error)) {
 	path := GraphStatePath(agentName, configDirFn)

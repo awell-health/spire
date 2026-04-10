@@ -39,7 +39,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			panicVal = r
 			e.log("executor cleanup panic: %v", r)
 		}
-		if !e.terminated {
+		if !e.terminated && !state.HasHookedSteps() {
 			e.closeAllOpenGraphStepBeads(state)
 		}
 		if state.AttemptBeadID != "" {
