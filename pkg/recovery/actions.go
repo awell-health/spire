@@ -19,6 +19,7 @@ const (
 	ActionDecide         RecoveryActionKind = "decide"
 	ActionLearn          RecoveryActionKind = "learn"
 	ActionFinish         RecoveryActionKind = "finish"
+	ActionTriage         RecoveryActionKind = "triage"
 )
 
 // KnownActions is the bounded set of recovery actions the executor recognizes.
@@ -35,6 +36,7 @@ var KnownActions = map[RecoveryActionKind]bool{
 	ActionDecide:             true,
 	ActionLearn:              true,
 	ActionFinish:             true,
+	ActionTriage:             true,
 }
 
 // RecoveryActionRequest is the structured input for a recovery action dispatch.

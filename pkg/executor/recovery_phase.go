@@ -5,10 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -73,12 +76,38 @@ func actionRecoveryExecute(e *Executor, stepName string, step StepConfig, state 
 		}
 	}
 
+	// For triage actions, inject test output and wizard log tail from
+	// collect_context step outputs into params so doTriage can use them.
+	params := step.With
+	if actionKind == "triage" && state != nil {
+		// Copy params to avoid mutating step.With.
+		params = make(map[string]string, len(step.With))
+		for k, v := range step.With {
+			params[k] = v
+		}
+		if cs, ok := state.Steps["collect_context"]; ok {
+			// Parse collect_context_result JSON to extract WizardLogTail.
+			if ccJSON := cs.Outputs["collect_context_result"]; ccJSON != "" {
+				var cc CollectContextResult
+				if err := json.Unmarshal([]byte(ccJSON), &cc); err == nil {
+					if cc.WizardLogTail != "" {
+						params["wizard_log_tail"] = cc.WizardLogTail
+						// Use wizard log tail as test output if no dedicated test_output.
+						if params["test_output"] == "" {
+							params["test_output"] = cc.WizardLogTail
+						}
+					}
+				}
+			}
+		}
+	}
+
 	req := recovery.RecoveryActionRequest{
 		Kind:         recovery.RecoveryActionKind(actionKind),
 		BeadID:       e.beadID,
 		SourceBeadID: sourceBeadID,
 		StepTarget:   step.With["step_target"],
-		Params:       step.With,
+		Params:       params,
 	}
 
 	result := ExecuteRecoveryAction(e, req)
@@ -145,6 +174,8 @@ func ExecuteRecoveryAction(e *Executor, req recovery.RecoveryActionRequest) reco
 		return doAnnotateResolution(e, req)
 	case recovery.ActionEscalate:
 		return doEscalate(e, req)
+	case recovery.ActionTriage:
+		return doTriage(e, req)
 	default:
 		return recovery.RecoveryActionResult{
 			Kind:    req.Kind,
@@ -386,6 +417,183 @@ func doEscalate(e *Executor, req recovery.RecoveryActionRequest) recovery.Recove
 	}
 }
 
+// doTriage dispatches a triage agent into the failing worktree to diagnose and
+// fix the issue. The agent gets test failure output and a focused prompt. Max 2
+// triage attempts per recovery bead; after that, returns failure so the caller
+// can escalate.
+func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.RecoveryActionResult {
+	if req.SourceBeadID == "" {
+		return failResult(req.Kind, "source_bead_id is required for triage")
+	}
+
+	// Read triage count from recovery bead metadata; enforce budget of 2.
+	triageCount := 0
+	if bead, err := e.deps.GetBead(req.BeadID); err == nil {
+		if tc := bead.Meta(recovery.KeyTriageCount); tc != "" {
+			triageCount, _ = strconv.Atoi(tc)
+		}
+	}
+	if triageCount >= 2 {
+		return failResult(req.Kind, "triage budget exhausted (max 2 attempts); escalate instead")
+	}
+
+	// Derive the wizard name from the source bead to load its graph state.
+	// Pattern: check for agent: label on attempt beads, fall back to "wizard-<sourceBeadID>".
+	wizardName := "wizard-" + req.SourceBeadID
+	if children, err := e.deps.GetChildren(req.SourceBeadID); err == nil {
+		for _, c := range children {
+			for _, l := range c.Labels {
+				if strings.HasPrefix(l, "agent:") {
+					wizardName = strings.TrimPrefix(l, "agent:")
+					break
+				}
+			}
+		}
+	}
+
+	// Load the source bead's graph state to find the worktree path.
+	var worktreeDir string
+	gs, err := LoadGraphState(wizardName, e.deps.ConfigDir)
+	if err == nil && gs != nil {
+		// Prefer "feature" workspace, fall back to first workspace with a Dir.
+		if ws, ok := gs.Workspaces["feature"]; ok && ws.Dir != "" {
+			worktreeDir = ws.Dir
+		} else {
+			for _, ws := range gs.Workspaces {
+				if ws.Dir != "" {
+					worktreeDir = ws.Dir
+					break
+				}
+			}
+		}
+		// Fall back to top-level WorktreeDir.
+		if worktreeDir == "" {
+			worktreeDir = gs.WorktreeDir
+		}
+	}
+
+	if worktreeDir == "" {
+		return failResult(req.Kind, "cannot determine worktree directory from source bead graph state")
+	}
+
+	// Verify the worktree still exists on disk.
+	if _, err := os.Stat(worktreeDir); os.IsNotExist(err) {
+		return failResult(req.Kind, fmt.Sprintf("worktree no longer exists: %s", worktreeDir))
+	}
+
+	// Read test output from params (injected by the execute step from collect_context).
+	testOutput := req.Params["test_output"]
+	wizardLogTail := req.Params["wizard_log_tail"]
+
+	// Build a focused custom prompt for the triage agent.
+	var prompt strings.Builder
+	prompt.WriteString("You are a triage agent. Your job is to diagnose and fix a failing test or build issue.\n\n")
+	prompt.WriteString("## Rules\n")
+	prompt.WriteString("- Fix the failing code so tests/build pass. Do NOT redesign or restructure.\n")
+	prompt.WriteString("- Run the validation commands to verify your fix before committing.\n")
+	prompt.WriteString("- Commit your fix with a descriptive message.\n")
+	prompt.WriteString("- Do NOT create PRs, push, or touch other branches.\n\n")
+
+	prompt.WriteString(fmt.Sprintf("## Worktree\n%s\n\n", worktreeDir))
+
+	if testOutput != "" {
+		prompt.WriteString("## Test/Build Failure Output\n```\n")
+		prompt.WriteString(testOutput)
+		if !strings.HasSuffix(testOutput, "\n") {
+			prompt.WriteString("\n")
+		}
+		prompt.WriteString("```\n\n")
+	}
+
+	if wizardLogTail != "" {
+		prompt.WriteString("## Wizard Log Tail\n```\n")
+		prompt.WriteString(wizardLogTail)
+		if !strings.HasSuffix(wizardLogTail, "\n") {
+			prompt.WriteString("\n")
+		}
+		prompt.WriteString("```\n\n")
+	}
+
+	// Include build/test commands from repo config if available.
+	if rc := e.deps.RepoConfig(); rc != nil {
+		prompt.WriteString("## Validation Commands\n")
+		if rc.Runtime.Build != "" {
+			prompt.WriteString(fmt.Sprintf("- Build: `%s`\n", rc.Runtime.Build))
+		}
+		if rc.Runtime.Test != "" {
+			prompt.WriteString(fmt.Sprintf("- Test: `%s`\n", rc.Runtime.Test))
+		}
+		if rc.Runtime.Lint != "" {
+			prompt.WriteString(fmt.Sprintf("- Lint: `%s`\n", rc.Runtime.Lint))
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Spawn the triage agent as an apprentice into the worktree.
+	spawnName := fmt.Sprintf("triage-%s-%d", req.SourceBeadID, triageCount+1)
+	started := time.Now()
+
+	handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+		Name:         spawnName,
+		BeadID:       req.SourceBeadID,
+		Role:         agent.RoleApprentice,
+		ExtraArgs:    []string{"--worktree-dir", worktreeDir},
+		CustomPrompt: prompt.String(),
+	})
+	if spawnErr != nil {
+		return failResult(req.Kind, fmt.Sprintf("spawn triage agent: %v", spawnErr))
+	}
+
+	waitErr := handle.Wait()
+
+	// Read result.json from the triage agent.
+	var agentResult string
+	if ar := e.readAgentResult(spawnName); ar != nil {
+		agentResult = ar.Result
+	} else if waitErr != nil {
+		agentResult = "error"
+	} else {
+		agentResult = "success"
+	}
+
+	// Record the agent run.
+	e.recordAgentRun(spawnName, req.SourceBeadID, "", "", string(agent.RoleApprentice), "triage", started, waitErr,
+		withParentRun(e.currentRunID))
+
+	// Increment triage count on recovery bead metadata.
+	newCount := strconv.Itoa(triageCount + 1)
+	if e.deps.SetBeadMetadata != nil {
+		_ = e.deps.SetBeadMetadata(req.BeadID, map[string]string{
+			recovery.KeyTriageCount: newCount,
+		})
+	}
+
+	e.log("recovery: triage %s attempt %d result=%s", req.SourceBeadID, triageCount+1, agentResult)
+
+	if agentResult != "success" {
+		return recovery.RecoveryActionResult{
+			Kind:    req.Kind,
+			Success: false,
+			Error:   fmt.Sprintf("triage agent returned %s", agentResult),
+			Output:  fmt.Sprintf("triage attempt %d failed: %s", triageCount+1, agentResult),
+			Metadata: map[string]string{
+				recovery.KeyTriageCount: newCount,
+			},
+		}
+	}
+
+	return recovery.RecoveryActionResult{
+		Kind:           req.Kind,
+		Success:        true,
+		Output:         fmt.Sprintf("triage attempt %d succeeded", triageCount+1),
+		ResolutionKind: "triage",
+		Metadata: map[string]string{
+			recovery.KeyResolutionKind: "triage",
+			recovery.KeyTriageCount:    newCount,
+		},
+	}
+}
+
 // failResult constructs a failed RecoveryActionResult.
 func failResult(kind recovery.RecoveryActionKind, msg string) recovery.RecoveryActionResult {
 	return recovery.RecoveryActionResult{
@@ -543,8 +751,16 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		return ActionResult{Error: fmt.Errorf("decide: unmarshal collect_context_result: %w", err)}
 	}
 
+	// Read triage count from recovery bead metadata for the decide prompt.
+	triageCount := 0
+	if bead, err := e.deps.GetBead(e.beadID); err == nil {
+		if tc := bead.Meta(recovery.KeyTriageCount); tc != "" {
+			triageCount, _ = strconv.Atoi(tc)
+		}
+	}
+
 	// Build Claude prompt.
-	prompt := buildDecidePrompt(ccResult)
+	prompt := buildDecidePrompt(ccResult, triageCount)
 
 	// Call Claude.
 	if e.deps.ClaudeRunner == nil {
@@ -969,7 +1185,8 @@ func mergeLearnings(metaLearnings []store.RecoveryLearning, sqlRows []store.Reco
 }
 
 // buildDecidePrompt constructs the Claude prompt for the decide step.
-func buildDecidePrompt(cc CollectContextResult) string {
+// triageCount is the number of triage attempts already made on this recovery bead.
+func buildDecidePrompt(cc CollectContextResult, triageCount int) string {
 	var b strings.Builder
 	b.WriteString("You are a recovery decision agent for Spire, an AI agent coordination system.\n\n")
 	b.WriteString("A bead (work item) has been interrupted and needs recovery. Analyze the diagnosis and choose the best recovery action.\n\n")
@@ -1020,7 +1237,7 @@ func buildDecidePrompt(cc CollectContextResult) string {
 
 	b.WriteString("## Instructions\n")
 	b.WriteString("Choose a recovery action. Output ONLY a JSON object with these fields:\n")
-	b.WriteString("- `chosen_action`: one of \"resummon\", \"reset-hard\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\"\n")
+	b.WriteString("- `chosen_action`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\", \"triage\"\n")
 	b.WriteString("- `confidence`: 0.0 to 1.0 — how confident you are this action will resolve the issue\n")
 	b.WriteString("- `reasoning`: brief explanation of why you chose this action\n")
 	b.WriteString("- `needs_human`: set to true if confidence < 0.7\n")
@@ -1033,6 +1250,38 @@ func buildDecidePrompt(cc CollectContextResult) string {
 		b.WriteString("Distinguish between:\n")
 		b.WriteString("- **Infrastructure failures** (missing commands, env setup, dependency install) that resummon/reset may fix\n")
 		b.WriteString("- **Code-level failures** (test assertions, missing env vars, type errors) that require code changes and resummon CANNOT fix\n\n")
+	}
+
+	// Triage guidance.
+	b.WriteString("### Triage Action\n")
+	b.WriteString("Choose `triage` when:\n")
+	b.WriteString("- Failure class is `step-failure` at implement or review-fix steps\n")
+	b.WriteString("- Test output shows clear code-level failures (assertion errors, type errors, compilation errors)\n")
+	b.WriteString("- The worktree still exists (see diagnosis git state)\n")
+	b.WriteString("- This is the first or second triage attempt (max 2)\n\n")
+	b.WriteString("Do NOT choose `triage` for:\n")
+	b.WriteString("- Infrastructure failures (missing commands, env setup, dependency install)\n")
+	b.WriteString("- When the worktree has been cleaned up\n")
+	b.WriteString("- When triage has already been tried twice\n\n")
+
+	// Triage budget context.
+	triageRemaining := 2 - triageCount
+	if triageRemaining < 0 {
+		triageRemaining = 0
+	}
+	b.WriteString(fmt.Sprintf("**Triage budget:** %d of 2 attempts used, %d remaining.\n", triageCount, triageRemaining))
+	if triageCount >= 2 {
+		b.WriteString("Triage budget is exhausted — do NOT choose `triage`.\n")
+	}
+	b.WriteString("\n")
+
+	// Worktree existence from diagnosis.
+	if cc.Diagnosis != nil && cc.Diagnosis.Git != nil {
+		if cc.Diagnosis.Git.WorktreeExists {
+			b.WriteString("**Worktree exists:** yes (triage is possible)\n\n")
+		} else {
+			b.WriteString("**Worktree exists:** no (triage is NOT possible — worktree was cleaned up)\n\n")
+		}
 	}
 
 	// Relapse awareness.
@@ -1076,7 +1325,7 @@ func buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failur
 	b.WriteString("## Instructions\n")
 	b.WriteString("Output ONLY a JSON object with these fields:\n")
 	b.WriteString("- `learning_summary`: concise description of what happened and what worked or didn't\n")
-	b.WriteString("- `resolution_kind`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\"\n")
+	b.WriteString("- `resolution_kind`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\", \"triage\"\n")
 	b.WriteString("- `reusable`: true if this learning applies to future similar failures, false otherwise\n\n")
 
 	if expectedOutcome != "" {

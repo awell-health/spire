@@ -24,6 +24,7 @@ const (
 	KeyOutcome            = "learning_outcome"   // "clean" / "dirty" / "relapsed"
 	KeyLearningID         = "learning_id"        // FK into recovery_learnings table
 	KeyExpectedOutcome    = "expected_outcome"   // decide agent's prediction of what should happen
+	KeyTriageCount        = "triage_count"       // number of triage attempts on this recovery bead (max 2)
 )
 
 // RecoveryMetadata is the typed projection of recovery-specific bead metadata.
@@ -43,6 +44,7 @@ type RecoveryMetadata struct {
 	Outcome            string // "clean" / "dirty" / "relapsed"
 	LearningID         string // FK into recovery_learnings table
 	ExpectedOutcome    string // decide agent's prediction of what should happen
+	TriageCount        string // number of triage attempts (max 2)
 }
 
 // RecoveryMetadataFromBead extracts RecoveryMetadata from a bead's Metadata map.
@@ -62,6 +64,7 @@ func RecoveryMetadataFromBead(b store.Bead) RecoveryMetadata {
 		Outcome:            b.Meta(KeyOutcome),
 		LearningID:         b.Meta(KeyLearningID),
 		ExpectedOutcome:    b.Meta(KeyExpectedOutcome),
+		TriageCount:        b.Meta(KeyTriageCount),
 	}
 }
 
@@ -110,6 +113,9 @@ func (r RecoveryMetadata) ToMap() map[string]string {
 	}
 	if r.ExpectedOutcome != "" {
 		m[KeyExpectedOutcome] = r.ExpectedOutcome
+	}
+	if r.TriageCount != "" {
+		m[KeyTriageCount] = r.TriageCount
 	}
 	return m
 }
