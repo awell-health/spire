@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -16,7 +15,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
 
 // SidecarState tracks the sidecar's current operational state.
@@ -199,6 +201,10 @@ func main() {
 		log.Fatalf("failed to create comms dir %s: %v", *commsDir, err)
 	}
 
+	// Wire up store resolver for direct DB access.
+	store.BeadsDirResolver = config.ResolveBeadsDir
+	defer store.Reset()
+
 	log.Printf("spire-sidecar starting (comms=%s, poll=%s, port=%d, agent=%s)",
 		*commsDir, *pollInterval, *port, *agentName)
 
@@ -310,44 +316,42 @@ func inboxLoop(ctx context.Context, state *SidecarState, commsDir string, interv
 }
 
 func collectAndWrite(state *SidecarState, commsDir, agentName string) {
-	args := []string{"collect", "--json"}
-	if agentName != "" {
-		args = append(args, agentName)
-	}
-
-	cmd := exec.Command("spire", args...)
-	output, err := cmd.Output()
+	// Query messages directly via store API instead of shelling out to spire CLI.
+	msgs, err := store.ListBeads(beads.IssueFilter{
+		Labels: []string{"msg", "to:" + agentName},
+		Status: store.StatusPtr(beads.StatusOpen),
+	})
 	if err != nil {
-		log.Printf("spire collect failed: %v", err)
+		log.Printf("store collect failed: %v", err)
 		state.setCollectResult(0, err)
 		return
 	}
 
-	// Count messages (attempt to parse JSON array).
-	var messages []json.RawMessage
-	count := 0
-	if err := json.Unmarshal(output, &messages); err == nil {
-		count = len(messages)
+	// Marshal to JSON for the wizard to consume.
+	output, err := json.MarshalIndent(msgs, "", "  ")
+	if err != nil {
+		log.Printf("failed to marshal inbox: %v", err)
+		state.setCollectResult(0, err)
+		return
 	}
 
 	// Write inbox.
 	inboxPath := filepath.Join(commsDir, "inbox.json")
 	if err := atomicWrite(inboxPath, output); err != nil {
 		log.Printf("failed to write inbox: %v", err)
-		state.setCollectResult(count, err)
+		state.setCollectResult(len(msgs), err)
 		return
 	}
 
-	state.setCollectResult(count, nil)
-	if count > 0 {
-		log.Printf("collected %d messages", count)
+	state.setCollectResult(len(msgs), nil)
+	if len(msgs) > 0 {
+		log.Printf("collected %d messages", len(msgs))
 		// Mark messages as read so they don't repeat on next poll.
-		for _, raw := range messages {
-			var msg struct {
-				ID string `json:"id"`
-			}
-			if json.Unmarshal(raw, &msg) == nil && msg.ID != "" {
-				exec.Command("spire", "read", msg.ID).Run() //nolint
+		for _, msg := range msgs {
+			if msg.ID != "" {
+				if err := store.CloseBead(msg.ID); err != nil {
+					log.Printf("failed to mark %s as read: %v", msg.ID, err)
+				}
 			}
 		}
 	}
