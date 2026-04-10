@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/steveyegge/beads"
 )
@@ -25,10 +26,10 @@ func IsInternalBead(b Bead) bool {
 	return InternalTypes[b.Type]
 }
 
-// migrationMapping defines label→type conversions for existing beads.
-var migrationMapping = []struct {
-	Label      string
-	TargetType string
+// labelToType maps legacy label-based identification to the new internal bead types.
+var labelToType = []struct {
+	label    string
+	beadType beads.IssueType
 }{
 	{"msg", "message"},
 	{"workflow-step", "step"},
@@ -37,38 +38,32 @@ var migrationMapping = []struct {
 }
 
 // MigrateInternalTypes converts existing label-identified beads to proper types.
-// It is idempotent — safe to run on every startup. Labels are NOT removed.
+// It queries beads by label and updates their type field. Idempotent — skips
+// beads that already have the correct type. Labels remain on the beads.
 func MigrateInternalTypes() error {
-	s, ctx, err := getStore()
-	if err != nil {
-		return fmt.Errorf("migrate internal types: %w", err)
-	}
-
-	for _, m := range migrationMapping {
-		issues, err := s.SearchIssues(ctx, "", beads.IssueFilter{
-			Labels: []string{m.Label},
+	migrated := 0
+	for _, lt := range labelToType {
+		results, err := ListBeads(beads.IssueFilter{
+			Labels: []string{lt.label},
 		})
 		if err != nil {
-			return fmt.Errorf("migrate internal types: search label %q: %w", m.Label, err)
+			return fmt.Errorf("migrate internal types: query label %q: %w", lt.label, err)
 		}
-
-		migrated := 0
-		for _, issue := range issues {
-			if string(issue.IssueType) == m.TargetType {
-				continue // already correct type
+		for _, b := range results {
+			if b.Type == string(lt.beadType) {
+				continue // already migrated
 			}
-			if err := s.UpdateIssue(ctx, issue.ID, map[string]interface{}{
-				"issue_type": m.TargetType,
-			}, Actor()); err != nil {
-				return fmt.Errorf("migrate internal types: update %s to type %q: %w", issue.ID, m.TargetType, err)
+			if err := UpdateBead(b.ID, map[string]interface{}{
+				"issue_type": string(lt.beadType),
+			}); err != nil {
+				log.Printf("migrate internal types: update %s to type %s: %v", b.ID, lt.beadType, err)
+				continue
 			}
 			migrated++
 		}
-
-		if migrated > 0 {
-			fmt.Printf("  migrated %d beads: %s → %s\n", migrated, m.Label, m.TargetType)
-		}
 	}
-
+	if migrated > 0 {
+		log.Printf("migrated %d beads to internal types", migrated)
+	}
 	return nil
 }

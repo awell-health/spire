@@ -151,7 +151,7 @@ func cmdUp(args []string) error {
 			fmt.Printf("ok (%d tower(s))\n", len(towers))
 		}
 
-		// Migrate label-identified beads to proper internal types
+		// Migrate label-identified internal beads to proper types
 		fmt.Print("internal type migration: ")
 		migWarned := 0
 		for _, t := range towers {
@@ -165,8 +165,8 @@ func cmdUp(args []string) error {
 				fmt.Printf("\n  warning: %s: %s", t.Database, err)
 				migWarned++
 			}
+			store.Reset()
 		}
-		store.Reset()
 		if migWarned > 0 {
 			fmt.Println()
 		} else {
