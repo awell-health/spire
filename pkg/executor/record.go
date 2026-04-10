@@ -121,10 +121,7 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 	}
 
 	// Populate context fields from executor state.
-	if e.formula != nil {
-		run.FormulaName = e.formula.Name
-		run.FormulaVersion = e.formula.Version
-	} else if e.graph != nil {
+	if e.graph != nil {
 		run.FormulaName = e.graph.Name
 		run.FormulaVersion = e.graph.Version
 	}

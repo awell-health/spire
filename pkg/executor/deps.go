@@ -18,18 +18,16 @@ import (
 
 // Type aliases re-exported for callers that need them.
 type (
-	Bead              = store.Bead
-	BoardBead         = store.BoardBead
-	CreateOpts        = store.CreateOpts
-	FormulaV2         = formula.FormulaV2
-	FormulaStepGraph  = formula.FormulaStepGraph
-	StepConfig        = formula.StepConfig
-	PhaseConfig       = formula.PhaseConfig
-	RevisionPolicy    = formula.RevisionPolicy
-	Backend           = agent.Backend
-	SpawnConfig       = agent.SpawnConfig
-	TowerConfig       = config.TowerConfig
-	AgentRun          = metrics.AgentRun
+	Bead             = store.Bead
+	BoardBead        = store.BoardBead
+	CreateOpts       = store.CreateOpts
+	FormulaStepGraph = formula.FormulaStepGraph
+	StepConfig       = formula.StepConfig
+	RevisionPolicy   = formula.RevisionPolicy
+	Backend          = agent.Backend
+	SpawnConfig      = agent.SpawnConfig
+	TowerConfig      = config.TowerConfig
+	AgentRun         = metrics.AgentRun
 )
 
 // SubtaskState tracks the status of a subtask during wave execution.
@@ -106,9 +104,8 @@ type Deps struct {
 	ArchmageGitEnv    func(tower *TowerConfig) []string
 
 	// Config
-	ConfigDir      func() (string, error)
-	ResolveFormula func(b Bead) (*FormulaV2, error)
-	RepoConfig     func() *repoconfig.RepoConfig // nil-safe; returns nil if unavailable
+	ConfigDir  func() (string, error)
+	RepoConfig func() *repoconfig.RepoConfig // nil-safe; returns nil if unavailable
 
 	// Spawner
 	Spawner Backend
@@ -146,5 +143,4 @@ type Deps struct {
 	HasLabel       func(b Bead, prefix string) string
 	ContainsLabel  func(b Bead, label string) bool
 	ParseIssueType func(s string) beads.IssueType
-	ResolveBeadBuildCmd func(b Bead) string
 }

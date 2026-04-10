@@ -18,7 +18,6 @@ type (
 	Bead           = store.Bead
 	BoardBead      = store.BoardBead
 	CreateOpts     = store.CreateOpts
-	FormulaV2      = formula.FormulaV2
 	RevisionPolicy = formula.RevisionPolicy
 	Backend        = agent.Backend
 	SpawnConfig    = agent.SpawnConfig
@@ -142,15 +141,11 @@ type Deps struct {
 	SQLEscape     func(s string) string
 	ResolveDatabase func(cfg *config.SpireConfig) (string, bool)
 
-	// Formula
-	LoadFormulaByName func(name string) (*FormulaV2, error)
-
 	// Executor terminal steps
 	TerminalMerge   func(beadID, branch, baseBranch, repoPath, buildCmd string, log func(string, ...interface{})) error
 	TerminalSplit   func(beadID, reviewerName string, splitTasks []SplitTask, log func(string, ...interface{})) error
 	TerminalDiscard func(beadID string, log func(string, ...interface{})) error
 	EscalateHumanFailure func(beadID, agentName, failureType, message string)
-	ResolveBeadBuildCmd  func(b Bead) string
 	ComputeWaves         func(epicID string) ([][]string, error)
 
 	// Molecule steps

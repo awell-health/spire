@@ -17,7 +17,6 @@ import (
 
 // --- Type aliases ---
 
-type FormulaV2 = formula.FormulaV2
 type RevisionPolicy = formula.RevisionPolicy
 
 // beadToInfo converts a Bead to formula.BeadInfo for pkg/formula calls.
@@ -37,7 +36,11 @@ func resolveFormulaName(bead Bead) string {
 // ResolveFormulaAny resolves a v3 formula for a bead.
 // Returns the formula (*formula.FormulaStepGraph), version 3, and any error.
 func ResolveFormulaAny(bead Bead) (interface{}, int, error) {
-	return formula.ResolveAny(beadToInfo(bead))
+	g, err := formula.ResolveV3(beadToInfo(bead))
+	if err != nil {
+		return nil, 0, err
+	}
+	return g, 3, nil
 }
 
 // ResolveFormulaV3 resolves a v3 step-graph formula for a bead.

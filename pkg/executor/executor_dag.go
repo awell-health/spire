@@ -10,13 +10,8 @@ import (
 // ensureAttemptBead reuses an existing attempt bead (typically created by cmdClaim)
 // or creates a new one if none exists.
 func (e *Executor) ensureAttemptBead() error {
-	// Determine model from formula for label updates.
+	// Determine model for label updates.
 	model := "unknown"
-	if e.formula != nil && e.formula.Phases != nil {
-		if pc, ok := e.formula.Phases[e.state.Phase]; ok && pc.Model != "" {
-			model = pc.Model
-		}
-	}
 
 	// If we already have an attempt bead from persisted state, verify it's still open.
 	if e.state.AttemptBeadID != "" {
@@ -123,29 +118,8 @@ func (e *Executor) ensureStepBeads() error {
 		}
 	}
 
-	phases := e.formula.EnabledPhases()
-	if len(phases) == 0 {
-		return nil
-	}
-
-	e.state.StepBeadIDs = make(map[string]string, len(phases))
-	for i, phase := range phases {
-		id, err := e.deps.CreateStepBead(e.beadID, phase)
-		if err != nil {
-			return fmt.Errorf("create step bead for %s: %w", phase, err)
-		}
-		e.state.StepBeadIDs[phase] = id
-		e.log("created step bead %s for phase %s", id, phase)
-
-		// Activate the first step bead (it matches the initial phase).
-		if i == 0 {
-			if err := e.deps.ActivateStepBead(id); err != nil {
-				e.log("warning: activate step bead %s: %s", id, err)
-			}
-		}
-	}
-
-	return e.saveState()
+	// V2 formula-based step bead creation removed — v3 uses graph-based step beads.
+	return nil
 }
 
 // --- Review sub-step bead management ---

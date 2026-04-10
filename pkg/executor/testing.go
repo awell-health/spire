@@ -1,8 +1,9 @@
 package executor
 
 // NewForTest creates an Executor with preset state and deps for testing.
-// This bypasses the normal New() flow (no registry add, no state load).
-func NewForTest(beadID, agentName string, formula *FormulaV2, state *State, deps *Deps) *Executor {
+// V2 formula support removed — the executor runs v3 step-graph only.
+// Pass nil for state to get a default empty state.
+func NewForTest(beadID, agentName string, state *State, deps *Deps) *Executor {
 	if state == nil {
 		state = &State{
 			BeadID:    beadID,
@@ -13,7 +14,6 @@ func NewForTest(beadID, agentName string, formula *FormulaV2, state *State, deps
 	return &Executor{
 		beadID:    beadID,
 		agentName: agentName,
-		formula:   formula,
 		state:     state,
 		deps:      deps,
 		log:       func(string, ...interface{}) {},

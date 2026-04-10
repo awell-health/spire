@@ -137,14 +137,8 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	round := len(existingReviews) + 1
 	log("review round: %d", round)
 
-	// 7b. Load formula for revision policy
-	var revPolicy RevisionPolicy
-	if formula, fErr := deps.LoadFormulaByName("spire-agent-work"); fErr == nil {
-		revPolicy = formula.GetRevisionPolicy()
-	}
-	if revPolicy.MaxRounds == 0 {
-		revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: repoconfig.DefaultReviewModel}
-	}
+	// 7b. Default revision policy (v2 formula loading removed).
+	revPolicy := RevisionPolicy{MaxRounds: 3, ArbiterModel: repoconfig.DefaultReviewModel}
 
 	// 7c. Create review-round bead before dispatching review
 	reviewBeadID, rbErr := deps.CreateReviewBead(beadID, reviewerName, round)
@@ -433,9 +427,8 @@ func ReviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath str
 	deps.CloseMoleculeStep(beadID, "review")
 	deps.AddComment(beadID, fmt.Sprintf("Review approved by %s", reviewerName))
 
-	// Resolve build command from bead's formula
-	bead, _ := deps.GetBead(beadID)
-	buildCmd := deps.ResolveBeadBuildCmd(bead)
+	// Build commands in v3 come from step-graph vars / repo config, not formula phases.
+	buildCmd := ""
 
 	// Terminal merge: rebase → build verify → ff-only merge → push → delete branch → close bead.
 	// DAG invariant enforced: branch is deleted before bead is closed.

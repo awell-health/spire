@@ -193,17 +193,3 @@ func TerminalDiscard(beadID string, deps *Deps, log func(string, ...interface{})
 	return nil
 }
 
-// ResolveBeadBuildCmd returns the build command for a bead's formula.
-func ResolveBeadBuildCmd(bead Bead, resolveFormula func(Bead) (*FormulaV2, error)) string {
-	f, err := resolveFormula(bead)
-	if err != nil {
-		return ""
-	}
-	if pc, ok := f.Phases["merge"]; ok && pc.Build != "" {
-		return pc.Build
-	}
-	if pc, ok := f.Phases["implement"]; ok && pc.Build != "" {
-		return pc.Build
-	}
-	return ""
-}

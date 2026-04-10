@@ -3,8 +3,6 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/wizard"
@@ -183,11 +181,6 @@ func buildWizardDeps() *wizard.Deps {
 			return resolveDatabase(cfg)
 		},
 
-		// Formula — v2 resolution removed; provide stub that always errors.
-		LoadFormulaByName: func(name string) (*FormulaV2, error) {
-			return nil, fmt.Errorf("v2 formula %q not available (v2 removed)", name)
-		},
-
 		// Executor terminal steps
 		TerminalMerge: terminalMerge,
 		TerminalSplit: func(beadID, reviewerName string, splitTasks []wizard.SplitTask, log func(string, ...interface{})) error {
@@ -200,7 +193,6 @@ func buildWizardDeps() *wizard.Deps {
 		},
 		TerminalDiscard:      terminalDiscard,
 		EscalateHumanFailure: escalateHumanFailure,
-		ResolveBeadBuildCmd:  resolveBeadBuildCmd,
 		ComputeWaves:         computeWaves,
 
 		// Molecule steps — self-referential through pkg/wizard

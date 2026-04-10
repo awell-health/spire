@@ -73,14 +73,8 @@ func EpicReview(state *EpicState, spawner Backend, deps *Deps) error {
 		log("review requested changes (round %d)", state.ReviewRounds+1)
 		state.ReviewRounds++
 
-		// Load revision policy from formula
-		var revPolicy RevisionPolicy
-		if formula, fErr := deps.LoadFormulaByName("spire-agent-work"); fErr == nil {
-			revPolicy = formula.GetRevisionPolicy()
-		}
-		if revPolicy.MaxRounds == 0 {
-			revPolicy = RevisionPolicy{MaxRounds: 3, ArbiterModel: repoconfig.DefaultReviewModel}
-		}
+		// Default revision policy (v2 formula loading removed).
+		revPolicy := RevisionPolicy{MaxRounds: 3, ArbiterModel: repoconfig.DefaultReviewModel}
 
 		// Check if we've hit max rounds
 		if state.ReviewRounds >= revPolicy.MaxRounds {

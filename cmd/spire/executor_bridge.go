@@ -52,12 +52,6 @@ type SplitTask = executor.SplitTask
 
 // --- Function aliases ---
 
-// newExecutor creates a formula executor for a bead, wiring up all dependencies.
-func newExecutor(beadID, agentName string, formula *FormulaV2, spawner AgentBackend) (*formulaExecutor, error) {
-	deps := buildExecutorDeps(spawner)
-	return executor.New(beadID, agentName, formula, deps)
-}
-
 // newGraphExecutor creates a v3 graph executor for a bead, wiring up all dependencies.
 func newGraphExecutor(beadID, agentName string, graph *formulaPkg.FormulaStepGraph, spawner AgentBackend) (*formulaExecutor, error) {
 	deps := buildExecutorDeps(spawner)
@@ -107,17 +101,6 @@ func wizardMessageArchmage(from, beadID, message string) {
 func escalateHumanFailure(beadID, agentName, failureType, message string) {
 	deps := buildExecutorDeps(ResolveBackend(""))
 	executor.EscalateHumanFailure(beadID, agentName, failureType, message, deps)
-}
-
-// --- Helper: resolveBeadBuildCmd ---
-
-func resolveBeadBuildCmd(bead Bead) string {
-	// V2 formula resolution removed; ResolveBeadBuildCmd returns "" for
-	// beads without a v2 formula.  Build commands in v3 are declared via
-	// step-graph vars / repo config, not formula phases.
-	return executor.ResolveBeadBuildCmd(bead, func(_ Bead) (*FormulaV2, error) {
-		return nil, fmt.Errorf("v2 formula resolution removed")
-	})
 }
 
 // --- Helper: archmageIdentity ---
@@ -173,10 +156,7 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		ArchmageGitEnv:    archmageGitEnv,
 
 		// Config
-		ConfigDir:      configDir,
-		ResolveFormula: func(_ Bead) (*FormulaV2, error) {
-			return nil, fmt.Errorf("v2 formula resolution removed")
-		},
+		ConfigDir: configDir,
 		RepoConfig: func() *repoconfig.RepoConfig {
 			// Best-effort: load from the bead's repo. Returns nil if unavailable.
 			cfg, err := repoconfig.Load(".")
@@ -224,10 +204,9 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		SetBeadMetadata: store.SetBeadMetadataMap,
 
 		// Label / type helpers
-		HasLabel:            hasLabel,
-		ContainsLabel:       containsLabel,
-		ParseIssueType:      parseIssueType,
-		ResolveBeadBuildCmd: resolveBeadBuildCmd,
+		HasLabel:       hasLabel,
+		ContainsLabel:  containsLabel,
+		ParseIssueType: parseIssueType,
 	}
 }
 
@@ -341,12 +320,11 @@ func cmdExecute(args []string) error {
 	}
 
 	bi := beadToInfo(bead)
-	anyFormula, _, err := formulaPkg.ResolveAny(bi)
+	graph, err := formulaPkg.ResolveV3(bi)
 	if err != nil {
 		return fmt.Errorf("resolve formula: %w", err)
 	}
 
-	graph := anyFormula.(*formulaPkg.FormulaStepGraph)
 	claimBeadIfNeeded(beadID, agentName)
 	ex, execErr := newGraphExecutor(beadID, agentName, graph, spawner)
 	if execErr != nil {

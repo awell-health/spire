@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	spgit "github.com/awell-health/spire/pkg/git"
@@ -53,9 +52,8 @@ type State struct {
 type Executor struct {
 	beadID    string
 	agentName string
-	formula   *FormulaV2         // v2 phase pipeline (nil when running v3)
-	graph     *FormulaStepGraph  // v3 step graph (nil when running v2)
-	graphState *GraphState       // v3 state (nil when running v2)
+	graph     *FormulaStepGraph  // v3 step graph
+	graphState *GraphState       // v3 state
 	state     *State
 	deps      *Deps
 	log       func(string, ...interface{})
@@ -134,30 +132,6 @@ func (e *Executor) saveState() error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
-}
-
-// advancePhase moves to the next enabled phase in the formula.
-func (e *Executor) advancePhase() bool {
-	next := e.nextPhase(e.state.Phase)
-	if next == "" {
-		return false
-	}
-	e.state.Phase = next
-	return true
-}
-
-// nextPhase returns the next enabled phase after the given one, or "".
-func (e *Executor) nextPhase(current string) string {
-	if e.formula == nil {
-		return ""
-	}
-	enabled := e.formula.EnabledPhases()
-	for i, p := range enabled {
-		if p == current && i+1 < len(enabled) {
-			return enabled[i+1]
-		}
-	}
-	return ""
 }
 
 // --- State persistence ---
@@ -268,24 +242,3 @@ func (e *Executor) resolveStepProvider(step StepConfig) string {
 	return repoconfig.ResolveProvider(step.Provider, formulaProvider, e.repoProvider())
 }
 
-// resolveDispatch returns the effective dispatch mode and its source.
-// It checks for a dispatch:<mode> label override on the bead first;
-// if none is found, it falls back to the formula's per-phase dispatch.
-func (e *Executor) resolveDispatch(pc PhaseConfig) (mode, source string) {
-	bead, err := e.deps.GetBead(e.beadID)
-	if err == nil {
-		var found []string
-		for _, l := range bead.Labels {
-			if strings.HasPrefix(l, "dispatch:") {
-				found = append(found, l[len("dispatch:"):])
-			}
-		}
-		if len(found) > 1 {
-			e.log("warning: multiple dispatch: labels found, using first (%s)", found[0])
-		}
-		if len(found) > 0 {
-			return found[0], "override"
-		}
-	}
-	return pc.GetDispatch(), "formula"
-}

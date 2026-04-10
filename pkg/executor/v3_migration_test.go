@@ -89,7 +89,7 @@ func TestMigration_ReviewPhaseUnchanged(t *testing.T) {
 	}
 }
 
-// --- ResolveAny always resolves to v3 ---
+// --- ResolveV3 always resolves to v3 ---
 
 func TestMigration_V3FormulaResolution(t *testing.T) {
 	tests := []struct {
@@ -120,18 +120,15 @@ func TestMigration_V3FormulaResolution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f, v, err := formula.ResolveAny(tt.bead)
+			g, err := formula.ResolveV3(tt.bead)
 			if err != nil {
-				t.Fatalf("ResolveAny: %v", err)
+				t.Fatalf("ResolveV3: %v", err)
 			}
-			if v != 3 {
-				t.Errorf("version = %d, want 3", v)
-			}
-			if f == nil {
+			if g == nil {
 				t.Fatal("expected non-nil formula")
 			}
-			if _, ok := f.(*formula.FormulaStepGraph); !ok {
-				t.Errorf("expected *FormulaStepGraph, got %T", f)
+			if g.Version != 3 {
+				t.Errorf("version = %d, want 3", g.Version)
 			}
 		})
 	}
