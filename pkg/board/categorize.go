@@ -42,13 +42,22 @@ func ActiveColumns(cols Columns) []ColDef {
 	return active
 }
 
+// isWorkBoardBead mirrors store.IsWorkBead for BoardBead values.
+func isWorkBoardBead(b BoardBead) bool {
+	return !store.InternalTypes[b.Type] && b.Parent == ""
+}
+
 // skipBead returns true if a bead is an internal DAG artifact that should not
 // appear in user-facing board columns (Ready, Implement, etc.). Alert beads
 // are also caught here so they don't leak into phase columns when their status
 // is not "open" or when they appear in the blocked-beads loop.
 func skipBead(b BoardBead) bool {
+	// Internal bead types (messages, steps, attempts, reviews) are hidden from the board.
+	if store.InternalTypes[b.Type] {
+		return true
+	}
 	for _, l := range b.Labels {
-		if strings.HasPrefix(l, "msg") || l == "template" || strings.HasPrefix(l, "agent") {
+		if l == "template" || strings.HasPrefix(l, "agent") {
 			return true
 		}
 		if l == "review-substep" {
@@ -57,15 +66,6 @@ func skipBead(b BoardBead) bool {
 		if l == "alert" || strings.HasPrefix(l, "alert:") {
 			return true
 		}
-	}
-	if store.IsAttemptBoardBead(b) {
-		return true
-	}
-	if store.IsReviewRoundBoardBead(b) {
-		return true
-	}
-	if store.IsStepBoardBead(b) {
-		return true
 	}
 	if store.IsFormulaTemplateBoardBead(b) {
 		return true
@@ -130,16 +130,15 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 
 		// Deferred beads land in Ready (sorted to bottom by SortBeads).
 		if b.Status == "deferred" {
-			if b.Parent == "" {
+			if isWorkBoardBead(b) {
 				c.Ready = append(c.Ready, b)
 			}
 			continue
 		}
 
-		// Epic children are managed by the epic formula — skip them from
-		// all board columns (phase and ready) so they don't appear as
-		// independent work items.
-		if b.Parent != "" {
+		// Non-work beads (internal types or epic children) are managed
+		// elsewhere — skip them from phase columns and ready.
+		if !isWorkBoardBead(b) {
 			continue
 		}
 
@@ -216,16 +215,15 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 
 		// Deferred beads land in Ready (sorted to bottom by SortBeads).
 		if b.Status == "deferred" {
-			if b.Parent == "" {
+			if isWorkBoardBead(b) {
 				c.Ready = append(c.Ready, b)
 			}
 			continue
 		}
 
-		// Epic children are managed by the epic formula — skip them from
-		// all board columns (phase and ready) so they don't appear as
-		// independent work items.
-		if b.Parent != "" {
+		// Non-work beads (internal types or epic children) are managed
+		// elsewhere — skip them from phase columns and ready.
+		if !isWorkBoardBead(b) {
 			continue
 		}
 
