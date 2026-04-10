@@ -344,19 +344,10 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 
 	for _, b := range inProgress {
 		// Skip internal tracking beads — only top-level work beads need health checks.
+		if !store.IsWorkBead(b) {
+			continue
+		}
 		if store.ContainsLabel(b, "review-approved") {
-			continue
-		}
-		if store.IsAttemptBead(b) || store.IsStepBead(b) || store.IsReviewRoundBead(b) {
-			continue
-		}
-		if store.ContainsLabel(b, "msg") {
-			continue
-		}
-		if store.HasLabel(b, "workflow:") != "" {
-			continue
-		}
-		if b.Parent != "" {
 			continue
 		}
 
@@ -829,7 +820,7 @@ func sendMessage(to, from, body, ref string, priority int) (string, error) {
 	return store.CreateBead(store.CreateOpts{
 		Title:    body,
 		Priority: priority,
-		Type:     beads.TypeTask,
+		Type:     "message",
 		Prefix:   "spi",
 		Labels:   labels,
 	})
