@@ -30,7 +30,7 @@ func TestGetSchedulableWork_MsgLabelExcluded(t *testing.T) {
 	mock := &schedMockStorage{
 		readyIssues: []*beads.Issue{
 			{ID: "spi-clean", Title: "Clean task", Status: beads.StatusOpen, IssueType: beads.TypeTask},
-			{ID: "spi-msg", Title: "A message", Status: beads.StatusOpen, IssueType: beads.TypeTask, Labels: []string{"msg"}},
+			{ID: "spi-msg", Title: "A message", Status: beads.StatusOpen, IssueType: "message", Labels: []string{"msg"}},
 		},
 	}
 	setTestStore(t, mock)
@@ -55,7 +55,7 @@ func TestGetSchedulableWork_MsgPrefixLabelExcluded(t *testing.T) {
 	mock := &schedMockStorage{
 		readyIssues: []*beads.Issue{
 			{ID: "spi-clean", Title: "Clean task", Status: beads.StatusOpen, IssueType: beads.TypeTask},
-			{ID: "spi-msgpfx", Title: "Msg with prefix", Status: beads.StatusOpen, IssueType: beads.TypeTask, Labels: []string{"msg:routing"}},
+			{ID: "spi-msgpfx", Title: "Msg with prefix", Status: beads.StatusOpen, IssueType: "message", Labels: []string{"msg:routing"}},
 		},
 	}
 	setTestStore(t, mock)

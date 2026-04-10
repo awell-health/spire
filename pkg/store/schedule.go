@@ -22,10 +22,10 @@ type QuarantinedBead struct {
 }
 
 // GetSchedulableWork returns beads that are ready AND eligible for agent
-// assignment. It calls GetReadyWork (which handles readiness: no open blockers,
-// excludes deferred/design/attempt/review-round/step beads) and then applies
-// scheduling policy filters:
-//   - Skip message beads (exact "msg" label or "msg" prefix labels)
+// assignment. It calls GetReadyWork (which handles readiness via SQL-level
+// type exclusion + IsWorkBead safety net, plus deferred/design/active-attempt
+// filtering) and then applies scheduling policy filters:
+//   - IsWorkBead safety net (backs up GetReadyWork's filter)
 //   - Skip template beads
 //   - Skip beads with an active attempt child (someone already working)
 //   - Quarantine beads where GetActiveAttempt returns an error (invariant violation)
@@ -37,8 +37,9 @@ func GetSchedulableWork(filter beads.WorkFilter) (*ScheduleResult, error) {
 
 	result := &ScheduleResult{}
 	for _, b := range ready {
-		// Skip message beads (both exact "msg" label and prefix like "msg:routing").
-		if HasLabel(b, "msg") != "" || ContainsLabel(b, "msg") {
+		// Safety net: IsWorkBead excludes internal types and child beads.
+		// GetReadyWork already applies this, but defense-in-depth for scheduling.
+		if !IsWorkBead(b) {
 			continue
 		}
 		// Skip template beads.

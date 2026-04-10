@@ -122,9 +122,15 @@ func GetConfig(key string) (string, error) {
 }
 
 // GetReadyWork returns beads that are ready to work on (no open blockers).
-// Post-filters out workflow step beads and message beads so they don't
-// appear as assignable work in the steward cycle.
+// Filters out internal beads (message, step, attempt, review), child beads,
+// design beads, and beads with active attempt children so they don't appear
+// as assignable work in the steward cycle.
 func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
+	// SQL-level filtering: exclude internal bead types to reduce row count.
+	for t := range InternalTypes {
+		filter.ExcludeTypes = append(filter.ExcludeTypes, beads.IssueType(t))
+	}
+
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
@@ -136,45 +142,23 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 
 	result := IssuesToBeads(issues)
 
-	// Post-filter: exclude deferred beads, workflow step beads, message beads,
-	// design beads, attempt beads, and beads with active attempt children.
+	// Post-filter: IsWorkBead is the Go-level safety net for internal type and
+	// child-bead exclusion (backs up the SQL filter above). Additional policy
+	// filters (deferred, design, active-attempt) are applied below.
 	var filtered []Bead
 	for _, b := range result {
-		// Skip epic children — the epic formula manages its own children
-		// via dispatch.children; they should never be independently assigned.
-		if b.Parent != "" {
+		// IsWorkBead excludes internal types (message, step, attempt, review)
+		// and child beads (Parent != "").
+		if !IsWorkBead(b) {
 			continue
 		}
 		// Skip deferred beads (held back from agents until explicitly undeferred)
 		if b.Status == "deferred" {
 			continue
 		}
-		// Skip message beads
-		if ContainsLabel(b, "msg") {
-			continue
-		}
 		// Skip design beads (thinking artifacts, not work items)
 		if b.Type == "design" {
 			continue
-		}
-		// Skip attempt beads (internal tracking, not assignable work)
-		if IsAttemptBead(b) {
-			continue
-		}
-		// Skip review-round beads (internal tracking, not assignable work)
-		if IsReviewRoundBead(b) {
-			continue
-		}
-		// Skip workflow step beads (phase tracking children of work beads)
-		if IsStepBead(b) {
-			continue
-		}
-		// Skip molecule step beads (parent carries workflow:* label)
-		if b.Parent != "" {
-			parent, perr := GetBead(b.Parent)
-			if perr == nil && HasLabel(parent, "workflow:") != "" {
-				continue
-			}
 		}
 		// Skip beads with an active attempt child (someone is already working).
 		// Fail closed: if GetActiveAttempt returns an error (e.g. multiple
@@ -182,8 +166,6 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 		attempt, aErr := GetActiveAttempt(b.ID)
 		if aErr != nil {
 			log.Printf("[store] quarantining %s (multiple open attempts): %v", b.ID, aErr)
-			// Note: callers that need test-replaceable alert behavior should
-			// use the bridge-level storeGetReadyWork wrapper instead.
 			continue
 		}
 		if attempt != nil {
