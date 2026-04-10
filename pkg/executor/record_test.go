@@ -478,6 +478,52 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 
 }
 
+func TestClassifyFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		spawnErr error
+		result   string
+		want     string
+	}{
+		// Successful outcomes → empty class.
+		{"success result", nil, "success", ""},
+		{"no_changes result", nil, "no_changes", ""},
+		{"empty result", nil, "", ""},
+
+		// Result-based classification.
+		{"timeout result", nil, "timeout", "timeout"},
+		{"test_failure result", nil, "test_failure", "test_fail"},
+		{"review_rejected result", nil, "review_rejected", "review_reject"},
+
+		// Error-based classification (result is "error" but spawnErr gives details).
+		{"killed signal", errors.New("signal: killed"), "error", "timeout"},
+		{"terminated signal", errors.New("signal: terminated"), "error", "timeout"},
+		{"merge conflict", errors.New("merge conflict in file.go"), "error", "merge_conflict"},
+		{"CONFLICT marker", errors.New("CONFLICT (content): Merge conflict"), "error", "merge_conflict"},
+		{"build fail", errors.New("build fail: exit 1"), "error", "build_fail"},
+		{"compilation error", errors.New("compilation error in main.go"), "error", "build_fail"},
+
+		// Fallback to "unknown" for error/empty_diff without recognizable spawnErr.
+		{"generic error result", nil, "error", "unknown"},
+		{"error with unrecognized spawnErr", errors.New("exit status 1"), "error", "unknown"},
+		{"empty_diff result", nil, "empty_diff", "unknown"},
+
+		// spawnErr present but result indicates success → empty class.
+		{"spawnErr but success result", errors.New("something"), "success", ""},
+
+		// Unrecognized result string without spawnErr → empty class.
+		{"unknown result string", nil, "some_custom_value", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyFailure(tt.spawnErr, tt.result)
+			if got != tt.want {
+				t.Errorf("classifyFailure(%v, %q) = %q, want %q", tt.spawnErr, tt.result, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGitDiffStats(t *testing.T) {
 	t.Run("empty base branch", func(t *testing.T) {
 		fc, la, lr := gitDiffStats("/tmp", "", "feat/branch")

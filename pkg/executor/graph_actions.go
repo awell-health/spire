@@ -241,9 +241,11 @@ func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state 
 	err := e.deps.ReviewEscalateToArbiter(e.beadID, sageName, lastReview, revPolicy, e.log)
 
 	reviewRound := state.Counters["review_round"]
+	reviewAttempt := state.Steps[stepName].CompletedCount + 1
 	e.recordAgentRun(sageName, e.beadID, "", arbiterModel, "arbiter", "review", started, err,
 		withReviewStep("arbiter", reviewRound+1),
-		withParentRun(e.currentRunID))
+		withParentRun(e.currentRunID),
+		withAttemptNumber(reviewAttempt))
 
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("arbiter escalation: %w", err)}
@@ -305,8 +307,10 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 	}
 
 	model := step.Model
+	attemptNum := state.Steps[stepName].CompletedCount + 1
 	e.recordAgentRun(spawnName, e.beadID, "", model, string(role), stepName, started, waitErr,
-		withParentRun(e.currentRunID))
+		withParentRun(e.currentRunID),
+		withAttemptNumber(attemptNum))
 
 	// Propagate child process failure as a node error only when no
 	// result.json was written. If the child declared its output, trust

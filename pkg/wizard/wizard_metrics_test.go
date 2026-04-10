@@ -105,6 +105,105 @@ not even close
 	})
 }
 
+func TestParseClaudeResultJSON_ToolUseCounting(t *testing.T) {
+	t.Run("no tool_use events", func(t *testing.T) {
+		input := []byte(`{"type":"assistant","message":"thinking..."}
+{"type":"result","result":"done","num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":50}}
+`)
+		_, metrics := parseClaudeResultJSON(input)
+		if metrics.ToolCalls != nil {
+			t.Errorf("ToolCalls = %v, want nil", metrics.ToolCalls)
+		}
+	})
+
+	t.Run("single tool_use event", func(t *testing.T) {
+		input := []byte(`{"type":"tool_use","name":"Read"}
+{"type":"result","result":"done","num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":50}}
+`)
+		_, metrics := parseClaudeResultJSON(input)
+		if metrics.ToolCalls == nil {
+			t.Fatal("ToolCalls is nil, want non-nil")
+		}
+		if metrics.ToolCalls["Read"] != 1 {
+			t.Errorf("ToolCalls[Read] = %d, want 1", metrics.ToolCalls["Read"])
+		}
+	})
+
+	t.Run("multiple different tools", func(t *testing.T) {
+		input := []byte(`{"type":"tool_use","name":"Read"}
+{"type":"tool_use","name":"Edit"}
+{"type":"tool_use","name":"Bash"}
+{"type":"tool_use","name":"Read"}
+{"type":"tool_use","name":"Read"}
+{"type":"tool_use","name":"Grep"}
+{"type":"result","result":"done","num_turns":3,"total_cost_usd":0.05,"usage":{"input_tokens":500,"output_tokens":200}}
+`)
+		_, metrics := parseClaudeResultJSON(input)
+		if metrics.ToolCalls == nil {
+			t.Fatal("ToolCalls is nil, want non-nil")
+		}
+		expected := map[string]int{"Read": 3, "Edit": 1, "Bash": 1, "Grep": 1}
+		for tool, want := range expected {
+			if got := metrics.ToolCalls[tool]; got != want {
+				t.Errorf("ToolCalls[%s] = %d, want %d", tool, got, want)
+			}
+		}
+		if len(metrics.ToolCalls) != len(expected) {
+			t.Errorf("ToolCalls has %d keys, want %d", len(metrics.ToolCalls), len(expected))
+		}
+	})
+
+	t.Run("tool_use without name is ignored", func(t *testing.T) {
+		input := []byte(`{"type":"tool_use"}
+{"type":"tool_use","name":"Read"}
+{"type":"result","result":"done","num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":50}}
+`)
+		_, metrics := parseClaudeResultJSON(input)
+		if metrics.ToolCalls == nil {
+			t.Fatal("ToolCalls is nil, want non-nil")
+		}
+		if metrics.ToolCalls["Read"] != 1 {
+			t.Errorf("ToolCalls[Read] = %d, want 1", metrics.ToolCalls["Read"])
+		}
+		if len(metrics.ToolCalls) != 1 {
+			t.Errorf("ToolCalls has %d keys, want 1 (nameless tool_use should be skipped)", len(metrics.ToolCalls))
+		}
+	})
+
+	t.Run("malformed lines mixed with valid tool_use", func(t *testing.T) {
+		input := []byte(`{bad json
+{"type":"tool_use","name":"Read"}
+not json at all
+{"type":"tool_use","name":"Edit"}
+{"type":"result","result":"done","num_turns":2,"total_cost_usd":0.02,"usage":{"input_tokens":200,"output_tokens":100}}
+`)
+		_, metrics := parseClaudeResultJSON(input)
+		if metrics.ToolCalls == nil {
+			t.Fatal("ToolCalls is nil, want non-nil")
+		}
+		if metrics.ToolCalls["Read"] != 1 {
+			t.Errorf("ToolCalls[Read] = %d, want 1", metrics.ToolCalls["Read"])
+		}
+		if metrics.ToolCalls["Edit"] != 1 {
+			t.Errorf("ToolCalls[Edit] = %d, want 1", metrics.ToolCalls["Edit"])
+		}
+	})
+
+	t.Run("tool_use events but no result event returns empty metrics", func(t *testing.T) {
+		input := []byte(`{"type":"tool_use","name":"Read"}
+{"type":"tool_use","name":"Edit"}
+`)
+		text, metrics := parseClaudeResultJSON(input)
+		if text != "" {
+			t.Errorf("resultText = %q, want empty", text)
+		}
+		// Without a result event, ToolCalls should not be populated.
+		if metrics.ToolCalls != nil {
+			t.Errorf("ToolCalls = %v, want nil (no result event)", metrics.ToolCalls)
+		}
+	})
+}
+
 func TestWizardBuildClaudeArgsIncludesJSONFormat(t *testing.T) {
 	args := WizardBuildClaudeArgs("hello", "claude-sonnet-4-6", 50)
 	found := false
@@ -185,4 +284,82 @@ func TestClaudeMetricsAdd(t *testing.T) {
 	if diff := sum.CostUSD - 0.15; diff < -1e-9 || diff > 1e-9 {
 		t.Errorf("CostUSD = %f, want 0.15", sum.CostUSD)
 	}
+}
+
+func TestClaudeMetricsAdd_ToolCallsMerge(t *testing.T) {
+	t.Run("both maps populated with overlapping keys", func(t *testing.T) {
+		a := ClaudeMetrics{ToolCalls: map[string]int{"Read": 5, "Edit": 2}}
+		b := ClaudeMetrics{ToolCalls: map[string]int{"Read": 3, "Bash": 1}}
+		sum := a.Add(b)
+		if sum.ToolCalls == nil {
+			t.Fatal("ToolCalls is nil, want non-nil")
+		}
+		if sum.ToolCalls["Read"] != 8 {
+			t.Errorf("ToolCalls[Read] = %d, want 8", sum.ToolCalls["Read"])
+		}
+		if sum.ToolCalls["Edit"] != 2 {
+			t.Errorf("ToolCalls[Edit] = %d, want 2", sum.ToolCalls["Edit"])
+		}
+		if sum.ToolCalls["Bash"] != 1 {
+			t.Errorf("ToolCalls[Bash] = %d, want 1", sum.ToolCalls["Bash"])
+		}
+		if len(sum.ToolCalls) != 3 {
+			t.Errorf("ToolCalls has %d keys, want 3", len(sum.ToolCalls))
+		}
+	})
+
+	t.Run("first nil second populated", func(t *testing.T) {
+		a := ClaudeMetrics{ToolCalls: nil}
+		b := ClaudeMetrics{ToolCalls: map[string]int{"Read": 3}}
+		sum := a.Add(b)
+		if sum.ToolCalls == nil {
+			t.Fatal("ToolCalls is nil, want non-nil")
+		}
+		if sum.ToolCalls["Read"] != 3 {
+			t.Errorf("ToolCalls[Read] = %d, want 3", sum.ToolCalls["Read"])
+		}
+	})
+
+	t.Run("first populated second nil", func(t *testing.T) {
+		a := ClaudeMetrics{ToolCalls: map[string]int{"Edit": 7}}
+		b := ClaudeMetrics{ToolCalls: nil}
+		sum := a.Add(b)
+		if sum.ToolCalls == nil {
+			t.Fatal("ToolCalls is nil, want non-nil")
+		}
+		if sum.ToolCalls["Edit"] != 7 {
+			t.Errorf("ToolCalls[Edit] = %d, want 7", sum.ToolCalls["Edit"])
+		}
+	})
+
+	t.Run("both nil", func(t *testing.T) {
+		a := ClaudeMetrics{ToolCalls: nil}
+		b := ClaudeMetrics{ToolCalls: nil}
+		sum := a.Add(b)
+		if sum.ToolCalls != nil {
+			t.Errorf("ToolCalls = %v, want nil", sum.ToolCalls)
+		}
+	})
+
+	t.Run("both empty maps", func(t *testing.T) {
+		a := ClaudeMetrics{ToolCalls: map[string]int{}}
+		b := ClaudeMetrics{ToolCalls: map[string]int{}}
+		sum := a.Add(b)
+		// Empty maps have len > 0 == false, so ToolCalls should be nil.
+		if sum.ToolCalls != nil {
+			t.Errorf("ToolCalls = %v, want nil (both empty)", sum.ToolCalls)
+		}
+	})
+
+	t.Run("does not mutate originals", func(t *testing.T) {
+		a := ClaudeMetrics{ToolCalls: map[string]int{"Read": 5}}
+		b := ClaudeMetrics{ToolCalls: map[string]int{"Read": 3}}
+		_ = a.Add(b)
+		if a.ToolCalls["Read"] != 5 {
+			t.Errorf("original a.ToolCalls[Read] = %d, want 5 (mutation detected)", a.ToolCalls["Read"])
+		}
+		if b.ToolCalls["Read"] != 3 {
+			t.Errorf("original b.ToolCalls[Read] = %d, want 3 (mutation detected)", b.ToolCalls["Read"])
+		}
+	})
 }
