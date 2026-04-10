@@ -93,6 +93,8 @@ type Opts struct {
 	// TermContentFn fetches content for the terminal pane overlay.
 	// Takes beadID and returns rendered content string.
 	TermContentFn func(beadID string) (string, error)
+	// SwitchTowerFn switches the active tower context. Injected by caller.
+	SwitchTowerFn func(towerName string) (string, error)
 }
 
 // ViewMode identifies which tabbed view is active on the board.
