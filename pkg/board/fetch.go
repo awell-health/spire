@@ -1,6 +1,7 @@
 package board
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -112,16 +113,18 @@ type snapshotMsg struct {
 }
 
 // fetchSnapshotCmd returns a tea.Cmd that fetches a BoardSnapshot in the background.
-func fetchSnapshotCmd(opts Opts, identity string, fetchAgents func() []LocalAgent) tea.Cmd {
+// db is the owned beads.Storage connection (not the singleton).
+func fetchSnapshotCmd(db beads.Storage, opts Opts, identity string, fetchAgents func() []LocalAgent) tea.Cmd {
 	return func() tea.Msg {
-		snap, err := fetchSnapshot(opts, identity, fetchAgents)
+		snap, err := fetchSnapshot(db, opts, identity, fetchAgents)
 		return snapshotMsg{Snap: snap, Err: err}
 	}
 }
 
 // fetchSnapshot assembles a complete BoardSnapshot in a single pass with minimal
 // DB queries: 3 bulk bead queries + 1 GetChildrenBatch = 4 total.
-func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) (*BoardSnapshot, error) {
+// db is the owned beads.Storage connection (not the singleton).
+func fetchSnapshot(db beads.Storage, opts Opts, identity string, fetchAgents func() []LocalAgent) (*BoardSnapshot, error) {
 	var warnings []string
 
 	// Check for Dolt conflicts before store reads.
@@ -131,8 +134,10 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 		warnings = append(warnings, w)
 	}
 
-	// 1. Bulk-fetch beads — same store calls as FetchBoard.
-	openBeads, err := store.ListBoardBeads(beads.IssueFilter{
+	ctx := context.Background()
+
+	// 1. Bulk-fetch beads using the owned db connection.
+	openBeads, err := listBoardBeadsDB(ctx, db, beads.IssueFilter{
 		ExcludeStatus: []beads.Status{beads.StatusClosed},
 	})
 	if err != nil {
@@ -145,12 +150,12 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 	}
 
 	closedCutoff := time.Now().Add(-7 * 24 * time.Hour)
-	closedBeads, _ := store.ListBoardBeads(beads.IssueFilter{
+	closedBeads, _ := listBoardBeadsDB(ctx, db, beads.IssueFilter{
 		Status:      store.StatusPtr(beads.StatusClosed),
 		ClosedAfter: &closedCutoff,
 	})
 
-	blockedBeads, _ := store.GetBlockedIssues(beads.WorkFilter{})
+	blockedBeads, _ := getBlockedIssuesDB(ctx, db, beads.WorkFilter{})
 
 	// Build blockedMap: beadID -> list of blocker IDs.
 	blockedMap := make(map[string][]string, len(blockedBeads))
@@ -165,7 +170,7 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 	}
 
 	// 3. Single query for all children.
-	childrenMap, err := store.GetChildrenBatch(needChildren)
+	childrenMap, err := getChildrenBatchDB(ctx, db, needChildren)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: batch children: %w", err)
 	}
@@ -251,7 +256,7 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 
 	// 8. Fetch recovery refs for interrupted beads.
 	recoveryRefs := make(map[string]*RecoveryRef)
-	getDeps := StoreDeps()
+	getDeps := storeDepsWith(ctx, db)
 	for _, b := range cols.Interrupted {
 		if ref := FetchRecoveryRef(b.ID, getDeps); ref != nil {
 			recoveryRefs[b.ID] = ref
@@ -271,4 +276,90 @@ func fetchSnapshot(opts Opts, identity string, fetchAgents func() []LocalAgent) 
 	}
 
 	return snap, nil
+}
+
+// --- DB-aware helpers for fetchSnapshot (use owned connection, not singleton) ---
+
+// listBoardBeadsDB is like store.ListBoardBeads but uses the provided db connection.
+func listBoardBeadsDB(ctx context.Context, db beads.Storage, filter beads.IssueFilter) ([]BoardBead, error) {
+	if filter.Status == nil && len(filter.ExcludeStatus) == 0 {
+		filter.ExcludeStatus = []beads.Status{beads.StatusClosed}
+	}
+	issues, err := db.SearchIssues(ctx, "", filter)
+	if err != nil {
+		return nil, fmt.Errorf("list board beads: %w", err)
+	}
+	return store.IssuesToBoardBeads(issues), nil
+}
+
+// getBlockedIssuesDB is like store.GetBlockedIssues but uses the provided db connection.
+func getBlockedIssuesDB(ctx context.Context, db beads.Storage, filter beads.WorkFilter) ([]BoardBead, error) {
+	blocked, err := db.GetBlockedIssues(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("get blocked issues: %w", err)
+	}
+	result := make([]BoardBead, 0, len(blocked))
+	for _, bi := range blocked {
+		bb := BoardBead{
+			ID:              bi.ID,
+			Title:           bi.Title,
+			Description:     bi.Description,
+			Status:          string(bi.Status),
+			Priority:        bi.Priority,
+			Type:            string(bi.IssueType),
+			Owner:           bi.Owner,
+			CreatedAt:       bi.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:       bi.UpdatedAt.Format(time.RFC3339),
+			Labels:          bi.Labels,
+			DependencyCount: bi.BlockedByCount,
+		}
+		for _, blockerID := range bi.BlockedBy {
+			bb.Dependencies = append(bb.Dependencies, BoardDep{
+				IssueID:     bi.ID,
+				DependsOnID: blockerID,
+				Type:        "blocks",
+			})
+		}
+		result = append(result, bb)
+	}
+	return result, nil
+}
+
+// getChildrenBatchDB is like store.GetChildrenBatch but uses the provided db connection.
+func getChildrenBatchDB(ctx context.Context, db beads.Storage, parentIDs []string) (map[string][]store.Bead, error) {
+	if len(parentIDs) == 0 {
+		return map[string][]store.Bead{}, nil
+	}
+	result := make(map[string][]store.Bead, len(parentIDs))
+	for _, pid := range parentIDs {
+		pid := pid
+		issues, err := db.SearchIssues(ctx, "", beads.IssueFilter{
+			ParentID: &pid,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get children of %s: %w", pid, err)
+		}
+		result[pid] = store.IssuesToBeads(issues)
+	}
+	return result, nil
+}
+
+// storeDepsWith returns a GetDependentsFunc backed by the provided db connection.
+func storeDepsWith(ctx context.Context, db beads.Storage) GetDependentsFunc {
+	return func(beadID string) ([]DepRecord, error) {
+		deps, err := db.GetDependentsWithMetadata(ctx, beadID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]DepRecord, len(deps))
+		for i, d := range deps {
+			out[i] = DepRecord{
+				ID:             d.ID,
+				Title:          d.Title,
+				Status:         string(d.Status),
+				DependencyType: string(d.DependencyType),
+			}
+		}
+		return out, nil
+	}
 }

@@ -2,6 +2,7 @@ package board
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -9,6 +10,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads"
+
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // PendingAction identifies an action to run after the TUI exits.
@@ -44,8 +48,12 @@ const (
 	SectionLower                  // blocked + interrupted side-by-side below the columns
 )
 
-// Model is the Bubble Tea model for the board TUI.
-type Model struct {
+// BoardMode is the Bubble Tea model for the board TUI.
+// It implements the Mode interface and owns its database connection.
+type BoardMode struct {
+	db       beads.Storage // owned database connection (not the singleton)
+	beadsDir string        // beads directory for reconnection
+
 	Opts          Opts
 	Cols          Columns
 	Agents        []LocalAgent // alive local wizards from registry
@@ -150,7 +158,7 @@ type Model struct {
 // termViewportH returns the number of visible content lines in the terminal
 // pane overlay. This must match the viewportH calculation in renderTerminalPane
 // (height - 5, where height = m.Height*85/100, clamped to min 3).
-func (m Model) termViewportH() int {
+func (m *BoardMode) termViewportH() int {
 	h := m.Height * 85 / 100
 	if h < 24 {
 		h = 24
@@ -166,14 +174,14 @@ func (m Model) termViewportH() int {
 }
 
 // VisibleCols returns the columns filtered by the current type scope.
-func (m Model) VisibleCols() Columns {
+func (m *BoardMode) VisibleCols() Columns {
 	return FilterTypeScope(m.Cols, m.TypeScope)
 }
 
 // DisplayColumns returns the columns to display, respecting ShowAllCols toggle
 // and search filter. This is the single filtering point for search — both
 // View() and navigation use these results.
-func (m Model) DisplayColumns() []ColDef {
+func (m *BoardMode) DisplayColumns() []ColDef {
 	vis := m.VisibleCols()
 	if m.SearchQuery != "" {
 		vis = FilterColumns(vis, m.SearchQuery)
@@ -185,7 +193,7 @@ func (m Model) DisplayColumns() []ColDef {
 }
 
 // ensureCardVisible adjusts ColScroll so SelCard is within the visible window.
-func (m *Model) ensureCardVisible(maxCards int) {
+func (m *BoardMode) ensureCardVisible(maxCards int) {
 	if maxCards <= 0 {
 		return
 	}
@@ -201,7 +209,7 @@ func (m *Model) ensureCardVisible(maxCards int) {
 }
 
 // colMaxCards computes MaxCards from the current board state.
-func (m *Model) colMaxCards() int {
+func (m *BoardMode) colMaxCards() int {
 	displayCols := m.DisplayColumns()
 	warningCount := 0
 	if m.Snapshot != nil {
@@ -213,7 +221,7 @@ func (m *Model) colMaxCards() int {
 }
 
 // ClampSelection keeps SelSection, SelCol, and SelCard within valid bounds.
-func (m *Model) ClampSelection() {
+func (m *BoardMode) ClampSelection() {
 	vis := m.VisibleCols()
 
 	// Force SelSection to match the active ViewMode.
@@ -296,7 +304,7 @@ func (m *Model) ClampSelection() {
 }
 
 // SelectedBead returns a pointer to the currently selected bead, or nil.
-func (m Model) SelectedBead() *BoardBead {
+func (m *BoardMode) SelectedBead() *BoardBead {
 	vis := m.VisibleCols()
 	switch m.SelSection {
 	case SectionAlerts:
@@ -334,6 +342,51 @@ func tickCmd(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
+// BoardModeOpts holds parameters for constructing a BoardMode.
+type BoardModeOpts struct {
+	BeadsDir       string
+	Opts           Opts
+	Identity       string
+	FetchAgentsFn  func() []LocalAgent
+	InlineActionFn func(PendingAction, string) error
+	RejectDesignFn func(string, string) error
+}
+
+// NewBoardMode creates a new BoardMode that owns its database connection.
+func NewBoardMode(o BoardModeOpts) (*BoardMode, error) {
+	db, err := store.Open(o.BeadsDir)
+	if err != nil {
+		return nil, fmt.Errorf("board: open store: %w", err)
+	}
+	return &BoardMode{
+		db:             db,
+		beadsDir:       o.BeadsDir,
+		Opts:           o.Opts,
+		Identity:       o.Identity,
+		LastTick:       time.Now(),
+		SelSection:     SectionColumns,
+		FetchAgentsFn:  o.FetchAgentsFn,
+		InlineActionFn: o.InlineActionFn,
+		RejectDesignFn: o.RejectDesignFn,
+		ResolveFn:      o.Opts.ResolveFn,
+		CmdlineRoot:    o.Opts.RootCmd,
+		TermContentFn:  o.Opts.TermContentFn,
+	}, nil
+}
+
+// boardModeRunner adapts *BoardMode (which implements Mode) to tea.Model
+// so it can be used directly with Bubble Tea until RootModel takes over.
+type boardModeRunner struct {
+	mode *BoardMode
+}
+
+func (r *boardModeRunner) Init() tea.Cmd                           { return r.mode.Init() }
+func (r *boardModeRunner) View() string                            { return r.mode.View() }
+func (r *boardModeRunner) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	_, cmd := r.mode.Update(msg)
+	return r, cmd
+}
+
 // RunBoardTUI runs the board TUI in a loop, executing pending actions between launches.
 // actionFn is called when the TUI exits with a pending action; it returns true to relaunch.
 // inlineActionFn is used for actions that execute within the TUI via tea.Cmd (no exit-relaunch).
@@ -342,40 +395,106 @@ func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, ac
 	if len(rejectDesignFn) > 0 {
 		rejectFn = rejectDesignFn[0]
 	}
+
+	// Resolve beadsDir from environment or config.
+	beadsDir := resolveBeadsDirForBoard()
+
 	for {
-		m := Model{
+		bm, err := NewBoardMode(BoardModeOpts{
+			BeadsDir:       beadsDir,
 			Opts:           opts,
 			Identity:       identity,
-			LastTick:       time.Now(),
-			SelSection:     SectionColumns,
 			FetchAgentsFn:  fetchAgents,
 			InlineActionFn: inlineActionFn,
 			RejectDesignFn: rejectFn,
-			ResolveFn:      opts.ResolveFn,
-			CmdlineRoot:    opts.RootCmd,
-			TermContentFn:  opts.TermContentFn,
+		})
+		if err != nil {
+			return err
 		}
-		p := tea.NewProgram(m, tea.WithAltScreen())
-		result, err := p.Run()
+		runner := &boardModeRunner{mode: bm}
+		p := tea.NewProgram(runner, tea.WithAltScreen())
+		_, err = p.Run()
 		if err != nil {
 			return err
 		}
 
-		final, ok := result.(Model)
-		if !ok || final.PendingAction == ActionNone {
+		if bm.PendingAction == ActionNone {
 			break
 		}
 
-		if !actionFn(final.PendingAction, final.PendingBeadID) {
+		if !actionFn(bm.PendingAction, bm.PendingBeadID) {
 			break
 		}
 	}
 	return nil
 }
 
-// Init implements tea.Model.
-func (m Model) Init() tea.Cmd {
-	return fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+// resolveBeadsDirForBoard resolves the beads directory for the board.
+// Uses BEADS_DIR env var if set, otherwise falls back to empty string
+// which will cause store.Open to fail with a clear error.
+func resolveBeadsDirForBoard() string {
+	if d := os.Getenv("BEADS_DIR"); d != "" {
+		return d
+	}
+	return ""
+}
+
+// Init implements Mode.
+func (m *BoardMode) Init() tea.Cmd {
+	return fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
+}
+
+// ID implements Mode.
+func (m *BoardMode) ID() ModeID { return ModeBoard }
+
+// SetSize implements Mode.
+func (m *BoardMode) SetSize(w, h int) {
+	m.Width = w
+	m.Height = h
+}
+
+// OnActivate implements Mode. Triggers an immediate re-fetch when the board tab becomes active.
+func (m *BoardMode) OnActivate() tea.Cmd {
+	return fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
+}
+
+// OnDeactivate implements Mode. Board data is cheap to keep refreshing, so this is a no-op.
+func (m *BoardMode) OnDeactivate() {}
+
+// HandleTowerChanged implements Mode. Closes the current db, re-opens at the new beads dir,
+// and triggers an immediate re-fetch.
+func (m *BoardMode) HandleTowerChanged(tc TowerChanged) tea.Cmd {
+	if m.db != nil {
+		m.db.Close()
+	}
+	m.beadsDir = tc.BeadsDir
+	m.Opts.TowerName = tc.Name
+	db, err := store.Open(tc.BeadsDir)
+	if err != nil {
+		m.ActionStatus = fmt.Sprintf("tower switch failed: %v", err)
+		m.ActionStatusTime = time.Now()
+		return nil
+	}
+	m.db = db
+	m.Snapshot = nil
+	m.SelCol = 0
+	m.SelCard = 0
+	m.ColScroll = 0
+	m.SelSection = SectionColumns
+	return fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
+}
+
+// HasOverlay implements Mode. Returns true when any overlay or modal is active,
+// indicating that Tab should be passed to this mode rather than switching tabs.
+func (m *BoardMode) HasOverlay() bool {
+	return m.Inspecting || m.ActionMenuOpen || m.TowerSwitcherOpen ||
+		m.ConfirmOpen || m.TermOpen || m.SearchActive ||
+		m.Cmdline.Active || m.FeedbackActive || m.ResolveActive
+}
+
+// reconnectWarningMsg is a transient warning sent when the db connection is re-established.
+type reconnectWarningMsg struct {
+	warning string
 }
 
 // actionResultMsg carries the result of an inline action executed via tea.Cmd.
@@ -452,7 +571,7 @@ type cmdlineDoneMsg struct {
 }
 
 // updateCmdline handles keypresses while command mode is active.
-func (m Model) updateCmdline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *BoardMode) updateCmdline(msg tea.KeyMsg) (Mode, tea.Cmd) {
 	newState, done, execCmd := HandleCmdlineKey(m.Cmdline, msg, m.CmdlineRoot)
 	m.Cmdline = newState
 	if done {
@@ -533,7 +652,7 @@ func dangerForAction(action PendingAction) DangerLevel {
 }
 
 // updateConfirm handles key input in the confirmation dialog.
-func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *BoardMode) updateConfirm(msg tea.KeyMsg) (Mode, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		action := m.ConfirmAction
@@ -553,22 +672,22 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// dispatchInlineAction dispatches an inline action via tea.Cmd if the Model has an InlineActionFn.
-func (m *Model) dispatchInlineAction(action PendingAction, beadID string) (Model, tea.Cmd) {
+// dispatchInlineAction dispatches an inline action via tea.Cmd if the BoardMode has an InlineActionFn.
+func (m *BoardMode) dispatchInlineAction(action PendingAction, beadID string) (Mode, tea.Cmd) {
 	if m.ActionRunning {
-		return *m, nil
+		return m, nil
 	}
 	if m.InlineActionFn == nil {
 		// Fallback to exit-relaunch pattern if no inline fn provided.
 		m.PendingAction = action
 		m.PendingBeadID = beadID
 		m.Quitting = true
-		return *m, tea.Quit
+		return m, tea.Quit
 	}
 	m.ActionRunning = true
 	m.ActionStatus = actionLabel(action) + "..."
 	m.ActionStatusTime = time.Now()
-	return *m, runInlineActionCmd(m.InlineActionFn, action, beadID)
+	return m, runInlineActionCmd(m.InlineActionFn, action, beadID)
 }
 
 // copyToClipboard pipes text to the system clipboard command.
@@ -589,7 +708,7 @@ func copyToClipboard(text string) error {
 
 // dispatchMenuAction handles an action selected from the action menu.
 // ActionRejectDesign and ActionResolve get special treatment: they open the inspector + text input.
-func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
+func (m *BoardMode) dispatchMenuAction(item MenuAction) (Mode, tea.Cmd) {
 	if item.ActionType == ActionResolve {
 		// Open inspector and activate resolve input.
 		m.Inspecting = true
@@ -601,9 +720,9 @@ func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
 		m.InspectorLoading = true
 		m.InspectorData = nil
 		if bead := m.SelectedBead(); bead != nil {
-			return *m, fetchInspectorCmd(*bead)
+			return m, fetchInspectorCmd(*bead)
 		}
-		return *m, nil
+		return m, nil
 	}
 	if item.ActionType == ActionRejectDesign {
 		// Open inspector and activate feedback input.
@@ -616,9 +735,9 @@ func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
 		m.InspectorLoading = true
 		m.InspectorData = nil
 		if bead := m.SelectedBead(); bead != nil {
-			return *m, fetchInspectorCmd(*bead)
+			return m, fetchInspectorCmd(*bead)
 		}
-		return *m, nil
+		return m, nil
 	}
 	if item.ActionType == ActionTrace {
 		// Open terminal pane with trace content.
@@ -630,9 +749,9 @@ func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
 		m.TermLines = nil
 		m.TermScroll = 0
 		if m.TermContentFn != nil {
-			return *m, fetchTermContentCmd(m.TermContentFn, beadID, m.TermTitle)
+			return m, fetchTermContentCmd(m.TermContentFn, beadID, m.TermTitle)
 		}
-		return *m, nil
+		return m, nil
 	}
 	if isInlineAction(item.ActionType) {
 		if item.Danger != DangerNone {
@@ -641,14 +760,14 @@ func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
 			m.ConfirmBeadID = m.ActionMenuBeadID
 			m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID, m.ActionMenuBeadTitle)
 			m.ConfirmDanger = item.Danger
-			return *m, nil
+			return m, nil
 		}
 		return m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
 	}
 	m.PendingAction = item.ActionType
 	m.PendingBeadID = m.ActionMenuBeadID
 	m.Quitting = true
-	return *m, tea.Quit
+	return m, tea.Quit
 }
 
 // rejectDesignResultMsg carries the result of a design rejection action.
@@ -664,7 +783,7 @@ type resolveResultMsg struct {
 }
 
 // updateFeedbackInput handles keypresses in the feedback text input mode.
-func (m Model) updateFeedbackInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *BoardMode) updateFeedbackInput(msg tea.KeyMsg) (Mode, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.FeedbackActive = false
@@ -712,7 +831,7 @@ func (m Model) updateFeedbackInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateResolveInput handles keypresses in the resolve text input mode.
-func (m Model) updateResolveInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *BoardMode) updateResolveInput(msg tea.KeyMsg) (Mode, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.ResolveActive = false
@@ -759,8 +878,8 @@ func (m Model) updateResolveInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// Update implements tea.Model.
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// Update implements Mode.
+func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Confirmation dialog: absorb all keys.
@@ -894,17 +1013,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if selected.Name == m.Opts.TowerName {
 						return m, nil // already on this tower
 					}
-					if m.Opts.SwitchTowerFn != nil {
-						if name, err := m.Opts.SwitchTowerFn(selected.Name); err == nil {
-							m.Opts.TowerName = name
-							m.Snapshot = nil
-							m.SelCol = 0
-							m.SelCard = 0
-							m.ColScroll = 0
-							m.SelSection = SectionColumns
-							return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
-						}
-					}
+					// Use HandleTowerChanged for tower switching.
+					cmd := m.HandleTowerChanged(TowerChanged{
+						Name:     selected.Name,
+						BeadsDir: selected.BeadsDir,
+					})
+					return m, cmd
 				}
 				return m, nil
 			}
@@ -1198,7 +1312,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.ClampSelection()
-			return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+			return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
 		case "t":
 			m.TypeScope = m.TypeScope.Next()
 			m.ClampSelection()
@@ -1361,11 +1475,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ActionStatus = ""
 		}
 		if !m.Inspecting {
-			return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+			return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
 		}
 		return m, tickCmd(m.Opts.Interval)
 	case snapshotMsg:
-		if msg.Err == nil && msg.Snap != nil {
+		if msg.Err != nil {
+			// Connection error — attempt reconnect.
+			if m.db != nil {
+				m.db.Close()
+			}
+			if db, err := store.Open(m.beadsDir); err == nil {
+				m.db = db
+			}
+			m.ActionStatus = "Reconnecting..."
+			m.ActionStatusTime = time.Now()
+			return m, tickCmd(m.Opts.Interval)
+		}
+		if msg.Snap != nil {
 			m.Snapshot = msg.Snap
 			m.Cols = msg.Snap.Columns
 			m.Agents = msg.Snap.Agents
@@ -1401,7 +1527,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.ActionStatusTime = time.Now()
 		// Refresh board data after action completes.
-		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+		return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
 	case rejectDesignResultMsg:
 		m.ActionRunning = false
 		if msg.Err != nil {
@@ -1410,7 +1536,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ActionStatus = "Design rejected"
 		}
 		m.ActionStatusTime = time.Now()
-		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+		return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
 	case resolveResultMsg:
 		m.ActionRunning = false
 		if msg.Err != nil {
@@ -1419,7 +1545,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ActionStatus = "Resolved"
 		}
 		m.ActionStatusTime = time.Now()
-		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+		return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
 	case cmdlineDoneMsg:
 		m.ActionRunning = false
 		if msg.err != nil {
@@ -1438,7 +1564,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ActionStatus = "Done"
 		}
 		m.ActionStatusTime = time.Now()
-		return m, fetchSnapshotCmd(m.Opts, m.Identity, m.FetchAgentsFn)
+		return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
 	}
 	return m, nil
 }

@@ -11,6 +11,7 @@ import (
 type TowerItem struct {
 	Name     string
 	Database string
+	BeadsDir string // resolved beads directory path for store.Open
 	Active   bool
 }
 

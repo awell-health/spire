@@ -9,7 +9,7 @@ import (
 
 // renderTerminalPane renders the terminal pane overlay content.
 // width and height are the overlay dimensions (not the full terminal).
-func renderTerminalPane(m *Model, width, height int) string {
+func renderTerminalPane(m *BoardMode, width, height int) string {
 	if width < 20 {
 		width = 20
 	}

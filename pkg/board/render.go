@@ -209,9 +209,9 @@ func renderTabSidebar(mode ViewMode, alertCount, lowerCount int) string {
 	return lipgloss.NewStyle().Width(sidebarWidth).Render(sidebar)
 }
 
-// View implements tea.Model for the board TUI.
+// View implements Mode for the board TUI.
 // This is a pure function — ZERO store/DB calls. All data comes from m.Snapshot.
-func (m Model) View() string {
+func (m *BoardMode) View() string {
 	if m.Quitting {
 		return ""
 	}
@@ -251,8 +251,8 @@ func (m Model) View() string {
 	visibleCols := m.VisibleCols()
 	displayCols := m.DisplayColumns()
 
-	// Subtract sidebar width from available width for content.
-	contentWidth := m.Width - sidebarWidth
+	// Full width available for board content (chrome rendered by RootModel).
+	contentWidth := m.Width
 	if contentWidth < 40 {
 		contentWidth = 40
 	}
@@ -270,15 +270,6 @@ func (m Model) View() string {
 	}
 
 	var s strings.Builder
-
-	// Header.
-	headerTitle := "Spire Board"
-	if m.Opts.TowerName != "" {
-		headerTitle = "Spire Board \u2022 " + m.Opts.TowerName
-	}
-	header := lipgloss.NewStyle().Bold(true).Render(headerTitle)
-	ts := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.LastTick.Format("15:04:05"))
-	s.WriteString(header + "  " + ts + "\n\n")
 
 	// Search bar.
 	if searchBar := renderSearchBar(m.SearchQuery, m.SearchActive, m.Width); searchBar != "" {
@@ -299,10 +290,7 @@ func (m Model) View() string {
 		s.WriteString("\n")
 	}
 
-	// Tab sidebar.
 	alertCount := len(visibleCols.Alerts)
-	lowerCount := len(visibleCols.Blocked) + len(visibleCols.Interrupted)
-	sidebarStr := renderTabSidebar(m.ViewMode, alertCount, lowerCount)
 
 	// Compute height budget based on active view mode.
 	var budget HeightBudgetResult
@@ -514,8 +502,8 @@ func (m Model) View() string {
 		}
 	}
 
-	// Join sidebar + main content horizontally.
-	s.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, sidebarStr, mainContent.String()))
+	// Write main content directly (chrome rendered by RootModel).
+	s.WriteString(mainContent.String())
 	s.WriteString("\n")
 
 	// Agent panel (capped by budget).
@@ -523,49 +511,14 @@ func (m Model) View() string {
 		s.WriteString(RenderAgentPanelSnap(m.Agents, m.Snapshot.DAGProgress, budget.MaxAgents))
 	}
 
-	// Footer.
-	s.WriteString("\n")
-	footerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	scopeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	epicInfo := ""
-	if m.Opts.Epic != "" {
-		epicInfo = " • epic:" + m.Opts.Epic
-	}
-	colsHint := ""
-	if m.ShowAllCols {
-		colsHint = " [all]"
-	}
-	leftFooter := footerStyle.Render("Tab view  j/k ↕  h/l ↔  Enter inspect  / search  s summon  u unsummon  r reset  x close  d defer  a actions  e epic" + epicInfo + "  T tower  H cols" + colsHint + " • q quit • ↻ " + m.Opts.Interval.String())
-	rightFooter := scopeStyle.Render("showing " + m.TypeScope.Label())
-	if m.Width > 0 {
-		gap := m.Width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)
-		if gap > 1 {
-			s.WriteString(leftFooter)
-			s.WriteString(strings.Repeat(" ", gap))
-			s.WriteString(rightFooter)
-		} else {
-			s.WriteString(leftFooter + "  " + rightFooter)
-		}
-	} else {
-		s.WriteString(leftFooter + "  " + rightFooter)
-	}
-	s.WriteString("\n")
+	// Command line / action status (kept in mode, not chrome).
 	if m.Cmdline.Active {
 		s.WriteString(RenderCmdline(m.Cmdline, m.Width))
-	} else {
-		var footerParts []string
-		if bead := m.SelectedBead(); bead != nil {
-			beadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-			footerParts = append(footerParts, beadStyle.Render(bead.ID+"  "+Truncate(bead.Title, 60)))
-		}
-		// Show inline action status.
-		if m.ActionStatus != "" {
-			statusStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-			footerParts = append(footerParts, statusStyle.Render(m.ActionStatus))
-		}
-		if len(footerParts) > 0 {
-			s.WriteString(strings.Join(footerParts, footerStyle.Render("  •  ")))
-		}
+		s.WriteString("\n")
+	} else if m.ActionStatus != "" {
+		statusStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+		s.WriteString(statusStyle.Render(m.ActionStatus))
+		s.WriteString("\n")
 	}
 
 	boardOutput := s.String()
@@ -586,7 +539,7 @@ func (m Model) View() string {
 		if popH > m.Height {
 			popH = m.Height
 		}
-		popup := renderTerminalPane(&m, popW, popH)
+		popup := renderTerminalPane(m, popW, popH)
 		return overlayPopup(boardOutput, popup, m.Width, m.Height)
 	}
 
