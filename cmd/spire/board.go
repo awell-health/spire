@@ -179,8 +179,8 @@ func cmdBoard(args []string) error {
 		return resolveSourceBead(beadID, comment, false)
 	}
 
-	opts.TermContentFn = func(beadID string, width int) (string, error) {
-		return renderTraceForBoard(beadID, width)
+	opts.TermContentFn = func(beadID string) (string, error) {
+		return renderTraceForBoard(beadID)
 	}
 
 	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn, inlineActionFn, rejectDesignFn)

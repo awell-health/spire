@@ -93,8 +93,8 @@ type Opts struct {
 	// ResolveFn resolves a needs-human bead with a recovery learning comment.
 	ResolveFn func(beadID, comment string) error
 	// TermContentFn fetches content for the terminal pane overlay.
-	// Takes (beadID, contentWidth) and returns rendered content string.
-	TermContentFn func(beadID string, width int) (string, error)
+	// Takes beadID and returns rendered content string.
+	TermContentFn func(beadID string) (string, error)
 }
 
 // ViewMode identifies which tabbed view is active on the board.

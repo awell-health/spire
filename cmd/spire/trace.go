@@ -423,7 +423,7 @@ func renderSubtaskToString(s *strings.Builder, td traceData, indent string) {
 
 // renderTraceForBoard builds and renders a full trace (including log tail)
 // as a single string for display in the board terminal pane.
-func renderTraceForBoard(beadID string, width int) (string, error) {
+func renderTraceForBoard(beadID string) (string, error) {
 	td, err := buildTrace(beadID)
 	if err != nil {
 		return "", err

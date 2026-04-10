@@ -143,8 +143,26 @@ type Model struct {
 	TermBeadID  string   // bead ID for refresh
 
 	// TermContentFn fetches content for the terminal pane. Injected by the caller.
-	// Takes (beadID, contentWidth) and returns rendered content string.
-	TermContentFn func(string, int) (string, error)
+	// Takes beadID and returns rendered content string.
+	TermContentFn func(string) (string, error)
+}
+
+// termViewportH returns the number of visible content lines in the terminal
+// pane overlay. This must match the viewportH calculation in renderTerminalPane
+// (height - 5, where height = m.Height*85/100, clamped to min 3).
+func (m Model) termViewportH() int {
+	h := m.Height * 85 / 100
+	if h < 24 {
+		h = 24
+	}
+	if h > m.Height {
+		h = m.Height
+	}
+	vh := h - 5
+	if vh < 3 {
+		vh = 3
+	}
+	return vh
 }
 
 // VisibleCols returns the columns filtered by the current type scope.
@@ -376,9 +394,9 @@ type termContentMsg struct {
 }
 
 // fetchTermContentCmd returns a tea.Cmd that fetches content for the terminal pane.
-func fetchTermContentCmd(fn func(string, int) (string, error), beadID, title string, width int) tea.Cmd {
+func fetchTermContentCmd(fn func(string) (string, error), beadID, title string) tea.Cmd {
 	return func() tea.Msg {
-		content, err := fn(beadID, width)
+		content, err := fn(beadID)
 		return termContentMsg{Title: title, Content: content, BeadID: beadID, Err: err}
 	}
 }
@@ -612,11 +630,7 @@ func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
 		m.TermLines = nil
 		m.TermScroll = 0
 		if m.TermContentFn != nil {
-			contentWidth := m.Width * 9 / 10
-			if contentWidth < 80 {
-				contentWidth = 80
-			}
-			return *m, fetchTermContentCmd(m.TermContentFn, beadID, m.TermTitle, contentWidth)
+			return *m, fetchTermContentCmd(m.TermContentFn, beadID, m.TermTitle)
 		}
 		return *m, nil
 	}
@@ -768,10 +782,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "j", "down":
 				m.TermScroll++
-				viewportH := m.Height*85/100 - 4
-				if viewportH < 10 {
-					viewportH = 10
-				}
+				viewportH := m.termViewportH()
 				maxScroll := len(m.TermLines) - viewportH
 				if maxScroll < 0 {
 					maxScroll = 0
@@ -785,10 +796,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.TermScroll = 0
 				}
 			case "d":
-				viewportH := m.Height*85/100 - 4
-				if viewportH < 10 {
-					viewportH = 10
-				}
+				viewportH := m.termViewportH()
 				m.TermScroll += viewportH / 2
 				maxScroll := len(m.TermLines) - viewportH
 				if maxScroll < 0 {
@@ -798,10 +806,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.TermScroll = maxScroll
 				}
 			case "u":
-				viewportH := m.Height*85/100 - 4
-				if viewportH < 10 {
-					viewportH = 10
-				}
+				viewportH := m.termViewportH()
 				m.TermScroll -= viewportH / 2
 				if m.TermScroll < 0 {
 					m.TermScroll = 0
@@ -816,10 +821,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "G":
 				m.PendingG = false
-				viewportH := m.Height*85/100 - 4
-				if viewportH < 10 {
-					viewportH = 10
-				}
+				viewportH := m.termViewportH()
 				maxScroll := len(m.TermLines) - viewportH
 				if maxScroll < 0 {
 					maxScroll = 0
@@ -828,11 +830,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "r":
 				if m.TermContentFn != nil && m.TermBeadID != "" {
 					m.TermLoading = true
-					contentWidth := m.Width * 9 / 10
-					if contentWidth < 80 {
-						contentWidth = 80
-					}
-					return m, fetchTermContentCmd(m.TermContentFn, m.TermBeadID, m.TermTitle, contentWidth)
+					return m, fetchTermContentCmd(m.TermContentFn, m.TermBeadID, m.TermTitle)
 				}
 			}
 			return m, nil
