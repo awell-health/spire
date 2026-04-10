@@ -187,13 +187,21 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	// Step 1: Commit any local changes (pull/push disabled — shared dolt server is source of truth).
 	_ = store.CommitPending("steward cycle sync")
 
-	// Step 2: Assess — find ready work.
-	ready, err := store.GetReadyWork(beads.WorkFilter{})
+	// Step 2: Assess — find schedulable work (ready + policy-filtered).
+	schedResult, err := store.GetSchedulableWork(beads.WorkFilter{})
 	if err != nil {
 		log.Printf("[steward] %sready: error — %s", prefix, err)
 		pushState()
 		return
 	}
+
+	// Handle quarantined beads (invariant violations like multiple open attempts).
+	for _, q := range schedResult.Quarantined {
+		log.Printf("[steward] quarantining %s (multiple open attempts): %v", q.ID, q.Error)
+		RaiseCorruptedBeadAlertFunc(q.ID, q.Error)
+	}
+
+	schedulable := schedResult.Schedulable
 
 	// Step 3: Load roster via backend.List() — one code path for all backends.
 	agents, _ := cfg.Backend.List()
@@ -205,7 +213,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	}
 
 	log.Printf("[steward] %sready: %d beads | roster: %d wizard(s) (%d busy, %d idle)",
-		prefix, len(ready), len(roster), len(busy), idleCount)
+		prefix, len(schedulable), len(roster), len(busy), idleCount)
 
 	if len(roster) == 0 {
 		CheckBeadHealth(cfg.StaleThreshold, cfg.ShutdownThreshold, cfg.DryRun, cfg.Backend)
@@ -213,31 +221,10 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		return
 	}
 
-	// Step 4: Assign ready beads to idle agents (round-robin).
+	// Step 4: Assign schedulable beads to idle agents (round-robin).
 	assigned := 0
 	agentIdx := 0
-	for _, bead := range ready {
-		// Skip message, template, and already-owned beads.
-		if store.HasLabel(bead, "msg") != "" || store.ContainsLabel(bead, "msg") {
-			continue
-		}
-		if store.ContainsLabel(bead, "template") {
-			continue
-		}
-		// Skip beads with an active attempt child (someone is already working).
-		// The attempt bead is the authority — owner: label is not used here.
-		// Fail closed: if GetActiveAttemptFunc returns an error (e.g. multiple
-		// open attempts), skip assignment and raise an alert rather than assigning.
-		attempt, aErr := GetActiveAttemptFunc(bead.ID)
-		if aErr != nil {
-			log.Printf("[steward] quarantining %s (multiple open attempts): %v", bead.ID, aErr)
-			RaiseCorruptedBeadAlertFunc(bead.ID, aErr)
-			continue
-		}
-		if attempt != nil {
-			continue
-		}
-
+	for _, bead := range schedulable {
 		// Find next idle agent (round-robin).
 		agentName := ""
 		for attempts := 0; attempts < len(roster); attempts++ {

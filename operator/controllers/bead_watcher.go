@@ -63,13 +63,21 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 	// DoltHub remote sync (pull/push) is handled by the dedicated spire-syncer pod.
 	// The bead watcher reads directly from the shared dolt server.
 
-	// 1. Get ready beads — GetReadyWork already filters out workflow steps,
-	// message beads, design beads, attempt beads, and review rounds.
-	readyBeads, err := store.GetReadyWork(beads.WorkFilter{})
+	// 1. Get schedulable beads — GetSchedulableWork handles readiness
+	// (no open blockers, excludes deferred/design/attempt/step beads) plus
+	// scheduling policy (excludes msg/template beads, active-attempt beads).
+	schedResult, err := store.GetSchedulableWork(beads.WorkFilter{})
 	if err != nil {
-		w.Log.Error(err, "store.GetReadyWork failed")
+		w.Log.Error(err, "store.GetSchedulableWork failed")
 		return
 	}
+
+	// Surface quarantined beads (invariant violations) at Error level.
+	for _, q := range schedResult.Quarantined {
+		w.Log.Error(q.Error, "quarantined bead (multiple open attempts)", "beadId", q.ID)
+	}
+
+	readyBeads := schedResult.Schedulable
 
 	// 2. Get existing workloads
 	var existing spirev1.SpireWorkloadList
