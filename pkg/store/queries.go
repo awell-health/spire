@@ -140,6 +140,11 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	// design beads, attempt beads, and beads with active attempt children.
 	var filtered []Bead
 	for _, b := range result {
+		// Skip epic children — the epic formula manages its own children
+		// via dispatch.children; they should never be independently assigned.
+		if b.Parent != "" {
+			continue
+		}
 		// Skip deferred beads (held back from agents until explicitly undeferred)
 		if b.Status == "deferred" {
 			continue
