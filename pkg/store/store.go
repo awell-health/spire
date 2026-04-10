@@ -52,6 +52,22 @@ func OpenAt(beadsDir string) (beads.Storage, error) {
 	return s, nil
 }
 
+// Open returns a fresh, independent beads.Storage connection to the dolt
+// database at beadsDir. Unlike Ensure/OpenAt it never touches the
+// package-level singleton — callers own the returned connection's lifecycle.
+// beadsDir must be non-empty; Open does not fall back to env vars or defaults.
+func Open(beadsDir string) (beads.Storage, error) {
+	if beadsDir == "" {
+		return nil, fmt.Errorf("store.Open: beadsDir must not be empty")
+	}
+	ctx := context.Background()
+	s, err := beads.OpenFromConfig(ctx, beadsDir)
+	if err != nil {
+		return nil, fmt.Errorf("store.Open: %w", err)
+	}
+	return s, nil
+}
+
 // Reset closes the active store.
 func Reset() {
 	if activeStore != nil {
