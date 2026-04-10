@@ -163,7 +163,7 @@ func TestValidateGraph_WorkspaceDeclInvalid(t *testing.T) {
 // --- resolveWorkspaceBranch tests ---
 
 func TestResolveWorkspaceBranch(t *testing.T) {
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, &State{
+	e := NewForTest("spi-abc", "wizard-spi-abc", &State{
 		BeadID:     "spi-abc",
 		BaseBranch: "main",
 		Subtasks:   make(map[string]SubtaskState),
@@ -194,7 +194,7 @@ func TestResolveWorkspaceBranch(t *testing.T) {
 // --- workspaceDir tests ---
 
 func TestWorkspaceDir_Default(t *testing.T) {
-	e := NewForTest("spi-xyz", "wizard-spi-xyz", nil, &State{
+	e := NewForTest("spi-xyz", "wizard-spi-xyz", &State{
 		BeadID:     "spi-xyz",
 		RepoPath:   "/repo",
 		Subtasks:   make(map[string]SubtaskState),
@@ -211,7 +211,7 @@ func TestWorkspaceDir_Default(t *testing.T) {
 }
 
 func TestWorkspaceDir_FromState(t *testing.T) {
-	e := NewForTest("spi-xyz", "wizard-spi-xyz", nil, &State{
+	e := NewForTest("spi-xyz", "wizard-spi-xyz", &State{
 		BeadID:   "spi-xyz",
 		RepoPath: "/repo",
 		Subtasks: make(map[string]SubtaskState),
@@ -238,7 +238,7 @@ func TestInitWorkspaceStates(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
 	decls := map[string]formula.WorkspaceDecl{
 		"main-repo": {Kind: formula.WorkspaceKindRepo, Scope: formula.WorkspaceScopeRun, Ownership: "owned", Cleanup: formula.WorkspaceCleanupTerminal},
@@ -273,7 +273,7 @@ func TestInitWorkspaceStates_SkipsExisting(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
 	decls := map[string]formula.WorkspaceDecl{
 		"staging": {Kind: formula.WorkspaceKindStaging, Branch: "staging/new", Scope: formula.WorkspaceScopeRun, Ownership: "owned", Cleanup: formula.WorkspaceCleanupTerminal},
@@ -303,7 +303,7 @@ func TestResolveWorkspace_RepoKind(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{
 		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
 	})
 
@@ -331,7 +331,7 @@ func TestResolveWorkspace_NotFound(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
 	_, err := e.resolveWorkspace("nonexistent")
 	if err == nil {
@@ -355,7 +355,7 @@ func TestReleaseWorkspace_BorrowedMarksClosedOnly(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
 	if err := e.releaseWorkspace("borrowed"); err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -380,7 +380,7 @@ func TestReleaseWorkspace_RepoMarksClosedOnly(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
 	if err := e.releaseWorkspace("main"); err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -401,7 +401,7 @@ func TestReleaseWorkspace_AlreadyClosed(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
 	if err := e.releaseWorkspace("ws"); err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -425,7 +425,7 @@ func TestReleaseWorkspace_TerminalCleanup_NotTerminated(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 	// e.terminated is false by default
 
 	if err := e.releaseWorkspace("staging"); err != nil {
@@ -454,7 +454,7 @@ func TestReleaseWorkspace_NeverCleanup(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 	e.terminated = true // even when terminated, "never" means no removal
 
 	if err := e.releaseWorkspace("persist"); err != nil {
@@ -487,7 +487,7 @@ func TestReleaseStepWorkspaces(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
 	if err := e.releaseStepWorkspaces("impl"); err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -523,7 +523,7 @@ func TestReleaseRunWorkspaces(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{})
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
 	if err := e.releaseRunWorkspaces(); err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -645,7 +645,7 @@ func TestResolveWorkspace_OwnedWorktree(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-abc", "wizard-spi-abc", nil, state, &Deps{
+	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{
 		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
 	})
 
@@ -730,7 +730,7 @@ func TestResolveWorkspace_RunScopeResume(t *testing.T) {
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
 	}
-	e := NewForTest("spi-def", "wizard-spi-def", nil, state, &Deps{
+	e := NewForTest("spi-def", "wizard-spi-def", state, &Deps{
 		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
 	})
 

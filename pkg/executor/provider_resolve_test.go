@@ -7,7 +7,7 @@ import (
 )
 
 func TestRepoProvider_NilRepoConfigFunc(t *testing.T) {
-	e := NewForTest("spi-test", "wizard-spi-test", nil, nil, &Deps{
+	e := NewForTest("spi-test", "wizard-spi-test", nil, &Deps{
 		RepoConfig: nil, // RepoConfig function itself is nil
 	})
 	got := e.repoProvider()
@@ -17,7 +17,7 @@ func TestRepoProvider_NilRepoConfigFunc(t *testing.T) {
 }
 
 func TestRepoProvider_NilRepoConfigReturn(t *testing.T) {
-	e := NewForTest("spi-test", "wizard-spi-test", nil, nil, &Deps{
+	e := NewForTest("spi-test", "wizard-spi-test", nil, &Deps{
 		RepoConfig: func() *repoconfig.RepoConfig { return nil },
 	})
 	got := e.repoProvider()
@@ -27,7 +27,7 @@ func TestRepoProvider_NilRepoConfigReturn(t *testing.T) {
 }
 
 func TestRepoProvider_WithProvider(t *testing.T) {
-	e := NewForTest("spi-test", "wizard-spi-test", nil, nil, &Deps{
+	e := NewForTest("spi-test", "wizard-spi-test", nil, &Deps{
 		RepoConfig: func() *repoconfig.RepoConfig {
 			return &repoconfig.RepoConfig{
 				Agent: repoconfig.AgentConfig{Provider: "codex"},

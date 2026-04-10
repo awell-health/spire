@@ -239,6 +239,30 @@ func TestRecordAgentRunPopulatesCostAndReviewRounds(t *testing.T) {
 }
 
 func TestRecordAgentRunContextFields(t *testing.T) {
+	t.Run("graph populates FormulaName and FormulaVersion", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) (string, error) {
+				recorded = &run
+				return "", nil
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, deps)
+		e.graph = &FormulaStepGraph{Name: "task-default", Version: 3}
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.FormulaName != "task-default" {
+			t.Errorf("FormulaName = %q, want %q", recorded.FormulaName, "task-default")
+		}
+		if recorded.FormulaVersion != 3 {
+			t.Errorf("FormulaVersion = %d, want 3", recorded.FormulaVersion)
+		}
+	})
+
 	t.Run("nil formula leaves FormulaName and FormulaVersion empty", func(t *testing.T) {
 		var recorded *AgentRun
 		deps := &Deps{

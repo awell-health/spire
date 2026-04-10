@@ -326,12 +326,6 @@ func (b *mockBackend) Kill(name string) error {
 
 
 
-
-
-
-
-
-
 // =============================================================================
 // Seam: ensureStagingWorktree resume and stale paths
 //
