@@ -115,6 +115,7 @@ func cmdSummon(args []string) error {
 	var auto bool
 	var dispatch string
 	var targetIDs []string
+	var hasExplicitCount bool
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -144,6 +145,7 @@ func cmdSummon(args []string) error {
 					return fmt.Errorf("expected a bead ID or number, got %q\nusage: spire summon <bead-id>... | <N> [--targets <ids>] [--auto] [--dispatch <mode>]", args[i])
 				}
 				count = n
+				hasExplicitCount = true
 			}
 		}
 	}
@@ -166,6 +168,11 @@ func cmdSummon(args []string) error {
 	// Positional bead IDs and --targets are mutually exclusive.
 	if len(targetIDs) > 0 && targets != "" {
 		return fmt.Errorf("cannot combine positional bead IDs with --targets")
+	}
+
+	// Positional bead IDs and an explicit numeric count are mutually exclusive.
+	if len(targetIDs) > 0 && hasExplicitCount {
+		return fmt.Errorf("cannot combine positional bead IDs with a numeric count")
 	}
 
 	// Positional bead IDs: infer count from the number of IDs.

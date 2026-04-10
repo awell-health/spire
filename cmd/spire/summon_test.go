@@ -98,6 +98,82 @@ func TestScanOrphanedBeads_SkipsInvalidJSON(t *testing.T) {
 	}
 }
 
+// --- Positional bead-ID parsing tests ---
+
+func TestCmdSummon_PositionalBeadIDs_PassesParsing(t *testing.T) {
+	// Single bead ID: should pass arg parsing and fail later at the store layer.
+	err := cmdSummon([]string{"spi-xxx"})
+	if err == nil {
+		return // if no error, parsing and store both worked — fine
+	}
+	// Must not fail with a parsing error.
+	if strings.Contains(err.Error(), "expected a bead ID or number") {
+		t.Fatalf("single positional bead ID should not fail parsing, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("single positional bead ID should not trigger usage error, got: %v", err)
+	}
+}
+
+func TestCmdSummon_MultiplePositionalBeadIDs_PassesParsing(t *testing.T) {
+	// Multiple bead IDs: should pass arg parsing and fail later at the store layer.
+	err := cmdSummon([]string{"spi-xxx", "spi-yyy", "spi-zzz"})
+	if err == nil {
+		return
+	}
+	if strings.Contains(err.Error(), "expected a bead ID or number") {
+		t.Fatalf("multiple positional bead IDs should not fail parsing, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "cannot combine") {
+		t.Fatalf("multiple positional bead IDs should not trigger mutual-exclusivity error, got: %v", err)
+	}
+}
+
+func TestCmdSummon_PositionalBeadIDs_MutualExclWithTargets(t *testing.T) {
+	err := cmdSummon([]string{"spi-xxx", "--targets", "spi-yyy"})
+	if err == nil {
+		t.Fatal("expected error when combining positional bead IDs with --targets")
+	}
+	if !strings.Contains(err.Error(), "cannot combine positional bead IDs with --targets") {
+		t.Fatalf("expected mutual-exclusivity error, got: %v", err)
+	}
+}
+
+func TestCmdSummon_PositionalBeadIDs_MutualExclWithCount(t *testing.T) {
+	err := cmdSummon([]string{"spi-xxx", "3"})
+	if err == nil {
+		t.Fatal("expected error when combining positional bead IDs with a numeric count")
+	}
+	if !strings.Contains(err.Error(), "cannot combine positional bead IDs with a numeric count") {
+		t.Fatalf("expected count+IDs mutual-exclusivity error, got: %v", err)
+	}
+}
+
+func TestCmdSummon_PositionalBeadIDs_CountInferred(t *testing.T) {
+	// Two positional bead IDs with no explicit count: should infer count=2.
+	// This will fail at the store layer, not at parsing — verifying
+	// that the count-inference logic doesn't produce a "requires a positive number" error.
+	err := cmdSummon([]string{"spi-aaa", "spi-bbb"})
+	if err == nil {
+		return
+	}
+	if strings.Contains(err.Error(), "summon requires a positive number") {
+		t.Fatalf("positional bead IDs should infer count, got: %v", err)
+	}
+}
+
+func TestCmdSummon_NumericCountStillWorks(t *testing.T) {
+	// Bare number: existing behavior should be preserved.
+	err := cmdSummon([]string{"3"})
+	if err == nil {
+		return
+	}
+	// Must not fail with a parsing error — should pass through to store/k8s.
+	if strings.Contains(err.Error(), "expected a bead ID or number") {
+		t.Fatalf("bare numeric count should not fail parsing, got: %v", err)
+	}
+}
+
 func TestCmdSummon_DispatchInvalidMode(t *testing.T) {
 	err := cmdSummon([]string{"1", "--dispatch", "bogus"})
 	if err == nil {
