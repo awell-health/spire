@@ -14,6 +14,23 @@ import (
 	"github.com/steveyegge/beads"
 )
 
+// Store function vars — declared for testability (same pattern as doltSQL).
+var (
+	storeListBeads     = store.ListBeads
+	storeGetBead       = store.GetBead
+	storeGetChildren   = store.GetChildren
+	storeGetComments   = store.GetComments
+	storeGetDepsWithMeta = store.GetDepsWithMeta
+	storeAddLabel      = store.AddLabel
+	storeRemoveLabel   = store.RemoveLabel
+	storeUpdateBead    = store.UpdateBead
+	storeAddDepTyped   = store.AddDepTyped
+	storeCreateBead    = store.CreateBead
+	storeCloseBead     = store.CloseBead
+	storeAddComment    = store.AddComment
+	storeAddDep        = store.AddDep
+)
+
 // StewardTools implements ToolExecutor for the steward sidecar.
 type StewardTools struct {
 	commsDir string
@@ -284,7 +301,7 @@ func (t *StewardTools) listBeads(input json.RawMessage) (string, error) {
 
 	// If filtering by parent, use GetChildren for an exact match.
 	if params.Parent != "" {
-		children, err := store.GetChildren(params.Parent)
+		children, err := storeGetChildren(params.Parent)
 		if err != nil {
 			return "", fmt.Errorf("list children of %s: %w", params.Parent, err)
 		}
@@ -307,7 +324,7 @@ func (t *StewardTools) listBeads(input json.RawMessage) (string, error) {
 		}
 	}
 
-	results, err := store.ListBeads(filter)
+	results, err := storeListBeads(filter)
 	if err != nil {
 		return "", fmt.Errorf("list beads: %w", err)
 	}
@@ -328,14 +345,14 @@ func (t *StewardTools) showBead(input json.RawMessage) (string, error) {
 	}
 	json.Unmarshal(input, &params)
 
-	bead, err := store.GetBead(params.ID)
+	bead, err := storeGetBead(params.ID)
 	if err != nil {
 		return "", fmt.Errorf("show bead %s: %w", params.ID, err)
 	}
 
-	comments, _ := store.GetComments(params.ID)
-	deps, _ := store.GetDepsWithMeta(params.ID)
-	children, _ := store.GetChildren(params.ID)
+	comments, _ := storeGetComments(params.ID)
+	deps, _ := storeGetDepsWithMeta(params.ID)
+	children, _ := storeGetChildren(params.ID)
 
 	result := showBeadResult{
 		Bead:         bead,
@@ -357,22 +374,22 @@ func (t *StewardTools) updateBead(input json.RawMessage) (string, error) {
 	json.Unmarshal(input, &params)
 
 	for _, l := range params.AddLabels {
-		if err := store.AddLabel(params.ID, l); err != nil {
+		if err := storeAddLabel(params.ID, l); err != nil {
 			return "", fmt.Errorf("add label %q to %s: %w", l, params.ID, err)
 		}
 	}
 	for _, l := range params.RemoveLabels {
-		if err := store.RemoveLabel(params.ID, l); err != nil {
+		if err := storeRemoveLabel(params.ID, l); err != nil {
 			return "", fmt.Errorf("remove label %q from %s: %w", l, params.ID, err)
 		}
 	}
 	if params.Priority != nil {
-		if err := store.UpdateBead(params.ID, map[string]interface{}{"priority": *params.Priority}); err != nil {
+		if err := storeUpdateBead(params.ID, map[string]interface{}{"priority": *params.Priority}); err != nil {
 			return "", fmt.Errorf("update priority for %s: %w", params.ID, err)
 		}
 	}
 	if params.Parent != "" {
-		if err := store.AddDepTyped(params.ID, params.Parent, string(beads.DepParentChild)); err != nil {
+		if err := storeAddDepTyped(params.ID, params.Parent, string(beads.DepParentChild)); err != nil {
 			return "", fmt.Errorf("set parent %s for %s: %w", params.Parent, params.ID, err)
 		}
 	}
@@ -391,7 +408,7 @@ func (t *StewardTools) createBead(input json.RawMessage) (string, error) {
 	}
 	json.Unmarshal(input, &params)
 
-	id, err := store.CreateBead(store.CreateOpts{
+	id, err := storeCreateBead(store.CreateOpts{
 		Title:       params.Title,
 		Description: params.Description,
 		Priority:    params.Priority,
@@ -411,7 +428,7 @@ func (t *StewardTools) closeBead(input json.RawMessage) (string, error) {
 	}
 	json.Unmarshal(input, &params)
 
-	if err := store.CloseBead(params.ID); err != nil {
+	if err := storeCloseBead(params.ID); err != nil {
 		return "", fmt.Errorf("close bead %s: %w", params.ID, err)
 	}
 	return fmt.Sprintf("Closed %s", params.ID), nil
@@ -424,7 +441,7 @@ func (t *StewardTools) addComment(input json.RawMessage) (string, error) {
 	}
 	json.Unmarshal(input, &params)
 
-	if err := store.AddComment(params.ID, params.Comment); err != nil {
+	if err := storeAddComment(params.ID, params.Comment); err != nil {
 		return "", fmt.Errorf("add comment to %s: %w", params.ID, err)
 	}
 	return fmt.Sprintf("Comment added to %s", params.ID), nil
@@ -458,23 +475,32 @@ func (t *StewardTools) getRoster(_ json.RawMessage) (string, error) {
 	if err != nil {
 		// Fallback: bead-based roster via store API.
 		openStatus := beads.StatusOpen
-		agents, err := store.ListBeads(beads.IssueFilter{
+		agents, listErr := storeListBeads(beads.IssueFilter{
 			Labels: []string{"agent"},
 			Status: &openStatus,
 		})
-		if err != nil {
-			return "", fmt.Errorf("list agent beads: %w", err)
+		if listErr != nil {
+			return "", fmt.Errorf("list agent beads: %w", listErr)
 		}
-		rosterJSON, _ := marshalJSON(agents)
+		rosterJSON, marshalErr := marshalJSON(agents)
+		if marshalErr != nil {
+			return "", fmt.Errorf("marshal roster: %w", marshalErr)
+		}
 		roster = rosterJSON
 	}
 
 	// Get busy agents via store API.
 	inProgressStatus := beads.StatusInProgress
-	busyBeads, _ := store.ListBeads(beads.IssueFilter{
+	busyBeads, err := storeListBeads(beads.IssueFilter{
 		Status: &inProgressStatus,
 	})
-	busyJSON, _ := marshalJSON(busyBeads)
+	if err != nil {
+		return "", fmt.Errorf("list busy beads: %w", err)
+	}
+	busyJSON, err := marshalJSON(busyBeads)
+	if err != nil {
+		return "", fmt.Errorf("marshal busy beads: %w", err)
+	}
 
 	return fmt.Sprintf("Roster:\n%s\n\nIn-progress work:\n%s", roster, busyJSON), nil
 }
@@ -514,7 +540,7 @@ func (t *StewardTools) addDependency(input json.RawMessage) (string, error) {
 	}
 	json.Unmarshal(input, &params)
 
-	if err := store.AddDep(params.Blocked, params.Blocker); err != nil {
+	if err := storeAddDep(params.Blocked, params.Blocker); err != nil {
 		return "", fmt.Errorf("add dep %s→%s: %w", params.Blocked, params.Blocker, err)
 	}
 	return fmt.Sprintf("Dependency added: %s blocked by %s", params.Blocked, params.Blocker), nil
@@ -522,7 +548,7 @@ func (t *StewardTools) addDependency(input json.RawMessage) (string, error) {
 
 func (t *StewardTools) listAgentsWork(_ json.RawMessage) (string, error) {
 	inProgressStatus := beads.StatusInProgress
-	results, err := store.ListBeads(beads.IssueFilter{
+	results, err := storeListBeads(beads.IssueFilter{
 		Status: &inProgressStatus,
 	})
 	if err != nil {
@@ -600,16 +626,33 @@ func ensureProjectID() {
 	}
 
 	// dolt.SQL returns tabular text; the CSV path was using "-r csv" which
-	// produces "value\n<actual>". The default output is a table. Parse the
-	// last non-empty line as the value.
+	// produces "value\n<actual>". The default output is a table:
+	//   +-------+
+	//   | value |
+	//   +-------+
+	//   | <pid> |
+	//   +-------+
+	// Parse the last non-border, non-header data line as the value.
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) < 2 {
 		log.Printf("[project-id] unexpected server response: %s", out)
 		return
 	}
-	serverPID := strings.TrimSpace(lines[len(lines)-1])
-	// Strip table formatting borders if present (e.g. "| <value> |").
-	serverPID = strings.Trim(serverPID, "| ")
+	// Walk backwards to find the last data line (skip border lines starting with '+').
+	serverPID := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, "+") {
+			continue
+		}
+		// Strip table cell borders: "| value |" → "value"
+		serverPID = strings.Trim(line, "| ")
+		break
+	}
+	if serverPID == "" || strings.EqualFold(serverPID, "value") {
+		log.Printf("[project-id] no data row in server response: %s", out)
+		return
+	}
 	log.Printf("[project-id] server: %s", serverPID)
 
 	if localPID == serverPID {
