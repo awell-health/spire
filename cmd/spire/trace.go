@@ -307,92 +307,108 @@ func buildTrace(beadID string) (*traceData, error) {
 
 // renderTrace prints the trace to stdout with ANSI formatting.
 func renderTrace(td *traceData) {
+	fmt.Print(renderTraceToString(td))
+}
+
+// renderTraceToString renders the full trace to a string with ANSI formatting.
+// Used by both the CLI (via renderTrace) and the board terminal pane.
+func renderTraceToString(td *traceData) string {
+	var s strings.Builder
+
 	// Header.
-	fmt.Printf("%sTRACE: %s%s — %s\n", bold, td.ID, reset, td.Title)
-	fmt.Printf("  Status: %s  Priority: P%d  Type: %s\n", colorStatus(td.Status), td.Priority, td.Type)
-	fmt.Println()
+	fmt.Fprintf(&s, "%sTRACE: %s%s — %s\n", bold, td.ID, reset, td.Title)
+	fmt.Fprintf(&s, "  Status: %s  Priority: P%d  Type: %s\n", colorStatus(td.Status), td.Priority, td.Type)
+	s.WriteString("\n")
 
 	// Pipeline.
 	if len(td.Steps) > 0 {
-		fmt.Printf("%sPipeline:%s ", bold, reset)
-		for i, s := range td.Steps {
+		fmt.Fprintf(&s, "%sPipeline:%s ", bold, reset)
+		for i, step := range td.Steps {
 			if i > 0 {
-				fmt.Print(" → ")
+				s.WriteString(" → ")
 			}
-			fmt.Print(renderStepBadge(s))
+			s.WriteString(renderStepBadge(step))
 		}
-		fmt.Println()
-		fmt.Println()
+		s.WriteString("\n\n")
 	}
 
 	// Active attempt.
 	if td.Attempt != nil {
 		a := td.Attempt
-		fmt.Printf("%sActive agent:%s %s%s%s", bold, reset, cyan, a.Name, reset)
+		fmt.Fprintf(&s, "%sActive agent:%s %s%s%s", bold, reset, cyan, a.Name, reset)
 		if a.Elapsed != "" {
-			fmt.Printf("  %s%s%s", dim, a.Elapsed, reset)
+			fmt.Fprintf(&s, "  %s%s%s", dim, a.Elapsed, reset)
 		}
-		fmt.Println()
+		s.WriteString("\n")
 		if a.Model != "" {
-			fmt.Printf("  Model: %s\n", a.Model)
+			fmt.Fprintf(&s, "  Model: %s\n", a.Model)
 		}
 		if a.Branch != "" {
-			fmt.Printf("  Branch: %s\n", a.Branch)
+			fmt.Fprintf(&s, "  Branch: %s\n", a.Branch)
 		}
 		if a.Worktree != "" {
-			fmt.Printf("  Worktree: %s\n", a.Worktree)
+			fmt.Fprintf(&s, "  Worktree: %s\n", a.Worktree)
 		}
-		fmt.Println()
+		s.WriteString("\n")
 	}
 
 	// Review history.
 	if len(td.Reviews) > 0 {
-		fmt.Printf("%sReview history:%s\n", bold, reset)
+		fmt.Fprintf(&s, "%sReview history:%s\n", bold, reset)
 		for _, r := range td.Reviews {
 			verdict := r.Verdict
 			if verdict == "" {
 				verdict = "pending"
 			}
 			icon := reviewVerdictIcon(verdict)
-			fmt.Printf("  Round %d: %s %s\n", r.Round, icon, verdict)
+			fmt.Fprintf(&s, "  Round %d: %s %s\n", r.Round, icon, verdict)
 		}
-		fmt.Println()
+		s.WriteString("\n")
 	}
 
 	// Subtasks (for epics).
 	if len(td.Subtasks) > 0 {
-		fmt.Printf("%sSubtasks:%s\n", bold, reset)
+		fmt.Fprintf(&s, "%sSubtasks:%s\n", bold, reset)
 		for _, sub := range td.Subtasks {
-			renderSubtask(sub, "  ")
+			renderSubtaskToString(&s, sub, "  ")
 		}
 	}
+
+	return s.String()
 }
 
 // renderSubtask prints a compact subtask trace line with its pipeline.
 func renderSubtask(td traceData, indent string) {
+	var s strings.Builder
+	renderSubtaskToString(&s, td, indent)
+	fmt.Print(s.String())
+}
+
+// renderSubtaskToString writes a compact subtask trace line to a builder.
+func renderSubtaskToString(s *strings.Builder, td traceData, indent string) {
 	statusIcon := subtaskStatusIcon(td.Status)
-	fmt.Printf("%s%s %s %-12s %s", indent, statusIcon, board.PriorityStr(td.Priority), td.ID, board.Truncate(td.Title, 35))
+	fmt.Fprintf(s, "%s%s %s %-12s %s", indent, statusIcon, board.PriorityStr(td.Priority), td.ID, board.Truncate(td.Title, 35))
 
 	// Show inline pipeline if steps exist.
 	if len(td.Steps) > 0 {
-		fmt.Print("  ")
-		for i, s := range td.Steps {
+		s.WriteString("  ")
+		for i, step := range td.Steps {
 			if i > 0 {
-				fmt.Print(" ")
+				s.WriteString(" ")
 			}
-			fmt.Print(renderStepBadgeCompact(s))
+			s.WriteString(renderStepBadgeCompact(step))
 		}
 	}
 
 	// Show active agent if any.
 	if td.Attempt != nil {
-		fmt.Printf("  %s%s%s", cyan, td.Attempt.Name, reset)
+		fmt.Fprintf(s, "  %s%s%s", cyan, td.Attempt.Name, reset)
 		if td.Attempt.Elapsed != "" {
-			fmt.Printf(" %s%s%s", dim, td.Attempt.Elapsed, reset)
+			fmt.Fprintf(s, " %s%s%s", dim, td.Attempt.Elapsed, reset)
 		}
 	}
 
-	fmt.Println()
+	s.WriteString("\n")
 
 	// Show review status inline for subtasks.
 	if len(td.Reviews) > 0 {
@@ -401,8 +417,20 @@ func renderSubtask(td traceData, indent string) {
 		if verdict == "" {
 			verdict = "pending"
 		}
-		fmt.Printf("%s  review r%d: %s\n", indent, last.Round, verdict)
+		fmt.Fprintf(s, "%s  review r%d: %s\n", indent, last.Round, verdict)
 	}
+}
+
+// renderTraceForBoard builds and renders a full trace (including log tail)
+// as a single string for display in the board terminal pane.
+func renderTraceForBoard(beadID string, width int) (string, error) {
+	td, err := buildTrace(beadID)
+	if err != nil {
+		return "", err
+	}
+	result := renderTraceToString(td)
+	result += renderWizardLogToString(td, 15)
+	return result, nil
 }
 
 // --- Rendering helpers ---
@@ -495,19 +523,26 @@ func formatElapsed(d time.Duration) string {
 
 // renderWizardLog shows the last N lines of the active wizard's log file.
 func renderWizardLog(td *traceData, lines int) {
+	fmt.Print(renderWizardLogToString(td, lines))
+}
+
+// renderWizardLogToString renders the wizard log tail to a string.
+func renderWizardLogToString(td *traceData, lines int) string {
 	if lines <= 0 || td.Attempt == nil || td.Attempt.LogFile == "" {
-		return
+		return ""
 	}
 	tail, err := readLastLines(td.Attempt.LogFile, lines)
 	if err != nil || len(tail) == 0 {
-		return
+		return ""
 	}
-	fmt.Printf("%sWizard log%s (%s):\n", bold, reset, td.Attempt.LogFile)
-	fmt.Printf("%s", dim)
+	var s strings.Builder
+	fmt.Fprintf(&s, "%sWizard log%s (%s):\n", bold, reset, td.Attempt.LogFile)
+	s.WriteString(dim)
 	for _, line := range tail {
-		fmt.Printf("  %s\n", line)
+		fmt.Fprintf(&s, "  %s\n", line)
 	}
-	fmt.Printf("%s\n", reset)
+	fmt.Fprintf(&s, "%s\n", reset)
+	return s.String()
 }
 
 // readLastLines returns the last n lines from a file.

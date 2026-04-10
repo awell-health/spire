@@ -179,6 +179,10 @@ func cmdBoard(args []string) error {
 		return resolveSourceBead(beadID, comment, false)
 	}
 
+	opts.TermContentFn = func(beadID string, width int) (string, error) {
+		return renderTraceForBoard(beadID, width)
+	}
+
 	return board.RunBoardTUI(opts, identity, fetchAgents, actionFn, inlineActionFn, rejectDesignFn)
 }
 
@@ -278,8 +282,6 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 		return cmdReset([]string{beadID, "--hard"})
 	case board.ActionGrok:
 		return cmdGrok([]string{beadID})
-	case board.ActionTrace:
-		return cmdTrace([]string{beadID})
 	case board.ActionClose:
 		return storeCloseBead(beadID)
 	case board.ActionApprove:

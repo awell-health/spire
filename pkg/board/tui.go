@@ -133,6 +133,18 @@ type Model struct {
 	TowerSwitcherOpen   bool
 	TowerSwitcherItems  []TowerItem
 	TowerSwitcherCursor int
+
+	// Terminal pane overlay state (generic scrollable content viewer).
+	TermOpen    bool     // true when the terminal pane is visible
+	TermTitle   string   // title bar text
+	TermLines   []string // pre-split content lines for scrolling
+	TermScroll  int      // scroll offset (first visible line index)
+	TermLoading bool     // true while async content fetch is in progress
+	TermBeadID  string   // bead ID for refresh
+
+	// TermContentFn fetches content for the terminal pane. Injected by the caller.
+	// Takes (beadID, contentWidth) and returns rendered content string.
+	TermContentFn func(string, int) (string, error)
 }
 
 // VisibleCols returns the columns filtered by the current type scope.
@@ -323,6 +335,7 @@ func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, ac
 			RejectDesignFn: rejectFn,
 			ResolveFn:      opts.ResolveFn,
 			CmdlineRoot:    opts.RootCmd,
+			TermContentFn:  opts.TermContentFn,
 		}
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		result, err := p.Run()
@@ -352,6 +365,22 @@ type actionResultMsg struct {
 	Action PendingAction
 	BeadID string
 	Err    error
+}
+
+// termContentMsg carries async-fetched content for the terminal pane overlay.
+type termContentMsg struct {
+	Title   string
+	Content string
+	BeadID  string
+	Err     error
+}
+
+// fetchTermContentCmd returns a tea.Cmd that fetches content for the terminal pane.
+func fetchTermContentCmd(fn func(string, int) (string, error), beadID, title string, width int) tea.Cmd {
+	return func() tea.Msg {
+		content, err := fn(beadID, width)
+		return termContentMsg{Title: title, Content: content, BeadID: beadID, Err: err}
+	}
 }
 
 // runInlineActionCmd returns a tea.Cmd that executes an action in a goroutine.
@@ -428,7 +457,7 @@ func (m Model) updateCmdline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // isInlineAction returns true if the action should execute within the TUI.
 func isInlineAction(a PendingAction) bool {
 	switch a {
-	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionClose, ActionApprove, ActionApproveDesign, ActionApproveGate, ActionDefer:
+	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionClose, ActionApprove, ActionApproveDesign, ActionApproveGate, ActionDefer:
 		return true
 	}
 	return false
@@ -573,6 +602,24 @@ func (m *Model) dispatchMenuAction(item MenuAction) (Model, tea.Cmd) {
 		}
 		return *m, nil
 	}
+	if item.ActionType == ActionTrace {
+		// Open terminal pane with trace content.
+		beadID := m.ActionMenuBeadID
+		m.TermOpen = true
+		m.TermLoading = true
+		m.TermTitle = "Trace: " + beadID
+		m.TermBeadID = beadID
+		m.TermLines = nil
+		m.TermScroll = 0
+		if m.TermContentFn != nil {
+			contentWidth := m.Width * 9 / 10
+			if contentWidth < 80 {
+				contentWidth = 80
+			}
+			return *m, fetchTermContentCmd(m.TermContentFn, beadID, m.TermTitle, contentWidth)
+		}
+		return *m, nil
+	}
 	if isInlineAction(item.ActionType) {
 		if item.Danger != DangerNone {
 			m.ConfirmOpen = true
@@ -705,6 +752,90 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Confirmation dialog: absorb all keys.
 		if m.ConfirmOpen {
 			return m.updateConfirm(msg)
+		}
+
+		// Terminal pane mode: absorb all keys.
+		if m.TermOpen {
+			switch msg.String() {
+			case "esc", "q":
+				m.TermOpen = false
+				m.TermLoading = false
+				m.TermLines = nil
+				m.TermScroll = 0
+				return m, nil
+			case "ctrl+c":
+				m.Quitting = true
+				return m, tea.Quit
+			case "j", "down":
+				m.TermScroll++
+				viewportH := m.Height*85/100 - 4
+				if viewportH < 10 {
+					viewportH = 10
+				}
+				maxScroll := len(m.TermLines) - viewportH
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.TermScroll > maxScroll {
+					m.TermScroll = maxScroll
+				}
+			case "k", "up":
+				m.TermScroll--
+				if m.TermScroll < 0 {
+					m.TermScroll = 0
+				}
+			case "d":
+				viewportH := m.Height*85/100 - 4
+				if viewportH < 10 {
+					viewportH = 10
+				}
+				m.TermScroll += viewportH / 2
+				maxScroll := len(m.TermLines) - viewportH
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.TermScroll > maxScroll {
+					m.TermScroll = maxScroll
+				}
+			case "u":
+				viewportH := m.Height*85/100 - 4
+				if viewportH < 10 {
+					viewportH = 10
+				}
+				m.TermScroll -= viewportH / 2
+				if m.TermScroll < 0 {
+					m.TermScroll = 0
+				}
+			case "g":
+				if m.PendingG {
+					m.PendingG = false
+					m.TermScroll = 0
+				} else {
+					m.PendingG = true
+				}
+				return m, nil
+			case "G":
+				m.PendingG = false
+				viewportH := m.Height*85/100 - 4
+				if viewportH < 10 {
+					viewportH = 10
+				}
+				maxScroll := len(m.TermLines) - viewportH
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				m.TermScroll = maxScroll
+			case "r":
+				if m.TermContentFn != nil && m.TermBeadID != "" {
+					m.TermLoading = true
+					contentWidth := m.Width * 9 / 10
+					if contentWidth < 80 {
+						contentWidth = 80
+					}
+					return m, fetchTermContentCmd(m.TermContentFn, m.TermBeadID, m.TermTitle, contentWidth)
+				}
+			}
+			return m, nil
 		}
 
 		// Action menu mode: absorb all keys.
@@ -1245,6 +1376,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ClampSelection()
 		}
 		return m, tickCmd(m.Opts.Interval)
+	case termContentMsg:
+		if msg.Err != nil {
+			m.TermLoading = false
+			m.TermLines = []string{"Error: " + msg.Err.Error()}
+			return m, nil
+		}
+		m.TermLoading = false
+		m.TermTitle = msg.Title
+		m.TermBeadID = msg.BeadID
+		m.TermLines = strings.Split(msg.Content, "\n")
+		m.TermScroll = 0
+		return m, nil
 	case inspectorDataMsg:
 		if msg.Err == nil && msg.Data != nil {
 			m.InspectorData = msg.Data

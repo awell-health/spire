@@ -570,6 +570,26 @@ func (m Model) View() string {
 
 	boardOutput := s.String()
 
+	// Terminal pane overlay: large scrollable content viewer.
+	if m.TermOpen {
+		popW := m.Width * 9 / 10
+		popH := m.Height * 85 / 100
+		if popW < 80 {
+			popW = 80
+		}
+		if popH < 24 {
+			popH = 24
+		}
+		if popW > m.Width {
+			popW = m.Width
+		}
+		if popH > m.Height {
+			popH = m.Height
+		}
+		popup := renderTerminalPane(&m, popW, popH)
+		return overlayPopup(boardOutput, popup, m.Width, m.Height)
+	}
+
 	// Action menu overlay: composite popup OVER the board (not replacing it).
 	if m.ActionMenuOpen {
 		popup := renderActionMenu(m.ActionMenuItems, m.ActionMenuCursor, m.ActionMenuBeadID, 35)

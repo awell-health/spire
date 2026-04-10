@@ -92,6 +92,9 @@ type Opts struct {
 	SwitchTowerFn func(towerName string) (string, error)
 	// ResolveFn resolves a needs-human bead with a recovery learning comment.
 	ResolveFn func(beadID, comment string) error
+	// TermContentFn fetches content for the terminal pane overlay.
+	// Takes (beadID, contentWidth) and returns rendered content string.
+	TermContentFn func(beadID string, width int) (string, error)
 }
 
 // ViewMode identifies which tabbed view is active on the board.
