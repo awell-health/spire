@@ -4,15 +4,16 @@
 
 ---
 
-## Current State (v0.32.0, 2026-04-03)
+## Current State (v0.35.0, 2026-04-10)
 
 Spire is a working local-first coordination hub for AI engineering agents.
-The v3 graph executor is the only execution engine. V2 is partially
-removed. Local execution is solid. The Helm chart and operator are
+The v3 graph executor is the only execution engine. V2 formula types
+and embedded TOML files are fully removed; formula files use canonical
+names. Local execution is solid. The Helm chart and operator are
 v3-aligned. The system handles epics, standalone tasks, bugs, recovery
 beads, and tower-level formula sharing.
 
-### What shipped: v0.28 to v0.32
+### What shipped: v0.28 to v0.35
 
 | Version | Theme | Key changes |
 |---------|-------|-------------|
@@ -20,17 +21,19 @@ beads, and tower-level formula sharing.
 | v0.30.0 | Formula v3 engine | Graph interpreter, declarative step graphs with conditions and opcodes, nestable review loops, crash-safe resume, all built-in formulas migrated |
 | v0.31.0 | V2 removal + recovery | V2 formula/workshop/focus stripped; recovery became first-class bead type with dedicated formula, structured metadata, prior-learning lookup |
 | v0.32.0 | Tower formula sharing | Formulas stored in dolt and synced via daemon; `spire formula list/show/publish/remove` CLI; resolution chain updated to tower -> repo -> embedded |
+| v0.33–0.35 | Formula polish + executor features | Canonical formula names (dropped -v3 suffix), v2 embedded TOML deleted, FormulaV2 types removed, hooked step status, `spire resolve`, deferred status, per-step provider override, inline prompts (`with.prompt`), `with` parameter interpolation, `human.approve` action, `spire summon` accepts bead IDs |
 
 ### What works today
 
-- **V3 graph executor** -- declarative step graphs with conditions, opcodes, nestable review loops, crash-safe resume
+- **V3 graph executor** -- declarative step graphs with conditions, opcodes, nestable review loops, crash-safe resume, hooked step status for gate actions, `with` parameter interpolation
 - **Tower-level formula sharing** -- formulas in dolt, synced across machines, CLI for publish/list/show/remove
-- **Formula resolution** -- tower -> repo -> embedded (first match wins)
+- **Formula resolution** -- tower -> repo -> embedded (first match wins); `spire resolve` command for manual gate resolution
 - **Recovery system** -- first-class recovery bead type with dedicated formula, structured metadata, prior-learning lookup
-- **Built-in v3 formulas** -- spire-epic-v3, spire-agent-work-v3, spire-bugfix-v3, spire-recovery-v3, plus review-phase and epic-implement-phase sub-graphs
-- **Interactive board TUI** -- Bubble Tea with cursor navigation, inline actions (summon/reset/close/approve/reject), inspector pane, command mode, tower switcher, search/filter
-- **Local agent execution** -- `spire summon` spawns wizard executors; apprentices work in isolated worktrees; sages review; arbiters break ties
-- **Steward** -- active work assignment (round-robin to idle agents), review routing, re-engagement on feedback, health monitoring
+- **Built-in formulas** -- task-default, bug-default, epic-default, chore-default, recovery-default, plus subgraph-review and subgraph-implement sub-graphs
+- **Formula features** -- per-step provider override, inline prompts (`with.prompt`), `human.approve` action for approval gates
+- **Interactive board TUI** -- Bubble Tea with cursor navigation, inline actions (summon/reset/close/approve/reject), inspector pane, command mode, tower switcher, search/filter, deferred status toggle
+- **Local agent execution** -- `spire summon` spawns wizard executors (accepts bead IDs or count); apprentices work in isolated worktrees; sages review; arbiters break ties
+- **Steward** -- active work assignment (round-robin to idle agents), review routing, re-engagement on feedback, health monitoring, hooked-step sweep for `human.approve` gates
 - **Full CLI surface** -- tower management, repo registration, work filing, agent messaging, observability (board/roster/watch/logs/metrics)
 - **Helm chart + operator** -- v3-aligned CRDs (SpireAgent, SpireWorkload, SpireConfig), agent/steward/dolt/syncer templates
 - **CI/CD** -- goreleaser, GitHub Actions, Homebrew tap
@@ -65,16 +68,17 @@ the workshop skill (item 4) and observability (item 7) for its modes.
 
 ### 1. Complete V2 Removal
 
-V2 formula types, resolution, and embedded formulas were removed in
-v0.31.0. But v2 code paths remain in `cmd/spire/` bridge files,
-`pkg/wizard`, `pkg/board`, and ~60 test functions across 15 files.
+V2 formula types, resolution, embedded formulas, and FormulaV2 types
+are fully removed. Formula files use canonical names (no `-v3` suffix).
+Remaining v2 references are limited to `cmd/spire/` bridge files and
+`pkg/board/dag.go`.
 
-- [ ] `cmd/spire/` bridge cleanup -- remove v2 fallbacks in executor_bridge.go, formula_bridge.go, close_advance.go, reset.go, summon.go, resummon.go, recover.go (7 files)
+- [ ] `cmd/spire/` bridge cleanup -- remove v2 fallbacks in executor_bridge.go, reset.go, summon.go, resummon.go (remaining references)
 - [x] `pkg/wizard/deps.go` -- remove v2 alias and LoadFormulaByName dep
 - [ ] `pkg/board/dag.go` -- remove v2 phaseIndex fallback
-- [ ] Test mass deletion -- ~60 test functions across 15 files that exercise v2 paths
-- [ ] Rename `-v3` formula files to canonical names (drop suffix)
-- [ ] Delete remaining v2 embedded TOML files (spire-recovery-work.formula.toml)
+- [x] Test mass deletion -- v2-specific test functions removed; FormulaV2 types deleted
+- [x] Rename `-v3` formula files to canonical names (drop suffix)
+- [x] Delete remaining v2 embedded TOML files (spire-recovery-work.formula.toml)
 
 ### 2. Operational Steward
 
@@ -84,7 +88,7 @@ limits, and spawning is immediate/eager with no wave batching.
 
 - [ ] Unified daemon -- merge steward loop into `spire up` (single process, not sibling)
 - [ ] Single-daemon enforcement -- prevent multiple `spire up` from racing
-- [ ] Ready-gate workflow -- beads start as `open` (drafting); explicit `spire ready <id>` or status change marks them for steward pickup. The steward must never auto-assign beads that haven't been marked ready, so users can create and refine work before it enters the queue.
+- [ ] Ready-gate workflow -- beads start as `open` (drafting); explicit `spire ready <id>` or status change marks them for steward pickup. The steward must never auto-assign beads that haven't been marked ready, so users can create and refine work before it enters the queue. *(Partially done: deferred status allows toggling beads out of the ready pool via the board TUI.)*
 - [ ] Per-tower concurrency limits -- `max_concurrent` config in tower settings
 - [ ] Wave batching -- group ready work assignment into configurable waves
 - [ ] Capacity reporting -- show active agents, queue depth, concurrency headroom in `spire status`
@@ -166,7 +170,7 @@ operational decisions.
 
 **New metrics to build:**
 
-- [ ] Formula performance comparison -- success rate, cost, and review rounds by formula name + version; answer "is v3 of spire-bugfix better than v2?"
+- [ ] Formula performance comparison -- success rate, cost, and review rounds by formula name + version; answer "is the latest bug-default better than last month's?"
 - [ ] Cost breakdown -- per-tower, per-repo, per-formula, per-phase cost attribution
 - [ ] Queue time tracking -- time from bead filed to wizard assigned (requires steward coordination)
 - [ ] Wave efficiency -- parallel vs sequential execution metrics for epic child dispatch

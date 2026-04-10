@@ -198,7 +198,7 @@ Lifecycle:
 ```
 
 Key behaviors:
-- Formula-driven: bead type maps to formula (`spire-epic`, `spire-bugfix`, `spire-agent-work`)
+- Formula-driven: bead type maps to formula (`epic-default`, `bug-default`, `task-default`)
 - For epics: creates staging branch, dispatches apprentices per wave, merges wave results
 - For standalone tasks: dispatches a single apprentice, then reviews and merges
 - Branch state file tracks staging/base/repo as single source of truth
@@ -263,23 +263,23 @@ for crash-safe resume.
 
 | Formula | Bead types | Steps | Description |
 |---------|-----------|-------|-------------|
-| `spire-epic-v3` | epic | design-check → plan → materialize → implement → review → merge → close | Full lifecycle with design validation, Opus planning, child dispatch, sage review, nestable review loops |
-| `spire-bugfix-v3` | bug | plan → implement → review → merge → close | Quick fix: wizard plan, single apprentice, sage review, auto-merge |
-| `spire-agent-work-v3` | task, feature, chore | plan → implement → review → merge → close | Standard work: wizard plan, single apprentice, sage review, auto-merge |
-| `spire-recovery-v3` | recovery | collect → design → plan → remediate → verify → document → close | Recovery lifecycle with prior-learning lookup and durable learning projection |
-| `review-phase` | (sub-graph) | sage-review → arbiter → fix → merge → discard | Nestable review loop, invoked by parent formulas |
-| `epic-implement-phase` | (sub-graph) | dispatch-children → merge-staging → verify | Epic child dispatch with staging integration |
+| `epic-default` | epic | design-check → plan → materialize → implement → review → merge → close | Full lifecycle with design validation, Opus planning, child dispatch, sage review, nestable review loops |
+| `bug-default` | bug | plan → implement → review → merge → close | Quick fix: wizard plan, single apprentice, sage review, auto-merge |
+| `task-default` | task, feature, chore | plan → implement → review → merge → close | Standard work: wizard plan, single apprentice, sage review, auto-merge |
+| `recovery-default` | recovery | collect → design → plan → remediate → verify → document → close | Recovery lifecycle with prior-learning lookup and durable learning projection |
+| `subgraph-review` | (sub-graph) | sage-review → arbiter → fix → merge → discard | Nestable review loop, invoked by parent formulas |
+| `subgraph-implement` | (sub-graph) | dispatch-children → merge-staging → verify | Epic child dispatch with staging integration |
 
 **Bead type → formula mapping:**
 
 ```
-epic     → spire-epic-v3
-bug      → spire-bugfix-v3
-task     → spire-agent-work-v3
-feature  → spire-agent-work-v3
-chore    → spire-agent-work-v3
-recovery → spire-recovery-v3
-(fallback) → spire-agent-work-v3
+epic     → epic-default
+bug      → bug-default
+task     → task-default
+feature  → task-default
+chore    → task-default
+recovery → recovery-default
+(fallback) → task-default
 ```
 
 **Name resolution** (determines which formula name to load):
@@ -298,7 +298,7 @@ overrides tower for local customization. Embedded is the fallback.
 Teams can publish custom formulas via `spire formula publish` and they
 propagate to all machines attached to the tower.
 
-**V3 step graph structure** (from `spire-epic-v3.formula.toml`):
+**V3 step graph structure** (from `epic-default.formula.toml`):
 
 ```toml
 [steps.design-check]
@@ -309,11 +309,11 @@ action = "plan.generate"     # wizard invokes Claude Opus
 depends_on = ["design-check"]
 
 [steps.implement]
-action = "graph.run"         # nested sub-graph (epic-implement-phase)
+action = "graph.run"         # nested sub-graph (subgraph-implement)
 depends_on = ["plan"]
 
 [steps.review]
-action = "graph.run"         # nested sub-graph (review-phase)
+action = "graph.run"         # nested sub-graph (subgraph-review)
 depends_on = ["implement"]
 condition = "steps.implement.outputs.result == 'success'"
 

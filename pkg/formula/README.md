@@ -86,7 +86,7 @@ behind the v3 execution model.
 | `ResolveAny` | Default resolution path -- v3 only. Returns `*FormulaStepGraph`. |
 | `ResolveV3` | Explicit v3 resolution for a bead. |
 | `ResolveV3Name` | Returns the v3 formula name for a bead without loading it. |
-| `DefaultV3FormulaMap` | Bead-type -> v3 formula name mapping (task->`spire-agent-work-v3`, etc.). |
+| `DefaultV3FormulaMap` | Bead-type -> v3 formula name mapping (task->`task-default`, bug->`bug-default`, epic->`epic-default`, chore->`chore-default`, etc.). |
 | **Graph semantics** | |
 | `NextSteps` | Determine which graph steps are ready given `completed map[string]bool` and condition context. |
 | `EntryStep` | Return the graph's entry step (explicit `Entry` field or implicit no-needs step). |
@@ -110,13 +110,15 @@ the binary:
 
 | Formula | Default for | Purpose |
 |---------|-------------|---------|
-| `spire-agent-work-v3` | task, chore, feature | Standard agent work lifecycle. |
-| `spire-bugfix-v3` | bug | Bug-fix lifecycle. |
-| `spire-epic-v3` | epic | Epic lifecycle with design-link check, plan materialization, child dispatch, and merge. |
-| `review-phase` | (nested) | Review sub-graph with sage review, arbiter escalation, and revision loops. Uses `noop` terminals. |
-| `epic-implement-phase` | (nested) | Epic implementation sub-graph for dispatching and verifying child beads. |
+| `task-default` | task, feature | Standard agent work lifecycle. |
+| `bug-default` | bug | Bug-fix lifecycle. |
+| `epic-default` | epic | Epic lifecycle with design-link check, plan materialization, child dispatch, and merge. |
+| `chore-default` | chore | Chore lifecycle. |
+| `recovery-default` | recovery | Recovery lifecycle. |
+| `subgraph-review` | (nested) | Review sub-graph with sage review, arbiter escalation, and revision loops. Uses `noop` terminals. |
+| `subgraph-implement` | (nested) | Epic implementation sub-graph for dispatching and verifying child beads. |
 
-Nested formulas (`review-phase`, `epic-implement-phase`) are invoked via
+Nested formulas (`subgraph-review`, `subgraph-implement`) are invoked via
 `graph.run` steps in parent formulas. Their terminal steps use `OpcodeNoop`
 because the parent graph handles the actual lifecycle transition.
 

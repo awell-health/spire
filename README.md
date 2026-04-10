@@ -12,13 +12,13 @@ Spire turns an engineer into the archmage of a tower — you write specs, file w
 |------|------|-------------|
 | **Archmage** | You. Writes specs, files work, reviews code, makes architecture calls. | — |
 | **Steward** | Global coordinator. Capacity planning, scheduling, dispatches wizards to ready beads. | `spire steward` |
-| **Wizard** | Per-bead orchestrator. Driven by a formula (e.g. `spire-bugfix`, `spire-epic`). Dispatches apprentices and sages, seals the work. | `spire summon N` |
+| **Wizard** | Per-bead orchestrator. Driven by a formula (e.g. `bug-default`, `epic-default`). Dispatches apprentices and sages, seals the work. | `spire summon N` |
 | **Apprentice** | Per-subtask implementer. Writes code in an isolated worktree. One-shot, pure implementer. | dispatched by wizard |
 | **Sage** | Per-review agent. Reviews implementation against the spec, produces a verdict. One-shot. | dispatched by wizard |
 | **Artificer** | Formula maker. Crafts and tests the formulas (spells) that wizards follow. | `spire workshop` |
 | **Familiar** | Per-agent companion. Messaging infrastructure, inbox delivery, health checks. | daemon (local) / container (k8s) |
 
-A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration: a bug gets `spire-bugfix` (plan → implement → review → merge), a task gets `spire-agent-work` (plan → implement → review → merge), and an epic gets `spire-epic` (design → plan → wave dispatch → review → merge). Same executor, different formula.
+A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration: a bug gets `bug-default` (plan → implement → review → merge), a task gets `task-default` (plan → implement → review → merge), a chore gets `chore-default`, and an epic gets `epic-default` (design → plan → wave dispatch → review → merge). Same executor, different formula.
 
 ## Why Spire
 
@@ -129,6 +129,14 @@ spire file "Auth system overhaul" -t epic -p 1
 spire file "Add OAuth2" -t task -p 2 --parent spi-abc
 spire file "Add MFA" -t task -p 2 --parent spi-abc
 bd dep add spi-abc.2 spi-abc.1    # MFA depends on OAuth2
+```
+
+### Unblock and diagnose
+
+```bash
+spire resolve spi-abc.1 "root cause was stale cache"  # record learning, unblock a stuck bead
+spire sql "SELECT * FROM dolt_status"                  # run SQL against the dolt server
+spire sql                                              # interactive dolt SQL shell
 ```
 
 ### Alert and communicate

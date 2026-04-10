@@ -30,9 +30,11 @@ Every bead type maps to a formula that defines the phase pipeline:
 
 | Bead type | Formula | Phases |
 |-----------|---------|--------|
-| epic | `spire-epic` | design → plan → implement (waves) → review → merge |
-| bug | `spire-bugfix` | implement → review → merge |
-| task, feature, chore | `spire-agent-work` | implement → review → merge |
+| epic | `epic-default` | design → plan → implement (waves) → review → merge |
+| bug | `bug-default` | implement → review → merge |
+| task | `task-default` | implement → review → merge |
+| feature | `task-default` | implement → review → merge |
+| chore | `chore-default` | implement → review → merge |
 
 Formulas are TOML files. Layered resolution (first match wins):
 1. Label `formula:<name>` on the bead

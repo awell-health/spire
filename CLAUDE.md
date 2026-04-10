@@ -244,7 +244,7 @@ spire grok <bead-id>
 
 `spire claim` verifies the bead isn't closed or owned by someone else, then sets it to in_progress. Use it before starting work.
 
-`spire focus` assembles context: bead details, workflow progress, related deps, messages, comments. It pours a `spire-agent-work` molecule on first focus.
+`spire focus` assembles context: bead details, workflow progress, related deps, messages, comments. It pours a `task-default` molecule on first focus.
 
 ### Design-to-work linkage
 
