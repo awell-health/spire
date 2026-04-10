@@ -77,10 +77,29 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 		// minimal actions for closed beads
 	}
 
-	// Non-design beads with needs-human: show Resolve/Approve/Resummon for open and in_progress.
+	// Non-design beads with needs-human: show context-appropriate actions.
+	// awaiting-approval → Approve gate (spire approve)
+	// interrupted:* → Resolve (spire resolve)
+	// needs-human alone → both options
 	if needsHuman && !isDesign && (bead.Status == "open" || bead.Status == "in_progress") {
-		items = append(items, MenuAction{Key: 'v', Label: "Resolve (record learning)", Danger: DangerConfirm, ActionType: ActionResolve})
-		items = append(items, MenuAction{Key: 'Y', Label: "Approve (close)", Danger: DangerConfirm, ActionType: ActionApprove})
+		awaitingApproval := bead.HasLabel("awaiting-approval")
+		hasInterrupted := bead.HasLabelPrefix("interrupted:") != ""
+
+		if awaitingApproval && !hasInterrupted {
+			// Pure approval gate — show Approve only.
+			items = append(items, MenuAction{Key: 'Y', Label: "Approve (advance gate)", Danger: DangerConfirm, ActionType: ActionApproveGate})
+		} else if hasInterrupted && !awaitingApproval {
+			// Pure interruption — show Resolve only.
+			items = append(items, MenuAction{Key: 'v', Label: "Resolve (record learning)", Danger: DangerConfirm, ActionType: ActionResolve})
+		} else {
+			// Both labels or needs-human alone — show both options.
+			items = append(items, MenuAction{Key: 'v', Label: "Resolve (record learning)", Danger: DangerConfirm, ActionType: ActionResolve})
+			if awaitingApproval {
+				items = append(items, MenuAction{Key: 'Y', Label: "Approve (advance gate)", Danger: DangerConfirm, ActionType: ActionApproveGate})
+			} else {
+				items = append(items, MenuAction{Key: 'Y', Label: "Approve (close)", Danger: DangerConfirm, ActionType: ActionApprove})
+			}
+		}
 		items = append(items, MenuAction{Key: 'S', Label: "Resummon", Danger: DangerNone, ActionType: ActionResummon})
 	}
 

@@ -34,6 +34,7 @@ var actionRegistry = map[string]ActionHandler{
 	"verify.run":            actionVerifyRun,
 	"git.merge_to_main":     actionMergeToMain,
 	"bead.finish":           actionBeadFinish,
+	"human.approve":         actionHumanApprove,
 	"noop":                  actionNoop,
 }
 
@@ -391,6 +392,57 @@ func actionCheckDesignLinked(e *Executor, stepName string, step StepConfig, stat
 
 	// Should not reach here.
 	return ActionResult{Outputs: map[string]string{"design_ref": designRef}}
+}
+
+// actionHumanApprove implements the human.approve gate action.
+//
+// First run (no labels yet): adds "needs-human" + "awaiting-approval" labels,
+// posts a comment, and returns Hooked so the graph parks.
+//
+// Re-run after spire approve clears labels: detects "awaiting-approval" is gone
+// and returns success so the graph advances.
+//
+// Re-run while still waiting: returns Hooked again.
+func actionHumanApprove(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	bead, err := e.deps.GetBead(e.beadID)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("human.approve: get bead: %w", err)}
+	}
+
+	hasAwaitingApproval := e.deps.ContainsLabel(bead, "awaiting-approval")
+	hasNeedsHuman := e.deps.ContainsLabel(bead, "needs-human")
+
+	// Case 1: awaiting-approval gone → approval received, gate passed.
+	// This covers both the clean path (spire approve removes both labels)
+	// and the edge case where only awaiting-approval was removed.
+	if !hasAwaitingApproval && hasNeedsHuman {
+		// Inconsistent state — treat as approved (spire approve removes both).
+		return ActionResult{Outputs: map[string]string{"status": "approved"}}
+	}
+	if !hasAwaitingApproval && !hasNeedsHuman {
+		// Either first run (neither label exists) or fully cleared.
+		// Distinguish by checking if the step has run before (outputs present).
+		if state.Steps[stepName].CompletedCount > 0 {
+			// Re-run after labels cleared — approved.
+			return ActionResult{Outputs: map[string]string{"status": "approved"}}
+		}
+		// First run: add labels and comment, then park.
+		if err := e.deps.AddLabel(e.beadID, "needs-human"); err != nil {
+			return ActionResult{Error: fmt.Errorf("human.approve: add needs-human label: %w", err)}
+		}
+		if err := e.deps.AddLabel(e.beadID, "awaiting-approval"); err != nil {
+			return ActionResult{Error: fmt.Errorf("human.approve: add awaiting-approval label: %w", err)}
+		}
+		title := step.Title
+		if title == "" {
+			title = stepName
+		}
+		e.deps.AddComment(e.beadID, fmt.Sprintf("Waiting for human approval before advancing past %s", title))
+		return ActionResult{Hooked: true}
+	}
+
+	// Case 2: awaiting-approval still present → not yet approved, keep waiting.
+	return ActionResult{Hooked: true}
 }
 
 // sendArchmageMessage sends a message to the archmage about this bead.

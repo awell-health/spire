@@ -269,6 +269,72 @@ func TestBuildActionMenu(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("awaiting-approval shows ApproveGate not Resolve", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-020", Status: "in_progress", Type: "task", Labels: []string{"needs-human", "awaiting-approval"}}
+		items := BuildActionMenu(bead, nil)
+
+		hasApproveGate := false
+		hasResolve := false
+		for _, item := range items {
+			if item.ActionType == ActionApproveGate {
+				hasApproveGate = true
+			}
+			if item.ActionType == ActionResolve {
+				hasResolve = true
+			}
+		}
+		if !hasApproveGate {
+			t.Error("expected ApproveGate action for awaiting-approval bead")
+		}
+		if hasResolve {
+			t.Error("should not have Resolve action when only awaiting-approval (no interrupted:*)")
+		}
+	})
+
+	t.Run("interrupted shows Resolve not ApproveGate", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-021", Status: "in_progress", Type: "task", Labels: []string{"needs-human", "interrupted:step-failure"}}
+		items := BuildActionMenu(bead, nil)
+
+		hasApproveGate := false
+		hasResolve := false
+		for _, item := range items {
+			if item.ActionType == ActionApproveGate {
+				hasApproveGate = true
+			}
+			if item.ActionType == ActionResolve {
+				hasResolve = true
+			}
+		}
+		if hasApproveGate {
+			t.Error("should not have ApproveGate action for interrupted bead without awaiting-approval")
+		}
+		if !hasResolve {
+			t.Error("expected Resolve action for interrupted bead")
+		}
+	})
+
+	t.Run("needs-human alone shows both Approve and Resolve", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-022", Status: "in_progress", Type: "task", Labels: []string{"needs-human"}}
+		items := BuildActionMenu(bead, nil)
+
+		hasApprove := false
+		hasResolve := false
+		for _, item := range items {
+			if item.ActionType == ActionApprove {
+				hasApprove = true
+			}
+			if item.ActionType == ActionResolve {
+				hasResolve = true
+			}
+		}
+		if !hasApprove {
+			t.Error("expected Approve action for needs-human alone")
+		}
+		if !hasResolve {
+			t.Error("expected Resolve action for needs-human alone")
+		}
+	})
 }
 
 func expectActions(t *testing.T, items []MenuAction, expected []PendingAction) {

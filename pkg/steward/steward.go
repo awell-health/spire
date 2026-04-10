@@ -662,29 +662,47 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string) int 
 			}
 
 			// 4. Resolve the hooked condition.
-			// Currently only check.design-linked uses hooked status.
-			// Look for design_ref in step outputs.
+			// Two hook types:
+			//   a) check.design-linked: design_ref output → check if design bead is closed with content
+			//   b) human.approve: no design_ref → check if awaiting-approval label was cleared
 			designRef := ss.Outputs["design_ref"]
-			if designRef == "" {
-				log.Printf("[steward] hooked sweep: %s step %s has no design_ref output, skipping", agentName, stepName)
-				continue
+			resolved := false
+
+			if designRef != "" {
+				// Design-linked hook: check if design bead is now closed with content.
+				designBead, err := GetBeadFunc(designRef)
+				if err != nil {
+					log.Printf("[steward] hooked sweep: get design bead %s: %s", designRef, err)
+					continue
+				}
+				if designBead.Status != "closed" {
+					continue // still waiting
+				}
+				comments, _ := GetCommentsFunc(designRef)
+				if len(comments) == 0 && designBead.Description == "" {
+					continue // closed but empty
+				}
+				log.Printf("[steward] hooked sweep: design bead %s resolved for %s step %s", designRef, agentName, stepName)
+				resolved = true
+			} else {
+				// Human approval hook (or other label-based hook): check if
+				// awaiting-approval and needs-human labels have been cleared.
+				bead, err := GetBeadFunc(gs.BeadID)
+				if err != nil {
+					log.Printf("[steward] hooked sweep: get bead %s: %s", gs.BeadID, err)
+					continue
+				}
+				if !store.ContainsLabel(bead, "awaiting-approval") && !store.ContainsLabel(bead, "needs-human") {
+					log.Printf("[steward] hooked sweep: approval labels cleared for %s step %s", agentName, stepName)
+					resolved = true
+				} else {
+					continue // still waiting for approval
+				}
 			}
 
-			// Check if design bead is now closed with content.
-			designBead, err := GetBeadFunc(designRef)
-			if err != nil {
-				log.Printf("[steward] hooked sweep: get design bead %s: %s", designRef, err)
+			if !resolved {
 				continue
 			}
-			if designBead.Status != "closed" {
-				continue // still waiting
-			}
-			comments, _ := GetCommentsFunc(designRef)
-			if len(comments) == 0 && designBead.Description == "" {
-				continue // closed but empty
-			}
-
-			log.Printf("[steward] hooked sweep: design bead %s resolved for %s step %s", designRef, agentName, stepName)
 
 			if dryRun {
 				log.Printf("[steward] [dry-run] would reset step %s and re-summon %s", stepName, agentName)

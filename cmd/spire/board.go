@@ -286,6 +286,9 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 		// Approve a needs-human design bead: remove the label and close it.
 		_ = storeRemoveLabel(beadID, "needs-human")
 		return storeCloseBead(beadID)
+	case board.ActionApproveGate:
+		// Approve a human.approve gate: remove labels, add comment, reset hooked steps.
+		return cmdApprove(beadID, "")
 	case board.ActionApproveDesign:
 		// Approve a design bead: close it (signals acceptance).
 		return storeCloseBead(beadID)

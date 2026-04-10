@@ -32,6 +32,7 @@ const (
 	ActionRejectDesign           // reject a design bead with feedback comment (inline via tea.Cmd)
 	ActionDefer                  // toggle deferred status (inline via tea.Cmd)
 	ActionResolve                // resolve a needs-human bead with recovery learning (inline via tea.Cmd)
+	ActionApproveGate            // approve a human.approve gate (remove awaiting-approval + needs-human, inline via tea.Cmd)
 )
 
 // Section identifies which vertical zone of the board the cursor is in.
@@ -387,6 +388,8 @@ func actionLabel(a PendingAction) string {
 		return "Defer"
 	case ActionResolve:
 		return "Resolve"
+	case ActionApproveGate:
+		return "Approve gate"
 	default:
 		return "Action"
 	}
@@ -422,7 +425,7 @@ func (m Model) updateCmdline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // isInlineAction returns true if the action should execute within the TUI.
 func isInlineAction(a PendingAction) bool {
 	switch a {
-	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionClose, ActionApprove, ActionApproveDesign, ActionDefer:
+	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionTrace, ActionClose, ActionApprove, ActionApproveDesign, ActionApproveGate, ActionDefer:
 		return true
 	}
 	return false
@@ -454,6 +457,8 @@ func confirmPromptForAction(action PendingAction, beadID, title string) string {
 		return fmt.Sprintf("Approve design %s?", label)
 	case ActionApproveDesign:
 		return fmt.Sprintf("Approve design %s?", label)
+	case ActionApproveGate:
+		return fmt.Sprintf("Approve and advance %s?", label)
 	case ActionUnsummon:
 		return fmt.Sprintf("Dismiss wizard for %s?", label)
 	case ActionResetSoft:
@@ -470,7 +475,7 @@ func dangerForAction(action PendingAction) DangerLevel {
 	switch action {
 	case ActionResetHard:
 		return DangerDestructive
-	case ActionClose, ActionUnsummon, ActionResetSoft, ActionApprove, ActionApproveDesign:
+	case ActionClose, ActionUnsummon, ActionResetSoft, ActionApprove, ActionApproveDesign, ActionApproveGate:
 		return DangerConfirm
 	default:
 		return DangerNone

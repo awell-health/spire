@@ -1827,3 +1827,166 @@ func TestDispatchAction_WithMapNotMutated(t *testing.T) {
 		t.Errorf("original With map was mutated: prompt=%q", original["prompt"])
 	}
 }
+
+// --- human.approve action tests ---
+
+// humanApproveTestDeps returns deps for human.approve action tests.
+func humanApproveTestDeps(labels map[string]bool) *Deps {
+	return &Deps{
+		GetBead: func(id string) (Bead, error) {
+			b := Bead{ID: id, Status: "in_progress"}
+			for l := range labels {
+				b.Labels = append(b.Labels, l)
+			}
+			return b, nil
+		},
+		AddLabel: func(id, label string) error {
+			labels[label] = true
+			return nil
+		},
+		RemoveLabel: func(id, label string) error {
+			delete(labels, label)
+			return nil
+		},
+		AddComment: func(id, text string) error {
+			return nil
+		},
+		ContainsLabel: func(b Bead, label string) bool {
+			for _, l := range b.Labels {
+				if l == label {
+					return true
+				}
+			}
+			return false
+		},
+		HasLabel: func(b Bead, prefix string) string {
+			for _, l := range b.Labels {
+				if len(l) >= len(prefix) && l[:len(prefix)] == prefix {
+					return l[len(prefix):]
+				}
+			}
+			return ""
+		},
+	}
+}
+
+func TestActionHumanApprove_FirstRun(t *testing.T) {
+	labels := map[string]bool{}
+	deps := humanApproveTestDeps(labels)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-approve",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"approve": {Action: "human.approve", Title: "Human reviews"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	step := StepConfig{Action: "human.approve", Title: "Human reviews"}
+
+	result := actionHumanApprove(exec, "approve", step, exec.graphState)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Hooked {
+		t.Error("expected Hooked=true on first run")
+	}
+	if !labels["needs-human"] {
+		t.Error("expected needs-human label to be added")
+	}
+	if !labels["awaiting-approval"] {
+		t.Error("expected awaiting-approval label to be added")
+	}
+}
+
+func TestActionHumanApprove_StillWaiting(t *testing.T) {
+	labels := map[string]bool{
+		"needs-human":       true,
+		"awaiting-approval": true,
+	}
+	deps := humanApproveTestDeps(labels)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-approve",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"approve": {Action: "human.approve"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	step := StepConfig{Action: "human.approve"}
+
+	result := actionHumanApprove(exec, "approve", step, exec.graphState)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Hooked {
+		t.Error("expected Hooked=true while awaiting approval")
+	}
+}
+
+func TestActionHumanApprove_Approved(t *testing.T) {
+	// Simulate: labels were cleared by spire approve, CompletedCount > 0 from prior hooked run.
+	labels := map[string]bool{}
+	deps := humanApproveTestDeps(labels)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-approve",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"approve": {Action: "human.approve"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	// Simulate that the step has been completed once before (hooked counts as a completion).
+	exec.graphState.Steps["approve"] = StepState{Status: "pending", CompletedCount: 1}
+	step := StepConfig{Action: "human.approve"}
+
+	result := actionHumanApprove(exec, "approve", step, exec.graphState)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Hooked {
+		t.Error("expected Hooked=false after approval")
+	}
+	if result.Outputs["status"] != "approved" {
+		t.Errorf("expected status=approved, got %q", result.Outputs["status"])
+	}
+}
+
+func TestActionHumanApprove_InconsistentState(t *testing.T) {
+	// awaiting-approval removed but needs-human still present — treat as approved.
+	labels := map[string]bool{
+		"needs-human": true,
+	}
+	deps := humanApproveTestDeps(labels)
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-approve",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"approve": {Action: "human.approve"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	step := StepConfig{Action: "human.approve"}
+
+	result := actionHumanApprove(exec, "approve", step, exec.graphState)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Hooked {
+		t.Error("expected Hooked=false when awaiting-approval is gone (inconsistent state = approved)")
+	}
+	if result.Outputs["status"] != "approved" {
+		t.Errorf("expected status=approved, got %q", result.Outputs["status"])
+	}
+}
