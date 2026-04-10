@@ -46,11 +46,39 @@ func (e *Executor) dispatchAction(stepName string, step StepConfig, state *Graph
 	if step.Action == "" {
 		return ActionResult{Error: fmt.Errorf("step %q has no action defined", stepName)}
 	}
+	// Interpolate {steps.X.outputs.Y} and {vars.Z} in With values.
+	// Copy the map to avoid mutating the formula definition.
+	if len(step.With) > 0 {
+		copied := make(map[string]string, len(step.With))
+		for k, v := range step.With {
+			copied[k] = v
+		}
+		step.With = copied
+		e.interpolateWith(&step, state)
+	}
 	handler, ok := actionRegistry[step.Action]
 	if !ok {
 		return ActionResult{Error: fmt.Errorf("unknown action %q for step %q", step.Action, stepName)}
 	}
 	return handler(e, stepName, step, state)
+}
+
+// interpolateWith resolves {steps.X.outputs.Y}, {vars.Z}, etc. in step.With values
+// using the same context map that conditions use.
+func (e *Executor) interpolateWith(step *StepConfig, state *GraphState) {
+	if len(step.With) == 0 {
+		return
+	}
+	ctx := e.buildConditionContext(state)
+	for k, v := range step.With {
+		if !strings.Contains(v, "{") {
+			continue
+		}
+		for ctxKey, ctxVal := range ctx {
+			v = strings.ReplaceAll(v, "{"+ctxKey+"}", ctxVal)
+		}
+		step.With[k] = v
+	}
 }
 
 // --- Real implementations ---

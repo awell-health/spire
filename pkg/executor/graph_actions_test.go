@@ -1630,3 +1630,200 @@ func TestCheckDesignLinked_ClosedDesignWithContent(t *testing.T) {
 		t.Errorf("expected design_ref=spi-des1, got %q", result.Outputs["design_ref"])
 	}
 }
+
+// --- interpolateWith tests ---
+
+func TestInterpolateWith_StepOutputs(t *testing.T) {
+	deps, _ := planTestDeps(t)
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-interpolate",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"plan":      {Action: "noop"},
+			"implement": {Action: "noop", Needs: []string{"plan"}},
+		},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+
+	// Simulate plan step having completed with outputs.
+	exec.graphState.Steps["plan"] = StepState{
+		Status:  "completed",
+		Outputs: map[string]string{"context_files": "pkg/foo.go,pkg/bar.go"},
+	}
+
+	step := StepConfig{
+		Action: "noop",
+		With: map[string]string{
+			"prompt": "Read these files: {steps.plan.outputs.context_files}",
+		},
+	}
+
+	exec.interpolateWith(&step, exec.graphState)
+
+	want := "Read these files: pkg/foo.go,pkg/bar.go"
+	if step.With["prompt"] != want {
+		t.Errorf("expected %q, got %q", want, step.With["prompt"])
+	}
+}
+
+func TestInterpolateWith_Vars(t *testing.T) {
+	deps, _ := planTestDeps(t)
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-interpolate-vars",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"step1": {Action: "noop"},
+		},
+	}
+	exec := NewGraphForTest("spi-abc", "wizard-test", graph, nil, deps)
+	exec.graphState.Vars["bead_id"] = "spi-abc"
+	exec.graphState.Vars["base_branch"] = "main"
+
+	step := StepConfig{
+		Action: "noop",
+		With: map[string]string{
+			"branch": "feat/{vars.bead_id}",
+			"base":   "{vars.base_branch}",
+		},
+	}
+
+	exec.interpolateWith(&step, exec.graphState)
+
+	if step.With["branch"] != "feat/spi-abc" {
+		t.Errorf("expected feat/spi-abc, got %q", step.With["branch"])
+	}
+	if step.With["base"] != "main" {
+		t.Errorf("expected main, got %q", step.With["base"])
+	}
+}
+
+func TestInterpolateWith_ShortFormVars(t *testing.T) {
+	deps, _ := planTestDeps(t)
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-interpolate-short",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"step1": {Action: "noop"},
+		},
+	}
+	exec := NewGraphForTest("spi-abc", "wizard-test", graph, nil, deps)
+	exec.graphState.Vars["bead_id"] = "spi-abc"
+
+	step := StepConfig{
+		Action: "noop",
+		With: map[string]string{
+			"id": "{bead_id}",
+		},
+	}
+
+	exec.interpolateWith(&step, exec.graphState)
+
+	if step.With["id"] != "spi-abc" {
+		t.Errorf("expected spi-abc via short-form, got %q", step.With["id"])
+	}
+}
+
+func TestInterpolateWith_UnresolvedLeftAsIs(t *testing.T) {
+	deps, _ := planTestDeps(t)
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-interpolate-unresolved",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"step1": {Action: "noop"},
+		},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "noop",
+		With: map[string]string{
+			"prompt": "Value: {steps.missing.outputs.foo}",
+		},
+	}
+
+	exec.interpolateWith(&step, exec.graphState)
+
+	// Unresolved references must be left as-is.
+	if step.With["prompt"] != "Value: {steps.missing.outputs.foo}" {
+		t.Errorf("expected unresolved reference preserved, got %q", step.With["prompt"])
+	}
+}
+
+func TestInterpolateWith_NoBracesUntouched(t *testing.T) {
+	deps, _ := planTestDeps(t)
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-interpolate-nobraces",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"step1": {Action: "noop"},
+		},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "noop",
+		With: map[string]string{
+			"plain": "no interpolation needed",
+		},
+	}
+
+	exec.interpolateWith(&step, exec.graphState)
+
+	if step.With["plain"] != "no interpolation needed" {
+		t.Errorf("expected plain value untouched, got %q", step.With["plain"])
+	}
+}
+
+func TestInterpolateWith_EmptyWith(t *testing.T) {
+	deps, _ := planTestDeps(t)
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-interpolate-empty",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"step1": {Action: "noop"},
+		},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+
+	step := StepConfig{
+		Action: "noop",
+	}
+
+	// Should not panic on nil/empty With map.
+	exec.interpolateWith(&step, exec.graphState)
+}
+
+func TestDispatchAction_WithMapNotMutated(t *testing.T) {
+	deps, _ := planTestDeps(t)
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-dispatch-no-mutate",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"plan": {Action: "noop"},
+			"impl": {Action: "noop", Needs: []string{"plan"}},
+		},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec.graphState.Steps["plan"] = StepState{
+		Status:  "completed",
+		Outputs: map[string]string{"files": "a.go"},
+	}
+
+	original := map[string]string{
+		"prompt": "Files: {steps.plan.outputs.files}",
+	}
+	step := StepConfig{
+		Action: "noop",
+		With:   original,
+	}
+
+	result := exec.dispatchAction("impl", step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// The original map must NOT have been mutated.
+	if original["prompt"] != "Files: {steps.plan.outputs.files}" {
+		t.Errorf("original With map was mutated: prompt=%q", original["prompt"])
+	}
+}
