@@ -275,7 +275,7 @@ func TestMigrateInternalTypes_SearchError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if got := err.Error(); got != `migrate internal types: search label "msg": database error` {
+	if got := err.Error(); got != `migrate internal types: query label "msg": list beads: database error` {
 		t.Errorf("unexpected error message: %s", got)
 	}
 }
@@ -302,11 +302,9 @@ func TestMigrateInternalTypes_UpdateError(t *testing.T) {
 	mock := &migrateMockUpdateErrorStorage{}
 	setTestStore(t, mock)
 
+	// Update errors are logged, not returned — migration continues past individual failures.
 	err := MigrateInternalTypes()
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if got := err.Error(); got != `migrate internal types: update msg-1 to type "message": write failed` {
-		t.Errorf("unexpected error message: %s", got)
+	if err != nil {
+		t.Fatalf("expected nil error (update failures are logged), got: %v", err)
 	}
 }

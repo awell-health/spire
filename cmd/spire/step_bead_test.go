@@ -298,9 +298,9 @@ func TestExecutor_TransitionStepBead_NoStepBeads(t *testing.T) {
 func TestBoard_FiltersStepBeads(t *testing.T) {
 	openBeads := []BoardBead{
 		{ID: "spi-task-1", Title: "Real task", Status: "open", Type: "task"},
-		{ID: "spi-task-1.1", Title: "step:design", Status: "in_progress", Type: "task",
+		{ID: "spi-task-1.1", Title: "step:design", Status: "in_progress", Type: "step",
 			Labels: []string{"workflow-step", "step:design"}},
-		{ID: "spi-task-1.2", Title: "step:implement", Status: "open", Type: "task",
+		{ID: "spi-task-1.2", Title: "step:implement", Status: "open", Type: "step",
 			Labels: []string{"workflow-step", "step:implement"}},
 		{ID: "spi-task-2", Title: "Another task", Status: "open", Type: "task"},
 	}

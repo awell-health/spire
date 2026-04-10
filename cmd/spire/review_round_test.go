@@ -209,8 +209,8 @@ func TestReviewRoundNumber(t *testing.T) {
 func TestBoard_FiltersReviewRoundBeads(t *testing.T) {
 	openBeads := []BoardBead{
 		{ID: "spi-task-1", Title: "Real task", Status: "open", Type: "task"},
-		{ID: "spi-task-1.1", Title: "review-round-1", Status: "in_progress", Type: "task", Labels: []string{"review-round", "sage:reviewer-1", "round:1"}},
-		{ID: "spi-task-1.2", Title: "review-round-2", Status: "closed", Type: "task", Labels: []string{"review-round", "sage:reviewer-1", "round:2"}},
+		{ID: "spi-task-1.1", Title: "review-round-1", Status: "in_progress", Type: "review", Labels: []string{"review-round", "sage:reviewer-1", "round:1"}},
+		{ID: "spi-task-1.2", Title: "review-round-2", Status: "closed", Type: "review", Labels: []string{"review-round", "sage:reviewer-1", "round:2"}},
 		{ID: "spi-task-2", Title: "Another task", Status: "open", Type: "task"},
 	}
 	closedBeads := []BoardBead{}

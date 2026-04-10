@@ -378,7 +378,7 @@ func TestSteward_AttemptBeadsNeverReadyWork(t *testing.T) {
 func TestBoard_FiltersAttemptBeads(t *testing.T) {
 	openBeads := []BoardBead{
 		{ID: "spi-task-1", Title: "Real task", Status: "open", Type: "task"},
-		{ID: "spi-task-1.1", Title: "attempt: wizard-1", Status: "in_progress", Type: "task", Labels: []string{"attempt"}},
+		{ID: "spi-task-1.1", Title: "attempt: wizard-1", Status: "in_progress", Type: "attempt", Labels: []string{"attempt"}},
 		{ID: "spi-task-2", Title: "Another task", Status: "open", Type: "task"},
 	}
 	closedBeads := []BoardBead{}
