@@ -375,6 +375,12 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 			if err != nil {
 				return fmt.Errorf("target %s: %w", id, err)
 			}
+			switch bead.Status {
+			case "closed", "done":
+				return fmt.Errorf("target %s is closed — reopen it first (bd update %s --status open)", id, id)
+			case "deferred":
+				return fmt.Errorf("target %s is deferred — set to open first (bd update %s --status open)", id, id)
+			}
 			candidates = append(candidates, bead)
 		}
 		count = len(candidates)
