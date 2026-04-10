@@ -43,6 +43,24 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	if cfg.StartRef != "" {
 		args = append(args, "--start-ref", cfg.StartRef)
 	}
+
+	// Write custom prompt to a temp file to avoid arg-length limits and shell
+	// escaping issues with multi-line prompts. The wizard subprocess reads and
+	// removes the file after parsing.
+	if cfg.CustomPrompt != "" {
+		f, err := os.CreateTemp("", "spire-prompt-*.txt")
+		if err != nil {
+			return nil, fmt.Errorf("write custom prompt temp file: %w", err)
+		}
+		if _, err := f.WriteString(cfg.CustomPrompt); err != nil {
+			f.Close()
+			os.Remove(f.Name())
+			return nil, fmt.Errorf("write custom prompt: %w", err)
+		}
+		f.Close()
+		args = append(args, "--custom-prompt-file", f.Name())
+	}
+
 	args = append(args, cfg.ExtraArgs...)
 
 	cmd := exec.Command(spireBin, args...)

@@ -101,6 +101,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	buildFixMode := false
 	worktreeDirOverride := ""
 	startRef := ""
+	customPromptFile := ""
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--name":
@@ -124,7 +125,23 @@ func CmdWizardRun(args []string, deps *Deps) error {
 				i++
 				startRef = args[i]
 			}
+		case "--custom-prompt-file":
+			if i+1 < len(args) {
+				i++
+				customPromptFile = args[i]
+			}
 		}
+	}
+
+	// Read and remove the custom prompt temp file immediately.
+	var customPrompt string
+	if customPromptFile != "" {
+		data, err := os.ReadFile(customPromptFile)
+		if err != nil {
+			return fmt.Errorf("read custom prompt file %s: %w", customPromptFile, err)
+		}
+		customPrompt = strings.TrimSpace(string(data))
+		os.Remove(customPromptFile)
 	}
 	if os.Getenv("SPIRE_APPRENTICE") == "1" {
 		apprenticeMode = true
@@ -288,8 +305,13 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		})
 
 		// Build implement prompt with feedback
-		implPrompt := WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
-			model, maxTurns, timeout, repoCfg, focusContext, beadJSON, "", feedback)
+		var implPrompt string
+		if customPrompt != "" {
+			implPrompt = WizardBuildCustomPrompt(wizardName, beadID, repoCfg, focusContext, beadJSON, customPrompt)
+		} else {
+			implPrompt = WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
+				model, maxTurns, timeout, repoCfg, focusContext, beadJSON, "", feedback)
+		}
 		implPromptPath := filepath.Join(worktreeDir, ".spire-prompt.txt")
 		if err := os.WriteFile(implPromptPath, []byte(implPrompt), 0644); err != nil {
 			return fmt.Errorf("write implement prompt: %w", err)
@@ -310,9 +332,9 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	} else {
 		// Normal path: design phase then implement phase
 
-		// --- Design phase (skipped in apprentice mode) ---
+		// --- Design phase (skipped in apprentice mode or when custom prompt is set) ---
 		var designOutput string
-		if !apprenticeMode {
+		if !apprenticeMode && customPrompt == "" {
 			deps.RegistryUpdate(wizardName, func(w *Entry) {
 				w.Phase = "design"
 				w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
@@ -351,8 +373,13 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
 		})
 
-		implPrompt := WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
-			model, maxTurns, timeout, repoCfg, focusContext, beadJSON, designOutput, "")
+		var implPrompt string
+		if customPrompt != "" {
+			implPrompt = WizardBuildCustomPrompt(wizardName, beadID, repoCfg, focusContext, beadJSON, customPrompt)
+		} else {
+			implPrompt = WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
+				model, maxTurns, timeout, repoCfg, focusContext, beadJSON, designOutput, "")
+		}
 		implPromptPath := filepath.Join(worktreeDir, ".spire-prompt.txt")
 		if err := os.WriteFile(implPromptPath, []byte(implPrompt), 0644); err != nil {
 			return fmt.Errorf("write implement prompt: %w", err)
@@ -811,6 +838,58 @@ You are working in an isolated git worktree. Other agents may be working on rela
 		optionalCmd(cfg.Runtime.Test),
 		extra.String(),
 		focusContext, beadJSON)
+}
+
+// WizardBuildCustomPrompt builds a prompt for a wizard.run step that uses an
+// inline prompt from with.prompt in the formula. The inline prompt becomes the
+// task-specific instructions, wrapped with standard Spire system context
+// (identity, focus context, bead JSON, repo config).
+func WizardBuildCustomPrompt(wizardName, beadID string, cfg *repoconfig.RepoConfig,
+	focusContext, beadJSON, customPrompt string) string {
+
+	optionalCmd := func(cmd string) string {
+		if cmd == "" {
+			return "(none)"
+		}
+		return cmd
+	}
+
+	contextPaths := cfg.Context
+	if len(contextPaths) == 0 {
+		contextPaths = []string{"CLAUDE.md", "SPIRE.md"}
+	}
+	var contextBlock strings.Builder
+	for _, p := range contextPaths {
+		fmt.Fprintf(&contextBlock, "- %s\n", p)
+	}
+
+	return fmt.Sprintf(`You are %s, a Spire agent working on bead %s.
+
+## Context
+
+%s
+
+## Bead
+
+%s
+
+## Repo
+
+- Build: %s
+- Test: %s
+
+## Repo context paths
+%s
+## Your task
+
+%s
+`, wizardName, beadID,
+		focusContext,
+		beadJSON,
+		optionalCmd(cfg.Runtime.Build),
+		optionalCmd(cfg.Runtime.Test),
+		contextBlock.String(),
+		customPrompt)
 }
 
 // WizardBuildClaudeArgs builds the common claude CLI arguments.

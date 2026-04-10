@@ -252,11 +252,12 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 	started := time.Now()
 
 	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
-		Name:      spawnName,
-		BeadID:    e.beadID,
-		Role:      role,
-		Provider:  e.resolveStepProvider(step),
-		ExtraArgs: extraArgs,
+		Name:         spawnName,
+		BeadID:       e.beadID,
+		Role:         role,
+		Provider:     e.resolveStepProvider(step),
+		ExtraArgs:    extraArgs,
+		CustomPrompt: step.With["prompt"],
 	})
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("spawn %s: %w", stepName, err)}

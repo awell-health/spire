@@ -100,6 +100,27 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	if cfg.StartRef != "" {
 		entryCmd = append(entryCmd, "--start-ref", cfg.StartRef)
 	}
+
+	// Write custom prompt to a temp file inside the repo root (which is
+	// volume-mounted into the container) so the wizard subprocess can read it.
+	if cfg.CustomPrompt != "" {
+		repoRoot, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve working dir for prompt file: %w", err)
+		}
+		f, err := os.CreateTemp(repoRoot, ".spire-prompt-*.txt")
+		if err != nil {
+			return nil, fmt.Errorf("write custom prompt temp file: %w", err)
+		}
+		if _, err := f.WriteString(cfg.CustomPrompt); err != nil {
+			f.Close()
+			os.Remove(f.Name())
+			return nil, fmt.Errorf("write custom prompt: %w", err)
+		}
+		f.Close()
+		entryCmd = append(entryCmd, "--custom-prompt-file", f.Name())
+	}
+
 	entryCmd = append(entryCmd, cfg.ExtraArgs...)
 
 	// Container name includes agent name for uniqueness across retries/rounds.
