@@ -182,7 +182,7 @@ func (e *Executor) ensureReviewSubStepBeads(graph *formula.FormulaStepGraph) err
 		id, err := e.deps.CreateBead(CreateOpts{
 			Title:    title,
 			Priority: 3,
-			Type:     beads.TypeTask,
+			Type:     beads.IssueType("step"),
 			Parent:   reviewBeadID,
 			Labels:   []string{"workflow-step", "step:" + stepName, "review-substep"},
 		})

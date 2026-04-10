@@ -72,7 +72,7 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 	msgID, err := deps.CreateBead(CreateOpts{
 		Title:    message,
 		Priority: 1,
-		Type:     beads.TypeTask,
+		Type:     beads.IssueType("message"),
 		Prefix:   "spi",
 		Labels:   labels,
 	})
