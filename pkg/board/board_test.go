@@ -1475,6 +1475,120 @@ func TestToJSON_RecoveryRefs(t *testing.T) {
 	})
 }
 
+// --- TestCategorizeColumnsFromStore_ParentFiltering ---
+
+func TestCategorizeColumnsFromStore_ParentFiltering(t *testing.T) {
+	t.Run("parented bead excluded from all columns", func(t *testing.T) {
+		openBeads := []BoardBead{
+			{ID: "spi-epic", Title: "Epic bead", Status: "open", Type: "epic", Priority: 1},
+			{ID: "spi-epic.1", Title: "Epic child task", Status: "open", Type: "task", Priority: 2, Parent: "spi-epic"},
+			{ID: "spi-top", Title: "Top-level task", Status: "open", Type: "task", Priority: 2},
+		}
+		cols := CategorizeColumnsFromStore(openBeads, nil, nil, "test@test.dev")
+
+		// The parented bead should not appear in any column.
+		for _, col := range []struct {
+			name  string
+			beads []BoardBead
+		}{
+			{"Ready", cols.Ready},
+			{"Design", cols.Design},
+			{"Plan", cols.Plan},
+			{"Implement", cols.Implement},
+			{"Review", cols.Review},
+			{"Merge", cols.Merge},
+			{"Done", cols.Done},
+			{"Blocked", cols.Blocked},
+			{"Alerts", cols.Alerts},
+			{"Interrupted", cols.Interrupted},
+		} {
+			for _, b := range col.beads {
+				if b.ID == "spi-epic.1" {
+					t.Errorf("parented bead spi-epic.1 should not appear in %s column", col.name)
+				}
+			}
+		}
+
+		// The epic and top-level task should still appear.
+		found := map[string]bool{}
+		for _, b := range cols.Ready {
+			found[b.ID] = true
+		}
+		if !found["spi-epic"] {
+			t.Error("epic bead spi-epic should appear in Ready")
+		}
+		if !found["spi-top"] {
+			t.Error("top-level bead spi-top should appear in Ready")
+		}
+	})
+}
+
+// --- TestCategorizeWithPhases_ParentFiltering ---
+
+func TestCategorizeWithPhases_ParentFiltering(t *testing.T) {
+	t.Run("parented bead excluded from all columns including phases", func(t *testing.T) {
+		openBeads := []BoardBead{
+			{ID: "spi-epic", Title: "Epic bead", Status: "in_progress", Type: "epic", Priority: 1},
+			{ID: "spi-epic.1", Title: "Child in implement", Status: "in_progress", Type: "task", Priority: 2, Parent: "spi-epic"},
+			{ID: "spi-epic.2", Title: "Child in review", Status: "in_progress", Type: "task", Priority: 2, Parent: "spi-epic"},
+			{ID: "spi-epic.3", Title: "Child in design", Status: "in_progress", Type: "task", Priority: 2, Parent: "spi-epic"},
+			{ID: "spi-epic.4", Title: "Child open no phase", Status: "open", Type: "task", Priority: 2, Parent: "spi-epic"},
+			{ID: "spi-top", Title: "Top-level in implement", Status: "in_progress", Type: "task", Priority: 2},
+		}
+		phaseMap := map[string]string{
+			"spi-epic":   "implement",
+			"spi-epic.1": "implement",
+			"spi-epic.2": "review",
+			"spi-epic.3": "design",
+			"spi-top":    "implement",
+		}
+
+		cols := CategorizeWithPhases(openBeads, nil, nil, phaseMap, "test@test.dev")
+
+		// No parented bead should appear in any column.
+		childIDs := map[string]bool{
+			"spi-epic.1": true, "spi-epic.2": true,
+			"spi-epic.3": true, "spi-epic.4": true,
+		}
+		for _, col := range []struct {
+			name  string
+			beads []BoardBead
+		}{
+			{"Ready", cols.Ready},
+			{"Design", cols.Design},
+			{"Plan", cols.Plan},
+			{"Implement", cols.Implement},
+			{"Review", cols.Review},
+			{"Merge", cols.Merge},
+			{"Done", cols.Done},
+			{"Blocked", cols.Blocked},
+			{"Alerts", cols.Alerts},
+			{"Interrupted", cols.Interrupted},
+		} {
+			for _, b := range col.beads {
+				if childIDs[b.ID] {
+					t.Errorf("parented bead %s should not appear in %s column", b.ID, col.name)
+				}
+			}
+		}
+
+		// The epic itself and top-level task should still appear in Implement.
+		if len(cols.Implement) != 2 {
+			t.Fatalf("expected 2 beads in Implement, got %d", len(cols.Implement))
+		}
+		implIDs := map[string]bool{}
+		for _, b := range cols.Implement {
+			implIDs[b.ID] = true
+		}
+		if !implIDs["spi-epic"] {
+			t.Error("epic bead spi-epic should appear in Implement")
+		}
+		if !implIDs["spi-top"] {
+			t.Error("top-level bead spi-top should appear in Implement")
+		}
+	})
+}
+
 // --- TestCategorizeWithPhases_DeferredBeads ---
 
 func TestCategorizeWithPhases_DeferredBeads(t *testing.T) {

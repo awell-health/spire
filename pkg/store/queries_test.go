@@ -261,3 +261,90 @@ func TestGetChildrenBoardBatch_Error(t *testing.T) {
 		t.Errorf("expected error to mention bad-parent, got %q", err.Error())
 	}
 }
+
+// --- GetReadyWork parent filtering tests ---
+
+// readyWorkMockStorage overrides GetReadyWork and SearchIssues for testing
+// the post-filter logic in GetReadyWork.
+type readyWorkMockStorage struct {
+	beads.Storage
+	readyIssues []*beads.Issue
+}
+
+func (m *readyWorkMockStorage) GetReadyWork(_ context.Context, _ beads.WorkFilter) ([]*beads.Issue, error) {
+	return m.readyIssues, nil
+}
+
+func (m *readyWorkMockStorage) SearchIssues(_ context.Context, _ string, _ beads.IssueFilter) ([]*beads.Issue, error) {
+	// Used by GetChildren inside GetActiveAttempt — return nothing by default.
+	return nil, nil
+}
+
+func (m *readyWorkMockStorage) Close() error { return nil }
+
+func TestGetReadyWork_ParentFiltering(t *testing.T) {
+	now := time.Now()
+	mock := &readyWorkMockStorage{
+		readyIssues: []*beads.Issue{
+			{
+				ID:        "spi-top",
+				Title:     "Top-level task",
+				Status:    beads.StatusOpen,
+				IssueType: beads.TypeTask,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				ID:        "spi-epic.1",
+				Title:     "Epic child task",
+				Status:    beads.StatusOpen,
+				IssueType: beads.TypeTask,
+				CreatedAt: now,
+				UpdatedAt: now,
+				Dependencies: []*beads.Dependency{
+					{
+						IssueID:     "spi-epic.1",
+						DependsOnID: "spi-epic",
+						Type:        beads.DepParentChild,
+					},
+				},
+			},
+			{
+				ID:        "spi-another",
+				Title:     "Another top-level",
+				Status:    beads.StatusOpen,
+				IssueType: beads.TypeTask,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	setTestStore(t, mock)
+
+	result, err := GetReadyWork(beads.WorkFilter{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// spi-epic.1 has a parent — it should be filtered out.
+	for _, b := range result {
+		if b.ID == "spi-epic.1" {
+			t.Errorf("epic child spi-epic.1 should be filtered from GetReadyWork results")
+		}
+	}
+
+	// The two top-level beads should remain.
+	ids := make(map[string]bool)
+	for _, b := range result {
+		ids[b.ID] = true
+	}
+	if !ids["spi-top"] {
+		t.Error("expected spi-top in results")
+	}
+	if !ids["spi-another"] {
+		t.Error("expected spi-another in results")
+	}
+	if len(result) != 2 {
+		t.Errorf("expected 2 results, got %d", len(result))
+	}
+}
