@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/awell-health/spire/pkg/agent"
-	"github.com/awell-health/spire/pkg/formula"
 	"github.com/steveyegge/beads"
 )
 
@@ -53,7 +51,7 @@ func TestSaveAndLoadState(t *testing.T) {
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	e := NewForTest("spi-xyz", "wizard-spi-xyz", nil, state, deps)
+	e := NewForTest("spi-xyz", "wizard-spi-xyz", state, deps)
 	if err := e.saveState(); err != nil {
 		t.Fatalf("saveState error: %v", err)
 	}
@@ -117,23 +115,13 @@ func TestEnsureStepBeadsReconcileFromGraph(t *testing.T) {
 		},
 	}
 
-	f := &formula.FormulaV2{
-		Name:    "test-formula",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"implement": {Role: "apprentice"},
-			"review":    {Role: "sage"},
-			"merge":     {Role: "wizard"},
-		},
-	}
-
 	state := &State{
 		BeadID:    "spi-parent",
 		AgentName: "wizard-test",
 		Subtasks:  make(map[string]SubtaskState),
 	}
 
-	e := NewForTest("spi-parent", "wizard-test", f, state, deps)
+	e := NewForTest("spi-parent", "wizard-test", state, deps)
 
 	if err := e.ensureStepBeads(); err != nil {
 		t.Fatalf("ensureStepBeads error: %v", err)
@@ -148,83 +136,6 @@ func TestEnsureStepBeadsReconcileFromGraph(t *testing.T) {
 	}
 	if got := e.state.StepBeadIDs["implement"]; got != "spi-parent.1" {
 		t.Errorf("implement step bead ID = %q, want spi-parent.1", got)
-	}
-}
-
-// TestEnsureStepBeadsCreatesWhenNoneExist verifies new step bead creation.
-func TestEnsureStepBeadsCreatesWhenNoneExist(t *testing.T) {
-	dir := t.TempDir()
-	configDirFn := func() (string, error) { return dir, nil }
-
-	created := map[string]string{}
-	activatedIDs := []string{}
-
-	deps := &Deps{
-		ConfigDir: configDirFn,
-		GetBead: func(id string) (Bead, error) {
-			return Bead{ID: id}, nil
-		},
-		GetChildren: func(parentID string) ([]Bead, error) {
-			return nil, nil // no existing children
-		},
-		CreateStepBead: func(parentID, stepName string) (string, error) {
-			id := "spi-new-" + stepName
-			created[stepName] = id
-			return id, nil
-		},
-		ActivateStepBead: func(stepID string) error {
-			activatedIDs = append(activatedIDs, stepID)
-			return nil
-		},
-		CloseStepBead: func(stepID string) error { return nil },
-		HasLabel: func(b Bead, prefix string) string {
-			for _, l := range b.Labels {
-				if len(l) > len(prefix) && l[:len(prefix)] == prefix {
-					return l[len(prefix):]
-				}
-			}
-			return ""
-		},
-		ContainsLabel: func(b Bead, label string) bool {
-			for _, l := range b.Labels {
-				if l == label {
-					return true
-				}
-			}
-			return false
-		},
-	}
-
-	f := &formula.FormulaV2{
-		Name:    "test-formula",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"implement": {Role: "apprentice"},
-			"review":    {Role: "sage"},
-			"merge":     {Role: "wizard"},
-		},
-	}
-
-	state := &State{
-		BeadID:    "spi-create",
-		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
-	}
-
-	e := NewForTest("spi-create", "wizard-test", f, state, deps)
-
-	if err := e.ensureStepBeads(); err != nil {
-		t.Fatalf("ensureStepBeads error: %v", err)
-	}
-
-	if len(created) != 3 {
-		t.Errorf("stepCreator called %d times, want 3", len(created))
-	}
-	if len(activatedIDs) != 1 || activatedIDs[0] != "spi-new-implement" {
-		t.Errorf("stepActivator called with %v, want [spi-new-implement]", activatedIDs)
-	}
-	if len(e.state.StepBeadIDs) != 3 {
-		t.Errorf("StepBeadIDs has %d entries, want 3", len(e.state.StepBeadIDs))
 	}
 }
 
@@ -267,7 +178,7 @@ func TestTransitionStepBead(t *testing.T) {
 		},
 	}
 
-	e := NewForTest("spi-trans", "wizard-trans", nil, state, deps)
+	e := NewForTest("spi-trans", "wizard-trans", state, deps)
 
 	e.transitionStepBead("design", "implement")
 
@@ -294,7 +205,7 @@ func TestTransitionStepBead_NoStepBeads(t *testing.T) {
 		},
 	}
 
-	e := NewForTest("spi-noop", "wizard", nil, &State{}, deps)
+	e := NewForTest("spi-noop", "wizard", &State{}, deps)
 	e.transitionStepBead("design", "implement")
 
 	if called {
@@ -330,7 +241,7 @@ func TestEnsureAttemptBead_CreatesNew(t *testing.T) {
 		StagingBranch: "feat/spi-test",
 	}
 
-	e := NewForTest("spi-test", "wizard-test", nil, state, deps)
+	e := NewForTest("spi-test", "wizard-test", state, deps)
 	if err := e.ensureAttemptBead(); err != nil {
 		t.Fatalf("ensureAttemptBead: %v", err)
 	}
@@ -369,7 +280,7 @@ func TestEnsureAttemptBead_ResumesExisting(t *testing.T) {
 		AttemptBeadID: "spi-resume.attempt-1",
 	}
 
-	e := NewForTest("spi-resume", "wizard-resume", nil, state, deps)
+	e := NewForTest("spi-resume", "wizard-resume", state, deps)
 	if err := e.ensureAttemptBead(); err != nil {
 		t.Fatalf("ensureAttemptBead: %v", err)
 	}
@@ -396,7 +307,7 @@ func TestCloseAttempt(t *testing.T) {
 	}
 
 	state := &State{AttemptBeadID: "spi-close.attempt-1"}
-	e := NewForTest("spi-close", "wizard", nil, state, deps)
+	e := NewForTest("spi-close", "wizard", state, deps)
 
 	e.closeAttempt("success: merged")
 
@@ -423,44 +334,11 @@ func TestCloseAttempt_Noop(t *testing.T) {
 	}
 
 	state := &State{AttemptBeadID: ""}
-	e := NewForTest("spi-noop", "wizard", nil, state, deps)
+	e := NewForTest("spi-noop", "wizard", state, deps)
 	e.closeAttempt("should not fire")
 
 	if called {
 		t.Error("closer should not be called when AttemptBeadID is empty")
-	}
-}
-
-// TestPhaseNavigation verifies advancePhase and nextPhase.
-func TestPhaseNavigation(t *testing.T) {
-	f := &formula.FormulaV2{
-		Name:    "test",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"design":    {Role: "wizard"},
-			"implement": {Role: "apprentice"},
-			"review":    {Role: "sage"},
-		},
-	}
-
-	deps := &Deps{ConfigDir: func() (string, error) { return t.TempDir(), nil }}
-	state := &State{Phase: "design"}
-	e := NewForTest("spi-nav", "wizard", f, state, deps)
-
-	// nextPhase
-	if next := e.nextPhase("design"); next != "implement" {
-		t.Errorf("nextPhase(design) = %q, want implement", next)
-	}
-	if next := e.nextPhase("review"); next != "" {
-		t.Errorf("nextPhase(review) = %q, want empty", next)
-	}
-
-	// advancePhase
-	if !e.advancePhase() {
-		t.Error("advancePhase should return true")
-	}
-	if e.state.Phase != "implement" {
-		t.Errorf("phase = %q, want implement", e.state.Phase)
 	}
 }
 
@@ -495,15 +373,14 @@ func TestEnrichSubtasksWithChangeSpecs(t *testing.T) {
 	}
 
 	state := &State{RepoPath: t.TempDir()}
-	e := NewForTest("spi-enrich", "wizard", nil, state, deps)
+	e := NewForTest("spi-enrich", "wizard", state, deps)
 
 	children := []Bead{
 		{ID: "spi-enrich.1", Title: "Subtask one"},
 		{ID: "spi-enrich.2", Title: "Subtask two"},
 	}
 
-	pc := formula.PhaseConfig{Model: "claude-opus-4-6"}
-	if err := e.enrichSubtasksWithChangeSpecs(children, "", "", pc); err != nil {
+	if err := e.enrichSubtasksWithChangeSpecs(children, "", "", "claude-opus-4-6", 0); err != nil {
 		t.Fatalf("enrichSubtasksWithChangeSpecs: %v", err)
 	}
 
@@ -556,15 +433,14 @@ func TestEnrichSkipsAlreadyEnriched(t *testing.T) {
 	}
 
 	state := &State{RepoPath: t.TempDir()}
-	e := NewForTest("spi-skip", "wizard", nil, state, deps)
+	e := NewForTest("spi-skip", "wizard", state, deps)
 
 	children := []Bead{
 		{ID: "spi-skip.1", Title: "Already done"},
 		{ID: "spi-skip.2", Title: "Needs spec"},
 	}
 
-	pc := formula.PhaseConfig{Model: "claude-opus-4-6"}
-	if err := e.enrichSubtasksWithChangeSpecs(children, "", "", pc); err != nil {
+	if err := e.enrichSubtasksWithChangeSpecs(children, "", "", "claude-opus-4-6", 0); err != nil {
 		t.Fatalf("enrichSubtasksWithChangeSpecs: %v", err)
 	}
 
@@ -664,11 +540,10 @@ func TestWizardPlanSkipsInternalDAGBeads(t *testing.T) {
 	}
 
 	state := &State{RepoPath: t.TempDir()}
-	e := NewForTest("spi-plan-dag", "wizard", nil, state, deps)
+	e := NewForTest("spi-plan-dag", "wizard", state, deps)
 
-	pc := formula.PhaseConfig{Model: "claude-sonnet-4-6"}
 	bead, _ := deps.GetBead("spi-plan-dag")
-	err := e.wizardPlanEpic(bead, pc)
+	err := e.wizardPlanEpic(bead, "claude-sonnet-4-6", 0)
 	if err != nil {
 		t.Fatalf("wizardPlanEpic: %v", err)
 	}
@@ -725,11 +600,10 @@ func TestWizardPlanEnrichesRealChildren(t *testing.T) {
 	}
 
 	state := &State{RepoPath: t.TempDir()}
-	e := NewForTest("spi-plan-mix", "wizard", nil, state, deps)
+	e := NewForTest("spi-plan-mix", "wizard", state, deps)
 
-	pc := formula.PhaseConfig{Model: "claude-opus-4-6"}
 	bead, _ := deps.GetBead("spi-plan-mix")
-	err := e.wizardPlanEpic(bead, pc)
+	err := e.wizardPlanEpic(bead, "claude-opus-4-6", 0)
 	if err != nil {
 		t.Fatalf("wizardPlanEpic: %v", err)
 	}
@@ -756,7 +630,7 @@ func TestSaveStateRemovesWhenTerminated(t *testing.T) {
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	e := NewForTest("spi-term", "wizard-spi-term", nil, state, deps)
+	e := NewForTest("spi-term", "wizard-spi-term", state, deps)
 
 	// First, save state normally — file should exist.
 	if err := e.saveState(); err != nil {
@@ -793,7 +667,7 @@ func TestSaveStateWritesWhenNotTerminated(t *testing.T) {
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	e := NewForTest("spi-live", "wizard-spi-live", nil, state, deps)
+	e := NewForTest("spi-live", "wizard-spi-live", state, deps)
 
 	// terminated is false by default — saveState should write.
 	if err := e.saveState(); err != nil {
@@ -817,117 +691,6 @@ func TestSaveStateWritesWhenNotTerminated(t *testing.T) {
 	}
 }
 
-// TestExecuteSequential verifies that executeSequential dispatches subtasks
-// one at a time, in wave order, merging each to staging and closing each
-// subtask before advancing to the next.
-func TestExecuteSequential(t *testing.T) {
-	repoDir := initSeqTestRepo(t)
-	configDir := t.TempDir()
-	configDirFn := func() (string, error) { return configDir, nil }
-
-	var spawnOrder []string
-	var closedBeads []string
-
-	deps := &Deps{
-		ConfigDir: configDirFn,
-		GetChildren: func(parentID string) ([]Bead, error) {
-			return []Bead{
-				{ID: "seq-1", Status: "open"},
-				{ID: "seq-2", Status: "open"},
-				{ID: "seq-3", Status: "open"},
-			}, nil
-		},
-		GetBlockedIssues: func(filter beads.WorkFilter) ([]BoardBead, error) {
-			return nil, nil // no deps = all in wave 0
-		},
-		IsAttemptBead:     func(b Bead) bool { return false },
-		IsStepBead:        func(b Bead) bool { return false },
-		IsReviewRoundBead: func(b Bead) bool { return false },
-		UpdateBead: func(id string, updates map[string]interface{}) error {
-			return nil
-		},
-		CloseBead: func(id string) error {
-			closedBeads = append(closedBeads, id)
-			return nil
-		},
-		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
-		ArchmageGitEnv:    func(tower *TowerConfig) []string { return os.Environ() },
-		AddLabel:          func(id, label string) error { return nil },
-		RemoveLabel:       func(id, label string) error { return nil },
-		Spawner: &mockBackend{
-			spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
-				spawnOrder = append(spawnOrder, cfg.BeadID)
-				// Simulate the apprentice creating a feat branch with a commit.
-				branch := "feat/" + cfg.BeadID
-				runGitIn(t, repoDir, "branch", branch)
-				return &mockHandle{}, nil
-			},
-		},
-	}
-
-	f := &formula.FormulaV2{
-		Name:    "test-sequential",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"implement": {
-				Role:     "apprentice",
-				Dispatch: "sequential",
-			},
-		},
-	}
-
-	state := &State{
-		BeadID:        "spi-seq",
-		AgentName:     "wizard-seq",
-		Subtasks:      make(map[string]SubtaskState),
-		RepoPath:      repoDir,
-		BaseBranch:    "main",
-		StagingBranch: "staging/spi-seq",
-	}
-
-	e := NewForTest("spi-seq", "wizard-seq", f, state, deps)
-
-	pc := formula.PhaseConfig{
-		Role:     "apprentice",
-		Dispatch: "sequential",
-	}
-
-	err := e.executeSequential("implement", pc)
-
-	// With no real commits on feat branches, the merge is a no-op (already
-	// up to date). All 3 subtasks should be dispatched and closed.
-	if err != nil {
-		t.Fatalf("executeSequential error: %v", err)
-	}
-
-	// Verify all 3 subtasks were dispatched in order.
-	if len(spawnOrder) != 3 {
-		t.Fatalf("expected 3 spawns, got %d: %v", len(spawnOrder), spawnOrder)
-	}
-	for i, want := range []string{"seq-1", "seq-2", "seq-3"} {
-		if spawnOrder[i] != want {
-			t.Errorf("spawn[%d] = %q, want %q", i, spawnOrder[i], want)
-		}
-	}
-
-	// Verify all subtasks were closed.
-	if len(closedBeads) != 3 {
-		t.Fatalf("expected 3 closed beads, got %d: %v", len(closedBeads), closedBeads)
-	}
-
-	// Verify subtask states are all "closed".
-	for _, id := range []string{"seq-1", "seq-2", "seq-3"} {
-		st, ok := e.state.Subtasks[id]
-		if !ok {
-			t.Errorf("missing subtask state for %s", id)
-			continue
-		}
-		if st.Status != "closed" {
-			t.Errorf("subtask %s status = %q, want closed", id, st.Status)
-		}
-	}
-}
-
 // runGitIn runs a git command in the given directory.
 func runGitIn(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -935,249 +698,6 @@ func runGitIn(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-	}
-}
-
-// initSeqTestRepo creates a test repo with a bare remote for push tests.
-func initSeqTestRepo(t *testing.T) string {
-	t.Helper()
-	repoDir := initSeamTestRepo(t)
-	bareDir := t.TempDir()
-	runGitIn(t, bareDir, "init", "--bare")
-	runGitIn(t, repoDir, "remote", "add", "origin", bareDir)
-	runGitIn(t, repoDir, "push", "-u", "origin", "main")
-	return repoDir
-}
-
-// TestExecuteSequential_SkipsCompleted verifies that sequential dispatch
-// skips subtasks that are already marked as closed in the executor state.
-func TestExecuteSequential_SkipsCompleted(t *testing.T) {
-	repoDir := initSeqTestRepo(t)
-	configDir := t.TempDir()
-	configDirFn := func() (string, error) { return configDir, nil }
-
-	var spawnOrder []string
-
-	deps := &Deps{
-		ConfigDir: configDirFn,
-		GetChildren: func(parentID string) ([]Bead, error) {
-			return []Bead{
-				{ID: "seq-1", Status: "open"},
-				{ID: "seq-2", Status: "open"},
-			}, nil
-		},
-		GetBlockedIssues: func(filter beads.WorkFilter) ([]BoardBead, error) {
-			return nil, nil
-		},
-		IsAttemptBead:     func(b Bead) bool { return false },
-		IsStepBead:        func(b Bead) bool { return false },
-		IsReviewRoundBead: func(b Bead) bool { return false },
-		UpdateBead: func(id string, updates map[string]interface{}) error {
-			return nil
-		},
-		CloseBead:         func(id string) error { return nil },
-		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
-		ArchmageGitEnv:    func(tower *TowerConfig) []string { return os.Environ() },
-		AddLabel:          func(id, label string) error { return nil },
-		RemoveLabel:       func(id, label string) error { return nil },
-		Spawner: &mockBackend{
-			spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
-				spawnOrder = append(spawnOrder, cfg.BeadID)
-				branch := "feat/" + cfg.BeadID
-				runGitIn(t, repoDir, "branch", branch)
-				return &mockHandle{}, nil
-			},
-		},
-	}
-
-	f := &formula.FormulaV2{
-		Name:    "test-sequential",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"implement": {
-				Role:     "apprentice",
-				Dispatch: "sequential",
-			},
-		},
-	}
-
-	state := &State{
-		BeadID:     "spi-seq-skip",
-		AgentName:  "wizard-seq-skip",
-		Subtasks: map[string]SubtaskState{
-			"seq-1": {Status: "closed", Branch: "feat/seq-1", Agent: "old-agent"},
-		},
-		RepoPath:      repoDir,
-		BaseBranch:    "main",
-		StagingBranch: "staging/spi-seq-skip",
-	}
-
-	e := NewForTest("spi-seq-skip", "wizard-seq-skip", f, state, deps)
-
-	pc := formula.PhaseConfig{
-		Role:     "apprentice",
-		Dispatch: "sequential",
-	}
-
-	err := e.executeSequential("implement", pc)
-	if err != nil {
-		t.Fatalf("executeSequential error: %v", err)
-	}
-
-	// seq-1 should be skipped (already closed), only seq-2 should be spawned
-	if len(spawnOrder) != 1 {
-		t.Fatalf("expected 1 spawn (seq-1 skipped), got %d: %v", len(spawnOrder), spawnOrder)
-	}
-	if spawnOrder[0] != "seq-2" {
-		t.Errorf("first spawn should be seq-2 (skipping seq-1), got %q", spawnOrder[0])
-	}
-}
-
-// TestExecuteSequential_NoSubtasks verifies that sequential dispatch returns
-// nil when there are no open subtasks.
-func TestExecuteSequential_NoSubtasks(t *testing.T) {
-	dir := t.TempDir()
-
-	deps := &Deps{
-		ConfigDir: func() (string, error) { return dir, nil },
-		GetChildren: func(parentID string) ([]Bead, error) {
-			return nil, nil
-		},
-		GetBlockedIssues: func(filter beads.WorkFilter) ([]BoardBead, error) {
-			return nil, nil
-		},
-		IsAttemptBead:     func(b Bead) bool { return false },
-		IsStepBead:        func(b Bead) bool { return false },
-		IsReviewRoundBead: func(b Bead) bool { return false },
-	}
-
-	state := &State{
-		BeadID:    "spi-seq-empty",
-		AgentName: "wizard-seq-empty",
-		Subtasks:  make(map[string]SubtaskState),
-	}
-
-	e := NewForTest("spi-seq-empty", "wizard-seq-empty", nil, state, deps)
-	pc := formula.PhaseConfig{Dispatch: "sequential"}
-
-	err := e.executeSequential("implement", pc)
-	if err != nil {
-		t.Fatalf("expected nil error for no subtasks, got: %v", err)
-	}
-}
-
-// =============================================================================
-// Bead lifecycle ownership tests (spi-3ejcg)
-// =============================================================================
-
-// TestMergeOrphanLoopSkipsInternalBeads verifies that executeMerge's orphan
-// loop only closes actual subtask beads, not step beads, attempt beads, or
-// review-round beads.
-func TestMergeOrphanLoopSkipsInternalBeads(t *testing.T) {
-	repoDir := initSeqTestRepo(t)
-
-	var closedIDs []string
-
-	// Children include subtask beads AND internal DAG beads.
-	children := []Bead{
-		{ID: "subtask-1", Status: "open", Labels: []string{}},
-		{ID: "subtask-2", Status: "open", Labels: []string{}},
-		{ID: "step-impl", Status: "in_progress", Labels: []string{"workflow-step", "step:implement"}},
-		{ID: "step-review", Status: "open", Labels: []string{"workflow-step", "step:review"}},
-		{ID: "attempt-1", Status: "in_progress", Labels: []string{"attempt"}},
-		{ID: "review-round-1", Status: "open", Labels: []string{"review-round"}},
-		{ID: "subtask-3", Status: "closed", Labels: []string{}}, // already closed
-	}
-
-	deps := &Deps{
-		ConfigDir: func() (string, error) { return t.TempDir(), nil },
-		GetBead: func(id string) (Bead, error) {
-			return Bead{ID: id, Status: "in_progress"}, nil
-		},
-		GetChildren: func(parentID string) ([]Bead, error) {
-			return children, nil
-		},
-		CloseBead: func(id string) error {
-			closedIDs = append(closedIDs, id)
-			return nil
-		},
-		HasLabel: func(b Bead, prefix string) string {
-			if prefix == "feat-branch:" {
-				return ""
-			}
-			return ""
-		},
-		AddLabel:          func(id, label string) error { return nil },
-		RemoveLabel:       func(id, label string) error { return nil },
-		ResolveBranch:     func(beadID string) string { return "feat/" + beadID },
-		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
-		ArchmageGitEnv:    func(tower *TowerConfig) []string { return os.Environ() },
-		IsAttemptBead: func(b Bead) bool {
-			for _, l := range b.Labels {
-				if l == "attempt" {
-					return true
-				}
-			}
-			return false
-		},
-		IsStepBead: func(b Bead) bool {
-			for _, l := range b.Labels {
-				if l == "workflow-step" {
-					return true
-				}
-			}
-			return false
-		},
-		IsReviewRoundBead: func(b Bead) bool {
-			for _, l := range b.Labels {
-				if l == "review-round" {
-					return true
-				}
-			}
-			return false
-		},
-	}
-
-	state := &State{
-		BeadID:        "spi-merge-test",
-		AgentName:     "wizard-merge-test",
-		Subtasks:      make(map[string]SubtaskState),
-		RepoPath:      repoDir,
-		BaseBranch:    "main",
-		StagingBranch: "staging/spi-merge-test",
-	}
-
-	f := &formula.FormulaV2{
-		Name:    "test",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"merge": {},
-		},
-	}
-
-	e := NewForTest("spi-merge-test", "wizard-merge-test", f, state, deps)
-
-	// executeMerge will fail because no staging worktree, but the orphan loop
-	// runs before the merge step. We test via the child-close logic directly.
-	// Instead, call executeMerge and expect it to fail (no staging worktree),
-	// but we can verify the orphan loop by checking which IDs were passed to CloseBead.
-	_ = e.executeMerge(formula.PhaseConfig{})
-
-	// Verify: only subtask-1 and subtask-2 were closed (not step, attempt, or review-round beads).
-	// subtask-3 was already closed so it should also be skipped.
-	// Note: executeMerge may fail before reaching the orphan loop due to worktree issues.
-	// So we check that IF any beads were closed, the internal ones were excluded.
-	for _, id := range closedIDs {
-		switch id {
-		case "step-impl", "step-review", "attempt-1", "review-round-1":
-			t.Errorf("orphan loop closed internal DAG bead %s — should have been skipped", id)
-		case "spi-merge-test":
-			// parent bead close is expected
-		case "subtask-1", "subtask-2":
-			// expected
-		default:
-			// any other close is fine
-		}
 	}
 }
 
@@ -1222,7 +742,7 @@ func TestTransitionStepBeadIdempotent(t *testing.T) {
 		},
 	}
 
-	e := NewForTest("spi-idem", "wizard-idem", nil, state, deps)
+	e := NewForTest("spi-idem", "wizard-idem", state, deps)
 
 	// Transition from review → merge, but both are already closed.
 	e.transitionStepBead("review", "merge")
@@ -1266,7 +786,7 @@ func TestTransitionStepBeadNormalPath(t *testing.T) {
 		},
 	}
 
-	e := NewForTest("spi-norm", "wizard-norm", nil, state, deps)
+	e := NewForTest("spi-norm", "wizard-norm", state, deps)
 
 	e.transitionStepBead("implement", "review")
 
@@ -1317,7 +837,7 @@ func TestCloseAllOpenStepBeads(t *testing.T) {
 		},
 	}
 
-	e := NewForTest("spi-cleanup", "wizard-cleanup", nil, state, deps)
+	e := NewForTest("spi-cleanup", "wizard-cleanup", state, deps)
 
 	e.closeAllOpenStepBeads()
 
@@ -1341,156 +861,3 @@ func TestCloseAllOpenStepBeads(t *testing.T) {
 	}
 }
 
-// TestBeadClosedExitCleansUpStepBeads verifies that when a bead is externally
-// closed (detected after advancePhase), all remaining step beads are closed.
-func TestBeadClosedExitCleansUpStepBeads(t *testing.T) {
-	dir := t.TempDir()
-	configDirFn := func() (string, error) { return dir, nil }
-
-	var closedStepIDs []string
-	attemptClosed := false
-
-	// Track bead status — parent starts open, then gets "closed" after first phase.
-	parentStatus := "in_progress"
-	phaseExecuted := false
-
-	beadStatuses := map[string]string{
-		"step-impl":   "in_progress",
-		"step-review": "open",
-		"step-merge":  "open",
-	}
-
-	deps := &Deps{
-		ConfigDir: configDirFn,
-		GetBead: func(id string) (Bead, error) {
-			if id == "spi-extclose" {
-				return Bead{ID: id, Status: parentStatus}, nil
-			}
-			status := beadStatuses[id]
-			if status == "" {
-				status = "open"
-			}
-			return Bead{ID: id, Status: status}, nil
-		},
-		GetChildren: func(parentID string) ([]Bead, error) {
-			return nil, nil
-		},
-		GetComments: func(id string) ([]*beads.Comment, error) {
-			return nil, nil
-		},
-		AddComment:    func(id, text string) error { return nil },
-		CloseBead:     func(id string) error { return nil },
-		CreateBead:    func(opts CreateOpts) (string, error) { return "", nil },
-		AddLabel:      func(id, label string) error { return nil },
-		RemoveLabel:   func(id, label string) error { return nil },
-		GetPhase:      func(b Bead) string { return "" },
-		ResolveRepo:   func(beadID string) (string, string, string, error) { return dir, "", "main", nil },
-		ResolveBranch: func(beadID string) string { return "feat/" + beadID },
-		RegistryAdd:    func(entry agent.Entry) error { return nil },
-		RegistryRemove: func(name string) error { return nil },
-		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
-		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
-			return "attempt-1", nil
-		},
-		CloseAttemptBead: func(attemptID, result string) error {
-			attemptClosed = true
-			return nil
-		},
-		GetActiveAttempt: func(parentID string) (*Bead, error) { return nil, nil },
-		CreateStepBead: func(parentID, stepName string) (string, error) {
-			return "step-" + stepName, nil
-		},
-		ActivateStepBead: func(stepID string) error { return nil },
-		CloseStepBead: func(stepID string) error {
-			closedStepIDs = append(closedStepIDs, stepID)
-			return nil
-		},
-		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
-		ArchmageGitEnv:    func(tower *TowerConfig) []string { return os.Environ() },
-		// Direct dispatch — simulates implement phase completing.
-		// The Spawner mock triggers the external close (executeDirect uses Spawner, not ClaudeRunner).
-		Spawner: &mockBackend{
-			spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
-				if !phaseExecuted {
-					phaseExecuted = true
-					parentStatus = "closed"
-				}
-				return &mockHandle{}, nil
-			},
-		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
-			return []byte("done"), nil
-		},
-		GetReviewBeads: func(parentID string) ([]Bead, error) {
-			return nil, nil
-		},
-		ReviewBeadVerdict: func(b Bead) string { return "" },
-		AgentResultDir: func(name string) string { return dir },
-		CaptureFocus:   func(beadID string) (string, error) { return "focus context", nil },
-		HasLabel:       func(b Bead, prefix string) string { return "" },
-		ContainsLabel:  func(b Bead, label string) bool { return false },
-		IsAttemptBead:  func(b Bead) bool { return false },
-		IsStepBead: func(b Bead) bool {
-			return b.ID == "step-impl" || b.ID == "step-review" || b.ID == "step-merge"
-		},
-		IsReviewRoundBead: func(b Bead) bool { return false },
-	}
-
-	f := &formula.FormulaV2{
-		Name:    "test-extclose",
-		Version: 2,
-		Phases: map[string]formula.PhaseConfig{
-			"implement": {Role: "apprentice"},
-			"review":    {Role: "sage", Behavior: "sage-review"},
-			"merge":     {},
-		},
-	}
-
-	state := &State{
-		BeadID:    "spi-extclose",
-		AgentName: "wizard-extclose",
-		Subtasks:  make(map[string]SubtaskState),
-		Phase:     "implement",
-		StepBeadIDs: map[string]string{
-			"implement": "step-impl",
-			"review":    "step-review",
-			"merge":     "step-merge",
-		},
-		RepoPath:   dir,
-		BaseBranch: "main",
-		AttemptBeadID: "attempt-1",
-	}
-
-	e := NewForTest("spi-extclose", "wizard-extclose", f, state, deps)
-	err := e.Run()
-
-	// Should exit cleanly because bead was closed externally.
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-
-	// Verify attempt was closed.
-	if !attemptClosed {
-		t.Error("attempt bead was not closed on external-close exit")
-	}
-
-	// Verify step beads were cleaned up by closeAllOpenStepBeads.
-	// At minimum, the review and merge step beads (which were never transitioned to)
-	// should have been closed.
-	closedSet := make(map[string]bool)
-	for _, id := range closedStepIDs {
-		closedSet[id] = true
-	}
-	if !closedSet["step-review"] {
-		t.Error("step-review was not closed — leaked step bead on external-close exit")
-	}
-	if !closedSet["step-merge"] {
-		t.Error("step-merge was not closed — leaked step bead on external-close exit")
-	}
-}
-
-// Suppress unused import warnings
-var (
-	_ = os.Getenv
-	_ = agent.RoleApprentice
-)
