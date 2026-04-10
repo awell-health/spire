@@ -439,14 +439,20 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 
 	// Derive the wizard name from the source bead to load its graph state.
 	// Pattern: check for agent: label on attempt beads, fall back to "wizard-<sourceBeadID>".
+	// Uses first-match: the first child with an agent: label wins.
 	wizardName := "wizard-" + req.SourceBeadID
 	if children, err := e.deps.GetChildren(req.SourceBeadID); err == nil {
+		found := false
 		for _, c := range children {
 			for _, l := range c.Labels {
 				if strings.HasPrefix(l, "agent:") {
 					wizardName = strings.TrimPrefix(l, "agent:")
+					found = true
 					break
 				}
+			}
+			if found {
+				break
 			}
 		}
 	}
@@ -515,18 +521,20 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 	}
 
 	// Include build/test commands from repo config if available.
-	if rc := e.deps.RepoConfig(); rc != nil {
-		prompt.WriteString("## Validation Commands\n")
-		if rc.Runtime.Build != "" {
-			prompt.WriteString(fmt.Sprintf("- Build: `%s`\n", rc.Runtime.Build))
+	if e.deps.RepoConfig != nil {
+		if rc := e.deps.RepoConfig(); rc != nil {
+			prompt.WriteString("## Validation Commands\n")
+			if rc.Runtime.Build != "" {
+				prompt.WriteString(fmt.Sprintf("- Build: `%s`\n", rc.Runtime.Build))
+			}
+			if rc.Runtime.Test != "" {
+				prompt.WriteString(fmt.Sprintf("- Test: `%s`\n", rc.Runtime.Test))
+			}
+			if rc.Runtime.Lint != "" {
+				prompt.WriteString(fmt.Sprintf("- Lint: `%s`\n", rc.Runtime.Lint))
+			}
+			prompt.WriteString("\n")
 		}
-		if rc.Runtime.Test != "" {
-			prompt.WriteString(fmt.Sprintf("- Test: `%s`\n", rc.Runtime.Test))
-		}
-		if rc.Runtime.Lint != "" {
-			prompt.WriteString(fmt.Sprintf("- Lint: `%s`\n", rc.Runtime.Lint))
-		}
-		prompt.WriteString("\n")
 	}
 
 	// Spawn the triage agent as an apprentice into the worktree.
@@ -563,9 +571,11 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 	// Increment triage count on recovery bead metadata.
 	newCount := strconv.Itoa(triageCount + 1)
 	if e.deps.SetBeadMetadata != nil {
-		_ = e.deps.SetBeadMetadata(req.BeadID, map[string]string{
+		if err := e.deps.SetBeadMetadata(req.BeadID, map[string]string{
 			recovery.KeyTriageCount: newCount,
-		})
+		}); err != nil {
+			e.log("warning: failed to persist triage count on %s: %v", req.BeadID, err)
+		}
 	}
 
 	e.log("recovery: triage %s attempt %d result=%s", req.SourceBeadID, triageCount+1, agentResult)

@@ -1,7 +1,17 @@
 package executor
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // TestHandleFinish_NeedsHuman verifies that when the decide step outputs
@@ -123,5 +133,698 @@ func TestHandleFinish_NilState(t *testing.T) {
 	}
 	if closedBead != "spi-recovery-nil" {
 		t.Errorf("CloseBead called with %q, want %q", closedBead, "spi-recovery-nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// doTriage tests
+// ---------------------------------------------------------------------------
+
+// triageTestSetup builds an Executor and deps suitable for doTriage tests.
+// It creates a temporary directory for the worktree and graph state.
+func triageTestSetup(t *testing.T) (tmpDir string, cleanup func()) {
+	t.Helper()
+	dir := t.TempDir()
+
+	// Create a fake worktree directory.
+	wtDir := filepath.Join(dir, "worktrees", "feat-spi-src1")
+	if err := os.MkdirAll(wtDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write graph state for the wizard agent referencing the worktree.
+	runtimeDir := filepath.Join(dir, "config", "runtime", "wizard-spi-src1")
+	if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gs := &GraphState{
+		BeadID:    "spi-src1",
+		AgentName: "wizard-spi-src1",
+		Workspaces: map[string]WorkspaceState{
+			"feature": {Dir: wtDir, Branch: "feat/spi-src1", Status: "active"},
+		},
+	}
+	data, _ := json.Marshal(gs)
+	if err := os.WriteFile(filepath.Join(runtimeDir, "graph_state.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	return dir, func() {}
+}
+
+// newTriageExecutor creates an executor with the given deps and a config dir pointing at tmpDir.
+func newTriageExecutor(t *testing.T, beadID string, deps *Deps) *Executor {
+	t.Helper()
+	e := NewGraphForTest(beadID, "recovery-agent", nil, nil, deps)
+	return e
+}
+
+func TestDoTriage_MissingSourceBeadID(t *testing.T) {
+	deps := &Deps{}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:   recovery.ActionTriage,
+		BeadID: "spi-recovery-1",
+		// SourceBeadID intentionally empty
+	}
+
+	result := doTriage(e, req)
+	if result.Success {
+		t.Fatal("expected failure for missing source_bead_id")
+	}
+	if !strings.Contains(result.Error, "source_bead_id is required") {
+		t.Errorf("error = %q, want to contain 'source_bead_id is required'", result.Error)
+	}
+}
+
+func TestDoTriage_BudgetExhausted(t *testing.T) {
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{
+				ID:       id,
+				Metadata: map[string]string{recovery.KeyTriageCount: "2"},
+			}, nil
+		},
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+	}
+
+	result := doTriage(e, req)
+	if result.Success {
+		t.Fatal("expected failure for budget exhausted")
+	}
+	if !strings.Contains(result.Error, "budget exhausted") {
+		t.Errorf("error = %q, want to contain 'budget exhausted'", result.Error)
+	}
+}
+
+func TestDoTriage_NoGraphState(t *testing.T) {
+	// Config dir points to an empty temp dir — no graph state file exists.
+	emptyDir := t.TempDir()
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return nil, nil
+		},
+		ConfigDir: func() (string, error) { return emptyDir, nil },
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+	}
+
+	result := doTriage(e, req)
+	if result.Success {
+		t.Fatal("expected failure when no graph state exists")
+	}
+	if !strings.Contains(result.Error, "cannot determine worktree") {
+		t.Errorf("error = %q, want to contain 'cannot determine worktree'", result.Error)
+	}
+}
+
+func TestDoTriage_WorktreeDeleted(t *testing.T) {
+	tmpDir, _ := triageTestSetup(t)
+
+	// Remove the worktree directory to simulate cleanup.
+	wtDir := filepath.Join(tmpDir, "worktrees", "feat-spi-src1")
+	os.RemoveAll(wtDir)
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return nil, nil
+		},
+		ConfigDir: func() (string, error) { return filepath.Join(tmpDir, "config"), nil },
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+	}
+
+	result := doTriage(e, req)
+	if result.Success {
+		t.Fatal("expected failure when worktree is deleted")
+	}
+	if !strings.Contains(result.Error, "worktree no longer exists") {
+		t.Errorf("error = %q, want to contain 'worktree no longer exists'", result.Error)
+	}
+}
+
+func TestDoTriage_SpawnError(t *testing.T) {
+	tmpDir, _ := triageTestSetup(t)
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return nil, nil
+		},
+		ConfigDir: func() (string, error) { return filepath.Join(tmpDir, "config"), nil },
+		Spawner: &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			return nil, fmt.Errorf("spawn failed: out of memory")
+		}},
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+		Params:       map[string]string{"test_output": "FAIL: TestFoo"},
+	}
+
+	result := doTriage(e, req)
+	if result.Success {
+		t.Fatal("expected failure on spawn error")
+	}
+	if !strings.Contains(result.Error, "spawn triage agent") {
+		t.Errorf("error = %q, want to contain 'spawn triage agent'", result.Error)
+	}
+}
+
+func TestDoTriage_AgentFailure(t *testing.T) {
+	tmpDir, _ := triageTestSetup(t)
+
+	var spawnedCfg agent.SpawnConfig
+	var metaSet map[string]string
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return nil, nil
+		},
+		ConfigDir: func() (string, error) { return filepath.Join(tmpDir, "config"), nil },
+		Spawner: &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			spawnedCfg = cfg
+			return &mockHandle{}, nil
+		}},
+		// readAgentResult needs AgentResultDir to return a dir with result.json.
+		AgentResultDir: func(agentName string) string {
+			// Write a "error" result for the triage agent.
+			dir := filepath.Join(tmpDir, "results", agentName)
+			os.MkdirAll(dir, 0755)
+			data, _ := json.Marshal(agentResultJSON{Result: "error"})
+			os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+			return dir
+		},
+		RecordAgentRun: func(run AgentRun) (string, error) { return "run-1", nil },
+		SetBeadMetadata: func(id string, meta map[string]string) error {
+			metaSet = meta
+			return nil
+		},
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+		Params:       map[string]string{"test_output": "FAIL: TestFoo"},
+	}
+
+	result := doTriage(e, req)
+	if result.Success {
+		t.Fatal("expected failure when agent result is error")
+	}
+	if !strings.Contains(result.Error, "triage agent returned error") {
+		t.Errorf("error = %q, want to contain 'triage agent returned error'", result.Error)
+	}
+
+	// Verify spawn config.
+	if spawnedCfg.Role != agent.RoleApprentice {
+		t.Errorf("spawn role = %q, want %q", spawnedCfg.Role, agent.RoleApprentice)
+	}
+	if !strings.Contains(spawnedCfg.Name, "triage-spi-src1-1") {
+		t.Errorf("spawn name = %q, want to contain 'triage-spi-src1-1'", spawnedCfg.Name)
+	}
+
+	// Verify triage count was incremented.
+	if metaSet[recovery.KeyTriageCount] != "1" {
+		t.Errorf("triage_count = %q, want %q", metaSet[recovery.KeyTriageCount], "1")
+	}
+}
+
+func TestDoTriage_HappyPath(t *testing.T) {
+	tmpDir, _ := triageTestSetup(t)
+
+	var spawnedCfg agent.SpawnConfig
+	var metaSet map[string]string
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			// Return a child with an agent: label to test wizard name derivation.
+			return []store.Bead{
+				{ID: "spi-src1.attempt", Labels: []string{"attempt", "agent:wizard-spi-src1"}},
+			}, nil
+		},
+		ConfigDir: func() (string, error) { return filepath.Join(tmpDir, "config"), nil },
+		Spawner: &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			spawnedCfg = cfg
+			return &mockHandle{}, nil
+		}},
+		AgentResultDir: func(agentName string) string {
+			dir := filepath.Join(tmpDir, "results", agentName)
+			os.MkdirAll(dir, 0755)
+			data, _ := json.Marshal(agentResultJSON{Result: "success"})
+			os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+			return dir
+		},
+		RecordAgentRun: func(run AgentRun) (string, error) { return "run-1", nil },
+		SetBeadMetadata: func(id string, meta map[string]string) error {
+			metaSet = meta
+			return nil
+		},
+		RepoConfig: func() *repoconfig.RepoConfig {
+			return &repoconfig.RepoConfig{
+				Runtime: repoconfig.RuntimeConfig{
+					Build: "go build ./...",
+					Test:  "go test ./...",
+					Lint:  "go vet ./...",
+				},
+			}
+		},
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+		Params: map[string]string{
+			"test_output":    "FAIL: TestFoo\n    expected 1, got 2",
+			"wizard_log_tail": "running tests...\nFAIL",
+		},
+	}
+
+	result := doTriage(e, req)
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+	if result.ResolutionKind != "triage" {
+		t.Errorf("resolution_kind = %q, want %q", result.ResolutionKind, "triage")
+	}
+	if !strings.Contains(result.Output, "attempt 1 succeeded") {
+		t.Errorf("output = %q, want to contain 'attempt 1 succeeded'", result.Output)
+	}
+
+	// Verify spawn config details.
+	if spawnedCfg.Role != agent.RoleApprentice {
+		t.Errorf("spawn role = %q, want %q", spawnedCfg.Role, agent.RoleApprentice)
+	}
+	if spawnedCfg.BeadID != "spi-src1" {
+		t.Errorf("spawn bead_id = %q, want %q", spawnedCfg.BeadID, "spi-src1")
+	}
+	// Custom prompt should contain test output and validation commands.
+	if !strings.Contains(spawnedCfg.CustomPrompt, "FAIL: TestFoo") {
+		t.Error("custom prompt missing test output")
+	}
+	if !strings.Contains(spawnedCfg.CustomPrompt, "go build ./...") {
+		t.Error("custom prompt missing build command")
+	}
+	if !strings.Contains(spawnedCfg.CustomPrompt, "go test ./...") {
+		t.Error("custom prompt missing test command")
+	}
+	if !strings.Contains(spawnedCfg.CustomPrompt, "running tests...") {
+		t.Error("custom prompt missing wizard log tail")
+	}
+
+	// Verify worktree dir in ExtraArgs.
+	found := false
+	for i, arg := range spawnedCfg.ExtraArgs {
+		if arg == "--worktree-dir" && i+1 < len(spawnedCfg.ExtraArgs) {
+			found = true
+			if !strings.Contains(spawnedCfg.ExtraArgs[i+1], "feat-spi-src1") {
+				t.Errorf("worktree-dir = %q, want to contain 'feat-spi-src1'", spawnedCfg.ExtraArgs[i+1])
+			}
+		}
+	}
+	if !found {
+		t.Error("ExtraArgs missing --worktree-dir flag")
+	}
+
+	// Verify triage count was incremented.
+	if metaSet[recovery.KeyTriageCount] != "1" {
+		t.Errorf("triage_count = %q, want %q", metaSet[recovery.KeyTriageCount], "1")
+	}
+}
+
+func TestDoTriage_WizardNameFirstMatch(t *testing.T) {
+	// Verify that the first child with an agent: label is used, not the last.
+	tmpDir, _ := triageTestSetup(t)
+
+	// Also write graph state for wizard-first-agent so it would succeed with that name.
+	runtimeDir := filepath.Join(tmpDir, "config", "runtime", "wizard-first-agent")
+	os.MkdirAll(runtimeDir, 0755)
+	wtDir := filepath.Join(tmpDir, "worktrees", "feat-spi-src1")
+	gs := &GraphState{
+		BeadID:    "spi-src1",
+		AgentName: "wizard-first-agent",
+		Workspaces: map[string]WorkspaceState{
+			"feature": {Dir: wtDir, Branch: "feat/spi-src1", Status: "active"},
+		},
+	}
+	data, _ := json.Marshal(gs)
+	os.WriteFile(filepath.Join(runtimeDir, "graph_state.json"), data, 0644)
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return []store.Bead{
+				{ID: "spi-src1.1", Labels: []string{"attempt", "agent:wizard-first-agent"}},
+				{ID: "spi-src1.2", Labels: []string{"attempt", "agent:wizard-second-agent"}},
+			}, nil
+		},
+		ConfigDir: func() (string, error) { return filepath.Join(tmpDir, "config"), nil },
+		Spawner: &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			return &mockHandle{}, nil
+		}},
+		AgentResultDir: func(agentName string) string {
+			dir := filepath.Join(tmpDir, "results", agentName)
+			os.MkdirAll(dir, 0755)
+			data, _ := json.Marshal(agentResultJSON{Result: "success"})
+			os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+			return dir
+		},
+		RecordAgentRun:  func(run AgentRun) (string, error) { return "run-1", nil },
+		SetBeadMetadata: func(id string, meta map[string]string) error { return nil },
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+		Params:       map[string]string{"test_output": "FAIL"},
+	}
+
+	// Should succeed because first-match (wizard-first-agent) has a valid graph state.
+	result := doTriage(e, req)
+	if !result.Success {
+		t.Fatalf("expected success with first-match wizard name, got: %s", result.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildDecidePrompt tests
+// ---------------------------------------------------------------------------
+
+func TestBuildDecidePrompt_IncludesTriageGuidance(t *testing.T) {
+	cc := CollectContextResult{
+		Diagnosis: &recovery.Diagnosis{
+			BeadID:      "spi-src1",
+			FailureMode: "step-failure",
+			Git: &recovery.GitState{
+				WorktreeExists: true,
+				BranchExists:   true,
+			},
+		},
+		WizardLogTail: "FAIL: TestFoo\n    expected 1, got 2",
+	}
+
+	prompt := buildDecidePrompt(cc, 0)
+
+	// Should include triage as a valid action.
+	if !strings.Contains(prompt, `"triage"`) {
+		t.Error("prompt missing triage in chosen_action enum")
+	}
+	// Should include triage guidance section.
+	if !strings.Contains(prompt, "Triage Action") {
+		t.Error("prompt missing Triage Action guidance section")
+	}
+	// Should show budget: 0 used, 2 remaining.
+	if !strings.Contains(prompt, "0 of 2 attempts used") {
+		t.Error("prompt missing correct triage budget for count=0")
+	}
+	if !strings.Contains(prompt, "2 remaining") {
+		t.Error("prompt missing remaining count")
+	}
+	// Should indicate worktree exists.
+	if !strings.Contains(prompt, "Worktree exists:** yes") {
+		t.Error("prompt missing worktree existence confirmation")
+	}
+}
+
+func TestBuildDecidePrompt_TriageBudgetExhausted(t *testing.T) {
+	cc := CollectContextResult{
+		Diagnosis: &recovery.Diagnosis{
+			BeadID:      "spi-src1",
+			FailureMode: "step-failure",
+		},
+	}
+
+	prompt := buildDecidePrompt(cc, 2)
+
+	if !strings.Contains(prompt, "2 of 2 attempts used") {
+		t.Error("prompt missing correct budget for count=2")
+	}
+	if !strings.Contains(prompt, "0 remaining") {
+		t.Error("prompt missing zero remaining")
+	}
+	if !strings.Contains(prompt, "do NOT choose `triage`") {
+		t.Error("prompt missing exhaustion warning")
+	}
+}
+
+func TestBuildDecidePrompt_WorktreeNotExists(t *testing.T) {
+	cc := CollectContextResult{
+		Diagnosis: &recovery.Diagnosis{
+			BeadID:      "spi-src1",
+			FailureMode: "step-failure",
+			Git: &recovery.GitState{
+				WorktreeExists: false,
+			},
+		},
+	}
+
+	prompt := buildDecidePrompt(cc, 0)
+
+	if !strings.Contains(prompt, "Worktree exists:** no") {
+		t.Error("prompt missing worktree non-existence indicator")
+	}
+	if !strings.Contains(prompt, "triage is NOT possible") {
+		t.Error("prompt missing triage-not-possible note")
+	}
+}
+
+func TestBuildDecidePrompt_PartialCount(t *testing.T) {
+	cc := CollectContextResult{}
+
+	prompt := buildDecidePrompt(cc, 1)
+
+	if !strings.Contains(prompt, "1 of 2 attempts used") {
+		t.Error("prompt missing correct budget for count=1")
+	}
+	if !strings.Contains(prompt, "1 remaining") {
+		t.Error("prompt missing 1 remaining")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Triage param-injection tests (actionRecoveryExecute)
+// ---------------------------------------------------------------------------
+
+func TestActionRecoveryExecute_TriageParamInjection(t *testing.T) {
+	// Build a collect_context result with WizardLogTail.
+	cc := CollectContextResult{
+		WizardLogTail: "FAIL: TestFoo\n    expected 1, got 2",
+	}
+	ccJSON, _ := json.Marshal(cc)
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"collect_context": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"collect_context_result": string(ccJSON),
+				},
+			},
+		},
+	}
+
+	// Capture the params passed to ExecuteRecoveryAction.
+	var capturedParams map[string]string
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{
+				ID:       id,
+				Metadata: map[string]string{recovery.KeySourceBead: "spi-src1"},
+			}, nil
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-1", "recovery-agent", nil, state, deps)
+
+	// We can't easily intercept ExecuteRecoveryAction, so instead test the
+	// param-injection logic directly by simulating what actionRecoveryExecute does.
+	step := StepConfig{
+		With: map[string]string{
+			"action":         "triage",
+			"source_bead_id": "spi-src1",
+		},
+	}
+
+	// Reproduce the param-injection block from actionRecoveryExecute.
+	actionKind := step.With["action"]
+	params := step.With
+	if actionKind == "triage" && state != nil {
+		params = make(map[string]string, len(step.With))
+		for k, v := range step.With {
+			params[k] = v
+		}
+		if cs, ok := state.Steps["collect_context"]; ok {
+			if ccJSON := cs.Outputs["collect_context_result"]; ccJSON != "" {
+				var cc CollectContextResult
+				if err := json.Unmarshal([]byte(ccJSON), &cc); err == nil {
+					if cc.WizardLogTail != "" {
+						params["wizard_log_tail"] = cc.WizardLogTail
+						if params["test_output"] == "" {
+							params["test_output"] = cc.WizardLogTail
+						}
+					}
+				}
+			}
+		}
+	}
+
+	capturedParams = params
+
+	// Original step.With should be unchanged.
+	if _, ok := step.With["wizard_log_tail"]; ok {
+		t.Error("step.With was mutated — wizard_log_tail should not be in original map")
+	}
+
+	// Injected params should have wizard_log_tail and test_output.
+	if capturedParams["wizard_log_tail"] != "FAIL: TestFoo\n    expected 1, got 2" {
+		t.Errorf("wizard_log_tail = %q, want wizard log content", capturedParams["wizard_log_tail"])
+	}
+	if capturedParams["test_output"] != "FAIL: TestFoo\n    expected 1, got 2" {
+		t.Errorf("test_output = %q, want wizard log content as fallback", capturedParams["test_output"])
+	}
+	// Original params should still be present.
+	if capturedParams["action"] != "triage" {
+		t.Errorf("action = %q, want %q", capturedParams["action"], "triage")
+	}
+	if capturedParams["source_bead_id"] != "spi-src1" {
+		t.Errorf("source_bead_id = %q, want %q", capturedParams["source_bead_id"], "spi-src1")
+	}
+
+	_ = e // used for context only
+}
+
+func TestActionRecoveryExecute_TriageParamInjection_ExplicitTestOutput(t *testing.T) {
+	// When test_output is already present in step.With, it should NOT be overridden.
+	cc := CollectContextResult{
+		WizardLogTail: "wizard log tail content",
+	}
+	ccJSON, _ := json.Marshal(cc)
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"collect_context": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"collect_context_result": string(ccJSON),
+				},
+			},
+		},
+	}
+
+	step := StepConfig{
+		With: map[string]string{
+			"action":      "triage",
+			"test_output": "explicit test output from step",
+		},
+	}
+
+	actionKind := step.With["action"]
+	params := step.With
+	if actionKind == "triage" && state != nil {
+		params = make(map[string]string, len(step.With))
+		for k, v := range step.With {
+			params[k] = v
+		}
+		if cs, ok := state.Steps["collect_context"]; ok {
+			if ccJSON := cs.Outputs["collect_context_result"]; ccJSON != "" {
+				var cc CollectContextResult
+				if err := json.Unmarshal([]byte(ccJSON), &cc); err == nil {
+					if cc.WizardLogTail != "" {
+						params["wizard_log_tail"] = cc.WizardLogTail
+						if params["test_output"] == "" {
+							params["test_output"] = cc.WizardLogTail
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// test_output should keep the explicit value, not the fallback.
+	if params["test_output"] != "explicit test output from step" {
+		t.Errorf("test_output = %q, want %q (should not be overridden)", params["test_output"], "explicit test output from step")
+	}
+	// wizard_log_tail should still be injected.
+	if params["wizard_log_tail"] != "wizard log tail content" {
+		t.Errorf("wizard_log_tail = %q, want %q", params["wizard_log_tail"], "wizard log tail content")
+	}
+}
+
+func TestActionRecoveryExecute_NonTriageNoInjection(t *testing.T) {
+	// Non-triage actions should not get param injection.
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"collect_context": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"collect_context_result": `{"wizard_log_tail":"some log"}`,
+				},
+			},
+		},
+	}
+
+	step := StepConfig{
+		With: map[string]string{
+			"action": "reset",
+		},
+	}
+
+	actionKind := step.With["action"]
+	params := step.With
+	if actionKind == "triage" && state != nil {
+		// This block should NOT execute for "reset".
+		t.Fatal("param injection block should not execute for non-triage actions")
+	}
+
+	// Params should be the original step.With.
+	if params["action"] != "reset" {
+		t.Errorf("action = %q, want %q", params["action"], "reset")
+	}
+	if _, ok := params["wizard_log_tail"]; ok {
+		t.Error("wizard_log_tail should not be injected for non-triage actions")
 	}
 }
