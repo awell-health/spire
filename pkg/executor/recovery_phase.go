@@ -408,7 +408,8 @@ func failResult(kind recovery.RecoveryActionKind, msg string) recovery.RecoveryA
 //   collect_context → decide → execute → verify → learn → finish
 //
 // collect_context and decide/learn involve Claude calls; execute and verify
-// delegate to existing mechanical handlers; finish always closes the bead.
+// delegate to existing mechanical handlers; finish closes the bead unless
+// decide chose escalate (needs-human), in which case it stays open.
 // ---------------------------------------------------------------------------
 
 // CollectContextResult is the structured output of the collect_context step.
@@ -722,8 +723,9 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 	}}
 }
 
-// handleFinish closes the recovery bead unconditionally. Writes a closing
-// comment summarizing the action taken and outcome.
+// handleFinish writes a closing comment and conditionally closes the recovery
+// bead. If the decide step chose escalate (needs-human), the bead is left open
+// so `spire resolve` can find it and write the human learning before closing.
 func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Gather summary from step outputs.
 	var chosenAction, outcome, reasoning string
@@ -769,7 +771,19 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 
 	_ = e.deps.AddComment(e.beadID, comment.String())
 
-	// Close recovery bead unconditionally.
+	// If decide chose escalate (needs-human), leave the recovery bead open so
+	// that `spire resolve` can find it, write the learning, and close it.
+	if needsHuman {
+		e.log("recovery: finish: leaving %s open (needs_human=true, action=%s)",
+			e.beadID, chosenAction)
+		return ActionResult{Outputs: map[string]string{
+			"status":  "needs_human",
+			"action":  chosenAction,
+			"outcome": outcome,
+		}}
+	}
+
+	// Close recovery bead for non-escalate paths.
 	if err := e.deps.CloseBead(e.beadID); err != nil {
 		e.log("recovery: finish: close bead %s: %s", e.beadID, err)
 		return ActionResult{
