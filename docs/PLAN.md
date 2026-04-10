@@ -70,7 +70,7 @@ v0.31.0. But v2 code paths remain in `cmd/spire/` bridge files,
 `pkg/wizard`, `pkg/board`, and ~60 test functions across 15 files.
 
 - [ ] `cmd/spire/` bridge cleanup -- remove v2 fallbacks in executor_bridge.go, formula_bridge.go, close_advance.go, reset.go, summon.go, resummon.go, recover.go (7 files)
-- [ ] `pkg/wizard/deps.go` -- remove FormulaV2 alias and LoadFormulaByName dep
+- [x] `pkg/wizard/deps.go` -- remove FormulaV2 alias and LoadFormulaByName dep
 - [ ] `pkg/board/dag.go` -- remove v2 phaseIndex fallback
 - [ ] Test mass deletion -- ~60 test functions across 15 files that exercise v2 paths
 - [ ] Rename `-v3` formula files to canonical names (drop suffix)
