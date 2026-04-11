@@ -338,6 +338,230 @@ func TestBuildActionMenu(t *testing.T) {
 	})
 }
 
+// --- TestBuildAgentActionMenu ---
+
+func TestBuildAgentActionMenu(t *testing.T) {
+	t.Run("running agent", func(t *testing.T) {
+		agent := AgentInfo{Name: "wizard-main", BeadID: "spi-001", Status: "running"}
+		items := BuildAgentActionMenu(agent)
+
+		expectActions(t, items, []PendingAction{
+			ActionUnsummon, ActionResetSoft, ActionResetHard, ActionClose,
+			ActionGrok, ActionTrace,
+		})
+
+		// Verify danger levels.
+		for _, item := range items {
+			switch item.ActionType {
+			case ActionUnsummon:
+				if item.Danger != DangerConfirm {
+					t.Errorf("Unsummon should be DangerConfirm, got %d", item.Danger)
+				}
+			case ActionResetHard:
+				if item.Danger != DangerDestructive {
+					t.Errorf("Reset --hard should be DangerDestructive, got %d", item.Danger)
+				}
+			}
+		}
+	})
+
+	t.Run("errored agent", func(t *testing.T) {
+		agent := AgentInfo{Name: "wizard-main", BeadID: "spi-002", Status: "errored"}
+		items := BuildAgentActionMenu(agent)
+
+		expectActions(t, items, []PendingAction{
+			ActionResetSoft, ActionResetHard, ActionResummon, ActionClose,
+			ActionGrok, ActionTrace,
+		})
+
+		// Errored agents get Resummon instead of Unsummon.
+		hasResummon := false
+		hasUnsummon := false
+		for _, item := range items {
+			if item.ActionType == ActionResummon {
+				hasResummon = true
+			}
+			if item.ActionType == ActionUnsummon {
+				hasUnsummon = true
+			}
+		}
+		if !hasResummon {
+			t.Error("expected Resummon for errored agent")
+		}
+		if hasUnsummon {
+			t.Error("errored agent should not have Unsummon")
+		}
+	})
+
+	t.Run("idle agent with bead", func(t *testing.T) {
+		agent := AgentInfo{Name: "wizard-main", BeadID: "spi-003", Status: "idle"}
+		items := BuildAgentActionMenu(agent)
+
+		expectActions(t, items, []PendingAction{
+			ActionSummon, ActionResetSoft, ActionClose,
+			ActionGrok, ActionTrace,
+		})
+
+		// No ResetHard for idle agents.
+		for _, item := range items {
+			if item.ActionType == ActionResetHard {
+				t.Error("idle agent should not have ResetHard")
+			}
+		}
+	})
+
+	t.Run("idle agent without bead", func(t *testing.T) {
+		agent := AgentInfo{Name: "wizard-idle", BeadID: "", Status: "idle"}
+		items := BuildAgentActionMenu(agent)
+
+		if len(items) != 0 {
+			t.Errorf("expected empty menu for idle agent without bead, got %d items", len(items))
+		}
+	})
+
+	t.Run("shortcut keys are unique per status", func(t *testing.T) {
+		statuses := []string{"running", "errored", "idle"}
+		for _, status := range statuses {
+			t.Run(status, func(t *testing.T) {
+				agent := AgentInfo{Name: "wizard-test", BeadID: "spi-test", Status: status}
+				items := BuildAgentActionMenu(agent)
+
+				seen := make(map[rune]string)
+				for _, item := range items {
+					if prev, ok := seen[item.Key]; ok {
+						t.Errorf("duplicate shortcut key '%c': %s and %s", item.Key, prev, item.Label)
+					}
+					seen[item.Key] = item.Label
+				}
+			})
+		}
+	})
+
+	t.Run("all items have grok and trace at tail", func(t *testing.T) {
+		for _, status := range []string{"running", "errored", "idle"} {
+			t.Run(status, func(t *testing.T) {
+				agent := AgentInfo{Name: "wizard-test", BeadID: "spi-test", Status: status}
+				items := BuildAgentActionMenu(agent)
+				n := len(items)
+				if n < 2 {
+					t.Fatalf("expected at least 2 items, got %d", n)
+				}
+				if items[n-2].ActionType != ActionGrok {
+					t.Errorf("second-to-last item should be Grok, got %d", items[n-2].ActionType)
+				}
+				if items[n-1].ActionType != ActionTrace {
+					t.Errorf("last item should be Trace, got %d", items[n-1].ActionType)
+				}
+			})
+		}
+	})
+}
+
+// --- TestBoardModeFooterHints ---
+
+func TestBoardModeFooterHints(t *testing.T) {
+	t.Run("ViewBoard default", func(t *testing.T) {
+		m := makeBoardMode()
+		m.ViewMode = ViewBoard
+		hints := m.FooterHints()
+		for _, want := range []string{"summon", "defer", "close", "reset", "actions", "search"} {
+			if !strings.Contains(hints, want) {
+				t.Errorf("ViewBoard hints missing %q, got %q", want, hints)
+			}
+		}
+	})
+
+	t.Run("ViewAlerts", func(t *testing.T) {
+		m := makeBoardMode()
+		m.ViewMode = ViewAlerts
+		hints := m.FooterHints()
+		for _, want := range []string{"summon", "close", "defer", "actions", "inspect"} {
+			if !strings.Contains(hints, want) {
+				t.Errorf("ViewAlerts hints missing %q, got %q", want, hints)
+			}
+		}
+	})
+
+	t.Run("ViewLower", func(t *testing.T) {
+		m := makeBoardMode()
+		m.ViewMode = ViewLower
+		hints := m.FooterHints()
+		for _, want := range []string{"reset", "resolve", "resummon", "close", "actions", "inspect"} {
+			if !strings.Contains(hints, want) {
+				t.Errorf("ViewLower hints missing %q, got %q", want, hints)
+			}
+		}
+	})
+
+	t.Run("ConfirmOpen overlay", func(t *testing.T) {
+		m := makeBoardMode()
+		m.ConfirmOpen = true
+		hints := m.FooterHints()
+		if !strings.Contains(hints, "confirm") || !strings.Contains(hints, "cancel") {
+			t.Errorf("ConfirmOpen hints should show confirm/cancel, got %q", hints)
+		}
+	})
+
+	t.Run("TermOpen overlay", func(t *testing.T) {
+		m := makeBoardMode()
+		m.TermOpen = true
+		hints := m.FooterHints()
+		if !strings.Contains(hints, "scroll") || !strings.Contains(hints, "close") {
+			t.Errorf("TermOpen hints should show scroll/close, got %q", hints)
+		}
+	})
+
+	t.Run("ActionMenuOpen overlay", func(t *testing.T) {
+		m := makeBoardMode()
+		m.ActionMenuOpen = true
+		hints := m.FooterHints()
+		if !strings.Contains(hints, "navigate") || !strings.Contains(hints, "select") {
+			t.Errorf("ActionMenuOpen hints should show navigate/select, got %q", hints)
+		}
+	})
+
+	t.Run("SearchActive overlay", func(t *testing.T) {
+		m := makeBoardMode()
+		m.SearchActive = true
+		hints := m.FooterHints()
+		if !strings.Contains(hints, "filter") || !strings.Contains(hints, "accept") {
+			t.Errorf("SearchActive hints should show filter/accept, got %q", hints)
+		}
+	})
+
+	t.Run("Cmdline active overlay", func(t *testing.T) {
+		m := makeBoardMode()
+		m.Cmdline.Active = true
+		hints := m.FooterHints()
+		if !strings.Contains(hints, "execute") || !strings.Contains(hints, "cancel") {
+			t.Errorf("Cmdline hints should show execute/cancel, got %q", hints)
+		}
+	})
+
+	t.Run("Inspecting overlay", func(t *testing.T) {
+		m := makeBoardMode()
+		m.Inspecting = true
+		hints := m.FooterHints()
+		if !strings.Contains(hints, "scroll") || !strings.Contains(hints, "close") {
+			t.Errorf("Inspecting hints should show scroll/close, got %q", hints)
+		}
+	})
+
+	t.Run("overlay takes priority over ViewMode", func(t *testing.T) {
+		m := makeBoardMode()
+		m.ViewMode = ViewLower
+		m.ConfirmOpen = true
+		hints := m.FooterHints()
+		// Should show confirm overlay hints, not ViewLower hints.
+		if strings.Contains(hints, "resolve") {
+			t.Errorf("overlay should take priority, but got ViewLower hints: %q", hints)
+		}
+		if !strings.Contains(hints, "confirm") {
+			t.Errorf("expected confirm overlay hints, got %q", hints)
+		}
+	})
+}
+
 func expectActions(t *testing.T, items []MenuAction, expected []PendingAction) {
 	t.Helper()
 	if len(items) != len(expected) {
