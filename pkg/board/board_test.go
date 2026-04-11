@@ -35,13 +35,13 @@ func keyMsgStr(s string) tea.KeyMsg {
 	}
 }
 
-func updateModel(m Model, msg tea.Msg) Model {
+func updateBoardMode(m BoardMode, msg tea.Msg) BoardMode {
 	result, _ := m.Update(msg)
-	return result.(Model)
+	return *result.(*BoardMode)
 }
 
-// makeModel creates a Model with some columns populated for testing.
-func makeModel() Model {
+// makeBoardMode creates a BoardMode with some columns populated for testing.
+func makeBoardMode() BoardMode {
 	cols := Columns{
 		Ready: []BoardBead{
 			{ID: "spi-001", Title: "First task", Status: "open", Type: "task", Priority: 1, Labels: []string{"team:alpha"}},
@@ -56,7 +56,7 @@ func makeModel() Model {
 			{ID: "spi-006", Title: "Done chore", Status: "closed", Type: "chore", Priority: 3},
 		},
 	}
-	return Model{
+	return BoardMode{
 		Cols:       cols,
 		Width:      120,
 		Height:     40,
@@ -432,8 +432,8 @@ func TestSearchFiltering(t *testing.T) {
 
 func TestSearchKeyDispatch(t *testing.T) {
 	t.Run("slash activates search", func(t *testing.T) {
-		m := makeModel()
-		m = updateModel(m, keyMsg('/'))
+		m := makeBoardMode()
+		m = updateBoardMode(m, keyMsg('/'))
 		if !m.SearchActive {
 			t.Error("expected SearchActive after /")
 		}
@@ -443,43 +443,43 @@ func TestSearchKeyDispatch(t *testing.T) {
 	})
 
 	t.Run("typing accumulates query", func(t *testing.T) {
-		m := makeModel()
-		m = updateModel(m, keyMsg('/'))
-		m = updateModel(m, keyMsg('a'))
-		m = updateModel(m, keyMsg('b'))
-		m = updateModel(m, keyMsg('c'))
+		m := makeBoardMode()
+		m = updateBoardMode(m, keyMsg('/'))
+		m = updateBoardMode(m, keyMsg('a'))
+		m = updateBoardMode(m, keyMsg('b'))
+		m = updateBoardMode(m, keyMsg('c'))
 		if m.SearchQuery != "abc" {
 			t.Errorf("expected query 'abc', got %q", m.SearchQuery)
 		}
 	})
 
 	t.Run("backspace removes last rune", func(t *testing.T) {
-		m := makeModel()
-		m = updateModel(m, keyMsg('/'))
-		m = updateModel(m, keyMsg('a'))
-		m = updateModel(m, keyMsg('b'))
-		m = updateModel(m, keyMsgType(tea.KeyBackspace))
+		m := makeBoardMode()
+		m = updateBoardMode(m, keyMsg('/'))
+		m = updateBoardMode(m, keyMsg('a'))
+		m = updateBoardMode(m, keyMsg('b'))
+		m = updateBoardMode(m, keyMsgType(tea.KeyBackspace))
 		if m.SearchQuery != "a" {
 			t.Errorf("expected query 'a' after backspace, got %q", m.SearchQuery)
 		}
 	})
 
 	t.Run("ctrl+u clears query", func(t *testing.T) {
-		m := makeModel()
-		m = updateModel(m, keyMsg('/'))
-		m = updateModel(m, keyMsg('a'))
-		m = updateModel(m, keyMsg('b'))
-		m = updateModel(m, keyMsgStr("ctrl+u"))
+		m := makeBoardMode()
+		m = updateBoardMode(m, keyMsg('/'))
+		m = updateBoardMode(m, keyMsg('a'))
+		m = updateBoardMode(m, keyMsg('b'))
+		m = updateBoardMode(m, keyMsgStr("ctrl+u"))
 		if m.SearchQuery != "" {
 			t.Errorf("expected empty query after ctrl+u, got %q", m.SearchQuery)
 		}
 	})
 
 	t.Run("esc exits search and clears query", func(t *testing.T) {
-		m := makeModel()
-		m = updateModel(m, keyMsg('/'))
-		m = updateModel(m, keyMsg('x'))
-		m = updateModel(m, keyMsgType(tea.KeyEsc))
+		m := makeBoardMode()
+		m = updateBoardMode(m, keyMsg('/'))
+		m = updateBoardMode(m, keyMsg('x'))
+		m = updateBoardMode(m, keyMsgType(tea.KeyEsc))
 		if m.SearchActive {
 			t.Error("expected SearchActive=false after Esc")
 		}
@@ -489,11 +489,11 @@ func TestSearchKeyDispatch(t *testing.T) {
 	})
 
 	t.Run("enter exits search preserves query", func(t *testing.T) {
-		m := makeModel()
-		m = updateModel(m, keyMsg('/'))
-		m = updateModel(m, keyMsg('t'))
-		m = updateModel(m, keyMsg('e'))
-		m = updateModel(m, keyMsgType(tea.KeyEnter))
+		m := makeBoardMode()
+		m = updateBoardMode(m, keyMsg('/'))
+		m = updateBoardMode(m, keyMsg('t'))
+		m = updateBoardMode(m, keyMsg('e'))
+		m = updateBoardMode(m, keyMsgType(tea.KeyEnter))
 		if m.SearchActive {
 			t.Error("expected SearchActive=false after Enter")
 		}
@@ -503,11 +503,11 @@ func TestSearchKeyDispatch(t *testing.T) {
 	})
 
 	t.Run("query change resets selection", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SelCard = 2
 		m.ColScroll = 1
-		m = updateModel(m, keyMsg('/'))
-		m = updateModel(m, keyMsg('x'))
+		m = updateBoardMode(m, keyMsg('/'))
+		m = updateBoardMode(m, keyMsg('x'))
 		if m.SelCard != 0 {
 			t.Errorf("expected SelCard=0 after query change, got %d", m.SelCard)
 		}
@@ -521,54 +521,54 @@ func TestSearchKeyDispatch(t *testing.T) {
 
 func TestKeybindingDispatch(t *testing.T) {
 	t.Run("j moves SelCard down", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		// Start on first column (Ready) with 2 beads.
 		m.SelCol = 0
 		m.SelCard = 0
-		m = updateModel(m, keyMsg('j'))
+		m = updateBoardMode(m, keyMsg('j'))
 		if m.SelCard != 1 {
 			t.Errorf("expected SelCard=1 after j, got %d", m.SelCard)
 		}
 	})
 
 	t.Run("k moves SelCard up", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SelCol = 0
 		m.SelCard = 1
-		m = updateModel(m, keyMsg('k'))
+		m = updateBoardMode(m, keyMsg('k'))
 		if m.SelCard != 0 {
 			t.Errorf("expected SelCard=0 after k, got %d", m.SelCard)
 		}
 	})
 
 	t.Run("h moves SelCol left", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SelCol = 1
-		m = updateModel(m, keyMsg('h'))
+		m = updateBoardMode(m, keyMsg('h'))
 		if m.SelCol != 0 {
 			t.Errorf("expected SelCol=0 after h, got %d", m.SelCol)
 		}
 	})
 
 	t.Run("l moves SelCol right", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SelCol = 0
-		m = updateModel(m, keyMsg('l'))
+		m = updateBoardMode(m, keyMsg('l'))
 		if m.SelCol != 1 {
 			t.Errorf("expected SelCol=1 after l, got %d", m.SelCol)
 		}
 	})
 
 	t.Run("gg jumps to top", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SelCol = 1 // Implement column with 3 beads
 		m.SelCard = 2
 		m.ColScroll = 1
-		m = updateModel(m, keyMsg('g'))
+		m = updateBoardMode(m, keyMsg('g'))
 		if !m.PendingG {
 			t.Error("expected PendingG after first g")
 		}
-		m = updateModel(m, keyMsg('g'))
+		m = updateBoardMode(m, keyMsg('g'))
 		if m.SelCard != 0 {
 			t.Errorf("expected SelCard=0 after gg, got %d", m.SelCard)
 		}
@@ -581,64 +581,64 @@ func TestKeybindingDispatch(t *testing.T) {
 	})
 
 	t.Run("g then other key clears PendingG", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SelCol = 1
 		m.SelCard = 2
-		m = updateModel(m, keyMsg('g'))
+		m = updateBoardMode(m, keyMsg('g'))
 		if !m.PendingG {
 			t.Error("expected PendingG after first g")
 		}
-		m = updateModel(m, keyMsg('j'))
+		m = updateBoardMode(m, keyMsg('j'))
 		if m.PendingG {
 			t.Error("PendingG should be cleared after non-g key")
 		}
 	})
 
 	t.Run("G jumps to bottom", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SelCol = 1 // Implement column with 3 beads
 		m.SelCard = 0
-		m = updateModel(m, keyMsg('G'))
+		m = updateBoardMode(m, keyMsg('G'))
 		if m.SelCard != 2 {
 			t.Errorf("expected SelCard=2 (last card) after G, got %d", m.SelCard)
 		}
 	})
 
 	t.Run("t cycles TypeScope", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		if m.TypeScope != TypeAll {
 			t.Fatalf("expected initial TypeScope=TypeAll, got %d", m.TypeScope)
 		}
-		m = updateModel(m, keyMsg('t'))
+		m = updateBoardMode(m, keyMsg('t'))
 		if m.TypeScope != TypeTask {
 			t.Errorf("expected TypeScope=TypeTask after first t, got %d", m.TypeScope)
 		}
-		m = updateModel(m, keyMsg('t'))
+		m = updateBoardMode(m, keyMsg('t'))
 		if m.TypeScope != TypeBug {
 			t.Errorf("expected TypeScope=TypeBug after second t, got %d", m.TypeScope)
 		}
 	})
 
 	t.Run("H toggles ShowAllCols", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		if m.ShowAllCols {
 			t.Fatal("expected ShowAllCols=false initially")
 		}
-		m = updateModel(m, keyMsg('H'))
+		m = updateBoardMode(m, keyMsg('H'))
 		if !m.ShowAllCols {
 			t.Error("expected ShowAllCols=true after H")
 		}
-		m = updateModel(m, keyMsg('H'))
+		m = updateBoardMode(m, keyMsg('H'))
 		if m.ShowAllCols {
 			t.Error("expected ShowAllCols=false after second H")
 		}
 	})
 
 	t.Run("a opens action menu", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SelCol = 0
 		m.SelCard = 0
-		m = updateModel(m, keyMsg('a'))
+		m = updateBoardMode(m, keyMsg('a'))
 		if !m.ActionMenuOpen {
 			t.Error("expected ActionMenuOpen after 'a'")
 		}
@@ -651,17 +651,17 @@ func TestKeybindingDispatch(t *testing.T) {
 	})
 
 	t.Run("q quits", func(t *testing.T) {
-		m := makeModel()
-		m = updateModel(m, keyMsg('q'))
+		m := makeBoardMode()
+		m = updateBoardMode(m, keyMsg('q'))
 		if !m.Quitting {
 			t.Error("expected Quitting after q")
 		}
 	})
 
 	t.Run("q clears search query first", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.SearchQuery = "test"
-		m = updateModel(m, keyMsg('q'))
+		m = updateBoardMode(m, keyMsg('q'))
 		if m.Quitting {
 			t.Error("q should clear search query before quitting")
 		}
@@ -674,18 +674,18 @@ func TestKeybindingDispatch(t *testing.T) {
 // --- TestActionMenuNavigation ---
 
 func TestActionMenuNavigation(t *testing.T) {
-	openMenu := func() Model {
-		m := makeModel()
+	openMenu := func() BoardMode {
+		m := makeBoardMode()
 		m.SelCol = 0
 		m.SelCard = 0
-		m = updateModel(m, keyMsg('a'))
+		m = updateBoardMode(m, keyMsg('a'))
 		return m
 	}
 
 	t.Run("j moves cursor down", func(t *testing.T) {
 		m := openMenu()
 		initial := m.ActionMenuCursor
-		m = updateModel(m, keyMsg('j'))
+		m = updateBoardMode(m, keyMsg('j'))
 		if m.ActionMenuCursor != initial+1 {
 			t.Errorf("expected cursor %d, got %d", initial+1, m.ActionMenuCursor)
 		}
@@ -694,7 +694,7 @@ func TestActionMenuNavigation(t *testing.T) {
 	t.Run("k moves cursor up", func(t *testing.T) {
 		m := openMenu()
 		m.ActionMenuCursor = 1
-		m = updateModel(m, keyMsg('k'))
+		m = updateBoardMode(m, keyMsg('k'))
 		if m.ActionMenuCursor != 0 {
 			t.Errorf("expected cursor 0, got %d", m.ActionMenuCursor)
 		}
@@ -703,7 +703,7 @@ func TestActionMenuNavigation(t *testing.T) {
 	t.Run("k at top stays at 0", func(t *testing.T) {
 		m := openMenu()
 		m.ActionMenuCursor = 0
-		m = updateModel(m, keyMsg('k'))
+		m = updateBoardMode(m, keyMsg('k'))
 		if m.ActionMenuCursor != 0 {
 			t.Errorf("expected cursor 0, got %d", m.ActionMenuCursor)
 		}
@@ -713,7 +713,7 @@ func TestActionMenuNavigation(t *testing.T) {
 		m := openMenu()
 		last := len(m.ActionMenuItems) - 1
 		m.ActionMenuCursor = last
-		m = updateModel(m, keyMsg('j'))
+		m = updateBoardMode(m, keyMsg('j'))
 		if m.ActionMenuCursor != last {
 			t.Errorf("expected cursor %d, got %d", last, m.ActionMenuCursor)
 		}
@@ -721,7 +721,7 @@ func TestActionMenuNavigation(t *testing.T) {
 
 	t.Run("esc closes menu", func(t *testing.T) {
 		m := openMenu()
-		m = updateModel(m, keyMsgType(tea.KeyEsc))
+		m = updateBoardMode(m, keyMsgType(tea.KeyEsc))
 		if m.ActionMenuOpen {
 			t.Error("expected ActionMenuOpen=false after Esc")
 		}
@@ -731,7 +731,7 @@ func TestActionMenuNavigation(t *testing.T) {
 		m := openMenu()
 		m.ActionMenuCursor = 0
 		expected := m.ActionMenuItems[0].ActionType
-		m = updateModel(m, keyMsgType(tea.KeyEnter))
+		m = updateBoardMode(m, keyMsgType(tea.KeyEnter))
 		if m.ActionMenuOpen {
 			t.Error("expected menu closed after Enter")
 		}
@@ -766,7 +766,7 @@ func TestActionMenuNavigation(t *testing.T) {
 		if !found {
 			t.Fatal("expected Grok action in menu")
 		}
-		m = updateModel(m, keyMsg(grokItem.Key))
+		m = updateBoardMode(m, keyMsg(grokItem.Key))
 		if m.ActionMenuOpen {
 			t.Error("expected menu closed after shortcut key")
 		}
@@ -775,7 +775,7 @@ func TestActionMenuNavigation(t *testing.T) {
 	t.Run("menu absorbs board keys", func(t *testing.T) {
 		m := openMenu()
 		origSelCard := m.SelCard
-		m = updateModel(m, keyMsg('j'))
+		m = updateBoardMode(m, keyMsg('j'))
 		// j should move menu cursor, not SelCard.
 		if m.SelCard != origSelCard {
 			t.Error("board key leaked through action menu")
@@ -786,8 +786,8 @@ func TestActionMenuNavigation(t *testing.T) {
 // --- TestInspectorNavigation ---
 
 func TestInspectorNavigation(t *testing.T) {
-	makeInspecting := func() Model {
-		m := makeModel()
+	makeInspecting := func() BoardMode {
+		m := makeBoardMode()
 		m.Inspecting = true
 		m.InspectorTab = 0
 		m.InspectorScroll = 0
@@ -805,11 +805,11 @@ func TestInspectorNavigation(t *testing.T) {
 
 	t.Run("tab toggles InspectorTab", func(t *testing.T) {
 		m := makeInspecting()
-		m = updateModel(m, keyMsgType(tea.KeyTab))
+		m = updateBoardMode(m, keyMsgType(tea.KeyTab))
 		if m.InspectorTab != 1 {
 			t.Errorf("expected InspectorTab=1 after Tab, got %d", m.InspectorTab)
 		}
-		m = updateModel(m, keyMsgType(tea.KeyTab))
+		m = updateBoardMode(m, keyMsgType(tea.KeyTab))
 		if m.InspectorTab != 0 {
 			t.Errorf("expected InspectorTab=0 after second Tab, got %d", m.InspectorTab)
 		}
@@ -818,7 +818,7 @@ func TestInspectorNavigation(t *testing.T) {
 	t.Run("shift+tab toggles in reverse", func(t *testing.T) {
 		m := makeInspecting()
 		m.InspectorTab = 0
-		m = updateModel(m, keyMsgStr("shift+tab"))
+		m = updateBoardMode(m, keyMsgStr("shift+tab"))
 		if m.InspectorTab != 1 {
 			t.Errorf("expected InspectorTab=1 after Shift+Tab from 0, got %d", m.InspectorTab)
 		}
@@ -827,7 +827,7 @@ func TestInspectorNavigation(t *testing.T) {
 	t.Run("tab resets scroll", func(t *testing.T) {
 		m := makeInspecting()
 		m.InspectorScroll = 5
-		m = updateModel(m, keyMsgType(tea.KeyTab))
+		m = updateBoardMode(m, keyMsgType(tea.KeyTab))
 		if m.InspectorScroll != 0 {
 			t.Errorf("expected InspectorScroll=0 after Tab, got %d", m.InspectorScroll)
 		}
@@ -835,7 +835,7 @@ func TestInspectorNavigation(t *testing.T) {
 
 	t.Run("j increments scroll", func(t *testing.T) {
 		m := makeInspecting()
-		m = updateModel(m, keyMsg('j'))
+		m = updateBoardMode(m, keyMsg('j'))
 		if m.InspectorScroll != 1 {
 			t.Errorf("expected InspectorScroll=1 after j, got %d", m.InspectorScroll)
 		}
@@ -844,7 +844,7 @@ func TestInspectorNavigation(t *testing.T) {
 	t.Run("k decrements scroll", func(t *testing.T) {
 		m := makeInspecting()
 		m.InspectorScroll = 3
-		m = updateModel(m, keyMsg('k'))
+		m = updateBoardMode(m, keyMsg('k'))
 		if m.InspectorScroll != 2 {
 			t.Errorf("expected InspectorScroll=2 after k, got %d", m.InspectorScroll)
 		}
@@ -853,7 +853,7 @@ func TestInspectorNavigation(t *testing.T) {
 	t.Run("k at 0 stays at 0", func(t *testing.T) {
 		m := makeInspecting()
 		m.InspectorScroll = 0
-		m = updateModel(m, keyMsg('k'))
+		m = updateBoardMode(m, keyMsg('k'))
 		if m.InspectorScroll != 0 {
 			t.Errorf("expected InspectorScroll=0, got %d", m.InspectorScroll)
 		}
@@ -862,7 +862,7 @@ func TestInspectorNavigation(t *testing.T) {
 	t.Run("g jumps to top", func(t *testing.T) {
 		m := makeInspecting()
 		m.InspectorScroll = 10
-		m = updateModel(m, keyMsg('g'))
+		m = updateBoardMode(m, keyMsg('g'))
 		if m.InspectorScroll != 0 {
 			t.Errorf("expected InspectorScroll=0 after g, got %d", m.InspectorScroll)
 		}
@@ -870,7 +870,7 @@ func TestInspectorNavigation(t *testing.T) {
 
 	t.Run("G jumps to bottom", func(t *testing.T) {
 		m := makeInspecting()
-		m = updateModel(m, keyMsg('G'))
+		m = updateBoardMode(m, keyMsg('G'))
 		if m.InspectorScroll <= 0 {
 			t.Error("expected InspectorScroll > 0 after G with content")
 		}
@@ -878,7 +878,7 @@ func TestInspectorNavigation(t *testing.T) {
 
 	t.Run("esc exits inspector", func(t *testing.T) {
 		m := makeInspecting()
-		m = updateModel(m, keyMsgType(tea.KeyEsc))
+		m = updateBoardMode(m, keyMsgType(tea.KeyEsc))
 		if m.Inspecting {
 			t.Error("expected Inspecting=false after Esc")
 		}
@@ -889,7 +889,7 @@ func TestInspectorNavigation(t *testing.T) {
 
 func TestColumnScrolling(t *testing.T) {
 	// Create a model with a tall column but short terminal.
-	makeScrollModel := func() Model {
+	makeScrollBoardMode := func() BoardMode {
 		beads := make([]BoardBead, 20)
 		for i := range beads {
 			beads[i] = BoardBead{
@@ -907,7 +907,7 @@ func TestColumnScrolling(t *testing.T) {
 		cols := Columns{
 			Ready: beads,
 		}
-		return Model{
+		return BoardMode{
 			Cols:       cols,
 			Width:      120,
 			Height:     20, // Short enough that MaxCards < 20
@@ -924,11 +924,11 @@ func TestColumnScrolling(t *testing.T) {
 	}
 
 	t.Run("j past viewport advances ColScroll", func(t *testing.T) {
-		m := makeScrollModel()
+		m := makeScrollBoardMode()
 		maxCards := m.colMaxCards()
 		// Navigate down past the visible window.
 		for i := 0; i < maxCards+2; i++ {
-			m = updateModel(m, keyMsg('j'))
+			m = updateBoardMode(m, keyMsg('j'))
 		}
 		if m.ColScroll == 0 {
 			t.Error("expected ColScroll > 0 after navigating past viewport")
@@ -936,16 +936,16 @@ func TestColumnScrolling(t *testing.T) {
 	})
 
 	t.Run("k back up retreats ColScroll", func(t *testing.T) {
-		m := makeScrollModel()
+		m := makeScrollBoardMode()
 		maxCards := m.colMaxCards()
 		// Navigate down past viewport.
 		for i := 0; i < maxCards+2; i++ {
-			m = updateModel(m, keyMsg('j'))
+			m = updateBoardMode(m, keyMsg('j'))
 		}
 		scrollAfterDown := m.ColScroll
 		// Navigate back up.
 		for i := 0; i < 3; i++ {
-			m = updateModel(m, keyMsg('k'))
+			m = updateBoardMode(m, keyMsg('k'))
 		}
 		if m.ColScroll >= scrollAfterDown {
 			t.Error("expected ColScroll to decrease after k")
@@ -953,7 +953,7 @@ func TestColumnScrolling(t *testing.T) {
 	})
 
 	t.Run("ensureCardVisible adjusts scroll", func(t *testing.T) {
-		m := makeScrollModel()
+		m := makeScrollBoardMode()
 		maxCards := m.colMaxCards()
 		m.SelCard = maxCards + 3
 		m.ColScroll = 0
@@ -968,7 +968,7 @@ func TestColumnScrolling(t *testing.T) {
 	})
 
 	t.Run("ensureCardVisible scrolls up", func(t *testing.T) {
-		m := makeScrollModel()
+		m := makeScrollBoardMode()
 		maxCards := m.colMaxCards()
 		m.ColScroll = 10
 		m.SelCard = 5
@@ -979,7 +979,7 @@ func TestColumnScrolling(t *testing.T) {
 	})
 
 	t.Run("ClampSelection wraps negative", func(t *testing.T) {
-		m := makeScrollModel()
+		m := makeScrollBoardMode()
 		m.SelCard = -1
 		m.ClampSelection()
 		active := m.DisplayColumns()
@@ -992,7 +992,7 @@ func TestColumnScrolling(t *testing.T) {
 	})
 
 	t.Run("ClampSelection caps overflow", func(t *testing.T) {
-		m := makeScrollModel()
+		m := makeScrollBoardMode()
 		m.SelCard = 999
 		m.ClampSelection()
 		active := m.DisplayColumns()
@@ -1352,7 +1352,7 @@ func TestBoardResultWarnings(t *testing.T) {
 
 func TestSnapshotWarningsRendered(t *testing.T) {
 	t.Run("TUI renders warnings above alerts", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.Snapshot = &BoardSnapshot{
 			Columns: m.Cols,
 			Warnings: []string{
@@ -1371,7 +1371,7 @@ func TestSnapshotWarningsRendered(t *testing.T) {
 	})
 
 	t.Run("TUI renders no warnings when empty", func(t *testing.T) {
-		m := makeModel()
+		m := makeBoardMode()
 		m.Snapshot = &BoardSnapshot{
 			Columns:     m.Cols,
 			DAGProgress: map[string]*DAGProgress{},
@@ -1384,7 +1384,7 @@ func TestSnapshotWarningsRendered(t *testing.T) {
 	})
 
 	t.Run("TUI renders with warnings and no data", func(t *testing.T) {
-		m := Model{Width: 120, Height: 40, Identity: "test@test.dev"}
+		m := BoardMode{Width: 120, Height: 40, Identity: "test@test.dev"}
 		m.Snapshot = &BoardSnapshot{
 			Warnings:    []string{"dolt-conflict: 1 unresolved conflict(s) in issues table — run `spire pull` to resolve"},
 			DAGProgress: map[string]*DAGProgress{},
@@ -1759,7 +1759,7 @@ func TestSortBeads_DeferredToBottom(t *testing.T) {
 // --- ViewMode / Tab cycling tests ---
 
 func TestTabCyclesViewMode(t *testing.T) {
-	m := makeModel()
+	m := makeBoardMode()
 
 	// Default is ViewBoard.
 	if m.ViewMode != ViewBoard {
@@ -1767,41 +1767,41 @@ func TestTabCyclesViewMode(t *testing.T) {
 	}
 
 	// Tab: Board -> Alerts.
-	m = updateModel(m, keyMsgStr("tab"))
+	m = updateBoardMode(m, keyMsgStr("tab"))
 	if m.ViewMode != ViewAlerts {
 		t.Errorf("after 1st tab: expected ViewAlerts, got %d", m.ViewMode)
 	}
 
 	// Tab: Alerts -> Lower.
-	m = updateModel(m, keyMsgStr("tab"))
+	m = updateBoardMode(m, keyMsgStr("tab"))
 	if m.ViewMode != ViewLower {
 		t.Errorf("after 2nd tab: expected ViewLower, got %d", m.ViewMode)
 	}
 
 	// Tab: Lower -> Board (wrap).
-	m = updateModel(m, keyMsgStr("tab"))
+	m = updateBoardMode(m, keyMsgStr("tab"))
 	if m.ViewMode != ViewBoard {
 		t.Errorf("after 3rd tab: expected ViewBoard (wrap), got %d", m.ViewMode)
 	}
 }
 
 func TestShiftTabCyclesViewModeBackward(t *testing.T) {
-	m := makeModel()
+	m := makeBoardMode()
 
 	// Shift+Tab: Board -> Lower (backward wrap).
-	m = updateModel(m, keyMsgStr("shift+tab"))
+	m = updateBoardMode(m, keyMsgStr("shift+tab"))
 	if m.ViewMode != ViewLower {
 		t.Errorf("after shift+tab from Board: expected ViewLower, got %d", m.ViewMode)
 	}
 
 	// Shift+Tab: Lower -> Alerts.
-	m = updateModel(m, keyMsgStr("shift+tab"))
+	m = updateBoardMode(m, keyMsgStr("shift+tab"))
 	if m.ViewMode != ViewAlerts {
 		t.Errorf("after shift+tab from Lower: expected ViewAlerts, got %d", m.ViewMode)
 	}
 
 	// Shift+Tab: Alerts -> Board.
-	m = updateModel(m, keyMsgStr("shift+tab"))
+	m = updateBoardMode(m, keyMsgStr("shift+tab"))
 	if m.ViewMode != ViewBoard {
 		t.Errorf("after shift+tab from Alerts: expected ViewBoard, got %d", m.ViewMode)
 	}
@@ -1809,7 +1809,7 @@ func TestShiftTabCyclesViewModeBackward(t *testing.T) {
 
 func TestTabResetsSelCardAndColScroll(t *testing.T) {
 	// Use a model with alerts so ViewAlerts has cards to select.
-	m := makeModel()
+	m := makeBoardMode()
 	m.Cols.Alerts = []BoardBead{
 		{ID: "spi-a1", Title: "Alert", Status: "open", Type: "task", Priority: 0, Labels: []string{"alert:test"}},
 	}
@@ -1817,7 +1817,7 @@ func TestTabResetsSelCardAndColScroll(t *testing.T) {
 	m.SelCard = 2
 	m.ColScroll = 1
 
-	m = updateModel(m, keyMsgStr("tab"))
+	m = updateBoardMode(m, keyMsgStr("tab"))
 	if m.SelCard != 0 {
 		t.Errorf("expected SelCard=0 after tab, got %d", m.SelCard)
 	}
@@ -1827,7 +1827,7 @@ func TestTabResetsSelCardAndColScroll(t *testing.T) {
 }
 
 func TestClampSelectionForcesSection(t *testing.T) {
-	m := makeModel()
+	m := makeBoardMode()
 
 	// ViewAlerts -> SelSection must be SectionAlerts.
 	m.ViewMode = ViewAlerts
@@ -1865,7 +1865,7 @@ func TestJKStaysWithinViewMode(t *testing.T) {
 			{ID: "spi-r1", Title: "Ready 1", Status: "open", Type: "task", Priority: 1},
 		},
 	}
-	m := Model{
+	m := BoardMode{
 		Cols:       cols,
 		Width:      120,
 		Height:     40,
@@ -1879,7 +1879,7 @@ func TestJKStaysWithinViewMode(t *testing.T) {
 	}
 
 	// Move down to second alert.
-	m = updateModel(m, keyMsg('j'))
+	m = updateBoardMode(m, keyMsg('j'))
 	if m.SelCard != 1 {
 		t.Errorf("expected SelCard=1, got %d", m.SelCard)
 	}
@@ -1888,7 +1888,7 @@ func TestJKStaysWithinViewMode(t *testing.T) {
 	}
 
 	// Move down again — should NOT leave SectionAlerts.
-	m = updateModel(m, keyMsg('j'))
+	m = updateBoardMode(m, keyMsg('j'))
 	if m.SelSection != SectionAlerts {
 		t.Errorf("j at bottom of alerts should stay in SectionAlerts, got %d", m.SelSection)
 	}
@@ -1934,7 +1934,7 @@ func TestViewRendersActiveMode(t *testing.T) {
 			{ID: "spi-b1", Title: "Blocked Task", Status: "open", Type: "task", Priority: 2, Labels: []string{}},
 		},
 	}
-	m := Model{
+	m := BoardMode{
 		Cols:       cols,
 		Width:      120,
 		Height:     40,
@@ -1953,10 +1953,6 @@ func TestViewRendersActiveMode(t *testing.T) {
 		if !strings.Contains(output, "Ready Task") {
 			t.Error("ViewBoard should show column content like 'Ready Task'")
 		}
-		// Sidebar should be present.
-		if !strings.Contains(output, "BOARD") {
-			t.Error("ViewBoard should render the tab sidebar with BOARD label")
-		}
 	})
 
 	t.Run("ViewAlerts shows alerts", func(t *testing.T) {
@@ -1966,9 +1962,6 @@ func TestViewRendersActiveMode(t *testing.T) {
 		output := m2.View()
 		if !strings.Contains(output, "Test Alert") {
 			t.Error("ViewAlerts should show alert content")
-		}
-		if !strings.Contains(output, "ALERTS") {
-			t.Error("ViewAlerts should render the tab sidebar with ALERTS label")
 		}
 	})
 
@@ -2018,12 +2011,12 @@ func TestViewRendersActiveMode(t *testing.T) {
 }
 
 func TestInspectorTabNotAffectedByViewMode(t *testing.T) {
-	m := makeModel()
+	m := makeBoardMode()
 	m.Inspecting = true
 	m.InspectorTab = 0
 
 	// Tab in inspector should toggle InspectorTab, not ViewMode.
-	m = updateModel(m, keyMsgStr("tab"))
+	m = updateBoardMode(m, keyMsgStr("tab"))
 	if m.InspectorTab != 1 {
 		t.Errorf("tab in inspector should toggle InspectorTab, got %d", m.InspectorTab)
 	}

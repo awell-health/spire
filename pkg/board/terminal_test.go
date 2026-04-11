@@ -79,15 +79,15 @@ func TestTruncateAnsi_MaxWidthOne(t *testing.T) {
 
 // --- renderTerminalPane tests ---
 
-func makeTermModel() Model {
-	return Model{
+func makeTermBoardMode() BoardMode {
+	return BoardMode{
 		Width:  120,
 		Height: 50,
 	}
 }
 
 func TestRenderTerminalPane_Loading(t *testing.T) {
-	m := makeTermModel()
+	m := makeTermBoardMode()
 	m.TermOpen = true
 	m.TermLoading = true
 	m.TermTitle = "Test Loading"
@@ -103,7 +103,7 @@ func TestRenderTerminalPane_Loading(t *testing.T) {
 }
 
 func TestRenderTerminalPane_Empty(t *testing.T) {
-	m := makeTermModel()
+	m := makeTermBoardMode()
 	m.TermOpen = true
 	m.TermTitle = "Empty Pane"
 	m.TermLines = nil
@@ -116,7 +116,7 @@ func TestRenderTerminalPane_Empty(t *testing.T) {
 }
 
 func TestRenderTerminalPane_WithContent(t *testing.T) {
-	m := makeTermModel()
+	m := makeTermBoardMode()
 	m.TermOpen = true
 	m.TermTitle = "Trace: spi-001"
 	lines := make([]string, 20)
@@ -141,7 +141,7 @@ func TestRenderTerminalPane_WithContent(t *testing.T) {
 }
 
 func TestRenderTerminalPane_ScrollIndicator(t *testing.T) {
-	m := makeTermModel()
+	m := makeTermBoardMode()
 	m.TermOpen = true
 	m.TermTitle = "Scrollable"
 	// Create more lines than viewport can hold (viewportH = height-5 = 25).
@@ -161,7 +161,7 @@ func TestRenderTerminalPane_ScrollIndicator(t *testing.T) {
 }
 
 func TestRenderTerminalPane_MinDimensions(t *testing.T) {
-	m := makeTermModel()
+	m := makeTermBoardMode()
 	m.TermOpen = true
 	m.TermTitle = "Tiny"
 	m.TermLines = []string{"a", "b", "c"}
@@ -174,7 +174,7 @@ func TestRenderTerminalPane_MinDimensions(t *testing.T) {
 }
 
 func TestRenderTerminalPane_ViewportSlicing(t *testing.T) {
-	m := makeTermModel()
+	m := makeTermBoardMode()
 	m.TermOpen = true
 	m.TermTitle = "Slice Test"
 	lines := make([]string, 50)
@@ -198,8 +198,8 @@ func TestRenderTerminalPane_ViewportSlicing(t *testing.T) {
 
 // --- Terminal pane Update (scroll/key handling) tests ---
 
-func makeTermOpenModel(numLines int) Model {
-	m := makeModel()
+func makeTermOpenBoardMode(numLines int) BoardMode {
+	m := makeBoardMode()
 	m.TermOpen = true
 	m.TermTitle = "Test"
 	m.TermBeadID = "spi-001"
@@ -213,44 +213,44 @@ func makeTermOpenModel(numLines int) Model {
 }
 
 func TestTermPaneUpdate_ScrollDown(t *testing.T) {
-	m := makeTermOpenModel(100)
-	m = updateModel(m, keyMsg('j'))
+	m := makeTermOpenBoardMode(100)
+	m = updateBoardMode(m, keyMsg('j'))
 	if m.TermScroll != 1 {
 		t.Errorf("expected TermScroll=1 after j, got %d", m.TermScroll)
 	}
 }
 
 func TestTermPaneUpdate_ScrollUp(t *testing.T) {
-	m := makeTermOpenModel(100)
+	m := makeTermOpenBoardMode(100)
 	m.TermScroll = 5
-	m = updateModel(m, keyMsg('k'))
+	m = updateBoardMode(m, keyMsg('k'))
 	if m.TermScroll != 4 {
 		t.Errorf("expected TermScroll=4 after k from 5, got %d", m.TermScroll)
 	}
 }
 
 func TestTermPaneUpdate_ScrollUpClampZero(t *testing.T) {
-	m := makeTermOpenModel(100)
+	m := makeTermOpenBoardMode(100)
 	m.TermScroll = 0
-	m = updateModel(m, keyMsg('k'))
+	m = updateBoardMode(m, keyMsg('k'))
 	if m.TermScroll != 0 {
 		t.Errorf("expected TermScroll=0 (clamped), got %d", m.TermScroll)
 	}
 }
 
 func TestTermPaneUpdate_ScrollDownClampMax(t *testing.T) {
-	m := makeTermOpenModel(5) // few lines, viewport larger
+	m := makeTermOpenBoardMode(5) // few lines, viewport larger
 	// With Height=40, viewportH = termViewportH(). The viewport is likely larger than 5 lines.
 	// Scrolling down should clamp to 0 (content fits in viewport).
-	m = updateModel(m, keyMsg('j'))
+	m = updateBoardMode(m, keyMsg('j'))
 	if m.TermScroll != 0 {
 		t.Errorf("expected TermScroll=0 (content fits viewport), got %d", m.TermScroll)
 	}
 }
 
 func TestTermPaneUpdate_GoToBottom(t *testing.T) {
-	m := makeTermOpenModel(200)
-	m = updateModel(m, keyMsg('G'))
+	m := makeTermOpenBoardMode(200)
+	m = updateBoardMode(m, keyMsg('G'))
 	viewportH := m.termViewportH()
 	expected := len(m.TermLines) - viewportH
 	if expected < 0 {
@@ -262,14 +262,14 @@ func TestTermPaneUpdate_GoToBottom(t *testing.T) {
 }
 
 func TestTermPaneUpdate_GoToTop(t *testing.T) {
-	m := makeTermOpenModel(200)
+	m := makeTermOpenBoardMode(200)
 	m.TermScroll = 50
 	// Press g once (sets PendingG), then g again (go to top).
-	m = updateModel(m, keyMsg('g'))
+	m = updateBoardMode(m, keyMsg('g'))
 	if !m.PendingG {
 		t.Error("expected PendingG=true after first g")
 	}
-	m = updateModel(m, keyMsg('g'))
+	m = updateBoardMode(m, keyMsg('g'))
 	if m.TermScroll != 0 {
 		t.Errorf("expected TermScroll=0 after gg, got %d", m.TermScroll)
 	}
@@ -279,9 +279,9 @@ func TestTermPaneUpdate_GoToTop(t *testing.T) {
 }
 
 func TestTermPaneUpdate_HalfPageDown(t *testing.T) {
-	m := makeTermOpenModel(200)
+	m := makeTermOpenBoardMode(200)
 	viewportH := m.termViewportH()
-	m = updateModel(m, keyMsg('d'))
+	m = updateBoardMode(m, keyMsg('d'))
 	expected := viewportH / 2
 	if m.TermScroll != expected {
 		t.Errorf("expected TermScroll=%d after d, got %d", expected, m.TermScroll)
@@ -289,10 +289,10 @@ func TestTermPaneUpdate_HalfPageDown(t *testing.T) {
 }
 
 func TestTermPaneUpdate_HalfPageUp(t *testing.T) {
-	m := makeTermOpenModel(200)
+	m := makeTermOpenBoardMode(200)
 	viewportH := m.termViewportH()
 	m.TermScroll = viewportH
-	m = updateModel(m, keyMsg('u'))
+	m = updateBoardMode(m, keyMsg('u'))
 	expected := viewportH - viewportH/2
 	if m.TermScroll != expected {
 		t.Errorf("expected TermScroll=%d after u from %d, got %d", expected, viewportH, m.TermScroll)
@@ -300,26 +300,26 @@ func TestTermPaneUpdate_HalfPageUp(t *testing.T) {
 }
 
 func TestTermPaneUpdate_EscCloses(t *testing.T) {
-	m := makeTermOpenModel(10)
-	m = updateModel(m, keyMsgType(tea.KeyEscape))
+	m := makeTermOpenBoardMode(10)
+	m = updateBoardMode(m, keyMsgType(tea.KeyEscape))
 	if m.TermOpen {
 		t.Error("expected TermOpen=false after Esc")
 	}
 }
 
 func TestTermPaneUpdate_QCloses(t *testing.T) {
-	m := makeTermOpenModel(10)
-	m = updateModel(m, keyMsg('q'))
+	m := makeTermOpenBoardMode(10)
+	m = updateBoardMode(m, keyMsg('q'))
 	if m.TermOpen {
 		t.Error("expected TermOpen=false after q")
 	}
 }
 
 func TestTermPaneUpdate_AbsorbsOtherKeys(t *testing.T) {
-	m := makeTermOpenModel(10)
+	m := makeTermOpenBoardMode(10)
 	origCol := m.SelCol
 	// Press 'l' which normally moves columns in the board.
-	m = updateModel(m, keyMsg('l'))
+	m = updateBoardMode(m, keyMsg('l'))
 	if !m.TermOpen {
 		t.Error("expected TermOpen to remain true for unhandled key")
 	}
@@ -329,7 +329,7 @@ func TestTermPaneUpdate_AbsorbsOtherKeys(t *testing.T) {
 }
 
 func TestTermPaneUpdate_TermContentMsg(t *testing.T) {
-	m := makeTermOpenModel(0)
+	m := makeTermOpenBoardMode(0)
 	m.TermLoading = true
 
 	msg := termContentMsg{
@@ -337,7 +337,7 @@ func TestTermPaneUpdate_TermContentMsg(t *testing.T) {
 		Content: "line1\nline2\nline3",
 		BeadID:  "spi-abc",
 	}
-	m = updateModel(m, msg)
+	m = updateBoardMode(m, msg)
 
 	if m.TermLoading {
 		t.Error("expected TermLoading=false after termContentMsg")
@@ -354,7 +354,7 @@ func TestTermPaneUpdate_TermContentMsg(t *testing.T) {
 }
 
 func TestTermPaneUpdate_TermContentMsgError(t *testing.T) {
-	m := makeTermOpenModel(0)
+	m := makeTermOpenBoardMode(0)
 	m.TermLoading = true
 
 	msg := termContentMsg{
@@ -362,7 +362,7 @@ func TestTermPaneUpdate_TermContentMsgError(t *testing.T) {
 		BeadID: "spi-abc",
 		Err:    errorf("fetch failed"),
 	}
-	m = updateModel(m, msg)
+	m = updateBoardMode(m, msg)
 
 	if m.TermLoading {
 		t.Error("expected TermLoading=false after error termContentMsg")
@@ -378,7 +378,7 @@ func TestTermViewportH_MatchesRenderer(t *testing.T) {
 	// Verify that termViewportH() produces the same value as renderTerminalPane's
 	// internal viewportH for various terminal sizes.
 	for _, height := range []int{24, 30, 40, 50, 80, 100} {
-		m := Model{Width: 120, Height: height}
+		m := BoardMode{Width: 120, Height: height}
 		got := m.termViewportH()
 
 		// Replicate renderTerminalPane's calculation:

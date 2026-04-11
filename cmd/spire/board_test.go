@@ -194,7 +194,7 @@ func TestFilterBoardTypeScope(t *testing.T) {
 }
 
 func TestBoardModelSelectedBeadUsesTypeScope(t *testing.T) {
-	m := board.Model{
+	m := board.BoardMode{
 		Cols: board.Columns{
 			Ready: []BoardBead{
 				{ID: "spi-task", Type: "task"},
@@ -236,7 +236,7 @@ func TestShowAllColsToggle(t *testing.T) {
 	cols := board.Columns{
 		Ready: []BoardBead{{ID: "spi-1", Type: "task"}},
 	}
-	m := board.Model{Cols: cols}
+	m := board.BoardMode{Cols: cols}
 
 	// Default: only non-empty columns
 	display := m.DisplayColumns()
