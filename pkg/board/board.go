@@ -317,9 +317,8 @@ func RunBoard(opts Opts, identity string, fetchAgents func() []LocalAgent, actio
 		rejectFn = rejectDesignFn[0]
 	}
 
-	beadsDir := resolveBeadsDirForBoard()
-
 	for {
+		beadsDir := resolveBeadsDirForBoard()
 		boardMode, err := NewBoardMode(BoardModeOpts{
 			BeadsDir:       beadsDir,
 			Opts:           opts,

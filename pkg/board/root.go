@@ -2,6 +2,7 @@ package board
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -185,6 +186,7 @@ func (r RootModel) handleTowerSwitcherKey(key string) (tea.Model, tea.Cmd) {
 			item := r.towerItems[r.towerCursor]
 			r.towerName = item.Name
 			r.beadsDir = item.BeadsDir
+			os.Setenv("BEADS_DIR", item.BeadsDir)
 			r.showTowerSwitcher = false
 			tc := TowerChanged{Name: item.Name, BeadsDir: item.BeadsDir}
 			var cmds []tea.Cmd

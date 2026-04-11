@@ -108,7 +108,7 @@ func (m *MetricsMode) HandleTowerChanged(tc TowerChanged) tea.Cmd {
 	}
 	m.towerName = tc.Name
 
-	towerCfg, err := config.ActiveTowerConfig()
+	towerCfg, err := config.LoadTowerConfig(tc.Name)
 	if err != nil {
 		m.lastErr = fmt.Errorf("tower config: %w", err)
 		return nil

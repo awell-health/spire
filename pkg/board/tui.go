@@ -404,10 +404,10 @@ func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, ac
 		rejectFn = rejectDesignFn[0]
 	}
 
-	// Resolve beadsDir from environment or config.
-	beadsDir := resolveBeadsDirForBoard()
-
 	for {
+		// Resolve beadsDir from environment or config on each iteration,
+		// so tower switches (which update BEADS_DIR) take effect on relaunch.
+		beadsDir := resolveBeadsDirForBoard()
 		bm, err := NewBoardMode(BoardModeOpts{
 			BeadsDir:       beadsDir,
 			Opts:           opts,
