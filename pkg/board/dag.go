@@ -120,15 +120,18 @@ func extractReviewVerdict(b Bead) string {
 var v3StepOrder = map[string]int{
 	"design-check": 0,
 	"design":       0,
-	"plan":         1,
-	"materialize":  2,
-	"implement":    3,
-	"verify":       4,
-	"verify-build": 4,
-	"review":       5,
-	"merge":        6,
-	"close":        7,
-	"discard":      7,
+	"research":     1,
+	"plan":         2,
+	"materialize":  3,
+	"implement":    4,
+	"verify":       5,
+	"verify-build": 5,
+	"review":       6,
+	"document":     7,
+	"approve":      7,
+	"merge":        8,
+	"close":        9,
+	"discard":      9,
 }
 
 // PhaseIndex returns the display order for a step/phase name.
