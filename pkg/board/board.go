@@ -399,6 +399,10 @@ func parsePendingAction(s string) PendingAction {
 		return ActionResummon
 	case "close":
 		return ActionClose
+	case "Grok":
+		return ActionGrok
+	case "Trace":
+		return ActionTrace
 	default:
 		return ActionNone
 	}

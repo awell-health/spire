@@ -252,6 +252,27 @@ func executeBoardAction(action board.PendingAction, beadID string) bool {
 			}
 		}
 		return true
+
+	case board.ActionGrok:
+		fmt.Println()
+		if err := cmdGrok([]string{beadID}); err != nil {
+			fmt.Fprintf(os.Stderr, "grok: %v\n", err)
+		}
+		fmt.Printf("\n%sPress Enter to return to board...%s ", board.Dim, board.Reset)
+		fmt.Scanln()
+		return true
+
+	case board.ActionTrace:
+		fmt.Println()
+		output, err := renderTraceForBoard(beadID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "trace: %v\n", err)
+		} else {
+			fmt.Print(output)
+		}
+		fmt.Printf("\n%sPress Enter to return to board...%s ", board.Dim, board.Reset)
+		fmt.Scanln()
+		return true
 	}
 	return false
 }
