@@ -482,30 +482,38 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 
 	// Fall back: if no worktree dir from graph state, check for a feat-branch:
 	// label on the source bead and create a worktree from that branch.
+	// Graph state is absent in this path, so resolve the repo directory from
+	// the bead's registered prefix via ResolveRepo.
 	if worktreeDir == "" {
 		sourceBead, berr := e.deps.GetBead(req.SourceBeadID)
 		if berr == nil {
 			branchLabel := store.HasLabel(sourceBead, "feat-branch:")
 			if branchLabel != "" {
+				// Resolve the source repo path from the bead's prefix.
+				// gs.RepoPath is always empty here (no graph state), so we
+				// must resolve from tower config.
+				repoDir, _, _, resolveErr := e.deps.ResolveRepo(req.SourceBeadID)
+				if resolveErr != nil || repoDir == "" {
+					return failResult(req.Kind, fmt.Sprintf("cannot resolve repo for bead %s: %v", req.SourceBeadID, resolveErr))
+				}
+
 				// Verify branch exists
 				checkCmd := exec.Command("git", "rev-parse", "--verify", branchLabel)
-				if gs != nil && gs.RepoPath != "" {
-					checkCmd.Dir = gs.RepoPath
-				}
+				checkCmd.Dir = repoDir
 				if checkCmd.Run() == nil {
 					// Create a worktree from the branch
 					wtDir := filepath.Join(os.TempDir(), "spire-triage", req.SourceBeadID)
 					os.MkdirAll(filepath.Dir(wtDir), 0755)
 					addCmd := exec.Command("git", "worktree", "add", wtDir, branchLabel)
-					if gs != nil && gs.RepoPath != "" {
-						addCmd.Dir = gs.RepoPath
-					}
+					addCmd.Dir = repoDir
 					if addErr := addCmd.Run(); addErr == nil {
 						worktreeDir = wtDir
 						e.log("triage: created worktree from branch %s at %s", branchLabel, wtDir)
 						// Clean up worktree when triage completes.
 						defer func() {
-							exec.Command("git", "worktree", "remove", "--force", wtDir).Run()
+							rmCmd := exec.Command("git", "worktree", "remove", "--force", wtDir)
+							rmCmd.Dir = repoDir
+							rmCmd.Run()
 							e.log("triage: cleaned up worktree %s", wtDir)
 						}()
 					}
