@@ -502,6 +502,39 @@ func (m *BoardMode) HasOverlay() bool {
 		m.Cmdline.Active || m.FeedbackActive || m.ResolveActive
 }
 
+// FooterHints implements Mode. Returns context-sensitive keybinding hints
+// that vary by the active ViewMode and overlay state.
+func (m *BoardMode) FooterHints() string {
+	// Overlays show their own hints.
+	if m.ConfirmOpen {
+		return "y confirm  n/esc cancel"
+	}
+	if m.TermOpen {
+		return "j/k scroll  d/u half-page  g/G top/bottom  r refresh  esc close"
+	}
+	if m.ActionMenuOpen {
+		return "j/k navigate  enter select  esc close"
+	}
+	if m.SearchActive {
+		return "type to filter  enter accept  esc clear"
+	}
+	if m.Cmdline.Active {
+		return "enter execute  esc cancel"
+	}
+	if m.Inspecting {
+		return "j/k scroll  tab switch pane  esc close"
+	}
+
+	switch m.ViewMode {
+	case ViewAlerts:
+		return "s summon  x close  d defer  a actions  enter inspect  / search"
+	case ViewLower:
+		return "r reset  v resolve  S resummon  x close  a actions  enter inspect"
+	default: // ViewBoard
+		return "s summon  d defer  x close  r reset  a actions  / search  ? help"
+	}
+}
+
 // actionResultMsg carries the result of an inline action executed via tea.Cmd.
 type actionResultMsg struct {
 	Action PendingAction

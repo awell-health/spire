@@ -69,6 +69,10 @@ func (m *mockMode) HasOverlay() bool {
 	return m.overlay
 }
 
+func (m *mockMode) FooterHints() string {
+	return ""
+}
+
 func (m *mockMode) ID() ModeID {
 	return m.id
 }

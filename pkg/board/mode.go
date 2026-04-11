@@ -77,6 +77,11 @@ type Mode interface {
 	// ID returns the mode's ModeID constant. Used by RootModel for tab bar
 	// rendering and message routing.
 	ID() ModeID
+
+	// FooterHints returns a single-line string of keybinding hints relevant
+	// to the mode's current state. RootModel appends global hints (Tab, T, q)
+	// after this line. Return "" if no mode-specific hints are available.
+	FooterHints() string
 }
 
 // PendingActionMsg wraps an action string. RootModel detects this from mode

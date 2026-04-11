@@ -333,6 +333,7 @@ func RunBoard(opts Opts, identity string, fetchAgents func() []LocalAgent, actio
 		}
 
 		agentsMode := NewAgentsMode(opts.TowerName)
+		agentsMode.InlineActionFn = inlineActionFn
 		workshopMode := NewWorkshopMode()
 		messagesMode := NewMessagesMode()
 		metricsMode := NewMetricsMode()

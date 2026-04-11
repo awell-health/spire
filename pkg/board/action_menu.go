@@ -112,6 +112,48 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 	return items
 }
 
+// BuildAgentActionMenu builds a context-sensitive action menu for an agent row.
+// The agent's status and bead state determine which actions are available.
+func BuildAgentActionMenu(agent AgentInfo) []MenuAction {
+	var items []MenuAction
+
+	if agent.BeadID == "" {
+		// Idle agent — no bead-specific actions.
+		return items
+	}
+
+	switch agent.Status {
+	case "running":
+		items = append(items,
+			MenuAction{Key: 'u', Label: "Unsummon wizard", Danger: DangerConfirm, ActionType: ActionUnsummon},
+			MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
+			MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
+	case "errored":
+		items = append(items,
+			MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
+			MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
+			MenuAction{Key: 's', Label: "Resummon", Danger: DangerNone, ActionType: ActionResummon},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
+	default: // idle with bead
+		items = append(items,
+			MenuAction{Key: 's', Label: "Summon wizard", Danger: DangerNone, ActionType: ActionSummon},
+			MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
+	}
+
+	// Always available for agents with beads.
+	items = append(items,
+		MenuAction{Key: 'g', Label: "Grok (deep focus)", Danger: DangerNone, ActionType: ActionGrok},
+		MenuAction{Key: 't', Label: "Trace timeline", Danger: DangerNone, ActionType: ActionTrace},
+	)
+
+	return items
+}
+
 // renderActionMenu renders the popup box as a lipgloss-styled string.
 func renderActionMenu(items []MenuAction, cursor int, beadID string, width int) string {
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))

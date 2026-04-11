@@ -27,6 +27,7 @@ func (m *WorkshopMode) OnActivate() tea.Cmd                     { return nil }
 func (m *WorkshopMode) OnDeactivate()                           {}
 func (m *WorkshopMode) HandleTowerChanged(TowerChanged) tea.Cmd { return nil }
 func (m *WorkshopMode) HasOverlay() bool                        { return false }
+func (m *WorkshopMode) FooterHints() string                     { return "" }
 
 func (m *WorkshopMode) View() string {
 	msg := "Workshop mode — coming soon"

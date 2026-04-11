@@ -27,6 +27,7 @@ func (m *MessagesMode) OnActivate() tea.Cmd                     { return nil }
 func (m *MessagesMode) OnDeactivate()                           {}
 func (m *MessagesMode) HandleTowerChanged(TowerChanged) tea.Cmd { return nil }
 func (m *MessagesMode) HasOverlay() bool                        { return false }
+func (m *MessagesMode) FooterHints() string                     { return "" }
 
 func (m *MessagesMode) View() string {
 	msg := "Messages mode — coming soon"

@@ -103,7 +103,7 @@ func (r RootModel) routeMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tickMsg, snapshotMsg, actionResultMsg, inspectorDataMsg, termContentMsg, rejectDesignResultMsg:
 		target = r.modeIndex(ModeBoard)
-	case agentTickMsg, AgentSnapshot:
+	case agentTickMsg, AgentSnapshot, agentActionResultMsg:
 		target = r.modeIndex(ModeAgents)
 	}
 	if target >= 0 && target < len(r.modes) {
@@ -264,10 +264,23 @@ func (r RootModel) renderTabBar() string {
 }
 
 // renderFooter builds the 2-line status footer.
+// Line 1: tower name + identity.
+// Line 2: mode-specific hints + global hints.
 func (r RootModel) renderFooter() string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	line1 := dimStyle.Render(fmt.Sprintf(" %s  %s", r.towerName, r.identity))
-	line2 := dimStyle.Render(" Tab: switch mode  T: tower  q: quit")
+
+	globalHints := "Tab: switch mode  T: tower  q: quit"
+	modeHints := ""
+	if len(r.modes) > 0 {
+		modeHints = r.modes[r.activeModeIdx].FooterHints()
+	}
+	var line2 string
+	if modeHints != "" {
+		line2 = dimStyle.Render(" " + modeHints + "  │  " + globalHints)
+	} else {
+		line2 = dimStyle.Render(" " + globalHints)
+	}
 	return line1 + "\n" + line2
 }
 

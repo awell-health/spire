@@ -32,6 +32,13 @@ type AgentInfo struct {
 // agentTickMsg is sent by the tick command to trigger a registry re-read.
 type agentTickMsg struct{}
 
+// agentActionResultMsg carries the result of an inline action in agents mode.
+type agentActionResultMsg struct {
+	Action PendingAction
+	BeadID string
+	Err    error
+}
+
 // AgentsMode implements Mode for the Agents tab.
 type AgentsMode struct {
 	snapshot     AgentSnapshot
@@ -41,6 +48,28 @@ type AgentsMode struct {
 	towerName    string
 	registryPath string // filesystem path to agent registry (unused — we use agent.LoadRegistry)
 	active       bool   // whether this mode is the active tab
+
+	// InlineActionFn executes an action within the TUI via tea.Cmd.
+	InlineActionFn func(PendingAction, string) error
+
+	// Action menu overlay state.
+	ActionMenuOpen    bool
+	ActionMenuItems   []MenuAction
+	ActionMenuCursor  int
+	ActionMenuBeadID  string
+	ActionMenuBeadTitle string
+
+	// Confirmation dialog state.
+	ConfirmOpen   bool
+	ConfirmAction PendingAction
+	ConfirmBeadID string
+	ConfirmPrompt string
+	ConfirmDanger DangerLevel
+
+	// Inline action execution state.
+	ActionRunning    bool
+	ActionStatus     string
+	ActionStatusTime time.Time
 }
 
 // NewAgentsMode creates an AgentsMode for the given tower.
@@ -58,6 +87,35 @@ func (m *AgentsMode) Init() tea.Cmd {
 	return tea.Batch(m.fetchAgents(), scheduleAgentTick())
 }
 
+// selectedAgent returns the currently selected agent, or nil if none.
+func (m *AgentsMode) selectedAgent() *AgentInfo {
+	if m.cursor >= 0 && m.cursor < len(m.snapshot.Agents) {
+		return &m.snapshot.Agents[m.cursor]
+	}
+	return nil
+}
+
+// dispatchInlineAction dispatches an inline action via tea.Cmd.
+func (m *AgentsMode) dispatchInlineAction(action PendingAction, beadID string) (Mode, tea.Cmd) {
+	if m.ActionRunning {
+		return m, nil
+	}
+	if m.InlineActionFn == nil {
+		// No inline fn — emit PendingActionMsg for exit-relaunch.
+		return m, func() tea.Msg {
+			return PendingActionMsg{Action: actionLabel(action), Args: []string{beadID}}
+		}
+	}
+	m.ActionRunning = true
+	m.ActionStatus = actionLabel(action) + "..."
+	m.ActionStatusTime = time.Now()
+	fn := m.InlineActionFn
+	return m, func() tea.Msg {
+		err := fn(action, beadID)
+		return agentActionResultMsg{Action: action, BeadID: beadID, Err: err}
+	}
+}
+
 // Update handles messages for the agents mode.
 func (m *AgentsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -69,9 +127,34 @@ func (m *AgentsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 		return m, nil
 
 	case agentTickMsg:
+		// Auto-clear action status after 5 seconds.
+		if m.ActionStatus != "" && time.Since(m.ActionStatusTime) > 5*time.Second {
+			m.ActionStatus = ""
+		}
 		return m, tea.Batch(m.fetchAgents(), scheduleAgentTick())
 
+	case agentActionResultMsg:
+		m.ActionRunning = false
+		if msg.Err != nil {
+			m.ActionStatus = fmt.Sprintf("%s failed: %v", actionLabel(msg.Action), msg.Err)
+		} else {
+			m.ActionStatus = fmt.Sprintf("%s: done", actionLabel(msg.Action))
+		}
+		m.ActionStatusTime = time.Now()
+		// Refresh agents after action.
+		return m, m.fetchAgents()
+
 	case tea.KeyMsg:
+		// Confirmation dialog absorbs all keys.
+		if m.ConfirmOpen {
+			return m.updateConfirm(msg)
+		}
+
+		// Action menu absorbs all keys.
+		if m.ActionMenuOpen {
+			return m.updateActionMenu(msg)
+		}
+
 		switch msg.String() {
 		case "j", "down":
 			if len(m.snapshot.Agents) > 0 {
@@ -81,10 +164,152 @@ func (m *AgentsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			if len(m.snapshot.Agents) > 0 {
 				m.cursor = (m.cursor - 1 + len(m.snapshot.Agents)) % len(m.snapshot.Agents)
 			}
+
+		// Unsummon — confirm first.
+		case "u":
+			if a := m.selectedAgent(); a != nil && a.BeadID != "" && a.Status == "running" {
+				m.ConfirmOpen = true
+				m.ConfirmAction = ActionUnsummon
+				m.ConfirmBeadID = a.BeadID
+				m.ConfirmPrompt = confirmPromptForAction(ActionUnsummon, a.BeadID, a.Name)
+				m.ConfirmDanger = DangerConfirm
+				return m, nil
+			}
+
+		// Reset — confirm first.
+		case "r":
+			if a := m.selectedAgent(); a != nil && a.BeadID != "" {
+				m.ConfirmOpen = true
+				m.ConfirmAction = ActionResetSoft
+				m.ConfirmBeadID = a.BeadID
+				m.ConfirmPrompt = confirmPromptForAction(ActionResetSoft, a.BeadID, a.Name)
+				m.ConfirmDanger = DangerConfirm
+				return m, nil
+			}
+
+		// Close — confirm first.
+		case "x":
+			if a := m.selectedAgent(); a != nil && a.BeadID != "" {
+				m.ConfirmOpen = true
+				m.ConfirmAction = ActionClose
+				m.ConfirmBeadID = a.BeadID
+				m.ConfirmPrompt = confirmPromptForAction(ActionClose, a.BeadID, a.Name)
+				m.ConfirmDanger = DangerConfirm
+				return m, nil
+			}
+
+		// Action menu.
+		case "a":
+			if a := m.selectedAgent(); a != nil && a.BeadID != "" {
+				m.ActionMenuBeadID = a.BeadID
+				m.ActionMenuBeadTitle = a.Name
+				m.ActionMenuItems = BuildAgentActionMenu(*a)
+				m.ActionMenuCursor = 0
+				m.ActionMenuOpen = true
+				return m, nil
+			}
+
+		// Enter — inspect (emit PendingAction for focus).
+		case "enter":
+			if a := m.selectedAgent(); a != nil && a.BeadID != "" {
+				return m, func() tea.Msg {
+					return PendingActionMsg{Action: "focus", Args: []string{a.BeadID}}
+				}
+			}
+
+		// Copy bead ID to clipboard.
+		case "y":
+			if a := m.selectedAgent(); a != nil && a.BeadID != "" {
+				if err := copyToClipboard(a.BeadID); err != nil {
+					m.ActionStatus = fmt.Sprintf("clipboard error: %v", err)
+				} else {
+					m.ActionStatus = fmt.Sprintf("copied: %s", a.BeadID)
+				}
+				m.ActionStatusTime = time.Now()
+			}
+			return m, nil
 		}
 		return m, nil
 	}
 	return m, nil
+}
+
+// updateConfirm handles key input in the confirmation dialog.
+func (m *AgentsMode) updateConfirm(msg tea.KeyMsg) (Mode, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		action := m.ConfirmAction
+		beadID := m.ConfirmBeadID
+		m.ConfirmOpen = false
+		if m.ActionRunning {
+			return m, nil
+		}
+		return m.dispatchInlineAction(action, beadID)
+	case "n", "N", "esc":
+		m.ConfirmOpen = false
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateActionMenu handles key input in the action menu overlay.
+func (m *AgentsMode) updateActionMenu(msg tea.KeyMsg) (Mode, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.ActionMenuOpen = false
+		return m, nil
+	case "j", "down":
+		if m.ActionMenuCursor < len(m.ActionMenuItems)-1 {
+			m.ActionMenuCursor++
+		}
+		return m, nil
+	case "k", "up":
+		if m.ActionMenuCursor > 0 {
+			m.ActionMenuCursor--
+		}
+		return m, nil
+	case "enter":
+		if m.ActionMenuCursor >= 0 && m.ActionMenuCursor < len(m.ActionMenuItems) {
+			item := m.ActionMenuItems[m.ActionMenuCursor]
+			m.ActionMenuOpen = false
+			return m.dispatchAgentMenuAction(item)
+		}
+		return m, nil
+	default:
+		// Shortcut key match.
+		for _, item := range m.ActionMenuItems {
+			if msg.String() == string(item.Key) {
+				m.ActionMenuOpen = false
+				return m.dispatchAgentMenuAction(item)
+			}
+		}
+		return m, nil
+	}
+}
+
+// dispatchAgentMenuAction handles an action selected from the agent action menu.
+func (m *AgentsMode) dispatchAgentMenuAction(item MenuAction) (Mode, tea.Cmd) {
+	if item.ActionType == ActionTrace || item.ActionType == ActionGrok {
+		// These use exit-relaunch pattern.
+		return m, func() tea.Msg {
+			return PendingActionMsg{Action: actionLabel(item.ActionType), Args: []string{m.ActionMenuBeadID}}
+		}
+	}
+	if isInlineAction(item.ActionType) {
+		if item.Danger != DangerNone {
+			m.ConfirmOpen = true
+			m.ConfirmAction = item.ActionType
+			m.ConfirmBeadID = m.ActionMenuBeadID
+			m.ConfirmPrompt = confirmPromptForAction(item.ActionType, m.ActionMenuBeadID, m.ActionMenuBeadTitle)
+			m.ConfirmDanger = item.Danger
+			return m, nil
+		}
+		return m.dispatchInlineAction(item.ActionType, m.ActionMenuBeadID)
+	}
+	// Non-inline: exit-relaunch.
+	return m, func() tea.Msg {
+		return PendingActionMsg{Action: actionLabel(item.ActionType), Args: []string{m.ActionMenuBeadID}}
+	}
 }
 
 // View renders the agents table from the latest snapshot. No I/O.
@@ -201,6 +426,35 @@ func (m *AgentsMode) View() string {
 		s.WriteString(prefix + row + "\n")
 	}
 
+	// Action status line.
+	if m.ActionStatus != "" {
+		statusStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+		s.WriteString("\n" + statusStyle.Render(m.ActionStatus) + "\n")
+	}
+
+	// Confirmation overlay.
+	if m.ConfirmOpen {
+		s.WriteString("\n")
+		promptStyle := lipgloss.NewStyle().Bold(true)
+		if m.ConfirmDanger == DangerDestructive {
+			promptStyle = promptStyle.Foreground(lipgloss.Color("1"))
+		} else {
+			promptStyle = promptStyle.Foreground(lipgloss.Color("3"))
+		}
+		s.WriteString(promptStyle.Render(m.ConfirmPrompt+" [y/n]") + "\n")
+	}
+
+	// Action menu overlay.
+	if m.ActionMenuOpen && len(m.ActionMenuItems) > 0 {
+		s.WriteString("\n")
+		menuWidth := m.width
+		if menuWidth <= 0 {
+			menuWidth = 40
+		}
+		s.WriteString(renderActionMenu(m.ActionMenuItems, m.ActionMenuCursor, m.ActionMenuBeadID, menuWidth))
+		s.WriteString("\n")
+	}
+
 	return s.String()
 }
 
@@ -227,8 +481,24 @@ func (m *AgentsMode) HandleTowerChanged(tc TowerChanged) tea.Cmd {
 	return m.fetchAgents()
 }
 
-// HasOverlay returns false — no overlays in v1.
-func (m *AgentsMode) HasOverlay() bool { return false }
+// HasOverlay returns true when confirmation dialog or action menu is open.
+func (m *AgentsMode) HasOverlay() bool {
+	return m.ConfirmOpen || m.ActionMenuOpen
+}
+
+// FooterHints implements Mode. Returns context-sensitive keybinding hints.
+func (m *AgentsMode) FooterHints() string {
+	if m.ConfirmOpen {
+		return "y confirm  n/esc cancel"
+	}
+	if m.ActionMenuOpen {
+		return "j/k navigate  enter select  esc close"
+	}
+	if len(m.snapshot.Agents) == 0 {
+		return ""
+	}
+	return "u unsummon  r reset  x close  a actions  enter inspect  y copy"
+}
 
 // fetchAgents returns a tea.Cmd that reads the agent registry and produces an AgentSnapshot.
 func (m *AgentsMode) fetchAgents() tea.Cmd {
@@ -318,4 +588,3 @@ func formatAgentDuration(d time.Duration) string {
 	s := int(d.Seconds())
 	return fmt.Sprintf("%ds", s)
 }
-

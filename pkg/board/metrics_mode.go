@@ -27,6 +27,7 @@ func (m *MetricsMode) OnActivate() tea.Cmd                     { return nil }
 func (m *MetricsMode) OnDeactivate()                           {}
 func (m *MetricsMode) HandleTowerChanged(TowerChanged) tea.Cmd { return nil }
 func (m *MetricsMode) HasOverlay() bool                        { return false }
+func (m *MetricsMode) FooterHints() string                     { return "" }
 
 func (m *MetricsMode) View() string {
 	msg := "Metrics mode — coming soon"
