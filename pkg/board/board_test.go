@@ -35,13 +35,13 @@ func keyMsgStr(s string) tea.KeyMsg {
 	}
 }
 
-func updateBoardMode(m BoardMode, msg tea.Msg) BoardMode {
+func updateBoardMode(m *BoardMode, msg tea.Msg) *BoardMode {
 	result, _ := m.Update(msg)
-	return *result.(*BoardMode)
+	return result.(*BoardMode)
 }
 
 // makeBoardMode creates a BoardMode with some columns populated for testing.
-func makeBoardMode() BoardMode {
+func makeBoardMode() *BoardMode {
 	cols := Columns{
 		Ready: []BoardBead{
 			{ID: "spi-001", Title: "First task", Status: "open", Type: "task", Priority: 1, Labels: []string{"team:alpha"}},
@@ -56,7 +56,7 @@ func makeBoardMode() BoardMode {
 			{ID: "spi-006", Title: "Done chore", Status: "closed", Type: "chore", Priority: 3},
 		},
 	}
-	return BoardMode{
+	return &BoardMode{
 		Cols:       cols,
 		Width:      120,
 		Height:     40,
@@ -674,7 +674,7 @@ func TestKeybindingDispatch(t *testing.T) {
 // --- TestActionMenuNavigation ---
 
 func TestActionMenuNavigation(t *testing.T) {
-	openMenu := func() BoardMode {
+	openMenu := func() *BoardMode {
 		m := makeBoardMode()
 		m.SelCol = 0
 		m.SelCard = 0
@@ -786,7 +786,7 @@ func TestActionMenuNavigation(t *testing.T) {
 // --- TestInspectorNavigation ---
 
 func TestInspectorNavigation(t *testing.T) {
-	makeInspecting := func() BoardMode {
+	makeInspecting := func() *BoardMode {
 		m := makeBoardMode()
 		m.Inspecting = true
 		m.InspectorTab = 0
@@ -889,7 +889,7 @@ func TestInspectorNavigation(t *testing.T) {
 
 func TestColumnScrolling(t *testing.T) {
 	// Create a model with a tall column but short terminal.
-	makeScrollBoardMode := func() BoardMode {
+	makeScrollBoardMode := func() *BoardMode {
 		beads := make([]BoardBead, 20)
 		for i := range beads {
 			beads[i] = BoardBead{
@@ -907,7 +907,7 @@ func TestColumnScrolling(t *testing.T) {
 		cols := Columns{
 			Ready: beads,
 		}
-		return BoardMode{
+		return &BoardMode{
 			Cols:       cols,
 			Width:      120,
 			Height:     20, // Short enough that MaxCards < 20
@@ -1384,7 +1384,7 @@ func TestSnapshotWarningsRendered(t *testing.T) {
 	})
 
 	t.Run("TUI renders with warnings and no data", func(t *testing.T) {
-		m := BoardMode{Width: 120, Height: 40, Identity: "test@test.dev"}
+		m := &BoardMode{Width: 120, Height: 40, Identity: "test@test.dev"}
 		m.Snapshot = &BoardSnapshot{
 			Warnings:    []string{"dolt-conflict: 1 unresolved conflict(s) in issues table — run `spire pull` to resolve"},
 			DAGProgress: map[string]*DAGProgress{},
@@ -1865,7 +1865,7 @@ func TestJKStaysWithinViewMode(t *testing.T) {
 			{ID: "spi-r1", Title: "Ready 1", Status: "open", Type: "task", Priority: 1},
 		},
 	}
-	m := BoardMode{
+	m := &BoardMode{
 		Cols:       cols,
 		Width:      120,
 		Height:     40,
@@ -1934,7 +1934,7 @@ func TestViewRendersActiveMode(t *testing.T) {
 			{ID: "spi-b1", Title: "Blocked Task", Status: "open", Type: "task", Priority: 2, Labels: []string{}},
 		},
 	}
-	m := BoardMode{
+	m := &BoardMode{
 		Cols:       cols,
 		Width:      120,
 		Height:     40,
@@ -1953,10 +1953,12 @@ func TestViewRendersActiveMode(t *testing.T) {
 		if !strings.Contains(output, "Ready Task") {
 			t.Error("ViewBoard should show column content like 'Ready Task'")
 		}
+		// Chrome (sidebar) is rendered by RootModel, not BoardMode.
+		// BoardMode.View() only renders board content.
 	})
 
 	t.Run("ViewAlerts shows alerts", func(t *testing.T) {
-		m2 := m
+		m2 := *m
 		m2.ViewMode = ViewAlerts
 		m2.SelSection = SectionAlerts
 		output := m2.View()
@@ -1966,7 +1968,7 @@ func TestViewRendersActiveMode(t *testing.T) {
 	})
 
 	t.Run("ViewLower shows blocked", func(t *testing.T) {
-		m3 := m
+		m3 := *m
 		m3.ViewMode = ViewLower
 		m3.SelSection = SectionLower
 		output := m3.View()
@@ -1976,7 +1978,7 @@ func TestViewRendersActiveMode(t *testing.T) {
 	})
 
 	t.Run("ViewAlerts empty shows placeholder", func(t *testing.T) {
-		m4 := m
+		m4 := *m
 		m4.ViewMode = ViewAlerts
 		m4.SelSection = SectionAlerts
 		emptyCols := Columns{}
@@ -1993,7 +1995,7 @@ func TestViewRendersActiveMode(t *testing.T) {
 	})
 
 	t.Run("ViewLower empty shows placeholder", func(t *testing.T) {
-		m5 := m
+		m5 := *m
 		m5.ViewMode = ViewLower
 		m5.SelSection = SectionLower
 		emptyCols := Columns{}

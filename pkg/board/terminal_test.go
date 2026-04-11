@@ -79,8 +79,8 @@ func TestTruncateAnsi_MaxWidthOne(t *testing.T) {
 
 // --- renderTerminalPane tests ---
 
-func makeTermBoardMode() BoardMode {
-	return BoardMode{
+func makeTermBoardMode() *BoardMode {
+	return &BoardMode{
 		Width:  120,
 		Height: 50,
 	}
@@ -92,7 +92,7 @@ func TestRenderTerminalPane_Loading(t *testing.T) {
 	m.TermLoading = true
 	m.TermTitle = "Test Loading"
 
-	out := renderTerminalPane(&m, 80, 30)
+	out := renderTerminalPane(m, 80, 30)
 
 	if !strings.Contains(out, "Loading...") {
 		t.Error("expected loading state to show 'Loading...'")
@@ -108,7 +108,7 @@ func TestRenderTerminalPane_Empty(t *testing.T) {
 	m.TermTitle = "Empty Pane"
 	m.TermLines = nil
 
-	out := renderTerminalPane(&m, 80, 30)
+	out := renderTerminalPane(m, 80, 30)
 
 	if !strings.Contains(out, "(empty)") {
 		t.Error("expected empty state to show '(empty)'")
@@ -125,7 +125,7 @@ func TestRenderTerminalPane_WithContent(t *testing.T) {
 	}
 	m.TermLines = lines
 
-	out := renderTerminalPane(&m, 80, 30)
+	out := renderTerminalPane(m, 80, 30)
 
 	if !strings.Contains(out, "Trace: spi-001") {
 		t.Error("expected title in output")
@@ -152,7 +152,7 @@ func TestRenderTerminalPane_ScrollIndicator(t *testing.T) {
 	m.TermLines = lines
 	m.TermScroll = 5
 
-	out := renderTerminalPane(&m, 80, 30)
+	out := renderTerminalPane(m, 80, 30)
 
 	// Should show scroll position indicator.
 	if !strings.Contains(out, "[6/100]") {
@@ -167,7 +167,7 @@ func TestRenderTerminalPane_MinDimensions(t *testing.T) {
 	m.TermLines = []string{"a", "b", "c"}
 
 	// Very small dimensions should be clamped up.
-	out := renderTerminalPane(&m, 5, 3)
+	out := renderTerminalPane(m, 5, 3)
 	if !strings.Contains(out, "Tiny") {
 		t.Error("expected title even at small dimensions")
 	}
@@ -185,7 +185,7 @@ func TestRenderTerminalPane_ViewportSlicing(t *testing.T) {
 
 	// Scroll to line 10. viewportH for height=30: h=30*85/100=25, clamped to 24 min → 25, vh=25-5=20.
 	m.TermScroll = 10
-	out := renderTerminalPane(&m, 80, 30)
+	out := renderTerminalPane(m, 80, 30)
 
 	// Line at index 10 should appear, line at index 0 should not.
 	if !strings.Contains(out, "uniqueline-010") {
@@ -198,7 +198,7 @@ func TestRenderTerminalPane_ViewportSlicing(t *testing.T) {
 
 // --- Terminal pane Update (scroll/key handling) tests ---
 
-func makeTermOpenBoardMode(numLines int) BoardMode {
+func makeTermOpenBoardMode(numLines int) *BoardMode {
 	m := makeBoardMode()
 	m.TermOpen = true
 	m.TermTitle = "Test"
@@ -378,7 +378,7 @@ func TestTermViewportH_MatchesRenderer(t *testing.T) {
 	// Verify that termViewportH() produces the same value as renderTerminalPane's
 	// internal viewportH for various terminal sizes.
 	for _, height := range []int{24, 30, 40, 50, 80, 100} {
-		m := BoardMode{Width: 120, Height: height}
+		m := &BoardMode{Width: 120, Height: height}
 		got := m.termViewportH()
 
 		// Replicate renderTerminalPane's calculation:
