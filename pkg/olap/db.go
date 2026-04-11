@@ -55,8 +55,19 @@ func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.
 }
 
 // SqlDB returns the raw *sql.DB for direct read queries (e.g. spire metrics).
+// Callers MUST NOT use the returned handle for writes — all write paths must go
+// through WithWriteLock to respect DuckDB's single-writer constraint.
 func (d *DB) SqlDB() *sql.DB {
 	return d.db
+}
+
+// WithWriteLock acquires the single-writer mutex and calls fn with the
+// underlying *sql.DB. All write paths from outside the olap package
+// must use this method to avoid races with ETL.
+func (d *DB) WithWriteLock(fn func(*sql.DB) error) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return fn(d.db)
 }
 
 // FormulaStats holds aggregated performance data for a formula name+version pair.

@@ -5,6 +5,7 @@ package otel
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -25,36 +26,39 @@ type ToolEvent struct {
 }
 
 // WriteBatch inserts a batch of tool events into DuckDB in a single transaction.
+// It acquires the olap.DB write lock for the duration of the transaction to
+// avoid races with ETL and other concurrent writers.
 func WriteBatch(db *olap.DB, events []ToolEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
 
-	sqlDB := db.SqlDB()
-	tx, err := sqlDB.BeginTx(context.Background(), nil)
-	if err != nil {
-		return fmt.Errorf("otel write: begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(`INSERT INTO tool_events
-		(session_id, bead_id, agent_name, step, tool_name, duration_ms, success, timestamp, tower)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("otel write: prepare: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, e := range events {
-		ts := e.Timestamp
-		if ts.IsZero() {
-			ts = time.Now().UTC()
+	return db.WithWriteLock(func(sqlDB *sql.DB) error {
+		tx, err := sqlDB.BeginTx(context.Background(), nil)
+		if err != nil {
+			return fmt.Errorf("otel write: begin tx: %w", err)
 		}
-		if _, err := stmt.Exec(e.SessionID, e.BeadID, e.AgentName, e.Step,
-			e.ToolName, e.DurationMs, e.Success, ts, e.Tower); err != nil {
-			return fmt.Errorf("otel write: exec: %w", err)
-		}
-	}
+		defer tx.Rollback()
 
-	return tx.Commit()
+		stmt, err := tx.Prepare(`INSERT INTO tool_events
+			(session_id, bead_id, agent_name, step, tool_name, duration_ms, success, timestamp, tower)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("otel write: prepare: %w", err)
+		}
+		defer stmt.Close()
+
+		for _, e := range events {
+			ts := e.Timestamp
+			if ts.IsZero() {
+				ts = time.Now().UTC()
+			}
+			if _, err := stmt.Exec(e.SessionID, e.BeadID, e.AgentName, e.Step,
+				e.ToolName, e.DurationMs, e.Success, ts, e.Tower); err != nil {
+				return fmt.Errorf("otel write: exec: %w", err)
+			}
+		}
+
+		return tx.Commit()
+	})
 }
