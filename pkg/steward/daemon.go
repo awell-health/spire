@@ -574,7 +574,7 @@ func syncToOLAP(tower config.TowerConfig) error {
 	}
 	defer db.Close()
 
-	dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s", dolt.Host(), dolt.Port(), tower.Database)
+	dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s?parseTime=true", dolt.Host(), dolt.Port(), tower.Database)
 	doltConn, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return err

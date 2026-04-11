@@ -210,7 +210,7 @@ func cmdUp(args []string) error {
 				continue
 			}
 			// Run initial ETL sync from Dolt into DuckDB.
-			dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s", doltHost(), doltPort(), t.Database)
+			dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s?parseTime=true", doltHost(), doltPort(), t.Database)
 			doltConn, err := sql.Open("mysql", dsn)
 			if err != nil {
 				adb.Close()
