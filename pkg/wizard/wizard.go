@@ -119,10 +119,10 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 // It claims a bead, creates a worktree, runs design + implement phases,
 // validates, commits, updates the bead, and hands off to review.
 //
-// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice] [--build-fix] [--worktree-dir <path>]
+// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice] [--build-fix] [--no-review] [--worktree-dir <path>]
 func CmdWizardRun(args []string, deps *Deps) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice] [--build-fix] [--worktree-dir <path>] [--start-ref <ref>]")
+		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice] [--build-fix] [--no-review] [--worktree-dir <path>] [--start-ref <ref>]")
 	}
 
 	// 1. Parse args
@@ -131,6 +131,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	reviewFix := false
 	apprenticeMode := false
 	buildFixMode := false
+	noReview := false
 	worktreeDirOverride := ""
 	startRef := ""
 	customPromptFile := ""
@@ -147,6 +148,8 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			apprenticeMode = true
 		case "--build-fix":
 			buildFixMode = true
+		case "--no-review":
+			noReview = true
 		case "--worktree-dir":
 			if i+1 < len(args) {
 				i++
@@ -456,9 +459,12 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			log("tests failed but build passed — proceeding")
 			deps.AddLabel(beadID, "test-failure")
 		}
-		if !apprenticeMode {
+		if !apprenticeMode && !noReview {
 			handoffDone = true
 			WizardReviewHandoff(beadID, wizardName, branchName, deps, log)
+		} else if noReview {
+			handoffDone = true
+			log("--no-review mode — skipping review handoff")
 		} else {
 			handoffDone = true
 			log("apprentice mode — skipping review handoff")

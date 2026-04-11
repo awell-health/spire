@@ -581,7 +581,7 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 		Name:         spawnName,
 		BeadID:       req.SourceBeadID,
 		Role:         agent.RoleApprentice,
-		ExtraArgs:    []string{"--worktree-dir", worktreeDir},
+		ExtraArgs:    []string{"--worktree-dir", worktreeDir, "--no-review"},
 		CustomPrompt: prompt.String(),
 	})
 	if spawnErr != nil {
