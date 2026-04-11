@@ -31,7 +31,7 @@ func viewRefreshStatements() []string {
 				SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END) AS success_count,
 				SUM(cost_usd)                                       AS total_cost_usd,
 				AVG(duration_seconds)                                AS avg_duration_s,
-				AVG(review_rounds)                                   AS avg_review_rounds
+				AVG(CASE WHEN review_rounds > 0 THEN review_rounds END) AS avg_review_rounds
 			FROM agent_runs_olap
 			WHERE started_at >= current_date - INTERVAL 7 DAY
 			GROUP BY 1, 2, 3, 4, 5
@@ -44,18 +44,34 @@ func viewRefreshStatements() []string {
 			avg_review_rounds = EXCLUDED.avg_review_rounds`,
 
 		// weekly_merge_stats: delete last 4 weeks and re-aggregate
+		// Uses per-bead subquery to correctly compute DORA metrics:
+		//   merge_count: distinct beads with successful seal/merge phase
+		//   failure_count: distinct beads with failures in key phases
+		//   avg_lead_time_s: avg time from first run to successful completion per bead
 		`DELETE FROM weekly_merge_stats WHERE week_start >= current_date - INTERVAL 28 DAY`,
 		`INSERT INTO weekly_merge_stats
 			SELECT
-				date_trunc('week', started_at)::DATE AS week_start,
-				COALESCE(tower, '') AS tower,
-				COALESCE(repo, '')  AS repo,
-				SUM(CASE WHEN result = 'success' AND phase = 'merge' THEN 1 ELSE 0 END) AS merge_count,
-				SUM(CASE WHEN result != 'success' THEN 1 ELSE 0 END)                     AS failure_count,
-				AVG(duration_seconds)                                                      AS avg_lead_time_s
-			FROM agent_runs_olap
-			WHERE started_at >= current_date - INTERVAL 28 DAY
-			GROUP BY 1, 2, 3
+				week_start,
+				tower,
+				repo,
+				SUM(is_merge) AS merge_count,
+				SUM(is_failure) AS failure_count,
+				AVG(CASE WHEN is_merge = 1 AND lead_time_s > 0 THEN lead_time_s END) AS avg_lead_time_s
+			FROM (
+				SELECT
+					date_trunc('week', MIN(started_at))::DATE AS week_start,
+					COALESCE(tower, '') AS tower,
+					COALESCE(repo, '')  AS repo,
+					MAX(CASE WHEN result = 'success' AND phase IN ('seal', 'merge') THEN 1 ELSE 0 END) AS is_merge,
+					MAX(CASE WHEN result NOT IN ('success', 'skipped') AND phase IN ('seal', 'merge', 'implement', 'review') THEN 1 ELSE 0 END) AS is_failure,
+					epoch(MAX(CASE WHEN result = 'success' THEN completed_at END)) - epoch(MIN(started_at)) AS lead_time_s
+				FROM agent_runs_olap
+				WHERE started_at >= current_date - INTERVAL 28 DAY
+				  AND bead_id IS NOT NULL
+				  AND bead_id != ''
+				GROUP BY bead_id, COALESCE(tower, ''), COALESCE(repo, '')
+			) per_bead
+			GROUP BY week_start, tower, repo
 		ON CONFLICT (week_start, tower, repo)
 		DO UPDATE SET
 			merge_count = EXCLUDED.merge_count,
@@ -79,5 +95,46 @@ func viewRefreshStatements() []string {
 		DO UPDATE SET
 			run_count = EXCLUDED.run_count,
 			total_cost = EXCLUDED.total_cost`,
+
+		// tool_usage_stats: delete last 7 days and re-aggregate
+		`DELETE FROM tool_usage_stats WHERE date >= current_date - INTERVAL 7 DAY`,
+		`INSERT INTO tool_usage_stats
+			SELECT
+				date_trunc('day', started_at)::DATE AS date,
+				COALESCE(tower, '') AS tower,
+				COALESCE(formula_name, '') AS formula_name,
+				COALESCE(phase, '') AS phase,
+				COUNT(*) AS total_runs,
+				SUM(COALESCE(read_calls, 0)) AS total_read,
+				SUM(COALESCE(edit_calls, 0)) AS total_edit,
+				SUM(COALESCE(read_calls, 0) + COALESCE(edit_calls, 0)) AS total_tools
+			FROM agent_runs_olap
+			WHERE started_at >= current_date - INTERVAL 7 DAY
+			GROUP BY 1, 2, 3, 4
+		ON CONFLICT (date, tower, formula_name, phase)
+		DO UPDATE SET
+			total_runs = EXCLUDED.total_runs,
+			total_read = EXCLUDED.total_read,
+			total_edit = EXCLUDED.total_edit,
+			total_tools = EXCLUDED.total_tools`,
+
+		// failure_hotspots: delete last 28 days and re-aggregate
+		`DELETE FROM failure_hotspots WHERE week_start >= current_date - INTERVAL 28 DAY`,
+		`INSERT INTO failure_hotspots
+			SELECT
+				date_trunc('week', started_at)::DATE AS week_start,
+				COALESCE(tower, '') AS tower,
+				COALESCE(bead_id, '') AS bead_id,
+				COALESCE(failure_class, 'unknown') AS failure_class,
+				COUNT(*) AS attempt_count,
+				MAX(started_at) AS last_failure_at
+			FROM agent_runs_olap
+			WHERE started_at >= current_date - INTERVAL 28 DAY
+			  AND result NOT IN ('success', 'skipped')
+			GROUP BY 1, 2, 3, 4
+		ON CONFLICT (week_start, tower, bead_id, failure_class)
+		DO UPDATE SET
+			attempt_count = EXCLUDED.attempt_count,
+			last_failure_at = EXCLUDED.last_failure_at`,
 	}
 }

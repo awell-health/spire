@@ -82,6 +82,30 @@ CREATE TABLE IF NOT EXISTS phase_cost_breakdown (
     PRIMARY KEY (date, tower, formula_name, phase)
 )`
 
+const createToolUsageStats = `
+CREATE TABLE IF NOT EXISTS tool_usage_stats (
+    date          DATE,
+    tower         VARCHAR,
+    formula_name  VARCHAR,
+    phase         VARCHAR,
+    total_runs    INTEGER,
+    total_read    INTEGER,
+    total_edit    INTEGER,
+    total_tools   INTEGER,
+    PRIMARY KEY (date, tower, formula_name, phase)
+)`
+
+const createFailureHotspots = `
+CREATE TABLE IF NOT EXISTS failure_hotspots (
+    week_start      DATE,
+    tower           VARCHAR,
+    bead_id         VARCHAR,
+    failure_class   VARCHAR,
+    attempt_count   INTEGER,
+    last_failure_at TIMESTAMP,
+    PRIMARY KEY (week_start, tower, bead_id, failure_class)
+)`
+
 // allSchemaStatements returns the DDL statements in creation order.
 func allSchemaStatements() []string {
 	return []string{
@@ -90,5 +114,7 @@ func allSchemaStatements() []string {
 		createDailyFormulaStats,
 		createWeeklyMergeStats,
 		createPhaseCostBreakdown,
+		createToolUsageStats,
+		createFailureHotspots,
 	}
 }
