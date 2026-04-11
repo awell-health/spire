@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -478,8 +480,42 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 		}
 	}
 
+	// Fall back: if no worktree dir from graph state, check for a feat-branch:
+	// label on the source bead and create a worktree from that branch.
 	if worktreeDir == "" {
-		return failResult(req.Kind, "cannot determine worktree directory from source bead graph state")
+		sourceBead, berr := e.deps.GetBead(req.SourceBeadID)
+		if berr == nil {
+			branchLabel := store.HasLabel(sourceBead, "feat-branch:")
+			if branchLabel != "" {
+				// Verify branch exists
+				checkCmd := exec.Command("git", "rev-parse", "--verify", branchLabel)
+				if gs != nil && gs.RepoPath != "" {
+					checkCmd.Dir = gs.RepoPath
+				}
+				if checkCmd.Run() == nil {
+					// Create a worktree from the branch
+					wtDir := filepath.Join(os.TempDir(), "spire-triage", req.SourceBeadID)
+					os.MkdirAll(filepath.Dir(wtDir), 0755)
+					addCmd := exec.Command("git", "worktree", "add", wtDir, branchLabel)
+					if gs != nil && gs.RepoPath != "" {
+						addCmd.Dir = gs.RepoPath
+					}
+					if addErr := addCmd.Run(); addErr == nil {
+						worktreeDir = wtDir
+						e.log("triage: created worktree from branch %s at %s", branchLabel, wtDir)
+						// Clean up worktree when triage completes.
+						defer func() {
+							exec.Command("git", "worktree", "remove", "--force", wtDir).Run()
+							e.log("triage: cleaned up worktree %s", wtDir)
+						}()
+					}
+				}
+			}
+		}
+	}
+
+	if worktreeDir == "" {
+		return failResult(req.Kind, "cannot determine worktree directory — no graph state, no feat-branch label")
 	}
 
 	// Verify the worktree still exists on disk.
