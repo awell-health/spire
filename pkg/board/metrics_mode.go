@@ -18,12 +18,13 @@ var _ Mode = (*MetricsMode)(nil)
 
 // metricsDataMsg carries fetched metrics data back to the Update loop.
 type metricsDataMsg struct {
-	dora      *olap.DORAMetrics
-	formulas  []olap.FormulaStats
-	bugs      []olap.BugCausality
-	costTrend []olap.CostTrendPoint
-	toolUsage []olap.ToolUsageStats
-	err       error
+	dora       *olap.DORAMetrics
+	formulas   []olap.FormulaStats
+	bugs       []olap.BugCausality
+	costTrend  []olap.CostTrendPoint
+	toolUsage  []olap.ToolUsageStats
+	toolEvents []olap.ToolEventStats
+	err        error
 }
 
 // metricsTickMsg triggers a periodic refresh.
@@ -44,11 +45,12 @@ type MetricsMode struct {
 	db            *olap.DB
 
 	// Cached data (populated by async fetch).
-	dora      *olap.DORAMetrics
-	formulas  []olap.FormulaStats
-	bugs      []olap.BugCausality
-	costTrend []olap.CostTrendPoint
-	toolUsage []olap.ToolUsageStats
+	dora       *olap.DORAMetrics
+	formulas   []olap.FormulaStats
+	bugs       []olap.BugCausality
+	costTrend  []olap.CostTrendPoint
+	toolUsage  []olap.ToolUsageStats
+	toolEvents []olap.ToolEventStats
 
 	loading     bool
 	lastErr     error
@@ -138,6 +140,7 @@ func (m *MetricsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			m.bugs = msg.bugs
 			m.costTrend = msg.costTrend
 			m.toolUsage = msg.toolUsage
+			m.toolEvents = msg.toolEvents
 			m.lastRefresh = time.Now()
 			// Reset scroll offsets on data refresh to avoid stale positions.
 			m.scrollOffset = [4]int{}
@@ -238,12 +241,14 @@ func (m *MetricsMode) fetchMetrics() tea.Cmd {
 		bugs, _ := db.QueryBugCausality(5)
 		costTrend, _ := db.QueryCostTrend(30)
 		toolUsage, _ := db.QueryToolUsage(since)
+		toolEvents, _ := db.QueryToolEvents(since)
 		return metricsDataMsg{
-			dora:      dora,
-			formulas:  formulas,
-			bugs:      bugs,
-			costTrend: costTrend,
-			toolUsage: toolUsage,
+			dora:       dora,
+			formulas:   formulas,
+			bugs:       bugs,
+			costTrend:  costTrend,
+			toolUsage:  toolUsage,
+			toolEvents: toolEvents,
 		}
 	}
 }
@@ -542,9 +547,41 @@ func (m *MetricsMode) renderBugContent() []string {
 }
 
 // renderToolUsageContent returns lines for the Tool Usage section.
+// Prefers OTel tool_events data when available; falls back to legacy tool_usage_stats.
 func (m *MetricsMode) renderToolUsageContent() []string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 
+	// Prefer OTel tool_events when available.
+	if len(m.toolEvents) > 0 {
+		// Sort: count DESC → tool name ASC.
+		sorted := make([]olap.ToolEventStats, len(m.toolEvents))
+		copy(sorted, m.toolEvents)
+		sort.Slice(sorted, func(i, j int) bool {
+			if sorted[i].Count != sorted[j].Count {
+				return sorted[i].Count > sorted[j].Count
+			}
+			return sorted[i].ToolName < sorted[j].ToolName
+		})
+
+		lines := []string{
+			dimStyle.Render(fmt.Sprintf("  %-20s %6s %8s %5s", "Tool", "Calls", "Avg ms", "Fails")),
+		}
+		for _, t := range sorted {
+			failStr := fmt.Sprintf("%d", t.FailureCount)
+			var failStyled string
+			if t.FailureCount > 0 {
+				failStyled = redStyle.Render(fmt.Sprintf("%5s", failStr))
+			} else {
+				failStyled = fmt.Sprintf("%5s", failStr)
+			}
+			lines = append(lines, fmt.Sprintf("  %-20s %6d %8.0f %s",
+				Truncate(t.ToolName, 20), t.Count, t.AvgDurationMs, failStyled))
+		}
+		return lines
+	}
+
+	// Fallback: legacy tool_usage_stats from agent_runs read_calls/edit_calls.
 	if len(m.toolUsage) == 0 {
 		return []string{dimStyle.Render("  No tool usage data")}
 	}
