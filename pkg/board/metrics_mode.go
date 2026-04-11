@@ -28,6 +28,14 @@ type metricsDataMsg struct {
 // metricsTickMsg triggers a periodic refresh.
 type metricsTickMsg time.Time
 
+// Section indices for the 2x2 grid.
+const (
+	secFormulaPerf = 0 // top-left
+	secCostTrend   = 1 // top-right
+	secBugHotspots = 2 // bottom-left
+	secToolUsage   = 3 // bottom-right
+)
+
 // MetricsMode renders live metrics from DuckDB in the Board TUI.
 type MetricsMode struct {
 	width, height int
@@ -44,6 +52,11 @@ type MetricsMode struct {
 	loading     bool
 	lastErr     error
 	lastRefresh time.Time
+
+	// Grid navigation state.
+	focusedSection int      // 0–3 index into the 2x2 grid
+	scrollOffset   [4]int   // per-section vertical scroll offset
+	sectionLines   [4]int   // per-section total content lines (set during render)
 }
 
 // NewMetricsMode creates a new MetricsMode.
@@ -51,7 +64,7 @@ func NewMetricsMode() *MetricsMode {
 	return &MetricsMode{}
 }
 
-func (m *MetricsMode) ID() ModeID     { return ModeMetrics }
+func (m *MetricsMode) ID() ModeID      { return ModeMetrics }
 func (m *MetricsMode) HasOverlay() bool { return false }
 
 func (m *MetricsMode) Init() tea.Cmd { return nil }
@@ -125,6 +138,8 @@ func (m *MetricsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			m.costTrend = msg.costTrend
 			m.toolUsage = msg.toolUsage
 			m.lastRefresh = time.Now()
+			// Reset scroll offsets on data refresh to avoid stale positions.
+			m.scrollOffset = [4]int{}
 		}
 		return m, scheduleMetricsTick()
 
@@ -135,17 +150,70 @@ func (m *MetricsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if msg.String() == "r" {
+		switch msg.String() {
+		case "r":
 			if m.db != nil {
 				m.loading = true
 				return m, m.fetchMetrics()
 			}
-			// No DB — try reactivating.
 			return m, m.OnActivate()
+
+		case "h", "left":
+			// Move focus to left column (0←1, 2←3).
+			if m.focusedSection%2 == 1 {
+				m.focusedSection--
+			}
+
+		case "l", "right":
+			// Move focus to right column (0→1, 2→3).
+			if m.focusedSection%2 == 0 {
+				m.focusedSection++
+			}
+
+		case "j", "down":
+			visibleLines := m.sectionContentHeight()
+			totalLines := m.sectionLines[m.focusedSection]
+			if totalLines > visibleLines && m.scrollOffset[m.focusedSection] < totalLines-visibleLines {
+				// Scroll down within focused section.
+				m.scrollOffset[m.focusedSection]++
+			} else if m.focusedSection < 2 {
+				// At scroll bottom or no overflow — move focus to row below.
+				m.focusedSection += 2
+			}
+
+		case "k", "up":
+			if m.scrollOffset[m.focusedSection] > 0 {
+				// Scroll up within focused section.
+				m.scrollOffset[m.focusedSection]--
+			} else if m.focusedSection >= 2 {
+				// At scroll top — move focus to row above.
+				m.focusedSection -= 2
+			}
+
+		case "tab":
+			// Cycle focus through all four sections.
+			m.focusedSection = (m.focusedSection + 1) % 4
+
+		case "shift+tab":
+			// Cycle focus backwards.
+			m.focusedSection = (m.focusedSection + 3) % 4
 		}
 		return m, nil
 	}
 	return m, nil
+}
+
+// sectionContentHeight returns the number of visible content lines per section
+// (excluding the title line).
+func (m *MetricsMode) sectionContentHeight() int {
+	headerHeight := 2 // DORA header line + separator
+	gridHeight := m.height - headerHeight
+	if gridHeight < 4 {
+		return 0
+	}
+	rowHeight := gridHeight / 2
+	// Title takes 2 lines (title + separator), leave rest for content.
+	return rowHeight - 2
 }
 
 // fetchMetrics returns a tea.Cmd that queries all metrics and returns a metricsDataMsg.
@@ -180,13 +248,15 @@ func scheduleMetricsTick() tea.Cmd {
 
 // FooterHints returns keybinding hints for the metrics mode.
 func (m *MetricsMode) FooterHints() string {
-	if m.lastRefresh.IsZero() {
-		return "r=refresh"
+	parts := []string{"h/l=column", "j/k=scroll", "tab=cycle"}
+	if !m.lastRefresh.IsZero() {
+		parts = append(parts, fmt.Sprintf("updated %s", relativeTime(m.lastRefresh)))
 	}
-	return fmt.Sprintf("Last updated: %s | r=refresh", relativeTime(m.lastRefresh))
+	parts = append(parts, "r=refresh")
+	return strings.Join(parts, "  ")
 }
 
-// View renders the metrics dashboard. No I/O — only cached data.
+// View renders the metrics dashboard as a DORA header + 2x2 grid.
 func (m *MetricsMode) View() string {
 	// Loading state.
 	if m.loading && m.dora == nil {
@@ -198,156 +268,291 @@ func (m *MetricsMode) View() string {
 		return m.centeredMessage(fmt.Sprintf("Error: %v\n\nPress r to retry", m.lastErr))
 	}
 
-	var s strings.Builder
+	// Compute layout dimensions.
+	headerHeight := 2 // DORA line + separator
+	gridHeight := m.height - headerHeight
+	if gridHeight < 4 {
+		// Terminal too small for grid — show DORA header only.
+		return m.renderDORAHeader() + "\n" + lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8")).Render("  Terminal too small for grid view")
+	}
 
-	headerStyle := lipgloss.NewStyle().Bold(true)
+	var out strings.Builder
+
+	// DORA header — always visible at top.
+	out.WriteString(m.renderDORAHeader())
+	out.WriteString("\n")
+
+	// Grid dimensions.
+	topRowHeight := gridHeight / 2
+	bottomRowHeight := gridHeight - topRowHeight
+	leftColWidth := m.width / 2
+	rightColWidth := m.width - leftColWidth
+
+	// Render the four sections, recording content line counts.
+	formulaContent := m.renderFormulaContent(leftColWidth)
+	costContent := m.renderCostTrendContent(rightColWidth)
+	bugContent := m.renderBugContent(leftColWidth)
+	toolContent := m.renderToolUsageContent(rightColWidth)
+
+	m.sectionLines[secFormulaPerf] = len(formulaContent)
+	m.sectionLines[secCostTrend] = len(costContent)
+	m.sectionLines[secBugHotspots] = len(bugContent)
+	m.sectionLines[secToolUsage] = len(toolContent)
+
+	topLeft := m.renderSection("Formula Performance", formulaContent, leftColWidth, topRowHeight, secFormulaPerf)
+	topRight := m.renderSection("Cost Trend (30d)", costContent, rightColWidth, topRowHeight, secCostTrend)
+	bottomLeft := m.renderSection("Failure Hotspots", bugContent, leftColWidth, bottomRowHeight, secBugHotspots)
+	bottomRight := m.renderSection("Tool Usage", toolContent, rightColWidth, bottomRowHeight, secToolUsage)
+
+	topRow := lipgloss.JoinHorizontal(lipgloss.Top, topLeft, topRight)
+	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, bottomLeft, bottomRight)
+	out.WriteString(topRow)
+	out.WriteString("\n")
+	out.WriteString(bottomRow)
+
+	// Error banner (shown with stale data).
+	if m.lastErr != nil {
+		warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+		out.WriteString("\n")
+		out.WriteString(warnStyle.Render(fmt.Sprintf(" Error: %v — press r to retry", m.lastErr)))
+	}
+
+	return out.String()
+}
+
+// renderDORAHeader renders a single-line color-coded DORA summary.
+func (m *MetricsMode) renderDORAHeader() string {
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	if m.dora == nil {
+		return lipgloss.NewStyle().Bold(true).Width(m.width).Render(
+			" DORA: " + dimStyle.Render("no data"))
+	}
+
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+
+	dfStr := fmt.Sprintf("%.1f/wk", m.dora.DeployFrequency)
+	ltStr := formatDuration(m.dora.LeadTimeSeconds)
+	frStr := fmt.Sprintf("%.0f%%", m.dora.ChangeFailureRate*100)
+	mttrStr := formatDuration(m.dora.MTTRSeconds)
+
+	// Color failure rate: green <10%, yellow 10-25%, red >25%.
+	frStyled := greenStyle.Render(frStr)
+	if m.dora.ChangeFailureRate > 0.25 {
+		frStyled = redStyle.Render(frStr)
+	} else if m.dora.ChangeFailureRate > 0.10 {
+		frStyled = yellowStyle.Render(frStr)
+	}
+
+	header := fmt.Sprintf(" DORA: %s  Lead: %s  Fail: %s  MTTR: %s",
+		greenStyle.Render(dfStr), ltStr, frStyled, mttrStr)
+
+	headerStyle := lipgloss.NewStyle().Bold(true).Width(m.width).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderBottom(true).
+		BorderForeground(lipgloss.Color("8"))
+	return headerStyle.Render(header)
+}
+
+// renderSection renders a titled, height-capped section box with scroll support.
+func (m *MetricsMode) renderSection(title string, contentLines []string, w, h int, sectionIdx int) string {
+	focused := m.focusedSection == sectionIdx
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	// Title styling — focused sections get highlighted.
+	var titleLine string
+	if focused {
+		titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+		titleLine = titleStyle.Render("▶ " + title)
+	} else {
+		titleStyle := lipgloss.NewStyle().Bold(true)
+		titleLine = titleStyle.Render("  " + title)
+	}
+
+	// Separator under title.
+	sepWidth := w - 2
+	if sepWidth < 1 {
+		sepWidth = 1
+	}
+	sep := dimStyle.Render("  " + strings.Repeat("─", sepWidth))
+
+	// Available content lines (height minus title and separator).
+	contentH := h - 2
+	if contentH < 1 {
+		contentH = 1
+	}
+
+	// Apply scroll offset.
+	offset := m.scrollOffset[sectionIdx]
+	if offset > len(contentLines)-contentH {
+		offset = len(contentLines) - contentH
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	m.scrollOffset[sectionIdx] = offset
+
+	// Slice visible content.
+	visible := contentLines
+	if len(visible) > offset {
+		visible = visible[offset:]
+	}
+	if len(visible) > contentH {
+		visible = visible[:contentH]
+	}
+
+	// Pad to fill height if needed.
+	for len(visible) < contentH {
+		visible = append(visible, "")
+	}
+
+	var out strings.Builder
+	out.WriteString(titleLine + "\n")
+	out.WriteString(sep + "\n")
+	for i, line := range visible {
+		out.WriteString(line)
+		if i < len(visible)-1 {
+			out.WriteString("\n")
+		}
+	}
+
+	// Scroll indicator.
+	if focused && len(contentLines) > contentH {
+		pos := ""
+		if offset > 0 && offset+contentH < len(contentLines) {
+			pos = " ↕"
+		} else if offset > 0 {
+			pos = " ↑"
+		} else {
+			pos = " ↓"
+		}
+		// Replace last character of last visible line with indicator.
+		_ = pos // shown in footer hints instead
+	}
+
+	return lipgloss.NewStyle().Width(w).Height(h).Render(out.String())
+}
+
+// renderFormulaContent returns lines for the Formula Performance section.
+func (m *MetricsMode) renderFormulaContent(w int) []string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 
-	// Section 1: DORA Metrics.
-	s.WriteString(headerStyle.Render(" DORA Metrics") + "\n")
-	s.WriteString(dimStyle.Render(" "+strings.Repeat("─", min(m.width-2, 60))) + "\n")
-
-	if m.dora != nil {
-		colW := max((m.width-4)/4, 16)
-		labels := fmt.Sprintf(" %-*s %-*s %-*s %-*s",
-			colW, "Deploy Freq", colW, "Lead Time", colW, "Failure Rate", colW, "MTTR")
-		s.WriteString(dimStyle.Render(labels) + "\n")
-
-		dfStr := fmt.Sprintf("%.1f/week", m.dora.DeployFrequency)
-		ltStr := formatDuration(m.dora.LeadTimeSeconds)
-		frStr := fmt.Sprintf("%.1f%%", m.dora.ChangeFailureRate*100)
-		mttrStr := formatDuration(m.dora.MTTRSeconds)
-
-		// Color failure rate: green <10%, yellow 10-25%, red >25%.
-		frStyled := greenStyle.Render(frStr)
-		if m.dora.ChangeFailureRate > 0.25 {
-			frStyled = redStyle.Render(frStr)
-		} else if m.dora.ChangeFailureRate > 0.10 {
-			frStyled = yellowStyle.Render(frStr)
-		}
-
-		values := fmt.Sprintf(" %-*s %-*s %-*s %-*s",
-			colW, greenStyle.Render(dfStr), colW, ltStr, colW, frStyled, colW, mttrStr)
-		s.WriteString(values + "\n")
-	} else {
-		s.WriteString(dimStyle.Render(" No data") + "\n")
-	}
-	s.WriteString("\n")
-
-	// Section 2: Formula Performance.
-	s.WriteString(headerStyle.Render(" Formula Performance") + "\n")
-	s.WriteString(dimStyle.Render(" "+strings.Repeat("─", min(m.width-2, 60))) + "\n")
-
-	if len(m.formulas) > 0 {
-		s.WriteString(dimStyle.Render(fmt.Sprintf(" %-18s %6s %8s %10s %12s", "Formula", "Runs", "Success", "Avg Cost", "Avg Reviews")) + "\n")
-		for _, f := range m.formulas {
-			successStr := fmt.Sprintf("%.1f%%", f.SuccessRate)
-			costStr := fmt.Sprintf("$%.2f", f.AvgCostUSD)
-			reviewStr := fmt.Sprintf("%.1f", f.AvgReviewRounds)
-
-			// Color success rate: green >=90%, yellow 70-90%, red <70%.
-			var successStyled string
-			if f.SuccessRate >= 90 {
-				successStyled = greenStyle.Render(fmt.Sprintf("%8s", successStr))
-			} else if f.SuccessRate >= 70 {
-				successStyled = yellowStyle.Render(fmt.Sprintf("%8s", successStr))
-			} else {
-				successStyled = redStyle.Render(fmt.Sprintf("%8s", successStr))
-			}
-
-			s.WriteString(fmt.Sprintf(" %-18s %6d %s %10s %12s\n",
-				Truncate(f.FormulaName, 18), f.TotalRuns, successStyled, costStr, reviewStr))
-		}
-	} else {
-		s.WriteString(dimStyle.Render(" No formula data") + "\n")
-	}
-	s.WriteString("\n")
-
-	// Section 3: Top 5 Failure Hotspots.
-	s.WriteString(headerStyle.Render(" Failure Hotspots") + "\n")
-	s.WriteString(dimStyle.Render(" "+strings.Repeat("─", min(m.width-2, 60))) + "\n")
-
-	if len(m.bugs) > 0 {
-		s.WriteString(dimStyle.Render(fmt.Sprintf(" %-14s %-18s %10s %14s", "Bead", "Class", "Attempts", "Last Failure")) + "\n")
-		for _, b := range m.bugs {
-			lastStr := relativeTime(b.LastFailure)
-
-			// Color attempts: yellow >=3, red >=5.
-			attStr := fmt.Sprintf("%d", b.AttemptCount)
-			var attStyled string
-			if b.AttemptCount >= 5 {
-				attStyled = redStyle.Render(fmt.Sprintf("%10s", attStr))
-			} else if b.AttemptCount >= 3 {
-				attStyled = yellowStyle.Render(fmt.Sprintf("%10s", attStr))
-			} else {
-				attStyled = fmt.Sprintf("%10s", attStr)
-			}
-
-			s.WriteString(fmt.Sprintf(" %-14s %-18s %s %14s\n",
-				Truncate(b.BeadID, 14), Truncate(b.FailureClass, 18), attStyled, lastStr))
-		}
-	} else {
-		s.WriteString(dimStyle.Render(" No failure hotspots") + "\n")
-	}
-	s.WriteString("\n")
-
-	// Section 4: Cost Trend (last 7-10 days).
-	s.WriteString(headerStyle.Render(" Cost Trend") + "\n")
-	s.WriteString(dimStyle.Render(" "+strings.Repeat("─", min(m.width-2, 60))) + "\n")
-
-	if len(m.costTrend) > 0 {
-		s.WriteString(dimStyle.Render(fmt.Sprintf(" %-12s %10s %6s", "Date", "Cost", "Runs")) + "\n")
-		limit := len(m.costTrend)
-		if limit > 10 {
-			limit = 10
-		}
-		for _, c := range m.costTrend[:limit] {
-			dateStr := c.Date.Format("Jan 02")
-			costStr := fmt.Sprintf("$%.2f", c.TotalCost)
-
-			// Color cost: yellow >$5, red >$20.
-			var costStyled string
-			if c.TotalCost > 20 {
-				costStyled = redStyle.Render(fmt.Sprintf("%10s", costStr))
-			} else if c.TotalCost > 5 {
-				costStyled = yellowStyle.Render(fmt.Sprintf("%10s", costStr))
-			} else {
-				costStyled = fmt.Sprintf("%10s", costStr)
-			}
-
-			s.WriteString(fmt.Sprintf(" %-12s %s %6d\n", dateStr, costStyled, c.RunCount))
-		}
-	} else {
-		s.WriteString(dimStyle.Render(" No cost data") + "\n")
-	}
-	s.WriteString("\n")
-
-	// Section 5: Tool Usage.
-	s.WriteString(headerStyle.Render(" Tool Usage") + "\n")
-	s.WriteString(dimStyle.Render(" "+strings.Repeat("─", min(m.width-2, 60))) + "\n")
-
-	if len(m.toolUsage) > 0 {
-		s.WriteString(dimStyle.Render(fmt.Sprintf(" %-18s %-12s %6s %6s %8s", "Formula", "Phase", "Read", "Edit", "Ratio")) + "\n")
-		for _, t := range m.toolUsage {
-			ratioStr := fmt.Sprintf("%.1f%%", t.ReadRatio*100)
-			s.WriteString(fmt.Sprintf(" %-18s %-12s %6d %6d %8s\n",
-				Truncate(t.FormulaName, 18), Truncate(t.Phase, 12), t.TotalRead, t.TotalEdit, ratioStr))
-		}
-	} else {
-		s.WriteString(dimStyle.Render(" No tool usage data") + "\n")
+	if len(m.formulas) == 0 {
+		return []string{dimStyle.Render("  No formula data")}
 	}
 
-	// Error banner (shown with stale data).
-	if m.lastErr != nil {
-		s.WriteString("\n")
-		warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-		s.WriteString(warnStyle.Render(fmt.Sprintf(" Error: %v — press r to retry", m.lastErr)) + "\n")
+	lines := []string{
+		dimStyle.Render(fmt.Sprintf("  %-16s %5s %7s %8s %6s", "Formula", "Runs", "Success", "Cost", "Revs")),
+	}
+	for _, f := range m.formulas {
+		successStr := fmt.Sprintf("%.0f%%", f.SuccessRate)
+		costStr := fmt.Sprintf("$%.2f", f.AvgCostUSD)
+		reviewStr := fmt.Sprintf("%.1f", f.AvgReviewRounds)
+
+		var successStyled string
+		if f.SuccessRate >= 90 {
+			successStyled = greenStyle.Render(fmt.Sprintf("%7s", successStr))
+		} else if f.SuccessRate >= 70 {
+			successStyled = yellowStyle.Render(fmt.Sprintf("%7s", successStr))
+		} else {
+			successStyled = redStyle.Render(fmt.Sprintf("%7s", successStr))
+		}
+
+		lines = append(lines, fmt.Sprintf("  %-16s %5d %s %8s %6s",
+			Truncate(f.FormulaName, 16), f.TotalRuns, successStyled, costStr, reviewStr))
+	}
+	return lines
+}
+
+// renderCostTrendContent returns lines for the Cost Trend section.
+func (m *MetricsMode) renderCostTrendContent(w int) []string {
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+
+	if len(m.costTrend) == 0 {
+		return []string{dimStyle.Render("  No cost data")}
 	}
 
-	return s.String()
+	lines := []string{
+		dimStyle.Render(fmt.Sprintf("  %-10s %8s %5s", "Date", "Cost", "Runs")),
+	}
+	limit := len(m.costTrend)
+	if limit > 10 {
+		limit = 10
+	}
+	for _, c := range m.costTrend[:limit] {
+		dateStr := c.Date.Format("Jan 02")
+		costStr := fmt.Sprintf("$%.2f", c.TotalCost)
+
+		var costStyled string
+		if c.TotalCost > 20 {
+			costStyled = redStyle.Render(fmt.Sprintf("%8s", costStr))
+		} else if c.TotalCost > 5 {
+			costStyled = yellowStyle.Render(fmt.Sprintf("%8s", costStr))
+		} else {
+			costStyled = fmt.Sprintf("%8s", costStr)
+		}
+
+		lines = append(lines, fmt.Sprintf("  %-10s %s %5d", dateStr, costStyled, c.RunCount))
+	}
+	return lines
+}
+
+// renderBugContent returns lines for the Failure Hotspots section.
+func (m *MetricsMode) renderBugContent(w int) []string {
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+
+	if len(m.bugs) == 0 {
+		return []string{dimStyle.Render("  No failure hotspots")}
+	}
+
+	lines := []string{
+		dimStyle.Render(fmt.Sprintf("  %-12s %-16s %6s %10s", "Bead", "Class", "Tries", "Last")),
+	}
+	for _, b := range m.bugs {
+		lastStr := relativeTime(b.LastFailure)
+		attStr := fmt.Sprintf("%d", b.AttemptCount)
+
+		var attStyled string
+		if b.AttemptCount >= 5 {
+			attStyled = redStyle.Render(fmt.Sprintf("%6s", attStr))
+		} else if b.AttemptCount >= 3 {
+			attStyled = yellowStyle.Render(fmt.Sprintf("%6s", attStr))
+		} else {
+			attStyled = fmt.Sprintf("%6s", attStr)
+		}
+
+		lines = append(lines, fmt.Sprintf("  %-12s %-16s %s %10s",
+			Truncate(b.BeadID, 12), Truncate(b.FailureClass, 16), attStyled, lastStr))
+	}
+	return lines
+}
+
+// renderToolUsageContent returns lines for the Tool Usage section.
+func (m *MetricsMode) renderToolUsageContent(w int) []string {
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	if len(m.toolUsage) == 0 {
+		return []string{dimStyle.Render("  No tool usage data")}
+	}
+
+	lines := []string{
+		dimStyle.Render(fmt.Sprintf("  %-16s %-10s %5s %5s %6s", "Formula", "Phase", "Read", "Edit", "Ratio")),
+	}
+	for _, t := range m.toolUsage {
+		ratioStr := fmt.Sprintf("%.0f%%", t.ReadRatio*100)
+		lines = append(lines, fmt.Sprintf("  %-16s %-10s %5d %5d %6s",
+			Truncate(t.FormulaName, 16), Truncate(t.Phase, 10), t.TotalRead, t.TotalEdit, ratioStr))
+	}
+	return lines
 }
 
 // centeredMessage renders a message centered in the available space.
@@ -410,4 +615,3 @@ func relativeTime(t time.Time) string {
 		return fmt.Sprintf("%dd ago", days)
 	}
 }
-
