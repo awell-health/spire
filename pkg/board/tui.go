@@ -529,7 +529,7 @@ func (m *BoardMode) FooterHints() string {
 	case ViewAlerts:
 		return "v=view  s summon  x close  d defer  a actions  enter inspect  / search"
 	case ViewLower:
-		return "v=view  r reset  S resummon  x close  a actions  enter inspect"
+		return "v=view  o resolve  r reset  S resummon  x close  a actions  enter inspect"
 	default: // ViewBoard
 		return "v=view  s summon  d defer  x close  r reset  a actions  / search  ? help"
 	}
@@ -1399,6 +1399,20 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
 				mm, cmd := m.dispatchInlineAction(ActionResummon, bead.ID)
 				return mm, cmd
+			}
+
+		// Resolve — opens inspector with text input for recovery learning.
+		case "o":
+			if bead := m.SelectedBead(); bead != nil && bead.HasLabel("needs-human") {
+				m.Inspecting = true
+				m.InspectorScroll = 0
+				m.InspectorTab = 0
+				m.ResolveActive = true
+				m.ResolveInput = ""
+				m.ResolveBeadID = bead.ID
+				m.InspectorLoading = true
+				m.InspectorData = nil
+				return m, fetchInspectorCmd(*bead)
 			}
 
 		// Reset — confirm, then inline.

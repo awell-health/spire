@@ -486,7 +486,7 @@ func TestBoardModeFooterHints(t *testing.T) {
 		m := makeBoardMode()
 		m.ViewMode = ViewLower
 		hints := m.FooterHints()
-		for _, want := range []string{"v=view", "reset", "resummon", "close", "actions", "inspect"} {
+		for _, want := range []string{"v=view", "o resolve", "reset", "resummon", "close", "actions", "inspect"} {
 			if !strings.Contains(hints, want) {
 				t.Errorf("ViewLower hints missing %q, got %q", want, hints)
 			}
@@ -2047,6 +2047,49 @@ func TestViewCycleResetsSelCardAndColScroll(t *testing.T) {
 	}
 	if m.ColScroll != 0 {
 		t.Errorf("expected ColScroll=0 after v, got %d", m.ColScroll)
+	}
+}
+
+func TestResolveKeyOpensResolveInput(t *testing.T) {
+	m := makeBoardMode()
+	m.ViewMode = ViewLower
+	m.SelSection = SectionLower
+	m.SelLowerCol = 1 // Interrupted column
+	m.Cols.Interrupted = []BoardBead{
+		{ID: "spi-nh1", Title: "Needs human", Status: "in_progress", Type: "task", Labels: []string{"needs-human"}},
+	}
+	m.SelCard = 0
+
+	m = updateBoardMode(m, keyMsgStr("o"))
+
+	if !m.ResolveActive {
+		t.Error("expected ResolveActive=true after pressing 'o' on needs-human bead")
+	}
+	if !m.Inspecting {
+		t.Error("expected Inspecting=true after pressing 'o' on needs-human bead")
+	}
+	if m.ResolveBeadID != "spi-nh1" {
+		t.Errorf("expected ResolveBeadID=spi-nh1, got %q", m.ResolveBeadID)
+	}
+}
+
+func TestResolveKeyNoOpWithoutNeedsHuman(t *testing.T) {
+	m := makeBoardMode()
+	m.ViewMode = ViewLower
+	m.SelSection = SectionLower
+	m.SelLowerCol = 0 // Blocked column
+	m.Cols.Blocked = []BoardBead{
+		{ID: "spi-blk1", Title: "Blocked task", Status: "open", Type: "task"},
+	}
+	m.SelCard = 0
+
+	m = updateBoardMode(m, keyMsgStr("o"))
+
+	if m.ResolveActive {
+		t.Error("expected ResolveActive=false after pressing 'o' on non-needs-human bead")
+	}
+	if m.Inspecting {
+		t.Error("expected Inspecting=false after pressing 'o' on non-needs-human bead")
 	}
 }
 
