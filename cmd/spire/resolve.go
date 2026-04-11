@@ -52,8 +52,8 @@ func resolveSourceBead(beadID, comment string, closeSource bool) error {
 	if err != nil {
 		return fmt.Errorf("get bead %s: %w", beadID, err)
 	}
-	if !containsLabel(bead, "needs-human") {
-		return fmt.Errorf("%s does not have needs-human label — nothing to resolve", beadID)
+	if bead.Status == "closed" {
+		return fmt.Errorf("%s is closed — nothing to resolve", beadID)
 	}
 
 	// Step 2: Find recovery beads

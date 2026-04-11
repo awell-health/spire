@@ -27,9 +27,28 @@ func stubResolveDeps(t *testing.T) func() {
 	}
 }
 
-// TestResolveSourceBead_NeedsHumanValidation verifies that resolveSourceBead
-// rejects beads without the needs-human label.
-func TestResolveSourceBead_NeedsHumanValidation(t *testing.T) {
+// TestResolveSourceBead_RejectsClosedBead verifies that resolveSourceBead
+// rejects closed beads.
+func TestResolveSourceBead_RejectsClosedBead(t *testing.T) {
+	cleanup := stubResolveDeps(t)
+	defer cleanup()
+
+	resolveGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "closed", Labels: []string{"some-label"}}, nil
+	}
+
+	err := resolveSourceBead("spi-test", "fixed it", false)
+	if err == nil {
+		t.Fatal("expected error for closed bead")
+	}
+	if !strings.Contains(err.Error(), "closed") {
+		t.Errorf("expected 'closed' in error, got: %v", err)
+	}
+}
+
+// TestResolveSourceBead_AcceptsWithoutNeedsHuman verifies that resolveSourceBead
+// works on beads without needs-human label (needs-human is not a prerequisite).
+func TestResolveSourceBead_AcceptsWithoutNeedsHuman(t *testing.T) {
 	cleanup := stubResolveDeps(t)
 	defer cleanup()
 
@@ -41,11 +60,8 @@ func TestResolveSourceBead_NeedsHumanValidation(t *testing.T) {
 	}
 
 	err := resolveSourceBead("spi-test", "fixed it", false)
-	if err == nil {
-		t.Fatal("expected error for bead without needs-human label")
-	}
-	if !strings.Contains(err.Error(), "needs-human") {
-		t.Errorf("expected 'needs-human' in error, got: %v", err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
