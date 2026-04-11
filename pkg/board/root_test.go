@@ -123,6 +123,39 @@ func TestTabCycling(t *testing.T) {
 	}
 }
 
+func TestShiftTabCycling(t *testing.T) {
+	m0 := newMockMode(ModeBoard)
+	m1 := newMockMode(ModeAgents)
+	m2 := newMockMode(ModeWorkshop)
+
+	root := NewRootModel(RootOpts{
+		TowerName: "test-tower",
+		Identity:  "test-user",
+		Modes:     []Mode{m0, m1, m2},
+	})
+
+	// Shift+Tab: 0 -> 2
+	model, _ := root.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	root = model.(RootModel)
+	if root.activeModeIdx != 2 {
+		t.Fatalf("expected activeModeIdx=2 after Shift+Tab from 0, got %d", root.activeModeIdx)
+	}
+
+	// Shift+Tab: 2 -> 1
+	model, _ = root.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	root = model.(RootModel)
+	if root.activeModeIdx != 1 {
+		t.Fatalf("expected activeModeIdx=1 after Shift+Tab from 2, got %d", root.activeModeIdx)
+	}
+
+	// Shift+Tab: 1 -> 0
+	model, _ = root.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	root = model.(RootModel)
+	if root.activeModeIdx != 0 {
+		t.Fatalf("expected activeModeIdx=0 after Shift+Tab from 1, got %d", root.activeModeIdx)
+	}
+}
+
 func TestTabPassthroughWhenOverlay(t *testing.T) {
 	m0 := newMockMode(ModeBoard)
 	m0.overlay = true // mode reports an overlay is open
@@ -316,6 +349,13 @@ func TestInitCallsAllModes(t *testing.T) {
 	}
 	if !m1.initCalled {
 		t.Fatal("expected mode 1 Init to be called")
+	}
+	// Init should also call OnActivate on the initially active mode (mode 0).
+	if m0.onActivateCalls != 1 {
+		t.Fatalf("expected mode 0 OnActivate called once during Init, got %d", m0.onActivateCalls)
+	}
+	if m1.onActivateCalls != 0 {
+		t.Fatalf("expected mode 1 OnActivate not called during Init, got %d", m1.onActivateCalls)
 	}
 }
 

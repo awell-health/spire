@@ -58,6 +58,12 @@ func (r RootModel) Init() tea.Cmd {
 			cmds = append(cmds, cmd)
 		}
 	}
+	// Activate the initially active mode.
+	if len(r.modes) > 0 {
+		if cmd := r.modes[r.activeModeIdx].OnActivate(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	return tea.Batch(cmds...)
 }
 
