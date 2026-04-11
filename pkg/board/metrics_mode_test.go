@@ -541,6 +541,145 @@ func TestRenderToolUsageContent_WithData(t *testing.T) {
 	}
 }
 
+func TestRenderToolUsageContent_BranchSelection(t *testing.T) {
+	tests := []struct {
+		name            string
+		toolEvents      []olap.ToolEventStats
+		toolUsage       []olap.ToolUsageStats
+		wantContains    []string
+		wantNotContains []string
+		wantLineCount   int
+	}{
+		{
+			name: "otel_path_when_toolEvents_populated",
+			toolEvents: []olap.ToolEventStats{
+				{ToolName: "FileRead", Count: 50, AvgDurationMs: 120.5, FailureCount: 0},
+				{ToolName: "FileEdit", Count: 30, AvgDurationMs: 200.0, FailureCount: 2},
+			},
+			// Legacy data present but should be ignored when toolEvents exist.
+			toolUsage: []olap.ToolUsageStats{
+				{FormulaName: "task-default", Phase: "implement", TotalRead: 100, TotalEdit: 50, TotalTools: 150, ReadRatio: 0.67},
+			},
+			wantContains:    []string{"Tool", "Calls", "Avg ms", "Fails", "FileRead", "FileEdit"},
+			wantNotContains: []string{"Formula", "Phase", "No tool usage data"},
+			wantLineCount:   3, // header + 2 tools
+		},
+		{
+			name:       "legacy_fallback_when_toolEvents_empty",
+			toolEvents: nil,
+			toolUsage: []olap.ToolUsageStats{
+				{FormulaName: "task-default", Phase: "implement", TotalRead: 100, TotalEdit: 50, TotalTools: 150, ReadRatio: 0.67},
+			},
+			wantContains:    []string{"Formula", "Phase", "task-default", "67%"},
+			wantNotContains: []string{"Avg ms", "Fails", "No tool usage data"},
+			wantLineCount:   2, // header + 1 row
+		},
+		{
+			name:            "no_data_when_both_empty",
+			toolEvents:      nil,
+			toolUsage:       nil,
+			wantContains:    []string{"No tool usage data"},
+			wantNotContains: []string{"Formula", "Calls"},
+			wantLineCount:   1,
+		},
+		{
+			name: "failure_count_gt_zero_rendered",
+			toolEvents: []olap.ToolEventStats{
+				{ToolName: "Bash", Count: 10, AvgDurationMs: 50.0, FailureCount: 3},
+				{ToolName: "Grep", Count: 20, AvgDurationMs: 30.0, FailureCount: 0},
+			},
+			wantContains:  []string{"Bash", "Grep", "3"},
+			wantLineCount: 3, // header + 2 tools
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewMetricsMode()
+			m.width = 80
+			m.height = 24
+			m.toolEvents = tt.toolEvents
+			m.toolUsage = tt.toolUsage
+
+			lines := m.renderToolUsageContent()
+			if len(lines) != tt.wantLineCount {
+				t.Fatalf("expected %d lines, got %d", tt.wantLineCount, len(lines))
+			}
+
+			combined := strings.Join(lines, "\n")
+			for _, want := range tt.wantContains {
+				if !strings.Contains(combined, want) {
+					t.Errorf("expected output to contain %q", want)
+				}
+			}
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(combined, notWant) {
+					t.Errorf("expected output NOT to contain %q", notWant)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderToolUsageContent_OTelSortOrder(t *testing.T) {
+	m := NewMetricsMode()
+	m.width = 80
+	m.height = 24
+	m.toolEvents = []olap.ToolEventStats{
+		{ToolName: "Edit", Count: 30, AvgDurationMs: 200.0, FailureCount: 0},
+		{ToolName: "Read", Count: 50, AvgDurationMs: 120.5, FailureCount: 0},
+		{ToolName: "Bash", Count: 50, AvgDurationMs: 80.0, FailureCount: 1},
+	}
+
+	lines := m.renderToolUsageContent()
+	combined := strings.Join(lines, "\n")
+
+	// Sorted by count DESC then name ASC: Bash(50) < Read(50) < Edit(30).
+	bashIdx := strings.Index(combined, "Bash")
+	readIdx := strings.Index(combined, "Read")
+	editIdx := strings.Index(combined, "Edit")
+
+	if bashIdx < 0 || readIdx < 0 || editIdx < 0 {
+		t.Fatal("expected all three tool names in output")
+	}
+	if bashIdx > readIdx || readIdx > editIdx {
+		t.Errorf("expected Bash before Read before Edit, got positions Bash=%d Read=%d Edit=%d",
+			bashIdx, readIdx, editIdx)
+	}
+}
+
+func TestRenderToolUsageContent_FailureCountRedStyling(t *testing.T) {
+	m := NewMetricsMode()
+	m.width = 80
+	m.height = 24
+	m.toolEvents = []olap.ToolEventStats{
+		{ToolName: "Bash", Count: 10, AvgDurationMs: 50.0, FailureCount: 3},
+		{ToolName: "Grep", Count: 20, AvgDurationMs: 30.0, FailureCount: 0},
+	}
+
+	lines := m.renderToolUsageContent()
+	// The failure-count cell for Bash (FailureCount=3) goes through redStyle.Render,
+	// producing a longer string than the plain Sprintf path used for Grep (FailureCount=0).
+	// Both data lines have the same column structure except the styled failure cell.
+	var bashLine, grepLine string
+	for _, l := range lines {
+		if strings.Contains(l, "Bash") {
+			bashLine = l
+		}
+		if strings.Contains(l, "Grep") {
+			grepLine = l
+		}
+	}
+	if bashLine == "" || grepLine == "" {
+		t.Fatal("expected both Bash and Grep lines in output")
+	}
+	// Styled text (via lipgloss) is longer in bytes than plain text due to escape sequences.
+	if len(bashLine) <= len(grepLine) {
+		t.Errorf("expected Bash line (failure styled) to be longer than Grep line; Bash=%d Grep=%d",
+			len(bashLine), len(grepLine))
+	}
+}
+
 // --- View integration tests ---
 
 func TestView_LoadingState(t *testing.T) {
