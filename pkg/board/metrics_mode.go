@@ -203,17 +203,25 @@ func (m *MetricsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 	return m, nil
 }
 
-// sectionContentHeight returns the number of visible content lines per section
-// (excluding the title line).
+// sectionContentHeight returns the number of visible content lines for the
+// given section index (excluding the title line and separator). Bottom-row
+// sections may be taller than top-row when gridHeight is odd.
 func (m *MetricsMode) sectionContentHeight() int {
+	return m.sectionRowHeight(m.focusedSection) - 2
+}
+
+// sectionRowHeight returns the row height for the given section index.
+func (m *MetricsMode) sectionRowHeight(sectionIdx int) int {
 	headerHeight := 2 // DORA header line + separator
 	gridHeight := m.height - headerHeight
 	if gridHeight < 4 {
-		return 0
+		return 2 // minimum: title + separator
 	}
-	rowHeight := gridHeight / 2
-	// Title takes 2 lines (title + separator), leave rest for content.
-	return rowHeight - 2
+	topRowHeight := gridHeight / 2
+	if sectionIdx < 2 {
+		return topRowHeight
+	}
+	return gridHeight - topRowHeight
 }
 
 // fetchMetrics returns a tea.Cmd that queries all metrics and returns a metricsDataMsg.
@@ -290,10 +298,10 @@ func (m *MetricsMode) View() string {
 	rightColWidth := m.width - leftColWidth
 
 	// Render the four sections, recording content line counts.
-	formulaContent := m.renderFormulaContent(leftColWidth)
-	costContent := m.renderCostTrendContent(rightColWidth)
-	bugContent := m.renderBugContent(leftColWidth)
-	toolContent := m.renderToolUsageContent(rightColWidth)
+	formulaContent := m.renderFormulaContent()
+	costContent := m.renderCostTrendContent()
+	bugContent := m.renderBugContent()
+	toolContent := m.renderToolUsageContent()
 
 	m.sectionLines[secFormulaPerf] = len(formulaContent)
 	m.sectionLines[secCostTrend] = len(costContent)
@@ -418,25 +426,11 @@ func (m *MetricsMode) renderSection(title string, contentLines []string, w, h in
 		}
 	}
 
-	// Scroll indicator.
-	if focused && len(contentLines) > contentH {
-		pos := ""
-		if offset > 0 && offset+contentH < len(contentLines) {
-			pos = " ↕"
-		} else if offset > 0 {
-			pos = " ↑"
-		} else {
-			pos = " ↓"
-		}
-		// Replace last character of last visible line with indicator.
-		_ = pos // shown in footer hints instead
-	}
-
 	return lipgloss.NewStyle().Width(w).Height(h).Render(out.String())
 }
 
 // renderFormulaContent returns lines for the Formula Performance section.
-func (m *MetricsMode) renderFormulaContent(w int) []string {
+func (m *MetricsMode) renderFormulaContent() []string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
@@ -470,7 +464,7 @@ func (m *MetricsMode) renderFormulaContent(w int) []string {
 }
 
 // renderCostTrendContent returns lines for the Cost Trend section.
-func (m *MetricsMode) renderCostTrendContent(w int) []string {
+func (m *MetricsMode) renderCostTrendContent() []string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
@@ -505,7 +499,7 @@ func (m *MetricsMode) renderCostTrendContent(w int) []string {
 }
 
 // renderBugContent returns lines for the Failure Hotspots section.
-func (m *MetricsMode) renderBugContent(w int) []string {
+func (m *MetricsMode) renderBugContent() []string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
@@ -537,7 +531,7 @@ func (m *MetricsMode) renderBugContent(w int) []string {
 }
 
 // renderToolUsageContent returns lines for the Tool Usage section.
-func (m *MetricsMode) renderToolUsageContent(w int) []string {
+func (m *MetricsMode) renderToolUsageContent() []string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	if len(m.toolUsage) == 0 {
