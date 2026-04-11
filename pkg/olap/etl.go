@@ -88,6 +88,11 @@ type agentRunRow struct {
 	FilesChanged     sql.NullInt64
 	LinesAdded       sql.NullInt64
 	LinesRemoved     sql.NullInt64
+	ReadCalls        sql.NullInt64
+	EditCalls        sql.NullInt64
+	ToolCallsJSON    sql.NullString
+	FailureClass     sql.NullString
+	AttemptNumber    sql.NullInt64
 	StartedAt        sql.NullTime
 	CompletedAt      sql.NullTime
 }
@@ -115,6 +120,7 @@ func (e *ETL) queryDolt(ctx context.Context, doltConn *sql.DB, lastID string) ([
 		cost_usd, duration_seconds,
 		startup_seconds, working_seconds, queue_seconds, review_seconds,
 		files_changed, lines_added, lines_removed,
+		read_calls, edit_calls, tool_calls_json, failure_class, attempt_number,
 		started_at, completed_at
 	FROM agent_runs
 	WHERE id > ?
@@ -139,6 +145,7 @@ func (e *ETL) queryDolt(ctx context.Context, doltConn *sql.DB, lastID string) ([
 			&r.CostUSD, &r.DurationSeconds,
 			&r.StartupSeconds, &r.WorkingSeconds, &r.QueueSeconds, &r.ReviewSeconds,
 			&r.FilesChanged, &r.LinesAdded, &r.LinesRemoved,
+			&r.ReadCalls, &r.EditCalls, &r.ToolCallsJSON, &r.FailureClass, &r.AttemptNumber,
 			&r.StartedAt, &r.CompletedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent_runs row: %w", err)
@@ -163,15 +170,16 @@ func (e *ETL) insertRows(ctx context.Context, rows []agentRunRow) (string, error
 		cost_usd, duration_seconds,
 		startup_seconds, working_seconds, queue_seconds, review_seconds,
 		files_changed, lines_added, lines_removed,
+		read_calls, edit_calls, tool_calls_json, failure_class, attempt_number,
 		started_at, completed_at, synced_at
 	) VALUES `)
 
-	args := make([]any, 0, len(rows)*29)
+	args := make([]any, 0, len(rows)*34)
 	for i, r := range rows {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		args = append(args,
 			r.ID, r.BeadID, r.EpicID, r.ParentRunID,
 			r.FormulaName, r.FormulaVersion,
@@ -183,6 +191,7 @@ func (e *ETL) insertRows(ctx context.Context, rows []agentRunRow) (string, error
 			r.CostUSD, r.DurationSeconds,
 			r.StartupSeconds, r.WorkingSeconds, r.QueueSeconds, r.ReviewSeconds,
 			r.FilesChanged, r.LinesAdded, r.LinesRemoved,
+			r.ReadCalls, r.EditCalls, r.ToolCallsJSON, r.FailureClass, r.AttemptNumber,
 			r.StartedAt, r.CompletedAt, time.Now().UTC(),
 		)
 	}
@@ -212,6 +221,11 @@ func (e *ETL) insertRows(ctx context.Context, rows []agentRunRow) (string, error
 		files_changed = EXCLUDED.files_changed,
 		lines_added = EXCLUDED.lines_added,
 		lines_removed = EXCLUDED.lines_removed,
+		read_calls = EXCLUDED.read_calls,
+		edit_calls = EXCLUDED.edit_calls,
+		tool_calls_json = EXCLUDED.tool_calls_json,
+		failure_class = EXCLUDED.failure_class,
+		attempt_number = EXCLUDED.attempt_number,
 		started_at = EXCLUDED.started_at,
 		completed_at = EXCLUDED.completed_at,
 		synced_at = EXCLUDED.synced_at`)

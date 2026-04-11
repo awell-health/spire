@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS agent_runs_olap (
     files_changed    INTEGER,
     lines_added      INTEGER,
     lines_removed    INTEGER,
+    read_calls       INTEGER,
+    edit_calls       INTEGER,
+    tool_calls_json  TEXT,
+    failure_class    VARCHAR,
+    attempt_number   INTEGER,
     started_at       TIMESTAMP,
     completed_at     TIMESTAMP,
     synced_at        TIMESTAMP DEFAULT now()

@@ -88,6 +88,11 @@ func TestETLSyncWithMockDolt(t *testing.T) {
 		files_changed INTEGER,
 		lines_added INTEGER,
 		lines_removed INTEGER,
+		read_calls INTEGER,
+		edit_calls INTEGER,
+		tool_calls_json TEXT,
+		failure_class VARCHAR,
+		attempt_number INTEGER,
 		started_at TIMESTAMP,
 		completed_at TIMESTAMP
 	)`)
@@ -99,8 +104,8 @@ func TestETLSyncWithMockDolt(t *testing.T) {
 
 	// Insert test rows
 	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
-		('run-001', 'spi-abc', 'spi-epic1', NULL, 'task-default', '3', 'implement', 'apprentice', 'claude-opus-4-6', 'my-tower', 'feat/abc', 'success', 2, 1000, 500, 1500, 0.15, 120.0, 5.0, 100.0, 10.0, 5.0, 3, 50, 20, ?, ?),
-		('run-002', 'spi-def', 'spi-epic1', 'run-001', 'task-default', '3', 'review', 'sage', 'claude-opus-4-6', 'my-tower', 'feat/def', 'success', 1, 800, 400, 1200, 0.10, 60.0, 3.0, 50.0, 5.0, 2.0, 0, 0, 0, ?, ?)`,
+		('run-001', 'spi-abc', 'spi-epic1', NULL, 'task-default', '3', 'implement', 'apprentice', 'claude-opus-4-6', 'my-tower', 'feat/abc', 'success', 2, 1000, 500, 1500, 0.15, 120.0, 5.0, 100.0, 10.0, 5.0, 3, 50, 20, 12, 5, '{"Read":12,"Edit":5}', NULL, 1, ?, ?),
+		('run-002', 'spi-def', 'spi-epic1', 'run-001', 'task-default', '3', 'review', 'sage', 'claude-opus-4-6', 'my-tower', 'feat/def', 'success', 1, 800, 400, 1200, 0.10, 60.0, 3.0, 50.0, 5.0, 2.0, 0, 0, 0, 8, 0, '{"Read":8}', NULL, 1, ?, ?)`,
 		now.Add(-time.Hour), now.Add(-30*time.Minute),
 		now.Add(-20*time.Minute), now.Add(-10*time.Minute),
 	)
@@ -178,6 +183,8 @@ func TestETLUpsertOnConflict(t *testing.T) {
 		cost_usd DOUBLE, duration_seconds DOUBLE,
 		startup_seconds DOUBLE, working_seconds DOUBLE, queue_seconds DOUBLE, review_seconds DOUBLE,
 		files_changed INTEGER, lines_added INTEGER, lines_removed INTEGER,
+		read_calls INTEGER, edit_calls INTEGER, tool_calls_json TEXT,
+		failure_class VARCHAR, attempt_number INTEGER,
 		started_at TIMESTAMP, completed_at TIMESTAMP
 	)`)
 	if err != nil {
@@ -188,7 +195,7 @@ func TestETLUpsertOnConflict(t *testing.T) {
 
 	// Insert a row
 	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
-		('run-100', 'spi-x', NULL, NULL, 'formula-a', '1', 'plan', 'wizard', 'opus', 'tower1', 'main', 'running', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, NULL)`, now)
+		('run-100', 'spi-x', NULL, NULL, 'formula-a', '1', 'plan', 'wizard', 'opus', 'tower1', 'main', 'running', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, NULL)`, now)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
