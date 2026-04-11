@@ -44,10 +44,8 @@ type AgentsMode struct {
 	snapshot     AgentSnapshot
 	width        int
 	height       int
-	cursor       int    // selected row
-	towerName    string
-	registryPath string // filesystem path to agent registry (unused — we use agent.LoadRegistry)
-	active       bool   // whether this mode is the active tab
+	cursor    int    // selected row
+	towerName string
 
 	// InlineActionFn executes an action within the TUI via tea.Cmd.
 	InlineActionFn func(PendingAction, string) error
@@ -464,16 +462,13 @@ func (m *AgentsMode) SetSize(w, h int) {
 	m.height = h
 }
 
-// OnActivate sets active=true, triggers an immediate re-fetch, and restarts the tick chain.
+// OnActivate triggers an immediate re-fetch and restarts the tick chain.
 func (m *AgentsMode) OnActivate() tea.Cmd {
-	m.active = true
 	return tea.Batch(m.fetchAgents(), scheduleAgentTick())
 }
 
-// OnDeactivate sets active=false.
-func (m *AgentsMode) OnDeactivate() {
-	m.active = false
-}
+// OnDeactivate is a no-op; required by the Mode interface.
+func (m *AgentsMode) OnDeactivate() {}
 
 // HandleTowerChanged updates the tower and triggers a re-fetch.
 func (m *AgentsMode) HandleTowerChanged(tc TowerChanged) tea.Cmd {
