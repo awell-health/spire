@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -251,6 +252,245 @@ func TestDoTriage_NoGraphState(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "cannot determine worktree") {
 		t.Errorf("error = %q, want to contain 'cannot determine worktree'", result.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Feat-branch fallback + ResolveRepo tests
+// ---------------------------------------------------------------------------
+
+func TestDoTriage_FeatBranchFallback_ResolveRepoError(t *testing.T) {
+	// No graph state, source bead has a feat-branch: label.
+	// ResolveRepo returns an error → should return failResult with "cannot resolve repo".
+	emptyDir := t.TempDir()
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			if id == "spi-src1" {
+				return store.Bead{
+					ID:     id,
+					Labels: []string{"feat-branch:feat/spi-src1"},
+				}, nil
+			}
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return nil, nil
+		},
+		ConfigDir: func() (string, error) { return emptyDir, nil },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return "", "", "", fmt.Errorf("no repo registered for prefix")
+		},
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+	}
+
+	result := doTriage(e, req)
+	if result.Success {
+		t.Fatal("expected failure when ResolveRepo returns error")
+	}
+	if !strings.Contains(result.Error, "cannot resolve repo for bead spi-src1") {
+		t.Errorf("error = %q, want to contain 'cannot resolve repo for bead spi-src1'", result.Error)
+	}
+}
+
+func TestDoTriage_FeatBranchFallback_ResolveRepoEmptyDir(t *testing.T) {
+	// No graph state, source bead has a feat-branch: label.
+	// ResolveRepo returns empty repoDir → should return failResult with "cannot resolve repo".
+	emptyDir := t.TempDir()
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			if id == "spi-src1" {
+				return store.Bead{
+					ID:     id,
+					Labels: []string{"feat-branch:feat/spi-src1"},
+				}, nil
+			}
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return nil, nil
+		},
+		ConfigDir: func() (string, error) { return emptyDir, nil },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return "", "https://github.com/org/repo", "main", nil
+		},
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+	}
+
+	result := doTriage(e, req)
+	if result.Success {
+		t.Fatal("expected failure when ResolveRepo returns empty repoDir")
+	}
+	if !strings.Contains(result.Error, "cannot resolve repo for bead spi-src1") {
+		t.Errorf("error = %q, want to contain 'cannot resolve repo for bead spi-src1'", result.Error)
+	}
+}
+
+func TestDoTriage_FeatBranchFallback_ResolveRepoSuccess(t *testing.T) {
+	// No graph state, source bead has a feat-branch: label.
+	// ResolveRepo succeeds with a valid directory. Git commands run with Dir set
+	// to the resolved path. Since the temp dir isn't a real git repo, the branch
+	// verify (git rev-parse) will fail and the function falls through to the
+	// "cannot determine worktree" error — but the important thing is that
+	// ResolveRepo was called and the error path for resolution itself was NOT hit.
+	emptyDir := t.TempDir()
+	repoDir := t.TempDir()
+
+	var resolvedBeadID string
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			if id == "spi-src1" {
+				return store.Bead{
+					ID:     id,
+					Labels: []string{"feat-branch:feat/spi-src1"},
+				}, nil
+			}
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return nil, nil
+		},
+		ConfigDir: func() (string, error) { return emptyDir, nil },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			resolvedBeadID = beadID
+			return repoDir, "https://github.com/org/repo", "main", nil
+		},
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+	}
+
+	result := doTriage(e, req)
+
+	// ResolveRepo should have been called with the source bead ID.
+	if resolvedBeadID != "spi-src1" {
+		t.Errorf("ResolveRepo called with %q, want %q", resolvedBeadID, "spi-src1")
+	}
+
+	// The result should NOT contain the "cannot resolve repo" error — that
+	// path was skipped because ResolveRepo succeeded. Instead, the git
+	// rev-parse fails (not a real repo), so we get the generic worktree error.
+	if result.Success {
+		t.Fatal("expected failure (fake repo has no git), but got success")
+	}
+	if strings.Contains(result.Error, "cannot resolve repo") {
+		t.Errorf("error = %q, should NOT contain 'cannot resolve repo' when ResolveRepo succeeds", result.Error)
+	}
+	if !strings.Contains(result.Error, "cannot determine worktree") {
+		t.Errorf("error = %q, want to contain 'cannot determine worktree'", result.Error)
+	}
+}
+
+func TestDoTriage_FeatBranchFallback_ResolveRepoSuccess_WithGitRepo(t *testing.T) {
+	// Full integration: set up a real git repo with the expected branch so
+	// the worktree creation succeeds via the feat-branch fallback.
+	emptyDir := t.TempDir()
+	repoDir := t.TempDir()
+
+	// Initialize a git repo and create the branch.
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+		{"git", "checkout", "-b", "feat/spi-src1"},
+		{"git", "commit", "--allow-empty", "-m", "feature"},
+		{"git", "checkout", "-"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git setup %v: %v\n%s", args, err, out)
+		}
+	}
+
+	var spawnedCfg agent.SpawnConfig
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			if id == "spi-src1" {
+				return store.Bead{
+					ID:     id,
+					Labels: []string{"feat-branch:feat/spi-src1"},
+				}, nil
+			}
+			return store.Bead{ID: id, Metadata: map[string]string{}}, nil
+		},
+		GetChildren: func(parentID string) ([]store.Bead, error) {
+			return nil, nil
+		},
+		ConfigDir: func() (string, error) { return emptyDir, nil },
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return repoDir, "https://github.com/org/repo", "main", nil
+		},
+		Spawner: &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			spawnedCfg = cfg
+			return &mockHandle{}, nil
+		}},
+		AgentResultDir: func(agentName string) string {
+			dir := filepath.Join(emptyDir, "results", agentName)
+			os.MkdirAll(dir, 0755)
+			data, _ := json.Marshal(agentResultJSON{Result: "success"})
+			os.WriteFile(filepath.Join(dir, "result.json"), data, 0644)
+			return dir
+		},
+		RecordAgentRun:  func(run AgentRun) (string, error) { return "run-1", nil },
+		SetBeadMetadata: func(id string, meta map[string]string) error { return nil },
+	}
+	e := newTriageExecutor(t, "spi-recovery-1", deps)
+
+	req := recovery.RecoveryActionRequest{
+		Kind:         recovery.ActionTriage,
+		BeadID:       "spi-recovery-1",
+		SourceBeadID: "spi-src1",
+		Params:       map[string]string{"test_output": "FAIL: TestFoo"},
+	}
+
+	result := doTriage(e, req)
+
+	// Clean up the worktree so it doesn't linger.
+	wtDir := filepath.Join(os.TempDir(), "spire-triage", "spi-src1")
+	defer func() {
+		rmCmd := exec.Command("git", "worktree", "remove", "--force", wtDir)
+		rmCmd.Dir = repoDir
+		rmCmd.Run()
+		os.RemoveAll(wtDir)
+	}()
+
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+
+	// Verify the spawned agent got a --worktree-dir pointing at the
+	// triage temp worktree (not CWD, not the repo root).
+	found := false
+	for i, arg := range spawnedCfg.ExtraArgs {
+		if arg == "--worktree-dir" && i+1 < len(spawnedCfg.ExtraArgs) {
+			found = true
+			if !strings.Contains(spawnedCfg.ExtraArgs[i+1], "spire-triage") {
+				t.Errorf("worktree-dir = %q, want to contain 'spire-triage'", spawnedCfg.ExtraArgs[i+1])
+			}
+		}
+	}
+	if !found {
+		t.Error("ExtraArgs missing --worktree-dir flag")
 	}
 }
 
