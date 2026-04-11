@@ -474,7 +474,7 @@ func (m *MetricsMode) renderCostTrendContent() []string {
 	}
 
 	lines := []string{
-		dimStyle.Render(fmt.Sprintf("  %-10s %8s %5s", "Date", "Cost", "Runs")),
+		dimStyle.Render(fmt.Sprintf("  %-10s %8s %6s %5s", "Date", "Cost", "Tokens", "Runs")),
 	}
 	limit := len(m.costTrend)
 	if limit > 10 {
@@ -483,6 +483,7 @@ func (m *MetricsMode) renderCostTrendContent() []string {
 	for _, c := range m.costTrend[:limit] {
 		dateStr := c.Date.Format("Jan 02")
 		costStr := fmt.Sprintf("$%.2f", c.TotalCost)
+		tokStr := formatTokens(c.PromptTokens + c.CompletionTokens)
 
 		var costStyled string
 		if c.TotalCost > 20 {
@@ -493,7 +494,7 @@ func (m *MetricsMode) renderCostTrendContent() []string {
 			costStyled = fmt.Sprintf("%8s", costStr)
 		}
 
-		lines = append(lines, fmt.Sprintf("  %-10s %s %5d", dateStr, costStyled, c.RunCount))
+		lines = append(lines, fmt.Sprintf("  %-10s %s %6s %5d", dateStr, costStyled, tokStr, c.RunCount))
 	}
 	return lines
 }
@@ -539,12 +540,12 @@ func (m *MetricsMode) renderToolUsageContent() []string {
 	}
 
 	lines := []string{
-		dimStyle.Render(fmt.Sprintf("  %-16s %-10s %5s %5s %6s", "Formula", "Phase", "Read", "Edit", "Ratio")),
+		dimStyle.Render(fmt.Sprintf("  %-14s %-10s %5s %5s %5s %6s", "Formula", "Phase", "Calls", "Read", "Edit", "Ratio")),
 	}
 	for _, t := range m.toolUsage {
 		ratioStr := fmt.Sprintf("%.0f%%", t.ReadRatio*100)
-		lines = append(lines, fmt.Sprintf("  %-16s %-10s %5d %5d %6s",
-			Truncate(t.FormulaName, 16), Truncate(t.Phase, 10), t.TotalRead, t.TotalEdit, ratioStr))
+		lines = append(lines, fmt.Sprintf("  %-14s %-10s %5d %5d %5d %6s",
+			Truncate(t.FormulaName, 14), Truncate(t.Phase, 10), t.TotalTools, t.TotalRead, t.TotalEdit, ratioStr))
 	}
 	return lines
 }
@@ -565,6 +566,21 @@ func (m *MetricsMode) centeredMessage(msg string) string {
 		s.WriteString(strings.Repeat(" ", pad) + line + "\n")
 	}
 	return s.String()
+}
+
+// formatTokens formats a token count as a compact string (e.g. "1.2M", "340K").
+// Returns "—" for zero values.
+func formatTokens(n int64) string {
+	if n == 0 {
+		return "—"
+	}
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.0fK", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // formatDuration converts seconds to a human-readable duration string.

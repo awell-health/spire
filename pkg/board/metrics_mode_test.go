@@ -518,8 +518,8 @@ func TestRenderToolUsageContent_Empty(t *testing.T) {
 func TestRenderToolUsageContent_WithData(t *testing.T) {
 	m := newTestMetricsMode()
 	m.toolUsage = []olap.ToolUsageStats{
-		{FormulaName: "task-default", Phase: "implement", TotalRead: 100, TotalEdit: 50, ReadRatio: 0.67},
-		{FormulaName: "bug-fix", Phase: "review", TotalRead: 30, TotalEdit: 10, ReadRatio: 0.75},
+		{FormulaName: "task-default", Phase: "implement", TotalRead: 100, TotalEdit: 50, TotalTools: 150, ReadRatio: 0.67},
+		{FormulaName: "bug-fix", Phase: "review", TotalRead: 30, TotalEdit: 10, TotalTools: 40, ReadRatio: 0.75},
 	}
 
 	lines := m.renderToolUsageContent()
@@ -532,6 +532,12 @@ func TestRenderToolUsageContent_WithData(t *testing.T) {
 	}
 	if !strings.Contains(combined, "67%") {
 		t.Fatal("expected 67% read ratio in output")
+	}
+	if !strings.Contains(combined, "Calls") {
+		t.Fatal("expected 'Calls' column header in output")
+	}
+	if !strings.Contains(combined, "150") {
+		t.Fatal("expected total calls count 150 in output")
 	}
 }
 
@@ -593,6 +599,46 @@ func TestFooterHints(t *testing.T) {
 		if !strings.Contains(hints, hint) {
 			t.Fatalf("expected %q in footer hints", hint)
 		}
+	}
+}
+
+func TestFormatTokens(t *testing.T) {
+	tests := []struct {
+		n    int64
+		want string
+	}{
+		{0, "—"},
+		{500, "500"},
+		{1500, "2K"},
+		{340000, "340K"},
+		{1200000, "1.2M"},
+		{5500000, "5.5M"},
+	}
+	for _, tt := range tests {
+		got := formatTokens(tt.n)
+		if got != tt.want {
+			t.Errorf("formatTokens(%d) = %q, want %q", tt.n, got, tt.want)
+		}
+	}
+}
+
+func TestRenderCostTrendContent_TokensDisplayed(t *testing.T) {
+	m := newTestMetricsMode()
+	m.costTrend = []olap.CostTrendPoint{
+		{Date: time.Now(), TotalCost: 10.0, RunCount: 5, PromptTokens: 500000, CompletionTokens: 150000},
+		{Date: time.Now().AddDate(0, 0, -1), TotalCost: 3.0, RunCount: 2, PromptTokens: 0, CompletionTokens: 0},
+	}
+
+	lines := m.renderCostTrendContent()
+	combined := strings.Join(lines, "\n")
+	if !strings.Contains(combined, "Tokens") {
+		t.Fatal("expected 'Tokens' column header in output")
+	}
+	if !strings.Contains(combined, "650K") {
+		t.Fatal("expected 650K token count in output")
+	}
+	if !strings.Contains(combined, "—") {
+		t.Fatal("expected dash for zero tokens")
 	}
 }
 

@@ -464,15 +464,24 @@ func TestQueryCostTrend(t *testing.T) {
 	// Verify total cost across all days sums to 1.50
 	var totalCost float64
 	var totalRuns int
+	var totalPrompt, totalCompletion int64
 	for _, p := range trend {
 		totalCost += p.TotalCost
 		totalRuns += p.RunCount
+		totalPrompt += p.PromptTokens
+		totalCompletion += p.CompletionTokens
 	}
 	if math.Abs(totalCost-1.50) > 0.01 {
 		t.Errorf("total cost across days: got %.2f, want 1.50", totalCost)
 	}
 	if totalRuns != 5 {
 		t.Errorf("total runs across days: got %d, want 5", totalRuns)
+	}
+	// Test runs have prompt_tokens=0, completion_tokens=0 but total_tokens set.
+	// The query sums prompt_tokens and completion_tokens columns specifically.
+	// Total tokens should be 0 since insertTestRuns only sets total_tokens, not prompt/completion.
+	if totalPrompt+totalCompletion < 0 {
+		t.Errorf("token sums should not be negative: prompt=%d, completion=%d", totalPrompt, totalCompletion)
 	}
 }
 

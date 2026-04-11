@@ -78,11 +78,13 @@ type BugCausality struct {
 	LastFailure  time.Time
 }
 
-// CostTrendPoint holds daily cost and run count data.
+// CostTrendPoint holds daily cost, token, and run count data.
 type CostTrendPoint struct {
-	Date      time.Time
-	TotalCost float64
-	RunCount  int
+	Date             time.Time
+	TotalCost        float64
+	RunCount         int
+	PromptTokens     int64
+	CompletionTokens int64
 }
 
 // QueryDORA computes DORA metrics from weekly_merge_stats and agent_runs_olap.
@@ -364,7 +366,9 @@ func (d *DB) QueryCostTrend(days int) ([]CostTrendPoint, error) {
 		SELECT
 			date_trunc('day', started_at)::DATE AS date,
 			COALESCE(SUM(cost_usd), 0) AS total_cost,
-			COUNT(*) AS run_count
+			COUNT(*) AS run_count,
+			COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) AS completion_tokens
 		FROM agent_runs_olap
 		WHERE started_at >= ?
 		GROUP BY 1
@@ -378,7 +382,7 @@ func (d *DB) QueryCostTrend(days int) ([]CostTrendPoint, error) {
 	var out []CostTrendPoint
 	for rows.Next() {
 		var p CostTrendPoint
-		if err := rows.Scan(&p.Date, &p.TotalCost, &p.RunCount); err != nil {
+		if err := rows.Scan(&p.Date, &p.TotalCost, &p.RunCount, &p.PromptTokens, &p.CompletionTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
