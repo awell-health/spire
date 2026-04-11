@@ -527,11 +527,11 @@ func (m *BoardMode) FooterHints() string {
 
 	switch m.ViewMode {
 	case ViewAlerts:
-		return "s summon  x close  d defer  a actions  enter inspect  / search"
+		return "v=view  s summon  x close  d defer  a actions  enter inspect  / search"
 	case ViewLower:
-		return "r reset  v resolve  S resummon  x close  a actions  enter inspect"
+		return "v=view  r reset  S resummon  x close  a actions  enter inspect"
 	default: // ViewBoard
-		return "s summon  d defer  x close  r reset  a actions  / search  ? help"
+		return "v=view  s summon  d defer  x close  r reset  a actions  / search  ? help"
 	}
 }
 
@@ -1473,7 +1473,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			return m, nil
 
 		// Cycle view mode.
-		case "tab":
+		case "v":
 			m.ViewMode++
 			if m.ViewMode > ViewLower {
 				m.ViewMode = ViewBoard
@@ -1482,7 +1482,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			m.ColScroll = 0
 			m.ClampSelection()
 			return m, nil
-		case "shift+tab":
+		case "V":
 			if m.ViewMode == ViewBoard {
 				m.ViewMode = ViewLower
 			} else {

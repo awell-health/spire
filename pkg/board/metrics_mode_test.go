@@ -189,26 +189,23 @@ func TestMetricsNavigation_JKScrollsWhenOverflow(t *testing.T) {
 	}
 }
 
-func TestMetricsNavigation_TabCycles(t *testing.T) {
+func TestMetricsNavigation_NumberKeysJumpSections(t *testing.T) {
 	m := newTestMetricsMode()
 
-	expected := []int{1, 2, 3, 0, 1}
-	for i, want := range expected {
-		sendKey(m, "tab")
-		if m.focusedSection != want {
-			t.Fatalf("step %d: expected section %d after tab, got %d", i, want, m.focusedSection)
-		}
+	tests := []struct {
+		key  string
+		want int
+	}{
+		{"2", secCostTrend},
+		{"4", secToolUsage},
+		{"1", secFormulaPerf},
+		{"3", secBugHotspots},
+		{"3", secBugHotspots}, // pressing same key is a no-op
 	}
-}
-
-func TestMetricsNavigation_ShiftTabCyclesBackward(t *testing.T) {
-	m := newTestMetricsMode()
-
-	expected := []int{3, 2, 1, 0, 3}
-	for i, want := range expected {
-		m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-		if m.focusedSection != want {
-			t.Fatalf("step %d: expected section %d after shift+tab, got %d", i, want, m.focusedSection)
+	for _, tc := range tests {
+		sendKey(m, tc.key)
+		if m.focusedSection != tc.want {
+			t.Fatalf("key %q: expected section %d, got %d", tc.key, tc.want, m.focusedSection)
 		}
 	}
 }
@@ -734,7 +731,7 @@ func TestFooterHints(t *testing.T) {
 	m := newTestMetricsMode()
 	hints := m.FooterHints()
 
-	for _, hint := range []string{"h/l=column", "j/k=scroll", "tab=cycle", "r=refresh"} {
+	for _, hint := range []string{"h/l=column", "j/k=scroll", "1-4=sections", "r=refresh"} {
 		if !strings.Contains(hints, hint) {
 			t.Fatalf("expected %q in footer hints", hint)
 		}

@@ -194,13 +194,14 @@ func (m *MetricsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				m.focusedSection -= 2
 			}
 
-		case "tab":
-			// Cycle focus through all four sections.
-			m.focusedSection = (m.focusedSection + 1) % 4
-
-		case "shift+tab":
-			// Cycle focus backwards.
-			m.focusedSection = (m.focusedSection + 3) % 4
+		case "1":
+			m.focusedSection = secFormulaPerf
+		case "2":
+			m.focusedSection = secCostTrend
+		case "3":
+			m.focusedSection = secBugHotspots
+		case "4":
+			m.focusedSection = secToolUsage
 		}
 		return m, nil
 	}
@@ -262,7 +263,7 @@ func scheduleMetricsTick() tea.Cmd {
 
 // FooterHints returns keybinding hints for the metrics mode.
 func (m *MetricsMode) FooterHints() string {
-	parts := []string{"h/l=column", "j/k=scroll", "tab=cycle"}
+	parts := []string{"h/l=column", "j/k=scroll", "1-4=sections"}
 	if !m.lastRefresh.IsZero() {
 		parts = append(parts, fmt.Sprintf("updated %s", relativeTime(m.lastRefresh)))
 	}

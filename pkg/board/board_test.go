@@ -486,7 +486,7 @@ func TestBoardModeFooterHints(t *testing.T) {
 		m := makeBoardMode()
 		m.ViewMode = ViewLower
 		hints := m.FooterHints()
-		for _, want := range []string{"reset", "resolve", "resummon", "close", "actions", "inspect"} {
+		for _, want := range []string{"v=view", "reset", "resummon", "close", "actions", "inspect"} {
 			if !strings.Contains(hints, want) {
 				t.Errorf("ViewLower hints missing %q, got %q", want, hints)
 			}
@@ -1980,9 +1980,9 @@ func TestSortBeads_DeferredToBottom(t *testing.T) {
 	})
 }
 
-// --- ViewMode / Tab cycling tests ---
+// --- ViewMode cycling tests ---
 
-func TestTabCyclesViewMode(t *testing.T) {
+func TestVCyclesViewMode(t *testing.T) {
 	m := makeBoardMode()
 
 	// Default is ViewBoard.
@@ -1990,48 +1990,48 @@ func TestTabCyclesViewMode(t *testing.T) {
 		t.Fatalf("expected ViewBoard default, got %d", m.ViewMode)
 	}
 
-	// Tab: Board -> Alerts.
-	m = updateBoardMode(m, keyMsgStr("tab"))
+	// v: Board -> Alerts.
+	m = updateBoardMode(m, keyMsgStr("v"))
 	if m.ViewMode != ViewAlerts {
-		t.Errorf("after 1st tab: expected ViewAlerts, got %d", m.ViewMode)
+		t.Errorf("after 1st v: expected ViewAlerts, got %d", m.ViewMode)
 	}
 
-	// Tab: Alerts -> Lower.
-	m = updateBoardMode(m, keyMsgStr("tab"))
+	// v: Alerts -> Lower.
+	m = updateBoardMode(m, keyMsgStr("v"))
 	if m.ViewMode != ViewLower {
-		t.Errorf("after 2nd tab: expected ViewLower, got %d", m.ViewMode)
+		t.Errorf("after 2nd v: expected ViewLower, got %d", m.ViewMode)
 	}
 
-	// Tab: Lower -> Board (wrap).
-	m = updateBoardMode(m, keyMsgStr("tab"))
+	// v: Lower -> Board (wrap).
+	m = updateBoardMode(m, keyMsgStr("v"))
 	if m.ViewMode != ViewBoard {
-		t.Errorf("after 3rd tab: expected ViewBoard (wrap), got %d", m.ViewMode)
+		t.Errorf("after 3rd v: expected ViewBoard (wrap), got %d", m.ViewMode)
 	}
 }
 
-func TestShiftTabCyclesViewModeBackward(t *testing.T) {
+func TestShiftVCyclesViewModeBackward(t *testing.T) {
 	m := makeBoardMode()
 
-	// Shift+Tab: Board -> Lower (backward wrap).
-	m = updateBoardMode(m, keyMsgStr("shift+tab"))
+	// V: Board -> Lower (backward wrap).
+	m = updateBoardMode(m, keyMsgStr("V"))
 	if m.ViewMode != ViewLower {
-		t.Errorf("after shift+tab from Board: expected ViewLower, got %d", m.ViewMode)
+		t.Errorf("after V from Board: expected ViewLower, got %d", m.ViewMode)
 	}
 
-	// Shift+Tab: Lower -> Alerts.
-	m = updateBoardMode(m, keyMsgStr("shift+tab"))
+	// V: Lower -> Alerts.
+	m = updateBoardMode(m, keyMsgStr("V"))
 	if m.ViewMode != ViewAlerts {
-		t.Errorf("after shift+tab from Lower: expected ViewAlerts, got %d", m.ViewMode)
+		t.Errorf("after V from Lower: expected ViewAlerts, got %d", m.ViewMode)
 	}
 
-	// Shift+Tab: Alerts -> Board.
-	m = updateBoardMode(m, keyMsgStr("shift+tab"))
+	// V: Alerts -> Board.
+	m = updateBoardMode(m, keyMsgStr("V"))
 	if m.ViewMode != ViewBoard {
-		t.Errorf("after shift+tab from Alerts: expected ViewBoard, got %d", m.ViewMode)
+		t.Errorf("after V from Alerts: expected ViewBoard, got %d", m.ViewMode)
 	}
 }
 
-func TestTabResetsSelCardAndColScroll(t *testing.T) {
+func TestViewCycleResetsSelCardAndColScroll(t *testing.T) {
 	// Use a model with alerts so ViewAlerts has cards to select.
 	m := makeBoardMode()
 	m.Cols.Alerts = []BoardBead{
@@ -2041,12 +2041,12 @@ func TestTabResetsSelCardAndColScroll(t *testing.T) {
 	m.SelCard = 2
 	m.ColScroll = 1
 
-	m = updateBoardMode(m, keyMsgStr("tab"))
+	m = updateBoardMode(m, keyMsgStr("v"))
 	if m.SelCard != 0 {
-		t.Errorf("expected SelCard=0 after tab, got %d", m.SelCard)
+		t.Errorf("expected SelCard=0 after v, got %d", m.SelCard)
 	}
 	if m.ColScroll != 0 {
-		t.Errorf("expected ColScroll=0 after tab, got %d", m.ColScroll)
+		t.Errorf("expected ColScroll=0 after v, got %d", m.ColScroll)
 	}
 }
 
