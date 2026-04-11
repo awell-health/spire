@@ -67,6 +67,71 @@ func IsTerminal(graph *FormulaStepGraph, stepName string) bool {
 	return false
 }
 
+// TopoSort returns step names sorted by topological level (longest path from
+// any root through Needs edges), with alphabetical tiebreak within the same
+// level. Returns nil for nil or empty graphs.
+func TopoSort(graph *FormulaStepGraph) []string {
+	if graph == nil || len(graph.Steps) == 0 {
+		return nil
+	}
+
+	// Compute levels: root steps (no needs) are level 0. Each other step's
+	// level is max(level[need] for need in needs) + 1. Iterate until stable
+	// to handle diamond DAGs correctly.
+	level := make(map[string]int, len(graph.Steps))
+	for name := range graph.Steps {
+		level[name] = 0
+	}
+
+	changed := true
+	for changed {
+		changed = false
+		for name, step := range graph.Steps {
+			if len(step.Needs) == 0 {
+				continue
+			}
+			maxNeed := 0
+			for _, need := range step.Needs {
+				if l, ok := level[need]; ok && l > maxNeed {
+					maxNeed = l
+				}
+			}
+			want := maxNeed + 1
+			if want > level[name] {
+				level[name] = want
+				changed = true
+			}
+		}
+	}
+
+	// Collect and sort: primary by level, secondary alphabetical.
+	names := make([]string, 0, len(graph.Steps))
+	for name := range graph.Steps {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if level[names[i]] != level[names[j]] {
+			return level[names[i]] < level[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	return names
+}
+
+// StepOrderMap returns a map from step name to positional index (0-based)
+// derived from TopoSort. Returns nil for nil or empty graphs.
+func StepOrderMap(graph *FormulaStepGraph) map[string]int {
+	sorted := TopoSort(graph)
+	if sorted == nil {
+		return nil
+	}
+	m := make(map[string]int, len(sorted))
+	for i, name := range sorted {
+		m[name] = i
+	}
+	return m
+}
+
 // ValidateGraph checks that a step graph is well-formed:
 //   - At least one step exists
 //   - Exactly one entry point (step with no needs, or explicit Entry)

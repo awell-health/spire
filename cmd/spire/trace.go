@@ -15,6 +15,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/olap"
 	"github.com/spf13/cobra"
 )
@@ -231,9 +232,14 @@ func buildTrace(beadID string) (*traceData, error) {
 			Status: string(s.Status),
 		})
 	}
-	sort.Slice(td.Steps, func(i, j int) bool {
-		return board.PhaseIndex(td.Steps[i].Name) < board.PhaseIndex(td.Steps[j].Name)
-	})
+	// Sort steps by formula topology (not a hardcoded map).
+	info := formula.BeadInfo{ID: target.ID, Type: string(target.Type), Labels: target.Labels}
+	if g, err := formula.ResolveV3(info); err == nil {
+		order := formula.StepOrderMap(g)
+		sort.Slice(td.Steps, func(i, j int) bool {
+			return traceStepPos(td.Steps[i].Name, order) < traceStepPos(td.Steps[j].Name, order)
+		})
+	}
 
 	// Active attempt.
 	attempt, _ := storeGetActiveAttemptFunc(beadID)
@@ -521,6 +527,19 @@ func reviewVerdictIcon(verdict string) string {
 	default:
 		return dim + "…" + reset
 	}
+}
+
+// traceStepPos returns the display position for a step name given a formula
+// order map. If order is nil, returns 0 (preserves insertion order).
+// Unknown steps sort to 999 (end).
+func traceStepPos(name string, order map[string]int) int {
+	if order == nil {
+		return 0
+	}
+	if pos, ok := order[name]; ok {
+		return pos
+	}
+	return 999
 }
 
 func extractAgentName(b Bead) string {

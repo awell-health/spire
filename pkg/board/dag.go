@@ -60,8 +60,9 @@ func FetchDAGProgress(beadID string) *DAGProgress {
 				Status: s.Status,
 			})
 		}
+		order := resolveStepOrder(beadID)
 		sort.Slice(dag.Steps, func(i, j int) bool {
-			return phaseIndex(dag.Steps[i].Name) < phaseIndex(dag.Steps[j].Name)
+			return stepPos(dag.Steps[i].Name, order) < stepPos(dag.Steps[j].Name, order)
 		})
 	}
 
@@ -113,42 +114,34 @@ func extractReviewVerdict(b Bead) string {
 	return ""
 }
 
-// phaseIndex returns the canonical position of a phase name.
-// Unknown phases sort to the end.
-// v3StepOrder defines the canonical display order for v3 graph step names.
-// Steps not in this list are sorted after known steps, alphabetically.
-var v3StepOrder = map[string]int{
-	"design-check": 0,
-	"design":       0,
-	"plan":         1,
-	"materialize":  2,
-	"implement":    3,
-	"verify":       4,
-	"verify-build": 4,
-	"review":       5,
-	"merge":        6,
-	"close":        7,
-	"discard":      7,
+// resolveStepOrder loads the formula for a bead and returns a map from step
+// name to display position derived from topological sort. Returns nil on any
+// error (formula not found, dolt not running, etc.) — callers should treat
+// nil as a graceful fallback (preserve insertion order).
+func resolveStepOrder(beadID string) map[string]int {
+	b, err := store.GetBead(beadID)
+	if err != nil {
+		return nil
+	}
+	info := formula.BeadInfo{ID: b.ID, Type: b.Type, Labels: b.Labels}
+	g, err := formula.ResolveV3(info)
+	if err != nil {
+		return nil
+	}
+	return formula.StepOrderMap(g)
 }
 
-// PhaseIndex returns the display order for a step/phase name.
-// Exported for use by cmd/spire/trace.go and other renderers.
-func PhaseIndex(name string) int {
-	return phaseIndex(name)
-}
-
-func phaseIndex(name string) int {
-	// Try v2 phase ordering first.
-	for i, p := range formula.ValidPhases {
-		if p == name {
-			return i
-		}
+// stepPos returns the display position for a step name given an order map.
+// If order is nil, returns 0 (all steps equal — preserves insertion order).
+// If name is not in the order, returns 999 (unknown steps sort to end).
+func stepPos(name string, order map[string]int) int {
+	if order == nil {
+		return 0
 	}
-	// Try v3 step ordering.
-	if idx, ok := v3StepOrder[name]; ok {
-		return idx
+	if pos, ok := order[name]; ok {
+		return pos
 	}
-	return 99
+	return 999
 }
 
 // FetchDAGProgressFromChildren builds DAGProgress from a pre-fetched children
@@ -177,8 +170,9 @@ func FetchDAGProgressFromChildren(beadID string, children []store.Bead) *DAGProg
 				Status: s.Status,
 			})
 		}
+		order := resolveStepOrder(beadID)
 		sort.Slice(dag.Steps, func(i, j int) bool {
-			return phaseIndex(dag.Steps[i].Name) < phaseIndex(dag.Steps[j].Name)
+			return stepPos(dag.Steps[i].Name, order) < stepPos(dag.Steps[j].Name, order)
 		})
 	}
 

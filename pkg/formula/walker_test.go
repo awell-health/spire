@@ -147,6 +147,129 @@ func TestIsTerminal(t *testing.T) {
 	}
 }
 
+func TestTopoSort_LinearChain(t *testing.T) {
+	g := &FormulaStepGraph{
+		Steps: map[string]StepConfig{
+			"plan":      {},
+			"implement": {Needs: []string{"plan"}},
+			"review":    {Needs: []string{"implement"}},
+			"merge":     {Needs: []string{"review"}},
+			"close":     {Needs: []string{"merge"}, Terminal: true},
+		},
+	}
+	got := TopoSort(g)
+	want := []string{"plan", "implement", "review", "merge", "close"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("index %d: expected %s, got %s (full: %v)", i, want[i], got[i], got)
+		}
+	}
+}
+
+func TestTopoSort_Diamond(t *testing.T) {
+	g := &FormulaStepGraph{
+		Steps: map[string]StepConfig{
+			"a": {},
+			"b": {Needs: []string{"a"}},
+			"c": {Needs: []string{"a"}},
+			"d": {Needs: []string{"b", "c"}, Terminal: true},
+		},
+	}
+	got := TopoSort(g)
+	want := []string{"a", "b", "c", "d"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("index %d: expected %s, got %s (full: %v)", i, want[i], got[i], got)
+		}
+	}
+}
+
+func TestTopoSort_BranchingTerminals(t *testing.T) {
+	// Mirrors task-default: review→{merge,discard}, merge→close
+	g := &FormulaStepGraph{
+		Steps: map[string]StepConfig{
+			"plan":      {},
+			"implement": {Needs: []string{"plan"}},
+			"review":    {Needs: []string{"implement"}},
+			"merge":     {Needs: []string{"review"}},
+			"discard":   {Needs: []string{"review"}, Terminal: true},
+			"close":     {Needs: []string{"merge"}, Terminal: true},
+		},
+	}
+	got := TopoSort(g)
+	// Level 0: plan, Level 1: implement, Level 2: review,
+	// Level 3: discard, merge (alphabetical tiebreak), Level 4: close
+	want := []string{"plan", "implement", "review", "discard", "merge", "close"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("index %d: expected %s, got %s (full: %v)", i, want[i], got[i], got)
+		}
+	}
+}
+
+func TestTopoSort_NilGraph(t *testing.T) {
+	if got := TopoSort(nil); got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
+}
+
+func TestTopoSort_EmptyGraph(t *testing.T) {
+	g := &FormulaStepGraph{Steps: map[string]StepConfig{}}
+	if got := TopoSort(g); got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
+}
+
+func TestTopoSort_EmbeddedTaskDefault(t *testing.T) {
+	g, err := LoadEmbeddedStepGraph("task-default")
+	if err != nil {
+		t.Fatalf("failed to load task-default: %v", err)
+	}
+	got := TopoSort(g)
+	// plan(0) → implement(1) → review(2) → discard(3),merge(3) → close(4)
+	want := []string{"plan", "implement", "review", "discard", "merge", "close"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("index %d: expected %s, got %s (full: %v)", i, want[i], got[i], got)
+		}
+	}
+}
+
+func TestStepOrderMap_Basic(t *testing.T) {
+	g := &FormulaStepGraph{
+		Steps: map[string]StepConfig{
+			"a": {},
+			"b": {Needs: []string{"a"}},
+			"c": {Needs: []string{"b"}, Terminal: true},
+		},
+	}
+	m := StepOrderMap(g)
+	if m == nil {
+		t.Fatal("expected non-nil map")
+	}
+	if m["a"] != 0 || m["b"] != 1 || m["c"] != 2 {
+		t.Fatalf("expected a=0, b=1, c=2, got %v", m)
+	}
+}
+
+func TestStepOrderMap_Nil(t *testing.T) {
+	if m := StepOrderMap(nil); m != nil {
+		t.Fatalf("expected nil, got %v", m)
+	}
+}
+
 func TestValidateGraph_Valid(t *testing.T) {
 	g := reviewGraph()
 	if err := ValidateGraph(g); err != nil {
