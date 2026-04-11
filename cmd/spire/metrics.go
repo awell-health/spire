@@ -210,6 +210,17 @@ func cmdMetrics(args []string) error {
 
 	if flagTools {
 		if adb != nil {
+			// Try OTel-sourced tool_events first (richer data: per-tool duration, failure rate).
+			otelTools, otelErr := adb.QueryToolEvents(since)
+			if otelErr == nil && len(otelTools) > 0 {
+				if flagJSON {
+					return metricsJSONEncode(otelTools)
+				}
+				renderOTelToolStats(otelTools)
+				return nil
+			}
+
+			// Fall back to old tool_usage_stats view for historical data.
 			tools, err := adb.QueryToolUsage(since)
 			if err != nil {
 				return fmt.Errorf("metrics: %w", err)
@@ -380,6 +391,20 @@ func renderToolStats(tools []olap.ToolUsageStats) {
 	for _, t := range tools {
 		fmt.Printf("  %-20s %-14s %6d %6d %6d %7.1f%%\n",
 			t.FormulaName, t.Phase, t.TotalRead, t.TotalEdit, t.TotalTools, t.ReadRatio*100)
+	}
+}
+
+func renderOTelToolStats(tools []olap.ToolEventStats) {
+	if len(tools) == 0 {
+		fmt.Println("No tool events recorded yet")
+		return
+	}
+	fmt.Println("Tool usage (OTel pipeline)")
+	fmt.Printf("  %-16s %7s %10s %9s\n", "TOOL", "CALLS", "AVG MS", "FAILURES")
+	fmt.Printf("  %-16s %7s %10s %9s\n", "────", "─────", "──────", "────────")
+	for _, t := range tools {
+		fmt.Printf("  %-16s %7d %10.0f %9d\n",
+			t.ToolName, t.Count, t.AvgDurationMs, t.FailureCount)
 	}
 }
 

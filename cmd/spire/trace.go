@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/board"
+	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/olap"
 	"github.com/spf13/cobra"
 )
 
@@ -54,16 +56,17 @@ func init() {
 
 // traceData holds the assembled trace for a bead, used for both rendering and JSON output.
 type traceData struct {
-	ID       string       `json:"id"`
-	Title    string       `json:"title"`
-	Status   string       `json:"status"`
-	Priority int          `json:"priority"`
-	Type     string       `json:"type"`
-	Phase    string       `json:"phase"`
-	Steps    []traceStep  `json:"steps"`
-	Attempt  *traceAgent  `json:"active_attempt,omitempty"`
-	Reviews  []traceReview `json:"reviews,omitempty"`
-	Subtasks []traceData  `json:"subtasks,omitempty"`
+	ID            string                  `json:"id"`
+	Title         string                  `json:"title"`
+	Status        string                  `json:"status"`
+	Priority      int                     `json:"priority"`
+	Type          string                  `json:"type"`
+	Phase         string                  `json:"phase"`
+	Steps         []traceStep             `json:"steps"`
+	Attempt       *traceAgent             `json:"active_attempt,omitempty"`
+	Reviews       []traceReview           `json:"reviews,omitempty"`
+	Subtasks      []traceData             `json:"subtasks,omitempty"`
+	ToolBreakdown []olap.StepToolBreakdown `json:"tool_breakdown,omitempty"`
 }
 
 type traceStep struct {
@@ -287,6 +290,16 @@ func buildTrace(beadID string) (*traceData, error) {
 		})
 	}
 
+	// Tool breakdown from OTel-sourced tool_events.
+	if tc, err := config.ActiveTowerConfig(); err == nil {
+		if adb, err := olap.Open(tc.OLAPPath()); err == nil {
+			defer adb.Close()
+			if steps, err := adb.QueryToolEventsByStep(beadID); err == nil && len(steps) > 0 {
+				td.ToolBreakdown = steps
+			}
+		}
+	}
+
 	// For epics: subtask tree.
 	if target.Type == "epic" {
 		children, _ := storeGetChildren(beadID)
@@ -362,6 +375,22 @@ func renderTraceToString(td *traceData) string {
 			}
 			icon := reviewVerdictIcon(verdict)
 			fmt.Fprintf(&s, "  Round %d: %s %s\n", r.Round, icon, verdict)
+		}
+		s.WriteString("\n")
+	}
+
+	// Tool breakdown (from OTel pipeline).
+	if len(td.ToolBreakdown) > 0 {
+		fmt.Fprintf(&s, "%sTool usage:%s\n", bold, reset)
+		for _, step := range td.ToolBreakdown {
+			fmt.Fprintf(&s, "  %s: ", step.Step)
+			for i, t := range step.Tools {
+				if i > 0 {
+					s.WriteString("  ")
+				}
+				fmt.Fprintf(&s, "%s: %d", t.ToolName, t.Count)
+			}
+			s.WriteString("\n")
 		}
 		s.WriteString("\n")
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,9 +20,85 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
 	"github.com/awell-health/spire/pkg/olap"
+	spireOtel "github.com/awell-health/spire/pkg/otel"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
+
+// --- Shared OLAP + OTLP receiver lifecycle ---
+//
+// The DuckDB connection and OTLP receiver persist across daemon cycles so that
+// the gRPC endpoint stays up between ticks. One receiver serves all towers —
+// the tower column in tool_events disambiguates.
+
+var (
+	sharedOLAPDB      *olap.DB
+	sharedOLAPPath    string
+	otlpReceiver      *spireOtel.Receiver
+)
+
+// ensureSharedOLAP opens the DuckDB file for the tower (creating it if needed)
+// and starts the OTLP receiver if not already running. Idempotent: subsequent
+// calls with the same tower reuse the existing connection.
+func ensureSharedOLAP(tower config.TowerConfig) (*olap.DB, error) {
+	olapPath := tower.OLAPPath()
+
+	// If already open for the same path, reuse.
+	if sharedOLAPDB != nil && sharedOLAPPath == olapPath {
+		return sharedOLAPDB, nil
+	}
+
+	// Close previous if path changed (tower switch — rare).
+	closeSharedOLAP()
+
+	if err := os.MkdirAll(filepath.Dir(olapPath), 0700); err != nil {
+		return nil, err
+	}
+	db, err := olap.Open(olapPath)
+	if err != nil {
+		return nil, err
+	}
+	sharedOLAPDB = db
+	sharedOLAPPath = olapPath
+
+	// Start OTLP receiver if not running.
+	if otlpReceiver == nil {
+		port := spireOtel.DefaultPort
+		if envPort := os.Getenv("SPIRE_OTLP_PORT"); envPort != "" {
+			if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
+				port = p
+			}
+		}
+		r := spireOtel.NewReceiver(db, port, tower.Name)
+		if err := r.Start(); err != nil {
+			// Non-fatal: telemetry collection is optional.
+			log.Printf("[daemon] OTLP receiver start: %v (telemetry disabled)", err)
+		} else {
+			otlpReceiver = r
+		}
+	}
+
+	return db, nil
+}
+
+// closeSharedOLAP shuts down the OTLP receiver and closes the shared DuckDB.
+func closeSharedOLAP() {
+	if otlpReceiver != nil {
+		otlpReceiver.Stop()
+		otlpReceiver = nil
+	}
+	if sharedOLAPDB != nil {
+		sharedOLAPDB.Close()
+		sharedOLAPDB = nil
+		sharedOLAPPath = ""
+	}
+}
+
+// StopOTLPReceiver gracefully shuts down the OTLP receiver and shared DuckDB.
+// Called from the daemon shutdown path (cmd/spire/daemon.go).
+func StopOTLPReceiver() {
+	closeSharedOLAP()
+}
 
 // InboxMessage is a single message in the inbox file.
 type InboxMessage struct {
@@ -562,17 +639,14 @@ func ReapDeadAgents(towerName string) int {
 }
 
 // syncToOLAP performs incremental ETL from Dolt agent_runs into the tower's
-// local DuckDB analytics database. Non-fatal: errors are logged by the caller.
+// local DuckDB analytics database. Uses the shared OLAP connection (which also
+// backs the OTLP receiver) so we don't open/close DuckDB every cycle.
+// Non-fatal: errors are logged by the caller.
 func syncToOLAP(tower config.TowerConfig) error {
-	olapPath := tower.OLAPPath()
-	if err := os.MkdirAll(filepath.Dir(olapPath), 0700); err != nil {
-		return err
-	}
-	db, err := olap.Open(olapPath)
+	db, err := ensureSharedOLAP(tower)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
 
 	dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s?parseTime=true", dolt.Host(), dolt.Port(), tower.Database)
 	doltConn, err := sql.Open("mysql", dsn)

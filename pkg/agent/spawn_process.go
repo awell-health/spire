@@ -68,32 +68,42 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 
 	// Inject SPIRE_TOWER into the child's env without mutating the process-global env.
 	if cfg.Tower != "" {
-		found := false
-		for i, e := range cmd.Env {
-			if strings.HasPrefix(e, "SPIRE_TOWER=") {
-				cmd.Env[i] = "SPIRE_TOWER=" + cfg.Tower
-				found = true
-				break
-			}
-		}
-		if !found {
-			cmd.Env = append(cmd.Env, "SPIRE_TOWER="+cfg.Tower)
-		}
+		setEnv(cmd, "SPIRE_TOWER", cfg.Tower)
 	}
 
-	// Inject SPIRE_PROVIDER into the child's env (same pattern as SPIRE_TOWER).
+	// Inject SPIRE_PROVIDER into the child's env.
 	if cfg.Provider != "" {
-		found := false
-		for i, e := range cmd.Env {
-			if strings.HasPrefix(e, "SPIRE_PROVIDER=") {
-				cmd.Env[i] = "SPIRE_PROVIDER=" + cfg.Provider
-				found = true
-				break
-			}
-		}
-		if !found {
-			cmd.Env = append(cmd.Env, "SPIRE_PROVIDER="+cfg.Provider)
-		}
+		setEnv(cmd, "SPIRE_PROVIDER", cfg.Provider)
+	}
+
+	// Inject OTLP telemetry environment for all providers.
+	// The daemon's OTLP receiver listens on localhost:4317 (or SPIRE_OTLP_PORT).
+	otlpPort := os.Getenv("SPIRE_OTLP_PORT")
+	if otlpPort == "" {
+		otlpPort = "4317"
+	}
+	otlpEndpoint := "http://localhost:" + otlpPort
+	setEnv(cmd, "OTEL_EXPORTER_OTLP_ENDPOINT", otlpEndpoint)
+
+	// Resource attributes carry bead context so the receiver can correlate
+	// spans to beads without post-hoc matching.
+	var resAttrs []string
+	if cfg.BeadID != "" {
+		resAttrs = append(resAttrs, "bead.id="+cfg.BeadID)
+	}
+	if cfg.Name != "" {
+		resAttrs = append(resAttrs, "agent.name="+cfg.Name)
+	}
+	if cfg.Tower != "" {
+		resAttrs = append(resAttrs, "tower="+cfg.Tower)
+	}
+	if len(resAttrs) > 0 {
+		setEnv(cmd, "OTEL_RESOURCE_ATTRIBUTES", strings.Join(resAttrs, ","))
+	}
+
+	// Claude Code: enable built-in OTel telemetry.
+	if cfg.Provider == "" || cfg.Provider == "claude" {
+		setEnv(cmd, "CLAUDE_CODE_ENABLE_TELEMETRY", "1")
 	}
 
 	if cfg.LogPath != "" {
@@ -156,6 +166,18 @@ func (h *ProcessHandle) Identifier() string {
 		return strconv.Itoa(h.cmd.Process.Pid)
 	}
 	return ""
+}
+
+// setEnv sets or replaces an environment variable in cmd.Env.
+func setEnv(cmd *exec.Cmd, key, value string) {
+	prefix := key + "="
+	for i, e := range cmd.Env {
+		if strings.HasPrefix(e, prefix) {
+			cmd.Env[i] = prefix + value
+			return
+		}
+	}
+	cmd.Env = append(cmd.Env, prefix+value)
 }
 
 // roleToSubcmd maps a SpawnRole to the spire subcommand name.

@@ -106,6 +106,19 @@ CREATE TABLE IF NOT EXISTS failure_hotspots (
     PRIMARY KEY (week_start, tower, bead_id, failure_class)
 )`
 
+const createToolEvents = `
+CREATE TABLE IF NOT EXISTS tool_events (
+    session_id    VARCHAR,
+    bead_id       VARCHAR,
+    agent_name    VARCHAR,
+    step          VARCHAR,
+    tool_name     VARCHAR,
+    duration_ms   INTEGER,
+    success       BOOLEAN,
+    timestamp     TIMESTAMP DEFAULT current_timestamp,
+    tower         VARCHAR
+)`
+
 // allSchemaStatements returns the DDL statements in creation order.
 func allSchemaStatements() []string {
 	return []string{
@@ -116,5 +129,6 @@ func allSchemaStatements() []string {
 		createPhaseCostBreakdown,
 		createToolUsageStats,
 		createFailureHotspots,
+		createToolEvents,
 	}
 }

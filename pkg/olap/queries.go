@@ -357,6 +357,126 @@ func (d *DB) QueryBugCausality(limit int) ([]BugCausality, error) {
 	return out, rows.Err()
 }
 
+// ToolEventStats holds aggregated tool event statistics from the tool_events table.
+type ToolEventStats struct {
+	ToolName     string  `json:"tool_name"`
+	Count        int     `json:"count"`
+	AvgDurationMs float64 `json:"avg_duration_ms"`
+	FailureCount int     `json:"failure_count"`
+	Step         string  `json:"step,omitempty"`
+}
+
+// StepToolBreakdown holds per-step tool usage for the trace view.
+type StepToolBreakdown struct {
+	Step  string           `json:"step"`
+	Tools []ToolEventStats `json:"tools"`
+}
+
+// QueryToolEvents returns aggregated tool event stats since the given time.
+func (d *DB) QueryToolEvents(since time.Time) ([]ToolEventStats, error) {
+	ctx := context.Background()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			tool_name,
+			COUNT(*) AS count,
+			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+			SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failure_count
+		FROM tool_events
+		WHERE timestamp >= ?
+		GROUP BY tool_name
+		ORDER BY count DESC
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ToolEventStats
+	for rows.Next() {
+		var s ToolEventStats
+		if err := rows.Scan(&s.ToolName, &s.Count, &s.AvgDurationMs, &s.FailureCount); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// QueryToolEventsByBead returns tool event stats for a specific bead, grouped by tool and step.
+func (d *DB) QueryToolEventsByBead(beadID string) ([]ToolEventStats, error) {
+	ctx := context.Background()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			tool_name,
+			COALESCE(step, '') AS step,
+			COUNT(*) AS count,
+			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+			SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failure_count
+		FROM tool_events
+		WHERE bead_id = ?
+		GROUP BY tool_name, step
+		ORDER BY count DESC
+	`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ToolEventStats
+	for rows.Next() {
+		var s ToolEventStats
+		if err := rows.Scan(&s.ToolName, &s.Step, &s.Count, &s.AvgDurationMs, &s.FailureCount); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// QueryToolEventsByStep returns per-step tool breakdowns for the trace view.
+func (d *DB) QueryToolEventsByStep(beadID string) ([]StepToolBreakdown, error) {
+	ctx := context.Background()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(step, 'unknown') AS step,
+			tool_name,
+			COUNT(*) AS count,
+			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+			SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failure_count
+		FROM tool_events
+		WHERE bead_id = ?
+		GROUP BY step, tool_name
+		ORDER BY step, count DESC
+	`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stepMap := make(map[string][]ToolEventStats)
+	var stepOrder []string
+	for rows.Next() {
+		var step string
+		var s ToolEventStats
+		if err := rows.Scan(&step, &s.ToolName, &s.Count, &s.AvgDurationMs, &s.FailureCount); err != nil {
+			return nil, err
+		}
+		if _, exists := stepMap[step]; !exists {
+			stepOrder = append(stepOrder, step)
+		}
+		stepMap[step] = append(stepMap[step], s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var out []StepToolBreakdown
+	for _, step := range stepOrder {
+		out = append(out, StepToolBreakdown{Step: step, Tools: stepMap[step]})
+	}
+	return out, nil
+}
+
 // QueryCostTrend returns daily cost and run count for the last N days.
 func (d *DB) QueryCostTrend(days int) ([]CostTrendPoint, error) {
 	ctx := context.Background()

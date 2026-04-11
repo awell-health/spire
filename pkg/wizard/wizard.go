@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/steveyegge/beads"
@@ -958,9 +957,8 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 		return ClaudeMetrics{}, fmt.Errorf("read prompt: %w", err)
 	}
 
-	// Set up tool metrics collection (PostToolUse hook).
-	// Best-effort: if setup fails, we still run Claude — just no tool counts.
-	agent.SetupToolMetrics("claude", worktreeDir)
+	// Tool metrics are now collected via the OTel pipeline (daemon OTLP receiver).
+	// The OTEL_EXPORTER_OTLP_ENDPOINT env var is injected at spawn time.
 
 	args := WizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
 
@@ -981,11 +979,6 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	runErr := cmd.Run()
 	_, metrics := parseClaudeResultJSON(buf.Bytes())
 
-	// Collect hook-based tool counts (more reliable than JSON output parsing).
-	if hookCounts, err := agent.CollectToolMetrics("claude", worktreeDir); err == nil && len(hookCounts) > 0 {
-		metrics.ToolCalls = hookCounts
-	}
-
 	return metrics, runErr
 }
 
@@ -999,8 +992,7 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 		return "", ClaudeMetrics{}, fmt.Errorf("read prompt: %w", err)
 	}
 
-	// Set up tool metrics collection (PostToolUse hook).
-	agent.SetupToolMetrics("claude", worktreeDir)
+	// Tool metrics are now collected via the OTel pipeline (daemon OTLP receiver).
 
 	args := WizardBuildClaudeArgs(string(promptBytes), model, maxTurns)
 
@@ -1021,11 +1013,6 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	// Fall back to raw output if parsing didn't find a result event
 	if resultText == "" {
 		resultText = string(out)
-	}
-
-	// Collect hook-based tool counts (more reliable than JSON output parsing).
-	if hookCounts, err := agent.CollectToolMetrics("claude", worktreeDir); err == nil && len(hookCounts) > 0 {
-		metrics.ToolCalls = hookCounts
 	}
 
 	return resultText, metrics, runErr

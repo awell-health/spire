@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/jb/awell/spire/.worktrees/spi-dt13w-feature/.claude/spire-tool-counter.sh",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

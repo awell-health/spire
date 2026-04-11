@@ -189,10 +189,11 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		if ar.Commit != "" {
 			run.CommitSHA = ar.Commit
 		}
-		// Tool call tracking from result.json.
+		// Tool call tracking from result.json. Per-tool counts now come from
+		// the OTel pipeline (tool_events table in DuckDB), so read_calls and
+		// edit_calls are no longer populated here. We still persist the full
+		// tool_calls_json blob for historical reference and fallback queries.
 		if len(ar.ToolCalls) > 0 {
-			run.ReadCalls = ar.ToolCalls["Read"]
-			run.EditCalls = ar.ToolCalls["Edit"] + ar.ToolCalls["Write"]
 			if blob, err := json.Marshal(ar.ToolCalls); err == nil {
 				run.ToolCallsJSON = string(blob)
 			}

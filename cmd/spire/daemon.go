@@ -100,6 +100,7 @@ func cmdDaemon(args []string) error {
 			steward.DaemonCycle()
 		case sig := <-sigCh:
 			log.Printf("[daemon] received %s, shutting down", sig)
+			steward.StopOTLPReceiver()
 			return nil
 		}
 	}
