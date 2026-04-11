@@ -533,8 +533,8 @@ func TestRenderToolUsageContent_WithData(t *testing.T) {
 	if !strings.Contains(combined, "67%") {
 		t.Fatal("expected 67% read ratio in output")
 	}
-	if !strings.Contains(combined, "Calls") {
-		t.Fatal("expected 'Calls' column header in output")
+	if !strings.Contains(combined, "Total") {
+		t.Fatal("expected 'Total' column header in output")
 	}
 	if !strings.Contains(combined, "150") {
 		t.Fatal("expected total calls count 150 in output")

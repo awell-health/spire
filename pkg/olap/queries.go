@@ -310,7 +310,7 @@ func (d *DB) QueryToolUsage(since time.Time) ([]ToolUsageStats, error) {
 		FROM tool_usage_stats
 		WHERE date >= ?::DATE
 		GROUP BY formula_name, phase
-		ORDER BY SUM(total_tools) DESC
+		ORDER BY read_ratio DESC, SUM(total_tools) DESC, formula_name ASC, phase ASC
 	`, since)
 	if err != nil {
 		return nil, err

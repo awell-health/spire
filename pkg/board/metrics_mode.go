@@ -2,6 +2,7 @@ package board
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -525,8 +526,17 @@ func (m *MetricsMode) renderBugContent() []string {
 			attStyled = fmt.Sprintf("%6s", attStr)
 		}
 
-		lines = append(lines, fmt.Sprintf("  %-12s %-16s %s %10s",
-			Truncate(b.BeadID, 12), Truncate(b.FailureClass, 16), attStyled, lastStr))
+		// Dim unclassified failures; classified failures stand out.
+		classStr := Truncate(b.FailureClass, 16)
+		var classStyled string
+		if b.FailureClass == "unknown" || b.FailureClass == "" {
+			classStyled = dimStyle.Render(fmt.Sprintf("%-16s", classStr))
+		} else {
+			classStyled = yellowStyle.Render(fmt.Sprintf("%-16s", classStr))
+		}
+
+		lines = append(lines, fmt.Sprintf("  %-12s %s %s %10s",
+			Truncate(b.BeadID, 12), classStyled, attStyled, lastStr))
 	}
 	return lines
 }
@@ -539,13 +549,29 @@ func (m *MetricsMode) renderToolUsageContent() []string {
 		return []string{dimStyle.Render("  No tool usage data")}
 	}
 
+	// Sort: ratio DESC → total DESC → formula ASC → phase ASC.
+	sorted := make([]olap.ToolUsageStats, len(m.toolUsage))
+	copy(sorted, m.toolUsage)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].ReadRatio != sorted[j].ReadRatio {
+			return sorted[i].ReadRatio > sorted[j].ReadRatio
+		}
+		if sorted[i].TotalTools != sorted[j].TotalTools {
+			return sorted[i].TotalTools > sorted[j].TotalTools
+		}
+		if sorted[i].FormulaName != sorted[j].FormulaName {
+			return sorted[i].FormulaName < sorted[j].FormulaName
+		}
+		return sorted[i].Phase < sorted[j].Phase
+	})
+
 	lines := []string{
-		dimStyle.Render(fmt.Sprintf("  %-14s %-10s %5s %5s %5s %6s", "Formula", "Phase", "Calls", "Read", "Edit", "Ratio")),
+		dimStyle.Render(fmt.Sprintf("  %-14s %-10s %5s %5s %5s %6s", "Formula", "Phase", "Read", "Edit", "Total", "Ratio")),
 	}
-	for _, t := range m.toolUsage {
+	for _, t := range sorted {
 		ratioStr := fmt.Sprintf("%.0f%%", t.ReadRatio*100)
 		lines = append(lines, fmt.Sprintf("  %-14s %-10s %5d %5d %5d %6s",
-			Truncate(t.FormulaName, 14), Truncate(t.Phase, 10), t.TotalTools, t.TotalRead, t.TotalEdit, ratioStr))
+			Truncate(t.FormulaName, 14), Truncate(t.Phase, 10), t.TotalRead, t.TotalEdit, t.TotalTools, ratioStr))
 	}
 	return lines
 }

@@ -477,11 +477,10 @@ func TestQueryCostTrend(t *testing.T) {
 	if totalRuns != 5 {
 		t.Errorf("total runs across days: got %d, want 5", totalRuns)
 	}
-	// Test runs have prompt_tokens=0, completion_tokens=0 but total_tokens set.
-	// The query sums prompt_tokens and completion_tokens columns specifically.
-	// Total tokens should be 0 since insertTestRuns only sets total_tokens, not prompt/completion.
-	if totalPrompt+totalCompletion < 0 {
-		t.Errorf("token sums should not be negative: prompt=%d, completion=%d", totalPrompt, totalCompletion)
+	// Test data sets total_tokens but not prompt_tokens/completion_tokens,
+	// so the query's COALESCE(SUM(prompt_tokens), 0) returns 0 for both.
+	if totalPrompt+totalCompletion != 0 {
+		t.Errorf("token sums should be 0 (test data has no prompt/completion tokens): prompt=%d, completion=%d", totalPrompt, totalCompletion)
 	}
 }
 
