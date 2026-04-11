@@ -2251,3 +2251,36 @@ func TestInspectorTabNotAffectedByViewMode(t *testing.T) {
 	}
 }
 
+func TestParsePendingAction(t *testing.T) {
+	tests := []struct {
+		input string
+		want  PendingAction
+	}{
+		// Lowercase (hardcoded paths).
+		{"focus", ActionFocus},
+		{"logs", ActionLogs},
+		{"summon", ActionSummon},
+		{"claim", ActionClaim},
+		{"resummon", ActionResummon},
+		{"close", ActionClose},
+		{"grok", ActionGrok},
+		{"trace", ActionTrace},
+		// Title-case (from actionLabel()).
+		{"Grok", ActionGrok},
+		{"Trace", ActionTrace},
+		{"Summon", ActionSummon},
+		{"Close", ActionClose},
+		// Unknown.
+		{"", ActionNone},
+		{"unknown", ActionNone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parsePendingAction(tt.input)
+			if got != tt.want {
+				t.Errorf("parsePendingAction(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+

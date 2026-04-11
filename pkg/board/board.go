@@ -4,6 +4,7 @@ package board
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -386,7 +387,7 @@ func RunBoard(opts Opts, identity string, fetchAgents func() []LocalAgent, actio
 
 // parsePendingAction converts a string action name to a PendingAction.
 func parsePendingAction(s string) PendingAction {
-	switch s {
+	switch strings.ToLower(s) {
 	case "focus":
 		return ActionFocus
 	case "logs":
@@ -399,9 +400,9 @@ func parsePendingAction(s string) PendingAction {
 		return ActionResummon
 	case "close":
 		return ActionClose
-	case "Grok":
+	case "grok":
 		return ActionGrok
-	case "Trace":
+	case "trace":
 		return ActionTrace
 	default:
 		return ActionNone
