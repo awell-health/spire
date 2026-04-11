@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
+
+	"github.com/awell-health/spire/pkg/olap"
 	"github.com/awell-health/spire/pkg/process"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
@@ -183,6 +188,50 @@ func cmdUp(args []string) error {
 			}
 		}
 		if arWarned > 0 {
+			fmt.Println()
+		} else {
+			fmt.Printf("ok (%d tower(s))\n", len(towers))
+		}
+
+		// Initialize OLAP (DuckDB) database and run initial ETL sync.
+		fmt.Print("olap database: ")
+		olapWarned := 0
+		for _, t := range towers {
+			olapPath := t.OLAPPath()
+			if err := os.MkdirAll(filepath.Dir(olapPath), 0700); err != nil {
+				fmt.Printf("\n  warning: %s: mkdir: %s", t.Name, err)
+				olapWarned++
+				continue
+			}
+			adb, err := olap.Open(olapPath)
+			if err != nil {
+				fmt.Printf("\n  warning: %s: init: %s", t.Name, err)
+				olapWarned++
+				continue
+			}
+			// Run initial ETL sync from Dolt into DuckDB.
+			dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s", doltHost(), doltPort(), t.Database)
+			doltConn, err := sql.Open("mysql", dsn)
+			if err != nil {
+				adb.Close()
+				fmt.Printf("\n  warning: %s: dolt connect: %s", t.Name, err)
+				olapWarned++
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			etl := olap.NewETL(adb)
+			n, syncErr := etl.Sync(ctx, doltConn)
+			cancel()
+			doltConn.Close()
+			adb.Close()
+			if syncErr != nil {
+				fmt.Printf("\n  warning: %s: sync: %s", t.Name, syncErr)
+				olapWarned++
+			} else if n > 0 {
+				log.Printf("[up] [%s] olap: initial sync — %d rows", t.Name, n)
+			}
+		}
+		if olapWarned > 0 {
 			fmt.Println()
 		} else {
 			fmt.Printf("ok (%d tower(s))\n", len(towers))
