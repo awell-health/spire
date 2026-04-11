@@ -178,17 +178,38 @@ func cmdUp(args []string) error {
 			fmt.Printf("ok (%d tower(s))\n", len(towers))
 		}
 
-		// Ensure agent_runs + golden_prompts tables exist and columns are up-to-date
+		// Ensure agent_runs + golden_prompts tables exist and columns are up-to-date.
+		// Skip migrations when stored spire_version matches the binary (schema is current).
 		fmt.Print("spire tables: ")
 		arWarned := 0
+		arSkipped := 0
 		for _, t := range towers {
-			if err := migrateSpireTables(t.Database); err != nil {
-				fmt.Printf("\n  warning: %s: %s", t.Database, err)
-				arWarned++
+			beadsDir := filepath.Join(doltDataDir(), t.Database, ".beads")
+			storedVer := readSpireVersion(beadsDir)
+			action := decideVersionAction(storedVer)
+
+			if action.warn {
+				fmt.Fprintf(os.Stderr, "\nWarning: Tower %s was written by Spire %s, you're running %s. Run: brew upgrade spire\n",
+					t.Name, action.storedVersion, action.binaryVersion)
+			}
+
+			if action.skipMigrations {
+				arSkipped++
+			} else {
+				if err := migrateSpireTables(t.Database); err != nil {
+					fmt.Printf("\n  warning: %s: %s", t.Database, err)
+					arWarned++
+				}
+			}
+
+			if action.writeVersion {
+				writeSpireVersion(beadsDir, action.binaryVersion)
 			}
 		}
 		if arWarned > 0 {
 			fmt.Println()
+		} else if arSkipped == len(towers) {
+			fmt.Printf("ok (%d tower(s), skipped — version match)\n", len(towers))
 		} else {
 			fmt.Printf("ok (%d tower(s))\n", len(towers))
 		}
