@@ -374,6 +374,14 @@ func NewBoardMode(o BoardModeOpts) (*BoardMode, error) {
 	}, nil
 }
 
+// Close releases the BoardMode's owned database connection.
+func (m *BoardMode) Close() {
+	if m.db != nil {
+		m.db.Close()
+		m.db = nil
+	}
+}
+
 // boardModeRunner adapts *BoardMode (which implements Mode) to tea.Model
 // so it can be used directly with Bubble Tea until RootModel takes over.
 type boardModeRunner struct {
@@ -414,6 +422,7 @@ func RunBoardTUI(opts Opts, identity string, fetchAgents func() []LocalAgent, ac
 		runner := &boardModeRunner{mode: bm}
 		p := tea.NewProgram(runner, tea.WithAltScreen())
 		_, err = p.Run()
+		bm.Close()
 		if err != nil {
 			return err
 		}
@@ -464,18 +473,19 @@ func (m *BoardMode) OnDeactivate() {}
 // HandleTowerChanged implements Mode. Closes the current db, re-opens at the new beads dir,
 // and triggers an immediate re-fetch.
 func (m *BoardMode) HandleTowerChanged(tc TowerChanged) tea.Cmd {
-	if m.db != nil {
-		m.db.Close()
-	}
-	m.beadsDir = tc.BeadsDir
 	m.Opts.TowerName = tc.Name
-	db, err := store.Open(tc.BeadsDir)
+	newDB, err := store.Open(tc.BeadsDir)
 	if err != nil {
 		m.ActionStatus = fmt.Sprintf("tower switch failed: %v", err)
 		m.ActionStatusTime = time.Now()
+		// Keep old m.db alive so ticks don't panic on nil.
 		return nil
 	}
-	m.db = db
+	if m.db != nil {
+		m.db.Close()
+	}
+	m.db = newDB
+	m.beadsDir = tc.BeadsDir
 	m.Snapshot = nil
 	m.SelCol = 0
 	m.SelCard = 0
@@ -490,11 +500,6 @@ func (m *BoardMode) HasOverlay() bool {
 	return m.Inspecting || m.ActionMenuOpen || m.TowerSwitcherOpen ||
 		m.ConfirmOpen || m.TermOpen || m.SearchActive ||
 		m.Cmdline.Active || m.FeedbackActive || m.ResolveActive
-}
-
-// reconnectWarningMsg is a transient warning sent when the db connection is re-established.
-type reconnectWarningMsg struct {
-	warning string
 }
 
 // actionResultMsg carries the result of an inline action executed via tea.Cmd.
@@ -1474,18 +1479,19 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 		if m.ActionStatus != "" && time.Since(m.ActionStatusTime) > 5*time.Second {
 			m.ActionStatus = ""
 		}
-		if !m.Inspecting {
+		if !m.Inspecting && m.db != nil {
 			return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
 		}
 		return m, tickCmd(m.Opts.Interval)
 	case snapshotMsg:
 		if msg.Err != nil {
 			// Connection error — attempt reconnect.
-			if m.db != nil {
-				m.db.Close()
-			}
-			if db, err := store.Open(m.beadsDir); err == nil {
-				m.db = db
+			// Open new connection first; only close old one on success to avoid nil db.
+			if newDB, err := store.Open(m.beadsDir); err == nil {
+				if m.db != nil {
+					m.db.Close()
+				}
+				m.db = newDB
 			}
 			m.ActionStatus = "Reconnecting..."
 			m.ActionStatusTime = time.Now()

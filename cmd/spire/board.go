@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
@@ -112,10 +113,19 @@ func cmdBoard(args []string) error {
 		return items
 	}
 
-	// Resolve available tower names for the RootModel tower switcher.
+	// Resolve available towers with beads dirs for the RootModel tower switcher.
 	if towers, err := config.ListTowerConfigs(); err == nil {
+		dd := doltDataDir()
 		for _, t := range towers {
-			opts.TowerNames = append(opts.TowerNames, t.Name)
+			item := board.TowerItem{
+				Name:     t.Name,
+				Database: t.Database,
+				Active:   t.Name == opts.TowerName,
+			}
+			if dd != "" && t.Database != "" {
+				item.BeadsDir = filepath.Join(dd, t.Database, ".beads")
+			}
+			opts.TowerItems = append(opts.TowerItems, item)
 		}
 	}
 

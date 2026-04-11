@@ -211,11 +211,14 @@ func TestTowerChangedPropagation(t *testing.T) {
 	m1 := newMockMode(ModeAgents)
 
 	root := NewRootModel(RootOpts{
-		TowerName:  "tower-a",
-		Identity:   "test-user",
-		BeadsDir:   "/tmp/beads",
-		Modes:      []Mode{m0, m1},
-		TowerNames: []string{"tower-a", "tower-b"},
+		TowerName: "tower-a",
+		Identity:  "test-user",
+		BeadsDir:  "/tmp/beads",
+		Modes:     []Mode{m0, m1},
+		TowerItems: []TowerItem{
+			{Name: "tower-a", BeadsDir: "/tmp/beads-a"},
+			{Name: "tower-b", BeadsDir: "/tmp/beads-b"},
+		},
 	})
 
 	// Open tower switcher.
@@ -251,6 +254,9 @@ func TestTowerChangedPropagation(t *testing.T) {
 		tc := m.towerChangedCalls[0]
 		if tc.Name != "tower-b" {
 			t.Fatalf("mode %d: expected TowerChanged.Name='tower-b', got '%s'", i, tc.Name)
+		}
+		if tc.BeadsDir != "/tmp/beads-b" {
+			t.Fatalf("mode %d: expected TowerChanged.BeadsDir='/tmp/beads-b', got '%s'", i, tc.BeadsDir)
 		}
 	}
 }
@@ -361,10 +367,13 @@ func TestInitCallsAllModes(t *testing.T) {
 
 func TestTowerSwitcherEsc(t *testing.T) {
 	root := NewRootModel(RootOpts{
-		TowerName:  "tower-a",
-		Identity:   "test-user",
-		Modes:      []Mode{newMockMode(ModeBoard)},
-		TowerNames: []string{"tower-a", "tower-b"},
+		TowerName: "tower-a",
+		Identity:  "test-user",
+		Modes:     []Mode{newMockMode(ModeBoard)},
+		TowerItems: []TowerItem{
+			{Name: "tower-a", BeadsDir: "/tmp/beads-a"},
+			{Name: "tower-b", BeadsDir: "/tmp/beads-b"},
+		},
 	})
 
 	// Open tower switcher.

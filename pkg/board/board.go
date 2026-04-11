@@ -95,8 +95,8 @@ type Opts struct {
 	// TermContentFn fetches content for the terminal pane overlay.
 	// Takes beadID and returns rendered content string.
 	TermContentFn func(beadID string) (string, error)
-	// TowerNames lists available tower names for the RootModel tower switcher.
-	TowerNames []string
+	// TowerItems lists available towers with their beads dirs for the RootModel tower switcher.
+	TowerItems []TowerItem
 }
 
 // ViewMode identifies which tabbed view is active on the board.
@@ -342,13 +342,20 @@ func RunBoard(opts Opts, identity string, fetchAgents func() []LocalAgent, actio
 			Identity:   identity,
 			BeadsDir:   beadsDir,
 			Modes:      []Mode{boardMode, agentsMode, workshopMode, messagesMode, metricsMode},
-			TowerNames: opts.TowerNames,
+			TowerItems: opts.TowerItems,
 		})
 
 		p := tea.NewProgram(root, tea.WithAltScreen())
-		_, err = p.Run()
+		finalModel, err := p.Run()
 		if err != nil {
+			boardMode.Close()
 			return err
+		}
+		boardMode.Close()
+
+		// Recover the final RootModel from p.Run() so PendingAction() reflects mutations.
+		if rm, ok := finalModel.(RootModel); ok {
+			root = rm
 		}
 
 		// Check RootModel for pending action (exit-relaunch pattern).

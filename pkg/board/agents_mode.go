@@ -210,10 +210,10 @@ func (m *AgentsMode) SetSize(w, h int) {
 	m.height = h
 }
 
-// OnActivate sets active=true and triggers an immediate re-fetch.
+// OnActivate sets active=true, triggers an immediate re-fetch, and restarts the tick chain.
 func (m *AgentsMode) OnActivate() tea.Cmd {
 	m.active = true
-	return m.fetchAgents()
+	return tea.Batch(m.fetchAgents(), scheduleAgentTick())
 }
 
 // OnDeactivate sets active=false.

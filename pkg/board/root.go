@@ -17,7 +17,7 @@ type RootOpts struct {
 	Identity   string
 	BeadsDir   string
 	Modes      []Mode
-	TowerNames []string // available towers for the switcher
+	TowerItems []TowerItem // available towers with beads dirs for the switcher
 }
 
 // RootModel is the top-level Bubble Tea model that owns shared state,
@@ -31,7 +31,7 @@ type RootModel struct {
 	width, height int
 	// tower switcher overlay state
 	showTowerSwitcher bool
-	towerNames        []string
+	towerItems        []TowerItem
 	towerCursor       int
 	// pending action for exit-relaunch
 	pendingAction *PendingActionMsg
@@ -44,7 +44,7 @@ func NewRootModel(opts RootOpts) RootModel {
 		towerName:  opts.TowerName,
 		identity:   opts.Identity,
 		beadsDir:   opts.BeadsDir,
-		towerNames: opts.TowerNames,
+		towerItems: opts.TowerItems,
 	}
 }
 
@@ -90,8 +90,38 @@ func (r RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return r, tea.Quit
 
 	default:
-		return r.updateActiveMode(msg)
+		return r.routeMsg(msg)
 	}
+}
+
+// routeMsg delivers a message to its owning mode based on type.
+// Mode-specific tick/snapshot messages are routed to the correct mode so that
+// background tick chains continue even when the mode is inactive.
+// Unknown message types are forwarded to the active mode.
+func (r RootModel) routeMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	target := -1
+	switch msg.(type) {
+	case tickMsg, snapshotMsg, actionResultMsg, inspectorDataMsg, termContentMsg, rejectDesignResultMsg:
+		target = r.modeIndex(ModeBoard)
+	case agentTickMsg, AgentSnapshot:
+		target = r.modeIndex(ModeAgents)
+	}
+	if target >= 0 && target < len(r.modes) {
+		updated, cmd := r.modes[target].Update(msg)
+		r.modes[target] = updated
+		return r, cmd
+	}
+	return r.updateActiveMode(msg)
+}
+
+// modeIndex returns the index of the mode with the given ID, or -1 if not found.
+func (r RootModel) modeIndex(id ModeID) int {
+	for i, m := range r.modes {
+		if m.ID() == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // handleKey processes all key messages with the priority order specified
@@ -141,7 +171,7 @@ func (r RootModel) cycleMode(delta int) (tea.Model, tea.Cmd) {
 func (r RootModel) handleTowerSwitcherKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "j", "down":
-		if r.towerCursor < len(r.towerNames)-1 {
+		if r.towerCursor < len(r.towerItems)-1 {
 			r.towerCursor++
 		}
 		return r, nil
@@ -151,10 +181,12 @@ func (r RootModel) handleTowerSwitcherKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return r, nil
 	case "enter":
-		if r.towerCursor >= 0 && r.towerCursor < len(r.towerNames) {
-			r.towerName = r.towerNames[r.towerCursor]
+		if r.towerCursor >= 0 && r.towerCursor < len(r.towerItems) {
+			item := r.towerItems[r.towerCursor]
+			r.towerName = item.Name
+			r.beadsDir = item.BeadsDir
 			r.showTowerSwitcher = false
-			tc := TowerChanged{Name: r.towerName, BeadsDir: r.beadsDir}
+			tc := TowerChanged{Name: item.Name, BeadsDir: item.BeadsDir}
 			var cmds []tea.Cmd
 			for _, m := range r.modes {
 				if cmd := m.HandleTowerChanged(tc); cmd != nil {
@@ -241,12 +273,11 @@ func (r RootModel) renderFooter() string {
 
 // overlayTowerSwitcher renders the tower switcher centered over the base view.
 func (r RootModel) overlayTowerSwitcher(base string) string {
-	items := make([]TowerItem, len(r.towerNames))
-	for i, name := range r.towerNames {
-		items[i] = TowerItem{
-			Name:   name,
-			Active: name == r.towerName,
-		}
+	// Mark the active tower for rendering.
+	items := make([]TowerItem, len(r.towerItems))
+	for i, item := range r.towerItems {
+		items[i] = item
+		items[i].Active = item.Name == r.towerName
 	}
 	overlay := renderTowerSwitcher(items, r.towerCursor, r.width)
 
