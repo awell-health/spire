@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS agent_runs_olap (
     synced_at        TIMESTAMP DEFAULT now()
 )`
 
+// createETLCursor defines the cursor table. The last_id column stores the
+// high-water-mark value for incremental sync. For agent_runs this is an
+// RFC3339 started_at timestamp (not an id — the column name is historical).
 const createETLCursor = `
 CREATE TABLE IF NOT EXISTS etl_cursor (
     table_name   VARCHAR PRIMARY KEY,

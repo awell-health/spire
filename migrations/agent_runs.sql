@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     INDEX idx_phase (phase),
     INDEX idx_formula (formula_name),
     INDEX idx_bead_type (bead_type),
-    INDEX idx_tower (tower)
+    INDEX idx_tower (tower),
+    INDEX idx_started_at (started_at)
 );
 
 CREATE TABLE IF NOT EXISTS golden_prompts (

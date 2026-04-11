@@ -133,22 +133,26 @@ func TestETLSyncWithMockDolt(t *testing.T) {
 		t.Errorf("expected 2 rows in agent_runs_olap, got %d", count)
 	}
 
-	// Verify cursor was updated
-	var lastID string
-	if err := olapDB.db.QueryRowContext(ctx, "SELECT last_id FROM etl_cursor WHERE table_name = 'agent_runs'").Scan(&lastID); err != nil {
+	// Verify cursor was updated to the last row's started_at (RFC3339)
+	var cursorVal string
+	if err := olapDB.db.QueryRowContext(ctx, "SELECT last_id FROM etl_cursor WHERE table_name = 'agent_runs'").Scan(&cursorVal); err != nil {
 		t.Fatalf("read cursor: %v", err)
 	}
-	if lastID != "run-002" {
-		t.Errorf("expected cursor at run-002, got %s", lastID)
+	// Cursor should be an RFC3339 timestamp matching the later row's started_at
+	expectedTS := now.Add(-20 * time.Minute).Format(time.RFC3339)
+	if cursorVal != expectedTS {
+		t.Errorf("expected cursor at %s, got %s", expectedTS, cursorVal)
 	}
 
-	// Second sync should be a no-op (cursor is at run-002, no new rows)
+	// Second sync re-fetches the boundary row (started_at >=) but upserts it,
+	// so it should sync 1 row (the boundary) with no net data change.
 	n2, err := etl.Sync(ctx, mockDolt)
 	if err != nil {
 		t.Fatalf("Sync (second): %v", err)
 	}
-	if n2 != 0 {
-		t.Errorf("expected 0 rows synced on second call, got %d", n2)
+	// The boundary row is re-fetched; only rows at the cursor timestamp are returned
+	if n2 > 1 {
+		t.Errorf("expected at most 1 row re-synced on second call, got %d", n2)
 	}
 
 	// Verify materialized views have data
@@ -218,7 +222,7 @@ func TestETLUpsertOnConflict(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	// Reset cursor to re-sync the same row
+	// Reset cursor to trigger a full re-sync (empty = no filter)
 	_, err = olapDB.db.ExecContext(ctx, `UPDATE etl_cursor SET last_id = '' WHERE table_name = 'agent_runs'`)
 	if err != nil {
 		t.Fatalf("reset cursor: %v", err)
@@ -245,5 +249,158 @@ func TestETLUpsertOnConflict(t *testing.T) {
 	}
 	if cost != 0.50 {
 		t.Errorf("expected cost=0.50, got %f", cost)
+	}
+}
+
+// TestETLNonMonotonicIDs verifies the bug fix: rows with lexically smaller IDs
+// than previously synced rows are still captured, because the cursor uses
+// started_at (monotonic) instead of id (random hex).
+func TestETLNonMonotonicIDs(t *testing.T) {
+	olapDB, err := Open("")
+	if err != nil {
+		t.Fatalf("Open olap: %v", err)
+	}
+	defer olapDB.Close()
+
+	mockDolt, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("Open mock dolt: %v", err)
+	}
+	defer mockDolt.Close()
+
+	_, err = mockDolt.Exec(`CREATE TABLE agent_runs (
+		id VARCHAR PRIMARY KEY, bead_id VARCHAR, epic_id VARCHAR,
+		parent_run_id VARCHAR, formula_name VARCHAR, formula_version VARCHAR,
+		phase VARCHAR, role VARCHAR, model VARCHAR, tower VARCHAR,
+		branch VARCHAR, result VARCHAR, review_rounds INTEGER,
+		context_tokens_in BIGINT, context_tokens_out BIGINT, total_tokens BIGINT,
+		cost_usd DOUBLE, duration_seconds DOUBLE,
+		startup_seconds DOUBLE, working_seconds DOUBLE, queue_seconds DOUBLE, review_seconds DOUBLE,
+		files_changed INTEGER, lines_added INTEGER, lines_removed INTEGER,
+		read_calls INTEGER, edit_calls INTEGER, tool_calls_json TEXT,
+		failure_class VARCHAR, attempt_number INTEGER,
+		started_at TIMESTAMP, completed_at TIMESTAMP
+	)`)
+	if err != nil {
+		t.Fatalf("create mock table: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Insert a row with a lexically "large" id
+	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
+		('run-zzz', 'spi-a', NULL, NULL, 'f', '1', 'plan', 'wizard', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?)`,
+		now.Add(-2*time.Hour), now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("insert row 1: %v", err)
+	}
+
+	ctx := context.Background()
+	etl := NewETL(olapDB)
+
+	// First sync: picks up run-zzz
+	n, err := etl.Sync(ctx, mockDolt)
+	if err != nil {
+		t.Fatalf("Sync 1: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 row, got %d", n)
+	}
+
+	// Insert a row with a lexically SMALLER id but LATER started_at.
+	// With the old id-based cursor (WHERE id > 'run-zzz'), this row would be
+	// skipped forever because 'run-aaa' < 'run-zzz'.
+	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
+		('run-aaa', 'spi-b', NULL, NULL, 'f', '1', 'impl', 'apprentice', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?)`,
+		now.Add(-30*time.Minute), now.Add(-15*time.Minute))
+	if err != nil {
+		t.Fatalf("insert row 2: %v", err)
+	}
+
+	// Second sync: must pick up run-aaa (plus re-process boundary)
+	n2, err := etl.Sync(ctx, mockDolt)
+	if err != nil {
+		t.Fatalf("Sync 2: %v", err)
+	}
+	if n2 < 1 {
+		t.Errorf("expected at least 1 new row synced, got %d", n2)
+	}
+
+	// Verify both rows are in the OLAP table
+	var count int
+	if err := olapDB.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM agent_runs_olap").Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 rows in agent_runs_olap, got %d", count)
+	}
+}
+
+// TestETLStaleCursorMigration verifies that a stale id-based cursor value
+// (from before the started_at fix) triggers a full re-sync.
+func TestETLStaleCursorMigration(t *testing.T) {
+	olapDB, err := Open("")
+	if err != nil {
+		t.Fatalf("Open olap: %v", err)
+	}
+	defer olapDB.Close()
+
+	mockDolt, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("Open mock dolt: %v", err)
+	}
+	defer mockDolt.Close()
+
+	_, err = mockDolt.Exec(`CREATE TABLE agent_runs (
+		id VARCHAR PRIMARY KEY, bead_id VARCHAR, epic_id VARCHAR,
+		parent_run_id VARCHAR, formula_name VARCHAR, formula_version VARCHAR,
+		phase VARCHAR, role VARCHAR, model VARCHAR, tower VARCHAR,
+		branch VARCHAR, result VARCHAR, review_rounds INTEGER,
+		context_tokens_in BIGINT, context_tokens_out BIGINT, total_tokens BIGINT,
+		cost_usd DOUBLE, duration_seconds DOUBLE,
+		startup_seconds DOUBLE, working_seconds DOUBLE, queue_seconds DOUBLE, review_seconds DOUBLE,
+		files_changed INTEGER, lines_added INTEGER, lines_removed INTEGER,
+		read_calls INTEGER, edit_calls INTEGER, tool_calls_json TEXT,
+		failure_class VARCHAR, attempt_number INTEGER,
+		started_at TIMESTAMP, completed_at TIMESTAMP
+	)`)
+	if err != nil {
+		t.Fatalf("create mock table: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
+		('run-abc', 'spi-x', NULL, NULL, 'f', '1', 'plan', 'wizard', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?)`,
+		now, now)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Manually insert a stale id-based cursor (simulating pre-fix state)
+	_, err = olapDB.db.ExecContext(ctx,
+		`INSERT INTO etl_cursor (table_name, last_id, last_synced) VALUES ('agent_runs', 'run-xyz', now())`)
+	if err != nil {
+		t.Fatalf("insert stale cursor: %v", err)
+	}
+
+	// Sync should detect the stale cursor, reset, and do a full sync
+	etl := NewETL(olapDB)
+	n, err := etl.Sync(ctx, mockDolt)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 row from full re-sync, got %d", n)
+	}
+
+	// Cursor should now be a timestamp, not an id
+	var cursorVal string
+	if err := olapDB.db.QueryRowContext(ctx, "SELECT last_id FROM etl_cursor WHERE table_name = 'agent_runs'").Scan(&cursorVal); err != nil {
+		t.Fatalf("read cursor: %v", err)
+	}
+	if cursorVal == "" || cursorVal == "run-xyz" {
+		t.Errorf("cursor should be an RFC3339 timestamp, got %q", cursorVal)
 	}
 }
