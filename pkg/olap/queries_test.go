@@ -500,6 +500,204 @@ func TestQueryCostTrendEmpty(t *testing.T) {
 	}
 }
 
+// insertTestToolEvents inserts tool events for testing query functions.
+func insertTestToolEvents(t *testing.T, db *DB) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	events := []struct {
+		sessionID, beadID, agentName, step, toolName, tower string
+		durationMs                                          int
+		success                                             bool
+		ts                                                  time.Time
+	}{
+		{"s1", "spi-abc", "apprentice-0", "implement", "Read", "t1", 50, true, now.Add(-time.Hour)},
+		{"s1", "spi-abc", "apprentice-0", "implement", "Read", "t1", 30, true, now.Add(-59 * time.Minute)},
+		{"s1", "spi-abc", "apprentice-0", "implement", "Edit", "t1", 120, true, now.Add(-58 * time.Minute)},
+		{"s1", "spi-abc", "apprentice-0", "implement", "Bash", "t1", 500, false, now.Add(-57 * time.Minute)},
+		{"s2", "spi-abc", "sage-0", "review", "Read", "t1", 40, true, now.Add(-30 * time.Minute)},
+		{"s2", "spi-abc", "sage-0", "review", "Grep", "t1", 80, true, now.Add(-29 * time.Minute)},
+		{"s3", "spi-def", "apprentice-1", "implement", "Read", "t1", 60, true, now.Add(-10 * time.Minute)},
+	}
+
+	for _, e := range events {
+		_, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO tool_events (session_id, bead_id, agent_name, step, tool_name, duration_ms, success, timestamp, tower)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.sessionID, e.beadID, e.agentName, e.step, e.toolName, e.durationMs, e.success, e.ts, e.tower,
+		)
+		if err != nil {
+			t.Fatalf("insert tool event: %v", err)
+		}
+	}
+}
+
+func TestQueryToolEvents(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	insertTestToolEvents(t, db)
+
+	since := time.Now().Add(-2 * time.Hour)
+	stats, err := db.QueryToolEvents(since)
+	if err != nil {
+		t.Fatalf("QueryToolEvents: %v", err)
+	}
+
+	if len(stats) == 0 {
+		t.Fatal("expected tool event stats, got 0")
+	}
+
+	// Read should be most frequent (4 events)
+	if stats[0].ToolName != "Read" {
+		t.Errorf("expected first tool to be Read (most frequent), got %s", stats[0].ToolName)
+	}
+	if stats[0].Count != 4 {
+		t.Errorf("Read count: got %d, want 4", stats[0].Count)
+	}
+	if stats[0].FailureCount != 0 {
+		t.Errorf("Read failure count: got %d, want 0", stats[0].FailureCount)
+	}
+
+	// Find Bash — it should have 1 failure
+	var bashFound bool
+	for _, s := range stats {
+		if s.ToolName == "Bash" {
+			bashFound = true
+			if s.Count != 1 {
+				t.Errorf("Bash count: got %d, want 1", s.Count)
+			}
+			if s.FailureCount != 1 {
+				t.Errorf("Bash failure count: got %d, want 1", s.FailureCount)
+			}
+		}
+	}
+	if !bashFound {
+		t.Error("expected Bash in results")
+	}
+}
+
+func TestQueryToolEventsEmpty(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	stats, err := db.QueryToolEvents(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("QueryToolEvents empty: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("expected 0 stats, got %d", len(stats))
+	}
+}
+
+func TestQueryToolEventsByBead(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	insertTestToolEvents(t, db)
+
+	stats, err := db.QueryToolEventsByBead("spi-abc")
+	if err != nil {
+		t.Fatalf("QueryToolEventsByBead: %v", err)
+	}
+
+	if len(stats) == 0 {
+		t.Fatal("expected stats for spi-abc, got 0")
+	}
+
+	// spi-abc has 6 events: Read(3), Edit(1), Bash(1), Grep(1)
+	totalCount := 0
+	for _, s := range stats {
+		totalCount += s.Count
+	}
+	if totalCount != 6 {
+		t.Errorf("total events for spi-abc: got %d, want 6", totalCount)
+	}
+
+	// spi-def should only have 1 event
+	defStats, err := db.QueryToolEventsByBead("spi-def")
+	if err != nil {
+		t.Fatalf("QueryToolEventsByBead(spi-def): %v", err)
+	}
+	if len(defStats) != 1 {
+		t.Errorf("expected 1 tool stat for spi-def, got %d", len(defStats))
+	}
+
+	// Nonexistent bead should return empty
+	emptyStats, err := db.QueryToolEventsByBead("spi-nonexistent")
+	if err != nil {
+		t.Fatalf("QueryToolEventsByBead(nonexistent): %v", err)
+	}
+	if len(emptyStats) != 0 {
+		t.Errorf("expected 0 stats for nonexistent bead, got %d", len(emptyStats))
+	}
+}
+
+func TestQueryToolEventsByStep(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	insertTestToolEvents(t, db)
+
+	steps, err := db.QueryToolEventsByStep("spi-abc")
+	if err != nil {
+		t.Fatalf("QueryToolEventsByStep: %v", err)
+	}
+
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps (implement, review), got %d", len(steps))
+	}
+
+	// Verify step grouping and ordering
+	stepNames := map[string]int{}
+	for _, s := range steps {
+		stepNames[s.Step] = len(s.Tools)
+	}
+
+	// implement step: Read(2), Edit(1), Bash(1) = 3 distinct tools
+	if stepNames["implement"] != 3 {
+		t.Errorf("implement step: expected 3 tools, got %d", stepNames["implement"])
+	}
+	// review step: Read(1), Grep(1) = 2 distinct tools
+	if stepNames["review"] != 2 {
+		t.Errorf("review step: expected 2 tools, got %d", stepNames["review"])
+	}
+
+	// Within each step, tools should be ordered by count DESC
+	for _, s := range steps {
+		if s.Step == "implement" && len(s.Tools) > 0 {
+			if s.Tools[0].ToolName != "Read" {
+				t.Errorf("implement first tool: got %s, want Read (highest count)", s.Tools[0].ToolName)
+			}
+			if s.Tools[0].Count != 2 {
+				t.Errorf("implement Read count: got %d, want 2", s.Tools[0].Count)
+			}
+		}
+	}
+
+	// Nonexistent bead returns empty
+	emptySteps, err := db.QueryToolEventsByStep("spi-nonexistent")
+	if err != nil {
+		t.Fatalf("QueryToolEventsByStep(nonexistent): %v", err)
+	}
+	if len(emptySteps) != 0 {
+		t.Errorf("expected 0 steps for nonexistent bead, got %d", len(emptySteps))
+	}
+}
+
 func TestNewTablesExistAfterInit(t *testing.T) {
 	db, err := Open("")
 	if err != nil {

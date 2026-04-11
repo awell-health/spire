@@ -191,8 +191,10 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		}
 		// Tool call tracking from result.json. Per-tool counts now come from
 		// the OTel pipeline (tool_events table in DuckDB), so read_calls and
-		// edit_calls are no longer populated here. We still persist the full
-		// tool_calls_json blob for historical reference and fallback queries.
+		// edit_calls are no longer populated here. Downstream consumers
+		// (MetricsToolUsage, MetricsThrashingDetection, tool_usage_stats view)
+		// all use COALESCE(read_calls, 0) so NULL/zero is safe. We still
+		// persist the full tool_calls_json blob for historical reference.
 		if len(ar.ToolCalls) > 0 {
 			if blob, err := json.Marshal(ar.ToolCalls); err == nil {
 				run.ToolCallsJSON = string(blob)
