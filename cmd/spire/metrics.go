@@ -49,6 +49,9 @@ var metricsCmd = &cobra.Command{
 		if bugs, _ := cmd.Flags().GetBool("bugs"); bugs {
 			fullArgs = append(fullArgs, "--bugs")
 		}
+		if fallback, _ := cmd.Flags().GetBool("fallback"); fallback {
+			fullArgs = append(fullArgs, "--fallback")
+		}
 		return cmdMetrics(fullArgs)
 	},
 }
@@ -63,6 +66,7 @@ func init() {
 	metricsCmd.Flags().Bool("failures", false, "Show failure breakdown and retry rates")
 	metricsCmd.Flags().Bool("tools", false, "Show tool usage per phase")
 	metricsCmd.Flags().Bool("bugs", false, "Show bug causality top-5")
+	metricsCmd.Flags().Bool("fallback", false, "Use Dolt fallback when DuckDB is unavailable (backward compat)")
 }
 
 // metricsJSONEncode writes v as indented JSON to stdout.
@@ -83,6 +87,7 @@ func cmdMetrics(args []string) error {
 		flagFailures bool
 		flagTools    bool
 		flagBugs     bool
+		flagFallback bool
 	)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -102,6 +107,8 @@ func cmdMetrics(args []string) error {
 			flagTools = true
 		case "--bugs":
 			flagBugs = true
+		case "--fallback":
+			flagFallback = true
 		case "--bead":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--bead requires a value")
@@ -109,21 +116,31 @@ func cmdMetrics(args []string) error {
 			i++
 			flagBead = args[i]
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire metrics [--bead <id>] [--model] [--phase] [--dora] [--trends] [--failures] [--tools] [--bugs] [--json]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire metrics [--bead <id>] [--model] [--phase] [--dora] [--trends] [--failures] [--tools] [--bugs] [--fallback] [--json]", args[i])
 		}
 	}
 
 	// Open DuckDB OLAP database for fast analytical queries.
 	var adb *olap.DB
+	var olapErr error
 	if tc, err := config.ActiveTowerConfig(); err == nil {
 		if db, err := olap.Open(tc.OLAPPath()); err == nil {
 			adb = db
 		} else {
-			fmt.Fprintf(os.Stderr, "warning: OLAP unavailable (%v), using Dolt fallback\n", err)
+			olapErr = err
 		}
+	} else {
+		olapErr = err
 	}
 	if adb != nil {
 		defer adb.Close()
+	} else if !flagFallback {
+		// DuckDB is required unless --fallback is explicitly set.
+		msg := "OLAP database unavailable"
+		if olapErr != nil {
+			msg += fmt.Sprintf(" (%v)", olapErr)
+		}
+		return fmt.Errorf("%s. Run `spire up` to start services, or use --fallback for Dolt queries", msg)
 	}
 
 	since := time.Now().AddDate(0, -3, 0) // 90-day default
