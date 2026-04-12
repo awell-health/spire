@@ -593,6 +593,51 @@ func RunsForBead(beadID string) ([]MetricsRow, error) {
 	return QueryJSON(query)
 }
 
+// StepRunRow holds a single agent_runs row for per-step metrics aggregation.
+type StepRunRow struct {
+	Phase        string  `json:"phase"`
+	PhaseBucket  string  `json:"phase_bucket"`
+	Duration     int     `json:"duration_seconds"`
+	CostUSD      float64 `json:"cost_usd"`
+	TokensIn     int     `json:"tokens_in"`
+	TokensOut    int     `json:"tokens_out"`
+	ToolCallsJSON string `json:"tool_calls_json"`
+	StartedAt    string  `json:"started_at"`
+	CompletedAt  string  `json:"completed_at"`
+}
+
+// StepMetricsForBead returns individual agent_runs rows for a bead, ordered by
+// started_at. The caller aggregates these into per-step metrics using phase mapping.
+func StepMetricsForBead(beadID string) ([]StepRunRow, error) {
+	query := fmt.Sprintf(`SELECT phase, phase_bucket, duration_seconds, cost_usd,
+		context_tokens_in, context_tokens_out, tool_calls_json,
+		started_at, completed_at
+	FROM agent_runs
+	WHERE bead_id = '%s'
+	ORDER BY started_at`, SqlEsc(beadID))
+
+	rows, err := QueryJSON(query)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []StepRunRow
+	for _, row := range rows {
+		result = append(result, StepRunRow{
+			Phase:        ToString(row["phase"]),
+			PhaseBucket:  ToString(row["phase_bucket"]),
+			Duration:     ToInt(row["duration_seconds"]),
+			CostUSD:      ToFloat(row["cost_usd"]),
+			TokensIn:     ToInt(row["context_tokens_in"]),
+			TokensOut:    ToInt(row["context_tokens_out"]),
+			ToolCallsJSON: ToString(row["tool_calls_json"]),
+			StartedAt:    ToString(row["started_at"]),
+			CompletedAt:  ToString(row["completed_at"]),
+		})
+	}
+	return result, nil
+}
+
 // SqlEsc escapes single quotes for SQL string literals.
 func SqlEsc(s string) string {
 	return strings.ReplaceAll(s, "'", "''")

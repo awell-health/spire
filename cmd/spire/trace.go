@@ -16,6 +16,7 @@ import (
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/observability"
 	"github.com/awell-health/spire/pkg/olap"
 	"github.com/spf13/cobra"
 )
@@ -73,8 +74,15 @@ type traceData struct {
 }
 
 type traceStep struct {
-	Name   string `json:"name"`
-	Status string `json:"status"` // closed, in_progress, open
+	Name       string  `json:"name"`
+	Status     string  `json:"status"` // closed, in_progress, open
+	Duration   int     `json:"duration_seconds,omitempty"`
+	CostUSD    float64 `json:"cost_usd,omitempty"`
+	TokensIn   int     `json:"tokens_in,omitempty"`
+	TokensOut  int     `json:"tokens_out,omitempty"`
+	ReadCalls  int     `json:"read_calls,omitempty"`
+	EditCalls  int     `json:"edit_calls,omitempty"`
+	WriteCalls int     `json:"write_calls,omitempty"`
 }
 
 type traceAgent struct {
@@ -243,6 +251,9 @@ func buildTrace(beadID string) (*traceData, error) {
 		})
 	}
 
+	// Per-step metrics from agent_runs.
+	populateStepMetrics(td)
+
 	// Active attempt.
 	attempt, _ := storeGetActiveAttemptFunc(beadID)
 	if attempt != nil {
@@ -360,6 +371,11 @@ func renderTraceToString(td *traceData) string {
 			s.WriteString(renderStepBadge(step))
 		}
 		s.WriteString("\n\n")
+
+		// Per-step metrics table (only if any step has data).
+		if hasStepMetrics(td.Steps) {
+			renderStepMetrics(&s, td.Steps)
+		}
 	}
 
 	// Active attempt.
@@ -548,6 +564,88 @@ func renderSpanWaterfall(s *strings.Builder, spans []olap.SpanRecord) {
 
 // --- Rendering helpers ---
 
+// hasStepMetrics returns true if any step has metrics data.
+func hasStepMetrics(steps []traceStep) bool {
+	for _, s := range steps {
+		if s.Duration > 0 || s.CostUSD > 0 || s.TokensIn > 0 || s.TokensOut > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// renderStepMetrics writes the per-step metrics table to a builder.
+func renderStepMetrics(s *strings.Builder, steps []traceStep) {
+	fmt.Fprintf(s, "%sSteps:%s\n", bold, reset)
+
+	var totalDur int
+	var totalCost float64
+	var totalIn, totalOut int
+	var totalR, totalE, totalW int
+
+	for _, step := range steps {
+		icon := stepStatusIcon(step.Status)
+		if step.Duration > 0 || step.CostUSD > 0 || step.TokensIn > 0 {
+			// Step with metrics.
+			totalDur += step.Duration
+			totalCost += step.CostUSD
+			totalIn += step.TokensIn
+			totalOut += step.TokensOut
+			totalR += step.ReadCalls
+			totalE += step.EditCalls
+			totalW += step.WriteCalls
+
+			fmt.Fprintf(s, "  %s %-12s %7s  $%-5s  R:%-3d E:%-3d W:%-3d  %s in / %s out\n",
+				icon, step.Name,
+				formatElapsed(time.Duration(step.Duration)*time.Second),
+				formatCost(step.CostUSD),
+				step.ReadCalls, step.EditCalls, step.WriteCalls,
+				formatTokensK(step.TokensIn), formatTokensK(step.TokensOut))
+		} else {
+			// Pending step — no data.
+			fmt.Fprintf(s, "  %s %-12s %s—%s\n", icon, step.Name, dim, reset)
+		}
+	}
+
+	// Separator and total row.
+	fmt.Fprintf(s, "  %s────────────────────────────────────────────────────────%s\n", dim, reset)
+	fmt.Fprintf(s, "  %-14s %7s  $%-5s  R:%-3d E:%-3d W:%-3d  %s in / %s out\n",
+		"Total",
+		formatElapsed(time.Duration(totalDur)*time.Second),
+		formatCost(totalCost),
+		totalR, totalE, totalW,
+		formatTokensK(totalIn), formatTokensK(totalOut))
+	s.WriteString("\n")
+}
+
+// stepStatusIcon returns a compact status icon for the metrics table.
+func stepStatusIcon(status string) string {
+	switch status {
+	case "closed":
+		return green + "✅" + reset
+	case "in_progress":
+		return cyan + "▶" + reset
+	default:
+		return dim + "○" + reset
+	}
+}
+
+// formatCost formats a USD cost for display.
+func formatCost(cost float64) string {
+	if cost < 0.01 {
+		return fmt.Sprintf("%.4f", cost)
+	}
+	return fmt.Sprintf("%.2f", cost)
+}
+
+// formatTokensK formats token counts in K (thousands) notation.
+func formatTokensK(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	return fmt.Sprintf("%dK", n/1000)
+}
+
 func renderStepBadge(s traceStep) string {
 	switch s.Status {
 	case "closed":
@@ -618,6 +716,122 @@ func traceStepPos(name string, order map[string]int) int {
 		return pos
 	}
 	return 999
+}
+
+// populateStepMetrics queries agent_runs for the bead and populates metrics
+// fields on each traceStep. Gracefully no-ops if no data is available.
+func populateStepMetrics(td *traceData) {
+	runs, err := observability.StepMetricsForBead(td.ID)
+	if err != nil || len(runs) == 0 {
+		return
+	}
+
+	// Build a set of known step names for matching.
+	stepNames := make(map[string]bool)
+	for _, s := range td.Steps {
+		stepNames[s.Name] = true
+	}
+
+	// Aggregate runs into per-step metrics.
+	type stepAgg struct {
+		duration   int
+		costUSD    float64
+		tokensIn   int
+		tokensOut  int
+		readCalls  int
+		editCalls  int
+		writeCalls int
+	}
+	agg := make(map[string]*stepAgg)
+
+	for _, run := range runs {
+		stepName := mapPhaseToStep(run.Phase, run.PhaseBucket, stepNames)
+		if stepName == "" {
+			continue
+		}
+
+		a, ok := agg[stepName]
+		if !ok {
+			a = &stepAgg{}
+			agg[stepName] = a
+		}
+
+		dur := run.Duration
+		// For active runs (no completed_at), compute running clock.
+		if run.CompletedAt == "" && run.StartedAt != "" {
+			if t, err := time.Parse(time.RFC3339, run.StartedAt); err == nil {
+				dur = int(time.Since(t).Seconds())
+			}
+		}
+
+		a.duration += dur
+		a.costUSD += run.CostUSD
+		a.tokensIn += run.TokensIn
+		a.tokensOut += run.TokensOut
+
+		// Parse tool_calls_json for R/E/W breakdown.
+		if run.ToolCallsJSON != "" {
+			var tools map[string]int
+			if json.Unmarshal([]byte(run.ToolCallsJSON), &tools) == nil {
+				a.readCalls += tools["Read"]
+				a.editCalls += tools["Edit"]
+				a.writeCalls += tools["Write"]
+			}
+		}
+	}
+
+	// Apply aggregated metrics to traceStep entries.
+	for i := range td.Steps {
+		if a, ok := agg[td.Steps[i].Name]; ok {
+			td.Steps[i].Duration = a.duration
+			td.Steps[i].CostUSD = a.costUSD
+			td.Steps[i].TokensIn = a.tokensIn
+			td.Steps[i].TokensOut = a.tokensOut
+			td.Steps[i].ReadCalls = a.readCalls
+			td.Steps[i].EditCalls = a.editCalls
+			td.Steps[i].WriteCalls = a.writeCalls
+		}
+	}
+}
+
+// mapPhaseToStep maps an agent_runs phase to a formula step name.
+// Direct match is tried first, then phase_bucket mapping.
+func mapPhaseToStep(phase, phaseBucket string, stepNames map[string]bool) string {
+	// Direct match: phase == step name (e.g., "implement" → "implement").
+	if stepNames[phase] {
+		return phase
+	}
+
+	// Phase-to-bucket mapping (mirrors executor/record.go phaseToBucket).
+	bucket := phaseBucket
+	if bucket == "" {
+		switch phase {
+		case "implement", "build-fix":
+			bucket = "implement"
+		case "review", "review-fix", "sage-review":
+			bucket = "review"
+		case "validate-design", "enrich-subtasks", "auto-approve", "skip", "waitForHuman":
+			bucket = "design"
+		}
+	}
+
+	// Map bucket to step name.
+	switch bucket {
+	case "implement":
+		if stepNames["implement"] {
+			return "implement"
+		}
+	case "review":
+		if stepNames["review"] {
+			return "review"
+		}
+	case "design":
+		if stepNames["plan"] {
+			return "plan"
+		}
+	}
+
+	return ""
 }
 
 func extractAgentName(b Bead) string {
