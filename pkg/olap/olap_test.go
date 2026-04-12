@@ -514,3 +514,208 @@ func TestETLStaleCursorMigration(t *testing.T) {
 		t.Errorf("cursor should be an RFC3339 timestamp, got %q", cursorVal)
 	}
 }
+
+func TestRepoFromBeadID(t *testing.T) {
+	tests := []struct {
+		beadID string
+		want   string
+	}{
+		{"web-a3f8", "web"},
+		{"spi-b7d0", "spi"},
+		{"api-8a01", "api"},
+		{"spi-b7d0.1", "spi"},
+		{"api-8a01.2.3", "api"},
+		{"hub-abc.1.2.3", "hub"},
+		{"", ""},           // empty bead_id
+		{"noprefixhere", ""}, // no dash
+		{"-leading", ""},   // dash at position 0
+	}
+	for _, tt := range tests {
+		got := repoFromBeadID(tt.beadID)
+		if got != tt.want {
+			t.Errorf("repoFromBeadID(%q) = %q, want %q", tt.beadID, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizeFormulaName(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   sql.NullString
+		want string
+	}{
+		{"valid name", sql.NullString{String: "task-default", Valid: true}, "task-default"},
+		{"empty string", sql.NullString{String: "", Valid: true}, "adhoc"},
+		{"null", sql.NullString{Valid: false}, "adhoc"},
+		{"whitespace preserved", sql.NullString{String: "my-formula", Valid: true}, "my-formula"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeFormulaName(tt.fn)
+			if got != tt.want {
+				t.Errorf("normalizeFormulaName(%v) = %q, want %q", tt.fn, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestETLRepoAndFormulaPopulation(t *testing.T) {
+	olapDB, err := Open("")
+	if err != nil {
+		t.Fatalf("Open olap: %v", err)
+	}
+	defer olapDB.Close()
+
+	mockDolt, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("Open mock dolt: %v", err)
+	}
+	defer mockDolt.Close()
+
+	_, err = mockDolt.Exec(`CREATE TABLE agent_runs (
+		id VARCHAR PRIMARY KEY, bead_id VARCHAR, epic_id VARCHAR,
+		parent_run_id VARCHAR, formula_name VARCHAR, formula_version VARCHAR,
+		phase VARCHAR, role VARCHAR, model VARCHAR, tower VARCHAR,
+		branch VARCHAR, result VARCHAR, review_rounds INTEGER,
+		context_tokens_in BIGINT, context_tokens_out BIGINT, total_tokens BIGINT,
+		cost_usd DOUBLE, duration_seconds DOUBLE,
+		startup_seconds DOUBLE, working_seconds DOUBLE, queue_seconds DOUBLE, review_seconds DOUBLE,
+		files_changed INTEGER, lines_added INTEGER, lines_removed INTEGER,
+		read_calls INTEGER, edit_calls INTEGER, tool_calls_json TEXT,
+		failure_class VARCHAR, attempt_number INTEGER,
+		started_at TIMESTAMP, completed_at TIMESTAMP
+	)`)
+	if err != nil {
+		t.Fatalf("create mock table: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Row 1: standard bead with formula
+	// Row 2: hierarchical bead with no formula (should become 'adhoc')
+	// Row 3: different repo prefix, empty formula string
+	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
+		('run-r1', 'web-a3f8', NULL, NULL, 'task-default', '3', 'implement', 'apprentice', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.1, 60, 0, 0, 0, 0, 1, 10, 5, 3, 1, NULL, NULL, 1, ?, ?),
+		('run-r2', 'spi-b7d0.1', NULL, NULL, NULL, NULL, 'plan', 'wizard', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.05, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?),
+		('run-r3', 'api-8a01.2.3', NULL, NULL, '', '1', 'review', 'sage', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.08, 45, 0, 0, 0, 0, 0, 0, 0, 2, 0, NULL, NULL, 1, ?, ?)`,
+		now.Add(-3*time.Hour), now.Add(-2*time.Hour),
+		now.Add(-90*time.Minute), now.Add(-time.Hour),
+		now.Add(-45*time.Minute), now.Add(-30*time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("insert mock rows: %v", err)
+	}
+
+	ctx := context.Background()
+	etl := NewETL(olapDB)
+	n, err := etl.Sync(ctx, mockDolt)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("expected 3 rows synced, got %d", n)
+	}
+
+	// Verify repo derivation
+	type repoRow struct {
+		id   string
+		repo sql.NullString
+	}
+	rows, err := olapDB.db.QueryContext(ctx, "SELECT id, repo FROM agent_runs_olap ORDER BY id")
+	if err != nil {
+		t.Fatalf("query repo: %v", err)
+	}
+	defer rows.Close()
+
+	expected := map[string]string{
+		"run-r1": "web",
+		"run-r2": "spi",
+		"run-r3": "api",
+	}
+	for rows.Next() {
+		var id string
+		var repo sql.NullString
+		if err := rows.Scan(&id, &repo); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		want, ok := expected[id]
+		if !ok {
+			t.Errorf("unexpected row id %s", id)
+			continue
+		}
+		if !repo.Valid || repo.String != want {
+			t.Errorf("row %s: repo = %v, want %q", id, repo, want)
+		}
+	}
+
+	// Verify formula_name normalization
+	type formulaRow struct {
+		id          string
+		formulaName string
+	}
+	fRows, err := olapDB.db.QueryContext(ctx, "SELECT id, formula_name FROM agent_runs_olap ORDER BY id")
+	if err != nil {
+		t.Fatalf("query formula: %v", err)
+	}
+	defer fRows.Close()
+
+	expectedFormula := map[string]string{
+		"run-r1": "task-default",
+		"run-r2": "adhoc",
+		"run-r3": "adhoc",
+	}
+	for fRows.Next() {
+		var id, fname string
+		if err := fRows.Scan(&id, &fname); err != nil {
+			t.Fatalf("scan formula: %v", err)
+		}
+		want, ok := expectedFormula[id]
+		if !ok {
+			continue
+		}
+		if fname != want {
+			t.Errorf("row %s: formula_name = %q, want %q", id, fname, want)
+		}
+	}
+
+	// Verify no rows have NULL or empty formula_name (all should be visible to aggregations)
+	var nullOrEmpty int
+	err = olapDB.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM agent_runs_olap WHERE formula_name IS NULL OR formula_name = ''",
+	).Scan(&nullOrEmpty)
+	if err != nil {
+		t.Fatalf("count null formula: %v", err)
+	}
+	if nullOrEmpty != 0 {
+		t.Errorf("expected 0 rows with NULL/empty formula_name, got %d", nullOrEmpty)
+	}
+
+	// Verify distinct formula names are correct
+	fnRows, err := olapDB.db.QueryContext(ctx,
+		"SELECT DISTINCT formula_name FROM agent_runs_olap ORDER BY formula_name")
+	if err != nil {
+		t.Fatalf("query distinct formula: %v", err)
+	}
+	defer fnRows.Close()
+	var formulaNames []string
+	for fnRows.Next() {
+		var fn string
+		if err := fnRows.Scan(&fn); err != nil {
+			t.Fatalf("scan distinct formula: %v", err)
+		}
+		formulaNames = append(formulaNames, fn)
+	}
+	if len(formulaNames) != 2 {
+		t.Errorf("expected 2 distinct formula names, got %v", formulaNames)
+	}
+	fnSet := make(map[string]bool)
+	for _, fn := range formulaNames {
+		fnSet[fn] = true
+	}
+	if !fnSet["task-default"] {
+		t.Error("expected 'task-default' in formula names")
+	}
+	if !fnSet["adhoc"] {
+		t.Error("expected 'adhoc' in formula names")
+	}
+}

@@ -280,6 +280,29 @@ func insertRowsTx(ctx context.Context, tx *sql.Tx, rows []agentRunRow) (string, 
 	return lastHighWater(rows), nil
 }
 
+// repoFromBeadID extracts the repo prefix from a bead ID.
+// Examples: "web-a3f8" → "web", "spi-b7d0.1" → "spi", "api-8a01.2.3" → "api".
+// Returns empty string if the bead ID has no dash (no prefix).
+func repoFromBeadID(beadID string) string {
+	if beadID == "" {
+		return ""
+	}
+	idx := strings.Index(beadID, "-")
+	if idx <= 0 {
+		return ""
+	}
+	return beadID[:idx]
+}
+
+// normalizeFormulaName returns the formula name, defaulting to "adhoc" when
+// the value is NULL or empty so it isn't filtered out of aggregation queries.
+func normalizeFormulaName(fn sql.NullString) string {
+	if !fn.Valid || fn.String == "" {
+		return "adhoc"
+	}
+	return fn.String
+}
+
 // buildInsertSQL constructs the upsert SQL and args for a batch of rows.
 func buildInsertSQL(rows []agentRunRow) (string, []any) {
 	var b strings.Builder
@@ -304,9 +327,9 @@ func buildInsertSQL(rows []agentRunRow) (string, []any) {
 		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		args = append(args,
 			r.ID, r.BeadID, r.EpicID, r.ParentRunID,
-			r.FormulaName, r.FormulaVersion,
+			normalizeFormulaName(r.FormulaName), r.FormulaVersion,
 			r.Phase, r.Role, r.Model, r.Tower,
-			nil, // repo — not in Dolt agent_runs, populated as NULL for now
+			repoFromBeadID(r.BeadID.String), // repo — derived from bead_id prefix
 			r.Branch, r.Result,
 			r.ReviewRounds,
 			r.PromptTokens, r.CompletionTokens, r.TotalTokens,
@@ -328,6 +351,7 @@ func buildInsertSQL(rows []agentRunRow) (string, []any) {
 		role = EXCLUDED.role,
 		model = EXCLUDED.model,
 		tower = EXCLUDED.tower,
+		repo = EXCLUDED.repo,
 		branch = EXCLUDED.branch,
 		result = EXCLUDED.result,
 		review_rounds = EXCLUDED.review_rounds,
