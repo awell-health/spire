@@ -315,13 +315,40 @@ func classifyFailure(spawnErr error, result string) string {
 
 	if spawnErr != nil {
 		msg := spawnErr.Error()
+		low := strings.ToLower(msg)
 		switch {
 		case strings.Contains(msg, "signal: killed") || strings.Contains(msg, "signal: terminated"):
 			return "timeout"
-		case strings.Contains(msg, "merge conflict") || strings.Contains(msg, "CONFLICT"):
+		case strings.Contains(low, "merge conflict") || strings.Contains(msg, "CONFLICT"):
 			return "merge_conflict"
-		case strings.Contains(msg, "build fail") || strings.Contains(msg, "compilation"):
+		case strings.Contains(low, "build fail") || strings.Contains(low, "compilation"):
 			return "build_fail"
+		case strings.Contains(low, "permission denied") || strings.Contains(low, "401") ||
+			strings.Contains(low, "403") || strings.Contains(low, "authentication") ||
+			strings.Contains(low, "unauthorized"):
+			return "auth_fail"
+		case strings.Contains(low, "rate limit") || strings.Contains(low, "429") ||
+			strings.Contains(low, "too many requests") || strings.Contains(low, "throttl"):
+			return "rate_limit"
+		case strings.Contains(low, "connection refused") || strings.Contains(low, "econnreset") ||
+			strings.Contains(low, "dns") || strings.Contains(low, "no such host") ||
+			strings.Contains(low, "network"):
+			return "network_error"
+		case strings.Contains(low, "out of memory") || strings.Contains(msg, "OOM") ||
+			strings.Contains(low, "killed") || strings.Contains(low, "resource"):
+			return "resource_limit"
+		case strings.Contains(low, "rebase") || strings.Contains(low, "detached head") ||
+			strings.Contains(low, "dirty worktree") || strings.Contains(low, "not a git"):
+			return "git_error"
+		case strings.Contains(low, "lint") || strings.Contains(low, "eslint") ||
+			strings.Contains(low, "prettier") || strings.Contains(low, "format"):
+			return "lint_fail"
+		case strings.Contains(low, "context length") || strings.Contains(low, "max tokens") ||
+			strings.Contains(low, "token limit") || strings.Contains(low, "context window"):
+			return "context_limit"
+		case strings.Contains(low, "spawn") || strings.Contains(low, "exec") ||
+			strings.Contains(low, "not found") || strings.Contains(low, "no such file"):
+			return "spawn_fail"
 		}
 	}
 

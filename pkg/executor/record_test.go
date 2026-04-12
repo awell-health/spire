@@ -503,10 +503,64 @@ func TestClassifyFailure(t *testing.T) {
 		{"build fail", errors.New("build fail: exit 1"), "error", "build_fail"},
 		{"compilation error", errors.New("compilation error in main.go"), "error", "build_fail"},
 
+		// Auth failures.
+		{"permission denied", errors.New("permission denied"), "error", "auth_fail"},
+		{"Permission Denied case insensitive", errors.New("Permission Denied on /path"), "error", "auth_fail"},
+		{"401 error", errors.New("HTTP 401 Unauthorized"), "error", "auth_fail"},
+		{"403 error", errors.New("403 Forbidden"), "error", "auth_fail"},
+		{"authentication failed", errors.New("authentication failed for token"), "error", "auth_fail"},
+		{"unauthorized", errors.New("unauthorized access to resource"), "error", "auth_fail"},
+
+		// Rate limiting.
+		{"rate limit", errors.New("rate limit exceeded"), "error", "rate_limit"},
+		{"429 error", errors.New("HTTP 429 Too Many Requests"), "error", "rate_limit"},
+		{"too many requests", errors.New("too many requests, please retry"), "error", "rate_limit"},
+		{"throttled", errors.New("request throttled by API"), "error", "rate_limit"},
+		{"throttling", errors.New("throttling applied"), "error", "rate_limit"},
+
+		// Network errors.
+		{"connection refused", errors.New("dial tcp: connection refused"), "error", "network_error"},
+		{"ECONNRESET", errors.New("read: ECONNRESET"), "error", "network_error"},
+		{"dns resolution", errors.New("dns resolution failed for host"), "error", "network_error"},
+		{"DNS uppercase", errors.New("DNS lookup error"), "error", "network_error"},
+		{"no such host", errors.New("dial tcp: no such host api.example.com"), "error", "network_error"},
+		{"network unreachable", errors.New("network is unreachable"), "error", "network_error"},
+
+		// Resource limits.
+		{"out of memory", errors.New("out of memory"), "error", "resource_limit"},
+		{"OOM uppercase", errors.New("process OOM killed"), "error", "resource_limit"},
+		{"killed process", errors.New("process killed by system"), "error", "resource_limit"},
+		{"resource exhausted", errors.New("resource exhausted: too many open files"), "error", "resource_limit"},
+
+		// Git errors (beyond merge conflict).
+		{"rebase error", errors.New("rebase in progress; abort first"), "error", "git_error"},
+		{"detached HEAD", errors.New("detached HEAD state, cannot commit"), "error", "git_error"},
+		{"dirty worktree", errors.New("dirty worktree: uncommitted changes"), "error", "git_error"},
+		{"not a git repo", errors.New("not a git repository"), "error", "git_error"},
+
+		// Lint/format failures.
+		{"lint error", errors.New("lint errors found in 3 files"), "error", "lint_fail"},
+		{"eslint", errors.New("eslint: 5 errors, 2 warnings"), "error", "lint_fail"},
+		{"prettier", errors.New("prettier: 2 files would be reformatted"), "error", "lint_fail"},
+		{"format check", errors.New("format check failed"), "error", "lint_fail"},
+
+		// Context/token limits.
+		{"context length", errors.New("context length exceeded: 200k tokens"), "error", "context_limit"},
+		{"max tokens", errors.New("max tokens reached"), "error", "context_limit"},
+		{"token limit", errors.New("token limit exceeded"), "error", "context_limit"},
+		{"context window", errors.New("context window full"), "error", "context_limit"},
+
+		// Spawn failures.
+		{"spawn error", errors.New("spawn failed: cannot create process"), "error", "spawn_fail"},
+		{"exec error", errors.New("exec: claude not found in PATH"), "error", "spawn_fail"},
+		{"not found", errors.New("binary not found: /usr/bin/claude"), "error", "spawn_fail"},
+		{"no such file", errors.New("no such file or directory: /tmp/agent"), "error", "spawn_fail"},
+
 		// Fallback to "unknown" for error/empty_diff without recognizable spawnErr.
 		{"generic error result", nil, "error", "unknown"},
 		{"error with unrecognized spawnErr", errors.New("exit status 1"), "error", "unknown"},
 		{"empty_diff result", nil, "empty_diff", "unknown"},
+		{"empty_diff with spawnErr", errors.New("exit status 1"), "empty_diff", "unknown"},
 
 		// spawnErr present but result indicates success → empty class.
 		{"spawnErr but success result", errors.New("something"), "success", ""},
@@ -521,6 +575,69 @@ func TestClassifyFailure(t *testing.T) {
 				t.Errorf("classifyFailure(%v, %q) = %q, want %q", tt.spawnErr, tt.result, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClassifyFailureCatchAllOnly(t *testing.T) {
+	// Verify that "unknown" only triggers when no specific pattern matches.
+	// All specific patterns should classify to something other than "unknown".
+	specificPatterns := []struct {
+		spawnErr string
+		want     string
+	}{
+		{"permission denied", "auth_fail"},
+		{"rate limit", "rate_limit"},
+		{"connection refused", "network_error"},
+		{"out of memory", "resource_limit"},
+		{"rebase in progress", "git_error"},
+		{"lint errors", "lint_fail"},
+		{"context length exceeded", "context_limit"},
+		{"spawn failed", "spawn_fail"},
+		{"merge conflict", "merge_conflict"},
+		{"build fail", "build_fail"},
+		{"signal: killed", "timeout"},
+	}
+	for _, tt := range specificPatterns {
+		t.Run("not_unknown/"+tt.want, func(t *testing.T) {
+			got := classifyFailure(errors.New(tt.spawnErr), "error")
+			if got == "unknown" {
+				t.Errorf("classifyFailure(%q, \"error\") = \"unknown\", want %q — pattern should match before catch-all", tt.spawnErr, tt.want)
+			}
+			if got != tt.want {
+				t.Errorf("classifyFailure(%q, \"error\") = %q, want %q", tt.spawnErr, got, tt.want)
+			}
+		})
+	}
+
+	// Only truly unrecognizable errors should fall through to "unknown".
+	unknowns := []string{
+		"exit status 1",
+		"exit status 2",
+		"unexpected EOF",
+		"broken pipe",
+	}
+	for _, msg := range unknowns {
+		t.Run("unknown/"+msg, func(t *testing.T) {
+			got := classifyFailure(errors.New(msg), "error")
+			if got != "unknown" {
+				t.Errorf("classifyFailure(%q, \"error\") = %q, want \"unknown\" — unrecognizable error should fall through", msg, got)
+			}
+		})
+	}
+}
+
+func TestClassifyFailureSpawnErrPrecedence(t *testing.T) {
+	// When result is "error" and spawnErr is non-empty, spawnErr-based
+	// classification takes precedence over the catch-all.
+	got := classifyFailure(errors.New("connection refused"), "error")
+	if got != "network_error" {
+		t.Errorf("spawnErr should take precedence: got %q, want \"network_error\"", got)
+	}
+
+	// When spawnErr is empty and result is "error", falls to "unknown".
+	got = classifyFailure(nil, "error")
+	if got != "unknown" {
+		t.Errorf("nil spawnErr with error result: got %q, want \"unknown\"", got)
 	}
 }
 
