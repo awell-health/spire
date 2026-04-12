@@ -3,6 +3,7 @@ package olap
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -333,6 +334,115 @@ func TestETLNonMonotonicIDs(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("expected 2 rows in agent_runs_olap, got %d", count)
+	}
+}
+
+// TestWriteFuncSequential verifies that WriteFunc works correctly for sequential
+// writes: open→write→close, then open again. This proves the per-write open/close
+// pattern doesn't lose data.
+func TestWriteFuncSequential(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/sequential_test.duckdb"
+
+	if err := EnsureSchema(dbPath); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+
+	const writes = 10
+	for i := 0; i < writes; i++ {
+		err := WriteFunc(dbPath, func(tx *sql.Tx) error {
+			sessionID := fmt.Sprintf("sess-%d", i)
+			_, err := tx.Exec(`INSERT INTO tool_events
+				(session_id, bead_id, agent_name, step, tool_name, duration_ms, success, timestamp, tower)
+				VALUES (?, 'test', 'test', 'test', 'Read', 10, true, current_timestamp, 'test')`,
+				sessionID)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("WriteFunc write %d: %v", i, err)
+		}
+	}
+
+	// Verify all writes persisted across open/close cycles.
+	var count int
+	if err := ReadFunc(dbPath, func(db *sql.DB) error {
+		return db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM tool_events").Scan(&count)
+	}); err != nil {
+		t.Fatalf("ReadFunc: %v", err)
+	}
+	if count != writes {
+		t.Errorf("expected %d rows, got %d", writes, count)
+	}
+}
+
+// TestWriteFuncRetryOnLockError verifies that IsDuckDBLockError correctly
+// identifies lock errors and that WriteFunc would retry on them.
+func TestWriteFuncRetryOnLockError(t *testing.T) {
+	// Verify lock error detection works for all known DuckDB lock messages.
+	lockMessages := []string{
+		"IO Error: Could not set lock on file",
+		"database is locked",
+		"io error: failed to set lock on database file",
+	}
+	for _, msg := range lockMessages {
+		if !IsDuckDBLockError(fmt.Errorf("%s", msg)) {
+			t.Errorf("expected %q to be detected as lock error", msg)
+		}
+	}
+
+	// Non-lock errors should not trigger retry.
+	nonLockMessages := []string{
+		"syntax error",
+		"table not found",
+		"connection refused",
+	}
+	for _, msg := range nonLockMessages {
+		if IsDuckDBLockError(fmt.Errorf("%s", msg)) {
+			t.Errorf("expected %q to NOT be detected as lock error", msg)
+		}
+	}
+}
+
+// TestReadFunc verifies that ReadFunc opens, queries, and closes without error.
+func TestReadFunc(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/readfunc_test.duckdb"
+
+	if err := EnsureSchema(dbPath); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+
+	var count int
+	if err := ReadFunc(dbPath, func(db *sql.DB) error {
+		return db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM agent_runs_olap").Scan(&count)
+	}); err != nil {
+		t.Fatalf("ReadFunc: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 rows in empty table, got %d", count)
+	}
+}
+
+// TestIsDuckDBLockError verifies lock error detection.
+func TestIsDuckDBLockError(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want bool
+	}{
+		{"Could not set lock on file", true},
+		{"IO Error: could not set lock on file", true},
+		{"database is locked", true},
+		{"syntax error", false},
+		{"connection refused", false},
+	}
+	for _, tt := range tests {
+		got := IsDuckDBLockError(fmt.Errorf("%s", tt.msg))
+		if got != tt.want {
+			t.Errorf("IsDuckDBLockError(%q) = %v, want %v", tt.msg, got, tt.want)
+		}
+	}
+	if IsDuckDBLockError(nil) {
+		t.Error("IsDuckDBLockError(nil) should be false")
 	}
 }
 

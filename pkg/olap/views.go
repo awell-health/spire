@@ -2,6 +2,7 @@ package olap
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -15,6 +16,18 @@ const viewRetentionDays = 90
 func RefreshMaterializedViews(ctx context.Context, db *DB) error {
 	for _, v := range viewRefreshStatements() {
 		if _, err := db.db.ExecContext(ctx, v); err != nil {
+			return fmt.Errorf("olap refresh view: %w", err)
+		}
+	}
+	return nil
+}
+
+// RefreshMaterializedViewsTx is the transaction-aware variant of
+// RefreshMaterializedViews. Used by the path-based ETL (WriteFunc pattern)
+// where all writes happen inside a transaction.
+func RefreshMaterializedViewsTx(ctx context.Context, tx *sql.Tx) error {
+	for _, v := range viewRefreshStatements() {
+		if _, err := tx.ExecContext(ctx, v); err != nil {
 			return fmt.Errorf("olap refresh view: %w", err)
 		}
 	}

@@ -27,25 +27,77 @@ import (
 
 // --- Shared OLAP + OTLP receiver lifecycle ---
 //
-// The DuckDB connection and OTLP receiver persist across daemon cycles so that
-// the gRPC endpoint stays up between ticks. One receiver serves all towers —
-// the tower column in tool_events disambiguates.
+// DuckDB writes are serialized through a DuckWriter goroutine. The OTLP
+// receiver and ETL sync both submit writes through this writer, preventing
+// file lock conflicts. No persistent DuckDB connection is held — each write
+// opens the file, writes, and closes (~1ms). The OTLP receiver persists
+// across daemon cycles so the gRPC endpoint stays up between ticks.
 
 var (
-	sharedOLAPDB      *olap.DB
-	sharedOLAPPath    string
-	otlpReceiver      *spireOtel.Receiver
+	sharedDuckWriter *DuckWriter
+	sharedOLAPPath   string
+	otlpReceiver     *spireOtel.Receiver
 )
 
-// ensureSharedOLAP opens the DuckDB file for the tower (creating it if needed)
-// and starts the OTLP receiver if not already running. Idempotent: subsequent
-// calls with the same tower reuse the existing connection.
-func ensureSharedOLAP(tower config.TowerConfig) (*olap.DB, error) {
+// DuckWriter serializes all DuckDB writes through a single goroutine.
+// Both OTel event flushes and ETL syncs submit through this writer,
+// preventing DuckDB's single-process lock from causing conflicts.
+type DuckWriter struct {
+	ch     chan writeRequest
+	dbPath string
+	done   chan struct{}
+}
+
+type writeRequest struct {
+	fn   func(*sql.Tx) error
+	resp chan error
+}
+
+// NewDuckWriter creates a new writer for the given DuckDB file path.
+func NewDuckWriter(dbPath string) *DuckWriter {
+	return &DuckWriter{
+		ch:     make(chan writeRequest, 64),
+		dbPath: dbPath,
+		done:   make(chan struct{}),
+	}
+}
+
+// Start launches the writer goroutine.
+func (dw *DuckWriter) Start() {
+	go dw.run()
+}
+
+// Stop drains pending writes and stops the writer goroutine.
+func (dw *DuckWriter) Stop() {
+	close(dw.ch)
+	<-dw.done
+}
+
+// Submit sends a write function to the writer goroutine and waits for it to
+// complete. The function is called inside a transaction managed by olap.WriteFunc
+// (which handles open→tx→commit→close and retry-on-lock).
+func (dw *DuckWriter) Submit(fn func(*sql.Tx) error) error {
+	resp := make(chan error, 1)
+	dw.ch <- writeRequest{fn: fn, resp: resp}
+	return <-resp
+}
+
+func (dw *DuckWriter) run() {
+	defer close(dw.done)
+	for req := range dw.ch {
+		req.resp <- olap.WriteFunc(dw.dbPath, req.fn)
+	}
+}
+
+// ensureSharedOLAP initializes the DuckWriter and OTLP receiver for the tower.
+// Idempotent: subsequent calls with the same tower reuse the existing writer.
+// No persistent DuckDB connection is held — the writer opens/closes per write.
+func ensureSharedOLAP(tower config.TowerConfig) (*DuckWriter, error) {
 	olapPath := tower.OLAPPath()
 
-	// If already open for the same path, reuse.
-	if sharedOLAPDB != nil && sharedOLAPPath == olapPath {
-		return sharedOLAPDB, nil
+	// If already set up for the same path, reuse.
+	if sharedDuckWriter != nil && sharedOLAPPath == olapPath {
+		return sharedDuckWriter, nil
 	}
 
 	// Close previous if path changed (tower switch — rare).
@@ -54,14 +106,19 @@ func ensureSharedOLAP(tower config.TowerConfig) (*olap.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(olapPath), 0700); err != nil {
 		return nil, err
 	}
-	db, err := olap.Open(olapPath)
-	if err != nil {
+
+	// Initialize schema (open → create tables → close). No persistent connection.
+	if err := olap.EnsureSchema(olapPath); err != nil {
 		return nil, err
 	}
-	sharedOLAPDB = db
+
+	// Start the single-writer goroutine.
+	dw := NewDuckWriter(olapPath)
+	dw.Start()
+	sharedDuckWriter = dw
 	sharedOLAPPath = olapPath
 
-	// Start OTLP receiver if not running.
+	// Start OTLP receiver if not running. It submits writes through the DuckWriter.
 	if otlpReceiver == nil {
 		port := spireOtel.DefaultPort
 		if envPort := os.Getenv("SPIRE_OTLP_PORT"); envPort != "" {
@@ -69,7 +126,7 @@ func ensureSharedOLAP(tower config.TowerConfig) (*olap.DB, error) {
 				port = p
 			}
 		}
-		r := spireOtel.NewReceiver(db, port, tower.Name)
+		r := spireOtel.NewReceiver(dw.Submit, port, tower.Name)
 		if err := r.Start(); err != nil {
 			// Non-fatal: telemetry collection is optional.
 			log.Printf("[daemon] OTLP receiver start: %v (telemetry disabled)", err)
@@ -78,23 +135,24 @@ func ensureSharedOLAP(tower config.TowerConfig) (*olap.DB, error) {
 		}
 	}
 
-	return db, nil
+	return dw, nil
 }
 
-// closeSharedOLAP shuts down the OTLP receiver and closes the shared DuckDB.
+// closeSharedOLAP shuts down the OTLP receiver and DuckWriter.
+// No persistent DB connection to close — the writer handles open/close per write.
 func closeSharedOLAP() {
 	if otlpReceiver != nil {
 		otlpReceiver.Stop()
 		otlpReceiver = nil
 	}
-	if sharedOLAPDB != nil {
-		sharedOLAPDB.Close()
-		sharedOLAPDB = nil
+	if sharedDuckWriter != nil {
+		sharedDuckWriter.Stop()
+		sharedDuckWriter = nil
 		sharedOLAPPath = ""
 	}
 }
 
-// StopOTLPReceiver gracefully shuts down the OTLP receiver and shared DuckDB.
+// StopOTLPReceiver gracefully shuts down the OTLP receiver and DuckWriter.
 // Called from the daemon shutdown path (cmd/spire/daemon.go).
 func StopOTLPReceiver() {
 	closeSharedOLAP()
@@ -639,11 +697,12 @@ func ReapDeadAgents(towerName string) int {
 }
 
 // syncToOLAP performs incremental ETL from Dolt agent_runs into the tower's
-// local DuckDB analytics database. Uses the shared OLAP connection (which also
-// backs the OTLP receiver) so we don't open/close DuckDB every cycle.
+// local DuckDB analytics database. Writes are serialized through the shared
+// DuckWriter so they don't conflict with OTel event flushes. No persistent
+// DuckDB connection is held.
 // Non-fatal: errors are logged by the caller.
 func syncToOLAP(tower config.TowerConfig) error {
-	db, err := ensureSharedOLAP(tower)
+	dw, err := ensureSharedOLAP(tower)
 	if err != nil {
 		return err
 	}
@@ -658,7 +717,7 @@ func syncToOLAP(tower config.TowerConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	etl := olap.NewETL(db)
+	etl := olap.NewETLWithWriter(tower.OLAPPath(), dw.Submit)
 	n, err := etl.Sync(ctx, doltConn)
 	if err != nil {
 		return err

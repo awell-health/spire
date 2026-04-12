@@ -10,12 +10,38 @@ import (
 
 // ETL handles incremental sync from Dolt agent_runs to DuckDB agent_runs_olap.
 type ETL struct {
+	// Persistent DB mode (backward compat — used by tests and legacy callers).
 	db *DB
+
+	// Path-based mode: open→use→close per operation.
+	dbPath  string
+	writeFn func(fn func(*sql.Tx) error) error
 }
 
-// NewETL creates a new ETL instance backed by the given DuckDB database.
+// NewETL creates a new ETL instance backed by a persistent *DB.
+// Used by tests and backward-compatible callers.
 func NewETL(db *DB) *ETL {
 	return &ETL{db: db}
+}
+
+// NewETLPath creates an ETL that opens/closes DuckDB per operation using
+// WriteFunc (with retry-on-lock). Used by spire up for standalone ETL seed.
+func NewETLPath(dbPath string) *ETL {
+	return &ETL{
+		dbPath: dbPath,
+		writeFn: func(fn func(*sql.Tx) error) error {
+			return WriteFunc(dbPath, fn)
+		},
+	}
+}
+
+// NewETLWithWriter creates an ETL that submits writes through a custom write
+// function (e.g. DuckWriter.Submit for serialized daemon writes).
+func NewETLWithWriter(dbPath string, wf func(fn func(*sql.Tx) error) error) *ETL {
+	return &ETL{
+		dbPath:  dbPath,
+		writeFn: wf,
+	}
 }
 
 // Sync performs an incremental ETL from the Dolt agent_runs table (via doltConn)
@@ -23,38 +49,85 @@ func NewETL(db *DB) *ETL {
 // etl_cursor table to track the high-water mark (an RFC3339 started_at timestamp).
 // Returns the number of rows synced and any error.
 func (e *ETL) Sync(ctx context.Context, doltConn *sql.DB) (int, error) {
+	// Legacy path: persistent *DB with mutex.
+	if e.db != nil {
+		return e.syncWithDB(ctx, doltConn)
+	}
+	return e.syncWithPath(ctx, doltConn)
+}
+
+// syncWithDB is the original sync path using a persistent *DB connection.
+func (e *ETL) syncWithDB(ctx context.Context, doltConn *sql.DB) (int, error) {
 	e.db.mu.Lock()
 	defer e.db.mu.Unlock()
 
-	// 1. Read cursor (started_at timestamp) from DuckDB
-	lastTS, err := e.readCursor(ctx)
+	lastTS, err := readCursor(ctx, e.db.db)
 	if err != nil {
 		return 0, fmt.Errorf("olap etl read cursor: %w", err)
 	}
 
-	// 2. Query Dolt for rows at or after the cursor timestamp
-	rows, err := e.queryDolt(ctx, doltConn, lastTS)
+	rows, err := queryDolt(ctx, doltConn, lastTS)
 	if err != nil {
 		return 0, fmt.Errorf("olap etl query dolt: %w", err)
 	}
-
 	if len(rows) == 0 {
 		return 0, nil
 	}
 
-	// 3. Bulk insert into DuckDB (upsert handles re-processed boundary rows)
-	newHighWater, err := e.insertRows(ctx, rows)
+	newHighWater, err := insertRows(ctx, e.db.db, rows)
 	if err != nil {
 		return 0, fmt.Errorf("olap etl insert: %w", err)
 	}
 
-	// 4. Update cursor
-	if err := e.updateCursor(ctx, newHighWater); err != nil {
+	if err := updateCursor(ctx, e.db.db, newHighWater); err != nil {
 		return 0, fmt.Errorf("olap etl update cursor: %w", err)
 	}
 
-	// 5. Refresh materialized views
 	if err := RefreshMaterializedViews(ctx, e.db); err != nil {
+		return len(rows), fmt.Errorf("olap etl refresh views: %w", err)
+	}
+
+	return len(rows), nil
+}
+
+// syncWithPath uses the open→write→close pattern for lock-safe DuckDB access.
+func (e *ETL) syncWithPath(ctx context.Context, doltConn *sql.DB) (int, error) {
+	// 1. Read cursor via ReadFunc (read-only, no lock contention).
+	var lastTS string
+	if err := ReadFunc(e.dbPath, func(db *sql.DB) error {
+		var err error
+		lastTS, err = readCursor(ctx, db)
+		return err
+	}); err != nil {
+		return 0, fmt.Errorf("olap etl read cursor: %w", err)
+	}
+
+	// 2. Query Dolt for rows at or after the cursor (no DuckDB access needed).
+	rows, err := queryDolt(ctx, doltConn, lastTS)
+	if err != nil {
+		return 0, fmt.Errorf("olap etl query dolt: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+
+	// 3. Insert rows + update cursor in a single write transaction.
+	var newHighWater string
+	if err := e.writeFn(func(tx *sql.Tx) error {
+		var txErr error
+		newHighWater, txErr = insertRowsTx(ctx, tx, rows)
+		if txErr != nil {
+			return fmt.Errorf("olap etl insert: %w", txErr)
+		}
+		return updateCursorTx(ctx, tx, newHighWater)
+	}); err != nil {
+		return 0, err
+	}
+
+	// 4. Refresh materialized views in a separate write.
+	if err := e.writeFn(func(tx *sql.Tx) error {
+		return RefreshMaterializedViewsTx(ctx, tx)
+	}); err != nil {
 		return len(rows), fmt.Errorf("olap etl refresh views: %w", err)
 	}
 
@@ -100,9 +173,9 @@ type agentRunRow struct {
 // readCursor returns the high-water-mark started_at timestamp (RFC3339) from
 // the etl_cursor table. Returns "" on first sync or if the stored value is a
 // stale id-based cursor (pre-fix data starting with "run-").
-func (e *ETL) readCursor(ctx context.Context) (string, error) {
+func readCursor(ctx context.Context, db *sql.DB) (string, error) {
 	var val string
-	err := e.db.db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		"SELECT last_id FROM etl_cursor WHERE table_name = 'agent_runs'",
 	).Scan(&val)
 	if err == sql.ErrNoRows {
@@ -123,7 +196,7 @@ func (e *ETL) readCursor(ctx context.Context) (string, error) {
 // Uses started_at as a monotonic cursor (not id, which is random hex).
 // The >= boundary means rows at the exact cursor timestamp are re-fetched;
 // the upsert in insertRows makes this harmless.
-func (e *ETL) queryDolt(ctx context.Context, doltConn *sql.DB, lastTS string) ([]agentRunRow, error) {
+func queryDolt(ctx context.Context, doltConn *sql.DB, lastTS string) ([]agentRunRow, error) {
 	baseCols := `SELECT
 		id, bead_id, epic_id, parent_run_id,
 		formula_name, CAST(formula_version AS CHAR) AS formula_version,
@@ -183,11 +256,32 @@ func (e *ETL) queryDolt(ctx context.Context, doltConn *sql.DB, lastTS string) ([
 	return rows, sqlRows.Err()
 }
 
-func (e *ETL) insertRows(ctx context.Context, rows []agentRunRow) (string, error) {
+// insertRows inserts rows using the raw *sql.DB (legacy persistent-DB path).
+func insertRows(ctx context.Context, db *sql.DB, rows []agentRunRow) (string, error) {
 	if len(rows) == 0 {
 		return "", nil
 	}
+	q, args := buildInsertSQL(rows)
+	if _, err := db.ExecContext(ctx, q, args...); err != nil {
+		return "", err
+	}
+	return lastHighWater(rows), nil
+}
 
+// insertRowsTx inserts rows inside a transaction (path-based pattern).
+func insertRowsTx(ctx context.Context, tx *sql.Tx, rows []agentRunRow) (string, error) {
+	if len(rows) == 0 {
+		return "", nil
+	}
+	q, args := buildInsertSQL(rows)
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return "", err
+	}
+	return lastHighWater(rows), nil
+}
+
+// buildInsertSQL constructs the upsert SQL and args for a batch of rows.
+func buildInsertSQL(rows []agentRunRow) (string, []any) {
 	var b strings.Builder
 	b.WriteString(`INSERT INTO agent_runs_olap (
 		id, bead_id, epic_id, parent_run_id,
@@ -258,22 +352,32 @@ func (e *ETL) insertRows(ctx context.Context, rows []agentRunRow) (string, error
 		completed_at = EXCLUDED.completed_at,
 		synced_at = EXCLUDED.synced_at`)
 
-	if _, err := e.db.db.ExecContext(ctx, b.String(), args...); err != nil {
-		return "", err
-	}
-
-	// Return the last row's started_at as the new high-water mark.
-	last := rows[len(rows)-1]
-	if last.StartedAt.Valid {
-		return last.StartedAt.Time.UTC().Format(time.RFC3339), nil
-	}
-	// Fallback: should not happen (started_at is NOT NULL in Dolt), but
-	// use current time rather than stalling the cursor.
-	return time.Now().UTC().Format(time.RFC3339), nil
+	return b.String(), args
 }
 
-func (e *ETL) updateCursor(ctx context.Context, lastID string) error {
-	_, err := e.db.db.ExecContext(ctx,
+// lastHighWater returns the RFC3339 high-water mark from the last row.
+func lastHighWater(rows []agentRunRow) string {
+	last := rows[len(rows)-1]
+	if last.StartedAt.Valid {
+		return last.StartedAt.Time.UTC().Format(time.RFC3339)
+	}
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
+// updateCursor updates the ETL cursor using a raw *sql.DB (legacy path).
+func updateCursor(ctx context.Context, db *sql.DB, lastID string) error {
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO etl_cursor (table_name, last_id, last_synced)
+		 VALUES ('agent_runs', ?, now())
+		 ON CONFLICT (table_name) DO UPDATE SET last_id = EXCLUDED.last_id, last_synced = now()`,
+		lastID,
+	)
+	return err
+}
+
+// updateCursorTx updates the ETL cursor inside a transaction (path-based pattern).
+func updateCursorTx(ctx context.Context, tx *sql.Tx, lastID string) error {
+	_, err := tx.ExecContext(ctx,
 		`INSERT INTO etl_cursor (table_name, last_id, last_synced)
 		 VALUES ('agent_runs', ?, now())
 		 ON CONFLICT (table_name) DO UPDATE SET last_id = EXCLUDED.last_id, last_synced = now()`,

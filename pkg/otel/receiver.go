@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -9,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/awell-health/spire/pkg/olap"
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -35,32 +35,35 @@ var knownTools = map[string]bool{
 	"TodoWrite":    true,
 	"LSP":          true,
 	// Codex equivalents
-	"read_file":    true,
-	"write_file":   true,
-	"shell":        true,
-	"search":       true,
+	"read_file":  true,
+	"write_file": true,
+	"shell":      true,
+	"search":     true,
 }
 
 // Receiver is a minimal OTLP gRPC trace receiver that extracts tool invocation
 // spans and writes them to DuckDB.
 type Receiver struct {
 	collectorpb.UnimplementedTraceServiceServer
-	db     *olap.DB
-	tower  string
-	server *grpc.Server
-	lis    net.Listener
-	port   int
+	writeFn func(fn func(*sql.Tx) error) error
+	tower   string
+	server  *grpc.Server
+	lis     net.Listener
+	port    int
 }
 
-// NewReceiver creates a new OTLP receiver. Call Start() to begin listening.
-func NewReceiver(db *olap.DB, port int, tower string) *Receiver {
+// NewReceiver creates a new OTLP receiver. writeFn is called for each batch of
+// tool events to persist them to DuckDB. In daemon mode this is typically
+// DuckWriter.Submit; standalone callers can use a closure over olap.WriteFunc.
+// Call Start() to begin listening.
+func NewReceiver(writeFn func(fn func(*sql.Tx) error) error, port int, tower string) *Receiver {
 	if port <= 0 {
 		port = DefaultPort
 	}
 	return &Receiver{
-		db:    db,
-		tower: tower,
-		port:  port,
+		writeFn: writeFn,
+		tower:   tower,
+		port:    port,
 	}
 }
 
@@ -113,7 +116,9 @@ func (r *Receiver) Export(_ context.Context, req *collectorpb.ExportTraceService
 	}
 
 	if len(events) > 0 {
-		if err := WriteBatch(r.db, events); err != nil {
+		if err := r.writeFn(func(tx *sql.Tx) error {
+			return InsertBatchTx(tx, events)
+		}); err != nil {
 			log.Printf("[otel] write batch (%d events): %v", len(events), err)
 			// Return success anyway — don't backpressure the provider
 		}

@@ -215,6 +215,9 @@ func cmdUp(args []string) error {
 		}
 
 		// Initialize OLAP (DuckDB) database and run initial ETL sync.
+		// Uses the open→write→close pattern (olap.WriteFunc) so no persistent
+		// DuckDB connection is held. Retry-on-lock handles the rare case where
+		// the daemon is already running and mid-flush.
 		fmt.Print("olap database: ")
 		olapWarned := 0
 		for _, t := range towers {
@@ -224,8 +227,7 @@ func cmdUp(args []string) error {
 				olapWarned++
 				continue
 			}
-			adb, err := olap.Open(olapPath)
-			if err != nil {
+			if err := olap.EnsureSchema(olapPath); err != nil {
 				fmt.Printf("\n  warning: %s: init: %s", t.Name, err)
 				olapWarned++
 				continue
@@ -234,17 +236,15 @@ func cmdUp(args []string) error {
 			dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s?parseTime=true", doltHost(), doltPort(), t.Database)
 			doltConn, err := sql.Open("mysql", dsn)
 			if err != nil {
-				adb.Close()
 				fmt.Printf("\n  warning: %s: dolt connect: %s", t.Name, err)
 				olapWarned++
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			etl := olap.NewETL(adb)
+			etl := olap.NewETLPath(olapPath)
 			n, syncErr := etl.Sync(ctx, doltConn)
 			cancel()
 			doltConn.Close()
-			adb.Close()
 			if syncErr != nil {
 				fmt.Printf("\n  warning: %s: sync: %s", t.Name, syncErr)
 				olapWarned++

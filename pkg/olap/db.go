@@ -7,11 +7,95 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
+
+// WriteFunc opens a DuckDB database at path, begins a transaction, calls fn,
+// commits, and closes the database — all in one call. If DuckDB returns a lock
+// error, it retries up to 3 times with exponential backoff (100ms, 200ms).
+// This is the foundational write primitive for the open→write→close pattern
+// that prevents long-held file locks.
+func WriteFunc(path string, fn func(tx *sql.Tx) error) error {
+	const maxRetries = 3
+	const baseDelay = 100 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(baseDelay * time.Duration(1<<uint(attempt-1)))
+		}
+		lastErr = writeOnce(path, fn)
+		if lastErr == nil {
+			return nil
+		}
+		if !IsDuckDBLockError(lastErr) {
+			return lastErr
+		}
+	}
+	return fmt.Errorf("olap write: lock not released after %d retries: %w", maxRetries, lastErr)
+}
+
+// writeOnce opens the DB, runs fn in a transaction, and closes. Single attempt.
+func writeOnce(path string, fn func(tx *sql.Tx) error) error {
+	db, err := sql.Open("duckdb", path)
+	if err != nil {
+		return fmt.Errorf("olap write open: %w", err)
+	}
+	// Single connection ensures db.Close() releases the file lock immediately.
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ReadFunc opens a DuckDB database at path, calls fn with the raw *sql.DB for
+// read-only queries, and closes the database. Reads don't need retry since
+// DuckDB allows concurrent readers.
+func ReadFunc(path string, fn func(db *sql.DB) error) error {
+	db, err := sql.Open("duckdb", path)
+	if err != nil {
+		return fmt.Errorf("olap read open: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	return fn(db)
+}
+
+// EnsureSchema opens the DuckDB file at path, creates all tables if they don't
+// exist, and closes. Used at startup to initialize without holding the DB open.
+func EnsureSchema(path string) error {
+	db, err := Open(path)
+	if err != nil {
+		return err
+	}
+	return db.Close()
+}
+
+// IsDuckDBLockError returns true if the error is a DuckDB file lock conflict.
+// DuckDB's lock error isn't a typed error — we match on substrings defensively
+// since the exact message varies across DuckDB versions.
+func IsDuckDBLockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "could not set lock") ||
+		strings.Contains(msg, "database is locked") ||
+		(strings.Contains(msg, "io error") && strings.Contains(msg, "lock"))
+}
 
 // DB wraps a DuckDB *sql.DB connection with a mutex for single-writer access.
 type DB struct {
