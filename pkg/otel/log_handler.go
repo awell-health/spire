@@ -258,21 +258,25 @@ func attrBool(m map[string]string, key string, defaultVal bool) bool {
 }
 
 // anyValueToString converts an OTLP AnyValue to its string representation.
+// Uses the oneof type to avoid silently dropping zero-valued ints/doubles
+// and false booleans.
 func anyValueToString(v *commonpb.AnyValue) string {
 	if v == nil {
 		return ""
 	}
-	if s := v.GetStringValue(); s != "" {
-		return s
-	}
-	if v.GetIntValue() != 0 {
+	switch v.Value.(type) {
+	case *commonpb.AnyValue_StringValue:
+		return v.GetStringValue()
+	case *commonpb.AnyValue_IntValue:
 		return strconv.FormatInt(v.GetIntValue(), 10)
-	}
-	if v.GetDoubleValue() != 0 {
+	case *commonpb.AnyValue_DoubleValue:
 		return fmt.Sprintf("%g", v.GetDoubleValue())
+	case *commonpb.AnyValue_BoolValue:
+		if v.GetBoolValue() {
+			return "true"
+		}
+		return "false"
+	default:
+		return ""
 	}
-	if v.GetBoolValue() {
-		return "true"
-	}
-	return v.GetStringValue()
 }

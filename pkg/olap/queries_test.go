@@ -698,6 +698,184 @@ func TestQueryToolEventsByStep(t *testing.T) {
 	}
 }
 
+// --- QueryToolSpansByBead ---
+
+func TestQueryToolSpansByBead(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Insert test spans for two beads.
+	spans := []struct {
+		traceID, spanID, parentID, beadID, spanName, kind string
+		durationMs                                        int
+		success                                           bool
+		startTime, endTime                                time.Time
+	}{
+		{"t1", "s1", "", "spi-spans", "interaction", "interaction", 500, true, now, now.Add(500 * time.Millisecond)},
+		{"t1", "s2", "s1", "spi-spans", "Read", "tool", 50, true, now.Add(10 * time.Millisecond), now.Add(60 * time.Millisecond)},
+		{"t1", "s3", "s1", "spi-spans", "Bash", "tool", 100, false, now.Add(100 * time.Millisecond), now.Add(200 * time.Millisecond)},
+		{"t2", "s4", "", "spi-other", "Edit", "tool", 80, true, now.Add(time.Second), now.Add(time.Second + 80*time.Millisecond)},
+	}
+
+	for _, s := range spans {
+		_, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO tool_spans (trace_id, span_id, parent_span_id, session_id, bead_id,
+				agent_name, step, span_name, kind, duration_ms, success, start_time, end_time, tower, attributes)
+			VALUES (?, ?, ?, 'sess', ?, 'agent', 'implement', ?, ?, ?, ?, ?, ?, 'tower', '{}')`,
+			s.traceID, s.spanID, s.parentID, s.beadID, s.spanName, s.kind,
+			s.durationMs, s.success, s.startTime, s.endTime,
+		)
+		if err != nil {
+			t.Fatalf("insert span %s: %v", s.spanID, err)
+		}
+	}
+
+	// Query spans for spi-spans.
+	results, err := db.QueryToolSpansByBead("spi-spans")
+	if err != nil {
+		t.Fatalf("QueryToolSpansByBead: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 spans for spi-spans, got %d", len(results))
+	}
+
+	// Should be ordered by start_time ASC.
+	if results[0].SpanName != "interaction" {
+		t.Errorf("first span = %q, want interaction", results[0].SpanName)
+	}
+	if results[1].SpanName != "Read" {
+		t.Errorf("second span = %q, want Read", results[1].SpanName)
+	}
+	if results[2].SpanName != "Bash" {
+		t.Errorf("third span = %q, want Bash", results[2].SpanName)
+	}
+
+	// Verify field values.
+	if results[0].ParentSpanID != "" {
+		t.Errorf("interaction parent = %q, want empty", results[0].ParentSpanID)
+	}
+	if results[1].ParentSpanID != "s1" {
+		t.Errorf("Read parent = %q, want s1", results[1].ParentSpanID)
+	}
+	if results[2].Success {
+		t.Error("Bash should have success=false")
+	}
+	if results[2].DurationMs != 100 {
+		t.Errorf("Bash duration = %d, want 100", results[2].DurationMs)
+	}
+}
+
+func TestQueryToolSpansByBead_Empty(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	results, err := db.QueryToolSpansByBead("spi-nonexistent")
+	if err != nil {
+		t.Fatalf("QueryToolSpansByBead: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 spans, got %d", len(results))
+	}
+}
+
+// --- QueryAPIEventsByBead ---
+
+func TestQueryAPIEventsByBead(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	events := []struct {
+		sessionID, beadID, model, provider string
+		durationMs                         int
+		inputTokens, outputTokens          int64
+		costUSD                            float64
+	}{
+		{"s1", "spi-api", "claude-opus-4-6", "claude", 1500, 5000, 2000, 0.12},
+		{"s1", "spi-api", "claude-opus-4-6", "claude", 2000, 3000, 1000, 0.08},
+		{"s2", "spi-api", "claude-sonnet-4-6", "claude", 800, 1000, 500, 0.02},
+		{"s3", "spi-other", "codex-mini", "codex", 500, 800, 300, 0.01},
+	}
+
+	for _, e := range events {
+		_, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO api_events (session_id, bead_id, agent_name, step, provider, model,
+				duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+				cost_usd, timestamp, tower)
+			VALUES (?, ?, 'agent', 'impl', ?, ?, ?, ?, ?, 0, 0, ?, ?, 'tower')`,
+			e.sessionID, e.beadID, e.provider, e.model,
+			e.durationMs, e.inputTokens, e.outputTokens, e.costUSD, now,
+		)
+		if err != nil {
+			t.Fatalf("insert api event: %v", err)
+		}
+	}
+
+	// Query API events for spi-api.
+	results, err := db.QueryAPIEventsByBead("spi-api")
+	if err != nil {
+		t.Fatalf("QueryAPIEventsByBead: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 model groups for spi-api, got %d", len(results))
+	}
+
+	// Ordered by count DESC: opus (2 events) first, sonnet (1 event) second.
+	if results[0].Model != "claude-opus-4-6" {
+		t.Errorf("first model = %q, want claude-opus-4-6", results[0].Model)
+	}
+	if results[0].Count != 2 {
+		t.Errorf("opus count = %d, want 2", results[0].Count)
+	}
+	if results[0].TotalInputTokens != 8000 {
+		t.Errorf("opus total_input_tokens = %d, want 8000", results[0].TotalInputTokens)
+	}
+	if results[0].TotalOutputTokens != 3000 {
+		t.Errorf("opus total_output_tokens = %d, want 3000", results[0].TotalOutputTokens)
+	}
+	// Total cost for opus: 0.12 + 0.08 = 0.20
+	if results[0].TotalCostUSD < 0.19 || results[0].TotalCostUSD > 0.21 {
+		t.Errorf("opus total_cost_usd = %f, want ~0.20", results[0].TotalCostUSD)
+	}
+
+	if results[1].Model != "claude-sonnet-4-6" {
+		t.Errorf("second model = %q, want claude-sonnet-4-6", results[1].Model)
+	}
+	if results[1].Count != 1 {
+		t.Errorf("sonnet count = %d, want 1", results[1].Count)
+	}
+}
+
+func TestQueryAPIEventsByBead_Empty(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	results, err := db.QueryAPIEventsByBead("spi-nonexistent")
+	if err != nil {
+		t.Fatalf("QueryAPIEventsByBead: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
 func TestNewTablesExistAfterInit(t *testing.T) {
 	db, err := Open("")
 	if err != nil {
