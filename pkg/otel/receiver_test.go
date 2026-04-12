@@ -385,6 +385,21 @@ func TestLogsReceiverExport_RoundTrip(t *testing.T) {
 		t.Error("expected success=true")
 	}
 
+	// Verify provider and event_kind columns on tool_events row.
+	var provider, eventKind string
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT provider, event_kind FROM tool_events WHERE bead_id = 'spi-roundtrip'",
+	).Scan(&provider, &eventKind)
+	if err != nil {
+		t.Fatalf("query tool_events provider/event_kind: %v", err)
+	}
+	if provider != "claude" {
+		t.Errorf("provider = %q, want claude", provider)
+	}
+	if eventKind != "tool_result" {
+		t.Errorf("event_kind = %q, want tool_result", eventKind)
+	}
+
 	// Verify api_events row.
 	var model string
 	var inputTokens int64
@@ -403,5 +418,243 @@ func TestLogsReceiverExport_RoundTrip(t *testing.T) {
 	}
 	if costUSD != 0.05 {
 		t.Errorf("cost_usd = %f, want 0.05", costUSD)
+	}
+}
+
+// TestLogsReceiverExport_CodexRoundTrip verifies that Codex log events
+// (read_file, write_file, shell, search) are correctly parsed and written
+// to DuckDB through the full receiver pipeline.
+func TestLogsReceiverExport_CodexRoundTrip(t *testing.T) {
+	db, err := olap.Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	writeFn := func(fn func(*sql.Tx) error) error {
+		return db.WithWriteLock(func(sqlDB *sql.DB) error {
+			tx, err := sqlDB.BeginTx(context.Background(), nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			if err := fn(tx); err != nil {
+				return err
+			}
+			return tx.Commit()
+		})
+	}
+
+	recv := NewReceiver(writeFn, 0, "test-tower")
+	lr := &logsReceiver{r: recv}
+
+	now := uint64(time.Now().UnixNano())
+	codexTools := []string{"read_file", "write_file", "shell", "search"}
+	var records []*logspb.LogRecord
+	for i, tool := range codexTools {
+		records = append(records, &logspb.LogRecord{
+			TimeUnixNano: now + uint64(i)*1_000_000,
+			Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "codex.tool_result"}},
+			Attributes: []*commonpb.KeyValue{
+				{Key: "tool_name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: tool}}},
+				{Key: "duration_ms", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64((i + 1) * 10)}}},
+				{Key: "success", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}}},
+			},
+		})
+	}
+
+	req := &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{
+			{
+				Resource: &resourcepb.Resource{
+					Attributes: []*commonpb.KeyValue{
+						{Key: "bead.id", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "spi-codex-rt"}}},
+						{Key: "agent.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "apprentice-codex-0"}}},
+						{Key: "step", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "implement"}}},
+						{Key: "session.id", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "sess-codex-rt"}}},
+					},
+				},
+				ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
+			},
+		},
+	}
+
+	resp, err := lr.Export(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+
+	// Verify all 4 Codex tool events were written.
+	ctx := context.Background()
+	var count int
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM tool_events WHERE bead_id = 'spi-codex-rt'",
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 4 {
+		t.Errorf("expected 4 tool events, got %d", count)
+	}
+
+	// Verify each tool was written with correct provider and event_kind.
+	rows, err := db.SqlDB().QueryContext(ctx,
+		"SELECT tool_name, provider, event_kind, step FROM tool_events WHERE bead_id = 'spi-codex-rt' ORDER BY timestamp",
+	)
+	if err != nil {
+		t.Fatalf("query rows: %v", err)
+	}
+	defer rows.Close()
+
+	var gotTools []string
+	for rows.Next() {
+		var toolName, provider, eventKind, step string
+		if err := rows.Scan(&toolName, &provider, &eventKind, &step); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		gotTools = append(gotTools, toolName)
+		if provider != "codex" {
+			t.Errorf("tool %s: provider = %q, want codex", toolName, provider)
+		}
+		if eventKind != "tool_result" {
+			t.Errorf("tool %s: event_kind = %q, want tool_result", toolName, eventKind)
+		}
+		if step != "implement" {
+			t.Errorf("tool %s: step = %q, want implement", toolName, step)
+		}
+	}
+	if len(gotTools) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(gotTools))
+	}
+	for i, want := range codexTools {
+		if gotTools[i] != want {
+			t.Errorf("row %d: tool_name = %q, want %q", i, gotTools[i], want)
+		}
+	}
+}
+
+// TestInsertBatchTx_LogParsedEvents verifies that events parsed from log
+// records (with provider and event_kind set) are correctly written to the
+// tool_events DuckDB table.
+func TestInsertBatchTx_LogParsedEvents(t *testing.T) {
+	db, err := olap.Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	events := []ToolEvent{
+		{
+			SessionID:  "sess-log-1",
+			BeadID:     "spi-logtest",
+			AgentName:  "apprentice-0",
+			Step:       "implement",
+			ToolName:   "Read",
+			DurationMs: 42,
+			Success:    true,
+			Timestamp:  now,
+			Tower:      "test-tower",
+			Provider:   "claude",
+			EventKind:  "tool_result",
+		},
+		{
+			SessionID:  "sess-log-1",
+			BeadID:     "spi-logtest",
+			AgentName:  "apprentice-0",
+			Step:       "implement",
+			ToolName:   "shell",
+			DurationMs: 300,
+			Success:    false,
+			Timestamp:  now.Add(time.Second),
+			Tower:      "test-tower",
+			Provider:   "codex",
+			EventKind:  "tool_result",
+		},
+		{
+			SessionID:  "sess-log-1",
+			BeadID:     "spi-logtest",
+			AgentName:  "apprentice-0",
+			Step:       "implement",
+			ToolName:   "Bash",
+			Timestamp:  now.Add(2 * time.Second),
+			Tower:      "test-tower",
+			Provider:   "claude",
+			EventKind:  "tool_decision",
+		},
+	}
+
+	err = db.WithWriteLock(func(sqlDB *sql.DB) error {
+		tx, err := sqlDB.BeginTx(context.Background(), nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := InsertBatchTx(tx, events); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	if err != nil {
+		t.Fatalf("InsertBatchTx: %v", err)
+	}
+
+	// Verify all 3 events were inserted.
+	ctx := context.Background()
+	var count int
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM tool_events WHERE bead_id = 'spi-logtest'",
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 rows, got %d", count)
+	}
+
+	// Verify provider and event_kind are stored correctly.
+	var provider, eventKind string
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT provider, event_kind FROM tool_events WHERE bead_id = 'spi-logtest' AND tool_name = 'Read'",
+	).Scan(&provider, &eventKind)
+	if err != nil {
+		t.Fatalf("scan Read: %v", err)
+	}
+	if provider != "claude" {
+		t.Errorf("Read provider = %q, want claude", provider)
+	}
+	if eventKind != "tool_result" {
+		t.Errorf("Read event_kind = %q, want tool_result", eventKind)
+	}
+
+	// Verify Codex event.
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT provider, event_kind FROM tool_events WHERE bead_id = 'spi-logtest' AND tool_name = 'shell'",
+	).Scan(&provider, &eventKind)
+	if err != nil {
+		t.Fatalf("scan shell: %v", err)
+	}
+	if provider != "codex" {
+		t.Errorf("shell provider = %q, want codex", provider)
+	}
+	if eventKind != "tool_result" {
+		t.Errorf("shell event_kind = %q, want tool_result", eventKind)
+	}
+
+	// Verify tool_decision event kind.
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT provider, event_kind FROM tool_events WHERE bead_id = 'spi-logtest' AND tool_name = 'Bash'",
+	).Scan(&provider, &eventKind)
+	if err != nil {
+		t.Fatalf("scan Bash: %v", err)
+	}
+	if provider != "claude" {
+		t.Errorf("Bash provider = %q, want claude", provider)
+	}
+	if eventKind != "tool_decision" {
+		t.Errorf("Bash event_kind = %q, want tool_decision", eventKind)
 	}
 }

@@ -94,6 +94,9 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	if cfg.Name != "" {
 		resAttrs = append(resAttrs, "agent.name="+cfg.Name)
 	}
+	if cfg.Step != "" {
+		resAttrs = append(resAttrs, "step="+cfg.Step)
+	}
 	if cfg.Tower != "" {
 		resAttrs = append(resAttrs, "tower="+cfg.Tower)
 	}

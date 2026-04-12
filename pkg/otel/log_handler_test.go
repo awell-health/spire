@@ -435,6 +435,255 @@ func TestParseLogRecords_ToolDecision(t *testing.T) {
 	}
 }
 
+func TestParseLogRecords_CodexReadFile(t *testing.T) {
+	now := uint64(time.Now().UnixNano())
+	resourceLogs := []*logspb.ResourceLogs{
+		{
+			Resource: &resourcepb.Resource{
+				Attributes: []*commonpb.KeyValue{
+					strKV("bead.id", "spi-codex-1"),
+					strKV("session.id", "sess-codex"),
+					strKV("step", "implement"),
+				},
+			},
+			ScopeLogs: []*logspb.ScopeLogs{
+				{
+					LogRecords: []*logspb.LogRecord{
+						{
+							TimeUnixNano: now,
+							Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "codex.tool_result"}},
+							Attributes: []*commonpb.KeyValue{
+								strKV("tool_name", "read_file"),
+								intKV("duration_ms", 25),
+								boolKV("success", true),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := ParseLogRecords(resourceLogs, "tower")
+	if len(result.ToolEvents) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(result.ToolEvents))
+	}
+	ev := result.ToolEvents[0]
+	if ev.Provider != "codex" {
+		t.Errorf("Provider = %q, want codex", ev.Provider)
+	}
+	if ev.ToolName != "read_file" {
+		t.Errorf("ToolName = %q, want read_file", ev.ToolName)
+	}
+	if ev.DurationMs != 25 {
+		t.Errorf("DurationMs = %d, want 25", ev.DurationMs)
+	}
+	if !ev.Success {
+		t.Error("Success should be true")
+	}
+	if ev.Step != "implement" {
+		t.Errorf("Step = %q, want implement", ev.Step)
+	}
+	if ev.EventKind != "tool_result" {
+		t.Errorf("EventKind = %q, want tool_result", ev.EventKind)
+	}
+}
+
+func TestParseLogRecords_CodexWriteFile(t *testing.T) {
+	now := uint64(time.Now().UnixNano())
+	resourceLogs := []*logspb.ResourceLogs{
+		{
+			Resource: &resourcepb.Resource{},
+			ScopeLogs: []*logspb.ScopeLogs{
+				{
+					LogRecords: []*logspb.LogRecord{
+						{
+							TimeUnixNano: now,
+							Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "codex.tool_result"}},
+							Attributes: []*commonpb.KeyValue{
+								strKV("tool_name", "write_file"),
+								intKV("duration_ms", 80),
+								boolKV("success", true),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := ParseLogRecords(resourceLogs, "tower")
+	if len(result.ToolEvents) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(result.ToolEvents))
+	}
+	ev := result.ToolEvents[0]
+	if ev.Provider != "codex" {
+		t.Errorf("Provider = %q, want codex", ev.Provider)
+	}
+	if ev.ToolName != "write_file" {
+		t.Errorf("ToolName = %q, want write_file", ev.ToolName)
+	}
+	if ev.DurationMs != 80 {
+		t.Errorf("DurationMs = %d, want 80", ev.DurationMs)
+	}
+}
+
+func TestParseLogRecords_CodexSearch(t *testing.T) {
+	now := uint64(time.Now().UnixNano())
+	resourceLogs := []*logspb.ResourceLogs{
+		{
+			Resource: &resourcepb.Resource{},
+			ScopeLogs: []*logspb.ScopeLogs{
+				{
+					LogRecords: []*logspb.LogRecord{
+						{
+							TimeUnixNano: now,
+							Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "codex.tool_result"}},
+							Attributes: []*commonpb.KeyValue{
+								strKV("tool_name", "search"),
+								intKV("duration_ms", 150),
+								boolKV("success", false),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := ParseLogRecords(resourceLogs, "tower")
+	if len(result.ToolEvents) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(result.ToolEvents))
+	}
+	ev := result.ToolEvents[0]
+	if ev.Provider != "codex" {
+		t.Errorf("Provider = %q, want codex", ev.Provider)
+	}
+	if ev.ToolName != "search" {
+		t.Errorf("ToolName = %q, want search", ev.ToolName)
+	}
+	if ev.Success {
+		t.Error("Success should be false")
+	}
+}
+
+func TestParseLogRecords_UserPrompt(t *testing.T) {
+	now := uint64(time.Now().UnixNano())
+	resourceLogs := []*logspb.ResourceLogs{
+		{
+			Resource: &resourcepb.Resource{
+				Attributes: []*commonpb.KeyValue{
+					strKV("bead.id", "spi-prompt"),
+					strKV("agent.name", "apprentice-0"),
+				},
+			},
+			ScopeLogs: []*logspb.ScopeLogs{
+				{
+					LogRecords: []*logspb.LogRecord{
+						{
+							TimeUnixNano: now,
+							Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "claude_code.user_prompt"}},
+							Attributes:   []*commonpb.KeyValue{},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := ParseLogRecords(resourceLogs, "tower")
+	if len(result.ToolEvents) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(result.ToolEvents))
+	}
+	ev := result.ToolEvents[0]
+	if ev.Provider != "claude" {
+		t.Errorf("Provider = %q, want claude", ev.Provider)
+	}
+	if ev.EventKind != "user_prompt" {
+		t.Errorf("EventKind = %q, want user_prompt", ev.EventKind)
+	}
+	if ev.BeadID != "spi-prompt" {
+		t.Errorf("BeadID = %q, want spi-prompt", ev.BeadID)
+	}
+	if ev.AgentName != "apprentice-0" {
+		t.Errorf("AgentName = %q, want apprentice-0", ev.AgentName)
+	}
+}
+
+func TestParseLogRecords_CodexAllTools(t *testing.T) {
+	// Verify all four Codex tool names are handled in a single batch.
+	now := uint64(time.Now().UnixNano())
+	codexTools := []string{"read_file", "write_file", "shell", "search"}
+	var records []*logspb.LogRecord
+	for i, tool := range codexTools {
+		records = append(records, &logspb.LogRecord{
+			TimeUnixNano: now + uint64(i)*1_000_000,
+			Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "codex.tool_result"}},
+			Attributes:   []*commonpb.KeyValue{strKV("tool_name", tool)},
+		})
+	}
+	resourceLogs := []*logspb.ResourceLogs{
+		{
+			Resource:  &resourcepb.Resource{},
+			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
+		},
+	}
+
+	result := ParseLogRecords(resourceLogs, "tower")
+	if len(result.ToolEvents) != 4 {
+		t.Fatalf("expected 4 tool events, got %d", len(result.ToolEvents))
+	}
+	for i, ev := range result.ToolEvents {
+		if ev.ToolName != codexTools[i] {
+			t.Errorf("event %d: ToolName = %q, want %q", i, ev.ToolName, codexTools[i])
+		}
+		if ev.Provider != "codex" {
+			t.Errorf("event %d: Provider = %q, want codex", i, ev.Provider)
+		}
+		if ev.EventKind != "tool_result" {
+			t.Errorf("event %d: EventKind = %q, want tool_result", i, ev.EventKind)
+		}
+	}
+}
+
+func TestParseLogRecords_EventNameField(t *testing.T) {
+	// Verify that the OTLP 1.5+ EventName field takes priority over Body.
+	now := uint64(time.Now().UnixNano())
+	resourceLogs := []*logspb.ResourceLogs{
+		{
+			Resource: &resourcepb.Resource{},
+			ScopeLogs: []*logspb.ScopeLogs{
+				{
+					LogRecords: []*logspb.LogRecord{
+						{
+							TimeUnixNano: now,
+							EventName:    "claude_code.tool_result",
+							Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "tool output text here"}},
+							Attributes: []*commonpb.KeyValue{
+								strKV("tool_name", "Grep"),
+								intKV("duration_ms", 30),
+								boolKV("success", true),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := ParseLogRecords(resourceLogs, "tower")
+	if len(result.ToolEvents) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(result.ToolEvents))
+	}
+	ev := result.ToolEvents[0]
+	if ev.ToolName != "Grep" {
+		t.Errorf("ToolName = %q, want Grep", ev.ToolName)
+	}
+	if ev.EventKind != "tool_result" {
+		t.Errorf("EventKind = %q, want tool_result", ev.EventKind)
+	}
+}
+
 func TestParseLogRecords_SkipsUnknownEvents(t *testing.T) {
 	resourceLogs := []*logspb.ResourceLogs{
 		{

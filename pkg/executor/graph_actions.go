@@ -276,6 +276,7 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 		BeadID:       e.beadID,
 		Role:         role,
 		Provider:     e.resolveStepProvider(step),
+		Step:         stepName,
 		ExtraArgs:    extraArgs,
 		CustomPrompt: step.With["prompt"],
 	})
