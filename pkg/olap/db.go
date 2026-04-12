@@ -183,7 +183,7 @@ func (d *DB) QueryFormulaPerformance(since time.Time) ([]FormulaStats, error) {
 				/ NULLIF(COUNT(*), 0), 1)                          AS success_rate,
 			ROUND(COALESCE(AVG(cost_usd), 0), 4)                   AS avg_cost_usd,
 			ROUND(COALESCE(AVG(review_rounds), 0), 1)              AS avg_review_rounds,
-			SUM(CASE WHEN started_at >= CURRENT_TIMESTAMP - INTERVAL 30 DAY THEN 1 ELSE 0 END) AS runs_last_30d
+			SUM(CASE WHEN started_at >= current_timestamp::TIMESTAMP - INTERVAL 30 DAY THEN 1 ELSE 0 END) AS runs_last_30d
 		FROM agent_runs_olap
 		WHERE formula_name IS NOT NULL
 		  AND formula_name != ''
