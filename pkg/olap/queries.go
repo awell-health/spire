@@ -242,7 +242,7 @@ func (d *DB) QueryTrends(since time.Time) ([]WeeklyTrend, error) {
 			COUNT(*) AS run_count,
 			ROUND(100.0 * SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS success_rate,
 			COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
-			COUNT(DISTINCT CASE WHEN result = 'success' AND phase IN ('seal', 'merge') THEN bead_id END) AS merge_count
+			COUNT(DISTINCT CASE WHEN result IN ('success', 'approve') AND phase IN ('sage-review', 'review') THEN bead_id END) AS merge_count
 		FROM agent_runs_olap
 		WHERE started_at >= ?
 		GROUP BY 1
@@ -269,13 +269,13 @@ func (d *DB) QueryFailures(since time.Time) ([]FailureStats, error) {
 	ctx := context.Background()
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT
-			COALESCE(failure_class, 'unknown') AS failure_class,
+			COALESCE(NULLIF(failure_class, ''), 'unknown') AS failure_class,
 			COUNT(*) AS count,
 			ROUND(100.0 * COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0), 1) AS percentage
 		FROM agent_runs_olap
 		WHERE started_at >= ?
-		  AND result NOT IN ('success', 'skipped')
-		GROUP BY failure_class
+		  AND result NOT IN ('success', 'skipped', 'approve', 'no_changes', '')
+		GROUP BY 1
 		ORDER BY count DESC
 	`, since)
 	if err != nil {

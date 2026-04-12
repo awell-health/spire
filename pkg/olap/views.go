@@ -63,9 +63,16 @@ func viewRefreshStatements() []string {
 
 		// weekly_merge_stats: delete + re-aggregate
 		// Uses per-bead subquery to correctly compute DORA metrics:
-		//   merge_count: distinct beads with successful seal/merge phase
-		//   failure_count: distinct beads with failures in key phases
+		//   merge_count: distinct beads with approved review (sage-review or arbiter)
+		//   failure_count: distinct beads with failures in agent-spawned phases
 		//   avg_lead_time_s: avg time from first run to successful completion per bead
+		//
+		// Phase names come from the executor's recordAgentRun calls:
+		//   'sage-review' — sage code review (result='approve' on approval)
+		//   'review'      — arbiter escalation (result='success' on completion)
+		//   'implement'   — apprentice implementation
+		//   'fix'         — review-fix round
+		// Op-kind steps (merge, close) don't spawn agents and have no agent_runs records.
 		fmt.Sprintf(`DELETE FROM weekly_merge_stats WHERE week_start >= current_date - INTERVAL %d DAY`, viewRetentionDays),
 		fmt.Sprintf(`INSERT INTO weekly_merge_stats
 			SELECT
@@ -80,9 +87,9 @@ func viewRefreshStatements() []string {
 					date_trunc('week', MIN(started_at))::DATE AS week_start,
 					COALESCE(tower, '') AS tower,
 					COALESCE(repo, '')  AS repo,
-					MAX(CASE WHEN result = 'success' AND phase IN ('seal', 'merge') THEN 1 ELSE 0 END) AS is_merge,
-					MAX(CASE WHEN result NOT IN ('success', 'skipped') AND phase IN ('seal', 'merge', 'implement', 'review') THEN 1 ELSE 0 END) AS is_failure,
-					epoch(MAX(CASE WHEN result = 'success' THEN completed_at END)) - epoch(MIN(started_at)) AS lead_time_s
+					MAX(CASE WHEN result IN ('success', 'approve') AND phase IN ('sage-review', 'review') THEN 1 ELSE 0 END) AS is_merge,
+					MAX(CASE WHEN result NOT IN ('success', 'skipped', 'approve', 'no_changes', '') AND phase IN ('implement', 'sage-review', 'review', 'fix') THEN 1 ELSE 0 END) AS is_failure,
+					epoch(MAX(CASE WHEN result IN ('success', 'approve') THEN completed_at END)) - epoch(MIN(started_at)) AS lead_time_s
 				FROM agent_runs_olap
 				WHERE started_at >= current_date - INTERVAL %d DAY
 				  AND bead_id IS NOT NULL
@@ -137,18 +144,21 @@ func viewRefreshStatements() []string {
 			total_tools = EXCLUDED.total_tools`, viewRetentionDays),
 
 		// failure_hotspots: delete + re-aggregate
+		// Excludes non-failure results: success, skipped, approve (sage verdict),
+		// no_changes, and empty string. Uses NULLIF to coalesce empty failure_class
+		// to 'unknown' (classifyFailure returns '' for non-failures that slip through).
 		fmt.Sprintf(`DELETE FROM failure_hotspots WHERE week_start >= current_date - INTERVAL %d DAY`, viewRetentionDays),
 		fmt.Sprintf(`INSERT INTO failure_hotspots
 			SELECT
 				date_trunc('week', started_at)::DATE AS week_start,
 				COALESCE(tower, '') AS tower,
 				COALESCE(bead_id, '') AS bead_id,
-				COALESCE(failure_class, 'unknown') AS failure_class,
+				COALESCE(NULLIF(failure_class, ''), 'unknown') AS failure_class,
 				COUNT(*) AS attempt_count,
 				MAX(started_at) AS last_failure_at
 			FROM agent_runs_olap
 			WHERE started_at >= current_date - INTERVAL %d DAY
-			  AND result NOT IN ('success', 'skipped')
+			  AND result NOT IN ('success', 'skipped', 'approve', 'no_changes', '')
 			GROUP BY 1, 2, 3, 4
 		ON CONFLICT (week_start, tower, bead_id, failure_class)
 		DO UPDATE SET

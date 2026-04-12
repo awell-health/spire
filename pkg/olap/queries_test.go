@@ -16,8 +16,8 @@ func insertTestRuns(t *testing.T, db *DB) time.Time {
 
 	// Run 1: bead b1, implement phase, failure (review_reject), 3 days ago
 	// Run 2: bead b1, implement phase, success, 2 days ago
-	// Run 3: bead b1, seal phase, success, 2 days ago + 2h (this makes b1 a "merge")
-	// Run 4: bead b2, implement phase, success (no seal → not a deploy), 1 day ago
+	// Run 3: bead b1, sage-review phase, success (sage approval → b1 is a "merge")
+	// Run 4: bead b2, implement phase, success (no review → not a deploy), 1 day ago
 	// Run 5: bead b3, implement phase, failure (merge_conflict), 5 days ago
 	runs := []struct {
 		id, bead, formula, fv, phase, model, tower, result string
@@ -33,7 +33,7 @@ func insertTestRuns(t *testing.T, db *DB) time.Time {
 		{"r2", "b1", "task-default", "3", "implement", "opus", "t1", "success",
 			0.50, 120.0, 2, 15, 7, nil,
 			now.Add(-2 * 24 * time.Hour), now.Add(-2*24*time.Hour + 120*time.Second), 2000},
-		{"r3", "b1", "task-default", "3", "seal", "opus", "t1", "success",
+		{"r3", "b1", "task-default", "3", "sage-review", "opus", "t1", "success",
 			0.10, 30.0, 0, 2, 0, nil,
 			now.Add(-2*24*time.Hour + 2*time.Hour), now.Add(-2*24*time.Hour + 2*time.Hour + 30*time.Second), 500},
 		{"r4", "b2", "bug-fix", "1", "implement", "sonnet", "t1", "success",
@@ -188,7 +188,7 @@ func TestQueryPhaseBreakdown(t *testing.T) {
 		t.Fatalf("expected 2 phases, got %d", len(phases))
 	}
 
-	// implement: 4 runs (2 success, 2 failure), seal: 1 run (1 success)
+	// implement: 4 runs (2 success, 2 failure), sage-review: 1 run (1 success)
 	impl := phases[0]
 	if impl.Phase != "implement" {
 		t.Errorf("first phase: got %s, want implement", impl.Phase)
@@ -200,15 +200,15 @@ func TestQueryPhaseBreakdown(t *testing.T) {
 		t.Errorf("implement SuccessRate: got %.1f, want 50.0", impl.SuccessRate)
 	}
 
-	seal := phases[1]
-	if seal.Phase != "seal" {
-		t.Errorf("second phase: got %s, want seal", seal.Phase)
+	sageReview := phases[1]
+	if sageReview.Phase != "sage-review" {
+		t.Errorf("second phase: got %s, want sage-review", sageReview.Phase)
 	}
-	if seal.RunCount != 1 {
-		t.Errorf("seal RunCount: got %d, want 1", seal.RunCount)
+	if sageReview.RunCount != 1 {
+		t.Errorf("sage-review RunCount: got %d, want 1", sageReview.RunCount)
 	}
-	if seal.SuccessRate != 100.0 {
-		t.Errorf("seal SuccessRate: got %.1f, want 100.0", seal.SuccessRate)
+	if sageReview.SuccessRate != 100.0 {
+		t.Errorf("sage-review SuccessRate: got %.1f, want 100.0", sageReview.SuccessRate)
 	}
 }
 
@@ -279,7 +279,7 @@ func TestQueryTrends(t *testing.T) {
 	if totalRuns != 5 {
 		t.Errorf("total runs across weeks: got %d, want 5", totalRuns)
 	}
-	// b1 has a successful seal → 1 merge
+	// b1 has a successful sage-review → 1 merge
 	if totalMerges != 1 {
 		t.Errorf("total merges across weeks: got %d, want 1", totalMerges)
 	}
@@ -310,7 +310,7 @@ func TestQueryDORA(t *testing.T) {
 		t.Errorf("DeployFrequency: got %.2f, want > 0", dora.DeployFrequency)
 	}
 
-	// LeadTimeSeconds: b1 lead time = time from r1.started_at to r3.completed_at > 0
+	// LeadTimeSeconds: b1 lead time = time from r1.started_at to r3.completed_at (sage-review) > 0
 	if dora.LeadTimeSeconds <= 0 {
 		t.Errorf("LeadTimeSeconds: got %.2f, want > 0", dora.LeadTimeSeconds)
 	}
@@ -924,5 +924,380 @@ func TestViewRefreshPopulatesNewTables(t *testing.T) {
 	}
 	if failCount == 0 {
 		t.Error("expected rows in failure_hotspots after view refresh")
+	}
+}
+
+// TestViewRefreshDORA verifies that the weekly_merge_stats view correctly
+// detects merges from sage-review and review (arbiter) phases.
+func TestViewRefreshDORA(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Insert 10 runs across 3 beads with realistic phase names:
+	//   bead-a: implement(success) + sage-review(approve) → is a deploy
+	//   bead-b: implement(success) + sage-review(approve) → is a deploy
+	//   bead-c: implement(success) + sage-review(request_changes) → NOT a deploy
+	runs := []struct {
+		id, bead, phase, result string
+		started, completed      time.Time
+	}{
+		// bead-a: deployed
+		{"d1", "test-a001", "implement", "success", now.Add(-4 * 24 * time.Hour), now.Add(-4*24*time.Hour + time.Hour)},
+		{"d2", "test-a001", "sage-review", "approve", now.Add(-4*24*time.Hour + 2*time.Hour), now.Add(-4*24*time.Hour + 3*time.Hour)},
+		// bead-b: deployed (via arbiter path)
+		{"d3", "test-a002", "implement", "success", now.Add(-3 * 24 * time.Hour), now.Add(-3*24*time.Hour + time.Hour)},
+		{"d4", "test-a002", "sage-review", "request_changes", now.Add(-3*24*time.Hour + 2*time.Hour), now.Add(-3*24*time.Hour + 3*time.Hour)},
+		{"d5", "test-a002", "review", "success", now.Add(-3*24*time.Hour + 4*time.Hour), now.Add(-3*24*time.Hour + 5*time.Hour)},
+		// bead-c: NOT deployed (review rejected, no approval)
+		{"d6", "test-a003", "implement", "success", now.Add(-2 * 24 * time.Hour), now.Add(-2*24*time.Hour + time.Hour)},
+		{"d7", "test-a003", "sage-review", "request_changes", now.Add(-2*24*time.Hour + 2*time.Hour), now.Add(-2*24*time.Hour + 3*time.Hour)},
+		// Additional successful implementations to pad data
+		{"d8", "test-a004", "implement", "success", now.Add(-1 * 24 * time.Hour), now.Add(-1*24*time.Hour + time.Hour)},
+		{"d9", "test-a005", "implement", "error", now.Add(-6 * time.Hour), now.Add(-5 * time.Hour)},
+		{"d10", "test-a005", "implement", "success", now.Add(-4 * time.Hour), now.Add(-3 * time.Hour)},
+	}
+
+	for _, r := range runs {
+		_, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO agent_runs_olap (id, bead_id, formula_name, phase, tower, repo, result, started_at, completed_at)
+			VALUES (?, ?, 'task-default', ?, 'test-tower', 'test', ?, ?, ?)`,
+			r.id, r.bead, r.phase, r.result, r.started, r.completed)
+		if err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	// Refresh views
+	if err := RefreshMaterializedViews(ctx, db); err != nil {
+		t.Fatalf("RefreshMaterializedViews: %v", err)
+	}
+
+	// Query DORA
+	since := now.Add(-30 * 24 * time.Hour)
+	dora, err := db.QueryDORA(since)
+	if err != nil {
+		t.Fatalf("QueryDORA: %v", err)
+	}
+
+	// DeployFrequency: 2 merged beads (a and b) → should be > 0
+	if dora.DeployFrequency <= 0 {
+		t.Errorf("DeployFrequency: got %.2f, want > 0", dora.DeployFrequency)
+	}
+
+	// LeadTimeSeconds: should be > 0 (measured from first run to approval)
+	if dora.LeadTimeSeconds <= 0 {
+		t.Errorf("LeadTimeSeconds: got %.2f, want > 0", dora.LeadTimeSeconds)
+	}
+
+	// ChangeFailureRate: should be between 0 and 1 (bead-c and bead-a005 have failures)
+	if dora.ChangeFailureRate < 0 || dora.ChangeFailureRate > 1 {
+		t.Errorf("ChangeFailureRate: got %.2f, want 0-1", dora.ChangeFailureRate)
+	}
+
+	// Verify weekly_merge_stats directly
+	var mergeCount, failureCount int
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT COALESCE(SUM(merge_count), 0), COALESCE(SUM(failure_count), 0) FROM weekly_merge_stats").
+		Scan(&mergeCount, &failureCount)
+	if err != nil {
+		t.Fatalf("query weekly_merge_stats: %v", err)
+	}
+	// 2 beads deployed (test-a001 via sage approve, test-a002 via arbiter success)
+	if mergeCount != 2 {
+		t.Errorf("weekly_merge_stats merge_count: got %d, want 2", mergeCount)
+	}
+}
+
+// TestViewRefreshFormulaStats verifies that the daily_formula_stats view
+// correctly aggregates formula performance data.
+func TestViewRefreshFormulaStats(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Insert 5 runs of 'task-default' and 3 runs of 'bug-fix'
+	runs := []struct {
+		id, formula, result string
+		cost                float64
+		dur                 float64
+		started             time.Time
+	}{
+		{"f1", "task-default", "success", 0.50, 120, now.Add(-2 * 24 * time.Hour)},
+		{"f2", "task-default", "success", 0.40, 90, now.Add(-2*24*time.Hour + time.Hour)},
+		{"f3", "task-default", "error", 0.30, 60, now.Add(-1 * 24 * time.Hour)},
+		{"f4", "task-default", "success", 0.60, 150, now.Add(-1*24*time.Hour + time.Hour)},
+		{"f5", "task-default", "success", 0.45, 100, now.Add(-6 * time.Hour)},
+		{"f6", "bug-fix", "success", 0.20, 45, now.Add(-1 * 24 * time.Hour)},
+		{"f7", "bug-fix", "error", 0.15, 30, now.Add(-12 * time.Hour)},
+		{"f8", "bug-fix", "success", 0.25, 55, now.Add(-3 * time.Hour)},
+	}
+
+	for _, r := range runs {
+		_, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO agent_runs_olap (id, bead_id, formula_name, formula_version, phase, tower, repo, result, cost_usd, duration_seconds, started_at, completed_at)
+			VALUES (?, 'test-bead', ?, '3', 'implement', 'test-tower', 'test', ?, ?, ?, ?, ?)`,
+			r.id, r.formula, r.result, r.cost, r.dur, r.started, r.started.Add(time.Duration(r.dur)*time.Second))
+		if err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	// Refresh views
+	if err := RefreshMaterializedViews(ctx, db); err != nil {
+		t.Fatalf("RefreshMaterializedViews: %v", err)
+	}
+
+	// Query formula performance
+	since := now.Add(-30 * 24 * time.Hour)
+	stats, err := db.QueryFormulaPerformance(since)
+	if err != nil {
+		t.Fatalf("QueryFormulaPerformance: %v", err)
+	}
+
+	if len(stats) == 0 {
+		t.Fatal("QueryFormulaPerformance returned no data (expected 'task-default' and 'bug-fix')")
+	}
+
+	// Find task-default stats
+	var taskDefault *FormulaStats
+	for i := range stats {
+		if stats[i].FormulaName == "task-default" {
+			taskDefault = &stats[i]
+			break
+		}
+	}
+	if taskDefault == nil {
+		t.Fatal("expected 'task-default' in formula performance results")
+	}
+	if taskDefault.TotalRuns != 5 {
+		t.Errorf("task-default TotalRuns: got %d, want 5", taskDefault.TotalRuns)
+	}
+	if taskDefault.Successes != 4 {
+		t.Errorf("task-default Successes: got %d, want 4", taskDefault.Successes)
+	}
+
+	// Verify daily_formula_stats has data
+	var dailyCount int
+	if err := db.SqlDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM daily_formula_stats").Scan(&dailyCount); err != nil {
+		t.Fatalf("count daily_formula_stats: %v", err)
+	}
+	if dailyCount == 0 {
+		t.Error("expected rows in daily_formula_stats after view refresh")
+	}
+}
+
+// TestViewRefreshFailureHotspots verifies that the failure_hotspots view
+// correctly groups failures by class and excludes non-failure results.
+func TestViewRefreshFailureHotspots(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Insert runs with specific failure classes:
+	//   3 timeout, 2 build_fail, 1 auth_fail, 1 unknown (empty class)
+	// Also insert non-failure results that should be excluded:
+	//   success, approve, no_changes, skipped
+	runs := []struct {
+		id, bead, result string
+		failClass        *string
+		started          time.Time
+	}{
+		{"h1", "test-h1", "timeout", strPtr("timeout"), now.Add(-3 * 24 * time.Hour)},
+		{"h2", "test-h1", "timeout", strPtr("timeout"), now.Add(-2 * 24 * time.Hour)},
+		{"h3", "test-h2", "timeout", strPtr("timeout"), now.Add(-1 * 24 * time.Hour)},
+		{"h4", "test-h2", "error", strPtr("build_fail"), now.Add(-2 * 24 * time.Hour)},
+		{"h5", "test-h3", "error", strPtr("build_fail"), now.Add(-1 * 24 * time.Hour)},
+		{"h6", "test-h3", "error", strPtr("auth_fail"), now.Add(-12 * time.Hour)},
+		{"h7", "test-h4", "error", strPtr(""), now.Add(-6 * time.Hour)},            // empty class → 'unknown'
+		{"h8", "test-h4", "error", nil, now.Add(-5 * time.Hour)},                    // NULL class → 'unknown'
+		// These should NOT appear in failure_hotspots:
+		{"h9", "test-h5", "success", nil, now.Add(-4 * time.Hour)},
+		{"h10", "test-h5", "approve", nil, now.Add(-3 * time.Hour)},
+		{"h11", "test-h5", "no_changes", nil, now.Add(-2 * time.Hour)},
+		{"h12", "test-h5", "skipped", nil, now.Add(-1 * time.Hour)},
+	}
+
+	for _, r := range runs {
+		_, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO agent_runs_olap (id, bead_id, formula_name, phase, tower, repo, result, failure_class, started_at, completed_at)
+			VALUES (?, ?, 'task-default', 'implement', 'test-tower', 'test', ?, ?, ?, ?)`,
+			r.id, r.bead, r.result, r.failClass, r.started, r.started.Add(time.Minute))
+		if err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	// Refresh views
+	if err := RefreshMaterializedViews(ctx, db); err != nil {
+		t.Fatalf("RefreshMaterializedViews: %v", err)
+	}
+
+	// Query failure hotspots
+	bugs, err := db.QueryBugCausality(20)
+	if err != nil {
+		t.Fatalf("QueryBugCausality: %v", err)
+	}
+
+	// Collect failure classes and counts
+	classCounts := map[string]int{}
+	for _, b := range bugs {
+		classCounts[b.FailureClass] += b.AttemptCount
+	}
+
+	// Verify specific failure classes appear (not all 'unknown')
+	if classCounts["timeout"] != 3 {
+		t.Errorf("timeout attempts: got %d, want 3", classCounts["timeout"])
+	}
+	if classCounts["build_fail"] != 2 {
+		t.Errorf("build_fail attempts: got %d, want 2", classCounts["build_fail"])
+	}
+	if classCounts["auth_fail"] != 1 {
+		t.Errorf("auth_fail attempts: got %d, want 1", classCounts["auth_fail"])
+	}
+	// Empty and NULL failure_class should both map to 'unknown'
+	if classCounts["unknown"] != 2 {
+		t.Errorf("unknown attempts: got %d, want 2 (from empty + NULL failure_class)", classCounts["unknown"])
+	}
+
+	// Verify non-failure results (success, approve, no_changes, skipped) are excluded
+	totalAttempts := 0
+	for _, c := range classCounts {
+		totalAttempts += c
+	}
+	if totalAttempts != 8 {
+		t.Errorf("total failure attempts: got %d, want 8 (excluding non-failure results)", totalAttempts)
+	}
+
+	// Also verify via QueryFailures
+	since := now.Add(-30 * 24 * time.Hour)
+	failures, err := db.QueryFailures(since)
+	if err != nil {
+		t.Fatalf("QueryFailures: %v", err)
+	}
+
+	failClasses := map[string]int{}
+	for _, f := range failures {
+		failClasses[f.FailureClass] = f.Count
+	}
+	if failClasses["timeout"] != 3 {
+		t.Errorf("QueryFailures timeout: got %d, want 3", failClasses["timeout"])
+	}
+	if failClasses["build_fail"] != 2 {
+		t.Errorf("QueryFailures build_fail: got %d, want 2", failClasses["build_fail"])
+	}
+}
+
+// TestViewRefreshEmptyTables verifies that RefreshMaterializedViews handles
+// empty data gracefully without errors.
+func TestViewRefreshEmptyTables(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	// Refresh with no data — should not error
+	if err := RefreshMaterializedViews(context.Background(), db); err != nil {
+		t.Fatalf("RefreshMaterializedViews on empty DB: %v", err)
+	}
+
+	// All materialized views should exist but be empty
+	tables := []string{
+		"daily_formula_stats",
+		"weekly_merge_stats",
+		"phase_cost_breakdown",
+		"tool_usage_stats",
+		"failure_hotspots",
+	}
+	ctx := context.Background()
+	for _, tbl := range tables {
+		var count int
+		if err := db.SqlDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM "+tbl).Scan(&count); err != nil {
+			t.Errorf("count %s: %v", tbl, err)
+		}
+		if count != 0 {
+			t.Errorf("%s: expected 0 rows on empty refresh, got %d", tbl, count)
+		}
+	}
+}
+
+// TestViewRefreshDORAWithApproveResult verifies that sage-review runs with
+// result='approve' (the actual sage verdict value) are correctly detected as merges.
+func TestViewRefreshDORAWithApproveResult(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Insert a bead with sage-review that wrote 'approve' as result
+	// (this is what the sage actually writes in production)
+	_, err = db.SqlDB().ExecContext(ctx, `
+		INSERT INTO agent_runs_olap (id, bead_id, formula_name, phase, tower, repo, result, started_at, completed_at)
+		VALUES
+			('ar1', 'test-approve', 'task-default', 'implement', 't1', 'test', 'success', ?, ?),
+			('ar2', 'test-approve', 'task-default', 'sage-review', 't1', 'test', 'approve', ?, ?)`,
+		now.Add(-2*time.Hour), now.Add(-time.Hour),
+		now.Add(-30*time.Minute), now.Add(-15*time.Minute))
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if err := RefreshMaterializedViews(ctx, db); err != nil {
+		t.Fatalf("RefreshMaterializedViews: %v", err)
+	}
+
+	var mergeCount int
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT COALESCE(SUM(merge_count), 0) FROM weekly_merge_stats").Scan(&mergeCount)
+	if err != nil {
+		t.Fatalf("query merge_count: %v", err)
+	}
+	if mergeCount != 1 {
+		t.Errorf("merge_count for 'approve' result: got %d, want 1", mergeCount)
+	}
+
+	// Verify lead time is correct: from implement start to sage-review completion
+	var avgLeadTime float64
+	err = db.SqlDB().QueryRowContext(ctx,
+		"SELECT COALESCE(AVG(avg_lead_time_s), 0) FROM weekly_merge_stats").Scan(&avgLeadTime)
+	if err != nil {
+		t.Fatalf("query lead_time: %v", err)
+	}
+	if avgLeadTime <= 0 {
+		t.Errorf("avg_lead_time_s: got %.2f, want > 0", avgLeadTime)
+	}
+
+	// Also verify QueryTrends picks up the merge
+	since := now.Add(-30 * 24 * time.Hour)
+	trends, err := db.QueryTrends(since)
+	if err != nil {
+		t.Fatalf("QueryTrends: %v", err)
+	}
+	totalMerges := 0
+	for _, tr := range trends {
+		totalMerges += tr.MergeCount
+	}
+	if totalMerges != 1 {
+		t.Errorf("QueryTrends total merges: got %d, want 1", totalMerges)
 	}
 }
