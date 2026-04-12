@@ -477,6 +477,100 @@ func (d *DB) QueryToolEventsByStep(beadID string) ([]StepToolBreakdown, error) {
 	return out, nil
 }
 
+// SpanRecord holds a single row from the tool_spans table.
+type SpanRecord struct {
+	TraceID      string    `json:"trace_id"`
+	SpanID       string    `json:"span_id"`
+	ParentSpanID string    `json:"parent_span_id"`
+	SpanName     string    `json:"span_name"`
+	Kind         string    `json:"kind"`
+	DurationMs   int       `json:"duration_ms"`
+	Success      bool      `json:"success"`
+	StartTime    time.Time `json:"start_time"`
+	EndTime      time.Time `json:"end_time"`
+	Attributes   string    `json:"attributes,omitempty"`
+}
+
+// QueryToolSpansByBead returns all spans for a bead, ordered by start_time.
+// Used for the waterfall trace view.
+func (d *DB) QueryToolSpansByBead(beadID string) ([]SpanRecord, error) {
+	ctx := context.Background()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(trace_id, '') AS trace_id,
+			COALESCE(span_id, '') AS span_id,
+			COALESCE(parent_span_id, '') AS parent_span_id,
+			COALESCE(span_name, '') AS span_name,
+			COALESCE(kind, '') AS kind,
+			COALESCE(duration_ms, 0) AS duration_ms,
+			COALESCE(success, true) AS success,
+			start_time,
+			end_time,
+			COALESCE(attributes, '{}') AS attributes
+		FROM tool_spans
+		WHERE bead_id = ?
+		ORDER BY start_time ASC
+	`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SpanRecord
+	for rows.Next() {
+		var s SpanRecord
+		if err := rows.Scan(&s.TraceID, &s.SpanID, &s.ParentSpanID, &s.SpanName,
+			&s.Kind, &s.DurationMs, &s.Success, &s.StartTime, &s.EndTime, &s.Attributes); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// APIEventStats holds aggregated API event statistics.
+type APIEventStats struct {
+	Model        string  `json:"model"`
+	Count        int     `json:"count"`
+	AvgDurationMs float64 `json:"avg_duration_ms"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	TotalInputTokens  int64 `json:"total_input_tokens"`
+	TotalOutputTokens int64 `json:"total_output_tokens"`
+}
+
+// QueryAPIEventsByBead returns aggregated API event stats for a bead.
+func (d *DB) QueryAPIEventsByBead(beadID string) ([]APIEventStats, error) {
+	ctx := context.Background()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(model, 'unknown') AS model,
+			COUNT(*) AS count,
+			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+			COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+			COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+			COALESCE(SUM(output_tokens), 0) AS total_output_tokens
+		FROM api_events
+		WHERE bead_id = ?
+		GROUP BY model
+		ORDER BY count DESC
+	`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []APIEventStats
+	for rows.Next() {
+		var s APIEventStats
+		if err := rows.Scan(&s.Model, &s.Count, &s.AvgDurationMs, &s.TotalCostUSD,
+			&s.TotalInputTokens, &s.TotalOutputTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // QueryCostTrend returns daily cost and run count for the last N days.
 func (d *DB) QueryCostTrend(days int) ([]CostTrendPoint, error) {
 	ctx := context.Background()

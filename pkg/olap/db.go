@@ -130,6 +130,10 @@ func (d *DB) InitSchema(ctx context.Context) error {
 			return fmt.Errorf("olap schema: %w", err)
 		}
 	}
+	// Migrate existing tool_events table: add columns introduced in dual-signal pipeline.
+	for _, alt := range schemaMigrations() {
+		d.db.ExecContext(ctx, alt) // ignore errors — column may already exist
+	}
 	return nil
 }
 

@@ -68,6 +68,8 @@ type traceData struct {
 	Reviews       []traceReview           `json:"reviews,omitempty"`
 	Subtasks      []traceData             `json:"subtasks,omitempty"`
 	ToolBreakdown []olap.StepToolBreakdown `json:"tool_breakdown,omitempty"`
+	Spans         []olap.SpanRecord        `json:"spans,omitempty"`
+	APIStats      []olap.APIEventStats     `json:"api_stats,omitempty"`
 }
 
 type traceStep struct {
@@ -296,12 +298,21 @@ func buildTrace(beadID string) (*traceData, error) {
 		})
 	}
 
-	// Tool breakdown from OTel-sourced tool_events.
+	// OTel data: spans (waterfall), tool breakdown, API stats.
 	if tc, err := config.ActiveTowerConfig(); err == nil {
 		if adb, err := olap.Open(tc.OLAPPath()); err == nil {
 			defer adb.Close()
+			// Spans for waterfall view (from traces pipeline).
+			if spans, err := adb.QueryToolSpansByBead(beadID); err == nil && len(spans) > 0 {
+				td.Spans = spans
+			}
+			// Tool breakdown from logs pipeline.
 			if steps, err := adb.QueryToolEventsByStep(beadID); err == nil && len(steps) > 0 {
 				td.ToolBreakdown = steps
+			}
+			// API stats from logs pipeline.
+			if apiStats, err := adb.QueryAPIEventsByBead(beadID); err == nil && len(apiStats) > 0 {
+				td.APIStats = apiStats
 			}
 		}
 	}
@@ -385,7 +396,14 @@ func renderTraceToString(td *traceData) string {
 		s.WriteString("\n")
 	}
 
-	// Tool breakdown (from OTel pipeline).
+	// Span waterfall (from traces pipeline — Claude beta).
+	if len(td.Spans) > 0 {
+		fmt.Fprintf(&s, "%sSpan waterfall:%s (%d spans)\n", bold, reset, len(td.Spans))
+		renderSpanWaterfall(&s, td.Spans)
+		s.WriteString("\n")
+	}
+
+	// Tool breakdown (from logs pipeline).
 	if len(td.ToolBreakdown) > 0 {
 		fmt.Fprintf(&s, "%sTool usage:%s\n", bold, reset)
 		for _, step := range td.ToolBreakdown {
@@ -397,6 +415,17 @@ func renderTraceToString(td *traceData) string {
 				fmt.Fprintf(&s, "%s: %d", t.ToolName, t.Count)
 			}
 			s.WriteString("\n")
+		}
+		s.WriteString("\n")
+	}
+
+	// API stats (from logs pipeline).
+	if len(td.APIStats) > 0 {
+		fmt.Fprintf(&s, "%sAPI calls:%s\n", bold, reset)
+		for _, a := range td.APIStats {
+			fmt.Fprintf(&s, "  %s: %d calls, avg %dms, $%.4f total, %dk in / %dk out\n",
+				a.Model, a.Count, int(a.AvgDurationMs), a.TotalCostUSD,
+				a.TotalInputTokens/1000, a.TotalOutputTokens/1000)
 		}
 		s.WriteString("\n")
 	}
@@ -466,6 +495,55 @@ func renderTraceForBoard(beadID string) (string, error) {
 	result := renderTraceToString(td)
 	result += renderWizardLogToString(td, 15)
 	return result, nil
+}
+
+// renderSpanWaterfall renders an indented tree of spans using parent-child relationships.
+func renderSpanWaterfall(s *strings.Builder, spans []olap.SpanRecord) {
+	// Build parent→children map.
+	childMap := make(map[string][]int)
+	var roots []int
+	for i, sp := range spans {
+		if sp.ParentSpanID == "" || sp.ParentSpanID == strings.Repeat("0", len(sp.ParentSpanID)) {
+			roots = append(roots, i)
+		} else {
+			childMap[sp.ParentSpanID] = append(childMap[sp.ParentSpanID], i)
+		}
+	}
+
+	// If no clear roots found (all spans have parents not in this set),
+	// fall back to flat list.
+	if len(roots) == 0 {
+		for i := range spans {
+			roots = append(roots, i)
+		}
+	}
+
+	// Render tree with depth limit.
+	var walk func(idx int, depth int)
+	walk = func(idx int, depth int) {
+		if depth > 8 {
+			return // prevent runaway nesting
+		}
+		sp := spans[idx]
+		indent := strings.Repeat("  ", depth+1)
+		durStr := fmt.Sprintf("%dms", sp.DurationMs)
+		statusIcon := green + "✓" + reset
+		if !sp.Success {
+			statusIcon = red + "✗" + reset
+		}
+		kindTag := ""
+		if sp.Kind != "" && sp.Kind != "other" {
+			kindTag = dim + " [" + sp.Kind + "]" + reset
+		}
+		fmt.Fprintf(s, "%s%s %s %s%s%s\n", indent, statusIcon, durStr, sp.SpanName, kindTag, reset)
+		for _, ci := range childMap[sp.SpanID] {
+			walk(ci, depth+1)
+		}
+	}
+
+	for _, ri := range roots {
+		walk(ri, 0)
+	}
 }
 
 // --- Rendering helpers ---

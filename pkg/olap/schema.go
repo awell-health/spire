@@ -119,8 +119,56 @@ CREATE TABLE IF NOT EXISTS tool_events (
     duration_ms   INTEGER,
     success       BOOLEAN,
     timestamp     TIMESTAMP DEFAULT current_timestamp,
-    tower         VARCHAR
+    tower         VARCHAR,
+    provider      VARCHAR,
+    event_kind    VARCHAR
 )`
+
+const createToolSpans = `
+CREATE TABLE IF NOT EXISTS tool_spans (
+    trace_id       VARCHAR,
+    span_id        VARCHAR,
+    parent_span_id VARCHAR,
+    session_id     VARCHAR,
+    bead_id        VARCHAR,
+    agent_name     VARCHAR,
+    step           VARCHAR,
+    span_name      VARCHAR,
+    kind           VARCHAR,
+    duration_ms    INTEGER,
+    success        BOOLEAN,
+    start_time     TIMESTAMP,
+    end_time       TIMESTAMP,
+    tower          VARCHAR,
+    attributes     TEXT
+)`
+
+const createAPIEvents = `
+CREATE TABLE IF NOT EXISTS api_events (
+    session_id      VARCHAR,
+    bead_id         VARCHAR,
+    agent_name      VARCHAR,
+    step            VARCHAR,
+    provider        VARCHAR,
+    model           VARCHAR,
+    duration_ms     INTEGER,
+    input_tokens    BIGINT,
+    output_tokens   BIGINT,
+    cache_read_tokens  BIGINT,
+    cache_write_tokens BIGINT,
+    cost_usd        DOUBLE,
+    timestamp       TIMESTAMP DEFAULT current_timestamp,
+    tower           VARCHAR
+)`
+
+// schemaMigrations returns ALTER TABLE statements for incremental schema
+// evolution. Each is executed with errors ignored (column may already exist).
+func schemaMigrations() []string {
+	return []string{
+		`ALTER TABLE tool_events ADD COLUMN IF NOT EXISTS provider VARCHAR`,
+		`ALTER TABLE tool_events ADD COLUMN IF NOT EXISTS event_kind VARCHAR`,
+	}
+}
 
 // allSchemaStatements returns the DDL statements in creation order.
 func allSchemaStatements() []string {
@@ -133,5 +181,7 @@ func allSchemaStatements() []string {
 		createToolUsageStats,
 		createFailureHotspots,
 		createToolEvents,
+		createToolSpans,
+		createAPIEvents,
 	}
 }
