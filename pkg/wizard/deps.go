@@ -103,7 +103,7 @@ type Deps struct {
 	// Review bead operations
 	GetReviewBeads    func(parentID string) ([]Bead, error)
 	CreateReviewBead  func(parentID, sageName string, round int) (string, error)
-	CloseReviewBead   func(reviewID, verdict, summary string) error
+	CloseReviewBead   func(reviewID, verdict, summary string, errorCount, warningCount, round int, findings []store.ReviewFinding) error
 
 	// Label / type helpers
 	HasLabel          func(b Bead, prefix string) string

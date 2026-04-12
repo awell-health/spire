@@ -526,10 +526,14 @@ func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string) {
 	}
 }
 
-// ReviewBeadVerdict extracts the verdict string from a closed review-round bead's description.
-// The description format is "verdict: <value>\n\n<summary>".
-// Returns "" if the bead has no verdict or the description doesn't match the expected format.
+// ReviewBeadVerdict extracts the verdict string from a closed review-round bead.
+// Prefers the "review_verdict" metadata key (structured); falls back to
+// parsing the description prefix "verdict: <value>" for legacy beads.
 func ReviewBeadVerdict(b store.Bead) string {
+	if v := b.Meta("review_verdict"); v != "" {
+		return v
+	}
+	// Legacy fallback: parse description.
 	if b.Description == "" {
 		return ""
 	}

@@ -98,9 +98,14 @@ func FetchDAGProgress(beadID string) *DAGProgress {
 	return &dag
 }
 
-// extractReviewVerdict parses the verdict from a review bead's description.
-// Review beads have description: "verdict: <verdict>\n\n<summary>".
+// extractReviewVerdict reads the verdict from a review bead.
+// Prefers the "review_verdict" metadata key (structured); falls back to
+// parsing the description prefix "verdict: <value>" for legacy beads.
 func extractReviewVerdict(b Bead) string {
+	if v := b.Meta("review_verdict"); v != "" {
+		return v
+	}
+	// Legacy fallback: parse description.
 	if b.Description == "" {
 		return ""
 	}

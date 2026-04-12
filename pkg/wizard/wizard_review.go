@@ -14,6 +14,7 @@ import (
 
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // CmdWizardReview is the sage entry point for reviewing a bead's implementation.
@@ -152,7 +153,7 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	if err != nil {
 		// Close review bead on failure
 		if reviewBeadID != "" {
-			deps.CloseReviewBead(reviewBeadID, "error", err.Error())
+			deps.CloseReviewBead(reviewBeadID, "error", err.Error(), 0, 0, round, nil)
 		}
 		return fmt.Errorf("opus review: %w", err)
 	}
@@ -166,6 +167,10 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	if reviewBeadID != "" {
 		var summaryBuf strings.Builder
 		summaryBuf.WriteString(review.Summary)
+
+		// Count errors/warnings and build structured findings for metadata.
+		var errorCount, warningCount int
+		var findings []store.ReviewFinding
 		for _, issue := range review.Issues {
 			summaryBuf.WriteString(fmt.Sprintf("\n- [%s] %s", issue.Severity, issue.Message))
 			if issue.File != "" {
@@ -175,8 +180,20 @@ func CmdWizardReview(args []string, deps *Deps) error {
 				}
 				summaryBuf.WriteString(")")
 			}
+			switch issue.Severity {
+			case "error":
+				errorCount++
+			case "warning":
+				warningCount++
+			}
+			findings = append(findings, store.ReviewFinding{
+				Severity: issue.Severity,
+				File:     issue.File,
+				Line:     issue.Line,
+				Message:  issue.Message,
+			})
 		}
-		deps.CloseReviewBead(reviewBeadID, review.Verdict, summaryBuf.String())
+		deps.CloseReviewBead(reviewBeadID, review.Verdict, summaryBuf.String(), errorCount, warningCount, round, findings)
 	}
 
 	// 9. Handle verdict

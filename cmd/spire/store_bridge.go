@@ -232,8 +232,8 @@ func storeCreateStepBead(parentID, stepName string) (string, error) {
 	return store.CreateStepBead(parentID, stepName)
 }
 
-func storeCloseReviewBead(reviewID, verdict, summary string) error {
-	return store.CloseReviewBead(reviewID, verdict, summary)
+func storeCloseReviewBead(reviewID, verdict, summary string, errorCount, warningCount, round int, findings []store.ReviewFinding) error {
+	return store.CloseReviewBead(reviewID, verdict, summary, errorCount, warningCount, round, findings)
 }
 
 // storeGetReviewBeads uses the test-replaceable storeGetChildrenFunc so tests

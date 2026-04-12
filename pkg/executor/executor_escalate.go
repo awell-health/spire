@@ -319,21 +319,10 @@ func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeC
 		return
 	}
 
-	// Build description with structured metadata block.
-	stepName := ""
-	if nodeCtx != "" {
-		// Extract step name from nodeCtx ("step=foo action=bar ...").
-		for _, part := range strings.Fields(nodeCtx) {
-			if strings.HasPrefix(part, "step=") {
-				stepName = strings.TrimPrefix(part, "step=")
-				break
-			}
-		}
-	}
-	desc := fmt.Sprintf(
-		"failure_class: %s\nsource_bead: %s\nsource_step: %s\n\n%s",
-		failureType, parentID, stepName, message,
-	)
+	// Description is the human-readable narrative only. Structured fields
+	// (failure_class, source_bead, source_step) are written to metadata by
+	// seedRecoveryMetadata — no need to duplicate them here.
+	desc := message
 	if nodeCtx != "" {
 		desc += "\nContext: " + nodeCtx
 	}

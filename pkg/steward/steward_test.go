@@ -1050,6 +1050,51 @@ func TestSweepHookedSteps_HumanApprove_LabelsCleared_Resolves(t *testing.T) {
 	}
 }
 
+// --- ReviewBeadVerdict tests ---
+
+func TestReviewBeadVerdict_FromMetadata(t *testing.T) {
+	b := store.Bead{
+		ID:       "spi-review-1",
+		Metadata: map[string]string{"review_verdict": "approve"},
+		// Description also set — metadata should take precedence.
+		Description: "verdict: request_changes\n\nsome feedback",
+	}
+	got := ReviewBeadVerdict(b)
+	if got != "approve" {
+		t.Errorf("ReviewBeadVerdict() = %q, want %q (metadata should take precedence)", got, "approve")
+	}
+}
+
+func TestReviewBeadVerdict_LegacyFallback(t *testing.T) {
+	b := store.Bead{
+		ID:          "spi-review-2",
+		Description: "verdict: request_changes\n\nMissing error handling",
+	}
+	got := ReviewBeadVerdict(b)
+	if got != "request_changes" {
+		t.Errorf("ReviewBeadVerdict() = %q, want %q (legacy description parsing)", got, "request_changes")
+	}
+}
+
+func TestReviewBeadVerdict_EmptyBead(t *testing.T) {
+	b := store.Bead{ID: "spi-review-3"}
+	got := ReviewBeadVerdict(b)
+	if got != "" {
+		t.Errorf("ReviewBeadVerdict() = %q, want empty for bead with no metadata or description", got)
+	}
+}
+
+func TestReviewBeadVerdict_NoMatchingDescription(t *testing.T) {
+	b := store.Bead{
+		ID:          "spi-review-4",
+		Description: "some random description without verdict prefix",
+	}
+	got := ReviewBeadVerdict(b)
+	if got != "" {
+		t.Errorf("ReviewBeadVerdict() = %q, want empty for non-verdict description", got)
+	}
+}
+
 func TestSweepHookedSteps_HumanApprove_OnlyNeedsHumanPresent_Skips(t *testing.T) {
 	// When needs-human is still present (even if awaiting-approval is gone),
 	// the sweep should skip — at least one label remains.

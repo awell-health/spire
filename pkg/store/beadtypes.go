@@ -1,11 +1,23 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/steveyegge/beads"
 )
+
+// ReviewFinding represents a single issue found during a code review.
+// Stored as a JSON array in the "review_findings" metadata key.
+type ReviewFinding struct {
+	Severity string `json:"severity"`       // "error" or "warning"
+	File     string `json:"file,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Message  string `json:"message"`
+}
 
 // --- Attempt bead helpers ---
 
@@ -222,16 +234,38 @@ func CreateStepBead(parentID, stepName string) (string, error) {
 }
 
 // CloseReviewBead closes a review-round bead and sets its description to verdict+summary.
-func CloseReviewBead(reviewID, verdict, summary string) error {
+// It also writes structured metadata (review_verdict, error_count, warning_count, round)
+// so verdict readers can query metadata instead of parsing the description.
+// The findings slice, if non-nil, is marshalled to JSON and stored as review_findings metadata.
+func CloseReviewBead(reviewID, verdict, summary string, errorCount, warningCount, round int, findings []ReviewFinding) error {
 	if reviewID == "" {
 		return nil
 	}
+	// Keep description for human readability.
 	desc := fmt.Sprintf("verdict: %s\n\n%s", verdict, summary)
 	if err := UpdateBead(reviewID, map[string]interface{}{
 		"description": desc,
 	}); err != nil {
 		return fmt.Errorf("update review bead description: %w", err)
 	}
+
+	// Write structured metadata — the machine-readable twin.
+	meta := map[string]string{
+		"review_verdict": verdict,
+		"error_count":    strconv.Itoa(errorCount),
+		"warning_count":  strconv.Itoa(warningCount),
+		"round":          strconv.Itoa(round),
+	}
+	if len(findings) > 0 {
+		if b, err := json.Marshal(findings); err == nil {
+			meta["review_findings"] = string(b)
+		}
+	}
+	if err := SetBeadMetadataMap(reviewID, meta); err != nil {
+		// Non-fatal: the bead is still useful with just the description.
+		fmt.Fprintf(os.Stderr, "warning: set review metadata on %s: %s\n", reviewID, err)
+	}
+
 	return CloseBead(reviewID)
 }
 
