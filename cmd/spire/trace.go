@@ -725,6 +725,15 @@ func populateStepMetrics(td *traceData) {
 	if err != nil || len(runs) == 0 {
 		return
 	}
+	populateStepMetricsFromRuns(td, runs)
+}
+
+// populateStepMetricsFromRuns is the pure aggregation logic extracted for testability.
+// It maps agent_runs rows to formula step names and populates metrics on traceStep entries.
+func populateStepMetricsFromRuns(td *traceData, runs []observability.StepRunRow) {
+	if len(runs) == 0 {
+		return
+	}
 
 	// Build a set of known step names for matching.
 	stepNames := make(map[string]bool)
