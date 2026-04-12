@@ -101,9 +101,13 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 		setEnv(cmd, "OTEL_RESOURCE_ATTRIBUTES", strings.Join(resAttrs, ","))
 	}
 
-	// Claude Code: enable built-in OTel telemetry.
+	// Claude Code: enable built-in OTel telemetry with trace export.
 	if cfg.Provider == "" || cfg.Provider == "claude" {
 		setEnv(cmd, "CLAUDE_CODE_ENABLE_TELEMETRY", "1")
+		setEnv(cmd, "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1")
+		setEnv(cmd, "OTEL_TRACES_EXPORTER", "otlp")
+		setEnv(cmd, "OTEL_LOGS_EXPORTER", "otlp")
+		setEnv(cmd, "OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
 	}
 
 	if cfg.LogPath != "" {
