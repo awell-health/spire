@@ -181,20 +181,21 @@ func TestProcessNextSerializes(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		// Small delay to let first goroutine start.
+		// Small delay to let first goroutine start processing.
 		time.Sleep(10 * time.Millisecond)
 		mq.ProcessNext(context.Background(), slowMerge)
 	}()
 
 	wg.Wait()
 
-	// Because ProcessNext dequeues under lock before calling mergeFn,
-	// the second goroutine gets its own item and they can run concurrently
-	// in terms of mergeFn. But each one is a distinct queue item.
-	// The key invariant: only one item is "active" at a time is enforced
-	// by the queue — the second call gets the next item, not the same one.
-	if mq.Depth() != 0 {
-		t.Fatalf("expected depth 0, got %d", mq.Depth())
+	// The processing guard ensures only one mergeFn runs at a time.
+	// The second ProcessNext returns nil because processing==true.
+	if atomic.LoadInt32(&maxConcurrent) != 1 {
+		t.Fatalf("expected max concurrent 1, got %d", atomic.LoadInt32(&maxConcurrent))
+	}
+	// One item remains because the second ProcessNext was rejected.
+	if mq.Depth() != 1 {
+		t.Fatalf("expected depth 1 (second call rejected while first was processing), got %d", mq.Depth())
 	}
 }
 

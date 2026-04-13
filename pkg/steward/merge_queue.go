@@ -27,14 +27,17 @@ type MergeResult struct {
 // MergeQueue serializes merge operations to prevent git push contention.
 // Thread-safe. The steward enqueues, then calls ProcessNext each cycle.
 type MergeQueue struct {
-	mu     sync.Mutex
-	queue  []MergeRequest
-	active *MergeRequest // currently processing (nil if idle)
+	mu         sync.Mutex
+	queue      []MergeRequest
+	active     *MergeRequest // currently processing (nil if idle)
+	processing bool          // true while mergeFn is executing
 }
 
 // NewMergeQueue creates an empty merge queue.
 func NewMergeQueue() *MergeQueue {
-	return &MergeQueue{}
+	return &MergeQueue{
+		queue: make([]MergeRequest, 0),
+	}
 }
 
 // Enqueue adds a merge request to the back of the queue.
@@ -55,7 +58,11 @@ func (mq *MergeQueue) Depth() int {
 func (mq *MergeQueue) Active() *MergeRequest {
 	mq.mu.Lock()
 	defer mq.mu.Unlock()
-	return mq.active
+	if mq.active == nil {
+		return nil
+	}
+	cp := *mq.active
+	return &cp
 }
 
 // Peek returns the next request without removing it, or nil if empty.
@@ -78,10 +85,11 @@ func (mq *MergeQueue) Peek() *MergeRequest {
 // Signature: func(ctx context.Context, req MergeRequest) MergeResult
 func (mq *MergeQueue) ProcessNext(ctx context.Context, mergeFn func(context.Context, MergeRequest) MergeResult) *MergeResult {
 	mq.mu.Lock()
-	if len(mq.queue) == 0 {
+	if mq.processing || len(mq.queue) == 0 {
 		mq.mu.Unlock()
 		return nil
 	}
+	mq.processing = true
 	req := mq.queue[0]
 	mq.queue = mq.queue[1:]
 	mq.active = &req
@@ -91,6 +99,7 @@ func (mq *MergeQueue) ProcessNext(ctx context.Context, mergeFn func(context.Cont
 
 	mq.mu.Lock()
 	mq.active = nil
+	mq.processing = false
 	mq.mu.Unlock()
 
 	return &result
