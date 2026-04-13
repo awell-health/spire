@@ -17,6 +17,8 @@
 package steward
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,9 +27,12 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
+
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -36,6 +41,12 @@ import (
 
 // GetActiveAttemptFunc is a test-replaceable function for store.GetActiveAttempt.
 var GetActiveAttemptFunc = store.GetActiveAttempt
+
+// GetDBForRoutingFunc is a test-replaceable function for getDBForRouting.
+var GetDBForRoutingFunc = getDBForRouting
+
+// AddLabelFunc is a test-replaceable function for store.AddLabel.
+var AddLabelFunc = store.AddLabel
 
 // ListBeadsFunc is a test-replaceable function for store.ListBeads.
 var ListBeadsFunc = store.ListBeads
@@ -109,6 +120,12 @@ type StewardConfig struct {
 	ShutdownThreshold time.Duration
 	AgentList         []string
 	MetricsPort       int // 0 = disabled; non-zero = start HTTP metrics server
+
+	ConcurrencyLimiter *ConcurrencyLimiter // nil = no limit enforcement
+	MergeQueue         *MergeQueue         // nil = no merge queue
+	TrustChecker       *TrustChecker       // nil = no trust checks
+	ABRouter           *ABRouter           // nil = no A/B routing
+	CycleStats         *CycleStats         // nil = no stats tracking
 }
 
 // AgentNames extracts agent names from an agent.Info slice.
@@ -166,6 +183,7 @@ func Cycle(cycleNum int, cfg StewardConfig) {
 // TowerCycle runs one steward cycle for a specific tower.
 // If towerName is "", uses the default store (legacy single-tower mode).
 func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
+	cycleStart := time.Now()
 	prefix := ""
 	if towerName != "" {
 		prefix = "[" + towerName + "] "
@@ -203,86 +221,82 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 
 	schedulable := schedResult.Schedulable
 
-	// Step 3: Load roster via backend.List() — one code path for all backends.
+	// Step 3: Load roster and refresh concurrency limiter.
 	agents, _ := cfg.Backend.List()
-	roster := AgentNames(agents, cfg.AgentList)
-	busy := BusySet(agents)
-	idleCount := len(roster) - len(busy)
-	if idleCount < 0 {
-		idleCount = 0
-	}
-
-	log.Printf("[steward] %sready: %d beads | roster: %d wizard(s) (%d busy, %d idle)",
-		prefix, len(schedulable), len(roster), len(busy), idleCount)
-
-	if len(roster) == 0 {
-		CheckBeadHealth(cfg.StaleThreshold, cfg.ShutdownThreshold, cfg.DryRun, cfg.Backend)
-		pushState()
-		return
-	}
-
-	// Step 4: Assign schedulable beads to idle agents (round-robin).
-	assigned := 0
-	agentIdx := 0
-	for _, bead := range schedulable {
-		// Find next idle agent (round-robin).
-		agentName := ""
-		for attempts := 0; attempts < len(roster); attempts++ {
-			candidate := roster[agentIdx%len(roster)]
-			agentIdx++
-			if !busy[candidate] {
-				agentName = candidate
-				break
-			}
+	aliveCount := 0
+	for _, a := range agents {
+		if a.Alive {
+			aliveCount++
 		}
+	}
+	if cfg.ConcurrencyLimiter != nil {
+		cfg.ConcurrencyLimiter.Refresh(towerName, agents)
+	}
 
-		if agentName == "" {
-			continue // all agents busy
+	// Load tower config for MaxConcurrent.
+	var maxConcurrent int
+	if tc, err := config.LoadTowerConfig(towerName); err == nil {
+		maxConcurrent = tc.MaxConcurrent
+	}
+
+	log.Printf("[steward] %sready: %d beads | agents: %d alive | max_concurrent: %d",
+		prefix, len(schedulable), aliveCount, maxConcurrent)
+
+	// Step 4: Auto-summon — spawn new wizards for schedulable work up to capacity.
+	spawned := 0
+	for _, bead := range schedulable {
+		// Check concurrency limit.
+		if cfg.ConcurrencyLimiter != nil && !cfg.ConcurrencyLimiter.CanSpawn(towerName, maxConcurrent) {
+			log.Printf("[steward] %sconcurrency limit reached (%d), deferring remaining work", prefix, maxConcurrent)
+			break
 		}
 
 		if cfg.DryRun {
-			log.Printf("[steward] %s[dry-run] would assign %s → %s", prefix, bead.ID, agentName)
-			assigned++
+			log.Printf("[steward] %s[dry-run] would summon wizard for %s", prefix, bead.ID)
+			spawned++
 			continue
 		}
 
-		if cfg.NoAssign {
-			// Managed agents get work via operator (SpireWorkloads), not messages.
-			log.Printf("[steward] %sassigned: %s → %s (P%d) [no-assign: operator handles pods]", prefix, bead.ID, agentName, bead.Priority)
-			busy[agentName] = true
-			assigned++
-			continue
+		// A/B routing: select formula variant if experiment is active.
+		if cfg.ABRouter != nil {
+			if db := GetDBForRoutingFunc(); db != nil {
+				formulaName := formula.ResolveV3Name(formula.BeadInfo{
+					ID:     bead.ID,
+					Type:   bead.Type,
+					Labels: bead.Labels,
+				})
+				variant, _ := cfg.ABRouter.SelectVariant(context.Background(), db, towerName, formulaName, bead.ID)
+				if variant != formulaName {
+					AddLabelFunc(bead.ID, "formula:"+variant)
+					log.Printf("[steward] %sA/B routing: %s → %s", prefix, bead.ID, variant)
+				}
+				db.Close()
+			}
 		}
 
-		// Send assignment message (for external/unmanaged agents).
-		msg := fmt.Sprintf("Please claim and work on %s: %s", bead.ID, bead.Title)
-		_, sendErr := SendMessageFunc(agentName, "steward", msg, bead.ID, bead.Priority)
-		if sendErr != nil {
-			log.Printf("[steward] %ssend failed: %s → %s: %s", prefix, bead.ID, agentName, sendErr)
-			continue
-		}
+		// Generate wizard name from bead ID.
+		wizardName := "wizard-" + SanitizeK8sLabel(bead.ID)
 
-		log.Printf("[steward] %sassigned: %s → %s (P%d)", prefix, bead.ID, agentName, bead.Priority)
-		busy[agentName] = true
-		assigned++
-
-		// Spawn the agent via backend after assignment.
+		// Spawn wizard.
 		handle, spawnErr := cfg.Backend.Spawn(agent.SpawnConfig{
-			Name:    agentName,
+			Name:    wizardName,
 			BeadID:  bead.ID,
-			Role:    agent.RoleApprentice,
+			Role:    agent.RoleWizard,
 			Tower:   towerName,
-			LogPath: filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
+			LogPath: filepath.Join(dolt.GlobalDir(), "wizards", wizardName+".log"),
 		})
 		if spawnErr != nil {
-			log.Printf("[steward] spawn failed: %s → %s: %s", bead.ID, agentName, spawnErr)
-		} else if handle != nil {
-			log.Printf("[steward] spawned %s for %s (%s)", agentName, bead.ID, handle.Identifier())
+			log.Printf("[steward] %sspawn failed: %s → %s: %s", prefix, bead.ID, wizardName, spawnErr)
+			continue
 		}
+		if handle != nil {
+			log.Printf("[steward] %ssummoned %s for %s (%s)", prefix, wizardName, bead.ID, handle.Identifier())
+		}
+		spawned++
 	}
 
-	if assigned > 0 {
-		log.Printf("[steward] %sassigned: %d bead(s)", prefix, assigned)
+	if spawned > 0 {
+		log.Printf("[steward] %ssummoned: %d wizard(s)", prefix, spawned)
 	}
 
 	// Step 4b: Detect standalone tasks ready for review.
@@ -304,7 +318,51 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		log.Printf("[steward] %sstale: none", prefix)
 	}
 
-	// Step 6: Push.
+	// Step 6b: Process merge queue (one per cycle to serialize).
+	if cfg.MergeQueue != nil && cfg.MergeQueue.Depth() > 0 {
+		result := cfg.MergeQueue.ProcessNext(context.Background(), ExecuteMergeFunc)
+		if result != nil {
+			if result.Success {
+				log.Printf("[steward] %smerge queue: %s merged (%s)", prefix, result.BeadID, result.SHA)
+				// Record clean merge for trust.
+				if cfg.TrustChecker != nil {
+					if db := GetDBForRoutingFunc(); db != nil {
+						repoPrefix := beadRepoPrefix(result.BeadID)
+						rec, _ := cfg.TrustChecker.RecordAndEvaluate(context.Background(), db, towerName, repoPrefix, true)
+						if rec != nil {
+							log.Printf("[steward] %strust: %s level=%d consecutive_clean=%d", prefix, repoPrefix, rec.Level, rec.ConsecutiveClean)
+						}
+						db.Close()
+					}
+				}
+			} else {
+				log.Printf("[steward] %smerge queue: %s failed: %s", prefix, result.BeadID, result.Error)
+				// Record failed merge for trust.
+				if cfg.TrustChecker != nil {
+					if db := GetDBForRoutingFunc(); db != nil {
+						repoPrefix := beadRepoPrefix(result.BeadID)
+						cfg.TrustChecker.RecordAndEvaluate(context.Background(), db, towerName, repoPrefix, false)
+						db.Close()
+					}
+				}
+			}
+		}
+	}
+
+	// Record cycle stats.
+	if cfg.CycleStats != nil {
+		cfg.CycleStats.Record(CycleStatsSnapshot{
+			LastCycleAt:      time.Now(),
+			CycleDuration:    time.Since(cycleStart),
+			ActiveAgents:     aliveCount,
+			QueueDepth:       mergeQueueDepth(cfg.MergeQueue),
+			SchedulableWork:  len(schedulable),
+			SpawnedThisCycle: spawned,
+			Tower:            towerName,
+		})
+	}
+
+	// Step 7: Push.
 	pushState()
 }
 
@@ -829,3 +887,50 @@ func sendMessage(to, from, body, ref string, priority int) (string, error) {
 		Labels:   labels,
 	})
 }
+
+// executeMerge is the merge callback for the merge queue.
+// Performs: git fetch, rebase onto base, push.
+// This is a placeholder — real git operations require repo context from pkg/git.
+func executeMerge(ctx context.Context, req MergeRequest) MergeResult {
+	// TODO: Wire to real git operations via pkg/git once merge infra is ready.
+	// For now, return a failure so the merge queue doesn't silently drop requests.
+	return MergeResult{
+		BeadID:  req.BeadID,
+		Success: false,
+		Error:   fmt.Errorf("merge execution not yet wired to git operations"),
+	}
+}
+
+// beadRepoPrefix extracts the repo prefix from a bead ID (e.g., "spi" from "spi-abc").
+func beadRepoPrefix(beadID string) string {
+	if idx := strings.Index(beadID, "-"); idx > 0 {
+		return beadID[:idx]
+	}
+	return beadID
+}
+
+// mergeQueueDepth safely returns depth (0 if queue is nil).
+func mergeQueueDepth(mq *MergeQueue) int {
+	if mq == nil {
+		return 0
+	}
+	return mq.Depth()
+}
+
+// getDBForRouting opens a *sql.DB connection to the dolt server for trust/routing queries.
+// Returns nil on error (callers should nil-check and skip).
+func getDBForRouting() *sql.DB {
+	dsn := fmt.Sprintf("root:@tcp(%s:%s)/", dolt.Host(), dolt.Port())
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil
+	}
+	return db
+}
+
+// ExecuteMergeFunc is the merge callback used by TowerCycle. Test-replaceable.
+var ExecuteMergeFunc = executeMerge

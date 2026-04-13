@@ -204,14 +204,26 @@ func cmdSteward(args []string) error {
 	// Align project_id — only for the CWD tower (legacy behavior).
 	ensureProjectID()
 
+	// Initialize wave-0 modules.
+	concurrencyLimiter := steward.NewConcurrencyLimiter()
+	mergeQueue := steward.NewMergeQueue()
+	trustChecker := steward.NewTrustChecker()
+	abRouter := steward.NewABRouter()
+	cycleStats := steward.NewCycleStats()
+
 	cfg := steward.StewardConfig{
-		DryRun:            dryRun,
-		NoAssign:          noAssign,
-		Backend:           backend,
-		StaleThreshold:    staleThreshold,
-		ShutdownThreshold: shutdownThreshold,
-		AgentList:         agentList,
-		MetricsPort:       metricsPort,
+		DryRun:             dryRun,
+		NoAssign:           noAssign,
+		Backend:            backend,
+		StaleThreshold:     staleThreshold,
+		ShutdownThreshold:  shutdownThreshold,
+		AgentList:          agentList,
+		MetricsPort:        metricsPort,
+		ConcurrencyLimiter: concurrencyLimiter,
+		MergeQueue:         mergeQueue,
+		TrustChecker:       trustChecker,
+		ABRouter:           abRouter,
+		CycleStats:         cycleStats,
 	}
 
 	// Start metrics server if configured.

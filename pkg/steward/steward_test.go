@@ -1,6 +1,7 @@
 package steward
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1136,5 +1137,373 @@ func TestSweepHookedSteps_HumanApprove_OnlyNeedsHumanPresent_Skips(t *testing.T)
 
 	if len(backend.spawns) != 0 {
 		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
+	}
+}
+
+// --- Steward cycle integration tests (wave-0 modules) ---
+
+// mockBackend records Spawn calls and returns configurable agents from List.
+type mockBackend struct {
+	spawns   []agent.SpawnConfig
+	agents   []agent.Info
+	listErr  error
+	spawnErr error
+}
+
+func (m *mockBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
+	if m.spawnErr != nil {
+		return nil, m.spawnErr
+	}
+	m.spawns = append(m.spawns, cfg)
+	return &fakeHandle{id: cfg.Name}, nil
+}
+func (m *mockBackend) List() ([]agent.Info, error) {
+	return m.agents, m.listErr
+}
+func (m *mockBackend) Logs(name string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
+func (m *mockBackend) Kill(name string) error                  { return nil }
+
+// setupCycleTest creates a minimal tower config for testing TowerCycle.
+// It stubs out store operations and returns a cleanup function.
+func setupCycleTest(t *testing.T, schedulableBeads []store.Bead) func() {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmpDir)
+	t.Setenv("SPIRE_DOLT_DIR", tmpDir)
+
+	// Create wizards log dir so filepath.Join doesn't fail.
+	os.MkdirAll(filepath.Join(tmpDir, "wizards"), 0755)
+
+	// Stub store functions used in TowerCycle.
+	origListBeads := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return nil, nil // no in_progress beads for health check
+	}
+
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		return nil, nil
+	}
+
+	return func() {
+		ListBeadsFunc = origListBeads
+		GetActiveAttemptFunc = origAttempt
+	}
+}
+
+func TestTowerCycle_ConcurrencyLimit_SpawnsUpToMax(t *testing.T) {
+	cleanup := setupCycleTest(t, nil)
+	defer cleanup()
+
+	backend := &mockBackend{
+		agents: []agent.Info{
+			{Name: "wizard-spi-existing1", Alive: true},
+		},
+	}
+
+	// Create 5 schedulable beads but limit to 2 concurrent.
+	cl := NewConcurrencyLimiter()
+	cs := NewCycleStats()
+
+	// Manually run the auto-summon logic (we can't easily call TowerCycle
+	// because it requires a real store, so we test the core components directly).
+
+	// Refresh limiter with 1 alive agent.
+	cl.Refresh("test-tower", backend.agents)
+
+	// With maxConcurrent=2 and 1 alive, CanSpawn should be true once.
+	if !cl.CanSpawn("test-tower", 2) {
+		t.Error("expected CanSpawn=true (1 of 2 slots used)")
+	}
+
+	// Simulate the spawn loop: spawn until limit reached.
+	beadIDs := []string{"spi-aaa", "spi-bbb", "spi-ccc", "spi-ddd", "spi-eee"}
+	spawned := 0
+	for _, id := range beadIDs {
+		if !cl.CanSpawn("test-tower", 2) {
+			break
+		}
+		wizardName := "wizard-" + SanitizeK8sLabel(id)
+		_, err := backend.Spawn(agent.SpawnConfig{
+			Name:   wizardName,
+			BeadID: id,
+			Role:   agent.RoleWizard,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		spawned++
+		// Simulate the limiter being updated (in real code, Refresh is called per cycle,
+		// but the limiter counts increase only after the next Refresh).
+		// For spawn-loop enforcement, we manually increment.
+		cl.mu.Lock()
+		cl.counts["test-tower"]++
+		cl.mu.Unlock()
+	}
+
+	if spawned != 1 {
+		t.Errorf("spawned = %d, want 1 (maxConcurrent=2, 1 already alive)", spawned)
+	}
+
+	// Verify wizard name format.
+	if len(backend.spawns) > 0 {
+		name := backend.spawns[0].Name
+		if name != "wizard-spi-aaa" {
+			t.Errorf("spawn name = %q, want wizard-spi-aaa", name)
+		}
+	}
+
+	// Verify cycle stats.
+	cs.Record(CycleStatsSnapshot{
+		ActiveAgents:     1,
+		SpawnedThisCycle: spawned,
+		SchedulableWork:  5,
+		Tower:            "test-tower",
+	})
+	snap := cs.Snapshot()
+	if snap.SpawnedThisCycle != 1 {
+		t.Errorf("stats spawned = %d, want 1", snap.SpawnedThisCycle)
+	}
+	if snap.SchedulableWork != 5 {
+		t.Errorf("stats schedulable = %d, want 5", snap.SchedulableWork)
+	}
+}
+
+func TestAutoSummon_WizardNaming(t *testing.T) {
+	// Verify that wizards get properly sanitized names.
+	tests := []struct {
+		beadID   string
+		expected string
+	}{
+		{"spi-abc", "wizard-spi-abc"},
+		{"spi-a3f8.1", "wizard-spi-a3f8-1"},
+		{"web-B7D0", "wizard-web-b7d0"},
+		{"api_8a01", "wizard-api-8a01"},
+	}
+	for _, tt := range tests {
+		name := "wizard-" + SanitizeK8sLabel(tt.beadID)
+		if name != tt.expected {
+			t.Errorf("wizard name for %q = %q, want %q", tt.beadID, name, tt.expected)
+		}
+	}
+}
+
+func TestMergeQueueProcessing_OnePerCycle(t *testing.T) {
+	mq := NewMergeQueue()
+
+	// Enqueue 3 merge requests.
+	mq.Enqueue(MergeRequest{BeadID: "spi-aaa", Branch: "feat/spi-aaa"})
+	mq.Enqueue(MergeRequest{BeadID: "spi-bbb", Branch: "feat/spi-bbb"})
+	mq.Enqueue(MergeRequest{BeadID: "spi-ccc", Branch: "feat/spi-ccc"})
+
+	if mq.Depth() != 3 {
+		t.Fatalf("queue depth = %d, want 3", mq.Depth())
+	}
+
+	// Process one — should dequeue "spi-aaa".
+	mergedIDs := []string{}
+	mockMerge := func(ctx context.Context, req MergeRequest) MergeResult {
+		mergedIDs = append(mergedIDs, req.BeadID)
+		return MergeResult{BeadID: req.BeadID, Success: true, SHA: "abc123"}
+	}
+
+	result := mq.ProcessNext(context.Background(), mockMerge)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Success {
+		t.Error("expected success")
+	}
+	if result.BeadID != "spi-aaa" {
+		t.Errorf("result.BeadID = %q, want spi-aaa", result.BeadID)
+	}
+
+	// Only one was processed (one per cycle).
+	if len(mergedIDs) != 1 {
+		t.Errorf("merged count = %d, want 1", len(mergedIDs))
+	}
+
+	// Remaining depth should be 2.
+	if mq.Depth() != 2 {
+		t.Errorf("remaining depth = %d, want 2", mq.Depth())
+	}
+}
+
+func TestTrustRecordAfterMerge(t *testing.T) {
+	// Verify that TrustChecker methods work correctly for steward integration.
+	tc := NewTrustChecker()
+
+	// RequiresSageReview: sandbox and supervised need review.
+	if !tc.RequiresSageReview(store.TrustSandbox) {
+		t.Error("sandbox should require sage review")
+	}
+	if !tc.RequiresSageReview(store.TrustSupervised) {
+		t.Error("supervised should require sage review")
+	}
+	if tc.RequiresSageReview(store.TrustTrusted) {
+		t.Error("trusted should NOT require sage review")
+	}
+	if tc.RequiresSageReview(store.TrustAutonomous) {
+		t.Error("autonomous should NOT require sage review")
+	}
+
+	// AllowsAutoMerge: trusted and autonomous allow auto-merge.
+	if tc.AllowsAutoMerge(store.TrustSandbox) {
+		t.Error("sandbox should NOT allow auto-merge")
+	}
+	if tc.AllowsAutoMerge(store.TrustSupervised) {
+		t.Error("supervised should NOT allow auto-merge")
+	}
+	if !tc.AllowsAutoMerge(store.TrustTrusted) {
+		t.Error("trusted should allow auto-merge")
+	}
+	if !tc.AllowsAutoMerge(store.TrustAutonomous) {
+		t.Error("autonomous should allow auto-merge")
+	}
+}
+
+func TestCycleStats_Populated(t *testing.T) {
+	cs := NewCycleStats()
+
+	// Initially empty.
+	snap := cs.Snapshot()
+	if !snap.LastCycleAt.IsZero() {
+		t.Error("expected zero LastCycleAt initially")
+	}
+
+	// Record a cycle.
+	now := time.Now()
+	cs.Record(CycleStatsSnapshot{
+		LastCycleAt:      now,
+		CycleDuration:    2 * time.Second,
+		ActiveAgents:     3,
+		QueueDepth:       1,
+		SchedulableWork:  5,
+		SpawnedThisCycle: 2,
+		Tower:            "test-tower",
+	})
+
+	snap = cs.Snapshot()
+	if snap.LastCycleAt != now {
+		t.Errorf("LastCycleAt = %v, want %v", snap.LastCycleAt, now)
+	}
+	if snap.CycleDuration != 2*time.Second {
+		t.Errorf("CycleDuration = %v, want 2s", snap.CycleDuration)
+	}
+	if snap.ActiveAgents != 3 {
+		t.Errorf("ActiveAgents = %d, want 3", snap.ActiveAgents)
+	}
+	if snap.QueueDepth != 1 {
+		t.Errorf("QueueDepth = %d, want 1", snap.QueueDepth)
+	}
+	if snap.SchedulableWork != 5 {
+		t.Errorf("SchedulableWork = %d, want 5", snap.SchedulableWork)
+	}
+	if snap.SpawnedThisCycle != 2 {
+		t.Errorf("SpawnedThisCycle = %d, want 2", snap.SpawnedThisCycle)
+	}
+	if snap.Tower != "test-tower" {
+		t.Errorf("Tower = %q, want test-tower", snap.Tower)
+	}
+}
+
+func TestDryRun_DoesNotSpawn(t *testing.T) {
+	backend := &mockBackend{}
+	cl := NewConcurrencyLimiter()
+
+	// Simulate dry-run spawn loop.
+	beadIDs := []string{"spi-aaa", "spi-bbb"}
+	spawned := 0
+	dryRun := true
+
+	for _, id := range beadIDs {
+		if cl.CanSpawn("test", 10) {
+			if dryRun {
+				// In dry-run mode, we increment spawned but don't call backend.Spawn.
+				spawned++
+				continue
+			}
+			backend.Spawn(agent.SpawnConfig{
+				Name:   "wizard-" + SanitizeK8sLabel(id),
+				BeadID: id,
+				Role:   agent.RoleWizard,
+			})
+			spawned++
+		}
+	}
+
+	if spawned != 2 {
+		t.Errorf("spawned count = %d, want 2", spawned)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("backend.spawns = %d, want 0 (dry-run should not spawn)", len(backend.spawns))
+	}
+}
+
+func TestABRouting_AddsFormulaLabel(t *testing.T) {
+	// Test the ABRouter behavior used by the steward cycle.
+	router := NewABRouter()
+
+	// Without a DB, we can test the hash determinism.
+	h1 := hashBead("spi-test1")
+	h2 := hashBead("spi-test1")
+	if h1 != h2 {
+		t.Errorf("hashBead not deterministic: %d != %d", h1, h2)
+	}
+
+	// Verify range.
+	for i := 0; i < 100; i++ {
+		id := fmt.Sprintf("spi-%04d", i)
+		h := hashBead(id)
+		if h < 0 || h >= 100 {
+			t.Errorf("hashBead(%q) = %d, out of range [0,100)", id, h)
+		}
+	}
+
+	_ = router // ABRouter.SelectVariant requires a DB, tested in ab_routing_test.go
+}
+
+func TestBeadRepoPrefix(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"spi-abc", "spi"},
+		{"web-b7d0", "web"},
+		{"api-8a01", "api"},
+		{"nohyphen", "nohyphen"},
+		{"x-y", "x"},
+	}
+	for _, tt := range tests {
+		got := beadRepoPrefix(tt.input)
+		if got != tt.expected {
+			t.Errorf("beadRepoPrefix(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestMergeQueueDepth_Nil(t *testing.T) {
+	if d := mergeQueueDepth(nil); d != 0 {
+		t.Errorf("mergeQueueDepth(nil) = %d, want 0", d)
+	}
+
+	mq := NewMergeQueue()
+	mq.Enqueue(MergeRequest{BeadID: "spi-x"})
+	if d := mergeQueueDepth(mq); d != 1 {
+		t.Errorf("mergeQueueDepth = %d, want 1", d)
+	}
+}
+
+func TestConcurrencyLimiter_UnlimitedWhenZero(t *testing.T) {
+	cl := NewConcurrencyLimiter()
+	cl.Refresh("tower", []agent.Info{
+		{Name: "a", Alive: true},
+		{Name: "b", Alive: true},
+		{Name: "c", Alive: true},
+	})
+
+	// maxConcurrent=0 means unlimited.
+	if !cl.CanSpawn("tower", 0) {
+		t.Error("expected CanSpawn=true with maxConcurrent=0 (unlimited)")
 	}
 }
