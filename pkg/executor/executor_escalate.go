@@ -7,16 +7,9 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
-
-// prefixFromID extracts the repo prefix from a bead ID (e.g. "ml" from "ml-3fz").
-func prefixFromID(id string) string {
-	if i := strings.Index(id, "-"); i > 0 {
-		return id[:i]
-	}
-	return ""
-}
 
 // isRecoveryBead returns true if the bead is itself a recovery bead,
 // used as a circuit breaker to prevent cascading escalations.
@@ -113,7 +106,7 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 	deps.AddLabel(beadID, "needs-human")
 	deps.AddLabel(beadID, "interrupted:empty-implement")
 
-	prefix := prefixFromID(beadID)
+	prefix := store.PrefixFromID(beadID)
 	alertTitle := fmt.Sprintf("[empty-implement] %s: apprentice produced no code changes", beadID)
 	if len(alertTitle) > 200 {
 		alertTitle = alertTitle[:200]
@@ -175,7 +168,7 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 	// needs-human alone) are not confused with interrupted/error states.
 	deps.AddLabel(beadID, "interrupted:"+failureType)
 
-	prefix := prefixFromID(beadID)
+	prefix := store.PrefixFromID(beadID)
 
 	// Create an alert bead that surfaces at the top of the board.
 	alertTitle := fmt.Sprintf("[%s] %s: %s", failureType, beadID, message)
@@ -234,7 +227,7 @@ func EscalateGraphStepFailure(beadID, agentName, failureType, message string, st
 	deps.AddLabel(beadID, "needs-human")
 	deps.AddLabel(beadID, "interrupted:"+failureType)
 
-	prefix := prefixFromID(beadID)
+	prefix := store.PrefixFromID(beadID)
 
 	// Build node-scoped context string.
 	var ctx []string
@@ -338,7 +331,7 @@ func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeC
 		Type:        beads.IssueType("recovery"),
 		Labels:      []string{"recovery-bead", "failure_class:" + failureType},
 		Description: desc,
-		Prefix:      prefixFromID(parentID),
+		Prefix:      store.PrefixFromID(parentID),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: create recovery bead for %s: %s\n", parentID, err)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
@@ -269,6 +270,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 			Priority:    bead.Priority,
 			Type:        e.deps.ParseIssueType("task"),
 			Parent:      e.beadID,
+			Prefix:      store.PrefixFromID(e.beadID),
 		})
 		if createErr != nil {
 			e.log("warning: create subtask %q: %s", t.Title, createErr)

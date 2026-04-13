@@ -76,6 +76,7 @@ func CreateAttemptBead(parentID, agentName, model, branch string) (string, error
 		Type:     beads.IssueType("attempt"),
 		Labels:   labels,
 		Parent:   parentID,
+		Prefix:   PrefixFromID(parentID),
 	})
 	if err != nil {
 		return "", fmt.Errorf("create attempt bead: %w", err)
@@ -202,6 +203,7 @@ func CreateReviewBead(parentID, sageName string, round int) (string, error) {
 		Type:     beads.IssueType("review"),
 		Labels:   labels,
 		Parent:   parentID,
+		Prefix:   PrefixFromID(parentID),
 	})
 	if err != nil {
 		return "", fmt.Errorf("create review bead: %w", err)
@@ -226,6 +228,7 @@ func CreateStepBead(parentID, stepName string) (string, error) {
 		Type:     beads.IssueType("step"),
 		Labels:   labels,
 		Parent:   parentID,
+		Prefix:   PrefixFromID(parentID),
 	})
 	if err != nil {
 		return "", fmt.Errorf("create step bead %s for %s: %w", stepName, parentID, err)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
@@ -185,6 +186,7 @@ func (e *Executor) ensureReviewSubStepBeads(graph *formula.FormulaStepGraph) err
 			Type:     beads.IssueType("step"),
 			Parent:   reviewBeadID,
 			Labels:   []string{"workflow-step", "step:" + stepName, "review-substep"},
+			Prefix:   store.PrefixFromID(reviewBeadID),
 		})
 		if err != nil {
 			return fmt.Errorf("create review sub-step bead for %s: %w", stepName, err)

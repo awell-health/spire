@@ -11,6 +11,7 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
@@ -368,6 +369,7 @@ func actionCheckDesignLinked(e *Executor, stepName string, step StepConfig, stat
 			Title:  "Design: " + e.beadID,
 			Type:   e.deps.ParseIssueType("design"),
 			Labels: []string{"needs-human"},
+			Prefix: store.PrefixFromID(e.beadID),
 		})
 		if err != nil {
 			return ActionResult{Error: fmt.Errorf("create design bead: %w", err)}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
@@ -64,6 +65,7 @@ func (e *Executor) wizardValidateDesign() (retErr error) {
 					Title:    designTitle,
 					Priority: 1,
 					Type:     e.deps.ParseIssueType("design"),
+					Prefix:   store.PrefixFromID(e.beadID),
 				})
 				if err != nil {
 					return fmt.Errorf("create design bead: %w", err)

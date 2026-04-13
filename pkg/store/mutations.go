@@ -2,9 +2,19 @@ package store
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/steveyegge/beads"
 )
+
+// PrefixFromID extracts the repo prefix from a bead ID (e.g. "oo" from "oo-b9u").
+// For hierarchical IDs like "spi-a3f8.1", returns "spi".
+func PrefixFromID(id string) string {
+	if i := strings.Index(id, "-"); i > 0 {
+		return id[:i]
+	}
+	return ""
+}
 
 // CreateBead creates a new bead and returns its ID.
 func CreateBead(opts CreateOpts) (string, error) {
