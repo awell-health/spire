@@ -20,6 +20,7 @@ type TowerConfig struct {
 	CreatedAt     string                       `json:"created_at"`
 	Archmage      ArchmageConfig               `json:"archmage,omitempty"`
 	LocalBindings map[string]*LocalRepoBinding `json:"local_bindings,omitempty"`
+	MaxConcurrent int                          `json:"max_concurrent,omitempty"` // max simultaneous wizards; 0 = unlimited
 }
 
 // LocalRepoBinding records machine-local state for a shared tower repo.
