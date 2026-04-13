@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -161,6 +162,13 @@ func runPull(remoteURL string, force bool) error {
 		}
 	}
 	if ownerErr != nil {
+		// Constraint violations (orphaned FK children, etc.) mean the merge
+		// landed the DB in an inconsistent state. Fail loudly rather than
+		// degrading to a warning — otherwise the daemon will happily commit
+		// a broken working set on the next sync.
+		if errors.Is(ownerErr, dolt.ErrMergeConstraintViolation) {
+			return fmt.Errorf("merge produced constraint violations: %w", ownerErr)
+		}
 		fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
 	}
 

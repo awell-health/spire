@@ -1,12 +1,19 @@
 package dolt
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 
 	"github.com/awell-health/spire/pkg/config"
 )
+
+// ErrMergeConstraintViolation signals that a merge left the database in a
+// state that still violates foreign-key (or other) constraints. Callers can
+// detect this with errors.Is to decide whether to treat an ownership
+// enforcement failure as soft (warning) or hard (abort).
+var ErrMergeConstraintViolation = errors.New("merge left unresolved constraint violations")
 
 // ClusterFields are owned by the cluster (remote/theirs wins on conflict).
 var ClusterFields = map[string]bool{
@@ -86,6 +93,18 @@ func ApplyMergeOwnership(dbName, preCommit string) error {
 		return fmt.Errorf("issues conflicts remain (%d unresolved)", remaining)
 	}
 
+	// Phase 1b: ensure the merge did not leave behind FK / other constraint
+	// violations (e.g. orphaned label/comment/event rows pointing at a bead
+	// that was deleted on one side and modified on the other).
+	violations, err := HasUnresolvedConstraintViolations(dbName)
+	if err != nil {
+		return fmt.Errorf("check constraint violations: %w", err)
+	}
+	if violations > 0 {
+		return fmt.Errorf("%w: %d violation(s) — inspect dolt_constraint_violations",
+			ErrMergeConstraintViolation, violations)
+	}
+
 	// Phase 2: scan for cluster-field regressions.
 	regressions, err := ScanClusterRegressions(dbName, preCommit)
 	if err != nil {
@@ -116,6 +135,46 @@ func HasUnresolvedConflicts(dbName string) (int, error) {
 		return 0, err
 	}
 	return ExtractCountValue(out), nil
+}
+
+// HasUnresolvedConstraintViolations returns the total number of rows across
+// all per-table dolt_constraint_violations_* views — i.e. FK or other
+// constraint violations introduced by a merge that still need attention.
+// Returns 0 (no error) if the summary view does not exist.
+func HasUnresolvedConstraintViolations(dbName string) (int, error) {
+	q := fmt.Sprintf("SELECT COALESCE(SUM(num_violations), 0) AS c FROM `%s`.dolt_constraint_violations", dbName)
+	out, err := sqlWithDB(dbName, q)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "doesn't exist") {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return ExtractCountValue(out), nil
+}
+
+// issuesColumns returns the ordered list of column names on the issues table
+// for the given database. Used to build schema-agnostic INSERTs that restore
+// a locally-deleted row from the `their_*` side of a conflict.
+func issuesColumns(dbName string) ([]string, error) {
+	q := fmt.Sprintf(
+		"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = 'issues' ORDER BY ORDINAL_POSITION",
+		SQLEscape(dbName))
+	out, err := sqlWithDB(dbName, q)
+	if err != nil {
+		return nil, fmt.Errorf("list issues columns: %w", err)
+	}
+	rows := ParseDoltRows(out, []string{"name"})
+	cols := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if c := r["name"]; c != "" {
+			cols = append(cols, c)
+		}
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("no columns found for issues table in %q", dbName)
+	}
+	return cols, nil
 }
 
 // ResolveIssueConflicts reads dolt_conflicts_issues and applies field-level
@@ -174,6 +233,13 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 		return 0, nil
 	}
 
+	// Fetch the issues-table column list once so delete-vs-modify conflicts
+	// can be resolved with a schema-agnostic INSERT from the `their_*` side.
+	cols, err := issuesColumns(dbName)
+	if err != nil {
+		return 0, err
+	}
+
 	// Build a single SQL batch with autocommit disabled so that writes
 	// succeed even when dolt has unresolved conflicts (autocommit mode
 	// rejects writes in that state). All statements run in one CLI
@@ -184,14 +250,16 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 
 	resolved := 0
 	for _, row := range rows {
-		id, updateStmt, deleteStmt, ok := buildIssueConflictStatements(row)
+		rowStmts, id, kind, ok := buildIssueConflictStatements(row, cols)
 		if !ok {
 			continue
 		}
-		stmts = append(stmts, updateStmt, deleteStmt)
+		stmts = append(stmts, rowStmts...)
 
-		log.Printf("[ownership] resolving conflict: %s (cluster: status=%s, user: title=%q)",
-			id, Coalesce(row["their_status"], "?"), Coalesce(row["our_title"], "?"))
+		log.Printf("[ownership] resolving conflict: %s [%s] (cluster: status=%s, user: title=%q)",
+			id, kind,
+			Coalesce(row["their_status"], row["our_status"], "?"),
+			Coalesce(row["our_title"], row["their_title"], "?"))
 		resolved++
 	}
 
@@ -210,12 +278,71 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 	return resolved, nil
 }
 
-func buildIssueConflictStatements(row map[string]string) (id, updateStmt, deleteStmt string, ok bool) {
-	id = Coalesce(row["our_id"], row["their_id"], row["base_id"])
-	if id == "" {
-		return "", "", "", false
-	}
+// buildIssueConflictStatements returns the SQL statements required to
+// resolve a single row from dolt_conflicts_issues, plus the bead id the
+// resolution targets and a short label describing the branch that was taken
+// (for logging). Returns ok=false when the row has no usable id.
+//
+// The resolution branches by how each side diff'd the base row:
+//
+//	ours=modify,  theirs=modify  → field-level merge (cluster wins on
+//	                                cluster fields, local wins on user fields)
+//	ours=delete,  theirs=modify  → restore from `their_*` (cluster wins on
+//	                                the existence of the bead) — this is the
+//	                                case that used to silently no-op the
+//	                                UPDATE and leave orphaned FK children.
+//	ours=modify,  theirs=delete  → keep ours (ignore the cluster-side delete;
+//	                                whoever modified locally still wants it).
+//	ours=delete,  theirs=delete  → nothing to apply; just drop the conflict.
+//
+// In every branch the dolt_conflicts_issues row for the bead is deleted so
+// the merge can commit.
+func buildIssueConflictStatements(row map[string]string, issueColumns []string) (stmts []string, id string, kind string, ok bool) {
+	ourID := nonNullValue(row["our_id"])
+	theirID := nonNullValue(row["their_id"])
+	baseID := nonNullValue(row["base_id"])
 
+	id = firstNonEmpty(ourID, theirID, baseID)
+	if id == "" {
+		return nil, "", "", false
+	}
+	escapedID := SQLEscape(id)
+	deleteConflictStmt := fmt.Sprintf(
+		"DELETE FROM dolt_conflicts_issues WHERE our_id = '%s' OR their_id = '%s' OR base_id = '%s'",
+		escapedID, escapedID, escapedID)
+
+	switch {
+	case ourID == "" && theirID != "":
+		// Delete-vs-modify: the cluster still cares about this bead. Restore
+		// it from the `their_*` snapshot using an INSERT that copies every
+		// column — this preserves FK children (labels/comments/events/…)
+		// that the cluster added alongside the modification.
+		insert, insertOK := buildRestoreFromTheirsInsert(escapedID, issueColumns)
+		if !insertOK {
+			return nil, "", "", false
+		}
+		return []string{insert, deleteConflictStmt}, id, "restore-from-theirs", true
+
+	case ourID != "" && theirID == "":
+		// Modify-vs-delete: the local row still exists and has been modified;
+		// ignore the cluster's delete and simply clear the conflict row.
+		return []string{deleteConflictStmt}, id, "keep-ours", true
+
+	case ourID == "" && theirID == "":
+		// Both sides deleted — the row is already gone locally. Nothing to
+		// apply apart from clearing the conflict entry.
+		return []string{deleteConflictStmt}, id, "both-deleted", true
+
+	default:
+		// Modify-vs-modify: classic field-level ownership merge.
+		return []string{buildFieldLevelMergeUpdate(row, escapedID), deleteConflictStmt}, id, "field-merge", true
+	}
+}
+
+// buildFieldLevelMergeUpdate constructs the UPDATE used for modify-vs-modify
+// conflicts: cluster-owned fields take `theirs`, user-owned fields take
+// `ours`. `escapedID` must already be SQL-escaped.
+func buildFieldLevelMergeUpdate(row map[string]string, escapedID string) string {
 	updates := []string{
 		// Cluster-owned fields: take theirs (remote)
 		fmt.Sprintf("status = '%s'", SQLEscape(Coalesce(row["their_status"], row["our_status"]))),
@@ -229,14 +356,47 @@ func buildIssueConflictStatements(row map[string]string) (id, updateStmt, delete
 		fmt.Sprintf("priority = %s", Coalesce(row["our_priority"], row["their_priority"], "2")),
 		fmt.Sprintf("issue_type = '%s'", SQLEscape(Coalesce(row["our_issue_type"], row["their_issue_type"]))),
 	}
-
-	escapedID := SQLEscape(id)
-	updateStmt = fmt.Sprintf("UPDATE issues SET %s WHERE id = '%s'",
+	return fmt.Sprintf("UPDATE issues SET %s WHERE id = '%s'",
 		strings.Join(updates, ", "), escapedID)
-	deleteStmt = fmt.Sprintf(
-		"DELETE FROM dolt_conflicts_issues WHERE our_id = '%s' OR their_id = '%s' OR base_id = '%s'",
-		escapedID, escapedID, escapedID)
-	return id, updateStmt, deleteStmt, true
+}
+
+// buildRestoreFromTheirsInsert constructs an INSERT that restores a bead
+// from the `their_*` snapshot of a conflict row. Copying every column keeps
+// us schema-independent — we don't need to be updated when new columns are
+// added to the issues table. `escapedID` must already be SQL-escaped.
+func buildRestoreFromTheirsInsert(escapedID string, issueColumns []string) (string, bool) {
+	if len(issueColumns) == 0 {
+		return "", false
+	}
+	theirCols := make([]string, len(issueColumns))
+	for i, c := range issueColumns {
+		theirCols[i] = "their_" + c
+	}
+	return fmt.Sprintf(
+		"INSERT INTO issues (%s) SELECT %s FROM dolt_conflicts_issues WHERE their_id = '%s'",
+		strings.Join(issueColumns, ", "),
+		strings.Join(theirCols, ", "),
+		escapedID,
+	), true
+}
+
+// nonNullValue normalises a conflict-row cell, treating dolt's "NULL"
+// sentinel as absent (same rule as Coalesce).
+func nonNullValue(s string) string {
+	if s == "" || strings.EqualFold(s, "NULL") {
+		return ""
+	}
+	return s
+}
+
+// firstNonEmpty returns the first argument that is non-empty, or "" if none.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // ScanClusterRegressions compares the pre-pull state to HEAD and finds
