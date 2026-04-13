@@ -1039,25 +1039,38 @@ func checkSpireHookSH(repoPath string) checkResult {
 	return checkResult{Name: name, Status: statusOK}
 }
 
-// checkSpireSkills verifies .claude/skills/spire-work/ directory exists.
+// checkSpireSkills verifies required Spire Claude skills exist in the repo.
 func checkSpireSkills(repoPath string) checkResult {
-	dir := filepath.Join(repoPath, ".claude", "skills", "spire-work")
-	name := ".claude/skills/spire-work/"
-
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
+	baseDir := filepath.Join(repoPath, ".claude", "skills")
+	name := ".claude/skills/"
+	required := []string{"spire-work", "spire-conflicts"}
+	var missing []string
+	for _, skill := range required {
+		dir := filepath.Join(baseDir, skill)
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			missing = append(missing, skill)
+		}
+	}
+	if len(missing) > 0 {
 		return checkResult{
-			Name:   name,
+			Name:   ".claude/skills/",
 			Status: statusMissing,
-			Detail: "directory does not exist",
+			Detail: "missing " + strings.Join(missing, ", "),
 			FixFunc: func() {
 				claudeDir := filepath.Join(repoPath, ".claude")
 				installSpireSkills(claudeDir)
-				// Verify it worked
-				if _, err := os.Stat(dir); err != nil {
-					fmt.Println("    Warning: skills directory still missing after install (source may not exist in ~/.claude/skills/)")
+				var stillMissing []string
+				for _, skill := range required {
+					dir := filepath.Join(baseDir, skill)
+					if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+						stillMissing = append(stillMissing, skill)
+					}
+				}
+				if len(stillMissing) > 0 {
+					fmt.Printf("    Warning: skills still missing after install: %s\n", strings.Join(stillMissing, ", "))
 				} else {
-					fmt.Println("    spire-work skills installed")
+					fmt.Println("    Spire skills installed")
 				}
 			},
 		}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -175,16 +176,25 @@ print(json.dumps({
 	fmt.Println("  Hooks configured (SessionStart, PostCompact, SubagentStart)")
 }
 
-// installSpireSkills copies spire-* skill directories from ~/.claude/skills/
-// into the project's .claude/skills/ directory.
+// installSpireSkills installs bundled Spire skills into Claude and Codex skill
+// directories, then copies global Claude spire-* skills into the project.
 func installSpireSkills(claudeDir string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
+		installBundledSpireSkills(filepath.Join(claudeDir, "skills"))
+		installBundledCodexSkills()
 		return
 	}
 
 	globalSkillsDir := filepath.Join(home, ".claude", "skills")
 	projectSkillsDir := filepath.Join(claudeDir, "skills")
+
+	// Seed the home-level and repo-level skill trees from the bundled assets so
+	// the skill ships with the Spire binary instead of relying on preexisting
+	// ~/.claude content.
+	installBundledSpireSkills(globalSkillsDir)
+	installBundledSpireSkills(projectSkillsDir)
+	installBundledCodexSkills()
 
 	entries, err := os.ReadDir(globalSkillsDir)
 	if err != nil {
@@ -203,6 +213,53 @@ func installSpireSkills(claudeDir string) {
 		dstDir := filepath.Join(projectSkillsDir, entry.Name())
 		copyDir(srcDir, dstDir)
 	}
+}
+
+func installBundledSpireSkills(dstRoot string) {
+	_ = copyEmbeddedDir(embedded.Skills, "skills", dstRoot)
+}
+
+func installBundledCodexSkills() {
+	root := codexHomeDir()
+	if root == "" {
+		return
+	}
+	_ = copyEmbeddedDir(embedded.Skills, "skills", filepath.Join(root, "skills"))
+}
+
+func codexHomeDir() string {
+	if v := os.Getenv("CODEX_HOME"); strings.TrimSpace(v) != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
+func copyEmbeddedDir(srcFS fs.FS, srcRoot, dstRoot string) error {
+	return fs.WalkDir(srcFS, srcRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcRoot, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(dstRoot, 0755)
+		}
+		dstPath := filepath.Join(dstRoot, rel)
+		if d.IsDir() {
+			return os.MkdirAll(dstPath, 0755)
+		}
+		data, err := fs.ReadFile(srcFS, path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dstPath, data, 0644)
+	})
 }
 
 // copyDir recursively copies a directory tree from src to dst.

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Spire Conflicts"
+  short_description: "Resolve Spire Dolt conflicts with direct SQL"
+  default_prompt: "Use $spire-conflicts to diagnose and resolve this Spire Dolt merge conflict."
+
+policy:
+  allow_implicit_invocation: true
