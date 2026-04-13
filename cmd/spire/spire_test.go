@@ -1072,12 +1072,14 @@ func TestProcessAlive(t *testing.T) {
 }
 
 func TestDoltPort(t *testing.T) {
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("DOLT_PORT", "")
 	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("DOLT_PORT")
 	if p := doltPort(); p != "3307" {
 		t.Errorf("doltPort() = %q, want %q", p, "3307")
 	}
 	os.Setenv("BEADS_DOLT_SERVER_PORT", "3308")
-	defer os.Unsetenv("BEADS_DOLT_SERVER_PORT")
 	if p := doltPort(); p != "3308" {
 		t.Errorf("doltPort() = %q, want %q", p, "3308")
 	}
