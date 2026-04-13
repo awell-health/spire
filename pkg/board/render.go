@@ -309,7 +309,7 @@ func (m *BoardMode) View() string {
 	var budget HeightBudgetResult
 	switch m.ViewMode {
 	case ViewBoard:
-		budget = CalcHeightBudget(m.Height, warningCount, 0, len(visibleCols.Interrupted), 0, len(displayCols), len(m.Agents))
+		budget = CalcHeightBudget(m.Height, warningCount, 0, 0, 0, len(displayCols), len(m.Agents))
 	case ViewAlerts:
 		budget = CalcHeightBudget(m.Height, warningCount, alertCount, 0, 0, 0, len(m.Agents))
 	case ViewLower:
@@ -359,35 +359,20 @@ func (m *BoardMode) View() string {
 		}
 
 	case ViewBoard:
-		// Interrupted banner — surfaces interrupted beads on the default view.
-		if len(visibleCols.Interrupted) > 0 {
-			SortBeads(visibleCols.Interrupted)
-			intStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-			mainContent.WriteString(intStyle.Render(fmt.Sprintf("⚠ INTERRUPTED (%d) — needs human attention", len(visibleCols.Interrupted))) + "\n")
-			maxInt := budget.MaxInterrupted
-			for i, b := range visibleCols.Interrupted {
-				if i >= maxInt {
-					dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-					mainContent.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Interrupted)-maxInt)) + "\n")
-					break
-				}
-				intType := ""
-				for _, l := range b.Labels {
-					if strings.HasPrefix(l, "interrupted:") {
-						intType = "[" + l[len("interrupted:"):] + "] "
-						break
-					}
-				}
-				mainContent.WriteString(fmt.Sprintf("  %s %s%s: %s", PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
-				if m.Snapshot != nil && m.Snapshot.RecoveryRefs != nil {
-					if ref := m.Snapshot.RecoveryRefs[b.ID]; ref != nil {
-						recStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-						mainContent.WriteString("  " + recStyle.Render("recovery → "+ref.ID))
-					}
-				}
-				mainContent.WriteString("\n")
+		// Compact attention line — shows counts for interrupted + alerts on one line.
+		intCount := len(visibleCols.Interrupted)
+		if intCount > 0 || alertCount > 0 {
+			var parts []string
+			if intCount > 0 {
+				intStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+				parts = append(parts, intStyle.Render(fmt.Sprintf("⚠ %d", intCount)))
 			}
-			mainContent.WriteString("\n")
+			if alertCount > 0 {
+				alertStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+				parts = append(parts, alertStyle.Render(fmt.Sprintf("⚑ %d", alertCount)))
+			}
+			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+			mainContent.WriteString(strings.Join(parts, dimStyle.Render(" │ ")) + dimStyle.Render(" — v to toggle view") + "\n\n")
 		}
 
 		// Phase columns.
