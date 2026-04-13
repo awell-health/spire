@@ -73,10 +73,17 @@ func ApplyMergeOwnership(dbName, preCommit string) error {
 	resolved, err := ResolveIssueConflicts(dbName)
 	if err != nil {
 		log.Printf("[ownership] resolve conflicts: %s", err)
-		// Non-fatal — continue to regression scan.
+		return err
 	}
 	if resolved > 0 {
 		log.Printf("[ownership] resolved %d conflict(s) with field-level ownership", resolved)
+	}
+	remaining, err := HasUnresolvedConflicts(dbName)
+	if err != nil {
+		return fmt.Errorf("check unresolved conflicts: %w", err)
+	}
+	if remaining > 0 {
+		return fmt.Errorf("issues conflicts remain (%d unresolved)", remaining)
 	}
 
 	// Phase 2: scan for cluster-field regressions.
@@ -177,32 +184,11 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 
 	resolved := 0
 	for _, row := range rows {
-		id := Coalesce(row["our_id"], row["their_id"], row["base_id"])
-		if id == "" {
+		id, updateStmt, deleteStmt, ok := buildIssueConflictStatements(row)
+		if !ok {
 			continue
 		}
-
-		// Build the resolved row: cluster fields take theirs, user fields take ours.
-		updates := []string{
-			// Cluster-owned fields: take theirs (remote)
-			fmt.Sprintf("status = '%s'", SQLEscape(Coalesce(row["their_status"], row["our_status"]))),
-			SQLNullableSet("owner", row["their_owner"], row["our_owner"]),
-			SQLNullableSet("assignee", row["their_assignee"], row["our_assignee"]),
-			SQLNullableSet("closed_at", row["their_closed_at"], row["our_closed_at"]),
-			SQLNullableSet("closed_by_session", row["their_closed_by_session"], row["our_closed_by_session"]),
-			// User-owned fields: take ours (local)
-			fmt.Sprintf("title = '%s'", SQLEscape(Coalesce(row["our_title"], row["their_title"]))),
-			fmt.Sprintf("description = '%s'", SQLEscape(Coalesce(row["our_description"], row["their_description"]))),
-			fmt.Sprintf("priority = %s", Coalesce(row["our_priority"], row["their_priority"], "2")),
-			fmt.Sprintf("issue_type = '%s'", SQLEscape(Coalesce(row["our_issue_type"], row["their_issue_type"]))),
-		}
-
-		escapedID := SQLEscape(id)
-		stmts = append(stmts, fmt.Sprintf("UPDATE issues SET %s WHERE id = '%s'",
-			strings.Join(updates, ", "), escapedID))
-		stmts = append(stmts, fmt.Sprintf(
-			"DELETE FROM dolt_conflicts_issues WHERE our_id = '%s' OR their_id = '%s' OR base_id = '%s'",
-			escapedID, escapedID, escapedID))
+		stmts = append(stmts, updateStmt, deleteStmt)
 
 		log.Printf("[ownership] resolving conflict: %s (cluster: status=%s, user: title=%q)",
 			id, Coalesce(row["their_status"], "?"), Coalesce(row["our_title"], "?"))
@@ -222,6 +208,35 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 	}
 
 	return resolved, nil
+}
+
+func buildIssueConflictStatements(row map[string]string) (id, updateStmt, deleteStmt string, ok bool) {
+	id = Coalesce(row["our_id"], row["their_id"], row["base_id"])
+	if id == "" {
+		return "", "", "", false
+	}
+
+	updates := []string{
+		// Cluster-owned fields: take theirs (remote)
+		fmt.Sprintf("status = '%s'", SQLEscape(Coalesce(row["their_status"], row["our_status"]))),
+		SQLNullableSet("owner", row["their_owner"], row["our_owner"]),
+		SQLNullableSet("assignee", row["their_assignee"], row["our_assignee"]),
+		SQLNullableSet("closed_at", row["their_closed_at"], row["our_closed_at"]),
+		SQLNullableSet("closed_by_session", row["their_closed_by_session"], row["our_closed_by_session"]),
+		// User-owned fields: take ours (local)
+		fmt.Sprintf("title = '%s'", SQLEscape(Coalesce(row["our_title"], row["their_title"]))),
+		fmt.Sprintf("description = '%s'", SQLEscape(Coalesce(row["our_description"], row["their_description"]))),
+		fmt.Sprintf("priority = %s", Coalesce(row["our_priority"], row["their_priority"], "2")),
+		fmt.Sprintf("issue_type = '%s'", SQLEscape(Coalesce(row["our_issue_type"], row["their_issue_type"]))),
+	}
+
+	escapedID := SQLEscape(id)
+	updateStmt = fmt.Sprintf("UPDATE issues SET %s WHERE id = '%s'",
+		strings.Join(updates, ", "), escapedID)
+	deleteStmt = fmt.Sprintf(
+		"DELETE FROM dolt_conflicts_issues WHERE our_id = '%s' OR their_id = '%s' OR base_id = '%s'",
+		escapedID, escapedID, escapedID)
+	return id, updateStmt, deleteStmt, true
 }
 
 // ScanClusterRegressions compares the pre-pull state to HEAD and finds

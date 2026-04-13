@@ -16,10 +16,12 @@ func SQLEscape(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
 
-// Coalesce returns the first non-empty string.
+// Coalesce returns the first non-empty, non-SQL-NULL string.
+// Dolt's tabular CLI output renders SQL NULL values as the literal text "NULL".
+// For conflict resolution we treat that sentinel as an absent value.
 func Coalesce(vals ...string) string {
 	for _, v := range vals {
-		if v != "" {
+		if v != "" && !strings.EqualFold(v, "NULL") {
 			return v
 		}
 	}

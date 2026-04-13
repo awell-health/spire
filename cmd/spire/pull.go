@@ -142,9 +142,26 @@ func runPull(remoteURL string, force bool) error {
 	var ownerErr error
 	if dbName != "" && preCommit != "" {
 		ownerErr = dolt.ApplyMergeOwnership(dbName, preCommit)
-		if ownerErr != nil {
-			fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
+	}
+	remainingConflicts := 0
+	if dbName != "" {
+		remaining, conflictErr := dolt.HasUnresolvedConflicts(dbName)
+		if conflictErr != nil {
+			if ownerErr != nil {
+				return fmt.Errorf("ownership enforcement failed and conflict state unknown: %w", ownerErr)
+			}
+			return fmt.Errorf("check unresolved conflicts: %w", conflictErr)
 		}
+		remainingConflicts = remaining
+		if remainingConflicts > 0 {
+			if ownerErr != nil {
+				return fmt.Errorf("merge conflicts remain (%d unresolved): %w", remainingConflicts, ownerErr)
+			}
+			return fmt.Errorf("merge conflicts remain (%d unresolved)", remainingConflicts)
+		}
+	}
+	if ownerErr != nil {
+		fmt.Printf("  Warning: ownership enforcement: %s\n", ownerErr)
 	}
 
 	// ── Classify pull errors after ownership enforcement ──────────────────────
@@ -161,17 +178,6 @@ func runPull(remoteURL string, force bool) error {
 			return fmt.Errorf("pull failed (diverged histories)")
 		}
 		if merge {
-			if ownerErr != nil {
-				// Ownership enforcement failed — check if conflicts persist.
-				remaining, conflictErr := dolt.HasUnresolvedConflicts(dbName)
-				if conflictErr != nil {
-					// Cannot verify conflict state — assume unresolved.
-					return fmt.Errorf("ownership enforcement failed and conflict state unknown: %w", ownerErr)
-				}
-				if remaining > 0 {
-					return fmt.Errorf("merge conflicts remain (%d unresolved): %w", remaining, ownerErr)
-				}
-			}
 			fmt.Println("  Merge conflicts resolved via field-level ownership.")
 		} else {
 			// hard+force (force pull still failed) or unknown error — propagate.

@@ -10,6 +10,7 @@ import (
 
 // mockDepFetcher implements depBatchFetcher for testing.
 type mockDepFetcher struct {
+	beads.Storage
 	deps map[string][]*beads.Dependency
 	err  error
 }
