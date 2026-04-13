@@ -46,15 +46,34 @@ type WorkQueueData struct {
 	Available       bool // true if at least one query succeeded
 }
 
+// StewardHealthData holds health information fetched from the steward's metrics server.
+type StewardHealthData struct {
+	LastCycleAt     time.Time
+	CycleDuration   time.Duration
+	ActiveAgents    int
+	QueueDepth      int
+	SchedulableWork int
+	TrustLevels     []TrustLevelInfo // per-repo trust levels
+}
+
+// TrustLevelInfo holds per-repo trust level information for display.
+type TrustLevelInfo struct {
+	RepoPrefix       string
+	Level            int
+	LevelName        string
+	ConsecutiveClean int
+}
+
 // StatusData holds all data needed to render the lifecycle status display.
 type StatusData struct {
-	Services  ServiceStatus
-	SyncInfos []SyncInfo
-	Agents    []agent.Info
-	AgentErr  error
-	WorkQueue WorkQueueData
-	GlobalDir string
-	Backend   agent.Backend
+	Services      ServiceStatus
+	SyncInfos     []SyncInfo
+	Agents        []agent.Info
+	AgentErr      error
+	WorkQueue     WorkQueueData
+	GlobalDir     string
+	Backend       agent.Backend
+	StewardHealth *StewardHealthData // nil if steward health unavailable
 }
 
 // RenderStatus renders the full lifecycle status display to stdout.
@@ -66,6 +85,11 @@ func RenderStatus(data StatusData) error {
 	renderDoltStatus(data.Services)
 	renderDaemonStatus(data.Services)
 	renderStewardStatus(data.Services)
+
+	// --- Steward Health ---
+	if data.StewardHealth != nil {
+		renderStewardHealth(data.StewardHealth)
+	}
 
 	// --- Sync ---
 	if len(data.SyncInfos) > 0 {
@@ -216,6 +240,31 @@ func renderLogFiles(globalDir string) {
 		age := FormatSyncAge(info.ModTime().Format(time.RFC3339))
 		size := FormatFileSize(info.Size())
 		fmt.Printf("  %s●%s %-16s %s  modified %s ago\n", Dim, Reset, lf.name, size, age)
+	}
+}
+
+func renderStewardHealth(h *StewardHealthData) {
+	fmt.Printf("\n%sSteward Health%s\n", Bold, Reset)
+
+	// Last cycle timing
+	if !h.LastCycleAt.IsZero() {
+		ago := time.Since(h.LastCycleAt).Round(time.Second)
+		fmt.Printf("  last cycle:     %s ago (took %s)\n",
+			FormatDurationShort(ago), FormatDurationShort(h.CycleDuration))
+	} else {
+		fmt.Printf("  last cycle:     %snever%s\n", Dim, Reset)
+	}
+
+	fmt.Printf("  active agents:  %d\n", h.ActiveAgents)
+	fmt.Printf("  merge queue:    %d pending\n", h.QueueDepth)
+	fmt.Printf("  schedulable:    %d beads\n", h.SchedulableWork)
+
+	if len(h.TrustLevels) > 0 {
+		fmt.Printf("  trust:\n")
+		for _, t := range h.TrustLevels {
+			fmt.Printf("    %-4s level %d (%s)   %d consecutive clean\n",
+				t.RepoPrefix, t.Level, t.LevelName, t.ConsecutiveClean)
+		}
 	}
 }
 

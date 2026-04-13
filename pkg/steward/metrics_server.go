@@ -7,23 +7,46 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+
+	"github.com/awell-health/spire/pkg/dolt"
 )
 
-// MetricsServer exposes Prometheus /metrics and /healthz endpoints
-// using the steward's shared Dolt database connection.
+// MetricsServer exposes Prometheus /metrics, /healthz, k8s liveness/readiness,
+// and a detailed health JSON endpoint using the steward's shared Dolt database connection.
 type MetricsServer struct {
-	port   int
-	db     *sql.DB
-	server *http.Server
+	port       int
+	db         *sql.DB
+	server     *http.Server
+	cycleStats *CycleStats // reference to steward's cycle stats (may be nil)
+	mergeQueue *MergeQueue // reference to merge queue (may be nil)
+}
+
+// MetricsServerOption configures optional MetricsServer dependencies.
+type MetricsServerOption func(*MetricsServer)
+
+// WithCycleStats attaches a CycleStats tracker to the metrics server.
+func WithCycleStats(cs *CycleStats) MetricsServerOption {
+	return func(m *MetricsServer) { m.cycleStats = cs }
+}
+
+// WithMergeQueue attaches a MergeQueue to the metrics server for depth/active reporting.
+func WithMergeQueue(mq *MergeQueue) MetricsServerOption {
+	return func(m *MetricsServer) { m.mergeQueue = mq }
 }
 
 // NewMetricsServer creates a MetricsServer that will listen on the given port
 // and query metrics from the provided database connection.
-func NewMetricsServer(port int, db *sql.DB) *MetricsServer {
-	return &MetricsServer{
+func NewMetricsServer(port int, db *sql.DB, opts ...MetricsServerOption) *MetricsServer {
+	m := &MetricsServer{
 		port: port,
 		db:   db,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Start launches the HTTP server in a background goroutine. Non-blocking.
@@ -31,6 +54,9 @@ func (m *MetricsServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", m.handleMetrics)
 	mux.HandleFunc("/healthz", m.handleHealth)
+	mux.HandleFunc("/livez", m.handleLivez)
+	mux.HandleFunc("/readyz", m.handleReadyz)
+	mux.HandleFunc("/health/detailed", m.handleDetailedHealth)
 
 	m.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", m.port),
@@ -51,12 +77,15 @@ func (m *MetricsServer) Start() error {
 		return err
 	default:
 		log.Printf("[metrics] listening on :%d", m.port)
+		// Write port file so `spire status` can discover us.
+		writeMetricsPortFile(m.port)
 		return nil
 	}
 }
 
 // Stop gracefully shuts down the HTTP server.
 func (m *MetricsServer) Stop(ctx context.Context) error {
+	removeMetricsPortFile()
 	if m.server == nil {
 		return nil
 	}
@@ -139,6 +168,26 @@ func (m *MetricsServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				f.FormulaName, f.FormulaVersion, f.AvgDurationSec)
 		}
 	}
+
+	// Steward cycle stats gauges
+	if m.cycleStats != nil {
+		cs := m.cycleStats.Snapshot()
+		fmt.Fprintf(w, "# HELP spire_steward_active_agents Currently active agents.\n")
+		fmt.Fprintf(w, "# TYPE spire_steward_active_agents gauge\n")
+		fmt.Fprintf(w, "spire_steward_active_agents %d\n", cs.ActiveAgents)
+
+		fmt.Fprintf(w, "# HELP spire_steward_schedulable_work Beads ready for assignment.\n")
+		fmt.Fprintf(w, "# TYPE spire_steward_schedulable_work gauge\n")
+		fmt.Fprintf(w, "spire_steward_schedulable_work %d\n", cs.SchedulableWork)
+
+		fmt.Fprintf(w, "# HELP spire_steward_cycle_duration_seconds Duration of last steward cycle.\n")
+		fmt.Fprintf(w, "# TYPE spire_steward_cycle_duration_seconds gauge\n")
+		fmt.Fprintf(w, "spire_steward_cycle_duration_seconds %.3f\n", cs.CycleDuration.Seconds())
+
+		fmt.Fprintf(w, "# HELP spire_steward_merge_queue_depth Pending merge requests.\n")
+		fmt.Fprintf(w, "# TYPE spire_steward_merge_queue_depth gauge\n")
+		fmt.Fprintf(w, "spire_steward_merge_queue_depth %d\n", cs.QueueDepth)
+	}
 }
 
 // handleHealth returns a simple health check response.
@@ -156,4 +205,88 @@ func (m *MetricsServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status": status,
 		"dolt":   doltStatus,
 	})
+}
+
+// handleLivez is a trivial liveness probe — if the server responds, it's alive.
+func (m *MetricsServer) handleLivez(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
+}
+
+// handleReadyz checks dolt connectivity. Returns 503 if dolt is unreachable.
+func (m *MetricsServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if err := m.db.PingContext(r.Context()); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "not ready: %s", err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
+}
+
+// handleDetailedHealth returns a JSON payload with cycle stats, queue depth,
+// active agents, and last cycle time. Used by `spire status` to display
+// steward health remotely.
+func (m *MetricsServer) handleDetailedHealth(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]interface{}{"status": "ok"}
+
+	// Dolt status
+	if err := m.db.PingContext(r.Context()); err != nil {
+		resp["status"] = "degraded"
+		resp["dolt"] = "error: " + err.Error()
+	} else {
+		resp["dolt"] = "connected"
+	}
+
+	// Cycle stats
+	if m.cycleStats != nil {
+		snap := m.cycleStats.Snapshot()
+		resp["last_cycle_at"] = snap.LastCycleAt
+		resp["cycle_duration_ms"] = snap.CycleDuration.Milliseconds()
+		resp["active_agents"] = snap.ActiveAgents
+		resp["schedulable_work"] = snap.SchedulableWork
+		resp["spawned_last_cycle"] = snap.SpawnedThisCycle
+	}
+
+	// Merge queue
+	if m.mergeQueue != nil {
+		resp["merge_queue_depth"] = m.mergeQueue.Depth()
+		if active := m.mergeQueue.Active(); active != nil {
+			resp["merge_active"] = active.BeadID
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// metricsPortFilePath returns the path to the file that records the active metrics port.
+func metricsPortFilePath() string {
+	return filepath.Join(dolt.GlobalDir(), "steward.metrics.port")
+}
+
+// writeMetricsPortFile writes the metrics port to a well-known file so
+// `spire status` can discover and query the health endpoint.
+func writeMetricsPortFile(port int) {
+	path := metricsPortFilePath()
+	os.WriteFile(path, []byte(fmt.Sprintf("%d", port)), 0644)
+}
+
+// removeMetricsPortFile removes the metrics port file on shutdown.
+func removeMetricsPortFile() {
+	os.Remove(metricsPortFilePath())
+}
+
+// ReadMetricsPort reads the metrics port from the well-known port file.
+// Returns 0 if the file doesn't exist or can't be read.
+func ReadMetricsPort() int {
+	data, err := os.ReadFile(metricsPortFilePath())
+	if err != nil {
+		return 0
+	}
+	var port int
+	if _, err := fmt.Sscanf(string(data), "%d", &port); err != nil {
+		return 0
+	}
+	return port
 }
