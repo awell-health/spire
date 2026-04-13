@@ -97,6 +97,7 @@ func ListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list board beads: %w", err)
 	}
+	PopulateDependencies(ctx, s, issues)
 	return IssuesToBoardBeads(issues), nil
 }
 
@@ -297,6 +298,7 @@ func GetChildrenBoardBatch(parentIDs []string) (map[string][]BoardBead, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get children of %s: %w", pid, err)
 		}
+		PopulateDependencies(ctx, s, issues)
 		result[pid] = IssuesToBoardBeads(issues)
 	}
 	return result, nil

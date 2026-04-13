@@ -82,6 +82,39 @@ func Actor() string {
 	return "spire"
 }
 
+// --- Dependency population ---
+
+// depBatchFetcher is satisfied by dolt stores that support bulk dependency
+// fetching (type-asserted from beads.Storage).
+type depBatchFetcher interface {
+	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*beads.Dependency, error)
+}
+
+// PopulateDependencies batch-fetches dependency records and sets
+// issue.Dependencies on each issue. This ensures FindParentID can derive the
+// Parent field correctly. No-op when the store doesn't support bulk dependency
+// queries or when issues is empty.
+func PopulateDependencies(ctx context.Context, s beads.Storage, issues []*beads.Issue) {
+	if len(issues) == 0 {
+		return
+	}
+	dqs, ok := s.(depBatchFetcher)
+	if !ok {
+		return
+	}
+	ids := make([]string, len(issues))
+	for i, issue := range issues {
+		ids[i] = issue.ID
+	}
+	allDeps, err := dqs.GetDependencyRecordsForIssues(ctx, ids)
+	if err != nil {
+		return // best-effort: fall back to empty deps
+	}
+	for _, issue := range issues {
+		issue.Dependencies = allDeps[issue.ID]
+	}
+}
+
 // --- Conversion helpers ---
 
 // IssueToBead converts a beads.Issue to the lightweight Bead type.

@@ -289,6 +289,7 @@ func listBoardBeadsDB(ctx context.Context, db beads.Storage, filter beads.IssueF
 	if err != nil {
 		return nil, fmt.Errorf("list board beads: %w", err)
 	}
+	store.PopulateDependencies(ctx, db, issues)
 	return store.IssuesToBoardBeads(issues), nil
 }
 
