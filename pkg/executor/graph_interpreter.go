@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/formula"
@@ -593,14 +594,40 @@ func (e *Executor) initMissingGraphWorkspaces(graph *FormulaStepGraph, state *Gr
 }
 
 // ensureGraphStepBeads creates step beads for each graph step (idempotent).
+// On resummon after reset, reuses existing step-type children instead of creating duplicates.
 func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphState) error {
 	if len(state.StepBeadIDs) > 0 {
 		e.log("graph step beads already exist (%d steps)", len(state.StepBeadIDs))
 		return nil
 	}
 
+	// Check for existing step bead children from a previous run.
+	// After reset --hard, the step beads are deleted. After soft reset or resummon,
+	// they may still exist — reuse them to avoid duplicates.
+	existing := make(map[string]string) // stepName → beadID
+	if children, err := e.deps.GetChildren(e.beadID); err == nil {
+		for _, child := range children {
+			if child.Type == "step" {
+				// Extract step name from "step:<name>" label
+				for _, l := range child.Labels {
+					if strings.HasPrefix(l, "step:") {
+						existing[strings.TrimPrefix(l, "step:")] = child.ID
+					}
+				}
+			}
+		}
+	}
+
+	if len(existing) > 0 {
+		e.log("reusing %d existing step beads", len(existing))
+	}
+
 	state.StepBeadIDs = make(map[string]string, len(graph.Steps))
 	for stepName, stepCfg := range graph.Steps {
+		if existingID, ok := existing[stepName]; ok {
+			state.StepBeadIDs[stepName] = existingID
+			continue
+		}
 		title := stepCfg.Title
 		if title == "" {
 			title = stepName
