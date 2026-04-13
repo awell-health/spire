@@ -177,16 +177,29 @@ const sidebarWidth = 16
 
 // renderTabSidebar renders a narrow vertical sidebar with tab labels.
 // The active tab is bright white/bold; inactive tabs are dim gray.
-func renderTabSidebar(mode ViewMode, alertCount, lowerCount int) string {
+func renderTabSidebar(mode ViewMode, alertCount, blockedCount, interruptedCount int) string {
 	type tabDef struct {
 		label string
-		count int
 		mode  ViewMode
 	}
+
+	// Build a combined label for the lower tab showing separate counts.
+	var lowerLabel string
+	switch {
+	case blockedCount > 0 && interruptedCount > 0:
+		lowerLabel = fmt.Sprintf("BLK(%d) INT(%d)", blockedCount, interruptedCount)
+	case interruptedCount > 0:
+		lowerLabel = fmt.Sprintf("INT (%d)", interruptedCount)
+	case blockedCount > 0:
+		lowerLabel = fmt.Sprintf("BLOCKED (%d)", blockedCount)
+	default:
+		lowerLabel = "BLOCKED"
+	}
+
 	tabs := []tabDef{
-		{"ALERTS", alertCount, ViewAlerts},
-		{"BOARD", 0, ViewBoard},
-		{"BLOCKED", lowerCount, ViewLower},
+		{label: "ALERTS", mode: ViewAlerts},
+		{label: "BOARD", mode: ViewBoard},
+		{label: lowerLabel, mode: ViewLower},
 	}
 
 	activeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
@@ -195,8 +208,8 @@ func renderTabSidebar(mode ViewMode, alertCount, lowerCount int) string {
 	var lines []string
 	for _, tab := range tabs {
 		label := tab.label
-		if tab.count > 0 {
-			label = fmt.Sprintf("%s (%d)", tab.label, tab.count)
+		if tab.label == "ALERTS" && alertCount > 0 {
+			label = fmt.Sprintf("ALERTS (%d)", alertCount)
 		}
 		if tab.mode == mode {
 			lines = append(lines, activeStyle.Render(" ▸ "+label))
@@ -296,7 +309,7 @@ func (m *BoardMode) View() string {
 	var budget HeightBudgetResult
 	switch m.ViewMode {
 	case ViewBoard:
-		budget = CalcHeightBudget(m.Height, warningCount, 0, 0, 0, len(displayCols), len(m.Agents))
+		budget = CalcHeightBudget(m.Height, warningCount, 0, len(visibleCols.Interrupted), 0, len(displayCols), len(m.Agents))
 	case ViewAlerts:
 		budget = CalcHeightBudget(m.Height, warningCount, alertCount, 0, 0, 0, len(m.Agents))
 	case ViewLower:
@@ -346,6 +359,37 @@ func (m *BoardMode) View() string {
 		}
 
 	case ViewBoard:
+		// Interrupted banner — surfaces interrupted beads on the default view.
+		if len(visibleCols.Interrupted) > 0 {
+			SortBeads(visibleCols.Interrupted)
+			intStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+			mainContent.WriteString(intStyle.Render(fmt.Sprintf("⚠ INTERRUPTED (%d) — needs human attention", len(visibleCols.Interrupted))) + "\n")
+			maxInt := budget.MaxInterrupted
+			for i, b := range visibleCols.Interrupted {
+				if i >= maxInt {
+					dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+					mainContent.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Interrupted)-maxInt)) + "\n")
+					break
+				}
+				intType := ""
+				for _, l := range b.Labels {
+					if strings.HasPrefix(l, "interrupted:") {
+						intType = "[" + l[len("interrupted:"):] + "] "
+						break
+					}
+				}
+				mainContent.WriteString(fmt.Sprintf("  %s %s%s: %s", PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
+				if m.Snapshot != nil && m.Snapshot.RecoveryRefs != nil {
+					if ref := m.Snapshot.RecoveryRefs[b.ID]; ref != nil {
+						recStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+						mainContent.WriteString("  " + recStyle.Render("recovery → "+ref.ID))
+					}
+				}
+				mainContent.WriteString("\n")
+			}
+			mainContent.WriteString("\n")
+		}
+
 		// Phase columns.
 		if len(displayCols) > 0 {
 			rendered := make([]string, len(displayCols))

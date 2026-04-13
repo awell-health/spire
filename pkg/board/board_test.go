@@ -2166,7 +2166,7 @@ func TestJKStaysWithinViewMode(t *testing.T) {
 
 func TestRenderTabSidebar(t *testing.T) {
 	t.Run("active tab is highlighted", func(t *testing.T) {
-		sidebar := renderTabSidebar(ViewBoard, 3, 2)
+		sidebar := renderTabSidebar(ViewBoard, 3, 2, 0)
 		if !strings.Contains(sidebar, "BOARD") {
 			t.Error("sidebar should contain BOARD label")
 		}
@@ -2179,12 +2179,26 @@ func TestRenderTabSidebar(t *testing.T) {
 	})
 
 	t.Run("counts shown when non-zero", func(t *testing.T) {
-		sidebar := renderTabSidebar(ViewAlerts, 5, 0)
+		sidebar := renderTabSidebar(ViewAlerts, 5, 0, 0)
 		if !strings.Contains(sidebar, "ALERTS (5)") {
 			t.Error("sidebar should show ALERTS (5) when alertCount=5")
 		}
 		if strings.Contains(sidebar, "BLOCKED (") {
 			t.Error("sidebar should not show count for BLOCKED when lowerCount=0")
+		}
+	})
+
+	t.Run("separate blocked and interrupted counts", func(t *testing.T) {
+		sidebar := renderTabSidebar(ViewBoard, 0, 2, 1)
+		if !strings.Contains(sidebar, "BLK(2) INT(1)") {
+			t.Errorf("sidebar should show 'BLK(2) INT(1)' when both present, got: %s", sidebar)
+		}
+	})
+
+	t.Run("only interrupted count", func(t *testing.T) {
+		sidebar := renderTabSidebar(ViewBoard, 0, 0, 3)
+		if !strings.Contains(sidebar, "INT (3)") {
+			t.Errorf("sidebar should show 'INT (3)' when only interrupted, got: %s", sidebar)
 		}
 	})
 }
