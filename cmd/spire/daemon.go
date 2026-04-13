@@ -7,10 +7,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/process"
 	"github.com/awell-health/spire/pkg/steward"
 	"github.com/spf13/cobra"
 )
@@ -75,6 +77,14 @@ func cmdDaemon(args []string) error {
 	}
 
 	log.Printf("[daemon] starting (interval=%s, once=%v)", interval, once)
+
+	// Prevent a second daemon process from starting if one is already running.
+	lockPath := filepath.Join(doltGlobalDir(), "spire-daemon.lock")
+	lock, lockErr := process.AcquireLock(lockPath)
+	if lockErr != nil {
+		return fmt.Errorf("daemon already running: %s", lockErr)
+	}
+	defer lock.Release()
 
 	// Write our PID file so spire down can find us
 	writePID(daemonPIDPath(), os.Getpid())

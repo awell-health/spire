@@ -81,6 +81,14 @@ func cmdUp(args []string) error {
 		}
 	}
 
+	// Prevent multiple 'spire up' from racing.
+	lockPath := filepath.Join(doltGlobalDir(), "spire-up.lock")
+	lock, lockErr := process.AcquireLock(lockPath)
+	if lockErr != nil {
+		return fmt.Errorf("cannot start: %s", lockErr)
+	}
+	defer lock.Release()
+
 	// Step 0: Ensure dolt binary is available
 	fmt.Print("dolt binary: ")
 	binPath, err := doltEnsureBinary()
