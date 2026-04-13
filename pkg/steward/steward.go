@@ -203,10 +203,10 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	}
 
 	// Step 1: Commit any local changes (pull/push disabled — shared dolt server is source of truth).
-	_ = store.CommitPending("steward cycle sync")
+	_ = CommitPendingFunc("steward cycle sync")
 
 	// Step 2: Assess — find schedulable work (ready + policy-filtered).
-	schedResult, err := store.GetSchedulableWork(beads.WorkFilter{})
+	schedResult, err := GetSchedulableWorkFunc(beads.WorkFilter{})
 	if err != nil {
 		log.Printf("[steward] %sready: error — %s", prefix, err)
 		pushState()
@@ -235,7 +235,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 
 	// Load tower config for MaxConcurrent.
 	var maxConcurrent int
-	if tc, err := config.LoadTowerConfig(towerName); err == nil {
+	if tc, err := LoadTowerConfigFunc(towerName); err == nil {
 		maxConcurrent = tc.MaxConcurrent
 	}
 
@@ -293,6 +293,13 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 			log.Printf("[steward] %ssummoned %s for %s (%s)", prefix, wizardName, bead.ID, handle.Identifier())
 		}
 		spawned++
+
+		// Update concurrency limiter to account for the newly spawned agent
+		// so CanSpawn reflects within-cycle spawns.
+		if cfg.ConcurrencyLimiter != nil {
+			agents = append(agents, agent.Info{Name: wizardName, Alive: true})
+			cfg.ConcurrencyLimiter.Refresh(towerName, agents)
+		}
 	}
 
 	if spawned > 0 {
@@ -934,3 +941,12 @@ func getDBForRouting() *sql.DB {
 
 // ExecuteMergeFunc is the merge callback used by TowerCycle. Test-replaceable.
 var ExecuteMergeFunc = executeMerge
+
+// CommitPendingFunc is a test-replaceable function for store.CommitPending.
+var CommitPendingFunc = store.CommitPending
+
+// GetSchedulableWorkFunc is a test-replaceable function for store.GetSchedulableWork.
+var GetSchedulableWorkFunc = store.GetSchedulableWork
+
+// LoadTowerConfigFunc is a test-replaceable function for config.LoadTowerConfig.
+var LoadTowerConfigFunc = config.LoadTowerConfig
