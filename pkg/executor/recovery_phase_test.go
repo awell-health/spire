@@ -806,7 +806,7 @@ func TestBuildDecidePrompt_IncludesTriageGuidance(t *testing.T) {
 		WizardLogTail: "FAIL: TestFoo\n    expected 1, got 2",
 	}
 
-	prompt := buildDecidePrompt(cc, 0)
+	prompt := buildDecidePrompt(cc, 0, nil)
 
 	// Should include triage as a valid action.
 	if !strings.Contains(prompt, `"triage"`) {
@@ -837,7 +837,7 @@ func TestBuildDecidePrompt_TriageBudgetExhausted(t *testing.T) {
 		},
 	}
 
-	prompt := buildDecidePrompt(cc, 2)
+	prompt := buildDecidePrompt(cc, 2, nil)
 
 	if !strings.Contains(prompt, "2 of 2 attempts used") {
 		t.Error("prompt missing correct budget for count=2")
@@ -861,7 +861,7 @@ func TestBuildDecidePrompt_WorktreeNotExists(t *testing.T) {
 		},
 	}
 
-	prompt := buildDecidePrompt(cc, 0)
+	prompt := buildDecidePrompt(cc, 0, nil)
 
 	if !strings.Contains(prompt, "Worktree exists:** no") {
 		t.Error("prompt missing worktree non-existence indicator")
@@ -874,7 +874,7 @@ func TestBuildDecidePrompt_WorktreeNotExists(t *testing.T) {
 func TestBuildDecidePrompt_PartialCount(t *testing.T) {
 	cc := CollectContextResult{}
 
-	prompt := buildDecidePrompt(cc, 1)
+	prompt := buildDecidePrompt(cc, 1, nil)
 
 	if !strings.Contains(prompt, "1 of 2 attempts used") {
 		t.Error("prompt missing correct budget for count=1")
@@ -1031,6 +1031,107 @@ func TestActionRecoveryExecute_TriageParamInjection_ExplicitTestOutput(t *testin
 	// wizard_log_tail should still be injected.
 	if params["wizard_log_tail"] != "wizard log tail content" {
 		t.Errorf("wizard_log_tail = %q, want %q", params["wizard_log_tail"], "wizard log tail content")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildDecidePrompt with LearningStats tests
+// ---------------------------------------------------------------------------
+
+func TestBuildDecidePrompt_WithStats(t *testing.T) {
+	cc := CollectContextResult{
+		Diagnosis: &recovery.Diagnosis{
+			BeadID:      "spi-src1",
+			FailureMode: "step-failure",
+		},
+	}
+	stats := &store.LearningStats{
+		FailureClass:    "step-failure",
+		TotalRecoveries: 10,
+		ActionStats: []store.ActionOutcomeStat{
+			{ResolutionKind: "resummon", Total: 6, CleanCount: 5, DirtyCount: 1, RelapsedCount: 0, SuccessRate: 0.833},
+			{ResolutionKind: "reset", Total: 4, CleanCount: 2, DirtyCount: 1, RelapsedCount: 1, SuccessRate: 0.5},
+		},
+		PredictionAccuracy: 0.75,
+	}
+
+	prompt := buildDecidePrompt(cc, 0, stats)
+
+	if !strings.Contains(prompt, "## Historical Outcome Statistics") {
+		t.Error("prompt missing Historical Outcome Statistics header")
+	}
+	if !strings.Contains(prompt, "Based on 10 prior recoveries for failure class `step-failure`") {
+		t.Error("prompt missing recovery count and failure class")
+	}
+	if !strings.Contains(prompt, "| resummon | 6 | 83%") {
+		t.Error("prompt missing resummon stats row")
+	}
+	if !strings.Contains(prompt, "| reset | 4 | 50%") {
+		t.Error("prompt missing reset stats row")
+	}
+	if !strings.Contains(prompt, "prediction accuracy: 75%") {
+		t.Error("prompt missing prediction accuracy")
+	}
+	if !strings.Contains(prompt, "Weight your action choice by historical success rates") {
+		t.Error("prompt missing action weighting guidance")
+	}
+}
+
+func TestBuildDecidePrompt_NilStats(t *testing.T) {
+	cc := CollectContextResult{
+		Diagnosis: &recovery.Diagnosis{
+			BeadID:      "spi-src1",
+			FailureMode: "step-failure",
+		},
+	}
+
+	prompt := buildDecidePrompt(cc, 0, nil)
+
+	if strings.Contains(prompt, "Historical Outcome Statistics") {
+		t.Error("prompt should NOT contain statistics section when stats is nil")
+	}
+}
+
+func TestBuildDecidePrompt_ZeroRecoveries(t *testing.T) {
+	cc := CollectContextResult{
+		Diagnosis: &recovery.Diagnosis{
+			BeadID:      "spi-src1",
+			FailureMode: "step-failure",
+		},
+	}
+	stats := &store.LearningStats{
+		FailureClass:    "step-failure",
+		TotalRecoveries: 0,
+	}
+
+	prompt := buildDecidePrompt(cc, 0, stats)
+
+	if strings.Contains(prompt, "Historical Outcome Statistics") {
+		t.Error("prompt should NOT contain statistics section when TotalRecoveries is 0")
+	}
+}
+
+func TestBuildDecidePrompt_StatsWithoutPredictionAccuracy(t *testing.T) {
+	cc := CollectContextResult{
+		Diagnosis: &recovery.Diagnosis{
+			BeadID:      "spi-src1",
+			FailureMode: "step-failure",
+		},
+	}
+	stats := &store.LearningStats{
+		FailureClass:       "step-failure",
+		TotalRecoveries:    5,
+		ActionStats:        []store.ActionOutcomeStat{{ResolutionKind: "resummon", Total: 5, CleanCount: 4, DirtyCount: 1, SuccessRate: 0.8}},
+		PredictionAccuracy: 0, // no predictions made
+	}
+
+	prompt := buildDecidePrompt(cc, 0, stats)
+
+	if !strings.Contains(prompt, "## Historical Outcome Statistics") {
+		t.Error("prompt missing statistics section")
+	}
+	if strings.Contains(prompt, "prediction accuracy") {
+		t.Error("prompt should NOT contain prediction accuracy line when accuracy is 0")
 	}
 }
 

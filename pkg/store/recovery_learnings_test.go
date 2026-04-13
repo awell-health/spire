@@ -136,3 +136,179 @@ func TestGetBeadLearnings_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetLearningStats tests
+// ---------------------------------------------------------------------------
+
+func TestGetLearningStats_AggregatesOutcomes(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Simulate grouped outcome counts for failure class "step-failure".
+	rows := sqlmock.NewRows([]string{"resolution_kind", "outcome", "count"}).
+		AddRow("resummon", "clean", 5).
+		AddRow("resummon", "dirty", 2).
+		AddRow("resummon", "relapsed", 1).
+		AddRow("reset", "clean", 3).
+		AddRow("reset", "dirty", 1)
+
+	mock.ExpectQuery(`SELECT resolution_kind, outcome, COUNT\(\*\) FROM recovery_learnings`).
+		WithArgs("step-failure").
+		WillReturnRows(rows)
+
+	// Prediction accuracy: 4 matched out of 6 with expected_outcome.
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM recovery_learnings WHERE failure_class = \? AND expected_outcome != '' AND outcome = expected_outcome`).
+		WithArgs("step-failure").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM recovery_learnings WHERE failure_class = \? AND expected_outcome != ''`).
+		WithArgs("step-failure").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(6))
+
+	stats, err := GetLearningStats(context.Background(), db, "step-failure")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if stats.FailureClass != "step-failure" {
+		t.Errorf("FailureClass = %q, want %q", stats.FailureClass, "step-failure")
+	}
+	if stats.TotalRecoveries != 12 {
+		t.Errorf("TotalRecoveries = %d, want 12", stats.TotalRecoveries)
+	}
+
+	// Find resummon and reset stats.
+	actionMap := make(map[string]ActionOutcomeStat)
+	for _, as := range stats.ActionStats {
+		actionMap[as.ResolutionKind] = as
+	}
+
+	resummon, ok := actionMap["resummon"]
+	if !ok {
+		t.Fatal("missing resummon in ActionStats")
+	}
+	if resummon.Total != 8 {
+		t.Errorf("resummon.Total = %d, want 8", resummon.Total)
+	}
+	if resummon.CleanCount != 5 {
+		t.Errorf("resummon.CleanCount = %d, want 5", resummon.CleanCount)
+	}
+	if resummon.DirtyCount != 2 {
+		t.Errorf("resummon.DirtyCount = %d, want 2", resummon.DirtyCount)
+	}
+	if resummon.RelapsedCount != 1 {
+		t.Errorf("resummon.RelapsedCount = %d, want 1", resummon.RelapsedCount)
+	}
+	// SuccessRate = 5/8 = 0.625
+	if resummon.SuccessRate < 0.624 || resummon.SuccessRate > 0.626 {
+		t.Errorf("resummon.SuccessRate = %f, want ~0.625", resummon.SuccessRate)
+	}
+
+	reset, ok := actionMap["reset"]
+	if !ok {
+		t.Fatal("missing reset in ActionStats")
+	}
+	if reset.Total != 4 {
+		t.Errorf("reset.Total = %d, want 4", reset.Total)
+	}
+	if reset.CleanCount != 3 {
+		t.Errorf("reset.CleanCount = %d, want 3", reset.CleanCount)
+	}
+	// SuccessRate = 3/4 = 0.75
+	if reset.SuccessRate < 0.749 || reset.SuccessRate > 0.751 {
+		t.Errorf("reset.SuccessRate = %f, want 0.75", reset.SuccessRate)
+	}
+
+	// Prediction accuracy = 4/6 ≈ 0.6667
+	if stats.PredictionAccuracy < 0.666 || stats.PredictionAccuracy > 0.667 {
+		t.Errorf("PredictionAccuracy = %f, want ~0.6667", stats.PredictionAccuracy)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetLearningStats_NoRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"resolution_kind", "outcome", "count"})
+	mock.ExpectQuery(`SELECT resolution_kind, outcome, COUNT\(\*\) FROM recovery_learnings`).
+		WithArgs("unknown-failure").
+		WillReturnRows(rows)
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM recovery_learnings WHERE failure_class = \? AND expected_outcome != '' AND outcome = expected_outcome`).
+		WithArgs("unknown-failure").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM recovery_learnings WHERE failure_class = \? AND expected_outcome != ''`).
+		WithArgs("unknown-failure").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	stats, err := GetLearningStats(context.Background(), db, "unknown-failure")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if stats.TotalRecoveries != 0 {
+		t.Errorf("TotalRecoveries = %d, want 0", stats.TotalRecoveries)
+	}
+	if len(stats.ActionStats) != 0 {
+		t.Errorf("ActionStats length = %d, want 0", len(stats.ActionStats))
+	}
+	if stats.PredictionAccuracy != 0 {
+		t.Errorf("PredictionAccuracy = %f, want 0", stats.PredictionAccuracy)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetLearningStats_PredictionAccuracyNoPredictions(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"resolution_kind", "outcome", "count"}).
+		AddRow("resummon", "clean", 3)
+
+	mock.ExpectQuery(`SELECT resolution_kind, outcome, COUNT\(\*\) FROM recovery_learnings`).
+		WithArgs("step-failure").
+		WillReturnRows(rows)
+
+	// No rows had expected_outcome set.
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM recovery_learnings WHERE failure_class = \? AND expected_outcome != '' AND outcome = expected_outcome`).
+		WithArgs("step-failure").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM recovery_learnings WHERE failure_class = \? AND expected_outcome != ''`).
+		WithArgs("step-failure").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	stats, err := GetLearningStats(context.Background(), db, "step-failure")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if stats.TotalRecoveries != 3 {
+		t.Errorf("TotalRecoveries = %d, want 3", stats.TotalRecoveries)
+	}
+	if stats.PredictionAccuracy != 0 {
+		t.Errorf("PredictionAccuracy = %f, want 0 (no predictions made)", stats.PredictionAccuracy)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -158,6 +158,125 @@ func GetCrossBeadLearningsAuto(failureClass string, limit int) ([]RecoveryLearni
 	return GetCrossBeadLearnings(context.Background(), db, failureClass, limit)
 }
 
+// LearningStats summarizes outcome statistics for a failure class.
+type LearningStats struct {
+	FailureClass       string
+	TotalRecoveries    int
+	ActionStats        []ActionOutcomeStat // per-action breakdown
+	PredictionAccuracy float64             // fraction where outcome matched expected_outcome
+}
+
+// ActionOutcomeStat holds per-action outcome counts for a failure class.
+type ActionOutcomeStat struct {
+	ResolutionKind string  // e.g., "resummon", "reset", "triage"
+	Total          int
+	CleanCount     int     // outcome = "clean"
+	DirtyCount     int     // outcome = "dirty"
+	RelapsedCount  int     // outcome = "relapsed"
+	SuccessRate    float64 // CleanCount / Total
+}
+
+// GetLearningStats returns aggregate outcome statistics for a failure class.
+// Used by the decide prompt to show historical success rates per action.
+func GetLearningStats(ctx context.Context, db *sql.DB, failureClass string) (*LearningStats, error) {
+	// Query per-action outcome counts.
+	rows, err := db.QueryContext(ctx,
+		`SELECT resolution_kind, outcome, COUNT(*) FROM recovery_learnings
+		 WHERE failure_class = ? GROUP BY resolution_kind, outcome`,
+		failureClass,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query learning stats: %w", err)
+	}
+	defer rows.Close()
+
+	// Accumulate counts keyed by resolution_kind.
+	type outcomeCount struct {
+		clean, dirty, relapsed, other int
+	}
+	byAction := make(map[string]*outcomeCount)
+	total := 0
+
+	for rows.Next() {
+		var kind, outcome string
+		var cnt int
+		if err := rows.Scan(&kind, &outcome, &cnt); err != nil {
+			return nil, fmt.Errorf("scan learning stats row: %w", err)
+		}
+		oc, ok := byAction[kind]
+		if !ok {
+			oc = &outcomeCount{}
+			byAction[kind] = oc
+		}
+		switch outcome {
+		case "clean":
+			oc.clean += cnt
+		case "dirty":
+			oc.dirty += cnt
+		case "relapsed":
+			oc.relapsed += cnt
+		default:
+			oc.other += cnt
+		}
+		total += cnt
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate learning stats rows: %w", err)
+	}
+
+	stats := &LearningStats{
+		FailureClass:    failureClass,
+		TotalRecoveries: total,
+	}
+
+	for kind, oc := range byAction {
+		actionTotal := oc.clean + oc.dirty + oc.relapsed + oc.other
+		successRate := 0.0
+		if actionTotal > 0 {
+			successRate = float64(oc.clean) / float64(actionTotal)
+		}
+		stats.ActionStats = append(stats.ActionStats, ActionOutcomeStat{
+			ResolutionKind: kind,
+			Total:          actionTotal,
+			CleanCount:     oc.clean,
+			DirtyCount:     oc.dirty,
+			RelapsedCount:  oc.relapsed,
+			SuccessRate:    successRate,
+		})
+	}
+
+	// Compute prediction accuracy: fraction where outcome matched expected_outcome.
+	var matchCount, totalWithExpected int
+	err = db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM recovery_learnings WHERE failure_class = ? AND expected_outcome != '' AND outcome = expected_outcome`,
+		failureClass,
+	).Scan(&matchCount)
+	if err != nil {
+		return stats, nil // non-fatal — stats are still useful without prediction accuracy
+	}
+	err = db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM recovery_learnings WHERE failure_class = ? AND expected_outcome != ''`,
+		failureClass,
+	).Scan(&totalWithExpected)
+	if err != nil {
+		return stats, nil
+	}
+	if totalWithExpected > 0 {
+		stats.PredictionAccuracy = float64(matchCount) / float64(totalWithExpected)
+	}
+
+	return stats, nil
+}
+
+// GetLearningStatsAuto wraps GetLearningStats using the active store's DB.
+func GetLearningStatsAuto(failureClass string) (*LearningStats, error) {
+	db, err := getDB()
+	if err != nil {
+		return nil, fmt.Errorf("get db for learning stats: %w", err)
+	}
+	return GetLearningStats(context.Background(), db, failureClass)
+}
+
 // UpdateLearningOutcome updates the outcome column for a recovery learning row
 // identified by the recovery bead ID. Used by relapse detection to mark
 // previously "clean" outcomes as "relapsed".

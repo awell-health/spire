@@ -813,8 +813,15 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		}
 	}
 
+	// Query historical outcome statistics for the failure class.
+	var stats *store.LearningStats
+	if ccResult.Diagnosis != nil {
+		failureClass := string(ccResult.Diagnosis.FailureMode)
+		stats, _ = store.GetLearningStatsAuto(failureClass)
+	}
+
 	// Build Claude prompt.
-	prompt := buildDecidePrompt(ccResult, triageCount)
+	prompt := buildDecidePrompt(ccResult, triageCount, stats)
 
 	// Call Claude.
 	if e.deps.ClaudeRunner == nil {
@@ -1240,7 +1247,7 @@ func mergeLearnings(metaLearnings []store.RecoveryLearning, sqlRows []store.Reco
 
 // buildDecidePrompt constructs the Claude prompt for the decide step.
 // triageCount is the number of triage attempts already made on this recovery bead.
-func buildDecidePrompt(cc CollectContextResult, triageCount int) string {
+func buildDecidePrompt(cc CollectContextResult, triageCount int, stats *store.LearningStats) string {
 	var b strings.Builder
 	b.WriteString("You are a recovery decision agent for Spire, an AI agent coordination system.\n\n")
 	b.WriteString("A bead (work item) has been interrupted and needs recovery. Analyze the diagnosis and choose the best recovery action.\n\n")
@@ -1271,6 +1278,25 @@ func buildDecidePrompt(cc CollectContextResult, triageCount int) string {
 		actJSON, _ := json.MarshalIndent(cc.RankedActions, "", "  ")
 		b.Write(actJSON)
 		b.WriteString("\n```\n\n")
+	}
+
+	// Historical outcome statistics.
+	if stats != nil && stats.TotalRecoveries > 0 {
+		b.WriteString("## Historical Outcome Statistics\n\n")
+		b.WriteString(fmt.Sprintf("Based on %d prior recoveries for failure class `%s`:\n\n",
+			stats.TotalRecoveries, stats.FailureClass))
+		b.WriteString("| Action | Attempts | Success Rate | Clean | Dirty | Relapsed |\n")
+		b.WriteString("|--------|----------|-------------|-------|-------|----------|\n")
+		for _, as := range stats.ActionStats {
+			b.WriteString(fmt.Sprintf("| %s | %d | %.0f%% | %d | %d | %d |\n",
+				as.ResolutionKind, as.Total, as.SuccessRate*100,
+				as.CleanCount, as.DirtyCount, as.RelapsedCount))
+		}
+		if stats.PredictionAccuracy > 0 {
+			b.WriteString(fmt.Sprintf("\nDecide agent prediction accuracy: %.0f%% (when expected_outcome was set).\n",
+				stats.PredictionAccuracy*100))
+		}
+		b.WriteString("\nWeight your action choice by historical success rates. Prefer actions with >70% success rate for this failure class unless the specific circumstances call for a different approach.\n\n")
 	}
 
 	// Bead learnings.
