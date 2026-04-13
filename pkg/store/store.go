@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -108,6 +109,7 @@ func PopulateDependencies(ctx context.Context, s beads.Storage, issues []*beads.
 	}
 	allDeps, err := dqs.GetDependencyRecordsForIssues(ctx, ids)
 	if err != nil {
+		log.Printf("[store] PopulateDependencies: %v", err)
 		return // best-effort: fall back to empty deps
 	}
 	for _, issue := range issues {
