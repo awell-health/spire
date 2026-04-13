@@ -16,6 +16,24 @@ func SQLEscape(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
 
+// SQLAssign returns a SQL assignment expression for string / datetime columns.
+// Empty and SQL NULL sentinel values are assigned as SQL NULL.
+func SQLAssign(field, value string) string {
+	if value == "" || strings.EqualFold(value, "NULL") {
+		return field + " = NULL"
+	}
+	return fmt.Sprintf("%s = '%s'", field, SQLEscape(value))
+}
+
+// SQLAssignNonNull returns a SQL assignment expression for required string fields.
+// Empty and SQL NULL sentinel values are normalized to the empty string.
+func SQLAssignNonNull(field, value string) string {
+	if value == "" || strings.EqualFold(value, "NULL") {
+		value = ""
+	}
+	return fmt.Sprintf("%s = '%s'", field, SQLEscape(value))
+}
+
 // Coalesce returns the first non-empty, non-SQL-NULL string.
 // Dolt's tabular CLI output renders SQL NULL values as the literal text "NULL".
 // For conflict resolution we treat that sentinel as an absent value.

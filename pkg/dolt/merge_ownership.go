@@ -140,7 +140,14 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 
 	// Read all conflict rows.
 	q := fmt.Sprintf(`SELECT
+		dolt_conflict_id,
 		base_id, our_id, their_id,
+		base_created_at, our_created_at, their_created_at,
+		base_created_by, our_created_by, their_created_by,
+		base_updated_at, our_updated_at, their_updated_at,
+		base_design, our_design, their_design,
+		base_acceptance_criteria, our_acceptance_criteria, their_acceptance_criteria,
+		base_notes, our_notes, their_notes,
 		base_status, our_status, their_status,
 		base_owner, our_owner, their_owner,
 		base_assignee, our_assignee, their_assignee,
@@ -158,7 +165,14 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 	}
 
 	rows := ParseDoltRows(out, []string{
+		"dolt_conflict_id",
 		"base_id", "our_id", "their_id",
+		"base_created_at", "our_created_at", "their_created_at",
+		"base_created_by", "our_created_by", "their_created_by",
+		"base_updated_at", "our_updated_at", "their_updated_at",
+		"base_design", "our_design", "their_design",
+		"base_acceptance_criteria", "our_acceptance_criteria", "their_acceptance_criteria",
+		"base_notes", "our_notes", "their_notes",
 		"base_status", "our_status", "their_status",
 		"base_owner", "our_owner", "their_owner",
 		"base_assignee", "our_assignee", "their_assignee",
@@ -211,31 +225,42 @@ func ResolveIssueConflicts(dbName string) (int, error) {
 }
 
 func buildIssueConflictStatements(row map[string]string) (id, updateStmt, deleteStmt string, ok bool) {
+	conflictID := row["dolt_conflict_id"]
+	if conflictID == "" {
+		return "", "", "", false
+	}
 	id = Coalesce(row["our_id"], row["their_id"], row["base_id"])
 	if id == "" {
 		return "", "", "", false
 	}
 
-	updates := []string{
-		// Cluster-owned fields: take theirs (remote)
-		fmt.Sprintf("status = '%s'", SQLEscape(Coalesce(row["their_status"], row["our_status"]))),
-		SQLNullableSet("owner", row["their_owner"], row["our_owner"]),
-		SQLNullableSet("assignee", row["their_assignee"], row["our_assignee"]),
-		SQLNullableSet("closed_at", row["their_closed_at"], row["our_closed_at"]),
-		SQLNullableSet("closed_by_session", row["their_closed_by_session"], row["our_closed_by_session"]),
-		// User-owned fields: take ours (local)
-		fmt.Sprintf("title = '%s'", SQLEscape(Coalesce(row["our_title"], row["their_title"]))),
-		fmt.Sprintf("description = '%s'", SQLEscape(Coalesce(row["our_description"], row["their_description"]))),
-		fmt.Sprintf("priority = %s", Coalesce(row["our_priority"], row["their_priority"], "2")),
-		fmt.Sprintf("issue_type = '%s'", SQLEscape(Coalesce(row["our_issue_type"], row["their_issue_type"]))),
+	assignments := []string{
+		// Primary key / required fields. Writing these to our_* lets Dolt recreate
+		// a row when our side deleted it but their side kept it.
+		SQLAssign("our_id", id),
+		SQLAssign("our_created_at", Coalesce(row["our_created_at"], row["their_created_at"], row["base_created_at"])),
+		SQLAssign("our_created_by", Coalesce(row["our_created_by"], row["their_created_by"], row["base_created_by"])),
+		SQLAssign("our_updated_at", Coalesce(row["their_updated_at"], row["our_updated_at"], row["base_updated_at"])),
+		SQLAssignNonNull("our_title", Coalesce(row["our_title"], row["their_title"], row["base_title"])),
+		SQLAssignNonNull("our_description", Coalesce(row["our_description"], row["their_description"], row["base_description"])),
+		SQLAssignNonNull("our_design", Coalesce(row["our_design"], row["their_design"], row["base_design"])),
+		SQLAssignNonNull("our_acceptance_criteria", Coalesce(row["our_acceptance_criteria"], row["their_acceptance_criteria"], row["base_acceptance_criteria"])),
+		SQLAssignNonNull("our_notes", Coalesce(row["our_notes"], row["their_notes"], row["base_notes"])),
+		// Cluster-owned fields: take theirs (remote) first.
+		SQLAssignNonNull("our_status", Coalesce(row["their_status"], row["our_status"], row["base_status"])),
+		SQLAssign("our_owner", Coalesce(row["their_owner"], row["our_owner"], row["base_owner"])),
+		SQLAssign("our_assignee", Coalesce(row["their_assignee"], row["our_assignee"], row["base_assignee"])),
+		SQLAssign("our_closed_at", Coalesce(row["their_closed_at"], row["our_closed_at"], row["base_closed_at"])),
+		SQLAssign("our_closed_by_session", Coalesce(row["their_closed_by_session"], row["our_closed_by_session"], row["base_closed_by_session"])),
+		// User-owned fields: take ours (local) first.
+		fmt.Sprintf("our_priority = %s", Coalesce(row["our_priority"], row["their_priority"], row["base_priority"], "2")),
+		SQLAssignNonNull("our_issue_type", Coalesce(row["our_issue_type"], row["their_issue_type"], row["base_issue_type"])),
 	}
 
-	escapedID := SQLEscape(id)
-	updateStmt = fmt.Sprintf("UPDATE issues SET %s WHERE id = '%s'",
-		strings.Join(updates, ", "), escapedID)
-	deleteStmt = fmt.Sprintf(
-		"DELETE FROM dolt_conflicts_issues WHERE our_id = '%s' OR their_id = '%s' OR base_id = '%s'",
-		escapedID, escapedID, escapedID)
+	updateStmt = fmt.Sprintf("UPDATE dolt_conflicts_issues SET %s WHERE dolt_conflict_id = '%s'",
+		strings.Join(assignments, ", "), SQLEscape(conflictID))
+	deleteStmt = fmt.Sprintf("DELETE FROM dolt_conflicts_issues WHERE dolt_conflict_id = '%s'",
+		SQLEscape(conflictID))
 	return id, updateStmt, deleteStmt, true
 }
 
