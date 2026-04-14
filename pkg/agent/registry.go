@@ -25,6 +25,7 @@ type Entry struct {
 	Phase          string `json:"phase,omitempty"`
 	PhaseStartedAt string `json:"phase_started_at,omitempty"`
 	Tower          string `json:"tower,omitempty"`
+	InstanceID     string `json:"InstanceID,omitempty"`
 }
 
 // RegistryPath returns the path to the wizard registry JSON file.
@@ -169,6 +170,13 @@ func RegisterSelf(name, beadID, phase string, opts ...func(*Entry)) func() {
 	}
 	RegistryAdd(entry)
 	return func() { RegistryRemove(name) }
+}
+
+// WithInstanceID returns a RegisterSelf option that sets the entry's InstanceID.
+func WithInstanceID(id string) func(*Entry) {
+	return func(e *Entry) {
+		e.InstanceID = id
+	}
 }
 
 // FindLiveForBead returns the first registry entry for the given bead, or nil.

@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,11 +40,12 @@ func (b *ProcessBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 	// Register in wizard registry with PID from handle.
 	pid, _ := strconv.Atoi(handle.Identifier())
 	entry := Entry{
-		Name:      cfg.Name,
-		PID:       pid,
-		BeadID:    cfg.BeadID,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Tower:     cfg.Tower,
+		Name:       cfg.Name,
+		PID:        pid,
+		BeadID:     cfg.BeadID,
+		StartedAt:  time.Now().UTC().Format(time.RFC3339),
+		Tower:      cfg.Tower,
+		InstanceID: cfg.InstanceID,
 	}
 	if err := RegistryAdd(entry); err != nil {
 		// Non-fatal: log and continue. The agent is running regardless.
@@ -122,6 +124,10 @@ func (b *ProcessBackend) Kill(name string) error {
 	}
 	if found == nil {
 		return fmt.Errorf("agent %q not found in registry", name)
+	}
+
+	if found.InstanceID != "" {
+		log.Printf("warning: killing agent %s owned by instance %s", name, found.InstanceID)
 	}
 
 	pid := found.PID

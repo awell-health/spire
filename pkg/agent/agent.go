@@ -99,6 +99,7 @@ type SpawnConfig struct {
 	BeadID       string    // Bead to work on
 	Role         SpawnRole // What kind of agent to run
 	Tower        string    // Tower name — injected as SPIRE_TOWER into subprocess env
+	InstanceID   string    // Instance identity of the spawning steward
 	Provider     string    // AI provider override (claude, codex, cursor) — injected as SPIRE_PROVIDER into subprocess env
 	Step         string    // Current step name (e.g. "implement", "review") — injected into OTEL_RESOURCE_ATTRIBUTES for log/trace correlation.
 	ExtraArgs    []string  // Additional args (e.g. "--review-fix")
