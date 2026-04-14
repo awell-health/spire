@@ -25,8 +25,13 @@ var fileCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("merge-mode"); v != "" {
 			fullArgs = append(fullArgs, "--merge-mode", v)
 		}
-		if v, _ := cmd.Flags().GetString("ref"); v != "" {
-			fullArgs = append(fullArgs, "--ref", v)
+		// --design is an alias for --ref (both create a discovered-from dep).
+		ref, _ := cmd.Flags().GetString("ref")
+		if design, _ := cmd.Flags().GetString("design"); design != "" && ref == "" {
+			ref = design
+		}
+		if ref != "" {
+			fullArgs = append(fullArgs, "--ref", ref)
 		}
 		if v, _ := cmd.Flags().GetString("type"); v != "" {
 			fullArgs = append(fullArgs, "-t", v)
@@ -54,6 +59,7 @@ func init() {
 	fileCmd.Flags().String("branch", "", "Base branch override for execution")
 	fileCmd.Flags().String("merge-mode", "", "Merge mode: merge or pr")
 	fileCmd.Flags().String("ref", "", "Design bead ID to link via discovered-from dep")
+	fileCmd.Flags().String("design", "", "Design bead ID (alias for --ref)")
 	fileCmd.Flags().StringP("type", "t", "", "Bead type (task, bug, feature, epic, chore, recovery)")
 	fileCmd.Flags().IntP("priority", "p", 0, "Priority (0-4)")
 	fileCmd.Flags().String("label", "", "Comma-separated labels")

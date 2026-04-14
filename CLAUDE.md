@@ -32,7 +32,48 @@ Current package READMEs exist in:
 
 Spire is a coordination hub for AI agents across repositories. Multiple repos register here, each with their own prefix. Epics created here are automatically mirrored to Linear by the daemon.
 
-## Using beads in Spire
+## Filing work
+
+**Use `spire file` to create beads, not `bd create`.** `spire file` handles
+prefix resolution, design linkage, and repo registration automatically.
+
+```bash
+# Create a task
+spire file "Fix auth token refresh" -t task -p 1
+
+# Create an epic
+spire file "User onboarding flow" -t epic -p 0
+
+# Create a task linked to a design bead
+spire file "Implement the thing" -t task -p 1 --design spi-xxx
+
+# Create a subtask under an epic
+spire file "My subtask" -t task -p 1 --parent spi-xxx
+```
+
+### Design-first workflow
+
+Always start with a design bead before filing tasks or epics:
+
+```bash
+# 1. Create a design bead to capture thinking
+spire design "What we're exploring"
+
+# 2. Add comments as the design evolves
+bd comments add <design-id> "Key decision: ..."
+
+# 3. Close the design when ready
+bd update <design-id> --status closed
+
+# 4. File work linked to the design
+spire file "The epic" -t epic -p 1 --design <design-id>
+```
+
+The `--design` flag creates a `discovered-from` dependency. The executor
+validates that epics have a closed design bead before entering the plan phase.
+`spire focus` and `spire grok` surface linked design beads as context.
+
+## Reading beads
 
 All `bd` commands work as normal. Spire runs a shared Dolt server on port 3307.
 
@@ -42,12 +83,6 @@ bd list --json
 
 # List ready work (no open blockers)
 bd ready --json
-
-# Create a task (uses the current repo's prefix)
-bd create "Fix auth token refresh" -p 1 -t task
-
-# Create an epic (will be auto-synced to Linear)
-bd create "User onboarding flow" -p 0 -t epic
 
 # View an issue
 bd show <id>
@@ -84,7 +119,7 @@ When you create a bead with `type=epic`, the daemon will:
 **IMPORTANT:** When creating tasks that belong to an epic, ALWAYS use `--parent`:
 
 ```bash
-bd create "my subtask" -t task -p 1 --parent spi-xxx
+spire file "my subtask" -t task -p 1 --parent spi-xxx
 # → spi-xxx.1  (hierarchical ID, visible relationship)
 ```
 
@@ -94,19 +129,19 @@ with no visible connection to the epic.
 Use beads' hierarchical IDs for epic breakdown:
 
 ```bash
-# Create an epic
-bd create "Auth system overhaul" -p 0 -t epic
+# Create an epic linked to its design
+spire file "Auth system overhaul" -t epic -p 0 --design spi-xyz
 # → spi-a3f8
 
 # Add tasks under the epic
-bd create "Implement OAuth2" -p 1 -t task --parent spi-a3f8
+spire file "Implement OAuth2" -t task -p 1 --parent spi-a3f8
 # → spi-a3f8.1
 
-bd create "Add MFA support" -p 1 -t task --parent spi-a3f8
+spire file "Add MFA support" -t task -p 1 --parent spi-a3f8
 # → spi-a3f8.2
 
 # Add sub-tasks
-bd create "Google OAuth provider" -p 2 -t task --parent spi-a3f8.1
+spire file "Google OAuth provider" -t task -p 2 --parent spi-a3f8.1
 # → spi-a3f8.1.1
 ```
 
@@ -255,8 +290,8 @@ Design beads capture exploration and decisions before filing work items. Link th
 spire design "Auth system overhaul"   # → spi-xxx
 
 # When ready to file a work item, link it:
-spire file "Auth overhaul epic" -t epic -p 1 --ref spi-xxx
-# --ref creates a discovered-from dep automatically
+spire file "Auth overhaul epic" -t epic -p 1 --design spi-xxx
+# --design creates a discovered-from dep automatically
 
 # Or link manually after filing:
 bd dep add <new-id> spi-xxx --type discovered-from
