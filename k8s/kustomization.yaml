@@ -15,6 +15,7 @@ resources:
   - clickhouse.yaml
   - steward.yaml
   - operator.yaml
+  - dolt-sync-rbac.yaml
   - dolt-sync-cronjob.yaml
   - network-policy.yaml
   - pod-priority.yaml

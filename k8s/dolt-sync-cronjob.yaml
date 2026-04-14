@@ -11,7 +11,7 @@ spec:
       template:
         spec:
           restartPolicy: OnFailure
-          serviceAccountName: spire-steward
+          serviceAccountName: spire-dolt-sync
           containers:
           - name: syncer
             image: bitnami/kubectl:latest

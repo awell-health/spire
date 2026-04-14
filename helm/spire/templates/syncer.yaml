@@ -15,6 +15,7 @@ spec:
       template:
         spec:
           restartPolicy: OnFailure
+          serviceAccountName: spire-dolt-sync
           containers:
             - name: syncer
               image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
