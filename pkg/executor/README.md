@@ -133,7 +133,84 @@ but skips parent-level cleanup (registry removal, staging close, attempt beads).
 Parent cleanup of nested state files happens after the parent save — this
 ordering is crash-safe.
 
-### Runtime state
+### Graph state
+
+`GraphState` is the execution state for one bead. It's persisted as JSON at
+`~/.config/spire/runtime/<agent-name>/graph_state.json` and saved after every
+step. Nested sub-graphs (e.g., `subgraph-implement` inside `epic-default`) get
+their own file at `<parent-agent>-<step-name>/graph_state.json`.
+
+```
+GraphState
+├── bead_id, agent_name           identity
+├── formula, formula_source       which formula is running (embedded/repo/tower)
+├── entry                         first step to evaluate
+├── steps: map[string]StepState   per-step execution state
+├── workspaces: map[string]WorkspaceState
+├── vars: map[string]string       formula variable bindings
+├── active_step                   currently executing step (empty when parked/idle)
+├── step_bead_ids                 step name → step bead ID mapping
+├── staging_branch, base_branch   git context
+├── repo_path, worktree_dir       filesystem context
+└── attempt_bead_id               current attempt bead
+```
+
+**StepState** tracks one step through its lifecycle:
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `pending` → `active` → `completed` / `failed` / `hooked` / `skipped` |
+| `outputs` | Key-value outputs produced by the action (used in conditions) |
+| `completed_count` | Mechanical counter: how many times this step has completed. Never reset — formulas use it for loop termination (`steps.X.completed_count > 0`). |
+| `started_at` / `completed_at` | Timestamps |
+
+**Step status transitions:**
+
+```
+pending ──→ active ──→ completed     (normal)
+                   ──→ failed        (action error → escalation)
+                   ──→ hooked        (parked for external condition)
+                   ──→ skipped       (condition not met)
+```
+
+A `hooked` step parks the graph — the interpreter exits gracefully, and the
+step bead's status is set to `hooked` in the store. Approval gates
+(`human.approve`) and step failures both use this mechanism. The difference
+is visible via linked beads: failures have alert/recovery beads, approval
+gates don't.
+
+**Lifecycle on escalation vs clean close:**
+
+- **Clean terminal** (close, verified): `e.terminated = true` → deferred
+  cleanup removes the graph state file. The bead is done.
+- **Escalation terminal** (implement-failed with status=escalate):
+  `e.terminated` stays false → graph state is preserved on disk. This allows
+  `reset --to` and `resummon` to load and rewind it.
+
+**WorkspaceState** tracks a declared workspace:
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | `repo`, `owned_worktree`, `borrowed_worktree`, `staging` |
+| `dir` | Absolute path (worktree kinds only) |
+| `branch` / `base_branch` | Resolved branch names |
+| `start_sha` | Session baseline (for diff stats) |
+| `status` | `pending` → `active` → `closed` |
+| `scope` | `run` (persists across steps) or `step` (released after each step) |
+| `cleanup` | `always`, `terminal`, `never` |
+
+**Storage backends:**
+
+| Backend | When | Implementation |
+|---------|------|----------------|
+| `FileGraphStateStore` | Local development (default) | JSON files in `~/.config/spire/runtime/` |
+| `DoltGraphStateStore` | Cluster mode (`BEADS_DOLT_SERVER_HOST` is remote) | `graph_state` table in Dolt |
+
+`ResolveGraphStateStore()` picks the backend automatically. The graph
+interpreter receives it via `Deps.GraphStateStore` (lazy-initialized on
+first use if not set).
+
+### Runtime state (legacy)
 
 `Executor.Run()` delegates to `RunGraph`. `State` carries legacy fields
 (phase, wave, review rounds) used by `recordAgentRun` for metrics recording.
