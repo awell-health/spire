@@ -609,6 +609,7 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 
 	greenLG := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	cyanLG := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	yellowLG := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	dimLG := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	for i := 0; i < shown; i++ {
@@ -648,6 +649,8 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 						icons = append(icons, greenLG.Render("✓"))
 					case "in_progress":
 						icons = append(icons, cyanLG.Render("▶"))
+					case "hooked":
+						icons = append(icons, yellowLG.Render("⏸"))
 					default:
 						icons = append(icons, dimLG.Render("○"))
 					}
@@ -703,8 +706,8 @@ func RenderCardStr(b BoardBead, clr color.Color, width int, selected ...bool) st
 		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
 	}
 
-	// Show compact DAG pipeline for in-progress beads.
-	if b.Status == "in_progress" {
+	// Show compact DAG pipeline for in-progress and hooked beads.
+	if b.Status == "in_progress" || b.Status == "hooked" {
 		if pipeline := RenderPipelineLipgloss(b.ID); pipeline != "" {
 			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
 		}
@@ -724,6 +727,7 @@ func RenderPipelineLipgloss(beadID string) string {
 
 	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	cyanStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	dimLGStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	var parts []string
@@ -733,6 +737,8 @@ func RenderPipelineLipgloss(beadID string) string {
 			parts = append(parts, greenStyle.Render("✓"))
 		case "in_progress":
 			parts = append(parts, cyanStyle.Render("▶"))
+		case "hooked":
+			parts = append(parts, yellowStyle.Render("⏸"))
 		default:
 			parts = append(parts, dimLGStyle.Render("○"))
 		}
@@ -765,6 +771,7 @@ func RenderPipelineFromDAG(dag *DAGProgress) string {
 
 	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	cyanStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	dimLGStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	var parts []string
@@ -774,6 +781,8 @@ func RenderPipelineFromDAG(dag *DAGProgress) string {
 			parts = append(parts, greenStyle.Render("✓"))
 		case "in_progress":
 			parts = append(parts, cyanStyle.Render("▶"))
+		case "hooked":
+			parts = append(parts, yellowStyle.Render("⏸"))
 		default:
 			parts = append(parts, dimLGStyle.Render("○"))
 		}
@@ -837,8 +846,8 @@ func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, clr color.Co
 		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
 	}
 
-	// Show compact DAG pipeline for in-progress beads.
-	if b.Status == "in_progress" {
+	// Show compact DAG pipeline for in-progress and hooked beads.
+	if b.Status == "in_progress" || b.Status == "hooked" {
 		if pipeline := RenderPipelineFromDAG(dag); pipeline != "" {
 			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
 		}
@@ -865,6 +874,7 @@ func RenderAgentPanelSnap(agents []LocalAgent, dagMap map[string]*DAGProgress, m
 
 	greenLG := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	cyanLG := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	yellowLG := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	dimLG := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	for i := 0; i < shown; i++ {
@@ -904,6 +914,8 @@ func RenderAgentPanelSnap(agents []LocalAgent, dagMap map[string]*DAGProgress, m
 						icons = append(icons, greenLG.Render("✓"))
 					case "in_progress":
 						icons = append(icons, cyanLG.Render("▶"))
+					case "hooked":
+						icons = append(icons, yellowLG.Render("⏸"))
 					default:
 						icons = append(icons, dimLG.Render("○"))
 					}
