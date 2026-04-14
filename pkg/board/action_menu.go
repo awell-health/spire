@@ -16,9 +16,7 @@ const (
 	DangerDestructive                     // red highlight + confirmation
 )
 
-// ActionReady supplements the PendingAction constants in tui.go and board.go.
-// Explicit value avoids iota conflicts with the main enum.
-const ActionReady PendingAction = 20
+// ActionReady is defined in the consolidated iota block in tui.go.
 
 // MenuAction represents a single item in the action menu popup.
 type MenuAction struct {

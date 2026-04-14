@@ -37,6 +37,10 @@ const (
 	ActionDefer                  // toggle deferred status (inline via tea.Cmd)
 	ActionResolve                // resolve a needs-human bead with recovery learning (inline via tea.Cmd)
 	ActionApproveGate            // approve a human.approve gate (remove awaiting-approval + needs-human, inline via tea.Cmd)
+	ActionComment                // add a comment to a bead (inline via tea.Cmd)
+	ActionResume                 // resume a hooked bead (clear hooked status, inline via tea.Cmd)
+	ActionReady                  // set bead status to ready (inline via tea.Cmd)
+	actionSentinel               // compile-time sentinel — must be last; add new actions above this line
 )
 
 // Section identifies which vertical zone of the board the cursor is in.
@@ -1532,28 +1536,6 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			if bead := m.SelectedBead(); bead != nil && bead.Status == "open" {
 				mm, cmd := m.dispatchInlineAction(ActionReady, bead.ID)
 				return mm, cmd
-			}
-
-		// Reset --hard — confirm, then inline.
-		case "R":
-			if bead := m.SelectedBead(); bead != nil && bead.Status == "in_progress" {
-				m.ConfirmOpen = true
-				m.ConfirmAction = ActionResetHard
-				m.ConfirmBeadID = bead.ID
-				m.ConfirmPrompt = confirmPromptForAction(ActionResetHard, bead.ID, bead.Title)
-				m.ConfirmDanger = DangerDestructive
-				return m, nil
-			}
-
-		// Close — confirm, then inline.
-		case "x":
-			if bead := m.SelectedBead(); bead != nil {
-				m.ConfirmOpen = true
-				m.ConfirmAction = ActionClose
-				m.ConfirmBeadID = bead.ID
-				m.ConfirmPrompt = confirmPromptForAction(ActionClose, bead.ID, bead.Title)
-				m.ConfirmDanger = DangerConfirm
-				return m, nil
 			}
 
 		// Defer/undefer toggle (any non-closed bead).

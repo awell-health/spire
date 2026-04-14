@@ -396,12 +396,7 @@ func RunBoard(opts Opts, identity string, fetchAgents func() []LocalAgent, actio
 	return nil
 }
 
-// Additional PendingAction constants added alongside the iota block in tui.go.
-// Values must not collide with the iota sequence (0–17 as of ActionApproveGate).
-const (
-	ActionComment PendingAction = 18 + iota // add a comment to a bead (inline via tea.Cmd)
-	ActionResume                            // resume a hooked bead (clear hooked status, inline via tea.Cmd)
-)
+// ActionComment and ActionResume are defined in the consolidated iota block in tui.go.
 
 // parsePendingAction converts a string action name to a PendingAction.
 func parsePendingAction(s string) PendingAction {

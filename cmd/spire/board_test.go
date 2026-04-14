@@ -227,8 +227,8 @@ func TestAllColumnsIncludesEmpty(t *testing.T) {
 	if len(active) != 2 {
 		t.Fatalf("expected 2 active columns, got %d", len(active))
 	}
-	if len(all) != 4 {
-		t.Fatalf("expected 4 total columns, got %d", len(all))
+	if len(all) != 5 {
+		t.Fatalf("expected 5 total columns, got %d", len(all))
 	}
 }
 
@@ -244,11 +244,11 @@ func TestShowAllColsToggle(t *testing.T) {
 		t.Fatalf("expected 1 display column with ShowAllCols=false, got %d", len(display))
 	}
 
-	// Toggle on: all status columns (BACKLOG, READY, IN PROGRESS, DONE)
+	// Toggle on: all status columns (BACKLOG, READY, IN PROGRESS, HOOKED, DONE)
 	m.ShowAllCols = true
 	display = m.DisplayColumns()
-	if len(display) != 4 {
-		t.Fatalf("expected 4 display columns with ShowAllCols=true, got %d", len(display))
+	if len(display) != 5 {
+		t.Fatalf("expected 5 display columns with ShowAllCols=true, got %d", len(display))
 	}
 
 	// Selection should work with empty columns

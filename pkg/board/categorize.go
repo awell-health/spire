@@ -18,11 +18,13 @@ type ColDef struct {
 }
 
 // AllColumns returns all status-based columns in board display order, including empty ones.
+// Order: BACKLOG, READY, IN PROGRESS, HOOKED, DONE (5 columns per spec).
 func AllColumns(cols Columns) []ColDef {
 	return []ColDef{
 		{"BACKLOG", lipgloss.Color("8"), cols.Backlog},
 		{"READY", lipgloss.Color("2"), cols.Ready},
 		{"IN PROGRESS", lipgloss.Color("6"), cols.InProgress},
+		{"HOOKED", lipgloss.Color("3"), cols.Hooked},
 		{"DONE", lipgloss.Color("8"), cols.Done},
 	}
 }
