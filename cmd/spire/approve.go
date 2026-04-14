@@ -77,6 +77,27 @@ func cmdApprove(beadID, comment string) error {
 			break
 		}
 	}
+	// Design beads: approve means close. They're thinking artifacts, not formula-driven.
+	if approvalStep == nil && bead.Type == "design" {
+		identity, _ := approveIdentityFunc()
+		if identity == "" {
+			identity = "human"
+		}
+		approvalMsg := fmt.Sprintf("Approved by %s", identity)
+		if comment != "" {
+			approvalMsg += ": " + comment
+		}
+		_ = approveAddCommentFunc(beadID, approvalMsg)
+		if containsLabel(bead, "needs-human") {
+			_ = storeRemoveLabel(beadID, "needs-human")
+		}
+		if err := storeCloseBead(beadID); err != nil {
+			return fmt.Errorf("close design bead %s: %w", beadID, err)
+		}
+		fmt.Printf("%sApproved and closed %s%s\n", bold, beadID, reset)
+		return nil
+	}
+
 	if approvalStep == nil {
 		return fmt.Errorf("bead %s has no hooked approval gate (human.approve or design-check)", beadID)
 	}
