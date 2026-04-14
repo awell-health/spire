@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +17,12 @@ var approveAddCommentFunc = storeAddComment
 var approveIdentityFunc = func() (string, error) { return detectIdentity("") }
 var approveSummonFunc = func(beadID string) error {
 	return cmdSummon([]string{"1", "--targets", beadID})
+}
+var loadGraphStateForApprove = func(wizardName string) (*executor.GraphState, error) {
+	return executor.LoadGraphState(wizardName, configDir)
+}
+var saveGraphStateForApprove = func(wizardName string, gs *executor.GraphState) error {
+	return gs.Save(wizardName, configDir)
 }
 
 var approveCmd = &cobra.Command{
@@ -57,15 +64,12 @@ func cmdApprove(beadID, comment string) error {
 		return fmt.Errorf("get step beads for %s: %w", beadID, err)
 	}
 
-	// Find the hooked approval step: prefer step:human.approve, fall back to any hooked step.
+	// Find the hooked approval step. Only accept step:human.approve steps —
+	// other hooked steps (design-check, failed steps) must not be cleared by approve.
 	var approvalStep *Bead
-	var firstHooked *Bead
 	for i, sb := range stepBeads {
 		if sb.Status != "hooked" {
 			continue
-		}
-		if firstHooked == nil {
-			firstHooked = &stepBeads[i]
 		}
 		if containsLabel(sb, "step:human.approve") {
 			approvalStep = &stepBeads[i]
@@ -73,10 +77,7 @@ func cmdApprove(beadID, comment string) error {
 		}
 	}
 	if approvalStep == nil {
-		approvalStep = firstHooked
-	}
-	if approvalStep == nil {
-		return fmt.Errorf("bead %s has no hooked approval step", beadID)
+		return fmt.Errorf("bead %s has no hooked approval step (step:human.approve)", beadID)
 	}
 
 	// Unhook the approval step (sets it back to 'open').
@@ -95,6 +96,24 @@ func cmdApprove(beadID, comment string) error {
 	}
 	if err := approveAddCommentFunc(beadID, approvalMsg); err != nil {
 		fmt.Fprintf(os.Stderr, "  (note: could not add approval comment to %s: %s)\n", beadID, err)
+	}
+
+	// Update graph state: reset the approval step to pending and bump CompletedCount
+	// so actionHumanApprove sees CompletedCount > 0 and returns approved.
+	wizardName := "wizard-" + beadID
+	if gs, gsErr := loadGraphStateForApprove(wizardName); gsErr == nil && gs != nil {
+		// Find the step name from the step bead's title (e.g., "step:human.approve").
+		for stepName, ss := range gs.Steps {
+			if ss.Status == "hooked" {
+				ss.Status = "pending"
+				ss.CompletedCount++
+				gs.Steps[stepName] = ss
+			}
+		}
+		gs.ActiveStep = ""
+		if saveErr := saveGraphStateForApprove(wizardName, gs); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "  (note: could not update graph state: %s)\n", saveErr)
+		}
 	}
 
 	// Check if any other step beads are still hooked; if not, set parent to in_progress.

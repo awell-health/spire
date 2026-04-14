@@ -32,14 +32,17 @@ func cmdResummon(args []string) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	// 1. Look up the bead and verify it has needs-human.
+	// 1. Look up the bead and verify it's in a resummonable state.
 	bead, err := storeGetBead(beadID)
 	if err != nil {
 		return fmt.Errorf("get bead %s: %w", beadID, err)
 	}
 
-	if !containsLabel(bead, "needs-human") {
-		return fmt.Errorf("%s does not have needs-human label — nothing to resummon", beadID)
+	// Accept hooked status (new model) or needs-human/interrupted labels (legacy beads).
+	isHooked := bead.Status == "hooked"
+	hasLegacyLabel := containsLabel(bead, "needs-human") || hasLabelPrefix(bead, "interrupted:")
+	if !isHooked && !hasLegacyLabel {
+		return fmt.Errorf("%s is not hooked or interrupted — nothing to resummon", beadID)
 	}
 
 	// 2. Kill the old wizard process and remove its registry entry (clears timer).
@@ -122,6 +125,16 @@ func cmdResummon(args []string) error {
 	// 7. Re-summon: spire summon 1 --targets <bead-id>
 	fmt.Printf("  re-summoning wizard for %s...\n", beadID)
 	return cmdSummon([]string{"1", "--targets", beadID})
+}
+
+// hasLabelPrefix returns true if any label on the bead starts with the given prefix.
+func hasLabelPrefix(b Bead, prefix string) bool {
+	for _, l := range b.Labels {
+		if strings.HasPrefix(l, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // closeRelatedAlerts closes all open alert beads that reference the given bead ID

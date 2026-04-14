@@ -161,14 +161,11 @@ func TestCmdApprove_WithComment(t *testing.T) {
 	}
 }
 
-// TestCmdApprove_FallsBackToAnyHookedStep verifies that when no step:human.approve
-// step exists, cmdApprove falls back to the first hooked step.
-func TestCmdApprove_FallsBackToAnyHookedStep(t *testing.T) {
+// TestCmdApprove_RejectsNonApprovalHookedStep verifies that when no step:human.approve
+// step exists, cmdApprove refuses to clear other hooked steps.
+func TestCmdApprove_RejectsNonApprovalHookedStep(t *testing.T) {
 	cleanup := stubApproveDeps(t)
 	defer cleanup()
-
-	tmp := t.TempDir()
-	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
 	approveGetBeadFunc = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: "hooked"}, nil
@@ -180,23 +177,12 @@ func TestCmdApprove_FallsBackToAnyHookedStep(t *testing.T) {
 		}, nil
 	}
 
-	var unhooked []string
-	approveUnhookStepBeadFunc = func(stepID string) error {
-		unhooked = append(unhooked, stepID)
-		return nil
-	}
-	approveUpdateBeadFunc = func(id string, u map[string]interface{}) error { return nil }
-	approveAddCommentFunc = func(id, text string) error { return nil }
-	approveIdentityFunc = func() (string, error) { return "JB", nil }
-
 	err := cmdApprove("spi-test", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error when no step:human.approve step exists")
 	}
-
-	// Should fall back to spi-test.2 (the only hooked step).
-	if len(unhooked) != 1 || unhooked[0] != "spi-test.2" {
-		t.Errorf("expected spi-test.2 to be unhooked, got: %v", unhooked)
+	if !strings.Contains(err.Error(), "no hooked approval step") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

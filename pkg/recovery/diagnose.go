@@ -36,8 +36,13 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 		}
 	}
 
-	if interruptLabel == "" {
-		return nil, fmt.Errorf("bead %s has no interrupted:* label — not in interrupted state", beadID)
+	// Accept hooked status (new model) or interrupted:* label (legacy).
+	if interruptLabel == "" && bead.Status != "hooked" {
+		return nil, fmt.Errorf("bead %s has no interrupted:* label and is not hooked — not in interrupted state", beadID)
+	}
+	// Synthesize a label for downstream code when only status is set.
+	if interruptLabel == "" && bead.Status == "hooked" {
+		interruptLabel = "interrupted:hooked"
 	}
 
 	// 3. Count attempts and get latest result.
