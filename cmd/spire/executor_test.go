@@ -11,86 +11,21 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-// TestLoadExecutorStateNilWhenMissing verifies that loadExecutorState returns nil
-// (not an error) when no state file exists — this is the signal that controls
-// the fresh-start vs resume path in cmdExecute.
-func TestLoadExecutorStateNilWhenMissing(t *testing.T) {
+// TestGraphStatePathIsolatedPerAgent verifies that different agent names
+// produce different graph state paths (preventing cross-agent state pollution).
+func TestGraphStatePathIsolatedPerAgent(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", dir)
 
-	state, err := loadExecutorState("wizard-spi-abc")
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if state != nil {
-		t.Fatalf("expected nil state for missing file, got %+v", state)
-	}
-}
-
-// TestLoadExecutorStateReturnsStateWhenPresent verifies that loadExecutorState
-// returns the saved state when a state file exists.
-func TestLoadExecutorStateReturnsStateWhenPresent(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("SPIRE_CONFIG_DIR", dir)
-
-	agentName := "wizard-spi-xyz"
-	saved := &executorState{
-		BeadID:    "spi-xyz",
-		AgentName: agentName,
-		Formula:   "spire-agent-work",
-		Phase:     "implement",
-		Subtasks:  make(map[string]subtaskState),
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	// Create an executor via NewForTest to save state
-	deps := &executor.Deps{
-		ConfigDir: configDir,
-	}
-	ex := executor.NewForTest(saved.BeadID, agentName, saved, deps)
-	// saveState is unexported — use the state file path directly
-	_ = ex // state is written via the helper below
-
-	// Write state manually using the same path logic
-	statePath := executorStatePath(agentName)
-	os.MkdirAll(statePath[:len(statePath)-len("/state.json")], 0755)
-	data := fmt.Sprintf(`{"bead_id":"spi-xyz","agent_name":"%s","formula":"spire-agent-work","phase":"implement","subtasks":{},"started_at":"%s"}`,
-		agentName, saved.StartedAt)
-	os.WriteFile(statePath, []byte(data), 0644)
-
-	loaded, err := loadExecutorState(agentName)
-	if err != nil {
-		t.Fatalf("loadExecutorState error: %v", err)
-	}
-	if loaded == nil {
-		t.Fatal("expected non-nil state after save, got nil")
-	}
-	if loaded.BeadID != saved.BeadID {
-		t.Errorf("BeadID = %q, want %q", loaded.BeadID, saved.BeadID)
-	}
-	if loaded.Phase != saved.Phase {
-		t.Errorf("Phase = %q, want %q", loaded.Phase, saved.Phase)
-	}
-	if loaded.Formula != saved.Formula {
-		t.Errorf("Formula = %q, want %q", loaded.Formula, saved.Formula)
-	}
-}
-
-// TestExecutorStatePathIsolatedPerAgent verifies that different agent names
-// produce different state paths (preventing cross-agent state pollution).
-func TestExecutorStatePathIsolatedPerAgent(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("SPIRE_CONFIG_DIR", dir)
-
-	path1 := executorStatePath("wizard-spi-aaa")
-	path2 := executorStatePath("wizard-spi-bbb")
+	path1 := graphStatePath("wizard-spi-aaa")
+	path2 := graphStatePath("wizard-spi-bbb")
 
 	if path1 == path2 {
 		t.Errorf("expected different paths for different agents, both got %q", path1)
 	}
 }
 
-// TestCmdExecuteSkipsClaimWhenResuming verifies that when a state file exists,
+// TestCmdExecuteSkipsClaimWhenResuming verifies that when a graph state file exists,
 // cmdExecute does not attempt to claim the bead.
 func TestCmdExecuteSkipsClaimWhenResuming(t *testing.T) {
 	dir := t.TempDir()
@@ -98,24 +33,24 @@ func TestCmdExecuteSkipsClaimWhenResuming(t *testing.T) {
 
 	agentName := "wizard-spi-resume-test"
 
-	// Write a state file for this agent so loadExecutorState returns non-nil.
-	statePath := executorStatePath(agentName)
-	os.MkdirAll(statePath[:len(statePath)-len("/state.json")], 0755)
-	data := fmt.Sprintf(`{"bead_id":"spi-resume-test","agent_name":"%s","formula":"spire-agent-work","phase":"implement","subtasks":{},"started_at":"%s"}`,
+	// Write a graph_state.json file for this agent so LoadGraphState returns non-nil.
+	gsPath := graphStatePath(agentName)
+	os.MkdirAll(gsPath[:len(gsPath)-len("/graph_state.json")], 0755)
+	data := fmt.Sprintf(`{"bead_id":"spi-resume-test","agent_name":"%s","formula":"spire-agent-work","active_step":"implement","steps":{},"started_at":"%s"}`,
 		agentName, time.Now().UTC().Format(time.RFC3339))
-	os.WriteFile(statePath, []byte(data), 0644)
+	os.WriteFile(gsPath, []byte(data), 0644)
 
 	// Verify state is visible
-	state, err := loadExecutorState(agentName)
+	state, err := executor.LoadGraphState(agentName, configDir)
 	if err != nil {
-		t.Fatalf("loadExecutorState: %v", err)
+		t.Fatalf("LoadGraphState: %v", err)
 	}
 	if state == nil {
-		t.Fatal("state file exists but loadExecutorState returned nil — resume detection is broken")
+		t.Fatal("graph state file exists but LoadGraphState returned nil — resume detection is broken")
 	}
 
 	// Clean up
-	os.Remove(executorStatePath(agentName))
+	os.Remove(gsPath)
 }
 
 // newTestExecutor builds a formulaExecutor with injectable fakes for store and claude.

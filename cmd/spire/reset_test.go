@@ -44,12 +44,6 @@ func TestRemoveGraphStateFiles_ParentAndNested(t *testing.T) {
 		}
 	}
 
-	// Also create a nested v2 state.json.
-	nestedV2Dir := filepath.Join(tmp, "runtime", wizardName+"-apprentice")
-	if err := os.WriteFile(filepath.Join(nestedV2Dir, "state.json"), []byte(`{}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
 	// Run quiet variant — should return true.
 	removed := removeGraphStateFilesQuiet(wizardName)
 	if !removed {
@@ -65,11 +59,6 @@ func TestRemoveGraphStateFiles_ParentAndNested(t *testing.T) {
 		if _, err := os.Stat(gs); !os.IsNotExist(err) {
 			t.Errorf("nested graph_state.json for %s should have been removed", n)
 		}
-	}
-	// Nested v2 state.json should also be removed.
-	v2State := filepath.Join(nestedV2Dir, "state.json")
-	if _, err := os.Stat(v2State); !os.IsNotExist(err) {
-		t.Error("nested v2 state.json should have been removed")
 	}
 }
 

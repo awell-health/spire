@@ -76,13 +76,7 @@ func cmdResummon(args []string) error {
 		}
 	}
 
-	// 3. Remove executor state files so summon starts fresh.
-	// Clear v2 state.json.
-	statePath := executorStatePath(wizardName)
-	if err := os.Remove(statePath); err == nil {
-		fmt.Printf("  %scleared v2 executor state%s\n", dim, reset)
-	}
-	// Clear v3 graph state (parent + nested sub-executors).
+	// 3. Remove graph state files so summon starts fresh.
 	removeGraphStateFiles(wizardName)
 
 	// 4. Strip needs-human label.

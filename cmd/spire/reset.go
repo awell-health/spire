@@ -124,13 +124,6 @@ func cmdReset(args []string) error {
 		wizardName = "wizard-" + beadID
 	}
 
-	// --- 2. Delete executor state.json ---
-
-	statePath := executorStatePath(wizardName)
-	if err := os.Remove(statePath); err == nil {
-		fmt.Printf("  %s✗ state file removed%s\n", dim, reset)
-	}
-
 	// --- Resolve formula to determine enabled phases and default --to ---
 
 	bead, err := storeGetBead(beadID)
@@ -214,10 +207,8 @@ func hardResetBeadCore(beadID string) error {
 		wizardName = "wizard-" + beadID
 	}
 
-	// --- 2. Remove graph state files (v3 parent + nested + v2) ---
+	// --- 2. Remove graph state files (parent + nested) ---
 	removeGraphStateFiles(wizardName)
-	statePath := executorStatePath(wizardName)
-	os.Remove(statePath) // v2 belt-and-suspenders
 
 	// --- 3. Delete internal DAG beads (with protected-set filtering) ---
 	children, err := storeGetChildren(beadID)
@@ -296,12 +287,8 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 	} else {
 		// --- Soft reset path (no worktree/branch deletion) ---
 
-		// 1. Remove v3 graph state files (parent + nested).
+		// 1. Remove graph state files (parent + nested).
 		removeGraphStateFiles(wizardName)
-		statePath := executorStatePath(wizardName)
-		if err := os.Remove(statePath); err == nil {
-			fmt.Printf("  %s✗ v2 state file also removed%s\n", dim, reset)
-		}
 
 		// 2. Process children: close internal DAG beads, reopen subtask children.
 		children, err := storeGetChildren(beadID)
@@ -487,9 +474,6 @@ func softResetV3(beadID, targetStep, wizardName string) error {
 				if err := os.Remove(nestedPath); err == nil {
 					fmt.Printf("  %s✗ nested graph state removed: %s%s\n", dim, nestedName, reset)
 				}
-				// Also remove nested v2 state.json.
-				nestedV2Path := filepath.Join(runtimeDir, nestedName, "state.json")
-				os.Remove(nestedV2Path)
 			}
 		}
 
@@ -714,18 +698,6 @@ func doRemoveGraphStateFiles(wizardName string, quiet bool) bool {
 			removed = true
 			if !quiet {
 				fmt.Printf("  %s✗ nested graph state removed: %s%s\n", dim, filepath.Base(filepath.Dir(m)), reset)
-			}
-		}
-	}
-
-	// Also glob nested state.json (v2 nested executors).
-	v2Pattern := filepath.Join(runtimeDir, wizardName+"-*", "state.json")
-	v2Matches, _ := filepath.Glob(v2Pattern)
-	for _, m := range v2Matches {
-		if err := os.Remove(m); err == nil {
-			removed = true
-			if !quiet {
-				fmt.Printf("  %s✗ nested v2 state removed: %s%s\n", dim, filepath.Base(filepath.Dir(m)), reset)
 			}
 		}
 	}

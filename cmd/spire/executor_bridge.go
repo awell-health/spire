@@ -58,16 +58,6 @@ func newGraphExecutor(beadID, agentName string, graph *formulaPkg.FormulaStepGra
 	return executor.NewGraph(beadID, agentName, graph, deps)
 }
 
-// loadExecutorState loads executor state from disk.
-func loadExecutorState(agentName string) (*executorState, error) {
-	return executor.LoadState(agentName, configDir)
-}
-
-// executorStatePath returns the state file path for an agent.
-func executorStatePath(agentName string) string {
-	return executor.StatePath(agentName, configDir)
-}
-
 // computeWaves delegates to pkg/executor.ComputeWaves.
 func computeWaves(epicID string) ([][]string, error) {
 	deps := buildExecutorDeps(ResolveBackend(""))
@@ -249,14 +239,9 @@ func executorResolveBranch(beadID string) string {
 // --- Command entry point ---
 
 // claimBeadIfNeeded claims the bead if it's not already in progress and
-// no existing executor state exists. Extracted from cmdExecute to avoid
-// duplicating the claim logic across v2/v3 paths.
+// no existing graph state exists. Extracted from cmdExecute to avoid
+// duplicating the claim logic.
 func claimBeadIfNeeded(beadID, agentName string) {
-	// Check for existing v2 state.
-	existingState, _ := loadExecutorState(agentName)
-	if existingState != nil {
-		return // resuming — don't re-claim
-	}
 	// Check for existing v3 graph state.
 	existingGraphState, _ := executor.LoadGraphState(agentName, configDir)
 	if existingGraphState != nil {

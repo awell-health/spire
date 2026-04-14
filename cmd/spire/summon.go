@@ -448,9 +448,7 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 			continue
 		}
 
-		// Check for existing executor state to determine resume vs fresh start.
-		// Check both v2 state.json and v3 graph_state.json.
-		existingState, _ := loadExecutorState(name)
+		// Check for existing graph state to determine resume vs fresh start.
 		existingGraphState, _ := executor.LoadGraphState(name, configDir)
 
 		// Resolve formula for the bead — best-effort, fall back to default.
@@ -492,9 +490,7 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 		}
 
 		if existingGraphState != nil && existingGraphState.ActiveStep != "" {
-			fmt.Printf("  %s%s%s → resuming %s from %s step (v3) [%s] formula=%s\n", cyan, name, reset, bead.ID, existingGraphState.ActiveStep, handle.Identifier(), formulaName)
-		} else if existingState != nil && existingState.Phase != "" {
-			fmt.Printf("  %s%s%s → resuming %s from %s phase [%s] formula=%s\n", cyan, name, reset, bead.ID, existingState.Phase, handle.Identifier(), formulaName)
+			fmt.Printf("  %s%s%s → resuming %s from %s step [%s] formula=%s\n", cyan, name, reset, bead.ID, existingGraphState.ActiveStep, handle.Identifier(), formulaName)
 		} else {
 			fmt.Printf("  %s%s%s → starting %s (%s) [%s] formula=%s\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier(), formulaName)
 		}
@@ -655,25 +651,13 @@ func cleanDeadWizards(reg wizardRegistry, quiet bool) wizardRegistry {
 // It removes the state file and cleans up bead labels so the bead can be re-summoned.
 // When quiet is true, stdout output is suppressed (for TUI and JSON output paths).
 func reapDeadWizard(w localWizard, quiet bool) {
-	// Delete v2 executor state file.
-	statePath := executorStatePath(w.Name)
-	removedV2 := false
-	if err := os.Remove(statePath); err == nil {
-		removedV2 = true
-	}
-
 	// Delete v3 graph state files (parent + nested sub-executors).
-	removedV3 := removeGraphStateFilesQuiet(w.Name)
+	removedState := removeGraphStateFilesQuiet(w.Name)
 
 	if !quiet {
-		switch {
-		case removedV2 && removedV3:
-			fmt.Printf("reaped stale wizard %s for %s (removed v2+v3 state)\n", w.Name, w.BeadID)
-		case removedV2:
-			fmt.Printf("reaped stale wizard %s for %s (removed v2 state)\n", w.Name, w.BeadID)
-		case removedV3:
-			fmt.Printf("reaped stale wizard %s for %s (removed v3 state)\n", w.Name, w.BeadID)
-		default:
+		if removedState {
+			fmt.Printf("reaped stale wizard %s for %s (removed graph state)\n", w.Name, w.BeadID)
+		} else {
 			fmt.Printf("reaped stale wizard %s for %s\n", w.Name, w.BeadID)
 		}
 	}
@@ -729,26 +713,14 @@ func scanOrphanedBeads(liveReg wizardRegistry) []Bead {
 			continue
 		}
 
-		// Check v2 state.json first.
+		// Read graph_state.json to extract the bead ID.
 		var beadID string
-		statePath := filepath.Join(runtimeDir, agentName, "state.json")
-		data, err := os.ReadFile(statePath)
+		gsPath := filepath.Join(runtimeDir, agentName, "graph_state.json")
+		gsData, err := os.ReadFile(gsPath)
 		if err == nil {
-			var state executorState
-			if err := json.Unmarshal(data, &state); err == nil {
-				beadID = state.BeadID
-			}
-		}
-
-		// Check v3 graph_state.json if v2 didn't yield a bead ID.
-		if beadID == "" {
-			gsPath := filepath.Join(runtimeDir, agentName, "graph_state.json")
-			gsData, err := os.ReadFile(gsPath)
-			if err == nil {
-				var gs executor.GraphState
-				if err := json.Unmarshal(gsData, &gs); err == nil {
-					beadID = gs.BeadID
-				}
+			var gs executor.GraphState
+			if err := json.Unmarshal(gsData, &gs); err == nil {
+				beadID = gs.BeadID
 			}
 		}
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/awell-health/spire/pkg/executor"
 )
 
 func TestCmdSummon_ForRemoved(t *testing.T) {
@@ -18,19 +20,19 @@ func TestCmdSummon_ForRemoved(t *testing.T) {
 	}
 }
 
-// writeScanOrphanState writes an executorState JSON file at
-// <configDir>/runtime/<agentName>/state.json.
-func writeScanOrphanState(t *testing.T, configDir, agentName string, state executorState) {
+// writeScanOrphanState writes a GraphState JSON file at
+// <configDir>/runtime/<agentName>/graph_state.json.
+func writeScanOrphanState(t *testing.T, configDir, agentName string, gs executor.GraphState) {
 	t.Helper()
 	dir := filepath.Join(configDir, "runtime", agentName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(state)
+	data, err := json.Marshal(gs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "graph_state.json"), data, 0644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -52,7 +54,7 @@ func TestScanOrphanedBeads_SkipsLiveAgent(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
-	writeScanOrphanState(t, tmp, "wizard-spi-abc", executorState{BeadID: "spi-abc", Phase: "implement"})
+	writeScanOrphanState(t, tmp, "wizard-spi-abc", executor.GraphState{BeadID: "spi-abc", ActiveStep: "implement"})
 
 	liveReg := wizardRegistry{
 		Wizards: []localWizard{
@@ -71,7 +73,7 @@ func TestScanOrphanedBeads_SkipsEmptyBeadID(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
-	writeScanOrphanState(t, tmp, "wizard-orphan-1", executorState{BeadID: "", Phase: "implement"})
+	writeScanOrphanState(t, tmp, "wizard-orphan-1", executor.GraphState{BeadID: "", ActiveStep: "implement"})
 
 	got := scanOrphanedBeads(wizardRegistry{})
 	if len(got) != 0 {
@@ -88,7 +90,7 @@ func TestScanOrphanedBeads_SkipsInvalidJSON(t *testing.T) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte("{not valid json"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "graph_state.json"), []byte("{not valid json"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -360,8 +362,8 @@ func TestScanOrphanedBeads_DeduplicatesBeadID(t *testing.T) {
 	// Two different agents both claim the same bead.
 	// storeGetBead will fail (no db) → both should be skipped, but
 	// dedup logic must not double-count the seen set.
-	writeScanOrphanState(t, tmp, "wizard-run-1", executorState{BeadID: "spi-dup", Phase: "implement"})
-	writeScanOrphanState(t, tmp, "wizard-run-2", executorState{BeadID: "spi-dup", Phase: "review"})
+	writeScanOrphanState(t, tmp, "wizard-run-1", executor.GraphState{BeadID: "spi-dup", ActiveStep: "implement"})
+	writeScanOrphanState(t, tmp, "wizard-run-2", executor.GraphState{BeadID: "spi-dup", ActiveStep: "review"})
 
 	// Both storeGetBead calls will error (no dolt), so result is still 0 —
 	// but this test verifies the seen-dedup path is reached without panic.

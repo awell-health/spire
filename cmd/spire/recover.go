@@ -350,20 +350,8 @@ func buildRecoveryDeps() *recovery.Deps {
 			return result, nil
 		},
 		LoadExecutorState: func(agentName string) (*recovery.RuntimeState, error) {
-			// Try v2 state first.
-			state, err := loadExecutorState(agentName)
-			if err == nil && state != nil {
-				return &recovery.RuntimeState{
-					Phase:         state.Phase,
-					Wave:          state.Wave,
-					StagingBranch: state.StagingBranch,
-					AttemptBeadID: state.AttemptBeadID,
-					StepBeadIDs:   state.StepBeadIDs,
-				}, nil
-			}
-			// Try v3 graph state.
-			gs, gsErr := executor.LoadGraphState(agentName, configDir)
-			if gsErr == nil && gs != nil {
+			gs, err := executor.LoadGraphState(agentName, configDir)
+			if err == nil && gs != nil {
 				return &recovery.RuntimeState{
 					Phase:         gs.ActiveStep,
 					StagingBranch: gs.StagingBranch,
