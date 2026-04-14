@@ -85,7 +85,7 @@ func setupCycleFuncMocks(t *testing.T, schedulable []store.Bead, maxConcurrent i
 	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
 		return &config.TowerConfig{MaxConcurrent: maxConcurrent}, nil
 	}
-	GetDBForRoutingFunc = func() *sql.DB { return nil }
+	GetDBForRoutingFunc = func(dbName string) *sql.DB { return nil }
 	AddLabelFunc = func(id, label string) error { return nil }
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) { return nil, nil }
 	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) { return nil, nil }
@@ -314,7 +314,7 @@ func TestE2E_ABRoutingSkippedWithoutDB(t *testing.T) {
 		labelCalls = append(labelCalls, id+":"+label)
 		return nil
 	}
-	GetDBForRoutingFunc = func() *sql.DB { return nil }
+	GetDBForRoutingFunc = func(dbName string) *sql.DB { return nil }
 
 	cfg := StewardConfig{
 		Backend:           backend,

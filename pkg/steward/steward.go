@@ -234,10 +234,18 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		cfg.ConcurrencyLimiter.Refresh(towerName, agents)
 	}
 
-	// Load tower config for MaxConcurrent.
+	// Load tower config for MaxConcurrent and database name.
 	var maxConcurrent int
+	var dbName string
 	if tc, err := LoadTowerConfigFunc(towerName); err == nil {
 		maxConcurrent = tc.MaxConcurrent
+		dbName = tc.Database
+	}
+	if dbName == "" {
+		dbName = DaemonDB
+	}
+	if dbName == "" {
+		dbName, _ = config.DetectDBName()
 	}
 
 	log.Printf("[steward] %sready: %d beads | agents: %d alive | max_concurrent: %d",
@@ -260,7 +268,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 
 		// A/B routing: select formula variant if experiment is active.
 		if cfg.ABRouter != nil {
-			if db := GetDBForRoutingFunc(); db != nil {
+			if db := GetDBForRoutingFunc(dbName); db != nil {
 				formulaName := formula.ResolveV3Name(formula.BeadInfo{
 					ID:     bead.ID,
 					Type:   bead.Type,
@@ -339,7 +347,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 				log.Printf("[steward] %smerge queue: %s merged (%s)", prefix, result.BeadID, result.SHA)
 				// Record clean merge for trust.
 				if cfg.TrustChecker != nil {
-					if db := GetDBForRoutingFunc(); db != nil {
+					if db := GetDBForRoutingFunc(dbName); db != nil {
 						repoPrefix := beadRepoPrefix(result.BeadID)
 						rec, _ := cfg.TrustChecker.RecordAndEvaluate(context.Background(), db, towerName, repoPrefix, true)
 						if rec != nil {
@@ -352,7 +360,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 				log.Printf("[steward] %smerge queue: %s failed: %s", prefix, result.BeadID, result.Error)
 				// Record failed merge for trust.
 				if cfg.TrustChecker != nil {
-					if db := GetDBForRoutingFunc(); db != nil {
+					if db := GetDBForRoutingFunc(dbName); db != nil {
 						repoPrefix := beadRepoPrefix(result.BeadID)
 						cfg.TrustChecker.RecordAndEvaluate(context.Background(), db, towerName, repoPrefix, false)
 						db.Close()
@@ -894,8 +902,8 @@ func mergeQueueDepth(mq *MergeQueue) int {
 
 // getDBForRouting opens a *sql.DB connection to the dolt server for trust/routing queries.
 // Returns nil on error (callers should nil-check and skip).
-func getDBForRouting() *sql.DB {
-	dsn := fmt.Sprintf("root:@tcp(%s:%s)/", dolt.Host(), dolt.Port())
+func getDBForRouting(dbName string) *sql.DB {
+	dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s", dolt.Host(), dolt.Port(), dbName)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil
