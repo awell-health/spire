@@ -185,10 +185,24 @@ func findLinkedBeads(parentID string, deps *Deps) ([]AlertInfo, *RecoveryRef) {
 	var alerts []AlertInfo
 	var recoveryRef *RecoveryRef
 	for _, dep := range dependents {
-		// Check for recovery-for dependent (first open one wins).
-		if dep.DependencyType == "recovery-for" && dep.Status != "closed" && recoveryRef == nil {
-			recoveryRef = &RecoveryRef{ID: dep.ID, Title: dep.Title}
-			continue
+		// Check for recovery beads: legacy recovery-for edges OR
+		// current caused-by edges with recovery-bead label.
+		if dep.Status != "closed" && recoveryRef == nil {
+			if dep.DependencyType == "recovery-for" {
+				recoveryRef = &RecoveryRef{ID: dep.ID, Title: dep.Title}
+				continue
+			}
+			if dep.DependencyType == "caused-by" {
+				for _, l := range dep.Labels {
+					if l == "recovery-bead" {
+						recoveryRef = &RecoveryRef{ID: dep.ID, Title: dep.Title}
+						break
+					}
+				}
+				if recoveryRef != nil {
+					continue
+				}
+			}
 		}
 
 		// Check for alert beads.

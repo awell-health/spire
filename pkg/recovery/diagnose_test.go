@@ -792,3 +792,72 @@ func TestDiagnose_HookedApprovalGate_DoesNotOfferRecoveryActions(t *testing.T) {
 		t.Fatal("expected error — approval gates should not be recoverable")
 	}
 }
+
+// TestDiagnose_HookedBeadWithCausedByRecoveryBead_IsRecoverable verifies that
+// a hooked bead with a caused-by recovery-bead dependent (current model) is
+// accepted as recoverable even without an interrupted:* label or alert beads.
+func TestDiagnose_HookedBeadWithCausedByRecoveryBead_IsRecoverable(t *testing.T) {
+	deps := mockDeps()
+	deps.GetBead = func(id string) (DepBead, error) {
+		return DepBead{
+			ID:     id,
+			Title:  "Hooked with caused-by recovery",
+			Status: "hooked",
+			Labels: []string{"phase:implement"},
+		}, nil
+	}
+	deps.GetDependentsWithMeta = func(id string) ([]DepDependent, error) {
+		return []DepDependent{
+			{ID: "spi-rec1", Title: "[recovery] step-failure", Status: "open",
+				DependencyType: "caused-by", Labels: []string{"recovery-bead"}},
+		}, nil
+	}
+
+	diag, err := Diagnose("spi-hooked", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+	if diag.RecoveryBead == nil {
+		t.Fatal("expected RecoveryBead to be populated from caused-by recovery-bead")
+	}
+	if diag.RecoveryBead.ID != "spi-rec1" {
+		t.Errorf("expected RecoveryBead.ID=%q, got %q", "spi-rec1", diag.RecoveryBead.ID)
+	}
+}
+
+// TestDiagnose_HookedBeadWithCausedByRecoveryBeadAndAlert_PopulatesRecoveryBead
+// verifies that when both a caused-by recovery bead and an alert bead exist,
+// the failure class comes from the alert and RecoveryBead is still populated.
+func TestDiagnose_HookedBeadWithCausedByRecoveryBeadAndAlert_PopulatesRecoveryBead(t *testing.T) {
+	deps := mockDeps()
+	deps.GetBead = func(id string) (DepBead, error) {
+		return DepBead{
+			ID:     id,
+			Title:  "Hooked with recovery + alert",
+			Status: "hooked",
+			Labels: []string{"phase:implement"},
+		}, nil
+	}
+	deps.GetDependentsWithMeta = func(id string) ([]DepDependent, error) {
+		return []DepDependent{
+			{ID: "spi-rec1", Title: "[recovery] step-failure", Status: "open",
+				DependencyType: "caused-by", Labels: []string{"recovery-bead"}},
+			{ID: "spi-alert1", Title: "alert", Status: "open",
+				DependencyType: "caused-by", Labels: []string{"alert:step-failure"}},
+		}, nil
+	}
+
+	diag, err := Diagnose("spi-hooked", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+	if diag.InterruptLabel != "interrupted:step-failure" {
+		t.Errorf("expected InterruptLabel=%q, got %q", "interrupted:step-failure", diag.InterruptLabel)
+	}
+	if diag.RecoveryBead == nil {
+		t.Fatal("expected RecoveryBead to be populated")
+	}
+	if diag.RecoveryBead.ID != "spi-rec1" {
+		t.Errorf("expected RecoveryBead.ID=%q, got %q", "spi-rec1", diag.RecoveryBead.ID)
+	}
+}
