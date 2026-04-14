@@ -326,6 +326,17 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		}
 	}
 
+	// 7b. Check for recovery retry request before starting phase execution.
+	// This must happen after setup (worktree, registration, focus) but before
+	// any phase work. Only checked at this entry point — not mid-execution.
+	retry, retryErr := checkRetryRequest(beadID, log)
+	if retryErr != nil {
+		log("retry request check failed: %s — exiting", retryErr)
+		elapsed := time.Since(startedAt)
+		WizardWriteResult(wizardName, beadID, "retry_error", branchName, "", elapsed, ClaudeMetrics{}, deps, log)
+		return retryErr
+	}
+
 	// 8-9. Phase execution
 	var accMetrics ClaudeMetrics
 	if reviewFix {
@@ -364,9 +375,11 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	} else {
 		// Normal path: design phase then implement phase
 
-		// --- Design phase (skipped in apprentice mode or when custom prompt is set) ---
+		// --- Design phase (skipped in apprentice mode, custom prompt, or retry past design) ---
 		var designOutput string
-		if !apprenticeMode && customPrompt == "" {
+		skipDesign := apprenticeMode || customPrompt != "" || retry.shouldSkipTo("design")
+		if !skipDesign {
+			retry.enterStep("design")
 			deps.RegistryUpdate(wizardName, func(w *Entry) {
 				w.Phase = "design"
 				w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
@@ -384,6 +397,11 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			designOutput, designMetrics, err = WizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
 			if err != nil {
 				log("design phase failed: %s", err)
+				if retry.handleStepFailure(err.Error()) {
+					elapsed := time.Since(startedAt)
+					WizardWriteResult(wizardName, beadID, "retry_failure", branchName, "", elapsed, accMetrics, deps, log)
+					return nil
+				}
 			}
 			accMetrics = accMetrics.Add(designMetrics)
 			log("design finished (%.0fs)", time.Since(designStartedAt).Seconds())
@@ -395,58 +413,116 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			// Post plan as bead comment
 			deps.AddComment(beadID, fmt.Sprintf("Design plan:\n%s", designOutput))
 
+			retry.handleStepSuccess()
+		} else if retry.retrying {
+			log("skipping design phase (retry target: %s)", retry.request.FromStep)
 		}
 
 		// --- Implement phase ---
-		deps.RegistryUpdate(wizardName, func(w *Entry) {
-			w.Phase = "implement"
-			w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
-		})
+		if !retry.shouldSkipTo("implement") {
+			retry.enterStep("implement")
+			deps.RegistryUpdate(wizardName, func(w *Entry) {
+				w.Phase = "implement"
+				w.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
+			})
 
-		var implPrompt string
-		if customPrompt != "" {
-			implPrompt = WizardBuildCustomPrompt(wizardName, beadID, repoCfg, focusContext, beadJSON, customPrompt)
-		} else {
-			implPrompt = WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
-				model, maxTurns, timeout, repoCfg, focusContext, beadJSON, designOutput, "")
-		}
-		implPromptPath := filepath.Join(worktreeDir, ".spire-prompt.txt")
-		if err := os.WriteFile(implPromptPath, []byte(implPrompt), 0644); err != nil {
-			return fmt.Errorf("write implement prompt: %w", err)
-		}
+			var implPrompt string
+			if customPrompt != "" {
+				implPrompt = WizardBuildCustomPrompt(wizardName, beadID, repoCfg, focusContext, beadJSON, customPrompt)
+			} else {
+				implPrompt = WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch,
+					model, maxTurns, timeout, repoCfg, focusContext, beadJSON, designOutput, "")
+			}
+			implPromptPath := filepath.Join(worktreeDir, ".spire-prompt.txt")
+			if err := os.WriteFile(implPromptPath, []byte(implPrompt), 0644); err != nil {
+				return fmt.Errorf("write implement prompt: %w", err)
+			}
 
-		claudeStartedAt := time.Now()
-		log("starting implement phase (timeout: %s)", timeout)
-		implMetrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns)
-		if runErr != nil {
-			log("claude implement failed: %s", runErr)
-		}
-		accMetrics = accMetrics.Add(implMetrics)
-		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
+			claudeStartedAt := time.Now()
+			log("starting implement phase (timeout: %s)", timeout)
+			implMetrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns)
+			if runErr != nil {
+				log("claude implement failed: %s", runErr)
+				if retry.handleStepFailure(runErr.Error()) {
+					elapsed := time.Since(startedAt)
+					WizardWriteResult(wizardName, beadID, "retry_failure", branchName, "", elapsed, accMetrics.Add(implMetrics), deps, log)
+					return nil
+				}
+			}
+			accMetrics = accMetrics.Add(implMetrics)
+			log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
+			retry.handleStepSuccess()
+		} else if retry.retrying {
+			log("skipping implement phase (retry target: %s)", retry.request.FromStep)
+		}
 	}
 
 	// 10. Commit
+	if !retry.shouldSkipTo("commit") {
+		retry.enterStep("commit")
+	}
 	commitSHA, committed := WizardCommit(wc, beadID, beadTitle, log)
+	if retry.retrying && retry.currentStep == "commit" {
+		if !committed {
+			if retry.handleStepFailure("no changes to commit") {
+				elapsed := time.Since(startedAt)
+				WizardWriteResult(wizardName, beadID, "retry_failure", branchName, "", elapsed, accMetrics, deps, log)
+				return nil
+			}
+		} else {
+			retry.handleStepSuccess()
+		}
+	}
 
 	// 11. Build gate — the apprentice can't go home until the build passes.
 	// On failure, invokes Claude to fix build errors, up to N rounds.
+	if !retry.shouldSkipTo("build-gate") {
+		retry.enterStep("build-gate")
+	}
 	buildPassed := WizardBuildGate(wc, beadID, beadTitle, worktreeDir, model, repoCfg, &accMetrics, log)
+	if retry.retrying && retry.currentStep == "build-gate" {
+		if !buildPassed {
+			if retry.handleStepFailure("build gate failed") {
+				elapsed := time.Since(startedAt)
+				WizardWriteResult(wizardName, beadID, "retry_failure", branchName, commitSHA, elapsed, accMetrics, deps, log)
+				return nil
+			}
+		} else {
+			retry.handleStepSuccess()
+		}
+	}
 
 	// 12. Run tests (informational only — does not gate completion).
+	if !retry.shouldSkipTo("test") {
+		retry.enterStep("test")
+	}
 	testsPassed := true
 	if repoCfg.Runtime.Test != "" {
 		log("validating: test")
 		if err := WizardRunCmd(worktreeDir, repoCfg.Runtime.Test); err != nil {
 			log("test failed: %s (informational)", err)
 			testsPassed = false
+			if retry.retrying && retry.currentStep == "test" {
+				if retry.handleStepFailure(err.Error()) {
+					elapsed := time.Since(startedAt)
+					WizardWriteResult(wizardName, beadID, "retry_failure", branchName, commitSHA, elapsed, accMetrics, deps, log)
+					return nil
+				}
+			}
 		}
+	}
+	if retry.retrying && retry.currentStep == "test" {
+		retry.handleStepSuccess()
 	}
 
 	// 13. Update bead (comment)
 	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, committed, testsPassed, deps, log)
 
 	// 14. Review handoff if committed and build passes.
+	if !retry.shouldSkipTo("review") {
+		retry.enterStep("review")
+	}
 	if committed && buildPassed {
 		if !testsPassed {
 			log("tests failed but build passed — proceeding")
@@ -462,9 +538,19 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			handoffDone = true
 			log("apprentice mode — skipping review handoff")
 		}
+		if retry.retrying && retry.currentStep == "review" {
+			retry.handleStepSuccess()
+		}
 	} else if !buildPassed {
 		log("build failed — apprentice cannot hand off")
 		deps.AddLabel(beadID, "build-failure")
+		if retry.retrying && retry.currentStep == "review" {
+			if retry.handleStepFailure("build failed — cannot hand off to review") {
+				elapsed := time.Since(startedAt)
+				WizardWriteResult(wizardName, beadID, "retry_failure", branchName, commitSHA, elapsed, accMetrics, deps, log)
+				return nil
+			}
+		}
 	}
 
 	// 15. If we didn't hand off, reopen the bead so it doesn't stay orphaned.
