@@ -34,7 +34,7 @@ import (
 // across daemon cycles so the gRPC endpoint stays up between ticks.
 
 var (
-	sharedDuckWriter *DuckWriter
+	sharedOLAPWriter olap.OLAPWriter
 	sharedOLAPPath   string
 	otlpReceiver     *spireOtel.Receiver
 )
@@ -73,6 +73,12 @@ func (dw *DuckWriter) Stop() {
 	<-dw.done
 }
 
+// Close implements olap.OLAPWriter. It stops the writer goroutine.
+func (dw *DuckWriter) Close() error {
+	dw.Stop()
+	return nil
+}
+
 // Submit sends a write function to the writer goroutine and waits for it to
 // complete. The function is called inside a transaction managed by olap.WriteFunc
 // (which handles open→tx→commit→close and retry-on-lock).
@@ -89,20 +95,54 @@ func (dw *DuckWriter) run() {
 	}
 }
 
-// ensureSharedOLAP initializes the DuckWriter and OTLP receiver for the tower.
+// ensureSharedOLAP initializes the OLAP writer and OTLP receiver for the tower.
 // Idempotent: subsequent calls with the same tower reuse the existing writer.
-// No persistent DuckDB connection is held — the writer opens/closes per write.
-func ensureSharedOLAP(tower config.TowerConfig) (*DuckWriter, error) {
+// The backend is selected via the SPIRE_OLAP_BACKEND env var: "clickhouse" uses
+// ClickHouse, anything else (including empty) uses DuckDB.
+func ensureSharedOLAP(tower config.TowerConfig) (olap.OLAPWriter, error) {
 	olapPath := tower.OLAPPath()
 
 	// If already set up for the same path, reuse.
-	if sharedDuckWriter != nil && sharedOLAPPath == olapPath {
-		return sharedDuckWriter, nil
+	if sharedOLAPWriter != nil && sharedOLAPPath == olapPath {
+		return sharedOLAPWriter, nil
 	}
 
 	// Close previous if path changed (tower switch — rare).
 	closeSharedOLAP()
 
+	// ClickHouse backend: connect to an external ClickHouse server.
+	backend := os.Getenv("SPIRE_OLAP_BACKEND")
+	if backend == "clickhouse" {
+		dsn := os.Getenv("SPIRE_CLICKHOUSE_DSN")
+		if dsn == "" {
+			return nil, fmt.Errorf("SPIRE_OLAP_BACKEND=clickhouse but SPIRE_CLICKHOUSE_DSN is not set")
+		}
+		cw, err := olap.NewClickHouseWriter(dsn)
+		if err != nil {
+			return nil, err
+		}
+		sharedOLAPWriter = cw
+		sharedOLAPPath = olapPath
+
+		// Start OTLP receiver with ClickHouse writer.
+		if otlpReceiver == nil {
+			port := spireOtel.DefaultPort
+			if envPort := os.Getenv("SPIRE_OTLP_PORT"); envPort != "" {
+				if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
+					port = p
+				}
+			}
+			r := spireOtel.NewReceiver(cw.Submit, port, tower.Name)
+			if err := r.Start(); err != nil {
+				log.Printf("[daemon] OTLP receiver start: %v (telemetry disabled)", err)
+			} else {
+				otlpReceiver = r
+			}
+		}
+		return cw, nil
+	}
+
+	// Default: DuckDB backend.
 	if err := os.MkdirAll(filepath.Dir(olapPath), 0700); err != nil {
 		return nil, err
 	}
@@ -115,7 +155,7 @@ func ensureSharedOLAP(tower config.TowerConfig) (*DuckWriter, error) {
 	// Start the single-writer goroutine.
 	dw := NewDuckWriter(olapPath)
 	dw.Start()
-	sharedDuckWriter = dw
+	sharedOLAPWriter = dw
 	sharedOLAPPath = olapPath
 
 	// Start OTLP receiver if not running. It submits writes through the DuckWriter.
@@ -138,16 +178,15 @@ func ensureSharedOLAP(tower config.TowerConfig) (*DuckWriter, error) {
 	return dw, nil
 }
 
-// closeSharedOLAP shuts down the OTLP receiver and DuckWriter.
-// No persistent DB connection to close — the writer handles open/close per write.
+// closeSharedOLAP shuts down the OTLP receiver and OLAP writer.
 func closeSharedOLAP() {
 	if otlpReceiver != nil {
 		otlpReceiver.Stop()
 		otlpReceiver = nil
 	}
-	if sharedDuckWriter != nil {
-		sharedDuckWriter.Stop()
-		sharedDuckWriter = nil
+	if sharedOLAPWriter != nil {
+		sharedOLAPWriter.Close()
+		sharedOLAPWriter = nil
 		sharedOLAPPath = ""
 	}
 }
@@ -697,12 +736,11 @@ func ReapDeadAgents(towerName string) int {
 }
 
 // syncToOLAP performs incremental ETL from Dolt agent_runs into the tower's
-// local DuckDB analytics database. Writes are serialized through the shared
-// DuckWriter so they don't conflict with OTel event flushes. No persistent
-// DuckDB connection is held.
+// OLAP store. Writes go through the shared OLAPWriter (DuckDB or ClickHouse)
+// so they don't conflict with OTel event flushes.
 // Non-fatal: errors are logged by the caller.
 func syncToOLAP(tower config.TowerConfig) error {
-	dw, err := ensureSharedOLAP(tower)
+	w, err := ensureSharedOLAP(tower)
 	if err != nil {
 		return err
 	}
@@ -717,7 +755,7 @@ func syncToOLAP(tower config.TowerConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	etl := olap.NewETLWithWriter(tower.OLAPPath(), dw.Submit)
+	etl := olap.NewETLWithWriter(tower.OLAPPath(), w.Submit)
 	n, err := etl.Sync(ctx, doltConn)
 	if err != nil {
 		return err
