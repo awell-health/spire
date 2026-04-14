@@ -19,35 +19,15 @@ spec:
             app.kubernetes.io/component: dolt-sync
         spec:
           restartPolicy: OnFailure
+          serviceAccountName: spire-steward
           containers:
             - name: dolt-sync
-              image: "{{ .Values.dolt.image.repository }}:{{ .Values.dolt.image.tag }}"
+              image: bitnami/kubectl:latest
               command:
                 - /bin/sh
                 - -c
                 - |
                   set -e
-                  cd /var/lib/dolt
-                  dolt config --global --set user.name "${DOLTHUB_USER}"
-                  dolt creds import /secrets/dolthub-creds.json 2>/dev/null || true
-                  dolt pull origin main || true
-                  dolt push origin main
-              env:
-                - name: DOLTHUB_USER
-                  valueFrom:
-                    secretKeyRef:
-                      name: spire-credentials
-                      key: dolthub-user
-                - name: DOLTHUB_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: spire-credentials
-                      key: dolthub-password
-              volumeMounts:
-                - name: dolt-data
-                  mountPath: /var/lib/dolt
-          volumes:
-            - name: dolt-data
-              persistentVolumeClaim:
-                claimName: dolt-data-spire-dolt-0
+                  kubectl exec spire-dolt-0 -n {{ .Release.Namespace }} -- sh -c \
+                    'cd /var/lib/dolt && dolt pull origin main || true && dolt push origin main'
 {{- end }}

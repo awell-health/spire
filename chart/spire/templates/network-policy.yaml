@@ -52,8 +52,9 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchLabels:
-              spire.agent: "true"
+            matchExpressions:
+              - key: spire.agent
+                operator: Exists
       ports:
         - port: {{ .Values.steward.otlpPort }}
           protocol: TCP
@@ -100,8 +101,9 @@ metadata:
     {{- include "spire.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchLabels:
-      spire.agent: "true"
+    matchExpressions:
+      - key: spire.agent
+        operator: Exists
   policyTypes:
     - Egress
   egress:

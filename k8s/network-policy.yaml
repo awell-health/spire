@@ -6,8 +6,9 @@ metadata:
   namespace: spire
 spec:
   podSelector:
-    matchLabels:
-      spire.agent: ""
+    matchExpressions:
+    - key: spire.agent
+      operator: Exists
   policyTypes: [Egress]
   egress:
   - to:

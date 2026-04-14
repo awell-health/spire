@@ -131,10 +131,11 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 			Name:      podName,
 			Namespace: b.namespace,
 			Labels: map[string]string{
-				"spire.agent": cfg.Name,
-				"spire.bead":  cfg.BeadID,
-				"spire.role":  string(cfg.Role),
-				"spire.tower": cfg.Tower,
+				"spire.agent":      "true",      // fixed value for network policy selectors
+				"spire.agent.name": cfg.Name,    // actual agent name for lookups
+				"spire.bead":       cfg.BeadID,
+				"spire.role":       string(cfg.Role),
+				"spire.tower":      cfg.Tower,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -171,7 +172,7 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 func (b *K8sBackend) List() ([]Info, error) {
 	pods, err := b.client.CoreV1().Pods(b.namespace).List(
 		context.Background(),
-		metav1.ListOptions{LabelSelector: "spire.agent"},
+		metav1.ListOptions{LabelSelector: "spire.agent=true"},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list agent pods: %w", err)
@@ -181,7 +182,7 @@ func (b *K8sBackend) List() ([]Info, error) {
 	for _, pod := range pods.Items {
 		alive := pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending
 		infos = append(infos, Info{
-			Name:       pod.Labels["spire.agent"],
+			Name:       pod.Labels["spire.agent.name"],
 			BeadID:     pod.Labels["spire.bead"],
 			Phase:      pod.Labels["spire.role"],
 			Alive:      alive,
@@ -231,7 +232,7 @@ func (b *K8sBackend) findPod(name string) (string, error) {
 	pods, err := b.client.CoreV1().Pods(b.namespace).List(
 		context.Background(),
 		metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("spire.agent=%s", name),
+			LabelSelector: fmt.Sprintf("spire.agent.name=%s", name),
 		},
 	)
 	if err != nil {

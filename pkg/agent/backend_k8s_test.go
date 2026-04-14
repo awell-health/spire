@@ -57,10 +57,11 @@ func TestK8sBackend_Spawn_CreatesCorrectPod(t *testing.T) {
 
 	// Check labels.
 	wantLabels := map[string]string{
-		"spire.agent": cfg.Name,
-		"spire.bead":  cfg.BeadID,
-		"spire.role":  string(cfg.Role),
-		"spire.tower": cfg.Tower,
+		"spire.agent":      "true",
+		"spire.agent.name": cfg.Name,
+		"spire.bead":       cfg.BeadID,
+		"spire.role":       string(cfg.Role),
+		"spire.tower":      cfg.Tower,
 	}
 	for k, want := range wantLabels {
 		if got := pod.Labels[k]; got != want {

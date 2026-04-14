@@ -38,11 +38,15 @@ func (h *K8sHandle) Wait() error {
 		return phaseError(pod)
 	}
 
-	// Watch for phase changes.
+	// Watch for phase changes. Use the ResourceVersion from the Get response
+	// so the watch starts from that point, not "now". This avoids a race where
+	// the pod completes between the Get and Watch calls — without this the
+	// Watch would never see the completion event and hang forever.
 	watcher, err := h.client.CoreV1().Pods(h.namespace).Watch(
 		context.Background(),
 		metav1.ListOptions{
-			FieldSelector: "metadata.name=" + h.podName,
+			FieldSelector:   "metadata.name=" + h.podName,
+			ResourceVersion: pod.ResourceVersion,
 		},
 	)
 	if err != nil {

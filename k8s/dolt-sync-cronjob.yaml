@@ -11,25 +11,12 @@ spec:
       template:
         spec:
           restartPolicy: OnFailure
+          serviceAccountName: spire-steward
           containers:
           - name: syncer
-            image: dolthub/dolt-sql-server:latest
+            image: bitnami/kubectl:latest
             command: ["sh", "-c"]
             args:
             - |
-              cd /var/lib/dolt && \
-              dolt pull origin main && \
-              dolt push origin main
-            env:
-            - name: DOLT_ROOT_PATH
-              value: /var/lib/dolt
-            envFrom:
-            - secretRef:
-                name: spire-credentials
-            volumeMounts:
-            - name: dolt-data
-              mountPath: /var/lib/dolt
-          volumes:
-          - name: dolt-data
-            persistentVolumeClaim:
-              claimName: dolt-data-spire-dolt-0
+              kubectl exec spire-dolt-0 -n spire -- sh -c \
+                'cd /var/lib/dolt && dolt pull origin main && dolt push origin main'

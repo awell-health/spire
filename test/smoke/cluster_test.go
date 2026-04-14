@@ -150,8 +150,11 @@ func TestClusterBootstrap(t *testing.T) {
 		if labels["spire.bead"] != beadID {
 			t.Errorf("spire.bead label = %q, want %q", labels["spire.bead"], beadID)
 		}
-		if labels["spire.agent"] == "" {
-			t.Error("spire.agent label is missing")
+		if labels["spire.agent"] != "true" {
+			t.Errorf("spire.agent label = %q, want \"true\"", labels["spire.agent"])
+		}
+		if labels["spire.agent.name"] == "" {
+			t.Error("spire.agent.name label is missing")
 		}
 		if labels["spire.role"] == "" {
 			t.Error("spire.role label is missing")
@@ -325,7 +328,8 @@ func TestClusterNetworkPolicies(t *testing.T) {
 				Name:      "netpol-test-agent",
 				Namespace: testNamespace,
 				Labels: map[string]string{
-					"spire.agent": "netpol-test",
+					"spire.agent":      "true",
+					"spire.agent.name": "netpol-test",
 				},
 			},
 			Spec: corev1.PodSpec{

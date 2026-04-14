@@ -1,0 +1,486 @@
+You are Spire apprentice wizard-spi-2jlhe-fix — IMPLEMENT PHASE.
+
+You are working in an isolated git worktree. Other agents may be working on related tasks in parallel — you cannot see their changes.
+
+## Task
+- bead: spi-2jlhe
+- base branch: main
+- feature branch: epic/spi-2jlhe
+- target model: claude-opus-4-6
+- max turns: 75
+- hard timeout: 15m
+
+## Before making changes
+1. Read the focus context below carefully — it contains the FULL task description.
+2. Read the repo context paths below. If a path is a directory, inspect only relevant files.
+3. Pay attention to "do not touch" constraints in the task description — other agents handle those files.
+
+## Repo context paths
+- CLAUDE.md
+- SPIRE.md
+- docs/ZFC.md
+- pkg/executor/README.md
+- pkg/formula/README.md
+- pkg/wizard/README.md
+- pkg/git/README.md
+- pkg/workshop/README.md
+
+
+## Validation commands
+- install: (none)
+- lint: go vet ./cmd/spire/
+- build: go build ./cmd/spire/
+- test: go test ./cmd/spire/ -timeout=30s
+
+## Rules — READ THESE
+
+1. Work ONLY on the task described below. Do not add features, refactor unrelated code, or "improve" things outside your task scope.
+2. Do NOT create a PR, merge, push, or touch other branches. The orchestrator handles that.
+3. Do NOT modify files listed as "do_not_touch" in the task description — another agent handles those.
+4. If the task description says to create types/interfaces that other tasks will use, make them complete and well-documented.
+5. COMMIT YOUR WORK before running validation. Your code MUST build — the orchestrator will verify this and send you back to fix build errors if it doesn't. If tests fail on code you wrote, try to fix it. If tests fail on code you didn't write, IGNORE IT and commit anyway.
+6. If you CANNOT complete the full task as described, commit what you have and report what's missing as a comment on the bead. Partial work committed is ALWAYS better than no work committed.
+7. Do NOT revert your changes. Do NOT undo work you've done. If something isn't working, commit what you have — the reviewer will sort it out.
+
+
+Address the following review feedback:
+## Prior Review Rounds
+
+### Round 1 (sage: wizard-spi-2jlhe-sage-review, status: closed)
+verdict: request_changes
+
+Solid foundation work — Helm chart, K8sBackend, ClickHouse OLAP, GraphStateStore abstraction, and comprehensive tests are well-structured. However, two correctness issues need fixing: K8sHandle.Wait() has a race condition that can hang indefinitely, and network policy label selectors don't match the labels K8sBackend actually sets on agent pods.
+- [error] Race condition in Wait(): if the pod completes between the Get (line 33) and the Watch (line 41), the Watch starts from 'now' and never sees the completion event — Wait() hangs forever. Fix: pass the ResourceVersion from the Get response into the Watch ListOptions, e.g. `metav1.ListOptions{FieldSelector: ..., ResourceVersion: pod.ResourceVersion}`. (pkg/agent/spawn_k8s.go:41)
+- [error] Label value mismatch: Spawn sets `"spire.agent": cfg.Name` (e.g. "apprentice-spi-abc-0"), but network policies in both chart/spire/templates/network-policy.yaml (uses `spire.agent: "true"`) and k8s/network-policy.yaml (uses `spire.agent: ""`) won't match. Agent egress restrictions and steward ingress-from-agent rules are silently unenforced. Either set the label to a fixed value like `"true"` (and use a separate label for the agent name), or change network policy selectors to use `matchExpressions` with `operator: Exists`. (pkg/agent/backend_k8s.go:146)
+- [error] podSelector `spire.agent: "true"` does not match pods created by K8sBackend which sets `spire.agent: <agent-name>`. This renders the agent egress NetworkPolicy ineffective. (chart/spire/templates/network-policy.yaml:121)
+- [error] podSelector `spire.agent: ""` matches only empty-string label values, but K8sBackend sets `spire.agent: <agent-name>`. Use matchExpressions with operator: Exists (as done correctly for steward-ingress on line 118). (k8s/network-policy.yaml:7)
+- [warning] CronJob mounts PVC `dolt-data-spire-dolt-0` (ReadWriteOnce) which is also mounted by the Dolt StatefulSet pod. If the CronJob pod is scheduled to a different node, the mount will fail. Consider running the sync command via `kubectl exec` into the StatefulSet pod instead, or use an initContainer/sidecar pattern. (k8s/dolt-sync-cronjob.yaml:33)
+- [warning] Same ReadWriteOnce PVC sharing issue as k8s/dolt-sync-cronjob.yaml — CronJob and StatefulSet pod both mount `dolt-data-spire-dolt-0`. (chart/spire/templates/dolt-sync-cronjob.yaml:49)
+
+
+
+## Focus context (FULL task description)
+--- Task spi-2jlhe ---
+Title: Cluster foundation: K8sBackend, Dolt StatefulSet, ClickHouse, Helm chart
+Status: in_progress
+Priority: P1
+Formula: epic-default
+
+--- Step Graph ---
+  design-check   ✓ completed   (<1s)
+  plan           ✓ completed   (15m52s)
+  materialize    ✓ completed   (<1s)
+  implement      ✓ completed   (19m51s)
+  implement-failed . pending     [terminal, when: outcome ne verified]
+→ review         ● active      [when: outcome eq verified]
+  discard        . pending     [terminal, when: outcome eq discard]
+  merge          . pending     [when: outcome eq merge]
+  close          . pending     [terminal]
+
+--- Workspace ---
+  staging: epic/spi-2jlhe (staging, active)
+
+--- discovered-from: spi-885rv ---
+Title: Production Kubernetes: cluster architecture for Spire with current system design
+Status: closed
+
+--- blocks: spi-m0ic5 ---
+Title: Steward as production service: concurrency, scheduling, health, trust
+Status: closed
+
+--- Comments (3) ---
+[JB]: ## Epic 3 (after Epic 2): Cluster Foundation
+
+The actual k8s infrastructure. By this point metrics are solid (Epic 1) and the steward is production-ready locally (Epic 2). This epic moves it to k8s.
+
+### Depends on
+- Epic 2 (spi-m0ic5): steward must be reliable before we put it in a pod
+
+### Subtasks
+
+1. **K8sBackend in pkg/agent** — implements the existing Backend interface. Spawn() creates a k8s pod, Wait() watches pod completion, Kill() deletes the pod. The linchpin — everything else (store, executor, wizard, formulas) runs unchanged.
+
+2. **Dolt StatefulSet** — PV for persistence, MySQL service on 3307, DoltHub sync via CronJob sidecar. Connection pooling for 50+ concurrent agents.
+
+3. **ClickHouse StatefulSet** — replaces DuckDB in cluster mode. Same schema (tool_events, tool_spans, api_events, agent_runs_olap). OTel writer swap: the receiver's writeFn targets ClickHouse instead of DuckDB. Abstract behind an interface so local (DuckDB) and cluster (ClickHouse) coexist.
+
+4. **Graph state in Dolt** — move graph_state.json from filesystem to Dolt table. Hooked-step sweep must survive pod restarts. Agent pods are ephemeral — filesystem state dies with the pod.
+
+5. **Helm chart** — steward Deployment, dolt StatefulSet, ClickHouse StatefulSet, syncer CronJob, RBAC for agent pod creation. `helm install spire awell/spire` boots the whole thing.
+
+6. **Secrets management** — API keys, git tokens, DoltHub creds via k8s Secrets. Per-repo token isolation. ESO (External Secrets Operator) support for Vault/AWS SM.
+
+7. **Network policies** — agent pods → dolt (3307), agent pods → steward (4317 OTLP), steward → ClickHouse. Nothing else.
+
+8. **Agent pod resource tiers** — implement gets 4Gi, review gets 1Gi, plan gets 512Mi. Pod priority classes for P0 beads.
+
+9. **Bootstrap and smoke test** — helm install → file a bead → agent pod spawns → work completes → bead closes. End-to-end in a test cluster.
+
+### Testing requirements
+- Test: K8sBackend.Spawn creates a pod with correct env vars, volumes, labels
+- Test: K8sBackend.Wait returns correct exit code from pod termination
+- Test: K8sBackend.Kill deletes the pod
+- Test: graph state round-trips through Dolt (write, read back, verify)
+- Test: ClickHouse writer produces same results as DuckDB writer for identical input
+- Integration test: helm install in kind/minikube, file bead, verify agent pod runs
+- Test: network policies allow required traffic, block everything else
+
+### Exit criteria
+- `helm install` boots a working Spire cluster
+- Agent pods spawn, execute, and terminate correctly
+- Metrics flow through ClickHouse
+- Graph state survives pod restarts
+- Smoke test: file bead → merged to main, entirely in-cluster
+[spire]: Wizard plan: 6 subtasks
+
+- spi-ths8c: K8sBackend: k8s pod spawning in pkg/agent
+- spi-k21ar: ClickHouse OLAP writer and schema
+- spi-rxv2d: Graph state persistence in Dolt
+- spi-cfkwi: K8s cluster infrastructure manifests
+- spi-ct7h7: Helm chart for production deployment
+- spi-r9wyb: Cluster bootstrap smoke test ← spi-ths8c, spi-k21ar, spi-rxv2d, spi-cfkwi, spi-ct7h7
+
+[spire]: Review round 1: request_changes — Solid foundation work — Helm chart, K8sBackend, ClickHouse OLAP, GraphStateStore abstraction, and comprehensive tests are well-structured. However, two correctness issues need fixing: K8sHandle.Wait() has a race condition that can hang indefinitely, and network policy label selectors don't match the labels K8sBackend actually sets on agent pods.
+- [error] Race condition in Wait(): if the pod completes between the Get (line 33) and the Watch (line 41), the Watch starts from 'now' and never sees the completion event — Wait() hangs forever. Fix: pass the ResourceVersion from the Get response into the Watch ListOptions, e.g. `metav1.ListOptions{FieldSelector: ..., ResourceVersion: pod.ResourceVersion}`. (pkg/agent/spawn_k8s.go:41)
+- [error] Label value mismatch: Spawn sets `"spire.agent": cfg.Name` (e.g. "apprentice-spi-abc-0"), but network policies in both chart/spire/templates/network-policy.yaml (uses `spire.agent: "true"`) and k8s/network-policy.yaml (uses `spire.agent: ""`) won't match. Agent egress restrictions and steward ingress-from-agent rules are silently unenforced. Either set the label to a fixed value like `"true"` (and use a separate label for the agent name), or change network policy selectors to use `matchExpressions` with `operator: Exists`. (pkg/agent/backend_k8s.go:146)
+- [error] podSelector `spire.agent: "true"` does not match pods created by K8sBackend which sets `spire.agent: <agent-name>`. This renders the agent egress NetworkPolicy ineffective. (chart/spire/templates/network-policy.yaml:121)
+- [error] podSelector `spire.agent: ""` matches only empty-string label values, but K8sBackend sets `spire.agent: <agent-name>`. Use matchExpressions with operator: Exists (as done correctly for steward-ingress on line 118). (k8s/network-policy.yaml:7)
+- [warning] CronJob mounts PVC `dolt-data-spire-dolt-0` (ReadWriteOnce) which is also mounted by the Dolt StatefulSet pod. If the CronJob pod is scheduled to a different node, the mount will fail. Consider running the sync command via `kubectl exec` into the StatefulSet pod instead, or use an initContainer/sidecar pattern. (k8s/dolt-sync-cronjob.yaml:33)
+- [warning] Same ReadWriteOnce PVC sharing issue as k8s/dolt-sync-cronjob.yaml — CronJob and StatefulSet pod both mount `dolt-data-spire-dolt-0`. (chart/spire/templates/dolt-sync-cronjob.yaml:49)
+
+--- Agent Runs (9) ---
+  claude-opus-4-6      sage       request_changes  125s  2026-04-14T01:55:06Z
+                       apprentice success     336s  2026-04-14T01:49:02Z
+                       apprentice success     214s  2026-04-14T01:35:16Z
+                       apprentice success     308s  2026-04-14T01:35:16Z
+                       apprentice success     290s  2026-04-14T01:35:16Z
+                       apprentice success     653s  2026-04-14T01:35:16Z
+                       apprentice success     131s  2026-04-14T01:35:16Z
+  claude-opus-4-6      wizard     success     950s  2026-04-14T01:19:24Z
+  claude-opus-4-6      wizard     success       0s  2026-04-14T01:19:23Z
+
+
+
+## Bead JSON
+[
+  {
+    "id": "spi-2jlhe",
+    "title": "Cluster foundation: K8sBackend, Dolt StatefulSet, ClickHouse, Helm chart",
+    "status": "in_progress",
+    "priority": 1,
+    "issue_type": "epic",
+    "assignee": "wizard-spi-2jlhe",
+    "created_at": "2026-04-12T19:44:37Z",
+    "updated_at": "2026-04-14T01:19:22Z",
+    "labels": [
+      "feat-branch:epic/spi-2jlhe"
+    ],
+    "dependencies": [
+      {
+        "id": "spi-885rv",
+        "title": "Production Kubernetes: cluster architecture for Spire with current system design",
+        "status": "closed",
+        "priority": 0,
+        "issue_type": "design",
+        "created_at": "2026-04-12T17:32:01Z",
+        "updated_at": "2026-04-12T19:43:32Z",
+        "closed_at": "2026-04-12T19:43:32Z",
+        "close_reason": "Design approved. Filing 5 serial epics discovered-from this design.",
+        "labels": [
+          "needs-human"
+        ],
+        "dependency_type": "discovered-from"
+      },
+      {
+        "id": "spi-m0ic5",
+        "title": "Steward as production service: concurrency, scheduling, health, trust",
+        "status": "closed",
+        "priority": 1,
+        "issue_type": "epic",
+        "assignee": "wizard-spi-m0ic5",
+        "created_at": "2026-04-12T19:44:11Z",
+        "updated_at": "2026-04-13T22:56:16Z",
+        "closed_at": "2026-04-13T22:56:16Z",
+        "labels": [
+          "feat-branch:epic/spi-m0ic5",
+          "review-approved"
+        ],
+        "dependency_type": "blocks"
+      }
+    ],
+    "dependents": [
+      {
+        "id": "spi-mcqan",
+        "title": "Web dashboard and Slack bot: observability for teams",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "epic",
+        "created_at": "2026-04-12T19:45:07Z",
+        "updated_at": "2026-04-12T19:45:07Z",
+        "dependency_type": "blocks"
+      },
+      {
+        "id": "spi-1agiy",
+        "title": "review-round-1",
+        "description": "verdict: request_changes\n\nSolid foundation work — Helm chart, K8sBackend, ClickHouse OLAP, GraphStateStore abstraction, and comprehensive tests are well-structured. However, two correctness issues need fixing: K8sHandle.Wait() has a race condition that can hang indefinitely, and network policy label selectors don't match the labels K8sBackend actually sets on agent pods.\n- [error] Race condition in Wait(): if the pod completes between the Get (line 33) and the Watch (line 41), the Watch starts from 'now' and never sees the completion event — Wait() hangs forever. Fix: pass the ResourceVersion from the Get response into the Watch ListOptions, e.g. `metav1.ListOptions{FieldSelector: ..., ResourceVersion: pod.ResourceVersion}`. (pkg/agent/spawn_k8s.go:41)\n- [error] Label value mismatch: Spawn sets `\"spire.agent\": cfg.Name` (e.g. \"apprentice-spi-abc-0\"), but network policies in both chart/spire/templates/network-policy.yaml (uses `spire.agent: \"true\"`) and k8s/network-policy.yaml (uses `spire.agent: \"\"`) won't match. Agent egress restrictions and steward ingress-from-agent rules are silently unenforced. Either set the label to a fixed value like `\"true\"` (and use a separate label for the agent name), or change network policy selectors to use `matchExpressions` with `operator: Exists`. (pkg/agent/backend_k8s.go:146)\n- [error] podSelector `spire.agent: \"true\"` does not match pods created by K8sBackend which sets `spire.agent: \u003cagent-name\u003e`. This renders the agent egress NetworkPolicy ineffective. (chart/spire/templates/network-policy.yaml:121)\n- [error] podSelector `spire.agent: \"\"` matches only empty-string label values, but K8sBackend sets `spire.agent: \u003cagent-name\u003e`. Use matchExpressions with operator: Exists (as done correctly for steward-ingress on line 118). (k8s/network-policy.yaml:7)\n- [warning] CronJob mounts PVC `dolt-data-spire-dolt-0` (ReadWriteOnce) which is also mounted by the Dolt StatefulSet pod. If the CronJob pod is scheduled to a different node, the mount will fail. Consider running the sync command via `kubectl exec` into the StatefulSet pod instead, or use an initContainer/sidecar pattern. (k8s/dolt-sync-cronjob.yaml:33)\n- [warning] Same ReadWriteOnce PVC sharing issue as k8s/dolt-sync-cronjob.yaml — CronJob and StatefulSet pod both mount `dolt-data-spire-dolt-0`. (chart/spire/templates/dolt-sync-cronjob.yaml:49)",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "review",
+        "created_at": "2026-04-14T01:55:09Z",
+        "updated_at": "2026-04-14T01:57:12Z",
+        "closed_at": "2026-04-14T01:57:12Z",
+        "metadata": {
+          "error_count": "4",
+          "review_findings": "[{\"severity\":\"error\",\"file\":\"pkg/agent/spawn_k8s.go\",\"line\":41,\"message\":\"Race condition in Wait(): if the pod completes between the Get (line 33) and the Watch (line 41), the Watch starts from 'now' and never sees the completion event — Wait() hangs forever. Fix: pass the ResourceVersion from the Get response into the Watch ListOptions, e.g. `metav1.ListOptions{FieldSelector: ..., ResourceVersion: pod.ResourceVersion}`.\"},{\"severity\":\"error\",\"file\":\"pkg/agent/backend_k8s.go\",\"line\":146,\"message\":\"Label value mismatch: Spawn sets `\\\"spire.agent\\\": cfg.Name` (e.g. \\\"apprentice-spi-abc-0\\\"), but network policies in both chart/spire/templates/network-policy.yaml (uses `spire.agent: \\\"true\\\"`) and k8s/network-policy.yaml (uses `spire.agent: \\\"\\\"`) won't match. Agent egress restrictions and steward ingress-from-agent rules are silently unenforced. Either set the label to a fixed value like `\\\"true\\\"` (and use a separate label for the agent name), or change network policy selectors to use `matchExpressions` with `operator: Exists`.\"},{\"severity\":\"error\",\"file\":\"chart/spire/templates/network-policy.yaml\",\"line\":121,\"message\":\"podSelector `spire.agent: \\\"true\\\"` does not match pods created by K8sBackend which sets `spire.agent: \\u003cagent-name\\u003e`. This renders the agent egress NetworkPolicy ineffective.\"},{\"severity\":\"error\",\"file\":\"k8s/network-policy.yaml\",\"line\":7,\"message\":\"podSelector `spire.agent: \\\"\\\"` matches only empty-string label values, but K8sBackend sets `spire.agent: \\u003cagent-name\\u003e`. Use matchExpressions with operator: Exists (as done correctly for steward-ingress on line 118).\"},{\"severity\":\"warning\",\"file\":\"k8s/dolt-sync-cronjob.yaml\",\"line\":33,\"message\":\"CronJob mounts PVC `dolt-data-spire-dolt-0` (ReadWriteOnce) which is also mounted by the Dolt StatefulSet pod. If the CronJob pod is scheduled to a different node, the mount will fail. Consider running the sync command via `kubectl exec` into the StatefulSet pod instead, or use an initContainer/sidecar pattern.\"},{\"severity\":\"warning\",\"file\":\"chart/spire/templates/dolt-sync-cronjob.yaml\",\"line\":49,\"message\":\"Same ReadWriteOnce PVC sharing issue as k8s/dolt-sync-cronjob.yaml — CronJob and StatefulSet pod both mount `dolt-data-spire-dolt-0`.\"}]",
+          "review_verdict": "request_changes",
+          "round": "1",
+          "warning_count": "2"
+        },
+        "labels": [
+          "review-round",
+          "round:1",
+          "sage:wizard-spi-2jlhe-sage-review"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-77zgd",
+        "title": "step:close",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:19:23Z",
+        "labels": [
+          "step:close",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-8y075",
+        "title": "attempt: wizard-spi-2jlhe",
+        "status": "in_progress",
+        "priority": 3,
+        "issue_type": "attempt",
+        "created_at": "2026-04-14T01:19:22Z",
+        "updated_at": "2026-04-14T01:19:22Z",
+        "labels": [
+          "agent:wizard-spi-2jlhe",
+          "attempt",
+          "branch:feat/spi-2jlhe",
+          "worktree:/Users/jb/awell/spire/.worktrees/spi-2jlhe-staging"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-aejxj",
+        "title": "step:plan",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:35:16Z",
+        "closed_at": "2026-04-14T01:35:16Z",
+        "labels": [
+          "step:plan",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-cfkwi",
+        "title": "K8s cluster infrastructure manifests",
+        "description": "Create and update all Kubernetes YAML manifests for the cluster foundation: Dolt StatefulSet, ClickHouse StatefulSet, DoltHub sync CronJob, network policies, secrets management, and pod priority classes. This is pure YAML/infrastructure work — no Go code changes.\n\n## Files to modify\n\n### k8s/dolt.yaml\n\nConvert from Deployment (current) to StatefulSet. The current file has a Deployment named spire-dolt with 1 replica, Recreate strategy, PVC spire-beads-data, port 3306, and a headless service.\n\nChanges:\n1. Change `kind: Deployment` to `kind: StatefulSet`\n2. Add `serviceName: spire-dolt` field\n3. Change port from 3306 to 3307 (Spire convention — pkg/dolt/server.go defaults to 3307)\n4. Add volumeClaimTemplates instead of referencing a separate PVC:\n```yaml\nvolumeClaimTemplates:\n- metadata:\n    name: dolt-data\n  spec:\n    accessModes: [ReadWriteOnce]\n    resources:\n      requests:\n        storage: 20Gi\n```\n5. Update the container volume mount to use the template name `dolt-data`\n6. Update the headless Service port to 3307\n7. Add connection pooling config to the dolt config ConfigMap:\n```yaml\nmax_connections: 200\nquery_parallelism: 4\n```\n8. Add resource limits: requests 256Mi/500m, limits 2Gi/2000m\n9. Add readiness probe: `tcpSocket: {port: 3307}` with initialDelaySeconds: 10\n10. Add liveness probe: same tcpSocket with initialDelaySeconds: 30, periodSeconds: 30\n\n### k8s/secrets.yaml\n\nUpdate the existing secrets manifest to include all credentials needed by the cluster. The secret should be named `spire-credentials` (referenced by K8sBackend pod spec):\n```yaml\napiVersion: v1\nkind: Secret\nmetadata:\n  name: spire-credentials\n  namespace: spire\ntype: Opaque\nstringData:\n  anthropic-key: \"\"     # Anthropic API key for Claude\n  github-token: \"\"       # GitHub token for repo access\n  dolthub-user: \"\"       # DoltHub username for sync\n  dolthub-password: \"\"   # DoltHub password/token for sync\n  clickhouse-password: \"\" # ClickHouse password (if auth enabled)\n```\n\nNote: Values are empty placeholders — users populate via `helm install --set` or `kubectl create secret`.\n\n### k8s/kustomization.yaml\n\nAdd all new resources to the resources list:\n```yaml\nresources:\n  # ... existing resources\n  - clickhouse.yaml\n  - dolt-sync-cronjob.yaml\n  - network-policy.yaml\n  - pod-priority.yaml\n  - eso-external-secret.yaml\n```\n\n## Files to create\n\n### k8s/clickhouse.yaml\n\nClickHouse StatefulSet + headless Service:\n\n```yaml\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: spire-clickhouse\n  namespace: spire\nspec:\n  serviceName: spire-clickhouse\n  replicas: 1\n  selector:\n    matchLabels:\n      app: spire-clickhouse\n  template:\n    metadata:\n      labels:\n        app: spire-clickhouse\n    spec:\n      containers:\n      - name: clickhouse\n        image: clickhouse/clickhouse-server:24.8\n        ports:\n        - containerPort: 8123\n          name: http\n        - containerPort: 9000\n          name: native\n        volumeMounts:\n        - name: clickhouse-data\n          mountPath: /var/lib/clickhouse\n        - name: clickhouse-config\n          mountPath: /etc/clickhouse-server/config.d/\n        resources:\n          requests:\n            memory: 512Mi\n            cpu: 500m\n          limits:\n            memory: 4Gi\n            cpu: 2000m\n        readinessProbe:\n          httpGet:\n            path: /ping\n            port: 8123\n          initialDelaySeconds: 5\n        livenessProbe:\n          httpGet:\n            path: /ping\n            port: 8123\n          initialDelaySeconds: 15\n          periodSeconds: 30\n  volumeClaimTemplates:\n  - metadata:\n      name: clickhouse-data\n    spec:\n      accessModes: [ReadWriteOnce]\n      resources:\n        requests:\n          storage: 50Gi\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: spire-clickhouse\n  namespace: spire\nspec:\n  clusterIP: None\n  ports:\n  - port: 8123\n    name: http\n  - port: 9000\n    name: native\n  selector:\n    app: spire-clickhouse\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: clickhouse-config\n  namespace: spire\ndata:\n  spire.xml: |\n    \u003cclickhouse\u003e\n      \u003cmax_connections\u003e200\u003c/max_connections\u003e\n      \u003cmax_concurrent_queries\u003e100\u003c/max_concurrent_queries\u003e\n      \u003cmax_server_memory_usage_to_ram_ratio\u003e0.8\u003c/max_server_memory_usage_to_ram_ratio\u003e\n    \u003c/clickhouse\u003e\n```\n\n### k8s/dolt-sync-cronjob.yaml\n\nCronJob for DoltHub push/pull synchronization:\n```yaml\napiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: spire-dolt-sync\n  namespace: spire\nspec:\n  schedule: \"*/15 * * * *\"  # Every 15 minutes\n  concurrencyPolicy: Forbid\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          restartPolicy: OnFailure\n          containers:\n          - name: syncer\n            image: dolthub/dolt-sql-server:latest\n            command: [\"sh\", \"-c\"]\n            args:\n            - |\n              cd /var/lib/dolt \u0026\u0026 \\\n              dolt pull origin main \u0026\u0026 \\\n              dolt push origin main\n            env:\n            - name: DOLT_ROOT_PATH\n              value: /var/lib/dolt\n            envFrom:\n            - secretRef:\n                name: spire-credentials\n            volumeMounts:\n            - name: dolt-data\n              mountPath: /var/lib/dolt\n          volumes:\n          - name: dolt-data\n            persistentVolumeClaim:\n              claimName: dolt-data-spire-dolt-0\n```\n\n### k8s/network-policy.yaml\n\nNetwork policies restricting traffic to required paths only:\n```yaml\n# Agent pods can reach dolt (3307) and steward OTLP (4317)\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: spire-agent-egress\n  namespace: spire\nspec:\n  podSelector:\n    matchLabels:\n      spire.agent: \"\"\n  policyTypes: [Egress]\n  egress:\n  - to:\n    - podSelector:\n        matchLabels:\n          app: spire-dolt\n    ports:\n    - port: 3307\n      protocol: TCP\n  - to:\n    - podSelector:\n        matchLabels:\n          app: spire-steward\n    ports:\n    - port: 4317\n      protocol: TCP\n  # DNS resolution\n  - to: []\n    ports:\n    - port: 53\n      protocol: UDP\n    - port: 53\n      protocol: TCP\n  # GitHub/API access (external)\n  - to:\n    - ipBlock:\n        cidr: 0.0.0.0/0\n        except:\n        - 10.0.0.0/8\n        - 172.16.0.0/12\n        - 192.168.0.0/16\n    ports:\n    - port: 443\n      protocol: TCP\n---\n# Steward can reach ClickHouse (9000) and dolt (3307)\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: spire-steward-egress\n  namespace: spire\nspec:\n  podSelector:\n    matchLabels:\n      app: spire-steward\n  policyTypes: [Egress]\n  egress:\n  - to:\n    - podSelector:\n        matchLabels:\n          app: spire-clickhouse\n    ports:\n    - port: 9000\n      protocol: TCP\n    - port: 8123\n      protocol: TCP\n  - to:\n    - podSelector:\n        matchLabels:\n          app: spire-dolt\n    ports:\n    - port: 3307\n      protocol: TCP\n  - to: []\n    ports:\n    - port: 53\n      protocol: UDP\n    - port: 53\n      protocol: TCP\n---\n# Default deny all ingress except labeled pods\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: spire-default-deny\n  namespace: spire\nspec:\n  podSelector: {}\n  policyTypes: [Ingress]\n  ingress: []\n---\n# Allow ingress to dolt from spire namespace\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: spire-dolt-ingress\n  namespace: spire\nspec:\n  podSelector:\n    matchLabels:\n      app: spire-dolt\n  policyTypes: [Ingress]\n  ingress:\n  - from:\n    - podSelector: {}\n    ports:\n    - port: 3307\n---\n# Allow OTLP ingress to steward from agent pods\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: spire-steward-ingress\n  namespace: spire\nspec:\n  podSelector:\n    matchLabels:\n      app: spire-steward\n  policyTypes: [Ingress]\n  ingress:\n  - from:\n    - podSelector:\n        matchExpressions:\n        - key: spire.agent\n          operator: Exists\n    ports:\n    - port: 4317\n---\n# Allow ingress to ClickHouse from steward only\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: spire-clickhouse-ingress\n  namespace: spire\nspec:\n  podSelector:\n    matchLabels:\n      app: spire-clickhouse\n  policyTypes: [Ingress]\n  ingress:\n  - from:\n    - podSelector:\n        matchLabels:\n          app: spire-steward\n    ports:\n    - port: 9000\n    - port: 8123\n```\n\n### k8s/pod-priority.yaml\n\nPriorityClasses for agent pods:\n```yaml\napiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\nmetadata:\n  name: spire-agent-p0\nvalue: 1000000\nglobalDefault: false\ndescription: \"P0 critical bead agent pods\"\n---\napiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\nmetadata:\n  name: spire-agent-default\nvalue: 100000\nglobalDefault: false\ndescription: \"Default priority for spire agent pods\"\n---\napiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\nmetadata:\n  name: spire-infrastructure\nvalue: 2000000\nglobalDefault: false\ndescription: \"Spire infrastructure pods (steward, dolt, clickhouse)\"\n```\n\n### k8s/eso-external-secret.yaml\n\nExternal Secrets Operator template for Vault/AWS Secrets Manager integration:\n```yaml\n# SecretStore — configure for your provider (AWS SM example)\napiVersion: external-secrets.io/v1beta1\nkind: SecretStore\nmetadata:\n  name: spire-secret-store\n  namespace: spire\nspec:\n  provider:\n    aws:\n      service: SecretsManager\n      region: us-east-1\n---\n# ExternalSecret — pulls secrets into k8s Secret\napiVersion: external-secrets.io/v1beta1\nkind: ExternalSecret\nmetadata:\n  name: spire-credentials-external\n  namespace: spire\nspec:\n  refreshInterval: 1h\n  secretStoreRef:\n    name: spire-secret-store\n    kind: SecretStore\n  target:\n    name: spire-credentials\n    creationPolicy: Owner\n  data:\n  - secretKey: anthropic-key\n    remoteRef:\n      key: spire/anthropic-key\n  - secretKey: github-token\n    remoteRef:\n      key: spire/github-token\n  - secretKey: dolthub-user\n    remoteRef:\n      key: spire/dolthub-user\n  - secretKey: dolthub-password\n    remoteRef:\n      key: spire/dolthub-password\n```\n\n## What this task does NOT do\n\n- Does NOT modify any Go code in pkg/\n- Does NOT create the Helm chart (that's a separate task in chart/spire/)\n- Does NOT modify pkg/agent/, pkg/executor/, pkg/steward/, or pkg/olap/\n- Does NOT modify go.mod or go.sum\n- Does NOT modify existing CRDs in k8s/crds/ — those are unchanged\n- Does NOT modify k8s/steward.yaml or k8s/operator.yaml — those stay as-is for kustomize deployment\n\nShared files (other tasks depend on these): k8s/dolt.yaml, k8s/clickhouse.yaml, k8s/dolt-sync-cronjob.yaml, k8s/network-policy.yaml, k8s/secrets.yaml, k8s/pod-priority.yaml, k8s/kustomization.yaml\n\nDo NOT touch (handled by other tasks): pkg/agent/backend.go, pkg/steward/daemon.go, pkg/steward/steward.go, pkg/executor/graph_state.go, pkg/executor/deps.go, pkg/olap/clickhouse.go, chart/spire/Chart.yaml, chart/spire/values.yaml, go.mod",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T01:35:15Z",
+        "updated_at": "2026-04-14T01:35:16Z",
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-ct7h7",
+        "title": "Helm chart for production deployment",
+        "description": "Create a Helm chart that packages the entire Spire cluster for production deployment: steward Deployment, Dolt StatefulSet, ClickHouse StatefulSet, DoltHub syncer CronJob, RBAC for agent pod creation, network policies, and configurable secrets. The goal: `helm install spire awell/spire` boots the whole thing.\n\nThis task creates the chart from the architecture design — it does NOT read or depend on the k8s/ kustomize manifests. The chart is the production deployment mechanism; k8s/ remains for dev/kustomize use.\n\n## Directory structure to create\n\nAll files go under chart/spire/:\n\n### chart/spire/Chart.yaml\n```yaml\napiVersion: v2\nname: spire\ndescription: Spire - AI agent coordination hub\ntype: application\nversion: 0.1.0\nappVersion: \"0.15.0\"\nmaintainers:\n- name: Awell\n```\n\n### chart/spire/values.yaml\n\nFull values schema with sensible defaults:\n```yaml\n# Tower configuration\ntower:\n  name: \"\"              # Required: tower name\n  maxConcurrent: 5      # Max concurrent agent pods\n  dolthub:\n    remote: \"\"          # DoltHub remote (e.g. awell/my-project)\n    syncInterval: \"*/15 * * * *\"  # CronJob schedule\n\n# Container images\nimage:\n  steward:\n    repository: ghcr.io/awell/spire-steward\n    tag: latest\n    pullPolicy: IfNotPresent\n  agent:\n    repository: ghcr.io/awell/spire-agent\n    tag: latest\n    pullPolicy: IfNotPresent\n\n# Dolt database\ndolt:\n  enabled: true\n  image:\n    repository: dolthub/dolt-sql-server\n    tag: latest\n  port: 3307\n  storage:\n    size: 20Gi\n    storageClass: \"\"    # Use default if empty\n  resources:\n    requests:\n      memory: 256Mi\n      cpu: 500m\n    limits:\n      memory: 2Gi\n      cpu: 2000m\n  config:\n    maxConnections: 200\n    queryParallelism: 4\n\n# ClickHouse analytics\nclickhouse:\n  enabled: true\n  image:\n    repository: clickhouse/clickhouse-server\n    tag: \"24.8\"\n  ports:\n    http: 8123\n    native: 9000\n  storage:\n    size: 50Gi\n    storageClass: \"\"\n  resources:\n    requests:\n      memory: 512Mi\n      cpu: 500m\n    limits:\n      memory: 4Gi\n      cpu: 2000m\n\n# Steward (control plane)\nsteward:\n  replicas: 1\n  interval: \"2m\"        # Steward cycle interval\n  otlpPort: 4317\n  metricsPort: 9090\n  resources:\n    requests:\n      memory: 256Mi\n      cpu: 250m\n    limits:\n      memory: 1Gi\n      cpu: 1000m\n\n# Agent pod defaults\nagent:\n  resourceTiers:\n    implement:\n      requests:\n        memory: 1Gi\n        cpu: 500m\n      limits:\n        memory: 4Gi\n        cpu: 2000m\n    review:\n      requests:\n        memory: 256Mi\n        cpu: 250m\n      limits:\n        memory: 1Gi\n        cpu: 1000m\n    plan:\n      requests:\n        memory: 256Mi\n        cpu: 250m\n      limits:\n        memory: 512Mi\n        cpu: 500m\n\n# Secrets\nsecrets:\n  create: true           # Create Secret resource\n  anthropicKey: \"\"       # Anthropic API key\n  githubToken: \"\"        # GitHub token\n  dolthubUser: \"\"        # DoltHub username\n  dolthubPassword: \"\"    # DoltHub password\n  externalSecrets:\n    enabled: false       # Use External Secrets Operator\n    secretStore: \"\"      # SecretStore name\n    refreshInterval: 1h\n\n# Network policies\nnetworkPolicies:\n  enabled: true\n\n# Pod priority classes\npodPriority:\n  enabled: true\n\n# Namespace\nnamespace: spire\ncreateNamespace: true\n```\n\n### chart/spire/templates/_helpers.tpl\n\nStandard Helm helpers:\n```\n{{- define \"spire.fullname\" -}}...{{- end }}\n{{- define \"spire.labels\" -}}...{{- end }}\n{{- define \"spire.selectorLabels\" -}}...{{- end }}\n{{- define \"spire.doltHost\" -}}spire-dolt.{{ .Release.Namespace }}.svc{{- end }}\n{{- define \"spire.clickhouseHost\" -}}spire-clickhouse.{{ .Release.Namespace }}.svc{{- end }}\n{{- define \"spire.stewardHost\" -}}spire-steward.{{ .Release.Namespace }}.svc{{- end }}\n```\n\n### chart/spire/templates/namespace.yaml\nConditional namespace creation.\n\n### chart/spire/templates/dolt-statefulset.yaml\n\nDolt StatefulSet with:\n- serviceName: spire-dolt\n- 1 replica\n- volumeClaimTemplates for persistent storage (size from values)\n- Port from values.dolt.port (default 3307)\n- Resources from values.dolt.resources\n- Readiness/liveness probes on TCP port\n- Config from values.dolt.config (max_connections, query_parallelism)\n- priorityClassName: spire-infrastructure (if podPriority.enabled)\n\nPlus headless Service for stable DNS.\n\n### chart/spire/templates/clickhouse-statefulset.yaml\n\nClickHouse StatefulSet (conditional on .Values.clickhouse.enabled):\n- serviceName: spire-clickhouse\n- 1 replica\n- volumeClaimTemplates for persistent storage\n- HTTP (8123) and native (9000) ports\n- Resources from values\n- Readiness probe: HTTP GET /ping on 8123\n- ConfigMap for ClickHouse settings\n- priorityClassName: spire-infrastructure\n\nPlus headless Service.\n\n### chart/spire/templates/steward-deployment.yaml\n\nSteward Deployment:\n- 1 replica (values.steward.replicas)\n- Container running spire steward with env vars:\n  - SPIRE_TOWER={{ .Values.tower.name }}\n  - STEWARD_INTERVAL={{ .Values.steward.interval }}\n  - BEADS_DOLT_SERVER_HOST={{ include \"spire.doltHost\" . }}\n  - BEADS_DOLT_SERVER_PORT={{ .Values.dolt.port }}\n  - SPIRE_OLAP_BACKEND=clickhouse (if clickhouse.enabled)\n  - SPIRE_CLICKHOUSE_DSN=clickhouse://{{ include \"spire.clickhouseHost\" . }}:{{ .Values.clickhouse.ports.native }}/spire\n  - SPIRE_AGENT_IMAGE={{ .Values.image.agent.repository }}:{{ .Values.image.agent.tag }}\n  - SPIRE_K8S_NAMESPACE={{ .Release.Namespace }}\n- Secret env refs for ANTHROPIC_API_KEY, GITHUB_TOKEN from spire-credentials\n- Ports: 4317 (OTLP), 9090 (metrics)\n- Readiness probe: HTTP GET /readyz on metrics port\n- Liveness probe: HTTP GET /livez on metrics port\n- Resources from values.steward.resources\n- ServiceAccount with RBAC for pod management\n- priorityClassName: spire-infrastructure\n\n### chart/spire/templates/steward-rbac.yaml\n\nServiceAccount + ClusterRole + ClusterRoleBinding for the steward to create/list/watch/delete pods (agent spawning):\n```yaml\nrules:\n- apiGroups: [\"\"]\n  resources: [pods, pods/log, pods/status]\n  verbs: [get, list, watch, create, delete]\n- apiGroups: [\"\"]\n  resources: [secrets, configmaps]\n  verbs: [get, list]\n```\n\n### chart/spire/templates/dolt-sync-cronjob.yaml\n\nCronJob for DoltHub synchronization (conditional on .Values.tower.dolthub.remote being non-empty):\n- Schedule from values.tower.dolthub.syncInterval\n- concurrencyPolicy: Forbid\n- Dolt pull then push\n- Uses same PVC as Dolt StatefulSet\n- DoltHub credentials from secret\n\n### chart/spire/templates/network-policy.yaml\n\nConditional on .Values.networkPolicies.enabled:\n- Agent pods → dolt (3307), steward (4317 OTLP)\n- Steward → ClickHouse (9000, 8123), dolt (3307)\n- Default deny ingress for namespace\n- Allow ingress to dolt from namespace\n- Allow OTLP ingress to steward from agent pods\n- Allow ingress to ClickHouse from steward only\n- Agent pods → external HTTPS (443) for GitHub/API access\n- DNS egress for all pods\n\n### chart/spire/templates/secrets.yaml\n\nConditional on .Values.secrets.create:\n```yaml\napiVersion: v1\nkind: Secret\nmetadata:\n  name: spire-credentials\ntype: Opaque\nstringData:\n  anthropic-key: {{ .Values.secrets.anthropicKey | quote }}\n  github-token: {{ .Values.secrets.githubToken | quote }}\n  dolthub-user: {{ .Values.secrets.dolthubUser | quote }}\n  dolthub-password: {{ .Values.secrets.dolthubPassword | quote }}\n```\n\n### chart/spire/templates/external-secret.yaml\n\nConditional on .Values.secrets.externalSecrets.enabled — ESO ExternalSecret resource.\n\n### chart/spire/templates/pod-priority.yaml\n\nConditional on .Values.podPriority.enabled:\n- spire-infrastructure: value 2000000 (steward, dolt, clickhouse)\n- spire-agent-p0: value 1000000 (P0 bead agents)\n- spire-agent-default: value 100000 (normal agents)\n\n### chart/spire/templates/configmap.yaml\n\nTower configuration ConfigMap:\n```yaml\ndata:\n  tower.json: |\n    {\n      \"name\": {{ .Values.tower.name | quote }},\n      \"max_concurrent\": {{ .Values.tower.maxConcurrent }}\n    }\n```\n\n### chart/spire/templates/NOTES.txt\n\nPost-install message:\n```\nSpire cluster installed!\n\nSteward: kubectl -n {{ .Release.Namespace }} logs -f deploy/spire-steward\nDolt:    kubectl -n {{ .Release.Namespace }} port-forward svc/spire-dolt {{ .Values.dolt.port }}\nStatus:  kubectl -n {{ .Release.Namespace }} get pods\n\nTo file a bead from outside the cluster:\n  export BEADS_DOLT_SERVER_HOST=$(kubectl -n {{ .Release.Namespace }} get svc spire-dolt -o jsonpath='{.spec.clusterIP}')\n  export BEADS_DOLT_SERVER_PORT={{ .Values.dolt.port }}\n  bd create \"My first bead\" -p 1 -t task\n```\n\n## What this task does NOT do\n\n- Does NOT modify any Go code in pkg/ or cmd/\n- Does NOT modify any files in k8s/ directory (the kustomize manifests are a separate deployment path)\n- Does NOT modify go.mod or go.sum\n- Does NOT create Docker images or Dockerfiles\n- Does NOT implement CRDs (those exist in k8s/crds/ already)\n\nShared files (other tasks depend on these): chart/spire/Chart.yaml, chart/spire/values.yaml, chart/spire/templates/dolt-statefulset.yaml, chart/spire/templates/clickhouse-statefulset.yaml, chart/spire/templates/steward-deployment.yaml, chart/spire/templates/network-policy.yaml, chart/spire/templates/secrets.yaml\n\nDo NOT touch (handled by other tasks): k8s/dolt.yaml, k8s/clickhouse.yaml, k8s/kustomization.yaml, k8s/network-policy.yaml, k8s/secrets.yaml, pkg/agent/backend.go, pkg/steward/daemon.go, pkg/executor/graph_state.go, go.mod",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T01:35:15Z",
+        "updated_at": "2026-04-14T01:35:16Z",
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-hw0v5",
+        "title": "step:design-check",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:19:24Z",
+        "closed_at": "2026-04-14T01:19:24Z",
+        "labels": [
+          "step:design-check",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-ixdix",
+        "title": "step:materialize",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:35:16Z",
+        "closed_at": "2026-04-14T01:35:16Z",
+        "labels": [
+          "step:materialize",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-k21ar",
+        "title": "ClickHouse OLAP writer and schema",
+        "description": "Abstract the OLAP write path behind an interface and implement a ClickHouse backend so the OTel receiver can write to ClickHouse in cluster mode instead of DuckDB. The existing writeFn pattern (func(fn func(*sql.Tx) error) error) is the swap point.\n\n## New dependencies\n\nRun `go get github.com/ClickHouse/clickhouse-go/v2` to add the ClickHouse database/sql driver. This is NOT currently in go.mod. Note: go.mod and go.sum will also be modified by the K8sBackend task in parallel — the merge orchestrator should run `go mod tidy` after merging both branches.\n\n## Background: current write path\n\nThe OTel receiver (pkg/otel/receiver.go:70) takes a `writeFn func(fn func(*sql.Tx) error) error` callback. The steward daemon (pkg/steward/daemon.go) creates a DuckWriter (lines 42-90) which serializes all writes through a single goroutine because DuckDB is single-writer. The DuckWriter.Submit method matches the writeFn signature. The write functions InsertBatchTx, InsertToolSpansTx, InsertAPIEventsTx (pkg/otel/writer.go:106-188) use *sql.Tx prepared statements with `?` placeholders.\n\nClickHouse's database/sql driver supports *sql.Tx and prepared statements, so the existing InsertBatchTx/InsertToolSpansTx/InsertAPIEventsTx functions work unchanged with a ClickHouse *sql.Tx. The key differences: ClickHouse supports concurrent writes (no goroutine serialization needed), uses MergeTree engines instead of DuckDB column stores, and has different DDL syntax.\n\n## Files to create\n\n### pkg/olap/clickhouse.go\n\nClickHouseWriter struct providing the same writeFn interface:\n\n```go\ntype ClickHouseWriter struct {\n    db  *sql.DB\n    dsn string\n}\n\nfunc NewClickHouseWriter(dsn string) (*ClickHouseWriter, error)\nfunc (cw *ClickHouseWriter) Submit(fn func(*sql.Tx) error) error\nfunc (cw *ClickHouseWriter) Close() error\n```\n\nConstructor: `NewClickHouseWriter(dsn string)` — opens a ClickHouse connection via `sql.Open(\"clickhouse\", dsn)`. The DSN format for clickhouse-go v2 is `clickhouse://host:port/database`. Call InitClickHouseSchema() on the connection to ensure tables exist.\n\nSubmit: Unlike DuckWriter which serializes through a goroutine channel, ClickHouseWriter can do concurrent writes. Implementation: `tx, _ := cw.db.BeginTx(ctx, nil)` → `fn(tx)` → `tx.Commit()`. Note: ClickHouse transactions are not truly atomic — Commit is effectively a no-op and writes are auto-committed. This is fine for append-only event data.\n\nClose: Closes the underlying sql.DB connection pool.\n\nAlso define an OLAPWriter interface that both DuckWriter and ClickHouseWriter satisfy:\n\n```go\ntype OLAPWriter interface {\n    Submit(fn func(*sql.Tx) error) error\n    Close() error\n}\n```\n\nAdd a `Close() error` method to the existing DuckWriter (close the channel, wait for goroutine).\n\n### pkg/olap/clickhouse_schema.go\n\nClickHouse DDL for the four tables. Use MergeTree family engines:\n\n```go\nfunc InitClickHouseSchema(db *sql.DB) error\n```\n\n**tool_events** — MergeTree, ORDER BY (tower, bead_id, timestamp):\n```sql\nCREATE TABLE IF NOT EXISTS tool_events (\n    session_id    String,\n    bead_id       String,\n    agent_name    String,\n    step          String,\n    tool_name     String,\n    duration_ms   Int32,\n    success       Bool,\n    timestamp     DateTime64(3) DEFAULT now64(3),\n    tower         String,\n    provider      String,\n    event_kind    String\n) ENGINE = MergeTree()\nORDER BY (tower, bead_id, timestamp)\n```\n\n**tool_spans** — MergeTree, ORDER BY (tower, bead_id, start_time):\n```sql\nCREATE TABLE IF NOT EXISTS tool_spans (\n    trace_id       String,\n    span_id        String,\n    parent_span_id String,\n    session_id     String,\n    bead_id        String,\n    agent_name     String,\n    step           String,\n    span_name      String,\n    kind           String,\n    duration_ms    Int32,\n    success        Bool,\n    start_time     DateTime64(3),\n    end_time       DateTime64(3),\n    tower          String,\n    attributes     String\n) ENGINE = MergeTree()\nORDER BY (tower, bead_id, start_time)\n```\n\n**api_events** — MergeTree, ORDER BY (tower, bead_id, timestamp):\n```sql\nCREATE TABLE IF NOT EXISTS api_events (\n    session_id         String,\n    bead_id            String,\n    agent_name         String,\n    step               String,\n    provider           String,\n    model              String,\n    duration_ms        Int32,\n    input_tokens       Int64,\n    output_tokens      Int64,\n    cache_read_tokens  Int64,\n    cache_write_tokens Int64,\n    cost_usd           Float64,\n    timestamp          DateTime64(3) DEFAULT now64(3),\n    tower              String\n) ENGINE = MergeTree()\nORDER BY (tower, bead_id, timestamp)\n```\n\n**agent_runs_olap** — ReplacingMergeTree(synced_at) for ETL deduplication, ORDER BY (id):\n```sql\nCREATE TABLE IF NOT EXISTS agent_runs_olap (\n    id                 String,\n    bead_id            String,\n    epic_id            String,\n    parent_run_id      String,\n    formula_name       String,\n    formula_version    String,\n    phase              String,\n    role               String,\n    model              String,\n    tower              String,\n    repo               String,\n    branch             String,\n    result             String,\n    review_rounds      Int32,\n    prompt_tokens      Int64,\n    completion_tokens  Int64,\n    total_tokens       Int64,\n    cost_usd           Float64,\n    duration_seconds   Float64,\n    startup_seconds    Float64,\n    working_seconds    Float64,\n    queue_seconds      Float64,\n    review_seconds     Float64,\n    files_changed      Int32,\n    lines_added        Int32,\n    lines_removed      Int32,\n    read_calls         Int32,\n    edit_calls         Int32,\n    tool_calls_json    String,\n    failure_class      String,\n    attempt_number     Int32,\n    started_at         DateTime64(3),\n    completed_at       DateTime64(3),\n    synced_at          DateTime64(3) DEFAULT now64(3)\n) ENGINE = ReplacingMergeTree(synced_at)\nORDER BY (id)\n```\n\nReplacingMergeTree deduplicates by keeping the row with the latest synced_at value for each unique (id) during background merges. ETL can do simple INSERTs without ON CONFLICT.\n\nAlso create the etl_cursor table for ClickHouse:\n```sql\nCREATE TABLE IF NOT EXISTS etl_cursor (\n    table_name  String,\n    last_id     String DEFAULT '',\n    last_synced DateTime64(3)\n) ENGINE = ReplacingMergeTree(last_synced)\nORDER BY (table_name)\n```\n\n### pkg/olap/clickhouse_test.go\n\nTests using go-sqlmock (already in go.mod as github.com/DATA-DOG/go-sqlmock):\n\n- TestInitClickHouseSchema: Verify all CREATE TABLE statements execute\n- TestClickHouseWriter_Submit: Verify fn is called with a *sql.Tx and data is inserted\n- TestClickHouseWriter_ConcurrentSubmit: Verify concurrent Submit calls don't block each other (unlike DuckWriter)\n\n## Files to modify\n\n### pkg/steward/daemon.go\n\nModify the ensureSharedOLAP function (lines 92-139). Currently it returns *DuckWriter. Change the return type to OLAPWriter (the new interface from pkg/olap).\n\nAdd backend detection at the top of ensureSharedOLAP:\n```go\nbackend := os.Getenv(\"SPIRE_OLAP_BACKEND\") // \"duckdb\" (default) or \"clickhouse\"\nif backend == \"clickhouse\" {\n    dsn := os.Getenv(\"SPIRE_CLICKHOUSE_DSN\") // e.g. \"clickhouse://spire-clickhouse.spire.svc:9000/spire\"\n    cw, err := olap.NewClickHouseWriter(dsn)\n    if err != nil { return nil, err }\n    // Start OTLP receiver with ClickHouse writer\n    r := spireOtel.NewReceiver(cw.Submit, port, tower.Name)\n    // ... start receiver\n    return cw, nil\n}\n// ... existing DuckWriter path\n```\n\nUpdate all callers within daemon.go that use the returned writer — they call .Submit() which is on the OLAPWriter interface, so the changes are minimal.\n\nAlso add a Close() method to DuckWriter (close the channel, wait for the goroutine to finish) so it satisfies OLAPWriter:\n```go\nfunc (dw *DuckWriter) Close() error {\n    close(dw.ch)\n    \u003c-dw.done\n    return nil\n}\n```\n\n## What this task does NOT do\n\n- Does NOT modify pkg/otel/receiver.go or pkg/otel/writer.go — the existing InsertBatchTx/InsertToolSpansTx/InsertAPIEventsTx functions work with both DuckDB and ClickHouse *sql.Tx\n- Does NOT modify pkg/olap/db.go, pkg/olap/queries.go, or pkg/olap/etl.go — query adaptation for ClickHouse is a follow-up\n- Does NOT modify cmd/spire/metrics.go — the metrics command currently uses DuckDB directly; adapting it for ClickHouse queries is separate\n- Does NOT create k8s manifests for ClickHouse (that's the K8s manifests task)\n- Does NOT modify pkg/agent/, pkg/executor/, or pkg/steward/steward.go\n- Does NOT modify pkg/olap/schema.go (DuckDB schema) — the ClickHouse schema is in its own file\n\nShared files (other tasks depend on these): pkg/olap/clickhouse.go, pkg/olap/clickhouse_schema.go, pkg/steward/daemon.go, go.mod, go.sum\n\nDo NOT touch (handled by other tasks): pkg/agent/backend.go, pkg/agent/backend_k8s.go, pkg/executor/graph_state.go, pkg/executor/deps.go, pkg/executor/executor.go, pkg/steward/steward.go, pkg/otel/receiver.go, pkg/otel/writer.go, pkg/olap/db.go, pkg/olap/schema.go, pkg/olap/queries.go, pkg/olap/etl.go, k8s/dolt.yaml, k8s/kustomization.yaml, chart/spire/Chart.yaml",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T01:35:15Z",
+        "updated_at": "2026-04-14T01:35:16Z",
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-k4s9l",
+        "title": "step:implement-failed",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:19:23Z",
+        "labels": [
+          "step:implement-failed",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-mmhru",
+        "title": "step:review",
+        "status": "in_progress",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:55:07Z",
+        "labels": [
+          "step:review",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-r9wyb",
+        "title": "Cluster bootstrap smoke test",
+        "description": "End-to-end integration test that validates the full cluster lifecycle: Helm install → file a bead → agent pod spawns → work completes → bead closes. This proves the entire stack works together.\n\n## Prerequisites\n\nThis test runs after all other tasks are merged. It requires:\n- K8sBackend in pkg/agent (pod spawning)\n- ClickHouse OLAP writer (event pipeline)\n- Graph state in Dolt (cluster-safe state)\n- Helm chart (deployment mechanism)\n- K8s cluster manifests (infrastructure definitions)\n\n## Files to create\n\n### test/smoke/cluster_test.go\n\nGo integration test (build tag `//go:build cluster` so it doesn't run in normal `go test`):\n\n```go\n//go:build cluster\n\npackage smoke\n\nimport (\n    \"context\"\n    \"os/exec\"\n    \"testing\"\n    \"time\"\n    // k8s client imports for validation\n)\n```\n\n**TestClusterBootstrap**: Main integration test\n\n1. **Setup**: Check that a k8s cluster is available (kind or minikube). If CLUSTER_PROVIDER env is set, use that; otherwise detect. If no cluster is available, skip the test with `t.Skip(\"no k8s cluster available\")`.\n\n2. **Helm Install**: Run `helm install spire chart/spire/ --namespace spire-test --create-namespace --set tower.name=smoke-test --set secrets.anthropicKey=$ANTHROPIC_API_KEY --set secrets.githubToken=$GITHUB_TOKEN --set image.steward.repository=spire-steward --set image.steward.tag=dev --set image.agent.repository=spire-agent --set image.agent.tag=dev --wait --timeout 5m`. Verify all pods reach Ready state.\n\n3. **Verify infrastructure pods**: Using k8s client or kubectl, verify:\n   - spire-dolt-0 pod is Running and Ready\n   - spire-clickhouse-0 pod is Running and Ready\n   - spire-steward deployment has 1/1 ready replicas\n   - All services have endpoints (spire-dolt, spire-clickhouse, spire-steward)\n\n4. **Verify Dolt connectivity**: Port-forward to dolt service, run a simple MySQL query (`SELECT 1`) to confirm connectivity.\n\n5. **Verify ClickHouse connectivity**: Port-forward to ClickHouse, run `SELECT 1` via HTTP (curl http://localhost:8123/?query=SELECT+1) or native protocol.\n\n6. **File a bead**: Using `bd create \"Smoke test task\" -p 2 -t task` with BEADS_DOLT_SERVER_HOST pointed at the port-forwarded dolt service. Capture the bead ID.\n\n7. **Wait for agent pod**: Poll (up to 3 minutes) for a pod with label `spire.bead=\u003cbead-id\u003e` to appear in the spire-test namespace. Verify it has:\n   - Correct labels (spire.agent, spire.bead, spire.role)\n   - Environment variables (SPIRE_TOWER, OTEL_EXPORTER_OTLP_ENDPOINT, BEADS_DOLT_SERVER_HOST)\n   - Resource limits set\n   - Secret refs for credentials\n\n8. **Wait for completion**: Poll (up to 10 minutes) for the agent pod to reach Succeeded or Failed phase. For the smoke test, we may need a simple formula that just closes the bead without actual Claude invocation. Use a noop formula or set SPIRE_PROVIDER=mock.\n\n9. **Verify bead closed**: Query Dolt to verify the bead status is \"closed\" or \"done\".\n\n10. **Verify OTel events**: Query ClickHouse for tool_events or api_events with the bead_id. Verify at least one event was written (confirming the OTel pipeline works end-to-end).\n\n11. **Verify graph state in Dolt**: Query the graph_state table in Dolt. After completion, the agent's graph state should be removed (cleaned up on success).\n\n12. **Verify network policies**: Attempt a connection from an agent pod to an unauthorized service (e.g., ClickHouse direct). Verify it's blocked (if network policies are enforced in the test cluster).\n\n13. **Teardown**: `helm uninstall spire --namespace spire-test \u0026\u0026 kubectl delete namespace spire-test`.\n\n**TestClusterNetworkPolicies**: Separate test for network policy validation\n- Create a test pod in the spire-test namespace with and without the spire.agent label\n- Verify labeled pod can reach dolt and steward OTLP\n- Verify labeled pod cannot reach ClickHouse directly\n- Verify unlabeled pod cannot reach dolt or steward\n\n**TestClusterResourceTiers**: Verify resource limits on spawned pods\n- File three beads that would spawn pods with different roles\n- Verify implement pod gets 4Gi limit\n- Verify review pod gets 1Gi limit\n- Verify plan pod gets 512Mi limit\n\n### test/smoke/cluster_helpers_test.go\n\nHelper functions:\n- `helmInstall(t, namespace, values map[string]string) error` — runs helm install with values\n- `helmUninstall(t, namespace) error` — runs helm uninstall\n- `waitForPod(t, namespace, labelSelector string, timeout time.Duration) (*corev1.Pod, error)` — polls for pod\n- `waitForPodPhase(t, namespace, podName string, phase corev1.PodPhase, timeout time.Duration) error` — waits for phase\n- `portForward(t, namespace, svc string, localPort, remotePort int) (cancel func())` — starts port-forward\n- `queryDolt(t, dsn, query string) (*sql.Rows, error)` — executes SQL against Dolt\n- `queryClickHouse(t, dsn, query string) (*sql.Rows, error)` — executes SQL against ClickHouse\n- `fileBead(t, doltDSN, title string) string` — creates a bead, returns ID\n- `getK8sClient(t) kubernetes.Interface` — returns k8s client from kubeconfig or in-cluster\n\n### test/smoke/testdata/smoke-formula.toml\n\nA minimal formula for the smoke test that doesn't require real AI providers:\n```toml\nversion = 3\nname = \"smoke-test\"\ndescription = \"Minimal formula for cluster smoke testing\"\n\n[steps.verify]\naction = \"verify.run\"\nneeds = []\nterminal = true\n[steps.verify.with]\ncommand = \"echo 'smoke test passed'\"\n```\n\nThis formula has a single step that runs `echo` and exits. No Claude or Codex needed.\n\n## What this task does NOT do\n\n- Does NOT modify any Go code in pkg/ (only creates test files)\n- Does NOT modify k8s/ manifests or chart/ templates\n- Does NOT modify go.mod (uses existing deps + k8s client if already present from K8sBackend task)\n- Does NOT build Docker images (assumes images are pre-built and available)\n- Does NOT create or modify CI/CD pipelines\n- Does NOT test non-cluster functionality (local mode, TUI, etc.)\n\nShared files (other tasks depend on these): test/smoke/cluster_test.go\n\nDo NOT touch (handled by other tasks): pkg/agent/backend_k8s.go, pkg/agent/backend.go, pkg/steward/daemon.go, pkg/steward/steward.go, pkg/executor/graph_state.go, pkg/executor/deps.go, pkg/olap/clickhouse.go, k8s/dolt.yaml, k8s/kustomization.yaml, chart/spire/Chart.yaml, chart/spire/values.yaml",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T01:35:16Z",
+        "updated_at": "2026-04-14T01:49:03Z",
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-rsfgv",
+        "title": "step:discard",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:19:23Z",
+        "labels": [
+          "step:discard",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-rxv2d",
+        "title": "Graph state persistence in Dolt",
+        "description": "Move graph_state.json from filesystem to a Dolt table so that hooked-step sweep survives pod restarts in cluster mode. Agent pods are ephemeral — filesystem state dies with the pod.\n\n## No new Go dependencies needed\n\nThis task uses the existing go-sql-driver/mysql (already in go.mod) for Dolt access.\n\n## Background: current graph state model\n\nGraphState is defined in pkg/executor/graph_state.go (lines 11-37). It's a struct with Steps, Workspaces, Vars, Counters, and metadata fields. Currently persisted as JSON at ~/.config/spire/runtime/{agentName}/graph_state.json.\n\nKey functions:\n- LoadGraphState(agentName, configDir) (*GraphState, error) — reads JSON file (lines 101-117)\n- (gs *GraphState) Save(agentName, configDir) error — writes JSON file (lines 119-129)\n- RemoveGraphState(agentName, configDir) error — deletes file (lines 142-145)\n- HasHookedSteps() bool — checks if any step has status \"hooked\" (lines 131-139)\n\nThe executor uses these in:\n- pkg/executor/executor.go: NewGraph() calls LoadGraphState (line ~95)\n- pkg/executor/graph_interpreter.go: RunGraph() calls state.Save() after each step (line ~26)\n\nThe steward uses them in:\n- pkg/steward/steward.go: SweepHookedSteps (lines 684-812) scans the filesystem runtime directory, loads graph_state.json for each agent, identifies hooked steps, and re-summons wizards.\n\nThe Deps struct is in pkg/executor/deps.go (lines 64-151).\n\n## Files to create\n\n### pkg/executor/graph_store.go\n\nDefine the GraphStateStore interface and DoltGraphStateStore implementation:\n\n```go\n// GraphStateStore abstracts graph state persistence.\n// FileGraphStateStore (local) and DoltGraphStateStore (cluster) implement this.\ntype GraphStateStore interface {\n    Load(agentName string) (*GraphState, error)\n    Save(agentName string, state *GraphState) error\n    Remove(agentName string) error\n    ListHooked(towerName string) ([]HookedEntry, error)\n}\n\ntype HookedEntry struct {\n    AgentName string\n    BeadID    string\n    State     *GraphState\n}\n```\n\n**FileGraphStateStore** — wraps existing filesystem functions:\n```go\ntype FileGraphStateStore struct {\n    ConfigDir string\n}\n\nfunc (fs *FileGraphStateStore) Load(agentName string) (*GraphState, error) {\n    return LoadGraphState(agentName, fs.ConfigDir)\n}\n\nfunc (fs *FileGraphStateStore) Save(agentName string, state *GraphState) error {\n    return state.Save(agentName, fs.ConfigDir)\n}\n\nfunc (fs *FileGraphStateStore) Remove(agentName string) error {\n    return RemoveGraphState(agentName, fs.ConfigDir)\n}\n\nfunc (fs *FileGraphStateStore) ListHooked(towerName string) ([]HookedEntry, error) {\n    // Move the filesystem scanning logic from SweepHookedSteps here:\n    // Scan configDir/runtime/*/graph_state.json, filter for HasHookedSteps()\n}\n```\n\n**DoltGraphStateStore** — uses Dolt MySQL table:\n```go\ntype DoltGraphStateStore struct {\n    db *sql.DB\n}\n\nfunc NewDoltGraphStateStore(dsn string) (*DoltGraphStateStore, error)\n```\n\nDolt table (create via EnsureGraphStateTable method):\n```sql\nCREATE TABLE IF NOT EXISTS graph_state (\n    agent_name       VARCHAR(255) PRIMARY KEY,\n    bead_id          VARCHAR(255) NOT NULL,\n    tower            VARCHAR(255) NOT NULL,\n    state_json       LONGTEXT NOT NULL,\n    has_hooked_steps BOOLEAN NOT NULL DEFAULT FALSE,\n    updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\n```\n\nMethods:\n- Load: `SELECT state_json FROM graph_state WHERE agent_name = ?` → json.Unmarshal into *GraphState\n- Save: Set has_hooked_steps by calling state.HasHookedSteps(). json.Marshal the state. `INSERT INTO graph_state (agent_name, bead_id, tower, state_json, has_hooked_steps, updated_at) VALUES (?, ?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), has_hooked_steps = VALUES(has_hooked_steps), updated_at = NOW()`. After insert, call `CALL dolt_commit('-Am', 'graph state update for ' || agentName)` to persist the Dolt commit (or let the steward's periodic commit handle it).\n- Remove: `DELETE FROM graph_state WHERE agent_name = ?`\n- ListHooked: `SELECT agent_name, bead_id, state_json FROM graph_state WHERE tower = ? AND has_hooked_steps = TRUE` → unmarshal each row into HookedEntry\n\n**ResolveGraphStateStore** factory function:\n```go\nfunc ResolveGraphStateStore(configDir string) GraphStateStore {\n    // Check if running in cluster mode\n    if host := os.Getenv(\"BEADS_DOLT_SERVER_HOST\"); host != \"\" \u0026\u0026 host != \"127.0.0.1\" \u0026\u0026 host != \"localhost\" {\n        dsn := fmt.Sprintf(\"root:@tcp(%s:%s)/%s?parseTime=true\",\n            host, dolt.Port(), database)\n        store, err := NewDoltGraphStateStore(dsn)\n        if err == nil {\n            return store\n        }\n        // Fall through to file store on error\n    }\n    return \u0026FileGraphStateStore{ConfigDir: configDir}\n}\n```\n\n### pkg/executor/graph_store_test.go\n\nTests:\n- TestFileGraphStateStore_RoundTrip: Create state → Save → Load → verify equal\n- TestFileGraphStateStore_Remove: Save → Remove → Load returns nil\n- TestFileGraphStateStore_ListHooked: Save states with hooked steps → ListHooked returns them\n- TestDoltGraphStateStore_RoundTrip: Using go-sqlmock, verify correct SQL for Save and Load\n- TestDoltGraphStateStore_ListHooked: Using go-sqlmock, verify SELECT with has_hooked_steps=TRUE\n- TestResolveGraphStateStore_Local: Without BEADS_DOLT_SERVER_HOST, returns FileGraphStateStore\n- TestResolveGraphStateStore_Cluster: With BEADS_DOLT_SERVER_HOST set, returns DoltGraphStateStore\n\n## Files to modify\n\n### pkg/executor/deps.go\n\nAdd a GraphStateStore field to the Deps struct (around line 64-151). Add it in the store operations section:\n```go\nGraphStateStore GraphStateStore // file-backed (local) or Dolt-backed (cluster)\n```\n\n### pkg/executor/executor.go\n\nModify NewGraph() (around line 82-110) to use deps.GraphStateStore instead of calling LoadGraphState directly:\n```go\n// Before:\nstate, err := LoadGraphState(agentName, configDir)\n// After:\nstate, err := deps.GraphStateStore.Load(agentName)\n```\n\nSimilarly update any direct calls to state.Save() and RemoveGraphState() in the executor to use the store:\n- In graph_interpreter.go where state.Save() is called: replace with e.deps.GraphStateStore.Save(e.agentName, state)\n- In cleanup where RemoveGraphState() is called: replace with e.deps.GraphStateStore.Remove(e.agentName)\n\nNote: the executor.go and graph_interpreter.go files reference the configDir from deps.ConfigDir. The store already knows the configDir (for FileGraphStateStore) or DSN (for DoltGraphStateStore), so the calls become simpler.\n\n### pkg/executor/graph_state.go\n\nKeep the existing LoadGraphState, Save, RemoveGraphState functions intact (they're used by FileGraphStateStore). No structural changes needed — FileGraphStateStore wraps them.\n\nAdd HasHookedSteps() to the file if it doesn't already exist as a public method (it does exist at lines 131-139, verify it's exported).\n\n### pkg/steward/steward.go\n\nModify SweepHookedSteps (lines 684-812). Currently it:\n1. Scans configDir/runtime/ filesystem directories\n2. Loads graph_state.json for each agent\n3. Identifies hooked steps\n4. Resolves hook conditions\n5. Resets resolved steps and re-summons wizards\n\nChange steps 1-3 to use a GraphStateStore:\n\n```go\n// SweepHookedSteps now accepts a GraphStateStore\nfunc SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, graphStore executor.GraphStateStore) (int, error) {\n    entries, err := graphStore.ListHooked(towerName)\n    // ... iterate entries instead of scanning filesystem\n    // Steps 4-5 (resolve conditions, reset, re-summon) stay the same\n    // After resetting, call graphStore.Save(entry.AgentName, entry.State)\n}\n```\n\nUpdate the caller of SweepHookedSteps in TowerCycle (line ~315) to pass the graph state store. The store instance should be created once in the daemon startup and passed through the steward config.\n\nAdd a GraphStateStore field to StewardConfig (pkg/steward/steward.go around line 114-129):\n```go\nGraphStateStore executor.GraphStateStore\n```\n\n## What this task does NOT do\n\n- Does NOT modify pkg/agent/ (no Backend changes)\n- Does NOT modify pkg/olap/ or pkg/steward/daemon.go (OLAP/ClickHouse changes)\n- Does NOT create k8s manifests or Helm chart files\n- Does NOT modify the DuckWriter or OTel receiver\n- Does NOT change how the existing LoadGraphState/Save file functions work (they're wrapped, not replaced)\n- Does NOT modify graph_interpreter.go's step dispatch logic — only the persistence calls change\n\nShared files (other tasks depend on these): pkg/executor/graph_store.go, pkg/executor/deps.go, pkg/executor/executor.go, pkg/steward/steward.go\n\nDo NOT touch (handled by other tasks): pkg/agent/backend.go, pkg/agent/backend_k8s.go, pkg/steward/daemon.go, pkg/olap/clickhouse.go, pkg/olap/db.go, pkg/otel/receiver.go, k8s/dolt.yaml, k8s/kustomization.yaml, chart/spire/Chart.yaml, go.mod",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T01:35:15Z",
+        "updated_at": "2026-04-14T01:35:16Z",
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-ths8c",
+        "title": "K8sBackend: k8s pod spawning in pkg/agent",
+        "description": "Implement K8sBackend in pkg/agent — the Backend interface implementation that spawns k8s pods instead of local processes. This is the linchpin: everything else (store, executor, wizard, formulas) runs unchanged.\n\n## New dependencies\n\nRun `go get k8s.io/client-go@latest k8s.io/api@latest k8s.io/apimachinery@latest` to add the k8s client library. These are NOT currently in go.mod. Note: go.mod and go.sum will also be modified by the ClickHouse task in parallel — the merge orchestrator should run `go mod tidy` after merging both branches.\n\n## Files to create\n\n### pkg/agent/backend_k8s.go\n\nK8sBackend struct implementing the Backend interface (defined in pkg/agent/agent.go lines 45-64):\n\n```go\ntype K8sBackend struct {\n    client    kubernetes.Interface\n    namespace string\n    image     string // agent container image\n}\n```\n\nConstructor: `NewK8sBackend() (*K8sBackend, error)` — creates k8s client from in-cluster config (rest.InClusterConfig) or kubeconfig fallback. Reads:\n- SPIRE_K8S_NAMESPACE env (default: current namespace from serviceaccount)\n- SPIRE_AGENT_IMAGE env (required: the spire agent container image)\n\nMethods:\n\n**Spawn(cfg SpawnConfig) (Handle, error)**: Create a k8s Pod via client.CoreV1().Pods(namespace).Create(). The pod spec must include:\n\n- Container command: the spire binary path + roleToSubcmd(cfg.Role) (see pkg/agent/spawn_process.go line 39 for the mapping: RoleWizard→\"wizard\", RoleApprentice→\"wizard-run\", RoleSage→\"wizard-review\", RoleExecutor→\"execute\") + cfg.BeadID + \"--name\" + cfg.Name + cfg.ExtraArgs\n- Image: from K8sBackend.image field\n- RestartPolicy: corev1.RestartPolicyNever (one-shot pods)\n- Environment variables (match spawn_process.go lines 68-113):\n  - SPIRE_TOWER=cfg.Tower\n  - SPIRE_PROVIDER=cfg.Provider (if non-empty)\n  - OTEL_EXPORTER_OTLP_ENDPOINT=http://spire-steward.{namespace}.svc:4317\n  - OTEL_RESOURCE_ATTRIBUTES=bead.id={cfg.BeadID},agent.name={cfg.Name},step={cfg.Step},tower={cfg.Tower}\n  - CLAUDE_CODE_ENABLE_TELEMETRY=1\n  - CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1\n  - OTEL_TRACES_EXPORTER=otlp, OTEL_LOGS_EXPORTER=otlp, OTEL_EXPORTER_OTLP_PROTOCOL=grpc\n  - BEADS_DOLT_SERVER_HOST=spire-dolt.{namespace}.svc\n  - BEADS_DOLT_SERVER_PORT=3307\n- Secret environment references (envFrom or env.valueFrom.secretKeyRef):\n  - ANTHROPIC_API_KEY from k8s Secret \"spire-credentials\" key \"anthropic-key\"\n  - GITHUB_TOKEN from k8s Secret \"spire-credentials\" key \"github-token\"\n- Labels on the pod:\n  - spire.agent={cfg.Name}\n  - spire.bead={cfg.BeadID}\n  - spire.role={string(cfg.Role)}\n  - spire.tower={cfg.Tower}\n- Resource limits per role (epic subtask 8 — agent pod resource tiers):\n  - RoleApprentice (implement): requests 1Gi/limits 4Gi memory, 500m/2000m CPU\n  - RoleSage (review): requests 256Mi/limits 1Gi memory, 250m/1000m CPU\n  - RoleWizard (plan/orchestrate): requests 256Mi/limits 512Mi memory, 250m/500m CPU\n  - RoleExecutor: same as RoleWizard\n- If cfg.CustomPrompt is non-empty, write it to a ConfigMap and mount it, or pass as env var SPIRE_CUSTOM_PROMPT\n- Pod priority class name: \"spire-agent-default\" (or \"spire-agent-p0\" based on future priority integration)\n\nReturn a *K8sHandle.\n\n**List() ([]Info, error)**: Query pods with label selector \"spire.agent\" in namespace. Map each pod to agent.Info{Name, Status, BeadID, StartedAt} using pod labels and status.\n\n**Logs(name string) (io.ReadCloser, error)**: Find pod by label spire.agent={name}, return client.CoreV1().Pods(namespace).GetLogs(podName, \u0026corev1.PodLogOptions{Follow: true}).Stream().\n\n**Kill(name string) error**: Find pod by label spire.agent={name}, delete it via client.CoreV1().Pods(namespace).Delete() with grace period 10 seconds.\n\n### pkg/agent/spawn_k8s.go\n\nK8sHandle struct implementing the Handle interface (defined in pkg/agent/agent.go lines 18-38):\n\n```go\ntype K8sHandle struct {\n    client    kubernetes.Interface\n    namespace string\n    podName   string\n    name      string\n    exited    atomic.Bool\n}\n```\n\nMethods:\n\n**Wait() error**: Use a field watcher (watch.Interface) on the pod. Wait until pod.Status.Phase is Succeeded or Failed. If Failed, return an error with the container exit code from pod.Status.ContainerStatuses[0].State.Terminated.ExitCode. Set h.exited to true on return.\n\n**Signal(sig os.Signal) error**: For SIGTERM, delete the pod with a grace period. For SIGKILL, delete with grace period 0.\n\n**Alive() bool**: Return !h.exited.Load()\n\n**Name() string**: Return h.name\n\n**Identifier() string**: Return h.podName\n\n### pkg/agent/backend_k8s_test.go\n\nUnit tests using k8s.io/client-go/kubernetes/fake:\n\n- TestK8sBackend_Spawn_CreatesCorrectPod: Verify pod has correct env vars, labels, resource limits, restart policy, secret refs\n- TestK8sBackend_Spawn_ResourceTiers: Verify RoleApprentice gets 4Gi, RoleSage gets 1Gi, RoleWizard gets 512Mi\n- TestK8sBackend_Wait_Success: Simulate pod completing successfully, verify nil error\n- TestK8sBackend_Wait_Failure: Simulate pod failing with exit code 1, verify error\n- TestK8sBackend_Kill: Verify pod is deleted\n- TestK8sBackend_List: Create multiple pods, verify all returned with correct Info\n- TestK8sBackend_Logs: Verify log stream returned for existing pod, os.ErrNotExist for missing\n\n## Files to modify\n\n### pkg/agent/backend.go\n\nAdd \"k8s\" case to ResolveBackend() (around line 34). The function currently maps \"process\"→ProcessBackend, \"docker\"→DockerBackend. Add:\n\n```go\ncase \"k8s\", \"kubernetes\":\n    return NewK8sBackend()\n```\n\nAlso add compile-time interface check at package level:\n```go\nvar _ Backend = (*K8sBackend)(nil)\nvar _ Handle = (*K8sHandle)(nil)\n```\n\n## What this task does NOT do\n\n- Does NOT create or modify any k8s YAML manifests in k8s/ directory\n- Does NOT create the Helm chart\n- Does NOT modify pkg/steward/ (daemon.go or steward.go)\n- Does NOT modify pkg/executor/ or pkg/olap/\n- Does NOT create ClickHouse or graph state code\n- Does NOT modify the existing ProcessBackend or DockerBackend implementations\n\nShared files (other tasks depend on these): pkg/agent/backend_k8s.go, pkg/agent/spawn_k8s.go, pkg/agent/backend.go, go.mod, go.sum\n\nDo NOT touch (handled by other tasks): pkg/steward/daemon.go, pkg/steward/steward.go, pkg/executor/graph_state.go, pkg/executor/deps.go, pkg/executor/executor.go, pkg/olap/clickhouse.go, k8s/dolt.yaml, k8s/kustomization.yaml, k8s/clickhouse.yaml, k8s/network-policy.yaml, k8s/secrets.yaml, chart/spire/Chart.yaml, chart/spire/values.yaml",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T01:35:15Z",
+        "updated_at": "2026-04-14T01:35:16Z",
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-wib4y",
+        "title": "step:merge",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:19:23Z",
+        "labels": [
+          "step:merge",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-xq9vg",
+        "title": "step:implement",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T01:19:23Z",
+        "updated_at": "2026-04-14T01:55:07Z",
+        "closed_at": "2026-04-14T01:55:07Z",
+        "labels": [
+          "step:implement",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      }
+    ],
+    "comments": [
+      {
+        "id": "019d8339-dc5b-7df2-bdf4-c20681c8426b",
+        "issue_id": "spi-2jlhe",
+        "author": "JB",
+        "text": "## Epic 3 (after Epic 2): Cluster Foundation\n\nThe actual k8s infrastructure. By this point metrics are solid (Epic 1) and the steward is production-ready locally (Epic 2). This epic moves it to k8s.\n\n### Depends on\n- Epic 2 (spi-m0ic5): steward must be reliable before we put it in a pod\n\n### Subtasks\n\n1. **K8sBackend in pkg/agent** — implements the existing Backend interface. Spawn() creates a k8s pod, Wait() watches pod completion, Kill() deletes the pod. The linchpin — everything else (store, executor, wizard, formulas) runs unchanged.\n\n2. **Dolt StatefulSet** — PV for persistence, MySQL service on 3307, DoltHub sync via CronJob sidecar. Connection pooling for 50+ concurrent agents.\n\n3. **ClickHouse StatefulSet** — replaces DuckDB in cluster mode. Same schema (tool_events, tool_spans, api_events, agent_runs_olap). OTel writer swap: the receiver's writeFn targets ClickHouse instead of DuckDB. Abstract behind an interface so local (DuckDB) and cluster (ClickHouse) coexist.\n\n4. **Graph state in Dolt** — move graph_state.json from filesystem to Dolt table. Hooked-step sweep must survive pod restarts. Agent pods are ephemeral — filesystem state dies with the pod.\n\n5. **Helm chart** — steward Deployment, dolt StatefulSet, ClickHouse StatefulSet, syncer CronJob, RBAC for agent pod creation. `helm install spire awell/spire` boots the whole thing.\n\n6. **Secrets management** — API keys, git tokens, DoltHub creds via k8s Secrets. Per-repo token isolation. ESO (External Secrets Operator) support for Vault/AWS SM.\n\n7. **Network policies** — agent pods → dolt (3307), agent pods → steward (4317 OTLP), steward → ClickHouse. Nothing else.\n\n8. **Agent pod resource tiers** — implement gets 4Gi, review gets 1Gi, plan gets 512Mi. Pod priority classes for P0 beads.\n\n9. **Bootstrap and smoke test** — helm install → file a bead → agent pod spawns → work completes → bead closes. End-to-end in a test cluster.\n\n### Testing requirements\n- Test: K8sBackend.Spawn creates a pod with correct env vars, volumes, labels\n- Test: K8sBackend.Wait returns correct exit code from pod termination\n- Test: K8sBackend.Kill deletes the pod\n- Test: graph state round-trips through Dolt (write, read back, verify)\n- Test: ClickHouse writer produces same results as DuckDB writer for identical input\n- Integration test: helm install in kind/minikube, file bead, verify agent pod runs\n- Test: network policies allow required traffic, block everything else\n\n### Exit criteria\n- `helm install` boots a working Spire cluster\n- Agent pods spawn, execute, and terminate correctly\n- Metrics flow through ClickHouse\n- Graph state survives pod restarts\n- Smoke test: file bead → merged to main, entirely in-cluster",
+        "created_at": "2026-04-12T19:45:01Z"
+      },
+      {
+        "id": "019d89a0-e30c-7918-bc7e-43db8d10fec9",
+        "issue_id": "spi-2jlhe",
+        "author": "spire",
+        "text": "Wizard plan: 6 subtasks\n\n- spi-ths8c: K8sBackend: k8s pod spawning in pkg/agent\n- spi-k21ar: ClickHouse OLAP writer and schema\n- spi-rxv2d: Graph state persistence in Dolt\n- spi-cfkwi: K8s cluster infrastructure manifests\n- spi-ct7h7: Helm chart for production deployment\n- spi-r9wyb: Cluster bootstrap smoke test ← spi-ths8c, spi-k21ar, spi-rxv2d, spi-cfkwi, spi-ct7h7\n",
+        "created_at": "2026-04-14T01:35:16Z"
+      },
+      {
+        "id": "019d89b4-f801-772b-af2d-e4a44066171a",
+        "issue_id": "spi-2jlhe",
+        "author": "spire",
+        "text": "Review round 1: request_changes — Solid foundation work — Helm chart, K8sBackend, ClickHouse OLAP, GraphStateStore abstraction, and comprehensive tests are well-structured. However, two correctness issues need fixing: K8sHandle.Wait() has a race condition that can hang indefinitely, and network policy label selectors don't match the labels K8sBackend actually sets on agent pods.\n- [error] Race condition in Wait(): if the pod completes between the Get (line 33) and the Watch (line 41), the Watch starts from 'now' and never sees the completion event — Wait() hangs forever. Fix: pass the ResourceVersion from the Get response into the Watch ListOptions, e.g. `metav1.ListOptions{FieldSelector: ..., ResourceVersion: pod.ResourceVersion}`. (pkg/agent/spawn_k8s.go:41)\n- [error] Label value mismatch: Spawn sets `\"spire.agent\": cfg.Name` (e.g. \"apprentice-spi-abc-0\"), but network policies in both chart/spire/templates/network-policy.yaml (uses `spire.agent: \"true\"`) and k8s/network-policy.yaml (uses `spire.agent: \"\"`) won't match. Agent egress restrictions and steward ingress-from-agent rules are silently unenforced. Either set the label to a fixed value like `\"true\"` (and use a separate label for the agent name), or change network policy selectors to use `matchExpressions` with `operator: Exists`. (pkg/agent/backend_k8s.go:146)\n- [error] podSelector `spire.agent: \"true\"` does not match pods created by K8sBackend which sets `spire.agent: \u003cagent-name\u003e`. This renders the agent egress NetworkPolicy ineffective. (chart/spire/templates/network-policy.yaml:121)\n- [error] podSelector `spire.agent: \"\"` matches only empty-string label values, but K8sBackend sets `spire.agent: \u003cagent-name\u003e`. Use matchExpressions with operator: Exists (as done correctly for steward-ingress on line 118). (k8s/network-policy.yaml:7)\n- [warning] CronJob mounts PVC `dolt-data-spire-dolt-0` (ReadWriteOnce) which is also mounted by the Dolt StatefulSet pod. If the CronJob pod is scheduled to a different node, the mount will fail. Consider running the sync command via `kubectl exec` into the StatefulSet pod instead, or use an initContainer/sidecar pattern. (k8s/dolt-sync-cronjob.yaml:33)\n- [warning] Same ReadWriteOnce PVC sharing issue as k8s/dolt-sync-cronjob.yaml — CronJob and StatefulSet pod both mount `dolt-data-spire-dolt-0`. (chart/spire/templates/dolt-sync-cronjob.yaml:49)",
+        "created_at": "2026-04-14T01:57:12Z"
+      }
+    ],
+    "epic_total_children": 17,
+    "epic_closed_children": 5,
+    "epic_closeable": false
+  }
+]
