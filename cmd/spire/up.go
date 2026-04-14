@@ -164,6 +164,22 @@ func cmdUp(args []string) error {
 			fmt.Printf("ok (%d tower(s))\n", len(towers))
 		}
 
+		// Ensure custom bead statuses (e.g. ready:active)
+		fmt.Print("custom bead statuses: ")
+		statusWarned := 0
+		for _, t := range towers {
+			beadsDir := filepath.Join(doltDataDir(), t.Database, ".beads")
+			if err := ensureCustomBeadStatuses(beadsDir); err != nil {
+				fmt.Printf("\n  warning: %s: %s", t.Database, err)
+				statusWarned++
+			}
+		}
+		if statusWarned > 0 {
+			fmt.Println()
+		} else {
+			fmt.Printf("ok (%d tower(s))\n", len(towers))
+		}
+
 		// Migrate label-identified internal beads to proper types
 		fmt.Print("internal type migration: ")
 		migWarned := 0

@@ -476,6 +476,58 @@ func ensureCustomBeadTypes(beadsDir string) error {
 	return nil
 }
 
+// requiredCustomStatuses are the custom bead statuses that Spire registers on
+// every tower. Format is "name:category" where category is "active" or "done".
+// "ready:active" tells the beads library SQL layer to include status='ready'
+// in the ready_issues view alongside status='open'.
+var requiredCustomStatuses = []string{"ready:active"}
+
+// ensureCustomBeadStatuses registers Spire's required custom bead statuses in
+// the given .beads directory. Idempotent — merges with any existing custom
+// statuses without clobbering user additions.
+func ensureCustomBeadStatuses(beadsDir string) error {
+	client := bdpkg.NewClient()
+	client.BeadsDir = beadsDir
+	client.Sandbox = true // remote may not be configured yet
+
+	// Read current custom statuses to avoid clobbering user additions.
+	current, err := client.ConfigGet("status.custom")
+	if err != nil {
+		// Key may not exist yet — treat as empty.
+		current = ""
+	}
+
+	// Build set of existing custom statuses.
+	existing := make(map[string]bool)
+	for _, s := range strings.Split(current, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			existing[s] = true
+		}
+	}
+
+	// Add any missing required statuses.
+	changed := false
+	for _, s := range requiredCustomStatuses {
+		if !existing[s] {
+			existing[s] = true
+			changed = true
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+
+	var statuses []string
+	for s := range existing {
+		statuses = append(statuses, s)
+	}
+	sort.Strings(statuses)
+
+	return client.ConfigSet("status.custom", strings.Join(statuses, ","))
+}
+
 var towerCmd = &cobra.Command{
 	Use:   "tower",
 	Short: "Manage towers",
