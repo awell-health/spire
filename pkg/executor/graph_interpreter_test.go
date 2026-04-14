@@ -33,6 +33,9 @@ func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 		},
 		ActivateStepBead: func(stepID string) error { return nil },
 		CloseStepBead:    func(stepID string) error { return nil },
+		HookStepBead:     func(stepID string) error { return nil },
+		UnhookStepBead:   func(stepID string) error { return nil },
+		UpdateBead:       func(id string, updates map[string]interface{}) error { return nil },
 		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
 			return "attempt-1", nil
 		},
