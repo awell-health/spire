@@ -197,6 +197,11 @@ func FindParentID(deps []*beads.Dependency) string {
 	return ""
 }
 
+// StatusHooked is the "hooked" bead status — a step parked waiting for a
+// condition (human approval, external event, error recovery). Defined here
+// because the beads library has it in internal/types but does not re-export it.
+const StatusHooked beads.Status = "hooked"
+
 // --- Filter helpers ---
 
 // StatusPtr returns a pointer to a beads.Status value.
@@ -222,6 +227,8 @@ func ParseStatus(s string) beads.Status {
 		return beads.StatusDeferred
 	case "closed":
 		return beads.StatusClosed
+	case "hooked":
+		return StatusHooked
 	default:
 		return beads.StatusOpen
 	}

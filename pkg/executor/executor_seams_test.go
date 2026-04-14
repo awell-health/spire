@@ -512,18 +512,13 @@ func TestArchmageIdentity_FromTower(t *testing.T) {
 	}
 }
 
-// TestEscalateHumanFailure_InterruptedLabel verifies that EscalateHumanFailure
-// adds an interrupted:<failureType> label alongside needs-human.
+// TestEscalateHumanFailure_AlertBead verifies that EscalateHumanFailure
+// creates an alert bead and recovery bead (no label-based routing).
 func TestEscalateHumanFailure_InterruptedLabel(t *testing.T) {
-	var labelsAdded []string
 	var beadsCreated []CreateOpts
 	var depsAdded []string
 
 	deps := &Deps{
-		AddLabel: func(id, label string) error {
-			labelsAdded = append(labelsAdded, id+":"+label)
-			return nil
-		},
 		AddComment: func(id, text string) error { return nil },
 		CreateBead: func(opts CreateOpts) (string, error) {
 			beadsCreated = append(beadsCreated, opts)
@@ -539,28 +534,6 @@ func TestEscalateHumanFailure_InterruptedLabel(t *testing.T) {
 	}
 
 	EscalateHumanFailure("spi-test", "wizard-test", "merge-failure", "merge conflict", deps)
-
-	// Verify needs-human label.
-	foundNeedsHuman := false
-	for _, l := range labelsAdded {
-		if l == "spi-test:needs-human" {
-			foundNeedsHuman = true
-		}
-	}
-	if !foundNeedsHuman {
-		t.Errorf("expected needs-human label, got: %v", labelsAdded)
-	}
-
-	// Verify interrupted:<failureType> label.
-	foundInterrupted := false
-	for _, l := range labelsAdded {
-		if l == "spi-test:interrupted:merge-failure" {
-			foundInterrupted = true
-		}
-	}
-	if !foundInterrupted {
-		t.Errorf("expected interrupted:merge-failure label, got: %v", labelsAdded)
-	}
 
 	// Verify alert bead was created with correct label.
 	foundAlert := false

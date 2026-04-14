@@ -137,7 +137,7 @@ func cmdBoard(args []string) error {
 		// Pre-fetch recovery refs for interrupted beads.
 		recoveryRefs := make(map[string]*board.RecoveryRef)
 		getDeps := board.StoreDeps()
-		for _, b := range result.Columns.Interrupted {
+		for _, b := range result.Columns.Hooked {
 			if ref := board.FetchRecoveryRef(b.ID, getDeps); ref != nil {
 				recoveryRefs[b.ID] = ref
 			}

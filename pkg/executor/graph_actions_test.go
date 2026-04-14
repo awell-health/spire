@@ -1272,16 +1272,13 @@ func TestBeadFinish_ResolvedStatus(t *testing.T) {
 // escalation path, not the unknown-status error path.
 func TestBeadFinish_EscalateStatus(t *testing.T) {
 	dir := t.TempDir()
-	var addedLabels []string
+	var createdAlerts []CreateOpts
 
 	deps := &Deps{
 		ConfigDir: func() (string, error) { return dir, nil },
-		AddLabel: func(id, label string) error {
-			addedLabels = append(addedLabels, label)
-			return nil
-		},
 		AddComment: func(id, text string) error { return nil },
 		CreateBead: func(opts CreateOpts) (string, error) {
+			createdAlerts = append(createdAlerts, opts)
 			return "spi-alert-test", nil
 		},
 		AddDepTyped: func(issueID, dependsOnID, depType string) error {
@@ -1314,15 +1311,17 @@ func TestBeadFinish_EscalateStatus(t *testing.T) {
 	if result.Outputs["status"] != "escalated" {
 		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "escalated")
 	}
-	// Verify escalation labels were applied.
-	foundNeedsHuman := false
-	for _, l := range addedLabels {
-		if l == "needs-human" {
-			foundNeedsHuman = true
+	// Verify escalation created an alert bead (status-based, not label-based).
+	foundAlert := false
+	for _, opts := range createdAlerts {
+		for _, lbl := range opts.Labels {
+			if lbl == "alert:bead-finish-escalate" {
+				foundAlert = true
+			}
 		}
 	}
-	if !foundNeedsHuman {
-		t.Errorf("expected needs-human label, got labels: %v", addedLabels)
+	if !foundAlert {
+		t.Errorf("expected alert bead with alert:bead-finish-escalate label, got: %v", createdAlerts)
 	}
 }
 
@@ -1893,12 +1892,9 @@ func TestActionHumanApprove_FirstRun(t *testing.T) {
 	if !result.Hooked {
 		t.Error("expected Hooked=true on first run")
 	}
-	if !labels["needs-human"] {
-		t.Error("expected needs-human label to be added")
-	}
-	if !labels["awaiting-approval"] {
-		t.Error("expected awaiting-approval label to be added")
-	}
+	// Status-based model: human.approve returns Hooked=true and the graph
+	// interpreter sets the step bead + parent bead to "hooked" status.
+	// No labels are added — the hooked status IS the signal.
 }
 
 func TestActionHumanApprove_StillWaiting(t *testing.T) {
@@ -1961,10 +1957,10 @@ func TestActionHumanApprove_Approved(t *testing.T) {
 }
 
 func TestActionHumanApprove_InconsistentState(t *testing.T) {
-	// awaiting-approval removed but needs-human still present — treat as approved.
-	labels := map[string]bool{
-		"needs-human": true,
-	}
+	// Status-based model: approval is determined solely by CompletedCount.
+	// CompletedCount == 0 means the step hasn't been hooked+resolved yet → hooks.
+	// CompletedCount > 0 means the hook was resolved → approved.
+	labels := map[string]bool{}
 	deps := humanApproveTestDeps(labels)
 
 	graph := &formula.FormulaStepGraph{
@@ -1978,13 +1974,23 @@ func TestActionHumanApprove_InconsistentState(t *testing.T) {
 	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
 	step := StepConfig{Action: "human.approve"}
 
+	// With CompletedCount == 0 (default), the action hooks — waiting for human.
 	result := actionHumanApprove(exec, "approve", step, exec.graphState)
-
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
+	if !result.Hooked {
+		t.Error("expected Hooked=true when CompletedCount == 0")
+	}
+
+	// With CompletedCount > 0, the action treats it as approved.
+	exec.graphState.Steps["approve"] = StepState{Status: "pending", CompletedCount: 1}
+	result = actionHumanApprove(exec, "approve", step, exec.graphState)
+	if result.Error != nil {
+		t.Fatalf("unexpected error on approved path: %v", result.Error)
+	}
 	if result.Hooked {
-		t.Error("expected Hooked=false when awaiting-approval is gone (inconsistent state = approved)")
+		t.Error("expected Hooked=false when CompletedCount > 0")
 	}
 	if result.Outputs["status"] != "approved" {
 		t.Errorf("expected status=approved, got %q", result.Outputs["status"])

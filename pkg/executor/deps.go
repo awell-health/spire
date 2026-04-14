@@ -84,6 +84,8 @@ type Deps struct {
 	CreateStepBead   func(parentID, stepName string) (string, error)
 	ActivateStepBead func(stepID string) error
 	CloseStepBead    func(stepID string) error
+	HookStepBead     func(stepID string) error
+	UnhookStepBead   func(stepID string) error
 
 	// Agent registry
 	RegistryAdd    func(entry agent.Entry) error

@@ -142,6 +142,19 @@ func cmdReset(args []string) error {
 		}
 	}
 
+	// Unhook any hooked child step beads before reset.
+	if children, err := storeGetChildren(beadID); err == nil {
+		for _, child := range children {
+			if isStepBead(child) && child.Status == "hooked" {
+				if err := storeUnhookStepBead(child.ID); err != nil {
+					fmt.Printf("  %s(note: could not unhook step %s: %s)%s\n", dim, child.ID, err, reset)
+				} else {
+					fmt.Printf("  %s✓ unhooked step %s%s\n", green, child.ID, reset)
+				}
+			}
+		}
+	}
+
 	// All formulas are v3 step graphs.
 	if toPhase != "" {
 		return softResetV3(beadID, toPhase, wizardName)

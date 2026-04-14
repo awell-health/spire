@@ -11,24 +11,24 @@ import (
 
 // HeightBudgetResult holds the computed layout parameters for the board.
 type HeightBudgetResult struct {
-	MaxCards       int  // max cards to show per column
-	Compact        bool // use 1-line compact cards instead of 4-line cards
-	MaxWarnings    int  // max warning lines to show (system-level, above alerts)
-	MaxAlerts      int  // max alert lines to show
-	MaxInterrupted int  // max interrupted lines to show
-	MaxBlocked     int  // max blocked lines to show
-	MaxAgents      int  // max agent lines to show in the agent panel (0 = hidden)
+	MaxCards    int  // max cards to show per column
+	Compact     bool // use 1-line compact cards instead of 4-line cards
+	MaxWarnings int  // max warning lines to show (system-level, above alerts)
+	MaxAlerts   int  // max alert lines to show
+	MaxHooked   int  // max hooked lines to show
+	MaxBlocked  int  // max blocked lines to show
+	MaxAgents   int  // max agent lines to show in the agent panel (0 = hidden)
 }
 
 // CalcHeightBudget computes card limits based on terminal height.
 // Returns permissive defaults when termHeight is zero (non-TTY or unknown).
-func CalcHeightBudget(termHeight, warningCount, alertCount, interruptedCount, blockedCount, colCount, agentCount int) HeightBudgetResult {
+func CalcHeightBudget(termHeight, warningCount, alertCount, hookedCount, blockedCount, colCount, agentCount int) HeightBudgetResult {
 	if termHeight <= 0 {
 		maxAg := agentCount
 		if maxAg > 5 {
 			maxAg = 5
 		}
-		return HeightBudgetResult{MaxCards: 99, MaxWarnings: warningCount, MaxAlerts: alertCount, MaxInterrupted: interruptedCount, MaxBlocked: 8, MaxAgents: maxAg}
+		return HeightBudgetResult{MaxCards: 99, MaxWarnings: warningCount, MaxAlerts: alertCount, MaxHooked: hookedCount, MaxBlocked: 8, MaxAgents: maxAg}
 	}
 
 	const fixed = 7
@@ -62,11 +62,11 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, interruptedCount, bl
 		}
 	}
 
-	// BLOCKED and INTERRUPTED share the same vertical space (rendered side-by-side).
+	// BLOCKED and HOOKED share the same vertical space (rendered side-by-side).
 	// Allocate a single pool and deduct from available only once.
-	maxInterrupted := 0
+	maxHooked := 0
 	maxBlocked := 0
-	if blockedCount > 0 || interruptedCount > 0 {
+	if blockedCount > 0 || hookedCount > 0 {
 		maxLower := available / 5
 		if maxLower < 1 {
 			maxLower = 1
@@ -77,16 +77,16 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, interruptedCount, bl
 				maxBlocked = blockedCount
 			}
 		}
-		if interruptedCount > 0 {
-			maxInterrupted = maxLower
-			if maxInterrupted > interruptedCount {
-				maxInterrupted = interruptedCount
+		if hookedCount > 0 {
+			maxHooked = maxLower
+			if maxHooked > hookedCount {
+				maxHooked = hookedCount
 			}
 		}
 		// Deduct the taller of the two from available (they share vertical space).
 		deduct := maxBlocked
-		if maxInterrupted > deduct {
-			deduct = maxInterrupted
+		if maxHooked > deduct {
+			deduct = maxHooked
 		}
 		available -= deduct + 2
 		if available < 4 {
@@ -124,13 +124,13 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, interruptedCount, bl
 	}
 
 	return HeightBudgetResult{
-		MaxCards:       maxCards,
-		Compact:        compact,
-		MaxWarnings:    maxWarnings,
-		MaxAlerts:      maxAlerts,
-		MaxInterrupted: maxInterrupted,
-		MaxBlocked:     maxBlocked,
-		MaxAgents:      maxAgents,
+		MaxCards:    maxCards,
+		Compact:    compact,
+		MaxWarnings: maxWarnings,
+		MaxAlerts:  maxAlerts,
+		MaxHooked:  maxHooked,
+		MaxBlocked: maxBlocked,
+		MaxAgents:  maxAgents,
 	}
 }
 
@@ -177,7 +177,7 @@ const sidebarWidth = 16
 
 // renderTabSidebar renders a narrow vertical sidebar with tab labels.
 // The active tab is bright white/bold; inactive tabs are dim gray.
-func renderTabSidebar(mode ViewMode, alertCount, blockedCount, interruptedCount int) string {
+func renderTabSidebar(mode ViewMode, alertCount, blockedCount, hookedCount int) string {
 	type tabDef struct {
 		label string
 		mode  ViewMode
@@ -186,10 +186,10 @@ func renderTabSidebar(mode ViewMode, alertCount, blockedCount, interruptedCount 
 	// Build a combined label for the lower tab showing separate counts.
 	var lowerLabel string
 	switch {
-	case blockedCount > 0 && interruptedCount > 0:
-		lowerLabel = fmt.Sprintf("BLK(%d) INT(%d)", blockedCount, interruptedCount)
-	case interruptedCount > 0:
-		lowerLabel = fmt.Sprintf("INT (%d)", interruptedCount)
+	case blockedCount > 0 && hookedCount > 0:
+		lowerLabel = fmt.Sprintf("BLK(%d) HKD(%d)", blockedCount, hookedCount)
+	case hookedCount > 0:
+		lowerLabel = fmt.Sprintf("HOOKED (%d)", hookedCount)
 	case blockedCount > 0:
 		lowerLabel = fmt.Sprintf("BLOCKED (%d)", blockedCount)
 	default:
@@ -313,7 +313,7 @@ func (m *BoardMode) View() string {
 	case ViewAlerts:
 		budget = CalcHeightBudget(m.Height, warningCount, alertCount, 0, 0, 0, len(m.Agents))
 	case ViewLower:
-		budget = CalcHeightBudget(m.Height, warningCount, 0, len(visibleCols.Interrupted), len(visibleCols.Blocked), 0, len(m.Agents))
+		budget = CalcHeightBudget(m.Height, warningCount, 0, len(visibleCols.Hooked), len(visibleCols.Blocked), 0, len(m.Agents))
 	}
 
 	// Render active view mode content.
@@ -359,13 +359,13 @@ func (m *BoardMode) View() string {
 		}
 
 	case ViewBoard:
-		// Compact attention line — shows counts for interrupted + alerts on one line.
-		intCount := len(visibleCols.Interrupted)
-		if intCount > 0 || alertCount > 0 {
+		// Compact attention line — shows counts for hooked + alerts on one line.
+		hookedCount := len(visibleCols.Hooked)
+		if hookedCount > 0 || alertCount > 0 {
 			var parts []string
-			if intCount > 0 {
-				intStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-				parts = append(parts, intStyle.Render(fmt.Sprintf("⚠ %d", intCount)))
+			if hookedCount > 0 {
+				hookedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+				parts = append(parts, hookedStyle.Render(fmt.Sprintf("⏸ %d", hookedCount)))
 			}
 			if alertCount > 0 {
 				alertStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
@@ -429,17 +429,17 @@ func (m *BoardMode) View() string {
 		}
 
 	case ViewLower:
-		// Blocked + Interrupted fullscreen.
+		// Blocked + Hooked fullscreen.
 		hasBlocked := len(visibleCols.Blocked) > 0
-		hasInterrupted := len(visibleCols.Interrupted) > 0
-		if hasBlocked || hasInterrupted {
+		hasHooked := len(visibleCols.Hooked) > 0
+		if hasBlocked || hasHooked {
 			selLower := m.SelSection == SectionLower
 
 			lowerWidth := contentWidth
 			if lowerWidth <= 0 {
 				lowerWidth = 80
 			}
-			bothPresent := hasBlocked && hasInterrupted
+			bothPresent := hasBlocked && hasHooked
 			subColWidth := lowerWidth
 			if bothPresent {
 				subColWidth = lowerWidth/2 - 2
@@ -478,56 +478,57 @@ func (m *BoardMode) View() string {
 				blockedStr = bb.String()
 			}
 
-			var interruptedStr string
-			if hasInterrupted {
-				SortBeads(visibleCols.Interrupted)
-				var ib strings.Builder
-				intStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+			var hookedStr string
+			if hasHooked {
+				SortBeads(visibleCols.Hooked)
+				var hb strings.Builder
+				hookedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 				if selLower && m.SelLowerCol == 1 {
-					intStyle = intStyle.Underline(true)
+					hookedStyle = hookedStyle.Underline(true)
 				}
-				ib.WriteString(intStyle.Render(fmt.Sprintf("⚠ INTERRUPTED (%d)", len(visibleCols.Interrupted))) + "\n")
-				for i, b := range visibleCols.Interrupted {
-					if i >= budget.MaxInterrupted {
+				hb.WriteString(hookedStyle.Render(fmt.Sprintf("⏸ HOOKED (%d)", len(visibleCols.Hooked))) + "\n")
+				for i, b := range visibleCols.Hooked {
+					if i >= budget.MaxHooked {
 						dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-						ib.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Interrupted)-budget.MaxInterrupted)) + "\n")
+						hb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Hooked)-budget.MaxHooked)) + "\n")
 						break
 					}
-					intType := ""
+					// Show which step is hooked from step:<name> labels on child step beads.
+					hookedStep := ""
 					for _, l := range b.Labels {
-						if strings.HasPrefix(l, "interrupted:") {
-							intType = "[" + l[len("interrupted:"):] + "] "
+						if strings.HasPrefix(l, "hooked-step:") {
+							hookedStep = "[" + l[len("hooked-step:"):] + "] "
 							break
 						}
 					}
 					if selLower && m.SelLowerCol == 1 && i == m.SelCard {
 						cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
-						ib.WriteString(fmt.Sprintf("%s %s %s%s: %s\n", cursor, PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
+						hb.WriteString(fmt.Sprintf("%s %s %s%s: %s\n", cursor, PriStr(b.Priority), hookedStep, b.ID, Truncate(b.Title, 50)))
 					} else {
-						ib.WriteString(fmt.Sprintf("  %s %s%s: %s\n", PriStr(b.Priority), intType, b.ID, Truncate(b.Title, 50)))
+						hb.WriteString(fmt.Sprintf("  %s %s%s: %s\n", PriStr(b.Priority), hookedStep, b.ID, Truncate(b.Title, 50)))
 					}
 					if m.Snapshot != nil && m.Snapshot.RecoveryRefs != nil {
 						if ref := m.Snapshot.RecoveryRefs[b.ID]; ref != nil {
 							recStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-							ib.WriteString(recStyle.Render(fmt.Sprintf("    recovery → %s", ref.ID)) + "\n")
+							hb.WriteString(recStyle.Render(fmt.Sprintf("    recovery → %s", ref.ID)) + "\n")
 						}
 					}
 				}
-				interruptedStr = ib.String()
+				hookedStr = hb.String()
 			}
 
 			if bothPresent {
 				leftStyle := lipgloss.NewStyle().Width(subColWidth + 2)
-				mainContent.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(blockedStr), interruptedStr))
+				mainContent.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(blockedStr), hookedStr))
 				mainContent.WriteString("\n")
 			} else if hasBlocked {
 				mainContent.WriteString(blockedStr)
 			} else {
-				mainContent.WriteString(interruptedStr)
+				mainContent.WriteString(hookedStr)
 			}
 		} else {
 			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-			mainContent.WriteString(dimStyle.Render("No blocked or interrupted beads") + "\n")
+			mainContent.WriteString(dimStyle.Render("No blocked or hooked beads") + "\n")
 		}
 	}
 

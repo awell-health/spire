@@ -25,17 +25,17 @@ type LocalAgent = agent.Entry
 
 // Columns holds beads categorized into board columns.
 type Columns struct {
-	Alerts      []BoardBead
-	Interrupted []BoardBead // parent beads with an interrupted:* label (escalated failures)
-	Backlog     []BoardBead // open + deferred beads (not yet ready for agents)
-	Ready       []BoardBead
-	Design      []BoardBead
-	Plan        []BoardBead
-	Implement   []BoardBead
-	Review      []BoardBead
-	Merge       []BoardBead
-	Done        []BoardBead
-	Blocked     []BoardBead
+	Alerts    []BoardBead
+	Hooked    []BoardBead // beads with status='hooked' (waiting for human/external condition)
+	Backlog   []BoardBead // open + deferred beads (not yet ready for agents)
+	Ready     []BoardBead
+	Design    []BoardBead
+	Plan      []BoardBead
+	Implement []BoardBead
+	Review    []BoardBead
+	Merge     []BoardBead
+	Done      []BoardBead
+	Blocked   []BoardBead
 }
 
 // RecoveryRef is an alias for recovery.RecoveryRef, avoiding duplicate definitions.
@@ -69,17 +69,17 @@ type BoardJSON struct {
 
 // ColumnsJSON is the JSON-serializable version of Columns.
 type ColumnsJSON struct {
-	Alerts      []BoardBeadJSON `json:"alerts"`
-	Interrupted []BoardBeadJSON `json:"interrupted"`
-	Backlog     []BoardBeadJSON `json:"backlog"`
-	Ready       []BoardBeadJSON `json:"ready"`
-	Design      []BoardBeadJSON `json:"design"`
-	Plan        []BoardBeadJSON `json:"plan"`
-	Implement   []BoardBeadJSON `json:"implement"`
-	Review      []BoardBeadJSON `json:"review"`
-	Merge       []BoardBeadJSON `json:"merge"`
-	Done        []BoardBeadJSON `json:"done"`
-	Blocked     []BoardBeadJSON `json:"blocked"`
+	Alerts    []BoardBeadJSON `json:"alerts"`
+	Hooked    []BoardBeadJSON `json:"hooked"`
+	Backlog   []BoardBeadJSON `json:"backlog"`
+	Ready     []BoardBeadJSON `json:"ready"`
+	Design    []BoardBeadJSON `json:"design"`
+	Plan      []BoardBeadJSON `json:"plan"`
+	Implement []BoardBeadJSON `json:"implement"`
+	Review    []BoardBeadJSON `json:"review"`
+	Merge     []BoardBeadJSON `json:"merge"`
+	Done      []BoardBeadJSON `json:"done"`
+	Blocked   []BoardBeadJSON `json:"blocked"`
 }
 
 // Opts holds board command options shared between JSON output and TUI mode.
@@ -93,7 +93,7 @@ type Opts struct {
 
 	// ListTowersFn returns available towers for the T-key switcher. Injected by caller.
 	ListTowersFn func() []TowerItem
-	// ResolveFn resolves a needs-human bead with a recovery learning comment.
+	// ResolveFn resolves a hooked bead with a recovery learning comment.
 	ResolveFn func(beadID, comment string) error
 	// TermContentFn fetches content for the terminal pane overlay.
 	// Takes beadID and returns rendered content string.
@@ -108,7 +108,7 @@ type ViewMode int
 const (
 	ViewBoard  ViewMode = iota // main phase columns (default)
 	ViewAlerts                 // alerts fullscreen
-	ViewLower                  // blocked + interrupted fullscreen
+	ViewLower                  // blocked + hooked fullscreen
 )
 
 // ANSI color codes for static terminal output (used by watch, roster, actions).
@@ -286,28 +286,28 @@ func StoreDeps() GetDependentsFunc {
 }
 
 // ToJSON converts Columns to the JSON-serializable ColumnsJSON with DAG progress.
-// recoveryRefs provides pre-fetched recovery refs for interrupted beads (may be nil).
+// recoveryRefs provides pre-fetched recovery refs for hooked beads (may be nil).
 func (c Columns) ToJSON(recoveryRefs map[string]*RecoveryRef) ColumnsJSON {
 	enrich := func(beads []BoardBead) []BoardBeadJSON {
 		return nonNilJSON(enrichBeadsJSON(NonNil(beads)))
 	}
 	cj := ColumnsJSON{
-		Alerts:      enrich(c.Alerts),
-		Interrupted: enrich(c.Interrupted),
-		Backlog:     enrich(c.Backlog),
-		Ready:       enrich(c.Ready),
-		Design:      enrich(c.Design),
-		Plan:        enrich(c.Plan),
-		Implement:   enrich(c.Implement),
-		Review:      enrich(c.Review),
-		Merge:       enrich(c.Merge),
-		Done:        enrich(c.Done),
-		Blocked:     enrich(c.Blocked),
+		Alerts:    enrich(c.Alerts),
+		Hooked:    enrich(c.Hooked),
+		Backlog:   enrich(c.Backlog),
+		Ready:     enrich(c.Ready),
+		Design:    enrich(c.Design),
+		Plan:      enrich(c.Plan),
+		Implement: enrich(c.Implement),
+		Review:    enrich(c.Review),
+		Merge:     enrich(c.Merge),
+		Done:      enrich(c.Done),
+		Blocked:   enrich(c.Blocked),
 	}
-	// Enrich interrupted beads with pre-fetched recovery refs.
+	// Enrich hooked beads with pre-fetched recovery refs.
 	if recoveryRefs != nil {
-		for i := range cj.Interrupted {
-			cj.Interrupted[i].RecoveryBead = recoveryRefs[cj.Interrupted[i].ID]
+		for i := range cj.Hooked {
+			cj.Hooked[i].RecoveryBead = recoveryRefs[cj.Hooked[i].ID]
 		}
 	}
 	return cj

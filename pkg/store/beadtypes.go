@@ -335,6 +335,53 @@ func CloseStepBead(stepID string) error {
 	return CloseBead(stepID)
 }
 
+// HookStepBead sets a step bead's status to 'hooked', indicating the step is
+// parked waiting for a condition (human approval, external event, error recovery).
+// Returns an error if the bead does not exist or is not of type=step.
+func HookStepBead(stepID string) error {
+	b, err := GetBead(stepID)
+	if err != nil {
+		return fmt.Errorf("hook step bead %s: %w", stepID, err)
+	}
+	if b.Type != "step" {
+		return fmt.Errorf("hook step bead %s: expected type=step, got type=%s", stepID, b.Type)
+	}
+	return UpdateBead(stepID, map[string]interface{}{
+		"status": "hooked",
+	})
+}
+
+// UnhookStepBead transitions a hooked step bead back to 'open', for when a
+// hooked condition is resolved and the step should be re-evaluated.
+// Returns an error if the bead does not exist or is not of type=step.
+func UnhookStepBead(stepID string) error {
+	b, err := GetBead(stepID)
+	if err != nil {
+		return fmt.Errorf("unhook step bead %s: %w", stepID, err)
+	}
+	if b.Type != "step" {
+		return fmt.Errorf("unhook step bead %s: expected type=step, got type=%s", stepID, b.Type)
+	}
+	return UpdateBead(stepID, map[string]interface{}{
+		"status": "open",
+	})
+}
+
+// GetHookedSteps returns all workflow-step children of a parent that have status=hooked.
+func GetHookedSteps(parentID string) ([]Bead, error) {
+	steps, err := GetStepBeads(parentID)
+	if err != nil {
+		return nil, err
+	}
+	var hooked []Bead
+	for _, s := range steps {
+		if s.Status == "hooked" {
+			hooked = append(hooked, s)
+		}
+	}
+	return hooked, nil
+}
+
 // GetStepBeads returns all workflow-step children of a parent bead, ordered by creation.
 func GetStepBeads(parentID string) ([]Bead, error) {
 	children, err := GetChildren(parentID)

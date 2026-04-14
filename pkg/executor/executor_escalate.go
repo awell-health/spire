@@ -87,24 +87,18 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 // review (which would review nothing), it escalates immediately.
 //
 // Actions:
-//  1. Labels the bead needs-human
-//  2. Creates an alert bead linked via a "caused-by" dep (not ref: label)
-//  3. Adds a comment explaining what happened
-//  4. Messages the archmage
+//  1. Creates an alert bead linked via a "caused-by" dep (not ref: label)
+//  2. Adds a comment explaining what happened
+//  3. Messages the archmage
 //
 // The bead stays at the implement phase so it can be resummon'd after the user
 // provides better context (design bead, improved description, etc.).
 func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
 	if isRecoveryBead(beadID, deps) {
-		deps.AddLabel(beadID, "needs-human")
-		deps.AddLabel(beadID, "interrupted:empty-implement")
 		deps.AddComment(beadID, "Empty implement on recovery bead — escalation suppressed to prevent cascade.")
 		return
 	}
-
-	deps.AddLabel(beadID, "needs-human")
-	deps.AddLabel(beadID, "interrupted:empty-implement")
 
 	prefix := store.PrefixFromID(beadID)
 	alertTitle := fmt.Sprintf("[empty-implement] %s: apprentice produced no code changes", beadID)
@@ -146,27 +140,18 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 // EscalateHumanFailure handles a terminal step failure in the review DAG.
 // It performs three actions:
 //  1. Creates an alert bead (surfaces in ALERTS on spire board)
-//  2. Labels the bead needs-human so spire board surfaces it
+//  2. Adds a comment and messages the archmage
 //  3. Leaves the bead at its current phase
 //
 // Failure types: "merge-failure", "build-failure", "repo-resolution", "arbiter-failure", "review-fix-merge-conflict"
 func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
 	if isRecoveryBead(beadID, deps) {
-		deps.AddLabel(beadID, "needs-human")
-		deps.AddLabel(beadID, "interrupted:"+failureType)
 		deps.AddComment(beadID, fmt.Sprintf(
 			"Failure on recovery bead (%s): %s — escalation suppressed to prevent cascade.",
 			failureType, message))
 		return
 	}
-
-	// Label needs-human so the board surfaces it in ALERTS.
-	deps.AddLabel(beadID, "needs-human")
-	// Explicit interrupted signal with failure type for board consumption.
-	// This is separate from needs-human so design approval gates (which use
-	// needs-human alone) are not confused with interrupted/error states.
-	deps.AddLabel(beadID, "interrupted:"+failureType)
 
 	prefix := store.PrefixFromID(beadID)
 
@@ -215,17 +200,11 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 func EscalateGraphStepFailure(beadID, agentName, failureType, message string, stepName, action, flow, workspace string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
 	if isRecoveryBead(beadID, deps) {
-		deps.AddLabel(beadID, "needs-human")
-		deps.AddLabel(beadID, "interrupted:"+failureType)
 		deps.AddComment(beadID, fmt.Sprintf(
 			"Failure on recovery bead (%s): %s — escalation suppressed to prevent cascade.",
 			failureType, message))
 		return
 	}
-
-	// Labels: same as EscalateHumanFailure — interrupt type is still the classification key.
-	deps.AddLabel(beadID, "needs-human")
-	deps.AddLabel(beadID, "interrupted:"+failureType)
 
 	prefix := store.PrefixFromID(beadID)
 

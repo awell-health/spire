@@ -165,6 +165,19 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 
 		// Activate step bead if tracked.
 		if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
+			// If the step bead was hooked (from a previous parked state that was
+			// externally reset by the steward), unhook it before reactivating.
+			if b, berr := e.deps.GetBead(stepBeadID); berr == nil && b.Status == "hooked" {
+				if err := e.deps.UnhookStepBead(stepBeadID); err != nil {
+					e.log("warning: unhook step bead %s (%s): %s", stepBeadID, stepName, err)
+				}
+				// If no other graph state steps are still hooked, restore parent to in_progress.
+				if !state.HasHookedSteps() {
+					if err := e.deps.UpdateBead(e.beadID, map[string]interface{}{"status": "in_progress"}); err != nil {
+						e.log("warning: restore parent status to in_progress: %s", err)
+					}
+				}
+			}
 			if err := e.deps.ActivateStepBead(stepBeadID); err != nil {
 				e.log("warning: activate step bead %s (%s): %s", stepBeadID, stepName, err)
 			}
@@ -187,7 +200,16 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			state.ActiveStep = "" // clear so graph detects parking
 			store.Save(e.agentName, state)
 
-			// Do NOT close the step bead — it stays open for retry.
+			// Hook the step bead in store (do NOT close — it stays hooked for retry).
+			if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
+				if err := e.deps.HookStepBead(stepBeadID); err != nil {
+					e.log("warning: hook step bead %s (%s): %s", stepBeadID, stepName, err)
+				}
+			}
+			// Set parent bead to hooked (at least one step is parked).
+			if err := e.deps.UpdateBead(e.beadID, map[string]interface{}{"status": "hooked"}); err != nil {
+				e.log("warning: set parent bead hooked: %s", err)
+			}
 
 			// Escalate to archmage with node-scoped context so the parent bead
 			// gets needs-human + interrupted:* labels and an alert bead.
@@ -204,7 +226,19 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			ss.Outputs = result.Outputs
 			state.Steps[stepName] = ss
 			state.ActiveStep = ""
-			store.Save(e.agentName, state)
+			e.deps.GraphStateStore.Save(e.agentName, state)
+
+			// Hook the step bead in store.
+			if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
+				if err := e.deps.HookStepBead(stepBeadID); err != nil {
+					e.log("warning: hook step bead %s (%s): %s", stepBeadID, stepName, err)
+				}
+			}
+			// Set parent bead to hooked (at least one step is parked).
+			if err := e.deps.UpdateBead(e.beadID, map[string]interface{}{"status": "hooked"}); err != nil {
+				e.log("warning: set parent bead hooked: %s", err)
+			}
+
 			e.log("step %s hooked — graph parked", stepName)
 			e.closeGraphAttempt(state, "parked: step "+stepName+" hooked")
 			return nil // graceful exit, not an error

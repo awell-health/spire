@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
@@ -49,6 +50,10 @@ func cmdClaim(args []string) error {
 	}
 	id := args[0]
 
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
+
 	// Verify bead exists and check state
 	target, err := claimGetBeadFunc(id)
 	if err != nil {
@@ -59,6 +64,8 @@ func cmdClaim(args []string) error {
 	if target.Status == "closed" {
 		return fmt.Errorf("bead %s is already closed", id)
 	}
+
+	wasHooked := target.Status == "hooked"
 
 	// Create or reclaim the attempt bead atomically.
 	// The attempt bead is the real ownership marker — storeGetReadyWork and
@@ -81,6 +88,19 @@ func cmdClaim(args []string) error {
 		"assignee": identity,
 	}); err != nil {
 		return fmt.Errorf("claim %s: %w", id, err)
+	}
+
+	// If the bead was hooked, a human is taking over — unhook all hooked step beads.
+	if wasHooked {
+		if children, err := storeGetChildren(id); err == nil {
+			for _, child := range children {
+				if isStepBead(child) && child.Status == "hooked" {
+					if err := storeUnhookStepBead(child.ID); err != nil {
+						fmt.Fprintf(os.Stderr, "  (note: could not unhook step %s: %s)\n", child.ID, err)
+					}
+				}
+			}
+		}
 	}
 
 	// Output result as JSON for easy consumption by spire-work

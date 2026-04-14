@@ -33,6 +33,9 @@ func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 		},
 		ActivateStepBead: func(stepID string) error { return nil },
 		CloseStepBead:    func(stepID string) error { return nil },
+		HookStepBead:     func(stepID string) error { return nil },
+		UnhookStepBead:   func(stepID string) error { return nil },
+		UpdateBead:       func(id string, updates map[string]interface{}) error { return nil },
 		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
 			return "attempt-1", nil
 		},
@@ -1277,12 +1280,7 @@ func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {
 		return nil
 	}
 
-	// Track escalation: labels added and alert beads created.
-	var addedLabels []string
-	deps.AddLabel = func(id, label string) error {
-		addedLabels = append(addedLabels, label)
-		return nil
-	}
+	// Track escalation: alert beads created and comments added.
 	var createdAlerts []string
 	deps.CreateBead = func(opts CreateOpts) (string, error) {
 		createdAlerts = append(createdAlerts, opts.Title)
@@ -1354,24 +1352,6 @@ func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {
 	// goes through EscalateGraphStepFailure (labels/alerts), not the attempt result.
 	if !strings.Contains(capturedResult, "parked") {
 		t.Errorf("expected result to contain 'parked', got: %s", capturedResult)
-	}
-
-	// Verify escalation: parent bead gets needs-human + interrupted:step-failure.
-	hasNeedsHuman := false
-	hasInterrupted := false
-	for _, l := range addedLabels {
-		if l == "needs-human" {
-			hasNeedsHuman = true
-		}
-		if l == "interrupted:step-failure" {
-			hasInterrupted = true
-		}
-	}
-	if !hasNeedsHuman {
-		t.Errorf("expected needs-human label on parent bead, got labels: %v", addedLabels)
-	}
-	if !hasInterrupted {
-		t.Errorf("expected interrupted:step-failure label on parent bead, got labels: %v", addedLabels)
 	}
 
 	// Verify alert bead was created with node-scoped context.
@@ -1800,12 +1780,19 @@ func TestRunGraph_FailedStepSetsHooked(t *testing.T) {
 		return ActionResult{Outputs: map[string]string{"done": "true"}}
 	}
 
-	// Track escalation calls via deps.AddLabel (needs-human is added by escalation).
-	deps.AddLabel = func(id, label string) error {
-		if label == "needs-human" {
-			escalateCalls++
+	// Track escalation calls via deps.CreateBead (escalation creates alert beads).
+	origCreateBead := deps.CreateBead
+	deps.CreateBead = func(opts CreateOpts) (string, error) {
+		for _, lbl := range opts.Labels {
+			if strings.HasPrefix(lbl, "alert:") {
+				escalateCalls++
+				break
+			}
 		}
-		return nil
+		if origCreateBead != nil {
+			return origCreateBead(opts)
+		}
+		return "alert-1", nil
 	}
 
 	graph := &formula.FormulaStepGraph{

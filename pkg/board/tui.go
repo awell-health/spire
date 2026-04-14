@@ -45,7 +45,7 @@ type Section int
 const (
 	SectionAlerts  Section = iota // alert beads above the columns
 	SectionColumns                // the main phase columns
-	SectionLower                  // blocked + interrupted side-by-side below the columns
+	SectionLower                  // blocked + hooked side-by-side below the columns
 )
 
 // BoardMode is the Bubble Tea model for the board TUI.
@@ -247,18 +247,18 @@ func (m *BoardMode) ClampSelection() {
 	case SectionLower:
 		// Clamp SelLowerCol to a sub-column that has items.
 		hasBlocked := len(vis.Blocked) > 0
-		hasInterrupted := len(vis.Interrupted) > 0
-		if m.SelLowerCol == 0 && !hasBlocked && hasInterrupted {
+		hasHooked := len(vis.Hooked) > 0
+		if m.SelLowerCol == 0 && !hasBlocked && hasHooked {
 			m.SelLowerCol = 1
 		}
-		if m.SelLowerCol == 1 && !hasInterrupted && hasBlocked {
+		if m.SelLowerCol == 1 && !hasHooked && hasBlocked {
 			m.SelLowerCol = 0
 		}
 		var items []BoardBead
 		if m.SelLowerCol == 0 {
 			items = vis.Blocked
 		} else {
-			items = vis.Interrupted
+			items = vis.Hooked
 		}
 		n := len(items)
 		if m.SelCard < 0 {
@@ -317,7 +317,7 @@ func (m *BoardMode) SelectedBead() *BoardBead {
 		if m.SelLowerCol == 0 {
 			items = vis.Blocked
 		} else {
-			items = vis.Interrupted
+			items = vis.Hooked
 		}
 		if m.SelCard >= 0 && m.SelCard < len(items) {
 			return &items[m.SelCard]
@@ -1298,7 +1298,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			switch m.SelSection {
 			case SectionLower:
 				vis := m.VisibleCols()
-				if m.SelLowerCol == 0 && len(vis.Interrupted) > 0 {
+				if m.SelLowerCol == 0 && len(vis.Hooked) > 0 {
 					m.SelLowerCol = 1
 					m.SelCard = 0
 					m.ClampSelection()
@@ -1337,7 +1337,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				if m.SelLowerCol == 0 {
 					items = vis.Blocked
 				} else {
-					items = vis.Interrupted
+					items = vis.Hooked
 				}
 				if m.SelCard+1 < len(items) {
 					m.SelCard++

@@ -25,6 +25,8 @@ type MenuAction struct {
 }
 
 // BuildActionMenu builds a context-sensitive list of actions based on bead state.
+// Routing is status-based: hooked beads get Resume/Reset/Close, in_progress beads
+// get wizard-aware actions, and other statuses keep their existing menus.
 func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 	if bead == nil {
 		return nil
@@ -38,15 +40,13 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 		}
 	}
 
-	needsHuman := bead.HasLabel("needs-human")
-
 	var items []MenuAction
 
 	isDesign := bead.Type == "design"
 
 	switch bead.Status {
 	case "open":
-		if isDesign && needsHuman {
+		if isDesign && bead.HasLabel("needs-human") {
 			items = append(items, MenuAction{Key: 'y', Label: "Approve design", Danger: DangerConfirm, ActionType: ActionApproveDesign})
 			items = append(items, MenuAction{Key: 'n', Label: "Reject with feedback", Danger: DangerNone, ActionType: ActionRejectDesign})
 		}
@@ -56,8 +56,16 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 	case "deferred":
 		items = append(items, MenuAction{Key: 'd', Label: "Undefer", Danger: DangerNone, ActionType: ActionDefer})
 		items = append(items, MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose})
+	case "hooked":
+		// Hooked beads are parked waiting for a condition — offer resume, reset, close.
+		items = append(items,
+			MenuAction{Key: 'S', Label: "Resume", Danger: DangerNone, ActionType: ActionResummon},
+			MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
+			MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
 	case "in_progress":
-		if isDesign && needsHuman {
+		if isDesign && bead.HasLabel("needs-human") {
 			items = append(items, MenuAction{Key: 'y', Label: "Approve design", Danger: DangerConfirm, ActionType: ActionApproveDesign})
 			items = append(items, MenuAction{Key: 'n', Label: "Reject with feedback", Danger: DangerNone, ActionType: ActionRejectDesign})
 		}
@@ -75,32 +83,6 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 		)
 	case "closed":
 		// minimal actions for closed beads
-	}
-
-	// Non-design beads with needs-human: show context-appropriate actions.
-	// awaiting-approval → Approve gate (spire approve)
-	// interrupted:* → Resolve (spire resolve)
-	// needs-human alone → both options
-	if needsHuman && !isDesign && (bead.Status == "open" || bead.Status == "in_progress") {
-		awaitingApproval := bead.HasLabel("awaiting-approval")
-		hasInterrupted := bead.HasLabelPrefix("interrupted:") != ""
-
-		if awaitingApproval && !hasInterrupted {
-			// Pure approval gate — show Approve only.
-			items = append(items, MenuAction{Key: 'Y', Label: "Approve (advance gate)", Danger: DangerConfirm, ActionType: ActionApproveGate})
-		} else if hasInterrupted && !awaitingApproval {
-			// Pure interruption — show Resolve only.
-			items = append(items, MenuAction{Key: 'v', Label: "Resolve (record learning)", Danger: DangerConfirm, ActionType: ActionResolve})
-		} else {
-			// Both labels or needs-human alone — show both options.
-			items = append(items, MenuAction{Key: 'v', Label: "Resolve (record learning)", Danger: DangerConfirm, ActionType: ActionResolve})
-			if awaitingApproval {
-				items = append(items, MenuAction{Key: 'Y', Label: "Approve (advance gate)", Danger: DangerConfirm, ActionType: ActionApproveGate})
-			} else {
-				items = append(items, MenuAction{Key: 'Y', Label: "Approve (close)", Danger: DangerConfirm, ActionType: ActionApprove})
-			}
-		}
-		items = append(items, MenuAction{Key: 'S', Label: "Resummon", Danger: DangerNone, ActionType: ActionResummon})
 	}
 
 	// Always available.
