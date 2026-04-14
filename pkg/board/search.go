@@ -18,6 +18,7 @@ func FilterColumns(cols Columns, query string) Columns {
 	return Columns{
 		Alerts:      FilterBeads(cols.Alerts, match),
 		Interrupted: FilterBeads(cols.Interrupted, match),
+		Backlog:     FilterBeads(cols.Backlog, match),
 		Ready:       FilterBeads(cols.Ready, match),
 		Design:      FilterBeads(cols.Design, match),
 		Plan:        FilterBeads(cols.Plan, match),

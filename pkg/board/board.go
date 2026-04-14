@@ -27,6 +27,7 @@ type LocalAgent = agent.Entry
 type Columns struct {
 	Alerts      []BoardBead
 	Interrupted []BoardBead // parent beads with an interrupted:* label (escalated failures)
+	Backlog     []BoardBead // open + deferred beads (not yet ready for agents)
 	Ready       []BoardBead
 	Design      []BoardBead
 	Plan        []BoardBead
@@ -70,6 +71,7 @@ type BoardJSON struct {
 type ColumnsJSON struct {
 	Alerts      []BoardBeadJSON `json:"alerts"`
 	Interrupted []BoardBeadJSON `json:"interrupted"`
+	Backlog     []BoardBeadJSON `json:"backlog"`
 	Ready       []BoardBeadJSON `json:"ready"`
 	Design      []BoardBeadJSON `json:"design"`
 	Plan        []BoardBeadJSON `json:"plan"`
@@ -292,6 +294,7 @@ func (c Columns) ToJSON(recoveryRefs map[string]*RecoveryRef) ColumnsJSON {
 	cj := ColumnsJSON{
 		Alerts:      enrich(c.Alerts),
 		Interrupted: enrich(c.Interrupted),
+		Backlog:     enrich(c.Backlog),
 		Ready:       enrich(c.Ready),
 		Design:      enrich(c.Design),
 		Plan:        enrich(c.Plan),

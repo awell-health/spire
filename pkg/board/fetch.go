@@ -76,6 +76,7 @@ func FetchBoard(opts Opts, identity string) (BoardResult, error) {
 		cols = FilterEpic(cols, opts.Epic)
 	}
 	if opts.Mine {
+		cols.Backlog = nil
 		cols.Ready = nil
 		cols.Design = FilterOwned(cols.Design, identity)
 		cols.Plan = FilterOwned(cols.Plan, identity)
@@ -94,6 +95,7 @@ func FetchBoard(opts Opts, identity string) (BoardResult, error) {
 		cols.Blocked = nil
 	}
 
+	SortBeads(cols.Backlog)
 	SortBeads(cols.Ready)
 	SortBeads(cols.Design)
 	SortBeads(cols.Plan)
@@ -186,6 +188,7 @@ func fetchSnapshot(db beads.Storage, opts Opts, identity string, fetchAgents fun
 		cols = FilterEpic(cols, opts.Epic)
 	}
 	if opts.Mine {
+		cols.Backlog = nil
 		cols.Ready = nil
 		cols.Design = FilterOwned(cols.Design, identity)
 		cols.Plan = FilterOwned(cols.Plan, identity)
@@ -204,6 +207,7 @@ func fetchSnapshot(db beads.Storage, opts Opts, identity string, fetchAgents fun
 		cols.Blocked = nil
 	}
 
+	SortBeads(cols.Backlog)
 	SortBeads(cols.Ready)
 	SortBeads(cols.Design)
 	SortBeads(cols.Plan)

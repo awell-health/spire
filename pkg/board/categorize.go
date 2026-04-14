@@ -20,6 +20,7 @@ type ColDef struct {
 // AllColumns returns all phase columns in board display order, including empty ones.
 func AllColumns(cols Columns) []ColDef {
 	return []ColDef{
+		{"BACKLOG", lipgloss.Color("8"), cols.Backlog},
 		{"READY", lipgloss.Color("2"), cols.Ready},
 		{"DESIGN", lipgloss.Color("4"), cols.Design},
 		{"PLAN", lipgloss.Color("6"), cols.Plan},
@@ -137,10 +138,10 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 			continue
 		}
 
-		// Deferred beads land in Ready (sorted to bottom by SortBeads).
+		// Deferred beads land in Backlog (sorted to bottom by SortBeads).
 		if b.Status == "deferred" {
 			if isWorkBoardBead(b) {
-				c.Ready = append(c.Ready, b)
+				c.Backlog = append(c.Backlog, b)
 			}
 			continue
 		}
@@ -148,6 +149,17 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		// Non-work beads (internal types or epic children) are managed
 		// elsewhere — skip them from phase columns and ready.
 		if !isWorkBoardBead(b) {
+			continue
+		}
+
+		// Open beads go to Backlog; ready beads go to Ready.
+		// In-progress beads route by phase label.
+		if b.Status == "open" {
+			c.Backlog = append(c.Backlog, b)
+			continue
+		}
+		if b.Status == "ready" {
+			c.Ready = append(c.Ready, b)
 			continue
 		}
 
@@ -222,10 +234,10 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 			continue
 		}
 
-		// Deferred beads land in Ready (sorted to bottom by SortBeads).
+		// Deferred beads land in Backlog (sorted to bottom by SortBeads).
 		if b.Status == "deferred" {
 			if isWorkBoardBead(b) {
-				c.Ready = append(c.Ready, b)
+				c.Backlog = append(c.Backlog, b)
 			}
 			continue
 		}
@@ -233,6 +245,17 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		// Non-work beads (internal types or epic children) are managed
 		// elsewhere — skip them from phase columns and ready.
 		if !isWorkBoardBead(b) {
+			continue
+		}
+
+		// Open beads go to Backlog; ready beads go to Ready.
+		// In-progress beads route by phase label.
+		if b.Status == "open" {
+			c.Backlog = append(c.Backlog, b)
+			continue
+		}
+		if b.Status == "ready" {
+			c.Ready = append(c.Ready, b)
 			continue
 		}
 
@@ -278,6 +301,7 @@ func FilterEpic(cols Columns, epicID string) Columns {
 	return Columns{
 		Alerts:      FilterBeads(cols.Alerts, match),
 		Interrupted: FilterBeads(cols.Interrupted, match),
+		Backlog:     FilterBeads(cols.Backlog, match),
 		Ready:       FilterBeads(cols.Ready, match),
 		Design:      FilterBeads(cols.Design, match),
 		Plan:        FilterBeads(cols.Plan, match),
@@ -381,6 +405,7 @@ func FilterTypeScope(cols Columns, scope TypeScope) Columns {
 	return Columns{
 		Alerts:      FilterBeads(cols.Alerts, match),
 		Interrupted: FilterBeads(cols.Interrupted, match),
+		Backlog:     FilterBeads(cols.Backlog, match),
 		Ready:       FilterBeads(cols.Ready, match),
 		Design:      FilterBeads(cols.Design, match),
 		Plan:        FilterBeads(cols.Plan, match),
