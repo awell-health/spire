@@ -31,6 +31,9 @@ type ClickHouseWriter struct {
 // tables exist. The DSN format for clickhouse-go v2 is
 // "clickhouse://host:port/database".
 func NewClickHouseWriter(dsn string) (*ClickHouseWriter, error) {
+	if err := EnsureClickHouseDatabase(dsn); err != nil {
+		return nil, fmt.Errorf("clickhouse ensure db: %w", err)
+	}
 	db, err := sql.Open("clickhouse", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse open: %w", err)

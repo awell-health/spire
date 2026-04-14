@@ -3,6 +3,7 @@ package olap
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 )
 
 // ClickHouse DDL statements. These mirror the DuckDB schema in schema.go but
@@ -129,6 +130,38 @@ func clickHouseSchemaStatements() []string {
 		chCreateAgentRunsOLAP,
 		chCreateETLCursor,
 	}
+}
+
+// EnsureClickHouseDatabase connects to the ClickHouse default database and
+// creates the target database if it doesn't exist. The dsn should be the
+// full connection string including the target database
+// (e.g. "clickhouse://host:9000/spire"). Idempotent.
+func EnsureClickHouseDatabase(dsn string) error {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return fmt.Errorf("parse clickhouse dsn: %w", err)
+	}
+	dbName := ""
+	if u.Path != "" {
+		dbName = u.Path[1:] // strip leading "/"
+	}
+	if dbName == "" {
+		return nil // no target database specified, nothing to create
+	}
+
+	// Connect to the "default" database to run the CREATE DATABASE statement.
+	bootstrap := *u
+	bootstrap.Path = "/default"
+	db, err := sql.Open("clickhouse", bootstrap.String())
+	if err != nil {
+		return fmt.Errorf("clickhouse bootstrap open: %w", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("CREATE DATABASE IF NOT EXISTS " + dbName); err != nil {
+		return fmt.Errorf("clickhouse create database %s: %w", dbName, err)
+	}
+	return nil
 }
 
 // InitClickHouseSchema creates all OLAP tables in ClickHouse if they don't

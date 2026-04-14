@@ -25,6 +25,8 @@ data:
       <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
       <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>
     </clickhouse>
+  init.sql: |
+    CREATE DATABASE IF NOT EXISTS spire;
 ---
 apiVersion: v1
 kind: Service
@@ -103,6 +105,10 @@ spec:
             - name: clickhouse-config
               mountPath: /etc/clickhouse-server/config.d/spire.xml
               subPath: config.xml
+            - name: clickhouse-config
+              mountPath: /docker-entrypoint-initdb.d/init.sql
+              subPath: init.sql
+              readOnly: true
       volumes:
         - name: clickhouse-config
           configMap:

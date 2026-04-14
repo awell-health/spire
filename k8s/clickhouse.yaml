@@ -26,7 +26,12 @@ spec:
         - name: clickhouse-data
           mountPath: /var/lib/clickhouse
         - name: clickhouse-config
-          mountPath: /etc/clickhouse-server/config.d/
+          mountPath: /etc/clickhouse-server/config.d/spire.xml
+          subPath: spire.xml
+        - name: clickhouse-config
+          mountPath: /docker-entrypoint-initdb.d/init.sql
+          subPath: init.sql
+          readOnly: true
         resources:
           requests:
             memory: 512Mi
@@ -45,6 +50,10 @@ spec:
             port: 8123
           initialDelaySeconds: 15
           periodSeconds: 30
+      volumes:
+      - name: clickhouse-config
+        configMap:
+          name: clickhouse-config
   volumeClaimTemplates:
   - metadata:
       name: clickhouse-data
@@ -81,3 +90,5 @@ data:
       <max_concurrent_queries>100</max_concurrent_queries>
       <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
     </clickhouse>
+  init.sql: |
+    CREATE DATABASE IF NOT EXISTS spire;
