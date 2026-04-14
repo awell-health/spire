@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -955,10 +957,11 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 
 	// Validate Claude's chosen action against repeated failures.
 	if fullCtx != nil && fullCtx.RepeatedFailures[result.ChosenAction] >= 2 {
+		originalAction := result.ChosenAction
 		e.log("recovery: decide: Claude chose %q but it has %d prior failures — overriding to escalate",
-			result.ChosenAction, fullCtx.RepeatedFailures[result.ChosenAction])
+			originalAction, fullCtx.RepeatedFailures[originalAction])
 		result.ChosenAction = "escalate"
-		result.Reasoning = fmt.Sprintf("Overridden: original choice has %d prior failures", fullCtx.RepeatedFailures[result.ChosenAction])
+		result.Reasoning = fmt.Sprintf("Overridden: original choice %q has %d prior failures", originalAction, fullCtx.RepeatedFailures[originalAction])
 		result.NeedsHuman = true
 	}
 
@@ -1315,8 +1318,15 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 
 	repoPath := e.effectiveRepoPath()
 
+	// Resolve Dolt DB handle for attempt tracking. Nil-safe: if DoltDB
+	// dep is not wired (local execution), attempt tracking is gracefully skipped.
+	var db *sql.DB
+	if e.deps != nil && e.deps.DoltDB != nil {
+		db = e.deps.DoltDB()
+	}
+
 	actionCtx := &RecoveryActionCtx{
-		DB:             nil, // DB handle not available in executor context; RunRecoveryAction nil-checks
+		DB:             db,
 		RepoPath:       repoPath,
 		RecoveryBeadID: e.beadID,
 		TargetBeadID:   sourceBeadID,
@@ -1427,12 +1437,30 @@ func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphSta
 	e.log("recovery: verify: retry request set on %s (from_step=%s, attempt=%d)", sourceBeadID, failedStep, attemptNumber)
 
 	// Polling loop: check for retry result every interval, up to timeout.
+	// Uses context + ticker so the loop is cancellable if the executor shuts down.
 	pollInterval := time.Duration(DefaultVerifyPollInterval) * time.Second
 	timeout := time.Duration(DefaultVerifyTimeout) * time.Second
-	deadline := time.Now().Add(timeout)
 
-	for time.Now().Before(deadline) {
-		time.Sleep(pollInterval)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Timeout: clean up and loop back to decide.
+			_ = ClearRetryRequest(sourceBeadID)
+			e.log("recovery: verify: polling timed out after %s", timeout)
+			return ActionResult{Outputs: map[string]string{
+				"status":  "failed",
+				"loop_to": "decide",
+				"reason":  fmt.Sprintf("verify polling timed out after %s", timeout),
+			}}
+		case <-ticker.C:
+			// Poll for result.
+		}
 
 		result, found, err := GetRetryResult(sourceBeadID)
 		if err != nil {
@@ -1479,16 +1507,6 @@ func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphSta
 			"reason":      "retry failed",
 		}}
 	}
-
-	// Timeout: clean up and loop back to decide.
-	_ = ClearRetryRequest(sourceBeadID)
-	e.log("recovery: verify: polling timed out after %s", timeout)
-
-	return ActionResult{Outputs: map[string]string{
-		"status":  "failed",
-		"loop_to": "decide",
-		"reason":  fmt.Sprintf("verify polling timed out after %s", timeout),
-	}}
 }
 
 // actionRecoveryVerify is the ActionHandler for the "recovery.verify" opcode.

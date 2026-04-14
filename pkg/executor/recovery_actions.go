@@ -1,10 +1,13 @@
 package executor
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -121,8 +124,12 @@ func RunRecoveryAction(ctx *RecoveryActionCtx, actionName string) error {
 		return fmt.Errorf("action %s exceeded max retries (%d)", actionName, action.MaxRetries)
 	}
 
-	// Record in-progress attempt.
+	// Pre-generate attempt ID so UpdateAttemptOutcome can reference it later.
+	// RecordRecoveryAttempt takes by value, so an internally generated ID
+	// would be lost to the caller.
+	attemptID := generateRecoveryAttemptID()
 	attempt := store.RecoveryAttempt{
+		ID:             attemptID,
 		RecoveryBeadID: ctx.RecoveryBeadID,
 		TargetBeadID:   ctx.TargetBeadID,
 		Action:         actionName,
@@ -173,17 +180,26 @@ func RunRecoveryAction(ctx *RecoveryActionCtx, actionName string) error {
 
 // ProvisionRecoveryWorktree creates a worktree for recovery operations using
 // pkg/git APIs. The worktree is placed at <repoPath>/.worktrees/<beadID>-recovery
-// on a branch named recovery/<beadID>. Returns a cleanup function that removes
-// the worktree when called.
+// on a branch named recovery/<beadID>, based on the target bead's feature branch
+// (not main). This ensures recovery actions operate on the bead's actual work.
+// Returns a cleanup function that removes the worktree when called.
 func ProvisionRecoveryWorktree(repoPath string, beadID string) (*spgit.WorktreeContext, func(), error) {
 	dir := filepath.Join(repoPath, ".worktrees", beadID+"-recovery")
 	branch := "recovery/" + beadID
-	baseBranch := "main"
 
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
-	wc, err := rc.CreateWorktreeNewBranch(dir, branch, baseBranch)
+	// Resolve the target bead's feature branch so the recovery worktree
+	// contains the bead's work. Fall back to feat/<beadID> if no label.
+	startPoint := "feat/" + beadID
+	if b, err := store.GetBead(beadID); err == nil {
+		if fb := store.HasLabel(b, "feat-branch:"); fb != "" {
+			startPoint = fb
+		}
+	}
+
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: "main"}
+	wc, err := rc.CreateWorktreeNewBranch(dir, branch, startPoint)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create recovery worktree at %s: %w", dir, err)
+		return nil, nil, fmt.Errorf("create recovery worktree at %s from %s: %w", dir, startPoint, err)
 	}
 
 	cleanup := func() {
@@ -238,6 +254,9 @@ func actionCherryPick() RecoveryAction {
 			commit := ctx.Params["commit"]
 			if commit == "" {
 				return fmt.Errorf("cherry-pick: missing 'commit' parameter")
+			}
+			if !validCommitSHA.MatchString(commit) {
+				return fmt.Errorf("cherry-pick: invalid commit hash %q (must be 7-40 hex characters)", commit)
 			}
 
 			wc := ctx.Worktree
@@ -370,6 +389,23 @@ func actionResetToStep() RecoveryAction {
 			return nil
 		},
 	}
+}
+
+// validCommitSHA matches a hex SHA (7-40 characters, the common range for
+// abbreviated and full SHAs). Used to guard against command injection in
+// actions that interpolate commit hashes into shell commands.
+var validCommitSHA = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+
+// generateRecoveryAttemptID generates a random attempt ID in the same format
+// as store.generateAttemptID ("ra-" + 8 hex chars). We generate it here so
+// the caller retains the ID after RecordRecoveryAttempt (which takes the
+// struct by value and would lose an internally generated ID).
+func generateRecoveryAttemptID() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "ra-00000000"
+	}
+	return "ra-" + hex.EncodeToString(b)
 }
 
 // actionEscalate sets the bead priority to P0 and adds a 'needs-human' label.

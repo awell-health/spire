@@ -7,6 +7,8 @@
 package executor
 
 import (
+	"database/sql"
+
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
@@ -135,6 +137,10 @@ type Deps struct {
 	// worktree, branches, graph state, internal DAG beads, and sets bead to open.
 	// Wired from cmd/spire where the git/config/registry machinery lives.
 	HardResetBead func(beadID string) error
+
+	// Dolt DB handle for recovery attempt tracking. Nil when no Dolt
+	// server is available (local execution). Callers must nil-check.
+	DoltDB func() *sql.DB
 
 	// Metadata
 	SetBeadMetadata func(id string, meta map[string]string) error
