@@ -54,6 +54,7 @@ func saveCycleFuncVars(t *testing.T) {
 	origGetComments := GetCommentsFunc
 	origRemoveLabel := RemoveLabelFunc
 	origSendMessage := SendMessageFunc
+	origConfigLoad := ConfigLoadFunc
 
 	t.Cleanup(func() {
 		CommitPendingFunc = origCommitPending
@@ -70,6 +71,7 @@ func saveCycleFuncVars(t *testing.T) {
 		GetCommentsFunc = origGetComments
 		RemoveLabelFunc = origRemoveLabel
 		SendMessageFunc = origSendMessage
+		ConfigLoadFunc = origConfigLoad
 	})
 }
 
@@ -97,6 +99,9 @@ func setupCycleFuncMocks(t *testing.T, schedulable []store.Bead, maxConcurrent i
 	SendMessageFunc = func(to, from, body, ref string, priority int) (string, error) { return "", nil }
 	ExecuteMergeFunc = func(ctx context.Context, req MergeRequest) MergeResult {
 		return MergeResult{BeadID: req.BeadID, Success: true, SHA: "abc123"}
+	}
+	ConfigLoadFunc = func() (*config.SpireConfig, error) {
+		return &config.SpireConfig{Instances: make(map[string]*config.Instance)}, nil
 	}
 }
 
@@ -358,6 +363,63 @@ func TestE2E_MergeFailureProcessed(t *testing.T) {
 
 	if mq.Depth() != 0 {
 		t.Errorf("expected queue empty after processing (even on failure), got depth %d", mq.Depth())
+	}
+}
+
+// TestE2E_DetectMergeReady_EnqueueAndProcess verifies that a full cycle with a
+// review-approved bead results in DetectMergeReady enqueueing and ProcessNext
+// calling ExecuteMergeFunc.
+func TestE2E_DetectMergeReady_EnqueueAndProcess(t *testing.T) {
+	backend := &cycleBackend{}
+	setupCycleFuncMocks(t, nil, 0) // no schedulable work
+
+	// Override ListBeadsFunc to return a review-approved bead for DetectMergeReady.
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{
+				ID:     "spi-merge1",
+				Status: "in_progress",
+				Type:   "task",
+				Labels: []string{"review-approved", "feat-branch:feat/spi-merge1"},
+			},
+		}, nil
+	}
+
+	// Override ConfigLoadFunc to return a config with the repo registered.
+	ConfigLoadFunc = func() (*config.SpireConfig, error) {
+		return &config.SpireConfig{
+			Instances: map[string]*config.Instance{
+				"spi": {Path: "/repos/spire", Prefix: "spi"},
+			},
+		}, nil
+	}
+
+	var mergedBeadIDs []string
+	ExecuteMergeFunc = func(ctx context.Context, req MergeRequest) MergeResult {
+		mergedBeadIDs = append(mergedBeadIDs, req.BeadID)
+		return MergeResult{BeadID: req.BeadID, Success: true, SHA: "merged-sha"}
+	}
+
+	mq := NewMergeQueue()
+	cfg := StewardConfig{
+		Backend:           backend,
+		MergeQueue:        mq,
+		StaleThreshold:    10 * time.Minute,
+		ShutdownThreshold: 15 * time.Minute,
+	}
+
+	TowerCycle(1, "", cfg)
+
+	// DetectMergeReady should have enqueued, ProcessNext should have processed.
+	if len(mergedBeadIDs) != 1 {
+		t.Fatalf("expected 1 merge execution, got %d", len(mergedBeadIDs))
+	}
+	if mergedBeadIDs[0] != "spi-merge1" {
+		t.Errorf("merged bead = %q, want %q", mergedBeadIDs[0], "spi-merge1")
+	}
+	// Queue should be empty after processing.
+	if mq.Depth() != 0 {
+		t.Errorf("expected queue depth 0 after processing, got %d", mq.Depth())
 	}
 }
 

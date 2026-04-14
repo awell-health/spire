@@ -118,3 +118,19 @@ func (mq *MergeQueue) Remove(beadID string) bool {
 	}
 	return false
 }
+
+// Contains checks if a beadID is already queued or actively being processed.
+// Prevents duplicate enqueue across cycles.
+func (mq *MergeQueue) Contains(beadID string) bool {
+	mq.mu.Lock()
+	defer mq.mu.Unlock()
+	if mq.active != nil && mq.active.BeadID == beadID {
+		return true
+	}
+	for _, req := range mq.queue {
+		if req.BeadID == beadID {
+			return true
+		}
+	}
+	return false
+}

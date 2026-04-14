@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/store"
@@ -1499,6 +1500,181 @@ func TestMergeQueueDepth_Nil(t *testing.T) {
 	if d := mergeQueueDepth(mq); d != 1 {
 		t.Errorf("mergeQueueDepth = %d, want 1", d)
 	}
+}
+
+// --- DetectMergeReady tests ---
+
+func TestDetectMergeReady_EnqueuesApprovedBead(t *testing.T) {
+	origListBeads := ListBeadsFunc
+	origConfigLoad := ConfigLoadFunc
+	defer func() {
+		ListBeadsFunc = origListBeads
+		ConfigLoadFunc = origConfigLoad
+	}()
+
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-abc", Status: "in_progress", Type: "task", Labels: []string{"review-approved", "feat-branch:feat/spi-abc"}},
+		}, nil
+	}
+	ConfigLoadFunc = func() (*config.SpireConfig, error) {
+		return &config.SpireConfig{
+			Instances: map[string]*config.Instance{
+				"spi": {Path: "/repos/spire", Prefix: "spi"},
+			},
+		}, nil
+	}
+
+	mq := NewMergeQueue()
+	DetectMergeReady(false, mq)
+
+	if mq.Depth() != 1 {
+		t.Errorf("expected queue depth 1, got %d", mq.Depth())
+	}
+	peek := mq.Peek()
+	if peek == nil {
+		t.Fatal("expected non-nil peek")
+	}
+	if peek.BeadID != "spi-abc" {
+		t.Errorf("BeadID = %q, want %q", peek.BeadID, "spi-abc")
+	}
+	if peek.Branch != "feat/spi-abc" {
+		t.Errorf("Branch = %q, want %q", peek.Branch, "feat/spi-abc")
+	}
+	if peek.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q", peek.BaseBranch, "main")
+	}
+	if peek.RepoPath != "/repos/spire" {
+		t.Errorf("RepoPath = %q, want %q", peek.RepoPath, "/repos/spire")
+	}
+}
+
+func TestDetectMergeReady_SkipsWithoutReviewApproved(t *testing.T) {
+	origListBeads := ListBeadsFunc
+	origConfigLoad := ConfigLoadFunc
+	defer func() {
+		ListBeadsFunc = origListBeads
+		ConfigLoadFunc = origConfigLoad
+	}()
+
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-noapproval", Status: "in_progress", Type: "task", Labels: []string{"feat-branch:feat/spi-noapproval"}},
+		}, nil
+	}
+	ConfigLoadFunc = func() (*config.SpireConfig, error) {
+		return &config.SpireConfig{
+			Instances: map[string]*config.Instance{
+				"spi": {Path: "/repos/spire", Prefix: "spi"},
+			},
+		}, nil
+	}
+
+	mq := NewMergeQueue()
+	DetectMergeReady(false, mq)
+
+	if mq.Depth() != 0 {
+		t.Errorf("expected queue depth 0 (no review-approved), got %d", mq.Depth())
+	}
+}
+
+func TestDetectMergeReady_SkipsAlreadyInQueue(t *testing.T) {
+	origListBeads := ListBeadsFunc
+	origConfigLoad := ConfigLoadFunc
+	defer func() {
+		ListBeadsFunc = origListBeads
+		ConfigLoadFunc = origConfigLoad
+	}()
+
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-dup", Status: "in_progress", Type: "task", Labels: []string{"review-approved", "feat-branch:feat/spi-dup"}},
+		}, nil
+	}
+	ConfigLoadFunc = func() (*config.SpireConfig, error) {
+		return &config.SpireConfig{
+			Instances: map[string]*config.Instance{
+				"spi": {Path: "/repos/spire", Prefix: "spi"},
+			},
+		}, nil
+	}
+
+	mq := NewMergeQueue()
+	// Pre-enqueue the bead.
+	mq.Enqueue(MergeRequest{BeadID: "spi-dup", Branch: "feat/spi-dup", BaseBranch: "main"})
+
+	DetectMergeReady(false, mq)
+
+	if mq.Depth() != 1 {
+		t.Errorf("expected queue depth 1 (no duplicate), got %d", mq.Depth())
+	}
+}
+
+func TestDetectMergeReady_SkipsNoRegisteredRepo(t *testing.T) {
+	origListBeads := ListBeadsFunc
+	origConfigLoad := ConfigLoadFunc
+	defer func() {
+		ListBeadsFunc = origListBeads
+		ConfigLoadFunc = origConfigLoad
+	}()
+
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "web-xyz", Status: "in_progress", Type: "task", Labels: []string{"review-approved", "feat-branch:feat/web-xyz"}},
+		}, nil
+	}
+	// Config has no "web" instance registered.
+	ConfigLoadFunc = func() (*config.SpireConfig, error) {
+		return &config.SpireConfig{
+			Instances: map[string]*config.Instance{
+				"spi": {Path: "/repos/spire", Prefix: "spi"},
+			},
+		}, nil
+	}
+
+	mq := NewMergeQueue()
+	DetectMergeReady(false, mq)
+
+	if mq.Depth() != 0 {
+		t.Errorf("expected queue depth 0 (no registered repo for prefix 'web'), got %d", mq.Depth())
+	}
+}
+
+// --- MergeQueue.Contains tests ---
+
+func TestMergeQueue_Contains_InQueue(t *testing.T) {
+	mq := NewMergeQueue()
+	mq.Enqueue(MergeRequest{BeadID: "spi-a"})
+	mq.Enqueue(MergeRequest{BeadID: "spi-b"})
+
+	if !mq.Contains("spi-a") {
+		t.Error("expected Contains(spi-a) = true")
+	}
+	if !mq.Contains("spi-b") {
+		t.Error("expected Contains(spi-b) = true")
+	}
+	if mq.Contains("spi-c") {
+		t.Error("expected Contains(spi-c) = false")
+	}
+}
+
+func TestMergeQueue_Contains_Active(t *testing.T) {
+	mq := NewMergeQueue()
+	mq.Enqueue(MergeRequest{BeadID: "spi-active"})
+
+	// Start processing to make it active.
+	done := make(chan struct{})
+	go func() {
+		mq.ProcessNext(context.Background(), func(ctx context.Context, req MergeRequest) MergeResult {
+			// Check Contains while active.
+			if !mq.Contains("spi-active") {
+				t.Error("expected Contains(spi-active) = true while active")
+			}
+			close(done)
+			return MergeResult{BeadID: req.BeadID, Success: true}
+		})
+	}()
+	<-done
 }
 
 func TestConcurrencyLimiter_UnlimitedWhenZero(t *testing.T) {

@@ -33,6 +33,7 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -331,6 +332,11 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		log.Printf("[steward] %shooked sweep: re-summoned %d wizard(s)", prefix, hookedCount)
 	}
 
+	// Step 4e: Detect merge-ready beads and enqueue.
+	if cfg.MergeQueue != nil {
+		DetectMergeReady(cfg.DryRun, cfg.MergeQueue)
+	}
+
 	// Step 5: Stale + shutdown check.
 	staleCount, shutdownCount := CheckBeadHealth(cfg.StaleThreshold, cfg.ShutdownThreshold, cfg.DryRun, cfg.Backend)
 	if staleCount > 0 || shutdownCount > 0 {
@@ -605,6 +611,64 @@ func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string) {
 	}
 }
 
+// DetectMergeReady scans in_progress beads with the "review-approved" label
+// and a "feat-branch:" label, resolves the repo path from config, and enqueues
+// a MergeRequest for each eligible bead. Skips beads already in the queue.
+func DetectMergeReady(dryRun bool, mq *MergeQueue) {
+	inProgress, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
+	if err != nil {
+		log.Printf("[steward] detectMergeReady: %s", err)
+		return
+	}
+
+	for _, b := range inProgress {
+		if !store.IsWorkBead(b) {
+			continue
+		}
+		if !store.ContainsLabel(b, "review-approved") {
+			continue
+		}
+		if mq.Contains(b.ID) {
+			continue
+		}
+
+		// Extract branch from feat-branch: label.
+		branch := store.HasLabel(b, "feat-branch:")
+		if branch == "" {
+			continue
+		}
+
+		// Resolve repo path from config.
+		cfg, err := ConfigLoadFunc()
+		if err != nil {
+			log.Printf("[steward] detectMergeReady: load config: %s", err)
+			continue
+		}
+		prefix := beadRepoPrefix(b.ID)
+		inst, ok := cfg.Instances[prefix]
+		if !ok || inst.Path == "" {
+			log.Printf("[steward] detectMergeReady: no registered repo for prefix %q (bead %s), skipping", prefix, b.ID)
+			continue
+		}
+
+		baseBranch := "main"
+
+		if dryRun {
+			log.Printf("[steward] [dry-run] would enqueue %s for merge (%s → %s)", b.ID, branch, baseBranch)
+			continue
+		}
+
+		mq.Enqueue(MergeRequest{
+			BeadID:     b.ID,
+			Branch:     branch,
+			BaseBranch: baseBranch,
+			RepoPath:   inst.Path,
+			EnqueuedAt: time.Now(),
+		})
+		log.Printf("[steward] enqueued %s for merge (%s → %s)", b.ID, branch, baseBranch)
+	}
+}
+
 // ReviewBeadVerdict extracts the verdict string from a closed review-round bead.
 // Prefers the "review_verdict" metadata key (structured); falls back to
 // parsing the description prefix "verdict: <value>" for legacy beads.
@@ -872,16 +936,56 @@ func sendMessage(to, from, body, ref string, priority int) (string, error) {
 }
 
 // executeMerge is the merge callback for the merge queue.
-// Performs: git fetch, rebase onto base, push.
-// This is a placeholder — real git operations require repo context from pkg/git.
+// Resumes the staging worktree, calls MergeToMain, pushes, and cleans up the branch.
 func executeMerge(ctx context.Context, req MergeRequest) MergeResult {
-	// TODO: Wire to real git operations via pkg/git once merge infra is ready.
-	// For now, return a failure so the merge queue doesn't silently drop requests.
-	return MergeResult{
-		BeadID:  req.BeadID,
-		Success: false,
-		Error:   fmt.Errorf("merge execution not yet wired to git operations"),
+	repoPath := req.RepoPath
+	if repoPath == "" {
+		// Resolve repo path from config using bead prefix.
+		cfg, err := ConfigLoadFunc()
+		if err != nil {
+			return MergeResult{BeadID: req.BeadID, Success: false, Error: fmt.Errorf("load config: %w", err)}
+		}
+		prefix := beadRepoPrefix(req.BeadID)
+		inst, ok := cfg.Instances[prefix]
+		if !ok || inst.Path == "" {
+			return MergeResult{BeadID: req.BeadID, Success: false, Error: fmt.Errorf("no registered repo for prefix %q", prefix)}
+		}
+		repoPath = inst.Path
 	}
+
+	wtDir := filepath.Join(repoPath, ".worktrees", req.BeadID)
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		return MergeResult{BeadID: req.BeadID, Success: false, Error: fmt.Errorf("no staging worktree found at %s", wtDir)}
+	}
+
+	baseBranch := req.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	stagingWt := spgit.ResumeStagingWorktree(repoPath, wtDir, req.Branch, baseBranch, log.Printf)
+
+	mergeEnv := os.Environ()
+	if err := stagingWt.MergeToMain(baseBranch, mergeEnv, "", "", nil); err != nil {
+		return MergeResult{BeadID: req.BeadID, Success: false, Error: fmt.Errorf("merge to main: %w", err)}
+	}
+
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: log.Printf}
+
+	if err := rc.Push("origin", baseBranch, mergeEnv); err != nil {
+		return MergeResult{BeadID: req.BeadID, Success: false, Error: fmt.Errorf("push %s: %w", baseBranch, err)}
+	}
+
+	// Clean up the feature branch (local + remote). Errors are non-fatal.
+	if err := rc.DeleteBranch(req.Branch); err != nil {
+		log.Printf("[steward] delete local branch %s: %s", req.Branch, err)
+	}
+	if err := rc.DeleteRemoteBranch("origin", req.Branch); err != nil {
+		log.Printf("[steward] delete remote branch %s: %s", req.Branch, err)
+	}
+
+	sha := rc.HeadSHA()
+	return MergeResult{BeadID: req.BeadID, Success: true, SHA: sha}
 }
 
 // beadRepoPrefix extracts the repo prefix from a bead ID (e.g., "spi" from "spi-abc").
@@ -926,3 +1030,6 @@ var GetSchedulableWorkFunc = store.GetSchedulableWork
 
 // LoadTowerConfigFunc is a test-replaceable function for config.LoadTowerConfig.
 var LoadTowerConfigFunc = config.LoadTowerConfig
+
+// ConfigLoadFunc is a test-replaceable function for config.Load.
+var ConfigLoadFunc = config.Load
