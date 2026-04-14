@@ -16,6 +16,8 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
+	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward"
 	"github.com/spf13/cobra"
@@ -219,6 +221,7 @@ func cmdSteward(args []string) error {
 		ShutdownThreshold:  shutdownThreshold,
 		AgentList:          agentList,
 		MetricsPort:        metricsPort,
+		GraphStateStore:    executor.ResolveGraphStateStore(config.Dir),
 		ConcurrencyLimiter: concurrencyLimiter,
 		MergeQueue:         mergeQueue,
 		TrustChecker:       trustChecker,

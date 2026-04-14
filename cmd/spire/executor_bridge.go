@@ -102,6 +102,9 @@ func archmageIdentity() (name, email string) {
 
 func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 	return &executor.Deps{
+		// Graph state persistence — Dolt-backed in cluster, file-backed locally.
+		GraphStateStore: executor.ResolveGraphStateStore(configDir),
+
 		// Store operations
 		GetBead:          storeGetBead,
 		GetChildren:      storeGetChildren,
