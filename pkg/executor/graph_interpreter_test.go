@@ -2375,9 +2375,11 @@ func TestRunGraph_Heartbeats(t *testing.T) {
 		t.Fatalf("RunGraph returned error: %v", err)
 	}
 
-	// Two steps means two loop iterations = two heartbeat calls.
-	if heartbeatCount != 2 {
-		t.Errorf("expected 2 heartbeat calls, got %d", heartbeatCount)
+	// With 30s rate-limiting, only the first iteration fires a heartbeat
+	// (lastHeartbeat starts at zero time, so the first fires immediately;
+	// subsequent iterations are microseconds apart and are skipped).
+	if heartbeatCount != 1 {
+		t.Errorf("expected 1 heartbeat call (rate-limited to 30s), got %d", heartbeatCount)
 	}
 }
 

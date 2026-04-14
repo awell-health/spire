@@ -126,7 +126,7 @@ func (b *ProcessBackend) Kill(name string) error {
 		return fmt.Errorf("agent %q not found in registry", name)
 	}
 
-	if found.InstanceID != "" {
+	if found.InstanceID != "" && found.InstanceID != CallerInstanceID {
 		log.Printf("warning: killing agent %s owned by instance %s", name, found.InstanceID)
 	}
 
@@ -150,6 +150,11 @@ func (b *ProcessBackend) Kill(name string) error {
 
 	return nil
 }
+
+// CallerInstanceID is set by the caller (e.g., steward or cmd/spire) to
+// identify this Spire instance. Used to distinguish same-instance kills
+// from cross-instance kills in log output.
+var CallerInstanceID string
 
 // ClearPIDFunc is set by cmd/spire to clear wizard PID files.
 // pkg/agent does not import steward_local — this callback bridges the gap.
