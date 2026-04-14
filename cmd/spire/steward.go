@@ -234,7 +234,10 @@ func cmdSteward(args []string) error {
 		if dbErr != nil {
 			log.Printf("[steward] metrics db open: %s (metrics disabled)", dbErr)
 		} else {
-			metricsServer = steward.NewMetricsServer(metricsPort, metricsDB)
+			metricsServer = steward.NewMetricsServer(metricsPort, metricsDB,
+				steward.WithCycleStats(cycleStats),
+				steward.WithMergeQueue(mergeQueue),
+			)
 			if err := metricsServer.Start(); err != nil {
 				log.Printf("[steward] metrics server: %s (metrics disabled)", err)
 				metricsDB.Close()
