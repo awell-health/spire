@@ -258,6 +258,24 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			}
 		}
 
+		// 6b. Check for loop_to directive — step requests re-execution from an earlier step.
+		if loopTo, ok := result.Outputs["loop_to"]; ok && loopTo != "" {
+			if _, exists := graph.Steps[loopTo]; exists {
+				// Safety valve: prevent infinite loops via CompletedCount.
+				if ss.CompletedCount > maxStepLoopCount {
+					e.log("step %s exceeded max loop count (%d), escalating", stepName, maxStepLoopCount)
+					EscalateHumanFailure(e.beadID, e.agentName, "step-loop-limit",
+						fmt.Sprintf("step %s looped %d times", stepName, ss.CompletedCount), e.deps)
+					// Fall through to terminal check — don't loop.
+				} else {
+					e.log("step %s requests loop to %s (iteration %d)", stepName, loopTo, ss.CompletedCount)
+					resetStepsForLoop(state, graph, loopTo)
+					store.Save(e.agentName, state)
+					continue
+				}
+			}
+		}
+
 		// 7. Check terminal.
 		if formula.IsTerminal(graph, stepName) {
 			// Reconcile: close all remaining step beads that didn't execute.
@@ -469,6 +487,44 @@ func (e *Executor) completedStepsFromState(state *GraphState) map[string]bool {
 		}
 	}
 	return m
+}
+
+// resetStepsForLoop resets the target step and all transitive dependents back
+// to pending so the graph interpreter can re-execute them. CompletedCount is
+// preserved on each step — it tracks loop iterations for the safety valve.
+func resetStepsForLoop(state *GraphState, graph *formula.FormulaStepGraph, targetStep string) {
+	// Build reverse-dependency map: step → steps that need it.
+	dependents := make(map[string][]string)
+	for name, step := range graph.Steps {
+		for _, dep := range step.Needs {
+			dependents[dep] = append(dependents[dep], name)
+		}
+	}
+	// BFS from targetStep to find all transitive dependents.
+	toReset := map[string]bool{targetStep: true}
+	queue := []string{targetStep}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, dep := range dependents[cur] {
+			if !toReset[dep] {
+				toReset[dep] = true
+				queue = append(queue, dep)
+			}
+		}
+	}
+	// Reset each step to pending. Leave StepBeadIDs intact — the activation
+	// code at step dispatch handles re-activating closed/hooked step beads.
+	for name := range toReset {
+		if ss, ok := state.Steps[name]; ok {
+			ss.Status = ""
+			ss.Outputs = nil
+			ss.StartedAt = ""
+			ss.CompletedAt = ""
+			// CompletedCount is preserved — it tracks iterations.
+			state.Steps[name] = ss
+		}
+	}
 }
 
 // --- Graph-specific bead management helpers ---

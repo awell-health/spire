@@ -41,6 +41,12 @@ const DefaultVerifyPollInterval = 30
 // (in seconds).
 const DefaultVerifyTimeout = 600 // 10 minutes
 
+// maxStepLoopCount is the safety valve for loop_to directives in the graph
+// interpreter. If a step completes more than this many times, the loop is
+// broken and the failure is escalated. The recovery decide step already
+// escalates at max_attempts=3, so this is a secondary safety net.
+const maxStepLoopCount = 5
+
 // actionRecoveryExecute is the ActionHandler for the "recovery.execute" opcode.
 // It bridges formula step dispatch to the recovery action vocabulary.
 //

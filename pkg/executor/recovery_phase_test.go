@@ -1399,3 +1399,79 @@ func TestGitStateReasoning_NilGitState(t *testing.T) {
 		t.Errorf("gitStateReasoning(nil git, rebase) = %q, want 'branch is behind main'", got)
 	}
 }
+
+// TestHandleVerify_ExecuteFailed verifies that when the execute step's output
+// status is "failed", handleVerify immediately returns loop_to=decide without
+// attempting to set a retry request.
+func TestHandleVerify_ExecuteFailed(t *testing.T) {
+	deps := &Deps{
+		AddComment: func(id, text string) error { return nil },
+	}
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"collect_context": {
+				Status:  "completed",
+				Outputs: map[string]string{"source_bead": "spi-target"},
+			},
+			"decide": {
+				Status:  "completed",
+				Outputs: map[string]string{"chosen_action": "resummon", "reasoning": "try again"},
+			},
+			"execute": {
+				Status:  "completed",
+				Outputs: map[string]string{"status": "failed", "action": "resummon"},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-v", "wizard-recovery", nil, state, deps)
+
+	result := handleVerify(e, "verify", StepConfig{Action: "recovery.execute", With: map[string]string{"action": "verify"}}, state)
+
+	if result.Error != nil {
+		t.Fatalf("handleVerify returned error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "failed" {
+		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "failed")
+	}
+	if result.Outputs["loop_to"] != "decide" {
+		t.Errorf("outputs[loop_to] = %q, want %q", result.Outputs["loop_to"], "decide")
+	}
+}
+
+// TestHandleVerify_ExecuteEmpty verifies that when execute has no status output
+// (empty string), handleVerify treats it as failure and returns loop_to=decide.
+func TestHandleVerify_ExecuteEmpty(t *testing.T) {
+	deps := &Deps{
+		AddComment: func(id, text string) error { return nil },
+	}
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"collect_context": {
+				Status:  "completed",
+				Outputs: map[string]string{"source_bead": "spi-target"},
+			},
+			"decide": {
+				Status:  "completed",
+				Outputs: map[string]string{"chosen_action": "resummon"},
+			},
+			"execute": {
+				Status:  "completed",
+				Outputs: map[string]string{},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-v2", "wizard-recovery", nil, state, deps)
+
+	result := handleVerify(e, "verify", StepConfig{Action: "recovery.execute", With: map[string]string{"action": "verify"}}, state)
+
+	if result.Error != nil {
+		t.Fatalf("handleVerify returned error: %v", result.Error)
+	}
+	if result.Outputs["loop_to"] != "decide" {
+		t.Errorf("outputs[loop_to] = %q, want %q", result.Outputs["loop_to"], "decide")
+	}
+}

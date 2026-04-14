@@ -1975,3 +1975,225 @@ func TestRunGraph_HookedResumeAfterReset(t *testing.T) {
 		t.Errorf("second run: step b expected completed, got %s", ss.Status)
 	}
 }
+
+// --- Test: loop_to directive resets steps and re-executes ---
+
+func TestRunGraph_LoopTo_ResetsAndReExecutes(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	// Track dispatch order.
+	var dispatched []string
+
+	// Step A and B are simple noops. Step C returns loop_to=a on first run,
+	// then succeeds on second run.
+	cRunCount := 0
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName)
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+	actionRegistry["test.maybe-loop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		dispatched = append(dispatched, stepName)
+		cRunCount++
+		if cRunCount == 1 {
+			return ActionResult{Outputs: map[string]string{"status": "failed", "loop_to": "a"}}
+		}
+		return ActionResult{Outputs: map[string]string{"status": "success"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-loop-to",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop"},
+			"b": {Action: "test.noop", Needs: []string{"a"}},
+			"c": {Action: "test.maybe-loop", Needs: []string{"b"}, Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	if !exec.terminated {
+		t.Error("expected executor to be terminated")
+	}
+
+	// Should have dispatched: a, b, c (loop_to=a), a, b, c (success) = 6 dispatches.
+	if len(dispatched) != 6 {
+		t.Fatalf("expected 6 dispatches, got %d: %v", len(dispatched), dispatched)
+	}
+	expected := []string{"a", "b", "c", "a", "b", "c"}
+	for i, exp := range expected {
+		if dispatched[i] != exp {
+			t.Errorf("dispatch[%d]: expected %s, got %s", i, exp, dispatched[i])
+		}
+	}
+
+	// All steps should be completed.
+	for _, name := range []string{"a", "b", "c"} {
+		ss := exec.graphState.Steps[name]
+		if ss.Status != "completed" {
+			t.Errorf("step %s: expected completed, got %s", name, ss.Status)
+		}
+	}
+
+	// CompletedCount should reflect the number of completions.
+	// a and b: completed twice each, c: completed twice.
+	for _, name := range []string{"a", "b", "c"} {
+		ss := exec.graphState.Steps[name]
+		if ss.CompletedCount != 2 {
+			t.Errorf("step %s: expected CompletedCount=2, got %d", name, ss.CompletedCount)
+		}
+	}
+}
+
+func TestRunGraph_LoopTo_SafetyValve(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// Track escalation calls.
+	var escalated bool
+	deps.CreateBead = func(opts CreateOpts) (string, error) {
+		escalated = true
+		return "alert-1", nil
+	}
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	// Step B always returns loop_to=a, creating an infinite loop.
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+	actionRegistry["test.always-loop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"loop_to": "a"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-loop-safety",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop"},
+			"b": {Action: "test.always-loop", Needs: []string{"a"}, Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+
+	// After exceeding maxStepLoopCount, the step falls through to the terminal
+	// check and the graph terminates normally (b is terminal).
+	if err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	if !exec.terminated {
+		t.Error("expected executor to be terminated after safety valve")
+	}
+
+	// Step b should have completed maxStepLoopCount+1 times (the +1 is the
+	// final iteration where the safety valve fires and falls through).
+	ss := exec.graphState.Steps["b"]
+	if ss.CompletedCount <= maxStepLoopCount {
+		t.Errorf("step b CompletedCount=%d, expected > %d", ss.CompletedCount, maxStepLoopCount)
+	}
+
+	// Escalation should have been triggered.
+	if !escalated {
+		t.Error("expected escalation to be triggered by safety valve")
+	}
+}
+
+func TestResetStepsForLoop(t *testing.T) {
+	// Graph: a -> b -> c (c depends on b, b depends on a).
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-reset",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop"},
+			"b": {Action: "test.noop", Needs: []string{"a"}},
+			"c": {Action: "test.noop", Needs: []string{"b"}, Terminal: true},
+		},
+	}
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"a": {Status: "completed", Outputs: map[string]string{"x": "1"}, StartedAt: "t1", CompletedAt: "t2", CompletedCount: 1},
+			"b": {Status: "completed", Outputs: map[string]string{"y": "2"}, StartedAt: "t3", CompletedAt: "t4", CompletedCount: 1},
+			"c": {Status: "completed", Outputs: map[string]string{"z": "3"}, StartedAt: "t5", CompletedAt: "t6", CompletedCount: 1},
+		},
+	}
+
+	// Reset from "a" — should reset a, b, and c (all transitive dependents).
+	resetStepsForLoop(state, graph, "a")
+
+	for _, name := range []string{"a", "b", "c"} {
+		ss := state.Steps[name]
+		if ss.Status != "" {
+			t.Errorf("step %s: expected empty status, got %q", name, ss.Status)
+		}
+		if ss.Outputs != nil {
+			t.Errorf("step %s: expected nil outputs, got %v", name, ss.Outputs)
+		}
+		if ss.StartedAt != "" {
+			t.Errorf("step %s: expected empty StartedAt, got %q", name, ss.StartedAt)
+		}
+		if ss.CompletedAt != "" {
+			t.Errorf("step %s: expected empty CompletedAt, got %q", name, ss.CompletedAt)
+		}
+		// CompletedCount must be preserved.
+		if ss.CompletedCount != 1 {
+			t.Errorf("step %s: expected CompletedCount=1, got %d", name, ss.CompletedCount)
+		}
+	}
+
+	// Test partial reset: reset from "b" should only reset b and c, not a.
+	state2 := &GraphState{
+		Steps: map[string]StepState{
+			"a": {Status: "completed", Outputs: map[string]string{"x": "1"}, CompletedCount: 2},
+			"b": {Status: "completed", Outputs: map[string]string{"y": "2"}, CompletedCount: 2},
+			"c": {Status: "completed", Outputs: map[string]string{"z": "3"}, CompletedCount: 2},
+		},
+	}
+
+	resetStepsForLoop(state2, graph, "b")
+
+	// a should be untouched.
+	if ss := state2.Steps["a"]; ss.Status != "completed" {
+		t.Errorf("step a: expected completed (untouched), got %q", ss.Status)
+	}
+	// b and c should be reset.
+	for _, name := range []string{"b", "c"} {
+		ss := state2.Steps[name]
+		if ss.Status != "" {
+			t.Errorf("step %s: expected empty status, got %q", name, ss.Status)
+		}
+		if ss.CompletedCount != 2 {
+			t.Errorf("step %s: expected CompletedCount=2 (preserved), got %d", name, ss.CompletedCount)
+		}
+	}
+}
