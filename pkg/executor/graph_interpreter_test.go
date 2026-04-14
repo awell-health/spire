@@ -47,7 +47,7 @@ func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 		ResolveBranch: func(beadID string) string { return "feat/" + beadID },
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
-		RegisterSelf:   func(name, beadID, phase string) func() { return func() {} },
+		RegisterSelf:   func(name, beadID, phase string, opts ...func(*agent.Entry)) func() { return func() {} },
 		HasLabel: func(b Bead, prefix string) string { return "" },
 		ContainsLabel: func(b Bead, label string) bool { return false },
 		AddLabel:    func(id, label string) error { return nil },
@@ -2195,5 +2195,305 @@ func TestResetStepsForLoop(t *testing.T) {
 		if ss.CompletedCount != 2 {
 			t.Errorf("step %s: expected CompletedCount=2 (preserved), got %d", name, ss.CompletedCount)
 		}
+	}
+}
+
+// --- Instance-aware tests ---
+
+// TestEnsureGraphAttemptBead_StampsInstanceMeta verifies that creating a new
+// attempt bead stamps instance metadata.
+func TestEnsureGraphAttemptBead_StampsInstanceMeta(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var stampedID string
+	var stampedMeta store.InstanceMeta
+	deps.StampAttemptInstance = func(attemptID string, m store.InstanceMeta) error {
+		stampedID = attemptID
+		stampedMeta = m
+		return nil
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	exec.sessionID = "test-session-123"
+	state := &GraphState{
+		BeadID:    "spi-test",
+		TowerName: "test-tower",
+	}
+
+	err := exec.ensureGraphAttemptBead(state)
+	if err != nil {
+		t.Fatalf("ensureGraphAttemptBead returned error: %v", err)
+	}
+
+	if stampedID == "" {
+		t.Fatal("StampAttemptInstance was not called")
+	}
+	if stampedID != "attempt-1" {
+		t.Errorf("expected attempt ID 'attempt-1', got %q", stampedID)
+	}
+	if stampedMeta.SessionID != "test-session-123" {
+		t.Errorf("expected SessionID 'test-session-123', got %q", stampedMeta.SessionID)
+	}
+	if stampedMeta.Backend != "process" {
+		t.Errorf("expected Backend 'process', got %q", stampedMeta.Backend)
+	}
+	if stampedMeta.Tower != "test-tower" {
+		t.Errorf("expected Tower 'test-tower', got %q", stampedMeta.Tower)
+	}
+	if stampedMeta.InstanceID == "" {
+		t.Error("expected non-empty InstanceID")
+	}
+	if stampedMeta.StartedAt == "" {
+		t.Error("expected non-empty StartedAt")
+	}
+}
+
+// TestEnsureGraphAttemptBead_ForeignInstanceFatal verifies that reclaiming an
+// attempt owned by a foreign instance returns a FATAL error.
+func TestEnsureGraphAttemptBead_ForeignInstanceFatal(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// Return an existing active attempt.
+	deps.GetActiveAttempt = func(parentID string) (*Bead, error) {
+		b := Bead{ID: "attempt-existing", Status: "in_progress"}
+		return &b, nil
+	}
+	deps.HasLabel = func(b Bead, prefix string) string {
+		if prefix == "agent:" {
+			return "wizard-test"
+		}
+		return ""
+	}
+	// Ownership check says NOT owned.
+	deps.IsOwnedByInstance = func(attemptID, instanceID string) (bool, error) {
+		return false, nil
+	}
+	deps.GetAttemptInstance = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{
+			InstanceID:   "foreign-instance-id",
+			InstanceName: "foreign-host",
+		}, nil
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	state := &GraphState{BeadID: "spi-test"}
+
+	err := exec.ensureGraphAttemptBead(state)
+	if err == nil {
+		t.Fatal("expected FATAL error, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "FATAL:") {
+		t.Errorf("expected error to start with 'FATAL:', got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "foreign-host") {
+		t.Errorf("expected error to mention foreign instance name, got %q", err.Error())
+	}
+}
+
+// TestEnsureGraphAttemptBead_SameInstanceSucceeds verifies that reclaiming an
+// attempt owned by this instance succeeds.
+func TestEnsureGraphAttemptBead_SameInstanceSucceeds(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	deps.GetActiveAttempt = func(parentID string) (*Bead, error) {
+		b := Bead{ID: "attempt-existing", Status: "in_progress"}
+		return &b, nil
+	}
+	deps.HasLabel = func(b Bead, prefix string) string {
+		if prefix == "agent:" {
+			return "wizard-test"
+		}
+		return ""
+	}
+	// Ownership check says YES owned.
+	deps.IsOwnedByInstance = func(attemptID, instanceID string) (bool, error) {
+		return true, nil
+	}
+
+	var stampCalled bool
+	deps.StampAttemptInstance = func(attemptID string, m store.InstanceMeta) error {
+		stampCalled = true
+		return nil
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+	state := &GraphState{BeadID: "spi-test"}
+
+	err := exec.ensureGraphAttemptBead(state)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if state.AttemptBeadID != "attempt-existing" {
+		t.Errorf("expected AttemptBeadID 'attempt-existing', got %q", state.AttemptBeadID)
+	}
+	if !stampCalled {
+		t.Error("expected StampAttemptInstance to be called on reclaim")
+	}
+}
+
+// TestRunGraph_Heartbeats verifies that the heartbeat is called at the start
+// of each graph step iteration.
+func TestRunGraph_Heartbeats(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var heartbeatCount int
+	deps.UpdateAttemptHeartbeat = func(attemptID string) error {
+		heartbeatCount++
+		return nil
+	}
+
+	// Register a test action.
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-heartbeat",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop"},
+			"b": {Action: "test.noop", Needs: []string{"a"}, Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	// Two steps means two loop iterations = two heartbeat calls.
+	if heartbeatCount != 2 {
+		t.Errorf("expected 2 heartbeat calls, got %d", heartbeatCount)
+	}
+}
+
+// TestRunGraph_RegisterSelfIncludesInstanceID verifies that RegisterSelf is
+// called with the WithInstanceID option.
+func TestRunGraph_RegisterSelfIncludesInstanceID(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var capturedOpts []func(*agent.Entry)
+	deps.RegisterSelf = func(name, beadID, phase string, opts ...func(*agent.Entry)) func() {
+		capturedOpts = opts
+		return func() {}
+	}
+
+	// Register a simple terminal action.
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-register",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	_ = exec.RunGraph(graph, exec.graphState)
+
+	if len(capturedOpts) == 0 {
+		t.Fatal("expected RegisterSelf to be called with opts, got none")
+	}
+
+	// Apply opts to a test entry to verify InstanceID is set.
+	entry := &agent.Entry{}
+	for _, opt := range capturedOpts {
+		opt(entry)
+	}
+	if entry.InstanceID == "" {
+		t.Error("expected InstanceID to be set via WithInstanceID opt")
+	}
+}
+
+// TestRunGraph_FatalOwnershipStopsExecution verifies that a FATAL ownership
+// error from ensureGraphAttemptBead stops RunGraph from proceeding.
+func TestRunGraph_FatalOwnershipStopsExecution(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// Return an existing active attempt owned by a foreign instance.
+	deps.GetActiveAttempt = func(parentID string) (*Bead, error) {
+		b := Bead{ID: "attempt-foreign", Status: "in_progress"}
+		return &b, nil
+	}
+	deps.HasLabel = func(b Bead, prefix string) string {
+		if prefix == "agent:" {
+			return "wizard-test"
+		}
+		return ""
+	}
+	deps.IsOwnedByInstance = func(attemptID, instanceID string) (bool, error) {
+		return false, nil
+	}
+	deps.GetAttemptInstance = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{InstanceName: "other-host"}, nil
+	}
+
+	var actionDispatched bool
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		actionDispatched = true
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-fatal",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	err := exec.RunGraph(graph, exec.graphState)
+	if err == nil {
+		t.Fatal("expected error from RunGraph due to FATAL ownership conflict")
+	}
+	if !strings.Contains(err.Error(), "ownership conflict") {
+		t.Errorf("expected ownership conflict error, got: %v", err)
+	}
+	if actionDispatched {
+		t.Error("no actions should have been dispatched after FATAL ownership error")
 	}
 }

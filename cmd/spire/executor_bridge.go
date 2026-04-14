@@ -123,9 +123,13 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		GetReviewBeads:   storeGetReviewBeads,
 
 		// Attempt operations
-		CreateAttemptBead: storeCreateAttemptBead,
-		CloseAttemptBead:  storeCloseAttemptBead,
-		GetActiveAttempt:  storeGetActiveAttempt,
+		CreateAttemptBead:      storeCreateAttemptBead,
+		CloseAttemptBead:       storeCloseAttemptBead,
+		GetActiveAttempt:       storeGetActiveAttempt,
+		StampAttemptInstance:   store.StampAttemptInstance,
+		IsOwnedByInstance:      store.IsOwnedByInstance,
+		GetAttemptInstance:     store.GetAttemptInstance,
+		UpdateAttemptHeartbeat: store.UpdateAttemptHeartbeat,
 
 		// Step bead operations
 		CreateStepBead:   storeCreateStepBead,
@@ -135,7 +139,9 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		// Agent registry
 		RegistryAdd:    func(entry agent.Entry) error { return wizardRegistryAdd(entry) },
 		RegistryRemove: func(name string) error { return wizardRegistryRemove(name) },
-		RegisterSelf:   func(name, beadID, phase string) func() { return agent.RegisterSelf(name, beadID, phase) },
+		RegisterSelf: func(name, beadID, phase string, opts ...func(*agent.Entry)) func() {
+			return agent.RegisterSelf(name, beadID, phase, opts...)
+		},
 
 		// Resolution
 		ResolveRepo:   wizardResolveRepo,

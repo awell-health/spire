@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // RunGraph is the v3 graph interpreter. It walks the step graph, dispatching
@@ -20,24 +23,31 @@ func (e *Executor) graphStateStore() GraphStateStore {
 }
 
 func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
-	store := e.graphStateStore()
+	graphStore := e.graphStateStore()
 
 	// Register with wizard registry inside RunGraph() — paired with the deferred
 	// cleanup below so registration and cleanup are always atomic.
-	regCleanup := e.deps.RegisterSelf(e.agentName, e.beadID, "graph:"+state.ActiveStep)
+	regCleanup := e.deps.RegisterSelf(e.agentName, e.beadID, "graph:"+state.ActiveStep,
+		agent.WithInstanceID(config.InstanceID()))
 	defer regCleanup()
 	defer func() {
 		if e.terminated {
-			store.Remove(e.agentName)
+			graphStore.Remove(e.agentName)
 		} else {
-			store.Save(e.agentName, state)
+			graphStore.Save(e.agentName, state)
 		}
 	}()
 	defer e.closeStagingWorktree()
 	defer e.releaseGraphRunWorkspaces(state)
 
 	// Ensure attempt bead (reuse existing ensureAttemptBead-like pattern for graph state).
+	// FATAL ownership errors must stop execution immediately — do not proceed with
+	// any graph steps if another instance owns the attempt.
 	if err := e.ensureGraphAttemptBead(state); err != nil {
+		if strings.HasPrefix(err.Error(), "FATAL:") {
+			e.log("FATAL: %s", err)
+			return fmt.Errorf("attempt ownership conflict: %w", err)
+		}
 		e.log("warning: create attempt bead: %s", err)
 	}
 	// The recover-then-repanic guard ensures that even if another defer or
@@ -94,6 +104,13 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 
 	// Main interpreter loop.
 	for {
+		// Heartbeat: keep LastSeenAt fresh for steward health monitoring.
+		if state.AttemptBeadID != "" && e.deps.UpdateAttemptHeartbeat != nil {
+			if err := e.deps.UpdateAttemptHeartbeat(state.AttemptBeadID); err != nil {
+				e.log("warning: heartbeat: %s", err)
+			}
+		}
+
 		// 1. Build condition context from state.
 		ctx := e.buildConditionContext(state)
 
@@ -161,7 +178,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		ss.Status = "active"
 		ss.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		state.Steps[stepName] = ss
-		store.Save(e.agentName, state)
+		graphStore.Save(e.agentName, state)
 
 		// Activate step bead if tracked.
 		if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
@@ -198,7 +215,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			// Do NOT set CompletedAt — the step is parked, not completed.
 			state.Steps[stepName] = ss
 			state.ActiveStep = "" // clear so graph detects parking
-			store.Save(e.agentName, state)
+			graphStore.Save(e.agentName, state)
 
 			// Hook the step bead in store (do NOT close — it stays hooked for retry).
 			if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
@@ -270,7 +287,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				} else {
 					e.log("step %s requests loop to %s (iteration %d)", stepName, loopTo, ss.CompletedCount)
 					resetStepsForLoop(state, graph, loopTo)
-					store.Save(e.agentName, state)
+					graphStore.Save(e.agentName, state)
 					continue
 				}
 			}
@@ -301,9 +318,9 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				e.terminated = true
 			}
 			// Save parent state before cleaning up nested state (crash-safe ordering).
-			store.Save(e.agentName, state)
+			graphStore.Save(e.agentName, state)
 			if stepCfg.Action == "graph.run" {
-				store.Remove(e.agentName + "-" + stepName)
+				graphStore.Remove(e.agentName + "-" + stepName)
 			}
 			e.closeGraphAttempt(state, "success: terminal step "+stepName)
 			return nil
@@ -330,7 +347,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		}
 
 		// 9. Persist and loop.
-		store.Save(e.agentName, state)
+		graphStore.Save(e.agentName, state)
 
 		// 10. Clean up nested graph state files after the parent save is durable.
 		// This is crash-safe: the parent step is already recorded as completed,
@@ -338,7 +355,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		// but the parent won't re-run the step.
 		if stepCfg.Action == "graph.run" {
 			nestedAgentName := e.agentName + "-" + stepName
-			store.Remove(nestedAgentName)
+			graphStore.Remove(nestedAgentName)
 		}
 	}
 }
@@ -530,11 +547,14 @@ func resetStepsForLoop(state *GraphState, graph *formula.FormulaStepGraph, targe
 // --- Graph-specific bead management helpers ---
 
 // ensureGraphAttemptBead creates or resumes an attempt bead for graph execution.
+// It stamps instance metadata on the attempt and verifies instance ownership
+// (fail-closed) when reclaiming an existing active attempt.
 func (e *Executor) ensureGraphAttemptBead(state *GraphState) error {
 	if state.AttemptBeadID != "" {
 		b, err := e.deps.GetBead(state.AttemptBeadID)
 		if err == nil && (b.Status == "open" || b.Status == "in_progress") {
 			e.log("resuming existing attempt bead %s", state.AttemptBeadID)
+			e.stampAttemptInstance(state.AttemptBeadID, state)
 			return nil
 		}
 		state.AttemptBeadID = ""
@@ -545,10 +565,30 @@ func (e *Executor) ensureGraphAttemptBead(state *GraphState) error {
 		return err
 	}
 	if existing != nil {
+		// Fail-closed instance ownership check: verify this instance owns the attempt.
+		if e.deps.IsOwnedByInstance != nil {
+			owned, oerr := e.deps.IsOwnedByInstance(existing.ID, config.InstanceID())
+			if oerr != nil {
+				return fmt.Errorf("check attempt ownership: %w", oerr)
+			}
+			if !owned {
+				ownerName := ""
+				if e.deps.GetAttemptInstance != nil {
+					meta, _ := e.deps.GetAttemptInstance(existing.ID)
+					if meta != nil {
+						ownerName = meta.InstanceName
+					}
+				}
+				return fmt.Errorf("FATAL: attempt %s owned by instance %q, not this instance %q — exiting to prevent conflict",
+					existing.ID, ownerName, config.InstanceName())
+			}
+		}
+
 		agent := e.deps.HasLabel(*existing, "agent:")
 		if agent == e.agentName {
 			state.AttemptBeadID = existing.ID
 			e.log("reusing attempt bead %s (created by claim)", existing.ID)
+			e.stampAttemptInstance(existing.ID, state)
 			return nil
 		}
 		return fmt.Errorf("active attempt %s already exists (agent: %s)", existing.ID, agent)
@@ -565,7 +605,28 @@ func (e *Executor) ensureGraphAttemptBead(state *GraphState) error {
 	}
 	state.AttemptBeadID = id
 	e.log("created attempt bead %s", id)
+	e.stampAttemptInstance(id, state)
 	return nil
+}
+
+// stampAttemptInstance writes instance ownership metadata onto an attempt bead.
+func (e *Executor) stampAttemptInstance(attemptID string, state *GraphState) {
+	if e.deps.StampAttemptInstance == nil {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	tower := state.TowerName
+	if err := e.deps.StampAttemptInstance(attemptID, store.InstanceMeta{
+		InstanceID:   config.InstanceID(),
+		SessionID:    e.sessionID,
+		InstanceName: config.InstanceName(),
+		Backend:      "process",
+		Tower:        tower,
+		StartedAt:    now,
+		LastSeenAt:   now,
+	}); err != nil {
+		e.log("warning: stamp attempt instance metadata: %s", err)
+	}
 }
 
 // closeGraphAttempt closes the current attempt bead with the given result.

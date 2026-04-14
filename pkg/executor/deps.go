@@ -78,9 +78,13 @@ type Deps struct {
 	GetReviewBeads   func(parentID string) ([]Bead, error)
 
 	// Attempt operations
-	CreateAttemptBead func(parentID, agentName, model, branch string) (string, error)
-	CloseAttemptBead  func(attemptID, result string) error
-	GetActiveAttempt  func(parentID string) (*Bead, error)
+	CreateAttemptBead      func(parentID, agentName, model, branch string) (string, error)
+	CloseAttemptBead       func(attemptID, result string) error
+	GetActiveAttempt       func(parentID string) (*Bead, error)
+	StampAttemptInstance   func(attemptID string, m store.InstanceMeta) error
+	IsOwnedByInstance      func(attemptID, instanceID string) (bool, error)
+	GetAttemptInstance     func(attemptID string) (*store.InstanceMeta, error)
+	UpdateAttemptHeartbeat func(attemptID string) error
 
 	// Step bead operations
 	CreateStepBead   func(parentID, stepName string) (string, error)
@@ -92,7 +96,7 @@ type Deps struct {
 	// Agent registry
 	RegistryAdd    func(entry agent.Entry) error
 	RegistryRemove func(name string) error
-	RegisterSelf   func(name, beadID, phase string) func()
+	RegisterSelf   func(name, beadID, phase string, opts ...func(*agent.Entry)) func()
 
 	// Resolution
 	ResolveRepo   func(beadID string) (repoPath, repoURL, baseBranch string, err error)

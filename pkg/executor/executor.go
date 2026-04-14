@@ -9,6 +9,7 @@ import (
 
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/google/uuid"
 )
 
 // GraphResult is the typed return from executing a step-graph formula.
@@ -51,6 +52,10 @@ type Executor struct {
 	state     *State
 	deps      *Deps
 	log       func(string, ...interface{})
+
+	// sessionID is a unique ID for this particular execution run. Generated
+	// once per NewGraph() call via UUID and stamped on the attempt bead.
+	sessionID string
 
 	// currentRunID is the run ID of this executor's own agent_run record.
 	// Used as ParentRunID for child spawns (apprentice, sage).
@@ -104,6 +109,7 @@ func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*E
 		agentName:  agentName,
 		graph:      graph,
 		graphState: state,
+		sessionID:  uuid.New().String(),
 		deps:       deps,
 		log:        log,
 	}, nil

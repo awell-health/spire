@@ -1393,7 +1393,7 @@ func TestGraphExecutorExitCleansUpRegistry(t *testing.T) {
 			registryRemoveCalled = true
 			return nil
 		},
-		RegisterSelf: func(name, beadID, phase string) func() {
+		RegisterSelf: func(name, beadID, phase string, opts ...func(*agent.Entry)) func() {
 			registryAddCalled = true
 			return func() { registryRemoveCalled = true }
 		},
