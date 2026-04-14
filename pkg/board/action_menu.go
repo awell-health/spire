@@ -16,6 +16,14 @@ const (
 	DangerDestructive                     // red highlight + confirmation
 )
 
+// Action constants defined locally — these supplement the PendingAction
+// constants in tui.go. Explicit values avoid iota conflicts with the main enum.
+const (
+	ActionComment PendingAction = iota + 100
+	ActionResume
+	ActionReady
+)
+
 // MenuAction represents a single item in the action menu popup.
 type MenuAction struct {
 	Key        rune
@@ -24,9 +32,8 @@ type MenuAction struct {
 	ActionType PendingAction
 }
 
-// BuildActionMenu builds a context-sensitive list of actions based on bead state.
-// Routing is status-based: hooked beads get Resume/Reset/Close, in_progress beads
-// get wizard-aware actions, and other statuses keep their existing menus.
+// BuildActionMenu builds a context-sensitive list of actions based on bead status.
+// Routing is purely status-based — no label checks.
 func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 	if bead == nil {
 		return nil
@@ -42,47 +49,57 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 
 	var items []MenuAction
 
-	isDesign := bead.Type == "design"
-
 	switch bead.Status {
 	case "open":
-		if isDesign && bead.HasLabel("needs-human") {
-			items = append(items, MenuAction{Key: 'y', Label: "Approve design", Danger: DangerConfirm, ActionType: ActionApproveDesign})
-			items = append(items, MenuAction{Key: 'n', Label: "Reject with feedback", Danger: DangerNone, ActionType: ActionRejectDesign})
-		}
-		items = append(items, MenuAction{Key: 's', Label: "Summon wizard", Danger: DangerNone, ActionType: ActionSummon})
-		items = append(items, MenuAction{Key: 'd', Label: "Defer", Danger: DangerNone, ActionType: ActionDefer})
-		items = append(items, MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose})
-	case "deferred":
-		items = append(items, MenuAction{Key: 'd', Label: "Undefer", Danger: DangerNone, ActionType: ActionDefer})
-		items = append(items, MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose})
-	case "hooked":
-		// Hooked beads are parked waiting for a condition — offer resume, reset, close.
 		items = append(items,
-			MenuAction{Key: 'S', Label: "Resume", Danger: DangerNone, ActionType: ActionResummon},
-			MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
-			MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
+			MenuAction{Key: 's', Label: "Summon wizard", Danger: DangerNone, ActionType: ActionSummon},
+			MenuAction{Key: 'r', Label: "Ready", Danger: DangerNone, ActionType: ActionReady},
+			MenuAction{Key: 'd', Label: "Defer", Danger: DangerNone, ActionType: ActionDefer},
+			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
+	case "ready":
+		items = append(items,
+			MenuAction{Key: 's', Label: "Summon wizard", Danger: DangerNone, ActionType: ActionSummon},
+			MenuAction{Key: 'd', Label: "Defer", Danger: DangerNone, ActionType: ActionDefer},
+			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
 			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
 		)
 	case "in_progress":
-		if isDesign && bead.HasLabel("needs-human") {
-			items = append(items, MenuAction{Key: 'y', Label: "Approve design", Danger: DangerConfirm, ActionType: ActionApproveDesign})
-			items = append(items, MenuAction{Key: 'n', Label: "Reject with feedback", Danger: DangerNone, ActionType: ActionRejectDesign})
-		}
 		if hasWizard {
-			items = append(items, MenuAction{Key: 'L', Label: "Tail logs", Danger: DangerNone, ActionType: ActionLogs})
-			items = append(items, MenuAction{Key: 'u', Label: "Unsummon wizard", Danger: DangerConfirm, ActionType: ActionUnsummon})
+			items = append(items,
+				MenuAction{Key: 'L', Label: "Tail logs", Danger: DangerNone, ActionType: ActionLogs},
+				MenuAction{Key: 'u', Label: "Unsummon wizard", Danger: DangerConfirm, ActionType: ActionUnsummon},
+				MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
+				MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
+				MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
+				MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+			)
+		} else {
+			items = append(items,
+				MenuAction{Key: 's', Label: "Summon (resume)", Danger: DangerNone, ActionType: ActionSummon},
+				MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
+				MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
+				MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
+				MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+			)
 		}
-		if !hasWizard {
-			items = append(items, MenuAction{Key: 's', Label: "Summon wizard", Danger: DangerNone, ActionType: ActionSummon})
-		}
+	case "hooked":
 		items = append(items,
+			MenuAction{Key: 'S', Label: "Resume", Danger: DangerNone, ActionType: ActionResume},
+			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
 			MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
 			MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
 			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
 		)
+	case "deferred":
+		items = append(items,
+			MenuAction{Key: 'd', Label: "Undefer", Danger: DangerNone, ActionType: ActionDefer},
+			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
 	case "closed":
-		// minimal actions for closed beads
+		// Closed beads: only Grok and Trace (appended below).
 	}
 
 	// Always available.

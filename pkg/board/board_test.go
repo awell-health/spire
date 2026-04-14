@@ -77,7 +77,7 @@ func TestBuildActionMenu(t *testing.T) {
 		bead := &BoardBead{ID: "spi-001", Status: "open", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
-		expectActions(t, items, []PendingAction{ActionSummon, ActionDefer, ActionClose, ActionGrok, ActionTrace})
+		expectActions(t, items, []PendingAction{ActionSummon, ActionReady, ActionDefer, ActionComment, ActionClose, ActionGrok, ActionTrace})
 
 		// Verify danger levels.
 		for _, item := range items {
@@ -100,7 +100,7 @@ func TestBuildActionMenu(t *testing.T) {
 		items := BuildActionMenu(bead, agents)
 
 		expectActions(t, items, []PendingAction{
-			ActionLogs, ActionUnsummon, ActionResetSoft, ActionResetHard,
+			ActionLogs, ActionUnsummon, ActionComment, ActionResetSoft, ActionResetHard,
 			ActionClose, ActionGrok, ActionTrace,
 		})
 
@@ -118,7 +118,7 @@ func TestBuildActionMenu(t *testing.T) {
 
 		found := false
 		for _, item := range items {
-			if item.ActionType == ActionResummon {
+			if item.ActionType == ActionResume {
 				found = true
 				break
 			}
@@ -171,104 +171,40 @@ func TestBuildActionMenu(t *testing.T) {
 		}
 	})
 
-	t.Run("design bead with needs-human shows approve/reject", func(t *testing.T) {
+	t.Run("labels do not affect action menu", func(t *testing.T) {
+		// Status-only routing: labels like needs-human no longer produce approve/reject actions.
 		bead := &BoardBead{ID: "spi-010", Status: "in_progress", Type: "design", Labels: []string{"needs-human"}}
 		items := BuildActionMenu(bead, nil)
 
-		hasApproveDesign := false
-		hasRejectDesign := false
 		for _, item := range items {
 			if item.ActionType == ActionApproveDesign {
-				hasApproveDesign = true
-				if item.Danger != DangerConfirm {
-					t.Errorf("ApproveDesign should be DangerConfirm, got %d", item.Danger)
-				}
+				t.Error("label-based ApproveDesign should not appear in status-only menu")
 			}
 			if item.ActionType == ActionRejectDesign {
-				hasRejectDesign = true
-				if item.Danger != DangerNone {
-					t.Errorf("RejectDesign should be DangerNone, got %d", item.Danger)
-				}
+				t.Error("label-based RejectDesign should not appear in status-only menu")
 			}
-		}
-		if !hasApproveDesign {
-			t.Error("expected ApproveDesign action for design bead with needs-human")
-		}
-		if !hasRejectDesign {
-			t.Error("expected RejectDesign action for design bead with needs-human")
 		}
 	})
 
-	t.Run("open design bead with needs-human shows approve/reject", func(t *testing.T) {
+	t.Run("open bead with labels gets standard open menu", func(t *testing.T) {
 		bead := &BoardBead{ID: "spi-011", Status: "open", Type: "design", Labels: []string{"needs-human"}}
 		items := BuildActionMenu(bead, nil)
 
-		hasApproveDesign := false
-		hasRejectDesign := false
-		for _, item := range items {
-			if item.ActionType == ActionApproveDesign {
-				hasApproveDesign = true
-			}
-			if item.ActionType == ActionRejectDesign {
-				hasRejectDesign = true
-			}
-		}
-		if !hasApproveDesign {
-			t.Error("expected ApproveDesign for open design bead with needs-human")
-		}
-		if !hasRejectDesign {
-			t.Error("expected RejectDesign for open design bead with needs-human")
-		}
+		expectActions(t, items, []PendingAction{ActionSummon, ActionReady, ActionDefer, ActionComment, ActionClose, ActionGrok, ActionTrace})
 	})
 
-	t.Run("non-design bead with needs-human does not show design actions", func(t *testing.T) {
+	t.Run("in_progress with labels no wizard gets standard orphaned menu", func(t *testing.T) {
 		bead := &BoardBead{ID: "spi-012", Status: "in_progress", Type: "task", Labels: []string{"needs-human"}}
 		items := BuildActionMenu(bead, nil)
 
-		for _, item := range items {
-			if item.ActionType == ActionApproveDesign {
-				t.Error("non-design bead should not have ApproveDesign action")
-			}
-			if item.ActionType == ActionRejectDesign {
-				t.Error("non-design bead should not have RejectDesign action")
-			}
-		}
+		expectActions(t, items, []PendingAction{ActionSummon, ActionComment, ActionResetSoft, ActionResetHard, ActionClose, ActionGrok, ActionTrace})
 	})
 
-	t.Run("hooked non-design bead shows Resume and Reset", func(t *testing.T) {
+	t.Run("hooked bead shows Resume and Reset", func(t *testing.T) {
 		bead := &BoardBead{ID: "spi-014", Status: "hooked", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
-		hasResume := false
-		hasReset := false
-		for _, item := range items {
-			if item.ActionType == ActionResummon {
-				hasResume = true
-			}
-			if item.ActionType == ActionResetSoft {
-				hasReset = true
-			}
-		}
-		if !hasResume {
-			t.Error("expected Resume action for hooked bead")
-		}
-		if !hasReset {
-			t.Error("expected Reset action for hooked bead")
-		}
-	})
-
-	t.Run("design bead without needs-human does not show design actions", func(t *testing.T) {
-		bead := &BoardBead{ID: "spi-013", Status: "in_progress", Type: "design"}
-		items := BuildActionMenu(bead, nil)
-
-		for _, item := range items {
-			if item.ActionType == ActionApproveDesign {
-				t.Error("design bead without needs-human should not have ApproveDesign action")
-			}
-			if item.ActionType == ActionRejectDesign {
-				t.Error("design bead without needs-human should not have RejectDesign action")
-			}
-		}
+		expectActions(t, items, []PendingAction{ActionResume, ActionComment, ActionResetSoft, ActionResetHard, ActionClose, ActionGrok, ActionTrace})
 	})
 
 	t.Run("hooked bead shows Resume not Resolve", func(t *testing.T) {
@@ -278,7 +214,7 @@ func TestBuildActionMenu(t *testing.T) {
 		hasResume := false
 		hasResolve := false
 		for _, item := range items {
-			if item.ActionType == ActionResummon {
+			if item.ActionType == ActionResume {
 				hasResume = true
 			}
 			if item.ActionType == ActionResolve {
@@ -297,12 +233,12 @@ func TestBuildActionMenu(t *testing.T) {
 		bead := &BoardBead{ID: "spi-021", Status: "hooked", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
-		hasResummon := false
+		hasResume := false
 		hasReset := false
 		hasClose := false
 		for _, item := range items {
-			if item.ActionType == ActionResummon {
-				hasResummon = true
+			if item.ActionType == ActionResume {
+				hasResume = true
 			}
 			if item.ActionType == ActionResetSoft {
 				hasReset = true
@@ -311,7 +247,7 @@ func TestBuildActionMenu(t *testing.T) {
 				hasClose = true
 			}
 		}
-		if !hasResummon {
+		if !hasResume {
 			t.Error("expected Resume action for hooked bead")
 		}
 		if !hasReset {
@@ -319,6 +255,52 @@ func TestBuildActionMenu(t *testing.T) {
 		}
 		if !hasClose {
 			t.Error("expected Close action for hooked bead")
+		}
+	})
+
+	t.Run("ready bead menu", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-030", Status: "ready", Type: "task"}
+		items := BuildActionMenu(bead, nil)
+
+		expectActions(t, items, []PendingAction{ActionSummon, ActionDefer, ActionComment, ActionClose, ActionGrok, ActionTrace})
+	})
+
+	t.Run("deferred bead menu", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-031", Status: "deferred", Type: "task"}
+		items := BuildActionMenu(bead, nil)
+
+		expectActions(t, items, []PendingAction{ActionDefer, ActionComment, ActionClose, ActionGrok, ActionTrace})
+	})
+
+	t.Run("closed bead menu", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-032", Status: "closed", Type: "task"}
+		items := BuildActionMenu(bead, nil)
+
+		expectActions(t, items, []PendingAction{ActionGrok, ActionTrace})
+	})
+
+	t.Run("comment present in all non-closed statuses", func(t *testing.T) {
+		for _, status := range []string{"open", "ready", "in_progress", "hooked", "deferred"} {
+			bead := &BoardBead{ID: "spi-040", Status: status, Type: "task"}
+			items := BuildActionMenu(bead, nil)
+			hasComment := false
+			for _, item := range items {
+				if item.ActionType == ActionComment {
+					hasComment = true
+					break
+				}
+			}
+			if !hasComment {
+				t.Errorf("expected Comment action for status %q", status)
+			}
+		}
+		// Closed should NOT have Comment.
+		bead := &BoardBead{ID: "spi-041", Status: "closed", Type: "task"}
+		items := BuildActionMenu(bead, nil)
+		for _, item := range items {
+			if item.ActionType == ActionComment {
+				t.Error("closed bead should not have Comment action")
+			}
 		}
 	})
 }
