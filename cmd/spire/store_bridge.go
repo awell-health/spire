@@ -270,6 +270,10 @@ func storeCloseStepBead(stepID string) error {
 	return store.CloseStepBead(stepID)
 }
 
+func storeUnhookStepBead(stepID string) error {
+	return store.UnhookStepBead(stepID)
+}
+
 func storeGetStepBeads(parentID string) ([]Bead, error) {
 	return store.GetStepBeads(parentID)
 }

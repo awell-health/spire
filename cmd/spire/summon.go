@@ -110,6 +110,10 @@ func cmdSummon(args []string) error {
 		return fmt.Errorf("usage: spire summon <bead-id>... | <N> [--targets <ids>] [--auto] [--dispatch <mode>]")
 	}
 
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
+
 	var count int
 	var targets string
 	var auto bool
@@ -380,6 +384,12 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 				return fmt.Errorf("target %s is closed — reopen it first (bd update %s --status open)", id, id)
 			case "deferred":
 				return fmt.Errorf("target %s is deferred — set to open or ready first (bd update %s --status open)", id, id)
+			case "hooked":
+				// Transition to in_progress before summoning — do NOT unhook step beads,
+				// let the wizard/executor evaluate the hook condition and decide.
+				if err := storeUpdateBead(id, map[string]interface{}{"status": "in_progress"}); err != nil {
+					return fmt.Errorf("transition hooked bead %s to in_progress: %w", id, err)
+				}
 			}
 			candidates = append(candidates, bead)
 		}
