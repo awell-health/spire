@@ -229,18 +229,9 @@ func doResetToStep(e *Executor, req recovery.RecoveryActionRequest) recovery.Rec
 		return failResult(req.Kind, "step_target is required for reset-to-step")
 	}
 
-	bead, err := e.deps.GetBead(req.SourceBeadID)
-	if err != nil {
+	if _, err := e.deps.GetBead(req.SourceBeadID); err != nil {
 		return failResult(req.Kind, fmt.Sprintf("get source bead: %v", err))
 	}
-
-	// Remove interrupt labels from source bead.
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "interrupted:") {
-			_ = e.deps.RemoveLabel(req.SourceBeadID, l)
-		}
-	}
-	_ = e.deps.RemoveLabel(req.SourceBeadID, "needs-human")
 
 	// Set source bead to in_progress (resuming, not restarting).
 	if err := e.deps.UpdateBead(req.SourceBeadID, map[string]interface{}{"status": "in_progress"}); err != nil {
@@ -268,18 +259,9 @@ func doResummon(e *Executor, req recovery.RecoveryActionRequest) recovery.Recove
 		return failResult(req.Kind, "source_bead_id is required for resummon")
 	}
 
-	bead, err := e.deps.GetBead(req.SourceBeadID)
-	if err != nil {
+	if _, err := e.deps.GetBead(req.SourceBeadID); err != nil {
 		return failResult(req.Kind, fmt.Sprintf("get source bead: %v", err))
 	}
-
-	// Remove interrupt labels.
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "interrupted:") {
-			_ = e.deps.RemoveLabel(req.SourceBeadID, l)
-		}
-	}
-	_ = e.deps.RemoveLabel(req.SourceBeadID, "needs-human")
 
 	// Set bead back to open for re-assignment.
 	if err := e.deps.UpdateBead(req.SourceBeadID, map[string]interface{}{"status": "open"}); err != nil {
@@ -299,8 +281,8 @@ func doResummon(e *Executor, req recovery.RecoveryActionRequest) recovery.Recove
 	}
 }
 
-// doVerifyClean checks bead health for the source bead: interrupt labels,
-// needs-human status, and whether the bead is still active.
+// doVerifyClean checks bead health for the source bead: whether the bead is
+// still active (not closed) and its status is healthy.
 // Returns VerificationStatus = "clean" or "dirty".
 func doVerifyClean(e *Executor, req recovery.RecoveryActionRequest) recovery.RecoveryActionResult {
 	targetID := req.SourceBeadID
@@ -315,24 +297,12 @@ func doVerifyClean(e *Executor, req recovery.RecoveryActionRequest) recovery.Rec
 
 	var issues []string
 
-	// Check for interrupt labels.
-	for _, l := range bead.Labels {
-		if strings.HasPrefix(l, "interrupted:") {
-			issues = append(issues, "has interrupt label: "+l)
-		}
-	}
-
-	// Check for needs-human.
-	for _, l := range bead.Labels {
-		if l == "needs-human" {
-			issues = append(issues, "has needs-human label")
-			break
-		}
-	}
-
 	// Check bead status.
 	if bead.Status == "closed" {
 		issues = append(issues, "bead is closed")
+	}
+	if bead.Status == "hooked" {
+		issues = append(issues, "bead is still hooked")
 	}
 
 	status := "clean"
@@ -394,12 +364,9 @@ func doAnnotateResolution(e *Executor, req recovery.RecoveryActionRequest) recov
 	}
 }
 
-// doEscalate marks the recovery bead as requiring human intervention. Adds a
-// needs-human label, writes an escalation comment, and does NOT close the bead.
+// doEscalate marks the recovery bead as requiring human intervention. Writes
+// an escalation comment and does NOT close the bead.
 func doEscalate(e *Executor, req recovery.RecoveryActionRequest) recovery.RecoveryActionResult {
-	// Add needs-human label to the recovery bead.
-	_ = e.deps.AddLabel(req.BeadID, "needs-human")
-
 	// Write escalation context as a comment.
 	reason := req.Params["reason"]
 	if reason == "" {
@@ -667,7 +634,7 @@ func failResult(kind recovery.RecoveryActionKind, msg string) recovery.RecoveryA
 //
 // collect_context and decide/learn involve Claude calls; execute and verify
 // delegate to existing mechanical handlers; finish closes the bead unless
-// decide chose escalate (needs-human), in which case it stays open.
+// decide chose escalate, in which case it stays open.
 // ---------------------------------------------------------------------------
 
 // CollectContextResult is the structured output of the collect_context step.
@@ -869,9 +836,8 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		})
 	}
 
-	// If needs_human, set bead status and write comment.
+	// If needs_human, write comment.
 	if result.NeedsHuman {
-		_ = e.deps.AddLabel(e.beadID, "needs-human")
 		_ = e.deps.AddComment(e.beadID, fmt.Sprintf(
 			"Recovery decide: needs human intervention.\n\nChosen action: %s\nConfidence: %.2f\nReasoning: %s\nExpected outcome: %s",
 			result.ChosenAction, result.Confidence, result.Reasoning, result.ExpectedOutcome,
@@ -997,8 +963,8 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 }
 
 // handleFinish writes a closing comment and conditionally closes the recovery
-// bead. If the decide step chose escalate (needs-human), the bead is left open
-// so `spire resolve` can find it and write the human learning before closing.
+// bead. If the decide step chose escalate, the bead is left open so
+// `spire resolve` can find it and write the human learning before closing.
 func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Gather summary from step outputs.
 	var chosenAction, outcome, reasoning string
@@ -1044,8 +1010,8 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 
 	_ = e.deps.AddComment(e.beadID, comment.String())
 
-	// If decide chose escalate (needs-human), leave the recovery bead open so
-	// that `spire resolve` can find it, write the learning, and close it.
+	// If decide chose escalate, leave the recovery bead open so that
+	// `spire resolve` can find it, write the learning, and close it.
 	if needsHuman {
 		e.log("recovery: finish: leaving %s open (needs_human=true, action=%s)",
 			e.beadID, chosenAction)
