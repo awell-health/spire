@@ -99,6 +99,48 @@ func SetBeadMetadataMap(id string, m map[string]string) error {
 	return UpdateBead(id, map[string]interface{}{"metadata": raw})
 }
 
+// appendToStringList parses raw as a JSON string array, appends value if not
+// already present, and returns the marshaled result. If raw is empty or
+// invalid, a new single-element array is returned.
+func appendToStringList(raw, value string) (string, bool) {
+	var list []string
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &list); err != nil {
+			list = nil
+		}
+	}
+	for _, v := range list {
+		if v == value {
+			return raw, false // already present
+		}
+	}
+	list = append(list, value)
+	out, err := json.Marshal(list)
+	if err != nil {
+		return raw, false
+	}
+	return string(out), true
+}
+
+// AppendBeadMetadataList appends value to a JSON string array stored under
+// the given metadata key. If the key doesn't exist or isn't a valid JSON
+// array, a new array is created. Duplicate values are skipped (idempotent).
+func AppendBeadMetadataList(id, key, value string) error {
+	meta, err := GetBeadMetadata(id)
+	if err != nil {
+		return fmt.Errorf("read metadata for %s: %w", id, err)
+	}
+	existing := ""
+	if meta != nil {
+		existing = meta[key]
+	}
+	updated, changed := appendToStringList(existing, value)
+	if !changed {
+		return nil
+	}
+	return SetBeadMetadata(id, key, updated)
+}
+
 // ListBeadsByMetadata searches for beads whose issue metadata matches the
 // given key-value pairs (AND semantics). The optional modFn callbacks allow
 // callers to set additional filter fields (status, type, etc.) before the

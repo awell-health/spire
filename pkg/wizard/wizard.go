@@ -18,6 +18,7 @@ import (
 
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
@@ -1304,6 +1305,7 @@ func WizardCommit(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(
 	if !hasUncommitted && hasNewCommits {
 		sha, _ := wc.HeadSHA()
 		log("Claude already committed on branch %s", wc.Branch)
+		recordCommitMetadata(beadID, sha, log)
 		return sha, true
 	}
 
@@ -1334,13 +1336,26 @@ func WizardCommit(wc *spgit.WorktreeContext, beadID, beadTitle string, log func(
 				return "", false
 			}
 			log("nothing staged, but Claude committed on branch %s — using existing commit", wc.Branch)
+			recordCommitMetadata(beadID, fsha, log)
 			return fsha, true
 		}
 		log("nothing staged after git add")
 		return "", false
 	}
 
+	recordCommitMetadata(beadID, sha, log)
 	return sha, true
+}
+
+// recordCommitMetadata appends a commit SHA to the bead's metadata.commits
+// list. Best-effort: logs a warning on failure but never blocks the commit flow.
+func recordCommitMetadata(beadID, sha string, log func(string, ...interface{})) {
+	if beadID == "" || sha == "" {
+		return
+	}
+	if err := store.AppendBeadMetadataList(beadID, "commits", sha); err != nil {
+		log("warning: failed to record commit metadata: %v", err)
+	}
 }
 
 // wizardUpdateBead adds a comment to the bead. Labels are managed by WizardReviewHandoff.
