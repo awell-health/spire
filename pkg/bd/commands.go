@@ -196,8 +196,18 @@ func (c *Client) Status() error {
 }
 
 // ConfigGet retrieves a config value by key.
+// Returns ("", nil) when the key is not set. The bd CLI prints
+// "key (not set)" with exit 0 for missing keys — this method
+// detects that sentinel and normalizes to an empty string.
 func (c *Client) ConfigGet(key string) (string, error) {
-	return c.exec("config", "get", key)
+	val, err := c.exec("config", "get", key)
+	if err != nil {
+		return "", err
+	}
+	if strings.HasSuffix(val, "(not set)") {
+		return "", nil
+	}
+	return val, nil
 }
 
 // ConfigSet sets a config key to value.
