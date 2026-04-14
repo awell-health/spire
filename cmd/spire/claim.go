@@ -5,6 +5,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/store"
+	"github.com/google/uuid"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/spf13/cobra"
@@ -82,6 +87,43 @@ func cmdClaim(args []string) error {
 		return fmt.Errorf("claim %s: %w", id, err)
 	}
 
+	// Check instance ownership before proceeding (fail-closed for foreign instances).
+	instanceID := config.InstanceID()
+	owned, err := storeIsOwnedByInstanceFunc(attemptID, instanceID)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		meta, _ := storeGetAttemptInstanceFunc(attemptID)
+		foreignName := "unknown"
+		if meta != nil {
+			foreignName = meta.InstanceName
+		}
+		return fmt.Errorf("attempt %s is owned by instance %q — cannot reclaim from this machine; use spire reset to release", attemptID, foreignName)
+	}
+
+	// Stamp instance metadata on the attempt bead.
+	sessionID := uuid.New().String()
+	instanceName := config.InstanceName()
+	towerName := ""
+	if tc, err := activeTowerConfig(); err == nil {
+		towerName = tc.Name
+	} else if tName := os.Getenv("SPIRE_TOWER"); tName != "" {
+		towerName = tName
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if stampErr := storeStampAttemptInstanceFunc(attemptID, store.InstanceMeta{
+		InstanceID:   instanceID,
+		SessionID:    sessionID,
+		InstanceName: instanceName,
+		Backend:      "process",
+		Tower:        towerName,
+		StartedAt:    now,
+		LastSeenAt:   now,
+	}); stampErr != nil {
+		return fmt.Errorf("stamp instance metadata on %s: %w", attemptID, stampErr)
+	}
+
 	// Flip status to in_progress.
 	if err := claimUpdateBeadFunc(id, map[string]interface{}{
 		"status":   "in_progress",
@@ -105,11 +147,13 @@ func cmdClaim(args []string) error {
 
 	// Output result as JSON for easy consumption by spire-work
 	result := map[string]string{
-		"id":      target.ID,
-		"title":   target.Title,
-		"type":    target.Type,
-		"status":  "in_progress",
-		"attempt": attemptID,
+		"id":            target.ID,
+		"title":         target.Title,
+		"type":          target.Type,
+		"status":        "in_progress",
+		"attempt":       attemptID,
+		"instance_name": instanceName,
+		"instance_id":   instanceID,
 	}
 	out, _ := json.Marshal(result)
 	fmt.Println(string(out))

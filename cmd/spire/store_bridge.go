@@ -38,6 +38,15 @@ var storeRaiseCorruptedBeadAlertFunc = storeRaiseCorruptedBeadAlert
 // storeGetDependentsWithMetaFunc is a test-replaceable function for storeGetDependentsWithMeta.
 var storeGetDependentsWithMetaFunc = storeGetDependentsWithMeta
 
+// storeStampAttemptInstanceFunc is a test-replaceable function for store.StampAttemptInstance.
+var storeStampAttemptInstanceFunc = storeStampAttemptInstance
+
+// storeIsOwnedByInstanceFunc is a test-replaceable function for store.IsOwnedByInstance.
+var storeIsOwnedByInstanceFunc = storeIsOwnedByInstance
+
+// storeGetAttemptInstanceFunc is a test-replaceable function for store.GetAttemptInstance.
+var storeGetAttemptInstanceFunc = storeGetAttemptInstance
+
 // storeCloseBeadFunc is a test-replaceable function for storeCloseBead.
 var storeCloseBeadFunc = storeCloseBead
 
@@ -222,6 +231,18 @@ func storeCreateAttemptBeadAtomic(parentID, agentName, model, branch string) (st
 
 func storeCloseAttemptBead(attemptID, result string) error {
 	return store.CloseAttemptBead(attemptID, result)
+}
+
+func storeStampAttemptInstance(attemptID string, m store.InstanceMeta) error {
+	return store.StampAttemptInstance(attemptID, m)
+}
+
+func storeIsOwnedByInstance(attemptID, instanceID string) (bool, error) {
+	return store.IsOwnedByInstance(attemptID, instanceID)
+}
+
+func storeGetAttemptInstance(attemptID string) (*store.InstanceMeta, error) {
+	return store.GetAttemptInstance(attemptID)
 }
 
 func storeCreateReviewBead(parentID, sageName string, round int) (string, error) {
