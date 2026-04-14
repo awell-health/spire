@@ -75,6 +75,7 @@ func FetchBoard(opts Opts, identity string) (BoardResult, error) {
 	if opts.Epic != "" {
 		cols = FilterEpic(cols, opts.Epic)
 	}
+	CapDone(&cols, 10)
 	if opts.Mine {
 		cols.Ready = nil
 		cols.Design = FilterOwned(cols.Design, identity)
@@ -185,6 +186,7 @@ func fetchSnapshot(db beads.Storage, opts Opts, identity string, fetchAgents fun
 	if opts.Epic != "" {
 		cols = FilterEpic(cols, opts.Epic)
 	}
+	CapDone(&cols, 10)
 	if opts.Mine {
 		cols.Ready = nil
 		cols.Design = FilterOwned(cols.Design, identity)

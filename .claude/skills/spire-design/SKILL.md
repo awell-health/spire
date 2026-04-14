@@ -52,11 +52,11 @@ When the brainstorm settles into actionable work:
 ```bash
 bd comments add <design-id> "Final design: [summary]"
 bd close <design-id>
-spire file "Title" -t epic -p 1 --label "ref:<design-id>"
+spire file "Title" -t epic -p 1 --ref <design-id>
 ```
 
-The `ref:` label links the work item to its design. `spire focus` surfaces referenced beads,
-so any agent working the task sees the design context.
+The `--ref` flag creates a `discovered-from` dependency linking the work item to its design.
+This is required — the wizard's design check phase won't advance without it.
 
 ## Step 4: If the brainstorm doesn't lead to work
 
@@ -75,5 +75,5 @@ The thinking is preserved in the archive for future reference.
 - Capture incrementally — decisions, rejections, questions as they arise
 - One design bead per topic — don't mix unrelated explorations
 - Always close design beads when done (settled or parked)
-- Link work items to their design bead via `ref:` labels
+- Link work items to their design bead via `--ref` (creates a `discovered-from` dep)
 - Design beads are NOT work items — they won't appear in `bd ready` or be picked up by `spire summon`

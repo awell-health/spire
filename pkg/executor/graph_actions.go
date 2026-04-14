@@ -383,6 +383,7 @@ func actionCheckDesignLinked(e *Executor, stepName string, step StepConfig, stat
 		e.deps.AddComment(newID, fmt.Sprintf("Created automatically for epic %s. Please add design content and close when ready.", e.beadID))
 		// Message archmage.
 		e.sendArchmageMessage(fmt.Sprintf("Design bead %s created for epic %s — needs human design input.", newID, e.beadID))
+		e.log("design-check: no linked design bead found — auto-created %s, waiting for human input", newID)
 		return ActionResult{Hooked: true, Outputs: map[string]string{"design_ref": newID}}
 	}
 
@@ -395,6 +396,11 @@ func actionCheckDesignLinked(e *Executor, stepName string, step StepConfig, stat
 			return ActionResult{Error: fmt.Errorf("design bead %s has no content", designRef)}
 		}
 		// Design bead exists but not ready — hook and wait.
+		if designOpen {
+			e.log("design-check: design bead %s is still open — waiting for it to be closed", designRef)
+		} else {
+			e.log("design-check: design bead %s is closed but has no content — waiting for design decisions", designRef)
+		}
 		return ActionResult{Hooked: true, Outputs: map[string]string{"design_ref": designRef}}
 	}
 

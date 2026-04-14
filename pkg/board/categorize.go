@@ -174,13 +174,10 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		}
 		c.Done = append(c.Done, b)
 	}
-	// Most recently updated first, capped at 10.
+	// Most recently updated first.
 	sort.Slice(c.Done, func(i, j int) bool {
 		return c.Done[i].UpdatedAt > c.Done[j].UpdatedAt
 	})
-	if len(c.Done) > 10 {
-		c.Done = c.Done[:10]
-	}
 
 	return c
 }
@@ -259,21 +256,46 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		}
 		c.Done = append(c.Done, b)
 	}
-	// Most recently updated first, capped at 10.
+	// Most recently updated first.
 	sort.Slice(c.Done, func(i, j int) bool {
 		return c.Done[i].UpdatedAt > c.Done[j].UpdatedAt
 	})
-	if len(c.Done) > 10 {
-		c.Done = c.Done[:10]
-	}
 
 	return c
 }
 
-// FilterEpic filters columns to only contain beads matching the epic ID and its children.
+// CapDone trims the Done column to at most n entries.
+// Call this after FilterEpic so the cap applies to the filtered set, not before.
+func CapDone(cols *Columns, n int) {
+	if len(cols.Done) > n {
+		cols.Done = cols.Done[:n]
+	}
+}
+
+// FilterEpic filters columns to only contain beads matching the epic ID, its
+// children, and beads linked via discovered-from dependencies (e.g. design beads).
 func FilterEpic(cols Columns, epicID string) Columns {
+	// Collect IDs of beads linked to the epic via discovered-from deps.
+	// Scan all columns to find the epic bead and read its dependencies.
+	linkedIDs := make(map[string]bool)
+	for _, slice := range [][]BoardBead{
+		cols.Alerts, cols.Interrupted, cols.Ready, cols.Design, cols.Plan,
+		cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked,
+	} {
+		for _, b := range slice {
+			if b.ID == epicID {
+				for _, dep := range b.Dependencies {
+					if dep.Type == "discovered-from" {
+						linkedIDs[dep.DependsOnID] = true
+					}
+				}
+				break
+			}
+		}
+	}
+
 	match := func(b BoardBead) bool {
-		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".")
+		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".") || linkedIDs[b.ID]
 	}
 	return Columns{
 		Alerts:      FilterBeads(cols.Alerts, match),
