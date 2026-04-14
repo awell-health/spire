@@ -16,9 +16,9 @@ func TestAgentsModeViewWithAgents(t *testing.T) {
 	m.SetSize(100, 40)
 	m.snapshot = AgentSnapshot{
 		Agents: []AgentInfo{
-			{Name: "wizard-main", BeadID: "spi-a3f8", Phase: "implement", Status: "running", Duration: 12 * time.Minute},
-			{Name: "wizard-web", BeadID: "web-b7d0", Phase: "review", Status: "idle", Duration: 0},
-			{Name: "apprentice-1", BeadID: "spi-a3f8.2", Phase: "implement", Status: "running", Duration: 3 * time.Minute},
+			{Name: "wizard-main", BeadID: "spi-a3f8", Status: "running", Duration: 12 * time.Minute},
+			{Name: "wizard-web", BeadID: "web-b7d0", Status: "idle", Duration: 0},
+			{Name: "apprentice-1", BeadID: "spi-a3f8.2", Status: "running", Duration: 3 * time.Minute},
 		},
 		FetchedAt: time.Now(),
 	}
@@ -26,7 +26,7 @@ func TestAgentsModeViewWithAgents(t *testing.T) {
 	view := m.View()
 
 	// Check header is present.
-	if !strings.Contains(view, "Agent") || !strings.Contains(view, "Bead") || !strings.Contains(view, "Phase") {
+	if !strings.Contains(view, "Agent") || !strings.Contains(view, "Bead") || !strings.Contains(view, "Status") {
 		t.Errorf("View missing table headers, got:\n%s", view)
 	}
 

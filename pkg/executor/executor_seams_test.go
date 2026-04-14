@@ -119,7 +119,7 @@ func TestWizardPlan_OnlyStepBeadChildren(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-plan",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -207,7 +207,7 @@ func TestWizardPlan_MixedChildren(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-mix",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -269,7 +269,7 @@ func TestWizardPlan_OnlyRealChildren(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-real",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -352,7 +352,7 @@ func TestEnsureStagingWorktree_Resume(t *testing.T) {
 	state := &State{
 		BeadID:        "spi-resume-wt",
 		AgentName:     "wizard-test",
-		Subtasks:      make(map[string]SubtaskState),
+
 		RepoPath:      dir,
 		BaseBranch:    "main",
 		StagingBranch: "staging/spi-resume-wt",
@@ -397,7 +397,7 @@ func TestEnsureStagingWorktree_StalePath(t *testing.T) {
 	state := &State{
 		BeadID:        "spi-stale",
 		AgentName:     "wizard-test",
-		Subtasks:      make(map[string]SubtaskState),
+
 		RepoPath:      dir,
 		BaseBranch:    "main",
 		StagingBranch: "staging/spi-stale",
@@ -428,7 +428,7 @@ func TestEnsureStagingWorktree_NoStagingBranch(t *testing.T) {
 	state := &State{
 		BeadID:        "spi-no-staging",
 		AgentName:     "wizard-test",
-		Subtasks:      make(map[string]SubtaskState),
+
 		RepoPath:      dir,
 		StagingBranch: "", // empty
 	}
@@ -768,7 +768,7 @@ func TestWizardPlanTask_HappyPath(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-task1",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -830,7 +830,7 @@ func TestWizardPlanTask_Resume(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-task2",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -875,7 +875,7 @@ func TestWizardPlanTask_EmptyPlan(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-task3",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -936,7 +936,7 @@ func TestCollectDesignContext(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-ctx",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -1053,7 +1053,7 @@ func TestWizardValidateDesign_CreatesDesignBead(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-epic1",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -1166,7 +1166,7 @@ func TestWizardValidateDesign_WaitsForOpenDesign(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-epic2",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -1241,7 +1241,7 @@ func TestWizardValidateDesign_WaitsForEmptyDesign(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-epic3",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -1299,7 +1299,7 @@ func TestWizardValidateDesign_HappyPath(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-epic4",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 
@@ -1348,7 +1348,7 @@ func TestCollectDesignContext_NoDeps(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-nodeps",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 		RepoPath:  dir,
 	}
 

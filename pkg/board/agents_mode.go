@@ -23,7 +23,6 @@ type AgentSnapshot struct {
 type AgentInfo struct {
 	Name      string
 	BeadID    string // empty if idle
-	Phase     string
 	Status    string // "running", "idle", "errored"
 	StartedAt time.Time
 	Duration  time.Duration
@@ -339,7 +338,7 @@ func (m *AgentsMode) View() string {
 	}
 
 	// Compute column widths from data.
-	colAgent, colBead, colPhase, colStatus, colDur := 5, 4, 5, 6, 8
+	colAgent, colBead, colStatus, colDur := 5, 4, 6, 8
 	for _, a := range m.snapshot.Agents {
 		if len(a.Name) > colAgent {
 			colAgent = len(a.Name)
@@ -347,16 +346,13 @@ func (m *AgentsMode) View() string {
 		if len(a.BeadID) > colBead {
 			colBead = len(a.BeadID)
 		}
-		if len(a.Phase) > colPhase {
-			colPhase = len(a.Phase)
-		}
 		if len(a.Status) > colStatus {
 			colStatus = len(a.Status)
 		}
 	}
 	// Clamp widths if terminal is narrow.
 	if m.width > 0 {
-		total := colAgent + colBead + colPhase + colStatus + colDur + 12 // gaps
+		total := colAgent + colBead + colStatus + colDur + 10 // gaps
 		if total > m.width {
 			excess := total - m.width
 			if colAgent > 12 {
@@ -372,11 +368,11 @@ func (m *AgentsMode) View() string {
 	}
 
 	// Header.
-	hdr := fmt.Sprintf("  %-*s  %-*s  %-*s  %-*s  %-*s",
-		colAgent, "Agent", colBead, "Bead", colPhase, "Phase", colStatus, "Status", colDur, "Duration")
+	hdr := fmt.Sprintf("  %-*s  %-*s  %-*s  %-*s",
+		colAgent, "Agent", colBead, "Bead", colStatus, "Status", colDur, "Duration")
 	s.WriteString(headerStyle.Render(hdr) + "\n")
 
-	sepWidth := colAgent + colBead + colPhase + colStatus + colDur + 10
+	sepWidth := colAgent + colBead + colStatus + colDur + 8
 	if m.width > 0 && sepWidth > m.width {
 		sepWidth = m.width
 	}
@@ -396,16 +392,6 @@ func (m *AgentsMode) View() string {
 		} else {
 			beadStr = fmt.Sprintf("%-*s", colBead, beadStr)
 		}
-		phaseStr := Truncate(a.Phase, colPhase)
-		if phaseStr == "" {
-			phaseStr = dimStyle.Render("—")
-			if colPhase > 1 {
-				phaseStr += strings.Repeat(" ", colPhase-1)
-			}
-		} else {
-			phaseStr = fmt.Sprintf("%-*s", colPhase, phaseStr)
-		}
-
 		durStr := "—"
 		if a.Duration > 0 {
 			durStr = formatAgentDuration(a.Duration)
@@ -413,8 +399,8 @@ func (m *AgentsMode) View() string {
 
 		statusStr := renderAgentStatus(a.Status, colStatus)
 
-		row := fmt.Sprintf("%-*s  %s  %s  %s  %-*s",
-			colAgent, nameStr, beadStr, phaseStr, statusStr, colDur, durStr)
+		row := fmt.Sprintf("%-*s  %s  %s  %-*s",
+			colAgent, nameStr, beadStr, statusStr, colDur, durStr)
 
 		if i == m.cursor {
 			prefix = cursorIcon + " "

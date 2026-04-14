@@ -22,25 +22,20 @@ type GraphResult struct {
 
 // State is the persistent state for a formula executor.
 type State struct {
-	BeadID        string                  `json:"bead_id"`
-	AgentName     string                  `json:"agent_name"`
-	Formula       string                  `json:"formula"`
-	FormulaSource  string                  `json:"formula_source,omitempty"` // "embedded", "repo", or "tower"
-	Phase          string                  `json:"phase"`
-	Wave           int                     `json:"wave"`
-	Subtasks       map[string]SubtaskState `json:"subtasks"`
-	ReviewRounds   int                     `json:"review_rounds"`
-	BuildFixRounds int                     `json:"build_fix_rounds,omitempty"`
-	StartedAt      string                  `json:"started_at"`
-	LastActionAt  string                  `json:"last_action_at"`
-	StagingBranch string                  `json:"staging_branch,omitempty"`
-	BaseBranch    string                  `json:"base_branch,omitempty"`
-	RepoPath      string                  `json:"repo_path,omitempty"`
-	AttemptBeadID string                  `json:"attempt_bead_id,omitempty"`
-	StepBeadIDs       map[string]string       `json:"step_bead_ids,omitempty"`        // phase name → step bead ID
-	ReviewStepBeadIDs map[string]string       `json:"review_step_bead_ids,omitempty"` // formula step name → sub-step bead ID
-	WorktreeDir       string                  `json:"worktree_dir,omitempty"`         // staging worktree directory path
-	LastGraphResult   *GraphResult            `json:"last_graph_result,omitempty"`
+	BeadID            string            `json:"bead_id"`
+	AgentName         string            `json:"agent_name"`
+	Formula           string            `json:"formula"`
+	FormulaSource     string            `json:"formula_source,omitempty"` // "embedded", "repo", or "tower"
+	StartedAt         string            `json:"started_at"`
+	LastActionAt      string            `json:"last_action_at"`
+	StagingBranch     string            `json:"staging_branch,omitempty"`
+	BaseBranch        string            `json:"base_branch,omitempty"`
+	RepoPath          string            `json:"repo_path,omitempty"`
+	AttemptBeadID     string            `json:"attempt_bead_id,omitempty"`
+	StepBeadIDs       map[string]string `json:"step_bead_ids,omitempty"`        // phase name → step bead ID
+	ReviewStepBeadIDs map[string]string `json:"review_step_bead_ids,omitempty"` // formula step name → sub-step bead ID
+	WorktreeDir       string            `json:"worktree_dir,omitempty"`         // staging worktree directory path
+	LastGraphResult   *GraphResult      `json:"last_graph_result,omitempty"`
 	// v3 graph runtime state.
 	Workspaces map[string]WorkspaceState `json:"workspaces,omitempty"`
 	StepStates map[string]StepState      `json:"step_states,omitempty"`

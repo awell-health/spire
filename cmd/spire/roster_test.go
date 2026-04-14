@@ -111,9 +111,9 @@ func TestBuildRosterWorkItems_CollapsesProcessesByBead(t *testing.T) {
 			BeadTitle:    "spire close command",
 			EpicID:       "spi-yanq",
 			EpicTitle:    "Operationalize steward around backend-driven execution",
-			Phase:        "implement",
-			PhaseElapsed: 14 * time.Second,
-			Timeout:      15 * time.Minute,
+			Phase:   "implement",
+			Elapsed: 14 * time.Second,
+			Timeout: 15 * time.Minute,
 		},
 	}
 

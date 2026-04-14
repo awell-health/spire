@@ -210,8 +210,8 @@ func TestRecordAgentRunPopulatesCostAndReviewRounds(t *testing.T) {
 		},
 	}
 
-	state := &State{ReviewRounds: 2}
-	e := NewForTest("spi-test", "wizard-test", state, deps)
+	e := NewForTest("spi-test", "wizard-test", nil, deps)
+	e.graphState = &GraphState{Counters: map[string]int{"review_rounds": 2}}
 	e.recordAgentRun("test-agent", "spi-test", "", "claude-sonnet-4-6", "apprentice", "implement",
 		time.Now().Add(-30*time.Second), nil)
 
@@ -452,27 +452,6 @@ func TestRecordAgentRunContextFields(t *testing.T) {
 		}
 		if recorded.Branch != "" {
 			t.Errorf("Branch = %q, want empty", recorded.Branch)
-		}
-	})
-
-	t.Run("WaveIndex from state.Wave", func(t *testing.T) {
-		var recorded *AgentRun
-		deps := &Deps{
-			RecordAgentRun: func(run AgentRun) (string, error) {
-				recorded = &run
-				return "", nil
-			},
-		}
-		state := &State{Wave: 3}
-		e := NewForTest("spi-test", "wizard-test", state, deps)
-		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-6", "apprentice", "implement",
-			time.Now().Add(-10*time.Second), nil)
-
-		if recorded == nil {
-			t.Fatal("RecordAgentRun was not called")
-		}
-		if recorded.WaveIndex != 3 {
-			t.Errorf("WaveIndex = %d, want 3", recorded.WaveIndex)
 		}
 	})
 

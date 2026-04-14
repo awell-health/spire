@@ -166,7 +166,7 @@ func TestResolveWorkspaceBranch(t *testing.T) {
 	e := NewForTest("spi-abc", "wizard-spi-abc", &State{
 		BeadID:     "spi-abc",
 		BaseBranch: "main",
-		Subtasks:   make(map[string]SubtaskState),
+
 		Workspaces: make(map[string]WorkspaceState),
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
@@ -197,7 +197,7 @@ func TestWorkspaceDir_Default(t *testing.T) {
 	e := NewForTest("spi-xyz", "wizard-spi-xyz", &State{
 		BeadID:     "spi-xyz",
 		RepoPath:   "/repo",
-		Subtasks:   make(map[string]SubtaskState),
+
 		Workspaces: make(map[string]WorkspaceState),
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
@@ -214,7 +214,7 @@ func TestWorkspaceDir_FromState(t *testing.T) {
 	e := NewForTest("spi-xyz", "wizard-spi-xyz", &State{
 		BeadID:   "spi-xyz",
 		RepoPath: "/repo",
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"borrowed": {Dir: "/other/repo/.worktrees/child-123"},
 		},
@@ -233,7 +233,7 @@ func TestWorkspaceDir_FromState(t *testing.T) {
 
 func TestInitWorkspaceStates(t *testing.T) {
 	state := &State{
-		Subtasks:   make(map[string]SubtaskState),
+
 		Workspaces: make(map[string]WorkspaceState),
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
@@ -266,7 +266,7 @@ func TestInitWorkspaceStates(t *testing.T) {
 
 func TestInitWorkspaceStates_SkipsExisting(t *testing.T) {
 	state := &State{
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"staging": {Name: "staging", Kind: formula.WorkspaceKindStaging, Status: "active", Dir: "/some/dir"},
 		},
@@ -296,7 +296,7 @@ func TestResolveWorkspace_RepoKind(t *testing.T) {
 	state := &State{
 		BeadID:   "spi-abc",
 		RepoPath: "/repo",
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"main": {Name: "main", Kind: formula.WorkspaceKindRepo, Status: "pending", Scope: formula.WorkspaceScopeRun, Ownership: "owned", Cleanup: formula.WorkspaceCleanupTerminal},
 		},
@@ -326,7 +326,7 @@ func TestResolveWorkspace_RepoKind(t *testing.T) {
 
 func TestResolveWorkspace_NotFound(t *testing.T) {
 	state := &State{
-		Subtasks:   make(map[string]SubtaskState),
+
 		Workspaces: make(map[string]WorkspaceState),
 		StepStates: make(map[string]StepState),
 		Counters:   make(map[string]int),
@@ -343,7 +343,7 @@ func TestResolveWorkspace_NotFound(t *testing.T) {
 
 func TestReleaseWorkspace_BorrowedMarksClosedOnly(t *testing.T) {
 	state := &State{
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"borrowed": {
 				Name: "borrowed", Kind: formula.WorkspaceKindBorrowedWorktree,
@@ -369,7 +369,7 @@ func TestReleaseWorkspace_BorrowedMarksClosedOnly(t *testing.T) {
 
 func TestReleaseWorkspace_RepoMarksClosedOnly(t *testing.T) {
 	state := &State{
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"main": {
 				Name: "main", Kind: formula.WorkspaceKindRepo,
@@ -394,7 +394,7 @@ func TestReleaseWorkspace_RepoMarksClosedOnly(t *testing.T) {
 
 func TestReleaseWorkspace_AlreadyClosed(t *testing.T) {
 	state := &State{
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"ws": {Name: "ws", Kind: formula.WorkspaceKindRepo, Status: "closed", Ownership: "owned"},
 		},
@@ -413,7 +413,7 @@ func TestReleaseWorkspace_TerminalCleanup_NotTerminated(t *testing.T) {
 	// but is marked closed (worktree is NOT removed).
 	state := &State{
 		RepoPath: "/repo",
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"staging": {
 				Name: "staging", Kind: formula.WorkspaceKindStaging,
@@ -442,7 +442,7 @@ func TestReleaseWorkspace_TerminalCleanup_NotTerminated(t *testing.T) {
 func TestReleaseWorkspace_NeverCleanup(t *testing.T) {
 	state := &State{
 		RepoPath: "/repo",
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"persist": {
 				Name: "persist", Kind: formula.WorkspaceKindOwnedWorktree,
@@ -471,7 +471,7 @@ func TestReleaseWorkspace_NeverCleanup(t *testing.T) {
 
 func TestReleaseStepWorkspaces(t *testing.T) {
 	state := &State{
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"step-ws": {
 				Name: "step-ws", Kind: formula.WorkspaceKindRepo,
@@ -507,7 +507,7 @@ func TestReleaseStepWorkspaces(t *testing.T) {
 
 func TestReleaseRunWorkspaces(t *testing.T) {
 	state := &State{
-		Subtasks: make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"run-ws": {
 				Name: "run-ws", Kind: formula.WorkspaceKindRepo,
@@ -629,7 +629,7 @@ func TestResolveWorkspace_OwnedWorktree(t *testing.T) {
 		BeadID:     "spi-abc",
 		RepoPath:   repoDir,
 		BaseBranch: "main",
-		Subtasks:   make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"impl": {
 				Name:       "impl",
@@ -714,7 +714,7 @@ func TestResolveWorkspace_RunScopeResume(t *testing.T) {
 		BeadID:     "spi-def",
 		RepoPath:   repoDir,
 		BaseBranch: "main",
-		Subtasks:   make(map[string]SubtaskState),
+
 		Workspaces: map[string]WorkspaceState{
 			"staging": {
 				Name:       "staging",

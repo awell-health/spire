@@ -22,10 +22,9 @@ type RosterAgent struct {
 	BeadTitle    string        `json:"bead_title"`
 	EpicID       string        `json:"epic_id,omitempty"`
 	EpicTitle    string        `json:"epic_title,omitempty"`
-	Phase        string        `json:"phase"`
-	Elapsed      time.Duration `json:"elapsed"`
-	PhaseElapsed time.Duration `json:"phase_elapsed"`
-	Timeout      time.Duration `json:"timeout"`
+	Phase   string        `json:"phase"`
+	Elapsed time.Duration `json:"elapsed"`
+	Timeout time.Duration `json:"timeout"`
 	Remaining    time.Duration `json:"remaining"`
 	RegisteredAt string        `json:"registered_at"`
 }
@@ -651,13 +650,7 @@ func rosterNameRank(name string) int {
 
 // RosterAgentCountdown returns phase, elapsed, and timeout for an agent.
 func RosterAgentCountdown(agent RosterAgent) (string, time.Duration, time.Duration) {
-	elapsed := agent.Elapsed
-	timeout := agent.Timeout
-	if agent.Phase != "" && agent.PhaseElapsed > 0 {
-		elapsed = agent.PhaseElapsed
-		timeout = RosterPhaseTimeout(agent.Phase, agent.Timeout)
-	}
-	return agent.Phase, elapsed, timeout
+	return agent.Phase, agent.Elapsed, agent.Timeout
 }
 
 // BuildSummary builds a RosterSummary from agents.
@@ -796,18 +789,6 @@ func RosterStatusDisplay(status string) (string, string) {
 		return Dim + "×" + Reset, fmt.Sprintf("%soffline%s", Dim, Reset)
 	default:
 		return Dim + "?" + Reset, status
-	}
-}
-
-// RosterPhaseTimeout returns the expected timeout for a given molecule phase.
-func RosterPhaseTimeout(phase string, globalTimeout time.Duration) time.Duration {
-	switch phase {
-	case "design", "review-fix", "review":
-		return 10 * time.Minute
-	case "implement":
-		return globalTimeout
-	default:
-		return globalTimeout
 	}
 }
 

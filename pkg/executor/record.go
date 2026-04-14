@@ -138,8 +138,8 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		StartedAt:       started.Format(time.RFC3339),
 		CompletedAt:     completed.Format(time.RFC3339),
 	}
-	if e.state != nil {
-		run.ReviewRounds = e.state.ReviewRounds
+	if e.graphState != nil {
+		run.ReviewRounds = e.graphState.Counters["review_rounds"]
 	}
 
 	// Populate context fields from executor state.
@@ -148,7 +148,6 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		run.FormulaVersion = e.graph.Version
 	}
 	if e.state != nil {
-		run.WaveIndex = e.state.Wave
 		if e.state.FormulaSource != "" {
 			run.FormulaSource = e.state.FormulaSource
 		}

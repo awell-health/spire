@@ -46,8 +46,6 @@ func TestSaveAndLoadState(t *testing.T) {
 		BeadID:    "spi-xyz",
 		AgentName: "wizard-spi-xyz",
 		Formula:   "spire-agent-work",
-		Phase:     "implement",
-		Subtasks:  make(map[string]SubtaskState),
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -65,9 +63,6 @@ func TestSaveAndLoadState(t *testing.T) {
 	}
 	if loaded.BeadID != state.BeadID {
 		t.Errorf("BeadID = %q, want %q", loaded.BeadID, state.BeadID)
-	}
-	if loaded.Phase != state.Phase {
-		t.Errorf("Phase = %q, want %q", loaded.Phase, state.Phase)
 	}
 }
 
@@ -118,7 +113,7 @@ func TestEnsureStepBeadsReconcileFromGraph(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-parent",
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]SubtaskState),
+
 	}
 
 	e := NewForTest("spi-parent", "wizard-test", state, deps)
@@ -625,8 +620,6 @@ func TestSaveStateRemovesWhenTerminated(t *testing.T) {
 		BeadID:    "spi-term",
 		AgentName: "wizard-spi-term",
 		Formula:   "test",
-		Phase:     "merge",
-		Subtasks:  make(map[string]SubtaskState),
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -662,8 +655,6 @@ func TestSaveStateWritesWhenNotTerminated(t *testing.T) {
 		BeadID:    "spi-live",
 		AgentName: "wizard-spi-live",
 		Formula:   "test",
-		Phase:     "implement",
-		Subtasks:  make(map[string]SubtaskState),
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
