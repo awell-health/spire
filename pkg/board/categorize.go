@@ -294,7 +294,7 @@ func CapDone(cols *Columns, n int) {
 func FilterEpic(cols Columns, epicID string) Columns {
 	linkedIDs := make(map[string]bool)
 	allSlices := [][]BoardBead{
-		cols.Alerts, cols.Interrupted, cols.Ready, cols.Design, cols.Plan,
+		cols.Alerts, cols.Hooked, cols.Backlog, cols.Ready, cols.Design, cols.Plan,
 		cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked,
 	}
 
