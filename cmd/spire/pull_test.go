@@ -11,6 +11,7 @@ import (
 // after CLIPull regardless of whether pull reported conflicts. This is a
 // live-server integration test gated by doltIsReachable().
 func TestRunPull_ConflictCallsOwnership(t *testing.T) {
+	restoreDoltPort(t)
 	if !doltIsReachable() {
 		t.Skip("dolt server not reachable")
 	}

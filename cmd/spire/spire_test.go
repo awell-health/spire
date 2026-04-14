@@ -1112,6 +1112,7 @@ func TestDoltDataDir(t *testing.T) {
 }
 
 func TestRequireDolt(t *testing.T) {
+	restoreDoltPort(t)
 	// If dolt is reachable, requireDolt should succeed
 	if doltIsReachable() {
 		err := requireDolt()

@@ -94,6 +94,7 @@ func TestExtractCountValue(t *testing.T) {
 }
 
 func TestGetCurrentCommitHash_Live(t *testing.T) {
+	restoreDoltPort(t)
 	if !doltIsReachable() {
 		t.Skip("dolt server not reachable")
 	}

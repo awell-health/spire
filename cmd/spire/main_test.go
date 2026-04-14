@@ -14,3 +14,14 @@ func TestMain(m *testing.M) {
 	os.Setenv("DOLT_PORT", "19999")
 	os.Exit(m.Run())
 }
+
+// restoreDoltPort undoes the TestMain isolation so integration tests gated by
+// doltIsReachable() can reach the real server. Call at the top of any test
+// that intentionally needs a live dolt connection.
+func restoreDoltPort(t *testing.T) {
+	t.Helper()
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("DOLT_PORT", "")
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("DOLT_PORT")
+}

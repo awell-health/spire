@@ -700,7 +700,7 @@ func TestDoctorCheckRepoMigrationFor_NoDolt(t *testing.T) {
 }
 
 func TestDoctorCheckRepoMigrationFor_AllMigrated(t *testing.T) {
-	// This test requires a running dolt server — skip if not available
+	restoreDoltPort(t)
 	if !doltIsReachable() {
 		t.Skip("dolt server not reachable")
 	}
