@@ -274,6 +274,75 @@ func TestCmdApprove_UpdatesGraphState(t *testing.T) {
 	}
 }
 
+// TestCmdApprove_OnlyTouchesApprovedHook verifies that cmdApprove only resets the
+// step:human.approve step in graph state, leaving other hooked steps untouched.
+func TestCmdApprove_OnlyTouchesApprovedHook(t *testing.T) {
+	cleanup := stubApproveDeps(t)
+	defer cleanup()
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	approveGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "hooked"}, nil
+	}
+	approveGetStepBeadsFunc = func(parentID string) ([]Bead, error) {
+		return []Bead{
+			{ID: "spi-gs.1", Status: "hooked", Type: "step", Labels: []string{"workflow-step", "step:human.approve"}},
+			{ID: "spi-gs.2", Status: "hooked", Type: "step", Labels: []string{"workflow-step", "step:review"}},
+		}, nil
+	}
+	approveUnhookStepBeadFunc = func(stepID string) error { return nil }
+	approveUpdateBeadFunc = func(id string, u map[string]interface{}) error { return nil }
+	approveAddCommentFunc = func(id, text string) error { return nil }
+	approveIdentityFunc = func() (string, error) { return "JB", nil }
+
+	seedGS := &executor.GraphState{
+		BeadID:    "spi-gs",
+		AgentName: "wizard-spi-gs",
+		Steps: map[string]executor.StepState{
+			"human.approve": {Status: "hooked", CompletedCount: 0},
+			"review":        {Status: "hooked", CompletedCount: 0},
+		},
+		ActiveStep: "human.approve",
+	}
+
+	var savedGS *executor.GraphState
+	loadGraphStateForApprove = func(wizardName string) (*executor.GraphState, error) {
+		return seedGS, nil
+	}
+	saveGraphStateForApprove = func(wizardName string, gs *executor.GraphState) error {
+		savedGS = gs
+		return nil
+	}
+
+	err := cmdApprove("spi-gs", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if savedGS == nil {
+		t.Fatal("expected graph state to be saved")
+	}
+
+	// human.approve should be reset to pending with CompletedCount bumped.
+	approveStep := savedGS.Steps["human.approve"]
+	if approveStep.Status != "pending" {
+		t.Errorf("human.approve: expected status=pending, got %q", approveStep.Status)
+	}
+	if approveStep.CompletedCount != 1 {
+		t.Errorf("human.approve: expected CompletedCount=1, got %d", approveStep.CompletedCount)
+	}
+
+	// review should be UNTOUCHED — still hooked with CompletedCount=0.
+	reviewStep := savedGS.Steps["review"]
+	if reviewStep.Status != "hooked" {
+		t.Errorf("review: expected status=hooked (untouched), got %q", reviewStep.Status)
+	}
+	if reviewStep.CompletedCount != 0 {
+		t.Errorf("review: expected CompletedCount=0 (untouched), got %d", reviewStep.CompletedCount)
+	}
+}
+
 // TestCmdApprove_MultipleHookedSteps verifies that when other steps remain hooked,
 // the parent is NOT transitioned to in_progress.
 func TestCmdApprove_MultipleHookedSteps(t *testing.T) {

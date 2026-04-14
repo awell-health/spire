@@ -40,10 +40,6 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 	if interruptLabel == "" && bead.Status != "hooked" {
 		return nil, fmt.Errorf("bead %s has no interrupted:* label and is not hooked — not in interrupted state", beadID)
 	}
-	// Synthesize a label for downstream code when only status is set.
-	if interruptLabel == "" && bead.Status == "hooked" {
-		interruptLabel = "interrupted:hooked"
-	}
 
 	// 3. Count attempts and get latest result.
 	attemptCount, lastResult := countAttempts(beadID, deps)
@@ -56,6 +52,32 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 
 	// 4. Find alert beads and recovery bead via dependents (single query).
 	alertBeads, recoveryBead := findLinkedBeads(beadID, deps)
+
+	// For hooked beads without an interrupted:* label, require failure evidence
+	// (a recovery bead or alert beads). Approval/design gates are hooked but
+	// have no failure artifacts — those are not recoverable.
+	if interruptLabel == "" && bead.Status == "hooked" {
+		if recoveryBead != nil {
+			// Recovery bead exists — real failure. Use alert label for classification if available.
+			interruptLabel = "interrupted:hooked"
+			for _, a := range alertBeads {
+				if strings.HasPrefix(a.Label, "alert:") {
+					interruptLabel = "interrupted:" + strings.TrimPrefix(a.Label, "alert:")
+					break
+				}
+			}
+		} else if len(alertBeads) > 0 {
+			// Alert beads but no recovery bead — still failure evidence.
+			if strings.HasPrefix(alertBeads[0].Label, "alert:") {
+				interruptLabel = "interrupted:" + strings.TrimPrefix(alertBeads[0].Label, "alert:")
+			} else {
+				interruptLabel = "interrupted:hooked"
+			}
+		} else {
+			// No failure evidence — this is an approval gate or design wait, not a failure.
+			return nil, fmt.Errorf("bead %s is hooked but has no failure evidence (no recovery or alert beads) — likely an approval gate, not recoverable", beadID)
+		}
+	}
 
 	// 5. Load executor state (best-effort).
 	var runtime *RuntimeState

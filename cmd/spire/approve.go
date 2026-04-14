@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/spf13/cobra"
@@ -98,21 +99,28 @@ func cmdApprove(beadID, comment string) error {
 		fmt.Fprintf(os.Stderr, "  (note: could not add approval comment to %s: %s)\n", beadID, err)
 	}
 
-	// Update graph state: reset the approval step to pending and bump CompletedCount
+	// Update graph state: reset ONLY the approved step to pending and bump CompletedCount
 	// so actionHumanApprove sees CompletedCount > 0 and returns approved.
+	// Derive the graph step name from the step bead's label (e.g., "step:human.approve" → "human.approve").
+	approvedStepName := ""
+	for _, l := range approvalStep.Labels {
+		if strings.HasPrefix(l, "step:") {
+			approvedStepName = strings.TrimPrefix(l, "step:")
+			break
+		}
+	}
 	wizardName := "wizard-" + beadID
-	if gs, gsErr := loadGraphStateForApprove(wizardName); gsErr == nil && gs != nil {
-		// Find the step name from the step bead's title (e.g., "step:human.approve").
-		for stepName, ss := range gs.Steps {
-			if ss.Status == "hooked" {
+	if approvedStepName != "" {
+		if gs, gsErr := loadGraphStateForApprove(wizardName); gsErr == nil && gs != nil {
+			if ss, ok := gs.Steps[approvedStepName]; ok && ss.Status == "hooked" {
 				ss.Status = "pending"
 				ss.CompletedCount++
-				gs.Steps[stepName] = ss
+				gs.Steps[approvedStepName] = ss
 			}
-		}
-		gs.ActiveStep = ""
-		if saveErr := saveGraphStateForApprove(wizardName, gs); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "  (note: could not update graph state: %s)\n", saveErr)
+			gs.ActiveStep = ""
+			if saveErr := saveGraphStateForApprove(wizardName, gs); saveErr != nil {
+				fmt.Fprintf(os.Stderr, "  (note: could not update graph state: %s)\n", saveErr)
+			}
 		}
 	}
 

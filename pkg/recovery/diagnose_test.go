@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -719,17 +720,46 @@ func TestDiagnose_NoRecoveryBead(t *testing.T) {
 	}
 }
 
-// TestDiagnose_HookedBead_NoInterruptLabel verifies that Diagnose accepts a bead
-// with status=hooked and no interrupted:* labels, synthesizing "interrupted:hooked"
-// for downstream classification.
-func TestDiagnose_HookedBead_NoInterruptLabel(t *testing.T) {
+// TestDiagnose_HookedBeadWithoutFailureEvidence_IsNotRecoverable verifies that
+// a hooked bead with no recovery bead, no alert beads, and no interrupted:* label
+// is rejected — it's an approval gate or design wait, not a failure.
+func TestDiagnose_HookedBeadWithoutFailureEvidence_IsNotRecoverable(t *testing.T) {
 	deps := mockDeps()
 	deps.GetBead = func(id string) (DepBead, error) {
 		return DepBead{
 			ID:     id,
-			Title:  "Hooked bead without interrupt label",
+			Title:  "Hooked approval gate",
 			Status: "hooked",
-			Labels: []string{"phase:implement"}, // no interrupted:* label
+			Labels: []string{"phase:implement"},
+		}, nil
+	}
+
+	_, err := Diagnose("spi-hooked", deps)
+	if err == nil {
+		t.Fatal("expected error for hooked bead with no failure evidence")
+	}
+	if !strings.Contains(err.Error(), "no failure evidence") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestDiagnose_HookedBeadWithRecoveryBead_UsesFailureClass verifies that a hooked
+// bead with a linked recovery bead and alert bead classifies using the alert label.
+func TestDiagnose_HookedBeadWithRecoveryBead_UsesFailureClass(t *testing.T) {
+	deps := mockDeps()
+	deps.GetBead = func(id string) (DepBead, error) {
+		return DepBead{
+			ID:     id,
+			Title:  "Hooked bead with recovery",
+			Status: "hooked",
+			Labels: []string{"phase:implement"},
+		}, nil
+	}
+	deps.GetDependentsWithMeta = func(id string) ([]DepDependent, error) {
+		return []DepDependent{
+			{ID: "spi-rec1", Title: "recovery", Status: "open", DependencyType: "recovery-for"},
+			{ID: "spi-alert1", Title: "alert", Status: "open", DependencyType: "caused-by",
+				Labels: []string{"alert:step-failure"}},
 		}, nil
 	}
 
@@ -737,24 +767,28 @@ func TestDiagnose_HookedBead_NoInterruptLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Diagnose returned error: %v", err)
 	}
+	if diag.InterruptLabel != "interrupted:step-failure" {
+		t.Errorf("expected InterruptLabel=%q, got %q", "interrupted:step-failure", diag.InterruptLabel)
+	}
+	if diag.RecoveryBead == nil {
+		t.Error("expected RecoveryBead to be set")
+	}
+}
 
-	// The synthesized interrupt label should be "interrupted:hooked".
-	if diag.InterruptLabel != "interrupted:hooked" {
-		t.Errorf("expected InterruptLabel=%q, got %q", "interrupted:hooked", diag.InterruptLabel)
+// TestDiagnose_HookedApprovalGate_DoesNotOfferRecoveryActions verifies that
+// a normal parked approval wait (hooked, no failure artifacts) is not recoverable.
+func TestDiagnose_HookedApprovalGate_DoesNotOfferRecoveryActions(t *testing.T) {
+	deps := mockDeps()
+	deps.GetBead = func(id string) (DepBead, error) {
+		return DepBead{
+			ID:     id,
+			Title:  "Waiting for approval",
+			Status: "hooked",
+		}, nil
 	}
 
-	// Status should reflect the bead's actual status.
-	if diag.Status != "hooked" {
-		t.Errorf("expected Status=%q, got %q", "hooked", diag.Status)
-	}
-
-	// Phase should still be extracted from labels.
-	if diag.Phase != "implement" {
-		t.Errorf("expected Phase=%q, got %q", "implement", diag.Phase)
-	}
-
-	// Actions should be populated (not empty).
-	if len(diag.Actions) == 0 {
-		t.Fatal("expected at least one recovery action")
+	_, err := Diagnose("spi-approval", deps)
+	if err == nil {
+		t.Fatal("expected error — approval gates should not be recoverable")
 	}
 }
