@@ -24,18 +24,24 @@ type Bead = store.Bead
 type LocalAgent = agent.Entry
 
 // Columns holds beads categorized into board columns.
+// Categorization is purely status-based: open/deferred→Backlog, ready→Ready,
+// in_progress→InProgress, hooked→Hooked, closed→Done.
+// The legacy phase fields (Design, Plan, Implement, Review, Merge) are retained
+// for compilation compatibility with fetch.go/search.go but are no longer populated
+// by the categorization functions.
 type Columns struct {
-	Alerts    []BoardBead
-	Hooked    []BoardBead // beads with status='hooked' (waiting for human/external condition)
-	Backlog   []BoardBead // open + deferred beads (not yet ready for agents)
-	Ready     []BoardBead
-	Design    []BoardBead
-	Plan      []BoardBead
-	Implement []BoardBead
-	Review    []BoardBead
-	Merge     []BoardBead
-	Done      []BoardBead
-	Blocked   []BoardBead
+	Alerts     []BoardBead
+	Hooked     []BoardBead // beads with status='hooked' (waiting for human/external condition)
+	Backlog    []BoardBead // open + deferred beads (not yet ready for agents)
+	Ready      []BoardBead
+	InProgress []BoardBead // all in_progress beads (regardless of phase)
+	Design     []BoardBead // legacy — no longer populated by categorization
+	Plan       []BoardBead // legacy — no longer populated by categorization
+	Implement  []BoardBead // legacy — no longer populated by categorization
+	Review     []BoardBead // legacy — no longer populated by categorization
+	Merge      []BoardBead // legacy — no longer populated by categorization
+	Done       []BoardBead
+	Blocked    []BoardBead
 }
 
 // RecoveryRef is an alias for recovery.RecoveryRef, avoiding duplicate definitions.
@@ -69,17 +75,18 @@ type BoardJSON struct {
 
 // ColumnsJSON is the JSON-serializable version of Columns.
 type ColumnsJSON struct {
-	Alerts    []BoardBeadJSON `json:"alerts"`
-	Hooked    []BoardBeadJSON `json:"hooked"`
-	Backlog   []BoardBeadJSON `json:"backlog"`
-	Ready     []BoardBeadJSON `json:"ready"`
-	Design    []BoardBeadJSON `json:"design"`
-	Plan      []BoardBeadJSON `json:"plan"`
-	Implement []BoardBeadJSON `json:"implement"`
-	Review    []BoardBeadJSON `json:"review"`
-	Merge     []BoardBeadJSON `json:"merge"`
-	Done      []BoardBeadJSON `json:"done"`
-	Blocked   []BoardBeadJSON `json:"blocked"`
+	Alerts     []BoardBeadJSON `json:"alerts"`
+	Hooked     []BoardBeadJSON `json:"hooked"`
+	Backlog    []BoardBeadJSON `json:"backlog"`
+	Ready      []BoardBeadJSON `json:"ready"`
+	InProgress []BoardBeadJSON `json:"in_progress"`
+	Design     []BoardBeadJSON `json:"design"`
+	Plan       []BoardBeadJSON `json:"plan"`
+	Implement  []BoardBeadJSON `json:"implement"`
+	Review     []BoardBeadJSON `json:"review"`
+	Merge      []BoardBeadJSON `json:"merge"`
+	Done       []BoardBeadJSON `json:"done"`
+	Blocked    []BoardBeadJSON `json:"blocked"`
 }
 
 // Opts holds board command options shared between JSON output and TUI mode.
@@ -292,17 +299,18 @@ func (c Columns) ToJSON(recoveryRefs map[string]*RecoveryRef) ColumnsJSON {
 		return nonNilJSON(enrichBeadsJSON(NonNil(beads)))
 	}
 	cj := ColumnsJSON{
-		Alerts:    enrich(c.Alerts),
-		Hooked:    enrich(c.Hooked),
-		Backlog:   enrich(c.Backlog),
-		Ready:     enrich(c.Ready),
-		Design:    enrich(c.Design),
-		Plan:      enrich(c.Plan),
-		Implement: enrich(c.Implement),
-		Review:    enrich(c.Review),
-		Merge:     enrich(c.Merge),
-		Done:      enrich(c.Done),
-		Blocked:   enrich(c.Blocked),
+		Alerts:     enrich(c.Alerts),
+		Hooked:     enrich(c.Hooked),
+		Backlog:    enrich(c.Backlog),
+		Ready:      enrich(c.Ready),
+		InProgress: enrich(c.InProgress),
+		Design:     enrich(c.Design),
+		Plan:       enrich(c.Plan),
+		Implement:  enrich(c.Implement),
+		Review:     enrich(c.Review),
+		Merge:      enrich(c.Merge),
+		Done:       enrich(c.Done),
+		Blocked:    enrich(c.Blocked),
 	}
 	// Enrich hooked beads with pre-fetched recovery refs.
 	if recoveryRefs != nil {
@@ -388,6 +396,13 @@ func RunBoard(opts Opts, identity string, fetchAgents func() []LocalAgent, actio
 	return nil
 }
 
+// Additional PendingAction constants added alongside the iota block in tui.go.
+// Values must not collide with the iota sequence (0–17 as of ActionApproveGate).
+const (
+	ActionComment PendingAction = 18 + iota // add a comment to a bead (inline via tea.Cmd)
+	ActionResume                            // resume a hooked bead (clear hooked status, inline via tea.Cmd)
+)
+
 // parsePendingAction converts a string action name to a PendingAction.
 func parsePendingAction(s string) PendingAction {
 	switch strings.ToLower(s) {
@@ -407,6 +422,10 @@ func parsePendingAction(s string) PendingAction {
 		return ActionGrok
 	case "trace":
 		return ActionTrace
+	case "comment":
+		return ActionComment
+	case "resume":
+		return ActionResume
 	default:
 		return ActionNone
 	}

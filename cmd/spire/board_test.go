@@ -219,16 +219,16 @@ func TestShortTypeDecision(t *testing.T) {
 
 func TestAllColumnsIncludesEmpty(t *testing.T) {
 	cols := board.Columns{
-		Ready:     []BoardBead{{ID: "spi-1", Type: "task"}},
-		Implement: []BoardBead{{ID: "spi-2", Type: "task"}},
+		Ready:      []BoardBead{{ID: "spi-1", Type: "task"}},
+		InProgress: []BoardBead{{ID: "spi-2", Type: "task"}},
 	}
 	active := board.ActiveColumns(cols)
 	all := board.AllColumns(cols)
 	if len(active) != 2 {
 		t.Fatalf("expected 2 active columns, got %d", len(active))
 	}
-	if len(all) != 8 {
-		t.Fatalf("expected 8 total columns, got %d", len(all))
+	if len(all) != 4 {
+		t.Fatalf("expected 4 total columns, got %d", len(all))
 	}
 }
 
@@ -244,15 +244,15 @@ func TestShowAllColsToggle(t *testing.T) {
 		t.Fatalf("expected 1 display column with ShowAllCols=false, got %d", len(display))
 	}
 
-	// Toggle on: all phase columns
+	// Toggle on: all status columns (BACKLOG, READY, IN PROGRESS, DONE)
 	m.ShowAllCols = true
 	display = m.DisplayColumns()
-	if len(display) != 8 {
-		t.Fatalf("expected 8 display columns with ShowAllCols=true, got %d", len(display))
+	if len(display) != 4 {
+		t.Fatalf("expected 4 display columns with ShowAllCols=true, got %d", len(display))
 	}
 
 	// Selection should work with empty columns
-	m.SelCol = 4 // IMPLEMENT (empty)
+	m.SelCol = 2 // IN PROGRESS (empty)
 	m.ClampSelection()
 	bead := m.SelectedBead()
 	if bead != nil {

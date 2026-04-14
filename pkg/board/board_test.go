@@ -47,7 +47,7 @@ func makeBoardMode() *BoardMode {
 			{ID: "spi-001", Title: "First task", Status: "open", Type: "task", Priority: 1, Labels: []string{"team:alpha"}},
 			{ID: "spi-002", Title: "Second bug", Status: "open", Type: "bug", Priority: 2, Labels: []string{"team:beta"}},
 		},
-		Implement: []BoardBead{
+		InProgress: []BoardBead{
 			{ID: "spi-003", Title: "Implement feature", Status: "in_progress", Type: "feature", Priority: 1},
 			{ID: "spi-004", Title: "Implement task", Status: "in_progress", Type: "task", Priority: 2},
 			{ID: "spi-005", Title: "Implement epic", Status: "in_progress", Type: "epic", Priority: 0},
@@ -752,7 +752,7 @@ func TestKeybindingDispatch(t *testing.T) {
 
 	t.Run("gg jumps to top", func(t *testing.T) {
 		m := makeBoardMode()
-		m.SelCol = 1 // Implement column with 3 beads
+		m.SelCol = 1 // InProgress column with 3 beads (ActiveColumns: Ready=0, InProgress=1, Done=2)
 		m.SelCard = 2
 		m.ColScroll = 1
 		m = updateBoardMode(m, keyMsg('g'))
@@ -787,7 +787,7 @@ func TestKeybindingDispatch(t *testing.T) {
 
 	t.Run("G jumps to bottom", func(t *testing.T) {
 		m := makeBoardMode()
-		m.SelCol = 1 // Implement column with 3 beads
+		m.SelCol = 1 // InProgress column with 3 beads (ActiveColumns: Ready=0, InProgress=1, Done=2)
 		m.SelCard = 0
 		m = updateBoardMode(m, keyMsg('G'))
 		if m.SelCard != 2 {
@@ -1446,7 +1446,7 @@ func TestHookedBeadCategorization(t *testing.T) {
 	})
 
 	t.Run("non-hooked bead is NOT routed to Hooked", func(t *testing.T) {
-		// Design approval gate: needs-human alone should stay in normal phase routing.
+		// in_progress bead with needs-human label should go to InProgress, not Hooked.
 		open := []BoardBead{
 			{ID: "spi-design", Title: "Design review", Status: "in_progress", Type: "design", Priority: 1,
 				Labels: []string{"needs-human", "phase:design"}},
@@ -1454,10 +1454,10 @@ func TestHookedBeadCategorization(t *testing.T) {
 		phaseMap := map[string]string{"spi-design": "design"}
 		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
 		if len(cols.Hooked) != 0 {
-			t.Errorf("design bead with needs-human should NOT be in Hooked, got: %v", cols.Hooked)
+			t.Errorf("in_progress bead with needs-human should NOT be in Hooked, got: %v", cols.Hooked)
 		}
-		if len(cols.Design) != 1 {
-			t.Errorf("design bead should be in Design column, got: %v", cols.Design)
+		if len(cols.InProgress) != 1 {
+			t.Errorf("in_progress bead should be in InProgress column, got: %v", cols.InProgress)
 		}
 	})
 
@@ -1471,8 +1471,8 @@ func TestHookedBeadCategorization(t *testing.T) {
 		if len(cols.Hooked) != 1 || cols.Hooked[0].ID != "spi-stuck" {
 			t.Errorf("hooked bead should be in Hooked, got: %v", cols.Hooked)
 		}
-		if len(cols.Implement) != 0 {
-			t.Errorf("hooked bead should NOT be in Implement, got: %v", cols.Implement)
+		if len(cols.InProgress) != 0 {
+			t.Errorf("hooked bead should NOT be in InProgress, got: %v", cols.InProgress)
 		}
 	})
 
@@ -1485,8 +1485,12 @@ func TestHookedBeadCategorization(t *testing.T) {
 		if len(cols.Hooked) != 1 || cols.Hooked[0].ID != "spi-fail" {
 			t.Errorf("expected spi-fail in Hooked, got: %v", cols.Hooked)
 		}
+		if len(cols.InProgress) != 0 {
+			t.Errorf("hooked bead should NOT be in InProgress, got: %v", cols.InProgress)
+		}
+		// Legacy phase fields should be empty.
 		if len(cols.Review) != 0 {
-			t.Errorf("hooked bead should NOT be in Review, got: %v", cols.Review)
+			t.Errorf("legacy Review should be empty, got: %v", cols.Review)
 		}
 	})
 }
@@ -1749,11 +1753,7 @@ func TestCategorizeColumnsFromStore_ParentFiltering(t *testing.T) {
 		}{
 			{"Backlog", cols.Backlog},
 			{"Ready", cols.Ready},
-			{"Design", cols.Design},
-			{"Plan", cols.Plan},
-			{"Implement", cols.Implement},
-			{"Review", cols.Review},
-			{"Merge", cols.Merge},
+			{"InProgress", cols.InProgress},
 			{"Done", cols.Done},
 			{"Blocked", cols.Blocked},
 			{"Alerts", cols.Alerts},
@@ -1813,11 +1813,7 @@ func TestCategorizeWithPhases_ParentFiltering(t *testing.T) {
 		}{
 			{"Backlog", cols.Backlog},
 			{"Ready", cols.Ready},
-			{"Design", cols.Design},
-			{"Plan", cols.Plan},
-			{"Implement", cols.Implement},
-			{"Review", cols.Review},
-			{"Merge", cols.Merge},
+			{"InProgress", cols.InProgress},
 			{"Done", cols.Done},
 			{"Blocked", cols.Blocked},
 			{"Alerts", cols.Alerts},
@@ -1830,19 +1826,19 @@ func TestCategorizeWithPhases_ParentFiltering(t *testing.T) {
 			}
 		}
 
-		// The epic itself and top-level task should still appear in Implement.
-		if len(cols.Implement) != 2 {
-			t.Fatalf("expected 2 beads in Implement, got %d", len(cols.Implement))
+		// The epic itself and top-level task should still appear in InProgress.
+		if len(cols.InProgress) != 2 {
+			t.Fatalf("expected 2 beads in InProgress, got %d", len(cols.InProgress))
 		}
-		implIDs := map[string]bool{}
-		for _, b := range cols.Implement {
-			implIDs[b.ID] = true
+		ipIDs := map[string]bool{}
+		for _, b := range cols.InProgress {
+			ipIDs[b.ID] = true
 		}
-		if !implIDs["spi-epic"] {
-			t.Error("epic bead spi-epic should appear in Implement")
+		if !ipIDs["spi-epic"] {
+			t.Error("epic bead spi-epic should appear in InProgress")
 		}
-		if !implIDs["spi-top"] {
-			t.Error("top-level bead spi-top should appear in Implement")
+		if !ipIDs["spi-top"] {
+			t.Error("top-level bead spi-top should appear in InProgress")
 		}
 	})
 }

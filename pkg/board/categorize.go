@@ -17,16 +17,12 @@ type ColDef struct {
 	Beads []BoardBead
 }
 
-// AllColumns returns all phase columns in board display order, including empty ones.
+// AllColumns returns all status-based columns in board display order, including empty ones.
 func AllColumns(cols Columns) []ColDef {
 	return []ColDef{
 		{"BACKLOG", lipgloss.Color("8"), cols.Backlog},
 		{"READY", lipgloss.Color("2"), cols.Ready},
-		{"DESIGN", lipgloss.Color("4"), cols.Design},
-		{"PLAN", lipgloss.Color("6"), cols.Plan},
-		{"IMPLEMENT", lipgloss.Color("6"), cols.Implement},
-		{"REVIEW", lipgloss.Color("3"), cols.Review},
-		{"MERGE", lipgloss.Color("5"), cols.Merge},
+		{"IN PROGRESS", lipgloss.Color("6"), cols.InProgress},
 		{"DONE", lipgloss.Color("8"), cols.Done},
 	}
 }
@@ -101,6 +97,7 @@ func isHookedBead(b BoardBead) bool {
 }
 
 // CategorizeColumnsFromStore builds board columns from store API results.
+// Categorization is purely status-based — no phase or label routing.
 // blockedBeads come from GetBlockedIssues and already have blocker metadata.
 func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead, identity string) Columns {
 	var c Columns
@@ -125,51 +122,26 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		if blockedIDs[b.ID] {
 			continue
 		}
-		// Hooked beads get their own section — they are parked waiting for a condition.
-		if isHookedBead(b) {
-			c.Hooked = append(c.Hooked, b)
-			continue
-		}
 
-		// Deferred beads land in Backlog (sorted to bottom by SortBeads).
-		if b.Status == "deferred" {
+		switch b.Status {
+		case "hooked":
+			c.Hooked = append(c.Hooked, b)
+		case "deferred":
 			if isWorkBoardBead(b) {
 				c.Backlog = append(c.Backlog, b)
 			}
-			continue
-		}
-
-		// Non-work beads (internal types or epic children) are managed
-		// elsewhere — skip them from phase columns and ready.
-		if !isWorkBoardBead(b) {
-			continue
-		}
-
-		// Open beads go to Backlog; ready beads go to Ready.
-		// In-progress beads route by phase label.
-		if b.Status == "open" {
-			c.Backlog = append(c.Backlog, b)
-			continue
-		}
-		if b.Status == "ready" {
-			c.Ready = append(c.Ready, b)
-			continue
-		}
-
-		phase := GetBoardBeadPhase(b)
-		switch {
-		case phase == "design":
-			c.Design = append(c.Design, b)
-		case phase == "plan":
-			c.Plan = append(c.Plan, b)
-		case phase == "implement":
-			c.Implement = append(c.Implement, b)
-		case strings.HasPrefix(phase, "review"):
-			c.Review = append(c.Review, b)
-		case phase == "merge":
-			c.Merge = append(c.Merge, b)
-		default:
-			c.Ready = append(c.Ready, b)
+		case "open":
+			if isWorkBoardBead(b) {
+				c.Backlog = append(c.Backlog, b)
+			}
+		case "ready":
+			if isWorkBoardBead(b) {
+				c.Ready = append(c.Ready, b)
+			}
+		case "in_progress":
+			if isWorkBoardBead(b) {
+				c.InProgress = append(c.InProgress, b)
+			}
 		}
 	}
 
@@ -187,8 +159,9 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 	return c
 }
 
-// CategorizeWithPhases builds board columns using a pre-computed phase map and blocked map
-// instead of making per-bead DB calls. Same logic as CategorizeColumnsFromStore.
+// CategorizeWithPhases builds board columns using a pre-computed blocked map.
+// Categorization is purely status-based — the phaseMap parameter is retained for
+// API compatibility but is no longer used for column routing.
 func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[string][]string, phaseMap map[string]string, identity string) Columns {
 	var c Columns
 
@@ -219,50 +192,26 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		if blockedIDs[b.ID] {
 			continue
 		}
-		if isHookedBead(b) {
-			c.Hooked = append(c.Hooked, b)
-			continue
-		}
 
-		// Deferred beads land in Backlog (sorted to bottom by SortBeads).
-		if b.Status == "deferred" {
+		switch b.Status {
+		case "hooked":
+			c.Hooked = append(c.Hooked, b)
+		case "deferred":
 			if isWorkBoardBead(b) {
 				c.Backlog = append(c.Backlog, b)
 			}
-			continue
-		}
-
-		// Non-work beads (internal types or epic children) are managed
-		// elsewhere — skip them from phase columns and ready.
-		if !isWorkBoardBead(b) {
-			continue
-		}
-
-		// Open beads go to Backlog; ready beads go to Ready.
-		// In-progress beads route by phase label.
-		if b.Status == "open" {
-			c.Backlog = append(c.Backlog, b)
-			continue
-		}
-		if b.Status == "ready" {
-			c.Ready = append(c.Ready, b)
-			continue
-		}
-
-		phase := phaseMap[b.ID]
-		switch {
-		case phase == "design":
-			c.Design = append(c.Design, b)
-		case phase == "plan":
-			c.Plan = append(c.Plan, b)
-		case phase == "implement":
-			c.Implement = append(c.Implement, b)
-		case strings.HasPrefix(phase, "review"):
-			c.Review = append(c.Review, b)
-		case phase == "merge":
-			c.Merge = append(c.Merge, b)
-		default:
-			c.Ready = append(c.Ready, b)
+		case "open":
+			if isWorkBoardBead(b) {
+				c.Backlog = append(c.Backlog, b)
+			}
+		case "ready":
+			if isWorkBoardBead(b) {
+				c.Ready = append(c.Ready, b)
+			}
+		case "in_progress":
+			if isWorkBoardBead(b) {
+				c.InProgress = append(c.InProgress, b)
+			}
 		}
 	}
 
@@ -294,8 +243,9 @@ func CapDone(cols *Columns, n int) {
 func FilterEpic(cols Columns, epicID string) Columns {
 	linkedIDs := make(map[string]bool)
 	allSlices := [][]BoardBead{
-		cols.Alerts, cols.Hooked, cols.Backlog, cols.Ready, cols.Design, cols.Plan,
-		cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked,
+		cols.Alerts, cols.Hooked, cols.Backlog, cols.Ready, cols.InProgress,
+		cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge,
+		cols.Done, cols.Blocked,
 	}
 
 	// Collect IDs of beads the epic depends on via discovered-from (design beads).
@@ -330,17 +280,18 @@ func FilterEpic(cols Columns, epicID string) Columns {
 		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".") || linkedIDs[b.ID]
 	}
 	return Columns{
-		Alerts:    FilterBeads(cols.Alerts, match),
-		Hooked:    FilterBeads(cols.Hooked, match),
-		Backlog:   FilterBeads(cols.Backlog, match),
-		Ready:     FilterBeads(cols.Ready, match),
-		Design:    FilterBeads(cols.Design, match),
-		Plan:      FilterBeads(cols.Plan, match),
-		Implement: FilterBeads(cols.Implement, match),
-		Review:    FilterBeads(cols.Review, match),
-		Merge:     FilterBeads(cols.Merge, match),
-		Done:      FilterBeads(cols.Done, match),
-		Blocked:   FilterBeads(cols.Blocked, match),
+		Alerts:     FilterBeads(cols.Alerts, match),
+		Hooked:     FilterBeads(cols.Hooked, match),
+		Backlog:    FilterBeads(cols.Backlog, match),
+		Ready:      FilterBeads(cols.Ready, match),
+		InProgress: FilterBeads(cols.InProgress, match),
+		Design:     FilterBeads(cols.Design, match),
+		Plan:       FilterBeads(cols.Plan, match),
+		Implement:  FilterBeads(cols.Implement, match),
+		Review:     FilterBeads(cols.Review, match),
+		Merge:      FilterBeads(cols.Merge, match),
+		Done:       FilterBeads(cols.Done, match),
+		Blocked:    FilterBeads(cols.Blocked, match),
 	}
 }
 
@@ -434,17 +385,18 @@ func FilterTypeScope(cols Columns, scope TypeScope) Columns {
 		return scope.Match(b)
 	}
 	return Columns{
-		Alerts:    FilterBeads(cols.Alerts, match),
-		Hooked:    FilterBeads(cols.Hooked, match),
-		Backlog:   FilterBeads(cols.Backlog, match),
-		Ready:     FilterBeads(cols.Ready, match),
-		Design:    FilterBeads(cols.Design, match),
-		Plan:      FilterBeads(cols.Plan, match),
-		Implement: FilterBeads(cols.Implement, match),
-		Review:    FilterBeads(cols.Review, match),
-		Merge:     FilterBeads(cols.Merge, match),
-		Done:      FilterBeads(cols.Done, match),
-		Blocked:   FilterBeads(cols.Blocked, match),
+		Alerts:     FilterBeads(cols.Alerts, match),
+		Hooked:     FilterBeads(cols.Hooked, match),
+		Backlog:    FilterBeads(cols.Backlog, match),
+		Ready:      FilterBeads(cols.Ready, match),
+		InProgress: FilterBeads(cols.InProgress, match),
+		Design:     FilterBeads(cols.Design, match),
+		Plan:       FilterBeads(cols.Plan, match),
+		Implement:  FilterBeads(cols.Implement, match),
+		Review:     FilterBeads(cols.Review, match),
+		Merge:      FilterBeads(cols.Merge, match),
+		Done:       FilterBeads(cols.Done, match),
+		Blocked:    FilterBeads(cols.Blocked, match),
 	}
 }
 

@@ -61,7 +61,7 @@ func TestCategorizeWithPhases_DeferredSortedAfterOpen(t *testing.T) {
 	}
 }
 
-func TestCategorizeWithPhases_InProgressRoutedByPhase(t *testing.T) {
+func TestCategorizeWithPhases_InProgressGoesToInProgress(t *testing.T) {
 	open := []BoardBead{
 		{ID: "spi-ip1", Title: "Implementing", Status: "in_progress", Type: "task", Priority: 1},
 		{ID: "spi-ip2", Title: "Designing", Status: "in_progress", Type: "task", Priority: 1},
@@ -71,11 +71,9 @@ func TestCategorizeWithPhases_InProgressRoutedByPhase(t *testing.T) {
 		"spi-ip2": "design",
 	}
 	cols := CategorizeWithPhases(open, nil, nil, phases, "me")
-	if len(cols.Implement) != 1 || cols.Implement[0].ID != "spi-ip1" {
-		t.Errorf("expected spi-ip1 in Implement, got %v", cols.Implement)
-	}
-	if len(cols.Design) != 1 || cols.Design[0].ID != "spi-ip2" {
-		t.Errorf("expected spi-ip2 in Design, got %v", cols.Design)
+	// All in_progress beads go to InProgress regardless of phase.
+	if len(cols.InProgress) != 2 {
+		t.Errorf("expected 2 beads in InProgress, got %v", cols.InProgress)
 	}
 	if len(cols.Backlog) != 0 {
 		t.Errorf("expected no beads in Backlog, got %v", cols.Backlog)
@@ -134,8 +132,8 @@ func TestCategorizeWithPhases_MixedStatuses(t *testing.T) {
 	if len(cols.Ready) != 1 || cols.Ready[0].ID != "spi-b" {
 		t.Errorf("expected spi-b in Ready, got %v", cols.Ready)
 	}
-	if len(cols.Implement) != 1 || cols.Implement[0].ID != "spi-d" {
-		t.Errorf("expected spi-d in Implement, got %v", cols.Implement)
+	if len(cols.InProgress) != 1 || cols.InProgress[0].ID != "spi-d" {
+		t.Errorf("expected spi-d in InProgress, got %v", cols.InProgress)
 	}
 	if len(cols.Done) != 1 || cols.Done[0].ID != "spi-e" {
 		t.Errorf("expected spi-e in Done, got %v", cols.Done)
