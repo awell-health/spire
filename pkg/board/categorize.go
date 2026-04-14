@@ -273,15 +273,17 @@ func CapDone(cols *Columns, n int) {
 }
 
 // FilterEpic filters columns to only contain beads matching the epic ID, its
-// children, and beads linked via discovered-from dependencies (e.g. design beads).
+// children, beads linked via discovered-from dependencies (e.g. design beads),
+// and beads that depend on the epic (e.g. alert and recovery beads via caused-by).
 func FilterEpic(cols Columns, epicID string) Columns {
-	// Collect IDs of beads linked to the epic via discovered-from deps.
-	// Scan all columns to find the epic bead and read its dependencies.
 	linkedIDs := make(map[string]bool)
-	for _, slice := range [][]BoardBead{
+	allSlices := [][]BoardBead{
 		cols.Alerts, cols.Interrupted, cols.Ready, cols.Design, cols.Plan,
 		cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked,
-	} {
+	}
+
+	// Collect IDs of beads the epic depends on via discovered-from (design beads).
+	for _, slice := range allSlices {
 		for _, b := range slice {
 			if b.ID == epicID {
 				for _, dep := range b.Dependencies {
@@ -290,6 +292,20 @@ func FilterEpic(cols Columns, epicID string) Columns {
 					}
 				}
 				break
+			}
+		}
+	}
+
+	// Collect beads that depend on the epic (reverse refs). This catches
+	// alert beads (caused-by), recovery beads, and other beads linked to
+	// the epic that don't use the parent field.
+	for _, slice := range allSlices {
+		for _, b := range slice {
+			for _, dep := range b.Dependencies {
+				if dep.DependsOnID == epicID {
+					linkedIDs[b.ID] = true
+					break
+				}
 			}
 		}
 	}
