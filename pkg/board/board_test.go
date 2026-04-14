@@ -431,7 +431,7 @@ func TestBoardModeFooterHints(t *testing.T) {
 		m := makeBoardMode()
 		m.ViewMode = ViewBoard
 		hints := m.FooterHints()
-		for _, want := range []string{"summon", "defer", "close", "reset", "actions", "search"} {
+		for _, want := range []string{"summon", "ready", "defer", "approve", "comment", "actions", "search"} {
 			if !strings.Contains(hints, want) {
 				t.Errorf("ViewBoard hints missing %q, got %q", want, hints)
 			}
@@ -442,7 +442,7 @@ func TestBoardModeFooterHints(t *testing.T) {
 		m := makeBoardMode()
 		m.ViewMode = ViewAlerts
 		hints := m.FooterHints()
-		for _, want := range []string{"summon", "close", "defer", "actions", "inspect"} {
+		for _, want := range []string{"summon", "defer", "actions", "comment", "inspect"} {
 			if !strings.Contains(hints, want) {
 				t.Errorf("ViewAlerts hints missing %q, got %q", want, hints)
 			}
@@ -453,7 +453,7 @@ func TestBoardModeFooterHints(t *testing.T) {
 		m := makeBoardMode()
 		m.ViewMode = ViewLower
 		hints := m.FooterHints()
-		for _, want := range []string{"v=view", "o resolve", "reset", "resummon", "close", "actions", "inspect"} {
+		for _, want := range []string{"v=view", "summon", "approve", "comment", "actions", "inspect"} {
 			if !strings.Contains(hints, want) {
 				t.Errorf("ViewLower hints missing %q, got %q", want, hints)
 			}

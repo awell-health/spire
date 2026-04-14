@@ -16,13 +16,9 @@ const (
 	DangerDestructive                     // red highlight + confirmation
 )
 
-// Action constants defined locally — these supplement the PendingAction
-// constants in tui.go. Explicit values avoid iota conflicts with the main enum.
-const (
-	ActionComment PendingAction = iota + 100
-	ActionResume
-	ActionReady
-)
+// ActionReady supplements the PendingAction constants in tui.go and board.go.
+// Explicit value avoids iota conflicts with the main enum.
+const ActionReady PendingAction = 20
 
 // MenuAction represents a single item in the action menu popup.
 type MenuAction struct {

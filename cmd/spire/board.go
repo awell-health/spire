@@ -335,6 +335,10 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 			return fmt.Errorf("defer: cannot toggle bead in status %q", b.Status)
 		}
 		return storeUpdateBead(beadID, map[string]interface{}{"status": newStatus})
+	case board.ActionReady:
+		return storeUpdateBead(beadID, map[string]interface{}{"status": "ready"})
+	case board.ActionResume:
+		return cmdApprove(beadID, "")
 	}
 	return fmt.Errorf("unknown inline action: %d", action)
 }

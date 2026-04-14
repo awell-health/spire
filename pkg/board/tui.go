@@ -120,6 +120,11 @@ type BoardMode struct {
 	FeedbackInput   string // current text
 	FeedbackBeadID  string // bead to add the comment to
 
+	// Comment input state for adding comments to beads.
+	CommentActive bool   // true when comment text input is shown
+	CommentInput  string // current text
+	CommentBeadID string // bead to add the comment to
+
 	// Resolve input state for needs-human bead resolution.
 	ResolveFn      func(beadID, comment string) error
 	ResolveActive  bool
@@ -499,7 +504,8 @@ func (m *BoardMode) HandleTowerChanged(tc TowerChanged) tea.Cmd {
 func (m *BoardMode) HasOverlay() bool {
 	return m.Inspecting || m.ActionMenuOpen || m.TowerSwitcherOpen ||
 		m.ConfirmOpen || m.TermOpen || m.SearchActive ||
-		m.Cmdline.Active || m.FeedbackActive || m.ResolveActive
+		m.Cmdline.Active || m.FeedbackActive || m.ResolveActive ||
+		m.CommentActive
 }
 
 // FooterHints implements Mode. Returns context-sensitive keybinding hints
@@ -515,6 +521,9 @@ func (m *BoardMode) FooterHints() string {
 	if m.ActionMenuOpen {
 		return "j/k navigate  enter select  esc close"
 	}
+	if m.CommentActive {
+		return "type comment  enter submit  esc cancel"
+	}
 	if m.SearchActive {
 		return "type to filter  enter accept  esc clear"
 	}
@@ -527,11 +536,11 @@ func (m *BoardMode) FooterHints() string {
 
 	switch m.ViewMode {
 	case ViewAlerts:
-		return "v=view  s summon  x close  d defer  a actions  enter inspect  / search"
+		return "v=view  s summon  d defer  a actions  c comment  enter inspect  / search"
 	case ViewLower:
-		return "v=view  o resolve  r reset  S resummon  x close  a actions  enter inspect"
+		return "v=view  s summon  y approve  c comment  a actions  enter inspect"
 	default: // ViewBoard
-		return "v=view  s summon  d defer  x close  r reset  a actions  / search  ? help"
+		return "v=view  s summon  r ready  d defer  y approve  c comment  a actions  / search"
 	}
 }
 
@@ -597,6 +606,10 @@ func actionLabel(a PendingAction) string {
 		return "Resolve"
 	case ActionApproveGate:
 		return "Approve gate"
+	case ActionReady:
+		return "Ready"
+	case ActionResume:
+		return "Resume"
 	default:
 		return "Action"
 	}
@@ -632,7 +645,7 @@ func (m *BoardMode) updateCmdline(msg tea.KeyMsg) (Mode, tea.Cmd) {
 // isInlineAction returns true if the action should execute within the TUI.
 func isInlineAction(a PendingAction) bool {
 	switch a {
-	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionClose, ActionApprove, ActionApproveDesign, ActionApproveGate, ActionDefer:
+	case ActionSummon, ActionResummon, ActionUnsummon, ActionResetSoft, ActionResetHard, ActionGrok, ActionClose, ActionApprove, ActionApproveDesign, ActionApproveGate, ActionDefer, ActionReady, ActionResume:
 		return true
 	}
 	return false
@@ -814,6 +827,12 @@ type rejectDesignResultMsg struct {
 	Err    error
 }
 
+// commentResultMsg carries the result of a comment action.
+type commentResultMsg struct {
+	BeadID string
+	Err    error
+}
+
 // resolveResultMsg carries the result of a resolve action.
 type resolveResultMsg struct {
 	BeadID string
@@ -863,6 +882,48 @@ func (m *BoardMode) updateFeedbackInput(msg tea.KeyMsg) (Mode, tea.Cmd) {
 	default:
 		if len(msg.String()) == 1 && msg.String()[0] >= 32 {
 			m.FeedbackInput += msg.String()
+		}
+		return m, nil
+	}
+}
+
+// updateCommentInput handles keypresses in the comment text input mode.
+func (m *BoardMode) updateCommentInput(msg tea.KeyMsg) (Mode, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.CommentActive = false
+		m.CommentInput = ""
+		m.CommentBeadID = ""
+		return m, nil
+	case "enter":
+		text := strings.TrimSpace(m.CommentInput)
+		if text == "" {
+			m.ActionStatus = "Comment text required"
+			m.ActionStatusTime = time.Now()
+			return m, nil
+		}
+		beadID := m.CommentBeadID
+		m.CommentActive = false
+		m.CommentInput = ""
+		m.CommentBeadID = ""
+		m.ActionRunning = true
+		m.ActionStatus = "Adding comment..."
+		m.ActionStatusTime = time.Now()
+		return m, func() tea.Msg {
+			err := store.AddComment(beadID, text)
+			return commentResultMsg{BeadID: beadID, Err: err}
+		}
+	case "backspace":
+		if len(m.CommentInput) > 0 {
+			m.CommentInput = m.CommentInput[:len(m.CommentInput)-1]
+		}
+		return m, nil
+	case "ctrl+u":
+		m.CommentInput = ""
+		return m, nil
+	default:
+		if len(msg.String()) == 1 && msg.String()[0] >= 32 {
+			m.CommentInput += msg.String()
 		}
 		return m, nil
 	}
@@ -1120,6 +1181,11 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				}
 				return m, nil
 			}
+		}
+
+		// Comment input mode: absorb all keys.
+		if m.CommentActive {
+			return m.updateCommentInput(msg)
 		}
 
 		// Inspector mode: handle keys differently.
@@ -1412,11 +1478,17 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			m.ShowAllCols = !m.ShowAllCols
 			m.ClampSelection()
 
-		// Summon wizard — inline.
+		// Summon wizard — inline (only for open/ready/hooked beads).
 		case "s":
 			if bead := m.SelectedBead(); bead != nil {
-				mm, cmd := m.dispatchInlineAction(ActionSummon, bead.ID)
-				return mm, cmd
+				switch bead.Status {
+				case "open", "ready", "hooked":
+					mm, cmd := m.dispatchInlineAction(ActionSummon, bead.ID)
+					return mm, cmd
+				default:
+					m.ActionStatus = fmt.Sprintf("Cannot summon: bead is %s", bead.Status)
+					m.ActionStatusTime = time.Now()
+				}
 			}
 
 		// Unsummon wizard — confirm, then inline (only if bead has a wizard).
@@ -1455,15 +1527,11 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				return m, fetchInspectorCmd(*bead)
 			}
 
-		// Reset — confirm, then inline.
+		// Ready — set status to ready (only for open beads).
 		case "r":
-			if bead := m.SelectedBead(); bead != nil && bead.Status == "in_progress" {
-				m.ConfirmOpen = true
-				m.ConfirmAction = ActionResetSoft
-				m.ConfirmBeadID = bead.ID
-				m.ConfirmPrompt = confirmPromptForAction(ActionResetSoft, bead.ID, bead.Title)
-				m.ConfirmDanger = DangerConfirm
-				return m, nil
+			if bead := m.SelectedBead(); bead != nil && bead.Status == "open" {
+				mm, cmd := m.dispatchInlineAction(ActionReady, bead.ID)
+				return mm, cmd
 			}
 
 		// Reset --hard — confirm, then inline.
@@ -1488,13 +1556,18 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				return m, nil
 			}
 
-		// Defer/undefer toggle.
+		// Defer/undefer toggle (any non-closed bead).
 		case "d":
 			if bead := m.SelectedBead(); bead != nil {
-				// Only toggle on ready (open) or deferred beads.
-				if bead.Status == "open" || bead.Status == "deferred" {
+				switch bead.Status {
+				case "open", "ready", "deferred":
 					mm, cmd := m.dispatchInlineAction(ActionDefer, bead.ID)
 					return mm, cmd
+				case "closed":
+					// no-op for closed beads
+				default:
+					m.ActionStatus = fmt.Sprintf("Cannot defer: bead is %s", bead.Status)
+					m.ActionStatusTime = time.Now()
 				}
 			}
 
@@ -1509,14 +1582,28 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				return m, nil
 			}
 
+		// Comment — open text input overlay (any bead).
+		case "c":
+			if bead := m.SelectedBead(); bead != nil {
+				m.CommentActive = true
+				m.CommentInput = ""
+				m.CommentBeadID = bead.ID
+				return m, nil
+			}
+
 		// Command mode.
 		case ":":
 			m.Cmdline = CmdlineState{Active: true, History: m.Cmdline.History, HistIdx: -1, CompIdx: -1}
 			return m, nil
 
-		// Copy bead ID to clipboard.
+		// Approve/unblock hooked bead, or copy bead ID to clipboard.
 		case "y":
 			if bead := m.SelectedBead(); bead != nil {
+				if bead.Status == "hooked" {
+					mm, cmd := m.dispatchInlineAction(ActionResume, bead.ID)
+					return mm, cmd
+				}
+				// Fallback: copy bead ID to clipboard for non-hooked beads.
 				if err := copyToClipboard(bead.ID); err != nil {
 					m.ActionStatus = fmt.Sprintf("clipboard error: %v", err)
 				} else {
@@ -1627,6 +1714,15 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			m.ActionStatus = fmt.Sprintf("Reject design failed: %v", msg.Err)
 		} else {
 			m.ActionStatus = "Design rejected"
+		}
+		m.ActionStatusTime = time.Now()
+		return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
+	case commentResultMsg:
+		m.ActionRunning = false
+		if msg.Err != nil {
+			m.ActionStatus = fmt.Sprintf("Comment failed: %v", msg.Err)
+		} else {
+			m.ActionStatus = "Comment added"
 		}
 		m.ActionStatusTime = time.Now()
 		return m, fetchSnapshotCmd(m.db, m.Opts, m.Identity, m.FetchAgentsFn)
