@@ -321,7 +321,7 @@ func RosterFromLocalWizards(timeout time.Duration, deps RosterDeps) []RosterAgen
 	var agents []RosterAgent
 	for _, w := range allAgents {
 		role := "wizard"
-		if strings.Contains(w.Name, "-review") || w.Phase == "review" {
+		if strings.Contains(w.Name, "-review") {
 			role = "reviewer"
 		}
 
@@ -337,7 +337,6 @@ func RosterFromLocalWizards(timeout time.Duration, deps RosterDeps) []RosterAgen
 			Role:    role,
 			BeadID:  w.BeadID,
 			Timeout: agentTimeout,
-			Phase:   w.Phase,
 		}
 
 		isAlive := w.PID > 0 && deps.ProcessAlive(w.PID)
@@ -349,11 +348,6 @@ func RosterFromLocalWizards(timeout time.Duration, deps RosterDeps) []RosterAgen
 				agent.Remaining = timeout - agent.Elapsed
 				if agent.Remaining < 0 {
 					agent.Remaining = 0
-				}
-			}
-			if w.PhaseStartedAt != "" {
-				if t, err := time.Parse(time.RFC3339, w.PhaseStartedAt); err == nil {
-					agent.PhaseElapsed = time.Since(t).Round(time.Second)
 				}
 			}
 		} else {

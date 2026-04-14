@@ -743,7 +743,7 @@ func DetectReviewFeedback(dryRun bool) {
 		// Check wizard registry for a wizard associated with this bead.
 		reg := agent.LoadRegistry()
 		for _, w := range reg.Wizards {
-			if w.BeadID == b.ID && w.Phase != "review" {
+			if w.BeadID == b.ID {
 				owner = w.Name
 				break
 			}

@@ -612,10 +612,7 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 
 	for i := 0; i < shown; i++ {
 		w := agents[i]
-		phase := w.Phase
-		if phase == "" {
-			phase = "working"
-		}
+		phase := "working"
 		elapsed := ""
 		if t, err := time.Parse(time.RFC3339, w.StartedAt); err == nil {
 			d := time.Since(t).Round(time.Second)
@@ -871,10 +868,7 @@ func RenderAgentPanelSnap(agents []LocalAgent, dagMap map[string]*DAGProgress, m
 
 	for i := 0; i < shown; i++ {
 		w := agents[i]
-		phase := w.Phase
-		if phase == "" {
-			phase = "working"
-		}
+		phase := "working"
 		elapsed := ""
 		if t, err := time.Parse(time.RFC3339, w.StartedAt); err == nil {
 			d := time.Since(t).Round(time.Second)

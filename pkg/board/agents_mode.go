@@ -508,7 +508,6 @@ func (m *AgentsMode) fetchAgents() tea.Cmd {
 			info := AgentInfo{
 				Name:   e.Name,
 				BeadID: e.BeadID,
-				Phase:  e.Phase,
 			}
 
 			// Determine status from PID liveness.
@@ -524,12 +523,7 @@ func (m *AgentsMode) fetchAgents() tea.Cmd {
 			}
 
 			// Parse start time for duration.
-			if e.PhaseStartedAt != "" {
-				if t, err := time.Parse(time.RFC3339, e.PhaseStartedAt); err == nil {
-					info.StartedAt = t
-					info.Duration = now.Sub(t).Round(time.Second)
-				}
-			} else if e.StartedAt != "" {
+			if e.StartedAt != "" {
 				if t, err := time.Parse(time.RFC3339, e.StartedAt); err == nil {
 					info.StartedAt = t
 					info.Duration = now.Sub(t).Round(time.Second)
