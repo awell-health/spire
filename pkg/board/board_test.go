@@ -1311,8 +1311,8 @@ func TestCategorizeFiltersAlerts(t *testing.T) {
 			{ID: "spi-201", Title: "In-progress alert", Status: "in_progress", Type: "task", Labels: []string{"alert:merge-failure"}},
 		}
 		cols := CategorizeColumnsFromStore(openBeads, nil, nil, "test@test.dev")
-		if len(cols.Ready) != 1 || cols.Ready[0].ID != "spi-200" {
-			t.Errorf("expected only spi-200 in Ready, got %v", cols.Ready)
+		if len(cols.Backlog) != 1 || cols.Backlog[0].ID != "spi-200" {
+			t.Errorf("expected only spi-200 in Backlog, got %v", cols.Backlog)
 		}
 		if len(cols.Alerts) != 0 {
 			t.Errorf("expected no alerts (status is in_progress, not open), got %v", cols.Alerts)
@@ -1338,8 +1338,8 @@ func TestCategorizeFiltersAlerts(t *testing.T) {
 			{ID: "spi-401", Title: "Real task", Status: "open", Type: "task"},
 		}
 		cols := CategorizeColumnsFromStore(openBeads, nil, nil, "test@test.dev")
-		if len(cols.Ready) != 1 || cols.Ready[0].ID != "spi-401" {
-			t.Errorf("expected only spi-401 in Ready, got %v", cols.Ready)
+		if len(cols.Backlog) != 1 || cols.Backlog[0].ID != "spi-401" {
+			t.Errorf("expected only spi-401 in Backlog, got %v", cols.Backlog)
 		}
 	})
 }
@@ -1474,8 +1474,8 @@ func TestInterruptedBeadCategorization(t *testing.T) {
 		if len(cols.Interrupted) != 1 || cols.Interrupted[0].ID != "spi-int" {
 			t.Errorf("expected spi-int in Interrupted, got: %v", cols.Interrupted)
 		}
-		if len(cols.Ready) != 1 || cols.Ready[0].ID != "spi-ok" {
-			t.Errorf("expected spi-ok in Ready, got: %v", cols.Ready)
+		if len(cols.Backlog) != 1 || cols.Backlog[0].ID != "spi-ok" {
+			t.Errorf("expected spi-ok in Backlog, got: %v", cols.Backlog)
 		}
 	})
 
@@ -1782,6 +1782,7 @@ func TestCategorizeColumnsFromStore_ParentFiltering(t *testing.T) {
 			name  string
 			beads []BoardBead
 		}{
+			{"Backlog", cols.Backlog},
 			{"Ready", cols.Ready},
 			{"Design", cols.Design},
 			{"Plan", cols.Plan},
@@ -1800,16 +1801,16 @@ func TestCategorizeColumnsFromStore_ParentFiltering(t *testing.T) {
 			}
 		}
 
-		// The epic and top-level task should still appear.
+		// The epic and top-level task should still appear (open beads go to Backlog).
 		found := map[string]bool{}
-		for _, b := range cols.Ready {
+		for _, b := range cols.Backlog {
 			found[b.ID] = true
 		}
 		if !found["spi-epic"] {
-			t.Error("epic bead spi-epic should appear in Ready")
+			t.Error("epic bead spi-epic should appear in Backlog")
 		}
 		if !found["spi-top"] {
-			t.Error("top-level bead spi-top should appear in Ready")
+			t.Error("top-level bead spi-top should appear in Backlog")
 		}
 	})
 }
@@ -1845,6 +1846,7 @@ func TestCategorizeWithPhases_ParentFiltering(t *testing.T) {
 			name  string
 			beads []BoardBead
 		}{
+			{"Backlog", cols.Backlog},
 			{"Ready", cols.Ready},
 			{"Design", cols.Design},
 			{"Plan", cols.Plan},
@@ -1883,7 +1885,7 @@ func TestCategorizeWithPhases_ParentFiltering(t *testing.T) {
 // --- TestCategorizeWithPhases_DeferredBeads ---
 
 func TestCategorizeWithPhases_DeferredBeads(t *testing.T) {
-	t.Run("deferred top-level bead lands in Ready", func(t *testing.T) {
+	t.Run("deferred top-level bead lands in Backlog", func(t *testing.T) {
 		openBeads := []BoardBead{
 			{ID: "spi-d1", Title: "deferred task", Status: "deferred", Type: "task", Priority: 2},
 			{ID: "spi-r1", Title: "regular task", Status: "open", Type: "task", Priority: 1},
@@ -1893,21 +1895,21 @@ func TestCategorizeWithPhases_DeferredBeads(t *testing.T) {
 
 		cols := CategorizeWithPhases(openBeads, nil, blockedMap, phaseMap, "test")
 
-		if len(cols.Ready) != 2 {
-			t.Fatalf("expected 2 beads in Ready, got %d", len(cols.Ready))
+		if len(cols.Backlog) != 2 {
+			t.Fatalf("expected 2 beads in Backlog, got %d", len(cols.Backlog))
 		}
 		foundDeferred := false
-		for _, b := range cols.Ready {
+		for _, b := range cols.Backlog {
 			if b.ID == "spi-d1" {
 				foundDeferred = true
 			}
 		}
 		if !foundDeferred {
-			t.Error("expected deferred bead spi-d1 in Ready column")
+			t.Error("expected deferred bead spi-d1 in Backlog column")
 		}
 	})
 
-	t.Run("deferred child bead excluded from Ready", func(t *testing.T) {
+	t.Run("deferred child bead excluded from Backlog", func(t *testing.T) {
 		openBeads := []BoardBead{
 			{ID: "spi-d2", Title: "deferred child", Status: "deferred", Type: "task", Parent: "spi-epic"},
 		}
@@ -1916,8 +1918,8 @@ func TestCategorizeWithPhases_DeferredBeads(t *testing.T) {
 
 		cols := CategorizeWithPhases(openBeads, nil, blockedMap, phaseMap, "test")
 
-		if len(cols.Ready) != 0 {
-			t.Errorf("expected 0 beads in Ready (child beads excluded), got %d", len(cols.Ready))
+		if len(cols.Backlog) != 0 {
+			t.Errorf("expected 0 beads in Backlog (child beads excluded), got %d", len(cols.Backlog))
 		}
 	})
 }

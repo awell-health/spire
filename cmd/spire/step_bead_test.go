@@ -310,7 +310,7 @@ func TestBoard_FiltersStepBeads(t *testing.T) {
 	cols := board.CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
 
 	allCols := [][]BoardBead{
-		cols.Ready, cols.Design, cols.Plan, cols.Implement,
+		cols.Backlog, cols.Ready, cols.Design, cols.Plan, cols.Implement,
 		cols.Review, cols.Merge, cols.Done, cols.Blocked, cols.Alerts,
 	}
 	for _, col := range allCols {
@@ -322,13 +322,13 @@ func TestBoard_FiltersStepBeads(t *testing.T) {
 	}
 
 	found := 0
-	for _, b := range cols.Ready {
+	for _, b := range cols.Backlog {
 		if b.ID == "spi-task-1" || b.ID == "spi-task-2" {
 			found++
 		}
 	}
 	if found != 2 {
-		t.Errorf("expected 2 real tasks in Ready, found %d", found)
+		t.Errorf("expected 2 real tasks in Backlog, found %d", found)
 	}
 }
 

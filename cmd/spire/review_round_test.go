@@ -219,7 +219,7 @@ func TestBoard_FiltersReviewRoundBeads(t *testing.T) {
 	cols := board.CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
 
 	// Review-round beads should be filtered out from all columns
-	for _, col := range [][]BoardBead{cols.Ready, cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked, cols.Alerts} {
+	for _, col := range [][]BoardBead{cols.Backlog, cols.Ready, cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked, cols.Alerts} {
 		for _, b := range col {
 			if isReviewRoundBoardBead(b) {
 				t.Errorf("review-round bead %s should be filtered from board columns", b.ID)
@@ -227,15 +227,15 @@ func TestBoard_FiltersReviewRoundBeads(t *testing.T) {
 		}
 	}
 
-	// Real tasks should still be present
+	// Real tasks should still be present (open beads go to Backlog)
 	found := 0
-	for _, b := range cols.Ready {
+	for _, b := range cols.Backlog {
 		if b.ID == "spi-task-1" || b.ID == "spi-task-2" {
 			found++
 		}
 	}
 	if found != 2 {
-		t.Errorf("expected 2 real tasks in Ready, found %d", found)
+		t.Errorf("expected 2 real tasks in Backlog, found %d", found)
 	}
 }
 

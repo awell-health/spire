@@ -386,7 +386,7 @@ func TestBoard_FiltersAttemptBeads(t *testing.T) {
 
 	cols := board.CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads, "")
 
-	for _, col := range [][]BoardBead{cols.Ready, cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked, cols.Alerts} {
+	for _, col := range [][]BoardBead{cols.Backlog, cols.Ready, cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked, cols.Alerts} {
 		for _, b := range col {
 			if isAttemptBoardBead(b) {
 				t.Errorf("attempt bead %s should be filtered from board columns", b.ID)
@@ -395,13 +395,13 @@ func TestBoard_FiltersAttemptBeads(t *testing.T) {
 	}
 
 	found := 0
-	for _, b := range cols.Ready {
+	for _, b := range cols.Backlog {
 		if b.ID == "spi-task-1" || b.ID == "spi-task-2" {
 			found++
 		}
 	}
 	if found != 2 {
-		t.Errorf("expected 2 real tasks in Ready, found %d", found)
+		t.Errorf("expected 2 real tasks in Backlog, found %d", found)
 	}
 }
 

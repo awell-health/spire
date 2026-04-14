@@ -227,8 +227,8 @@ func TestAllColumnsIncludesEmpty(t *testing.T) {
 	if len(active) != 2 {
 		t.Fatalf("expected 2 active columns, got %d", len(active))
 	}
-	if len(all) != 7 {
-		t.Fatalf("expected 7 total columns, got %d", len(all))
+	if len(all) != 8 {
+		t.Fatalf("expected 8 total columns, got %d", len(all))
 	}
 }
 
@@ -247,20 +247,20 @@ func TestShowAllColsToggle(t *testing.T) {
 	// Toggle on: all phase columns
 	m.ShowAllCols = true
 	display = m.DisplayColumns()
-	if len(display) != 7 {
-		t.Fatalf("expected 7 display columns with ShowAllCols=true, got %d", len(display))
+	if len(display) != 8 {
+		t.Fatalf("expected 8 display columns with ShowAllCols=true, got %d", len(display))
 	}
 
 	// Selection should work with empty columns
-	m.SelCol = 3 // IMPLEMENT (empty)
+	m.SelCol = 4 // IMPLEMENT (empty)
 	m.ClampSelection()
 	bead := m.SelectedBead()
 	if bead != nil {
 		t.Fatalf("expected nil bead for empty column, got %v", bead)
 	}
 
-	// Navigate to READY (index 0) which has a bead
-	m.SelCol = 0
+	// Navigate to READY (index 1) which has a bead
+	m.SelCol = 1
 	m.SelCard = 0
 	bead = m.SelectedBead()
 	if bead == nil || bead.ID != "spi-1" {
