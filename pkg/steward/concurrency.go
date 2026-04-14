@@ -21,13 +21,13 @@ func NewConcurrencyLimiter() *ConcurrencyLimiter {
 }
 
 // Refresh updates the active count for a tower from the backend agent list.
-// Counts only agents where Alive==true.
+// Counts only agents where Alive==true and Tower matches the requested tower.
 func (cl *ConcurrencyLimiter) Refresh(tower string, agents []agent.Info) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	count := 0
 	for _, a := range agents {
-		if a.Alive {
+		if a.Alive && a.Tower == tower {
 			count++
 		}
 	}

@@ -43,6 +43,7 @@ func (b *ProcessBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 		PID:       pid,
 		BeadID:    cfg.BeadID,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Tower:     cfg.Tower,
 	}
 	if err := RegistryAdd(entry); err != nil {
 		// Non-fatal: log and continue. The agent is running regardless.
@@ -75,6 +76,7 @@ func (b *ProcessBackend) List() ([]Info, error) {
 			Alive:      alive,
 			Identifier: strconv.Itoa(w.PID),
 			StartedAt:  startedAt,
+			Tower:      w.Tower,
 		})
 	}
 

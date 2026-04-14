@@ -151,6 +151,7 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 		"--label", fmt.Sprintf("spire.agent=%s", cfg.Name),
 		"--label", fmt.Sprintf("spire.bead=%s", cfg.BeadID),
 		"--label", fmt.Sprintf("spire.role=%s", string(cfg.Role)),
+		"--label", fmt.Sprintf("spire.tower=%s", cfg.Tower),
 		// Volume mounts: host config dir -> container config dir, and repo root.
 		"-v", fmt.Sprintf("%s:%s", hostConfigDir, containerConfigDir),
 		"-v", fmt.Sprintf("%s:%s", repoRoot, repoRoot),

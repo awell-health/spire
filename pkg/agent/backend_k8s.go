@@ -188,6 +188,7 @@ func (b *K8sBackend) List() ([]Info, error) {
 			Alive:      alive,
 			Identifier: pod.Name,
 			StartedAt:  pod.CreationTimestamp.Time,
+			Tower:      pod.Labels["spire.tower"],
 		})
 	}
 	return infos, nil

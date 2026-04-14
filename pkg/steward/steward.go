@@ -306,7 +306,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		// Update concurrency limiter to account for the newly spawned agent
 		// so CanSpawn reflects within-cycle spawns.
 		if cfg.ConcurrencyLimiter != nil {
-			agents = append(agents, agent.Info{Name: wizardName, Alive: true})
+			agents = append(agents, agent.Info{Name: wizardName, Alive: true, Tower: towerName})
 			cfg.ConcurrencyLimiter.Refresh(towerName, agents)
 		}
 	}

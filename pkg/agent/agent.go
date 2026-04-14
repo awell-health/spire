@@ -71,6 +71,7 @@ type Info struct {
 	Alive      bool      // true if the agent is still running
 	Identifier string    // opaque: PID, container ID, pod name
 	StartedAt  time.Time // when the agent was started
+	Tower      string    // tower this agent belongs to
 }
 
 // SpawnRole describes what kind of agent to run.

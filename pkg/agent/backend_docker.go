@@ -65,12 +65,13 @@ func (b *DockerBackend) List() ([]Info, error) {
 
 // inspectContainer reads labels and state from a single container.
 func (b *DockerBackend) inspectContainer(id string) (Info, error) {
-	// Inspect format: agent-name \t bead-id \t role \t running \t created
+	// Inspect format: agent-name \t bead-id \t role \t running \t created \t tower
 	format := `{{index .Config.Labels "spire.agent"}}` +
 		"\t" + `{{index .Config.Labels "spire.bead"}}` +
 		"\t" + `{{index .Config.Labels "spire.role"}}` +
 		"\t" + `{{.State.Running}}` +
-		"\t" + `{{.Created}}`
+		"\t" + `{{.Created}}` +
+		"\t" + `{{index .Config.Labels "spire.tower"}}`
 
 	out, err := exec.Command("docker", "inspect", "--format", format, id).Output()
 	if err != nil {
@@ -83,7 +84,7 @@ func (b *DockerBackend) inspectContainer(id string) (Info, error) {
 // ParseDockerInspect parses a single line of tab-separated docker inspect output
 // into an Info. Exported for testing.
 func ParseDockerInspect(id, line string) (Info, error) {
-	parts := strings.SplitN(line, "\t", 5)
+	parts := strings.SplitN(line, "\t", 6)
 	if len(parts) < 5 {
 		return Info{}, fmt.Errorf("unexpected inspect output: %q", line)
 	}
@@ -93,6 +94,11 @@ func ParseDockerInspect(id, line string) (Info, error) {
 	// Docker Created timestamps use RFC 3339 with nanoseconds.
 	startedAt, _ := time.Parse(time.RFC3339Nano, parts[4])
 
+	var tower string
+	if len(parts) >= 6 {
+		tower = parts[5]
+	}
+
 	return Info{
 		Name:       parts[0],
 		BeadID:     parts[1],
@@ -100,6 +106,7 @@ func ParseDockerInspect(id, line string) (Info, error) {
 		Alive:      alive,
 		Identifier: id,
 		StartedAt:  startedAt,
+		Tower:      tower,
 	}, nil
 }
 
