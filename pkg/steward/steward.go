@@ -19,7 +19,6 @@ package steward
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -32,6 +31,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -121,11 +121,12 @@ type StewardConfig struct {
 	AgentList         []string
 	MetricsPort       int // 0 = disabled; non-zero = start HTTP metrics server
 
-	ConcurrencyLimiter *ConcurrencyLimiter // nil = no limit enforcement
-	MergeQueue         *MergeQueue         // nil = no merge queue
-	TrustChecker       *TrustChecker       // nil = no trust checks
-	ABRouter           *ABRouter           // nil = no A/B routing
-	CycleStats         *CycleStats         // nil = no stats tracking
+	ConcurrencyLimiter *ConcurrencyLimiter      // nil = no limit enforcement
+	MergeQueue         *MergeQueue              // nil = no merge queue
+	TrustChecker       *TrustChecker            // nil = no trust checks
+	ABRouter           *ABRouter                // nil = no A/B routing
+	CycleStats         *CycleStats              // nil = no stats tracking
+	GraphStateStore    executor.GraphStateStore // nil = use default file-backed store
 }
 
 // AgentNames extracts agent names from an agent.Info slice.
@@ -313,7 +314,12 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	DetectReviewFeedback(cfg.DryRun)
 
 	// Step 4d: Sweep hooked graph steps.
-	if hookedCount := SweepHookedSteps(cfg.DryRun, cfg.Backend, towerName); hookedCount > 0 {
+	// Use configured store if available, otherwise fall back to file-backed store.
+	graphStore := cfg.GraphStateStore
+	if graphStore == nil {
+		graphStore = &executor.FileGraphStateStore{ConfigDir: config.Dir}
+	}
+	if hookedCount := SweepHookedSteps(cfg.DryRun, cfg.Backend, towerName, graphStore); hookedCount > 0 {
 		log.Printf("[steward] %shooked sweep: re-summoned %d wizard(s)", prefix, hookedCount)
 	}
 
@@ -681,59 +687,28 @@ func DetectReviewFeedback(dryRun bool) {
 
 // SweepHookedSteps finds graph states with hooked steps and re-summons
 // wizards when the hooked condition is resolved (e.g., design bead closed).
-func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string) int {
-	// 1. Enumerate runtime directory.
-	cfgDir, err := config.Dir()
+func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, graphStore executor.GraphStateStore) int {
+	// 1. List all graph states with hooked steps via the store abstraction.
+	// In local mode this scans configDir/runtime/*/graph_state.json;
+	// in cluster mode it queries the Dolt graph_state table.
+	entries, err := graphStore.ListHooked(towerName)
 	if err != nil {
-		log.Printf("[steward] hooked sweep: config dir: %s", err)
+		log.Printf("[steward] hooked sweep: list hooked: %s", err)
 		return 0
-	}
-	runtimeDir := filepath.Join(cfgDir, "runtime")
-	entries, err := os.ReadDir(runtimeDir)
-	if err != nil {
-		return 0 // no runtime dir yet
 	}
 
 	resummoned := 0
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		agentName := entry.Name()
+		agentName := entry.AgentName
+		gs := entry.State
 
-		// 2. Load graph state JSON.
-		gsPath := filepath.Join(runtimeDir, agentName, "graph_state.json")
-		data, err := os.ReadFile(gsPath)
-		if err != nil {
-			continue // no graph state or v2 agent
-		}
-
-		// Use a minimal struct to avoid importing pkg/executor.
-		var gs struct {
-			BeadID    string `json:"bead_id"`
-			TowerName string `json:"tower_name"`
-			Steps     map[string]struct {
-				Status  string            `json:"status"`
-				Outputs map[string]string `json:"outputs"`
-			} `json:"steps"`
-		}
-		if err := json.Unmarshal(data, &gs); err != nil {
-			continue
-		}
-
-		// Skip graph states belonging to a different tower.
-		// Empty TowerName means legacy (pre-migration) — sweep from any tower.
-		if gs.TowerName != "" && gs.TowerName != towerName {
-			continue
-		}
-
-		// 3. Find hooked steps.
+		// 2. Find hooked steps.
 		for stepName, ss := range gs.Steps {
 			if ss.Status != "hooked" {
 				continue
 			}
 
-			// 4. Resolve the hooked condition.
+			// 3. Resolve the hooked condition.
 			// Two hook types:
 			//   a) check.design-linked: design_ref output → check if design bead is closed with content
 			//   b) human.approve: no design_ref → check if awaiting-approval label was cleared
@@ -781,25 +756,18 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string) int 
 				continue
 			}
 
-			// 5. Reset hooked step to pending.
-			// Re-read, modify, and write back the full graph state.
-			var fullGS map[string]interface{}
-			json.Unmarshal(data, &fullGS) // data is the raw bytes from step 2
-			if stepsMap, ok := fullGS["steps"].(map[string]interface{}); ok {
-				if stepMap, ok := stepsMap[stepName].(map[string]interface{}); ok {
-					stepMap["status"] = "pending"
-					delete(stepMap, "outputs")
-					delete(stepMap, "started_at")
-					delete(stepMap, "completed_at")
-				}
-			}
-			updated, _ := json.MarshalIndent(fullGS, "", "  ")
-			if err := os.WriteFile(gsPath, updated, 0644); err != nil {
-				log.Printf("[steward] hooked sweep: write graph state %s: %s", gsPath, err)
+			// 4. Reset hooked step to pending via the graph state store.
+			ss.Status = "pending"
+			ss.Outputs = nil
+			ss.StartedAt = ""
+			ss.CompletedAt = ""
+			gs.Steps[stepName] = ss
+			if err := graphStore.Save(agentName, gs); err != nil {
+				log.Printf("[steward] hooked sweep: save graph state for %s: %s", agentName, err)
 				continue
 			}
 
-			// 6. Re-summon wizard.
+			// 5. Re-summon wizard.
 			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
 				Name:    agentName,
 				BeadID:  gs.BeadID,

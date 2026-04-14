@@ -12,6 +12,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -728,7 +729,8 @@ func TestSweepHookedSteps_ResolvesDesign(t *testing.T) {
 	defer func() { GetCommentsFunc = origGetComments }()
 
 	backend := &spawnTrackingBackend{}
-	count := SweepHookedSteps(false, backend, "test-tower")
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
 
 	if count != 1 {
 		t.Errorf("SweepHookedSteps returned %d, want 1", count)
@@ -806,7 +808,8 @@ func TestSweepHookedSteps_SkipsOpenDesign(t *testing.T) {
 	defer func() { GetCommentsFunc = origGetComments }()
 
 	backend := &spawnTrackingBackend{}
-	count := SweepHookedSteps(false, backend, "test-tower")
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0", count)
@@ -886,7 +889,8 @@ func TestSweepHookedSteps_TowerScoped(t *testing.T) {
 
 	// Sweep as tower "awell" — should process awell + legacy, skip mlti.
 	backend := &spawnTrackingBackend{}
-	count := SweepHookedSteps(false, backend, "awell")
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "awell", gsStore)
 
 	if count != 2 {
 		t.Errorf("SweepHookedSteps returned %d, want 2", count)
@@ -954,7 +958,8 @@ func TestSweepHookedSteps_HumanApprove_LabelsPresent_Skips(t *testing.T) {
 	defer func() { GetBeadFunc = origGetBead }()
 
 	backend := &spawnTrackingBackend{}
-	count := SweepHookedSteps(false, backend, "test-tower")
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (labels still present)", count)
@@ -1013,7 +1018,8 @@ func TestSweepHookedSteps_HumanApprove_LabelsCleared_Resolves(t *testing.T) {
 	defer func() { GetBeadFunc = origGetBead }()
 
 	backend := &spawnTrackingBackend{}
-	count := SweepHookedSteps(false, backend, "test-tower")
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
 
 	if count != 1 {
 		t.Errorf("SweepHookedSteps returned %d, want 1", count)
@@ -1129,7 +1135,8 @@ func TestSweepHookedSteps_HumanApprove_OnlyNeedsHumanPresent_Skips(t *testing.T)
 	defer func() { GetBeadFunc = origGetBead }()
 
 	backend := &spawnTrackingBackend{}
-	count := SweepHookedSteps(false, backend, "test-tower")
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (needs-human still present)", count)

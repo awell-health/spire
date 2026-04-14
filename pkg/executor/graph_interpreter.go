@@ -19,9 +19,9 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	defer regCleanup()
 	defer func() {
 		if e.terminated {
-			RemoveGraphState(e.agentName, e.deps.ConfigDir)
+			e.deps.GraphStateStore.Remove(e.agentName)
 		} else {
-			state.Save(e.agentName, e.deps.ConfigDir)
+			e.deps.GraphStateStore.Save(e.agentName, state)
 		}
 	}()
 	defer e.closeStagingWorktree()
@@ -152,7 +152,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		ss.Status = "active"
 		ss.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		state.Steps[stepName] = ss
-		state.Save(e.agentName, e.deps.ConfigDir)
+		e.deps.GraphStateStore.Save(e.agentName, state)
 
 		// Activate step bead if tracked.
 		if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
@@ -176,7 +176,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			// Do NOT set CompletedAt — the step is parked, not completed.
 			state.Steps[stepName] = ss
 			state.ActiveStep = "" // clear so graph detects parking
-			state.Save(e.agentName, e.deps.ConfigDir)
+			e.deps.GraphStateStore.Save(e.agentName, state)
 
 			// Do NOT close the step bead — it stays open for retry.
 
@@ -195,7 +195,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			ss.Outputs = result.Outputs
 			state.Steps[stepName] = ss
 			state.ActiveStep = ""
-			state.Save(e.agentName, e.deps.ConfigDir)
+			e.deps.GraphStateStore.Save(e.agentName, state)
 			e.log("step %s hooked — graph parked", stepName)
 			e.closeGraphAttempt(state, "parked: step "+stepName+" hooked")
 			return nil // graceful exit, not an error
@@ -234,9 +234,9 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			}
 			e.terminated = true
 			// Save parent state before cleaning up nested state (crash-safe ordering).
-			state.Save(e.agentName, e.deps.ConfigDir)
+			e.deps.GraphStateStore.Save(e.agentName, state)
 			if stepCfg.Action == "graph.run" {
-				RemoveGraphState(e.agentName+"-"+stepName, e.deps.ConfigDir)
+				e.deps.GraphStateStore.Remove(e.agentName + "-" + stepName)
 			}
 			e.closeGraphAttempt(state, "success: terminal step "+stepName)
 			return nil
@@ -263,7 +263,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		}
 
 		// 9. Persist and loop.
-		state.Save(e.agentName, e.deps.ConfigDir)
+		e.deps.GraphStateStore.Save(e.agentName, state)
 
 		// 10. Clean up nested graph state files after the parent save is durable.
 		// This is crash-safe: the parent step is already recorded as completed,
@@ -271,7 +271,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		// but the parent won't re-run the step.
 		if stepCfg.Action == "graph.run" {
 			nestedAgentName := e.agentName + "-" + stepName
-			RemoveGraphState(nestedAgentName, e.deps.ConfigDir)
+			e.deps.GraphStateStore.Remove(nestedAgentName)
 		}
 	}
 }
@@ -342,7 +342,7 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 			ss.Status = "failed"
 			ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			state.Steps[stepName] = ss
-			state.Save(state.AgentName, e.deps.ConfigDir) // persist failure for resume
+			e.deps.GraphStateStore.Save(state.AgentName, state) // persist failure for resume
 			return fmt.Errorf("nested step %s failed: %w", stepName, result.Error)
 		}
 
@@ -357,7 +357,7 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 			// Nested graphs don't create step beads (ensureGraphStepBeads is
 			// only called by RunGraph), so no reconciliation needed here.
 			// Persist final state before returning (caller removes on success).
-			state.Save(state.AgentName, e.deps.ConfigDir)
+			e.deps.GraphStateStore.Save(state.AgentName, state)
 			return nil
 		}
 
@@ -373,7 +373,7 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 		}
 
 		// Persist after each step so nested graph progress survives interrupts.
-		state.Save(state.AgentName, e.deps.ConfigDir)
+		e.deps.GraphStateStore.Save(state.AgentName, state)
 	}
 }
 
@@ -640,7 +640,7 @@ func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphSta
 		e.log("created step bead %s for step %s", id, stepName)
 	}
 
-	return state.Save(e.agentName, e.deps.ConfigDir)
+	return e.deps.GraphStateStore.Save(e.agentName, state)
 }
 
 // summarizeSteps returns a compact string representation of step states.

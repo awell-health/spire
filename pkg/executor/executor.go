@@ -84,8 +84,13 @@ func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*E
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", agentName, fmt.Sprintf(format, a...))
 	}
 
+	// Default to file-backed store if not explicitly set.
+	if deps.GraphStateStore == nil {
+		deps.GraphStateStore = &FileGraphStateStore{ConfigDir: deps.ConfigDir}
+	}
+
 	// Load or create graph state.
-	state, err := LoadGraphState(agentName, deps.ConfigDir)
+	state, err := deps.GraphStateStore.Load(agentName)
 	if err != nil {
 		return nil, fmt.Errorf("load graph state: %w", err)
 	}

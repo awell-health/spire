@@ -62,6 +62,9 @@ type ReviewIssue struct {
 // caller (cmd/spire) so the executor package has no dependency on cmd/spire
 // internals.
 type Deps struct {
+	// Graph state persistence (file-backed local, Dolt-backed cluster)
+	GraphStateStore GraphStateStore
+
 	// Store operations
 	GetBead          func(id string) (Bead, error)
 	GetChildren      func(parentID string) ([]Bead, error)
