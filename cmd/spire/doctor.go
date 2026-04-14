@@ -1043,7 +1043,7 @@ func checkSpireHookSH(repoPath string) checkResult {
 func checkSpireSkills(repoPath string) checkResult {
 	baseDir := filepath.Join(repoPath, ".claude", "skills")
 	name := ".claude/skills/"
-	required := []string{"spire-work", "spire-conflicts"}
+	required := []string{"spire-work", "spire-conflicts", "spire-design"}
 	var missing []string
 	for _, skill := range required {
 		dir := filepath.Join(baseDir, skill)

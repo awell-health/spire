@@ -29,6 +29,10 @@ func TestInstallSpireSkills_InstallsBundledSkillEverywhere(t *testing.T) {
 	assertFileContains(t, filepath.Join(claudeDir, "skills", "spire-conflicts", "SKILL.md"), "dolt sql")
 	assertFileContains(t, filepath.Join(claudeDir, "skills", "spire-conflicts", "agents", "openai.yaml"), "display_name: \"Spire Conflicts\"")
 	assertFileContains(t, filepath.Join(codexHome, "skills", "spire-conflicts", "SKILL.md"), "dolt sql")
+
+	assertFileContains(t, filepath.Join(home, ".claude", "skills", "spire-design", "SKILL.md"), "design bead")
+	assertFileContains(t, filepath.Join(claudeDir, "skills", "spire-design", "SKILL.md"), "design bead")
+	assertFileContains(t, filepath.Join(codexHome, "skills", "spire-design", "SKILL.md"), "design bead")
 }
 
 func TestCheckSpireSkills_FixInstallsBundledConflictSkill(t *testing.T) {
@@ -60,6 +64,7 @@ func TestCheckSpireSkills_FixInstallsBundledConflictSkill(t *testing.T) {
 	r.FixFunc()
 
 	assertFileContains(t, filepath.Join(claudeSkills, "spire-conflicts", "SKILL.md"), "dolt sql")
+	assertFileContains(t, filepath.Join(claudeSkills, "spire-design", "SKILL.md"), "design bead")
 }
 
 func assertFileContains(t *testing.T, path, needle string) {
