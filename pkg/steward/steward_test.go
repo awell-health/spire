@@ -1205,7 +1205,7 @@ func TestTowerCycle_ConcurrencyLimit_SpawnsUpToMax(t *testing.T) {
 
 	backend := &mockBackend{
 		agents: []agent.Info{
-			{Name: "wizard-spi-existing1", Alive: true},
+			{Name: "wizard-spi-existing1", Alive: true, Tower: "test-tower"},
 		},
 	}
 
