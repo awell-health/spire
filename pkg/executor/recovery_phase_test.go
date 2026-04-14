@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
@@ -1167,5 +1168,234 @@ func TestActionRecoveryExecute_NonTriageNoInjection(t *testing.T) {
 	}
 	if _, ok := params["wizard_log_tail"]; ok {
 		t.Error("wizard_log_tail should not be injected for non-triage actions")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseHumanGuidance
+// ---------------------------------------------------------------------------
+
+func TestParseHumanGuidance_KeywordMatching(t *testing.T) {
+	tests := []struct {
+		name     string
+		comments []string
+		want     string
+	}{
+		{"rebase keyword", []string{"try rebase onto main"}, "rebase-onto-main"},
+		{"rebase simple", []string{"rebase"}, "rebase-onto-main"},
+		{"cherry-pick", []string{"cherry-pick abc123"}, "cherry-pick"},
+		{"cherry pick no hyphen", []string{"cherry pick that commit"}, "cherry-pick"},
+		{"resolve conflicts", []string{"resolve conflicts please"}, "resolve-conflicts"},
+		{"resolve conflict singular", []string{"resolve conflict"}, "resolve-conflicts"},
+		{"rebuild", []string{"rebuild the project"}, "rebuild"},
+		{"try rebuild", []string{"try rebuild"}, "rebuild"},
+		{"resummon", []string{"resummon an apprentice"}, "resummon"},
+		{"re-summon", []string{"re-summon"}, "resummon"},
+		{"try again", []string{"try again"}, "resummon"},
+		{"reset", []string{"reset the step"}, "reset-to-step"},
+		{"reset to step", []string{"reset to step verify"}, "reset-to-step"},
+		{"escalate", []string{"escalate to human"}, "escalate"},
+		{"fix", []string{"fix the build issue"}, "targeted-fix"},
+		{"targeted fix", []string{"targeted fix needed"}, "targeted-fix"},
+		{"no match", []string{"hello world"}, ""},
+		{"empty comments", []string{}, ""},
+		{"nil comments", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseHumanGuidance(tt.comments, nil)
+			if got != tt.want {
+				t.Errorf("parseHumanGuidance(%v, nil) = %q, want %q", tt.comments, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseHumanGuidance_MostRecentCommentWins(t *testing.T) {
+	// Most recent comment (last in slice) should be checked first.
+	comments := []string{
+		"try rebase",     // rebase-onto-main
+		"rebuild please", // rebuild — this is more recent
+	}
+	got := parseHumanGuidance(comments, nil)
+	if got != "rebuild" {
+		t.Errorf("parseHumanGuidance = %q, want 'rebuild' (most recent comment)", got)
+	}
+}
+
+func TestParseHumanGuidance_CaseInsensitive(t *testing.T) {
+	comments := []string{"REBASE onto main"}
+	got := parseHumanGuidance(comments, nil)
+	if got != "rebase-onto-main" {
+		t.Errorf("parseHumanGuidance = %q, want 'rebase-onto-main'", got)
+	}
+}
+
+func TestParseHumanGuidance_SkipsRepeatedFailures(t *testing.T) {
+	comments := []string{"try rebase"}
+	repeated := map[string]int{"rebase-onto-main": 2}
+	got := parseHumanGuidance(comments, repeated)
+	if got != "" {
+		t.Errorf("parseHumanGuidance = %q, want empty (rebase has 2 failures)", got)
+	}
+}
+
+func TestParseHumanGuidance_SkipsRepeatedButFindsAlternative(t *testing.T) {
+	comments := []string{"try rebase or rebuild"}
+	repeated := map[string]int{"rebase-onto-main": 3}
+	got := parseHumanGuidance(comments, repeated)
+	if got != "rebuild" {
+		t.Errorf("parseHumanGuidance = %q, want 'rebuild' (rebase filtered out)", got)
+	}
+}
+
+func TestParseHumanGuidance_RepeatedBelowThreshold(t *testing.T) {
+	comments := []string{"try rebase"}
+	repeated := map[string]int{"rebase-onto-main": 1} // below threshold of 2
+	got := parseHumanGuidance(comments, repeated)
+	if got != "rebase-onto-main" {
+		t.Errorf("parseHumanGuidance = %q, want 'rebase-onto-main' (only 1 failure)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// decideFromGitState
+// ---------------------------------------------------------------------------
+
+func TestDecideFromGitState_Diverged(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		GitState: &git.BranchDiagnostics{
+			Diverged:    true,
+			BehindMain:  3,
+			AheadOfMain: 2,
+		},
+	}
+	got := decideFromGitState(ctx)
+	if got != "rebase-onto-main" {
+		t.Errorf("decideFromGitState(diverged) = %q, want 'rebase-onto-main'", got)
+	}
+}
+
+func TestDecideFromGitState_BehindMain(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		GitState: &git.BranchDiagnostics{
+			BehindMain:  5,
+			AheadOfMain: 1,
+			Diverged:    false,
+		},
+	}
+	got := decideFromGitState(ctx)
+	if got != "rebase-onto-main" {
+		t.Errorf("decideFromGitState(behind) = %q, want 'rebase-onto-main'", got)
+	}
+}
+
+func TestDecideFromGitState_DirtyWorktree(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		GitState: &git.BranchDiagnostics{
+			BehindMain: 0,
+		},
+		WorktreeState: &git.WorktreeDiagnostics{
+			Exists:  true,
+			IsDirty: true,
+		},
+	}
+	got := decideFromGitState(ctx)
+	if got != "rebuild" {
+		t.Errorf("decideFromGitState(dirty worktree) = %q, want 'rebuild'", got)
+	}
+}
+
+func TestDecideFromGitState_CleanState(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		GitState: &git.BranchDiagnostics{
+			BehindMain: 0,
+		},
+		WorktreeState: &git.WorktreeDiagnostics{
+			Exists:  true,
+			IsDirty: false,
+		},
+	}
+	got := decideFromGitState(ctx)
+	if got != "" {
+		t.Errorf("decideFromGitState(clean) = %q, want empty", got)
+	}
+}
+
+func TestDecideFromGitState_NilGitState(t *testing.T) {
+	ctx := &FullRecoveryContext{}
+	got := decideFromGitState(ctx)
+	if got != "" {
+		t.Errorf("decideFromGitState(nil git) = %q, want empty", got)
+	}
+}
+
+func TestDecideFromGitState_WorktreeNotExists(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		GitState: &git.BranchDiagnostics{BehindMain: 0},
+		WorktreeState: &git.WorktreeDiagnostics{
+			Exists: false,
+		},
+	}
+	got := decideFromGitState(ctx)
+	if got != "" {
+		t.Errorf("decideFromGitState(worktree not exists) = %q, want empty", got)
+	}
+}
+
+func TestDecideFromGitState_PriorityOrder(t *testing.T) {
+	// Diverged takes priority over dirty worktree.
+	ctx := &FullRecoveryContext{
+		GitState: &git.BranchDiagnostics{
+			Diverged:   true,
+			BehindMain: 3,
+		},
+		WorktreeState: &git.WorktreeDiagnostics{
+			Exists:  true,
+			IsDirty: true,
+		},
+	}
+	got := decideFromGitState(ctx)
+	if got != "rebase-onto-main" {
+		t.Errorf("decideFromGitState(diverged+dirty) = %q, want 'rebase-onto-main' (diverged takes priority)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// gitStateReasoning
+// ---------------------------------------------------------------------------
+
+func TestGitStateReasoning(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		GitState: &git.BranchDiagnostics{
+			BehindMain: 7,
+			MainRef:    "main",
+		},
+	}
+
+	tests := []struct {
+		action   string
+		contains string
+	}{
+		{"resolve-conflicts", "merge conflicts"},
+		{"rebase-onto-main", "7 commits behind main"},
+		{"rebuild", "uncommitted changes"},
+		{"unknown-action", "unknown-action"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			got := gitStateReasoning(ctx, tt.action)
+			if !strings.Contains(got, tt.contains) {
+				t.Errorf("gitStateReasoning(ctx, %q) = %q, want to contain %q", tt.action, got, tt.contains)
+			}
+		})
+	}
+}
+
+func TestGitStateReasoning_NilGitState(t *testing.T) {
+	ctx := &FullRecoveryContext{}
+	got := gitStateReasoning(ctx, "rebase-onto-main")
+	if got != "branch is behind main" {
+		t.Errorf("gitStateReasoning(nil git, rebase) = %q, want 'branch is behind main'", got)
 	}
 }

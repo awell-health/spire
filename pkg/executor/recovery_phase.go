@@ -782,7 +782,11 @@ func handleCollectContext(e *Executor, stepName string, step StepConfig, state *
 	// This provides git diagnostics, attempt history, human comments, and
 	// repeated failure tracking for the decide step's enhanced logic.
 	repoPath := e.effectiveRepoPath()
-	fullCtx, fullCtxErr := BuildRecoveryContext(nil, repoPath, e.beadID)
+	var collectDB *sql.DB
+	if e.deps != nil && e.deps.DoltDB != nil {
+		collectDB = e.deps.DoltDB()
+	}
+	fullCtx, fullCtxErr := BuildRecoveryContext(collectDB, repoPath, e.beadID)
 	if fullCtxErr != nil {
 		e.log("recovery: collect_context: BuildRecoveryContext failed (non-fatal): %v", fullCtxErr)
 	} else {
@@ -1489,7 +1493,11 @@ func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphSta
 
 		// Re-build recovery context for the next decide iteration.
 		repoPath := e.effectiveRepoPath()
-		freshCtx, freshErr := BuildRecoveryContext(nil, repoPath, e.beadID)
+		var verifyDB *sql.DB
+		if e.deps != nil && e.deps.DoltDB != nil {
+			verifyDB = e.deps.DoltDB()
+		}
+		freshCtx, freshErr := BuildRecoveryContext(verifyDB, repoPath, e.beadID)
 		if freshErr == nil {
 			if freshJSON, jsonErr := json.Marshal(freshCtx); jsonErr == nil {
 				if state.Vars == nil {

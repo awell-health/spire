@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -300,8 +301,12 @@ func actionResolveConflicts() RecoveryAction {
 			}
 
 			for _, f := range files {
-				if err := wc.RunCommand(fmt.Sprintf("git checkout %s -- %s", strategy, f)); err != nil {
-					return fmt.Errorf("resolve conflict in %s with %s: %w", f, strategy, err)
+				// Use exec.Command with args slice to avoid shell injection
+				// from filenames containing spaces, quotes, or semicolons.
+				cmd := exec.Command("git", "checkout", strategy, "--", f)
+				cmd.Dir = wc.Dir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					return fmt.Errorf("resolve conflict in %s with %s: %w\n%s", f, strategy, err, out)
 				}
 			}
 
