@@ -205,6 +205,9 @@ func ProvisionRecoveryWorktree(repoPath string, beadID string) (*spgit.WorktreeC
 
 	cleanup := func() {
 		wc.Cleanup()
+		// Delete the ephemeral recovery branch so a second attempt can recreate it.
+		rc2 := &spgit.RepoContext{Dir: repoPath, BaseBranch: "main"}
+		_ = rc2.ForceDeleteBranch(branch)
 	}
 	return wc, cleanup, nil
 }

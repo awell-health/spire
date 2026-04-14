@@ -2,9 +2,14 @@ package executor
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	spgit "github.com/awell-health/spire/pkg/git"
 )
 
 // ---------------------------------------------------------------------------
@@ -469,5 +474,75 @@ func TestRunRecoveryAction_LogsAttemptNumber(t *testing.T) {
 	}
 	if !strings.Contains(logged, "attempt 1") {
 		t.Errorf("log = %q, want to contain 'attempt 1'", logged)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ProvisionRecoveryWorktree — cleanup deletes the branch
+// ---------------------------------------------------------------------------
+
+// initTestRepo creates a temporary git repo with an initial commit on main.
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "git", "init")
+	runGit(t, dir, "git", "config", "user.name", "Test")
+	runGit(t, dir, "git", "config", "user.email", "test@test.com")
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644)
+	runGit(t, dir, "git", "add", "-A")
+	runGit(t, dir, "git", "commit", "-m", "initial commit")
+	runGit(t, dir, "git", "branch", "-M", "main")
+	return dir
+}
+
+func runGit(t *testing.T, dir, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
+	}
+}
+
+func TestProvisionRecoveryWorktree_CleanupDeletesBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+
+	// Create the feat/<beadID> branch that ProvisionRecoveryWorktree uses as startPoint.
+	beadID := "test-cleanup-1"
+	runGit(t, repoDir, "git", "branch", "feat/"+beadID, "main")
+
+	// First provision — should succeed.
+	wc, cleanup, err := ProvisionRecoveryWorktree(repoDir, beadID)
+	if err != nil {
+		t.Fatalf("first ProvisionRecoveryWorktree: %v", err)
+	}
+	if wc == nil {
+		t.Fatal("first provision returned nil WorktreeContext")
+	}
+
+	// Verify the recovery branch exists.
+	rc := &spgit.RepoContext{Dir: repoDir, BaseBranch: "main"}
+	branch := "recovery/" + beadID
+	if !rc.BranchExists(branch) {
+		t.Fatalf("branch %s should exist after provision", branch)
+	}
+
+	// Call cleanup — should remove worktree AND delete the branch.
+	cleanup()
+
+	// Verify the branch is gone.
+	if rc.BranchExists(branch) {
+		t.Fatalf("branch %s should be deleted after cleanup", branch)
+	}
+
+	// Second provision — should succeed now that the branch is cleaned up.
+	wc2, cleanup2, err := ProvisionRecoveryWorktree(repoDir, beadID)
+	if err != nil {
+		t.Fatalf("second ProvisionRecoveryWorktree: %v", err)
+	}
+	defer cleanup2()
+	if wc2 == nil {
+		t.Fatal("second provision returned nil WorktreeContext")
 	}
 }
