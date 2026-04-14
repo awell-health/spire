@@ -275,7 +275,13 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 					}
 				}
 			}
-			e.terminated = true
+			// Only mark terminated (which removes graph state) on clean exits.
+			// Escalations need graph state preserved for reset --to / resummon.
+			isEscalation := stepCfg.With["status"] == "escalate" ||
+				(result.Outputs != nil && result.Outputs["status"] == "escalated")
+			if !isEscalation {
+				e.terminated = true
+			}
 			// Save parent state before cleaning up nested state (crash-safe ordering).
 			store.Save(e.agentName, state)
 			if stepCfg.Action == "graph.run" {

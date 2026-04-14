@@ -47,12 +47,10 @@ func cmdResummon(args []string) error {
 
 	// 2. Kill the old wizard process and remove its registry entry (clears timer).
 	reg := loadWizardRegistry()
-	wizardName := "wizard-" + beadID
 
 	for i := range reg.Wizards {
 		if reg.Wizards[i].BeadID == beadID {
 			w := reg.Wizards[i]
-			wizardName = w.Name
 
 			// Kill process if still alive.
 			if w.PID > 0 && processAlive(w.PID) {
@@ -79,8 +77,9 @@ func cmdResummon(args []string) error {
 		}
 	}
 
-	// 3. Remove graph state files so summon starts fresh.
-	removeGraphStateFiles(wizardName)
+	// 3. Preserve graph state — the new wizard should resume where the old one left off.
+	// Previously this deleted graph state, forcing a full restart. That wastes all
+	// completed work (plan, dispatch, implement) when only a later step failed.
 
 	// 4. Strip needs-human label.
 	if err := storeRemoveLabel(beadID, "needs-human"); err != nil {
