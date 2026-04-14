@@ -93,17 +93,11 @@ func isAlertBead(b BoardBead) bool {
 	return false
 }
 
-// isInterruptedBead returns true if the bead has an interrupted:* label.
-// This is the explicit failure signal set by executor escalation functions,
-// distinct from alert beads (which are separate linked artifacts) and from
-// needs-human alone (which is used for design approval gates).
-func isInterruptedBead(b BoardBead) bool {
-	for _, l := range b.Labels {
-		if strings.HasPrefix(l, "interrupted:") {
-			return true
-		}
-	}
-	return false
+// isHookedBead returns true if the bead has status='hooked'.
+// This replaces the old label-based interrupted:* check — hooked status is now
+// set directly on beads by the executor when a step parks for human/external action.
+func isHookedBead(b BoardBead) bool {
+	return b.Status == "hooked"
 }
 
 // CategorizeColumnsFromStore builds board columns from store API results.
@@ -131,10 +125,9 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		if blockedIDs[b.ID] {
 			continue
 		}
-		// Interrupted beads get their own section — they must not fall into READY
-		// when step beads are closed after a failed executor run.
-		if isInterruptedBead(b) {
-			c.Interrupted = append(c.Interrupted, b)
+		// Hooked beads get their own section — they are parked waiting for a condition.
+		if isHookedBead(b) {
+			c.Hooked = append(c.Hooked, b)
 			continue
 		}
 
@@ -226,8 +219,8 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		if blockedIDs[b.ID] {
 			continue
 		}
-		if isInterruptedBead(b) {
-			c.Interrupted = append(c.Interrupted, b)
+		if isHookedBead(b) {
+			c.Hooked = append(c.Hooked, b)
 			continue
 		}
 
@@ -337,17 +330,17 @@ func FilterEpic(cols Columns, epicID string) Columns {
 		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".") || linkedIDs[b.ID]
 	}
 	return Columns{
-		Alerts:      FilterBeads(cols.Alerts, match),
-		Interrupted: FilterBeads(cols.Interrupted, match),
-		Backlog:     FilterBeads(cols.Backlog, match),
-		Ready:       FilterBeads(cols.Ready, match),
-		Design:      FilterBeads(cols.Design, match),
-		Plan:        FilterBeads(cols.Plan, match),
-		Implement:   FilterBeads(cols.Implement, match),
-		Review:      FilterBeads(cols.Review, match),
-		Merge:       FilterBeads(cols.Merge, match),
-		Done:        FilterBeads(cols.Done, match),
-		Blocked:     FilterBeads(cols.Blocked, match),
+		Alerts:    FilterBeads(cols.Alerts, match),
+		Hooked:    FilterBeads(cols.Hooked, match),
+		Backlog:   FilterBeads(cols.Backlog, match),
+		Ready:     FilterBeads(cols.Ready, match),
+		Design:    FilterBeads(cols.Design, match),
+		Plan:      FilterBeads(cols.Plan, match),
+		Implement: FilterBeads(cols.Implement, match),
+		Review:    FilterBeads(cols.Review, match),
+		Merge:     FilterBeads(cols.Merge, match),
+		Done:      FilterBeads(cols.Done, match),
+		Blocked:   FilterBeads(cols.Blocked, match),
 	}
 }
 
@@ -441,17 +434,17 @@ func FilterTypeScope(cols Columns, scope TypeScope) Columns {
 		return scope.Match(b)
 	}
 	return Columns{
-		Alerts:      FilterBeads(cols.Alerts, match),
-		Interrupted: FilterBeads(cols.Interrupted, match),
-		Backlog:     FilterBeads(cols.Backlog, match),
-		Ready:       FilterBeads(cols.Ready, match),
-		Design:      FilterBeads(cols.Design, match),
-		Plan:        FilterBeads(cols.Plan, match),
-		Implement:   FilterBeads(cols.Implement, match),
-		Review:      FilterBeads(cols.Review, match),
-		Merge:       FilterBeads(cols.Merge, match),
-		Done:        FilterBeads(cols.Done, match),
-		Blocked:     FilterBeads(cols.Blocked, match),
+		Alerts:    FilterBeads(cols.Alerts, match),
+		Hooked:    FilterBeads(cols.Hooked, match),
+		Backlog:   FilterBeads(cols.Backlog, match),
+		Ready:     FilterBeads(cols.Ready, match),
+		Design:    FilterBeads(cols.Design, match),
+		Plan:      FilterBeads(cols.Plan, match),
+		Implement: FilterBeads(cols.Implement, match),
+		Review:    FilterBeads(cols.Review, match),
+		Merge:     FilterBeads(cols.Merge, match),
+		Done:      FilterBeads(cols.Done, match),
+		Blocked:   FilterBeads(cols.Blocked, match),
 	}
 }
 

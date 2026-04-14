@@ -260,10 +260,10 @@ func fetchSnapshot(db beads.Storage, opts Opts, identity string, fetchAgents fun
 		}
 	}
 
-	// 8. Fetch recovery refs for interrupted beads.
+	// 8. Fetch recovery refs for hooked beads.
 	recoveryRefs := make(map[string]*RecoveryRef)
 	getDeps := storeDepsWith(ctx, db)
-	for _, b := range cols.Interrupted {
+	for _, b := range cols.Hooked {
 		if ref := FetchRecoveryRef(b.ID, getDeps); ref != nil {
 			recoveryRefs[b.ID] = ref
 		}

@@ -293,47 +293,32 @@ func TestBuildActionMenu(t *testing.T) {
 		}
 	})
 
-	t.Run("interrupted shows Resolve not ApproveGate", func(t *testing.T) {
-		bead := &BoardBead{ID: "spi-021", Status: "in_progress", Type: "task", Labels: []string{"needs-human", "interrupted:step-failure"}}
+	t.Run("hooked shows Resume Reset Close", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-021", Status: "hooked", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
-		hasApproveGate := false
-		hasResolve := false
+		hasResummon := false
+		hasReset := false
+		hasClose := false
 		for _, item := range items {
-			if item.ActionType == ActionApproveGate {
-				hasApproveGate = true
+			if item.ActionType == ActionResummon {
+				hasResummon = true
 			}
-			if item.ActionType == ActionResolve {
-				hasResolve = true
+			if item.ActionType == ActionResetSoft {
+				hasReset = true
 			}
-		}
-		if hasApproveGate {
-			t.Error("should not have ApproveGate action for interrupted bead without awaiting-approval")
-		}
-		if !hasResolve {
-			t.Error("expected Resolve action for interrupted bead")
-		}
-	})
-
-	t.Run("needs-human alone shows both Approve and Resolve", func(t *testing.T) {
-		bead := &BoardBead{ID: "spi-022", Status: "in_progress", Type: "task", Labels: []string{"needs-human"}}
-		items := BuildActionMenu(bead, nil)
-
-		hasApprove := false
-		hasResolve := false
-		for _, item := range items {
-			if item.ActionType == ActionApprove {
-				hasApprove = true
-			}
-			if item.ActionType == ActionResolve {
-				hasResolve = true
+			if item.ActionType == ActionClose {
+				hasClose = true
 			}
 		}
-		if !hasApprove {
-			t.Error("expected Approve action for needs-human alone")
+		if !hasResummon {
+			t.Error("expected Resume action for hooked bead")
 		}
-		if !hasResolve {
-			t.Error("expected Resolve action for needs-human alone")
+		if !hasReset {
+			t.Error("expected Reset action for hooked bead")
+		}
+		if !hasClose {
+			t.Error("expected Close action for hooked bead")
 		}
 	})
 }
@@ -1461,25 +1446,24 @@ func TestConfirmPromptForAction(t *testing.T) {
 	}
 }
 
-// --- TestInterruptedBeadCategorization ---
+// --- TestHookedBeadCategorization ---
 
-func TestInterruptedBeadCategorization(t *testing.T) {
-	t.Run("interrupted bead routes to Interrupted not Ready", func(t *testing.T) {
+func TestHookedBeadCategorization(t *testing.T) {
+	t.Run("hooked bead routes to Hooked not Ready", func(t *testing.T) {
 		open := []BoardBead{
-			{ID: "spi-int", Title: "Failed merge", Status: "in_progress", Type: "task", Priority: 1,
-				Labels: []string{"interrupted:merge-failure", "needs-human"}},
+			{ID: "spi-hk", Title: "Waiting for approval", Status: "hooked", Type: "task", Priority: 1},
 			{ID: "spi-ok", Title: "Normal task", Status: "open", Type: "task", Priority: 2},
 		}
 		cols := CategorizeColumnsFromStore(open, nil, nil, "test@test.dev")
-		if len(cols.Interrupted) != 1 || cols.Interrupted[0].ID != "spi-int" {
-			t.Errorf("expected spi-int in Interrupted, got: %v", cols.Interrupted)
+		if len(cols.Hooked) != 1 || cols.Hooked[0].ID != "spi-hk" {
+			t.Errorf("expected spi-hk in Hooked, got: %v", cols.Hooked)
 		}
 		if len(cols.Backlog) != 1 || cols.Backlog[0].ID != "spi-ok" {
 			t.Errorf("expected spi-ok in Backlog, got: %v", cols.Backlog)
 		}
 	})
 
-	t.Run("needs-human without interrupted is NOT routed to Interrupted", func(t *testing.T) {
+	t.Run("non-hooked bead is NOT routed to Hooked", func(t *testing.T) {
 		// Design approval gate: needs-human alone should stay in normal phase routing.
 		open := []BoardBead{
 			{ID: "spi-design", Title: "Design review", Status: "in_progress", Type: "design", Priority: 1,
@@ -1487,41 +1471,40 @@ func TestInterruptedBeadCategorization(t *testing.T) {
 		}
 		phaseMap := map[string]string{"spi-design": "design"}
 		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
-		if len(cols.Interrupted) != 0 {
-			t.Errorf("design bead with needs-human should NOT be in Interrupted, got: %v", cols.Interrupted)
+		if len(cols.Hooked) != 0 {
+			t.Errorf("design bead with needs-human should NOT be in Hooked, got: %v", cols.Hooked)
 		}
 		if len(cols.Design) != 1 {
 			t.Errorf("design bead should be in Design column, got: %v", cols.Design)
 		}
 	})
 
-	t.Run("interrupted takes priority over phase routing", func(t *testing.T) {
+	t.Run("hooked takes priority over phase routing", func(t *testing.T) {
 		open := []BoardBead{
-			{ID: "spi-stuck", Title: "Stuck in implement", Status: "in_progress", Type: "task", Priority: 1,
-				Labels: []string{"interrupted:build-failure", "needs-human", "phase:implement"}},
+			{ID: "spi-stuck", Title: "Stuck in implement", Status: "hooked", Type: "task", Priority: 1,
+				Labels: []string{"phase:implement"}},
 		}
 		phaseMap := map[string]string{"spi-stuck": "implement"}
 		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
-		if len(cols.Interrupted) != 1 || cols.Interrupted[0].ID != "spi-stuck" {
-			t.Errorf("interrupted bead should be in Interrupted, got: %v", cols.Interrupted)
+		if len(cols.Hooked) != 1 || cols.Hooked[0].ID != "spi-stuck" {
+			t.Errorf("hooked bead should be in Hooked, got: %v", cols.Hooked)
 		}
 		if len(cols.Implement) != 0 {
-			t.Errorf("interrupted bead should NOT be in Implement, got: %v", cols.Implement)
+			t.Errorf("hooked bead should NOT be in Implement, got: %v", cols.Implement)
 		}
 	})
 
-	t.Run("CategorizeWithPhases also routes interrupted", func(t *testing.T) {
+	t.Run("CategorizeWithPhases also routes hooked", func(t *testing.T) {
 		open := []BoardBead{
-			{ID: "spi-fail", Title: "Repo failure", Status: "in_progress", Type: "feature", Priority: 0,
-				Labels: []string{"interrupted:repo-resolution"}},
+			{ID: "spi-fail", Title: "Repo failure", Status: "hooked", Type: "feature", Priority: 0},
 		}
 		phaseMap := map[string]string{"spi-fail": "review"}
 		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
-		if len(cols.Interrupted) != 1 || cols.Interrupted[0].ID != "spi-fail" {
-			t.Errorf("expected spi-fail in Interrupted, got: %v", cols.Interrupted)
+		if len(cols.Hooked) != 1 || cols.Hooked[0].ID != "spi-fail" {
+			t.Errorf("expected spi-fail in Hooked, got: %v", cols.Hooked)
 		}
 		if len(cols.Review) != 0 {
-			t.Errorf("interrupted bead should NOT be in Review, got: %v", cols.Review)
+			t.Errorf("hooked bead should NOT be in Review, got: %v", cols.Review)
 		}
 	})
 }

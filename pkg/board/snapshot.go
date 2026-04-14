@@ -8,7 +8,7 @@ type BoardSnapshot struct {
 	Columns      Columns
 	DAGProgress  map[string]*DAGProgress
 	EpicSummary  map[string]*EpicChildSummary
-	RecoveryRefs map[string]*RecoveryRef // interrupted beadID -> open recovery bead (if any)
+	RecoveryRefs map[string]*RecoveryRef // hooked beadID -> open recovery bead (if any)
 	Agents       []LocalAgent
 	PhaseMap     map[string]string // beadID -> phase string (for render)
 	Warnings     []string          // transient system-level alerts (e.g. dolt conflicts)
