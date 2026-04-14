@@ -486,7 +486,7 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 	// Header bar.
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	headerHint := "Esc to close  Tab to switch"
+	headerHint := "Esc close  Tab switch  j/k scroll  J/K ×5"
 	if b.Type == "design" && b.HasLabel("needs-human") {
 		headerHint = "y Approve  n Reject  Esc close  Tab switch"
 	}

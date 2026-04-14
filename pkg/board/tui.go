@@ -952,6 +952,21 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				if m.TermScroll < 0 {
 					m.TermScroll = 0
 				}
+			case "J", "shift+j", "shift+down":
+				m.TermScroll += 5
+				viewportH := m.termViewportH()
+				maxScroll := len(m.TermLines) - viewportH
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.TermScroll > maxScroll {
+					m.TermScroll = maxScroll
+				}
+			case "K", "shift+k", "shift+up":
+				m.TermScroll -= 5
+				if m.TermScroll < 0 {
+					m.TermScroll = 0
+				}
 			case "d":
 				viewportH := m.termViewportH()
 				m.TermScroll += viewportH / 2
@@ -1167,6 +1182,13 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				m.InspectorScroll++
 			case "k", "up":
 				m.InspectorScroll--
+				if m.InspectorScroll < 0 {
+					m.InspectorScroll = 0
+				}
+			case "J", "shift+j", "shift+down":
+				m.InspectorScroll += 5
+			case "K", "shift+k", "shift+up":
+				m.InspectorScroll -= 5
 				if m.InspectorScroll < 0 {
 					m.InspectorScroll = 0
 				}

@@ -194,6 +194,24 @@ func (m *MetricsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				m.focusedSection -= 2
 			}
 
+		case "J", "shift+j", "shift+down":
+			visibleLines := m.sectionContentHeight()
+			totalLines := m.sectionLines[m.focusedSection]
+			maxOff := totalLines - visibleLines
+			if maxOff < 0 {
+				maxOff = 0
+			}
+			m.scrollOffset[m.focusedSection] += 5
+			if m.scrollOffset[m.focusedSection] > maxOff {
+				m.scrollOffset[m.focusedSection] = maxOff
+			}
+
+		case "K", "shift+k", "shift+up":
+			m.scrollOffset[m.focusedSection] -= 5
+			if m.scrollOffset[m.focusedSection] < 0 {
+				m.scrollOffset[m.focusedSection] = 0
+			}
+
 		case "1":
 			m.focusedSection = secFormulaPerf
 		case "2":

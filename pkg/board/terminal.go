@@ -93,7 +93,7 @@ func renderTerminalPane(m *BoardMode, width, height int) string {
 	}
 
 	// Footer with key hints.
-	lines = append(lines, footerStyle.Render("q/Esc close · j/k scroll · d/u page · g/G top/bottom · r refresh"))
+	lines = append(lines, footerStyle.Render("q/Esc close · j/k scroll · J/K ×5 · d/u page · g/G top/bottom · r refresh"))
 
 	content := strings.Join(lines, "\n")
 
