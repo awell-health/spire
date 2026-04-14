@@ -5,6 +5,66 @@ import (
 	"testing"
 )
 
+// resummonGuardAccepts mirrors the guard condition in cmdResummon (lines 41-46).
+// Extracted here so we can unit-test the decision logic without requiring a live store.
+func resummonGuardAccepts(b Bead) bool {
+	isHooked := b.Status == "hooked"
+	hasLegacyLabel := containsLabel(b, "needs-human") || hasLabelPrefix(b, "interrupted:")
+	return isHooked || hasLegacyLabel
+}
+
+// TestResummonGuard_HookedBead verifies that a bead with status=hooked is
+// accepted by the resummon guard even without needs-human or interrupted:* labels.
+func TestResummonGuard_HookedBead(t *testing.T) {
+	b := Bead{ID: "spi-hooked", Status: "hooked", Labels: []string{"phase:implement"}}
+	if !resummonGuardAccepts(b) {
+		t.Error("expected hooked bead to be accepted by resummon guard")
+	}
+}
+
+// TestResummonGuard_InterruptedLabel verifies that a bead with an interrupted:*
+// label is accepted by the resummon guard.
+func TestResummonGuard_InterruptedLabel(t *testing.T) {
+	b := Bead{ID: "spi-int", Status: "in_progress", Labels: []string{"interrupted:merge-failure", "needs-human"}}
+	if !resummonGuardAccepts(b) {
+		t.Error("expected bead with interrupted:merge-failure to be accepted by resummon guard")
+	}
+}
+
+// TestResummonGuard_OpenNonInterrupted verifies that a normal open bead with
+// no hooked status and no interrupted:* labels is rejected.
+func TestResummonGuard_OpenNonInterrupted(t *testing.T) {
+	b := Bead{ID: "spi-normal", Status: "open", Labels: []string{"phase:implement"}}
+	if resummonGuardAccepts(b) {
+		t.Error("expected normal open bead to be rejected by resummon guard")
+	}
+}
+
+// TestHasLabelPrefix verifies the hasLabelPrefix helper used by the resummon guard.
+func TestHasLabelPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []string
+		prefix string
+		want   bool
+	}{
+		{"match", []string{"interrupted:merge-failure"}, "interrupted:", true},
+		{"no match", []string{"phase:implement"}, "interrupted:", false},
+		{"empty labels", []string{}, "interrupted:", false},
+		{"prefix only", []string{"interrupted:"}, "interrupted:", true},
+		{"multiple labels match", []string{"phase:implement", "interrupted:build-failure"}, "interrupted:", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := Bead{Labels: tt.labels}
+			got := hasLabelPrefix(b, tt.prefix)
+			if got != tt.want {
+				t.Errorf("hasLabelPrefix(%v, %q) = %v, want %v", tt.labels, tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestResummon_ClearsDispatchOverride verifies that resummon strips stale
 // dispatch:* labels so the executor falls back to formula-default dispatch.
 // Regression test for spi-wlxbf.

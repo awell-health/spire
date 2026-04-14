@@ -718,3 +718,43 @@ func TestDiagnose_NoRecoveryBead(t *testing.T) {
 		t.Errorf("expected nil RecoveryBead, got %+v", diag.RecoveryBead)
 	}
 }
+
+// TestDiagnose_HookedBead_NoInterruptLabel verifies that Diagnose accepts a bead
+// with status=hooked and no interrupted:* labels, synthesizing "interrupted:hooked"
+// for downstream classification.
+func TestDiagnose_HookedBead_NoInterruptLabel(t *testing.T) {
+	deps := mockDeps()
+	deps.GetBead = func(id string) (DepBead, error) {
+		return DepBead{
+			ID:     id,
+			Title:  "Hooked bead without interrupt label",
+			Status: "hooked",
+			Labels: []string{"phase:implement"}, // no interrupted:* label
+		}, nil
+	}
+
+	diag, err := Diagnose("spi-hooked", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+
+	// The synthesized interrupt label should be "interrupted:hooked".
+	if diag.InterruptLabel != "interrupted:hooked" {
+		t.Errorf("expected InterruptLabel=%q, got %q", "interrupted:hooked", diag.InterruptLabel)
+	}
+
+	// Status should reflect the bead's actual status.
+	if diag.Status != "hooked" {
+		t.Errorf("expected Status=%q, got %q", "hooked", diag.Status)
+	}
+
+	// Phase should still be extracted from labels.
+	if diag.Phase != "implement" {
+		t.Errorf("expected Phase=%q, got %q", "implement", diag.Phase)
+	}
+
+	// Actions should be populated (not empty).
+	if len(diag.Actions) == 0 {
+		t.Fatal("expected at least one recovery action")
+	}
+}

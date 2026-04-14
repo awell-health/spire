@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/awell-health/spire/pkg/executor"
 )
 
 // stubApproveDeps replaces test-replaceable vars used by approve.go.
@@ -16,6 +18,8 @@ func stubApproveDeps(t *testing.T) func() {
 	origAddComment := approveAddCommentFunc
 	origIdentity := approveIdentityFunc
 	origSummon := approveSummonFunc
+	origLoadGS := loadGraphStateForApprove
+	origSaveGS := saveGraphStateForApprove
 
 	// Default stub: no-op summon to avoid hitting the store.
 	approveSummonFunc = func(beadID string) error { return nil }
@@ -28,6 +32,8 @@ func stubApproveDeps(t *testing.T) func() {
 		approveAddCommentFunc = origAddComment
 		approveIdentityFunc = origIdentity
 		approveSummonFunc = origSummon
+		loadGraphStateForApprove = origLoadGS
+		saveGraphStateForApprove = origSaveGS
 	}
 }
 
@@ -183,6 +189,88 @@ func TestCmdApprove_RejectsNonApprovalHookedStep(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no hooked approval step") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestCmdApprove_UpdatesGraphState verifies that cmdApprove resets hooked graph
+// steps to pending and bumps CompletedCount so actionHumanApprove sees
+// CompletedCount > 0 on resume and returns approved.
+func TestCmdApprove_UpdatesGraphState(t *testing.T) {
+	cleanup := stubApproveDeps(t)
+	defer cleanup()
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	approveGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "hooked"}, nil
+	}
+	approveGetStepBeadsFunc = func(parentID string) ([]Bead, error) {
+		return []Bead{
+			{ID: "spi-gs.1", Status: "hooked", Type: "step", Labels: []string{"workflow-step", "step:human.approve"}},
+		}, nil
+	}
+	approveUnhookStepBeadFunc = func(stepID string) error { return nil }
+	approveUpdateBeadFunc = func(id string, u map[string]interface{}) error { return nil }
+	approveAddCommentFunc = func(id, text string) error { return nil }
+	approveIdentityFunc = func() (string, error) { return "JB", nil }
+
+	// Seed a graph state with a hooked step and CompletedCount=0.
+	seedGS := &executor.GraphState{
+		BeadID:    "spi-gs",
+		AgentName: "wizard-spi-gs",
+		Steps: map[string]executor.StepState{
+			"human.approve": {Status: "hooked", CompletedCount: 0},
+			"implement":     {Status: "completed", CompletedCount: 1},
+		},
+		ActiveStep: "human.approve",
+	}
+
+	var savedGS *executor.GraphState
+	loadGraphStateForApprove = func(wizardName string) (*executor.GraphState, error) {
+		if wizardName != "wizard-spi-gs" {
+			t.Errorf("unexpected wizard name: %s", wizardName)
+		}
+		return seedGS, nil
+	}
+	saveGraphStateForApprove = func(wizardName string, gs *executor.GraphState) error {
+		savedGS = gs
+		return nil
+	}
+
+	err := cmdApprove("spi-gs", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if savedGS == nil {
+		t.Fatal("expected graph state to be saved")
+	}
+
+	// The hooked step should be reset to pending with CompletedCount bumped.
+	approveStep, ok := savedGS.Steps["human.approve"]
+	if !ok {
+		t.Fatal("expected human.approve step in saved graph state")
+	}
+	if approveStep.Status != "pending" {
+		t.Errorf("expected human.approve status=pending, got %q", approveStep.Status)
+	}
+	if approveStep.CompletedCount != 1 {
+		t.Errorf("expected human.approve CompletedCount=1, got %d", approveStep.CompletedCount)
+	}
+
+	// ActiveStep should be cleared.
+	if savedGS.ActiveStep != "" {
+		t.Errorf("expected ActiveStep cleared, got %q", savedGS.ActiveStep)
+	}
+
+	// The implement step should be unchanged.
+	implStep := savedGS.Steps["implement"]
+	if implStep.Status != "completed" {
+		t.Errorf("expected implement status=completed, got %q", implStep.Status)
+	}
+	if implStep.CompletedCount != 1 {
+		t.Errorf("expected implement CompletedCount=1 (unchanged), got %d", implStep.CompletedCount)
 	}
 }
 
