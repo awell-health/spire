@@ -106,9 +106,6 @@ func (rs *retryState) handleStepSuccess() {
 	if err := executor.SetRetryResult(rs.beadID, result); err != nil {
 		rs.log("warning: failed to set retry result: %s", err)
 	}
-	if err := executor.ClearRetryRequest(rs.beadID); err != nil {
-		rs.log("warning: failed to clear retry request: %s", err)
-	}
 
 	rs.log("Retry succeeded at step %s, continuing normal execution", rs.currentStep)
 	// Clear retrying flag — the handoff is complete, continue normally.
