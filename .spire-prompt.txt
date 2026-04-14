@@ -1,0 +1,302 @@
+You are Spire apprentice wizard-spi-a0spf-implement — IMPLEMENT PHASE.
+
+You are working in an isolated git worktree. Other agents may be working on related tasks in parallel — you cannot see their changes.
+
+## Task
+- bead: spi-a0spf
+- base branch: main
+- feature branch: feat/spi-a0spf
+- target model: claude-opus-4-6
+- max turns: 75
+- hard timeout: 15m
+
+## Before making changes
+1. Read the focus context below carefully — it contains the FULL task description.
+2. Read the repo context paths below. If a path is a directory, inspect only relevant files.
+3. Pay attention to "do not touch" constraints in the task description — other agents handle those files.
+
+## Repo context paths
+- CLAUDE.md
+- SPIRE.md
+- docs/ZFC.md
+- pkg/executor/README.md
+- pkg/formula/README.md
+- pkg/wizard/README.md
+- pkg/git/README.md
+- pkg/workshop/README.md
+
+
+## Validation commands
+- install: (none)
+- lint: go vet ./cmd/spire/
+- build: go build ./cmd/spire/
+- test: go test ./cmd/spire/ -timeout=30s
+
+## Rules — READ THESE
+
+1. Work ONLY on the task described below. Do not add features, refactor unrelated code, or "improve" things outside your task scope.
+2. Do NOT create a PR, merge, push, or touch other branches. The orchestrator handles that.
+3. Do NOT modify files listed as "do_not_touch" in the task description — another agent handles those.
+4. If the task description says to create types/interfaces that other tasks will use, make them complete and well-documented.
+5. COMMIT YOUR WORK before running validation. Your code MUST build — the orchestrator will verify this and send you back to fix build errors if it doesn't. If tests fail on code you wrote, try to fix it. If tests fail on code you didn't write, IGNORE IT and commit anyway.
+6. If you CANNOT complete the full task as described, commit what you have and report what's missing as a comment on the bead. Partial work committed is ALWAYS better than no work committed.
+7. Do NOT revert your changes. Do NOT undo work you've done. If something isn't working, commit what you have — the reviewer will sort it out.
+
+
+## Focus context (FULL task description)
+--- Task spi-a0spf ---
+Title: Retry requests forward graph step names the wizard does not accept
+Status: in_progress
+Priority: P1
+Formula: bug-default
+
+--- Step Graph ---
+  plan           ✓ completed   (6m11s)
+→ implement      ● active    
+  review         . pending   
+  discard        . pending     [terminal, when: outcome eq discard]
+  merge          . pending     [when: outcome eq merge]
+  close          . pending     [terminal]
+
+--- Workspace ---
+  feature: feat/{vars.bead_id} (owned_worktree, pending)
+
+--- discovered-from: spi-2xvo4 ---
+Title: Recovery agent: git-aware, worktree-capable, cooperative wizard handoff
+Status: closed
+
+--- blocks: spi-ilz58 ---
+Title: Recovery formula still uses verify-clean, not cooperative verify loop
+Status: closed
+
+--- Comments (1) ---
+[spire]: Implementation plan:
+
+Good — `StepConfig = formula.StepConfig` is a type alias in deps.go. The flow is: `EscalateGraphStepFailure` receives `stepCfg.Flow` at the call site in graph_interpreter.go:217. This `flow` value is included in the `nodeCtx` string but not extracted as a separate metadata field.
+
+Now I have all the context for a precise plan. Here it is:
+
+---
+
+**Approach:** The recovery agent stores graph step names (e.g., `verify-build`) as `SourceStep` in recovery metadata, which flows into `RetryRequest.FromStep`. The wizard rejects these because it only knows its own phase names (`design`, `implement`, `commit`, `build-gate`, `test`, `review`). Fix this by: (1) also storing the graph step's `flow` field in recovery metadata, (2) using it as the wizard-compatible phase in `handleVerify`, and (3) adding a fallback mapping in the wizard for robustness.
+
+**Key files:**
+- `pkg/executor/recovery_protocol.go` — add `MapToWizardPhase()` function and `KnownWizardPhases` set
+- `pkg/executor/recovery_phase.go` — call `MapToWizardPhase()` on `failedStep` before setting `FromStep` in `handleVerify`
+- `pkg/wizard/wizard_retry.go` — use `executor.MapToWizardPhase()` instead of raw `knownWizardSteps` lookup in `checkRetryRequest`
+- `pkg/recovery/keys.go` (or wherever `KeySourceStep` is defined) — add `KeySourceFlow` constant for the new metadata field
+- `pkg/executor/executor_escalate.go` — extract `flow` from `nodeCtx` in `buildSeedMetadata()` and store as `SourceFlow`; also seed `SourceFlow` in `RecoveryMetadata`
+- `pkg/executor/recovery_context.go` — read `SourceFlow` into `FullRecoveryContext` and use it to populate a new `WizardPhase` field
+- `pkg/executor/recovery_protocol_test.go` — add tests for `MapToWizardPhase`
+- `pkg/wizard/wizard_retry_test.go` — update tests for the new mapping behavior
+
+**Steps:**
+
+1. **Add `KeySourceFlow` to recovery metadata keys** (pkg/recovery/keys.go or equivalent). Add a `source_flow` metadata key alongside the existing `source_step` key.
+
+2. **Extend `RecoveryMetadata` and `buildSeedMetadata`** (pkg/executor/executor_escalate.go). In `buildSeedMetadata()`, also extract `flow=<value>` from `nodeCtx` (same pattern as `step=`). Store it in a new `SourceFlow` field on `RecoveryMetadata`. This captures the formula step's `flow` attribute (e.g., `implement`, `task-plan`, `epic-plan`) at escalation time.
+
+3. **Add `WizardPhase` to `FullRecoveryContext`** (pkg/executor/recovery_context.go). In `BuildRecoveryContext()`, after reading `FailedStep` from `KeySourceStep`, also read `SourceFlow` from metadata into a new `WizardPhase string` field on `FullRecoveryContext`.
+
+4. **Add `MapToWizardPhase()` in `recovery_protocol.go`**. This is the translation function. Logic:
+   - If step is already in `KnownWizardPhases` → return as-is
+   - Check a static mapping for known graph step names:
+     - `verify-build`, `build-failed` → `build-gate`
+     - `dispatch-children` → `implement`
+     - `design-check` → `design`
+     - `implement-failed` → `implement`
+     - `merge`, `close`, `discard` → `review` (retry from review to redo the terminal flow)
+     - `plan`, `materialize` → `design`
+     - `sage-review`, `review-fix`, `arbiter` → `review` (subgraph-review steps)
+   - Final fallback → `implement` (safest restart point for the wizard)
+   - Export `KnownWizardPhases` so the wizard package can reference it.
+
+5. **Use `MapToWizardPhase` in `handleVerify`** (recovery_phase.go ~line 1430). After determining `failedStep`, also check `fullCtx.WizardPhase` (the `flow` from step metadata). Prefer `WizardPhase` if non-empty, else apply `MapToWizardPhase(failedStep)`. Set the mapped value as `FromStep`.
+
+6. **Use `MapToWizardPhase` in wizard's `checkRetryRequest`** (wizard_retry.go). Replace the direct `knownWizardSteps[req.FromStep]` check with `mapped := executor.MapToWizardPhase(req.FromStep)`. If `mapped` differs from `req.FromStep`, log the translation. Update `req.FromStep` to the mapped value before proceeding. Remove the local `knownWizardSteps` var (it's now canonical in executor).
+
+7. **Tests:**
+   - `recovery_protocol_test.go`: Test `MapToWizardPhase` — known wizard steps pass through, graph step names map correctly, unknown names fallback to `implement`.
+   - `wizard_retry_test.go`: Add a test case where `FromStep="verify-build"` — should translate to `build-gate` and succeed instead of rejecting.
+   - `executor_escalate_test.go` (if exists): Test that `buildSeedMetadata` extracts `flow` into `SourceFlow`.
+   - `recovery_context_test.go`: Test that `WizardPhase` is populated from metadata.
+
+**Edge cases / gotchas:**
+- **Graph steps with no `flow` attribute** (like `verify-build`, `dispatch-children`): The `SourceFlow` metadata will be empty. The static mapping in `MapToWizardPhase` handles these by name.
+- **Subgraph steps** (from `subgraph-review`, `subgraph-implement`): These have step names like `sage-review`, `review-fix`, `verified`. The static map must cover these, and the fallback must be sensible.
+- **Empty `failedStep`**: If both `FailedStep` and `WizardPhase` are empty, `handleVerify` should still set a `FromStep`. Use `implement` as default — the wizard will restart from the implement phase.
+- **Circular dependency risk**: `MapToWizardPhase` must live in `pkg/executor` (not `pkg/wizard`) since wizard already imports executor. The wizard calls `executor.MapToWizardPhase()`.
+- **Recovery protocol test** at line 16 uses `FromStep: "verify-build"` — this is the exact bug scenario. Update it to verify the mapping works end-to-end.
+- **The `flow` values in formulas** (`task-plan`, `epic-plan`, `sage-review`, `review-fix`, `arbiter`) don't match wizard phases directly. The `MapToWizardPhase` function should also map these: `task-plan`/`epic-plan` → `design`, `sage-review` → `review`, `review-fix` → `review`, `arbiter` → `review`, `implement` → `implement`.
+
+**Validation:**
+- `go test ./pkg/executor/... -run TestMapToWizardPhase` — verify the mapping function
+- `go test ./pkg/wizard/... -run TestRetry` — verify the wizard accepts translated step names
+- `go test ./pkg/executor/... -run TestRecovery` — verify end-to-end recovery context building
+- `go build ./...` — ensure no import cycles from the new shared function
+
+--- Agent Runs (2) ---
+  claude-opus-4-6      wizard     success     370s  2026-04-14T21:51:45Z
+  claude-opus-4-6      wizard     success       0s  2026-04-14T21:51:44Z
+
+
+
+## Bead JSON
+[
+  {
+    "id": "spi-a0spf",
+    "title": "Retry requests forward graph step names the wizard does not accept",
+    "status": "in_progress",
+    "priority": 1,
+    "issue_type": "bug",
+    "assignee": "wizard-spi-a0spf",
+    "created_at": "2026-04-14T20:48:49Z",
+    "updated_at": "2026-04-14T21:51:44Z",
+    "dependencies": [
+      {
+        "id": "spi-2xvo4",
+        "title": "Recovery agent: git-aware, worktree-capable, cooperative wizard handoff",
+        "status": "closed",
+        "priority": 0,
+        "issue_type": "design",
+        "created_at": "2026-04-14T15:36:23Z",
+        "updated_at": "2026-04-14T19:08:43Z",
+        "closed_at": "2026-04-14T19:08:43Z",
+        "close_reason": "Closed",
+        "labels": [
+          "needs-human"
+        ],
+        "dependency_type": "discovered-from"
+      },
+      {
+        "id": "spi-ilz58",
+        "title": "Recovery formula still uses verify-clean, not cooperative verify loop",
+        "status": "closed",
+        "priority": 1,
+        "issue_type": "bug",
+        "assignee": "wizard-spi-ilz58",
+        "created_at": "2026-04-14T20:48:49Z",
+        "updated_at": "2026-04-14T21:06:02Z",
+        "closed_at": "2026-04-14T21:06:02Z",
+        "metadata": {
+          "commits": "[\"ff8ff959ea3f9d5559111a72bde0998297a75bb8\"]"
+        },
+        "labels": [
+          "review-approved"
+        ],
+        "dependency_type": "blocks"
+      }
+    ],
+    "dependents": [
+      {
+        "id": "spi-6mmud",
+        "title": "step:close",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:44Z",
+        "updated_at": "2026-04-14T21:51:44Z",
+        "labels": [
+          "step:close",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-7mvuf",
+        "title": "step:merge",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:44Z",
+        "updated_at": "2026-04-14T21:51:44Z",
+        "labels": [
+          "step:merge",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-ilmhg",
+        "title": "step:plan",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:44Z",
+        "updated_at": "2026-04-14T21:57:57Z",
+        "closed_at": "2026-04-14T21:57:57Z",
+        "labels": [
+          "step:plan",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-jxvc2",
+        "title": "attempt: wizard-spi-a0spf",
+        "status": "in_progress",
+        "priority": 3,
+        "issue_type": "attempt",
+        "created_at": "2026-04-14T21:51:44Z",
+        "updated_at": "2026-04-14T21:51:44Z",
+        "labels": [
+          "agent:wizard-spi-a0spf",
+          "attempt",
+          "branch:feat/spi-a0spf"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-ka9rk",
+        "title": "step:review",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:44Z",
+        "updated_at": "2026-04-14T21:51:44Z",
+        "labels": [
+          "step:review",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-w2jf5",
+        "title": "step:implement",
+        "status": "in_progress",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:44Z",
+        "updated_at": "2026-04-14T21:57:57Z",
+        "labels": [
+          "step:implement",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-xk7t4",
+        "title": "step:discard",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:44Z",
+        "updated_at": "2026-04-14T21:51:44Z",
+        "labels": [
+          "step:discard",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      }
+    ],
+    "comments": [
+      {
+        "id": "019d8e00-4978-7e63-a23a-ffda924acaa9",
+        "issue_id": "spi-a0spf",
+        "author": "spire",
+        "text": "Implementation plan:\n\nGood — `StepConfig = formula.StepConfig` is a type alias in deps.go. The flow is: `EscalateGraphStepFailure` receives `stepCfg.Flow` at the call site in graph_interpreter.go:217. This `flow` value is included in the `nodeCtx` string but not extracted as a separate metadata field.\n\nNow I have all the context for a precise plan. Here it is:\n\n---\n\n**Approach:** The recovery agent stores graph step names (e.g., `verify-build`) as `SourceStep` in recovery metadata, which flows into `RetryRequest.FromStep`. The wizard rejects these because it only knows its own phase names (`design`, `implement`, `commit`, `build-gate`, `test`, `review`). Fix this by: (1) also storing the graph step's `flow` field in recovery metadata, (2) using it as the wizard-compatible phase in `handleVerify`, and (3) adding a fallback mapping in the wizard for robustness.\n\n**Key files:**\n- `pkg/executor/recovery_protocol.go` — add `MapToWizardPhase()` function and `KnownWizardPhases` set\n- `pkg/executor/recovery_phase.go` — call `MapToWizardPhase()` on `failedStep` before setting `FromStep` in `handleVerify`\n- `pkg/wizard/wizard_retry.go` — use `executor.MapToWizardPhase()` instead of raw `knownWizardSteps` lookup in `checkRetryRequest`\n- `pkg/recovery/keys.go` (or wherever `KeySourceStep` is defined) — add `KeySourceFlow` constant for the new metadata field\n- `pkg/executor/executor_escalate.go` — extract `flow` from `nodeCtx` in `buildSeedMetadata()` and store as `SourceFlow`; also seed `SourceFlow` in `RecoveryMetadata`\n- `pkg/executor/recovery_context.go` — read `SourceFlow` into `FullRecoveryContext` and use it to populate a new `WizardPhase` field\n- `pkg/executor/recovery_protocol_test.go` — add tests for `MapToWizardPhase`\n- `pkg/wizard/wizard_retry_test.go` — update tests for the new mapping behavior\n\n**Steps:**\n\n1. **Add `KeySourceFlow` to recovery metadata keys** (pkg/recovery/keys.go or equivalent). Add a `source_flow` metadata key alongside the existing `source_step` key.\n\n2. **Extend `RecoveryMetadata` and `buildSeedMetadata`** (pkg/executor/executor_escalate.go). In `buildSeedMetadata()`, also extract `flow=\u003cvalue\u003e` from `nodeCtx` (same pattern as `step=`). Store it in a new `SourceFlow` field on `RecoveryMetadata`. This captures the formula step's `flow` attribute (e.g., `implement`, `task-plan`, `epic-plan`) at escalation time.\n\n3. **Add `WizardPhase` to `FullRecoveryContext`** (pkg/executor/recovery_context.go). In `BuildRecoveryContext()`, after reading `FailedStep` from `KeySourceStep`, also read `SourceFlow` from metadata into a new `WizardPhase string` field on `FullRecoveryContext`.\n\n4. **Add `MapToWizardPhase()` in `recovery_protocol.go`**. This is the translation function. Logic:\n   - If step is already in `KnownWizardPhases` → return as-is\n   - Check a static mapping for known graph step names:\n     - `verify-build`, `build-failed` → `build-gate`\n     - `dispatch-children` → `implement`\n     - `design-check` → `design`\n     - `implement-failed` → `implement`\n     - `merge`, `close`, `discard` → `review` (retry from review to redo the terminal flow)\n     - `plan`, `materialize` → `design`\n     - `sage-review`, `review-fix`, `arbiter` → `review` (subgraph-review steps)\n   - Final fallback → `implement` (safest restart point for the wizard)\n   - Export `KnownWizardPhases` so the wizard package can reference it.\n\n5. **Use `MapToWizardPhase` in `handleVerify`** (recovery_phase.go ~line 1430). After determining `failedStep`, also check `fullCtx.WizardPhase` (the `flow` from step metadata). Prefer `WizardPhase` if non-empty, else apply `MapToWizardPhase(failedStep)`. Set the mapped value as `FromStep`.\n\n6. **Use `MapToWizardPhase` in wizard's `checkRetryRequest`** (wizard_retry.go). Replace the direct `knownWizardSteps[req.FromStep]` check with `mapped := executor.MapToWizardPhase(req.FromStep)`. If `mapped` differs from `req.FromStep`, log the translation. Update `req.FromStep` to the mapped value before proceeding. Remove the local `knownWizardSteps` var (it's now canonical in executor).\n\n7. **Tests:**\n   - `recovery_protocol_test.go`: Test `MapToWizardPhase` — known wizard steps pass through, graph step names map correctly, unknown names fallback to `implement`.\n   - `wizard_retry_test.go`: Add a test case where `FromStep=\"verify-build\"` — should translate to `build-gate` and succeed instead of rejecting.\n   - `executor_escalate_test.go` (if exists): Test that `buildSeedMetadata` extracts `flow` into `SourceFlow`.\n   - `recovery_context_test.go`: Test that `WizardPhase` is populated from metadata.\n\n**Edge cases / gotchas:**\n- **Graph steps with no `flow` attribute** (like `verify-build`, `dispatch-children`): The `SourceFlow` metadata will be empty. The static mapping in `MapToWizardPhase` handles these by name.\n- **Subgraph steps** (from `subgraph-review`, `subgraph-implement`): These have step names like `sage-review`, `review-fix`, `verified`. The static map must cover these, and the fallback must be sensible.\n- **Empty `failedStep`**: If both `FailedStep` and `WizardPhase` are empty, `handleVerify` should still set a `FromStep`. Use `implement` as default — the wizard will restart from the implement phase.\n- **Circular dependency risk**: `MapToWizardPhase` must live in `pkg/executor` (not `pkg/wizard`) since wizard already imports executor. The wizard calls `executor.MapToWizardPhase()`.\n- **Recovery protocol test** at line 16 uses `FromStep: \"verify-build\"` — this is the exact bug scenario. Update it to verify the mapping works end-to-end.\n- **The `flow` values in formulas** (`task-plan`, `epic-plan`, `sage-review`, `review-fix`, `arbiter`) don't match wizard phases directly. The `MapToWizardPhase` function should also map these: `task-plan`/`epic-plan` → `design`, `sage-review` → `review`, `review-fix` → `review`, `arbiter` → `review`, `implement` → `implement`.\n\n**Validation:**\n- `go test ./pkg/executor/... -run TestMapToWizardPhase` — verify the mapping function\n- `go test ./pkg/wizard/... -run TestRetry` — verify the wizard accepts translated step names\n- `go test ./pkg/executor/... -run TestRecovery` — verify end-to-end recovery context building\n- `go build ./...` — ensure no import cycles from the new shared function",
+        "created_at": "2026-04-14T21:57:57Z"
+      }
+    ]
+  }
+]

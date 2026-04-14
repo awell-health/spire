@@ -15,6 +15,7 @@ const (
 	KeySourceBead         = "source_bead"
 	KeySourceFormula      = "source_formula"
 	KeySourceStep         = "source_step"
+	KeySourceFlow         = "source_flow"
 	KeyResolutionKind     = "resolution_kind"
 	KeyVerificationStatus = "verification_status"
 	KeyLearningKey        = "learning_key"
@@ -35,6 +36,7 @@ type RecoveryMetadata struct {
 	SourceBead         string
 	SourceFormula      string
 	SourceStep         string
+	SourceFlow         string
 	ResolutionKind     string
 	VerificationStatus string
 	LearningKey        string
@@ -55,6 +57,7 @@ func RecoveryMetadataFromBead(b store.Bead) RecoveryMetadata {
 		SourceBead:         b.Meta(KeySourceBead),
 		SourceFormula:      b.Meta(KeySourceFormula),
 		SourceStep:         b.Meta(KeySourceStep),
+		SourceFlow:         b.Meta(KeySourceFlow),
 		ResolutionKind:     b.Meta(KeyResolutionKind),
 		VerificationStatus: b.Meta(KeyVerificationStatus),
 		LearningKey:        b.Meta(KeyLearningKey),
@@ -86,6 +89,9 @@ func (r RecoveryMetadata) ToMap() map[string]string {
 	}
 	if r.SourceStep != "" {
 		m[KeySourceStep] = r.SourceStep
+	}
+	if r.SourceFlow != "" {
+		m[KeySourceFlow] = r.SourceFlow
 	}
 	if r.ResolutionKind != "" {
 		m[KeyResolutionKind] = r.ResolutionKind

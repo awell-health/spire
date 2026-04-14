@@ -23,11 +23,12 @@ func TestBuildSeedMetadata(t *testing.T) {
 				FailureClass:     "merge-failure",
 				SourceBead:       "spi-abc",
 				SourceStep:       "",
+				SourceFlow:       "",
 				FailureSignature: "merge-failure",
 			},
 		},
 		{
-			name:        "nodeCtx with step",
+			name:        "nodeCtx with step and flow",
 			parentID:    "spi-def",
 			failureType: "step-failure",
 			nodeCtx:     "step=implement action=wizard.run flow=implement workspace=feature",
@@ -35,11 +36,12 @@ func TestBuildSeedMetadata(t *testing.T) {
 				FailureClass:     "step-failure",
 				SourceBead:       "spi-def",
 				SourceStep:       "implement",
+				SourceFlow:       "implement",
 				FailureSignature: "step-failure:implement",
 			},
 		},
 		{
-			name:        "nodeCtx step only",
+			name:        "nodeCtx step only no flow",
 			parentID:    "spi-ghi",
 			failureType: "build-failure",
 			nodeCtx:     "step=review",
@@ -47,11 +49,12 @@ func TestBuildSeedMetadata(t *testing.T) {
 				FailureClass:     "build-failure",
 				SourceBead:       "spi-ghi",
 				SourceStep:       "review",
+				SourceFlow:       "",
 				FailureSignature: "build-failure:review",
 			},
 		},
 		{
-			name:        "nodeCtx without step prefix",
+			name:        "nodeCtx flow only no step",
 			parentID:    "spi-jkl",
 			failureType: "repo-resolution",
 			nodeCtx:     "action=wizard.run flow=implement",
@@ -59,19 +62,34 @@ func TestBuildSeedMetadata(t *testing.T) {
 				FailureClass:     "repo-resolution",
 				SourceBead:       "spi-jkl",
 				SourceStep:       "",
+				SourceFlow:       "implement",
 				FailureSignature: "repo-resolution",
 			},
 		},
 		{
-			name:        "step appears after other fields",
+			name:        "step appears after other fields with flow",
 			parentID:    "spi-mno",
 			failureType: "step-failure",
-			nodeCtx:     "action=wizard.run step=merge workspace=feature",
+			nodeCtx:     "action=wizard.run step=merge flow=review workspace=feature",
 			want: recovery.RecoveryMetadata{
 				FailureClass:     "step-failure",
 				SourceBead:       "spi-mno",
 				SourceStep:       "merge",
+				SourceFlow:       "review",
 				FailureSignature: "step-failure:merge",
+			},
+		},
+		{
+			name:        "flow is task-plan",
+			parentID:    "spi-pqr",
+			failureType: "step-failure",
+			nodeCtx:     "step=verify-build flow=task-plan",
+			want: recovery.RecoveryMetadata{
+				FailureClass:     "step-failure",
+				SourceBead:       "spi-pqr",
+				SourceStep:       "verify-build",
+				SourceFlow:       "task-plan",
+				FailureSignature: "step-failure:verify-build",
 			},
 		},
 	}
@@ -87,6 +105,9 @@ func TestBuildSeedMetadata(t *testing.T) {
 			}
 			if got.SourceStep != tt.want.SourceStep {
 				t.Errorf("SourceStep = %q, want %q", got.SourceStep, tt.want.SourceStep)
+			}
+			if got.SourceFlow != tt.want.SourceFlow {
+				t.Errorf("SourceFlow = %q, want %q", got.SourceFlow, tt.want.SourceFlow)
 			}
 			if got.FailureSignature != tt.want.FailureSignature {
 				t.Errorf("FailureSignature = %q, want %q", got.FailureSignature, tt.want.FailureSignature)

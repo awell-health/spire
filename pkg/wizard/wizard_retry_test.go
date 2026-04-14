@@ -20,11 +20,39 @@ func TestKnownWizardSteps_Contains(t *testing.T) {
 }
 
 func TestKnownWizardSteps_RejectsUnknown(t *testing.T) {
-	unknowns := []string{"deploy", "merge", "plan", "verify", ""}
+	unknowns := []string{"deploy", "verify", ""}
 	for _, step := range unknowns {
 		if knownWizardSteps[step] {
 			t.Errorf("knownWizardSteps should not contain %q", step)
 		}
+	}
+}
+
+// TestKnownWizardSteps_MatchesExecutor verifies the local alias points to
+// the canonical set in executor.KnownWizardPhases.
+func TestKnownWizardSteps_MatchesExecutor(t *testing.T) {
+	for phase := range executor.KnownWizardPhases {
+		if !knownWizardSteps[phase] {
+			t.Errorf("knownWizardSteps missing executor phase %q", phase)
+		}
+	}
+	for phase := range knownWizardSteps {
+		if !executor.KnownWizardPhases[phase] {
+			t.Errorf("knownWizardSteps has extra phase %q not in executor", phase)
+		}
+	}
+}
+
+// TestMapToWizardPhase_VerifyBuildAccepted tests the exact bug scenario:
+// recovery agent sends FromStep="verify-build" which should translate to
+// "build-gate" and be accepted, not rejected as unknown.
+func TestMapToWizardPhase_VerifyBuildAccepted(t *testing.T) {
+	mapped := executor.MapToWizardPhase("verify-build")
+	if mapped != "build-gate" {
+		t.Fatalf("MapToWizardPhase('verify-build') = %q, want 'build-gate'", mapped)
+	}
+	if !knownWizardSteps[mapped] {
+		t.Errorf("mapped phase %q not in knownWizardSteps", mapped)
 	}
 }
 

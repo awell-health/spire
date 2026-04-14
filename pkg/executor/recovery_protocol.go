@@ -200,3 +200,69 @@ func clearRecoveryLabels(beadID string, prefixes ...string) error {
 func clearAllRecoveryLabels(beadID string) error {
 	return clearRecoveryLabels(beadID, recoveryLabelPrefix)
 }
+
+// KnownWizardPhases is the canonical set of wizard-internal phase names.
+// Exported so both executor and wizard packages share a single source of truth.
+var KnownWizardPhases = map[string]bool{
+	"design":     true,
+	"implement":  true,
+	"commit":     true,
+	"build-gate": true,
+	"test":       true,
+	"review":     true,
+}
+
+// graphStepToWizardPhase maps graph step names and formula flow values to the
+// wizard phase they correspond to. Used by MapToWizardPhase for the static
+// translation layer.
+var graphStepToWizardPhase = map[string]string{
+	// Build-related graph steps
+	"verify-build":  "build-gate",
+	"build-failed":  "build-gate",
+
+	// Implementation graph steps
+	"dispatch-children": "implement",
+	"implement-failed":  "implement",
+
+	// Design/plan graph steps
+	"design-check": "design",
+	"plan":         "design",
+	"materialize":  "design",
+
+	// Terminal/review graph steps
+	"merge":   "review",
+	"close":   "review",
+	"discard": "review",
+
+	// Subgraph review steps
+	"sage-review": "review",
+	"review-fix":  "review",
+	"arbiter":     "review",
+	"verified":    "review",
+
+	// Formula flow values (these appear as SourceFlow, not step names)
+	"task-plan":  "design",
+	"epic-plan":  "design",
+}
+
+// MapToWizardPhase translates a graph step name or formula flow value into a
+// wizard-compatible phase name. The wizard only accepts phases from
+// KnownWizardPhases; graph step names (e.g., "verify-build") must be mapped
+// before setting RetryRequest.FromStep.
+//
+// Resolution order:
+//  1. If step is already a known wizard phase, return as-is
+//  2. Check static mapping for known graph step names / flow values
+//  3. Fallback to "implement" (safest restart point)
+func MapToWizardPhase(step string) string {
+	if step == "" {
+		return "implement"
+	}
+	if KnownWizardPhases[step] {
+		return step
+	}
+	if mapped, ok := graphStepToWizardPhase[step]; ok {
+		return mapped
+	}
+	return "implement"
+}

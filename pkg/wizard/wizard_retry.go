@@ -7,16 +7,9 @@ import (
 	"github.com/awell-health/spire/pkg/executor"
 )
 
-// Known wizard steps that a retry request can target. These correspond to the
-// internal phases of CmdWizardRun's execution flow.
-var knownWizardSteps = map[string]bool{
-	"design":    true,
-	"implement": true,
-	"commit":    true,
-	"build-gate":     true,
-	"test":      true,
-	"review":    true,
-}
+// knownWizardSteps is a local alias for executor.KnownWizardPhases.
+// Kept as a read-only reference for backward compatibility in tests.
+var knownWizardSteps = executor.KnownWizardPhases
 
 // retryState tracks whether the current wizard run is executing a recovery
 // retry request. When retrying is true, step completions and failures are
@@ -47,20 +40,12 @@ func checkRetryRequest(beadID string, log func(string, ...interface{})) (*retryS
 		return &retryState{beadID: beadID, log: log}, nil
 	}
 
-	// Validate that FromStep matches a known wizard step.
-	if !knownWizardSteps[req.FromStep] {
-		// Unknown step — report failure and exit.
-		result := executor.RetryResult{
-			Success: false,
-			Error:   fmt.Sprintf("unknown step: %s", req.FromStep),
-		}
-		if setErr := executor.SetRetryResult(beadID, result); setErr != nil {
-			log("warning: failed to set retry result for unknown step: %s", setErr)
-		}
-		if clearErr := executor.ClearRetryRequest(beadID); clearErr != nil {
-			log("warning: failed to clear retry request: %s", clearErr)
-		}
-		return nil, fmt.Errorf("recovery agent requested retry from unknown step: %s", req.FromStep)
+	// Map the FromStep to a wizard-compatible phase. This handles graph step
+	// names (e.g., "verify-build") that the recovery agent may forward.
+	mapped := executor.MapToWizardPhase(req.FromStep)
+	if mapped != req.FromStep {
+		log("Mapped recovery step %q → wizard phase %q", req.FromStep, mapped)
+		req.FromStep = mapped
 	}
 
 	log("Recovery agent requested retry from step: %s (attempt %d)", req.FromStep, req.AttemptNumber)

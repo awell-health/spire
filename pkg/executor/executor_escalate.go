@@ -419,11 +419,14 @@ func ExecutorFinishRecovery(beadID string, learning recovery.RecoveryLearning, d
 // from the available escalation context. Pure logic — no side effects.
 func buildSeedMetadata(parentID, failureType, nodeCtx string) recovery.RecoveryMetadata {
 	stepName := ""
+	flowName := ""
 	if nodeCtx != "" {
 		for _, part := range strings.Fields(nodeCtx) {
 			if strings.HasPrefix(part, "step=") {
 				stepName = strings.TrimPrefix(part, "step=")
-				break
+			}
+			if strings.HasPrefix(part, "flow=") {
+				flowName = strings.TrimPrefix(part, "flow=")
 			}
 		}
 	}
@@ -438,6 +441,7 @@ func buildSeedMetadata(parentID, failureType, nodeCtx string) recovery.RecoveryM
 		FailureClass:     failureType,
 		SourceBead:       parentID,
 		SourceStep:       stepName,
+		SourceFlow:       flowName,
 		FailureSignature: sig,
 		// TODO(source_formula): The Escalate* functions receive deps but not
 		// the executor's formula reference. To populate SourceFormula, either

@@ -156,6 +156,7 @@ type FullRecoveryContext struct {
 	AttemptHistory   []store.RecoveryAttempt    `json:"attempt_history,omitempty"`
 	HumanComments    []string                  `json:"human_comments,omitempty"`
 	FailedStep       string                    `json:"failed_step,omitempty"`
+	WizardPhase      string                    `json:"wizard_phase,omitempty"`
 	FailureReason    string                    `json:"failure_reason,omitempty"`
 	TotalAttempts    int                       `json:"total_attempts"`
 	RepeatedFailures map[string]int            `json:"repeated_failures,omitempty"`
@@ -199,6 +200,9 @@ func BuildRecoveryContext(db *sql.DB, repoPath string, recoveryBeadID string) (*
 	if ctx.FailedStep == "" {
 		ctx.FailedStep = parseFailedStepFromLabels(targetBead.Labels)
 	}
+
+	// 4b. Read SourceFlow from recovery bead metadata as the wizard-compatible phase.
+	ctx.WizardPhase = recoveryBead.Meta(recovery.KeySourceFlow)
 
 	// 5. Parse failure reason from recovery bead metadata.
 	ctx.FailureReason = recoveryBead.Meta(recovery.KeyFailureClass)

@@ -1404,15 +1404,31 @@ func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphSta
 
 	// Determine failed step and attempt number from context.
 	failedStep := ""
+	wizardPhase := ""
 	attemptNumber := 1
 	if state != nil && state.Vars != nil {
 		if frcJSON := state.Vars["full_recovery_context"]; frcJSON != "" {
 			var fullCtx FullRecoveryContext
 			if err := json.Unmarshal([]byte(frcJSON), &fullCtx); err == nil {
 				failedStep = fullCtx.FailedStep
+				wizardPhase = fullCtx.WizardPhase
 				attemptNumber = fullCtx.TotalAttempts + 1
 			}
 		}
+	}
+
+	// Map graph step name to wizard-compatible phase. Prefer the flow-derived
+	// WizardPhase (set from SourceFlow metadata) when available; otherwise
+	// translate the raw failedStep via MapToWizardPhase.
+	mappedStep := wizardPhase
+	if mappedStep == "" {
+		mappedStep = MapToWizardPhase(failedStep)
+	} else if !KnownWizardPhases[mappedStep] {
+		// WizardPhase from flow might also need mapping (e.g., "task-plan" → "design").
+		mappedStep = MapToWizardPhase(mappedStep)
+	}
+	if mappedStep != failedStep {
+		e.log("recovery: verify: mapped step %q → wizard phase %q", failedStep, mappedStep)
 	}
 
 	// Read human guidance from decide step if available.
@@ -1423,11 +1439,11 @@ func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphSta
 		}
 	}
 
-	// Set retry request on the target bead.
+	// Set retry request on the target bead using the mapped wizard phase.
 	retryReq := RetryRequest{
 		RecoveryBeadID: e.beadID,
 		TargetBeadID:   sourceBeadID,
-		FromStep:       failedStep,
+		FromStep:       mappedStep,
 		AttemptNumber:  attemptNumber,
 		Guidance:       guidance,
 	}
@@ -1444,7 +1460,7 @@ func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphSta
 		}
 	}
 
-	e.log("recovery: verify: retry request set on %s (from_step=%s, attempt=%d)", sourceBeadID, failedStep, attemptNumber)
+	e.log("recovery: verify: retry request set on %s (from_step=%s, attempt=%d)", sourceBeadID, mappedStep, attemptNumber)
 
 	// Polling loop: check for retry result every interval, up to timeout.
 	// Uses context + ticker so the loop is cancellable if the executor shuts down.

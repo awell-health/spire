@@ -168,6 +168,83 @@ func TestRetryRequestLabelConstruction(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// MapToWizardPhase
+// ---------------------------------------------------------------------------
+
+func TestMapToWizardPhase_KnownWizardSteps(t *testing.T) {
+	// Known wizard phases should pass through unchanged.
+	for phase := range KnownWizardPhases {
+		got := MapToWizardPhase(phase)
+		if got != phase {
+			t.Errorf("MapToWizardPhase(%q) = %q, want %q (passthrough)", phase, got, phase)
+		}
+	}
+}
+
+func TestMapToWizardPhase_GraphStepNames(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"verify-build", "build-gate"},
+		{"build-failed", "build-gate"},
+		{"dispatch-children", "implement"},
+		{"implement-failed", "implement"},
+		{"design-check", "design"},
+		{"plan", "design"},
+		{"materialize", "design"},
+		{"merge", "review"},
+		{"close", "review"},
+		{"discard", "review"},
+		{"sage-review", "review"},
+		{"review-fix", "review"},
+		{"arbiter", "review"},
+		{"verified", "review"},
+	}
+	for _, tt := range tests {
+		got := MapToWizardPhase(tt.input)
+		if got != tt.want {
+			t.Errorf("MapToWizardPhase(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestMapToWizardPhase_FlowValues(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"task-plan", "design"},
+		{"epic-plan", "design"},
+		// "implement" is already a known wizard phase, should passthrough.
+		{"implement", "implement"},
+	}
+	for _, tt := range tests {
+		got := MapToWizardPhase(tt.input)
+		if got != tt.want {
+			t.Errorf("MapToWizardPhase(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestMapToWizardPhase_UnknownFallback(t *testing.T) {
+	unknowns := []string{"something-weird", "deploy", "rollback", "custom-step"}
+	for _, step := range unknowns {
+		got := MapToWizardPhase(step)
+		if got != "implement" {
+			t.Errorf("MapToWizardPhase(%q) = %q, want 'implement' (fallback)", step, got)
+		}
+	}
+}
+
+func TestMapToWizardPhase_Empty(t *testing.T) {
+	got := MapToWizardPhase("")
+	if got != "implement" {
+		t.Errorf("MapToWizardPhase('') = %q, want 'implement'", got)
+	}
+}
+
 func TestRetryResultStatusLabel(t *testing.T) {
 	tests := []struct {
 		success bool
