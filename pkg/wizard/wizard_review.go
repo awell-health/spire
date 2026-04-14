@@ -440,8 +440,6 @@ func ReviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath str
 	// Add review-approved (still needed for executor/workshop reads until those are migrated)
 	deps.AddLabel(beadID, "review-approved")
 
-	// Close review molecule step
-	deps.CloseMoleculeStep(beadID, "review")
 	deps.AddComment(beadID, fmt.Sprintf("Review approved by %s", reviewerName))
 
 	// Build commands in v3 come from step-graph vars / repo config, not formula phases.
@@ -457,8 +455,6 @@ func ReviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath str
 		return err
 	}
 
-	// Close merge molecule step after successful merge
-	deps.CloseMoleculeStep(beadID, "merge")
 	deps.RemoveLabel(beadID, "test-failure")
 	log("done — merged and closed")
 	return nil
@@ -799,8 +795,6 @@ func CmdWizardMerge(args []string, deps *Deps) error {
 		return err
 	}
 
-	// Close merge molecule step and bead
-	deps.CloseMoleculeStep(beadID, "merge")
 	deps.RemoveLabel(beadID, "review-approved")
 	deps.RemoveLabel(beadID, "test-failure")
 	deps.RemoveLabel(beadID, "feat-branch:"+branch)

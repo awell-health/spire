@@ -1437,7 +1437,6 @@ func TestGraphExecutorExitCleansUpRegistry(t *testing.T) {
 			return nil, nil
 		},
 		Spawner:           &mockBackend{},
-		CloseMoleculeStep: func(beadID, stepName string) {},
 		AddComment:        func(id, text string) error { return nil },
 	}
 

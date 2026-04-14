@@ -325,9 +325,9 @@ These are not pipeline-specific — they're the vocabulary of how all work progr
 | System | What it tracks | How |
 |---|---|---|
 | `phase:X` label on the bead | Where the bead is RIGHT NOW | Board column routing, agent dispatch |
-| Molecule children (child beads) | What has been COMPLETED | Audit trail, progress record |
+| GraphState step beads | What has been COMPLETED | Audit trail, progress record |
 
-On each phase transition, the code calls both `setPhase()` (update board routing) and `wizardCloseMoleculeStep()` (close the audit trail child bead). They are complementary, not redundant.
+On each phase transition, the code calls `setPhase()` (update board routing). Step bead lifecycle (activate/close) is managed by the v3 graph interpreter via `GraphState.StepBeadIDs`.
 
 ### Phase transitions
 

@@ -362,8 +362,6 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		accMetrics = accMetrics.Add(metrics)
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
-		// Close implement molecule step
-		deps.CloseMoleculeStep(beadID, "implement")
 	} else {
 		// Normal path: design phase then implement phase
 
@@ -398,8 +396,6 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			// Post plan as bead comment
 			deps.AddComment(beadID, fmt.Sprintf("Design plan:\n%s", designOutput))
 
-			// Close design molecule step
-			deps.CloseMoleculeStep(beadID, "design")
 		}
 
 		// --- Implement phase ---
@@ -429,8 +425,6 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		accMetrics = accMetrics.Add(implMetrics)
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
 
-		// Close implement molecule step
-		deps.CloseMoleculeStep(beadID, "implement")
 	}
 
 	// 10. Commit
@@ -1331,62 +1325,6 @@ func CaptureWizardFocus(beadID string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
-}
-
-// --- Molecule helpers ---
-
-// FindMoleculeSteps finds the workflow molecule for a bead and returns
-// step name -> step bead ID mapping.
-func FindMoleculeSteps(beadID string, deps *Deps) (string, map[string]string, error) {
-	// Find molecule by workflow:<beadID> label
-	mols, err := deps.ListBeads(beads.IssueFilter{
-		IDPrefix: "spi-",
-		Labels:   []string{"workflow:" + beadID},
-	})
-	if err != nil || len(mols) == 0 {
-		return "", nil, fmt.Errorf("no molecule found for %s", beadID)
-	}
-	molID := mols[0].ID
-
-	// Get children (the molecule steps)
-	children, err := deps.GetChildren(molID)
-	if err != nil {
-		return molID, nil, err
-	}
-
-	// Match by title prefix
-	steps := make(map[string]string)
-	for _, c := range children {
-		lower := strings.ToLower(c.Title)
-		switch {
-		case strings.HasPrefix(lower, "design"):
-			steps["design"] = c.ID
-		case strings.HasPrefix(lower, "implement"):
-			steps["implement"] = c.ID
-		case strings.HasPrefix(lower, "review"):
-			steps["review"] = c.ID
-		case strings.HasPrefix(lower, "merge"):
-			steps["merge"] = c.ID
-		}
-	}
-	return molID, steps, nil
-}
-
-// CloseMoleculeStep closes a named step in the bead's workflow molecule.
-func CloseMoleculeStep(beadID, stepName string, deps *Deps) {
-	_, steps, err := FindMoleculeSteps(beadID, deps)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: molecule step %s: %s\n", stepName, err)
-		return
-	}
-	stepID, ok := steps[stepName]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "warning: molecule step %s not found for %s\n", stepName, beadID)
-		return
-	}
-	if err := deps.CloseBead(stepID); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: close molecule step %s (%s): %s\n", stepName, stepID, err)
-	}
 }
 
 // --- Feedback collection ---

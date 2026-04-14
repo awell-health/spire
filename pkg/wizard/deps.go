@@ -129,10 +129,6 @@ type Deps struct {
 	EscalateHumanFailure func(beadID, agentName, failureType, message string)
 	ComputeWaves         func(epicID string) ([][]string, error)
 
-	// Molecule steps
-	FindMoleculeSteps func(beadID string) (string, map[string]string, error)
-	CloseMoleculeStep func(beadID, stepName string)
-
 	// Focus / bead JSON
 	CaptureFocus func(beadID string) (string, error)
 	GetBeadJSON  func(beadID string) (string, error)

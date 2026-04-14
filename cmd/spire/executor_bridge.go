@@ -183,9 +183,6 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		ReviewEscalateToArbiter: bridgeReviewEscalateToArbiter,
 		ReviewBeadVerdict:       reviewBeadVerdict,
 
-		// Molecule steps
-		CloseMoleculeStep: wizardCloseMoleculeStep,
-
 		// Bead predicates
 		IsAttemptBead:     isAttemptBead,
 		IsStepBead:        isStepBead,

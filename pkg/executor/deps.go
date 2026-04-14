@@ -124,9 +124,6 @@ type Deps struct {
 	ReviewEscalateToArbiter func(beadID, reviewerName string, lastReview *Review, policy RevisionPolicy, log func(string, ...interface{})) error
 	ReviewBeadVerdict       func(b Bead) string
 
-	// Molecule steps
-	CloseMoleculeStep func(beadID, stepName string)
-
 	// Bead predicates
 	IsAttemptBead    func(b Bead) bool
 	IsStepBead       func(b Bead) bool

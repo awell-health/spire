@@ -50,13 +50,6 @@ func wizardCaptureFocus(beadID string) (string, error) {
 	return wizard.CaptureWizardFocus(beadID)
 }
 
-func wizardCloseMoleculeStep(beadID, stepName string) {
-	wizard.CloseMoleculeStep(beadID, stepName, buildWizardDeps())
-}
-
-func wizardFindMoleculeSteps(beadID string) (string, map[string]string, error) {
-	return wizard.FindMoleculeSteps(beadID, buildWizardDeps())
-}
 
 func wizardCleanup(worktreeDir, repoPath string) {
 	wizard.WizardCleanup(worktreeDir, repoPath)
@@ -178,14 +171,6 @@ func buildWizardDeps() *wizard.Deps {
 		TerminalDiscard:      terminalDiscard,
 		EscalateHumanFailure: escalateHumanFailure,
 		ComputeWaves:         computeWaves,
-
-		// Molecule steps — self-referential through pkg/wizard
-		FindMoleculeSteps: func(beadID string) (string, map[string]string, error) {
-			return wizard.FindMoleculeSteps(beadID, buildWizardDeps())
-		},
-		CloseMoleculeStep: func(beadID, stepName string) {
-			wizard.CloseMoleculeStep(beadID, stepName, buildWizardDeps())
-		},
 
 		// Focus / bead JSON
 		CaptureFocus: wizard.CaptureWizardFocus,
