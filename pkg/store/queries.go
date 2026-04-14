@@ -148,6 +148,13 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	// filters (deferred, design, active-attempt) are applied below.
 	var filtered []Bead
 	for _, b := range result {
+		// Skip open beads — only status=ready beads should reach the steward.
+		// The beads library returns both open and ready (both category=active),
+		// but the scheduling path narrows to just ready.
+		// TODO: use bd.StatusOpen constant when pkg/store imports pkg/bd
+		if b.Status == "open" {
+			continue
+		}
 		// IsWorkBead excludes internal types (message, step, attempt, review)
 		// and child beads (Parent != "").
 		if !IsWorkBead(b) {
