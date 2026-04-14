@@ -12,7 +12,12 @@ resources:
   - beads-seed.yaml
   - spire-config.yaml
   - dolt.yaml
+  - clickhouse.yaml
   - steward.yaml
   - operator.yaml
+  - dolt-sync-cronjob.yaml
+  - network-policy.yaml
+  - pod-priority.yaml
+  - eso-external-secret.yaml
   # Optional — uncomment to deploy:
   # - syncer.yaml

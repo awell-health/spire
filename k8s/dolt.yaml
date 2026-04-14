@@ -1,28 +1,29 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: spire-dolt
   namespace: spire
   labels:
+    app: spire-dolt
     app.kubernetes.io/name: spire-dolt
     app.kubernetes.io/component: database
 spec:
+  serviceName: spire-dolt
   replicas: 1
-  strategy:
-    type: Recreate  # PV is RWO — only one pod can mount it
   selector:
     matchLabels:
-      app.kubernetes.io/name: spire-dolt
+      app: spire-dolt
   template:
     metadata:
       labels:
+        app: spire-dolt
         app.kubernetes.io/name: spire-dolt
     spec:
       containers:
         - name: dolt
           image: dolthub/dolt-sql-server:latest
           ports:
-            - containerPort: 3306
+            - containerPort: 3307
               name: mysql
           env:
             - name: DOLT_ROOT_PATH
@@ -42,7 +43,7 @@ spec:
                   key: key_id
                   optional: true
           volumeMounts:
-            - name: data
+            - name: dolt-data
               mountPath: /var/lib/dolt
             - name: dolt-config
               mountPath: /var/lib/dolt/config.yaml
@@ -55,25 +56,21 @@ spec:
               readOnly: true
           resources:
             requests:
-              cpu: 100m
+              cpu: 500m
               memory: 256Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 2000m
+              memory: 2Gi
           readinessProbe:
             tcpSocket:
-              port: 3306
-            initialDelaySeconds: 5
-            periodSeconds: 10
+              port: 3307
+            initialDelaySeconds: 10
           livenessProbe:
             tcpSocket:
-              port: 3306
-            initialDelaySeconds: 15
+              port: 3307
+            initialDelaySeconds: 30
             periodSeconds: 30
       volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: spire-beads-data
         - name: dolt-config
           configMap:
             name: dolt-server-config
@@ -84,6 +81,14 @@ spec:
         - name: init
           configMap:
             name: dolt-init
+  volumeClaimTemplates:
+  - metadata:
+      name: dolt-data
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources:
+        requests:
+          storage: 20Gi
 ---
 apiVersion: v1
 kind: Service
@@ -94,12 +99,12 @@ metadata:
     app.kubernetes.io/name: spire-dolt
 spec:
   selector:
-    app.kubernetes.io/name: spire-dolt
+    app: spire-dolt
   ports:
-    - port: 3306
-      targetPort: 3306
+    - port: 3307
+      targetPort: 3307
       name: mysql
-  clusterIP: None  # headless — pods connect to spire-dolt.spire.svc:3306
+  clusterIP: None  # headless — pods connect to spire-dolt.spire.svc:3307
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -119,10 +124,12 @@ data:
     allow_cleartext_passwords: true
     listener:
       host: "0.0.0.0"
-      port: 3306
-      max_connections: 100
+      port: 3307
+      max_connections: 200
       read_timeout_millis: 28800000
       write_timeout_millis: 28800000
+    performance:
+      query_parallelism: 4
 ---
 apiVersion: v1
 kind: ConfigMap

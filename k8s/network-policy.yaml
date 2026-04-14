@@ -1,0 +1,147 @@
+# Agent pods can reach dolt (3307) and steward OTLP (4317)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-agent-egress
+  namespace: spire
+spec:
+  podSelector:
+    matchLabels:
+      spire.agent: ""
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: spire-dolt
+    ports:
+    - port: 3307
+      protocol: TCP
+  - to:
+    - podSelector:
+        matchLabels:
+          app: spire-steward
+    ports:
+    - port: 4317
+      protocol: TCP
+  # DNS resolution
+  - to: []
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # GitHub/API access (external)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - port: 443
+      protocol: TCP
+---
+# Steward can reach ClickHouse (9000) and dolt (3307)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-steward-egress
+  namespace: spire
+spec:
+  podSelector:
+    matchLabels:
+      app: spire-steward
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: spire-clickhouse
+    ports:
+    - port: 9000
+      protocol: TCP
+    - port: 8123
+      protocol: TCP
+  - to:
+    - podSelector:
+        matchLabels:
+          app: spire-dolt
+    ports:
+    - port: 3307
+      protocol: TCP
+  - to: []
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+---
+# Default deny all ingress except labeled pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-default-deny
+  namespace: spire
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress: []
+---
+# Allow ingress to dolt from spire namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-dolt-ingress
+  namespace: spire
+spec:
+  podSelector:
+    matchLabels:
+      app: spire-dolt
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector: {}
+    ports:
+    - port: 3307
+---
+# Allow OTLP ingress to steward from agent pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-steward-ingress
+  namespace: spire
+spec:
+  podSelector:
+    matchLabels:
+      app: spire-steward
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - key: spire.agent
+          operator: Exists
+    ports:
+    - port: 4317
+---
+# Allow ingress to ClickHouse from steward only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-clickhouse-ingress
+  namespace: spire
+spec:
+  podSelector:
+    matchLabels:
+      app: spire-clickhouse
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: spire-steward
+    ports:
+    - port: 9000
+    - port: 8123

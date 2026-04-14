@@ -1,0 +1,23 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: spire-agent-p0
+value: 1000000
+globalDefault: false
+description: "P0 critical bead agent pods"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: spire-agent-default
+value: 100000
+globalDefault: false
+description: "Default priority for spire agent pods"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: spire-infrastructure
+value: 2000000
+globalDefault: false
+description: "Spire infrastructure pods (steward, dolt, clickhouse)"

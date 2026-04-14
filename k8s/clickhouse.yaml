@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-clickhouse
+  namespace: spire
+spec:
+  serviceName: spire-clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spire-clickhouse
+  template:
+    metadata:
+      labels:
+        app: spire-clickhouse
+    spec:
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:24.8
+        ports:
+        - containerPort: 8123
+          name: http
+        - containerPort: 9000
+          name: native
+        volumeMounts:
+        - name: clickhouse-data
+          mountPath: /var/lib/clickhouse
+        - name: clickhouse-config
+          mountPath: /etc/clickhouse-server/config.d/
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 500m
+          limits:
+            memory: 4Gi
+            cpu: 2000m
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 15
+          periodSeconds: 30
+  volumeClaimTemplates:
+  - metadata:
+      name: clickhouse-data
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources:
+        requests:
+          storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-clickhouse
+  namespace: spire
+spec:
+  clusterIP: None
+  ports:
+  - port: 8123
+    name: http
+  - port: 9000
+    name: native
+  selector:
+    app: spire-clickhouse
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: spire
+data:
+  spire.xml: |
+    <clickhouse>
+      <max_connections>200</max_connections>
+      <max_concurrent_queries>100</max_concurrent_queries>
+      <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+    </clickhouse>
