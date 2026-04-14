@@ -20,6 +20,7 @@ func init() {
 	rootCmd.AddCommand(claimCmd)
 	rootCmd.AddCommand(closeCmd)
 	rootCmd.AddCommand(readyCmd)
+	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(downCmd)
 	rootCmd.AddCommand(shutdownCmd)
 	rootCmd.AddCommand(statusCmd)
