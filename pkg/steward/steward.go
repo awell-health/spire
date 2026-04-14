@@ -67,6 +67,15 @@ var GetCommentsFunc = store.GetComments
 // RemoveLabelFunc is a test-replaceable function for store.RemoveLabel.
 var RemoveLabelFunc = store.RemoveLabel
 
+// UnhookStepBeadFunc is a test-replaceable function for store.UnhookStepBead.
+var UnhookStepBeadFunc = store.UnhookStepBead
+
+// GetHookedStepsFunc is a test-replaceable function for store.GetHookedSteps.
+var GetHookedStepsFunc = store.GetHookedSteps
+
+// UpdateBeadFunc is a test-replaceable function for store.UpdateBead.
+var UpdateBeadFunc = store.UpdateBead
+
 // SendMessageFunc creates a message bead. Test-replaceable.
 var SendMessageFunc = sendMessage
 
@@ -760,33 +769,73 @@ func DetectReviewFeedback(dryRun bool) {
 // SweepHookedSteps finds graph states with hooked steps and re-summons
 // wizards when the hooked condition is resolved (e.g., design bead closed).
 func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, graphStore executor.GraphStateStore) int {
-	// 1. List all graph states with hooked steps via the store abstraction.
-	// In local mode this scans configDir/runtime/*/graph_state.json;
-	// in cluster mode it queries the Dolt graph_state table.
-	entries, err := graphStore.ListHooked(towerName)
+	resummoned := 0
+
+	// --- Primary path: bead-status-driven sweep ---
+	// Query for work beads with status='hooked'. For each, find child step beads
+	// with status='hooked' and check if their hook condition is resolved.
+	hookedStatus := beads.Status("hooked")
+	hookedParents, err := ListBeadsFunc(beads.IssueFilter{Status: &hookedStatus})
 	if err != nil {
-		log.Printf("[steward] hooked sweep: list hooked: %s", err)
-		return 0
+		log.Printf("[steward] hooked sweep: list hooked beads: %s", err)
 	}
 
-	resummoned := 0
-	for _, entry := range entries {
-		agentName := entry.AgentName
-		gs := entry.State
+	// Track which bead IDs we resolved via bead-status path so the graph-state
+	// fallback can skip them.
+	resolvedBeadIDs := make(map[string]bool)
 
-		// 2. Find hooked steps.
-		for stepName, ss := range gs.Steps {
-			if ss.Status != "hooked" {
+	for _, parent := range hookedParents {
+		// Only sweep work types (task, bug, feature, epic).
+		switch parent.Type {
+		case "task", "bug", "feature", "epic":
+		default:
+			continue
+		}
+
+		// Find hooked step bead children.
+		hookedSteps, err := GetHookedStepsFunc(parent.ID)
+		if err != nil {
+			log.Printf("[steward] hooked sweep: get hooked steps for %s: %s", parent.ID, err)
+			continue
+		}
+		if len(hookedSteps) == 0 {
+			continue
+		}
+
+		// Load graph state to get outputs and agent name for condition checking.
+		// Try to find the agent name from the graph state store.
+		var gs *executor.GraphState
+		var agentName string
+
+		// Scan graph state entries to find the one matching this bead.
+		entries, _ := graphStore.ListHooked(towerName)
+		for _, entry := range entries {
+			if entry.BeadID == parent.ID {
+				gs = entry.State
+				agentName = entry.AgentName
+				break
+			}
+		}
+
+		anyResolved := false
+		for _, stepBead := range hookedSteps {
+			stepName := store.StepBeadPhaseName(stepBead)
+			if stepName == "" {
 				continue
 			}
 
-			// 3. Resolve the hooked condition.
+			// Resolve the hooked condition using graph state outputs if available.
 			// Two hook types:
 			//   a) check.design-linked: design_ref output → check if design bead is closed with content
 			//   b) human.approve: no design_ref → check if awaiting-approval label was cleared
-			designRef := ss.Outputs["design_ref"]
-			resolved := false
+			var designRef string
+			if gs != nil {
+				if ss, ok := gs.Steps[stepName]; ok {
+					designRef = ss.Outputs["design_ref"]
+				}
+			}
 
+			resolved := false
 			if designRef != "" {
 				// Design-linked hook: check if design bead is now closed with content.
 				designBead, err := GetBeadFunc(designRef)
@@ -801,18 +850,18 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				if len(comments) == 0 && designBead.Description == "" {
 					continue // closed but empty
 				}
-				log.Printf("[steward] hooked sweep: design bead %s resolved for %s step %s", designRef, agentName, stepName)
+				log.Printf("[steward] hooked sweep: design bead %s resolved for %s step %s", designRef, parent.ID, stepName)
 				resolved = true
 			} else {
 				// Human approval hook (or other label-based hook): check if
 				// awaiting-approval and needs-human labels have been cleared.
-				bead, err := GetBeadFunc(gs.BeadID)
+				parentBead, err := GetBeadFunc(parent.ID)
 				if err != nil {
-					log.Printf("[steward] hooked sweep: get bead %s: %s", gs.BeadID, err)
+					log.Printf("[steward] hooked sweep: get bead %s: %s", parent.ID, err)
 					continue
 				}
-				if !store.ContainsLabel(bead, "awaiting-approval") && !store.ContainsLabel(bead, "needs-human") {
-					log.Printf("[steward] hooked sweep: approval labels cleared for %s step %s", agentName, stepName)
+				if !store.ContainsLabel(parentBead, "awaiting-approval") && !store.ContainsLabel(parentBead, "needs-human") {
+					log.Printf("[steward] hooked sweep: approval labels cleared for %s step %s", parent.ID, stepName)
 					resolved = true
 				} else {
 					continue // still waiting for approval
@@ -824,11 +873,144 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			}
 
 			if dryRun {
-				log.Printf("[steward] [dry-run] would reset step %s and re-summon %s", stepName, agentName)
+				log.Printf("[steward] [dry-run] would unhook step %s (%s) and re-summon for %s", stepName, stepBead.ID, parent.ID)
+				anyResolved = true
 				continue
 			}
 
-			// 4. Reset hooked step to pending via the graph state store.
+			// 1. Unhook the step bead (status hooked → open).
+			if err := UnhookStepBeadFunc(stepBead.ID); err != nil {
+				log.Printf("[steward] hooked sweep: unhook step bead %s: %s", stepBead.ID, err)
+				continue
+			}
+
+			// Also reset the graph state step to pending if we have it.
+			if gs != nil {
+				if ss, ok := gs.Steps[stepName]; ok {
+					ss.Status = "pending"
+					ss.Outputs = nil
+					ss.StartedAt = ""
+					ss.CompletedAt = ""
+					gs.Steps[stepName] = ss
+					if err := graphStore.Save(agentName, gs); err != nil {
+						log.Printf("[steward] hooked sweep: save graph state for %s: %s", agentName, err)
+					}
+				}
+			}
+
+			anyResolved = true
+			break // one hooked step per parent is enough per cycle
+		}
+
+		if !anyResolved {
+			continue
+		}
+
+		resolvedBeadIDs[parent.ID] = true
+
+		if dryRun {
+			resummoned++
+			continue
+		}
+
+		// 2. Check if any other step beads for this parent are still hooked.
+		remainingHooked, _ := GetHookedStepsFunc(parent.ID)
+		if len(remainingHooked) == 0 {
+			// 3. No more hooked steps — set parent bead status back to in_progress.
+			if err := UpdateBeadFunc(parent.ID, map[string]interface{}{
+				"status": "in_progress",
+			}); err != nil {
+				log.Printf("[steward] hooked sweep: set %s to in_progress: %s", parent.ID, err)
+			} else {
+				log.Printf("[steward] hooked sweep: %s no longer hooked, set to in_progress", parent.ID)
+			}
+		}
+
+		// 4. Re-summon wizard.
+		if agentName == "" {
+			agentName = "wizard-" + SanitizeK8sLabel(parent.ID)
+		}
+		handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+			Name:    agentName,
+			BeadID:  parent.ID,
+			Role:    agent.RoleApprentice,
+			Tower:   towerName,
+			LogPath: filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
+		})
+		if spawnErr != nil {
+			log.Printf("[steward] hooked sweep: spawn %s: %s", agentName, spawnErr)
+		} else if handle != nil {
+			log.Printf("[steward] hooked sweep: re-summoned %s for %s (%s)", agentName, parent.ID, handle.Identifier())
+		}
+		resummoned++
+	}
+
+	// --- Secondary path: graph-state-driven fallback ---
+	// Scan graph_state.json files for hooked steps not yet covered by bead status.
+	// This handles cases where graph state has hooked steps but bead status hasn't
+	// been updated yet (e.g., pre-migration data).
+	entries, err := graphStore.ListHooked(towerName)
+	if err != nil {
+		log.Printf("[steward] hooked sweep: list hooked graph states: %s", err)
+		return resummoned
+	}
+
+	for _, entry := range entries {
+		// Skip beads already resolved via the primary bead-status path.
+		if resolvedBeadIDs[entry.BeadID] {
+			continue
+		}
+
+		agentName := entry.AgentName
+		gs := entry.State
+
+		for stepName, ss := range gs.Steps {
+			if ss.Status != "hooked" {
+				continue
+			}
+
+			designRef := ss.Outputs["design_ref"]
+			resolved := false
+
+			if designRef != "" {
+				designBead, err := GetBeadFunc(designRef)
+				if err != nil {
+					log.Printf("[steward] hooked sweep: get design bead %s: %s", designRef, err)
+					continue
+				}
+				if designBead.Status != "closed" {
+					continue
+				}
+				comments, _ := GetCommentsFunc(designRef)
+				if len(comments) == 0 && designBead.Description == "" {
+					continue
+				}
+				log.Printf("[steward] hooked sweep: design bead %s resolved for %s step %s (graph-state fallback)", designRef, agentName, stepName)
+				resolved = true
+			} else {
+				bead, err := GetBeadFunc(gs.BeadID)
+				if err != nil {
+					log.Printf("[steward] hooked sweep: get bead %s: %s", gs.BeadID, err)
+					continue
+				}
+				if !store.ContainsLabel(bead, "awaiting-approval") && !store.ContainsLabel(bead, "needs-human") {
+					log.Printf("[steward] hooked sweep: approval labels cleared for %s step %s (graph-state fallback)", agentName, stepName)
+					resolved = true
+				} else {
+					continue
+				}
+			}
+
+			if !resolved {
+				continue
+			}
+
+			if dryRun {
+				log.Printf("[steward] [dry-run] would reset step %s and re-summon %s (graph-state fallback)", stepName, agentName)
+				continue
+			}
+
+			// Reset graph state step to pending.
 			ss.Status = "pending"
 			ss.Outputs = nil
 			ss.StartedAt = ""
@@ -839,7 +1021,27 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				continue
 			}
 
-			// 5. Re-summon wizard.
+			// Also unhook the step bead if we can find it.
+			if stepBeadID, ok := gs.StepBeadIDs[stepName]; ok && stepBeadID != "" {
+				if err := UnhookStepBeadFunc(stepBeadID); err != nil {
+					log.Printf("[steward] hooked sweep: unhook step bead %s: %s", stepBeadID, err)
+				}
+			}
+
+			// Check parent bead status and clear hooked if no more hooked steps.
+			parentBead, _ := GetBeadFunc(gs.BeadID)
+			if parentBead.Status == "hooked" {
+				remainingHooked, _ := GetHookedStepsFunc(gs.BeadID)
+				if len(remainingHooked) == 0 {
+					if err := UpdateBeadFunc(gs.BeadID, map[string]interface{}{
+						"status": "in_progress",
+					}); err != nil {
+						log.Printf("[steward] hooked sweep: set %s to in_progress: %s", gs.BeadID, err)
+					}
+				}
+			}
+
+			// Re-summon wizard.
 			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
 				Name:    agentName,
 				BeadID:  gs.BeadID,
@@ -850,12 +1052,13 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			if spawnErr != nil {
 				log.Printf("[steward] hooked sweep: spawn %s: %s", agentName, spawnErr)
 			} else if handle != nil {
-				log.Printf("[steward] hooked sweep: re-summoned %s for %s (%s)", agentName, gs.BeadID, handle.Identifier())
+				log.Printf("[steward] hooked sweep: re-summoned %s for %s (%s) (graph-state fallback)", agentName, gs.BeadID, handle.Identifier())
 			}
 			resummoned++
-			break // one hooked step per agent is enough
+			break
 		}
 	}
+
 	return resummoned
 }
 
