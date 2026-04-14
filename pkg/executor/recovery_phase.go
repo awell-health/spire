@@ -24,7 +24,20 @@ func init() {
 	actionRegistry["recovery.decide"] = actionRecoveryDecide
 	actionRegistry["recovery.learn"] = actionRecoveryLearn
 	actionRegistry["recovery.collect_context"] = actionRecoveryCollectContext
+	actionRegistry["recovery.verify"] = actionRecoveryVerify
 }
+
+// DefaultMaxRecoveryAttempts is the number of recovery attempts before
+// automatic escalation. Can be overridden via step.With["max_attempts"].
+const DefaultMaxRecoveryAttempts = 3
+
+// DefaultVerifyPollInterval is the polling interval for the cooperative
+// verify loop (in seconds).
+const DefaultVerifyPollInterval = 30
+
+// DefaultVerifyTimeout is the maximum time to wait for a retry result
+// (in seconds).
+const DefaultVerifyTimeout = 600 // 10 minutes
 
 // actionRecoveryExecute is the ActionHandler for the "recovery.execute" opcode.
 // It bridges formula step dispatch to the recovery action vocabulary.
@@ -65,6 +78,15 @@ func actionRecoveryExecute(e *Executor, stepName string, step StepConfig, state 
 		if actionKind == "execute" {
 			return ActionResult{Error: fmt.Errorf("recovery execute: no chosen_action from decide step")}
 		}
+
+		// Check if the chosen action is in the git-aware recovery action
+		// registry (recovery_actions.go). If so, route through RunRecoveryAction
+		// which handles worktree provisioning and per-attempt tracking.
+		if _, isGitAware := GetAction(actionKind); isGitAware {
+			return handleGitAwareExecute(e, stepName, step, state, actionKind)
+		}
+	case "verify":
+		return handleVerify(e, stepName, step, state)
 	case "learn":
 		return handleLearn(e, stepName, step, state)
 	case "finish":
@@ -669,7 +691,9 @@ func actionRecoveryLearn(e *Executor, stepName string, step StepConfig, state *G
 }
 // handleCollectContext assembles diagnosis JSON + prior learnings from the
 // recovery_learnings table (per-bead and cross-bead). This is mechanical —
-// no Claude call. Writes CollectContextResult JSON to step outputs.
+// no Claude call. Also calls BuildRecoveryContext to assemble the full
+// git-aware recovery context and stores it in state.Vars for subsequent
+// phases (decide, execute, verify).
 func handleCollectContext(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Resolve source bead from recovery bead metadata.
 	sourceBeadID := resolveSourceBead(e, step)
@@ -752,11 +776,42 @@ func handleCollectContext(e *Executor, stepName string, step StepConfig, state *
 		}
 	}
 
+	// Build the full git-aware recovery context via BuildRecoveryContext.
+	// This provides git diagnostics, attempt history, human comments, and
+	// repeated failure tracking for the decide step's enhanced logic.
+	repoPath := e.effectiveRepoPath()
+	fullCtx, fullCtxErr := BuildRecoveryContext(nil, repoPath, e.beadID)
+	if fullCtxErr != nil {
+		e.log("recovery: collect_context: BuildRecoveryContext failed (non-fatal): %v", fullCtxErr)
+	} else {
+		// Store the FullRecoveryContext as JSON in state.Vars for
+		// downstream phases (decide, execute, verify).
+		if fullCtxJSON, jsonErr := json.Marshal(fullCtx); jsonErr == nil {
+			if state.Vars == nil {
+				state.Vars = make(map[string]string)
+			}
+			state.Vars["full_recovery_context"] = string(fullCtxJSON)
+			outputs["total_attempts"] = strconv.Itoa(fullCtx.TotalAttempts)
+			if fullCtx.FailedStep != "" {
+				outputs["failed_step"] = fullCtx.FailedStep
+			}
+		}
+	}
+
 	return ActionResult{Outputs: outputs}
 }
 
 // handleDecide calls Claude with the collect_context result to choose a
-// recovery action. Outputs chosen_action, confidence, reasoning, needs_human.
+// recovery action. Also incorporates FullRecoveryContext when available:
+// avoids repeating failed actions, parses human comments as guidance, and
+// auto-escalates when TotalAttempts >= max_attempts (default 3).
+//
+// Decision priority:
+//  (a) human guidance if present
+//  (b) git-state-driven (behind main → rebase, dirty worktree → rebuild,
+//      conflict → resolve-conflicts)
+//  (c) Claude-selected action
+//  (d) fallback to resummon if unclear
 func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Read collect_context result from previous step outputs.
 	var contextJSON string
@@ -774,6 +829,70 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		return ActionResult{Error: fmt.Errorf("decide: unmarshal collect_context_result: %w", err)}
 	}
 
+	// Load FullRecoveryContext from state vars (set by collect_context).
+	var fullCtx *FullRecoveryContext
+	if state != nil && state.Vars != nil {
+		if frcJSON := state.Vars["full_recovery_context"]; frcJSON != "" {
+			fullCtx = &FullRecoveryContext{}
+			if err := json.Unmarshal([]byte(frcJSON), fullCtx); err != nil {
+				e.log("recovery: decide: failed to parse full_recovery_context (continuing without): %v", err)
+				fullCtx = nil
+			}
+		}
+	}
+
+	// Check max attempts — auto-escalate if threshold reached.
+	maxAttempts := DefaultMaxRecoveryAttempts
+	if ma := step.With["max_attempts"]; ma != "" {
+		if parsed, err := strconv.Atoi(ma); err == nil && parsed > 0 {
+			maxAttempts = parsed
+		}
+	}
+	if fullCtx != nil && fullCtx.TotalAttempts >= maxAttempts {
+		e.log("recovery: decide: auto-escalate — total attempts %d >= max %d", fullCtx.TotalAttempts, maxAttempts)
+		return ActionResult{Outputs: map[string]string{
+			"status":        "success",
+			"chosen_action": "escalate",
+			"confidence":    "1.00",
+			"reasoning":     fmt.Sprintf("Auto-escalate: %d recovery attempts exhausted (max %d)", fullCtx.TotalAttempts, maxAttempts),
+			"needs_human":   "true",
+		}}
+	}
+
+	// (a) Check for human guidance in comments.
+	if fullCtx != nil && len(fullCtx.HumanComments) > 0 {
+		if guided := parseHumanGuidance(fullCtx.HumanComments, fullCtx.RepeatedFailures); guided != "" {
+			e.log("recovery: decide: human guidance detected → %s", guided)
+			return ActionResult{Outputs: map[string]string{
+				"status":        "success",
+				"chosen_action": guided,
+				"confidence":    "0.90",
+				"reasoning":     "Human guidance from bead comment",
+				"needs_human":   "false",
+			}}
+		}
+	}
+
+	// (b) Git-state-driven decision when FullRecoveryContext is available.
+	if fullCtx != nil {
+		if gitAction := decideFromGitState(fullCtx); gitAction != "" {
+			// Verify this action hasn't repeatedly failed.
+			if fullCtx.RepeatedFailures[gitAction] < 2 {
+				e.log("recovery: decide: git-state-driven → %s", gitAction)
+				return ActionResult{Outputs: map[string]string{
+					"status":        "success",
+					"chosen_action": gitAction,
+					"confidence":    "0.85",
+					"reasoning":     fmt.Sprintf("Git state analysis: %s", gitStateReasoning(fullCtx, gitAction)),
+					"needs_human":   "false",
+				}}
+			}
+			e.log("recovery: decide: git-state suggests %s but it has %d prior failures, falling through to Claude",
+				gitAction, fullCtx.RepeatedFailures[gitAction])
+		}
+	}
+
+	// (c) Fall through to Claude-based decision.
 	// Read triage count from recovery bead metadata for the decide prompt.
 	triageCount := 0
 	if bead, err := e.deps.GetBead(e.beadID); err == nil {
@@ -789,12 +908,23 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		stats, _ = store.GetLearningStatsAuto(failureClass)
 	}
 
-	// Build Claude prompt.
+	// Build Claude prompt — include FullRecoveryContext summary if available.
 	prompt := buildDecidePrompt(ccResult, triageCount, stats)
+	if fullCtx != nil {
+		prompt += "\n\n## Full Recovery Context (git-aware)\n\n" + SummarizeContext(fullCtx)
+	}
 
 	// Call Claude.
 	if e.deps.ClaudeRunner == nil {
-		return ActionResult{Error: fmt.Errorf("decide: ClaudeRunner not available")}
+		// (d) No Claude runner → fallback to resummon.
+		e.log("recovery: decide: ClaudeRunner not available, falling back to resummon")
+		return ActionResult{Outputs: map[string]string{
+			"status":        "success",
+			"chosen_action": "resummon",
+			"confidence":    "0.50",
+			"reasoning":     "Fallback: ClaudeRunner unavailable",
+			"needs_human":   "false",
+		}}
 	}
 
 	args := []string{
@@ -806,13 +936,30 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 
 	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
 	if err != nil {
-		return ActionResult{Error: fmt.Errorf("decide: claude call failed: %w", err)}
+		// (d) Claude call failed → fallback to resummon.
+		e.log("recovery: decide: claude call failed, falling back to resummon: %v", err)
+		return ActionResult{Outputs: map[string]string{
+			"status":        "success",
+			"chosen_action": "resummon",
+			"confidence":    "0.40",
+			"reasoning":     fmt.Sprintf("Fallback: Claude call failed: %v", err),
+			"needs_human":   "false",
+		}}
 	}
 
 	// Parse Claude's JSON response.
 	var result DecideResult
 	if err := parseJSONFromClaude(out, &result); err != nil {
 		return ActionResult{Error: fmt.Errorf("decide: parse claude response: %w", err)}
+	}
+
+	// Validate Claude's chosen action against repeated failures.
+	if fullCtx != nil && fullCtx.RepeatedFailures[result.ChosenAction] >= 2 {
+		e.log("recovery: decide: Claude chose %q but it has %d prior failures — overriding to escalate",
+			result.ChosenAction, fullCtx.RepeatedFailures[result.ChosenAction])
+		result.ChosenAction = "escalate"
+		result.Reasoning = fmt.Sprintf("Overridden: original choice has %d prior failures", fullCtx.RepeatedFailures[result.ChosenAction])
+		result.NeedsHuman = true
 	}
 
 	// Apply confidence threshold.
@@ -848,6 +995,85 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 	}
 
 	return ActionResult{Outputs: outputs}
+}
+
+// parseHumanGuidance scans human comments for action keywords and returns
+// the matching recovery action name, or "" if no guidance is detected.
+// Avoids suggesting actions that have repeatedly failed.
+func parseHumanGuidance(comments []string, repeatedFailures map[string]int) string {
+	guidanceMap := map[string]string{
+		"rebase":            "rebase-onto-main",
+		"try rebase":        "rebase-onto-main",
+		"rebase onto main":  "rebase-onto-main",
+		"cherry-pick":       "cherry-pick",
+		"cherry pick":       "cherry-pick",
+		"resolve conflicts": "resolve-conflicts",
+		"resolve conflict":  "resolve-conflicts",
+		"rebuild":           "rebuild",
+		"try rebuild":       "rebuild",
+		"resummon":          "resummon",
+		"re-summon":         "resummon",
+		"try again":         "resummon",
+		"reset":             "reset-to-step",
+		"reset to step":     "reset-to-step",
+		"escalate":          "escalate",
+		"fix":               "targeted-fix",
+		"targeted fix":      "targeted-fix",
+	}
+
+	// Scan comments from most recent to oldest.
+	for i := len(comments) - 1; i >= 0; i-- {
+		lower := strings.ToLower(strings.TrimSpace(comments[i]))
+		for keyword, action := range guidanceMap {
+			if strings.Contains(lower, keyword) {
+				// Don't follow guidance toward an action that keeps failing.
+				if repeatedFailures != nil && repeatedFailures[action] >= 2 {
+					continue
+				}
+				return action
+			}
+		}
+	}
+	return ""
+}
+
+// decideFromGitState returns a recovery action based on git diagnostics,
+// or "" if no clear action is indicated.
+func decideFromGitState(ctx *FullRecoveryContext) string {
+	// Behind main and diverged → rebase (diverged implies conflicts likely).
+	if ctx.GitState != nil && ctx.GitState.Diverged {
+		return "rebase-onto-main"
+	}
+
+	// Behind main → rebase.
+	if ctx.GitState != nil && ctx.GitState.BehindMain > 0 {
+		return "rebase-onto-main"
+	}
+
+	// Dirty worktree (uncommitted changes, likely broken build) → rebuild.
+	if ctx.WorktreeState != nil && ctx.WorktreeState.Exists && ctx.WorktreeState.IsDirty {
+		return "rebuild"
+	}
+
+	return ""
+}
+
+// gitStateReasoning returns a human-readable explanation of why a
+// git-state-driven action was chosen.
+func gitStateReasoning(ctx *FullRecoveryContext, action string) string {
+	switch action {
+	case "resolve-conflicts":
+		return "worktree has merge conflicts"
+	case "rebase-onto-main":
+		if ctx.GitState != nil {
+			return fmt.Sprintf("branch is %d commits behind %s", ctx.GitState.BehindMain, ctx.GitState.MainRef)
+		}
+		return "branch is behind main"
+	case "rebuild":
+		return "worktree has uncommitted changes (dirty)"
+	default:
+		return action
+	}
 }
 
 // handleLearn calls Claude with the action taken and verify outcome to extract
@@ -962,9 +1188,10 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 	}}
 }
 
-// handleFinish writes a closing comment and conditionally closes the recovery
-// bead. If the decide step chose escalate, the bead is left open so
-// `spire resolve` can find it and write the human learning before closing.
+// handleFinish writes a closing comment, cleans up recovery protocol labels,
+// and conditionally closes the recovery bead. If the decide step chose
+// escalate, the bead is left open so `spire resolve` can find it and write
+// the human learning before closing.
 func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Gather summary from step outputs.
 	var chosenAction, outcome, reasoning string
@@ -980,7 +1207,7 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 		}
 		if outcome == "" {
 			if vs, ok := state.Steps["verify"]; ok {
-				if vs.Outputs["verification_status"] == "clean" {
+				if vs.Outputs["verification_status"] == "clean" || vs.Outputs["status"] == "success" {
 					outcome = "clean"
 				} else {
 					outcome = "dirty"
@@ -994,6 +1221,21 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 	}
 	if outcome == "" {
 		outcome = "unknown"
+	}
+
+	// Clean up recovery protocol labels on the target bead. This ensures
+	// no stale retry request or result labels remain after the recovery
+	// bead finishes, regardless of outcome. Guard against nil deps (tests).
+	if e.deps != nil && e.deps.GetBead != nil {
+		sourceBeadID := resolveSourceBead(e, step)
+		if sourceBeadID != "" {
+			if err := ClearRetryRequest(sourceBeadID); err != nil {
+				e.log("recovery: finish: clear retry request on %s: %v", sourceBeadID, err)
+			}
+			if err := ClearRetryResult(sourceBeadID); err != nil {
+				e.log("recovery: finish: clear retry result on %s: %v", sourceBeadID, err)
+			}
+		}
 	}
 
 	// Build closing comment.
@@ -1039,6 +1281,220 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 		"action":  chosenAction,
 		"outcome": outcome,
 	}}
+}
+
+// ---------------------------------------------------------------------------
+// Git-aware execute, cooperative verify, and opcode handlers (spi-qrwof)
+// ---------------------------------------------------------------------------
+
+// handleGitAwareExecute routes execution through the git-aware recovery action
+// registry (RunRecoveryAction) which handles worktree provisioning and
+// per-attempt tracking. This is the counterpart to the legacy
+// ExecuteRecoveryAction dispatch for the new action vocabulary.
+func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state *GraphState, actionName string) ActionResult {
+	sourceBeadID := resolveSourceBead(e, step)
+	if sourceBeadID == "" {
+		return ActionResult{Error: fmt.Errorf("execute: cannot resolve source bead")}
+	}
+
+	// Build params from decide step outputs and step.With.
+	params := make(map[string]string)
+	for k, v := range step.With {
+		params[k] = v
+	}
+	// Inject decide step outputs as params for the action.
+	if state != nil {
+		if ds, ok := state.Steps["decide"]; ok {
+			for k, v := range ds.Outputs {
+				if _, exists := params[k]; !exists {
+					params[k] = v
+				}
+			}
+		}
+	}
+
+	repoPath := e.effectiveRepoPath()
+
+	actionCtx := &RecoveryActionCtx{
+		DB:             nil, // DB handle not available in executor context; RunRecoveryAction nil-checks
+		RepoPath:       repoPath,
+		RecoveryBeadID: e.beadID,
+		TargetBeadID:   sourceBeadID,
+		Params:         params,
+		Log:            func(msg string) { e.log("recovery: %s", msg) },
+	}
+
+	err := RunRecoveryAction(actionCtx, actionName)
+
+	outputs := map[string]string{
+		"status": "success",
+		"action": actionName,
+	}
+
+	if err != nil {
+		outputs["status"] = "failed"
+		outputs["error"] = err.Error()
+		e.log("recovery: execute %s failed: %v", actionName, err)
+		return ActionResult{
+			Outputs: outputs,
+			Error:   fmt.Errorf("recovery action %q failed: %w", actionName, err),
+		}
+	}
+
+	e.log("recovery: execute %s succeeded", actionName)
+	return ActionResult{Outputs: outputs}
+}
+
+// handleVerify implements the cooperative retry loop between the recovery
+// executor and the target bead's wizard.
+//
+// On execute success:
+//  1. Set a RetryRequest on the target bead via SetRetryRequest
+//  2. Poll GetRetryResult every 30 seconds
+//  3. On success: clear labels, mark attempt success, proceed to learn
+//  4. On failure: clear result, mark attempt failure, loop back to decide
+//  5. On timeout (10 min): treat as failure, loop back to decide
+//
+// On execute failure: skip retry request, output loop_to=decide directly.
+func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	// Check whether execute succeeded.
+	var executeStatus, actionName, sourceBeadID string
+	if state != nil {
+		if es, ok := state.Steps["execute"]; ok {
+			executeStatus = es.Outputs["status"]
+			actionName = es.Outputs["action"]
+		}
+		if cs, ok := state.Steps["collect_context"]; ok {
+			sourceBeadID = cs.Outputs["source_bead"]
+		}
+	}
+	if sourceBeadID == "" {
+		sourceBeadID = resolveSourceBead(e, step)
+	}
+
+	// On execute failure: skip retry request, loop back to decide.
+	if executeStatus == "failed" || executeStatus == "" {
+		e.log("recovery: verify: execute %s failed, looping back to decide", actionName)
+		return ActionResult{Outputs: map[string]string{
+			"status":  "failed",
+			"loop_to": "decide",
+			"reason":  "execute action failed",
+		}}
+	}
+
+	// Determine failed step and attempt number from context.
+	failedStep := ""
+	attemptNumber := 1
+	if state != nil && state.Vars != nil {
+		if frcJSON := state.Vars["full_recovery_context"]; frcJSON != "" {
+			var fullCtx FullRecoveryContext
+			if err := json.Unmarshal([]byte(frcJSON), &fullCtx); err == nil {
+				failedStep = fullCtx.FailedStep
+				attemptNumber = fullCtx.TotalAttempts + 1
+			}
+		}
+	}
+
+	// Read human guidance from decide step if available.
+	guidance := ""
+	if state != nil {
+		if ds, ok := state.Steps["decide"]; ok {
+			guidance = ds.Outputs["reasoning"]
+		}
+	}
+
+	// Set retry request on the target bead.
+	retryReq := RetryRequest{
+		RecoveryBeadID: e.beadID,
+		TargetBeadID:   sourceBeadID,
+		FromStep:       failedStep,
+		AttemptNumber:  attemptNumber,
+		Guidance:       guidance,
+	}
+
+	if err := SetRetryRequest(sourceBeadID, retryReq); err != nil {
+		e.log("recovery: verify: failed to set retry request on %s: %v", sourceBeadID, err)
+		return ActionResult{
+			Outputs: map[string]string{
+				"status":  "failed",
+				"loop_to": "decide",
+				"reason":  fmt.Sprintf("set retry request failed: %v", err),
+			},
+			Error: fmt.Errorf("set retry request: %w", err),
+		}
+	}
+
+	e.log("recovery: verify: retry request set on %s (from_step=%s, attempt=%d)", sourceBeadID, failedStep, attemptNumber)
+
+	// Polling loop: check for retry result every interval, up to timeout.
+	pollInterval := time.Duration(DefaultVerifyPollInterval) * time.Second
+	timeout := time.Duration(DefaultVerifyTimeout) * time.Second
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+
+		result, found, err := GetRetryResult(sourceBeadID)
+		if err != nil {
+			e.log("recovery: verify: poll error: %v", err)
+			continue
+		}
+		if !found {
+			continue // Still waiting
+		}
+
+		// Result received — process it.
+		if result.Success {
+			// Success: clean up labels and proceed to learn.
+			_ = ClearRetryRequest(sourceBeadID)
+			_ = ClearRetryResult(sourceBeadID)
+			e.log("recovery: verify: retry succeeded (step_reached=%s)", result.StepReached)
+			return ActionResult{Outputs: map[string]string{
+				"status":       "success",
+				"step_reached": result.StepReached,
+			}}
+		}
+
+		// Failure: clean up result, loop back to decide with fresh context.
+		_ = ClearRetryResult(sourceBeadID)
+		e.log("recovery: verify: retry failed (failed_step=%s, error=%s)", result.FailedStep, result.Error)
+
+		// Re-build recovery context for the next decide iteration.
+		repoPath := e.effectiveRepoPath()
+		freshCtx, freshErr := BuildRecoveryContext(nil, repoPath, e.beadID)
+		if freshErr == nil {
+			if freshJSON, jsonErr := json.Marshal(freshCtx); jsonErr == nil {
+				if state.Vars == nil {
+					state.Vars = make(map[string]string)
+				}
+				state.Vars["full_recovery_context"] = string(freshJSON)
+			}
+		}
+
+		return ActionResult{Outputs: map[string]string{
+			"status":      "failed",
+			"loop_to":     "decide",
+			"failed_step": result.FailedStep,
+			"error":       result.Error,
+			"reason":      "retry failed",
+		}}
+	}
+
+	// Timeout: clean up and loop back to decide.
+	_ = ClearRetryRequest(sourceBeadID)
+	e.log("recovery: verify: polling timed out after %s", timeout)
+
+	return ActionResult{Outputs: map[string]string{
+		"status":  "failed",
+		"loop_to": "decide",
+		"reason":  fmt.Sprintf("verify polling timed out after %s", timeout),
+	}}
+}
+
+// actionRecoveryVerify is the ActionHandler for the "recovery.verify" opcode.
+// Delegates to handleVerify for the cooperative retry loop.
+func actionRecoveryVerify(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	return handleVerify(e, stepName, step, state)
 }
 
 // ---------------------------------------------------------------------------
