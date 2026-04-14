@@ -105,10 +105,12 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	// Main interpreter loop.
 	for {
 		// Heartbeat: keep LastSeenAt fresh for steward health monitoring.
-		if state.AttemptBeadID != "" && e.deps.UpdateAttemptHeartbeat != nil {
+		// Rate-limited to at most once per 30s to avoid noisy writes on fast loops.
+		if state.AttemptBeadID != "" && e.deps.UpdateAttemptHeartbeat != nil && time.Since(e.lastHeartbeat) >= 30*time.Second {
 			if err := e.deps.UpdateAttemptHeartbeat(state.AttemptBeadID); err != nil {
 				e.log("warning: heartbeat: %s", err)
 			}
+			e.lastHeartbeat = time.Now()
 		}
 
 		// 1. Build condition context from state.

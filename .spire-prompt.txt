@@ -1,11 +1,11 @@
-You are Spire apprentice wizard-spi-a0spf-implement — IMPLEMENT PHASE.
+You are Spire apprentice wizard-spi-8wc0w-fix — IMPLEMENT PHASE.
 
 You are working in an isolated git worktree. Other agents may be working on related tasks in parallel — you cannot see their changes.
 
 ## Task
-- bead: spi-a0spf
+- bead: spi-8wc0w
 - base branch: main
-- feature branch: feat/spi-a0spf
+- feature branch: epic/spi-8wc0w
 - target model: claude-opus-4-6
 - max turns: 75
 - hard timeout: 15m
@@ -43,173 +43,128 @@ You are working in an isolated git worktree. Other agents may be working on rela
 7. Do NOT revert your changes. Do NOT undo work you've done. If something isn't working, commit what you have — the reviewer will sort it out.
 
 
+Address the following review feedback:
+## Prior Review Rounds
+
+### Round 1 (sage: wizard-spi-8wc0w-sage-review, status: closed)
+verdict: request_changes
+
+Implementation is thorough and well-structured with good backward compatibility and fail-closed semantics. Two issues need fixing: the Entry.InstanceID JSON tag uses PascalCase while all other fields use snake_case, and the new ownership-filtering branches in SweepHookedSteps lack test coverage.
+- [error] JSON tag `json:"InstanceID,omitempty"` uses PascalCase while every other field in Entry uses snake_case (name, pid, bead_id, started_at, phase_started_at, tower). Should be `json:"instance_id,omitempty"` for consistency. This affects serialization output consumed by other tools reading the wizard registry JSON file. The corresponding tests in registry_test.go (TestEntryJSONIncludesInstanceID, TestEntryJSONOmitsEmptyInstanceID) also assert PascalCase and would need updating. (pkg/agent/registry.go:28)
+- [warning] SweepHookedSteps gained ownership-filtering branches in two places (the main hooked-parents loop around line 849 and the graph-state fallback loop around line 1031) but no tests exercise these new paths. Existing SweepHookedSteps tests don't mock IsOwnedByInstanceFunc/GetActiveAttemptFunc for ownership. At minimum, add a test that verifies a foreign-owned attempt is skipped during hooked-step sweep. (pkg/steward/steward_test.go:1690)
+- [warning] Heartbeat runs on every loop iteration unconditionally, including when polling/parking. For long-running graphs with many steps this is fine, but for graphs that loop back (resetStepsForLoop), the heartbeat call on every iteration with no rate-limiting could produce noisy writes. Consider whether a rate-limited heartbeat (e.g., at most once per 30s) would be more appropriate, or accept this as intentional since loop iterations are typically seconds apart. (pkg/executor/graph_interpreter.go:107)
+
+
+
 ## Focus context (FULL task description)
---- Task spi-a0spf ---
-Title: Retry requests forward graph step names the wizard does not accept
+--- Task spi-8wc0w ---
+Title: Safe multi-local steward: attempt-based execution leases and instance identity
 Status: in_progress
 Priority: P1
-Formula: bug-default
+Formula: epic-default
 
 --- Step Graph ---
-  plan           ✓ completed   (6m11s)
-→ implement      ● active    
-  review         . pending   
+  design-check   ✓ completed   (<1s)
+  plan           ✓ completed   (7m33s)
+  materialize    ✓ completed   (<1s)
+  implement      ✓ completed   (14m20s)
+  implement-failed . pending     [terminal, when: outcome ne verified]
+→ review         ● active      [when: outcome eq verified]
   discard        . pending     [terminal, when: outcome eq discard]
   merge          . pending     [when: outcome eq merge]
   close          . pending     [terminal]
 
 --- Workspace ---
-  feature: feat/{vars.bead_id} (owned_worktree, pending)
+  staging: epic/spi-8wc0w (staging, active)
 
---- discovered-from: spi-2xvo4 ---
-Title: Recovery agent: git-aware, worktree-capable, cooperative wizard handoff
+--- discovered-from: spi-uvoyi ---
+Title: Safe multi-local steward operation
 Status: closed
+Description: Design safe multi-local stewarding on multiple developer laptops attached to the same tower before k8s.
 
---- blocks: spi-ilz58 ---
-Title: Recovery formula still uses verify-clean, not cooperative verify loop
-Status: closed
+Core decision: the active attempt bead becomes the authoritative execution lease for machine/session ownership, while parent bead ownership remains a projection for UI and workflow convenience.
 
---- Comments (1) ---
-[spire]: Implementation plan:
+Target outcome: many local stewards can scan the same ready queue safely, but each machine may supervise only the attempts it owns, and all process-mode launches/resumes go through `spire execute`.
 
-Good — `StepConfig = formula.StepConfig` is a type alias in deps.go. The flow is: `EscalateGraphStepFailure` receives `stepCfg.Flow` at the call site in graph_interpreter.go:217. This `flow` value is included in the `nodeCtx` string but not extracted as a separate metadata field.
+--- Comments (2) ---
+[spire]: Wizard plan: 6 subtasks
 
-Now I have all the context for a precise plan. Here it is:
+- spi-bo1i6: Instance Identity
+- spi-r93yh: Attempt Instance Metadata API
+- spi-ddj5f: Agent Package Instance Support
+- spi-ghrzq: Claim Fail-Closed with Instance Lease ← spi-bo1i6, spi-r93yh
+- spi-aah31: Executor Instance-Aware Startup ← spi-bo1i6, spi-r93yh, spi-ddj5f
+- spi-srz0m: Steward Multi-Local Safety ← spi-bo1i6, spi-r93yh, spi-ddj5f
 
----
+[spire]: Review round 1: request_changes — Implementation is thorough and well-structured with good backward compatibility and fail-closed semantics. Two issues need fixing: the Entry.InstanceID JSON tag uses PascalCase while all other fields use snake_case, and the new ownership-filtering branches in SweepHookedSteps lack test coverage.
+- [error] JSON tag `json:"InstanceID,omitempty"` uses PascalCase while every other field in Entry uses snake_case (name, pid, bead_id, started_at, phase_started_at, tower). Should be `json:"instance_id,omitempty"` for consistency. This affects serialization output consumed by other tools reading the wizard registry JSON file. The corresponding tests in registry_test.go (TestEntryJSONIncludesInstanceID, TestEntryJSONOmitsEmptyInstanceID) also assert PascalCase and would need updating. (pkg/agent/registry.go:28)
+- [warning] SweepHookedSteps gained ownership-filtering branches in two places (the main hooked-parents loop around line 849 and the graph-state fallback loop around line 1031) but no tests exercise these new paths. Existing SweepHookedSteps tests don't mock IsOwnedByInstanceFunc/GetActiveAttemptFunc for ownership. At minimum, add a test that verifies a foreign-owned attempt is skipped during hooked-step sweep. (pkg/steward/steward_test.go:1690)
+- [warning] Heartbeat runs on every loop iteration unconditionally, including when polling/parking. For long-running graphs with many steps this is fine, but for graphs that loop back (resetStepsForLoop), the heartbeat call on every iteration with no rate-limiting could produce noisy writes. Consider whether a rate-limited heartbeat (e.g., at most once per 30s) would be more appropriate, or accept this as intentional since loop iterations are typically seconds apart. (pkg/executor/graph_interpreter.go:107)
 
-**Approach:** The recovery agent stores graph step names (e.g., `verify-build`) as `SourceStep` in recovery metadata, which flows into `RetryRequest.FromStep`. The wizard rejects these because it only knows its own phase names (`design`, `implement`, `commit`, `build-gate`, `test`, `review`). Fix this by: (1) also storing the graph step's `flow` field in recovery metadata, (2) using it as the wizard-compatible phase in `handleVerify`, and (3) adding a fallback mapping in the wizard for robustness.
-
-**Key files:**
-- `pkg/executor/recovery_protocol.go` — add `MapToWizardPhase()` function and `KnownWizardPhases` set
-- `pkg/executor/recovery_phase.go` — call `MapToWizardPhase()` on `failedStep` before setting `FromStep` in `handleVerify`
-- `pkg/wizard/wizard_retry.go` — use `executor.MapToWizardPhase()` instead of raw `knownWizardSteps` lookup in `checkRetryRequest`
-- `pkg/recovery/keys.go` (or wherever `KeySourceStep` is defined) — add `KeySourceFlow` constant for the new metadata field
-- `pkg/executor/executor_escalate.go` — extract `flow` from `nodeCtx` in `buildSeedMetadata()` and store as `SourceFlow`; also seed `SourceFlow` in `RecoveryMetadata`
-- `pkg/executor/recovery_context.go` — read `SourceFlow` into `FullRecoveryContext` and use it to populate a new `WizardPhase` field
-- `pkg/executor/recovery_protocol_test.go` — add tests for `MapToWizardPhase`
-- `pkg/wizard/wizard_retry_test.go` — update tests for the new mapping behavior
-
-**Steps:**
-
-1. **Add `KeySourceFlow` to recovery metadata keys** (pkg/recovery/keys.go or equivalent). Add a `source_flow` metadata key alongside the existing `source_step` key.
-
-2. **Extend `RecoveryMetadata` and `buildSeedMetadata`** (pkg/executor/executor_escalate.go). In `buildSeedMetadata()`, also extract `flow=<value>` from `nodeCtx` (same pattern as `step=`). Store it in a new `SourceFlow` field on `RecoveryMetadata`. This captures the formula step's `flow` attribute (e.g., `implement`, `task-plan`, `epic-plan`) at escalation time.
-
-3. **Add `WizardPhase` to `FullRecoveryContext`** (pkg/executor/recovery_context.go). In `BuildRecoveryContext()`, after reading `FailedStep` from `KeySourceStep`, also read `SourceFlow` from metadata into a new `WizardPhase string` field on `FullRecoveryContext`.
-
-4. **Add `MapToWizardPhase()` in `recovery_protocol.go`**. This is the translation function. Logic:
-   - If step is already in `KnownWizardPhases` → return as-is
-   - Check a static mapping for known graph step names:
-     - `verify-build`, `build-failed` → `build-gate`
-     - `dispatch-children` → `implement`
-     - `design-check` → `design`
-     - `implement-failed` → `implement`
-     - `merge`, `close`, `discard` → `review` (retry from review to redo the terminal flow)
-     - `plan`, `materialize` → `design`
-     - `sage-review`, `review-fix`, `arbiter` → `review` (subgraph-review steps)
-   - Final fallback → `implement` (safest restart point for the wizard)
-   - Export `KnownWizardPhases` so the wizard package can reference it.
-
-5. **Use `MapToWizardPhase` in `handleVerify`** (recovery_phase.go ~line 1430). After determining `failedStep`, also check `fullCtx.WizardPhase` (the `flow` from step metadata). Prefer `WizardPhase` if non-empty, else apply `MapToWizardPhase(failedStep)`. Set the mapped value as `FromStep`.
-
-6. **Use `MapToWizardPhase` in wizard's `checkRetryRequest`** (wizard_retry.go). Replace the direct `knownWizardSteps[req.FromStep]` check with `mapped := executor.MapToWizardPhase(req.FromStep)`. If `mapped` differs from `req.FromStep`, log the translation. Update `req.FromStep` to the mapped value before proceeding. Remove the local `knownWizardSteps` var (it's now canonical in executor).
-
-7. **Tests:**
-   - `recovery_protocol_test.go`: Test `MapToWizardPhase` — known wizard steps pass through, graph step names map correctly, unknown names fallback to `implement`.
-   - `wizard_retry_test.go`: Add a test case where `FromStep="verify-build"` — should translate to `build-gate` and succeed instead of rejecting.
-   - `executor_escalate_test.go` (if exists): Test that `buildSeedMetadata` extracts `flow` into `SourceFlow`.
-   - `recovery_context_test.go`: Test that `WizardPhase` is populated from metadata.
-
-**Edge cases / gotchas:**
-- **Graph steps with no `flow` attribute** (like `verify-build`, `dispatch-children`): The `SourceFlow` metadata will be empty. The static mapping in `MapToWizardPhase` handles these by name.
-- **Subgraph steps** (from `subgraph-review`, `subgraph-implement`): These have step names like `sage-review`, `review-fix`, `verified`. The static map must cover these, and the fallback must be sensible.
-- **Empty `failedStep`**: If both `FailedStep` and `WizardPhase` are empty, `handleVerify` should still set a `FromStep`. Use `implement` as default — the wizard will restart from the implement phase.
-- **Circular dependency risk**: `MapToWizardPhase` must live in `pkg/executor` (not `pkg/wizard`) since wizard already imports executor. The wizard calls `executor.MapToWizardPhase()`.
-- **Recovery protocol test** at line 16 uses `FromStep: "verify-build"` — this is the exact bug scenario. Update it to verify the mapping works end-to-end.
-- **The `flow` values in formulas** (`task-plan`, `epic-plan`, `sage-review`, `review-fix`, `arbiter`) don't match wizard phases directly. The `MapToWizardPhase` function should also map these: `task-plan`/`epic-plan` → `design`, `sage-review` → `review`, `review-fix` → `review`, `arbiter` → `review`, `implement` → `implement`.
-
-**Validation:**
-- `go test ./pkg/executor/... -run TestMapToWizardPhase` — verify the mapping function
-- `go test ./pkg/wizard/... -run TestRetry` — verify the wizard accepts translated step names
-- `go test ./pkg/executor/... -run TestRecovery` — verify end-to-end recovery context building
-- `go build ./...` — ensure no import cycles from the new shared function
-
---- Agent Runs (2) ---
-  claude-opus-4-6      wizard     success     370s  2026-04-14T21:51:45Z
-  claude-opus-4-6      wizard     success       0s  2026-04-14T21:51:44Z
+--- Agent Runs (9) ---
+  claude-opus-4-6      sage       request_changes   92s  2026-04-14T22:13:28Z
+                       apprentice success     282s  2026-04-14T22:02:13Z
+                       apprentice success     642s  2026-04-14T22:02:13Z
+                       apprentice success     519s  2026-04-14T22:02:13Z
+                       apprentice success     182s  2026-04-14T21:59:09Z
+                       apprentice success     142s  2026-04-14T21:59:09Z
+                       apprentice success     179s  2026-04-14T21:59:09Z
+  claude-opus-4-6      wizard     success     451s  2026-04-14T21:51:35Z
+  claude-opus-4-6      wizard     success       0s  2026-04-14T21:51:34Z
 
 
 
 ## Bead JSON
 [
   {
-    "id": "spi-a0spf",
-    "title": "Retry requests forward graph step names the wizard does not accept",
+    "id": "spi-8wc0w",
+    "title": "Safe multi-local steward: attempt-based execution leases and instance identity",
     "status": "in_progress",
     "priority": 1,
-    "issue_type": "bug",
-    "assignee": "wizard-spi-a0spf",
-    "created_at": "2026-04-14T20:48:49Z",
-    "updated_at": "2026-04-14T21:51:44Z",
+    "issue_type": "epic",
+    "assignee": "wizard-spi-8wc0w",
+    "created_at": "2026-04-14T21:51:21Z",
+    "updated_at": "2026-04-14T21:51:34Z",
+    "labels": [
+      "feat-branch:epic/spi-8wc0w"
+    ],
     "dependencies": [
       {
-        "id": "spi-2xvo4",
-        "title": "Recovery agent: git-aware, worktree-capable, cooperative wizard handoff",
-        "status": "closed",
-        "priority": 0,
-        "issue_type": "design",
-        "created_at": "2026-04-14T15:36:23Z",
-        "updated_at": "2026-04-14T19:08:43Z",
-        "closed_at": "2026-04-14T19:08:43Z",
-        "close_reason": "Closed",
-        "labels": [
-          "needs-human"
-        ],
-        "dependency_type": "discovered-from"
-      },
-      {
-        "id": "spi-ilz58",
-        "title": "Recovery formula still uses verify-clean, not cooperative verify loop",
+        "id": "spi-uvoyi",
+        "title": "Safe multi-local steward operation",
+        "description": "Design safe multi-local stewarding on multiple developer laptops attached to the same tower before k8s.\n\nCore decision: the active attempt bead becomes the authoritative execution lease for machine/session ownership, while parent bead ownership remains a projection for UI and workflow convenience.\n\nTarget outcome: many local stewards can scan the same ready queue safely, but each machine may supervise only the attempts it owns, and all process-mode launches/resumes go through `spire execute`.",
         "status": "closed",
         "priority": 1,
-        "issue_type": "bug",
-        "assignee": "wizard-spi-ilz58",
-        "created_at": "2026-04-14T20:48:49Z",
-        "updated_at": "2026-04-14T21:06:02Z",
-        "closed_at": "2026-04-14T21:06:02Z",
-        "metadata": {
-          "commits": "[\"ff8ff959ea3f9d5559111a72bde0998297a75bb8\"]"
-        },
-        "labels": [
-          "review-approved"
-        ],
-        "dependency_type": "blocks"
+        "issue_type": "design",
+        "created_at": "2026-04-14T21:21:28Z",
+        "updated_at": "2026-04-14T21:48:24Z",
+        "closed_at": "2026-04-14T21:48:24Z",
+        "dependency_type": "discovered-from"
       }
     ],
     "dependents": [
       {
-        "id": "spi-6mmud",
-        "title": "step:close",
+        "id": "spi-1iz7x",
+        "title": "step:implement-failed",
         "status": "open",
         "priority": 3,
         "issue_type": "step",
-        "created_at": "2026-04-14T21:51:44Z",
-        "updated_at": "2026-04-14T21:51:44Z",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T21:51:34Z",
         "labels": [
-          "step:close",
+          "step:implement-failed",
           "workflow-step"
         ],
         "dependency_type": "parent-child"
       },
       {
-        "id": "spi-7mvuf",
+        "id": "spi-3sq4z",
         "title": "step:merge",
         "status": "open",
         "priority": 3,
         "issue_type": "step",
-        "created_at": "2026-04-14T21:51:44Z",
-        "updated_at": "2026-04-14T21:51:44Z",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T21:51:34Z",
         "labels": [
           "step:merge",
           "workflow-step"
@@ -217,43 +172,13 @@ Now I have all the context for a precise plan. Here it is:
         "dependency_type": "parent-child"
       },
       {
-        "id": "spi-ilmhg",
-        "title": "step:plan",
-        "status": "closed",
-        "priority": 3,
-        "issue_type": "step",
-        "created_at": "2026-04-14T21:51:44Z",
-        "updated_at": "2026-04-14T21:57:57Z",
-        "closed_at": "2026-04-14T21:57:57Z",
-        "labels": [
-          "step:plan",
-          "workflow-step"
-        ],
-        "dependency_type": "parent-child"
-      },
-      {
-        "id": "spi-jxvc2",
-        "title": "attempt: wizard-spi-a0spf",
+        "id": "spi-4dfyu",
+        "title": "step:review",
         "status": "in_progress",
         "priority": 3,
-        "issue_type": "attempt",
-        "created_at": "2026-04-14T21:51:44Z",
-        "updated_at": "2026-04-14T21:51:44Z",
-        "labels": [
-          "agent:wizard-spi-a0spf",
-          "attempt",
-          "branch:feat/spi-a0spf"
-        ],
-        "dependency_type": "parent-child"
-      },
-      {
-        "id": "spi-ka9rk",
-        "title": "step:review",
-        "status": "open",
-        "priority": 3,
         "issue_type": "step",
-        "created_at": "2026-04-14T21:51:44Z",
-        "updated_at": "2026-04-14T21:51:44Z",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T22:13:28Z",
         "labels": [
           "step:review",
           "workflow-step"
@@ -261,13 +186,123 @@ Now I have all the context for a precise plan. Here it is:
         "dependency_type": "parent-child"
       },
       {
-        "id": "spi-w2jf5",
-        "title": "step:implement",
+        "id": "spi-aah31",
+        "title": "Executor Instance-Aware Startup",
+        "description": "Make the executor stamp instance metadata on attempt beads, verify instance ownership at startup, register with instance context, and heartbeat during execution.\n\nModify `pkg/executor/graph_interpreter.go`:\n\n1. In `ensureGraphAttemptBead()` (around line 533): after creating or reclaiming the attempt bead, stamp instance metadata:\n   ```go\n   store.StampAttemptInstance(attemptID, store.InstanceMeta{\n       InstanceID:   config.InstanceID(),\n       SessionID:    sessionID, // generate once per executor run, store in Executor struct\n       InstanceName: config.InstanceName(),\n       Backend:      \"process\",  // or from executor config if available\n       Tower:        e.tower,    // if available, else resolve from config\n       StartedAt:    time.Now().UTC().Format(time.RFC3339),\n       LastSeenAt:   time.Now().UTC().Format(time.RFC3339),\n   })\n   ```\n\n2. Add FAIL-CLOSED instance ownership check in `ensureGraphAttemptBead()`: when an existing active attempt is found (the `GetActiveAttempt` path), verify instance ownership:\n   ```go\n   owned, err := store.IsOwnedByInstance(attempt.ID, config.InstanceID())\n   if err != nil { return fmt.Errorf(\"check attempt ownership: %w\", err) }\n   if !owned {\n       meta, _ := store.GetAttemptInstance(attempt.ID)\n       return fmt.Errorf(\"FATAL: attempt %s owned by instance %q, not this instance %q — exiting to prevent conflict\",\n           attempt.ID, meta.InstanceName, config.InstanceName())\n   }\n   ```\n   The caller (RunGraph) must treat this error as FATAL — do not continue execution, do not mutate workspace or workflow state. The executor should exit cleanly (deregister, close cleanly) but must NOT proceed with any graph steps.\n\n3. In `RunGraph()` (around line 27): update the RegisterSelf call to include instance context:\n   ```go\n   regCleanup := e.deps.RegisterSelf(e.agentName, e.beadID, \"graph:\"+state.ActiveStep,\n       agent.WithInstanceID(config.InstanceID()))\n   ```\n\n4. Add periodic heartbeat: at the start of each graph step iteration in the RunGraph loop, call `store.UpdateAttemptHeartbeat(state.AttemptBeadID)` if AttemptBeadID is set. This keeps LastSeenAt fresh for steward health monitoring.\n\nModify `pkg/executor/executor.go` (if needed):\n- Add `sessionID string` field to `Executor` struct, generated once in `NewGraph()` via UUID.\n- Add `tower string` field if not already present (check existing fields).\n\nModify `pkg/executor/deps.go` (if the store and config calls go through deps):\n- Check if StampAttemptInstance, IsOwnedByInstance, UpdateAttemptHeartbeat need to be wired through Deps for testability. If Deps already has a pattern for store calls, follow it. If executor calls store directly, do the same.\n\nImport `config` for InstanceID/InstanceName, `store` for instance meta functions, `agent` for WithInstanceID.\n\nTests in `pkg/executor/graph_interpreter_test.go` (or create):\n- ensureGraphAttemptBead stamps instance metadata on new attempt\n- ensureGraphAttemptBead fails fatally when foreign instance owns attempt\n- ensureGraphAttemptBead succeeds when same instance owns attempt\n- RunGraph heartbeats on each step\n- RegisterSelf includes InstanceID\n\nDo NOT modify cmd/spire/, pkg/steward/, pkg/store/, or pkg/agent/ (use their APIs as-is from previous tasks).\n\nShared files (other tasks depend on these): pkg/executor/graph_interpreter.go, pkg/executor/executor.go, pkg/executor/deps.go\n\nDo NOT touch (handled by other tasks): cmd/spire/claim.go, cmd/spire/store_bridge.go, pkg/steward/steward.go, pkg/store/instance_meta.go, pkg/agent/registry.go, pkg/agent/agent.go",
         "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T21:59:08Z",
+        "updated_at": "2026-04-14T22:12:39Z",
+        "metadata": {
+          "commits": "[\"eed6f4dd01fbadd417528e4f01090c11f7bb8e1e\"]"
+        },
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-bo1i6",
+        "title": "Instance Identity",
+        "description": "Create stable per-install instance identity for Spire.\n\nCreate NEW file `pkg/config/instance.go`:\n- `type InstanceInfo struct { ID string; Name string }` — ID is a stable UUID, Name is human-readable hostname\n- `func InstanceID() string` — returns the stable instance UUID. On first call, generates a UUIDv4 and persists it to `~/.config/spire/instance.json` (JSON: `{\"instance_id\": \"...\", \"instance_name\": \"...\"}`) using the same config dir as other spire config (`ConfigDir()`). On subsequent calls, reads from that file. Cache in a `sync.Once` for the process lifetime.\n- `func InstanceName() string` — returns `os.Hostname()` (or 'unknown' on error). This is informational only, not authoritative.\n- `func InstanceInfo() InstanceInfo` — returns both ID and Name.\n- Use `os.MkdirAll` for the config dir, `os.ReadFile`/`os.WriteFile` with 0600 permissions for the JSON file.\n- Use `github.com/google/uuid` if available in go.mod, otherwise `crypto/rand` to generate UUID.\n\nCreate NEW file `pkg/config/instance_test.go`:\n- Test that InstanceID() returns a valid UUID\n- Test that InstanceID() returns the same value on repeated calls\n- Test that InstanceID() persists to disk and survives re-reads\n- Test that InstanceName() returns a non-empty string\n\nDo NOT modify any existing files in pkg/config/. Do NOT touch pkg/store/, pkg/steward/, pkg/executor/, pkg/agent/, or cmd/spire/.\n\nShared files (other tasks depend on these): pkg/config/instance.go\n\nDo NOT touch (handled by other tasks): pkg/config/config.go, pkg/config/tower.go, pkg/config/identity.go, pkg/store/beadtypes.go, pkg/store/metadata.go, pkg/agent/registry.go, pkg/agent/agent.go, pkg/steward/steward.go, pkg/executor/graph_interpreter.go, cmd/spire/claim.go",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T21:59:08Z",
+        "updated_at": "2026-04-14T22:01:05Z",
+        "metadata": {
+          "commits": "[\"333f9d5bbb94c05bf0c2c4e15b2ed1439f220b1e\"]"
+        },
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-c1xyx",
+        "title": "step:design-check",
+        "status": "closed",
         "priority": 3,
         "issue_type": "step",
-        "created_at": "2026-04-14T21:51:44Z",
-        "updated_at": "2026-04-14T21:57:57Z",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T21:51:35Z",
+        "closed_at": "2026-04-14T21:51:35Z",
+        "labels": [
+          "step:design-check",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-ddj5f",
+        "title": "Agent Package Instance Support",
+        "description": "Add instance identity fields to SpawnConfig, registry Entry, and process backend.\n\nModify `pkg/agent/agent.go`:\n- Add `InstanceID string` field to `SpawnConfig` struct (after the Tower field). This carries the spawning steward's instance identity to the backend.\n\nModify `pkg/agent/registry.go`:\n- Add `InstanceID string` field to `Entry` struct (after Tower). JSON key: `InstanceID`.\n- Update `RegisterSelf(name, beadID, phase string, opts ...func(*Entry)) func()` — no signature change needed. The existing opts variadic already supports adding custom modifiers. Add a new option constructor:\n  `func WithInstanceID(id string) func(*Entry)` — sets Entry.InstanceID to id.\n- No changes to RegistryAdd/RegistryRemove/RegistryUpdate — they already serialize the full Entry struct to JSON, so the new field is automatically included.\n\nModify `pkg/agent/backend_process.go`:\n- In `ProcessBackend.Spawn()`: when creating the Entry, set `InstanceID: cfg.InstanceID` (reading from SpawnConfig).\n- In `ProcessBackend.Kill()`: before killing, log a warning if the Entry's InstanceID is non-empty and doesn't match the current caller's context. Do NOT block the kill — just log. Use `log.Printf(\"warning: killing agent %s owned by instance %s\", name, entry.InstanceID)` only when there's a mismatch and entry.InstanceID != \"\".\n\nUpdate tests:\n- In `pkg/agent/registry_test.go` (or create if needed): test that WithInstanceID option sets the field, test that RegisterSelf with WithInstanceID produces correct Entry.\n- Verify Entry JSON serialization includes InstanceID.\n\nDo NOT touch backend_docker.go or backend_k8s.go — they can adopt InstanceID later. Do NOT modify pkg/config/, pkg/store/, pkg/steward/, pkg/executor/, or cmd/spire/.\n\nShared files (other tasks depend on these): pkg/agent/agent.go, pkg/agent/registry.go, pkg/agent/backend_process.go\n\nDo NOT touch (handled by other tasks): pkg/agent/backend_docker.go, pkg/agent/backend_k8s.go, pkg/config/instance.go, pkg/store/instance_meta.go, pkg/steward/steward.go, pkg/executor/graph_interpreter.go, cmd/spire/claim.go",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T21:59:08Z",
+        "updated_at": "2026-04-14T22:01:41Z",
+        "metadata": {
+          "commits": "[\"6a1745555d8f813bfcd8e3d41228360bbe54dd54\"]"
+        },
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-eitbq",
+        "title": "step:close",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T21:51:34Z",
+        "labels": [
+          "step:close",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-ghrzq",
+        "title": "Claim Fail-Closed with Instance Lease",
+        "description": "Make `spire claim` stamp instance metadata on attempt beads and fail closed when a foreign instance owns the active attempt.\n\nModify `cmd/spire/claim.go` — `cmdClaim()` function:\n\n1. After the existing `claimCreateAttemptFunc()` call succeeds (around line 83), add instance metadata stamping:\n   ```go\n   instanceID := config.InstanceID()\n   sessionID := uuid.New().String()  // or crypto/rand UUID\n   err = store.StampAttemptInstance(attemptID, store.InstanceMeta{\n       InstanceID:   instanceID,\n       SessionID:    sessionID,\n       InstanceName: config.InstanceName(),\n       Backend:      \"process\",  // claim is always local process mode\n       Tower:        towerName,  // resolve from config context\n       StartedAt:    time.Now().UTC().Format(time.RFC3339),\n       LastSeenAt:   time.Now().UTC().Format(time.RFC3339),\n   })\n   ```\n\n2. When `CreateAttemptBeadAtomic` returns an EXISTING attempt (reclaim case — same agent name), check instance ownership BEFORE proceeding:\n   ```go\n   owned, err := store.IsOwnedByInstance(attemptID, instanceID)\n   if err != nil { return err }\n   if !owned {\n       meta, _ := store.GetAttemptInstance(attemptID)\n       foreignName := \"unknown\"\n       if meta != nil { foreignName = meta.InstanceName }\n       return fmt.Errorf(\"attempt %s is owned by instance %q — cannot reclaim from this machine; use spire reset to release\", attemptID, foreignName)\n   }\n   ```\n   This check goes AFTER the CreateAttemptBeadAtomic call and BEFORE setting parent status to in_progress.\n\n3. Add instance_name to the JSON output struct so the user can see which machine claimed:\n   Add `InstanceName string` and `InstanceID string` fields to the output.\n\nModify `cmd/spire/store_bridge.go`:\n- Add test-replaceable vars for the new store calls:\n  ```go\n  var storeStampAttemptInstanceFunc = store.StampAttemptInstance\n  var storeIsOwnedByInstanceFunc = store.IsOwnedByInstance\n  var storeGetAttemptInstanceFunc = store.GetAttemptInstance\n  ```\n- Use these vars in claim.go instead of calling store directly (matches existing pattern: `claimCreateAttemptFunc`, `storeGetBeadFunc`, etc.)\n\nImport `config` package for InstanceID/InstanceName. Import `store` for the new instance meta functions. Import `time`.\n\nTests: Add test cases in claim_test.go (or create if needed):\n- Claim stamps instance metadata on new attempt\n- Claim reclaim succeeds when same instance\n- Claim reclaim fails with clear error when foreign instance\n- Output JSON includes instance fields\n\nDo NOT modify pkg/store/ (use the API from 'Attempt Instance Metadata API' task as-is). Do NOT modify pkg/executor/, pkg/steward/, or pkg/agent/.\n\nShared files (other tasks depend on these): cmd/spire/claim.go, cmd/spire/store_bridge.go\n\nDo NOT touch (handled by other tasks): pkg/store/instance_meta.go, pkg/store/beadtypes.go, pkg/executor/graph_interpreter.go, pkg/steward/steward.go, pkg/agent/registry.go",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T21:59:08Z",
+        "updated_at": "2026-04-14T22:06:38Z",
+        "metadata": {
+          "commits": "[\"5a542ce9d0d127d29200055d8dbd442603167925\"]"
+        },
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-mr8mg",
+        "title": "review-round-1",
+        "description": "verdict: request_changes\n\nImplementation is thorough and well-structured with good backward compatibility and fail-closed semantics. Two issues need fixing: the Entry.InstanceID JSON tag uses PascalCase while all other fields use snake_case, and the new ownership-filtering branches in SweepHookedSteps lack test coverage.\n- [error] JSON tag `json:\"InstanceID,omitempty\"` uses PascalCase while every other field in Entry uses snake_case (name, pid, bead_id, started_at, phase_started_at, tower). Should be `json:\"instance_id,omitempty\"` for consistency. This affects serialization output consumed by other tools reading the wizard registry JSON file. The corresponding tests in registry_test.go (TestEntryJSONIncludesInstanceID, TestEntryJSONOmitsEmptyInstanceID) also assert PascalCase and would need updating. (pkg/agent/registry.go:28)\n- [warning] SweepHookedSteps gained ownership-filtering branches in two places (the main hooked-parents loop around line 849 and the graph-state fallback loop around line 1031) but no tests exercise these new paths. Existing SweepHookedSteps tests don't mock IsOwnedByInstanceFunc/GetActiveAttemptFunc for ownership. At minimum, add a test that verifies a foreign-owned attempt is skipped during hooked-step sweep. (pkg/steward/steward_test.go:1690)\n- [warning] Heartbeat runs on every loop iteration unconditionally, including when polling/parking. For long-running graphs with many steps this is fine, but for graphs that loop back (resetStepsForLoop), the heartbeat call on every iteration with no rate-limiting could produce noisy writes. Consider whether a rate-limited heartbeat (e.g., at most once per 30s) would be more appropriate, or accept this as intentional since loop iterations are typically seconds apart. (pkg/executor/graph_interpreter.go:107)",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "review",
+        "created_at": "2026-04-14T22:13:30Z",
+        "updated_at": "2026-04-14T22:15:00Z",
+        "closed_at": "2026-04-14T22:15:00Z",
+        "metadata": {
+          "error_count": "1",
+          "review_findings": "[{\"severity\":\"error\",\"file\":\"pkg/agent/registry.go\",\"line\":28,\"message\":\"JSON tag `json:\\\"InstanceID,omitempty\\\"` uses PascalCase while every other field in Entry uses snake_case (name, pid, bead_id, started_at, phase_started_at, tower). Should be `json:\\\"instance_id,omitempty\\\"` for consistency. This affects serialization output consumed by other tools reading the wizard registry JSON file. The corresponding tests in registry_test.go (TestEntryJSONIncludesInstanceID, TestEntryJSONOmitsEmptyInstanceID) also assert PascalCase and would need updating.\"},{\"severity\":\"warning\",\"file\":\"pkg/steward/steward_test.go\",\"line\":1690,\"message\":\"SweepHookedSteps gained ownership-filtering branches in two places (the main hooked-parents loop around line 849 and the graph-state fallback loop around line 1031) but no tests exercise these new paths. Existing SweepHookedSteps tests don't mock IsOwnedByInstanceFunc/GetActiveAttemptFunc for ownership. At minimum, add a test that verifies a foreign-owned attempt is skipped during hooked-step sweep.\"},{\"severity\":\"warning\",\"file\":\"pkg/executor/graph_interpreter.go\",\"line\":107,\"message\":\"Heartbeat runs on every loop iteration unconditionally, including when polling/parking. For long-running graphs with many steps this is fine, but for graphs that loop back (resetStepsForLoop), the heartbeat call on every iteration with no rate-limiting could produce noisy writes. Consider whether a rate-limited heartbeat (e.g., at most once per 30s) would be more appropriate, or accept this as intentional since loop iterations are typically seconds apart.\"}]",
+          "review_verdict": "request_changes",
+          "round": "1",
+          "warning_count": "2"
+        },
+        "labels": [
+          "review-round",
+          "round:1",
+          "sage:wizard-spi-8wc0w-sage-review"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-n0wu4",
+        "title": "step:implement",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T22:13:28Z",
+        "closed_at": "2026-04-14T22:13:28Z",
         "labels": [
           "step:implement",
           "workflow-step"
@@ -275,28 +310,112 @@ Now I have all the context for a precise plan. Here it is:
         "dependency_type": "parent-child"
       },
       {
-        "id": "spi-xk7t4",
+        "id": "spi-ptdi1",
         "title": "step:discard",
         "status": "open",
         "priority": 3,
         "issue_type": "step",
-        "created_at": "2026-04-14T21:51:44Z",
-        "updated_at": "2026-04-14T21:51:44Z",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T21:51:34Z",
         "labels": [
           "step:discard",
           "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-r93yh",
+        "title": "Attempt Instance Metadata API",
+        "description": "Add a metadata API for stamping and reading instance ownership on attempt beads.\n\nCreate NEW file `pkg/store/instance_meta.go`:\n\n```go\npackage store\n\n// InstanceMeta holds the execution lease metadata stamped on an attempt bead.\ntype InstanceMeta struct {\n    InstanceID   string // stable UUID identifying the Spire install/runtime\n    SessionID    string // unique ID for this particular execution run\n    InstanceName string // human-readable hostname for UI\n    Backend      string // 'process', 'docker', or 'k8s'\n    Tower        string // tower name\n    StartedAt    string // RFC3339 lease start timestamp\n    LastSeenAt   string // RFC3339 heartbeat timestamp\n}\n```\n\nFunctions to implement:\n- `func StampAttemptInstance(attemptID string, m InstanceMeta) error` — calls `SetBeadMetadataMap(attemptID, map)` with keys: `instance_id`, `session_id`, `instance_name`, `backend`, `tower`, `lease_started_at`, `last_seen_at`. Only write non-empty values.\n- `func GetAttemptInstance(attemptID string) (*InstanceMeta, error)` — calls `GetBeadMetadata(attemptID)`, parses the keys back into an InstanceMeta struct. Returns nil (not error) if `instance_id` key is absent (pre-migration attempt).\n- `func IsOwnedByInstance(attemptID, instanceID string) (bool, error)` — gets instance meta; returns true if instance_id matches. Returns true if no instance metadata exists (backward compat: unstamped attempts are assumed local).\n- `func UpdateAttemptHeartbeat(attemptID string) error` — calls `SetBeadMetadata(attemptID, \"last_seen_at\", time.Now().UTC().Format(time.RFC3339))`.\n\nCreate NEW file `pkg/store/instance_meta_test.go`:\n- Test StampAttemptInstance writes expected metadata keys\n- Test GetAttemptInstance round-trips correctly\n- Test GetAttemptInstance returns nil for unstamped bead\n- Test IsOwnedByInstance matches correctly, returns true for unstamped\n- Test UpdateAttemptHeartbeat updates only last_seen_at\n\nUse the existing `SetBeadMetadataMap`, `SetBeadMetadata`, and `GetBeadMetadata` functions from metadata.go. Import `time` for heartbeat timestamps.\n\nDo NOT modify existing files. Do NOT change CreateAttemptBead, CreateAttemptBeadAtomic, or any other existing function signatures. This task is purely additive — new file, new types, new functions only.\n\nShared files (other tasks depend on these): pkg/store/instance_meta.go\n\nDo NOT touch (handled by other tasks): pkg/store/beadtypes.go, pkg/store/metadata.go, pkg/store/queries.go, pkg/store/schedule.go, pkg/config/instance.go, pkg/agent/registry.go, pkg/steward/steward.go, pkg/executor/graph_interpreter.go, cmd/spire/claim.go",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T21:59:08Z",
+        "updated_at": "2026-04-14T22:01:49Z",
+        "metadata": {
+          "commits": "[\"4899b8b334f95ded1a30782166f60ce3e15df280\"]"
+        },
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-rjoa7",
+        "title": "step:plan",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T21:59:09Z",
+        "closed_at": "2026-04-14T21:59:09Z",
+        "labels": [
+          "step:plan",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-srz0m",
+        "title": "Steward Multi-Local Safety",
+        "description": "Make the steward scope health checks to locally-owned attempts, filter spawn candidates by repo bind state, route process-mode spawns through executor, and restrict hooked auto-resume to local attempts.\n\nModify `pkg/steward/steward.go`:\n\n### 1. Scope CheckBeadHealth to local instance (function around line 424)\n\nCurrent behavior: iterates ALL in_progress beads and kills any that exceed thresholds.\nNew behavior:\n- Get `localInstanceID := config.InstanceID()`\n- For each in_progress bead with an active attempt:\n  - Call `store.GetAttemptInstance(attempt.ID)` to get instance metadata\n  - If `meta != nil \u0026\u0026 meta.InstanceID != \"\" \u0026\u0026 meta.InstanceID != localInstanceID`: this is a FOREIGN attempt. Log it as informational (`\"foreign attempt %s on instance %s — skipping health check\"`) and SKIP — do not mark stale or kill.\n  - If `meta == nil || meta.InstanceID == \"\"`: backward compat — treat as local (unstamped pre-migration attempts).\n  - If `meta.InstanceID == localInstanceID`: proceed with existing stale/shutdown logic as before.\n- Add counters for foreign stale attempts and include in return value or log summary.\n\n### 2. Filter spawn candidates by repo bind state (in TowerCycle, around line 264)\n\nCurrent behavior: spawns a wizard for every schedulable bead.\nNew behavior:\n- Before the auto-summon loop, load tower config: `tower, err := config.LoadTowerConfig(towerName)`\n- For each schedulable bead, resolve its repo prefix (from the bead ID prefix, e.g., `web-` from `web-abc123`).\n- Check `tower.LocalBindings[prefix]` — only spawn if binding exists AND `binding.State == \"bound\"`.\n- If prefix is unbound/skipped/unmanaged or not in bindings: skip with debug log (`\"skipping %s: prefix %s not bound on this instance\"`). Do NOT error — the bead is visible but not locally executable.\n\n### 3. Route process-mode spawns through executor (in TowerCycle spawn, around line 300)\n\nCurrent behavior: `Role: agent.RoleWizard` in SpawnConfig.\nNew behavior: `Role: agent.RoleExecutor` for process-mode spawns.\n- Add `InstanceID: config.InstanceID()` to the SpawnConfig so the process backend writes it to the registry entry.\n- The wizard name generation can remain `\"wizard-\" + ...` for now (naming is cosmetic), but the Role must be RoleExecutor so the correct entrypoint is used.\n\n### 4. Restrict hooked auto-resume to local attempts\n\nFind any code in steward.go that handles hooked bead resume (sweeping for hooked beads and restarting execution). For each hooked bead being considered for auto-resume:\n- Get the active attempt and check instance ownership via `store.IsOwnedByInstance(attemptID, config.InstanceID())`\n- Only auto-resume if owned by this instance\n- Skip foreign hooked beads with a debug log\n\nIf there is steward-level review routing logic that duplicates executor lifecycle (the design says to disable it), identify it and remove or gate it behind a check that prevents dual state machines.\n\nImport `config` for InstanceID, `store` for GetAttemptInstance and IsOwnedByInstance.\n\nTests in `pkg/steward/steward_test.go` (add or create):\n- CheckBeadHealth skips foreign-owned attempts\n- CheckBeadHealth processes locally-owned attempts normally\n- CheckBeadHealth treats unstamped attempts as local (backward compat)\n- TowerCycle skips beads for unbound prefixes\n- TowerCycle spawns beads for bound prefixes\n- SpawnConfig uses RoleExecutor and includes InstanceID\n\nDo NOT modify pkg/steward/daemon.go, pkg/store/, pkg/executor/, pkg/agent/, or cmd/spire/.\n\nShared files (other tasks depend on these): pkg/steward/steward.go\n\nDo NOT touch (handled by other tasks): pkg/steward/daemon.go, pkg/steward/local.go, cmd/spire/claim.go, pkg/executor/graph_interpreter.go, pkg/store/instance_meta.go, pkg/agent/registry.go, pkg/agent/agent.go, pkg/agent/backend_process.go",
+        "status": "in_progress",
+        "priority": 1,
+        "issue_type": "task",
+        "created_at": "2026-04-14T21:59:08Z",
+        "updated_at": "2026-04-14T22:10:32Z",
+        "metadata": {
+          "commits": "[\"2efb6089060d293efa5ebb586708793daa14ad16\"]"
+        },
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-tcf5w",
+        "title": "step:materialize",
+        "status": "closed",
+        "priority": 3,
+        "issue_type": "step",
+        "created_at": "2026-04-14T21:51:34Z",
+        "updated_at": "2026-04-14T21:59:09Z",
+        "closed_at": "2026-04-14T21:59:09Z",
+        "labels": [
+          "step:materialize",
+          "workflow-step"
+        ],
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "spi-y4h9z",
+        "title": "attempt: wizard-spi-8wc0w",
+        "status": "in_progress",
+        "priority": 3,
+        "issue_type": "attempt",
+        "created_at": "2026-04-14T21:51:33Z",
+        "updated_at": "2026-04-14T21:51:34Z",
+        "labels": [
+          "agent:wizard-spi-8wc0w",
+          "attempt",
+          "branch:feat/spi-8wc0w",
+          "worktree:/Users/jb/awell/spire/.worktrees/spi-8wc0w-staging"
         ],
         "dependency_type": "parent-child"
       }
     ],
     "comments": [
       {
-        "id": "019d8e00-4978-7e63-a23a-ffda924acaa9",
-        "issue_id": "spi-a0spf",
+        "id": "019d8e01-61fb-717a-9ff7-750d27fc63d8",
+        "issue_id": "spi-8wc0w",
         "author": "spire",
-        "text": "Implementation plan:\n\nGood — `StepConfig = formula.StepConfig` is a type alias in deps.go. The flow is: `EscalateGraphStepFailure` receives `stepCfg.Flow` at the call site in graph_interpreter.go:217. This `flow` value is included in the `nodeCtx` string but not extracted as a separate metadata field.\n\nNow I have all the context for a precise plan. Here it is:\n\n---\n\n**Approach:** The recovery agent stores graph step names (e.g., `verify-build`) as `SourceStep` in recovery metadata, which flows into `RetryRequest.FromStep`. The wizard rejects these because it only knows its own phase names (`design`, `implement`, `commit`, `build-gate`, `test`, `review`). Fix this by: (1) also storing the graph step's `flow` field in recovery metadata, (2) using it as the wizard-compatible phase in `handleVerify`, and (3) adding a fallback mapping in the wizard for robustness.\n\n**Key files:**\n- `pkg/executor/recovery_protocol.go` — add `MapToWizardPhase()` function and `KnownWizardPhases` set\n- `pkg/executor/recovery_phase.go` — call `MapToWizardPhase()` on `failedStep` before setting `FromStep` in `handleVerify`\n- `pkg/wizard/wizard_retry.go` — use `executor.MapToWizardPhase()` instead of raw `knownWizardSteps` lookup in `checkRetryRequest`\n- `pkg/recovery/keys.go` (or wherever `KeySourceStep` is defined) — add `KeySourceFlow` constant for the new metadata field\n- `pkg/executor/executor_escalate.go` — extract `flow` from `nodeCtx` in `buildSeedMetadata()` and store as `SourceFlow`; also seed `SourceFlow` in `RecoveryMetadata`\n- `pkg/executor/recovery_context.go` — read `SourceFlow` into `FullRecoveryContext` and use it to populate a new `WizardPhase` field\n- `pkg/executor/recovery_protocol_test.go` — add tests for `MapToWizardPhase`\n- `pkg/wizard/wizard_retry_test.go` — update tests for the new mapping behavior\n\n**Steps:**\n\n1. **Add `KeySourceFlow` to recovery metadata keys** (pkg/recovery/keys.go or equivalent). Add a `source_flow` metadata key alongside the existing `source_step` key.\n\n2. **Extend `RecoveryMetadata` and `buildSeedMetadata`** (pkg/executor/executor_escalate.go). In `buildSeedMetadata()`, also extract `flow=\u003cvalue\u003e` from `nodeCtx` (same pattern as `step=`). Store it in a new `SourceFlow` field on `RecoveryMetadata`. This captures the formula step's `flow` attribute (e.g., `implement`, `task-plan`, `epic-plan`) at escalation time.\n\n3. **Add `WizardPhase` to `FullRecoveryContext`** (pkg/executor/recovery_context.go). In `BuildRecoveryContext()`, after reading `FailedStep` from `KeySourceStep`, also read `SourceFlow` from metadata into a new `WizardPhase string` field on `FullRecoveryContext`.\n\n4. **Add `MapToWizardPhase()` in `recovery_protocol.go`**. This is the translation function. Logic:\n   - If step is already in `KnownWizardPhases` → return as-is\n   - Check a static mapping for known graph step names:\n     - `verify-build`, `build-failed` → `build-gate`\n     - `dispatch-children` → `implement`\n     - `design-check` → `design`\n     - `implement-failed` → `implement`\n     - `merge`, `close`, `discard` → `review` (retry from review to redo the terminal flow)\n     - `plan`, `materialize` → `design`\n     - `sage-review`, `review-fix`, `arbiter` → `review` (subgraph-review steps)\n   - Final fallback → `implement` (safest restart point for the wizard)\n   - Export `KnownWizardPhases` so the wizard package can reference it.\n\n5. **Use `MapToWizardPhase` in `handleVerify`** (recovery_phase.go ~line 1430). After determining `failedStep`, also check `fullCtx.WizardPhase` (the `flow` from step metadata). Prefer `WizardPhase` if non-empty, else apply `MapToWizardPhase(failedStep)`. Set the mapped value as `FromStep`.\n\n6. **Use `MapToWizardPhase` in wizard's `checkRetryRequest`** (wizard_retry.go). Replace the direct `knownWizardSteps[req.FromStep]` check with `mapped := executor.MapToWizardPhase(req.FromStep)`. If `mapped` differs from `req.FromStep`, log the translation. Update `req.FromStep` to the mapped value before proceeding. Remove the local `knownWizardSteps` var (it's now canonical in executor).\n\n7. **Tests:**\n   - `recovery_protocol_test.go`: Test `MapToWizardPhase` — known wizard steps pass through, graph step names map correctly, unknown names fallback to `implement`.\n   - `wizard_retry_test.go`: Add a test case where `FromStep=\"verify-build\"` — should translate to `build-gate` and succeed instead of rejecting.\n   - `executor_escalate_test.go` (if exists): Test that `buildSeedMetadata` extracts `flow` into `SourceFlow`.\n   - `recovery_context_test.go`: Test that `WizardPhase` is populated from metadata.\n\n**Edge cases / gotchas:**\n- **Graph steps with no `flow` attribute** (like `verify-build`, `dispatch-children`): The `SourceFlow` metadata will be empty. The static mapping in `MapToWizardPhase` handles these by name.\n- **Subgraph steps** (from `subgraph-review`, `subgraph-implement`): These have step names like `sage-review`, `review-fix`, `verified`. The static map must cover these, and the fallback must be sensible.\n- **Empty `failedStep`**: If both `FailedStep` and `WizardPhase` are empty, `handleVerify` should still set a `FromStep`. Use `implement` as default — the wizard will restart from the implement phase.\n- **Circular dependency risk**: `MapToWizardPhase` must live in `pkg/executor` (not `pkg/wizard`) since wizard already imports executor. The wizard calls `executor.MapToWizardPhase()`.\n- **Recovery protocol test** at line 16 uses `FromStep: \"verify-build\"` — this is the exact bug scenario. Update it to verify the mapping works end-to-end.\n- **The `flow` values in formulas** (`task-plan`, `epic-plan`, `sage-review`, `review-fix`, `arbiter`) don't match wizard phases directly. The `MapToWizardPhase` function should also map these: `task-plan`/`epic-plan` → `design`, `sage-review` → `review`, `review-fix` → `review`, `arbiter` → `review`, `implement` → `implement`.\n\n**Validation:**\n- `go test ./pkg/executor/... -run TestMapToWizardPhase` — verify the mapping function\n- `go test ./pkg/wizard/... -run TestRetry` — verify the wizard accepts translated step names\n- `go test ./pkg/executor/... -run TestRecovery` — verify end-to-end recovery context building\n- `go build ./...` — ensure no import cycles from the new shared function",
-        "created_at": "2026-04-14T21:57:57Z"
+        "text": "Wizard plan: 6 subtasks\n\n- spi-bo1i6: Instance Identity\n- spi-r93yh: Attempt Instance Metadata API\n- spi-ddj5f: Agent Package Instance Support\n- spi-ghrzq: Claim Fail-Closed with Instance Lease ← spi-bo1i6, spi-r93yh\n- spi-aah31: Executor Instance-Aware Startup ← spi-bo1i6, spi-r93yh, spi-ddj5f\n- spi-srz0m: Steward Multi-Local Safety ← spi-bo1i6, spi-r93yh, spi-ddj5f\n",
+        "created_at": "2026-04-14T21:59:09Z"
+      },
+      {
+        "id": "019d8e0f-e789-7217-9801-ed5d98ac639f",
+        "issue_id": "spi-8wc0w",
+        "author": "spire",
+        "text": "Review round 1: request_changes — Implementation is thorough and well-structured with good backward compatibility and fail-closed semantics. Two issues need fixing: the Entry.InstanceID JSON tag uses PascalCase while all other fields use snake_case, and the new ownership-filtering branches in SweepHookedSteps lack test coverage.\n- [error] JSON tag `json:\"InstanceID,omitempty\"` uses PascalCase while every other field in Entry uses snake_case (name, pid, bead_id, started_at, phase_started_at, tower). Should be `json:\"instance_id,omitempty\"` for consistency. This affects serialization output consumed by other tools reading the wizard registry JSON file. The corresponding tests in registry_test.go (TestEntryJSONIncludesInstanceID, TestEntryJSONOmitsEmptyInstanceID) also assert PascalCase and would need updating. (pkg/agent/registry.go:28)\n- [warning] SweepHookedSteps gained ownership-filtering branches in two places (the main hooked-parents loop around line 849 and the graph-state fallback loop around line 1031) but no tests exercise these new paths. Existing SweepHookedSteps tests don't mock IsOwnedByInstanceFunc/GetActiveAttemptFunc for ownership. At minimum, add a test that verifies a foreign-owned attempt is skipped during hooked-step sweep. (pkg/steward/steward_test.go:1690)\n- [warning] Heartbeat runs on every loop iteration unconditionally, including when polling/parking. For long-running graphs with many steps this is fine, but for graphs that loop back (resetStepsForLoop), the heartbeat call on every iteration with no rate-limiting could produce noisy writes. Consider whether a rate-limited heartbeat (e.g., at most once per 30s) would be more appropriate, or accept this as intentional since loop iterations are typically seconds apart. (pkg/executor/graph_interpreter.go:107)",
+        "created_at": "2026-04-14T22:15:00Z"
       }
-    ]
+    ],
+    "epic_total_children": 17,
+    "epic_closed_children": 5,
+    "epic_closeable": false
   }
 ]

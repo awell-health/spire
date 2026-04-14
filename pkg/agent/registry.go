@@ -25,7 +25,7 @@ type Entry struct {
 	Phase          string `json:"phase,omitempty"`
 	PhaseStartedAt string `json:"phase_started_at,omitempty"`
 	Tower          string `json:"tower,omitempty"`
-	InstanceID     string `json:"InstanceID,omitempty"`
+	InstanceID     string `json:"instance_id,omitempty"`
 }
 
 // RegistryPath returns the path to the wizard registry JSON file.

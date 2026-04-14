@@ -74,6 +74,10 @@ type Executor struct {
 	// poll iterations. Defaults to 30s in production; set to a small value in
 	// tests to avoid blocking.
 	designPollInterval time.Duration
+
+	// lastHeartbeat tracks when the last heartbeat was sent. Used to rate-limit
+	// heartbeat writes to at most once per 30 seconds.
+	lastHeartbeat time.Time
 }
 
 // NewGraph creates a v3 graph executor for a bead. It loads or creates

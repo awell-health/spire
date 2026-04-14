@@ -1148,6 +1148,162 @@ func TestSweepHookedSteps_HumanApprove_OnlyNeedsHumanPresent_Skips(t *testing.T)
 	}
 }
 
+// --- SweepHookedSteps ownership-filtering tests ---
+
+func TestSweepHookedSteps_SkipsForeignOwnedAttempt(t *testing.T) {
+	// When the active attempt is owned by a foreign instance, the hooked-step
+	// sweep should skip that bead entirely — no graph-state read, no spawn.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	// Write graph state with a hooked step — this should NOT be reached.
+	gs := map[string]interface{}{
+		"bead_id": "spi-foreign1",
+		"steps": map[string]interface{}{
+			"check.design-linked": map[string]interface{}{
+				"status": "hooked",
+				"outputs": map[string]string{
+					"design_ref": "spi-design-foreign",
+				},
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-foreign1", gs)
+
+	// Mock store: hooked parent bead.
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && string(*filter.Status) == "hooked" {
+			return []store.Bead{
+				{ID: "spi-foreign1", Status: "hooked", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	// Active attempt exists for the hooked parent.
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-foreign1" {
+			return &store.Bead{ID: "spi-foreign1.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	// Attempt is owned by a foreign instance.
+	origOwned := IsOwnedByInstanceFunc
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) {
+		if attemptID == "spi-foreign1.attempt-1" {
+			return false, nil // foreign
+		}
+		return true, nil
+	}
+	defer func() { IsOwnedByInstanceFunc = origOwned }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	// GetHookedStepsFunc should NOT be called for foreign bead — track calls.
+	hookedStepsCalled := false
+	origHooked := GetHookedStepsFunc
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-foreign1" {
+			hookedStepsCalled = true
+		}
+		return nil, nil
+	}
+	defer func() { GetHookedStepsFunc = origHooked }()
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0 (foreign attempt skipped)", count)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0 (foreign attempt should not trigger spawn)", len(backend.spawns))
+	}
+	if hookedStepsCalled {
+		t.Error("GetHookedStepsFunc was called for foreign-owned bead — should have been skipped")
+	}
+}
+
+func TestSweepHookedSteps_SkipsForeignOwnedAttempt_GraphStateFallback(t *testing.T) {
+	// The graph-state fallback loop (second path in SweepHookedSteps) should
+	// also skip foreign-owned attempts.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	// Write graph state with a hooked step.
+	gs := map[string]interface{}{
+		"bead_id": "spi-fallback1",
+		"steps": map[string]interface{}{
+			"check.design-linked": map[string]interface{}{
+				"status": "hooked",
+				"outputs": map[string]string{
+					"design_ref": "spi-design-fb",
+				},
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-fallback1", gs)
+
+	// No hooked beads from bead-status path (forces fallback to graph-state path).
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return nil, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	// Active attempt exists for the fallback bead.
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-fallback1" {
+			return &store.Bead{ID: "spi-fallback1.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	// Attempt is owned by a foreign instance.
+	origOwned := IsOwnedByInstanceFunc
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) {
+		if attemptID == "spi-fallback1.attempt-1" {
+			return false, nil // foreign
+		}
+		return true, nil
+	}
+	defer func() { IsOwnedByInstanceFunc = origOwned }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	// Mock GetBead so the fallback path doesn't error if it checks the design.
+	origGetBead := GetBeadFunc
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	defer func() { GetBeadFunc = origGetBead }()
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0 (foreign attempt skipped in graph-state fallback)", count)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0 (foreign attempt should not trigger spawn)", len(backend.spawns))
+	}
+}
+
 // --- Steward cycle integration tests (wave-0 modules) ---
 
 // mockBackend records Spawn calls and returns configurable agents from List.

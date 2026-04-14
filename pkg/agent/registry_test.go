@@ -77,8 +77,8 @@ func TestEntryJSONIncludesInstanceID(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if m["InstanceID"] != "inst-def" {
-		t.Fatalf("expected InstanceID %q in JSON, got %v", "inst-def", m["InstanceID"])
+	if m["instance_id"] != "inst-def" {
+		t.Fatalf("expected instance_id %q in JSON, got %v", "inst-def", m["instance_id"])
 	}
 }
 
@@ -97,8 +97,8 @@ func TestEntryJSONOmitsEmptyInstanceID(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := m["InstanceID"]; ok {
-		t.Fatal("expected InstanceID to be omitted from JSON when empty")
+	if _, ok := m["instance_id"]; ok {
+		t.Fatal("expected instance_id to be omitted from JSON when empty")
 	}
 }
 
