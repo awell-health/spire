@@ -13,6 +13,8 @@ import (
 
 var _ Backend = (*ProcessBackend)(nil)
 var _ Backend = (*DockerBackend)(nil)
+var _ Backend = (*K8sBackend)(nil)
+var _ Handle = (*K8sHandle)(nil)
 
 // ---------------------------------------------------------------------------
 // ResolveBackend returns a Backend for the given backend name.
@@ -37,6 +39,13 @@ func ResolveBackend(name string) Backend {
 		return newProcessBackend()
 	case "docker":
 		return newDockerBackend()
+	case "k8s", "kubernetes":
+		b, err := NewK8sBackend()
+		if err != nil {
+			log.Printf("[backend] k8s backend init failed: %v, falling back to process", err)
+			return newProcessBackend()
+		}
+		return b
 	default:
 		log.Printf("[backend] unknown backend %q, falling back to process", name)
 		return newProcessBackend()
