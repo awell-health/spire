@@ -65,20 +65,20 @@ func cmdApprove(beadID, comment string) error {
 		return fmt.Errorf("get step beads for %s: %w", beadID, err)
 	}
 
-	// Find the hooked approval step. Only accept step:human.approve steps —
-	// other hooked steps (design-check, failed steps) must not be cleared by approve.
+	// Find the hooked approval gate. Accept human.approve and design-check steps —
+	// these are legitimate approval gates. Failed/recovery hooks must not be cleared.
 	var approvalStep *Bead
 	for i, sb := range stepBeads {
 		if sb.Status != "hooked" {
 			continue
 		}
-		if containsLabel(sb, "step:human.approve") {
+		if containsLabel(sb, "step:human.approve") || containsLabel(sb, "step:design-check") {
 			approvalStep = &stepBeads[i]
 			break
 		}
 	}
 	if approvalStep == nil {
-		return fmt.Errorf("bead %s has no hooked approval step (step:human.approve)", beadID)
+		return fmt.Errorf("bead %s has no hooked approval gate (human.approve or design-check)", beadID)
 	}
 
 	// Unhook the approval step (sets it back to 'open').

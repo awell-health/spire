@@ -54,10 +54,10 @@ func TestCmdApprove_RequiresHookedStep(t *testing.T) {
 
 	err := cmdApprove("spi-test", "")
 	if err == nil {
-		t.Fatal("expected error for bead with no hooked approval step")
+		t.Fatal("expected error for bead with no hooked approval gate")
 	}
-	if !strings.Contains(err.Error(), "no hooked approval step") {
-		t.Errorf("expected 'no hooked approval step' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "no hooked approval gate") {
+		t.Errorf("expected 'no hooked approval gate' in error, got: %v", err)
 	}
 }
 
@@ -187,7 +187,7 @@ func TestCmdApprove_RejectsNonApprovalHookedStep(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no step:human.approve step exists")
 	}
-	if !strings.Contains(err.Error(), "no hooked approval step") {
+	if !strings.Contains(err.Error(), "no hooked approval gate") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
