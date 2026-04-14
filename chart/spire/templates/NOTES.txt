@@ -1,0 +1,10 @@
+Spire cluster installed!
+
+Steward: kubectl -n {{ .Release.Namespace }} logs -f deploy/spire-steward
+Dolt:    kubectl -n {{ .Release.Namespace }} port-forward svc/spire-dolt {{ .Values.dolt.port }}
+Status:  kubectl -n {{ .Release.Namespace }} get pods
+
+To file a bead from outside the cluster:
+  export BEADS_DOLT_SERVER_HOST=$(kubectl -n {{ .Release.Namespace }} get svc spire-dolt -o jsonpath='{.spec.clusterIP}')
+  export BEADS_DOLT_SERVER_PORT={{ .Values.dolt.port }}
+  bd create "My first bead" -p 1 -t task

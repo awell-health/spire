@@ -1,0 +1,203 @@
+{{- if .Values.networkPolicies.enabled }}
+# Default deny all ingress in namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Allow ingress to Dolt from all pods in namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-dolt-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: dolt
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - port: {{ .Values.dolt.port }}
+          protocol: TCP
+---
+# Allow OTLP ingress to steward from agent pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-steward-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: steward
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              spire.agent: "true"
+      ports:
+        - port: {{ .Values.steward.otlpPort }}
+          protocol: TCP
+    - from:
+        - podSelector: {}
+      ports:
+        - port: {{ .Values.steward.metricsPort }}
+          protocol: TCP
+---
+{{- if .Values.clickhouse.enabled }}
+# Allow ingress to ClickHouse from steward only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-clickhouse-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: clickhouse
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: steward
+      ports:
+        - port: {{ .Values.clickhouse.ports.native }}
+          protocol: TCP
+        - port: {{ .Values.clickhouse.ports.http }}
+          protocol: TCP
+{{- end }}
+---
+# Agent pod egress: Dolt, steward OTLP, external HTTPS, DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-agent-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      spire.agent: "true"
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Dolt
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: dolt
+      ports:
+        - port: {{ .Values.dolt.port }}
+          protocol: TCP
+    # Steward OTLP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: steward
+      ports:
+        - port: {{ .Values.steward.otlpPort }}
+          protocol: TCP
+    # External HTTPS (GitHub, Anthropic API)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+---
+# Steward egress: ClickHouse, Dolt, external HTTPS, DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spire-steward-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: steward
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Dolt
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: dolt
+      ports:
+        - port: {{ .Values.dolt.port }}
+          protocol: TCP
+    {{- if .Values.clickhouse.enabled }}
+    # ClickHouse
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: clickhouse
+      ports:
+        - port: {{ .Values.clickhouse.ports.native }}
+          protocol: TCP
+        - port: {{ .Values.clickhouse.ports.http }}
+          protocol: TCP
+    {{- end }}
+    # External HTTPS
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+    # Kubernetes API (for pod spawning)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 6443
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+{{- end }}

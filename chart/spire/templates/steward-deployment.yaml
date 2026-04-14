@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-steward
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: steward
+spec:
+  replicas: {{ .Values.steward.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: steward
+      {{- include "spire.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "spire.labels" . | nindent 8 }}
+        app.kubernetes.io/component: steward
+    spec:
+      {{- if .Values.podPriority.enabled }}
+      priorityClassName: spire-infrastructure
+      {{- end }}
+      serviceAccountName: spire-steward
+      containers:
+        - name: steward
+          image: "{{ .Values.image.steward.repository }}:{{ .Values.image.steward.tag }}"
+          imagePullPolicy: {{ .Values.image.steward.pullPolicy }}
+          args:
+            - steward
+            - "--interval={{ .Values.steward.interval }}"
+          env:
+            - name: SPIRE_TOWER
+              value: {{ .Values.tower.name | quote }}
+            - name: STEWARD_INTERVAL
+              value: {{ .Values.steward.interval | quote }}
+            - name: BEADS_DOLT_SERVER_HOST
+              value: {{ include "spire.doltHost" . | quote }}
+            - name: BEADS_DOLT_SERVER_PORT
+              value: {{ .Values.dolt.port | quote }}
+            {{- if .Values.clickhouse.enabled }}
+            - name: SPIRE_OLAP_BACKEND
+              value: "clickhouse"
+            - name: SPIRE_CLICKHOUSE_DSN
+              value: "clickhouse://{{ include "spire.clickhouseHost" . }}:{{ .Values.clickhouse.ports.native }}/spire"
+            {{- end }}
+            - name: SPIRE_AGENT_IMAGE
+              value: "{{ .Values.image.agent.repository }}:{{ .Values.image.agent.tag }}"
+            - name: SPIRE_K8S_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: anthropic-key
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: github-token
+          ports:
+            - name: otlp
+              containerPort: {{ .Values.steward.otlpPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.steward.metricsPort }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.steward.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-steward
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: steward
+spec:
+  ports:
+    - name: otlp
+      port: {{ .Values.steward.otlpPort }}
+      targetPort: otlp
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.steward.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/component: steward
+    {{- include "spire.selectorLabels" . | nindent 4 }}

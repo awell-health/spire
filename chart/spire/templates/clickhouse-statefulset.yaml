@@ -1,0 +1,121 @@
+{{- if .Values.clickhouse.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-clickhouse-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+data:
+  config.xml: |
+    <clickhouse>
+      <logger>
+        <level>information</level>
+        <console>1</console>
+      </logger>
+      <http_port>{{ .Values.clickhouse.ports.http }}</http_port>
+      <tcp_port>{{ .Values.clickhouse.ports.native }}</tcp_port>
+      <listen_host>0.0.0.0</listen_host>
+      <max_connections>4096</max_connections>
+      <keep_alive_timeout>3</keep_alive_timeout>
+      <max_concurrent_queries>100</max_concurrent_queries>
+      <path>/var/lib/clickhouse/</path>
+      <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+      <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+      <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>
+    </clickhouse>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-clickhouse
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  clusterIP: None
+  ports:
+    - name: http
+      port: {{ .Values.clickhouse.ports.http }}
+      targetPort: http
+      protocol: TCP
+    - name: native
+      port: {{ .Values.clickhouse.ports.native }}
+      targetPort: native
+      protocol: TCP
+  selector:
+    app.kubernetes.io/component: clickhouse
+    {{- include "spire.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-clickhouse
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  serviceName: spire-clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: clickhouse
+      {{- include "spire.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "spire.labels" . | nindent 8 }}
+        app.kubernetes.io/component: clickhouse
+    spec:
+      {{- if .Values.podPriority.enabled }}
+      priorityClassName: spire-infrastructure
+      {{- end }}
+      containers:
+        - name: clickhouse
+          image: "{{ .Values.clickhouse.image.repository }}:{{ .Values.clickhouse.image.tag }}"
+          ports:
+            - name: http
+              containerPort: {{ .Values.clickhouse.ports.http }}
+              protocol: TCP
+            - name: native
+              containerPort: {{ .Values.clickhouse.ports.native }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.clickhouse.resources | nindent 12 }}
+          volumeMounts:
+            - name: clickhouse-data
+              mountPath: /var/lib/clickhouse
+            - name: clickhouse-config
+              mountPath: /etc/clickhouse-server/config.d/spire.xml
+              subPath: config.xml
+      volumes:
+        - name: clickhouse-config
+          configMap:
+            name: spire-clickhouse-config
+  volumeClaimTemplates:
+    - metadata:
+        name: clickhouse-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.clickhouse.storage.storageClass }}
+        storageClassName: {{ .Values.clickhouse.storage.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.clickhouse.storage.size }}
+{{- end }}

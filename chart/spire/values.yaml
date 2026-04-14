@@ -1,0 +1,122 @@
+# Tower configuration
+tower:
+  name: ""              # Required: tower name
+  maxConcurrent: 5      # Max concurrent agent pods
+  dolthub:
+    remote: ""          # DoltHub remote (e.g. awell/my-project)
+    syncInterval: "*/15 * * * *"  # CronJob schedule
+
+# Container images
+image:
+  steward:
+    repository: ghcr.io/awell/spire-steward
+    tag: latest
+    pullPolicy: IfNotPresent
+  agent:
+    repository: ghcr.io/awell/spire-agent
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# Dolt database
+dolt:
+  enabled: true
+  image:
+    repository: dolthub/dolt-sql-server
+    tag: latest
+  port: 3307
+  storage:
+    size: 20Gi
+    storageClass: ""    # Use default if empty
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 500m
+    limits:
+      memory: 2Gi
+      cpu: 2000m
+  config:
+    maxConnections: 200
+    queryParallelism: 4
+
+# ClickHouse analytics
+clickhouse:
+  enabled: true
+  image:
+    repository: clickhouse/clickhouse-server
+    tag: "24.8"
+  ports:
+    http: 8123
+    native: 9000
+  storage:
+    size: 50Gi
+    storageClass: ""
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 4Gi
+      cpu: 2000m
+
+# Steward (control plane)
+steward:
+  replicas: 1
+  interval: "2m"        # Steward cycle interval
+  otlpPort: 4317
+  metricsPort: 9090
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 1Gi
+      cpu: 1000m
+
+# Agent pod defaults
+agent:
+  resourceTiers:
+    implement:
+      requests:
+        memory: 1Gi
+        cpu: 500m
+      limits:
+        memory: 4Gi
+        cpu: 2000m
+    review:
+      requests:
+        memory: 256Mi
+        cpu: 250m
+      limits:
+        memory: 1Gi
+        cpu: 1000m
+    plan:
+      requests:
+        memory: 256Mi
+        cpu: 250m
+      limits:
+        memory: 512Mi
+        cpu: 500m
+
+# Secrets
+secrets:
+  create: true           # Create Secret resource
+  anthropicKey: ""       # Anthropic API key
+  githubToken: ""        # GitHub token
+  dolthubUser: ""        # DoltHub username
+  dolthubPassword: ""    # DoltHub password
+  externalSecrets:
+    enabled: false       # Use External Secrets Operator
+    secretStore: ""      # SecretStore name
+    refreshInterval: 1h
+
+# Network policies
+networkPolicies:
+  enabled: true
+
+# Pod priority classes
+podPriority:
+  enabled: true
+
+# Namespace
+namespace: spire
+createNamespace: true

@@ -1,0 +1,53 @@
+{{- if and .Values.dolt.enabled .Values.tower.dolthub.remote }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: spire-dolt-sync
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt-sync
+spec:
+  schedule: {{ .Values.tower.dolthub.syncInterval | quote }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "spire.labels" . | nindent 12 }}
+            app.kubernetes.io/component: dolt-sync
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: dolt-sync
+              image: "{{ .Values.dolt.image.repository }}:{{ .Values.dolt.image.tag }}"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  cd /var/lib/dolt
+                  dolt config --global --set user.name "${DOLTHUB_USER}"
+                  dolt creds import /secrets/dolthub-creds.json 2>/dev/null || true
+                  dolt pull origin main || true
+                  dolt push origin main
+              env:
+                - name: DOLTHUB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: spire-credentials
+                      key: dolthub-user
+                - name: DOLTHUB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: spire-credentials
+                      key: dolthub-password
+              volumeMounts:
+                - name: dolt-data
+                  mountPath: /var/lib/dolt
+          volumes:
+            - name: dolt-data
+              persistentVolumeClaim:
+                claimName: dolt-data-spire-dolt-0
+{{- end }}

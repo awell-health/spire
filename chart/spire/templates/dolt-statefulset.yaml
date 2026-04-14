@@ -1,0 +1,83 @@
+{{- if .Values.dolt.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-dolt
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt
+spec:
+  clusterIP: None
+  ports:
+    - name: mysql
+      port: {{ .Values.dolt.port }}
+      targetPort: mysql
+      protocol: TCP
+  selector:
+    app.kubernetes.io/component: dolt
+    {{- include "spire.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-dolt
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt
+spec:
+  serviceName: spire-dolt
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: dolt
+      {{- include "spire.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "spire.labels" . | nindent 8 }}
+        app.kubernetes.io/component: dolt
+    spec:
+      {{- if .Values.podPriority.enabled }}
+      priorityClassName: spire-infrastructure
+      {{- end }}
+      containers:
+        - name: dolt
+          image: "{{ .Values.dolt.image.repository }}:{{ .Values.dolt.image.tag }}"
+          ports:
+            - name: mysql
+              containerPort: {{ .Values.dolt.port }}
+              protocol: TCP
+          args:
+            - "--host=0.0.0.0"
+            - "--port={{ .Values.dolt.port }}"
+            - "--max-connections={{ .Values.dolt.config.maxConnections }}"
+            - "--query-parallelism={{ .Values.dolt.config.queryParallelism }}"
+          readinessProbe:
+            tcpSocket:
+              port: mysql
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: mysql
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.dolt.resources | nindent 12 }}
+          volumeMounts:
+            - name: dolt-data
+              mountPath: /var/lib/dolt
+  volumeClaimTemplates:
+    - metadata:
+        name: dolt-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.dolt.storage.storageClass }}
+        storageClassName: {{ .Values.dolt.storage.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.dolt.storage.size }}
+{{- end }}

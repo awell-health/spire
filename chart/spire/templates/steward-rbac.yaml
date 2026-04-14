@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-steward
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: steward
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-steward-{{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: steward
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, pods/status]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [secrets, configmaps]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-steward-{{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: steward
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-steward-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: spire-steward
+    namespace: {{ .Release.Namespace }}
