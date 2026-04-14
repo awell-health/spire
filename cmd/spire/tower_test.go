@@ -831,6 +831,75 @@ func TestIsValidDatabaseName(t *testing.T) {
 	}
 }
 
+// --- mergeCustomStatuses tests ---
+
+func TestMergeCustomStatuses_EmptyToRequired(t *testing.T) {
+	merged, changed := mergeCustomStatuses("", requiredCustomStatuses)
+	if !changed {
+		t.Fatal("expected changed=true when adding to empty config")
+	}
+	if merged != "ready:active" {
+		t.Errorf("merged = %q, want %q", merged, "ready:active")
+	}
+}
+
+func TestMergeCustomStatuses_Idempotent(t *testing.T) {
+	// Already has the required status — should not change.
+	merged, changed := mergeCustomStatuses("ready:active", requiredCustomStatuses)
+	if changed {
+		t.Fatal("expected changed=false when status already present")
+	}
+	if merged != "ready:active" {
+		t.Errorf("merged = %q, want %q", merged, "ready:active")
+	}
+}
+
+func TestMergeCustomStatuses_PreservesUserStatuses(t *testing.T) {
+	// User has a custom status — it should be preserved after merge.
+	merged, changed := mergeCustomStatuses("custom:done", requiredCustomStatuses)
+	if !changed {
+		t.Fatal("expected changed=true when adding missing required status")
+	}
+	// Should contain both user status and required status, sorted.
+	if merged != "custom:done,ready:active" {
+		t.Errorf("merged = %q, want %q", merged, "custom:done,ready:active")
+	}
+}
+
+func TestMergeCustomStatuses_PreservesExistingWithRequired(t *testing.T) {
+	// User has both a custom status AND the required one — no change.
+	merged, changed := mergeCustomStatuses("custom:done,ready:active", requiredCustomStatuses)
+	if changed {
+		t.Fatal("expected changed=false when all required statuses present")
+	}
+	if merged != "custom:done,ready:active" {
+		t.Errorf("merged = %q, want %q", merged, "custom:done,ready:active")
+	}
+}
+
+func TestMergeCustomStatuses_HandlesWhitespace(t *testing.T) {
+	// Whitespace in existing config should be trimmed.
+	merged, changed := mergeCustomStatuses(" custom:done , ready:active ", requiredCustomStatuses)
+	if changed {
+		t.Fatal("expected changed=false (trimmed values match)")
+	}
+	if merged != " custom:done , ready:active " {
+		t.Errorf("merged = %q, want original (unchanged)", merged)
+	}
+}
+
+func TestMergeCustomStatuses_MultipleRequired(t *testing.T) {
+	// Test with multiple required statuses.
+	required := []string{"ready:active", "paused:active"}
+	merged, changed := mergeCustomStatuses("custom:done", required)
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	if merged != "custom:done,paused:active,ready:active" {
+		t.Errorf("merged = %q, want %q", merged, "custom:done,paused:active,ready:active")
+	}
+}
+
 func TestInstanceTowerOmitEmpty(t *testing.T) {
 	// Instance without Tower should omit the field in JSON (backward compat)
 	cfg := &SpireConfig{

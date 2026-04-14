@@ -7,6 +7,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// readyGetBeadFunc is a test-replaceable wrapper around storeGetBead.
+var readyGetBeadFunc = storeGetBead
+
+// readyUpdateBeadFunc is a test-replaceable wrapper around storeUpdateBead.
+var readyUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+	return storeUpdateBead(id, updates)
+}
+
 var readyCmd = &cobra.Command{
 	Use:   "ready <bead-id> [bead-id...]",
 	Short: "Mark beads as ready for agent pickup",
@@ -20,7 +28,7 @@ func runReady(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, id := range args {
-		bead, err := storeGetBead(id)
+		bead, err := readyGetBeadFunc(id)
 		if err != nil {
 			return fmt.Errorf("bead %s not found", id)
 		}
@@ -41,7 +49,7 @@ func runReady(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("bead %s has unexpected status %q", id, bead.Status)
 		}
 
-		if err := storeUpdateBead(id, map[string]interface{}{
+		if err := readyUpdateBeadFunc(id, map[string]interface{}{
 			"status": "ready",
 		}); err != nil {
 			return fmt.Errorf("ready %s: %w", id, err)

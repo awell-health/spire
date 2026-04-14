@@ -29,7 +29,7 @@ func (m *schedMockStorage) Close() error { return nil }
 func TestGetSchedulableWork_MsgLabelExcluded(t *testing.T) {
 	mock := &schedMockStorage{
 		readyIssues: []*beads.Issue{
-			{ID: "spi-clean", Title: "Clean task", Status: beads.StatusOpen, IssueType: beads.TypeTask},
+			{ID: "spi-clean", Title: "Clean task", Status: "ready", IssueType: beads.TypeTask},
 			{ID: "spi-msg", Title: "A message", Status: beads.StatusOpen, IssueType: "message", Labels: []string{"msg"}},
 		},
 	}
@@ -54,7 +54,7 @@ func TestGetSchedulableWork_MsgLabelExcluded(t *testing.T) {
 func TestGetSchedulableWork_MsgPrefixLabelExcluded(t *testing.T) {
 	mock := &schedMockStorage{
 		readyIssues: []*beads.Issue{
-			{ID: "spi-clean", Title: "Clean task", Status: beads.StatusOpen, IssueType: beads.TypeTask},
+			{ID: "spi-clean", Title: "Clean task", Status: "ready", IssueType: beads.TypeTask},
 			{ID: "spi-msgpfx", Title: "Msg with prefix", Status: beads.StatusOpen, IssueType: "message", Labels: []string{"msg:routing"}},
 		},
 	}
@@ -79,8 +79,8 @@ func TestGetSchedulableWork_MsgPrefixLabelExcluded(t *testing.T) {
 func TestGetSchedulableWork_TemplateLabelExcluded(t *testing.T) {
 	mock := &schedMockStorage{
 		readyIssues: []*beads.Issue{
-			{ID: "spi-clean", Title: "Clean task", Status: beads.StatusOpen, IssueType: beads.TypeTask},
-			{ID: "spi-tmpl", Title: "Template bead", Status: beads.StatusOpen, IssueType: beads.TypeTask, Labels: []string{"template"}},
+			{ID: "spi-clean", Title: "Clean task", Status: "ready", IssueType: beads.TypeTask},
+			{ID: "spi-tmpl", Title: "Template bead", Status: "ready", IssueType: beads.TypeTask, Labels: []string{"template"}},
 		},
 	}
 	setTestStore(t, mock)
@@ -104,8 +104,8 @@ func TestGetSchedulableWork_TemplateLabelExcluded(t *testing.T) {
 func TestGetSchedulableWork_ActiveAttemptExcluded(t *testing.T) {
 	mock := &schedMockStorage{
 		readyIssues: []*beads.Issue{
-			{ID: "spi-clean", Title: "Clean task", Status: beads.StatusOpen, IssueType: beads.TypeTask},
-			{ID: "spi-owned", Title: "Owned bead", Status: beads.StatusOpen, IssueType: beads.TypeTask},
+			{ID: "spi-clean", Title: "Clean task", Status: "ready", IssueType: beads.TypeTask},
+			{ID: "spi-owned", Title: "Owned bead", Status: "ready", IssueType: beads.TypeTask},
 		},
 	}
 	setTestStore(t, mock)
@@ -134,8 +134,8 @@ func TestGetSchedulableWork_ActiveAttemptExcluded(t *testing.T) {
 func TestGetSchedulableWork_MultipleAttemptsQuarantined(t *testing.T) {
 	mock := &schedMockStorage{
 		readyIssues: []*beads.Issue{
-			{ID: "spi-clean", Title: "Clean task", Status: beads.StatusOpen, IssueType: beads.TypeTask},
-			{ID: "spi-broken", Title: "Broken bead", Status: beads.StatusOpen, IssueType: beads.TypeTask},
+			{ID: "spi-clean", Title: "Clean task", Status: "ready", IssueType: beads.TypeTask},
+			{ID: "spi-broken", Title: "Broken bead", Status: "ready", IssueType: beads.TypeTask},
 		},
 	}
 	setTestStore(t, mock)
@@ -173,8 +173,8 @@ func TestGetSchedulableWork_MultipleAttemptsQuarantined(t *testing.T) {
 func TestGetSchedulableWork_CleanBeadPassesThrough(t *testing.T) {
 	mock := &schedMockStorage{
 		readyIssues: []*beads.Issue{
-			{ID: "spi-task1", Title: "Task 1", Status: beads.StatusOpen, IssueType: beads.TypeTask, Priority: 1},
-			{ID: "spi-task2", Title: "Task 2", Status: beads.StatusOpen, IssueType: beads.TypeFeature, Priority: 2},
+			{ID: "spi-task1", Title: "Task 1", Status: "ready", IssueType: beads.TypeTask, Priority: 1},
+			{ID: "spi-task2", Title: "Task 2", Status: "ready", IssueType: beads.TypeFeature, Priority: 2},
 		},
 	}
 	setTestStore(t, mock)

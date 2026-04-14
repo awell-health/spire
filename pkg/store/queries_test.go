@@ -289,7 +289,7 @@ func TestGetReadyWork_ParentFiltering(t *testing.T) {
 			{
 				ID:        "spi-top",
 				Title:     "Top-level task",
-				Status:    beads.StatusOpen,
+				Status:    "ready",
 				IssueType: beads.TypeTask,
 				CreatedAt: now,
 				UpdatedAt: now,
@@ -297,7 +297,7 @@ func TestGetReadyWork_ParentFiltering(t *testing.T) {
 			{
 				ID:        "spi-epic.1",
 				Title:     "Epic child task",
-				Status:    beads.StatusOpen,
+				Status:    "ready",
 				IssueType: beads.TypeTask,
 				CreatedAt: now,
 				UpdatedAt: now,
@@ -312,7 +312,7 @@ func TestGetReadyWork_ParentFiltering(t *testing.T) {
 			{
 				ID:        "spi-another",
 				Title:     "Another top-level",
-				Status:    beads.StatusOpen,
+				Status:    "ready",
 				IssueType: beads.TypeTask,
 				CreatedAt: now,
 				UpdatedAt: now,
@@ -346,5 +346,60 @@ func TestGetReadyWork_ParentFiltering(t *testing.T) {
 	}
 	if len(result) != 2 {
 		t.Errorf("expected 2 results, got %d", len(result))
+	}
+}
+
+// TestGetReadyWork_OpenBeadsExcluded verifies that open beads are filtered out
+// by GetReadyWork — only status=ready beads should reach the steward.
+func TestGetReadyWork_OpenBeadsExcluded(t *testing.T) {
+	now := time.Now()
+	mock := &readyWorkMockStorage{
+		readyIssues: []*beads.Issue{
+			{
+				ID:        "spi-open",
+				Title:     "Open task (still drafting)",
+				Status:    beads.StatusOpen,
+				IssueType: beads.TypeTask,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				ID:        "spi-ready",
+				Title:     "Ready task (human approved)",
+				Status:    "ready",
+				IssueType: beads.TypeTask,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				ID:        "spi-open2",
+				Title:     "Another open task",
+				Status:    beads.StatusOpen,
+				IssueType: beads.TypeTask,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	setTestStore(t, mock)
+
+	result, err := GetReadyWork(beads.WorkFilter{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Open beads must be excluded.
+	for _, b := range result {
+		if b.Status == "open" {
+			t.Errorf("open bead %s should not appear in GetReadyWork results", b.ID)
+		}
+	}
+
+	// Only the ready bead should pass through.
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result (only ready bead), got %d", len(result))
+	}
+	if result[0].ID != "spi-ready" {
+		t.Errorf("expected spi-ready, got %s", result[0].ID)
 	}
 }

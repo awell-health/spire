@@ -497,7 +497,18 @@ func ensureCustomBeadStatuses(beadsDir string) error {
 		current = ""
 	}
 
-	// Build set of existing custom statuses.
+	merged, changed := mergeCustomStatuses(current, requiredCustomStatuses)
+	if !changed {
+		return nil
+	}
+
+	return client.ConfigSet("status.custom", merged)
+}
+
+// mergeCustomStatuses merges required statuses into the current comma-separated
+// config string. Returns the merged string and whether any statuses were added.
+// Pure function — no I/O, safe to unit test.
+func mergeCustomStatuses(current string, required []string) (string, bool) {
 	existing := make(map[string]bool)
 	for _, s := range strings.Split(current, ",") {
 		s = strings.TrimSpace(s)
@@ -506,9 +517,8 @@ func ensureCustomBeadStatuses(beadsDir string) error {
 		}
 	}
 
-	// Add any missing required statuses.
 	changed := false
-	for _, s := range requiredCustomStatuses {
+	for _, s := range required {
 		if !existing[s] {
 			existing[s] = true
 			changed = true
@@ -516,7 +526,7 @@ func ensureCustomBeadStatuses(beadsDir string) error {
 	}
 
 	if !changed {
-		return nil
+		return current, false
 	}
 
 	var statuses []string
@@ -525,7 +535,7 @@ func ensureCustomBeadStatuses(beadsDir string) error {
 	}
 	sort.Strings(statuses)
 
-	return client.ConfigSet("status.custom", strings.Join(statuses, ","))
+	return strings.Join(statuses, ","), true
 }
 
 var towerCmd = &cobra.Command{
