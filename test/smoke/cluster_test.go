@@ -4,7 +4,6 @@ package smoke
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"testing"
