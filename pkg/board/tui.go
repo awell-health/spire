@@ -1187,6 +1187,24 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				}
 			case "J", "shift+j", "shift+down":
 				m.InspectorScroll += 5
+				if m.InspectorData != nil {
+					var dag *DAGProgress
+					if m.Snapshot != nil {
+						dag = m.Snapshot.DAGProgress[m.InspectorData.Bead.ID]
+					}
+					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab)
+					maxVisible := m.Height - 2
+					if maxVisible < 5 {
+						maxVisible = 5
+					}
+					maxScroll := total - maxVisible
+					if maxScroll < 0 {
+						maxScroll = 0
+					}
+					if m.InspectorScroll > maxScroll {
+						m.InspectorScroll = maxScroll
+					}
+				}
 			case "K", "shift+k", "shift+up":
 				m.InspectorScroll -= 5
 				if m.InspectorScroll < 0 {
