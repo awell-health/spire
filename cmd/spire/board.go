@@ -320,14 +320,19 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 		// Approve a design bead: close it (signals acceptance).
 		return storeCloseBead(beadID)
 	case board.ActionDefer:
-		// Toggle deferred status: open → deferred, deferred → open.
+		// Toggle deferred status: open/ready → deferred, deferred → open.
 		b, err := storeGetBead(beadID)
 		if err != nil {
 			return fmt.Errorf("defer: get bead: %w", err)
 		}
-		newStatus := "deferred"
-		if b.Status == "deferred" {
+		var newStatus string
+		switch b.Status {
+		case "open", "ready":
+			newStatus = "deferred"
+		case "deferred":
 			newStatus = "open"
+		default:
+			return fmt.Errorf("defer: cannot toggle bead in status %q", b.Status)
 		}
 		return storeUpdateBead(beadID, map[string]interface{}{"status": newStatus})
 	}

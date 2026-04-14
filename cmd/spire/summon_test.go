@@ -281,7 +281,7 @@ func TestSummonLocal_RejectsDeferredBead(t *testing.T) {
 	if !strings.Contains(err.Error(), "spi-deferred is deferred") {
 		t.Fatalf("expected deferred error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "set to open first") {
+	if !strings.Contains(err.Error(), "set to open or ready first") {
 		t.Fatalf("expected actionable hint, got: %v", err)
 	}
 }
