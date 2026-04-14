@@ -1,5 +1,5 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: spire-dolt
   namespace: {{ .Values.namespace }}
@@ -9,8 +9,9 @@ metadata:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
   replicas: 1
-  strategy:
-    type: Recreate
+  serviceName: spire-dolt
+  updateStrategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app.kubernetes.io/name: spire-dolt
@@ -19,6 +20,28 @@ spec:
       labels:
         app.kubernetes.io/name: spire-dolt
     spec:
+      initContainers:
+        - name: dolt-init
+          image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
+          command: ["bash", "/scripts/init.sh"]
+          env:
+            - name: DOLT_ROOT_PATH
+              value: /var/lib/dolt
+            - name: DOLT_REMOTE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: DOLT_REMOTE_USER
+            - name: DOLT_REMOTE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spire-credentials
+                  key: DOLT_REMOTE_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/dolt
+            - name: init-scripts
+              mountPath: /scripts
       containers:
         - name: dolt
           image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
@@ -65,12 +88,29 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 30
       volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: spire-beads-data
         - name: dolt-config
           configMap:
             name: dolt-server-config
+        - name: init-scripts
+          configMap:
+            name: dolt-init
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: spire-dolt
+          app.kubernetes.io/component: beads-storage
+          app.kubernetes.io/managed-by: {{ .Release.Service }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.dolt.storage.size }}
+        {{- if .Values.dolt.storage.storageClass }}
+        storageClassName: {{ .Values.dolt.storage.storageClass }}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -125,14 +165,24 @@ data:
     #!/bin/bash
     set -e
     DB_DIR="/var/lib/dolt/spi"
+
+    dolt config --global --set user.name "spire-dolt"
+    dolt config --global --set user.email "dolt@spire.local"
+
     if [ ! -d "$DB_DIR/.dolt" ]; then
       echo "[dolt-init] first boot — cloning from DoltHub..."
-      dolt config --global --set user.name "spire-dolt"
-      dolt config --global --set user.email "dolt@spire.local"
       cd /var/lib/dolt
-      dolt clone https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }} spi 2>&1 \
-        || echo "[dolt-init] WARNING: clone failed — starting with empty database"
-      echo "[dolt-init] done"
+      dolt clone "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}" spi 2>&1 \
+        || {
+          echo "[dolt-init] WARNING: clone failed — initializing empty database"
+          mkdir -p spi && cd spi && dolt init
+          dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}"
+        }
     else
-      echo "[dolt-init] PV has data — skipping clone"
+      echo "[dolt-init] PV has data — ensuring remote is configured"
+      cd "$DB_DIR"
+      # Ensure origin remote exists (idempotent)
+      dolt remote remove origin 2>/dev/null || true
+      dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}"
     fi
+    echo "[dolt-init] done"
