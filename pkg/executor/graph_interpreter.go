@@ -12,16 +12,25 @@ import (
 // RunGraph is the v3 graph interpreter. It walks the step graph, dispatching
 // actions, collecting outputs, persisting state, and detecting terminal steps.
 // It replaces the v2 phase loop for formulas that declare a step graph.
+func (e *Executor) graphStateStore() GraphStateStore {
+	if e.deps.GraphStateStore == nil {
+		e.deps.GraphStateStore = &FileGraphStateStore{ConfigDir: e.deps.ConfigDir}
+	}
+	return e.deps.GraphStateStore
+}
+
 func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
+	store := e.graphStateStore()
+
 	// Register with wizard registry inside RunGraph() — paired with the deferred
 	// cleanup below so registration and cleanup are always atomic.
 	regCleanup := e.deps.RegisterSelf(e.agentName, e.beadID, "graph:"+state.ActiveStep)
 	defer regCleanup()
 	defer func() {
 		if e.terminated {
-			e.deps.GraphStateStore.Remove(e.agentName)
+			store.Remove(e.agentName)
 		} else {
-			e.deps.GraphStateStore.Save(e.agentName, state)
+			store.Save(e.agentName, state)
 		}
 	}()
 	defer e.closeStagingWorktree()
@@ -152,7 +161,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		ss.Status = "active"
 		ss.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		state.Steps[stepName] = ss
-		e.deps.GraphStateStore.Save(e.agentName, state)
+		store.Save(e.agentName, state)
 
 		// Activate step bead if tracked.
 		if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
@@ -176,7 +185,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			// Do NOT set CompletedAt — the step is parked, not completed.
 			state.Steps[stepName] = ss
 			state.ActiveStep = "" // clear so graph detects parking
-			e.deps.GraphStateStore.Save(e.agentName, state)
+			store.Save(e.agentName, state)
 
 			// Do NOT close the step bead — it stays open for retry.
 
@@ -195,7 +204,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			ss.Outputs = result.Outputs
 			state.Steps[stepName] = ss
 			state.ActiveStep = ""
-			e.deps.GraphStateStore.Save(e.agentName, state)
+			store.Save(e.agentName, state)
 			e.log("step %s hooked — graph parked", stepName)
 			e.closeGraphAttempt(state, "parked: step "+stepName+" hooked")
 			return nil // graceful exit, not an error
@@ -234,9 +243,9 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			}
 			e.terminated = true
 			// Save parent state before cleaning up nested state (crash-safe ordering).
-			e.deps.GraphStateStore.Save(e.agentName, state)
+			store.Save(e.agentName, state)
 			if stepCfg.Action == "graph.run" {
-				e.deps.GraphStateStore.Remove(e.agentName + "-" + stepName)
+				store.Remove(e.agentName + "-" + stepName)
 			}
 			e.closeGraphAttempt(state, "success: terminal step "+stepName)
 			return nil
@@ -263,7 +272,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		}
 
 		// 9. Persist and loop.
-		e.deps.GraphStateStore.Save(e.agentName, state)
+		store.Save(e.agentName, state)
 
 		// 10. Clean up nested graph state files after the parent save is durable.
 		// This is crash-safe: the parent step is already recorded as completed,
@@ -271,7 +280,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		// but the parent won't re-run the step.
 		if stepCfg.Action == "graph.run" {
 			nestedAgentName := e.agentName + "-" + stepName
-			e.deps.GraphStateStore.Remove(nestedAgentName)
+			store.Remove(nestedAgentName)
 		}
 	}
 }
@@ -287,6 +296,8 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 // subgraph-review graph called from task-default) without interfering
 // with the parent graph's lifecycle.
 func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) error {
+	store := e.graphStateStore()
+
 	// Resolve branch state for the sub-graph (usually inherited from parent).
 	if state.RepoPath == "" || state.BaseBranch == "" {
 		if err := e.resolveGraphBranchState(graph, state); err != nil {
@@ -342,7 +353,7 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 			ss.Status = "failed"
 			ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			state.Steps[stepName] = ss
-			e.deps.GraphStateStore.Save(state.AgentName, state) // persist failure for resume
+			store.Save(state.AgentName, state) // persist failure for resume
 			return fmt.Errorf("nested step %s failed: %w", stepName, result.Error)
 		}
 
@@ -357,7 +368,7 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 			// Nested graphs don't create step beads (ensureGraphStepBeads is
 			// only called by RunGraph), so no reconciliation needed here.
 			// Persist final state before returning (caller removes on success).
-			e.deps.GraphStateStore.Save(state.AgentName, state)
+			store.Save(state.AgentName, state)
 			return nil
 		}
 
@@ -373,7 +384,7 @@ func (e *Executor) RunNestedGraph(graph *FormulaStepGraph, state *GraphState) er
 		}
 
 		// Persist after each step so nested graph progress survives interrupts.
-		e.deps.GraphStateStore.Save(state.AgentName, state)
+		store.Save(state.AgentName, state)
 	}
 }
 
@@ -497,13 +508,11 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 	state.BaseBranch = baseBranch
 
 	// Bead-level base-branch override (from spire file --branch) takes
-	// precedence over repo defaults. Mirrors the v2 resolveBranchState
-	// logic in executor.go.
-	if bead, berr := e.deps.GetBead(e.beadID); berr == nil {
-		if bb := e.deps.HasLabel(bead, "base-branch:"); bb != "" {
-			e.log("using bead base-branch override: %s (was: %s)", bb, state.BaseBranch)
-			state.BaseBranch = bb
-		}
+	// precedence over repo defaults. Walks up the parent chain so that
+	// child tasks inherit the base branch from their epic.
+	if bb := e.findBaseBranchInParentChain(e.beadID); bb != "" {
+		e.log("using bead base-branch override: %s (was: %s)", bb, state.BaseBranch)
+		state.BaseBranch = bb
 	}
 
 	if state.StagingBranch == "" {
@@ -516,6 +525,27 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 	e.log("branch state resolved: repo=%s base=%s staging=%s",
 		state.RepoPath, state.BaseBranch, state.StagingBranch)
 	return nil
+}
+
+// findBaseBranchInParentChain walks up the bead's parent chain looking for a
+// base-branch: label. Returns the branch name from the first bead that has one,
+// or "" if none in the chain do. This lets child tasks inherit the base branch
+// from their epic without needing the label copied to every child.
+func (e *Executor) findBaseBranchInParentChain(beadID string) string {
+	visited := make(map[string]bool)
+	current := beadID
+	for current != "" && !visited[current] {
+		visited[current] = true
+		bead, err := e.deps.GetBead(current)
+		if err != nil {
+			break
+		}
+		if bb := e.deps.HasLabel(bead, "base-branch:"); bb != "" {
+			return bb
+		}
+		current = bead.Parent
+	}
+	return ""
 }
 
 func (e *Executor) resolveDeclaredGraphStagingBranch(graph *FormulaStepGraph, state *GraphState) string {
@@ -640,7 +670,7 @@ func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphSta
 		e.log("created step bead %s for step %s", id, stepName)
 	}
 
-	return e.deps.GraphStateStore.Save(e.agentName, state)
+	return e.graphStateStore().Save(e.agentName, state)
 }
 
 // summarizeSteps returns a compact string representation of step states.

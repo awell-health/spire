@@ -49,6 +49,7 @@ python3 -c "
 import json, sys
 print(json.dumps({
     'hookSpecificOutput': {
+        'hookEventName': '$HOOK_EVENT',
         'additionalContext': sys.stdin.read()
     }
 }))

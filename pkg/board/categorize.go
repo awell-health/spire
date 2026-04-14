@@ -186,13 +186,10 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		}
 		c.Done = append(c.Done, b)
 	}
-	// Most recently updated first, capped at 10.
+	// Most recently updated first.
 	sort.Slice(c.Done, func(i, j int) bool {
 		return c.Done[i].UpdatedAt > c.Done[j].UpdatedAt
 	})
-	if len(c.Done) > 10 {
-		c.Done = c.Done[:10]
-	}
 
 	return c
 }
@@ -282,21 +279,62 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		}
 		c.Done = append(c.Done, b)
 	}
-	// Most recently updated first, capped at 10.
+	// Most recently updated first.
 	sort.Slice(c.Done, func(i, j int) bool {
 		return c.Done[i].UpdatedAt > c.Done[j].UpdatedAt
 	})
-	if len(c.Done) > 10 {
-		c.Done = c.Done[:10]
-	}
 
 	return c
 }
 
-// FilterEpic filters columns to only contain beads matching the epic ID and its children.
+// CapDone trims the Done column to at most n entries.
+// Call this after FilterEpic so the cap applies to the filtered set, not before.
+func CapDone(cols *Columns, n int) {
+	if len(cols.Done) > n {
+		cols.Done = cols.Done[:n]
+	}
+}
+
+// FilterEpic filters columns to only contain beads matching the epic ID, its
+// children, beads linked via discovered-from dependencies (e.g. design beads),
+// and beads that depend on the epic (e.g. alert and recovery beads via caused-by).
 func FilterEpic(cols Columns, epicID string) Columns {
+	linkedIDs := make(map[string]bool)
+	allSlices := [][]BoardBead{
+		cols.Alerts, cols.Interrupted, cols.Ready, cols.Design, cols.Plan,
+		cols.Implement, cols.Review, cols.Merge, cols.Done, cols.Blocked,
+	}
+
+	// Collect IDs of beads the epic depends on via discovered-from (design beads).
+	for _, slice := range allSlices {
+		for _, b := range slice {
+			if b.ID == epicID {
+				for _, dep := range b.Dependencies {
+					if dep.Type == "discovered-from" {
+						linkedIDs[dep.DependsOnID] = true
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// Collect beads that depend on the epic (reverse refs). This catches
+	// alert beads (caused-by), recovery beads, and other beads linked to
+	// the epic that don't use the parent field.
+	for _, slice := range allSlices {
+		for _, b := range slice {
+			for _, dep := range b.Dependencies {
+				if dep.DependsOnID == epicID {
+					linkedIDs[b.ID] = true
+					break
+				}
+			}
+		}
+	}
+
 	match := func(b BoardBead) bool {
-		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".")
+		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".") || linkedIDs[b.ID]
 	}
 	return Columns{
 		Alerts:      FilterBeads(cols.Alerts, match),

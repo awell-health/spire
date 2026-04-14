@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -591,6 +592,7 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 		Role:         agent.RoleApprentice,
 		ExtraArgs:    []string{"--worktree-dir", worktreeDir, "--no-review"},
 		CustomPrompt: prompt.String(),
+		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", spawnName+".log"),
 	})
 	if spawnErr != nil {
 		return failResult(req.Kind, fmt.Sprintf("spawn triage agent: %v", spawnErr))

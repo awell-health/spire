@@ -278,6 +278,14 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 		}
 		titleToID[t.Title] = id
 		e.log("  created %s: %s", id, t.Title)
+
+		// Propagate base-branch label from parent epic so child tasks
+		// target the same integration branch without manual labeling.
+		if parentBB := store.HasLabel(bead, "base-branch:"); parentBB != "" {
+			if labelErr := e.deps.AddLabel(id, "base-branch:"+parentBB); labelErr != nil {
+				e.log("warning: propagate base-branch to %s: %s", id, labelErr)
+			}
+		}
 	}
 
 	// Add dependencies
