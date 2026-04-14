@@ -1,0 +1,10 @@
+version = 3
+name = "smoke-test"
+description = "Minimal formula for cluster smoke testing"
+
+[steps.verify]
+action = "verify.run"
+needs = []
+terminal = true
+[steps.verify.with]
+command = "echo 'smoke test passed'"
