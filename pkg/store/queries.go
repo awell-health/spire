@@ -164,6 +164,10 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 		if b.Status == "deferred" {
 			continue
 		}
+		// Skip hooked beads (parked waiting for a condition — approval, event, recovery)
+		if b.Status == "hooked" {
+			continue
+		}
 		// Skip design beads (thinking artifacts, not work items)
 		if b.Type == "design" {
 			continue
