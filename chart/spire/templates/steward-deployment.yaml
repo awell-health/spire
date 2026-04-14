@@ -22,6 +22,35 @@ spec:
       priorityClassName: spire-infrastructure
       {{- end }}
       serviceAccountName: spire-steward
+      initContainers:
+        - name: seed-beads
+          image: "{{ .Values.image.steward.repository }}:{{ .Values.image.steward.tag }}"
+          imagePullPolicy: {{ .Values.image.steward.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              if [ ! -f /data/.beads/metadata.json ]; then
+                mkdir -p /data/.beads
+                cp /seed/metadata.json /data/.beads/metadata.json
+                cp /seed/routes.jsonl /data/.beads/routes.jsonl
+                [ -f /seed/config.yaml ] && cp /seed/config.yaml /data/.beads/config.yaml
+                echo "[seed] .beads/ seeded from ConfigMap"
+              else
+                echo "[seed] .beads/ already exists, refreshing config"
+                [ -f /seed/config.yaml ] && cp /seed/config.yaml /data/.beads/config.yaml
+              fi
+              # Ensure git repo exists (bd expects it).
+              if [ ! -d /data/.git ]; then
+                cd /data && git init -q 2>/dev/null || true
+                git config user.name "spire-steward"
+                git config user.email "steward@spire.local"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: beads-seed
+              mountPath: /seed
+              readOnly: true
       containers:
         - name: steward
           image: "{{ .Values.image.steward.repository }}:{{ .Values.image.steward.tag }}"
@@ -34,6 +63,10 @@ spec:
               value: {{ .Values.tower.name | quote }}
             - name: STEWARD_INTERVAL
               value: {{ .Values.steward.interval | quote }}
+            - name: BEADS_DIR
+              value: "/data/.beads"
+            - name: DOLT_DATA_DIR
+              value: "/data"
             - name: BEADS_DOLT_SERVER_HOST
               value: {{ include "spire.doltHost" . | quote }}
             - name: BEADS_DOLT_SERVER_PORT
@@ -79,6 +112,23 @@ spec:
             periodSeconds: 20
           resources:
             {{- toYaml .Values.steward.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: spire-config
+              mountPath: /etc/spire
+              readOnly: true
+          workingDir: /etc/spire
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: spire-steward-data
+        - name: beads-seed
+          configMap:
+            name: beads-seed
+        - name: spire-config
+          configMap:
+            name: spire-tower-config
 ---
 apiVersion: v1
 kind: Service

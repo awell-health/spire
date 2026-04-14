@@ -64,6 +64,9 @@ steward:
   interval: "2m"        # Steward cycle interval
   otlpPort: 4317
   metricsPort: 9090
+  storage:
+    size: 1Gi
+    storageClass: ""    # Use default if empty
   resources:
     requests:
       memory: 256Mi
@@ -116,6 +119,10 @@ networkPolicies:
 # Pod priority classes
 podPriority:
   enabled: true
+
+# Beads configuration
+beads:
+  prefix: "spi"
 
 # Namespace
 namespace: spire

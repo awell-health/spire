@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spire-steward-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: steward
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.steward.storage.storageClass }}
+  storageClassName: {{ .Values.steward.storage.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.steward.storage.size }}

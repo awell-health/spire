@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: beads-seed
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+    app.kubernetes.io/component: beads-config
+data:
+  metadata.json: |
+    {
+      "database": "dolt",
+      "backend": "dolt",
+      "dolt_mode": "server",
+      "dolt_database": {{ .Values.beads.prefix | default "spi" | quote }}
+    }
+  config.yaml: |
+    dolt.host: {{ include "spire.doltHost" . | quote }}
+    dolt.port: {{ .Values.dolt.port }}
+  routes.jsonl: |
+    {"prefix":"{{ .Values.beads.prefix | default "spi" }}-","path":"."}
