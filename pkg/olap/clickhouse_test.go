@@ -115,6 +115,7 @@ func TestClickHouseWriter_ConcurrentSubmit(t *testing.T) {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	defer db.Close()
+	mock.MatchExpectationsInOrder(false)
 
 	cw := &ClickHouseWriter{db: db, dsn: "clickhouse://localhost:9000/test"}
 
