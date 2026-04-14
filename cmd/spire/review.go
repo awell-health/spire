@@ -68,14 +68,12 @@ func cmdReview(args []string) error {
 
 	// 4. Resolve repo for git operations.
 	var repoPath string
-	var repoResolved bool
 	if len(commits) > 0 {
 		rp, _, _, rerr := wizardResolveRepo(id)
 		if rerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not resolve repo for %s: %v\n", id, rerr)
 		} else {
 			repoPath = rp
-			repoResolved = true
 		}
 	}
 
@@ -83,7 +81,7 @@ func cmdReview(args []string) error {
 		fmt.Println("--- Commits ---")
 		fmt.Println("No commits recorded.")
 		fmt.Println()
-	} else if !repoResolved {
+	} else if repoPath == "" {
 		fmt.Println("--- Commits ---")
 		fmt.Printf("Commits recorded but repo not locally available: %s\n", strings.Join(commits, ", "))
 		fmt.Println()
@@ -170,52 +168,27 @@ func filterReachableCommits(repoPath string, shas []string) []string {
 	return reachable
 }
 
-// reviewDiff produces a combined diff for the given commits.
+// reviewDiff produces a combined diff for the given commits using per-commit
+// git show. This approach is universally correct regardless of commit ancestry,
+// root commits, rebases, or non-contiguous SHAs.
 // If statsOnly is true, it produces --stat output instead.
-// It tries a range diff first, falling back to per-commit diffs.
 func reviewDiff(repoPath string, commits []string, statsOnly bool) (string, error) {
-	if len(commits) == 1 {
+	var buf strings.Builder
+	for _, sha := range commits {
 		args := []string{"-C", repoPath, "show", "--format="}
 		if statsOnly {
 			args = append(args, "--stat")
 		}
-		args = append(args, commits[0])
+		args = append(args, sha)
 		out, err := exec.Command("git", args...).CombinedOutput()
-		return string(out), err
-	}
-
-	// Try range diff: first~1..last
-	first := commits[0]
-	last := commits[len(commits)-1]
-
-	var args []string
-	if statsOnly {
-		args = []string{"-C", repoPath, "diff", "--stat", first + "~1.." + last}
-	} else {
-		args = []string{"-C", repoPath, "diff", first + "~1.." + last}
-	}
-	out, err := exec.Command("git", args...).CombinedOutput()
-	if err == nil {
-		return string(out), nil
-	}
-
-	// Fallback: per-commit diffs.
-	var buf strings.Builder
-	for _, sha := range commits {
-		cArgs := []string{"-C", repoPath, "show", "--format="}
-		if statsOnly {
-			cArgs = append(cArgs, "--stat")
-		}
-		cArgs = append(cArgs, sha)
-		cOut, cErr := exec.Command("git", cArgs...).CombinedOutput()
-		if cErr != nil {
-			buf.WriteString(fmt.Sprintf("# commit %s: git show failed: %v\n", sha, cErr))
+		if err != nil {
+			buf.WriteString(fmt.Sprintf("# commit %s: git show failed: %v\n", sha, err))
 			continue
 		}
-		if !statsOnly {
+		if len(commits) > 1 && !statsOnly {
 			buf.WriteString(fmt.Sprintf("# commit %s\n", sha))
 		}
-		buf.Write(cOut)
+		buf.Write(out)
 	}
 	return buf.String(), nil
 }
