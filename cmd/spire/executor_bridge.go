@@ -45,8 +45,6 @@ func init() {
 
 type formulaExecutor = executor.Executor
 type executorState = executor.State
-type subtaskState = executor.SubtaskState
-
 // SplitTask is re-exported from pkg/executor.
 type SplitTask = executor.SplitTask
 

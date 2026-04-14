@@ -48,25 +48,6 @@ type ReviewIssue struct {
 	Message  string `json:"message"`
 }
 
-// EpicState is the persistent state for a wizard epic orchestration session.
-type EpicState struct {
-	EpicID       string                  `json:"epic_id"`
-	Phase        string                  `json:"phase"`
-	SessionID    string                  `json:"session_id,omitempty"`
-	Wave         int                     `json:"wave"`
-	Subtasks     map[string]SubtaskState `json:"subtasks"`
-	ReviewRounds int                     `json:"review_rounds"`
-	StartedAt    string                  `json:"started_at"`
-	LastActionAt string                  `json:"last_action_at"`
-}
-
-// SubtaskState tracks a subtask during wave execution.
-type SubtaskState struct {
-	Status string `json:"status"`
-	Branch string `json:"branch"`
-	Agent  string `json:"agent,omitempty"`
-}
-
 // InboxMessage is a single message in the inbox file.
 type InboxMessage struct {
 	ID        string `json:"id"`

@@ -35,8 +35,6 @@ var wizardReviewCmd = &cobra.Command{
 
 type Review = wizard.Review
 type ReviewIssue = wizard.ReviewIssue
-type epicState = wizard.EpicState
-
 // --- Function aliases for backward compatibility ---
 // Other cmd/spire files (executor_bridge.go, formula_bridge.go) call these.
 

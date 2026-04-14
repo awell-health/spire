@@ -194,9 +194,9 @@ func makeAgentsModeWithAgents() *AgentsMode {
 	m.SetSize(100, 40)
 	m.snapshot = AgentSnapshot{
 		Agents: []AgentInfo{
-			{Name: "wizard-main", BeadID: "spi-001", Phase: "implement", Status: "running"},
-			{Name: "wizard-idle", BeadID: "", Phase: "", Status: "idle"},
-			{Name: "wizard-err", BeadID: "spi-003", Phase: "review", Status: "errored"},
+			{Name: "wizard-main", BeadID: "spi-001", Status: "running"},
+			{Name: "wizard-idle", BeadID: "", Status: "idle"},
+			{Name: "wizard-err", BeadID: "spi-003", Status: "errored"},
 		},
 	}
 	return m

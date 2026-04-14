@@ -30,13 +30,6 @@ type (
 	AgentRun         = metrics.AgentRun
 )
 
-// SubtaskState tracks the status of a subtask during wave execution.
-type SubtaskState struct {
-	Status string `json:"status"` // "open", "in_progress", "closed", "done"
-	Branch string `json:"branch"`
-	Agent  string `json:"agent,omitempty"`
-}
-
 // SplitTask represents a follow-on task created when an arbiter decides to split a bead.
 type SplitTask struct {
 	Title       string `json:"title"`

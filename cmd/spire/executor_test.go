@@ -252,7 +252,6 @@ func TestEnsureStepBeadsReconcileFromGraph(t *testing.T) {
 	state := &executorState{
 		BeadID:    epic.ID,
 		AgentName: "wizard-test",
-		Subtasks:  make(map[string]subtaskState),
 	}
 
 	e := executor.NewForTest(epic.ID, "wizard-test", state, deps)
