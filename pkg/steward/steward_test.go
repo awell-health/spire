@@ -1690,3 +1690,315 @@ func TestConcurrencyLimiter_UnlimitedWhenZero(t *testing.T) {
 		t.Error("expected CanSpawn=true with maxConcurrent=0 (unlimited)")
 	}
 }
+
+// --- CheckBeadHealth instance scoping tests ---
+
+func TestCheckBeadHealth_SkipsForeignOwnedAttempts(t *testing.T) {
+	// Bead updated 45 minutes ago (beyond shutdown threshold).
+	oldTime := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-foreign", Title: "foreign task", Status: "in_progress", UpdatedAt: oldTime, Type: "task"},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-foreign.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-foreign"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-foreign" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	// Return foreign instance metadata.
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{InstanceID: "remote-instance-uuid"}, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	backend := &fakeBackend{}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+
+	// Foreign attempt should be skipped entirely — no stale, no shutdown, no kills.
+	if staleCount != 0 {
+		t.Errorf("staleCount = %d, want 0 (foreign attempt skipped)", staleCount)
+	}
+	if shutdownCount != 0 {
+		t.Errorf("shutdownCount = %d, want 0 (foreign attempt skipped)", shutdownCount)
+	}
+	if len(backend.killed) != 0 {
+		t.Errorf("expected no kills for foreign attempt, got %v", backend.killed)
+	}
+}
+
+func TestCheckBeadHealth_ProcessesLocallyOwnedAttempts(t *testing.T) {
+	// Bead updated 45 minutes ago (beyond shutdown threshold).
+	oldTime := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-local", Title: "local task", Status: "in_progress", UpdatedAt: oldTime, Type: "task"},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-local.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-local"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-local" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	// Return local instance metadata.
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{InstanceID: "local-instance-uuid"}, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	backend := &fakeBackend{}
+	_, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+
+	// Local attempt should be processed — shutdown threshold exceeded.
+	if shutdownCount != 1 {
+		t.Errorf("shutdownCount = %d, want 1 (local attempt should be processed)", shutdownCount)
+	}
+	if len(backend.killed) != 1 || backend.killed[0] != "wizard-local" {
+		t.Errorf("killed = %v, want [wizard-local]", backend.killed)
+	}
+}
+
+func TestCheckBeadHealth_TreatsUnstampedAttemptsAsLocal(t *testing.T) {
+	// Bead updated 20 minutes ago (beyond stale threshold but within shutdown).
+	staleTime := time.Now().Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-unstamped", Title: "unstamped task", Status: "in_progress", UpdatedAt: staleTime, Type: "task"},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-unstamped.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-unstamped"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-unstamped" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	// Return nil metadata (unstamped pre-migration attempt).
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return nil, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	backend := &fakeBackend{}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+
+	// Unstamped attempts are treated as local — should be processed.
+	if staleCount != 1 {
+		t.Errorf("staleCount = %d, want 1 (unstamped attempt treated as local)", staleCount)
+	}
+	if shutdownCount != 0 {
+		t.Errorf("shutdownCount = %d, want 0", shutdownCount)
+	}
+}
+
+// --- TowerCycle bind state filtering tests ---
+
+// towerCycleTestSetup mocks the store/beadsdir functions so TowerCycle can run
+// with a non-empty towerName without requiring a real dolt store.
+func towerCycleTestSetup(t *testing.T) func() {
+	t.Helper()
+	origBeadsDir := BeadsDirForTowerFunc
+	BeadsDirForTowerFunc = func(name string) string { return "/fake/.beads" }
+	origStoreOpen := StoreOpenAtFunc
+	StoreOpenAtFunc = func(dir string) (beads.Storage, error) { return nil, nil }
+	origCommit := CommitPendingFunc
+	CommitPendingFunc = func(msg string) error { return nil }
+	// Stub ListBeadsFunc for CheckBeadHealth (step 5 of TowerCycle).
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) { return nil, nil }
+	// Stub InstanceIDFunc.
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "test-instance" }
+	return func() {
+		BeadsDirForTowerFunc = origBeadsDir
+		StoreOpenAtFunc = origStoreOpen
+		CommitPendingFunc = origCommit
+		ListBeadsFunc = origList
+		InstanceIDFunc = origInstanceID
+	}
+}
+
+func TestTowerCycle_SkipsBeadsForUnboundPrefixes(t *testing.T) {
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+	cleanup := towerCycleTestSetup(t)
+	defer cleanup()
+
+	origSchedulable := GetSchedulableWorkFunc
+	GetSchedulableWorkFunc = func(filter beads.WorkFilter) (*store.ScheduleResult, error) {
+		return &store.ScheduleResult{
+			Schedulable: []store.Bead{
+				{ID: "web-task1", Title: "web task", Type: "task"},
+				{ID: "api-task1", Title: "api task", Type: "task"},
+			},
+		}, nil
+	}
+	defer func() { GetSchedulableWorkFunc = origSchedulable }()
+
+	origLoadTower := LoadTowerConfigFunc
+	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
+		return &config.TowerConfig{
+			Name: "test-tower",
+			LocalBindings: map[string]*config.LocalRepoBinding{
+				"web": {Prefix: "web", State: "bound", LocalPath: "/path/to/web"},
+				"api": {Prefix: "api", State: "skipped"},
+			},
+		}, nil
+	}
+	defer func() { LoadTowerConfigFunc = origLoadTower }()
+
+	InstanceIDFunc = func() string { return "test-instance" }
+
+	backend := &spawnTrackingBackend{}
+	TowerCycle(1, "test-tower", StewardConfig{
+		Backend:           backend,
+		StaleThreshold:    30 * time.Minute,
+		ShutdownThreshold: 60 * time.Minute,
+	})
+
+	// Only web-task1 should be spawned (bound); api-task1 should be skipped (skipped state).
+	if len(backend.spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1", len(backend.spawns))
+	}
+	if backend.spawns[0].BeadID != "web-task1" {
+		t.Errorf("spawned bead = %q, want web-task1", backend.spawns[0].BeadID)
+	}
+}
+
+func TestTowerCycle_SpawnsBeadsForBoundPrefixes(t *testing.T) {
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+	cleanup := towerCycleTestSetup(t)
+	defer cleanup()
+
+	origSchedulable := GetSchedulableWorkFunc
+	GetSchedulableWorkFunc = func(filter beads.WorkFilter) (*store.ScheduleResult, error) {
+		return &store.ScheduleResult{
+			Schedulable: []store.Bead{
+				{ID: "spi-task1", Title: "spire task", Type: "task"},
+				{ID: "web-task2", Title: "web task 2", Type: "task"},
+			},
+		}, nil
+	}
+	defer func() { GetSchedulableWorkFunc = origSchedulable }()
+
+	origLoadTower := LoadTowerConfigFunc
+	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
+		return &config.TowerConfig{
+			Name: "test-tower",
+			LocalBindings: map[string]*config.LocalRepoBinding{
+				"spi": {Prefix: "spi", State: "bound", LocalPath: "/path/to/spi"},
+				"web": {Prefix: "web", State: "bound", LocalPath: "/path/to/web"},
+			},
+		}, nil
+	}
+	defer func() { LoadTowerConfigFunc = origLoadTower }()
+
+	InstanceIDFunc = func() string { return "test-instance" }
+
+	backend := &spawnTrackingBackend{}
+	TowerCycle(1, "test-tower", StewardConfig{
+		Backend:           backend,
+		StaleThreshold:    30 * time.Minute,
+		ShutdownThreshold: 60 * time.Minute,
+	})
+
+	// Both beads should be spawned (both prefixes are bound).
+	if len(backend.spawns) != 2 {
+		t.Fatalf("spawn count = %d, want 2", len(backend.spawns))
+	}
+}
+
+func TestTowerCycle_SpawnConfigUsesRoleExecutorAndInstanceID(t *testing.T) {
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+	cleanup := towerCycleTestSetup(t)
+	defer cleanup()
+
+	origSchedulable := GetSchedulableWorkFunc
+	GetSchedulableWorkFunc = func(filter beads.WorkFilter) (*store.ScheduleResult, error) {
+		return &store.ScheduleResult{
+			Schedulable: []store.Bead{
+				{ID: "spi-task1", Title: "spire task", Type: "task"},
+			},
+		}, nil
+	}
+	defer func() { GetSchedulableWorkFunc = origSchedulable }()
+
+	origLoadTower := LoadTowerConfigFunc
+	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
+		return &config.TowerConfig{
+			Name: "test-tower",
+			LocalBindings: map[string]*config.LocalRepoBinding{
+				"spi": {Prefix: "spi", State: "bound", LocalPath: "/path/to/spi"},
+			},
+		}, nil
+	}
+	defer func() { LoadTowerConfigFunc = origLoadTower }()
+
+	InstanceIDFunc = func() string { return "my-instance-uuid" }
+
+	backend := &spawnTrackingBackend{}
+	TowerCycle(1, "test-tower", StewardConfig{
+		Backend:           backend,
+		StaleThreshold:    30 * time.Minute,
+		ShutdownThreshold: 60 * time.Minute,
+	})
+
+	if len(backend.spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1", len(backend.spawns))
+	}
+	sc := backend.spawns[0]
+	if sc.Role != agent.RoleExecutor {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleExecutor)
+	}
+	if sc.InstanceID != "my-instance-uuid" {
+		t.Errorf("spawn InstanceID = %q, want %q", sc.InstanceID, "my-instance-uuid")
+	}
+}

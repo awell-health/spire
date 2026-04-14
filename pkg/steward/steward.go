@@ -73,6 +73,15 @@ var UnhookStepBeadFunc = store.UnhookStepBead
 // GetHookedStepsFunc is a test-replaceable function for store.GetHookedSteps.
 var GetHookedStepsFunc = store.GetHookedSteps
 
+// GetAttemptInstanceFunc is a test-replaceable function for store.GetAttemptInstance.
+var GetAttemptInstanceFunc = store.GetAttemptInstance
+
+// IsOwnedByInstanceFunc is a test-replaceable function for store.IsOwnedByInstance.
+var IsOwnedByInstanceFunc = store.IsOwnedByInstance
+
+// InstanceIDFunc is a test-replaceable function for config.InstanceID.
+var InstanceIDFunc = config.InstanceID
+
 // UpdateBeadFunc is a test-replaceable function for store.UpdateBead.
 var UpdateBeadFunc = store.UpdateBead
 
@@ -200,12 +209,12 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		prefix = "[" + towerName + "] "
 
 		// Open store for this tower's .beads/ directory.
-		beadsDir := BeadsDirForTower(towerName)
+		beadsDir := BeadsDirForTowerFunc(towerName)
 		if beadsDir == "" {
 			log.Printf("[steward] %sno .beads/ directory found, skipping", prefix)
 			return
 		}
-		if _, err := store.OpenAt(beadsDir); err != nil {
+		if _, err := StoreOpenAtFunc(beadsDir); err != nil {
 			log.Printf("[steward] %sopen store: %s", prefix, err)
 			return
 		}
@@ -262,8 +271,26 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		prefix, len(schedulable), aliveCount, maxConcurrent)
 
 	// Step 4: Auto-summon — spawn new wizards for schedulable work up to capacity.
+	// Load tower config for local binding checks.
+	var towerBindings map[string]*config.LocalRepoBinding
+	if towerName != "" {
+		if tower, tErr := LoadTowerConfigFunc(towerName); tErr == nil {
+			towerBindings = tower.LocalBindings
+		}
+	}
+
 	spawned := 0
 	for _, bead := range schedulable {
+		// Filter by repo bind state: only spawn for prefixes bound on this instance.
+		beadPrefix := beadRepoPrefix(bead.ID)
+		if towerBindings != nil {
+			binding, ok := towerBindings[beadPrefix]
+			if !ok || binding == nil || binding.State != "bound" {
+				log.Printf("[steward] %sskipping %s: prefix %s not bound on this instance", prefix, bead.ID, beadPrefix)
+				continue
+			}
+		}
+
 		// Check concurrency limit.
 		if cfg.ConcurrencyLimiter != nil && !cfg.ConcurrencyLimiter.CanSpawn(towerName, maxConcurrent) {
 			log.Printf("[steward] %sconcurrency limit reached (%d), deferring remaining work", prefix, maxConcurrent)
@@ -296,13 +323,16 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		// Generate wizard name from bead ID.
 		wizardName := "wizard-" + SanitizeK8sLabel(bead.ID)
 
-		// Spawn wizard.
+		// Spawn executor (process-mode spawns use RoleExecutor so the correct
+		// entrypoint is used). Include InstanceID so the process backend writes
+		// it to the registry entry.
 		handle, spawnErr := cfg.Backend.Spawn(agent.SpawnConfig{
-			Name:    wizardName,
-			BeadID:  bead.ID,
-			Role:    agent.RoleWizard,
-			Tower:   towerName,
-			LogPath: filepath.Join(dolt.GlobalDir(), "wizards", wizardName+".log"),
+			Name:       wizardName,
+			BeadID:     bead.ID,
+			Role:       agent.RoleExecutor,
+			Tower:      towerName,
+			InstanceID: InstanceIDFunc(),
+			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", wizardName+".log"),
 		})
 		if spawnErr != nil {
 			log.Printf("[steward] %sspawn failed: %s → %s: %s", prefix, bead.ID, wizardName, spawnErr)
@@ -425,6 +455,10 @@ func BeadsDirForTower(towerName string) string {
 //   - stale: wizard exceeded guidelines (warning + alert bead)
 //   - shutdown: tower kills the wizard via backend.Kill()
 //
+// Only processes attempts owned by this instance. Foreign attempts (owned by
+// another instance) are skipped. Unstamped pre-migration attempts are treated
+// as local for backward compatibility.
+//
 // Returns (staleCount, shutdownCount).
 func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool, backend agent.Backend) (int, int) {
 	inProgress, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
@@ -433,8 +467,9 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 		return 0, 0
 	}
 
+	localInstanceID := InstanceIDFunc()
 	now := time.Now()
-	staleCount, shutdownCount := 0, 0
+	staleCount, shutdownCount, foreignCount := 0, 0, 0
 
 	for _, b := range inProgress {
 		// Skip internal tracking beads — only top-level work beads need health checks.
@@ -468,6 +503,19 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 			RaiseCorruptedBeadAlert(b.ID, aErr)
 		} else if attempt != nil {
 			owner = store.HasLabel(*attempt, "agent:")
+
+			// Check instance ownership of the attempt.
+			meta, metaErr := GetAttemptInstanceFunc(attempt.ID)
+			if metaErr != nil {
+				log.Printf("[steward] check health: get instance meta for %s: %s", attempt.ID, metaErr)
+			} else if meta != nil && meta.InstanceID != "" && meta.InstanceID != localInstanceID {
+				// Foreign attempt — skip health check.
+				log.Printf("[steward] foreign attempt %s on instance %s — skipping health check", attempt.ID, meta.InstanceID)
+				foreignCount++
+				continue
+			}
+			// meta == nil || meta.InstanceID == "": backward compat (unstamped) — treat as local.
+			// meta.InstanceID == localInstanceID: local — proceed with health check.
 		}
 
 		if age > shutdownThreshold {
@@ -490,6 +538,10 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 				log.Printf("[steward] STALE: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
 			}
 		}
+	}
+
+	if foreignCount > 0 {
+		log.Printf("[steward] check health: skipped %d foreign attempt(s)", foreignCount)
 	}
 
 	return staleCount, shutdownCount
@@ -784,12 +836,26 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 	// fallback can skip them.
 	resolvedBeadIDs := make(map[string]bool)
 
+	localInstanceID := InstanceIDFunc()
+
 	for _, parent := range hookedParents {
 		// Only sweep work types (task, bug, feature, epic).
 		switch parent.Type {
 		case "task", "bug", "feature", "epic":
 		default:
 			continue
+		}
+
+		// Restrict auto-resume to locally-owned attempts.
+		attempt, aErr := GetActiveAttemptFunc(parent.ID)
+		if aErr == nil && attempt != nil {
+			owned, oErr := IsOwnedByInstanceFunc(attempt.ID, localInstanceID)
+			if oErr != nil {
+				log.Printf("[steward] hooked sweep: check ownership for %s: %s", attempt.ID, oErr)
+			} else if !owned {
+				log.Printf("[steward] hooked sweep: skipping %s — foreign attempt %s", parent.ID, attempt.ID)
+				continue
+			}
 		}
 
 		// Find hooked step bead children.
@@ -959,6 +1025,18 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 		// Skip beads already resolved via the primary bead-status path.
 		if resolvedBeadIDs[entry.BeadID] {
 			continue
+		}
+
+		// Restrict auto-resume to locally-owned attempts.
+		attempt, aErr := GetActiveAttemptFunc(entry.BeadID)
+		if aErr == nil && attempt != nil {
+			owned, oErr := IsOwnedByInstanceFunc(attempt.ID, localInstanceID)
+			if oErr != nil {
+				log.Printf("[steward] hooked sweep: check ownership for %s: %s", attempt.ID, oErr)
+			} else if !owned {
+				log.Printf("[steward] hooked sweep: skipping %s — foreign attempt %s (graph-state fallback)", entry.BeadID, attempt.ID)
+				continue
+			}
 		}
 
 		agentName := entry.AgentName
@@ -1236,3 +1314,9 @@ var LoadTowerConfigFunc = config.LoadTowerConfig
 
 // ConfigLoadFunc is a test-replaceable function for config.Load.
 var ConfigLoadFunc = config.Load
+
+// BeadsDirForTowerFunc is a test-replaceable function for BeadsDirForTower.
+var BeadsDirForTowerFunc = BeadsDirForTower
+
+// StoreOpenAtFunc is a test-replaceable function for store.OpenAt.
+var StoreOpenAtFunc = store.OpenAt
