@@ -8,6 +8,7 @@ func NewForTest(beadID, agentName string, state *State, deps *Deps) *Executor {
 		state = &State{
 			BeadID:    beadID,
 			AgentName: agentName,
+			Subtasks:  make(map[string]SubtaskState),
 		}
 	}
 	return &Executor{

@@ -72,6 +72,7 @@ func (b *ProcessBackend) List() ([]Info, error) {
 		infos = append(infos, Info{
 			Name:       w.Name,
 			BeadID:     w.BeadID,
+			Phase:      w.Phase,
 			Alive:      alive,
 			Identifier: strconv.Itoa(w.PID),
 			StartedAt:  startedAt,

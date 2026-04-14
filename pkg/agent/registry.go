@@ -22,6 +22,8 @@ type Entry struct {
 	BeadID         string `json:"bead_id"`
 	Worktree       string `json:"worktree"`
 	StartedAt      string `json:"started_at"`
+	Phase          string `json:"phase,omitempty"`
+	PhaseStartedAt string `json:"phase_started_at,omitempty"`
 	Tower          string `json:"tower,omitempty"`
 }
 
@@ -155,10 +157,12 @@ func RegistryUpdate(name string, update func(*Entry)) error {
 func RegisterSelf(name, beadID, phase string, opts ...func(*Entry)) func() {
 	now := time.Now().UTC().Format(time.RFC3339)
 	entry := Entry{
-		Name:      name,
-		PID:       os.Getpid(),
-		BeadID:    beadID,
-		StartedAt: now,
+		Name:           name,
+		PID:            os.Getpid(),
+		BeadID:         beadID,
+		StartedAt:      now,
+		Phase:          phase,
+		PhaseStartedAt: now,
 	}
 	for _, opt := range opts {
 		opt(&entry)
