@@ -46,6 +46,8 @@ beads:
 # -- Steward configuration
 steward:
   interval: "2m"
+  backend: "k8s"
+  metricsPort: 9090
   resources:
     requests:
       cpu: 50m

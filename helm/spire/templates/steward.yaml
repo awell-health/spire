@@ -35,6 +35,14 @@ spec:
               value: "3306"
             - name: STEWARD_INTERVAL
               value: {{ .Values.steward.interval | quote }}
+            - name: STEWARD_BACKEND
+              value: {{ .Values.steward.backend | quote }}
+            - name: STEWARD_METRICS_PORT
+              value: {{ .Values.steward.metricsPort | quote }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.steward.metricsPort }}
+              protocol: TCP
           resources:
             requests:
               cpu: {{ .Values.steward.resources.requests.cpu }}
@@ -42,6 +50,18 @@ spec:
             limits:
               cpu: {{ .Values.steward.resources.limits.cpu }}
               memory: {{ .Values.steward.resources.limits.memory }}
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
           volumeMounts:
             - name: data
               mountPath: /data

@@ -5,6 +5,8 @@ echo "[steward] starting up..."
 
 : "${BEADS_PREFIX:=spi}"
 : "${STEWARD_INTERVAL:=2m}"
+: "${STEWARD_BACKEND:=}"
+: "${STEWARD_METRICS_PORT:=0}"
 
 # .beads/ is seeded by the initContainer from the beads-seed ConfigMap.
 # No bd init, no project ID alignment, no DoltHub remotes.
@@ -41,4 +43,6 @@ echo "[steward] ready. interval=$STEWARD_INTERVAL"
 exec spire steward \
     --interval="$STEWARD_INTERVAL" \
     --no-assign \
-    ${STEWARD_AGENTS:+--agents="$STEWARD_AGENTS"}
+    ${STEWARD_AGENTS:+--agents="$STEWARD_AGENTS"} \
+    ${STEWARD_BACKEND:+--backend="$STEWARD_BACKEND"} \
+    ${STEWARD_METRICS_PORT:+--metrics-port="$STEWARD_METRICS_PORT"}
