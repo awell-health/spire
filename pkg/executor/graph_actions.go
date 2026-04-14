@@ -3,11 +3,13 @@ package executor
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
@@ -280,6 +282,7 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 		Step:         stepName,
 		ExtraArgs:    extraArgs,
 		CustomPrompt: step.With["prompt"],
+		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", spawnName+".log"),
 	})
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("spawn %s: %w", stepName, err)}

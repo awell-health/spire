@@ -5,12 +5,14 @@ package executor
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 )
@@ -193,6 +195,7 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 					Role:      agent.RoleApprentice,
 					ExtraArgs: extraArgs,
 					StartRef:  startRef,
+					LogPath:   filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
 				})
 				if spawnErr != nil {
 					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr,
@@ -278,6 +281,7 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 			Role:      agent.RoleApprentice,
 			ExtraArgs: []string{"--apprentice"},
 			StartRef:  startRef,
+			LogPath:   filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
 		})
 		if spawnErr != nil {
 			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
@@ -325,10 +329,11 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 
 	started := time.Now()
 	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
-		Name:   apprenticeName,
-		BeadID: e.beadID,
-		Role:   agent.RoleApprentice,
+		Name:      apprenticeName,
+		BeadID:    e.beadID,
+		Role:      agent.RoleApprentice,
 		ExtraArgs: []string{"--apprentice"},
+		LogPath:   filepath.Join(dolt.GlobalDir(), "wizards", apprenticeName+".log"),
 	})
 	if err != nil {
 		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, err,
