@@ -67,7 +67,6 @@ func init() {
 
 	// --- Internal / advanced ---
 	rootCmd.AddCommand(executeCmd)
-	rootCmd.AddCommand(wizardEpicCmd)
 	rootCmd.AddCommand(wizardRunCmd)
 	rootCmd.AddCommand(wizardReviewCmd)
 

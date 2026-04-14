@@ -1,5 +1,5 @@
 // wizard_bridge.go wires pkg/wizard callbacks and provides thin CLI adapters
-// for wizard-run, wizard-review, wizard-merge, and wizard-epic commands.
+// for wizard-run, wizard-review, and wizard-merge commands.
 package main
 
 import (
@@ -8,16 +8,6 @@ import (
 	"github.com/awell-health/spire/pkg/wizard"
 	"github.com/spf13/cobra"
 )
-
-var wizardEpicCmd = &cobra.Command{
-	Use:                "wizard-epic <epic-id>",
-	Short:              "Execute wizard epic orchestration",
-	Hidden:             true,
-	DisableFlagParsing: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return cmdWizardEpic(args)
-	},
-}
 
 var wizardRunCmd = &cobra.Command{
 	Use:                "wizard-run",
@@ -107,10 +97,6 @@ func cmdWizardReview(args []string) error {
 
 func cmdWizardMerge(args []string) error {
 	return wizard.CmdWizardMerge(args, buildWizardDeps())
-}
-
-func cmdWizardEpic(args []string) error {
-	return wizard.CmdWizardEpic(args, buildWizardDeps())
 }
 
 // --- Deps wiring ---

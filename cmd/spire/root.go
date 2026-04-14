@@ -46,7 +46,6 @@ Work:
   close <bead-id>       Force-close a bead (remove phase labels, close molecule steps)
   focus <bead-id>       Assemble read-only context for a task
   grok <bead-id>        Focus + live Linear context
-  wizard-epic <epic-id>  Execute wizard epic orchestration
 
 Workshop:
   workshop              Interactive formula exploration
