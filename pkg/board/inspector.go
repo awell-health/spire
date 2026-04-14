@@ -12,7 +12,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/steveyegge/beads"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -22,6 +24,12 @@ const (
 	InspectorTabDetails = 0
 	InspectorTabLogs    = 1
 )
+
+// HookedStepInfo describes a hooked (parked) step for the inspector display.
+type HookedStepInfo struct {
+	StepName   string // e.g. "review", "design-check"
+	WaitingFor string // human-readable description of what the step is waiting for
+}
 
 // InspectorData holds the fetched detail data for the inspector pane.
 type InspectorData struct {
@@ -33,9 +41,10 @@ type InspectorData struct {
 	Deps        []*beads.IssueWithDependencyMetadata // what this bead depends on
 	Dependents  []*beads.IssueWithDependencyMetadata // what depends on this bead
 	DAG         *DAGProgress
-	Messages    []BoardBead // messages referencing this bead
-	DesignBeads []BoardBead // design beads linked via discovered-from deps
-	LogContent  string      // cached wizard log content (loaded in FetchInspectorData, not View)
+	Messages    []BoardBead      // messages referencing this bead
+	DesignBeads []BoardBead      // design beads linked via discovered-from deps
+	HookedStep  *HookedStepInfo  // hooked step details (nil when bead is not hooked)
+	LogContent  string           // cached wizard log content (loaded in FetchInspectorData, not View)
 }
 
 // FetchInspectorData loads all detail data for a bead from the store.
@@ -99,6 +108,11 @@ func FetchInspectorData(b BoardBead) InspectorData {
 		data.Messages = msgs
 	}
 
+	// Hooked step details.
+	if b.Status == "hooked" {
+		data.HookedStep = findHookedStepInfo(b.ID, data.DAG)
+	}
+
 	// Wizard log content: read and cache here (not in View).
 	wizardName := "wizard-" + b.ID
 	logDir := filepath.Join(dolt.GlobalDir(), "wizards")
@@ -114,6 +128,72 @@ func FetchInspectorData(b BoardBead) InspectorData {
 	}
 
 	return data
+}
+
+// findHookedStepInfo determines which step is hooked and what it's waiting for.
+// It uses DAG steps (already loaded) to find the hooked step name, then loads
+// the executor graph state to read step outputs for the "waiting for" detail.
+func findHookedStepInfo(beadID string, dag *DAGProgress) *HookedStepInfo {
+	// Find hooked step name from DAG.
+	hookedName := ""
+	if dag != nil {
+		for _, s := range dag.Steps {
+			if s.Status == "hooked" {
+				hookedName = s.Name
+				break
+			}
+		}
+	}
+	if hookedName == "" {
+		return nil
+	}
+
+	info := &HookedStepInfo{StepName: hookedName}
+
+	// Try to load graph state to get step outputs.
+	wizardName := "wizard-" + beadID
+	gs, err := executor.LoadGraphState(wizardName, config.Dir)
+	if err == nil && gs != nil {
+		if ss, ok := gs.Steps[hookedName]; ok {
+			info.WaitingFor = hookedWaitingFor(hookedName, ss.Outputs)
+			return info
+		}
+	}
+
+	// Fallback: infer from step name alone.
+	info.WaitingFor = hookedWaitingFor(hookedName, nil)
+	return info
+}
+
+// hookedWaitingFor determines a human-readable "waiting for" string from
+// the step name and its graph state outputs.
+func hookedWaitingFor(stepName string, outputs map[string]string) string {
+	// Check outputs for design_ref.
+	if ref, ok := outputs["design_ref"]; ok && ref != "" {
+		return "design bead " + ref
+	}
+
+	// Check if step name suggests human approval.
+	if stepName == "review" || strings.Contains(stepName, "review") {
+		return "human approval"
+	}
+
+	// Check outputs for explicit hook reason.
+	if reason, ok := outputs["hook_reason"]; ok && reason != "" {
+		return reason
+	}
+
+	// If outputs exist, show them as raw condition.
+	if len(outputs) > 0 {
+		var parts []string
+		for k, v := range outputs {
+			parts = append(parts, k+"="+v)
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, ", ")
+	}
+
+	return "external condition"
 }
 
 // RenderInspector renders the full inspector view for a bead.
@@ -148,6 +228,13 @@ func RenderInspector(data InspectorData, width, height, scrollOffset int) string
 		statusLine += "  Phase: " + lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(data.Phase)
 	}
 	lines = append(lines, statusLine)
+
+	// Hooked step details — shown prominently when bead is hooked.
+	if data.HookedStep != nil {
+		hookedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+		lines = append(lines, hookedStyle.Render("⏸ Hooked at: step:"+data.HookedStep.StepName))
+		lines = append(lines, "Waiting for: "+hookedStyle.Render(data.HookedStep.WaitingFor))
+	}
 
 	owner := BeadOwnerLabel(b)
 	if owner != "" {
@@ -319,6 +406,8 @@ func renderStatus(status string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("open")
 	case "in_progress":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("in_progress")
+	case "hooked":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("hooked")
 	case "closed":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("closed")
 	default:
@@ -332,6 +421,8 @@ func statusIconStr(status string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("✓")
 	case "in_progress":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("▶")
+	case "hooked":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("⏸")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("○")
 	}
@@ -523,6 +614,13 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 			statusLine += "  Phase: " + lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(data.Phase)
 		}
 		lines = append(lines, statusLine)
+
+		// Hooked step details — shown prominently when bead is hooked.
+		if data.HookedStep != nil {
+			hookedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+			lines = append(lines, hookedStyle.Render("⏸ Hooked at: step:"+data.HookedStep.StepName))
+			lines = append(lines, "Waiting for: "+hookedStyle.Render(data.HookedStep.WaitingFor))
+		}
 
 		owner := BeadOwnerLabel(bb)
 		if owner != "" {
