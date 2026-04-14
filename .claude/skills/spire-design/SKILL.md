@@ -69,6 +69,23 @@ bd close <design-id>
 
 The thinking is preserved in the archive for future reference.
 
+## Targeting a non-main branch
+
+When the work from a design should land on a specific integration branch instead of main
+(e.g. a long-lived feature branch spanning multiple epics), use `--branch` when filing:
+
+```bash
+spire file "Auth overhaul epic" -t epic -p 1 --ref <design-id> --branch my-integration-branch
+```
+
+This adds a `base-branch:my-integration-branch` label to the epic. During plan-phase
+breakdown, the label is automatically propagated to all child tasks. At execution time,
+Spire also walks up the parent chain — so even manually-created children without the label
+will inherit the base branch from their epic.
+
+You only need to set `--branch` on the top-level epic. All subtasks will branch from and
+target the integration branch automatically.
+
 ## Rules
 
 - Create the design bead EARLY — don't wait until the conversation is over

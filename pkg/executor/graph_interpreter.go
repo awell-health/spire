@@ -497,13 +497,11 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 	state.BaseBranch = baseBranch
 
 	// Bead-level base-branch override (from spire file --branch) takes
-	// precedence over repo defaults. Mirrors the v2 resolveBranchState
-	// logic in executor.go.
-	if bead, berr := e.deps.GetBead(e.beadID); berr == nil {
-		if bb := e.deps.HasLabel(bead, "base-branch:"); bb != "" {
-			e.log("using bead base-branch override: %s (was: %s)", bb, state.BaseBranch)
-			state.BaseBranch = bb
-		}
+	// precedence over repo defaults. Walks up the parent chain so that
+	// child tasks inherit the base branch from their epic.
+	if bb := e.findBaseBranchInParentChain(e.beadID); bb != "" {
+		e.log("using bead base-branch override: %s (was: %s)", bb, state.BaseBranch)
+		state.BaseBranch = bb
 	}
 
 	if state.StagingBranch == "" {
@@ -516,6 +514,27 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 	e.log("branch state resolved: repo=%s base=%s staging=%s",
 		state.RepoPath, state.BaseBranch, state.StagingBranch)
 	return nil
+}
+
+// findBaseBranchInParentChain walks up the bead's parent chain looking for a
+// base-branch: label. Returns the branch name from the first bead that has one,
+// or "" if none in the chain do. This lets child tasks inherit the base branch
+// from their epic without needing the label copied to every child.
+func (e *Executor) findBaseBranchInParentChain(beadID string) string {
+	visited := make(map[string]bool)
+	current := beadID
+	for current != "" && !visited[current] {
+		visited[current] = true
+		bead, err := e.deps.GetBead(current)
+		if err != nil {
+			break
+		}
+		if bb := e.deps.HasLabel(bead, "base-branch:"); bb != "" {
+			return bb
+		}
+		current = bead.Parent
+	}
+	return ""
 }
 
 func (e *Executor) resolveDeclaredGraphStagingBranch(graph *FormulaStepGraph, state *GraphState) string {

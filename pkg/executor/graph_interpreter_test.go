@@ -7,6 +7,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
@@ -1603,6 +1604,88 @@ func TestResolveGraphBranchState_ResumeSkipsOverride(t *testing.T) {
 	}
 	if exec.graphState.BaseBranch != "main" {
 		t.Errorf("BaseBranch = %q, want %q (resume should preserve)", exec.graphState.BaseBranch, "main")
+	}
+}
+
+func TestResolveGraphBranchState_InheritsFromParent(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	deps.ResolveRepo = func(beadID string) (string, string, string, error) {
+		return "/tmp/repo", "", "main", nil
+	}
+
+	// Child bead has no label, but its parent epic does.
+	deps.GetBead = func(id string) (Bead, error) {
+		switch id {
+		case "spi-child":
+			return Bead{ID: "spi-child", Status: "in_progress", Parent: "spi-epic"}, nil
+		case "spi-epic":
+			return Bead{ID: "spi-epic", Status: "in_progress", Labels: []string{"base-branch:develop"}}, nil
+		default:
+			return Bead{ID: id, Status: "in_progress"}, nil
+		}
+	}
+	deps.HasLabel = func(b Bead, prefix string) string {
+		return store.HasLabel(b, prefix)
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-parent-inherit",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-child", "wizard-child", graph, nil, deps)
+	err := exec.resolveGraphBranchState(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("resolveGraphBranchState: %v", err)
+	}
+
+	if exec.graphState.BaseBranch != "develop" {
+		t.Errorf("BaseBranch = %q, want %q (should inherit from parent)", exec.graphState.BaseBranch, "develop")
+	}
+}
+
+func TestResolveGraphBranchState_NoLabelInChain(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	deps.ResolveRepo = func(beadID string) (string, string, string, error) {
+		return "/tmp/repo", "", "main", nil
+	}
+
+	// Neither child nor parent has the label.
+	deps.GetBead = func(id string) (Bead, error) {
+		switch id {
+		case "spi-child":
+			return Bead{ID: "spi-child", Status: "in_progress", Parent: "spi-epic"}, nil
+		case "spi-epic":
+			return Bead{ID: "spi-epic", Status: "in_progress"}, nil
+		default:
+			return Bead{ID: id, Status: "in_progress"}, nil
+		}
+	}
+	deps.HasLabel = func(b Bead, prefix string) string {
+		return store.HasLabel(b, prefix)
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-no-chain",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.noop", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-child", "wizard-child", graph, nil, deps)
+	err := exec.resolveGraphBranchState(graph, exec.graphState)
+	if err != nil {
+		t.Fatalf("resolveGraphBranchState: %v", err)
+	}
+
+	if exec.graphState.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q (no label in chain)", exec.graphState.BaseBranch, "main")
 	}
 }
 

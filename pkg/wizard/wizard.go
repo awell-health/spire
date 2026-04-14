@@ -225,12 +225,11 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	}
 
 	// Bead-level base-branch override (from spire file --branch) takes
-	// precedence over repo config and tower defaults.
-	if bead, berr := deps.GetBead(beadID); berr == nil {
-		if bb := deps.HasLabel(bead, "base-branch:"); bb != "" {
-			log("using bead base-branch override: %s (was: %s)", bb, baseBranch)
-			baseBranch = bb
-		}
+	// precedence over repo config and tower defaults. Walks up the parent
+	// chain so child tasks inherit the base branch from their epic.
+	if bb := findBaseBranchInParentChain(beadID, deps); bb != "" {
+		log("using bead base-branch override: %s (was: %s)", bb, baseBranch)
+		baseBranch = bb
 	}
 
 	branchName := strings.ReplaceAll(branchPattern, "{bead-id}", beadID)
@@ -1487,4 +1486,25 @@ func WizardReviewHandoff(beadID, wizardName, branchName string, deps *Deps, log 
 
 	log("review handoff complete, spawned %s (%s)", reviewerName, handle.Identifier())
 	// Self-unregister happens via defer in CmdWizardRun
+}
+
+// findBaseBranchInParentChain walks up the bead's parent chain looking for a
+// base-branch: label. Returns the branch name from the first bead that has one,
+// or "" if none in the chain do. This lets child tasks inherit the base branch
+// from their epic without needing the label copied to every child.
+func findBaseBranchInParentChain(beadID string, deps *Deps) string {
+	visited := make(map[string]bool)
+	current := beadID
+	for current != "" && !visited[current] {
+		visited[current] = true
+		bead, err := deps.GetBead(current)
+		if err != nil {
+			break
+		}
+		if bb := deps.HasLabel(bead, "base-branch:"); bb != "" {
+			return bb
+		}
+		current = bead.Parent
+	}
+	return ""
 }
