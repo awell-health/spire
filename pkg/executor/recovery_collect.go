@@ -12,11 +12,11 @@ import (
 	"github.com/awell-health/spire/pkg/store"
 )
 
-// actionRecoveryCollectContext is the ActionHandler for "recovery.collect_context".
+// actionClericCollectContext is the ActionHandler for "cleric.collect_context".
 // It mechanically assembles diagnosis, ranked actions, and prior learnings for
 // a recovery bead, then writes the formatted context as a bead comment and
 // stashes JSON in state.Vars for in-process access by the decide step.
-func actionRecoveryCollectContext(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+func actionClericCollectContext(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// 1. Get recovery bead and extract source bead ID from metadata.
 	recoveryBead, err := e.deps.GetBead(e.beadID)
 	if err != nil {

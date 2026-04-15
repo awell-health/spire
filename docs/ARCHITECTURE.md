@@ -266,7 +266,7 @@ for crash-safe resume.
 | `epic-default` | epic | design-check → plan → materialize → implement → review → merge → close | Full lifecycle with design validation, Opus planning, child dispatch, sage review, nestable review loops |
 | `bug-default` | bug | plan → implement → review → merge → close | Quick fix: wizard plan, single apprentice, sage review, auto-merge |
 | `task-default` | task, feature, chore | plan → implement → review → merge → close | Standard work: wizard plan, single apprentice, sage review, auto-merge |
-| `recovery-default` | recovery | collect → design → plan → remediate → verify → document → close | Recovery lifecycle with prior-learning lookup and durable learning projection |
+| `cleric-default` | recovery | collect → decide → execute → verify → learn → finish | Recovery lifecycle with cleric-driven decision and learning extraction |
 | `subgraph-review` | (sub-graph) | sage-review → arbiter → fix → merge → discard | Nestable review loop, invoked by parent formulas |
 | `subgraph-implement` | (sub-graph) | dispatch-children → merge-staging → verify | Epic child dispatch with staging integration |
 
@@ -278,7 +278,7 @@ bug      → bug-default
 task     → task-default
 feature  → task-default
 chore    → task-default
-recovery → recovery-default
+recovery → cleric-default
 (fallback) → task-default
 ```
 

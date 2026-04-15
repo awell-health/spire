@@ -1,9 +1,9 @@
-# recovery-default.formula.toml — default agentic recovery lifecycle.
+# cleric-default.formula.toml — default agentic recovery lifecycle.
 #
 # collect_context → decide → execute → verify → learn → finish
 # Needs-human path: collect_context → decide → finish_needs_human
 
-name = "recovery-default"
+name = "cleric-default"
 description = "Agentic recovery: Claude-driven decide + learn steps, always-close lifecycle"
 version = 3
 entry = "collect_context"
@@ -32,7 +32,7 @@ default = "main"
 # Step 1: Collect diagnosis context + prior learnings (mechanical, no Claude).
 [steps.collect_context]
 kind = "op"
-action = "recovery.execute"
+action = "cleric.execute"
 title = "Collect diagnosis context and prior learnings"
 [steps.collect_context.with]
 action = "collect_context"
@@ -40,7 +40,7 @@ action = "collect_context"
 # Step 2: Claude-driven decision — choose recovery action.
 [steps.decide]
 kind = "op"
-action = "recovery.execute"
+action = "cleric.execute"
 needs = ["collect_context"]
 title = "Claude-driven recovery decision"
 [steps.decide.with]
@@ -50,7 +50,7 @@ action = "decide"
 # Skipped if decide set needs_human=true.
 [steps.execute]
 kind = "op"
-action = "recovery.execute"
+action = "cleric.execute"
 needs = ["decide"]
 title = "Execute chosen recovery action"
 [steps.execute.with]
@@ -61,7 +61,7 @@ all = [{ left = "steps.decide.outputs.needs_human", op = "ne", right = "true" }]
 # Step 4: Verify source bead health after remediation.
 [steps.verify]
 kind = "op"
-action = "recovery.execute"
+action = "cleric.execute"
 needs = ["execute"]
 title = "Verify source bead health"
 produces = ["verification_status"]
@@ -71,7 +71,7 @@ action = "verify"
 # Step 5: Claude-driven learning extraction.
 [steps.learn]
 kind = "op"
-action = "recovery.learn"
+action = "cleric.learn"
 needs = ["verify"]
 title = "Claude-driven learning extraction"
 [steps.learn.with]
@@ -80,7 +80,7 @@ action = "learn"
 # Step 6a: Close recovery bead (happy path — after learning).
 [steps.finish]
 kind = "op"
-action = "recovery.execute"
+action = "cleric.execute"
 needs = ["learn"]
 terminal = true
 title = "Close recovery bead"
@@ -90,7 +90,7 @@ action = "finish"
 # Step 6b: Close recovery bead (needs-human path — after decide).
 [steps.finish_needs_human]
 kind = "op"
-action = "recovery.execute"
+action = "cleric.execute"
 needs = ["decide"]
 terminal = true
 title = "Close recovery bead (needs human)"

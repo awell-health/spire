@@ -114,7 +114,7 @@ the binary:
 | `bug-default` | bug | Bug-fix lifecycle. |
 | `epic-default` | epic | Epic lifecycle with design-link check, plan materialization, child dispatch, and merge. |
 | `chore-default` | chore | Chore lifecycle. |
-| `recovery-default` | recovery | Recovery lifecycle. |
+| `cleric-default` | recovery | Recovery lifecycle (cleric-driven). |
 | `subgraph-review` | (nested) | Review sub-graph with sage review, arbiter escalation, and revision loops. Uses `noop` terminals. |
 | `subgraph-implement` | (nested) | Epic implementation sub-graph for dispatching and verifying child beads. |
 

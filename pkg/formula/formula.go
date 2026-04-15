@@ -217,7 +217,7 @@ var DefaultV3FormulaMap = map[string]string{
 	"epic":     "epic-default",
 	"chore":    "chore-default",
 	"feature":  "task-default",
-	"recovery": "recovery-default",
+	"recovery": "cleric-default",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.
@@ -244,7 +244,7 @@ var legacyV2NameMap = map[string]string{
 	"spire-agent-work-v3":  "task-default",
 	"spire-bugfix-v3":      "bug-default",
 	"spire-epic-v3":        "epic-default",
-	"spire-recovery-v3":    "recovery-default",
+	"spire-recovery-v3":    "cleric-default",
 	"review-phase":         "subgraph-review",
 	"epic-implement-phase": "subgraph-implement",
 }

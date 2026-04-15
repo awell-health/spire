@@ -18,10 +18,10 @@ const (
 	OpcodeGitMergeToMain        = "git.merge_to_main"
 	OpcodeBeadFinish            = "bead.finish"
 	OpcodeNoop                  = "noop"
-	OpcodeRecoveryExecute       = "recovery.execute"
-	OpcodeRecoveryDecide        = "recovery.decide"
-	OpcodeRecoveryLearn         = "recovery.learn"
-	OpcodeRecoveryCollectContext = "recovery.collect_context"
+	OpcodeClericExecute       = "cleric.execute"
+	OpcodeClericDecide        = "cleric.decide"
+	OpcodeClericLearn         = "cleric.learn"
+	OpcodeClericCollectContext = "cleric.collect_context"
 )
 
 // ValidOpcodes is the set of recognized executor opcodes.
@@ -35,10 +35,10 @@ var ValidOpcodes = map[string]bool{
 	OpcodeGitMergeToMain:         true,
 	OpcodeBeadFinish:             true,
 	OpcodeNoop:                   true,
-	OpcodeRecoveryExecute:        true,
-	OpcodeRecoveryDecide:         true,
-	OpcodeRecoveryLearn:          true,
-	OpcodeRecoveryCollectContext: true,
+	OpcodeClericExecute:        true,
+	OpcodeClericDecide:         true,
+	OpcodeClericLearn:          true,
+	OpcodeClericCollectContext: true,
 }
 
 // ValidOpcode returns true if the opcode is in the recognized set.

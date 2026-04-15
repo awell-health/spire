@@ -50,7 +50,7 @@ func TestHandleFinish_NeedsHuman(t *testing.T) {
 
 	e := NewGraphForTest("spi-recovery-nh", "wizard-recovery", nil, state, deps)
 
-	result := handleFinish(e, "finish", StepConfig{Action: "recovery.finish"}, state)
+	result := handleFinish(e, "finish", StepConfig{Action: "cleric.finish"}, state)
 
 	if result.Error != nil {
 		t.Fatalf("handleFinish returned error: %v", result.Error)
@@ -97,7 +97,7 @@ func TestHandleFinish_NonEscalate(t *testing.T) {
 
 	e := NewGraphForTest("spi-recovery-ok", "wizard-recovery", nil, state, deps)
 
-	result := handleFinish(e, "finish", StepConfig{Action: "recovery.finish"}, state)
+	result := handleFinish(e, "finish", StepConfig{Action: "cleric.finish"}, state)
 
 	if result.Error != nil {
 		t.Fatalf("handleFinish returned error: %v", result.Error)
@@ -125,7 +125,7 @@ func TestHandleFinish_NilState(t *testing.T) {
 
 	e := NewGraphForTest("spi-recovery-nil", "wizard-recovery", nil, nil, deps)
 
-	result := handleFinish(e, "finish", StepConfig{Action: "recovery.finish"}, nil)
+	result := handleFinish(e, "finish", StepConfig{Action: "cleric.finish"}, nil)
 
 	if result.Error != nil {
 		t.Fatalf("handleFinish returned error: %v", result.Error)
@@ -177,7 +177,7 @@ func triageTestSetup(t *testing.T) (tmpDir string, cleanup func()) {
 // newTriageExecutor creates an executor with the given deps and a config dir pointing at tmpDir.
 func newTriageExecutor(t *testing.T, beadID string, deps *Deps) *Executor {
 	t.Helper()
-	e := NewGraphForTest(beadID, "recovery-agent", nil, nil, deps)
+	e := NewGraphForTest(beadID, "cleric-agent", nil, nil, deps)
 	return e
 }
 
@@ -886,7 +886,7 @@ func TestBuildDecidePrompt_PartialCount(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Triage param-injection tests (actionRecoveryExecute)
+// Triage param-injection tests (actionClericExecute)
 // ---------------------------------------------------------------------------
 
 func TestActionRecoveryExecute_TriageParamInjection(t *testing.T) {
@@ -919,10 +919,10 @@ func TestActionRecoveryExecute_TriageParamInjection(t *testing.T) {
 		},
 	}
 
-	e := NewGraphForTest("spi-recovery-1", "recovery-agent", nil, state, deps)
+	e := NewGraphForTest("spi-recovery-1", "cleric-agent", nil, state, deps)
 
 	// We can't easily intercept ExecuteRecoveryAction, so instead test the
-	// param-injection logic directly by simulating what actionRecoveryExecute does.
+	// param-injection logic directly by simulating what actionClericExecute does.
 	step := StepConfig{
 		With: map[string]string{
 			"action":         "triage",
@@ -930,7 +930,7 @@ func TestActionRecoveryExecute_TriageParamInjection(t *testing.T) {
 		},
 	}
 
-	// Reproduce the param-injection block from actionRecoveryExecute.
+	// Reproduce the param-injection block from actionClericExecute.
 	actionKind := step.With["action"]
 	params := step.With
 	if actionKind == "triage" && state != nil {
@@ -1427,7 +1427,7 @@ func TestHandleVerify_ExecuteFailed(t *testing.T) {
 
 	e := NewGraphForTest("spi-recovery-v", "wizard-recovery", nil, state, deps)
 
-	result := handleVerify(e, "verify", StepConfig{Action: "recovery.execute", With: map[string]string{"action": "verify"}}, state)
+	result := handleVerify(e, "verify", StepConfig{Action: "cleric.execute", With: map[string]string{"action": "verify"}}, state)
 
 	if result.Error != nil {
 		t.Fatalf("handleVerify returned error: %v", result.Error)
@@ -1466,7 +1466,7 @@ func TestHandleVerify_ExecuteEmpty(t *testing.T) {
 
 	e := NewGraphForTest("spi-recovery-v2", "wizard-recovery", nil, state, deps)
 
-	result := handleVerify(e, "verify", StepConfig{Action: "recovery.execute", With: map[string]string{"action": "verify"}}, state)
+	result := handleVerify(e, "verify", StepConfig{Action: "cleric.execute", With: map[string]string{"action": "verify"}}, state)
 
 	if result.Error != nil {
 		t.Fatalf("handleVerify returned error: %v", result.Error)

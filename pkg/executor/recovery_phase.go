@@ -22,11 +22,11 @@ import (
 )
 
 func init() {
-	actionRegistry["recovery.execute"] = actionRecoveryExecute
-	actionRegistry["recovery.decide"] = actionRecoveryDecide
-	actionRegistry["recovery.learn"] = actionRecoveryLearn
-	actionRegistry["recovery.collect_context"] = actionRecoveryCollectContext
-	actionRegistry["recovery.verify"] = actionRecoveryVerify
+	actionRegistry["cleric.execute"] = actionClericExecute
+	actionRegistry["cleric.decide"] = actionClericDecide
+	actionRegistry["cleric.learn"] = actionClericLearn
+	actionRegistry["cleric.collect_context"] = actionClericCollectContext
+	actionRegistry["cleric.verify"] = actionClericVerify
 }
 
 // DefaultMaxRecoveryAttempts is the number of recovery attempts before
@@ -47,7 +47,7 @@ const DefaultVerifyTimeout = 600 // 10 minutes
 // escalates at max_attempts=3, so this is a secondary safety net.
 const maxStepLoopCount = 5
 
-// actionRecoveryExecute is the ActionHandler for the "recovery.execute" opcode.
+// actionClericExecute is the ActionHandler for the "cleric.execute" opcode.
 // It bridges formula step dispatch to the recovery action vocabulary.
 //
 // Reads With parameters:
@@ -61,10 +61,10 @@ const maxStepLoopCount = 5
 //	reason:          for escalate
 //
 // Any additional With parameters are passed through as Params.
-func actionRecoveryExecute(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+func actionClericExecute(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	actionKind := step.With["action"]
 	if actionKind == "" {
-		return ActionResult{Error: fmt.Errorf("recovery.execute step %q missing required with.action", stepName)}
+		return ActionResult{Error: fmt.Errorf("cleric.execute step %q missing required with.action", stepName)}
 	}
 
 	// Agentic recovery steps: handle directly with full graph context.
@@ -692,9 +692,9 @@ type LearnResult struct {
 	Reusable        bool   `json:"reusable"`
 }
 
-// actionRecoveryLearn is the ActionHandler for the "recovery.learn" opcode.
+// actionClericLearn is the ActionHandler for the "cleric.learn" opcode.
 // Delegates to handleLearn for the agentic v3 recovery formula.
-func actionRecoveryLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+func actionClericLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	return handleLearn(e, stepName, step, state)
 }
 // handleCollectContext assembles diagnosis JSON + prior learnings from the
@@ -1539,9 +1539,9 @@ func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphSta
 	}
 }
 
-// actionRecoveryVerify is the ActionHandler for the "recovery.verify" opcode.
+// actionClericVerify is the ActionHandler for the "cleric.verify" opcode.
 // Delegates to handleVerify for the cooperative retry loop.
-func actionRecoveryVerify(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+func actionClericVerify(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	return handleVerify(e, stepName, step, state)
 }
 
@@ -1721,7 +1721,7 @@ func mergeLearnings(metaLearnings []store.RecoveryLearning, sqlRows []store.Reco
 // triageCount is the number of triage attempts already made on this recovery bead.
 func buildDecidePrompt(cc CollectContextResult, triageCount int, stats *store.LearningStats) string {
 	var b strings.Builder
-	b.WriteString("You are a recovery decision agent for Spire, an AI agent coordination system.\n\n")
+	b.WriteString("You are a cleric agent for Spire, an AI agent coordination system.\n\n")
 	b.WriteString("A bead (work item) has been interrupted and needs recovery. Analyze the diagnosis and choose the best recovery action.\n\n")
 
 	// Diagnosis context.
@@ -1855,7 +1855,7 @@ func buildDecidePrompt(cc CollectContextResult, triageCount int, stats *store.Le
 // buildLearnPrompt constructs the Claude prompt for the learn step.
 func buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome string) string {
 	var b strings.Builder
-	b.WriteString("You are a recovery learning agent for Spire, an AI agent coordination system.\n\n")
+	b.WriteString("You are a cleric learning agent for Spire, an AI agent coordination system.\n\n")
 	b.WriteString("A recovery action was taken. Analyze the result and extract a learning for future incidents.\n\n")
 
 	b.WriteString("## Recovery Context\n")

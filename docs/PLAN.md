@@ -29,7 +29,7 @@ beads, and tower-level formula sharing.
 - **Tower-level formula sharing** -- formulas in dolt, synced across machines, CLI for publish/list/show/remove
 - **Formula resolution** -- tower -> repo -> embedded (first match wins); `spire resolve` command for manual gate resolution
 - **Recovery system** -- first-class recovery bead type with dedicated formula, structured metadata, prior-learning lookup
-- **Built-in formulas** -- task-default, bug-default, epic-default, chore-default, recovery-default, plus subgraph-review and subgraph-implement sub-graphs
+- **Built-in formulas** -- task-default, bug-default, epic-default, chore-default, cleric-default, plus subgraph-review and subgraph-implement sub-graphs
 - **Formula features** -- per-step provider override, inline prompts (`with.prompt`), `human.approve` action for approval gates
 - **Interactive board TUI** -- Bubble Tea with cursor navigation, inline actions (summon/reset/close/approve/reject), inspector pane, command mode, tower switcher, search/filter, deferred status toggle
 - **Local agent execution** -- `spire summon` spawns wizard executors (accepts bead IDs or count); apprentices work in isolated worktrees; sages review; arbiters break ties

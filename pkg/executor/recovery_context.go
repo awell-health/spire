@@ -392,7 +392,7 @@ func extractHumanComments(comments []*beads.Comment) []string {
 // isAgentAuthor returns true if the author string looks like an agent name
 // rather than a human user.
 func isAgentAuthor(author string) bool {
-	agentPrefixes := []string{"wizard-", "apprentice-", "sage-", "steward-", "recovery-"}
+	agentPrefixes := []string{"wizard-", "apprentice-", "sage-", "steward-", "cleric-"}
 	for _, p := range agentPrefixes {
 		if strings.HasPrefix(author, p) {
 			return true

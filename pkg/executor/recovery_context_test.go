@@ -138,7 +138,7 @@ func TestIsAgentAuthor(t *testing.T) {
 		{"apprentice-spi-xyz", true},
 		{"sage-review", true},
 		{"steward-global", true},
-		{"recovery-spi-123", true},
+		{"cleric-spi-123", true},
 		{"JB", false},
 		{"alice", false},
 		{"", false},
