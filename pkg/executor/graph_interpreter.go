@@ -506,6 +506,10 @@ func (e *Executor) collectMessages(state *GraphState) {
 	if e.deps.ListBeads == nil {
 		return
 	}
+	if !e.lastMessageCollect.IsZero() && time.Since(e.lastMessageCollect) < 30*time.Second {
+		return
+	}
+	e.lastMessageCollect = time.Now()
 
 	delete(state.Vars, "pending_messages")
 

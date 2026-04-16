@@ -78,6 +78,10 @@ type Executor struct {
 	// lastHeartbeat tracks when the last heartbeat was sent. Used to rate-limit
 	// heartbeat writes to at most once per 30 seconds.
 	lastHeartbeat time.Time
+
+	// lastMessageCollect tracks when collectMessages last queried the store.
+	// Rate-limited to the same 30s cadence as heartbeats.
+	lastMessageCollect time.Time
 }
 
 // NewGraph creates a v3 graph executor for a bead. It loads or creates

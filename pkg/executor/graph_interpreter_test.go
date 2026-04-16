@@ -2499,3 +2499,151 @@ func TestRunGraph_FatalOwnershipStopsExecution(t *testing.T) {
 		t.Error("no actions should have been dispatched after FATAL ownership error")
 	}
 }
+
+// --- Test: collectMessages ---
+
+func TestCollectMessages(t *testing.T) {
+	tests := []struct {
+		name           string
+		listBeads      func(beads.IssueFilter) ([]Bead, error)
+		closeBead      func(string) error
+		hasLabel       func(Bead, string) string
+		presetVar      string // pre-existing pending_messages value
+		wantVar        string // expected state.Vars["pending_messages"] ("" means absent)
+		wantVarAbsent  bool   // if true, pending_messages should be deleted
+		wantCloseCalls []string
+	}{
+		{
+			name:          "nil ListBeads dep is a no-op",
+			listBeads:     nil,
+			wantVarAbsent: true,
+		},
+		{
+			name: "query error logs warning and returns",
+			listBeads: func(f beads.IssueFilter) ([]Bead, error) {
+				return nil, fmt.Errorf("db connection failed")
+			},
+			presetVar:     `[{"id":"old"}]`,
+			wantVarAbsent: true,
+		},
+		{
+			name: "zero messages clears pending_messages",
+			listBeads: func(f beads.IssueFilter) ([]Bead, error) {
+				return nil, nil
+			},
+			presetVar:     `[{"id":"stale"}]`,
+			wantVarAbsent: true,
+		},
+		{
+			name: "successful collection with label extraction",
+			listBeads: func(f beads.IssueFilter) ([]Bead, error) {
+				return []Bead{
+					{ID: "msg-1", Title: "hello wizard"},
+					{ID: "msg-2", Title: "inject task X"},
+				}, nil
+			},
+			closeBead: func(id string) error { return nil },
+			hasLabel: func(b Bead, prefix string) string {
+				labels := map[string]map[string]string{
+					"msg-1": {"from:": "archmage", "ref:": "spi-abc"},
+					"msg-2": {"from:": "steward", "ref:": "spi-xyz"},
+				}
+				if m, ok := labels[b.ID]; ok {
+					return m[prefix]
+				}
+				return ""
+			},
+			wantVar:        `[{"id":"msg-1","from":"archmage","ref":"spi-abc","text":"hello wizard"},{"id":"msg-2","from":"steward","ref":"spi-xyz","text":"inject task X"}]`,
+			wantCloseCalls: []string{"msg-1", "msg-2"},
+		},
+		{
+			name: "CloseBead error does not abort collection",
+			listBeads: func(f beads.IssueFilter) ([]Bead, error) {
+				return []Bead{
+					{ID: "msg-a", Title: "first"},
+					{ID: "msg-b", Title: "second"},
+				}, nil
+			},
+			closeBead: func(id string) error {
+				if id == "msg-a" {
+					return fmt.Errorf("close failed")
+				}
+				return nil
+			},
+			hasLabel: func(b Bead, prefix string) string { return "" },
+			wantVar:  `[{"id":"msg-a","from":"","ref":"","text":"first"},{"id":"msg-b","from":"","ref":"","text":"second"}]`,
+			wantCloseCalls: []string{"msg-a", "msg-b"},
+		},
+		{
+			name: "filter uses correct labels and status",
+			listBeads: func(f beads.IssueFilter) ([]Bead, error) {
+				// Verify the filter is constructed correctly
+				if len(f.Labels) != 2 || f.Labels[0] != "msg" || f.Labels[1] != "to:wizard-test" {
+					t.Errorf("unexpected filter labels: %v", f.Labels)
+				}
+				if f.Status == nil || *f.Status != beads.StatusOpen {
+					t.Errorf("expected open status filter, got %v", f.Status)
+				}
+				return nil, nil
+			},
+			wantVarAbsent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps, _ := testGraphDeps(t)
+			deps.ListBeads = tt.listBeads
+
+			if tt.closeBead != nil {
+				deps.CloseBead = tt.closeBead
+			}
+			if tt.hasLabel != nil {
+				deps.HasLabel = tt.hasLabel
+			}
+
+			var closeCalls []string
+			if tt.wantCloseCalls != nil {
+				origClose := deps.CloseBead
+				deps.CloseBead = func(id string) error {
+					closeCalls = append(closeCalls, id)
+					if origClose != nil {
+						return origClose(id)
+					}
+					return nil
+				}
+			}
+
+			exec := NewGraphForTest("spi-test", "wizard-test", nil, nil, deps)
+			state := &GraphState{Vars: map[string]string{}}
+			if tt.presetVar != "" {
+				state.Vars["pending_messages"] = tt.presetVar
+			}
+
+			exec.collectMessages(state)
+
+			if tt.wantVarAbsent {
+				if _, ok := state.Vars["pending_messages"]; ok {
+					t.Errorf("expected pending_messages to be absent, got %q", state.Vars["pending_messages"])
+				}
+			} else if tt.wantVar != "" {
+				got := state.Vars["pending_messages"]
+				if got != tt.wantVar {
+					t.Errorf("pending_messages mismatch\n got: %s\nwant: %s", got, tt.wantVar)
+				}
+			}
+
+			if tt.wantCloseCalls != nil {
+				if len(closeCalls) != len(tt.wantCloseCalls) {
+					t.Errorf("close calls: got %v, want %v", closeCalls, tt.wantCloseCalls)
+				} else {
+					for i, want := range tt.wantCloseCalls {
+						if closeCalls[i] != want {
+							t.Errorf("close call %d: got %q, want %q", i, closeCalls[i], want)
+						}
+					}
+				}
+			}
+		})
+	}
+}
