@@ -20,7 +20,21 @@ multi-bead coordinator.
   wizard re-entry and route them back into motion.
 - **Tower daemon duties**: sync loops, inbox delivery, dead-agent cleanup, and
   tower-level maintenance work.
+- **Hooked-step sweeping**: queries step beads by `status=hooked`, checks
+  whether the blocking condition has resolved, and re-summons the wizard.
+- **Concurrency limiter**: per-tower `MaxConcurrent` enforcement — tracks
+  active agents and gates spawning via `ConcurrencyLimiter`.
+- **Merge queue**: serializes merge operations to prevent git push contention
+  (`MergeQueue`).
+- **Trust gradient**: per-repo trust levels that gate review requirements and
+  auto-merge permissions (`TrustChecker`). Promotes after consecutive clean
+  merges, demotes on reverts/failures.
 - **Backend-facing coordination**: local process dispatch vs managed backends.
+
+> **Target (not yet implemented):** The steward will auto-summon clerics
+> for recovery beads when failure evidence exists (interrupted label,
+> failed attempt history). Today, recovery beads are filed by the executor
+> on wizard failure and assigned through the normal ready-work cycle.
 
 ## What this package does NOT own
 

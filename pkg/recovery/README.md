@@ -4,6 +4,14 @@ Recovery owns **diagnosis and action proposal** for interrupted parent beads. It
 inspects bead state, attempt history, git/worktree status, and executor runtime
 state to classify the failure mode and produce a ranked list of recovery actions.
 
+**Important distinction:** "Recovery" in this package is the **data model** —
+beads, metadata, failure classification, learnings, and action proposals. The
+**agent** that performs recovery is the **cleric** (runs `cleric-default`
+formula, action handlers live in `pkg/executor/recovery_phase.go`,
+`recovery_decide.go`, `recovery_collect.go`, `recovery_context.go`). This
+package provides the diagnostic foundation; the cleric executor code drives the
+actual recovery lifecycle.
+
 ## Boundaries
 
 - **Executor/runtime** owns setting and clearing `interrupted:*` signals.

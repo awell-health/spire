@@ -4,16 +4,19 @@
 
 ---
 
-## Current State (v0.35.0, 2026-04-10)
+## Current State (v0.39.0, 2026-04-15)
 
 Spire is a working local-first coordination hub for AI engineering agents.
-The v3 graph executor is the only execution engine. V2 formula types
-and embedded TOML files are fully removed; formula files use canonical
-names. Local execution is solid. The Helm chart and operator are
-v3-aligned. The system handles epics, standalone tasks, bugs, recovery
-beads, and tower-level formula sharing.
+The v3 graph executor is the only execution engine. V2 code is fully
+removed. Step beads carry operational status (hooked, in_progress, closed)
+replacing label-based routing. The cleric (recovery agent) runs
+git-aware, worktree-capable recovery with cooperative wizard handoff.
+Multi-local steward safety uses instance identity and attempt leases.
+The Helm chart deploys steward, Dolt, and ClickHouse with proper
+bootstrap. `spire review`, `spire ready`, and `spire file --design`
+are shipped.
 
-### What shipped: v0.28 to v0.35
+### What shipped: v0.28 to v0.39
 
 | Version | Theme | Key changes |
 |---------|-------|-------------|
@@ -22,19 +25,23 @@ beads, and tower-level formula sharing.
 | v0.31.0 | V2 removal + recovery | V2 formula/workshop/focus stripped; recovery became first-class bead type with dedicated formula, structured metadata, prior-learning lookup |
 | v0.32.0 | Tower formula sharing | Formulas stored in dolt and synced via daemon; `spire formula list/show/publish/remove` CLI; resolution chain updated to tower -> repo -> embedded |
 | v0.33–0.35 | Formula polish + executor features | Canonical formula names (dropped -v3 suffix), v2 embedded TOML deleted, FormulaV2 types removed, hooked step status, `spire resolve`, deferred status, per-step provider override, inline prompts (`with.prompt`), `with` parameter interpolation, `human.approve` action, `spire summon` accepts bead IDs |
+| v0.36–0.38 | Steward production + K8s foundation | Concurrency limiter, merge queue, trust gradient, A/B routing, health endpoints, K8s manifests, Helm chart, ClickHouse OLAP, Dolt StatefulSet, graph state persistence in Dolt |
+| v0.39.0 | Operational state + cleric + multi-local | Status-based routing (hooked replaces interrupted labels), cleric recovery agent with cooperative wizard handoff, multi-local steward safety with instance leases, `spire review`/`spire ready`/`spire file --design`, v2 dead code fully removed, compact board attention line |
 
 ### What works today
 
 - **V3 graph executor** -- declarative step graphs with conditions, opcodes, nestable review loops, crash-safe resume, hooked step status for gate actions, `with` parameter interpolation
 - **Tower-level formula sharing** -- formulas in dolt, synced across machines, CLI for publish/list/show/remove
 - **Formula resolution** -- tower -> repo -> embedded (first match wins); `spire resolve` command for manual gate resolution
-- **Recovery system** -- first-class recovery bead type with dedicated formula, structured metadata, prior-learning lookup
+- **Operational state model** -- step beads carry status (hooked, in_progress, closed); board and steward route by bead status, not labels; parent bead reflects hooked when any step is parked
+- **Cleric (recovery agent)** -- git-aware, worktree-capable recovery with cooperative wizard handoff; collect_context → decide → execute → verify (polling loop) → learn → finish
+- **Recovery system** -- first-class recovery bead type with structured metadata, prior-learning lookup, failure classification; cleric-default formula
 - **Built-in formulas** -- task-default, bug-default, epic-default, chore-default, cleric-default, plus subgraph-review and subgraph-implement sub-graphs
 - **Formula features** -- per-step provider override, inline prompts (`with.prompt`), `human.approve` action for approval gates
-- **Interactive board TUI** -- Bubble Tea with cursor navigation, inline actions (summon/reset/close/approve/reject), inspector pane, command mode, tower switcher, search/filter, deferred status toggle
-- **Local agent execution** -- `spire summon` spawns wizard executors (accepts bead IDs or count); apprentices work in isolated worktrees; sages review; arbiters break ties
-- **Steward** -- active work assignment (round-robin to idle agents), review routing, re-engagement on feedback, health monitoring, hooked-step sweep for `human.approve` gates
-- **Full CLI surface** -- tower management, repo registration, work filing, agent messaging, observability (board/roster/watch/logs/metrics)
+- **Interactive board TUI** -- Bubble Tea with Hooked/Backlog columns, status-based action menus, inspector with hooked step details, Shift-J/K fast scroll, compact attention line, command mode, tower switcher, search/filter
+- **Local agent execution** -- `spire summon` spawns wizard executors (accepts bead IDs or count); apprentices work in isolated worktrees and write metadata.commits; sages review; arbiters break ties
+- **Steward** -- active work assignment, concurrency limiter (per-tower), merge queue, trust gradient, health endpoints, hooked-step sweep, multi-local safety with instance leases
+- **Full CLI surface** -- `spire file --design`, `spire review`, `spire ready`, `spire update`, plus tower management, repo registration, agent messaging, observability (board/roster/watch/logs/metrics)
 - **Helm chart + operator** -- v3-aligned CRDs (SpireAgent, SpireWorkload, SpireConfig), agent/steward/dolt/syncer templates
 - **CI/CD** -- goreleaser, GitHub Actions, Homebrew tap
 
@@ -73,12 +80,13 @@ are fully removed. Formula files use canonical names (no `-v3` suffix).
 Remaining v2 references are limited to `cmd/spire/` bridge files and
 `pkg/board/dag.go`.
 
-- [ ] `cmd/spire/` bridge cleanup -- remove v2 fallbacks in executor_bridge.go, reset.go, summon.go, resummon.go (remaining references)
+- [x] `cmd/spire/` bridge cleanup -- v2 fallbacks removed (`spi-b0ejk`)
 - [x] `pkg/wizard/deps.go` -- remove v2 alias and LoadFormulaByName dep
-- [ ] `pkg/board/dag.go` -- remove v2 phaseIndex fallback
+- [x] `pkg/board/dag.go` -- v2 phaseIndex fallback removed (`spi-b0ejk.3`)
 - [x] Test mass deletion -- v2-specific test functions removed; FormulaV2 types deleted
 - [x] Rename `-v3` formula files to canonical names (drop suffix)
 - [x] Delete remaining v2 embedded TOML files (spire-recovery-work.formula.toml)
+- [x] Dead v2 types and dual v2/v3 paths removed (`spi-b0ejk`)
 
 ### 2. Operational Steward
 
@@ -87,12 +95,14 @@ monitors health. But it runs as a sibling process, has no concurrency
 limits, and spawning is immediate/eager with no wave batching.
 
 - [ ] Unified daemon -- merge steward loop into `spire up` (single process, not sibling)
-- [ ] Single-daemon enforcement -- prevent multiple `spire up` from racing
-- [ ] Ready-gate workflow -- beads start as `open` (drafting); explicit `spire ready <id>` or status change marks them for steward pickup. The steward must never auto-assign beads that haven't been marked ready, so users can create and refine work before it enters the queue. *(Partially done: deferred status allows toggling beads out of the ready pool via the board TUI.)*
-- [ ] Per-tower concurrency limits -- `max_concurrent` config in tower settings
+- [x] Single-daemon enforcement -- flock-based file locking (`spi-oelwk`)
+- [x] Ready-gate workflow -- `spire ready <id>` marks beads for steward pickup; `GetReadyWork` filters by status=ready (`spi-lccod`)
+- [x] Per-tower concurrency limits -- `max_concurrent` in tower config, `ConcurrencyLimiter` filters by tower (`spi-kol5t`, `spi-m0ic5.4`)
 - [ ] Wave batching -- group ready work assignment into configurable waves
-- [ ] Capacity reporting -- show active agents, queue depth, concurrency headroom in `spire status`
-- [ ] Steward health endpoint -- liveness/readiness for monitoring
+- [x] Capacity reporting -- active agents, queue depth in `spire status` and `/health/detailed` (`spi-eki8x`)
+- [x] Steward health endpoint -- `/readyz`, `/livez`, `/health/detailed` with cycle stats and merge queue (`spi-eki8x`, `spi-m0ic5.2`)
+- [x] Hooked-step sweep -- steward queries step beads by status=hooked (`spi-724yo`)
+- [x] Multi-local safety -- instance identity, attempt leases, tower-scoped agent ownership (`spi-8wc0w`)
 
 ### 3. Kubernetes / Helm Operational
 

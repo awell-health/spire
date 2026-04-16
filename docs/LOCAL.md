@@ -165,6 +165,31 @@ works via `spire summon` (see below).
 **Not yet built**: Unified single-process daemon/steward. Single-instance
 enforcement. Health endpoint.
 
+### Instance identity
+
+Each Spire installation has a stable instance ID stored in
+`~/.config/spire/instance.json` (generated once on first use via
+`config.InstanceID()`). The steward uses this to scope agent ownership --
+it only manages processes it owns (same instance ID), which prevents
+conflicts when multiple machines are attached to the same tower via
+DoltHub.
+
+### `spire ready` -- ready-gate workflow
+
+Beads start as `open`. The `spire ready <id>` command transitions a bead
+to `ready` status, marking it for steward pickup. This two-step gate
+(`open` -> `ready`) lets the archmage control when work becomes eligible
+for agent assignment. The steward only queries beads with `status=ready`
+in its assignment cycle.
+
+### `spire review` -- read-only context assembly
+
+`spire review <bead-id>` assembles review context from a bead's commit
+history: header info, recorded commits, diff stats, full diff, review
+history, and tail sections (deps, messages, comments). This is a
+read-only inspection command -- it does not modify the bead or trigger
+any agent action.
+
 ### 7. Monitor
 
 ```

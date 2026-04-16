@@ -15,6 +15,7 @@ Spire turns an engineer into the archmage of a tower — you write specs, file w
 | **Wizard** | Per-bead orchestrator. Driven by a formula (e.g. `bug-default`, `epic-default`). Dispatches apprentices and sages, seals the work. | `spire summon N` |
 | **Apprentice** | Per-subtask implementer. Writes code in an isolated worktree. One-shot, pure implementer. | dispatched by wizard |
 | **Sage** | Per-review agent. Reviews implementation against the spec, produces a verdict. One-shot. | dispatched by wizard |
+| **Cleric** | Recovery agent. Diagnoses failures, executes recovery actions, extracts learnings. | dispatched for recovery beads |
 | **Artificer** | Formula maker. Crafts and tests the formulas (spells) that wizards follow. | `spire workshop` |
 | **Familiar** | Per-agent companion. Messaging infrastructure, inbox delivery, health checks. | daemon (local) / container (k8s) |
 
@@ -129,6 +130,9 @@ spire file "Auth system overhaul" -t epic -p 1
 spire file "Add OAuth2" -t task -p 2 --parent spi-abc
 spire file "Add MFA" -t task -p 2 --parent spi-abc
 bd dep add spi-abc.2 spi-abc.1    # MFA depends on OAuth2
+spire ready spi-abc.1             # mark bead for steward pickup (open → ready)
+spire update spi-abc.1 --priority 0  # update bead fields
+spire review spi-abc.1            # assemble review context (read-only)
 ```
 
 ### Unblock and diagnose

@@ -49,7 +49,7 @@ Single Go binary. Entry point for all operations.
 |-------------|----------------------------------------------------|
 | Setup       | `tower create`, `tower attach`, `repo add`, `config`, `push`, `pull`, `sync` |
 | Lifecycle   | `up`, `down`, `shutdown`, `status`, `doctor`, `version` |
-| Work        | `file`, `design`, `spec`, `claim`, `close`, `advance`, `focus`, `grok` |
+| Work        | `file`, `design`, `spec`, `claim`, `close`, `advance`, `focus`, `grok`, `ready`, `review`, `update` |
 | Messaging   | `register`, `unregister`, `send`, `collect`, `read`, `inbox` |
 | Coordination| `steward`, `board`, `roster`, `summon`, `dismiss`, `watch`, `alert` |
 | Execution   | `wizard-run`, `wizard-review`, `wizard-merge`, `execute`, `wizard-epic` |
@@ -69,7 +69,7 @@ Spire shells out to the `bd` binary for all work graph mutations.
 | Table      | Purpose                                                    |
 |------------|------------------------------------------------------------|
 | `issues`   | id, title, description, status, priority, type, owner, parent, timestamps |
-| `labels`   | issue_id, label -- routing (`msg`, `to:<agent>`, `from:<agent>`, `ref:<bead-id>`), metadata (`feat-branch:`, `updated:`, `needs-human`) |
+| `labels`   | issue_id, label -- routing (`msg`, `to:<agent>`, `from:<agent>`, `ref:<bead-id>`), metadata (`feat-branch:`, `updated:`, `needs-human`). Note: `needs-human` is legacy (only used for design approval gates). The current routing model uses `status=hooked` on step beads. |
 | `deps`     | blocked, blocker -- dependency graph                       |
 | `comments` | issue_id, author, body, created_at                         |
 | `metadata` | key-value store (project_id, config)                       |
@@ -79,6 +79,15 @@ Spire shells out to the `bd` binary for all work graph mutations.
 Key operations: `create`, `update`, `close`, `list`, `show`, `ready`
 (returns beads with no open blockers), `dep add`, `children`, `dolt commit`,
 `dolt push`, `dolt pull`.
+
+**Hooked status model:** Step beads (children of a parent work bead)
+carry their own status: `open` -> `in_progress` -> `hooked` / `completed`
+/ `failed`. A step enters `hooked` when it is parked waiting for an
+external condition (e.g., a design bead to be closed, human approval).
+The parent bead reflects `hooked` when any of its step beads are parked.
+The steward's hooked-step sweeper polls hooked step beads each cycle,
+checks whether the blocking condition has resolved, and re-summons the
+wizard when it has.
 
 ### Dolt Database
 
@@ -226,6 +235,17 @@ branch diff against the bead spec.
 - Verdicts: `approve`, `request_changes`
 - Revision rounds: if changes requested, wizard spawns a review-fix apprentice and re-reviews
 - Arbiter escalation: after max rounds, Claude Opus tie-break decides final action
+
+#### Cleric
+
+Recovery agent. Summoned when a wizard fails and a recovery bead is
+filed with failure evidence. Runs the `cleric-default` formula
+(`collect` -> `decide` -> `execute` -> `verify` -> `learn` -> `finish`),
+which inspects the failure, decides on a recovery action, executes it,
+and extracts learnings for future runs. The cleric can set a
+`RetryRequest` on the original bead, enabling cooperative recovery: the
+re-summoned wizard checks this at startup via `checkRetryRequest` and
+skips ahead to the requested step.
 
 #### Artificer
 
@@ -637,6 +657,7 @@ Managed via kustomize (`k8s/kustomization.yaml`):
 | Reviewer      | Sage       | Reviews code, returns verdict, one-shot         |
 | Formula maker | Artificer  | Creates and manages formulas (spells) via `spire workshop` |
 | Companion     | Familiar   | Per-agent companion (sidecar) for messaging and health |
+| Recovery agent | Cleric  | Healer/restorer — runs cleric-default formula on recovery beads |
 | Dispute resolver | Arbiter | Resolves disputes when sage and apprentice disagree |
 | Formula tool  | Workshop   | CLI tool for formula creation, testing, and publishing |
 | Database      | Archive    | Dolt database                                   |

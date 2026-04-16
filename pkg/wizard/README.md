@@ -45,6 +45,19 @@ Examples:
 - The wizard does not make that decision; it just implements, validates, and commits.
 - The executor may pass `--worktree-dir` for any mode (implement, review-fix, build-fix); the wizard resumes that workspace without owning its lifecycle.
 
+## Retry-from-step (cooperative recovery)
+
+When a cleric (recovery agent) sets a `RetryRequest` on a bead, the
+wizard checks it at startup via `checkRetryRequest` in
+`wizard_retry.go`. If a request is present, the wizard skips ahead to
+the requested step (via `shouldSkipTo`), executes it, and reports the
+outcome back to the recovery agent via `SetRetryResult`. This enables
+cooperative recovery without the cleric needing to drive the wizard's
+internal lifecycle.
+
+Multiple retry requests are deduplicated — only the latest (highest
+`AttemptNumber`) is honored. Stale requests are cleared automatically.
+
 ## Key entrypoints
 
 | Entry point | Purpose |
