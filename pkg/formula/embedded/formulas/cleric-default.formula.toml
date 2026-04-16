@@ -1,6 +1,7 @@
 # cleric-default.formula.toml — default agentic recovery lifecycle.
 #
-# collect_context → decide → execute → verify → learn → finish
+# collect_context → decide → execute → verify → retry (loop) → learn → finish
+# Retry loop: verify fail + decide.completed_count < max_retries → resets decide/execute/verify
 # Needs-human path: collect_context → decide → finish_needs_human
 
 name = "cleric-default"
@@ -26,6 +27,10 @@ required = true
 [vars.base_branch]
 description = "Base branch for any git operations"
 default = "main"
+
+[vars.max_retries]
+description = "Maximum recovery attempts before learning from failure"
+default = "4"
 
 # --- Steps ---
 
@@ -68,7 +73,21 @@ produces = ["verification_status"]
 [steps.verify.with]
 action = "verify"
 
-# Step 5: Claude-driven learning extraction.
+# Step 5a: Retry loop — verify fail + budget remaining → reset decide/execute/verify.
+[steps.retry]
+kind = "op"
+action = "noop"
+needs = ["verify"]
+title = "Retry recovery loop"
+resets = ["decide", "execute", "verify"]
+[steps.retry.when]
+all = [
+  { left = "steps.verify.outputs.verification_status", op = "eq", right = "fail" },
+  { left = "steps.decide.completed_count", op = "lt", right = "vars.max_retries" },
+]
+
+# Step 5b: Claude-driven learning extraction.
+# Fires on verify pass OR exhausted retries.
 [steps.learn]
 kind = "op"
 action = "cleric.learn"
@@ -76,6 +95,11 @@ needs = ["verify"]
 title = "Claude-driven learning extraction"
 [steps.learn.with]
 action = "learn"
+[steps.learn.when]
+any = [
+  { left = "steps.verify.outputs.verification_status", op = "eq", right = "pass" },
+  { left = "steps.decide.completed_count", op = "ge", right = "vars.max_retries" },
+]
 
 # Step 6a: Close recovery bead (happy path — after learning).
 [steps.finish]
