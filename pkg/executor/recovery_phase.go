@@ -17,6 +17,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/dolt"
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -438,24 +439,7 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 	}
 
 	// Derive the wizard name from the source bead to load its graph state.
-	// Pattern: check for agent: label on attempt beads, fall back to "wizard-<sourceBeadID>".
-	// Uses first-match: the first child with an agent: label wins.
-	wizardName := "wizard-" + req.SourceBeadID
-	if children, err := e.deps.GetChildren(req.SourceBeadID); err == nil {
-		found := false
-		for _, c := range children {
-			for _, l := range c.Labels {
-				if strings.HasPrefix(l, "agent:") {
-					wizardName = strings.TrimPrefix(l, "agent:")
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-	}
+	wizardName := resolveWizardName(req.SourceBeadID, e.deps)
 
 	// Load the source bead's graph state to find the worktree path.
 	var worktreeDir string
@@ -1328,6 +1312,18 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 
 	repoPath := e.effectiveRepoPath()
 
+	// Try to resume the wizard's staging worktree so recovery actions
+	// operate directly on the staging branch (no ephemeral recovery/<id>
+	// branch). Falls through to ProvisionRecoveryWorktree in RunRecoveryAction
+	// if graph state is unavailable.
+	var preResolvedWorktree *spgit.WorktreeContext
+	if wc, err := resumeWizardStagingWorktree(sourceBeadID, e); err == nil {
+		preResolvedWorktree = wc
+		e.log("resumed wizard staging worktree at %s (branch %s)", wc.Dir, wc.Branch)
+	} else {
+		e.log("cannot resume wizard staging worktree: %v; will fall back to recovery provisioning", err)
+	}
+
 	// Resolve Dolt DB handle for attempt tracking. Nil-safe: if DoltDB
 	// dep is not wired (local execution), attempt tracking is gracefully skipped.
 	var db *sql.DB
@@ -1338,6 +1334,7 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 	actionCtx := &RecoveryActionCtx{
 		DB:             db,
 		RepoPath:       repoPath,
+		Worktree:       preResolvedWorktree,
 		RecoveryBeadID: e.beadID,
 		TargetBeadID:   sourceBeadID,
 		Params:         params,
@@ -1548,6 +1545,81 @@ func actionClericVerify(e *Executor, stepName string, step StepConfig, state *Gr
 // ---------------------------------------------------------------------------
 // Helper functions for agentic recovery
 // ---------------------------------------------------------------------------
+
+// resolveWizardName derives the wizard agent name for a given source bead.
+// Checks children for an agent: label, falls back to "wizard-<sourceBeadID>".
+func resolveWizardName(sourceBeadID string, deps *Deps) string {
+	wizardName := "wizard-" + sourceBeadID
+	if deps == nil || deps.GetChildren == nil {
+		return wizardName
+	}
+	children, err := deps.GetChildren(sourceBeadID)
+	if err != nil {
+		return wizardName
+	}
+	for _, c := range children {
+		for _, l := range c.Labels {
+			if strings.HasPrefix(l, "agent:") {
+				return strings.TrimPrefix(l, "agent:")
+			}
+		}
+	}
+	return wizardName
+}
+
+// resumeWizardStagingWorktree resolves the wizard's staging worktree from graph
+// state and either resumes it (dir exists) or recreates it (dir gone, branch
+// exists). Returns an error if graph state is unavailable or has no staging info.
+func resumeWizardStagingWorktree(sourceBeadID string, e *Executor) (*spgit.WorktreeContext, error) {
+	wizardName := resolveWizardName(sourceBeadID, e.deps)
+	gs, err := LoadGraphState(wizardName, e.deps.ConfigDir)
+	if err != nil || gs == nil {
+		return nil, fmt.Errorf("no graph state for wizard %s: %w", wizardName, err)
+	}
+
+	// Extract staging worktree info. Prefer Workspaces["staging"] (v3 formulas),
+	// fall back to top-level WorktreeDir + StagingBranch (v2 compat).
+	var dir, branch, baseBranch, repoPath string
+	if ws, ok := gs.Workspaces["staging"]; ok && ws.Dir != "" {
+		dir = ws.Dir
+		branch = ws.Branch
+		baseBranch = ws.BaseBranch
+	}
+	if dir == "" {
+		dir = gs.WorktreeDir
+	}
+	if branch == "" {
+		branch = gs.StagingBranch
+	}
+	if baseBranch == "" {
+		baseBranch = gs.BaseBranch
+	}
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	repoPath = gs.RepoPath
+	if repoPath == "" {
+		repoPath = e.effectiveRepoPath()
+	}
+
+	if dir == "" {
+		return nil, fmt.Errorf("wizard %s graph state has no staging worktree dir", wizardName)
+	}
+	if branch == "" {
+		return nil, fmt.Errorf("wizard %s graph state has no staging branch", wizardName)
+	}
+
+	// If the worktree directory still exists on disk, resume it.
+	if _, statErr := os.Stat(dir); statErr == nil {
+		return spgit.ResumeWorktreeContext(dir, branch, baseBranch, repoPath,
+			func(msg string, args ...any) { e.log("cleric-worktree: "+msg, args...) })
+	}
+
+	// Directory gone — recreate worktree from the staging branch.
+	e.log("staging worktree %s gone; recreating from branch %s", dir, branch)
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch}
+	return rc.CreateWorktree(dir, branch)
+}
 
 // resolveSourceBead resolves the source bead ID from step params or bead metadata.
 func resolveSourceBead(e *Executor, step StepConfig) string {
