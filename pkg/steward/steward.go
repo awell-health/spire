@@ -82,6 +82,12 @@ var IsOwnedByInstanceFunc = store.IsOwnedByInstance
 // InstanceIDFunc is a test-replaceable function for config.InstanceID.
 var InstanceIDFunc = config.InstanceID
 
+// GetDependentsWithMetaFunc is a test-replaceable function for store.GetDependentsWithMeta.
+var GetDependentsWithMetaFunc = store.GetDependentsWithMeta
+
+// LoadRegistryFunc is a test-replaceable function for agent.LoadRegistry.
+var LoadRegistryFunc = agent.LoadRegistry
+
 // UpdateBeadFunc is a test-replaceable function for store.UpdateBead.
 var UpdateBeadFunc = store.UpdateBead
 
@@ -969,6 +975,123 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 		}
 
 		if !anyResolved {
+			// Failure-evidence path: check if this hooked bead has a recovery/alert
+			// bead linked via caused-by. If so, summon a cleric (or detect that the
+			// cleric already succeeded).
+			evidence, found := findFailureEvidence(parent.ID)
+			if !found {
+				continue // not a failure hook — nothing to do
+			}
+
+			// Check if the recovery bead is already closed (cleric finished).
+			recoveryBead, rbErr := GetBeadFunc(evidence.RecoveryBeadID)
+			if rbErr != nil {
+				log.Printf("[steward] hooked sweep: get recovery bead %s: %s", evidence.RecoveryBeadID, rbErr)
+				continue
+			}
+
+			if recoveryBead.Status == "closed" {
+				// Cleric finished. Check resolution: success → unhook + resummon,
+				// escalated → leave hooked for human attention.
+				outcome := recoveryBead.Meta("learning_outcome")
+				if outcome == "escalated" {
+					log.Printf("[steward] hooked sweep: recovery %s escalated for %s — leaving hooked for human", evidence.RecoveryBeadID, parent.ID)
+					continue
+				}
+
+				// Success path: unhook all hooked steps and resummon wizard.
+				log.Printf("[steward] hooked sweep: recovery %s succeeded for %s — unhooking and resuming", evidence.RecoveryBeadID, parent.ID)
+
+				if dryRun {
+					log.Printf("[steward] [dry-run] would unhook %s after cleric success and re-summon wizard", parent.ID)
+					resolvedBeadIDs[parent.ID] = true
+					resummoned++
+					continue
+				}
+
+				for _, stepBead := range hookedSteps {
+					if uhErr := UnhookStepBeadFunc(stepBead.ID); uhErr != nil {
+						log.Printf("[steward] hooked sweep: unhook step bead %s: %s", stepBead.ID, uhErr)
+					}
+					// Reset graph state step to pending.
+					stepName := store.StepBeadPhaseName(stepBead)
+					if gs != nil && stepName != "" {
+						if ss, ok := gs.Steps[stepName]; ok {
+							ss.Status = "pending"
+							ss.Outputs = nil
+							ss.StartedAt = ""
+							ss.CompletedAt = ""
+							gs.Steps[stepName] = ss
+						}
+					}
+				}
+				if gs != nil {
+					if err := graphStore.Save(agentName, gs); err != nil {
+						log.Printf("[steward] hooked sweep: save graph state for %s: %s", agentName, err)
+					}
+				}
+
+				// Set parent bead back to in_progress.
+				if err := UpdateBeadFunc(parent.ID, map[string]interface{}{
+					"status": "in_progress",
+				}); err != nil {
+					log.Printf("[steward] hooked sweep: set %s to in_progress: %s", parent.ID, err)
+				} else {
+					log.Printf("[steward] hooked sweep: %s no longer hooked, set to in_progress", parent.ID)
+				}
+
+				// Re-summon the wizard.
+				wizName := agentName
+				if wizName == "" {
+					wizName = "wizard-" + SanitizeK8sLabel(parent.ID)
+				}
+				handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+					Name:    wizName,
+					BeadID:  parent.ID,
+					Role:    agent.RoleApprentice,
+					Tower:   towerName,
+					LogPath: filepath.Join(dolt.GlobalDir(), "wizards", wizName+".log"),
+				})
+				if spawnErr != nil {
+					log.Printf("[steward] hooked sweep: spawn %s: %s", wizName, spawnErr)
+				} else if handle != nil {
+					log.Printf("[steward] hooked sweep: re-summoned %s for %s after cleric success (%s)", wizName, parent.ID, handle.Identifier())
+				}
+				resolvedBeadIDs[parent.ID] = true
+				resummoned++
+				continue
+			}
+
+			// Recovery bead is still open — check if a cleric is already running.
+			if isClericRunning(evidence.RecoveryBeadID) {
+				log.Printf("[steward] hooked sweep: cleric already running for recovery %s (source %s)", evidence.RecoveryBeadID, parent.ID)
+				continue
+			}
+
+			if dryRun {
+				log.Printf("[steward] [dry-run] would summon cleric for recovery %s (source %s)", evidence.RecoveryBeadID, parent.ID)
+				resummoned++
+				continue
+			}
+
+			// Summon a cleric for the recovery bead.
+			clericName := "cleric-" + SanitizeK8sLabel(evidence.RecoveryBeadID)
+			log.Printf("[steward] hooked sweep: summoning cleric %s for recovery %s (source %s)", clericName, evidence.RecoveryBeadID, parent.ID)
+
+			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+				Name:       clericName,
+				BeadID:     evidence.RecoveryBeadID,
+				Role:       agent.RoleExecutor,
+				Tower:      towerName,
+				InstanceID: localInstanceID,
+				LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", clericName+".log"),
+			})
+			if spawnErr != nil {
+				log.Printf("[steward] hooked sweep: spawn cleric %s: %s", clericName, spawnErr)
+			} else if handle != nil {
+				log.Printf("[steward] hooked sweep: summoned cleric %s for %s (%s)", clericName, evidence.RecoveryBeadID, handle.Identifier())
+			}
+			resummoned++
 			continue
 		}
 
@@ -1138,6 +1261,56 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 	}
 
 	return resummoned
+}
+
+// FailureEvidence holds the IDs of recovery and alert beads linked to a hooked parent
+// via caused-by dependencies.
+type FailureEvidence struct {
+	RecoveryBeadID string
+	AlertBeadIDs   []string
+}
+
+// findFailureEvidence queries dependents of a hooked bead for caused-by deps
+// pointing from recovery or alert beads. Returns the first non-closed recovery
+// bead found, plus any alert bead IDs.
+func findFailureEvidence(beadID string) (FailureEvidence, bool) {
+	dependents, err := GetDependentsWithMetaFunc(beadID)
+	if err != nil {
+		log.Printf("[steward] findFailureEvidence: get dependents for %s: %s", beadID, err)
+		return FailureEvidence{}, false
+	}
+
+	var evidence FailureEvidence
+	for _, dep := range dependents {
+		if string(dep.DependencyType) != "caused-by" {
+			continue
+		}
+		b, bErr := GetBeadFunc(dep.ID)
+		if bErr != nil {
+			continue
+		}
+		if b.Type == "recovery" {
+			if evidence.RecoveryBeadID == "" {
+				evidence.RecoveryBeadID = b.ID
+			}
+		} else if store.ContainsLabel(b, "alert:") || b.Type == "alert" {
+			evidence.AlertBeadIDs = append(evidence.AlertBeadIDs, b.ID)
+		}
+	}
+
+	return evidence, evidence.RecoveryBeadID != ""
+}
+
+// isClericRunning checks the agent registry for a live cleric targeting the given
+// recovery bead. Prevents double-summoning.
+func isClericRunning(recoveryBeadID string) bool {
+	reg := LoadRegistryFunc()
+	for _, w := range reg.Wizards {
+		if w.BeadID == recoveryBeadID {
+			return true
+		}
+	}
+	return false
 }
 
 // GetReviewBeads returns review-round child beads for a parent, sorted by round number.

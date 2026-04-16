@@ -1304,6 +1304,506 @@ func TestSweepHookedSteps_SkipsForeignOwnedAttempt_GraphStateFallback(t *testing
 	}
 }
 
+// --- Failure-evidence (cleric) sweep tests ---
+
+// stubFailureEvidenceHooks saves and restores all function vars used by the
+// failure-evidence path in SweepHookedSteps. Returns a cleanup function.
+func stubFailureEvidenceHooks(t *testing.T) func() {
+	t.Helper()
+	origList := ListBeadsFunc
+	origAttempt := GetActiveAttemptFunc
+	origOwned := IsOwnedByInstanceFunc
+	origInstance := InstanceIDFunc
+	origGetBead := GetBeadFunc
+	origGetComments := GetCommentsFunc
+	origHooked := GetHookedStepsFunc
+	origUnhook := UnhookStepBeadFunc
+	origUpdate := UpdateBeadFunc
+	origDependents := GetDependentsWithMetaFunc
+	origRegistry := LoadRegistryFunc
+
+	return func() {
+		ListBeadsFunc = origList
+		GetActiveAttemptFunc = origAttempt
+		IsOwnedByInstanceFunc = origOwned
+		InstanceIDFunc = origInstance
+		GetBeadFunc = origGetBead
+		GetCommentsFunc = origGetComments
+		GetHookedStepsFunc = origHooked
+		UnhookStepBeadFunc = origUnhook
+		UpdateBeadFunc = origUpdate
+		GetDependentsWithMetaFunc = origDependents
+		LoadRegistryFunc = origRegistry
+	}
+}
+
+func TestSweepHookedSteps_FailureEvidence_SummonsCleric(t *testing.T) {
+	// When a hooked bead has failure evidence (a recovery bead linked via
+	// caused-by) and no cleric is running, the sweep should summon a cleric.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	// Hooked parent bead returned by ListBeads.
+	hookedStatus := beads.Status("hooked")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && *filter.Status == hookedStatus {
+			return []store.Bead{
+				{ID: "spi-parent1", Status: "hooked", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	// Active attempt is locally owned.
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-parent1" {
+			return &store.Bead{ID: "spi-parent1.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) {
+		return true, nil
+	}
+	InstanceIDFunc = func() string { return "local-instance" }
+
+	// Hooked step bead with no design_ref (falls to approval path).
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-parent1" {
+			return []store.Bead{
+				{ID: "spi-parent1.step-impl", Status: "hooked", Labels: []string{"step:implement-failed"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	// Parent bead has needs-human label — approval check won't resolve.
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		switch id {
+		case "spi-parent1":
+			return store.Bead{
+				ID: "spi-parent1", Status: "hooked", Type: "task",
+				Labels: []string{"needs-human"},
+			}, nil
+		case "spi-recovery1":
+			return store.Bead{
+				ID: "spi-recovery1", Status: "open", Type: "recovery",
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+
+	// Recovery bead linked via caused-by.
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		if id == "spi-parent1" {
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-recovery1", IssueType: "recovery", Status: "open"},
+					DependencyType: "caused-by",
+				},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	// No cleric running.
+	LoadRegistryFunc = func() agent.Registry {
+		return agent.Registry{}
+	}
+
+	UnhookStepBeadFunc = func(id string) error { return nil }
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error { return nil }
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+
+	if count != 1 {
+		t.Errorf("SweepHookedSteps returned %d, want 1", count)
+	}
+
+	// Verify a cleric was spawned (not a wizard).
+	if len(backend.spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1", len(backend.spawns))
+	}
+	sc := backend.spawns[0]
+	if sc.Name != "cleric-spi-recovery1" {
+		t.Errorf("spawn name = %q, want cleric-spi-recovery1", sc.Name)
+	}
+	if sc.BeadID != "spi-recovery1" {
+		t.Errorf("spawn bead = %q, want spi-recovery1", sc.BeadID)
+	}
+	if sc.Role != agent.RoleExecutor {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleExecutor)
+	}
+}
+
+func TestSweepHookedSteps_FailureEvidence_ClericAlreadyRunning_Skips(t *testing.T) {
+	// When a cleric is already running for the recovery bead, skip summoning.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	hookedStatus := beads.Status("hooked")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && *filter.Status == hookedStatus {
+			return []store.Bead{
+				{ID: "spi-parent2", Status: "hooked", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-parent2" {
+			return &store.Bead{ID: "spi-parent2.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) {
+		return true, nil
+	}
+	InstanceIDFunc = func() string { return "local-instance" }
+
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-parent2" {
+			return []store.Bead{
+				{ID: "spi-parent2.step-impl", Status: "hooked", Labels: []string{"step:implement-failed"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		switch id {
+		case "spi-parent2":
+			return store.Bead{
+				ID: "spi-parent2", Status: "hooked", Type: "task",
+				Labels: []string{"needs-human"},
+			}, nil
+		case "spi-recovery2":
+			return store.Bead{
+				ID: "spi-recovery2", Status: "open", Type: "recovery",
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		if id == "spi-parent2" {
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-recovery2", IssueType: "recovery", Status: "open"},
+					DependencyType: "caused-by",
+				},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	// Cleric IS already running for this recovery bead.
+	LoadRegistryFunc = func() agent.Registry {
+		return agent.Registry{
+			Wizards: []agent.Entry{
+				{Name: "cleric-spi-recovery2", BeadID: "spi-recovery2"},
+			},
+		}
+	}
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0 (cleric already running)", count)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
+	}
+}
+
+func TestSweepHookedSteps_FailureEvidence_NoRecoveryBead_Skips(t *testing.T) {
+	// When a hooked bead has no failure evidence, the sweep should skip it.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	hookedStatus := beads.Status("hooked")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && *filter.Status == hookedStatus {
+			return []store.Bead{
+				{ID: "spi-parent3", Status: "hooked", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-parent3" {
+			return &store.Bead{ID: "spi-parent3.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) {
+		return true, nil
+	}
+	InstanceIDFunc = func() string { return "local-instance" }
+
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-parent3" {
+			return []store.Bead{
+				{ID: "spi-parent3.step-impl", Status: "hooked", Labels: []string{"step:implement"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	// Parent has needs-human (approval won't clear), and no dependents.
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		if id == "spi-parent3" {
+			return store.Bead{
+				ID: "spi-parent3", Status: "hooked", Type: "task",
+				Labels: []string{"needs-human"},
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+
+	// No dependents at all — no failure evidence.
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return nil, nil
+	}
+
+	LoadRegistryFunc = func() agent.Registry { return agent.Registry{} }
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0 (no failure evidence)", count)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
+	}
+}
+
+func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t *testing.T) {
+	// When the recovery bead is already closed (cleric succeeded), the sweep
+	// should unhook the step and re-summon the wizard.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	hookedStatus := beads.Status("hooked")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && *filter.Status == hookedStatus {
+			return []store.Bead{
+				{ID: "spi-parent4", Status: "hooked", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-parent4" {
+			return &store.Bead{ID: "spi-parent4.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) {
+		return true, nil
+	}
+	InstanceIDFunc = func() string { return "local-instance" }
+
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-parent4" {
+			return []store.Bead{
+				{ID: "spi-parent4.step-impl", Status: "hooked", Labels: []string{"step:implement-failed"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		switch id {
+		case "spi-parent4":
+			return store.Bead{
+				ID: "spi-parent4", Status: "hooked", Type: "task",
+				Labels: []string{"needs-human"},
+			}, nil
+		case "spi-recovery4":
+			return store.Bead{
+				ID: "spi-recovery4", Status: "closed", Type: "recovery",
+				Metadata: map[string]string{"learning_outcome": "clean"},
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		if id == "spi-parent4" {
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-recovery4", IssueType: "recovery", Status: "closed"},
+					DependencyType: "caused-by",
+				},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	LoadRegistryFunc = func() agent.Registry { return agent.Registry{} }
+
+	var unhooked []string
+	UnhookStepBeadFunc = func(id string) error {
+		unhooked = append(unhooked, id)
+		return nil
+	}
+
+	var updatedBeads []string
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error {
+		updatedBeads = append(updatedBeads, id)
+		return nil
+	}
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+
+	if count != 1 {
+		t.Errorf("SweepHookedSteps returned %d, want 1", count)
+	}
+
+	// Verify step was unhooked.
+	if len(unhooked) != 1 || unhooked[0] != "spi-parent4.step-impl" {
+		t.Errorf("unhooked = %v, want [spi-parent4.step-impl]", unhooked)
+	}
+
+	// Verify parent was set to in_progress.
+	if len(updatedBeads) != 1 || updatedBeads[0] != "spi-parent4" {
+		t.Errorf("updatedBeads = %v, want [spi-parent4]", updatedBeads)
+	}
+
+	// Verify a wizard (not cleric) was spawned for the parent bead.
+	if len(backend.spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1", len(backend.spawns))
+	}
+	sc := backend.spawns[0]
+	if sc.BeadID != "spi-parent4" {
+		t.Errorf("spawn bead = %q, want spi-parent4", sc.BeadID)
+	}
+	if sc.Role != agent.RoleApprentice {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleApprentice)
+	}
+}
+
+func TestSweepHookedSteps_FailureEvidence_ClericEscalated_StaysHooked(t *testing.T) {
+	// When the recovery bead is closed with escalation, the bead should stay
+	// hooked for human attention.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	hookedStatus := beads.Status("hooked")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && *filter.Status == hookedStatus {
+			return []store.Bead{
+				{ID: "spi-parent5", Status: "hooked", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-parent5" {
+			return &store.Bead{ID: "spi-parent5.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) {
+		return true, nil
+	}
+	InstanceIDFunc = func() string { return "local-instance" }
+
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-parent5" {
+			return []store.Bead{
+				{ID: "spi-parent5.step-impl", Status: "hooked", Labels: []string{"step:implement-failed"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		switch id {
+		case "spi-parent5":
+			return store.Bead{
+				ID: "spi-parent5", Status: "hooked", Type: "task",
+				Labels: []string{"needs-human"},
+			}, nil
+		case "spi-recovery5":
+			return store.Bead{
+				ID: "spi-recovery5", Status: "closed", Type: "recovery",
+				Metadata: map[string]string{"learning_outcome": "escalated"},
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		if id == "spi-parent5" {
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-recovery5", IssueType: "recovery", Status: "closed"},
+					DependencyType: "caused-by",
+				},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	LoadRegistryFunc = func() agent.Registry { return agent.Registry{} }
+	UnhookStepBeadFunc = func(id string) error { return nil }
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error { return nil }
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0 (escalated — stays hooked)", count)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
+	}
+}
+
 // --- Steward cycle integration tests (wave-0 modules) ---
 
 // mockBackend records Spawn calls and returns configurable agents from List.
