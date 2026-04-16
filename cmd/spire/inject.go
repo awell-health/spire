@@ -80,7 +80,7 @@ func cmdInject(epicID, taskID string) error {
 	}
 	_, _ = injectCreateBeadFunc(createOpts{
 		Title:  fmt.Sprintf("Injected %s: plan and dispatch", taskID),
-		Type:   "task",
+		Type:   "message",
 		Labels: []string{"msg", "to:" + wizardName, "from:" + identity, "ref:" + epicID},
 	})
 
