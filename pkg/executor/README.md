@@ -173,11 +173,37 @@ pending ──→ active ──→ completed     (normal)
                    ──→ skipped       (condition not met)
 ```
 
-A `hooked` step parks the graph — the interpreter exits gracefully, and the
-step bead's status is set to `hooked` in the store. Approval gates
-(`human.approve`) and step failures both use this mechanism. The difference
-is visible via linked beads: failures have alert/recovery beads, approval
-gates don't.
+**Dual-state model — graph state + store beads:**
+
+Step status exists in two places that the interpreter keeps in sync:
+
+1. **GraphState** (file/dolt) — the interpreter's working memory. Drives
+   the step-dispatch loop. Persisted after every step.
+2. **Step beads in the store** — the externally visible state. The board,
+   steward, CLI commands, and recovery agent all read step bead status
+   instead of parsing graph state files.
+
+The interpreter mirrors graph state transitions onto step beads via these
+store operations (defined in `pkg/store/beadtypes.go`):
+
+| Graph state transition | Store operation | Step bead status |
+|------------------------|-----------------|------------------|
+| pending → active | `ActivateStepBead` | `in_progress` |
+| active → hooked | `HookStepBead` | `hooked` |
+| hooked → active (resume) | `UnhookStepBead` then `ActivateStepBead` | `open` → `in_progress` |
+| active → completed | `CloseStepBead` | `closed` |
+
+When a step hooks, the interpreter also sets the **parent bead** status to
+`hooked` via `UpdateBead`. When a previously-hooked step resumes and no
+other steps remain hooked, the parent is restored to `in_progress`. This
+is how the board knows a bead is parked without scanning graph state files.
+
+**Hooked vs failed:** Both use `status=hooked` on the step bead. The
+difference is failure evidence: step failures create alert beads and
+recovery beads (linked via `caused-by`). Approval gates (`human.approve`)
+and design waits (`check.design-linked`) hook without creating failure
+artifacts. The recovery system uses this distinction — `Diagnose` requires
+failure evidence to treat a hooked bead as recoverable.
 
 **Lifecycle on escalation vs clean close:**
 
