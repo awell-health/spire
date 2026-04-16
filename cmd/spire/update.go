@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads"
 )
 
 // updateGetBeadFunc is a test-replaceable wrapper around storeGetBead.
@@ -24,6 +25,15 @@ var updateRemoveLabelFunc = storeRemoveLabel
 
 // updateIdentityFunc is a test-replaceable wrapper around detectIdentity.
 var updateIdentityFunc = func(asFlag string) (string, error) { return detectIdentity(asFlag) }
+
+// updateAddDepTypedFunc is a test-replaceable wrapper around storeAddDepTyped.
+var updateAddDepTypedFunc = storeAddDepTyped
+
+// updateRemoveDepFunc is a test-replaceable wrapper around storeRemoveDep.
+var updateRemoveDepFunc = storeRemoveDep
+
+// updateGetDepsWithMetaFunc is a test-replaceable wrapper around storeGetDepsWithMeta.
+var updateGetDepsWithMetaFunc = storeGetDepsWithMeta
 
 var updateCmd = &cobra.Command{
 	Use:   "update <bead-id> [flags]",
@@ -50,6 +60,7 @@ func init() {
 	updateCmd.Flags().Bool("defer", false, "Set status to deferred")
 	updateCmd.Flags().String("add-label", "", "Add a label")
 	updateCmd.Flags().String("remove-label", "", "Remove a label")
+	updateCmd.Flags().String("parent", "", "Set or change parent bead")
 }
 
 func cmdUpdate(cmd *cobra.Command, args []string) error {
@@ -131,6 +142,42 @@ func cmdUpdate(cmd *cobra.Command, args []string) error {
 		if err := updateRemoveLabelFunc(id, label); err != nil {
 			return fmt.Errorf("update %s: remove label: %w", id, err)
 		}
+	}
+
+	// Handle --parent: set or change the parent-child dep.
+	if cmd.Flags().Changed("parent") {
+		parentID, _ := cmd.Flags().GetString("parent")
+
+		// Reject self-parent.
+		if parentID == id {
+			return fmt.Errorf("update %s: cannot set a bead as its own parent", id)
+		}
+
+		// Validate the target parent exists.
+		if _, err := updateGetBeadFunc(parentID); err != nil {
+			return fmt.Errorf("update %s: parent bead %s not found: %w", id, parentID, err)
+		}
+
+		// Find and remove any existing parent-child dep.
+		deps, err := updateGetDepsWithMetaFunc(id)
+		if err != nil {
+			return fmt.Errorf("update %s: fetching deps: %w", id, err)
+		}
+		for _, dep := range deps {
+			if dep.DependencyType == beads.DepParentChild {
+				if err := updateRemoveDepFunc(id, dep.ID); err != nil {
+					return fmt.Errorf("update %s: removing old parent dep: %w", id, err)
+				}
+				break
+			}
+		}
+
+		// Add the new parent-child dep.
+		if err := updateAddDepTypedFunc(id, parentID, string(beads.DepParentChild)); err != nil {
+			return fmt.Errorf("update %s: adding parent dep: %w", id, err)
+		}
+
+		updates["parent"] = parentID
 	}
 
 	// Apply field updates if any.

@@ -179,6 +179,10 @@ func storeAddDepTyped(issueID, dependsOnID, depType string) error {
 	return store.AddDepTyped(issueID, dependsOnID, depType)
 }
 
+func storeRemoveDep(issueID, dependsOnID string) error {
+	return store.RemoveDep(issueID, dependsOnID)
+}
+
 func storeCloseBead(id string) error {
 	return store.CloseBead(id)
 }

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads"
 )
 
 // stubUpdateDeps replaces all store/identity funcs used by cmdUpdate with safe stubs.
@@ -16,12 +18,18 @@ func stubUpdateDeps(t *testing.T, bead Bead) func() {
 	origAddLabel := updateAddLabelFunc
 	origRemoveLabel := updateRemoveLabelFunc
 	origIdentity := updateIdentityFunc
+	origAddDepTyped := updateAddDepTypedFunc
+	origRemoveDep := updateRemoveDepFunc
+	origGetDepsWithMeta := updateGetDepsWithMetaFunc
 
 	updateGetBeadFunc = func(id string) (Bead, error) { return bead, nil }
 	updateUpdateBeadFunc = func(id string, updates map[string]interface{}) error { return nil }
 	updateAddLabelFunc = func(id, label string) error { return nil }
 	updateRemoveLabelFunc = func(id, label string) error { return nil }
 	updateIdentityFunc = func(asFlag string) (string, error) { return "wizard-test", nil }
+	updateAddDepTypedFunc = func(issueID, dependsOnID, depType string) error { return nil }
+	updateRemoveDepFunc = func(issueID, dependsOnID string) error { return nil }
+	updateGetDepsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) { return nil, nil }
 
 	return func() {
 		updateGetBeadFunc = origGetBead
@@ -29,6 +37,9 @@ func stubUpdateDeps(t *testing.T, bead Bead) func() {
 		updateAddLabelFunc = origAddLabel
 		updateRemoveLabelFunc = origRemoveLabel
 		updateIdentityFunc = origIdentity
+		updateAddDepTypedFunc = origAddDepTyped
+		updateRemoveDepFunc = origRemoveDep
+		updateGetDepsWithMetaFunc = origGetDepsWithMeta
 	}
 }
 
@@ -46,6 +57,7 @@ func executeUpdateCmd(args []string) error {
 	cmd.Flags().Bool("defer", false, "")
 	cmd.Flags().String("add-label", "", "")
 	cmd.Flags().String("remove-label", "", "")
+	cmd.Flags().String("parent", "", "")
 	cmd.SetArgs(args)
 	return cmd.Execute()
 }
@@ -221,5 +233,139 @@ func TestUpdate_RemoveLabel(t *testing.T) {
 	}
 	if capturedLabel != "old-tag" {
 		t.Errorf("expected label='old-tag', got %q", capturedLabel)
+	}
+}
+
+func TestUpdate_SetParent(t *testing.T) {
+	bead := Bead{ID: "spi-child", Title: "child task", Status: "open"}
+	cleanup := stubUpdateDeps(t, bead)
+	defer cleanup()
+
+	// getBead resolves both the child and the parent.
+	updateGetBeadFunc = func(id string) (Bead, error) {
+		switch id {
+		case "spi-child":
+			return bead, nil
+		case "spi-parent":
+			return Bead{ID: "spi-parent", Title: "parent epic", Status: "open"}, nil
+		}
+		return Bead{}, fmt.Errorf("not found")
+	}
+
+	// No existing deps — this is a fresh parent assignment.
+	updateGetDepsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return nil, nil
+	}
+
+	var addedDep struct{ issueID, dependsOnID, depType string }
+	updateAddDepTypedFunc = func(issueID, dependsOnID, depType string) error {
+		addedDep.issueID = issueID
+		addedDep.dependsOnID = dependsOnID
+		addedDep.depType = depType
+		return nil
+	}
+
+	removeCalled := false
+	updateRemoveDepFunc = func(issueID, dependsOnID string) error {
+		removeCalled = true
+		return nil
+	}
+
+	if err := executeUpdateCmd([]string{"spi-child", "--parent", "spi-parent"}); err != nil {
+		t.Fatalf("expected update to succeed, got: %v", err)
+	}
+
+	if addedDep.issueID != "spi-child" || addedDep.dependsOnID != "spi-parent" || addedDep.depType != string(beads.DepParentChild) {
+		t.Errorf("expected parent-child dep spi-child→spi-parent, got %+v", addedDep)
+	}
+	if removeCalled {
+		t.Error("expected no remove call when no existing parent")
+	}
+}
+
+func TestUpdate_ChangeParent(t *testing.T) {
+	bead := Bead{ID: "spi-child", Title: "child task", Status: "open"}
+	cleanup := stubUpdateDeps(t, bead)
+	defer cleanup()
+
+	updateGetBeadFunc = func(id string) (Bead, error) {
+		switch id {
+		case "spi-child":
+			return bead, nil
+		case "spi-new-parent":
+			return Bead{ID: "spi-new-parent", Title: "new parent", Status: "open"}, nil
+		}
+		return Bead{}, fmt.Errorf("not found")
+	}
+
+	// Existing parent-child dep to spi-old-parent.
+	updateGetDepsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return []*beads.IssueWithDependencyMetadata{
+			{
+				Issue:          beads.Issue{ID: "spi-old-parent"},
+				DependencyType: beads.DepParentChild,
+			},
+		}, nil
+	}
+
+	var removedDep struct{ issueID, dependsOnID string }
+	updateRemoveDepFunc = func(issueID, dependsOnID string) error {
+		removedDep.issueID = issueID
+		removedDep.dependsOnID = dependsOnID
+		return nil
+	}
+
+	var addedDep struct{ issueID, dependsOnID, depType string }
+	updateAddDepTypedFunc = func(issueID, dependsOnID, depType string) error {
+		addedDep.issueID = issueID
+		addedDep.dependsOnID = dependsOnID
+		addedDep.depType = depType
+		return nil
+	}
+
+	if err := executeUpdateCmd([]string{"spi-child", "--parent", "spi-new-parent"}); err != nil {
+		t.Fatalf("expected update to succeed, got: %v", err)
+	}
+
+	if removedDep.issueID != "spi-child" || removedDep.dependsOnID != "spi-old-parent" {
+		t.Errorf("expected old parent dep removed (spi-child, spi-old-parent), got %+v", removedDep)
+	}
+	if addedDep.issueID != "spi-child" || addedDep.dependsOnID != "spi-new-parent" || addedDep.depType != string(beads.DepParentChild) {
+		t.Errorf("expected new parent-child dep spi-child→spi-new-parent, got %+v", addedDep)
+	}
+}
+
+func TestUpdate_ParentNotFound(t *testing.T) {
+	bead := Bead{ID: "spi-child", Title: "child task", Status: "open"}
+	cleanup := stubUpdateDeps(t, bead)
+	defer cleanup()
+
+	updateGetBeadFunc = func(id string) (Bead, error) {
+		if id == "spi-child" {
+			return bead, nil
+		}
+		return Bead{}, fmt.Errorf("not found")
+	}
+
+	err := executeUpdateCmd([]string{"spi-child", "--parent", "spi-ghost"})
+	if err == nil {
+		t.Fatal("expected error for nonexistent parent, got nil")
+	}
+	if !strings.Contains(err.Error(), "parent bead spi-ghost not found") {
+		t.Errorf("expected 'parent bead not found' error, got: %v", err)
+	}
+}
+
+func TestUpdate_SelfParentRejected(t *testing.T) {
+	bead := Bead{ID: "spi-test", Title: "some task", Status: "open"}
+	cleanup := stubUpdateDeps(t, bead)
+	defer cleanup()
+
+	err := executeUpdateCmd([]string{"spi-test", "--parent", "spi-test"})
+	if err == nil {
+		t.Fatal("expected error for self-parent, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot set a bead as its own parent") {
+		t.Errorf("expected self-parent error, got: %v", err)
 	}
 }
