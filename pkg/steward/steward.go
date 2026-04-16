@@ -85,8 +85,15 @@ var InstanceIDFunc = config.InstanceID
 // GetDependentsWithMetaFunc is a test-replaceable function for store.GetDependentsWithMeta.
 var GetDependentsWithMetaFunc = store.GetDependentsWithMeta
 
-// LoadRegistryFunc is a test-replaceable function for agent.LoadRegistry.
-var LoadRegistryFunc = agent.LoadRegistry
+// CreateAttemptBeadAtomicFunc is a test-replaceable function for store.CreateAttemptBeadAtomic.
+// Used by the cleric summon path to claim recovery beads before spawning.
+var CreateAttemptBeadAtomicFunc = store.CreateAttemptBeadAtomic
+
+// StampAttemptInstanceFunc is a test-replaceable function for store.StampAttemptInstance.
+var StampAttemptInstanceFunc = store.StampAttemptInstance
+
+// InstanceNameFunc is a test-replaceable function for config.InstanceName.
+var InstanceNameFunc = config.InstanceName
 
 // UpdateBeadFunc is a test-replaceable function for store.UpdateBead.
 var UpdateBeadFunc = store.UpdateBead
@@ -664,11 +671,12 @@ func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string) {
 		reviewerName := "reviewer-" + SanitizeK8sLabel(b.ID)
 
 		handle, spawnErr := backend.Spawn(agent.SpawnConfig{
-			Name:    reviewerName,
-			BeadID:  b.ID,
-			Role:    agent.RoleSage,
-			Tower:   towerName,
-			LogPath: filepath.Join(dolt.GlobalDir(), "wizards", reviewerName+".log"),
+			Name:       reviewerName,
+			BeadID:     b.ID,
+			Role:       agent.RoleSage,
+			Tower:      towerName,
+			InstanceID: InstanceIDFunc(),
+			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", reviewerName+".log"),
 		})
 		if spawnErr != nil {
 			log.Printf("[steward] failed to spawn reviewer for %s: %v", b.ID, spawnErr)
@@ -1046,11 +1054,12 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 					wizName = "wizard-" + SanitizeK8sLabel(parent.ID)
 				}
 				handle, spawnErr := backend.Spawn(agent.SpawnConfig{
-					Name:    wizName,
-					BeadID:  parent.ID,
-					Role:    agent.RoleApprentice,
-					Tower:   towerName,
-					LogPath: filepath.Join(dolt.GlobalDir(), "wizards", wizName+".log"),
+					Name:       wizName,
+					BeadID:     parent.ID,
+					Role:       agent.RoleApprentice,
+					Tower:      towerName,
+					InstanceID: localInstanceID,
+					LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", wizName+".log"),
 				})
 				if spawnErr != nil {
 					log.Printf("[steward] hooked sweep: spawn %s: %s", wizName, spawnErr)
@@ -1062,11 +1071,8 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				continue
 			}
 
-			// Recovery bead is still open — check if a cleric is already running.
-			if isClericRunning(evidence.RecoveryBeadID) {
-				log.Printf("[steward] hooked sweep: cleric already running for recovery %s (source %s)", evidence.RecoveryBeadID, parent.ID)
-				continue
-			}
+			// Recovery bead is still open — claim it before spawning a cleric.
+			clericName := "cleric-" + SanitizeK8sLabel(evidence.RecoveryBeadID)
 
 			if dryRun {
 				log.Printf("[steward] [dry-run] would summon cleric for recovery %s (source %s)", evidence.RecoveryBeadID, parent.ID)
@@ -1074,8 +1080,35 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				continue
 			}
 
-			// Summon a cleric for the recovery bead.
-			clericName := "cleric-" + SanitizeK8sLabel(evidence.RecoveryBeadID)
+			// Claim the recovery bead atomically. CreateAttemptBeadAtomic
+			// rejects if another agent already has an active attempt,
+			// preventing double-summon across instances.
+			attemptID, claimErr := CreateAttemptBeadAtomicFunc(evidence.RecoveryBeadID, clericName, "", "")
+			if claimErr != nil {
+				log.Printf("[steward] hooked sweep: recovery %s already claimed: %s", evidence.RecoveryBeadID, claimErr)
+				continue
+			}
+
+			// Stamp instance ownership on the attempt bead.
+			now := time.Now().UTC().Format(time.RFC3339)
+			if stampErr := StampAttemptInstanceFunc(attemptID, store.InstanceMeta{
+				InstanceID:   localInstanceID,
+				InstanceName: InstanceNameFunc(),
+				Backend:      "process",
+				Tower:        towerName,
+				StartedAt:    now,
+				LastSeenAt:   now,
+			}); stampErr != nil {
+				log.Printf("[steward] hooked sweep: stamp instance on %s: %s", attemptID, stampErr)
+			}
+
+			// Set recovery bead to in_progress.
+			if upErr := UpdateBeadFunc(evidence.RecoveryBeadID, map[string]interface{}{
+				"status": "in_progress",
+			}); upErr != nil {
+				log.Printf("[steward] hooked sweep: set recovery %s to in_progress: %s", evidence.RecoveryBeadID, upErr)
+			}
+
 			log.Printf("[steward] hooked sweep: summoning cleric %s for recovery %s (source %s)", clericName, evidence.RecoveryBeadID, parent.ID)
 
 			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
@@ -1120,11 +1153,12 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			agentName = "wizard-" + SanitizeK8sLabel(parent.ID)
 		}
 		handle, spawnErr := backend.Spawn(agent.SpawnConfig{
-			Name:    agentName,
-			BeadID:  parent.ID,
-			Role:    agent.RoleApprentice,
-			Tower:   towerName,
-			LogPath: filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
+			Name:       agentName,
+			BeadID:     parent.ID,
+			Role:       agent.RoleApprentice,
+			Tower:      towerName,
+			InstanceID: localInstanceID,
+			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
 		})
 		if spawnErr != nil {
 			log.Printf("[steward] hooked sweep: spawn %s: %s", agentName, spawnErr)
@@ -1244,11 +1278,12 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 
 			// Re-summon wizard.
 			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
-				Name:    agentName,
-				BeadID:  gs.BeadID,
-				Role:    agent.RoleApprentice,
-				Tower:   towerName,
-				LogPath: filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
+				Name:       agentName,
+				BeadID:     gs.BeadID,
+				Role:       agent.RoleApprentice,
+				Tower:      towerName,
+				InstanceID: localInstanceID,
+				LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
 			})
 			if spawnErr != nil {
 				log.Printf("[steward] hooked sweep: spawn %s: %s", agentName, spawnErr)
@@ -1301,17 +1336,6 @@ func findFailureEvidence(beadID string) (FailureEvidence, bool) {
 	return evidence, evidence.RecoveryBeadID != ""
 }
 
-// isClericRunning checks the agent registry for a live cleric targeting the given
-// recovery bead. Prevents double-summoning.
-func isClericRunning(recoveryBeadID string) bool {
-	reg := LoadRegistryFunc()
-	for _, w := range reg.Wizards {
-		if w.BeadID == recoveryBeadID {
-			return true
-		}
-	}
-	return false
-}
 
 // GetReviewBeads returns review-round child beads for a parent, sorted by round number.
 // Uses the test-replaceable GetChildrenFunc so tests can inject fake children.

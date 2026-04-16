@@ -101,6 +101,11 @@ The `actionRegistry` maps opcode strings to handler functions:
 | `bead.finish`           | Close the bead (and orphan subtasks for epics), mark terminated. |
 | `noop`                  | Immediate success — used as terminal signals in nested graphs. |
 | `graph.run`             | Load and execute a nested sub-graph inline. |
+| `cleric.collect_context` | Gather diagnosis, learnings, wizard log tail, and `FullRecoveryContext`. |
+| `cleric.decide`         | Claude-driven action selection (with human guidance and git-state heuristics). |
+| `cleric.execute`        | Dispatch to git-aware or legacy recovery action, provision worktree if needed. |
+| `cleric.verify`         | Cooperative retry: set `RetryRequest` on source bead, poll for wizard result. |
+| `cleric.learn`          | Claude-driven learning extraction; writes to bead metadata + SQL table. |
 
 ### Formula-declared resets
 

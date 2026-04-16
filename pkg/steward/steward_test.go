@@ -1314,26 +1314,30 @@ func stubFailureEvidenceHooks(t *testing.T) func() {
 	origAttempt := GetActiveAttemptFunc
 	origOwned := IsOwnedByInstanceFunc
 	origInstance := InstanceIDFunc
+	origInstanceName := InstanceNameFunc
 	origGetBead := GetBeadFunc
 	origGetComments := GetCommentsFunc
 	origHooked := GetHookedStepsFunc
 	origUnhook := UnhookStepBeadFunc
 	origUpdate := UpdateBeadFunc
 	origDependents := GetDependentsWithMetaFunc
-	origRegistry := LoadRegistryFunc
+	origCreateAttempt := CreateAttemptBeadAtomicFunc
+	origStampAttempt := StampAttemptInstanceFunc
 
 	return func() {
 		ListBeadsFunc = origList
 		GetActiveAttemptFunc = origAttempt
 		IsOwnedByInstanceFunc = origOwned
 		InstanceIDFunc = origInstance
+		InstanceNameFunc = origInstanceName
 		GetBeadFunc = origGetBead
 		GetCommentsFunc = origGetComments
 		GetHookedStepsFunc = origHooked
 		UnhookStepBeadFunc = origUnhook
 		UpdateBeadFunc = origUpdate
 		GetDependentsWithMetaFunc = origDependents
-		LoadRegistryFunc = origRegistry
+		CreateAttemptBeadAtomicFunc = origCreateAttempt
+		StampAttemptInstanceFunc = origStampAttempt
 	}
 }
 
@@ -1411,10 +1415,14 @@ func TestSweepHookedSteps_FailureEvidence_SummonsCleric(t *testing.T) {
 		return nil, nil
 	}
 
-	// No cleric running.
-	LoadRegistryFunc = func() agent.Registry {
-		return agent.Registry{}
+	// Claim succeeds — no existing attempt on the recovery bead.
+	var claimedBeadID string
+	CreateAttemptBeadAtomicFunc = func(parentID, agentName, model, branch string) (string, error) {
+		claimedBeadID = parentID
+		return parentID + ".attempt-1", nil
 	}
+	StampAttemptInstanceFunc = func(attemptID string, meta store.InstanceMeta) error { return nil }
+	InstanceNameFunc = func() string { return "test-machine" }
 
 	UnhookStepBeadFunc = func(id string) error { return nil }
 	UpdateBeadFunc = func(id string, fields map[string]interface{}) error { return nil }
@@ -1425,6 +1433,11 @@ func TestSweepHookedSteps_FailureEvidence_SummonsCleric(t *testing.T) {
 
 	if count != 1 {
 		t.Errorf("SweepHookedSteps returned %d, want 1", count)
+	}
+
+	// Verify recovery bead was claimed.
+	if claimedBeadID != "spi-recovery1" {
+		t.Errorf("claimed bead = %q, want spi-recovery1", claimedBeadID)
 	}
 
 	// Verify a cleric was spawned (not a wizard).
@@ -1443,8 +1456,8 @@ func TestSweepHookedSteps_FailureEvidence_SummonsCleric(t *testing.T) {
 	}
 }
 
-func TestSweepHookedSteps_FailureEvidence_ClericAlreadyRunning_Skips(t *testing.T) {
-	// When a cleric is already running for the recovery bead, skip summoning.
+func TestSweepHookedSteps_FailureEvidence_AlreadyClaimed_Skips(t *testing.T) {
+	// When the recovery bead is already claimed (attempt exists), skip summoning.
 	cfgDir := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
 	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
@@ -1511,13 +1524,9 @@ func TestSweepHookedSteps_FailureEvidence_ClericAlreadyRunning_Skips(t *testing.
 		return nil, nil
 	}
 
-	// Cleric IS already running for this recovery bead.
-	LoadRegistryFunc = func() agent.Registry {
-		return agent.Registry{
-			Wizards: []agent.Entry{
-				{Name: "cleric-spi-recovery2", BeadID: "spi-recovery2"},
-			},
-		}
+	// Claim fails — another agent already has an active attempt.
+	CreateAttemptBeadAtomicFunc = func(parentID, agentName, model, branch string) (string, error) {
+		return "", fmt.Errorf("active attempt already exists (agent: cleric-spi-recovery2)")
 	}
 
 	backend := &spawnTrackingBackend{}
@@ -1525,7 +1534,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericAlreadyRunning_Skips(t *testing.
 	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
 
 	if count != 0 {
-		t.Errorf("SweepHookedSteps returned %d, want 0 (cleric already running)", count)
+		t.Errorf("SweepHookedSteps returned %d, want 0 (already claimed)", count)
 	}
 	if len(backend.spawns) != 0 {
 		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
@@ -1589,7 +1598,6 @@ func TestSweepHookedSteps_FailureEvidence_NoRecoveryBead_Skips(t *testing.T) {
 		return nil, nil
 	}
 
-	LoadRegistryFunc = func() agent.Registry { return agent.Registry{} }
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
@@ -1673,7 +1681,6 @@ func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t 
 		return nil, nil
 	}
 
-	LoadRegistryFunc = func() agent.Registry { return agent.Registry{} }
 
 	var unhooked []string
 	UnhookStepBeadFunc = func(id string) error {
@@ -1788,7 +1795,6 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_StaysHooked(t *testing
 		return nil, nil
 	}
 
-	LoadRegistryFunc = func() agent.Registry { return agent.Registry{} }
 	UnhookStepBeadFunc = func(id string) error { return nil }
 	UpdateBeadFunc = func(id string, fields map[string]interface{}) error { return nil }
 

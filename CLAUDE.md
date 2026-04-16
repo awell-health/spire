@@ -27,6 +27,7 @@ Current package READMEs exist in:
 - `pkg/steward/README.md`
 - `pkg/formula/README.md`
 - `pkg/workshop/README.md`
+- `pkg/recovery/README.md`
 
 ## Overview
 

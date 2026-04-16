@@ -22,6 +22,8 @@ multi-bead coordinator.
   tower-level maintenance work.
 - **Hooked-step sweeping**: queries step beads by `status=hooked`, checks
   whether the blocking condition has resolved, and re-summons the wizard.
+- **Cleric auto-summoning**: detects failure evidence on hooked beads and
+  summons clerics to recover them (see section below).
 - **Concurrency limiter**: per-tower `MaxConcurrent` enforcement — tracks
   active agents and gates spawning via `ConcurrencyLimiter`.
 - **Merge queue**: serializes merge operations to prevent git push contention
@@ -31,10 +33,47 @@ multi-bead coordinator.
   merges, demotes on reverts/failures.
 - **Backend-facing coordination**: local process dispatch vs managed backends.
 
-> **Target (not yet implemented):** The steward will auto-summon clerics
-> for recovery beads when failure evidence exists (interrupted label,
-> failed attempt history). Today, recovery beads are filed by the executor
-> on wizard failure and assigned through the normal ready-work cycle.
+## Cleric auto-summoning
+
+When a wizard fails, the executor files a recovery bead (type `recovery`)
+linked to the hooked parent via a `caused-by` dependency. The steward's
+hooked-step sweep detects this failure evidence and summons a cleric to
+investigate.
+
+### Flow
+
+1. `SweepHookedSteps` queries beads with `status=hooked`.
+2. For each hooked parent, `findFailureEvidence` looks for `caused-by`
+   dependents of type `recovery`.
+3. If the recovery bead is **closed**: check `learning_outcome` metadata.
+   - `"escalated"` — leave hooked for human attention.
+   - Anything else (success) — unhook steps, set parent to `in_progress`,
+     re-summon the wizard.
+4. If the recovery bead is **open**: summon a cleric via the claim-then-spawn
+   pattern (see below).
+
+### Claim-then-spawn pattern
+
+The steward uses the same atomic claim pattern as `spire claim`:
+
+1. `CreateAttemptBeadAtomic` — atomically creates an attempt bead on the
+   recovery bead. If another agent (on any instance) already claimed it,
+   this call rejects and the steward skips the summon.
+2. `StampAttemptInstance` — stamps instance ownership metadata on the attempt.
+3. `UpdateBead` — sets the recovery bead to `in_progress`.
+4. `backend.Spawn` — starts the cleric executor process.
+
+The spawned cleric executor calls `ensureGraphAttemptBead` on startup, finds
+the attempt bead created by the steward (matching agent name), and reuses it.
+
+This pattern is multi-local safe: two stewards on different machines will
+both attempt the atomic claim, but only one succeeds. The loser sees
+"active attempt already exists" and skips.
+
+**Do not use registry-based duplicate detection for spawn decisions.** The
+agent registry (`wizards.json`) is a local process tracker — it is not an
+ownership mechanism. Use attempt beads for ownership; they live in the shared
+store and are atomically created.
 
 ## What this package does NOT own
 
