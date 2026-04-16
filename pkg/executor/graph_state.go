@@ -34,6 +34,7 @@ type GraphState struct {
 	AttemptBeadID string            `json:"attempt_bead_id,omitempty"`
 	StepBeadIDs   map[string]string `json:"step_bead_ids,omitempty"`
 	WorktreeDir   string            `json:"worktree_dir,omitempty"`
+	InjectedTasks []string          `json:"injected_tasks,omitempty"`
 }
 
 // StepState tracks the status and outputs of a single graph step.

@@ -38,6 +38,7 @@ func init() {
 	rootCmd.AddCommand(stewardCmd)
 	rootCmd.AddCommand(summonCmd)
 	rootCmd.AddCommand(dismissCmd)
+	rootCmd.AddCommand(injectCmd)
 	rootCmd.AddCommand(resetCmd)
 	rootCmd.AddCommand(resummonCmd)
 	rootCmd.AddCommand(resolveCmd)
