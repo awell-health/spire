@@ -76,6 +76,7 @@ type Deps struct {
 	GetDependentsWithMeta func(id string) ([]*beads.IssueWithDependencyMetadata, error)
 	GetBlockedIssues      func(filter beads.WorkFilter) ([]BoardBead, error)
 	GetReviewBeads   func(parentID string) ([]Bead, error)
+	ListBeads        func(filter beads.IssueFilter) ([]Bead, error)
 
 	// Attempt operations
 	CreateAttemptBead      func(parentID, agentName, model, branch string) (string, error)

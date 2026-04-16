@@ -121,6 +121,7 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		GetDependentsWithMeta: storeGetDependentsWithMeta,
 		GetBlockedIssues:      storeGetBlockedIssues,
 		GetReviewBeads:   storeGetReviewBeads,
+		ListBeads:        storeListBeads,
 
 		// Attempt operations
 		CreateAttemptBead:      storeCreateAttemptBead,

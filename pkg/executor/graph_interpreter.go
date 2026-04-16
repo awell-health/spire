@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
 
 // RunGraph is the v3 graph interpreter. It walks the step graph, dispatching
@@ -112,6 +114,8 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			}
 			e.lastHeartbeat = time.Now()
 		}
+
+		e.collectMessages(state)
 
 		// 1. Build condition context from state.
 		ctx := e.buildConditionContext(state)
@@ -494,6 +498,47 @@ func (e *Executor) buildConditionContext(state *GraphState) map[string]string {
 	}
 
 	return ctx
+}
+
+// collectMessages queries open messages addressed to this wizard, stores them
+// in state.Vars["pending_messages"] as JSON, and closes consumed messages.
+func (e *Executor) collectMessages(state *GraphState) {
+	if e.deps.ListBeads == nil {
+		return
+	}
+
+	delete(state.Vars, "pending_messages")
+
+	messages, err := e.deps.ListBeads(beads.IssueFilter{
+		Labels: []string{"msg", "to:" + e.agentName},
+		Status: store.StatusPtr(beads.StatusOpen),
+	})
+	if err != nil {
+		e.log("warning: collect messages: %s", err)
+		return
+	}
+	if len(messages) == 0 {
+		return
+	}
+
+	type msgEntry struct {
+		ID   string `json:"id"`
+		From string `json:"from"`
+		Ref  string `json:"ref"`
+		Text string `json:"text"`
+	}
+	var entries []msgEntry
+	for _, m := range messages {
+		entry := msgEntry{ID: m.ID, Text: m.Title}
+		entry.From = e.deps.HasLabel(m, "from:")
+		entry.Ref = e.deps.HasLabel(m, "ref:")
+		entries = append(entries, entry)
+		if err := e.deps.CloseBead(m.ID); err != nil {
+			e.log("warning: close message %s: %s", m.ID, err)
+		}
+	}
+	data, _ := json.Marshal(entries)
+	state.Vars["pending_messages"] = string(data)
 }
 
 // completedStepsFromState converts GraphState.Steps to the map[string]bool
