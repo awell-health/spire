@@ -115,18 +115,14 @@ func TestCmdWizardReview_MissingBaseBranchOverride(t *testing.T) {
 		t.Fatalf("wizard baseBranch = %q, want %q", wizardBase, "hello-world-iteration-one")
 	}
 
-	// --- Sage path: does NOT apply the override (this is the bug) ---
-	// CmdWizardReview line 69 calls deps.ResolveRepo and uses baseBranch
-	// directly without calling findBaseBranchInParentChain.
+	// --- Sage path: must apply the same override after ResolveRepo ---
 	_, _, sageBase, _ := deps.ResolveRepo(testBead.ID)
-	// BUG: sageBase is "main" — should be "hello-world-iteration-one".
-	// The sage will diff against origin/main instead of origin/hello-world-iteration-one.
+	if bb := findBaseBranchInParentChain(testBead.ID, deps); bb != "" {
+		sageBase = bb
+	}
 
-	if sageBase == "main" {
-		t.Errorf("sage baseBranch = %q (repo default); "+
-			"should be %q (bead label override). "+
-			"CmdWizardReview does not call findBaseBranchInParentChain after ResolveRepo. "+
-			"The sage diffs against the wrong base when base-branch: label is set.",
+	if sageBase != "hello-world-iteration-one" {
+		t.Errorf("sage baseBranch = %q, want %q (bead label override)",
 			sageBase, "hello-world-iteration-one")
 	}
 }
@@ -160,12 +156,12 @@ func TestCmdWizardMerge_MissingBaseBranchOverride(t *testing.T) {
 	}
 
 	_, _, mergeBase, _ := deps.ResolveRepo(testBead.ID)
-	// BUG: mergeBase is "main" — should be "develop".
+	if bb := findBaseBranchInParentChain(testBead.ID, deps); bb != "" {
+		mergeBase = bb
+	}
 
-	if mergeBase == "main" {
-		t.Errorf("merge baseBranch = %q (repo default); "+
-			"should be %q (bead label override). "+
-			"CmdWizardMerge does not call findBaseBranchInParentChain after ResolveRepo.",
+	if mergeBase != "develop" {
+		t.Errorf("merge baseBranch = %q, want %q (bead label override)",
 			mergeBase, "develop")
 	}
 }

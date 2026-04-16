@@ -70,6 +70,9 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
+	if bb := findBaseBranchInParentChain(beadID, deps); bb != "" {
+		baseBranch = bb
+	}
 
 	// 2. Get bead and resolve branch from labels
 	bead, err := deps.GetBead(beadID)
@@ -732,6 +735,9 @@ Decision meanings:
 				fmt.Sprintf("arbiter merge: %s", err.Error()))
 			return nil
 		}
+		if bb := findBaseBranchInParentChain(beadID, deps); bb != "" {
+			baseBranch = bb
+		}
 		ReviewHandleApproval(beadID, reviewerName, branch, baseBranch, repoPath, deps, log)
 		return nil
 
@@ -784,6 +790,9 @@ func CmdWizardMerge(args []string, deps *Deps) error {
 	repoPath, _, baseBranch, err := deps.ResolveRepo(beadID)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
+	}
+	if bb := findBaseBranchInParentChain(beadID, deps); bb != "" {
+		baseBranch = bb
 	}
 	if branch == "" {
 		branch = deps.ResolveBranch(beadID, repoPath)
