@@ -3,12 +3,14 @@ package executor
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -116,6 +118,8 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		}
 
 		e.collectMessages(state)
+
+		e.dispatchInjectedTasks(state)
 
 		// 1. Build condition context from state.
 		ctx := e.buildConditionContext(state)
@@ -543,6 +547,93 @@ func (e *Executor) collectMessages(state *GraphState) {
 	}
 	data, _ := json.Marshal(entries)
 	state.Vars["pending_messages"] = string(data)
+}
+
+// dispatchInjectedTasks processes state.InjectedTasks by spawning an apprentice
+// for each task, merging its branch into staging, then clearing the queue.
+// Called in the RunGraph loop after collectMessages and before NextSteps.
+func (e *Executor) dispatchInjectedTasks(state *GraphState) {
+	if len(state.InjectedTasks) == 0 {
+		return
+	}
+
+	graphStore := e.graphStateStore()
+
+	stagingWt, err := e.ensureGraphStagingWorktree(state)
+	if err != nil {
+		e.log("warning: ensure staging for injection: %s — dispatching without merge", err)
+		stagingWt = nil
+	}
+
+	resolver := e.conflictResolver(0)
+	model := e.repoModel()
+
+	if state.Counters == nil {
+		state.Counters = make(map[string]int)
+	}
+
+	var remaining []string
+	for _, taskID := range state.InjectedTasks {
+		if b, berr := e.deps.GetBead(taskID); berr == nil && b.Status == "closed" {
+			e.log("injected task %s already closed, skipping", taskID)
+			continue
+		}
+
+		state.Counters["inject"]++
+		name := fmt.Sprintf("%s-inj-%d", e.agentName, state.Counters["inject"])
+
+		e.log("dispatching injected task %s as %s", taskID, name)
+		e.deps.UpdateBead(taskID, map[string]interface{}{"status": "in_progress"})
+
+		var startRef string
+		if stagingWt != nil {
+			if sha, serr := stagingWt.HeadSHA(); serr == nil && sha != "" {
+				startRef = sha
+			}
+		}
+
+		started := time.Now()
+		h, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+			Name:      name,
+			BeadID:    taskID,
+			Role:      agent.RoleApprentice,
+			ExtraArgs: []string{"--apprentice"},
+			StartRef:  startRef,
+			LogPath:   filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
+		})
+		if spawnErr != nil {
+			e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
+				withParentRun(e.currentRunID))
+			e.log("warning: spawn injected task %s: %s", taskID, spawnErr)
+			remaining = append(remaining, taskID)
+			continue
+		}
+
+		waitErr := h.Wait()
+		e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, waitErr,
+			withParentRun(e.currentRunID))
+
+		if waitErr != nil {
+			e.log("warning: injected task %s failed: %s", taskID, waitErr)
+			continue
+		}
+
+		if stagingWt != nil {
+			featBranch := e.resolveBranch(taskID)
+			if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
+				e.log("warning: merge injected task %s branch %s: %s", taskID, featBranch, mergeErr)
+				continue
+			}
+		}
+
+		e.log("injected task %s dispatched and merged", taskID)
+	}
+
+	state.InjectedTasks = nil
+	if len(remaining) > 0 {
+		state.InjectedTasks = remaining
+	}
+	graphStore.Save(e.agentName, state)
 }
 
 // completedStepsFromState converts GraphState.Steps to the map[string]bool

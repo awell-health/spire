@@ -7,6 +7,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -2645,5 +2646,230 @@ func TestCollectMessages(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- dispatchInjectedTasks tests ---
+
+func TestDispatchInjectedTasks_EmptyIsNoop(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	spawned := false
+	deps.Spawner = &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+		spawned = true
+		return &mockHandle{}, nil
+	}}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test",
+		Version: 3,
+		Steps:   map[string]formula.StepConfig{"a": {Action: "test.noop", Terminal: true}},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	state := exec.graphState
+	state.InjectedTasks = nil
+
+	exec.dispatchInjectedTasks(state)
+
+	if spawned {
+		t.Error("expected no spawn when InjectedTasks is empty")
+	}
+}
+
+func TestDispatchInjectedTasks_SpawnsAndClears(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var spawnedConfigs []agent.SpawnConfig
+	deps.Spawner = &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+		spawnedConfigs = append(spawnedConfigs, cfg)
+		return &mockHandle{}, nil
+	}}
+
+	var updatedBeads []string
+	deps.UpdateBead = func(id string, updates map[string]interface{}) error {
+		if s, ok := updates["status"]; ok && s == "in_progress" {
+			updatedBeads = append(updatedBeads, id)
+		}
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test",
+		Version: 3,
+		Steps:   map[string]formula.StepConfig{"a": {Action: "test.noop", Terminal: true}},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec.stagingWt = spgit.ResumeStagingWorktree(".", t.TempDir(), "staging/spi-test", "main", func(string, ...interface{}) {})
+	state := exec.graphState
+	state.RepoPath = "."
+	state.BaseBranch = "main"
+	state.StagingBranch = "staging/spi-test"
+	state.InjectedTasks = []string{"spi-aaa", "spi-bbb"}
+
+	exec.dispatchInjectedTasks(state)
+
+	if len(spawnedConfigs) != 2 {
+		t.Fatalf("expected 2 spawns, got %d", len(spawnedConfigs))
+	}
+	if spawnedConfigs[0].BeadID != "spi-aaa" {
+		t.Errorf("first spawn bead: got %q, want spi-aaa", spawnedConfigs[0].BeadID)
+	}
+	if spawnedConfigs[1].BeadID != "spi-bbb" {
+		t.Errorf("second spawn bead: got %q, want spi-bbb", spawnedConfigs[1].BeadID)
+	}
+	for _, cfg := range spawnedConfigs {
+		if cfg.Role != agent.RoleApprentice {
+			t.Errorf("spawn role: got %v, want apprentice", cfg.Role)
+		}
+	}
+
+	if len(updatedBeads) != 2 || updatedBeads[0] != "spi-aaa" || updatedBeads[1] != "spi-bbb" {
+		t.Errorf("expected bead status updates for [spi-aaa, spi-bbb], got %v", updatedBeads)
+	}
+
+	if state.InjectedTasks != nil {
+		t.Errorf("expected InjectedTasks to be nil after dispatch, got %v", state.InjectedTasks)
+	}
+
+	if state.Counters["inject"] != 2 {
+		t.Errorf("expected inject counter=2, got %d", state.Counters["inject"])
+	}
+}
+
+func TestDispatchInjectedTasks_FailedApprenticeDoesNotBlockOthers(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	callCount := 0
+	deps.Spawner = &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+		callCount++
+		if cfg.BeadID == "spi-fail" {
+			return &mockHandle{waitErr: fmt.Errorf("exit status 1")}, nil
+		}
+		return &mockHandle{}, nil
+	}}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test",
+		Version: 3,
+		Steps:   map[string]formula.StepConfig{"a": {Action: "test.noop", Terminal: true}},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec.stagingWt = spgit.ResumeStagingWorktree(".", t.TempDir(), "staging/spi-test", "main", func(string, ...interface{}) {})
+	state := exec.graphState
+	state.RepoPath = "."
+	state.BaseBranch = "main"
+	state.StagingBranch = "staging/spi-test"
+	state.InjectedTasks = []string{"spi-fail", "spi-ok"}
+
+	exec.dispatchInjectedTasks(state)
+
+	if callCount != 2 {
+		t.Errorf("expected 2 spawn calls (failed one should not block), got %d", callCount)
+	}
+
+	if state.InjectedTasks != nil {
+		t.Errorf("expected InjectedTasks cleared after dispatch, got %v", state.InjectedTasks)
+	}
+}
+
+func TestDispatchInjectedTasks_SkipsClosedBeads(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	deps.GetBead = func(id string) (Bead, error) {
+		if id == "spi-done" {
+			return Bead{ID: id, Status: "closed"}, nil
+		}
+		return Bead{ID: id, Status: "in_progress"}, nil
+	}
+
+	var spawnedIDs []string
+	deps.Spawner = &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+		spawnedIDs = append(spawnedIDs, cfg.BeadID)
+		return &mockHandle{}, nil
+	}}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test",
+		Version: 3,
+		Steps:   map[string]formula.StepConfig{"a": {Action: "test.noop", Terminal: true}},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec.stagingWt = spgit.ResumeStagingWorktree(".", t.TempDir(), "staging/spi-test", "main", func(string, ...interface{}) {})
+	state := exec.graphState
+	state.RepoPath = "."
+	state.BaseBranch = "main"
+	state.StagingBranch = "staging/spi-test"
+	state.InjectedTasks = []string{"spi-done", "spi-pending"}
+
+	exec.dispatchInjectedTasks(state)
+
+	if len(spawnedIDs) != 1 || spawnedIDs[0] != "spi-pending" {
+		t.Errorf("expected only spi-pending to be spawned, got %v", spawnedIDs)
+	}
+}
+
+func TestDispatchInjectedTasks_SpawnFailureRetainsTask(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	deps.Spawner = &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+		if cfg.BeadID == "spi-nospawn" {
+			return nil, fmt.Errorf("out of memory")
+		}
+		return &mockHandle{}, nil
+	}}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test",
+		Version: 3,
+		Steps:   map[string]formula.StepConfig{"a": {Action: "test.noop", Terminal: true}},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec.stagingWt = spgit.ResumeStagingWorktree(".", t.TempDir(), "staging/spi-test", "main", func(string, ...interface{}) {})
+	state := exec.graphState
+	state.RepoPath = "."
+	state.BaseBranch = "main"
+	state.StagingBranch = "staging/spi-test"
+	state.InjectedTasks = []string{"spi-nospawn", "spi-ok"}
+
+	exec.dispatchInjectedTasks(state)
+
+	if len(state.InjectedTasks) != 1 || state.InjectedTasks[0] != "spi-nospawn" {
+		t.Errorf("expected spi-nospawn retained in queue, got %v", state.InjectedTasks)
+	}
+}
+
+func TestDispatchInjectedTasks_CounterSurvivesRestart(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	var spawnNames []string
+	deps.Spawner = &mockBackend{spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+		spawnNames = append(spawnNames, cfg.Name)
+		return &mockHandle{}, nil
+	}}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test",
+		Version: 3,
+		Steps:   map[string]formula.StepConfig{"a": {Action: "test.noop", Terminal: true}},
+	}
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec.stagingWt = spgit.ResumeStagingWorktree(".", t.TempDir(), "staging/spi-test", "main", func(string, ...interface{}) {})
+	state := exec.graphState
+	state.RepoPath = "."
+	state.BaseBranch = "main"
+	state.StagingBranch = "staging/spi-test"
+	state.Counters["inject"] = 5
+	state.InjectedTasks = []string{"spi-next"}
+
+	exec.dispatchInjectedTasks(state)
+
+	if len(spawnNames) != 1 {
+		t.Fatalf("expected 1 spawn, got %d", len(spawnNames))
+	}
+	if spawnNames[0] != "wizard-test-inj-6" {
+		t.Errorf("expected name wizard-test-inj-6, got %q", spawnNames[0])
+	}
+	if state.Counters["inject"] != 6 {
+		t.Errorf("expected inject counter=6, got %d", state.Counters["inject"])
 	}
 }
