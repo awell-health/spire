@@ -64,6 +64,112 @@ func TestParseReviewOutput_Approve(t *testing.T) {
 	}
 }
 
+// TestCmdWizardReview_MissingBaseBranchOverride documents a bug where the sage
+// review resolves baseBranch from ResolveRepo (repo default) but does NOT apply
+// the bead-level base-branch: label override. The wizard (implement/fix) path
+// applies this override via findBaseBranchInParentChain, so the sage diffs
+// against a different base than the wizard worked on.
+//
+// Symptom: when a bead has base-branch:hello-world-iteration-one, the wizard
+// implements on that branch, but the sage diffs against origin/main. The review
+// includes changes from the base branch the wizard didn't write, the fix wizard
+// gets nonsensical feedback, and exits with zero changes.
+//
+// Bug: spi-ybcpe
+func TestCmdWizardReview_MissingBaseBranchOverride(t *testing.T) {
+	// Simulate the Deps the sage and wizard both use.
+	testBead := Bead{
+		ID:     "oo-1z2",
+		Status: "in_progress",
+		Title:  "Consolidate type system",
+		Labels: []string{"base-branch:hello-world-iteration-one", "feat-branch:feat/oo-1z2"},
+	}
+
+	deps := &Deps{
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return "/tmp/open-orchestration", "git@github.com:example/oo.git", "main", nil
+		},
+		GetBead: func(id string) (Bead, error) {
+			if id == testBead.ID {
+				return testBead, nil
+			}
+			return Bead{}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string {
+			for _, l := range b.Labels {
+				if len(l) > len(prefix) && l[:len(prefix)] == prefix {
+					return l[len(prefix):]
+				}
+			}
+			return ""
+		},
+	}
+
+	// --- Wizard path: applies the override ---
+	_, _, wizardBase, _ := deps.ResolveRepo(testBead.ID)
+	if bb := findBaseBranchInParentChain(testBead.ID, deps); bb != "" {
+		wizardBase = bb
+	}
+
+	if wizardBase != "hello-world-iteration-one" {
+		t.Fatalf("wizard baseBranch = %q, want %q", wizardBase, "hello-world-iteration-one")
+	}
+
+	// --- Sage path: does NOT apply the override (this is the bug) ---
+	// CmdWizardReview line 69 calls deps.ResolveRepo and uses baseBranch
+	// directly without calling findBaseBranchInParentChain.
+	_, _, sageBase, _ := deps.ResolveRepo(testBead.ID)
+	// BUG: sageBase is "main" — should be "hello-world-iteration-one".
+	// The sage will diff against origin/main instead of origin/hello-world-iteration-one.
+
+	if sageBase == "main" {
+		t.Errorf("sage baseBranch = %q (repo default); "+
+			"should be %q (bead label override). "+
+			"CmdWizardReview does not call findBaseBranchInParentChain after ResolveRepo. "+
+			"The sage diffs against the wrong base when base-branch: label is set.",
+			sageBase, "hello-world-iteration-one")
+	}
+}
+
+// TestCmdWizardMerge_MissingBaseBranchOverride documents the same bug in the
+// merge entry point. CmdWizardMerge (line 784) resolves baseBranch from
+// ResolveRepo without applying the base-branch: label override, so it would
+// attempt to merge into the wrong branch.
+func TestCmdWizardMerge_MissingBaseBranchOverride(t *testing.T) {
+	testBead := Bead{
+		ID:     "oo-abc",
+		Status: "in_progress",
+		Labels: []string{"base-branch:develop", "feat-branch:feat/oo-abc", "review-approved"},
+	}
+
+	deps := &Deps{
+		ResolveRepo: func(beadID string) (string, string, string, error) {
+			return "/tmp/repo", "", "main", nil
+		},
+		GetBead: func(id string) (Bead, error) {
+			return testBead, nil
+		},
+		HasLabel: func(b Bead, prefix string) string {
+			for _, l := range b.Labels {
+				if len(l) > len(prefix) && l[:len(prefix)] == prefix {
+					return l[len(prefix):]
+				}
+			}
+			return ""
+		},
+	}
+
+	_, _, mergeBase, _ := deps.ResolveRepo(testBead.ID)
+	// BUG: mergeBase is "main" — should be "develop".
+
+	if mergeBase == "main" {
+		t.Errorf("merge baseBranch = %q (repo default); "+
+			"should be %q (bead label override). "+
+			"CmdWizardMerge does not call findBaseBranchInParentChain after ResolveRepo.",
+			mergeBase, "develop")
+	}
+}
+
 // TestParseReviewOutput_RequestChanges verifies request_changes parsing.
 func TestParseReviewOutput_RequestChanges(t *testing.T) {
 	input := `{"verdict": "request_changes", "summary": "Missing tests", "issues": [{"file": "main.go", "line": 42, "severity": "error", "message": "no tests"}]}`
