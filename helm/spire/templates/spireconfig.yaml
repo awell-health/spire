@@ -8,18 +8,18 @@ metadata:
 spec:
   dolthub:
     remote: {{ .Values.dolthub.remote | quote }}
-    credentialsSecret: spire-credentials
+    credentialsSecret: {{ include "spire.secretName" . }}
   polling:
     interval: {{ .Values.spireConfig.polling.interval | quote }}
     staleThreshold: {{ .Values.spireConfig.polling.staleThreshold | quote }}
     reassignThreshold: {{ .Values.spireConfig.polling.reassignThreshold | quote }}
   tokens:
     default:
-      secret: spire-credentials
+      secret: {{ include "spire.secretName" . }}
       key: ANTHROPIC_API_KEY_DEFAULT
   defaultToken: {{ .Values.spireConfig.defaultToken | quote }}
   {{- if .Values.linear.apiKey }}
   linear:
-    apiKeySecret: spire-credentials
+    apiKeySecret: {{ include "spire.secretName" . }}
     apiKeyKey: LINEAR_API_KEY
   {{- end }}

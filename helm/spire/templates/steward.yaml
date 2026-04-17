@@ -47,7 +47,7 @@ spec:
             - name: DOLT_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: DOLT_PORT
-              value: "3306"
+              value: {{ .Values.dolt.port | quote }}
             - name: BEADS_DATABASE
               value: {{ .Values.beads.database | default .Values.beads.prefix | quote }}
             - name: BEADS_PREFIX
@@ -67,11 +67,11 @@ spec:
             - name: DOLT_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: DOLT_PORT
-              value: "3306"
+              value: {{ .Values.dolt.port | quote }}
             - name: BEADS_DOLT_SERVER_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: BEADS_DOLT_SERVER_PORT
-              value: "3306"
+              value: {{ .Values.dolt.port | quote }}
             - name: STEWARD_INTERVAL
               value: {{ .Values.steward.interval | quote }}
             - name: STEWARD_BACKEND
@@ -126,15 +126,15 @@ spec:
             - name: DOLT_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: DOLT_PORT
-              value: "3306"
+              value: {{ .Values.dolt.port | quote }}
             - name: BEADS_DOLT_SERVER_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: BEADS_DOLT_SERVER_PORT
-              value: "3306"
+              value: {{ .Values.dolt.port | quote }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: spire-credentials
+                  name: {{ include "spire.secretName" . }}
                   key: ANTHROPIC_API_KEY_DEFAULT
                   optional: true
           resources:

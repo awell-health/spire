@@ -84,7 +84,26 @@ github:
 linear:
   apiKey: ""
 
-## @param existingSecret If set, the chart will NOT render spire-credentials and will instead reference an externally-created Secret with this name. Useful for prod installs where secrets are managed outside helm (sealed-secrets, external-secrets-operator, vault-injector, etc.). The external secret must contain the same keys the chart would render.
+# -- Additional credentials not covered above. Rendered into the same
+# secret as the top-level credential blocks. Keep empty if unused.
+credentials:
+  # Codex provider API key. Distinct env var from OPENAI_API_KEY so
+  # callers can route codex traffic through a separate key without
+  # reconfiguring the openai provider.
+  codex:
+    apiKey: ""
+  # OAuth client credentials for integrations that register their own
+  # OAuth app (as opposed to using Spire's shared client).
+  oauth:
+    linear:
+      clientId: ""
+      clientSecret: ""
+
+# -- If set, the chart will NOT render spire-credentials and will instead
+# reference an externally-created Secret with this name. Useful for prod
+# installs where secrets are managed outside helm (sealed-secrets,
+# external-secrets-operator, vault-injector, etc.). The external secret
+# must contain the same keys the chart would render.
 existingSecret: ""
 
 ## @section Bead / tenant configuration
@@ -153,6 +172,10 @@ operator:
 ## @param dolt.storage.size Size of the PVC backing the dolt StatefulSet.
 ## @param dolt.storage.storageClass StorageClass for the dolt PVC. Leave empty to use the cluster default.
 dolt:
+  # Port the dolt SQL server listens on inside the pod. The service
+  # exposes the same port. Kept separate from any host-side tooling
+  # port so the chart can be tuned without touching client config.
+  port: 3306
   resources:
     requests:
       cpu: 100m

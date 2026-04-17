@@ -27,15 +27,15 @@ spec:
                 - name: DOLT_HOST
                   value: "spire-dolt.{{ .Values.namespace }}.svc"
                 - name: DOLT_PORT
-                  value: "3306"
+                  value: {{ .Values.dolt.port | quote }}
                 - name: DOLT_REMOTE_USER
                   valueFrom:
                     secretKeyRef:
-                      name: spire-credentials
+                      name: {{ include "spire.secretName" . }}
                       key: DOLT_REMOTE_USER
                 - name: DOLT_REMOTE_PASSWORD
                   valueFrom:
                     secretKeyRef:
-                      name: spire-credentials
+                      name: {{ include "spire.secretName" . }}
                       key: DOLT_REMOTE_PASSWORD
 {{- end }}

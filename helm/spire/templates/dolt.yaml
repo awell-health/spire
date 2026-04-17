@@ -30,12 +30,12 @@ spec:
             - name: DOLT_REMOTE_USER
               valueFrom:
                 secretKeyRef:
-                  name: spire-credentials
+                  name: {{ include "spire.secretName" . }}
                   key: DOLT_REMOTE_USER
             - name: DOLT_REMOTE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: spire-credentials
+                  name: {{ include "spire.secretName" . }}
                   key: DOLT_REMOTE_PASSWORD
             {{- if .Values.dolthub.keyId }}
             - name: DOLT_CREDS_KEY_ID
@@ -58,7 +58,7 @@ spec:
           image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
           imagePullPolicy: {{ .Values.images.dolt.pullPolicy }}
           ports:
-            - containerPort: 3306
+            - containerPort: {{ .Values.dolt.port }}
               name: mysql
           env:
             - name: DOLT_ROOT_PATH
@@ -68,12 +68,12 @@ spec:
             - name: DOLT_REMOTE_USER
               valueFrom:
                 secretKeyRef:
-                  name: spire-credentials
+                  name: {{ include "spire.secretName" . }}
                   key: DOLT_REMOTE_USER
             - name: DOLT_REMOTE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: spire-credentials
+                  name: {{ include "spire.secretName" . }}
                   key: DOLT_REMOTE_PASSWORD
             {{- if .Values.dolthub.keyId }}
             - name: DOLT_CREDS_KEY_ID
@@ -101,12 +101,12 @@ spec:
               memory: {{ .Values.dolt.resources.limits.memory }}
           readinessProbe:
             tcpSocket:
-              port: 3306
+              port: {{ .Values.dolt.port }}
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             tcpSocket:
-              port: 3306
+              port: {{ .Values.dolt.port }}
             initialDelaySeconds: 15
             periodSeconds: 30
       volumes:
@@ -152,8 +152,8 @@ spec:
   selector:
     app.kubernetes.io/name: spire-dolt
   ports:
-    - port: 3306
-      targetPort: 3306
+    - port: {{ .Values.dolt.port }}
+      targetPort: {{ .Values.dolt.port }}
       name: mysql
   clusterIP: None
 ---
@@ -176,7 +176,7 @@ data:
     allow_cleartext_passwords: true
     listener:
       host: "0.0.0.0"
-      port: 3306
+      port: {{ .Values.dolt.port }}
       max_connections: 100
       read_timeout_millis: 28800000
       write_timeout_millis: 28800000
