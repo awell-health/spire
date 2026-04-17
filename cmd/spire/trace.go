@@ -311,18 +311,21 @@ func buildTrace(beadID string) (*traceData, error) {
 
 	// OTel data: spans (waterfall), tool breakdown, API stats.
 	if tc, err := config.ActiveTowerConfig(); err == nil {
-		if adb, err := olap.Open(tc.OLAPPath()); err == nil {
-			defer adb.Close()
-			// Spans for waterfall view (from traces pipeline).
-			if spans, err := adb.QueryToolSpansByBead(beadID); err == nil && len(spans) > 0 {
+		store, err := olap.OpenBackend(olap.Config{
+			Backend: os.Getenv("SPIRE_OLAP_BACKEND"),
+			Path:    tc.OLAPPath(),
+			DSN:     os.Getenv("SPIRE_CLICKHOUSE_DSN"),
+		})
+		if err == nil {
+			defer store.Close()
+			var reader olap.TraceReader = store
+			if spans, err := reader.QueryToolSpansByBead(beadID); err == nil && len(spans) > 0 {
 				td.Spans = spans
 			}
-			// Tool breakdown from logs pipeline.
-			if steps, err := adb.QueryToolEventsByStep(beadID); err == nil && len(steps) > 0 {
+			if steps, err := reader.QueryToolEventsByStep(beadID); err == nil && len(steps) > 0 {
 				td.ToolBreakdown = steps
 			}
-			// API stats from logs pipeline.
-			if apiStats, err := adb.QueryAPIEventsByBead(beadID); err == nil && len(apiStats) > 0 {
+			if apiStats, err := reader.QueryAPIEventsByBead(beadID); err == nil && len(apiStats) > 0 {
 				td.APIStats = apiStats
 			}
 		}

@@ -1,4 +1,6 @@
-package olap
+//go:build cgo
+
+package duckdb
 
 import (
 	"context"
