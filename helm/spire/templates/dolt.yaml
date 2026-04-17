@@ -37,11 +37,22 @@ spec:
                 secretKeyRef:
                   name: spire-credentials
                   key: DOLT_REMOTE_PASSWORD
+            {{- if .Values.dolthub.keyId }}
+            - name: DOLT_CREDS_KEY_ID
+              value: {{ .Values.dolthub.keyId | quote }}
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/dolt
             - name: init-scripts
               mountPath: /scripts
+            {{- if .Values.dolthub.credsSecretName }}
+            # Must match where dolt looks: $DOLT_ROOT_PATH/.dolt/creds
+            # (dolt redirects ~/.dolt to $DOLT_ROOT_PATH/.dolt when set).
+            - name: dolt-creds
+              mountPath: /var/lib/dolt/.dolt/creds
+              readOnly: true
+            {{- end }}
       containers:
         - name: dolt
           image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
@@ -64,12 +75,23 @@ spec:
                 secretKeyRef:
                   name: spire-credentials
                   key: DOLT_REMOTE_PASSWORD
+            {{- if .Values.dolthub.keyId }}
+            - name: DOLT_CREDS_KEY_ID
+              value: {{ .Values.dolthub.keyId | quote }}
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/dolt
             - name: dolt-config
               mountPath: /var/lib/dolt/config.yaml
               subPath: config.yaml
+            {{- if .Values.dolthub.credsSecretName }}
+            # Must match where dolt looks: $DOLT_ROOT_PATH/.dolt/creds
+            # (dolt redirects ~/.dolt to $DOLT_ROOT_PATH/.dolt when set).
+            - name: dolt-creds
+              mountPath: /var/lib/dolt/.dolt/creds
+              readOnly: true
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.dolt.resources.requests.cpu }}
@@ -95,6 +117,12 @@ spec:
           configMap:
             name: dolt-init
             defaultMode: 0755
+        {{- if .Values.dolthub.credsSecretName }}
+        - name: dolt-creds
+          secret:
+            secretName: {{ .Values.dolthub.credsSecretName }}
+            defaultMode: 0400
+        {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -168,6 +196,9 @@ data:
 
     dolt config --global --set user.name "spire-dolt"
     dolt config --global --set user.email "dolt@spire.local"
+    if [ -n "$DOLT_CREDS_KEY_ID" ]; then
+      dolt config --global --set user.creds "$DOLT_CREDS_KEY_ID"
+    fi
 
     if [ ! -d "$DB_DIR/.dolt" ]; then
       echo "[dolt-init] first boot — cloning from DoltHub..."

@@ -28,9 +28,19 @@ images:
 dolthub:
   # DoltHub remote path (e.g. "your-org/your-tower")
   remote: ""
-  # Credentials — set via --set or a separate secret
+  # DoltHub user — kept for completeness, but HTTPS clone/pull/push
+  # authenticates via the JWK file below, not user/password.
   user: ""
   password: ""
+  # Name of an externally-created k8s Secret with one or more .jwk
+  # credential files from your local `~/.dolt/creds/`. Required for
+  # DoltHub clone/pull/push — env-var auth is not sufficient. Create with:
+  #   kubectl -n <ns> create secret generic dolt-creds \
+  #     --from-file=<keyid>.jwk=$HOME/.dolt/creds/<keyid>.jwk
+  credsSecretName: ""
+  # DOLT_CREDS_KEY_ID: filename (without .jwk) of the key to use from
+  # credsSecretName. Must exactly match a file in that Secret.
+  keyId: ""
 
 # -- Anthropic credentials. Provide ONE of apiKey or oauthToken.
 # oauthToken is from `claude setup-token` on a Max/Team subscription
