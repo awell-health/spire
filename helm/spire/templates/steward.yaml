@@ -78,6 +78,10 @@ spec:
               value: {{ .Values.steward.backend | quote }}
             - name: STEWARD_METRICS_PORT
               value: {{ .Values.steward.metricsPort | quote }}
+            # Required for STEWARD_BACKEND=k8s — the agent pod image the
+            # operator spawns when a wizard is needed.
+            - name: SPIRE_AGENT_IMAGE
+              value: "{{ .Values.images.agent.repository }}:{{ .Values.images.agent.tag }}"
           ports:
             - name: metrics
               containerPort: {{ .Values.steward.metricsPort }}
