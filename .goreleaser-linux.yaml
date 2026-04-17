@@ -43,7 +43,7 @@ dockers:
     goarch: amd64
     ids: [spire]
     image_templates:
-      - "ghcr.io/awell-health/spire-steward:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-steward:{{ .Version }}-amd64"
       - "ghcr.io/awell-health/spire-steward:latest-amd64"
     dockerfile: Dockerfile.steward
     use: buildx
@@ -58,7 +58,7 @@ dockers:
     goarch: arm64
     ids: [spire]
     image_templates:
-      - "ghcr.io/awell-health/spire-steward:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-steward:{{ .Version }}-arm64"
       - "ghcr.io/awell-health/spire-steward:latest-arm64"
     dockerfile: Dockerfile.steward
     use: buildx
@@ -74,7 +74,7 @@ dockers:
     goarch: amd64
     ids: [spire]
     image_templates:
-      - "ghcr.io/awell-health/spire-agent:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-agent:{{ .Version }}-amd64"
       - "ghcr.io/awell-health/spire-agent:latest-amd64"
     dockerfile: Dockerfile.agent
     use: buildx
@@ -89,7 +89,7 @@ dockers:
     goarch: arm64
     ids: [spire]
     image_templates:
-      - "ghcr.io/awell-health/spire-agent:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-agent:{{ .Version }}-arm64"
       - "ghcr.io/awell-health/spire-agent:latest-arm64"
     dockerfile: Dockerfile.agent
     use: buildx
@@ -105,7 +105,7 @@ dockers:
     goarch: amd64
     ids: [spire]
     image_templates:
-      - "ghcr.io/awell-health/spire-builder:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-builder:{{ .Version }}-amd64"
       - "ghcr.io/awell-health/spire-builder:latest-amd64"
     dockerfile: Dockerfile.builder
     use: buildx
@@ -120,7 +120,7 @@ dockers:
     goarch: arm64
     ids: [spire]
     image_templates:
-      - "ghcr.io/awell-health/spire-builder:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-builder:{{ .Version }}-arm64"
       - "ghcr.io/awell-health/spire-builder:latest-arm64"
     dockerfile: Dockerfile.builder
     use: buildx
@@ -132,30 +132,30 @@ dockers:
 
 docker_manifests:
   # steward
-  - name_template: "ghcr.io/awell-health/spire-steward:{{ .Tag }}"
+  - name_template: "ghcr.io/awell-health/spire-steward:{{ .Version }}"
     image_templates:
-      - "ghcr.io/awell-health/spire-steward:{{ .Tag }}-amd64"
-      - "ghcr.io/awell-health/spire-steward:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-steward:{{ .Version }}-amd64"
+      - "ghcr.io/awell-health/spire-steward:{{ .Version }}-arm64"
   - name_template: "ghcr.io/awell-health/spire-steward:latest"
     image_templates:
       - "ghcr.io/awell-health/spire-steward:latest-amd64"
       - "ghcr.io/awell-health/spire-steward:latest-arm64"
 
   # agent
-  - name_template: "ghcr.io/awell-health/spire-agent:{{ .Tag }}"
+  - name_template: "ghcr.io/awell-health/spire-agent:{{ .Version }}"
     image_templates:
-      - "ghcr.io/awell-health/spire-agent:{{ .Tag }}-amd64"
-      - "ghcr.io/awell-health/spire-agent:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-agent:{{ .Version }}-amd64"
+      - "ghcr.io/awell-health/spire-agent:{{ .Version }}-arm64"
   - name_template: "ghcr.io/awell-health/spire-agent:latest"
     image_templates:
       - "ghcr.io/awell-health/spire-agent:latest-amd64"
       - "ghcr.io/awell-health/spire-agent:latest-arm64"
 
   # builder
-  - name_template: "ghcr.io/awell-health/spire-builder:{{ .Tag }}"
+  - name_template: "ghcr.io/awell-health/spire-builder:{{ .Version }}"
     image_templates:
-      - "ghcr.io/awell-health/spire-builder:{{ .Tag }}-amd64"
-      - "ghcr.io/awell-health/spire-builder:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-builder:{{ .Version }}-amd64"
+      - "ghcr.io/awell-health/spire-builder:{{ .Version }}-arm64"
   - name_template: "ghcr.io/awell-health/spire-builder:latest"
     image_templates:
       - "ghcr.io/awell-health/spire-builder:latest-amd64"

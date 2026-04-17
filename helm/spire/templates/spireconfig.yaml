@@ -8,7 +8,7 @@ metadata:
 spec:
   dolthub:
     remote: {{ .Values.dolthub.remoteUrl | quote }}
-    credentialsSecret: spire-credentials
+    credentialsSecret: {{ include "spire.secretName" . }}
   polling:
     interval: {{ .Values.spireConfig.polling.interval | quote }}
     staleThreshold: {{ .Values.spireConfig.polling.staleThreshold | quote }}
