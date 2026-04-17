@@ -54,7 +54,11 @@ func (e *Executor) runClaude(args []string, label string) ([]byte, error) {
 		fmt.Fprintf(logFile, "bead:   %s\n", e.beadID)
 		fmt.Fprintf(logFile, "dir:    %s\n", dir)
 		fmt.Fprintf(logFile, "time:   %s\n", time.Now().UTC().Format(time.RFC3339))
-		fmt.Fprintf(logFile, "args:   %q\n", args)
+		fmt.Fprintf(logFile, "args:\n")
+		for _, a := range args {
+			fmt.Fprintln(logFile, a)
+		}
+		fmt.Fprintln(logFile)
 		fmt.Fprintf(logFile, "=== stream ===\n")
 	}
 

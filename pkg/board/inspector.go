@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"charm.land/lipgloss/v2"
 	"github.com/steveyegge/beads"
 
@@ -199,6 +200,20 @@ func FetchInspectorData(b BoardBead) InspectorData {
 	}
 
 	return data
+}
+
+// renderLogMarkdown runs the log content through glamour so markdown in
+// prompts, specs, and comments renders with styled headers, lists, and
+// code fences. Falls back to an error so the caller can plain-wrap.
+func renderLogMarkdown(content string, width int) (string, error) {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return "", err
+	}
+	return r.Render(content)
 }
 
 // claudeLogName derives a display name from a claude log filename.
@@ -996,7 +1011,10 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 			lines = append(lines, strings.Repeat(" ", headerW)+counter)
 			lines = append(lines, "")
 
-			// Render active log.
+			// Render active log. Use the full inspector width here (not
+			// the 100-col prose cap), and run the content through glamour
+			// so markdown in prompts/specs renders formatted. Fall back to
+			// plain wrapped text on any rendering error.
 			active := data.Logs[idx]
 			if active.Content != "" {
 				logLines := strings.Split(active.Content, "\n")
@@ -1005,10 +1023,20 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 					start = len(logLines) - 50
 					lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... showing last 50 of %d lines", len(logLines))))
 				}
-				wrapWidth := contentWidth - 2
-				for _, ll := range logLines[start:] {
-					for _, wl := range wrapText(ll, wrapWidth) {
-						lines = append(lines, "  "+wl)
+				tail := strings.Join(logLines[start:], "\n")
+				logWidth := width - 4
+				if logWidth < 40 {
+					logWidth = 40
+				}
+				if rendered, err := renderLogMarkdown(tail, logWidth); err == nil {
+					for _, ll := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
+						lines = append(lines, ll)
+					}
+				} else {
+					for _, ll := range logLines[start:] {
+						for _, wl := range wrapText(ll, logWidth-2) {
+							lines = append(lines, "  "+wl)
+						}
 					}
 				}
 			} else {
