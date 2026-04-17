@@ -18,7 +18,7 @@ spec:
           serviceAccountName: spire-dolt-sync
           containers:
             - name: syncer
-              image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+              image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
               imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
               command: ["sh", "-c"]
               args:

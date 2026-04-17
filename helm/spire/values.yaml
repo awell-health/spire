@@ -1,82 +1,109 @@
 # Spire Helm chart values
 # Override any of these in your own values file or with --set.
 
-# -- Kubernetes namespace to deploy into
+## @section Global parameters
+
+## @param namespace Kubernetes namespace to deploy into
 namespace: spire
 
-# -- Whether the chart should render a Namespace resource. Set to false when
-# using `helm install --create-namespace` or when the namespace is pre-created
-# and managed outside the chart. Defaults to true for backward compatibility.
+## @param createNamespace Whether the chart should render a Namespace resource.
+## Set to false when using `helm install --create-namespace` or when the
+## namespace is pre-created and managed outside the chart. Defaults to true
+## for backward compatibility.
 createNamespace: true
 
-# -- Container image registry and tags
+## @section Image configuration
+##
+## Container image registry and tags for spire-managed workloads. Image tags
+## default to "" which resolves to .Chart.AppVersion at render time — this
+## means `helm install` on a published chart pins to the release version
+## automatically, without needing `--set *.tag=...` flags. The dolt image is
+## pulled from upstream (dolthub/dolt-sql-server) and uses its own versioning.
+
+## @param images.steward.repository Docker image repository for the steward/operator/sidecar/syncer
+## @param images.steward.tag Steward image tag. Defaults to .Chart.AppVersion if empty.
+## @param images.steward.pullPolicy Steward image pull policy
+## @param images.agent.repository Docker image repository for apprentice agents
+## @param images.agent.tag Agent image tag. Defaults to .Chart.AppVersion if empty.
+## @param images.agent.pullPolicy Agent image pull policy
+## @param images.dolt.repository Docker image repository for the dolt SQL server (upstream)
+## @param images.dolt.tag Dolt image tag (upstream, not tied to chart appVersion)
+## @param images.dolt.pullPolicy Dolt image pull policy
 images:
   steward:
     repository: ghcr.io/awell-health/spire-steward
-    tag: latest
+    tag: ""  # Defaults to .Chart.AppVersion if empty
     pullPolicy: IfNotPresent
   agent:
     repository: ghcr.io/awell-health/spire-agent
-    tag: latest
+    tag: ""  # Defaults to .Chart.AppVersion if empty
     pullPolicy: IfNotPresent
   dolt:
     repository: dolthub/dolt-sql-server
     tag: latest
     pullPolicy: IfNotPresent
 
-# -- DoltHub remote configuration (required)
+## @section DoltHub remote configuration
+##
+## DoltHub is the source of truth for beads. The chart clones from this
+## remote on first boot and pushes/pulls on the configured cadence.
+
+## @param dolthub.remote DoltHub remote path (e.g. "your-org/your-tower"). Required.
+## @param dolthub.user DoltHub user — kept for completeness but HTTPS clone/pull/push authenticates via the JWK file below, not user/password.
+## @param dolthub.password DoltHub password (see note on dolthub.user).
+## @param dolthub.credsSecretName Name of an externally-created k8s Secret with one or more .jwk credential files from your local `~/.dolt/creds/`. Required for DoltHub clone/pull/push — env-var auth is not sufficient. Create with `kubectl -n <ns> create secret generic dolt-creds --from-file=<keyid>.jwk=$HOME/.dolt/creds/<keyid>.jwk`.
+## @param dolthub.keyId Filename (without .jwk) of the key to use from credsSecretName. Must exactly match a file in that Secret.
 dolthub:
-  # DoltHub remote path (e.g. "your-org/your-tower")
   remote: ""
-  # DoltHub user — kept for completeness, but HTTPS clone/pull/push
-  # authenticates via the JWK file below, not user/password.
   user: ""
   password: ""
-  # Name of an externally-created k8s Secret with one or more .jwk
-  # credential files from your local `~/.dolt/creds/`. Required for
-  # DoltHub clone/pull/push — env-var auth is not sufficient. Create with:
-  #   kubectl -n <ns> create secret generic dolt-creds \
-  #     --from-file=<keyid>.jwk=$HOME/.dolt/creds/<keyid>.jwk
   credsSecretName: ""
-  # DOLT_CREDS_KEY_ID: filename (without .jwk) of the key to use from
-  # credsSecretName. Must exactly match a file in that Secret.
   keyId: ""
 
-# -- Anthropic credentials. Provide ONE of apiKey or oauthToken.
-# oauthToken is from `claude setup-token` on a Max/Team subscription
-# (starts with sk-ant-oat01-...). apiKey is a classic API key.
+## @section Agent credentials
+##
+## Credentials used by apprentice agents running in the cluster. Provide the
+## ones you use — e.g. only `anthropic.oauthToken` if you run Claude agents
+## on a Max/Team subscription.
+
+## @param anthropic.apiKey Anthropic classic API key (mutually exclusive with oauthToken).
+## @param anthropic.oauthToken Anthropic OAuth token from `claude setup-token` on a Max/Team subscription (starts with sk-ant-oat01-...).
 anthropic:
   apiKey: ""
   oauthToken: ""
 
-# -- Optional: OpenAI API key for codex provider
+## @param openai.apiKey OpenAI API key for the codex provider.
 openai:
   apiKey: ""
 
-# -- Optional: GitHub token for repo operations
+## @param github.token GitHub token for repo operations (clone, PR, push).
 github:
   token: ""
 
-# -- Optional: Linear API key for epic sync
+## @param linear.apiKey Linear API key for epic sync.
 linear:
   apiKey: ""
 
-# -- If set, the chart will NOT render spire-credentials and will instead
-# reference an externally-created Secret with this name. Useful for prod
-# installs where secrets are managed outside helm (sealed-secrets,
-# external-secrets-operator, vault-injector, etc.). The external secret
-# must contain the same keys the chart would render.
+## @param existingSecret If set, the chart will NOT render spire-credentials and will instead reference an externally-created Secret with this name. Useful for prod installs where secrets are managed outside helm (sealed-secrets, external-secrets-operator, vault-injector, etc.). The external secret must contain the same keys the chart would render.
 existingSecret: ""
 
-# -- Bead configuration for this tenant
+## @section Bead / tenant configuration
+
+## @param beads.prefix Bead ID prefix for this tenant (e.g. "spi" → spi-abc123).
+## @param beads.database Local dolt database name. Defaults to prefix when empty. Must match what `dolt clone` creates on disk and what bd's metadata.json looks up via SQL.
 beads:
-  # Bead ID prefix (e.g. "spi" → spi-abc123)
   prefix: "spi"
-  # Local dolt database name. Defaults to prefix. Must match what `dolt clone`
-  # creates on disk and what bd's metadata.json looks up via SQL.
   database: ""
 
-# -- Steward configuration
+## @section Steward configuration
+
+## @param steward.interval Steward poll interval.
+## @param steward.backend Steward execution backend (k8s | docker | process).
+## @param steward.metricsPort HTTP port the steward exposes /livez, /readyz, /metrics on.
+## @param steward.resources.requests.cpu Steward CPU request.
+## @param steward.resources.requests.memory Steward memory request.
+## @param steward.resources.limits.cpu Steward CPU limit.
+## @param steward.resources.limits.memory Steward memory limit.
 steward:
   # Main steward cycle interval. 10s is cheap because each cycle is just
   # dolt SQL reads (no LLM). Tighter intervals give faster reaction to
@@ -100,7 +127,13 @@ steward:
       cpu: 200m
       memory: 256Mi
 
-# -- Operator configuration
+## @section Operator configuration
+
+## @param operator.interval Operator reconcile interval.
+## @param operator.resources.requests.cpu Operator CPU request.
+## @param operator.resources.requests.memory Operator memory request.
+## @param operator.resources.limits.cpu Operator CPU limit.
+## @param operator.resources.limits.memory Operator memory limit.
 operator:
   interval: "30s"
   resources:
@@ -111,7 +144,14 @@ operator:
       cpu: 200m
       memory: 256Mi
 
-# -- Dolt database configuration
+## @section Dolt database configuration
+
+## @param dolt.resources.requests.cpu Dolt CPU request.
+## @param dolt.resources.requests.memory Dolt memory request.
+## @param dolt.resources.limits.cpu Dolt CPU limit.
+## @param dolt.resources.limits.memory Dolt memory limit.
+## @param dolt.storage.size Size of the PVC backing the dolt StatefulSet.
+## @param dolt.storage.storageClass StorageClass for the dolt PVC. Leave empty to use the cluster default.
 dolt:
   resources:
     requests:
@@ -124,12 +164,20 @@ dolt:
     size: 5Gi
     # storageClass: "" # leave empty to use cluster default
 
-# -- Steward persistent storage
+## @section Steward persistent storage
+
+## @param stewardStorage.size Size of the PVC backing the steward /data volume.
+## @param stewardStorage.storageClass StorageClass for the steward PVC. Leave empty to use the cluster default.
 stewardStorage:
   size: 1Gi
   # storageClass: ""
 
-# -- SpireConfig: polling and token routing
+## @section SpireConfig (polling and token routing)
+
+## @param spireConfig.polling.interval SpireConfig poll interval.
+## @param spireConfig.polling.staleThreshold How long before an in_progress bead is considered stale.
+## @param spireConfig.polling.reassignThreshold How long before a stale bead is reassigned.
+## @param spireConfig.defaultToken Default token label for tenant-scoped credentials.
 spireConfig:
   polling:
     interval: "2m"
@@ -137,27 +185,36 @@ spireConfig:
     reassignThreshold: "6h"
   defaultToken: default
 
-# -- Agent definitions
-# Each entry creates a SpireAgent CR that the operator manages.
-# agents:
-#   - name: my-repo-agent
-#     mode: managed
-#     repo: https://github.com/your-org/my-repo.git
-#     repoBranch: main
-#     prefixes: ["myp-"]
-#     maxConcurrent: 2
-#     capabilities: ["implement"]
-#     resources:
-#       requests:
-#         memory: "256Mi"
-#         cpu: "100m"
-#       limits:
-#         memory: "1Gi"
-#         cpu: "500m"
+## @section Agent definitions
+##
+## Each entry creates a SpireAgent CR that the operator manages.
+## Example:
+##   agents:
+##     - name: my-repo-agent
+##       mode: managed
+##       repo: https://github.com/your-org/my-repo.git
+##       repoBranch: main
+##       prefixes: ["myp-"]
+##       maxConcurrent: 2
+##       capabilities: ["implement"]
+##       resources:
+##         requests:
+##           memory: "256Mi"
+##           cpu: "100m"
+##         limits:
+##           memory: "1Gi"
+##           cpu: "500m"
+
+## @param agents List of SpireAgent CRs to render. Default is empty.
 agents: []
 
-# -- Syncer CronJob: runs spire pull && spire push on a schedule.
-# Enable this if you want the cluster to sync DoltHub without the daemon.
+## @section Syncer CronJob
+##
+## Runs `spire pull && spire push` on a schedule. Enable this if you want the
+## cluster to sync DoltHub without the daemon.
+
+## @param syncer.enabled Whether to render the syncer CronJob.
+## @param syncer.schedule Cron schedule for the syncer.
 syncer:
   enabled: false
   schedule: "*/2 * * * *"

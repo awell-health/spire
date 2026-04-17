@@ -26,7 +26,7 @@ spec:
         # logic with `spire tower attach` via pkg/tower so CLI and cluster
         # paths stay aligned.
         - name: tower-attach
-          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
           command: ["sh", "-c"]
           args:
@@ -59,7 +59,7 @@ spec:
               mountPath: /data
       containers:
         - name: steward
-          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
           env:
             - name: BEADS_PREFIX
@@ -113,7 +113,7 @@ spec:
               readOnly: true
           workingDir: /etc/spire
         - name: sidecar
-          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
           command: ["spire-steward-sidecar"]
           args:

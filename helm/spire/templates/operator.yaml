@@ -20,13 +20,13 @@ spec:
       serviceAccountName: spire-operator
       containers:
         - name: operator
-          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
           command: ["spire-operator"]
           args:
             - --namespace={{ .Values.namespace }}
             - --interval={{ .Values.operator.interval }}
-            - --steward-image={{ .Values.images.agent.repository }}:{{ .Values.images.agent.tag }}
+            - --steward-image={{ .Values.images.agent.repository }}:{{ .Values.images.agent.tag | default .Chart.AppVersion }}
           resources:
             requests:
               cpu: {{ .Values.operator.resources.requests.cpu }}

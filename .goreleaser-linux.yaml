@@ -1,6 +1,15 @@
 version: 2
 project_name: spire
 
+# Patch the Helm chart Chart.yaml so its version/appVersion match the release
+# tag. The chart is a sentinel 0.0.0 in git; goreleaser rewrites both fields
+# before packaging so downstream artifacts (and default image tags derived
+# from .Chart.AppVersion) are pinned to the release version.
+before:
+  hooks:
+    - sed -i 's/^version:.*/version: {{ .Version }}/' helm/spire/Chart.yaml
+    - sed -i 's/^appVersion:.*/appVersion: "{{ .Version }}"/' helm/spire/Chart.yaml
+
 builds:
   - main: ./cmd/spire
     binary: spire
