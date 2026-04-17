@@ -18,6 +18,43 @@ spec:
         app.kubernetes.io/name: spire-operator
     spec:
       serviceAccountName: spire-operator
+      initContainers:
+        # Same tower-attach pattern as the steward so the operator has
+        # a .beads/ workspace pointed at the cluster dolt. Required by
+        # WorkloadAssigner.getSchedulableSet — without it the operator
+        # logs "store not initialized — call Ensure() first" every cycle.
+        - name: tower-attach
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              spire tower attach-cluster \
+                --data-dir=/data \
+                --database="$BEADS_DATABASE" \
+                --prefix="$BEADS_PREFIX" \
+                --dolthub-remote="$DOLTHUB_REMOTE" \
+                --dolt-wait=300s
+              chmod 700 /data/.beads 2>/dev/null || true
+          env:
+            - name: DOLT_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DATABASE
+              value: {{ .Values.beads.database | default .Values.beads.prefix | quote }}
+            - name: BEADS_PREFIX
+              value: {{ .Values.beads.prefix | quote }}
+            - name: DOLTHUB_REMOTE
+              value: {{ .Values.dolthub.remoteUrl | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: operator
           image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
@@ -27,6 +64,19 @@ spec:
             - --namespace={{ .Values.namespace }}
             - --interval={{ .Values.operator.interval }}
             - --steward-image={{ .Values.images.agent.repository }}:{{ .Values.images.agent.tag | default .Chart.AppVersion }}
+            - --beads-dir=/data/.beads
+          env:
+            - name: DOLT_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: {{ .Values.dolt.port | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
           resources:
             requests:
               cpu: {{ .Values.operator.resources.requests.cpu }}
@@ -34,3 +84,6 @@ spec:
             limits:
               cpu: {{ .Values.operator.resources.limits.cpu }}
               memory: {{ .Values.operator.resources.limits.memory }}
+      volumes:
+        - name: data
+          emptyDir: {}

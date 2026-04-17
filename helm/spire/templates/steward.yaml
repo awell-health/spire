@@ -37,16 +37,27 @@ spec:
                 git config user.name "spire-steward"
                 git config user.email "steward@spire.local"
               fi
-              exec spire tower attach-cluster \
+              spire tower attach-cluster \
                 --data-dir=/data \
                 --database="$BEADS_DATABASE" \
                 --prefix="$BEADS_PREFIX" \
                 --dolthub-remote="$DOLTHUB_REMOTE" \
                 --dolt-wait=300s
+              # bd warns at 0755 — tighten. Done after attach-cluster so
+              # the directory exists.
+              chmod 700 /data/.beads 2>/dev/null || true
           env:
+            # DOLT_HOST/DOLT_PORT are what pkg/dolt reads (attach-cluster's
+            # own SQL probes). BEADS_DOLT_SERVER_HOST/PORT are what the bd
+            # subprocess reads — without them bd defaults to 127.0.0.1,
+            # which breaks the ensureCustomBeadTypes step. Set both.
             - name: DOLT_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: BEADS_DOLT_SERVER_PORT
               value: {{ .Values.dolt.port | quote }}
             - name: BEADS_DATABASE
               value: {{ .Values.beads.database | default .Values.beads.prefix | quote }}

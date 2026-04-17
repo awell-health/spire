@@ -1,6 +1,13 @@
 {{- if .Values.syncer.enabled }}
-apiVersion: batch/v1
-kind: CronJob
+# Syncer: long-running loop that bridges the cluster dolt DB and DoltHub.
+# Converted from a CronJob to a Deployment because k8s CronJob cannot
+# schedule sub-minute intervals. Runs `spire pull && spire push` every
+# .Values.syncer.interval so cluster and laptop see each other's work.
+#
+# Requires the same JWK + .beads bootstrap as the dolt pod because
+# spire pull/push authenticate to DoltHub via the JWK credential file.
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: spire-syncer
   namespace: {{ .Values.namespace }}
@@ -8,34 +15,149 @@ metadata:
     app.kubernetes.io/name: spire-syncer
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
-  schedule: {{ .Values.syncer.schedule | quote }}
-  concurrencyPolicy: Forbid
-  jobTemplate:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-syncer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-syncer
     spec:
-      template:
-        spec:
-          restartPolicy: OnFailure
-          serviceAccountName: spire-dolt-sync
-          containers:
-            - name: syncer
-              image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
-              imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
-              command: ["sh", "-c"]
-              args:
-                - "spire pull && spire push"
-              env:
-                - name: DOLT_HOST
-                  value: "spire-dolt.{{ .Values.namespace }}.svc"
-                - name: DOLT_PORT
-                  value: {{ .Values.dolt.port | quote }}
-                - name: DOLT_REMOTE_USER
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ include "spire.secretName" . }}
-                      key: DOLT_REMOTE_USER
-                - name: DOLT_REMOTE_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ include "spire.secretName" . }}
-                      key: DOLT_REMOTE_PASSWORD
+      serviceAccountName: spire-dolt-sync
+      initContainers:
+        - name: tower-attach
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              spire tower attach-cluster \
+                --data-dir=/data \
+                --database="$BEADS_DATABASE" \
+                --prefix="$BEADS_PREFIX" \
+                --dolthub-remote="$DOLTHUB_REMOTE" \
+                --dolt-wait=300s
+              chmod 700 /data/.beads 2>/dev/null || true
+          env:
+            - name: DOLT_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DATABASE
+              value: {{ .Values.beads.database | default .Values.beads.prefix | quote }}
+            - name: BEADS_PREFIX
+              value: {{ .Values.beads.prefix | quote }}
+            - name: DOLTHUB_REMOTE
+              value: {{ .Values.dolthub.remoteUrl | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: syncer
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          command: ["spire"]
+          args:
+            - daemon
+            # Single-tower cluster mode: sync just this DB via SQL pull/push
+            # against the running dolt server (the syncer pod has no local
+            # dolt repo — the dolt StatefulSet does, with JWK creds).
+            - --database={{ .Values.beads.database | default .Values.beads.prefix }}
+            - --interval={{ .Values.syncer.interval }}
+            - --debounce={{ .Values.syncer.debounce }}
+            # --serve starts pkg/gateway.Server in the same process so POST
+            # /sync on :port forwards to this daemon's Trigger().
+            - --serve=:{{ .Values.syncer.port }}
+          workingDir: /data
+          ports:
+            - name: http
+              containerPort: {{ .Values.syncer.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          env:
+            - name: DOLT_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: DOLT_REMOTE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spire.secretName" . }}
+                  key: DOLT_REMOTE_USER
+            - name: DOLT_REMOTE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spire.secretName" . }}
+                  key: DOLT_REMOTE_PASSWORD
+            {{- if .Values.dolthub.credsKeyId }}
+            - name: DOLT_CREDS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-dolthub-creds
+                  key: key-id
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- if .Values.dolthub.credsKeyId }}
+            # Must match where dolt looks: $DOLT_ROOT_PATH/.dolt/creds.
+            # Syncer does not set DOLT_ROOT_PATH, so the mount is at $HOME.
+            - name: dolthub-creds
+              mountPath: /root/.dolt/creds/{{ .Values.dolthub.credsKeyId }}.jwk
+              subPath: key-value
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: data
+          emptyDir: {}
+        {{- if .Values.dolthub.credsKeyId }}
+        - name: dolthub-creds
+          secret:
+            secretName: {{ .Release.Name }}-dolthub-creds
+            defaultMode: 0400
+            items:
+              - key: key-value
+                path: key-value
+        {{- end }}
+---
+# Service exposing the gateway's POST /sync endpoint in-cluster.
+# Reachable via `spire-syncer.<ns>.svc:<port>` from other pods. For
+# laptop-to-cluster triggers, port-forward or add an Ingress as needed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-syncer
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-syncer
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  selector:
+    app.kubernetes.io/name: spire-syncer
+  ports:
+    - name: http
+      port: {{ .Values.syncer.port }}
+      targetPort: {{ .Values.syncer.port }}
+      protocol: TCP
 {{- end }}

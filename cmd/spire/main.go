@@ -35,6 +35,7 @@ func init() {
 	rootCmd.AddCommand(collectCmd)
 	rootCmd.AddCommand(boardCmd)
 	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(gatewayCmd)
 	rootCmd.AddCommand(stewardCmd)
 	rootCmd.AddCommand(summonCmd)
 	rootCmd.AddCommand(dismissCmd)

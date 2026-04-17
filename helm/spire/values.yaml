@@ -240,13 +240,20 @@ spireConfig:
 ## @param agents List of SpireAgent CRs to render. Default is empty.
 agents: []
 
-## @section Syncer CronJob
+## @section Syncer
 ##
-## Runs `spire pull && spire push` on a schedule. Enable this if you want the
-## cluster to sync DoltHub without the daemon.
+## Long-running Deployment that runs `spire pull && spire push` on a loop.
+## Bridges the cluster's dolt DB and DoltHub so laptop work becomes visible
+## in-cluster and cluster work flows back out. Was a CronJob before, but
+## k8s CronJob cannot schedule sub-minute intervals — and 10s is the right
+## cadence for dogfooding.
 
-## @param syncer.enabled Whether to render the syncer CronJob.
-## @param syncer.schedule Cron schedule for the syncer.
+## @param syncer.enabled Whether to render the syncer Deployment and Service.
+## @param syncer.interval Background sync interval. Baseline cadence; on-demand triggers use the gateway endpoint.
+## @param syncer.debounce Minimum time between triggered syncs. Rapid POSTs to /sync coalesce within this window.
+## @param syncer.port HTTP port for the gateway endpoint (exposed as the spire-syncer Service).
 syncer:
-  enabled: false
-  schedule: "*/2 * * * *"
+  enabled: true
+  interval: "1m"
+  debounce: "5s"
+  port: 8082
