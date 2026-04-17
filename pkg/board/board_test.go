@@ -2304,3 +2304,104 @@ func TestParsePendingAction(t *testing.T) {
 	}
 }
 
+// makeInspectingWithLogs returns a BoardMode with the inspector open on the
+// Logs tab, pre-populated with the given number of synthetic LogView entries.
+func makeInspectingWithLogs(numLogs int) *BoardMode {
+	m := makeBoardMode()
+	m.Inspecting = true
+	m.InspectorTab = InspectorTabLogs
+	m.InspectorLogIdx = 0
+	m.InspectorScroll = 0
+	logs := make([]LogView, numLogs)
+	for i := 0; i < numLogs; i++ {
+		logs[i] = LogView{
+			Name:    fmt.Sprintf("log-%d", i),
+			Path:    fmt.Sprintf("/tmp/log-%d.log", i),
+			Content: fmt.Sprintf("content %d", i),
+		}
+	}
+	m.InspectorData = &InspectorData{
+		Bead: BoardBead{
+			ID:     "spi-001",
+			Title:  "Test bead",
+			Status: "open",
+			Type:   "task",
+		},
+		Logs: logs,
+	}
+	return m
+}
+
+func TestInspectorLogCycleRight(t *testing.T) {
+	m := makeInspectingWithLogs(3)
+
+	m = updateBoardMode(m, keyMsg('l'))
+	if m.InspectorLogIdx != 1 {
+		t.Errorf("after 1st l: expected InspectorLogIdx=1, got %d", m.InspectorLogIdx)
+	}
+	m = updateBoardMode(m, keyMsg('l'))
+	if m.InspectorLogIdx != 2 {
+		t.Errorf("after 2nd l: expected InspectorLogIdx=2, got %d", m.InspectorLogIdx)
+	}
+	m = updateBoardMode(m, keyMsg('l'))
+	if m.InspectorLogIdx != 0 {
+		t.Errorf("after 3rd l (wrap): expected InspectorLogIdx=0, got %d", m.InspectorLogIdx)
+	}
+}
+
+func TestInspectorLogCycleLeft(t *testing.T) {
+	m := makeInspectingWithLogs(3)
+
+	m = updateBoardMode(m, keyMsg('h'))
+	if m.InspectorLogIdx != 2 {
+		t.Errorf("after 1st h (wrap): expected InspectorLogIdx=2, got %d", m.InspectorLogIdx)
+	}
+	m = updateBoardMode(m, keyMsg('h'))
+	if m.InspectorLogIdx != 1 {
+		t.Errorf("after 2nd h: expected InspectorLogIdx=1, got %d", m.InspectorLogIdx)
+	}
+	m = updateBoardMode(m, keyMsg('h'))
+	if m.InspectorLogIdx != 0 {
+		t.Errorf("after 3rd h: expected InspectorLogIdx=0, got %d", m.InspectorLogIdx)
+	}
+}
+
+func TestInspectorLogCycleIgnoredOnDetailsTab(t *testing.T) {
+	m := makeInspectingWithLogs(3)
+	m.InspectorTab = InspectorTabDetails
+	m.InspectorLogIdx = 0
+
+	m = updateBoardMode(m, keyMsg('l'))
+	if m.InspectorLogIdx != 0 {
+		t.Errorf("l on Details tab should not change InspectorLogIdx, got %d", m.InspectorLogIdx)
+	}
+	m = updateBoardMode(m, keyMsg('h'))
+	if m.InspectorLogIdx != 0 {
+		t.Errorf("h on Details tab should not change InspectorLogIdx, got %d", m.InspectorLogIdx)
+	}
+}
+
+func TestInspectorLogCycleNoLogs(t *testing.T) {
+	m := makeInspectingWithLogs(0)
+
+	// Pressing l with zero logs should not crash or increment.
+	m = updateBoardMode(m, keyMsg('l'))
+	if m.InspectorLogIdx != 0 {
+		t.Errorf("l with zero logs should not increment, got %d", m.InspectorLogIdx)
+	}
+	m = updateBoardMode(m, keyMsg('h'))
+	if m.InspectorLogIdx != 0 {
+		t.Errorf("h with zero logs should not decrement, got %d", m.InspectorLogIdx)
+	}
+
+	// Also test with InspectorData = nil.
+	m2 := makeBoardMode()
+	m2.Inspecting = true
+	m2.InspectorTab = InspectorTabLogs
+	m2.InspectorData = nil
+	m2 = updateBoardMode(m2, keyMsg('l'))
+	if m2.InspectorLogIdx != 0 {
+		t.Errorf("l with nil InspectorData should not increment, got %d", m2.InspectorLogIdx)
+	}
+}
+

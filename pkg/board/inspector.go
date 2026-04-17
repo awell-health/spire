@@ -31,6 +31,13 @@ type HookedStepInfo struct {
 	WaitingFor string // human-readable description of what the step is waiting for
 }
 
+// LogView represents a single log source displayed in the inspector Logs tab.
+type LogView struct {
+	Name    string // e.g. "wizard", "epic-plan (13:09)", "recovery-decide (14:02)"
+	Path    string // absolute path to the log file on disk
+	Content string // full file contents
+}
+
 // InspectorData holds the fetched detail data for the inspector pane.
 type InspectorData struct {
 	Bead        BoardBead
@@ -44,7 +51,7 @@ type InspectorData struct {
 	Messages    []BoardBead      // messages referencing this bead
 	DesignBeads []BoardBead      // design beads linked via discovered-from deps
 	HookedStep  *HookedStepInfo  // hooked step details (nil when bead is not hooked)
-	LogContent  string           // cached wizard log content (loaded in FetchInspectorData, not View)
+	Logs        []LogView        // ordered: wizard top-level first, then claude logs newest-first
 }
 
 // FetchInspectorData loads all detail data for a bead from the store.
@@ -122,12 +129,73 @@ func FetchInspectorData(b BoardBead) InspectorData {
 	}
 	for _, path := range candidates {
 		if content, err := os.ReadFile(path); err == nil {
-			data.LogContent = string(content)
+			data.Logs = append(data.Logs, LogView{
+				Name:    "wizard",
+				Path:    path,
+				Content: string(content),
+			})
 			break
 		}
 	}
 
+	// Per-invocation claude subprocess logs.
+	claudeDir := filepath.Join(logDir, wizardName, "claude")
+	if matches, err := filepath.Glob(filepath.Join(claudeDir, "*.log")); err == nil && len(matches) > 0 {
+		// Sort descending (newest first, since timestamps sort lexicographically).
+		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+		for _, path := range matches {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			data.Logs = append(data.Logs, LogView{
+				Name:    claudeLogName(filepath.Base(path)),
+				Path:    path,
+				Content: string(content),
+			})
+		}
+	}
+
 	return data
+}
+
+// claudeLogName derives a display name from a claude log filename.
+// Input: "<label>-<YYYYMMDD-HHMMSS>.log" (e.g. "epic-plan-20260417-173412.log").
+// Output: "<label> (HH:MM)" (e.g. "epic-plan (17:34)").
+// If the filename does not match the expected pattern, returns the filename
+// without its .log extension as a fallback.
+func claudeLogName(filename string) string {
+	base := strings.TrimSuffix(filename, ".log")
+	// Find the last occurrence of "-YYYYMMDD-HHMMSS" suffix.
+	// Scan from the right for a suffix of the form -DDDDDDDD-DDDDDD (8+6 digits).
+	if len(base) < 16 {
+		return base
+	}
+	tsStart := len(base) - 16 // position of the leading '-'
+	if base[tsStart] != '-' {
+		return base
+	}
+	tsPart := base[tsStart+1:] // "YYYYMMDD-HHMMSS"
+	if len(tsPart) != 15 || tsPart[8] != '-' {
+		return base
+	}
+	datePart := tsPart[:8]
+	timePart := tsPart[9:]
+	for i := 0; i < 8; i++ {
+		if datePart[i] < '0' || datePart[i] > '9' {
+			return base
+		}
+	}
+	for i := 0; i < 6; i++ {
+		if timePart[i] < '0' || timePart[i] > '9' {
+			return base
+		}
+	}
+	label := base[:tsStart]
+	if label == "" {
+		return base
+	}
+	return fmt.Sprintf("%s (%s:%s)", label, timePart[:2], timePart[2:4])
 }
 
 // findHookedStepInfo determines which step is hooked and what it's waiting for.
@@ -387,11 +455,11 @@ func InspectorLineCount(data InspectorData, width int) int {
 }
 
 // inspectorLineCountSnap counts inspector lines using the pure renderInspectorSnap function.
-func inspectorLineCountSnap(data *InspectorData, dag *DAGProgress, width, tab int) int {
+func inspectorLineCountSnap(data *InspectorData, dag *DAGProgress, width, tab, logIdx int) int {
 	if data == nil {
 		return 3
 	}
-	full := renderInspectorSnap(data.Bead, data, dag, width, 10000, 0, tab)
+	full := renderInspectorSnap(data.Bead, data, dag, width, 10000, 0, tab, logIdx)
 	return strings.Count(full, "\n") + 1
 }
 
@@ -557,7 +625,8 @@ func fetchInspectorCmd(b BoardBead) tea.Cmd {
 // instead of calling the DB, making it safe to call from View().
 // If data is nil, returns a "Loading..." placeholder.
 // The tab parameter selects the active tab (0=details, 1=logs).
-func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, width, height, scrollOffset, tab int) string {
+// The logIdx parameter selects which log is shown within the Logs tab.
+func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, width, height, scrollOffset, tab, logIdx int) string {
 	if data == nil {
 		headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -578,6 +647,9 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	headerHint := "Esc close  Tab switch  j/k scroll  J/K ×5"
+	if tab == InspectorTabLogs {
+		headerHint = "Esc close  Tab switch  j/k scroll  ←/→ or h/l log"
+	}
 	if b.Type == "design" && b.HasLabel("needs-human") {
 		headerHint = "y Approve  n Reject  Esc close  Tab switch"
 	}
@@ -830,20 +902,47 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 	}
 
 	if tab == InspectorTabLogs {
-		lines = append(lines, sectionHeader("Wizard Logs"))
-		lines = append(lines, "")
-		if data.LogContent != "" {
-			logLines := strings.Split(data.LogContent, "\n")
-			start := 0
-			if len(logLines) > 50 {
-				start = len(logLines) - 50
-				lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... showing last 50 of %d lines", len(logLines))))
-			}
-			for _, ll := range logLines[start:] {
-				lines = append(lines, "  "+ll)
-			}
+		if len(data.Logs) == 0 {
+			lines = append(lines, dimStyle.Render("  No logs for "+bb.ID))
 		} else {
-			lines = append(lines, dimStyle.Render("  No active wizard for "+bb.ID))
+			// Clamp logIdx into range.
+			idx := logIdx
+			if idx < 0 {
+				idx = 0
+			}
+			if idx >= len(data.Logs) {
+				idx = len(data.Logs) - 1
+			}
+
+			// Sub-tab strip listing the available logs.
+			activeLogStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Underline(true)
+			inactiveLogStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+			var logParts []string
+			for i, lv := range data.Logs {
+				if i == idx {
+					logParts = append(logParts, activeLogStyle.Render("["+lv.Name+"]"))
+				} else {
+					logParts = append(logParts, inactiveLogStyle.Render(lv.Name))
+				}
+			}
+			lines = append(lines, dimStyle.Render("Logs:")+"  "+strings.Join(logParts, "  ")+"   "+dimStyle.Render("← h/l →"))
+			lines = append(lines, "")
+
+			// Render active log.
+			active := data.Logs[idx]
+			if active.Content != "" {
+				logLines := strings.Split(active.Content, "\n")
+				start := 0
+				if len(logLines) > 50 {
+					start = len(logLines) - 50
+					lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... showing last 50 of %d lines", len(logLines))))
+				}
+				for _, ll := range logLines[start:] {
+					lines = append(lines, "  "+ll)
+				}
+			} else {
+				lines = append(lines, dimStyle.Render("  (empty log)"))
+			}
 		}
 	}
 

@@ -104,6 +104,9 @@ type BoardMode struct {
 	// Inspector tab (0=details, 1=logs).
 	InspectorTab int
 
+	// InspectorLogIdx is the active log within the Logs tab.
+	InspectorLogIdx int
+
 	// Vim gg key sequence: true after first g press, waiting for second key.
 	PendingG bool
 
@@ -769,6 +772,7 @@ func (m *BoardMode) dispatchMenuAction(item MenuAction) (Mode, tea.Cmd) {
 		m.Inspecting = true
 		m.InspectorScroll = 0
 		m.InspectorTab = 0
+		m.InspectorLogIdx = 0
 		m.ResolveActive = true
 		m.ResolveInput = ""
 		m.ResolveBeadID = m.ActionMenuBeadID
@@ -784,6 +788,7 @@ func (m *BoardMode) dispatchMenuAction(item MenuAction) (Mode, tea.Cmd) {
 		m.Inspecting = true
 		m.InspectorScroll = 0
 		m.InspectorTab = 0
+		m.InspectorLogIdx = 0
 		m.FeedbackActive = true
 		m.FeedbackInput = ""
 		m.FeedbackBeadID = m.ActionMenuBeadID
@@ -1243,6 +1248,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				m.Inspecting = false
 				m.InspectorScroll = 0
 				m.InspectorTab = 0
+				m.InspectorLogIdx = 0
 				m.InspectorData = nil
 				m.InspectorLoading = false
 			case "ctrl+c":
@@ -1262,7 +1268,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 					if m.Snapshot != nil {
 						dag = m.Snapshot.DAGProgress[m.InspectorData.Bead.ID]
 					}
-					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab)
+					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab, m.InspectorLogIdx)
 					maxVisible := m.Height - 2
 					if maxVisible < 5 {
 						maxVisible = 5
@@ -1288,7 +1294,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 					if m.Snapshot != nil {
 						dag = m.Snapshot.DAGProgress[m.InspectorData.Bead.ID]
 					}
-					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab)
+					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab, m.InspectorLogIdx)
 					maxVisible := m.Height - 2
 					if maxVisible < 5 {
 						maxVisible = 5
@@ -1310,6 +1316,24 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 					m.InspectorTab = 1
 				}
 				m.InspectorScroll = 0
+			case "l", "right":
+				// Cycle to next log within Logs tab.
+				if m.InspectorTab == InspectorTabLogs && m.InspectorData != nil && len(m.InspectorData.Logs) > 0 {
+					m.InspectorLogIdx++
+					if m.InspectorLogIdx >= len(m.InspectorData.Logs) {
+						m.InspectorLogIdx = 0
+					}
+					m.InspectorScroll = 0
+				}
+			case "h", "left":
+				// Cycle to previous log within Logs tab.
+				if m.InspectorTab == InspectorTabLogs && m.InspectorData != nil && len(m.InspectorData.Logs) > 0 {
+					m.InspectorLogIdx--
+					if m.InspectorLogIdx < 0 {
+						m.InspectorLogIdx = len(m.InspectorData.Logs) - 1
+					}
+					m.InspectorScroll = 0
+				}
 			}
 			return m, nil
 		}
@@ -1343,6 +1367,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				m.Inspecting = true
 				m.InspectorScroll = 0
 				m.InspectorTab = 0
+				m.InspectorLogIdx = 0
 				m.InspectorLoading = true
 				m.InspectorData = nil
 				return m, fetchInspectorCmd(*bead)
@@ -1523,6 +1548,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				m.Inspecting = true
 				m.InspectorScroll = 0
 				m.InspectorTab = 0
+				m.InspectorLogIdx = 0
 				m.ResolveActive = true
 				m.ResolveInput = ""
 				m.ResolveBeadID = bead.ID
