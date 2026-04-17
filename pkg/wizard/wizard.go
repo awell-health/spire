@@ -751,7 +751,7 @@ func ResolveRepo(beadID string, deps *Deps) (repoPath, repoURL, baseBranch strin
 		return "", "", "", fmt.Errorf("no local repo registered for prefix %q (bead %s)", prefix, beadID)
 	}
 	if baseBranch == "" {
-		baseBranch = "main"
+		baseBranch = repoconfig.DefaultBranchBase
 		log.Printf("[resolve] base branch not configured for prefix %q — defaulting to %q", prefix, baseBranch)
 	}
 	return repoPath, repoURL, baseBranch, nil

@@ -82,7 +82,7 @@ func TestValidCommitSHA(t *testing.T) {
 
 func TestGetAction_BuiltinActions(t *testing.T) {
 	builtins := []string{
-		"rebase-onto-main",
+		"rebase-onto-base",
 		"cherry-pick",
 		"resolve-conflicts",
 		"targeted-fix",
@@ -118,7 +118,7 @@ func TestListActions_ContainsAllBuiltins(t *testing.T) {
 	for _, a := range actions {
 		names[a.Name] = true
 	}
-	expected := []string{"rebase-onto-main", "cherry-pick", "resolve-conflicts",
+	expected := []string{"rebase-onto-base", "cherry-pick", "resolve-conflicts",
 		"targeted-fix", "rebuild", "resummon", "reset-to-step", "escalate"}
 	for _, name := range expected {
 		if !names[name] {
@@ -159,7 +159,7 @@ func TestBuiltinActions_WorktreeRequirements(t *testing.T) {
 		name             string
 		requiresWorktree bool
 	}{
-		{"rebase-onto-main", true},
+		{"rebase-onto-base", true},
 		{"cherry-pick", true},
 		{"resolve-conflicts", true},
 		{"targeted-fix", false},
@@ -187,7 +187,7 @@ func TestBuiltinActions_MaxRetries(t *testing.T) {
 		name       string
 		maxRetries int
 	}{
-		{"rebase-onto-main", 3},
+		{"rebase-onto-base", 3},
 		{"cherry-pick", 3},
 		{"resolve-conflicts", 2},
 		{"targeted-fix", 3},
@@ -513,7 +513,7 @@ func TestProvisionRecoveryWorktree_CleanupDeletesBranch(t *testing.T) {
 	runGit(t, repoDir, "git", "branch", "feat/"+beadID, "main")
 
 	// First provision — should succeed.
-	wc, cleanup, err := ProvisionRecoveryWorktree(repoDir, beadID)
+	wc, cleanup, err := ProvisionRecoveryWorktree(repoDir, beadID, "main")
 	if err != nil {
 		t.Fatalf("first ProvisionRecoveryWorktree: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestProvisionRecoveryWorktree_CleanupDeletesBranch(t *testing.T) {
 	}
 
 	// Second provision — should succeed now that the branch is cleaned up.
-	wc2, cleanup2, err := ProvisionRecoveryWorktree(repoDir, beadID)
+	wc2, cleanup2, err := ProvisionRecoveryWorktree(repoDir, beadID, "main")
 	if err != nil {
 		t.Fatalf("second ProvisionRecoveryWorktree: %v", err)
 	}

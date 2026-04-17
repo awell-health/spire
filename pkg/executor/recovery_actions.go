@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -37,6 +38,10 @@ type RecoveryAction struct {
 type RecoveryActionCtx struct {
 	DB             *sql.DB
 	RepoPath       string
+	// BaseBranch is the target bead's base branch (from the base-branch:
+	// label, spire.yaml, or repoconfig.DefaultBranchBase). Actions that
+	// rebase or diff against the base use this, NOT a literal "main".
+	BaseBranch     string
 	Worktree       *spgit.WorktreeContext // nil if !RequiresWorktree
 	RecoveryBeadID string
 	TargetBeadID   string
@@ -52,7 +57,7 @@ var (
 func init() {
 	// Register the built-in git-aware recovery actions.
 	for _, a := range []RecoveryAction{
-		actionRebaseOntoMain(),
+		actionRebaseOntoBase(),
 		actionCherryPick(),
 		actionResolveConflicts(),
 		actionTargetedFix(),
@@ -147,7 +152,7 @@ func RunRecoveryAction(ctx *RecoveryActionCtx, actionName string) error {
 	// Provision worktree if the action requires one and none was provided.
 	var cleanupFn func()
 	if action.RequiresWorktree && ctx.Worktree == nil {
-		wc, cleanup, err := ProvisionRecoveryWorktree(ctx.RepoPath, ctx.TargetBeadID)
+		wc, cleanup, err := ProvisionRecoveryWorktree(ctx.RepoPath, ctx.TargetBeadID, ctx.BaseBranch)
 		if err != nil {
 			if ctx.DB != nil {
 				_ = store.UpdateAttemptOutcome(ctx.DB, attempt.ID, "failure", fmt.Sprintf("provision worktree: %v", err))
@@ -182,9 +187,12 @@ func RunRecoveryAction(ctx *RecoveryActionCtx, actionName string) error {
 // ProvisionRecoveryWorktree creates a worktree for recovery operations using
 // pkg/git APIs. The worktree is placed at <repoPath>/.worktrees/<beadID>-recovery
 // on a branch named recovery/<beadID>, based on the target bead's feature branch
-// (not main). This ensures recovery actions operate on the bead's actual work.
-// Returns a cleanup function that removes the worktree when called.
-func ProvisionRecoveryWorktree(repoPath string, beadID string) (*spgit.WorktreeContext, func(), error) {
+// (not the base branch). This ensures recovery actions operate on the bead's
+// actual work. The baseBranch argument is passed through to spgit.RepoContext
+// so downstream git operations target the correct base (falls back to
+// repoconfig.DefaultBranchBase if empty). Returns a cleanup function that
+// removes the worktree when called.
+func ProvisionRecoveryWorktree(repoPath, beadID, baseBranch string) (*spgit.WorktreeContext, func(), error) {
 	dir := filepath.Join(repoPath, ".worktrees", beadID+"-recovery")
 	branch := "recovery/" + beadID
 
@@ -197,7 +205,8 @@ func ProvisionRecoveryWorktree(repoPath string, beadID string) (*spgit.WorktreeC
 		}
 	}
 
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: "main"}
+	base := repoconfig.ResolveBranchBase(baseBranch)
+	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: base}
 	wc, err := rc.CreateWorktreeNewBranch(dir, branch, startPoint)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create recovery worktree at %s from %s: %w", dir, startPoint, err)
@@ -206,7 +215,7 @@ func ProvisionRecoveryWorktree(repoPath string, beadID string) (*spgit.WorktreeC
 	cleanup := func() {
 		wc.Cleanup()
 		// Delete the ephemeral recovery branch so a second attempt can recreate it.
-		rc2 := &spgit.RepoContext{Dir: repoPath, BaseBranch: "main"}
+		rc2 := &spgit.RepoContext{Dir: repoPath, BaseBranch: base}
 		_ = rc2.ForceDeleteBranch(branch)
 	}
 	return wc, cleanup, nil
@@ -216,31 +225,35 @@ func ProvisionRecoveryWorktree(repoPath string, beadID string) (*spgit.WorktreeC
 // Built-in recovery actions
 // ---------------------------------------------------------------------------
 
-// actionRebaseOntoMain fetches origin/main and rebases the worktree branch
-// onto it. Aborts and returns an error with conflicted file list on conflict.
-func actionRebaseOntoMain() RecoveryAction {
+// actionRebaseOntoBase fetches origin/<base> and rebases the worktree branch
+// onto it. The base branch comes from RecoveryActionCtx.BaseBranch (resolved
+// from the bead's base-branch: label, spire.yaml, or the system default).
+// Aborts and returns an error with conflicted file list on conflict.
+func actionRebaseOntoBase() RecoveryAction {
 	return RecoveryAction{
-		Name:             "rebase-onto-main",
-		Description:      "Fetch origin/main and rebase the worktree branch onto it",
+		Name:             "rebase-onto-base",
+		Description:      "Fetch origin/<base> and rebase the worktree branch onto it",
 		RequiresWorktree: true,
 		MaxRetries:       3,
 		Fn: func(ctx *RecoveryActionCtx) error {
 			wc := ctx.Worktree
+			base := repoconfig.ResolveBranchBase(ctx.BaseBranch)
+			ref := "origin/" + base
 
-			// Fetch origin main into the worktree's shared refs.
-			wc.EnsureRemoteRef("origin", "main")
+			// Fetch origin/<base> into the worktree's shared refs.
+			wc.EnsureRemoteRef("origin", base)
 
 			// Attempt rebase.
-			if err := wc.RunCommand("git rebase origin/main"); err != nil {
+			if err := wc.RunCommand("git rebase " + ref); err != nil {
 				// Collect conflicted files before aborting.
 				files, _ := wc.ConflictedFiles()
 				_ = wc.RunCommand("git rebase --abort")
 				if len(files) > 0 {
 					return fmt.Errorf("rebase conflict in files: %s", strings.Join(files, ", "))
 				}
-				return fmt.Errorf("rebase onto origin/main failed: %w", err)
+				return fmt.Errorf("rebase onto %s failed: %w", ref, err)
 			}
-			ctx.Log("rebase onto origin/main succeeded")
+			ctx.Log(fmt.Sprintf("rebase onto %s succeeded", ref))
 			return nil
 		},
 	}

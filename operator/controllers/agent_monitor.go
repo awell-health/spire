@@ -15,6 +15,7 @@ import (
 	"github.com/go-logr/logr"
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // AgentMonitor tracks agent heartbeats and manages pods for managed agents.
@@ -285,7 +286,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 
 	branch := agent.Spec.RepoBranch
 	if branch == "" {
-		branch = "main"
+		branch = repoconfig.DefaultBranchBase
 	}
 
 	// Wizard environment
@@ -498,7 +499,7 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 
 	branch := agent.Spec.RepoBranch
 	if branch == "" {
-		branch = "main"
+		branch = repoconfig.DefaultBranchBase
 	}
 
 	// Wizard environment.
@@ -655,7 +656,7 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 
 	branch := agent.Spec.RepoBranch
 	if branch == "" {
-		branch = "main"
+		branch = repoconfig.DefaultBranchBase
 	}
 
 	// Wizard environment.

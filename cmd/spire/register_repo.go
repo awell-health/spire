@@ -303,7 +303,7 @@ func detectBranch(dir string) string {
 	rc := &spgit.RepoContext{Dir: dir}
 	b := rc.CurrentBranch()
 	if b == "" || b == "HEAD" {
-		return "main"
+		return repoconfig.DefaultBranchBase
 	}
 	return b
 }

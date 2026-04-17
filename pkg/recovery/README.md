@@ -124,7 +124,7 @@ Registered in `pkg/executor/recovery_actions.go`:
 
 | Action | What it does | Max retries |
 |--------|-------------|-------------|
-| `rebase-onto-main` | Fetch origin/main, rebase onto it | 3 |
+| `rebase-onto-base` | Fetch `origin/<base>`, rebase onto it (base from bead label / spire.yaml) | 3 |
 | `cherry-pick` | Cherry-pick a specified commit | 3 |
 | `resolve-conflicts` | Resolve merge conflicts (theirs/ours) | 2 |
 | `targeted-fix` | Record apprentice fix request | 3 |

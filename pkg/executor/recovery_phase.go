@@ -19,6 +19,7 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -999,9 +1000,10 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 // Avoids suggesting actions that have repeatedly failed.
 func parseHumanGuidance(comments []string, repeatedFailures map[string]int) string {
 	guidanceMap := map[string]string{
-		"rebase":            "rebase-onto-main",
-		"try rebase":        "rebase-onto-main",
-		"rebase onto main":  "rebase-onto-main",
+		"rebase":            "rebase-onto-base",
+		"try rebase":        "rebase-onto-base",
+		"rebase onto main":  "rebase-onto-base",
+		"rebase onto base":  "rebase-onto-base",
 		"cherry-pick":       "cherry-pick",
 		"cherry pick":       "cherry-pick",
 		"resolve conflicts": "resolve-conflicts",
@@ -1037,14 +1039,14 @@ func parseHumanGuidance(comments []string, repeatedFailures map[string]int) stri
 // decideFromGitState returns a recovery action based on git diagnostics,
 // or "" if no clear action is indicated.
 func decideFromGitState(ctx *FullRecoveryContext) string {
-	// Behind main and diverged → rebase (diverged implies conflicts likely).
+	// Behind base and diverged → rebase (diverged implies conflicts likely).
 	if ctx.GitState != nil && ctx.GitState.Diverged {
-		return "rebase-onto-main"
+		return "rebase-onto-base"
 	}
 
-	// Behind main → rebase.
+	// Behind base → rebase.
 	if ctx.GitState != nil && ctx.GitState.BehindMain > 0 {
-		return "rebase-onto-main"
+		return "rebase-onto-base"
 	}
 
 	// Dirty worktree (uncommitted changes, likely broken build) → rebuild.
@@ -1061,11 +1063,11 @@ func gitStateReasoning(ctx *FullRecoveryContext, action string) string {
 	switch action {
 	case "resolve-conflicts":
 		return "worktree has merge conflicts"
-	case "rebase-onto-main":
+	case "rebase-onto-base":
 		if ctx.GitState != nil {
 			return fmt.Sprintf("branch is %d commits behind %s", ctx.GitState.BehindMain, ctx.GitState.MainRef)
 		}
-		return "branch is behind main"
+		return "branch is behind base"
 	case "rebuild":
 		return "worktree has uncommitted changes (dirty)"
 	default:
@@ -1317,11 +1319,21 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 	// branch). Falls through to ProvisionRecoveryWorktree in RunRecoveryAction
 	// if graph state is unavailable.
 	var preResolvedWorktree *spgit.WorktreeContext
+	var baseBranch string
 	if wc, err := resumeWizardStagingWorktree(sourceBeadID, e); err == nil {
 		preResolvedWorktree = wc
-		e.log("resumed wizard staging worktree at %s (branch %s)", wc.Dir, wc.Branch)
+		baseBranch = wc.BaseBranch
+		e.log("resumed wizard staging worktree at %s (branch %s, base %s)", wc.Dir, wc.Branch, wc.BaseBranch)
 	} else {
 		e.log("cannot resume wizard staging worktree: %v; will fall back to recovery provisioning", err)
+	}
+
+	// Resolve base branch for the target bead when we didn't get it from the
+	// wizard's staging worktree. Walks the parent chain for a base-branch:
+	// label, then falls back to repoconfig.DefaultBranchBase. Never a literal
+	// "main".
+	if baseBranch == "" {
+		baseBranch = resolveBaseBranchForBead(sourceBeadID, e)
 	}
 
 	// Resolve Dolt DB handle for attempt tracking. Nil-safe: if DoltDB
@@ -1334,6 +1346,7 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 	actionCtx := &RecoveryActionCtx{
 		DB:             db,
 		RepoPath:       repoPath,
+		BaseBranch:     baseBranch,
 		Worktree:       preResolvedWorktree,
 		RecoveryBeadID: e.beadID,
 		TargetBeadID:   sourceBeadID,
@@ -1595,7 +1608,7 @@ func resumeWizardStagingWorktree(sourceBeadID string, e *Executor) (*spgit.Workt
 		baseBranch = gs.BaseBranch
 	}
 	if baseBranch == "" {
-		baseBranch = "main"
+		baseBranch = repoconfig.DefaultBranchBase
 	}
 	repoPath = gs.RepoPath
 	if repoPath == "" {
@@ -1630,6 +1643,28 @@ func resolveSourceBead(e *Executor, step StepConfig) string {
 		return bead.Meta(recovery.KeySourceBead)
 	}
 	return ""
+}
+
+// resolveBaseBranchForBead resolves the base branch for a target bead by
+// walking its parent chain for a `base-branch:` label. Falls back to
+// repoconfig.DefaultBranchBase if no label is found anywhere in the chain.
+// Used by recovery actions so rebases and diffs target the correct branch
+// (never a hardcoded "main").
+func resolveBaseBranchForBead(beadID string, e *Executor) string {
+	visited := make(map[string]bool)
+	current := beadID
+	for current != "" && !visited[current] {
+		visited[current] = true
+		bead, err := e.deps.GetBead(current)
+		if err != nil {
+			break
+		}
+		if bb := e.deps.HasLabel(bead, "base-branch:"); bb != "" {
+			return bb
+		}
+		current = bead.Parent
+	}
+	return repoconfig.DefaultBranchBase
 }
 
 // executorToRecoveryDeps builds a recovery.Deps from executor.Deps.

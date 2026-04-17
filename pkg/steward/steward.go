@@ -34,6 +34,7 @@ import (
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -726,7 +727,11 @@ func DetectMergeReady(dryRun bool, mq *MergeQueue) {
 			continue
 		}
 
-		baseBranch := "main"
+		// Resolve base branch: bead's base-branch: label overrides, else default.
+		baseBranch := store.HasLabel(b, "base-branch:")
+		if baseBranch == "" {
+			baseBranch = repoconfig.DefaultBranchBase
+		}
 
 		if dryRun {
 			log.Printf("[steward] [dry-run] would enqueue %s for merge (%s → %s)", b.ID, branch, baseBranch)
@@ -1436,10 +1441,7 @@ func executeMerge(ctx context.Context, req MergeRequest) MergeResult {
 		return MergeResult{BeadID: req.BeadID, Success: false, Error: fmt.Errorf("no staging worktree found at %s", wtDir)}
 	}
 
-	baseBranch := req.BaseBranch
-	if baseBranch == "" {
-		baseBranch = "main"
-	}
+	baseBranch := repoconfig.ResolveBranchBase(req.BaseBranch)
 
 	stagingWt := spgit.ResumeStagingWorktree(repoPath, wtDir, req.Branch, baseBranch, log.Printf)
 

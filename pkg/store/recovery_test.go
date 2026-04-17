@@ -71,7 +71,7 @@ func TestRecordRecoveryAttempt_AutoSetsIDAndCreatedAt(t *testing.T) {
 	attempt := RecoveryAttempt{
 		RecoveryBeadID: "spi-rec01",
 		TargetBeadID:   "spi-abc",
-		Action:         "rebase-onto-main",
+		Action:         "rebase-onto-base",
 		Outcome:        "in_progress",
 		AttemptNumber:  1,
 	}
@@ -145,7 +145,7 @@ func TestListRecoveryAttempts(t *testing.T) {
 	}).
 		AddRow("ra-001", "spi-rec01", "spi-abc", "resummon", nil,
 			"failure", "build failed", 1, "2026-04-14 10:00:00").
-		AddRow("ra-002", "spi-rec01", "spi-abc", "rebase-onto-main", `{"branch":"main"}`,
+		AddRow("ra-002", "spi-rec01", "spi-abc", "rebase-onto-base", `{"branch":"main"}`,
 			"success", nil, 2, "2026-04-14 11:00:00")
 
 	mock.ExpectQuery(`SELECT .+ FROM recovery_attempts WHERE recovery_bead_id = \? ORDER BY attempt_number ASC`).

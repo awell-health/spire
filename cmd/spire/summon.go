@@ -14,6 +14,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
@@ -322,10 +323,24 @@ func listK8sWizards() []string {
 }
 
 func createSpireAgentCR(name string) error {
-	// Detect repo URL from git remote.
+	// Detect repo URL and default branch from the cwd's git repo. Prefer
+	// spire.yaml's branch.base, then the checked-out branch, then the
+	// system default. Avoids hardcoding "main" for repos that base work on
+	// develop/trunk/etc.
 	cwd, _ := os.Getwd()
 	rc := &spgit.RepoContext{Dir: cwd}
 	repoURL := rc.RemoteURL("origin")
+
+	repoBranch := ""
+	if cfg, err := repoconfig.Load(cwd); err == nil && cfg != nil {
+		repoBranch = cfg.Branch.Base
+	}
+	if repoBranch == "" {
+		if b := rc.CurrentBranch(); b != "" && b != "HEAD" {
+			repoBranch = b
+		}
+	}
+	repoBranch = repoconfig.ResolveBranchBase(repoBranch)
 
 	manifest := fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1
 kind: SpireAgent
@@ -339,8 +354,8 @@ spec:
     - "spi-"
   maxConcurrent: 1
   repo: "%s"
-  repoBranch: "main"
-`, name, name, repoURL)
+  repoBranch: "%s"
+`, name, name, repoURL, repoBranch)
 
 	cmd := exec.Command("kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifest)

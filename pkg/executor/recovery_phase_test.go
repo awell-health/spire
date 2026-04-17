@@ -1181,8 +1181,8 @@ func TestParseHumanGuidance_KeywordMatching(t *testing.T) {
 		comments []string
 		want     string
 	}{
-		{"rebase keyword", []string{"try rebase onto main"}, "rebase-onto-main"},
-		{"rebase simple", []string{"rebase"}, "rebase-onto-main"},
+		{"rebase keyword", []string{"try rebase onto main"}, "rebase-onto-base"},
+		{"rebase simple", []string{"rebase"}, "rebase-onto-base"},
 		{"cherry-pick", []string{"cherry-pick abc123"}, "cherry-pick"},
 		{"cherry pick no hyphen", []string{"cherry pick that commit"}, "cherry-pick"},
 		{"resolve conflicts", []string{"resolve conflicts please"}, "resolve-conflicts"},
@@ -1214,7 +1214,7 @@ func TestParseHumanGuidance_KeywordMatching(t *testing.T) {
 func TestParseHumanGuidance_MostRecentCommentWins(t *testing.T) {
 	// Most recent comment (last in slice) should be checked first.
 	comments := []string{
-		"try rebase",     // rebase-onto-main
+		"try rebase",     // rebase-onto-base
 		"rebuild please", // rebuild — this is more recent
 	}
 	got := parseHumanGuidance(comments, nil)
@@ -1226,14 +1226,14 @@ func TestParseHumanGuidance_MostRecentCommentWins(t *testing.T) {
 func TestParseHumanGuidance_CaseInsensitive(t *testing.T) {
 	comments := []string{"REBASE onto main"}
 	got := parseHumanGuidance(comments, nil)
-	if got != "rebase-onto-main" {
-		t.Errorf("parseHumanGuidance = %q, want 'rebase-onto-main'", got)
+	if got != "rebase-onto-base" {
+		t.Errorf("parseHumanGuidance = %q, want 'rebase-onto-base'", got)
 	}
 }
 
 func TestParseHumanGuidance_SkipsRepeatedFailures(t *testing.T) {
 	comments := []string{"try rebase"}
-	repeated := map[string]int{"rebase-onto-main": 2}
+	repeated := map[string]int{"rebase-onto-base": 2}
 	got := parseHumanGuidance(comments, repeated)
 	if got != "" {
 		t.Errorf("parseHumanGuidance = %q, want empty (rebase has 2 failures)", got)
@@ -1242,7 +1242,7 @@ func TestParseHumanGuidance_SkipsRepeatedFailures(t *testing.T) {
 
 func TestParseHumanGuidance_SkipsRepeatedButFindsAlternative(t *testing.T) {
 	comments := []string{"try rebase or rebuild"}
-	repeated := map[string]int{"rebase-onto-main": 3}
+	repeated := map[string]int{"rebase-onto-base": 3}
 	got := parseHumanGuidance(comments, repeated)
 	if got != "rebuild" {
 		t.Errorf("parseHumanGuidance = %q, want 'rebuild' (rebase filtered out)", got)
@@ -1251,10 +1251,10 @@ func TestParseHumanGuidance_SkipsRepeatedButFindsAlternative(t *testing.T) {
 
 func TestParseHumanGuidance_RepeatedBelowThreshold(t *testing.T) {
 	comments := []string{"try rebase"}
-	repeated := map[string]int{"rebase-onto-main": 1} // below threshold of 2
+	repeated := map[string]int{"rebase-onto-base": 1} // below threshold of 2
 	got := parseHumanGuidance(comments, repeated)
-	if got != "rebase-onto-main" {
-		t.Errorf("parseHumanGuidance = %q, want 'rebase-onto-main' (only 1 failure)", got)
+	if got != "rebase-onto-base" {
+		t.Errorf("parseHumanGuidance = %q, want 'rebase-onto-base' (only 1 failure)", got)
 	}
 }
 
@@ -1271,8 +1271,8 @@ func TestDecideFromGitState_Diverged(t *testing.T) {
 		},
 	}
 	got := decideFromGitState(ctx)
-	if got != "rebase-onto-main" {
-		t.Errorf("decideFromGitState(diverged) = %q, want 'rebase-onto-main'", got)
+	if got != "rebase-onto-base" {
+		t.Errorf("decideFromGitState(diverged) = %q, want 'rebase-onto-base'", got)
 	}
 }
 
@@ -1285,8 +1285,8 @@ func TestDecideFromGitState_BehindMain(t *testing.T) {
 		},
 	}
 	got := decideFromGitState(ctx)
-	if got != "rebase-onto-main" {
-		t.Errorf("decideFromGitState(behind) = %q, want 'rebase-onto-main'", got)
+	if got != "rebase-onto-base" {
+		t.Errorf("decideFromGitState(behind) = %q, want 'rebase-onto-base'", got)
 	}
 }
 
@@ -1356,8 +1356,8 @@ func TestDecideFromGitState_PriorityOrder(t *testing.T) {
 		},
 	}
 	got := decideFromGitState(ctx)
-	if got != "rebase-onto-main" {
-		t.Errorf("decideFromGitState(diverged+dirty) = %q, want 'rebase-onto-main' (diverged takes priority)", got)
+	if got != "rebase-onto-base" {
+		t.Errorf("decideFromGitState(diverged+dirty) = %q, want 'rebase-onto-base' (diverged takes priority)", got)
 	}
 }
 
@@ -1378,7 +1378,7 @@ func TestGitStateReasoning(t *testing.T) {
 		contains string
 	}{
 		{"resolve-conflicts", "merge conflicts"},
-		{"rebase-onto-main", "7 commits behind main"},
+		{"rebase-onto-base", "7 commits behind main"},
 		{"rebuild", "uncommitted changes"},
 		{"unknown-action", "unknown-action"},
 	}
@@ -1394,9 +1394,9 @@ func TestGitStateReasoning(t *testing.T) {
 
 func TestGitStateReasoning_NilGitState(t *testing.T) {
 	ctx := &FullRecoveryContext{}
-	got := gitStateReasoning(ctx, "rebase-onto-main")
-	if got != "branch is behind main" {
-		t.Errorf("gitStateReasoning(nil git, rebase) = %q, want 'branch is behind main'", got)
+	got := gitStateReasoning(ctx, "rebase-onto-base")
+	if got != "branch is behind base" {
+		t.Errorf("gitStateReasoning(nil git, rebase) = %q, want 'branch is behind base'", got)
 	}
 }
 

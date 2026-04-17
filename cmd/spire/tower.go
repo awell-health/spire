@@ -18,6 +18,7 @@ import (
 	bdpkg "github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -1445,7 +1446,7 @@ func walkSharedReposForBind(tower *TowerConfig) error {
 		repoURL := r["repo_url"]
 		branch := r["branch"]
 		if branch == "" {
-			branch = "main"
+			branch = repoconfig.DefaultBranchBase
 		}
 
 		fmt.Printf("  %s  %s  (default branch: %s)\n", prefix, repoURL, branch)

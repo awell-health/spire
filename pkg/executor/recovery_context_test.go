@@ -301,7 +301,7 @@ func TestSummarizeContext_WithAttemptHistory(t *testing.T) {
 		TargetBead:   store.Bead{ID: "spi-t", Title: "T", Status: "in_progress"},
 		TotalAttempts: 2,
 		AttemptHistory: []store.RecoveryAttempt{
-			{AttemptNumber: 1, Action: "rebase-onto-main", Outcome: "failure", Error: "conflicts"},
+			{AttemptNumber: 1, Action: "rebase-onto-base", Outcome: "failure", Error: "conflicts"},
 			{AttemptNumber: 2, Action: "rebuild", Outcome: "success"},
 		},
 	}
@@ -309,7 +309,7 @@ func TestSummarizeContext_WithAttemptHistory(t *testing.T) {
 	if !strings.Contains(got, "Total attempts:** 2") {
 		t.Error("missing total attempts")
 	}
-	if !strings.Contains(got, "action=rebase-onto-main outcome=failure") {
+	if !strings.Contains(got, "action=rebase-onto-base outcome=failure") {
 		t.Error("missing first attempt")
 	}
 	if !strings.Contains(got, "action=rebuild outcome=success") {
@@ -321,13 +321,13 @@ func TestSummarizeContext_WithRepeatedFailures(t *testing.T) {
 	ctx := &FullRecoveryContext{
 		RecoveryBead:     store.Bead{ID: "spi-r"},
 		TargetBead:       store.Bead{ID: "spi-t", Title: "T", Status: "in_progress"},
-		RepeatedFailures: map[string]int{"rebase-onto-main": 3, "rebuild": 1},
+		RepeatedFailures: map[string]int{"rebase-onto-base": 3, "rebuild": 1},
 	}
 	got := SummarizeContext(ctx)
 	if !strings.Contains(got, "Repeated Failures") {
 		t.Error("missing repeated failures header")
 	}
-	if !strings.Contains(got, "rebase-onto-main: 3 failures") {
+	if !strings.Contains(got, "rebase-onto-base: 3 failures") {
 		t.Error("missing rebase failure count")
 	}
 }
