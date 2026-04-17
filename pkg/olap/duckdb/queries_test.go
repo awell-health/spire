@@ -1,10 +1,14 @@
-package olap
+//go:build cgo
+
+package duckdb
 
 import (
 	"context"
 	"math"
 	"testing"
 	"time"
+
+	"github.com/awell-health/spire/pkg/olap"
 )
 
 // insertTestRuns inserts a standard set of test data into agent_runs_olap.
