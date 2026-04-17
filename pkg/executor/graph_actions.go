@@ -274,6 +274,12 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 	spawnName := fmt.Sprintf("%s-%s", e.agentName, stepName)
 	started := time.Now()
 
+	// Per-round log path so looping steps (sage-review, fix under
+	// subgraph-review's `resets`) preserve history across rounds instead
+	// of overwriting. Name stays stable for the agent registry / OTel.
+	attemptNum := state.Steps[stepName].CompletedCount + 1
+	logName := fmt.Sprintf("%s-%d", spawnName, attemptNum)
+
 	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
 		Name:         spawnName,
 		BeadID:       e.beadID,
@@ -282,7 +288,7 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 		Step:         stepName,
 		ExtraArgs:    extraArgs,
 		CustomPrompt: step.With["prompt"],
-		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", spawnName+".log"),
+		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", logName+".log"),
 	})
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("spawn %s: %w", stepName, err)}
@@ -312,7 +318,6 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 	}
 
 	model := step.Model
-	attemptNum := state.Steps[stepName].CompletedCount + 1
 	e.recordAgentRun(spawnName, e.beadID, "", model, string(role), stepName, started, waitErr,
 		withParentRun(e.currentRunID),
 		withAttemptNumber(attemptNum))
