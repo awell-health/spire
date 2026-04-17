@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	_ "github.com/marcboeker/go-duckdb"
 )
 
 // WriteFunc opens a DuckDB database at path, begins a transaction, calls fn,
