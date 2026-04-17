@@ -1,4 +1,4 @@
-.PHONY: build build-steward build-agent load deploy apply restart logs status clean
+.PHONY: build build-steward build-agent load deploy apply restart logs status clean smoke-test-helm
 
 NAMESPACE ?= spire
 
@@ -62,3 +62,11 @@ status:
 
 clean:
 	kubectl delete namespace $(NAMESPACE) --ignore-not-found
+
+# --- Smoke tests ---
+
+# Run the multi-tenant helm smoke test. Installs two releases into
+# separate namespaces (spire-a, spire-b) with different bead prefixes
+# and verifies isolation. See docs/HELM.md for env-var options.
+smoke-test-helm:
+	bash hack/multi-tenant-smoke-test.sh
