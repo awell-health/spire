@@ -54,3 +54,6 @@ dist/
 .beads/routes.jsonl
 .beads/interactions.jsonl
 .beads/.beads-credential-key.beads/
+
+# Local files
+*.local.*

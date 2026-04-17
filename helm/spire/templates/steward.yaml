@@ -18,6 +18,45 @@ spec:
         app.kubernetes.io/name: spire-steward
     spec:
       serviceAccountName: spire-operator
+      initContainers:
+        # Non-interactive tower attach: waits for the cloned DB to be served
+        # by the dolt pod, reads project_id and prefix from its metadata
+        # table, and writes an authoritative .beads/ workspace to /data.
+        # Replaces the older static beads-seed ConfigMap approach — shares
+        # logic with `spire tower attach` via pkg/tower so CLI and cluster
+        # paths stay aligned.
+        - name: tower-attach
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ ! -d /data/.git ]; then
+                cd /data && git init -q 2>/dev/null || true
+                git config user.name "spire-steward"
+                git config user.email "steward@spire.local"
+              fi
+              exec spire tower attach-cluster \
+                --data-dir=/data \
+                --database="$BEADS_DATABASE" \
+                --prefix="$BEADS_PREFIX" \
+                --dolthub-remote="$DOLTHUB_REMOTE" \
+                --dolt-wait=300s
+          env:
+            - name: DOLT_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: DOLT_PORT
+              value: "3306"
+            - name: BEADS_DATABASE
+              value: {{ .Values.beads.database | default .Values.beads.prefix | quote }}
+            - name: BEADS_PREFIX
+              value: {{ .Values.beads.prefix | quote }}
+            - name: DOLTHUB_REMOTE
+              value: {{ .Values.dolthub.remote | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: steward
           image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag }}

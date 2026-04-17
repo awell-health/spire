@@ -164,7 +164,7 @@ data:
   init.sh: |
     #!/bin/bash
     set -e
-    DB_DIR="/var/lib/dolt/spi"
+    DB_DIR="/var/lib/dolt/{{ .Values.beads.database | default .Values.beads.prefix }}"
 
     dolt config --global --set user.name "spire-dolt"
     dolt config --global --set user.email "dolt@spire.local"
@@ -172,10 +172,10 @@ data:
     if [ ! -d "$DB_DIR/.dolt" ]; then
       echo "[dolt-init] first boot — cloning from DoltHub..."
       cd /var/lib/dolt
-      dolt clone "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}" spi 2>&1 \
+      dolt clone "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}" {{ .Values.beads.database | default .Values.beads.prefix }} 2>&1 \
         || {
           echo "[dolt-init] WARNING: clone failed — initializing empty database"
-          mkdir -p spi && cd spi && dolt init
+          mkdir -p {{ .Values.beads.database | default .Values.beads.prefix }} && cd {{ .Values.beads.database | default .Values.beads.prefix }} && dolt init
           dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}"
         }
     else

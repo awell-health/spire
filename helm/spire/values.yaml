@@ -4,6 +4,11 @@
 # -- Kubernetes namespace to deploy into
 namespace: spire
 
+# -- Whether the chart should render a Namespace resource. Set to false when
+# using `helm install --create-namespace` or when the namespace is pre-created
+# and managed outside the chart. Defaults to true for backward compatibility.
+createNamespace: true
+
 # -- Container image registry and tags
 images:
   steward:
@@ -27,8 +32,15 @@ dolthub:
   user: ""
   password: ""
 
-# -- Anthropic API key for agent LLM calls (required)
+# -- Anthropic credentials. Provide ONE of apiKey or oauthToken.
+# oauthToken is from `claude setup-token` on a Max/Team subscription
+# (starts with sk-ant-oat01-...). apiKey is a classic API key.
 anthropic:
+  apiKey: ""
+  oauthToken: ""
+
+# -- Optional: OpenAI API key for codex provider
+openai:
   apiKey: ""
 
 # -- Optional: GitHub token for repo operations
@@ -39,9 +51,20 @@ github:
 linear:
   apiKey: ""
 
-# -- Prefix for the hub beads in this cluster
+# -- If set, the chart will NOT render spire-credentials and will instead
+# reference an externally-created Secret with this name. Useful for prod
+# installs where secrets are managed outside helm (sealed-secrets,
+# external-secrets-operator, vault-injector, etc.). The external secret
+# must contain the same keys the chart would render.
+existingSecret: ""
+
+# -- Bead configuration for this tenant
 beads:
+  # Bead ID prefix (e.g. "spi" → spi-abc123)
   prefix: "spi"
+  # Local dolt database name. Defaults to prefix. Must match what `dolt clone`
+  # creates on disk and what bd's metadata.json looks up via SQL.
+  database: ""
 
 # -- Steward configuration
 steward:
