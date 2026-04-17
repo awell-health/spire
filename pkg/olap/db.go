@@ -158,18 +158,6 @@ func (d *DB) WithWriteLock(fn func(*sql.DB) error) error {
 	return fn(d.db)
 }
 
-// FormulaStats holds aggregated performance data for a formula name+version pair.
-type FormulaStats struct {
-	FormulaName     string
-	FormulaVersion  string
-	TotalRuns       int
-	Successes       int
-	SuccessRate     float64 // 0–100
-	AvgCostUSD      float64
-	AvgReviewRounds float64
-	RunsLast30d     int
-}
-
 // QueryFormulaPerformance returns aggregated stats per formula name and version
 // for all runs with started_at >= since.
 func (d *DB) QueryFormulaPerformance(since time.Time) ([]FormulaStats, error) {

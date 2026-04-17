@@ -6,86 +6,11 @@ import (
 	"time"
 )
 
-// DORAMetrics holds the four DORA performance metrics.
-type DORAMetrics struct {
-	DeployFrequency   float64 // deploys per week
-	LeadTimeSeconds   float64 // avg seconds from first commit to deploy
-	ChangeFailureRate float64 // ratio 0.0-1.0
-	MTTRSeconds       float64 // mean time to recovery
-}
-
-// SummaryStats holds overall run statistics.
-type SummaryStats struct {
-	TotalRuns    int
-	Successes    int
-	Failures     int
-	SuccessRate  float64
-	AvgCostUSD   float64
-	AvgDurationS float64
-	TotalCostUSD float64
-}
-
-// ModelStats holds per-model aggregated statistics.
-type ModelStats struct {
-	Model        string
-	RunCount     int
-	SuccessRate  float64
-	AvgCostUSD   float64
-	AvgDurationS float64
-	TotalTokens  int64
-}
-
-// PhaseStats holds per-phase aggregated statistics.
-type PhaseStats struct {
-	Phase        string
-	RunCount     int
-	SuccessRate  float64
-	AvgCostUSD   float64
-	AvgDurationS float64
-}
-
-// WeeklyTrend holds weekly aggregated metrics for trend display.
-type WeeklyTrend struct {
-	WeekStart    time.Time
-	RunCount     int
-	SuccessRate  float64
-	TotalCostUSD float64
-	MergeCount   int
-}
-
-// FailureStats holds failure breakdown by class.
-type FailureStats struct {
-	FailureClass string
-	Count        int
-	Percentage   float64
-}
-
-// ToolUsageStats holds tool call aggregates per formula/phase.
-type ToolUsageStats struct {
-	FormulaName string
-	Phase       string
-	TotalRead   int
-	TotalEdit   int
-	TotalTools  int
-	ReadRatio   float64 // read / (read+edit)
-}
-
-// BugCausality holds failure hotspot data for repeated failures on a bead.
-type BugCausality struct {
-	BeadID       string
-	FailureClass string
-	AttemptCount int
-	LastFailure  time.Time
-}
-
-// CostTrendPoint holds daily cost, token, and run count data.
-type CostTrendPoint struct {
-	Date             time.Time
-	TotalCost        float64
-	RunCount         int
-	PromptTokens     int64
-	CompletionTokens int64
-}
+// Shared types used by the queries below (DORAMetrics, SummaryStats,
+// ModelStats, PhaseStats, WeeklyTrend, FailureStats, ToolUsageStats,
+// BugCausality, CostTrendPoint, ToolEventStats, StepToolBreakdown,
+// SpanRecord, APIEventStats) are declared in olap.go so both backend
+// subpackages can consume them without import cycles.
 
 // QueryDORA computes DORA metrics from weekly_merge_stats and agent_runs_olap.
 func (d *DB) QueryDORA(since time.Time) (*DORAMetrics, error) {
@@ -357,21 +282,6 @@ func (d *DB) QueryBugCausality(limit int) ([]BugCausality, error) {
 	return out, rows.Err()
 }
 
-// ToolEventStats holds aggregated tool event statistics from the tool_events table.
-type ToolEventStats struct {
-	ToolName     string  `json:"tool_name"`
-	Count        int     `json:"count"`
-	AvgDurationMs float64 `json:"avg_duration_ms"`
-	FailureCount int     `json:"failure_count"`
-	Step         string  `json:"step,omitempty"`
-}
-
-// StepToolBreakdown holds per-step tool usage for the trace view.
-type StepToolBreakdown struct {
-	Step  string           `json:"step"`
-	Tools []ToolEventStats `json:"tools"`
-}
-
 // QueryToolEvents returns aggregated tool event stats since the given time.
 func (d *DB) QueryToolEvents(since time.Time) ([]ToolEventStats, error) {
 	ctx := context.Background()
@@ -477,20 +387,6 @@ func (d *DB) QueryToolEventsByStep(beadID string) ([]StepToolBreakdown, error) {
 	return out, nil
 }
 
-// SpanRecord holds a single row from the tool_spans table.
-type SpanRecord struct {
-	TraceID      string    `json:"trace_id"`
-	SpanID       string    `json:"span_id"`
-	ParentSpanID string    `json:"parent_span_id"`
-	SpanName     string    `json:"span_name"`
-	Kind         string    `json:"kind"`
-	DurationMs   int       `json:"duration_ms"`
-	Success      bool      `json:"success"`
-	StartTime    time.Time `json:"start_time"`
-	EndTime      time.Time `json:"end_time"`
-	Attributes   string    `json:"attributes,omitempty"`
-}
-
 // QueryToolSpansByBead returns all spans for a bead, ordered by start_time.
 // Used for the waterfall trace view.
 func (d *DB) QueryToolSpansByBead(beadID string) ([]SpanRecord, error) {
@@ -526,16 +422,6 @@ func (d *DB) QueryToolSpansByBead(beadID string) ([]SpanRecord, error) {
 		out = append(out, s)
 	}
 	return out, rows.Err()
-}
-
-// APIEventStats holds aggregated API event statistics.
-type APIEventStats struct {
-	Model        string  `json:"model"`
-	Count        int     `json:"count"`
-	AvgDurationMs float64 `json:"avg_duration_ms"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	TotalInputTokens  int64 `json:"total_input_tokens"`
-	TotalOutputTokens int64 `json:"total_output_tokens"`
 }
 
 // QueryAPIEventsByBead returns aggregated API event stats for a bead.
