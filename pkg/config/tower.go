@@ -21,6 +21,17 @@ type TowerConfig struct {
 	Archmage      ArchmageConfig               `json:"archmage,omitempty"`
 	LocalBindings map[string]*LocalRepoBinding `json:"local_bindings,omitempty"`
 	MaxConcurrent int                          `json:"max_concurrent,omitempty"` // max simultaneous wizards; 0 = unlimited
+	Clusters      []ClusterAttachment          `json:"clusters,omitempty"`
+}
+
+// ClusterAttachment records a Kubernetes cluster a tower can dispatch work to.
+// One entry per namespace — the namespace is the natural identifier because a
+// single physical cluster may host several isolated Spire installs.
+type ClusterAttachment struct {
+	Namespace  string `json:"namespace"`
+	Kubeconfig string `json:"kubeconfig,omitempty"` // path; empty means in-cluster
+	Context    string `json:"context,omitempty"`    // kubeconfig context name; empty means current
+	InCluster  bool   `json:"in_cluster,omitempty"`
 }
 
 // LocalRepoBinding records machine-local state for a shared tower repo.

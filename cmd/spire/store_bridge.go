@@ -10,6 +10,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/store"
+	towerpkg "github.com/awell-health/spire/pkg/tower"
 	"github.com/steveyegge/beads"
 )
 
@@ -409,6 +410,16 @@ func reviewRoundNumber(b Bead) int {
 
 func stepBeadPhaseName(b Bead) string {
 	return store.StepBeadPhaseName(b)
+}
+
+// --- Tower cluster attachment bridge ---
+
+// towerAttachCluster records a ClusterAttachment on the active tower (or the
+// tower named in opts.Tower). Thin wrapper around pkg/tower so cmd/spire
+// paths call AttachCluster through the same bridge pattern used for store
+// and formula operations.
+func towerAttachCluster(opts towerpkg.AttachOptions) error {
+	return towerpkg.AttachCluster(opts)
 }
 
 // --- Tower formula bridge (delegate to pkg/store with DB from active store) ---

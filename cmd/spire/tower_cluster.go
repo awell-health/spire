@@ -28,11 +28,31 @@ import (
 var towerAttachClusterCmd = &cobra.Command{
 	Use:   "attach-cluster",
 	Short: "Non-interactive tower attach for cluster bootstrap",
-	Long: `Seeds .beads/ in --data-dir after reading the attached tower's
-project_id and prefix from the live dolt server. Expects the dolt server to
-be reachable via DOLT_HOST/DOLT_PORT env (or --host/--port) and the database
-to already exist on it (cloned by a separate init container).`,
+	Long: `attach-cluster has two modes.
+
+Bootstrap mode (--data-dir/--database): seeds .beads/ in --data-dir after
+reading the attached tower's project_id and prefix from the live dolt server.
+Used by the steward init container in the Helm chart.
+
+Register mode (--namespace): records a ClusterAttachment on the tower config
+so later dispatch code can route work to a specific Kubernetes namespace.
+When --in-cluster is set, uses the pod service account instead of a
+kubeconfig file.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		namespace, _ := cmd.Flags().GetString("namespace")
+		if namespace != "" {
+			towerName, _ := cmd.Flags().GetString("tower")
+			kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+			kubeContext, _ := cmd.Flags().GetString("context")
+			inCluster, _ := cmd.Flags().GetBool("in-cluster")
+			return towerAttachCluster(towerpkg.AttachOptions{
+				Tower:      towerName,
+				Namespace:  namespace,
+				Kubeconfig: kubeconfig,
+				Context:    kubeContext,
+				InCluster:  inCluster,
+			})
+		}
 		dataDir, _ := cmd.Flags().GetString("data-dir")
 		database, _ := cmd.Flags().GetString("database")
 		prefixFallback, _ := cmd.Flags().GetString("prefix")
@@ -43,11 +63,18 @@ to already exist on it (cloned by a separate init container).`,
 }
 
 func init() {
-	towerAttachClusterCmd.Flags().String("data-dir", "/data", "Directory containing .beads/ to seed")
-	towerAttachClusterCmd.Flags().String("database", "", "Dolt database name (required)")
-	towerAttachClusterCmd.Flags().String("prefix", "", "Bead prefix fallback (used if DB lacks prefix metadata)")
-	towerAttachClusterCmd.Flags().String("dolthub-remote", "", "DoltHub remote path (e.g. awell/awell); stored in TowerConfig for provenance")
-	towerAttachClusterCmd.Flags().Duration("dolt-wait", 120*time.Second, "How long to wait for dolt server reachability")
+	towerAttachClusterCmd.Flags().String("data-dir", "/data", "Directory containing .beads/ to seed (bootstrap mode)")
+	towerAttachClusterCmd.Flags().String("database", "", "Dolt database name (bootstrap mode)")
+	towerAttachClusterCmd.Flags().String("prefix", "", "Bead prefix fallback (bootstrap mode)")
+	towerAttachClusterCmd.Flags().String("dolthub-remote", "", "DoltHub remote path; stored in TowerConfig for provenance (bootstrap mode)")
+	towerAttachClusterCmd.Flags().Duration("dolt-wait", 120*time.Second, "How long to wait for dolt server reachability (bootstrap mode)")
+
+	towerAttachClusterCmd.Flags().String("namespace", "", "Kubernetes namespace for the cluster attachment (register mode)")
+	towerAttachClusterCmd.Flags().String("kubeconfig", "", "Path to kubeconfig; defaults to $KUBECONFIG or ~/.kube/config (register mode)")
+	towerAttachClusterCmd.Flags().String("context", "", "Kubeconfig context name; empty means current context (register mode)")
+	towerAttachClusterCmd.Flags().Bool("in-cluster", false, "Use pod service account instead of a kubeconfig file (register mode)")
+	towerAttachClusterCmd.Flags().String("tower", "", "Target tower name; defaults to the active tower (register mode)")
+
 	towerCmd.AddCommand(towerAttachClusterCmd)
 }
 
