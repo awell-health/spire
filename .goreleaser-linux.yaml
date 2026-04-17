@@ -27,6 +27,131 @@ archives:
 checksum:
   name_template: "checksums_linux.txt"
 
+dockers:
+  # --- steward ---
+  - id: steward-amd64
+    goos: linux
+    goarch: amd64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-steward:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-steward:latest-amd64"
+    dockerfile: Dockerfile.steward
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+
+  - id: steward-arm64
+    goos: linux
+    goarch: arm64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-steward:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-steward:latest-arm64"
+    dockerfile: Dockerfile.steward
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+
+  # --- agent ---
+  - id: agent-amd64
+    goos: linux
+    goarch: amd64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-agent:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-agent:latest-amd64"
+    dockerfile: Dockerfile.agent
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+
+  - id: agent-arm64
+    goos: linux
+    goarch: arm64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-agent:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-agent:latest-arm64"
+    dockerfile: Dockerfile.agent
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+
+  # --- builder ---
+  - id: builder-amd64
+    goos: linux
+    goarch: amd64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-builder:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-builder:latest-amd64"
+    dockerfile: Dockerfile.builder
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+
+  - id: builder-arm64
+    goos: linux
+    goarch: arm64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-builder:{{ .Tag }}-arm64"
+      - "ghcr.io/awell-health/spire-builder:latest-arm64"
+    dockerfile: Dockerfile.builder
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+
+docker_manifests:
+  # steward
+  - name_template: "ghcr.io/awell-health/spire-steward:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/awell-health/spire-steward:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-steward:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/awell-health/spire-steward:latest"
+    image_templates:
+      - "ghcr.io/awell-health/spire-steward:latest-amd64"
+      - "ghcr.io/awell-health/spire-steward:latest-arm64"
+
+  # agent
+  - name_template: "ghcr.io/awell-health/spire-agent:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/awell-health/spire-agent:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-agent:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/awell-health/spire-agent:latest"
+    image_templates:
+      - "ghcr.io/awell-health/spire-agent:latest-amd64"
+      - "ghcr.io/awell-health/spire-agent:latest-arm64"
+
+  # builder
+  - name_template: "ghcr.io/awell-health/spire-builder:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/awell-health/spire-builder:{{ .Tag }}-amd64"
+      - "ghcr.io/awell-health/spire-builder:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/awell-health/spire-builder:latest"
+    image_templates:
+      - "ghcr.io/awell-health/spire-builder:latest-amd64"
+      - "ghcr.io/awell-health/spire-builder:latest-arm64"
+
 # No release — the darwin job creates the release and we append to it.
 release:
   disable: true
