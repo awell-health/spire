@@ -182,7 +182,7 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 			wg.Add(1)
 			go func(idx int, beadID string) {
 				defer wg.Done()
-				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx, idx)
+				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx+1, idx+1)
 				e.log("  dispatching %s for %s", name, beadID)
 
 				e.deps.UpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
@@ -273,7 +273,7 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 		e.log("=== sequential step %d/%d: %s ===", i+1, len(subtasks), subtaskID)
 		e.deps.UpdateBead(subtaskID, map[string]interface{}{"status": "in_progress"})
 
-		name := fmt.Sprintf("%s-seq-%d", e.agentName, i)
+		name := fmt.Sprintf("%s-seq-%d", e.agentName, i+1)
 		started := time.Now()
 		handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
 			Name:      name,

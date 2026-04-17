@@ -157,7 +157,7 @@ func FetchInspectorData(b BoardBead) InspectorData {
 	}
 
 	// Sibling spawn logs: apprentices, sages, clerics. Each spawn is named
-	// wizard-<beadID>-<suffix> (e.g. -impl, -sage-review, -w0-0, -seq-1),
+	// wizard-<beadID>-<suffix> (e.g. -impl, -sage-review-1, -w1-1, -seq-1),
 	// with its own claude/ subdir for any claude subprocesses it invokes.
 	knownNames := map[string]bool{}
 	for _, lv := range data.Logs {
