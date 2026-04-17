@@ -19,6 +19,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	towerpkg "github.com/awell-health/spire/pkg/tower"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -345,45 +346,22 @@ var ensureBootstrapCustomTypesFn = ensureCustomBeadTypes
 
 // bootstrapTowerBeadsDir writes the minimum .beads workspace needed for a
 // tower-backed store and ensures Spire's required custom bead types exist.
+// The file writes themselves are in pkg/tower.BootstrapBeadsDir so the
+// cluster attach flow uses the same logic; this wrapper adds the bd-shell
+// step for custom types (which cluster mode runs via a separate init step).
 func bootstrapTowerBeadsDir(beadsDir string, tower *TowerConfig) error {
-	if err := os.MkdirAll(beadsDir, 0755); err != nil {
-		return fmt.Errorf("create .beads/: %w", err)
+	if err := towerpkg.BootstrapBeadsDir(towerpkg.BootstrapOpts{
+		BeadsDir: beadsDir,
+		Tower:    tower,
+		DoltHost: doltHost(),
+		DoltPort: doltPort(),
+		AutoPush: false,
+	}); err != nil {
+		return err
 	}
-
-	// Remove stale dolt-server.port — beads resolves port as:
-	//   env var > dolt-server.port > config.yaml > metadata.json
-	// A stale port file would override everything we write below.
-	os.Remove(filepath.Join(beadsDir, "dolt-server.port"))
-
-	// Including dolt_server_port triggers ServerModeExternal in beads, which
-	// suppresses auto-start — preventing beads from launching a shadow dolt.
-	serverPort, _ := strconv.Atoi(doltPort())
-	beadsMeta := map[string]any{
-		"database":         "dolt",
-		"backend":          "dolt",
-		"dolt_mode":        "server",
-		"dolt_database":    tower.Database,
-		"dolt_server_port": serverPort,
-	}
-	if tower.ProjectID != "" {
-		beadsMeta["project_id"] = tower.ProjectID
-	}
-	metaBytes, _ := json.MarshalIndent(beadsMeta, "", "  ")
-	metaPath := filepath.Join(beadsDir, "metadata.json")
-	if err := os.WriteFile(metaPath, append(metaBytes, '\n'), 0644); err != nil {
-		return fmt.Errorf("write .beads/metadata.json: %w", err)
-	}
-
-	configYAML := fmt.Sprintf("dolt.host: %q\ndolt.port: %s\nauto_push: false\n", doltHost(), doltPort())
-	configPath := filepath.Join(beadsDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
-		return fmt.Errorf("write .beads/config.yaml: %w", err)
-	}
-
 	if err := ensureBootstrapCustomTypesFn(beadsDir); err != nil {
 		return fmt.Errorf("register custom bead types: %w", err)
 	}
-
 	return nil
 }
 
@@ -658,6 +636,8 @@ func cmdTower(args []string) error {
 		return cmdTowerCreate(args[1:])
 	case "attach":
 		return cmdTowerAttach(args[1:])
+	case "attach-cluster":
+		return towerAttachClusterCmd.RunE(towerAttachClusterCmd, args[1:])
 	case "list":
 		return cmdTowerList()
 	case "use":
@@ -1007,24 +987,14 @@ func cmdTowerAttach(args []string) error {
 	cloneDir := filepath.Join(dataDir, dbName)
 	fmt.Println("reading tower identity...")
 
-	var projectID, hubPrefix string
-
-	// Try to read project_id from metadata
-	metaOut, err := dolt.LocalQuery(cloneDir, "SELECT `value` FROM metadata WHERE `key` = '_project_id'")
-	if err == nil {
-		projectID = extractSQLValue(metaOut)
+	localExec := func(q string) (string, error) {
+		return dolt.LocalQuery(cloneDir, q)
 	}
-	if projectID == "" {
-		return fmt.Errorf("no project_id found in tower database — was it created with 'spire tower create'?")
-	}
-
-	// Try to read prefix from config
-	prefixOut, err := dolt.LocalQuery(cloneDir, "SELECT `value` FROM metadata WHERE `key` = 'prefix'")
-	if err == nil {
-		hubPrefix = extractSQLValue(prefixOut)
+	projectID, hubPrefix, err := towerpkg.ReadMetadata(localExec, "")
+	if err != nil {
+		return err
 	}
 	if hubPrefix == "" {
-		// Derive from database name
 		hubPrefix = derivePrefixFromName(dbName)
 	}
 
