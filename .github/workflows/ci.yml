@@ -26,6 +26,46 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+  # ClickHouse integration tests — runs the pkg/olap/clickhouse contract
+  # suite against a real ClickHouse server. Isolated from the main
+  # `build` job so the DuckDB unit tests stay on the happy path.
+  clickhouse-integration:
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24
+        ports:
+          - 9000:9000
+          - 8123:8123
+        env:
+          CLICKHOUSE_DB: default
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: ""
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Wait for ClickHouse
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8123/ping >/dev/null; then
+              echo "ClickHouse is ready"
+              exit 0
+            fi
+            echo "Waiting for ClickHouse ($i/30)..."
+            sleep 2
+          done
+          echo "ClickHouse did not become ready in time" >&2
+          exit 1
+      - name: Run ClickHouse contract tests
+        env:
+          SPIRE_CLICKHOUSE_DSN: clickhouse://127.0.0.1:9000/spire_test
+        run: go test -tags=integration -count=1 -timeout 120s ./pkg/olap/clickhouse/...
+
   tag-and-release:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
