@@ -32,14 +32,14 @@ type ActionHandler func(e *Executor, stepName string, step StepConfig, state *Gr
 // (actionGraphRun → RunNestedGraph → dispatchAction → actionRegistry).
 var actionRegistry = map[string]ActionHandler{
 	"wizard.run":             actionWizardRun,
-	"check.design-linked":   actionCheckDesignLinked,
+	"check.design-linked":    actionCheckDesignLinked,
 	"beads.materialize_plan": actionMaterializePlan,
-	"dispatch.children":     actionDispatchChildren,
-	"verify.run":            actionVerifyRun,
-	"git.merge_to_main":     actionMergeToMain,
-	"bead.finish":           actionBeadFinish,
-	"human.approve":         actionHumanApprove,
-	"noop":                  actionNoop,
+	"dispatch.children":      actionDispatchChildren,
+	"verify.run":             actionVerifyRun,
+	"git.merge_to_main":      actionMergeToMain,
+	"bead.finish":            actionBeadFinish,
+	"human.approve":          actionHumanApprove,
+	"noop":                   actionNoop,
 }
 
 func init() {
@@ -225,7 +225,7 @@ func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state 
 	// Build revision policy from graph vars and step config.
 	arbiterModel := step.Model
 	if arbiterModel == "" {
-		arbiterModel = "claude-opus-4-6"
+		arbiterModel = "claude-opus-4-7"
 	}
 	maxRounds := 3
 	if mr, ok := state.Vars["max_review_rounds"]; ok {
@@ -444,6 +444,7 @@ func (e *Executor) sendArchmageMessage(msg string) {
 // Reads With parameters:
 //
 //	status: "closed" | "done" | "wontfix" | "discard" (default: "closed")
+//
 // actionNoop is a no-op action that completes immediately with success.
 // Used for terminal signal steps in nested graphs (e.g. subgraph-review merge/discard
 // terminals) where the parent graph is responsible for the real side effects.
@@ -728,7 +729,7 @@ func actionMaterializePlan(e *Executor, stepName string, step StepConfig, state 
 	e.log("materialize: found %d subtask(s) for %s", len(realChildren), e.beadID)
 
 	outputs := map[string]string{
-		"status":     "pass",
+		"status":      "pass",
 		"child_count": fmt.Sprintf("%d", len(realChildren)),
 	}
 	return ActionResult{Outputs: outputs}

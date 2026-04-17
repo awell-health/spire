@@ -48,7 +48,7 @@ description = "Sage reviews staging branch diff"
 role = "sage"
 title = "Sage review"
 timeout = "10m"
-model = "claude-opus-4-6"
+model = "claude-opus-4-7"
 verdict_only = true
 
 # Step 2: Fix apprentice. Routes when sage rejects AND round budget remains.
@@ -62,7 +62,7 @@ needs = ["sage-review"]
 role = "apprentice"
 title = "Fix: address sage review feedback"
 timeout = "15m"
-model = "claude-opus-4-6"
+model = "claude-opus-4-7"
 resets = ["sage-review", "fix"]
 [steps.fix.when]
 all = [
@@ -80,7 +80,7 @@ needs = ["sage-review"]
 role = "arbiter"
 title = "Arbiter: break review deadlock"
 timeout = "10m"
-model = "claude-opus-4-6"
+model = "claude-opus-4-7"
 [steps.arbiter.when]
 all = [
   { left = "steps.sage-review.outputs.verdict", op = "eq", right = "request_changes" },

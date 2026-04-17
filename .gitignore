@@ -12,6 +12,10 @@ cmd/spire/spire
 
 # Claude Code worktrees
 .claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# Stray mysql client state dir
+mysql:/
 
 # Runtime state
 synced-epics.json

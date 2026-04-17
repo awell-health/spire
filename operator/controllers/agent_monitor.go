@@ -25,7 +25,7 @@ type AgentMonitor struct {
 	Namespace      string
 	Interval       time.Duration
 	OfflineTimeout time.Duration // how long before an agent is considered offline
-	StewardImage     string        // default image for managed agent pods
+	StewardImage   string        // default image for managed agent pods
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -384,7 +384,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 						"--port=8080",
 						fmt.Sprintf("--agent-name=%s", agent.Name),
 					},
-					Env: sidecarEnv,
+					Env:        sidecarEnv,
 					WorkingDir: "/data", // bd/spire find .beads by walking up from CWD
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "comms", MountPath: "/comms"},
@@ -513,7 +513,6 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "WIZARD_MODEL", Value: "claude-opus-4-6"},
 		{Name: "WIZARD_MAX_REVIEW_ROUNDS", Value: "3"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
@@ -670,7 +669,6 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
 		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
 		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "WIZARD_MODEL", Value: "claude-opus-4-6"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 

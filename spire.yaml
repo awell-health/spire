@@ -5,7 +5,7 @@ runtime:
   lint: go vet ./cmd/spire/
 
 agent:
-  model: claude-opus-4-6
+  model: claude-opus-4-7
   stale: 10m
   timeout: 15m
 
