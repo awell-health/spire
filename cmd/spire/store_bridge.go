@@ -295,6 +295,10 @@ func storeCloseStepBead(stepID string) error {
 	return store.CloseStepBead(stepID)
 }
 
+func storeHookStepBead(stepID string) error {
+	return store.HookStepBead(stepID)
+}
+
 func storeUnhookStepBead(stepID string) error {
 	return store.UnhookStepBead(stepID)
 }

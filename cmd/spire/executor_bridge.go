@@ -136,6 +136,8 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		CreateStepBead:   storeCreateStepBead,
 		ActivateStepBead: storeActivateStepBead,
 		CloseStepBead:    storeCloseStepBead,
+		HookStepBead:     storeHookStepBead,
+		UnhookStepBead:   storeUnhookStepBead,
 
 		// Agent registry
 		RegistryAdd:    func(entry agent.Entry) error { return wizardRegistryAdd(entry) },
