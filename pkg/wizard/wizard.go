@@ -340,6 +340,12 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	// 8-9. Phase execution
 	var accMetrics ClaudeMetrics
+	// reviewFixSubprocessErr captures a non-zero exit from the review-fix
+	// claude subprocess (kill, timeout, bad prompt, etc.). It's checked
+	// after the commit step: if the subprocess failed AND nothing was
+	// staged, we must fail the whole step — see the guard after
+	// WizardCommit below.
+	var reviewFixSubprocessErr error
 	if reviewFix {
 		// --review-fix path: skip design, collect feedback, implement with feedback
 		feedback := WizardCollectReviewHistory(beadID, wizardName, deps)
@@ -369,6 +375,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		metrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, reviewFixTimeout, maxTurns)
 		if runErr != nil {
 			log("claude implement failed: %s", runErr)
+			reviewFixSubprocessErr = runErr
 		}
 		accMetrics = accMetrics.Add(metrics)
 		log("implement finished (%.0fs)", time.Since(claudeStartedAt).Seconds())
@@ -474,6 +481,15 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		} else {
 			retry.handleStepSuccess()
 		}
+	}
+
+	// 10b. Hard-failure guard for the review-fix apprentice. See
+	// reviewFixFailureGuard below for why this check is necessary and
+	// why we deliberately skip WizardWriteResult on this path.
+	if guardErr := reviewFixFailureGuard(reviewFix, committed, reviewFixSubprocessErr); guardErr != nil {
+		elapsed := time.Since(startedAt)
+		log("review-fix apprentice failed with no staged changes — failing step (%.0fs total)", elapsed.Seconds())
+		return guardErr
 	}
 
 	// 11. Build gate — the apprentice can't go home until the build passes.
@@ -1276,6 +1292,32 @@ Your code does not build. Fix the build errors below.
 
 ## Repo context paths
 %s`, buildCmdStr, buildErr, buildCmdStr, beadID, contextBlock.String())
+}
+
+// reviewFixFailureGuard returns a non-nil error when a review-fix
+// apprentice's claude subprocess exited non-zero (signal kill, timeout,
+// API error, etc.) AND nothing was staged. A no-op fix must NOT be
+// treated as success: the graph interpreter would fire the formula's
+// `resets` directive, re-run sage review against unchanged code, and
+// potentially flip an earlier request_changes into an approve — making
+// the whole review loop a no-op. Returning an error routes the step to
+// failed, which (per max_review_rounds + steps.arbiter.when) escalates
+// to the arbiter instead of looping.
+//
+// A successful subprocess that produced zero changes is a legitimate
+// edge case (e.g. the issue was already fixed before the wizard ran)
+// and is NOT caught here.
+//
+// Callers must NOT write result.json when this returns an error: the
+// executor's wizard.run dispatcher trusts result.json over the
+// subprocess exit status (pkg/executor/graph_actions.go wizardRunSpawn),
+// so writing a result would downgrade this failure to "completed" and
+// the resets would still fire.
+func reviewFixFailureGuard(reviewFix, committed bool, subprocessErr error) error {
+	if !reviewFix || committed || subprocessErr == nil {
+		return nil
+	}
+	return fmt.Errorf("review-fix apprentice failed with no staged changes: %w", subprocessErr)
 }
 
 // WizardCommit commits any changes on the branch.

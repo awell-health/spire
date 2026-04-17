@@ -2874,3 +2874,88 @@ func TestDispatchInjectedTasks_CounterSurvivesRestart(t *testing.T) {
 		t.Errorf("expected inject counter=6, got %d", state.Counters["inject"])
 	}
 }
+
+// TestRunGraph_FailedStepWithResetsDoesNotFireResets is the regression test
+// for spi-fljzd — a review-fix step that returns an error must NOT apply
+// its declared `resets` against upstream step(s). Production incident:
+// the fix apprentice was killed by its timeout, staged zero changes, and
+// the wizard returned nil. The graph interpreter treated the step as
+// completed and reset sage-review + fix to pending, re-running sage
+// against unchanged code and flipping request_changes to approve. This
+// test locks in the executor-level half of the contract: when a step's
+// action returns Error, its `resets` targets stay completed.
+func TestRunGraph_FailedStepWithResetsDoesNotFireResets(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"verdict": "request_changes"}}
+	}
+	actionRegistry["test.fail"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Error: fmt.Errorf("fix apprentice failed with no staged changes: signal: killed")}
+	}
+
+	// Mirror subgraph-review shape: sage-review → fix (resets sage-review).
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-reset-on-error",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"sage-review": {Action: "test.noop"},
+			"fix": {
+				Action: "test.fail",
+				Needs:  []string{"sage-review"},
+				Resets: []string{"sage-review", "fix"},
+			},
+			"merge": {Action: "test.noop", Needs: []string{"sage-review"}, Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	// Pre-mark sage-review completed with verdict=request_changes so fix routes.
+	exec.graphState.Steps["sage-review"] = StepState{
+		Status:          "completed",
+		CompletedCount:  1,
+		Outputs:         map[string]string{"verdict": "request_changes"},
+		StartedAt:       "2026-04-17T00:00:00Z",
+		CompletedAt:     "2026-04-17T00:00:01Z",
+	}
+
+	if err := exec.RunGraph(graph, exec.graphState); err != nil {
+		t.Fatalf("RunGraph returned error: %v (graph should park, not error)", err)
+	}
+
+	// The failing fix step must be hooked, not completed — otherwise the
+	// interpreter would have hit the resets code path.
+	fix := exec.graphState.Steps["fix"]
+	if fix.Status != "hooked" {
+		t.Errorf("fix step: expected hooked, got %s", fix.Status)
+	}
+	if fix.CompletedAt != "" {
+		t.Errorf("fix step: expected empty CompletedAt, got %s", fix.CompletedAt)
+	}
+
+	// sage-review must stay completed — resets were NOT applied. If they
+	// had fired, status would be back to "pending" and Outputs would be nil.
+	sage := exec.graphState.Steps["sage-review"]
+	if sage.Status != "completed" {
+		t.Errorf("sage-review: expected completed (resets must not fire on failed fix), got %s", sage.Status)
+	}
+	if v := sage.Outputs["verdict"]; v != "request_changes" {
+		t.Errorf("sage-review: expected verdict=request_changes preserved, got %q", v)
+	}
+	if sage.StartedAt == "" || sage.CompletedAt == "" {
+		t.Error("sage-review: expected timestamps preserved after failed fix")
+	}
+}
