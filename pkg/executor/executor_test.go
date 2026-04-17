@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"testing"
@@ -358,7 +359,7 @@ func TestEnrichSubtasksWithChangeSpecs(t *testing.T) {
 			comments[id] = append(comments[id], text)
 			return nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			callCount++
 			return []byte("**Change spec: fake**\n\n**Files to modify:**\n- foo.go"), nil
 		},
@@ -418,7 +419,7 @@ func TestEnrichSkipsAlreadyEnriched(t *testing.T) {
 			comments[id] = append(comments[id], text)
 			return nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			callCount++
 			return []byte("**Change spec: new**"), nil
 		},
@@ -513,7 +514,7 @@ func TestWizardPlanSkipsInternalDAGBeads(t *testing.T) {
 			return "spi-plan-child.1", nil
 		},
 		AddDep: func(issueID, depID string) error { return nil },
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			// If Claude is invoked, planning was attempted (not skipped).
 			planCalled = true
 			return []byte(`{"title": "Subtask 1", "description": "Do the thing", "deps": [], "shared_files": [], "do_not_touch": []}`), nil
@@ -577,7 +578,7 @@ func TestWizardPlanEnrichesRealChildren(t *testing.T) {
 			}, nil
 		},
 		AddComment: func(id, text string) error { return nil },
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			enrichCalls++
 			return []byte("**Change spec: test**"), nil
 		},

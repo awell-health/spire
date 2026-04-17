@@ -4,7 +4,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,12 +178,15 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		},
 
 		// Claude runner
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, logOut io.Writer) ([]byte, error) {
+			var stdout bytes.Buffer
 			cmd := exec.Command("claude", args...)
 			cmd.Dir = dir
 			cmd.Env = os.Environ()
-			cmd.Stderr = os.Stderr
-			return cmd.Output()
+			cmd.Stdout = io.MultiWriter(&stdout, logOut)
+			cmd.Stderr = io.MultiWriter(os.Stderr, logOut)
+			err := cmd.Run()
+			return stdout.Bytes(), err
 		},
 
 		// Focus context

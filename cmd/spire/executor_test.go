@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"testing"
@@ -160,7 +161,7 @@ func TestWizardPlanEnrichesWhenChildrenExist(t *testing.T) {
 			return nil
 		},
 		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) { return nil, nil },
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			callCount++
 			return []byte("**Change spec: fake**\n\n**Files to modify:**\n- foo.go — add Bar()"), nil
 		},

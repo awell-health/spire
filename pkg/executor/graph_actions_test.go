@@ -38,7 +38,7 @@ func planTestDeps(t *testing.T) (*Deps, *[][]string) {
 		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
 			return nil, nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			argsCopy := make([]string, len(args))
 			copy(argsCopy, args)
 			*capturedArgs = append(*capturedArgs, argsCopy)
@@ -142,7 +142,7 @@ func TestActionPlanTask_ZeroMaxTurns(t *testing.T) {
 func TestActionPlanEpic_FormulaMaxTurns(t *testing.T) {
 	deps, capturedArgs := planTestDeps(t)
 	// ClaudeRunner returns JSON lines for epic planning.
-	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+	deps.ClaudeRunner = func(args []string, dir string, _ io.Writer) ([]byte, error) {
 		argsCopy := make([]string, len(args))
 		copy(argsCopy, args)
 		*capturedArgs = append(*capturedArgs, argsCopy)
@@ -191,7 +191,7 @@ func TestActionPlanEpic_FormulaMaxTurns(t *testing.T) {
 // does NOT invent a hardcoded budget like 5.
 func TestActionPlanEpic_ZeroMaxTurns(t *testing.T) {
 	deps, capturedArgs := planTestDeps(t)
-	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+	deps.ClaudeRunner = func(args []string, dir string, _ io.Writer) ([]byte, error) {
 		argsCopy := make([]string, len(args))
 		copy(argsCopy, args)
 		*capturedArgs = append(*capturedArgs, argsCopy)

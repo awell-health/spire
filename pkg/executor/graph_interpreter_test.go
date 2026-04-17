@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -783,7 +784,7 @@ func TestActionWizardRun_TaskPlan(t *testing.T) {
 	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
 		return nil, nil
 	}
-	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+	deps.ClaudeRunner = func(args []string, dir string, _ io.Writer) ([]byte, error) {
 		claudeCalledWith = args
 		return []byte("**Approach:** Do the thing\n\n**Steps:**\n1. Change foo.go"), nil
 	}
@@ -843,7 +844,7 @@ func TestActionWizardRun_EpicPlan(t *testing.T) {
 	deps.IsAttemptBead = func(b Bead) bool { return false }
 	deps.IsStepBead = func(b Bead) bool { return false }
 	deps.IsReviewRoundBead = func(b Bead) bool { return false }
-	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+	deps.ClaudeRunner = func(args []string, dir string, _ io.Writer) ([]byte, error) {
 		claudeCalledWith = args
 		// Return two subtask JSON lines.
 		return []byte(`{"title": "Task A", "description": "Do A", "deps": [], "shared_files": [], "do_not_touch": []}

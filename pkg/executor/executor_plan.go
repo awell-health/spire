@@ -92,7 +92,7 @@ Be precise and actionable. The apprentice implementing this will use your plan a
 	if maxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 	}
-	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
+	out, err := e.runClaude(args, "task-plan")
 	e.recordAgentRun(e.agentName, e.beadID, "", resolvedModel, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude task plan: %w", err)
@@ -219,7 +219,7 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 	if maxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 	}
-	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
+	out, err := e.runClaude(args, "epic-plan")
 	e.recordAgentRun(e.agentName, e.beadID, "", resolvedModel, "wizard", "plan", started, err)
 	if err != nil {
 		return fmt.Errorf("claude plan: %w", err)
@@ -411,7 +411,7 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 		if maxTurns > 0 {
 			csArgs = append(csArgs, "--max-turns", fmt.Sprintf("%d", maxTurns))
 		}
-		out, err := e.deps.ClaudeRunner(csArgs, e.effectiveRepoPath())
+		out, err := e.runClaude(csArgs, "change-spec")
 		if err != nil {
 			e.log("warning: change spec for %s: %s", child.ID, err)
 			continue

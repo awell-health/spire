@@ -931,7 +931,7 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		"--max-turns", "1",
 	}
 
-	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
+	out, err := e.runClaude(args, "recovery-decide")
 	if err != nil {
 		// (d) Claude call failed → fallback to resummon.
 		e.log("recovery: decide: claude call failed, falling back to resummon: %v", err)
@@ -1122,7 +1122,7 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 		"--max-turns", "1",
 	}
 
-	out, err := e.deps.ClaudeRunner(args, e.effectiveRepoPath())
+	out, err := e.runClaude(args, "recovery-learn")
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("learn: claude call failed: %w", err)}
 	}

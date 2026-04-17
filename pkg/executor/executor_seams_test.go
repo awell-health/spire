@@ -88,7 +88,7 @@ func TestWizardPlan_OnlyStepBeadChildren(t *testing.T) {
 			enrichCommentCount++
 			return nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			claudeRunnerCalled = true
 			return []byte(`{"title": "Task 1", "description": "Do something", "deps": [], "shared_files": [], "do_not_touch": []}`), nil
 		},
@@ -180,7 +180,7 @@ func TestWizardPlan_MixedChildren(t *testing.T) {
 		AddComment: func(id, text string) error {
 			return nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			claudeRunnerCalled++
 			// Track which bead is being enriched (the prompt contains the subtask ID)
 			for _, arg := range args {
@@ -257,7 +257,7 @@ func TestWizardPlan_OnlyRealChildren(t *testing.T) {
 		AddComment: func(id, text string) error {
 			return nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			claudeRunnerCalled++
 			return []byte("**Change spec: fake**\n\n**Files to modify:**\n- foo.go"), nil
 		},
@@ -732,7 +732,7 @@ func TestWizardPlanTask_HappyPath(t *testing.T) {
 			postedComment = text
 			return nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			claudeRunnerCalled = true
 			return []byte("**Approach:** Fix the token refresh logic\n\n**Key files:**\n- auth.go"), nil
 		},
@@ -794,7 +794,7 @@ func TestWizardPlanTask_Resume(t *testing.T) {
 			t.Error("AddComment should not be called on resume")
 			return nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			claudeRunnerCalled = true
 			return nil, nil
 		},
@@ -840,7 +840,7 @@ func TestWizardPlanTask_EmptyPlan(t *testing.T) {
 			t.Error("AddComment should not be called when plan is empty")
 			return nil
 		},
-		ClaudeRunner: func(args []string, dir string) ([]byte, error) {
+		ClaudeRunner: func(args []string, dir string, _ io.Writer) ([]byte, error) {
 			return []byte("   \n  \n  "), nil // whitespace-only output
 		},
 	}

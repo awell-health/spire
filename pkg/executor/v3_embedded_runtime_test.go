@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"io"
 	"os"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestEmbeddedRuntime_AgentWorkV3_PlanExecutesPlanning(t *testing.T) {
 	deps.GetComments = func(id string) ([]*beads.Comment, error) { return nil, nil }
 	deps.AddComment = func(id, text string) error { return nil }
 	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) { return nil, nil }
-	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+	deps.ClaudeRunner = func(args []string, dir string, _ io.Writer) ([]byte, error) {
 		claudeRunnerCalled = true
 		return []byte("Implementation plan:\n\nApproach: test plan"), nil
 	}
@@ -253,7 +254,7 @@ func TestEmbeddedRuntime_AgentWorkV3_WorkspaceInitialized(t *testing.T) {
 	deps.GetComments = func(id string) ([]*beads.Comment, error) { return nil, nil }
 	deps.AddComment = func(id, text string) error { return nil }
 	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) { return nil, nil }
-	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+	deps.ClaudeRunner = func(args []string, dir string, _ io.Writer) ([]byte, error) {
 		return []byte("Implementation plan:\n\nApproach: test"), nil
 	}
 
@@ -383,7 +384,7 @@ func TestEmbeddedRuntime_AgentWorkV3_FullGraphWithMocks(t *testing.T) {
 	deps.GetComments = func(id string) ([]*beads.Comment, error) { return nil, nil }
 	deps.AddComment = func(id, text string) error { return nil }
 	deps.GetDepsWithMeta = func(id string) ([]*beads.IssueWithDependencyMetadata, error) { return nil, nil }
-	deps.ClaudeRunner = func(args []string, dir string) ([]byte, error) {
+	deps.ClaudeRunner = func(args []string, dir string, _ io.Writer) ([]byte, error) {
 		return []byte("Implementation plan:\n\nApproach: test"), nil
 	}
 	deps.IsAttemptBead = func(b Bead) bool { return false }

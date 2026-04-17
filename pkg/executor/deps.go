@@ -8,6 +8,7 @@ package executor
 
 import (
 	"database/sql"
+	"io"
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
@@ -122,8 +123,13 @@ type Deps struct {
 	// Path: <doltGlobalDir>/wizards/<agentName>
 	AgentResultDir func(agentName string) string
 
-	// Claude runner
-	ClaudeRunner func(args []string, dir string) ([]byte, error)
+	// Claude runner. logOut receives a live tee of the subprocess stdout and
+	// stderr; the returned []byte is stdout only (for parsing). Callers
+	// typically go through (*Executor).runClaude() which opens a
+	// per-invocation log file and fills logOut, so operators can drill from
+	// high-level wizard logs down to raw claude output and the tee survives
+	// if the wizard dies mid-call.
+	ClaudeRunner func(args []string, dir string, logOut io.Writer) ([]byte, error)
 
 	// Focus context
 	CaptureFocus func(beadID string) (string, error)
