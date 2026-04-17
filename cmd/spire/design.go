@@ -45,6 +45,39 @@ func init() {
 	designCmd.Flags().String("label", "", "Comma-separated labels")
 }
 
+var (
+	designCreateBeadFunc      = func(opts createOpts) (string, error) { return storeCreateBead(opts) }
+	designAddLabelFunc        = func(id, label string) error { return storeAddLabel(id, label) }
+	designResolvePrefixFunc   = resolveDesignPrefix
+	designRequireApprovalFunc = resolveDesignRequireApproval
+)
+
+func resolveDesignPrefix(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if cwd, err := realCwd(); err == nil {
+		if cfg, err := loadConfig(); err == nil {
+			if inst := findInstanceByPath(cfg, cwd); inst != nil {
+				return inst.Prefix, nil
+			}
+		}
+	}
+	if tower, err := activeTowerConfig(); err == nil && tower != nil && tower.HubPrefix != "" {
+		return tower.HubPrefix, nil
+	}
+	return "", fmt.Errorf("no repo registered for this directory.\nRun `spire repo add` to register, or use `spire design --prefix <name> \"Title\"`")
+}
+
+func resolveDesignRequireApproval() bool {
+	if cwd, err := os.Getwd(); err == nil {
+		if rc, rcErr := repoconfig.Load(cwd); rcErr == nil {
+			return repoconfig.ResolveDesignRequireApproval(rc.Design.RequireApproval)
+		}
+	}
+	return true
+}
+
 // cmdDesign creates a design bead — a thinking artifact for brainstorming
 // and exploration. Design beads capture the "why" and "why not" before
 // committing to work items (tasks, epics, bugs).
@@ -123,43 +156,19 @@ Workflow:
 		return fmt.Errorf("design: title is required")
 	}
 
-	// Detect prefix: CWD repo → active tower hub prefix → error
-	if cwd, err := realCwd(); err == nil {
-		if cfg, err := loadConfig(); err == nil {
-			if inst := findInstanceByPath(cfg, cwd); inst != nil {
-				opts.Prefix = inst.Prefix
-			}
-		}
+	prefix, err := designResolvePrefixFunc(opts.Prefix)
+	if err != nil {
+		return err
 	}
-	if opts.Prefix == "" {
-		// Fall back to active tower's hub prefix
-		if tower, err := activeTowerConfig(); err == nil && tower != nil && tower.HubPrefix != "" {
-			opts.Prefix = tower.HubPrefix
-		}
-	}
-	if opts.Prefix == "" {
-		return fmt.Errorf("no repo registered for this directory.\nRun `spire repo add` to register, or use `spire design --prefix <name> \"Title\"`")
-	}
+	opts.Prefix = prefix
 
-	id, err := storeCreateBead(opts)
+	id, err := designCreateBeadFunc(opts)
 	if err != nil {
 		return fmt.Errorf("design: %w", err)
 	}
 
-	// Apply design approval gate: set in_progress + needs-human by default.
-	// Load repo config (best-effort — missing config defaults to require_approval: true).
-	requireApproval := true
-	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-		if rc, rcErr := repoconfig.Load(cwd); rcErr == nil {
-			requireApproval = repoconfig.ResolveDesignRequireApproval(rc.Design.RequireApproval)
-		}
-	}
-
-	if requireApproval {
-		if err := storeUpdateBead(id, map[string]interface{}{"status": "in_progress"}); err != nil {
-			return fmt.Errorf("design: set in_progress: %w", err)
-		}
-		if err := storeAddLabel(id, "needs-human"); err != nil {
+	if designRequireApprovalFunc() {
+		if err := designAddLabelFunc(id, "needs-human"); err != nil {
 			return fmt.Errorf("design: add needs-human label: %w", err)
 		}
 	}
