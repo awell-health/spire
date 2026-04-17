@@ -37,20 +37,26 @@ spec:
                 secretKeyRef:
                   name: {{ include "spire.secretName" . }}
                   key: DOLT_REMOTE_PASSWORD
-            {{- if .Values.dolthub.keyId }}
+            {{- if .Values.dolthub.credsKeyId }}
             - name: DOLT_CREDS_KEY_ID
-              value: {{ .Values.dolthub.keyId | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-dolthub-creds
+                  key: key-id
             {{- end }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/dolt
             - name: init-scripts
               mountPath: /scripts
-            {{- if .Values.dolthub.credsSecretName }}
-            # Must match where dolt looks: $DOLT_ROOT_PATH/.dolt/creds
+            {{- if .Values.dolthub.credsKeyId }}
+            # Mount the single JWK file into $DOLT_ROOT_PATH/.dolt/creds/
             # (dolt redirects ~/.dolt to $DOLT_ROOT_PATH/.dolt when set).
-            - name: dolt-creds
-              mountPath: /var/lib/dolt/.dolt/creds
+            # subPath places exactly this file without replacing the dir,
+            # so dolt can still write other config under .dolt/.
+            - name: dolthub-creds
+              mountPath: /var/lib/dolt/.dolt/creds/{{ .Values.dolthub.credsKeyId }}.jwk
+              subPath: key-value
               readOnly: true
             {{- end }}
       containers:
@@ -75,9 +81,12 @@ spec:
                 secretKeyRef:
                   name: {{ include "spire.secretName" . }}
                   key: DOLT_REMOTE_PASSWORD
-            {{- if .Values.dolthub.keyId }}
+            {{- if .Values.dolthub.credsKeyId }}
             - name: DOLT_CREDS_KEY_ID
-              value: {{ .Values.dolthub.keyId | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-dolthub-creds
+                  key: key-id
             {{- end }}
           volumeMounts:
             - name: data
@@ -85,11 +94,14 @@ spec:
             - name: dolt-config
               mountPath: /var/lib/dolt/config.yaml
               subPath: config.yaml
-            {{- if .Values.dolthub.credsSecretName }}
-            # Must match where dolt looks: $DOLT_ROOT_PATH/.dolt/creds
+            {{- if .Values.dolthub.credsKeyId }}
+            # Mount the single JWK file into $DOLT_ROOT_PATH/.dolt/creds/
             # (dolt redirects ~/.dolt to $DOLT_ROOT_PATH/.dolt when set).
-            - name: dolt-creds
-              mountPath: /var/lib/dolt/.dolt/creds
+            # subPath places exactly this file without replacing the dir,
+            # so dolt can still write other config under .dolt/.
+            - name: dolthub-creds
+              mountPath: /var/lib/dolt/.dolt/creds/{{ .Values.dolthub.credsKeyId }}.jwk
+              subPath: key-value
               readOnly: true
             {{- end }}
           resources:
@@ -117,11 +129,14 @@ spec:
           configMap:
             name: dolt-init
             defaultMode: 0755
-        {{- if .Values.dolthub.credsSecretName }}
-        - name: dolt-creds
+        {{- if .Values.dolthub.credsKeyId }}
+        - name: dolthub-creds
           secret:
-            secretName: {{ .Values.dolthub.credsSecretName }}
+            secretName: {{ .Release.Name }}-dolthub-creds
             defaultMode: 0400
+            items:
+              - key: key-value
+                path: key-value
         {{- end }}
   volumeClaimTemplates:
     - metadata:
@@ -203,17 +218,17 @@ data:
     if [ ! -d "$DB_DIR/.dolt" ]; then
       echo "[dolt-init] first boot — cloning from DoltHub..."
       cd /var/lib/dolt
-      dolt clone "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}" {{ .Values.beads.database | default .Values.beads.prefix }} 2>&1 \
+      dolt clone "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remoteUrl }}" {{ .Values.beads.database | default .Values.beads.prefix }} 2>&1 \
         || {
           echo "[dolt-init] WARNING: clone failed — initializing empty database"
           mkdir -p {{ .Values.beads.database | default .Values.beads.prefix }} && cd {{ .Values.beads.database | default .Values.beads.prefix }} && dolt init
-          dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}"
+          dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remoteUrl }}"
         }
     else
       echo "[dolt-init] PV has data — ensuring remote is configured"
       cd "$DB_DIR"
       # Ensure origin remote exists (idempotent)
       dolt remote remove origin 2>/dev/null || true
-      dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remote }}"
+      dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remoteUrl }}"
     fi
     echo "[dolt-init] done"

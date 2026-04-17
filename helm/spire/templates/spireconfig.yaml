@@ -7,8 +7,8 @@ metadata:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
   dolthub:
-    remote: {{ .Values.dolthub.remote | quote }}
-    credentialsSecret: {{ include "spire.secretName" . }}
+    remote: {{ .Values.dolthub.remoteUrl | quote }}
+    credentialsSecret: spire-credentials
   polling:
     interval: {{ .Values.spireConfig.polling.interval | quote }}
     staleThreshold: {{ .Values.spireConfig.polling.staleThreshold | quote }}

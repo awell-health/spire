@@ -54,11 +54,20 @@ images:
 ## @param dolthub.credsSecretName Name of an externally-created k8s Secret with one or more .jwk credential files from your local `~/.dolt/creds/`. Required for DoltHub clone/pull/push — env-var auth is not sufficient. Create with `kubectl -n <ns> create secret generic dolt-creds --from-file=<keyid>.jwk=$HOME/.dolt/creds/<keyid>.jwk`.
 ## @param dolthub.keyId Filename (without .jwk) of the key to use from credsSecretName. Must exactly match a file in that Secret.
 dolthub:
-  remote: ""
+  # DoltHub remote path (e.g. "your-org/your-tower")
+  remoteUrl: ""
+  # DoltHub user — kept for completeness, but HTTPS clone/pull/push
+  # authenticates via the JWK file below, not user/password.
   user: ""
   password: ""
-  credsSecretName: ""
-  keyId: ""
+  # The Dolt key ID (base32 string shown by `dolt creds ls`). Becomes
+  # the basename of the JWK file under $DOLT_ROOT_PATH/.dolt/creds/ and
+  # the value of DOLT_CREDS_KEY_ID.
+  credsKeyId: ""
+  # Raw JWK JSON string for the private key (contents of
+  # ~/.dolt/creds/<credsKeyId>.jwk). Stored in a chart-managed Secret
+  # and file-mounted into the dolt pod.
+  credsKeyValue: ""
 
 ## @section Agent credentials
 ##

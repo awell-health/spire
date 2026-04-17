@@ -53,7 +53,7 @@ spec:
             - name: BEADS_PREFIX
               value: {{ .Values.beads.prefix | quote }}
             - name: DOLTHUB_REMOTE
-              value: {{ .Values.dolthub.remote | quote }}
+              value: {{ .Values.dolthub.remoteUrl | quote }}
           volumeMounts:
             - name: data
               mountPath: /data
