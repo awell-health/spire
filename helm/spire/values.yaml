@@ -78,9 +78,20 @@ beads:
 
 # -- Steward configuration
 steward:
-  interval: "2m"
+  # Main steward cycle interval. 10s is cheap because each cycle is just
+  # dolt SQL reads (no LLM). Tighter intervals give faster reaction to
+  # newly-ready beads and to stale-wizard detection.
+  interval: "10s"
   backend: "k8s"
   metricsPort: 9090
+  # LLM model for the sidecar (message router / condition tracker).
+  # haiku-4-5 handles routine routing well; bump to sonnet/opus only if
+  # directives become nuanced enough to warrant it.
+  sidecarModel: "claude-haiku-4-5-20251001"
+  # Sidecar inbox-poll interval. Safe to keep tight because the sidecar
+  # now skips the LLM call entirely when the inbox + tracking + pending
+  # are all empty — idle rounds cost zero Anthropic tokens.
+  sidecarPollInterval: "10s"
   resources:
     requests:
       cpu: 50m

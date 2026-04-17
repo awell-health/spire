@@ -80,7 +80,11 @@ func main() {
 	commsDir := flag.String("comms-dir", "/comms", "shared communication directory")
 	pollInterval := flag.Duration("poll-interval", 30*time.Second, "inbox poll interval")
 	port := flag.Int("port", 8081, "health endpoint port")
-	model := flag.String("model", "claude-sonnet-4-6", "Anthropic model to use")
+	// haiku-4-5 is the right model for this subsystem: routing, classification,
+	// and tool-call selection for a message pipe. Sonnet-level reasoning is
+	// overkill for "label these 3 beads" — the old default of sonnet-4-6
+	// cost ~10x per call for no quality gain on the 90%+ routine traffic.
+	model := flag.String("model", "claude-haiku-4-5-20251001", "Anthropic model to use")
 	contextThreshold := flag.Float64("context-threshold", 0.45, "context usage fraction that triggers restart (0.0-1.0)")
 	flag.Parse()
 
@@ -276,12 +280,26 @@ func processInbox(session *Session, commsDir string, state *StewardState, round 
 		}
 	}
 
+	// Idle gate: if nothing is going on, skip the LLM call entirely. The
+	// sidecar's job is to react to messages and re-evaluate standing
+	// conditions; with none of those active, there is literally nothing
+	// for the model to do. Polling a 2,880-rounds/day tight loop against
+	// an LLM endpoint for "no action needed." is pure waste.
+	idle := len(messages) == 0 &&
+		len(state.Tracking) == 0 &&
+		len(state.Pending) == 0
+	if idle {
+		*round++
+		log.Printf("[steward-sidecar] round %d: idle (no messages, tracking, or pending) — skipping LLM call", *round)
+		return
+	}
+
 	// Build the prompt for this round.
 	var prompt string
 	if len(messages) > 0 {
 		prompt = fmt.Sprintf("## Inbox (%d new messages)\n\n%s", len(messages), inboxJSON)
 	} else {
-		prompt = "No new messages. Check your tracking conditions if any are active."
+		prompt = "No new messages. Check your tracking conditions."
 	}
 
 	// Add current state context.

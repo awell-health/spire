@@ -114,8 +114,8 @@ spec:
           command: ["spire-steward-sidecar"]
           args:
             - "--comms-dir=/comms"
-            - "--poll-interval=30s"
-            - "--model=claude-sonnet-4-6"
+            - "--poll-interval={{ .Values.steward.sidecarPollInterval }}"
+            - "--model={{ .Values.steward.sidecarModel }}"
             - "--context-threshold=0.45"
             - "--port=8081"
           env:
