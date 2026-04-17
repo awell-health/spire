@@ -20,15 +20,17 @@ SpireAgent CRDs — into a Kubernetes cluster.
 
 ## Single-release install
 
+The chart renders the DoltHub-creds Secret itself from two inline values —
+`dolthub.credsKeyId` (the key id shown by `dolt creds ls`) and
+`dolthub.credsKeyValue` (the raw JWK file contents). Pass the JWK file
+with `--set-file` so helm reads it from disk rather than trying to parse
+it as a flag value.
+
 ```bash
 # 1. Create a namespace.
 kubectl create namespace spire
 
-# 2. Create the DoltHub credentials secret.
-kubectl -n spire create secret generic dolt-creds \
-  --from-file="<keyid>.jwk=$HOME/.dolt/creds/<keyid>.jwk"
-
-# 3. Install the chart.
+# 2. Install the chart — DoltHub Secret is rendered by the chart.
 helm install spire helm/spire \
   --namespace spire \
   --set namespace=spire \
@@ -36,11 +38,16 @@ helm install spire helm/spire \
   --set beads.prefix=spi \
   --set images.steward.tag=vX.Y.Z \
   --set images.agent.tag=vX.Y.Z \
-  --set dolthub.remote=my-org/my-tower \
-  --set dolthub.credsSecretName=dolt-creds \
-  --set dolthub.keyId=<keyid> \
+  --set dolthub.remoteUrl=my-org/my-tower \
+  --set dolthub.credsKeyId=<keyid> \
+  --set-file dolthub.credsKeyValue=$HOME/.dolt/creds/<keyid>.jwk \
   --set anthropic.apiKey=$ANTHROPIC_API_KEY
 ```
+
+If you prefer to manage secrets outside helm (sealed-secrets, external-secrets,
+vault-injector), set `existingSecret` to the name of a pre-created Secret that
+carries the same keys the chart would render. The chart will skip rendering
+its own `spire-credentials` in that case.
 
 The chart has two namespace-related values that both need to match the
 `--namespace` flag:
@@ -60,8 +67,6 @@ state is shared except cluster-scoped CRDs (`spireagent`, `spireconfig`,
 ```bash
 # Release A — prefix "a", namespace spire-a.
 kubectl create namespace spire-a
-kubectl -n spire-a create secret generic dolt-creds \
-  --from-file="<keyid>.jwk=$HOME/.dolt/creds/<keyid>.jwk"
 helm install spire-a helm/spire \
   --namespace spire-a \
   --set namespace=spire-a \
@@ -69,14 +74,12 @@ helm install spire-a helm/spire \
   --set beads.prefix=a \
   --set images.steward.tag=vX.Y.Z \
   --set images.agent.tag=vX.Y.Z \
-  --set dolthub.remote=my-org/tower-a \
-  --set dolthub.credsSecretName=dolt-creds \
-  --set dolthub.keyId=<keyid>
+  --set dolthub.remoteUrl=my-org/tower-a \
+  --set dolthub.credsKeyId=<keyid> \
+  --set-file dolthub.credsKeyValue=$HOME/.dolt/creds/<keyid>.jwk
 
 # Release B — prefix "b", namespace spire-b.
 kubectl create namespace spire-b
-kubectl -n spire-b create secret generic dolt-creds \
-  --from-file="<keyid>.jwk=$HOME/.dolt/creds/<keyid>.jwk"
 helm install spire-b helm/spire \
   --namespace spire-b \
   --set namespace=spire-b \
@@ -84,9 +87,9 @@ helm install spire-b helm/spire \
   --set beads.prefix=b \
   --set images.steward.tag=vX.Y.Z \
   --set images.agent.tag=vX.Y.Z \
-  --set dolthub.remote=my-org/tower-b \
-  --set dolthub.credsSecretName=dolt-creds \
-  --set dolthub.keyId=<keyid>
+  --set dolthub.remoteUrl=my-org/tower-b \
+  --set dolthub.credsKeyId=<keyid> \
+  --set-file dolthub.credsKeyValue=$HOME/.dolt/creds/<keyid>.jwk
 ```
 
 Because the CRDs are cluster-scoped and shipped in `helm/spire/crds/`,

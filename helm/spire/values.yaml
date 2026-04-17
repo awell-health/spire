@@ -48,11 +48,11 @@ images:
 ## DoltHub is the source of truth for beads. The chart clones from this
 ## remote on first boot and pushes/pulls on the configured cadence.
 
-## @param dolthub.remote DoltHub remote path (e.g. "your-org/your-tower"). Required.
+## @param dolthub.remoteUrl DoltHub remote path (e.g. "your-org/your-tower"). Required.
 ## @param dolthub.user DoltHub user — kept for completeness but HTTPS clone/pull/push authenticates via the JWK file below, not user/password.
 ## @param dolthub.password DoltHub password (see note on dolthub.user).
-## @param dolthub.credsSecretName Name of an externally-created k8s Secret with one or more .jwk credential files from your local `~/.dolt/creds/`. Required for DoltHub clone/pull/push — env-var auth is not sufficient. Create with `kubectl -n <ns> create secret generic dolt-creds --from-file=<keyid>.jwk=$HOME/.dolt/creds/<keyid>.jwk`.
-## @param dolthub.keyId Filename (without .jwk) of the key to use from credsSecretName. Must exactly match a file in that Secret.
+## @param dolthub.credsKeyId Dolt key ID (base32 string shown by `dolt creds ls`). Becomes the basename of the JWK file under $DOLT_ROOT_PATH/.dolt/creds/ and the value of DOLT_CREDS_KEY_ID.
+## @param dolthub.credsKeyValue Raw JWK JSON contents of `~/.dolt/creds/<credsKeyId>.jwk`. Pass with `--set-file dolthub.credsKeyValue=<path>` so helm reads the file. The chart renders a Secret from these two values and file-mounts it into the dolt pod.
 dolthub:
   # DoltHub remote path (e.g. "your-org/your-tower")
   remoteUrl: ""

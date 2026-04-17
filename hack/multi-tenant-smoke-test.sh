@@ -71,13 +71,6 @@ install_release() {
 
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
 
-  # Pre-create dolt creds secret if the test runner supplied one.
-  if [[ -n "${DOLT_CREDS_FILE:-}" && -n "${DOLT_CREDS_KEY_ID:-}" ]]; then
-    kubectl -n "$ns" delete secret dolt-creds --ignore-not-found
-    kubectl -n "$ns" create secret generic dolt-creds \
-      --from-file="${DOLT_CREDS_KEY_ID}.jwk=${DOLT_CREDS_FILE}"
-  fi
-
   local set_args=(
     --set "namespace=$ns"
     --set "createNamespace=false"
@@ -91,11 +84,13 @@ install_release() {
   remote_var="$(echo "$remote_var" | tr '[:lower:]' '[:upper:]')"
   local remote="${!remote_var:-}"
   if [[ -n "$remote" ]]; then
-    set_args+=(--set "dolthub.remote=$remote")
+    set_args+=(--set "dolthub.remoteUrl=$remote")
   fi
-  if [[ -n "${DOLT_CREDS_KEY_ID:-}" ]]; then
-    set_args+=(--set "dolthub.credsSecretName=dolt-creds")
-    set_args+=(--set "dolthub.keyId=$DOLT_CREDS_KEY_ID")
+  # The chart renders a DoltHub-creds Secret from these two values — pass the
+  # key id and the raw JWK file contents, not a secret name.
+  if [[ -n "${DOLT_CREDS_FILE:-}" && -n "${DOLT_CREDS_KEY_ID:-}" ]]; then
+    set_args+=(--set "dolthub.credsKeyId=$DOLT_CREDS_KEY_ID")
+    set_args+=(--set-file "dolthub.credsKeyValue=$DOLT_CREDS_FILE")
   fi
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     set_args+=(--set "anthropic.apiKey=$ANTHROPIC_API_KEY")
