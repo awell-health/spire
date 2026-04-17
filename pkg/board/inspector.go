@@ -156,6 +156,48 @@ func FetchInspectorData(b BoardBead) InspectorData {
 		}
 	}
 
+	// Sibling spawn logs: apprentices, sages, clerics. Each spawn is named
+	// wizard-<beadID>-<suffix> (e.g. -impl, -sage-review, -w0-0, -seq-1),
+	// with its own claude/ subdir for any claude subprocesses it invokes.
+	knownNames := map[string]bool{}
+	for _, lv := range data.Logs {
+		knownNames[filepath.Base(lv.Path)] = true
+	}
+	if siblings, err := filepath.Glob(filepath.Join(logDir, wizardName+"-*.log")); err == nil {
+		sort.Strings(siblings)
+		for _, path := range siblings {
+			if knownNames[filepath.Base(path)] {
+				continue
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			stem := strings.TrimSuffix(filepath.Base(path), ".log")
+			name := strings.TrimPrefix(stem, wizardName+"-")
+			data.Logs = append(data.Logs, LogView{
+				Name:    name,
+				Path:    path,
+				Content: string(content),
+			})
+			sibClaudeDir := filepath.Join(logDir, stem, "claude")
+			if sibMatches, err := filepath.Glob(filepath.Join(sibClaudeDir, "*.log")); err == nil && len(sibMatches) > 0 {
+				sort.Sort(sort.Reverse(sort.StringSlice(sibMatches)))
+				for _, sp := range sibMatches {
+					sc, err := os.ReadFile(sp)
+					if err != nil {
+						continue
+					}
+					data.Logs = append(data.Logs, LogView{
+						Name:    name + "/" + claudeLogName(filepath.Base(sp)),
+						Path:    sp,
+						Content: string(sc),
+					})
+				}
+			}
+		}
+	}
+
 	return data
 }
 
@@ -914,18 +956,44 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 				idx = len(data.Logs) - 1
 			}
 
-			// Sub-tab strip listing the available logs.
+			// Sub-tab strip listing the available logs. May wrap across
+			// multiple lines when there are many spawns (epic with N
+			// apprentices + sage + their claude logs can easily exceed
+			// terminal width). Lines pack greedily by visible width.
 			activeLogStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Underline(true)
 			inactiveLogStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-			var logParts []string
+			counter := dimStyle.Render(fmt.Sprintf("%d/%d", idx+1, len(data.Logs))) + " " + dimStyle.Render("← h/l →")
+			header := dimStyle.Render("Logs:") + " "
+			headerW := lipgloss.Width(header)
+			sep := "  "
+			sepW := lipgloss.Width(sep)
+			var stripLines []string
+			cur := header
+			curW := headerW
 			for i, lv := range data.Logs {
+				var part string
 				if i == idx {
-					logParts = append(logParts, activeLogStyle.Render("["+lv.Name+"]"))
+					part = activeLogStyle.Render("[" + lv.Name + "]")
 				} else {
-					logParts = append(logParts, inactiveLogStyle.Render(lv.Name))
+					part = inactiveLogStyle.Render(lv.Name)
 				}
+				partW := lipgloss.Width(part)
+				if curW > headerW && curW+sepW+partW > contentWidth {
+					stripLines = append(stripLines, cur)
+					cur = strings.Repeat(" ", headerW) + part
+					curW = headerW + partW
+					continue
+				}
+				if curW > headerW {
+					cur += sep
+					curW += sepW
+				}
+				cur += part
+				curW += partW
 			}
-			lines = append(lines, dimStyle.Render("Logs:")+"  "+strings.Join(logParts, "  ")+"   "+dimStyle.Render("← h/l →"))
+			stripLines = append(stripLines, cur)
+			lines = append(lines, stripLines...)
+			lines = append(lines, strings.Repeat(" ", headerW)+counter)
 			lines = append(lines, "")
 
 			// Render active log.
@@ -937,8 +1005,11 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 					start = len(logLines) - 50
 					lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... showing last 50 of %d lines", len(logLines))))
 				}
+				wrapWidth := contentWidth - 2
 				for _, ll := range logLines[start:] {
-					lines = append(lines, "  "+ll)
+					for _, wl := range wrapText(ll, wrapWidth) {
+						lines = append(lines, "  "+wl)
+					}
 				}
 			} else {
 				lines = append(lines, dimStyle.Render("  (empty log)"))
