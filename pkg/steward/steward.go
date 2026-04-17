@@ -533,6 +533,17 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 		}
 
 		if age > shutdownThreshold {
+			// Without an identifiable owner there is no wizard to kill —
+			// calling Kill("") just spams "agent \"\" not found in
+			// registry" each cycle. This typically means the attempt bead
+			// was never created or never stamped (e.g. schema mismatch,
+			// foreign-instance work whose attempt lookup failed). Log
+			// stale and move on; a human can investigate the orphan.
+			if owner == "" {
+				staleCount++
+				log.Printf("[steward] STALE (no owner): %s (%s) age=%s — not killing, investigate orphan", b.ID, b.Title, age.Round(time.Second))
+				continue
+			}
 			// Fatal: kill the wizard via backend.
 			shutdownCount++
 			if dryRun {

@@ -11,7 +11,7 @@ COPY operator/go.mod operator/go.sum ./
 RUN go mod download
 
 # Build bd from source (changes rarely).
-ARG BEADS_VERSION=v0.61.0
+ARG BEADS_VERSION=v1.0.2
 WORKDIR /beads
 RUN apk add --no-cache git \
     && git clone --depth 1 --branch "${BEADS_VERSION}" https://github.com/steveyegge/beads.git . \
