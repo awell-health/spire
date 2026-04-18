@@ -34,7 +34,8 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: trigger
-              image: bitnami/kubectl:latest
+              # Pin to a specific minor to avoid silent breakage on pulls.
+              image: bitnami/kubectl:1.31
               command: ["/bin/sh", "-c"]
               args:
                 - |

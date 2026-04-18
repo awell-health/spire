@@ -15,16 +15,10 @@ import (
 // A "non-fast-forward" or conflict error is returned verbatim so callers
 // can decide whether to retry, merge, or surface.
 func SQLPull(dbName, remote, branch string) error {
-	if dbName == "" {
-		return fmt.Errorf("SQLPull: dbName is required")
+	q, err := buildSyncQuery("DOLT_PULL", dbName, remote, branch)
+	if err != nil {
+		return fmt.Errorf("SQLPull: %w", err)
 	}
-	if remote == "" {
-		remote = "origin"
-	}
-	if branch == "" {
-		branch = "main"
-	}
-	q := fmt.Sprintf("USE `%s`; CALL DOLT_PULL('%s', '%s')", dbName, sqlEscape(remote), sqlEscape(branch))
 	out, err := RawQuery(q)
 	if err != nil {
 		return fmt.Errorf("dolt pull via SQL: %w", err)
@@ -39,16 +33,10 @@ func SQLPull(dbName, remote, branch string) error {
 // rationale as SQLPull — the dolt server has the creds and the DB, the
 // gateway just drives the call.
 func SQLPush(dbName, remote, branch string) error {
-	if dbName == "" {
-		return fmt.Errorf("SQLPush: dbName is required")
+	q, err := buildSyncQuery("DOLT_PUSH", dbName, remote, branch)
+	if err != nil {
+		return fmt.Errorf("SQLPush: %w", err)
 	}
-	if remote == "" {
-		remote = "origin"
-	}
-	if branch == "" {
-		branch = "main"
-	}
-	q := fmt.Sprintf("USE `%s`; CALL DOLT_PUSH('%s', '%s')", dbName, sqlEscape(remote), sqlEscape(branch))
 	out, err := RawQuery(q)
 	if err != nil {
 		return fmt.Errorf("dolt push via SQL: %w", err)
@@ -59,6 +47,34 @@ func SQLPush(dbName, remote, branch string) error {
 	return nil
 }
 
+// buildSyncQuery composes a `USE <db>; CALL <proc>('<remote>', '<branch>')`
+// statement with proper identifier and literal escaping. proc is the dolt
+// stored procedure name (DOLT_PULL / DOLT_PUSH). Returns an error if
+// dbName is empty; remote/branch default to origin/main.
+func buildSyncQuery(proc, dbName, remote, branch string) (string, error) {
+	if dbName == "" {
+		return "", fmt.Errorf("dbName is required")
+	}
+	if remote == "" {
+		remote = "origin"
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	return fmt.Sprintf(
+		"USE `%s`; CALL %s('%s', '%s')",
+		sqlEscapeIdent(dbName), proc, sqlEscape(remote), sqlEscape(branch),
+	), nil
+}
+
+// sqlEscape escapes a string literal (single-quoted).
 func sqlEscape(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlEscapeIdent escapes a backtick-quoted identifier. Inputs here come
+// from controlled internal config, but we close the quoting gap so a
+// stray backtick in a db name can't break out of the identifier.
+func sqlEscapeIdent(s string) string {
+	return strings.ReplaceAll(s, "`", "``")
 }
