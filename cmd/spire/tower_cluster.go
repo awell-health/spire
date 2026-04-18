@@ -93,6 +93,13 @@ func init() {
 //
 // Declared as a package var so tests can swap it for a stub without
 // shelling out to a real bd binary.
+//
+// Force is intentionally left off. Idempotency is owned by the upstream
+// IsBlankDB guard in cmdTowerAttachCluster — a populated database short-
+// circuits before this runs. Without Force, a concurrent restart that
+// somehow slipped past the blank check (race on first boot) will fail
+// loudly instead of clobbering an in-flight project_id seed. project_id
+// stability is a spec-level invariant ("generate once and only once").
 var clusterRunBdInit = func(database, prefix, runDir string) error {
 	client := bdpkg.NewClient()
 	client.RunDir = runDir
@@ -100,7 +107,6 @@ var clusterRunBdInit = func(database, prefix, runDir string) error {
 	return client.Init(bdpkg.InitOpts{
 		Database: database,
 		Prefix:   prefix,
-		Force:    true,
 	})
 }
 

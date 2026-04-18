@@ -164,28 +164,35 @@ A blank dolt database is not enough — spire needs:
   ```
   Then install the chart per Use Case 1 with `dolthub.remoteUrl=your-org/myorg`.
 
-**2b. Cluster-first (no DoltHub account needed):**
-  Skip DoltHub entirely. The chart's `dolt-init` must run the full
-  `spire tower create` equivalent in-cluster:
-  - Initialize a dolt repo
-  - Run `spire tower create` ritual (project_id generation, metadata
-    population, custom bead types) — **currently NOT wired into the
-    chart — TODO in a new bead**
-  - Start sql-server with remotesapi
+**2b. Cluster-first (no DoltHub account needed):** *(supported — see `spi-8x60z`)*
+  Skip DoltHub entirely. The chart handles the full `spire tower create`
+  equivalent in-cluster:
+  - `dolt-init` runs `dolt init` in the PV so the sql-server can start
+    against an empty database
+  - The steward init container runs `spire tower attach-cluster
+    --bootstrap-if-blank`, which detects the blank DB, runs the
+    beads-layer ritual (schema init, `_project_id` seed, custom bead
+    types), then seeds `.beads/` on the steward PV
+  - sql-server keeps running with remotesapi
   - Laptop attaches via `spire tower attach http://<host>:50051/<db>`
     (requires bead `spi-ibq3g`)
 
-### Gap for 2b
+Install snippet:
 
-The `dolt-init` ConfigMap's init.sh has an "empty database" fallback
-path that runs `dolt init`, but **does not invoke spire's
-tower-creation ritual** (project_id, metadata.json, custom bead types).
-Without that, the database is bd-incomplete and the steward will fail
-on first query.
+```bash
+helm install spire-local helm/spire \
+  --namespace spire-local --create-namespace \
+  --set dolthub.remoteUrl="" \
+  -f values.local.yaml
+```
 
-A new bead should be filed: *"Chart init.sh: wire spire tower-create
-ritual for blank-tower install mode (Use Case 2b)."* Until then, Use
-Case 2 requires going through DoltHub (path 2a).
+With `dolthub.remoteUrl` empty, `dolt-init` skips the clone and runs
+`dolt init` into the PV, then `--bootstrap-if-blank` in the steward init
+container finishes the ritual. Pod restart is a no-op — the upstream
+`IsBlankDB` guard short-circuits once the database is populated.
+
+See `docs/HELM.md` for the full "fresh tower, no DoltHub" walkthrough
+with verification commands.
 
 ### Acceptance criteria (Use Case 2)
 
@@ -376,7 +383,7 @@ kubectl -n spire-prod logs -f <wizard-pod>
 | `spi-doylg` | Fix TOCTOU race in `pkg/steward/daemon_runner.go` Run() | Correctness bug in sync loop |
 | `spi-2p022` | Tests for `pkg/steward/daemon_runner.go` | Concurrency-heavy code with zero coverage |
 | `spi-ct6o8` | Tests for `pkg/gateway` | HTTP surface with zero coverage |
-| (new) | Chart init.sh: wire `spire tower create` ritual for Use Case 2b | Blocks the "no DoltHub, fresh tower" path |
+| `spi-8x60z` | Chart init.sh: wire `spire tower create` ritual for Use Case 2b | ~~Blocks the "no DoltHub, fresh tower" path~~ — shipped; left in-table as a v1 deliverable |
 | (new) | Chart values for `additionalUsers: [...]` rendering SQL Job | Operators need a declarative path to add users |
 
 ## Running this plan
@@ -389,6 +396,7 @@ engineer / agent:
 3. Validate backups
 4. Validate example pod flow
 5. Validate Use Case 2a (fresh DoltHub tower)
-6. File gaps for 2b / 3b / additional users as future-work beads
+6. Validate Use Case 2b (blank-tower install, `--bootstrap-if-blank`)
+7. File remaining gaps for 3b / additional users as future-work beads
 
 When all acceptance criteria above are checked, the chart is v1-ready.
