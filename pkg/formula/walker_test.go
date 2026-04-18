@@ -444,6 +444,39 @@ func TestValidateGraph_InvalidStepKind(t *testing.T) {
 	}
 }
 
+// TestValidateGraph_InvalidOnError covers validation of the step-level
+// on_error directive added in spi-676a4. Known values pass; unknown values
+// must be rejected with a descriptive error.
+func TestValidateGraph_InvalidOnError(t *testing.T) {
+	g := &FormulaStepGraph{
+		Steps: map[string]StepConfig{
+			"a": {OnError: "bogus", Terminal: true},
+		},
+	}
+	err := ValidateGraph(g)
+	if err == nil {
+		t.Fatal("expected error for invalid on_error")
+	}
+	if !strings.Contains(err.Error(), "invalid on_error") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidateGraph_OnErrorValid ensures the known-good on_error values
+// ("", "park", "record") all pass validation.
+func TestValidateGraph_OnErrorValid(t *testing.T) {
+	for _, val := range []string{"", "park", "record"} {
+		g := &FormulaStepGraph{
+			Steps: map[string]StepConfig{
+				"a": {OnError: val, Terminal: true},
+			},
+		}
+		if err := ValidateGraph(g); err != nil {
+			t.Errorf("ValidateGraph with on_error=%q: unexpected error: %v", val, err)
+		}
+	}
+}
+
 func TestValidateGraph_WhenAndConditionCollision(t *testing.T) {
 	g := &FormulaStepGraph{
 		Steps: map[string]StepConfig{

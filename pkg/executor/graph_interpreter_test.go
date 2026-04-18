@@ -2959,3 +2959,341 @@ func TestRunGraph_FailedStepWithResetsDoesNotFireResets(t *testing.T) {
 		t.Error("sage-review: expected timestamps preserved after failed fix")
 	}
 }
+
+// --- Tests: on_error = "record" branch (spi-676a4) ---
+
+// TestRunGraph_OnErrorRecord_RecordsErrorAndContinues verifies that when a
+// step declares on_error="record" and its action returns an error, the
+// interpreter records outputs.error and outputs.status=failed, marks the step
+// completed (not hooked), and continues the graph loop so downstream gating
+// can react to the recorded error.
+func TestRunGraph_OnErrorRecord_RecordsErrorAndContinues(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// Track which step beads get closed vs hooked — on_error=record must close,
+	// not hook (the step is completed, error recorded, not parked).
+	var closedStepBeads []string
+	var hookedStepBeads []string
+	deps.CloseStepBead = func(id string) error {
+		closedStepBeads = append(closedStepBeads, id)
+		return nil
+	}
+	deps.HookStepBead = func(id string) error {
+		hookedStepBeads = append(hookedStepBeads, id)
+		return nil
+	}
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.fail"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Error: fmt.Errorf("boom: simulated rebase conflict")}
+	}
+	actionRegistry["test.noop"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"done": "true"}}
+	}
+
+	// Graph: execute fails (on_error=record); the follow-up step is gated on
+	// execute.outputs.status==failed so the recorded error routes correctly.
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-on-error-record",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"execute": {
+				Action:  "test.fail",
+				OnError: formula.OnErrorRecord,
+			},
+			"follow_up": {
+				Action: "test.noop",
+				Needs:  []string{"execute"},
+				When: &formula.StructuredCondition{
+					All: []formula.Predicate{
+						{Left: "steps.execute.outputs.status", Op: "eq", Right: "failed"},
+					},
+				},
+				Terminal: true,
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	if err := exec.RunGraph(graph, exec.graphState); err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	// execute step must be completed (not hooked), with error recorded.
+	execStep := exec.graphState.Steps["execute"]
+	if execStep.Status != "completed" {
+		t.Errorf("execute status = %q, want completed (on_error=record)", execStep.Status)
+	}
+	if execStep.Outputs["error"] != "boom: simulated rebase conflict" {
+		t.Errorf("execute outputs.error = %q, want %q", execStep.Outputs["error"], "boom: simulated rebase conflict")
+	}
+	if execStep.Outputs["status"] != "failed" {
+		t.Errorf("execute outputs.status = %q, want %q", execStep.Outputs["status"], "failed")
+	}
+	if execStep.CompletedAt == "" {
+		t.Error("execute CompletedAt: expected set (step is completed), got empty")
+	}
+
+	// follow_up must have been dispatched because status=failed was visible.
+	if exec.graphState.Steps["follow_up"].Status != "completed" {
+		t.Errorf("follow_up status = %q, want completed (gate on execute.outputs.status=failed)",
+			exec.graphState.Steps["follow_up"].Status)
+	}
+
+	// Step bead should be closed (execute is done), NOT hooked.
+	if len(hookedStepBeads) != 0 {
+		t.Errorf("expected no hooked step beads for on_error=record, got %v", hookedStepBeads)
+	}
+	execBeadID := exec.graphState.StepBeadIDs["execute"]
+	closedExec := false
+	for _, id := range closedStepBeads {
+		if id == execBeadID {
+			closedExec = true
+			break
+		}
+	}
+	if !closedExec {
+		t.Errorf("expected execute step bead %q to be closed, got closed=%v", execBeadID, closedStepBeads)
+	}
+
+	// Executor should terminate normally (graph reached a terminal).
+	if !exec.terminated {
+		t.Error("expected executor terminated (graph completed via follow_up terminal)")
+	}
+}
+
+// TestRunGraph_OnErrorUnset_ParksAsBefore guards the existing park-on-error
+// contract for non-recovery formulas (task/bug/chore/epic). A step without
+// on_error set must still park as hooked when its action errors.
+func TestRunGraph_OnErrorUnset_ParksAsBefore(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.fail"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Error: fmt.Errorf("baseline failure")}
+	}
+
+	// Default on_error (empty string) must still park.
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-on-error-default-parks",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"a": {Action: "test.fail", Terminal: true},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	if err := exec.RunGraph(graph, exec.graphState); err != nil {
+		t.Fatalf("expected nil error (parked), got %v", err)
+	}
+
+	a := exec.graphState.Steps["a"]
+	if a.Status != "hooked" {
+		t.Errorf("step a status = %q, want hooked (default on_error=park)", a.Status)
+	}
+	if a.CompletedAt != "" {
+		t.Errorf("step a CompletedAt = %q, want empty (hooked steps aren't completed)", a.CompletedAt)
+	}
+	// No error recorded — the park path does not write outputs.error.
+	if _, ok := a.Outputs["error"]; ok {
+		t.Errorf("step a outputs.error should not be set for park path, got %q", a.Outputs["error"])
+	}
+}
+
+// TestRunGraph_OnErrorRecord_PreservesExistingError verifies that when an
+// action already populates outputs.error and also returns an error, the
+// interpreter does not overwrite the existing error message. Same for status.
+func TestRunGraph_OnErrorRecord_PreservesExistingError(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	actionRegistry["test.fail_with_outputs"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{
+			Outputs: map[string]string{
+				"error":  "rich error from handler",
+				"status": "custom",
+			},
+			Error: fmt.Errorf("generic error wrapper"),
+		}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-on-error-record-preserves",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"execute": {
+				Action:   "test.fail_with_outputs",
+				OnError:  formula.OnErrorRecord,
+				Terminal: true,
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	if err := exec.RunGraph(graph, exec.graphState); err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	got := exec.graphState.Steps["execute"]
+	if got.Outputs["error"] != "rich error from handler" {
+		t.Errorf("outputs.error = %q, want preserved %q", got.Outputs["error"], "rich error from handler")
+	}
+	if got.Outputs["status"] != "custom" {
+		t.Errorf("outputs.status = %q, want preserved %q", got.Outputs["status"], "custom")
+	}
+	if got.Status != "completed" {
+		t.Errorf("step status = %q, want completed", got.Status)
+	}
+}
+
+// TestRunGraph_OnErrorRecord_BudgetExhaustionRoutesToNeedsHuman exercises the
+// cleric-default retry_on_error → finish_needs_human_on_error end-to-end
+// pattern: execute errors repeatedly (on_error=record), a retry step fires
+// until its completed_count reaches the budget, then a terminal finish step
+// gated on "budget exhausted" is taken instead of parking. Mirrors the
+// concrete spi-q6det scenario (rebase-onto-base conflict).
+func TestRunGraph_OnErrorRecord_BudgetExhaustionRoutesToNeedsHuman(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+
+	var executeCalls int
+	var finishCalls int
+	var finishNeedsHumanCalls int
+
+	actionRegistry["test.fail"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		executeCalls++
+		return ActionResult{Error: fmt.Errorf("rebase conflict attempt #%d", executeCalls)}
+	}
+	actionRegistry["test.retry"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Outputs: map[string]string{"status": "retried"}}
+	}
+	actionRegistry["test.finish"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		finishCalls++
+		return ActionResult{Outputs: map[string]string{"status": "success"}}
+	}
+	actionRegistry["test.finish_needs_human"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		finishNeedsHumanCalls++
+		return ActionResult{Outputs: map[string]string{"status": "needs_human"}}
+	}
+
+	// Mirror cleric-default's execute-error path with a tiny budget=2.
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-budget-exhaustion",
+		Version: 3,
+		Vars: map[string]formula.FormulaVar{
+			"max_execute_error_retries": {Default: "2"},
+		},
+		Steps: map[string]formula.StepConfig{
+			"execute": {
+				Action:  "test.fail",
+				OnError: formula.OnErrorRecord,
+			},
+			// Reset the chain (including self) while budget remains.
+			"retry_on_error": {
+				Action: "test.retry",
+				Needs:  []string{"execute"},
+				Resets: []string{"retry_on_error", "execute"},
+				When: &formula.StructuredCondition{
+					All: []formula.Predicate{
+						{Left: "steps.execute.outputs.status", Op: "eq", Right: "failed"},
+						{Left: "steps.retry_on_error.completed_count", Op: "lt", Right: "vars.max_execute_error_retries"},
+					},
+				},
+			},
+			// Terminal: execute keeps erroring past the budget → needs_human.
+			"finish_needs_human_on_error": {
+				Action:   "test.finish_needs_human",
+				Needs:    []string{"execute"},
+				Terminal: true,
+				When: &formula.StructuredCondition{
+					All: []formula.Predicate{
+						{Left: "steps.execute.outputs.status", Op: "eq", Right: "failed"},
+						{Left: "steps.retry_on_error.completed_count", Op: "ge", Right: "vars.max_execute_error_retries"},
+					},
+				},
+			},
+			// Unused happy-path terminal kept to prove we don't take it.
+			"finish": {
+				Action:   "test.finish",
+				Needs:    []string{"execute"},
+				Terminal: true,
+				When: &formula.StructuredCondition{
+					All: []formula.Predicate{
+						{Left: "steps.execute.outputs.status", Op: "eq", Right: "success"},
+					},
+				},
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	if err := exec.RunGraph(graph, exec.graphState); err != nil {
+		t.Fatalf("RunGraph returned error: %v", err)
+	}
+
+	// Budget=2 → execute should be dispatched exactly 3 times (initial + 2 retries).
+	if executeCalls != 3 {
+		t.Errorf("executeCalls = %d, want 3 (initial + 2 retries before budget exhaustion)", executeCalls)
+	}
+	retry := exec.graphState.Steps["retry_on_error"]
+	if retry.CompletedCount != 2 {
+		t.Errorf("retry_on_error.completed_count = %d, want 2", retry.CompletedCount)
+	}
+	if finishNeedsHumanCalls != 1 {
+		t.Errorf("finish_needs_human_on_error calls = %d, want 1 (terminal should fire once)", finishNeedsHumanCalls)
+	}
+	if finishCalls != 0 {
+		t.Errorf("finish calls = %d, want 0 (happy-path terminal must not fire)", finishCalls)
+	}
+	if !exec.terminated {
+		t.Error("expected executor terminated (reached finish_needs_human_on_error)")
+	}
+}

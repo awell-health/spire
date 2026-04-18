@@ -1475,3 +1475,237 @@ func TestHandleVerify_ExecuteEmpty(t *testing.T) {
 		t.Errorf("outputs[loop_to] = %q, want %q", result.Outputs["loop_to"], "decide")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// handleRecordExecuteError tests (spi-676a4)
+// ---------------------------------------------------------------------------
+
+// TestHandleRecordExecuteError_PostsCommentWithErrorText verifies the happy
+// path: an execute step already has outputs.error recorded by the
+// interpreter, handleRecordExecuteError reads it and posts a bead comment
+// containing the verbatim error text, then returns status=recorded.
+func TestHandleRecordExecuteError_PostsCommentWithErrorText(t *testing.T) {
+	var commentBeadID, commentText string
+
+	deps := &Deps{
+		AddComment: func(id, text string) error {
+			commentBeadID = id
+			commentText = text
+			return nil
+		},
+	}
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"execute": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"error":  "rebase onto main failed: conflict in pkg/gateway/gateway_test.go",
+					"status": "failed",
+				},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-rec", "cleric-agent", nil, state, deps)
+
+	result := handleRecordExecuteError(e, "retry_on_error",
+		StepConfig{Action: "cleric.execute", With: map[string]string{"action": "record_error"}}, state)
+
+	if result.Error != nil {
+		t.Fatalf("handleRecordExecuteError returned error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "recorded" {
+		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "recorded")
+	}
+	if commentBeadID != "spi-recovery-rec" {
+		t.Errorf("AddComment called with bead %q, want %q", commentBeadID, "spi-recovery-rec")
+	}
+	if !strings.Contains(commentText, "rebase onto main failed: conflict in pkg/gateway/gateway_test.go") {
+		t.Errorf("comment text missing error text, got: %q", commentText)
+	}
+	if !strings.Contains(commentText, "Cleric execute errored") {
+		t.Errorf("comment text missing header, got: %q", commentText)
+	}
+}
+
+// TestHandleRecordExecuteError_DefensiveEmptyError verifies the defensive
+// fallback when the execute step somehow has no recorded error text (which
+// should not happen if the interpreter wired correctly) — a placeholder
+// comment is posted instead of a bare empty block.
+func TestHandleRecordExecuteError_DefensiveEmptyError(t *testing.T) {
+	var commentText string
+	deps := &Deps{
+		AddComment: func(id, text string) error {
+			commentText = text
+			return nil
+		},
+	}
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"execute": {
+				Status:  "completed",
+				Outputs: map[string]string{}, // no "error" key
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-empty", "cleric-agent", nil, state, deps)
+
+	result := handleRecordExecuteError(e, "retry_on_error",
+		StepConfig{Action: "cleric.execute"}, state)
+
+	if result.Error != nil {
+		t.Fatalf("handleRecordExecuteError returned error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "recorded" {
+		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "recorded")
+	}
+	if !strings.Contains(commentText, "no error text recorded") {
+		t.Errorf("expected defensive placeholder in comment, got: %q", commentText)
+	}
+}
+
+// TestHandleRecordExecuteError_NilAddCommentDep verifies the handler is
+// nil-safe when AddComment is not wired (e.g., unit test envs). Status is
+// still recorded so the formula's reset/retry flow continues.
+func TestHandleRecordExecuteError_NilAddCommentDep(t *testing.T) {
+	deps := &Deps{} // AddComment intentionally nil
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"execute": {
+				Outputs: map[string]string{"error": "boom"},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-nil-dep", "cleric-agent", nil, state, deps)
+
+	// Must not panic.
+	result := handleRecordExecuteError(e, "retry_on_error",
+		StepConfig{Action: "cleric.execute"}, state)
+
+	if result.Error != nil {
+		t.Fatalf("handleRecordExecuteError returned error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "recorded" {
+		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "recorded")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleFinish step.With["needs_human"] override tests (spi-676a4)
+// ---------------------------------------------------------------------------
+
+// TestHandleFinish_NeedsHumanViaStepWith verifies that handleFinish honors
+// the formula-level override step.With["needs_human"]="true" and leaves the
+// recovery bead OPEN — even when the decide step did not set
+// outputs.needs_human. This is the path taken by
+// finish_needs_human_on_error when the execute-error retry budget is
+// exhausted.
+func TestHandleFinish_NeedsHumanViaStepWith(t *testing.T) {
+	var closedBead string
+
+	deps := &Deps{
+		AddComment: func(id, text string) error { return nil },
+		CloseBead: func(id string) error {
+			closedBead = id
+			return nil
+		},
+	}
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"decide": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"chosen_action": "rebase-onto-base",
+					// NOTE: no needs_human=true here — the override is purely via step.With.
+				},
+			},
+			"execute": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"status": "failed",
+					"error":  "rebase conflict",
+				},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-finish-nh-with", "wizard-recovery", nil, state, deps)
+
+	step := StepConfig{
+		Action: "cleric.execute",
+		With: map[string]string{
+			"action":      "finish",
+			"needs_human": "true",
+		},
+	}
+
+	result := handleFinish(e, "finish_needs_human_on_error", step, state)
+
+	if result.Error != nil {
+		t.Fatalf("handleFinish returned error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "needs_human" {
+		t.Errorf("outputs[status] = %q, want %q (forced via step.With)",
+			result.Outputs["status"], "needs_human")
+	}
+	if closedBead != "" {
+		t.Errorf("CloseBead was called with %q, but must be left open for spire resolve", closedBead)
+	}
+}
+
+// TestHandleFinish_StepWithNeedsHumanFalse verifies that when step.With has
+// needs_human != "true" (the default/empty case), the decide-output path is
+// the sole driver — absence of decide.outputs.needs_human → normal close.
+func TestHandleFinish_StepWithNeedsHumanFalse(t *testing.T) {
+	var closedBead string
+
+	deps := &Deps{
+		AddComment: func(id, text string) error { return nil },
+		CloseBead: func(id string) error {
+			closedBead = id
+			return nil
+		},
+	}
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"decide": {
+				Status:  "completed",
+				Outputs: map[string]string{"chosen_action": "resummon"},
+			},
+			"learn": {
+				Status:  "completed",
+				Outputs: map[string]string{"outcome": "clean"},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-finish-nh-off", "wizard-recovery", nil, state, deps)
+
+	step := StepConfig{
+		Action: "cleric.execute",
+		With: map[string]string{
+			"action":      "finish",
+			"needs_human": "false", // explicit non-override
+		},
+	}
+
+	result := handleFinish(e, "finish", step, state)
+
+	if result.Error != nil {
+		t.Fatalf("handleFinish returned error: %v", result.Error)
+	}
+	if result.Outputs["status"] != "success" {
+		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "success")
+	}
+	if closedBead != "spi-recovery-finish-nh-off" {
+		t.Errorf("CloseBead called with %q, want %q (no override → normal close)",
+			closedBead, "spi-recovery-finish-nh-off")
+	}
+}
