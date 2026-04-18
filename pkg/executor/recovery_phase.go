@@ -1104,7 +1104,23 @@ func hasImperativeOpener(comment string) bool {
 
 // decideFromGitState returns a recovery action based on git diagnostics,
 // or "" if no clear action is indicated.
+//
+// Routing priority:
+//  1. Unresolved conflicts present in the target worktree → resolve-conflicts
+//     (the agentic resolver). Taking precedence over rebase-onto-base is
+//     deliberate: a paused rebase/merge/cherry-pick already has markers on
+//     disk, and rebasing again just re-hits the same conflict. The agentic
+//     resolver needs the paused worktree to stay paused so its commit
+//     advances the real rebase.
+//  2. Behind base (including diverged) → rebase-onto-base.
+//  3. Dirty worktree (uncommitted non-conflict changes) → rebuild.
 func decideFromGitState(ctx *FullRecoveryContext) string {
+	// Conflicts in progress → agentic resolve-conflicts. Route FIRST so we
+	// don't ask rebase-onto-base to re-do the work that just conflicted.
+	if len(ctx.ConflictedFiles) > 0 {
+		return "resolve-conflicts"
+	}
+
 	// Behind base and diverged → rebase (diverged implies conflicts likely).
 	if ctx.GitState != nil && ctx.GitState.Diverged {
 		return "rebase-onto-base"
@@ -1128,6 +1144,9 @@ func decideFromGitState(ctx *FullRecoveryContext) string {
 func gitStateReasoning(ctx *FullRecoveryContext, action string) string {
 	switch action {
 	case "resolve-conflicts":
+		if n := len(ctx.ConflictedFiles); n > 0 {
+			return fmt.Sprintf("%d file(s) have unresolved merge conflicts", n)
+		}
 		return "worktree has merge conflicts"
 	case "rebase-onto-base":
 		if ctx.GitState != nil {
@@ -1462,6 +1481,15 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 		TargetBeadID:   sourceBeadID,
 		Params:         params,
 		Log:            func(msg string) { e.log("recovery: %s", msg) },
+		// Dispatcher wiring for actions that spawn apprentices (e.g. the
+		// agentic resolve-conflicts). Nil-safe downstream: actions that
+		// don't dispatch simply ignore these.
+		Spawner:        e.deps.Spawner,
+		RecordAgentRun: e.deps.RecordAgentRun,
+		AgentResultDir: e.deps.AgentResultDir,
+		LogBaseDir:     dolt.GlobalDir(),
+		ParentRunID:    e.currentRunID,
+		AgentNamespace: "cleric-resolver",
 	}
 
 	err := RunRecoveryAction(actionCtx, actionName)

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
@@ -35,6 +36,13 @@ type RecoveryAction struct {
 
 // RecoveryActionCtx provides the execution context for a recovery action.
 // Worktree is non-nil only when RequiresWorktree is true.
+//
+// Optional dispatcher deps (Spawner, RecordAgentRun, AgentResultDir, LogBaseDir,
+// ParentRunID, AgentNamespace) are populated by handleGitAwareExecute so that
+// actions needing apprentice dispatch (e.g. the agentic resolve-conflicts) can
+// spawn an agent without leaking Executor internals into the action registry.
+// When these are nil/empty, dispatch-requiring actions fail with a descriptive
+// error.
 type RecoveryActionCtx struct {
 	DB             *sql.DB
 	RepoPath       string
@@ -47,6 +55,19 @@ type RecoveryActionCtx struct {
 	TargetBeadID   string
 	Params         map[string]string
 	Log            func(string)
+
+	// Dispatcher wiring (optional; required only by actions that spawn agents).
+	Spawner         agent.Backend
+	RecordAgentRun  func(run AgentRun) (string, error)
+	AgentResultDir  func(agentName string) string
+	LogBaseDir      string
+	ParentRunID     string
+	AgentNamespace  string // "cleric-resolver" etc., used to form spawn names
+
+	// Optional hooks for test injection. When nil, the defaults call the real
+	// store.GetBead and an in-process dispatch via Spawner + RecordAgentRun.
+	GetBeadFn  func(id string) (store.Bead, error)
+	DispatchFn func(cfg agent.SpawnConfig) (agent.Handle, error)
 }
 
 var (
@@ -291,52 +312,76 @@ func actionCherryPick() RecoveryAction {
 	}
 }
 
-// actionResolveConflicts attempts conflict resolution for each conflicted file.
-// Defaults to --theirs; uses --ours if Params["strategy"] is "ours". Commits
-// the result.
+// actionResolveConflicts resolves merge conflicts in the worktree.
+//
+// Strategy selection (ctx.Params["strategy"]):
+//
+//	""         (default) or "agentic" → dispatch an apprentice with full
+//	                                    conflict context (files, markers, both
+//	                                    sides' commits, beads those commits
+//	                                    belong to) and validation gates. This
+//	                                    is the only strategy that can resolve
+//	                                    conflicts where both sides have real
+//	                                    content.
+//	"theirs"                          → mechanical `git checkout --theirs` +
+//	                                    commit. Destroys one side wholesale.
+//	                                    Only safe when you know the incoming
+//	                                    side is correct.
+//	"ours"                            → mechanical `git checkout --ours` +
+//	                                    commit. Same caveat.
+//
+// The agentic path requires ctx.Spawner / ctx.RecordAgentRun to be populated.
+// handleGitAwareExecute wires those from the executor's Deps.
 func actionResolveConflicts() RecoveryAction {
 	return RecoveryAction{
 		Name:             "resolve-conflicts",
-		Description:      "Resolve merge conflicts using --theirs (or --ours) and commit",
+		Description:      "Resolve merge conflicts (default: agentic dispatch; explicit strategy=theirs|ours for mechanical)",
 		RequiresWorktree: true,
 		MaxRetries:       2,
 		Fn: func(ctx *RecoveryActionCtx) error {
-			wc := ctx.Worktree
-			strategy := "--theirs"
-			if ctx.Params["strategy"] == "ours" {
-				strategy = "--ours"
+			strategy := ctx.Params["strategy"]
+			switch strategy {
+			case "theirs", "ours":
+				return mechanicalResolveConflicts(ctx, strategy)
+			case "", "agentic":
+				return agenticResolveConflicts(ctx)
+			default:
+				return fmt.Errorf("resolve-conflicts: unknown strategy %q (want agentic|theirs|ours)", strategy)
 			}
-
-			files, err := wc.ConflictedFiles()
-			if err != nil {
-				return fmt.Errorf("list conflicted files: %w", err)
-			}
-			if len(files) == 0 {
-				ctx.Log("no conflicted files found")
-				return nil
-			}
-
-			for _, f := range files {
-				// Use exec.Command with args slice to avoid shell injection
-				// from filenames containing spaces, quotes, or semicolons.
-				cmd := exec.Command("git", "checkout", strategy, "--", f)
-				cmd.Dir = wc.Dir
-				if out, err := cmd.CombinedOutput(); err != nil {
-					return fmt.Errorf("resolve conflict in %s with %s: %w\n%s", f, strategy, err, out)
-				}
-			}
-
-			// Stage and commit the resolution.
-			if err := wc.RunCommand("git add -A"); err != nil {
-				return fmt.Errorf("stage resolved files: %w", err)
-			}
-			if _, err := wc.Commit(fmt.Sprintf("resolve conflicts using %s strategy", strategy)); err != nil {
-				return fmt.Errorf("commit conflict resolution: %w", err)
-			}
-			ctx.Log(fmt.Sprintf("resolved %d conflicted files with %s", len(files), strategy))
-			return nil
 		},
 	}
+}
+
+// mechanicalResolveConflicts is the legacy --theirs/--ours path.
+func mechanicalResolveConflicts(ctx *RecoveryActionCtx, strategy string) error {
+	wc := ctx.Worktree
+	flag := "--" + strategy
+
+	files, err := wc.ConflictedFiles()
+	if err != nil {
+		return fmt.Errorf("list conflicted files: %w", err)
+	}
+	if len(files) == 0 {
+		ctx.Log("no conflicted files found")
+		return nil
+	}
+
+	for _, f := range files {
+		cmd := exec.Command("git", "checkout", flag, "--", f)
+		cmd.Dir = wc.Dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("resolve conflict in %s with %s: %w\n%s", f, flag, err, out)
+		}
+	}
+
+	if err := wc.RunCommand("git add -A"); err != nil {
+		return fmt.Errorf("stage resolved files: %w", err)
+	}
+	if _, err := wc.Commit(fmt.Sprintf("resolve conflicts using %s strategy", flag)); err != nil {
+		return fmt.Errorf("commit conflict resolution: %w", err)
+	}
+	ctx.Log(fmt.Sprintf("resolved %d conflicted files with %s", len(files), flag))
+	return nil
 }
 
 // actionTargetedFix records that an apprentice dispatch is needed to fix a

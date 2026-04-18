@@ -268,3 +268,176 @@ func (wc *WorktreeContext) Cleanup() {
 		os.RemoveAll(wc.Dir)
 	}
 }
+
+// ConflictState describes an in-progress conflicted operation in a worktree.
+// InProgressOp is one of "rebase", "merge", "cherry-pick", or "" if no
+// operation is paused. HeadSHA is the current HEAD. IncomingSHA is the
+// commit being applied (rebase: the cherry being picked onto the new base;
+// merge: the other side; cherry-pick: the source). Empty strings are
+// returned when the field cannot be resolved.
+type ConflictState struct {
+	InProgressOp string
+	HeadSHA      string
+	IncomingSHA  string
+}
+
+// DetectConflictState inspects the worktree's .git/ directory for in-progress
+// rebase / merge / cherry-pick state and resolves the HEAD and incoming SHAs.
+// When the worktree is a linked worktree (shares .git with the main repo),
+// it reads from the worktree's private gitdir rather than the main repo .git.
+// Returns an empty state (InProgressOp == "") when no operation is paused.
+func (wc *WorktreeContext) DetectConflictState() ConflictState {
+	state := ConflictState{}
+	gitDir := wc.resolveGitDir()
+	if gitDir == "" {
+		return state
+	}
+
+	// Current HEAD.
+	if out, err := exec.Command("git", "-C", wc.Dir, "rev-parse", "HEAD").Output(); err == nil {
+		state.HeadSHA = strings.TrimSpace(string(out))
+	}
+
+	// Detect operation + resolve incoming SHA.
+	switch {
+	case fileExists(filepath.Join(gitDir, "rebase-merge")) || fileExists(filepath.Join(gitDir, "rebase-apply")):
+		state.InProgressOp = "rebase"
+		// REBASE_HEAD points to the commit being replayed.
+		if sha, ok := wc.readRefFile("REBASE_HEAD"); ok {
+			state.IncomingSHA = sha
+			break
+		}
+		// Fallback: rebase-merge/stopped-sha (interactive) or rebase-apply/original-commit.
+		if sha, ok := readFileTrim(filepath.Join(gitDir, "rebase-merge", "stopped-sha")); ok {
+			state.IncomingSHA = sha
+		} else if sha, ok := readFileTrim(filepath.Join(gitDir, "rebase-apply", "original-commit")); ok {
+			state.IncomingSHA = sha
+		}
+	case fileExists(filepath.Join(gitDir, "CHERRY_PICK_HEAD")):
+		state.InProgressOp = "cherry-pick"
+		if sha, ok := wc.readRefFile("CHERRY_PICK_HEAD"); ok {
+			state.IncomingSHA = sha
+		}
+	case fileExists(filepath.Join(gitDir, "MERGE_HEAD")):
+		state.InProgressOp = "merge"
+		if sha, ok := wc.readRefFile("MERGE_HEAD"); ok {
+			state.IncomingSHA = sha
+		}
+	}
+	return state
+}
+
+// readRefFile resolves a pseudo-ref (REBASE_HEAD / MERGE_HEAD / CHERRY_PICK_HEAD)
+// via git rev-parse so the caller gets the full SHA regardless of where git
+// stores the pointer (packed refs, worktree-private gitdir, etc.).
+func (wc *WorktreeContext) readRefFile(ref string) (string, bool) {
+	out, err := exec.Command("git", "-C", wc.Dir, "rev-parse", ref).Output()
+	if err != nil {
+		return "", false
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return "", false
+	}
+	return sha, true
+}
+
+// resolveGitDir returns the absolute path to this worktree's gitdir
+// (the per-worktree directory, not the main repo's .git when this is a
+// linked worktree). Returns "" if it can't be resolved.
+func (wc *WorktreeContext) resolveGitDir() string {
+	out, err := exec.Command("git", "-C", wc.Dir, "rev-parse", "--git-dir").Output()
+	if err != nil {
+		return ""
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(wc.Dir, dir)
+	}
+	return dir
+}
+
+// FileLog returns `git log --all --pretty=fuller -n <limit> -- <path>` output.
+// Used to enrich conflict-resolution context with the file's recent history.
+func (wc *WorktreeContext) FileLog(path string, limit int) (string, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	out, err := exec.Command("git", "-C", wc.Dir, "log", "--all",
+		"--pretty=fuller", fmt.Sprintf("-n%d", limit), "--", path).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("git log -- %s: %w", path, err)
+	}
+	return string(out), nil
+}
+
+// CommitMetadata describes a single commit. Empty fields indicate lookup failure.
+type CommitMetadata struct {
+	SHA     string
+	Subject string
+	Author  string
+	Date    string
+	Body    string
+}
+
+// ShowCommit returns metadata for the given commit SHA. Nil when the SHA
+// cannot be resolved (e.g. root commit, garbage-collected).
+func (wc *WorktreeContext) ShowCommit(sha string) (*CommitMetadata, error) {
+	if sha == "" {
+		return nil, fmt.Errorf("empty sha")
+	}
+	// Format: SHA%nSubject%nAuthor%nDate%n%nBody — separator chosen because
+	// pretty format strings don't offer an unambiguous record separator.
+	// We parse by splitting on "\n" — subject is a single line by git convention.
+	out, err := exec.Command("git", "-C", wc.Dir, "show", "--no-patch",
+		"--format=%H%n%s%n%an <%ae>%n%aI%n%b", sha).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git show %s: %w", sha, err)
+	}
+	lines := strings.SplitN(strings.TrimRight(string(out), "\n"), "\n", 5)
+	md := &CommitMetadata{}
+	if len(lines) > 0 {
+		md.SHA = lines[0]
+	}
+	if len(lines) > 1 {
+		md.Subject = lines[1]
+	}
+	if len(lines) > 2 {
+		md.Author = lines[2]
+	}
+	if len(lines) > 3 {
+		md.Date = lines[3]
+	}
+	if len(lines) > 4 {
+		md.Body = lines[4]
+	}
+	return md, nil
+}
+
+// DiffCheck runs `git diff --check` to detect conflict markers in tracked files.
+// A non-nil error means markers (or other whitespace issues) are present.
+// Returns combined output regardless.
+func (wc *WorktreeContext) DiffCheck() (string, error) {
+	out, err := exec.Command("git", "-C", wc.Dir, "diff", "--check").CombinedOutput()
+	return string(out), err
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func readFileTrim(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	s := strings.TrimSpace(string(data))
+	if s == "" {
+		return "", false
+	}
+	return s, true
+}

@@ -160,6 +160,12 @@ type FullRecoveryContext struct {
 	FailureReason    string                    `json:"failure_reason,omitempty"`
 	TotalAttempts    int                       `json:"total_attempts"`
 	RepeatedFailures map[string]int            `json:"repeated_failures,omitempty"`
+	// ConflictedFiles lists tracked files with unresolved merge conflicts in
+	// the target bead's worktree. Non-empty implies an operation is paused
+	// mid-rebase/merge/cherry-pick with markers on disk — the signal decide
+	// uses to route to the agentic conflict resolver instead of rebasing
+	// again (which would just re-hit the same conflict).
+	ConflictedFiles  []string                   `json:"conflicted_files,omitempty"`
 }
 
 // BuildRecoveryContext assembles a full recovery context by loading the
@@ -227,6 +233,9 @@ func BuildRecoveryContext(db *sql.DB, repoPath string, recoveryBeadID string) (*
 		wtDiag, wtErr := git.DiagnoseWorktree(repoPath, targetBeadID)
 		if wtErr == nil {
 			ctx.WorktreeState = wtDiag
+			if wtDiag != nil {
+				ctx.ConflictedFiles = wtDiag.ConflictedFiles
+			}
 		}
 	}
 

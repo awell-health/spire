@@ -23,12 +23,13 @@ type BranchDiagnostics struct {
 // WorktreeDiagnostics captures the state of a worktree identified by a
 // caller-provided identifier (typically matched against branch names or paths).
 type WorktreeDiagnostics struct {
-	Exists         bool     // whether a matching worktree was found
-	Path           string   // absolute path to the worktree
-	IsDirty        bool     // true if working tree has uncommitted changes
-	UntrackedFiles []string // untracked file paths (from git status --porcelain)
-	Branch         string   // branch checked out in the worktree
-	HeadHash       string   // HEAD SHA of the worktree
+	Exists          bool     // whether a matching worktree was found
+	Path            string   // absolute path to the worktree
+	IsDirty         bool     // true if working tree has uncommitted changes
+	UntrackedFiles  []string // untracked file paths (from git status --porcelain)
+	ConflictedFiles []string // files with unresolved merge conflicts (git diff --diff-filter=U)
+	Branch          string   // branch checked out in the worktree
+	HeadHash        string   // HEAD SHA of the worktree
 }
 
 // DiagnoseBranch computes ahead/behind counts for branch relative to the
@@ -114,6 +115,16 @@ func DiagnoseWorktree(repoPath string, beadID string) (*WorktreeDiagnostics, err
 		for _, line := range strings.Split(statusStr, "\n") {
 			if len(line) >= 3 && line[0] == '?' && line[1] == '?' {
 				diag.UntrackedFiles = append(diag.UntrackedFiles, strings.TrimSpace(line[3:]))
+			}
+		}
+	}
+
+	// Unresolved conflict list — filter U, via git diff --name-only --diff-filter=U.
+	// Empty when no conflict is in progress. Errors are informational.
+	if conflictOut, err := exec.Command("git", "-C", wtPath, "diff", "--name-only", "--diff-filter=U").Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(conflictOut)), "\n") {
+			if line != "" {
+				diag.ConflictedFiles = append(diag.ConflictedFiles, line)
 			}
 		}
 	}
