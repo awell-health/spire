@@ -27,7 +27,8 @@ type MenuAction struct {
 }
 
 // BuildActionMenu builds a context-sensitive list of actions based on bead status.
-// Routing is purely status-based — no label checks.
+// Routing is status-based, with a label-aware approve entry (key `y`) appended
+// when the bead carries `needs-human` or `awaiting-approval`.
 func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 	if bead == nil {
 		return nil
@@ -94,6 +95,19 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 		)
 	case "closed":
 		// Closed beads: only Grok and Trace (appended below).
+	}
+
+	// Label-aware approve entry on `y`. Precedence (first match wins):
+	//   1. awaiting-approval → Approve gate
+	//   2. design + needs-human → Approve design
+	//   3. needs-human (non-design) → Approve
+	switch {
+	case bead.HasLabel("awaiting-approval"):
+		items = append(items, MenuAction{Key: 'y', Label: "Approve gate", Danger: DangerConfirm, ActionType: ActionApproveGate})
+	case bead.Type == "design" && bead.HasLabel("needs-human"):
+		items = append(items, MenuAction{Key: 'y', Label: "Approve design", Danger: DangerConfirm, ActionType: ActionApproveDesign})
+	case bead.HasLabel("needs-human"):
+		items = append(items, MenuAction{Key: 'y', Label: "Approve", Danger: DangerConfirm, ActionType: ActionApprove})
 	}
 
 	// Always available.

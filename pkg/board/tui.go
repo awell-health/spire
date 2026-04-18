@@ -545,9 +545,9 @@ func (m *BoardMode) FooterHints() string {
 	case ViewAlerts:
 		return "v=view  s summon  d defer  a actions  c comment  enter inspect  / search"
 	case ViewLower:
-		return "v=view  s summon  y approve  c comment  a actions  enter inspect"
+		return "v=view  s summon  y yank  c comment  a actions  enter inspect"
 	default: // ViewBoard
-		return "v=view  s summon  r ready  d defer  y approve  c comment  a actions  / search"
+		return "v=view  s summon  r ready  d defer  y yank  c comment  a actions  / search"
 	}
 }
 
@@ -1218,17 +1218,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 
 			switch msg.String() {
 			case "y":
-				if isReviewableDesign {
-					beadID := m.InspectorData.Bead.ID
-					title := m.InspectorData.Bead.Title
-					m.ConfirmOpen = true
-					m.ConfirmAction = ActionApproveDesign
-					m.ConfirmBeadID = beadID
-					m.ConfirmPrompt = confirmPromptForAction(ActionApproveDesign, beadID, title)
-					m.ConfirmDanger = DangerConfirm
-					return m, nil
-				}
-				// Fallback: copy bead ID to clipboard.
+				// Always yank: copy bead ID to clipboard.
 				if m.InspectorData != nil {
 					if err := copyToClipboard(m.InspectorData.Bead.ID); err != nil {
 						m.ActionStatus = fmt.Sprintf("clipboard error: %v", err)
@@ -1604,14 +1594,9 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			m.Cmdline = CmdlineState{Active: true, History: m.Cmdline.History, HistIdx: -1, CompIdx: -1}
 			return m, nil
 
-		// Approve/unblock hooked bead, or copy bead ID to clipboard.
+		// Yank: copy bead ID to clipboard.
 		case "y":
 			if bead := m.SelectedBead(); bead != nil {
-				if bead.Status == "hooked" {
-					mm, cmd := m.dispatchInlineAction(ActionResume, bead.ID)
-					return mm, cmd
-				}
-				// Fallback: copy bead ID to clipboard for non-hooked beads.
 				if err := copyToClipboard(bead.ID); err != nil {
 					m.ActionStatus = fmt.Sprintf("clipboard error: %v", err)
 				} else {
