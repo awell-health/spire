@@ -879,18 +879,18 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 	// to the agentic default (see MarkDemoted on action failure paths).
 	if sig := failureSignatureFromContext(e, ccResult); sig != "" {
 		threshold := clericPromotionThreshold(e, sig)
-		if state, err := recovery.LookupPromotionState(sig, threshold); err != nil {
+		if promState, err := recovery.LookupPromotionState(sig, threshold); err != nil {
 			e.log("recovery: decide: promotion lookup for %s failed (continuing with agentic default): %v", sig, err)
-		} else if state.Promoted {
-			action, params := recipeDispatch(state.Recipe)
+		} else if promState.Promoted {
+			action, params := recipeDispatch(promState.Recipe)
 			if action != "" && (fullCtx == nil || fullCtx.RepeatedFailures[action] < 2) {
 				e.log("recovery: decide: promoted mechanical recipe for %s → %s (count=%d threshold=%d)",
-					sig, action, state.Count, state.Threshold)
+					sig, action, promState.Count, promState.Threshold)
 				outputs := map[string]string{
 					"status":        "success",
 					"chosen_action": action,
 					"confidence":    "0.95",
-					"reasoning":     fmt.Sprintf("Promoted mechanical recipe for %s (%d clean outcomes ≥ threshold %d)", sig, state.Count, state.Threshold),
+					"reasoning":     fmt.Sprintf("Promoted mechanical recipe for %s (%d clean outcomes ≥ threshold %d)", sig, promState.Count, promState.Threshold),
 					"needs_human":   "false",
 					"promoted":      "true",
 				}

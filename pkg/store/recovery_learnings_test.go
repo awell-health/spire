@@ -78,6 +78,7 @@ func TestWriteRecoveryLearning_Success(t *testing.T) {
 			1, // reusable=true → 1
 			now.UTC().Format("2006-01-02 15:04:05"),
 			row.ExpectedOutcome,
+			row.MechanicalRecipe,
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -100,14 +101,14 @@ func TestGetBeadLearnings_Success(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"id", "recovery_bead", "source_bead", "failure_class", "failure_sig",
 		"resolution_kind", "outcome", "learning_summary", "reusable", "resolved_at",
-		"expected_outcome",
+		"expected_outcome", "mechanical_recipe", "demoted_at",
 	}).
 		AddRow("learn-001", "rec-001", "spi-abc", "implement-failed", "implement-failed:implement",
 			"resummon", "clean", "Fixed via resummon.", 1, "2026-04-05 18:00:00",
-			"Should pass build after resummon.").
+			"Should pass build after resummon.", nil, nil).
 		AddRow("learn-002", "rec-002", "spi-abc", "implement-failed", nil,
 			"reset", "relapsed", nil, 1, "2026-04-05 16:00:00",
-			nil)
+			nil, nil, nil)
 
 	mock.ExpectQuery(`SELECT .+ FROM recovery_learnings WHERE source_bead = \? AND failure_class = \?`).
 		WithArgs("spi-abc", "implement-failed").
@@ -308,6 +309,258 @@ func TestGetLearningStats_PredictionAccuracyNoPredictions(t *testing.T) {
 		t.Errorf("PredictionAccuracy = %f, want 0 (no predictions made)", stats.PredictionAccuracy)
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetPromotionSnapshot tests (per spi-4o4bi review round 1)
+// ---------------------------------------------------------------------------
+
+func TestGetPromotionSnapshot_EmptySignatureReturnsZero(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	snap, err := GetPromotionSnapshot(context.Background(), db, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap == nil || snap.CleanCount != 0 || snap.LatestRecipe != "" || snap.FailureSig != "" {
+		t.Errorf("GetPromotionSnapshot(\"\") = %+v, want zero-value snapshot", snap)
+	}
+}
+
+func TestGetPromotionSnapshot_CountsConsecutiveCleanWithRecipe(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"outcome", "mechanical_recipe", "demoted_at"}).
+		AddRow("clean", `{"kind":"builtin","action":"rebase-onto-base"}`, nil).
+		AddRow("clean", `{"kind":"builtin","action":"rebase-onto-base"}`, nil).
+		AddRow("clean", `{"kind":"builtin","action":"rebase-onto-base"}`, nil)
+
+	mock.ExpectQuery(`SELECT outcome, mechanical_recipe, demoted_at FROM recovery_learnings WHERE failure_sig = \?`).
+		WithArgs("step-failure:merge").
+		WillReturnRows(rows)
+
+	snap, err := GetPromotionSnapshot(context.Background(), db, "step-failure:merge")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.CleanCount != 3 {
+		t.Errorf("CleanCount = %d, want 3", snap.CleanCount)
+	}
+	if snap.LatestRecipe != `{"kind":"builtin","action":"rebase-onto-base"}` {
+		t.Errorf("LatestRecipe = %q, want builtin rebase recipe", snap.LatestRecipe)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetPromotionSnapshot_StopsAtFirstNonCleanRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Newest-first: 2 clean, then dirty → count stops at 2.
+	rows := sqlmock.NewRows([]string{"outcome", "mechanical_recipe", "demoted_at"}).
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, nil).
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, nil).
+		AddRow("dirty", `{"kind":"builtin","action":"rebuild"}`, nil).
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, nil)
+
+	mock.ExpectQuery(`SELECT outcome, mechanical_recipe, demoted_at FROM recovery_learnings WHERE failure_sig = \?`).
+		WithArgs("sig1").
+		WillReturnRows(rows)
+
+	snap, err := GetPromotionSnapshot(context.Background(), db, "sig1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.CleanCount != 2 {
+		t.Errorf("CleanCount = %d, want 2 (walk stops at dirty)", snap.CleanCount)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetPromotionSnapshot_StopsAtDemotedRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// First clean, then a clean-but-demoted → count stops at 1.
+	rows := sqlmock.NewRows([]string{"outcome", "mechanical_recipe", "demoted_at"}).
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, nil).
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, "2026-04-18 12:00:00").
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, nil)
+
+	mock.ExpectQuery(`SELECT outcome, mechanical_recipe, demoted_at FROM recovery_learnings WHERE failure_sig = \?`).
+		WithArgs("sig2").
+		WillReturnRows(rows)
+
+	snap, err := GetPromotionSnapshot(context.Background(), db, "sig2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.CleanCount != 1 {
+		t.Errorf("CleanCount = %d, want 1 (walk stops at demoted)", snap.CleanCount)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetPromotionSnapshot_StopsAtRowWithoutRecipe(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Clean row without a recipe breaks the chain — signatures without
+	// codified resolutions must never promote.
+	rows := sqlmock.NewRows([]string{"outcome", "mechanical_recipe", "demoted_at"}).
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, nil).
+		AddRow("clean", nil, nil).
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, nil)
+
+	mock.ExpectQuery(`SELECT outcome, mechanical_recipe, demoted_at FROM recovery_learnings WHERE failure_sig = \?`).
+		WithArgs("sig3").
+		WillReturnRows(rows)
+
+	snap, err := GetPromotionSnapshot(context.Background(), db, "sig3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.CleanCount != 1 {
+		t.Errorf("CleanCount = %d, want 1 (walk stops at empty recipe)", snap.CleanCount)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetPromotionSnapshot_EmptyStringRecipeAlsoBreaksChain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Empty string recipe (not NULL) also breaks the chain.
+	rows := sqlmock.NewRows([]string{"outcome", "mechanical_recipe", "demoted_at"}).
+		AddRow("clean", "", nil).
+		AddRow("clean", `{"kind":"builtin","action":"rebuild"}`, nil)
+
+	mock.ExpectQuery(`SELECT outcome, mechanical_recipe, demoted_at FROM recovery_learnings WHERE failure_sig = \?`).
+		WithArgs("sig4").
+		WillReturnRows(rows)
+
+	snap, err := GetPromotionSnapshot(context.Background(), db, "sig4")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.CleanCount != 0 {
+		t.Errorf("CleanCount = %d, want 0 (first row has empty recipe)", snap.CleanCount)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetPromotionSnapshot_NoRowsReturnsZero(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"outcome", "mechanical_recipe", "demoted_at"})
+	mock.ExpectQuery(`SELECT outcome, mechanical_recipe, demoted_at FROM recovery_learnings WHERE failure_sig = \?`).
+		WithArgs("unknown-sig").
+		WillReturnRows(rows)
+
+	snap, err := GetPromotionSnapshot(context.Background(), db, "unknown-sig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.CleanCount != 0 || snap.LatestRecipe != "" {
+		t.Errorf("snap = %+v, want zero-count empty-recipe", snap)
+	}
+	if snap.FailureSig != "unknown-sig" {
+		t.Errorf("FailureSig = %q, want unknown-sig", snap.FailureSig)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DemotePromotedRows tests
+// ---------------------------------------------------------------------------
+
+func TestDemotePromotedRows_EmptySignatureIsNoop(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No ExpectExec — empty sig must short-circuit without touching the DB.
+	if err := DemotePromotedRows(context.Background(), db, ""); err != nil {
+		t.Fatalf("DemotePromotedRows(\"\") err = %v, want nil", err)
+	}
+}
+
+func TestDemotePromotedRows_UpdatesMatchingRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec(`UPDATE recovery_learnings SET demoted_at = \? WHERE failure_sig = \? AND outcome = 'clean' AND demoted_at IS NULL AND mechanical_recipe IS NOT NULL AND mechanical_recipe != ''`).
+		WithArgs(sqlmock.AnyArg(), "step-failure:merge").
+		WillReturnResult(sqlmock.NewResult(0, 3))
+
+	err = DemotePromotedRows(context.Background(), db, "step-failure:merge")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDemotePromotedRows_NoMatchingRowsStillSucceeds(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec(`UPDATE recovery_learnings SET demoted_at = \? WHERE failure_sig = \? AND outcome = 'clean' AND demoted_at IS NULL AND mechanical_recipe IS NOT NULL AND mechanical_recipe != ''`).
+		WithArgs(sqlmock.AnyArg(), "nonexistent").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err = DemotePromotedRows(context.Background(), db, "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}

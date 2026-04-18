@@ -6,6 +6,39 @@ import (
 	"github.com/awell-health/spire/pkg/store"
 )
 
+// Test seams for the promotion store calls. Tests override these to avoid
+// needing a live Dolt connection. Production code reads them via the default
+// bindings to the store.*Auto wrappers.
+var (
+	getPromotionSnapshot = store.GetPromotionSnapshotAuto
+	demotePromotedRows   = store.DemotePromotedRowsAuto
+)
+
+// SetPromotionStoreForTests swaps the promotion store seams so tests can
+// exercise LookupPromotionState / MarkDemoted without a live Dolt store.
+// Returns a restore function that callers MUST invoke in defer. A nil
+// argument leaves that seam unchanged.
+//
+// Production code MUST NOT call this. The suffix is the usual Go signal
+// that this is a test-only hook.
+func SetPromotionStoreForTests(
+	snap func(string) (*store.PromotionSnapshot, error),
+	demote func(string) error,
+) (restore func()) {
+	origSnap := getPromotionSnapshot
+	origDemote := demotePromotedRows
+	if snap != nil {
+		getPromotionSnapshot = snap
+	}
+	if demote != nil {
+		demotePromotedRows = demote
+	}
+	return func() {
+		getPromotionSnapshot = origSnap
+		demotePromotedRows = origDemote
+	}
+}
+
 // PromotionState is the lookup result for a failure signature's promotion
 // status. Count is the number of consecutive clean+recipe outcomes for the
 // signature (newest-first, stopping at the first failure / demotion / row
@@ -50,7 +83,7 @@ func LookupPromotionState(failureSig string, threshold int) (*PromotionState, er
 	if threshold <= 0 {
 		return nil, fmt.Errorf("promotion threshold must be positive, got %d", threshold)
 	}
-	snap, err := store.GetPromotionSnapshotAuto(failureSig)
+	snap, err := getPromotionSnapshot(failureSig)
 	if err != nil {
 		return nil, fmt.Errorf("lookup promotion snapshot: %w", err)
 	}
@@ -79,7 +112,7 @@ func MarkDemoted(failureSig string) error {
 	if failureSig == "" {
 		return nil
 	}
-	if err := store.DemotePromotedRowsAuto(failureSig); err != nil {
+	if err := demotePromotedRows(failureSig); err != nil {
 		return fmt.Errorf("mark demoted %s: %w", failureSig, err)
 	}
 	return nil

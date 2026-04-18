@@ -275,6 +275,126 @@ branch:
 	}
 }
 
+func TestResolveClericPromotionThreshold(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        ClericConfig
+		failureSig string
+		want       int
+	}{
+		{
+			name:       "all empty → system default",
+			cfg:        ClericConfig{},
+			failureSig: "step-failure:merge",
+			want:       DefaultClericPromotionThreshold,
+		},
+		{
+			name:       "empty cfg with empty sig → system default",
+			cfg:        ClericConfig{},
+			failureSig: "",
+			want:       DefaultClericPromotionThreshold,
+		},
+		{
+			name:       "global threshold honored",
+			cfg:        ClericConfig{PromotionThreshold: 5},
+			failureSig: "step-failure:merge",
+			want:       5,
+		},
+		{
+			name: "override wins over global",
+			cfg: ClericConfig{
+				PromotionThreshold: 5,
+				PromotionOverrides: map[string]int{"step-failure:merge": 10},
+			},
+			failureSig: "step-failure:merge",
+			want:       10,
+		},
+		{
+			name: "override miss → falls through to global",
+			cfg: ClericConfig{
+				PromotionThreshold: 4,
+				PromotionOverrides: map[string]int{"other-sig": 10},
+			},
+			failureSig: "step-failure:merge",
+			want:       4,
+		},
+		{
+			name: "override miss with no global → default",
+			cfg: ClericConfig{
+				PromotionOverrides: map[string]int{"other-sig": 10},
+			},
+			failureSig: "step-failure:merge",
+			want:       DefaultClericPromotionThreshold,
+		},
+		{
+			name: "empty sig skips override lookup",
+			cfg: ClericConfig{
+				PromotionThreshold: 4,
+				PromotionOverrides: map[string]int{"": 999}, // would match if not guarded
+			},
+			failureSig: "",
+			want:       4,
+		},
+		{
+			name: "zero override falls through to global",
+			cfg: ClericConfig{
+				PromotionThreshold: 6,
+				PromotionOverrides: map[string]int{"step-failure:merge": 0},
+			},
+			failureSig: "step-failure:merge",
+			want:       6,
+		},
+		{
+			name: "negative override falls through to global",
+			cfg: ClericConfig{
+				PromotionThreshold: 6,
+				PromotionOverrides: map[string]int{"step-failure:merge": -1},
+			},
+			failureSig: "step-failure:merge",
+			want:       6,
+		},
+		{
+			name:       "zero global falls through to default",
+			cfg:        ClericConfig{PromotionThreshold: 0},
+			failureSig: "step-failure:merge",
+			want:       DefaultClericPromotionThreshold,
+		},
+		{
+			name:       "negative global falls through to default",
+			cfg:        ClericConfig{PromotionThreshold: -3},
+			failureSig: "step-failure:merge",
+			want:       DefaultClericPromotionThreshold,
+		},
+		{
+			name: "negative override AND negative global both fall through",
+			cfg: ClericConfig{
+				PromotionThreshold: -5,
+				PromotionOverrides: map[string]int{"sig": -2},
+			},
+			failureSig: "sig",
+			want:       DefaultClericPromotionThreshold,
+		},
+		{
+			name: "per-sig override of 1 (smallest valid) is honored",
+			cfg: ClericConfig{
+				PromotionThreshold: 3,
+				PromotionOverrides: map[string]int{"hot-sig": 1},
+			},
+			failureSig: "hot-sig",
+			want:       1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveClericPromotionThreshold(tt.cfg, tt.failureSig)
+			if got != tt.want {
+				t.Errorf("ResolveClericPromotionThreshold(%+v, %q) = %d, want %d",
+					tt.cfg, tt.failureSig, got, tt.want)
+			}
+		})
+	}
+}
+
 func writeFile(dir, name, content string) error {
 	return os.WriteFile(dir+"/"+name, []byte(content), 0644)
 }
