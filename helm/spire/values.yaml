@@ -259,10 +259,10 @@ agents: []
 ## k8s CronJob cannot schedule sub-minute intervals — and 10s is the right
 ## cadence for dogfooding.
 
-## @param syncer.enabled Whether to render the separate syncer Deployment. Default false — the daemon sidecar on the dolt pod now handles sync, which uses the same CLI auth path as laptop `spire up`. The separate Deployment is kept as opt-in for cross-pod experiments.
-## @param syncer.interval Daemon sync interval (applies to whichever daemon runs — sidecar or standalone).
+## @param syncer.enabled Whether to render the syncer Deployment + Service. Default false — Phase 1 does not need a DoltHub-sync loop because the cluster's dolt serves its own remotesapi. Re-enable when archival DoltHub sync is wanted (Phase 2).
+## @param syncer.interval Background sync interval when the syncer is enabled.
 ## @param syncer.debounce Minimum time between triggered syncs. Rapid POSTs to /sync coalesce within this window.
-## @param syncer.port HTTP port for the gateway endpoint (exposed as spire-gateway Service, target sidecar or standalone).
+## @param syncer.port HTTP port the syncer's gateway endpoint listens on (exposed as the spire-syncer Service).
 syncer:
   enabled: true
   interval: "1m"
