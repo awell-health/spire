@@ -69,9 +69,12 @@ helm install spire ./helm/spire \
   --set images.agent.repository=spire-agent \
   --set images.agent.tag=dev \
   --set images.agent.pullPolicy=IfNotPresent \
-  --set dolthub.remote=your-org/your-tower \
-  --set dolthub.user=your-dolthub-user \
-  --set dolthub.password=your-dolthub-token \
+  --set dolthub.remoteUrl=your-org/your-tower \
+  --set dolthub.credsKeyId=<keyid> \
+  --set-file dolthub.credsKeyValue=$HOME/.dolt/creds/<keyid>.jwk \
+  --set dolthub.userName=your-dolthub-username \
+  --set dolthub.user=dolt_remote \
+  --set dolthub.password=<strong-remotesapi-password> \
   --set anthropic.apiKey=sk-ant-...
 ```
 
@@ -115,18 +118,30 @@ images:
     tag: latest
 
 dolthub:
-  remote: your-org/your-tower
-  user: your-dolthub-user
-  password: your-dolthub-token
+  # DoltHub tower (HTTPS clone/push via JWK).
+  remoteUrl: your-org/your-tower
+  credsKeyId: <base32-key-id>       # from `dolt creds ls`
+  credsKeyValue: ""                 # pass via --set-file, never inline in git
+  userName: your-dolthub-username   # MUST match the account that owns the JWK
+  userEmail: you@example.com
+
+  # Cluster remotesapi SQL login. Auto-provisioned by the post-install Job
+  # (see `dolt.provisionRemoteUser.enabled`). External `dolt remote`
+  # clients authenticate with these against the cluster's :50051 endpoint.
+  user: dolt_remote
+  password: <strong-remotesapi-password>
 
 anthropic:
-  apiKey: sk-ant-...
+  # One of apiKey or oauthToken is required.
+  apiKey: sk-ant-api03-...
+  oauthToken: ""                    # sk-ant-oat01-... (from `claude setup-token` on a Max plan)
 
 github:
   token: ghp_...
 
 beads:
   prefix: spi
+  database: spi
 
 # Define agents — one SpireAgent CRD per repo
 agents:
@@ -222,12 +237,18 @@ All configurable values are documented in `helm/spire/values.yaml`. Key values:
 | `namespace` | `spire` | Kubernetes namespace |
 | `images.steward.repository` | `ghcr.io/awell-health/spire-steward` | Steward image |
 | `images.agent.repository` | `ghcr.io/awell-health/spire-agent` | Agent image |
-| `dolthub.remote` | `""` | DoltHub remote path (required) |
-| `dolthub.user` | `""` | DoltHub username (required) |
-| `dolthub.password` | `""` | DoltHub token (required) |
-| `anthropic.apiKey` | `""` | Anthropic API key (required) |
-| `github.token` | `""` | GitHub PAT (required for repo clone/push operations) |
-| `beads.prefix` | `spi` | Hub bead prefix |
+| `dolthub.remoteUrl` | `""` | DoltHub tower path (`org/tower`). Required for UC 1 / 3a. |
+| `dolthub.credsKeyId` | `""` | Dolt key ID — basename of the JWK file; shown by `dolt creds ls`. Required. |
+| `dolthub.credsKeyValue` | `""` | Raw JWK JSON contents. Pass via `--set-file`; never inline. Required. |
+| `dolthub.userName` | `""` | Dolt CLI `user.name`. MUST match the DoltHub account that owns the JWK. |
+| `dolthub.userEmail` | `""` | Dolt CLI `user.email`. |
+| `dolthub.user` | `""` | Cluster remotesapi SQL username (provisioned by post-install Job). |
+| `dolthub.password` | `""` | Cluster remotesapi SQL password. |
+| `anthropic.apiKey` | `""` | Anthropic classic API key. Use this or `oauthToken`. |
+| `anthropic.oauthToken` | `""` | Anthropic OAuth token (Max subscription, from `claude setup-token`). |
+| `github.token` | `""` | GitHub PAT (required for repo clone/push operations). |
+| `beads.prefix` | `spi` | Hub bead prefix. |
+| `beads.database` | `""` | Local dolt database name. Defaults to `beads.prefix`. |
 | `steward.interval` | `2m` | Steward sync interval |
 | `spireConfig.polling.staleThreshold` | `4h` | Mark workload stale after this |
 | `spireConfig.polling.reassignThreshold` | `6h` | Reassign stale workloads after this |
