@@ -23,6 +23,15 @@ type RecoveryLearningRow struct {
 	Reusable        bool
 	ResolvedAt      time.Time
 	ExpectedOutcome string // decide agent's prediction of what should happen
+	// MechanicalRecipe is the serialised codified replay of this resolution.
+	// Empty means "no recipe captured" — those outcomes never contribute to
+	// promotion. Populated on agentic action successes that can be replayed
+	// deterministically (see pkg/recovery.MechanicalRecipe).
+	MechanicalRecipe string
+	// DemotedAt is non-zero when this row has been demoted after a promoted
+	// mechanical recipe failed. Demoted rows are skipped by promotion count
+	// queries so the counter effectively resets to zero for that signature.
+	DemotedAt time.Time
 }
 
 // WriteRecoveryLearning inserts a recovery learning into the recovery_learnings table.
@@ -32,11 +41,12 @@ func WriteRecoveryLearning(ctx context.Context, db *sql.DB, l RecoveryLearningRo
 		reusable = 1
 	}
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO recovery_learnings (id, recovery_bead, source_bead, failure_class, failure_sig, resolution_kind, outcome, learning_summary, reusable, resolved_at, expected_outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO recovery_learnings (id, recovery_bead, source_bead, failure_class, failure_sig, resolution_kind, outcome, learning_summary, reusable, resolved_at, expected_outcome, mechanical_recipe) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		l.ID, l.RecoveryBead, l.SourceBead, l.FailureClass, l.FailureSig,
 		l.ResolutionKind, l.Outcome, l.LearningSummary, reusable,
 		l.ResolvedAt.UTC().Format("2006-01-02 15:04:05"),
 		l.ExpectedOutcome,
+		l.MechanicalRecipe,
 	)
 	if err != nil {
 		return fmt.Errorf("insert recovery learning: %w", err)
@@ -48,7 +58,7 @@ func WriteRecoveryLearning(ctx context.Context, db *sql.DB, l RecoveryLearningRo
 // and failure class, ordered by resolved_at DESC.
 func GetBeadLearnings(ctx context.Context, db *sql.DB, sourceBeadID, failureClass string) ([]RecoveryLearningRow, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, recovery_bead, source_bead, failure_class, failure_sig, resolution_kind, outcome, learning_summary, reusable, resolved_at, expected_outcome
+		`SELECT id, recovery_bead, source_bead, failure_class, failure_sig, resolution_kind, outcome, learning_summary, reusable, resolved_at, expected_outcome, mechanical_recipe, demoted_at
 		 FROM recovery_learnings
 		 WHERE source_bead = ? AND failure_class = ? AND reusable = TRUE
 		 ORDER BY resolved_at DESC`,
@@ -68,7 +78,7 @@ func GetCrossBeadLearnings(ctx context.Context, db *sql.DB, failureClass string,
 		limit = 5
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, recovery_bead, source_bead, failure_class, failure_sig, resolution_kind, outcome, learning_summary, reusable, resolved_at, expected_outcome
+		`SELECT id, recovery_bead, source_bead, failure_class, failure_sig, resolution_kind, outcome, learning_summary, reusable, resolved_at, expected_outcome, mechanical_recipe, demoted_at
 		 FROM recovery_learnings
 		 WHERE failure_class = ? AND reusable = TRUE
 		 ORDER BY resolved_at DESC
@@ -92,10 +102,13 @@ func scanLearningRows(rows *sql.Rows) ([]RecoveryLearningRow, error) {
 		var failureSig sql.NullString
 		var learningSummary sql.NullString
 		var expectedOutcome sql.NullString
+		var mechanicalRecipe sql.NullString
+		var demotedAt sql.NullString
 		if err := rows.Scan(
 			&r.ID, &r.RecoveryBead, &r.SourceBead, &r.FailureClass,
 			&failureSig, &r.ResolutionKind, &r.Outcome,
 			&learningSummary, &reusable, &resolvedAt, &expectedOutcome,
+			&mechanicalRecipe, &demotedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan recovery learning row: %w", err)
 		}
@@ -109,6 +122,12 @@ func scanLearningRows(rows *sql.Rows) ([]RecoveryLearningRow, error) {
 		}
 		if expectedOutcome.Valid {
 			r.ExpectedOutcome = expectedOutcome.String
+		}
+		if mechanicalRecipe.Valid {
+			r.MechanicalRecipe = mechanicalRecipe.String
+		}
+		if demotedAt.Valid {
+			r.DemotedAt, _ = time.Parse("2006-01-02 15:04:05", demotedAt.String)
 		}
 		results = append(results, r)
 	}
@@ -298,4 +317,106 @@ func UpdateLearningOutcomeAuto(recoveryBeadID, outcome string) error {
 		return fmt.Errorf("get db for learning outcome update: %w", err)
 	}
 	return UpdateLearningOutcome(context.Background(), db, recoveryBeadID, outcome)
+}
+
+// PromotionSnapshot is the raw query result for a failure signature's
+// promotion state. Clean count and latest recipe are computed by walking
+// rows newest-first and stopping at the first non-clean / demoted / empty
+// recipe row — mirroring the "one regression undoes promotion" semantic.
+type PromotionSnapshot struct {
+	FailureSig   string
+	CleanCount   int    // consecutive clean+recipe+not-demoted rows, newest-first
+	LatestRecipe string // mechanical_recipe from the most recent clean row (may be empty)
+}
+
+// GetPromotionSnapshot walks recovery_learnings for failureSig, newest-first,
+// counting consecutive rows that are outcome=clean, not demoted, and carry
+// a non-empty mechanical_recipe. The walk stops at the first row that breaks
+// any of those conditions. This mirrors the promotion counter semantic:
+// one failure / demotion / un-codified outcome resets the count.
+//
+// A row WITHOUT a recipe still breaks the chain — a signature that can't
+// be consistently codified should never promote.
+func GetPromotionSnapshot(ctx context.Context, db *sql.DB, failureSig string) (*PromotionSnapshot, error) {
+	if failureSig == "" {
+		return &PromotionSnapshot{}, nil
+	}
+	rows, err := db.QueryContext(ctx,
+		`SELECT outcome, mechanical_recipe, demoted_at
+		 FROM recovery_learnings
+		 WHERE failure_sig = ?
+		 ORDER BY resolved_at DESC`,
+		failureSig,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query promotion snapshot: %w", err)
+	}
+	defer rows.Close()
+
+	snap := &PromotionSnapshot{FailureSig: failureSig}
+	for rows.Next() {
+		var outcome string
+		var recipe sql.NullString
+		var demotedAt sql.NullString
+		if err := rows.Scan(&outcome, &recipe, &demotedAt); err != nil {
+			return nil, fmt.Errorf("scan promotion snapshot row: %w", err)
+		}
+		if demotedAt.Valid && demotedAt.String != "" {
+			break
+		}
+		if outcome != "clean" {
+			break
+		}
+		if !recipe.Valid || recipe.String == "" {
+			break
+		}
+		snap.CleanCount++
+		if snap.LatestRecipe == "" {
+			snap.LatestRecipe = recipe.String
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate promotion snapshot rows: %w", err)
+	}
+	return snap, nil
+}
+
+// GetPromotionSnapshotAuto wraps GetPromotionSnapshot using the active store's DB.
+func GetPromotionSnapshotAuto(failureSig string) (*PromotionSnapshot, error) {
+	db, err := getDB()
+	if err != nil {
+		return nil, fmt.Errorf("get db for promotion snapshot: %w", err)
+	}
+	return GetPromotionSnapshot(context.Background(), db, failureSig)
+}
+
+// DemotePromotedRows stamps demoted_at on all rows for failureSig that
+// currently contribute to its promotion count (clean + non-empty recipe
+// + not-yet-demoted). Writing demoted_at on the tail is enough — the
+// promotion snapshot walker stops at any demoted row — but we mark every
+// chain row so historical queries stay consistent.
+func DemotePromotedRows(ctx context.Context, db *sql.DB, failureSig string) error {
+	if failureSig == "" {
+		return nil
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err := db.ExecContext(ctx,
+		`UPDATE recovery_learnings
+		 SET demoted_at = ?
+		 WHERE failure_sig = ? AND outcome = 'clean' AND demoted_at IS NULL AND mechanical_recipe IS NOT NULL AND mechanical_recipe != ''`,
+		now, failureSig,
+	)
+	if err != nil {
+		return fmt.Errorf("demote promoted rows for %s: %w", failureSig, err)
+	}
+	return nil
+}
+
+// DemotePromotedRowsAuto wraps DemotePromotedRows using the active store's DB.
+func DemotePromotedRowsAuto(failureSig string) error {
+	db, err := getDB()
+	if err != nil {
+		return fmt.Errorf("get db for demotion: %w", err)
+	}
+	return DemotePromotedRows(context.Background(), db, failureSig)
 }

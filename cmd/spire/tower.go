@@ -241,6 +241,8 @@ const recoveryLearningsTableSQL = `CREATE TABLE IF NOT EXISTS recovery_learnings
     reusable        BOOLEAN DEFAULT TRUE,
     resolved_at     DATETIME NOT NULL,
     expected_outcome TEXT,
+    mechanical_recipe TEXT,
+    demoted_at      DATETIME,
     INDEX idx_failure_class (failure_class),
     INDEX idx_source_bead (source_bead, failure_class)
 )`
@@ -357,6 +359,14 @@ var spireMigrations = []columnMigration{
 
 	// --- recovery_learnings: expected_outcome (spi-4mb51) ---
 	{table: "recovery_learnings", column: "expected_outcome", ddl: "ADD COLUMN expected_outcome TEXT"},
+
+	// --- recovery_learnings: promotion policy (spi-4o4bi / spi-ngi35) ---
+	// mechanical_recipe stores the codified replay of an agentic success so
+	// the cleric can promote to mechanical once threshold clean outcomes
+	// accumulate for a failure_signature. demoted_at flags rows that were
+	// demoted after a mechanical failure (one regression resets the counter).
+	{table: "recovery_learnings", column: "mechanical_recipe", ddl: "ADD COLUMN mechanical_recipe TEXT"},
+	{table: "recovery_learnings", column: "demoted_at", ddl: "ADD COLUMN demoted_at DATETIME"},
 }
 
 // requiredCustomTypes are the bead types that Spire registers on every tower.

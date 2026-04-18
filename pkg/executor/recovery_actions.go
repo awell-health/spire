@@ -14,6 +14,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -68,6 +69,15 @@ type RecoveryActionCtx struct {
 	// store.GetBead and an in-process dispatch via Spawner + RecordAgentRun.
 	GetBeadFn  func(id string) (store.Bead, error)
 	DispatchFn func(cfg agent.SpawnConfig) (agent.Handle, error)
+
+	// SuccessRecipe is populated by action Fns on success to record the
+	// codified replay form. RunRecoveryAction auto-fills a default recipe
+	// from the action name for deterministic built-ins (rebase-onto-base,
+	// cherry-pick, rebuild, reset-to-step, resummon) when the action leaves
+	// this nil. Agentic actions (resolve-conflicts, triage) leave it nil to
+	// opt out of promotion — an apprentice's reasoning can't be replayed
+	// generically.
+	SuccessRecipe *recovery.MechanicalRecipe
 }
 
 var (
@@ -202,7 +212,30 @@ func RunRecoveryAction(ctx *RecoveryActionCtx, actionName string) error {
 		_ = store.UpdateAttemptOutcome(ctx.DB, attempt.ID, outcome, errText)
 	}
 
+	// Recipe autofill for deterministic built-ins: if the action succeeded
+	// and didn't set SuccessRecipe itself, record a builtin recipe naming
+	// the action (with the same params). This is what lets the promotion
+	// policy skip agentic dispatch on subsequent recoveries of the same
+	// signature. Agentic or ambiguous actions must opt out by staying nil.
+	if err == nil && ctx.SuccessRecipe == nil && deterministicRecipeAction(actionName) {
+		ctx.SuccessRecipe = recovery.NewBuiltinRecipe(actionName, ctx.Params)
+	}
+
 	return err
+}
+
+// deterministicRecipeAction reports whether an action is safe to replay
+// without apprentice reasoning. Only actions whose behaviour is fully
+// specified by (name, params) qualify. Agentic actions (resolve-conflicts,
+// triage, targeted-fix) must NOT auto-populate a recipe because their
+// success came from an apprentice's contextual reasoning.
+func deterministicRecipeAction(name string) bool {
+	switch name {
+	case "rebase-onto-base", "cherry-pick", "rebuild", "reset-to-step", "resummon":
+		return true
+	default:
+		return false
+	}
 }
 
 // ProvisionRecoveryWorktree creates a worktree for recovery operations using

@@ -872,6 +872,40 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		}
 	}
 
+	// (a2) Promoted mechanical recipe check. Once a failure_signature has
+	// accumulated N consecutive clean agentic recoveries (each with a
+	// codified mechanical_recipe), skip the agentic dispatch and replay
+	// the recipe. A single failure of a promoted recipe demotes it back
+	// to the agentic default (see MarkDemoted on action failure paths).
+	if sig := failureSignatureFromContext(e, ccResult); sig != "" {
+		threshold := clericPromotionThreshold(e, sig)
+		if state, err := recovery.LookupPromotionState(sig, threshold); err != nil {
+			e.log("recovery: decide: promotion lookup for %s failed (continuing with agentic default): %v", sig, err)
+		} else if state.Promoted {
+			action, params := recipeDispatch(state.Recipe)
+			if action != "" && (fullCtx == nil || fullCtx.RepeatedFailures[action] < 2) {
+				e.log("recovery: decide: promoted mechanical recipe for %s → %s (count=%d threshold=%d)",
+					sig, action, state.Count, state.Threshold)
+				outputs := map[string]string{
+					"status":        "success",
+					"chosen_action": action,
+					"confidence":    "0.95",
+					"reasoning":     fmt.Sprintf("Promoted mechanical recipe for %s (%d clean outcomes ≥ threshold %d)", sig, state.Count, state.Threshold),
+					"needs_human":   "false",
+					"promoted":      "true",
+				}
+				for k, v := range params {
+					outputs["recipe_param_"+k] = v
+				}
+				return ActionResult{Outputs: outputs}
+			}
+			if action != "" {
+				e.log("recovery: decide: promoted recipe %s has %d prior failures, falling through",
+					action, fullCtx.RepeatedFailures[action])
+			}
+		}
+	}
+
 	// (b) Git-state-driven decision when FullRecoveryContext is available.
 	if fullCtx != nil {
 		if gitAction := decideFromGitState(fullCtx); gitAction != "" {
@@ -1139,6 +1173,52 @@ func decideFromGitState(ctx *FullRecoveryContext) string {
 	return ""
 }
 
+// failureSignatureFromContext resolves the failure_signature for a decide
+// lookup. Prefers the recovery bead's metadata (already stamped by
+// collect_context / escalate paths); falls back to the diagnosis's failure
+// class. Returns "" when no signature is available — the caller must treat
+// empty as "don't promote".
+func failureSignatureFromContext(e *Executor, ccResult CollectContextResult) string {
+	if e != nil && e.deps.GetBead != nil {
+		if bead, err := e.deps.GetBead(e.beadID); err == nil {
+			if sig := bead.Meta(recovery.KeyFailureSignature); sig != "" {
+				return sig
+			}
+		}
+	}
+	if ccResult.Diagnosis != nil {
+		return string(ccResult.Diagnosis.FailureMode)
+	}
+	return ""
+}
+
+// clericPromotionThreshold resolves the effective promotion threshold for
+// the given failure signature, applying the precedence chain from
+// repoconfig.ResolveClericPromotionThreshold.
+func clericPromotionThreshold(e *Executor, failureSig string) int {
+	var cfg repoconfig.ClericConfig
+	if e != nil && e.deps.RepoConfig != nil {
+		if rc := e.deps.RepoConfig(); rc != nil {
+			cfg = rc.Cleric
+		}
+	}
+	return repoconfig.ResolveClericPromotionThreshold(cfg, failureSig)
+}
+
+// recipeDispatch extracts the executable action + params from a recipe
+// for use by the decide step. Only builtin recipes are directly dispatchable
+// today — sequence recipes would require planner support and are captured
+// here for forward compatibility but treated as non-dispatchable (returns "").
+func recipeDispatch(r *recovery.MechanicalRecipe) (action string, params map[string]string) {
+	if r == nil {
+		return "", nil
+	}
+	if r.Kind != recovery.RecipeKindBuiltin || r.Action == "" {
+		return "", nil
+	}
+	return r.Action, r.Params
+}
+
 // gitStateReasoning returns a human-readable explanation of why a
 // git-state-driven action was chosen.
 func gitStateReasoning(ctx *FullRecoveryContext, action string) string {
@@ -1164,7 +1244,7 @@ func gitStateReasoning(ctx *FullRecoveryContext, action string) string {
 // a learning. Writes to both bead metadata and the recovery_learnings table.
 func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Read decide result and verify outcome from step outputs.
-	var chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome string
+	var chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome, mechanicalRecipe string
 	if state != nil {
 		if ds, ok := state.Steps["decide"]; ok {
 			chosenAction = ds.Outputs["chosen_action"]
@@ -1177,6 +1257,13 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 		}
 		if cs, ok := state.Steps["collect_context"]; ok {
 			failureClass = cs.Outputs["failure_class"]
+		}
+		// Recipe capture: the execute step's outputs include the serialised
+		// mechanical_recipe for deterministic action successes. Nil/empty
+		// means no recipe was captured — that outcome never contributes to
+		// promotion.
+		if es, ok := state.Steps["execute"]; ok {
+			mechanicalRecipe = es.Outputs["mechanical_recipe"]
 		}
 	}
 
@@ -1242,18 +1329,27 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 
 	// 2. Write to recovery_learnings SQL table.
 	sourceBeadID := resolveSourceBead(e, step)
+	// Only persist the recipe on clean outcomes — a "dirty" resolution
+	// should never contribute to promotion counting. This guards against
+	// auto-captured recipes from deterministic actions that verify fails
+	// right after, which would otherwise poison the promotion chain.
+	recipeToStore := mechanicalRecipe
+	if outcome != "clean" {
+		recipeToStore = ""
+	}
 	learningRow := store.RecoveryLearningRow{
-		ID:              generateLearningID(),
-		RecoveryBead:    e.beadID,
-		SourceBead:      sourceBeadID,
-		FailureClass:    failureClass,
-		FailureSig:      failureSig,
-		ResolutionKind:  result.ResolutionKind,
-		Outcome:         outcome,
-		LearningSummary: result.LearningSummary,
-		Reusable:        result.Reusable,
-		ResolvedAt:      now,
-		ExpectedOutcome: expectedOutcome,
+		ID:               generateLearningID(),
+		RecoveryBead:     e.beadID,
+		SourceBead:       sourceBeadID,
+		FailureClass:     failureClass,
+		FailureSig:       failureSig,
+		ResolutionKind:   result.ResolutionKind,
+		Outcome:          outcome,
+		LearningSummary:  result.LearningSummary,
+		Reusable:         result.Reusable,
+		ResolvedAt:       now,
+		ExpectedOutcome:  expectedOutcome,
+		MechanicalRecipe: recipeToStore,
 	}
 	if err := store.WriteRecoveryLearningAuto(learningRow); err != nil {
 		// Non-fatal: the bead metadata write is the primary record.
@@ -1499,13 +1595,47 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 		"action": actionName,
 	}
 
+	// Resolve the recovery bead's failure signature once so we can either
+	// demote on failure or embed the signature alongside the captured
+	// recipe on success.
+	failureSig := ""
+	if bead, berr := e.deps.GetBead(e.beadID); berr == nil {
+		failureSig = bead.Meta(recovery.KeyFailureSignature)
+	}
+
 	if err != nil {
 		outputs["status"] = "failed"
 		outputs["error"] = err.Error()
+		// Promotion demotion: if the chosen action was a promoted recipe
+		// (decide step tagged "promoted=true"), this failure resets the
+		// counter for this signature. One regression undoes promotion.
+		if state != nil {
+			if ds, ok := state.Steps["decide"]; ok && ds.Outputs["promoted"] == "true" && failureSig != "" {
+				if derr := recovery.MarkDemoted(failureSig); derr != nil {
+					e.log("recovery: demote %s after promoted-recipe failure: %v", failureSig, derr)
+				} else {
+					e.log("recovery: demoted %s (promoted recipe %s failed)", failureSig, actionName)
+				}
+			}
+		}
 		e.log("recovery: execute %s failed: %v", actionName, err)
 		return ActionResult{
 			Outputs: outputs,
 			Error:   fmt.Errorf("recovery action %q failed: %w", actionName, err),
+		}
+	}
+
+	// Recipe capture: serialise the recipe populated by RunRecoveryAction
+	// into the step outputs so handleLearn can persist it on the learning
+	// row. Agentic actions leave SuccessRecipe nil and simply skip this.
+	if actionCtx.SuccessRecipe != nil {
+		if serialised, merr := recovery.MarshalRecipe(actionCtx.SuccessRecipe); merr != nil {
+			e.log("recovery: marshal recipe for %s: %v (continuing without capture)", actionName, merr)
+		} else if serialised != "" {
+			outputs["mechanical_recipe"] = serialised
+			if failureSig != "" {
+				outputs["failure_signature"] = failureSig
+			}
 		}
 	}
 

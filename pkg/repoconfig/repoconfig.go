@@ -20,7 +20,33 @@ type RepoConfig struct {
 	Branch  BranchConfig  `yaml:"branch"`
 	PR      PRConfig      `yaml:"pr"`
 	Design  DesignConfig  `yaml:"design"`
+	Cleric  ClericConfig  `yaml:"cleric"`
 	Context []string      `yaml:"context"`
+}
+
+// ClericConfig controls the cleric (recovery agent) promotion policy.
+//
+// The cleric runs agentic by default: each new failure_signature dispatches
+// an apprentice with full context. Once PromotionThreshold clean agentic
+// resolutions accumulate for the same signature (and each carries a
+// mechanical_recipe), subsequent recoveries short-circuit to the codified
+// recipe. A single failure of a promoted recipe demotes the signature back
+// to agentic.
+//
+// PromotionOverrides lets specific failure_signature values override the
+// global threshold. Keys are failure_signature strings as produced by
+// pkg/recovery (e.g. "step-failure:merge", "build-failure:implement").
+type ClericConfig struct {
+	// PromotionThreshold is the number of consecutive clean recoveries with
+	// a mechanical_recipe required before a failure_signature is promoted
+	// to the mechanical path. Defaults to DefaultClericPromotionThreshold
+	// (3) when zero or negative.
+	PromotionThreshold int `yaml:"promotion_threshold"`
+	// PromotionOverrides maps specific failure_signature strings to a
+	// per-class threshold. When a key matches the current signature, its
+	// value wins over PromotionThreshold. Non-positive values fall back to
+	// the global threshold.
+	PromotionOverrides map[string]int `yaml:"promotion_overrides"`
 }
 
 // DesignConfig controls design bead creation behaviour.

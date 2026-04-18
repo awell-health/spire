@@ -34,6 +34,13 @@ const (
 
 	// DefaultTimeoutDuration is DefaultTimeout as a time.Duration.
 	DefaultTimeoutDuration = 15 * time.Minute
+
+	// DefaultClericPromotionThreshold is the global default for the number
+	// of consecutive clean agentic recoveries (each carrying a
+	// mechanical_recipe) before a failure_signature promotes to mechanical
+	// execution. Per-signature overrides can raise or lower this via the
+	// cleric.promotion_overrides map in spire.yaml.
+	DefaultClericPromotionThreshold = 3
 )
 
 // ResolveModel returns the first non-empty value in the precedence chain:
@@ -118,4 +125,24 @@ func ResolveDesignRequireApproval(ptr *bool) bool {
 		return *ptr
 	}
 	return true
+}
+
+// ResolveClericPromotionThreshold returns the effective promotion threshold
+// for a given failure signature. Resolution order:
+//  1. cleric.promotion_overrides[failureSig] (positive value wins)
+//  2. cleric.promotion_threshold (if positive)
+//  3. DefaultClericPromotionThreshold
+//
+// Non-positive configured values fall through to the next source, which
+// means an operator can't accidentally disable promotion with 0 or -1.
+func ResolveClericPromotionThreshold(cfg ClericConfig, failureSig string) int {
+	if failureSig != "" {
+		if v, ok := cfg.PromotionOverrides[failureSig]; ok && v > 0 {
+			return v
+		}
+	}
+	if cfg.PromotionThreshold > 0 {
+		return cfg.PromotionThreshold
+	}
+	return DefaultClericPromotionThreshold
 }
