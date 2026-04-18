@@ -49,8 +49,8 @@ images:
 ## remote on first boot and pushes/pulls on the configured cadence.
 
 ## @param dolthub.remoteUrl DoltHub remote path (e.g. "your-org/your-tower"). Required.
-## @param dolthub.user DoltHub user — kept for completeness but HTTPS clone/pull/push authenticates via the JWK file below, not user/password.
-## @param dolthub.password DoltHub password (see note on dolthub.user).
+## @param dolthub.user Dual-purpose username. (1) DoltHub CLI placeholder — HTTPS clone/pull/push to DoltHub authenticates via the JWK below, not this field. (2) SQL username the post-install provisioning Job creates inside the cluster's dolt server as the remotesapi login. It's rendered into the Secret as DOLT_REMOTE_USER, and the provision Job reads the same key — so set this to the username laptops will use when they `dolt clone --user=<here> http://…:<remotesapiPort>/<db>`. Example: `dolt_remote`.
+## @param dolthub.password Dual-purpose password. (1) DoltHub CLI placeholder (not used for HTTPS auth; the JWK handles that). (2) Password for the cluster-side remotesapi SQL user provisioned by the post-install Job, rendered into the Secret as DOLT_REMOTE_PASSWORD. MUST NOT contain a single quote (') — the provisioning Job rejects such passwords to avoid shell/SQL quoting pitfalls. (Our generator in k8s/setup-dolt-users.sh also strips `/+=` for the same reason.) Rotate by `helm upgrade --set dolthub.password=<new>`; the Job re-runs and `ALTER USER` takes effect.
 ## @param dolthub.credsKeyId Dolt key ID (base32 string shown by `dolt creds ls`). Basename of the JWK file in the chart-managed Secret, and the argument to `dolt creds use`.
 ## @param dolthub.credsKeyValue Raw JWK JSON contents of `~/.dolt/creds/<credsKeyId>.jwk`. Pass with `--set-file dolthub.credsKeyValue=<path>` so helm reads the file.
 ## @param dolthub.userName Dolt CLI `user.name` config. Must match the DoltHub account that owns the credential key — NOT an arbitrary display name. DoltHub's auth enforces this on fetch/pull (not on clone, which is why clone-only tests miss it). For the `awell/awell` tower this is `awell`.
@@ -58,9 +58,13 @@ images:
 dolthub:
   # DoltHub remote path (e.g. "your-org/your-tower")
   remoteUrl: ""
-  # DoltHub user — kept for completeness, but HTTPS clone/pull/push
-  # authenticates via the JWK file below, not user/password.
+  # DoltHub CLI placeholder AND the SQL username the post-install Job
+  # creates inside the cluster's dolt for remotesapi auth. HTTPS traffic
+  # to DoltHub authenticates via the JWK below; this field is what
+  # laptops pass as `dolt clone --user=<here> http://…:<remotesapiPort>/<db>`.
   user: ""
+  # Password for the cluster-side remotesapi SQL user (rendered into
+  # Secret as DOLT_REMOTE_PASSWORD). Must not contain a single quote.
   password: ""
   # The Dolt key ID (base32 string shown by `dolt creds ls`).
   credsKeyId: ""
@@ -178,6 +182,7 @@ operator:
 
 ## @param dolt.port MySQL-protocol port the dolt server listens on.
 ## @param dolt.remotesapiPort Port for dolt's remote API (makes the server act as a dolt-remote endpoint — laptops can `dolt remote add cluster dolt://<svc>:<port>/<db>` and push/pull directly against this cluster instead of DoltHub).
+## @param dolt.provisionRemoteUser.enabled Render a post-install/post-upgrade Job that creates (and re-ALTERs) the SQL user matching DOLT_REMOTE_USER/DOLT_REMOTE_PASSWORD in the Secret, so remotesapi clients can authenticate out-of-the-box. Leave on for a clean zero-manual-step install; disable to provision users yourself (e.g. via k8s/setup-dolt-users.sh for multi-role setups). When using `existingSecret`, that Secret MUST provide both DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD keys or the Job will fail.
 ## @param dolt.resources.requests.cpu Dolt CPU request.
 ## @param dolt.resources.requests.memory Dolt memory request.
 ## @param dolt.resources.limits.cpu Dolt CPU limit.
@@ -196,6 +201,14 @@ dolt:
   # the inner loop. See docs/sql-reference/server/configuration for
   # the `remotesapi` block.
   remotesapiPort: 50051
+  # Chart-managed creation of the SQL user that matches DOLT_REMOTE_USER/
+  # DOLT_REMOTE_PASSWORD in the Secret. Runs as a post-install and
+  # post-upgrade helm hook against the live dolt SQL server, so password
+  # rotations propagate on `helm upgrade`. Disable if you provision dolt
+  # users out-of-band (e.g. via k8s/setup-dolt-users.sh for multi-role
+  # setups).
+  provisionRemoteUser:
+    enabled: true
   resources:
     requests:
       cpu: 100m

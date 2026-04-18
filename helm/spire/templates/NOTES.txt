@@ -3,7 +3,7 @@ Spire has been deployed to namespace "{{ .Values.namespace }}".
 Next steps:
 
 1. Verify dolt is ready:
-   kubectl rollout status deployment/spire-dolt -n {{ .Values.namespace }}
+   kubectl rollout status statefulset/spire-dolt -n {{ .Values.namespace }}
 
 2. Verify steward is running:
    kubectl rollout status deployment/spire-steward -n {{ .Values.namespace }}
@@ -11,11 +11,28 @@ Next steps:
 3. Check operator logs:
    kubectl logs -n {{ .Values.namespace }} deploy/spire-operator -f
 
-4. File a bead and push from your laptop:
+{{- if .Values.dolt.provisionRemoteUser.enabled }}
+
+4. Verify the remotesapi SQL user was auto-provisioned:
+   kubectl -n {{ .Values.namespace }} get job spire-dolt-provision        # Completions: 1/1
+   kubectl -n {{ .Values.namespace }} logs job/spire-dolt-provision       # CREATE USER / GRANT OK
+
+   (This ran automatically from a post-install hook — no manual
+   `kubectl exec … CREATE USER …` step required. Disable by setting
+   `--set dolt.provisionRemoteUser.enabled=false` on `helm install` or
+   `helm upgrade`.)
+{{- else }}
+
+4. Provision a remotesapi SQL user manually — `dolt.provisionRemoteUser.enabled`
+   is false, so remotesapi clients cannot authenticate yet. Either flip it
+   back on, or run k8s/setup-dolt-users.sh for a multi-role setup.
+{{- end }}
+
+5. File a bead and push from your laptop:
    spire file "Test cluster" -t task -p 2
    spire push
 
-5. Watch the cluster pick it up:
+6. Watch the cluster pick it up:
    kubectl get spireworkloads -n {{ .Values.namespace }} -w
 
 For the full deployment guide, see docs/cluster-deployment.md.

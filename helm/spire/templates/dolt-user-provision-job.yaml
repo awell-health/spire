@@ -1,0 +1,118 @@
+{{- if .Values.dolt.provisionRemoteUser.enabled }}
+# Post-install/upgrade Job that creates the remotesapi SQL user inside
+# the dolt server. The user name/password are whatever the Secret holds
+# under DOLT_REMOTE_USER / DOLT_REMOTE_PASSWORD — the same keys the
+# dolt StatefulSet and clients read — so the user and the credentials
+# that reference it stay in lockstep.
+#
+# Runs on install AND upgrade so rotating dolthub.password in values
+# propagates via `ALTER USER` without operator intervention.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spire-dolt-provision
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-dolt-provision
+    app.kubernetes.io/component: bootstrap
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    # Run after the dolt StatefulSet manifest applies. Hook weight > 0
+    # leaves room for negative-weight bootstrap Jobs to land earlier.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    # Delete prior successful runs before re-running; keep failed runs
+    # around for debugging (do NOT add hook-failed here).
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-dolt-provision
+    spec:
+      restartPolicy: Never
+      initContainers:
+        # Post-install hooks fire after manifests apply but can race the
+        # StatefulSet's first boot. Block until the SQL server answers a
+        # trivial query as root (no password). Reuses the dolt image so
+        # no extra pull; avoids depending on `nc` being present in the
+        # upstream base image.
+        - name: wait-for-dolt
+          image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
+          imagePullPolicy: {{ .Values.images.dolt.pullPolicy }}
+          command:
+            - bash
+            - -c
+            - |
+              set -u
+              export DOLT_CLI_PASSWORD=""
+              i=0
+              until dolt --host=spire-dolt --port={{ .Values.dolt.port }} --user=root --no-tls sql -q "select 1" >/dev/null 2>&1; do
+                i=$((i + 1))
+                if [ "$i" -gt 120 ]; then
+                  echo "[wait-for-dolt] timed out after $i attempts"
+                  exit 1
+                fi
+                echo "[wait-for-dolt] dolt not ready yet (attempt $i)..."
+                sleep 2
+              done
+              echo "[wait-for-dolt] dolt SQL server is up"
+      containers:
+        - name: provision
+          image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
+          imagePullPolicy: {{ .Values.images.dolt.pullPolicy }}
+          env:
+            # REMOTE_USER / REMOTE_PASSWORD come from the same Secret
+            # the dolt StatefulSet reads, so whatever credentials are
+            # rendered there are the ones provisioned here.
+            - name: REMOTE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spire.secretName" . }}
+                  key: DOLT_REMOTE_USER
+            - name: REMOTE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spire.secretName" . }}
+                  key: DOLT_REMOTE_PASSWORD
+            # Empty so the dolt CLI doesn't prompt for a password when
+            # authenticating as root (which has no password).
+            - name: DOLT_CLI_PASSWORD
+              value: ""
+          command:
+            - bash
+            - -euo
+            - pipefail
+            - -c
+            - |
+              # Reject passwords containing a single quote — the SQL
+              # below quotes ${REMOTE_PASSWORD} with '…' and escape
+              # gymnastics inside a Helm-rendered shell are not worth
+              # the surface area. Mirrors setup-dolt-users.sh, which
+              # strips /+= from its generated passwords for the same
+              # reason.
+              case "${REMOTE_PASSWORD}" in
+                *\'*)
+                  echo "[provision] ERROR: DOLT_REMOTE_PASSWORD contains a single quote; choose a different password" >&2
+                  exit 2
+                  ;;
+              esac
+              SQL="CREATE USER IF NOT EXISTS '${REMOTE_USER}'@'%' IDENTIFIED BY '${REMOTE_PASSWORD}';
+              ALTER USER '${REMOTE_USER}'@'%' IDENTIFIED BY '${REMOTE_PASSWORD}';
+              GRANT ALL ON *.* TO '${REMOTE_USER}'@'%';
+              FLUSH PRIVILEGES;"
+              # Server-mode only — never `dolt sql -q` against a
+              # local directory, which would edit on-disk files and
+              # diverge from the live server's view. Do NOT mount the
+              # dolt PVC into this Job.
+              dolt --host=spire-dolt --port={{ .Values.dolt.port }} --user=root --no-tls sql -q "$SQL"
+              echo "[provision] remotesapi user '${REMOTE_USER}' is up to date"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+{{- end }}
