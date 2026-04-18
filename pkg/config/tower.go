@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+// Remote kinds for TowerConfig.RemoteKind. Empty defaults to RemoteKindDoltHub
+// for backwards compatibility with towers created before this field existed.
+const (
+	RemoteKindDoltHub    = "dolthub"
+	RemoteKindRemotesAPI = "remotesapi"
+)
+
 // TowerConfig represents a tower's identity and configuration.
 type TowerConfig struct {
 	Name          string                       `json:"name"`
@@ -22,6 +29,26 @@ type TowerConfig struct {
 	LocalBindings map[string]*LocalRepoBinding `json:"local_bindings,omitempty"`
 	MaxConcurrent int                          `json:"max_concurrent,omitempty"` // max simultaneous wizards; 0 = unlimited
 	Clusters      []ClusterAttachment          `json:"clusters,omitempty"`
+
+	// RemoteKind selects the auth / transport convention for DolthubRemote.
+	// Empty = "dolthub" (legacy). "remotesapi" means a self-hosted dolt-sql-server
+	// reached over the remotesapi gRPC port (typically :50051), authed with
+	// MySQL-style user+password stored in the keychain.
+	RemoteKind string `json:"remote_kind,omitempty"`
+
+	// RemoteUser is the remotesapi username (or DoltHub user) for convenience.
+	// The password is never persisted here — it lives in the credentials file.
+	RemoteUser string `json:"remote_user,omitempty"`
+}
+
+// EffectiveRemoteKind returns the remote kind, defaulting to "dolthub" when
+// the field is empty. All sync paths should use this rather than reading
+// RemoteKind directly so legacy configs keep working.
+func (t TowerConfig) EffectiveRemoteKind() string {
+	if t.RemoteKind == "" {
+		return RemoteKindDoltHub
+	}
+	return t.RemoteKind
 }
 
 // ClusterAttachment records a Kubernetes cluster a tower can dispatch work to.

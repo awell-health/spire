@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/config"
 )
 
 // NormalizeDolthubURL expands a short "org/repo" form to the full DoltHub API URL.
@@ -17,6 +20,93 @@ func NormalizeDolthubURL(url string) string {
 		return url
 	}
 	return "https://doltremoteapi.dolthub.com/" + url
+}
+
+// ClassifyRemoteURL decides whether a remote URL points at DoltHub (the hosted
+// service, authed with JWK-signed tokens) or at a self-hosted dolt-sql-server
+// reachable over the remotesapi gRPC port (authed with MySQL-style creds).
+//
+// Rules:
+//   - short form "org/repo" (no scheme, no ':')          → dolthub
+//   - scheme dolt://                                      → remotesapi
+//   - http(s)://doltremoteapi.dolthub.com/...             → dolthub
+//   - http(s)://(www.)?dolthub.com/...                    → dolthub
+//   - any other http(s)://host[:port]/path                → remotesapi
+//   - empty / malformed input                             → error
+//
+// The classifier keys on scheme + host, not port — port-forwarded cluster URLs
+// (localhost:50051) and in-cluster DNS URLs must both work.
+func ClassifyRemoteURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("remote URL is empty")
+	}
+
+	if !strings.Contains(raw, "://") {
+		if strings.Contains(raw, "/") && !strings.ContainsAny(raw, ": ") {
+			return config.RemoteKindDoltHub, nil
+		}
+		return "", fmt.Errorf("remote URL %q is missing a scheme — use http://, https://, or dolt://, or the short form \"org/repo\" for DoltHub", raw)
+	}
+
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse remote URL %q: %w", raw, err)
+	}
+
+	switch strings.ToLower(u.Scheme) {
+	case "dolt":
+		return config.RemoteKindRemotesAPI, nil
+	case "http", "https":
+		host := strings.ToLower(u.Hostname())
+		if host == "doltremoteapi.dolthub.com" || host == "www.dolthub.com" || host == "dolthub.com" {
+			return config.RemoteKindDoltHub, nil
+		}
+		if host == "" {
+			return "", fmt.Errorf("remote URL %q has no host", raw)
+		}
+		return config.RemoteKindRemotesAPI, nil
+	default:
+		return "", fmt.Errorf("unsupported remote URL scheme %q in %q — use http://, https://, or dolt://", u.Scheme, raw)
+	}
+}
+
+// NormalizeRemoteURL normalizes a URL based on its classified kind. For DoltHub
+// it delegates to NormalizeDolthubURL (the legacy short-form expander). For
+// remotesapi it trims trailing slashes so "http://h:50051/db" and
+// "http://h:50051/db/" resolve the same; the scheme is preserved — dolt CLI
+// accepts both http(s):// and dolt://.
+func NormalizeRemoteURL(raw, kind string) string {
+	raw = strings.TrimSpace(raw)
+	switch kind {
+	case config.RemoteKindDoltHub:
+		return NormalizeDolthubURL(raw)
+	case config.RemoteKindRemotesAPI:
+		return strings.TrimRight(raw, "/")
+	}
+	return raw
+}
+
+// DatabaseFromRemoteURL extracts the database name from a remotesapi URL.
+// For "http://host:50051/spi" → "spi". Returns "" if no path component.
+func DatabaseFromRemoteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		// short form "org/repo" — take last path segment
+		parts := strings.Split(strings.Trim(raw, "/"), "/")
+		return parts[len(parts)-1]
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	p := strings.Trim(u.Path, "/")
+	if p == "" {
+		return ""
+	}
+	// take the last path segment in case the URL has /api/v1/<db> or similar
+	parts := strings.Split(p, "/")
+	return parts[len(parts)-1]
 }
 
 // ReadBeadsDBName reads the dolt_database field from .beads/metadata.json,

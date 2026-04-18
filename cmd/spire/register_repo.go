@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
@@ -193,22 +194,25 @@ func cmdRegisterRepo(args []string) error {
 		fmt.Printf("  Warning: dolt commit skipped: %s\n", err)
 	}
 
-	// --- Push to DoltHub (if remote configured) ---
+	// --- Push to the tower's remote (DoltHub or cluster remotesapi) ---
 	if tower.DolthubRemote != "" {
-		// Set credentials
-		if u := getCredential(CredKeyDolthubUser); u != "" {
-			os.Setenv("DOLT_REMOTE_USER", u)
-		}
-		if pass := getCredential(CredKeyDolthubPassword); pass != "" {
-			os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+		// Credentials routed through RemoteCredentials so remotesapi-attached
+		// towers use their per-tower user/password instead of DoltHub creds.
+		if u, pass := config.RemoteCredentials(tower); u != "" || pass != "" {
+			if u != "" {
+				os.Setenv("DOLT_REMOTE_USER", u)
+			}
+			if pass != "" {
+				os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+			}
 		}
 
 		dataDir := filepath.Join(doltDataDir(), tower.Database)
 		setDoltCLIRemote(dataDir, "origin", tower.DolthubRemote)
 
-		fmt.Println("  Pushing registration to DoltHub...")
+		fmt.Printf("  Pushing registration to %s remote...\n", tower.EffectiveRemoteKind())
 		if err := doltCLIPush(dataDir, false); err != nil {
-			fmt.Printf("  Warning: DoltHub push skipped: %s\n", err)
+			fmt.Printf("  Warning: push skipped: %s\n", err)
 			fmt.Println("  Run 'spire push' later to sync.")
 		}
 	}

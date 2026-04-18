@@ -461,12 +461,15 @@ func runDoltSync(tower config.TowerConfig) {
 	dolt.SetCLIRemote(dataDir, "origin", tower.DolthubRemote)
 
 	// Inject credentials; defer cleanup so they don't leak into the rest of the
-	// daemon cycle after runDoltSync returns.
-	if user := config.GetCredential(config.CredKeyDolthubUser); user != "" {
+	// daemon cycle after runDoltSync returns. Credentials are resolved from the
+	// tower's RemoteKind — DoltHub draws from the shared dolthub-user/password
+	// keys; remotesapi draws from per-tower remotesapi-user-<tower>/remotesapi-password-<tower>.
+	user, pass := config.RemoteCredentials(&tower)
+	if user != "" {
 		os.Setenv("DOLT_REMOTE_USER", user)
 		defer os.Unsetenv("DOLT_REMOTE_USER")
 	}
-	if pass := config.GetCredential(config.CredKeyDolthubPassword); pass != "" {
+	if pass != "" {
 		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
 		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
 	}

@@ -291,3 +291,112 @@ func MaskValue(value string) string {
 	}
 	return value[:4] + "..." + value[len(value)-4:]
 }
+
+// RemotesapiUserKey returns the credentials-file key for a tower's remotesapi
+// username. Keys are namespaced per-tower so multiple remotesapi towers can
+// coexist (e.g. laptop attached to both dev and prod clusters).
+func RemotesapiUserKey(towerName string) string {
+	return "remotesapi-user-" + sanitizeTowerCredKey(towerName)
+}
+
+// RemotesapiPasswordKey returns the credentials-file key for a tower's remotesapi password.
+func RemotesapiPasswordKey(towerName string) string {
+	return "remotesapi-password-" + sanitizeTowerCredKey(towerName)
+}
+
+func sanitizeTowerCredKey(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		default:
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "default"
+	}
+	return b.String()
+}
+
+// SetRemotesapiCredentials persists the remotesapi user+password for a tower
+// to the credentials file. Bypasses the IsCredentialKey whitelist because keys
+// are dynamic (namespaced per-tower).
+func SetRemotesapiCredentials(towerName, user, password string) error {
+	creds, err := LoadCredentials()
+	if err != nil {
+		return fmt.Errorf("load credentials: %w", err)
+	}
+	creds[RemotesapiUserKey(towerName)] = user
+	creds[RemotesapiPasswordKey(towerName)] = password
+	return SaveCredentials(creds)
+}
+
+// GetRemotesapiUser returns the stored remotesapi username for a tower.
+// Env var DOLT_REMOTE_USER takes precedence so CI and one-off overrides work
+// without touching the file. Returns "" if nothing is configured.
+func GetRemotesapiUser(towerName string) string {
+	if v := os.Getenv("SPIRE_DOLTHUB_USER"); v != "" {
+		return v
+	}
+	if v := os.Getenv("DOLT_REMOTE_USER"); v != "" {
+		return v
+	}
+	creds, err := LoadCredentials()
+	if err != nil {
+		return ""
+	}
+	return creds[RemotesapiUserKey(towerName)]
+}
+
+// GetRemotesapiPassword returns the stored remotesapi password for a tower.
+// Env var DOLT_REMOTE_PASSWORD takes precedence. Returns "" if unset.
+func GetRemotesapiPassword(towerName string) string {
+	if v := os.Getenv("SPIRE_DOLTHUB_PASSWORD"); v != "" {
+		return v
+	}
+	if v := os.Getenv("DOLT_REMOTE_PASSWORD"); v != "" {
+		return v
+	}
+	creds, err := LoadCredentials()
+	if err != nil {
+		return ""
+	}
+	return creds[RemotesapiPasswordKey(towerName)]
+}
+
+// DeleteRemotesapiCredentials removes the stored remotesapi creds for a tower.
+// Idempotent: missing keys are silently skipped.
+func DeleteRemotesapiCredentials(towerName string) error {
+	creds, err := LoadCredentials()
+	if err != nil {
+		return fmt.Errorf("load credentials: %w", err)
+	}
+	delete(creds, RemotesapiUserKey(towerName))
+	delete(creds, RemotesapiPasswordKey(towerName))
+	return SaveCredentials(creds)
+}
+
+// RemoteCredentials returns the (user, password) pair appropriate for a
+// tower's remote kind. Callers should set DOLT_REMOTE_USER/DOLT_REMOTE_PASSWORD
+// env vars from the returned values before invoking the dolt CLI — both
+// remotesapi and DoltHub auth use those same env var names.
+func RemoteCredentials(tower *TowerConfig) (user, password string) {
+	if tower == nil {
+		return GetCredential(CredKeyDolthubUser), GetCredential(CredKeyDolthubPassword)
+	}
+	switch tower.EffectiveRemoteKind() {
+	case RemoteKindRemotesAPI:
+		user = GetRemotesapiUser(tower.Name)
+		if user == "" {
+			user = tower.RemoteUser
+		}
+		password = GetRemotesapiPassword(tower.Name)
+		return
+	default:
+		return GetCredential(CredKeyDolthubUser), GetCredential(CredKeyDolthubPassword)
+	}
+}

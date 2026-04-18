@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/spf13/cobra"
 )
@@ -55,8 +56,11 @@ Arguments:
                  e.g. awell/my-db  or  https://doltremoteapi.dolthub.com/awell/my-db
 
 Auth:
-  Credentials are read from spire's credential store (spire config set dolthub-user,
-  dolthub-password) or from DOLT_REMOTE_USER / DOLT_REMOTE_PASSWORD env vars.
+  Credentials are read from spire's credential store or from DOLT_REMOTE_USER /
+  DOLT_REMOTE_PASSWORD env vars. The source depends on the active tower's
+  remote_kind:
+    dolthub    → spire config set dolthub-user / dolthub-password
+    remotesapi → stored per-tower by 'spire tower attach' (--user / --password-stdin)
 
 Examples:
   spire pull                              # pull from existing remote
@@ -117,11 +121,15 @@ func runPull(remoteURL string, force bool) error {
 		}
 	}
 
-	// ── Inject DoltHub credentials ────────────────────────────────────────────
-	if user := getCredential(CredKeyDolthubUser); user != "" {
+	// ── Inject remote credentials (DoltHub or cluster remotesapi) ────────────
+	// Resolve the active tower so remotesapi-attached towers pull with their
+	// per-tower MySQL-style creds instead of the shared DoltHub JWK creds.
+	tower, _ := activeTowerConfig()
+	user, pass := config.RemoteCredentials(tower)
+	if user != "" {
 		os.Setenv("DOLT_REMOTE_USER", user)
 	}
-	if pass := getCredential(CredKeyDolthubPassword); pass != "" {
+	if pass != "" {
 		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
 	}
 

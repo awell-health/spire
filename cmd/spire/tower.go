@@ -126,6 +126,29 @@ func promptArchmageIdentity() ArchmageConfig {
 	return ArchmageConfig{Name: name, Email: email}
 }
 
+// readPasswordFromStdin reads a password from stdin. When stdin is a TTY it
+// reads without echoing (like `ssh` and `docker login`). When stdin is piped
+// (e.g. `echo $PW | spire tower attach ... --password-stdin`), it consumes the
+// first line. Either way, trailing newlines are trimmed.
+func readPasswordFromStdin() (string, error) {
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		fmt.Print("Password: ")
+		b, err := term.ReadPassword(fd)
+		fmt.Println()
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && line == "" {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
 const reposTableSQL = `CREATE TABLE IF NOT EXISTS repos (
     prefix       VARCHAR(16) PRIMARY KEY,
     repo_url     VARCHAR(512) NOT NULL,
@@ -544,13 +567,34 @@ var towerCreateCmd = &cobra.Command{
 }
 
 var towerAttachCmd = &cobra.Command{
-	Use:   "attach <dolthub-url>",
-	Short: "Clone a tower from DoltHub",
-	Args:  cobra.ExactArgs(1),
+	Use:   "attach <remote-url>",
+	Short: "Clone a tower from DoltHub or a cluster remotesapi endpoint",
+	Long: `Clone a tower and create a local config.
+
+Supported remote URLs:
+  org/repo                                    — DoltHub short form
+  https://doltremoteapi.dolthub.com/org/repo  — DoltHub full URL
+  http://host:50051/db                        — cluster remotesapi (http)
+  https://host:50051/db                       — cluster remotesapi (https)
+  dolt://host:50051/db                        — cluster remotesapi (dolt scheme)
+
+For cluster remotesapi URLs, --user is required and a password is read from
+--password, --password-stdin, or the DOLT_REMOTE_PASSWORD env var. The creds
+are persisted to ~/.config/spire/credentials keyed by the tower name.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fullArgs := []string{args[0]}
 		if v, _ := cmd.Flags().GetString("name"); v != "" {
 			fullArgs = append(fullArgs, "--name", v)
+		}
+		if v, _ := cmd.Flags().GetString("user"); v != "" {
+			fullArgs = append(fullArgs, "--user", v)
+		}
+		if v, _ := cmd.Flags().GetString("password"); v != "" {
+			fullArgs = append(fullArgs, "--password", v)
+		}
+		if v, _ := cmd.Flags().GetBool("password-stdin"); v {
+			fullArgs = append(fullArgs, "--password-stdin")
 		}
 		return cmdTowerAttach(fullArgs)
 	},
@@ -615,6 +659,9 @@ func init() {
 	towerCreateCmd.Flags().String("prefix", "", "Hub prefix")
 
 	towerAttachCmd.Flags().String("name", "", "Local name override")
+	towerAttachCmd.Flags().String("user", "", "Remote username (required for cluster remotesapi URLs)")
+	towerAttachCmd.Flags().String("password", "", "Remote password (prefer --password-stdin)")
+	towerAttachCmd.Flags().Bool("password-stdin", false, "Read password from stdin (safer than --password)")
 
 	towerRemoveCmd.Flags().Bool("force", false, "Force removal (skip confirmation, allow removing last tower)")
 
@@ -893,14 +940,20 @@ func cmdTowerCreate(args []string) error {
 	return nil
 }
 
-// cmdTowerAttach clones a tower from DoltHub and creates a local config.
+// cmdTowerAttach clones a tower from DoltHub or a cluster remotesapi endpoint
+// and creates a local config.
 func cmdTowerAttach(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire tower attach <dolthub-url> [--name local-name]")
+		return fmt.Errorf("usage: spire tower attach <remote-url> [--name local-name] [--user <u> --password <p> | --password-stdin]")
 	}
 
 	dolthubArg := args[0]
-	var name string
+	var (
+		name          string
+		remoteUser    string
+		remotePass    string
+		passwordStdin bool
+	)
 
 	// Parse remaining flags
 	for i := 1; i < len(args); i++ {
@@ -910,24 +963,53 @@ func cmdTowerAttach(args []string) error {
 			name = args[i]
 		case strings.HasPrefix(args[i], "--name="):
 			name = strings.TrimPrefix(args[i], "--name=")
+		case args[i] == "--user" && i+1 < len(args):
+			i++
+			remoteUser = args[i]
+		case strings.HasPrefix(args[i], "--user="):
+			remoteUser = strings.TrimPrefix(args[i], "--user=")
+		case args[i] == "--password" && i+1 < len(args):
+			i++
+			remotePass = args[i]
+		case strings.HasPrefix(args[i], "--password="):
+			remotePass = strings.TrimPrefix(args[i], "--password=")
+		case args[i] == "--password-stdin":
+			passwordStdin = true
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire tower attach <dolthub-url> [--name local-name]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire tower attach <remote-url> [--name local-name] [--user <u> --password <p> | --password-stdin]", args[i])
 		}
 	}
 
-	// Normalize DoltHub URL
-	remoteURL := normalizeDolthubURL(dolthubArg)
+	// Classify the remote URL to decide auth + transport semantics.
+	remoteKind, err := dolt.ClassifyRemoteURL(dolthubArg)
+	if err != nil {
+		return fmt.Errorf("attach: %w", err)
+	}
 
-	// Derive name from URL if not provided
+	// Normalize the URL for the chosen kind. For DoltHub this expands short
+	// "org/repo" to the full API URL; for remotesapi it trims trailing slashes.
+	remoteURL := dolt.NormalizeRemoteURL(dolthubArg, remoteKind)
+
+	// Derive name from URL if not provided. For remotesapi use the DB path
+	// segment; for DoltHub fall back to the legacy extractor.
 	if name == "" {
-		name = nameFromDolthubURL(dolthubArg)
+		if remoteKind == config.RemoteKindRemotesAPI {
+			name = dolt.DatabaseFromRemoteURL(remoteURL)
+		} else {
+			name = nameFromDolthubURL(dolthubArg)
+		}
 	}
 	if name == "" {
 		return fmt.Errorf("could not derive tower name from %q — use --name to specify", dolthubArg)
 	}
 
 	// Database name from URL
-	dbName := nameFromDolthubURL(dolthubArg)
+	var dbName string
+	if remoteKind == config.RemoteKindRemotesAPI {
+		dbName = dolt.DatabaseFromRemoteURL(remoteURL)
+	} else {
+		dbName = nameFromDolthubURL(dolthubArg)
+	}
 	if dbName == "" {
 		dbName = name
 	}
@@ -951,12 +1033,37 @@ func cmdTowerAttach(args []string) error {
 		}
 	}
 
-	// Set credentials for remote operations
-	if user := getCredential(CredKeyDolthubUser); user != "" {
-		os.Setenv("DOLT_REMOTE_USER", user)
-	}
-	if pass := getCredential(CredKeyDolthubPassword); pass != "" {
-		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+	// Resolve and set credentials based on remote kind.
+	switch remoteKind {
+	case config.RemoteKindRemotesAPI:
+		if remoteUser == "" {
+			return fmt.Errorf("--user is required for cluster remotesapi URLs (e.g. --user=dolt_remote)")
+		}
+		if passwordStdin {
+			if remotePass != "" {
+				return fmt.Errorf("cannot use both --password and --password-stdin")
+			}
+			pw, err := readPasswordFromStdin()
+			if err != nil {
+				return fmt.Errorf("read password from stdin: %w", err)
+			}
+			remotePass = pw
+		}
+		if remotePass == "" {
+			remotePass = os.Getenv("DOLT_REMOTE_PASSWORD")
+		}
+		if remotePass == "" {
+			return fmt.Errorf("a password is required for cluster remotesapi URLs — pass --password, --password-stdin, or set DOLT_REMOTE_PASSWORD")
+		}
+		os.Setenv("DOLT_REMOTE_USER", remoteUser)
+		os.Setenv("DOLT_REMOTE_PASSWORD", remotePass)
+	default: // dolthub
+		if user := getCredential(CredKeyDolthubUser); user != "" {
+			os.Setenv("DOLT_REMOTE_USER", user)
+		}
+		if pass := getCredential(CredKeyDolthubPassword); pass != "" {
+			os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+		}
 	}
 
 	// Clone from DoltHub using dolt CLI directly in the data directory
@@ -1012,6 +1119,19 @@ func cmdTowerAttach(args []string) error {
 		DolthubRemote: remoteURL,
 		Database:      dbName,
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		RemoteKind:    remoteKind,
+	}
+	if remoteKind == config.RemoteKindRemotesAPI {
+		tower.RemoteUser = remoteUser
+	}
+
+	// Persist remotesapi credentials to the per-tower slots in the credentials
+	// file. Only needed for remotesapi; DoltHub creds stay in the shared
+	// dolthub-user/dolthub-password keys.
+	if remoteKind == config.RemoteKindRemotesAPI {
+		if err := config.SetRemotesapiCredentials(name, remoteUser, remotePass); err != nil {
+			return fmt.Errorf("save remotesapi credentials: %w", err)
+		}
 	}
 
 	// Restart the dolt server so it discovers the freshly cloned database.
@@ -1050,12 +1170,16 @@ func cmdTowerAttach(args []string) error {
 	// Print summary
 	configPathStr := must(towerConfigPath(name))
 	fmt.Printf("\nTower attached: %s\n", tower.Name)
-	fmt.Printf("  project_id: %s\n", tower.ProjectID)
-	fmt.Printf("  prefix:     %s\n", tower.HubPrefix)
-	fmt.Printf("  database:   %s\n", tower.Database)
-	fmt.Printf("  remote:     %s\n", tower.DolthubRemote)
-	fmt.Printf("  beads:      %s\n", beadCount)
-	fmt.Printf("  config:     %s\n", configPathStr)
+	fmt.Printf("  project_id:  %s\n", tower.ProjectID)
+	fmt.Printf("  prefix:      %s\n", tower.HubPrefix)
+	fmt.Printf("  database:    %s\n", tower.Database)
+	fmt.Printf("  remote:      %s\n", tower.DolthubRemote)
+	fmt.Printf("  remote_kind: %s\n", tower.EffectiveRemoteKind())
+	if tower.RemoteUser != "" {
+		fmt.Printf("  remote_user: %s\n", tower.RemoteUser)
+	}
+	fmt.Printf("  beads:       %s\n", beadCount)
+	fmt.Printf("  config:      %s\n", configPathStr)
 
 	return nil
 }
@@ -1086,8 +1210,8 @@ func cmdTowerList() error {
 		cwdTower = tc.Name
 	}
 
-	fmt.Printf("  %-16s %-8s %-20s %s\n", "NAME", "PREFIX", "DATABASE", "REMOTE")
-	fmt.Printf("  %-16s %-8s %-20s %s\n", "----", "------", "--------", "------")
+	fmt.Printf("  %-16s %-8s %-20s %-10s %s\n", "NAME", "PREFIX", "DATABASE", "KIND", "REMOTE")
+	fmt.Printf("  %-16s %-8s %-20s %-10s %s\n", "----", "------", "--------", "----", "------")
 	for _, t := range towers {
 		remote := "local"
 		if t.DolthubRemote != "" {
@@ -1101,7 +1225,7 @@ func cmdTowerList() error {
 		} else if t.Name == activeTower {
 			marker = "~" // global default (not CWD)
 		}
-		fmt.Printf("%s %-16s %-8s %-20s %s\n", marker, t.Name, t.HubPrefix, t.Database, remote)
+		fmt.Printf("%s %-16s %-8s %-20s %-10s %s\n", marker, t.Name, t.HubPrefix, t.Database, t.EffectiveRemoteKind(), remote)
 	}
 
 	fmt.Println()
@@ -1291,6 +1415,12 @@ func cmdTowerRemove(name string, force bool) error {
 		return fmt.Errorf("delete tower config: %w", err)
 	}
 	summary = append(summary, fmt.Sprintf("Deleted tower config"))
+
+	// 8b. Delete any tower-scoped remotesapi credentials. Best-effort: missing
+	// entries or an unreadable credentials file don't fail the remove.
+	if err := config.DeleteRemotesapiCredentials(name); err == nil {
+		summary = append(summary, "Removed tower-scoped remotesapi credentials")
+	}
 
 	// 9. Print summary.
 	fmt.Printf("\nRemoved tower %q:\n", name)

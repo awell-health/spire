@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/spf13/cobra"
 )
@@ -95,12 +96,14 @@ func runSync() error {
 		dolt.SetCLIRemote(dataDir, "origin", url)
 	}
 
-	// ── Inject DoltHub credentials ────────────────────────────────────────────
-	if user := getCredential(CredKeyDolthubUser); user != "" {
+	// ── Inject remote credentials (DoltHub or cluster remotesapi) ────────────
+	tower, _ := activeTowerConfig()
+	user, pass := config.RemoteCredentials(tower)
+	if user != "" {
 		os.Setenv("DOLT_REMOTE_USER", user)
 		defer os.Unsetenv("DOLT_REMOTE_USER")
 	}
-	if pass := getCredential(CredKeyDolthubPassword); pass != "" {
+	if pass != "" {
 		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
 		defer os.Unsetenv("DOLT_REMOTE_PASSWORD")
 	}

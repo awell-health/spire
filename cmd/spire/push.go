@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/spf13/cobra"
 )
@@ -70,14 +72,40 @@ func runPush(remoteURL string) error {
 	}
 	dataDir := filepath.Join(doltDataDir(), dbName)
 
+	// ── Resolve tower (to know the remote kind) ──────────────────────────────
+	tower, _ := activeTowerConfig()
+	remoteKind := config.RemoteKindDoltHub
+	if tower != nil {
+		remoteKind = tower.EffectiveRemoteKind()
+	}
+
+	// ── Inject remote credentials ────────────────────────────────────────────
+	// dolt CLI reads DOLT_REMOTE_USER / DOLT_REMOTE_PASSWORD directly. Both
+	// DoltHub and remotesapi use these env var names; only the source differs.
+	if user, pass := config.RemoteCredentials(tower); user != "" || pass != "" {
+		if user != "" {
+			os.Setenv("DOLT_REMOTE_USER", user)
+		}
+		if pass != "" {
+			os.Setenv("DOLT_REMOTE_PASSWORD", pass)
+		}
+	}
+
 	// ── Remote setup ──────────────────────────────────────────────────────────
 	if remoteURL != "" {
-		remoteURL = normalizeDolthubURL(remoteURL)
+		// Classify the passed URL. If it disagrees with the stored tower kind
+		// we trust the URL — user is likely re-pointing the remote.
+		if kind, err := dolt.ClassifyRemoteURL(remoteURL); err == nil {
+			remoteKind = kind
+		}
+		remoteURL = dolt.NormalizeRemoteURL(remoteURL, remoteKind)
 
 		// Best-effort: create the DoltHub database if it doesn't exist yet.
-		// Non-fatal — push will report the real error if this silently fails.
-		if err := dolt.EnsureDoltHubDB(remoteURL); err != nil {
-			fmt.Printf("  Note: could not pre-create remote db: %s\n", err)
+		// Skip for remotesapi — that endpoint manages its own databases.
+		if remoteKind == config.RemoteKindDoltHub {
+			if err := dolt.EnsureDoltHubDB(remoteURL); err != nil {
+				fmt.Printf("  Note: could not pre-create remote db: %s\n", err)
+			}
 		}
 
 		// Set remote in both SQL (for bd) and CLI (for direct push).
