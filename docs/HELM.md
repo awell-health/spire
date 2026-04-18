@@ -97,6 +97,73 @@ only the first release installs them — subsequent releases reuse the
 existing CRDs. `helm uninstall` does not remove CRDs (by design); you
 must `kubectl delete crd` manually if you want them gone.
 
+## Remotesapi SQL users
+
+The cluster's dolt server exposes a remotesapi port (default `50051`)
+so laptops/CI can `dolt clone/push/pull http://<host>:50051/<db>`
+without going through DoltHub. Each client authenticates as a SQL user
+on the cluster dolt.
+
+The chart creates the primary `DOLT_REMOTE_USER` automatically via the
+post-install `spire-dolt-provision` Job. For additional users (per-dev
+logins, a scoped read-only role for CI, etc.), use
+`dolt.additionalUsers` and pre-create a k8s Secret per entry:
+
+```yaml
+# my-values.yaml
+dolt:
+  additionalUsers:
+    - name: dolt_remote_ci
+      host: "%"
+      existingSecret: dolt-remote-ci-credentials
+      secretKey: password
+      grants:
+        - "ALL PRIVILEGES ON *.*"
+    - name: analyst
+      host: "%"
+      existingSecret: dolt-analyst-credentials
+      secretKey: password
+      grants:
+        - "SELECT ON *.*"
+```
+
+```bash
+# Pre-create the Secrets before `helm install/upgrade`.
+kubectl -n spire create secret generic dolt-remote-ci-credentials \
+  --from-literal=password=$(openssl rand -base64 24 | tr -d /+= | head -c 24)
+kubectl -n spire create secret generic dolt-analyst-credentials \
+  --from-literal=password=$(openssl rand -base64 24 | tr -d /+= | head -c 24)
+
+helm install spire helm/spire -n spire --values my-values.yaml
+```
+
+On install/upgrade the chart renders `spire-dolt-additional-users`, a
+post-install/post-upgrade hook Job. It waits for dolt to be ready, then
+runs idempotent `CREATE USER IF NOT EXISTS … ALTER USER … IDENTIFIED
+BY … GRANT …` for every entry. Passwords are mounted from the named
+Secrets at Pod-runtime via `valueFrom.secretKeyRef`, so the rendered
+manifest contains Secret references but no plaintext.
+
+Rotation is `kubectl patch secret <name>` followed by `helm upgrade`;
+the Job re-runs and `ALTER USER` re-applies the new password. The
+paired `CREATE USER IF NOT EXISTS` means initial provisioning is a
+no-op on subsequent upgrades that don't add new entries.
+
+Notes:
+
+- **Single quotes are rejected** in `name`, `host`, `grants`, and the
+  password itself. The chart refuses to render (and the Job exits
+  non-zero at runtime for the password check) rather than generate
+  quote-escaped SQL. Pick identifiers without `'`.
+- **The referenced Secret must exist before the Job Pod schedules.**
+  If it doesn't, the Pod stays in `CreateContainerConfigError` —
+  inspect with `kubectl -n spire describe pod -l app.kubernetes.io/name=spire-dolt-additional-users`.
+- **Inline passwords are deliberately unsupported.** There is no
+  `password: "…"` field; every entry must use `existingSecret`.
+- The Job does not delete users that were removed from the values list.
+  Drop them from dolt by hand: `kubectl exec deploy/spire-dolt -c dolt
+  -- dolt sql -q "DROP USER 'old_user'@'%'"`.
+
 ## Verifying isolation
 
 ```bash

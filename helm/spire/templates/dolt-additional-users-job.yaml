@@ -1,0 +1,153 @@
+{{- if gt (len .Values.dolt.additionalUsers) 0 }}
+{{- /*
+  Reject usernames/hosts that would break the SQL literal quoting.
+  The job renders CREATE USER '<name>'@'<host>' … with a single-quoted
+  literal; a user-provided single quote would let values.yaml close the
+  literal and append arbitrary SQL. Fail fast at render time rather
+  than smuggle the check into a runtime bash `case`.
+*/ -}}
+{{- range $i, $user := .Values.dolt.additionalUsers }}
+{{- if not $user.name }}
+{{- fail (printf "dolt.additionalUsers[%d].name is required" $i) }}
+{{- end }}
+{{- if not $user.existingSecret }}
+{{- fail (printf "dolt.additionalUsers[%d].existingSecret is required — plaintext passwords in values are not supported" $i) }}
+{{- end }}
+{{- if contains "'" $user.name }}
+{{- fail (printf "dolt.additionalUsers[%d].name must not contain a single quote: %q" $i $user.name) }}
+{{- end }}
+{{- if and $user.host (contains "'" $user.host) }}
+{{- fail (printf "dolt.additionalUsers[%d].host must not contain a single quote: %q" $i $user.host) }}
+{{- end }}
+{{- range $g, $grant := $user.grants }}
+{{- if contains "'" $grant }}
+{{- fail (printf "dolt.additionalUsers[%d].grants[%d] must not contain a single quote: %q" $i $g $grant) }}
+{{- end }}
+{{- end }}
+{{- end }}
+# Post-install/upgrade Job that provisions the operator-declared extra
+# SQL users in the cluster's dolt server. Runs idempotent
+# CREATE USER IF NOT EXISTS + ALTER USER + GRANT for each entry in
+# .Values.dolt.additionalUsers, sourcing every password from a
+# pre-existing k8s Secret so passwords never appear in the rendered
+# manifest. Password rotation is a `kubectl patch secret …` + `helm
+# upgrade` — the ALTER USER step re-applies the password each run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spire-dolt-additional-users
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-dolt-additional-users
+    app.kubernetes.io/component: additional-users
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    # Weight 10 runs AFTER spire-dolt-provision (weight 5). The primary
+    # provision Job isn't a prerequisite — this Job authenticates as
+    # root with no password, same as spire-dolt-provision — but ordering
+    # keeps logs/events in a predictable sequence when both run.
+    "helm.sh/hook-weight": "10"
+    # Delete prior successful runs before re-running; keep failed runs
+    # around for debugging (do NOT add hook-failed here).
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-dolt-additional-users
+    spec:
+      restartPolicy: Never
+      initContainers:
+        # Post-install hooks fire after manifests apply but can race the
+        # dolt StatefulSet's first boot — and hook-weight ordering alone
+        # does NOT imply pod readiness. Block until the SQL server
+        # answers a trivial root-auth query before letting the main
+        # container attempt CREATE USER. Reuses the dolt image (already
+        # pulled for the StatefulSet) so no extra image download.
+        - name: wait-for-dolt
+          image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
+          imagePullPolicy: {{ .Values.images.dolt.pullPolicy }}
+          command:
+            - bash
+            - -c
+            - |
+              set -u
+              export DOLT_CLI_PASSWORD=""
+              i=0
+              until dolt --host=spire-dolt --port={{ .Values.dolt.port }} --user=root --no-tls sql -q "select 1" >/dev/null 2>&1; do
+                i=$((i + 1))
+                if [ "$i" -gt 120 ]; then
+                  echo "[wait-for-dolt] timed out after $i attempts"
+                  exit 1
+                fi
+                echo "[wait-for-dolt] dolt not ready yet (attempt $i)..."
+                sleep 2
+              done
+              echo "[wait-for-dolt] dolt SQL server is up"
+      containers:
+        - name: provision
+          image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
+          imagePullPolicy: {{ .Values.images.dolt.pullPolicy }}
+          env:
+            # Empty so the dolt CLI doesn't prompt for a password when
+            # authenticating as root (root has no password in this chart).
+            - name: DOLT_CLI_PASSWORD
+              value: ""
+            {{- range $i, $user := .Values.dolt.additionalUsers }}
+            # Indexed env var (PW_0, PW_1, …) so the name is always a
+            # valid shell identifier regardless of the SQL username.
+            # The rendered manifest references the Secret by name only;
+            # the password itself is read by the Pod at runtime.
+            - name: PW_{{ $i }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $user.existingSecret }}
+                  key: {{ $user.secretKey | default "password" }}
+            {{- end }}
+          command:
+            - bash
+            - -euo
+            - pipefail
+            - -c
+            - |
+              # Reject passwords containing a single quote — the SQL
+              # below quotes each password with '…' and escape gymnastics
+              # inside a Helm-rendered shell are not worth the surface
+              # area. Mirrors spire-dolt-provision's check on
+              # DOLT_REMOTE_PASSWORD. Usernames/hosts/grants were
+              # already validated at render time.
+              {{- range $i, $user := .Values.dolt.additionalUsers }}
+              case "${PW_{{ $i }}}" in
+                *\'*)
+                  echo "[provision] ERROR: password for user '{{ $user.name }}' contains a single quote; choose a different password" >&2
+                  exit 2
+                  ;;
+              esac
+              {{- end }}
+              SQL=""
+              {{- range $i, $user := .Values.dolt.additionalUsers }}
+              {{- $host := default "%" $user.host }}
+              SQL="${SQL}CREATE USER IF NOT EXISTS '{{ $user.name }}'@'{{ $host }}' IDENTIFIED BY '${PW_{{ $i }}}';
+              ALTER USER '{{ $user.name }}'@'{{ $host }}' IDENTIFIED BY '${PW_{{ $i }}}';
+              {{- range $user.grants }}
+              GRANT {{ . }} TO '{{ $user.name }}'@'{{ $host }}';
+              {{- end }}
+              "
+              {{- end }}
+              SQL="${SQL}FLUSH PRIVILEGES;"
+              # Server-mode only — do NOT `dolt sql -q` against a local
+              # directory (would edit on-disk files and diverge from the
+              # live server). Never mount the dolt PVC into this Job.
+              dolt --host=spire-dolt --port={{ .Values.dolt.port }} --user=root --no-tls sql -q "$SQL"
+              echo "[provision] additional users are up to date"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+{{- end }}
