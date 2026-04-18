@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	bdpkg "github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	towerpkg "github.com/awell-health/spire/pkg/tower"
@@ -32,7 +33,10 @@ var towerAttachClusterCmd = &cobra.Command{
 
 Bootstrap mode (--data-dir/--database): seeds .beads/ in --data-dir after
 reading the attached tower's project_id and prefix from the live dolt server.
-Used by the steward init container in the Helm chart.
+Used by the steward init container in the Helm chart. When
+--bootstrap-if-blank is set, a blank database (no user tables) is
+initialized with Spire's schema + identity + custom bead types first, so
+installs without a DoltHub remote can land a usable tower.
 
 Register mode (--namespace): records a ClusterAttachment on the tower config
 so later dispatch code can route work to a specific Kubernetes namespace.
@@ -58,7 +62,8 @@ kubeconfig file.`,
 		prefixFallback, _ := cmd.Flags().GetString("prefix")
 		dolthubRemote, _ := cmd.Flags().GetString("dolthub-remote")
 		waitDur, _ := cmd.Flags().GetDuration("dolt-wait")
-		return cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote, waitDur)
+		bootstrapIfBlank, _ := cmd.Flags().GetBool("bootstrap-if-blank")
+		return cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote, waitDur, bootstrapIfBlank)
 	},
 }
 
@@ -68,6 +73,7 @@ func init() {
 	towerAttachClusterCmd.Flags().String("prefix", "", "Bead prefix fallback (bootstrap mode)")
 	towerAttachClusterCmd.Flags().String("dolthub-remote", "", "DoltHub remote path; stored in TowerConfig for provenance (bootstrap mode)")
 	towerAttachClusterCmd.Flags().Duration("dolt-wait", 120*time.Second, "How long to wait for dolt server reachability (bootstrap mode)")
+	towerAttachClusterCmd.Flags().Bool("bootstrap-if-blank", false, "If the target database has no user tables, run the `spire tower create` ritual (schema, project_id, custom types) before attaching. Required for Use Case 2b (no DoltHub install).")
 
 	towerAttachClusterCmd.Flags().String("namespace", "", "Kubernetes namespace for the cluster attachment (register mode)")
 	towerAttachClusterCmd.Flags().String("kubeconfig", "", "Path to kubeconfig; defaults to $KUBECONFIG or ~/.kube/config (register mode)")
@@ -78,7 +84,27 @@ func init() {
 	towerCmd.AddCommand(towerAttachClusterCmd)
 }
 
-func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote string, waitDur time.Duration) error {
+// clusterRunBdInit is the default RunBdInit wiring for cluster bootstrap.
+// Shells out to `bd init` with the steward PV as cwd so the command's
+// `.beads/` workspace lands on the PV. The dolt connection is taken from
+// ambient env (BEADS_DOLT_SERVER_HOST/PORT), which the steward init
+// container sets — bd will connect to the external dolt server instead
+// of auto-starting an embedded one.
+//
+// Declared as a package var so tests can swap it for a stub without
+// shelling out to a real bd binary.
+var clusterRunBdInit = func(database, prefix, runDir string) error {
+	client := bdpkg.NewClient()
+	client.RunDir = runDir
+	client.Sandbox = true // no remote is configured on the blank path
+	return client.Init(bdpkg.InitOpts{
+		Database: database,
+		Prefix:   prefix,
+		Force:    true,
+	})
+}
+
+func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote string, waitDur time.Duration, bootstrapIfBlank bool) error {
 	if database == "" {
 		return fmt.Errorf("--database is required")
 	}
@@ -91,11 +117,17 @@ func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote stri
 
 	host, port := dolt.Host(), dolt.Port()
 	fmt.Printf("[attach-cluster] waiting for database %q on %s:%s (up to %s)\n", database, host, port, waitDur)
-	// Probe the database specifically — a bare `SELECT 1` succeeds as soon
-	// as dolt accepts connections, but the DB may still be loading from the
-	// clone the dolt StatefulSet init container ran. Querying the metadata
-	// table ensures we only proceed once the cloned DB is actually served.
-	probe := fmt.Sprintf("SELECT 1 FROM `%s`.metadata LIMIT 1", database)
+	// Probe strength depends on mode. Normal attach assumes a cloned DB —
+	// probing `<db>.metadata` ensures the clone has finished loading, not
+	// just that dolt accepts connections. In --bootstrap-if-blank mode the
+	// table will not exist yet, so we probe the schema listing instead so a
+	// freshly-`dolt init`ed empty DB can still pass the readiness gate.
+	var probe string
+	if bootstrapIfBlank {
+		probe = fmt.Sprintf("SELECT 1 FROM information_schema.schemata WHERE schema_name = '%s' LIMIT 1", database)
+	} else {
+		probe = fmt.Sprintf("SELECT 1 FROM `%s`.metadata LIMIT 1", database)
+	}
 	deadline := time.Now().Add(waitDur)
 	for {
 		if _, err := dolt.RawQuery(probe); err == nil {
@@ -107,6 +139,32 @@ func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote stri
 		time.Sleep(2 * time.Second)
 	}
 	fmt.Printf("[attach-cluster] database %q reachable\n", database)
+
+	if bootstrapIfBlank {
+		blank, err := towerpkg.IsBlankDB(dolt.RawQuery, database)
+		if err != nil {
+			return fmt.Errorf("blank-check: %w", err)
+		}
+		if !blank {
+			fmt.Printf("[attach-cluster] database %q already populated — skipping bootstrap\n", database)
+		} else {
+			prefixForBootstrap := prefixFallback
+			if prefixForBootstrap == "" {
+				prefixForBootstrap = derivePrefixFromName(database)
+			}
+			fmt.Printf("[attach-cluster] bootstrap: blank DB, running ritual (database=%s, prefix=%s)\n", database, prefixForBootstrap)
+			if err := towerpkg.BootstrapBlank(dolt.RawQuery, towerpkg.BlankBootstrapOpts{
+				Database:          database,
+				Prefix:            prefixForBootstrap,
+				DataDir:           dataDir,
+				RunBdInit:         clusterRunBdInit,
+				EnsureCustomTypes: ensureBootstrapCustomTypesFn,
+			}); err != nil {
+				return fmt.Errorf("bootstrap blank tower: %w", err)
+			}
+			fmt.Printf("[attach-cluster] bootstrap: ritual complete\n")
+		}
+	}
 
 	fmt.Printf("[attach-cluster] reading tower metadata from database %q\n", database)
 	projectID, prefix, err := towerpkg.ReadMetadata(dolt.RawQuery, database)

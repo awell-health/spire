@@ -57,6 +57,55 @@ The chart has two namespace-related values that both need to match the
   resource. Set to `false` when you pre-create the namespace (as above)
   or when you use `helm install --create-namespace`.
 
+## Fresh tower, no DoltHub
+
+If you don't have a DoltHub account yet, install with an empty
+`dolthub.remoteUrl`. The dolt pod's init container will run `dolt init`
+locally instead of cloning, and the steward init container's
+`--bootstrap-if-blank` flag (enabled by default in the chart) runs the
+equivalent of `spire tower create` against the freshly-initialized
+database — schema, `_project_id`, custom bead types — so the steward lands
+ready to accept work.
+
+```bash
+kubectl create namespace spire
+helm install spire helm/spire \
+  --namespace spire \
+  --set namespace=spire \
+  --set createNamespace=false \
+  --set beads.prefix=spi \
+  --set images.steward.tag=vX.Y.Z \
+  --set images.agent.tag=vX.Y.Z \
+  --set dolthub.remoteUrl="" \
+  --set anthropic.apiKey=$ANTHROPIC_API_KEY
+```
+
+Verify after install:
+
+```bash
+# Wait for steward to come up.
+kubectl rollout status deploy/spire-steward -n spire --timeout=2m
+
+# Bootstrap wrote _project_id into the tower metadata table.
+kubectl exec -n spire spire-dolt-0 -c dolt -- \
+  dolt --host 127.0.0.1 --port 3306 --user root --no-tls -p "" \
+  sql -q "USE spi; SELECT value FROM metadata WHERE \`key\`='_project_id'"
+
+# Custom bead types are registered.
+kubectl exec -n spire spire-dolt-0 -c dolt -- \
+  dolt --host 127.0.0.1 --port 3306 --user root --no-tls -p "" \
+  sql -q "USE spi; SELECT name FROM custom_types"
+
+# Steward workspace metadata points at the cluster dolt server.
+kubectl exec -n spire deploy/spire-steward -c steward -- \
+  cat /data/.beads/metadata.json
+```
+
+A restarted steward pod re-runs the init container but the
+`--bootstrap-if-blank` guard detects the populated database and logs
+`database "spi" already populated — skipping bootstrap`, so project_id
+remains stable across restarts.
+
 ## Multi-tenant: multiple releases in one cluster
 
 Spire is multi-tenant-safe: each release runs fully isolated in its own

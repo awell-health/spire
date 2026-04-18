@@ -42,6 +42,7 @@ spec:
                 --database="$BEADS_DATABASE" \
                 --prefix="$BEADS_PREFIX" \
                 --dolthub-remote="$DOLTHUB_REMOTE" \
+                --bootstrap-if-blank \
                 --dolt-wait=300s
               # bd warns at 0755 — tighten. Done after attach-cluster so
               # the directory exists.
