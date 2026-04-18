@@ -3,6 +3,15 @@
 # collect_context → decide → execute → verify → retry (loop) → learn → finish
 # Retry loop: verify fail + decide.completed_count < max_retries → resets decide/execute/verify
 # Needs-human path: collect_context → decide → finish_needs_human
+#
+# Execute-error path (on_error = "record" on [steps.execute]):
+#   If the execute action errors (e.g. rebase-onto-base hits a conflict), the
+#   interpreter records the error text as steps.execute.outputs.error (and
+#   outputs.status=failed) instead of parking. The retry_on_error step then
+#   fires: it adds a bead comment with the error text (so spire focus surfaces
+#   it on the next iteration), then resets decide/execute/verify to re-enter
+#   decide with new context. After max_execute_error_retries attempts,
+#   finish_needs_human_on_error routes to the real needs-human close.
 
 name = "cleric-default"
 description = "Agentic recovery: Claude-driven decide + learn steps, always-close lifecycle"
@@ -29,8 +38,12 @@ description = "Base branch for any git operations"
 default = "main"
 
 [vars.max_retries]
-description = "Maximum recovery attempts before learning from failure"
+description = "Maximum recovery attempts before learning from failure (verify-fail budget)"
 default = "4"
+
+[vars.max_execute_error_retries]
+description = "Maximum execute-error retries before escalating to human (separate from verify-fail budget)"
+default = "2"
 
 # --- Steps ---
 
@@ -53,17 +66,25 @@ action = "decide"
 
 # Step 3: Execute the chosen recovery action (mechanical dispatch).
 # Skipped if decide set needs_human=true.
+#
+# on_error = "record": if the action returns an error (e.g. rebase conflict),
+# the interpreter records it as outputs.error + outputs.status=failed and
+# marks the step completed. retry_on_error then fires to route the loop
+# back to decide with the error visible in the bead comment stream.
 [steps.execute]
 kind = "op"
 action = "cleric.execute"
 needs = ["decide"]
 title = "Execute chosen recovery action"
+on_error = "record"
 [steps.execute.with]
 action = "execute"
 [steps.execute.when]
 all = [{ left = "steps.decide.outputs.needs_human", op = "ne", right = "true" }]
 
 # Step 4: Verify source bead health after remediation.
+# Only runs when execute succeeded — when execute errored (on_error=record),
+# retry_on_error or finish_needs_human_on_error handles the flow instead.
 [steps.verify]
 kind = "op"
 action = "cleric.execute"
@@ -72,6 +93,8 @@ title = "Verify source bead health"
 produces = ["verification_status"]
 [steps.verify.with]
 action = "verify"
+[steps.verify.when]
+all = [{ left = "steps.execute.outputs.status", op = "eq", right = "success" }]
 
 # Step 5a: Retry loop — verify fail + budget remaining → reset decide/execute/verify.
 [steps.retry]
@@ -84,6 +107,25 @@ resets = ["decide", "execute", "verify"]
 all = [
   { left = "steps.verify.outputs.verification_status", op = "eq", right = "fail" },
   { left = "steps.decide.completed_count", op = "lt", right = "vars.max_retries" },
+]
+
+# Step 5c: Retry after execute error — add a bead comment with the error text,
+# then reset decide/execute/verify so cleric re-enters decide. Uses its own
+# completed_count as the iteration counter (independent of the verify-fail
+# budget tracked via decide.completed_count). Self-reset allows the step to
+# fire again until the execute-error budget is exhausted.
+[steps.retry_on_error]
+kind = "op"
+action = "cleric.execute"
+needs = ["execute"]
+title = "Retry after execute error"
+resets = ["retry_on_error", "decide", "execute", "verify"]
+[steps.retry_on_error.with]
+action = "record_error"
+[steps.retry_on_error.when]
+all = [
+  { left = "steps.execute.outputs.status", op = "eq", right = "failed" },
+  { left = "steps.retry_on_error.completed_count", op = "lt", right = "vars.max_execute_error_retries" },
 ]
 
 # Step 5b: Claude-driven learning extraction.
@@ -122,3 +164,21 @@ title = "Close recovery bead (needs human)"
 action = "finish"
 [steps.finish_needs_human.when]
 all = [{ left = "steps.decide.outputs.needs_human", op = "eq", right = "true" }]
+
+# Step 6c: Close recovery bead (execute-error budget exhausted — needs human).
+# Fires when execute keeps erroring past max_execute_error_retries. Uses
+# with.needs_human=true so handleFinish leaves the bead open for spire resolve.
+[steps.finish_needs_human_on_error]
+kind = "op"
+action = "cleric.execute"
+needs = ["execute"]
+terminal = true
+title = "Close recovery bead (execute errors exhausted)"
+[steps.finish_needs_human_on_error.with]
+action = "finish"
+needs_human = "true"
+[steps.finish_needs_human_on_error.when]
+all = [
+  { left = "steps.execute.outputs.status", op = "eq", right = "failed" },
+  { left = "steps.retry_on_error.completed_count", op = "ge", right = "vars.max_execute_error_retries" },
+]

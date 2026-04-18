@@ -101,6 +101,8 @@ func actionClericExecute(e *Executor, stepName string, step StepConfig, state *G
 		return handleLearn(e, stepName, step, state)
 	case "finish":
 		return handleFinish(e, stepName, step, state)
+	case "record_error":
+		return handleRecordExecuteError(e, stepName, step, state)
 	}
 
 	// Resolve source bead ID: prefer explicit param, fall back to recovery bead metadata.
@@ -1187,19 +1189,63 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 	}}
 }
 
+// handleRecordExecuteError posts a bead comment with the execute step's
+// recorded error text so that when cleric re-enters the decide step, the
+// prior failure shows up via spire focus's comment stream. The action is
+// a no-op beyond commenting — the retry gating is handled by the formula's
+// conditional edges (resets back to decide/execute/verify).
+//
+// Emits status="recorded" on success. If the execute step has no recorded
+// error text, a placeholder message is posted instead (defensive: this
+// should not happen under normal operation because the interpreter writes
+// outputs.error before firing this step).
+func handleRecordExecuteError(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	errMsg := ""
+	if state != nil {
+		if es, ok := state.Steps["execute"]; ok {
+			errMsg = es.Outputs["error"]
+		}
+	}
+	if errMsg == "" {
+		errMsg = "(no error text recorded — check wizard logs)"
+	}
+
+	comment := fmt.Sprintf("Cleric execute errored — scheduling retry:\n\n```\n%s\n```", errMsg)
+	if e.deps != nil && e.deps.AddComment != nil {
+		if err := e.deps.AddComment(e.beadID, comment); err != nil {
+			e.log("recovery: record_error: add comment: %s", err)
+		}
+	}
+
+	e.log("recovery: record_error: recorded execute error, resetting decide/execute/verify for retry")
+	return ActionResult{Outputs: map[string]string{"status": "recorded"}}
+}
+
 // handleFinish writes a closing comment, cleans up recovery protocol labels,
 // and conditionally closes the recovery bead. If the decide step chose
 // escalate, the bead is left open so `spire resolve` can find it and write
 // the human learning before closing.
+//
+// The needs_human override can be triggered two ways:
+//  1. decide step output needs_human=true (Claude chose to escalate)
+//  2. step.With["needs_human"]="true" (formula forces escalation, e.g. when
+//     the execute-error retry budget is exhausted)
 func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Gather summary from step outputs.
 	var chosenAction, outcome, reasoning string
 	var needsHuman bool
+	// Formula-level override: finish steps can force needs_human via step.With
+	// (e.g. finish_needs_human_on_error when execute errors exhaust the budget).
+	if step.With["needs_human"] == "true" {
+		needsHuman = true
+	}
 	if state != nil {
 		if ds, ok := state.Steps["decide"]; ok {
 			chosenAction = ds.Outputs["chosen_action"]
 			reasoning = ds.Outputs["reasoning"]
-			needsHuman = ds.Outputs["needs_human"] == "true"
+			if ds.Outputs["needs_human"] == "true" {
+				needsHuman = true
+			}
 		}
 		if ls, ok := state.Steps["learn"]; ok {
 			outcome = ls.Outputs["outcome"]

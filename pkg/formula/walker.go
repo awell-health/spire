@@ -212,6 +212,11 @@ func ValidateGraph(graph *FormulaStepGraph) error {
 				return fmt.Errorf("step %q: resets target %q does not exist", name, target)
 			}
 		}
+
+		// Validate on_error directive.
+		if !ValidOnError(step.OnError) {
+			return fmt.Errorf("step %q: invalid on_error %q (want: park, record)", name, step.OnError)
+		}
 	}
 
 	if terminalCount == 0 {

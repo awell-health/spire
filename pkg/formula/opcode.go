@@ -71,3 +71,18 @@ func ValidVarType(t string) bool {
 	}
 	return t == VarTypeString || t == VarTypeInt || t == VarTypeBool || t == VarTypeBeadID
 }
+
+// OnError directives — controls interpreter reaction to action errors.
+const (
+	OnErrorPark   = "park"   // default: hook the step for human recovery
+	OnErrorRecord = "record" // record error as outputs.error and continue
+)
+
+// ValidOnError returns true if the on_error directive is recognized.
+// Empty string is valid (defaults to "park").
+func ValidOnError(s string) bool {
+	if s == "" {
+		return true
+	}
+	return s == OnErrorPark || s == OnErrorRecord
+}

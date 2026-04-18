@@ -217,6 +217,41 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 
 		// 5. Record outputs and update state.
 		if result.Error != nil {
+			// Opt-in: if step declares on_error = "record", treat the error as a
+			// recoverable outcome — record it as outputs.error and mark the step
+			// completed so the formula can route on it (e.g. cleric-default's
+			// retry_on_error path). Default stays park-and-escalate.
+			if stepCfg.OnError == formula.OnErrorRecord {
+				outputs := result.Outputs
+				if outputs == nil {
+					outputs = make(map[string]string)
+				}
+				if _, ok := outputs["error"]; !ok {
+					outputs["error"] = result.Error.Error()
+				}
+				if _, ok := outputs["status"]; !ok {
+					outputs["status"] = "failed"
+				}
+				ss = state.Steps[stepName]
+				ss.Status = "completed"
+				ss.Outputs = outputs
+				ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+				ss.CompletedCount++
+				state.Steps[stepName] = ss
+				graphStore.Save(e.agentName, state)
+
+				// Close the step bead — the step is done (error recorded, not parked).
+				if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
+					if err := e.deps.CloseStepBead(stepBeadID); err != nil {
+						e.log("warning: close step bead %s (%s): %s", stepBeadID, stepName, err)
+					}
+				}
+
+				e.log("step %s errored (recorded as outputs.error, on_error=record): %s",
+					stepName, result.Error)
+				continue
+			}
+
 			// Park the step as hooked (not failed) so the resolve→steward→re-summon
 			// flow can retry it. The graph loop will detect hooked steps and exit
 			// gracefully without a second escalation.

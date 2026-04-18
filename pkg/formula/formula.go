@@ -79,6 +79,13 @@ type StepConfig struct {
 	Resets    []string             `toml:"resets,omitempty"`    // steps to reset to pending after this step completes
 	Flow      string               `toml:"flow,omitempty"`      // for wizard.run: task-plan, implement, etc.
 	Graph     string               `toml:"graph,omitempty"`     // graph.run: nested graph formula name
+	// OnError controls how the interpreter reacts when the step's action
+	// returns a non-nil Error. Valid values:
+	//   "" / "park"  — default: park the step as hooked, escalate to human.
+	//   "record"     — record the error text as outputs.error (and outputs.status=failed
+	//                  if unset), mark the step completed, and continue the graph loop.
+	//                  Lets the formula route on the error via conditional edges.
+	OnError string `toml:"on_error,omitempty"`
 }
 
 // --- Parsing ---
