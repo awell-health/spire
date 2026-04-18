@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -448,10 +447,3 @@ func indentBlock(s, prefix string) string {
 	}
 	return out.String()
 }
-
-// ---------------------------------------------------------------------------
-// Compile-time anchors to avoid "unused" noise when one platform's build tag
-// excludes a helper. exec is used indirectly through wc.RunCommandOutput but
-// keeping the anchor here documents the reliance on the stdlib package.
-// ---------------------------------------------------------------------------
-var _ = exec.Command

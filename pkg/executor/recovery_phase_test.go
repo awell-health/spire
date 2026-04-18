@@ -1436,6 +1436,71 @@ func TestDecideFromGitState_PriorityOrder(t *testing.T) {
 	}
 }
 
+// TestDecideFromGitState_ConflictsRouteToResolveConflicts verifies the new
+// routing added for spi-nghqn: when ConflictedFiles is non-empty, decide
+// must route to resolve-conflicts (the agentic resolver), NOT rebase-onto-base.
+// The rationale: a paused rebase/merge/cherry-pick already has markers on
+// disk; running rebase-onto-base again just re-hits the same conflict.
+func TestDecideFromGitState_ConflictsRouteToResolveConflicts(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		ConflictedFiles: []string{"pkg/gateway/gateway_test.go"},
+	}
+	got := decideFromGitState(ctx)
+	if got != "resolve-conflicts" {
+		t.Errorf("decideFromGitState(conflicts present) = %q, want 'resolve-conflicts'", got)
+	}
+}
+
+// TestDecideFromGitState_ConflictsTakePriorityOverBehind verifies that even
+// when the branch also reports Diverged/Behind, conflicted files route to
+// resolve-conflicts — conflicts mean a paused git op, not a stale branch.
+func TestDecideFromGitState_ConflictsTakePriorityOverBehind(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		ConflictedFiles: []string{"a.go", "b.go"},
+		GitState: &git.BranchDiagnostics{
+			Diverged:   true,
+			BehindMain: 5,
+		},
+		WorktreeState: &git.WorktreeDiagnostics{
+			Exists:  true,
+			IsDirty: true,
+		},
+	}
+	got := decideFromGitState(ctx)
+	if got != "resolve-conflicts" {
+		t.Errorf("decideFromGitState(conflicts + diverged + dirty) = %q, want 'resolve-conflicts' (conflicts take top priority)", got)
+	}
+}
+
+// TestDecideFromGitState_EmptyConflictedFilesFallsThrough verifies that an
+// empty (but non-nil) ConflictedFiles slice is treated like nil — decide
+// falls through to behind/dirty logic.
+func TestDecideFromGitState_EmptyConflictedFilesFallsThrough(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		ConflictedFiles: []string{},
+		GitState: &git.BranchDiagnostics{
+			BehindMain: 2,
+		},
+	}
+	got := decideFromGitState(ctx)
+	if got != "rebase-onto-base" {
+		t.Errorf("decideFromGitState(empty-slice + behind) = %q, want 'rebase-onto-base'", got)
+	}
+}
+
+// TestGitStateReasoning_ResolveConflictsUsesCount verifies gitStateReasoning
+// reports the file count when the action is resolve-conflicts and
+// ConflictedFiles is populated.
+func TestGitStateReasoning_ResolveConflictsUsesCount(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		ConflictedFiles: []string{"a.go", "b.go", "c.go"},
+	}
+	got := gitStateReasoning(ctx, "resolve-conflicts")
+	if !strings.Contains(got, "3 file") {
+		t.Errorf("gitStateReasoning(resolve-conflicts, 3 files) = %q, want to mention '3 file'", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // gitStateReasoning
 // ---------------------------------------------------------------------------
