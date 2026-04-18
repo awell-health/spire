@@ -1,133 +1,205 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
-// fakeTarget records how Trigger was called and can return a preset error.
-type fakeTarget struct {
-	calls      atomic.Int32
-	lastReason atomic.Value // string
-	err        error
+// fakeTrigger records the last reason seen and returns err on Trigger.
+type fakeTrigger struct {
+	mu          sync.Mutex
+	calls       int32
+	lastReason  string
+	err         error
 }
 
-func (f *fakeTarget) Trigger(reason string) error {
-	f.calls.Add(1)
-	f.lastReason.Store(reason)
-	return f.err
+func (f *fakeTrigger) Trigger(reason string) error {
+	atomic.AddInt32(&f.calls, 1)
+	f.mu.Lock()
+	f.lastReason = reason
+	err := f.err
+	f.mu.Unlock()
+	return err
 }
 
-func (f *fakeTarget) reason() string {
-	v := f.lastReason.Load()
-	if v == nil {
-		return ""
+func (f *fakeTrigger) callCount() int32 { return atomic.LoadInt32(&f.calls) }
+
+func (f *fakeTrigger) reason() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastReason
+}
+
+func silentLogger() *log.Logger {
+	return log.New(io.Discard, "", 0)
+}
+
+func newTestServer(target Triggerable) *Server {
+	return NewServer(":0", target, silentLogger())
+}
+
+func TestHandleSync_MethodNotAllowed(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+	}{
+		{"GET", http.MethodGet},
+		{"PUT", http.MethodPut},
+		{"DELETE", http.MethodDelete},
+		{"PATCH", http.MethodPatch},
 	}
-	return v.(string)
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ft := &fakeTrigger{}
+			s := newTestServer(ft)
+			req := httptest.NewRequest(tc.method, "/sync", nil)
+			rec := httptest.NewRecorder()
 
-func newServer(target Triggerable) *Server {
-	return &Server{target: target, log: log.New(io.Discard, "", 0)}
-}
+			s.handleSync(rec, req)
 
-func TestHandleSync_RejectsNonPOST(t *testing.T) {
-	target := &fakeTarget{}
-	s := newServer(target)
-
-	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch} {
-		req := httptest.NewRequest(method, "/sync", nil)
-		w := httptest.NewRecorder()
-		s.handleSync(w, req)
-		if w.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s /sync: status = %d, want %d", method, w.Code, http.StatusMethodNotAllowed)
-		}
-	}
-	if got := target.calls.Load(); got != 0 {
-		t.Errorf("target was called %d times; non-POST must not trigger", got)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+			}
+			if ft.callCount() != 0 {
+				t.Errorf("Trigger called %d times, want 0 on non-POST", ft.callCount())
+			}
+		})
 	}
 }
 
-func TestHandleSync_PostTriggers(t *testing.T) {
-	target := &fakeTarget{}
-	s := newServer(target)
-
+func TestHandleSync_PostSuccess(t *testing.T) {
+	ft := &fakeTrigger{}
+	s := newTestServer(ft)
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
-	w := httptest.NewRecorder()
-	s.handleSync(w, req)
+	rec := httptest.NewRecorder()
 
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-	if got := target.calls.Load(); got != 1 {
-		t.Errorf("calls = %d, want 1", got)
-	}
-	if r := target.reason(); r != "http:http" {
-		// default reason is "http" which becomes "http:http" after prefix.
-		t.Errorf("reason = %q, want %q", r, "http:http")
-	}
-	if body := w.Body.String(); !strings.Contains(body, "triggered") {
-		t.Errorf("body = %q, want to contain 'triggered'", body)
-	}
-}
+	s.handleSync(rec, req)
 
-func TestHandleSync_ExtractsReasonQueryParam(t *testing.T) {
-	target := &fakeTarget{}
-	s := newServer(target)
-
-	req := httptest.NewRequest(http.MethodPost, "/sync?reason=signal", nil)
-	w := httptest.NewRecorder()
-	s.handleSync(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if r := target.reason(); r != "http:signal" {
-		t.Errorf("reason = %q, want %q", r, "http:signal")
+	if !strings.Contains(rec.Body.String(), "triggered") {
+		t.Errorf("body = %q, want to contain %q", rec.Body.String(), "triggered")
+	}
+	if ft.callCount() != 1 {
+		t.Errorf("Trigger called %d times, want 1", ft.callCount())
+	}
+	if got := ft.reason(); got != "http:http" {
+		t.Errorf("reason = %q, want %q (default)", got, "http:http")
 	}
 }
 
-func TestHandleSync_DeclinedReturns202(t *testing.T) {
-	target := &fakeTarget{err: errors.New("debounced (retry in 5s)")}
-	s := newServer(target)
+func TestHandleSync_PostWithReason(t *testing.T) {
+	ft := &fakeTrigger{}
+	s := newTestServer(ft)
+	req := httptest.NewRequest(http.MethodPost, "/sync?reason=webhook", nil)
+	rec := httptest.NewRecorder()
 
-	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
-	w := httptest.NewRecorder()
-	s.handleSync(w, req)
+	s.handleSync(rec, req)
 
-	if w.Code != http.StatusAccepted {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusAccepted)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	body := w.Body.String()
-	if !strings.HasPrefix(body, "skipped: ") {
-		t.Errorf("body = %q, want prefix 'skipped: '", body)
-	}
-	if !strings.Contains(body, "debounced") {
-		t.Errorf("body = %q, want to surface trigger error", body)
+	if got := ft.reason(); got != "http:webhook" {
+		t.Errorf("reason = %q, want %q", got, "http:webhook")
 	}
 }
 
-func TestHandleSync_DeclinedInProgressReturns202(t *testing.T) {
-	target := &fakeTarget{err: errors.New("sync already in progress")}
-	s := newServer(target)
+func TestHandleSync_TriggerDeclinedReturns202(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		wantSub string
+	}{
+		{"debounced", errors.New("debounced (retry in 5s)"), "debounced"},
+		{"in-progress", errors.New("sync already in progress"), "in progress"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ft := &fakeTrigger{err: tc.err}
+			s := newTestServer(ft)
+			req := httptest.NewRequest(http.MethodPost, "/sync", nil)
+			rec := httptest.NewRecorder()
 
-	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
-	w := httptest.NewRecorder()
-	s.handleSync(w, req)
+			s.handleSync(rec, req)
 
-	if w.Code != http.StatusAccepted {
-		t.Errorf("status = %d, want %d (declined must be 202, not 5xx)", w.Code, http.StatusAccepted)
+			if rec.Code != http.StatusAccepted {
+				t.Errorf("status = %d, want %d (declined triggers should be 202)", rec.Code, http.StatusAccepted)
+			}
+			body := rec.Body.String()
+			if !strings.HasPrefix(body, "skipped:") {
+				t.Errorf("body = %q, want prefix %q", body, "skipped:")
+			}
+			if !strings.Contains(body, tc.wantSub) {
+				t.Errorf("body = %q, want to contain %q", body, tc.wantSub)
+			}
+		})
 	}
 }
 
 func TestNewServer_NilLoggerDefaults(t *testing.T) {
-	s := NewServer(":0", &fakeTarget{}, nil)
+	ft := &fakeTrigger{}
+	s := NewServer(":0", ft, nil)
 	if s.log == nil {
-		t.Error("NewServer with nil logger: s.log is nil, want default logger")
+		t.Error("NewServer with nil logger should default to log.Default()")
+	}
+}
+
+func TestServer_RunAndShutdown(t *testing.T) {
+	ft := &fakeTrigger{}
+	// Use port 0 so the kernel picks a free port — we exercise the full
+	// ListenAndServe / Shutdown cycle without a real HTTP round-trip,
+	// since our interest is clean shutdown on ctx cancel.
+	s := NewServer("127.0.0.1:0", ft, silentLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	// Give the server a moment to start listening. Not strictly needed
+	// for correctness but makes the test's intent clearer.
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run returned err on shutdown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
+func TestHealthz(t *testing.T) {
+	// Spin up a real server and hit /healthz so the mux wiring is covered.
+	ft := &fakeTrigger{}
+	s := NewServer("127.0.0.1:0", ft, silentLogger())
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	mux.HandleFunc("/sync", s.handleSync)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz status = %d, want 200", resp.StatusCode)
 	}
 }

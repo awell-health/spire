@@ -159,13 +159,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 			// Ticker triggers ignore debounce: if the cadence is 1m and
 			// debounce is 5s, we still want the 1m tick to run. It will
 			// still be blocked if an actual sync is in progress.
+			// Check-and-set under a single lock acquisition — a split
+			// read-then-write races Trigger() and would spawn parallel
+			// syncs, defeating the mutual-exclusion invariant.
 			d.mu.Lock()
-			busy := d.syncing
-			d.mu.Unlock()
-			if busy {
+			if d.syncing {
+				d.mu.Unlock()
 				continue
 			}
-			d.mu.Lock()
 			d.syncing = true
 			d.mu.Unlock()
 			go d.runOnce("interval")

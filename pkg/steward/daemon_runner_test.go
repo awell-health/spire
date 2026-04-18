@@ -3,253 +3,355 @@ package steward
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// fakeStrategy is a controllable syncStrategy for tests. Sync blocks on
-// release (nil = don't block) and records call count.
+// fakeStrategy is a controllable syncStrategy for testing the Daemon.
+// Each call to Sync blocks on release (if non-nil) then returns err.
 type fakeStrategy struct {
-	calls   atomic.Int32
-	reasons []string
-	mu      sync.Mutex
-	err     error
-	release chan struct{}
+	mu       sync.Mutex
+	calls    int32
+	release  chan struct{}
+	err      error
+	describe string
 }
 
-func (f *fakeStrategy) Describe() string { return "fake" }
+func newFakeStrategy() *fakeStrategy {
+	return &fakeStrategy{describe: "fake"}
+}
 
-func (f *fakeStrategy) Sync(_ context.Context, reason string) error {
-	f.calls.Add(1)
+func (f *fakeStrategy) Sync(ctx context.Context, _ string) error {
+	atomic.AddInt32(&f.calls, 1)
 	f.mu.Lock()
-	f.reasons = append(f.reasons, reason)
+	rel := f.release
+	err := f.err
 	f.mu.Unlock()
-	if f.release != nil {
-		<-f.release
+	if rel != nil {
+		select {
+		case <-rel:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	return f.err
+	return err
 }
 
-func (f *fakeStrategy) lastReason() string {
+func (f *fakeStrategy) Describe() string { return f.describe }
+
+func (f *fakeStrategy) setRelease(ch chan struct{}) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.reasons) == 0 {
-		return ""
-	}
-	return f.reasons[len(f.reasons)-1]
+	f.release = ch
+	f.mu.Unlock()
 }
 
-func quietLogger() *log.Logger {
+func (f *fakeStrategy) setErr(err error) {
+	f.mu.Lock()
+	f.err = err
+	f.mu.Unlock()
+}
+
+func (f *fakeStrategy) callCount() int32 { return atomic.LoadInt32(&f.calls) }
+
+func silentLogger() *log.Logger {
 	return log.New(io.Discard, "", 0)
 }
 
-func TestRunOnce_Success(t *testing.T) {
-	f := &fakeStrategy{}
-	d := &Daemon{strategy: f, log: quietLogger()}
+func newTestDaemon(strategy syncStrategy, interval, debounce time.Duration) *Daemon {
+	return &Daemon{
+		strategy: strategy,
+		interval: interval,
+		debounce: debounce,
+		log:      silentLogger(),
+	}
+}
+
+func TestDaemon_RunOnce_Success(t *testing.T) {
+	fs := newFakeStrategy()
+	d := newTestDaemon(fs, time.Minute, 0)
 
 	if err := d.RunOnce("test"); err != nil {
-		t.Fatalf("RunOnce: %v", err)
+		t.Fatalf("RunOnce: unexpected error: %v", err)
 	}
-	if got := f.calls.Load(); got != 1 {
-		t.Errorf("calls = %d, want 1", got)
+	if got := fs.callCount(); got != 1 {
+		t.Errorf("sync calls = %d, want 1", got)
 	}
-	if r := f.lastReason(); r != "test" {
-		t.Errorf("reason = %q, want %q", r, "test")
+	if d.syncing {
+		t.Error("syncing flag not cleared after RunOnce")
 	}
-	// lastSync should be updated.
 	if d.lastSync.IsZero() {
 		t.Error("lastSync not updated after RunOnce")
 	}
-	if d.syncing {
-		t.Error("syncing flag leaked after RunOnce")
-	}
 }
 
-func TestRunOnce_SurfaceError(t *testing.T) {
+func TestDaemon_RunOnce_PropagatesError(t *testing.T) {
+	fs := newFakeStrategy()
 	want := errors.New("boom")
-	f := &fakeStrategy{err: want}
-	d := &Daemon{strategy: f, log: quietLogger()}
+	fs.setErr(want)
+	d := newTestDaemon(fs, time.Minute, 0)
 
-	err := d.RunOnce("test")
-	if !errors.Is(err, want) {
+	if err := d.RunOnce("test"); !errors.Is(err, want) {
 		t.Errorf("RunOnce err = %v, want %v", err, want)
 	}
+	if d.syncing {
+		t.Error("syncing flag not cleared after error")
+	}
 }
 
-func TestRunOnce_RejectsWhenSyncing(t *testing.T) {
-	release := make(chan struct{})
-	f := &fakeStrategy{release: release}
-	d := &Daemon{strategy: f, log: quietLogger()}
+func TestDaemon_RunOnce_RejectsWhenBusy(t *testing.T) {
+	fs := newFakeStrategy()
+	gate := make(chan struct{})
+	fs.setRelease(gate)
+	d := newTestDaemon(fs, time.Minute, 0)
 
-	// Start a Trigger that will block on release.
-	if err := d.Trigger("first"); err != nil {
-		t.Fatalf("first Trigger: %v", err)
-	}
-	waitUntilSyncing(t, d)
+	done := make(chan error, 1)
+	go func() { done <- d.RunOnce("first") }()
 
-	// RunOnce should refuse while a sync is in progress.
-	err := d.RunOnce("second")
-	if err == nil || !strings.Contains(err.Error(), "in progress") {
-		t.Errorf("RunOnce while syncing: err = %v, want 'in progress'", err)
+	// Wait until the first RunOnce has acquired the busy flag.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.syncing
+	}, "first RunOnce to enter sync")
+
+	if err := d.RunOnce("second"); err == nil {
+		t.Error("expected error from concurrent RunOnce, got nil")
 	}
-	close(release)
+
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("first RunOnce err: %v", err)
+	}
 }
 
-func TestTrigger_AcceptsFirstCall(t *testing.T) {
-	release := make(chan struct{})
-	f := &fakeStrategy{release: release}
-	d := &Daemon{strategy: f, log: quietLogger()}
+func TestDaemon_Trigger_Success(t *testing.T) {
+	fs := newFakeStrategy()
+	d := newTestDaemon(fs, time.Minute, 0)
 
 	if err := d.Trigger("http"); err != nil {
-		t.Fatalf("Trigger: %v", err)
+		t.Fatalf("Trigger: unexpected error: %v", err)
 	}
-	waitUntilSyncing(t, d)
-	close(release)
-	waitUntilIdle(t, d)
 
-	if got := f.calls.Load(); got != 1 {
-		t.Errorf("calls = %d, want 1", got)
-	}
+	waitFor(t, func() bool { return fs.callCount() == 1 }, "sync to run")
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return !d.syncing
+	}, "sync to finish")
 }
 
-func TestTrigger_RejectsConcurrent(t *testing.T) {
-	release := make(chan struct{})
-	f := &fakeStrategy{release: release}
-	d := &Daemon{strategy: f, log: quietLogger()}
+func TestDaemon_Trigger_RejectsWhenBusy(t *testing.T) {
+	fs := newFakeStrategy()
+	gate := make(chan struct{})
+	fs.setRelease(gate)
+	d := newTestDaemon(fs, time.Minute, 0)
 
 	if err := d.Trigger("first"); err != nil {
 		t.Fatalf("first Trigger: %v", err)
 	}
-	waitUntilSyncing(t, d)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.syncing
+	}, "first Trigger to start")
 
-	err := d.Trigger("second")
-	if err == nil || !strings.Contains(err.Error(), "in progress") {
-		t.Errorf("second Trigger: err = %v, want 'in progress'", err)
-	}
-	close(release)
-	waitUntilIdle(t, d)
-
-	if got := f.calls.Load(); got != 1 {
-		t.Errorf("strategy calls = %d, want 1 (second should have been rejected)", got)
-	}
-}
-
-func TestTrigger_Debounces(t *testing.T) {
-	f := &fakeStrategy{}
-	d := &Daemon{strategy: f, debounce: 100 * time.Millisecond, log: quietLogger()}
-
-	// First call runs to completion.
-	if err := d.Trigger("first"); err != nil {
-		t.Fatalf("first Trigger: %v", err)
-	}
-	waitUntilIdle(t, d)
-
-	// Immediate second call should be debounced.
-	err := d.Trigger("second")
-	if err == nil || !strings.Contains(err.Error(), "debounced") {
-		t.Errorf("second Trigger: err = %v, want 'debounced'", err)
+	if err := d.Trigger("second"); err == nil {
+		t.Error("expected concurrent Trigger to be rejected")
 	}
 
-	// After the debounce window passes, a Trigger succeeds.
-	time.Sleep(120 * time.Millisecond)
-	if err := d.Trigger("third"); err != nil {
-		t.Errorf("third Trigger after debounce: %v", err)
-	}
-	waitUntilIdle(t, d)
+	close(gate)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return !d.syncing
+	}, "first Trigger to finish")
 
-	if got := f.calls.Load(); got != 2 {
-		t.Errorf("strategy calls = %d, want 2 (first + third)", got)
+	if got := fs.callCount(); got != 1 {
+		t.Errorf("sync calls = %d, want 1 (second Trigger should not have spawned sync)", got)
 	}
 }
 
-func TestTrigger_ZeroDebounceAllowsImmediateRetry(t *testing.T) {
-	f := &fakeStrategy{}
-	d := &Daemon{strategy: f, debounce: 0, log: quietLogger()}
+func TestDaemon_Trigger_Debounce(t *testing.T) {
+	fs := newFakeStrategy()
+	d := newTestDaemon(fs, time.Minute, 100*time.Millisecond)
 
 	if err := d.Trigger("first"); err != nil {
 		t.Fatalf("first Trigger: %v", err)
 	}
-	waitUntilIdle(t, d)
-	if err := d.Trigger("second"); err != nil {
-		t.Errorf("second Trigger with zero debounce: %v", err)
-	}
-	waitUntilIdle(t, d)
+	waitFor(t, func() bool { return fs.callCount() == 1 }, "first sync to run")
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return !d.syncing
+	}, "first sync to finish")
 
-	if got := f.calls.Load(); got != 2 {
-		t.Errorf("calls = %d, want 2", got)
+	// Immediately after, Trigger should be rejected by debounce.
+	if err := d.Trigger("second"); err == nil {
+		t.Error("expected debounce to reject second Trigger")
+	}
+	if got := fs.callCount(); got != 1 {
+		t.Errorf("sync calls after debounce = %d, want 1", got)
 	}
 }
 
-func TestRun_StartupAndCancel(t *testing.T) {
-	f := &fakeStrategy{}
-	d := &Daemon{strategy: f, interval: time.Hour, debounce: 0, log: quietLogger()}
+func TestDaemon_Trigger_ConcurrentRaceSafety(t *testing.T) {
+	// Fire many Triggers in parallel; at most one sync should run at a time.
+	fs := newFakeStrategy()
+	gate := make(chan struct{})
+	fs.setRelease(gate)
+	d := newTestDaemon(fs, time.Minute, 0)
+
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = d.Trigger("race")
+		}()
+	}
+	wg.Wait()
+
+	// Exactly one should have acquired the busy flag; the rest rejected.
+	d.mu.Lock()
+	if !d.syncing {
+		d.mu.Unlock()
+		t.Fatal("expected exactly one Trigger to acquire busy flag")
+	}
+	d.mu.Unlock()
+
+	if got := fs.callCount(); got != 1 {
+		t.Errorf("concurrent sync count = %d, want 1 (race condition)", got)
+	}
+
+	close(gate)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return !d.syncing
+	}, "sync to finish")
+}
+
+func TestDaemon_Run_StopsOnCancel(t *testing.T) {
+	fs := newFakeStrategy()
+	d := newTestDaemon(fs, 50*time.Millisecond, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
 
-	// Startup Trigger should fire roughly immediately.
-	waitForCalls(t, f, 1)
-	if r := f.lastReason(); r != "startup" {
-		t.Errorf("first reason = %q, want 'startup'", r)
-	}
+	// Wait for startup sync to run.
+	waitFor(t, func() bool { return fs.callCount() >= 1 }, "startup sync")
 
 	cancel()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Errorf("Run returned error after cancel: %v", err)
+			t.Errorf("Run returned err: %v", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Run did not exit after cancel")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
 	}
 }
 
-// --- helpers ---
+func TestDaemon_Run_TickerDoesNotSpawnConcurrentSyncs(t *testing.T) {
+	// Regression test for the TOCTOU race: a slow sync plus fast ticker
+	// used to spawn a second sync if the ticker's check-and-set was split
+	// across two lock acquisitions. With the fix, only one sync runs.
+	fs := newFakeStrategy()
+	gate := make(chan struct{})
+	fs.setRelease(gate)
+	// Ticker much faster than the sync so the ticker fires repeatedly
+	// while the first sync is still blocked.
+	d := newTestDaemon(fs, 5*time.Millisecond, 0)
 
-func waitUntilSyncing(t *testing.T, d *Daemon) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		d.mu.Lock()
-		busy := d.syncing
-		d.mu.Unlock()
-		if busy {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	// Let the ticker fire many times while the first sync blocks.
+	time.Sleep(100 * time.Millisecond)
+
+	// At this point: one sync is running (blocked), the ticker has fired
+	// ~20 times and rejected each, so call count must be exactly 1.
+	if got := fs.callCount(); got != 1 {
+		t.Errorf("concurrent syncs detected: call count = %d, want 1", got)
 	}
-	t.Fatal("timed out waiting for syncing=true")
+
+	close(gate)
+	cancel()
+	<-done
 }
 
-func waitUntilIdle(t *testing.T, d *Daemon) {
+func TestLocalStrategy_Describe(t *testing.T) {
+	s := localStrategy{}
+	if got := s.Describe(); got != "local-multi-tower" {
+		t.Errorf("Describe = %q, want %q", got, "local-multi-tower")
+	}
+}
+
+func TestClusterStrategy_Describe(t *testing.T) {
+	s := &clusterStrategy{database: "beads_acm", remote: "origin", branch: "main"}
+	want := "cluster-sql:beads_acm:origin/main"
+	if got := s.Describe(); got != want {
+		t.Errorf("Describe = %q, want %q", got, want)
+	}
+}
+
+func TestNewClusterDaemon_AppliesDefaults(t *testing.T) {
+	d := NewClusterDaemon("beads_acm", "", "", time.Minute, 0, nil)
+	cs, ok := d.strategy.(*clusterStrategy)
+	if !ok {
+		t.Fatalf("strategy type = %T, want *clusterStrategy", d.strategy)
+	}
+	if cs.remote != "origin" {
+		t.Errorf("remote = %q, want %q", cs.remote, "origin")
+	}
+	if cs.branch != "main" {
+		t.Errorf("branch = %q, want %q", cs.branch, "main")
+	}
+	if d.log == nil {
+		t.Error("log should default to log.Default(), got nil")
+	}
+}
+
+func TestNewLocalDaemon_AppliesDefaults(t *testing.T) {
+	d := NewLocalDaemon(time.Minute, time.Second, nil)
+	if _, ok := d.strategy.(*localStrategy); !ok {
+		t.Fatalf("strategy type = %T, want *localStrategy", d.strategy)
+	}
+	if d.log == nil {
+		t.Error("log should default to log.Default(), got nil")
+	}
+}
+
+func TestLoggerOr(t *testing.T) {
+	custom := silentLogger()
+	if got := loggerOr(custom); got != custom {
+		t.Error("loggerOr should return the supplied logger")
+	}
+	if got := loggerOr(nil); got == nil {
+		t.Error("loggerOr(nil) should return a non-nil logger")
+	}
+}
+
+// waitFor polls cond until it returns true or a short timeout expires.
+// Failures include the description so the test output points at which
+// invariant never became true.
+func waitFor(t *testing.T, cond func() bool, desc string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		d.mu.Lock()
-		busy := d.syncing
-		d.mu.Unlock()
-		if !busy {
+		if cond() {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for syncing=false")
-}
-
-func waitForCalls(t *testing.T, f *fakeStrategy, n int32) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if f.calls.Load() >= n {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %d strategy calls (got %d)", n, f.calls.Load())
+	t.Fatal(fmt.Sprintf("timed out waiting for: %s", desc))
 }

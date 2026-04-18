@@ -48,12 +48,14 @@ func SQLPush(dbName, remote, branch string) error {
 }
 
 // buildSyncQuery composes a `USE <db>; CALL <proc>('<remote>', '<branch>')`
-// statement with proper identifier and literal escaping. proc is the dolt
-// stored procedure name (DOLT_PULL / DOLT_PUSH). Returns an error if
-// dbName is empty; remote/branch default to origin/main.
+// statement with proper identifier validation and literal escaping. proc is
+// the dolt stored procedure name (DOLT_PULL / DOLT_PUSH). dbName is
+// validated (rejects empty, backticks, NUL) rather than escaped, since it
+// comes from controlled internal config; remote/branch default to
+// origin/main and are single-quote-escaped.
 func buildSyncQuery(proc, dbName, remote, branch string) (string, error) {
-	if dbName == "" {
-		return "", fmt.Errorf("dbName is required")
+	if err := validateIdentifier("dbName", dbName); err != nil {
+		return "", err
 	}
 	if remote == "" {
 		remote = "origin"
@@ -63,7 +65,7 @@ func buildSyncQuery(proc, dbName, remote, branch string) (string, error) {
 	}
 	return fmt.Sprintf(
 		"USE `%s`; CALL %s('%s', '%s')",
-		sqlEscapeIdent(dbName), proc, sqlEscape(remote), sqlEscape(branch),
+		dbName, proc, sqlEscape(remote), sqlEscape(branch),
 	), nil
 }
 
@@ -72,9 +74,18 @@ func sqlEscape(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
 
-// sqlEscapeIdent escapes a backtick-quoted identifier. Inputs here come
-// from controlled internal config, but we close the quoting gap so a
-// stray backtick in a db name can't break out of the identifier.
-func sqlEscapeIdent(s string) string {
-	return strings.ReplaceAll(s, "`", "``")
+// validateIdentifier guards values interpolated into backtick-quoted SQL
+// identifier positions (USE `%s`). A backtick in such a value would close
+// the quote and inject arbitrary SQL; sqlEscape only handles single quotes.
+// We take the strict path — reject identifiers with backticks or the NUL
+// byte outright rather than attempt backtick-doubling, since dbName values
+// come from config and should never legitimately contain either.
+func validateIdentifier(name, v string) error {
+	if v == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	if strings.ContainsAny(v, "`\x00") {
+		return fmt.Errorf("%s contains a disallowed character (backtick or NUL)", name)
+	}
+	return nil
 }

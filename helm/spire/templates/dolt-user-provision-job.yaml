@@ -86,12 +86,18 @@ spec:
             - pipefail
             - -c
             - |
-              # Reject passwords containing a single quote — the SQL
-              # below quotes ${REMOTE_PASSWORD} with '…' and escape
-              # gymnastics inside a Helm-rendered shell are not worth
-              # the surface area. Mirrors setup-dolt-users.sh, which
-              # strips /+= from its generated passwords for the same
-              # reason.
+              # Reject credentials containing a single quote — the SQL
+              # below quotes both ${REMOTE_USER} and ${REMOTE_PASSWORD}
+              # with '…' and escape gymnastics inside a Helm-rendered
+              # shell are not worth the surface area. Mirrors
+              # setup-dolt-users.sh, which strips /+= from its generated
+              # passwords for the same reason.
+              case "${REMOTE_USER}" in
+                *\'*)
+                  echo "[provision] ERROR: DOLT_REMOTE_USER contains a single quote; choose a different username" >&2
+                  exit 2
+                  ;;
+              esac
               case "${REMOTE_PASSWORD}" in
                 *\'*)
                   echo "[provision] ERROR: DOLT_REMOTE_PASSWORD contains a single quote; choose a different password" >&2
