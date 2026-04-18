@@ -43,6 +43,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-dolthub-creds
                   key: key-id
+            - name: DOLTHUB_USER
+              value: {{ .Values.dolthub.userName | default "awell" | quote }}
+            - name: DOLTHUB_EMAIL
+              value: {{ .Values.dolthub.userEmail | default "dolt@spire.local" | quote }}
             {{- end }}
           volumeMounts:
             - name: data
@@ -50,22 +54,32 @@ spec:
             - name: init-scripts
               mountPath: /scripts
             {{- if .Values.dolthub.credsKeyId }}
-            # Mount the single JWK file into $DOLT_ROOT_PATH/.dolt/creds/
-            # (dolt redirects ~/.dolt to $DOLT_ROOT_PATH/.dolt when set).
-            # subPath places exactly this file without replacing the dir,
-            # so dolt can still write other config under .dolt/.
+            # Read-only source directory — the init script copies the JWK
+            # from here into $DOLT_ROOT_PATH/.dolt/creds/ where dolt can
+            # write to it (dolt creds import wants a writable target).
             - name: dolthub-creds
-              mountPath: /var/lib/dolt/.dolt/creds/{{ .Values.dolthub.credsKeyId }}.jwk
-              subPath: key-value
+              mountPath: /creds-input
               readOnly: true
             {{- end }}
       containers:
         - name: dolt
           image: {{ .Values.images.dolt.repository }}:{{ .Values.images.dolt.tag }}
           imagePullPolicy: {{ .Values.images.dolt.pullPolicy }}
+          # Override the image's default entrypoint so the server reads
+          # our config.yaml (with the remotesapi block). The stock
+          # dolthub/dolt-sql-server entrypoint runs `dolt sql-server
+          # --host=0.0.0.0 --port=3306` with no --config flag and
+          # silently ignores any mounted config file — exactly the
+          # behavior we hit when remotesapi wasn't coming up.
+          command: ["dolt"]
+          args:
+            - sql-server
+            - --config=/var/lib/dolt/config.yaml
           ports:
             - containerPort: {{ .Values.dolt.port }}
               name: mysql
+            - containerPort: {{ .Values.dolt.remotesapiPort }}
+              name: remotesapi
           env:
             - name: DOLT_ROOT_PATH
               value: /var/lib/dolt
@@ -95,13 +109,11 @@ spec:
               mountPath: /var/lib/dolt/config.yaml
               subPath: config.yaml
             {{- if .Values.dolthub.credsKeyId }}
-            # Mount the single JWK file into $DOLT_ROOT_PATH/.dolt/creds/
-            # (dolt redirects ~/.dolt to $DOLT_ROOT_PATH/.dolt when set).
-            # subPath places exactly this file without replacing the dir,
-            # so dolt can still write other config under .dolt/.
+            # Read-only source dir. Main server reads the creds the
+            # init container copied into $DOLT_ROOT_PATH/.dolt/creds
+            # and registered via `dolt creds import`.
             - name: dolthub-creds
-              mountPath: /var/lib/dolt/.dolt/creds/{{ .Values.dolthub.credsKeyId }}.jwk
-              subPath: key-value
+              mountPath: /creds-input
               readOnly: true
             {{- end }}
           resources:
@@ -170,6 +182,9 @@ spec:
     - port: {{ .Values.dolt.port }}
       targetPort: {{ .Values.dolt.port }}
       name: mysql
+    - port: {{ .Values.dolt.remotesapiPort }}
+      targetPort: {{ .Values.dolt.remotesapiPort }}
+      name: remotesapi
   clusterIP: None
 ---
 apiVersion: v1
@@ -188,13 +203,19 @@ data:
     user:
       name: root
       password: ""
-    allow_cleartext_passwords: true
     listener:
       host: "0.0.0.0"
       port: {{ .Values.dolt.port }}
       max_connections: 100
       read_timeout_millis: 28800000
       write_timeout_millis: 28800000
+    # Expose this dolt server as a dolt-remote endpoint on its own port.
+    # Clients (laptops, CI, other clusters) can then
+    #   dolt remote add cluster http://<host>:{{ .Values.dolt.remotesapiPort }}/<db>
+    # and push/pull directly, skipping DoltHub as the sync spine.
+    remotesapi:
+      port: {{ .Values.dolt.remotesapiPort }}
+      read_only: false
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -209,10 +230,23 @@ data:
     set -e
     DB_DIR="/var/lib/dolt/{{ .Values.beads.database | default .Values.beads.prefix }}"
 
-    dolt config --global --set user.name "spire-dolt"
-    dolt config --global --set user.email "dolt@spire.local"
-    if [ -n "$DOLT_CREDS_KEY_ID" ]; then
-      dolt config --global --set user.creds "$DOLT_CREDS_KEY_ID"
+    # user.name MUST match the DoltHub account that owns the credential
+    # key — DoltHub enforces this for fetch/pull auth (not for clone,
+    # which is why clone-only tests don't catch a mismatch). From
+    # DoltHub's reference Dockerfile: `user.name` = DOLTHUB_USER env.
+    dolt config --global --set user.name "${DOLTHUB_USER:-spire-dolt}"
+    dolt config --global --set user.email "${DOLTHUB_EMAIL:-dolt@spire.local}"
+
+    # Full DoltHub auth ritual (mirrors the official awell/awell
+    # Dockerfile): copy JWK from the read-only Secret mount into the
+    # writable creds dir, then import + use. Just setting `user.creds`
+    # config is enough for clone but NOT for pull/fetch/push.
+    if [ -n "$DOLT_CREDS_KEY_ID" ] && [ -f "/creds-input/key-value" ]; then
+      mkdir -p "$DOLT_ROOT_PATH/.dolt/creds"
+      cp "/creds-input/key-value" "$DOLT_ROOT_PATH/.dolt/creds/${DOLT_CREDS_KEY_ID}.jwk"
+      chmod 600 "$DOLT_ROOT_PATH/.dolt/creds/${DOLT_CREDS_KEY_ID}.jwk"
+      dolt creds import "$DOLT_ROOT_PATH/.dolt/creds/${DOLT_CREDS_KEY_ID}.jwk" || true
+      dolt creds use "$DOLT_CREDS_KEY_ID" || true
     fi
 
     if [ ! -d "$DB_DIR/.dolt" ]; then

@@ -51,8 +51,10 @@ images:
 ## @param dolthub.remoteUrl DoltHub remote path (e.g. "your-org/your-tower"). Required.
 ## @param dolthub.user DoltHub user — kept for completeness but HTTPS clone/pull/push authenticates via the JWK file below, not user/password.
 ## @param dolthub.password DoltHub password (see note on dolthub.user).
-## @param dolthub.credsKeyId Dolt key ID (base32 string shown by `dolt creds ls`). Becomes the basename of the JWK file under $DOLT_ROOT_PATH/.dolt/creds/ and the value of DOLT_CREDS_KEY_ID.
-## @param dolthub.credsKeyValue Raw JWK JSON contents of `~/.dolt/creds/<credsKeyId>.jwk`. Pass with `--set-file dolthub.credsKeyValue=<path>` so helm reads the file. The chart renders a Secret from these two values and file-mounts it into the dolt pod.
+## @param dolthub.credsKeyId Dolt key ID (base32 string shown by `dolt creds ls`). Basename of the JWK file in the chart-managed Secret, and the argument to `dolt creds use`.
+## @param dolthub.credsKeyValue Raw JWK JSON contents of `~/.dolt/creds/<credsKeyId>.jwk`. Pass with `--set-file dolthub.credsKeyValue=<path>` so helm reads the file.
+## @param dolthub.userName Dolt CLI `user.name` config. Must match the DoltHub account that owns the credential key — NOT an arbitrary display name. DoltHub's auth enforces this on fetch/pull (not on clone, which is why clone-only tests miss it). For the `awell/awell` tower this is `awell`.
+## @param dolthub.userEmail Dolt CLI `user.email` config. Email associated with the DoltHub account.
 dolthub:
   # DoltHub remote path (e.g. "your-org/your-tower")
   remoteUrl: ""
@@ -60,14 +62,14 @@ dolthub:
   # authenticates via the JWK file below, not user/password.
   user: ""
   password: ""
-  # The Dolt key ID (base32 string shown by `dolt creds ls`). Becomes
-  # the basename of the JWK file under $DOLT_ROOT_PATH/.dolt/creds/ and
-  # the value of DOLT_CREDS_KEY_ID.
+  # The Dolt key ID (base32 string shown by `dolt creds ls`).
   credsKeyId: ""
-  # Raw JWK JSON string for the private key (contents of
-  # ~/.dolt/creds/<credsKeyId>.jwk). Stored in a chart-managed Secret
-  # and file-mounted into the dolt pod.
+  # Raw JWK JSON string for the private key.
   credsKeyValue: ""
+  # Dolt CLI user.name — must match the DoltHub account that owns the key.
+  userName: ""
+  # Dolt CLI user.email — the account's email.
+  userEmail: ""
 
 ## @section Agent credentials
 ##
@@ -174,6 +176,8 @@ operator:
 
 ## @section Dolt database configuration
 
+## @param dolt.port MySQL-protocol port the dolt server listens on.
+## @param dolt.remotesapiPort Port for dolt's remote API (makes the server act as a dolt-remote endpoint — laptops can `dolt remote add cluster dolt://<svc>:<port>/<db>` and push/pull directly against this cluster instead of DoltHub).
 ## @param dolt.resources.requests.cpu Dolt CPU request.
 ## @param dolt.resources.requests.memory Dolt memory request.
 ## @param dolt.resources.limits.cpu Dolt CPU limit.
@@ -185,6 +189,13 @@ dolt:
   # exposes the same port. Kept separate from any host-side tooling
   # port so the chart can be tuned without touching client config.
   port: 3306
+  # Port for the dolt remotes API — when set, the dolt server acts as
+  # its own dolt-remote endpoint. Laptops can then run
+  #   dolt remote add cluster http://<host>:<port>/<db>
+  # and push/pull directly against the cluster, skipping DoltHub in
+  # the inner loop. See docs/sql-reference/server/configuration for
+  # the `remotesapi` block.
+  remotesapiPort: 50051
   resources:
     requests:
       cpu: 100m
@@ -248,10 +259,10 @@ agents: []
 ## k8s CronJob cannot schedule sub-minute intervals — and 10s is the right
 ## cadence for dogfooding.
 
-## @param syncer.enabled Whether to render the syncer Deployment and Service.
-## @param syncer.interval Background sync interval. Baseline cadence; on-demand triggers use the gateway endpoint.
+## @param syncer.enabled Whether to render the separate syncer Deployment. Default false — the daemon sidecar on the dolt pod now handles sync, which uses the same CLI auth path as laptop `spire up`. The separate Deployment is kept as opt-in for cross-pod experiments.
+## @param syncer.interval Daemon sync interval (applies to whichever daemon runs — sidecar or standalone).
 ## @param syncer.debounce Minimum time between triggered syncs. Rapid POSTs to /sync coalesce within this window.
-## @param syncer.port HTTP port for the gateway endpoint (exposed as the spire-syncer Service).
+## @param syncer.port HTTP port for the gateway endpoint (exposed as spire-gateway Service, target sidecar or standalone).
 syncer:
   enabled: true
   interval: "1m"

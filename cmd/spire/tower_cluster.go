@@ -153,6 +153,16 @@ func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote stri
 		fmt.Fprintf(os.Stderr, "[attach-cluster] warning: register custom bead types: %v\n", err)
 	}
 
+	// Persist the tower config so `spire daemon` (local mode, in a
+	// sidecar) can find and iterate it via config.ListTowerConfigs().
+	// Without this, the cluster daemon reports "no towers configured,
+	// skipping cycle" and nothing syncs.
+	if err := config.SaveTowerConfig(tower); err != nil {
+		fmt.Fprintf(os.Stderr, "[attach-cluster] warning: save tower config: %v\n", err)
+	} else {
+		fmt.Printf("[attach-cluster] saved tower config for %q\n", tower.Name)
+	}
+
 	fmt.Println("[attach-cluster] done")
 	return nil
 }

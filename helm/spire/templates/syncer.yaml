@@ -92,6 +92,10 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           env:
+            # Syncer uses cluster-sql strategy (CALL DOLT_PULL via the
+            # dolt server). The DoltHub-facing auth lives on the dolt
+            # pod — the syncer only needs to reach the dolt server
+            # over MySQL wire protocol. No JWK / DOLT_REMOTE_* here.
             - name: DOLT_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: DOLT_PORT
@@ -100,46 +104,12 @@ spec:
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: BEADS_DOLT_SERVER_PORT
               value: {{ .Values.dolt.port | quote }}
-            - name: DOLT_REMOTE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "spire.secretName" . }}
-                  key: DOLT_REMOTE_USER
-            - name: DOLT_REMOTE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "spire.secretName" . }}
-                  key: DOLT_REMOTE_PASSWORD
-            {{- if .Values.dolthub.credsKeyId }}
-            - name: DOLT_CREDS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Release.Name }}-dolthub-creds
-                  key: key-id
-            {{- end }}
           volumeMounts:
             - name: data
               mountPath: /data
-            {{- if .Values.dolthub.credsKeyId }}
-            # Must match where dolt looks: $DOLT_ROOT_PATH/.dolt/creds.
-            # Syncer does not set DOLT_ROOT_PATH, so the mount is at $HOME.
-            - name: dolthub-creds
-              mountPath: /root/.dolt/creds/{{ .Values.dolthub.credsKeyId }}.jwk
-              subPath: key-value
-              readOnly: true
-            {{- end }}
       volumes:
         - name: data
           emptyDir: {}
-        {{- if .Values.dolthub.credsKeyId }}
-        - name: dolthub-creds
-          secret:
-            secretName: {{ .Release.Name }}-dolthub-creds
-            defaultMode: 0400
-            items:
-              - key: key-value
-                path: key-value
-        {{- end }}
 ---
 # Service exposing the gateway's POST /sync endpoint in-cluster.
 # Reachable via `spire-syncer.<ns>.svc:<port>` from other pods. For
