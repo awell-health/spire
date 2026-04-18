@@ -1000,6 +1000,19 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 // parseHumanGuidance scans human comments for action keywords and returns
 // the matching recovery action name, or "" if no guidance is detected.
 // Avoids suggesting actions that have repeatedly failed.
+//
+// Two-gate acceptance:
+//   - Gate A (imperative opener): the comment's first non-whitespace token
+//     (lowercased, leading markdown/quote punctuation stripped, trailing
+//     punctuation stripped) must be in imperativeOpeners. This keeps system
+//     failure-report text ("recovery action \"rebase-onto-base\" failed",
+//     "Cleric execute errored — scheduling retry: rebase conflict ...") from
+//     being mistaken for a human imperative.
+//   - Gate B (keyword match): the comment must still contain an action
+//     keyword from guidanceMap; that match determines which action to return.
+//
+// False-negatives on phrasings like "Please rebase..." / "Let's rebuild..."
+// are a deliberate tradeoff — tighter signal kills self-amplification loops.
 func parseHumanGuidance(comments []string, repeatedFailures map[string]int) string {
 	guidanceMap := map[string]string{
 		"rebase":            "rebase-onto-base",
@@ -1024,6 +1037,9 @@ func parseHumanGuidance(comments []string, repeatedFailures map[string]int) stri
 
 	// Scan comments from most recent to oldest.
 	for i := len(comments) - 1; i >= 0; i-- {
+		if !hasImperativeOpener(comments[i]) {
+			continue
+		}
 		lower := strings.ToLower(strings.TrimSpace(comments[i]))
 		for keyword, action := range guidanceMap {
 			if strings.Contains(lower, keyword) {
@@ -1036,6 +1052,54 @@ func parseHumanGuidance(comments []string, repeatedFailures map[string]int) stri
 		}
 	}
 	return ""
+}
+
+// imperativeOpeners is the set of first tokens accepted as evidence that a
+// comment is a human imperative (not a system failure report).
+var imperativeOpeners = map[string]bool{
+	"try":         true,
+	"retry":       true,
+	"redo":        true,
+	"rebase":      true,
+	"resolve":     true,
+	"fix":         true,
+	"cherry":      true,
+	"cherry-pick": true,
+	"revert":      true,
+	"rebuild":     true,
+	"resummon":    true,
+	"re-summon":   true,
+	"reset":       true,
+	"escalate":    true,
+	"targeted":    true,
+	"merge":       true,
+	"apply":       true,
+}
+
+// hasImperativeOpener reports whether the comment's first non-whitespace
+// token is an accepted imperative. The check normalizes leading markdown
+// bullets / blockquote markers / quote chars and trailing punctuation, and
+// is case-insensitive.
+func hasImperativeOpener(comment string) bool {
+	// Strip leading markdown/quote/list decoration that agents or humans may
+	// add ahead of an imperative ("- try ...", "> rebase ...", "\"try ...\"").
+	trim := strings.TrimLeft(comment, " \t\r\n-*>#`\"'")
+	if trim == "" {
+		return false
+	}
+	// First whitespace-delimited token.
+	end := strings.IndexFunc(trim, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	var tok string
+	if end == -1 {
+		tok = trim
+	} else {
+		tok = trim[:end]
+	}
+	// Drop trailing punctuation so "rebase." / "fix:" / "try," match.
+	tok = strings.TrimRight(tok, ".,:;!?)\"'`")
+	return imperativeOpeners[strings.ToLower(tok)]
 }
 
 // decideFromGitState returns a recovery action based on git diagnostics,

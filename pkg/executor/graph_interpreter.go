@@ -12,6 +12,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -239,6 +240,13 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				ss.CompletedCount++
 				state.Steps[stepName] = ss
 				graphStore.Save(e.agentName, state)
+
+				// Persist a recovery_attempts failure row so RepeatedFailures grows
+				// across retries. Without this, decide's >=2 prior-failures guard
+				// never fires and the loop pins to the same failed action (spi-uh5oo).
+				// The chosen action comes from the decide step's output — not the
+				// execute step's raw error class.
+				e.recordOnErrorRecoveryAttempt(state, result.Error)
 
 				// Close the step bead — the step is done (error recorded, not parked).
 				if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {
@@ -1005,6 +1013,64 @@ func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphSta
 	}
 
 	return e.graphStateStore().Save(e.agentName, state)
+}
+
+// recordOnErrorRecoveryAttempt persists a recovery_attempts failure row for
+// the execute step's chosen action when on_error=record fires. This is what
+// makes RepeatedFailures[action] grow across retries — the signal
+// parseHumanGuidance's >=2 guard reads (spi-uh5oo bug 2).
+//
+// The action label is read from the decide step's chosen_action output; the
+// attempt number is derived from CountAttemptsByAction(+1). Silently no-ops
+// when DoltDB is not wired or decide never set a chosen_action.
+//
+// Note: pkg/executor/recovery_actions.go's RunRecoveryAction also records
+// attempts for git-aware actions when DB is wired. In that path this call
+// can duplicate — a full de-dup requires centralizing attempt recording in
+// the interpreter, which is out of scope for this fix.
+func (e *Executor) recordOnErrorRecoveryAttempt(state *GraphState, stepErr error) {
+	if state == nil || stepErr == nil {
+		return
+	}
+	if e.deps == nil || e.deps.DoltDB == nil {
+		return
+	}
+	db := e.deps.DoltDB()
+	if db == nil {
+		return
+	}
+	ds, ok := state.Steps["decide"]
+	if !ok {
+		return
+	}
+	chosenAction := ds.Outputs["chosen_action"]
+	if chosenAction == "" {
+		return
+	}
+
+	targetBeadID := ""
+	if e.deps.GetBead != nil {
+		if b, err := e.deps.GetBead(e.beadID); err == nil {
+			targetBeadID = b.Meta(recovery.KeySourceBead)
+		}
+	}
+
+	attemptNum := 1
+	if count, err := store.CountAttemptsByAction(db, e.beadID, chosenAction); err == nil {
+		attemptNum = count + 1
+	}
+
+	attempt := store.RecoveryAttempt{
+		RecoveryBeadID: e.beadID,
+		TargetBeadID:   targetBeadID,
+		Action:         chosenAction,
+		Outcome:        "failure",
+		Error:          stepErr.Error(),
+		AttemptNumber:  attemptNum,
+	}
+	if err := store.RecordRecoveryAttempt(db, attempt); err != nil {
+		e.log("warning: record recovery attempt (%s on_error=record): %s", chosenAction, err)
+	}
 }
 
 // summarizeSteps returns a compact string representation of step states.

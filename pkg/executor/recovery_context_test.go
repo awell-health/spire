@@ -139,10 +139,12 @@ func TestIsAgentAuthor(t *testing.T) {
 		{"sage-review", true},
 		{"steward-global", true},
 		{"cleric-spi-123", true},
+		{"spire", true}, // system-posted comments (spi-uh5oo bug 1)
 		{"JB", false},
 		{"alice", false},
 		{"", false},
 		{"wizardof-oz", false}, // doesn't start with "wizard-"
+		{"spired", false},      // must be exact "spire", not a prefix
 	}
 	for _, tt := range tests {
 		t.Run(tt.author, func(t *testing.T) {
@@ -151,6 +153,24 @@ func TestIsAgentAuthor(t *testing.T) {
 				t.Errorf("isAgentAuthor(%q) = %v, want %v", tt.author, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestExtractHumanComments_FiltersSpireAuthor regression-guards spi-uh5oo
+// bug 1: system-posted "spire" comments (e.g. "recovery action
+// \"rebase-onto-base\" failed") must not leak into the human-comment stream
+// consumed by parseHumanGuidance.
+func TestExtractHumanComments_FiltersSpireAuthor(t *testing.T) {
+	comments := []*beads.Comment{
+		{Author: "spire", Text: `recovery action "rebase-onto-base" failed`},
+		{Author: "JB", Text: "try rebase onto main"},
+	}
+	got := extractHumanComments(comments)
+	if len(got) != 1 {
+		t.Fatalf("extractHumanComments returned %d comments, want 1", len(got))
+	}
+	if got[0] != "try rebase onto main" {
+		t.Errorf("got[0] = %q, want %q", got[0], "try rebase onto main")
 	}
 }
 

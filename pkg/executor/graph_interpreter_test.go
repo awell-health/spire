@@ -1,11 +1,13 @@
 package executor
 
 import (
+	"database/sql"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
 
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
@@ -3295,5 +3297,123 @@ func TestRunGraph_OnErrorRecord_BudgetExhaustionRoutesToNeedsHuman(t *testing.T)
 	}
 	if !exec.terminated {
 		t.Error("expected executor terminated (reached finish_needs_human_on_error)")
+	}
+}
+
+// --- Tests: on_error=record persists recovery_attempts row (spi-uh5oo bug 2) ---
+
+// TestRecordOnErrorRecoveryAttempt_PersistsFailureRow verifies that a failure
+// row is written to recovery_attempts when on_error=record fires for a step
+// whose decide predecessor chose an action. Two consecutive failures must
+// produce attempt_number=1 then attempt_number=2, so CountAttemptsByAction
+// (used by BuildRecoveryContext to populate RepeatedFailures) returns 2.
+func TestRecordOnErrorRecoveryAttempt_PersistsFailureRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	deps, _ := testGraphDeps(t)
+	deps.DoltDB = func() *sql.DB { return db }
+	// Return an empty bead so Meta(KeySourceBead) is "" (no target bead wired).
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "in_progress"}, nil
+	}
+
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"decide": {
+				Status:  "completed",
+				Outputs: map[string]string{"chosen_action": "rebase-onto-base"},
+			},
+		},
+	}
+	exec := NewGraphForTest("spi-recovery-1", "cleric-agent", nil, state, deps)
+
+	// First failure → CountAttemptsByAction returns 0 → record attempt #1.
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM recovery_attempts`).
+		WithArgs("spi-recovery-1", "rebase-onto-base").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectExec(`INSERT INTO recovery_attempts`).
+		WithArgs(
+			sqlmock.AnyArg(),        // id (auto)
+			"spi-recovery-1",        // recovery_bead_id
+			"",                      // target_bead_id (no source_bead label wired)
+			"rebase-onto-base",      // action
+			"",                      // params
+			"failure",               // outcome
+			"rebase conflict boom",  // error
+			1,                       // attempt_number
+			sqlmock.AnyArg(),        // created_at (auto)
+		).WillReturnResult(sqlmock.NewResult(1, 1))
+
+	exec.recordOnErrorRecoveryAttempt(state, fmt.Errorf("rebase conflict boom"))
+
+	// Second failure → CountAttemptsByAction returns 1 → record attempt #2.
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM recovery_attempts`).
+		WithArgs("spi-recovery-1", "rebase-onto-base").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	mock.ExpectExec(`INSERT INTO recovery_attempts`).
+		WithArgs(
+			sqlmock.AnyArg(),
+			"spi-recovery-1",
+			"",
+			"rebase-onto-base",
+			"",
+			"failure",
+			"rebase conflict again",
+			2,
+			sqlmock.AnyArg(),
+		).WillReturnResult(sqlmock.NewResult(2, 1))
+
+	exec.recordOnErrorRecoveryAttempt(state, fmt.Errorf("rebase conflict again"))
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// TestRecordOnErrorRecoveryAttempt_NoOpWhenDoltDBUnwired guards the defensive
+// path: when DoltDB is not wired (local execution), the helper must silently
+// no-op rather than panic.
+func TestRecordOnErrorRecoveryAttempt_NoOpWhenDoltDBUnwired(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+	// DoltDB intentionally nil.
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"decide": {Outputs: map[string]string{"chosen_action": "rebase-onto-base"}},
+		},
+	}
+	exec := NewGraphForTest("spi-recovery-nil-db", "cleric-agent", nil, state, deps)
+	exec.recordOnErrorRecoveryAttempt(state, fmt.Errorf("boom"))
+}
+
+// TestRecordOnErrorRecoveryAttempt_NoOpWhenNoChosenAction guards the
+// defensive path: when decide never set a chosen_action, there is nothing
+// to record, so the helper must not write a row with Action="".
+func TestRecordOnErrorRecoveryAttempt_NoOpWhenNoChosenAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	deps, _ := testGraphDeps(t)
+	deps.DoltDB = func() *sql.DB { return db }
+	deps.GetBead = func(id string) (Bead, error) { return Bead{ID: id}, nil }
+
+	// Decide step has no chosen_action output (e.g. decide step not yet run).
+	state := &GraphState{
+		Steps: map[string]StepState{
+			"decide": {Outputs: map[string]string{}},
+		},
+	}
+	exec := NewGraphForTest("spi-recovery-no-action", "cleric-agent", nil, state, deps)
+	exec.recordOnErrorRecoveryAttempt(state, fmt.Errorf("boom"))
+
+	// No sqlmock expectations set — any DB call would fail the test.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
 	}
 }

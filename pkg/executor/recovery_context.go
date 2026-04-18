@@ -390,8 +390,15 @@ func extractHumanComments(comments []*beads.Comment) []string {
 }
 
 // isAgentAuthor returns true if the author string looks like an agent name
-// rather than a human user.
+// rather than a human user. This is a denylist — every new agent role needs to
+// be added here. Flipping to a positive human-allowlist is a follow-up.
+// "spire" is the literal author for system-posted comments (failure reports,
+// retry-scheduling notices) — treat these as agent-authored so they don't
+// leak into parseHumanGuidance.
 func isAgentAuthor(author string) bool {
+	if author == "spire" {
+		return true
+	}
 	agentPrefixes := []string{"wizard-", "apprentice-", "sage-", "steward-", "cleric-"}
 	for _, p := range agentPrefixes {
 		if strings.HasPrefix(author, p) {

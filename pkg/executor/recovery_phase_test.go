@@ -1258,6 +1258,81 @@ func TestParseHumanGuidance_RepeatedBelowThreshold(t *testing.T) {
 	}
 }
 
+// TestParseHumanGuidance_RejectsSystemFailureReport regression-guards spi-uh5oo
+// bug 3: a "spire"-authored failure-report comment must not parse as guidance,
+// even though it contains the action keyword "rebase-onto-base".
+func TestParseHumanGuidance_RejectsSystemFailureReport(t *testing.T) {
+	comments := []string{`recovery action "rebase-onto-base" failed`}
+	got := parseHumanGuidance(comments, nil)
+	if got != "" {
+		t.Errorf("parseHumanGuidance = %q, want empty (system failure report)", got)
+	}
+}
+
+// TestParseHumanGuidance_RejectsRetrySchedulingComment regression-guards the
+// self-amplification case from spi-uh5oo bug 3: the retry-scheduling comment
+// posted by handleRecordExecuteError contains the word "rebase" but opens
+// with "Cleric", not an imperative — it must not parse as guidance.
+func TestParseHumanGuidance_RejectsRetrySchedulingComment(t *testing.T) {
+	comments := []string{
+		"Cleric execute errored — scheduling retry:\n\n```\nrebase conflict in files: pkg/gateway/gateway_test.go\n```",
+	}
+	got := parseHumanGuidance(comments, nil)
+	if got != "" {
+		t.Errorf("parseHumanGuidance = %q, want empty (retry-scheduling comment)", got)
+	}
+}
+
+// TestParseHumanGuidance_AcceptsImperativeWithConflictWord verifies that a
+// legitimate human imperative containing the word "conflict" still parses —
+// the imperative-opener gate must not be so aggressive that it filters out
+// real guidance that mentions failure-adjacent vocabulary.
+func TestParseHumanGuidance_AcceptsImperativeWithConflictWord(t *testing.T) {
+	comments := []string{"resolve the conflict by rebasing onto base"}
+	got := parseHumanGuidance(comments, nil)
+	if got == "" {
+		t.Errorf("parseHumanGuidance returned empty, want a match for 'resolve the conflict by rebasing onto base'")
+	}
+}
+
+// TestParseHumanGuidance_RejectsNonImperativeOpener verifies that comments
+// whose first token is not in the imperative set are rejected, even when
+// they contain an action keyword.
+func TestParseHumanGuidance_RejectsNonImperativeOpener(t *testing.T) {
+	cases := []string{
+		"Please rebase onto main",
+		"Let's rebuild the project",
+		"Can you escalate this?",
+		"the rebase failed again",
+	}
+	for _, c := range cases {
+		if got := parseHumanGuidance([]string{c}, nil); got != "" {
+			t.Errorf("parseHumanGuidance(%q) = %q, want empty (non-imperative opener)", c, got)
+		}
+	}
+}
+
+// TestParseHumanGuidance_NormalizesLeadingPunctuation verifies the imperative
+// check strips leading markdown/quote punctuation so a comment like
+// "- try rebase..." or "> rebase..." still matches.
+func TestParseHumanGuidance_NormalizesLeadingPunctuation(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"- try rebase onto main", "rebase-onto-base"},
+		{"> rebase please", "rebase-onto-base"},
+		{"  \"rebase onto base\"", "rebase-onto-base"},
+		{"* rebuild the project", "rebuild"},
+	}
+	for _, c := range cases {
+		got := parseHumanGuidance([]string{c.in}, nil)
+		if got != c.want {
+			t.Errorf("parseHumanGuidance(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // decideFromGitState
 // ---------------------------------------------------------------------------
