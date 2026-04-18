@@ -205,6 +205,82 @@ Workloads move: `Pending` → `Assigned` → `InProgress` → `Done`.
 
 ---
 
+## Additional SQL users
+
+The cluster's dolt server exposes a remotesapi port (default `50051`)
+so laptops and CI can `dolt clone/push/pull` against it directly
+instead of going through DoltHub. The chart auto-provisions one
+`dolt_remote` user (`dolthub.user` / `dolthub.password`) for that
+remotesapi flow. When a real team wants per-user credentials — a
+scoped read-only role for CI, per-dev logins with independent
+rotation, a read-only auditor account — declare them via
+`dolt.additionalUsers`:
+
+```yaml
+# my-values.yaml
+dolt:
+  additionalUsers:
+    # Secret-ref form (preferred) — password lives in a Secret you
+    # manage out-of-band (sealed-secrets, ESO, vault-injector, etc.).
+    - name: alice
+      passwordSecret:
+        name: spire-user-alice
+        key: password            # default "password"
+      grants:
+        - "ALL ON spi.*"
+    # Inline form — password comes from values. The chart materializes
+    # it into a chart-managed Secret (`spire-dolt-additional-users`,
+    # key `addl-pw-<name>`) so the rendered Job spec never carries
+    # plaintext. Use for demos/dev; prefer passwordSecret in prod.
+    - name: readonly
+      password: "plaintext-discouraged"
+      grants:
+        - "SELECT ON spi.*"
+```
+
+With Secret-ref entries, pre-create each Secret before `helm install`
+or the Job Pod fails with `CreateContainerConfigError`:
+
+```bash
+kubectl -n spire create secret generic spire-user-alice \
+  --from-literal=password=$(openssl rand -base64 24 | tr -d /+= | head -c 24)
+```
+
+On install/upgrade the chart renders `spire-dolt-additional-users`, a
+post-install/post-upgrade hook Job that waits for dolt to be ready and
+runs idempotent `CREATE USER IF NOT EXISTS … ALTER USER … IDENTIFIED
+BY … GRANT …` for every entry. Rotation is re-running `helm upgrade`
+with the new password (inline) or `kubectl patch secret` + `helm
+upgrade` (Secret-ref); the Job's `ALTER USER` re-applies the password
+on the next run.
+
+Constraints to be aware of:
+
+- **`name`** is validated at Helm render time against
+  `^[a-zA-Z0-9_]{1,32}$`. Anything else (`alice;DROP`, `bob spaces`,
+  64-char strings) fails the render before a manifest reaches the
+  cluster.
+- **Single quotes are rejected** in `host`, `grants`, and passwords.
+  `host`/`grants` fail the Helm render; passwords trip a runtime check
+  in the Job and exit non-zero with a clear message.
+- **Exactly one password source per entry.** Either `passwordSecret`
+  or `password` must be set — neither or both fails the render.
+- **Grant revocation on removal is not automatic.** Dropping an entry
+  from `additionalUsers` on `helm upgrade` leaves the SQL user in
+  place. Drop it by hand:
+  `kubectl exec statefulset/spire-dolt -- dolt sql -q "DROP USER 'old_user'@'%'"`.
+
+Connect with a provisioned user from a laptop (port-forward first):
+
+```bash
+kubectl -n spire port-forward svc/spire-dolt 50051:50051
+dolt clone --user=alice http://localhost:50051/spi /tmp/alice-clone
+```
+
+See `docs/HELM.md` for the full schema reference.
+
+---
+
 ## Upgrades
 
 To upgrade to a new chart or image version:

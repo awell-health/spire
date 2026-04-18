@@ -1,21 +1,14 @@
 {{- if gt (len .Values.dolt.additionalUsers) 0 }}
 {{- /*
-  Reject usernames/hosts that would break the SQL literal quoting.
-  The job renders CREATE USER '<name>'@'<host>' … with a single-quoted
-  literal; a user-provided single quote would let values.yaml close the
-  literal and append arbitrary SQL. Fail fast at render time rather
-  than smuggle the check into a runtime bash `case`.
+  Validate every entry at render time. Names are regex-checked so that
+  `alice'; DROP USER` / `bob spaces` / 64-char strings fail the Helm
+  render instead of being smuggled into SQL via values.yaml. Host and
+  grant values go through a single-quote reject; inline/Secret-ref
+  password choice is resolved per entry by
+  `spire.additionalUserPasswordRef` below.
 */ -}}
 {{- range $i, $user := .Values.dolt.additionalUsers }}
-{{- if not $user.name }}
-{{- fail (printf "dolt.additionalUsers[%d].name is required" $i) }}
-{{- end }}
-{{- if not $user.existingSecret }}
-{{- fail (printf "dolt.additionalUsers[%d].existingSecret is required — plaintext passwords in values are not supported" $i) }}
-{{- end }}
-{{- if contains "'" $user.name }}
-{{- fail (printf "dolt.additionalUsers[%d].name must not contain a single quote: %q" $i $user.name) }}
-{{- end }}
+{{- include "spire.validateAdditionalUserName" (list $i $user.name) }}
 {{- if and $user.host (contains "'" $user.host) }}
 {{- fail (printf "dolt.additionalUsers[%d].host must not contain a single quote: %q" $i $user.host) }}
 {{- end }}
@@ -24,14 +17,21 @@
 {{- fail (printf "dolt.additionalUsers[%d].grants[%d] must not contain a single quote: %q" $i $g $grant) }}
 {{- end }}
 {{- end }}
+{{- if and $user.password (contains "'" $user.password) }}
+{{- fail (printf "dolt.additionalUsers[%d] (%q) inline password must not contain a single quote" $i $user.name) }}
+{{- end }}
 {{- end }}
 # Post-install/upgrade Job that provisions the operator-declared extra
 # SQL users in the cluster's dolt server. Runs idempotent
 # CREATE USER IF NOT EXISTS + ALTER USER + GRANT for each entry in
-# .Values.dolt.additionalUsers, sourcing every password from a
-# pre-existing k8s Secret so passwords never appear in the rendered
-# manifest. Password rotation is a `kubectl patch secret …` + `helm
-# upgrade` — the ALTER USER step re-applies the password each run.
+# .Values.dolt.additionalUsers. Each entry's password comes from either
+# an operator-managed Secret (`passwordSecret: { name, key }`) or an
+# inline `password:` value materialized into the chart-managed
+# `spire-dolt-additional-users` Secret — resolved per entry by the
+# `spire.additionalUserPasswordRef` helper. Password rotation is
+# `kubectl patch secret …` (Secret-ref) or
+# `helm upgrade --set dolt.additionalUsers[i].password=…` (inline) + the
+# ALTER USER step re-applies the password on the next run.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -43,11 +43,12 @@ metadata:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
   annotations:
     "helm.sh/hook": post-install,post-upgrade
-    # Weight 10 runs AFTER spire-dolt-provision (weight 5). The primary
-    # provision Job isn't a prerequisite — this Job authenticates as
-    # root with no password, same as spire-dolt-provision — but ordering
-    # keeps logs/events in a predictable sequence when both run.
-    "helm.sh/hook-weight": "10"
+    # Weight 6 runs AFTER spire-dolt-provision (weight 5). The primary
+    # provision Job isn't a strict prerequisite — this Job authenticates
+    # as root with no password, same as spire-dolt-provision — but
+    # ordering keeps logs/events in a predictable sequence when both
+    # run.
+    "helm.sh/hook-weight": "6"
     # Delete prior successful runs before re-running; keep failed runs
     # around for debugging (do NOT add hook-failed here).
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
@@ -97,15 +98,13 @@ spec:
             - name: DOLT_CLI_PASSWORD
               value: ""
             {{- range $i, $user := .Values.dolt.additionalUsers }}
-            # Indexed env var (PW_0, PW_1, …) so the name is always a
-            # valid shell identifier regardless of the SQL username.
-            # The rendered manifest references the Secret by name only;
-            # the password itself is read by the Pod at runtime.
+            # Indexed env var (PW_0, PW_1, …) so the env name is always
+            # a valid shell identifier regardless of the SQL username.
+            # The rendered manifest references the resolved Secret by
+            # name only; the password itself is read by the Pod at
+            # runtime via `valueFrom.secretKeyRef`.
             - name: PW_{{ $i }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $user.existingSecret }}
-                  key: {{ $user.secretKey | default "password" }}
+              {{- include "spire.additionalUserPasswordRef" (dict "user" $user "i" $i) | nindent 14 }}
             {{- end }}
           command:
             - bash
@@ -118,7 +117,7 @@ spec:
               # inside a Helm-rendered shell are not worth the surface
               # area. Mirrors spire-dolt-provision's check on
               # DOLT_REMOTE_PASSWORD. Usernames/hosts/grants were
-              # already validated at render time.
+              # already validated at render time by the helpers.
               {{- range $i, $user := .Values.dolt.additionalUsers }}
               case "${PW_{{ $i }}}" in
                 *\'*)

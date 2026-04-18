@@ -27,6 +27,14 @@ Next steps:
    is false, so remotesapi clients cannot authenticate yet. Either flip it
    back on, or run k8s/setup-dolt-users.sh for a multi-role setup.
 {{- end }}
+{{- if gt (len .Values.dolt.additionalUsers) 0 }}
+
+{{- $names := list }}
+{{- range .Values.dolt.additionalUsers }}{{- $names = append $names .name }}{{- end }}
+Provisioned {{ len .Values.dolt.additionalUsers }} additional SQL users: {{ join ", " $names }}.
+   kubectl -n {{ .Values.namespace }} get job spire-dolt-additional-users  # Completions: 1/1
+   kubectl -n {{ .Values.namespace }} logs job/spire-dolt-additional-users # CREATE USER / GRANT OK
+{{- end }}
 
 5. File a bead and push from your laptop:
    spire file "Test cluster" -t task -p 2

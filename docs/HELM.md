@@ -106,63 +106,69 @@ on the cluster dolt.
 
 The chart creates the primary `DOLT_REMOTE_USER` automatically via the
 post-install `spire-dolt-provision` Job. For additional users (per-dev
-logins, a scoped read-only role for CI, etc.), use
-`dolt.additionalUsers` and pre-create a k8s Secret per entry:
+logins, a scoped read-only role for CI, a read-only auditor account,
+etc.), declare them with `dolt.additionalUsers`. Each entry supplies
+its password from either an operator-managed Secret (`passwordSecret`,
+preferred) or an inline `password:` string that the chart materializes
+into a per-release Secret (`spire-dolt-additional-users`) so the
+rendered Job spec never carries plaintext.
 
 ```yaml
-# my-values.yaml
+# my-values.yaml — two entries, one Secret-ref, one inline.
 dolt:
   additionalUsers:
-    - name: dolt_remote_ci
-      host: "%"
-      existingSecret: dolt-remote-ci-credentials
-      secretKey: password
+    - name: alice
+      passwordSecret:
+        name: spire-user-alice
+        key: password            # default is "password"; specify if different
       grants:
-        - "ALL PRIVILEGES ON *.*"
-    - name: analyst
-      host: "%"
-      existingSecret: dolt-analyst-credentials
-      secretKey: password
+        - "ALL ON spi.*"
+    - name: readonly
+      password: "plaintext-discouraged"   # dev/demo only — prefer passwordSecret
       grants:
-        - "SELECT ON *.*"
+        - "SELECT ON spi.*"
 ```
 
+With the Secret-ref form, pre-create each referenced Secret before
+`helm install/upgrade` — the Job Pod will fail with
+`CreateContainerConfigError` if the Secret is missing:
+
 ```bash
-# Pre-create the Secrets before `helm install/upgrade`.
-kubectl -n spire create secret generic dolt-remote-ci-credentials \
-  --from-literal=password=$(openssl rand -base64 24 | tr -d /+= | head -c 24)
-kubectl -n spire create secret generic dolt-analyst-credentials \
+kubectl -n spire create secret generic spire-user-alice \
   --from-literal=password=$(openssl rand -base64 24 | tr -d /+= | head -c 24)
 
 helm install spire helm/spire -n spire --values my-values.yaml
 ```
 
-On install/upgrade the chart renders `spire-dolt-additional-users`, a
-post-install/post-upgrade hook Job. It waits for dolt to be ready, then
-runs idempotent `CREATE USER IF NOT EXISTS … ALTER USER … IDENTIFIED
-BY … GRANT …` for every entry. Passwords are mounted from the named
-Secrets at Pod-runtime via `valueFrom.secretKeyRef`, so the rendered
-manifest contains Secret references but no plaintext.
-
-Rotation is `kubectl patch secret <name>` followed by `helm upgrade`;
-the Job re-runs and `ALTER USER` re-applies the new password. The
-paired `CREATE USER IF NOT EXISTS` means initial provisioning is a
-no-op on subsequent upgrades that don't add new entries.
+With the inline form, the password goes into values and the chart
+renders a Kubernetes Secret named `spire-dolt-additional-users` with
+keys `addl-pw-<name>`. The Job's env reads from those keys — so the
+password lands in a Secret (expected k8s handling), not in the Job's
+PodSpec. Rotate an inline password by re-running `helm upgrade` with a
+new value; rotate a Secret-ref password with `kubectl patch secret`
+followed by `helm upgrade`. In both cases the Job's `ALTER USER` step
+re-applies the new password on the next run. The paired
+`CREATE USER IF NOT EXISTS` makes subsequent installs a no-op when no
+entries have changed.
 
 Notes:
 
-- **Single quotes are rejected** in `name`, `host`, `grants`, and the
-  password itself. The chart refuses to render (and the Job exits
-  non-zero at runtime for the password check) rather than generate
-  quote-escaped SQL. Pick identifiers without `'`.
-- **The referenced Secret must exist before the Job Pod schedules.**
-  If it doesn't, the Pod stays in `CreateContainerConfigError` —
-  inspect with `kubectl -n spire describe pod -l app.kubernetes.io/name=spire-dolt-additional-users`.
-- **Inline passwords are deliberately unsupported.** There is no
-  `password: "…"` field; every entry must use `existingSecret`.
-- The Job does not delete users that were removed from the values list.
-  Drop them from dolt by hand: `kubectl exec deploy/spire-dolt -c dolt
-  -- dolt sql -q "DROP USER 'old_user'@'%'"`.
+- **`name` is validated at Helm render time against
+  `^[a-zA-Z0-9_]{1,32}$`.** Values like `alice;DROP`, `bob spaces`, or
+  64-char strings fail the render with a clear error — the Job
+  manifest never reaches the cluster.
+- **Single quotes are rejected** in `host`, `grants`, and the password
+  itself. Helm render fails for host/grants and the Job exits non-zero
+  at runtime for passwords rather than generating quote-escaped SQL.
+- **Exactly one of `passwordSecret.name` or `password` must be set
+  per entry** — render fails otherwise.
+- **Operator-managed Secrets must exist before the Job Pod schedules.**
+  If they don't, inspect with
+  `kubectl -n spire describe pod -l app.kubernetes.io/name=spire-dolt-additional-users`.
+- **Grant revocation on removal is NOT automatic.** Dropping an entry
+  from `additionalUsers` on `helm upgrade` leaves the SQL user in
+  place — drop it by hand:
+  `kubectl exec statefulset/spire-dolt -- dolt sql -q "DROP USER 'old_user'@'%'"`.
 
 ## Verifying isolation
 

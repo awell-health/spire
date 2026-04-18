@@ -183,7 +183,7 @@ operator:
 ## @param dolt.port MySQL-protocol port the dolt server listens on.
 ## @param dolt.remotesapiPort Port for dolt's remote API (makes the server act as a dolt-remote endpoint — laptops can `dolt remote add cluster dolt://<svc>:<port>/<db>` and push/pull directly against this cluster instead of DoltHub).
 ## @param dolt.provisionRemoteUser.enabled Render a post-install/post-upgrade Job that creates (and re-ALTERs) the SQL user matching DOLT_REMOTE_USER/DOLT_REMOTE_PASSWORD in the Secret, so remotesapi clients can authenticate out-of-the-box. Leave on for a clean zero-manual-step install; disable to provision users yourself (e.g. via k8s/setup-dolt-users.sh for multi-role setups). When using `existingSecret`, that Secret MUST provide both DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD keys or the Job will fail.
-## @param dolt.additionalUsers Extra SQL users to provision alongside the primary `dolt_remote` user, useful when laptops/CI want their own remotesapi credentials (per-user audit, independent rotation) without hand-running `CREATE USER`. Each entry: `name` (SQL username), `host` (defaults to `%`), `existingSecret`/`secretKey` (pre-existing k8s Secret holding the password — never inline), `grants` (list of SQL GRANT clauses, e.g. `ALL PRIVILEGES ON *.*`). Renders a second post-install/post-upgrade Job that runs idempotent `CREATE USER IF NOT EXISTS … ALTER USER … GRANT …` for every entry. Leaving the default empty list renders no extra resources. `name`/`host` must not contain a single quote (render fails fast); passwords containing a single quote are rejected at runtime.
+## @param dolt.additionalUsers Extra SQL users to provision alongside the primary `dolt_remote` user, useful when laptops/CI want their own remotesapi credentials (per-user audit, independent rotation) without hand-running `CREATE USER`. Each entry: `name` (SQL username, validated against `^[a-zA-Z0-9_]{1,32}$` at render time), `host` (defaults to `%`), a password source (either `passwordSecret: { name, key }` referencing an operator-managed Secret — preferred — or inline `password: "..."` which the chart materializes into a per-release Secret), `grants` (list of SQL GRANT clauses, e.g. `ALL ON spi.*`). Renders a second post-install/post-upgrade Job that runs idempotent `CREATE USER IF NOT EXISTS … ALTER USER … GRANT …` for every entry. Leaving the default empty list renders no extra resources. Single-quote characters are rejected in host/grants/passwords; invalid names fail the Helm render.
 ## @param dolt.resources.requests.cpu Dolt CPU request.
 ## @param dolt.resources.requests.memory Dolt memory request.
 ## @param dolt.resources.limits.cpu Dolt CPU limit.
@@ -212,24 +212,46 @@ dolt:
     enabled: true
   # Extra SQL users provisioned alongside the primary `dolt_remote` user.
   # Use when laptops/CI want per-user remotesapi credentials (audit,
-  # independent rotation) without hand-running `CREATE USER`. Each entry
-  # sources its password from a pre-existing k8s Secret — plaintext
-  # passwords in values are deliberately not supported. The chart
+  # independent rotation) without hand-running `CREATE USER`. The chart
   # renders a second post-install/post-upgrade Job that runs idempotent
   # CREATE/ALTER/GRANT for every entry. Leave empty to render nothing.
+  #
+  # Each entry:
+  #   name           — SQL username. Required. Validated at render time
+  #                    against `^[a-zA-Z0-9_]{1,32}$`; anything else
+  #                    (semicolons, quotes, spaces, >32 chars) fails the
+  #                    Helm render with a clear error.
+  #   host           — SQL host pattern. Optional, defaults to "%" (any
+  #                    host). Must not contain a single quote.
+  #   passwordSecret — Secret-ref password source (preferred). An object
+  #                    with `name` (Secret name in the release namespace)
+  #                    and optional `key` (default "password"). The
+  #                    Secret must exist before the Job Pod schedules.
+  #   password       — Inline password. Materialized into a
+  #                    chart-managed Secret named
+  #                    `spire-dolt-additional-users` with key
+  #                    `addl-pw-<name>` so it never appears in the Job
+  #                    manifest. Must not contain a single quote. Use
+  #                    `passwordSecret` for anything but demo/dev.
+  #   grants         — List of SQL GRANT clauses (e.g. "ALL ON spi.*").
+  #                    Must not contain a single quote. Applied every
+  #                    run; grant revocation on removal is NOT handled
+  #                    — drop the user by hand with DROP USER if
+  #                    you remove an entry.
+  #
+  # Exactly one of passwordSecret or password must be set per entry —
+  # render fails otherwise.
   additionalUsers: []
-  # - name: dolt_remote_ci
-  #   host: "%"
-  #   existingSecret: dolt-remote-ci-credentials
-  #   secretKey: password
+  # - name: alice
+  #   passwordSecret:
+  #     name: spire-user-alice
+  #     key: password
   #   grants:
-  #     - "ALL PRIVILEGES ON *.*"
-  # - name: analyst
-  #   host: "%"
-  #   existingSecret: dolt-analyst-credentials
-  #   secretKey: password
+  #     - "ALL ON spi.*"
+  # - name: readonly
+  #   password: "plaintext-discouraged"
   #   grants:
-  #     - "SELECT ON *.*"
+  #     - "SELECT ON spi.*"
   resources:
     requests:
       cpu: 100m
