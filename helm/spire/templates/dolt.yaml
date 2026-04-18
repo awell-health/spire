@@ -102,6 +102,12 @@ spec:
                   name: {{ .Release.Name }}-dolthub-creds
                   key: key-id
             {{- end }}
+            {{- if and .Values.backup.enabled .Values.backup.gcs.serviceAccountJson }}
+            # Points dolt's GCS client at the mounted service-account
+            # JSON so `dolt backup sync <gcs-remote>` can authenticate.
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /creds/gcs/key.json
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/dolt
@@ -114,6 +120,11 @@ spec:
             # and registered via `dolt creds import`.
             - name: dolthub-creds
               mountPath: /creds-input
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.backup.enabled .Values.backup.gcs.serviceAccountJson }}
+            - name: gcs-creds
+              mountPath: /creds/gcs
               readOnly: true
             {{- end }}
           resources:
@@ -149,6 +160,12 @@ spec:
             items:
               - key: key-value
                 path: key-value
+        {{- end }}
+        {{- if and .Values.backup.enabled .Values.backup.gcs.serviceAccountJson }}
+        - name: gcs-creds
+          secret:
+            secretName: {{ .Release.Name }}-gcs-creds
+            defaultMode: 0400
         {{- end }}
   volumeClaimTemplates:
     - metadata:
@@ -265,4 +282,17 @@ data:
       dolt remote remove origin 2>/dev/null || true
       dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remoteUrl }}"
     fi
+
+    {{- if .Values.backup.enabled }}
+    # Register the GCS backup remote (idempotent — `dolt backup add`
+    # errors harmlessly if the target already exists, so we swallow it).
+    # `dolt backup sync` (run later by the spire-dolt-backup CronJob)
+    # resolves this name to the gs:// URL.
+    cd "$DB_DIR"
+    BACKUP_URL="gs://{{ .Values.backup.gcs.bucket }}/{{ .Values.backup.gcs.prefix }}"
+    echo "[dolt-init] registering backup remote {{ .Values.backup.remoteName }} -> $BACKUP_URL"
+    dolt backup add {{ .Values.backup.remoteName | quote }} "$BACKUP_URL" \
+      || echo "[dolt-init] backup remote already registered (ok)"
+    {{- end }}
+
     echo "[dolt-init] done"

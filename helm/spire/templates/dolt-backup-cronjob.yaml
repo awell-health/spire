@@ -1,0 +1,57 @@
+{{- if .Values.backup.enabled }}
+# Scheduled backup: runs `dolt backup sync <remote>` inside the dolt
+# container on a cron cadence. We can't mount the dolt PVC into a
+# separate pod (PVC is ReadWriteOnce, owned by the StatefulSet), so
+# the CronJob just triggers the sync via `kubectl exec` — same pattern
+# as the dolt-sync syncer when it was a CronJob.
+#
+# Retention (30 days) is enforced by a GCS bucket lifecycle rule
+# configured out-of-band. See backup.retentionDays in values.yaml.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: spire-dolt-backup
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-dolt-backup
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  # Skip if a prior run is still syncing — prevents overlapping
+  # `dolt backup sync` calls that could race on the same target.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: spire-dolt-backup
+        spec:
+          serviceAccountName: spire-dolt-backup
+          restartPolicy: OnFailure
+          containers:
+            - name: trigger
+              image: bitnami/kubectl:latest
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  # StatefulSet gives us a stable pod name, but fall back
+                  # to label-selector so this still works if the name
+                  # convention changes upstream.
+                  POD=$(kubectl -n {{ .Values.namespace }} get pod \
+                    -l app.kubernetes.io/name=spire-dolt \
+                    -o jsonpath='{.items[0].metadata.name}')
+                  if [ -z "$POD" ]; then
+                    echo "ERROR: could not find spire-dolt pod" >&2
+                    exit 1
+                  fi
+                  echo "syncing backup from pod=$POD remote={{ .Values.backup.remoteName }}"
+                  kubectl -n {{ .Values.namespace }} exec "$POD" -c dolt -- \
+                    sh -c 'cd /var/lib/dolt/{{ .Values.beads.database | default .Values.beads.prefix }} && dolt backup sync {{ .Values.backup.remoteName }}'
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+{{- end }}

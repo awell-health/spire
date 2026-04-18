@@ -268,3 +268,50 @@ syncer:
   interval: "1m"
   debounce: "5s"
   port: 8082
+
+## @section Dolt backups (GCS)
+##
+## Phase-1 disaster-recovery path: a CronJob that runs `dolt backup sync`
+## against a GCS bucket. The backup target is registered once by the
+## dolt-init script (`dolt backup add <name> gs://...`) so every install
+## is self-contained. Retention (30-day deletion) is enforced by a GCS
+## bucket lifecycle rule, NOT by the chart — Helm has no native way to
+## reconcile GCS bucket policies. Configure the lifecycle rule once on
+## the bucket, out-of-band, e.g.:
+##   gsutil lifecycle set lifecycle.json gs://<bucket>
+## with a rule that deletes objects older than `retentionDays` days.
+##
+## Credentials rotation: the GCS service-account JSON is mounted into
+## the dolt pod as GOOGLE_APPLICATION_CREDENTIALS. Rotating the JSON
+## requires restarting the dolt StatefulSet.
+
+## @param backup.enabled Whether to render the GCS backup resources (CronJob, Secret, RBAC, dolt-side volume/env). Off by default — Phase-1 opt-in.
+## @param backup.schedule Cron expression for the backup CronJob. Default is daily at 03:00 UTC.
+## @param backup.remoteName Name of the dolt backup remote registered by dolt-init (`dolt backup add <name> <url>`). Must match what the CronJob syncs.
+## @param backup.gcs.bucket GCS bucket name (without `gs://`). Required when backup.enabled=true.
+## @param backup.gcs.prefix Optional path prefix inside the bucket. Final URL is `gs://<bucket>/<prefix>`. Empty = bucket root.
+## @param backup.gcs.serviceAccountJson Raw JSON of a GCS service-account key with objectAdmin on the bucket. Pass via `--set-file backup.gcs.serviceAccountJson=sa.json`.
+## @param backup.retentionDays Documentation-only. Enforced by a GCS bucket lifecycle rule configured out-of-band — the chart does not manage it.
+## @param backup.resources.requests.cpu CronJob trigger-container CPU request (tiny kubectl-exec workload).
+## @param backup.resources.requests.memory CronJob trigger-container memory request.
+## @param backup.resources.limits.cpu CronJob trigger-container CPU limit.
+## @param backup.resources.limits.memory CronJob trigger-container memory limit.
+backup:
+  enabled: false
+  schedule: "0 3 * * *"   # daily 03:00 UTC
+  remoteName: "gcs-backup"
+  gcs:
+    bucket: ""            # e.g. "awell-spire-backups"
+    prefix: ""            # e.g. "prod/spi" → gs://bucket/prefix
+    serviceAccountJson: "" # raw JSON, pass via --set-file
+  # Retention is enforced by a GCS bucket lifecycle rule. The chart does
+  # NOT manage this — configure it out-of-band:
+  #   gsutil lifecycle set lifecycle.json gs://<bucket>
+  retentionDays: 30       # doc-only; not applied by the chart
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
