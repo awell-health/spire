@@ -204,6 +204,14 @@ func TestCmdSummon_DispatchValidModes(t *testing.T) {
 	t.Setenv("BEADS_DIR", tmp)
 	resetStore()
 
+	// Force the k8s-availability probe to return false so cmdSummon
+	// takes the local path. Without this the real probe shells out to
+	// kubectl, which hangs indefinitely on machines whose current
+	// context targets an unreachable API server.
+	origK8s := isK8sAvailableFunc
+	defer func() { isK8sAvailableFunc = origK8s }()
+	isK8sAvailableFunc = func() bool { return false }
+
 	for _, mode := range []string{"sequential", "wave", "direct"} {
 		t.Run(mode, func(t *testing.T) {
 			// Valid modes pass validation but will fail later when hitting

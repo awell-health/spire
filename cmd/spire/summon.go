@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -201,7 +202,7 @@ func cmdSummon(args []string) error {
 	}
 
 	// Detect mode: k8s or local.
-	if isK8sAvailable() {
+	if isK8sAvailableFunc() {
 		return summonK8s(count)
 	}
 	return summonLocal(count, targetIDs, dispatch)
@@ -245,7 +246,7 @@ func cmdDismiss(args []string) error {
 		}
 	}
 
-	if isK8sAvailable() {
+	if isK8sAvailableFunc() {
 		return dismissK8s(count, dismissAll)
 	}
 	return dismissLocal(count, dismissAll, targetIDs)
@@ -296,9 +297,19 @@ func dismissK8s(count int, all bool) error {
 	return nil
 }
 
+// isK8sAvailableFunc is the indirection used by cmdSummon / cmdDismiss so
+// tests can stub k8s detection without shelling out. Production callers
+// leave this alone; tests assign a func that returns a fixed bool.
+var isK8sAvailableFunc = isK8sAvailable
+
+// isK8sAvailable probes for a reachable cluster with the "spire" namespace.
+// Bounded by a short timeout so that a hung or unreachable kubectl context
+// can't block `spire summon` / `spire dismiss` or, via transitive callers,
+// the unit test suite.
 func isK8sAvailable() bool {
-	cmd := exec.Command("kubectl", "get", "ns", "spire", "--no-headers")
-	return cmd.Run() == nil
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "kubectl", "get", "ns", "spire", "--no-headers").Run() == nil
 }
 
 func countK8sWizards() int {
