@@ -287,9 +287,15 @@ spireConfig:
 ## @section Guild definitions
 ##
 ## Each entry creates a WizardGuild CR that the operator manages.
+##
+## Naming convention: the `name` is the guild's shortname. It is used verbatim
+## as the CR name and as the prefix for every wizard pod spawned under the
+## guild (`<name>-wizard-<bead>`). Keep it short, lowercase, and DNS-safe.
+## For a single-guild tower, `main` is the recommended default.
+##
 ## Example:
 ##   guilds:
-##     - name: my-repo-guild
+##     - name: main
 ##       mode: managed
 ##       repo: https://github.com/your-org/my-repo.git
 ##       repoBranch: main
@@ -304,7 +310,8 @@ spireConfig:
 ##           memory: "1Gi"
 ##           cpu: "500m"
 
-## @param guilds List of WizardGuild CRs to render. Default is empty.
+## @param guilds List of WizardGuild CRs to render. Default is empty; operators
+## supply guilds per deployment. See section header for naming convention.
 guilds: []
 
 ## @section Syncer

@@ -143,9 +143,10 @@ beads:
   prefix: spi
   database: spi
 
-# Define agents — one SpireAgent CRD per repo
-agents:
-  - name: my-repo-agent
+# Define guilds — one WizardGuild CR per repo. `name` is the guild shortname
+# and prefixes every wizard pod spawned under it (`<name>-wizard-<bead>`).
+guilds:
+  - name: main
     mode: managed
     repo: https://github.com/your-org/my-repo.git
     repoBranch: main
