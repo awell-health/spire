@@ -52,6 +52,13 @@ dockers:
       - "--label=org.opencontainers.image.version={{ .Tag }}"
       - "--label=org.opencontainers.image.created={{ .Date }}"
       - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: &steward_ctx
+      - go.mod
+      - go.sum
+      - cmd
+      - pkg
+      - operator
+      - k8s
 
   - id: steward-arm64
     goos: linux
@@ -67,6 +74,7 @@ dockers:
       - "--label=org.opencontainers.image.version={{ .Tag }}"
       - "--label=org.opencontainers.image.created={{ .Date }}"
       - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: *steward_ctx
 
   # --- agent ---
   - id: agent-amd64
@@ -83,6 +91,12 @@ dockers:
       - "--label=org.opencontainers.image.version={{ .Tag }}"
       - "--label=org.opencontainers.image.created={{ .Date }}"
       - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: &agent_ctx
+      - go.mod
+      - go.sum
+      - cmd
+      - pkg
+      - agent-entrypoint.sh
 
   - id: agent-arm64
     goos: linux
@@ -98,6 +112,7 @@ dockers:
       - "--label=org.opencontainers.image.version={{ .Tag }}"
       - "--label=org.opencontainers.image.created={{ .Date }}"
       - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: *agent_ctx
 
   # --- builder ---
   - id: builder-amd64
@@ -114,6 +129,11 @@ dockers:
       - "--label=org.opencontainers.image.version={{ .Tag }}"
       - "--label=org.opencontainers.image.created={{ .Date }}"
       - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: &builder_ctx
+      - go.mod
+      - go.sum
+      - operator/go.mod
+      - operator/go.sum
 
   - id: builder-arm64
     goos: linux
@@ -129,6 +149,7 @@ dockers:
       - "--label=org.opencontainers.image.version={{ .Tag }}"
       - "--label=org.opencontainers.image.created={{ .Date }}"
       - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: *builder_ctx
 
 docker_manifests:
   # steward
