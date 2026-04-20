@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,12 +13,6 @@ import (
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/store"
 )
-
-// beadIDFromCommitSubject matches the project convention `<type>(<bead-id>):`
-// at the start of a commit subject (e.g. "feat(spi-abc12):", "fix(web-9xx.1):").
-// Bead IDs are prefix-lowercase-dash-hex-dot-digits per the `spi-<hex>` scheme
-// documented in CLAUDE.md.
-var beadIDFromCommitSubject = regexp.MustCompile(`^[a-z]+\(([a-z]+-[a-z0-9]+(?:\.\d+)*)\):`)
 
 // conflictSideContext bundles the commit + bead information for one side of
 // a conflict. BeadID / Bead are zero-valued when the commit subject doesn't
@@ -137,7 +130,7 @@ func resolveSideContext(ctx *RecoveryActionCtx, wc *spgit.WorktreeContext, sha, 
 
 	if md, err := wc.ShowCommit(sha); err == nil {
 		side.Commit = md
-		if beadID := extractBeadIDFromSubject(md.Subject); beadID != "" {
+		if beadID := spgit.BeadIDFromSubject(md.Subject); beadID != "" {
 			side.BeadID = beadID
 			get := ctx.GetBeadFn
 			if get == nil {
@@ -151,15 +144,6 @@ func resolveSideContext(ctx *RecoveryActionCtx, wc *spgit.WorktreeContext, sha, 
 		}
 	}
 	return side
-}
-
-// extractBeadIDFromSubject returns the bead ID from a commit subject or "".
-func extractBeadIDFromSubject(subject string) string {
-	m := beadIDFromCommitSubject.FindStringSubmatch(subject)
-	if len(m) < 2 {
-		return ""
-	}
-	return m[1]
 }
 
 // dispatchConflictApprentice spawns an apprentice agent into the paused

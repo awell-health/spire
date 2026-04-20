@@ -16,41 +16,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// extractBeadIDFromSubject
-// ---------------------------------------------------------------------------
-
-func TestExtractBeadIDFromSubject(t *testing.T) {
-	tests := []struct {
-		subject string
-		want    string
-	}{
-		{"feat(spi-abc12): add OAuth2 support", "spi-abc12"},
-		{"fix(xserver-0hy): handle nil pointer", "xserver-0hy"},
-		{"chore(pan-b7d0): upgrade deps", "pan-b7d0"},
-		{"feat(spi-a3f8.1): sub-task under epic", "spi-a3f8.1"},
-		{"feat(spi-a3f8.1.2): nested sub-task", "spi-a3f8.1.2"},
-		{"docs(web-9xx): update README", "web-9xx"},
-
-		// Negatives.
-		{"Merge pull request #42 from foo/bar", ""},
-		{"fix: missing bead id in parens", ""},
-		{"[spi-abc12] wrong format", ""},
-		{"no prefix here", ""},
-		{"", ""},
-		{"feat(not a bead): invalid id chars", ""},  // spaces in id
-		{"feat(SPI-ABC12): uppercase prefix", ""},   // must be lowercase
-	}
-	for _, tt := range tests {
-		t.Run(tt.subject, func(t *testing.T) {
-			got := extractBeadIDFromSubject(tt.subject)
-			if got != tt.want {
-				t.Errorf("extractBeadIDFromSubject(%q) = %q, want %q", tt.subject, got, tt.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // testPackagesFor
 // ---------------------------------------------------------------------------
 
