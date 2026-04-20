@@ -1,48 +1,146 @@
 package main
 
 import (
-	"fmt"
+	"context"
+	"errors"
+	"strings"
 	"testing"
-
-	"github.com/awell-health/spire/pkg/dolt"
 )
 
-// TestRunPull_ConflictCallsOwnership validates that ApplyMergeOwnership runs
-// after CLIPull regardless of whether pull reported conflicts. This is a
-// live-server integration test gated by doltIsReachable().
-func TestRunPull_ConflictCallsOwnership(t *testing.T) {
-	restoreDoltPort(t)
-	if !doltIsReachable() {
-		t.Skip("dolt server not reachable")
+// fakePullDeps is a recording fake satisfying pullDeps. Each *Result field
+// is the canned return value; each *Calls slice records call arguments so
+// tests can assert ordering and inputs.
+type fakePullDeps struct {
+	commitHash string
+	pullErr    error
+	ownerErr   error
+	conflicts  int
+	conflictsErr error
+
+	calls []string // ordered call log: "GetCurrentCommitHash", "CLIPull", ...
+
+	commitCalls    []string
+	pullCalls      []struct{ dataDir string; force bool }
+	ownershipCalls []struct{ dbName, preCommit string }
+	conflictCalls  []string
+}
+
+func (f *fakePullDeps) GetCurrentCommitHash(dbName string) string {
+	f.calls = append(f.calls, "GetCurrentCommitHash")
+	f.commitCalls = append(f.commitCalls, dbName)
+	return f.commitHash
+}
+
+func (f *fakePullDeps) CLIPull(_ context.Context, dataDir string, force bool) error {
+	f.calls = append(f.calls, "CLIPull")
+	f.pullCalls = append(f.pullCalls, struct{ dataDir string; force bool }{dataDir, force})
+	return f.pullErr
+}
+
+func (f *fakePullDeps) ApplyMergeOwnership(dbName, preCommit string) error {
+	f.calls = append(f.calls, "ApplyMergeOwnership")
+	f.ownershipCalls = append(f.ownershipCalls, struct{ dbName, preCommit string }{dbName, preCommit})
+	return f.ownerErr
+}
+
+func (f *fakePullDeps) HasUnresolvedConflicts(dbName string) (int, error) {
+	f.calls = append(f.calls, "HasUnresolvedConflicts")
+	f.conflictCalls = append(f.conflictCalls, dbName)
+	return f.conflicts, f.conflictsErr
+}
+
+// TestRunPullCore_ConflictCallsOwnership locks in the contract that
+// ApplyMergeOwnership runs after CLIPull even when CLIPull returned a
+// conflict error, and that the call order is
+// GetCurrentCommitHash → CLIPull → ApplyMergeOwnership → HasUnresolvedConflicts.
+func TestRunPullCore_ConflictCallsOwnership(t *testing.T) {
+	fake := &fakePullDeps{
+		commitHash: "deadbeef",
+		pullErr:    errors.New("CONFLICT: table issues has conflicting rows"),
+		ownerErr:   nil,
+		conflicts:  0,
 	}
 
-	dbName := readBeadsDBName()
-	if dbName == "" {
-		t.Skip("no beads database configured")
+	if err := runPullCore(fake, "/tmp/data", "beads", false); err != nil {
+		t.Fatalf("runPullCore returned error, want nil (merge resolved): %v", err)
 	}
 
-	// Record pre-pull commit so we can verify ownership ran.
-	preCommit := dolt.GetCurrentCommitHash(dbName)
-	if preCommit == "" {
-		t.Skip("unable to read current commit hash")
+	if len(fake.ownershipCalls) != 1 {
+		t.Fatalf("ApplyMergeOwnership call count = %d, want 1", len(fake.ownershipCalls))
+	}
+	if got := fake.ownershipCalls[0].preCommit; got != "deadbeef" {
+		t.Errorf("ApplyMergeOwnership preCommit = %q, want %q", got, "deadbeef")
+	}
+	if got := fake.ownershipCalls[0].dbName; got != "beads" {
+		t.Errorf("ApplyMergeOwnership dbName = %q, want %q", got, "beads")
 	}
 
-	// Run pull — may succeed (fast-forward, already up-to-date) or hit a
-	// real conflict depending on remote state. Either way, ownership must run.
-	_ = runPull("", false)
+	wantOrder := []string{
+		"GetCurrentCommitHash",
+		"CLIPull",
+		"ApplyMergeOwnership",
+		"HasUnresolvedConflicts",
+	}
+	if !equalStrings(fake.calls, wantOrder) {
+		t.Errorf("call order = %v, want %v", fake.calls, wantOrder)
+	}
+}
 
-	// After pull + ownership, there must be zero unresolved conflict rows.
-	out, err := doltSQL(
-		fmt.Sprintf("USE `%s`; SELECT COUNT(*) AS c FROM dolt_conflicts_issues", dbName),
-		false,
-	)
-	if err != nil {
-		t.Skipf("could not query conflict table: %v", err)
+// TestRunPullCore_RemainingConflictsError verifies that when ownership
+// enforcement leaves conflicts behind, runPullCore returns an error
+// mentioning "merge conflicts remain".
+func TestRunPullCore_RemainingConflictsError(t *testing.T) {
+	fake := &fakePullDeps{
+		commitHash: "deadbeef",
+		pullErr:    errors.New("CONFLICT: table issues has conflicting rows"),
+		ownerErr:   nil,
+		conflicts:  2,
 	}
-	count := extractCountValue(out)
-	if count != 0 {
-		t.Errorf("expected 0 unresolved conflicts after pull, got %d", count)
+
+	err := runPullCore(fake, "/tmp/data", "beads", false)
+	if err == nil {
+		t.Fatal("runPullCore returned nil, want error about remaining conflicts")
 	}
+	if !strings.Contains(err.Error(), "merge conflicts remain") {
+		t.Errorf("error %q does not mention 'merge conflicts remain'", err)
+	}
+}
+
+// TestRunPullCore_NoDBNameSkipsOwnership checks that when dbName is empty,
+// the ownership and conflict-check calls are skipped — only CLIPull runs.
+func TestRunPullCore_NoDBNameSkipsOwnership(t *testing.T) {
+	fake := &fakePullDeps{
+		pullErr: nil,
+	}
+
+	if err := runPullCore(fake, "/tmp/data", "", false); err != nil {
+		t.Fatalf("runPullCore returned error: %v", err)
+	}
+
+	if len(fake.commitCalls) != 0 {
+		t.Errorf("GetCurrentCommitHash called %d times, want 0 (no dbName)", len(fake.commitCalls))
+	}
+	if len(fake.ownershipCalls) != 0 {
+		t.Errorf("ApplyMergeOwnership called %d times, want 0 (no dbName)", len(fake.ownershipCalls))
+	}
+	if len(fake.conflictCalls) != 0 {
+		t.Errorf("HasUnresolvedConflicts called %d times, want 0 (no dbName)", len(fake.conflictCalls))
+	}
+	if len(fake.pullCalls) != 1 {
+		t.Errorf("CLIPull called %d times, want 1", len(fake.pullCalls))
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestPullErrorForceHardPath verifies that hard errors propagate even when

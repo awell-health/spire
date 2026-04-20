@@ -77,6 +77,35 @@ Examples:
 	return runPull(remoteURL, force)
 }
 
+// pullDeps is the cmd/spire/pull-local seam over pkg/dolt's pull pipeline.
+// It exists so runPullCore can be unit-tested without a live dolt server.
+type pullDeps interface {
+	GetCurrentCommitHash(dbName string) string
+	CLIPull(ctx context.Context, dataDir string, force bool) error
+	ApplyMergeOwnership(dbName, preCommit string) error
+	HasUnresolvedConflicts(dbName string) (int, error)
+}
+
+type realPullDeps struct{}
+
+func (realPullDeps) GetCurrentCommitHash(dbName string) string {
+	return dolt.GetCurrentCommitHash(dbName)
+}
+
+func (realPullDeps) CLIPull(ctx context.Context, dataDir string, force bool) error {
+	return dolt.CLIPull(ctx, dataDir, force)
+}
+
+func (realPullDeps) ApplyMergeOwnership(dbName, preCommit string) error {
+	return dolt.ApplyMergeOwnership(dbName, preCommit)
+}
+
+func (realPullDeps) HasUnresolvedConflicts(dbName string) (int, error) {
+	return dolt.HasUnresolvedConflicts(dbName)
+}
+
+var defaultPullDeps pullDeps = realPullDeps{}
+
 func runPull(remoteURL string, force bool) error {
 	if err := requireDolt(); err != nil {
 		return err
@@ -133,27 +162,42 @@ func runPull(remoteURL string, force bool) error {
 		os.Setenv("DOLT_REMOTE_PASSWORD", pass)
 	}
 
-	// ── Record pre-pull commit for ownership enforcement ─────────────────────
 	dbName := readBeadsDBName()
+	if err := runPullCore(defaultPullDeps, dataDir, dbName, force); err != nil {
+		return err
+	}
+
+	fmt.Println("  Pull complete.")
+	fmt.Println()
+	bd("status") //nolint
+	return nil
+}
+
+// runPullCore drives the dolt pull → ownership-enforce → conflict-check
+// pipeline through the pullDeps seam. Pre-pipeline setup (remote config,
+// credentials, data-dir resolution) and the post-pipeline UX echo stay in
+// runPull.
+func runPullCore(deps pullDeps, dataDir, dbName string, force bool) error {
+	// ── Record pre-pull commit for ownership enforcement ─────────────────────
 	preCommit := ""
 	if dbName != "" {
-		preCommit = dolt.GetCurrentCommitHash(dbName)
+		preCommit = deps.GetCurrentCommitHash(dbName)
 	}
 
 	// ── Pull via dolt CLI ─────────────────────────────────────────────────────
 	fmt.Println("  Pulling from origin...")
-	pullErr := dolt.CLIPull(context.Background(), dataDir, force)
+	pullErr := deps.CLIPull(context.Background(), dataDir, force)
 
 	// ── Enforce field-level ownership ─────────────────────────────────────────
 	// Must run even when pull reports conflicts, since CLIPull merges data
 	// into the working set before returning the conflict error.
 	var ownerErr error
 	if dbName != "" && preCommit != "" {
-		ownerErr = dolt.ApplyMergeOwnership(dbName, preCommit)
+		ownerErr = deps.ApplyMergeOwnership(dbName, preCommit)
 	}
 	remainingConflicts := 0
 	if dbName != "" {
-		remaining, conflictErr := dolt.HasUnresolvedConflicts(dbName)
+		remaining, conflictErr := deps.HasUnresolvedConflicts(dbName)
 		if conflictErr != nil {
 			if ownerErr != nil {
 				return fmt.Errorf("ownership enforcement failed and conflict state unknown: %w", ownerErr)
@@ -193,9 +237,6 @@ func runPull(remoteURL string, force bool) error {
 		}
 	}
 
-	fmt.Println("  Pull complete.")
-	fmt.Println()
-	bd("status") //nolint
 	return nil
 }
 
