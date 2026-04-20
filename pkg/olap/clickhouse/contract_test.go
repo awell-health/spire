@@ -70,11 +70,18 @@ func pairFactory(t *testing.T, baseDSN string) olaptest.PairFactory {
 }
 
 // pingDSN verifies the server accepts a connection without attempting
-// schema initialisation. Any failure here is reported by TestContract
-// as a hard stop since running the rest of the harness would produce
-// misleading failures.
+// schema initialisation. It targets the always-present `default`
+// bootstrap DB rather than the DSN's configured database, which may
+// not exist yet (per-subtest DBs are created later by pairFactory).
+// Any failure here is reported by TestContract as a hard stop since
+// running the rest of the harness would produce misleading failures.
 func pingDSN(dsn string) error {
-	db, err := sql.Open("clickhouse", dsn)
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", envDSN, err)
+	}
+	u.Path = "/default"
+	db, err := sql.Open("clickhouse", u.String())
 	if err != nil {
 		return err
 	}
