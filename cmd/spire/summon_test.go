@@ -8,8 +8,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
 )
+
+// stubSpawn is a summonSpawnFunc that refuses to spawn a real subprocess.
+// Tests that reach summonLocal's spawn path use it to avoid fork/exec'ing the
+// test binary, which would inherit SPIRE_CONFIG_DIR and race with t.TempDir
+// cleanup.
+func stubSpawn(AgentBackend, SpawnConfig) (agent.Handle, error) {
+	return nil, fmt.Errorf("test: spawn disabled")
+}
 
 func TestCmdSummon_ForRemoved(t *testing.T) {
 	err := cmdSummon([]string{"1", "--for", "spi-abc"})
@@ -305,10 +314,15 @@ func TestSummonLocal_AllowsOpenBead(t *testing.T) {
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
 	orig := storeGetBeadFunc
-	defer func() { storeGetBeadFunc = orig }()
+	origSpawn := summonSpawnFunc
+	defer func() {
+		storeGetBeadFunc = orig
+		summonSpawnFunc = origSpawn
+	}()
 	storeGetBeadFunc = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: "open", Title: "test"}, nil
 	}
+	summonSpawnFunc = stubSpawn
 
 	err := summonLocal(1, []string{"spi-open"}, "")
 	// Should NOT get a status rejection error. It will fail later
@@ -324,10 +338,15 @@ func TestSummonLocal_AllowsInProgressBead(t *testing.T) {
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
 	orig := storeGetBeadFunc
-	defer func() { storeGetBeadFunc = orig }()
+	origSpawn := summonSpawnFunc
+	defer func() {
+		storeGetBeadFunc = orig
+		summonSpawnFunc = origSpawn
+	}()
 	storeGetBeadFunc = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: "in_progress", Title: "test"}, nil
 	}
+	summonSpawnFunc = stubSpawn
 
 	err := summonLocal(1, []string{"spi-wip"}, "")
 	if err != nil && (strings.Contains(err.Error(), "is closed") || strings.Contains(err.Error(), "is deferred")) {
@@ -346,9 +365,11 @@ func TestSummonLocal_TransitionsOpenToInProgress(t *testing.T) {
 
 	origGet := storeGetBeadFunc
 	origUpdate := summonUpdateBeadFunc
+	origSpawn := summonSpawnFunc
 	defer func() {
 		storeGetBeadFunc = origGet
 		summonUpdateBeadFunc = origUpdate
+		summonSpawnFunc = origSpawn
 	}()
 
 	storeGetBeadFunc = func(id string) (Bead, error) {
@@ -362,6 +383,7 @@ func TestSummonLocal_TransitionsOpenToInProgress(t *testing.T) {
 		gotUpdates = updates
 		return nil
 	}
+	summonSpawnFunc = stubSpawn
 
 	_ = summonLocal(1, []string{"spi-open"}, "")
 
@@ -381,9 +403,11 @@ func TestSummonLocal_TransitionsReadyToInProgress(t *testing.T) {
 
 	origGet := storeGetBeadFunc
 	origUpdate := summonUpdateBeadFunc
+	origSpawn := summonSpawnFunc
 	defer func() {
 		storeGetBeadFunc = origGet
 		summonUpdateBeadFunc = origUpdate
+		summonSpawnFunc = origSpawn
 	}()
 
 	storeGetBeadFunc = func(id string) (Bead, error) {
@@ -397,6 +421,7 @@ func TestSummonLocal_TransitionsReadyToInProgress(t *testing.T) {
 		gotUpdates = updates
 		return nil
 	}
+	summonSpawnFunc = stubSpawn
 
 	_ = summonLocal(1, []string{"spi-ready"}, "")
 

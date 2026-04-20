@@ -306,6 +306,13 @@ var isK8sAvailableFunc = isK8sAvailable
 // used by summonLocal for status transitions.
 var summonUpdateBeadFunc = storeUpdateBead
 
+// summonSpawnFunc is the seam around backend.Spawn so unit tests can exercise
+// summonLocal without fork/exec'ing the test binary (which would inherit
+// SPIRE_CONFIG_DIR and race with t.TempDir's RemoveAll).
+var summonSpawnFunc = func(b AgentBackend, cfg SpawnConfig) (agent.Handle, error) {
+	return b.Spawn(cfg)
+}
+
 // isK8sAvailable probes for a reachable cluster with the "spire" namespace.
 // Bounded by a short timeout so that a hung or unreachable kubectl context
 // can't block `spire summon` / `spire dismiss` or, via transitive callers,
@@ -513,7 +520,7 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 			towerName = cfg.ActiveTower
 		}
 
-		handle, err := backend.Spawn(SpawnConfig{
+		handle, err := summonSpawnFunc(backend, SpawnConfig{
 			Name:      name,
 			BeadID:    bead.ID,
 			Role:      RoleExecutor,
