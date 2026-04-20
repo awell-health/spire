@@ -72,6 +72,8 @@ spire watch
 
 The default local path is process-based: `spire summon` starts executor processes on your laptop, and approved work is landed by merging to the repo's base branch.
 
+Kubernetes/Helm deployment of Spire has been end-to-end verified on minikube via the spi-s8c4k smoke test.
+
 Every step is traceable — `spire trace` shows the full execution DAG for any bead:
 
 ![Spire trace](demo-trace.png)
