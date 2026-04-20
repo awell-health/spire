@@ -1,0 +1,93 @@
+version: 2
+project_name: spire
+
+before:
+  hooks:
+    - "sed -i 's/^version:.*/version: {{ .Version }}/' helm/spire/Chart.yaml"
+    - "sed -i 's/^appVersion:.*/appVersion: \"{{ .Version }}\"/' helm/spire/Chart.yaml"
+
+builds:
+  - main: ./cmd/spire
+    binary: spire
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums_linux_amd64.txt"
+
+dockers:
+  - id: steward-amd64
+    goos: linux
+    goarch: amd64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-steward:{{ .Version }}-amd64"
+      - "ghcr.io/awell-health/spire-steward:latest-amd64"
+    dockerfile: Dockerfile.steward
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: &steward_ctx
+      - go.mod
+      - go.sum
+      - cmd
+      - pkg
+      - operator
+      - k8s
+
+  - id: agent-amd64
+    goos: linux
+    goarch: amd64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-agent:{{ .Version }}-amd64"
+      - "ghcr.io/awell-health/spire-agent:latest-amd64"
+    dockerfile: Dockerfile.agent
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: &agent_ctx
+      - go.mod
+      - go.sum
+      - cmd
+      - pkg
+      - agent-entrypoint.sh
+
+  - id: builder-amd64
+    goos: linux
+    goarch: amd64
+    ids: [spire]
+    image_templates:
+      - "ghcr.io/awell-health/spire-builder:{{ .Version }}-amd64"
+      - "ghcr.io/awell-health/spire-builder:latest-amd64"
+    dockerfile: Dockerfile.builder
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/awell-health/spire"
+    extra_files: &builder_ctx
+      - go.mod
+      - go.sum
+      - operator/go.mod
+      - operator/go.sum
+
+release:
+  disable: true

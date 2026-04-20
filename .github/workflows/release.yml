@@ -15,7 +15,7 @@ permissions:
   packages: write
 
 jobs:
-  build-linux:
+  build-linux-amd64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,12 +25,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install arm64 cross-compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to GitHub Container Registry
@@ -42,13 +36,74 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          args: release --clean --config .goreleaser-linux.yaml --skip=announce
+          args: release --clean --config .goreleaser-linux-amd64.yaml --skip=announce
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-artifacts
+          name: linux-amd64-artifacts
           path: dist/*.tar.gz
+
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean --config .goreleaser-linux-arm64.yaml --skip=announce
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-artifacts
+          path: dist/*.tar.gz
+
+  docker-manifests:
+    needs: [build-linux-amd64, build-linux-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Derive version
+        id: v
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Join multi-arch tags
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          for image in spire-steward spire-agent spire-builder; do
+            docker buildx imagetools create \
+              -t "ghcr.io/awell-health/${image}:${VERSION}" \
+              "ghcr.io/awell-health/${image}:${VERSION}-amd64" \
+              "ghcr.io/awell-health/${image}:${VERSION}-arm64"
+            docker buildx imagetools create \
+              -t "ghcr.io/awell-health/${image}:latest" \
+              "ghcr.io/awell-health/${image}:latest-amd64" \
+              "ghcr.io/awell-health/${image}:latest-arm64"
+          done
 
   build-darwin:
     runs-on: macos-latest
@@ -69,13 +124,14 @@ jobs:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.CONTENTS_AND_WORKFLOWS_TOKEN }}
 
   upload-linux:
-    needs: [build-linux, build-darwin]
+    needs: [build-linux-amd64, build-linux-arm64, build-darwin]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: linux-artifacts
+          pattern: linux-*-artifacts
           path: linux-dist
+          merge-multiple: true
       - name: Upload Linux binaries to release
         run: |
           gh release upload "${{ inputs.tag }}" linux-dist/*.tar.gz --clobber
