@@ -70,12 +70,12 @@ var catalogs = map[Role]*Catalog{
 			{
 				Name:        "sage accept",
 				Args:        "<bead> [comment]",
-				Description: "Record an accept verdict for the current review round.",
+				Description: "Close the open review round with verdict=approve and label the task review-approved.",
 			},
 			{
 				Name:        "sage reject",
 				Args:        "<bead> --feedback <text>",
-				Description: "Record a reject verdict with required feedback for the apprentice.",
+				Description: "Close the open review round with verdict=request_changes and the required feedback.",
 			},
 		},
 		Common: CommonCommands,

@@ -93,20 +93,32 @@ branch has merged into main.
 Role-scoped commands for the **sage** — the agent dispatched to review
 an apprentice's work and record a verdict on the open review round.
 
+The user-facing verbs are `accept` / `reject`. The CLI translates them to
+the canonical review-round verdicts `approve` / `request_changes` and
+writes through the single review-round store helper used by the wizard
+review loop. Steward routing, feedback re-dispatch, and review history
+read from the review-round bead's `review_verdict` metadata, so sage-CLI
+verdicts and wizard-driven verdicts flow through the same pipeline.
+
+No parallel verdict field is written to the parent bead.
+
 ### `spire sage accept <bead> [comment]`
 
-Record an accept verdict for the current review round.
+Close the open review round with the canonical `approve` verdict.
 
 ```bash
 spire sage accept <bead-id> [comment]
 ```
 
-Writes `review_verdict=accept` (plus optional `review_comment`) to the
-task bead's metadata and closes the open review-round child bead.
+Writes `review_verdict=approve` to the open review-round child bead
+(via `CloseReviewBead`), adds the `review-approved` label to the task
+bead so the merge queue picks it up, and appends a review-approved
+comment. The optional positional `comment` is carried in the review-round
+summary and parent comment.
 
 ### `spire sage reject <bead> --feedback <text>`
 
-Record a reject verdict with required feedback for the apprentice.
+Close the open review round with the canonical `request_changes` verdict.
 
 ```bash
 spire sage reject <bead-id> --feedback <text>
@@ -114,11 +126,14 @@ spire sage reject <bead-id> --feedback <text>
 
 | Flag | Description |
 |------|-------------|
-| `--feedback <text>` | Feedback text explaining the reject verdict (required) |
+| `--feedback <text>` | Feedback text stored as the review-round summary (required) |
 
-Writes `review_verdict=reject` + `review_feedback=<text>` to the task
-bead's metadata and closes the open review-round child bead. `--feedback`
-is required — rejections without actionable feedback are not accepted.
+Writes `review_verdict=request_changes` to the open review-round child
+bead (via `CloseReviewBead`) with the feedback as the summary, and
+appends a `request_changes` comment to the task bead. The steward's
+feedback detector observes the review-round verdict and re-dispatches the
+apprentice, identical to the wizard-driven path. `--feedback` is
+required — rejections without actionable feedback are not accepted.
 
 ---
 

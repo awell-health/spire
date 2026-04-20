@@ -4,23 +4,64 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
+// sageStubs captures calls made to the sage.go test seams so assertions can
+// inspect exactly what the handler wrote and to which bead. Fields are
+// populated lazily; unused fields stay at their zero values.
+type sageStubs struct {
+	closeReviewID       string
+	closeReviewVerdict  string
+	closeReviewSummary  string
+	closeReviewRound    int
+	closeReviewErrCount int
+	closeReviewWarnCnt  int
+	closeReviewFindings []store.ReviewFinding
+
+	addedLabels   []struct{ id, label string }
+	addedComments []struct{ id, text string }
+}
+
 // stubSageDeps swaps the sage.go test seams for in-memory fakes and returns
-// a cleanup func that restores the originals. Each test that exercises the
-// store path should defer the returned cleanup so swaps don't leak across
-// tests in this package.
-func stubSageDeps(t *testing.T) func() {
+// the stubs plus a cleanup func that restores the originals. Each test that
+// exercises the store path should defer the returned cleanup so swaps don't
+// leak across tests in this package.
+func stubSageDeps(t *testing.T) (*sageStubs, func()) {
 	t.Helper()
 	origGetChildren := sageGetChildrenFunc
-	origSetMeta := sageSetMetadataMapFunc
-	origCloseAttempt := sageCloseAttemptFunc
-	return func() {
-		sageGetChildrenFunc = origGetChildren
-		sageSetMetadataMapFunc = origSetMeta
-		sageCloseAttemptFunc = origCloseAttempt
+	origCloseReview := sageCloseReviewFunc
+	origAddLabel := sageAddLabelFunc
+	origAddComment := sageAddCommentFunc
+
+	s := &sageStubs{}
+	sageCloseReviewFunc = func(reviewID, verdict, summary string, errorCount, warningCount, round int, findings []store.ReviewFinding) error {
+		s.closeReviewID = reviewID
+		s.closeReviewVerdict = verdict
+		s.closeReviewSummary = summary
+		s.closeReviewErrCount = errorCount
+		s.closeReviewWarnCnt = warningCount
+		s.closeReviewRound = round
+		s.closeReviewFindings = findings
+		return nil
 	}
+	sageAddLabelFunc = func(id, label string) error {
+		s.addedLabels = append(s.addedLabels, struct{ id, label string }{id, label})
+		return nil
+	}
+	sageAddCommentFunc = func(id, text string) error {
+		s.addedComments = append(s.addedComments, struct{ id, text string }{id, text})
+		return nil
+	}
+
+	cleanup := func() {
+		sageGetChildrenFunc = origGetChildren
+		sageCloseReviewFunc = origCloseReview
+		sageAddLabelFunc = origAddLabel
+		sageAddCommentFunc = origAddComment
+	}
+	return s, cleanup
 }
 
 // TestSageCmdRegistered verifies sageCmd is wired onto rootCmd and carries
@@ -54,10 +95,12 @@ func TestSageCmdRegistered(t *testing.T) {
 	}
 }
 
-// TestSageAccept_HappyPath verifies the verdict=accept path writes the
-// right metadata and closes the current review-round child.
+// TestSageAccept_HappyPath verifies that CLI "accept" translates to the
+// canonical "approve" verdict on the open review-round bead, the parent
+// gets the review-approved label (so DetectMergeReady picks it up), and no
+// parallel verdict metadata lands on the parent.
 func TestSageAccept_HappyPath(t *testing.T) {
-	cleanup := stubSageDeps(t)
+	s, cleanup := stubSageDeps(t)
 	defer cleanup()
 
 	sageGetChildrenFunc = func(parentID string) ([]Bead, error) {
@@ -72,45 +115,47 @@ func TestSageAccept_HappyPath(t *testing.T) {
 		}, nil
 	}
 
-	var setMetaID string
-	var setMetaMap map[string]string
-	sageSetMetadataMapFunc = func(id string, m map[string]string) error {
-		setMetaID = id
-		setMetaMap = m
-		return nil
-	}
-
-	var closedID, closedResult string
-	sageCloseAttemptFunc = func(id, result string) error {
-		closedID = id
-		closedResult = result
-		return nil
-	}
-
 	if err := cmdSageAccept("spi-p", ""); err != nil {
 		t.Fatalf("cmdSageAccept: %v", err)
 	}
-	if setMetaID != "spi-p" {
-		t.Errorf("setMetaID = %q, want spi-p", setMetaID)
+
+	if s.closeReviewID != "spi-p.1" {
+		t.Errorf("closed review id = %q, want spi-p.1", s.closeReviewID)
 	}
-	if setMetaMap["review_verdict"] != "accept" {
-		t.Errorf("review_verdict = %q, want accept", setMetaMap["review_verdict"])
+	if s.closeReviewVerdict != "approve" {
+		t.Errorf("verdict = %q, want approve (canonical review-round verdict)", s.closeReviewVerdict)
 	}
-	if _, ok := setMetaMap["review_comment"]; ok {
-		t.Errorf("review_comment should not be set when no comment given; got %q", setMetaMap["review_comment"])
+	if s.closeReviewRound != 1 {
+		t.Errorf("round = %d, want 1", s.closeReviewRound)
 	}
-	if closedID != "spi-p.1" {
-		t.Errorf("closed attempt = %q, want spi-p.1", closedID)
+
+	haveApproved := false
+	for _, l := range s.addedLabels {
+		if l.id == "spi-p" && l.label == "review-approved" {
+			haveApproved = true
+		}
 	}
-	if closedResult != "accept" {
-		t.Errorf("close result = %q, want accept", closedResult)
+	if !haveApproved {
+		t.Errorf("expected review-approved label on parent spi-p, got %+v", s.addedLabels)
+	}
+
+	// No parent-bead verdict metadata should have been written — the
+	// review-round bead is the single source of truth.
+	for _, c := range s.addedComments {
+		if c.id != "spi-p" {
+			t.Errorf("unexpected comment target %q; sage should only comment on the parent", c.id)
+		}
+		if strings.Contains(c.text, "review_verdict") {
+			t.Errorf("comment should not leak parent metadata verbiage: %q", c.text)
+		}
 	}
 }
 
-// TestSageAccept_WithComment verifies the optional comment lands in
-// review_comment metadata alongside the verdict.
+// TestSageAccept_WithComment verifies the optional comment is appended to
+// the summary passed to CloseReviewBead and surfaces in the parent comment
+// trail — on the review-round bead, not a parent metadata field.
 func TestSageAccept_WithComment(t *testing.T) {
-	cleanup := stubSageDeps(t)
+	s, cleanup := stubSageDeps(t)
 	defer cleanup()
 
 	sageGetChildrenFunc = func(parentID string) ([]Bead, error) {
@@ -119,33 +164,34 @@ func TestSageAccept_WithComment(t *testing.T) {
 				ID:     "spi-p.1",
 				Title:  "review-round-1",
 				Status: "in_progress",
-				Labels: []string{"review-round"},
+				Labels: []string{"review-round", "round:1"},
 				Parent: parentID,
 			},
 		}, nil
 	}
-	var metaMap map[string]string
-	sageSetMetadataMapFunc = func(id string, m map[string]string) error {
-		metaMap = m
-		return nil
-	}
-	sageCloseAttemptFunc = func(id, result string) error { return nil }
 
 	if err := cmdSageAccept("spi-p", "LGTM, nice work"); err != nil {
 		t.Fatalf("cmdSageAccept: %v", err)
 	}
-	if metaMap["review_verdict"] != "accept" {
-		t.Errorf("verdict = %q, want accept", metaMap["review_verdict"])
+	if s.closeReviewVerdict != "approve" {
+		t.Errorf("verdict = %q, want approve", s.closeReviewVerdict)
 	}
-	if metaMap["review_comment"] != "LGTM, nice work" {
-		t.Errorf("review_comment = %q, want 'LGTM, nice work'", metaMap["review_comment"])
+	if !strings.Contains(s.closeReviewSummary, "LGTM, nice work") {
+		t.Errorf("summary should carry the operator comment, got %q", s.closeReviewSummary)
+	}
+	if len(s.addedComments) != 1 {
+		t.Fatalf("want 1 parent comment, got %d (%+v)", len(s.addedComments), s.addedComments)
+	}
+	if !strings.Contains(s.addedComments[0].text, "LGTM, nice work") {
+		t.Errorf("parent comment = %q; want it to include the operator comment", s.addedComments[0].text)
 	}
 }
 
-// TestSageReject_HappyPath verifies verdict=reject + feedback metadata and
-// that the review-round child is closed with a reject result.
+// TestSageReject_HappyPath verifies verdict translation for reject and that
+// the feedback lands on the review-round bead summary; no parent-bead
+// metadata path is used.
 func TestSageReject_HappyPath(t *testing.T) {
-	cleanup := stubSageDeps(t)
+	s, cleanup := stubSageDeps(t)
 	defer cleanup()
 
 	sageGetChildrenFunc = func(parentID string) ([]Bead, error) {
@@ -154,39 +200,41 @@ func TestSageReject_HappyPath(t *testing.T) {
 				ID:     "spi-p.1",
 				Title:  "review-round-1",
 				Status: "in_progress",
-				Labels: []string{"review-round"},
+				Labels: []string{"review-round", "round:1"},
 				Parent: parentID,
 			},
 		}, nil
-	}
-
-	var metaMap map[string]string
-	sageSetMetadataMapFunc = func(id string, m map[string]string) error {
-		metaMap = m
-		return nil
-	}
-
-	var closedID, closedResult string
-	sageCloseAttemptFunc = func(id, result string) error {
-		closedID = id
-		closedResult = result
-		return nil
 	}
 
 	if err := cmdSageReject("spi-p", "missing error handling in foo.go"); err != nil {
 		t.Fatalf("cmdSageReject: %v", err)
 	}
-	if metaMap["review_verdict"] != "reject" {
-		t.Errorf("verdict = %q, want reject", metaMap["review_verdict"])
+	if s.closeReviewID != "spi-p.1" {
+		t.Errorf("closed review id = %q, want spi-p.1", s.closeReviewID)
 	}
-	if metaMap["review_feedback"] != "missing error handling in foo.go" {
-		t.Errorf("feedback = %q, want 'missing error handling in foo.go'", metaMap["review_feedback"])
+	if s.closeReviewVerdict != "request_changes" {
+		t.Errorf("verdict = %q, want request_changes (canonical review-round verdict)", s.closeReviewVerdict)
 	}
-	if closedID != "spi-p.1" {
-		t.Errorf("closed = %q, want spi-p.1", closedID)
+	if s.closeReviewSummary != "missing error handling in foo.go" {
+		t.Errorf("summary = %q, want the feedback text verbatim", s.closeReviewSummary)
 	}
-	if closedResult != "reject" {
-		t.Errorf("close result = %q, want reject", closedResult)
+	if s.closeReviewRound != 1 {
+		t.Errorf("round = %d, want 1", s.closeReviewRound)
+	}
+	// Reject must not add review-approved — that only fires on accept.
+	for _, l := range s.addedLabels {
+		if l.label == "review-approved" {
+			t.Errorf("reject should not add review-approved label, got %+v", s.addedLabels)
+		}
+	}
+	if len(s.addedComments) != 1 || s.addedComments[0].id != "spi-p" {
+		t.Fatalf("want 1 parent comment on spi-p, got %+v", s.addedComments)
+	}
+	if !strings.Contains(s.addedComments[0].text, "request_changes") {
+		t.Errorf("parent comment should mention request_changes, got %q", s.addedComments[0].text)
+	}
+	if !strings.Contains(s.addedComments[0].text, "missing error handling in foo.go") {
+		t.Errorf("parent comment should include feedback text, got %q", s.addedComments[0].text)
 	}
 }
 
@@ -227,9 +275,9 @@ func TestSageReject_MissingFeedback(t *testing.T) {
 
 // TestSageReject_NoOpenReview verifies the command errors when the task bead
 // has no open review-round child. Closed rounds and non-review children
-// must not satisfy the check.
+// must not satisfy the check, and no verdict write must occur.
 func TestSageReject_NoOpenReview(t *testing.T) {
-	cleanup := stubSageDeps(t)
+	s, cleanup := stubSageDeps(t)
 	defer cleanup()
 
 	sageGetChildrenFunc = func(parentID string) ([]Bead, error) {
@@ -250,12 +298,8 @@ func TestSageReject_NoOpenReview(t *testing.T) {
 			},
 		}, nil
 	}
-	sageSetMetadataMapFunc = func(id string, m map[string]string) error {
-		t.Fatalf("setMetadata should not be called when no open review round; got id=%q", id)
-		return nil
-	}
-	sageCloseAttemptFunc = func(id, result string) error {
-		t.Fatalf("closeAttempt should not be called when no open review round; got id=%q", id)
+	sageCloseReviewFunc = func(reviewID, verdict, summary string, errorCount, warningCount, round int, findings []store.ReviewFinding) error {
+		t.Fatalf("CloseReviewBead should not be called when no open review round; got id=%q", reviewID)
 		return nil
 	}
 
@@ -265,5 +309,55 @@ func TestSageReject_NoOpenReview(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no open review-round") {
 		t.Errorf("error %q should mention 'no open review-round'", err.Error())
+	}
+	if len(s.addedLabels)+len(s.addedComments) != 0 {
+		t.Errorf("failure path must not write to parent; got labels=%+v comments=%+v",
+			s.addedLabels, s.addedComments)
+	}
+}
+
+// TestSageVerdict_NoParentMetadataWrite guards against the spi-o475n
+// split-brain regression: both verdicts must route through CloseReviewBead
+// on the review-round bead and must NOT write a review_verdict field to the
+// parent. We verify by ensuring only the review-round id is passed to
+// sageCloseReviewFunc and that no label/comment carries the
+// "review_verdict=" form that would indicate a metadata path.
+func TestSageVerdict_NoParentMetadataWrite(t *testing.T) {
+	s, cleanup := stubSageDeps(t)
+	defer cleanup()
+
+	sageGetChildrenFunc = func(parentID string) ([]Bead, error) {
+		return []Bead{
+			{
+				ID:     "spi-p.1",
+				Title:  "review-round-1",
+				Status: "in_progress",
+				Labels: []string{"review-round", "round:1"},
+				Parent: parentID,
+			},
+		}, nil
+	}
+
+	if err := cmdSageAccept("spi-p", "ok"); err != nil {
+		t.Fatalf("cmdSageAccept: %v", err)
+	}
+	if s.closeReviewID == "spi-p" {
+		t.Error("verdict write targeted parent bead; must target review-round bead")
+	}
+	for _, l := range s.addedLabels {
+		if strings.HasPrefix(l.label, "review_verdict") {
+			t.Errorf("parent got review_verdict label %q; verdict must live on review-round bead only", l.label)
+		}
+	}
+
+	*s = sageStubs{}
+	if err := cmdSageReject("spi-p", "fix this"); err != nil {
+		t.Fatalf("cmdSageReject: %v", err)
+	}
+	if s.closeReviewID == "spi-p" {
+		t.Error("reject verdict write targeted parent bead; must target review-round bead")
+	}
+	if s.closeReviewVerdict != "request_changes" {
+		t.Errorf("canonical verdict = %q, want request_changes", s.closeReviewVerdict)
 	}
 }
