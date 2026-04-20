@@ -217,7 +217,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	timeout := repoconfig.ResolveTimeout("", repoCfg.Agent.Timeout, repoconfig.DefaultTimeout)
 	maxTurns := repoCfg.Agent.MaxTurns
 	if maxTurns == 0 {
-		maxTurns = 75
+		maxTurns = 150
 	}
 	designTimeout := repoconfig.ResolveDesignTimeout(repoCfg.Agent.DesignTimeout)
 	branchPattern := repoconfig.ResolveBranchPattern(repoCfg.Branch.Pattern)

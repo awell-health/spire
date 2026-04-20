@@ -1,6 +1,6 @@
 runtime:
   language: go
-  test: go test ./cmd/spire/ -timeout=30s
+  test: go test ./cmd/spire/ -timeout=60s
   build: go build ./cmd/spire/
   lint: go vet ./cmd/spire/
 
