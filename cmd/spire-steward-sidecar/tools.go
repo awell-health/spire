@@ -588,7 +588,7 @@ func runSpire(args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func runKubectl(args ...string) (string, error) {
+var runKubectl = func(args ...string) (string, error) {
 	cmd := exec.Command("kubectl", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

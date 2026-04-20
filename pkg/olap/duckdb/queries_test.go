@@ -1074,7 +1074,7 @@ func TestViewRefreshFormulaStats(t *testing.T) {
 	}
 
 	// Find task-default stats
-	var taskDefault *FormulaStats
+	var taskDefault *olap.FormulaStats
 	for i := range stats {
 		if stats[i].FormulaName == "task-default" {
 			taskDefault = &stats[i]

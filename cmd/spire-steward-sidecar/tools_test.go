@@ -670,9 +670,15 @@ func TestEnsureProjectID_DbNameFromEnv(t *testing.T) {
 func TestGetRoster_KubectlFallbackToStore(t *testing.T) {
 	saveStoreVars(t)
 
-	// We can't easily mock runKubectl without a var, but the function will fail
-	// in test environment (no kubectl). So it will always fall back to store.
-	// This tests the fallback path.
+	// Force the kubectl path to fail so the store fallback is exercised.
+	// kubectl may be installed in the test env and return an empty list,
+	// which would skip the fallback entirely.
+	origKubectl := runKubectl
+	runKubectl = func(args ...string) (string, error) {
+		return "", errors.New("kubectl unavailable in test")
+	}
+	t.Cleanup(func() { runKubectl = origKubectl })
+
 	storeListBeads = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Labels != nil && len(filter.Labels) == 1 && filter.Labels[0] == "agent" {
 			return []store.Bead{
@@ -708,6 +714,13 @@ func TestGetRoster_KubectlFallbackToStore(t *testing.T) {
 
 func TestGetRoster_FallbackStoreError(t *testing.T) {
 	saveStoreVars(t)
+
+	// Force kubectl to fail so the store-based fallback path is taken.
+	origKubectl := runKubectl
+	runKubectl = func(args ...string) (string, error) {
+		return "", errors.New("kubectl unavailable in test")
+	}
+	t.Cleanup(func() { runKubectl = origKubectl })
 
 	callCount := 0
 	storeListBeads = func(filter beads.IssueFilter) ([]store.Bead, error) {

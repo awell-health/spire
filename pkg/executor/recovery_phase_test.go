@@ -1288,10 +1288,10 @@ func TestParseHumanGuidance_RejectsRetrySchedulingComment(t *testing.T) {
 // the imperative-opener gate must not be so aggressive that it filters out
 // real guidance that mentions failure-adjacent vocabulary.
 func TestParseHumanGuidance_AcceptsImperativeWithConflictWord(t *testing.T) {
-	comments := []string{"resolve the conflict by rebasing onto base"}
+	comments := []string{"resolve the conflict, rebase onto base"}
 	got := parseHumanGuidance(comments, nil)
 	if got == "" {
-		t.Errorf("parseHumanGuidance returned empty, want a match for 'resolve the conflict by rebasing onto base'")
+		t.Errorf("parseHumanGuidance returned empty, want a match for 'resolve the conflict, rebase onto base'")
 	}
 }
 
