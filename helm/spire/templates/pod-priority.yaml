@@ -1,0 +1,39 @@
+{{- if .Values.podPriority.enabled }}
+# PriorityClasses consumed by `pkg/agent/backend_k8s.go` when spawning wizard
+# pods (the Go backend hardcodes name `spire-agent-default`). Without them
+# k8s rejects the pod create with "no PriorityClass with name ... was found"
+# and the steward cycle retries every cycle without progress.
+#
+# These are cluster-scoped resources. Helm will reject an install that tries
+# to create a PriorityClass someone else already owns; set `podPriority.enabled=false`
+# in that case and manage the classes out-of-band.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: spire-infrastructure
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+value: 2000000
+globalDefault: false
+description: "Spire infrastructure components (steward, operator, dolt, syncer)"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: spire-agent-p0
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+value: 1000000
+globalDefault: false
+description: "P0 critical bead agent pods"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: spire-agent-default
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+value: 100000
+globalDefault: false
+description: "Default priority for Spire agent (wizard) pods"
+{{- end }}

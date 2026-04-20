@@ -28,6 +28,17 @@ createNamespace: true
 paths:
   dataRoot: /data
 
+## @section Pod priority
+##
+## Cluster-scoped PriorityClasses consumed by wizard pods (name baked into
+## `pkg/agent/backend_k8s.go`). Disable when another operator owns these
+## classes or when a shared cluster forbids PriorityClass ownership per
+## release.
+
+## @param podPriority.enabled Render the PriorityClass resources (spire-infrastructure, spire-agent-p0, spire-agent-default).
+podPriority:
+  enabled: true
+
 ## @section Image configuration
 ##
 ## Container image registry and tags for spire-managed workloads. Image tags
