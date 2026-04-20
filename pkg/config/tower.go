@@ -39,6 +39,27 @@ type TowerConfig struct {
 	// RemoteUser is the remotesapi username (or DoltHub user) for convenience.
 	// The password is never persisted here — it lives in the credentials file.
 	RemoteUser string `json:"remote_user,omitempty"`
+
+	// BundleStore configures the git-bundle artifact store used by the
+	// apprentice submit / wizard fetch flow. See pkg/bundlestore.
+	BundleStore BundleStoreConfig `json:"bundle_store,omitempty"`
+}
+
+// BundleStoreConfig mirrors pkg/bundlestore.Config as JSON-serializable
+// tower state. Zero values are filled from bundlestore defaults at
+// construction time; nothing here is required in a fresh tower config.
+type BundleStoreConfig struct {
+	// Backend selects the implementation. Currently only "local" ships.
+	Backend string `json:"backend,omitempty"`
+	// LocalRoot is the filesystem root for the local backend. Empty
+	// falls back to $XDG_DATA_HOME/spire/bundles.
+	LocalRoot string `json:"local_root,omitempty"`
+	// MaxBytes caps individual bundle size. 0 means use the package
+	// default (10 MiB).
+	MaxBytes int64 `json:"max_bytes,omitempty"`
+	// JanitorInterval is parsed with time.ParseDuration. Empty means
+	// use the package default (5m).
+	JanitorInterval string `json:"janitor_interval,omitempty"`
 }
 
 // EffectiveRemoteKind returns the remote kind, defaulting to "dolthub" when
