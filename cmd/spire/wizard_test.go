@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -352,52 +351,6 @@ func TestWizardSeal_NoOpenAttempt(t *testing.T) {
 	}
 	if h.closedID != "" {
 		t.Errorf("expected no attempt close, got %q", h.closedID)
-	}
-}
-
-// --- Deprecation shim warnings -------------------------------------------
-
-func captureWizardLegacyStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	orig := wizardLegacyWarnWriter
-	wizardLegacyWarnWriter = func() *os.File { return w }
-	defer func() { wizardLegacyWarnWriter = orig }()
-
-	fn()
-
-	w.Close()
-	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, r)
-	return buf.String()
-}
-
-func TestWizardRun_DeprecationWarning(t *testing.T) {
-	// Replace cmdWizardRun-side so we only exercise the RunE warning,
-	// not the full wizard implementation pipeline.
-	out := captureWizardLegacyStderr(t, func() {
-		_ = wizardRunCmd.RunE(wizardRunCmd, []string{})
-	})
-	if !strings.Contains(out, "deprecated") {
-		t.Errorf("wizard-run stderr %q missing 'deprecated'", out)
-	}
-	if !strings.Contains(out, "wizard-run") {
-		t.Errorf("wizard-run stderr %q missing command name", out)
-	}
-}
-
-func TestWizardReview_DeprecationWarning(t *testing.T) {
-	out := captureWizardLegacyStderr(t, func() {
-		_ = wizardReviewCmd.RunE(wizardReviewCmd, []string{})
-	})
-	if !strings.Contains(out, "deprecated") {
-		t.Errorf("wizard-review stderr %q missing 'deprecated'", out)
-	}
-	if !strings.Contains(out, "wizard-review") {
-		t.Errorf("wizard-review stderr %q missing command name", out)
 	}
 }
 

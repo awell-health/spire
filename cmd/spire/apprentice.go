@@ -51,11 +51,29 @@ SPIRE_APPRENTICE_IDX, which the wizard injects at spawn time.`,
 	},
 }
 
+// apprenticeRunCmd is the internal spawn-only entry point used by the
+// executor/spawner to launch an apprentice subprocess. It is hidden from
+// the user-facing catalog — operators invoke apprentices through
+// `spire summon`, not directly. DisableFlagParsing is on because
+// CmdWizardRun owns its own flag grammar (--name, --review-fix,
+// --worktree-dir, --start-ref, --custom-prompt-file).
+var apprenticeRunCmd = &cobra.Command{
+	Use:                "run <bead-id>",
+	Short:              "Internal: run apprentice implementation subprocess",
+	Hidden:             true,
+	DisableFlagParsing: true,
+	Args:               cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWizardRun(args)
+	},
+}
+
 func init() {
 	apprenticeSubmitCmd.Flags().String("bead", "", "Task bead ID (overrides SPIRE_BEAD_ID)")
 	apprenticeSubmitCmd.Flags().String("since", "", "Base ref for the bundle (overrides the bead's base-branch: label)")
 	apprenticeSubmitCmd.Flags().Bool("no-changes", false, "Signal the bead with a no-op payload; skips bundle creation")
 	apprenticeCmd.AddCommand(apprenticeSubmitCmd)
+	apprenticeCmd.AddCommand(apprenticeRunCmd)
 }
 
 // --- Test-replaceable seams ---

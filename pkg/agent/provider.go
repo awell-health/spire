@@ -2,8 +2,8 @@
 // CLI invocation. Each provider (Claude, Codex, Cursor) knows how to build CLI
 // arguments and normalize output for its respective AI tool.
 //
-// Provider dispatch happens inside the spawned spire subprocess (wizard-run,
-// wizard-review), not at the Backend level. The Backend interface manages
+// Provider dispatch happens inside the spawned spire subprocess (apprentice run,
+// sage review), not at the Backend level. The Backend interface manages
 // process lifecycle (spawn/kill/logs); the AIProvider interface manages
 // AI CLI invocation within a running process.
 package agent

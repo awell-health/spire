@@ -20,7 +20,7 @@ import (
 // CmdWizardReview is the sage entry point for reviewing a bead's implementation.
 func CmdWizardReview(args []string, deps *Deps) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire wizard-review <bead-id> --name <name> [--verdict-only]")
+		return fmt.Errorf("usage: spire sage review <bead-id> --name <name> [--verdict-only]")
 	}
 
 	beadID := args[0]
@@ -526,7 +526,7 @@ func ReviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, deps *D
 }
 
 // ReviewHandleRequestChanges handles a request_changes verdict: posts comments,
-// spawns a wizard-run --review-fix, and returns.
+// spawns an apprentice with --review-fix, and returns.
 func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, revPolicy RevisionPolicy, deps *Deps, log func(string, ...interface{})) error {
 	log("requesting changes (round %d)", round)
 
@@ -595,7 +595,7 @@ func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 		PhaseStartedAt: reengageNow,
 	})
 
-	// Spawn wizard-run --review-fix
+	// Spawn apprentice with --review-fix
 	log("spawning %s --review-fix", wizardName)
 	logDir := filepath.Join(deps.DoltGlobalDir(), "wizards")
 	backend := deps.ResolveBackend("")

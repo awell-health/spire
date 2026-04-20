@@ -586,8 +586,7 @@ spire summon [n] [--targets <ids>] [--auto]
 ```
 
 Each wizard runs as a local process in an isolated git worktree, driven
-by the bead's formula. Prefer `spire summon` over the deprecated
-`spire wizard-run` — see the Deprecated section.
+by the bead's formula.
 
 #### `spire resummon`
 
@@ -758,31 +757,6 @@ archmage workflow; documented here for completeness.
 The verbs in this section continue to work but print a stderr
 deprecation warning and will be hard-removed in **v1.0**. Prefer the
 replacements listed below.
-
-### `spire wizard-run`
-
-`[deprecated since v0.44.0, hard removal v1.0]`
-
-```bash
-spire wizard-run <bead-id>
-```
-
-Use `spire summon` (or `spire wizard claim` for attempt creation)
-instead. `wizard-run` was the legacy internal entry point for the wizard
-implementation phase; the role-scoped taxonomy replaces it with the
-public `summon` surface and the `wizard claim` atomic-claim verb.
-
-### `spire wizard-review`
-
-`[deprecated since v0.44.0, hard removal v1.0]`
-
-```bash
-spire wizard-review
-```
-
-Use the new review flow instead: `spire sage accept <bead>` or
-`spire sage reject <bead> --feedback <text>` to record verdicts; the
-wizard drives review rounds automatically via its formula.
 
 ### `spire wizard-merge`
 

@@ -72,8 +72,6 @@ func init() {
 
 	// --- Internal / advanced ---
 	rootCmd.AddCommand(executeCmd)
-	rootCmd.AddCommand(wizardRunCmd)
-	rootCmd.AddCommand(wizardReviewCmd)
 
 	// --- Version ---
 	rootCmd.AddCommand(versionCmd)

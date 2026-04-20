@@ -142,7 +142,7 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		result := wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs)
 		// Promote the review verdict into outputs so the formula can route on
 		// steps.sage-review.outputs.verdict. The generic result field from
-		// wizard-review carries the verdict string.
+		// the sage review subprocess carries the verdict string.
 		verdict := result.Outputs["result"]
 		if verdict == "approve" || verdict == "request_changes" {
 			result.Outputs["verdict"] = verdict

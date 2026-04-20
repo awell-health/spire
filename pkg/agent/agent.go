@@ -79,10 +79,10 @@ type Info struct {
 type SpawnRole string
 
 const (
-	// RoleApprentice is a per-subtask implementer (wizard-run).
+	// RoleApprentice is a per-subtask implementer (apprentice run).
 	RoleApprentice SpawnRole = "apprentice"
 
-	// RoleSage is a per-review agent (wizard-review).
+	// RoleSage is a per-review agent (sage review).
 	RoleSage SpawnRole = "sage"
 
 	// RoleWizard is the executor — handles full workflow for all workload types.

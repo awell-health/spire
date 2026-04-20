@@ -45,6 +45,22 @@ var sageRejectCmd = &cobra.Command{
 	RunE:  runSageReject,
 }
 
+// sageReviewCmd is the internal spawn-only entry point used by the
+// executor/spawner to launch a sage review subprocess. It is hidden from
+// the user-facing catalog — verdicts are recorded through the public
+// `spire sage accept` / `spire sage reject` verbs. DisableFlagParsing is
+// on because CmdWizardReview owns its own flag grammar.
+var sageReviewCmd = &cobra.Command{
+	Use:                "review <bead-id>",
+	Short:              "Internal: run sage review subprocess",
+	Hidden:             true,
+	DisableFlagParsing: true,
+	Args:               cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdWizardReview(args)
+	},
+}
+
 // --- Test-replaceable seams (mirror the storeGetBeadFunc pattern) ---
 
 var sageGetChildrenFunc = storeGetChildren
@@ -55,7 +71,7 @@ var sageAddCommentFunc = store.AddComment
 func init() {
 	sageRejectCmd.Flags().String("feedback", "", "Feedback text explaining the request_changes verdict (required)")
 	_ = sageRejectCmd.MarkFlagRequired("feedback")
-	sageCmd.AddCommand(sageAcceptCmd, sageRejectCmd)
+	sageCmd.AddCommand(sageAcceptCmd, sageRejectCmd, sageReviewCmd)
 	rootCmd.AddCommand(sageCmd)
 }
 

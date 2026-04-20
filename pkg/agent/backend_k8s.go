@@ -86,7 +86,8 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 		return nil, err
 	}
 
-	args := []string{subcmd, cfg.BeadID, "--name", cfg.Name}
+	args := append([]string{}, subcmd...)
+	args = append(args, cfg.BeadID, "--name", cfg.Name)
 	args = append(args, cfg.ExtraArgs...)
 
 	env := b.buildEnvVars(cfg)

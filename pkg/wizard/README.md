@@ -7,8 +7,8 @@ part of the system has decided what role it should play and where it should
 run.
 
 In practice, `pkg/wizard` owns:
-- apprentice entrypoints (`wizard-run`)
-- sage entrypoints (`wizard-review`)
+- apprentice entrypoints (`apprentice run`)
+- sage entrypoints (`sage review`)
 - prompt assembly for those subprocesses
 - Claude invocation, timeout handling, validation, commit, and result writing
 - worktree preparation for a single subprocess — owns a fresh worktree when self-managed, or resumes a borrowed worktree via `--worktree-dir` (now honored for all modes: implement, review-fix, build-fix)
@@ -18,8 +18,8 @@ In practice, `pkg/wizard` owns:
 ## What this package owns
 
 - **Single-agent lifecycle**: start a wizard subprocess, prepare its workspace, run the role-specific flow, and write `result.json`.
-- **Apprentice execution**: implementation, review-fix, and build-fix flows in `wizard-run`.
-- **Sage execution**: diff review, test execution, verdict production, and review bead updates in `wizard-review`.
+- **Apprentice execution**: implementation, review-fix, and build-fix flows in `apprentice run`.
+- **Sage execution**: diff review, test execution, verdict production, and review bead updates in `sage review`.
 - **Prompt and validation mechanics**: prompt text, Claude CLI invocation, timeout enforcement, lint/build/test validation, and commit logic for one subprocess.
 - **Per-process workspace handling**: create a fresh worktree when self-managed, or resume a borrowed worktree when the caller (typically the v3 graph executor) passes `--worktree-dir`. This flag is honored for all modes — implementation, review-fix, and build-fix — not just review-fix.
 - **Legacy epic helpers**: `wizard-epic` and related files still live here.

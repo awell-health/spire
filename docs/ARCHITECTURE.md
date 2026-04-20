@@ -52,7 +52,7 @@ Single Go binary. Entry point for all operations.
 | Work        | `file`, `design`, `spec`, `claim`, `close`, `advance`, `focus`, `grok`, `ready`, `review`, `update` |
 | Messaging   | `register`, `unregister`, `send`, `collect`, `read`, `inbox` |
 | Coordination| `steward`, `board`, `roster`, `summon`, `dismiss`, `watch`, `alert` |
-| Execution   | `wizard-run`, `wizard-review`, `wizard-merge`, `execute`, `wizard-epic` |
+| Execution   | `apprentice run`, `sage review`, `wizard-merge`, `execute`, `wizard-epic` |
 | Observability| `logs`, `metrics`                                  |
 | Integrations| `connect`, `disconnect`, `serve`, `daemon`          |
 
@@ -168,7 +168,7 @@ bead. Routes by workload type:
 |-----------|---------------|--------------------|
 | task/*    | Wizard pod    | `agent-entrypoint.sh` (runs Claude Code) |
 | epic      | Wizard pod    | `agent-entrypoint.sh` (runs Claude Code) |
-| review    | Wizard pod    | `spire wizard-review --once`              |
+| review    | Wizard pod    | `spire sage review --once`              |
 
 Reaps completed/failed pods and removes work from the agent's CurrentWork
 list.

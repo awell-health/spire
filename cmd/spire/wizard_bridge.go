@@ -1,42 +1,15 @@
 // wizard_bridge.go wires pkg/wizard callbacks and provides thin CLI adapters
-// for wizard-run, wizard-review, and wizard-merge commands.
+// for the apprentice/sage spawn entry points. The public-facing role verbs
+// (apprentice submit, sage accept/reject, wizard claim/seal) live in their
+// respective role files; this bridge only forwards the internal subprocess
+// invocations to pkg/wizard.
 package main
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/wizard"
-	"github.com/spf13/cobra"
 )
-
-// wizardLegacyWarnWriter is the io.Writer that deprecation shims print to.
-// Tests override this to capture warnings without touching os.Stderr.
-var wizardLegacyWarnWriter = func() *os.File { return os.Stderr }
-
-var wizardRunCmd = &cobra.Command{
-	Use:                "wizard-run",
-	Short:              "Internal: run wizard implementation phase",
-	Hidden:             true,
-	DisableFlagParsing: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Fprintln(wizardLegacyWarnWriter(), "warning: 'spire wizard-run' is deprecated and will be removed in v1.0; use 'spire summon' (or 'spire wizard claim' for attempt creation) instead")
-		return cmdWizardRun(args)
-	},
-}
-
-var wizardReviewCmd = &cobra.Command{
-	Use:                "wizard-review",
-	Short:              "Internal: run wizard review phase",
-	Hidden:             true,
-	DisableFlagParsing: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Fprintln(wizardLegacyWarnWriter(), "warning: 'spire wizard-review' is deprecated and will be removed in v1.0; use 'spire sage accept' / 'spire sage reject' to record verdicts instead")
-		return cmdWizardReview(args)
-	},
-}
 
 // --- Type aliases for backward compatibility ---
 // These let existing cmd/spire code (executor_bridge, steward, etc.) continue
@@ -93,10 +66,6 @@ func cmdWizardRun(args []string) error {
 
 func cmdWizardReview(args []string) error {
 	return wizard.CmdWizardReview(args, buildWizardDeps())
-}
-
-func cmdWizardMerge(args []string) error {
-	return wizard.CmdWizardMerge(args, buildWizardDeps())
 }
 
 // --- Deps wiring ---

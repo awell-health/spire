@@ -1,5 +1,5 @@
 // Package wizard implements the wizard lifecycle: autonomous implementation
-// (wizard-run), code review (wizard-review / sage), and wizard epic
+// (apprentice run), code review (sage review), and wizard epic
 // orchestration. All external dependencies are injected via the Deps struct
 // so this package has no dependency on cmd/spire internals.
 package wizard

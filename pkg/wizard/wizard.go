@@ -120,10 +120,10 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 // It claims a bead, creates a worktree, runs design + implement phases,
 // validates, commits, updates the bead, and hands off to review.
 //
-// Usage: spire wizard-run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice] [--build-fix] [--no-review] [--worktree-dir <path>]
+// Usage: spire apprentice run <bead-id> [--name <wizard-name>] [--review-fix] [--apprentice] [--build-fix] [--no-review] [--worktree-dir <path>]
 func CmdWizardRun(args []string, deps *Deps) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: spire wizard-run <bead-id> [--name <name>] [--review-fix] [--apprentice] [--build-fix] [--no-review] [--worktree-dir <path>] [--start-ref <ref>]")
+		return fmt.Errorf("usage: spire apprentice run <bead-id> [--name <name>] [--review-fix] [--apprentice] [--build-fix] [--no-review] [--worktree-dir <path>] [--start-ref <ref>]")
 	}
 
 	// 1. Parse args

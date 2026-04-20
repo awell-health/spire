@@ -89,18 +89,19 @@ func TestK8sBackend_Spawn_CreatesCorrectPod(t *testing.T) {
 		t.Errorf("Image = %q, want %q", c.Image, testImage)
 	}
 
-	// Check command includes the role subcmd, bead ID, and name.
-	if len(c.Command) < 4 {
+	// Check command includes the role subcmd tokens, bead ID, and name.
+	if len(c.Command) < 5 {
 		t.Fatalf("Command too short: %v", c.Command)
 	}
 	if c.Command[0] != "spire" {
 		t.Errorf("Command[0] = %q, want spire", c.Command[0])
 	}
-	if c.Command[1] != "wizard-run" { // RoleApprentice -> wizard-run
-		t.Errorf("Command[1] = %q, want wizard-run", c.Command[1])
+	// RoleApprentice -> "apprentice run"
+	if c.Command[1] != "apprentice" || c.Command[2] != "run" {
+		t.Errorf("Command[1:3] = %v, want [apprentice run]", c.Command[1:3])
 	}
-	if c.Command[2] != cfg.BeadID {
-		t.Errorf("Command[2] = %q, want %q", c.Command[2], cfg.BeadID)
+	if c.Command[3] != cfg.BeadID {
+		t.Errorf("Command[3] = %q, want %q", c.Command[3], cfg.BeadID)
 	}
 
 	// Check env vars.

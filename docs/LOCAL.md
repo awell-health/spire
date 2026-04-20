@@ -248,7 +248,7 @@ Container lifecycle:
    by default, overrideable in `spire.yaml`)
 3. Container starts with the bead ID, repo URL, and branch as arguments
 4. The container runs the same internal Spire subcommand graph used
-   locally (`execute`, `wizard-run`, or `wizard-review`, depending on role)
+   locally (`execute`, `apprentice run`, or `sage review`, depending on role)
 5. On completion, the container exits and Spire can inspect it via Docker
    metadata and streamed logs
 

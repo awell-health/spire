@@ -39,7 +39,8 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 		return nil, err
 	}
 
-	args := []string{subcmd, cfg.BeadID, "--name", cfg.Name}
+	args := append([]string{}, subcmd...)
+	args = append(args, cfg.BeadID, "--name", cfg.Name)
 	if cfg.StartRef != "" {
 		args = append(args, "--start-ref", cfg.StartRef)
 	}
@@ -205,18 +206,20 @@ func setEnv(cmd *exec.Cmd, key, value string) {
 	cmd.Env = append(cmd.Env, prefix+value)
 }
 
-// roleToSubcmd maps a SpawnRole to the spire subcommand name.
-func roleToSubcmd(role SpawnRole) (string, error) {
+// roleToSubcmd maps a SpawnRole to the spire subcommand argv tokens.
+// Returns a slice so multi-word role-scoped subcommands (e.g. "apprentice run")
+// can be spliced into the command line by each backend.
+func roleToSubcmd(role SpawnRole) ([]string, error) {
 	switch role {
 	case RoleApprentice:
-		return "wizard-run", nil
+		return []string{"apprentice", "run"}, nil
 	case RoleSage:
-		return "wizard-review", nil
+		return []string{"sage", "review"}, nil
 	case RoleWizard:
-		return "wizard", nil
+		return []string{"wizard"}, nil
 	case RoleExecutor:
-		return "execute", nil
+		return []string{"execute"}, nil
 	default:
-		return "", fmt.Errorf("unknown spawn role: %q", role)
+		return nil, fmt.Errorf("unknown spawn role: %q", role)
 	}
 }
