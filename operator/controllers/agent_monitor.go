@@ -144,6 +144,29 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		workSet[beadID] = true
 	}
 
+	// Self-heal: if the operator restarted and lost in-memory state, the assigner
+	// may not have re-populated CurrentWork yet. Any active pod whose bead isn't
+	// in CurrentWork would otherwise be reaped as "stale" below. Re-attach it.
+	healed := false
+	for beadID, pod := range podsByBead {
+		if workSet[beadID] {
+			continue
+		}
+		if !isPodActive(pod) {
+			continue
+		}
+		agent.Status.CurrentWork = append(agent.Status.CurrentWork, beadID)
+		workSet[beadID] = true
+		healed = true
+		m.Log.Info("re-attached running pod to CurrentWork", "agent", agent.Name, "bead", beadID, "pod", pod.Name)
+	}
+	if healed {
+		if err := m.Client.Status().Update(ctx, agent); err != nil {
+			m.Log.Error(err, "failed to update agent CurrentWork after self-heal", "agent", agent.Name)
+			return
+		}
+	}
+
 	// Reap completed/failed pods and remove their bead IDs from CurrentWork
 	statusChanged := false
 	for beadID, pod := range podsByBead {
@@ -841,6 +864,22 @@ func beadsSeedVolume() corev1.Volume {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// isPodActive reports whether a pod should still count toward an agent's
+// CurrentWork — i.e. it's not terminal, being deleted, or finished.
+func isPodActive(pod *corev1.Pod) bool {
+	if pod.DeletionTimestamp != nil {
+		return false
+	}
+	switch pod.Status.Phase {
+	case corev1.PodSucceeded, corev1.PodFailed:
+		return false
+	}
+	if isPodFinished(pod) {
+		return false
+	}
+	return true
+}
 
 // isPodFinished checks if the main work container (wizard or artificer) has
 // terminated, even if the pod phase is still Running (sidecar may still be alive).
