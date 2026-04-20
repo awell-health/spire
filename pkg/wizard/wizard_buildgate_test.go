@@ -26,7 +26,7 @@ func mockBuildRunner(failCount int, errOutput string) (BuildRunFunc, *int) {
 // by writing a file to the worktree. It records call count.
 func mockAgentRunner() (AgentRunFunc, *int) {
 	calls := new(int)
-	return func(dir, promptPath, model, timeout string, maxTurns int) (ClaudeMetrics, error) {
+	return func(dir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (ClaudeMetrics, error) {
 		*calls++
 		// Simulate Claude writing a fix file
 		fixFile := filepath.Join(dir, fmt.Sprintf("fix-%d.go", *calls))
@@ -38,7 +38,7 @@ func mockAgentRunner() (AgentRunFunc, *int) {
 // mockAgentRunnerNoOp returns an AgentRunFunc that does nothing (no file changes).
 func mockAgentRunnerNoOp() (AgentRunFunc, *int) {
 	calls := new(int)
-	return func(dir, promptPath, model, timeout string, maxTurns int) (ClaudeMetrics, error) {
+	return func(dir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (ClaudeMetrics, error) {
 		*calls++
 		return ClaudeMetrics{}, nil
 	}, calls
@@ -48,7 +48,7 @@ func TestWizardBuildGate_NoBuildCommand(t *testing.T) {
 	wc := setupWorktree(t, "feat/gate-no-cmd")
 	cfg := &repoconfig.RepoConfig{}
 
-	passed := wizardBuildGateImpl(wc, "test-001", "no build cmd", wc.Dir, "", cfg, nil, noopLog, nil, nil)
+	passed := wizardBuildGateImpl(wc, "test-001", "no build cmd", wc.Dir, "", cfg, nil, "", noopLog, nil, nil)
 	if !passed {
 		t.Error("expected build gate to pass when no build command is configured")
 	}
@@ -64,7 +64,7 @@ func TestWizardBuildGate_BuildPassesFirstTry(t *testing.T) {
 	runAgent, agentCalls := mockAgentRunnerNoOp()
 
 	var metrics ClaudeMetrics
-	passed := wizardBuildGateImpl(wc, "test-002", "build passes", wc.Dir, "", cfg, &metrics, noopLog,
+	passed := wizardBuildGateImpl(wc, "test-002", "build passes", wc.Dir, "", cfg, &metrics, "", noopLog,
 		runBuild, runAgent)
 
 	if !passed {
@@ -93,7 +93,7 @@ func TestWizardBuildGate_FixSucceedsRound1(t *testing.T) {
 	runAgent, agentCalls := mockAgentRunner()
 
 	var metrics ClaudeMetrics
-	passed := wizardBuildGateImpl(wc, "test-003", "fix round 1", wc.Dir, "", cfg, &metrics, noopLog,
+	passed := wizardBuildGateImpl(wc, "test-003", "fix round 1", wc.Dir, "", cfg, &metrics, "", noopLog,
 		runBuild, runAgent)
 
 	if !passed {
@@ -122,7 +122,7 @@ func TestWizardBuildGate_ExhaustedAfterMaxRounds(t *testing.T) {
 	runAgent, agentCalls := mockAgentRunner()
 
 	var metrics ClaudeMetrics
-	passed := wizardBuildGateImpl(wc, "test-004", "exhausted rounds", wc.Dir, "", cfg, &metrics, noopLog,
+	passed := wizardBuildGateImpl(wc, "test-004", "exhausted rounds", wc.Dir, "", cfg, &metrics, "", noopLog,
 		runBuild, runAgent)
 
 	if passed {
@@ -155,7 +155,7 @@ func TestWizardBuildGate_FixSucceedsRound2(t *testing.T) {
 	runAgent, agentCalls := mockAgentRunner()
 
 	var metrics ClaudeMetrics
-	passed := wizardBuildGateImpl(wc, "test-005", "fix round 2", wc.Dir, "", cfg, &metrics, noopLog,
+	passed := wizardBuildGateImpl(wc, "test-005", "fix round 2", wc.Dir, "", cfg, &metrics, "", noopLog,
 		runBuild, runAgent)
 
 	if !passed {
@@ -181,7 +181,7 @@ func TestWizardBuildGate_MetricsAccumulation(t *testing.T) {
 
 	// Start with pre-existing metrics.
 	metrics := ClaudeMetrics{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500, Turns: 5, CostUSD: 1.0}
-	wizardBuildGateImpl(wc, "test-006", "metrics test", wc.Dir, "", cfg, &metrics, noopLog,
+	wizardBuildGateImpl(wc, "test-006", "metrics test", wc.Dir, "", cfg, &metrics, "", noopLog,
 		runBuild, runAgent)
 
 	// Each fix round adds: 100 input, 50 output, 150 total, 1 turn, 0.01 cost.
@@ -205,7 +205,7 @@ func TestWizardBuildGate_NilMetrics(t *testing.T) {
 	runBuild, _ := mockBuildRunner(1, "error")
 	runAgent, _ := mockAgentRunner()
 
-	passed := wizardBuildGateImpl(wc, "test-007", "nil metrics", wc.Dir, "", cfg, nil, noopLog,
+	passed := wizardBuildGateImpl(wc, "test-007", "nil metrics", wc.Dir, "", cfg, nil, "", noopLog,
 		runBuild, runAgent)
 
 	if !passed {
@@ -223,7 +223,7 @@ func TestWizardBuildGate_PromptFileCleanup(t *testing.T) {
 	runBuild, _ := mockBuildRunner(1, "error")
 	runAgent, _ := mockAgentRunnerNoOp()
 
-	wizardBuildGateImpl(wc, "test-008", "cleanup test", wc.Dir, "", cfg, nil, noopLog,
+	wizardBuildGateImpl(wc, "test-008", "cleanup test", wc.Dir, "", cfg, nil, "", noopLog,
 		runBuild, runAgent)
 
 	promptPath := filepath.Join(wc.Dir, ".spire-build-fix-prompt.txt")

@@ -372,7 +372,8 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		reviewFixTimeout := designTimeout // spec: review-fix gets 10m, not 15m
 		claudeStartedAt := time.Now()
 		log("starting implement phase with review feedback (timeout: %s)", reviewFixTimeout)
-		metrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, reviewFixTimeout, maxTurns)
+		metrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, reviewFixTimeout, maxTurns,
+			WizardAgentResultDir(deps, wizardName), "review-fix")
 		if runErr != nil {
 			log("claude implement failed: %s", runErr)
 			reviewFixSubprocessErr = runErr
@@ -402,7 +403,8 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			designStartedAt := time.Now()
 			log("starting design phase (timeout: %s)", designTimeout)
 			var designMetrics ClaudeMetrics
-			designOutput, designMetrics, err = WizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2)
+			designOutput, designMetrics, err = WizardRunClaudeCapture(worktreeDir, designPromptPath, model, designTimeout, maxTurns/2,
+				WizardAgentResultDir(deps, wizardName), "design")
 			if err != nil {
 				log("design phase failed: %s", err)
 				if retry.handleStepFailure(err.Error()) {
@@ -448,7 +450,8 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 			claudeStartedAt := time.Now()
 			log("starting implement phase (timeout: %s)", timeout)
-			implMetrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns)
+			implMetrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns,
+				WizardAgentResultDir(deps, wizardName), "implement")
 			if runErr != nil {
 				log("claude implement failed: %s", runErr)
 				if retry.handleStepFailure(runErr.Error()) {
@@ -497,7 +500,8 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	if !retry.shouldSkipTo("build-gate") {
 		retry.enterStep("build-gate")
 	}
-	buildPassed := WizardBuildGate(wc, beadID, beadTitle, worktreeDir, model, repoCfg, &accMetrics, log)
+	buildPassed := WizardBuildGate(wc, beadID, beadTitle, worktreeDir, model, repoCfg, &accMetrics,
+		WizardAgentResultDir(deps, wizardName), log)
 	if retry.retrying && retry.currentStep == "build-gate" {
 		if !buildPassed {
 			if retry.handleStepFailure("build gate failed") {
@@ -654,7 +658,8 @@ func cmdBuildFix(beadID, wizardName, worktreeDir string, startedAt time.Time,
 	// Run Claude to fix the build errors.
 	claudeStartedAt := time.Now()
 	log("starting build-fix phase (timeout: %s)", buildFixTimeout)
-	buildFixMetrics, runErr := WizardRunClaude(worktreeDir, promptPath, model, buildFixTimeout, maxTurns)
+	buildFixMetrics, runErr := WizardRunClaude(worktreeDir, promptPath, model, buildFixTimeout, maxTurns,
+		WizardAgentResultDir(deps, wizardName), "build-fix")
 	if runErr != nil {
 		log("claude build-fix failed: %s", runErr)
 	}
@@ -1029,12 +1034,20 @@ func WizardBuildCustomPrompt(wizardName, beadID string, cfg *repoconfig.RepoConf
 // WizardBuildClaudeArgs builds the common claude CLI arguments.
 // maxTurns is passed as --max-turns to limit agent iterations.
 // Timeout enforcement is handled by the caller via context.WithTimeout.
+//
+// Output format is stream-json so each turn (system init, tool_use,
+// tool_result, assistant/user, final result) lands on disk for
+// post-mortem. --include-partial-messages adds assistant deltas;
+// --verbose is required for stream-json to actually emit intermediate
+// events (omitting it silently degrades to result-only output).
 func WizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
 	args := []string{
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--model", model,
-		"--output-format", "json",
+		"--output-format", "stream-json",
+		"--include-partial-messages",
+		"--verbose",
 	}
 	// 0 means unlimited — omit the flag so Claude has no turn ceiling.
 	// The timeout is the real gate.
@@ -1044,10 +1057,63 @@ func WizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
 	return args
 }
 
-// WizardRunClaude invokes the claude CLI in print mode (output teed to stderr).
-// Returns token usage metrics parsed from the JSON result event.
-// timeout enforces a hard process-level deadline via context.
-func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int) (ClaudeMetrics, error) {
+// sanitizeClaudeLogLabel normalizes a semantic label into a filesystem-safe
+// token. Mirrors pkg/executor/claude_runner.go so the board inspector's
+// glob + sort treats wizard and executor logs consistently.
+func sanitizeClaudeLogLabel(s string) string {
+	r := strings.NewReplacer("/", "-", " ", "-", ":", "-")
+	out := r.Replace(s)
+	if out == "" {
+		return "claude"
+	}
+	return out
+}
+
+// openClaudeStreamLog opens <agentResultDir>/claude/<label>-<ts>.log for
+// append. Returns (nil, "") when agentResultDir is empty or the file
+// can't be opened. Best-effort: a broken log dir must never block the
+// claude invocation, so failures are logged (to stderr) and we fall
+// through to a discard writer.
+//
+// Timestamp format matches pkg/executor/claude_runner.go so
+// pkg/board/inspector.go's wizard-<id>-<suffix>/claude/*.log glob
+// treats wizard-produced and executor-produced logs uniformly.
+func openClaudeStreamLog(agentResultDir, label string) (*os.File, string) {
+	if agentResultDir == "" {
+		return nil, ""
+	}
+	dir := filepath.Join(agentResultDir, "claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: mkdir claude log dir %s: %v\n", dir, err)
+		return nil, ""
+	}
+	ts := time.Now().UTC().Format("20060102-150405")
+	name := fmt.Sprintf("%s-%s.log", sanitizeClaudeLogLabel(label), ts)
+	path := filepath.Join(dir, name)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: open claude log %s: %v\n", path, err)
+		return nil, ""
+	}
+	return f, path
+}
+
+// WizardAgentResultDir returns the per-wizard directory under which
+// claude stream logs live (<DoltGlobalDir>/wizards/<wizardName>). Empty
+// if deps or DoltGlobalDir are nil.
+func WizardAgentResultDir(deps *Deps, wizardName string) string {
+	if deps == nil || deps.DoltGlobalDir == nil {
+		return ""
+	}
+	return filepath.Join(deps.DoltGlobalDir(), "wizards", wizardName)
+}
+
+// WizardRunClaude invokes the claude CLI in print mode (output teed to
+// stderr and, when agentResultDir is non-empty, to a per-invocation log
+// file at <agentResultDir>/claude/<label>-<ts>.log). Returns token usage
+// metrics parsed from the stream's final result event. timeout enforces
+// a hard process-level deadline via context.
+func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
 		return ClaudeMetrics{}, fmt.Errorf("read prompt: %w", err)
@@ -1068,21 +1134,39 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = worktreeDir
 	cmd.Env = os.Environ()
+
+	logFile, logPath := openClaudeStreamLog(agentResultDir, label)
+	if logFile != nil {
+		defer logFile.Close()
+		fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s\n", label, logPath)
+		writeClaudeLogHeader(logFile, label, worktreeDir, args)
+	}
+
 	var buf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stderr, &buf)
+	writers := []io.Writer{os.Stderr, &buf}
+	if logFile != nil {
+		writers = append(writers, logFile)
+	}
+	cmd.Stdout = io.MultiWriter(writers...)
 	cmd.Stderr = os.Stderr
 
+	started := time.Now()
 	runErr := cmd.Run()
-	_, metrics := parseClaudeResultJSON(buf.Bytes())
+	if logFile != nil {
+		fmt.Fprintf(logFile, "\n=== end (err=%v, duration=%s) ===\n", runErr, time.Since(started))
+	}
 
+	_, metrics := parseClaudeResultJSON(buf.Bytes())
 	return metrics, runErr
 }
 
 // WizardRunClaudeCapture invokes the claude CLI and captures the text result.
-// Returns the result text extracted from the JSON result event, token usage
-// metrics, and any execution error. Falls back to raw output if JSON parsing fails.
-// timeout enforces a hard process-level deadline via context.
-func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int) (string, ClaudeMetrics, error) {
+// Returns the result text extracted from the stream's final result event,
+// token usage metrics, and any execution error. Falls back to raw output if
+// parsing fails. timeout enforces a hard process-level deadline via context.
+// When agentResultDir is non-empty, the full stream is also teed to
+// <agentResultDir>/claude/<label>-<ts>.log.
+func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (string, ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
 		return "", ClaudeMetrics{}, fmt.Errorf("read prompt: %w", err)
@@ -1104,7 +1188,27 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	cmd.Env = os.Environ()
 	cmd.Stderr = os.Stderr
 
-	out, runErr := cmd.Output()
+	logFile, logPath := openClaudeStreamLog(agentResultDir, label)
+	if logFile != nil {
+		defer logFile.Close()
+		fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s\n", label, logPath)
+		writeClaudeLogHeader(logFile, label, worktreeDir, args)
+	}
+
+	var buf bytes.Buffer
+	writers := []io.Writer{&buf}
+	if logFile != nil {
+		writers = append(writers, logFile)
+	}
+	cmd.Stdout = io.MultiWriter(writers...)
+
+	started := time.Now()
+	runErr := cmd.Run()
+	if logFile != nil {
+		fmt.Fprintf(logFile, "\n=== end (err=%v, duration=%s) ===\n", runErr, time.Since(started))
+	}
+
+	out := buf.Bytes()
 	resultText, metrics := parseClaudeResultJSON(out)
 	// Fall back to raw output if parsing didn't find a result event
 	if resultText == "" {
@@ -1112,6 +1216,20 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	}
 
 	return resultText, metrics, runErr
+}
+
+// writeClaudeLogHeader writes an identifying preamble to the claude
+// log file so an operator tailing it mid-run sees what invocation they
+// are watching. Mirrors the executor's header format.
+func writeClaudeLogHeader(f *os.File, label, worktreeDir string, args []string) {
+	fmt.Fprintf(f, "=== claude invocation ===\n")
+	fmt.Fprintf(f, "label: %s\n", label)
+	fmt.Fprintf(f, "dir:   %s\n", worktreeDir)
+	fmt.Fprintf(f, "time:  %s\n", time.Now().UTC().Format(time.RFC3339))
+	// Skip args: the prompt (-p) is enormous and not useful in the header.
+	_ = args
+	fmt.Fprintln(f)
+	fmt.Fprintf(f, "=== stream ===\n")
 }
 
 // WizardRunCmd runs a shell command in the given directory.
@@ -1165,21 +1283,25 @@ const DefaultMaxBuildFixRounds = 2
 // BuildRunFunc runs a build command in a directory and returns output + error.
 type BuildRunFunc func(dir, cmd string) (string, error)
 
-// AgentRunFunc invokes a Claude agent and returns metrics.
-type AgentRunFunc func(dir, promptPath, model, timeout string, maxTurns int) (ClaudeMetrics, error)
+// AgentRunFunc invokes a Claude agent and returns metrics. The
+// agentResultDir + label arguments select where the per-invocation
+// stream log is written; empty agentResultDir disables the log tee.
+type AgentRunFunc func(dir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (ClaudeMetrics, error)
 
 // WizardBuildGate runs the build command and, on failure, enters a fix loop:
 // invoke Claude with the build error, re-commit, re-build, up to maxRounds.
-// Returns true if the build passes (immediately or after fixes).
+// Returns true if the build passes (immediately or after fixes). When
+// agentResultDir is non-empty, each fix invocation's stream is captured
+// to <agentResultDir>/claude/build-gate-fix-<ts>.log.
 func WizardBuildGate(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, model string,
-	cfg *repoconfig.RepoConfig, accMetrics *ClaudeMetrics, log func(string, ...interface{})) bool {
-	return wizardBuildGateImpl(wc, beadID, beadTitle, worktreeDir, model, cfg, accMetrics, log,
+	cfg *repoconfig.RepoConfig, accMetrics *ClaudeMetrics, agentResultDir string, log func(string, ...interface{})) bool {
+	return wizardBuildGateImpl(wc, beadID, beadTitle, worktreeDir, model, cfg, accMetrics, agentResultDir, log,
 		WizardRunCmdCapture, WizardRunClaude)
 }
 
 // wizardBuildGateImpl is the testable implementation of WizardBuildGate.
 func wizardBuildGateImpl(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, model string,
-	cfg *repoconfig.RepoConfig, accMetrics *ClaudeMetrics, log func(string, ...interface{}),
+	cfg *repoconfig.RepoConfig, accMetrics *ClaudeMetrics, agentResultDir string, log func(string, ...interface{}),
 	runBuild BuildRunFunc, runAgent AgentRunFunc) bool {
 
 	buildCmd := cfg.Runtime.Build
@@ -1218,8 +1340,11 @@ func wizardBuildGateImpl(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeD
 			return false
 		}
 
-		// Invoke Claude to fix.
-		fixMetrics, runErr := runAgent(worktreeDir, promptPath, model, buildFixTimeout, maxTurns)
+		// Invoke Claude to fix. Label includes the round so each attempt
+		// writes to its own file (not strictly necessary — timestamps
+		// already disambiguate — but makes post-mortem scanning easier).
+		fixLabel := fmt.Sprintf("build-gate-fix-r%d", round)
+		fixMetrics, runErr := runAgent(worktreeDir, promptPath, model, buildFixTimeout, maxTurns, agentResultDir, fixLabel)
 		if accMetrics != nil {
 			*accMetrics = accMetrics.Add(fixMetrics)
 		}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -204,18 +205,226 @@ not json at all
 	})
 }
 
-func TestWizardBuildClaudeArgsIncludesJSONFormat(t *testing.T) {
+func TestWizardBuildClaudeArgsStreamJSON(t *testing.T) {
 	args := WizardBuildClaudeArgs("hello", "claude-sonnet-4-6", 50)
-	found := false
+
+	// Must request stream-json (one JSONL event per turn, not a single result summary).
+	var streamJSON bool
 	for i, a := range args {
-		if a == "--output-format" && i+1 < len(args) && args[i+1] == "json" {
-			found = true
+		if a == "--output-format" && i+1 < len(args) && args[i+1] == "stream-json" {
+			streamJSON = true
 			break
 		}
 	}
-	if !found {
-		t.Errorf("WizardBuildClaudeArgs missing --output-format json, got %v", args)
+	if !streamJSON {
+		t.Errorf("expected --output-format stream-json, got %v", args)
 	}
+
+	// stream-json silently degrades without --verbose; we MUST include it.
+	if !containsArg(args, "--verbose") {
+		t.Errorf("expected --verbose (required for stream-json intermediate events), got %v", args)
+	}
+
+	// Partial-message deltas help post-mortem of stuck agents.
+	if !containsArg(args, "--include-partial-messages") {
+		t.Errorf("expected --include-partial-messages, got %v", args)
+	}
+
+	// Regression guard: the old plain-json mode lost everything but the
+	// result event — make sure we never go back.
+	for i, a := range args {
+		if a == "--output-format" && i+1 < len(args) && args[i+1] == "json" {
+			t.Errorf("must not use plain --output-format json (emits only final result), got %v", args)
+		}
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestParseClaudeResultJSON_StreamJSON(t *testing.T) {
+	// A realistic stream-json output: system init, a few tool_use / tool_result
+	// events, an assistant message, then the final result event as the last line.
+	// The result.json contract (input/output tokens, turns, cost, tool counts)
+	// must be parsed identically to the old single-line json mode.
+	input := []byte(`{"type":"system","subtype":"init","session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"starting"}]}}
+{"type":"tool_use","name":"Read","input":{"path":"x"}}
+{"type":"tool_result","tool_use_id":"tu_1","content":"file contents"}
+{"type":"tool_use","name":"Edit","input":{}}
+{"type":"tool_result","tool_use_id":"tu_2","content":"edited"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"partial"}]}}
+{"type":"tool_use","name":"Read","input":{"path":"y"}}
+{"type":"tool_result","tool_use_id":"tu_3","content":"more"}
+{"type":"result","subtype":"success","is_error":false,"num_turns":9,"result":"done","session_id":"s1","total_cost_usd":0.34,"usage":{"input_tokens":4200,"output_tokens":1800}}
+`)
+
+	text, metrics := parseClaudeResultJSON(input)
+	if text != "done" {
+		t.Errorf("resultText = %q, want %q", text, "done")
+	}
+	if metrics.InputTokens != 4200 {
+		t.Errorf("InputTokens = %d, want 4200", metrics.InputTokens)
+	}
+	if metrics.OutputTokens != 1800 {
+		t.Errorf("OutputTokens = %d, want 1800", metrics.OutputTokens)
+	}
+	if metrics.TotalTokens != 6000 {
+		t.Errorf("TotalTokens = %d, want 6000", metrics.TotalTokens)
+	}
+	if metrics.Turns != 9 {
+		t.Errorf("Turns = %d, want 9", metrics.Turns)
+	}
+	if metrics.CostUSD != 0.34 {
+		t.Errorf("CostUSD = %f, want 0.34", metrics.CostUSD)
+	}
+	// Tool counts aggregated across the stream.
+	if metrics.ToolCalls == nil {
+		t.Fatal("expected non-nil ToolCalls, got nil")
+	}
+	if metrics.ToolCalls["Read"] != 2 {
+		t.Errorf("ToolCalls[Read] = %d, want 2", metrics.ToolCalls["Read"])
+	}
+	if metrics.ToolCalls["Edit"] != 1 {
+		t.Errorf("ToolCalls[Edit] = %d, want 1", metrics.ToolCalls["Edit"])
+	}
+}
+
+func TestOpenClaudeStreamLog(t *testing.T) {
+	t.Run("creates claude subdir and log file", func(t *testing.T) {
+		base := t.TempDir()
+
+		f, path := openClaudeStreamLog(base, "implement")
+		if f == nil {
+			t.Fatal("expected non-nil file handle")
+		}
+		defer f.Close()
+
+		if path == "" {
+			t.Fatal("expected non-empty path")
+		}
+
+		claudeDir := filepath.Join(base, "claude")
+		if _, err := os.Stat(claudeDir); err != nil {
+			t.Fatalf("expected claude subdir at %s: %v", claudeDir, err)
+		}
+
+		// Filename must match the board glob <dir>/claude/*.log and start with label.
+		if filepath.Dir(path) != claudeDir {
+			t.Errorf("log dir = %q, want %q", filepath.Dir(path), claudeDir)
+		}
+		name := filepath.Base(path)
+		if !strings.HasPrefix(name, "implement-") || !strings.HasSuffix(name, ".log") {
+			t.Errorf("log filename %q should look like implement-<ts>.log", name)
+		}
+	})
+
+	t.Run("writing a multi-event stream lands on disk", func(t *testing.T) {
+		base := t.TempDir()
+		f, path := openClaudeStreamLog(base, "review-fix")
+		if f == nil {
+			t.Fatal("expected non-nil file handle")
+		}
+
+		stream := `{"type":"system","subtype":"init"}
+{"type":"tool_use","name":"Read"}
+{"type":"tool_result","content":"ok"}
+{"type":"result","result":"done","num_turns":3,"total_cost_usd":0.02,"usage":{"input_tokens":100,"output_tokens":50}}
+`
+		if _, err := f.Write([]byte(stream)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		f.Close()
+
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read log: %v", err)
+		}
+		if !strings.Contains(string(got), `"type":"tool_use"`) {
+			t.Errorf("log missing tool_use events; got:\n%s", got)
+		}
+		if !strings.Contains(string(got), `"type":"result"`) {
+			t.Errorf("log missing result event; got:\n%s", got)
+		}
+	})
+
+	t.Run("empty agentResultDir disables log file (best-effort, no error)", func(t *testing.T) {
+		f, path := openClaudeStreamLog("", "implement")
+		if f != nil {
+			t.Error("expected nil file for empty dir")
+			f.Close()
+		}
+		if path != "" {
+			t.Errorf("expected empty path, got %q", path)
+		}
+	})
+
+	t.Run("unwritable dir falls back silently (no panic)", func(t *testing.T) {
+		// Point at a path where mkdir will fail (a path under an existing
+		// regular file). Best-effort contract: return (nil, "") without erroring.
+		base := t.TempDir()
+		blocker := filepath.Join(base, "file")
+		if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		f, path := openClaudeStreamLog(filepath.Join(blocker, "nested"), "implement")
+		if f != nil {
+			t.Error("expected nil file when mkdir fails")
+			f.Close()
+		}
+		if path != "" {
+			t.Errorf("expected empty path on failure, got %q", path)
+		}
+	})
+
+	t.Run("sanitizes label with slash/space/colon", func(t *testing.T) {
+		base := t.TempDir()
+		f, path := openClaudeStreamLog(base, "weird/label name:x")
+		if f == nil {
+			t.Fatal("expected non-nil file handle")
+		}
+		defer f.Close()
+		name := filepath.Base(path)
+		if strings.ContainsAny(name, "/: ") {
+			// filenames with slashes would land in a subdir; spaces/colons are
+			// legal on most filesystems but portability + the executor's
+			// pattern — keep them out.
+			t.Errorf("sanitized name %q still contains unsafe chars", name)
+		}
+		if !strings.HasPrefix(name, "weird-label-name-x-") {
+			t.Errorf("expected sanitized prefix weird-label-name-x-, got %q", name)
+		}
+	})
+}
+
+func TestWizardAgentResultDir(t *testing.T) {
+	t.Run("returns <DoltGlobalDir>/wizards/<name>", func(t *testing.T) {
+		deps := &Deps{DoltGlobalDir: func() string { return "/tmp/spire" }}
+		got := WizardAgentResultDir(deps, "wizard-spi-abc-w1-1")
+		want := filepath.Join("/tmp/spire", "wizards", "wizard-spi-abc-w1-1")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("nil deps returns empty string", func(t *testing.T) {
+		if got := WizardAgentResultDir(nil, "x"); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("nil DoltGlobalDir func returns empty string", func(t *testing.T) {
+		deps := &Deps{}
+		if got := WizardAgentResultDir(deps, "x"); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
 }
 
 func TestWizardWriteResultIncludesMetrics(t *testing.T) {
