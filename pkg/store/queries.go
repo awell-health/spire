@@ -127,6 +127,21 @@ func GetConfig(key string) (string, error) {
 // design beads, and beads with active attempt children so they don't appear
 // as assignable work in the steward cycle.
 func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
+	// Default to status="ready" when the caller doesn't specify — "ready"
+	// is a Spire-specific custom active status registered in the beads
+	// `custom_statuses` table, and `beads.Storage.GetReadyWork` hardcodes
+	// its default status clause to `status IN ('open', 'in_progress')`.
+	// Without this override the query never returns any ready bead, and
+	// the steward cycle reports "ready: 0 beads" no matter how many
+	// `spire ready`-marked beads exist. Callers who want a different
+	// status (e.g. "open") pass it explicitly and we honor their choice.
+	if filter.Status == "" {
+		// "ready" is not a built-in beads Status constant (v1.0.0 ships
+		// only open/in_progress/blocked/deferred/closed/pinned/hooked);
+		// it's registered in custom_statuses as category="active".
+		filter.Status = beads.Status("ready")
+	}
+
 	// SQL-level filtering: exclude internal bead types to reduce row count.
 	for t := range InternalTypes {
 		filter.ExcludeTypes = append(filter.ExcludeTypes, beads.IssueType(t))
