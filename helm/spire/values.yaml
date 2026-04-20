@@ -288,6 +288,12 @@ spireConfig:
 ##
 ## Each entry creates a WizardGuild CR that the operator manages.
 ##
+## BREAKING CHANGE (spi-iaw8q): the SpireAgent CRD was replaced by WizardGuild.
+## No migration tooling is shipped — upgrades from charts that deployed the
+## old `spireagents.spire.awell.io` CRD require `helm uninstall && helm install`.
+## Decision per archmage on bead spi-iaw8q (2026-04-20): no production users
+## yet, so direct replacement is the rollout mechanism in lower environments.
+##
 ## Naming convention: the `name` is the guild's shortname. It is used verbatim
 ## as the CR name and as the prefix for every wizard pod spawned under the
 ## guild (`<name>-wizard-<bead>`). Keep it short, lowercase, and DNS-safe.

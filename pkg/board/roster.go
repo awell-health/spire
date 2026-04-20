@@ -108,9 +108,7 @@ func RosterFromK8s(timeout time.Duration) ([]RosterAgent, error) {
 	if names, err := exec.Command("kubectl", "get", "wizardguild", "-n", "spire",
 		"-o", "jsonpath={.items[*].metadata.name}").Output(); err == nil {
 		for _, n := range strings.Fields(strings.TrimSpace(string(names))) {
-			if strings.HasPrefix(n, "wizard-") {
-				agentNames = append(agentNames, n)
-			}
+			agentNames = append(agentNames, n)
 		}
 	}
 
