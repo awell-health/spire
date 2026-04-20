@@ -30,13 +30,14 @@ spec:
           args:
             - |
               set -e
+              mkdir -p {{ include "spire.dbDataDir" . }}
               spire tower attach-cluster \
-                --data-dir=/data \
+                --data-dir={{ include "spire.dbDataDir" . }} \
                 --database="$BEADS_DATABASE" \
                 --prefix="$BEADS_PREFIX" \
                 --dolthub-remote="$DOLTHUB_REMOTE" \
                 --dolt-wait=300s
-              chmod 700 /data/.beads 2>/dev/null || true
+              chmod 700 {{ include "spire.beadsDir" . }} 2>/dev/null || true
           env:
             - name: DOLT_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
@@ -47,14 +48,18 @@ spec:
             - name: BEADS_DOLT_SERVER_PORT
               value: {{ .Values.dolt.port | quote }}
             - name: BEADS_DATABASE
-              value: {{ .Values.beads.database | default .Values.beads.prefix | quote }}
+              value: {{ include "spire.database" . | quote }}
             - name: BEADS_PREFIX
               value: {{ .Values.beads.prefix | quote }}
             - name: DOLTHUB_REMOTE
               value: {{ .Values.dolthub.remoteUrl | quote }}
+            - name: SPIRE_CONFIG_DIR
+              value: {{ include "spire.configDir" . | quote }}
+            - name: DOLT_DATA_DIR
+              value: {{ .Values.paths.dataRoot | quote }}
           volumeMounts:
             - name: data
-              mountPath: /data
+              mountPath: {{ .Values.paths.dataRoot }}
       containers:
         - name: operator
           image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
@@ -64,7 +69,7 @@ spec:
             - --namespace={{ .Values.namespace }}
             - --interval={{ .Values.operator.interval }}
             - --steward-image={{ .Values.images.agent.repository }}:{{ .Values.images.agent.tag | default .Chart.AppVersion }}
-            - --beads-dir=/data/.beads
+            - --beads-dir={{ include "spire.beadsDir" . }}
           env:
             - name: DOLT_HOST
               value: "spire-dolt.{{ .Values.namespace }}.svc"
@@ -74,9 +79,13 @@ spec:
               value: "spire-dolt.{{ .Values.namespace }}.svc"
             - name: BEADS_DOLT_SERVER_PORT
               value: {{ .Values.dolt.port | quote }}
+            - name: SPIRE_CONFIG_DIR
+              value: {{ include "spire.configDir" . | quote }}
+            - name: DOLT_DATA_DIR
+              value: {{ .Values.paths.dataRoot | quote }}
           volumeMounts:
             - name: data
-              mountPath: /data
+              mountPath: {{ .Values.paths.dataRoot }}
           resources:
             requests:
               cpu: {{ .Values.operator.resources.requests.cpu }}

@@ -9,6 +9,49 @@ one by this name; otherwise it falls back to "<release>-credentials".
 {{- end -}}
 
 {{/*
+spire.database — canonical database / tower name. Every template that
+needs this value (volume subpaths, --data-dir, attach-cluster --database,
+dolt backup subdir, etc) MUST use this helper rather than repeating the
+`beads.database | default beads.prefix` expression, so there is exactly
+one place that decides what the database is called.
+*/}}
+{{- define "spire.database" -}}
+{{ .Values.beads.database | default .Values.beads.prefix }}
+{{- end -}}
+
+{{/*
+spire.dbDataDir — per-database dolt data dir (`<dataRoot>/<database>`).
+Matches the laptop convention `$DOLT_DATA_DIR/<db>`, so setting
+DOLT_DATA_DIR=<dataRoot> in-pod lets `BeadsDirForTower()` resolve a
+tower's .beads/ without any persisted per-tower overrides. Used by
+every `spire tower attach-cluster --data-dir=...` invocation.
+*/}}
+{{- define "spire.dbDataDir" -}}
+{{ .Values.paths.dataRoot }}/{{ include "spire.database" . }}
+{{- end -}}
+
+{{/*
+spire.beadsDir — the tower's `.beads/` workspace (`<dbDataDir>/.beads`).
+This is where `attach-cluster` seeds the workspace and where the steward,
+operator, and syncer read work state. Derived, not a knob.
+*/}}
+{{- define "spire.beadsDir" -}}
+{{ include "spire.dbDataDir" . }}/.beads
+{{- end -}}
+
+{{/*
+spire.configDir — SPIRE_CONFIG_DIR for every Spire-owned container
+(init and main). Points at a subdir of the shared PVC so that the tower
+config written by the init container's `attach-cluster` survives into
+the main container, where the steward loads it via ListTowerConfigs().
+Without this persistence, the init's ephemeral filesystem discards the
+file and the main container reports "no tower configured".
+*/}}
+{{- define "spire.configDir" -}}
+{{ .Values.paths.dataRoot }}/spire-config
+{{- end -}}
+
+{{/*
 spire.additionalUsersSecretName — name of the chart-managed Secret that
 holds inline passwords (from `entry.password`) for dolt.additionalUsers.
 Kept separate from `spire.secretName` so external-secret setups don't

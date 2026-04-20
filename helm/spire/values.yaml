@@ -12,6 +12,22 @@ namespace: spire
 ## for backward compatibility.
 createNamespace: true
 
+## @section Filesystem paths
+##
+## The PVC mount point is the only externally-observable path knob. Every
+## other persistent path used by Spire in-cluster — the per-database dolt
+## data dir, the `.beads/` workspace, the tower config dir that
+## `spire tower attach-cluster` writes and the main container reads — is
+## derived as a subpath of this root via chart helpers
+## (`spire.dbDataDir`, `spire.beadsDir`, `spire.configDir`), so the chart
+## cannot ship with two paths silently out of sync. Override this only
+## when the deploy target needs a different mount location (different
+## volume, path-based pod-security policy, etc).
+
+## @param paths.dataRoot Mount point for the persistent volume and root of all derived paths.
+paths:
+  dataRoot: /data
+
 ## @section Image configuration
 ##
 ## Container image registry and tags for spire-managed workloads. Image tags
