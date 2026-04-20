@@ -265,6 +265,9 @@ func (b *K8sBackend) buildEnvVars(cfg SpawnConfig) []corev1.EnvVar {
 	if cfg.Provider != "" {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_PROVIDER", Value: cfg.Provider})
 	}
+	if cfg.Role != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_ROLE", Value: string(cfg.Role)})
+	}
 
 	// Apprentice identity env vars. Transport-agnostic: the apprentice reads
 	// them to resolve which bead to write to and what role to claim at

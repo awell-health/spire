@@ -172,6 +172,10 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 		args = append(args, "-e", fmt.Sprintf("SPIRE_TOWER=%s", val))
 	}
 
+	// SPIRE_ROLE: surface the agent's role so the SubagentStart hook can
+	// emit the correct per-role command catalog.
+	args = append(args, appendRoleDockerArgs(cfg)...)
+
 	// Apprentice identity env vars. Transport-agnostic: the apprentice reads
 	// them to resolve which bead to write to and what role to claim at
 	// submit time.
@@ -308,6 +312,16 @@ func (h *DockerHandle) Name() string { return h.name }
 
 // Identifier returns the Docker container ID.
 func (h *DockerHandle) Identifier() string { return h.containerID }
+
+// appendRoleDockerArgs returns the `-e SPIRE_ROLE=<role>` pair when the
+// config carries a role. Returns nil for an empty role so unset spawns
+// don't leak an empty env var into the container.
+func appendRoleDockerArgs(cfg SpawnConfig) []string {
+	if cfg.Role == "" {
+		return nil
+	}
+	return []string{"-e", fmt.Sprintf("SPIRE_ROLE=%s", string(cfg.Role))}
+}
 
 // appendIdentityDockerArgs returns the `-e KEY=VALUE` args for the three
 // apprentice identity env vars. Exported for backend-level tests that

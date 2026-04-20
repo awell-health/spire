@@ -139,6 +139,9 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 	if cfg.Provider != "" {
 		setEnv(cmd, "SPIRE_PROVIDER", cfg.Provider)
 	}
+	if cfg.Role != "" {
+		setEnv(cmd, "SPIRE_ROLE", string(cfg.Role))
+	}
 
 	// Apprentice identity env vars. Transport-agnostic: the apprentice reads
 	// them to resolve which bead to write to and what role to claim at

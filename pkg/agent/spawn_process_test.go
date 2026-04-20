@@ -137,6 +137,45 @@ func TestApplyProcessEnv_OmitsEmptyIdentity(t *testing.T) {
 	}
 }
 
+// TestApplyProcessEnv_SetsSpireRole verifies SPIRE_ROLE is injected into the
+// child process env for each role so the SubagentStart hook can emit the
+// correct per-role command catalog.
+func TestApplyProcessEnv_SetsSpireRole(t *testing.T) {
+	roles := []SpawnRole{RoleApprentice, RoleSage, RoleWizard, RoleExecutor}
+	for _, role := range roles {
+		t.Run(string(role), func(t *testing.T) {
+			cmd := &exec.Cmd{Env: []string{"PATH=/usr/bin"}}
+
+			applyProcessEnv(cmd, SpawnConfig{
+				Name: "test-" + string(role),
+				Role: role,
+			})
+
+			got := envToMap(cmd.Env)
+			want := string(role)
+			if v, ok := got["SPIRE_ROLE"]; !ok {
+				t.Errorf("missing SPIRE_ROLE; env: %v", cmd.Env)
+			} else if v != want {
+				t.Errorf("SPIRE_ROLE = %q, want %q", v, want)
+			}
+		})
+	}
+}
+
+// TestApplyProcessEnv_OmitsEmptyRole verifies SPIRE_ROLE is NOT injected
+// when cfg.Role is empty — matches the SPIRE_TOWER/SPIRE_PROVIDER pattern.
+func TestApplyProcessEnv_OmitsEmptyRole(t *testing.T) {
+	cmd := &exec.Cmd{Env: []string{}}
+
+	applyProcessEnv(cmd, SpawnConfig{Name: "no-role"})
+
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "SPIRE_ROLE=") {
+			t.Errorf("unexpected SPIRE_ROLE set: %s", e)
+		}
+	}
+}
+
 func envToMap(env []string) map[string]string {
 	m := make(map[string]string, len(env))
 	for _, e := range env {

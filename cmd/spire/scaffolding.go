@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/cmd/spire/embedded"
+	"github.com/awell-health/spire/pkg/scaffold"
 )
 
 // spireWorkProtocol is the work lifecycle section added to CLAUDE.md.
@@ -78,62 +79,7 @@ func writeSpireHooks(repoPath, prefix string) {
 
 	// Write the hook script
 	hookScript := filepath.Join(repoPath, ".claude", "spire-hook.sh")
-	scriptContent := fmt.Sprintf(`#!/usr/bin/env bash
-# Spire context injection hook for Claude Code.
-# Reads the hook event from stdin and outputs additionalContext.
-
-EVENT=$(cat 2>/dev/null || true)
-HOOK_EVENT=$(echo "$EVENT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('hook_event_name',''))" 2>/dev/null || echo "")
-
-SPIRE_MD=""
-if [ -f "%s/SPIRE.md" ]; then
-    SPIRE_MD=$(cat "%s/SPIRE.md")
-fi
-
-case "$HOOK_EVENT" in
-    SessionStart)
-        COLLECT=$(spire collect 2>/dev/null || echo "No messages.")
-        CONTEXT="# Spire Context (prefix: %s)
-
-${SPIRE_MD}
-
-## Current inbox
-${COLLECT}"
-        ;;
-    PostCompact)
-        CONTEXT="# Spire Context (re-injected after compaction, prefix: %s)
-
-${SPIRE_MD}"
-        ;;
-    SubagentStart)
-        CONTEXT="# Spire Work Protocol (prefix: %s)
-
-You are a subagent in a Spire-managed repo. Follow this protocol:
-
-${SPIRE_MD}
-
-IMPORTANT: When you complete work on a bead, you MUST:
-1. Close each molecule step: bd close <step-id>
-2. Close the bead: bd close <bead-id>
-3. Push state: bd dolt push
-Never leave beads or molecule steps open after completing work."
-        ;;
-    *)
-        echo "{}"
-        exit 0
-        ;;
-esac
-
-python3 -c "
-import json, sys
-print(json.dumps({
-    'hookSpecificOutput': {
-        'additionalContext': sys.stdin.read(),
-        'hookEventName': '$HOOK_EVENT'
-    }
-}))
-" <<< "$CONTEXT"
-`, repoPath, repoPath, prefix, prefix, prefix)
+	scriptContent := renderSpireHookScript(repoPath, prefix)
 
 	if err := os.WriteFile(hookScript, []byte(scriptContent), 0755); err != nil {
 		fmt.Printf("  Warning: could not write hook script: %s\n", err)
@@ -175,6 +121,118 @@ print(json.dumps({
 	}
 
 	fmt.Println("  Hooks configured (SessionStart, PostCompact, SubagentStart)")
+}
+
+// renderSpireHookScript returns the full contents of .claude/spire-hook.sh.
+// The script dispatches on the Claude Code hook_event_name:
+//   - SessionStart / PostCompact emit a repo-wide context (unchanged).
+//   - SubagentStart emits the per-role catalog matching $SPIRE_ROLE (set
+//     by the agent spawner). Unknown or unset roles fall back to the
+//     generic work-protocol reminder so ad-hoc sessions keep working.
+//
+// Per-role catalogs are rendered via pkg/scaffold.RenderHookInstructions
+// so the hook and docs/cli-reference.md never drift from each other.
+func renderSpireHookScript(repoPath, prefix string) string {
+	roleCases := renderRoleHookCases()
+	return fmt.Sprintf(`#!/usr/bin/env bash
+# Spire context injection hook for Claude Code.
+# Reads the hook event from stdin and outputs additionalContext.
+
+EVENT=$(cat 2>/dev/null || true)
+HOOK_EVENT=$(echo "$EVENT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('hook_event_name',''))" 2>/dev/null || echo "")
+
+SPIRE_MD=""
+if [ -f "%s/SPIRE.md" ]; then
+    SPIRE_MD=$(cat "%s/SPIRE.md")
+fi
+
+case "$HOOK_EVENT" in
+    SessionStart)
+        COLLECT=$(spire collect 2>/dev/null || echo "No messages.")
+        CONTEXT="# Spire Context (prefix: %s)
+
+${SPIRE_MD}
+
+## Current inbox
+${COLLECT}"
+        ;;
+    PostCompact)
+        CONTEXT="# Spire Context (re-injected after compaction, prefix: %s)
+
+${SPIRE_MD}"
+        ;;
+    SubagentStart)
+        ROLE_CATALOG=""
+        case "${SPIRE_ROLE:-}" in
+%s            *)
+                ROLE_CATALOG=""
+                ;;
+        esac
+        if [ -n "$ROLE_CATALOG" ]; then
+            CONTEXT="# Spire Work Protocol (prefix: %s, role: ${SPIRE_ROLE})
+
+$ROLE_CATALOG
+
+${SPIRE_MD}"
+        else
+            CONTEXT="# Spire Work Protocol (prefix: %s)
+
+You are a subagent in a Spire-managed repo. Follow this protocol:
+
+${SPIRE_MD}
+
+IMPORTANT: When you complete work on a bead, you MUST:
+1. Close each molecule step: bd close <step-id>
+2. Close the bead: bd close <bead-id>
+3. Push state: bd dolt push
+Never leave beads or molecule steps open after completing work."
+        fi
+        ;;
+    *)
+        echo "{}"
+        exit 0
+        ;;
+esac
+
+python3 -c "
+import json, sys
+print(json.dumps({
+    'hookSpecificOutput': {
+        'additionalContext': sys.stdin.read(),
+        'hookEventName': '$HOOK_EVENT'
+    }
+}))
+" <<< "$CONTEXT"
+`, repoPath, repoPath, prefix, prefix, roleCases, prefix, prefix)
+}
+
+// renderRoleHookCases emits one `<role>) read -r -d '' ROLE_CATALOG <<EOF...EOF ;;`
+// bash case branch per known scaffold role.
+//
+// We use `read -r -d ''` rather than `$(cat <<...)` because bash's
+// parser chokes on apostrophes inside a heredoc that is nested in a
+// `$(...)` command substitution (the heredoc is balanced correctly but
+// bash's tokenizer tracks outer single-quotes through the substitution).
+// `read -d ''` reads the heredoc as a single NUL-terminated token into
+// the variable, returning exit code 1 at EOF — the outer script does
+// not run under `set -e` so that is harmless.
+//
+// The heredoc delimiter is single-quoted so the embedded catalog text
+// is literal — no $ expansion, no backtick subshells.
+func renderRoleHookCases() string {
+	var b strings.Builder
+	for _, role := range scaffold.KnownRoles() {
+		content, err := scaffold.RenderHookInstructions(role)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "            %s)\n", role)
+		fmt.Fprintf(&b, "                read -r -d '' ROLE_CATALOG <<'SPIRE_ROLE_EOF' || true\n")
+		b.WriteString(content)
+		fmt.Fprintf(&b, "SPIRE_ROLE_EOF\n")
+		fmt.Fprintf(&b, "                ;;\n")
+	}
+	return b.String()
 }
 
 // installSpireSkills installs bundled Spire skills into Claude and Codex skill

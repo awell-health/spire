@@ -226,6 +226,55 @@ func TestK8sBackend_Spawn_ApprenticeIdentity(t *testing.T) {
 	}
 }
 
+// TestK8sBackend_Spawn_SetsSpireRole verifies SPIRE_ROLE is injected into
+// the pod env for each role so the SubagentStart hook can emit the
+// correct per-role command catalog.
+func TestK8sBackend_Spawn_SetsSpireRole(t *testing.T) {
+	roles := []SpawnRole{RoleApprentice, RoleSage, RoleWizard, RoleExecutor}
+	for _, role := range roles {
+		t.Run(string(role), func(t *testing.T) {
+			b, client := newTestBackend()
+
+			cfg := SpawnConfig{
+				Name:   "agent-" + string(role),
+				BeadID: "spi-role",
+				Role:   role,
+				Tower:  "t",
+			}
+
+			if _, err := b.Spawn(cfg); err != nil {
+				t.Fatalf("Spawn: %v", err)
+			}
+
+			pods, err := client.CoreV1().Pods(testNamespace).List(
+				context.Background(), metav1.ListOptions{},
+			)
+			if err != nil {
+				t.Fatalf("list pods: %v", err)
+			}
+			if len(pods.Items) != 1 {
+				t.Fatalf("expected 1 pod, got %d", len(pods.Items))
+			}
+
+			var got string
+			var found bool
+			for _, e := range pods.Items[0].Spec.Containers[0].Env {
+				if e.Name == "SPIRE_ROLE" {
+					got = e.Value
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("missing SPIRE_ROLE env var")
+			}
+			if got != string(role) {
+				t.Errorf("SPIRE_ROLE = %q, want %q", got, string(role))
+			}
+		})
+	}
+}
+
 // TestK8sBackend_Spawn_OmitsEmptyIdentity verifies that identity env vars
 // left unset on SpawnConfig are NOT injected.
 func TestK8sBackend_Spawn_OmitsEmptyIdentity(t *testing.T) {

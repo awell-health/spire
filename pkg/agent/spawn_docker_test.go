@@ -40,6 +40,36 @@ func TestAppendIdentityDockerArgs_Empty(t *testing.T) {
 	}
 }
 
+// TestAppendRoleDockerArgs_SetsSpireRole verifies each role produces a
+// single `-e SPIRE_ROLE=<role>` arg pair on the docker-run command line so
+// the SubagentStart hook can emit the correct per-role command catalog.
+func TestAppendRoleDockerArgs_SetsSpireRole(t *testing.T) {
+	roles := []SpawnRole{RoleApprentice, RoleSage, RoleWizard, RoleExecutor}
+	for _, role := range roles {
+		t.Run(string(role), func(t *testing.T) {
+			args := appendRoleDockerArgs(SpawnConfig{Role: role})
+
+			want := []string{"-e", "SPIRE_ROLE=" + string(role)}
+			if len(args) != len(want) {
+				t.Fatalf("args length = %d, want %d: %v", len(args), len(want), args)
+			}
+			for i, v := range want {
+				if args[i] != v {
+					t.Errorf("args[%d] = %q, want %q", i, args[i], v)
+				}
+			}
+		})
+	}
+}
+
+// TestAppendRoleDockerArgs_EmptyRole verifies an empty role produces no
+// args (matches the SPIRE_TOWER/SPIRE_PROVIDER pattern).
+func TestAppendRoleDockerArgs_EmptyRole(t *testing.T) {
+	if args := appendRoleDockerArgs(SpawnConfig{}); len(args) != 0 {
+		t.Errorf("expected empty args for empty role, got %d: %v", len(args), args)
+	}
+}
+
 // TestAppendIdentityDockerArgs_PartiallyPopulated verifies that only the
 // populated identity fields produce args — matches the pattern used by
 // SPIRE_TOWER/SPIRE_PROVIDER.
