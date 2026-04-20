@@ -181,6 +181,16 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 					break
 				}
 			}
+			// Best-effort: on any non-success terminal outcome, delete origin/feat/<beadID>
+			// so failed apprentice runs don't leak remote branches. Apprentice's checkpoint
+			// push runs unconditionally (agent-entrypoint.sh push_branch), so the cleanup
+			// has to live here, not in the entrypoint.
+			if pod.Status.Phase != corev1.PodSucceeded {
+				if err := m.deleteRemoteFeatBranch(ctx, agent, beadID, cfg); err != nil {
+					m.Log.Error(err, "failed to delete remote feat branch after non-success reap",
+						"agent", agent.Name, "bead", beadID)
+				}
+			}
 			// Delete the finished pod
 			if pod.DeletionTimestamp == nil {
 				if err := m.Client.Delete(ctx, pod); err != nil {
