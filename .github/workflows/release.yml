@@ -42,7 +42,10 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          args: release --clean --config .goreleaser-linux.yaml --skip=announce
+          # docker skipped while spi-53ew8 is open — docker build context is
+          # missing the source tree the multi-stage Dockerfiles COPY. Remove
+          # --skip=docker once that bead lands.
+          args: release --clean --config .goreleaser-linux.yaml --skip=announce,docker
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
