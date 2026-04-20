@@ -302,6 +302,10 @@ func dismissK8s(count int, all bool) error {
 // leave this alone; tests assign a func that returns a fixed bool.
 var isK8sAvailableFunc = isK8sAvailable
 
+// summonUpdateBeadFunc is a test-replaceable wrapper around storeUpdateBead
+// used by summonLocal for status transitions.
+var summonUpdateBeadFunc = storeUpdateBead
+
 // isK8sAvailable probes for a reachable cluster with the "spire" namespace.
 // Bounded by a short timeout so that a hung or unreachable kubectl context
 // can't block `spire summon` / `spire dismiss` or, via transitive callers,
@@ -416,12 +420,12 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 			case "hooked":
 				// Transition to in_progress before summoning — do NOT unhook step beads,
 				// let the wizard/executor evaluate the hook condition and decide.
-				if err := storeUpdateBead(id, map[string]interface{}{"status": "in_progress"}); err != nil {
+				if err := summonUpdateBeadFunc(id, map[string]interface{}{"status": "in_progress"}); err != nil {
 					return fmt.Errorf("transition hooked bead %s to in_progress: %w", id, err)
 				}
 				bead.Status = "in_progress"
 			case "open", "ready":
-				if err := storeUpdateBead(id, map[string]interface{}{"status": "in_progress"}); err != nil {
+				if err := summonUpdateBeadFunc(id, map[string]interface{}{"status": "in_progress"}); err != nil {
 					return fmt.Errorf("transition %s bead %s to in_progress: %w", bead.Status, id, err)
 				}
 				bead.Status = "in_progress"

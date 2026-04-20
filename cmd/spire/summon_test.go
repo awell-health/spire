@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,6 +332,112 @@ func TestSummonLocal_AllowsInProgressBead(t *testing.T) {
 	err := summonLocal(1, []string{"spi-wip"}, "")
 	if err != nil && (strings.Contains(err.Error(), "is closed") || strings.Contains(err.Error(), "is deferred")) {
 		t.Fatalf("in_progress bead should not be rejected by status gate, got: %v", err)
+	}
+}
+
+// TestSummonLocal_TransitionsOpenToInProgress verifies that a bead with
+// status "open" is advanced to "in_progress" via summonUpdateBeadFunc before
+// the wizard spawn path runs. This is the core fix for spi-corqy: prior to
+// the fix, the status-transition switch had no case for "open"/"ready", so
+// summoned beads stayed in the backlog lane on the board.
+func TestSummonLocal_TransitionsOpenToInProgress(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	origGet := storeGetBeadFunc
+	origUpdate := summonUpdateBeadFunc
+	defer func() {
+		storeGetBeadFunc = origGet
+		summonUpdateBeadFunc = origUpdate
+	}()
+
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "open", Title: "test"}, nil
+	}
+
+	var gotID string
+	var gotUpdates map[string]interface{}
+	summonUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+		gotID = id
+		gotUpdates = updates
+		return nil
+	}
+
+	_ = summonLocal(1, []string{"spi-open"}, "")
+
+	if gotID != "spi-open" {
+		t.Fatalf("expected summonUpdateBeadFunc called for spi-open, got %q", gotID)
+	}
+	if gotUpdates["status"] != "in_progress" {
+		t.Fatalf("expected status=in_progress, got %v", gotUpdates["status"])
+	}
+}
+
+// TestSummonLocal_TransitionsReadyToInProgress verifies the same transition
+// from "ready" (the other status that falls into the new switch case).
+func TestSummonLocal_TransitionsReadyToInProgress(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	origGet := storeGetBeadFunc
+	origUpdate := summonUpdateBeadFunc
+	defer func() {
+		storeGetBeadFunc = origGet
+		summonUpdateBeadFunc = origUpdate
+	}()
+
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "ready", Title: "test"}, nil
+	}
+
+	var gotID string
+	var gotUpdates map[string]interface{}
+	summonUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+		gotID = id
+		gotUpdates = updates
+		return nil
+	}
+
+	_ = summonLocal(1, []string{"spi-ready"}, "")
+
+	if gotID != "spi-ready" {
+		t.Fatalf("expected summonUpdateBeadFunc called for spi-ready, got %q", gotID)
+	}
+	if gotUpdates["status"] != "in_progress" {
+		t.Fatalf("expected status=in_progress, got %v", gotUpdates["status"])
+	}
+}
+
+// TestSummonLocal_TransitionFailurePropagates verifies that when the store
+// update call fails, summonLocal aborts with a wrapped error mentioning the
+// original status — ensuring the caller learns which bead state failed.
+func TestSummonLocal_TransitionFailurePropagates(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	origGet := storeGetBeadFunc
+	origUpdate := summonUpdateBeadFunc
+	defer func() {
+		storeGetBeadFunc = origGet
+		summonUpdateBeadFunc = origUpdate
+	}()
+
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "open", Title: "test"}, nil
+	}
+	summonUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+		return fmt.Errorf("db down")
+	}
+
+	err := summonLocal(1, []string{"spi-open"}, "")
+	if err == nil {
+		t.Fatal("expected error when update fails")
+	}
+	if !strings.Contains(err.Error(), "transition open bead spi-open to in_progress") {
+		t.Fatalf("expected transition error mentioning bead and status, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "db down") {
+		t.Fatalf("expected wrapped update error, got: %v", err)
 	}
 }
 
