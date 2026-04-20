@@ -35,7 +35,12 @@ CREATE TABLE IF NOT EXISTS agent_runs_olap (
     attempt_number   INTEGER,
     started_at       TIMESTAMP,
     completed_at     TIMESTAMP,
-    synced_at        TIMESTAMP DEFAULT now()
+    synced_at        TIMESTAMP DEFAULT now(),
+    turns              INTEGER,
+    max_turns          INTEGER,
+    stop_reason        VARCHAR,
+    cache_read_tokens  BIGINT,
+    cache_write_tokens BIGINT
 )`
 
 // createETLCursor defines the cursor table. The last_id column stores the
@@ -167,6 +172,11 @@ func schemaMigrations() []string {
 	return []string{
 		`ALTER TABLE tool_events ADD COLUMN IF NOT EXISTS provider VARCHAR`,
 		`ALTER TABLE tool_events ADD COLUMN IF NOT EXISTS event_kind VARCHAR`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS turns INTEGER`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS max_turns INTEGER`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS stop_reason VARCHAR`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT`,
 	}
 }
 

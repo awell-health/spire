@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     context_tokens_out INT,
     total_tokens INT,
     turns INT,
+    max_turns INT,
+    stop_reason VARCHAR(32),
+    cache_read_tokens BIGINT,
+    cache_write_tokens BIGINT,
     cost_usd DOUBLE,
     duration_seconds INT,
     startup_seconds INT,     -- pod start → claude start (clone, install, claim, focus)

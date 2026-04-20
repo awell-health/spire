@@ -18,15 +18,19 @@ type agentResultJSON struct {
 	Commit     string `json:"commit"`
 	ElapsedS   int    `json:"elapsed_s"`
 	// Extended fields (populated when available)
-	TotalTokens  int            `json:"total_tokens,omitempty"`
-	ContextIn    int            `json:"context_tokens_in,omitempty"`
-	ContextOut   int            `json:"context_tokens_out,omitempty"`
-	FilesChanged int            `json:"files_changed,omitempty"`
-	LinesAdded   int            `json:"lines_added,omitempty"`
-	LinesRemoved int            `json:"lines_removed,omitempty"`
-	Turns        int            `json:"turns,omitempty"`
-	CostUSD      float64        `json:"cost_usd,omitempty"`
-	ToolCalls    map[string]int `json:"tool_calls,omitempty"` // tool_name → invocation count
+	TotalTokens      int            `json:"total_tokens,omitempty"`
+	ContextIn        int            `json:"context_tokens_in,omitempty"`
+	ContextOut       int            `json:"context_tokens_out,omitempty"`
+	FilesChanged     int            `json:"files_changed,omitempty"`
+	LinesAdded       int            `json:"lines_added,omitempty"`
+	LinesRemoved     int            `json:"lines_removed,omitempty"`
+	Turns            int            `json:"turns,omitempty"`
+	MaxTurns         int            `json:"max_turns,omitempty"`
+	StopReason       string         `json:"stop_reason,omitempty"`
+	CacheReadTokens  int64          `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64          `json:"cache_write_tokens,omitempty"`
+	CostUSD          float64        `json:"cost_usd,omitempty"`
+	ToolCalls        map[string]int `json:"tool_calls,omitempty"` // tool_name → invocation count
 }
 
 // recordOpt is a functional option for recordAgentRun.
@@ -180,6 +184,10 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 		run.LinesAdded = ar.LinesAdded
 		run.LinesRemoved = ar.LinesRemoved
 		run.Turns = ar.Turns
+		run.MaxTurns = ar.MaxTurns
+		run.StopReason = ar.StopReason
+		run.CacheReadTokens = ar.CacheReadTokens
+		run.CacheWriteTokens = ar.CacheWriteTokens
 		run.CostUSD = ar.CostUSD
 		// Branch and commit from agent result take priority.
 		if ar.Branch != "" {

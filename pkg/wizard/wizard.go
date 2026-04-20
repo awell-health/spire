@@ -24,22 +24,38 @@ import (
 
 // ClaudeMetrics captures token usage, cost, and tool call counts from a Claude CLI invocation.
 type ClaudeMetrics struct {
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	Turns        int
-	CostUSD      float64
-	ToolCalls    map[string]int // tool_name → invocation count (e.g. {"Read": 12, "Edit": 3})
+	InputTokens      int
+	OutputTokens     int
+	TotalTokens      int
+	Turns            int
+	MaxTurns         int    // the cap in effect for this run (set by caller, not from result event)
+	StopReason       string // "end_turn" | "max_turns" | "tool_use" | ... (from Claude result.stop_reason)
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	CostUSD          float64
+	ToolCalls        map[string]int // tool_name → invocation count (e.g. {"Read": 12, "Edit": 3})
 }
 
 // Add returns the sum of two ClaudeMetrics values.
+// MaxTurns and StopReason are per-run identity, not summable: prefer the
+// receiver's value, falling back to the other's when the receiver is unset.
 func (m ClaudeMetrics) Add(other ClaudeMetrics) ClaudeMetrics {
 	merged := ClaudeMetrics{
-		InputTokens:  m.InputTokens + other.InputTokens,
-		OutputTokens: m.OutputTokens + other.OutputTokens,
-		TotalTokens:  m.TotalTokens + other.TotalTokens,
-		Turns:        m.Turns + other.Turns,
-		CostUSD:      m.CostUSD + other.CostUSD,
+		InputTokens:      m.InputTokens + other.InputTokens,
+		OutputTokens:     m.OutputTokens + other.OutputTokens,
+		TotalTokens:      m.TotalTokens + other.TotalTokens,
+		Turns:            m.Turns + other.Turns,
+		CacheReadTokens:  m.CacheReadTokens + other.CacheReadTokens,
+		CacheWriteTokens: m.CacheWriteTokens + other.CacheWriteTokens,
+		CostUSD:          m.CostUSD + other.CostUSD,
+		MaxTurns:         m.MaxTurns,
+		StopReason:       m.StopReason,
+	}
+	if merged.MaxTurns == 0 {
+		merged.MaxTurns = other.MaxTurns
+	}
+	if merged.StopReason == "" {
+		merged.StopReason = other.StopReason
 	}
 	// Merge tool call maps.
 	if len(m.ToolCalls) > 0 || len(other.ToolCalls) > 0 {
@@ -89,10 +105,13 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 			Type         string  `json:"type"`
 			Result       string  `json:"result"`
 			NumTurns     int     `json:"num_turns"`
+			StopReason   string  `json:"stop_reason"`
 			TotalCostUSD float64 `json:"total_cost_usd"`
 			Usage        struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens             int   `json:"input_tokens"`
+				OutputTokens            int   `json:"output_tokens"`
+				CacheReadInputTokens    int64 `json:"cache_read_input_tokens"`
+				CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal(line, &evt); err != nil {
@@ -101,11 +120,14 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 		if evt.Type == "result" {
 			resultText = evt.Result
 			metrics = ClaudeMetrics{
-				InputTokens:  evt.Usage.InputTokens,
-				OutputTokens: evt.Usage.OutputTokens,
-				TotalTokens:  evt.Usage.InputTokens + evt.Usage.OutputTokens,
-				Turns:        evt.NumTurns,
-				CostUSD:      evt.TotalCostUSD,
+				InputTokens:      evt.Usage.InputTokens,
+				OutputTokens:     evt.Usage.OutputTokens,
+				TotalTokens:      evt.Usage.InputTokens + evt.Usage.OutputTokens,
+				Turns:            evt.NumTurns,
+				StopReason:       evt.StopReason,
+				CacheReadTokens:  evt.Usage.CacheReadInputTokens,
+				CacheWriteTokens: evt.Usage.CacheCreationInputTokens,
+				CostUSD:          evt.TotalCostUSD,
 			}
 			if len(toolCalls) > 0 {
 				metrics.ToolCalls = toolCalls
@@ -1157,6 +1179,7 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	}
 
 	_, metrics := parseClaudeResultJSON(buf.Bytes())
+	metrics.MaxTurns = maxTurns
 	return metrics, runErr
 }
 
@@ -1210,6 +1233,7 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 
 	out := buf.Bytes()
 	resultText, metrics := parseClaudeResultJSON(out)
+	metrics.MaxTurns = maxTurns
 	// Fall back to raw output if parsing didn't find a result event
 	if resultText == "" {
 		resultText = string(out)
@@ -1563,6 +1587,10 @@ func WizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
 		"context_tokens_out": metrics.OutputTokens,
 		"total_tokens":       metrics.TotalTokens,
 		"turns":              metrics.Turns,
+		"max_turns":          metrics.MaxTurns,
+		"stop_reason":        metrics.StopReason,
+		"cache_read_tokens":  metrics.CacheReadTokens,
+		"cache_write_tokens": metrics.CacheWriteTokens,
 		"cost_usd":           metrics.CostUSD,
 	}
 	if len(metrics.ToolCalls) > 0 {

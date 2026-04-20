@@ -170,6 +170,11 @@ type agentRunRow struct {
 	AttemptNumber    sql.NullInt64
 	StartedAt        sql.NullTime
 	CompletedAt      sql.NullTime
+	Turns            sql.NullInt64
+	MaxTurns         sql.NullInt64
+	StopReason       sql.NullString
+	CacheReadTokens  sql.NullInt64
+	CacheWriteTokens sql.NullInt64
 }
 
 // readCursor returns the high-water-mark started_at timestamp (RFC3339) from
@@ -209,7 +214,8 @@ func queryDolt(ctx context.Context, doltConn *sql.DB, lastTS string) ([]agentRun
 		startup_seconds, working_seconds, queue_seconds, review_seconds,
 		files_changed, lines_added, lines_removed,
 		read_calls, edit_calls, tool_calls_json, failure_class, attempt_number,
-		started_at, completed_at
+		started_at, completed_at,
+		turns, max_turns, stop_reason, cache_read_tokens, cache_write_tokens
 	FROM agent_runs`
 
 	var query string
@@ -250,6 +256,7 @@ func queryDolt(ctx context.Context, doltConn *sql.DB, lastTS string) ([]agentRun
 			&r.FilesChanged, &r.LinesAdded, &r.LinesRemoved,
 			&r.ReadCalls, &r.EditCalls, &r.ToolCallsJSON, &r.FailureClass, &r.AttemptNumber,
 			&r.StartedAt, &r.CompletedAt,
+			&r.Turns, &r.MaxTurns, &r.StopReason, &r.CacheReadTokens, &r.CacheWriteTokens,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent_runs row: %w", err)
 		}
@@ -318,15 +325,16 @@ func buildInsertSQL(rows []agentRunRow) (string, []any) {
 		startup_seconds, working_seconds, queue_seconds, review_seconds,
 		files_changed, lines_added, lines_removed,
 		read_calls, edit_calls, tool_calls_json, failure_class, attempt_number,
-		started_at, completed_at, synced_at
+		started_at, completed_at, synced_at,
+		turns, max_turns, stop_reason, cache_read_tokens, cache_write_tokens
 	) VALUES `)
 
-	args := make([]any, 0, len(rows)*34)
+	args := make([]any, 0, len(rows)*39)
 	for i, r := range rows {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		args = append(args,
 			r.ID, r.BeadID, r.EpicID, r.ParentRunID,
 			normalizeFormulaName(r.FormulaName), r.FormulaVersion,
@@ -340,6 +348,7 @@ func buildInsertSQL(rows []agentRunRow) (string, []any) {
 			r.FilesChanged, r.LinesAdded, r.LinesRemoved,
 			r.ReadCalls, r.EditCalls, r.ToolCallsJSON, r.FailureClass, r.AttemptNumber,
 			r.StartedAt, r.CompletedAt, time.Now().UTC(),
+			r.Turns, r.MaxTurns, r.StopReason, r.CacheReadTokens, r.CacheWriteTokens,
 		)
 	}
 
@@ -376,7 +385,12 @@ func buildInsertSQL(rows []agentRunRow) (string, []any) {
 		attempt_number = EXCLUDED.attempt_number,
 		started_at = EXCLUDED.started_at,
 		completed_at = EXCLUDED.completed_at,
-		synced_at = EXCLUDED.synced_at`)
+		synced_at = EXCLUDED.synced_at,
+		turns = EXCLUDED.turns,
+		max_turns = EXCLUDED.max_turns,
+		stop_reason = EXCLUDED.stop_reason,
+		cache_read_tokens = EXCLUDED.cache_read_tokens,
+		cache_write_tokens = EXCLUDED.cache_write_tokens`)
 
 	return b.String(), args
 }

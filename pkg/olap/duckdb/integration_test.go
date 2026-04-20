@@ -41,7 +41,9 @@ func createMockDolt(t *testing.T) (*sql.DB, time.Time) {
 		files_changed INTEGER, lines_added INTEGER, lines_removed INTEGER,
 		read_calls INTEGER, edit_calls INTEGER, tool_calls_json TEXT,
 		failure_class VARCHAR, attempt_number INTEGER,
-		started_at TIMESTAMP, completed_at TIMESTAMP
+		started_at TIMESTAMP, completed_at TIMESTAMP,
+		turns INTEGER, max_turns INTEGER, stop_reason VARCHAR,
+		cache_read_tokens BIGINT, cache_write_tokens BIGINT
 	)`)
 	if err != nil {
 		t.Fatalf("create mock agent_runs: %v", err)

@@ -42,6 +42,10 @@ type AgentRun struct {
 	ContextTokensOut   int    `json:"context_tokens_out,omitempty"`
 	TotalTokens        int    `json:"total_tokens,omitempty"`
 	Turns              int     `json:"turns,omitempty"`
+	MaxTurns           int     `json:"max_turns,omitempty"`
+	StopReason         string  `json:"stop_reason,omitempty"`
+	CacheReadTokens    int64   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens   int64   `json:"cache_write_tokens,omitempty"`
 	CostUSD            float64 `json:"cost_usd,omitempty"`
 	DurationSeconds    int     `json:"duration_seconds,omitempty"`
 	StartupSeconds     int    `json:"startup_seconds,omitempty"`
@@ -167,6 +171,22 @@ func Record(run AgentRun) (string, error) {
 	if run.Turns > 0 {
 		cols = append(cols, "turns")
 		vals = append(vals, itoa(run.Turns))
+	}
+	if run.MaxTurns > 0 {
+		cols = append(cols, "max_turns")
+		vals = append(vals, itoa(run.MaxTurns))
+	}
+	if run.StopReason != "" {
+		cols = append(cols, "stop_reason")
+		vals = append(vals, esc(run.StopReason))
+	}
+	if run.CacheReadTokens > 0 {
+		cols = append(cols, "cache_read_tokens")
+		vals = append(vals, i64toa(run.CacheReadTokens))
+	}
+	if run.CacheWriteTokens > 0 {
+		cols = append(cols, "cache_write_tokens")
+		vals = append(vals, i64toa(run.CacheWriteTokens))
 	}
 	if run.CostUSD > 0 {
 		cols = append(cols, "cost_usd")
@@ -480,6 +500,11 @@ func esc(s string) string {
 
 // itoa converts an int to its string representation (no quoting).
 func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
+}
+
+// i64toa converts an int64 to its string representation (no quoting).
+func i64toa(n int64) string {
 	return fmt.Sprintf("%d", n)
 }
 

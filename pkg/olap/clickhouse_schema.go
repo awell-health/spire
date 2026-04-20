@@ -105,7 +105,12 @@ CREATE TABLE IF NOT EXISTS agent_runs_olap (
     attempt_number     Int32,
     started_at         DateTime64(3),
     completed_at       DateTime64(3),
-    synced_at          DateTime64(3) DEFAULT now64(3)
+    synced_at          DateTime64(3) DEFAULT now64(3),
+    turns              Int32,
+    max_turns          Int32,
+    stop_reason        String,
+    cache_read_tokens  Int64,
+    cache_write_tokens Int64
 ) ENGINE = ReplacingMergeTree(synced_at)
 ORDER BY (id)
 `

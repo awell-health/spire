@@ -210,6 +210,10 @@ const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     read_calls INT,
     edit_calls INT,
     tool_calls_json TEXT,
+    max_turns INT,
+    stop_reason VARCHAR(32),
+    cache_read_tokens BIGINT,
+    cache_write_tokens BIGINT,
     INDEX idx_bead (bead_id),
     INDEX idx_epic (epic_id),
     INDEX idx_result (result),
@@ -332,6 +336,12 @@ var spireMigrations = []columnMigration{
 	{table: "agent_runs", column: "read_calls", ddl: "ADD COLUMN read_calls INT"},
 	{table: "agent_runs", column: "edit_calls", ddl: "ADD COLUMN edit_calls INT"},
 	{table: "agent_runs", column: "tool_calls_json", ddl: "ADD COLUMN tool_calls_json TEXT"},
+
+	// --- agent_runs: max_turns / stop_reason / cache token counts (spi-e24e9) ---
+	{table: "agent_runs", column: "max_turns", ddl: "ADD COLUMN max_turns INT"},
+	{table: "agent_runs", column: "stop_reason", ddl: "ADD COLUMN stop_reason VARCHAR(32)"},
+	{table: "agent_runs", column: "cache_read_tokens", ddl: "ADD COLUMN cache_read_tokens BIGINT"},
+	{table: "agent_runs", column: "cache_write_tokens", ddl: "ADD COLUMN cache_write_tokens BIGINT"},
 
 	// --- golden_prompts columns (in table order) ---
 	{table: "golden_prompts", column: "run_id", ddl: "ADD COLUMN run_id VARCHAR(32) NOT NULL PRIMARY KEY"},
