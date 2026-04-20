@@ -17,6 +17,15 @@ const (
 	RemoteKindRemotesAPI = "remotesapi"
 )
 
+// Apprentice transport modes for ApprenticeConfig.Transport. Empty defaults to
+// ApprenticeTransportPush so towers created before this field existed keep the
+// legacy push-based delivery. "bundle" opts into the git-bundle artifact flow
+// driven by pkg/bundlestore and `spire apprentice submit`.
+const (
+	ApprenticeTransportPush   = "push"
+	ApprenticeTransportBundle = "bundle"
+)
+
 // TowerConfig represents a tower's identity and configuration.
 type TowerConfig struct {
 	Name          string                       `json:"name"`
@@ -43,6 +52,30 @@ type TowerConfig struct {
 	// BundleStore configures the git-bundle artifact store used by the
 	// apprentice submit / wizard fetch flow. See pkg/bundlestore.
 	BundleStore BundleStoreConfig `json:"bundle_store,omitempty"`
+
+	// Apprentice toggles apprentice-side behavior, notably the transport
+	// mode apprentices use to deliver work back to the wizard.
+	Apprentice ApprenticeConfig `json:"apprentice,omitempty"`
+}
+
+// ApprenticeConfig controls apprentice-side behavior for a tower. Currently
+// only the delivery transport is configurable. Zero value is valid and
+// resolves to ApprenticeTransportPush via EffectiveTransport.
+type ApprenticeConfig struct {
+	// Transport selects how apprentices deliver work back to the wizard.
+	// Empty resolves to ApprenticeTransportPush. See EffectiveTransport.
+	Transport string `toml:"transport" yaml:"transport" json:"transport,omitempty"`
+}
+
+// EffectiveTransport returns the configured transport, defaulting to
+// ApprenticeTransportPush when unset. Callers should use this rather than
+// reading Transport directly so legacy configs keep working. Unknown values
+// pass through unchanged — validation is not performed here.
+func (c ApprenticeConfig) EffectiveTransport() string {
+	if c.Transport == "" {
+		return ApprenticeTransportPush
+	}
+	return c.Transport
 }
 
 // BundleStoreConfig mirrors pkg/bundlestore.Config as JSON-serializable
