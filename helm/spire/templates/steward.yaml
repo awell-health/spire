@@ -103,6 +103,11 @@ spec:
             # operator spawns when a wizard is needed.
             - name: SPIRE_AGENT_IMAGE
               value: "{{ .Values.images.agent.repository }}:{{ .Values.images.agent.tag }}"
+            # Secret the k8s backend references when projecting credentials
+            # onto wizard pods. Must match the helm-rendered Secret name so
+            # ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN resolve.
+            - name: SPIRE_CREDENTIALS_SECRET
+              value: {{ include "spire.secretName" . | quote }}
             # Must match the init container's values so (a) the tower
             # config attach-cluster wrote is readable here, and (b)
             # BeadsDirForTower's convention-based lookup resolves.

@@ -20,18 +20,26 @@ import (
 // Each agent runs as a one-shot Pod with labels for discovery and
 // secret references for credentials.
 type K8sBackend struct {
-	client    kubernetes.Interface
-	namespace string
-	image     string // agent container image
+	client     kubernetes.Interface
+	namespace  string
+	image      string // agent container image
+	secretName string // k8s Secret holding ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN
 }
 
 // NewK8sBackend creates a K8sBackend using in-cluster config with
 // kubeconfig fallback. Reads SPIRE_K8S_NAMESPACE (default: namespace
-// from serviceaccount token) and SPIRE_AGENT_IMAGE (required).
+// from serviceaccount token), SPIRE_AGENT_IMAGE (required), and
+// SPIRE_CREDENTIALS_SECRET (optional; falls back to "spire-credentials"
+// for backward compat with installs that pre-date the helm chart's
+// release-scoped secret naming).
 func NewK8sBackend() (*K8sBackend, error) {
 	image := os.Getenv("SPIRE_AGENT_IMAGE")
 	if image == "" {
 		return nil, fmt.Errorf("SPIRE_AGENT_IMAGE env is required for k8s backend")
+	}
+	secretName := os.Getenv("SPIRE_CREDENTIALS_SECRET")
+	if secretName == "" {
+		secretName = "spire-credentials"
 	}
 
 	config, err := rest.InClusterConfig()
@@ -63,9 +71,10 @@ func NewK8sBackend() (*K8sBackend, error) {
 	}
 
 	return &K8sBackend{
-		client:    client,
-		namespace: ns,
-		image:     image,
+		client:     client,
+		namespace:  ns,
+		image:      image,
+		secretName: secretName,
 	}, nil
 }
 
@@ -73,9 +82,10 @@ func NewK8sBackend() (*K8sBackend, error) {
 // Used for testing with the k8s fake client.
 func NewK8sBackendFromClient(client kubernetes.Interface, namespace, image string) *K8sBackend {
 	return &K8sBackend{
-		client:    client,
-		namespace: namespace,
-		image:     image,
+		client:     client,
+		namespace:  namespace,
+		image:      image,
+		secretName: "spire-credentials",
 	}
 }
 
@@ -100,14 +110,18 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 		})
 	}
 
-	// Secret references.
+	// Secret references. Key names match what `helm/spire/templates/secret.yaml`
+	// writes (uppercase env-var-style, not lowercase kebab). GITHUB_TOKEN is
+	// optional so installs without a github token (e.g. smoke tests that
+	// don't push) don't block pod creation on a missing key.
+	optional := true
 	env = append(env,
 		corev1.EnvVar{
 			Name: "ANTHROPIC_API_KEY",
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "spire-credentials"},
-					Key:                  "anthropic-key",
+					LocalObjectReference: corev1.LocalObjectReference{Name: b.secretName},
+					Key:                  "ANTHROPIC_API_KEY_DEFAULT",
 				},
 			},
 		},
@@ -115,8 +129,9 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 			Name: "GITHUB_TOKEN",
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "spire-credentials"},
-					Key:                  "github-token",
+					LocalObjectReference: corev1.LocalObjectReference{Name: b.secretName},
+					Key:                  "GITHUB_TOKEN",
+					Optional:             &optional,
 				},
 			},
 		},

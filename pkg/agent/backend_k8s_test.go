@@ -156,8 +156,8 @@ func TestK8sBackend_Spawn_CreatesCorrectPod(t *testing.T) {
 		if apiKey.ValueFrom.SecretKeyRef.Name != "spire-credentials" {
 			t.Errorf("ANTHROPIC_API_KEY secret name = %q, want spire-credentials", apiKey.ValueFrom.SecretKeyRef.Name)
 		}
-		if apiKey.ValueFrom.SecretKeyRef.Key != "anthropic-key" {
-			t.Errorf("ANTHROPIC_API_KEY secret key = %q, want anthropic-key", apiKey.ValueFrom.SecretKeyRef.Key)
+		if apiKey.ValueFrom.SecretKeyRef.Key != "ANTHROPIC_API_KEY_DEFAULT" {
+			t.Errorf("ANTHROPIC_API_KEY secret key = %q, want ANTHROPIC_API_KEY_DEFAULT", apiKey.ValueFrom.SecretKeyRef.Key)
 		}
 	}
 
@@ -170,8 +170,11 @@ func TestK8sBackend_Spawn_CreatesCorrectPod(t *testing.T) {
 		if ghToken.ValueFrom.SecretKeyRef.Name != "spire-credentials" {
 			t.Errorf("GITHUB_TOKEN secret name = %q, want spire-credentials", ghToken.ValueFrom.SecretKeyRef.Name)
 		}
-		if ghToken.ValueFrom.SecretKeyRef.Key != "github-token" {
-			t.Errorf("GITHUB_TOKEN secret key = %q, want github-token", ghToken.ValueFrom.SecretKeyRef.Key)
+		if ghToken.ValueFrom.SecretKeyRef.Key != "GITHUB_TOKEN" {
+			t.Errorf("GITHUB_TOKEN secret key = %q, want GITHUB_TOKEN", ghToken.ValueFrom.SecretKeyRef.Key)
+		}
+		if ghToken.ValueFrom.SecretKeyRef.Optional == nil || !*ghToken.ValueFrom.SecretKeyRef.Optional {
+			t.Error("GITHUB_TOKEN should be Optional=true so installs without a github token don't block pod creation")
 		}
 	}
 }
