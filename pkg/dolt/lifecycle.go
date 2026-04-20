@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -32,18 +33,30 @@ func ManagedBinPath() string {
 	return filepath.Join(ManagedDir(), "dolt")
 }
 
+var (
+	resolvedBinPathOnce  sync.Once
+	resolvedBinPathValue string
+)
+
 // ResolvedBinPath returns the dolt binary to use.
 // Priority: 1) managed binary if version OK, 2) PATH binary if version OK, 3) empty string.
 // An outdated managed binary does not shadow a valid system binary.
+// The result is memoized for the life of the process — the resolved path
+// does not change during a run, and the underlying probe shells out to
+// `dolt version`, which is too expensive to repeat on every dolt call.
 func ResolvedBinPath() string {
-	managed := ManagedBinPath()
-	if _, err := os.Stat(managed); err == nil && VersionOK(managed) {
-		return managed
-	}
-	if p, err := exec.LookPath("dolt"); err == nil && VersionOK(p) {
-		return p
-	}
-	return ""
+	resolvedBinPathOnce.Do(func() {
+		managed := ManagedBinPath()
+		if _, err := os.Stat(managed); err == nil && VersionOK(managed) {
+			resolvedBinPathValue = managed
+			return
+		}
+		if p, err := exec.LookPath("dolt"); err == nil && VersionOK(p) {
+			resolvedBinPathValue = p
+			return
+		}
+	})
+	return resolvedBinPathValue
 }
 
 // Bin returns the resolved dolt binary path, falling back to "dolt" if
