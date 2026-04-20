@@ -347,7 +347,7 @@ func TestSummonLocal_RejectsMultipleTargets_FirstBadFails(t *testing.T) {
 	storeGetBeadFunc = func(id string) (Bead, error) {
 		callCount++
 		if id == "spi-good" {
-			return Bead{ID: id, Status: "open", Title: "good"}, nil
+			return Bead{ID: id, Status: "in_progress", Title: "good"}, nil
 		}
 		return Bead{ID: id, Status: "closed", Title: "bad"}, nil
 	}

@@ -419,6 +419,12 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 				if err := storeUpdateBead(id, map[string]interface{}{"status": "in_progress"}); err != nil {
 					return fmt.Errorf("transition hooked bead %s to in_progress: %w", id, err)
 				}
+				bead.Status = "in_progress"
+			case "open", "ready":
+				if err := storeUpdateBead(id, map[string]interface{}{"status": "in_progress"}); err != nil {
+					return fmt.Errorf("transition %s bead %s to in_progress: %w", bead.Status, id, err)
+				}
+				bead.Status = "in_progress"
 			}
 			candidates = append(candidates, bead)
 		}
