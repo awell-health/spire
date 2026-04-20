@@ -503,3 +503,41 @@ func keysOf(m map[string]string) []string {
 	}
 	return ks
 }
+
+// --- Cobra registration --------------------------------------------------
+
+// TestApprenticeCmdRegistered asserts that apprenticeCmd is wired to rootCmd
+// and that apprenticeSubmitCmd is a child of apprenticeCmd. Guards against
+// regressions where a refactor detaches the parent from rootCmd or flattens
+// "apprentice submit" back into a single top-level verb.
+func TestApprenticeCmdRegistered(t *testing.T) {
+	var foundParent bool
+	for _, c := range rootCmd.Commands() {
+		if c == apprenticeCmd {
+			foundParent = true
+			break
+		}
+	}
+	if !foundParent {
+		t.Fatalf("apprenticeCmd is not registered on rootCmd")
+	}
+
+	if apprenticeCmd.Use != "apprentice" {
+		t.Errorf("apprenticeCmd.Use = %q, want %q", apprenticeCmd.Use, "apprentice")
+	}
+
+	var foundChild bool
+	for _, c := range apprenticeCmd.Commands() {
+		if c == apprenticeSubmitCmd {
+			foundChild = true
+			break
+		}
+	}
+	if !foundChild {
+		t.Fatalf("apprenticeSubmitCmd is not a child of apprenticeCmd; children = %v", apprenticeCmd.Commands())
+	}
+
+	if apprenticeSubmitCmd.Use != "submit" {
+		t.Errorf("apprenticeSubmitCmd.Use = %q, want %q", apprenticeSubmitCmd.Use, "submit")
+	}
+}
