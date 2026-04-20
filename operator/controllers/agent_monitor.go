@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,7 +18,32 @@ import (
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
 )
+
+// apprenticeSignalKeyPrefix is the metadata-key prefix written by
+// `spire apprentice submit`. Its presence on a bead means at least one
+// apprentice finished submission (bundle or no-op). See cmd/spire/apprentice.go.
+const apprenticeSignalKeyPrefix = "apprentice_signal_"
+
+// getBeadMetadataFn is overridable in tests.
+var getBeadMetadataFn = store.GetBeadMetadata
+
+// hasApprenticeSignal returns true if any apprentice_signal_* metadata key
+// is present on the bead. Enumerating by prefix handles the multi-apprentice
+// case (each idx writes its own key) without needing the index up front.
+func hasApprenticeSignal(beadID string) (bool, error) {
+	md, err := getBeadMetadataFn(beadID)
+	if err != nil {
+		return false, err
+	}
+	for k := range md {
+		if strings.HasPrefix(k, apprenticeSignalKeyPrefix) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // AgentMonitor tracks agent heartbeats and manages pods for managed agents.
 type AgentMonitor struct {
@@ -145,59 +171,73 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		workSet[beadID] = true
 	}
 
-	// Self-heal: if the operator restarted and lost in-memory state, the assigner
-	// may not have re-populated CurrentWork yet. Any active pod whose bead isn't
-	// in CurrentWork would otherwise be reaped as "stale" below. Re-attach it.
-	healed := false
-	for beadID, pod := range podsByBead {
-		if workSet[beadID] {
-			continue
-		}
-		if !isPodActive(pod) {
-			continue
-		}
-		agent.Status.CurrentWork = append(agent.Status.CurrentWork, beadID)
-		workSet[beadID] = true
-		healed = true
-		m.Log.Info("re-attached running pod to CurrentWork", "agent", agent.Name, "bead", beadID, "pod", pod.Name)
+	// Reap loop: the reconciler is a pure function of (pods × signals).
+	// Walk the union of pod beads and CurrentWork beads and decide per-bead:
+	//   signal present                       → success: drop from CurrentWork,
+	//                                          delete pod, KEEP origin/feat/<bead>
+	//                                          (wizard consumes it on merge).
+	//   no signal, pod terminated            → failure: drop from CurrentWork,
+	//                                          delete pod, delete origin/feat/<bead>.
+	//   no signal, pod active                → in progress; skip.
+	//   no signal, no pod                    → leave CurrentWork alone; the
+	//                                          create-pod loop re-provisions.
+	// "Signal" = any apprentice_signal_* metadata key (bundle or no-op). The
+	// apprentice's comment is human UX; reading it would be a layering violation.
+	statusChanged := false
+	reaped := make(map[string]bool)
+	allBeads := make(map[string]bool, len(podsByBead)+len(workSet))
+	for beadID := range podsByBead {
+		allBeads[beadID] = true
 	}
-	if healed {
-		if err := m.Client.Status().Update(ctx, agent); err != nil {
-			m.Log.Error(err, "failed to update agent CurrentWork after self-heal", "agent", agent.Name)
-			return
-		}
+	for beadID := range workSet {
+		allBeads[beadID] = true
 	}
 
-	// Reap completed/failed pods and remove their bead IDs from CurrentWork
-	statusChanged := false
-	for beadID, pod := range podsByBead {
-		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed || isPodFinished(pod) {
-			// Remove bead from CurrentWork
-			for i, id := range agent.Status.CurrentWork {
-				if id == beadID {
-					agent.Status.CurrentWork = append(agent.Status.CurrentWork[:i], agent.Status.CurrentWork[i+1:]...)
-					delete(workSet, beadID)
-					statusChanged = true
-					m.Log.Info("reaped completed workload", "agent", agent.Name, "bead", beadID, "podPhase", pod.Status.Phase)
-					break
+	for beadID := range allBeads {
+		pod, havePod := podsByBead[beadID]
+
+		signalPresent, err := hasApprenticeSignal(beadID)
+		if err != nil {
+			m.Log.Error(err, "failed to read bead metadata for reap; skipping this cycle",
+				"agent", agent.Name, "bead", beadID)
+			continue
+		}
+
+		switch {
+		case signalPresent:
+			if removeFromCurrentWork(agent, beadID) {
+				delete(workSet, beadID)
+				statusChanged = true
+			}
+			if havePod && pod.DeletionTimestamp == nil {
+				if err := m.Client.Delete(ctx, pod); err != nil {
+					m.Log.Error(err, "failed to delete completed pod", "pod", pod.Name)
 				}
 			}
-			// Best-effort: on any non-success terminal outcome, delete origin/feat/<beadID>
-			// so failed apprentice runs don't leak remote branches. Apprentice's checkpoint
-			// push runs unconditionally (agent-entrypoint.sh push_branch), so the cleanup
-			// has to live here, not in the entrypoint.
-			if pod.Status.Phase != corev1.PodSucceeded {
-				if err := m.deleteRemoteFeatBranch(ctx, agent, beadID, cfg); err != nil {
-					m.Log.Error(err, "failed to delete remote feat branch after non-success reap",
-						"agent", agent.Name, "bead", beadID)
-				}
+			reaped[beadID] = true
+			m.Log.Info("reaped completed workload",
+				"agent", agent.Name, "bead", beadID, "reason", "signal")
+
+		case havePod && (pod.Status.Phase == corev1.PodSucceeded ||
+			pod.Status.Phase == corev1.PodFailed || isPodFinished(pod)):
+			if removeFromCurrentWork(agent, beadID) {
+				delete(workSet, beadID)
+				statusChanged = true
 			}
-			// Delete the finished pod
+			// Apprentice's checkpoint push runs unconditionally, so cleanup of
+			// the leaked remote branch has to live here, not in the entrypoint.
+			if err := m.deleteRemoteFeatBranch(ctx, agent, beadID, cfg); err != nil {
+				m.Log.Error(err, "failed to delete remote feat branch after non-success reap",
+					"agent", agent.Name, "bead", beadID)
+			}
 			if pod.DeletionTimestamp == nil {
 				if err := m.Client.Delete(ctx, pod); err != nil {
 					m.Log.Error(err, "failed to delete finished pod", "pod", pod.Name)
 				}
 			}
+			reaped[beadID] = true
+			m.Log.Info("reaped completed workload",
+				"agent", agent.Name, "bead", beadID, "reason", "pod-terminated-no-signal")
 		}
 	}
 	if statusChanged {
@@ -237,6 +277,9 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 	for beadID, pod := range podsByBead {
 		if workSet[beadID] {
 			continue
+		}
+		if reaped[beadID] {
+			continue // reap loop already issued Delete
 		}
 		if pod.DeletionTimestamp != nil {
 			continue
@@ -897,20 +940,16 @@ func beadsSeedVolume() corev1.Volume {
 
 func boolPtr(b bool) *bool { return &b }
 
-// isPodActive reports whether a pod should still count toward an agent's
-// CurrentWork — i.e. it's not terminal, being deleted, or finished.
-func isPodActive(pod *corev1.Pod) bool {
-	if pod.DeletionTimestamp != nil {
-		return false
+// removeFromCurrentWork drops beadID from agent.Status.CurrentWork in-place.
+// Returns true if the slice was modified.
+func removeFromCurrentWork(agent *spirev1.WizardGuild, beadID string) bool {
+	for i, id := range agent.Status.CurrentWork {
+		if id == beadID {
+			agent.Status.CurrentWork = append(agent.Status.CurrentWork[:i], agent.Status.CurrentWork[i+1:]...)
+			return true
+		}
 	}
-	switch pod.Status.Phase {
-	case corev1.PodSucceeded, corev1.PodFailed:
-		return false
-	}
-	if isPodFinished(pod) {
-		return false
-	}
-	return true
+	return false
 }
 
 // isPodFinished checks if the main work container (wizard or artificer) has
