@@ -217,12 +217,14 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 				extraArgs := []string{"--apprentice"}
 				started := time.Now()
 				h, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
-					Name:      name,
-					BeadID:    beadID,
-					Role:      agent.RoleApprentice,
-					ExtraArgs: extraArgs,
-					StartRef:  startRef,
-					LogPath:   filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
+					Name:          name,
+					BeadID:        beadID,
+					Role:          agent.RoleApprentice,
+					ExtraArgs:     extraArgs,
+					StartRef:      startRef,
+					LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
+					AttemptID:     e.attemptID(),
+					ApprenticeIdx: "0",
 				})
 				if spawnErr != nil {
 					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr,
@@ -265,10 +267,34 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 			e.log("wave %d: %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))
 		}
 
-		// Merge successful child branches into staging.
+		// Apply each successful apprentice's bundle into staging, then merge.
+		// No-op signals skip merge entirely. The bundle is deleted only after
+		// a successful merge so a conflict can be retried with the bundle
+		// still present.
 		if stagingWt != nil {
 			for _, cr := range waveResults {
-				if cr.Err != nil || cr.Branch == "" {
+				if cr.Err != nil {
+					continue
+				}
+				if e.deps.BundleStore != nil {
+					outcome, err := e.applyApprenticeBundle(cr.BeadID, 0, stagingWt)
+					if err != nil {
+						return allResults, fmt.Errorf("apply apprentice bundle for %s: %w", cr.BeadID, err)
+					}
+					if outcome.NoOp {
+						continue
+					}
+					if outcome.Applied {
+						if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
+							return allResults, fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
+						}
+						e.deleteApprenticeBundle(cr.BeadID, outcome.Handle)
+						continue
+					}
+				}
+				// Legacy fallback: assume the apprentice's feat branch is
+				// already present locally.
+				if cr.Branch == "" {
 					continue
 				}
 				if mergeErr := stagingWt.MergeBranch(cr.Branch, resolver); mergeErr != nil {
@@ -303,12 +329,14 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 		name := fmt.Sprintf("%s-seq-%d", e.agentName, i+1)
 		started := time.Now()
 		handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
-			Name:      name,
-			BeadID:    subtaskID,
-			Role:      agent.RoleApprentice,
-			ExtraArgs: []string{"--apprentice"},
-			StartRef:  startRef,
-			LogPath:   filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
+			Name:          name,
+			BeadID:        subtaskID,
+			Role:          agent.RoleApprentice,
+			ExtraArgs:     []string{"--apprentice"},
+			StartRef:      startRef,
+			LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
+			AttemptID:     e.attemptID(),
+			ApprenticeIdx: "0",
 		})
 		if spawnErr != nil {
 			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
@@ -332,10 +360,34 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 			return allResults, fmt.Errorf("apprentice %s failed: %w", subtaskID, waitErr)
 		}
 
-		// Merge feat branch into staging.
+		// Apply the apprentice's bundle into staging, then merge. No-op
+		// signals skip merge entirely. The bundle is deleted only after a
+		// successful merge so a conflict can be retried with the bundle
+		// still present.
 		if stagingWt != nil {
-			if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
-				return allResults, fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
+			merged := false
+			if e.deps.BundleStore != nil {
+				outcome, err := e.applyApprenticeBundle(subtaskID, 0, stagingWt)
+				if err != nil {
+					return allResults, fmt.Errorf("apply apprentice bundle for %s: %w", subtaskID, err)
+				}
+				switch {
+				case outcome.NoOp:
+					merged = true // nothing to merge counts as success
+				case outcome.Applied:
+					if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
+						return allResults, fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
+					}
+					e.deleteApprenticeBundle(subtaskID, outcome.Handle)
+					merged = true
+				}
+			}
+			if !merged {
+				// Legacy fallback: assume the apprentice's feat branch is
+				// already present locally.
+				if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
+					return allResults, fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
+				}
 			}
 			// Update startRef for next child.
 			if sha, err := stagingWt.HeadSHA(); err == nil && sha != "" {
@@ -397,6 +449,7 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 			if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
 				return fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
 			}
+			e.deleteApprenticeBundle(e.beadID, outcome.Handle)
 			return nil
 		}
 	}

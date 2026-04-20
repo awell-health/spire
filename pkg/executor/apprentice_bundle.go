@@ -5,14 +5,17 @@ package executor
 // The apprentice (cmd/spire/apprentice.go) writes a git bundle to the
 // BundleStore and stamps a JSON signal on the task bead under the
 // apprentice_signal_<role> metadata key. The wizard side reads that signal,
-// streams the bundle to a temp file, fetches it into staging as a local
-// branch, and then deletes the bundle. Merge integration stays in
-// StagingWorktree.MergeBranch — this helper only materializes the branch.
+// streams the bundle to a temp file, and fetches it into staging as a local
+// branch. Merge integration stays in StagingWorktree.MergeBranch — this
+// helper only materializes the branch.
 //
-// The four dispatch sites (direct, wave, sequential, injected) call
-// applyApprenticeBundle exactly after a successful spawn and exactly before
-// MergeBranch. A no-op signal signals "nothing to merge" and the caller
-// skips the merge entirely.
+// All four dispatch sites (direct, wave, sequential, injected) call
+// applyApprenticeBundle after a successful spawn and before MergeBranch when
+// e.deps.BundleStore is wired. A no-op signal tells the caller "nothing to
+// merge" and the merge is skipped entirely. The bundle handle is returned to
+// the caller so it can call deleteApprenticeBundle only after a successful
+// merge — deleting earlier would leave the wizard with no way to retry on
+// merge failure.
 
 import (
 	"context"
@@ -32,20 +35,27 @@ import (
 type bundleOutcome struct {
 	// Applied is true when the apprentice's bundle was fetched and a
 	// local branch ref was force-updated to its HEAD. The caller should
-	// then call stagingWt.MergeBranch(Branch, resolver).
+	// then call stagingWt.MergeBranch(Branch, resolver) and, on success,
+	// deleteApprenticeBundle(Handle).
 	Applied bool
 	// NoOp is true when the apprentice explicitly signalled "no changes".
-	// The caller must skip merge for this bead.
+	// The caller must skip merge for this bead. Handle is zero in this case.
 	NoOp bool
 	// Branch is the local branch ref the bundle was applied to. Empty
 	// when Applied is false.
 	Branch string
+	// Handle is the BundleStore handle that was applied. Returned so the
+	// caller can call deleteApprenticeBundle ONLY after a successful merge.
+	// Deleting before merge would leave the wizard with no way to retry on
+	// conflict. Zero when Applied is false.
+	Handle bundlestore.BundleHandle
 }
 
 // applyApprenticeBundle reads the apprentice's signal for (beadID, idx),
 // streams the bundle out of the BundleStore, and applies it as a local
 // branch in the staging worktree. On success the caller merges Branch into
-// staging via the existing MergeBranch helper.
+// staging via the existing MergeBranch helper, then calls
+// deleteApprenticeBundle(Handle) to clean up.
 //
 // If the signal is absent the function returns an error — every spawn the
 // wizard tracks as complete is expected to have produced exactly one signal.
@@ -96,12 +106,22 @@ func (e *Executor) applyApprenticeBundle(beadID string, idx int, stagingWt *spgi
 		return bundleOutcome{}, fmt.Errorf("apply bundle for %s: %w", beadID, err)
 	}
 
-	if err := e.deps.BundleStore.Delete(context.Background(), handle); err != nil {
-		e.log("warning: delete bundle %s for %s: %s — janitor will collect", handle.Key, beadID, err)
-	}
-
 	e.log("applied apprentice bundle for %s (%d commits) -> %s", beadID, len(sig.Commits), branch)
-	return bundleOutcome{Applied: true, Branch: branch}, nil
+	return bundleOutcome{Applied: true, Branch: branch, Handle: handle}, nil
+}
+
+// deleteApprenticeBundle removes a bundle from the BundleStore. Callers
+// invoke it AFTER a successful merge (or an explicit discard) — never
+// before, because a merge failure that has already lost its bundle cannot
+// be retried. Errors are logged and swallowed; the bundle janitor is the
+// correctness net.
+func (e *Executor) deleteApprenticeBundle(beadID string, h bundlestore.BundleHandle) {
+	if e.deps.BundleStore == nil || h.Key == "" {
+		return
+	}
+	if err := e.deps.BundleStore.Delete(context.Background(), h); err != nil {
+		e.log("warning: delete bundle %s for %s: %s — janitor will collect", h.Key, beadID, err)
+	}
 }
 
 // streamBundleToTmp copies the bundle stream out of the BundleStore into a

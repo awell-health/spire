@@ -637,12 +637,14 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 
 		started := time.Now()
 		h, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
-			Name:      name,
-			BeadID:    taskID,
-			Role:      agent.RoleApprentice,
-			ExtraArgs: []string{"--apprentice"},
-			StartRef:  startRef,
-			LogPath:   filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
+			Name:          name,
+			BeadID:        taskID,
+			Role:          agent.RoleApprentice,
+			ExtraArgs:     []string{"--apprentice"},
+			StartRef:      startRef,
+			LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
+			AttemptID:     e.attemptID(),
+			ApprenticeIdx: "0",
 		})
 		if spawnErr != nil {
 			e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
@@ -662,10 +664,33 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 		}
 
 		if stagingWt != nil {
-			featBranch := e.resolveBranch(taskID)
-			if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
-				e.log("warning: merge injected task %s branch %s: %s", taskID, featBranch, mergeErr)
-				continue
+			merged := false
+			if e.deps.BundleStore != nil {
+				outcome, err := e.applyApprenticeBundle(taskID, 0, stagingWt)
+				if err != nil {
+					e.log("warning: apply apprentice bundle for injected task %s: %s", taskID, err)
+					continue
+				}
+				if outcome.NoOp {
+					e.log("injected task %s signalled no-op — nothing to merge", taskID)
+					merged = true
+				} else if outcome.Applied {
+					if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
+						e.log("warning: merge injected task %s branch %s: %s", taskID, outcome.Branch, mergeErr)
+						continue
+					}
+					e.deleteApprenticeBundle(taskID, outcome.Handle)
+					merged = true
+				}
+			}
+			if !merged {
+				// Legacy fallback: assume the apprentice's feat branch is
+				// already present locally.
+				featBranch := e.resolveBranch(taskID)
+				if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
+					e.log("warning: merge injected task %s branch %s: %s", taskID, featBranch, mergeErr)
+					continue
+				}
 			}
 		}
 
