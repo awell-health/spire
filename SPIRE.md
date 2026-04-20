@@ -12,6 +12,14 @@ starting any work.
 | **Wizard** | Per-bead orchestrator. Drives the formula lifecycle. | You were spawned by `spire summon` |
 | **Apprentice** | Implementer. Writes code in isolated worktree. | You were dispatched by a wizard |
 | **Sage** | Reviewer. Returns verdict (approve / request changes). | You were dispatched for review |
+| **Cleric** | Failure-recovery driver (diagnose → execute → learn). | You were dispatched to recover a stuck bead |
+| **Arbiter** | Dispute resolver. Issues binding verdicts. | You were dispatched to break a sage/apprentice deadlock |
+
+Each role has its own scoped CLI surface. See `docs/cli-reference.md`
+for the full role-grouped command catalog. The scaffolder reads
+`SPIRE_ROLE` on agent startup and surfaces only that role's commands
+(plus the multi-role common verbs) — see CLAUDE.md for the scaffolder
+contract.
 
 ## Session lifecycle
 

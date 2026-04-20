@@ -1,10 +1,20 @@
 # Spire CLI Reference
 
-Complete reference for all `spire` commands.
+Complete reference for all `spire` commands, organized by agent role.
 
 For the `bd` (beads) CLI reference, see the [beads documentation](https://github.com/steveyegge/beads).
 
-> **Note on generation:** This document is derived from the help text printed by `spire help` (see `printUsage()` in `cmd/spire/main.go`). If you add or change commands, update both `printUsage()` and this file together. A quick way to check for drift: `spire help 2>&1 | diff - <(grep -E '^\s+(spire|  [a-z])' docs/cli-reference.md)`
+> **Role-scoped CLI taxonomy.** As of v0.44.0 the CLI is organized by
+> agent role: each of the five agent roles (apprentice, wizard, sage,
+> cleric, arbiter) has its own parent command and scoped subcommands.
+> Multi-role and top-level commands live under their own sections. A
+> role-aware scaffolder hook reads the `SPIRE_ROLE` env var and only
+> surfaces that role's catalog in the agent's session — see CLAUDE.md
+> for the full scaffolder contract.
+>
+> **Source of truth.** Role sections below (Apprentice, Wizard, Sage,
+> Cleric, Arbiter) mirror `pkg/scaffold/catalog.go`. If a signature here
+> drifts from that catalog, the catalog wins.
 
 ---
 
@@ -16,405 +26,343 @@ For the `bd` (beads) CLI reference, see the [beads documentation](https://github
 
 ---
 
-## Setup commands
+## Apprentice
 
-### `spire tower create`
+Role-scoped commands for the **apprentice** — the agent dispatched by a
+wizard to implement a single task bead in an isolated worktree.
 
-Create a new tower (shared workspace backed by Dolt).
+### `spire apprentice submit`
+
+Bundle apprentice work and signal the wizard via the BundleStore.
 
 ```bash
-spire tower create --name my-team [--dolthub org/repo] [--prefix spi]
+spire apprentice submit [--bead <id>] [--no-changes]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--name` | Tower name (required) |
-| `--dolthub` | DoltHub remote to create/use (e.g., `myorg/my-tower`) |
-| `--prefix` | Hub prefix for beads (auto-generated if omitted) |
+| `--bead <id>` | Task bead ID (overrides `SPIRE_BEAD_ID`) |
+| `--no-changes` | Signal the bead with a no-op payload; skips bundle creation |
 
-Creates a local Dolt database, generates tower identity, pushes to DoltHub, and writes `~/.config/spire/towers/<name>.json`.
-
-### `spire tower attach`
-
-Join an existing tower from DoltHub.
-
-```bash
-spire tower attach <dolthub-url> [--name local-name]
-```
-
-Clones the tower database locally, bootstraps `.beads/`, and writes local tower config. Use this when a second developer joins a team that already has a tower.
-
-### `spire tower list`
-
-List all configured towers.
-
-```bash
-spire tower list
-```
-
-### `spire tower use`
-
-Set the active tower for subsequent commands.
-
-```bash
-spire tower use <name>
-```
-
-### `spire repo add`
-
-Register a repo under the active tower.
-
-```bash
-spire repo add [path] [--prefix web] [--repo-url https://github.com/org/repo] [--branch main]
-```
-
-| Flag | Description |
-|------|-------------|
-| `--prefix` | Short prefix for bead IDs (e.g., `web` → beads like `web-a3f8`) |
-| `--repo-url` | Git remote URL (auto-detected from `git remote` if omitted) |
-| `--branch` | Default branch (default: `main`) |
-
-Validates prefix uniqueness, writes to the `repos` table in dolt, creates `.beads/` in the repo, generates `spire.yaml` if missing, and pushes registration to DoltHub.
-
-### `spire repo list`
-
-List repos registered in the active tower.
-
-```bash
-spire repo list [--json]
-```
-
-### `spire repo remove`
-
-Remove a repo from the tower.
-
-```bash
-spire repo remove <prefix>
-```
-
-### `spire config`
-
-Read and write config values and credentials.
-
-```bash
-spire config set <key> <value>     # store a credential or config value
-spire config get <key>             # read a value (masked by default)
-spire config get <key> --unmask    # show the actual value
-spire config list                  # show all configured keys (masked)
-```
-
-**Credential keys:**
-
-| Key | Description |
-|-----|-------------|
-| `anthropic-key` | Anthropic API key (`sk-ant-...`) |
-| `github-token` | GitHub personal access token (`ghp_...`) |
-| `dolthub-user` | DoltHub username |
-| `dolthub-password` | DoltHub token |
-
-**Config keys:**
-
-| Key | Description |
-|-----|-------------|
-| `identity` | Your name/identity for bead attribution |
-| `dolt.port` | Local dolt server port (default: 3307) |
-| `daemon.interval` | Sync interval (default: 2m) |
-| `dolthub.remote` | DoltHub remote URL |
-
-Credentials are stored at `~/.config/spire/credentials` (chmod 600). Environment variables override file values: `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `DOLT_REMOTE_USER`, `DOLT_REMOTE_PASSWORD`.
-
-### `spire doctor`
-
-Health checks and auto-repair.
-
-```bash
-spire doctor [--fix]
-```
-
-Checks 11 items in 3 categories:
-- **System**: dolt binary, dolt version, Docker available
-- **Tower**: tower config, database reachable, `.beads/` present
-- **Credentials**: anthropic-key, github-token, dolthub credentials, credential file permissions
-
-`--fix` auto-repairs: downloads missing dolt binary, starts dolt server, fixes credential file permissions, regenerates `.beads/` config.
+Bundles every commit between the base branch and HEAD into a git bundle,
+uploads the bundle to the tower's BundleStore, and writes a signal on the
+task bead so the wizard knows the bundle is ready to consume. The command
+never pushes to a git remote — the bundle IS the delivery.
 
 ---
 
-## Sync commands
+## Wizard
 
-### `spire push`
+Role-scoped commands for the **wizard** — the per-bead orchestrator that
+drives the formula lifecycle, creates attempt beads, dispatches
+apprentices, consults sages, and seals work on merge.
 
-Push local database to DoltHub.
+### `spire wizard claim <bead>`
 
-```bash
-spire push [url]
-```
-
-Commits local dolt changes and pushes to the configured DoltHub remote.
-
-### `spire pull`
-
-Pull from DoltHub.
+Atomic claim: create the attempt bead and set the task to `in_progress`.
 
 ```bash
-spire pull [url] [--force]
+spire wizard claim <bead-id>
 ```
 
-Fast-forward pull by default. Use `--force` to overwrite local changes. The daemon runs this automatically on each sync cycle.
+Creates a child attempt bead under `<bead-id>` and flips the task bead's
+status to `in_progress`. Fails if an open attempt already exists under
+the task (the error names the existing attempt ID).
 
-### `spire sync`
+### `spire wizard seal <bead> [--merge-commit <sha>]`
 
-Three-way merge pull for diverged histories.
+Record `merge_commit` + `sealed_at` on the task and close the attempt
+bead.
 
 ```bash
-spire sync --merge
+spire wizard seal <bead-id> [--merge-commit <sha>]
 ```
 
-Use when a fast-forward pull fails due to diverged history (e.g., two machines filed beads without syncing first).
+| Flag | Description |
+|------|-------------|
+| `--merge-commit <sha>` | Merge commit SHA (defaults to current git HEAD) |
+
+Writes `merge_commit` + `sealed_at` fields to the task bead's metadata
+and closes the bead's current open attempt. Called after the feature
+branch has merged into main.
 
 ---
 
-## Lifecycle commands
+## Sage
 
-### `spire up`
+Role-scoped commands for the **sage** — the agent dispatched to review
+an apprentice's work and record a verdict on the open review round.
 
-Start the dolt server and sync daemon.
+### `spire sage accept <bead> [comment]`
+
+Record an accept verdict for the current review round.
 
 ```bash
-spire up [--interval 2m] [--steward] [--backend process|docker|k8s]
+spire sage accept <bead-id> [comment]
+```
+
+Writes `review_verdict=accept` (plus optional `review_comment`) to the
+task bead's metadata and closes the open review-round child bead.
+
+### `spire sage reject <bead> --feedback <text>`
+
+Record a reject verdict with required feedback for the apprentice.
+
+```bash
+spire sage reject <bead-id> --feedback <text>
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--interval` | Daemon sync interval (default: `2m`) |
-| `--steward` | Also start a steward companion process |
-| `--backend` | Backend for the steward to use (`process`, `docker`, `k8s`) |
+| `--feedback <text>` | Feedback text explaining the reject verdict (required) |
 
-`spire up` without `--steward` starts infrastructure only. Add `--steward` to run the coordinator loop as a sibling process. `spire summon` remains the common local way to add capacity.
-
-### `spire down`
-
-Stop the sync daemon (dolt server keeps running).
-
-```bash
-spire down
-```
-
-### `spire shutdown`
-
-Stop the sync daemon and dolt server.
-
-```bash
-spire shutdown
-```
-
-### `spire status`
-
-Show running services, agents, and work queue.
-
-```bash
-spire status
-```
-
-Prints: dolt server state (PID, reachability), daemon state (PID, last sync), active wizard count.
-
-### `spire logs`
-
-Tail agent or system logs.
-
-```bash
-spire logs [wizard-name] [--daemon] [--dolt]
-```
-
-| Flag | Description |
-|------|-------------|
-| (no args) | Tail daemon log |
-| `wizard-name` | Tail a specific wizard's log |
-| `--daemon` | Tail daemon log explicitly |
-| `--dolt` | Tail dolt server log |
-
-Logs are stored at `~/.local/share/spire/wizards/<name>.log`.
+Writes `review_verdict=reject` + `review_feedback=<text>` to the task
+bead's metadata and closes the open review-round child bead. `--feedback`
+is required — rejections without actionable feedback are not accepted.
 
 ---
 
-## Work commands
+## Cleric
 
-### `spire file`
+Role-scoped commands for the **cleric** — the role that drives the
+failure-recovery state machine. The three subcommands map ~1:1 to the
+cleric formula actions: `diagnose` → `cleric.decide`, `execute` →
+`cleric.execute`, `learn` → `cleric.learn`.
 
-Create a bead (work item).
+### `spire cleric diagnose <bead>`
+
+Diagnose a stuck or failing bead and propose a recovery action.
 
 ```bash
-spire file "<title>" [--prefix web] -t <type> -p <priority> [--parent <id>] [--label <label>]
+spire cleric diagnose <bead-id> [--decision <text>]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--prefix` | Repo prefix to use (default: current directory's repo) |
-| `-t, --type` | Bead type: `task`, `bug`, `feature`, `epic`, `chore` |
-| `-p, --priority` | Priority: `0` (P0/critical) – `4` (P4/nice-to-have) |
-| `--parent` | Parent bead ID (for sub-tasks) |
-| `--label` | Label to add (repeatable) |
+| `--decision <text>` | Next-action decision text attached to the diagnosis |
 
-**Always set both `-t` and `-p`.** The type determines which formula the wizard uses. The priority determines dispatch order.
+Writes `cleric_state=diagnosed` (and the optional decision text) to the
+bead's metadata.
 
-### `spire design`
+### `spire cleric execute --action <name>`
 
-Create a design bead (brainstorming/exploration artifact).
+Run the recovery action chosen during diagnosis.
 
 ```bash
-spire design "<title>" [-p <priority>]
-```
-
-Design beads are thinking artifacts, not work items. They appear on the board in the DESIGN column but are filtered out of `spire summon`'s ready queue. Use them to capture exploration before filing implementation tasks.
-
-### `spire spec`
-
-Scaffold a spec and optionally file it as a bead.
-
-```bash
-spire spec "<title>" [--no-file] [--break <epic-id>]
+spire cleric execute --action <name> [--bead <id>]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--no-file` | Write the spec to disk only, don't create a bead |
-| `--break` | Break an existing epic into subtasks based on the spec |
+| `--action <name>` | Recovery action to run (required) |
+| `--bead <id>` | Bead ID (overrides `SPIRE_BEAD` / cwd auto-detect) |
 
-### `spire claim`
+If `--bead` is absent, the bead is resolved from `SPIRE_BEAD` or by
+walking the working directory for a basename that matches the bead-ID
+pattern.
 
-Atomically claim a bead.
+### `spire cleric learn <bead>`
 
-```bash
-spire claim <bead-id>
-```
-
-Pulls from DoltHub, verifies the bead is claimable (open, unowned), sets status to `in_progress` with your identity, and pushes. Fails if the bead is already owned by someone else.
-
-Always claim before working: `spire claim` prevents double-work.
-
-### `spire close`
-
-Force-close a bead.
+Persist the diagnosis and outcome into the cleric's knowledge base.
 
 ```bash
-spire close <bead-id>
+spire cleric learn <bead-id> [--notes <text>]
 ```
 
-Removes phase labels, closes molecule steps, and sets status to `closed`. Use for work you're abandoning or that was completed outside the normal flow.
+| Flag | Description |
+|------|-------------|
+| `--notes <text>` | Learning notes to record on the bead |
 
-### `spire focus`
+Records the cleric's learning notes on the bead and marks the cleric
+state `finished`.
 
-Assemble read-only context for a task.
+---
+
+## Arbiter
+
+Role-scoped commands for the **arbiter** — the role that resolves
+disputes between sages and apprentices by issuing a binding verdict.
+
+### `spire arbiter decide <bead> [--verdict accept|reject|custom]`
+
+Record a binding arbiter verdict for a contested review round.
+
+```bash
+spire arbiter decide <bead-id> --verdict accept|reject|custom [--note <text>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--verdict` | Arbiter verdict: `accept`, `reject`, or `custom` (required) |
+| `--note <text>` | Optional verdict reasoning/note |
+
+Writes an `arbiter_verdict` payload (with `source="arbiter"` marker) to
+the task bead's metadata. If the task has an active attempt bead (the
+current dispute round), the attempt is closed with result
+`arbiter-resolved`. Downstream sage verdict writers refuse to overwrite
+an arbiter-source verdict.
+
+---
+
+## Artificer
+
+Role-scoped commands for the **artificer** — the role that authors,
+validates, inspects, and publishes formulas. The artificer operates on
+formula TOML files; it never drives live bead execution.
+
+### `spire workshop`
+
+Drop into the interactive formula workshop.
+
+```bash
+spire workshop
+```
+
+### `spire workshop list`
+
+List available formulas.
+
+```bash
+spire workshop list [--custom] [--embedded] [--all] [--json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--custom` | Show only tower-published (disk) formulas |
+| `--embedded` | Show only binary-embedded defaults |
+| `--all` | Show every formula (default if no filter set) |
+| `--json` | JSON output |
+
+### `spire workshop show <name>`
+
+Display formula details with the ASCII step-graph diagram.
+
+```bash
+spire workshop show <formula-name>
+```
+
+### `spire workshop validate <name>`
+
+Validate a formula's syntax, structure, and semantics.
+
+```bash
+spire workshop validate <formula-name>
+```
+
+Exits non-zero if any errors are found. Warnings are reported but
+non-fatal.
+
+### `spire workshop compose`
+
+Interactive formula builder for authoring v3 step-graph formulas.
+
+```bash
+spire workshop compose
+```
+
+### `spire workshop dry-run <name>`
+
+Simulate formula execution without live side effects.
+
+```bash
+spire workshop dry-run <formula-name> [--json] [--bead <id>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | JSON output |
+| `--bead <id>` | Bead ID for context (accepted for backward compat) |
+
+### `spire workshop test <name>`
+
+Dry-run a formula against a real bead's full context.
+
+```bash
+spire workshop test <formula-name> --bead <id> [--json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--bead <id>` | Bead ID (required) |
+| `--json` | JSON output |
+
+Logs a note to stderr if the bead's resolved formula does not match
+`<formula-name>` (you asked for one formula, the bead would normally use
+another).
+
+### `spire workshop publish <name>`
+
+Copy a formula to the tower's `.beads/formulas/` so layered resolution
+picks it up.
+
+```bash
+spire workshop publish <formula-name>
+```
+
+### `spire workshop unpublish <name>`
+
+Remove a published formula; beads fall back to the embedded default.
+
+```bash
+spire workshop unpublish <formula-name>
+```
+
+---
+
+## Common (multi-role reads / messaging)
+
+These commands are available to every role. They are not role-scoped —
+the scaffolder hook emits them alongside the role's own catalog. A
+wizard, sage, cleric, arbiter, and apprentice can all run these.
+
+### `spire focus <bead>`
+
+Assemble full context for a bead (deps, messages, comments, workflow
+molecule).
 
 ```bash
 spire focus <bead-id>
 ```
 
-Outputs: bead details, workflow progress, referenced design beads, recent messages, comments. Also pours the workflow molecule on first focus. Wizards call this automatically.
+Outputs: bead details, workflow progress, referenced design beads,
+recent messages, comments. Pours the workflow molecule on first focus.
 
-### `spire grok`
+### `spire grok <bead>`
 
-Focus with live Linear context.
+Deep focus that also pulls live integration context (e.g., Linear).
 
 ```bash
 spire grok <bead-id>
 ```
 
-Like `spire focus` but also fetches the linked Linear issue for additional context (requires Linear integration).
+Like `spire focus` but also fetches the linked Linear issue (requires
+Linear integration).
 
-### `spire wizard-epic`
+### `spire send <agent> "msg" --ref <bead>`
 
-Execute wizard epic orchestration.
-
-```bash
-spire wizard-epic <epic-id>
-```
-
-Runs the wizard in epic mode for long-running epic management. For local work, `spire summon` is the typical path.
-
----
-
-## Agent commands
-
-### `spire summon`
-
-Summon wizard agents to claim and work ready beads.
-
-```bash
-spire summon [n] [--targets <ids>] [--auto]
-```
-
-| Flag | Description |
-|------|-------------|
-| `n` | Number of wizards to summon (default: 1) |
-| `--targets` | Comma-separated bead IDs to target directly |
-| `--auto` | Keep summoning as work becomes available |
-
-Each wizard runs as a local process in an isolated git worktree, driven by the bead's formula. The formula is determined by bead type (`task`→`spire-agent-work`, `bug`→`spire-bugfix`, `epic`→`spire-epic`).
-
-### `spire dismiss`
-
-Dismiss running wizards.
-
-```bash
-spire dismiss [n] [--all]
-```
-
-Sends SIGINT to wizard processes. Wizards finish their current step before exiting.
-
-### `spire roster`
-
-Show work grouped by epic and agent status.
-
-```bash
-spire roster
-```
-
-Displays: beads in progress per epic, wizard process status, elapsed time, progress bar. Dead processes are cleaned up automatically.
-
----
-
-## Messaging commands
-
-### `spire send`
-
-Send a message to an agent or bead.
+Send a message to another agent, optionally referencing a bead.
 
 ```bash
 spire send <to> "<message>" [--ref <bead-id>] [--thread <msg-id>] [--priority <0-4>]
 ```
 
-`<to>` can be an agent name or bead ID. Messages are stored in the bead graph and routed via labels (`to:<agent>`, `from:<agent>`).
+`<to>` can be an agent name or bead ID. Messages are stored in the bead
+graph and routed via labels (`to:<agent>`, `from:<agent>`).
 
 ### `spire collect`
 
-Check inbox for messages (queries the database).
+Check the inbox for messages addressed to this agent.
 
 ```bash
 spire collect [name]
 ```
 
-Prints new messages addressed to `name` (or your registered identity if omitted). Use `spire inbox` for fast file-based reads in hot paths.
+Prints new messages addressed to `name` (or your registered identity if
+omitted).
 
-### `spire inbox`
+### `spire read <bead>`
 
-Read the local inbox file.
-
-```bash
-spire inbox [agent-name] [--check] [--watch] [--json]
-```
-
-| Flag | Description |
-|------|-------------|
-| `--check` | Silent if empty, non-zero exit if new messages |
-| `--watch` | Block until new messages arrive |
-| `--json` | Output as JSON |
-
-The daemon writes inbox state to a local file. `spire inbox` reads that file without hitting the database — use it for high-frequency checks (wizard main loops, hooks).
-
-### `spire read`
-
-Mark a message as read.
+Mark a message thread on a bead as read.
 
 ```bash
 spire read <bead-id>
@@ -422,9 +370,149 @@ spire read <bead-id>
 
 ---
 
-## Observability commands
+## Archmage (user / top-level)
 
-### `spire board`
+These are top-level commands invoked by the human archmage (or by tools
+acting on the archmage's behalf). They are not role-scoped: they set up
+infrastructure, file work, operate on the tower, and observe the system.
+
+### Setup
+
+#### `spire tower create`
+
+Create a new tower (shared workspace backed by Dolt).
+
+```bash
+spire tower create --name my-team [--dolthub org/repo] [--prefix spi]
+```
+
+#### `spire tower attach`
+
+Join an existing tower from DoltHub.
+
+```bash
+spire tower attach <dolthub-url> [--name local-name]
+```
+
+#### `spire tower list`
+
+List configured towers.
+
+```bash
+spire tower list
+```
+
+#### `spire tower use`
+
+Set the active tower for subsequent commands.
+
+```bash
+spire tower use <name>
+```
+
+#### `spire tower remove`
+
+Remove a tower.
+
+```bash
+spire tower remove <name> [--force]
+```
+
+#### `spire repo add`
+
+Register a repo under the active tower.
+
+```bash
+spire repo add [path] [--prefix web] [--repo-url <url>] [--branch main]
+```
+
+#### `spire repo list`
+
+List repos registered in the active tower.
+
+```bash
+spire repo list [--json]
+```
+
+#### `spire repo remove`
+
+Remove a repo from the tower.
+
+```bash
+spire repo remove <prefix>
+```
+
+#### `spire config`
+
+Read and write config values and credentials.
+
+```bash
+spire config set <key> <value>
+spire config get <key> [--unmask]
+spire config list
+```
+
+#### `spire doctor`
+
+Health checks and auto-repair.
+
+```bash
+spire doctor [--fix]
+```
+
+### Sync
+
+#### `spire push`
+
+Push local database to DoltHub.
+
+```bash
+spire push [url]
+```
+
+#### `spire pull`
+
+Pull from DoltHub (fast-forward by default, `--force` to overwrite).
+
+```bash
+spire pull [url] [--force]
+```
+
+### Lifecycle
+
+#### `spire up`
+
+Start the dolt server and sync daemon.
+
+```bash
+spire up [--interval 2m] [--steward] [--backend process|docker|k8s]
+```
+
+#### `spire down`
+
+Stop the sync daemon (dolt keeps running).
+
+```bash
+spire down
+```
+
+#### `spire shutdown`
+
+Stop the sync daemon and dolt server.
+
+```bash
+spire shutdown
+```
+
+#### `spire status`
+
+Show running services, agents, and work queue.
+
+```bash
+spire status
+```
+
+#### `spire board`
 
 Interactive Kanban board TUI.
 
@@ -432,37 +520,15 @@ Interactive Kanban board TUI.
 spire board [--mine] [--ready] [--epic <id>] [--json]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--mine` | Show only beads assigned to you |
-| `--ready` | Show only ready (unblocked) beads |
-| `--epic <id>` | Scope to one epic |
-| `--json` | Machine-readable output (no TUI) |
+#### `spire logs`
 
-Board columns: READY → DESIGN → PLAN → IMPLEMENT → REVIEW → MERGE → DONE → BLOCKED. Empty columns collapse.
-
-**Keyboard shortcuts (TUI mode):**
-
-| Key | Action |
-|-----|--------|
-| `↑/↓` | Navigate beads |
-| `←/→` | Switch columns |
-| `enter` | Select bead |
-| `q` | Quit |
-| `r` | Refresh |
-| `j/k` | Vi-style navigation |
-
-### `spire watch`
-
-Live-updating activity view.
+Tail agent or system logs.
 
 ```bash
-spire watch [bead-id]
+spire logs [wizard-name] [--daemon] [--dolt]
 ```
 
-Without arguments: shows tower activity (agents, recent events). With a bead ID: shows epic progress with countdown.
-
-### `spire metrics`
+#### `spire metrics`
 
 Agent run metrics and DORA metrics.
 
@@ -470,29 +536,114 @@ Agent run metrics and DORA metrics.
 spire metrics [--bead <id>] [--model] [--json]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--bead <id>` | Filter to one bead |
-| `--model` | Break down cost by model |
-| `--json` | Machine-readable output |
+#### `spire watch`
 
-See [metrics.md](metrics.md) for the full metrics reference.
-
-### `spire alert`
-
-Alert on bead state changes.
+Live-updating activity view.
 
 ```bash
-spire alert [bead-id] [--type <type>] [-p <priority>]
+spire watch [bead-id]
 ```
 
-Sends a priority alert, optionally referencing a bead. Used by wizards to flag issues requiring human attention.
+### Work filing and orchestration
 
----
+#### `spire file`
 
-## Advanced commands
+Create a bead (work item).
 
-### `spire register`
+```bash
+spire file "<title>" [--prefix <p>] -t <type> -p <priority> [--parent <id>] [--design <id>] [--label <label>]
+```
+
+#### `spire design`
+
+Create a design bead (brainstorming/exploration artifact).
+
+```bash
+spire design "<title>" [-p <priority>]
+```
+
+#### `spire summon`
+
+Summon wizard agents to claim and work ready beads.
+
+```bash
+spire summon [n] [--targets <ids>] [--auto]
+```
+
+Each wizard runs as a local process in an isolated git worktree, driven
+by the bead's formula. Prefer `spire summon` over the deprecated
+`spire wizard-run` — see the Deprecated section.
+
+#### `spire resummon`
+
+Clear `needs-human` / timer labels and re-summon a wizard for a bead.
+
+```bash
+spire resummon <bead-id>
+```
+
+#### `spire ready`
+
+Publish a bead so the cluster can pick it up.
+
+```bash
+spire ready <bead-id>
+```
+
+#### `spire reset`
+
+Reset a bead's workflow state without destroying the bead.
+
+```bash
+spire reset <bead-id>
+```
+
+#### `spire update`
+
+Update bead fields.
+
+```bash
+spire update <bead-id> [--title ...] [--status ...] [--priority <n>]
+```
+
+Prefer `spire update` over `bd update` for the same reason `spire file`
+is preferred over `bd create`.
+
+#### `spire close`
+
+Force-close a bead (removes phase labels, closes molecule steps).
+
+```bash
+spire close <bead-id>
+```
+
+#### `spire approve`
+
+Record an archmage-level approval on a bead.
+
+```bash
+spire approve <bead-id>
+```
+
+#### `spire resolve`
+
+Resolve a bead decision point (e.g., surfaced by the cleric flow).
+
+```bash
+spire resolve <bead-id>
+```
+
+#### `spire review`
+
+Manually enter the review flow for a bead.
+
+```bash
+spire review <bead-id>
+```
+
+### Messaging
+
+#### `spire register`
 
 Register an agent identity.
 
@@ -500,9 +651,7 @@ Register an agent identity.
 spire register <name>
 ```
 
-Required for agents that receive messages. Sets up routing labels and inbox.
-
-### `spire unregister`
+#### `spire unregister`
 
 Unregister an agent identity.
 
@@ -510,55 +659,45 @@ Unregister an agent identity.
 spire unregister <name>
 ```
 
-### `spire daemon`
+#### `spire send`
 
-Run the sync daemon directly (without `spire up`).
-
-```bash
-spire daemon [--interval 2m] [--once]
-```
-
-The daemon handles: DoltHub sync, Linear epic sync, webhook queue processing.
-
-### `spire steward`
-
-Run the work coordinator.
+Top-level message send (also available as a Common command; see that
+section for the full signature).
 
 ```bash
-spire steward [--once] [--dry-run]
+spire send <to> "<message>" [--ref <bead-id>] [--thread <msg-id>] [--priority <0-4>]
 ```
 
-The steward queries ready beads, checks capacity, and assigns work. In k8s, it creates SpireWorkload CRDs. Locally, it coordinates against the configured backend and roster, but `spire summon` remains the primary manual entry point.
+#### `spire alert`
 
-### `spire serve`
-
-Run the webhook receiver.
+Alert on bead state changes (priority-tagged notification).
 
 ```bash
-spire serve [--port 8080]
+spire alert [bead-id] [--type <type>] [-p <priority>]
 ```
 
-Listens for inbound webhooks (e.g., Linear, GitHub) and writes them to the processing queue.
+### Formulas (archmage surface)
 
-### `spire connect`
+#### `spire formula`
 
-Connect an integration.
+Formula convenience surface for the archmage. See `spire workshop` under
+the Artificer section for the authoring/validation surface.
 
 ```bash
-spire connect linear
+spire formula <subcommand> [args]
 ```
 
-Interactive OAuth2 or API key flow. Stores credentials in `~/.config/spire/credentials`.
+### Observability / debugging
 
-### `spire disconnect`
+#### `spire sql`
 
-Disconnect an integration.
+Open an interactive SQL prompt against the tower's Dolt database.
 
 ```bash
-spire disconnect linear
+spire sql
 ```
 
-### `spire version`
+#### `spire version`
 
 Print version information.
 
@@ -566,18 +705,90 @@ Print version information.
 spire version
 ```
 
-Prints: spire version, managed dolt version and path.
+### Infrastructure daemons
+
+#### `spire daemon`
+
+Run the sync daemon directly (without `spire up`).
+
+```bash
+spire daemon [--interval 2m] [--once]
+```
+
+#### `spire gateway`
+
+Run the gateway service (webhook receiver and HTTP surface).
+
+```bash
+spire gateway [--port 8080]
+```
+
+### Internal (hidden) commands
+
+#### `spire execute`
+
+Run the full formula executor (spawned by `summon`).
+
+```bash
+spire execute <bead-id>
+```
+
+Internal — spawned by `summon` and the operator. Not part of the normal
+archmage workflow; documented here for completeness.
 
 ---
 
-## Hidden commands (agent use)
+## Deprecated
 
-These commands are used internally by wizards and are not part of the normal user workflow:
+The verbs in this section continue to work but print a stderr
+deprecation warning and will be hard-removed in **v1.0**. Prefer the
+replacements listed below.
 
-| Command | Description |
-|---------|-------------|
-| `spire execute <bead-id>` | Run the full formula executor (spawned by `summon`) |
-| `spire wizard-run <bead-id>` | Run an apprentice implementation step |
-| `spire wizard-review` | Run a sage review step |
-| `spire wizard-merge` | Run a merge step |
-| `spire wizard-epic <epic-id>` | Run the legacy epic orchestrator command |
+### `spire wizard-run`
+
+`[deprecated since v0.44.0, hard removal v1.0]`
+
+```bash
+spire wizard-run <bead-id>
+```
+
+Use `spire summon` (or `spire wizard claim` for attempt creation)
+instead. `wizard-run` was the legacy internal entry point for the wizard
+implementation phase; the role-scoped taxonomy replaces it with the
+public `summon` surface and the `wizard claim` atomic-claim verb.
+
+### `spire wizard-review`
+
+`[deprecated since v0.44.0, hard removal v1.0]`
+
+```bash
+spire wizard-review
+```
+
+Use the new review flow instead: `spire sage accept <bead>` or
+`spire sage reject <bead> --feedback <text>` to record verdicts; the
+wizard drives review rounds automatically via its formula.
+
+### `spire wizard-merge`
+
+`[deprecated since v0.44.0, hard removal v1.0]`
+
+```bash
+spire wizard-merge
+```
+
+Use the new review flow instead. The wizard seals beads after merge via
+`spire wizard seal <bead>`; merge orchestration itself runs inside the
+wizard's formula — no separate `wizard-merge` verb is required.
+
+### `spire wizard-epic`
+
+`[deprecated since v0.44.0, hard removal v1.0]`
+
+```bash
+spire wizard-epic <epic-id>
+```
+
+Use the new review flow instead. Epic orchestration is now driven by
+`spire summon` pulling from the ready queue, with per-attempt lifecycle
+managed via `spire wizard claim` / `spire wizard seal`.

@@ -13,6 +13,39 @@ Before starting work, read these files in order to understand the system:
 
 These are not optional. Agents that skip this context produce work that conflicts with the system's design.
 
+## Role-scoped CLI
+
+As of v0.44.0, the `spire` CLI is organized by agent role. Each of the
+five agent roles has its own parent command with scoped subcommands:
+
+| Role | Parent command | Scoped verbs |
+|------|----------------|--------------|
+| apprentice | `spire apprentice` | `submit` |
+| wizard | `spire wizard` | `claim`, `seal` |
+| sage | `spire sage` | `accept`, `reject` |
+| cleric | `spire cleric` | `diagnose`, `execute`, `learn` |
+| arbiter | `spire arbiter` | `decide` |
+
+See `docs/cli-reference.md` for the full role-grouped catalog, the
+Artificer (`spire workshop`) surface, the multi-role Common commands
+(`focus`, `grok`, `send`, `collect`, `read`), the Archmage top-level
+surface, and the Deprecated verbs slated for removal in v1.0.
+
+### The `SPIRE_ROLE` env var
+
+When the executor spawns a role-specific agent session, it sets the
+`SPIRE_ROLE` environment variable to one of: `apprentice`, `wizard`,
+`sage`, `cleric`, `arbiter`. The scaffolder installs a
+`.claude/spire-hook.sh` script that reads this variable on
+`SubagentStart` and prints the role's command catalog into the session.
+
+**Cross-role isolation is enforced:** a session running with
+`SPIRE_ROLE=apprentice` only sees apprentice-scoped commands plus the
+common multi-role verbs in its hook output — never `sage accept`,
+`wizard claim`, or any other role's verbs. The catalog data lives in
+`pkg/scaffold/` (see `pkg/scaffold/README.md`) and is the single source
+of truth shared by hook output and `docs/cli-reference.md`.
+
 ## Package README rule
 
 Before changing code under `pkg/`, read that package's `README.md` if one
@@ -28,6 +61,7 @@ Current package READMEs exist in:
 - `pkg/formula/README.md`
 - `pkg/workshop/README.md`
 - `pkg/recovery/README.md`
+- `pkg/scaffold/README.md`
 
 ## Overview
 
