@@ -14,8 +14,8 @@ var (
 
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
-		&SpireAgent{},
-		&SpireAgentList{},
+		&WizardGuild{},
+		&WizardGuildList{},
 		&SpireWorkload{},
 		&SpireWorkloadList{},
 		&SpireConfig{},

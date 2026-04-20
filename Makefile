@@ -52,8 +52,8 @@ status:
 	@echo "=== Pods ==="
 	@kubectl get pods -n $(NAMESPACE)
 	@echo ""
-	@echo "=== Agents ==="
-	@kubectl get spireagent -n $(NAMESPACE)
+	@echo "=== Guilds ==="
+	@kubectl get wizardguild -n $(NAMESPACE)
 	@echo ""
 	@echo "=== Workloads ==="
 	@kubectl get spireworkload -n $(NAMESPACE)

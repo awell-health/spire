@@ -1,17 +1,17 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: spireagents.spire.awell.io
+  name: wizardguilds.spire.awell.io
 spec:
   group: spire.awell.io
   names:
-    kind: SpireAgent
-    listKind: SpireAgentList
-    plural: spireagents
-    singular: spireagent
+    kind: WizardGuild
+    listKind: WizardGuildList
+    plural: wizardguilds
+    singular: wizardguild
     shortNames:
-      - sa
-      - agent
+      - wg
+      - guild
   scope: Namespaced
   versions:
     - name: v1alpha1
@@ -27,23 +27,23 @@ spec:
               properties:
                 displayName:
                   type: string
-                  description: Human-readable name for the agent
+                  description: Human-readable name for the guild
                 mode:
                   type: string
                   enum: [external, managed]
                   description: |
-                    external: agent runs on a dev machine, operator only sends messages.
-                    managed: operator creates and manages a pod for this agent.
+                    external: guild runs on a dev machine, operator only sends messages.
+                    managed: operator creates and manages a pod for this guild.
                 capabilities:
                   type: array
                   items:
                     type: string
-                  description: Skills/technologies this agent can work with
+                  description: Skills/technologies this guild can work with
                 prefixes:
                   type: array
                   items:
                     type: string
-                  description: Bead prefixes this agent can claim work from
+                  description: Bead prefixes this guild can claim work from
                 token:
                   type: string
                   default: default
@@ -51,14 +51,14 @@ spec:
                 maxConcurrent:
                   type: integer
                   default: 1
-                  description: Max beads this agent can work on simultaneously
+                  description: Max beads this guild can work on simultaneously
                 # Managed mode fields
                 image:
                   type: string
-                  description: Container image for managed agents
+                  description: Container image for managed guilds
                 repo:
                   type: string
-                  description: Git repo URL for managed agents to clone
+                  description: Git repo URL for managed guilds to clone
                 repoBranch:
                   type: string
                   default: main
@@ -90,10 +90,10 @@ spec:
                   description: Bead IDs currently being worked on
                 completedCount:
                   type: integer
-                  description: Total beads completed by this agent
+                  description: Total beads completed by this guild
                 podName:
                   type: string
-                  description: Pod name for managed agents
+                  description: Pod name for managed guilds
                 message:
                   type: string
                   description: Human-readable status message

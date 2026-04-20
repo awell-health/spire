@@ -4,18 +4,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SpireAgent defines an agent that can execute work.
+// WizardGuild defines a guild of wizards (agents) that can execute work.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-type SpireAgent struct {
+// +kubebuilder:resource:path=wizardguilds,singular=wizardguild,shortName=wg;guild
+type WizardGuild struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   SpireAgentSpec   `json:"spec,omitempty"`
-	Status SpireAgentStatus `json:"status,omitempty"`
+	Spec   WizardGuildSpec   `json:"spec,omitempty"`
+	Status WizardGuildStatus `json:"status,omitempty"`
 }
 
-type SpireAgentSpec struct {
+type WizardGuildSpec struct {
 	DisplayName   string   `json:"displayName,omitempty"`
 	Mode          string   `json:"mode"` // "external" or "managed"
 	Capabilities  []string `json:"capabilities,omitempty"`
@@ -33,18 +34,18 @@ type SpireAgentSpec struct {
 	MaxApprentices *int `json:"maxApprentices,omitempty"`
 
 	// Managed mode fields
-	Image      string                `json:"image,omitempty"`
-	Repo       string                `json:"repo,omitempty"`
-	RepoBranch string                `json:"repoBranch,omitempty"`
-	Resources  *AgentResourceRequirements `json:"resources,omitempty"`
+	Image      string                     `json:"image,omitempty"`
+	Repo       string                     `json:"repo,omitempty"`
+	RepoBranch string                     `json:"repoBranch,omitempty"`
+	Resources  *GuildResourceRequirements `json:"resources,omitempty"`
 }
 
-type AgentResourceRequirements struct {
+type GuildResourceRequirements struct {
 	Requests map[string]string `json:"requests,omitempty"`
 	Limits   map[string]string `json:"limits,omitempty"`
 }
 
-type SpireAgentStatus struct {
+type WizardGuildStatus struct {
 	Phase          string   `json:"phase,omitempty"` // Idle, Working, Stale, Offline, Provisioning
 	Registered     bool     `json:"registered,omitempty"`
 	LastSeen       string   `json:"lastSeen,omitempty"`
@@ -55,10 +56,10 @@ type SpireAgentStatus struct {
 }
 
 // +kubebuilder:object:root=true
-type SpireAgentList struct {
+type WizardGuildList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []SpireAgent `json:"items"`
+	Items           []WizardGuild `json:"items"`
 }
 
 // SpireWorkload represents a bead assignment.

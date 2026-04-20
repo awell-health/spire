@@ -15,7 +15,7 @@ import (
 	"github.com/awell-health/spire/pkg/store"
 )
 
-// WorkloadAssigner matches pending SpireWorkloads to available SpireAgents.
+// WorkloadAssigner matches pending SpireWorkloads to available WizardGuilds.
 type WorkloadAssigner struct {
 	Client             client.Client
 	Log                logr.Logger
@@ -57,14 +57,14 @@ func (a *WorkloadAssigner) cycle(ctx context.Context) {
 	}
 
 	// 2. Get agents
-	var agents spirev1.SpireAgentList
+	var agents spirev1.WizardGuildList
 	if err := a.Client.List(ctx, &agents, client.InNamespace(a.Namespace)); err != nil {
 		a.Log.Error(err, "failed to list agents")
 		return
 	}
 
 	// Build agent availability map
-	agentMap := make(map[string]*spirev1.SpireAgent)
+	agentMap := make(map[string]*spirev1.WizardGuild)
 	for i := range agents.Items {
 		agent := &agents.Items[i]
 		agentMap[agent.Name] = agent
@@ -136,7 +136,7 @@ func (a *WorkloadAssigner) getSchedulableSet() map[string]bool {
 	return set
 }
 
-func (a *WorkloadAssigner) selectAgent(agents []spirev1.SpireAgent, wl *spirev1.SpireWorkload) *spirev1.SpireAgent {
+func (a *WorkloadAssigner) selectAgent(agents []spirev1.WizardGuild, wl *spirev1.SpireWorkload) *spirev1.WizardGuild {
 	for i := range agents {
 		agent := &agents[i]
 
@@ -166,7 +166,7 @@ func (a *WorkloadAssigner) selectAgent(agents []spirev1.SpireAgent, wl *spirev1.
 	return nil
 }
 
-func (a *WorkloadAssigner) assign(ctx context.Context, wl *spirev1.SpireWorkload, agent *spirev1.SpireAgent) {
+func (a *WorkloadAssigner) assign(ctx context.Context, wl *spirev1.SpireWorkload, agent *spirev1.WizardGuild) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Update workload status (agent-monitor will create the pod)

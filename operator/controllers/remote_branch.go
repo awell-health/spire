@@ -79,7 +79,7 @@ func (m *AgentMonitor) loadGitHubToken(ctx context.Context, cfg *spirev1.SpireCo
 // REST API. No-op when the token or repo info is missing or the remote isn't
 // GitHub. Treats 204/404/422 as success (branch is gone or never existed).
 // Returns an error only on transport failures or unexpected HTTP statuses.
-func (m *AgentMonitor) deleteRemoteFeatBranch(ctx context.Context, agent *spirev1.SpireAgent, beadID string, cfg *spirev1.SpireConfig) error {
+func (m *AgentMonitor) deleteRemoteFeatBranch(ctx context.Context, agent *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) error {
 	if agent == nil || beadID == "" {
 		return nil
 	}

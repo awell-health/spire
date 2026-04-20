@@ -480,7 +480,7 @@ func (t *StewardTools) sendMessage(input json.RawMessage) (string, error) {
 
 func (t *StewardTools) getRoster(_ json.RawMessage) (string, error) {
 	// Get roster from k8s or bead registrations.
-	roster, err := runKubectl("get", "spireagent", "-n", "spire", "-o", "json")
+	roster, err := runKubectl("get", "wizardguild", "-n", "spire", "-o", "json")
 	if err != nil {
 		// Fallback: bead-based roster via store API.
 		openStatus := beads.StatusOpen

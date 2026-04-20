@@ -54,7 +54,7 @@ func (m *AgentMonitor) Run(ctx context.Context) {
 
 func (m *AgentMonitor) cycle(ctx context.Context) {
 	m.Log.Info("agent monitor cycle start")
-	var agents spirev1.SpireAgentList
+	var agents spirev1.WizardGuildList
 	if err := m.Client.List(ctx, &agents, client.InNamespace(m.Namespace)); err != nil {
 		m.Log.Error(err, "failed to list agents")
 		return
@@ -90,7 +90,7 @@ func (m *AgentMonitor) loadConfig(ctx context.Context) *spirev1.SpireConfig {
 }
 
 // checkExternalAgent updates phase based on lastSeen heartbeat.
-func (m *AgentMonitor) checkExternalAgent(ctx context.Context, agent *spirev1.SpireAgent) {
+func (m *AgentMonitor) checkExternalAgent(ctx context.Context, agent *spirev1.WizardGuild) {
 	if agent.Status.LastSeen == "" {
 		if agent.Status.Phase != "Offline" {
 			agent.Status.Phase = "Offline"
@@ -118,7 +118,7 @@ func (m *AgentMonitor) checkExternalAgent(ctx context.Context, agent *spirev1.Sp
 
 // reconcileManagedAgent creates one pod per assigned workload (bead),
 // and cleans up pods when work is removed.
-func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1.SpireAgent, cfg *spirev1.SpireConfig) {
+func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1.WizardGuild, cfg *spirev1.SpireConfig) {
 	// List existing pods for this agent
 	var podList corev1.PodList
 	if err := m.Client.List(ctx, &podList,
@@ -256,7 +256,7 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 }
 
 // updateAgentPhase sets the agent phase based on its running pods.
-func (m *AgentMonitor) updateAgentPhase(ctx context.Context, agent *spirev1.SpireAgent, podsByBead map[string]*corev1.Pod) {
+func (m *AgentMonitor) updateAgentPhase(ctx context.Context, agent *spirev1.WizardGuild, podsByBead map[string]*corev1.Pod) {
 	if len(agent.Status.CurrentWork) == 0 {
 		if agent.Status.Phase != "Idle" {
 			agent.Status.Phase = "Idle"
@@ -306,7 +306,7 @@ func (m *AgentMonitor) updateAgentPhase(ctx context.Context, agent *spirev1.Spir
 //   - sidecar: runs spire-sidecar (inbox polling, health, control channel)
 //
 // They share /comms (filesystem-based coordination) and /workspace.
-func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
+func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
 	image := agent.Spec.Image
 	if image == "" {
 		image = m.StewardImage
@@ -511,7 +511,7 @@ func intstr8080() intstr.IntOrString {
 	return intstr.FromInt32(8080)
 }
 
-func buildResources(spec *spirev1.AgentResourceRequirements) corev1.ResourceRequirements {
+func buildResources(spec *spirev1.GuildResourceRequirements) corev1.ResourceRequirements {
 	reqs := corev1.ResourceRequirements{}
 	if spec == nil {
 		return reqs
@@ -549,7 +549,7 @@ func (m *AgentMonitor) getWorkloadType(ctx context.Context, beadID string) strin
 // buildEpicPod creates a pod spec for an epic bead.
 // Epic pods run the wizard binary with epic-specific args,
 // which reviews child branches, creates PRs, and manages the merge queue.
-func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
+func (m *AgentMonitor) buildEpicPod(agent *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
 	image := agent.Spec.Image
 	if image == "" {
 		image = m.StewardImage
@@ -705,7 +705,7 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 
 // buildReviewPod creates a one-shot pod for standalone task review.
 // Similar to buildEpicPod but runs the wizard in review mode (--mode=review --bead-id=X).
-func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
+func (m *AgentMonitor) buildReviewPod(agent *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
 	image := agent.Spec.Image
 	if image == "" {
 		image = m.StewardImage

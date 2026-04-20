@@ -284,12 +284,12 @@ spireConfig:
     reassignThreshold: "6h"
   defaultToken: default
 
-## @section Agent definitions
+## @section Guild definitions
 ##
-## Each entry creates a SpireAgent CR that the operator manages.
+## Each entry creates a WizardGuild CR that the operator manages.
 ## Example:
-##   agents:
-##     - name: my-repo-agent
+##   guilds:
+##     - name: my-repo-guild
 ##       mode: managed
 ##       repo: https://github.com/your-org/my-repo.git
 ##       repoBranch: main
@@ -304,8 +304,8 @@ spireConfig:
 ##           memory: "1Gi"
 ##           cpu: "500m"
 
-## @param agents List of SpireAgent CRs to render. Default is empty.
-agents: []
+## @param guilds List of WizardGuild CRs to render. Default is empty.
+guilds: []
 
 ## @section Syncer
 ##

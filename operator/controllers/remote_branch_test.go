@@ -111,9 +111,9 @@ func TestDeleteRemoteFeatBranch(t *testing.T) {
 				Build()
 
 			m := &AgentMonitor{Client: c, Log: testr.New(t), Namespace: ns}
-			agent := &spirev1.SpireAgent{
+			agent := &spirev1.WizardGuild{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: ns},
-				Spec:       spirev1.SpireAgentSpec{Repo: tc.repo},
+				Spec:       spirev1.WizardGuildSpec{Repo: tc.repo},
 			}
 
 			err := m.deleteRemoteFeatBranch(context.Background(), agent, "spi-3x7h7", cfg)
@@ -152,9 +152,9 @@ func TestDeleteRemoteFeatBranch_NoConfig(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).Build()
 	m := &AgentMonitor{Client: c, Log: testr.New(t), Namespace: ns}
-	agent := &spirev1.SpireAgent{
+	agent := &spirev1.WizardGuild{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: ns},
-		Spec:       spirev1.SpireAgentSpec{Repo: "https://github.com/awell-health/spire"},
+		Spec:       spirev1.WizardGuildSpec{Repo: "https://github.com/awell-health/spire"},
 	}
 
 	if err := m.deleteRemoteFeatBranch(context.Background(), agent, "spi-3x7h7", nil); err != nil {

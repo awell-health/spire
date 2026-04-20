@@ -27,11 +27,11 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	return sch
 }
 
-func makeAgent(name, namespace string, currentWork []string) *spirev1.SpireAgent {
-	return &spirev1.SpireAgent{
+func makeAgent(name, namespace string, currentWork []string) *spirev1.WizardGuild {
+	return &spirev1.WizardGuild{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       spirev1.SpireAgentSpec{Mode: "managed", Image: "test-image:latest"},
-		Status:     spirev1.SpireAgentStatus{CurrentWork: currentWork},
+		Spec:       spirev1.WizardGuildSpec{Mode: "managed", Image: "test-image:latest"},
+		Status:     spirev1.WizardGuildStatus{CurrentWork: currentWork},
 	}
 }
 
@@ -66,7 +66,7 @@ func TestReconcileManagedAgent_SelfHealsCurrentWork(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithScheme(sch).
 		WithObjects(agent, pod).
-		WithStatusSubresource(&spirev1.SpireAgent{}).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
 		Build()
 
 	m := &AgentMonitor{
@@ -89,7 +89,7 @@ func TestReconcileManagedAgent_SelfHealsCurrentWork(t *testing.T) {
 	}
 
 	// Agent CurrentWork must contain the bead.
-	var gotAgent spirev1.SpireAgent
+	var gotAgent spirev1.WizardGuild
 	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: agent.Name}, &gotAgent); err != nil {
 		t.Fatalf("get agent: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestReconcileManagedAgent_DoesNotHealTerminalPods(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithScheme(sch).
 		WithObjects(agent, succeeded, failed, deleting).
-		WithStatusSubresource(&spirev1.SpireAgent{}).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
 		Build()
 
 	m := &AgentMonitor{
@@ -128,7 +128,7 @@ func TestReconcileManagedAgent_DoesNotHealTerminalPods(t *testing.T) {
 	ctx := context.Background()
 	m.reconcileManagedAgent(ctx, agent, nil)
 
-	var gotAgent spirev1.SpireAgent
+	var gotAgent spirev1.WizardGuild
 	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: agent.Name}, &gotAgent); err != nil {
 		t.Fatalf("get agent: %v", err)
 	}

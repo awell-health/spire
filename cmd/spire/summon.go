@@ -260,7 +260,7 @@ func summonK8s(count int) error {
 
 	for i := 0; i < count; i++ {
 		name := fmt.Sprintf("wizard-%d", existing+i+1)
-		if err := createSpireAgentCR(name); err != nil {
+		if err := createWizardGuildCR(name); err != nil {
 			return fmt.Errorf("failed to summon %s: %w", name, err)
 		}
 		fmt.Printf("  %s%s%s summoned to the tower\n", cyan, name, reset)
@@ -286,7 +286,7 @@ func dismissK8s(count int, all bool) error {
 	// Dismiss from the end (highest numbered first).
 	for i := len(wizards) - 1; i >= len(wizards)-count; i-- {
 		name := wizards[i]
-		if err := deleteSpireAgentCR(name); err != nil {
+		if err := deleteWizardGuildCR(name); err != nil {
 			log.Printf("failed to dismiss %s: %v", name, err)
 			continue
 		}
@@ -321,7 +321,7 @@ func countK8sWizards() int {
 }
 
 func listK8sWizards() []string {
-	cmd := exec.Command("kubectl", "get", "spireagent", "-n", "spire",
+	cmd := exec.Command("kubectl", "get", "wizardguild", "-n", "spire",
 		"-o", "jsonpath={.items[*].metadata.name}")
 	out, err := cmd.Output()
 	if err != nil {
@@ -337,7 +337,7 @@ func listK8sWizards() []string {
 	return wizards
 }
 
-func createSpireAgentCR(name string) error {
+func createWizardGuildCR(name string) error {
 	// Detect repo URL and default branch from the cwd's git repo. Prefer
 	// spire.yaml's branch.base, then the checked-out branch, then the
 	// system default. Avoids hardcoding "main" for repos that base work on
@@ -358,7 +358,7 @@ func createSpireAgentCR(name string) error {
 	repoBranch = repoconfig.ResolveBranchBase(repoBranch)
 
 	manifest := fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 metadata:
   name: %s
   namespace: spire
@@ -381,8 +381,8 @@ spec:
 	return nil
 }
 
-func deleteSpireAgentCR(name string) error {
-	cmd := exec.Command("kubectl", "delete", "spireagent", name, "-n", "spire")
+func deleteWizardGuildCR(name string) error {
+	cmd := exec.Command("kubectl", "delete", "wizardguild", name, "-n", "spire")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %s", err, string(out))

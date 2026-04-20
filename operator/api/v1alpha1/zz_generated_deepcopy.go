@@ -4,18 +4,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// DeepCopyObject implements runtime.Object for SpireAgent.
-func (in *SpireAgent) DeepCopyObject() runtime.Object {
+// DeepCopyObject implements runtime.Object for WizardGuild.
+func (in *WizardGuild) DeepCopyObject() runtime.Object {
 	if in == nil {
 		return nil
 	}
-	out := new(SpireAgent)
+	out := new(WizardGuild)
 	in.DeepCopyInto(out)
 	return out
 }
 
-// DeepCopyInto copies all properties into another SpireAgent.
-func (in *SpireAgent) DeepCopyInto(out *SpireAgent) {
+// DeepCopyInto copies all properties into another WizardGuild.
+func (in *WizardGuild) DeepCopyInto(out *WizardGuild) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
@@ -23,7 +23,7 @@ func (in *SpireAgent) DeepCopyInto(out *SpireAgent) {
 	in.Status.DeepCopyInto(&out.Status)
 }
 
-func (in *SpireAgentSpec) DeepCopyInto(out *SpireAgentSpec) {
+func (in *WizardGuildSpec) DeepCopyInto(out *WizardGuildSpec) {
 	*out = *in
 	if in.Capabilities != nil {
 		out.Capabilities = make([]string, len(in.Capabilities))
@@ -38,12 +38,12 @@ func (in *SpireAgentSpec) DeepCopyInto(out *SpireAgentSpec) {
 		out.MaxApprentices = &v
 	}
 	if in.Resources != nil {
-		out.Resources = new(AgentResourceRequirements)
+		out.Resources = new(GuildResourceRequirements)
 		in.Resources.DeepCopyInto(out.Resources)
 	}
 }
 
-func (in *AgentResourceRequirements) DeepCopyInto(out *AgentResourceRequirements) {
+func (in *GuildResourceRequirements) DeepCopyInto(out *GuildResourceRequirements) {
 	*out = *in
 	if in.Requests != nil {
 		out.Requests = make(map[string]string, len(in.Requests))
@@ -59,7 +59,7 @@ func (in *AgentResourceRequirements) DeepCopyInto(out *AgentResourceRequirements
 	}
 }
 
-func (in *SpireAgentStatus) DeepCopyInto(out *SpireAgentStatus) {
+func (in *WizardGuildStatus) DeepCopyInto(out *WizardGuildStatus) {
 	*out = *in
 	if in.CurrentWork != nil {
 		out.CurrentWork = make([]string, len(in.CurrentWork))
@@ -67,22 +67,22 @@ func (in *SpireAgentStatus) DeepCopyInto(out *SpireAgentStatus) {
 	}
 }
 
-// DeepCopyObject implements runtime.Object for SpireAgentList.
-func (in *SpireAgentList) DeepCopyObject() runtime.Object {
+// DeepCopyObject implements runtime.Object for WizardGuildList.
+func (in *WizardGuildList) DeepCopyObject() runtime.Object {
 	if in == nil {
 		return nil
 	}
-	out := new(SpireAgentList)
+	out := new(WizardGuildList)
 	in.DeepCopyInto(out)
 	return out
 }
 
-func (in *SpireAgentList) DeepCopyInto(out *SpireAgentList) {
+func (in *WizardGuildList) DeepCopyInto(out *WizardGuildList) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ListMeta.DeepCopyInto(&out.ListMeta)
 	if in.Items != nil {
-		out.Items = make([]SpireAgent, len(in.Items))
+		out.Items = make([]WizardGuild, len(in.Items))
 		for i := range in.Items {
 			in.Items[i].DeepCopyInto(&out.Items[i])
 		}
