@@ -116,6 +116,12 @@ type Deps struct {
 	// Spawner
 	Spawner Backend
 
+	// MaxApprentices caps the number of concurrent apprentice subprocesses
+	// spawned during wave dispatch. 0 means "use built-in default" — the
+	// executor resolves to repoconfig.DefaultMaxApprentices (3). Per-step
+	// overrides via step.With["max-apprentices"] take precedence.
+	MaxApprentices int
+
 	// Agent run recording
 	RecordAgentRun func(run AgentRun) (string, error)
 

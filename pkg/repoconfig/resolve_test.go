@@ -275,6 +275,80 @@ branch:
 	}
 }
 
+func TestResolveMaxApprentices(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"zero → default", 0, DefaultMaxApprentices},
+		{"negative → default", -5, DefaultMaxApprentices},
+		{"positive → passthrough", 7, 7},
+		{"one → one", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveMaxApprentices(tt.in)
+			if got != tt.want {
+				t.Errorf("ResolveMaxApprentices(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoadParsesMaxApprentices verifies that Load() parses agent.max-apprentices
+// from spire.yaml into AgentConfig.MaxApprentices.
+func TestLoadParsesMaxApprentices(t *testing.T) {
+	dir := t.TempDir()
+
+	yaml := `runtime:
+  language: go
+  test: go test ./...
+agent:
+  max-apprentices: 5
+`
+	if err := writeFile(dir, "spire.yaml", yaml); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(dir, "go.mod", "module test\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.MaxApprentices != 5 {
+		t.Errorf("Agent.MaxApprentices = %d, want 5", cfg.Agent.MaxApprentices)
+	}
+}
+
+// TestLoadMaxApprenticesUnsetStaysZero verifies that when agent.max-apprentices
+// is omitted from spire.yaml, AgentConfig.MaxApprentices is 0 (so the
+// resolver can detect "unset" and apply the layered default).
+func TestLoadMaxApprenticesUnsetStaysZero(t *testing.T) {
+	dir := t.TempDir()
+
+	yaml := `runtime:
+  language: go
+  test: go test ./...
+`
+	if err := writeFile(dir, "spire.yaml", yaml); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(dir, "go.mod", "module test\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.MaxApprentices != 0 {
+		t.Errorf("Agent.MaxApprentices = %d, want 0 (unset)", cfg.Agent.MaxApprentices)
+	}
+}
+
 func TestResolveClericPromotionThreshold(t *testing.T) {
 	tests := []struct {
 		name       string

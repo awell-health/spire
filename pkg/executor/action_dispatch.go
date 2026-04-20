@@ -15,6 +15,7 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 // actionDispatchChildren orchestrates child bead execution.
@@ -76,6 +77,21 @@ func actionDispatchChildren(e *Executor, stepName string, step StepConfig, state
 
 	model := step.Model
 
+	// Resolve apprentice concurrency cap (most-specific wins):
+	//   step.With["max-apprentices"] > e.deps.MaxApprentices > default (3)
+	// Env-var precedence (SPIRE_MAX_APPRENTICES) is applied in the CLI bridge
+	// when Deps is built; by the time it reaches here it's already baked into
+	// e.deps.MaxApprentices.
+	maxApprentices := e.deps.MaxApprentices
+	if raw := step.With["max-apprentices"]; raw != "" {
+		if n, convErr := strconv.Atoi(raw); convErr == nil && n > 0 {
+			maxApprentices = n
+		}
+	}
+	if maxApprentices <= 0 {
+		maxApprentices = repoconfig.DefaultMaxApprentices
+	}
+
 	switch strategy {
 	case "dependency-wave":
 		waves, waveErr := ComputeWaves(e.beadID, e.deps)
@@ -86,7 +102,7 @@ func actionDispatchChildren(e *Executor, stepName string, step StepConfig, state
 			e.log("no open subtasks for dispatch")
 			return ActionResult{Outputs: map[string]string{"status": "pass", "dispatched": "0"}}
 		}
-		results, dispErr := e.dispatchWaveCore(waves, stagingWt, model, resolver)
+		results, dispErr := e.dispatchWaveCore(waves, stagingWt, model, resolver, maxApprentices)
 		return buildDispatchResult(results, dispErr)
 
 	case "sequential":
@@ -160,8 +176,15 @@ type childResult struct {
 // branches into staging before proceeding to the next wave. It does NOT include
 // build verification, build-fix retry, or subtask closing (those are separate
 // formula steps).
-func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error) ([]childResult, error) {
-	e.log("dispatching %d wave(s)", len(waves))
+//
+// maxApprentices caps how many apprentice subprocesses run concurrently within
+// a single wave. Callers pass the resolved value (>=1); a non-positive value
+// falls back to repoconfig.DefaultMaxApprentices.
+func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error, maxApprentices int) ([]childResult, error) {
+	if maxApprentices <= 0 {
+		maxApprentices = repoconfig.DefaultMaxApprentices
+	}
+	e.log("dispatching %d wave(s) (max %d concurrent apprentice(s))", len(waves), maxApprentices)
 
 	var allResults []childResult
 	var startRef string
@@ -177,11 +200,15 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 
 		var wg sync.WaitGroup
 		resultCh := make(chan waveResult, len(wave))
+		sem := make(chan struct{}, maxApprentices)
 
 		for i, subtaskID := range wave {
 			wg.Add(1)
 			go func(idx int, beadID string) {
 				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
 				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx+1, idx+1)
 				e.log("  dispatching %s for %s", name, beadID)
 

@@ -41,6 +41,12 @@ const (
 	// execution. Per-signature overrides can raise or lower this via the
 	// cleric.promotion_overrides map in spire.yaml.
 	DefaultClericPromotionThreshold = 3
+
+	// DefaultMaxApprentices is the default cap on concurrent apprentice
+	// subprocesses spawned by a single wizard during wave dispatch. Used
+	// when no value is set in spire.yaml, the operator env, or the formula
+	// step.
+	DefaultMaxApprentices = 3
 )
 
 // ResolveModel returns the first non-empty value in the precedence chain:
@@ -125,6 +131,16 @@ func ResolveDesignRequireApproval(ptr *bool) bool {
 		return *ptr
 	}
 	return true
+}
+
+// ResolveMaxApprentices returns the effective cap on concurrent apprentices
+// spawned by a wizard, given a raw value from spire.yaml. Non-positive
+// values resolve to DefaultMaxApprentices.
+func ResolveMaxApprentices(repoMaxApprentices int) int {
+	if repoMaxApprentices > 0 {
+		return repoMaxApprentices
+	}
+	return DefaultMaxApprentices
 }
 
 // ResolveClericPromotionThreshold returns the effective promotion threshold

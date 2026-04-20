@@ -69,15 +69,16 @@ type RuntimeConfig struct {
 
 // AgentConfig controls autonomous agent behaviour.
 type AgentConfig struct {
-	Backend       string       `yaml:"backend"`              // execution backend: "process", "docker", "k8s"
-	Model         string       `yaml:"model"`                // default model for this repo
-	Provider      string       `yaml:"provider,omitempty"`   // default AI provider: "claude", "codex", "cursor"
-	MaxTurns      int          `yaml:"max-turns"`            // safety limit
-	Stale         string       `yaml:"stale"`                // warning: wizard exceeded guidelines (e.g. "10m")
-	Timeout       string       `yaml:"timeout"`              // fatal: tower kills the wizard (e.g. "15m")
-	DesignTimeout string       `yaml:"design-timeout"`       // timeout for design phase (e.g. "10m")
-	Docker        DockerConfig `yaml:"docker"`               // Docker spawner configuration
-	Formula       string       `yaml:"formula,omitempty"`    // default formula name
+	Backend        string       `yaml:"backend"`              // execution backend: "process", "docker", "k8s"
+	Model          string       `yaml:"model"`                // default model for this repo
+	Provider       string       `yaml:"provider,omitempty"`   // default AI provider: "claude", "codex", "cursor"
+	MaxTurns       int          `yaml:"max-turns"`            // safety limit
+	MaxApprentices int          `yaml:"max-apprentices"`      // cap on concurrent apprentices per wizard (0 = unset; resolves to DefaultMaxApprentices)
+	Stale          string       `yaml:"stale"`                // warning: wizard exceeded guidelines (e.g. "10m")
+	Timeout        string       `yaml:"timeout"`              // fatal: tower kills the wizard (e.g. "15m")
+	DesignTimeout  string       `yaml:"design-timeout"`       // timeout for design phase (e.g. "10m")
+	Docker         DockerConfig `yaml:"docker"`               // Docker spawner configuration
+	Formula        string       `yaml:"formula,omitempty"`    // default formula name
 }
 
 // DockerConfig controls Docker-based agent spawning.

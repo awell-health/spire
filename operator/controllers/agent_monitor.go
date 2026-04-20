@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -343,6 +344,17 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3306"},
 		{Name: "BEADS_DIR", Value: "/data/.beads"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
+	}
+
+	// Cluster-level cap on concurrent apprentice subprocesses. When unset
+	// on the CR we leave SPIRE_MAX_APPRENTICES absent so the wizard falls
+	// back to spire.yaml (or the built-in default). This keeps the
+	// layering precedence correct: CR > spire.yaml > default.
+	if agent.Spec.MaxApprentices != nil {
+		wizardEnv = append(wizardEnv, corev1.EnvVar{
+			Name:  "SPIRE_MAX_APPRENTICES",
+			Value: strconv.Itoa(*agent.Spec.MaxApprentices),
+		})
 	}
 
 	// Sidecar environment

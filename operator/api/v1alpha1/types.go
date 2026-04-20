@@ -22,6 +22,15 @@ type SpireAgentSpec struct {
 	Prefixes      []string `json:"prefixes,omitempty"`
 	Token         string   `json:"token,omitempty"`
 	MaxConcurrent int      `json:"maxConcurrent,omitempty"`
+	// MaxApprentices caps the number of concurrent apprentice subprocesses
+	// that a single wizard pod will spawn during wave dispatch. Pointer so
+	// unset (nil) is distinguishable from zero: when nil, the operator will
+	// not inject SPIRE_MAX_APPRENTICES and the wizard falls back to the
+	// spire.yaml value (or the built-in default of 3).
+	//
+	// Intended to migrate to a future WizardGuild CRD; landed here per the
+	// forward-compat note in operator/controllers/agent_monitor.go.
+	MaxApprentices *int `json:"maxApprentices,omitempty"`
 
 	// Managed mode fields
 	Image      string                `json:"image,omitempty"`

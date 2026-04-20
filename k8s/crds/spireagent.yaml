@@ -52,6 +52,15 @@ spec:
                   type: integer
                   default: 1
                   description: Max beads this agent can work on simultaneously
+                maxApprentices:
+                  type: integer
+                  minimum: 1
+                  description: |
+                    Max concurrent apprentice subprocesses spawned by a single
+                    wizard pod during wave dispatch. When unset, the operator
+                    leaves SPIRE_MAX_APPRENTICES unset on the pod and the
+                    wizard falls back to spire.yaml agent.max-apprentices,
+                    then the built-in default (3).
                 # Managed mode fields
                 image:
                   type: string

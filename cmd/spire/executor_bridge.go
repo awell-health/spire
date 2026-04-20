@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
@@ -106,6 +107,8 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 	return &executor.Deps{
 		// Graph state persistence — Dolt-backed in cluster, file-backed locally.
 		GraphStateStore: executor.ResolveGraphStateStore(configDir),
+
+		MaxApprentices: resolveMaxApprentices(),
 
 		// Store operations
 		GetBead:          storeGetBead,
@@ -237,6 +240,27 @@ func bridgeReviewEscalateToArbiter(beadID, reviewerName string, lastReview *exec
 // --- Type compatibility: Review lives in pkg/wizard and pkg/executor as separate types ---
 // cmd/spire aliases wizard.Review via wizard_bridge.go; executor.Review is separate.
 // The bridge above handles conversion. pkg/executor callers use executor.Review.
+
+// resolveMaxApprentices returns the cap on concurrent apprentice subprocesses
+// for this wizard. Precedence: SPIRE_MAX_APPRENTICES env > spire.yaml
+// agent.max-apprentices > 0 (executor falls back to DefaultMaxApprentices).
+//
+// The operator sets SPIRE_MAX_APPRENTICES on the wizard pod when
+// SpireAgent.spec.maxApprentices is set; locally the env is unset and the
+// spire.yaml value wins. Per-step formula overrides are applied later in
+// dispatchWaveCore via step.With["max-apprentices"].
+func resolveMaxApprentices() int {
+	if raw := os.Getenv("SPIRE_MAX_APPRENTICES"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	cfg, err := repoconfig.Load(".")
+	if err != nil || cfg == nil {
+		return 0
+	}
+	return cfg.Agent.MaxApprentices
+}
 
 // executorResolveBranch loads spire.yaml from the bead's repo and resolves
 // the branch name. Used by the executor's Deps.ResolveBranch.

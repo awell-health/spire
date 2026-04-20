@@ -33,6 +33,10 @@ func (in *SpireAgentSpec) DeepCopyInto(out *SpireAgentSpec) {
 		out.Prefixes = make([]string, len(in.Prefixes))
 		copy(out.Prefixes, in.Prefixes)
 	}
+	if in.MaxApprentices != nil {
+		v := *in.MaxApprentices
+		out.MaxApprentices = &v
+	}
 	if in.Resources != nil {
 		out.Resources = new(AgentResourceRequirements)
 		in.Resources.DeepCopyInto(out.Resources)
