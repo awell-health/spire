@@ -298,16 +298,24 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
 		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
-		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
 		{Name: "DOLT_PORT", Value: "3306"},
+		// bd uses BEADS_DOLT_SERVER_{HOST,PORT} to reach the shared dolt server; without
+		// these it falls back to 127.0.0.1:0 and tries to auto-start a local dolt.
+		{Name: "BEADS_DOLT_SERVER_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
+		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3306"},
+		{Name: "BEADS_DIR", Value: "/data/.beads"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
 	// Sidecar environment
 	sidecarEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
 		{Name: "DOLT_PORT", Value: "3306"},
+		{Name: "BEADS_DOLT_SERVER_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
+		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3306"},
+		{Name: "BEADS_DIR", Value: "/data/.beads"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
 
@@ -511,7 +519,7 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
 		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
-		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
 		{Name: "DOLT_PORT", Value: "3306"},
 		{Name: "WIZARD_MAX_REVIEW_ROUNDS", Value: "3"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
@@ -520,7 +528,7 @@ func (m *AgentMonitor) buildEpicPod(agent *spirev1.SpireAgent, beadID string, cf
 	// Sidecar environment.
 	sidecarEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
 		{Name: "DOLT_PORT", Value: "3306"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
@@ -667,7 +675,7 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
 		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
 		{Name: "SPIRE_STATE_DIR", Value: "/data"},
-		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
 		{Name: "DOLT_PORT", Value: "3306"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
@@ -675,7 +683,7 @@ func (m *AgentMonitor) buildReviewPod(agent *spirev1.SpireAgent, beadID string, 
 	// Sidecar environment.
 	sidecarEnv := []corev1.EnvVar{
 		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "DOLT_HOST", Value: "spire-dolt.spire.svc"},
+		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
 		{Name: "DOLT_PORT", Value: "3306"},
 		{Name: "SPIRE_BD_LOG", Value: "1"},
 	}
@@ -808,7 +816,10 @@ func beadsSeedInitContainer() corev1.Container {
 		Image:   "alpine:3.20",
 		Command: []string{"sh", "-c"},
 		Args: []string{
-			`mkdir -p /data/.beads && cp /seed/metadata.json /data/.beads/metadata.json && cp /seed/routes.jsonl /data/.beads/routes.jsonl && [ -f /seed/config.yaml ] && cp /seed/config.yaml /data/.beads/config.yaml; if [ ! -d /data/.git ]; then cd /data && git init -q 2>/dev/null; fi`,
+			// `|| true` on git init: alpine:3.20 has no git; failing there blocked pods (spi-5pgqy).
+			// chown at end: wizard runs as UID 1000 (non-root); otherwise can't write to /data/.beads/dolt-server.lock, bd-created files, etc.
+			// `|| true` on config.yaml cp: keep going even when the ConfigMap omits it (makes behavior consistent with the routes.jsonl line which uses &&).
+			`mkdir -p /data/.beads && cp /seed/metadata.json /data/.beads/metadata.json && cp /seed/routes.jsonl /data/.beads/routes.jsonl && ([ -f /seed/config.yaml ] && cp /seed/config.yaml /data/.beads/config.yaml || true); if [ ! -d /data/.git ]; then cd /data && git init -q 2>/dev/null || true; fi; chown -R 1000:1000 /data`,
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "data", MountPath: "/data"},
