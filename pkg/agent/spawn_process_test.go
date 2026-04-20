@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -65,4 +66,83 @@ func TestSetEnv_PrefixCollision(t *testing.T) {
 	if len(cmd.Env) != 2 {
 		t.Errorf("expected 2 env vars (no collision), got %d: %v", len(cmd.Env), cmd.Env)
 	}
+}
+
+// TestApplyProcessEnv_ApprenticeIdentity verifies the three identity env
+// vars (SPIRE_BEAD_ID, SPIRE_ATTEMPT_ID, SPIRE_APPRENTICE_IDX) are injected
+// into the child process env when populated on SpawnConfig.
+func TestApplyProcessEnv_ApprenticeIdentity(t *testing.T) {
+	cmd := &exec.Cmd{Env: []string{"PATH=/usr/bin"}}
+
+	applyProcessEnv(cmd, SpawnConfig{
+		Name:          "apprentice-spi-abc-0",
+		BeadID:        "spi-abc",
+		Role:          RoleApprentice,
+		AttemptID:     "spi-att1",
+		ApprenticeIdx: "0",
+	})
+
+	got := envToMap(cmd.Env)
+
+	wantIdentity := map[string]string{
+		"SPIRE_BEAD_ID":        "spi-abc",
+		"SPIRE_ATTEMPT_ID":     "spi-att1",
+		"SPIRE_APPRENTICE_IDX": "0",
+	}
+	for k, want := range wantIdentity {
+		if v, ok := got[k]; !ok {
+			t.Errorf("missing env var %s; env: %v", k, cmd.Env)
+		} else if v != want {
+			t.Errorf("env %s = %q, want %q", k, v, want)
+		}
+	}
+}
+
+// TestApplyProcessEnv_ApprenticeIdentity_NonZeroIdx verifies a non-zero
+// fan-out index is passed through verbatim.
+func TestApplyProcessEnv_ApprenticeIdentity_NonZeroIdx(t *testing.T) {
+	cmd := &exec.Cmd{Env: []string{}}
+
+	applyProcessEnv(cmd, SpawnConfig{
+		BeadID:        "spi-abc",
+		AttemptID:     "spi-att2",
+		ApprenticeIdx: "7",
+	})
+
+	got := envToMap(cmd.Env)
+	if got["SPIRE_APPRENTICE_IDX"] != "7" {
+		t.Errorf("SPIRE_APPRENTICE_IDX = %q, want %q", got["SPIRE_APPRENTICE_IDX"], "7")
+	}
+	if got["SPIRE_ATTEMPT_ID"] != "spi-att2" {
+		t.Errorf("SPIRE_ATTEMPT_ID = %q, want %q", got["SPIRE_ATTEMPT_ID"], "spi-att2")
+	}
+}
+
+// TestApplyProcessEnv_OmitsEmptyIdentity verifies that identity env vars
+// left unset on SpawnConfig are NOT injected — matches the pattern used
+// by SPIRE_TOWER and SPIRE_PROVIDER.
+func TestApplyProcessEnv_OmitsEmptyIdentity(t *testing.T) {
+	cmd := &exec.Cmd{Env: []string{}}
+
+	applyProcessEnv(cmd, SpawnConfig{
+		Name: "no-identity",
+	})
+
+	for _, e := range cmd.Env {
+		for _, prefix := range []string{"SPIRE_BEAD_ID=", "SPIRE_ATTEMPT_ID=", "SPIRE_APPRENTICE_IDX="} {
+			if strings.HasPrefix(e, prefix) {
+				t.Errorf("unexpected env var set: %s", e)
+			}
+		}
+	}
+}
+
+func envToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		if i := strings.IndexByte(e, '='); i >= 0 {
+			m[e[:i]] = e[i+1:]
+		}
+	}
+	return m
 }

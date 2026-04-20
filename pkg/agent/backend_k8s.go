@@ -266,6 +266,19 @@ func (b *K8sBackend) buildEnvVars(cfg SpawnConfig) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_PROVIDER", Value: cfg.Provider})
 	}
 
+	// Apprentice identity env vars. Transport-agnostic: the apprentice reads
+	// them to resolve which bead to write to and what role to claim at
+	// submit time.
+	if cfg.BeadID != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_BEAD_ID", Value: cfg.BeadID})
+	}
+	if cfg.AttemptID != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_ATTEMPT_ID", Value: cfg.AttemptID})
+	}
+	if cfg.ApprenticeIdx != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_APPRENTICE_IDX", Value: cfg.ApprenticeIdx})
+	}
+
 	// OTEL resource attributes for trace/log correlation.
 	var resAttrs []string
 	if cfg.BeadID != "" {

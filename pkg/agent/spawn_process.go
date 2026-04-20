@@ -65,53 +65,7 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 
 	cmd := exec.Command(spireBin, args...)
 	cmd.Env = os.Environ()
-
-	// Inject SPIRE_TOWER into the child's env without mutating the process-global env.
-	if cfg.Tower != "" {
-		setEnv(cmd, "SPIRE_TOWER", cfg.Tower)
-	}
-
-	// Inject SPIRE_PROVIDER into the child's env.
-	if cfg.Provider != "" {
-		setEnv(cmd, "SPIRE_PROVIDER", cfg.Provider)
-	}
-
-	// Inject OTLP telemetry environment for all providers.
-	// The daemon's OTLP receiver listens on localhost:4317 (or SPIRE_OTLP_PORT).
-	otlpPort := os.Getenv("SPIRE_OTLP_PORT")
-	if otlpPort == "" {
-		otlpPort = "4317"
-	}
-	otlpEndpoint := "http://localhost:" + otlpPort
-	setEnv(cmd, "OTEL_EXPORTER_OTLP_ENDPOINT", otlpEndpoint)
-
-	// Resource attributes carry bead context so the receiver can correlate
-	// spans to beads without post-hoc matching.
-	var resAttrs []string
-	if cfg.BeadID != "" {
-		resAttrs = append(resAttrs, "bead.id="+cfg.BeadID)
-	}
-	if cfg.Name != "" {
-		resAttrs = append(resAttrs, "agent.name="+cfg.Name)
-	}
-	if cfg.Step != "" {
-		resAttrs = append(resAttrs, "step="+cfg.Step)
-	}
-	if cfg.Tower != "" {
-		resAttrs = append(resAttrs, "tower="+cfg.Tower)
-	}
-	if len(resAttrs) > 0 {
-		setEnv(cmd, "OTEL_RESOURCE_ATTRIBUTES", strings.Join(resAttrs, ","))
-	}
-
-	// Claude Code: enable built-in OTel telemetry with trace export.
-	if cfg.Provider == "" || cfg.Provider == "claude" {
-		setEnv(cmd, "CLAUDE_CODE_ENABLE_TELEMETRY", "1")
-		setEnv(cmd, "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1")
-		setEnv(cmd, "OTEL_TRACES_EXPORTER", "otlp")
-		setEnv(cmd, "OTEL_LOGS_EXPORTER", "otlp")
-		setEnv(cmd, "OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-	}
+	applyProcessEnv(cmd, cfg)
 
 	if cfg.LogPath != "" {
 		os.MkdirAll(filepath.Dir(cfg.LogPath), 0755)
@@ -173,6 +127,67 @@ func (h *ProcessHandle) Identifier() string {
 		return strconv.Itoa(h.cmd.Process.Pid)
 	}
 	return ""
+}
+
+// applyProcessEnv injects all SpawnConfig-derived env vars into cmd.Env.
+// Extracted from Spawn so tests can verify the config-to-env translation
+// without actually starting a process.
+func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
+	if cfg.Tower != "" {
+		setEnv(cmd, "SPIRE_TOWER", cfg.Tower)
+	}
+	if cfg.Provider != "" {
+		setEnv(cmd, "SPIRE_PROVIDER", cfg.Provider)
+	}
+
+	// Apprentice identity env vars. Transport-agnostic: the apprentice reads
+	// them to resolve which bead to write to and what role to claim at
+	// submit time.
+	if cfg.BeadID != "" {
+		setEnv(cmd, "SPIRE_BEAD_ID", cfg.BeadID)
+	}
+	if cfg.AttemptID != "" {
+		setEnv(cmd, "SPIRE_ATTEMPT_ID", cfg.AttemptID)
+	}
+	if cfg.ApprenticeIdx != "" {
+		setEnv(cmd, "SPIRE_APPRENTICE_IDX", cfg.ApprenticeIdx)
+	}
+
+	// OTLP telemetry. The daemon's OTLP receiver listens on localhost:4317
+	// (or SPIRE_OTLP_PORT).
+	otlpPort := os.Getenv("SPIRE_OTLP_PORT")
+	if otlpPort == "" {
+		otlpPort = "4317"
+	}
+	setEnv(cmd, "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:"+otlpPort)
+
+	// Resource attributes carry bead context so the receiver can correlate
+	// spans to beads without post-hoc matching.
+	var resAttrs []string
+	if cfg.BeadID != "" {
+		resAttrs = append(resAttrs, "bead.id="+cfg.BeadID)
+	}
+	if cfg.Name != "" {
+		resAttrs = append(resAttrs, "agent.name="+cfg.Name)
+	}
+	if cfg.Step != "" {
+		resAttrs = append(resAttrs, "step="+cfg.Step)
+	}
+	if cfg.Tower != "" {
+		resAttrs = append(resAttrs, "tower="+cfg.Tower)
+	}
+	if len(resAttrs) > 0 {
+		setEnv(cmd, "OTEL_RESOURCE_ATTRIBUTES", strings.Join(resAttrs, ","))
+	}
+
+	// Claude Code: enable built-in OTel telemetry with trace export.
+	if cfg.Provider == "" || cfg.Provider == "claude" {
+		setEnv(cmd, "CLAUDE_CODE_ENABLE_TELEMETRY", "1")
+		setEnv(cmd, "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1")
+		setEnv(cmd, "OTEL_TRACES_EXPORTER", "otlp")
+		setEnv(cmd, "OTEL_LOGS_EXPORTER", "otlp")
+		setEnv(cmd, "OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+	}
 }
 
 // setEnv sets or replaces an environment variable in cmd.Env.

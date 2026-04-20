@@ -600,11 +600,12 @@ func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	logDir := filepath.Join(deps.DoltGlobalDir(), "wizards")
 	backend := deps.ResolveBackend("")
 	handle, spawnErr := backend.Spawn(SpawnConfig{
-		Name:      wizardName,
-		BeadID:    beadID,
-		Role:      RoleApprentice,
-		ExtraArgs: []string{"--review-fix"},
-		LogPath:   filepath.Join(logDir, wizardName+"-fix.log"),
+		Name:          wizardName,
+		BeadID:        beadID,
+		Role:          RoleApprentice,
+		ExtraArgs:     []string{"--review-fix"},
+		LogPath:       filepath.Join(logDir, wizardName+"-fix.log"),
+		ApprenticeIdx: "0",
 	})
 	if spawnErr != nil {
 		log("failed to spawn wizard: %s", spawnErr)

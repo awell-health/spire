@@ -95,17 +95,19 @@ const (
 // SpawnConfig describes the intent for spawning an agent.
 // Backend-agnostic — each spawner translates this to its own mechanism.
 type SpawnConfig struct {
-	Name         string    // Agent name (e.g. "apprentice-spi-1dl-0")
-	BeadID       string    // Bead to work on
-	Role         SpawnRole // What kind of agent to run
-	Tower        string    // Tower name — injected as SPIRE_TOWER into subprocess env
-	InstanceID   string    // Instance identity of the spawning steward
-	Provider     string    // AI provider override (claude, codex, cursor) — injected as SPIRE_PROVIDER into subprocess env
-	Step         string    // Current step name (e.g. "implement", "review") — injected into OTEL_RESOURCE_ATTRIBUTES for log/trace correlation.
-	ExtraArgs    []string  // Additional args (e.g. "--review-fix")
-	LogPath      string    // Output destination (empty = inherit stderr)
-	StartRef     string    // Git ref (SHA or branch) for the child worktree start point. Empty = use repo base branch.
-	CustomPrompt string    // Inline prompt from formula with.prompt — written to temp file and passed as --custom-prompt-file to subprocess.
+	Name          string    // Agent name (e.g. "apprentice-spi-1dl-0")
+	BeadID        string    // Bead to work on — injected as SPIRE_BEAD_ID into subprocess env
+	Role          SpawnRole // What kind of agent to run
+	Tower         string    // Tower name — injected as SPIRE_TOWER into subprocess env
+	InstanceID    string    // Instance identity of the spawning steward
+	Provider      string    // AI provider override (claude, codex, cursor) — injected as SPIRE_PROVIDER into subprocess env
+	Step          string    // Current step name (e.g. "implement", "review") — injected into OTEL_RESOURCE_ATTRIBUTES for log/trace correlation.
+	ExtraArgs     []string  // Additional args (e.g. "--review-fix")
+	LogPath       string    // Output destination (empty = inherit stderr)
+	StartRef      string    // Git ref (SHA or branch) for the child worktree start point. Empty = use repo base branch.
+	CustomPrompt  string    // Inline prompt from formula with.prompt — written to temp file and passed as --custom-prompt-file to subprocess.
+	AttemptID     string    // Attempt bead ID created by the wizard for this spawn — injected as SPIRE_ATTEMPT_ID into subprocess env. Empty when the spawn is not a fresh attempt (e.g. review-fix re-engagement).
+	ApprenticeIdx string    // Fan-out index of this apprentice within its wave (integer as string). Injected as SPIRE_APPRENTICE_IDX into subprocess env. "0" for single-apprentice spawns.
 }
 
 // NewSpawner returns a Spawner for the given backend.

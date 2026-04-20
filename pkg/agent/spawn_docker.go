@@ -172,6 +172,11 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 		args = append(args, "-e", fmt.Sprintf("SPIRE_TOWER=%s", val))
 	}
 
+	// Apprentice identity env vars. Transport-agnostic: the apprentice reads
+	// them to resolve which bead to write to and what role to claim at
+	// submit time.
+	args = append(args, appendIdentityDockerArgs(cfg)...)
+
 	// Extra volumes from config.
 	for _, v := range s.ExtraVolumes {
 		args = append(args, "-v", v)
@@ -303,6 +308,23 @@ func (h *DockerHandle) Name() string { return h.name }
 
 // Identifier returns the Docker container ID.
 func (h *DockerHandle) Identifier() string { return h.containerID }
+
+// appendIdentityDockerArgs returns the `-e KEY=VALUE` args for the three
+// apprentice identity env vars. Exported for backend-level tests that
+// verify the config-to-env translation.
+func appendIdentityDockerArgs(cfg SpawnConfig) []string {
+	var out []string
+	if cfg.BeadID != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_BEAD_ID=%s", cfg.BeadID))
+	}
+	if cfg.AttemptID != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_ATTEMPT_ID=%s", cfg.AttemptID))
+	}
+	if cfg.ApprenticeIdx != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_APPRENTICE_IDX=%s", cfg.ApprenticeIdx))
+	}
+	return out
+}
 
 // SanitizeContainerName replaces characters not allowed in Docker container
 // names with hyphens. Docker allows [a-zA-Z0-9_.-].

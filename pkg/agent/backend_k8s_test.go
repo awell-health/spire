@@ -175,6 +175,90 @@ func TestK8sBackend_Spawn_CreatesCorrectPod(t *testing.T) {
 	}
 }
 
+// TestK8sBackend_Spawn_ApprenticeIdentity verifies the three apprentice
+// identity env vars are injected into the spawned pod when populated on
+// SpawnConfig.
+func TestK8sBackend_Spawn_ApprenticeIdentity(t *testing.T) {
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:          "apprentice-spi-xyz-2",
+		BeadID:        "spi-xyz",
+		Role:          RoleApprentice,
+		Tower:         "t",
+		AttemptID:     "spi-att9",
+		ApprenticeIdx: "2",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pods, err := client.CoreV1().Pods(testNamespace).List(
+		context.Background(), metav1.ListOptions{},
+	)
+	if err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	if len(pods.Items) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(pods.Items))
+	}
+
+	envMap := make(map[string]corev1.EnvVar)
+	for _, e := range pods.Items[0].Spec.Containers[0].Env {
+		envMap[e.Name] = e
+	}
+
+	wantEnv := map[string]string{
+		"SPIRE_BEAD_ID":        "spi-xyz",
+		"SPIRE_ATTEMPT_ID":     "spi-att9",
+		"SPIRE_APPRENTICE_IDX": "2",
+	}
+	for k, want := range wantEnv {
+		got, ok := envMap[k]
+		if !ok {
+			t.Errorf("missing env var %s", k)
+			continue
+		}
+		if got.Value != want {
+			t.Errorf("env %s = %q, want %q", k, got.Value, want)
+		}
+	}
+}
+
+// TestK8sBackend_Spawn_OmitsEmptyIdentity verifies that identity env vars
+// left unset on SpawnConfig are NOT injected.
+func TestK8sBackend_Spawn_OmitsEmptyIdentity(t *testing.T) {
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:  "reviewer",
+		Role:  RoleSage,
+		Tower: "t",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pods, err := client.CoreV1().Pods(testNamespace).List(
+		context.Background(), metav1.ListOptions{},
+	)
+	if err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	if len(pods.Items) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(pods.Items))
+	}
+
+	for _, e := range pods.Items[0].Spec.Containers[0].Env {
+		switch e.Name {
+		case "SPIRE_BEAD_ID", "SPIRE_ATTEMPT_ID", "SPIRE_APPRENTICE_IDX":
+			t.Errorf("unexpected env var set: %s=%s", e.Name, e.Value)
+		}
+	}
+}
+
 func TestK8sBackend_Spawn_ResourceTiers(t *testing.T) {
 	tests := []struct {
 		role      SpawnRole
