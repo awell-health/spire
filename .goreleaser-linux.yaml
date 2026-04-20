@@ -7,8 +7,8 @@ project_name: spire
 # from .Chart.AppVersion) are pinned to the release version.
 before:
   hooks:
-    - sed -i 's/^version:.*/version: {{ .Version }}/' helm/spire/Chart.yaml
-    - sed -i 's/^appVersion:.*/appVersion: "{{ .Version }}"/' helm/spire/Chart.yaml
+    - "sed -i 's/^version:.*/version: {{ .Version }}/' helm/spire/Chart.yaml"
+    - "sed -i 's/^appVersion:.*/appVersion: \"{{ .Version }}\"/' helm/spire/Chart.yaml"
 
 builds:
   - main: ./cmd/spire
