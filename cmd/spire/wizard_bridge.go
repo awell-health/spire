@@ -3,11 +3,18 @@
 package main
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/wizard"
 	"github.com/spf13/cobra"
 )
+
+// wizardLegacyWarnWriter is the io.Writer that deprecation shims print to.
+// Tests override this to capture warnings without touching os.Stderr.
+var wizardLegacyWarnWriter = func() *os.File { return os.Stderr }
 
 var wizardRunCmd = &cobra.Command{
 	Use:                "wizard-run",
@@ -15,6 +22,7 @@ var wizardRunCmd = &cobra.Command{
 	Hidden:             true,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Fprintln(wizardLegacyWarnWriter(), "warning: 'spire wizard-run' is deprecated and will be removed in v1.0; use 'spire summon' (or 'spire wizard claim' for attempt creation) instead")
 		return cmdWizardRun(args)
 	},
 }
@@ -25,6 +33,7 @@ var wizardReviewCmd = &cobra.Command{
 	Hidden:             true,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Fprintln(wizardLegacyWarnWriter(), "warning: 'spire wizard-review' is deprecated and will be removed in v1.0; use 'spire sage accept' / 'spire sage reject' to record verdicts instead")
 		return cmdWizardReview(args)
 	},
 }
