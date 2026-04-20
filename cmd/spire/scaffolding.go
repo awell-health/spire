@@ -128,7 +128,8 @@ python3 -c "
 import json, sys
 print(json.dumps({
     'hookSpecificOutput': {
-        'additionalContext': sys.stdin.read()
+        'additionalContext': sys.stdin.read(),
+        'hookEventName': '$HOOK_EVENT'
     }
 }))
 " <<< "$CONTEXT"
