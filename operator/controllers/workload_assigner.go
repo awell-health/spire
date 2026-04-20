@@ -23,7 +23,6 @@ type WorkloadAssigner struct {
 	Interval           time.Duration
 	StaleThreshold     time.Duration
 	ReassignThreshold  time.Duration
-	BeadsDir           string // path to .beads directory for store validation
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -117,15 +116,8 @@ func (a *WorkloadAssigner) cycle(ctx context.Context) {
 
 // getSchedulableSet returns a set of bead IDs that are currently schedulable
 // according to the shared scheduling policy in store.GetSchedulableWork.
-// Returns nil if the store is not available (graceful degradation).
+// Returns nil if the store query fails (graceful degradation).
 func (a *WorkloadAssigner) getSchedulableSet() map[string]bool {
-	if a.BeadsDir != "" {
-		if _, err := store.Ensure(a.BeadsDir); err != nil {
-			a.Log.Error(err, "failed to initialize bead store for scheduling validation")
-			return nil
-		}
-	}
-
 	result, err := store.GetSchedulableWork(beads.WorkFilter{})
 	if err != nil {
 		a.Log.Error(err, "store.GetSchedulableWork failed, skipping validation")

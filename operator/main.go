@@ -13,6 +13,7 @@ import (
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
 	"github.com/awell-health/spire/operator/controllers"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 var scheme = runtime.NewScheme()
@@ -38,7 +39,7 @@ func main() {
 	flag.DurationVar(&reassignAfter, "reassign-after", 6*time.Hour, "Time before reassigning stale work")
 	flag.DurationVar(&offlineTimeout, "offline-timeout", 30*time.Minute, "Time before marking agent as offline")
 	flag.StringVar(&stewardImage, "steward-image", "ghcr.io/awell-health/spire-steward:latest", "Image for managed agent pods")
-	flag.StringVar(&beadsDir, "beads-dir", "", "Path to .beads directory for scheduling validation (optional)")
+	flag.StringVar(&beadsDir, "beads-dir", "", "Path to .beads directory for scheduling validation (required)")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -46,6 +47,17 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	log := ctrl.Log.WithName("operator")
+
+	if beadsDir == "" {
+		log.Error(nil, "--beads-dir is required for scheduling validation")
+		os.Exit(1)
+	}
+	store.BeadsDirResolver = func() string { return beadsDir }
+	if _, err := store.Ensure(beadsDir); err != nil {
+		log.Error(err, "failed to open beads store at startup", "beadsDir", beadsDir)
+		os.Exit(1)
+	}
+	defer store.Reset()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -56,8 +68,8 @@ func main() {
 	}
 
 	// Workload assigner — matches pending workloads to agents.
-	// When beads-dir is set, the assigner validates pending workloads against
-	// the shared scheduling policy (store.GetSchedulableWork) before assigning.
+	// Validates pending workloads against the shared scheduling policy
+	// (store.GetSchedulableWork) before assigning.
 	assigner := &controllers.WorkloadAssigner{
 		Client:            mgr.GetClient(),
 		Log:               log.WithName("workload-assigner"),
@@ -65,7 +77,6 @@ func main() {
 		Interval:          interval,
 		StaleThreshold:    staleThreshold,
 		ReassignThreshold: reassignAfter,
-		BeadsDir:          beadsDir,
 	}
 	if err := mgr.Add(assigner); err != nil {
 		log.Error(err, "unable to add workload assigner")
