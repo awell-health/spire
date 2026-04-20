@@ -83,13 +83,13 @@ func (s *Store) QueryTraces(ctx context.Context, filter olap.TraceFilter) ([]ola
 			argMax(span_name, parent_span_id = '')                     AS root_span,
 			count()                                                    AS span_count,
 			toInt32(dateDiff('millisecond', min(start_time), max(end_time))) AS duration_ms,
-			min(start_time)                                            AS start_time,
-			max(end_time)                                              AS end_time,
+			min(start_time)                                            AS trace_start,
+			max(end_time)                                              AS trace_end,
 			min(success)                                               AS success
 		FROM tool_spans
 		WHERE %s
 		GROUP BY trace_id
-		ORDER BY start_time DESC
+		ORDER BY trace_start DESC
 		LIMIT ?
 	`, where)
 	args = append(args, limit)
