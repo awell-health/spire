@@ -56,7 +56,7 @@ func createMockDolt(t *testing.T) (*sql.DB, time.Time) {
 		beadID := testBeadIDs[i%len(testBeadIDs)]
 		started := now.Add(-time.Duration(10-i) * time.Hour)
 		completed := started.Add(90 * time.Second)
-		_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES (?, ?, NULL, NULL, ?, '3', 'implement', 'apprentice', 'claude-opus-4-6', ?, 'feat/test', 'success', 1, 1000, 500, 1500, 0.15, 90.0, 5.0, 80.0, 3.0, 2.0, 3, 50, 20, 12, 5, '{"Read":12,"Edit":5}', NULL, 1, ?, ?)`,
+		_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES (?, ?, NULL, NULL, ?, '3', 'implement', 'apprentice', 'claude-opus-4-6', ?, 'feat/test', 'success', 1, 1000, 500, 1500, 0.15, 90.0, 5.0, 80.0, 3.0, 2.0, 3, 50, 20, 12, 5, '{"Read":12,"Edit":5}', NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 			fmt.Sprintf("run-impl-%d", i), beadID, testFormula, testTower, started, completed)
 		if err != nil {
 			t.Fatalf("insert impl run %d: %v", i, err)
@@ -68,7 +68,7 @@ func createMockDolt(t *testing.T) (*sql.DB, time.Time) {
 		beadID := testBeadIDs[i]
 		started := now.Add(-time.Duration(9-i) * time.Hour)
 		completed := started.Add(30 * time.Second)
-		_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES (?, ?, NULL, NULL, ?, '3', 'sage-review', 'sage', 'claude-opus-4-6', ?, 'feat/test', 'success', 0, 500, 200, 700, 0.05, 30.0, 2.0, 25.0, 2.0, 1.0, 0, 0, 0, 3, 0, '{"Read":3}', NULL, 1, ?, ?)`,
+		_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES (?, ?, NULL, NULL, ?, '3', 'sage-review', 'sage', 'claude-opus-4-6', ?, 'feat/test', 'success', 0, 500, 200, 700, 0.05, 30.0, 2.0, 25.0, 2.0, 1.0, 0, 0, 0, 3, 0, '{"Read":3}', NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 			fmt.Sprintf("run-review-%d", i), beadID, testFormula, testTower, started, completed)
 		if err != nil {
 			t.Fatalf("insert review run %d: %v", i, err)
@@ -80,7 +80,7 @@ func createMockDolt(t *testing.T) (*sql.DB, time.Time) {
 		beadID := testBeadIDs[3+i%2]
 		started := now.Add(-time.Duration(8-i) * time.Hour)
 		completed := started.Add(60 * time.Second)
-		_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES (?, ?, NULL, NULL, ?, '3', 'implement', 'apprentice', 'claude-opus-4-6', ?, 'feat/test', 'error', 0, 800, 300, 1100, 0.12, 60.0, 3.0, 50.0, 5.0, 2.0, 1, 10, 5, 5, 2, '{"Read":5,"Edit":2}', 'build_fail', ?, ?, ?)`,
+		_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES (?, ?, NULL, NULL, ?, '3', 'implement', 'apprentice', 'claude-opus-4-6', ?, 'feat/test', 'error', 0, 800, 300, 1100, 0.12, 60.0, 3.0, 50.0, 5.0, 2.0, 1, 10, 5, 5, 2, '{"Read":5,"Edit":2}', 'build_fail', ?, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 			fmt.Sprintf("run-fail-%d", i), beadID, testFormula, testTower, i+1, started, completed)
 		if err != nil {
 			t.Fatalf("insert fail run %d: %v", i, err)
@@ -91,7 +91,7 @@ func createMockDolt(t *testing.T) (*sql.DB, time.Time) {
 	{
 		started := now.Add(-7 * time.Hour)
 		completed := started.Add(300 * time.Second)
-		_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES (?, ?, NULL, NULL, ?, '3', 'implement', 'apprentice', 'claude-opus-4-6', ?, 'feat/test', 'timeout', 0, 600, 200, 800, 0.20, 300.0, 5.0, 280.0, 10.0, 5.0, 0, 0, 0, 2, 0, '{"Read":2}', 'timeout', 1, ?, ?)`,
+		_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES (?, ?, NULL, NULL, ?, '3', 'implement', 'apprentice', 'claude-opus-4-6', ?, 'feat/test', 'timeout', 0, 600, 200, 800, 0.20, 300.0, 5.0, 280.0, 10.0, 5.0, 0, 0, 0, 2, 0, '{"Read":2}', 'timeout', 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 			"run-timeout-0", testBeadIDs[4], testFormula, testTower, started, completed)
 		if err != nil {
 			t.Fatalf("insert timeout run: %v", err)

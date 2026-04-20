@@ -110,10 +110,12 @@ func TestETLSyncWithMockDolt(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 
-	// Insert test rows
+	// Insert test rows. New columns (turns, max_turns, stop_reason,
+	// cache_read_tokens, cache_write_tokens) are populated with non-NULL
+	// values to verify they survive the ETL round-trip into agent_runs_olap.
 	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
-		('run-001', 'spi-abc', 'spi-epic1', NULL, 'task-default', '3', 'implement', 'apprentice', 'claude-opus-4-6', 'my-tower', 'feat/abc', 'success', 2, 1000, 500, 1500, 0.15, 120.0, 5.0, 100.0, 10.0, 5.0, 3, 50, 20, 12, 5, '{"Read":12,"Edit":5}', NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL),
-		('run-002', 'spi-def', 'spi-epic1', 'run-001', 'task-default', '3', 'review', 'sage', 'claude-opus-4-6', 'my-tower', 'feat/def', 'success', 1, 800, 400, 1200, 0.10, 60.0, 3.0, 50.0, 5.0, 2.0, 0, 0, 0, 8, 0, '{"Read":8}', NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+		('run-001', 'spi-abc', 'spi-epic1', NULL, 'task-default', '3', 'implement', 'apprentice', 'claude-opus-4-6', 'my-tower', 'feat/abc', 'success', 2, 1000, 500, 1500, 0.15, 120.0, 5.0, 100.0, 10.0, 5.0, 3, 50, 20, 12, 5, '{"Read":12,"Edit":5}', NULL, 1, ?, ?, 5, 75, 'end_turn', 12345, 6789),
+		('run-002', 'spi-def', 'spi-epic1', 'run-001', 'task-default', '3', 'review', 'sage', 'claude-opus-4-6', 'my-tower', 'feat/def', 'success', 1, 800, 400, 1200, 0.10, 60.0, 3.0, 50.0, 5.0, 2.0, 0, 0, 0, 8, 0, '{"Read":8}', NULL, 1, ?, ?, 3, 75, 'max_turns', 8000, 2000)`,
 		now.Add(-time.Hour), now.Add(-30*time.Minute),
 		now.Add(-20*time.Minute), now.Add(-10*time.Minute),
 	)
@@ -170,6 +172,83 @@ func TestETLSyncWithMockDolt(t *testing.T) {
 	}
 	if dailyCount == 0 {
 		t.Error("expected rows in daily_formula_stats after sync")
+	}
+
+	// Verify the new columns survived the ETL round-trip with the exact
+	// non-NULL values inserted on the source side.
+	var (
+		gotTurns      sql.NullInt64
+		gotMaxTurns   sql.NullInt64
+		gotStopReason sql.NullString
+		gotCacheRead  sql.NullInt64
+		gotCacheWrite sql.NullInt64
+	)
+	err = olapDB.db.QueryRowContext(ctx,
+		`SELECT turns, max_turns, stop_reason, cache_read_tokens, cache_write_tokens
+		FROM agent_runs_olap WHERE id = 'run-001'`,
+	).Scan(&gotTurns, &gotMaxTurns, &gotStopReason, &gotCacheRead, &gotCacheWrite)
+	if err != nil {
+		t.Fatalf("read run-001 new columns: %v", err)
+	}
+	if !gotTurns.Valid || gotTurns.Int64 != 5 {
+		t.Errorf("run-001 turns = %v, want 5", gotTurns)
+	}
+	if !gotMaxTurns.Valid || gotMaxTurns.Int64 != 75 {
+		t.Errorf("run-001 max_turns = %v, want 75", gotMaxTurns)
+	}
+	if !gotStopReason.Valid || gotStopReason.String != "end_turn" {
+		t.Errorf("run-001 stop_reason = %v, want end_turn", gotStopReason)
+	}
+	if !gotCacheRead.Valid || gotCacheRead.Int64 != 12345 {
+		t.Errorf("run-001 cache_read_tokens = %v, want 12345", gotCacheRead)
+	}
+	if !gotCacheWrite.Valid || gotCacheWrite.Int64 != 6789 {
+		t.Errorf("run-001 cache_write_tokens = %v, want 6789", gotCacheWrite)
+	}
+
+	// Aggregation query — exercises the new columns as both grouping and
+	// filtering targets, which is the whole reason they're in OLAP.
+	var (
+		avgTurns float64
+		maxTurns int64
+	)
+	err = olapDB.db.QueryRowContext(ctx,
+		`SELECT AVG(turns), MAX(turns) FROM agent_runs_olap WHERE stop_reason = 'end_turn'`,
+	).Scan(&avgTurns, &maxTurns)
+	if err != nil {
+		t.Fatalf("aggregation query: %v", err)
+	}
+	if avgTurns != 5.0 {
+		t.Errorf("AVG(turns) WHERE stop_reason='end_turn' = %v, want 5.0", avgTurns)
+	}
+	if maxTurns != 5 {
+		t.Errorf("MAX(turns) WHERE stop_reason='end_turn' = %d, want 5", maxTurns)
+	}
+
+	var maxTurnsHits int64
+	err = olapDB.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM agent_runs_olap WHERE stop_reason = 'max_turns'`,
+	).Scan(&maxTurnsHits)
+	if err != nil {
+		t.Fatalf("count max_turns: %v", err)
+	}
+	if maxTurnsHits != 1 {
+		t.Errorf("COUNT(*) WHERE stop_reason='max_turns' = %d, want 1", maxTurnsHits)
+	}
+
+	// Sum cache tokens across both rows.
+	var totalCacheRead, totalCacheWrite int64
+	err = olapDB.db.QueryRowContext(ctx,
+		`SELECT SUM(cache_read_tokens), SUM(cache_write_tokens) FROM agent_runs_olap`,
+	).Scan(&totalCacheRead, &totalCacheWrite)
+	if err != nil {
+		t.Fatalf("sum cache tokens: %v", err)
+	}
+	if totalCacheRead != 20345 {
+		t.Errorf("SUM(cache_read_tokens) = %d, want 20345", totalCacheRead)
+	}
+	if totalCacheWrite != 8789 {
+		t.Errorf("SUM(cache_write_tokens) = %d, want 8789", totalCacheWrite)
 	}
 }
 
@@ -301,7 +380,7 @@ func TestETLNonMonotonicIDs(t *testing.T) {
 
 	// Insert a row with a lexically "large" id
 	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
-		('run-zzz', 'spi-a', NULL, NULL, 'f', '1', 'plan', 'wizard', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?)`,
+		('run-zzz', 'spi-a', NULL, NULL, 'f', '1', 'plan', 'wizard', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 		now.Add(-2*time.Hour), now.Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("insert row 1: %v", err)
@@ -323,7 +402,7 @@ func TestETLNonMonotonicIDs(t *testing.T) {
 	// With the old id-based cursor (WHERE id > 'run-zzz'), this row would be
 	// skipped forever because 'run-aaa' < 'run-zzz'.
 	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
-		('run-aaa', 'spi-b', NULL, NULL, 'f', '1', 'impl', 'apprentice', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?)`,
+		('run-aaa', 'spi-b', NULL, NULL, 'f', '1', 'impl', 'apprentice', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 		now.Add(-30*time.Minute), now.Add(-15*time.Minute))
 	if err != nil {
 		t.Fatalf("insert row 2: %v", err)
@@ -493,7 +572,7 @@ func TestETLStaleCursorMigration(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
-		('run-abc', 'spi-x', NULL, NULL, 'f', '1', 'plan', 'wizard', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?)`,
+		('run-abc', 'spi-x', NULL, NULL, 'f', '1', 'plan', 'wizard', 'opus', 't', 'main', 'success', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 		now, now)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -610,9 +689,9 @@ func TestETLRepoAndFormulaPopulation(t *testing.T) {
 	// Row 2: hierarchical bead with no formula (should become 'adhoc')
 	// Row 3: different repo prefix, empty formula string
 	_, err = mockDolt.Exec(`INSERT INTO agent_runs VALUES
-		('run-r1', 'web-a3f8', NULL, NULL, 'task-default', '3', 'implement', 'apprentice', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.1, 60, 0, 0, 0, 0, 1, 10, 5, 3, 1, NULL, NULL, 1, ?, ?),
-		('run-r2', 'spi-b7d0.1', NULL, NULL, NULL, NULL, 'plan', 'wizard', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.05, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?),
-		('run-r3', 'api-8a01.2.3', NULL, NULL, '', '1', 'review', 'sage', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.08, 45, 0, 0, 0, 0, 0, 0, 0, 2, 0, NULL, NULL, 1, ?, ?)`,
+		('run-r1', 'web-a3f8', NULL, NULL, 'task-default', '3', 'implement', 'apprentice', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.1, 60, 0, 0, 0, 0, 1, 10, 5, 3, 1, NULL, NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL),
+		('run-r2', 'spi-b7d0.1', NULL, NULL, NULL, NULL, 'plan', 'wizard', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.05, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL),
+		('run-r3', 'api-8a01.2.3', NULL, NULL, '', '1', 'review', 'sage', 'opus', 't1', 'main', 'success', 0, 0, 0, 0, 0.08, 45, 0, 0, 0, 0, 0, 0, 0, 2, 0, NULL, NULL, 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
 		now.Add(-3*time.Hour), now.Add(-2*time.Hour),
 		now.Add(-90*time.Minute), now.Add(-time.Hour),
 		now.Add(-45*time.Minute), now.Add(-30*time.Minute),

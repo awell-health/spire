@@ -139,6 +139,19 @@ func schemaStatements() []string {
 	}
 }
 
+// schemaMigrations returns ALTER TABLE statements for incremental schema
+// evolution on existing ClickHouse deployments. Each is executed with
+// errors ignored (column may already exist).
+func schemaMigrations() []string {
+	return []string{
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS turns Int32`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS max_turns Int32`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS stop_reason String`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS cache_read_tokens Int64`,
+		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS cache_write_tokens Int64`,
+	}
+}
+
 // ensureDatabase connects to the ClickHouse default database and creates
 // the target database if it doesn't exist. The dsn should be the full
 // connection string including the target database (e.g.
@@ -170,13 +183,17 @@ func ensureDatabase(dsn string) error {
 	return nil
 }
 
-// initSchema creates all OLAP tables in ClickHouse if they don't exist.
-// Idempotent — safe to call on every startup.
+// initSchema creates all OLAP tables in ClickHouse if they don't exist
+// and applies incremental ALTER TABLE migrations for existing
+// deployments. Idempotent — safe to call on every startup.
 func initSchema(db *sql.DB) error {
 	for _, ddl := range schemaStatements() {
 		if _, err := db.Exec(ddl); err != nil {
 			return fmt.Errorf("clickhouse schema: %w", err)
 		}
+	}
+	for _, alt := range schemaMigrations() {
+		_, _ = db.Exec(alt) // ignore errors — column may already exist
 	}
 	return nil
 }

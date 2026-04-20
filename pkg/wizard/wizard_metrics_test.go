@@ -12,7 +12,7 @@ import (
 func TestParseClaudeResultJSON(t *testing.T) {
 	t.Run("valid result event", func(t *testing.T) {
 		input := []byte(`{"type":"assistant","message":"thinking..."}
-{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":45000,"is_error":false,"num_turns":5,"result":"Here is the implementation.","session_id":"abc","total_cost_usd":0.12,"usage":{"input_tokens":3000,"output_tokens":2000}}
+{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":45000,"is_error":false,"num_turns":5,"result":"Here is the implementation.","session_id":"abc","stop_reason":"end_turn","total_cost_usd":0.12,"usage":{"input_tokens":3000,"output_tokens":2000,"cache_read_input_tokens":12345,"cache_creation_input_tokens":6789}}
 `)
 		text, metrics := parseClaudeResultJSON(input)
 		if text != "Here is the implementation." {
@@ -32,6 +32,15 @@ func TestParseClaudeResultJSON(t *testing.T) {
 		}
 		if metrics.CostUSD != 0.12 {
 			t.Errorf("CostUSD = %f, want 0.12", metrics.CostUSD)
+		}
+		if metrics.StopReason != "end_turn" {
+			t.Errorf("StopReason = %q, want %q", metrics.StopReason, "end_turn")
+		}
+		if metrics.CacheReadTokens != 12345 {
+			t.Errorf("CacheReadTokens = %d, want 12345", metrics.CacheReadTokens)
+		}
+		if metrics.CacheWriteTokens != 6789 {
+			t.Errorf("CacheWriteTokens = %d, want 6789", metrics.CacheWriteTokens)
 		}
 	})
 
@@ -435,11 +444,15 @@ func TestWizardWriteResultIncludesMetrics(t *testing.T) {
 	noop := func(string, ...interface{}) {}
 
 	metrics := ClaudeMetrics{
-		InputTokens:  3000,
-		OutputTokens: 2000,
-		TotalTokens:  5000,
-		Turns:        5,
-		CostUSD:      0.12,
+		InputTokens:      3000,
+		OutputTokens:     2000,
+		TotalTokens:      5000,
+		Turns:            5,
+		MaxTurns:         75,
+		StopReason:       "end_turn",
+		CacheReadTokens:  12345,
+		CacheWriteTokens: 6789,
+		CostUSD:          0.12,
 	}
 	WizardWriteResult("test-wizard", "spi-test", "success", "feat/test", "abc123",
 		42*time.Second, metrics, deps, noop)
@@ -459,6 +472,9 @@ func TestWizardWriteResultIncludesMetrics(t *testing.T) {
 		"context_tokens_out": 2000,
 		"total_tokens":       5000,
 		"turns":              5,
+		"max_turns":          75,
+		"cache_read_tokens":  12345,
+		"cache_write_tokens": 6789,
 		"cost_usd":           0.12,
 	}
 	for key, want := range checks {
@@ -471,11 +487,34 @@ func TestWizardWriteResultIncludesMetrics(t *testing.T) {
 			t.Errorf("result.json %s = %v, want %v", key, got, want)
 		}
 	}
+
+	// stop_reason is a string; check separately.
+	if got, ok := result["stop_reason"].(string); !ok {
+		t.Errorf("result.json missing stop_reason or wrong type: %v", result["stop_reason"])
+	} else if got != "end_turn" {
+		t.Errorf("result.json stop_reason = %q, want %q", got, "end_turn")
+	}
 }
 
 func TestClaudeMetricsAdd(t *testing.T) {
-	a := ClaudeMetrics{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, Turns: 3, CostUSD: 0.05}
-	b := ClaudeMetrics{InputTokens: 200, OutputTokens: 100, TotalTokens: 300, Turns: 5, CostUSD: 0.10}
+	a := ClaudeMetrics{
+		InputTokens:      100,
+		OutputTokens:     50,
+		TotalTokens:      150,
+		Turns:            3,
+		CacheReadTokens:  1000,
+		CacheWriteTokens: 200,
+		CostUSD:          0.05,
+	}
+	b := ClaudeMetrics{
+		InputTokens:      200,
+		OutputTokens:     100,
+		TotalTokens:      300,
+		Turns:            5,
+		CacheReadTokens:  3000,
+		CacheWriteTokens: 400,
+		CostUSD:          0.10,
+	}
 	sum := a.Add(b)
 
 	if sum.InputTokens != 300 {
@@ -490,9 +529,65 @@ func TestClaudeMetricsAdd(t *testing.T) {
 	if sum.Turns != 8 {
 		t.Errorf("Turns = %d, want 8", sum.Turns)
 	}
+	if sum.CacheReadTokens != 4000 {
+		t.Errorf("CacheReadTokens = %d, want 4000", sum.CacheReadTokens)
+	}
+	if sum.CacheWriteTokens != 600 {
+		t.Errorf("CacheWriteTokens = %d, want 600", sum.CacheWriteTokens)
+	}
 	if diff := sum.CostUSD - 0.15; diff < -1e-9 || diff > 1e-9 {
 		t.Errorf("CostUSD = %f, want 0.15", sum.CostUSD)
 	}
+}
+
+func TestClaudeMetricsAdd_MaxTurnsAndStopReasonFallback(t *testing.T) {
+	t.Run("receiver wins when both set", func(t *testing.T) {
+		a := ClaudeMetrics{MaxTurns: 75, StopReason: "end_turn"}
+		b := ClaudeMetrics{MaxTurns: 150, StopReason: "max_turns"}
+		sum := a.Add(b)
+		if sum.MaxTurns != 75 {
+			t.Errorf("MaxTurns = %d, want 75 (receiver wins)", sum.MaxTurns)
+		}
+		if sum.StopReason != "end_turn" {
+			t.Errorf("StopReason = %q, want %q (receiver wins)", sum.StopReason, "end_turn")
+		}
+	})
+
+	t.Run("falls back to other when receiver unset", func(t *testing.T) {
+		a := ClaudeMetrics{}
+		b := ClaudeMetrics{MaxTurns: 150, StopReason: "tool_use"}
+		sum := a.Add(b)
+		if sum.MaxTurns != 150 {
+			t.Errorf("MaxTurns = %d, want 150 (fallback to other)", sum.MaxTurns)
+		}
+		if sum.StopReason != "tool_use" {
+			t.Errorf("StopReason = %q, want %q (fallback to other)", sum.StopReason, "tool_use")
+		}
+	})
+
+	t.Run("both unset stays unset", func(t *testing.T) {
+		a := ClaudeMetrics{}
+		b := ClaudeMetrics{}
+		sum := a.Add(b)
+		if sum.MaxTurns != 0 {
+			t.Errorf("MaxTurns = %d, want 0", sum.MaxTurns)
+		}
+		if sum.StopReason != "" {
+			t.Errorf("StopReason = %q, want empty", sum.StopReason)
+		}
+	})
+
+	t.Run("partial: receiver has MaxTurns, other has StopReason", func(t *testing.T) {
+		a := ClaudeMetrics{MaxTurns: 75}
+		b := ClaudeMetrics{StopReason: "end_turn"}
+		sum := a.Add(b)
+		if sum.MaxTurns != 75 {
+			t.Errorf("MaxTurns = %d, want 75", sum.MaxTurns)
+		}
+		if sum.StopReason != "end_turn" {
+			t.Errorf("StopReason = %q, want %q", sum.StopReason, "end_turn")
+		}
+	})
 }
 
 func TestClaudeMetricsAdd_ToolCallsMerge(t *testing.T) {
