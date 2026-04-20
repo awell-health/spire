@@ -13,6 +13,7 @@ import (
 	"strconv"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/bundlestore"
 	"github.com/awell-health/spire/pkg/executor"
 	formulaPkg "github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/metrics"
@@ -174,6 +175,11 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		// Spawner
 		Spawner: spawner,
 
+		// BundleStore — same resolver used by `spire apprentice submit` so
+		// producer and consumer agree on the backend. Nil when construction
+		// fails; dispatch sites fall back to legacy merge behavior.
+		BundleStore: buildBundleStore(),
+
 		// Agent run recording
 		RecordAgentRun: metrics.Record,
 		AgentResultDir: func(agentName string) string {
@@ -260,6 +266,19 @@ func resolveMaxApprentices() int {
 		return 0
 	}
 	return cfg.Agent.MaxApprentices
+}
+
+// buildBundleStore resolves the tower-configured bundle store used by the
+// wizard to consume apprentice bundles. Returns nil on any construction
+// error — dispatch sites treat nil as "legacy path, no bundle fetch".
+// Mirrors defaultNewBundleStore from apprentice.go so producer and consumer
+// resolve to the same backend/root.
+func buildBundleStore() bundlestore.BundleStore {
+	bs, err := defaultNewBundleStore()
+	if err != nil {
+		return nil
+	}
+	return bs
 }
 
 // executorResolveBranch loads spire.yaml from the bead's repo and resolves

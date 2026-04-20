@@ -222,6 +222,24 @@ func (wc *WorktreeContext) EnsureRemoteRef(remote, ref string) {
 	exec.Command("git", "-C", wc.RepoPath, "fetch", remote, ref).Run()
 }
 
+// ApplyBundle fetches a git bundle at bundlePath and force-updates targetBranch
+// to point at the bundle's HEAD ref. Used to materialize an apprentice-produced
+// bundle as a local branch inside the wizard's staging worktree before merge.
+//
+// The bundle's prerequisites (commits referenced but not carried) must already
+// be present in the repo — callers must ensure the base branch is up to date.
+//
+// The "+" prefix force-updates the ref; this makes replays idempotent (a
+// re-applied bundle resets the branch rather than failing on non-fast-forward).
+func (wc *WorktreeContext) ApplyBundle(bundlePath, targetBranch string) error {
+	out, err := exec.Command("git", "-C", wc.Dir, "fetch",
+		bundlePath, "+HEAD:"+targetBranch).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("apply bundle %s -> %s: %w\n%s", bundlePath, targetBranch, err, string(out))
+	}
+	return nil
+}
+
 // ConflictedFiles returns the list of files with unresolved merge conflicts.
 func (wc *WorktreeContext) ConflictedFiles() ([]string, error) {
 	out, err := exec.Command("git", "-C", wc.Dir, "diff", "--name-only", "--diff-filter=U").Output()

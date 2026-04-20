@@ -11,6 +11,7 @@ import (
 	"io"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/bundlestore"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/metrics"
@@ -115,6 +116,11 @@ type Deps struct {
 
 	// Spawner
 	Spawner Backend
+
+	// BundleStore is the artifact store the wizard consumes apprentice
+	// bundles from. Nil when unavailable (tests or older setups) — dispatch
+	// sites must nil-check and fall back to the legacy branch-merge path.
+	BundleStore bundlestore.BundleStore
 
 	// MaxApprentices caps the number of concurrent apprentice subprocesses
 	// spawned during wave dispatch. 0 means "use built-in default" — the

@@ -221,6 +221,19 @@ func (e *Executor) resolveBranch(beadID string) string {
 	return "feat/" + beadID
 }
 
+// attemptID returns the current attempt bead ID from whichever state is
+// active. Graph executions use graphState; legacy executions use state.
+// Empty is a valid return (e.g. review-fix re-engagement).
+func (e *Executor) attemptID() string {
+	if e.graphState != nil && e.graphState.AttemptBeadID != "" {
+		return e.graphState.AttemptBeadID
+	}
+	if e.state != nil {
+		return e.state.AttemptBeadID
+	}
+	return ""
+}
+
 // repoModel returns the agent model from the repo config, or "" if unavailable.
 func (e *Executor) repoModel() string {
 	if e.deps.RepoConfig == nil {

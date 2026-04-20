@@ -356,11 +356,13 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 
 	started := time.Now()
 	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
-		Name:      apprenticeName,
-		BeadID:    e.beadID,
-		Role:      agent.RoleApprentice,
-		ExtraArgs: []string{"--apprentice"},
-		LogPath:   filepath.Join(dolt.GlobalDir(), "wizards", apprenticeName+".log"),
+		Name:          apprenticeName,
+		BeadID:        e.beadID,
+		Role:          agent.RoleApprentice,
+		ExtraArgs:     []string{"--apprentice"},
+		LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", apprenticeName+".log"),
+		AttemptID:     e.attemptID(),
+		ApprenticeIdx: "0",
 	})
 	if err != nil {
 		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, err,
@@ -378,14 +380,33 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 
 	e.log("apprentice completed")
 
-	// Merge the feat branch into staging.
-	if stagingWt != nil {
-		featBranch := fmt.Sprintf("feat/%s", e.beadID)
-		e.log("merging %s into staging", featBranch)
-		if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
-			return fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
+	// Apply the apprentice's submitted bundle onto staging, then merge.
+	// A no-op signal short-circuits: nothing to merge.
+	if stagingWt == nil {
+		return nil
+	}
+	if e.deps.BundleStore != nil {
+		outcome, err := e.applyApprenticeBundle(e.beadID, 0, stagingWt)
+		if err != nil {
+			return fmt.Errorf("apply apprentice bundle: %w", err)
+		}
+		if outcome.NoOp {
+			return nil
+		}
+		if outcome.Applied {
+			if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
+				return fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
+			}
+			return nil
 		}
 	}
 
+	// Legacy fallback: assume the apprentice's feat branch is already
+	// present locally and merge by branch name.
+	featBranch := fmt.Sprintf("feat/%s", e.beadID)
+	e.log("merging %s into staging (legacy path)", featBranch)
+	if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
+		return fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
+	}
 	return nil
 }
