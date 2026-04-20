@@ -137,6 +137,53 @@ func TestReconcileManagedAgent_DoesNotHealTerminalPods(t *testing.T) {
 	}
 }
 
+// TestBuildWorkloadPod_NamingAndLabels locks in the pod-name template and
+// label contract so future renames are deliberate. Per spi-kh2em: name is
+// "<guild>-wizard-<bead>" (no "spire-" prefix) and the pod carries both
+// "spire.awell.io/agent" (today's selector) and "spire.awell.io/guild"
+// (forward-compat for the WizardGuild CRD rename).
+func TestBuildWorkloadPod_NamingAndLabels(t *testing.T) {
+	ns := "spire"
+	agent := makeAgent("core", ns, nil)
+	m := &AgentMonitor{Log: testr.New(t), Namespace: ns}
+
+	pod := m.buildWorkloadPod(agent, "spi-abc", nil)
+
+	if pod.Name != "core-wizard-spi-abc" {
+		t.Fatalf("pod.Name = %q, want %q", pod.Name, "core-wizard-spi-abc")
+	}
+
+	wantLabels := map[string]string{
+		"spire.awell.io/agent":   "core",
+		"spire.awell.io/guild":   "core",
+		"spire.awell.io/bead":    "spi-abc",
+		"spire.awell.io/managed": "true",
+		"spire.awell.io/role":    "wizard",
+		"app.kubernetes.io/name": "spire-wizard",
+	}
+	for k, want := range wantLabels {
+		if got := pod.Labels[k]; got != want {
+			t.Errorf("labels[%q] = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// TestBuildWorkloadPod_NameTruncatedTo63 ensures we stay within the k8s
+// pod-name limit even when agent/bead names are unusually long.
+func TestBuildWorkloadPod_NameTruncatedTo63(t *testing.T) {
+	ns := "spire"
+	longAgent := "very-long-guild-name-that-pushes-the-limit"
+	longBead := "spi-this-is-also-quite-long-to-overflow"
+	agent := makeAgent(longAgent, ns, nil)
+	m := &AgentMonitor{Log: testr.New(t), Namespace: ns}
+
+	pod := m.buildWorkloadPod(agent, longBead, nil)
+
+	if len(pod.Name) > 63 {
+		t.Fatalf("pod.Name length = %d, want <= 63 (got %q)", len(pod.Name), pod.Name)
+	}
+}
+
 func TestIsPodActive(t *testing.T) {
 	now := metav1.Now()
 	cases := []struct {

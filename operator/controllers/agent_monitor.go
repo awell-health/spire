@@ -301,6 +301,10 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		image = m.StewardImage
 	}
 
+	// Pod name template is "<guild>-wizard-<bead>" per the 2026-04-20 naming
+	// decision on spi-kh2em (no "spire-" prefix; agent/guild name first). The
+	// agent name is the guild name today; that will diverge when the
+	// WizardGuild CRD lands (separate bead).
 	podName := fmt.Sprintf("%s-wizard-%s", sanitizeK8sName(agent.Name), sanitizeK8sName(beadID))
 	// k8s pod names max 63 chars
 	if len(podName) > 63 {
@@ -384,6 +388,10 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: m.Namespace,
+			// "spire.awell.io/agent" + "spire.awell.io/managed" are the selector
+			// keys used by reconcileManagedAgent — do not remove. "guild" is
+			// forward-compat for the WizardGuild CRD rename (separate bead) and
+			// duplicates "agent" today by design. "role" mirrors buildEpicPod.
 			Labels: map[string]string{
 				"spire.awell.io/agent":   agent.Name,
 				"spire.awell.io/guild":   agent.Name,
