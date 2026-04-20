@@ -13,13 +13,19 @@ import (
 )
 
 // arbiterTestHarness captures the side effects runArbiterDecide produces so
-// tests can assert on metadata writes, comments, and attempt closures without
-// a live store.
+// tests can assert on review-round metadata writes, comments, and attempt
+// closures without a live store.
 type arbiterTestHarness struct {
 	bead                Bead
 	beadErr             error
+	review              *Bead
+	reviewErr           error
+	metaWrittenOnID     string
 	metadata            map[string]string
+	closedReviewID      string
+	closeReviewErr      error
 	comments            []string
+	commentTargets      []string
 	activeAttempt       *Bead
 	closedAttemptID     string
 	closedAttemptResult string
@@ -31,13 +37,24 @@ func newArbiterHarness(t *testing.T, bead Bead) (*arbiterTestHarness, func()) {
 	h := &arbiterTestHarness{
 		bead:     bead,
 		metadata: map[string]string{},
+		// Default: a single open review-round exists for the task. Tests that
+		// need a closed/missing/different round override after construction.
+		review: &Bead{
+			ID:     bead.ID + ".review",
+			Title:  "review-round-1",
+			Status: "in_progress",
+			Labels: []string{"review-round", "round:1"},
+			Parent: bead.ID,
+		},
 	}
 
 	origGetBead := arbiterGetBeadFunc
-	origSetMeta := arbiterSetBeadMetadataFunc
+	origSetMeta := arbiterSetMetadataMapFunc
 	origAddComment := arbiterAddCommentFunc
 	origGetAttempt := arbiterGetActiveAttemptFunc
 	origCloseAttempt := arbiterCloseAttemptBeadFunc
+	origMostRecent := arbiterMostRecentReviewFunc
+	origCloseBead := arbiterCloseBeadFunc
 	origNow := arbiterNowFunc
 
 	arbiterGetBeadFunc = func(id string) (Bead, error) {
@@ -46,12 +63,16 @@ func newArbiterHarness(t *testing.T, bead Bead) (*arbiterTestHarness, func()) {
 		}
 		return h.bead, nil
 	}
-	arbiterSetBeadMetadataFunc = func(id, key, value string) error {
-		h.metadata[key] = value
+	arbiterSetMetadataMapFunc = func(id string, m map[string]string) error {
+		h.metaWrittenOnID = id
+		for k, v := range m {
+			h.metadata[k] = v
+		}
 		return nil
 	}
 	arbiterAddCommentFunc = func(id, text string) error {
 		h.comments = append(h.comments, text)
+		h.commentTargets = append(h.commentTargets, id)
 		return nil
 	}
 	arbiterGetActiveAttemptFunc = func(parentID string) (*Bead, error) {
@@ -62,16 +83,28 @@ func newArbiterHarness(t *testing.T, bead Bead) (*arbiterTestHarness, func()) {
 		h.closedAttemptResult = result
 		return nil
 	}
+	arbiterMostRecentReviewFunc = func(parentID string) (*Bead, error) {
+		if h.reviewErr != nil {
+			return nil, h.reviewErr
+		}
+		return h.review, nil
+	}
+	arbiterCloseBeadFunc = func(id string) error {
+		h.closedReviewID = id
+		return h.closeReviewErr
+	}
 	arbiterNowFunc = func() time.Time {
 		return time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
 	}
 
 	cleanup := func() {
 		arbiterGetBeadFunc = origGetBead
-		arbiterSetBeadMetadataFunc = origSetMeta
+		arbiterSetMetadataMapFunc = origSetMeta
 		arbiterAddCommentFunc = origAddComment
 		arbiterGetActiveAttemptFunc = origGetAttempt
 		arbiterCloseAttemptBeadFunc = origCloseAttempt
+		arbiterMostRecentReviewFunc = origMostRecent
+		arbiterCloseBeadFunc = origCloseBead
 		arbiterNowFunc = origNow
 	}
 	return h, cleanup
@@ -170,6 +203,14 @@ func TestArbiterDecide_HappyPath_Accept(t *testing.T) {
 		t.Fatalf("runArbiterDecide: %v", err)
 	}
 
+	// Metadata must land on the review-round, not the task bead — that is
+	// the storage boundary that makes the verdict binding (sage and arbiter
+	// share the same review-round; readers consult it for the final word).
+	if h.metaWrittenOnID != h.review.ID {
+		t.Errorf("metadata written on %q, want review-round %q (task is %q)",
+			h.metaWrittenOnID, h.review.ID, bead.ID)
+	}
+
 	raw, ok := h.metadata[arbiterVerdictMetaKey]
 	if !ok {
 		ks := make([]string, 0, len(h.metadata))
@@ -196,11 +237,27 @@ func TestArbiterDecide_HappyPath_Accept(t *testing.T) {
 		t.Error("decided_at empty")
 	}
 
+	// Mirrored review_verdict on the same review-round so existing readers
+	// don't need to parse the JSON payload.
+	if h.metadata["review_verdict"] != "accept" {
+		t.Errorf("review_verdict mirror = %q, want accept", h.metadata["review_verdict"])
+	}
+
+	// Open review-round must be closed.
+	if h.closedReviewID != h.review.ID {
+		t.Errorf("closedReviewID = %q, want %q", h.closedReviewID, h.review.ID)
+	}
+
 	if len(h.comments) == 0 {
 		t.Fatal("no comments recorded")
 	}
 	if !strings.Contains(h.comments[0], "accept") {
 		t.Errorf("comment %q does not mention 'accept'", h.comments[0])
+	}
+	// The summary comment goes on the task bead so humans browsing the task
+	// see "arbiter decided X" without drilling into the review-round.
+	if h.commentTargets[0] != bead.ID {
+		t.Errorf("comment target = %q, want task %q", h.commentTargets[0], bead.ID)
 	}
 }
 
@@ -235,11 +292,74 @@ func TestArbiterDecide_HappyPath_Reject(t *testing.T) {
 		t.Errorf("source = %q, want %q", payload.Source, arbiterVerdictSource)
 	}
 
+	// Verdict goes on the review-round, not the task — keep the boundaries
+	// from drifting back as we extend the harness.
+	if h.metaWrittenOnID != h.review.ID {
+		t.Errorf("metadata written on %q, want review-round %q", h.metaWrittenOnID, h.review.ID)
+	}
+
 	if h.closedAttemptID != "spi-rej.attempt" {
 		t.Errorf("closedAttemptID = %q, want spi-rej.attempt", h.closedAttemptID)
 	}
 	if h.closedAttemptResult != arbiterAttemptResult {
 		t.Errorf("closedAttemptResult = %q, want %q", h.closedAttemptResult, arbiterAttemptResult)
+	}
+}
+
+// --- Already-closed review-round: arbiter still binds, doesn't re-close ---
+
+func TestArbiterDecide_ClosedReview_StillWritesNoCloseReplay(t *testing.T) {
+	// A sage may have closed the round before the arbiter ran. The arbiter
+	// must still write the binding verdict on that closed round (so readers
+	// switch to it) but must NOT re-close the bead.
+	bead := Bead{ID: "spi-late", Title: "dispute"}
+	h, cleanup := newArbiterHarness(t, bead)
+	defer cleanup()
+	h.review = &Bead{
+		ID:     "spi-late.review",
+		Title:  "review-round-1",
+		Status: "closed",
+		Labels: []string{"review-round", "round:1"},
+		Parent: bead.ID,
+	}
+
+	cmd := newDecideCmd()
+	_ = cmd.Flags().Set("verdict", "reject")
+	if err := runArbiterDecide(cmd, []string{"spi-late"}); err != nil {
+		t.Fatalf("runArbiterDecide: %v", err)
+	}
+
+	if _, ok := h.metadata[arbiterVerdictMetaKey]; !ok {
+		t.Errorf("arbiter_verdict not written on already-closed review-round")
+	}
+	if h.metaWrittenOnID != h.review.ID {
+		t.Errorf("metaWrittenOnID = %q, want %q", h.metaWrittenOnID, h.review.ID)
+	}
+	if h.closedReviewID != "" {
+		t.Errorf("closeBead called on already-closed review-round (%q); should be a no-op",
+			h.closedReviewID)
+	}
+}
+
+// --- No review-round: arbiter has nothing to bind ---
+
+func TestArbiterDecide_NoReviewRound_Errors(t *testing.T) {
+	bead := Bead{ID: "spi-noreview", Title: "dispute"}
+	h, cleanup := newArbiterHarness(t, bead)
+	defer cleanup()
+	h.review = nil // task has no review-round child yet
+
+	cmd := newDecideCmd()
+	_ = cmd.Flags().Set("verdict", "accept")
+	err := runArbiterDecide(cmd, []string{"spi-noreview"})
+	if err == nil {
+		t.Fatal("expected error when no review-round exists, got nil")
+	}
+	if !strings.Contains(err.Error(), "no review-round") {
+		t.Errorf("error %q should mention 'no review-round'", err.Error())
+	}
+	if _, wrote := h.metadata[arbiterVerdictMetaKey]; wrote {
+		t.Error("arbiter_verdict written despite missing review-round")
 	}
 }
 

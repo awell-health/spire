@@ -59,3 +59,40 @@ func TestExtractReviewVerdict_VerdictOnlyLine(t *testing.T) {
 		t.Errorf("extractReviewVerdict() = %q, want %q", got, "approve")
 	}
 }
+
+// TestExtractReviewVerdict_ArbiterOverridesSage verifies the arbiter_verdict
+// JSON payload takes precedence over a conflicting review_verdict written by
+// sage on the same review-round bead. This is the binding-verdict semantics
+// the board is responsible for honoring.
+func TestExtractReviewVerdict_ArbiterOverridesSage(t *testing.T) {
+	b := store.Bead{
+		ID: "spi-review-arb",
+		Metadata: map[string]string{
+			"arbiter_verdict": `{"source":"arbiter","verdict":"approve","decided_at":"2026-04-20T12:00:00Z"}`,
+			"review_verdict":  "reject",
+		},
+		Description: "verdict: reject\n\nsage was overruled",
+	}
+	got := extractReviewVerdict(b)
+	if got != "approve" {
+		t.Errorf("extractReviewVerdict() = %q, want %q (arbiter_verdict must override sage)", got, "approve")
+	}
+}
+
+// TestExtractReviewVerdict_ArbiterUnparseableFallsBack verifies that a
+// malformed arbiter_verdict JSON does not silently swallow the verdict —
+// readers fall back to review_verdict so the round still has a usable
+// answer.
+func TestExtractReviewVerdict_ArbiterUnparseableFallsBack(t *testing.T) {
+	b := store.Bead{
+		ID: "spi-review-bad",
+		Metadata: map[string]string{
+			"arbiter_verdict": "{not-json}",
+			"review_verdict":  "reject",
+		},
+	}
+	got := extractReviewVerdict(b)
+	if got != "reject" {
+		t.Errorf("extractReviewVerdict() = %q, want %q (fallback to review_verdict on bad JSON)", got, "reject")
+	}
+}

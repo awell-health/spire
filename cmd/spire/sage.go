@@ -28,7 +28,11 @@ The user-facing verbs remain accept/reject; the CLI translates them to the
 canonical approve/request_changes verdict stored on the review-round bead.
 Verdict writes funnel through the single review-round store helper, so
 steward routing, wizard review re-dispatch, and review history all pick up
-sage-CLI verdicts the same way they pick up wizard-driven ones.`,
+sage-CLI verdicts the same way they pick up wizard-driven ones.
+
+Both verdicts refuse to run when the most-recent review-round on the task
+already carries an arbiter_verdict — arbiter decisions are binding (see
+"spire arbiter decide").`,
 }
 
 var sageAcceptCmd = &cobra.Command{
@@ -67,6 +71,7 @@ var sageGetChildrenFunc = storeGetChildren
 var sageCloseReviewFunc = store.CloseReviewBead
 var sageAddLabelFunc = store.AddLabel
 var sageAddCommentFunc = store.AddComment
+var sageMostRecentReviewFunc = store.MostRecentReviewRound
 
 func init() {
 	sageRejectCmd.Flags().String("feedback", "", "Feedback text explaining the request_changes verdict (required)")
@@ -129,6 +134,26 @@ func findOpenReviewRound(beadID string) (*Bead, error) {
 	}
 }
 
+// guardArbiterBound returns an error if the most recent review-round on
+// beadID has been decided by an arbiter. Arbiter decisions are binding —
+// the sage CLI must not overwrite them, regardless of whether the
+// arbiter-decided round is still open or already closed.
+func guardArbiterBound(beadID string) error {
+	last, err := sageMostRecentReviewFunc(beadID)
+	if err != nil {
+		return fmt.Errorf("look up most recent review-round for %s: %w", beadID, err)
+	}
+	if last == nil {
+		return nil
+	}
+	if v := last.Meta(arbiterVerdictMetaKey); v != "" {
+		return fmt.Errorf(
+			"arbiter has decided review round %d on %s; sage verdicts are not accepted",
+			store.ReviewRoundNumber(*last), beadID)
+	}
+	return nil
+}
+
 // cmdSageAccept translates the user-facing "accept" verb to the canonical
 // review-round verdict "approve" and writes it through CloseReviewBead.
 // It also applies the review-approved label on the parent task so the merge
@@ -136,6 +161,9 @@ func findOpenReviewRound(beadID string) (*Bead, error) {
 // approval. No parallel verdict is written to the parent bead — the
 // review-round bead is the single authoritative source.
 func cmdSageAccept(beadID, comment string) error {
+	if err := guardArbiterBound(beadID); err != nil {
+		return err
+	}
 	review, err := findOpenReviewRound(beadID)
 	if err != nil {
 		return err
@@ -168,6 +196,9 @@ func cmdSageAccept(beadID, comment string) error {
 // picks up the request_changes verdict and re-dispatches the apprentice,
 // same as when the wizard review loop sets the verdict itself.
 func cmdSageReject(beadID, feedback string) error {
+	if err := guardArbiterBound(beadID); err != nil {
+		return err
+	}
 	review, err := findOpenReviewRound(beadID)
 	if err != nil {
 		return err

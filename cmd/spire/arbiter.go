@@ -16,10 +16,12 @@ var arbiterCmd = &cobra.Command{
 	Long: `Arbiter-side commands.
 
 An arbiter resolves disputes between sages and apprentices by issuing a
-binding verdict. "spire arbiter decide" records that verdict on the task
-bead's metadata with a source="arbiter" marker that distinguishes it from
-sage verdicts. Once recorded the verdict is binding: subsequent sage
-verdicts on the same review round are rejected by downstream writers.`,
+binding verdict. "spire arbiter decide" records that verdict on the most
+recent review-round child of the task — the same storage boundary the
+sage writes to — with a source="arbiter" marker, then closes the round.
+Once recorded the verdict is binding: subsequent sage verdicts on that
+same review round are rejected by the sage CLI and downstream readers
+prefer the arbiter verdict.`,
 }
 
 var arbiterDecideCmd = &cobra.Command{
@@ -27,8 +29,12 @@ var arbiterDecideCmd = &cobra.Command{
 	Short: "Record a binding arbiter verdict on a bead",
 	Long: `Record a binding arbiter verdict on <bead>.
 
-The verdict is written to the task bead's metadata under the
-"arbiter_verdict" key as a JSON payload that carries source="arbiter".
+The verdict is written to the most recent review-round child of <bead>
+under the "arbiter_verdict" metadata key as a JSON payload that carries
+source="arbiter". The matching plain "review_verdict" key is mirrored on
+the same review-round so existing readers see the arbiter's call. If the
+review-round is still open, it is closed with the arbiter's verdict.
+
 If the task has an active attempt bead (the current dispute round), the
 attempt is closed with result "arbiter-resolved". Downstream sage verdict
 writers check the arbiter marker and refuse to overwrite it.`,
@@ -47,16 +53,19 @@ func init() {
 // --- Test-replaceable seams ---
 
 var arbiterGetBeadFunc = storeGetBead
-var arbiterSetBeadMetadataFunc = store.SetBeadMetadata
+var arbiterSetMetadataMapFunc = store.SetBeadMetadataMap
 var arbiterAddCommentFunc = storeAddComment
 var arbiterGetActiveAttemptFunc = storeGetActiveAttempt
 var arbiterCloseAttemptBeadFunc = storeCloseAttemptBead
+var arbiterMostRecentReviewFunc = store.MostRecentReviewRound
+var arbiterCloseBeadFunc = store.CloseBead
 var arbiterNowFunc = func() time.Time { return time.Now().UTC() }
 
-// arbiterVerdictPayload is the JSON structure written to the task bead under
-// the "arbiter_verdict" metadata key. The Source field is the load-bearing
-// marker that distinguishes arbiter verdicts from sage verdicts; readers
-// treat an arbiter-source verdict as binding and refuse to overwrite it.
+// arbiterVerdictPayload is the JSON structure written to the review-round
+// bead under the "arbiter_verdict" metadata key. The Source field is the
+// load-bearing marker that distinguishes arbiter verdicts from sage
+// verdicts; readers treat an arbiter-source verdict as binding and the sage
+// CLI refuses to overwrite it.
 type arbiterVerdictPayload struct {
 	Source    string `json:"source"`
 	Verdict   string `json:"verdict"`
@@ -65,9 +74,9 @@ type arbiterVerdictPayload struct {
 }
 
 const (
-	arbiterVerdictMetaKey  = "arbiter_verdict"
-	arbiterVerdictSource   = "arbiter"
-	arbiterAttemptResult   = "arbiter-resolved"
+	arbiterVerdictMetaKey = "arbiter_verdict"
+	arbiterVerdictSource  = "arbiter"
+	arbiterAttemptResult  = "arbiter-resolved"
 )
 
 var allowedArbiterVerdicts = map[string]bool{
@@ -93,6 +102,17 @@ func runArbiterDecide(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get bead %s: %w", beadID, err)
 	}
 
+	// Locate the review-round the arbiter is deciding. The arbiter only
+	// settles disputes that began with a sage review, so an absent round is
+	// a hard error — there is no review to bind.
+	review, err := arbiterMostRecentReviewFunc(beadID)
+	if err != nil {
+		return fmt.Errorf("look up review-round for %s: %w", beadID, err)
+	}
+	if review == nil {
+		return fmt.Errorf("bead %s has no review-round to decide; arbiter only resolves sage-initiated review rounds", beadID)
+	}
+
 	payload := arbiterVerdictPayload{
 		Source:    arbiterVerdictSource,
 		Verdict:   verdict,
@@ -103,8 +123,25 @@ func runArbiterDecide(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("marshal arbiter verdict: %w", err)
 	}
-	if err := arbiterSetBeadMetadataFunc(beadID, arbiterVerdictMetaKey, string(raw)); err != nil {
-		return fmt.Errorf("write arbiter verdict metadata: %w", err)
+	// Write the binding verdict on the review-round bead — the same storage
+	// boundary sage writes to. The arbiter_verdict JSON carries the source
+	// marker; the mirrored review_verdict keeps existing readers compatible
+	// without parsing the JSON payload.
+	meta := map[string]string{
+		arbiterVerdictMetaKey: string(raw),
+		"review_verdict":      verdict,
+	}
+	if err := arbiterSetMetadataMapFunc(review.ID, meta); err != nil {
+		return fmt.Errorf("write arbiter verdict metadata on review-round %s: %w", review.ID, err)
+	}
+
+	// Close the review-round if it is still open. A round that was already
+	// closed (e.g. by a sage racing the arbiter) stays closed — the arbiter
+	// verdict on the same bead now overrides whatever the sage wrote.
+	if review.Status == "open" || review.Status == "in_progress" {
+		if cerr := arbiterCloseBeadFunc(review.ID); cerr != nil {
+			fmt.Fprintf(os.Stderr, "  (note: could not close review-round %s: %s)\n", review.ID, cerr)
+		}
 	}
 
 	// Close the current dispute round attempt if one is open. A failure to
@@ -116,7 +153,7 @@ func runArbiterDecide(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	summary := fmt.Sprintf("arbiter verdict: %s", verdict)
+	summary := fmt.Sprintf("arbiter verdict: %s (review-round %s)", verdict, review.ID)
 	if note != "" {
 		summary += " — " + note
 	}
@@ -124,6 +161,6 @@ func runArbiterDecide(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  (note: could not add arbiter comment to %s: %s)\n", beadID, err)
 	}
 
-	fmt.Printf("arbiter verdict %q recorded on %s\n", verdict, beadID)
+	fmt.Printf("arbiter verdict %q recorded on %s (review-round %s)\n", verdict, beadID, review.ID)
 	return nil
 }

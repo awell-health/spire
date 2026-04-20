@@ -299,6 +299,25 @@ func GetReviewBeads(parentID string) ([]Bead, error) {
 	return reviews, nil
 }
 
+// MostRecentReviewRound returns the highest-numbered review-round child of
+// parentID, regardless of status. Returns (nil, nil) when no review-round
+// child exists.
+//
+// This is the lookup arbiter and sage share to identify the round whose
+// verdict they are about to set: the arbiter writes the binding verdict on
+// it; the sage refuses to write when it already carries an arbiter_verdict.
+func MostRecentReviewRound(parentID string) (*Bead, error) {
+	reviews, err := GetReviewBeads(parentID)
+	if err != nil {
+		return nil, err
+	}
+	if len(reviews) == 0 {
+		return nil, nil
+	}
+	last := reviews[len(reviews)-1]
+	return &last, nil
+}
+
 // IsReviewRoundBead returns true if the bead is a review-round bead
 // (has "review-round" label or title starts with "review-round-").
 func IsReviewRoundBead(b Bead) bool {

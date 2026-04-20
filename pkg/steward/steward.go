@@ -19,6 +19,7 @@ package steward
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -761,9 +762,12 @@ func DetectMergeReady(dryRun bool, mq *MergeQueue) {
 }
 
 // ReviewBeadVerdict extracts the verdict string from a closed review-round bead.
-// Prefers the "review_verdict" metadata key (structured); falls back to
-// parsing the description prefix "verdict: <value>" for legacy beads.
+// Precedence: arbiter_verdict (binding) > review_verdict (sage) >
+// description prefix "verdict: <value>" (legacy beads).
 func ReviewBeadVerdict(b store.Bead) string {
+	if v := arbiterVerdictFromMeta(b); v != "" {
+		return v
+	}
 	if v := b.Meta("review_verdict"); v != "" {
 		return v
 	}
@@ -779,6 +783,24 @@ func ReviewBeadVerdict(b store.Bead) string {
 		return strings.TrimPrefix(line, "verdict: ")
 	}
 	return ""
+}
+
+// arbiterVerdictFromMeta parses the "arbiter_verdict" metadata JSON payload
+// and returns its verdict field. Returns "" when the key is absent or the
+// payload is unparseable — callers fall back to the sage-written
+// review_verdict in either case.
+func arbiterVerdictFromMeta(b store.Bead) string {
+	raw := b.Meta("arbiter_verdict")
+	if raw == "" {
+		return ""
+	}
+	var payload struct {
+		Verdict string `json:"verdict"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	return payload.Verdict
 }
 
 // DetectReviewFeedback finds in_progress beads whose last review-round bead

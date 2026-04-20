@@ -28,12 +28,16 @@ type sageStubs struct {
 // the stubs plus a cleanup func that restores the originals. Each test that
 // exercises the store path should defer the returned cleanup so swaps don't
 // leak across tests in this package.
+//
+// By default the arbiter-bound guard returns nil (no arbiter has decided)
+// so tests that don't touch arbiter state can keep their existing setup.
 func stubSageDeps(t *testing.T) (*sageStubs, func()) {
 	t.Helper()
 	origGetChildren := sageGetChildrenFunc
 	origCloseReview := sageCloseReviewFunc
 	origAddLabel := sageAddLabelFunc
 	origAddComment := sageAddCommentFunc
+	origMostRecent := sageMostRecentReviewFunc
 
 	s := &sageStubs{}
 	sageCloseReviewFunc = func(reviewID, verdict, summary string, errorCount, warningCount, round int, findings []store.ReviewFinding) error {
@@ -54,12 +58,14 @@ func stubSageDeps(t *testing.T) (*sageStubs, func()) {
 		s.addedComments = append(s.addedComments, struct{ id, text string }{id, text})
 		return nil
 	}
+	sageMostRecentReviewFunc = func(parentID string) (*Bead, error) { return nil, nil }
 
 	cleanup := func() {
 		sageGetChildrenFunc = origGetChildren
 		sageCloseReviewFunc = origCloseReview
 		sageAddLabelFunc = origAddLabel
 		sageAddCommentFunc = origAddComment
+		sageMostRecentReviewFunc = origMostRecent
 	}
 	return s, cleanup
 }
@@ -270,6 +276,83 @@ func TestSageReject_MissingFeedback(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "feedback") {
 		t.Errorf("error %q should mention 'feedback'", err.Error())
+	}
+}
+
+// arbiterBoundReview returns a review-round bead carrying an
+// arbiter_verdict payload, used to seed the arbiter-decided state.
+func arbiterBoundReview(parent, id string, status string) *Bead {
+	return &Bead{
+		ID:     id,
+		Title:  "review-round-1",
+		Status: status,
+		Labels: []string{"review-round", "round:1"},
+		Parent: parent,
+		Metadata: map[string]string{
+			arbiterVerdictMetaKey: `{"source":"arbiter","verdict":"reject","decided_at":"2026-04-20T12:00:00Z"}`,
+			"review_verdict":      "reject",
+		},
+	}
+}
+
+// TestSageAccept_RefusesAfterArbiter verifies sage accept refuses to write
+// when the most recent review-round (open or closed) carries an arbiter
+// verdict. This is the binding-verdict guarantee.
+func TestSageAccept_RefusesAfterArbiter(t *testing.T) {
+	for _, status := range []string{"in_progress", "closed"} {
+		t.Run(status, func(t *testing.T) {
+			_, cleanup := stubSageDeps(t)
+			defer cleanup()
+
+			sageMostRecentReviewFunc = func(parentID string) (*Bead, error) {
+				return arbiterBoundReview(parentID, "spi-p.1", status), nil
+			}
+			sageCloseReviewFunc = func(reviewID, verdict, summary string, errorCount, warningCount, round int, findings []store.ReviewFinding) error {
+				t.Fatalf("CloseReviewBead must not be called after arbiter decided; got id=%q", reviewID)
+				return nil
+			}
+			sageGetChildrenFunc = func(parentID string) ([]Bead, error) {
+				t.Fatal("getChildren must not run — guard runs first")
+				return nil, nil
+			}
+
+			err := cmdSageAccept("spi-p", "looks fine")
+			if err == nil {
+				t.Fatal("expected error after arbiter decision, got nil")
+			}
+			if !strings.Contains(err.Error(), "arbiter") {
+				t.Errorf("error %q should mention 'arbiter'", err.Error())
+			}
+			if !strings.Contains(err.Error(), "not accepted") {
+				t.Errorf("error %q should mention 'not accepted'", err.Error())
+			}
+		})
+	}
+}
+
+// TestSageReject_RefusesAfterArbiter mirrors the accept guard for reject.
+func TestSageReject_RefusesAfterArbiter(t *testing.T) {
+	_, cleanup := stubSageDeps(t)
+	defer cleanup()
+
+	sageMostRecentReviewFunc = func(parentID string) (*Bead, error) {
+		return arbiterBoundReview(parentID, "spi-p.1", "closed"), nil
+	}
+	sageCloseReviewFunc = func(reviewID, verdict, summary string, errorCount, warningCount, round int, findings []store.ReviewFinding) error {
+		t.Fatalf("CloseReviewBead must not be called after arbiter decided; got id=%q", reviewID)
+		return nil
+	}
+	sageGetChildrenFunc = func(parentID string) ([]Bead, error) {
+		t.Fatal("getChildren must not run — guard runs first")
+		return nil, nil
+	}
+
+	err := cmdSageReject("spi-p", "more issues")
+	if err == nil {
+		t.Fatal("expected error after arbiter decision, got nil")
+	}
+	if !strings.Contains(err.Error(), "arbiter") {
+		t.Errorf("error %q should mention 'arbiter'", err.Error())
 	}
 }
 

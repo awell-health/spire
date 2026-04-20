@@ -1,6 +1,7 @@
 package board
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -99,9 +100,12 @@ func FetchDAGProgress(beadID string) *DAGProgress {
 }
 
 // extractReviewVerdict reads the verdict from a review bead.
-// Prefers the "review_verdict" metadata key (structured); falls back to
-// parsing the description prefix "verdict: <value>" for legacy beads.
+// Precedence: arbiter_verdict (binding) > review_verdict (sage) >
+// description prefix "verdict: <value>" (legacy beads).
 func extractReviewVerdict(b Bead) string {
+	if v := arbiterVerdictFromMeta(b); v != "" {
+		return v
+	}
 	if v := b.Meta("review_verdict"); v != "" {
 		return v
 	}
@@ -117,6 +121,24 @@ func extractReviewVerdict(b Bead) string {
 		return strings.TrimPrefix(line, "verdict: ")
 	}
 	return ""
+}
+
+// arbiterVerdictFromMeta parses the "arbiter_verdict" metadata JSON payload
+// and returns its verdict field. Returns "" when the key is absent or the
+// payload is unparseable — callers fall back to the sage-written
+// review_verdict in either case.
+func arbiterVerdictFromMeta(b Bead) string {
+	raw := b.Meta("arbiter_verdict")
+	if raw == "" {
+		return ""
+	}
+	var payload struct {
+		Verdict string `json:"verdict"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	return payload.Verdict
 }
 
 // resolveStepOrder loads the formula for a bead and returns a map from step

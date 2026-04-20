@@ -100,7 +100,11 @@ review loop. Steward routing, feedback re-dispatch, and review history
 read from the review-round bead's `review_verdict` metadata, so sage-CLI
 verdicts and wizard-driven verdicts flow through the same pipeline.
 
-No parallel verdict field is written to the parent bead.
+Verdict metadata is stored on the **review-round bead** (the child of
+the task), not on the task itself. This is the single authoritative
+storage boundary an arbiter shares with the sage — keeping all verdict
+state on one bead makes arbiter decisions binding. No parallel verdict
+field is written to the parent bead.
 
 ### `spire sage accept <bead> [comment]`
 
@@ -115,6 +119,10 @@ Writes `review_verdict=approve` to the open review-round child bead
 bead so the merge queue picks it up, and appends a review-approved
 comment. The optional positional `comment` is carried in the review-round
 summary and parent comment.
+
+Errors out if the most-recent review-round on `<bead-id>` already
+carries an `arbiter_verdict` — arbiter decisions are binding and the
+sage CLI refuses to overwrite them.
 
 ### `spire sage reject <bead> --feedback <text>`
 
@@ -134,6 +142,9 @@ appends a `request_changes` comment to the task bead. The steward's
 feedback detector observes the review-round verdict and re-dispatches the
 apprentice, identical to the wizard-driven path. `--feedback` is
 required — rejections without actionable feedback are not accepted.
+
+Errors out if the most-recent review-round on `<bead-id>` already
+carries an `arbiter_verdict` — see `spire arbiter decide`.
 
 ---
 
@@ -211,11 +222,27 @@ spire arbiter decide <bead-id> --verdict accept|reject|custom [--note <text>]
 | `--verdict` | Arbiter verdict: `accept`, `reject`, or `custom` (required) |
 | `--note <text>` | Optional verdict reasoning/note |
 
-Writes an `arbiter_verdict` payload (with `source="arbiter"` marker) to
-the task bead's metadata. If the task has an active attempt bead (the
-current dispute round), the attempt is closed with result
-`arbiter-resolved`. Downstream sage verdict writers refuse to overwrite
-an arbiter-source verdict.
+The authoritative storage boundary for review verdicts is the
+**review-round bead** — the same child bead a sage writes to. Arbiter
+decisions are binding because they land on that round and close it; they
+are not a parallel metadata channel on the task.
+
+Writes an `arbiter_verdict` JSON payload (with `source="arbiter"` marker,
+plus `verdict`, optional `note`, and `decided_at`) to the most recent
+review-round child of `<bead-id>`. The matching plain `review_verdict`
+key is mirrored on the same review-round so existing readers see the
+arbiter's call without parsing the JSON. If the review-round is still
+open, it is closed.
+
+If the task has an active attempt bead (the current dispute round), the
+attempt is closed with result `arbiter-resolved`. The sage CLI refuses
+to write `accept`/`reject` on a round whose most-recent review carries
+an `arbiter_verdict`, and downstream readers (board, steward) prefer the
+arbiter verdict over any sage-written `review_verdict` on the same
+review-round.
+
+Errors out cleanly if `<bead-id>` has no review-round child — the
+arbiter only resolves rounds a sage has already opened.
 
 ---
 

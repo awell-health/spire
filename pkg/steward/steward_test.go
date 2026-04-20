@@ -1103,6 +1103,42 @@ func TestReviewBeadVerdict_NoMatchingDescription(t *testing.T) {
 	}
 }
 
+// TestReviewBeadVerdict_ArbiterOverridesSage verifies the arbiter_verdict
+// JSON payload takes precedence over sage's review_verdict on the same
+// review-round bead. This is the binding-verdict guarantee — readers
+// downstream of the steward consult ReviewBeadVerdict to decide whether to
+// re-engage the wizard, so the arbiter must win.
+func TestReviewBeadVerdict_ArbiterOverridesSage(t *testing.T) {
+	b := store.Bead{
+		ID: "spi-review-arb",
+		Metadata: map[string]string{
+			"arbiter_verdict": `{"source":"arbiter","verdict":"approve","decided_at":"2026-04-20T12:00:00Z"}`,
+			"review_verdict":  "request_changes",
+		},
+	}
+	got := ReviewBeadVerdict(b)
+	if got != "approve" {
+		t.Errorf("ReviewBeadVerdict() = %q, want %q (arbiter must override sage)", got, "approve")
+	}
+}
+
+// TestReviewBeadVerdict_ArbiterUnparseableFallsBack ensures malformed
+// arbiter_verdict JSON falls through to review_verdict rather than blackholing
+// the verdict — the round must still surface a usable answer.
+func TestReviewBeadVerdict_ArbiterUnparseableFallsBack(t *testing.T) {
+	b := store.Bead{
+		ID: "spi-review-bad",
+		Metadata: map[string]string{
+			"arbiter_verdict": "{not-json",
+			"review_verdict":  "approve",
+		},
+	}
+	got := ReviewBeadVerdict(b)
+	if got != "approve" {
+		t.Errorf("ReviewBeadVerdict() = %q, want %q (fallback on bad JSON)", got, "approve")
+	}
+}
+
 func TestSweepHookedSteps_HumanApprove_OnlyNeedsHumanPresent_Skips(t *testing.T) {
 	// When needs-human is still present (even if awaiting-approval is gone),
 	// the sweep should skip — at least one label remains.
