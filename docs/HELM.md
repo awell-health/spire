@@ -113,6 +113,13 @@ namespace with its own dolt PVC, steward, operator, and bead prefix. No
 state is shared except cluster-scoped CRDs (`spireagent`, `spireconfig`,
 `spireworkload`).
 
+Cluster-scoped RBAC is release-scoped: each release installs its own
+ClusterRole and ClusterRoleBinding named `<release>-operator` (e.g.
+`spire-a-operator`, `spire-b-operator`), so installing or uninstalling
+one release never rebinds or removes another's permissions. The
+ServiceAccount stays namespace-scoped and keeps the stable name
+`spire-operator`.
+
 ```bash
 # Release A — prefix "a", namespace spire-a.
 kubectl create namespace spire-a
@@ -144,7 +151,17 @@ helm install spire-b helm/spire \
 Because the CRDs are cluster-scoped and shipped in `helm/spire/crds/`,
 only the first release installs them — subsequent releases reuse the
 existing CRDs. `helm uninstall` does not remove CRDs (by design); you
-must `kubectl delete crd` manually if you want them gone.
+must `kubectl delete crd` manually if you want them gone. CRDs are the
+only cluster-scoped resources genuinely shared across releases; the
+ClusterRole/ClusterRoleBinding are per-release (see above).
+
+> **Upgrade note for installs predating this change:** earlier chart
+> versions named the ClusterRole/ClusterRoleBinding `spire-operator`
+> (un-prefixed). A `helm upgrade` across the boundary deletes the old
+> object and creates a release-scoped one, so the operator briefly
+> loses cluster-scoped permissions mid-upgrade. The risk window is
+> seconds and the operator reconciles on its own — no manual action
+> required for a single-release install.
 
 ## Remotesapi SQL users
 

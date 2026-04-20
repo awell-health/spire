@@ -153,6 +153,31 @@ if kubectl logs -n "$NS_B" deploy/spire-operator --tail=200 2>/dev/null | grep -
   fail "$NS_B operator logs reference $NS_A"
 fi
 
+step "Verifying ClusterRole/ClusterRoleBinding are release-scoped"
+# Both releases must carry their own cluster-scoped RBAC so a helm
+# uninstall of A doesn't revoke B's permissions (and vice versa).
+for rel in "$REL_A" "$REL_B"; do
+  kubectl get clusterrole "${rel}-operator" >/dev/null \
+    || fail "expected ClusterRole ${rel}-operator to exist"
+  kubectl get clusterrolebinding "${rel}-operator" >/dev/null \
+    || fail "expected ClusterRoleBinding ${rel}-operator to exist"
+done
+# Guard against regressions: the un-prefixed name from the pre-fix
+# chart must NOT exist — that's the collision point.
+if kubectl get clusterrole spire-operator >/dev/null 2>&1; then
+  fail "legacy un-prefixed ClusterRole 'spire-operator' still exists — collision risk"
+fi
+if kubectl get clusterrolebinding spire-operator >/dev/null 2>&1; then
+  fail "legacy un-prefixed ClusterRoleBinding 'spire-operator' still exists — collision risk"
+fi
+# Each binding's roleRef should point at its release-scoped role.
+for rel in "$REL_A" "$REL_B"; do
+  roleref="$(kubectl get clusterrolebinding "${rel}-operator" \
+    -o jsonpath='{.roleRef.name}')"
+  [[ "$roleref" == "${rel}-operator" ]] \
+    || fail "${rel}-operator binding roleRef='$roleref', want '${rel}-operator'"
+done
+
 step "Verifying secrets are per-namespace (no cross-reference)"
 # Secrets with the same name in different namespaces are distinct objects —
 # the isolation check is that neither release references secrets from the
@@ -168,13 +193,33 @@ if echo "$refs_b" | grep -q "$NS_A"; then
   fail "$NS_B deploys reference secrets from $NS_A"
 fi
 
+step "Verifying uninstall of A leaves B's cluster-scoped RBAC intact"
+# This is the end-state assertion for the multi-tenant RBAC fix:
+# tearing down release A must not revoke release B's cluster-scoped
+# permissions. We uninstall A early (before the normal cleanup block)
+# so we can check B survives; the cleanup block below skips A.
+helm uninstall "$REL_A" -n "$NS_A" --wait || fail "helm uninstall $REL_A failed"
+REL_A_UNINSTALLED=1
+kubectl get clusterrole "${REL_B}-operator" >/dev/null \
+  || fail "uninstalling $REL_A removed $REL_B's ClusterRole"
+kubectl get clusterrolebinding "${REL_B}-operator" >/dev/null \
+  || fail "uninstalling $REL_A removed $REL_B's ClusterRoleBinding"
+if kubectl get clusterrole "${REL_A}-operator" >/dev/null 2>&1; then
+  fail "$REL_A ClusterRole still present after uninstall"
+fi
+if kubectl get clusterrolebinding "${REL_A}-operator" >/dev/null 2>&1; then
+  fail "$REL_A ClusterRoleBinding still present after uninstall"
+fi
+
 # --- cleanup -----------------------------------------------------------------
 if [[ "${KEEP_NAMESPACES:-0}" == "1" ]]; then
   echo
   echo "KEEP_NAMESPACES=1 — leaving $NS_A and $NS_B in place for debugging"
 else
   step "Cleaning up"
-  helm uninstall "$REL_A" -n "$NS_A" || true
+  if [[ "${REL_A_UNINSTALLED:-0}" != "1" ]]; then
+    helm uninstall "$REL_A" -n "$NS_A" || true
+  fi
   helm uninstall "$REL_B" -n "$NS_B" || true
   kubectl delete namespace "$NS_A" "$NS_B" --ignore-not-found --wait=false
 fi

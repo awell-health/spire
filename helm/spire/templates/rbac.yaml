@@ -6,10 +6,14 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 ---
+# Cluster-scoped RBAC names are release-scoped so that multiple helm
+# releases in one cluster don't collide. The ServiceAccount (above)
+# stays namespace-scoped and keeps the stable name `spire-operator`
+# because Deployments/StatefulSets reference it by that name.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: spire-operator
+  name: {{ .Release.Name }}-operator
   labels:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 rules:
@@ -29,13 +33,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: spire-operator
+  name: {{ .Release.Name }}-operator
   labels:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: spire-operator
+  name: {{ .Release.Name }}-operator
 subjects:
   - kind: ServiceAccount
     name: spire-operator
