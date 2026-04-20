@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -12,17 +13,15 @@ import (
 // wizardClaimHarness captures every mutation cmdWizardClaim performs so tests
 // can assert on the full effect set without touching a live dolt server.
 type wizardClaimHarness struct {
-	active          *Bead
-	activeErr       error
-	createErr       error
-	createdParent   string
-	createdAgent    string
-	createdModel    string
-	createdBranch   string
-	createdAttempt  string
-	updatedBead     string
-	updatedStatus   string
-	identity        string
+	createErr      error
+	createdParent  string
+	createdAgent   string
+	createdModel   string
+	createdBranch  string
+	createdAttempt string
+	updatedBead    string
+	updatedStatus  string
+	identity       string
 }
 
 func newWizardClaimHarness(t *testing.T) (*wizardClaimHarness, func()) {
@@ -33,14 +32,10 @@ func newWizardClaimHarness(t *testing.T) (*wizardClaimHarness, func()) {
 		createdAttempt: "spi-task.attempt-1",
 	}
 
-	origGetActive := wizardClaimGetActiveAttempt
 	origCreate := wizardClaimCreateAttempt
 	origUpdate := wizardClaimUpdateBead
 	origIdentity := wizardClaimIdentity
 
-	wizardClaimGetActiveAttempt = func(parentID string) (*Bead, error) {
-		return h.active, h.activeErr
-	}
 	wizardClaimCreateAttempt = func(parentID, agent, model, branch string) (string, error) {
 		if h.createErr != nil {
 			return "", h.createErr
@@ -61,7 +56,6 @@ func newWizardClaimHarness(t *testing.T) (*wizardClaimHarness, func()) {
 	wizardClaimIdentity = func(asFlag string) (string, error) { return h.identity, nil }
 
 	return h, func() {
-		wizardClaimGetActiveAttempt = origGetActive
 		wizardClaimCreateAttempt = origCreate
 		wizardClaimUpdateBead = origUpdate
 		wizardClaimIdentity = origIdentity
@@ -133,33 +127,75 @@ func TestWizardClaim_HappyPath(t *testing.T) {
 	}
 }
 
+// TestWizardClaim_AlreadyHasAttempt verifies that a foreign-agent conflict
+// surfaced by CreateAttemptBeadAtomic is wrapped with "claim <bead>" and
+// preserves the underlying "already exists (agent: ...)" identifiers, and
+// that no status flip happens on conflict.
 func TestWizardClaim_AlreadyHasAttempt(t *testing.T) {
 	h, cleanup := newWizardClaimHarness(t)
 	defer cleanup()
 
-	h.active = &Bead{ID: "spi-task.attempt-old", Title: "attempt: wizard-other"}
+	h.createErr = fmt.Errorf("active attempt spi-task.attempt-old already exists (agent: wizard-other)")
 
 	err := cmdWizardClaim("spi-task")
 	if err == nil {
-		t.Fatal("expected error when open attempt exists, got nil")
+		t.Fatal("expected error when active attempt exists, got nil")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "spi-task") {
-		t.Errorf("error %q missing task bead id", msg)
+	if !strings.Contains(msg, "claim spi-task") {
+		t.Errorf("error %q missing 'claim spi-task' wrap", msg)
+	}
+	if !strings.Contains(msg, "already exists") {
+		t.Errorf("error %q missing 'already exists' phrase", msg)
 	}
 	if !strings.Contains(msg, "spi-task.attempt-old") {
-		t.Errorf("error %q missing attempt id", msg)
+		t.Errorf("error %q missing foreign attempt id", msg)
 	}
-	if !strings.Contains(msg, "already has open attempt") {
-		t.Errorf("error %q missing 'already has open attempt' phrase", msg)
+	if !strings.Contains(msg, "wizard-other") {
+		t.Errorf("error %q missing foreign agent identity", msg)
 	}
 
-	// No mutations should have happened.
-	if h.createdParent != "" {
-		t.Errorf("expected no attempt creation; got createdParent = %q", h.createdParent)
-	}
+	// No status flip on conflict.
 	if h.updatedBead != "" {
-		t.Errorf("expected no bead update; got updatedBead = %q", h.updatedBead)
+		t.Errorf("expected no bead update on conflict; got updatedBead = %q", h.updatedBead)
+	}
+	if h.updatedStatus != "" {
+		t.Errorf("expected no status flip on conflict; got updatedStatus = %q", h.updatedStatus)
+	}
+}
+
+// TestWizardClaim_ReclaimReusesExistingAttempt verifies the same-agent
+// reclaim path: CreateAttemptBeadAtomic returns the existing attempt ID with
+// nil error, and cmdWizardClaim treats that as success — flipping the bead
+// to in_progress.
+func TestWizardClaim_ReclaimReusesExistingAttempt(t *testing.T) {
+	h, cleanup := newWizardClaimHarness(t)
+	defer cleanup()
+
+	// Atomic create stub returns an existing attempt ID (same-agent reclaim).
+	h.createdAttempt = "spi-task.attempt-existing"
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := cmdWizardClaim("spi-task")
+
+	w.Close()
+	os.Stdout = oldStdout
+	_, _ = io.Copy(io.Discard, r)
+
+	if err != nil {
+		t.Fatalf("expected reclaim to succeed, got: %v", err)
+	}
+	if h.createdParent != "spi-task" {
+		t.Errorf("createdParent = %q, want spi-task", h.createdParent)
+	}
+	if h.updatedBead != "spi-task" {
+		t.Errorf("updatedBead = %q, want spi-task", h.updatedBead)
+	}
+	if h.updatedStatus != "in_progress" {
+		t.Errorf("updatedStatus = %q, want in_progress", h.updatedStatus)
 	}
 }
 

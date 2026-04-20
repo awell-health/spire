@@ -33,8 +33,7 @@ merge commit + seal timestamp and closes the open attempt.`,
 // These function variables let tests swap the store/git calls made by the
 // wizard subcommands without touching cmd/spire/store_bridge.go.
 
-var wizardClaimGetActiveAttempt = storeGetActiveAttempt
-var wizardClaimCreateAttempt = store.CreateAttemptBead
+var wizardClaimCreateAttempt = storeCreateAttemptBeadAtomic
 var wizardClaimUpdateBead = storeUpdateBead
 var wizardClaimIdentity = func(asFlag string) (string, error) { return detectIdentity(asFlag) }
 
@@ -103,17 +102,6 @@ func cmdWizardClaim(beadID string) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	// Reject if the bead already has an open attempt; the caller almost
-	// certainly wants the existing attempt ID in the error, not a silent
-	// create-and-overwrite.
-	existing, err := wizardClaimGetActiveAttempt(beadID)
-	if err != nil {
-		return fmt.Errorf("check active attempt for %s: %w", beadID, err)
-	}
-	if existing != nil {
-		return fmt.Errorf("bead %s already has open attempt %s", beadID, existing.ID)
-	}
-
 	agent, err := wizardClaimIdentity("")
 	if err != nil {
 		return fmt.Errorf("detect identity: %w", err)
@@ -121,9 +109,14 @@ func cmdWizardClaim(beadID string) error {
 
 	branch := resolveClaimBranch(beadID)
 
+	// CreateAttemptBeadAtomic collapses the active-attempt check and the
+	// create into a single call: same-agent reclaim returns the existing
+	// attempt ID with nil error; foreign-agent conflict returns an error
+	// that names the conflicting attempt and agent. This closes the TOCTOU
+	// window the previous two-step path opened.
 	attemptID, err := wizardClaimCreateAttempt(beadID, agent, "", branch)
 	if err != nil {
-		return fmt.Errorf("create attempt bead for %s: %w", beadID, err)
+		return fmt.Errorf("claim %s: %w", beadID, err)
 	}
 
 	if err := wizardClaimUpdateBead(beadID, map[string]interface{}{
