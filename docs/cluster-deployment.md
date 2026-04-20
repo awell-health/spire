@@ -37,9 +37,9 @@ Spire ships a Helm chart at `helm/spire/`. The chart deploys:
 - The steward (work coordinator)
 - The operator (pod lifecycle manager)
 - SpireConfig CRD (cluster singleton configuration)
-- SpireAgent CRDs (per-repo agent definitions)
+- WizardGuild CRDs (per-repo agent definitions)
 
-Today those `SpireAgent` definitions are still explicit in chart values.
+Today those `WizardGuild` definitions are still explicit in chart values.
 The operator does not yet derive them automatically from the tower's
 `repos` table.
 
@@ -152,7 +152,6 @@ guilds:
     repoBranch: main
     prefixes: ["myp-"]
     maxConcurrent: 2
-    capabilities: ["implement"]
     resources:
       requests:
         memory: "256Mi"
@@ -329,7 +328,7 @@ All configurable values are documented in `helm/spire/values.yaml`. Key values:
 | `steward.interval` | `2m` | Steward sync interval |
 | `spireConfig.polling.staleThreshold` | `4h` | Mark workload stale after this |
 | `spireConfig.polling.reassignThreshold` | `6h` | Reassign stale workloads after this |
-| `agents` | `[]` | List of SpireAgent definitions |
+| `agents` | `[]` | List of WizardGuild definitions |
 | `syncer.enabled` | `false` | Enable DoltHub sync CronJob |
 | `syncer.schedule` | `*/2 * * * *` | CronJob schedule |
 
@@ -366,13 +365,13 @@ If your cluster enforces namespace-scoped RBAC, patch the ClusterRole after inst
 
 ## CRD reference
 
-### SpireAgent
+### WizardGuild
 
 Represents an entity that can do work.
 
 ```yaml
 apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 spec:
   mode: managed | external     # "managed" = operator creates pods; "external" = your process
   image: string                # container image (managed only)
@@ -381,7 +380,6 @@ spec:
   prefixes: [string]           # bead prefixes this agent can handle
   maxConcurrent: int           # max simultaneous workloads
   token: string                # token name from SpireConfig (default: "default")
-  capabilities: [string]       # what this agent can do (default: ["implement"])
   resources:                   # k8s resource requests/limits
     requests:
       memory: string
@@ -409,7 +407,7 @@ Status fields (set by operator):
 | Field | Description |
 |-------|-------------|
 | `phase` | `Pending` → `Assigned` → `InProgress` → `Done` / `Stale` / `Failed` |
-| `assignedAgent` | Name of the SpireAgent handling this workload |
+| `assignedAgent` | Name of the WizardGuild handling this workload |
 | `startTime` | When the pod started |
 | `completionTime` | When the pod finished |
 
@@ -523,7 +521,7 @@ No available agent matches the workload. Check:
 3. Agent `status.currentWork` length is below `spec.maxConcurrent`
 
 ```bash
-kubectl get spireagents -n spire -o yaml | grep -A5 "status:"
+kubectl get wizardguilds -n spire -o yaml | grep -A5 "status:"
 ```
 
 ### Agent pods not being created
@@ -531,7 +529,7 @@ kubectl get spireagents -n spire -o yaml | grep -A5 "status:"
 The agent must have `spec.mode: managed`. Check:
 
 ```bash
-kubectl get spireagents -n spire -o jsonpath='{.items[*].spec.mode}'
+kubectl get wizardguilds -n spire -o jsonpath='{.items[*].spec.mode}'
 ```
 
 Also verify `spec.image` is set and pullable by the cluster.

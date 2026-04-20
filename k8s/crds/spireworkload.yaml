@@ -53,7 +53,7 @@ spec:
                   enum: [Pending, Assigned, InProgress, Done, Stale, Failed]
                 assignedTo:
                   type: string
-                  description: Name of the SpireAgent handling this work
+                  description: Name of the WizardGuild handling this work
                 assignedAt:
                   type: string
                   format: date-time

@@ -31,7 +31,7 @@ acceptance criteria.
         │ spire-steward    │                         │ spire-operator   │
         │ (Deployment)     │                         │ (Deployment)     │
         │   dispatch loop  │                         │   watches        │
-        │   sidecar router │                         │   SpireAgent CRs │
+        │   sidecar router │                         │   WizardGuild CRs│
         └──────────────────┘                         └─────────┬────────┘
                                                                ▼
                                                       ┌────────────────┐

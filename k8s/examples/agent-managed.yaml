@@ -1,14 +1,13 @@
 # A managed agent — operator creates a pod when work is assigned.
 # The pod runs Claude headlessly via the Agent SDK.
 apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 metadata:
   name: ci-worker
   namespace: spire
 spec:
   displayName: "CI Worker"
   mode: managed
-  capabilities: ["Go", "TypeScript", "testing"]
   prefixes: ["spi-", "open-"]
   token: default
   maxConcurrent: 1

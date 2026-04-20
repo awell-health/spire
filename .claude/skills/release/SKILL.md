@@ -13,6 +13,10 @@ history and bead graph.
 Run these commands to understand what's changed:
 
 ```bash
+
+# Fetch latest tags from git
+git fetch --tags
+
 # Latest tag
 git describe --tags --abbrev=0
 
@@ -60,19 +64,24 @@ Group by section. Format:
 
 ```markdown
 ## Features
+
 - **<short description>** — <detail from bead/commit> (`<bead-id>`)
 
 ## Fixes
+
 - **<short description>** — <detail> (`<bead-id>`)
 
 ## Improvements
+
 - <chore/refactor/docs changes, grouped if minor>
 
 ## Internal
+
 - <test changes, CI, dependency bumps — only if noteworthy>
 ```
 
 Rules:
+
 - Lead with the user-facing impact, not the code change
 - Combine related commits under one bullet (e.g. multiple commits for one bead)
 - Skip trivial chores unless they affect users (dep upgrades, migration fixes)
@@ -83,6 +92,7 @@ Rules:
 ## Step 5: Present for review
 
 Show the user:
+
 1. The version bump with reasoning (e.g. `v0.33.0 → v0.34.0 (minor: 3 feat commits)`)
 2. The draft release notes
 3. Ask: "Look good? I'll write the notes, commit, tag, and push."
@@ -116,6 +126,7 @@ have a corresponding git tag. When CI passes and an untagged notes file exists,
 it tags the commit and runs goreleaser automatically.
 
 IMPORTANT:
+
 - Never use `gh release create` — goreleaser creates the release.
 - Never manually create tags — CI creates the tag after tests pass.
 - Never use `git tag` locally for releases.

@@ -310,11 +310,11 @@ RUN apt-get install -y your-tool
 RUN pip install your-package
 ```
 
-Reference your image in the SpireAgent CRD:
+Reference your image in the WizardGuild CRD:
 
 ```yaml
 apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 metadata:
   name: my-agent
   namespace: spire
@@ -340,7 +340,7 @@ spire logs wizard-spi-abc  # tail a specific agent's output
 
 ### Kubernetes
 
-The operator monitors SpireAgent `status.phase`:
+The operator monitors WizardGuild `status.phase`:
 
 | Phase | Description |
 |-------|-------------|

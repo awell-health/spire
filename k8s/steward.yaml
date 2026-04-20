@@ -159,10 +159,10 @@ metadata:
 rules:
   # CRDs
   - apiGroups: ["spire.awell.io"]
-    resources: ["spireagents", "spireworkloads", "spireconfigs"]
+    resources: ["wizardguilds", "spireworkloads", "spireconfigs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["spire.awell.io"]
-    resources: ["spireagents/status", "spireworkloads/status", "spireconfigs/status"]
+    resources: ["wizardguilds/status", "spireworkloads/status", "spireconfigs/status"]
     verbs: ["get", "update", "patch"]
   # Pod management (for managed agents)
   - apiGroups: [""]

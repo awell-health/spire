@@ -42,7 +42,7 @@ are shipped.
 - **Local agent execution** -- `spire summon` spawns wizard executors (accepts bead IDs or count); apprentices work in isolated worktrees and write metadata.commits; sages review; arbiters break ties
 - **Steward** -- active work assignment, concurrency limiter (per-tower), merge queue, trust gradient, health endpoints, hooked-step sweep, multi-local safety with instance leases
 - **Full CLI surface** -- `spire file --design`, `spire review`, `spire ready`, `spire update`, plus tower management, repo registration, agent messaging, observability (board/roster/watch/logs/metrics)
-- **Helm chart + operator** -- v3-aligned CRDs (SpireAgent, SpireWorkload, SpireConfig), agent/steward/dolt/syncer templates
+- **Helm chart + operator** -- v3-aligned CRDs (WizardGuild, SpireWorkload, SpireConfig), agent/steward/dolt/syncer templates
 - **CI/CD** -- goreleaser, GitHub Actions, Homebrew tap
 
 ---
@@ -110,7 +110,7 @@ The Helm chart and operator are v3-aligned with clean CRDs. The main
 gaps are cluster bootstrap and the operator reading the repos table.
 
 - [ ] Bootstrap job -- `spire tower attach <dolthub-url>` as a Helm hook on install
-- [ ] Operator reads repos table -- auto-derive SpireAgent CRs from dolt repos table
+- [ ] Operator reads repos table -- auto-derive WizardGuild CRs from dolt repos table
 - [ ] Image version alignment -- Dockerfiles should track latest beads release
 - [ ] Syncer pod formalization -- configurable via SpireConfig CR, health reporting
 - [ ] End-to-end cluster smoke test -- tower attach -> file work -> agent executes -> bead closes
@@ -232,7 +232,7 @@ limit. Add wave batching only if needed.
 
 ### 3. Operator repos-table derivation -- MEDIUM
 
-Switching from explicit SpireAgent CRDs to repos-table derivation
+Switching from explicit WizardGuild CRDs to repos-table derivation
 changes the contract. **Mitigation:** Support both modes during
 transition. CRDs remain the override mechanism.
 

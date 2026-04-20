@@ -252,7 +252,7 @@ func bridgeReviewEscalateToArbiter(beadID, reviewerName string, lastReview *exec
 // agent.max-apprentices > 0 (executor falls back to DefaultMaxApprentices).
 //
 // The operator sets SPIRE_MAX_APPRENTICES on the wizard pod when
-// SpireAgent.spec.maxApprentices is set; locally the env is unset and the
+// WizardGuild.spec.maxApprentices is set; locally the env is unset and the
 // spire.yaml value wins. Per-step formula overrides are applied later in
 // dispatchWaveCore via step.With["max-apprentices"].
 func resolveMaxApprentices() int {

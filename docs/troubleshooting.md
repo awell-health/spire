@@ -292,7 +292,7 @@ spire watch       # try again
 
 As many as your machine can handle. Each wizard runs as a local process in its own git worktree, consuming ~1 claude session.
 
-In k8s, each wizard runs in its own pod. Set `spec.maxConcurrent` on the SpireAgent CRD to limit concurrent work per agent.
+In k8s, each wizard runs in its own pod. Set `spec.maxConcurrent` on the WizardGuild CRD to limit concurrent work per agent.
 
 ### Can I run Spire without a DoltHub account?
 

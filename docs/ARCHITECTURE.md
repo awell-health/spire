@@ -122,7 +122,7 @@ reviews, and monitors health.
 > via `spire up --steward`. V1.0 target: merge into the daemon as a
 > unified single process. Locally, `spire summon` remains available for
 > manual capacity alongside steward-driven assignment. In k8s, the
-> operator watches SpireAgent CRDs; the target is for the operator to
+> operator watches WizardGuild CRDs; the target is for the operator to
 > read the `repos` table directly and derive agent configurations.
 
 Assignment modes:
@@ -156,7 +156,7 @@ Reads `bd ready --json` from the shared dolt server. Creates SpireWorkload
 CRs for new ready beads. Updates workload status when beads close.
 
 **WorkloadAssigner** (`controllers/workload_assigner.go`):
-Matches pending SpireWorkloads to available SpireAgents. Sorts by priority.
+Matches pending SpireWorkloads to available WizardGuilds. Sorts by priority.
 Checks prefix compatibility and concurrency limits. Marks stale workloads
 for reassignment.
 
@@ -177,7 +177,7 @@ list.
 
 | CRD             | Purpose                                            |
 |-----------------|----------------------------------------------------|
-| `SpireAgent`    | Registered agent (external or managed), capabilities, prefixes, image, concurrency |
+| `WizardGuild`   | Registered agent (external or managed), capabilities, prefixes, image, concurrency |
 | `SpireWorkload` | Bead assignment: beadId, priority, type, phase lifecycle (Pending -> Assigned -> InProgress -> Done/Stale/Failed) |
 | `SpireConfig`   | Cluster singleton: DoltHub remote, polling config, token references, routing rules |
 
@@ -509,18 +509,18 @@ storage:
 ### k8s CRD Examples
 
 The `repos` table in dolt is the source of truth for registered repos.
-The operator reads this table and derives SpireAgent configurations from
-it. SpireAgent CRDs shown below are auto-generated; do not treat
+The operator reads this table and derives WizardGuild configurations from
+it. WizardGuild CRDs shown below are auto-generated; do not treat
 `spec.repo` as a manually-managed primary registry.
 
-> **Current state:** SpireAgent CRDs are manually applied and the operator
+> **Current state:** WizardGuild CRDs are manually applied and the operator
 > watches them as the roster source. Target: the operator reads the `repos`
-> table and either auto-generates SpireAgent CRDs or bypasses them entirely.
+> table and either auto-generates WizardGuild CRDs or bypasses them entirely.
 
 ```yaml
 # Auto-generated from repos table; do not manage manually.
 apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 metadata:
   name: wizard-1
   namespace: spire
@@ -531,7 +531,6 @@ spec:
   repoBranch: main                          # derived from repos.branch
   prefixes: ["web-"]                        # derived from repos.prefix
   maxConcurrent: 1
-  capabilities: ["implement"]
 ```
 
 ```yaml
@@ -636,7 +635,7 @@ Managed via kustomize (`k8s/kustomization.yaml`):
 | Resource         | Kind           | Purpose                              |
 |------------------|----------------|--------------------------------------|
 | `namespace.yaml` | Namespace      | `spire` namespace                    |
-| `crds/`          | CRDs           | SpireAgent, SpireWorkload, SpireConfig |
+| `crds/`          | CRDs           | WizardGuild, SpireWorkload, SpireConfig |
 | `beads-pvc.yaml` | PVC            | Dolt database storage                |
 | `steward-pvc.yaml`| PVC           | Steward state persistence            |
 | `beads-seed.yaml`| ConfigMap      | .beads/ seed for agent pods          |

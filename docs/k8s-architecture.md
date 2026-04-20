@@ -28,7 +28,7 @@ Human files bead          Operator sees it          Pod runs agent
 
 Three CRDs, all namespaced under `spire.awell.io/v1alpha1`:
 
-**SpireAgent** — represents an entity that can do work.
+**WizardGuild** — represents an entity that can do work.
 
 | Field | Description |
 |-------|-------------|
@@ -78,7 +78,7 @@ Three poll-loop controllers run inside the operator process:
 - Runs `bd dolt push` to push state changes
 
 **WorkloadAssigner** (`operator/controllers/workload_assigner.go`)
-- Lists pending SpireWorkloads and available SpireAgents
+- Lists pending SpireWorkloads and available WizardGuilds
 - Matches by prefix (`agent.spec.prefixes` intersected with `workload.spec.prefixes`)
 - Respects agent capacity (`maxConcurrent`)
 - Sorts pending work by priority (lower = more urgent)
@@ -279,7 +279,7 @@ The operator runs under a `spire-operator` ServiceAccount with a namespaced Role
 
 | Resource | Verbs |
 |----------|-------|
-| `spireagents`, `spireworkloads`, `spireconfigs` | get, list, watch, create, update, patch, delete |
+| `wizardguilds`, `spireworkloads`, `spireconfigs` | get, list, watch, create, update, patch, delete |
 | `*/status` (above CRDs) | get, update, patch |
 | `pods` | get, list, watch, create, delete |
 | `secrets` | get |
@@ -338,7 +338,7 @@ operator/
 
 k8s/
   crds/
-    spireagent.yaml                — SpireAgent CRD schema
+    wizardguild.yaml               — WizardGuild CRD schema
     spireworkload.yaml             — SpireWorkload CRD schema
     spireconfig.yaml               — SpireConfig CRD schema
   examples/

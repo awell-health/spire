@@ -307,7 +307,6 @@ spireConfig:
 ##       repoBranch: main
 ##       prefixes: ["myp-"]
 ##       maxConcurrent: 2
-##       capabilities: ["implement"]
 ##       resources:
 ##         requests:
 ##           memory: "256Mi"

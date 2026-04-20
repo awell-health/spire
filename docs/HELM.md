@@ -2,7 +2,7 @@
 
 Spire ships a Helm chart at `helm/spire` that deploys the full
 coordination stack — dolt, steward, operator, sidecar, syncer, and
-SpireAgent CRDs — into a Kubernetes cluster.
+WizardGuild CRDs — into a Kubernetes cluster.
 
 ## Prerequisites
 
@@ -110,7 +110,7 @@ remains stable across restarts.
 
 Spire is multi-tenant-safe: each release runs fully isolated in its own
 namespace with its own dolt PVC, steward, operator, and bead prefix. No
-state is shared except cluster-scoped CRDs (`spireagent`, `spireconfig`,
+state is shared except cluster-scoped CRDs (`wizardguild`, `spireconfig`,
 `spireworkload`).
 
 Cluster-scoped RBAC is release-scoped: each release installs its own
@@ -294,7 +294,7 @@ helm uninstall spire-b -n spire-b && kubectl delete namespace spire-b
 
 # Optional: remove cluster-scoped CRDs (only do this when no other
 # Spire release is still using them).
-kubectl delete crd spireagents.spire.awellhealth.com
+kubectl delete crd wizardguilds.spire.awellhealth.com
 kubectl delete crd spireconfigs.spire.awellhealth.com
 kubectl delete crd spireworkloads.spire.awellhealth.com
 ```

@@ -2,14 +2,13 @@
 # Created by running: spire register jb --k8s
 # Or applied manually.
 apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 metadata:
   name: jb
   namespace: spire
 spec:
   displayName: "JB"
   mode: external
-  capabilities: ["Go", "TypeScript", "React", "PostgreSQL"]
   prefixes: ["spi-", "open-", "awell-", "xserver-"]
   token: default
   maxConcurrent: 2

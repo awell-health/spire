@@ -188,7 +188,7 @@ bd list --json | jq '.[] | select(.id | startswith("web-"))'
 
 ### Prefix routing in the cluster
 
-In Kubernetes, each `SpireAgent` CRD declares which prefixes it handles:
+In Kubernetes, each `WizardGuild` CRD declares which prefixes it handles:
 
 ```yaml
 spec:

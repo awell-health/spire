@@ -193,16 +193,15 @@ spec:
 
 ## CRD schemas
 
-### SpireAgent
+### WizardGuild
 
 ```
 apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 
 spec:
   displayName:   string          # human-readable name
   mode:          enum(external, managed)  # REQUIRED
-  capabilities:  []string        # skills (informational)
   prefixes:      []string        # bead prefixes to match (e.g., ["spi-"])
   token:         string          # Anthropic token name (default: "default")
   maxConcurrent: int             # max workloads (default: 1)

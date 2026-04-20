@@ -38,7 +38,7 @@ spec:
                   type: array
                   items:
                     type: string
-                  description: Skills/technologies this guild can work with
+                  description: Reserved (no-op today). Planned for tool/skill provisioning; not consumed by the operator.
                 prefixes:
                   type: array
                   items:

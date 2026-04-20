@@ -390,7 +390,7 @@ spire roster                      # work grouped by epic, plus agent process sta
 `spire execute` process per bead, tracks PIDs in `wizards.json`.
 `spire dismiss` sends SIGINT to wizard processes. `spire roster` shows
 local wizard status with elapsed time and progress bars. k8s mode
-creates/deletes SpireAgent CRDs.
+creates/deletes WizardGuild CRDs.
 
 ---
 

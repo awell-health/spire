@@ -96,7 +96,7 @@ On a laptop, `spire up` starts a local Dolt server and daemon. `spire up --stewa
 
 ### Spire Cluster
 
-In Kubernetes, Spire deploys via a Helm chart. The chart currently renders explicit `SpireAgent` objects, and the operator manages pods from those CRs. The steward runs as a persistent deployment. Wizard pods are ephemeral -- one per task, terminated on completion. A syncer pod can handle DoltHub push/pull on interval. Secrets (API keys, GitHub tokens) are stored in Kubernetes secrets.
+In Kubernetes, Spire deploys via a Helm chart. The chart renders `WizardGuild` CRs, and the operator manages pods from those CRs. The steward runs as a persistent deployment. Wizard pods are ephemeral -- one per task, terminated on completion. A syncer pod can handle DoltHub push/pull on interval. Secrets (API keys, GitHub tokens) are stored in Kubernetes secrets.
 
 ### Spire Hosted (Future)
 

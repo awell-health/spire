@@ -1,14 +1,13 @@
 # A wizard — managed agent pod that does coding work.
 # The archmage assigns beads; the operator spins up a pod per assignment.
 apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 metadata:
   name: wizard-1
   namespace: spire
 spec:
   displayName: "Wizard 1"
   mode: managed
-  capabilities: ["Go", "TypeScript", "testing"]
   prefixes: ["spi-"]
   token: default
   maxConcurrent: 1

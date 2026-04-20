@@ -21,10 +21,13 @@ spec:
     - {{ . | quote }}
     {{- end }}
   maxConcurrent: {{ .maxConcurrent | default 1 }}
+  {{- if .capabilities }}
+  # Reserved field — no-op until wired up. Only rendered when explicitly set.
   capabilities:
-    {{- range (.capabilities | default (list "implement")) }}
+    {{- range .capabilities }}
     - {{ . | quote }}
     {{- end }}
+  {{- end }}
   {{- if .resources }}
   resources:
     {{- toYaml .resources | nindent 4 }}

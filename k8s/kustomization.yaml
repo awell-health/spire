@@ -4,7 +4,7 @@ kind: Kustomization
 resources:
   # Order matters: namespace → CRDs → storage → config → deployments
   - namespace.yaml
-  - crds/spireagent.yaml
+  - crds/wizardguild.yaml
   - crds/spireconfig.yaml
   - crds/spireworkload.yaml
   - beads-pvc.yaml

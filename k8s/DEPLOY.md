@@ -97,7 +97,7 @@ Expected output:
 - `spire-dolt` pod — Running
 - `spire-operator` pod — Running
 - `spire-steward` pod — Running (2 containers: steward + steward-sidecar)
-- SpireAgents — listed with phase Idle/Working
+- WizardGuilds — listed with phase Idle/Working
 
 ## Architecture
 
@@ -116,7 +116,7 @@ Expected output:
 
 - **dolt**: Persistent database. All beads state lives here.
 - **steward**: Finds ready work, routes to agents. PVC persists `.beads/` config across restarts.
-- **operator**: Watches SpireAgent/SpireWorkload CRs, creates pods for managed agents.
+- **operator**: Watches WizardGuild/SpireWorkload CRs, creates pods for managed agents.
 - **wizard pods**: One-shot pods that execute tasks. `.beads/` seeded from ConfigMap.
 
 All pods connect to dolt over SQL. No DoltHub remotes in the loop — deploy the optional `syncer.yaml` if you want DoltHub backup.
@@ -184,4 +184,4 @@ kubectl exec deploy/spire-dolt -n spire -- \
   dolt sql -q "USE spi; SELECT value FROM metadata WHERE \`key\`='_project_id'" -r csv
 ```
 
-**No work being assigned**: `make status` — check SpireAgents exist and aren't Offline. Check SpireWorkloads exist (bead bridge creates these from ready beads).
+**No work being assigned**: `make status` — check WizardGuilds exist and aren't Offline. Check SpireWorkloads exist (bead bridge creates these from ready beads).

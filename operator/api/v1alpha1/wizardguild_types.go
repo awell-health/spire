@@ -17,8 +17,10 @@ type WizardGuild struct {
 }
 
 type WizardGuildSpec struct {
-	DisplayName   string   `json:"displayName,omitempty"`
-	Mode          string   `json:"mode"` // "external" or "managed"
+	DisplayName string `json:"displayName,omitempty"`
+	Mode        string `json:"mode"` // "external" or "managed"
+	// Capabilities is reserved for future use (likely tool/skill provisioning).
+	// No code path consumes it today — values set here are a no-op.
 	Capabilities  []string `json:"capabilities,omitempty"`
 	Prefixes      []string `json:"prefixes,omitempty"`
 	Token         string   `json:"token,omitempty"`

@@ -20,7 +20,7 @@ This script:
 1. Starts minikube if not running
 2. Builds the `spire-mayor:dev` image inside minikube
 3. Creates the `spire` namespace
-4. Applies all three CRDs (SpireAgent, SpireWorkload, SpireConfig)
+4. Applies all three CRDs (WizardGuild, SpireWorkload, SpireConfig)
 5. Prompts for DoltHub credentials and creates the k8s Secret
 6. Deploys the mayor
 7. Applies example SpireConfig and registers you as an external agent
@@ -81,7 +81,7 @@ Or create your own:
 
 ```yaml
 apiVersion: spire.awell.io/v1alpha1
-kind: SpireAgent
+kind: WizardGuild
 metadata:
   name: your-name
   namespace: spire
@@ -119,7 +119,7 @@ kubectl get spireworkloads -n spire -w
 kubectl get pods -n spire -w
 
 # Check agent status
-kubectl get spireagents -n spire
+kubectl get wizardguilds -n spire
 ```
 
 ## Verifying the pipeline
@@ -189,7 +189,7 @@ Check credentials: `kubectl get secret spire-credentials -n spire -o yaml`. Veri
 No available agent matches. Check that agent `spec.prefixes` includes the bead's prefix (e.g., `spi-`), and that `agent.status.currentWork` length is below `spec.maxConcurrent`.
 
 **Agent pods not created:**
-The agent must be `mode: managed`. Check `kubectl get spireagents -n spire -o yaml` for the agent's spec. Also verify `spec.image` is set and pullable.
+The agent must be `mode: managed`. Check `kubectl get wizardguilds -n spire -o yaml` for the agent's spec. Also verify `spec.image` is set and pullable.
 
 **Worker fails immediately:**
 Check `SPIRE_REPO_URL` — the worker needs to clone a repo. Check that `GITHUB_TOKEN` is set if the repo is private. Look at worker logs: `kubectl logs <pod> -c worker`.
