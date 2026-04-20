@@ -1,0 +1,39 @@
+{{- if .Values.quota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ .Release.Name }}-quota
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  hard:
+    requests.cpu: "{{ .Values.quota.requests.cpu }}"
+    requests.memory: "{{ .Values.quota.requests.memory }}"
+    limits.cpu: "{{ .Values.quota.limits.cpu }}"
+    limits.memory: "{{ .Values.quota.limits.memory }}"
+    pods: "{{ .Values.quota.pods }}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ .Release.Name }}-limits
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  limits:
+    - type: Container
+      max:
+        cpu: "{{ .Values.quota.podLimits.max.cpu }}"
+        memory: "{{ .Values.quota.podLimits.max.memory }}"
+      min:
+        cpu: "{{ .Values.quota.podLimits.min.cpu }}"
+        memory: "{{ .Values.quota.podLimits.min.memory }}"
+      default:
+        cpu: "{{ .Values.quota.podLimits.default.cpu }}"
+        memory: "{{ .Values.quota.podLimits.default.memory }}"
+      defaultRequest:
+        cpu: "{{ .Values.quota.podLimits.defaultRequest.cpu }}"
+        memory: "{{ .Values.quota.podLimits.defaultRequest.memory }}"
+{{- end }}

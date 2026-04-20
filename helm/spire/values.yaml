@@ -371,3 +371,57 @@ backup:
     limits:
       cpu: 500m
       memory: 512Mi
+
+## @section Namespace resource quota
+##
+## Optional ResourceQuota + LimitRange for the release namespace. When
+## enabled, the chart reserves namespace-wide capacity up front instead
+## of letting pods race the scheduler, and sets per-container defaults
+## so a misconfigured guild can't starve others.
+##
+## Schema note: the bead title calls out `quota.{enabled,requests,limits}`.
+## A ResourceQuota also needs a pod count cap, and a LimitRange needs
+## min/max/default per container — those don't fit semantically under
+## `requests`/`limits`, so they live under `pods` and `podLimits`. Don't
+## "fix" the schema by folding them in.
+##
+## LimitRange note: `type: Container` (not `Pod`). Kubernetes only
+## auto-injects default requests/limits onto containers for the Container
+## type — Pod-typed LimitRanges only validate pod totals.
+
+## @param quota.enabled Render a ResourceQuota + LimitRange for the namespace. Off by default.
+## @param quota.requests.cpu Namespace-wide cap on sum of container CPU requests.
+## @param quota.requests.memory Namespace-wide cap on sum of container memory requests.
+## @param quota.limits.cpu Namespace-wide cap on sum of container CPU limits.
+## @param quota.limits.memory Namespace-wide cap on sum of container memory limits.
+## @param quota.pods Maximum number of pods in the namespace.
+## @param quota.podLimits.max.cpu Maximum CPU a single container may request/limit.
+## @param quota.podLimits.max.memory Maximum memory a single container may request/limit.
+## @param quota.podLimits.min.cpu Minimum CPU a single container may request.
+## @param quota.podLimits.min.memory Minimum memory a single container may request.
+## @param quota.podLimits.default.cpu Default CPU limit injected when a container doesn't set one.
+## @param quota.podLimits.default.memory Default memory limit injected when a container doesn't set one.
+## @param quota.podLimits.defaultRequest.cpu Default CPU request injected when a container doesn't set one.
+## @param quota.podLimits.defaultRequest.memory Default memory request injected when a container doesn't set one.
+quota:
+  enabled: false
+  requests:
+    cpu: "4"
+    memory: "8Gi"
+  limits:
+    cpu: "8"
+    memory: "16Gi"
+  pods: "50"
+  podLimits:
+    max:
+      cpu: "2"
+      memory: "4Gi"
+    min:
+      cpu: "10m"
+      memory: "32Mi"
+    default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
