@@ -453,10 +453,10 @@ The operator logs cycle summaries: `totalReady`, `assigned`, `inProgress`, `done
 kubectl get pods -n spire -l spire.awell.io/managed=true
 
 # Logs for a specific wizard
-kubectl logs -n spire spire-agent-my-agent-spi-a3f8 -c wizard
+kubectl logs -n spire my-agent-wizard-spi-a3f8 -c wizard
 
 # Sidecar logs
-kubectl logs -n spire spire-agent-my-agent-spi-a3f8 -c familiar
+kubectl logs -n spire my-agent-wizard-spi-a3f8 -c familiar
 ```
 
 ### Check workload status

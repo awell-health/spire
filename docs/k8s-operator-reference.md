@@ -102,13 +102,15 @@ The operator generates this pod spec for each workload assignment:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: spire-agent-{agent}-{bead}   # max 63 chars
+  name: {agent}-wizard-{bead}   # max 63 chars
   namespace: spire
   labels:
     spire.awell.io/agent: {agent-name}
+    spire.awell.io/guild: {agent-name}
     spire.awell.io/bead: {bead-id}
     spire.awell.io/managed: "true"
-    app.kubernetes.io/name: spire-agent
+    spire.awell.io/role: wizard
+    app.kubernetes.io/name: spire-wizard
 spec:
   restartPolicy: Never
   volumes:

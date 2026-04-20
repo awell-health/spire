@@ -301,7 +301,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 		image = m.StewardImage
 	}
 
-	podName := fmt.Sprintf("spire-agent-%s-%s", agent.Name, sanitizeK8sName(beadID))
+	podName := fmt.Sprintf("%s-wizard-%s", sanitizeK8sName(agent.Name), sanitizeK8sName(beadID))
 	// k8s pod names max 63 chars
 	if len(podName) > 63 {
 		podName = podName[:63]
@@ -386,9 +386,11 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.SpireAgent, beadID string
 			Namespace: m.Namespace,
 			Labels: map[string]string{
 				"spire.awell.io/agent":   agent.Name,
+				"spire.awell.io/guild":   agent.Name,
 				"spire.awell.io/bead":    beadID,
 				"spire.awell.io/managed": "true",
-				"app.kubernetes.io/name": "spire-agent",
+				"spire.awell.io/role":    "wizard",
+				"app.kubernetes.io/name": "spire-wizard",
 			},
 		},
 		Spec: corev1.PodSpec{

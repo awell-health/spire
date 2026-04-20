@@ -146,7 +146,7 @@ Workloads should move from `Pending` → `Assigned` → `InProgress` → `Done`.
 kubectl get pods -n spire -l spire.awell.io/managed=true
 ```
 
-Each pod is named `spire-agent-{agent}-{bead-id}`. The pod has two containers:
+Each pod is named `{agent}-wizard-{bead-id}`. The pod has two containers:
 - `worker` — runs the agent entrypoint
 - `familiar` — polls inbox and serves health checks
 
@@ -154,10 +154,10 @@ Each pod is named `spire-agent-{agent}-{bead-id}`. The pod has two containers:
 
 ```bash
 # Worker logs
-kubectl logs -n spire spire-agent-ci-worker-spi-a3f8 -c worker
+kubectl logs -n spire ci-worker-wizard-spi-a3f8 -c worker
 
 # Familiar logs
-kubectl logs -n spire spire-agent-ci-worker-spi-a3f8 -c familiar
+kubectl logs -n spire ci-worker-wizard-spi-a3f8 -c familiar
 ```
 
 ### Check metrics

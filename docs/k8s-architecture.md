@@ -100,7 +100,7 @@ Three poll-loop controllers run inside the operator process:
 Each managed workload gets its own pod with two containers sharing three volumes:
 
 ```
-Pod: spire-agent-{agent-name}-{bead-id}
+Pod: {agent-name}-wizard-{bead-id}
  ┌──────────────────────────────────────────────────┐
  │                                                  │
  │  ┌─────────────────┐   ┌──────────────────────┐ │

@@ -380,7 +380,7 @@ that sync failures don't block work assignment.
 
 ```
 +--------------------------------------------------+
-| Pod: spire-agent-<agent>-<bead-id>               |
+| Pod: <agent>-wizard-<bead-id>                    |
 |                                                   |
 | +------------------+   +----------------------+  |
 | | init: seed-beads |   | ConfigMap: beads-seed|  |
