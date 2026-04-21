@@ -1063,10 +1063,11 @@ func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphSta
 // attempt number is derived from CountAttemptsByAction(+1). Silently no-ops
 // when DoltDB is not wired or decide never set a chosen_action.
 //
-// Note: pkg/executor/recovery_actions.go's RunRecoveryAction also records
-// attempts for git-aware actions when DB is wired. In that path this call
-// can duplicate — a full de-dup requires centralizing attempt recording in
-// the interpreter, which is out of scope for this fix.
+// Note: recovery's plan-mode execute path (handlePlanExecute) records its
+// own attempts through the mechanical/worker dispatches when DB is wired.
+// In that path this call can duplicate — a full de-dup requires
+// centralizing attempt recording in the interpreter, which is out of scope
+// for this fix.
 func (e *Executor) recordOnErrorRecoveryAttempt(state *GraphState, stepErr error) {
 	if state == nil || stepErr == nil {
 		return

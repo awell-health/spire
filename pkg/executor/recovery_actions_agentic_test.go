@@ -12,6 +12,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -385,8 +386,9 @@ func TestBuildConflictBundle_BeadLookupMiss(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// agenticResolveConflicts — validates the top-level orchestration via
-// DispatchFn + GetBeadFn hooks.
+// SpawnRepairWorker — validates the top-level orchestration via DispatchFn
+// + GetBeadFn hooks. The function is the canonical RepairModeWorker
+// entrypoint; these tests exercise the conflict-resolution worker shape.
 // ---------------------------------------------------------------------------
 
 // fakeHandle implements agent.Handle for tests.
@@ -418,9 +420,9 @@ func (fakeSpawner) List() ([]agent.Info, error)        { return nil, nil }
 func (fakeSpawner) Logs(string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
 func (fakeSpawner) Kill(string) error                  { return nil }
 
-// TestAgenticResolveConflicts_NoConflicts returns cleanly without dispatching
+// TestSpawnRepairWorker_NoConflicts returns cleanly without dispatching
 // when ConflictedFiles() is empty.
-func TestAgenticResolveConflicts_NoConflicts(t *testing.T) {
+func TestSpawnRepairWorker_NoConflicts(t *testing.T) {
 	dir := initAgenticTestRepo(t)
 	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
 
@@ -430,8 +432,8 @@ func TestAgenticResolveConflicts_NoConflicts(t *testing.T) {
 		Log:      func(msg string) { logged = append(logged, msg) },
 	}
 
-	if err := agenticResolveConflicts(ctx); err != nil {
-		t.Fatalf("agenticResolveConflicts on clean tree: %v", err)
+	if _, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir}); err != nil {
+		t.Fatalf("SpawnRepairWorker on clean tree: %v", err)
 	}
 	found := false
 	for _, m := range logged {
@@ -444,23 +446,24 @@ func TestAgenticResolveConflicts_NoConflicts(t *testing.T) {
 	}
 }
 
-// TestAgenticResolveConflicts_NilWorktree returns an error.
-func TestAgenticResolveConflicts_NilWorktree(t *testing.T) {
+// TestSpawnRepairWorker_NilWorkspace returns an error when neither
+// ctx.Worktree nor the passed WorkspaceHandle carries a path.
+func TestSpawnRepairWorker_NilWorkspace(t *testing.T) {
 	ctx := &RecoveryActionCtx{Log: func(string) {}}
-	err := agenticResolveConflicts(ctx)
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{})
 	if err == nil {
-		t.Fatal("expected error with nil worktree")
+		t.Fatal("expected error with no workspace")
 	}
-	if !strings.Contains(err.Error(), "nil worktree") {
-		t.Errorf("error = %q, want to mention nil worktree", err)
+	if !strings.Contains(err.Error(), "no workspace") {
+		t.Errorf("error = %q, want to mention 'no workspace'", err)
 	}
 }
 
-// TestAgenticResolveConflicts_DispatchSucceedsAndGatesPass sets up a real
+// TestSpawnRepairWorker_DispatchSucceedsAndGatesPass sets up a real
 // paused rebase, injects a DispatchFn that simulates the apprentice by
 // writing a merged file + running `git rebase --continue`, and asserts the
 // top-level flow returns nil (all gates pass).
-func TestAgenticResolveConflicts_DispatchSucceedsAndGatesPass(t *testing.T) {
+func TestSpawnRepairWorker_DispatchSucceedsAndGatesPass(t *testing.T) {
 	dir := initAgenticTestRepo(t)
 
 	// Trivial go.mod so `go build ./...` succeeds — the gate will run it.
@@ -522,8 +525,8 @@ func TestAgenticResolveConflicts_DispatchSucceedsAndGatesPass(t *testing.T) {
 		Log:          func(string) {},
 	}
 
-	if err := agenticResolveConflicts(ctx); err != nil {
-		t.Fatalf("agenticResolveConflicts: %v", err)
+	if _, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir}); err != nil {
+		t.Fatalf("SpawnRepairWorker: %v", err)
 	}
 	if dispatched != 1 {
 		t.Errorf("dispatched = %d, want 1", dispatched)
@@ -534,9 +537,9 @@ func TestAgenticResolveConflicts_DispatchSucceedsAndGatesPass(t *testing.T) {
 	}
 }
 
-// TestAgenticResolveConflicts_GateFailsWhenMarkersRemain verifies the validation
+// TestSpawnRepairWorker_GateFailsWhenMarkersRemain verifies the validation
 // gate catches an apprentice that claimed success but left conflict markers.
-func TestAgenticResolveConflicts_GateFailsWhenMarkersRemain(t *testing.T) {
+func TestSpawnRepairWorker_GateFailsWhenMarkersRemain(t *testing.T) {
 	dir := initAgenticTestRepo(t)
 
 	path := filepath.Join(dir, "data.txt")
@@ -571,7 +574,7 @@ func TestAgenticResolveConflicts_GateFailsWhenMarkersRemain(t *testing.T) {
 		Log:          func(string) {},
 	}
 
-	err := agenticResolveConflicts(ctx)
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir})
 	if err == nil {
 		t.Fatal("expected gate to fail on unresolved markers")
 	}
@@ -580,8 +583,8 @@ func TestAgenticResolveConflicts_GateFailsWhenMarkersRemain(t *testing.T) {
 	}
 }
 
-// TestAgenticResolveConflicts_DispatchSpawnError surfaces the error.
-func TestAgenticResolveConflicts_DispatchSpawnError(t *testing.T) {
+// TestSpawnRepairWorker_DispatchSpawnError surfaces the error.
+func TestSpawnRepairWorker_DispatchSpawnError(t *testing.T) {
 	dir := initAgenticTestRepo(t)
 
 	path := filepath.Join(dir, "d.txt")
@@ -615,7 +618,7 @@ func TestAgenticResolveConflicts_DispatchSpawnError(t *testing.T) {
 		Log:          func(string) {},
 	}
 
-	err := agenticResolveConflicts(ctx)
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir})
 	if err == nil {
 		t.Fatal("expected error when dispatch fails to spawn")
 	}
@@ -630,7 +633,7 @@ func TestDispatchConflictApprentice_NoSpawner(t *testing.T) {
 		Worktree: &spgit.WorktreeContext{Dir: "/tmp/x"},
 		Log:      func(string) {},
 	}
-	err := dispatchConflictApprentice(ctx, conflictBundle{})
+	_, err := dispatchConflictApprentice(ctx, conflictBundle{})
 	if err == nil {
 		t.Fatal("expected error with no Spawner")
 	}
@@ -645,7 +648,7 @@ func TestDispatchConflictApprentice_NoWorktree(t *testing.T) {
 		Spawner: fakeSpawner{},
 		Log:     func(string) {},
 	}
-	err := dispatchConflictApprentice(ctx, conflictBundle{})
+	_, err := dispatchConflictApprentice(ctx, conflictBundle{})
 	if err == nil {
 		t.Fatal("expected error with no worktree")
 	}
@@ -670,7 +673,7 @@ func TestDispatchConflictApprentice_WaitErrorNonFatal(t *testing.T) {
 		Log: func(string) {},
 	}
 
-	err := dispatchConflictApprentice(ctx, conflictBundle{})
+	_, err := dispatchConflictApprentice(ctx, conflictBundle{})
 	if err != nil {
 		t.Errorf("dispatchConflictApprentice returned error on non-nil Wait() — expected nil: %v", err)
 	}
@@ -694,7 +697,7 @@ func TestDispatchConflictApprentice_UsesCustomAgentNamespace(t *testing.T) {
 		Log: func(string) {},
 	}
 
-	err := dispatchConflictApprentice(ctx, conflictBundle{})
+	_, err := dispatchConflictApprentice(ctx, conflictBundle{})
 	if err != nil {
 		t.Fatalf("dispatchConflictApprentice: %v", err)
 	}

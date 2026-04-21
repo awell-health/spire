@@ -76,9 +76,19 @@ func actionClericExecute(e *Executor, stepName string, step StepConfig, state *G
 	case "decide":
 		return handleDecide(e, stepName, step, state)
 	case "execute":
-		// Read chosen_action from the decide step's output.
+		// Prefer the typed RepairPlan JSON produced by decide (chunk 2). When
+		// present, dispatch on plan.Mode. Fall back to the legacy chosen_action
+		// string for actions that don't map to a RepairMode (annotate-resolution,
+		// triage, etc.) — those continue to flow through ExecuteRecoveryAction.
 		if state != nil {
 			if ds, ok := state.Steps["decide"]; ok {
+				if planJSON := ds.Outputs["plan"]; planJSON != "" {
+					var plan recovery.RepairPlan
+					if err := json.Unmarshal([]byte(planJSON), &plan); err != nil {
+						return ActionResult{Error: fmt.Errorf("recovery execute: unmarshal decide plan: %w", err)}
+					}
+					return handlePlanExecute(e, stepName, step, state, plan)
+				}
 				if chosen := ds.Outputs["chosen_action"]; chosen != "" {
 					actionKind = chosen
 					e.log("recovery: execute using decide output: %s", actionKind)
@@ -87,13 +97,6 @@ func actionClericExecute(e *Executor, stepName string, step StepConfig, state *G
 		}
 		if actionKind == "execute" {
 			return ActionResult{Error: fmt.Errorf("recovery execute: no chosen_action from decide step")}
-		}
-
-		// Check if the chosen action is in the git-aware recovery action
-		// registry (recovery_actions.go). If so, route through RunRecoveryAction
-		// which handles worktree provisioning and per-attempt tracking.
-		if _, isGitAware := GetAction(actionKind); isGitAware {
-			return handleGitAwareExecute(e, stepName, step, state, actionKind)
 		}
 	case "verify":
 		return handleVerify(e, stepName, step, state)
@@ -1239,91 +1242,59 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 }
 
 // ---------------------------------------------------------------------------
-// Git-aware execute, cooperative verify, and opcode handlers (spi-qrwof)
+// Plan-mode execute, cooperative verify, and opcode handlers (spi-h32xj §6)
 // ---------------------------------------------------------------------------
 
-// handleGitAwareExecute routes execution through the git-aware recovery action
-// registry (RunRecoveryAction) which handles worktree provisioning and
-// per-attempt tracking. This is the counterpart to the legacy
-// ExecuteRecoveryAction dispatch for the new action vocabulary.
-func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state *GraphState, actionName string) ActionResult {
+// handlePlanExecute dispatches a typed RepairPlan produced by decide. It
+// provisions a recovery workspace (by resuming the wizard's staging
+// worktree when possible, otherwise by calling ProvisionRecoveryWorktree
+// — chunk 4 replaces this with resolveWorkspace) and routes on plan.Mode
+// to the matching execute surface:
+//
+//   - Noop       → no-op resume
+//   - Mechanical → mechanicalActions[plan.Action]
+//   - Worker     → SpawnRepairWorker
+//   - Recipe     → executeRecipe (stub until chunk 7)
+//   - Escalate   → terminal "needs_human" outcome
+//
+// Legacy metadata keys (chosen_action, mechanical_recipe, failure_signature)
+// are still emitted so downstream steps that haven't migrated yet keep
+// working — the parallel coexistence policy ends in chunk 6.
+func handlePlanExecute(e *Executor, stepName string, step StepConfig, state *GraphState, plan recovery.RepairPlan) ActionResult {
+	actionName := plan.Action
+	if actionName == "" {
+		actionName = string(plan.Mode)
+	}
+	outputs := map[string]string{
+		"status": "success",
+		"action": actionName,
+		"mode":   string(plan.Mode),
+	}
+
+	switch plan.Mode {
+	case recovery.RepairModeNoop:
+		e.log("recovery: execute noop — resuming hooked bead without repair")
+		return ActionResult{Outputs: outputs}
+	case recovery.RepairModeEscalate:
+		outputs["status"] = "needs_human"
+		if plan.Reason != "" {
+			outputs["reason"] = plan.Reason
+		}
+		e.log("recovery: execute escalate: %s", plan.Reason)
+		return ActionResult{Outputs: outputs}
+	}
+
 	sourceBeadID := resolveSourceBead(e, step)
 	if sourceBeadID == "" {
 		return ActionResult{Error: fmt.Errorf("execute: cannot resolve source bead")}
 	}
 
-	// Build params from decide step outputs and step.With.
-	params := make(map[string]string)
-	for k, v := range step.With {
-		params[k] = v
+	actionCtx, ws, cleanup, err := e.buildRecoveryActionCtx(sourceBeadID, plan, step, state)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("execute: provision workspace for %s: %w", actionName, err)}
 	}
-	// Inject decide step outputs as params for the action.
-	if state != nil {
-		if ds, ok := state.Steps["decide"]; ok {
-			for k, v := range ds.Outputs {
-				if _, exists := params[k]; !exists {
-					params[k] = v
-				}
-			}
-		}
-	}
-
-	repoPath := e.effectiveRepoPath()
-
-	// Try to resume the wizard's staging worktree so recovery actions
-	// operate directly on the staging branch (no ephemeral recovery/<id>
-	// branch). Falls through to ProvisionRecoveryWorktree in RunRecoveryAction
-	// if graph state is unavailable.
-	var preResolvedWorktree *spgit.WorktreeContext
-	var baseBranch string
-	if wc, err := resumeWizardStagingWorktree(sourceBeadID, e); err == nil {
-		preResolvedWorktree = wc
-		baseBranch = wc.BaseBranch
-		e.log("resumed wizard staging worktree at %s (branch %s, base %s)", wc.Dir, wc.Branch, wc.BaseBranch)
-	} else {
-		e.log("cannot resume wizard staging worktree: %v; will fall back to recovery provisioning", err)
-	}
-
-	// Resolve base branch for the target bead when we didn't get it from the
-	// wizard's staging worktree. Walks the parent chain for a base-branch:
-	// label, then falls back to repoconfig.DefaultBranchBase. Never a literal
-	// "main".
-	if baseBranch == "" {
-		baseBranch = resolveBaseBranchForBead(sourceBeadID, e)
-	}
-
-	// Resolve Dolt DB handle for attempt tracking. Nil-safe: if DoltDB
-	// dep is not wired (local execution), attempt tracking is gracefully skipped.
-	var db *sql.DB
-	if e.deps != nil && e.deps.DoltDB != nil {
-		db = e.deps.DoltDB()
-	}
-
-	actionCtx := &RecoveryActionCtx{
-		DB:             db,
-		RepoPath:       repoPath,
-		BaseBranch:     baseBranch,
-		Worktree:       preResolvedWorktree,
-		RecoveryBeadID: e.beadID,
-		TargetBeadID:   sourceBeadID,
-		Params:         params,
-		Log:            func(msg string) { e.log("recovery: %s", msg) },
-		// Dispatcher wiring for actions that spawn apprentices (e.g. the
-		// agentic resolve-conflicts). Nil-safe downstream: actions that
-		// don't dispatch simply ignore these.
-		Spawner:        e.deps.Spawner,
-		RecordAgentRun: e.deps.RecordAgentRun,
-		AgentResultDir: e.deps.AgentResultDir,
-		LogBaseDir:     dolt.GlobalDir(),
-		ParentRunID:    e.currentRunID,
-		AgentNamespace: "cleric-resolver",
-	}
-
-	err := RunRecoveryAction(actionCtx, actionName)
-
-	outputs := map[string]string{
-		"status": "success",
-		"action": actionName,
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Resolve the recovery bead's failure signature once so we can either
@@ -1334,9 +1305,40 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 		failureSig = bead.Meta(recovery.KeyFailureSignature)
 	}
 
-	if err != nil {
+	var recipe *recovery.MechanicalRecipe
+	var execErr error
+
+	switch plan.Mode {
+	case recovery.RepairModeMechanical:
+		fn, ok := mechanicalActions[plan.Action]
+		if !ok {
+			execErr = fmt.Errorf("unknown mechanical action %q — decide/execute vocabulary mismatch", plan.Action)
+		} else {
+			recipe, execErr = fn(actionCtx, plan, ws)
+		}
+	case recovery.RepairModeWorker:
+		var workerResult RepairWorkerResult
+		workerResult, execErr = SpawnRepairWorker(actionCtx, plan, ws)
+		if workerResult.WorkerAttemptID != "" {
+			outputs["worker_attempt_id"] = workerResult.WorkerAttemptID
+		}
+		if workerResult.Output != "" {
+			outputs["output"] = workerResult.Output
+		}
+	case recovery.RepairModeRecipe:
+		var recipeResult RepairResult
+		recipeResult, execErr = executeRecipe(actionCtx, plan, ws)
+		recipe = recipeResult.Recipe
+		if recipeResult.Output != "" {
+			outputs["output"] = recipeResult.Output
+		}
+	default:
+		execErr = fmt.Errorf("unsupported repair mode %q", plan.Mode)
+	}
+
+	if execErr != nil {
 		outputs["status"] = "failed"
-		outputs["error"] = err.Error()
+		outputs["error"] = execErr.Error()
 		// Promotion demotion: if the chosen action was a promoted recipe
 		// (decide step tagged "promoted=true"), this failure resets the
 		// counter for this signature. One regression undoes promotion.
@@ -1349,18 +1351,18 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 				}
 			}
 		}
-		e.log("recovery: execute %s failed: %v", actionName, err)
+		e.log("recovery: execute %s (mode=%s) failed: %v", actionName, plan.Mode, execErr)
 		return ActionResult{
 			Outputs: outputs,
-			Error:   fmt.Errorf("recovery action %q failed: %w", actionName, err),
+			Error:   fmt.Errorf("recovery action %q failed: %w", actionName, execErr),
 		}
 	}
 
-	// Recipe capture: serialise the recipe populated by RunRecoveryAction
-	// into the step outputs so handleLearn can persist it on the learning
-	// row. Agentic actions leave SuccessRecipe nil and simply skip this.
-	if actionCtx.SuccessRecipe != nil {
-		if serialised, merr := recovery.MarshalRecipe(actionCtx.SuccessRecipe); merr != nil {
+	// Recipe capture: serialise the recipe returned by the mechanical
+	// dispatch into the step outputs so handleLearn can persist it on the
+	// learning row. Worker-mode paths leave recipe nil and simply skip.
+	if recipe != nil {
+		if serialised, merr := recovery.MarshalRecipe(recipe); merr != nil {
 			e.log("recovery: marshal recipe for %s: %v (continuing without capture)", actionName, merr)
 		} else if serialised != "" {
 			outputs["mechanical_recipe"] = serialised
@@ -1370,8 +1372,94 @@ func handleGitAwareExecute(e *Executor, stepName string, step StepConfig, state 
 		}
 	}
 
-	e.log("recovery: execute %s succeeded", actionName)
+	e.log("recovery: execute %s (mode=%s) succeeded", actionName, plan.Mode)
 	return ActionResult{Outputs: outputs}
+}
+
+// buildRecoveryActionCtx provisions the workspace a RepairPlan requires
+// and assembles the RecoveryActionCtx carrying every dep the mechanical
+// and worker dispatches read. Chunk 4 replaces the internal resume /
+// ProvisionRecoveryWorktree pair with resolveWorkspace consuming
+// plan.Workspace.
+func (e *Executor) buildRecoveryActionCtx(sourceBeadID string, plan recovery.RepairPlan, step StepConfig, state *GraphState) (*RecoveryActionCtx, WorkspaceHandle, func(), error) {
+	// Merge step.With and decide outputs so mechanical params flow through.
+	params := make(map[string]string)
+	for k, v := range step.With {
+		params[k] = v
+	}
+	if state != nil {
+		if ds, ok := state.Steps["decide"]; ok {
+			for k, v := range ds.Outputs {
+				if _, exists := params[k]; !exists {
+					params[k] = v
+				}
+			}
+		}
+	}
+	for k, v := range plan.Params {
+		params[k] = v
+	}
+
+	repoPath := e.effectiveRepoPath()
+
+	// Prefer resuming the wizard's staging worktree so recovery operates
+	// directly on the staging branch. Fall back to ProvisionRecoveryWorktree
+	// when the wizard state isn't recoverable.
+	var wc *spgit.WorktreeContext
+	var cleanup func()
+	baseBranch := ""
+	if resumed, err := resumeWizardStagingWorktree(sourceBeadID, e); err == nil {
+		wc = resumed
+		baseBranch = resumed.BaseBranch
+		e.log("resumed wizard staging worktree at %s (branch %s, base %s)", resumed.Dir, resumed.Branch, resumed.BaseBranch)
+	} else {
+		e.log("cannot resume wizard staging worktree: %v; provisioning recovery worktree", err)
+		if baseBranch == "" {
+			baseBranch = resolveBaseBranchForBead(sourceBeadID, e)
+		}
+		provisioned, cleanupFn, perr := ProvisionRecoveryWorktree(repoPath, sourceBeadID, baseBranch)
+		if perr != nil {
+			return nil, WorkspaceHandle{}, nil, fmt.Errorf("provision recovery worktree: %w", perr)
+		}
+		wc = provisioned
+		cleanup = cleanupFn
+	}
+	if baseBranch == "" {
+		baseBranch = resolveBaseBranchForBead(sourceBeadID, e)
+	}
+
+	var db *sql.DB
+	if e.deps != nil && e.deps.DoltDB != nil {
+		db = e.deps.DoltDB()
+	}
+
+	actionCtx := &RecoveryActionCtx{
+		DB:             db,
+		RepoPath:       repoPath,
+		BaseBranch:     baseBranch,
+		Worktree:       wc,
+		RecoveryBeadID: e.beadID,
+		TargetBeadID:   sourceBeadID,
+		Params:         params,
+		Log:            func(msg string) { e.log("recovery: %s", msg) },
+		Spawner:        e.deps.Spawner,
+		RecordAgentRun: e.deps.RecordAgentRun,
+		AgentResultDir: e.deps.AgentResultDir,
+		LogBaseDir:     dolt.GlobalDir(),
+		ParentRunID:    e.currentRunID,
+		AgentNamespace: "cleric-repair",
+	}
+
+	ws := WorkspaceHandle{
+		Name:       "recovery",
+		Path:       wc.Dir,
+		Branch:     wc.Branch,
+		BaseBranch: baseBranch,
+		Kind:       WorkspaceKindOwnedWorktree,
+		Origin:     WorkspaceOriginLocalBind,
+	}
+
+	return actionCtx, ws, cleanup, nil
 }
 
 // handleVerify implements the cooperative retry loop between the recovery

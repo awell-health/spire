@@ -11,6 +11,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -46,43 +47,53 @@ type conflictBundle struct {
 	Files        []conflictFileContext
 }
 
-// agenticResolveConflicts assembles a conflict bundle, dispatches an
-// apprentice into the paused worktree, waits for it to resolve the conflicts
-// and commit, then runs validation gates. On any gate failure, returns an
-// error so the cleric's on_error=record path captures it and decide can
-// reconsider.
+// SpawnRepairWorker is the canonical RepairModeWorker entrypoint: it
+// assembles a conflict bundle for the paused workspace, dispatches an
+// apprentice into it, waits for the worker to resolve and commit, then
+// runs validation gates. On any gate failure returns an error so the
+// cleric's on_error=record path captures it and decide can reconsider.
 //
-// Required dispatcher deps on ctx: Spawner, RecordAgentRun, AgentResultDir,
-// LogBaseDir. When any are missing, returns an error without dispatching so
-// the caller (decide loop) can either route to a mechanical action or
-// escalate.
-func agenticResolveConflicts(ctx *RecoveryActionCtx) error {
+// ws is the workspace the plan selected (borrowed from the target bead's
+// wizard today). When ctx.Worktree is nil, SpawnRepairWorker reconstructs
+// a WorktreeContext from ws so the existing buildConflictBundle /
+// runConflictValidationGates helpers find the repo without callers having
+// to thread a pre-built context.
+//
+// Required dispatcher deps on ctx: Spawner, RecordAgentRun (optional),
+// LogBaseDir (optional). When Spawner is missing the function returns an
+// error without dispatching so the caller (decide loop or execute step)
+// can either retry on a different mode or escalate.
+func SpawnRepairWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle) (RepairWorkerResult, error) {
+	if ctx.Worktree == nil {
+		ctx.Worktree = worktreeFromHandle(ws)
+	}
 	wc := ctx.Worktree
-	if wc == nil {
-		return fmt.Errorf("resolve-conflicts agentic: nil worktree")
+	if wc == nil || wc.Dir == "" {
+		return RepairWorkerResult{}, fmt.Errorf("spawn repair worker: no workspace")
 	}
 
 	files, err := wc.ConflictedFiles()
 	if err != nil {
-		return fmt.Errorf("list conflicted files: %w", err)
+		return RepairWorkerResult{}, fmt.Errorf("list conflicted files: %w", err)
 	}
 	if len(files) == 0 {
-		ctx.Log("no conflicted files found — nothing to resolve")
-		return nil
+		ctx.logf("no conflicted files found — nothing to resolve")
+		return RepairWorkerResult{Output: "no conflicts to resolve"}, nil
 	}
 
 	bundle := buildConflictBundle(ctx, wc, files)
 
-	if err := dispatchConflictApprentice(ctx, bundle); err != nil {
-		return fmt.Errorf("dispatch conflict apprentice: %w", err)
+	workerAttemptID, err := dispatchConflictApprentice(ctx, bundle)
+	if err != nil {
+		return RepairWorkerResult{WorkerAttemptID: workerAttemptID}, fmt.Errorf("dispatch conflict apprentice: %w", err)
 	}
 
 	if err := runConflictValidationGates(ctx, wc, files); err != nil {
-		return err
+		return RepairWorkerResult{WorkerAttemptID: workerAttemptID}, err
 	}
 
-	ctx.Log(fmt.Sprintf("agentic resolver completed; %d file(s) processed, all gates passed", len(files)))
-	return nil
+	ctx.logf(fmt.Sprintf("repair worker completed; %d file(s) processed, all gates passed", len(files)))
+	return RepairWorkerResult{WorkerAttemptID: workerAttemptID, Output: fmt.Sprintf("%d file(s) resolved", len(files))}, nil
 }
 
 // buildConflictBundle assembles the full context bundle for the apprentice.
@@ -148,21 +159,23 @@ func resolveSideContext(ctx *RecoveryActionCtx, wc *spgit.WorktreeContext, sha, 
 
 // dispatchConflictApprentice spawns an apprentice agent into the paused
 // worktree with a pre-assembled conflict prompt and blocks until it returns.
-// Any spawn or wait error is returned to the caller — the validation gates
-// run afterward regardless of the apprentice's exit code because some
-// subprocess errors are non-fatal (e.g. hook noise) and the gates are the
-// authoritative check.
-func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle) error {
+// Returns the agent-run row ID recorded via ctx.RecordAgentRun (empty when
+// RecordAgentRun is not wired). Any spawn error is returned to the caller;
+// a non-nil Wait() is logged but not returned because the validation gates
+// are the authoritative check — some subprocess errors are non-fatal (e.g.
+// hook noise) and a clean exit with conflict markers still on disk is a
+// real failure that the gates catch.
+func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle) (string, error) {
 	if ctx.Spawner == nil {
-		return fmt.Errorf("agentic resolver: no Spawner wired on ctx")
+		return "", fmt.Errorf("repair worker: no Spawner wired on ctx")
 	}
 	if ctx.Worktree == nil {
-		return fmt.Errorf("agentic resolver: no worktree on ctx")
+		return "", fmt.Errorf("repair worker: no worktree on ctx")
 	}
 
 	ns := ctx.AgentNamespace
 	if ns == "" {
-		ns = "cleric-resolver"
+		ns = "cleric-repair"
 	}
 	spawnName := fmt.Sprintf("%s-%s-%d", ns, ctx.TargetBeadID, time.Now().UnixNano()%1_000_000)
 
@@ -213,7 +226,7 @@ func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle) e
 	handle, spawnErr := dispatch(cfg)
 	if spawnErr != nil {
 		recordResolverRun(ctx, spawnName, started, "spawn_error")
-		return fmt.Errorf("spawn: %w", spawnErr)
+		return spawnName, fmt.Errorf("spawn: %w", spawnErr)
 	}
 
 	waitErr := handle.Wait()
@@ -227,11 +240,11 @@ func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle) e
 		// Keep going: validation gates decide whether the apprentice actually
 		// resolved anything. A non-zero exit with clean gates is fine; a
 		// clean exit with markers still on disk fails at the gate layer.
-		ctx.Log(fmt.Sprintf("apprentice %s exited with %v — validating output", spawnName, waitErr))
+		ctx.logf(fmt.Sprintf("repair worker %s exited with %v — validating output", spawnName, waitErr))
 	} else {
-		ctx.Log(fmt.Sprintf("apprentice %s completed", spawnName))
+		ctx.logf(fmt.Sprintf("repair worker %s completed", spawnName))
 	}
-	return nil
+	return spawnName, nil
 }
 
 // runConflictValidationGates runs the gates described in the task spec:

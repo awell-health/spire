@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +9,7 @@ import (
 	"testing"
 
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 )
 
 // ---------------------------------------------------------------------------
@@ -77,242 +77,80 @@ func TestValidCommitSHA(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Action registry
+// mechanicalActions lookup table
 // ---------------------------------------------------------------------------
 
-func TestGetAction_BuiltinActions(t *testing.T) {
-	builtins := []string{
-		"rebase-onto-base",
-		"cherry-pick",
-		"resolve-conflicts",
-		"targeted-fix",
-		"rebuild",
-		"resummon",
-		"reset-to-step",
-		"escalate",
-	}
-
-	for _, name := range builtins {
-		t.Run(name, func(t *testing.T) {
-			action, ok := GetAction(name)
-			if !ok {
-				t.Fatalf("GetAction(%q) not found", name)
-			}
-			if action.Name != name {
-				t.Errorf("action.Name = %q, want %q", action.Name, name)
-			}
-		})
-	}
-}
-
-func TestGetAction_Unknown(t *testing.T) {
-	_, ok := GetAction("nonexistent-action")
-	if ok {
-		t.Error("GetAction('nonexistent-action') should return false")
-	}
-}
-
-func TestListActions_ContainsAllBuiltins(t *testing.T) {
-	actions := ListActions()
-	names := make(map[string]bool)
-	for _, a := range actions {
-		names[a.Name] = true
-	}
-	expected := []string{"rebase-onto-base", "cherry-pick", "resolve-conflicts",
-		"targeted-fix", "rebuild", "resummon", "reset-to-step", "escalate"}
+func TestMechanicalActions_CoversCanonicalMechanicals(t *testing.T) {
+	expected := []string{"rebase-onto-base", "cherry-pick", "rebuild", "reset-to-step"}
 	for _, name := range expected {
-		if !names[name] {
-			t.Errorf("ListActions() missing %q", name)
+		if _, ok := mechanicalActions[name]; !ok {
+			t.Errorf("mechanicalActions missing canonical entry %q", name)
 		}
 	}
 }
 
-func TestRegisterAction_Custom(t *testing.T) {
-	custom := RecoveryAction{
-		Name:        "test-custom-action",
-		Description: "Test action for unit tests",
-		Fn:          func(ctx *RecoveryActionCtx) error { return nil },
-	}
-	RegisterAction(custom)
-	defer func() {
-		// Clean up: remove the custom action.
-		recoveryActionRegistryMu.Lock()
-		delete(recoveryActionRegistry, "test-custom-action")
-		recoveryActionRegistryMu.Unlock()
-	}()
-
-	got, ok := GetAction("test-custom-action")
-	if !ok {
-		t.Fatal("registered custom action not found")
-	}
-	if got.Name != "test-custom-action" {
-		t.Errorf("got.Name = %q, want 'test-custom-action'", got.Name)
-	}
-}
-
 // ---------------------------------------------------------------------------
-// Built-in action property checks
+// mechanicalResetToStep — record-only mechanical that logs the step target
+// and returns a captured recipe.
 // ---------------------------------------------------------------------------
 
-func TestBuiltinActions_WorktreeRequirements(t *testing.T) {
-	tests := []struct {
-		name             string
-		requiresWorktree bool
-	}{
-		{"rebase-onto-base", true},
-		{"cherry-pick", true},
-		{"resolve-conflicts", true},
-		{"targeted-fix", false},
-		{"rebuild", true},
-		{"resummon", false},
-		{"reset-to-step", false},
-		{"escalate", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			action, ok := GetAction(tt.name)
-			if !ok {
-				t.Fatalf("action %q not found", tt.name)
-			}
-			if action.RequiresWorktree != tt.requiresWorktree {
-				t.Errorf("RequiresWorktree = %v, want %v", action.RequiresWorktree, tt.requiresWorktree)
-			}
-		})
-	}
-}
-
-func TestBuiltinActions_MaxRetries(t *testing.T) {
-	tests := []struct {
-		name       string
-		maxRetries int
-	}{
-		{"rebase-onto-base", 3},
-		{"cherry-pick", 3},
-		{"resolve-conflicts", 2},
-		{"targeted-fix", 3},
-		{"rebuild", 3},
-		{"resummon", 3},
-		{"reset-to-step", 2},
-		{"escalate", 1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			action, ok := GetAction(tt.name)
-			if !ok {
-				t.Fatalf("action %q not found", tt.name)
-			}
-			if action.MaxRetries != tt.maxRetries {
-				t.Errorf("MaxRetries = %d, want %d", action.MaxRetries, tt.maxRetries)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Non-worktree action execution (no git ops needed)
-// ---------------------------------------------------------------------------
-
-func TestActionTargetedFix_MissingIssue(t *testing.T) {
-	action, _ := GetAction("targeted-fix")
-	ctx := &RecoveryActionCtx{
-		Params: map[string]string{},
-		Log:    func(msg string) {},
-	}
-	err := action.Fn(ctx)
-	if err == nil {
-		t.Fatal("expected error for missing 'issue' parameter")
-	}
-	if !strings.Contains(err.Error(), "missing 'issue' parameter") {
-		t.Errorf("error = %q, want to contain 'missing issue parameter'", err)
-	}
-}
-
-func TestActionTargetedFix_WithIssue(t *testing.T) {
-	action, _ := GetAction("targeted-fix")
-	var logged string
-	ctx := &RecoveryActionCtx{
-		Params: map[string]string{"issue": "build failure in pkg/foo"},
-		Log:    func(msg string) { logged = msg },
-	}
-	err := action.Fn(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(logged, "build failure in pkg/foo") {
-		t.Errorf("log = %q, want to contain issue description", logged)
-	}
-}
-
-func TestActionResetToStep_MissingStep(t *testing.T) {
-	action, _ := GetAction("reset-to-step")
-	ctx := &RecoveryActionCtx{
-		Params: map[string]string{},
-		Log:    func(msg string) {},
-	}
-	err := action.Fn(ctx)
+func TestMechanicalResetToStep_MissingStep(t *testing.T) {
+	fn := mechanicalActions["reset-to-step"]
+	ctx := &RecoveryActionCtx{Log: func(msg string) {}}
+	plan := recovery.RepairPlan{Mode: recovery.RepairModeMechanical, Action: "reset-to-step"}
+	recipe, err := fn(ctx, plan, WorkspaceHandle{})
 	if err == nil {
 		t.Fatal("expected error for missing 'step' parameter")
 	}
+	if recipe != nil {
+		t.Errorf("recipe should be nil on failure, got %+v", recipe)
+	}
 }
 
-func TestActionResetToStep_WithStep(t *testing.T) {
-	action, _ := GetAction("reset-to-step")
+func TestMechanicalResetToStep_WithStep(t *testing.T) {
+	fn := mechanicalActions["reset-to-step"]
 	var logged string
-	ctx := &RecoveryActionCtx{
+	ctx := &RecoveryActionCtx{Log: func(msg string) { logged = msg }}
+	plan := recovery.RepairPlan{
+		Mode:   recovery.RepairModeMechanical,
+		Action: "reset-to-step",
 		Params: map[string]string{"step": "verify-build"},
-		Log:    func(msg string) { logged = msg },
 	}
-	err := action.Fn(ctx)
+	recipe, err := fn(ctx, plan, WorkspaceHandle{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(logged, "verify-build") {
 		t.Errorf("log = %q, want to contain step name", logged)
 	}
-}
-
-func TestActionResummon_Logs(t *testing.T) {
-	action, _ := GetAction("resummon")
-	var logged string
-	ctx := &RecoveryActionCtx{
-		TargetBeadID: "spi-test-1",
-		Params:       map[string]string{},
-		Log:          func(msg string) { logged = msg },
-	}
-	err := action.Fn(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(logged, "spi-test-1") {
-		t.Errorf("log = %q, want to contain target bead ID", logged)
+	if recipe == nil || recipe.Action != "reset-to-step" {
+		t.Errorf("captured recipe = %+v, want builtin reset-to-step", recipe)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Cherry-pick SHA validation
+// mechanicalCherryPick — SHA validation guards against shell injection.
 // ---------------------------------------------------------------------------
 
-func TestActionCherryPick_MissingCommit(t *testing.T) {
-	action, _ := GetAction("cherry-pick")
-	ctx := &RecoveryActionCtx{
-		Params: map[string]string{},
-		Log:    func(msg string) {},
-	}
-	err := action.Fn(ctx)
+func TestMechanicalCherryPick_MissingCommit(t *testing.T) {
+	fn := mechanicalActions["cherry-pick"]
+	ctx := &RecoveryActionCtx{Log: func(msg string) {}}
+	plan := recovery.RepairPlan{Mode: recovery.RepairModeMechanical, Action: "cherry-pick"}
+	_, err := fn(ctx, plan, WorkspaceHandle{})
 	if err == nil {
 		t.Fatal("expected error for missing 'commit' parameter")
 	}
 }
 
-func TestActionCherryPick_InvalidSHA(t *testing.T) {
-	action, _ := GetAction("cherry-pick")
-	ctx := &RecoveryActionCtx{
+func TestMechanicalCherryPick_InvalidSHA(t *testing.T) {
+	fn := mechanicalActions["cherry-pick"]
+	ctx := &RecoveryActionCtx{Log: func(msg string) {}}
+	plan := recovery.RepairPlan{
+		Mode:   recovery.RepairModeMechanical,
+		Action: "cherry-pick",
 		Params: map[string]string{"commit": "abc; rm -rf /"},
-		Log:    func(msg string) {},
 	}
-	err := action.Fn(ctx)
+	_, err := fn(ctx, plan, WorkspaceHandle{})
 	if err == nil {
 		t.Fatal("expected error for invalid commit hash")
 	}
@@ -322,158 +160,36 @@ func TestActionCherryPick_InvalidSHA(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RunRecoveryAction
+// actionTargetedFix — tombstone raises a helpful error and never calls out
+// to a runtime primitive. Historical recovery beads may still reference the
+// action name via resume paths; this test pins the error message that tells
+// the caller to dispatch via RepairModeWorker instead.
 // ---------------------------------------------------------------------------
 
-func TestRunRecoveryAction_UnknownAction(t *testing.T) {
-	ctx := &RecoveryActionCtx{
-		Params: map[string]string{},
-		Log:    func(msg string) {},
-	}
-	err := RunRecoveryAction(ctx, "totally-unknown-action")
+func TestActionTargetedFix_Retired(t *testing.T) {
+	_, err := actionTargetedFix(&RecoveryActionCtx{}, recovery.RepairPlan{Action: "targeted-fix"}, WorkspaceHandle{})
 	if err == nil {
-		t.Fatal("expected error for unknown action")
+		t.Fatal("expected retirement error")
 	}
-	if !strings.Contains(err.Error(), "unknown recovery action") {
-		t.Errorf("error = %q, want to contain 'unknown recovery action'", err)
+	if !strings.Contains(err.Error(), "targeted-fix is retired") {
+		t.Errorf("error = %q, want to contain 'targeted-fix is retired'", err)
 	}
-}
-
-func TestRunRecoveryAction_MaxRetriesExceeded(t *testing.T) {
-	// Register a test action with MaxRetries=1
-	testAction := RecoveryAction{
-		Name:        "test-max-retry-action",
-		Description: "Test max retries",
-		MaxRetries:  1,
-		Fn:          func(ctx *RecoveryActionCtx) error { return nil },
-	}
-	RegisterAction(testAction)
-	defer func() {
-		recoveryActionRegistryMu.Lock()
-		delete(recoveryActionRegistry, "test-max-retry-action")
-		recoveryActionRegistryMu.Unlock()
-	}()
-
-	// DB is nil, so attemptNum defaults to 1 (no count check). We need to
-	// register an action with MaxRetries=0 to trigger the exceeded check
-	// at attempt 1. Instead, test with a lower bound:
-	// MaxRetries=1, attemptNum=1 → should NOT exceed (1 <= 1 is false because
-	// the check is attemptNum > MaxRetries). So attempt 1 of max 1 is fine.
-	// Let's adjust: create action with MaxRetries=0 to verify.
-	zeroAction := RecoveryAction{
-		Name:        "test-zero-retry-action",
-		Description: "Test zero retries",
-		MaxRetries:  0, // 0 means no limit, per the code: if action.MaxRetries > 0
-		Fn:          func(ctx *RecoveryActionCtx) error { return nil },
-	}
-	RegisterAction(zeroAction)
-	defer func() {
-		recoveryActionRegistryMu.Lock()
-		delete(recoveryActionRegistry, "test-zero-retry-action")
-		recoveryActionRegistryMu.Unlock()
-	}()
-
-	// With MaxRetries=0, there's no retry limit — this should succeed.
-	ctx := &RecoveryActionCtx{
-		Params: map[string]string{},
-		Log:    func(msg string) {},
-	}
-	err := RunRecoveryAction(ctx, "test-zero-retry-action")
-	if err != nil {
-		t.Fatalf("action with MaxRetries=0 should have no limit, got: %v", err)
+	if !strings.Contains(err.Error(), "RepairModeWorker") {
+		t.Errorf("error = %q, want to mention RepairModeWorker", err)
 	}
 }
 
-func TestRunRecoveryAction_PreGeneratesAttemptID(t *testing.T) {
-	// Verify that RunRecoveryAction pre-generates an attempt ID.
-	// Since DB is nil, we can't verify the DB write, but we can verify
-	// the flow doesn't panic and the action executes.
-	var actionExecuted bool
-	testAction := RecoveryAction{
-		Name:        "test-pregen-id-action",
-		Description: "Test pre-generated ID",
-		MaxRetries:  3,
-		Fn: func(ctx *RecoveryActionCtx) error {
-			actionExecuted = true
-			return nil
-		},
-	}
-	RegisterAction(testAction)
-	defer func() {
-		recoveryActionRegistryMu.Lock()
-		delete(recoveryActionRegistry, "test-pregen-id-action")
-		recoveryActionRegistryMu.Unlock()
-	}()
+// ---------------------------------------------------------------------------
+// executeRecipe — stub until chunk 7 wires Recipe.ToRepairPlan().
+// ---------------------------------------------------------------------------
 
-	ctx := &RecoveryActionCtx{
-		RecoveryBeadID: "spi-recovery-1",
-		TargetBeadID:   "spi-target-1",
-		Params:         map[string]string{},
-		Log:            func(msg string) {},
-	}
-	err := RunRecoveryAction(ctx, "test-pregen-id-action")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !actionExecuted {
-		t.Error("action function was not executed")
-	}
-}
-
-func TestRunRecoveryAction_ActionError(t *testing.T) {
-	testAction := RecoveryAction{
-		Name:        "test-error-action",
-		Description: "Always fails",
-		MaxRetries:  3,
-		Fn: func(ctx *RecoveryActionCtx) error {
-			return fmt.Errorf("deliberate failure")
-		},
-	}
-	RegisterAction(testAction)
-	defer func() {
-		recoveryActionRegistryMu.Lock()
-		delete(recoveryActionRegistry, "test-error-action")
-		recoveryActionRegistryMu.Unlock()
-	}()
-
-	ctx := &RecoveryActionCtx{
-		Params: map[string]string{},
-		Log:    func(msg string) {},
-	}
-	err := RunRecoveryAction(ctx, "test-error-action")
+func TestExecuteRecipe_Stubbed(t *testing.T) {
+	_, err := executeRecipe(&RecoveryActionCtx{}, recovery.RepairPlan{Mode: recovery.RepairModeRecipe}, WorkspaceHandle{})
 	if err == nil {
-		t.Fatal("expected error from failing action")
+		t.Fatal("expected stub error")
 	}
-	if !strings.Contains(err.Error(), "deliberate failure") {
-		t.Errorf("error = %q, want to contain 'deliberate failure'", err)
-	}
-}
-
-func TestRunRecoveryAction_LogsAttemptNumber(t *testing.T) {
-	testAction := RecoveryAction{
-		Name:        "test-log-action",
-		Description: "Check logging",
-		MaxRetries:  3,
-		Fn:          func(ctx *RecoveryActionCtx) error { return nil },
-	}
-	RegisterAction(testAction)
-	defer func() {
-		recoveryActionRegistryMu.Lock()
-		delete(recoveryActionRegistry, "test-log-action")
-		recoveryActionRegistryMu.Unlock()
-	}()
-
-	var logged string
-	ctx := &RecoveryActionCtx{
-		Params: map[string]string{},
-		Log:    func(msg string) { logged = msg },
-	}
-	err := RunRecoveryAction(ctx, "test-log-action")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(logged, "attempt 1") {
-		t.Errorf("log = %q, want to contain 'attempt 1'", logged)
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Errorf("error = %q, want to mention 'not yet implemented'", err)
 	}
 }
 
