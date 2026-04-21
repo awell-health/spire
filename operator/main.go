@@ -41,6 +41,22 @@ func main() {
 	flag.StringVar(&stewardImage, "steward-image", "ghcr.io/awell-health/spire-steward:latest", "Image for managed agent pods")
 	flag.StringVar(&beadsDir, "beads-dir", "", "Path to .beads directory for scheduling validation (required)")
 
+	// Runtime-contract identity inputs (docs/design/spi-xplwy-runtime-contract.md §1.1).
+	//
+	// Read ONCE at startup so pod-building code never reaches into process
+	// env for tower/prefix/dolthub identity — the ypoqx rule extended to
+	// the operator. Helm plumbs these from the chart values; for local
+	// development set them explicitly via --database / --prefix /
+	// --dolthub-remote or via the same-named env vars.
+	var (
+		database      string
+		prefix        string
+		dolthubRemote string
+	)
+	flag.StringVar(&database, "database", os.Getenv("BEADS_DATABASE"), "Dolt database name (tower identity). Defaults to $BEADS_DATABASE; falls back to --namespace when unset.")
+	flag.StringVar(&prefix, "prefix", os.Getenv("BEADS_PREFIX"), "Default bead prefix. Defaults to $BEADS_PREFIX.")
+	flag.StringVar(&dolthubRemote, "dolthub-remote", os.Getenv("DOLTHUB_REMOTE"), "DoltHub remote URL for tower-attach init containers. Defaults to $DOLTHUB_REMOTE.")
+
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -83,6 +99,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Database identity defaults: if --database is unset, fall back to
+	// --namespace to match the helm convention where the chart's
+	// release-scoped database name equals the install namespace.
+	if database == "" {
+		database = namespace
+	}
+
 	// Agent monitor — tracks heartbeats and manages pods
 	monitor := &controllers.AgentMonitor{
 		Client:         mgr.GetClient(),
@@ -90,7 +113,10 @@ func main() {
 		Namespace:      namespace,
 		Interval:       interval,
 		OfflineTimeout: offlineTimeout,
-		StewardImage:     stewardImage,
+		StewardImage:   stewardImage,
+		Database:       database,
+		Prefix:         prefix,
+		DolthubRemote:  dolthubRemote,
 	}
 	if err := mgr.Add(monitor); err != nil {
 		log.Error(err, "unable to add agent monitor")

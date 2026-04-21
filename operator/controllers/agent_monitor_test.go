@@ -30,10 +30,20 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 }
 
 func makeAgent(name, namespace string, currentWork []string) *spirev1.WizardGuild {
+	// Populate Repo and RepoBranch so SpawnConfig validation in the
+	// shared pkg/agent builder succeeds. A real managed-mode guild
+	// always has these set; an empty Repo is an admin misconfiguration
+	// that buildWorkloadPod now catches explicitly (spi-fjt2t).
 	return &spirev1.WizardGuild{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       spirev1.WizardGuildSpec{Mode: "managed", Image: "test-image:latest"},
-		Status:     spirev1.WizardGuildStatus{CurrentWork: currentWork},
+		Spec: spirev1.WizardGuildSpec{
+			Mode:       "managed",
+			Image:      "test-image:latest",
+			Repo:       "git@example.com:spire-test/repo.git",
+			RepoBranch: "main",
+			Prefixes:   []string{"spi"},
+		},
+		Status: spirev1.WizardGuildStatus{CurrentWork: currentWork},
 	}
 }
 
@@ -266,25 +276,46 @@ func TestBuildWorkloadPod_NameTruncatedTo63(t *testing.T) {
 	}
 }
 
-// TestBuildWorkloadPod_CanonicalShape pins the canonical single-container
-// wizard pod contract (spi-kjh9e / spi-9wo3a): one tower-attach init
-// container, one "agent" main container running `spire execute`, two
-// emptyDir volumes (data + workspace), and no Model A artifacts
-// (sidecar / /comms / beads-seed ConfigMap / agent-entrypoint.sh).
+// TestBuildWorkloadPod_CanonicalShape pins the canonical wizard pod
+// contract produced by the shared pkg/agent builder (spi-fjt2t):
+//
+//   - Two init containers: "tower-attach" (stages tower data onto /data)
+//     and "repo-bootstrap" (clones the repo into /workspace/<prefix>).
+//     Both match the pkg/agent wizard-pod shape.
+//   - One "agent" main container running `spire execute`.
+//   - Two emptyDir volumes: /data and /workspace.
+//   - No Model A artifacts (sidecar, /comms, beads-seed ConfigMap).
+//
+// Operator-specific overlay (labels, MaxApprentices, secret refs) is
+// tested separately in the parity test.
 func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 	ns := "spire"
 	agent := makeAgent("core", ns, nil)
-	m := &AgentMonitor{Log: testr.New(t), Namespace: ns, StewardImage: "spire-agent:dev"}
+	m := &AgentMonitor{
+		Log:          testr.New(t),
+		Namespace:    ns,
+		StewardImage: "spire-agent:dev",
+		Database:     "spire",
+		Prefix:       "spi",
+	}
 
 	pod := m.buildWorkloadPod(agent, "spi-abc", nil)
-
-	// Init container: exactly one named "tower-attach".
-	if len(pod.Spec.InitContainers) != 1 {
-		t.Fatalf("len(InitContainers) = %d, want 1", len(pod.Spec.InitContainers))
+	if pod == nil {
+		t.Fatalf("buildWorkloadPod returned nil (SpawnConfig validation failed?)")
 	}
-	ic := pod.Spec.InitContainers[0]
-	if ic.Name != "tower-attach" {
-		t.Errorf("init container Name = %q, want tower-attach", ic.Name)
+
+	// Init containers: tower-attach + repo-bootstrap, matching the shared
+	// pkg/agent wizard-pod shape.
+	if len(pod.Spec.InitContainers) != 2 {
+		t.Fatalf("len(InitContainers) = %d, want 2 (tower-attach + repo-bootstrap)", len(pod.Spec.InitContainers))
+	}
+	icByName := make(map[string]corev1.Container, len(pod.Spec.InitContainers))
+	for _, ic := range pod.Spec.InitContainers {
+		icByName[ic.Name] = ic
+	}
+	ic, ok := icByName["tower-attach"]
+	if !ok {
+		t.Fatalf("init container %q not found; got %v", "tower-attach", pod.Spec.InitContainers)
 	}
 	wantPrefix := []string{"spire", "tower", "attach-cluster"}
 	if len(ic.Command) < len(wantPrefix) {
@@ -299,6 +330,9 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 		if !anyHasPrefix(ic.Command, flag) {
 			t.Errorf("init container Command missing flag with prefix %q; got %v", flag, ic.Command)
 		}
+	}
+	if _, ok := icByName["repo-bootstrap"]; !ok {
+		t.Errorf("init container %q not found; got %v", "repo-bootstrap", pod.Spec.InitContainers)
 	}
 
 	// Main container: exactly one named "agent" running `spire execute`.

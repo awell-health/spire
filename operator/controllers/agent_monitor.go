@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -11,8 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/go-logr/logr"
@@ -20,6 +17,7 @@ import (
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -55,6 +53,24 @@ type AgentMonitor struct {
 	Interval       time.Duration
 	OfflineTimeout time.Duration // how long before an agent is considered offline
 	StewardImage   string        // default image for managed agent pods
+
+	// Runtime-contract identity inputs (docs/design/spi-xplwy-runtime-contract.md §1.1).
+	//
+	// Set once at operator startup from --database/--prefix/--dolthub-remote
+	// or the matching env vars (helm plumbs these). Pod building NEVER reads
+	// these from process env on every spawn — that was the ambient-CWD
+	// anti-pattern spi-ypoqx removed from pkg/executor, extended here so
+	// operator-managed pods follow the same rule.
+	//
+	// Database is the dolt database name (== tower identity). Falls back to
+	// Namespace in main.go when unset (helm convention).
+	Database string
+	// Prefix is the default bead prefix. For single-prefix guilds this is
+	// the authoritative value; multi-prefix guilds may override it from
+	// WizardGuild.Spec.Prefixes when a single guild-level prefix is present.
+	Prefix string
+	// DolthubRemote is the dolt remote URL for the tower-attach init container.
+	DolthubRemote string
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -254,18 +270,20 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 			continue // pod already running for this bead
 		}
 
-		// Route by workload type:
-		//   epic   → epic pod (wizard + sidecar, Model A — out of scope for spi-9wo3a)
-		//   review → review pod (wizard --mode=review, Model A — out of scope for spi-9wo3a)
-		//   *      → canonical single-container wizard pod (see buildWorkloadPod)
-		var pod *corev1.Pod
-		switch wlType := m.getWorkloadType(ctx, beadID); wlType {
-		case "epic":
-			pod = m.buildEpicPod(agent, beadID, cfg)
-		case "review":
-			pod = m.buildReviewPod(agent, beadID, cfg)
-		default:
-			pod = m.buildWorkloadPod(agent, beadID, cfg)
+		// All workload types (task/bug/feature/chore/epic) route through the
+		// canonical single-container wizard pod via the shared pkg/agent
+		// builder. `spire execute <bead-id>` dispatches on the bead's type
+		// internally — the operator no longer has to fan out to per-type pod
+		// shapes. The Model A epic/review paths (wizard + sidecar, /comms
+		// volume, beads-seed ConfigMap) were removed as part of chunk 4 of
+		// the runtime-contract migration (spi-fjt2t).
+		pod := m.buildWorkloadPod(agent, beadID, cfg)
+		if pod == nil {
+			// buildWorkloadPod logs and returns nil when SpawnConfig validation
+			// fails (e.g. the CR is missing Repo or RepoBranch). Skip the
+			// bead this cycle; the next reconcile will retry once the CR is
+			// fixed.
+			continue
 		}
 		if err := m.Client.Create(ctx, pod); err != nil {
 			m.Log.Error(err, "failed to create workload pod", "agent", agent.Name, "bead", beadID)
@@ -348,114 +366,218 @@ func (m *AgentMonitor) updateAgentPhase(ctx context.Context, agent *spirev1.Wiza
 // buildWorkloadPod creates the canonical single-container wizard pod for a
 // single bead assignment (task/bug/feature/chore workloads).
 //
-// Source of truth for the pod shape: pkg/agent/backend_k8s.go:buildWizardPod.
-// This path duplicates the canonical structure inline because the operator
-// sources image, labels, secrets, and resource overrides from the
-// WizardGuild CR and SpireConfig — inputs the pkg/agent backend does not
-// know about. A follow-up bead tracks unifying the two builders; until
-// then, changes to the canonical shape must be mirrored here.
+// As of spi-fjt2t (chunk 4 of docs/design/spi-xplwy-runtime-contract.md §4),
+// pod construction delegates to the shared pkg/agent builder via
+// agent.NewPodBuilder(...).BuildPod(cfg). The operator's role is to:
+//   - translate WizardGuild CR + SpireConfig + tower identity into a
+//     runtime.SpawnConfig (Identity / Workspace / Run are populated from
+//     canonical sources — never from ambient env);
+//   - call BuildPod to get the canonical pod shape;
+//   - apply operator-specific overlays that the shared builder does not
+//     know about (guild-scoped labels, SpireConfig-sourced secret refs,
+//     MaxApprentices env, resource override, operator-flavored pod name).
 //
-// The pod runs:
-//   - One init container ("tower-attach") that runs
-//     `spire tower attach-cluster` to stage .beads/ and spire config into
-//     /data.
-//   - One main container ("agent") that runs
-//     `spire execute <bead-id> --name <agent-name>` against the cluster
-//     dolt service.
-//
-// Volumes are two emptyDirs: /data (beads + spire config) and /workspace
-// (apprentice bundle staging). There is no sidecar, no /comms volume, and
-// no beads-seed ConfigMap — those belong to the removed Model A contract
-// (see docs/k8s-operator-reference.md → Deprecated: agent-entrypoint.sh).
-func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
-	image := agent.Spec.Image
+// After the overlay the pod is byte-for-byte equivalent to what the shared
+// builder would produce for the same SpawnConfig, plus the overlay fields.
+// See TestBuildWorkloadPod_SharedBuilderParity for the enforced contract.
+func (m *AgentMonitor) buildWorkloadPod(wg *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
+	image := wg.Spec.Image
 	if image == "" {
 		image = m.StewardImage
 	}
 
-	// Pod name template is "<guild>-wizard-<bead>" per the 2026-04-20 naming
-	// decision on spi-kh2em (no "spire-" prefix; agent/guild name first). The
-	// agent name is the guild name today; that will diverge when the
-	// WizardGuild CRD lands (separate bead).
-	podName := fmt.Sprintf("%s-wizard-%s", sanitizeK8sName(agent.Name), sanitizeK8sName(beadID))
-	// k8s pod names max 63 chars
-	if len(podName) > 63 {
-		podName = podName[:63]
-	}
-
-	branch := agent.Spec.RepoBranch
+	branch := wg.Spec.RepoBranch
 	if branch == "" {
 		branch = repoconfig.DefaultBranchBase
 	}
 
-	// attach-cluster inputs. Database/prefix/dolthub-remote are read from
-	// the operator's ambient env (plumbed via helm) and SpireConfig; we do
-	// not invent new CRD fields here. Database falls back to the operator's
-	// namespace to match the helm default `spire.database` which is
-	// derived from the release-scoped bead prefix.
-	db := os.Getenv("BEADS_DATABASE")
-	if db == "" {
-		db = m.Namespace
-	}
-	prefix := os.Getenv("BEADS_PREFIX")
-	if prefix == "" && len(agent.Spec.Prefixes) == 1 {
-		// Single-prefix guild: use it as the attach-cluster fallback so
-		// the init container gets a sensible value even when the operator
-		// wasn't deployed with BEADS_PREFIX set. Multi-prefix guilds
-		// leave --prefix empty; attach-cluster reads the authoritative
-		// value from the dolt TowerConfig and logs a mismatch warning.
-		prefix = agent.Spec.Prefixes[0]
-	}
-	dolthubRemote := os.Getenv("DOLTHUB_REMOTE")
-	if dolthubRemote == "" && cfg != nil {
-		dolthubRemote = cfg.Spec.DoltHub.Remote
-	}
+	prefix := m.resolvePrefix(wg)
+	db := m.resolveDatabase()
 
-	// Main-container env. Matches the canonical shape: the init container
-	// stages beads at /data/<db>/.beads and spire config at /data/spire-config;
-	// DOLT_DATA_DIR + SPIRE_CONFIG_DIR tell resolveBeadsDir() where to find
-	// them. BEADS_DOLT_SERVER_{HOST,PORT} point at the cluster dolt so bd
-	// doesn't auto-start an embedded server.
-	wizardEnv := []corev1.EnvVar{
-		{Name: "DOLT_DATA_DIR", Value: "/data"},
-		{Name: "SPIRE_CONFIG_DIR", Value: "/data/spire-config"},
-		{Name: "BEADS_DOLT_SERVER_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
-		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3306"},
-
-		// Identity
-		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "SPIRE_BEAD_ID", Value: beadID},
-		{Name: "SPIRE_ROLE", Value: "wizard"},
-
-		// Repo — still consumed by the wizard for apprentice bundle production.
-		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
-		{Name: "SPIRE_REPO_BRANCH", Value: branch},
-
-		// OTel wiring — matches pkg/agent/backend_k8s.go so traces/logs from
-		// operator-managed wizards land in the same steward collector as
-		// steward-spawned pods.
-		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: fmt.Sprintf("http://spire-steward.%s.svc:4317", m.Namespace)},
-		{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "grpc"},
-		{Name: "OTEL_TRACES_EXPORTER", Value: "otlp"},
-		{Name: "OTEL_LOGS_EXPORTER", Value: "otlp"},
-		{Name: "OTEL_RESOURCE_ATTRIBUTES", Value: fmt.Sprintf("bead.id=%s,agent.name=%s", beadID, agent.Name)},
+	// SpawnConfig for the shared builder. Identity fields come from the
+	// operator's explicit startup config (Database / Prefix / DolthubRemote)
+	// and the WizardGuild CR — never from pod-building-time env reads.
+	spawnCfg := agent.SpawnConfig{
+		Name:       wg.Name, // operator uses the guild name as the agent name
+		BeadID:     beadID,
+		Role:       agent.RoleWizard,
+		Tower:      db,
+		Step:       "wizard",
+		RepoURL:    wg.Spec.Repo,
+		RepoBranch: branch,
+		RepoPrefix: prefix,
+		Identity: runtime.RepoIdentity{
+			TowerName:  db,
+			Prefix:     prefix,
+			RepoURL:    wg.Spec.Repo,
+			BaseBranch: branch,
+		},
+		Run: runtime.RunContext{
+			TowerName:       db,
+			Prefix:          prefix,
+			BeadID:          beadID,
+			Role:            runtime.RoleWizard,
+			FormulaStep:     "wizard",
+			Backend:         "operator-k8s",
+			WorkspaceKind:   runtime.WorkspaceKindOwnedWorktree,
+			WorkspaceName:   "wizard",
+			WorkspaceOrigin: runtime.WorkspaceOriginOriginClone,
+			HandoffMode:     runtime.HandoffNone,
+		},
 	}
 
-	// Cluster-level cap on concurrent apprentice subprocesses. When unset
-	// on the CR we leave SPIRE_MAX_APPRENTICES absent so the wizard falls
-	// back to spire.yaml (or the built-in default). This keeps the
-	// layering precedence correct: CR > spire.yaml > default.
-	if agent.Spec.MaxApprentices != nil {
-		wizardEnv = append(wizardEnv, corev1.EnvVar{
+	// BuildPod uses the shared wizard-pod shape (tower-attach +
+	// repo-bootstrap init containers, /data+/workspace volumes, WizardResources).
+	// Client is nil because RoleWizard never hits resolveWorkspaceVolume
+	// (that path is substrate-only). Secret name is "spire-credentials"
+	// by default; the operator overrides the env refs below via CR-sourced
+	// SpireConfig tokens.
+	builder := agent.NewPodBuilder(nil, m.Namespace, image, "")
+	pod, err := builder.BuildPod(spawnCfg)
+	if err != nil {
+		// Identity inputs are required for wizard pods. If we produced a
+		// SpawnConfig with empty RepoURL / BaseBranch / Prefix, fail
+		// visibly instead of silently returning a bad pod — the monitor
+		// logs the error and skips this bead until the CR is fixed.
+		m.Log.Error(err, "shared pod builder failed; skipping bead",
+			"agent", wg.Name, "bead", beadID)
+		return nil
+	}
+
+	// Apply operator-specific overlays: guild-scoped labels, canonical
+	// pod name, dolthub-remote on the init container, SpireConfig-sourced
+	// secret refs, MaxApprentices env, resource override, pod-name
+	// template. These are operator inputs the shared builder does not know
+	// about; applying them post-build keeps the shared shape authoritative.
+	m.applyOperatorOverlay(pod, wg, beadID, cfg, image, db, prefix)
+
+	return pod
+}
+
+// applyOperatorOverlay mutates pod in place to carry operator-specific
+// fields on top of the shared pkg/agent pod shape. Split out for test
+// readability: callers can assert the shared shape and the overlay
+// separately. The overlay is intentionally narrow — anything that could
+// live on SpawnConfig should go there instead, not accrete here.
+func (m *AgentMonitor) applyOperatorOverlay(
+	pod *corev1.Pod,
+	wg *spirev1.WizardGuild,
+	beadID string,
+	cfg *spirev1.SpireConfig,
+	image, db, prefix string,
+) {
+	// Pod name template is "<guild>-wizard-<bead>" per the 2026-04-20 naming
+	// decision on spi-kh2em (no "spire-" prefix; agent/guild name first). The
+	// shared builder's sanitizePodName appends a timestamp suffix for
+	// collision avoidance; operator-managed pods use a deterministic name
+	// so controller-runtime's idempotent Create/Delete reconciler loop
+	// works correctly.
+	podName := fmt.Sprintf("%s-wizard-%s", sanitizeK8sName(wg.Name), sanitizeK8sName(beadID))
+	if len(podName) > 63 {
+		podName = podName[:63]
+	}
+	pod.Name = podName
+
+	// spire.awell.io/* labels are load-bearing for reconcileManagedAgent's
+	// list selector and the workload_assigner prefix-match path. The
+	// shared builder's spire.* labels remain in place for
+	// network-policy / backend-agent discovery; we add the operator-guild
+	// labels on top.
+	if pod.Labels == nil {
+		pod.Labels = map[string]string{}
+	}
+	pod.Labels["spire.awell.io/agent"] = wg.Name
+	pod.Labels["spire.awell.io/guild"] = wg.Name
+	pod.Labels["spire.awell.io/bead"] = beadID
+	pod.Labels["spire.awell.io/managed"] = "true"
+	pod.Labels["spire.awell.io/role"] = "wizard"
+	pod.Labels["app.kubernetes.io/name"] = "spire-wizard"
+
+	// Update the main container: image override from guild CR (the shared
+	// builder used m.StewardImage when the guild didn't override), resource
+	// override from guild CR, working dir at /workspace for the wizard
+	// subprocess (the shared builder doesn't set WorkingDir by default).
+	if len(pod.Spec.Containers) > 0 {
+		main := &pod.Spec.Containers[0]
+		main.Image = image
+		main.Resources = wizardResources(wg.Spec.Resources)
+		main.WorkingDir = "/workspace"
+		// Rewrite the command to match the operator's wizard entrypoint
+		// shape: `spire execute <bead-id> --name <agent-name>`. The shared
+		// builder uses roleToSubcmd(RoleWizard) which is also "spire execute",
+		// so the arg list is already the canonical form. The canonical
+		// form from pkg/agent includes "--name <Name>" — we just keep it.
+		_ = main
+	}
+
+	// Update the init container: override image, rewrite the command to
+	// include operator-scoped --data-dir/--database/--prefix/--dolthub-remote.
+	// The shared builder's init container uses the same flag set, but
+	// with dolthub remote resolved from env — the operator passes it
+	// explicitly via m.DolthubRemote (read once at startup).
+	if len(pod.Spec.InitContainers) > 0 {
+		for i := range pod.Spec.InitContainers {
+			ic := &pod.Spec.InitContainers[i]
+			ic.Image = image
+			if ic.Name == "tower-attach" {
+				ic.Command = []string{
+					"spire", "tower", "attach-cluster",
+					"--data-dir=/data/" + db,
+					"--database=" + db,
+					"--prefix=" + prefix,
+					"--dolthub-remote=" + m.dolthubRemoteForCfg(cfg),
+				}
+			}
+		}
+	}
+
+	// Env overlay: MaxApprentices from the guild CR, SpireConfig token
+	// refs for ANTHROPIC_API_KEY and GITHUB_TOKEN, SPIRE_K8S_SHARED_WORKSPACE=1
+	// so apprentice/sage children spawned by this wizard go through the
+	// shared-workspace path (chunk 2 of the runtime-contract migration).
+	// Applied to every container + init container so both paths see the
+	// same values.
+	overlayEnv := m.buildOverlayEnv(wg, cfg)
+	for i := range pod.Spec.Containers {
+		pod.Spec.Containers[i].Env = mergeEnv(pod.Spec.Containers[i].Env, overlayEnv)
+	}
+	for i := range pod.Spec.InitContainers {
+		pod.Spec.InitContainers[i].Env = mergeEnv(pod.Spec.InitContainers[i].Env, overlayEnv)
+	}
+}
+
+// buildOverlayEnv returns the operator-specific env vars applied on top
+// of the shared pkg/agent env. Kept as a method on AgentMonitor so tests
+// can build it in isolation.
+func (m *AgentMonitor) buildOverlayEnv(wg *spirev1.WizardGuild, cfg *spirev1.SpireConfig) []corev1.EnvVar {
+	env := []corev1.EnvVar{
+		// SPIRE_AGENT_NAME — the operator uses the guild name as the
+		// agent name. pkg/agent's buildEnvVars doesn't emit this because
+		// the process/docker backends have no analog. Wizards read it
+		// for logging and metric attribution.
+		{Name: "SPIRE_AGENT_NAME", Value: wg.Name},
+
+		// Flip the shared-workspace gate on for operator-managed pods.
+		// This is the first production surface turning on the new path
+		// (spi-fjt2t, per design §7.2). Child apprentice/sage pods
+		// spawned by the wizard inherit this env via SPIRE_ROLE-aware
+		// dispatch; the wizard itself never reads it.
+		{Name: "SPIRE_K8S_SHARED_WORKSPACE", Value: "1"},
+	}
+
+	// MaxApprentices: CR > spire.yaml > default (built-in 3). Only
+	// inject SPIRE_MAX_APPRENTICES when the CR sets it; otherwise the
+	// wizard falls back to spire.yaml.
+	if wg.Spec.MaxApprentices != nil {
+		env = append(env, corev1.EnvVar{
 			Name:  "SPIRE_MAX_APPRENTICES",
-			Value: strconv.Itoa(*agent.Spec.MaxApprentices),
+			Value: strconv.Itoa(*wg.Spec.MaxApprentices),
 		})
 	}
 
-	// Inject secrets from SpireConfig.
 	if cfg != nil {
-		// Anthropic API key
-		tokenName := agent.Spec.Token
+		// Anthropic API key.
+		tokenName := wg.Spec.Token
 		if tokenName == "" {
 			tokenName = cfg.Spec.DefaultToken
 		}
@@ -463,79 +585,82 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID strin
 			tokenName = "default"
 		}
 		if tokenRef, ok := cfg.Spec.Tokens[tokenName]; ok {
-			wizardEnv = append(wizardEnv,
-				envFromSecret("ANTHROPIC_API_KEY", tokenRef.Secret, tokenRef.Key),
-			)
+			env = append(env, envFromSecret("ANTHROPIC_API_KEY", tokenRef.Secret, tokenRef.Key))
 		}
 
-		// GitHub token — optional so installs without one don't block pod creation.
+		// GitHub token — optional so installs without one don't block pod
+		// creation.
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
-			wizardEnv = append(wizardEnv,
-				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
-			)
+			env = append(env, envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"))
 		}
 	}
 
-	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
-	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"}
+	return env
+}
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: m.Namespace,
-			// spire.awell.io/* are load-bearing — reconcileManagedAgent's list
-			// selector uses {agent, managed}, and the controller rename PRs
-			// migrate these keys atomically, not one pod at a time. "guild" is
-			// forward-compat for the WizardGuild CRD rename (separate bead).
-			Labels: map[string]string{
-				"spire.awell.io/agent":   agent.Name,
-				"spire.awell.io/guild":   agent.Name,
-				"spire.awell.io/bead":    beadID,
-				"spire.awell.io/managed": "true",
-				"spire.awell.io/role":    "wizard",
-				"app.kubernetes.io/name": "spire-wizard",
-			},
-		},
-		Spec: corev1.PodSpec{
-			RestartPolicy:     corev1.RestartPolicyNever,
-			PriorityClassName: "spire-agent-default",
-			Volumes: []corev1.Volume{
-				{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			},
-			InitContainers: []corev1.Container{{
-				Name:  "tower-attach",
-				Image: image,
-				Command: []string{
-					"spire", "tower", "attach-cluster",
-					"--data-dir=/data/" + db,
-					"--database=" + db,
-					"--prefix=" + prefix,
-					"--dolthub-remote=" + dolthubRemote,
-				},
-				// Share the main container's env so BEADS_DOLT_SERVER_HOST/PORT
-				// point at the cluster dolt service — otherwise attach-cluster
-				// falls through to laptop defaults (127.0.0.1:3307).
-				Env:          wizardEnv,
-				VolumeMounts: []corev1.VolumeMount{dataMount},
-			}},
-			Containers: []corev1.Container{
-				{
-					Name:  "agent",
-					Image: image,
-					Command: []string{
-						"spire", "execute", beadID, "--name", agent.Name,
-					},
-					Env:          wizardEnv,
-					Resources:    wizardResources(agent.Spec.Resources),
-					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount},
-					WorkingDir:   "/workspace",
-				},
-			},
-		},
+// mergeEnv overlays b onto a: entries in b that share a Name with an
+// entry in a replace the earlier value; new entries in b are appended.
+// Order in a is preserved for entries that aren't overridden, keeping
+// the shared-builder env stable across parity test runs.
+func mergeEnv(a, b []corev1.EnvVar) []corev1.EnvVar {
+	if len(b) == 0 {
+		return a
 	}
+	out := make([]corev1.EnvVar, 0, len(a)+len(b))
+	bIndex := make(map[string]int, len(b))
+	for i, e := range b {
+		bIndex[e.Name] = i
+	}
+	seen := make(map[string]bool, len(a))
+	for _, e := range a {
+		if idx, ok := bIndex[e.Name]; ok {
+			out = append(out, b[idx])
+		} else {
+			out = append(out, e)
+		}
+		seen[e.Name] = true
+	}
+	for _, e := range b {
+		if !seen[e.Name] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
-	return pod
+// resolvePrefix picks the authoritative prefix for this guild's pods.
+// Precedence: single-prefix guild CR > operator's default Prefix. A
+// multi-prefix guild without an operator default yields the empty
+// string; the init container then reads the authoritative value from
+// the dolt TowerConfig at attach-cluster time.
+func (m *AgentMonitor) resolvePrefix(wg *spirev1.WizardGuild) string {
+	if len(wg.Spec.Prefixes) == 1 {
+		return wg.Spec.Prefixes[0]
+	}
+	return m.Prefix
+}
+
+// resolveDatabase returns the dolt database name. Plumbed once at
+// startup; never read from process env at pod-build time.
+func (m *AgentMonitor) resolveDatabase() string {
+	if m.Database != "" {
+		return m.Database
+	}
+	// Helm convention: release-scoped database equals install namespace.
+	return m.Namespace
+}
+
+// dolthubRemoteForCfg returns the dolthub remote used in the
+// tower-attach init container. Precedence: operator startup config >
+// SpireConfig CR > empty.
+func (m *AgentMonitor) dolthubRemoteForCfg(cfg *spirev1.SpireConfig) string {
+	if m.DolthubRemote != "" {
+		return m.DolthubRemote
+	}
+	if cfg != nil {
+		return cfg.Spec.DoltHub.Remote
+	}
+	return ""
 }
 
 // wizardResources returns the resource requirements for a wizard pod.
@@ -575,10 +700,6 @@ func envFromSecretOptional(envName, secretName, key string) corev1.EnvVar {
 	}
 }
 
-func intstr8080() intstr.IntOrString {
-	return intstr.FromInt32(8080)
-}
-
 func buildResources(spec *spirev1.GuildResourceRequirements) corev1.ResourceRequirements {
 	reqs := corev1.ResourceRequirements{}
 	if spec == nil {
@@ -599,371 +720,6 @@ func buildResources(spec *spirev1.GuildResourceRequirements) corev1.ResourceRequ
 	return reqs
 }
 
-// getWorkloadType looks up the SpireWorkload CR for a bead ID and returns its type.
-// Returns empty string if not found.
-func (m *AgentMonitor) getWorkloadType(ctx context.Context, beadID string) string {
-	var workloads spirev1.SpireWorkloadList
-	if err := m.Client.List(ctx, &workloads, client.InNamespace(m.Namespace)); err != nil {
-		return ""
-	}
-	for _, wl := range workloads.Items {
-		if wl.Spec.BeadID == beadID {
-			return wl.Spec.Type
-		}
-	}
-	return ""
-}
-
-// buildEpicPod creates a pod spec for an epic bead.
-// Epic pods run the wizard binary with epic-specific args,
-// which reviews child branches, creates PRs, and manages the merge queue.
-func (m *AgentMonitor) buildEpicPod(agent *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
-	image := agent.Spec.Image
-	if image == "" {
-		image = m.StewardImage
-	}
-
-	podName := fmt.Sprintf("spire-wizard-%s", sanitizeK8sName(beadID))
-	if len(podName) > 63 {
-		podName = podName[:63]
-	}
-
-	branch := agent.Spec.RepoBranch
-	if branch == "" {
-		branch = repoconfig.DefaultBranchBase
-	}
-
-	// Wizard environment.
-	wizardEnv := []corev1.EnvVar{
-		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "SPIRE_EPIC_ID", Value: beadID},
-		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
-		{Name: "SPIRE_REPO_BRANCH", Value: branch},
-		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
-		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
-		{Name: "SPIRE_STATE_DIR", Value: "/data"},
-		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
-		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "WIZARD_MAX_REVIEW_ROUNDS", Value: "3"},
-		{Name: "SPIRE_BD_LOG", Value: "1"},
-	}
-
-	// Sidecar environment.
-	sidecarEnv := []corev1.EnvVar{
-		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
-		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "SPIRE_BD_LOG", Value: "1"},
-	}
-
-	// Inject secrets from SpireConfig.
-	if cfg != nil {
-		// Opus token — prefer "heavy" token for the wizard, fall back to default.
-		tokenName := "heavy"
-		if _, ok := cfg.Spec.Tokens[tokenName]; !ok {
-			tokenName = agent.Spec.Token
-			if tokenName == "" {
-				tokenName = cfg.Spec.DefaultToken
-			}
-			if tokenName == "" {
-				tokenName = "default"
-			}
-		}
-		if tokenRef, ok := cfg.Spec.Tokens[tokenName]; ok {
-			wizardEnv = append(wizardEnv,
-				envFromSecret("ANTHROPIC_API_KEY", tokenRef.Secret, tokenRef.Key),
-			)
-		}
-
-		// GitHub token.
-		if cfg.Spec.DoltHub.CredentialsSecret != "" {
-			wizardEnv = append(wizardEnv,
-				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
-			)
-		}
-	}
-
-	volumes := []corev1.Volume{
-		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		beadsSeedVolume(),
-	}
-
-	sharedMounts := []corev1.VolumeMount{
-		{Name: "comms", MountPath: "/comms"},
-		{Name: "workspace", MountPath: "/workspace"},
-		{Name: "data", MountPath: "/data"},
-	}
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: m.Namespace,
-			Labels: map[string]string{
-				"spire.awell.io/agent":   agent.Name,
-				"spire.awell.io/bead":    beadID,
-				"spire.awell.io/managed": "true",
-				"spire.awell.io/role":    "wizard",
-				"app.kubernetes.io/name": "spire-wizard",
-			},
-		},
-		Spec: corev1.PodSpec{
-			RestartPolicy:  corev1.RestartPolicyNever,
-			InitContainers: []corev1.Container{beadsSeedInitContainer()},
-			Volumes:        volumes,
-			Containers: []corev1.Container{
-				{
-					Name:    "wizard",
-					Image:   image,
-					Command: []string{"spire", "wizard", fmt.Sprintf("--epic-id=%s", beadID)},
-					Env:     wizardEnv,
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("100m"),
-							corev1.ResourceMemory: resource.MustParse("256Mi"),
-						},
-					},
-					VolumeMounts: sharedMounts,
-					WorkingDir:   "/workspace",
-				},
-				{
-					Name:  "sidecar",
-					Image: image,
-					Command: []string{
-						"spire-sidecar",
-						"--comms-dir=/comms",
-						"--poll-interval=10s",
-						"--port=8080",
-						fmt.Sprintf("--agent-name=%s", agent.Name),
-					},
-					Env:        sidecarEnv,
-					WorkingDir: "/data",
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "comms", MountPath: "/comms"},
-						{Name: "data", MountPath: "/data"},
-					},
-					ReadinessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/readyz",
-								Port: intstr8080(),
-							},
-						},
-						InitialDelaySeconds: 5,
-						PeriodSeconds:       10,
-					},
-					LivenessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/healthz",
-								Port: intstr8080(),
-							},
-						},
-						InitialDelaySeconds: 10,
-						PeriodSeconds:       30,
-					},
-				},
-			},
-		},
-	}
-
-	return pod
-}
-
-// buildReviewPod creates a one-shot pod for standalone task review.
-// Similar to buildEpicPod but runs the wizard in review mode (--mode=review --bead-id=X).
-func (m *AgentMonitor) buildReviewPod(agent *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
-	image := agent.Spec.Image
-	if image == "" {
-		image = m.StewardImage
-	}
-
-	podName := fmt.Sprintf("spire-review-%s", sanitizeK8sName(beadID))
-	if len(podName) > 63 {
-		podName = podName[:63]
-	}
-
-	branch := agent.Spec.RepoBranch
-	if branch == "" {
-		branch = repoconfig.DefaultBranchBase
-	}
-
-	// Wizard environment.
-	wizardEnv := []corev1.EnvVar{
-		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "SPIRE_BEAD_ID", Value: beadID},
-		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
-		{Name: "SPIRE_REPO_BRANCH", Value: branch},
-		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
-		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
-		{Name: "SPIRE_STATE_DIR", Value: "/data"},
-		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
-		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "SPIRE_BD_LOG", Value: "1"},
-	}
-
-	// Sidecar environment.
-	sidecarEnv := []corev1.EnvVar{
-		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
-		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "SPIRE_BD_LOG", Value: "1"},
-	}
-
-	// Inject secrets from SpireConfig.
-	if cfg != nil {
-		// Opus token.
-		tokenName := "heavy"
-		if _, ok := cfg.Spec.Tokens[tokenName]; !ok {
-			tokenName = agent.Spec.Token
-			if tokenName == "" {
-				tokenName = cfg.Spec.DefaultToken
-			}
-			if tokenName == "" {
-				tokenName = "default"
-			}
-		}
-		if tokenRef, ok := cfg.Spec.Tokens[tokenName]; ok {
-			wizardEnv = append(wizardEnv,
-				envFromSecret("ANTHROPIC_API_KEY", tokenRef.Secret, tokenRef.Key),
-			)
-		}
-
-		if cfg.Spec.DoltHub.CredentialsSecret != "" {
-			wizardEnv = append(wizardEnv,
-				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
-			)
-		}
-	}
-
-	volumes := []corev1.Volume{
-		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		beadsSeedVolume(),
-	}
-
-	sharedMounts := []corev1.VolumeMount{
-		{Name: "comms", MountPath: "/comms"},
-		{Name: "workspace", MountPath: "/workspace"},
-		{Name: "data", MountPath: "/data"},
-	}
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: m.Namespace,
-			Labels: map[string]string{
-				"spire.awell.io/agent":   agent.Name,
-				"spire.awell.io/bead":    beadID,
-				"spire.awell.io/managed": "true",
-				"spire.awell.io/role":    "reviewer",
-				"app.kubernetes.io/name": "spire-review",
-			},
-		},
-		Spec: corev1.PodSpec{
-			RestartPolicy:  corev1.RestartPolicyNever,
-			InitContainers: []corev1.Container{beadsSeedInitContainer()},
-			Volumes:        volumes,
-			Containers: []corev1.Container{
-				{
-					Name:  "wizard",
-					Image: image,
-					Command: []string{
-						"spire",
-						"wizard",
-						fmt.Sprintf("--bead-id=%s", beadID),
-						"--mode=review",
-						"--once",
-					},
-					Env: wizardEnv,
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("100m"),
-							corev1.ResourceMemory: resource.MustParse("256Mi"),
-						},
-					},
-					VolumeMounts: sharedMounts,
-					WorkingDir:   "/workspace",
-				},
-				{
-					Name:  "sidecar",
-					Image: image,
-					Command: []string{
-						"spire-sidecar",
-						"--comms-dir=/comms",
-						"--poll-interval=10s",
-						"--port=8080",
-						fmt.Sprintf("--agent-name=%s", agent.Name),
-					},
-					Env:        sidecarEnv,
-					WorkingDir: "/data",
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "comms", MountPath: "/comms"},
-						{Name: "data", MountPath: "/data"},
-					},
-					ReadinessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/readyz",
-								Port: intstr8080(),
-							},
-						},
-						InitialDelaySeconds: 5,
-						PeriodSeconds:       10,
-					},
-					LivenessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/healthz",
-								Port: intstr8080(),
-							},
-						},
-						InitialDelaySeconds: 10,
-						PeriodSeconds:       30,
-					},
-				},
-			},
-		},
-	}
-
-	return pod
-}
-
-// beadsSeedInitContainer returns an initContainer that copies .beads/ config
-// from the beads-seed ConfigMap into /data/.beads/.
-func beadsSeedInitContainer() corev1.Container {
-	return corev1.Container{
-		Name:    "seed-beads",
-		Image:   "alpine:3.20",
-		Command: []string{"sh", "-c"},
-		Args: []string{
-			// `|| true` on git init: alpine:3.20 has no git; failing there blocked pods (spi-5pgqy).
-			// chown at end: wizard runs as UID 1000 (non-root); otherwise can't write to /data/.beads/dolt-server.lock, bd-created files, etc.
-			// `|| true` on config.yaml cp: keep going even when the ConfigMap omits it (makes behavior consistent with the routes.jsonl line which uses &&).
-			`mkdir -p /data/.beads && cp /seed/metadata.json /data/.beads/metadata.json && cp /seed/routes.jsonl /data/.beads/routes.jsonl && ([ -f /seed/config.yaml ] && cp /seed/config.yaml /data/.beads/config.yaml || true); if [ ! -d /data/.git ]; then cd /data && git init -q 2>/dev/null || true; fi; chown -R 1000:1000 /data`,
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "data", MountPath: "/data"},
-			{Name: "beads-seed", MountPath: "/seed", ReadOnly: true},
-		},
-	}
-}
-
-// beadsSeedVolume returns the volume definition for the beads-seed ConfigMap.
-func beadsSeedVolume() corev1.Volume {
-	return corev1.Volume{
-		Name: "beads-seed",
-		VolumeSource: corev1.VolumeSource{
-			ConfigMap: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "beads-seed"},
-			},
-		},
-	}
-}
-
-func boolPtr(b bool) *bool { return &b }
 
 // removeFromCurrentWork drops beadID from agent.Status.CurrentWork in-place.
 // Returns true if the slice was modified.
@@ -977,19 +733,19 @@ func removeFromCurrentWork(agent *spirev1.WizardGuild, beadID string) bool {
 	return false
 }
 
-// isPodFinished reports whether the main work container has terminated, even
-// when the pod phase is still Running.
+// isPodFinished reports whether the main work container has terminated,
+// even when the pod phase is still Running.
 //
-// Used across all three pod paths:
-//   - Canonical workload pods (spi-9wo3a): one container named "agent"; any
-//     termination signals completion.
-//   - Epic/review pods (Model A, out of scope for spi-9wo3a): wizard + sidecar;
-//     the sidecar may keep the pod in Running while the wizard has exited, so
-//     we explicitly skip it.
+// Operator-managed pods use the canonical single-container wizard pod
+// shape (one "agent" container; Model A's wizard+sidecar shape was
+// deleted in spi-fjt2t). The "wizard"/"sidecar" fallbacks are preserved
+// here because in-flight pods on clusters that have not yet been
+// recreated may still carry the old container names — so reap still
+// fires on upgrade without a pod-by-pod manual cleanup.
 func isPodFinished(pod *corev1.Pod) bool {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.Name == "sidecar" {
-			continue // skip the sidecar (epic/review pods only)
+			continue // legacy Model A sidecar — not present on new pods.
 		}
 		if cs.State.Terminated != nil {
 			return true
