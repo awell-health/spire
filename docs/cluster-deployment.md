@@ -20,9 +20,10 @@ spire pull         <──  remote <────────────── s
                                                   ├── WorkloadAssigner
                                                   └── AgentMonitor
                                                       |
-                                                 wizard pods
-                                                  ├── agent container
-                                                  └── familiar container
+                                                 wizard pods (one-shot)
+                                                  ├── init: tower-attach
+                                                  └── agent container
+                                                      (spire execute)
 ```
 
 The cluster never creates a tower — it attaches to one you created locally. Developers file work locally, push to DoltHub, and the cluster picks it up.
@@ -451,12 +452,16 @@ The operator logs cycle summaries: `totalReady`, `assigned`, `inProgress`, `done
 # All agent pods
 kubectl get pods -n spire -l spire.awell.io/managed=true
 
-# Logs for a specific wizard
-kubectl logs -n spire my-agent-wizard-spi-a3f8 -c wizard
+# Logs for a specific wizard (main container is named `agent`)
+kubectl logs -n spire my-agent-wizard-spi-a3f8 -c agent
 
-# Sidecar logs
-kubectl logs -n spire my-agent-wizard-spi-a3f8 -c familiar
+# Init container logs (tower-attach bootstrap)
+kubectl logs -n spire my-agent-wizard-spi-a3f8 -c tower-attach
 ```
+
+The wizard pod is single-container (`agent`) with one init container
+(`tower-attach`). There is no familiar sidecar or `/comms` volume in
+wizard pods — see [k8s-operator-reference.md](k8s-operator-reference.md#deprecated-agent-entrypointsh--model-a).
 
 ### Check workload status
 

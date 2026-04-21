@@ -132,9 +132,8 @@ Assignment modes:
 ### Steward Sidecar (`cmd/spire-steward-sidecar/`)
 
 LLM-powered message processor that runs alongside the steward in k8s.
-Distinct from the familiar (per-agent companion): the steward-sidecar is
-an LLM-powered processor specific to the steward, whereas the familiar
-(`cmd/spire-sidecar/`) handles messaging and health for wizard pods.
+It is specific to the steward pod and is not deployed into wizard pods —
+wizard pods are single-container (`spire execute`) with no sidecar.
 Uses the Anthropic API with tool use to process messages sent to the steward.
 
 **Capabilities (via tools):**
@@ -650,8 +649,8 @@ spec:
    --> pod runs: clone, claim, focus, implement, test, push
 
 7. Wizard completes
-   writes result.json, familiar detects exit
-   --> AgentMonitor reaps pod, removes from CurrentWork
+   spire execute exits; pod enters Succeeded / Failed
+   --> AgentMonitor reads pod phase, reaps pod, removes from CurrentWork
 
 8. Status flows back
    syncer: dolt push --> DoltHub

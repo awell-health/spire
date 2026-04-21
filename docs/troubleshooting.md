@@ -386,7 +386,7 @@ spire collect agent-b
 spire send agent-a "Checked, looks good" --ref spi-abc --thread spi-msg-xyz
 ```
 
-Messages are stored in the bead graph and routed by labels. The familiar (sidecar) in k8s delivers inbox files to agent containers.
+Messages are stored in the bead graph and routed by labels. Agents read their inbox by calling `spire collect` against the shared dolt database.
 
 ### How do I connect Spire to Linear?
 

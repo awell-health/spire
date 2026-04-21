@@ -146,18 +146,22 @@ Workloads should move from `Pending` → `Assigned` → `InProgress` → `Done`.
 kubectl get pods -n spire -l spire.awell.io/managed=true
 ```
 
-Each pod is named `{agent}-wizard-{bead-id}`. The pod has two containers:
-- `worker` — runs the agent entrypoint
-- `familiar` — polls inbox and serves health checks
+Each pod is named `{agent}-wizard-{bead-id}`. The pod is single-container
+with one init container:
+- `tower-attach` (init) — runs `spire tower attach-cluster` to prime `/data`
+- `agent` (main) — runs `spire execute <bead> --name <name>`
+
+See [k8s-operator-reference.md — Canonical wizard pod contract](k8s-operator-reference.md#canonical-wizard-pod-contract)
+for the authoritative pod spec.
 
 ### Read pod logs
 
 ```bash
-# Worker logs
-kubectl logs -n spire ci-worker-wizard-spi-a3f8 -c worker
+# Main container logs
+kubectl logs -n spire ci-worker-wizard-spi-a3f8 -c agent
 
-# Familiar logs
-kubectl logs -n spire ci-worker-wizard-spi-a3f8 -c familiar
+# Init container logs (tower-attach bootstrap)
+kubectl logs -n spire ci-worker-wizard-spi-a3f8 -c tower-attach
 ```
 
 ### Check metrics
@@ -191,11 +195,11 @@ No available agent matches. Check that agent `spec.prefixes` includes the bead's
 **Agent pods not created:**
 The agent must be `mode: managed`. Check `kubectl get wizardguilds -n spire -o yaml` for the agent's spec. Also verify `spec.image` is set and pullable.
 
-**Worker fails immediately:**
-Check `SPIRE_REPO_URL` — the worker needs to clone a repo. Check that `GITHUB_TOKEN` is set if the repo is private. Look at worker logs: `kubectl logs <pod> -c worker`.
-
-**Familiar not ready:**
-The familiar needs to successfully run `spire collect` at least once. It runs in `/data` where beads state lives. If `/data/.beads` doesn't exist yet (worker hasn't initialized), the familiar will retry.
+**Wizard fails immediately:**
+Check the `agent` container logs: `kubectl logs <pod> -c agent`. If
+`GITHUB_TOKEN` is needed for the repo, verify it is set in the
+credentials secret. For bootstrap failures (missing `/data/.beads`),
+check the `tower-attach` init container: `kubectl logs <pod> -c tower-attach`.
 
 **Stale workloads not being reassigned:**
 Wait for the reassign threshold (default: 6h). Or reduce it: edit SpireConfig `spec.polling.reassignThreshold`.

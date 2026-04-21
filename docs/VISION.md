@@ -136,7 +136,7 @@ The formula maker. The artificer crafts and maintains spells (formulas) — the 
 
 ### Familiar
 
-A per-agent companion that runs alongside each wizard or apprentice. The familiar manages all communication between its agent and the Archive (the tower's Dolt database) — reading and writing beads, relaying messages, handling control signals (STOP, STEER, PAUSE, RESUME), posting liveness heartbeats, and serving health endpoints. In k8s it runs as a sidecar container (`cmd/spire-sidecar/`); locally it runs as a goroutine within the agent process.
+A per-agent companion that mediates communication between an agent and the Archive (the tower's Dolt database) — reading and writing beads, relaying messages, handling control signals (STOP, STEER, PAUSE, RESUME), posting liveness heartbeats, and serving health endpoints. Locally it runs as a goroutine within the agent process. The `cmd/spire-sidecar/` binary is retained for historical / non-wizard uses; on `main` it is **not** deployed into wizard pods — wizard pods are single-container (`spire execute`) and coordinate with the steward via dolt and OTLP telemetry instead of a sidecar. See the canonical wizard pod contract in [k8s-operator-reference.md](k8s-operator-reference.md#canonical-wizard-pod-contract).
 
 ### Workshop (CLI Tool)
 
