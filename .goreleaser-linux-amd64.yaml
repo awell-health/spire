@@ -67,7 +67,6 @@ dockers:
       - go.sum
       - cmd
       - pkg
-      - agent-entrypoint.sh
 
   - id: builder-amd64
     goos: linux
