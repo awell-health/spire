@@ -32,7 +32,7 @@ func (a *WorkloadAssigner) Start(ctx context.Context) error {
 }
 
 func (a *WorkloadAssigner) Run(ctx context.Context) {
-	a.Log.Info("workload assigner starting", "interval", a.Interval)
+	a.Log.Info("workload assigner starting", "interval", a.Interval, "backend", "operator-k8s")
 	ticker := time.NewTicker(a.Interval)
 	defer ticker.Stop()
 
@@ -52,14 +52,14 @@ func (a *WorkloadAssigner) cycle(ctx context.Context) {
 	// 1. Get pending workloads
 	var workloads spirev1.SpireWorkloadList
 	if err := a.Client.List(ctx, &workloads, client.InNamespace(a.Namespace)); err != nil {
-		a.Log.Error(err, "failed to list workloads")
+		a.Log.Error(err, "failed to list workloads", "backend", "operator-k8s")
 		return
 	}
 
 	// 2. Get agents
 	var agents spirev1.WizardGuildList
 	if err := a.Client.List(ctx, &agents, client.InNamespace(a.Namespace)); err != nil {
-		a.Log.Error(err, "failed to list agents")
+		a.Log.Error(err, "failed to list agents", "backend", "operator-k8s")
 		return
 	}
 
@@ -88,7 +88,7 @@ func (a *WorkloadAssigner) cycle(ctx context.Context) {
 			// assign based on CRD state alone (graceful degradation).
 			if schedulable != nil && !schedulable[wl.Spec.BeadID] {
 				a.Log.Info("workload bead no longer schedulable, cancelling",
-					"bead", wl.Spec.BeadID)
+					"bead_id", wl.Spec.BeadID, "backend", "operator-k8s")
 				wl.Status.Phase = "Cancelled"
 				wl.Status.Message = "Bead no longer schedulable (scheduling policy)"
 				a.Client.Status().Update(ctx, wl) //nolint
@@ -120,13 +120,13 @@ func (a *WorkloadAssigner) cycle(ctx context.Context) {
 func (a *WorkloadAssigner) getSchedulableSet() map[string]bool {
 	result, err := store.GetSchedulableWork(beads.WorkFilter{})
 	if err != nil {
-		a.Log.Error(err, "store.GetSchedulableWork failed, skipping validation")
+		a.Log.Error(err, "store.GetSchedulableWork failed, skipping validation", "backend", "operator-k8s")
 		return nil
 	}
 
 	// Log quarantined beads at Error level.
 	for _, q := range result.Quarantined {
-		a.Log.Error(q.Error, "quarantined bead (multiple open attempts)", "beadId", q.ID)
+		a.Log.Error(q.Error, "quarantined bead (multiple open attempts)", "bead_id", q.ID, "backend", "operator-k8s")
 	}
 
 	set := make(map[string]bool, len(result.Schedulable))
@@ -176,17 +176,17 @@ func (a *WorkloadAssigner) assign(ctx context.Context, wl *spirev1.SpireWorkload
 	wl.Status.Attempts++
 	wl.Status.Message = fmt.Sprintf("Assigned to %s", agent.Name)
 	if err := a.Client.Status().Update(ctx, wl); err != nil {
-		a.Log.Error(err, "failed to update workload status")
+		a.Log.Error(err, "failed to update workload status", "bead_id", wl.Spec.BeadID, "agent_name", agent.Name, "backend", "operator-k8s")
 	}
 
 	// Update agent status
 	agent.Status.Phase = "Working"
 	agent.Status.CurrentWork = append(agent.Status.CurrentWork, wl.Spec.BeadID)
 	if err := a.Client.Status().Update(ctx, agent); err != nil {
-		a.Log.Error(err, "failed to update agent status")
+		a.Log.Error(err, "failed to update agent status", "bead_id", wl.Spec.BeadID, "agent_name", agent.Name, "backend", "operator-k8s")
 	}
 
-	a.Log.Info("assigned workload", "bead", wl.Spec.BeadID, "agent", agent.Name, "priority", wl.Spec.Priority)
+	a.Log.Info("assigned workload", "bead_id", wl.Spec.BeadID, "agent_name", agent.Name, "priority", wl.Spec.Priority, "backend", "operator-k8s")
 }
 
 func (a *WorkloadAssigner) checkStale(ctx context.Context, wl *spirev1.SpireWorkload) {
@@ -204,7 +204,7 @@ func (a *WorkloadAssigner) checkStale(ctx context.Context, wl *spirev1.SpireWork
 	if age > a.ReassignThreshold {
 		// Unassign and return to pending for re-matching
 		a.Log.Info("workload stale, unassigning",
-			"bead", wl.Spec.BeadID, "agent", wl.Status.AssignedTo, "age", age)
+			"bead_id", wl.Spec.BeadID, "agent_name", wl.Status.AssignedTo, "age", age, "backend", "operator-k8s")
 
 		oldAgent := wl.Status.AssignedTo
 		wl.Status.Phase = "Pending"
@@ -215,7 +215,7 @@ func (a *WorkloadAssigner) checkStale(ctx context.Context, wl *spirev1.SpireWork
 	} else if age > a.StaleThreshold && wl.Status.Phase != "Stale" {
 		// Send a reminder
 		a.Log.Info("workload stale, sending reminder",
-			"bead", wl.Spec.BeadID, "agent", wl.Status.AssignedTo, "age", age)
+			"bead_id", wl.Spec.BeadID, "agent_name", wl.Status.AssignedTo, "age", age, "backend", "operator-k8s")
 
 		wl.Status.Phase = "Stale"
 		wl.Status.Message = fmt.Sprintf("No progress for %s", age.Round(time.Minute))

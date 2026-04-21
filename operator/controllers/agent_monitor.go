@@ -80,7 +80,7 @@ func (m *AgentMonitor) Start(ctx context.Context) error {
 }
 
 func (m *AgentMonitor) Run(ctx context.Context) {
-	m.Log.Info("agent monitor starting", "interval", m.Interval)
+	m.Log.Info("agent monitor starting", "interval", m.Interval, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 	ticker := time.NewTicker(m.Interval)
 	defer ticker.Stop()
 
@@ -97,13 +97,13 @@ func (m *AgentMonitor) Run(ctx context.Context) {
 }
 
 func (m *AgentMonitor) cycle(ctx context.Context) {
-	m.Log.Info("agent monitor cycle start")
+	m.Log.Info("agent monitor cycle start", "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 	var agents spirev1.WizardGuildList
 	if err := m.Client.List(ctx, &agents, client.InNamespace(m.Namespace)); err != nil {
-		m.Log.Error(err, "failed to list agents")
+		m.Log.Error(err, "failed to list agents", "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		return
 	}
-	m.Log.Info("agent monitor found agents", "count", len(agents.Items))
+	m.Log.Info("agent monitor found agents", "count", len(agents.Items), "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 
 	// Load SpireConfig for token/DoltHub resolution
 	cfg := m.loadConfig(ctx)
@@ -126,7 +126,7 @@ func (m *AgentMonitor) loadConfig(ctx context.Context) *spirev1.SpireConfig {
 	var cfg spirev1.SpireConfig
 	if err := m.Client.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: "default"}, &cfg); err != nil {
 		if !errors.IsNotFound(err) {
-			m.Log.Error(err, "failed to read SpireConfig")
+			m.Log.Error(err, "failed to read SpireConfig", "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		}
 		return nil
 	}
@@ -155,7 +155,7 @@ func (m *AgentMonitor) checkExternalAgent(ctx context.Context, agent *spirev1.Wi
 			agent.Status.Phase = "Offline"
 			agent.Status.Message = fmt.Sprintf("Last seen %s ago", age.Round(time.Minute))
 			m.Client.Status().Update(ctx, agent) //nolint
-			m.Log.Info("agent went offline", "agent", agent.Name, "lastSeen", age)
+			m.Log.Info("agent went offline", "agent_name", agent.Name, "lastSeen", age, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		}
 	}
 }
@@ -169,7 +169,7 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		client.InNamespace(m.Namespace),
 		client.MatchingLabels{"spire.awell.io/agent": agent.Name, "spire.awell.io/managed": "true"},
 	); err != nil {
-		m.Log.Error(err, "failed to list agent pods", "agent", agent.Name)
+		m.Log.Error(err, "failed to list agent pods", "agent_name", agent.Name, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		return
 	}
 
@@ -217,7 +217,7 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		signalPresent, err := hasApprenticeSignal(beadID)
 		if err != nil {
 			m.Log.Error(err, "failed to read bead metadata for reap; skipping this cycle",
-				"agent", agent.Name, "bead", beadID)
+				"agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 			continue
 		}
 
@@ -229,12 +229,12 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 			}
 			if havePod && pod.DeletionTimestamp == nil {
 				if err := m.Client.Delete(ctx, pod); err != nil {
-					m.Log.Error(err, "failed to delete completed pod", "pod", pod.Name)
+					m.Log.Error(err, "failed to delete completed pod", "pod", pod.Name, "agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 				}
 			}
 			reaped[beadID] = true
 			m.Log.Info("reaped completed workload",
-				"agent", agent.Name, "bead", beadID, "reason", "signal")
+				"agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s", "reason", "signal")
 
 		case havePod && (pod.Status.Phase == corev1.PodSucceeded ||
 			pod.Status.Phase == corev1.PodFailed || isPodFinished(pod)):
@@ -246,21 +246,21 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 			// the leaked remote branch has to live here, not in the entrypoint.
 			if err := m.deleteRemoteFeatBranch(ctx, agent, beadID, cfg); err != nil {
 				m.Log.Error(err, "failed to delete remote feat branch after non-success reap",
-					"agent", agent.Name, "bead", beadID)
+					"agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 			}
 			if pod.DeletionTimestamp == nil {
 				if err := m.Client.Delete(ctx, pod); err != nil {
-					m.Log.Error(err, "failed to delete finished pod", "pod", pod.Name)
+					m.Log.Error(err, "failed to delete finished pod", "pod", pod.Name, "agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 				}
 			}
 			reaped[beadID] = true
 			m.Log.Info("reaped completed workload",
-				"agent", agent.Name, "bead", beadID, "reason", "pod-terminated-no-signal")
+				"agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s", "reason", "pod-terminated-no-signal")
 		}
 	}
 	if statusChanged {
 		if err := m.Client.Status().Update(ctx, agent); err != nil {
-			m.Log.Error(err, "failed to update agent CurrentWork after reaping")
+			m.Log.Error(err, "failed to update agent CurrentWork after reaping", "agent_name", agent.Name, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		}
 	}
 
@@ -286,11 +286,11 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 			continue
 		}
 		if err := m.Client.Create(ctx, pod); err != nil {
-			m.Log.Error(err, "failed to create workload pod", "agent", agent.Name, "bead", beadID)
+			m.Log.Error(err, "failed to create workload pod", "agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 			continue
 		}
 
-		m.Log.Info("created workload pod", "agent", agent.Name, "bead", beadID, "pod", pod.Name, "role", pod.Labels["spire.awell.io/role"])
+		m.Log.Info("created workload pod", "agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s", "pod", pod.Name, "role", pod.Labels["spire.awell.io/role"], "workspace_kind", pod.Labels["spire.awell.io/workspace-kind"], "workspace_name", pod.Labels["spire.awell.io/workspace-name"], "handoff_mode", pod.Labels["spire.awell.io/handoff-mode"])
 	}
 
 	// Delete pods for work that's no longer assigned
@@ -308,9 +308,9 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 			continue // already handled above
 		}
 		if err := m.Client.Delete(ctx, pod); err != nil {
-			m.Log.Error(err, "failed to delete stale workload pod", "pod", pod.Name, "bead", beadID)
+			m.Log.Error(err, "failed to delete stale workload pod", "pod", pod.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		} else {
-			m.Log.Info("deleted stale workload pod", "agent", agent.Name, "bead", beadID)
+			m.Log.Info("deleted stale workload pod", "agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		}
 	}
 
@@ -440,7 +440,7 @@ func (m *AgentMonitor) buildWorkloadPod(wg *spirev1.WizardGuild, beadID string, 
 		// visibly instead of silently returning a bad pod — the monitor
 		// logs the error and skips this bead until the CR is fixed.
 		m.Log.Error(err, "shared pod builder failed; skipping bead",
-			"agent", wg.Name, "bead", beadID)
+			"agent_name", wg.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		return nil
 	}
 

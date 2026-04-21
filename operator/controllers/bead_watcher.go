@@ -33,7 +33,7 @@ func (w *BeadWatcher) Start(ctx context.Context) error {
 
 // Run is the main loop — call from the operator's main.go in a goroutine.
 func (w *BeadWatcher) Run(ctx context.Context) {
-	w.Log.Info("bead watcher starting", "interval", w.Interval)
+	w.Log.Info("bead watcher starting", "interval", w.Interval, "backend", "operator-k8s")
 	ticker := time.NewTicker(w.Interval)
 	defer ticker.Stop()
 
@@ -43,7 +43,7 @@ func (w *BeadWatcher) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			w.Log.Info("bead watcher stopping")
+			w.Log.Info("bead watcher stopping", "backend", "operator-k8s")
 			return
 		case <-ticker.C:
 			w.cycle(ctx)
@@ -52,11 +52,11 @@ func (w *BeadWatcher) Run(ctx context.Context) {
 }
 
 func (w *BeadWatcher) cycle(ctx context.Context) {
-	w.Log.V(1).Info("bead watcher cycle start")
+	w.Log.V(1).Info("bead watcher cycle start", "backend", "operator-k8s")
 
 	// Ensure store is initialized
 	if _, err := store.Ensure(w.BeadsDir); err != nil {
-		w.Log.Error(err, "failed to initialize bead store", "beadsDir", w.BeadsDir)
+		w.Log.Error(err, "failed to initialize bead store", "beadsDir", w.BeadsDir, "backend", "operator-k8s")
 		return
 	}
 
@@ -68,13 +68,13 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 	// scheduling policy (excludes msg/template beads, active-attempt beads).
 	schedResult, err := store.GetSchedulableWork(beads.WorkFilter{})
 	if err != nil {
-		w.Log.Error(err, "store.GetSchedulableWork failed")
+		w.Log.Error(err, "store.GetSchedulableWork failed", "backend", "operator-k8s")
 		return
 	}
 
 	// Surface quarantined beads (invariant violations) at Error level.
 	for _, q := range schedResult.Quarantined {
-		w.Log.Error(q.Error, "quarantined bead (multiple open attempts)", "beadId", q.ID)
+		w.Log.Error(q.Error, "quarantined bead (multiple open attempts)", "bead_id", q.ID, "backend", "operator-k8s")
 	}
 
 	readyBeads := schedResult.Schedulable
@@ -82,7 +82,7 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 	// 2. Get existing workloads
 	var existing spirev1.SpireWorkloadList
 	if err := w.Client.List(ctx, &existing, client.InNamespace(w.Namespace)); err != nil {
-		w.Log.Error(err, "failed to list SpireWorkloads")
+		w.Log.Error(err, "failed to list SpireWorkloads", "backend", "operator-k8s")
 		return
 	}
 
@@ -120,7 +120,7 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 		}
 
 		if err := w.Client.Create(ctx, workload); err != nil {
-			w.Log.Error(err, "failed to create SpireWorkload", "beadId", bead.ID)
+			w.Log.Error(err, "failed to create SpireWorkload", "bead_id", bead.ID, "backend", "operator-k8s")
 			continue
 		}
 
@@ -128,7 +128,7 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 		workload.Status.Phase = "Pending"
 		workload.Status.Message = "Waiting for agent assignment"
 		if err := w.Client.Status().Update(ctx, workload); err != nil {
-			w.Log.Error(err, "failed to set initial status", "beadId", bead.ID)
+			w.Log.Error(err, "failed to set initial status", "bead_id", bead.ID, "backend", "operator-k8s")
 		}
 
 		created++
@@ -151,13 +151,13 @@ func (w *BeadWatcher) cycle(ctx context.Context) {
 			}
 		}
 	} else {
-		w.Log.Error(err, "store.ListBeads (closed) failed")
+		w.Log.Error(err, "store.ListBeads (closed) failed", "backend", "operator-k8s")
 	}
 
 	if created > 0 {
-		w.Log.Info("bead watcher cycle complete", "newWorkloads", created, "totalReady", len(readyBeads))
+		w.Log.Info("bead watcher cycle complete", "newWorkloads", created, "totalReady", len(readyBeads), "backend", "operator-k8s")
 	} else {
-		w.Log.V(1).Info("bead watcher cycle complete", "totalReady", len(readyBeads))
+		w.Log.V(1).Info("bead watcher cycle complete", "totalReady", len(readyBeads), "backend", "operator-k8s")
 	}
 }
 

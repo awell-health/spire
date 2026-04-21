@@ -65,7 +65,7 @@ func (m *AgentMonitor) loadGitHubToken(ctx context.Context, cfg *spirev1.SpireCo
 	if err := m.Client.Get(ctx, key, &secret); err != nil {
 		if !errors.IsNotFound(err) {
 			m.Log.V(1).Info("failed to read DoltHub credentials secret for GitHub token",
-				"secret", cfg.Spec.DoltHub.CredentialsSecret, "err", err)
+				"secret", cfg.Spec.DoltHub.CredentialsSecret, "err", err, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
 		}
 		return ""
 	}
