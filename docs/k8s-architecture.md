@@ -97,9 +97,9 @@ Three poll-loop controllers run inside the operator process:
 
 ## Pod architecture
 
-Each managed workload gets a **single-container wizard pod** with one
-init container that bootstraps the beads data directory, and two
-emptyDir volumes. The authoritative spec lives in
+Each managed workload gets a **single-container wizard pod** with two
+init containers that bootstrap the beads data directory and the repo
+checkout, plus two emptyDir volumes. The authoritative spec lives in
 [k8s-operator-reference.md — Canonical wizard pod contract](k8s-operator-reference.md#canonical-wizard-pod-contract);
 this section summarizes.
 
@@ -113,6 +113,15 @@ Pod: {agent-name}
  │  │    --data-dir=/data/<db> --database=<db>             │ │
  │  │    --prefix=<prefix> --dolthub-remote=<remote>       │ │
  │  │  volumeMounts: /data                                 │ │
+ │  └────────────────────┬─────────────────────────────────┘ │
+ │                       │                                    │
+ │                       v                                    │
+ │  ┌──────────────────────────────────────────────────────┐ │
+ │  │  init: repo-bootstrap                                │ │
+ │  │  sh -c 'git clone … && spire repo bind-local …'      │ │
+ │  │    SPIRE_REPO_URL / SPIRE_REPO_BRANCH /              │ │
+ │  │    SPIRE_REPO_PREFIX                                 │ │
+ │  │  volumeMounts: /data, /workspace                     │ │
  │  └────────────────────┬─────────────────────────────────┘ │
  │                       │                                    │
  │                       v                                    │
@@ -143,7 +152,7 @@ Pod: {agent-name}
 
 ### Init container: tower-attach
 
-A single init container named `tower-attach` runs
+The first init container, `tower-attach`, runs
 `spire tower attach-cluster` with `--data-dir`, `--database`, `--prefix`,
 and `--dolthub-remote` flags. It primes the `/data` volume with the
 beads workspace (dolt data dir) and spire config so the main container
@@ -151,6 +160,20 @@ can open dolt immediately.
 
 This replaces both the older `beads-seed` ConfigMap bootstrap and the
 `agent-entrypoint.sh` workspace-setup flow.
+
+### Init container: repo-bootstrap
+
+The second init container, `repo-bootstrap`, clones the bead's repo
+into `/workspace/<prefix>` and invokes `spire repo bind-local` to write
+a local binding into the tower config on `/data`. `bind-local` is the
+local-only counterpart to `spire repo bind`: it takes repo URL and
+branch as explicit flags (rather than reading the shared dolt repos
+table) and writes only to `tower.LocalBindings` and `cfg.Instances`.
+This is what lets the bootstrap succeed in the pod's read path — the
+main container's `wizard.ResolveRepo` finds the checkout as soon as it
+starts. See [k8s-operator-reference.md — Init container:
+repo-bootstrap](k8s-operator-reference.md#init-container-repo-bootstrap)
+for the full contract.
 
 ### Main container: agent
 
@@ -184,6 +207,9 @@ The steward/operator injects these into the main (`agent`) container:
 | `SPIRE_BEAD_ID` | Assigned bead ID | Yes |
 | `SPIRE_TOWER` | Tower name | Yes |
 | `SPIRE_ROLE` | `wizard` | Yes |
+| `SPIRE_REPO_URL` | Git remote URL for the bead's prefix (also on `repo-bootstrap`) | Yes |
+| `SPIRE_REPO_BRANCH` | Branch cloned by `repo-bootstrap` (also on the init container) | Yes |
+| `SPIRE_REPO_PREFIX` | Bead prefix — keys `cfg.Instances[prefix]` for `wizard.ResolveRepo` | Yes |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector (steward) | Yes |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Yes |
 | `OTEL_TRACES_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp` | Yes |

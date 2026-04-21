@@ -108,6 +108,17 @@ type SpawnConfig struct {
 	CustomPrompt  string    // Inline prompt from formula with.prompt — written to temp file and passed as --custom-prompt-file to subprocess.
 	AttemptID     string    // Attempt bead ID created by the wizard for this spawn — injected as SPIRE_ATTEMPT_ID into subprocess env. Empty when the spawn is not a fresh attempt (e.g. review-fix re-engagement).
 	ApprenticeIdx string    // Fan-out index of this apprentice within its wave (integer as string). Injected as SPIRE_APPRENTICE_IDX into subprocess env. "0" for single-apprentice spawns.
+
+	// Repo bootstrap inputs — required by the k8s backend for RoleWizard pods
+	// (see pkg/agent/backend_k8s buildWizardPod). A wizard pod has an empty
+	// /workspace and no local instance binding; the repo-bootstrap init
+	// container clones RepoURL@RepoBranch into /workspace/<RepoPrefix> and
+	// invokes `spire repo bind-local` so wizard.ResolveRepo can find the
+	// local path. Other backends (process, docker) and other roles ignore
+	// these fields.
+	RepoURL    string // git remote URL for the bead's repo prefix
+	RepoBranch string // default branch to clone for bootstrap
+	RepoPrefix string // bead prefix (e.g. "spi") — keys cfg.Instances[prefix]
 }
 
 // NewSpawner returns a Spawner for the given backend.

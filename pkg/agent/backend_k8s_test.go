@@ -247,6 +247,11 @@ func TestK8sBackend_Spawn_SetsSpireRole(t *testing.T) {
 				Role:   role,
 				Tower:  "t",
 			}
+			if role == RoleWizard {
+				cfg.RepoURL = "https://github.com/example/repo.git"
+				cfg.RepoBranch = "main"
+				cfg.RepoPrefix = "spi"
+			}
 
 			if _, err := b.Spawn(cfg); err != nil {
 				t.Fatalf("Spawn: %v", err)
@@ -339,6 +344,11 @@ func TestK8sBackend_Spawn_ResourceTiers(t *testing.T) {
 				Role:   tt.role,
 				Tower:  "test-tower",
 			}
+			if tt.role == RoleWizard {
+				cfg.RepoURL = "https://github.com/example/repo.git"
+				cfg.RepoBranch = "main"
+				cfg.RepoPrefix = "spi"
+			}
 
 			_, err := b.Spawn(cfg)
 			if err != nil {
@@ -367,10 +377,13 @@ func TestK8sBackend_Wait_Success(t *testing.T) {
 	b := NewK8sBackendFromClient(client, testNamespace, testImage)
 
 	cfg := SpawnConfig{
-		Name:   "test-wait-ok",
-		BeadID: "spi-wait",
-		Role:   RoleWizard,
-		Tower:  "test",
+		Name:       "test-wait-ok",
+		BeadID:     "spi-wait",
+		Role:       RoleWizard,
+		Tower:      "test",
+		RepoURL:    "https://github.com/example/repo.git",
+		RepoBranch: "main",
+		RepoPrefix: "spi",
 	}
 
 	handle, err := b.Spawn(cfg)
@@ -500,12 +513,18 @@ func TestK8sBackend_List(t *testing.T) {
 	beads := []string{"spi-a", "spi-b", "spi-c"}
 
 	for i, role := range roles {
-		_, err := b.Spawn(SpawnConfig{
+		cfg := SpawnConfig{
 			Name:   names[i],
 			BeadID: beads[i],
 			Role:   role,
 			Tower:  "test",
-		})
+		}
+		if role == RoleWizard {
+			cfg.RepoURL = "https://github.com/example/repo.git"
+			cfg.RepoBranch = "main"
+			cfg.RepoPrefix = "spi"
+		}
+		_, err := b.Spawn(cfg)
 		if err != nil {
 			t.Fatalf("Spawn %s: %v", names[i], err)
 		}
@@ -574,17 +593,26 @@ func searchString(s, substr string) bool {
 // policy) so that regressions in any one dimension surface on their
 // own rather than folded into a single mega-assertion.
 
+// wizardSpawnConfig returns a SpawnConfig populated with the repo
+// bootstrap fields now required by buildWizardPod (spi-fopwn). Used by
+// every wizard-branch test so fixtures stay DRY and any future field
+// additions surface in a single place.
+func wizardSpawnConfig() SpawnConfig {
+	return SpawnConfig{
+		Name:       "wizard-spi-abcde-0",
+		BeadID:     "spi-abcde",
+		Role:       RoleWizard,
+		Tower:      "test-tower",
+		RepoURL:    "https://github.com/example/repo.git",
+		RepoBranch: "main",
+		RepoPrefix: "spi",
+	}
+}
+
 func TestK8sBackend_SpawnWizard_Volumes(t *testing.T) {
 	b, client := newTestBackend()
 
-	cfg := SpawnConfig{
-		Name:   "wizard-spi-abcde-0",
-		BeadID: "spi-abcde",
-		Role:   RoleWizard,
-		Tower:  "test-tower",
-	}
-
-	if _, err := b.Spawn(cfg); err != nil {
+	if _, err := b.Spawn(wizardSpawnConfig()); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
@@ -622,72 +650,188 @@ func TestK8sBackend_SpawnWizard_Volumes(t *testing.T) {
 		t.Errorf("main container /workspace mount volume = %q, want %q", mainMounts["/workspace"], "workspace")
 	}
 
-	if len(pod.Spec.InitContainers) != 1 {
-		t.Fatalf("len(InitContainers) = %d, want 1", len(pod.Spec.InitContainers))
+	if len(pod.Spec.InitContainers) != 2 {
+		t.Fatalf("len(InitContainers) = %d, want 2 (tower-attach, repo-bootstrap)", len(pod.Spec.InitContainers))
 	}
-	var initDataMount bool
-	for _, m := range pod.Spec.InitContainers[0].VolumeMounts {
+	// tower-attach mounts /data only; repo-bootstrap mounts /data + /workspace.
+	towerAttach := pod.Spec.InitContainers[0]
+	var taDataMount bool
+	for _, m := range towerAttach.VolumeMounts {
 		if m.MountPath == "/data" && m.Name == "data" {
-			initDataMount = true
+			taDataMount = true
 			break
 		}
 	}
-	if !initDataMount {
-		t.Errorf("init container missing /data mount backed by volume %q; mounts = %+v",
-			"data", pod.Spec.InitContainers[0].VolumeMounts)
+	if !taDataMount {
+		t.Errorf("tower-attach missing /data mount backed by volume %q; mounts = %+v",
+			"data", towerAttach.VolumeMounts)
+	}
+
+	repoBootstrap := pod.Spec.InitContainers[1]
+	rbMounts := make(map[string]string, 2)
+	for _, m := range repoBootstrap.VolumeMounts {
+		rbMounts[m.MountPath] = m.Name
+	}
+	if rbMounts["/data"] != "data" {
+		t.Errorf("repo-bootstrap /data mount volume = %q, want %q", rbMounts["/data"], "data")
+	}
+	if rbMounts["/workspace"] != "workspace" {
+		t.Errorf("repo-bootstrap /workspace mount volume = %q, want %q", rbMounts["/workspace"], "workspace")
 	}
 }
 
 func TestK8sBackend_SpawnWizard_InitContainer(t *testing.T) {
 	b, client := newTestBackend()
 
-	cfg := SpawnConfig{
-		Name:   "wizard-spi-abcde-0",
-		BeadID: "spi-abcde",
-		Role:   RoleWizard,
-		Tower:  "test-tower",
-	}
-
-	if _, err := b.Spawn(cfg); err != nil {
+	if _, err := b.Spawn(wizardSpawnConfig()); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
 	pod := spawnedPod(t, client)
 
-	if len(pod.Spec.InitContainers) != 1 {
-		t.Fatalf("len(InitContainers) = %d, want 1", len(pod.Spec.InitContainers))
+	if len(pod.Spec.InitContainers) != 2 {
+		t.Fatalf("len(InitContainers) = %d, want 2 (tower-attach, repo-bootstrap)", len(pod.Spec.InitContainers))
 	}
 	ic := pod.Spec.InitContainers[0]
 	if ic.Name != "tower-attach" {
-		t.Errorf("init container Name = %q, want tower-attach", ic.Name)
+		t.Errorf("init container[0].Name = %q, want tower-attach", ic.Name)
 	}
 	if len(ic.Command) < 3 {
-		t.Fatalf("init container Command too short: %v", ic.Command)
+		t.Fatalf("tower-attach Command too short: %v", ic.Command)
 	}
 	wantPrefix := []string{"spire", "tower", "attach-cluster"}
 	for i, w := range wantPrefix {
 		if ic.Command[i] != w {
-			t.Errorf("init container Command[%d] = %q, want %q", i, ic.Command[i], w)
+			t.Errorf("tower-attach Command[%d] = %q, want %q", i, ic.Command[i], w)
 		}
 	}
 	for _, flag := range []string{"--data-dir=/data/", "--database=", "--prefix=", "--dolthub-remote="} {
 		if !containsFlag(ic.Command, flag) {
-			t.Errorf("init container Command missing flag starting with %q; got %v", flag, ic.Command)
+			t.Errorf("tower-attach Command missing flag starting with %q; got %v", flag, ic.Command)
 		}
+	}
+}
+
+// TestK8sBackend_SpawnWizard_RepoBootstrapInitContainer pins the
+// repo-bootstrap init container (spi-fopwn): it must run after
+// tower-attach, reference the three SPIRE_REPO_* env vars in its shell
+// command, and mount both /data (for bind-local to write tower config)
+// and /workspace (for the clone target).
+func TestK8sBackend_SpawnWizard_RepoBootstrapInitContainer(t *testing.T) {
+	b, client := newTestBackend()
+
+	if _, err := b.Spawn(wizardSpawnConfig()); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pod := spawnedPod(t, client)
+
+	if len(pod.Spec.InitContainers) != 2 {
+		t.Fatalf("len(InitContainers) = %d, want 2 (tower-attach, repo-bootstrap)", len(pod.Spec.InitContainers))
+	}
+	// Order matters: tower-attach seeds /data/<db>/.beads, then
+	// repo-bootstrap clones and binds; swapping the order breaks the
+	// bind-local write target.
+	if pod.Spec.InitContainers[0].Name != "tower-attach" {
+		t.Errorf("init container[0].Name = %q, want tower-attach", pod.Spec.InitContainers[0].Name)
+	}
+	if pod.Spec.InitContainers[1].Name != "repo-bootstrap" {
+		t.Errorf("init container[1].Name = %q, want repo-bootstrap", pod.Spec.InitContainers[1].Name)
+	}
+
+	rb := pod.Spec.InitContainers[1]
+	if rb.Image != testImage {
+		t.Errorf("repo-bootstrap Image = %q, want %q", rb.Image, testImage)
+	}
+	if len(rb.Command) < 2 || rb.Command[0] != "sh" || rb.Command[1] != "-c" {
+		t.Errorf("repo-bootstrap Command[:2] = %v, want [sh -c ...]", rb.Command)
+	}
+	if len(rb.Command) < 3 {
+		t.Fatalf("repo-bootstrap Command missing script: %v", rb.Command)
+	}
+	script := rb.Command[2]
+	for _, substr := range []string{
+		"SPIRE_REPO_URL",
+		"SPIRE_REPO_BRANCH",
+		"SPIRE_REPO_PREFIX",
+		"git clone",
+		"spire repo bind-local",
+	} {
+		if !strings.Contains(script, substr) {
+			t.Errorf("repo-bootstrap script missing %q\nscript: %s", substr, script)
+		}
+	}
+
+	// The env vars themselves must be on the container (not just
+	// referenced in the script) so the shell can expand them.
+	envMap := make(map[string]corev1.EnvVar, len(rb.Env))
+	for _, e := range rb.Env {
+		envMap[e.Name] = e
+	}
+	wantEnv := map[string]string{
+		"SPIRE_REPO_URL":    "https://github.com/example/repo.git",
+		"SPIRE_REPO_BRANCH": "main",
+		"SPIRE_REPO_PREFIX": "spi",
+	}
+	for k, want := range wantEnv {
+		got, ok := envMap[k]
+		if !ok {
+			t.Errorf("repo-bootstrap missing env %s", k)
+			continue
+		}
+		if got.Value != want {
+			t.Errorf("repo-bootstrap env %s = %q, want %q", k, got.Value, want)
+		}
+	}
+
+	mounts := make(map[string]string, 2)
+	for _, m := range rb.VolumeMounts {
+		mounts[m.MountPath] = m.Name
+	}
+	if mounts["/data"] != "data" {
+		t.Errorf("repo-bootstrap /data mount volume = %q, want data", mounts["/data"])
+	}
+	if mounts["/workspace"] != "workspace" {
+		t.Errorf("repo-bootstrap /workspace mount volume = %q, want workspace", mounts["/workspace"])
+	}
+}
+
+// TestK8sBackend_SpawnWizard_RejectsEmptyRepoFields pins the fail-fast
+// guard on buildWizardPod (spi-fopwn): an empty RepoURL, RepoBranch, or
+// RepoPrefix must surface as a clear error at Spawn time rather than
+// producing a pod that dies later in ResolveRepo.
+func TestK8sBackend_SpawnWizard_RejectsEmptyRepoFields(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*SpawnConfig)
+		want string
+	}{
+		{"empty RepoURL", func(c *SpawnConfig) { c.RepoURL = "" }, "RepoURL is required"},
+		{"empty RepoBranch", func(c *SpawnConfig) { c.RepoBranch = "" }, "RepoBranch is required"},
+		{"empty RepoPrefix", func(c *SpawnConfig) { c.RepoPrefix = "" }, "RepoPrefix is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := newTestBackend()
+
+			cfg := wizardSpawnConfig()
+			tc.mut(&cfg)
+
+			_, err := b.Spawn(cfg)
+			if err == nil {
+				t.Fatalf("Spawn(%s): want error, got nil", tc.name)
+			}
+			if !contains(err.Error(), tc.want) {
+				t.Errorf("Spawn(%s) error = %q, want containing %q", tc.name, err.Error(), tc.want)
+			}
+		})
 	}
 }
 
 func TestK8sBackend_SpawnWizard_Env(t *testing.T) {
 	b, client := newTestBackend()
 
-	cfg := SpawnConfig{
-		Name:   "wizard-spi-abcde-0",
-		BeadID: "spi-abcde",
-		Role:   RoleWizard,
-		Tower:  "test-tower",
-	}
-
-	if _, err := b.Spawn(cfg); err != nil {
+	if _, err := b.Spawn(wizardSpawnConfig()); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
@@ -698,12 +842,16 @@ func TestK8sBackend_SpawnWizard_Env(t *testing.T) {
 		envMap[e.Name] = e
 	}
 
-	// Wizard-specific literal values — DOLT_DATA_DIR and SPIRE_CONFIG_DIR
-	// must be set on the main container so resolveBeadsDir() finds the
-	// store the tower-attach init container stages into /data.
+	// Wizard-specific literal values — DOLT_DATA_DIR, SPIRE_CONFIG_DIR,
+	// and the three SPIRE_REPO_* vars must be set on the main container
+	// so resolveBeadsDir() / ResolveRepo find the store the init
+	// containers staged into /data and /workspace.
 	wantLiteral := map[string]string{
-		"DOLT_DATA_DIR":    "/data",
-		"SPIRE_CONFIG_DIR": "/data/spire-config",
+		"DOLT_DATA_DIR":     "/data",
+		"SPIRE_CONFIG_DIR":  "/data/spire-config",
+		"SPIRE_REPO_URL":    "https://github.com/example/repo.git",
+		"SPIRE_REPO_BRANCH": "main",
+		"SPIRE_REPO_PREFIX": "spi",
 	}
 	for k, want := range wantLiteral {
 		got, ok := envMap[k]
@@ -747,14 +895,7 @@ func TestK8sBackend_SpawnWizard_Env(t *testing.T) {
 func TestK8sBackend_SpawnWizard_Resources(t *testing.T) {
 	b, client := newTestBackend()
 
-	cfg := SpawnConfig{
-		Name:   "wizard-spi-abcde-0",
-		BeadID: "spi-abcde",
-		Role:   RoleWizard,
-		Tower:  "test-tower",
-	}
-
-	if _, err := b.Spawn(cfg); err != nil {
+	if _, err := b.Spawn(wizardSpawnConfig()); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
@@ -774,14 +915,7 @@ func TestK8sBackend_SpawnWizard_ResourceOverride(t *testing.T) {
 
 	b, client := newTestBackend()
 
-	cfg := SpawnConfig{
-		Name:   "wizard-spi-abcde-0",
-		BeadID: "spi-abcde",
-		Role:   RoleWizard,
-		Tower:  "test-tower",
-	}
-
-	if _, err := b.Spawn(cfg); err != nil {
+	if _, err := b.Spawn(wizardSpawnConfig()); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
@@ -795,13 +929,7 @@ func TestK8sBackend_SpawnWizard_ResourceOverride(t *testing.T) {
 func TestK8sBackend_SpawnWizard_Command(t *testing.T) {
 	b, client := newTestBackend()
 
-	cfg := SpawnConfig{
-		Name:   "wizard-spi-abcde-0",
-		BeadID: "spi-abcde",
-		Role:   RoleWizard,
-		Tower:  "test-tower",
-	}
-
+	cfg := wizardSpawnConfig()
 	if _, err := b.Spawn(cfg); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -817,14 +945,7 @@ func TestK8sBackend_SpawnWizard_Command(t *testing.T) {
 func TestK8sBackend_SpawnWizard_RestartPolicyNever(t *testing.T) {
 	b, client := newTestBackend()
 
-	cfg := SpawnConfig{
-		Name:   "wizard-spi-abcde-0",
-		BeadID: "spi-abcde",
-		Role:   RoleWizard,
-		Tower:  "test-tower",
-	}
-
-	if _, err := b.Spawn(cfg); err != nil {
+	if _, err := b.Spawn(wizardSpawnConfig()); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 

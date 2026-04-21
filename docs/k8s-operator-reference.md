@@ -97,10 +97,15 @@ For **managed** agents:
 ## Canonical wizard pod contract
 
 The wizard pod is the **canonical per-bead runtime** in Kubernetes. It is a
-**single-container pod** (one main container, one init container) with
+**single-container pod** (one main container, two init containers) with
 `restartPolicy: Never` — the pod is one-shot: it boots, runs the wizard's
 formula lifecycle for a single bead, and exits. The operator (or steward's
 k8s backend) reaps it on exit.
+
+The two init containers run **in order**: `tower-attach` stages beads state
+and spire config onto `/data`, then `repo-bootstrap` clones the bead's repo
+into `/workspace/<prefix>` and writes a local-only binding so
+`wizard.ResolveRepo` resolves the checkout when the main container starts.
 
 There is exactly one pod model on `main`. The prior richer model
 (worker entrypoint script + familiar sidecar + `/comms` IPC volume) has
@@ -145,6 +150,38 @@ spec:
         - name: data
           mountPath: /data
 
+    - name: repo-bootstrap
+      image: {agent image}
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          : "${SPIRE_REPO_URL:?SPIRE_REPO_URL required}"
+          : "${SPIRE_REPO_BRANCH:?SPIRE_REPO_BRANCH required}"
+          : "${SPIRE_REPO_PREFIX:?SPIRE_REPO_PREFIX required}"
+          dest="/workspace/${SPIRE_REPO_PREFIX}"
+          if [ ! -d "${dest}/.git" ]; then
+            git clone --branch "${SPIRE_REPO_BRANCH}" "${SPIRE_REPO_URL}" "${dest}"
+          fi
+          spire repo bind-local \
+            --prefix  "${SPIRE_REPO_PREFIX}" \
+            --path    "${dest}" \
+            --repo-url "${SPIRE_REPO_URL}" \
+            --branch  "${SPIRE_REPO_BRANCH}"
+      env:
+        - name: SPIRE_REPO_URL
+          value: {repo URL}
+        - name: SPIRE_REPO_BRANCH
+          value: {repo branch}
+        - name: SPIRE_REPO_PREFIX
+          value: {bead prefix}
+      volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: workspace
+          mountPath: /workspace
+
   containers:
     - name: agent
       image: {agent image}
@@ -174,6 +211,14 @@ spec:
           value: {tower-name}
         - name: SPIRE_ROLE
           value: wizard
+
+        # Repo bootstrap (also set on the repo-bootstrap init container)
+        - name: SPIRE_REPO_URL
+          value: {repo URL}
+        - name: SPIRE_REPO_BRANCH
+          value: {repo branch}
+        - name: SPIRE_REPO_PREFIX
+          value: {bead prefix}
 
         # Observability (OTel)
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -227,7 +272,7 @@ the wizard process is the whole runtime.
 
 ### Init container: `tower-attach`
 
-A single init container named `tower-attach` runs
+The first init container, `tower-attach`, runs
 `spire tower attach-cluster` with:
 
 - `--data-dir=/data/<db>` — dolt data directory under the shared `/data` volume
@@ -238,6 +283,33 @@ A single init container named `tower-attach` runs
 This replaces both the old operator-side `beads-seed` ConfigMap and the
 `agent-entrypoint.sh` bootstrap flow. On exit, `/data` is primed with
 beads state so the main container can open dolt immediately.
+
+### Init container: `repo-bootstrap`
+
+The second init container, `repo-bootstrap`, runs a short shell script
+that (1) validates `SPIRE_REPO_URL` / `SPIRE_REPO_BRANCH` /
+`SPIRE_REPO_PREFIX` are set, (2) clones the repo into
+`/workspace/<prefix>` if it is not already there, and (3) invokes
+`spire repo bind-local` to populate the tower's `LocalBindings[prefix]`
+and the global config's `Instances[prefix]` under the shared `/data`
+volume.
+
+`bind-local` is deliberately used instead of `bind`: `bind` reads from
+the shared dolt repos table, which requires the prefix to already be
+registered on this instance. `bind-local` takes repo URL and branch as
+explicit flags and writes only to local tower/global config, never to
+the shared repos table — which is both what the pod actually needs and
+what lets the bootstrap succeed in offline/local-test flows where the
+shared dolt is not reachable before `ResolveRepo` would be called.
+
+On exit, `/workspace/<prefix>` contains a ready checkout and
+`wizard.ResolveRepo` will resolve the prefix without error.
+
+The init container mounts both `/data` (so `bind-local` writes hit the
+same `SPIRE_CONFIG_DIR` the main container reads) and `/workspace` (the
+clone target). The three `SPIRE_REPO_*` env vars are set on both the
+init container (for the shell script) and the main container (so
+`wizard.ResolveRepo` can key `Instances` deterministically).
 
 ### Main container env
 
@@ -253,6 +325,9 @@ Required on the main (`agent`) container:
 | `SPIRE_BEAD_ID`            | Bead the wizard will execute                                 |
 | `SPIRE_TOWER`              | Tower name                                                   |
 | `SPIRE_ROLE`               | `wizard`                                                     |
+| `SPIRE_REPO_URL`           | Git remote URL for the bead's prefix (also set on `repo-bootstrap`)   |
+| `SPIRE_REPO_BRANCH`        | Branch cloned by `repo-bootstrap` (also set on the init container)    |
+| `SPIRE_REPO_PREFIX`        | Bead prefix — keys `cfg.Instances[prefix]` for `wizard.ResolveRepo`   |
 | `OTEL_*`                   | OTLP exporter endpoint, protocol, resource attrs (see spec)  |
 | `ANTHROPIC_API_KEY`        | From `Secret` (key `ANTHROPIC_API_KEY_DEFAULT`)              |
 | `GITHUB_TOKEN`             | From `Secret` (optional)                                     |

@@ -166,7 +166,11 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 
 	var pod *corev1.Pod
 	if cfg.Role == RoleWizard {
-		pod = b.buildWizardPod(cfg, podName, args, env)
+		p, err := b.buildWizardPod(cfg, podName, args, env)
+		if err != nil {
+			return nil, err
+		}
+		pod = p
 	} else {
 		resources := resourcesForRole(cfg.Role)
 		pod = &corev1.Pod{
@@ -214,27 +218,49 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 
 // buildWizardPod produces the canonical wizard pod: a tower-attach init
 // container that stages .beads and tower config onto emptyDir /data, a
-// /workspace emptyDir for later apprentice bundle flows, matching volume
-// mounts on the main container, DOLT_DATA_DIR and SPIRE_CONFIG_DIR env
-// vars so resolveBeadsDir() finds the staged store, and WizardResources()
-// for the main container.
+// repo-bootstrap init container that clones the bead's repo into
+// /workspace/<prefix> and binds it locally (spi-fopwn), a /workspace
+// emptyDir shared with the main container, matching volume mounts on
+// the main container, DOLT_DATA_DIR and SPIRE_CONFIG_DIR env vars so
+// resolveBeadsDir() finds the staged store, SPIRE_REPO_PREFIX so
+// wizard.ResolveRepo deterministically keys cfg.Instances, and
+// WizardResources() for the main container.
 //
-// Database/prefix/dolthub-remote for the init container command come from
-// the same env source the steward deployment already uses — see
-// NewK8sBackend. Database falls back to cfg.Tower (tower name == database
-// name, per pkg/tower/attach-cluster).
-func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, podName string, args []string, env []corev1.EnvVar) *corev1.Pod {
+// Database/prefix/dolthub-remote for the tower-attach init container
+// come from the same env source the steward deployment already uses —
+// see NewK8sBackend. Database falls back to cfg.Tower (tower name ==
+// database name, per pkg/tower/attach-cluster).
+//
+// Repo bootstrap inputs (RepoURL, RepoBranch, RepoPrefix) come from
+// SpawnConfig. They are required — an empty value returns an error
+// rather than producing a pod that will fail at ResolveRepo time with
+// an opaque "no local repo registered" message.
+func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, podName string, args []string, env []corev1.EnvVar) (*corev1.Pod, error) {
+	if cfg.RepoURL == "" {
+		return nil, fmt.Errorf("wizard pod spec: RepoURL is required (bead %s)", cfg.BeadID)
+	}
+	if cfg.RepoBranch == "" {
+		return nil, fmt.Errorf("wizard pod spec: RepoBranch is required (bead %s)", cfg.BeadID)
+	}
+	if cfg.RepoPrefix == "" {
+		return nil, fmt.Errorf("wizard pod spec: RepoPrefix is required (bead %s)", cfg.BeadID)
+	}
+
 	db := b.database
 	if db == "" {
 		db = cfg.Tower
 	}
 
-	// Main container needs these two so resolveBeadsDir() finds the bead
-	// store the init container stages at /data/<db>/.beads. Without them
-	// `spire execute` dies with "no .beads directory found".
+	// Main container needs these so resolveBeadsDir() finds the bead
+	// store the tower-attach init container stages at /data/<db>/.beads,
+	// and wizard.ResolveRepo can key cfg.Instances deterministically by
+	// SPIRE_REPO_PREFIX rather than re-deriving it from the bead ID.
 	env = append(env,
 		corev1.EnvVar{Name: "DOLT_DATA_DIR", Value: "/data"},
 		corev1.EnvVar{Name: "SPIRE_CONFIG_DIR", Value: "/data/spire-config"},
+		corev1.EnvVar{Name: "SPIRE_REPO_URL", Value: cfg.RepoURL},
+		corev1.EnvVar{Name: "SPIRE_REPO_BRANCH", Value: cfg.RepoBranch},
+		corev1.EnvVar{Name: "SPIRE_REPO_PREFIX", Value: cfg.RepoPrefix},
 	)
 
 	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
@@ -265,24 +291,42 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, podName string, args []stri
 					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 				},
 			},
-			InitContainers: []corev1.Container{{
-				Name:  "tower-attach",
-				Image: b.image,
-				Command: []string{
-					"spire", "tower", "attach-cluster",
-					"--data-dir=/data/" + db,
-					"--database=" + db,
-					"--prefix=" + b.prefix,
-					"--dolthub-remote=" + b.dolthubRemote,
+			InitContainers: []corev1.Container{
+				{
+					Name:  "tower-attach",
+					Image: b.image,
+					Command: []string{
+						"spire", "tower", "attach-cluster",
+						"--data-dir=/data/" + db,
+						"--database=" + db,
+						"--prefix=" + b.prefix,
+						"--dolthub-remote=" + b.dolthubRemote,
+					},
+					// Share the main container's env so BEADS_DOLT_SERVER_HOST /
+					// BEADS_DOLT_SERVER_PORT (and DOLT_HOST/PORT if set) point at
+					// the cluster dolt service. Without this the init container
+					// falls through to the laptop defaults (127.0.0.1:3307) and
+					// attach-cluster times out waiting on a DB that isn't there.
+					Env:          env,
+					VolumeMounts: []corev1.VolumeMount{dataMount},
 				},
-				// Share the main container's env so BEADS_DOLT_SERVER_HOST /
-				// BEADS_DOLT_SERVER_PORT (and DOLT_HOST/PORT if set) point at
-				// the cluster dolt service. Without this the init container
-				// falls through to the laptop defaults (127.0.0.1:3307) and
-				// attach-cluster times out waiting on a DB that isn't there.
-				Env:          env,
-				VolumeMounts: []corev1.VolumeMount{dataMount},
-			}},
+				{
+					Name:  "repo-bootstrap",
+					Image: b.image,
+					// Fail-fast validation in shell covers the case where some
+					// future wiring strips the env vars before they reach the
+					// pod. Without this, git clone would emit a confusing
+					// "fatal: repository '' not found" and the bind would silently
+					// skip the mount instead of surfacing a clear config error.
+					Command: []string{"sh", "-c", repoBootstrapScript},
+					Env:     env,
+					// Shares /data so bind-local writes tower/global config to
+					// the same SPIRE_CONFIG_DIR the tower-attach init container
+					// staged; /workspace is the clone target shared with the
+					// main container.
+					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount},
+				},
+			},
 			Containers: []corev1.Container{
 				{
 					Name:         "agent",
@@ -294,8 +338,38 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, podName string, args []stri
 				},
 			},
 		},
-	}
+	}, nil
 }
+
+// repoBootstrapScript is the shell command run by the repo-bootstrap
+// init container. It performs three steps:
+//
+//  1. Validate that SPIRE_REPO_URL / SPIRE_REPO_BRANCH / SPIRE_REPO_PREFIX
+//     are all set. Without this check, git clone and bind-local would emit
+//     opaque errors downstream.
+//  2. Clone SPIRE_REPO_URL@SPIRE_REPO_BRANCH into /workspace/<prefix>.
+//  3. Invoke `spire repo bind-local` with the same values to populate
+//     tower.LocalBindings[prefix] and cfg.Instances[prefix] on the shared
+//     /data volume so wizard.ResolveRepo succeeds when the main container
+//     starts. bind-local (not bind) is used deliberately: bind reads from
+//     the shared dolt repos table and would need the prefix to already
+//     be registered, which is the case in production but not in the
+//     local-test flow where this init container runs before the steward
+//     has reconciled repos.
+const repoBootstrapScript = `set -e
+: "${SPIRE_REPO_URL:?SPIRE_REPO_URL required}"
+: "${SPIRE_REPO_BRANCH:?SPIRE_REPO_BRANCH required}"
+: "${SPIRE_REPO_PREFIX:?SPIRE_REPO_PREFIX required}"
+dest="/workspace/${SPIRE_REPO_PREFIX}"
+if [ ! -d "${dest}/.git" ]; then
+  git clone --branch "${SPIRE_REPO_BRANCH}" "${SPIRE_REPO_URL}" "${dest}"
+fi
+spire repo bind-local \
+  --prefix "${SPIRE_REPO_PREFIX}" \
+  --path "${dest}" \
+  --repo-url "${SPIRE_REPO_URL}" \
+  --branch "${SPIRE_REPO_BRANCH}"
+`
 
 // List returns Info for all Spire agent pods in the namespace.
 func (b *K8sBackend) List() ([]Info, error) {

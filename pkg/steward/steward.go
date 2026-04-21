@@ -338,6 +338,21 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		// Generate wizard name from bead ID.
 		wizardName := "wizard-" + SanitizeK8sLabel(bead.ID)
 
+		// Repo bootstrap inputs for the k8s backend's wizard pod init
+		// containers (spi-fopwn). Sourced from the tower's LocalBinding
+		// for this prefix, which reconcileSharedRepos populates from the
+		// shared repos table. Other backends (process, docker) ignore
+		// these fields. If the binding is missing fields we log and
+		// continue: buildWizardPod will fail-fast with a clear error on
+		// the k8s path, and the process backend doesn't need them.
+		var repoURL, repoBranch string
+		if towerBindings != nil {
+			if binding, ok := towerBindings[beadPrefix]; ok && binding != nil {
+				repoURL = binding.RepoURL
+				repoBranch = binding.SharedBranch
+			}
+		}
+
 		// Summon the wizard with RoleWizard so the backend can apply the
 		// canonical wizard pod spec and resource tier. Include InstanceID so
 		// the process backend writes it to the registry entry.
@@ -348,6 +363,9 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 			Tower:      towerName,
 			InstanceID: InstanceIDFunc(),
 			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", wizardName+".log"),
+			RepoURL:    repoURL,
+			RepoBranch: repoBranch,
+			RepoPrefix: beadPrefix,
 		})
 		if spawnErr != nil {
 			log.Printf("[steward] %sspawn failed: %s → %s: %s", prefix, bead.ID, wizardName, spawnErr)
