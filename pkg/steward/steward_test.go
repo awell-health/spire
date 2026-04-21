@@ -14,9 +14,22 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/executor"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
+
+// mustMarshalOutcome returns the JSON encoding of a RecoveryOutcome for use in
+// bead metadata in tests. It mirrors what recovery.WriteOutcome persists under
+// recovery.KeyRecoveryOutcome.
+func mustMarshalOutcome(t *testing.T, out recovery.RecoveryOutcome) string {
+	t.Helper()
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal recovery outcome: %v", err)
+	}
+	return string(b)
+}
 
 // --- AgentNames tests (replaces loadRoster tests) ---
 
@@ -1697,7 +1710,13 @@ func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t 
 		case "spi-recovery4":
 			return store.Bead{
 				ID: "spi-recovery4", Status: "closed", Type: "recovery",
-				Metadata: map[string]string{"learning_outcome": "clean"},
+				Metadata: map[string]string{
+					recovery.KeyRecoveryOutcome: mustMarshalOutcome(t, recovery.RecoveryOutcome{
+						SourceBeadID:  "spi-parent4",
+						Decision:      recovery.DecisionResume,
+						VerifyVerdict: recovery.VerifyVerdictPass,
+					}),
+				},
 			}, nil
 		}
 		return store.Bead{}, fmt.Errorf("not found: %s", id)
@@ -1811,7 +1830,13 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_StaysHooked(t *testing
 		case "spi-recovery5":
 			return store.Bead{
 				ID: "spi-recovery5", Status: "closed", Type: "recovery",
-				Metadata: map[string]string{"learning_outcome": "escalated"},
+				Metadata: map[string]string{
+					recovery.KeyRecoveryOutcome: mustMarshalOutcome(t, recovery.RecoveryOutcome{
+						SourceBeadID:  "spi-parent5",
+						Decision:      recovery.DecisionEscalate,
+						VerifyVerdict: recovery.VerifyVerdictFail,
+					}),
+				},
 			}, nil
 		}
 		return store.Bead{}, fmt.Errorf("not found: %s", id)
@@ -1840,6 +1865,94 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_StaysHooked(t *testing
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (escalated — stays hooked)", count)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0", len(backend.spawns))
+	}
+}
+
+func TestSweepHookedSteps_FailureEvidence_ClericClosedWithoutOutcome_StaysHooked(t *testing.T) {
+	// When the recovery bead is closed but has no recovery_outcome metadata
+	// (older bead, or a write was skipped), the sweep defaults to the safe
+	// path: leave the parent hooked for human attention rather than
+	// optimistically resuming.
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	hookedStatus := beads.Status("hooked")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && *filter.Status == hookedStatus {
+			return []store.Bead{
+				{ID: "spi-parent6", Status: "hooked", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-parent6" {
+			return &store.Bead{ID: "spi-parent6.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) {
+		return true, nil
+	}
+	InstanceIDFunc = func() string { return "local-instance" }
+
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-parent6" {
+			return []store.Bead{
+				{ID: "spi-parent6.step-impl", Status: "hooked", Labels: []string{"step:implement-failed"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		switch id {
+		case "spi-parent6":
+			return store.Bead{
+				ID: "spi-parent6", Status: "hooked", Type: "task",
+				Labels: []string{"needs-human"},
+			}, nil
+		case "spi-recovery6":
+			return store.Bead{
+				ID: "spi-recovery6", Status: "closed", Type: "recovery",
+				// No recovery_outcome metadata — simulates an older bead or a
+				// cleric that closed without writing an outcome record.
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		if id == "spi-parent6" {
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-recovery6", IssueType: "recovery", Status: "closed"},
+					DependencyType: "caused-by",
+				},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	UnhookStepBeadFunc = func(id string) error { return nil }
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error { return nil }
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+
+	if count != 0 {
+		t.Errorf("SweepHookedSteps returned %d, want 0 (no outcome — stays hooked)", count)
 	}
 	if len(backend.spawns) != 0 {
 		t.Errorf("spawn count = %d, want 0", len(backend.spawns))

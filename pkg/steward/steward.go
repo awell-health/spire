@@ -35,6 +35,7 @@ import (
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -1055,11 +1056,13 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			}
 
 			if recoveryBead.Status == "closed" {
-				// Cleric finished. Check resolution: success → unhook + resummon,
-				// escalated → leave hooked for human attention.
-				outcome := recoveryBead.Meta("learning_outcome")
-				if outcome == "escalated" {
-					log.Printf("[steward] hooked sweep: recovery %s escalated for %s — leaving hooked for human", evidence.RecoveryBeadID, parent.ID)
+				// Cleric finished. Check resolution: DecisionResume → unhook + resummon,
+				// DecisionEscalate → leave hooked for human attention. Beads without a
+				// recorded outcome (older beads or missing writes) default to the
+				// leave-hooked path for safety.
+				outcome, haveOutcome := recovery.ReadOutcome(recoveryBead)
+				if !haveOutcome || outcome.Decision == recovery.DecisionEscalate {
+					log.Printf("[steward] hooked sweep: recovery %s escalated (or no outcome) for %s — leaving hooked for human", evidence.RecoveryBeadID, parent.ID)
 					continue
 				}
 

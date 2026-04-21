@@ -15,6 +15,17 @@ import (
 	"github.com/awell-health/spire/pkg/store"
 )
 
+// planJSONAction marshals a RepairPlan with only the Action field set, for use
+// as decide.outputs.plan in tests that previously passed chosen_action.
+func planJSONAction(t *testing.T, action string) string {
+	t.Helper()
+	b, err := json.Marshal(recovery.RepairPlan{Action: action})
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	return string(b)
+}
+
 // TestHandleFinish_NeedsHuman verifies that when the decide step outputs
 // needs_human=true, the finish step does NOT close the recovery bead.
 func TestHandleFinish_NeedsHuman(t *testing.T) {
@@ -33,9 +44,9 @@ func TestHandleFinish_NeedsHuman(t *testing.T) {
 			"decide": {
 				Status: "completed",
 				Outputs: map[string]string{
-					"chosen_action": "escalate",
-					"needs_human":   "true",
-					"reasoning":     "cannot fix automatically",
+					"plan":        planJSONAction(t, "escalate"),
+					"needs_human": "true",
+					"reasoning":   "cannot fix automatically",
 				},
 			},
 			"learn": {
@@ -80,9 +91,9 @@ func TestHandleFinish_NonEscalate(t *testing.T) {
 			"decide": {
 				Status: "completed",
 				Outputs: map[string]string{
-					"chosen_action": "retry",
-					"needs_human":   "false",
-					"reasoning":     "retrying build",
+					"plan":        planJSONAction(t, "retry"),
+					"needs_human": "false",
+					"reasoning":   "retrying build",
 				},
 			},
 			"learn": {
@@ -1008,7 +1019,7 @@ func TestHandleVerify_ExecuteFailed(t *testing.T) {
 			},
 			"decide": {
 				Status:  "completed",
-				Outputs: map[string]string{"chosen_action": "resummon", "reasoning": "try again"},
+				Outputs: map[string]string{"plan": planJSONAction(t, "resummon"), "reasoning": "try again"},
 			},
 			"execute": {
 				Status:  "completed",
@@ -1047,7 +1058,7 @@ func TestHandleVerify_ExecuteEmpty(t *testing.T) {
 			},
 			"decide": {
 				Status:  "completed",
-				Outputs: map[string]string{"chosen_action": "resummon"},
+				Outputs: map[string]string{"plan": planJSONAction(t, "resummon")},
 			},
 			"execute": {
 				Status:  "completed",
@@ -1213,7 +1224,7 @@ func TestHandleFinish_NeedsHumanViaStepWith(t *testing.T) {
 			"decide": {
 				Status: "completed",
 				Outputs: map[string]string{
-					"chosen_action": "rebase-onto-base",
+					"plan": planJSONAction(t, "rebase-onto-base"),
 					// NOTE: no needs_human=true here — the override is purely via step.With.
 				},
 			},
@@ -1269,7 +1280,7 @@ func TestHandleFinish_StepWithNeedsHumanFalse(t *testing.T) {
 		Steps: map[string]StepState{
 			"decide": {
 				Status:  "completed",
-				Outputs: map[string]string{"chosen_action": "resummon"},
+				Outputs: map[string]string{"plan": planJSONAction(t, "resummon")},
 			},
 			"learn": {
 				Status:  "completed",

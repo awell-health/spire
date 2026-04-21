@@ -1059,9 +1059,9 @@ func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphSta
 // makes RepeatedFailures[action] grow across retries — the signal
 // parseHumanGuidance's >=2 guard reads (spi-uh5oo bug 2).
 //
-// The action label is read from the decide step's chosen_action output; the
-// attempt number is derived from CountAttemptsByAction(+1). Silently no-ops
-// when DoltDB is not wired or decide never set a chosen_action.
+// The action label is derived from decide.outputs.plan (RepairPlan.Action);
+// the attempt number is derived from CountAttemptsByAction(+1). Silently
+// no-ops when DoltDB is not wired or decide never produced a plan.
 //
 // Note: recovery's plan-mode execute path (handlePlanExecute) records its
 // own attempts through the mechanical/worker dispatches when DB is wired.
@@ -1083,7 +1083,13 @@ func (e *Executor) recordOnErrorRecoveryAttempt(state *GraphState, stepErr error
 	if !ok {
 		return
 	}
-	chosenAction := ds.Outputs["chosen_action"]
+	chosenAction := ""
+	if planJSON := ds.Outputs["plan"]; planJSON != "" {
+		var plan recovery.RepairPlan
+		if err := json.Unmarshal([]byte(planJSON), &plan); err == nil {
+			chosenAction = plan.Action
+		}
+	}
 	if chosenAction == "" {
 		return
 	}

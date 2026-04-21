@@ -2,9 +2,7 @@ package executor
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -76,10 +74,8 @@ func actionClericExecute(e *Executor, stepName string, step StepConfig, state *G
 	case "decide":
 		return handleDecide(e, stepName, step, state)
 	case "execute":
-		// Prefer the typed RepairPlan JSON produced by decide (chunk 2). When
-		// present, dispatch on plan.Mode. Fall back to the legacy chosen_action
-		// string for actions that don't map to a RepairMode (annotate-resolution,
-		// triage, etc.) — those continue to flow through ExecuteRecoveryAction.
+		// Dispatch on the typed RepairPlan produced by decide. The plan is the
+		// sole execute contract — no legacy action-string fallback.
 		if state != nil {
 			if ds, ok := state.Steps["decide"]; ok {
 				if planJSON := ds.Outputs["plan"]; planJSON != "" {
@@ -89,15 +85,9 @@ func actionClericExecute(e *Executor, stepName string, step StepConfig, state *G
 					}
 					return handlePlanExecute(e, stepName, step, state, plan)
 				}
-				if chosen := ds.Outputs["chosen_action"]; chosen != "" {
-					actionKind = chosen
-					e.log("recovery: execute using decide output: %s", actionKind)
-				}
 			}
 		}
-		if actionKind == "execute" {
-			return ActionResult{Error: fmt.Errorf("recovery execute: no chosen_action from decide step")}
-		}
+		return ActionResult{Error: fmt.Errorf("recovery execute: no plan from decide step")}
 	case "verify":
 		return handleVerify(e, stepName, step, state)
 	case "learn":
@@ -695,13 +685,6 @@ type CollectContextResult struct {
 	WizardLogTail  string                    `json:"wizard_log_tail,omitempty"`
 }
 
-// LearnResult is the structured output of the learn step (Claude response).
-type LearnResult struct {
-	LearningSummary string `json:"learning_summary"`
-	ResolutionKind  string `json:"resolution_kind"`
-	Reusable        bool   `json:"reusable"`
-}
-
 // actionClericLearn is the ActionHandler for the "cleric.learn" opcode.
 // Delegates to handleLearn for the agentic v3 recovery formula.
 func actionClericLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
@@ -830,10 +813,10 @@ func handleCollectContext(e *Executor, stepName string, step StepConfig, state *
 // parsing, promoted-recipe replay, git-state heuristics, Claude fallback)
 // lives in pkg/recovery and the executor only bridges state/deps.
 //
-// Transitional output surface: the wrapper writes the typed `plan` JSON
-// plus the legacy scalar keys (chosen_action, confidence, reasoning,
-// needs_human, expected_outcome) so execute/learn/finish keep working
-// until Chunk 6 replaces the legacy outputs with RecoveryOutcome.
+// Outputs: the typed `plan` JSON (recovery.RepairPlan) plus scalar hints
+// (confidence, reasoning, needs_human, expected_outcome) that downstream
+// steps surface in comments. The retired `chosen_action` scalar was
+// removed in Chunk 6 — callers derive the action by unmarshaling `plan`.
 func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	var contextJSON string
 	if state != nil {
@@ -954,12 +937,11 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 
 	needsHuman := plan.Mode == recovery.RepairModeEscalate
 	outputs := map[string]string{
-		"status":        "success",
-		"plan":          string(planJSON),
-		"chosen_action": plan.Action,
-		"confidence":    fmt.Sprintf("%.2f", plan.Confidence),
-		"reasoning":     plan.Reason,
-		"needs_human":   fmt.Sprintf("%t", needsHuman),
+		"status":      "success",
+		"plan":        string(planJSON),
+		"confidence":  fmt.Sprintf("%.2f", plan.Confidence),
+		"reasoning":   plan.Reason,
+		"needs_human": fmt.Sprintf("%t", needsHuman),
 	}
 	if capturedClaudeResult != nil {
 		outputs["expected_outcome"] = capturedClaudeResult.ExpectedOutcome
@@ -974,131 +956,92 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 	return ActionResult{Outputs: outputs}
 }
 
-// handleLearn calls Claude with the action taken and verify outcome to extract
-// a learning. Writes to both bead metadata and the recovery_learnings table.
+// handleLearn assembles a RecoveryOutcome from step state and persists it
+// through recovery.WriteOutcome — the single writer for outcome metadata and
+// the recovery_learnings SQL table. Inputs are drawn from decide.outputs.plan
+// (RepairPlan), verify.outputs (verdict/verify_kind), execute.outputs
+// (worker_attempt_id), and collect_context.outputs (failure_class / failed
+// step). No ad hoc metadata or label writes happen here.
 func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	// Read decide result and verify outcome from step outputs.
-	var chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome, mechanicalRecipe string
+	var plan recovery.RepairPlan
+	var verifyVerdict recovery.VerifyVerdict
+	var verifyKind recovery.VerifyKind
+	var failureClass, failedStep, workerAttemptID string
+
 	if state != nil {
 		if ds, ok := state.Steps["decide"]; ok {
-			chosenAction = ds.Outputs["chosen_action"]
-			confidence = ds.Outputs["confidence"]
-			reasoning = ds.Outputs["reasoning"]
-			expectedOutcome = ds.Outputs["expected_outcome"]
+			if pjson := ds.Outputs["plan"]; pjson != "" {
+				if err := json.Unmarshal([]byte(pjson), &plan); err != nil {
+					e.log("recovery: learn: unmarshal decide plan (continuing with zero plan): %v", err)
+					plan = recovery.RepairPlan{}
+				}
+			}
 		}
 		if vs, ok := state.Steps["verify"]; ok {
-			verifyOutcome = vs.Outputs["verification_status"]
+			verifyVerdict = recovery.VerifyVerdict(vs.Outputs["verdict"])
+			verifyKind = recovery.VerifyKind(vs.Outputs["verify_kind"])
 		}
 		if cs, ok := state.Steps["collect_context"]; ok {
 			failureClass = cs.Outputs["failure_class"]
+			failedStep = cs.Outputs["failed_step"]
 		}
-		// Recipe capture: the execute step's outputs include the serialised
-		// mechanical_recipe for deterministic action successes. Nil/empty
-		// means no recipe was captured — that outcome never contributes to
-		// promotion.
 		if es, ok := state.Steps["execute"]; ok {
-			mechanicalRecipe = es.Outputs["mechanical_recipe"]
+			workerAttemptID = es.Outputs["worker_attempt_id"]
 		}
 	}
 
-	if verifyOutcome == "" {
-		verifyOutcome = "unknown"
-	}
-
-	// Get failure signature from recovery bead metadata.
-	if bead, err := e.deps.GetBead(e.beadID); err == nil {
-		if failureClass == "" {
-			failureClass = bead.Meta(recovery.KeyFailureClass)
-		}
-		failureSig = bead.Meta(recovery.KeyFailureSignature)
-	}
-
-	// Build Claude prompt.
-	prompt := buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome)
-
-	// Call Claude.
-	if e.deps.ClaudeRunner == nil {
-		return ActionResult{Error: fmt.Errorf("learn: ClaudeRunner not available")}
-	}
-
-	args := []string{
-		"--dangerously-skip-permissions",
-		"-p", prompt,
-		"--output-format", "text",
-		"--max-turns", "1",
-	}
-
-	out, err := e.runClaude(args, "recovery-learn")
+	bead, err := e.deps.GetBead(e.beadID)
 	if err != nil {
-		return ActionResult{Error: fmt.Errorf("learn: claude call failed: %w", err)}
+		return ActionResult{Error: fmt.Errorf("learn: get recovery bead: %w", err)}
+	}
+	if failureClass == "" {
+		failureClass = bead.Meta(recovery.KeyFailureClass)
 	}
 
-	var result LearnResult
-	if err := parseJSONFromClaude(out, &result); err != nil {
-		return ActionResult{Error: fmt.Errorf("learn: parse claude response: %w", err)}
-	}
-
-	now := time.Now().UTC()
-	outcome := "clean"
-	if verifyOutcome != "clean" {
-		outcome = "dirty"
-	}
-
-	// 1. Write to bead metadata via existing path.
-	metaMap := map[string]string{
-		recovery.KeyLearningSummary: result.LearningSummary,
-		recovery.KeyResolutionKind:  result.ResolutionKind,
-		recovery.KeyResolvedAt:      now.Format(time.RFC3339),
-	}
-	if result.Reusable {
-		metaMap[recovery.KeyReusable] = "true"
-	}
-	metaMap[recovery.KeyVerificationStatus] = outcome
-	if expectedOutcome != "" {
-		metaMap[recovery.KeyExpectedOutcome] = expectedOutcome
-	}
-	if err := store.SetBeadMetadataMap(e.beadID, metaMap); err != nil {
-		e.log("recovery: learn: write bead metadata: %s", err)
-	}
-
-	// 2. Write to recovery_learnings SQL table.
 	sourceBeadID := resolveSourceBead(e, step)
-	// Only persist the recipe on clean outcomes — a "dirty" resolution
-	// should never contribute to promotion counting. This guards against
-	// auto-captured recipes from deterministic actions that verify fails
-	// right after, which would otherwise poison the promotion chain.
-	recipeToStore := mechanicalRecipe
-	if outcome != "clean" {
-		recipeToStore = ""
+
+	decision := recovery.DecisionResume
+	if verifyVerdict != recovery.VerifyVerdictPass {
+		decision = recovery.DecisionEscalate
 	}
-	learningRow := store.RecoveryLearningRow{
-		ID:               generateLearningID(),
-		RecoveryBead:     e.beadID,
-		SourceBead:       sourceBeadID,
-		FailureClass:     failureClass,
-		FailureSig:       failureSig,
-		ResolutionKind:   result.ResolutionKind,
-		Outcome:          outcome,
-		LearningSummary:  result.LearningSummary,
-		Reusable:         result.Reusable,
-		ResolvedAt:       now,
-		ExpectedOutcome:  expectedOutcome,
-		MechanicalRecipe: recipeToStore,
-	}
-	if err := store.WriteRecoveryLearningAuto(learningRow); err != nil {
-		// Non-fatal: the bead metadata write is the primary record.
-		e.log("recovery: learn: write to recovery_learnings table: %s", err)
+	if plan.Mode == recovery.RepairModeEscalate {
+		decision = recovery.DecisionEscalate
 	}
 
-	e.log("recovery: learn: %s (resolution=%s, outcome=%s, reusable=%t)",
-		result.LearningSummary, result.ResolutionKind, outcome, result.Reusable)
+	outcome := recovery.RecoveryOutcome{
+		RecoveryAttemptID: e.state.AttemptBeadID,
+		SourceRunID:       e.currentRunID,
+		SourceBeadID:      sourceBeadID,
+		FailedStep:        failedStep,
+		FailureClass:      recovery.FailureClass(failureClass),
+		RepairMode:        plan.Mode,
+		RepairAction:      plan.Action,
+		WorkerAttemptID:   workerAttemptID,
+		WorkspaceKind:     plan.Workspace.Kind,
+		VerifyKind:        verifyKind,
+		VerifyVerdict:     verifyVerdict,
+		Decision:          decision,
+	}
+
+	if err := recovery.WriteOutcome(context.Background(), &bead, outcome); err != nil {
+		e.log("recovery: learn: WriteOutcome: %s", err)
+	}
+
+	verificationStatus := "dirty"
+	if verifyVerdict == recovery.VerifyVerdictPass {
+		verificationStatus = "clean"
+	}
+
+	e.log("recovery: learn: outcome mode=%s action=%s verdict=%s decision=%s",
+		plan.Mode, plan.Action, verifyVerdict, decision)
 
 	return ActionResult{Outputs: map[string]string{
-		"status":           "success",
-		"learning_summary": result.LearningSummary,
-		"resolution_kind":  result.ResolutionKind,
-		"outcome":          outcome,
-		"reusable":         fmt.Sprintf("%t", result.Reusable),
+		"status":         "success",
+		"verify_verdict": string(verifyVerdict),
+		"decision":       string(decision),
+		"repair_mode":    string(plan.Mode),
+		"repair_action":  plan.Action,
+		"outcome":        verificationStatus,
 	}}
 }
 
@@ -1154,7 +1097,12 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 	}
 	if state != nil {
 		if ds, ok := state.Steps["decide"]; ok {
-			chosenAction = ds.Outputs["chosen_action"]
+			if pjson := ds.Outputs["plan"]; pjson != "" {
+				var plan recovery.RepairPlan
+				if err := json.Unmarshal([]byte(pjson), &plan); err == nil {
+					chosenAction = plan.Action
+				}
+			}
 			reasoning = ds.Outputs["reasoning"]
 			if ds.Outputs["needs_human"] == "true" {
 				needsHuman = true
@@ -1258,9 +1206,9 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 //   - Recipe     → executeRecipe (stub until chunk 7)
 //   - Escalate   → terminal "needs_human" outcome
 //
-// Legacy metadata keys (chosen_action, mechanical_recipe, failure_signature)
-// are still emitted so downstream steps that haven't migrated yet keep
-// working — the parallel coexistence policy ends in chunk 6.
+// Outputs surface: status, action (plan.Action or plan.Mode fallback), and
+// mode. Step outputs for mechanical/worker/recipe dispatches add their own
+// attempt IDs on top; see each branch below.
 func handlePlanExecute(e *Executor, stepName string, step StepConfig, state *GraphState, plan recovery.RepairPlan) ActionResult {
 	actionName := plan.Action
 	if actionName == "" {
@@ -1937,80 +1885,3 @@ func mergeLearnings(metaLearnings []store.RecoveryLearning, sqlRows []store.Reco
 	return merged
 }
 
-// buildLearnPrompt constructs the Claude prompt for the learn step.
-func buildLearnPrompt(chosenAction, confidence, reasoning, verifyOutcome, failureClass, failureSig, expectedOutcome string) string {
-	var b strings.Builder
-	b.WriteString("You are a cleric learning agent for Spire, an AI agent coordination system.\n\n")
-	b.WriteString("A recovery action was taken. Analyze the result and extract a learning for future incidents.\n\n")
-
-	b.WriteString("## Recovery Context\n")
-	b.WriteString(fmt.Sprintf("- Chosen action: %s\n", chosenAction))
-	b.WriteString(fmt.Sprintf("- Confidence: %s\n", confidence))
-	b.WriteString(fmt.Sprintf("- Reasoning: %s\n", reasoning))
-	b.WriteString(fmt.Sprintf("- Verify outcome: %s\n", verifyOutcome))
-	b.WriteString(fmt.Sprintf("- Failure class: %s\n", failureClass))
-	if failureSig != "" {
-		b.WriteString(fmt.Sprintf("- Failure signature: %s\n", failureSig))
-	}
-	b.WriteString("\n")
-
-	if expectedOutcome != "" {
-		b.WriteString("## Expected Outcome (from decide step)\n")
-		b.WriteString(fmt.Sprintf("The decide agent predicted: %s\n\n", expectedOutcome))
-	}
-
-	b.WriteString("## Instructions\n")
-	b.WriteString("Output ONLY a JSON object with these fields:\n")
-	b.WriteString("- `learning_summary`: concise description of what happened and what worked or didn't\n")
-	b.WriteString("- `resolution_kind`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\", \"triage\"\n")
-	b.WriteString("- `reusable`: true if this learning applies to future similar failures, false otherwise\n\n")
-
-	if expectedOutcome != "" {
-		b.WriteString("Compare the actual outcome against the expected outcome. If they diverge, note this in the learning summary.\n\n")
-	}
-
-	b.WriteString("Output ONLY the JSON object, no markdown fences, no explanation outside the JSON.\n")
-
-	return b.String()
-}
-
-// parseJSONFromClaude extracts a JSON object from Claude's output, handling
-// potential markdown fences and surrounding text.
-func parseJSONFromClaude(out []byte, v interface{}) error {
-	text := strings.TrimSpace(string(out))
-
-	// Strip markdown fences if present.
-	if strings.HasPrefix(text, "```") {
-		lines := strings.Split(text, "\n")
-		var jsonLines []string
-		inBlock := false
-		for _, line := range lines {
-			if strings.HasPrefix(line, "```") {
-				inBlock = !inBlock
-				continue
-			}
-			if inBlock {
-				jsonLines = append(jsonLines, line)
-			}
-		}
-		text = strings.Join(jsonLines, "\n")
-	}
-
-	// Find JSON object boundaries.
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start >= 0 && end > start {
-		text = text[start : end+1]
-	}
-
-	return json.Unmarshal([]byte(text), v)
-}
-
-// generateLearningID creates a random ID for a recovery learning row.
-func generateLearningID() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("rl-%d", time.Now().UnixNano())
-	}
-	return "rl-" + hex.EncodeToString(b)
-}

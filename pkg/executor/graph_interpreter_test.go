@@ -2,6 +2,7 @@ package executor
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -11,9 +12,22 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
+
+// mustPlanJSON marshals a RepairPlan with the given action for use as the
+// decide step's `plan` output in tests. This mirrors what actionClericDecide
+// persists after Chunk 5.
+func mustPlanJSON(t *testing.T, action string) string {
+	t.Helper()
+	b, err := json.Marshal(recovery.RepairPlan{Action: action})
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	return string(b)
+}
 
 // testGraphDeps returns mock deps suitable for graph interpreter tests.
 // The returned actionLog captures dispatched action calls.
@@ -3340,7 +3354,7 @@ func TestRecordOnErrorRecoveryAttempt_PersistsFailureRow(t *testing.T) {
 		Steps: map[string]StepState{
 			"decide": {
 				Status:  "completed",
-				Outputs: map[string]string{"chosen_action": "rebase-onto-base"},
+				Outputs: map[string]string{"plan": mustPlanJSON(t, "rebase-onto-base")},
 			},
 		},
 	}
@@ -3397,7 +3411,7 @@ func TestRecordOnErrorRecoveryAttempt_NoOpWhenDoltDBUnwired(t *testing.T) {
 	// DoltDB intentionally nil.
 	state := &GraphState{
 		Steps: map[string]StepState{
-			"decide": {Outputs: map[string]string{"chosen_action": "rebase-onto-base"}},
+			"decide": {Outputs: map[string]string{"plan": mustPlanJSON(t, "rebase-onto-base")}},
 		},
 	}
 	exec := NewGraphForTest("spi-recovery-nil-db", "cleric-agent", nil, state, deps)
@@ -3405,8 +3419,8 @@ func TestRecordOnErrorRecoveryAttempt_NoOpWhenDoltDBUnwired(t *testing.T) {
 }
 
 // TestRecordOnErrorRecoveryAttempt_NoOpWhenNoChosenAction guards the
-// defensive path: when decide never set a chosen_action, there is nothing
-// to record, so the helper must not write a row with Action="".
+// defensive path: when decide never produced a plan, there is nothing to
+// record, so the helper must not write a row with Action="".
 func TestRecordOnErrorRecoveryAttempt_NoOpWhenNoChosenAction(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -3418,7 +3432,7 @@ func TestRecordOnErrorRecoveryAttempt_NoOpWhenNoChosenAction(t *testing.T) {
 	deps.DoltDB = func() *sql.DB { return db }
 	deps.GetBead = func(id string) (Bead, error) { return Bead{ID: id}, nil }
 
-	// Decide step has no chosen_action output (e.g. decide step not yet run).
+	// Decide step has no plan output (e.g. decide step not yet run).
 	state := &GraphState{
 		Steps: map[string]StepState{
 			"decide": {Outputs: map[string]string{}},
