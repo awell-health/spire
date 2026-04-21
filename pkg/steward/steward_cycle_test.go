@@ -154,8 +154,8 @@ func TestE2E_WizardNaming(t *testing.T) {
 	if got != want {
 		t.Errorf("wizard name = %q, want %q (dot sanitized to hyphen)", got, want)
 	}
-	if backend.spawns[0].Role != agent.RoleExecutor {
-		t.Errorf("spawn role = %q, want %q", backend.spawns[0].Role, agent.RoleExecutor)
+	if backend.spawns[0].Role != agent.RoleWizard {
+		t.Errorf("spawn role = %q, want %q", backend.spawns[0].Role, agent.RoleWizard)
 	}
 	if backend.spawns[0].BeadID != "spi-abc.1" {
 		t.Errorf("spawn beadID = %q, want %q", backend.spawns[0].BeadID, "spi-abc.1")
@@ -297,8 +297,8 @@ func TestE2E_SpawnConfigFields(t *testing.T) {
 	if sc.BeadID != "spi-test" {
 		t.Errorf("SpawnConfig.BeadID = %q, want %q", sc.BeadID, "spi-test")
 	}
-	if sc.Role != agent.RoleExecutor {
-		t.Errorf("SpawnConfig.Role = %q, want %q", sc.Role, agent.RoleExecutor)
+	if sc.Role != agent.RoleWizard {
+		t.Errorf("SpawnConfig.Role = %q, want %q", sc.Role, agent.RoleWizard)
 	}
 	if !strings.HasPrefix(sc.Name, "wizard-") {
 		t.Errorf("SpawnConfig.Name = %q, want prefix 'wizard-'", sc.Name)

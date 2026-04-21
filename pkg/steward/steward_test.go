@@ -2654,7 +2654,7 @@ func TestTowerCycle_SpawnsBeadsForBoundPrefixes(t *testing.T) {
 	}
 }
 
-func TestTowerCycle_SpawnConfigUsesRoleExecutorAndInstanceID(t *testing.T) {
+func TestTowerCycle_SpawnConfigUsesRoleWizardAndInstanceID(t *testing.T) {
 	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
 	cleanup := towerCycleTestSetup(t)
 	defer cleanup()
@@ -2693,8 +2693,8 @@ func TestTowerCycle_SpawnConfigUsesRoleExecutorAndInstanceID(t *testing.T) {
 		t.Fatalf("spawn count = %d, want 1", len(backend.spawns))
 	}
 	sc := backend.spawns[0]
-	if sc.Role != agent.RoleExecutor {
-		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleExecutor)
+	if sc.Role != agent.RoleWizard {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleWizard)
 	}
 	if sc.InstanceID != "my-instance-uuid" {
 		t.Errorf("spawn InstanceID = %q, want %q", sc.InstanceID, "my-instance-uuid")

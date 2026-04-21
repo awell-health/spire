@@ -338,13 +338,13 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		// Generate wizard name from bead ID.
 		wizardName := "wizard-" + SanitizeK8sLabel(bead.ID)
 
-		// Spawn executor (process-mode spawns use RoleExecutor so the correct
-		// entrypoint is used). Include InstanceID so the process backend writes
-		// it to the registry entry.
+		// Summon the wizard with RoleWizard so the backend can apply the
+		// canonical wizard pod spec and resource tier. Include InstanceID so
+		// the process backend writes it to the registry entry.
 		handle, spawnErr := cfg.Backend.Spawn(agent.SpawnConfig{
 			Name:       wizardName,
 			BeadID:     bead.ID,
-			Role:       agent.RoleExecutor,
+			Role:       agent.RoleWizard,
 			Tower:      towerName,
 			InstanceID: InstanceIDFunc(),
 			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", wizardName+".log"),
