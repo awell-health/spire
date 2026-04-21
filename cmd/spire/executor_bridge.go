@@ -56,55 +56,75 @@ type SplitTask = executor.SplitTask
 
 // newGraphExecutor creates a v3 graph executor for a bead, wiring up all dependencies.
 func newGraphExecutor(beadID, agentName string, graph *formulaPkg.FormulaStepGraph, spawner AgentBackend) (*formulaExecutor, error) {
-	deps := buildExecutorDeps(spawner)
+	deps := buildExecutorDepsForBead(beadID, spawner)
 	return executor.NewGraph(beadID, agentName, graph, deps)
 }
 
 // computeWaves delegates to pkg/executor.ComputeWaves.
 func computeWaves(epicID string) ([][]string, error) {
-	deps := buildExecutorDeps(ResolveBackend(""))
+	deps := buildExecutorDepsForBead(epicID, resolveBackendForBead(epicID))
 	return executor.ComputeWaves(epicID, deps)
 }
 
 // --- Terminal step wrappers ---
 
 func terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, log func(string, ...interface{})) error {
-	deps := buildExecutorDeps(ResolveBackend(""))
+	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
 	return executor.TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd, deps, log)
 }
 
 func terminalSplit(beadID, reviewerName string, splitTasks []SplitTask, log func(string, ...interface{})) error {
-	deps := buildExecutorDeps(ResolveBackend(""))
+	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
 	return executor.TerminalSplit(beadID, reviewerName, splitTasks, deps, log)
 }
 
 func terminalDiscard(beadID string, log func(string, ...interface{})) error {
-	deps := buildExecutorDeps(ResolveBackend(""))
+	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
 	return executor.TerminalDiscard(beadID, deps, log)
 }
 
 // --- Escalation wrappers ---
 
 func wizardMessageArchmage(from, beadID, message string) {
-	deps := buildExecutorDeps(ResolveBackend(""))
+	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
 	executor.MessageArchmage(from, beadID, message, deps)
 }
 
 func escalateHumanFailure(beadID, agentName, failureType, message string) {
-	deps := buildExecutorDeps(ResolveBackend(""))
+	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
 	executor.EscalateHumanFailure(beadID, agentName, failureType, message, deps)
 }
 
 // --- Helper: archmageIdentity ---
 
 func archmageIdentity() (name, email string) {
-	deps := buildExecutorDeps(ResolveBackend(""))
+	// No bead context — fall back to cwd-based resolution. archmageIdentity
+	// only reads git config, so the spawner choice here does not affect
+	// behavior; we pass a process backend to avoid the cwd assertion.
+	deps := buildExecutorDepsForBead("", ResolveBackend(""))
 	return executor.ArchmageIdentity(deps)
 }
 
 // --- Deps wiring ---
 
+// buildExecutorDeps is the legacy, cwd-based wiring entry point. Prefer
+// buildExecutorDepsForBead so config reads honor the bead's registered
+// repo path rather than ambient CWD. See spi-vrzhf.
 func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
+	return buildExecutorDepsForBead("", spawner)
+}
+
+// buildExecutorDepsForBead resolves executor.Deps values that read
+// spire.yaml from the bead's registered repo path. Pass beadID="" when
+// no bead context is available (e.g. archmage-identity only reads git
+// config and is insensitive to backend/repo config).
+func buildExecutorDepsForBead(beadID string, spawner AgentBackend) *executor.Deps {
+	repoPath := ""
+	if beadID != "" {
+		if rp, _, _, err := wizardResolveRepo(beadID); err == nil {
+			repoPath = rp
+		}
+	}
 	return &executor.Deps{
 		// Graph state persistence — Dolt-backed in cluster, file-backed
 		// locally. Identity is resolved from the active tower (+
@@ -119,7 +139,7 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		// docs/CLI-MIGRATION.md.
 		GraphStateStore: resolveGraphStateStoreOrLocal(""),
 
-		MaxApprentices: resolveMaxApprentices(),
+		MaxApprentices: resolveMaxApprenticesForRepo(repoPath),
 
 		// Store operations
 		GetBead:          storeGetBead,
@@ -174,8 +194,16 @@ func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 		// Config
 		ConfigDir: configDir,
 		RepoConfig: func() *repoconfig.RepoConfig {
-			// Best-effort: load from the bead's repo. Returns nil if unavailable.
-			cfg, err := repoconfig.Load(".")
+			// Best-effort: load from the bead's registered repo path.
+			// Falls back to cwd when beadID is empty or the prefix is
+			// not registered locally. Loading via repoPath — not "." —
+			// is what keeps operator-managed wizards, whose cwd may be
+			// above the clone, on the canonical spire.yaml.
+			dir := repoPath
+			if dir == "" {
+				dir = "."
+			}
+			cfg, err := repoconfig.Load(dir)
 			if err != nil {
 				return nil
 			}
@@ -257,25 +285,80 @@ func bridgeReviewEscalateToArbiter(beadID, reviewerName string, lastReview *exec
 // cmd/spire aliases wizard.Review via wizard_bridge.go; executor.Review is separate.
 // The bridge above handles conversion. pkg/executor callers use executor.Review.
 
-// resolveMaxApprentices returns the cap on concurrent apprentice subprocesses
-// for this wizard. Precedence: SPIRE_MAX_APPRENTICES env > spire.yaml
-// agent.max-apprentices > 0 (executor falls back to DefaultMaxApprentices).
+// resolveMaxApprentices returns the cap on concurrent apprentice
+// subprocesses using the process's current working directory for
+// spire.yaml lookup. Prefer resolveMaxApprenticesForRepo so config reads
+// honor the bead's registered repo path rather than ambient CWD — see
+// spi-vrzhf. Kept for callers that have no bead in scope.
+func resolveMaxApprentices() int {
+	return resolveMaxApprenticesForRepo("")
+}
+
+// resolveMaxApprenticesForRepo returns the cap on concurrent apprentice
+// subprocesses for this wizard, loading spire.yaml from repoDir.
+//
+// Precedence: SPIRE_MAX_APPRENTICES env > spire.yaml agent.max-apprentices
+// > 0 (executor falls back to DefaultMaxApprentices).
 //
 // The operator sets SPIRE_MAX_APPRENTICES on the wizard pod when
 // WizardGuild.spec.maxApprentices is set; locally the env is unset and the
 // spire.yaml value wins. Per-step formula overrides are applied later in
 // dispatchWaveCore via step.With["max-apprentices"].
-func resolveMaxApprentices() int {
+//
+// When repoDir is empty we fall back to cwd. If SPIRE_REPO_PREFIX is set
+// but no spire.yaml is reachable from cwd, a warning fires via the same
+// assertion used by ResolveBackend so the silent-operator-fallback
+// regression from spi-vrzhf stays detectable.
+func resolveMaxApprenticesForRepo(repoDir string) int {
 	if raw := os.Getenv("SPIRE_MAX_APPRENTICES"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			return n
 		}
 	}
-	cfg, err := repoconfig.Load(".")
+	dir := repoDir
+	explicit := dir != ""
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return 0
+		}
+	}
+	cfg, err := repoconfig.Load(dir)
 	if err != nil || cfg == nil {
+		if !explicit {
+			assertRepoConfigReachable(dir, "resolveMaxApprentices")
+		}
 		return 0
 	}
+	if !explicit && cfg.Agent.MaxApprentices == 0 && cfg.Agent.Backend == "" {
+		// cwd-based lookup returned an empty config; warn if we appear
+		// to be inside an operator-managed pod that landed above the
+		// clone.
+		assertRepoConfigReachable(dir, "resolveMaxApprentices")
+	}
 	return cfg.Agent.MaxApprentices
+}
+
+// assertRepoConfigReachable is a thin cmd-side mirror of the pkg/agent
+// runtime assertion. When SPIRE_REPO_PREFIX is set and spire.yaml is not
+// reachable from cwd, but the canonical clone path /workspace/<prefix>
+// has one, we log a warning naming the caller. See spi-vrzhf.
+func assertRepoConfigReachable(cwd, caller string) {
+	prefix := os.Getenv("SPIRE_REPO_PREFIX")
+	if prefix == "" {
+		return
+	}
+	expected := filepath.Join("/workspace", prefix)
+	if _, err := os.Stat(filepath.Join(cwd, "spire.yaml")); err == nil {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(expected, "spire.yaml")); err == nil {
+		fmt.Fprintf(os.Stderr,
+			"[spire] WARN %s: cwd=%q but SPIRE_REPO_PREFIX=%q resolves to %q; spire.yaml not reachable from cwd. Pass an explicit repo path or fix the container WorkingDir.\n",
+			caller, cwd, prefix, expected,
+		)
+	}
 }
 
 // buildBundleStore resolves the tower-configured bundle store used by the
@@ -350,8 +433,12 @@ func cmdExecute(args []string) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	// All formulas are v3 step-graph formulas.
-	spawner := ResolveBackend("")
+	// All formulas are v3 step-graph formulas. Resolve the backend from
+	// the bead's registered-repo spire.yaml rather than cwd so
+	// operator-managed wizard pods (whose cwd is /workspace, above the
+	// clone at /workspace/<prefix>) still pick up agent.backend. See
+	// spi-vrzhf.
+	spawner := resolveBackendForBead(beadID)
 
 	if formulaName != "" {
 		graph, gErr := formulaPkg.LoadStepGraphByName(formulaName)
