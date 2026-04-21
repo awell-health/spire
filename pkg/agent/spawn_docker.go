@@ -182,6 +182,25 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	// submit time.
 	args = append(args, appendIdentityDockerArgs(cfg)...)
 
+	// Canonical repo identity + run env vars from the runtime contract
+	// (spi-wqax9). When cfg.Identity / cfg.Run carry these, they flow
+	// into the container as first-class env vars; when empty they are
+	// omitted so we do not leak blank values.
+	args = append(args, appendRuntimeContractDockerArgs(cfg)...)
+
+	// Workspace substrate mount. If the caller populated cfg.Workspace,
+	// bind-mount the path into the container at the same path so the
+	// in-container worker sees a pre-existing checkout (e.g. a borrowed
+	// worktree). When the workspace path equals repoRoot (already
+	// mounted above), this is a no-op duplicate we suppress so docker
+	// does not error on the same source path twice.
+	if cfg.Workspace != nil && cfg.Workspace.Path != "" && cfg.Workspace.Path != repoRoot {
+		args = append(args, "-v", fmt.Sprintf("%s:%s", cfg.Workspace.Path, cfg.Workspace.Path))
+	}
+	if cfg.Workspace != nil && cfg.Workspace.Path != "" {
+		args = append(args, "-e", fmt.Sprintf("SPIRE_WORKSPACE_PATH=%s", cfg.Workspace.Path))
+	}
+
 	// Extra volumes from config.
 	for _, v := range s.ExtraVolumes {
 		args = append(args, "-v", v)
@@ -332,12 +351,60 @@ func appendIdentityDockerArgs(cfg SpawnConfig) []string {
 	if cfg.BeadID != "" {
 		out = append(out, "-e", fmt.Sprintf("SPIRE_BEAD_ID=%s", cfg.BeadID))
 	}
-	if cfg.AttemptID != "" {
+	if cfg.AttemptID == "" && cfg.Run.AttemptID != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_ATTEMPT_ID=%s", cfg.Run.AttemptID))
+	} else if cfg.AttemptID != "" {
 		out = append(out, "-e", fmt.Sprintf("SPIRE_ATTEMPT_ID=%s", cfg.AttemptID))
 	}
 	if cfg.ApprenticeIdx != "" {
 		out = append(out, "-e", fmt.Sprintf("SPIRE_APPRENTICE_IDX=%s", cfg.ApprenticeIdx))
 	}
+	return out
+}
+
+// appendRuntimeContractDockerArgs emits the canonical runtime-contract
+// env vars (spi-wqax9 §4 / §5) as `-e KEY=VALUE` pairs. Empty fields
+// are skipped so unset values do not leak as blank env into the
+// container. Resolution order for each key prefers the canonical
+// cfg.Identity / cfg.Run field and falls back to the legacy
+// SpawnConfig field so dispatch sites that have not yet migrated
+// still produce valid output.
+func appendRuntimeContractDockerArgs(cfg SpawnConfig) []string {
+	var out []string
+
+	repoURL := cfg.Identity.RepoURL
+	if repoURL == "" {
+		repoURL = cfg.RepoURL
+	}
+	if repoURL != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_REPO_URL=%s", repoURL))
+	}
+
+	prefix := cfg.Identity.Prefix
+	if prefix == "" {
+		prefix = cfg.RepoPrefix
+	}
+	if prefix != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_REPO_PREFIX=%s", prefix))
+		out = append(out, "-e", fmt.Sprintf("BEADS_PREFIX=%s", prefix))
+	}
+
+	baseBranch := cfg.Identity.BaseBranch
+	if baseBranch == "" {
+		baseBranch = cfg.RepoBranch
+	}
+	if baseBranch != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_REPO_BRANCH=%s", baseBranch))
+	}
+
+	if cfg.Identity.TowerName != "" {
+		out = append(out, "-e", fmt.Sprintf("BEADS_DATABASE=%s", cfg.Identity.TowerName))
+	}
+
+	if cfg.Run.RunID != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_RUN_ID=%s", cfg.Run.RunID))
+	}
+
 	return out
 }
 

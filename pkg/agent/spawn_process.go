@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,11 @@ import (
 	"sync/atomic"
 	"syscall"
 )
+
+// ErrWorkspacePathMissing is returned by the process backend when
+// cfg.Workspace.Path is set but the directory does not exist on disk.
+// The executor should re-materialize the workspace before re-dispatching.
+var ErrWorkspacePathMissing = errors.New("process backend: cfg.Workspace.Path does not exist")
 
 // ProcessSpawner spawns agents as local OS processes.
 type ProcessSpawner struct{}
@@ -28,6 +34,18 @@ func NewProcessHandle(name string, cmd *exec.Cmd) *ProcessHandle {
 }
 
 func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
+	// Validate the workspace substrate exists on disk before spawning.
+	// The worker will --worktree-dir into this path; launching a
+	// process whose workspace does not exist produces confusing
+	// downstream errors. cfg.Workspace is optional during the
+	// migration window (not every dispatch site populates it yet);
+	// when nil we preserve the pre-spi-wqax9 behavior.
+	if cfg.Workspace != nil && cfg.Workspace.Path != "" {
+		if stat, err := os.Stat(cfg.Workspace.Path); err != nil || !stat.IsDir() {
+			return nil, fmt.Errorf("%w: %s (bead %s)", ErrWorkspacePathMissing, cfg.Workspace.Path, cfg.BeadID)
+		}
+	}
+
 	spireBin, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("find spire binary: %w", err)
@@ -133,9 +151,24 @@ func (h *ProcessHandle) Identifier() string {
 // applyProcessEnv injects all SpawnConfig-derived env vars into cmd.Env.
 // Extracted from Spawn so tests can verify the config-to-env translation
 // without actually starting a process.
+//
+// Resolution order when both a legacy field (cfg.Tower, cfg.Step) and
+// the canonical equivalent on cfg.Identity / cfg.Run carry the same
+// value, cfg values take precedence: the spawn-time config is the
+// source of truth and overrides whatever the caller inherited from its
+// own process env. During the migration window, either shape is
+// acceptable; once every dispatch site populates Identity/Run the
+// legacy fields can be removed.
 func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
-	if cfg.Tower != "" {
-		setEnv(cmd, "SPIRE_TOWER", cfg.Tower)
+	tower := cfg.Tower
+	if tower == "" {
+		tower = cfg.Identity.TowerName
+	}
+	if tower == "" {
+		tower = cfg.Run.TowerName
+	}
+	if tower != "" {
+		setEnv(cmd, "SPIRE_TOWER", tower)
 	}
 	if cfg.Provider != "" {
 		setEnv(cmd, "SPIRE_PROVIDER", cfg.Provider)
@@ -144,17 +177,62 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 		setEnv(cmd, "SPIRE_ROLE", string(cfg.Role))
 	}
 
+	// Canonical repo identity — written unconditionally when cfg.Identity
+	// carries the value. Local wizards running in process mode do not need
+	// SPIRE_REPO_* for bootstrap (there is no init container) but pkg/wizard
+	// and the apprentice read these to resolve which repo/prefix they are
+	// working on. Writing them here keeps the contract uniform across
+	// backends.
+	if cfg.Identity.RepoURL != "" {
+		setEnv(cmd, "SPIRE_REPO_URL", cfg.Identity.RepoURL)
+	}
+	prefix := cfg.Identity.Prefix
+	if prefix == "" {
+		prefix = cfg.RepoPrefix
+	}
+	if prefix != "" {
+		setEnv(cmd, "SPIRE_REPO_PREFIX", prefix)
+	}
+	baseBranch := cfg.Identity.BaseBranch
+	if baseBranch == "" {
+		baseBranch = cfg.RepoBranch
+	}
+	if baseBranch != "" {
+		setEnv(cmd, "SPIRE_REPO_BRANCH", baseBranch)
+	}
+	if cfg.Identity.TowerName != "" {
+		setEnv(cmd, "BEADS_DATABASE", cfg.Identity.TowerName)
+	}
+	if prefix != "" {
+		setEnv(cmd, "BEADS_PREFIX", prefix)
+	}
+
+	// Workspace handle — surfaces the path the spawned worker should
+	// use. The existing ExtraArgs=["--worktree-dir", ...] flow remains
+	// the authoritative plumbing; SPIRE_WORKSPACE_PATH duplicates it
+	// for consumers that want an env read.
+	if cfg.Workspace != nil && cfg.Workspace.Path != "" {
+		setEnv(cmd, "SPIRE_WORKSPACE_PATH", cfg.Workspace.Path)
+	}
+
 	// Apprentice identity env vars. Transport-agnostic: the apprentice reads
 	// them to resolve which bead to write to and what role to claim at
 	// submit time.
 	if cfg.BeadID != "" {
 		setEnv(cmd, "SPIRE_BEAD_ID", cfg.BeadID)
 	}
-	if cfg.AttemptID != "" {
-		setEnv(cmd, "SPIRE_ATTEMPT_ID", cfg.AttemptID)
+	attemptID := cfg.AttemptID
+	if attemptID == "" {
+		attemptID = cfg.Run.AttemptID
+	}
+	if attemptID != "" {
+		setEnv(cmd, "SPIRE_ATTEMPT_ID", attemptID)
 	}
 	if cfg.ApprenticeIdx != "" {
 		setEnv(cmd, "SPIRE_APPRENTICE_IDX", cfg.ApprenticeIdx)
+	}
+	if cfg.Run.RunID != "" {
+		setEnv(cmd, "SPIRE_RUN_ID", cfg.Run.RunID)
 	}
 
 	// OTLP telemetry. The daemon's OTLP receiver listens on localhost:4317
@@ -167,6 +245,10 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 
 	// Resource attributes carry bead context so the receiver can correlate
 	// spans to beads without post-hoc matching.
+	step := cfg.Step
+	if step == "" {
+		step = cfg.Run.FormulaStep
+	}
 	var resAttrs []string
 	if cfg.BeadID != "" {
 		resAttrs = append(resAttrs, "bead.id="+cfg.BeadID)
@@ -174,11 +256,11 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 	if cfg.Name != "" {
 		resAttrs = append(resAttrs, "agent.name="+cfg.Name)
 	}
-	if cfg.Step != "" {
-		resAttrs = append(resAttrs, "step="+cfg.Step)
+	if step != "" {
+		resAttrs = append(resAttrs, "step="+step)
 	}
-	if cfg.Tower != "" {
-		resAttrs = append(resAttrs, "tower="+cfg.Tower)
+	if tower != "" {
+		resAttrs = append(resAttrs, "tower="+tower)
 	}
 	if len(resAttrs) > 0 {
 		setEnv(cmd, "OTEL_RESOURCE_ATTRIBUTES", strings.Join(resAttrs, ","))

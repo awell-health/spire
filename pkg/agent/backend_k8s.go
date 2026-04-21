@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/runtime"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,24 +22,47 @@ import (
 // Each agent runs as a one-shot Pod with labels for discovery and
 // secret references for credentials.
 type K8sBackend struct {
-	client        kubernetes.Interface
-	namespace     string
-	image         string // agent container image
-	secretName    string // k8s Secret holding ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN
-	database      string // dolt database name (tower name); wizard tower-attach --database
-	prefix        string // bead prefix; wizard tower-attach --prefix
-	dolthubRemote string // dolthub remote path; wizard tower-attach --dolthub-remote
+	client     kubernetes.Interface
+	namespace  string
+	image      string // agent container image
+	secretName string // k8s Secret holding ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN
 }
+
+// Typed errors returned by Spawn for missing runtime contract inputs.
+// Callers can errors.Is against these to route failures (e.g. the
+// executor may retry on a missing-workspace error by re-materializing
+// the substrate before re-dispatching).
+var (
+	// ErrWorkspaceRequired is returned when cfg.Workspace is nil but the
+	// role/config combination requires a materialized substrate.
+	ErrWorkspaceRequired = errors.New("k8s backend: cfg.Workspace is required")
+	// ErrIdentityRequired is returned when cfg.Identity (plus legacy
+	// cfg.Tower / cfg.RepoURL / cfg.RepoBranch / cfg.RepoPrefix) are
+	// all unset for a role that requires canonical identity to stage
+	// tower data or bootstrap a repo.
+	ErrIdentityRequired = errors.New("k8s backend: cfg.Identity is required")
+	// ErrSharedWorkspacePVCNotFound is returned when the shared-workspace
+	// gate is on, cfg.Workspace.Kind==WorkspaceKindBorrowedWorktree, and
+	// no PVC with the expected owner-label is found in the namespace.
+	ErrSharedWorkspacePVCNotFound = errors.New("k8s backend: owning-wizard PVC not found for borrowed workspace")
+)
 
 // NewK8sBackend creates a K8sBackend using in-cluster config with
 // kubeconfig fallback. Reads SPIRE_K8S_NAMESPACE (default: namespace
 // from serviceaccount token), SPIRE_AGENT_IMAGE (required), and
 // SPIRE_CREDENTIALS_SECRET (optional; falls back to "spire-credentials"
 // for backward compat with installs that pre-date the helm chart's
-// release-scoped secret naming). Wizard-pod attach-cluster flags are
-// sourced from BEADS_DATABASE, BEADS_PREFIX, and DOLTHUB_REMOTE — the
-// same envs the helm chart already injects into the steward so init
-// containers across the cluster share one config source.
+// release-scoped secret naming).
+//
+// As of spi-wqax9, backend construction no longer reads
+// BEADS_DATABASE / BEADS_PREFIX / DOLTHUB_REMOTE from process env.
+// Those values are now sourced from cfg.Identity on every Spawn so one
+// backend instance can serve multiple towers/prefixes without process
+// restart. Legacy SpawnConfig fields (cfg.Tower, cfg.RepoURL,
+// cfg.RepoBranch, cfg.RepoPrefix) are used as a fallback for the
+// migration window until every dispatch site populates cfg.Identity —
+// once they all do, the legacy fallback becomes dead code and can be
+// removed in a later cleanup bead.
 func NewK8sBackend() (*K8sBackend, error) {
 	image := os.Getenv("SPIRE_AGENT_IMAGE")
 	if image == "" {
@@ -77,135 +102,49 @@ func NewK8sBackend() (*K8sBackend, error) {
 	}
 
 	return &K8sBackend{
-		client:        client,
-		namespace:     ns,
-		image:         image,
-		secretName:    secretName,
-		database:      os.Getenv("BEADS_DATABASE"),
-		prefix:        os.Getenv("BEADS_PREFIX"),
-		dolthubRemote: os.Getenv("DOLTHUB_REMOTE"),
+		client:     client,
+		namespace:  ns,
+		image:      image,
+		secretName: secretName,
 	}, nil
 }
 
 // NewK8sBackendFromClient creates a K8sBackend with an injected client.
-// Used for testing with the k8s fake client. Wizard-pod attach-cluster
-// flags read from BEADS_DATABASE/BEADS_PREFIX/DOLTHUB_REMOTE so tests
-// can exercise the wizard branch with t.Setenv.
+// Used for testing with the k8s fake client.
 func NewK8sBackendFromClient(client kubernetes.Interface, namespace, image string) *K8sBackend {
 	return &K8sBackend{
-		client:        client,
-		namespace:     namespace,
-		image:         image,
-		secretName:    "spire-credentials",
-		database:      os.Getenv("BEADS_DATABASE"),
-		prefix:        os.Getenv("BEADS_PREFIX"),
-		dolthubRemote: os.Getenv("DOLTHUB_REMOTE"),
+		client:     client,
+		namespace:  namespace,
+		image:      image,
+		secretName: "spire-credentials",
 	}
 }
 
 // Spawn creates a one-shot k8s Pod for the given agent config.
 //
-// RoleWizard pods take the canonical wizard pod contract: a tower-attach
-// init container stages .beads into /data/<db>/.beads, /data and /workspace
-// emptyDir volumes are mounted on the main container, DOLT_DATA_DIR and
-// SPIRE_CONFIG_DIR env vars are added so resolveBeadsDir() finds the staged
-// store, and the main container uses WizardResources() — enough headroom
-// to fan out apprentices.
+// The pod shape is selected by buildRolePod keyed on cfg.Role ×
+// cfg.Workspace.Kind:
 //
-// All other roles keep the flat executor pod shape that ships today
-// (byte-for-byte identical to the pre-wizard-branch code path).
+//   - Wizard role → the canonical wizard pod (tower-attach +
+//     repo-bootstrap init containers, /data+/workspace volumes, wizard
+//     resources).
+//   - Any role whose cfg.Workspace.Kind is non-repo → the same two
+//     init containers, staging the substrate before the main container
+//     starts. This closes the apprentice/sage-in-k8s gap.
+//   - Everything else (apprentice/sage without a workspace handle, or
+//     Kind==WorkspaceKindRepo) → the flat executor pod (byte-for-byte
+//     identical to the pre-shared-builder code path).
 func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
-	subcmd, err := roleToSubcmd(cfg.Role)
+	pod, err := b.buildRolePod(cfg)
 	if err != nil {
 		return nil, err
-	}
-
-	args := append([]string{}, subcmd...)
-	args = append(args, cfg.BeadID, "--name", cfg.Name)
-	args = append(args, cfg.ExtraArgs...)
-
-	env := b.buildEnvVars(cfg)
-
-	// If custom prompt is non-empty, pass as env var.
-	if cfg.CustomPrompt != "" {
-		env = append(env, corev1.EnvVar{
-			Name:  "SPIRE_CUSTOM_PROMPT",
-			Value: cfg.CustomPrompt,
-		})
-	}
-
-	// Secret references. Key names match what `helm/spire/templates/secret.yaml`
-	// writes (uppercase env-var-style, not lowercase kebab). GITHUB_TOKEN is
-	// optional so installs without a github token (e.g. smoke tests that
-	// don't push) don't block pod creation on a missing key.
-	optional := true
-	env = append(env,
-		corev1.EnvVar{
-			Name: "ANTHROPIC_API_KEY",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: b.secretName},
-					Key:                  "ANTHROPIC_API_KEY_DEFAULT",
-				},
-			},
-		},
-		corev1.EnvVar{
-			Name: "GITHUB_TOKEN",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: b.secretName},
-					Key:                  "GITHUB_TOKEN",
-					Optional:             &optional,
-				},
-			},
-		},
-	)
-
-	// Sanitize the agent name for use as a pod name (must be DNS-compatible).
-	podName := sanitizePodName(cfg.Name)
-
-	var pod *corev1.Pod
-	if cfg.Role == RoleWizard {
-		p, err := b.buildWizardPod(cfg, podName, args, env)
-		if err != nil {
-			return nil, err
-		}
-		pod = p
-	} else {
-		resources := resourcesForRole(cfg.Role)
-		pod = &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      podName,
-				Namespace: b.namespace,
-				Labels: map[string]string{
-					"spire.agent":      "true",   // fixed value for network policy selectors
-					"spire.agent.name": cfg.Name, // actual agent name for lookups
-					"spire.bead":       cfg.BeadID,
-					"spire.role":       string(cfg.Role),
-					"spire.tower":      cfg.Tower,
-				},
-			},
-			Spec: corev1.PodSpec{
-				RestartPolicy:     corev1.RestartPolicyNever,
-				PriorityClassName: "spire-agent-default",
-				Containers: []corev1.Container{
-					{
-						Name:      "agent",
-						Image:     b.image,
-						Command:   append([]string{"spire"}, args...),
-						Env:       env,
-						Resources: resources,
-					},
-				},
-			},
-		}
 	}
 
 	created, err := b.client.CoreV1().Pods(b.namespace).Create(
 		context.Background(), pod, metav1.CreateOptions{},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create pod %s: %w", podName, err)
+		return nil, fmt.Errorf("create pod %s: %w", pod.Name, err)
 	}
 
 	return &K8sHandle{
@@ -214,6 +153,133 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 		podName:   created.Name,
 		name:      cfg.Name,
 	}, nil
+}
+
+// buildRolePod is the role-agnostic shared pod builder. It routes on
+// cfg.Role × cfg.Workspace.Kind and returns a ready-to-create Pod
+// (with labels, annotations, volumes, init containers, and main
+// container) without calling out to the k8s API.
+//
+// The routing rules (spi-wqax9 §4):
+//
+//  1. Wizard: always gets tower-attach + repo-bootstrap init containers.
+//     A wizard pod without a materialized workspace is invalid —
+//     buildWizardPod fails fast on empty identity/bootstrap inputs.
+//  2. Non-wizard role with cfg.Workspace != nil and
+//     cfg.Workspace.Kind != WorkspaceKindRepo: gets the same two init
+//     containers. When SPIRE_K8S_SHARED_WORKSPACE=1 and the kind is
+//     borrowed-worktree, the workspace is mounted from the parent
+//     wizard's PVC rather than an emptyDir.
+//  3. Otherwise (non-wizard with nil Workspace, or Kind==repo): the
+//     legacy flat pod. This is the gate-OFF baseline.
+func (b *K8sBackend) buildRolePod(cfg SpawnConfig) (*corev1.Pod, error) {
+	ident := resolveIdentity(cfg)
+	podName := sanitizePodName(cfg.Name)
+
+	// Determine the pod shape before we start allocating objects so we
+	// fail fast when the contract is violated (cfg.Identity missing for
+	// a role that needs substrate, cfg.Workspace missing, etc.).
+	shape := selectPodShape(cfg)
+
+	subcmd, err := roleToSubcmd(cfg.Role)
+	if err != nil {
+		return nil, err
+	}
+	args := append([]string{}, subcmd...)
+	args = append(args, cfg.BeadID, "--name", cfg.Name)
+	args = append(args, cfg.ExtraArgs...)
+
+	env := b.buildEnvVars(cfg, ident)
+	if cfg.CustomPrompt != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_CUSTOM_PROMPT", Value: cfg.CustomPrompt})
+	}
+	env = append(env, secretEnvRefs(b.secretName)...)
+
+	switch shape {
+	case podShapeWizard:
+		return b.buildWizardPod(cfg, ident, podName, args, env)
+	case podShapeSubstrate:
+		return b.buildSubstratePod(cfg, ident, podName, args, env)
+	default:
+		return b.buildFlatPod(cfg, podName, args, env), nil
+	}
+}
+
+// podShape selects which builder buildRolePod dispatches to.
+type podShape int
+
+const (
+	// podShapeFlat is the legacy flat executor pod (no init containers,
+	// no workspace volumes). Used when the caller has not populated
+	// cfg.Workspace (gate-OFF baseline).
+	podShapeFlat podShape = iota
+	// podShapeWizard is the wizard pod with tower-attach and
+	// repo-bootstrap init containers and a /data+/workspace volume pair.
+	podShapeWizard
+	// podShapeSubstrate is the apprentice/sage/cleric equivalent of the
+	// wizard pod: same init containers staging substrate, but keyed on
+	// cfg.Workspace rather than the hard-coded wizard branch. When
+	// SPIRE_K8S_SHARED_WORKSPACE=1, a borrowed_worktree workspace
+	// mounts the parent wizard's PVC instead of an emptyDir.
+	podShapeSubstrate
+)
+
+// selectPodShape picks the builder for cfg. Wizard always goes to the
+// wizard shape; non-wizard roles go to substrate when their workspace
+// handle carries a non-repo kind.
+func selectPodShape(cfg SpawnConfig) podShape {
+	if cfg.Role == RoleWizard {
+		return podShapeWizard
+	}
+	if cfg.Workspace != nil && cfg.Workspace.Kind != runtime.WorkspaceKindRepo {
+		return podShapeSubstrate
+	}
+	return podShapeFlat
+}
+
+// resolveIdentity returns the canonical RepoIdentity for cfg. When
+// cfg.Identity is populated (by the executor's dispatch site), it is
+// used as-is. Otherwise a best-effort identity is synthesized from the
+// legacy SpawnConfig fields (cfg.Tower, cfg.RepoURL, cfg.RepoBranch,
+// cfg.RepoPrefix) to preserve behavior during the migration window.
+// Once every dispatch site populates cfg.Identity this fallback becomes
+// dead code and can be removed.
+func resolveIdentity(cfg SpawnConfig) runtime.RepoIdentity {
+	ident := cfg.Identity
+	if ident.TowerName == "" {
+		ident.TowerName = cfg.Tower
+	}
+	if ident.Prefix == "" {
+		ident.Prefix = cfg.RepoPrefix
+	}
+	if ident.RepoURL == "" {
+		ident.RepoURL = cfg.RepoURL
+	}
+	if ident.BaseBranch == "" {
+		ident.BaseBranch = cfg.RepoBranch
+	}
+	return ident
+}
+
+// resolveDolthubRemote returns the dolthub remote for the tower-attach
+// init container. The canonical source is RepoIdentity — but the
+// identity type does not (yet) carry DolthubRemote as a first-class
+// field; until it does, we read from cfg.Run (if populated by the
+// executor) or fall back to the DOLTHUB_REMOTE env. This is the one
+// remaining env read in the backend and is documented in the package
+// README as transitional.
+func resolveDolthubRemote(cfg SpawnConfig) string {
+	// DOLTHUB_REMOTE is not on RepoIdentity today; fall through to the
+	// env for now. This is the only process-env read that remains in
+	// the backend, and it mirrors the steward's own resolution path so
+	// init containers across the cluster agree on one source.
+	return os.Getenv("DOLTHUB_REMOTE")
+}
+
+// isIdentityZero reports whether an identity is missing the three
+// pieces needed to stage tower data + bootstrap a repo.
+func isIdentityZero(ident runtime.RepoIdentity) bool {
+	return ident.TowerName == "" && ident.Prefix == "" && ident.RepoURL == ""
 }
 
 // buildWizardPod produces the canonical wizard pod: a tower-attach init
@@ -226,107 +292,70 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 // wizard.ResolveRepo deterministically keys cfg.Instances, and
 // WizardResources() for the main container.
 //
-// Database/prefix/dolthub-remote for the tower-attach init container
-// come from the same env source the steward deployment already uses —
-// see NewK8sBackend. Database falls back to cfg.Tower (tower name ==
-// database name, per pkg/tower/attach-cluster).
-//
 // Repo bootstrap inputs (RepoURL, RepoBranch, RepoPrefix) come from
-// SpawnConfig. They are required — an empty value returns an error
-// rather than producing a pod that will fail at ResolveRepo time with
-// an opaque "no local repo registered" message.
-func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, podName string, args []string, env []corev1.EnvVar) (*corev1.Pod, error) {
-	if cfg.RepoURL == "" {
-		return nil, fmt.Errorf("wizard pod spec: RepoURL is required (bead %s)", cfg.BeadID)
+// cfg.Identity if populated, else from the legacy cfg.RepoURL /
+// cfg.RepoBranch / cfg.RepoPrefix fields (see resolveIdentity). Any
+// empty input surfaces as a typed error at Spawn time rather than
+// producing a pod that fails at ResolveRepo with an opaque "no local
+// repo registered" message.
+func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, ident runtime.RepoIdentity, podName string, args []string, env []corev1.EnvVar) (*corev1.Pod, error) {
+	// Error messages reference the legacy SpawnConfig field names
+	// (RepoURL/RepoBranch/RepoPrefix) because that is what callers see
+	// at dispatch sites today; Identity is populated by resolveIdentity
+	// from those fields during the migration window. Once every
+	// dispatch site populates Identity directly, the messages can move
+	// to the canonical names (RepoURL/BaseBranch/Prefix).
+	if ident.RepoURL == "" {
+		return nil, fmt.Errorf("%w: wizard pod spec: RepoURL is required (bead %s)", ErrIdentityRequired, cfg.BeadID)
 	}
-	if cfg.RepoBranch == "" {
-		return nil, fmt.Errorf("wizard pod spec: RepoBranch is required (bead %s)", cfg.BeadID)
+	if ident.BaseBranch == "" {
+		return nil, fmt.Errorf("%w: wizard pod spec: RepoBranch is required (bead %s)", ErrIdentityRequired, cfg.BeadID)
 	}
-	if cfg.RepoPrefix == "" {
-		return nil, fmt.Errorf("wizard pod spec: RepoPrefix is required (bead %s)", cfg.BeadID)
+	if ident.Prefix == "" {
+		return nil, fmt.Errorf("%w: wizard pod spec: RepoPrefix is required (bead %s)", ErrIdentityRequired, cfg.BeadID)
 	}
 
-	db := b.database
+	db := ident.TowerName
 	if db == "" {
+		// Tower name == database name (per pkg/tower/attach-cluster).
+		// Fall back to cfg.Tower for dispatch sites that set Tower
+		// without populating Identity.
 		db = cfg.Tower
 	}
 
-	// Main container needs these so resolveBeadsDir() finds the bead
-	// store the tower-attach init container stages at /data/<db>/.beads,
-	// and wizard.ResolveRepo can key cfg.Instances deterministically by
-	// SPIRE_REPO_PREFIX rather than re-deriving it from the bead ID.
-	env = append(env,
-		corev1.EnvVar{Name: "DOLT_DATA_DIR", Value: "/data"},
-		corev1.EnvVar{Name: "SPIRE_CONFIG_DIR", Value: "/data/spire-config"},
-		corev1.EnvVar{Name: "SPIRE_REPO_URL", Value: cfg.RepoURL},
-		corev1.EnvVar{Name: "SPIRE_REPO_BRANCH", Value: cfg.RepoBranch},
-		corev1.EnvVar{Name: "SPIRE_REPO_PREFIX", Value: cfg.RepoPrefix},
-	)
+	env = append(env, substrateEnv(ident)...)
 
 	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
 	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"}
 
-	return &corev1.Pod{
+	volumes := []corev1.Volume{
+		{
+			Name:         "data",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
+		{
+			Name:         "workspace",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
+	}
+
+	initContainers := []corev1.Container{
+		b.towerAttachInit(db, ident, env, []corev1.VolumeMount{dataMount}),
+		b.repoBootstrapInit(env, []corev1.VolumeMount{dataMount, workspaceMount}),
+	}
+
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: b.namespace,
-			Labels: map[string]string{
-				"spire.agent":      "true",   // fixed value for network policy selectors
-				"spire.agent.name": cfg.Name, // actual agent name for lookups
-				"spire.bead":       cfg.BeadID,
-				"spire.role":       string(cfg.Role),
-				"spire.tower":      cfg.Tower,
-			},
+			Labels:    b.podLabels(cfg, ident),
+			Annotations: b.podAnnotations(cfg),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:     corev1.RestartPolicyNever,
 			PriorityClassName: "spire-agent-default",
-			Volumes: []corev1.Volume{
-				{
-					Name:         "data",
-					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-				},
-				{
-					Name:         "workspace",
-					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-				},
-			},
-			InitContainers: []corev1.Container{
-				{
-					Name:  "tower-attach",
-					Image: b.image,
-					Command: []string{
-						"spire", "tower", "attach-cluster",
-						"--data-dir=/data/" + db,
-						"--database=" + db,
-						"--prefix=" + b.prefix,
-						"--dolthub-remote=" + b.dolthubRemote,
-					},
-					// Share the main container's env so BEADS_DOLT_SERVER_HOST /
-					// BEADS_DOLT_SERVER_PORT (and DOLT_HOST/PORT if set) point at
-					// the cluster dolt service. Without this the init container
-					// falls through to the laptop defaults (127.0.0.1:3307) and
-					// attach-cluster times out waiting on a DB that isn't there.
-					Env:          env,
-					VolumeMounts: []corev1.VolumeMount{dataMount},
-				},
-				{
-					Name:  "repo-bootstrap",
-					Image: b.image,
-					// Fail-fast validation in shell covers the case where some
-					// future wiring strips the env vars before they reach the
-					// pod. Without this, git clone would emit a confusing
-					// "fatal: repository '' not found" and the bind would silently
-					// skip the mount instead of surfacing a clear config error.
-					Command: []string{"sh", "-c", repoBootstrapScript},
-					Env:     env,
-					// Shares /data so bind-local writes tower/global config to
-					// the same SPIRE_CONFIG_DIR the tower-attach init container
-					// staged; /workspace is the clone target shared with the
-					// main container.
-					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount},
-				},
-			},
+			Volumes:           volumes,
+			InitContainers:    initContainers,
 			Containers: []corev1.Container{
 				{
 					Name:         "agent",
@@ -338,7 +367,409 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, podName string, args []stri
 				},
 			},
 		},
+	}
+
+	return pod, nil
+}
+
+// buildSubstratePod produces an apprentice/sage/cleric pod that needs
+// a materialized workspace substrate — the same contract as the wizard
+// pod, but keyed off cfg.Workspace rather than hard-coded. Closes the
+// apprentice/sage-in-k8s gap from the test matrix (design §5).
+//
+// Volumes:
+//   - /data emptyDir (tower-attach target)
+//   - /workspace: emptyDir by default. When SPIRE_K8S_SHARED_WORKSPACE=1
+//     and cfg.Workspace.Kind == WorkspaceKindBorrowedWorktree, the
+//     workspace is mounted from the parent wizard pod's PVC (located by
+//     the spire.io/owning-wizard-pod label selector).
+func (b *K8sBackend) buildSubstratePod(cfg SpawnConfig, ident runtime.RepoIdentity, podName string, args []string, env []corev1.EnvVar) (*corev1.Pod, error) {
+	if cfg.Workspace == nil {
+		return nil, fmt.Errorf("%w: role %q requires cfg.Workspace (bead %s)", ErrWorkspaceRequired, cfg.Role, cfg.BeadID)
+	}
+	if isIdentityZero(ident) {
+		return nil, fmt.Errorf("%w: role %q requires cfg.Identity (bead %s)", ErrIdentityRequired, cfg.Role, cfg.BeadID)
+	}
+	if ident.RepoURL == "" {
+		return nil, fmt.Errorf("%w: role %q requires RepoURL (bead %s)", ErrIdentityRequired, cfg.Role, cfg.BeadID)
+	}
+	if ident.BaseBranch == "" {
+		return nil, fmt.Errorf("%w: role %q requires BaseBranch (bead %s)", ErrIdentityRequired, cfg.Role, cfg.BeadID)
+	}
+	if ident.Prefix == "" {
+		return nil, fmt.Errorf("%w: role %q requires Prefix (bead %s)", ErrIdentityRequired, cfg.Role, cfg.BeadID)
+	}
+
+	db := ident.TowerName
+	if db == "" {
+		db = cfg.Tower
+	}
+
+	env = append(env, substrateEnv(ident)...)
+
+	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
+	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"}
+
+	// Pick the workspace volume source. Default: emptyDir (fresh
+	// per-pod substrate). Shared-PVC: when the gate is on and the kind
+	// signals borrowed-worktree continuation, mount the parent
+	// wizard's PVC so the child sees the wizard-owned checkout.
+	workspaceVol, err := b.resolveWorkspaceVolume(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	volumes := []corev1.Volume{
+		{
+			Name:         "data",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
+		{
+			Name:         "workspace",
+			VolumeSource: workspaceVol,
+		},
+	}
+
+	initContainers := []corev1.Container{
+		b.towerAttachInit(db, ident, env, []corev1.VolumeMount{dataMount}),
+		b.repoBootstrapInit(env, []corev1.VolumeMount{dataMount, workspaceMount}),
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: b.namespace,
+			Labels:    b.podLabels(cfg, ident),
+			Annotations: b.podAnnotations(cfg),
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy:     corev1.RestartPolicyNever,
+			PriorityClassName: "spire-agent-default",
+			Volumes:           volumes,
+			InitContainers:    initContainers,
+			Containers: []corev1.Container{
+				{
+					Name:         "agent",
+					Image:        b.image,
+					Command:      append([]string{"spire"}, args...),
+					Env:          env,
+					Resources:    resourcesForRole(cfg.Role),
+					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount},
+				},
+			},
+		},
+	}
+
+	return pod, nil
+}
+
+// buildFlatPod produces the legacy flat executor pod (no init
+// containers, no volumes). This is the gate-OFF baseline for
+// apprentice/sage spawns that arrive without cfg.Workspace — the
+// existing byte-for-byte output before the shared-builder refactor.
+func (b *K8sBackend) buildFlatPod(cfg SpawnConfig, podName string, args []string, env []corev1.EnvVar) *corev1.Pod {
+	ident := resolveIdentity(cfg)
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: b.namespace,
+			Labels:    b.podLabels(cfg, ident),
+			Annotations: b.podAnnotations(cfg),
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy:     corev1.RestartPolicyNever,
+			PriorityClassName: "spire-agent-default",
+			Containers: []corev1.Container{
+				{
+					Name:      "agent",
+					Image:     b.image,
+					Command:   append([]string{"spire"}, args...),
+					Env:       env,
+					Resources: resourcesForRole(cfg.Role),
+				},
+			},
+		},
+	}
+}
+
+// resolveWorkspaceVolume returns the VolumeSource for the pod's
+// /workspace mount. Default: emptyDir. When SPIRE_K8S_SHARED_WORKSPACE=1
+// and cfg.Workspace.Kind == WorkspaceKindBorrowedWorktree, the volume
+// is backed by the parent wizard pod's PVC, located via the
+// `spire.io/owning-wizard-pod=<name>` label selector. A missing PVC
+// surfaces as ErrSharedWorkspacePVCNotFound — no silent fallback to
+// emptyDir.
+func (b *K8sBackend) resolveWorkspaceVolume(cfg SpawnConfig) (corev1.VolumeSource, error) {
+	gateOn := os.Getenv("SPIRE_K8S_SHARED_WORKSPACE") == "1"
+	if !gateOn || cfg.Workspace == nil || cfg.Workspace.Kind != runtime.WorkspaceKindBorrowedWorktree {
+		return corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}, nil
+	}
+
+	parent := parentWizardPodName(cfg)
+	if parent == "" {
+		return corev1.VolumeSource{}, fmt.Errorf("%w: cannot derive parent wizard pod name (bead %s)", ErrSharedWorkspacePVCNotFound, cfg.BeadID)
+	}
+
+	pvcs, err := b.client.CoreV1().PersistentVolumeClaims(b.namespace).List(
+		context.Background(),
+		metav1.ListOptions{LabelSelector: fmt.Sprintf("%s=%s", LabelOwningWizardPod, parent)},
+	)
+	if err != nil {
+		return corev1.VolumeSource{}, fmt.Errorf("%w: list PVCs: %v", ErrSharedWorkspacePVCNotFound, err)
+	}
+	if len(pvcs.Items) == 0 {
+		return corev1.VolumeSource{}, fmt.Errorf("%w: no PVC with %s=%s (bead %s)",
+			ErrSharedWorkspacePVCNotFound, LabelOwningWizardPod, parent, cfg.BeadID)
+	}
+
+	return corev1.VolumeSource{
+		PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: pvcs.Items[0].Name,
+		},
 	}, nil
+}
+
+// parentWizardPodName returns the name of the parent wizard pod that
+// owns the shared PVC for a borrowed-worktree child. It is derived
+// from cfg.Run.RunID (the wizard pod's name is RunID when the wizard
+// was itself spawned by the operator or a parent executor) or from the
+// agent name's conventional prefix (e.g. "apprentice-spi-abc-0" has
+// parent "wizard-spi-abc"). The heuristic is intentionally simple —
+// later work can plumb an explicit ParentPod field onto SpawnConfig if
+// the agent-name convention proves fragile.
+//
+// The returned name is normalized via podNameLookupKey (no timestamp
+// suffix) because it is used as a label selector against existing
+// PVCs — sanitizePodName's collision-avoidance suffix is only valid
+// for freshly-created pods.
+func parentWizardPodName(cfg SpawnConfig) string {
+	if cfg.Run.RunID != "" {
+		return podNameLookupKey(cfg.Run.RunID)
+	}
+	// Convention: apprentice-spi-abc-0 → wizard-spi-abc (drop the
+	// last "-N" fan-out index). Works for the canonical wave names
+	// produced by action_dispatch.go.
+	name := cfg.Name
+	if idx := strings.LastIndexByte(name, '-'); idx > 0 {
+		name = name[:idx]
+	}
+	if strings.HasPrefix(name, "apprentice-") {
+		return podNameLookupKey("wizard-" + strings.TrimPrefix(name, "apprentice-"))
+	}
+	if strings.HasPrefix(name, "sage-") {
+		return podNameLookupKey("wizard-" + strings.TrimPrefix(name, "sage-"))
+	}
+	return ""
+}
+
+// podNameLookupKey normalizes a name to the same lowercase / charset
+// rules as sanitizePodName but WITHOUT the timestamp suffix —
+// suitable for label-selector lookups that need to match an existing
+// pod's stable name.
+func podNameLookupKey(name string) string {
+	name = strings.ToLower(name)
+	name = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		return '-'
+	}, name)
+	name = strings.Trim(name, "-")
+	if len(name) > 253 {
+		name = name[:253]
+	}
+	return name
+}
+
+// towerAttachInit builds the tower-attach init container that stages
+// /data/<db>/.beads and tower config onto the shared emptyDir. Shared
+// env plus the supplied volume mounts so the init container has the
+// same dolt cluster pointers as the main container — without this the
+// init container falls back to laptop localhost defaults and
+// attach-cluster times out.
+func (b *K8sBackend) towerAttachInit(db string, ident runtime.RepoIdentity, env []corev1.EnvVar, mounts []corev1.VolumeMount) corev1.Container {
+	return corev1.Container{
+		Name:  "tower-attach",
+		Image: b.image,
+		Command: []string{
+			"spire", "tower", "attach-cluster",
+			"--data-dir=/data/" + db,
+			"--database=" + db,
+			"--prefix=" + ident.Prefix,
+			"--dolthub-remote=" + resolveDolthubRemote(SpawnConfig{Identity: ident}),
+		},
+		Env:          env,
+		VolumeMounts: mounts,
+	}
+}
+
+// repoBootstrapInit builds the repo-bootstrap init container that
+// clones SPIRE_REPO_URL@SPIRE_REPO_BRANCH into /workspace/<prefix> and
+// binds it locally so wizard.ResolveRepo succeeds when the main
+// container starts.
+func (b *K8sBackend) repoBootstrapInit(env []corev1.EnvVar, mounts []corev1.VolumeMount) corev1.Container {
+	return corev1.Container{
+		Name:  "repo-bootstrap",
+		Image: b.image,
+		// Fail-fast validation in shell covers the case where some
+		// future wiring strips the env vars before they reach the
+		// pod. Without this, git clone would emit a confusing
+		// "fatal: repository '' not found" and the bind would silently
+		// skip the mount instead of surfacing a clear config error.
+		Command:      []string{"sh", "-c", repoBootstrapScript},
+		Env:          env,
+		VolumeMounts: mounts,
+	}
+}
+
+// substrateEnv builds the canonical env vars a substrate-enabled pod
+// must carry: the SPIRE_REPO_* trio consumed by the repo-bootstrap
+// init container's shell script, plus the DOLT_DATA_DIR /
+// SPIRE_CONFIG_DIR pair consumed by resolveBeadsDir() and the
+// BEADS_DATABASE / BEADS_PREFIX / DOLTHUB_REMOTE vars that downstream
+// dolt tooling expects.
+func substrateEnv(ident runtime.RepoIdentity) []corev1.EnvVar {
+	env := []corev1.EnvVar{
+		{Name: "DOLT_DATA_DIR", Value: "/data"},
+		{Name: "SPIRE_CONFIG_DIR", Value: "/data/spire-config"},
+		{Name: "SPIRE_REPO_URL", Value: ident.RepoURL},
+		{Name: "SPIRE_REPO_BRANCH", Value: ident.BaseBranch},
+		{Name: "SPIRE_REPO_PREFIX", Value: ident.Prefix},
+	}
+	if ident.TowerName != "" {
+		env = append(env, corev1.EnvVar{Name: "BEADS_DATABASE", Value: ident.TowerName})
+	}
+	if ident.Prefix != "" {
+		env = append(env, corev1.EnvVar{Name: "BEADS_PREFIX", Value: ident.Prefix})
+	}
+	if r := resolveDolthubRemote(SpawnConfig{Identity: ident}); r != "" {
+		env = append(env, corev1.EnvVar{Name: "DOLTHUB_REMOTE", Value: r})
+	}
+	return env
+}
+
+// secretEnvRefs builds the ANTHROPIC_API_KEY and GITHUB_TOKEN secret
+// references. Key names match what `helm/spire/templates/secret.yaml`
+// writes. GITHUB_TOKEN is optional so installs without a github token
+// (e.g. smoke tests that don't push) don't block pod creation on a
+// missing key.
+func secretEnvRefs(secretName string) []corev1.EnvVar {
+	optional := true
+	return []corev1.EnvVar{
+		{
+			Name: "ANTHROPIC_API_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+					Key:                  "ANTHROPIC_API_KEY_DEFAULT",
+				},
+			},
+		},
+		{
+			Name: "GITHUB_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+					Key:                  "GITHUB_TOKEN",
+					Optional:             &optional,
+				},
+			},
+		},
+	}
+}
+
+// Canonical label keys written to every pod created by this backend
+// (spi-wqax9). The spire.* labels below preserve the pre-existing
+// network-policy / discovery surface; the spire.io/* labels are the
+// runtime-contract vocabulary from docs/design/spi-xplwy-runtime-contract.md
+// §1. High-cardinality identifiers (attempt_id, run_id) are emitted as
+// annotations, not labels, so metric/selector cardinality stays bounded.
+const (
+	LabelTower           = "spire.io/tower"
+	LabelPrefix          = "spire.io/prefix"
+	LabelBead            = "spire.io/bead"
+	LabelRole            = "spire.io/role"
+	LabelFormulaStep     = "spire.io/formula-step"
+	LabelWorkspaceKind   = "spire.io/workspace-kind"
+	LabelWorkspaceName   = "spire.io/workspace-name"
+	LabelWorkspaceOrigin = "spire.io/workspace-origin"
+	LabelHandoffMode     = "spire.io/handoff-mode"
+	LabelBackend         = "spire.io/backend"
+	LabelOwningWizardPod = "spire.io/owning-wizard-pod"
+
+	AnnotationAttemptID = "spire.io/attempt-id"
+	AnnotationRunID     = "spire.io/run-id"
+)
+
+// podLabels constructs the full canonical label set for a pod. The
+// legacy spire.agent / spire.bead / spire.role / spire.tower labels
+// are preserved unchanged because network policies and the List() /
+// findPod() code paths still match on them.
+func (b *K8sBackend) podLabels(cfg SpawnConfig, ident runtime.RepoIdentity) map[string]string {
+	labels := map[string]string{
+		// Legacy labels — preserved byte-for-byte so discovery and
+		// network policies do not regress.
+		"spire.agent":      "true",
+		"spire.agent.name": cfg.Name,
+		"spire.bead":       cfg.BeadID,
+		"spire.role":       string(cfg.Role),
+		"spire.tower":      cfg.Tower,
+	}
+
+	// Canonical spire.io/* label vocabulary. Low-cardinality fields
+	// only; attempt/run go on annotations below.
+	setLabel(labels, LabelBackend, "k8s")
+	setLabel(labels, LabelTower, ident.TowerName)
+	setLabel(labels, LabelPrefix, ident.Prefix)
+	setLabel(labels, LabelBead, cfg.BeadID)
+	setLabel(labels, LabelRole, string(cfg.Role))
+	setLabel(labels, LabelFormulaStep, cfg.Run.FormulaStep)
+	if cfg.Run.FormulaStep == "" && cfg.Step != "" {
+		// Legacy Step field — keep the label non-empty for pre-Run
+		// dispatch sites that only set cfg.Step.
+		setLabel(labels, LabelFormulaStep, cfg.Step)
+	}
+	if cfg.Workspace != nil {
+		setLabel(labels, LabelWorkspaceKind, string(cfg.Workspace.Kind))
+		setLabel(labels, LabelWorkspaceName, cfg.Workspace.Name)
+		setLabel(labels, LabelWorkspaceOrigin, string(cfg.Workspace.Origin))
+	} else {
+		setLabel(labels, LabelWorkspaceKind, string(cfg.Run.WorkspaceKind))
+		setLabel(labels, LabelWorkspaceName, cfg.Run.WorkspaceName)
+		setLabel(labels, LabelWorkspaceOrigin, string(cfg.Run.WorkspaceOrigin))
+	}
+	setLabel(labels, LabelHandoffMode, string(cfg.Run.HandoffMode))
+
+	return labels
+}
+
+// podAnnotations writes high-cardinality RunContext fields (attempt,
+// run id) as annotations, not labels, so metric / selector
+// cardinality stays bounded.
+func (b *K8sBackend) podAnnotations(cfg SpawnConfig) map[string]string {
+	annotations := map[string]string{}
+	if cfg.Run.AttemptID != "" {
+		annotations[AnnotationAttemptID] = cfg.Run.AttemptID
+	} else if cfg.AttemptID != "" {
+		annotations[AnnotationAttemptID] = cfg.AttemptID
+	}
+	if cfg.Run.RunID != "" {
+		annotations[AnnotationRunID] = cfg.Run.RunID
+	}
+	if len(annotations) == 0 {
+		return nil
+	}
+	return annotations
+}
+
+// setLabel writes key=val only when val is non-empty. Empty labels are
+// dropped so discovery selectors do not accidentally match the wrong
+// pod on an unset field.
+func setLabel(labels map[string]string, key, val string) {
+	if val == "" {
+		return
+	}
+	labels[key] = val
 }
 
 // repoBootstrapScript is the shell command run by the repo-bootstrap
@@ -449,8 +880,9 @@ func (b *K8sBackend) findPod(name string) (string, error) {
 }
 
 // buildEnvVars constructs the standard environment variables for an agent pod,
-// mirroring the process spawner's env setup.
-func (b *K8sBackend) buildEnvVars(cfg SpawnConfig) []corev1.EnvVar {
+// mirroring the process spawner's env setup. The returned slice is the
+// main container's env (init containers reuse the same list).
+func (b *K8sBackend) buildEnvVars(cfg SpawnConfig, ident runtime.RepoIdentity) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: fmt.Sprintf("http://spire-steward.%s.svc:4317", b.namespace)},
 		{Name: "CLAUDE_CODE_ENABLE_TELEMETRY", Value: "1"},
@@ -466,8 +898,12 @@ func (b *K8sBackend) buildEnvVars(cfg SpawnConfig) []corev1.EnvVar {
 		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3306"},
 	}
 
-	if cfg.Tower != "" {
-		env = append(env, corev1.EnvVar{Name: "SPIRE_TOWER", Value: cfg.Tower})
+	tower := cfg.Tower
+	if tower == "" {
+		tower = ident.TowerName
+	}
+	if tower != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_TOWER", Value: tower})
 	}
 	if cfg.Provider != "" {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_PROVIDER", Value: cfg.Provider})
@@ -500,8 +936,8 @@ func (b *K8sBackend) buildEnvVars(cfg SpawnConfig) []corev1.EnvVar {
 	if cfg.Step != "" {
 		resAttrs = append(resAttrs, "step="+cfg.Step)
 	}
-	if cfg.Tower != "" {
-		resAttrs = append(resAttrs, "tower="+cfg.Tower)
+	if tower != "" {
+		resAttrs = append(resAttrs, "tower="+tower)
 	}
 	if len(resAttrs) > 0 {
 		env = append(env, corev1.EnvVar{
