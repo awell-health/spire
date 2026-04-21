@@ -106,8 +106,18 @@ func archmageIdentity() (name, email string) {
 
 func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
 	return &executor.Deps{
-		// Graph state persistence — Dolt-backed in cluster, file-backed locally.
-		GraphStateStore: executor.ResolveGraphStateStore(configDir),
+		// Graph state persistence — Dolt-backed in cluster, file-backed
+		// locally. Identity is resolved from the active tower (+
+		// auto-picked prefix when unambiguous). On ErrNoTowerBound or
+		// ErrAmbiguousPrefix we fall back to a local FileGraphStateStore
+		// scoped by configDir so the executor can still read/write
+		// state; the error is logged so operators notice the
+		// misconfiguration. Commands that require cluster-mode
+		// persistence (the steward) should validate identity up front
+		// via resolveGraphStateStoreForCLI. See
+		// docs/design/spi-xplwy-runtime-contract.md §1.1 and
+		// docs/CLI-MIGRATION.md.
+		GraphStateStore: resolveGraphStateStoreOrLocal(""),
 
 		MaxApprentices: resolveMaxApprentices(),
 

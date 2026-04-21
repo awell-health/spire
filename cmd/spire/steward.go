@@ -213,6 +213,19 @@ func cmdSteward(args []string) error {
 	abRouter := steward.NewABRouter()
 	cycleStats := steward.NewCycleStats()
 
+	// Resolve the graph-state store using the active tower's identity.
+	// The steward is a tower-scoped daemon — if no tower is bound, or if
+	// a multi-prefix tower is ambiguous, we fall back to a local file
+	// store and log the reason so the operator can fix it. (We do not
+	// hard-fail: the steward should keep running in degraded
+	// local-only mode rather than crash-looping.)
+	graphStore, gsErr := resolveGraphStateStoreForCLI("")
+	if gsErr != nil {
+		log.Printf("[steward] graph-state store: %s (falling back to local file store)",
+			friendlyIdentityError(gsErr))
+		graphStore = &executor.FileGraphStateStore{ConfigDir: config.Dir}
+	}
+
 	cfg := steward.StewardConfig{
 		DryRun:             dryRun,
 		NoAssign:           noAssign,
@@ -221,7 +234,7 @@ func cmdSteward(args []string) error {
 		ShutdownThreshold:  shutdownThreshold,
 		AgentList:          agentList,
 		MetricsPort:        metricsPort,
-		GraphStateStore:    executor.ResolveGraphStateStore(config.Dir),
+		GraphStateStore:    graphStore,
 		ConcurrencyLimiter: concurrencyLimiter,
 		MergeQueue:         mergeQueue,
 		TrustChecker:       trustChecker,
