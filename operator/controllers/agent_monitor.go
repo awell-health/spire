@@ -495,13 +495,22 @@ func (m *AgentMonitor) applyOperatorOverlay(
 
 	// Update the main container: image override from guild CR (the shared
 	// builder used m.StewardImage when the guild didn't override), resource
-	// override from guild CR, working dir at /workspace for the wizard
-	// subprocess (the shared builder doesn't set WorkingDir by default).
+	// override from guild CR, and WorkingDir pointed at the cloned repo
+	// checkout.
+	//
+	// WorkingDir must match the clone destination from repoBootstrapScript
+	// in pkg/agent/backend_k8s.go, which resolves to
+	// "/workspace/${SPIRE_REPO_PREFIX}". If we set WorkingDir=/workspace
+	// (one level too high), the main container starts above the cloned
+	// tree, spire.yaml resolution misses, and resolveMaxApprentices() plus
+	// ResolveBackend("") silently fall back to env/process defaults — the
+	// k8s backend path spi-wqax9 built is then never exercised. See
+	// spi-vrzhf for the bug that made this explicit.
 	if len(pod.Spec.Containers) > 0 {
 		main := &pod.Spec.Containers[0]
 		main.Image = image
 		main.Resources = wizardResources(wg.Spec.Resources)
-		main.WorkingDir = "/workspace"
+		main.WorkingDir = "/workspace/" + prefix
 		// Rewrite the command to match the operator's wizard entrypoint
 		// shape: `spire execute <bead-id> --name <agent-name>`. The shared
 		// builder uses roleToSubcmd(RoleWizard) which is also "spire execute",

@@ -420,6 +420,58 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 	}
 }
 
+// TestBuildWorkloadPod_WorkingDirInsideClone is the spi-vrzhf regression
+// test. The repo bootstrap init container clones to
+// /workspace/${SPIRE_REPO_PREFIX} (see pkg/agent/backend_k8s.go
+// repoBootstrapScript), so the main container's WorkingDir must point
+// at /workspace/<prefix> — not /workspace — otherwise spire.yaml lookups
+// in ResolveBackend("") and resolveMaxApprentices() silently fall back
+// to env/defaults and the k8s backend path is never exercised.
+func TestBuildWorkloadPod_WorkingDirInsideClone(t *testing.T) {
+	ns := "spire"
+	agent := makeAgent("core", ns, nil)
+	m := &AgentMonitor{
+		Log:          testr.New(t),
+		Namespace:    ns,
+		StewardImage: "spire-agent:dev",
+		Database:     "spire",
+		Prefix:       "spi",
+	}
+
+	pod := m.buildWorkloadPod(agent, "spi-abc", nil)
+	if pod == nil {
+		t.Fatalf("buildWorkloadPod returned nil")
+	}
+	if len(pod.Spec.Containers) == 0 {
+		t.Fatalf("pod has no containers")
+	}
+	main := pod.Spec.Containers[0]
+
+	// The clone lands at /workspace/<prefix>; WorkingDir must match so
+	// repoconfig.Load(".") walking from cwd finds spire.yaml.
+	wantDir := "/workspace/spi"
+	if main.WorkingDir != wantDir {
+		t.Errorf("main.WorkingDir = %q, want %q — the clone at /workspace/%s would be out of reach from cwd%s",
+			main.WorkingDir, wantDir, "spi",
+			" (spi-vrzhf regression)")
+	}
+
+	// Double-check: the SPIRE_REPO_PREFIX env var the init container uses
+	// to choose the clone destination must carry the same value, so the
+	// two code paths don't drift. pkg/agent builds this into env, so it
+	// is present on every container.
+	var gotPrefix string
+	for _, e := range main.Env {
+		if e.Name == "SPIRE_REPO_PREFIX" {
+			gotPrefix = e.Value
+			break
+		}
+	}
+	if gotPrefix != "spi" {
+		t.Errorf("SPIRE_REPO_PREFIX env on main container = %q, want spi — init container would clone to a different path", gotPrefix)
+	}
+}
+
 // TestBuildWorkloadPod_NoSidecar explicitly guards against regressing to the
 // sidecar model: a single main container, never a container named "sidecar".
 func TestBuildWorkloadPod_NoSidecar(t *testing.T) {
