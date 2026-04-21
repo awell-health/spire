@@ -5,7 +5,11 @@
 // recovery decisions.
 package recovery
 
-import "time"
+import (
+	"time"
+
+	"github.com/awell-health/spire/pkg/runtime"
+)
 
 // FailureClass categorizes the interruption reason from an interrupted:* label.
 type FailureClass string
@@ -150,3 +154,112 @@ const (
 	ExitAllDestructive   = 2 // all proposed actions are destructive — steward should escalate
 	ExitWizardRunning    = 3 // wizard still running — wait and retry
 )
+
+// RepairMode classifies how a repair plan will be executed. See design
+// spi-h32xj-cleric-repair-loop §2.
+type RepairMode string
+
+const (
+	// RepairModeNoop resumes the hooked bead without executing a repair —
+	// used when decide determines no action is needed (e.g. after a human
+	// edit cleared the interruption).
+	RepairModeNoop RepairMode = "noop"
+	// RepairModeMechanical dispatches a deterministic function such as
+	// rebase-onto-base, cherry-pick, rebuild, or reset-to-step.
+	RepairModeMechanical RepairMode = "mechanical"
+	// RepairModeWorker spawns an agentic repair subprocess on a borrowed
+	// workspace. Replaces the legacy targeted-fix placeholder.
+	RepairModeWorker RepairMode = "worker"
+	// RepairModeRecipe executes a promoted recipe through the same runtime
+	// paths as its un-promoted mechanical or worker form.
+	RepairModeRecipe RepairMode = "recipe"
+	// RepairModeEscalate is terminal — needs-human is a property of the
+	// plan rather than a separate decision surface.
+	RepairModeEscalate RepairMode = "escalate"
+)
+
+// WorkspaceRequest describes the workspace the execute step must provision
+// for a RepairPlan. WorkspaceKind is imported from pkg/runtime (canonical
+// spi-xplwy runtime contract). BorrowFrom names the target bead whose
+// workspace should be borrowed when Kind is borrowed_worktree.
+type WorkspaceRequest struct {
+	Kind       runtime.WorkspaceKind `json:"kind"`
+	BorrowFrom string                `json:"borrow_from,omitempty"`
+}
+
+// VerifyKind selects the verification strategy for a RepairPlan.
+type VerifyKind string
+
+const (
+	// VerifyKindRerunStep re-runs a named wizard step via the cooperative
+	// retry protocol.
+	VerifyKindRerunStep VerifyKind = "rerun-step"
+	// VerifyKindNarrowCheck executes a targeted command and treats its
+	// exit status as the verdict.
+	VerifyKindNarrowCheck VerifyKind = "narrow-check"
+	// VerifyKindRecipePostcondition runs a recipe's captured postcondition
+	// check.
+	VerifyKindRecipePostcondition VerifyKind = "recipe-postcondition"
+)
+
+// VerifyPlan describes how to confirm a repair succeeded. The cleric's
+// verify step dispatches on Kind.
+type VerifyPlan struct {
+	Kind     VerifyKind `json:"kind"`
+	StepName string     `json:"step_name,omitempty"` // for rerun-step
+	Command  []string   `json:"command,omitempty"`   // for narrow-check
+}
+
+// VerifyVerdict is the outcome of a VerifyPlan execution.
+type VerifyVerdict string
+
+const (
+	VerifyVerdictPass    VerifyVerdict = "pass"
+	VerifyVerdictFail    VerifyVerdict = "fail"
+	VerifyVerdictTimeout VerifyVerdict = "timeout"
+)
+
+// Decision is the cleric's terminal decision consumed by the steward to
+// either resume the hooked parent or leave it escalated for human review.
+type Decision string
+
+const (
+	DecisionResume   Decision = "resume"
+	DecisionEscalate Decision = "escalate"
+)
+
+// RepairPlan is the typed output of recovery.Decide. It replaces the
+// parallel free-form action-string and RecoveryAction-registry vocabularies
+// with a single RepairMode-keyed plan.
+type RepairPlan struct {
+	Mode       RepairMode        `json:"mode"`
+	Action     string            `json:"action,omitempty"` // mechanical fn name OR recipe id OR worker role
+	Params     map[string]string `json:"params,omitempty"`
+	Workspace  WorkspaceRequest  `json:"workspace"`
+	Verify     VerifyPlan        `json:"verify"`
+	Confidence float64           `json:"confidence,omitempty"`
+	Reason     string            `json:"reason,omitempty"`
+}
+
+// RecoveryOutcome is the structured record every recovery attempt emits to
+// bead metadata, the recovery_learnings SQL table, traces, and metrics. The
+// steward consumes it through recovery.ReadOutcome to decide resume vs
+// escalate for the hooked parent.
+type RecoveryOutcome struct {
+	RecoveryAttemptID string              `json:"recovery_attempt_id"`
+	SourceBeadID      string              `json:"source_bead_id"`
+	SourceAttemptID   string              `json:"source_attempt_id,omitempty"`
+	SourceRunID       string              `json:"source_run_id,omitempty"`
+	FailedStep        string              `json:"failed_step,omitempty"`
+	FailureClass      FailureClass        `json:"failure_class"`
+	RepairMode        RepairMode          `json:"repair_mode"`
+	RepairAction      string              `json:"repair_action,omitempty"`
+	WorkerAttemptID   string              `json:"worker_attempt_id,omitempty"`
+	WorkspaceKind     runtime.WorkspaceKind `json:"workspace_kind,omitempty"`
+	HandoffMode       runtime.HandoffMode   `json:"handoff_mode,omitempty"`
+	VerifyKind        VerifyKind          `json:"verify_kind,omitempty"`
+	VerifyVerdict     VerifyVerdict       `json:"verify_verdict,omitempty"`
+	Decision          Decision            `json:"decision,omitempty"`
+	RecipeID          string              `json:"recipe_id,omitempty"`
+	RecipeVersion     int                 `json:"recipe_version,omitempty"`
+}

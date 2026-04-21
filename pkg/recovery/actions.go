@@ -46,6 +46,11 @@ type RecoveryActionRequest struct {
 	SourceBeadID string             `json:"source_bead_id"`        // the bead being recovered
 	StepTarget   string             `json:"step_target,omitempty"` // for reset-to-step
 	Params       map[string]string  `json:"params,omitempty"`
+	// Plan carries the typed RepairPlan produced by recovery.Decide once the
+	// cleric migrates off the legacy Kind/Params dispatch (spi-h32xj chunks
+	// 2+). Optional: nil on legacy callers; populated alongside the legacy
+	// fields during the parallel-coexistence window.
+	Plan *RepairPlan `json:"plan,omitempty"`
 }
 
 // RecoveryActionResult is the structured output from a recovery action execution.
@@ -60,4 +65,9 @@ type RecoveryActionResult struct {
 	// Metadata holds additional key/value pairs to merge into the recovery bead's
 	// issue metadata. Keys should use the constants from metadata.go.
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// Plan is the RepairPlan that produced this result once the cleric
+	// migrates off the legacy Kind-based dispatch (spi-h32xj chunks 2+).
+	// Optional: nil on legacy results; populated alongside the legacy fields
+	// during the parallel-coexistence window.
+	Plan *RepairPlan `json:"plan,omitempty"`
 }
