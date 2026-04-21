@@ -28,12 +28,22 @@ import (
 // SignalPayload is the JSON structure written to the task bead's metadata
 // under apprentice_signal_<role>. Mirrors the consumer-side shape in
 // pkg/bundlestore.Signal — keep the tags in lockstep.
+//
+// HandoffMode records which delivery mode the executor selected for this
+// apprentice spawn (runtime.HandoffMode — "bundle", "transitional",
+// "borrowed", "none"). The apprentice does NOT choose the mode; it emits
+// whatever the executor decided so downstream consumers (metrics, the
+// spi-xplwy chunk 5b cutover) can reason about delivery without
+// re-inferring it. Omitted from the signal when the caller didn't wire it
+// (preserves back-compat with older callers that submitted via the CLI
+// wrapper before the runtime-contract fields existed).
 type SignalPayload struct {
 	Kind        string   `json:"kind"`
 	Role        string   `json:"role"`
 	BundleKey   string   `json:"bundle_key,omitempty"`
 	Commits     []string `json:"commits,omitempty"`
 	SubmittedAt string   `json:"submitted_at"`
+	HandoffMode string   `json:"handoff_mode,omitempty"`
 }
 
 // Options describes a single apprentice submission. Every external dependency
@@ -60,6 +70,13 @@ type Options struct {
 	// NoChanges short-circuits: writes a no-op signal and skips bundle
 	// creation. Mirrors the CLI's --no-changes flag.
 	NoChanges bool
+
+	// HandoffMode is the delivery mode the executor selected for this
+	// spawn (runtime.HandoffMode value as a string). The apprentice emits
+	// whatever the executor chose — it does not select the mode. When
+	// empty the signal omits the field, preserving back-compat with older
+	// callers. See docs/design/spi-xplwy-runtime-contract.md §1.3.
+	HandoffMode string
 
 	// Store is the BundleStore the bundle is uploaded to. Required unless
 	// NoChanges is true.
@@ -229,6 +246,7 @@ func Submit(ctx context.Context, opts Options) error {
 		BundleKey:   handle.Key,
 		Commits:     commitShas,
 		SubmittedAt: opts.Now().Format(time.RFC3339),
+		HandoffMode: opts.HandoffMode,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -256,6 +274,7 @@ func writeNoChangesSignal(opts Options, role string) error {
 		Kind:        bundlestore.SignalKindNoOp,
 		Role:        role,
 		SubmittedAt: opts.Now().Format(time.RFC3339),
+		HandoffMode: opts.HandoffMode,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

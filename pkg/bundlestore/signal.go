@@ -21,12 +21,18 @@ const SignalMetadataPrefix = "apprentice_signal_"
 // SignalMetadataKey(role). The producer lives in cmd/spire/apprentice.go;
 // this type is the consumer-side mirror. Keep the field tags in lockstep —
 // the shape is the wire format between apprentice and wizard.
+//
+// HandoffMode is the runtime.HandoffMode value the executor selected for
+// the apprentice that produced this signal. Empty when the producer
+// predates spi-xplwy chunk 5a — consumers MUST treat empty as "unknown,"
+// not as HandoffNone.
 type Signal struct {
 	Kind        string   `json:"kind"`
 	Role        string   `json:"role"`
 	BundleKey   string   `json:"bundle_key,omitempty"`
 	Commits     []string `json:"commits,omitempty"`
 	SubmittedAt string   `json:"submitted_at"`
+	HandoffMode string   `json:"handoff_mode,omitempty"`
 }
 
 // ApprenticeRole returns the canonical role string for an apprentice at

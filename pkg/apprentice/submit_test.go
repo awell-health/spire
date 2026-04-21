@@ -447,6 +447,81 @@ func TestSubmit_WorktreeDirScoping(t *testing.T) {
 	}
 }
 
+// TestSubmit_HandoffModeOnBundle verifies that the bundle-path signal
+// records opts.HandoffMode verbatim — the apprentice emits whatever the
+// executor selected; it does not choose. See spi-xplwy chunk 5a.
+func TestSubmit_HandoffModeOnBundle(t *testing.T) {
+	f := newSubmitFixture(t, "spi-hm", "main")
+	f.addCommit("a.txt", "feat(spi-hm): x")
+
+	opts := f.options("spi-hm", 0)
+	opts.HandoffMode = "bundle"
+
+	if err := Submit(context.Background(), opts); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	raw, ok := f.metadata["apprentice_signal_apprentice-spi-hm-0"]
+	if !ok {
+		t.Fatalf("signal missing; got %v", keysOf(f.metadata))
+	}
+	var payload SignalPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal signal: %v", err)
+	}
+	if payload.HandoffMode != "bundle" {
+		t.Errorf("handoff_mode = %q, want \"bundle\"", payload.HandoffMode)
+	}
+}
+
+// TestSubmit_HandoffModeOnNoChanges verifies the no-op signal also carries
+// the HandoffMode — even a no-op delivery still happened under a chosen
+// mode, and the chunk-6 observability sweep relies on the field being
+// present everywhere.
+func TestSubmit_HandoffModeOnNoChanges(t *testing.T) {
+	f := newSubmitFixture(t, "spi-hmn", "main")
+
+	opts := f.options("spi-hmn", 0)
+	opts.NoChanges = true
+	opts.HandoffMode = "bundle"
+
+	if err := Submit(context.Background(), opts); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	raw, ok := f.metadata["apprentice_signal_apprentice-spi-hmn-0"]
+	if !ok {
+		t.Fatalf("signal missing; got %v", keysOf(f.metadata))
+	}
+	var payload SignalPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal signal: %v", err)
+	}
+	if payload.HandoffMode != "bundle" {
+		t.Errorf("handoff_mode = %q, want \"bundle\"", payload.HandoffMode)
+	}
+}
+
+// TestSubmit_HandoffModeEmptyOmitted verifies that when opts.HandoffMode
+// is empty (older callers), the field is omitted from the JSON — consumers
+// treat empty as "unknown," not as HandoffNone.
+func TestSubmit_HandoffModeEmptyOmitted(t *testing.T) {
+	f := newSubmitFixture(t, "spi-hme", "main")
+	f.addCommit("a.txt", "feat(spi-hme): x")
+
+	opts := f.options("spi-hme", 0)
+	// HandoffMode left empty.
+
+	if err := Submit(context.Background(), opts); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	raw := f.metadata["apprentice_signal_apprentice-spi-hme-0"]
+	if strings.Contains(raw, "handoff_mode") {
+		t.Errorf("raw signal should omit handoff_mode when unset, got: %s", raw)
+	}
+}
+
 // TestSubmit_AttemptIDFallback verifies the "-local" fallback when AttemptID
 // is empty: the bundle still lands under a stable key.
 func TestSubmit_AttemptIDFallback(t *testing.T) {
