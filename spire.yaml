@@ -7,7 +7,7 @@ runtime:
 agent:
   model: claude-opus-4-7
   stale: 10m
-  timeout: 15m
+  timeout: 60m
 
 branch:
   base: main
