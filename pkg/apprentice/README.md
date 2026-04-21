@@ -52,16 +52,38 @@ write logic.
 
 This package owns the **bundle/no-op** delivery contract only.
 
-Push transport exists today, but it is not implemented here. When the runtime
-chooses push transport, the caller bypasses `pkg/apprentice` and pushes the
-feature branch directly. That means:
+Push transport exists today, but it is not implemented here. It is
+classified as `HandoffMode=transitional` in the runtime contract (see
+[docs/design/spi-xplwy-runtime-contract.md §1.3](../../docs/design/spi-xplwy-runtime-contract.md)),
+quarantined, counted, and Warn-logged by `pkg/executor/handoff.go`.
+When the runtime chooses push transport, the caller bypasses
+`pkg/apprentice` and pushes the feature branch directly. That means:
 
 - bundle metadata rules live here
 - push transport policy does not
+- phase 5b (separate bead) removes the push path entirely
 
 If those two paths must become more uniform, the unification should happen at
 the contract boundary above this package, not by turning `pkg/apprentice` into a
 general transport router.
+
+## Position in the runtime contract
+
+The apprentice emits one of two artifacts, chosen by the **executor**
+(never inferred here):
+
+1. **The bundle signal artifact**, with `HandoffMode` set by the
+   executor before dispatch. `Submit` writes the signal payload
+   (including the mode) so the executor does not have to re-infer the
+   selected mode when it integrates the bundle.
+2. **An explicit no-op outcome**, when the apprentice intentionally
+   produced no changes. This is still an explicit emission, not silence.
+
+The apprentice does **NOT** own transport policy. Selecting between
+`HandoffBorrowed` (same-owner continuation — no delivery needed),
+`HandoffBundle` (canonical cross-owner), and `HandoffTransitional` (the
+quarantined push path) is executor responsibility. This package simply
+executes whichever bundle-or-no-op contract was chosen for it.
 
 ## Key types
 

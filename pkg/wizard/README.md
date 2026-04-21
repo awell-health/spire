@@ -45,6 +45,35 @@ Examples:
 - The wizard does not make that decision; it just implements, validates, and commits.
 - The executor may pass `--worktree-dir` for any mode (implement, review-fix, build-fix); the wizard resumes that workspace without owning its lifecycle.
 
+### Position in the runtime contract
+
+The wizard sits at the bottom of the four-type contract defined in
+[docs/design/spi-xplwy-runtime-contract.md §1](../../docs/design/spi-xplwy-runtime-contract.md).
+Specifically:
+
+- **One role, one assigned workspace.** A wizard subprocess runs exactly
+  one `SpawnRole` (apprentice, sage, or wizard-orchestrator) inside the
+  `WorkspaceHandle.Path` the backend materialized. It does not choose
+  between kinds, switch branches inside borrowed worktrees, or invent
+  workspace policy.
+- **Does NOT infer `RepoIdentity`.** Tower name, prefix, repo URL, and
+  base branch arrive as env (`BEADS_DATABASE`, `BEADS_PREFIX`,
+  `SPIRE_REPO_URL`, etc.) set by the backend on executor orders. The
+  wizard reads them; it does not walk the CWD, re-read `.beads/metadata`
+  to choose a database, or fall back to a hardcoded default. The
+  `pkg/runtime` audit test enforces this.
+- **Does NOT choose workspace policy.** Kind, origin, branch, base
+  branch, and borrowed-vs-owned are set by the executor before spawn.
+- **Emits `RunContext` on every structured log line and in `result.json`.**
+  The backend stamps the canonical `SPIRE_*` env on the process; the
+  wizard rehydrates `RunContext` via `runtime.RunContextFromEnv` and
+  threads it into every log emission (`runtime.LogFields`) and into the
+  `run_context` block of `result.json` so parent executors can correlate
+  the run without re-parsing.
+
+If a change is about which role runs, which workspace it uses, or
+which handoff mode applies, it belongs in `pkg/executor`, not here.
+
 ## Retry-from-step (cooperative recovery)
 
 When a cleric (recovery agent) sets a `RetryRequest` on a bead, the

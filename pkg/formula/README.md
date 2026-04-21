@@ -103,6 +103,47 @@ behind the v3 execution model.
 | `ValidStepKind` | Validates step kind: `op`, `dispatch`, `call` (empty valid for v2 compat). |
 | `ValidVarType` | Validates variable type: `string`, `int`, `bool`, `bead_id`. |
 
+## Declaring same-owner continuation vs cross-owner handoff
+
+Formulas do not encode `HandoffMode` directly — the executor selects it
+(see [docs/design/spi-xplwy-runtime-contract.md §1.3](../../docs/design/spi-xplwy-runtime-contract.md)).
+But a formula's workspace and step-flow declarations are what the
+executor reads when picking a mode, so an operator (or archmage)
+inspecting a formula can predict the mode at every step.
+
+The prediction rule:
+
+| Pattern in the formula                                                                 | `HandoffMode` the executor selects |
+|----------------------------------------------------------------------------------------|------------------------------------|
+| Terminal step (`bead.finish`, `noop`) or step with no successor                         | `HandoffNone`                      |
+| Next step reuses the same `workspace` (borrowed or shared) and same role owner          | `HandoffBorrowed` — no delivery needed |
+| Next step switches owner and the parent declares a bundle-producing flow                | `HandoffBundle` — canonical cross-owner |
+| Step declares the legacy push flow (quarantined; see `handoff.go`)                      | `HandoffTransitional` — Warn-logged, counted, removed in phase 5b |
+
+Concrete mapping in the built-in formulas:
+
+- `task-default` / `bug-default`: `implement → sage-review → review-fix`
+  all share the same workspace and belong to the same owner chain, so
+  each intra-chain step is `HandoffBorrowed`. The final `merge` step
+  terminates with `HandoffNone`.
+- `epic-default`: child dispatch (`subgraph-implement`) crosses
+  ownership from parent wizard to per-child apprentices, so those
+  edges are `HandoffBundle`. The merge-to-staging step consumes the
+  bundles and is `HandoffNone` once integrated.
+- `subgraph-review`: sage-review → arbiter → fix all share the same
+  borrowed workspace; every edge is `HandoffBorrowed`. The discard/
+  approve terminals are `HandoffNone`.
+
+When adding a new formula, use this table to pick `workspace` kinds and
+step flows with the mode you want in mind. If a step produces an
+artifact that a different owner consumes, declare it with a workspace
+that triggers a bundle-producing flow; if it stays on the same owner's
+substrate, use `borrowed_worktree` and the executor will elide the
+handoff entirely.
+
+The runtime contract types themselves live in `pkg/executor` — this
+package stays declarative.
+
 ## Embedded v3 formulas
 
 The `embedded/formulas/` directory contains built-in v3 formulas compiled into

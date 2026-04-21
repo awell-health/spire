@@ -57,6 +57,87 @@ If you find yourself adding prompt text, Claude CLI flags, timeout policy, or co
 - **Steward** is above the executor. It ensures the tower has enough wizard capacity, summons and resets workers, and routes work to ready beads.
 - **Workshop** is beside the executor. It defines and validates the formulas that the executor consumes, but it does not run those formulas on live beads. Workshop also defines the `FormulaStepGraph` structure (steps, workspaces, vars) that the executor consumes at runtime.
 
+## Runtime contract types (normative)
+
+This package is the home of the canonical worker-runtime contract defined
+in [docs/design/spi-xplwy-runtime-contract.md §1](../../docs/design/spi-xplwy-runtime-contract.md).
+The four contract types live here because **workspace ownership and
+handoff-mode selection are executor policy** — they are not decisions
+that `pkg/wizard`, `pkg/apprentice`, `pkg/agent`, or the operator are
+allowed to second-guess.
+
+The canonical types are declared in
+[`runtime_contract.go`](runtime_contract.go) and re-exported through
+[`pkg/runtime`](../runtime) for backend/observability consumers that
+cannot depend on `pkg/executor`.
+
+| Type                | Purpose                                                          |
+|---------------------|------------------------------------------------------------------|
+| `RepoIdentity`      | Tower-derived identity (tower name/id, prefix, repo URL, base). |
+| `WorkspaceHandle`   | Exported workspace contract: `Name`, `Kind`, `Branch`, `BaseBranch`, `Path`, `Origin`, `Borrowed`. |
+| `HandoffMode`       | Cross-owner delivery selection: `none`, `borrowed`, `bundle`, `transitional`. |
+| `RunContext`        | Observability identity: tower, prefix, bead/attempt/run ids, role, formula step, backend, workspace kind/name/origin, handoff mode. |
+
+### `RepoIdentity` — invariants
+
+- Resolved from `pkg/config` active-tower state plus `pkg/store` repo
+  registration. Never from `os.Getwd` or the legacy
+  `dolt.ReadBeadsDBName` ingress. The audit test in
+  `pkg/runtime/audit_test.go` enforces this for every runtime-critical
+  package.
+- Immutable for the life of a worker run.
+- The executor (and only the executor) assembles `RepoIdentity` at
+  dispatch and stamps it onto every `SpawnConfig`. The `"spire"` default
+  database fallback is permanently removed; callers see
+  `executor.ErrNoTowerBound` / `ErrAmbiguousPrefix` when identity cannot
+  be resolved. See `docs/CLI-MIGRATION.md` for the migration guide.
+
+### `WorkspaceHandle` — invariants
+
+- `Kind` is one of `repo`, `owned_worktree`, `borrowed_worktree`,
+  `staging`. `Origin` is one of `local-bind`, `origin-clone`, or
+  `guild-cache` (reserved for phase 2 — spi-sn7o3).
+- `Path` is the single way the worker finds its workspace. Backends
+  materialize it; the wizard consumes it via `--worktree-dir`.
+- A worker MUST NOT mutate a `Borrowed=true` workspace outside its
+  declared ownership surface. Fresh or cross-owner runs require
+  `Borrowed=false`.
+- Materialization failure is a backend error, not a wizard surprise.
+- Workspace selection (which `Kind` / `Origin` for a given step) is
+  executor policy — `resolveGraphWorkspace` owns it. Backends are told
+  what substrate to use; they do not guess.
+
+### `HandoffMode` — invariants
+
+- Cross-owner delivery uses `HandoffBundle`.
+- `HandoffBorrowed` is **not a delivery protocol** — it is the statement
+  that no delivery is needed because workspace ownership did not change
+  (e.g. implement → sage-review → review-fix on the same worktree).
+- `HandoffTransitional` is explicit compatibility debt: quarantined,
+  counted, and Warn-logged in `handoff.go`. The
+  `SPIRE_FAIL_ON_TRANSITIONAL_HANDOFF=1` env var promotes the
+  deprecation log to a hard error — CI parity lanes set it on so any
+  regression that silently reintroduces push transport fails the lane.
+- **Only the executor selects `HandoffMode`.** Apprentice and wizard
+  emit the selected artifact or an explicit no-op outcome; neither
+  infers a mode.
+
+### `RunContext` — invariants
+
+- Every log/trace/metric emitted from executor, wizard, apprentice,
+  agent, and the operator uses this field vocabulary (see
+  `pkg/runtime/obs.go` for `LogFields`, `LogFieldOrder`, and
+  `MetricLabels`).
+- Metric cardinality is controlled: `BeadID`, `AttemptID`, and `RunID`
+  stay **off** high-cardinality metric labels. They live in logs and
+  traces only. `MetricLabels` enforces this.
+- The `OTEL_RESOURCE_ATTRIBUTES` string uses the canonical field names
+  in underscore form (`bead_id`, not legacy `bead.id`).
+
+Cross-backend parity for env vocabulary, metric labels, and log
+suffix is pinned by
+[test/parity/runcontext_parity_test.go](../../test/parity/runcontext_parity_test.go).
+
 ## Key types and entrypoints
 
 | Type / function          | Purpose |

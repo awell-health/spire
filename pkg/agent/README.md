@@ -44,33 +44,64 @@ If a change is about *which* role should run, it does not belong here.
 If a change is about *how a backend must materialize the runtime surface for a
 spawned role*, it probably does.
 
-## Backend obligations
+## Backend obligations (normative)
 
-`SpawnConfig` describes the runtime surface the caller expects. A backend must
-either satisfy that surface or fail fast.
+This section is the normative reference for §2 ("Backend obligations") of
+[docs/design/spi-xplwy-runtime-contract.md](../../docs/design/spi-xplwy-runtime-contract.md).
+`SpawnConfig` describes the runtime surface the caller expects. A backend
+(process, docker, k8s, or operator-managed k8s) MUST, before the main
+container or process starts, do **all four** of the following — or fail fast
+with a typed error:
 
-Examples:
+1. **Resolve and propagate `RepoIdentity`.** The identity (tower name, tower
+   id, prefix, repo URL, base branch) is produced by the executor from active
+   tower state and passed in on `SpawnConfig.Identity`. Backends translate
+   it into the canonical env vocabulary (`BEADS_DATABASE`, `BEADS_PREFIX`,
+   `DOLTHUB_REMOTE`, `SPIRE_REPO_URL`, `SPIRE_REPO_PREFIX`) on the spawned
+   worker. Backends MUST NOT re-derive identity from ambient CWD, ad-hoc pod
+   env, or CR-only fields.
+2. **Materialize `WorkspaceHandle.Path` per `Kind`.**
+   - `Kind=repo` — nothing to materialize beyond the substrate.
+   - `Kind=owned_worktree` / `Kind=staging` — fresh worktree rooted at the
+     substrate, owned by the spawned role.
+   - `Kind=borrowed_worktree` — the existing path (owned by the parent
+     wizard) must be reachable from the spawned worker, unchanged. The
+     worker sees the path on disk; it does not clone or branch inside it.
+   The worker finds this path via `--worktree-dir` (plumbed through
+   `ExtraArgs`) and `SPIRE_WORKSPACE_PATH`.
+3. **Emit `RunContext` as labels/annotations/env.** Every canonical
+   `RunContext` field (tower, prefix, bead_id, attempt_id, run_id, role,
+   formula_step, backend, workspace_kind, workspace_name, workspace_origin,
+   handoff_mode) is stamped onto the pod — as labels for low-cardinality
+   keys, annotations for high-cardinality keys, and `SPIRE_*` env on the
+   main container — or onto the process env for process/docker backends.
+   The `OTEL_RESOURCE_ATTRIBUTES` string uses the same canonical field
+   names (underscore form: `bead_id`, not legacy `bead.id`). The parity
+   contract is pinned by
+   [test/parity/runcontext_parity_test.go](../../test/parity/runcontext_parity_test.go).
+4. **Fail fast on missing prerequisites.** Missing `Identity`, missing or
+   unreachable `Workspace.Path`, missing tower mount — these are backend
+   errors (init container non-zero exit, or typed `Backend.Spawn` error),
+   not downstream wizard surprises. No backend may silently fall back to
+   process-local state or a default database name.
 
-- If the caller supplies `ExtraArgs = ["--worktree-dir", ...]`, the backend must
-  ensure the spawned process can actually see that workspace path.
-- If the spawned role needs tower data or repo bootstrap, the backend must
-  materialize those prerequisites instead of assuming process-local state.
-- Backend-specific convenience must not silently change the bead/executor
-  contract. A backend is an implementation of the runtime surface, not a second
-  orchestration layer.
+Backend-specific convenience must not silently change the bead/executor
+contract. A backend is an implementation of the runtime surface, not a
+second orchestration layer.
 
-## K8s-specific note
+### K8s and operator parity
 
-The k8s backend currently has a special contract for `RoleWizard`: tower data,
-repo bootstrap inputs, and the canonical wizard pod surface are materialized by
-the backend before the main container runs.
+The k8s backend's shared pod builder (`BuildPod` on `K8sBackend`) is the
+single source of truth for pod shape. The operator (`operator/controllers/
+agent_monitor.go`) calls into that builder so the canonical labels,
+annotations, env, and init containers are identical on both surfaces. The
+byte-level parity guarantee is enforced by
+`operator/controllers/pod_builder_parity_test.go`.
 
-That kind of runtime materialization belongs here, not in `pkg/wizard`.
-
-The inverse is also true: if apprentice or sage pods need equivalent workspace
-or repo surfaces, that must be fixed here or routed differently upstream. It is
-not acceptable to rely on process-local path assumptions that a fresh pod
-cannot satisfy.
+Apprentice, sage, and wizard pods share the builder — there is no
+wizard-only special case. `Kind=borrowed_worktree` apprentices additionally
+mount the parent wizard's workspace volume; all other pod shape decisions
+are keyed off `SpawnConfig.Role` + `Workspace.Kind`.
 
 ## Key types
 
