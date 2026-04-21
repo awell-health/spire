@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/runtime"
 )
 
 // EnvFailOnTransitionalHandoff gates the hard-fail behavior. When the env
@@ -126,20 +127,12 @@ func recordHandoffSelection(logf func(string, ...interface{}), mode HandoffMode,
 	bumpTransitionalCounter(run.TowerName, run.Prefix, string(run.Role), run.Backend)
 
 	if logf != nil {
-		logf("%s tower=%s prefix=%s bead=%s attempt=%s run=%s role=%s step=%s backend=%s workspace_kind=%s workspace_name=%s workspace_origin=%s",
-			DeprecationMessageTransitional,
-			run.TowerName,
-			run.Prefix,
-			run.BeadID,
-			run.AttemptID,
-			run.RunID,
-			run.Role,
-			run.FormulaStep,
-			run.Backend,
-			run.WorkspaceKind,
-			run.WorkspaceName,
-			run.WorkspaceOrigin,
-		)
+		// Emit the canonical RunContext field vocabulary (docs/design/
+		// spi-xplwy-runtime-contract.md §1.4). runtime.LogFields renders
+		// every field — including empty ones — so downstream log parsers
+		// see a stable schema regardless of which fields the dispatch
+		// site populated.
+		logf("%s%s", DeprecationMessageTransitional, runtime.LogFields(run))
 	}
 
 	if failOnTransitionalHandoff() {

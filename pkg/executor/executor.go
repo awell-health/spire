@@ -9,6 +9,7 @@ import (
 
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/google/uuid"
 )
 
@@ -88,10 +89,6 @@ type Executor struct {
 // GraphState, registers with the wizard registry, and returns an executor
 // with the graph path active (formula is nil).
 func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*Executor, error) {
-	log := func(format string, a ...interface{}) {
-		fmt.Fprintf(os.Stderr, "[%s] %s\n", agentName, fmt.Sprintf(format, a...))
-	}
-
 	// Default to file-backed store if not explicitly set.
 	if deps.GraphStateStore == nil {
 		deps.GraphStateStore = &FileGraphStateStore{ConfigDir: deps.ConfigDir}
@@ -112,15 +109,22 @@ func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*E
 		}
 	}
 
-	return &Executor{
+	e := &Executor{
 		beadID:     beadID,
 		agentName:  agentName,
 		graph:      graph,
 		graphState: state,
 		sessionID:  uuid.New().String(),
 		deps:       deps,
-		log:        log,
-	}, nil
+	}
+	// Wrap the log sink so every emission carries the canonical RunContext
+	// field vocabulary (docs/design/spi-xplwy-runtime-contract.md §1.4).
+	// Existing e.log("msg: %s", x) call sites gain the suffix without
+	// per-site edits.
+	e.log = func(format string, a ...interface{}) {
+		fmt.Fprintf(os.Stderr, "[%s] %s%s\n", agentName, fmt.Sprintf(format, a...), runtime.LogFields(e.runContext("")))
+	}
+	return e, nil
 }
 
 // Run drives the bead through its formula's step graph.

@@ -144,8 +144,8 @@ func TestRecordHandoffSelection(t *testing.T) {
 						if !strings.Contains(line, "prefix=spi") {
 							t.Errorf("log missing prefix label: %s", line)
 						}
-						if !strings.Contains(line, "bead=spi-yif4t") {
-							t.Errorf("log missing bead label: %s", line)
+						if !strings.Contains(line, "bead_id=spi-yif4t") {
+							t.Errorf("log missing bead_id label: %s", line)
 						}
 						if !strings.Contains(line, "role=apprentice") {
 							t.Errorf("log missing role label: %s", line)

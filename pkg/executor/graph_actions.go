@@ -259,6 +259,91 @@ func (e *Executor) runtimeStep(state *GraphState, fallback string) string {
 	return fallback
 }
 
+// runContext assembles the canonical RunContext for log/trace/metric
+// emission from the executor's current state. This is the observability
+// identity described in docs/design/spi-xplwy-runtime-contract.md §1.4.
+//
+// The assembled context is deliberately a snapshot: callers (e.log, span
+// setup, metric labels) re-read it on each emission so late-bound fields
+// (ActiveStep, AttemptBeadID, workspace resolution) reflect the current
+// step without needing to push updates through a mutable handle.
+//
+// All fields render as empty strings when unavailable — missing values
+// never drop the field from the log surface.
+func (e *Executor) runContext(stepFallback string) RunContext {
+	if e == nil {
+		return RunContext{}
+	}
+	state := e.graphState
+	run := RunContext{
+		RunID: e.currentRunID,
+		Role:  agent.RoleExecutor,
+	}
+	if state != nil {
+		run.TowerName = state.TowerName
+		run.BeadID = state.BeadID
+		run.AttemptID = state.AttemptBeadID
+		run.FormulaStep = state.ActiveStep
+	}
+	if run.BeadID == "" {
+		run.BeadID = e.beadID
+	}
+	if run.AttemptID == "" {
+		run.AttemptID = e.attemptID()
+	}
+	if run.FormulaStep == "" {
+		run.FormulaStep = stepFallback
+	}
+	run.Prefix = prefixFromBeadID(run.BeadID)
+	run.Backend = e.runtimeBackend()
+	if state != nil && state.ActiveStep != "" {
+		if ws := inferActiveWorkspaceHandle(state); ws != nil {
+			run.WorkspaceKind = ws.Kind
+			run.WorkspaceName = ws.Name
+			run.WorkspaceOrigin = ws.Origin
+		}
+	}
+	return run
+}
+
+// prefixFromBeadID extracts the bead prefix from a bead ID ("spi-abc" →
+// "spi"). Empty input → empty output. This avoids a store.PrefixFromID
+// import from the hot log path, which is called on every e.log emission.
+func prefixFromBeadID(beadID string) string {
+	if beadID == "" {
+		return ""
+	}
+	for i, r := range beadID {
+		if r == '-' {
+			return beadID[:i]
+		}
+	}
+	return ""
+}
+
+// inferActiveWorkspaceHandle returns the WorkspaceHandle for the active
+// step's declared workspace, or nil when none can be resolved from state
+// alone. Used by runContext() to stamp workspace_kind/name/origin on
+// logs without reaching into the formula graph on every emission.
+func inferActiveWorkspaceHandle(state *GraphState) *WorkspaceHandle {
+	if state == nil || state.ActiveStep == "" {
+		return nil
+	}
+	// When the active step's workspace name matches a persisted workspace,
+	// use that. Otherwise fall back to matching by WorktreeDir (the common
+	// case for staging workspaces).
+	for name, ws := range state.Workspaces {
+		if ws.Status == "active" {
+			handle := ws.Handle()
+			if handle.Name == "" {
+				handle.Name = name
+			}
+			return &handle
+		}
+	}
+	return nil
+}
+
 func graphWorkspaceHandle(state *GraphState, name string) *WorkspaceHandle {
 	if state == nil || name == "" {
 		return nil
