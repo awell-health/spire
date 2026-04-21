@@ -186,6 +186,13 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 	}
 	e.log("dispatching %d wave(s) (max %d concurrent apprentice(s))", len(waves), maxApprentices)
 
+	// Cross-owner dispatch: the apprentice produces a delivery artifact
+	// (bundle) that the parent merges into staging, OR takes the legacy
+	// push-transport path that phase 5a quarantines as HandoffTransitional.
+	// The selection is resolved once up front from the tower config so every
+	// apprentice in every wave carries the same handoff mode.
+	apprenticeHandoff := e.resolveApprenticeHandoff()
+
 	var allResults []childResult
 	var startRef string
 
@@ -226,7 +233,13 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 					AttemptID:     e.attemptID(),
 					ApprenticeIdx: "0",
 				}
-				cfg = e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil)
+				cfg, contractErr := e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil, apprenticeHandoff)
+				if contractErr != nil {
+					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, contractErr,
+						withParentRun(e.currentRunID))
+					resultCh <- waveResult{BeadID: beadID, Agent: name, Err: contractErr}
+					return
+				}
 				h, spawnErr := e.deps.Spawner.Spawn(cfg)
 				if spawnErr != nil {
 					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr,
@@ -324,6 +337,10 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error) ([]childResult, error) {
 	e.log("sequential dispatch: %d subtask(s)", len(subtasks))
 
+	// Same cross-owner dispatch handoff as the wave path — the tower's
+	// configured apprentice transport decides bundle vs transitional.
+	apprenticeHandoff := e.resolveApprenticeHandoff()
+
 	var allResults []childResult
 	var startRef string
 
@@ -343,7 +360,12 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 			AttemptID:     e.attemptID(),
 			ApprenticeIdx: "0",
 		}
-		cfg = e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil)
+		cfg, contractErr := e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil, apprenticeHandoff)
+		if contractErr != nil {
+			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, contractErr,
+				withParentRun(e.currentRunID))
+			return allResults, fmt.Errorf("handoff selection for %s: %w", subtaskID, contractErr)
+		}
 		handle, spawnErr := e.deps.Spawner.Spawn(cfg)
 		if spawnErr != nil {
 			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
@@ -416,6 +438,10 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 	apprenticeName := fmt.Sprintf("%s-impl", e.agentName)
 	e.log("dispatching apprentice %s", apprenticeName)
 
+	// Same cross-owner dispatch handoff selection: bundle when the tower
+	// configures it, otherwise the quarantined transitional push path.
+	apprenticeHandoff := e.resolveApprenticeHandoff()
+
 	started := time.Now()
 	cfg := agent.SpawnConfig{
 		Name:          apprenticeName,
@@ -426,7 +452,12 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 		AttemptID:     e.attemptID(),
 		ApprenticeIdx: "0",
 	}
-	cfg = e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil)
+	cfg, contractErr := e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil, apprenticeHandoff)
+	if contractErr != nil {
+		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, contractErr,
+			withParentRun(e.currentRunID))
+		return fmt.Errorf("handoff selection: %w", contractErr)
+	}
 	handle, err := e.deps.Spawner.Spawn(cfg)
 	if err != nil {
 		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, err,

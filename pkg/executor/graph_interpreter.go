@@ -611,6 +611,11 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 	resolver := e.conflictResolver(0)
 	model := e.repoModel()
 
+	// Injected tasks are cross-owner dispatches on peer beads — same
+	// handoff rules as dispatch.children: tower transport decides bundle
+	// vs transitional.
+	apprenticeHandoff := e.resolveApprenticeHandoff()
+
 	if state.Counters == nil {
 		state.Counters = make(map[string]int)
 	}
@@ -646,7 +651,14 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 			AttemptID:     e.attemptID(),
 			ApprenticeIdx: "0",
 		}
-		cfg = e.withRuntimeContract(cfg, state.TowerName, state.RepoPath, state.BaseBranch, e.runtimeStep(state, "inject"), "", nil)
+		cfg, contractErr := e.withRuntimeContract(cfg, state.TowerName, state.RepoPath, state.BaseBranch, e.runtimeStep(state, "inject"), "", nil, apprenticeHandoff)
+		if contractErr != nil {
+			e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, contractErr,
+				withParentRun(e.currentRunID))
+			e.log("warning: handoff selection for injected task %s: %s", taskID, contractErr)
+			remaining = append(remaining, taskID)
+			continue
+		}
 		h, spawnErr := e.deps.Spawner.Spawn(cfg)
 		if spawnErr != nil {
 			e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, spawnErr,

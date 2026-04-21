@@ -599,7 +599,13 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 		CustomPrompt: prompt.String(),
 		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", spawnName+".log"),
 	}
-	cfg = e.withRuntimeContract(cfg, towerName, repoPath, baseBranch, "triage", "triage", workspace)
+	// Triage runs inside the same bead's recovery flow — the apprentice
+	// reuses the worktree the cleric provisioned and produces no
+	// cross-owner artifact.
+	cfg, contractErr := e.withRuntimeContract(cfg, towerName, repoPath, baseBranch, "triage", "triage", workspace, HandoffBorrowed)
+	if contractErr != nil {
+		return failResult(req.Kind, fmt.Sprintf("triage handoff selection: %v", contractErr))
+	}
 	handle, spawnErr := e.deps.Spawner.Spawn(cfg)
 	if spawnErr != nil {
 		return failResult(req.Kind, fmt.Sprintf("spawn triage agent: %v", spawnErr))

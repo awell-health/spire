@@ -356,7 +356,18 @@ func normalizeWorkspaceHandle(workspace *WorkspaceHandle, workspaceName, repoPat
 	return &handle
 }
 
-func (e *Executor) withRuntimeContract(cfg agent.SpawnConfig, towerName, repoPath, baseBranch, runStep, workspaceName string, workspace *WorkspaceHandle) agent.SpawnConfig {
+// withRuntimeContract populates the canonical runtime-contract fields on a
+// SpawnConfig. Every call site MUST pass an explicit HandoffMode — the
+// executor is the single authority on handoff-mode selection (see
+// docs/design/spi-xplwy-runtime-contract.md §1.3), so there is no "derive
+// from workspace" auto-path. Pass HandoffNone for terminal/no-op spawns.
+//
+// As a side effect, when the selected mode is HandoffTransitional, this
+// function bumps spire_handoff_transitional_total, emits the Warn-level
+// deprecation log, and honors the SPIRE_FAIL_ON_TRANSITIONAL_HANDOFF gate
+// via recordHandoffSelection. The returned error, when non-nil, must be
+// propagated so the caller can fail the spawn.
+func (e *Executor) withRuntimeContract(cfg agent.SpawnConfig, towerName, repoPath, baseBranch, runStep, workspaceName string, workspace *WorkspaceHandle, mode HandoffMode) (agent.SpawnConfig, error) {
 	prefix := store.PrefixFromID(cfg.BeadID)
 	if prefix == "" {
 		prefix = cfg.RepoPrefix
@@ -388,20 +399,18 @@ func (e *Executor) withRuntimeContract(cfg agent.SpawnConfig, towerName, repoPat
 		Role:        cfg.Role,
 		FormulaStep: runStep,
 		Backend:     e.runtimeBackend(),
+		HandoffMode: mode,
 	}
 	if workspace != nil {
 		cfg.Run.WorkspaceKind = workspace.Kind
 		cfg.Run.WorkspaceName = workspace.Name
 		cfg.Run.WorkspaceOrigin = workspace.Origin
-		if workspace.Borrowed {
-			cfg.Run.HandoffMode = HandoffBorrowed
-		} else {
-			cfg.Run.HandoffMode = HandoffNone
-		}
-	} else {
-		cfg.Run.HandoffMode = HandoffNone
 	}
-	return cfg
+
+	if err := recordHandoffSelection(e.log, mode, cfg.Run); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }
 
 // actionArbiterEscalate routes the "arbiter" flow to the executor's arbiter
@@ -479,7 +488,17 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 		CustomPrompt: step.With["prompt"],
 		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", logName+".log"),
 	}
-	cfg = e.withRuntimeContract(cfg, state.TowerName, state.RepoPath, state.BaseBranch, stepName, step.Workspace, workspace)
+	// In-bead wizard.run flows (implement, sage-review, review-fix,
+	// recovery-verify, arbiter, etc.) are same-owner continuations: the
+	// subprocess is the next step for the same bead, on the same workspace.
+	// No cross-owner delivery happens at this boundary, so HandoffBorrowed
+	// is correct even when the workspace is a fresh owned_worktree — the
+	// borrowed-vs-owned distinction on WorkspaceHandle is about cleanup,
+	// not about whether a handoff protocol runs.
+	cfg, err := e.withRuntimeContract(cfg, state.TowerName, state.RepoPath, state.BaseBranch, stepName, step.Workspace, workspace, HandoffBorrowed)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("handoff selection for %s: %w", stepName, err)}
+	}
 	handle, err := e.deps.Spawner.Spawn(cfg)
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("spawn %s: %w", stepName, err)}
