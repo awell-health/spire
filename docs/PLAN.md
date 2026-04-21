@@ -16,6 +16,20 @@ The Helm chart deploys steward, Dolt, and ClickHouse with proper
 bootstrap. `spire review`, `spire ready`, and `spire file --design`
 are shipped.
 
+**Runtime contract (spi-xplwy) — complete.** The four-type canonical
+worker-runtime contract (`RepoIdentity`, `WorkspaceHandle`,
+`HandoffMode`, `RunContext`) is landed and enforced identically across
+local process, `pkg/agent`-k8s, and operator-k8s surfaces. Ambient-CWD
+identity derivation is removed from runtime-critical packages and
+gated by `pkg/runtime/audit_test.go`. Push transport is quarantined as
+`HandoffMode=transitional`, Warn-logged and CI-gated under
+`SPIRE_FAIL_ON_TRANSITIONAL_HANDOFF=1`. See
+[docs/design/spi-xplwy-runtime-contract.md](design/spi-xplwy-runtime-contract.md)
+and [docs/CLI-MIGRATION.md](CLI-MIGRATION.md). The phase-2 WizardGuild
+repo-cache work (spi-sn7o3) now sits cleanly on top of this contract as
+a new `WorkspaceOrigin=guild-cache` option — not a prerequisite, not a
+blocker.
+
 ### What shipped: v0.28 to v0.39
 
 | Version | Theme | Key changes |
@@ -106,15 +120,34 @@ limits, and spawning is immediate/eager with no wave batching.
 
 ### 3. Kubernetes / Helm Operational
 
-The Helm chart and operator are v3-aligned with clean CRDs. The main
-gaps are cluster bootstrap and the operator reading the repos table.
+The Helm chart and operator are v3-aligned with clean CRDs, and all
+three runtime surfaces (local process, `pkg/agent`-k8s, operator-k8s)
+now satisfy the spi-xplwy canonical runtime contract. The main gaps
+are cluster bootstrap and the operator reading the repos table.
 
+- [x] Canonical runtime contract (spi-xplwy) -- `RepoIdentity`, `WorkspaceHandle`, `HandoffMode`, `RunContext` hold across local/`pkg/agent`-k8s/operator-k8s. Push transport quarantined as `HandoffMode=transitional`. See [design](design/spi-xplwy-runtime-contract.md).
 - [ ] Bootstrap job -- `spire tower attach <dolthub-url>` as a Helm hook on install
 - [ ] Operator reads repos table -- auto-derive WizardGuild CRs from dolt repos table
 - [ ] Image version alignment -- Dockerfiles should track latest beads release
 - [ ] Syncer pod formalization -- configurable via SpireConfig CR, health reporting
 - [ ] End-to-end cluster smoke test -- tower attach -> file work -> agent executes -> bead closes
 - [ ] Optional ingress for webhook receiver
+
+#### Phase 2 (on top of the runtime contract): spi-sn7o3
+
+`spi-sn7o3` — the WizardGuild repo-cache — is **phase 2 on top of the
+spi-xplwy runtime contract**, not a prerequisite for it and not a
+blocker for any V1.0 item above. It introduces a new
+`WorkspaceOrigin=guild-cache` alongside the existing `local-bind` and
+`origin-clone` origins, letting the k8s backend materialize worktrees
+from a pre-warmed shared repo cache instead of cloning from origin on
+every pod start. Because the `WorkspaceOrigin` type is already
+reserved (see `pkg/executor/runtime_contract.go`) and backends already
+route by `Workspace.Kind`/`Origin`, adding `guild-cache` is an
+additive change: no contract edits, no parity-matrix change, and no
+migration for other workstreams.
+
+- [ ] spi-sn7o3 -- WizardGuild repo-cache; materializes workspaces with `Origin=guild-cache` for faster cold-pod start. Ships when spi-xplwy parity is green (it is) and cluster-image bootstrap (above) is stable enough to attach a cache PVC.
 
 ### 4. Workshop Skill
 
