@@ -20,9 +20,26 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
+
+// wizardLogSink returns a printf-style log closure that stamps every line
+// with the canonical RunContext field vocabulary (docs/design/
+// spi-xplwy-runtime-contract.md §1.4). The backend spawning this wizard
+// populates SPIRE_TOWER, SPIRE_BEAD_ID, SPIRE_REPO_PREFIX, SPIRE_ROLE, and
+// the workspace/handoff vars — runtime.RunContextFromEnv() reads that set
+// and LogFields() renders it as a stable suffix. Missing values emit "".
+//
+// The wrapped closure snapshots env at call time (not sink construction)
+// so late-bound writes by the wizard (e.g. SPIRE_FORMULA_STEP updates on
+// phase transitions) are picked up automatically.
+func wizardLogSink(label string) func(string, ...interface{}) {
+	return func(format string, a ...interface{}) {
+		fmt.Fprintf(os.Stderr, "[%s] %s%s\n", label, fmt.Sprintf(format, a...), runtime.LogFields(runtime.RunContextFromEnv()))
+	}
+}
 
 // ClaudeMetrics captures token usage, cost, and tool call counts from a Claude CLI invocation.
 type ClaudeMetrics struct {
@@ -208,9 +225,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	}
 
 	startedAt := time.Now()
-	log := func(format string, a ...interface{}) {
-		fmt.Fprintf(os.Stderr, "[%s] %s\n", wizardName, fmt.Sprintf(format, a...))
-	}
+	log := wizardLogSink(wizardName)
 
 	// --- Build-fix mode: early return path ---
 	// The executor spawns the apprentice with --build-fix --apprentice --worktree-dir <path>.
@@ -859,7 +874,7 @@ func ResolveRepo(beadID string, deps *Deps) (repoPath, repoURL, baseBranch strin
 	}
 	if baseBranch == "" {
 		baseBranch = repoconfig.DefaultBranchBase
-		log.Printf("[resolve] base branch not configured for prefix %q — defaulting to %q", prefix, baseBranch)
+		log.Printf("[resolve] base branch not configured for prefix %q — defaulting to %q%s", prefix, baseBranch, runtime.LogFields(runtime.RunContextFromEnv()))
 	}
 	return repoPath, repoURL, baseBranch, nil
 }
@@ -1170,7 +1185,7 @@ func openClaudeStreamLog(agentResultDir, label string) (*os.File, string) {
 	}
 	dir := filepath.Join(agentResultDir, "claude")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: mkdir claude log dir %s: %v\n", dir, err)
+		fmt.Fprintf(os.Stderr, "warning: mkdir claude log dir %s: %v%s\n", dir, err, runtime.LogFields(runtime.RunContextFromEnv()))
 		return nil, ""
 	}
 	ts := time.Now().UTC().Format("20060102-150405")
@@ -1178,7 +1193,7 @@ func openClaudeStreamLog(agentResultDir, label string) (*os.File, string) {
 	path := filepath.Join(dir, name)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: open claude log %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "warning: open claude log %s: %v%s\n", path, err, runtime.LogFields(runtime.RunContextFromEnv()))
 		return nil, ""
 	}
 	return f, path
@@ -1224,7 +1239,7 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	logFile, logPath := openClaudeStreamLog(agentResultDir, label)
 	if logFile != nil {
 		defer logFile.Close()
-		fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s\n", label, logPath)
+		fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s%s\n", label, logPath, runtime.LogFields(runtime.RunContextFromEnv()))
 		writeClaudeLogHeader(logFile, label, worktreeDir, args)
 	}
 
@@ -1278,7 +1293,7 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	logFile, logPath := openClaudeStreamLog(agentResultDir, label)
 	if logFile != nil {
 		defer logFile.Close()
-		fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s\n", label, logPath)
+		fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s%s\n", label, logPath, runtime.LogFields(runtime.RunContextFromEnv()))
 		writeClaudeLogHeader(logFile, label, worktreeDir, args)
 	}
 
@@ -1695,7 +1710,7 @@ func WizardCollectFeedback(beadID, wizardName string, deps *Deps) string {
 		Labels:   []string{"msg", "to:" + wizardName, "ref:" + beadID},
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: collect feedback: %s\n", err)
+		fmt.Fprintf(os.Stderr, "warning: collect feedback: %s%s\n", err, runtime.LogFields(runtime.RunContextFromEnv()))
 		return ""
 	}
 

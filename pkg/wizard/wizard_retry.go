@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/awell-health/spire/pkg/executor"
+	"github.com/awell-health/spire/pkg/runtime"
 )
 
 // knownWizardSteps is a local alias for executor.KnownWizardPhases.
@@ -119,6 +120,6 @@ func (rs *retryState) handleStepFailure(errMsg string) bool {
 		rs.currentStep, rs.request.RecoveryBeadID)
 
 	// Write a minimal result.json so the executor knows we exited intentionally.
-	fmt.Fprintf(os.Stderr, "[%s] retry failure — exiting cleanly for recovery agent\n", rs.beadID)
+	fmt.Fprintf(os.Stderr, "[%s] retry failure — exiting cleanly for recovery agent%s\n", rs.beadID, runtime.LogFields(runtime.RunContextFromEnv()))
 	return true
 }

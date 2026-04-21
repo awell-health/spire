@@ -43,9 +43,7 @@ func CmdWizardReview(args []string, deps *Deps) error {
 		verdictOnly = true
 	}
 
-	log := func(format string, a ...interface{}) {
-		fmt.Fprintf(os.Stderr, "[%s] %s\n", reviewerName, fmt.Sprintf(format, a...))
-	}
+	log := wizardLogSink(reviewerName)
 
 	// Self-register in the wizard registry.
 	regCleanup := deps.RegisterSelf(reviewerName, beadID, "review")
@@ -773,9 +771,7 @@ func CmdWizardMerge(args []string, deps *Deps) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	log := func(format string, a ...interface{}) {
-		fmt.Fprintf(os.Stderr, "[merge] %s\n", fmt.Sprintf(format, a...))
-	}
+	log := wizardLogSink("merge")
 
 	// Verify bead is review-approved
 	bead, err := deps.GetBead(beadID)
