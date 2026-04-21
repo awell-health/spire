@@ -2,6 +2,7 @@ package git
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -232,6 +233,43 @@ func (wc *WorktreeContext) EnsureRemoteRef(remote, ref string) {
 // The "+" prefix force-updates the ref; this makes replays idempotent (a
 // re-applied bundle resets the branch rather than failing on non-fast-forward).
 func (wc *WorktreeContext) ApplyBundle(bundlePath, targetBranch string) error {
+	return wc.applyBundleAtPath(bundlePath, targetBranch)
+}
+
+// ApplyBundleFromReader streams bundle bytes from r into a temp file owned by
+// this package, then applies it to targetBranch via the same fetch logic as
+// ApplyBundle. The temp file lives in os.TempDir() — git fetch <bundle> does
+// not require same-FS placement — so this works against linked worktrees
+// (where the worktree's .git is a pointer file, not a directory).
+//
+// The caller owns r's lifecycle (this method does not Close it). The temp
+// file is removed before return.
+func (wc *WorktreeContext) ApplyBundleFromReader(r io.Reader, targetBranch string) error {
+	tmp, err := os.CreateTemp("", "spire-bundle-*.bundle")
+	if err != nil {
+		return fmt.Errorf("apply bundle from reader: create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmp, r); err != nil {
+		tmp.Close()
+		return fmt.Errorf("apply bundle from reader: copy to %s: %w", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("apply bundle from reader: close %s: %w", tmpPath, err)
+	}
+
+	if err := wc.applyBundleAtPath(tmpPath, targetBranch); err != nil {
+		return fmt.Errorf("apply bundle from reader: %w", err)
+	}
+	return nil
+}
+
+// applyBundleAtPath runs the underlying `git fetch <bundle> +HEAD:<branch>`
+// from the worktree dir. Shared by ApplyBundle and ApplyBundleFromReader so
+// the fetch refspec/flags don't drift between callers.
+func (wc *WorktreeContext) applyBundleAtPath(bundlePath, targetBranch string) error {
 	out, err := exec.Command("git", "-C", wc.Dir, "fetch",
 		bundlePath, "+HEAD:"+targetBranch).CombinedOutput()
 	if err != nil {

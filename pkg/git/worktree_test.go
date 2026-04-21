@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,6 +103,100 @@ func TestResolveGitDir_NotARepo(t *testing.T) {
 	wc := &WorktreeContext{Dir: dir}
 	if gd := wc.resolveGitDir(); gd != "" {
 		t.Errorf("resolveGitDir on non-repo = %q, want empty", gd)
+	}
+}
+
+// =============================================================================
+// WorktreeContext.ApplyBundleFromReader
+// =============================================================================
+
+// TestApplyBundleFromReader_LinkedWorktree is the regression test for
+// spi-g54n4. The previous bundle-apply path (executor's streamBundleToTmp)
+// assumed `.git` was a directory and tried to mkdir under it; in a linked
+// worktree `.git` is a pointer file, so the call crashed with
+// "mkdir .git: not a directory". This test exercises the new streaming API
+// against a linked worktree to prove the fix.
+func TestApplyBundleFromReader_LinkedWorktree(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+	baseSHA := strings.TrimSpace(run(t, dir, "git", "rev-parse", "HEAD"))
+
+	// Build a bundle off a temporary side branch and capture its bytes.
+	run(t, dir, "git", "checkout", "-q", "-b", "bundle-src")
+	writeFile(t, filepath.Join(dir, "feature.txt"), "feature\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-q", "-m", "feature commit")
+	bundleHeadSHA := strings.TrimSpace(run(t, dir, "git", "rev-parse", "HEAD"))
+
+	bundlePath := filepath.Join(t.TempDir(), "feat.bundle")
+	run(t, dir, "git", "bundle", "create", bundlePath, baseSHA+"..HEAD")
+
+	// Reset main-side state: drop the temp branch so the linked worktree
+	// can be created cleanly and the target ref doesn't yet exist.
+	run(t, dir, "git", "checkout", "-q", "main")
+	run(t, dir, "git", "branch", "-D", "bundle-src")
+
+	bundleBytes, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+
+	// Create the linked worktree — `.git` inside it is a pointer file, not
+	// a directory. This is the regression case.
+	rc.CreateBranch("feat/linked")
+	wtDir := filepath.Join(t.TempDir(), "wt-linked")
+	wc, err := rc.CreateWorktree(wtDir, "feat/linked")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(wtDir, ".git")); err != nil || info.IsDir() {
+		t.Fatalf("expected linked worktree .git to be a pointer file, got err=%v isDir=%v",
+			err, info != nil && info.IsDir())
+	}
+
+	const targetBranch = "spire/test-bundle"
+	if err := wc.ApplyBundleFromReader(bytes.NewReader(bundleBytes), targetBranch); err != nil {
+		t.Fatalf("ApplyBundleFromReader on linked worktree: %v", err)
+	}
+
+	got := strings.TrimSpace(run(t, wtDir, "git", "rev-parse", targetBranch))
+	if got != bundleHeadSHA {
+		t.Errorf("%s = %q, want bundle HEAD %q", targetBranch, got, bundleHeadSHA)
+	}
+}
+
+// TestApplyBundleFromReader_Idempotent verifies the "+" force-update refspec:
+// re-applying the same bundle to the same target branch must succeed (callers
+// retry after partial failures).
+func TestApplyBundleFromReader_Idempotent(t *testing.T) {
+	dir := initTestRepo(t)
+	baseSHA := strings.TrimSpace(run(t, dir, "git", "rev-parse", "HEAD"))
+
+	run(t, dir, "git", "checkout", "-q", "-b", "bundle-src")
+	writeFile(t, filepath.Join(dir, "x.txt"), "x\n")
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-q", "-m", "x")
+	headSHA := strings.TrimSpace(run(t, dir, "git", "rev-parse", "HEAD"))
+
+	bundlePath := filepath.Join(t.TempDir(), "x.bundle")
+	run(t, dir, "git", "bundle", "create", bundlePath, baseSHA+"..HEAD")
+	run(t, dir, "git", "checkout", "-q", "main")
+	run(t, dir, "git", "branch", "-D", "bundle-src")
+
+	bundleBytes, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+
+	wc := &WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
+	for i := 0; i < 2; i++ {
+		if err := wc.ApplyBundleFromReader(bytes.NewReader(bundleBytes), "spire/repeat"); err != nil {
+			t.Fatalf("ApplyBundleFromReader attempt %d: %v", i+1, err)
+		}
+	}
+	got := strings.TrimSpace(run(t, dir, "git", "rev-parse", "spire/repeat"))
+	if got != headSHA {
+		t.Errorf("spire/repeat = %q, want %q", got, headSHA)
 	}
 }
 

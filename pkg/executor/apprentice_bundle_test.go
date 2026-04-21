@@ -279,6 +279,40 @@ func TestApplyApprenticeBundle_GetBeadError(t *testing.T) {
 	}
 }
 
+// TestApplyApprenticeBundle_BundleStoreGetError verifies that a Get
+// failure from the BundleStore is wrapped with the per-bead context
+// prefix. Alert/log scrapers (and the spi-v3h7v / spi-75a / spi-is5
+// alert beads filed against the linked-worktree crash) match on
+// "apprentice bundle for <bead>:" — preserve that wrapping.
+func TestApplyApprenticeBundle_BundleStoreGetError(t *testing.T) {
+	role := bundlestore.ApprenticeRole("spi-test", 0)
+	store := newFakeBundleStore()
+	store.getErr = errors.New("transient s3 error")
+
+	deps := &Deps{
+		BundleStore: store,
+		GetBead: func(id string) (Bead, error) {
+			return Bead{
+				ID: id,
+				Metadata: map[string]string{
+					bundlestore.SignalMetadataKey(role): `{"kind":"bundle","role":"` + role + `","bundle_key":"k","commits":["sha1"],"submitted_at":"t"}`,
+				},
+			}, nil
+		},
+		ResolveBranch: func(beadID string) string { return "feat/" + beadID },
+	}
+	e := NewForTest("spi-test", "wizard-test", nil, deps)
+
+	stagingWt := &spgit.StagingWorktree{}
+	_, err := e.applyApprenticeBundle("spi-test", 0, stagingWt)
+	if err == nil {
+		t.Fatal("expected error when BundleStore.Get fails")
+	}
+	if !strings.Contains(err.Error(), "get apprentice bundle for spi-test") {
+		t.Errorf("err = %q, want to mention 'get apprentice bundle for spi-test'", err)
+	}
+}
+
 // TestApplyApprenticeBundle_Success exercises the happy path end-to-end:
 // real git bundle, real local-store, real worktree. The bundle is applied
 // to a fresh branch, Handle is returned with the correct Key, and Delete

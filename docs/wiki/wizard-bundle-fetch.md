@@ -123,12 +123,12 @@ is a wire-protocol bug, not an absence.
   until the downstream step commits. Surface the handle on the outcome
   so the caller owns the delete.
 
-## Known limitation
+## Tmp-file placement
 
-`streamBundleToTmp` writes to `<stagingDir>/.git/tmp-bundles/`. When
-staging is backed by a real `git worktree add` worktree, `<dir>/.git`
-is a *file* pointing at the real gitdir, not a directory — `MkdirAll`
-fails. The current test uses a normal repo and passes. If a real-worktree
-failure surfaces, resolve the gitdir via `git rev-parse --git-dir` or
-use `WorktreeContext.RepoPath`. Filed as review follow-up on round 2;
-not blocking.
+The bundle stream is written to a temp file via
+`pkg/git.WorktreeContext.ApplyBundleFromReader`, which uses
+`os.TempDir()`. `git fetch <bundle>` does not require the bundle to
+live on the same filesystem as the worktree, so this works against
+linked worktrees (where `<dir>/.git` is a pointer file, not a
+directory). Path layout decisions for git artifacts live in
+`pkg/git`, not in the executor — see `pkg/git/README.md`.

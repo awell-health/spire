@@ -5,9 +5,9 @@ package executor
 // The apprentice (cmd/spire/apprentice.go) writes a git bundle to the
 // BundleStore and stamps a JSON signal on the task bead under the
 // apprentice_signal_<role> metadata key. The wizard side reads that signal,
-// streams the bundle to a temp file, and fetches it into staging as a local
-// branch. Merge integration stays in StagingWorktree.MergeBranch — this
-// helper only materializes the branch.
+// streams the bundle directly into pkg/git, which materializes it as a local
+// branch in the staging worktree. Merge integration stays in
+// StagingWorktree.MergeBranch — this helper only materializes the branch.
 //
 // All four dispatch sites (direct, wave, sequential, injected) call
 // applyApprenticeBundle after a successful spawn and before MergeBranch when
@@ -21,9 +21,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/awell-health/spire/pkg/bundlestore"
 	spgit "github.com/awell-health/spire/pkg/git"
@@ -100,15 +97,15 @@ func (e *Executor) applyApprenticeBundle(beadID string, idx int, stagingWt *spgi
 	}
 
 	handle := bundlestore.HandleForSignal(beadID, sig)
-	tmpPath, err := e.streamBundleToTmp(handle, stagingWt.Dir)
+	rc, err := e.deps.BundleStore.Get(context.Background(), handle)
 	if err != nil {
-		return bundleOutcome{}, err
+		return bundleOutcome{}, fmt.Errorf("get apprentice bundle for %s: %w", beadID, err)
 	}
-	defer os.Remove(tmpPath)
+	defer rc.Close()
 
 	branch := e.resolveBranch(beadID)
-	if err := stagingWt.ApplyBundle(tmpPath, branch); err != nil {
-		return bundleOutcome{}, fmt.Errorf("apply bundle for %s: %w", beadID, err)
+	if err := stagingWt.ApplyBundleFromReader(rc, branch); err != nil {
+		return bundleOutcome{}, fmt.Errorf("apply apprentice bundle for %s: %w", beadID, err)
 	}
 
 	e.log("applied apprentice bundle for %s (%d commits) -> %s", beadID, len(sig.Commits), branch)
@@ -127,38 +124,4 @@ func (e *Executor) deleteApprenticeBundle(beadID string, h bundlestore.BundleHan
 	if err := e.deps.BundleStore.Delete(context.Background(), h); err != nil {
 		e.log("warning: delete bundle %s for %s: %s — janitor will collect", h.Key, beadID, err)
 	}
-}
-
-// streamBundleToTmp copies the bundle stream out of the BundleStore into a
-// temp file under stagingDir/.git/tmp-bundles/. Placing it inside the
-// worktree's .git dir keeps the file on the same filesystem as the repo
-// (no cross-device errors during fetch) and makes the path trivially
-// discoverable during incident diagnosis.
-func (e *Executor) streamBundleToTmp(h bundlestore.BundleHandle, stagingDir string) (string, error) {
-	rc, err := e.deps.BundleStore.Get(context.Background(), h)
-	if err != nil {
-		return "", fmt.Errorf("get bundle %s: %w", h.Key, err)
-	}
-	defer rc.Close()
-
-	tmpDir := filepath.Join(stagingDir, ".git", "tmp-bundles")
-	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return "", fmt.Errorf("mkdir tmp-bundles: %w", err)
-	}
-
-	f, err := os.CreateTemp(tmpDir, "apprentice-*.bundle")
-	if err != nil {
-		return "", fmt.Errorf("create tmp bundle: %w", err)
-	}
-	path := f.Name()
-	if _, err := io.Copy(f, rc); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", fmt.Errorf("stream bundle to %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", fmt.Errorf("close tmp bundle %s: %w", path, err)
-	}
-	return path, nil
 }
