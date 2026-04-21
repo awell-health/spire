@@ -249,6 +249,41 @@ func (e *Executor) runtimeBaseBranch() string {
 	return ""
 }
 
+// runtimeRepoURL resolves the canonical repo origin URL for the executor's
+// active bead/prefix. The source of truth is the active tower's registered-
+// repo entry (LocalBindings keyed by bead prefix, with a fall-through to
+// the tower's shared repos table via the ypoqx resolver in cmd/spire).
+//
+// In-process, we only consult ActiveTowerConfig() + LocalBindings: the
+// shared repos table lookup lives in cmd/spire/repo_identity.go and is
+// intentionally not plumbed here (pkg/executor must not reach into the
+// dolt-level resolver). An empty return is a legitimate outcome when no
+// tower is bound (e.g. unit tests) — withRuntimeContract callers still
+// see cfg.RepoURL (if set) as the ultimate fallback.
+//
+// This helper is the canonical producer of Identity.RepoURL on every
+// same-bead dispatch; no caller should rely on cfg.RepoURL being
+// populated for a k8s substrate spawn to succeed.
+func (e *Executor) runtimeRepoURL() string {
+	if e == nil || e.deps == nil || e.deps.ActiveTowerConfig == nil {
+		return ""
+	}
+	tower, err := e.deps.ActiveTowerConfig()
+	if err != nil || tower == nil {
+		return ""
+	}
+	prefix := store.PrefixFromID(e.beadID)
+	if prefix == "" {
+		return ""
+	}
+	if binding, ok := tower.LocalBindings[prefix]; ok && binding != nil {
+		if binding.RepoURL != "" {
+			return binding.RepoURL
+		}
+	}
+	return ""
+}
+
 func (e *Executor) runtimeStep(state *GraphState, fallback string) string {
 	if state != nil && state.ActiveStep != "" {
 		return state.ActiveStep
@@ -467,11 +502,23 @@ func (e *Executor) withRuntimeContract(cfg agent.SpawnConfig, towerName, repoPat
 		attemptID = e.attemptID()
 	}
 
+	// RepoURL is resolved from executor state (active tower's registered-
+	// repo binding) rather than copied from cfg.RepoURL. This removes the
+	// foot-gun that let same-bead k8s dispatches fail at buildSubstratePod
+	// with ErrIdentityRequired because no caller had populated cfg.RepoURL
+	// (spi-x7fus). If state resolution returns empty (unit tests, no tower
+	// bound), fall back to any explicit cfg.RepoURL the caller did set so
+	// existing call sites that do thread the field through keep working.
+	repoURL := e.runtimeRepoURL()
+	if repoURL == "" {
+		repoURL = cfg.RepoURL
+	}
+
 	cfg.Identity = RepoIdentity{
 		TowerName:  towerName,
 		TowerID:    towerName,
 		Prefix:     prefix,
-		RepoURL:    cfg.RepoURL,
+		RepoURL:    repoURL,
 		BaseBranch: baseBranch,
 	}
 	cfg.Workspace = workspace

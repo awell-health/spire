@@ -344,6 +344,191 @@ func TestWithRuntimeContract_HandoffModePopulates(t *testing.T) {
 	}
 }
 
+// TestWithRuntimeContract_ResolvesRepoURLFromTower is the spi-x7fus
+// regression. Pre-fix, withRuntimeContract copied cfg.RepoURL — which
+// every same-bead dispatch site (graph_actions.go:583 and
+// action_dispatch.go:236/363/455) left empty — into Identity.RepoURL,
+// causing buildSubstratePod to reject k8s spawns with ErrIdentityRequired
+// before the worker started. Post-fix, RepoURL is resolved from the
+// active tower's LocalBindings map keyed by bead prefix.
+//
+// To reproduce the pre-fix failure locally:
+//
+//  1. Revert withRuntimeContract to RepoURL: cfg.RepoURL
+//  2. Run: go test ./pkg/executor -run TestWithRuntimeContract_ResolvesRepoURLFromTower
+//  3. Observe a failure on the "cfg_repo_url_empty_tower_bound" case:
+//     Identity.RepoURL = "", want "https://github.com/example/repo.git"
+//  4. Re-apply the fix and the test passes.
+func TestWithRuntimeContract_ResolvesRepoURLFromTower(t *testing.T) {
+	const wantURL = "https://github.com/example/repo.git"
+
+	cases := []struct {
+		name          string
+		cfgRepoURL    string
+		tower         *TowerConfig
+		towerErr      error
+		deps          *Deps // when nil, constructed from tower/towerErr
+		wantRepoURL   string
+	}{
+		{
+			// The load-bearing case: a same-bead dispatch site that did NOT
+			// populate cfg.RepoURL (the production bug) must still produce
+			// a SpawnConfig that buildSubstratePod will accept.
+			name:       "cfg_repo_url_empty_tower_bound",
+			cfgRepoURL: "",
+			tower: &TowerConfig{
+				LocalBindings: map[string]*config.LocalRepoBinding{
+					"spi": {Prefix: "spi", RepoURL: wantURL},
+				},
+			},
+			wantRepoURL: wantURL,
+		},
+		{
+			// Back-compat: a caller that does thread cfg.RepoURL through is
+			// still honored when the tower has no binding (e.g. unit tests
+			// with a stub Deps that returns a minimal tower).
+			name:       "cfg_repo_url_wins_when_tower_has_no_binding",
+			cfgRepoURL: wantURL,
+			tower:      &TowerConfig{LocalBindings: nil},
+			wantRepoURL: wantURL,
+		},
+		{
+			// Tower binding wins over any legacy cfg.RepoURL — the executor
+			// state is now authoritative.
+			name:       "tower_binding_wins_over_cfg_repo_url",
+			cfgRepoURL: "https://github.com/legacy/stale.git",
+			tower: &TowerConfig{
+				LocalBindings: map[string]*config.LocalRepoBinding{
+					"spi": {Prefix: "spi", RepoURL: wantURL},
+				},
+			},
+			wantRepoURL: wantURL,
+		},
+		{
+			// No tower accessor: fall back to cfg.RepoURL if set. Preserves
+			// existing test setups that construct an empty Deps{}.
+			name:       "no_deps_accessor_falls_back_to_cfg",
+			cfgRepoURL: wantURL,
+			deps:       &Deps{},
+			wantRepoURL: wantURL,
+		},
+		{
+			// Tower accessor errors: fall back to cfg.RepoURL.
+			name:       "tower_error_falls_back_to_cfg",
+			cfgRepoURL: wantURL,
+			towerErr:   errFake{},
+			wantRepoURL: wantURL,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ResetHandoffTransitionalCounters()
+
+			deps := tc.deps
+			if deps == nil {
+				tower := tc.tower
+				err := tc.towerErr
+				deps = &Deps{
+					ActiveTowerConfig: func() (*TowerConfig, error) {
+						return tower, err
+					},
+				}
+			}
+
+			e := NewForTest("spi-target", "wizard-test", nil, deps)
+
+			cfg := agent.SpawnConfig{
+				BeadID:  "spi-target",
+				Role:    agent.RoleApprentice,
+				RepoURL: tc.cfgRepoURL,
+			}
+
+			out, err := e.withRuntimeContract(cfg, "tower-a", "/tmp/repo", "main", "implement", "", nil, HandoffBorrowed)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if out.Identity.RepoURL != tc.wantRepoURL {
+				t.Errorf("Identity.RepoURL = %q, want %q", out.Identity.RepoURL, tc.wantRepoURL)
+			}
+
+			// Defense in depth: the downstream buildSubstratePod check is
+			// `ident.RepoURL == ""`. Assert the exact condition that the
+			// k8s backend will see.
+			if tc.wantRepoURL != "" && out.Identity.RepoURL == "" {
+				t.Errorf("Identity.RepoURL empty — buildSubstratePod would reject this spawn with ErrIdentityRequired")
+			}
+		})
+	}
+}
+
+// TestWithRuntimeContract_ProducesSpawnConfigAcceptedByBuildSubstratePod
+// closes the loop on spi-x7fus by asserting that the cfg produced by
+// withRuntimeContract without cfg.RepoURL set satisfies every precondition
+// that pkg/agent/backend_k8s.go:buildSubstratePod enforces
+// (cfg.Workspace != nil, Identity.RepoURL != "", Identity.BaseBranch != "",
+// Identity.Prefix != ""). Before the fix, Identity.RepoURL was "" and
+// buildSubstratePod returned ErrIdentityRequired; this test encodes that
+// exact contract from the executor side so the bug cannot regress.
+func TestWithRuntimeContract_ProducesSpawnConfigAcceptedByBuildSubstratePod(t *testing.T) {
+	const wantURL = "https://github.com/example/repo.git"
+
+	deps := &Deps{
+		ActiveTowerConfig: func() (*TowerConfig, error) {
+			return &TowerConfig{
+				LocalBindings: map[string]*config.LocalRepoBinding{
+					"spi": {Prefix: "spi", RepoURL: wantURL},
+				},
+			}, nil
+		},
+	}
+	e := NewForTest("spi-target", "wizard-test", nil, deps)
+
+	// Mimic the same-bead dispatch sites: cfg.RepoURL is intentionally
+	// NOT set. Callers only thread repoPath/baseBranch through the
+	// withRuntimeContract signature.
+	cfg := agent.SpawnConfig{
+		Name:   "wizard-test-impl",
+		BeadID: "spi-target",
+		Role:   agent.RoleApprentice,
+	}
+
+	workspace := &WorkspaceHandle{
+		Name:       "implement",
+		Kind:       WorkspaceKindBorrowedWorktree,
+		Branch:     "feat/spi-target",
+		BaseBranch: "main",
+		Path:       "/workspace/spi",
+		Origin:     WorkspaceOriginLocalBind,
+		Borrowed:   true,
+	}
+
+	out, err := e.withRuntimeContract(cfg, "tower-a", "/tmp/repo", "main", "implement", "implement", workspace, HandoffBorrowed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Exact preconditions from pkg/agent/backend_k8s.go:buildSubstratePod.
+	if out.Workspace == nil {
+		t.Error("cfg.Workspace is nil — buildSubstratePod would reject with ErrWorkspaceRequired")
+	}
+	if out.Identity.RepoURL == "" {
+		t.Error("Identity.RepoURL is empty — buildSubstratePod would reject with ErrIdentityRequired (the spi-x7fus bug)")
+	}
+	if out.Identity.BaseBranch == "" {
+		t.Error("Identity.BaseBranch is empty — buildSubstratePod would reject with ErrIdentityRequired")
+	}
+	if out.Identity.Prefix == "" {
+		t.Error("Identity.Prefix is empty — buildSubstratePod would reject with ErrIdentityRequired")
+	}
+
+	// And the positive assertion: the resolved RepoURL came from the tower.
+	if out.Identity.RepoURL != wantURL {
+		t.Errorf("Identity.RepoURL = %q, want %q (resolved from tower binding)", out.Identity.RepoURL, wantURL)
+	}
+}
+
 // errFake is a non-nil error sentinel used in ActiveTowerConfig stubs.
 type errFake struct{}
 
