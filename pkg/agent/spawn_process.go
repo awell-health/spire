@@ -209,6 +209,10 @@ func setEnv(cmd *exec.Cmd, key, value string) {
 // roleToSubcmd maps a SpawnRole to the spire subcommand argv tokens.
 // Returns a slice so multi-word role-scoped subcommands (e.g. "apprentice run")
 // can be spliced into the command line by each backend.
+//
+// RoleWizard and RoleExecutor both map to "execute": the in-pod command is
+// `spire execute`, and the wizard identity lives in the enum (surfaced via the
+// SPIRE_ROLE env var and role-specific pod spec / resources).
 func roleToSubcmd(role SpawnRole) ([]string, error) {
 	switch role {
 	case RoleApprentice:
@@ -216,7 +220,7 @@ func roleToSubcmd(role SpawnRole) ([]string, error) {
 	case RoleSage:
 		return []string{"sage", "review"}, nil
 	case RoleWizard:
-		return []string{"wizard"}, nil
+		return []string{"execute"}, nil
 	case RoleExecutor:
 		return []string{"execute"}, nil
 	default:
