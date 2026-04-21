@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -557,4 +559,314 @@ func searchString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// --- Wizard pod spec tests ----------------------------------------------
+//
+// These tests pin the canonical wizard pod contract produced by the
+// RoleWizard branch in (*K8sBackend).Spawn. Each test spawns a single
+// wizard pod via the fake clientset and asserts one aspect of the pod
+// spec (volumes, init container, env, resources, command, restart
+// policy) so that regressions in any one dimension surface on their
+// own rather than folded into a single mega-assertion.
+
+func TestK8sBackend_SpawnWizard_Volumes(t *testing.T) {
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:   "wizard-spi-abcde-0",
+		BeadID: "spi-abcde",
+		Role:   RoleWizard,
+		Tower:  "test-tower",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pod := spawnedPod(t, client)
+
+	if len(pod.Spec.Volumes) != 2 {
+		t.Fatalf("len(Volumes) = %d, want 2; got %+v", len(pod.Spec.Volumes), pod.Spec.Volumes)
+	}
+	vols := make(map[string]corev1.Volume, 2)
+	for _, v := range pod.Spec.Volumes {
+		vols[v.Name] = v
+	}
+	for _, name := range []string{"data", "workspace"} {
+		v, ok := vols[name]
+		if !ok {
+			t.Errorf("missing volume %q", name)
+			continue
+		}
+		if v.EmptyDir == nil {
+			t.Errorf("volume %q: EmptyDir is nil, want EmptyDir source", name)
+		}
+	}
+
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatalf("len(Containers) = %d, want 1", len(pod.Spec.Containers))
+	}
+	mainMounts := make(map[string]string, 2) // path -> volume name
+	for _, m := range pod.Spec.Containers[0].VolumeMounts {
+		mainMounts[m.MountPath] = m.Name
+	}
+	if mainMounts["/data"] != "data" {
+		t.Errorf("main container /data mount volume = %q, want %q", mainMounts["/data"], "data")
+	}
+	if mainMounts["/workspace"] != "workspace" {
+		t.Errorf("main container /workspace mount volume = %q, want %q", mainMounts["/workspace"], "workspace")
+	}
+
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("len(InitContainers) = %d, want 1", len(pod.Spec.InitContainers))
+	}
+	var initDataMount bool
+	for _, m := range pod.Spec.InitContainers[0].VolumeMounts {
+		if m.MountPath == "/data" && m.Name == "data" {
+			initDataMount = true
+			break
+		}
+	}
+	if !initDataMount {
+		t.Errorf("init container missing /data mount backed by volume %q; mounts = %+v",
+			"data", pod.Spec.InitContainers[0].VolumeMounts)
+	}
+}
+
+func TestK8sBackend_SpawnWizard_InitContainer(t *testing.T) {
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:   "wizard-spi-abcde-0",
+		BeadID: "spi-abcde",
+		Role:   RoleWizard,
+		Tower:  "test-tower",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pod := spawnedPod(t, client)
+
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("len(InitContainers) = %d, want 1", len(pod.Spec.InitContainers))
+	}
+	ic := pod.Spec.InitContainers[0]
+	if ic.Name != "tower-attach" {
+		t.Errorf("init container Name = %q, want tower-attach", ic.Name)
+	}
+	if len(ic.Command) < 3 {
+		t.Fatalf("init container Command too short: %v", ic.Command)
+	}
+	wantPrefix := []string{"spire", "tower", "attach-cluster"}
+	for i, w := range wantPrefix {
+		if ic.Command[i] != w {
+			t.Errorf("init container Command[%d] = %q, want %q", i, ic.Command[i], w)
+		}
+	}
+	for _, flag := range []string{"--data-dir=/data/", "--database=", "--prefix=", "--dolthub-remote="} {
+		if !containsFlag(ic.Command, flag) {
+			t.Errorf("init container Command missing flag starting with %q; got %v", flag, ic.Command)
+		}
+	}
+}
+
+func TestK8sBackend_SpawnWizard_Env(t *testing.T) {
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:   "wizard-spi-abcde-0",
+		BeadID: "spi-abcde",
+		Role:   RoleWizard,
+		Tower:  "test-tower",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pod := spawnedPod(t, client)
+
+	envMap := make(map[string]corev1.EnvVar, len(pod.Spec.Containers[0].Env))
+	for _, e := range pod.Spec.Containers[0].Env {
+		envMap[e.Name] = e
+	}
+
+	// Wizard-specific literal values — DOLT_DATA_DIR and SPIRE_CONFIG_DIR
+	// must be set on the main container so resolveBeadsDir() finds the
+	// store the tower-attach init container stages into /data.
+	wantLiteral := map[string]string{
+		"DOLT_DATA_DIR":    "/data",
+		"SPIRE_CONFIG_DIR": "/data/spire-config",
+	}
+	for k, want := range wantLiteral {
+		got, ok := envMap[k]
+		if !ok {
+			t.Errorf("missing env var %s", k)
+			continue
+		}
+		if got.Value != want {
+			t.Errorf("env %s = %q, want %q", k, got.Value, want)
+		}
+	}
+
+	// Preserved keys — existence check only (values are pinned by the
+	// existing TestK8sBackend_Spawn_* tests; here we verify the wizard
+	// branch did not drop them relative to the executor branch).
+	// SPIRE_AGENT_NAME is mentioned by the change spec but is not injected
+	// by (*K8sBackend).buildEnvVars today — only the operator path sets
+	// it — so it is deliberately absent from this existence check.
+	for _, k := range []string{
+		"SPIRE_BEAD_ID",
+		"SPIRE_TOWER",
+		"SPIRE_ROLE",
+		"BEADS_DOLT_SERVER_HOST",
+		"BEADS_DOLT_SERVER_PORT",
+	} {
+		if _, ok := envMap[k]; !ok {
+			t.Errorf("missing env var %s", k)
+		}
+	}
+
+	// ANTHROPIC_API_KEY must be wired through Secret, not a literal value.
+	apiKey, ok := envMap["ANTHROPIC_API_KEY"]
+	if !ok {
+		t.Fatal("missing ANTHROPIC_API_KEY env var")
+	}
+	if apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil {
+		t.Error("ANTHROPIC_API_KEY should use ValueFrom.SecretKeyRef, not a literal Value")
+	}
+}
+
+func TestK8sBackend_SpawnWizard_Resources(t *testing.T) {
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:   "wizard-spi-abcde-0",
+		BeadID: "spi-abcde",
+		Role:   RoleWizard,
+		Tower:  "test-tower",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pod := spawnedPod(t, client)
+	res := pod.Spec.Containers[0].Resources
+
+	checkQty(t, "Requests[memory]", res.Requests[corev1.ResourceMemory], "1Gi")
+	checkQty(t, "Requests[cpu]", res.Requests[corev1.ResourceCPU], "250m")
+	checkQty(t, "Limits[memory]", res.Limits[corev1.ResourceMemory], "2Gi")
+	checkQty(t, "Limits[cpu]", res.Limits[corev1.ResourceCPU], "1000m")
+}
+
+func TestK8sBackend_SpawnWizard_ResourceOverride(t *testing.T) {
+	// t.Setenv auto-restores on cleanup; no manual defer needed.
+	t.Setenv("SPIRE_WIZARD_MEMORY_LIMIT", "4Gi")
+	t.Setenv("SPIRE_WIZARD_CPU_LIMIT", "2000m")
+
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:   "wizard-spi-abcde-0",
+		BeadID: "spi-abcde",
+		Role:   RoleWizard,
+		Tower:  "test-tower",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pod := spawnedPod(t, client)
+	res := pod.Spec.Containers[0].Resources
+
+	checkQty(t, "Limits[memory]", res.Limits[corev1.ResourceMemory], "4Gi")
+	checkQty(t, "Limits[cpu]", res.Limits[corev1.ResourceCPU], "2000m")
+}
+
+func TestK8sBackend_SpawnWizard_Command(t *testing.T) {
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:   "wizard-spi-abcde-0",
+		BeadID: "spi-abcde",
+		Role:   RoleWizard,
+		Tower:  "test-tower",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pod := spawnedPod(t, client)
+	got := pod.Spec.Containers[0].Command
+	want := []string{"spire", "execute", cfg.BeadID, "--name", cfg.Name}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("main container Command = %v, want %v", got, want)
+	}
+}
+
+func TestK8sBackend_SpawnWizard_RestartPolicyNever(t *testing.T) {
+	b, client := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:   "wizard-spi-abcde-0",
+		BeadID: "spi-abcde",
+		Role:   RoleWizard,
+		Tower:  "test-tower",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pod := spawnedPod(t, client)
+	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
+		t.Errorf("RestartPolicy = %q, want %q", pod.Spec.RestartPolicy, corev1.RestartPolicyNever)
+	}
+}
+
+// spawnedPod fetches the single pod created by Spawn from the fake
+// clientset. Fails the test if zero or multiple pods are present.
+// Additive helper for the wizard spec tests — existing tests still use
+// their inline list pattern.
+func spawnedPod(t *testing.T, client *fake.Clientset) *corev1.Pod {
+	t.Helper()
+	pods, err := client.CoreV1().Pods(testNamespace).List(
+		context.Background(), metav1.ListOptions{},
+	)
+	if err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	if len(pods.Items) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(pods.Items))
+	}
+	return &pods.Items[0]
+}
+
+// containsFlag reports whether cmd contains any argument that starts
+// with the given prefix. Used to assert the tower-attach init container
+// wire up without pinning the (possibly empty) attach-cluster values.
+func containsFlag(cmd []string, prefix string) bool {
+	for _, arg := range cmd {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkQty fails the test if q is not equal to the quantity parsed
+// from want. Uses resource.Quantity.Equal so we compare canonical
+// values rather than == on the struct.
+func checkQty(t *testing.T, label string, q resource.Quantity, want string) {
+	t.Helper()
+	w := resource.MustParse(want)
+	if !q.Equal(w) {
+		t.Errorf("%s = %s, want %s", label, q.String(), w.String())
+	}
 }
