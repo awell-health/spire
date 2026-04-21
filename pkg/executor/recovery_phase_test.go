@@ -1301,3 +1301,123 @@ func TestHandleFinish_StepWithNeedsHumanFalse(t *testing.T) {
 			closedBead, "spi-recovery-finish-nh-off")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// handlePlanExecute — RepairModeRecipe regression
+// ---------------------------------------------------------------------------
+
+// TestHandlePlanExecute_RecipeAndMechanicalShareMechanicalDispatch asserts
+// the design spi-h32xj §6 chunk 7 guarantee: a promoted recipe and the
+// un-promoted mechanical plan flow through the IDENTICAL dispatch surface.
+// Both plans carry Mode values that differ (Mechanical vs Recipe) but
+// Action="rebase-onto-base" routes to the same mechanicalActions entry;
+// handlePlanExecute must land both calls in that entry with the same
+// Params, and both must capture a serialised recipe into
+// outputs[mechanical_recipe] so the learn step can extend the promotion
+// chain on replay.
+//
+// Workspace.Kind=WorkspaceKindRepo sidesteps worktree provisioning — the
+// stub doesn't care about the substrate, and the real rebase helper
+// would need a live origin. The recording stub lets us observe the
+// dispatch target directly.
+func TestHandlePlanExecute_RecipeAndMechanicalShareMechanicalDispatch(t *testing.T) {
+	var dispatched []struct {
+		mode   recovery.RepairMode
+		action string
+		params map[string]string
+	}
+	stub := func(_ *RecoveryActionCtx, p recovery.RepairPlan, _ WorkspaceHandle) (*recovery.MechanicalRecipe, error) {
+		cp := make(map[string]string, len(p.Params))
+		for k, v := range p.Params {
+			cp[k] = v
+		}
+		dispatched = append(dispatched, struct {
+			mode   recovery.RepairMode
+			action string
+			params map[string]string
+		}{p.Mode, p.Action, cp})
+		return recovery.NewBuiltinRecipe(p.Action, p.Params), nil
+	}
+	orig := mechanicalActions["rebase-onto-base"]
+	mechanicalActions["rebase-onto-base"] = stub
+	defer func() { mechanicalActions["rebase-onto-base"] = orig }()
+
+	tmp := t.TempDir()
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id}, nil
+		},
+		HasLabel: func(_ store.Bead, _ string) string { return "" },
+	}
+	state := &GraphState{
+		BeadID:    "spi-recovery-rcp",
+		AgentName: "wizard-recovery",
+		RepoPath:  tmp,
+		Steps:     map[string]StepState{},
+	}
+	e := NewGraphForTest("spi-recovery-rcp", "wizard-recovery", nil, state, deps)
+
+	step := StepConfig{
+		Action: "cleric.execute",
+		With:   map[string]string{"source_bead_id": "spi-src1"},
+	}
+
+	makePlan := func(mode recovery.RepairMode) recovery.RepairPlan {
+		return recovery.RepairPlan{
+			Mode:      mode,
+			Action:    "rebase-onto-base",
+			Params:    map[string]string{"note": "equal-params"},
+			Workspace: recovery.WorkspaceRequest{Kind: WorkspaceKindRepo},
+		}
+	}
+
+	mechResult := handlePlanExecute(e, "execute", step, state, makePlan(recovery.RepairModeMechanical))
+	if mechResult.Error != nil {
+		t.Fatalf("mechanical handlePlanExecute err = %v", mechResult.Error)
+	}
+	recipeResult := handlePlanExecute(e, "execute", step, state, makePlan(recovery.RepairModeRecipe))
+	if recipeResult.Error != nil {
+		t.Fatalf("recipe handlePlanExecute err = %v", recipeResult.Error)
+	}
+
+	if len(dispatched) != 2 {
+		t.Fatalf("stub hit %d times, want 2", len(dispatched))
+	}
+	if dispatched[0].action != "rebase-onto-base" || dispatched[1].action != "rebase-onto-base" {
+		t.Errorf("dispatched actions = %q/%q, want both rebase-onto-base",
+			dispatched[0].action, dispatched[1].action)
+	}
+	if dispatched[0].mode != recovery.RepairModeMechanical {
+		t.Errorf("first dispatch mode = %q, want Mechanical", dispatched[0].mode)
+	}
+	if dispatched[1].mode != recovery.RepairModeRecipe {
+		t.Errorf("second dispatch mode = %q, want Recipe", dispatched[1].mode)
+	}
+	if dispatched[0].params["note"] != "equal-params" || dispatched[1].params["note"] != "equal-params" {
+		t.Errorf("dispatched params differ: mech=%v recipe=%v",
+			dispatched[0].params, dispatched[1].params)
+	}
+
+	if mechResult.Outputs["status"] != "success" || recipeResult.Outputs["status"] != "success" {
+		t.Errorf("status mismatch: mech=%q recipe=%q",
+			mechResult.Outputs["status"], recipeResult.Outputs["status"])
+	}
+	if mechResult.Outputs["action"] != "rebase-onto-base" || recipeResult.Outputs["action"] != "rebase-onto-base" {
+		t.Errorf("action outputs differ: mech=%q recipe=%q",
+			mechResult.Outputs["action"], recipeResult.Outputs["action"])
+	}
+	if mechResult.Outputs["mode"] == recipeResult.Outputs["mode"] {
+		t.Errorf("mode outputs identical %q; expected distinct Mechanical vs Recipe",
+			mechResult.Outputs["mode"])
+	}
+	if mechResult.Outputs["mechanical_recipe"] == "" {
+		t.Error("mechanical outputs missing mechanical_recipe capture")
+	}
+	if recipeResult.Outputs["mechanical_recipe"] == "" {
+		t.Error("recipe outputs missing mechanical_recipe capture (promotion chain needs it to extend)")
+	}
+	if mechResult.Outputs["mechanical_recipe"] != recipeResult.Outputs["mechanical_recipe"] {
+		t.Errorf("captured recipes differ:\n  mech=%s\nrecipe=%s",
+			mechResult.Outputs["mechanical_recipe"], recipeResult.Outputs["mechanical_recipe"])
+	}
+}

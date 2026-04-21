@@ -185,11 +185,63 @@ func actionTargetedFix(_ *RecoveryActionCtx, _ recovery.RepairPlan, _ WorkspaceH
 	return nil, fmt.Errorf("targeted-fix is retired; dispatch this intent as RepairModeWorker with the desired repair role")
 }
 
-// executeRecipe runs a promoted Recipe against ws. Stub in chunk 3 —
-// recipe executability lands in spi-h32xj/chunk 7 alongside
-// Recipe.ToRepairPlan().
-func executeRecipe(_ *RecoveryActionCtx, _ recovery.RepairPlan, _ WorkspaceHandle) (RepairResult, error) {
-	return RepairResult{}, fmt.Errorf("recipe execution not yet implemented")
+// executeRecipe runs a promoted Recipe against ws. The plan's Action +
+// Params are the replayable payload that decide stamped when the promotion
+// snapshot crossed threshold; they're enough to reconstruct the builtin
+// recipe and route through the SAME dispatch surface the un-promoted
+// plan would use — mechanicalActions[Action] for mechanical recipes,
+// SpawnRepairWorker for worker recipes. No second dispatch map, no
+// shadow spawner (design spi-h32xj §6 chunk 7).
+//
+// On success the function re-captures the replayed recipe so the learn
+// step can extend the promotion chain with another clean outcome. On
+// failure it returns the underlying dispatch error verbatim so the
+// caller's demote path (handlePlanExecute) can react and reset the
+// promotion counter for this signature.
+func executeRecipe(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle) (RepairResult, error) {
+	recipe := recovery.NewBuiltinRecipe(plan.Action, plan.Params)
+	if recipe == nil {
+		return RepairResult{}, fmt.Errorf("recipe execution: plan missing action — recipe is not replayable")
+	}
+	if recipe.Kind != recovery.RecipeKindBuiltin {
+		return RepairResult{}, fmt.Errorf("recipe execution: only builtin kind is dispatchable, got %q", recipe.Kind)
+	}
+
+	// Mechanical recipe: dispatch through the canonical mechanicalActions
+	// map. Same function, same params, same workspace — identical to the
+	// un-promoted mechanical path.
+	if fn, ok := mechanicalActions[recipe.Action]; ok {
+		captured, err := fn(ctx, plan, ws)
+		if err != nil {
+			return RepairResult{}, err
+		}
+		// Re-stamp with the replayed recipe when the mechanical returned
+		// nil (defensive) so the learn step always has a recipe to extend
+		// the promotion chain with.
+		if captured == nil {
+			captured = recipe
+		}
+		return RepairResult{
+			Recipe: captured,
+			Output: fmt.Sprintf("recipe replayed (mechanical): %s", recipe.Action),
+		}, nil
+	}
+
+	// Worker recipe: dispatch through the canonical SpawnRepairWorker.
+	// Same spawner, same validation gates — identical to the un-promoted
+	// worker path.
+	workerResult, err := SpawnRepairWorker(ctx, plan, ws)
+	if err != nil {
+		return RepairResult{}, err
+	}
+	output := fmt.Sprintf("recipe replayed (worker): %s", recipe.Action)
+	if workerResult.WorkerAttemptID != "" {
+		output += fmt.Sprintf(" worker_attempt_id=%s", workerResult.WorkerAttemptID)
+	}
+	if workerResult.Output != "" {
+		output += " " + workerResult.Output
+	}
+	return RepairResult{Recipe: recipe, Output: output}, nil
 }
 
 // worktreeFromHandle reconstructs a WorktreeContext from a

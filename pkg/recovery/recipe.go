@@ -3,6 +3,8 @@ package recovery
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/awell-health/spire/pkg/runtime"
 )
 
 // RecipeKind discriminates MechanicalRecipe variants.
@@ -111,4 +113,67 @@ func UnmarshalRecipe(raw string) (*MechanicalRecipe, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// ToRepairPlan converts a promoted recipe into the executable RepairPlan
+// the cleric's execute step consumes. The outer Mode is RepairModeRecipe so
+// the learn step can distinguish replayed outcomes from agentic ones; the
+// inner Action / Params mirror the un-promoted mechanical or worker form so
+// execution dispatches through the exact same runtime paths (design
+// spi-h32xj §2 "Recipe" entry).
+//
+// A nil recipe produces a bare RepairPlan{Mode: RepairModeRecipe} so
+// callers don't have to nil-check before propagating the mode — this shape
+// fails dispatch loudly in handlePlanExecute rather than silently
+// degrading.
+//
+// Only builtin recipes are dispatchable today; sequence recipes fall
+// through to an empty Action, matching the recipeDispatch behavior used by
+// the decide step's promotion path.
+func (r *MechanicalRecipe) ToRepairPlan() RepairPlan {
+	plan := RepairPlan{Mode: RepairModeRecipe}
+	if r == nil {
+		return plan
+	}
+	action, params := recipeDispatch(r)
+	plan.Action = action
+	plan.Confidence = 1.0
+	if action != "" {
+		plan.Reason = fmt.Sprintf("Promoted mechanical recipe: %s", action)
+	}
+	plan.Workspace = workspaceFromAction(action)
+	plan.Verify = VerifyPlan{
+		Kind:     VerifyKindRecipePostcondition,
+		StepName: action,
+	}
+	if len(params) > 0 {
+		plan.Params = make(map[string]string, len(params))
+		for k, v := range params {
+			plan.Params[k] = v
+		}
+	}
+	return plan
+}
+
+// workspaceFromAction returns the WorkspaceRequest an action requires,
+// mirroring the dispatch shape the un-promoted mechanical or worker plan
+// used. Keep this in sync with actionToRepairMode in decide.go — any
+// action that promotes through ToRepairPlan must have a workspace mapping
+// here or it will fail to dispatch when executed.
+func workspaceFromAction(action string) WorkspaceRequest {
+	switch action {
+	case "rebase-onto-base", "cherry-pick", "rebuild":
+		// Mechanical actions that mutate the feature branch run on a fresh
+		// owned worktree off that branch — matches the un-promoted path.
+		return WorkspaceRequest{Kind: runtime.WorkspaceKindOwnedWorktree}
+	case "reset-to-step", "reset_to_step", "reset-hard", "reset_hard":
+		// Record-only / graph-level mechanicals need a repo handle only.
+		return WorkspaceRequest{Kind: runtime.WorkspaceKindRepo}
+	case "resolve-conflicts", "resummon", "reset", "triage", "targeted-fix":
+		// Worker actions run inside the target bead's paused staging
+		// worktree so they can advance the in-progress operation.
+		return WorkspaceRequest{Kind: runtime.WorkspaceKindBorrowedWorktree}
+	default:
+		return WorkspaceRequest{}
+	}
 }
