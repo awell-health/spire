@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -27,21 +28,31 @@ import (
 //   recovery:guidance=<text>                — optional human guidance text
 
 // RetryRequest represents a recovery agent's request for a wizard to retry
-// execution from a specific step.
+// execution from a specific step. The optional VerifyPlan selects between
+// the legacy rerun-step protocol (when nil or Kind=rerun-step) and the
+// narrow-check / recipe-postcondition verification variants added in
+// spi-h32xj chunk 5. Legacy callers that set only FromStep remain supported
+// via the nil-VerifyPlan default branch in the wizard.
 type RetryRequest struct {
-	RecoveryBeadID string // ID of the recovery bead making the request
-	TargetBeadID   string // ID of the bead to retry
-	FromStep       string // which step to retry from
-	AttemptNumber  int    // current attempt number
-	Guidance       string // optional human guidance text
+	RecoveryBeadID string              // ID of the recovery bead making the request
+	TargetBeadID   string              // ID of the bead to retry
+	FromStep       string              // which step to retry from (legacy; also used as StepName for rerun-step fallback)
+	AttemptNumber  int                 // current attempt number
+	Guidance       string              // optional human guidance text
+	VerifyPlan     *recovery.VerifyPlan // optional — drives VerifyKind dispatch on the wizard
 }
 
-// RetryResult represents the outcome of a wizard retry attempt.
+// RetryResult represents the outcome of a wizard retry attempt. Verdict
+// carries the VerifyKind-aware verdict populated by the wizard's
+// VerifyPlan dispatch (pass/fail/timeout); Success is retained for the
+// legacy rerun-step branch and mirrors Verdict==pass for callers that
+// only consume the older field.
 type RetryResult struct {
-	Success     bool   `json:"success"`      // whether the retry succeeded
-	FailedStep  string `json:"failed_step"`  // step that failed (empty if Success)
-	Error       string `json:"error"`        // error message (empty if Success)
-	StepReached string `json:"step_reached"` // furthest step reached during retry
+	Success     bool                   `json:"success"`            // whether the retry succeeded (mirrors Verdict==pass)
+	FailedStep  string                 `json:"failed_step"`        // step that failed (empty if Success)
+	Error       string                 `json:"error"`              // error message (empty if Success)
+	StepReached string                 `json:"step_reached"`       // furthest step reached during retry
+	Verdict     recovery.VerifyVerdict `json:"verdict,omitempty"`  // pass/fail/timeout — populated by VerifyPlan dispatch
 }
 
 // Label prefix constants for recovery handoff.
@@ -52,15 +63,20 @@ const (
 	recoveryLabelStatus       = "recovery:status="
 	recoveryLabelResult       = "recovery:result="
 	recoveryLabelGuidance     = "recovery:guidance="
+	recoveryLabelVerifyPlan   = "recovery:verify-plan="
 	recoveryLabelPrefix       = "recovery:"
 )
 
 // SetRetryRequest sets recovery labels on the target bead to request a retry.
 // Any existing recovery request labels are cleared first to avoid stale values.
+// When req.VerifyPlan is non-nil, its JSON encoding is written to a
+// recovery:verify-plan label so the wizard can dispatch on VerifyKind.
+// Nil VerifyPlan keeps wire format identical to pre-chunk-5 callers.
 func SetRetryRequest(targetBeadID string, req RetryRequest) error {
 	// Clear any existing request labels before setting new ones.
 	if err := clearRecoveryLabels(targetBeadID, recoveryLabelRetryFrom, recoveryLabelAttempt,
-		recoveryLabelRecoveryBead, recoveryLabelStatus, recoveryLabelGuidance); err != nil {
+		recoveryLabelRecoveryBead, recoveryLabelStatus, recoveryLabelGuidance,
+		recoveryLabelVerifyPlan); err != nil {
 		return fmt.Errorf("clear existing retry request: %w", err)
 	}
 
@@ -73,6 +89,13 @@ func SetRetryRequest(targetBeadID string, req RetryRequest) error {
 	if req.Guidance != "" {
 		labels = append(labels, recoveryLabelGuidance+req.Guidance)
 	}
+	if req.VerifyPlan != nil {
+		planJSON, err := json.Marshal(req.VerifyPlan)
+		if err != nil {
+			return fmt.Errorf("marshal verify plan: %w", err)
+		}
+		labels = append(labels, recoveryLabelVerifyPlan+string(planJSON))
+	}
 
 	for _, l := range labels {
 		if err := store.AddLabel(targetBeadID, l); err != nil {
@@ -83,7 +106,10 @@ func SetRetryRequest(targetBeadID string, req RetryRequest) error {
 }
 
 // GetRetryRequest reads a retry request from the target bead's labels.
-// Returns (nil, false, nil) if no request is present.
+// Returns (nil, false, nil) if no request is present. When a
+// recovery:verify-plan label is present, its JSON is decoded into
+// req.VerifyPlan; absence keeps the field nil and the wizard falls
+// back to legacy FromStep-only semantics.
 func GetRetryRequest(targetBeadID string) (*RetryRequest, bool, error) {
 	b, err := store.GetBead(targetBeadID)
 	if err != nil {
@@ -104,6 +130,13 @@ func GetRetryRequest(targetBeadID string) (*RetryRequest, bool, error) {
 		FromStep:       fromStep,
 		AttemptNumber:  attempt,
 		Guidance:       store.HasLabel(b, recoveryLabelGuidance),
+	}
+	if planJSON := store.HasLabel(b, recoveryLabelVerifyPlan); planJSON != "" {
+		var plan recovery.VerifyPlan
+		if err := json.Unmarshal([]byte(planJSON), &plan); err != nil {
+			return nil, false, fmt.Errorf("unmarshal verify plan: %w", err)
+		}
+		req.VerifyPlan = &plan
 	}
 	return req, true, nil
 }

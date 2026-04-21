@@ -1528,15 +1528,21 @@ func (e *Executor) resolveRepairWorkspace(sourceBeadID string, plan recovery.Rep
 	}
 }
 
-// handleVerify implements the cooperative retry loop between the recovery
-// executor and the target bead's wizard.
+// handleVerify drives the cleric's verify step. It loads the RepairPlan
+// from decide.outputs.plan, hands the embedded VerifyPlan off to the target
+// bead's wizard via the cooperative retry protocol, and translates the
+// wizard's VerifyVerdict into the step outputs consumed by the graph
+// interpreter.
 //
-// On execute success:
-//  1. Set a RetryRequest on the target bead via SetRetryRequest
-//  2. Poll GetRetryResult every 30 seconds
-//  3. On success: clear labels, mark attempt success, proceed to learn
-//  4. On failure: clear result, mark attempt failure, loop back to decide
-//  5. On timeout (10 min): treat as failure, loop back to decide
+// VerifyKind dispatch (design spi-h32xj §5) lives on the wizard side — this
+// function just carries the plan through runVerifyPlan. Legacy decide
+// outputs without a typed plan fall back to an implicit Kind=rerun-step
+// using the mapped wizard phase, preserving pre-chunk-5 behavior.
+//
+// Emits the legacy outputs (status/loop_to/step_reached/failed_step/error)
+// side-by-side with the chunk-5 fields (verdict/decision/verify_kind) so
+// downstream steps that haven't migrated keep working through the
+// coexistence window.
 //
 // On execute failure: skip retry request, output loop_to=decide directly.
 func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
@@ -1594,111 +1600,65 @@ func handleVerify(e *Executor, stepName string, step StepConfig, state *GraphSta
 		e.log("recovery: verify: mapped step %q → wizard phase %q", failedStep, mappedStep)
 	}
 
-	// Read human guidance from decide step if available.
+	// Read human guidance and the typed RepairPlan from decide outputs.
+	// A missing or unparseable plan is not fatal — the rerun-step path is
+	// derived from mappedStep so legacy decide outputs continue to work.
 	guidance := ""
+	var plan recovery.RepairPlan
 	if state != nil {
 		if ds, ok := state.Steps["decide"]; ok {
 			guidance = ds.Outputs["reasoning"]
-		}
-	}
-
-	// Set retry request on the target bead using the mapped wizard phase.
-	retryReq := RetryRequest{
-		RecoveryBeadID: e.beadID,
-		TargetBeadID:   sourceBeadID,
-		FromStep:       mappedStep,
-		AttemptNumber:  attemptNumber,
-		Guidance:       guidance,
-	}
-
-	if err := SetRetryRequest(sourceBeadID, retryReq); err != nil {
-		e.log("recovery: verify: failed to set retry request on %s: %v", sourceBeadID, err)
-		return ActionResult{
-			Outputs: map[string]string{
-				"status":  "failed",
-				"loop_to": "decide",
-				"reason":  fmt.Sprintf("set retry request failed: %v", err),
-			},
-			Error: fmt.Errorf("set retry request: %w", err),
-		}
-	}
-
-	e.log("recovery: verify: retry request set on %s (from_step=%s, attempt=%d)", sourceBeadID, mappedStep, attemptNumber)
-
-	// Polling loop: check for retry result every interval, up to timeout.
-	// Uses context + ticker so the loop is cancellable if the executor shuts down.
-	pollInterval := time.Duration(DefaultVerifyPollInterval) * time.Second
-	timeout := time.Duration(DefaultVerifyTimeout) * time.Second
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			// Timeout: clean up and loop back to decide.
-			_ = ClearRetryRequest(sourceBeadID)
-			e.log("recovery: verify: polling timed out after %s", timeout)
-			return ActionResult{Outputs: map[string]string{
-				"status":  "failed",
-				"loop_to": "decide",
-				"reason":  fmt.Sprintf("verify polling timed out after %s", timeout),
-			}}
-		case <-ticker.C:
-			// Poll for result.
-		}
-
-		result, found, err := GetRetryResult(sourceBeadID)
-		if err != nil {
-			e.log("recovery: verify: poll error: %v", err)
-			continue
-		}
-		if !found {
-			continue // Still waiting
-		}
-
-		// Result received — process it.
-		if result.Success {
-			// Success: clean up labels and proceed to learn.
-			_ = ClearRetryRequest(sourceBeadID)
-			_ = ClearRetryResult(sourceBeadID)
-			e.log("recovery: verify: retry succeeded (step_reached=%s)", result.StepReached)
-			return ActionResult{Outputs: map[string]string{
-				"status":       "success",
-				"step_reached": result.StepReached,
-			}}
-		}
-
-		// Failure: clean up result, loop back to decide with fresh context.
-		_ = ClearRetryResult(sourceBeadID)
-		e.log("recovery: verify: retry failed (failed_step=%s, error=%s)", result.FailedStep, result.Error)
-
-		// Re-build recovery context for the next decide iteration.
-		repoPath := e.effectiveRepoPath()
-		var verifyDB *sql.DB
-		if e.deps != nil && e.deps.DoltDB != nil {
-			verifyDB = e.deps.DoltDB()
-		}
-		freshCtx, freshErr := BuildRecoveryContext(verifyDB, repoPath, e.beadID)
-		if freshErr == nil {
-			if freshJSON, jsonErr := json.Marshal(freshCtx); jsonErr == nil {
-				if state.Vars == nil {
-					state.Vars = make(map[string]string)
+			if pjson := ds.Outputs["plan"]; pjson != "" {
+				if err := json.Unmarshal([]byte(pjson), &plan); err != nil {
+					e.log("recovery: verify: failed to parse decide plan (falling back to implicit rerun-step): %v", err)
+					plan = recovery.RepairPlan{}
 				}
-				state.Vars["full_recovery_context"] = string(freshJSON)
 			}
 		}
+	}
 
-		return ActionResult{Outputs: map[string]string{
-			"status":      "failed",
-			"loop_to":     "decide",
-			"failed_step": result.FailedStep,
-			"error":       result.Error,
-			"reason":      "retry failed",
-		}}
+	verdict, result, err := runVerifyPlan(e, plan, sourceBeadID, mappedStep, attemptNumber, guidance, state)
+
+	verifyKind := plan.Verify.Kind
+	if verifyKind == "" {
+		verifyKind = recovery.VerifyKindRerunStep
+	}
+
+	outputs := map[string]string{
+		"verdict":     string(verdict),
+		"decision":    string(verdictToDecision(verdict)),
+		"verify_kind": string(verifyKind),
+	}
+
+	if err != nil {
+		outputs["status"] = "failed"
+		outputs["loop_to"] = "decide"
+		outputs["reason"] = fmt.Sprintf("set retry request failed: %v", err)
+		return ActionResult{Outputs: outputs, Error: err}
+	}
+
+	switch verdict {
+	case recovery.VerifyVerdictPass:
+		outputs["status"] = "success"
+		if result != nil {
+			outputs["step_reached"] = result.StepReached
+		}
+		return ActionResult{Outputs: outputs}
+	case recovery.VerifyVerdictTimeout:
+		outputs["status"] = "failed"
+		outputs["loop_to"] = "decide"
+		outputs["reason"] = fmt.Sprintf("verify polling timed out after %s",
+			time.Duration(DefaultVerifyTimeout)*time.Second)
+		return ActionResult{Outputs: outputs}
+	default:
+		outputs["status"] = "failed"
+		outputs["loop_to"] = "decide"
+		outputs["reason"] = "retry failed"
+		if result != nil {
+			outputs["failed_step"] = result.FailedStep
+			outputs["error"] = result.Error
+		}
+		return ActionResult{Outputs: outputs}
 	}
 }
 

@@ -377,6 +377,17 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		return retryErr
 	}
 
+	// VerifyPlan dispatch (design spi-h32xj §5): narrow-check and
+	// recipe-postcondition run inline in the wizard's worktree and bypass
+	// the normal phase loop. rerun-step falls through to the standard
+	// skip-to-target-step handling below.
+	if retry.runVerifyPlanIfNonStep(worktreeDir) {
+		log("verify plan executed inline — exiting cleanly")
+		elapsed := time.Since(startedAt)
+		WizardWriteResult(wizardName, beadID, "retry_complete", branchName, "", elapsed, ClaudeMetrics{}, deps, log)
+		return nil
+	}
+
 	// 8-9. Phase execution
 	var accMetrics ClaudeMetrics
 	// reviewFixSubprocessErr captures a non-zero exit from the review-fix
