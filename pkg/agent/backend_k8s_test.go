@@ -122,7 +122,7 @@ func TestK8sBackend_Spawn_CreatesCorrectPod(t *testing.T) {
 		"OTEL_LOGS_EXPORTER":                "otlp",
 		"OTEL_EXPORTER_OTLP_PROTOCOL":       "grpc",
 		"BEADS_DOLT_SERVER_HOST":            "spire-dolt.spire-test.svc",
-		"BEADS_DOLT_SERVER_PORT":            "3307",
+		"BEADS_DOLT_SERVER_PORT":            "3306",
 		"SPIRE_CUSTOM_PROMPT":               "do the thing",
 	}
 	for k, want := range wantEnv {
@@ -321,7 +321,11 @@ func TestK8sBackend_Spawn_ResourceTiers(t *testing.T) {
 	}{
 		{RoleApprentice, "4Gi"},
 		{RoleSage, "1Gi"},
-		{RoleWizard, "512Mi"},
+		// RoleWizard has its own tier (spi-3ca64): wizards orchestrate
+		// apprentices and need more headroom than the old shared default.
+		// Defaults live in resources.go (wizardDefaultMemoryLimit) and
+		// can be overridden via SPIRE_WIZARD_MEMORY_LIMIT.
+		{RoleWizard, "2Gi"},
 		{RoleExecutor, "512Mi"},
 	}
 

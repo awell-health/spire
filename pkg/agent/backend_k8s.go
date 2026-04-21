@@ -275,6 +275,12 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, podName string, args []stri
 					"--prefix=" + b.prefix,
 					"--dolthub-remote=" + b.dolthubRemote,
 				},
+				// Share the main container's env so BEADS_DOLT_SERVER_HOST /
+				// BEADS_DOLT_SERVER_PORT (and DOLT_HOST/PORT if set) point at
+				// the cluster dolt service. Without this the init container
+				// falls through to the laptop defaults (127.0.0.1:3307) and
+				// attach-cluster times out waiting on a DB that isn't there.
+				Env:          env,
 				VolumeMounts: []corev1.VolumeMount{dataMount},
 			}},
 			Containers: []corev1.Container{
@@ -379,7 +385,11 @@ func (b *K8sBackend) buildEnvVars(cfg SpawnConfig) []corev1.EnvVar {
 		{Name: "OTEL_LOGS_EXPORTER", Value: "otlp"},
 		{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "grpc"},
 		{Name: "BEADS_DOLT_SERVER_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", b.namespace)},
-		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3307"},
+		// Cluster dolt service listens on 3306 (the chart default,
+		// `.Values.dolt.port` in `helm/spire/values.yaml`); 3307 is the
+		// laptop local port only. Hardcoded here because the backend
+		// process doesn't have access to chart values at runtime.
+		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3306"},
 	}
 
 	if cfg.Tower != "" {
