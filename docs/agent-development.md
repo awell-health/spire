@@ -278,23 +278,32 @@ The `spire focus` command assembles most of this automatically.
 
 ## Container agents (k8s)
 
-In Kubernetes, agents run as pods with two containers:
-- **wizard container**: runs `agent-entrypoint.sh`
-- **familiar container**: runs `spire-sidecar` for messaging and health checks
+In Kubernetes, a wizard runs as a **single-container pod** with one
+init container. The main container's `command` is
+`["spire", "execute", "<bead-id>", "--name", "<agent-name>"]` —
+no shell entrypoint wrapper.
 
-### Communication protocol
+The init container (`tower-attach`) primes `/data` from the cluster
+dolt server before the main container starts. Two emptyDir volumes
+are mounted: `/data` (beads workspace + spire config) and
+`/workspace` (git clone target for apprentice bundle production).
 
-Containers communicate via the shared `/comms` emptyDir volume:
+See [k8s-operator-reference.md — Canonical wizard pod contract](k8s-operator-reference.md#canonical-wizard-pod-contract)
+for the authoritative pod spec.
 
-| File | Writer | Reader | Purpose |
-|------|--------|--------|---------|
-| `inbox.json` | familiar | wizard | Messages from other agents |
-| `control` | familiar | wizard | STOP, STEER, PAUSE, RESUME |
-| `result.json` | wizard | familiar | Run outcome (triggers shutdown) |
-| `wizard-alive` | wizard | familiar | Heartbeat (liveness) |
-| `heartbeat` | familiar | operator | Familiar liveness |
+### Run outcome
 
-The wizard writes `result.json` when done. The familiar detects this and exits, which triggers the operator to reap the pod.
+`restartPolicy: Never` — the pod exits when `spire execute` exits. The
+operator/steward reads the pod phase (`Succeeded` or `Failed`) and
+reaps the pod. There is no sidecar, no filesystem IPC volume, and no
+`result.json` file; outcome flows through the bead's status and through
+pod logs.
+
+> **Deprecated:** earlier versions of this guide described a
+> `agent-entrypoint.sh` worker + familiar sidecar + `/comms` IPC
+> volume. That model has been removed on main (epic `spi-kjh9e`,
+> design `spi-lm26c`) because it diverged from the code path in
+> `pkg/agent/backend_k8s.go`.
 
 ### Custom agent image
 
@@ -350,7 +359,9 @@ The operator monitors WizardGuild `status.phase`:
 | `Stale` | Exceeded `spire.yaml`'s `agent.stale` threshold |
 | `Offline` | Heartbeat timeout |
 
-The familiar writes `heartbeat` every 30 seconds. The operator marks agents `Offline` if the heartbeat is too old.
+For external agents, heartbeats are reported via `spire` CLI calls.
+Managed wizard pods do not have an in-pod heartbeat writer; liveness is
+inferred from the pod phase (`Running` / `Succeeded` / `Failed`).
 
 ---
 

@@ -79,13 +79,13 @@ For **external** agents:
 - If never seen, set Offline with "Never seen" message
 
 For **managed** agents:
-1. List pods with labels `spire.awell.io/agent={name}` and `spire.awell.io/managed=true`
+1. List pods with labels `spire.agent=true` and `spire.agent.name={name}`
 2. **Reap**: for each pod in `Succeeded` or `Failed` phase:
    - Remove the pod's bead ID from `agent.status.currentWork`
    - Delete the pod
 3. **Create**: for each bead ID in `currentWork` with no existing pod:
-   - Build pod spec with worker + familiar containers
-   - Inject env vars, secrets, volume mounts
+   - Build the canonical wizard pod spec (see below)
+   - Inject env vars, secrets, and volume mounts
    - Create the pod
 4. **Clean**: for each pod whose bead ID is NOT in `currentWork`:
    - Delete the pod (orphan cleanup)
@@ -94,102 +94,228 @@ For **managed** agents:
    - Any pod pending → `Provisioning`
    - All pods running → `Working`
 
-## Pod specification
+## Canonical wizard pod contract
 
-The operator generates this pod spec for each workload assignment:
+The wizard pod is the **canonical per-bead runtime** in Kubernetes. It is a
+**single-container pod** (one main container, one init container) with
+`restartPolicy: Never` — the pod is one-shot: it boots, runs the wizard's
+formula lifecycle for a single bead, and exits. The operator (or steward's
+k8s backend) reaps it on exit.
+
+There is exactly one pod model on `main`. The prior richer model
+(worker entrypoint script + familiar sidecar + `/comms` IPC volume) has
+been removed — see [Deprecated: agent-entrypoint.sh / Model A](#deprecated-agent-entrypointsh--model-a) below.
+
+### Pod spec
 
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: {agent}-wizard-{bead}   # max 63 chars
+  name: {agent-name}              # sanitized; timestamp-suffixed for uniqueness
   namespace: spire
   labels:
-    spire.awell.io/agent: {agent-name}
-    spire.awell.io/guild: {agent-name}
-    spire.awell.io/bead: {bead-id}
-    spire.awell.io/managed: "true"
-    spire.awell.io/role: wizard
-    app.kubernetes.io/name: spire-wizard
+    spire.agent: "true"           # selector for network policies / listing
+    spire.agent.name: {agent-name}
+    spire.bead: {bead-id}
+    spire.role: wizard            # wizard | executor | apprentice | sage
+    spire.tower: {tower-name}
 spec:
-  restartPolicy: Never
+  restartPolicy: Never            # one-shot: pod exits, operator reaps
+  priorityClassName: spire-agent-default
+
   volumes:
-    - name: comms
+    - name: data                  # beads workspace + spire config
       emptyDir: {}
-    - name: workspace
+    - name: workspace             # git clone target for apprentice bundle production
       emptyDir: {}
-    - name: data
-      emptyDir: {}
+
+  initContainers:
+    - name: tower-attach
+      image: {agent image}
+      command:
+        - spire
+        - tower
+        - attach-cluster
+        - --data-dir=/data/{db}
+        - --database={db}
+        - --prefix={prefix}
+        - --dolthub-remote={remote}
+      volumeMounts:
+        - name: data
+          mountPath: /data
+
   containers:
-    - name: worker
-      image: {agent.spec.image or default}
-      command: ["/usr/local/bin/agent-entrypoint.sh"]
-      workingDir: /workspace
+    - name: agent
+      image: {agent image}
+      command:
+        - spire
+        - execute
+        - {bead-id}
+        - --name
+        - {agent-name}
       env:
+        # Tower / dolt wiring
+        - name: DOLT_DATA_DIR
+          value: /data
+        - name: SPIRE_CONFIG_DIR
+          value: /data/spire-config
+        - name: BEADS_DOLT_SERVER_HOST
+          value: spire-dolt.{namespace}.svc
+        - name: BEADS_DOLT_SERVER_PORT
+          value: "3307"
+
+        # Identity
         - name: SPIRE_AGENT_NAME
-          value: {agent.name}
+          value: {agent-name}
         - name: SPIRE_BEAD_ID
           value: {bead-id}
-        - name: SPIRE_REPO_URL
-          value: {agent.spec.repo}
-        - name: SPIRE_REPO_BRANCH
-          value: {agent.spec.repoBranch or "main"}
-        - name: SPIRE_COMMS_DIR
-          value: /comms
-        - name: SPIRE_WORKSPACE_DIR
-          value: /workspace
-        - name: SPIRE_STATE_DIR
-          value: /data
-        - name: DOLTHUB_REMOTE
-          value: {config.spec.dolthub.remote}
-        - name: DOLT_REMOTE_USER
-          valueFrom:
-            secretKeyRef: {credentialsSecret}/DOLT_REMOTE_USER
-        - name: DOLT_REMOTE_PASSWORD
-          valueFrom:
-            secretKeyRef: {credentialsSecret}/DOLT_REMOTE_PASSWORD
+        - name: SPIRE_TOWER
+          value: {tower-name}
+        - name: SPIRE_ROLE
+          value: wizard
+
+        # Observability (OTel)
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://spire-steward.{namespace}.svc:4317
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: grpc
+        - name: OTEL_TRACES_EXPORTER
+          value: otlp
+        - name: OTEL_LOGS_EXPORTER
+          value: otlp
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: bead.id={bead-id},agent.name={agent-name},tower={tower-name}
+
+        # Secrets
         - name: ANTHROPIC_API_KEY
           valueFrom:
-            secretKeyRef: {resolved token secret/key}
-        - name: GITHUB_TOKEN       # optional
+            secretKeyRef:
+              name: {credentials secret}
+              key: ANTHROPIC_API_KEY_DEFAULT
+        - name: GITHUB_TOKEN        # optional
           valueFrom:
-            secretKeyRef: {credentialsSecret}/GITHUB_TOKEN
+            secretKeyRef:
+              name: {credentials secret}
+              key: GITHUB_TOKEN
+              optional: true
+
       volumeMounts:
-        - name: comms
-          mountPath: /comms
+        - name: data
+          mountPath: /data
         - name: workspace
           mountPath: /workspace
-        - name: data
-          mountPath: /data
-      resources: {from agent.spec.resources}
 
-    - name: familiar
-      image: {same as worker}
-      command:
-        - spire-sidecar
-        - --comms-dir=/comms
-        - --poll-interval=10s
-        - --port=8080
-        - --agent-name={agent.name}
-      workingDir: /data
-      volumeMounts:
-        - name: comms
-          mountPath: /comms
-        - name: data
-          mountPath: /data
-      readinessProbe:
-        httpGet:
-          path: /readyz
-          port: 8080
-        initialDelaySeconds: 5
-        periodSeconds: 10
-      livenessProbe:
-        httpGet:
-          path: /healthz
-          port: 8080
-        initialDelaySeconds: 10
-        periodSeconds: 30
+      resources:
+        requests:
+          memory: 1Gi              # SPIRE_WIZARD_MEMORY_REQUEST
+          cpu: 250m                # SPIRE_WIZARD_CPU_REQUEST
+        limits:
+          memory: 2Gi              # SPIRE_WIZARD_MEMORY_LIMIT
+          cpu: 1000m               # SPIRE_WIZARD_CPU_LIMIT
 ```
+
+### Volumes
+
+| Name        | Type     | Mount path   | Purpose                                                      |
+|-------------|----------|--------------|--------------------------------------------------------------|
+| `data`      | emptyDir | `/data`      | Beads workspace (dolt data dir) and spire config (`/data/spire-config`) |
+| `workspace` | emptyDir | `/workspace` | Git clone target used when the wizard produces apprentice bundles |
+
+No shared `/comms` volume exists. Wizard↔sidecar filesystem IPC is gone;
+the wizard process is the whole runtime.
+
+### Init container: `tower-attach`
+
+A single init container named `tower-attach` runs
+`spire tower attach-cluster` with:
+
+- `--data-dir=/data/<db>` — dolt data directory under the shared `/data` volume
+- `--database=<db>` — dolt database name
+- `--prefix=<prefix>` — bead prefix for this tower
+- `--dolthub-remote=<remote>` — DoltHub remote for sync
+
+This replaces both the old operator-side `beads-seed` ConfigMap and the
+`agent-entrypoint.sh` bootstrap flow. On exit, `/data` is primed with
+beads state so the main container can open dolt immediately.
+
+### Main container env
+
+Required on the main (`agent`) container:
+
+| Variable                   | Value / source                                               |
+|----------------------------|--------------------------------------------------------------|
+| `DOLT_DATA_DIR`            | `/data`                                                      |
+| `SPIRE_CONFIG_DIR`         | `/data/spire-config`                                         |
+| `BEADS_DOLT_SERVER_HOST`   | In-cluster dolt service (e.g. `spire-dolt.<ns>.svc`)         |
+| `BEADS_DOLT_SERVER_PORT`   | `3307`                                                       |
+| `SPIRE_AGENT_NAME`         | Agent identity                                               |
+| `SPIRE_BEAD_ID`            | Bead the wizard will execute                                 |
+| `SPIRE_TOWER`              | Tower name                                                   |
+| `SPIRE_ROLE`               | `wizard`                                                     |
+| `OTEL_*`                   | OTLP exporter endpoint, protocol, resource attrs (see spec)  |
+| `ANTHROPIC_API_KEY`        | From `Secret` (key `ANTHROPIC_API_KEY_DEFAULT`)              |
+| `GITHUB_TOKEN`             | From `Secret` (optional)                                     |
+
+### Resource tier
+
+Wizard pods have their own resource tier (distinct from apprentice and
+sage tiers). Defaults:
+
+| Field            | Default | Override env                 |
+|------------------|---------|------------------------------|
+| Memory request   | `1Gi`   | `SPIRE_WIZARD_MEMORY_REQUEST`|
+| Memory limit     | `2Gi`   | `SPIRE_WIZARD_MEMORY_LIMIT`  |
+| CPU request      | `250m`  | `SPIRE_WIZARD_CPU_REQUEST`   |
+| CPU limit        | `1000m` | `SPIRE_WIZARD_CPU_LIMIT`     |
+
+These defaults intentionally give the wizard enough headroom to plan and
+dispatch apprentices without OOM-killing under parallel fan-out; they are
+higher than the generic executor/sage tier.
+
+### One-shot semantics
+
+- `restartPolicy: Never` — k8s never restarts the pod. If the wizard
+  crashes mid-formula, the steward observes the `Failed` phase, records
+  the failure, and (per formula policy) may re-dispatch a fresh pod
+  against the same bead.
+- The pod succeeds (`Succeeded`) when `spire execute` exits 0, and fails
+  (`Failed`) otherwise. Reap is driven by pod phase, not by any
+  sidecar signal.
+- There is no sidecar, no health probe, no long-running ancillary
+  process. The pod's lifetime is exactly the lifetime of the wizard
+  process.
+
+## Deprecated: agent-entrypoint.sh / Model A
+
+The **richer entrypoint model** — "Model A" — previously documented for
+wizard pods has been **removed from main**. That model composed:
+
+- A main container that ran `agent-entrypoint.sh` (a multi-phase bash
+  script that cloned the repo, seeded `.beads/`, claimed the bead,
+  invoked Claude, validated, and pushed).
+- A **familiar sidecar** (`spire-sidecar`) at `:8080` providing
+  `/healthz`, `/readyz`, `/status`, inbox polling, and control-channel
+  command handling.
+- A shared **`/comms`** emptyDir used as a filesystem IPC channel
+  between the worker and the familiar (`inbox.json`, `control`,
+  `result.json`, `heartbeat`, `steer`, etc.).
+- A `beads-seed` ConfigMap that pre-staged `.beads/` layout for the
+  worker to copy in.
+
+**Why it was removed.** Model A diverged from the code path actually
+executed by `pkg/agent/backend_k8s.go`. The backend spawns a single
+container running `spire execute <bead> --name <name>` — no shell
+entrypoint, no familiar, no `/comms`, no seed ConfigMap. Maintaining
+two contracts (one documented, one implemented) caused operator,
+helm, and test drift.
+
+Starting with epic **spi-kjh9e** (design **spi-lm26c**), `main`
+promises exactly one contract: the canonical wizard pod documented
+above. References to `agent-entrypoint.sh`, the familiar sidecar, the
+`/comms` volume, and Model A should be read as historical; they are
+preserved only in dated design/plan archives under `docs/design/`,
+`docs/plans/`, `docs/reviews/`, and `docs/superpowers/specs/`.
 
 ## CRD schemas
 
@@ -285,43 +411,14 @@ status:
   message:       string
 ```
 
-## Worker entrypoint reference
+## Wizard process
 
-`agent-entrypoint.sh` environment variables:
+The wizard pod's main container runs `spire execute <bead-id> --name <agent-name>`.
+There is no shell entrypoint wrapper. The Go process drives the formula
+lifecycle end-to-end: claim the bead, load the formula, execute each
+step (planning, apprentice dispatch, review, merge), and exit.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `SPIRE_AGENT_NAME` | Yes | — | Agent identity |
-| `SPIRE_BEAD_ID` | No | from inbox | Bead to work on |
-| `SPIRE_REPO_URL` | Yes* | — | Repo to clone (*unless workspace pre-populated) |
-| `SPIRE_REPO_BRANCH` | No | `main` | Branch for clone and base |
-| `SPIRE_COMMS_DIR` | No | `/comms` | Shared comms directory |
-| `SPIRE_WORKSPACE_DIR` | No | `/workspace` | Git workspace |
-| `SPIRE_STATE_DIR` | No | `/data` | Beads state directory |
-| `SPIRE_AGENT_PREFIX` | No | `wrk` | Beads prefix for agent's state repo |
-| `SPIRE_GIT_EMAIL` | No | `{name}@spire.local` | Git author email |
-| `SPIRE_AGENT_CMD` | No | `claude --print` | Custom agent command |
-| `DOLTHUB_REMOTE` | No | — | DoltHub remote for state sync |
-| `ANTHROPIC_API_KEY` | Yes | — | Claude API key |
-| `GITHUB_TOKEN` | No | — | For private repos and `gh` CLI |
-
-### result.json schema
-
-Written by the entrypoint on every exit:
-
-```json
-{
-  "agentName": "ci-worker",
-  "beadId": "spi-a3f8",
-  "result": "success",          // success|test_failure|timeout|stopped|error
-  "summary": "validated and pushed branch feat/spi-a3f8",
-  "branch": "feat/spi-a3f8",
-  "commit": "abc1234...",
-  "startedAt": "2026-03-19T19:00:00Z",
-  "completedAt": "2026-03-19T19:25:00Z",
-  "model": "claude-sonnet-4-6",
-  "maxTurns": 50,
-  "timeout": "30m",
-  "testsPassed": true
-}
-```
+Run outcome is reported through bead status (and, for the steward's own
+bookkeeping, through the pod's terminal `Succeeded` / `Failed` phase).
+There is no `/comms/result.json` file; a reviewer inspects the bead and
+the pod logs.

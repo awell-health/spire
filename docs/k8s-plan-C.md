@@ -79,9 +79,9 @@
          |  spawns via k8s API
          |
 +--------v-----------+--+--+--+--+
-| agent pods (0..N)  |  |  |  |  |   ephemeral, one per wizard
-| - wizard container |  |  |  |  |
-| - familiar sidecar |  |  |  |  |
+| wizard pods (0..N) |  |  |  |  |   ephemeral, one per bead
+| - single container |  |  |  |  |   (spire execute)
+| - init: tower-attach                 (no familiar sidecar)
 +----+---------------+--+--+--+--+
      |
      | MySQL (3306)           OTLP (4317)
@@ -143,12 +143,18 @@ type K8sBackendConfig struct {
 **Spawn flow:**
 
 1. Steward calls `backend.Spawn(SpawnConfig{...})`
-2. K8sBackend builds a Pod spec:
-   - Init container: seed `.beads/` from ConfigMap (or from Dolt directly via `bd init --stealth`)
-   - Main container: `spire execute <bead-id>` with env vars for Dolt DSN, tower name, OTel endpoint
-   - Sidecar: familiar container with `/comms` emptyDir shared volume
+2. K8sBackend builds the canonical wizard pod spec
+   (see [k8s-operator-reference.md](k8s-operator-reference.md#canonical-wizard-pod-contract)):
+   - Init container `tower-attach`: `spire tower attach-cluster
+     --data-dir=/data/<db> --database=<db> --prefix=<prefix>
+     --dolthub-remote=<remote>`
+   - Main container `agent`: `spire execute <bead-id> --name <agent-name>`
+     with env vars for dolt DSN, tower name, OTel endpoint, and role
+   - Volumes: emptyDir `/data` (beads workspace + spire config) and
+     emptyDir `/workspace` (git clone target)
    - Secrets: mounted from k8s Secrets (Anthropic key, GitHub token)
-   - Labels: `spire.awell.io/bead-id`, `spire.awell.io/agent-name`, `spire.awell.io/tower`
+   - Labels: `spire.bead`, `spire.agent.name`, `spire.tower`, `spire.role`
+   - **No familiar sidecar, no `/comms` volume, no `beads-seed` ConfigMap.**
 3. K8sBackend creates the Pod via client-go
 4. Returns a `K8sHandle` that wraps pod watch for Wait/Alive/Signal
 

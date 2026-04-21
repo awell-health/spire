@@ -164,14 +164,15 @@ for reassignment.
 Tracks agent heartbeats. For managed agents, creates one pod per assigned
 bead. Routes by workload type:
 
-| Bead type | Pod type      | Main container     |
-|-----------|---------------|--------------------|
-| task/*    | Wizard pod    | `agent-entrypoint.sh` (runs Claude Code) |
-| epic      | Wizard pod    | `agent-entrypoint.sh` (runs Claude Code) |
-| review    | Wizard pod    | `spire sage review --once`              |
+| Bead type | Pod type      | Main container                         |
+|-----------|---------------|----------------------------------------|
+| task/*    | Wizard pod    | `spire execute <bead> --name <name>`   |
+| epic      | Wizard pod    | `spire execute <bead> --name <name>`   |
+| review    | Sage pod      | `spire sage review --once`             |
 
 Reaps completed/failed pods and removes work from the agent's CurrentWork
-list.
+list. See [k8s-operator-reference.md](k8s-operator-reference.md#canonical-wizard-pod-contract)
+for the canonical wizard pod spec.
 
 **CRDs** (`operator/api/v1alpha1/types.go`):
 
@@ -191,8 +192,12 @@ Per-bead orchestrator. Drives the formula lifecycle for a single bead.
 spawned by `spire summon`. It dispatches apprentices and sages as needed
 for the bead's formula.
 
-**k8s**: Runs in a wizard pod (`agent-entrypoint.sh`). Clones the repo
-inside the container.
+**k8s**: Runs in a wizard pod as a single container invoking
+`spire execute <bead> --name <name>` (no shell entrypoint wrapper). A
+`tower-attach` init container primes `/data` from the cluster dolt
+server before the wizard starts. See
+[k8s-operator-reference.md](k8s-operator-reference.md#canonical-wizard-pod-contract)
+for the full pod contract.
 
 ```
 Lifecycle:
@@ -257,19 +262,18 @@ formula creation — it does not orchestrate epics or review code.
 > has been removed. Formula work now lives in `spire workshop`, while the
 > executor handles task, bug, and epic execution both locally and in k8s.
 
-#### Familiar (`cmd/spire-sidecar/`)
+#### Familiar (`cmd/spire-sidecar/`) — deprecated in wizard pods
 
-Per-agent companion (sidecar). Runs alongside wizard containers in
-every agent pod (k8s only). The directory name `cmd/spire-sidecar/`
-is an implementation detail; the user-facing name is "familiar."
+Historically the familiar ran alongside the wizard container in every
+agent pod, providing inbox polling, a control channel, heartbeats, and
+health endpoints over a shared `/comms` emptyDir. On `main` the wizard
+pod no longer includes a familiar sidecar: the pod is single-container
+(`spire execute ...`) and there is no `/comms` volume. The
+`cmd/spire-sidecar/` binary is retained only for historical / non-wizard
+uses; it is not deployed into wizard pods.
 
-**Loops:**
-- Inbox polling: `spire collect --json` on interval, writes to `/comms/inbox.json`
-- Control channel: watches `/comms/control` for STOP, STEER, PAUSE, RESUME commands
-- Wizard monitor: watches `/comms/result.json` and `/comms/wizard-alive` for liveness
-- Heartbeat: writes timestamp to `/comms/heartbeat` every 30s
-
-**Health endpoints:** `/healthz`, `/readyz`, `/status` (JSON snapshot including work context)
+See [k8s-operator-reference.md — Deprecated: agent-entrypoint.sh / Model A](k8s-operator-reference.md#deprecated-agent-entrypointsh--model-a)
+for the removal rationale.
 
 ### Formula System (`pkg/formula/`, `pkg/executor/`)
 
@@ -378,37 +382,72 @@ that sync failures don't block work assignment.
 
 ### Wizard Pod
 
+The wizard pod is the canonical per-bead runtime. It is a single-container
+pod with one init container and `restartPolicy: Never` (one-shot). See
+[k8s-operator-reference.md](k8s-operator-reference.md#canonical-wizard-pod-contract)
+for the authoritative spec.
+
 ```
-+--------------------------------------------------+
-| Pod: <agent>-wizard-<bead-id>                    |
-|                                                   |
-| +------------------+   +----------------------+  |
-| | init: seed-beads |   | ConfigMap: beads-seed|  |
-| | (alpine:3.20)    |<--| metadata.json        |  |
-| +------------------+   | routes.jsonl         |  |
-|         |               | config.yaml          |  |
-|         v               +----------------------+  |
-| +------------------+   +---------------------+   |
-| | wizard           |   | familiar            |   |
-| | agent-entrypoint |   | spire-sidecar       |   |
-| | .sh              |   | :8080               |   |
-| | workdir:/workspace|  | workdir:/data        |   |
-| +------------------+   +---------------------+   |
-|         |         |           |                   |
-|    /workspace  /comms      /comms   /data         |
-|    (emptyDir)  (emptyDir)  (shared) (emptyDir)    |
-+--------------------------------------------------+
++----------------------------------------------------------+
+| Pod: <agent-name>                                        |
+|   restartPolicy: Never                                   |
+|   labels: spire.agent, spire.agent.name, spire.bead,     |
+|           spire.role=wizard, spire.tower                 |
+|                                                          |
+| +------------------------------------------------------+ |
+| | init: tower-attach                                   | |
+| | spire tower attach-cluster                           | |
+| |   --data-dir=/data/<db> --database=<db>              | |
+| |   --prefix=<prefix> --dolthub-remote=<remote>        | |
+| | volumeMounts: /data                                  | |
+| +------------------------------------------------------+ |
+|                         |                                 |
+|                         v                                 |
+| +------------------------------------------------------+ |
+| | agent (main)                                         | |
+| | spire execute <bead-id> --name <agent-name>          | |
+| | env: DOLT_DATA_DIR, SPIRE_CONFIG_DIR,                | |
+| |      BEADS_DOLT_SERVER_{HOST,PORT},                  | |
+| |      SPIRE_AGENT_NAME, SPIRE_BEAD_ID,                | |
+| |      SPIRE_TOWER, SPIRE_ROLE=wizard,                 | |
+| |      OTEL_*, ANTHROPIC_API_KEY (Secret),             | |
+| |      GITHUB_TOKEN (Secret, optional)                 | |
+| | volumeMounts: /data, /workspace                      | |
+| | resources: 1Gi/250m req, 2Gi/1000m lim (overridable) | |
+| +------------------------------------------------------+ |
+|                                                          |
+|   /data       emptyDir  — beads workspace + spire config |
+|   /workspace  emptyDir  — git clone for apprentice bundles|
++----------------------------------------------------------+
 ```
 
 Volumes:
-- `/comms` (emptyDir) -- filesystem-based IPC between wizard and familiar
-- `/workspace` (emptyDir) -- git clone of the target repo
-- `/data` (emptyDir) -- beads state (`.beads/` seeded by initContainer)
-- `beads-seed` (ConfigMap) -- metadata.json, routes.jsonl, config.yaml
+- `/data` (emptyDir) — beads workspace (dolt data dir) and spire config
+  (`/data/spire-config`); primed by the `tower-attach` init container
+- `/workspace` (emptyDir) — git clone target for apprentice bundle production
 
-> **Current state:** Agent pods require the `beads-seed` ConfigMap to
-> initialize `.beads/` state. Target: `bd init --stealth` or a committed
-> `metadata.json` in the repo eliminates the ConfigMap seeding step.
+There is no `/comms` volume, no `beads-seed` ConfigMap, and no familiar
+sidecar. The init container does all bootstrap work that used to live
+in `agent-entrypoint.sh` and the `beads-seed` ConfigMap.
+
+#### Resource tier
+
+| Field            | Default | Override env                 |
+|------------------|---------|------------------------------|
+| Memory request   | `1Gi`   | `SPIRE_WIZARD_MEMORY_REQUEST`|
+| Memory limit     | `2Gi`   | `SPIRE_WIZARD_MEMORY_LIMIT`  |
+| CPU request      | `250m`  | `SPIRE_WIZARD_CPU_REQUEST`   |
+| CPU limit        | `1000m` | `SPIRE_WIZARD_CPU_LIMIT`     |
+
+Wizard pods are sized for planning and apprentice fan-out, so the
+defaults are higher than the generic executor/sage tier.
+
+#### One-shot semantics
+
+`restartPolicy: Never` — on exit, the steward/operator reads the pod
+phase (`Succeeded` / `Failed`), records the outcome, and reaps the pod.
+There is no in-pod sidecar reporting; the pod's lifetime equals the
+wizard process's lifetime.
 
 ### Wizard Pod (Epic)
 
@@ -435,21 +474,36 @@ for planning and review.
 
 ## Inter-Container Communication
 
-Containers within a pod communicate via the shared `/comms` emptyDir:
+Wizard pods are single-container; there is no in-pod IPC. The steward
+pod still uses a `/comms` emptyDir between its own containers (steward
+process and steward-sidecar) for LLM-powered message processing, but
+that volume does not exist in wizard pods. See the Steward Pod diagram
+above.
 
-| File              | Writer    | Reader    | Purpose                        |
-|-------------------|-----------|-----------|--------------------------------|
-| `inbox.json`      | familiar  | wizard    | Messages from other agents     |
-| `control`         | familiar  | wizard    | STOP, STEER:msg, PAUSE, RESUME|
-| `steer`           | familiar  | wizard    | Steering corrections (live)    |
-| `steer.log`       | wizard    | wizard    | Accumulated steering history   |
-| `stop`            | familiar  | wizard    | Shutdown signal                |
-| `result.json`     | wizard    | familiar  | Run outcome (triggers familiar shutdown) |
-| `wizard-alive`    | wizard    | familiar  | Heartbeat (liveness check)     |
-| `heartbeat`       | familiar  | operator  | Familiar liveness              |
-| `bead.json`       | wizard    | familiar  | Current work context           |
-| `prompt.txt`      | wizard   | wizard   | Assembled Claude prompt        |
-| `focus.txt`       | wizard   | wizard   | Spire focus output             |
+Wizard ↔ steward coordination flows through the dolt database and
+OTLP telemetry, not through files on a shared volume.
+
+## Deprecated: agent-entrypoint.sh / Model A
+
+Earlier revisions of this document described a richer wizard pod
+("Model A"): a main container that ran `agent-entrypoint.sh` (a bash
+script that cloned the repo, seeded `.beads/` from a ConfigMap, claimed
+the bead, invoked Claude, validated, and pushed) plus a familiar
+sidecar at `:8080` that polled inboxes, served `/healthz`/`/readyz`,
+and coordinated over a shared `/comms` emptyDir.
+
+That model is **removed from main** because it diverged from the code
+path actually executed by `pkg/agent/backend_k8s.go`, which spawns a
+single-container pod running `spire execute` directly. Only the
+canonical wizard pod documented above (and in
+[k8s-operator-reference.md](k8s-operator-reference.md#canonical-wizard-pod-contract))
+is promised on main.
+
+Tracked under epic **spi-kjh9e** with design **spi-lm26c**. Legacy
+references to `agent-entrypoint.sh`, the familiar sidecar at `:8080`,
+and `/comms` remain only in dated design/plan archives under
+`docs/design/`, `docs/plans/`, `docs/reviews/`, and
+`docs/superpowers/specs/`.
 
 ## Configuration
 
@@ -624,9 +678,10 @@ Contains `spire`, `spire-steward-sidecar`, `spire-operator`, `bd`, `dolt`,
 `kubectl`. Used for the steward pod and operator pod.
 
 **Agent image** (`Dockerfile.agent`):
-Contains `spire`, `spire-sidecar` (familiar), `bd`, `dolt`,
-`claude` (Claude Code CLI), `gh`, Go, Node.js, Python. Used for wizard
-pods (task, epic, and review workloads). Runs as non-root user `wizard`.
+Contains `spire`, `bd`, `dolt`, `claude` (Claude Code CLI), `gh`, Go,
+Node.js, Python. Used for wizard pods (task, epic, and review
+workloads). The main container entrypoint is `spire execute` directly;
+no shell wrapper and no in-pod sidecar. Runs as non-root user `wizard`.
 
 ## k8s Resources
 
