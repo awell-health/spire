@@ -292,11 +292,12 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 						continue
 					}
 				}
-				// Legacy fallback: assume the apprentice's feat branch is
-				// already present locally.
+				// Push-transport / legacy fallback: fetch the apprentice's
+				// feat branch from the remote (idempotent; cheap) then merge.
 				if cr.Branch == "" {
 					continue
 				}
+				stagingWt.FetchBranch("origin", cr.Branch)
 				if mergeErr := stagingWt.MergeBranch(cr.Branch, resolver); mergeErr != nil {
 					return allResults, fmt.Errorf("merge %s into staging: %w", cr.Branch, mergeErr)
 				}
@@ -383,8 +384,9 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 				}
 			}
 			if !merged {
-				// Legacy fallback: assume the apprentice's feat branch is
-				// already present locally.
+				// Push-transport / legacy fallback: fetch the apprentice's
+				// feat branch from the remote (idempotent) then merge.
+				stagingWt.FetchBranch("origin", featBranch)
 				if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
 					return allResults, fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 				}
@@ -454,10 +456,12 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 		}
 	}
 
-	// Legacy fallback: assume the apprentice's feat branch is already
-	// present locally and merge by branch name.
+	// Push-transport / legacy fallback: fetch the apprentice's feat branch
+	// from the remote (idempotent; succeeds silently if already local) then
+	// merge.
 	featBranch := fmt.Sprintf("feat/%s", e.beadID)
-	e.log("merging %s into staging (legacy path)", featBranch)
+	e.log("merging %s into staging (push/legacy path)", featBranch)
+	stagingWt.FetchBranch("origin", featBranch)
 	if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
 		return fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 	}

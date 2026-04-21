@@ -7,6 +7,7 @@ package main
 
 import (
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/bundlestore"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/wizard"
 )
@@ -163,6 +164,11 @@ func buildWizardDeps() *wizard.Deps {
 		CmdClaim: cmdClaim,
 		CmdSend: func(args []string) error {
 			return cmdSend(args)
+		},
+
+		// Bundle delivery
+		NewBundleStore: func() (bundlestore.BundleStore, error) {
+			return defaultNewBundleStore()
 		},
 	}
 }

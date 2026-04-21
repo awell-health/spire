@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/apprentice"
+	"github.com/awell-health/spire/pkg/config"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
@@ -579,7 +581,10 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			log("--no-review mode — skipping review handoff")
 		} else {
 			handoffDone = true
-			log("apprentice mode — skipping review handoff")
+			if err := deliverApprenticeWork(wc, beadID, deps, log); err != nil {
+				log("apprentice delivery failed: %s", err)
+				return fmt.Errorf("apprentice delivery: %w", err)
+			}
 		}
 		if retry.retrying && retry.currentStep == "review" {
 			retry.handleStepSuccess()
@@ -617,6 +622,53 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	log("done (%.0fs total)", elapsed.Seconds())
 	return nil
+}
+
+// deliverApprenticeWork runs the apprentice's post-build delivery step. It
+// consults the tower's configured apprentice transport and either submits a
+// git bundle via pkg/apprentice.Submit (transport=bundle) or pushes the feat
+// branch to the tower's remote (transport=push). Prior to this, the
+// apprentice-mode exit silently returned — the wizard never learned about
+// the work. Both branches return an error on failure so the caller can fail
+// the attempt rather than masquerade as a successful no-op.
+func deliverApprenticeWork(wc *spgit.WorktreeContext, beadID string, deps *Deps, logf func(string, ...interface{})) error {
+	transport := config.ApprenticeTransportBundle
+	if deps.ActiveTowerConfig != nil {
+		if tower, err := deps.ActiveTowerConfig(); err == nil && tower != nil {
+			transport = tower.Apprentice.EffectiveTransport()
+		}
+	}
+	switch transport {
+	case config.ApprenticeTransportBundle:
+		if deps.NewBundleStore == nil {
+			return fmt.Errorf("bundle transport configured but no BundleStore factory wired")
+		}
+		bstore, err := deps.NewBundleStore()
+		if err != nil {
+			return fmt.Errorf("open bundle store: %w", err)
+		}
+		idx := 0
+		if s := os.Getenv("SPIRE_APPRENTICE_IDX"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil {
+				idx = v
+			}
+		}
+		logf("apprentice mode — submitting bundle for %s (idx %d, base %s)", beadID, idx, wc.BaseBranch)
+		return apprentice.Submit(context.Background(), apprentice.Options{
+			BeadID:        beadID,
+			AttemptID:     os.Getenv("SPIRE_ATTEMPT_ID"),
+			ApprenticeIdx: idx,
+			BaseBranch:    wc.BaseBranch,
+			WorktreeDir:   wc.Dir,
+			Store:         bstore,
+		})
+	case config.ApprenticeTransportPush:
+		remote := "origin"
+		logf("apprentice mode — pushing %s to %s", wc.Branch, remote)
+		return wc.Push(remote)
+	default:
+		return fmt.Errorf("unknown apprentice transport %q", transport)
+	}
 }
 
 // cmdBuildFix handles the --build-fix apprentice mode. The executor writes

@@ -862,6 +862,9 @@ func cmdTowerCreate(args []string) error {
 		Database:  database,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		Archmage:  archmage,
+		Apprentice: config.ApprenticeConfig{
+			Transport: config.ApprenticeTransportBundle,
+		},
 	}
 
 	// Create repos table — use rawDoltQuery (bd dolt sql doesn't exist in bd 0.62)

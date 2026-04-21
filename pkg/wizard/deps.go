@@ -6,6 +6,7 @@ package wizard
 
 import (
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/bundlestore"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/store"
@@ -139,6 +140,10 @@ type Deps struct {
 	// CLI commands (thin delegation — these stay in cmd/spire)
 	CmdClaim func(args []string) error
 	CmdSend  func(args []string) error
+
+	// NewBundleStore constructs a BundleStore for apprentice bundle delivery.
+	// Only called when the configured apprentice transport is "bundle".
+	NewBundleStore func() (bundlestore.BundleStore, error)
 }
 
 // SplitTask represents a follow-on task created when an arbiter decides to split.

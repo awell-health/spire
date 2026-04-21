@@ -8,7 +8,7 @@ func TestApprenticeConfig_EffectiveTransport(t *testing.T) {
 		in   string
 		want string
 	}{
-		{name: "empty defaults to push", in: "", want: ApprenticeTransportPush},
+		{name: "empty defaults to bundle", in: "", want: ApprenticeTransportBundle},
 		{name: "push explicit", in: ApprenticeTransportPush, want: ApprenticeTransportPush},
 		{name: "bundle explicit", in: ApprenticeTransportBundle, want: ApprenticeTransportBundle},
 		{name: "arbitrary value passes through", in: "carrier-pigeon", want: "carrier-pigeon"},

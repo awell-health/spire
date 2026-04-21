@@ -105,9 +105,12 @@ func TestApplyApprenticeBundle_NilStaging(t *testing.T) {
 	}
 }
 
-// TestApplyApprenticeBundle_MissingSignal verifies that a bead with no
-// signal returns an error — every spawn the wizard tracks as complete is
-// expected to have produced exactly one signal.
+// TestApplyApprenticeBundle_MissingSignal verifies the push-transport
+// fallback path. A bead with no apprentice_signal_<role> metadata returns a
+// zero bundleOutcome with no error, signalling the caller to fetch
+// feat/<bead> from the remote and merge it the legacy way. Before the
+// transport rewiring, a missing signal was a hard error — which blocked
+// every bead whose apprentice used push transport.
 func TestApplyApprenticeBundle_MissingSignal(t *testing.T) {
 	deps := &Deps{
 		BundleStore: newFakeBundleStore(),
@@ -118,12 +121,18 @@ func TestApplyApprenticeBundle_MissingSignal(t *testing.T) {
 	e := NewForTest("spi-test", "wizard-test", nil, deps)
 
 	stagingWt := &spgit.StagingWorktree{}
-	_, err := e.applyApprenticeBundle("spi-test", 0, stagingWt)
-	if err == nil {
-		t.Fatal("expected error when signal is missing")
+	outcome, err := e.applyApprenticeBundle("spi-test", 0, stagingWt)
+	if err != nil {
+		t.Fatalf("unexpected error on missing signal: %s", err)
 	}
-	if !strings.Contains(err.Error(), "no apprentice signal") {
-		t.Errorf("err = %q, want to mention 'no apprentice signal'", err)
+	if outcome.Applied {
+		t.Errorf("Applied = true, want false (signal absent → caller handles fallback)")
+	}
+	if outcome.NoOp {
+		t.Errorf("NoOp = true, want false (missing signal is not an explicit no-op)")
+	}
+	if outcome.Branch != "" {
+		t.Errorf("Branch = %q, want empty", outcome.Branch)
 	}
 }
 

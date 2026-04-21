@@ -194,6 +194,9 @@ func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote stri
 		DolthubRemote: dolthubRemote,
 		Database:      database,
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		Apprentice: config.ApprenticeConfig{
+			Transport: config.ApprenticeTransportBundle,
+		},
 	}
 
 	beadsDir := filepath.Join(dataDir, ".beads")

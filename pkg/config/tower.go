@@ -18,9 +18,10 @@ const (
 )
 
 // Apprentice transport modes for ApprenticeConfig.Transport. Empty defaults to
-// ApprenticeTransportPush so towers created before this field existed keep the
-// legacy push-based delivery. "bundle" opts into the git-bundle artifact flow
-// driven by pkg/bundlestore and `spire apprentice submit`.
+// ApprenticeTransportBundle so new towers (and any config that forgets to set
+// the field) go through the git-bundle artifact flow driven by
+// pkg/bundlestore and pkg/apprentice.Submit. The legacy "push" transport is
+// still honored when set explicitly.
 const (
 	ApprenticeTransportPush   = "push"
 	ApprenticeTransportBundle = "bundle"
@@ -60,20 +61,21 @@ type TowerConfig struct {
 
 // ApprenticeConfig controls apprentice-side behavior for a tower. Currently
 // only the delivery transport is configurable. Zero value is valid and
-// resolves to ApprenticeTransportPush via EffectiveTransport.
+// resolves to ApprenticeTransportBundle via EffectiveTransport.
 type ApprenticeConfig struct {
 	// Transport selects how apprentices deliver work back to the wizard.
-	// Empty resolves to ApprenticeTransportPush. See EffectiveTransport.
+	// Empty resolves to ApprenticeTransportBundle. See EffectiveTransport.
 	Transport string `toml:"transport" yaml:"transport" json:"transport,omitempty"`
 }
 
 // EffectiveTransport returns the configured transport, defaulting to
-// ApprenticeTransportPush when unset. Callers should use this rather than
-// reading Transport directly so legacy configs keep working. Unknown values
-// pass through unchanged — validation is not performed here.
+// ApprenticeTransportBundle when unset. Callers should use this rather than
+// reading Transport directly so configs that predate the field default to
+// the bundle transport. Unknown values pass through unchanged — validation
+// is not performed here.
 func (c ApprenticeConfig) EffectiveTransport() string {
 	if c.Transport == "" {
-		return ApprenticeTransportPush
+		return ApprenticeTransportBundle
 	}
 	return c.Transport
 }

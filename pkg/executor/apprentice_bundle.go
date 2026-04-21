@@ -57,10 +57,11 @@ type bundleOutcome struct {
 // staging via the existing MergeBranch helper, then calls
 // deleteApprenticeBundle(Handle) to clean up.
 //
-// If the signal is absent the function returns an error — every spawn the
-// wizard tracks as complete is expected to have produced exactly one signal.
-// Callers that want legacy behavior (no BundleStore wired) must check
-// deps.BundleStore themselves before invoking this helper.
+// When no signal is present the function returns a zero outcome with no
+// error — callers must treat that as "apprentice used push transport" and
+// fall back to fetching feat/<beadID> from the remote before merging. The
+// bundle and push transports share this consumer path; only the signal's
+// presence distinguishes them.
 func (e *Executor) applyApprenticeBundle(beadID string, idx int, stagingWt *spgit.StagingWorktree) (bundleOutcome, error) {
 	if e.deps.BundleStore == nil {
 		return bundleOutcome{}, errors.New("no BundleStore configured")
@@ -80,7 +81,11 @@ func (e *Executor) applyApprenticeBundle(beadID string, idx int, stagingWt *spgi
 		return bundleOutcome{}, fmt.Errorf("parse apprentice signal %s: %w", role, err)
 	}
 	if !ok {
-		return bundleOutcome{}, fmt.Errorf("no apprentice signal for %s on %s", role, beadID)
+		// No signal — apprentice used push transport (or ran before bundle
+		// support existed). Return a zero outcome so the caller falls through
+		// to the fetch+merge legacy path.
+		e.log("no apprentice signal for %s on %s — falling back to feat-branch merge", role, beadID)
+		return bundleOutcome{}, nil
 	}
 
 	if sig.Kind == bundlestore.SignalKindNoOp {
