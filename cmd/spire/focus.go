@@ -42,9 +42,6 @@ func cmdFocusJSON(args []string) error {
 	if err := requireDolt(); err != nil {
 		return err
 	}
-	if len(args) < 1 {
-		return fmt.Errorf("usage: spire focus --json <bead-id>")
-	}
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
 	}
