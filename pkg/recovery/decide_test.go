@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -524,5 +525,98 @@ func TestGitStateReasoning_NilGitState(t *testing.T) {
 	got := gitStateReasoning(nil, nil, "rebase-onto-base")
 	if got != "branch is behind base" {
 		t.Errorf("gitStateReasoning(nil git, rebase) = %q, want 'branch is behind base'", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Decide: FailureClass → RepairMode matrix (design spi-h32xj §7)
+// ---------------------------------------------------------------------------
+
+// TestDecide_MergeFailure_MapsToMechanical pins the matrix row
+// `FailureClass=merge-failure → RepairMode=mechanical (rebase)`. A merge
+// failure typically surfaces as a branch that is behind/diverged from base
+// without unresolved conflicts on disk — decide routes to the
+// `rebase-onto-base` mechanical.
+func TestDecide_MergeFailure_MapsToMechanical(t *testing.T) {
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+	}
+	deps := Deps{
+		BranchDiagnostics: &git.BranchDiagnostics{BehindMain: 3, MainRef: "origin/main"},
+	}
+	plan, err := Decide(context.Background(), diagnosis, nil, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if plan.Mode != RepairModeMechanical {
+		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeMechanical)
+	}
+	if plan.Action != "rebase-onto-base" {
+		t.Errorf("Action = %q, want rebase-onto-base", plan.Action)
+	}
+}
+
+// TestDecide_BuildFailure_PromotedRecipeMapsToRecipeMode pins the matrix row
+// `FailureClass=build-failure → RepairMode=recipe when covered`. When a
+// promoted mechanical recipe exists for the bead's failure signature,
+// decide short-circuits to recipe replay with Mode=RepairModeRecipe.
+func TestDecide_BuildFailure_PromotedRecipeMapsToRecipeMode(t *testing.T) {
+	restore := withPromotionStubs(t,
+		func(sig string) (*store.PromotionSnapshot, error) {
+			return &store.PromotionSnapshot{
+				FailureSig:   sig,
+				CleanCount:   3,
+				LatestRecipe: `{"kind":"builtin","action":"rebuild"}`,
+			}, nil
+		},
+		nil,
+	)
+	defer restore()
+
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailBuild,
+	}
+	deps := Deps{
+		FailureSignature:   "build-failure:some-sig",
+		PromotionThreshold: func(string) int { return 3 },
+	}
+	plan, err := Decide(context.Background(), diagnosis, nil, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if plan.Mode != RepairModeRecipe {
+		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeRecipe)
+	}
+	if plan.Action != "rebuild" {
+		t.Errorf("Action = %q, want rebuild", plan.Action)
+	}
+}
+
+// TestDecide_ReviewFix_FallbackMapsToWorker pins the matrix row
+// `FailureClass=review-fix → RepairMode=worker`. With no git-state signal
+// and no ClaudeRunner, decide falls back to `resummon` which maps to
+// RepairModeWorker — the normal path for handing off a review-fix to a
+// repair worker on a borrowed workspace.
+func TestDecide_ReviewFix_FallbackMapsToWorker(t *testing.T) {
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailReviewFix,
+	}
+	deps := Deps{
+		// No BranchDiagnostics / WorktreeDiagnostics / ConflictedFiles so
+		// the git-state heuristic falls through.
+		// No ClaudeRunner so decide emits the fallback plan.
+	}
+	plan, err := Decide(context.Background(), diagnosis, nil, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if plan.Mode != RepairModeWorker {
+		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeWorker)
+	}
+	if plan.Action != "resummon" {
+		t.Errorf("Action = %q, want resummon", plan.Action)
 	}
 }

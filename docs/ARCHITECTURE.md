@@ -291,12 +291,25 @@ branch diff against the bead spec.
 
 Recovery agent. Summoned when a wizard fails and a recovery bead is
 filed with failure evidence. Runs the `cleric-default` formula
-(`collect` -> `decide` -> `execute` -> `verify` -> `learn` -> `finish`),
-which inspects the failure, decides on a recovery action, executes it,
-and extracts learnings for future runs. The cleric can set a
-`RetryRequest` on the original bead, enabling cooperative recovery: the
-re-summoned wizard checks this at startup via `checkRetryRequest` and
-skips ahead to the requested step.
+(`collect_context` -> `decide` -> `execute` -> `verify` -> `learn` ->
+`finish`), which inspects the failure, decides on a repair plan, executes
+it, verifies the outcome, and records a structured `RecoveryOutcome` the
+steward consumes.
+
+The redesign in [design/spi-h32xj-cleric-repair-loop.md](design/spi-h32xj-cleric-repair-loop.md)
+sharpens the package split: `pkg/recovery` owns the domain types
+(`RepairMode`, `RepairPlan`, `VerifyPlan`, `VerifyVerdict`, `Decision`,
+`RecoveryOutcome`) and decide-time policy. `pkg/executor` owns the
+runtime — cleric step adapters that provision workspaces through the
+shared [runtime contract](design/spi-xplwy-runtime-contract.md), dispatch
+by `RepairMode`, and drive the cooperative retry protocol.
+
+The cleric can set a `RetryRequest` on the original bead, enabling
+cooperative recovery: the re-summoned wizard checks it at startup via
+`checkRetryRequest` and skips ahead to the requested step (or honors a
+full `VerifyPlan` once the request carries one). The steward reads the
+cleric's `RecoveryOutcome` through the typed `recovery.ReadOutcome`
+accessor — it does not parse comment text or ad hoc labels.
 
 #### Artificer
 

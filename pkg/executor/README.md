@@ -182,11 +182,42 @@ The `actionRegistry` maps opcode strings to handler functions:
 | `bead.finish`           | Close the bead (and orphan subtasks for epics), mark terminated. |
 | `noop`                  | Immediate success — used as terminal signals in nested graphs. |
 | `graph.run`             | Load and execute a nested sub-graph inline. |
-| `cleric.collect_context` | Gather diagnosis, learnings, wizard log tail, and `FullRecoveryContext`. |
-| `cleric.decide`         | Claude-driven action selection (with human guidance and git-state heuristics). |
-| `cleric.execute`        | Dispatch to git-aware or legacy recovery action, provision worktree if needed. |
-| `cleric.verify`         | Cooperative retry: set `RetryRequest` on source bead, poll for wizard result. |
-| `cleric.learn`          | Claude-driven learning extraction; writes to bead metadata + SQL table. |
+| `cleric.collect_context` | Adapter around `recovery.Diagnose` + learnings + wizard log tail. |
+| `cleric.decide`         | Adapter that calls `recovery.Decide` and writes the `RepairPlan` JSON to the step output. |
+| `cleric.execute`        | Reads the decide step's `RepairPlan`, resolves its `WorkspaceRequest` via `resolveGraphWorkspace`, dispatches by `RepairMode` (mechanical fn, worker spawn, recipe replay, escalate). |
+| `cleric.verify`         | Dispatches the plan's `VerifyPlan` by `VerifyKind` (`rerun-step` via cooperative retry, `narrow-check` via command exec, `recipe-postcondition` via replay). |
+| `cleric.learn`          | Adapter around `recovery.DocumentLearning` and the promotion counter; writes to bead metadata + SQL table. |
+| `cleric.finish`         | Emits `RecoveryOutcome` via `recovery.WriteOutcome` and closes the recovery bead. Steward reads it via `recovery.ReadOutcome`. |
+
+### Cleric runtime surface
+
+The cleric's domain model and decide-time policy live in `pkg/recovery`
+(see [design spi-h32xj](../../docs/design/spi-h32xj-cleric-repair-loop.md)
+and [pkg/recovery/README.md](../recovery/README.md)). This package owns
+only the runtime glue:
+
+- `actionClericCollectContext`, `actionClericDecide`, `actionClericLearn`
+  are thin adapters — they call into `pkg/recovery` and persist results
+  into graph outputs.
+- `actionClericExecute` is where runtime primitives live: it reads the
+  typed `recovery.RepairPlan` produced by decide, provisions the declared
+  `WorkspaceRequest` via `resolveGraphWorkspace` (same code path any other
+  step uses — no cleric-only worktree fallback), and dispatches by
+  `RepairMode`. Mechanical action bodies (rebase, cherry-pick, rebuild,
+  reset-to-step) live in `recovery_actions.go` as functions keyed by
+  action name. Worker dispatch uses `pkg/agent.Backend.Spawn` like any
+  other apprentice.
+- `actionClericVerify` dispatches the plan's `VerifyPlan`. The
+  `rerun-step` kind sets a `wizard.RetryRequest` (carrying the
+  `VerifyPlan`) on the target bead and polls for the wizard's reply.
+  `narrow-check` and `recipe-postcondition` execute locally.
+- `handleFinish` writes the canonical `recovery.RecoveryOutcome` via
+  `recovery.WriteOutcome`. That record is the sole steward contract.
+
+The `actionTargetedFix` function in `recovery_actions.go` is a tombstone
+(one-release coexistence per design §9 Q3). It returns a helpful error
+pointing callers at `RepairModeWorker`; historical recovery beads may
+still reference the old name through resume paths.
 
 ### Formula-declared resets
 

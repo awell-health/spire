@@ -1,181 +1,300 @@
 # pkg/recovery
 
-Diagnosis, classification, and action proposal for interrupted parent beads.
+Domain model and policy for the cleric repair loop. This package owns the
+diagnostic types, the decide-time policy, the learning/promotion model, and
+the canonical `RecoveryOutcome` contract the steward consumes.
 
-**Important distinction:** "Recovery" in this package is the **data model** —
-beads, metadata, failure classification, learnings, and action proposals. The
-**agent** that performs recovery is the **cleric** (runs `cleric-default`
-formula, action handlers live in `pkg/executor/recovery_phase.go`). This
-package provides the diagnostic foundation; the cleric executor code drives the
-actual recovery lifecycle.
+**Ownership split (design
+[spi-h32xj-cleric-repair-loop](../../docs/design/spi-h32xj-cleric-repair-loop.md)
+§1):**
 
-## Boundaries
+| Package        | Owns                                                                   |
+|----------------|------------------------------------------------------------------------|
+| `pkg/recovery` | Domain types, diagnosis, decide policy, recipe promotion, outcome I/O  |
+| `pkg/executor` | Runtime: cleric step adapters, workspace provisioning, spawn, verify wire protocol |
+| `pkg/wizard`   | Wizard-side retry: `checkRetryRequest`, skip-to-step, result reporting |
+| `pkg/steward`  | Observes `RecoveryOutcome` via `ReadOutcome`; decides resume vs stays-hooked |
 
-| Package | Owns |
-|---------|------|
-| `pkg/recovery` | Diagnosis, failure classification, action proposal, learning storage |
-| `pkg/executor` | Cleric action handlers, cooperative retry protocol, git-aware actions |
-| `pkg/steward` | Auto-summoning clerics (claim-then-spawn) |
-| `pkg/wizard` | Wizard-side retry: `checkRetryRequest`, skip-to-step, result reporting |
-
-## What this package owns
-
-- **Diagnosis** (`Diagnose`): inspects bead state, attempt history, git/worktree
-  status, and executor runtime state to classify the failure mode.
-- **Failure classification** (`FailureClass`): categorises interruptions into
-  `empty-implement`, `merge-failure`, `build-failure`, `review-fix`,
-  `repo-resolution`, `arbiter`, `step-failure`, `unknown`.
-- **Action proposal**: ranks recovery actions by likelihood of success, based on
-  failure class and historical outcomes.
-- **Verification** (`Verify`, `CheckSourceHealth`): checks whether the
-  interrupted state has been cleared after a recovery action.
-- **Learning storage** (`DocumentLearning`, `FinishRecovery`): writes learning
-  metadata to both bead metadata (fast, local) and the `recovery_learnings` SQL
-  table (canonical, queryable).
+The cleric itself is the agent that runs the `cleric-default` formula. This
+package provides the diagnostic + policy foundation; `pkg/executor` drives
+the step-by-step runtime.
 
 ## Cleric lifecycle
 
-The cleric runs the `cleric-default` formula — a 6-step recovery loop:
+The `cleric-default` formula is a 6-step repair loop:
 
 ```
 collect_context ──→ decide ──→ execute ──→ verify ──→ learn ──→ finish
-                      │                      │
-                      │                      └─ failure: loop back to decide
-                      │                         (up to max_retries times)
+                      │          │           │
+                      │          │           └─ fail → retry → decide
+                      │          │
+                      │          └─ error → record_error → finish_needs_human
                       │
-                      └─ needs_human=true ──→ finish_needs_human
+                      └─ escalate → finish_needs_human
 ```
 
-### Steps
+| Step              | Owner          | What happens                                                                                   |
+|-------------------|----------------|------------------------------------------------------------------------------------------------|
+| `collect_context` | `pkg/recovery` | `Diagnose()` + learnings + wizard log tail → `FullRecoveryContext`                             |
+| `decide`          | `pkg/recovery` | `Decide()` returns a typed `RepairPlan` from `Diagnosis + History`                              |
+| `execute`         | `pkg/executor` | Provisions the plan's `WorkspaceRequest` via the runtime contract, dispatches by `RepairMode`  |
+| `verify`          | `pkg/executor` | Runs the `VerifyPlan` embedded in the plan; cooperative retry for `rerun-step`                 |
+| `learn`           | `pkg/recovery` | Extracts learning; promotes a repeated resolution to a `MechanicalRecipe`                      |
+| `finish`          | `pkg/executor` | Emits `RecoveryOutcome` via `WriteOutcome` and closes the recovery bead                        |
 
-| Step | Action | What happens |
-|------|--------|--------------|
-| `collect_context` | `cleric.collect_context` | Mechanical: calls `Diagnose()`, gathers per-bead and cross-bead learnings, reads wizard log tail, builds `FullRecoveryContext` |
-| `decide` | `cleric.decide` | Claude-driven: chooses recovery action from ranked list. Checks human guidance, git state heuristics, and historical outcomes. Sets `needs_human=true` if confidence < 0.7 or repeated failures |
-| `execute` | `cleric.execute` | Dispatches to git-aware action registry (`RunRecoveryAction`) or legacy actions. Provisions worktree if needed |
-| `verify` | `cleric.verify` | Cooperative retry: sets `RetryRequest` on source bead, polls for wizard result (30s intervals, 10min timeout). Loops to decide on failure |
-| `learn` | `cleric.learn` | Claude-driven: extracts learning summary, resolution kind, reusability. Writes to bead metadata + SQL table |
-| `finish` | `cleric.execute` | Clears retry labels, writes closing comment, closes recovery bead (or leaves open if `needs_human`) |
+## Domain types
 
-### Decision priority
+### `RepairMode` — how a repair is executed
 
-1. **Human guidance** (comments with keywords like "rebase", "rebuild", "escalate")
-2. **Git-state heuristics** (diverged → rebase, dirty → rebuild)
-3. **Claude selection** (with fallback to resummon if Claude unavailable)
-4. Actions with 2+ prior failures are excluded; auto-escalates if all are exhausted
+```go
+const (
+    RepairModeNoop       // resume hooked parent, no repair needed
+    RepairModeMechanical // deterministic fn (rebase, cherry-pick, rebuild, reset-to-step)
+    RepairModeWorker     // agentic repair subprocess on a borrowed workspace
+    RepairModeRecipe     // promoted plan; dispatches through the un-promoted path
+    RepairModeEscalate   // terminal; needs-human is a property of the plan
+)
+```
+
+Taxonomy rules:
+
+- `RepairModeMechanical` covers deterministic actions that are promotable to
+  recipes.
+- `RepairModeWorker` is the replacement for the retired `targeted-fix`
+  placeholder. A repair worker is a normal apprentice on a borrowed
+  workspace — no cleric-specific spawn path.
+- `RepairModeRecipe` executes via the exact same runtime paths as the
+  un-promoted mechanical or worker form (see `Recipe.ToRepairPlan`).
+- `RepairModeEscalate` is terminal. `needs_human=true` collapses into the
+  plan rather than being a parallel decision surface.
+- `RepairModeNoop` lets `decide` resume a hooked bead that simply needs to
+  be unparked (e.g. after a human edit cleared the interruption).
+
+### `RepairPlan` — the typed output of `Decide`
+
+```go
+type RepairPlan struct {
+    Mode       RepairMode
+    Action     string            // mechanical fn name OR recipe id OR worker role
+    Params     map[string]string
+    Workspace  WorkspaceRequest  // what workspace execute must provision
+    Verify     VerifyPlan        // how to confirm success
+    Confidence float64
+    Reason     string
+}
+```
+
+`WorkspaceRequest.Kind` uses `runtime.WorkspaceKind` from the spi-xplwy
+runtime contract. The executor passes the resulting `WorkspaceHandle` to
+the action function (mechanical) or to `SpawnConfig` (worker). There is no
+cleric-only workspace helper.
+
+### `VerifyPlan` and `VerifyVerdict`
+
+```go
+const (
+    VerifyKindRerunStep           // re-run a wizard step via cooperative retry
+    VerifyKindNarrowCheck         // run a targeted command; exit status is the verdict
+    VerifyKindRecipePostcondition // replay a recipe's captured postcondition
+)
+
+const (
+    VerifyVerdictPass
+    VerifyVerdictFail
+    VerifyVerdictTimeout
+)
+```
+
+The cleric's verify step dispatches on `VerifyPlan.Kind`. Legacy
+`RetryRequest`s that carry only `FromStep` are honored as
+`Kind=rerun-step, StepName=FromStep` — see `pkg/wizard/wizard_retry.go`.
+
+### `Decision` — terminal signal the steward reads
+
+```go
+const (
+    DecisionResume   // unhook parent; wizard can resume
+    DecisionEscalate // leave hooked; a human must intervene
+)
+```
+
+### `RecoveryOutcome` — the structured record every recovery emits
+
+```go
+type RecoveryOutcome struct {
+    RecoveryAttemptID string
+    SourceBeadID      string
+    SourceAttemptID   string
+    SourceRunID       string
+    FailedStep        string
+    FailureClass      FailureClass
+    RepairMode        RepairMode
+    RepairAction      string
+    WorkerAttemptID   string           // empty unless Mode == worker/recipe(worker-shape)
+    WorkspaceKind     runtime.WorkspaceKind
+    HandoffMode       runtime.HandoffMode
+    VerifyKind        VerifyKind
+    VerifyVerdict     VerifyVerdict
+    Decision          Decision
+    RecipeID          string
+    RecipeVersion     int
+}
+```
+
+`WriteOutcome` is the **sole writer** of this record: it persists to bead
+metadata under `KeyRecoveryOutcome` and to the `recovery_learnings` SQL
+table in one call. `ReadOutcome` is the sole reader. The steward must use
+`ReadOutcome` — parsing comment text or ad hoc `recovery:*` labels to
+decide resume-vs-escalate is forbidden by design (§4 of the spec).
+
+### `Recipe.ToRepairPlan` — promoted dispatch through the un-promoted path
+
+A `MechanicalRecipe` codifies a successful recovery so it can be replayed
+directly on future occurrences of the same failure signature. When the
+promotion counter for a signature reaches threshold, `Decide` returns a
+`RepairPlan{Mode: RepairModeRecipe}` instead of invoking Claude.
+`Recipe.ToRepairPlan()` converts the stored recipe into that plan so
+execute dispatches through the same mechanical / worker paths as the
+un-promoted form. A single failure demotes the signature back to the
+agentic default (see `MarkDemoted` / `PromotionState`).
+
+## What this package owns
+
+- **Diagnosis** (`Diagnose`, `DiagnoseAuto`): inspects bead state, attempt
+  history, git/worktree diagnostics, and executor runtime state to classify
+  the failure.
+- **Failure classification** (`FailureClass` + `classify.go`): maps
+  `interrupted:*` labels + step context to one of `empty-implement`,
+  `merge-failure`, `build-failure`, `review-fix`, `repo-resolution`,
+  `arbiter`, `step-failure`, `unknown`.
+- **Decide policy** (`Decide`): produces a `RepairPlan` from
+  `Diagnosis + History`. Priority order: attempt-budget guard → human
+  guidance → promoted recipe replay → git-state heuristics → Claude → fallback.
+- **Action-to-RepairMode mapping** (`actionToRepairMode`): the one place
+  that maps a historic action name (`rebase-onto-base`, `resolve-conflicts`,
+  `escalate`, …) to its canonical `RepairMode`.
+- **Recipe promotion** (`promotion.go`, `recipe.go`): per-signature
+  promotion counters and the `MechanicalRecipe` model, including
+  `ToRepairPlan`.
+- **Outcome I/O** (`finish.go`): `WriteOutcome` and `ReadOutcome` — the
+  steward contract. Single writer; single reader.
+- **Document/finish** (`document.go`, `finish.go`): writes bead metadata
+  and the `recovery_learnings` SQL row.
+
+## What this package does NOT own
+
+- **Step execution / runtime orchestration.** `pkg/executor` owns the
+  cleric step adapters (`cleric.collect_context`, `cleric.decide`,
+  `cleric.execute`, `cleric.verify`, `cleric.learn`, `cleric.finish`) and
+  the workspace / spawn plumbing behind them.
+- **Workspace provisioning.** Execute calls `resolveGraphWorkspace` with
+  the plan's `WorkspaceRequest` and receives a `WorkspaceHandle` from the
+  runtime contract. There is no longer a recovery-only worktree fallback.
+- **Wizard-side retry.** `checkRetryRequest`, skip-to-step, and result
+  reporting live in `pkg/wizard`.
+- **Interrupt signaling.** The executor decides when a step hooks and
+  writes the failure evidence a cleric later reads.
+
+## Decide priority
+
+1. **Attempt-budget guard** — if `len(history) ≥ MaxAttempts`, emit
+   `RepairModeEscalate`.
+2. **Human guidance** — a comment whose first imperative token matches a
+   keyword in `guidanceMap` (e.g. `rebase`, `rebuild`, `escalate`) wins,
+   unless that action has already failed twice.
+3. **Promoted recipe replay** — if the failure signature has crossed its
+   promotion threshold, dispatch via `Recipe.ToRepairPlan`.
+4. **Git-state heuristics** — conflicts → `resolve-conflicts`, diverged or
+   behind base → `rebase-onto-base`, dirty → `rebuild`.
+5. **Claude-backed decision** — `Deps.ClaudeRunner` invoked with the rich
+   context prompt (diagnosis, wizard log tail, ranked actions, learnings,
+   stats). Claude's choice is overridden to `escalate` if it matches an
+   action with ≥2 prior failures; `needs_human` is set when confidence
+   drops below `0.7`.
+6. **Fallback** — when Claude is unavailable or returns an error, emit
+   `resummon` at confidence `0.4–0.5`.
 
 ## Cooperative retry protocol
 
-The verify step implements a label-based handoff between cleric and wizard:
-
-```
-CLERIC                                    WIZARD
-  │                                         │
-  ├─ SetRetryRequest(target, {              │
-  │    FromStep: "build-gate",              │
-  │    Attempt: 2,                          │
-  │    RecoveryBead: "spi-rc-456"           │
-  │  })                                     │
-  │  → labels: recovery:retry-from=...      │
-  │            recovery:status=waiting       │
-  │                                         │
-  ├─ Poll every 30s ─────────────────────── │
-  │                                         ├─ checkRetryRequest()
-  │                                         ├─ Skip phases before FromStep
-  │                                         ├─ Run from requested step
-  │                                         │
-  │                                         ├─ Success:
-  │                                         │  SetRetryResult({Success: true})
-  │                                         │  → recovery:status=succeeded
-  │                                         │
-  │                                         └─ Failure:
-  │                                            SetRetryResult({Success: false})
-  │                                            → recovery:status=failed
-  │                                         │
-  ├─ Read result                            │
-  ├─ Success → learn → finish               │
-  └─ Failure → rebuild context → decide     │
-```
-
-Labels live on the **target bead** (the one being retried). Graph step names
-are mapped to wizard phases via `MapToWizardPhase` (e.g., `verify-build` →
-`build-gate`).
+The cleric never directly re-runs wizard steps. For `VerifyKindRerunStep`,
+`pkg/executor/recovery_phase.go` sets a `wizard.RetryRequest` on the
+target bead and polls for the wizard's reply. Labels live on the **target
+bead** (the one being retried). The wire protocol is unchanged from the
+legacy shape; `VerifyPlan` simply rides alongside. Legacy requests that
+omit `VerifyPlan` default to `Kind=rerun-step, StepName=FromStep`.
 
 ## Learning system
 
-Two storage tiers, both written by the `learn` step:
+Two storage tiers, both populated by `learn` → `finish`:
 
-| Tier | Store | Used for |
-|------|-------|----------|
-| Bead metadata | `store.SetBeadMetadataMap()` | Fast local access, bead-scoped queries |
-| `recovery_learnings` SQL | `store.WriteRecoveryLearningAuto()` | Cross-bead aggregation, historical analytics |
+| Tier          | Store                                   | Used for                              |
+|---------------|-----------------------------------------|---------------------------------------|
+| Bead metadata | `KeyRecoveryOutcome` (JSON blob)        | Fast local access; steward `ReadOutcome` |
+| SQL           | `recovery_learnings` table              | Cross-bead aggregation and analytics  |
 
-The `decide` step queries both tiers to inform future decisions:
+`WriteOutcome` is the single authoritative writer. It also mirrors a small
+set of fields (`resolved_at`, `failure_class`, `source_bead`,
+`resolution_kind`, `verification_status`, `reusable`) to individual
+metadata keys for decide-time query compatibility. The retired
+`learning_outcome` scalar is intentionally not written.
 
-- **Per-bead**: past recoveries for the same source bead + failure class
-- **Cross-bead**: past recoveries for the same failure class from any source
+Learnings marked `reusable=true` (i.e. `Decision=DecisionResume`) are
+candidates for promotion on a subsequent match of the same failure
+signature.
 
-Learnings marked `reusable=true` are candidates for future recovery of the
-same failure class.
+## Action surface (names used across the stack)
 
-## Git-aware actions
+These are the action strings a `RepairPlan` may carry. They are mapped to a
+`RepairMode` by `actionToRepairMode` and to a `WorkspaceRequest` by
+`workspaceFromAction`. Both mappings are the single source of truth for
+dispatch.
 
-Registered in `pkg/executor/recovery_actions.go`:
+| Action                | Mode       | Typical workspace         |
+|-----------------------|------------|---------------------------|
+| `rebase-onto-base`    | Mechanical | `owned_worktree`          |
+| `cherry-pick`         | Mechanical | `owned_worktree`          |
+| `rebuild`             | Mechanical | `owned_worktree`          |
+| `reset-to-step`       | Mechanical | `repo` (graph-state only) |
+| `reset-hard`          | Mechanical | `repo` (graph-state only) |
+| `resolve-conflicts`   | Worker     | `borrowed_worktree`       |
+| `resummon`            | Worker     | `borrowed_worktree`       |
+| `reset`               | Worker     | `borrowed_worktree`       |
+| `triage`              | Worker     | `borrowed_worktree`       |
+| `targeted-fix` (tombstone) | — | — (dispatch fails loudly, see below) |
+| `verify-clean`        | Noop       | n/a                       |
+| `escalate`            | Escalate   | n/a                       |
 
-| Action | What it does | Max retries |
-|--------|-------------|-------------|
-| `rebase-onto-base` | Fetch `origin/<base>`, rebase onto it (base from bead label / spire.yaml) | 3 |
-| `cherry-pick` | Cherry-pick a specified commit | 3 |
-| `resolve-conflicts` | Resolve merge conflicts (theirs/ours) | 2 |
-| `targeted-fix` | Record apprentice fix request | 3 |
-| `rebuild` | Run `go build ./...` | 3 |
-| `resummon` | Mark for wizard re-summon | 3 |
-| `reset-to-step` | Reset executor to a named step | 2 |
-| `escalate` | Set P0 + needs-human label | 1 |
-
-Actions that require a worktree get one via `ProvisionRecoveryWorktree`
-(prefers resuming the wizard's staging worktree, falls back to ephemeral
-`recovery/<beadID>` branch).
-
-## Steward integration
-
-The steward auto-summons clerics for hooked beads with failure evidence. It
-uses the atomic claim pattern (see `pkg/steward/README.md`) — not the agent
-registry — to prevent double-summon across instances.
-
-The steward also observes cleric outcomes:
-- Recovery bead **closed** with `learning_outcome=clean` → unhook parent, re-summon wizard
-- Recovery bead **closed** with `learning_outcome=escalated` → leave hooked for human
-- Recovery bead **open** → summon cleric (if not already claimed)
-
-## Key types
-
-| Type | Purpose |
-|------|---------|
-| `Diagnosis` | Full diagnostic report for an interrupted bead |
-| `FailureClass` | Categorisation of the interruption reason |
-| `RecoveryActionKind` | Action type enum (reset, resummon, escalate, etc.) |
-| `RecoveryActionRequest` / `RecoveryActionResult` | Mechanical action dispatch |
-| `RecoveryMetadata` | Typed projection of recovery-specific metadata |
-| `VerifyResult` | Post-recovery check that interrupted state is cleared |
-| `Deps` | Dependency injection struct for testability |
+The `targeted-fix` action is retired (see design §9 Q3). A tombstone
+(`actionTargetedFix` in `pkg/executor/recovery_actions.go`) remains for one
+release of coexistence so historical recovery beads that still reference
+the name fail loudly with a pointer at `RepairModeWorker` rather than
+silently dispatching to nothing.
 
 ## Constants
 
-| Constant | Value | Purpose |
-|----------|-------|---------|
-| `DefaultMaxRecoveryAttempts` | 3 | Retry budget before auto-escalation |
-| `DefaultVerifyPollInterval` | 30s | Cooperative verify poll interval |
-| `DefaultVerifyTimeout` | 10min | Max wait for wizard retry result |
+| Constant                      | Value  | Purpose                                          |
+|-------------------------------|--------|--------------------------------------------------|
+| `DefaultMaxRecoveryAttempts`  | 3      | Retry budget before auto-escalation              |
+| `DefaultVerifyPollInterval`   | 30s    | Cooperative verify poll interval                 |
+| `DefaultVerifyTimeout`        | 10min  | Max wait for wizard retry result                 |
+| `KeyRecoveryOutcome`          | string | Metadata key; sole writer `WriteOutcome`; sole reader `ReadOutcome` |
 
 ## Practical rules
 
-1. **This package diagnoses; the executor acts.** Don't put action execution
-   logic here — route it through the executor's action registry.
-2. **Failure classes are the routing key.** Learnings, action ranking, and
-   cross-bead aggregation all key on failure class. Get classification right.
-3. **Learnings go to both tiers.** Always write to bead metadata AND the SQL
-   table. The SQL table is canonical; metadata is for fast access.
-4. **Don't bypass the retry protocol.** The cleric never directly re-runs
-   wizard steps — it sets a RetryRequest and waits for the wizard to report
-   back. This keeps the wizard simple and label-driven.
+1. **Domain + policy here; runtime in `pkg/executor`.** Don't put
+   workspace, spawn, or wire-protocol code here. Policy decisions flow out
+   of this package as a typed `RepairPlan`; runtime dispatch happens on the
+   executor side.
+2. **`WriteOutcome` is the single writer.** No other code path should
+   emit a `RecoveryOutcome` record. The steward reads only through
+   `ReadOutcome`.
+3. **`FailureClass` is the routing key.** Learnings, action ranking, and
+   cross-bead aggregation all key on it. Get classification right in
+   `classify.go` before touching decide priority.
+4. **`actionToRepairMode` and `workspaceFromAction` are paired.** Any
+   new action name must appear in both — the second is in `recipe.go` and
+   governs promoted-recipe dispatch. Out-of-sync mappings produce plans
+   that fail dispatch.
+5. **Don't bypass the retry protocol.** `VerifyKindRerunStep` always goes
+   through `RetryRequest` on the target bead. The cleric never mutates a
+   target bead's branch state directly.
