@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -300,7 +301,11 @@ func TestResolveGraphStateStore_Local(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
 	dir := t.TempDir()
 	configDirFn := func() (string, error) { return dir, nil }
-	store := ResolveGraphStateStore(configDirFn)
+	identity := RepoIdentity{TowerName: "spi", Prefix: "spi"}
+	store, err := ResolveGraphStateStore(identity, configDirFn)
+	if err != nil {
+		t.Fatalf("ResolveGraphStateStore: %v", err)
+	}
 
 	if _, ok := store.(*FileGraphStateStore); !ok {
 		t.Errorf("expected *FileGraphStateStore, got %T", store)
@@ -312,7 +317,11 @@ func TestResolveGraphStateStore_LocalHost(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "127.0.0.1")
 	dir := t.TempDir()
 	configDirFn := func() (string, error) { return dir, nil }
-	store := ResolveGraphStateStore(configDirFn)
+	identity := RepoIdentity{TowerName: "spi", Prefix: "spi"}
+	store, err := ResolveGraphStateStore(identity, configDirFn)
+	if err != nil {
+		t.Fatalf("ResolveGraphStateStore: %v", err)
+	}
 
 	if _, ok := store.(*FileGraphStateStore); !ok {
 		t.Errorf("expected *FileGraphStateStore for localhost, got %T", store)
@@ -325,11 +334,25 @@ func TestResolveGraphStateStore_Cluster(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "192.168.1.100")
 	dir := t.TempDir()
 	configDirFn := func() (string, error) { return dir, nil }
-	store := ResolveGraphStateStore(configDirFn)
+	identity := RepoIdentity{TowerName: "spi", Prefix: "spi"}
+	store, err := ResolveGraphStateStore(identity, configDirFn)
+	if err != nil {
+		t.Fatalf("ResolveGraphStateStore: %v", err)
+	}
 
 	// Falls back to FileGraphStateStore because the connection fails.
 	if _, ok := store.(*FileGraphStateStore); !ok {
 		t.Errorf("expected fallback to *FileGraphStateStore when Dolt unreachable, got %T", store)
+	}
+}
+
+func TestResolveGraphStateStore_NoTowerBound(t *testing.T) {
+	// Zero identity -> ErrNoTowerBound.
+	dir := t.TempDir()
+	configDirFn := func() (string, error) { return dir, nil }
+	_, err := ResolveGraphStateStore(RepoIdentity{}, configDirFn)
+	if !errors.Is(err, ErrNoTowerBound) {
+		t.Fatalf("expected ErrNoTowerBound, got %v", err)
 	}
 }
 

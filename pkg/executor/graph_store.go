@@ -3,6 +3,7 @@ package executor
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,22 @@ import (
 
 	"github.com/awell-health/spire/pkg/dolt"
 )
+
+// ErrNoTowerBound is returned by ResolveGraphStateStore when the caller
+// supplies a zero-valued RepoIdentity (no active tower bound). Commands
+// that surface to humans should catch this and print a clear "no tower
+// bound" message directing the user to `spire tower create` /
+// `spire repo add`.
+var ErrNoTowerBound = errors.New("no tower bound: run `spire tower create` or `spire repo add` first")
+
+// ErrAmbiguousPrefix is returned when a tower has multiple registered
+// repos and the caller did not pick one. CLI commands should resolve
+// this by either accepting an explicit --prefix flag or asking the user
+// to choose. This error is never hit at the pkg/executor layer in
+// practice — the CLI helpers in cmd/spire resolve identity before
+// calling ResolveGraphStateStore — but it is exported here so CLI code
+// can compare against it with errors.Is.
+var ErrAmbiguousPrefix = errors.New("tower has multiple registered repos — pass --prefix to disambiguate")
 
 // GraphStateStore abstracts graph state persistence.
 // FileGraphStateStore (local) and DoltGraphStateStore (cluster) implement this.
@@ -193,21 +210,48 @@ func (ds *DoltGraphStateStore) ListHooked(towerName string) ([]HookedEntry, erro
 
 // --- Factory ---
 
-// ResolveGraphStateStore returns a DoltGraphStateStore when running in cluster
-// mode (BEADS_DOLT_SERVER_HOST is a remote host), otherwise a FileGraphStateStore.
-func ResolveGraphStateStore(configDirFn func() (string, error)) GraphStateStore {
+// ResolveGraphStateStore returns a DoltGraphStateStore when running in
+// cluster mode (BEADS_DOLT_SERVER_HOST is a remote host), otherwise a
+// FileGraphStateStore.
+//
+// identity.TowerName is the dolt database the cluster-mode store
+// connects to. A zero-valued identity returns ErrNoTowerBound —
+// runtime-critical code may NOT derive tower/prefix from ambient CWD.
+// Prior versions fell back to dolt.ReadBeadsDBName(os.Getwd) + the
+// hardcoded "spire" default; that path is permanently removed.
+// See docs/design/spi-xplwy-runtime-contract.md §1.1 ("RepoIdentity is
+// always resolved from pkg/config tower state plus pkg/store repo
+// registration for Prefix — no path/CWD inference is permitted in
+// runtime-critical code").
+//
+// CLI commands that need a graph-state store are expected to resolve a
+// RepoIdentity via pkg/config.ActiveTowerConfig + registered-repo
+// lookup (see cmd/spire resolveRepoIdentity helper) and pass it in.
+// Commands that legitimately run outside a bound repo (e.g.
+// `spire tower create`) must not call this function.
+//
+// On cluster-mode DSN open / ping failure the function falls back to
+// the file store rather than failing the caller — losing cluster-mode
+// persistence is surfaced via the Dolt connection error logs, and the
+// file store is always usable. The fallback is an existing behavior
+// preserved across this refactor.
+func ResolveGraphStateStore(identity RepoIdentity, configDirFn func() (string, error)) (GraphStateStore, error) {
+	if identity.TowerName == "" {
+		return nil, ErrNoTowerBound
+	}
 	if host := os.Getenv("BEADS_DOLT_SERVER_HOST"); host != "" && host != "127.0.0.1" && host != "localhost" {
-		database := dolt.ReadBeadsDBName(os.Getwd)
-		if database == "" {
-			database = "spire"
-		}
+		// Ambient-CWD resolution was removed here. The database name is
+		// the caller-supplied identity.TowerName. See
+		// docs/design/spi-xplwy-runtime-contract.md §1.1 — this is the
+		// single biggest ambient-CWD removal in the runtime contract
+		// migration (chunk 3 of §4).
 		dsn := fmt.Sprintf("root:@tcp(%s:%s)/%s?parseTime=true&timeout=5s",
-			host, dolt.Port(), database)
+			host, dolt.Port(), identity.TowerName)
 		store, err := NewDoltGraphStateStore(dsn)
 		if err == nil {
-			return store
+			return store, nil
 		}
-		// Fall through to file store on error
+		// Fall through to file store on connection error.
 	}
-	return &FileGraphStateStore{ConfigDir: configDirFn}
+	return &FileGraphStateStore{ConfigDir: configDirFn}, nil
 }
