@@ -40,6 +40,25 @@ type WizardGuildSpec struct {
 	Repo       string                     `json:"repo,omitempty"`
 	RepoBranch string                     `json:"repoBranch,omitempty"`
 	Resources  *GuildResourceRequirements `json:"resources,omitempty"`
+
+	// SharedWorkspace opts the guild in to the borrowed-worktree k8s
+	// spawn path by setting SPIRE_K8S_SHARED_WORKSPACE=1 on the wizard
+	// pod. When true, child apprentice/sage pods spawned by the wizard
+	// mount the parent wizard's PVC (labeled
+	// `spire.io/owning-wizard-pod=<name>`) at /workspace; when false
+	// (default), /workspace is backed by an emptyDir and borrowed
+	// worktrees are not supported on the k8s backend.
+	//
+	// IMPORTANT: setting this to true WITHOUT production PVC
+	// provisioning will cause child pod spawns to fail with
+	// ErrSharedWorkspacePVCNotFound. The operator does not create the
+	// PVC today — see spi-cslm8 for the bug and the follow-up task for
+	// PVC provisioning. Until that lands, leave this unset (default
+	// false) to keep the operator's behavior correct.
+	//
+	// Pointer so unset (nil) is distinguishable from explicit false,
+	// matching the MaxApprentices precedence pattern above.
+	SharedWorkspace *bool `json:"sharedWorkspace,omitempty"`
 }
 
 type GuildResourceRequirements struct {

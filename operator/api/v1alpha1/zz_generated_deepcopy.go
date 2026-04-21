@@ -41,6 +41,10 @@ func (in *WizardGuildSpec) DeepCopyInto(out *WizardGuildSpec) {
 		out.Resources = new(GuildResourceRequirements)
 		in.Resources.DeepCopyInto(out.Resources)
 	}
+	if in.SharedWorkspace != nil {
+		v := *in.SharedWorkspace
+		out.SharedWorkspace = &v
+	}
 }
 
 func (in *GuildResourceRequirements) DeepCopyInto(out *GuildResourceRequirements) {

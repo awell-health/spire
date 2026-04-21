@@ -51,6 +51,12 @@ func TestBuildWorkloadPod_SharedBuilderParity(t *testing.T) {
 	apprentPtr := maxApprent
 	wg.Spec.MaxApprentices = &apprentPtr
 	wg.Spec.Token = defaultToken
+	// Opt this parity guild into the shared-workspace gate so the
+	// assertion below (SPIRE_K8S_SHARED_WORKSPACE=1) still holds. The
+	// gate is now opt-in per spi-cslm8; default-off behavior is covered
+	// in TestBuildWorkloadPod_SharedWorkspaceGate_OptIn below.
+	sharedWs := true
+	wg.Spec.SharedWorkspace = &sharedWs
 
 	cfg := &spirev1.SpireConfig{}
 	cfg.Spec.DefaultToken = defaultToken
@@ -388,33 +394,100 @@ func resourceListEqual(a, b corev1.ResourceList) bool {
 	return true
 }
 
-// TestBuildWorkloadPod_SharedWorkspaceGate pins the "SPIRE_K8S_SHARED_WORKSPACE=1
-// on operator-managed pods" contract. This is the first production
-// surface turning on chunk 2's new code path per spi-fjt2t.
-func TestBuildWorkloadPod_SharedWorkspaceGate(t *testing.T) {
+// TestBuildWorkloadPod_SharedWorkspaceGate_OptIn pins the post-spi-cslm8
+// contract: SPIRE_K8S_SHARED_WORKSPACE is NOT set on operator-managed
+// pods by default (because production PVC provisioning is not wired yet;
+// flipping it on without a PVC breaks child spawns with
+// ErrSharedWorkspacePVCNotFound), and IS set when the guild opts in via
+// spec.sharedWorkspace=true.
+//
+// The original unconditional-on contract (spi-fjt2t) was the bug fixed
+// by spi-cslm8: the operator set the gate but nothing provisioned the
+// PVC, so borrowed-worktree child spawns failed once spi-vrzhf made
+// operator-managed wizards actually reach the k8s backend. Keep this
+// test so future refactors can't silently flip the default back on
+// without also landing PVC provisioning.
+func TestBuildWorkloadPod_SharedWorkspaceGate_OptIn(t *testing.T) {
 	ns := "spire"
-	wg := makeAgent("core", ns, nil)
-	m := &AgentMonitor{
-		Log:          testr.New(t),
-		Namespace:    ns,
-		StewardImage: "spire-agent:dev",
-		Database:     "spire",
-		Prefix:       "spi",
-	}
 
-	pod := m.buildWorkloadPod(wg, "spi-abc", nil)
-	if pod == nil {
-		t.Fatalf("buildWorkloadPod returned nil")
-	}
-	main := pod.Spec.Containers[0]
-	em := envMap(main.Env)
-	got, ok := em["SPIRE_K8S_SHARED_WORKSPACE"]
-	if !ok {
-		t.Fatalf("SPIRE_K8S_SHARED_WORKSPACE not set on main container; want Value=1")
-	}
-	if got.Value != "1" {
-		t.Errorf("SPIRE_K8S_SHARED_WORKSPACE = %q, want %q", got.Value, "1")
-	}
+	t.Run("default off (spec.sharedWorkspace unset)", func(t *testing.T) {
+		wg := makeAgent("core", ns, nil)
+		m := &AgentMonitor{
+			Log:          testr.New(t),
+			Namespace:    ns,
+			StewardImage: "spire-agent:dev",
+			Database:     "spire",
+			Prefix:       "spi",
+		}
+
+		pod := m.buildWorkloadPod(wg, "spi-abc", nil)
+		if pod == nil {
+			t.Fatalf("buildWorkloadPod returned nil")
+		}
+		main := pod.Spec.Containers[0]
+		em := envMap(main.Env)
+		if got, ok := em["SPIRE_K8S_SHARED_WORKSPACE"]; ok {
+			t.Errorf("SPIRE_K8S_SHARED_WORKSPACE = %+v, want unset (default off)", got)
+		}
+		// Also absent on every init container so tower-attach /
+		// repo-bootstrap don't see a stale signal.
+		for _, ic := range pod.Spec.InitContainers {
+			icEnv := envMap(ic.Env)
+			if got, ok := icEnv["SPIRE_K8S_SHARED_WORKSPACE"]; ok {
+				t.Errorf("init %q has SPIRE_K8S_SHARED_WORKSPACE = %+v, want unset", ic.Name, got)
+			}
+		}
+	})
+
+	t.Run("explicit false (spec.sharedWorkspace=false)", func(t *testing.T) {
+		wg := makeAgent("core", ns, nil)
+		off := false
+		wg.Spec.SharedWorkspace = &off
+		m := &AgentMonitor{
+			Log:          testr.New(t),
+			Namespace:    ns,
+			StewardImage: "spire-agent:dev",
+			Database:     "spire",
+			Prefix:       "spi",
+		}
+
+		pod := m.buildWorkloadPod(wg, "spi-abc", nil)
+		main := pod.Spec.Containers[0]
+		if _, ok := envMap(main.Env)["SPIRE_K8S_SHARED_WORKSPACE"]; ok {
+			t.Error("SPIRE_K8S_SHARED_WORKSPACE must not be set when spec.sharedWorkspace=false")
+		}
+	})
+
+	t.Run("opt-in on (spec.sharedWorkspace=true)", func(t *testing.T) {
+		wg := makeAgent("core", ns, nil)
+		on := true
+		wg.Spec.SharedWorkspace = &on
+		m := &AgentMonitor{
+			Log:          testr.New(t),
+			Namespace:    ns,
+			StewardImage: "spire-agent:dev",
+			Database:     "spire",
+			Prefix:       "spi",
+		}
+
+		pod := m.buildWorkloadPod(wg, "spi-abc", nil)
+		main := pod.Spec.Containers[0]
+		got, ok := envMap(main.Env)["SPIRE_K8S_SHARED_WORKSPACE"]
+		if !ok {
+			t.Fatalf("SPIRE_K8S_SHARED_WORKSPACE not set on main container; want Value=1 (opt-in)")
+		}
+		if got.Value != "1" {
+			t.Errorf("SPIRE_K8S_SHARED_WORKSPACE = %q, want %q", got.Value, "1")
+		}
+		// Propagation to init containers (parity with other overlay env).
+		for _, ic := range pod.Spec.InitContainers {
+			icEnv := envMap(ic.Env)
+			icGot, icOk := icEnv["SPIRE_K8S_SHARED_WORKSPACE"]
+			if !icOk || icGot.Value != "1" {
+				t.Errorf("init %q SPIRE_K8S_SHARED_WORKSPACE = %+v, want Value=1", ic.Name, icGot)
+			}
+		}
+	})
 }
 
 // TestBuildWorkloadPod_MissingRepoReturnsNil asserts buildWorkloadPod

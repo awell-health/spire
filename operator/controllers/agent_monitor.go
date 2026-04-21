@@ -541,11 +541,11 @@ func (m *AgentMonitor) applyOperatorOverlay(
 	}
 
 	// Env overlay: MaxApprentices from the guild CR, SpireConfig token
-	// refs for ANTHROPIC_API_KEY and GITHUB_TOKEN, SPIRE_K8S_SHARED_WORKSPACE=1
+	// refs for ANTHROPIC_API_KEY and GITHUB_TOKEN, and (only when the
+	// guild opts in via spec.sharedWorkspace) SPIRE_K8S_SHARED_WORKSPACE=1
 	// so apprentice/sage children spawned by this wizard go through the
-	// shared-workspace path (chunk 2 of the runtime-contract migration).
-	// Applied to every container + init container so both paths see the
-	// same values.
+	// shared-workspace path. Applied to every container + init container
+	// so both paths see the same values.
 	overlayEnv := m.buildOverlayEnv(wg, cfg)
 	for i := range pod.Spec.Containers {
 		pod.Spec.Containers[i].Env = mergeEnv(pod.Spec.Containers[i].Env, overlayEnv)
@@ -565,13 +565,21 @@ func (m *AgentMonitor) buildOverlayEnv(wg *spirev1.WizardGuild, cfg *spirev1.Spi
 		// the process/docker backends have no analog. Wizards read it
 		// for logging and metric attribution.
 		{Name: "SPIRE_AGENT_NAME", Value: wg.Name},
+	}
 
-		// Flip the shared-workspace gate on for operator-managed pods.
-		// This is the first production surface turning on the new path
-		// (spi-fjt2t, per design §7.2). Child apprentice/sage pods
-		// spawned by the wizard inherit this env via SPIRE_ROLE-aware
-		// dispatch; the wizard itself never reads it.
-		{Name: "SPIRE_K8S_SHARED_WORKSPACE", Value: "1"},
+	// SPIRE_K8S_SHARED_WORKSPACE is opt-in via the guild CR
+	// (spec.sharedWorkspace). Default OFF because production PVC
+	// provisioning is not wired — flipping this on without a PVC
+	// labeled `spire.io/owning-wizard-pod=<name>` in the namespace
+	// makes child apprentice/sage spawns fail with
+	// ErrSharedWorkspacePVCNotFound (pkg/agent/backend_k8s.go
+	// resolveWorkspaceVolume). See spi-cslm8.
+	//
+	// When this flag lands production PVC provisioning, the default
+	// can flip back to ON; for now keep it opt-in so a missing PVC
+	// can't break operator-managed wizards in the field.
+	if wg.Spec.SharedWorkspace != nil && *wg.Spec.SharedWorkspace {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_K8S_SHARED_WORKSPACE", Value: "1"})
 	}
 
 	// MaxApprentices: CR > spire.yaml > default (built-in 3). Only
