@@ -83,6 +83,16 @@ spec:
               value: {{ include "spire.configDir" . | quote }}
             - name: DOLT_DATA_DIR
               value: {{ .Values.paths.dataRoot | quote }}
+            # BEADS_DATABASE / BEADS_PREFIX / DOLTHUB_REMOTE are propagated to
+            # workload wizard pods via the canonical tower-attach init
+            # container; the operator's AgentMonitor reads them off its own
+            # env (see operator/controllers/agent_monitor.go:buildWorkloadPod).
+            - name: BEADS_DATABASE
+              value: {{ include "spire.database" . | quote }}
+            - name: BEADS_PREFIX
+              value: {{ .Values.beads.prefix | quote }}
+            - name: DOLTHUB_REMOTE
+              value: {{ .Values.dolthub.remoteUrl | quote }}
           volumeMounts:
             - name: data
               mountPath: {{ .Values.paths.dataRoot }}

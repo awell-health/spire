@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/go-logr/logr"
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -253,9 +255,9 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		}
 
 		// Route by workload type:
-		//   epic   → wizard pod (wizard + familiar)
-		//   review → wizard pod (wizard --mode=review)
-		//   *      → wizard pod (wizard + sidecar)
+		//   epic   → epic pod (wizard + sidecar, Model A — out of scope for spi-9wo3a)
+		//   review → review pod (wizard --mode=review, Model A — out of scope for spi-9wo3a)
+		//   *      → canonical single-container wizard pod (see buildWorkloadPod)
 		var pod *corev1.Pod
 		switch wlType := m.getWorkloadType(ctx, beadID); wlType {
 		case "epic":
@@ -343,12 +345,28 @@ func (m *AgentMonitor) updateAgentPhase(ctx context.Context, agent *spirev1.Wiza
 	}
 }
 
-// buildWorkloadPod creates a pod spec for a single bead assignment.
-// The pod has two containers:
-//   - wizard: runs agent-entrypoint.sh (clone, claim, focus, execute, push)
-//   - sidecar: runs spire-sidecar (inbox polling, health, control channel)
+// buildWorkloadPod creates the canonical single-container wizard pod for a
+// single bead assignment (task/bug/feature/chore workloads).
 //
-// They share /comms (filesystem-based coordination) and /workspace.
+// Source of truth for the pod shape: pkg/agent/backend_k8s.go:buildWizardPod.
+// This path duplicates the canonical structure inline because the operator
+// sources image, labels, secrets, and resource overrides from the
+// WizardGuild CR and SpireConfig — inputs the pkg/agent backend does not
+// know about. A follow-up bead tracks unifying the two builders; until
+// then, changes to the canonical shape must be mirrored here.
+//
+// The pod runs:
+//   - One init container ("tower-attach") that runs
+//     `spire tower attach-cluster` to stage .beads/ and spire config into
+//     /data.
+//   - One main container ("agent") that runs
+//     `spire execute <bead-id> --name <agent-name>` against the cluster
+//     dolt service.
+//
+// Volumes are two emptyDirs: /data (beads + spire config) and /workspace
+// (apprentice bundle staging). There is no sidecar, no /comms volume, and
+// no beads-seed ConfigMap — those belong to the removed Model A contract
+// (see docs/k8s-operator-reference.md → Deprecated: agent-entrypoint.sh).
 func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID string, cfg *spirev1.SpireConfig) *corev1.Pod {
 	image := agent.Spec.Image
 	if image == "" {
@@ -370,23 +388,57 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID strin
 		branch = repoconfig.DefaultBranchBase
 	}
 
-	// Wizard environment
+	// attach-cluster inputs. Database/prefix/dolthub-remote are read from
+	// the operator's ambient env (plumbed via helm) and SpireConfig; we do
+	// not invent new CRD fields here. Database falls back to the operator's
+	// namespace to match the helm default `spire.database` which is
+	// derived from the release-scoped bead prefix.
+	db := os.Getenv("BEADS_DATABASE")
+	if db == "" {
+		db = m.Namespace
+	}
+	prefix := os.Getenv("BEADS_PREFIX")
+	if prefix == "" && len(agent.Spec.Prefixes) == 1 {
+		// Single-prefix guild: use it as the attach-cluster fallback so
+		// the init container gets a sensible value even when the operator
+		// wasn't deployed with BEADS_PREFIX set. Multi-prefix guilds
+		// leave --prefix empty; attach-cluster reads the authoritative
+		// value from the dolt TowerConfig and logs a mismatch warning.
+		prefix = agent.Spec.Prefixes[0]
+	}
+	dolthubRemote := os.Getenv("DOLTHUB_REMOTE")
+	if dolthubRemote == "" && cfg != nil {
+		dolthubRemote = cfg.Spec.DoltHub.Remote
+	}
+
+	// Main-container env. Matches the canonical shape: the init container
+	// stages beads at /data/<db>/.beads and spire config at /data/spire-config;
+	// DOLT_DATA_DIR + SPIRE_CONFIG_DIR tell resolveBeadsDir() where to find
+	// them. BEADS_DOLT_SERVER_{HOST,PORT} point at the cluster dolt so bd
+	// doesn't auto-start an embedded server.
 	wizardEnv := []corev1.EnvVar{
-		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "SPIRE_BEAD_ID", Value: beadID},
-		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
-		{Name: "SPIRE_REPO_BRANCH", Value: branch},
-		{Name: "SPIRE_COMMS_DIR", Value: "/comms"},
-		{Name: "SPIRE_WORKSPACE_DIR", Value: "/workspace"},
-		{Name: "SPIRE_STATE_DIR", Value: "/data"},
-		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
-		{Name: "DOLT_PORT", Value: "3306"},
-		// bd uses BEADS_DOLT_SERVER_{HOST,PORT} to reach the shared dolt server; without
-		// these it falls back to 127.0.0.1:0 and tries to auto-start a local dolt.
+		{Name: "DOLT_DATA_DIR", Value: "/data"},
+		{Name: "SPIRE_CONFIG_DIR", Value: "/data/spire-config"},
 		{Name: "BEADS_DOLT_SERVER_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
 		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3306"},
-		{Name: "BEADS_DIR", Value: "/data/.beads"},
-		{Name: "SPIRE_BD_LOG", Value: "1"},
+
+		// Identity
+		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
+		{Name: "SPIRE_BEAD_ID", Value: beadID},
+		{Name: "SPIRE_ROLE", Value: "wizard"},
+
+		// Repo — still consumed by the wizard for apprentice bundle production.
+		{Name: "SPIRE_REPO_URL", Value: agent.Spec.Repo},
+		{Name: "SPIRE_REPO_BRANCH", Value: branch},
+
+		// OTel wiring — matches pkg/agent/backend_k8s.go so traces/logs from
+		// operator-managed wizards land in the same steward collector as
+		// steward-spawned pods.
+		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: fmt.Sprintf("http://spire-steward.%s.svc:4317", m.Namespace)},
+		{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "grpc"},
+		{Name: "OTEL_TRACES_EXPORTER", Value: "otlp"},
+		{Name: "OTEL_LOGS_EXPORTER", Value: "otlp"},
+		{Name: "OTEL_RESOURCE_ATTRIBUTES", Value: fmt.Sprintf("bead.id=%s,agent.name=%s", beadID, agent.Name)},
 	}
 
 	// Cluster-level cap on concurrent apprentice subprocesses. When unset
@@ -400,18 +452,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID strin
 		})
 	}
 
-	// Sidecar environment
-	sidecarEnv := []corev1.EnvVar{
-		{Name: "SPIRE_AGENT_NAME", Value: agent.Name},
-		{Name: "DOLT_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
-		{Name: "DOLT_PORT", Value: "3306"},
-		{Name: "BEADS_DOLT_SERVER_HOST", Value: fmt.Sprintf("spire-dolt.%s.svc", m.Namespace)},
-		{Name: "BEADS_DOLT_SERVER_PORT", Value: "3306"},
-		{Name: "BEADS_DIR", Value: "/data/.beads"},
-		{Name: "SPIRE_BD_LOG", Value: "1"},
-	}
-
-	// Inject secrets from SpireConfig
+	// Inject secrets from SpireConfig.
 	if cfg != nil {
 		// Anthropic API key
 		tokenName := agent.Spec.Token
@@ -427,7 +468,7 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID strin
 			)
 		}
 
-		// GitHub token
+		// GitHub token — optional so installs without one don't block pod creation.
 		if cfg.Spec.DoltHub.CredentialsSecret != "" {
 			wizardEnv = append(wizardEnv,
 				envFromSecretOptional("GITHUB_TOKEN", cfg.Spec.DoltHub.CredentialsSecret, "GITHUB_TOKEN"),
@@ -435,28 +476,17 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID strin
 		}
 	}
 
-	// Shared volumes
-	volumes := []corev1.Volume{
-		{Name: "comms", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		beadsSeedVolume(),
-	}
-
-	sharedMounts := []corev1.VolumeMount{
-		{Name: "comms", MountPath: "/comms"},
-		{Name: "workspace", MountPath: "/workspace"},
-		{Name: "data", MountPath: "/data"},
-	}
+	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
+	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"}
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: m.Namespace,
-			// "spire.awell.io/agent" + "spire.awell.io/managed" are the selector
-			// keys used by reconcileManagedAgent — do not remove. "guild" is
-			// forward-compat for the WizardGuild CRD rename (separate bead) and
-			// duplicates "agent" today by design. "role" mirrors buildEpicPod.
+			// spire.awell.io/* are load-bearing — reconcileManagedAgent's list
+			// selector uses {agent, managed}, and the controller rename PRs
+			// migrate these keys atomically, not one pod at a time. "guild" is
+			// forward-compat for the WizardGuild CRD rename (separate bead).
 			Labels: map[string]string{
 				"spire.awell.io/agent":   agent.Name,
 				"spire.awell.io/guild":   agent.Name,
@@ -467,61 +497,56 @@ func (m *AgentMonitor) buildWorkloadPod(agent *spirev1.WizardGuild, beadID strin
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy:  corev1.RestartPolicyNever, // one-shot: do the work, exit
-			InitContainers: []corev1.Container{beadsSeedInitContainer()},
-			Volumes:        volumes,
+			RestartPolicy:     corev1.RestartPolicyNever,
+			PriorityClassName: "spire-agent-default",
+			Volumes: []corev1.Volume{
+				{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			},
+			InitContainers: []corev1.Container{{
+				Name:  "tower-attach",
+				Image: image,
+				Command: []string{
+					"spire", "tower", "attach-cluster",
+					"--data-dir=/data/" + db,
+					"--database=" + db,
+					"--prefix=" + prefix,
+					"--dolthub-remote=" + dolthubRemote,
+				},
+				// Share the main container's env so BEADS_DOLT_SERVER_HOST/PORT
+				// point at the cluster dolt service — otherwise attach-cluster
+				// falls through to laptop defaults (127.0.0.1:3307).
+				Env:          wizardEnv,
+				VolumeMounts: []corev1.VolumeMount{dataMount},
+			}},
 			Containers: []corev1.Container{
 				{
-					Name:         "wizard",
-					Image:        image,
-					Command:      []string{"/usr/local/bin/agent-entrypoint.sh"},
-					Env:          wizardEnv,
-					Resources:    buildResources(agent.Spec.Resources),
-					VolumeMounts: sharedMounts,
-					WorkingDir:   "/workspace",
-				},
-				{
-					Name:  "sidecar",
-					Image: image, // same image — contains spire-sidecar binary
+					Name:  "agent",
+					Image: image,
 					Command: []string{
-						"spire-sidecar",
-						"--comms-dir=/comms",
-						"--poll-interval=10s",
-						"--port=8080",
-						fmt.Sprintf("--agent-name=%s", agent.Name),
+						"spire", "execute", beadID, "--name", agent.Name,
 					},
-					Env:        sidecarEnv,
-					WorkingDir: "/data", // bd/spire find .beads by walking up from CWD
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "comms", MountPath: "/comms"},
-						{Name: "data", MountPath: "/data"},
-					},
-					ReadinessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/readyz",
-								Port: intstr8080(),
-							},
-						},
-						InitialDelaySeconds: 5,
-						PeriodSeconds:       10,
-					},
-					LivenessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/healthz",
-								Port: intstr8080(),
-							},
-						},
-						InitialDelaySeconds: 10,
-						PeriodSeconds:       30,
-					},
+					Env:          wizardEnv,
+					Resources:    wizardResources(agent.Spec.Resources),
+					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount},
+					WorkingDir:   "/workspace",
 				},
 			},
 		},
 	}
 
 	return pod
+}
+
+// wizardResources returns the resource requirements for a wizard pod.
+// Guild-level overrides (WizardGuild.Spec.Resources) win when set; otherwise
+// we fall back to the canonical wizard-tier defaults from pkg/agent so the
+// operator path matches pkg/agent/backend_k8s.go:buildWizardPod.
+func wizardResources(spec *spirev1.GuildResourceRequirements) corev1.ResourceRequirements {
+	if spec == nil {
+		return agent.WizardResources()
+	}
+	return buildResources(spec)
 }
 
 func envFromSecret(envName, secretName, key string) corev1.EnvVar {
@@ -952,12 +977,19 @@ func removeFromCurrentWork(agent *spirev1.WizardGuild, beadID string) bool {
 	return false
 }
 
-// isPodFinished checks if the main work container (wizard or artificer) has
-// terminated, even if the pod phase is still Running (sidecar may still be alive).
+// isPodFinished reports whether the main work container has terminated, even
+// when the pod phase is still Running.
+//
+// Used across all three pod paths:
+//   - Canonical workload pods (spi-9wo3a): one container named "agent"; any
+//     termination signals completion.
+//   - Epic/review pods (Model A, out of scope for spi-9wo3a): wizard + sidecar;
+//     the sidecar may keep the pod in Running while the wizard has exited, so
+//     we explicitly skip it.
 func isPodFinished(pod *corev1.Pod) bool {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.Name == "sidecar" {
-			continue // skip the sidecar
+			continue // skip the sidecar (epic/review pods only)
 		}
 		if cs.State.Terminated != nil {
 			return true

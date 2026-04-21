@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -265,6 +266,192 @@ func TestBuildWorkloadPod_NameTruncatedTo63(t *testing.T) {
 	}
 }
 
+// TestBuildWorkloadPod_CanonicalShape pins the canonical single-container
+// wizard pod contract (spi-kjh9e / spi-9wo3a): one tower-attach init
+// container, one "agent" main container running `spire execute`, two
+// emptyDir volumes (data + workspace), and no Model A artifacts
+// (sidecar / /comms / beads-seed ConfigMap / agent-entrypoint.sh).
+func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
+	ns := "spire"
+	agent := makeAgent("core", ns, nil)
+	m := &AgentMonitor{Log: testr.New(t), Namespace: ns, StewardImage: "spire-agent:dev"}
+
+	pod := m.buildWorkloadPod(agent, "spi-abc", nil)
+
+	// Init container: exactly one named "tower-attach".
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("len(InitContainers) = %d, want 1", len(pod.Spec.InitContainers))
+	}
+	ic := pod.Spec.InitContainers[0]
+	if ic.Name != "tower-attach" {
+		t.Errorf("init container Name = %q, want tower-attach", ic.Name)
+	}
+	wantPrefix := []string{"spire", "tower", "attach-cluster"}
+	if len(ic.Command) < len(wantPrefix) {
+		t.Fatalf("init container Command too short: %v", ic.Command)
+	}
+	for i, w := range wantPrefix {
+		if ic.Command[i] != w {
+			t.Errorf("init container Command[%d] = %q, want %q", i, ic.Command[i], w)
+		}
+	}
+	for _, flag := range []string{"--data-dir=/data/", "--database=", "--prefix=", "--dolthub-remote="} {
+		if !anyHasPrefix(ic.Command, flag) {
+			t.Errorf("init container Command missing flag with prefix %q; got %v", flag, ic.Command)
+		}
+	}
+
+	// Main container: exactly one named "agent" running `spire execute`.
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatalf("len(Containers) = %d, want 1", len(pod.Spec.Containers))
+	}
+	main := pod.Spec.Containers[0]
+	if main.Name != "agent" {
+		t.Errorf("main container Name = %q, want agent", main.Name)
+	}
+	wantCmd := []string{"spire", "execute", "spi-abc", "--name", "core"}
+	if !stringSlicesEqual(main.Command, wantCmd) {
+		t.Errorf("main container Command = %v, want %v", main.Command, wantCmd)
+	}
+
+	// Volumes: exactly data + workspace emptyDir, no comms / beads-seed.
+	if len(pod.Spec.Volumes) != 2 {
+		t.Fatalf("len(Volumes) = %d, want 2; got %+v", len(pod.Spec.Volumes), pod.Spec.Volumes)
+	}
+	vols := make(map[string]corev1.Volume, len(pod.Spec.Volumes))
+	for _, v := range pod.Spec.Volumes {
+		vols[v.Name] = v
+	}
+	for _, name := range []string{"data", "workspace"} {
+		v, ok := vols[name]
+		if !ok {
+			t.Errorf("missing volume %q", name)
+			continue
+		}
+		if v.EmptyDir == nil {
+			t.Errorf("volume %q: EmptyDir is nil, want EmptyDir source", name)
+		}
+	}
+	for _, forbidden := range []string{"comms", "beads-seed"} {
+		if _, ok := vols[forbidden]; ok {
+			t.Errorf("Model A volume %q must not exist on the canonical workload pod", forbidden)
+		}
+	}
+
+	// Main container env must include DOLT_DATA_DIR and SPIRE_CONFIG_DIR so
+	// resolveBeadsDir() finds the store staged by tower-attach.
+	envMap := make(map[string]corev1.EnvVar, len(main.Env))
+	for _, e := range main.Env {
+		envMap[e.Name] = e
+	}
+	wantEnv := map[string]string{
+		"DOLT_DATA_DIR":    "/data",
+		"SPIRE_CONFIG_DIR": "/data/spire-config",
+		"SPIRE_AGENT_NAME": "core",
+		"SPIRE_BEAD_ID":    "spi-abc",
+		"SPIRE_ROLE":       "wizard",
+	}
+	for k, want := range wantEnv {
+		got, ok := envMap[k]
+		if !ok {
+			t.Errorf("missing env var %s", k)
+			continue
+		}
+		if got.Value != want {
+			t.Errorf("env %s = %q, want %q", k, got.Value, want)
+		}
+	}
+
+	// Pod-level invariants from the canonical contract.
+	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
+		t.Errorf("RestartPolicy = %q, want Never", pod.Spec.RestartPolicy)
+	}
+	if pod.Spec.PriorityClassName != "spire-agent-default" {
+		t.Errorf("PriorityClassName = %q, want spire-agent-default", pod.Spec.PriorityClassName)
+	}
+
+	// Main container volume mounts: /data + /workspace, no /comms.
+	mainMounts := make(map[string]string, len(main.VolumeMounts))
+	for _, vm := range main.VolumeMounts {
+		mainMounts[vm.MountPath] = vm.Name
+	}
+	if mainMounts["/data"] != "data" {
+		t.Errorf("main container /data mount volume = %q, want data", mainMounts["/data"])
+	}
+	if mainMounts["/workspace"] != "workspace" {
+		t.Errorf("main container /workspace mount volume = %q, want workspace", mainMounts["/workspace"])
+	}
+	if _, ok := mainMounts["/comms"]; ok {
+		t.Error("main container must not mount /comms on the canonical workload pod")
+	}
+}
+
+// TestBuildWorkloadPod_NoSidecar explicitly guards against regressing to the
+// sidecar model: a single main container, never a container named "sidecar".
+func TestBuildWorkloadPod_NoSidecar(t *testing.T) {
+	ns := "spire"
+	agent := makeAgent("core", ns, nil)
+	m := &AgentMonitor{Log: testr.New(t), Namespace: ns}
+
+	pod := m.buildWorkloadPod(agent, "spi-abc", nil)
+
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatalf("len(Containers) = %d, want 1 (no sidecar)", len(pod.Spec.Containers))
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.Name == "sidecar" {
+			t.Errorf("container named %q must not exist on the canonical workload pod", c.Name)
+		}
+		if strings.Contains(strings.Join(c.Command, " "), "agent-entrypoint.sh") {
+			t.Errorf("container %q runs agent-entrypoint.sh; that path was removed in spi-d4ku6", c.Name)
+		}
+	}
+}
+
+// TestBuildWorkloadPod_ResourceOverride verifies guild-level overrides win
+// and that the wizard-tier default is applied when the guild is unset. This
+// is the contract spi-9wo3a preserves on purpose: teams may already rely on
+// guild-level Resources, so the switch to the canonical pod must not drop
+// that override path.
+func TestBuildWorkloadPod_ResourceOverride(t *testing.T) {
+	ns := "spire"
+
+	t.Run("guild override wins", func(t *testing.T) {
+		agent := makeAgent("core", ns, nil)
+		agent.Spec.Resources = &spirev1.GuildResourceRequirements{
+			Requests: map[string]string{"memory": "512Mi", "cpu": "100m"},
+			Limits:   map[string]string{"memory": "1Gi", "cpu": "500m"},
+		}
+		m := &AgentMonitor{Log: testr.New(t), Namespace: ns}
+		pod := m.buildWorkloadPod(agent, "spi-abc", nil)
+
+		res := pod.Spec.Containers[0].Resources
+		if got := res.Requests[corev1.ResourceMemory]; got.String() != "512Mi" {
+			t.Errorf("memory request = %s, want 512Mi", got.String())
+		}
+		if got := res.Limits[corev1.ResourceMemory]; got.String() != "1Gi" {
+			t.Errorf("memory limit = %s, want 1Gi", got.String())
+		}
+	})
+
+	t.Run("default wizard tier applies when guild is unset", func(t *testing.T) {
+		agent := makeAgent("core", ns, nil)
+		m := &AgentMonitor{Log: testr.New(t), Namespace: ns}
+		pod := m.buildWorkloadPod(agent, "spi-abc", nil)
+
+		res := pod.Spec.Containers[0].Resources
+		// Canonical defaults from pkg/agent/resources.go: wizard tier gets
+		// 1Gi/2Gi memory and 250m/1000m cpu. Resources aren't nil because
+		// of the fallback — assert they match.
+		if got := res.Requests[corev1.ResourceMemory]; got.String() != "1Gi" {
+			t.Errorf("default memory request = %s, want 1Gi", got.String())
+		}
+		if got := res.Limits[corev1.ResourceMemory]; got.String() != "2Gi" {
+			t.Errorf("default memory limit = %s, want 2Gi", got.String())
+		}
+	})
+}
+
 func TestIsPodFinished(t *testing.T) {
 	cases := []struct {
 		name string
@@ -272,7 +459,23 @@ func TestIsPodFinished(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "wizard container terminated",
+			// Canonical workload pod: single "agent" container, terminated.
+			// This is the spi-9wo3a shape — assert reap still works.
+			name: "single agent container terminated",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "agent", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			// Epic/review (Model A) pod: wizard terminated, sidecar still
+			// running keeps the pod in Running phase. Reap must still fire.
+			name: "wizard container terminated (epic/review path)",
 			pod: &corev1.Pod{
 				Status: corev1.PodStatus{
 					Phase: corev1.PodRunning,
@@ -318,4 +521,14 @@ func TestIsPodFinished(t *testing.T) {
 			}
 		})
 	}
+}
+
+// anyHasPrefix reports whether any element of cmd starts with prefix.
+func anyHasPrefix(cmd []string, prefix string) bool {
+	for _, arg := range cmd {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	return false
 }

@@ -146,7 +146,7 @@ After code changes, the fastest path depends on what you changed:
 # Changed steward code or entrypoint:
 make steward        # ~15s (Go compile + load + restart)
 
-# Changed agent/wizard code or agent-entrypoint.sh:
+# Changed agent/wizard code:
 make agent          # ~15s (Go compile + load)
 # Then restart any running wizard pods or wait for next assignment
 

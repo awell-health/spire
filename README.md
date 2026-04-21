@@ -255,7 +255,6 @@ spire/
 ├── pkg/metrics/           # Agent run recording
 ├── pkg/repoconfig/        # spire.yaml reader
 ├── k8s/                   # Manifests, CRDs, entrypoints
-├── agent-entrypoint.sh    # Wizard pod lifecycle
 ├── docs/
 │   ├── getting-started.md # Laptop setup, first task, first landed change
 │   ├── cli-reference.md   # All commands documented
