@@ -83,7 +83,7 @@ func SpawnRepairWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws Work
 
 	bundle := buildConflictBundle(ctx, wc, files)
 
-	workerAttemptID, err := dispatchConflictApprentice(ctx, bundle)
+	workerAttemptID, err := dispatchConflictApprentice(ctx, bundle, ws)
 	if err != nil {
 		return RepairWorkerResult{WorkerAttemptID: workerAttemptID}, fmt.Errorf("dispatch conflict apprentice: %w", err)
 	}
@@ -165,7 +165,7 @@ func resolveSideContext(ctx *RecoveryActionCtx, wc *spgit.WorktreeContext, sha, 
 // are the authoritative check — some subprocess errors are non-fatal (e.g.
 // hook noise) and a clean exit with conflict markers still on disk is a
 // real failure that the gates catch.
-func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle) (string, error) {
+func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle, ws WorkspaceHandle) (string, error) {
 	if ctx.Spawner == nil {
 		return "", fmt.Errorf("repair worker: no Spawner wired on ctx")
 	}
@@ -195,15 +195,18 @@ func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle) (
 		CustomPrompt: prompt,
 		LogPath:      logPath,
 	}
-	workspace := inferWorkspaceHandle(ctx.RepoPath, ctx.Worktree.Dir, ctx.Worktree.Branch, ctx.Worktree.BaseBranch)
-	if workspace != nil && workspace.BaseBranch == "" {
+	workspace := ws
+	if workspace.Name == "" {
+		workspace.Name = "recovery"
+	}
+	if workspace.BaseBranch == "" {
 		workspace.BaseBranch = ctx.BaseBranch
 	}
 	cfg.Identity = RepoIdentity{
 		Prefix:     store.PrefixFromID(ctx.TargetBeadID),
-		BaseBranch: ctx.BaseBranch,
+		BaseBranch: workspace.BaseBranch,
 	}
-	cfg.Workspace = normalizeWorkspaceHandle(workspace, "recovery", ctx.RepoPath, ctx.BaseBranch)
+	cfg.Workspace = &workspace
 	cfg.Run = RunContext{
 		Prefix:          store.PrefixFromID(ctx.TargetBeadID),
 		BeadID:          ctx.TargetBeadID,
@@ -211,9 +214,9 @@ func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle) (
 		Role:            cfg.Role,
 		FormulaStep:     "resolve-conflicts",
 		Backend:         "process",
-		WorkspaceKind:   cfg.Workspace.Kind,
-		WorkspaceName:   cfg.Workspace.Name,
-		WorkspaceOrigin: cfg.Workspace.Origin,
+		WorkspaceKind:   workspace.Kind,
+		WorkspaceName:   workspace.Name,
+		WorkspaceOrigin: workspace.Origin,
 		HandoffMode:     HandoffBorrowed,
 	}
 

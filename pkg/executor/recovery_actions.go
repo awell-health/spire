@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -28,10 +27,11 @@ type RecoveryActionCtx struct {
 	DB         *sql.DB
 	RepoPath   string
 	BaseBranch string
-	// Worktree is the provisioned workspace context. Chunk 3 still
-	// populates this via ProvisionRecoveryWorktree or the wizard's
-	// resumed staging worktree; chunk 4 will switch to resolveWorkspace
-	// producing a handle+context pair up front.
+	// Worktree is the provisioned workspace context. Populated by
+	// buildRecoveryActionCtx through the shared runtime workspace
+	// contract (spi-xplwy) — dispatch on plan.Workspace.Kind selects
+	// between the target bead's borrowed staging worktree and a fresh
+	// owned worktree off its feature branch.
 	Worktree       *spgit.WorktreeContext
 	RecoveryBeadID string
 	TargetBeadID   string
@@ -193,51 +193,19 @@ func executeRecipe(_ *RecoveryActionCtx, _ recovery.RepairPlan, _ WorkspaceHandl
 }
 
 // worktreeFromHandle reconstructs a WorktreeContext from a
-// WorkspaceHandle so mechanical actions can reuse the spgit helpers
-// (RunCommand, ConflictedFiles, EnsureRemoteRef) without threading a
-// pre-built context through every signature. Chunk 4 replaces this
-// with resolveWorkspace producing a live handle+context pair.
+// WorkspaceHandle so mechanical actions and the worker-dispatch
+// fallback can reuse the spgit helpers (RunCommand, ConflictedFiles,
+// EnsureRemoteRef) without threading a pre-built context through every
+// signature. buildRecoveryActionCtx provides a live context directly
+// via resolveRepairWorkspace; this helper covers the path where
+// SpawnRepairWorker is invoked with a bare WorkspaceHandle (e.g. from
+// tests that bypass the builder).
 func worktreeFromHandle(ws WorkspaceHandle) *spgit.WorktreeContext {
 	return &spgit.WorktreeContext{
 		Dir:        ws.Path,
 		Branch:     ws.Branch,
 		BaseBranch: ws.BaseBranch,
 	}
-}
-
-// ProvisionRecoveryWorktree creates a worktree for recovery operations
-// using pkg/git APIs. The worktree is placed at
-// <repoPath>/.worktrees/<beadID>-recovery on a branch named
-// recovery/<beadID>, based on the target bead's feature branch (not
-// the base branch). This ensures recovery actions operate on the
-// bead's actual work.
-//
-// Kept for chunk 3 — chunk 4 replaces this with resolveWorkspace
-// consuming a WorkspaceRequest.
-func ProvisionRecoveryWorktree(repoPath, beadID, baseBranch string) (*spgit.WorktreeContext, func(), error) {
-	dir := filepath.Join(repoPath, ".worktrees", beadID+"-recovery")
-	branch := "recovery/" + beadID
-
-	startPoint := "feat/" + beadID
-	if b, err := store.GetBead(beadID); err == nil {
-		if fb := store.HasLabel(b, "feat-branch:"); fb != "" {
-			startPoint = fb
-		}
-	}
-
-	base := repoconfig.ResolveBranchBase(baseBranch)
-	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: base}
-	wc, err := rc.CreateWorktreeNewBranch(dir, branch, startPoint)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create recovery worktree at %s from %s: %w", dir, startPoint, err)
-	}
-
-	cleanup := func() {
-		wc.Cleanup()
-		rc2 := &spgit.RepoContext{Dir: repoPath, BaseBranch: base}
-		_ = rc2.ForceDeleteBranch(branch)
-	}
-	return wc, cleanup, nil
 }
 
 // validCommitSHA matches a hex SHA (7-40 characters). Used to guard

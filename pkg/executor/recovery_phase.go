@@ -1246,10 +1246,11 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 // ---------------------------------------------------------------------------
 
 // handlePlanExecute dispatches a typed RepairPlan produced by decide. It
-// provisions a recovery workspace (by resuming the wizard's staging
-// worktree when possible, otherwise by calling ProvisionRecoveryWorktree
-// — chunk 4 replaces this with resolveWorkspace) and routes on plan.Mode
-// to the matching execute surface:
+// resolves the recovery workspace through the shared runtime contract
+// (spi-xplwy) — dispatch on plan.Workspace.Kind selects between
+// borrowing the target bead's staging worktree and provisioning a fresh
+// owned worktree — then routes on plan.Mode to the matching execute
+// surface:
 //
 //   - Noop       → no-op resume
 //   - Mechanical → mechanicalActions[plan.Action]
@@ -1376,11 +1377,17 @@ func handlePlanExecute(e *Executor, stepName string, step StepConfig, state *Gra
 	return ActionResult{Outputs: outputs}
 }
 
-// buildRecoveryActionCtx provisions the workspace a RepairPlan requires
-// and assembles the RecoveryActionCtx carrying every dep the mechanical
-// and worker dispatches read. Chunk 4 replaces the internal resume /
-// ProvisionRecoveryWorktree pair with resolveWorkspace consuming
-// plan.Workspace.
+// buildRecoveryActionCtx resolves the workspace a RepairPlan requires via
+// the shared runtime contract (spi-xplwy) and assembles the
+// RecoveryActionCtx carrying every dep the mechanical and worker
+// dispatches read. Dispatch on plan.Workspace.Kind mirrors the runtime
+// model documented in spi-h32xj §3:
+//
+//   - repo:             pure-db op; no worktree provisioning.
+//   - borrowed_worktree: resume the target bead's wizard staging worktree.
+//   - owned_worktree:    fresh recovery branch off the target bead's feat
+//     branch via pkg/git primitives; cleanup removes the worktree and
+//     deletes the branch.
 func (e *Executor) buildRecoveryActionCtx(sourceBeadID string, plan recovery.RepairPlan, step StepConfig, state *GraphState) (*RecoveryActionCtx, WorkspaceHandle, func(), error) {
 	// Merge step.With and decide outputs so mechanical params flow through.
 	params := make(map[string]string)
@@ -1402,28 +1409,12 @@ func (e *Executor) buildRecoveryActionCtx(sourceBeadID string, plan recovery.Rep
 
 	repoPath := e.effectiveRepoPath()
 
-	// Prefer resuming the wizard's staging worktree so recovery operates
-	// directly on the staging branch. Fall back to ProvisionRecoveryWorktree
-	// when the wizard state isn't recoverable.
-	var wc *spgit.WorktreeContext
-	var cleanup func()
-	baseBranch := ""
-	if resumed, err := resumeWizardStagingWorktree(sourceBeadID, e); err == nil {
-		wc = resumed
-		baseBranch = resumed.BaseBranch
-		e.log("resumed wizard staging worktree at %s (branch %s, base %s)", resumed.Dir, resumed.Branch, resumed.BaseBranch)
-	} else {
-		e.log("cannot resume wizard staging worktree: %v; provisioning recovery worktree", err)
-		if baseBranch == "" {
-			baseBranch = resolveBaseBranchForBead(sourceBeadID, e)
-		}
-		provisioned, cleanupFn, perr := ProvisionRecoveryWorktree(repoPath, sourceBeadID, baseBranch)
-		if perr != nil {
-			return nil, WorkspaceHandle{}, nil, fmt.Errorf("provision recovery worktree: %w", perr)
-		}
-		wc = provisioned
-		cleanup = cleanupFn
+	wc, ws, cleanup, err := e.resolveRepairWorkspace(sourceBeadID, plan)
+	if err != nil {
+		return nil, WorkspaceHandle{}, nil, err
 	}
+
+	baseBranch := ws.BaseBranch
 	if baseBranch == "" {
 		baseBranch = resolveBaseBranchForBead(sourceBeadID, e)
 	}
@@ -1450,16 +1441,91 @@ func (e *Executor) buildRecoveryActionCtx(sourceBeadID string, plan recovery.Rep
 		AgentNamespace: "cleric-repair",
 	}
 
-	ws := WorkspaceHandle{
-		Name:       "recovery",
-		Path:       wc.Dir,
-		Branch:     wc.Branch,
-		BaseBranch: baseBranch,
-		Kind:       WorkspaceKindOwnedWorktree,
-		Origin:     WorkspaceOriginLocalBind,
-	}
-
 	return actionCtx, ws, cleanup, nil
+}
+
+// resolveRepairWorkspace materializes the workspace described by
+// plan.Workspace. It is the cleric's entry point into the shared runtime
+// workspace contract (spi-xplwy): every RepairMode that needs a
+// substrate flows through a single Kind-keyed dispatch. plan.Workspace is
+// authoritative; when the Kind is empty, execute defaults to
+// owned_worktree (the mechanical case). Noop/escalate resolve no
+// workspace — those modes short-circuit in handlePlanExecute before this
+// helper runs.
+func (e *Executor) resolveRepairWorkspace(sourceBeadID string, plan recovery.RepairPlan) (*spgit.WorktreeContext, WorkspaceHandle, func(), error) {
+	const wsName = "recovery"
+	kind := plan.Workspace.Kind
+	if kind == "" {
+		kind = WorkspaceKindOwnedWorktree
+	}
+	repoPath := e.effectiveRepoPath()
+	baseBranch := resolveBaseBranchForBead(sourceBeadID, e)
+
+	switch kind {
+	case WorkspaceKindRepo:
+		return nil, WorkspaceHandle{
+			Name:       wsName,
+			Kind:       WorkspaceKindRepo,
+			Path:       repoPath,
+			BaseBranch: baseBranch,
+			Origin:     WorkspaceOriginLocalBind,
+		}, nil, nil
+
+	case WorkspaceKindBorrowedWorktree:
+		borrowFrom := plan.Workspace.BorrowFrom
+		if borrowFrom == "" {
+			borrowFrom = sourceBeadID
+		}
+		wc, err := resumeWizardStagingWorktree(borrowFrom, e)
+		if err != nil {
+			return nil, WorkspaceHandle{}, nil, fmt.Errorf("borrow workspace from %s: %w", borrowFrom, err)
+		}
+		bb := wc.BaseBranch
+		if bb == "" {
+			bb = baseBranch
+		}
+		return wc, WorkspaceHandle{
+			Name:       wsName,
+			Kind:       WorkspaceKindBorrowedWorktree,
+			Path:       wc.Dir,
+			Branch:     wc.Branch,
+			BaseBranch: bb,
+			Origin:     WorkspaceOriginLocalBind,
+			Borrowed:   true,
+		}, nil, nil
+
+	case WorkspaceKindOwnedWorktree:
+		dir := filepath.Join(repoPath, ".worktrees", sourceBeadID+"-recovery")
+		branch := "recovery/" + sourceBeadID
+		startPoint := "feat/" + sourceBeadID
+		if b, gerr := store.GetBead(sourceBeadID); gerr == nil {
+			if fb := store.HasLabel(b, "feat-branch:"); fb != "" {
+				startPoint = fb
+			}
+		}
+		base := repoconfig.ResolveBranchBase(baseBranch)
+		rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: base}
+		wc, err := rc.CreateWorktreeNewBranch(dir, branch, startPoint)
+		if err != nil {
+			return nil, WorkspaceHandle{}, nil, fmt.Errorf("create owned recovery worktree at %s from %s: %w", dir, startPoint, err)
+		}
+		cleanup := func() {
+			wc.Cleanup()
+			rc2 := &spgit.RepoContext{Dir: repoPath, BaseBranch: base}
+			_ = rc2.ForceDeleteBranch(branch)
+		}
+		return wc, WorkspaceHandle{
+			Name:       wsName,
+			Kind:       WorkspaceKindOwnedWorktree,
+			Path:       wc.Dir,
+			Branch:     branch,
+			BaseBranch: base,
+			Origin:     WorkspaceOriginLocalBind,
+		}, cleanup, nil
+
+	default:
+		return nil, WorkspaceHandle{}, nil, fmt.Errorf("resolve repair workspace: unsupported kind %q", kind)
+	}
 }
 
 // handleVerify implements the cooperative retry loop between the recovery

@@ -633,7 +633,7 @@ func TestDispatchConflictApprentice_NoSpawner(t *testing.T) {
 		Worktree: &spgit.WorktreeContext{Dir: "/tmp/x"},
 		Log:      func(string) {},
 	}
-	_, err := dispatchConflictApprentice(ctx, conflictBundle{})
+	_, err := dispatchConflictApprentice(ctx, conflictBundle{}, WorkspaceHandle{Path: "/tmp/x"})
 	if err == nil {
 		t.Fatal("expected error with no Spawner")
 	}
@@ -648,7 +648,7 @@ func TestDispatchConflictApprentice_NoWorktree(t *testing.T) {
 		Spawner: fakeSpawner{},
 		Log:     func(string) {},
 	}
-	_, err := dispatchConflictApprentice(ctx, conflictBundle{})
+	_, err := dispatchConflictApprentice(ctx, conflictBundle{}, WorkspaceHandle{})
 	if err == nil {
 		t.Fatal("expected error with no worktree")
 	}
@@ -673,7 +673,7 @@ func TestDispatchConflictApprentice_WaitErrorNonFatal(t *testing.T) {
 		Log: func(string) {},
 	}
 
-	_, err := dispatchConflictApprentice(ctx, conflictBundle{})
+	_, err := dispatchConflictApprentice(ctx, conflictBundle{}, WorkspaceHandle{Path: dir})
 	if err != nil {
 		t.Errorf("dispatchConflictApprentice returned error on non-nil Wait() — expected nil: %v", err)
 	}
@@ -697,7 +697,15 @@ func TestDispatchConflictApprentice_UsesCustomAgentNamespace(t *testing.T) {
 		Log: func(string) {},
 	}
 
-	_, err := dispatchConflictApprentice(ctx, conflictBundle{})
+	ws := WorkspaceHandle{
+		Name:       "recovery",
+		Kind:       WorkspaceKindOwnedWorktree,
+		Path:       dir,
+		Branch:     "recovery/spi-target",
+		BaseBranch: "main",
+		Origin:     WorkspaceOriginLocalBind,
+	}
+	_, err := dispatchConflictApprentice(ctx, conflictBundle{}, ws)
 	if err != nil {
 		t.Fatalf("dispatchConflictApprentice: %v", err)
 	}
@@ -736,8 +744,7 @@ func TestDispatchConflictApprentice_UsesCustomAgentNamespace(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — local to the agentic tests so we don't conflict with the
-// initTestRepo symbol used by recovery_actions_test.go.
+// Helpers — local to the agentic tests.
 // ---------------------------------------------------------------------------
 
 func initAgenticTestRepo(t *testing.T) string {
