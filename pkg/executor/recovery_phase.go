@@ -25,7 +25,7 @@ import (
 
 func init() {
 	actionRegistry["cleric.execute"] = actionClericExecute
-	actionRegistry["cleric.decide"] = actionClericDecide
+	actionRegistry["cleric.decide"] = handleDecide
 	actionRegistry["cleric.learn"] = actionClericLearn
 	actionRegistry["cleric.collect_context"] = actionClericCollectContext
 	actionRegistry["cleric.verify"] = actionClericVerify
@@ -692,15 +692,6 @@ type CollectContextResult struct {
 	WizardLogTail  string                    `json:"wizard_log_tail,omitempty"`
 }
 
-// DecideResult is the structured output of the decide step (Claude response).
-type DecideResult struct {
-	ChosenAction    string  `json:"chosen_action"`
-	Confidence      float64 `json:"confidence"`
-	Reasoning       string  `json:"reasoning"`
-	NeedsHuman      bool    `json:"needs_human"`
-	ExpectedOutcome string  `json:"expected_outcome"`
-}
-
 // LearnResult is the structured output of the learn step (Claude response).
 type LearnResult struct {
 	LearningSummary string `json:"learning_summary"`
@@ -830,20 +821,17 @@ func handleCollectContext(e *Executor, stepName string, step StepConfig, state *
 	return ActionResult{Outputs: outputs}
 }
 
-// handleDecide calls Claude with the collect_context result to choose a
-// recovery action. Also incorporates FullRecoveryContext when available:
-// avoids repeating failed actions, parses human comments as guidance, and
-// auto-escalates when TotalAttempts >= max_attempts (default 3).
+// handleDecide delegates to recovery.Decide and serializes its RepairPlan
+// into step outputs. The thin-wrapper shape is per design
+// spi-h32xj-cleric-repair-loop §6 — the decision policy (human-guidance
+// parsing, promoted-recipe replay, git-state heuristics, Claude fallback)
+// lives in pkg/recovery and the executor only bridges state/deps.
 //
-// Decision priority:
-//
-//	(a) human guidance if present
-//	(b) git-state-driven (behind main → rebase, dirty worktree → rebuild,
-//	    conflict → resolve-conflicts)
-//	(c) Claude-selected action
-//	(d) fallback to resummon if unclear
+// Transitional output surface: the wrapper writes the typed `plan` JSON
+// plus the legacy scalar keys (chosen_action, confidence, reasoning,
+// needs_human, expected_outcome) so execute/learn/finish keep working
+// until Chunk 6 replaces the legacy outputs with RecoveryOutcome.
 func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
-	// Read collect_context result from previous step outputs.
 	var contextJSON string
 	if state != nil {
 		if ss, ok := state.Steps["collect_context"]; ok {
@@ -859,7 +847,6 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		return ActionResult{Error: fmt.Errorf("decide: unmarshal collect_context_result: %w", err)}
 	}
 
-	// Load FullRecoveryContext from state vars (set by collect_context).
 	var fullCtx *FullRecoveryContext
 	if state != nil && state.Vars != nil {
 		if frcJSON := state.Vars["full_recovery_context"]; frcJSON != "" {
@@ -871,404 +858,117 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		}
 	}
 
-	// Check max attempts — auto-escalate if threshold reached.
-	maxAttempts := DefaultMaxRecoveryAttempts
+	maxAttempts := 0
 	if ma := step.With["max_attempts"]; ma != "" {
 		if parsed, err := strconv.Atoi(ma); err == nil && parsed > 0 {
 			maxAttempts = parsed
 		}
 	}
-	if fullCtx != nil && fullCtx.TotalAttempts >= maxAttempts {
-		e.log("recovery: decide: auto-escalate — total attempts %d >= max %d", fullCtx.TotalAttempts, maxAttempts)
-		return ActionResult{Outputs: map[string]string{
-			"status":        "success",
-			"chosen_action": "escalate",
-			"confidence":    "1.00",
-			"reasoning":     fmt.Sprintf("Auto-escalate: %d recovery attempts exhausted (max %d)", fullCtx.TotalAttempts, maxAttempts),
-			"needs_human":   "true",
-		}}
-	}
 
-	// (a) Check for human guidance in comments.
-	if fullCtx != nil && len(fullCtx.HumanComments) > 0 {
-		if guided := parseHumanGuidance(fullCtx.HumanComments, fullCtx.RepeatedFailures); guided != "" {
-			e.log("recovery: decide: human guidance detected → %s", guided)
-			return ActionResult{Outputs: map[string]string{
-				"status":        "success",
-				"chosen_action": guided,
-				"confidence":    "0.90",
-				"reasoning":     "Human guidance from bead comment",
-				"needs_human":   "false",
-			}}
-		}
-	}
-
-	// (a2) Promoted mechanical recipe check. Once a failure_signature has
-	// accumulated N consecutive clean agentic recoveries (each with a
-	// codified mechanical_recipe), skip the agentic dispatch and replay
-	// the recipe. A single failure of a promoted recipe demotes it back
-	// to the agentic default (see MarkDemoted on action failure paths).
-	if sig := failureSignatureFromContext(e, ccResult); sig != "" {
-		threshold := clericPromotionThreshold(e, sig)
-		if promState, err := recovery.LookupPromotionState(sig, threshold); err != nil {
-			e.log("recovery: decide: promotion lookup for %s failed (continuing with agentic default): %v", sig, err)
-		} else if promState.Promoted {
-			action, params := recipeDispatch(promState.Recipe)
-			if action != "" && (fullCtx == nil || fullCtx.RepeatedFailures[action] < 2) {
-				e.log("recovery: decide: promoted mechanical recipe for %s → %s (count=%d threshold=%d)",
-					sig, action, promState.Count, promState.Threshold)
-				outputs := map[string]string{
-					"status":        "success",
-					"chosen_action": action,
-					"confidence":    "0.95",
-					"reasoning":     fmt.Sprintf("Promoted mechanical recipe for %s (%d clean outcomes ≥ threshold %d)", sig, promState.Count, promState.Threshold),
-					"needs_human":   "false",
-					"promoted":      "true",
-				}
-				for k, v := range params {
-					outputs["recipe_param_"+k] = v
-				}
-				return ActionResult{Outputs: outputs}
-			}
-			if action != "" {
-				e.log("recovery: decide: promoted recipe %s has %d prior failures, falling through",
-					action, fullCtx.RepeatedFailures[action])
-			}
-		}
-	}
-
-	// (b) Git-state-driven decision when FullRecoveryContext is available.
-	if fullCtx != nil {
-		if gitAction := decideFromGitState(fullCtx); gitAction != "" {
-			// Verify this action hasn't repeatedly failed.
-			if fullCtx.RepeatedFailures[gitAction] < 2 {
-				e.log("recovery: decide: git-state-driven → %s", gitAction)
-				return ActionResult{Outputs: map[string]string{
-					"status":        "success",
-					"chosen_action": gitAction,
-					"confidence":    "0.85",
-					"reasoning":     fmt.Sprintf("Git state analysis: %s", gitStateReasoning(fullCtx, gitAction)),
-					"needs_human":   "false",
-				}}
-			}
-			e.log("recovery: decide: git-state suggests %s but it has %d prior failures, falling through to Claude",
-				gitAction, fullCtx.RepeatedFailures[gitAction])
-		}
-	}
-
-	// (c) Fall through to Claude-based decision.
-	// Read triage count from recovery bead metadata for the decide prompt.
 	triageCount := 0
-	if bead, err := e.deps.GetBead(e.beadID); err == nil {
-		if tc := bead.Meta(recovery.KeyTriageCount); tc != "" {
-			triageCount, _ = strconv.Atoi(tc)
+	failureSig := ""
+	if e.deps.GetBead != nil {
+		if bead, err := e.deps.GetBead(e.beadID); err == nil {
+			if tc := bead.Meta(recovery.KeyTriageCount); tc != "" {
+				triageCount, _ = strconv.Atoi(tc)
+			}
+			failureSig = bead.Meta(recovery.KeyFailureSignature)
+		}
+	}
+	if failureSig == "" && ccResult.Diagnosis != nil {
+		failureSig = string(ccResult.Diagnosis.FailureMode)
+	}
+
+	var capturedClaudeResult *recovery.DecideResult
+	recDeps := recovery.Deps{
+		RecoveryBeadID:   e.beadID,
+		Logf:             e.log,
+		MaxAttempts:      maxAttempts,
+		TriageCount:      triageCount,
+		FailureSignature: failureSig,
+		RankedActions:    ccResult.RankedActions,
+		BeadLearnings:    ccResult.BeadLearnings,
+		CrossLearnings:   ccResult.CrossLearnings,
+		WizardLogTail:    ccResult.WizardLogTail,
+		LearningStats: func(failureClass string) (*store.LearningStats, error) {
+			return store.GetLearningStatsAuto(failureClass)
+		},
+		PromotionThreshold: func(sig string) int {
+			var cfg repoconfig.ClericConfig
+			if e.deps.RepoConfig != nil {
+				if rc := e.deps.RepoConfig(); rc != nil {
+					cfg = rc.Cleric
+				}
+			}
+			return repoconfig.ResolveClericPromotionThreshold(cfg, sig)
+		},
+		CaptureDecideResult: func(r recovery.DecideResult) {
+			rr := r
+			capturedClaudeResult = &rr
+		},
+	}
+
+	if e.deps.AddComment != nil {
+		recDeps.AddRecoveryBeadComment = func(text string) error {
+			return e.deps.AddComment(e.beadID, text)
+		}
+	}
+	if e.deps.SetBeadMetadata != nil {
+		recDeps.SetRecoveryBeadMeta = func(meta map[string]string) error {
+			return e.deps.SetBeadMetadata(e.beadID, meta)
+		}
+	}
+	if e.deps.ClaudeRunner != nil {
+		recDeps.ClaudeRunner = func(args []string, label string) ([]byte, error) {
+			return e.runClaude(args, label)
 		}
 	}
 
-	// Query historical outcome statistics for the failure class.
-	var stats *store.LearningStats
+	diagnosis := recovery.Diagnosis{}
 	if ccResult.Diagnosis != nil {
-		failureClass := string(ccResult.Diagnosis.FailureMode)
-		stats, _ = store.GetLearningStatsAuto(failureClass)
+		diagnosis = *ccResult.Diagnosis
 	}
 
-	// Build Claude prompt — include FullRecoveryContext summary if available.
-	prompt := buildDecidePrompt(ccResult, triageCount, stats)
+	var history []store.RecoveryAttempt
 	if fullCtx != nil {
-		prompt += "\n\n## Full Recovery Context (git-aware)\n\n" + SummarizeContext(fullCtx)
+		recDeps.BranchDiagnostics = fullCtx.GitState
+		recDeps.WorktreeDiagnostics = fullCtx.WorktreeState
+		recDeps.ConflictedFiles = fullCtx.ConflictedFiles
+		recDeps.HumanComments = fullCtx.HumanComments
+		recDeps.ContextSummary = SummarizeContext(fullCtx)
+		history = fullCtx.AttemptHistory
 	}
 
-	// Call Claude.
-	if e.deps.ClaudeRunner == nil {
-		// (d) No Claude runner → fallback to resummon.
-		e.log("recovery: decide: ClaudeRunner not available, falling back to resummon")
-		return ActionResult{Outputs: map[string]string{
-			"status":        "success",
-			"chosen_action": "resummon",
-			"confidence":    "0.50",
-			"reasoning":     "Fallback: ClaudeRunner unavailable",
-			"needs_human":   "false",
-		}}
-	}
-
-	args := []string{
-		"--dangerously-skip-permissions",
-		"-p", prompt,
-		"--output-format", "text",
-		"--max-turns", "1",
-	}
-
-	out, err := e.runClaude(args, "recovery-decide")
+	plan, err := recovery.Decide(context.Background(), diagnosis, history, recDeps)
 	if err != nil {
-		// (d) Claude call failed → fallback to resummon.
-		e.log("recovery: decide: claude call failed, falling back to resummon: %v", err)
-		return ActionResult{Outputs: map[string]string{
-			"status":        "success",
-			"chosen_action": "resummon",
-			"confidence":    "0.40",
-			"reasoning":     fmt.Sprintf("Fallback: Claude call failed: %v", err),
-			"needs_human":   "false",
-		}}
+		return ActionResult{Error: err}
 	}
 
-	// Parse Claude's JSON response.
-	var result DecideResult
-	if err := parseJSONFromClaude(out, &result); err != nil {
-		return ActionResult{Error: fmt.Errorf("decide: parse claude response: %w", err)}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		return ActionResult{Error: fmt.Errorf("decide: marshal plan: %w", err)}
 	}
 
-	// Validate Claude's chosen action against repeated failures.
-	if fullCtx != nil && fullCtx.RepeatedFailures[result.ChosenAction] >= 2 {
-		originalAction := result.ChosenAction
-		e.log("recovery: decide: Claude chose %q but it has %d prior failures — overriding to escalate",
-			originalAction, fullCtx.RepeatedFailures[originalAction])
-		result.ChosenAction = "escalate"
-		result.Reasoning = fmt.Sprintf("Overridden: original choice %q has %d prior failures", originalAction, fullCtx.RepeatedFailures[originalAction])
-		result.NeedsHuman = true
-	}
-
-	// Apply confidence threshold.
-	if result.Confidence < 0.7 {
-		result.NeedsHuman = true
-	}
-
+	needsHuman := plan.Mode == recovery.RepairModeEscalate
 	outputs := map[string]string{
-		"status":           "success",
-		"chosen_action":    result.ChosenAction,
-		"confidence":       fmt.Sprintf("%.2f", result.Confidence),
-		"reasoning":        result.Reasoning,
-		"needs_human":      fmt.Sprintf("%t", result.NeedsHuman),
-		"expected_outcome": result.ExpectedOutcome,
+		"status":        "success",
+		"plan":          string(planJSON),
+		"chosen_action": plan.Action,
+		"confidence":    fmt.Sprintf("%.2f", plan.Confidence),
+		"reasoning":     plan.Reason,
+		"needs_human":   fmt.Sprintf("%t", needsHuman),
 	}
-
-	// Store expected_outcome on recovery bead metadata for downstream comparison.
-	if result.ExpectedOutcome != "" && e.deps.SetBeadMetadata != nil {
-		_ = e.deps.SetBeadMetadata(e.beadID, map[string]string{
-			recovery.KeyExpectedOutcome: result.ExpectedOutcome,
-		})
+	if capturedClaudeResult != nil {
+		outputs["expected_outcome"] = capturedClaudeResult.ExpectedOutcome
 	}
-
-	// If needs_human, write comment.
-	if result.NeedsHuman {
-		_ = e.deps.AddComment(e.beadID, fmt.Sprintf(
-			"Recovery decide: needs human intervention.\n\nChosen action: %s\nConfidence: %.2f\nReasoning: %s\nExpected outcome: %s",
-			result.ChosenAction, result.Confidence, result.Reasoning, result.ExpectedOutcome,
-		))
-		e.log("recovery: decide needs-human (confidence=%.2f, action=%s)", result.Confidence, result.ChosenAction)
-	} else {
-		e.log("recovery: decide chose %q (confidence=%.2f)", result.ChosenAction, result.Confidence)
+	if plan.Mode == recovery.RepairModeRecipe {
+		outputs["promoted"] = "true"
+		for k, v := range plan.Params {
+			outputs["recipe_param_"+k] = v
+		}
 	}
 
 	return ActionResult{Outputs: outputs}
-}
-
-// parseHumanGuidance scans human comments for action keywords and returns
-// the matching recovery action name, or "" if no guidance is detected.
-// Avoids suggesting actions that have repeatedly failed.
-//
-// Two-gate acceptance:
-//   - Gate A (imperative opener): the comment's first non-whitespace token
-//     (lowercased, leading markdown/quote punctuation stripped, trailing
-//     punctuation stripped) must be in imperativeOpeners. This keeps system
-//     failure-report text ("recovery action \"rebase-onto-base\" failed",
-//     "Cleric execute errored — scheduling retry: rebase conflict ...") from
-//     being mistaken for a human imperative.
-//   - Gate B (keyword match): the comment must still contain an action
-//     keyword from guidanceMap; that match determines which action to return.
-//
-// False-negatives on phrasings like "Please rebase..." / "Let's rebuild..."
-// are a deliberate tradeoff — tighter signal kills self-amplification loops.
-func parseHumanGuidance(comments []string, repeatedFailures map[string]int) string {
-	guidanceMap := map[string]string{
-		"rebase":            "rebase-onto-base",
-		"try rebase":        "rebase-onto-base",
-		"rebase onto main":  "rebase-onto-base",
-		"rebase onto base":  "rebase-onto-base",
-		"cherry-pick":       "cherry-pick",
-		"cherry pick":       "cherry-pick",
-		"resolve conflicts": "resolve-conflicts",
-		"resolve conflict":  "resolve-conflicts",
-		"rebuild":           "rebuild",
-		"try rebuild":       "rebuild",
-		"resummon":          "resummon",
-		"re-summon":         "resummon",
-		"try again":         "resummon",
-		"reset":             "reset-to-step",
-		"reset to step":     "reset-to-step",
-		"escalate":          "escalate",
-		"fix":               "targeted-fix",
-		"targeted fix":      "targeted-fix",
-	}
-
-	// Scan comments from most recent to oldest.
-	for i := len(comments) - 1; i >= 0; i-- {
-		if !hasImperativeOpener(comments[i]) {
-			continue
-		}
-		lower := strings.ToLower(strings.TrimSpace(comments[i]))
-		for keyword, action := range guidanceMap {
-			if strings.Contains(lower, keyword) {
-				// Don't follow guidance toward an action that keeps failing.
-				if repeatedFailures != nil && repeatedFailures[action] >= 2 {
-					continue
-				}
-				return action
-			}
-		}
-	}
-	return ""
-}
-
-// imperativeOpeners is the set of first tokens accepted as evidence that a
-// comment is a human imperative (not a system failure report).
-var imperativeOpeners = map[string]bool{
-	"try":         true,
-	"retry":       true,
-	"redo":        true,
-	"rebase":      true,
-	"resolve":     true,
-	"fix":         true,
-	"cherry":      true,
-	"cherry-pick": true,
-	"revert":      true,
-	"rebuild":     true,
-	"resummon":    true,
-	"re-summon":   true,
-	"reset":       true,
-	"escalate":    true,
-	"targeted":    true,
-	"merge":       true,
-	"apply":       true,
-}
-
-// hasImperativeOpener reports whether the comment's first non-whitespace
-// token is an accepted imperative. The check normalizes leading markdown
-// bullets / blockquote markers / quote chars and trailing punctuation, and
-// is case-insensitive.
-func hasImperativeOpener(comment string) bool {
-	// Strip leading markdown/quote/list decoration that agents or humans may
-	// add ahead of an imperative ("- try ...", "> rebase ...", "\"try ...\"").
-	trim := strings.TrimLeft(comment, " \t\r\n-*>#`\"'")
-	if trim == "" {
-		return false
-	}
-	// First whitespace-delimited token.
-	end := strings.IndexFunc(trim, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '\r'
-	})
-	var tok string
-	if end == -1 {
-		tok = trim
-	} else {
-		tok = trim[:end]
-	}
-	// Drop trailing punctuation so "rebase." / "fix:" / "try," match.
-	tok = strings.TrimRight(tok, ".,:;!?)\"'`")
-	return imperativeOpeners[strings.ToLower(tok)]
-}
-
-// decideFromGitState returns a recovery action based on git diagnostics,
-// or "" if no clear action is indicated.
-//
-// Routing priority:
-//  1. Unresolved conflicts present in the target worktree → resolve-conflicts
-//     (the agentic resolver). Taking precedence over rebase-onto-base is
-//     deliberate: a paused rebase/merge/cherry-pick already has markers on
-//     disk, and rebasing again just re-hits the same conflict. The agentic
-//     resolver needs the paused worktree to stay paused so its commit
-//     advances the real rebase.
-//  2. Behind base (including diverged) → rebase-onto-base.
-//  3. Dirty worktree (uncommitted non-conflict changes) → rebuild.
-func decideFromGitState(ctx *FullRecoveryContext) string {
-	// Conflicts in progress → agentic resolve-conflicts. Route FIRST so we
-	// don't ask rebase-onto-base to re-do the work that just conflicted.
-	if len(ctx.ConflictedFiles) > 0 {
-		return "resolve-conflicts"
-	}
-
-	// Behind base and diverged → rebase (diverged implies conflicts likely).
-	if ctx.GitState != nil && ctx.GitState.Diverged {
-		return "rebase-onto-base"
-	}
-
-	// Behind base → rebase.
-	if ctx.GitState != nil && ctx.GitState.BehindMain > 0 {
-		return "rebase-onto-base"
-	}
-
-	// Dirty worktree (uncommitted changes, likely broken build) → rebuild.
-	if ctx.WorktreeState != nil && ctx.WorktreeState.Exists && ctx.WorktreeState.IsDirty {
-		return "rebuild"
-	}
-
-	return ""
-}
-
-// failureSignatureFromContext resolves the failure_signature for a decide
-// lookup. Prefers the recovery bead's metadata (already stamped by
-// collect_context / escalate paths); falls back to the diagnosis's failure
-// class. Returns "" when no signature is available — the caller must treat
-// empty as "don't promote".
-func failureSignatureFromContext(e *Executor, ccResult CollectContextResult) string {
-	if e != nil && e.deps.GetBead != nil {
-		if bead, err := e.deps.GetBead(e.beadID); err == nil {
-			if sig := bead.Meta(recovery.KeyFailureSignature); sig != "" {
-				return sig
-			}
-		}
-	}
-	if ccResult.Diagnosis != nil {
-		return string(ccResult.Diagnosis.FailureMode)
-	}
-	return ""
-}
-
-// clericPromotionThreshold resolves the effective promotion threshold for
-// the given failure signature, applying the precedence chain from
-// repoconfig.ResolveClericPromotionThreshold.
-func clericPromotionThreshold(e *Executor, failureSig string) int {
-	var cfg repoconfig.ClericConfig
-	if e != nil && e.deps.RepoConfig != nil {
-		if rc := e.deps.RepoConfig(); rc != nil {
-			cfg = rc.Cleric
-		}
-	}
-	return repoconfig.ResolveClericPromotionThreshold(cfg, failureSig)
-}
-
-// recipeDispatch extracts the executable action + params from a recipe
-// for use by the decide step. Only builtin recipes are directly dispatchable
-// today — sequence recipes would require planner support and are captured
-// here for forward compatibility but treated as non-dispatchable (returns "").
-func recipeDispatch(r *recovery.MechanicalRecipe) (action string, params map[string]string) {
-	if r == nil {
-		return "", nil
-	}
-	if r.Kind != recovery.RecipeKindBuiltin || r.Action == "" {
-		return "", nil
-	}
-	return r.Action, r.Params
-}
-
-// gitStateReasoning returns a human-readable explanation of why a
-// git-state-driven action was chosen.
-func gitStateReasoning(ctx *FullRecoveryContext, action string) string {
-	switch action {
-	case "resolve-conflicts":
-		if n := len(ctx.ConflictedFiles); n > 0 {
-			return fmt.Sprintf("%d file(s) have unresolved merge conflicts", n)
-		}
-		return "worktree has merge conflicts"
-	case "rebase-onto-base":
-		if ctx.GitState != nil {
-			return fmt.Sprintf("branch is %d commits behind %s", ctx.GitState.BehindMain, ctx.GitState.MainRef)
-		}
-		return "branch is behind base"
-	case "rebuild":
-		return "worktree has uncommitted changes (dirty)"
-	default:
-		return action
-	}
 }
 
 // handleLearn calls Claude with the action taken and verify outcome to extract
@@ -2121,141 +1821,6 @@ func mergeLearnings(metaLearnings []store.RecoveryLearning, sqlRows []store.Reco
 	}
 
 	return merged
-}
-
-// buildDecidePrompt constructs the Claude prompt for the decide step.
-// triageCount is the number of triage attempts already made on this recovery bead.
-func buildDecidePrompt(cc CollectContextResult, triageCount int, stats *store.LearningStats) string {
-	var b strings.Builder
-	b.WriteString("You are a cleric agent for Spire, an AI agent coordination system.\n\n")
-	b.WriteString("A bead (work item) has been interrupted and needs recovery. Analyze the diagnosis and choose the best recovery action.\n\n")
-
-	// Diagnosis context.
-	if cc.Diagnosis != nil {
-		diagJSON, _ := json.MarshalIndent(cc.Diagnosis, "", "  ")
-		b.WriteString("## Diagnosis\n```json\n")
-		b.Write(diagJSON)
-		b.WriteString("\n```\n\n")
-	}
-
-	// Wizard log output.
-	if cc.WizardLogTail != "" {
-		b.WriteString("## Wizard Log Output (last ~100 lines)\n")
-		b.WriteString("This is the actual output from the wizard that failed. Use it to understand WHY the failure occurred.\n\n")
-		b.WriteString("```\n")
-		b.WriteString(cc.WizardLogTail)
-		if !strings.HasSuffix(cc.WizardLogTail, "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString("```\n\n")
-	}
-
-	// Ranked actions.
-	if len(cc.RankedActions) > 0 {
-		b.WriteString("## Available Actions (mechanically ranked)\n```json\n")
-		actJSON, _ := json.MarshalIndent(cc.RankedActions, "", "  ")
-		b.Write(actJSON)
-		b.WriteString("\n```\n\n")
-	}
-
-	// Historical outcome statistics.
-	if stats != nil && stats.TotalRecoveries > 0 {
-		b.WriteString("## Historical Outcome Statistics\n\n")
-		b.WriteString(fmt.Sprintf("Based on %d prior recoveries for failure class `%s`:\n\n",
-			stats.TotalRecoveries, stats.FailureClass))
-		b.WriteString("| Action | Attempts | Success Rate | Clean | Dirty | Relapsed |\n")
-		b.WriteString("|--------|----------|-------------|-------|-------|----------|\n")
-		for _, as := range stats.ActionStats {
-			b.WriteString(fmt.Sprintf("| %s | %d | %.0f%% | %d | %d | %d |\n",
-				as.ResolutionKind, as.Total, as.SuccessRate*100,
-				as.CleanCount, as.DirtyCount, as.RelapsedCount))
-		}
-		if stats.PredictionAccuracy > 0 {
-			b.WriteString(fmt.Sprintf("\nDecide agent prediction accuracy: %.0f%% (when expected_outcome was set).\n",
-				stats.PredictionAccuracy*100))
-		}
-		b.WriteString("\nWeight your action choice by historical success rates. Prefer actions with >70% success rate for this failure class unless the specific circumstances call for a different approach.\n\n")
-	}
-
-	// Bead learnings.
-	if len(cc.BeadLearnings) > 0 {
-		b.WriteString("## Prior experience with this exact bead\n```json\n")
-		blJSON, _ := json.MarshalIndent(cc.BeadLearnings, "", "  ")
-		b.Write(blJSON)
-		b.WriteString("\n```\n\n")
-	}
-
-	// Cross-bead learnings.
-	if len(cc.CrossLearnings) > 0 {
-		b.WriteString("## Similar incidents across the system (lower weight)\n```json\n")
-		clJSON, _ := json.MarshalIndent(cc.CrossLearnings, "", "  ")
-		b.Write(clJSON)
-		b.WriteString("\n```\n\n")
-	}
-
-	b.WriteString("## Instructions\n")
-	b.WriteString("Choose a recovery action. Output ONLY a JSON object with these fields:\n")
-	b.WriteString("- `chosen_action`: one of \"reset\", \"resummon\", \"do_nothing\", \"escalate\", \"reset_to_step\", \"verify_clean\", \"triage\"\n")
-	b.WriteString("- `confidence`: 0.0 to 1.0 — how confident you are this action will resolve the issue\n")
-	b.WriteString("- `reasoning`: brief explanation of why you chose this action\n")
-	b.WriteString("- `needs_human`: set to true if confidence < 0.7\n")
-	b.WriteString("- `expected_outcome`: what you expect to happen after this action is taken. Include: what should succeed, how to verify it worked, and under what conditions this action would be the wrong choice.\n\n")
-
-	// Log-referencing reasoning requirements.
-	if cc.WizardLogTail != "" {
-		b.WriteString("### CRITICAL: Log-Based Reasoning\n")
-		b.WriteString("Wizard log output is available above. Your reasoning MUST reference specific errors or output lines from the log.\n")
-		b.WriteString("Distinguish between:\n")
-		b.WriteString("- **Infrastructure failures** (missing commands, env setup, dependency install) that resummon/reset may fix\n")
-		b.WriteString("- **Code-level failures** (test assertions, missing env vars, type errors) that require code changes and resummon CANNOT fix\n\n")
-	}
-
-	// Triage guidance.
-	b.WriteString("### Triage Action\n")
-	b.WriteString("Choose `triage` when:\n")
-	b.WriteString("- Failure class is `step-failure` at implement or review-fix steps\n")
-	b.WriteString("- Test output shows clear code-level failures (assertion errors, type errors, compilation errors)\n")
-	b.WriteString("- The worktree still exists (see diagnosis git state)\n")
-	b.WriteString("- This is the first or second triage attempt (max 2)\n\n")
-	b.WriteString("Do NOT choose `triage` for:\n")
-	b.WriteString("- Infrastructure failures (missing commands, env setup, dependency install)\n")
-	b.WriteString("- When the worktree has been cleaned up\n")
-	b.WriteString("- When triage has already been tried twice\n\n")
-
-	// Triage budget context.
-	triageRemaining := 2 - triageCount
-	if triageRemaining < 0 {
-		triageRemaining = 0
-	}
-	b.WriteString(fmt.Sprintf("**Triage budget:** %d of 2 attempts used, %d remaining.\n", triageCount, triageRemaining))
-	if triageCount >= 2 {
-		b.WriteString("Triage budget is exhausted — do NOT choose `triage`.\n")
-	}
-	b.WriteString("\n")
-
-	// Worktree existence from diagnosis.
-	if cc.Diagnosis != nil && cc.Diagnosis.Git != nil {
-		if cc.Diagnosis.Git.WorktreeExists {
-			b.WriteString("**Worktree exists:** yes (triage is possible)\n\n")
-		} else {
-			b.WriteString("**Worktree exists:** no (triage is NOT possible — worktree was cleaned up)\n\n")
-		}
-	}
-
-	// Relapse awareness.
-	b.WriteString("### Relapse Awareness\n")
-	b.WriteString("If prior learnings show outcome=\"relapsed\" for an action on this bead, do NOT choose that action again unless you can explain from the log why this time is different.\n")
-	b.WriteString("A \"relapsed\" outcome means a prior recovery with that action appeared to succeed but the bead failed again with the same failure class within 24 hours.\n\n")
-
-	b.WriteString("### Action Guide\n")
-	b.WriteString("- `resummon`: Soft reset — clears interrupt labels, sets bead to open. Wizard resumes on the SAME branch with existing code. Use for transient/infrastructure failures.\n")
-	b.WriteString("- `reset-hard`: Destructive reset — kills wizard, deletes worktree, branches, graph state, and internal DAG beads. Fresh start from scratch. Use when code is fundamentally broken and resuming would repeat the same mistakes.\n")
-	b.WriteString("- `reset_to_step`: Rewinds to a specific step. Use for targeted re-execution of a single phase.\n")
-	b.WriteString("- `escalate`: Marks for human intervention. Use when confidence is low or the problem is outside agent capability.\n")
-	b.WriteString("- `do_nothing`: Valid if the source bead already appears clean.\n\n")
-	b.WriteString("Output ONLY the JSON object, no markdown fences, no explanation outside the JSON.\n")
-
-	return b.String()
 }
 
 // buildLearnPrompt constructs the Claude prompt for the learn step.
