@@ -297,7 +297,9 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 				if cr.Branch == "" {
 					continue
 				}
-				stagingWt.FetchBranch("origin", cr.Branch)
+				if fetchErr := stagingWt.FetchBranch("origin", cr.Branch); fetchErr != nil {
+					e.log("fetch %s (best-effort): %s", cr.Branch, fetchErr)
+				}
 				if mergeErr := stagingWt.MergeBranch(cr.Branch, resolver); mergeErr != nil {
 					return allResults, fmt.Errorf("merge %s into staging: %w", cr.Branch, mergeErr)
 				}
@@ -386,7 +388,9 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 			if !merged {
 				// Push-transport / legacy fallback: fetch the apprentice's
 				// feat branch from the remote (idempotent) then merge.
-				stagingWt.FetchBranch("origin", featBranch)
+				if fetchErr := stagingWt.FetchBranch("origin", featBranch); fetchErr != nil {
+					e.log("fetch %s (best-effort): %s", featBranch, fetchErr)
+				}
 				if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
 					return allResults, fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 				}
@@ -461,7 +465,9 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 	// merge.
 	featBranch := fmt.Sprintf("feat/%s", e.beadID)
 	e.log("merging %s into staging (push/legacy path)", featBranch)
-	stagingWt.FetchBranch("origin", featBranch)
+	if fetchErr := stagingWt.FetchBranch("origin", featBranch); fetchErr != nil {
+		e.log("fetch %s (best-effort): %s", featBranch, fetchErr)
+	}
 	if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
 		return fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 	}

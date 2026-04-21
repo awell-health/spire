@@ -581,7 +581,14 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			log("--no-review mode — skipping review handoff")
 		} else {
 			handoffDone = true
-			if err := deliverApprenticeWork(wc, beadID, deps, log); err != nil {
+			apprenticeIdx := 0
+			if s := os.Getenv("SPIRE_APPRENTICE_IDX"); s != "" {
+				if v, err := strconv.Atoi(s); err == nil {
+					apprenticeIdx = v
+				}
+			}
+			attemptID := os.Getenv("SPIRE_ATTEMPT_ID")
+			if err := deliverApprenticeWork(wc, beadID, apprenticeIdx, attemptID, deps, log); err != nil {
 				log("apprentice delivery failed: %s", err)
 				return fmt.Errorf("apprentice delivery: %w", err)
 			}
@@ -624,6 +631,12 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	return nil
 }
 
+// submitApprenticeBundleFunc is the package-level seam for
+// pkg/apprentice.Submit. Production code calls the upstream function; tests
+// replace it with a capture stub to assert on Options without needing a real
+// dolt store for the default GetBead/SetMetadata/AddComment callbacks.
+var submitApprenticeBundleFunc = apprentice.Submit
+
 // deliverApprenticeWork runs the apprentice's post-build delivery step. It
 // consults the tower's configured apprentice transport and either submits a
 // git bundle via pkg/apprentice.Submit (transport=bundle) or pushes the feat
@@ -631,7 +644,12 @@ func CmdWizardRun(args []string, deps *Deps) error {
 // apprentice-mode exit silently returned — the wizard never learned about
 // the work. Both branches return an error on failure so the caller can fail
 // the attempt rather than masquerade as a successful no-op.
-func deliverApprenticeWork(wc *spgit.WorktreeContext, beadID string, deps *Deps, logf func(string, ...interface{})) error {
+//
+// apprenticeIdx and attemptID are resolved by the caller (from
+// SPIRE_APPRENTICE_IDX / SPIRE_ATTEMPT_ID) and threaded in here so this
+// function has no hidden env coupling — tests can drive it directly without
+// setting process env.
+func deliverApprenticeWork(wc *spgit.WorktreeContext, beadID string, apprenticeIdx int, attemptID string, deps *Deps, logf func(string, ...interface{})) error {
 	transport := config.ApprenticeTransportBundle
 	if deps.ActiveTowerConfig != nil {
 		if tower, err := deps.ActiveTowerConfig(); err == nil && tower != nil {
@@ -647,17 +665,11 @@ func deliverApprenticeWork(wc *spgit.WorktreeContext, beadID string, deps *Deps,
 		if err != nil {
 			return fmt.Errorf("open bundle store: %w", err)
 		}
-		idx := 0
-		if s := os.Getenv("SPIRE_APPRENTICE_IDX"); s != "" {
-			if v, err := strconv.Atoi(s); err == nil {
-				idx = v
-			}
-		}
-		logf("apprentice mode — submitting bundle for %s (idx %d, base %s)", beadID, idx, wc.BaseBranch)
-		return apprentice.Submit(context.Background(), apprentice.Options{
+		logf("apprentice mode — submitting bundle for %s (idx %d, base %s)", beadID, apprenticeIdx, wc.BaseBranch)
+		return submitApprenticeBundleFunc(context.Background(), apprentice.Options{
 			BeadID:        beadID,
-			AttemptID:     os.Getenv("SPIRE_ATTEMPT_ID"),
-			ApprenticeIdx: idx,
+			AttemptID:     attemptID,
+			ApprenticeIdx: apprenticeIdx,
 			BaseBranch:    wc.BaseBranch,
 			WorktreeDir:   wc.Dir,
 			Store:         bstore,

@@ -127,8 +127,18 @@ func ResumeStagingWorktree(repoPath, dir, branch, baseBranch string, log func(st
 // FetchBranch fetches a specific branch from a remote into this staging worktree.
 // Fetch operations live on StagingWorktree (not WorktreeContext) because
 // WorktreeContext enforces local-ref-only semantics.
-func (w *StagingWorktree) FetchBranch(remote, branch string) {
-	exec.Command("git", "-C", w.Dir, "fetch", remote, branch).Run()
+//
+// Returns the underlying git error (including stderr) on failure. Callers that
+// treat fetch as best-effort (e.g. the push-transport fallback in
+// action_dispatch) may still discard it and rely on MergeBranch failing later,
+// but surfacing a genuine fetch error (network, auth) here prevents the
+// confusing "merge failed" message when the root cause was the fetch.
+func (w *StagingWorktree) FetchBranch(remote, branch string) error {
+	out, err := exec.Command("git", "-C", w.Dir, "fetch", remote, branch).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git fetch %s %s: %w\n%s", remote, branch, err, string(out))
+	}
+	return nil
 }
 
 // MergeBranch merges childBranch into this staging worktree's branch with
