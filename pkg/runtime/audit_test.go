@@ -62,6 +62,10 @@ var allowedGetwdSites = map[string]string{
 	// pkg/apprentice: test file that chdir's to set up a worktree and
 	// needs to restore the original cwd.
 	"pkg/apprentice/submit_test.go": "test-only: save/restore cwd around chdir",
+	// pkg/agent: backend resolution tests chdir to simulate the
+	// operator-pod scenario (WorkingDir above the clone, spi-vrzhf) and
+	// need to restore the original cwd.
+	"pkg/agent/backend_test.go": "test-only: save/restore cwd around chdir in spi-vrzhf regression test",
 }
 
 // violation describes one flagged call site.
