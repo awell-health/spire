@@ -20,10 +20,13 @@ import (
 // Each agent runs as a one-shot Pod with labels for discovery and
 // secret references for credentials.
 type K8sBackend struct {
-	client     kubernetes.Interface
-	namespace  string
-	image      string // agent container image
-	secretName string // k8s Secret holding ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN
+	client        kubernetes.Interface
+	namespace     string
+	image         string // agent container image
+	secretName    string // k8s Secret holding ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN
+	database      string // dolt database name (tower name); wizard tower-attach --database
+	prefix        string // bead prefix; wizard tower-attach --prefix
+	dolthubRemote string // dolthub remote path; wizard tower-attach --dolthub-remote
 }
 
 // NewK8sBackend creates a K8sBackend using in-cluster config with
@@ -31,7 +34,10 @@ type K8sBackend struct {
 // from serviceaccount token), SPIRE_AGENT_IMAGE (required), and
 // SPIRE_CREDENTIALS_SECRET (optional; falls back to "spire-credentials"
 // for backward compat with installs that pre-date the helm chart's
-// release-scoped secret naming).
+// release-scoped secret naming). Wizard-pod attach-cluster flags are
+// sourced from BEADS_DATABASE, BEADS_PREFIX, and DOLTHUB_REMOTE — the
+// same envs the helm chart already injects into the steward so init
+// containers across the cluster share one config source.
 func NewK8sBackend() (*K8sBackend, error) {
 	image := os.Getenv("SPIRE_AGENT_IMAGE")
 	if image == "" {
@@ -71,25 +77,43 @@ func NewK8sBackend() (*K8sBackend, error) {
 	}
 
 	return &K8sBackend{
-		client:     client,
-		namespace:  ns,
-		image:      image,
-		secretName: secretName,
+		client:        client,
+		namespace:     ns,
+		image:         image,
+		secretName:    secretName,
+		database:      os.Getenv("BEADS_DATABASE"),
+		prefix:        os.Getenv("BEADS_PREFIX"),
+		dolthubRemote: os.Getenv("DOLTHUB_REMOTE"),
 	}, nil
 }
 
 // NewK8sBackendFromClient creates a K8sBackend with an injected client.
-// Used for testing with the k8s fake client.
+// Used for testing with the k8s fake client. Wizard-pod attach-cluster
+// flags read from BEADS_DATABASE/BEADS_PREFIX/DOLTHUB_REMOTE so tests
+// can exercise the wizard branch with t.Setenv.
 func NewK8sBackendFromClient(client kubernetes.Interface, namespace, image string) *K8sBackend {
 	return &K8sBackend{
-		client:     client,
-		namespace:  namespace,
-		image:      image,
-		secretName: "spire-credentials",
+		client:        client,
+		namespace:     namespace,
+		image:         image,
+		secretName:    "spire-credentials",
+		database:      os.Getenv("BEADS_DATABASE"),
+		prefix:        os.Getenv("BEADS_PREFIX"),
+		dolthubRemote: os.Getenv("DOLTHUB_REMOTE"),
 	}
 }
 
 // Spawn creates a one-shot k8s Pod for the given agent config.
+//
+// RoleWizard pods take the canonical wizard pod contract: a tower-attach
+// init container stages .beads into /data/<db>/.beads, /data and /workspace
+// emptyDir volumes are mounted on the main container, DOLT_DATA_DIR and
+// SPIRE_CONFIG_DIR env vars are added so resolveBeadsDir() finds the staged
+// store, and the main container uses WizardResources() — enough headroom
+// to fan out apprentices.
+//
+// All other roles keep the flat executor pod shape that ships today
+// (byte-for-byte identical to the pre-wizard-branch code path).
 func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 	subcmd, err := roleToSubcmd(cfg.Role)
 	if err != nil {
@@ -137,36 +161,40 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 		},
 	)
 
-	resources := resourcesForRole(cfg.Role)
-
 	// Sanitize the agent name for use as a pod name (must be DNS-compatible).
 	podName := sanitizePodName(cfg.Name)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: b.namespace,
-			Labels: map[string]string{
-				"spire.agent":      "true",      // fixed value for network policy selectors
-				"spire.agent.name": cfg.Name,    // actual agent name for lookups
-				"spire.bead":       cfg.BeadID,
-				"spire.role":       string(cfg.Role),
-				"spire.tower":      cfg.Tower,
-			},
-		},
-		Spec: corev1.PodSpec{
-			RestartPolicy:     corev1.RestartPolicyNever,
-			PriorityClassName: "spire-agent-default",
-			Containers: []corev1.Container{
-				{
-					Name:      "agent",
-					Image:     b.image,
-					Command:   append([]string{"spire"}, args...),
-					Env:       env,
-					Resources: resources,
+	var pod *corev1.Pod
+	if cfg.Role == RoleWizard {
+		pod = b.buildWizardPod(cfg, podName, args, env)
+	} else {
+		resources := resourcesForRole(cfg.Role)
+		pod = &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      podName,
+				Namespace: b.namespace,
+				Labels: map[string]string{
+					"spire.agent":      "true",   // fixed value for network policy selectors
+					"spire.agent.name": cfg.Name, // actual agent name for lookups
+					"spire.bead":       cfg.BeadID,
+					"spire.role":       string(cfg.Role),
+					"spire.tower":      cfg.Tower,
 				},
 			},
-		},
+			Spec: corev1.PodSpec{
+				RestartPolicy:     corev1.RestartPolicyNever,
+				PriorityClassName: "spire-agent-default",
+				Containers: []corev1.Container{
+					{
+						Name:      "agent",
+						Image:     b.image,
+						Command:   append([]string{"spire"}, args...),
+						Env:       env,
+						Resources: resources,
+					},
+				},
+			},
+		}
 	}
 
 	created, err := b.client.CoreV1().Pods(b.namespace).Create(
@@ -182,6 +210,85 @@ func (b *K8sBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 		podName:   created.Name,
 		name:      cfg.Name,
 	}, nil
+}
+
+// buildWizardPod produces the canonical wizard pod: a tower-attach init
+// container that stages .beads and tower config onto emptyDir /data, a
+// /workspace emptyDir for later apprentice bundle flows, matching volume
+// mounts on the main container, DOLT_DATA_DIR and SPIRE_CONFIG_DIR env
+// vars so resolveBeadsDir() finds the staged store, and WizardResources()
+// for the main container.
+//
+// Database/prefix/dolthub-remote for the init container command come from
+// the same env source the steward deployment already uses — see
+// NewK8sBackend. Database falls back to cfg.Tower (tower name == database
+// name, per pkg/tower/attach-cluster).
+func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, podName string, args []string, env []corev1.EnvVar) *corev1.Pod {
+	db := b.database
+	if db == "" {
+		db = cfg.Tower
+	}
+
+	// Main container needs these two so resolveBeadsDir() finds the bead
+	// store the init container stages at /data/<db>/.beads. Without them
+	// `spire execute` dies with "no .beads directory found".
+	env = append(env,
+		corev1.EnvVar{Name: "DOLT_DATA_DIR", Value: "/data"},
+		corev1.EnvVar{Name: "SPIRE_CONFIG_DIR", Value: "/data/spire-config"},
+	)
+
+	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
+	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"}
+
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: b.namespace,
+			Labels: map[string]string{
+				"spire.agent":      "true",   // fixed value for network policy selectors
+				"spire.agent.name": cfg.Name, // actual agent name for lookups
+				"spire.bead":       cfg.BeadID,
+				"spire.role":       string(cfg.Role),
+				"spire.tower":      cfg.Tower,
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy:     corev1.RestartPolicyNever,
+			PriorityClassName: "spire-agent-default",
+			Volumes: []corev1.Volume{
+				{
+					Name:         "data",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				},
+				{
+					Name:         "workspace",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				},
+			},
+			InitContainers: []corev1.Container{{
+				Name:  "tower-attach",
+				Image: b.image,
+				Command: []string{
+					"spire", "tower", "attach-cluster",
+					"--data-dir=/data/" + db,
+					"--database=" + db,
+					"--prefix=" + b.prefix,
+					"--dolthub-remote=" + b.dolthubRemote,
+				},
+				VolumeMounts: []corev1.VolumeMount{dataMount},
+			}},
+			Containers: []corev1.Container{
+				{
+					Name:         "agent",
+					Image:        b.image,
+					Command:      append([]string{"spire"}, args...),
+					Env:          env,
+					Resources:    WizardResources(),
+					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount},
+				},
+			},
+		},
+	}
 }
 
 // List returns Info for all Spire agent pods in the namespace.
