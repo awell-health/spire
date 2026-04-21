@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/runtime"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,12 +43,12 @@ func ResolveBackend(name string) Backend {
 	case "k8s", "kubernetes":
 		b, err := NewK8sBackend()
 		if err != nil {
-			log.Printf("[backend] k8s backend init failed: %v, falling back to process", err)
+			log.Printf("[backend] k8s backend init failed: %v, falling back to process%s", err, runtime.LogFields(runtime.RunContextFromEnv()))
 			return newProcessBackend()
 		}
 		return b
 	default:
-		log.Printf("[backend] unknown backend %q, falling back to process", name)
+		log.Printf("[backend] unknown backend %q, falling back to process%s", name, runtime.LogFields(runtime.RunContextFromEnv()))
 		return newProcessBackend()
 	}
 }

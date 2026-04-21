@@ -405,6 +405,39 @@ func appendRuntimeContractDockerArgs(cfg SpawnConfig) []string {
 		out = append(out, "-e", fmt.Sprintf("SPIRE_RUN_ID=%s", cfg.Run.RunID))
 	}
 
+	// Canonical RunContext observability env (docs/design/
+	// spi-xplwy-runtime-contract.md §1.4). Missing fields are omitted so
+	// we do not leak blank env; the consumer's runtime.RunContextFromEnv()
+	// treats absence as empty-string, matching the log-surface contract.
+	step := cfg.Run.FormulaStep
+	if step == "" {
+		step = cfg.Step
+	}
+	if step != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_FORMULA_STEP=%s", step))
+	}
+	if cfg.Run.Backend != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_BACKEND=%s", cfg.Run.Backend))
+	}
+	if cfg.Run.WorkspaceKind != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_WORKSPACE_KIND=%s", string(cfg.Run.WorkspaceKind)))
+	} else if cfg.Workspace != nil && cfg.Workspace.Kind != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_WORKSPACE_KIND=%s", string(cfg.Workspace.Kind)))
+	}
+	if cfg.Run.WorkspaceName != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_WORKSPACE_NAME=%s", cfg.Run.WorkspaceName))
+	} else if cfg.Workspace != nil && cfg.Workspace.Name != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_WORKSPACE_NAME=%s", cfg.Workspace.Name))
+	}
+	if cfg.Run.WorkspaceOrigin != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_WORKSPACE_ORIGIN=%s", string(cfg.Run.WorkspaceOrigin)))
+	} else if cfg.Workspace != nil && cfg.Workspace.Origin != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_WORKSPACE_ORIGIN=%s", string(cfg.Workspace.Origin)))
+	}
+	if cfg.Run.HandoffMode != "" {
+		out = append(out, "-e", fmt.Sprintf("SPIRE_HANDOFF_MODE=%s", string(cfg.Run.HandoffMode)))
+	}
+
 	return out
 }
 

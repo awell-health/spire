@@ -215,6 +215,39 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 		setEnv(cmd, "SPIRE_WORKSPACE_PATH", cfg.Workspace.Path)
 	}
 
+	// RunContext fields (docs/design/spi-xplwy-runtime-contract.md §1.4).
+	// Every canonical log-field value flows through env so the spawned
+	// worker's runtime.RunContextFromEnv() reconstructs the full identity
+	// set and stamps it on every log line. Missing values remain unset
+	// (empty-string env) — RunContextFromEnv() treats absence as empty,
+	// matching the "never drop the field" log-surface rule.
+	if cfg.Run.FormulaStep != "" {
+		setEnv(cmd, "SPIRE_FORMULA_STEP", cfg.Run.FormulaStep)
+	} else if cfg.Step != "" {
+		setEnv(cmd, "SPIRE_FORMULA_STEP", cfg.Step)
+	}
+	if cfg.Run.Backend != "" {
+		setEnv(cmd, "SPIRE_BACKEND", cfg.Run.Backend)
+	}
+	if cfg.Run.WorkspaceKind != "" {
+		setEnv(cmd, "SPIRE_WORKSPACE_KIND", string(cfg.Run.WorkspaceKind))
+	} else if cfg.Workspace != nil && cfg.Workspace.Kind != "" {
+		setEnv(cmd, "SPIRE_WORKSPACE_KIND", string(cfg.Workspace.Kind))
+	}
+	if cfg.Run.WorkspaceName != "" {
+		setEnv(cmd, "SPIRE_WORKSPACE_NAME", cfg.Run.WorkspaceName)
+	} else if cfg.Workspace != nil && cfg.Workspace.Name != "" {
+		setEnv(cmd, "SPIRE_WORKSPACE_NAME", cfg.Workspace.Name)
+	}
+	if cfg.Run.WorkspaceOrigin != "" {
+		setEnv(cmd, "SPIRE_WORKSPACE_ORIGIN", string(cfg.Run.WorkspaceOrigin))
+	} else if cfg.Workspace != nil && cfg.Workspace.Origin != "" {
+		setEnv(cmd, "SPIRE_WORKSPACE_ORIGIN", string(cfg.Workspace.Origin))
+	}
+	if cfg.Run.HandoffMode != "" {
+		setEnv(cmd, "SPIRE_HANDOFF_MODE", string(cfg.Run.HandoffMode))
+	}
+
 	// Apprentice identity env vars. Transport-agnostic: the apprentice reads
 	// them to resolve which bead to write to and what role to claim at
 	// submit time.
@@ -243,25 +276,60 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 	}
 	setEnv(cmd, "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:"+otlpPort)
 
-	// Resource attributes carry bead context so the receiver can correlate
-	// spans to beads without post-hoc matching.
+	// Resource attributes carry the canonical RunContext vocabulary
+	// (docs/design/spi-xplwy-runtime-contract.md §1.4) so the OTLP
+	// receiver can correlate spans/logs/metrics to beads without
+	// post-hoc matching. The set mirrors runtime.LogFieldOrder — every
+	// canonical log field also rides on every emitted span/log as a
+	// resource attribute. Missing fields are omitted rather than emitted
+	// blank to keep the attribute set compact on the wire.
 	step := cfg.Step
 	if step == "" {
 		step = cfg.Run.FormulaStep
 	}
-	var resAttrs []string
-	if cfg.BeadID != "" {
-		resAttrs = append(resAttrs, "bead.id="+cfg.BeadID)
+	prefix = cfg.Identity.Prefix
+	if prefix == "" {
+		prefix = cfg.RepoPrefix
 	}
+	if prefix == "" {
+		prefix = cfg.Run.Prefix
+	}
+	var resAttrs []string
+	addAttr := func(k, v string) {
+		if v == "" {
+			return
+		}
+		resAttrs = append(resAttrs, k+"="+v)
+	}
+	// agent.name is kept for back-compat with existing alerts; the rest
+	// are the canonical RunContext field names.
 	if cfg.Name != "" {
 		resAttrs = append(resAttrs, "agent.name="+cfg.Name)
 	}
-	if step != "" {
-		resAttrs = append(resAttrs, "step="+step)
+	addAttr("tower", tower)
+	addAttr("prefix", prefix)
+	addAttr("bead_id", cfg.BeadID)
+	addAttr("attempt_id", attemptID)
+	addAttr("run_id", cfg.Run.RunID)
+	addAttr("role", string(cfg.Role))
+	addAttr("formula_step", step)
+	addAttr("backend", cfg.Run.Backend)
+	if cfg.Run.WorkspaceKind != "" {
+		addAttr("workspace_kind", string(cfg.Run.WorkspaceKind))
+	} else if cfg.Workspace != nil {
+		addAttr("workspace_kind", string(cfg.Workspace.Kind))
 	}
-	if tower != "" {
-		resAttrs = append(resAttrs, "tower="+tower)
+	if cfg.Run.WorkspaceName != "" {
+		addAttr("workspace_name", cfg.Run.WorkspaceName)
+	} else if cfg.Workspace != nil {
+		addAttr("workspace_name", cfg.Workspace.Name)
 	}
+	if cfg.Run.WorkspaceOrigin != "" {
+		addAttr("workspace_origin", string(cfg.Run.WorkspaceOrigin))
+	} else if cfg.Workspace != nil {
+		addAttr("workspace_origin", string(cfg.Workspace.Origin))
+	}
+	addAttr("handoff_mode", string(cfg.Run.HandoffMode))
 	if len(resAttrs) > 0 {
 		setEnv(cmd, "OTEL_RESOURCE_ATTRIBUTES", strings.Join(resAttrs, ","))
 	}
@@ -274,6 +342,19 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 		setEnv(cmd, "OTEL_LOGS_EXPORTER", "otlp")
 		setEnv(cmd, "OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
 	}
+}
+
+// ApplyProcessEnvForTest is the exported entry point test code uses to
+// exercise applyProcessEnv without actually starting a process. The
+// test/parity suite asserts the full canonical SPIRE_* env vocabulary
+// is present on cmd.Env after this call.
+//
+// Production callers MUST NOT use this — they get the env automatically
+// via Spawn(). Exported only because the parity test lives in
+// test/parity (outside pkg/agent) and Go does not export unexported
+// identifiers across package boundaries.
+func ApplyProcessEnvForTest(cmd *exec.Cmd, cfg SpawnConfig) {
+	applyProcessEnv(cmd, cfg)
 }
 
 // setEnv sets or replaces an environment variable in cmd.Env.

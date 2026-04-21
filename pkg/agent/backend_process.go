@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/runtime"
 )
 
 // ProcessBackend implements Backend for local process execution.
@@ -49,7 +50,7 @@ func (b *ProcessBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 	}
 	if err := RegistryAdd(entry); err != nil {
 		// Non-fatal: log and continue. The agent is running regardless.
-		fmt.Fprintf(os.Stderr, "[processBackend] warning: registry add for %s: %v\n", cfg.Name, err)
+		fmt.Fprintf(os.Stderr, "[processBackend] warning: registry add for %s: %v%s\n", cfg.Name, err, runtime.LogFields(cfg.Run))
 	}
 
 	return handle, nil
@@ -127,7 +128,11 @@ func (b *ProcessBackend) Kill(name string) error {
 	}
 
 	if found.InstanceID != "" && found.InstanceID != CallerInstanceID {
-		log.Printf("warning: killing agent %s owned by instance %s", name, found.InstanceID)
+		// No SpawnConfig in scope here — the kill path is invoked by the
+		// steward/CLI long after the spawn boundary. Fall back to the
+		// callee's own env so the log line still carries the canonical
+		// identity set for whichever tower/bead the caller is bound to.
+		log.Printf("warning: killing agent %s owned by instance %s%s", name, found.InstanceID, runtime.LogFields(runtime.RunContextFromEnv()))
 	}
 
 	pid := found.PID

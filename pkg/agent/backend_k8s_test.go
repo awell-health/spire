@@ -143,7 +143,11 @@ func TestK8sBackend_Spawn_CreatesCorrectPod(t *testing.T) {
 	if !ok {
 		t.Error("missing OTEL_RESOURCE_ATTRIBUTES")
 	} else {
-		for _, want := range []string{"bead.id=spi-abc", "agent.name=apprentice-spi-abc-0", "step=implement", "tower=my-tower"} {
+		// Canonical RunContext resource attributes (spi-zm3b1 rename pass).
+		// "bead.id"/"step" are replaced by "bead_id"/"formula_step" to match
+		// the log-field vocabulary in runtime.LogFieldOrder. "agent.name"
+		// stays for back-compat with existing alerts.
+		for _, want := range []string{"bead_id=spi-abc", "agent.name=apprentice-spi-abc-0", "formula_step=implement", "tower=my-tower", "backend=k8s", "role=apprentice"} {
 			if !contains(ra.Value, want) {
 				t.Errorf("OTEL_RESOURCE_ATTRIBUTES %q missing %q", ra.Value, want)
 			}

@@ -925,20 +925,100 @@ func (b *K8sBackend) buildEnvVars(cfg SpawnConfig, ident runtime.RepoIdentity) [
 		env = append(env, corev1.EnvVar{Name: "SPIRE_APPRENTICE_IDX", Value: cfg.ApprenticeIdx})
 	}
 
-	// OTEL resource attributes for trace/log correlation.
+	// Canonical RunContext env (docs/design/spi-xplwy-runtime-contract.md
+	// §1.4). Every canonical log-field value flows into the pod so the
+	// in-pod worker's runtime.RunContextFromEnv() reconstructs the full
+	// identity set and stamps it on every structured log line. Missing
+	// fields are omitted so unset values do not leak as blank env; the
+	// consumer treats absence as empty-string, matching the log-surface
+	// contract. BEADS_PREFIX is already emitted via the tower/identity
+	// surface; SPIRE_REPO_PREFIX carries the same value under the
+	// canonical observability name.
+	prefix := ident.Prefix
+	if prefix == "" {
+		prefix = cfg.RepoPrefix
+	}
+	if prefix != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_REPO_PREFIX", Value: prefix})
+	}
+	if cfg.Run.RunID != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_RUN_ID", Value: cfg.Run.RunID})
+	}
+	step := cfg.Run.FormulaStep
+	if step == "" {
+		step = cfg.Step
+	}
+	if step != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_FORMULA_STEP", Value: step})
+	}
+	backend := cfg.Run.Backend
+	if backend == "" {
+		backend = "k8s"
+	}
+	env = append(env, corev1.EnvVar{Name: "SPIRE_BACKEND", Value: backend})
+	if cfg.Run.WorkspaceKind != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_WORKSPACE_KIND", Value: string(cfg.Run.WorkspaceKind)})
+	} else if cfg.Workspace != nil && cfg.Workspace.Kind != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_WORKSPACE_KIND", Value: string(cfg.Workspace.Kind)})
+	}
+	if cfg.Run.WorkspaceName != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_WORKSPACE_NAME", Value: cfg.Run.WorkspaceName})
+	} else if cfg.Workspace != nil && cfg.Workspace.Name != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_WORKSPACE_NAME", Value: cfg.Workspace.Name})
+	}
+	if cfg.Run.WorkspaceOrigin != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_WORKSPACE_ORIGIN", Value: string(cfg.Run.WorkspaceOrigin)})
+	} else if cfg.Workspace != nil && cfg.Workspace.Origin != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_WORKSPACE_ORIGIN", Value: string(cfg.Workspace.Origin)})
+	}
+	if cfg.Run.HandoffMode != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_HANDOFF_MODE", Value: string(cfg.Run.HandoffMode)})
+	}
+
+	// OTEL resource attributes carry the canonical RunContext vocabulary
+	// (docs/design/spi-xplwy-runtime-contract.md §1.4) so every
+	// trace/log/metric correlates to the same identity set the wizard
+	// stamps on its structured logs. Missing fields are omitted rather
+	// than emitted blank to keep the attribute set compact.
 	var resAttrs []string
-	if cfg.BeadID != "" {
-		resAttrs = append(resAttrs, "bead.id="+cfg.BeadID)
+	addAttr := func(k, v string) {
+		if v == "" {
+			return
+		}
+		resAttrs = append(resAttrs, k+"="+v)
 	}
 	if cfg.Name != "" {
+		// agent.name retained for back-compat with existing alerts.
 		resAttrs = append(resAttrs, "agent.name="+cfg.Name)
 	}
-	if cfg.Step != "" {
-		resAttrs = append(resAttrs, "step="+cfg.Step)
+	addAttr("tower", tower)
+	addAttr("prefix", prefix)
+	addAttr("bead_id", cfg.BeadID)
+	attemptID := cfg.AttemptID
+	if attemptID == "" {
+		attemptID = cfg.Run.AttemptID
 	}
-	if tower != "" {
-		resAttrs = append(resAttrs, "tower="+tower)
+	addAttr("attempt_id", attemptID)
+	addAttr("run_id", cfg.Run.RunID)
+	addAttr("role", string(cfg.Role))
+	addAttr("formula_step", step)
+	addAttr("backend", backend)
+	if cfg.Run.WorkspaceKind != "" {
+		addAttr("workspace_kind", string(cfg.Run.WorkspaceKind))
+	} else if cfg.Workspace != nil {
+		addAttr("workspace_kind", string(cfg.Workspace.Kind))
 	}
+	if cfg.Run.WorkspaceName != "" {
+		addAttr("workspace_name", cfg.Run.WorkspaceName)
+	} else if cfg.Workspace != nil {
+		addAttr("workspace_name", cfg.Workspace.Name)
+	}
+	if cfg.Run.WorkspaceOrigin != "" {
+		addAttr("workspace_origin", string(cfg.Run.WorkspaceOrigin))
+	} else if cfg.Workspace != nil {
+		addAttr("workspace_origin", string(cfg.Workspace.Origin))
+	}
+	addAttr("handoff_mode", string(cfg.Run.HandoffMode))
 	if len(resAttrs) > 0 {
 		env = append(env, corev1.EnvVar{
 			Name:  "OTEL_RESOURCE_ATTRIBUTES",
