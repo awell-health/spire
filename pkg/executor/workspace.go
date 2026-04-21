@@ -38,7 +38,18 @@ func (e *Executor) InitWorkspaceStates(workspaces map[string]formula.WorkspaceDe
 
 // resolveWorkspace looks up a workspace name in the executor's runtime state,
 // creates or resumes the corresponding pkg/git object, persists WorkspaceState,
-// and returns the *spgit.WorktreeContext (nil for "repo" kind).
+// and returns:
+//   - the *spgit.WorktreeContext (nil for "repo" kind)
+//   - a *WorkspaceHandle describing the resolved substrate (the contract piece
+//     passed to pkg/agent backends via SpawnConfig.Workspace)
+//   - an error
+//
+// The handle records Origin. Local executor resolution always produces
+// WorkspaceOriginLocalBind — we're reusing an existing local repo
+// checkout. WorkspaceOriginOriginClone is produced by pkg/agent's
+// k8s backend when a fresh clone is required (chunk 2 / spi-wqax9);
+// WorkspaceOriginGuildCache is reserved for phase 2 (spi-sn7o3) and
+// is not set by this path.
 //
 // Resolution rules:
 //   - scope=run + already active → resume (capture fresh StartSHA for session baseline)
@@ -47,18 +58,20 @@ func (e *Executor) InitWorkspaceStates(workspaces map[string]formula.WorkspaceDe
 //   - borrowed_worktree → ResumeWorktreeContext (does not own lifecycle)
 //   - owned_worktree → NewStagingWorktreeAt (owns lifecycle)
 //   - staging → NewStagingWorktreeAt with staging branch semantics
-func (e *Executor) resolveWorkspace(name string) (*spgit.WorktreeContext, error) {
+func (e *Executor) resolveWorkspace(name string) (*spgit.WorktreeContext, *WorkspaceHandle, error) {
 	ws, ok := e.state.Workspaces[name]
 	if !ok {
-		return nil, fmt.Errorf("workspace %q not found in state", name)
+		return nil, nil, fmt.Errorf("workspace %q not found in state", name)
 	}
 
 	// For repo kind, just set Dir to the main repo path and return nil context.
 	if ws.Kind == formula.WorkspaceKindRepo {
 		ws.Dir = e.state.RepoPath
 		ws.Status = "active"
+		ws.Origin = WorkspaceOriginLocalBind
 		e.state.Workspaces[name] = ws
-		return nil, nil
+		h := ws.Handle()
+		return nil, &h, nil
 	}
 
 	// Active + scope=run → resume existing worktree, refresh session baseline.
@@ -66,27 +79,35 @@ func (e *Executor) resolveWorkspace(name string) (*spgit.WorktreeContext, error)
 		if ws.Kind == formula.WorkspaceKindBorrowedWorktree {
 			wc, err := spgit.ResumeWorktreeContext(ws.Dir, ws.Branch, ws.BaseBranch, e.state.RepoPath, e.log)
 			if err != nil {
-				return nil, fmt.Errorf("resume borrowed workspace %q: %w", name, err)
+				return nil, nil, fmt.Errorf("resume borrowed workspace %q: %w", name, err)
 			}
 			ws.StartSHA = wc.StartSHA
+			if ws.Origin == "" {
+				ws.Origin = WorkspaceOriginLocalBind
+			}
 			e.state.Workspaces[name] = ws
-			return wc, nil
+			h := ws.Handle()
+			return wc, &h, nil
 		}
 		// Owned or staging — resume via ResumeStagingWorktree for session baseline.
 		sw := spgit.ResumeStagingWorktree(e.state.RepoPath, ws.Dir, ws.Branch, ws.BaseBranch, e.log)
 		ws.StartSHA = sw.StartSHA
+		if ws.Origin == "" {
+			ws.Origin = WorkspaceOriginLocalBind
+		}
 		e.state.Workspaces[name] = ws
-		return &sw.WorktreeContext, nil
+		h := ws.Handle()
+		return &sw.WorktreeContext, &h, nil
 	}
 
 	// Active + scope=step should not happen — the previous step should have released it.
 	if ws.Status == "active" && ws.Scope == formula.WorkspaceScopeStep {
-		return nil, fmt.Errorf("workspace %q (scope=step) is still active — should have been released", name)
+		return nil, nil, fmt.Errorf("workspace %q (scope=step) is still active — should have been released", name)
 	}
 
 	// Pending → create fresh workspace.
 	if ws.Status != "pending" {
-		return nil, fmt.Errorf("workspace %q has unexpected status %q", name, ws.Status)
+		return nil, nil, fmt.Errorf("workspace %q has unexpected status %q", name, ws.Status)
 	}
 
 	// Resolve branch and base branch patterns.
@@ -105,21 +126,23 @@ func (e *Executor) resolveWorkspace(name string) (*spgit.WorktreeContext, error)
 	case formula.WorkspaceKindBorrowedWorktree:
 		wc, err := spgit.ResumeWorktreeContext(dir, branch, baseBranch, e.state.RepoPath, e.log)
 		if err != nil {
-			return nil, fmt.Errorf("resume borrowed workspace %q: %w", name, err)
+			return nil, nil, fmt.Errorf("resume borrowed workspace %q: %w", name, err)
 		}
 		ws.Dir = dir
 		ws.Branch = branch
 		ws.BaseBranch = baseBranch
 		ws.StartSHA = wc.StartSHA
 		ws.Status = "active"
+		ws.Origin = WorkspaceOriginLocalBind
 		e.state.Workspaces[name] = ws
-		return wc, nil
+		h := ws.Handle()
+		return wc, &h, nil
 
 	case formula.WorkspaceKindOwnedWorktree, formula.WorkspaceKindStaging:
 		// Force-create the branch from base before creating worktree.
 		rc := &spgit.RepoContext{Dir: e.state.RepoPath, BaseBranch: baseBranch, Log: e.log}
 		if err := rc.ForceBranch(branch, baseBranch); err != nil {
-			return nil, fmt.Errorf("create branch for workspace %q: %w", name, err)
+			return nil, nil, fmt.Errorf("create branch for workspace %q: %w", name, err)
 		}
 
 		sw, err := spgit.NewStagingWorktreeAt(
@@ -127,7 +150,7 @@ func (e *Executor) resolveWorkspace(name string) (*spgit.WorktreeContext, error)
 			archName, archEmail, e.log,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("create workspace %q: %w", name, err)
+			return nil, nil, fmt.Errorf("create workspace %q: %w", name, err)
 		}
 		// Capture session baseline SHA (NewStagingWorktreeAt doesn't set StartSHA).
 		startSHA := captureHeadSHA(sw.Dir)
@@ -137,11 +160,13 @@ func (e *Executor) resolveWorkspace(name string) (*spgit.WorktreeContext, error)
 		ws.BaseBranch = baseBranch
 		ws.StartSHA = startSHA
 		ws.Status = "active"
+		ws.Origin = WorkspaceOriginLocalBind
 		e.state.Workspaces[name] = ws
-		return &sw.WorktreeContext, nil
+		h := ws.Handle()
+		return &sw.WorktreeContext, &h, nil
 
 	default:
-		return nil, fmt.Errorf("workspace %q: unsupported kind %q for creation", name, ws.Kind)
+		return nil, nil, fmt.Errorf("workspace %q: unsupported kind %q for creation", name, ws.Kind)
 	}
 }
 
@@ -260,6 +285,7 @@ func (e *Executor) resolveGraphWorkspace(name string, state *GraphState) (string
 	if ws.Kind == formula.WorkspaceKindRepo {
 		ws.Dir = state.RepoPath
 		ws.Status = "active"
+		ws.Origin = WorkspaceOriginLocalBind
 		state.Workspaces[name] = ws
 		return ws.Dir, nil
 	}
@@ -296,12 +322,17 @@ func (e *Executor) resolveGraphWorkspace(name string, state *GraphState) (string
 		ws.BaseBranch = state.BaseBranch
 		ws.StartSHA = sw.StartSHA
 		ws.Status = "active"
+		ws.Origin = WorkspaceOriginLocalBind
 		state.Workspaces[name] = ws
 		return sw.Dir, nil
 	}
 
 	// Active + scope=run → already resolved, return existing Dir.
 	if ws.Status == "active" && ws.Scope == formula.WorkspaceScopeRun && ws.Dir != "" {
+		if ws.Origin == "" {
+			ws.Origin = WorkspaceOriginLocalBind
+			state.Workspaces[name] = ws
+		}
 		return ws.Dir, nil
 	}
 
@@ -341,6 +372,7 @@ func (e *Executor) resolveGraphWorkspace(name string, state *GraphState) (string
 		ws.BaseBranch = baseBranch
 		ws.StartSHA = wc.StartSHA
 		ws.Status = "active"
+		ws.Origin = WorkspaceOriginLocalBind
 		state.Workspaces[name] = ws
 		return dir, nil
 
@@ -364,6 +396,7 @@ func (e *Executor) resolveGraphWorkspace(name string, state *GraphState) (string
 		ws.BaseBranch = baseBranch
 		ws.StartSHA = startSHA
 		ws.Status = "active"
+		ws.Origin = WorkspaceOriginLocalBind
 		state.Workspaces[name] = ws
 		return dir, nil
 

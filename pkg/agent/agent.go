@@ -13,6 +13,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/awell-health/spire/pkg/runtime"
 )
 
 // Handle represents a running agent, regardless of execution backend.
@@ -76,20 +78,26 @@ type Info struct {
 
 // SpawnRole describes what kind of agent to run.
 // Each backend maps this to its own execution mechanism.
-type SpawnRole string
+//
+// The canonical definition now lives in pkg/runtime so that
+// runtime.RunContext.Role can reference it without forcing
+// pkg/runtime → pkg/agent (which would re-open the cycle resolved by
+// pkg/runtime). Existing agent.SpawnRole / agent.RoleX call sites
+// continue to work unchanged through this alias + const re-export.
+type SpawnRole = runtime.SpawnRole
 
 const (
 	// RoleApprentice is a per-subtask implementer (apprentice run).
-	RoleApprentice SpawnRole = "apprentice"
+	RoleApprentice = runtime.RoleApprentice
 
 	// RoleSage is a per-review agent (sage review).
-	RoleSage SpawnRole = "sage"
+	RoleSage = runtime.RoleSage
 
 	// RoleWizard is the executor — handles full workflow for all workload types.
-	RoleWizard SpawnRole = "wizard"
+	RoleWizard = runtime.RoleWizard
 
 	// RoleExecutor is a formula-driven executor (execute).
-	RoleExecutor SpawnRole = "executor"
+	RoleExecutor = runtime.RoleExecutor
 )
 
 // SpawnConfig describes the intent for spawning an agent.
@@ -119,6 +127,19 @@ type SpawnConfig struct {
 	RepoURL    string // git remote URL for the bead's repo prefix
 	RepoBranch string // default branch to clone for bootstrap
 	RepoPrefix string // bead prefix (e.g. "spi") — keys cfg.Instances[prefix]
+
+	// Canonical runtime contract fields (docs/design/spi-xplwy-runtime-contract.md §1).
+	//
+	// These three fields replace the ad-hoc plumbing (RepoURL/RepoBranch/
+	// RepoPrefix env reads, per-backend workspace mounting, and scattered
+	// log/trace labels) as pkg/agent backends migrate to the canonical
+	// contract. In this task (spi-b9tu3) the fields are populated by the
+	// executor at dispatch but backends still read from the legacy fields
+	// / env vars — later tasks in epic spi-xplwy migrate each backend to
+	// read these authoritative values instead.
+	Identity  runtime.RepoIdentity    // canonical repo identity for the run
+	Workspace *runtime.WorkspaceHandle // materialized workspace substrate (nil if none)
+	Run       runtime.RunContext      // observability identity (tower/prefix/bead/attempt/role/step/backend/workspace/handoff)
 }
 
 // NewSpawner returns a Spawner for the given backend.

@@ -216,7 +216,7 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 
 				extraArgs := []string{"--apprentice"}
 				started := time.Now()
-				h, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+				cfg := agent.SpawnConfig{
 					Name:          name,
 					BeadID:        beadID,
 					Role:          agent.RoleApprentice,
@@ -225,7 +225,9 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 					LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
 					AttemptID:     e.attemptID(),
 					ApprenticeIdx: "0",
-				})
+				}
+				cfg = e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil)
+				h, spawnErr := e.deps.Spawner.Spawn(cfg)
 				if spawnErr != nil {
 					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr,
 						withParentRun(e.currentRunID))
@@ -331,7 +333,7 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 
 		name := fmt.Sprintf("%s-seq-%d", e.agentName, i+1)
 		started := time.Now()
-		handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+		cfg := agent.SpawnConfig{
 			Name:          name,
 			BeadID:        subtaskID,
 			Role:          agent.RoleApprentice,
@@ -340,7 +342,9 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 			LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
 			AttemptID:     e.attemptID(),
 			ApprenticeIdx: "0",
-		})
+		}
+		cfg = e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil)
+		handle, spawnErr := e.deps.Spawner.Spawn(cfg)
 		if spawnErr != nil {
 			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
 				withParentRun(e.currentRunID))
@@ -413,7 +417,7 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 	e.log("dispatching apprentice %s", apprenticeName)
 
 	started := time.Now()
-	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
+	cfg := agent.SpawnConfig{
 		Name:          apprenticeName,
 		BeadID:        e.beadID,
 		Role:          agent.RoleApprentice,
@@ -421,7 +425,9 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 		LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", apprenticeName+".log"),
 		AttemptID:     e.attemptID(),
 		ApprenticeIdx: "0",
-	})
+	}
+	cfg = e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil)
+	handle, err := e.deps.Spawner.Spawn(cfg)
 	if err != nil {
 		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, err,
 			withParentRun(e.currentRunID))

@@ -411,10 +411,12 @@ func (h *fakeHandle) Identifier() string     { return h.name }
 // dispatchConflictApprentice. Spawn is unused because DispatchFn overrides.
 type fakeSpawner struct{}
 
-func (fakeSpawner) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) { return nil, errors.New("not used") }
-func (fakeSpawner) List() ([]agent.Info, error)                       { return nil, nil }
-func (fakeSpawner) Logs(string) (io.ReadCloser, error)                { return nil, os.ErrNotExist }
-func (fakeSpawner) Kill(string) error                                 { return nil }
+func (fakeSpawner) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
+	return nil, errors.New("not used")
+}
+func (fakeSpawner) List() ([]agent.Info, error)        { return nil, nil }
+func (fakeSpawner) Logs(string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
+func (fakeSpawner) Kill(string) error                  { return nil }
 
 // TestAgenticResolveConflicts_NoConflicts returns cleanly without dispatching
 // when ConflictedFiles() is empty.
@@ -715,6 +717,18 @@ func TestDispatchConflictApprentice_UsesCustomAgentNamespace(t *testing.T) {
 	}
 	if captured.CustomPrompt == "" {
 		t.Error("CustomPrompt should be non-empty")
+	}
+	if captured.Workspace == nil {
+		t.Fatal("expected conflict apprentice spawn to include workspace handle")
+	}
+	if captured.Workspace.Path != dir {
+		t.Errorf("workspace path = %q, want %q", captured.Workspace.Path, dir)
+	}
+	if captured.Run.FormulaStep != "resolve-conflicts" {
+		t.Errorf("run formula step = %q, want %q", captured.Run.FormulaStep, "resolve-conflicts")
+	}
+	if captured.Identity.Prefix != "spi" {
+		t.Errorf("identity prefix = %q, want %q", captured.Identity.Prefix, "spi")
 	}
 }
 

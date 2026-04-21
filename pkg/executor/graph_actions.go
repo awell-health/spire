@@ -112,12 +112,20 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 
 	// Resolve workspace dir from step declaration or fall back to state.WorktreeDir.
 	wsDir := state.WorktreeDir
+	workspace := graphWorkspaceHandle(state, step.Workspace)
 	if step.Workspace != "" {
 		dir, err := e.resolveGraphWorkspace(step.Workspace, state)
 		if err != nil {
 			return ActionResult{Error: fmt.Errorf("resolve workspace %q for %s: %w", step.Workspace, stepName, err)}
 		}
 		wsDir = dir
+		workspace = graphWorkspaceHandle(state, step.Workspace)
+	}
+	if workspace == nil && wsDir != "" {
+		workspace = graphWorkspaceHandleForPath(state, wsDir)
+		if workspace == nil {
+			workspace = inferWorkspaceHandle(state.RepoPath, wsDir, state.StagingBranch, state.BaseBranch)
+		}
 	}
 
 	switch flow {
@@ -130,7 +138,7 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
-		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
+		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs, workspace)
 	case "sage-review":
 		extraArgs := []string{}
 		if step.VerdictOnly {
@@ -139,7 +147,7 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
-		result := wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs)
+		result := wizardRunSpawn(e, stepName, step, state, agent.RoleSage, extraArgs, workspace)
 		// Promote the review verdict into outputs so the formula can route on
 		// steps.sage-review.outputs.verdict. The generic result field from
 		// the sage review subprocess carries the verdict string.
@@ -156,7 +164,7 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
-		result := wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
+		result := wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs, workspace)
 		// Promote the result field to verification_status so the formula can
 		// route on steps.verify.outputs.verification_status. The apprentice
 		// writes a generic "result" field (e.g. "pass" or "fail") to
@@ -172,7 +180,7 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
-		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
+		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs, workspace)
 	case "arbiter":
 		return actionArbiterEscalate(e, stepName, step, state)
 	default:
@@ -181,7 +189,7 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		if wsDir != "" {
 			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
 		}
-		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs)
+		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs, workspace)
 	}
 }
 
@@ -213,6 +221,187 @@ func actionPlanEpic(e *Executor, stepName string, step StepConfig, state *GraphS
 	}
 
 	return ActionResult{Outputs: map[string]string{"status": "planned"}}
+}
+
+func (e *Executor) runtimeBackend() string {
+	if e.deps != nil && e.deps.RepoConfig != nil {
+		if cfg := e.deps.RepoConfig(); cfg != nil && cfg.Agent.Backend != "" {
+			return cfg.Agent.Backend
+		}
+	}
+	return "process"
+}
+
+func (e *Executor) runtimeTowerName() string {
+	if e.graphState != nil && e.graphState.TowerName != "" {
+		return e.graphState.TowerName
+	}
+	return ""
+}
+
+func (e *Executor) runtimeBaseBranch() string {
+	if e.graphState != nil && e.graphState.BaseBranch != "" {
+		return e.graphState.BaseBranch
+	}
+	if e.state != nil && e.state.BaseBranch != "" {
+		return e.state.BaseBranch
+	}
+	return ""
+}
+
+func (e *Executor) runtimeStep(state *GraphState, fallback string) string {
+	if state != nil && state.ActiveStep != "" {
+		return state.ActiveStep
+	}
+	if e.graphState != nil && e.graphState.ActiveStep != "" {
+		return e.graphState.ActiveStep
+	}
+	return fallback
+}
+
+func graphWorkspaceHandle(state *GraphState, name string) *WorkspaceHandle {
+	if state == nil || name == "" {
+		return nil
+	}
+	ws, ok := state.Workspaces[name]
+	if !ok {
+		return nil
+	}
+	handle := ws.Handle()
+	if handle.Name == "" {
+		handle.Name = name
+	}
+	if handle.BaseBranch == "" {
+		handle.BaseBranch = state.BaseBranch
+	}
+	if handle.Kind == WorkspaceKindRepo && handle.Path == "" {
+		handle.Path = state.RepoPath
+	}
+	return &handle
+}
+
+func graphWorkspaceHandleForPath(state *GraphState, path string) *WorkspaceHandle {
+	if state == nil || path == "" {
+		return nil
+	}
+	if path == state.RepoPath {
+		return inferWorkspaceHandle(state.RepoPath, path, "", state.BaseBranch)
+	}
+	for name, ws := range state.Workspaces {
+		if ws.Dir != path {
+			continue
+		}
+		handle := ws.Handle()
+		if handle.Name == "" {
+			handle.Name = name
+		}
+		if handle.BaseBranch == "" {
+			handle.BaseBranch = state.BaseBranch
+		}
+		return &handle
+	}
+	return nil
+}
+
+func inferWorkspaceHandle(repoPath, path, branch, baseBranch string) *WorkspaceHandle {
+	if path == "" && repoPath == "" {
+		return nil
+	}
+	kind := WorkspaceKindOwnedWorktree
+	resolvedPath := path
+	if resolvedPath == "" || resolvedPath == repoPath {
+		kind = WorkspaceKindRepo
+		resolvedPath = repoPath
+	}
+	return &WorkspaceHandle{
+		Kind:       kind,
+		Branch:     branch,
+		BaseBranch: baseBranch,
+		Path:       resolvedPath,
+		Origin:     WorkspaceOriginLocalBind,
+		Borrowed:   kind != WorkspaceKindRepo,
+	}
+}
+
+func normalizeWorkspaceHandle(workspace *WorkspaceHandle, workspaceName, repoPath, baseBranch string) *WorkspaceHandle {
+	if workspace == nil {
+		return &WorkspaceHandle{
+			Name:       workspaceName,
+			Kind:       WorkspaceKindRepo,
+			BaseBranch: baseBranch,
+			Path:       repoPath,
+			Origin:     WorkspaceOriginLocalBind,
+		}
+	}
+	handle := *workspace
+	if handle.Name == "" {
+		handle.Name = workspaceName
+	}
+	if handle.Kind == "" {
+		if handle.Path == repoPath {
+			handle.Kind = WorkspaceKindRepo
+		} else {
+			handle.Kind = WorkspaceKindOwnedWorktree
+		}
+	}
+	if handle.BaseBranch == "" {
+		handle.BaseBranch = baseBranch
+	}
+	if handle.Kind == WorkspaceKindRepo && handle.Path == "" {
+		handle.Path = repoPath
+	}
+	if handle.Origin == "" {
+		handle.Origin = WorkspaceOriginLocalBind
+	}
+	return &handle
+}
+
+func (e *Executor) withRuntimeContract(cfg agent.SpawnConfig, towerName, repoPath, baseBranch, runStep, workspaceName string, workspace *WorkspaceHandle) agent.SpawnConfig {
+	prefix := store.PrefixFromID(cfg.BeadID)
+	if prefix == "" {
+		prefix = cfg.RepoPrefix
+	}
+	if baseBranch == "" {
+		baseBranch = cfg.RepoBranch
+	}
+
+	workspace = normalizeWorkspaceHandle(workspace, workspaceName, repoPath, baseBranch)
+	attemptID := cfg.AttemptID
+	if attemptID == "" {
+		attemptID = e.attemptID()
+	}
+
+	cfg.Identity = RepoIdentity{
+		TowerName:  towerName,
+		TowerID:    towerName,
+		Prefix:     prefix,
+		RepoURL:    cfg.RepoURL,
+		BaseBranch: baseBranch,
+	}
+	cfg.Workspace = workspace
+	cfg.Run = RunContext{
+		TowerName:   towerName,
+		Prefix:      prefix,
+		BeadID:      cfg.BeadID,
+		AttemptID:   attemptID,
+		RunID:       e.currentRunID,
+		Role:        cfg.Role,
+		FormulaStep: runStep,
+		Backend:     e.runtimeBackend(),
+	}
+	if workspace != nil {
+		cfg.Run.WorkspaceKind = workspace.Kind
+		cfg.Run.WorkspaceName = workspace.Name
+		cfg.Run.WorkspaceOrigin = workspace.Origin
+		if workspace.Borrowed {
+			cfg.Run.HandoffMode = HandoffBorrowed
+		} else {
+			cfg.Run.HandoffMode = HandoffNone
+		}
+	} else {
+		cfg.Run.HandoffMode = HandoffNone
+	}
+	return cfg
 }
 
 // actionArbiterEscalate routes the "arbiter" flow to the executor's arbiter
@@ -270,7 +459,7 @@ func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state 
 }
 
 // wizardRunSpawn is the common spawn logic for wizard.run actions.
-func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphState, role agent.SpawnRole, extraArgs []string) ActionResult {
+func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphState, role agent.SpawnRole, extraArgs []string, workspace *WorkspaceHandle) ActionResult {
 	spawnName := fmt.Sprintf("%s-%s", e.agentName, stepName)
 	started := time.Now()
 
@@ -280,7 +469,7 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 	attemptNum := state.Steps[stepName].CompletedCount + 1
 	logName := fmt.Sprintf("%s-%d", spawnName, attemptNum)
 
-	handle, err := e.deps.Spawner.Spawn(agent.SpawnConfig{
+	cfg := agent.SpawnConfig{
 		Name:         spawnName,
 		BeadID:       e.beadID,
 		Role:         role,
@@ -289,7 +478,9 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 		ExtraArgs:    extraArgs,
 		CustomPrompt: step.With["prompt"],
 		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", logName+".log"),
-	})
+	}
+	cfg = e.withRuntimeContract(cfg, state.TowerName, state.RepoPath, state.BaseBranch, stepName, step.Workspace, workspace)
+	handle, err := e.deps.Spawner.Spawn(cfg)
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("spawn %s: %w", stepName, err)}
 	}

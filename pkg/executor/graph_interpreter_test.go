@@ -48,18 +48,18 @@ func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return ".", "", "main", nil
 		},
-		ResolveBranch: func(beadID string) string { return "feat/" + beadID },
+		ResolveBranch:  func(beadID string) string { return "feat/" + beadID },
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
 		RegisterSelf:   func(name, beadID, phase string, opts ...func(*agent.Entry)) func() { return func() {} },
-		HasLabel: func(b Bead, prefix string) string { return "" },
-		ContainsLabel: func(b Bead, label string) bool { return false },
-		AddLabel:    func(id, label string) error { return nil },
-		RemoveLabel: func(id, label string) error { return nil },
-		CloseBead:   func(id string) error { return nil },
-		CreateBead:  func(opts CreateOpts) (string, error) { return "alert-1", nil },
-		AddComment:  func(id, text string) error { return nil },
-		AddDepTyped: func(from, to, depType string) error { return nil },
+		HasLabel:       func(b Bead, prefix string) string { return "" },
+		ContainsLabel:  func(b Bead, label string) bool { return false },
+		AddLabel:       func(id, label string) error { return nil },
+		RemoveLabel:    func(id, label string) error { return nil },
+		CloseBead:      func(id string) error { return nil },
+		CreateBead:     func(opts CreateOpts) (string, error) { return "alert-1", nil },
+		AddComment:     func(id, text string) error { return nil },
+		AddDepTyped:    func(from, to, depType string) error { return nil },
 	}
 
 	return deps, actionLog
@@ -749,7 +749,7 @@ func TestActionMaterializePlan_WithChildren(t *testing.T) {
 		return []Bead{
 			{ID: "spi-test.1", Type: "task", Title: "Subtask 1"},
 			{ID: "spi-test.2", Type: "task", Title: "Subtask 2"},
-			{ID: "step-1", Type: "task", Title: "Step bead"},     // internal
+			{ID: "step-1", Type: "task", Title: "Step bead"},       // internal
 			{ID: "attempt-1", Type: "task", Title: "Attempt bead"}, // internal
 		}, nil
 	}
@@ -2574,8 +2574,8 @@ func TestCollectMessages(t *testing.T) {
 				}
 				return nil
 			},
-			hasLabel: func(b Bead, prefix string) string { return "" },
-			wantVar:  `[{"id":"msg-a","from":"","ref":"","text":"first"},{"id":"msg-b","from":"","ref":"","text":"second"}]`,
+			hasLabel:       func(b Bead, prefix string) string { return "" },
+			wantVar:        `[{"id":"msg-a","from":"","ref":"","text":"first"},{"id":"msg-b","from":"","ref":"","text":"second"}]`,
 			wantCloseCalls: []string{"msg-a", "msg-b"},
 		},
 		{
@@ -2723,6 +2723,21 @@ func TestDispatchInjectedTasks_SpawnsAndClears(t *testing.T) {
 	for _, cfg := range spawnedConfigs {
 		if cfg.Role != agent.RoleApprentice {
 			t.Errorf("spawn role: got %v, want apprentice", cfg.Role)
+		}
+		if cfg.Identity.Prefix != "spi" {
+			t.Errorf("spawn identity prefix = %q, want %q", cfg.Identity.Prefix, "spi")
+		}
+		if cfg.Identity.BaseBranch != "main" {
+			t.Errorf("spawn identity base branch = %q, want %q", cfg.Identity.BaseBranch, "main")
+		}
+		if cfg.Workspace == nil {
+			t.Fatal("expected injected task spawn to carry a workspace handle")
+		}
+		if cfg.Workspace.Kind != WorkspaceKindRepo {
+			t.Errorf("workspace kind = %q, want %q", cfg.Workspace.Kind, WorkspaceKindRepo)
+		}
+		if cfg.Run.FormulaStep != "inject" {
+			t.Errorf("run formula step = %q, want %q", cfg.Run.FormulaStep, "inject")
 		}
 	}
 
@@ -2927,11 +2942,11 @@ func TestRunGraph_FailedStepWithResetsDoesNotFireResets(t *testing.T) {
 	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
 	// Pre-mark sage-review completed with verdict=request_changes so fix routes.
 	exec.graphState.Steps["sage-review"] = StepState{
-		Status:          "completed",
-		CompletedCount:  1,
-		Outputs:         map[string]string{"verdict": "request_changes"},
-		StartedAt:       "2026-04-17T00:00:00Z",
-		CompletedAt:     "2026-04-17T00:00:01Z",
+		Status:         "completed",
+		CompletedCount: 1,
+		Outputs:        map[string]string{"verdict": "request_changes"},
+		StartedAt:      "2026-04-17T00:00:00Z",
+		CompletedAt:    "2026-04-17T00:00:01Z",
 	}
 
 	if err := exec.RunGraph(graph, exec.graphState); err != nil {
@@ -3337,15 +3352,15 @@ func TestRecordOnErrorRecoveryAttempt_PersistsFailureRow(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
 	mock.ExpectExec(`INSERT INTO recovery_attempts`).
 		WithArgs(
-			sqlmock.AnyArg(),        // id (auto)
-			"spi-recovery-1",        // recovery_bead_id
-			"",                      // target_bead_id (no source_bead label wired)
-			"rebase-onto-base",      // action
-			"",                      // params
-			"failure",               // outcome
-			"rebase conflict boom",  // error
-			1,                       // attempt_number
-			sqlmock.AnyArg(),        // created_at (auto)
+			sqlmock.AnyArg(),       // id (auto)
+			"spi-recovery-1",       // recovery_bead_id
+			"",                     // target_bead_id (no source_bead label wired)
+			"rebase-onto-base",     // action
+			"",                     // params
+			"failure",              // outcome
+			"rebase conflict boom", // error
+			1,                      // attempt_number
+			sqlmock.AnyArg(),       // created_at (auto)
 		).WillReturnResult(sqlmock.NewResult(1, 1))
 
 	exec.recordOnErrorRecoveryAttempt(state, fmt.Errorf("rebase conflict boom"))

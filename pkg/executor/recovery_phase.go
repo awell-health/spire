@@ -281,7 +281,7 @@ func doResetToStep(e *Executor, req recovery.RecoveryActionRequest) recovery.Rec
 		ResolutionKind: "reset-to-step",
 		Metadata: map[string]string{
 			recovery.KeyResolutionKind: "reset-to-step",
-			"step_target":             req.StepTarget,
+			"step_target":              req.StepTarget,
 		},
 	}
 }
@@ -446,15 +446,29 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 
 	// Load the source bead's graph state to find the worktree path.
 	var worktreeDir string
+	var repoPath string
+	var baseBranch string
+	var towerName string
+	var workspace *WorkspaceHandle
 	gs, err := LoadGraphState(wizardName, e.deps.ConfigDir)
 	if err == nil && gs != nil {
+		repoPath = gs.RepoPath
+		baseBranch = gs.BaseBranch
+		towerName = gs.TowerName
 		// Prefer "feature" workspace, fall back to first workspace with a Dir.
 		if ws, ok := gs.Workspaces["feature"]; ok && ws.Dir != "" {
 			worktreeDir = ws.Dir
+			handle := ws.Handle()
+			workspace = &handle
 		} else {
-			for _, ws := range gs.Workspaces {
+			for name, ws := range gs.Workspaces {
 				if ws.Dir != "" {
 					worktreeDir = ws.Dir
+					handle := ws.Handle()
+					if handle.Name == "" {
+						handle.Name = name
+					}
+					workspace = &handle
 					break
 				}
 			}
@@ -462,6 +476,7 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 		// Fall back to top-level WorktreeDir.
 		if worktreeDir == "" {
 			worktreeDir = gs.WorktreeDir
+			workspace = inferWorkspaceHandle(gs.RepoPath, gs.WorktreeDir, gs.StagingBranch, gs.BaseBranch)
 		}
 	}
 
@@ -477,10 +492,12 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 				// Resolve the source repo path from the bead's prefix.
 				// gs.RepoPath is always empty here (no graph state), so we
 				// must resolve from tower config.
-				repoDir, _, _, resolveErr := e.deps.ResolveRepo(req.SourceBeadID)
+				repoDir, _, resolvedBaseBranch, resolveErr := e.deps.ResolveRepo(req.SourceBeadID)
 				if resolveErr != nil || repoDir == "" {
 					return failResult(req.Kind, fmt.Sprintf("cannot resolve repo for bead %s: %v", req.SourceBeadID, resolveErr))
 				}
+				repoPath = repoDir
+				baseBranch = resolvedBaseBranch
 
 				// Verify branch exists
 				checkCmd := exec.Command("git", "rev-parse", "--verify", branchLabel)
@@ -493,6 +510,7 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 					addCmd.Dir = repoDir
 					if addErr := addCmd.Run(); addErr == nil {
 						worktreeDir = wtDir
+						workspace = inferWorkspaceHandle(repoDir, wtDir, branchLabel, resolvedBaseBranch)
 						e.log("triage: created worktree from branch %s at %s", branchLabel, wtDir)
 						// Clean up worktree when triage completes.
 						defer func() {
@@ -514,6 +532,9 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 	// Verify the worktree still exists on disk.
 	if _, err := os.Stat(worktreeDir); os.IsNotExist(err) {
 		return failResult(req.Kind, fmt.Sprintf("worktree no longer exists: %s", worktreeDir))
+	}
+	if workspace == nil {
+		workspace = inferWorkspaceHandle(repoPath, worktreeDir, "", baseBranch)
 	}
 
 	// Read test output from params (injected by the execute step from collect_context).
@@ -570,14 +591,16 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 	spawnName := fmt.Sprintf("triage-%s-%d", req.SourceBeadID, triageCount+1)
 	started := time.Now()
 
-	handle, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+	cfg := agent.SpawnConfig{
 		Name:         spawnName,
 		BeadID:       req.SourceBeadID,
 		Role:         agent.RoleApprentice,
 		ExtraArgs:    []string{"--worktree-dir", worktreeDir, "--no-review"},
 		CustomPrompt: prompt.String(),
 		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", spawnName+".log"),
-	})
+	}
+	cfg = e.withRuntimeContract(cfg, towerName, repoPath, baseBranch, "triage", "triage", workspace)
+	handle, spawnErr := e.deps.Spawner.Spawn(cfg)
 	if spawnErr != nil {
 		return failResult(req.Kind, fmt.Sprintf("spawn triage agent: %v", spawnErr))
 	}
@@ -684,6 +707,7 @@ type LearnResult struct {
 func actionClericLearn(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	return handleLearn(e, stepName, step, state)
 }
+
 // handleCollectContext assembles diagnosis JSON + prior learnings from the
 // recovery_learnings table (per-bead and cross-bead). This is mechanical —
 // no Claude call. Also calls BuildRecoveryContext to assemble the full
@@ -806,11 +830,12 @@ func handleCollectContext(e *Executor, stepName string, step StepConfig, state *
 // auto-escalates when TotalAttempts >= max_attempts (default 3).
 //
 // Decision priority:
-//  (a) human guidance if present
-//  (b) git-state-driven (behind main → rebase, dirty worktree → rebuild,
-//      conflict → resolve-conflicts)
-//  (c) Claude-selected action
-//  (d) fallback to resummon if unclear
+//
+//	(a) human guidance if present
+//	(b) git-state-driven (behind main → rebase, dirty worktree → rebuild,
+//	    conflict → resolve-conflicts)
+//	(c) Claude-selected action
+//	(d) fallback to resummon if unclear
 func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
 	// Read collect_context result from previous step outputs.
 	var contextJSON string
@@ -1313,8 +1338,8 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 	// 1. Write to bead metadata via existing path.
 	metaMap := map[string]string{
 		recovery.KeyLearningSummary: result.LearningSummary,
-		recovery.KeyResolutionKind: result.ResolutionKind,
-		recovery.KeyResolvedAt:     now.Format(time.RFC3339),
+		recovery.KeyResolutionKind:  result.ResolutionKind,
+		recovery.KeyResolvedAt:      now.Format(time.RFC3339),
 	}
 	if result.Reusable {
 		metaMap[recovery.KeyReusable] = "true"

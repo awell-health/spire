@@ -19,11 +19,11 @@ import (
 // match the project commit convention, or when the bead isn't present in the
 // local store — callers must nil-check the Bead pointer before using it.
 type conflictSideContext struct {
-	Label      string // "HEAD" / "incoming (rebase)" etc.
-	Operation  string // "rebase" / "merge" / "cherry-pick"
-	Commit     *spgit.CommitMetadata
-	BeadID     string
-	Bead       *store.Bead
+	Label     string // "HEAD" / "incoming (rebase)" etc.
+	Operation string // "rebase" / "merge" / "cherry-pick"
+	Commit    *spgit.CommitMetadata
+	BeadID    string
+	Bead      *store.Bead
 }
 
 // conflictFileContext bundles the state of one conflicted file. Content
@@ -181,6 +181,27 @@ func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle) e
 		ExtraArgs:    []string{"--worktree-dir", ctx.Worktree.Dir, "--no-review"},
 		CustomPrompt: prompt,
 		LogPath:      logPath,
+	}
+	workspace := inferWorkspaceHandle(ctx.RepoPath, ctx.Worktree.Dir, ctx.Worktree.Branch, ctx.Worktree.BaseBranch)
+	if workspace != nil && workspace.BaseBranch == "" {
+		workspace.BaseBranch = ctx.BaseBranch
+	}
+	cfg.Identity = RepoIdentity{
+		Prefix:     store.PrefixFromID(ctx.TargetBeadID),
+		BaseBranch: ctx.BaseBranch,
+	}
+	cfg.Workspace = normalizeWorkspaceHandle(workspace, "recovery", ctx.RepoPath, ctx.BaseBranch)
+	cfg.Run = RunContext{
+		Prefix:          store.PrefixFromID(ctx.TargetBeadID),
+		BeadID:          ctx.TargetBeadID,
+		RunID:           ctx.ParentRunID,
+		Role:            cfg.Role,
+		FormulaStep:     "resolve-conflicts",
+		Backend:         "process",
+		WorkspaceKind:   cfg.Workspace.Kind,
+		WorkspaceName:   cfg.Workspace.Name,
+		WorkspaceOrigin: cfg.Workspace.Origin,
+		HandoffMode:     HandoffBorrowed,
 	}
 
 	dispatch := ctx.DispatchFn

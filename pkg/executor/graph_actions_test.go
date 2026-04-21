@@ -44,8 +44,8 @@ func planTestDeps(t *testing.T) (*Deps, *[][]string) {
 			*capturedArgs = append(*capturedArgs, argsCopy)
 			return []byte("Implementation plan:\n\nDo the thing."), nil
 		},
-		IsAttemptBead:    func(b Bead) bool { return false },
-		IsStepBead:       func(b Bead) bool { return false },
+		IsAttemptBead:     func(b Bead) bool { return false },
+		IsStepBead:        func(b Bead) bool { return false },
 		IsReviewRoundBead: func(b Bead) bool { return false },
 	}
 
@@ -319,6 +319,9 @@ func TestImplementFlowIncludesApprenticeFlag(t *testing.T) {
 	}
 
 	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec.graphState.RepoPath = dir
+	exec.graphState.BaseBranch = "main"
+	exec.graphState.TowerName = "tower-test"
 
 	step := StepConfig{
 		Action: "wizard.run",
@@ -345,6 +348,33 @@ func TestImplementFlowIncludesApprenticeFlag(t *testing.T) {
 	// Also verify the role is apprentice.
 	if captured.Role != agent.RoleApprentice {
 		t.Errorf("expected role %q, got %q", agent.RoleApprentice, captured.Role)
+	}
+	if captured.Identity.TowerName != "tower-test" {
+		t.Errorf("identity tower = %q, want %q", captured.Identity.TowerName, "tower-test")
+	}
+	if captured.Identity.Prefix != "spi" {
+		t.Errorf("identity prefix = %q, want %q", captured.Identity.Prefix, "spi")
+	}
+	if captured.Identity.BaseBranch != "main" {
+		t.Errorf("identity base branch = %q, want %q", captured.Identity.BaseBranch, "main")
+	}
+	if captured.Workspace == nil {
+		t.Fatal("expected workspace handle to be populated")
+	}
+	if captured.Workspace.Kind != WorkspaceKindRepo {
+		t.Errorf("workspace kind = %q, want %q", captured.Workspace.Kind, WorkspaceKindRepo)
+	}
+	if captured.Workspace.Path != dir {
+		t.Errorf("workspace path = %q, want %q", captured.Workspace.Path, dir)
+	}
+	if captured.Run.FormulaStep != "implement" {
+		t.Errorf("run formula step = %q, want %q", captured.Run.FormulaStep, "implement")
+	}
+	if captured.Run.WorkspaceKind != WorkspaceKindRepo {
+		t.Errorf("run workspace kind = %q, want %q", captured.Run.WorkspaceKind, WorkspaceKindRepo)
+	}
+	if captured.Run.WorkspaceOrigin != WorkspaceOriginLocalBind {
+		t.Errorf("run workspace origin = %q, want %q", captured.Run.WorkspaceOrigin, WorkspaceOriginLocalBind)
 	}
 }
 
@@ -381,7 +411,7 @@ func TestWizardRunSpawnFailsOnChildExit(t *testing.T) {
 	}
 	state := exec.graphState
 
-	result := wizardRunSpawn(exec, "implement", step, state, agent.RoleApprentice, []string{"--apprentice"})
+	result := wizardRunSpawn(exec, "implement", step, state, agent.RoleApprentice, []string{"--apprentice"}, nil)
 
 	if result.Error == nil {
 		t.Fatal("expected non-nil Error when child process exits non-zero, got nil")
@@ -439,7 +469,7 @@ func TestWizardRunSpawnSucceedsWithResultJSONDespiteWaitErr(t *testing.T) {
 	}
 	state := exec.graphState
 
-	result := wizardRunSpawn(exec, stepName, step, state, agent.RoleApprentice, []string{"--apprentice"})
+	result := wizardRunSpawn(exec, stepName, step, state, agent.RoleApprentice, []string{"--apprentice"}, nil)
 
 	// The node should succeed because result.json says "success".
 	if result.Error != nil {
@@ -500,7 +530,7 @@ func TestWizardRunSpawnTrustsApproveResultDespiteWaitErr(t *testing.T) {
 		Flow:   "sage-review",
 	}
 
-	result := wizardRunSpawn(exec, stepName, step, exec.graphState, agent.RoleSage, nil)
+	result := wizardRunSpawn(exec, stepName, step, exec.graphState, agent.RoleSage, nil, nil)
 
 	if result.Error != nil {
 		t.Fatalf("expected nil Error when result.json reports approve, got: %v", result.Error)
@@ -525,13 +555,13 @@ func (b *sageVerdictMockBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, err
 	}
 	return &sageVerdictMockHandle{}, nil
 }
-func (b *sageVerdictMockBackend) List() ([]agent.Info, error)       { return nil, nil }
+func (b *sageVerdictMockBackend) List() ([]agent.Info, error)             { return nil, nil }
 func (b *sageVerdictMockBackend) Logs(name string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
-func (b *sageVerdictMockBackend) Kill(name string) error            { return nil }
+func (b *sageVerdictMockBackend) Kill(name string) error                  { return nil }
 
 type sageVerdictMockHandle struct{}
 
-func (h *sageVerdictMockHandle) Wait() error           { return nil }
+func (h *sageVerdictMockHandle) Wait() error            { return nil }
 func (h *sageVerdictMockHandle) Signal(os.Signal) error { return nil }
 func (h *sageVerdictMockHandle) Alive() bool            { return false }
 func (h *sageVerdictMockHandle) Name() string           { return "mock-sage" }
@@ -569,7 +599,7 @@ func TestSageReview_ApproveVerdictPromotion(t *testing.T) {
 
 	deps := &Deps{
 		ConfigDir: func() (string, error) { return dir, nil },
-		Spawner: &sageVerdictMockBackend{},
+		Spawner:   &sageVerdictMockBackend{},
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
@@ -623,7 +653,7 @@ func TestSageReview_RequestChangesVerdictPromotion(t *testing.T) {
 
 	deps := &Deps{
 		ConfigDir: func() (string, error) { return dir, nil },
-		Spawner: &sageVerdictMockBackend{},
+		Spawner:   &sageVerdictMockBackend{},
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
@@ -667,7 +697,7 @@ func TestSageReview_NoResultJSON_NoVerdict(t *testing.T) {
 
 	deps := &Deps{
 		ConfigDir: func() (string, error) { return dir, nil },
-		Spawner: &sageVerdictMockBackend{},
+		Spawner:   &sageVerdictMockBackend{},
 		AgentResultDir: func(name string) string {
 			return filepath.Join(dir, name)
 		},
@@ -821,6 +851,18 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir(t *testing.T) {
 		t.Errorf("sage-review spawn missing --worktree-dir; ExtraArgs = %v", sageConfig.ExtraArgs)
 	} else if foundWorktreeDir != featureDir {
 		t.Errorf("sage-review --worktree-dir = %q, want %q", foundWorktreeDir, featureDir)
+	}
+	if sageConfig.Workspace == nil {
+		t.Fatal("sage-review spawn missing workspace handle")
+	}
+	if sageConfig.Workspace.Name != "feature" {
+		t.Errorf("workspace name = %q, want %q", sageConfig.Workspace.Name, "feature")
+	}
+	if sageConfig.Workspace.Path != featureDir {
+		t.Errorf("workspace path = %q, want %q", sageConfig.Workspace.Path, featureDir)
+	}
+	if sageConfig.Run.FormulaStep != "sage-review" {
+		t.Errorf("run formula step = %q, want %q", sageConfig.Run.FormulaStep, "sage-review")
 	}
 
 	// Verify the review outcome was captured.
@@ -1184,9 +1226,9 @@ func TestActionDispatchChildren_ParsesConflictMaxTurns(t *testing.T) {
 	// repo, but we verify the strconv.Atoi parsing and that non-numeric values
 	// are handled gracefully (treated as 0).
 	tests := []struct {
-		name  string
-		raw   string
-		want  int
+		name string
+		raw  string
+		want int
 	}{
 		{"numeric value", "15", 15},
 		{"empty string (unset)", "", 0},
@@ -1275,7 +1317,7 @@ func TestBeadFinish_EscalateStatus(t *testing.T) {
 	var createdAlerts []CreateOpts
 
 	deps := &Deps{
-		ConfigDir: func() (string, error) { return dir, nil },
+		ConfigDir:  func() (string, error) { return dir, nil },
 		AddComment: func(id, text string) error { return nil },
 		CreateBead: func(opts CreateOpts) (string, error) {
 			createdAlerts = append(createdAlerts, opts)

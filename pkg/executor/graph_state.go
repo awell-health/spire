@@ -48,16 +48,57 @@ type StepState struct {
 
 // WorkspaceState is the persisted runtime state for a single declared workspace.
 type WorkspaceState struct {
-	Name       string `json:"name,omitempty"`        // matches the key in formula [workspaces]
-	Kind       string `json:"kind,omitempty"`         // resolved kind from WorkspaceDecl
-	Dir        string `json:"dir,omitempty"`          // absolute path (worktree types only)
-	Branch     string `json:"branch,omitempty"`       // resolved branch name
-	BaseBranch string `json:"base_branch,omitempty"`  // resolved base branch
-	StartSHA   string `json:"start_sha,omitempty"`    // session baseline SHA
-	Status     string `json:"status,omitempty"`       // "pending", "active", "closed"
-	Scope      string `json:"scope,omitempty"`        // "run" or "step"
-	Ownership  string `json:"ownership,omitempty"`    // "owned" or "borrowed"
-	Cleanup    string `json:"cleanup,omitempty"`      // "always", "terminal", "never"
+	Name       string          `json:"name,omitempty"`       // matches the key in formula [workspaces]
+	Kind       string          `json:"kind,omitempty"`        // resolved kind from WorkspaceDecl
+	Dir        string          `json:"dir,omitempty"`         // absolute path (worktree types only)
+	Branch     string          `json:"branch,omitempty"`      // resolved branch name
+	BaseBranch string          `json:"base_branch,omitempty"` // resolved base branch
+	StartSHA   string          `json:"start_sha,omitempty"`   // session baseline SHA
+	Status     string          `json:"status,omitempty"`      // "pending", "active", "closed"
+	Scope      string          `json:"scope,omitempty"`       // "run" or "step"
+	Ownership  string          `json:"ownership,omitempty"`   // "owned" or "borrowed"
+	Cleanup    string          `json:"cleanup,omitempty"`     // "always", "terminal", "never"
+	Origin     WorkspaceOrigin `json:"origin,omitempty"`      // how substrate was produced; missing in older persisted shape → defaults to local-bind on load
+}
+
+// UnmarshalJSON implements back-compatible decoding: older persisted
+// WorkspaceState shapes lack `origin`, so an empty Origin is defaulted
+// to WorkspaceOriginLocalBind. Runtime code must therefore never treat
+// a zero-value Origin as meaningful — the only valid zero on disk was
+// produced by a pre-Origin shape, which we interpret as local-bind.
+func (s *WorkspaceState) UnmarshalJSON(data []byte) error {
+	type alias WorkspaceState
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*s = WorkspaceState(a)
+	if s.Origin == "" {
+		s.Origin = WorkspaceOriginLocalBind
+	}
+	return nil
+}
+
+// Handle converts the persisted WorkspaceState into an exported
+// WorkspaceHandle — the contract piece pkg/agent backends consume when
+// materializing a worker's substrate. Borrowed is derived from the
+// persisted Ownership string (ownership="borrowed"). An empty Origin
+// is normalized to WorkspaceOriginLocalBind to keep the zero-value
+// contract consistent with UnmarshalJSON.
+func (s *WorkspaceState) Handle() WorkspaceHandle {
+	origin := s.Origin
+	if origin == "" {
+		origin = WorkspaceOriginLocalBind
+	}
+	return WorkspaceHandle{
+		Name:       s.Name,
+		Kind:       WorkspaceKind(s.Kind),
+		Branch:     s.Branch,
+		BaseBranch: s.BaseBranch,
+		Path:       s.Dir,
+		Origin:     origin,
+		Borrowed:   s.Ownership == "borrowed",
+	}
 }
 
 // NewGraphState creates a fresh GraphState from a graph definition, initializing

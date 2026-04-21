@@ -160,6 +160,71 @@ func TestValidateGraph_WorkspaceDeclInvalid(t *testing.T) {
 	}
 }
 
+func TestWorkspaceStateHandle(t *testing.T) {
+	tests := []struct {
+		name    string
+		state   WorkspaceState
+		jsonDoc string
+		want    WorkspaceHandle
+	}{
+		{
+			name: "explicit origin and borrowed ownership",
+			state: WorkspaceState{
+				Name:       "feature",
+				Kind:       "borrowed_worktree",
+				Dir:        "/tmp/feature",
+				Branch:     "feat/spi-test",
+				BaseBranch: "main",
+				Ownership:  "borrowed",
+				Origin:     WorkspaceOriginOriginClone,
+			},
+			want: WorkspaceHandle{
+				Name:       "feature",
+				Kind:       WorkspaceKindBorrowedWorktree,
+				Branch:     "feat/spi-test",
+				BaseBranch: "main",
+				Path:       "/tmp/feature",
+				Origin:     WorkspaceOriginOriginClone,
+				Borrowed:   true,
+			},
+		},
+		{
+			name: "legacy json defaults missing origin to local bind",
+			jsonDoc: `{
+				"name":"staging",
+				"kind":"staging",
+				"dir":"/tmp/staging",
+				"branch":"staging/spi-test",
+				"base_branch":"main",
+				"ownership":"owned"
+			}`,
+			want: WorkspaceHandle{
+				Name:       "staging",
+				Kind:       WorkspaceKindStaging,
+				Branch:     "staging/spi-test",
+				BaseBranch: "main",
+				Path:       "/tmp/staging",
+				Origin:     WorkspaceOriginLocalBind,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ws := tt.state
+			if tt.jsonDoc != "" {
+				if err := json.Unmarshal([]byte(tt.jsonDoc), &ws); err != nil {
+					t.Fatalf("json.Unmarshal: %v", err)
+				}
+			}
+			got := ws.Handle()
+			if got != tt.want {
+				t.Fatalf("Handle() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 // --- resolveWorkspaceBranch tests ---
 
 func TestResolveWorkspaceBranch(t *testing.T) {
@@ -195,8 +260,8 @@ func TestResolveWorkspaceBranch(t *testing.T) {
 
 func TestWorkspaceDir_Default(t *testing.T) {
 	e := NewForTest("spi-xyz", "wizard-spi-xyz", &State{
-		BeadID:     "spi-xyz",
-		RepoPath:   "/repo",
+		BeadID:   "spi-xyz",
+		RepoPath: "/repo",
 
 		Workspaces: make(map[string]WorkspaceState),
 		StepStates: make(map[string]StepState),
@@ -307,12 +372,18 @@ func TestResolveWorkspace_RepoKind(t *testing.T) {
 		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
 	})
 
-	wc, err := e.resolveWorkspace("main")
+	wc, h, err := e.resolveWorkspace("main")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 	if wc != nil {
 		t.Fatal("repo kind should return nil WorktreeContext")
+	}
+	if h == nil {
+		t.Fatal("repo kind should return a non-nil handle")
+	}
+	if h.Origin != WorkspaceOriginLocalBind {
+		t.Errorf("repo kind handle origin = %q, want local-bind", h.Origin)
 	}
 
 	ws := e.state.Workspaces["main"]
@@ -333,7 +404,7 @@ func TestResolveWorkspace_NotFound(t *testing.T) {
 	}
 	e := NewForTest("spi-abc", "wizard-spi-abc", state, &Deps{})
 
-	_, err := e.resolveWorkspace("nonexistent")
+	_, _, err := e.resolveWorkspace("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent workspace")
 	}
@@ -587,6 +658,7 @@ func TestWorkspaceState_JSONRoundtrip(t *testing.T) {
 		Scope:      formula.WorkspaceScopeRun,
 		Ownership:  "owned",
 		Cleanup:    formula.WorkspaceCleanupTerminal,
+		Origin:     WorkspaceOriginLocalBind,
 	}
 
 	data, err := json.Marshal(original)
@@ -649,12 +721,15 @@ func TestResolveWorkspace_OwnedWorktree(t *testing.T) {
 		ActiveTowerConfig: func() (*TowerConfig, error) { return nil, nil },
 	})
 
-	wc, err := e.resolveWorkspace("impl")
+	wc, h, err := e.resolveWorkspace("impl")
 	if err != nil {
 		t.Fatalf("resolveWorkspace: %s", err)
 	}
 	if wc == nil {
 		t.Fatal("expected non-nil WorktreeContext for owned_worktree")
+	}
+	if h == nil || h.Origin != WorkspaceOriginLocalBind {
+		t.Errorf("owned_worktree handle origin = %v, want local-bind", h)
 	}
 
 	ws := e.state.Workspaces["impl"]
@@ -735,7 +810,7 @@ func TestResolveWorkspace_RunScopeResume(t *testing.T) {
 	})
 
 	// First resolve: creates the workspace.
-	wc1, err := e.resolveWorkspace("staging")
+	wc1, _, err := e.resolveWorkspace("staging")
 	if err != nil {
 		t.Fatalf("first resolve: %s", err)
 	}
@@ -749,7 +824,7 @@ func TestResolveWorkspace_RunScopeResume(t *testing.T) {
 	}
 
 	// Second resolve: resumes and refreshes StartSHA.
-	_, err = e.resolveWorkspace("staging")
+	_, _, err = e.resolveWorkspace("staging")
 	if err != nil {
 		t.Fatalf("second resolve: %s", err)
 	}

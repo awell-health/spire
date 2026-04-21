@@ -618,6 +618,15 @@ func TestDoTriage_AgentFailure(t *testing.T) {
 	if !strings.Contains(spawnedCfg.Name, "triage-spi-src1-1") {
 		t.Errorf("spawn name = %q, want to contain 'triage-spi-src1-1'", spawnedCfg.Name)
 	}
+	if spawnedCfg.Workspace == nil {
+		t.Fatal("expected triage spawn to include workspace handle")
+	}
+	if spawnedCfg.Run.FormulaStep != "triage" {
+		t.Errorf("run formula step = %q, want %q", spawnedCfg.Run.FormulaStep, "triage")
+	}
+	if spawnedCfg.Identity.Prefix != "spi" {
+		t.Errorf("identity prefix = %q, want %q", spawnedCfg.Identity.Prefix, "spi")
+	}
 
 	// Verify triage count was incremented.
 	if metaSet[recovery.KeyTriageCount] != "1" {
@@ -675,7 +684,7 @@ func TestDoTriage_HappyPath(t *testing.T) {
 		BeadID:       "spi-recovery-1",
 		SourceBeadID: "spi-src1",
 		Params: map[string]string{
-			"test_output":    "FAIL: TestFoo\n    expected 1, got 2",
+			"test_output":     "FAIL: TestFoo\n    expected 1, got 2",
 			"wizard_log_tail": "running tests...\nFAIL",
 		},
 	}
@@ -697,6 +706,15 @@ func TestDoTriage_HappyPath(t *testing.T) {
 	}
 	if spawnedCfg.BeadID != "spi-src1" {
 		t.Errorf("spawn bead_id = %q, want %q", spawnedCfg.BeadID, "spi-src1")
+	}
+	if spawnedCfg.Workspace == nil {
+		t.Fatal("expected triage spawn to include workspace handle")
+	}
+	if spawnedCfg.Workspace.Path == "" {
+		t.Error("workspace path should not be empty")
+	}
+	if spawnedCfg.Run.FormulaStep != "triage" {
+		t.Errorf("run formula step = %q, want %q", spawnedCfg.Run.FormulaStep, "triage")
 	}
 	// Custom prompt should contain test output and validation commands.
 	if !strings.Contains(spawnedCfg.CustomPrompt, "FAIL: TestFoo") {

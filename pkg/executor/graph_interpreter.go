@@ -636,7 +636,7 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 		}
 
 		started := time.Now()
-		h, spawnErr := e.deps.Spawner.Spawn(agent.SpawnConfig{
+		cfg := agent.SpawnConfig{
 			Name:          name,
 			BeadID:        taskID,
 			Role:          agent.RoleApprentice,
@@ -645,7 +645,9 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 			LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
 			AttemptID:     e.attemptID(),
 			ApprenticeIdx: "0",
-		})
+		}
+		cfg = e.withRuntimeContract(cfg, state.TowerName, state.RepoPath, state.BaseBranch, e.runtimeStep(state, "inject"), "", nil)
+		h, spawnErr := e.deps.Spawner.Spawn(cfg)
 		if spawnErr != nil {
 			e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
 				withParentRun(e.currentRunID))
