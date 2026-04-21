@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/executor"
+	"github.com/awell-health/spire/pkg/focus"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/observability"
 	"github.com/awell-health/spire/pkg/recovery"
@@ -21,8 +24,42 @@ var focusCmd = &cobra.Command{
 	Short: "Assemble read-only context for a task",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+			return cmdFocusJSON(args)
+		}
 		return cmdFocus(args)
 	},
+}
+
+func init() {
+	focusCmd.Flags().Bool("json", false, "Emit structured focus context as JSON instead of the human-readable report")
+}
+
+// cmdFocusJSON emits a pkg/focus.FocusContext as JSON to stdout.
+// It intentionally shares the same entry-side setup (dolt guard, BEADS_DIR
+// resolution) as cmdFocus so both modes see the same store state.
+func cmdFocusJSON(args []string) error {
+	if err := requireDolt(); err != nil {
+		return err
+	}
+	if len(args) < 1 {
+		return fmt.Errorf("usage: spire focus --json <bead-id>")
+	}
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
+	id := args[0]
+
+	fc, err := focus.Build(context.Background(), id, configDir)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(fc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal focus context: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
 }
 
 func cmdFocus(args []string) error {

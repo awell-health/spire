@@ -43,16 +43,27 @@ type RecoveryLearning struct {
 
 // GetBead fetches a single bead by ID.
 func GetBead(id string) (Bead, error) {
-	s, ctx, err := getStore()
+	issue, err := GetIssue(id)
 	if err != nil {
 		return Bead{}, err
 	}
+	return IssueToBead(issue), nil
+}
+
+// GetIssue fetches a single bead as a raw beads.Issue by ID. Use this when
+// you need fields not exposed on the lightweight Bead projection
+// (assignee, acceptance_criteria, created_at, created_by, etc.).
+// Dependencies are populated so Parent and related queries work off the
+// returned issue.
+func GetIssue(id string) (*beads.Issue, error) {
+	s, ctx, err := getStore()
+	if err != nil {
+		return nil, err
+	}
 	issue, err := s.GetIssue(ctx, id)
 	if err != nil {
-		return Bead{}, fmt.Errorf("get bead %s: %w", id, err)
+		return nil, fmt.Errorf("get bead %s: %w", id, err)
 	}
-	// GetIssue does not populate Dependencies — fetch them separately
-	// so that Parent (derived from parent-child deps) is available.
 	if issue.Dependencies == nil {
 		if depsWithMeta, dErr := s.GetDependenciesWithMetadata(ctx, id); dErr == nil {
 			for _, dm := range depsWithMeta {
@@ -64,7 +75,7 @@ func GetBead(id string) (Bead, error) {
 			}
 		}
 	}
-	return IssueToBead(issue), nil
+	return issue, nil
 }
 
 // ListBeads searches for beads matching the given filter.
