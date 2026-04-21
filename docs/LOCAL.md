@@ -165,6 +165,46 @@ works via `spire summon` (see below).
 **Not yet built**: Unified single-process daemon/steward. Single-instance
 enforcement. Health endpoint.
 
+### Tower binding and multi-prefix resolution
+
+As of the spi-xplwy runtime contract (chunk 3), commands that write
+graph state resolve their dolt database from an explicit `RepoIdentity`
+rather than walking up from `os.Getwd()` to find `.beads/metadata.json`.
+The old "fall back to a database named `spire`" behavior is removed.
+
+**No tower bound.** Running a graph-state command outside any bound
+repo prints:
+
+```
+no tower bound for this command. Run `spire tower create` to create one,
+or `spire repo add` inside a registered repo. Use --tower <name> to target
+a specific tower when multiple exist.
+```
+
+The command falls back to a local file-backed graph store scoped by
+`~/.config/spire`. The steward daemon logs the fallback once at startup
+and keeps running in local mode.
+
+Fix: `spire tower create --name <tower>`, or `cd` into a directory
+registered with `spire repo add`.
+
+**Multi-prefix towers.** Single-prefix towers auto-resolve. A tower
+that registers multiple repo prefixes requires an explicit
+`--prefix=<one>`:
+
+```
+tower "my-team" has prefixes [api, spi, web] — rerun with --prefix=<one>
+```
+
+The global `--tower <name>` flag selects the active tower. Subprocess
+chains (wizard → apprentice → sage) inherit the selection via
+`SPIRE_TOWER=<name>` in the environment — the executor stamps this
+automatically when dispatching, so agent pipelines keep working without
+extra flags.
+
+Full migration details and developer guidance: see
+[docs/CLI-MIGRATION.md](CLI-MIGRATION.md).
+
 ### Instance identity
 
 Each Spire installation has a stable instance ID stored in

@@ -181,6 +181,47 @@ for the canonical wizard pod spec.
 | `SpireWorkload` | Bead assignment: beadId, priority, type, phase lifecycle (Pending -> Assigned -> InProgress -> Done/Stale/Failed) |
 | `SpireConfig`   | Cluster singleton: DoltHub remote, polling config, token references, routing rules |
 
+### Worker Runtime Contract
+
+> **Authoritative spec:** [docs/design/spi-xplwy-runtime-contract.md §1](design/spi-xplwy-runtime-contract.md).
+> This section is a short summary + pointer; read the spec for
+> invariants and enforcement points.
+
+The worker runtime is held together by **four types** owned by
+`pkg/executor` (re-exported through `pkg/runtime` for backends and
+observability) and **two backend obligations** owned by `pkg/agent`.
+The contract holds identically across local process mode, `pkg/agent`
+k8s mode, and operator-managed cluster mode — by design, not by
+coincidence.
+
+**The four types:**
+
+| Type              | Who owns it        | What it pins                                                   |
+|-------------------|--------------------|----------------------------------------------------------------|
+| `RepoIdentity`    | executor           | Tower-derived identity. Never inferred from ambient CWD.       |
+| `WorkspaceHandle` | executor           | The workspace the worker will see (`Kind`, `Path`, `Origin`, `Borrowed`). |
+| `HandoffMode`     | executor           | Cross-owner delivery selection (`none`/`borrowed`/`bundle`/`transitional`). |
+| `RunContext`      | executor           | Observability identity carried by every log, trace, and metric. |
+
+**The two backend obligations** (see
+[pkg/agent/README.md — Backend obligations](../pkg/agent/README.md#backend-obligations-normative)):
+resolve and propagate `RepoIdentity`, materialize `WorkspaceHandle.Path`
+per `Kind`, emit `RunContext` as labels/annotations/env, and fail fast
+on missing prerequisites. The operator (`operator/controllers/
+agent_monitor.go`) calls the same `pkg/agent` pod builder as the
+k8s backend, so pod-shape parity is structural rather than a promise.
+
+**Push transport is quarantined.** The legacy flow where an apprentice
+pushes its feature branch directly (outside the bundle contract) is now
+classified as `HandoffMode=transitional`. Every transitional selection
+is counted (`spire_handoff_transitional_total`), Warn-logged with full
+identity, and — when `SPIRE_FAIL_ON_TRANSITIONAL_HANDOFF=1` is set (CI
+parity lanes default this on) — promoted to a hard error. The
+description of apprentice push behavior below under "Apprentice" and
+the `spire push`/`dolt push` mentions elsewhere in this document are
+**not removed**; they are annotated pending chunk 5b (a separate bead)
+which deletes the push path entirely once metrics show zero live use.
+
 ### Agents
 
 #### Wizard (`cmd/spire/wizard.go`, `cmd/spire/executor.go`)
@@ -228,6 +269,12 @@ works in an isolated git worktree on a feature branch (`feat/{bead-id}`).
 - Runs Claude Code with `--dangerously-skip-permissions -p <prompt>`
 - Validates output (lint, build, test) before pushing
 - Commits and pushes branch for the wizard to merge into staging
+  > **Quarantined (chunk 5a).** Direct feature-branch push is
+  > `HandoffMode=transitional` in the runtime contract — counted,
+  > Warn-logged, and failed under `SPIRE_FAIL_ON_TRANSITIONAL_HANDOFF=1`.
+  > Canonical cross-owner delivery is bundle transport (see
+  > [pkg/apprentice/README.md](../pkg/apprentice/README.md)). Chunk 5b
+  > removes this path.
 
 #### Sage
 
