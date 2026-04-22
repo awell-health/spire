@@ -600,15 +600,23 @@ func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state 
 }
 
 // wizardRunSpawn is the common spawn logic for wizard.run actions.
+//
+// Per-attempt naming: the spawn identifier is <agentName>-<stepName>-<N>, used
+// for BOTH the orchestrator .log filename and the spawned wizard's result
+// directory. That single stem is what pairs the orchestrator log with its
+// claude transcripts in the board inspector. Re-running the same step (e.g.
+// sage-review rounds, resummon) bumps N and produces a distinct sibling tree
+// rather than overwriting the previous attempt.
+//
+// Legacy on-disk layouts written before this naming change (orchestrator log
+// suffixed with -N but result dir unsuffixed) remain readable as raw files but
+// their claude transcripts won't be paired by the inspector — migration of old
+// trees is intentionally out of scope.
 func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphState, role agent.SpawnRole, extraArgs []string, workspace *WorkspaceHandle) ActionResult {
-	spawnName := fmt.Sprintf("%s-%s", e.agentName, stepName)
 	started := time.Now()
 
-	// Per-round log path so looping steps (sage-review, fix under
-	// subgraph-review's `resets`) preserve history across rounds instead
-	// of overwriting. Name stays stable for the agent registry / OTel.
 	attemptNum := state.Steps[stepName].CompletedCount + 1
-	logName := fmt.Sprintf("%s-%d", spawnName, attemptNum)
+	spawnName := fmt.Sprintf("%s-%s-%d", e.agentName, stepName, attemptNum)
 
 	cfg := agent.SpawnConfig{
 		Name:         spawnName,
@@ -618,7 +626,7 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 		Step:         stepName,
 		ExtraArgs:    extraArgs,
 		CustomPrompt: step.With["prompt"],
-		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", logName+".log"),
+		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", spawnName+".log"),
 	}
 	// In-bead wizard.run flows (implement, sage-review, review-fix,
 	// recovery-verify, arbiter, etc.) are same-owner continuations: the

@@ -427,7 +427,9 @@ func TestWizardRunSpawnFailsOnChildExit(t *testing.T) {
 func TestWizardRunSpawnSucceedsWithResultJSONDespiteWaitErr(t *testing.T) {
 	agentName := "wizard-test"
 	stepName := "implement"
-	spawnName := agentName + "-" + stepName
+	// wizardRunSpawn uses name = <agentName>-<stepName>-<attemptNum>; first
+	// attempt is 1.
+	spawnName := agentName + "-" + stepName + "-1"
 
 	// Set up a temp dir with result.json reporting success.
 	resultDir := t.TempDir()
@@ -490,7 +492,7 @@ func TestWizardRunSpawnSucceedsWithResultJSONDespiteWaitErr(t *testing.T) {
 func TestWizardRunSpawnTrustsApproveResultDespiteWaitErr(t *testing.T) {
 	agentName := "wizard-test"
 	stepName := "sage-review"
-	spawnName := agentName + "-" + stepName
+	spawnName := agentName + "-" + stepName + "-1"
 
 	resultDir := t.TempDir()
 	ar := agentResultJSON{Result: "approve"}
@@ -575,8 +577,8 @@ func TestSageReview_ApproveVerdictPromotion(t *testing.T) {
 	dir := t.TempDir()
 
 	// Pre-write the result.json that the sage would produce.
-	// The agent name is "<executor-agent>-<step-name>".
-	agentName := "wizard-test-sage-review"
+	// The spawn name is "<executor-agent>-<step-name>-<attemptNum>".
+	agentName := "wizard-test-sage-review-1"
 	resultDir := filepath.Join(dir, agentName)
 	os.MkdirAll(resultDir, 0755)
 
@@ -633,7 +635,7 @@ func TestSageReview_ApproveVerdictPromotion(t *testing.T) {
 func TestSageReview_RequestChangesVerdictPromotion(t *testing.T) {
 	dir := t.TempDir()
 
-	agentName := "wizard-test-sage-review"
+	agentName := "wizard-test-sage-review-1"
 	resultDir := filepath.Join(dir, agentName)
 	os.MkdirAll(resultDir, 0755)
 
@@ -754,10 +756,10 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir(t *testing.T) {
 	}
 
 	// Pre-write result.json for the sage-review spawn.
-	// wizardRunSpawn uses spawnName = e.agentName + "-" + stepName.
+	// wizardRunSpawn uses name = <agentName>-<stepName>-<attemptNum>.
 	// e.agentName is still the parent executor's agent name ("wizard-test"),
-	// so the sage spawn name is "wizard-test-sage-review".
-	sageSpawnName := agentName + "-sage-review"
+	// so the first sage-review spawn name is "wizard-test-sage-review-1".
+	sageSpawnName := agentName + "-sage-review-1"
 	sageResultDir := filepath.Join(dir, sageSpawnName)
 	os.MkdirAll(sageResultDir, 0755)
 	sageResult, _ := json.Marshal(map[string]interface{}{
@@ -894,8 +896,8 @@ func TestGraphRun_ReviewPhase_PropagatesWorktreeDir_UnresolvedWorkspace(t *testi
 		},
 	}
 
-	// Pre-write result.json for the sage-review spawn.
-	sageSpawnName := agentName + "-sage-review"
+	// Pre-write result.json for the sage-review spawn (attempt 1).
+	sageSpawnName := agentName + "-sage-review-1"
 	sageResultDir := filepath.Join(dir, sageSpawnName)
 	os.MkdirAll(sageResultDir, 0755)
 	sageResult, _ := json.Marshal(map[string]interface{}{
@@ -1038,10 +1040,10 @@ func TestGraphRun_ReviewPhase_ResumeRepairsWorktreeDir(t *testing.T) {
 		},
 	}
 
-	// Pre-write result.json for the sage-review spawn.
-	// wizardRunSpawn uses e.agentName + "-" + stepName, and e.agentName
-	// is the parent executor's name (not the nested sub-agent name).
-	sageSpawnName := agentName + "-sage-review"
+	// Pre-write result.json for the sage-review spawn (attempt 1).
+	// wizardRunSpawn uses <e.agentName>-<stepName>-<attemptNum>, and
+	// e.agentName is the parent executor's name (not the nested sub-agent name).
+	sageSpawnName := agentName + "-sage-review-1"
 	sageResultDir := filepath.Join(dir, sageSpawnName)
 	os.MkdirAll(sageResultDir, 0755)
 	sageResult, _ := json.Marshal(map[string]interface{}{
@@ -1376,7 +1378,7 @@ func TestRecoveryVerify_PromotesResultToVerificationStatus(t *testing.T) {
 	dir := t.TempDir()
 	agentName := "wizard-recovery-test"
 	stepName := "verify"
-	spawnName := agentName + "-" + stepName
+	spawnName := agentName + "-" + stepName + "-1"
 
 	// Pre-write result.json with result="pass" (the apprentice writes this).
 	resultDir := filepath.Join(dir, spawnName)
@@ -1431,7 +1433,7 @@ func TestRecoveryVerify_FailPromotesVerificationStatus(t *testing.T) {
 	dir := t.TempDir()
 	agentName := "wizard-recovery-test"
 	stepName := "verify"
-	spawnName := agentName + "-" + stepName
+	spawnName := agentName + "-" + stepName + "-1"
 
 	resultDir := filepath.Join(dir, spawnName)
 	os.MkdirAll(resultDir, 0755)
