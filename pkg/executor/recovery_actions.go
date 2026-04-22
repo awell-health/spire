@@ -78,6 +78,11 @@ func (c *RecoveryActionCtx) logf(msg string) {
 type RepairResult struct {
 	Recipe *recovery.MechanicalRecipe
 	Output string
+	// WorkerAttemptID is set only when the recipe dispatched through
+	// SpawnRepairWorker. Mechanical recipes leave it empty. handleLearn
+	// uses a non-empty value as the signal to stamp
+	// RecoveryOutcome.HandoffMode = HandoffBorrowed for recipe plans.
+	WorkerAttemptID string
 }
 
 // RepairWorkerResult is the outcome of a SpawnRepairWorker call.
@@ -251,7 +256,11 @@ func executeRecipe(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws Workspac
 	if workerResult.Output != "" {
 		output += " " + workerResult.Output
 	}
-	return RepairResult{Recipe: recipe, Output: output}, nil
+	return RepairResult{
+		Recipe:          recipe,
+		Output:          output,
+		WorkerAttemptID: workerResult.WorkerAttemptID,
+	}, nil
 }
 
 // worktreeFromHandle reconstructs a WorktreeContext from a

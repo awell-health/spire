@@ -18,6 +18,7 @@ import (
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -762,6 +763,13 @@ func handleCollectContext(e *Executor, stepName string, step StepConfig, state *
 		"source_bead":            sourceBeadID,
 	}
 
+	// Surface the hooked bead's active attempt ID so handleLearn can stamp
+	// it as RecoveryOutcome.SourceAttemptID — the field links the steward's
+	// learn record back to the specific source attempt that tripped.
+	if diag != nil && diag.Runtime != nil && diag.Runtime.AttemptBeadID != "" {
+		outputs["source_attempt_id"] = diag.Runtime.AttemptBeadID
+	}
+
 	// Also output verification_status if diagnosis available (for already-clean detection).
 	if diag != nil {
 		hasInterrupt := false
@@ -956,6 +964,17 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 	return ActionResult{Outputs: outputs}
 }
 
+// writeRecoveryOutcome routes the RecoveryOutcome write through the injected
+// Deps.WriteRecoveryOutcome seam when present, falling back to
+// recovery.WriteOutcome. The seam lets tests assert fail-closed behavior on
+// outcome persistence without having to stand up a Dolt store.
+func (e *Executor) writeRecoveryOutcome(ctx context.Context, bead *store.Bead, out recovery.RecoveryOutcome) error {
+	if e.deps != nil && e.deps.WriteRecoveryOutcome != nil {
+		return e.deps.WriteRecoveryOutcome(ctx, bead, out)
+	}
+	return recovery.WriteOutcome(ctx, bead, out)
+}
+
 // handleLearn assembles a RecoveryOutcome from step state and persists it
 // through recovery.WriteOutcome — the single writer for outcome metadata and
 // the recovery_learnings SQL table. Inputs are drawn from decide.outputs.plan
@@ -967,6 +986,10 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 	var verifyVerdict recovery.VerifyVerdict
 	var verifyKind recovery.VerifyKind
 	var failureClass, failedStep, workerAttemptID string
+	var sourceAttemptID string
+	var handoffMode runtime.HandoffMode
+	var recipeID string
+	var promoted bool
 
 	if state != nil {
 		if ds, ok := state.Steps["decide"]; ok {
@@ -976,6 +999,7 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 					plan = recovery.RepairPlan{}
 				}
 			}
+			promoted = ds.Outputs["promoted"] == "true"
 		}
 		if vs, ok := state.Steps["verify"]; ok {
 			verifyVerdict = recovery.VerifyVerdict(vs.Outputs["verdict"])
@@ -984,9 +1008,13 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 		if cs, ok := state.Steps["collect_context"]; ok {
 			failureClass = cs.Outputs["failure_class"]
 			failedStep = cs.Outputs["failed_step"]
+			sourceAttemptID = cs.Outputs["source_attempt_id"]
 		}
 		if es, ok := state.Steps["execute"]; ok {
 			workerAttemptID = es.Outputs["worker_attempt_id"]
+			if hm := es.Outputs["handoff_mode"]; hm != "" {
+				handoffMode = runtime.HandoffMode(hm)
+			}
 		}
 	}
 
@@ -1008,23 +1036,50 @@ func handleLearn(e *Executor, stepName string, step StepConfig, state *GraphStat
 		decision = recovery.DecisionEscalate
 	}
 
+	// Prefer the attempt ID recorded in the active graph state — that is
+	// the canonical source under v3 execution. Fall back through the
+	// executor's attemptID() helper (which handles the legacy state and
+	// nil-state cases) so legacy/test paths keep working.
+	recoveryAttemptID := ""
+	if state != nil && state.AttemptBeadID != "" {
+		recoveryAttemptID = state.AttemptBeadID
+	} else {
+		recoveryAttemptID = e.attemptID()
+	}
+
+	// Promoted-recipe plans replay an action under a known key; use the
+	// action name as the recipe identifier. Builtin recipes do not carry
+	// a version yet — see pkg/recovery/README.md.
+	if promoted || plan.Mode == recovery.RepairModeRecipe {
+		recipeID = plan.Action
+	}
+
 	outcome := recovery.RecoveryOutcome{
-		RecoveryAttemptID: e.state.AttemptBeadID,
+		RecoveryAttemptID: recoveryAttemptID,
 		SourceRunID:       e.currentRunID,
 		SourceBeadID:      sourceBeadID,
+		SourceAttemptID:   sourceAttemptID,
 		FailedStep:        failedStep,
 		FailureClass:      recovery.FailureClass(failureClass),
 		RepairMode:        plan.Mode,
 		RepairAction:      plan.Action,
 		WorkerAttemptID:   workerAttemptID,
 		WorkspaceKind:     plan.Workspace.Kind,
+		HandoffMode:       handoffMode,
 		VerifyKind:        verifyKind,
 		VerifyVerdict:     verifyVerdict,
 		Decision:          decision,
+		RecipeID:          recipeID,
 	}
 
-	if err := recovery.WriteOutcome(context.Background(), &bead, outcome); err != nil {
-		e.log("recovery: learn: WriteOutcome: %s", err)
+	// Fail closed on WriteOutcome errors: the steward consumes this record
+	// through ReadOutcome as its sole integration surface, so silently
+	// continuing to finish (where the recovery bead would close) would
+	// leave the steward unable to decide resume vs escalate. Surfacing the
+	// error here aborts the run; the bead stays open and a future cleric
+	// cycle can retry.
+	if err := e.writeRecoveryOutcome(context.Background(), &bead, outcome); err != nil {
+		return ActionResult{Error: fmt.Errorf("learn: write outcome: %w", err)}
 	}
 
 	verificationStatus := "dirty"
@@ -1166,8 +1221,20 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 	// falls back to the escalate path. Writing the outcome explicitly lets
 	// metrics and traces distinguish "cleric escalated" from "cleric crashed
 	// before writing an outcome".
+	//
+	// Fail closed on outcome-write errors: the steward's sole integration
+	// surface is the ReadOutcome/WriteOutcome contract, so closing the
+	// recovery bead without a persisted outcome record would leave the
+	// hooked parent in an ambiguous state. Return the error instead — the
+	// bead stays open and a later cleric cycle can retry.
 	if needsHuman {
-		persistEscalatedOutcome(e, step, state)
+		if err := persistEscalatedOutcome(e, step, state); err != nil {
+			e.log("recovery: finish: persistEscalatedOutcome: %s", err)
+			return ActionResult{
+				Outputs: map[string]string{"status": "needs_human"},
+				Error:   fmt.Errorf("finish: write escalate outcome: %w", err),
+			}
+		}
 	}
 
 	// Close the recovery bead (escalate and non-escalate both close). Leaving
@@ -1205,24 +1272,27 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 // run. It is a no-op if an outcome has already been written — handleLearn is
 // the sole writer on the non-escalate paths, and WriteOutcome itself is the
 // sole authoritative writer of the record shape (see pkg/recovery/finish.go).
-// Errors are logged but do not fail the finish step: the bead still closes
-// and the steward treats a closed recovery without an outcome as escalated.
-func persistEscalatedOutcome(e *Executor, step StepConfig, state *GraphState) {
+// Errors are returned to the caller so handleFinish can fail the recovery
+// closed rather than silently closing a bead without a steward-readable
+// outcome record.
+func persistEscalatedOutcome(e *Executor, step StepConfig, state *GraphState) error {
 	if e.deps == nil || e.deps.GetBead == nil {
-		return
+		return nil
 	}
 	bead, err := e.deps.GetBead(e.beadID)
 	if err != nil {
-		e.log("recovery: finish: get recovery bead for outcome: %s", err)
-		return
+		return fmt.Errorf("get recovery bead for escalate outcome: %w", err)
 	}
 	if _, haveOutcome := recovery.ReadOutcome(bead); haveOutcome {
-		return
+		return nil
 	}
 
 	var plan recovery.RepairPlan
 	var failureClass, failedStep string
-	var attemptID string
+	var attemptID, workerAttemptID, sourceAttemptID string
+	var verifyKind recovery.VerifyKind
+	var verifyVerdict recovery.VerifyVerdict
+	var handoffMode runtime.HandoffMode
 	if state != nil {
 		if ds, ok := state.Steps["decide"]; ok {
 			if pjson := ds.Outputs["plan"]; pjson != "" {
@@ -1232,27 +1302,55 @@ func persistEscalatedOutcome(e *Executor, step StepConfig, state *GraphState) {
 		if cs, ok := state.Steps["collect_context"]; ok {
 			failureClass = cs.Outputs["failure_class"]
 			failedStep = cs.Outputs["failed_step"]
+			sourceAttemptID = cs.Outputs["source_attempt_id"]
+		}
+		if es, ok := state.Steps["execute"]; ok {
+			workerAttemptID = es.Outputs["worker_attempt_id"]
+			if hm := es.Outputs["handoff_mode"]; hm != "" {
+				handoffMode = runtime.HandoffMode(hm)
+			}
+		}
+		if vs, ok := state.Steps["verify"]; ok {
+			verifyKind = recovery.VerifyKind(vs.Outputs["verify_kind"])
+			verifyVerdict = recovery.VerifyVerdict(vs.Outputs["verdict"])
 		}
 		attemptID = state.AttemptBeadID
 	}
+	if attemptID == "" {
+		attemptID = e.attemptID()
+	}
 	if failureClass == "" {
 		failureClass = bead.Meta(recovery.KeyFailureClass)
+	}
+
+	// Failed step on the formula-level step.With["needs_human"] path — e.g.
+	// finish_needs_human_on_error — is named on the step itself.
+	if failedStep == "" && step.With != nil {
+		if fs := step.With["failed_step"]; fs != "" {
+			failedStep = fs
+		}
 	}
 
 	outcome := recovery.RecoveryOutcome{
 		RecoveryAttemptID: attemptID,
 		SourceRunID:       e.currentRunID,
 		SourceBeadID:      resolveSourceBead(e, step),
+		SourceAttemptID:   sourceAttemptID,
 		FailedStep:        failedStep,
 		FailureClass:      recovery.FailureClass(failureClass),
 		RepairMode:        plan.Mode,
 		RepairAction:      plan.Action,
+		WorkerAttemptID:   workerAttemptID,
 		WorkspaceKind:     plan.Workspace.Kind,
+		HandoffMode:       handoffMode,
+		VerifyKind:        verifyKind,
+		VerifyVerdict:     verifyVerdict,
 		Decision:          recovery.DecisionEscalate,
 	}
-	if err := recovery.WriteOutcome(context.Background(), &bead, outcome); err != nil {
-		e.log("recovery: finish: WriteOutcome for escalate: %s", err)
+	if err := e.writeRecoveryOutcome(context.Background(), &bead, outcome); err != nil {
+		return fmt.Errorf("write escalate outcome: %w", err)
 	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,12 +1438,26 @@ func handlePlanExecute(e *Executor, stepName string, step StepConfig, state *Gra
 		if workerResult.Output != "" {
 			outputs["output"] = workerResult.Output
 		}
+		// SpawnRepairWorker always sets HandoffBorrowed on its SpawnConfig
+		// (see recovery_actions_agentic.go). Surface the mode here so the
+		// learn step can populate RecoveryOutcome.HandoffMode rather than
+		// re-deriving it from the plan.
+		outputs["handoff_mode"] = string(HandoffBorrowed)
 	case recovery.RepairModeRecipe:
 		var recipeResult RepairResult
 		recipeResult, execErr = executeRecipe(actionCtx, plan, ws)
 		recipe = recipeResult.Recipe
 		if recipeResult.Output != "" {
 			outputs["output"] = recipeResult.Output
+		}
+		// Recipe replays that dispatch through SpawnRepairWorker borrow
+		// the target bead's workspace, matching the worker-mode branch
+		// above. Mechanical recipes leave WorkerAttemptID empty so the
+		// field stays unset for them — mechanicalActions does not
+		// borrow anything.
+		if recipeResult.WorkerAttemptID != "" {
+			outputs["worker_attempt_id"] = recipeResult.WorkerAttemptID
+			outputs["handoff_mode"] = string(HandoffBorrowed)
 		}
 	default:
 		execErr = fmt.Errorf("unsupported repair mode %q", plan.Mode)

@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -1436,5 +1438,321 @@ func TestHandlePlanExecute_RecipeAndMechanicalShareMechanicalDispatch(t *testing
 	if mechResult.Outputs["mechanical_recipe"] != recipeResult.Outputs["mechanical_recipe"] {
 		t.Errorf("captured recipes differ:\n  mech=%s\nrecipe=%s",
 			mechResult.Outputs["mechanical_recipe"], recipeResult.Outputs["mechanical_recipe"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleLearn + persistEscalatedOutcome contract/fail-closed regressions
+// (spi-nqf7z)
+// ---------------------------------------------------------------------------
+
+// learnPlanJSON builds a decide-step plan JSON for use in handleLearn tests.
+func learnPlanJSON(t *testing.T, plan recovery.RepairPlan) string {
+	t.Helper()
+	b, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	return string(b)
+}
+
+// TestHandleLearn_UsesGraphStateAttemptID asserts that handleLearn stamps
+// RecoveryOutcome.RecoveryAttemptID from state.AttemptBeadID — the canonical
+// source under graph execution. The pre-fix code read e.state.AttemptBeadID,
+// which panics in graph mode because NewGraph() never initializes e.state.
+func TestHandleLearn_UsesGraphStateAttemptID(t *testing.T) {
+	var captured recovery.RecoveryOutcome
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id}, nil
+		},
+		WriteRecoveryOutcome: func(_ context.Context, _ *store.Bead, out recovery.RecoveryOutcome) error {
+			captured = out
+			return nil
+		},
+	}
+
+	state := &GraphState{
+		AttemptBeadID: "spi-recovery-x.attempt-2",
+		Steps: map[string]StepState{
+			"decide": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"plan": learnPlanJSON(t, recovery.RepairPlan{
+						Mode:   recovery.RepairModeMechanical,
+						Action: "rebase-onto-base",
+					}),
+				},
+			},
+			"verify": {
+				Status:  "completed",
+				Outputs: map[string]string{"verdict": string(recovery.VerifyVerdictPass)},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-x", "wizard-recovery", nil, state, deps)
+
+	result := handleLearn(e, "learn", StepConfig{Action: "cleric.learn"}, state)
+	if result.Error != nil {
+		t.Fatalf("handleLearn returned error: %v", result.Error)
+	}
+	if captured.RecoveryAttemptID != "spi-recovery-x.attempt-2" {
+		t.Errorf("RecoveryAttemptID = %q, want %q (graph mode canonical source is state.AttemptBeadID)",
+			captured.RecoveryAttemptID, "spi-recovery-x.attempt-2")
+	}
+}
+
+// TestHandleLearn_PopulatesFullContract exercises the full RecoveryOutcome
+// contract — every field the design and package README list as populated by
+// the learn step must carry its expected value. Fields that today's builtin
+// recipes deliberately leave empty (RecipeVersion) are not asserted against.
+func TestHandleLearn_PopulatesFullContract(t *testing.T) {
+	var captured recovery.RecoveryOutcome
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{
+				ID: id,
+				Metadata: map[string]string{
+					recovery.KeyFailureClass: string(recovery.FailBuild),
+				},
+			}, nil
+		},
+		WriteRecoveryOutcome: func(_ context.Context, _ *store.Bead, out recovery.RecoveryOutcome) error {
+			captured = out
+			return nil
+		},
+	}
+
+	plan := recovery.RepairPlan{
+		Mode:      recovery.RepairModeRecipe,
+		Action:    "resolve-conflicts",
+		Workspace: recovery.WorkspaceRequest{Kind: WorkspaceKindBorrowedWorktree},
+	}
+	state := &GraphState{
+		AttemptBeadID: "spi-recovery-full.attempt-1",
+		Steps: map[string]StepState{
+			"collect_context": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"failure_class":     string(recovery.FailBuild),
+					"failed_step":       "implement",
+					"source_attempt_id": "spi-src1.attempt-4",
+					"source_bead":       "spi-src1",
+				},
+			},
+			"execute": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"worker_attempt_id": "worker-run-7",
+					"handoff_mode":      string(HandoffBorrowed),
+				},
+			},
+			"verify": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"verdict":     string(recovery.VerifyVerdictPass),
+					"verify_kind": string(recovery.VerifyKindNarrowCheck),
+				},
+			},
+			"decide": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"plan":     learnPlanJSON(t, plan),
+					"promoted": "true",
+				},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-full", "wizard-recovery", nil, state, deps)
+
+	step := StepConfig{
+		Action: "cleric.learn",
+		With:   map[string]string{"source_bead_id": "spi-src1"},
+	}
+
+	result := handleLearn(e, "learn", step, state)
+	if result.Error != nil {
+		t.Fatalf("handleLearn returned error: %v", result.Error)
+	}
+
+	assert := func(name, got, want string) {
+		t.Helper()
+		if got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	assert("RecoveryAttemptID", captured.RecoveryAttemptID, "spi-recovery-full.attempt-1")
+	assert("SourceBeadID", captured.SourceBeadID, "spi-src1")
+	assert("SourceAttemptID", captured.SourceAttemptID, "spi-src1.attempt-4")
+	assert("FailedStep", captured.FailedStep, "implement")
+	assert("FailureClass", string(captured.FailureClass), string(recovery.FailBuild))
+	assert("RepairMode", string(captured.RepairMode), string(recovery.RepairModeRecipe))
+	assert("RepairAction", captured.RepairAction, "resolve-conflicts")
+	assert("WorkerAttemptID", captured.WorkerAttemptID, "worker-run-7")
+	assert("WorkspaceKind", string(captured.WorkspaceKind), string(WorkspaceKindBorrowedWorktree))
+	assert("HandoffMode", string(captured.HandoffMode), string(HandoffBorrowed))
+	assert("VerifyKind", string(captured.VerifyKind), string(recovery.VerifyKindNarrowCheck))
+	assert("VerifyVerdict", string(captured.VerifyVerdict), string(recovery.VerifyVerdictPass))
+	assert("Decision", string(captured.Decision), string(recovery.DecisionResume))
+	assert("RecipeID", captured.RecipeID, "resolve-conflicts")
+	if captured.HandoffMode != runtime.HandoffBorrowed {
+		t.Errorf("HandoffMode typed compare failed, got %T %q", captured.HandoffMode, captured.HandoffMode)
+	}
+}
+
+// TestHandleLearn_WriteOutcomeFailureFailsClosed asserts that a WriteOutcome
+// error aborts the learn step with a non-nil ActionResult.Error. Prior to
+// the fix the error was logged and the step returned success, which let the
+// run advance to finish and close the recovery bead without the
+// steward-readable outcome record it needs.
+func TestHandleLearn_WriteOutcomeFailureFailsClosed(t *testing.T) {
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id}, nil
+		},
+		WriteRecoveryOutcome: func(_ context.Context, _ *store.Bead, _ recovery.RecoveryOutcome) error {
+			return fmt.Errorf("dolt write failed: deadline exceeded")
+		},
+	}
+
+	state := &GraphState{
+		AttemptBeadID: "spi-recovery-fc.attempt-1",
+		Steps: map[string]StepState{
+			"decide": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"plan": learnPlanJSON(t, recovery.RepairPlan{
+						Mode:   recovery.RepairModeMechanical,
+						Action: "rebase-onto-base",
+					}),
+				},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-fc", "wizard-recovery", nil, state, deps)
+
+	result := handleLearn(e, "learn", StepConfig{Action: "cleric.learn"}, state)
+	if result.Error == nil {
+		t.Fatal("handleLearn returned nil Error on WriteOutcome failure; want non-nil (fail closed)")
+	}
+	if !strings.Contains(result.Error.Error(), "write outcome") {
+		t.Errorf("error = %q, want to wrap write-outcome failure", result.Error)
+	}
+}
+
+// TestHandleFinish_PersistEscalatedOutcomeFailureFailsClosed asserts that a
+// WriteOutcome failure on the escalate path (step.With[needs_human]=true)
+// aborts the finish step without closing the recovery bead. Closing with no
+// outcome record leaves the steward unable to distinguish an escalated
+// terminal from a crashed cleric.
+func TestHandleFinish_PersistEscalatedOutcomeFailureFailsClosed(t *testing.T) {
+	var closed bool
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id}, nil
+		},
+		AddComment: func(_, _ string) error { return nil },
+		CloseBead: func(_ string) error {
+			closed = true
+			return nil
+		},
+		WriteRecoveryOutcome: func(_ context.Context, _ *store.Bead, _ recovery.RecoveryOutcome) error {
+			return fmt.Errorf("dolt write failed: deadline exceeded")
+		},
+	}
+
+	state := &GraphState{
+		AttemptBeadID: "spi-recovery-esc.attempt-1",
+		Steps: map[string]StepState{
+			"decide": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"plan": learnPlanJSON(t, recovery.RepairPlan{
+						Mode:   recovery.RepairModeEscalate,
+						Action: "escalate",
+					}),
+				},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-esc", "wizard-recovery", nil, state, deps)
+
+	step := StepConfig{
+		Action: "cleric.execute",
+		With: map[string]string{
+			"action":      "finish",
+			"needs_human": "true",
+		},
+	}
+
+	result := handleFinish(e, "finish_needs_human", step, state)
+	if result.Error == nil {
+		t.Fatal("handleFinish returned nil Error on escalate WriteOutcome failure; want non-nil (fail closed)")
+	}
+	if !strings.Contains(result.Error.Error(), "escalate outcome") {
+		t.Errorf("error = %q, want to wrap escalate-outcome failure", result.Error)
+	}
+	if closed {
+		t.Error("CloseBead was called despite WriteOutcome failure; recovery must stay open so a later cleric can retry")
+	}
+}
+
+// TestHandleLearn_ReadsSourceAttemptIDFromCollectContext asserts that the
+// source_attempt_id surfaced by handleCollectContext flows through
+// handleLearn into RecoveryOutcome.SourceAttemptID. End-to-end coverage of
+// the Diagnose → collect_context wiring lives in pkg/recovery tests; this
+// test pins the executor contract that collect_context outputs are the
+// single source for the field.
+func TestHandleLearn_ReadsSourceAttemptIDFromCollectContext(t *testing.T) {
+	var captured recovery.RecoveryOutcome
+
+	deps := &Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return store.Bead{ID: id}, nil
+		},
+		WriteRecoveryOutcome: func(_ context.Context, _ *store.Bead, out recovery.RecoveryOutcome) error {
+			captured = out
+			return nil
+		},
+	}
+
+	state := &GraphState{
+		AttemptBeadID: "spi-recovery-sai.attempt-1",
+		Steps: map[string]StepState{
+			"collect_context": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"source_attempt_id": "spi-src1.attempt-7",
+					"source_bead":       "spi-src1",
+				},
+			},
+			"decide": {
+				Status: "completed",
+				Outputs: map[string]string{
+					"plan": learnPlanJSON(t, recovery.RepairPlan{
+						Mode:   recovery.RepairModeMechanical,
+						Action: "rebase-onto-base",
+					}),
+				},
+			},
+		},
+	}
+
+	e := NewGraphForTest("spi-recovery-sai", "wizard-recovery", nil, state, deps)
+
+	result := handleLearn(e, "learn", StepConfig{Action: "cleric.learn"}, state)
+	if result.Error != nil {
+		t.Fatalf("handleLearn returned error: %v", result.Error)
+	}
+	if captured.SourceAttemptID != "spi-src1.attempt-7" {
+		t.Errorf("SourceAttemptID = %q, want %q (must flow through collect_context outputs)",
+			captured.SourceAttemptID, "spi-src1.attempt-7")
 	}
 }

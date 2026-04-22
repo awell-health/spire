@@ -17,6 +17,7 @@ import (
 	"github.com/awell-health/spire/pkg/executor"
 	formulaPkg "github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/metrics"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
@@ -254,6 +255,12 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) *executor.Dep
 
 		// Metadata
 		SetBeadMetadata: store.SetBeadMetadataMap,
+
+		// Recovery outcome writer — pkg/recovery.WriteOutcome is the sole
+		// writer of the RecoveryOutcome shape (bead metadata + recovery_learnings).
+		// Exposed as a dep so tests can inject a failing writer to exercise
+		// the cleric's fail-closed path on outcome persistence.
+		WriteRecoveryOutcome: recovery.WriteOutcome,
 
 		// Label / type helpers
 		HasLabel:       hasLabel,

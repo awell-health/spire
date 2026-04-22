@@ -136,10 +136,31 @@ type RecoveryOutcome struct {
     VerifyKind        VerifyKind
     VerifyVerdict     VerifyVerdict
     Decision          Decision
-    RecipeID          string
-    RecipeVersion     int
+    RecipeID          string           // populated when a recipe is replayed; action name for anonymous builtin recipes
+    RecipeVersion     int              // reserved — stays zero until recipes grow a version schema
 }
 ```
+
+Field population rules:
+
+- **Required on every write**: `RecoveryAttemptID`, `SourceBeadID`,
+  `FailureClass`, `RepairMode`, `Decision`. The learn step sources
+  `RecoveryAttemptID` from `GraphState.AttemptBeadID` (the canonical
+  source under graph execution); legacy/test paths fall back to
+  `(*Executor).attemptID()`.
+- **`SourceAttemptID`** is lifted from the diagnosis (`Diagnose`'s
+  `Runtime.AttemptBeadID`) and carried forward by collect_context
+  outputs. Empty when the hooked parent had no active attempt.
+- **`HandoffMode`** is set to `HandoffBorrowed` for worker-shaped
+  repairs (including recipes that dispatch through `SpawnRepairWorker`).
+  Mechanical and mechanical-recipe paths leave it empty — they do not
+  transit a worker handoff.
+- **`RecipeID` / `RecipeVersion`**: today's builtin recipes are
+  anonymous, so `RecipeID` is populated with the recipe's action name
+  when a promoted plan is replayed and `RecipeVersion` is intentionally
+  left zero. The pair is reserved for a future schema where recipes
+  carry a stable ID and a monotonic version; call sites outside
+  `WriteOutcome` should not populate either.
 
 `WriteOutcome` is the **sole writer** of this record: it persists to bead
 metadata under `KeyRecoveryOutcome` and to the `recovery_learnings` SQL

@@ -7,6 +7,7 @@
 package executor
 
 import (
+	"context"
 	"database/sql"
 	"io"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/metrics"
+	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -167,6 +169,14 @@ type Deps struct {
 
 	// Metadata
 	SetBeadMetadata func(id string, meta map[string]string) error
+
+	// WriteRecoveryOutcome persists a RecoveryOutcome through the sole
+	// writer in pkg/recovery. Exposed as a dep so tests can inject a
+	// failing writer without having to stub the store. Production wires
+	// this to recovery.WriteOutcome; the executor's writeRecoveryOutcome
+	// helper falls back to that default when unset so legacy tests that
+	// don't exercise the learn path don't have to wire it.
+	WriteRecoveryOutcome func(ctx context.Context, bead *store.Bead, out recovery.RecoveryOutcome) error
 
 	// Label / type helpers
 	HasLabel       func(b Bead, prefix string) string
