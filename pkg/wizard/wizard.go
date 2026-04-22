@@ -1181,33 +1181,87 @@ func sanitizeClaudeLogLabel(s string) string {
 	return out
 }
 
-// openClaudeStreamLog opens <agentResultDir>/claude/<label>-<ts>.log for
-// append. Returns (nil, "") when agentResultDir is empty or the file
-// can't be opened. Best-effort: a broken log dir must never block the
-// claude invocation, so failures are logged (to stderr) and we fall
-// through to a discard writer.
-//
-// Timestamp format matches pkg/executor/claude_runner.go so
-// pkg/board/inspector.go's wizard-<id>-<suffix>/claude/*.log glob
-// treats wizard-produced and executor-produced logs uniformly.
-func openClaudeStreamLog(agentResultDir, label string) (*os.File, string) {
+// providerStream bundles the per-invocation stdout transcript and
+// stderr sidecar produced by openProviderStreamLog.
+type providerStream struct {
+	stdoutPath string
+	stderrPath string
+	stdout     *os.File
+	stderr     *os.File
+}
+
+// openClaudeProviderStream is the best-effort caller shim used by the
+// Claude invocation helpers. It opens a transcript pair under
+// <agentResultDir>/claude/, logs the stdout path to stderr so an
+// operator can tail it, and writes the Claude-specific header preamble.
+// Returns nil (tee disabled) when agentResultDir is empty or the
+// transcript cannot be opened — a broken log dir must never block the
+// claude invocation.
+func openClaudeProviderStream(agentResultDir, label, worktreeDir string, args []string) *providerStream {
 	if agentResultDir == "" {
-		return nil, ""
+		return nil
 	}
-	dir := filepath.Join(agentResultDir, "claude")
+	stream, err := openProviderStreamLog(agentResultDir, "claude", label)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: claude transcript capture: %v%s\n", err, runtime.LogFields(runtime.RunContextFromEnv()))
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s%s\n", label, stream.stdoutPath, runtime.LogFields(runtime.RunContextFromEnv()))
+	writeClaudeLogHeader(stream.stdout, label, worktreeDir, args)
+	return stream
+}
+
+// openProviderStreamLog opens a pair of per-invocation transcript files
+// for an AI-provider CLI spawn:
+//
+//   - stdout JSONL transcript: <agentResultDir>/<provider>/<label>-<ts>.jsonl
+//   - stderr sidecar:          <agentResultDir>/<provider>/<label>-<ts>.stderr.log
+//
+// Both files are opened O_CREATE|O_WRONLY|O_APPEND with 0644. The
+// containing directory is created with 0755.
+//
+// The provider must be non-empty — transcripts keyed under "" would
+// collide with other providers' discovery globs. An empty
+// agentResultDir is also rejected so callers opt into capture
+// explicitly.
+//
+// If opening the stderr sidecar fails after stdout was opened, stdout
+// is closed before the error is returned so no file handle leaks.
+//
+// Timestamp format matches pkg/executor/claude_runner.go so downstream
+// readers (pkg/board/inspector.go, cmd/spire/logs.go) can treat
+// wizard-produced and executor-produced transcripts uniformly.
+func openProviderStreamLog(agentResultDir, provider, label string) (*providerStream, error) {
+	if agentResultDir == "" {
+		return nil, fmt.Errorf("openProviderStreamLog: empty agentResultDir")
+	}
+	if provider == "" {
+		return nil, fmt.Errorf("openProviderStreamLog: empty provider")
+	}
+	dir := filepath.Join(agentResultDir, provider)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: mkdir claude log dir %s: %v%s\n", dir, err, runtime.LogFields(runtime.RunContextFromEnv()))
-		return nil, ""
+		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	ts := time.Now().UTC().Format("20060102-150405")
-	name := fmt.Sprintf("%s-%s.log", sanitizeClaudeLogLabel(label), ts)
-	path := filepath.Join(dir, name)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	stem := fmt.Sprintf("%s-%s", sanitizeClaudeLogLabel(label), ts)
+	stdoutPath := filepath.Join(dir, stem+".jsonl")
+	stderrPath := filepath.Join(dir, stem+".stderr.log")
+
+	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: open claude log %s: %v%s\n", path, err, runtime.LogFields(runtime.RunContextFromEnv()))
-		return nil, ""
+		return nil, fmt.Errorf("open stdout transcript %s: %w", stdoutPath, err)
 	}
-	return f, path
+	stderr, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		stdout.Close()
+		return nil, fmt.Errorf("open stderr sidecar %s: %w", stderrPath, err)
+	}
+	return &providerStream{
+		stdoutPath: stdoutPath,
+		stderrPath: stderrPath,
+		stdout:     stdout,
+		stderr:     stderr,
+	}, nil
 }
 
 // WizardAgentResultDir returns the per-wizard directory under which
@@ -1220,11 +1274,12 @@ func WizardAgentResultDir(deps *Deps, wizardName string) string {
 	return filepath.Join(deps.DoltGlobalDir(), "wizards", wizardName)
 }
 
-// WizardRunClaude invokes the claude CLI in print mode (output teed to
-// stderr and, when agentResultDir is non-empty, to a per-invocation log
-// file at <agentResultDir>/claude/<label>-<ts>.log). Returns token usage
-// metrics parsed from the stream's final result event. timeout enforces
-// a hard process-level deadline via context.
+// WizardRunClaude invokes the claude CLI in print mode. Output is teed
+// to stderr and, when agentResultDir is non-empty, to a per-invocation
+// transcript pair under <agentResultDir>/claude/: a JSONL stdout
+// transcript and a .stderr.log sidecar. Returns token usage metrics
+// parsed from the stream's final result event. timeout enforces a hard
+// process-level deadline via context.
 func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
@@ -1247,25 +1302,28 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	cmd.Dir = worktreeDir
 	cmd.Env = os.Environ()
 
-	logFile, logPath := openClaudeStreamLog(agentResultDir, label)
-	if logFile != nil {
-		defer logFile.Close()
-		fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s%s\n", label, logPath, runtime.LogFields(runtime.RunContextFromEnv()))
-		writeClaudeLogHeader(logFile, label, worktreeDir, args)
+	stream := openClaudeProviderStream(agentResultDir, label, worktreeDir, args)
+	if stream != nil {
+		defer stream.stdout.Close()
+		defer stream.stderr.Close()
 	}
 
 	var buf bytes.Buffer
-	writers := []io.Writer{os.Stderr, &buf}
-	if logFile != nil {
-		writers = append(writers, logFile)
+	stdoutWriters := []io.Writer{os.Stderr, &buf}
+	if stream != nil {
+		stdoutWriters = append(stdoutWriters, stream.stdout)
 	}
-	cmd.Stdout = io.MultiWriter(writers...)
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = io.MultiWriter(stdoutWriters...)
+	if stream != nil {
+		cmd.Stderr = io.MultiWriter(os.Stderr, stream.stderr)
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 
 	started := time.Now()
 	runErr := cmd.Run()
-	if logFile != nil {
-		fmt.Fprintf(logFile, "\n=== end (err=%v, duration=%s) ===\n", runErr, time.Since(started))
+	if stream != nil {
+		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", runErr, time.Since(started))
 	}
 
 	_, metrics := parseClaudeResultJSON(buf.Bytes())
@@ -1278,7 +1336,8 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 // token usage metrics, and any execution error. Falls back to raw output if
 // parsing fails. timeout enforces a hard process-level deadline via context.
 // When agentResultDir is non-empty, the full stream is also teed to
-// <agentResultDir>/claude/<label>-<ts>.log.
+// <agentResultDir>/claude/<label>-<ts>.jsonl, with a sidecar
+// <label>-<ts>.stderr.log for stderr.
 func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (string, ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
@@ -1299,26 +1358,29 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = worktreeDir
 	cmd.Env = os.Environ()
-	cmd.Stderr = os.Stderr
 
-	logFile, logPath := openClaudeStreamLog(agentResultDir, label)
-	if logFile != nil {
-		defer logFile.Close()
-		fmt.Fprintf(os.Stderr, "[claude] invocation [%s] logging to %s%s\n", label, logPath, runtime.LogFields(runtime.RunContextFromEnv()))
-		writeClaudeLogHeader(logFile, label, worktreeDir, args)
+	stream := openClaudeProviderStream(agentResultDir, label, worktreeDir, args)
+	if stream != nil {
+		defer stream.stdout.Close()
+		defer stream.stderr.Close()
 	}
 
 	var buf bytes.Buffer
-	writers := []io.Writer{&buf}
-	if logFile != nil {
-		writers = append(writers, logFile)
+	stdoutWriters := []io.Writer{&buf}
+	if stream != nil {
+		stdoutWriters = append(stdoutWriters, stream.stdout)
 	}
-	cmd.Stdout = io.MultiWriter(writers...)
+	cmd.Stdout = io.MultiWriter(stdoutWriters...)
+	if stream != nil {
+		cmd.Stderr = io.MultiWriter(os.Stderr, stream.stderr)
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 
 	started := time.Now()
 	runErr := cmd.Run()
-	if logFile != nil {
-		fmt.Fprintf(logFile, "\n=== end (err=%v, duration=%s) ===\n", runErr, time.Since(started))
+	if stream != nil {
+		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", runErr, time.Since(started))
 	}
 
 	out := buf.Bytes()
@@ -1406,7 +1468,8 @@ type AgentRunFunc func(dir, promptPath, model, timeout string, maxTurns int, age
 // invoke Claude with the build error, re-commit, re-build, up to maxRounds.
 // Returns true if the build passes (immediately or after fixes). When
 // agentResultDir is non-empty, each fix invocation's stream is captured
-// to <agentResultDir>/claude/build-gate-fix-<ts>.log.
+// to <agentResultDir>/claude/build-gate-fix-r<N>-<ts>.jsonl (plus a
+// matching .stderr.log sidecar).
 func WizardBuildGate(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeDir, model string,
 	cfg *repoconfig.RepoConfig, accMetrics *ClaudeMetrics, agentResultDir string, log func(string, ...interface{})) bool {
 	return wizardBuildGateImpl(wc, beadID, beadTitle, worktreeDir, model, cfg, accMetrics, agentResultDir, log,

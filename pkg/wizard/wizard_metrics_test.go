@@ -305,106 +305,157 @@ func TestParseClaudeResultJSON_StreamJSON(t *testing.T) {
 	}
 }
 
-func TestOpenClaudeStreamLog(t *testing.T) {
-	t.Run("creates claude subdir and log file", func(t *testing.T) {
+func TestOpenProviderStreamLog(t *testing.T) {
+	t.Run("creates provider subdir and stdout+stderr transcript pair", func(t *testing.T) {
 		base := t.TempDir()
 
-		f, path := openClaudeStreamLog(base, "implement")
-		if f == nil {
-			t.Fatal("expected non-nil file handle")
+		stream, err := openProviderStreamLog(base, "claude", "implement")
+		if err != nil {
+			t.Fatalf("openProviderStreamLog: %v", err)
 		}
-		defer f.Close()
+		defer stream.stdout.Close()
+		defer stream.stderr.Close()
 
-		if path == "" {
-			t.Fatal("expected non-empty path")
-		}
-
-		claudeDir := filepath.Join(base, "claude")
-		if _, err := os.Stat(claudeDir); err != nil {
-			t.Fatalf("expected claude subdir at %s: %v", claudeDir, err)
+		providerDir := filepath.Join(base, "claude")
+		if _, err := os.Stat(providerDir); err != nil {
+			t.Fatalf("expected claude subdir at %s: %v", providerDir, err)
 		}
 
-		// Filename must match the board glob <dir>/claude/*.log and start with label.
-		if filepath.Dir(path) != claudeDir {
-			t.Errorf("log dir = %q, want %q", filepath.Dir(path), claudeDir)
+		if filepath.Dir(stream.stdoutPath) != providerDir {
+			t.Errorf("stdout dir = %q, want %q", filepath.Dir(stream.stdoutPath), providerDir)
 		}
-		name := filepath.Base(path)
-		if !strings.HasPrefix(name, "implement-") || !strings.HasSuffix(name, ".log") {
-			t.Errorf("log filename %q should look like implement-<ts>.log", name)
+		if filepath.Dir(stream.stderrPath) != providerDir {
+			t.Errorf("stderr dir = %q, want %q", filepath.Dir(stream.stderrPath), providerDir)
+		}
+
+		stdoutName := filepath.Base(stream.stdoutPath)
+		if !strings.HasPrefix(stdoutName, "implement-") || !strings.HasSuffix(stdoutName, ".jsonl") {
+			t.Errorf("stdout filename %q should look like implement-<ts>.jsonl", stdoutName)
+		}
+		stderrName := filepath.Base(stream.stderrPath)
+		if !strings.HasPrefix(stderrName, "implement-") || !strings.HasSuffix(stderrName, ".stderr.log") {
+			t.Errorf("stderr filename %q should look like implement-<ts>.stderr.log", stderrName)
+		}
+
+		// Both files must share the <label>-<ts> stem.
+		stdoutStem := strings.TrimSuffix(stdoutName, ".jsonl")
+		stderrStem := strings.TrimSuffix(stderrName, ".stderr.log")
+		if stdoutStem != stderrStem {
+			t.Errorf("stdout/stderr stems differ: %q vs %q", stdoutStem, stderrStem)
 		}
 	})
 
-	t.Run("writing a multi-event stream lands on disk", func(t *testing.T) {
+	t.Run("provider keys the subdir", func(t *testing.T) {
 		base := t.TempDir()
-		f, path := openClaudeStreamLog(base, "review-fix")
-		if f == nil {
-			t.Fatal("expected non-nil file handle")
+		stream, err := openProviderStreamLog(base, "codex", "implement")
+		if err != nil {
+			t.Fatalf("openProviderStreamLog: %v", err)
+		}
+		defer stream.stdout.Close()
+		defer stream.stderr.Close()
+
+		codexDir := filepath.Join(base, "codex")
+		if _, err := os.Stat(codexDir); err != nil {
+			t.Fatalf("expected codex subdir at %s: %v", codexDir, err)
+		}
+		if filepath.Dir(stream.stdoutPath) != codexDir {
+			t.Errorf("stdout dir = %q, want %q", filepath.Dir(stream.stdoutPath), codexDir)
+		}
+	})
+
+	t.Run("writes to both stdout and stderr handles land on disk", func(t *testing.T) {
+		base := t.TempDir()
+		stream, err := openProviderStreamLog(base, "claude", "review-fix")
+		if err != nil {
+			t.Fatalf("openProviderStreamLog: %v", err)
 		}
 
-		stream := `{"type":"system","subtype":"init"}
+		stdoutStream := `{"type":"system","subtype":"init"}
 {"type":"tool_use","name":"Read"}
 {"type":"tool_result","content":"ok"}
 {"type":"result","result":"done","num_turns":3,"total_cost_usd":0.02,"usage":{"input_tokens":100,"output_tokens":50}}
 `
-		if _, err := f.Write([]byte(stream)); err != nil {
-			t.Fatalf("write: %v", err)
+		if _, err := stream.stdout.Write([]byte(stdoutStream)); err != nil {
+			t.Fatalf("stdout write: %v", err)
 		}
-		f.Close()
+		if _, err := stream.stderr.Write([]byte("claude: warning on stderr\n")); err != nil {
+			t.Fatalf("stderr write: %v", err)
+		}
+		stream.stdout.Close()
+		stream.stderr.Close()
 
-		got, err := os.ReadFile(path)
+		gotStdout, err := os.ReadFile(stream.stdoutPath)
 		if err != nil {
-			t.Fatalf("read log: %v", err)
+			t.Fatalf("read stdout log: %v", err)
 		}
-		if !strings.Contains(string(got), `"type":"tool_use"`) {
-			t.Errorf("log missing tool_use events; got:\n%s", got)
+		if !strings.Contains(string(gotStdout), `"type":"tool_use"`) {
+			t.Errorf("stdout log missing tool_use events; got:\n%s", gotStdout)
 		}
-		if !strings.Contains(string(got), `"type":"result"`) {
-			t.Errorf("log missing result event; got:\n%s", got)
+		if !strings.Contains(string(gotStdout), `"type":"result"`) {
+			t.Errorf("stdout log missing result event; got:\n%s", gotStdout)
+		}
+
+		gotStderr, err := os.ReadFile(stream.stderrPath)
+		if err != nil {
+			t.Fatalf("read stderr log: %v", err)
+		}
+		if !strings.Contains(string(gotStderr), "claude: warning on stderr") {
+			t.Errorf("stderr log missing expected line; got:\n%s", gotStderr)
 		}
 	})
 
-	t.Run("empty agentResultDir disables log file (best-effort, no error)", func(t *testing.T) {
-		f, path := openClaudeStreamLog("", "implement")
-		if f != nil {
-			t.Error("expected nil file for empty dir")
-			f.Close()
-		}
-		if path != "" {
-			t.Errorf("expected empty path, got %q", path)
+	t.Run("empty agentResultDir errors", func(t *testing.T) {
+		stream, err := openProviderStreamLog("", "claude", "implement")
+		if err == nil {
+			if stream != nil {
+				stream.stdout.Close()
+				stream.stderr.Close()
+			}
+			t.Fatal("expected error for empty agentResultDir")
 		}
 	})
 
-	t.Run("unwritable dir falls back silently (no panic)", func(t *testing.T) {
-		// Point at a path where mkdir will fail (a path under an existing
-		// regular file). Best-effort contract: return (nil, "") without erroring.
+	t.Run("empty provider errors (never silently write under \"\")", func(t *testing.T) {
+		base := t.TempDir()
+		stream, err := openProviderStreamLog(base, "", "implement")
+		if err == nil {
+			if stream != nil {
+				stream.stdout.Close()
+				stream.stderr.Close()
+			}
+			t.Fatal("expected error for empty provider")
+		}
+	})
+
+	t.Run("unwritable dir errors", func(t *testing.T) {
 		base := t.TempDir()
 		blocker := filepath.Join(base, "file")
 		if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		f, path := openClaudeStreamLog(filepath.Join(blocker, "nested"), "implement")
-		if f != nil {
-			t.Error("expected nil file when mkdir fails")
-			f.Close()
-		}
-		if path != "" {
-			t.Errorf("expected empty path on failure, got %q", path)
+		stream, err := openProviderStreamLog(filepath.Join(blocker, "nested"), "claude", "implement")
+		if err == nil {
+			if stream != nil {
+				stream.stdout.Close()
+				stream.stderr.Close()
+			}
+			t.Fatal("expected error when mkdir fails")
 		}
 	})
 
 	t.Run("sanitizes label with slash/space/colon", func(t *testing.T) {
 		base := t.TempDir()
-		f, path := openClaudeStreamLog(base, "weird/label name:x")
-		if f == nil {
-			t.Fatal("expected non-nil file handle")
+		stream, err := openProviderStreamLog(base, "claude", "weird/label name:x")
+		if err != nil {
+			t.Fatalf("openProviderStreamLog: %v", err)
 		}
-		defer f.Close()
-		name := filepath.Base(path)
-		if strings.ContainsAny(name, "/: ") {
-			// filenames with slashes would land in a subdir; spaces/colons are
-			// legal on most filesystems but portability + the executor's
-			// pattern — keep them out.
-			t.Errorf("sanitized name %q still contains unsafe chars", name)
+		defer stream.stdout.Close()
+		defer stream.stderr.Close()
+
+		name := filepath.Base(stream.stdoutPath)
+		stem := strings.TrimSuffix(name, ".jsonl")
+		if strings.ContainsAny(stem, "/: ") {
+			t.Errorf("sanitized stem %q still contains unsafe chars", stem)
 		}
 		if !strings.HasPrefix(name, "weird-label-name-x-") {
 			t.Errorf("expected sanitized prefix weird-label-name-x-, got %q", name)
