@@ -1,4 +1,4 @@
-.PHONY: build build-steward build-agent load deploy apply restart logs status clean smoke-test-helm test-observability
+.PHONY: build build-steward build-agent load deploy apply restart logs status clean smoke-test-helm test-observability crd-check
 
 NAMESPACE ?= spire
 
@@ -70,6 +70,17 @@ clean:
 # and verifies isolation. See docs/HELM.md for env-var options.
 smoke-test-helm:
 	bash hack/multi-tenant-smoke-test.sh
+
+# --- CRD drift guard ---
+
+# k8s/crds/ is the authoritative CRD source; helm/spire/crds/ MUST be a
+# byte-identical copy so `helm install` and `kubectl apply -f k8s/crds/`
+# produce the same schema. Drift here silently strips unknown fields
+# (see spi-8fvhv: missing spec.cache schema dropped Cache from every
+# applied WizardGuild CR).
+crd-check:
+	@diff -r k8s/crds/ helm/spire/crds/ \
+		|| { echo "CRD drift: k8s/crds and helm/spire/crds disagree; cp k8s/crds/<file>.yaml helm/spire/crds/"; exit 1; }
 
 # --- Observability regression suite ---
 

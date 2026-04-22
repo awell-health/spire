@@ -25,6 +25,8 @@ jobs:
         run: go test ./pkg/... ./cmd/spire/... -count=1 -timeout 120s
       - name: Vet
         run: go vet ./...
+      - name: CRD drift check
+        run: make crd-check
 
   # ClickHouse integration tests — runs the pkg/olap/clickhouse contract
   # suite against a real ClickHouse server. Isolated from the main
