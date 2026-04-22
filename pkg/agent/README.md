@@ -103,6 +103,47 @@ wizard-only special case. `Kind=borrowed_worktree` apprentices additionally
 mount the parent wizard's workspace volume; all other pod shape decisions
 are keyed off `SpawnConfig.Role` + `Workspace.Kind`.
 
+## Apprentice pod shape: `BuildApprenticePod` is canonical
+
+`pkg/agent` is the single source of truth for apprentice pod shape, and
+`BuildApprenticePod(spec PodSpec) (*corev1.Pod, error)` (in
+[`pod_builder.go`](pod_builder.go)) is the canonical constructor. Both
+the steward's cluster-native dispatch path
+([`pkg/steward/cluster_dispatch.go`](../steward/cluster_dispatch.go))
+and the operator's intent reconciler
+([`operator/controllers/intent_reconciler.go`](../../operator/controllers/intent_reconciler.go))
+translate their own state into a `PodSpec` and call this function;
+neither hand-rolls pod shape. See [docs/ARCHITECTURE.md →
+Seams](../../docs/ARCHITECTURE.md#seams) for the architectural framing.
+
+Rules that hold inside this package:
+
+- **One canonical constructor.** `BuildApprenticePod` is the only public
+  way to materialize an apprentice pod. Internal helpers (env build,
+  label build, init-container build) stay private.
+- **Explicit `PodSpec` fields, no opaque maps.** Every input the
+  apprentice pod needs (image, identity, workspace, handoff, resources,
+  cache PVC overlay, OTLP endpoint) is a typed field on `PodSpec`.
+  Missing required inputs surface as typed `ErrPodSpec*` errors at
+  build time rather than as init-container failures at runtime.
+- **No process-env fallbacks.** The function never reads process env,
+  never falls back to ambient CWD, and never hides missing identity
+  behind a default. Callers plumb identity explicitly from their own
+  configuration surfaces.
+- **Parity is enforced, not promised.** Pod shape stability is pinned by
+  `pkg/agent/pod_builder_test.go` (golden shape: required env vars,
+  volumes, restart policy, labels, no stale env keys),
+  `pkg/agent/pod_builder_parity_test.go`, and
+  `operator/controllers/pod_builder_parity_test.go`. A second
+  pod-construction code path under `pkg/steward/` or `operator/` is a
+  contract violation and should be rejected in review.
+
+When the legacy `(*K8sBackend).BuildPod` path under `backend_k8s.go`
+(retained for the wizard-pod shape and the spawner lifecycle) eventually
+graduates onto `BuildApprenticePod`, this package's pod-shape surface
+collapses to a single function — that is the target end-state for the
+spi-sj18k epic.
+
 ## Key types
 
 | Type / function | Purpose |

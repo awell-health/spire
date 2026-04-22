@@ -54,7 +54,7 @@ If you find yourself adding prompt text, Claude CLI flags, timeout policy, or co
 
 ## Relationship To Steward And Workshop
 
-- **Steward** is above the executor. It ensures the tower has enough wizard capacity, summons and resets workers, and routes work to ready beads.
+- **Steward** is above the executor. It ensures the tower has enough wizard capacity, summons and resets workers, and routes work to ready beads. The steward branches on `pkg/config.DeploymentMode` at its dispatch entry — see [docs/ARCHITECTURE.md → Deployment modes](../../docs/ARCHITECTURE.md#deployment-modes) and [pkg/steward/README.md → Deployment-mode dispatch](../steward/README.md#deployment-mode-dispatch). The executor is unaware of mode; it runs the same formula graph regardless of how the steward chose to dispatch the bead.
 - **Workshop** is beside the executor. It defines and validates the formulas that the executor consumes, but it does not run those formulas on live beads. Workshop also defines the `FormulaStepGraph` structure (steps, workspaces, vars) that the executor consumes at runtime.
 
 ## Runtime contract types (normative)

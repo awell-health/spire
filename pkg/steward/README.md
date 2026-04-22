@@ -9,6 +9,71 @@ work should run.
 If `pkg/executor` is the per-bead control plane, `pkg/steward` is the
 multi-bead coordinator.
 
+## Deployment-mode dispatch
+
+The steward's scheduling entry (the dispatch step in `TowerCycle`,
+`steward.go`) reads `tower.EffectiveDeploymentMode()` from
+`pkg/config/deployment_mode.go` and branches on the three values. The
+contract here is normative — every cluster-native scheduling path lives
+behind these branches.
+
+| `DeploymentMode` value | What this package does |
+|------------------------|------------------------|
+| `local-native` (default) | Existing direct-spawn loop: the steward calls `backend.Spawn` for each schedulable bead, reading `LocalBindings` for repo bootstrap inputs. This path is the only one allowed to read `LocalBindings.State`, `LocalBindings.LocalPath`, or `cfg.Instances`. |
+| `cluster-native` | `cluster_dispatch.go` runs. The steward resolves repo identity through `pkg/steward/identity.ClusterIdentityResolver`, claims an attempt bead and emits a `pkg/steward/intent.WorkloadIntent` through `pkg/steward/dispatch.ClaimThenEmit`, and never creates pods directly. |
+| `attached-reserved` | The dispatch step skips with a typed `attached.ErrAttachedNotImplemented` log line. No work is dispatched in this mode today. |
+
+### Cluster-native: the three seams
+
+When `EffectiveDeploymentMode == cluster-native`, the steward composes
+exactly three seams. Wiring lives on `StewardConfig.ClusterDispatch`
+(see `cluster_dispatch.go`); a nil entry — or any nil field — disables
+cluster-native dispatch and the steward logs and skips rather than
+silently falling back to local spawn.
+
+1. **`identity.ClusterIdentityResolver`** — resolves a repo prefix to its
+   canonical `ClusterRepoIdentity` using the shared tower repo registry
+   (the `repos` table in dolt). The cluster path MUST resolve through
+   this seam and never read `LocalBindings.State`,
+   `LocalBindings.LocalPath`, or `cfg.Instances`.
+2. **`dispatch.AttemptClaimer` + `dispatch.DispatchEmitter` via
+   `dispatch.ClaimThenEmit`** — the only allowed dispatch path.
+   `ClaimNext` atomically opens an attempt bead in the shared store;
+   `Emit` refuses to publish without a matching `AttemptHandle`. The
+   attempt bead row is the canonical ownership seam — no in-process
+   busy map, mutex, or `sync.Map` is allowed as a substitute.
+3. **`intent.IntentPublisher`** — the scheduler-side exit seam that
+   delivers a `WorkloadIntent` to the operator. The operator consumes
+   it through `intent.IntentConsumer` and reconciles cluster resources
+   to match. This package never imports `k8s.io/*`; the publisher
+   transport (a CR apply, in production) is plumbed in by `cmd/spire`.
+
+If a steward-internal cluster path needs an apprentice pod, it MUST
+call `pkg/agent.BuildApprenticePod` rather than building the pod shape
+locally. There is no in-package pod construction in cluster-native code
+paths.
+
+### The LocalBindings rule
+
+> **Cluster-native code paths MUST NEVER read `LocalBindings.State`,
+> `LocalBindings.LocalPath`, or `cfg.Instances`.**
+
+`LocalBindings` is per-machine workspace state — bind status and the
+local clone path of a repo on this archmage's filesystem. Those values
+have no meaning across cluster replicas: another replica of the steward
+running in the same tower will see different `LocalBindings` for the
+same prefix, or none at all. Treating them as authoritative in cluster
+scheduling silently fragments ownership across replicas.
+
+The local-native dispatch path may read `LocalBindings` (it is the only
+caller that owns the local workspace). Cluster-native code resolves
+repo identity through `identity.ClusterIdentityResolver` and treats
+`LocalBindings` as if it did not exist. The boundary is enforced
+mechanically: `cluster_dispatch.go` carries no `cfg.Instances` access
+or `LocalBindings` dereference, and the cluster identity resolver's
+`LocalBindingsAccessor` field is wired with a panicking stub in tests
+to prove `Resolve` never touches it.
+
 ## What this package owns
 
 - **Ready-work assignment**: find ready beads and assign them to idle agents.

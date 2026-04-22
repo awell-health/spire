@@ -7,37 +7,136 @@ local machines and Kubernetes clusters via DoltHub.
 > **Living document.** Updated 2026-04-03. Where the current implementation
 > differs from the target, inline callouts note the gap.
 
-## Deployment Modes
+## Deployment modes
 
-Spire runs in three configurations. All share the same work graph, sync
-protocol, and agent protocol.
+Spire's control-plane topology is selected by an explicit, three-valued
+contract owned by `pkg/config/deployment_mode.go`. Every scheduling /
+dispatch entry point reads the tower's effective mode and branches on it.
+The mode is deliberately orthogonal to **worker backend** (process /
+docker / k8s) and to **sync transport** (syncer / remotesapi / DoltHub) —
+see [Non-goals](#non-goals) below.
 
-**Local** -- Developer laptop. The `spire` CLI manages a local Dolt server
-and daemon. Agents run as local processes via `spire summon` (each summoned
-wizard is a `spire execute` subprocess that orchestrates worktrees and review
-steps).
+| Mode | Wire value | What runs where |
+|------|------------|-----------------|
+| Local-native | `local-native` | Full control plane and workers on the archmage's machine. The steward spawns wizard subprocesses directly via `pkg/agent.Backend.Spawn`. The canonical default for new towers. |
+| Cluster-native | `cluster-native` | Steward runs in a pod, emits `pkg/steward/intent.WorkloadIntent` after an atomic attempt-bead claim, and the operator reconciles those intents into apprentice pods. The archmage's machine is a client of the cluster control plane. |
+| Attached-reserved | `attached-reserved` | A local control plane targeting a remote cluster execution surface through the same `WorkloadIntent` seam. **Reserved — not implemented.** Selecting it is a declaration of intent; consumers return `attached.ErrAttachedNotImplemented`. See [docs/attached-mode.md](attached-mode.md) for the full reservation. |
 
-**Cluster** -- Kubernetes. The operator watches CRDs and spins up agent
-pods. A shared Dolt Deployment holds the work graph. A syncer pod handles
-DoltHub push/pull.
-
-**Hybrid** -- Local CLI + remote cluster. DoltHub bridges the two: the
-developer pushes beads, the cluster pulls and executes, status flows back
-via DoltHub.
+The shared work graph still flows over Dolt + DoltHub regardless of which
+mode is in effect: local-native pushes locally, cluster-native syncs via
+the syncer pod, and an attached-mode tower would do whatever its sync
+transport selection dictates. Sync is not the mode switch.
 
 ```
-  Local                  DoltHub                Cluster
-  -----                  -------                -------
-  spire push ──────────> remote <────────────── syncer pull
-  spire pull <────────── remote ──────────────> syncer push
-                            |
-  Developer B               |
-  spire push ──────────> remote
-  spire pull <────────── remote
+  Local-native                  Cluster-native                     Attached-reserved
+  ------------                  --------------                     -----------------
+  steward (CLI)                 steward (pod)                      steward (CLI)
+    │                             │                                  │
+    │ Spawn (process/docker/k8s)  │ Publish(WorkloadIntent)          │ Publish(WorkloadIntent) → remote
+    ▼                             ▼                                  ▼  (transport TBD)
+  apprentice process            operator reconciler                ErrAttachedNotImplemented
+                                  │
+                                  │ BuildApprenticePod
+                                  ▼
+                                apprentice pod
 ```
 
-No direct connectivity between laptops and cluster is required. DoltHub is
-the hub.
+## Non-goals
+
+These are explicit non-goals of the deployment-mode contract. They exist
+because each one was, at some point, a tempting shortcut that would have
+collapsed an orthogonal dimension into the mode switch.
+
+- **Attached mode is reserved, not implemented.** No execution path exists
+  for `DeploymentModeAttachedReserved` today. The runtime surface is the
+  stub in `pkg/steward/attached`, which returns
+  `attached.ErrAttachedNotImplemented` for any input. Selecting it in a
+  tower config is a declaration of intent only. See
+  [docs/attached-mode.md](attached-mode.md) for the reservation, the
+  seams it will reuse, and the contract a future implementation MUST NOT
+  perturb.
+- **Sync transport is orthogonal to deployment mode.** A local-native
+  tower may sync over DoltHub; a cluster-native tower may sync over
+  remotesapi or a syncer pod. Choosing `cluster-native` does not imply
+  any particular transport, and choosing a particular transport does not
+  imply a particular deployment mode. Code that branches on transport to
+  decide topology — or vice versa — violates the contract documented on
+  `pkg/config.DeploymentMode`.
+- **`LocalBindings` are local-only workspace state.** The `LocalBindings`
+  map on the tower config records per-machine workspace facts (bind
+  state, local clone path) that have no meaning across cluster replicas.
+  Cluster-native scheduling code paths MUST NOT read
+  `LocalBindings.State`, `LocalBindings.LocalPath`, or `cfg.Instances`.
+  Cluster repo identity comes from
+  [`pkg/steward/identity.ClusterIdentityResolver`](#seams) backed by the
+  shared tower repo registry; that is the only canonical source.
+
+## Seams
+
+Spire's three-mode contract is held together by four narrow seams owned by
+`pkg/steward/intent`, `pkg/steward/identity`, `pkg/steward/dispatch`, and
+`pkg/agent`. Each seam has a typed interface, a single canonical
+production implementation, and reflection- or parity-based tests that
+prevent it from drifting into a second source of truth.
+
+### `WorkloadIntent` (`pkg/steward/intent`)
+
+`WorkloadIntent` is the dispatch-time payload that crosses the
+scheduler-to-reconciler boundary in cluster-native (and, eventually,
+attached) mode. It carries `AttemptID`, a minimal `RepoIdentity`
+(`URL`, `BaseBranch`, `Prefix`), `FormulaPhase`, `Resources`, and
+`HandoffMode` — and **nothing machine-local**. The package imports
+nothing from `k8s.io/*`, `pkg/dolt`, or `pkg/config`, and a reflection
+test in `intent_test.go` rejects any new field that smuggles
+`LocalBindings`, local paths, or other per-machine state onto the wire.
+`IntentPublisher` is the scheduler-side exit seam; `IntentConsumer` is
+the reconciler-side entry seam. Both are interfaces so the transport
+(today, a Kubernetes CR apply) is pluggable.
+
+### `ClusterIdentityResolver` (`pkg/steward/identity`)
+
+`ClusterIdentityResolver` is the only canonical source of cluster repo
+identity. Implementations resolve a repo prefix to its canonical
+`ClusterRepoIdentity` (`URL`, `BaseBranch`, `Prefix`) by reading the
+shared tower repo registry — the `repos` table backed by
+`pkg/store`'s dolt connection. Cluster scheduling code MUST resolve
+through this seam and MUST NOT touch `LocalBindings.State`,
+`LocalBindings.LocalPath`, or `cfg.Instances`. The boundary is pinned
+mechanically: `DefaultClusterIdentityResolver` accepts an audit-only
+`LocalBindingsAccessor` and tests wire a panicking stub to prove
+`Resolve` never dereferences it. The production implementation is
+`SQLRegistryStore`, which reads the tower's `repos` rows via the
+shared dolt connection.
+
+### `AttemptClaimer` + `DispatchEmitter` + `ClaimThenEmit` (`pkg/steward/dispatch`)
+
+`pkg/steward/dispatch` formalizes claim-then-emit as the only path by
+which cluster-native scheduling may hand work to a reconciler.
+`AttemptClaimer.ClaimNext` atomically opens an attempt bead in the
+shared store via `pkg/store.CreateAttemptBead` — the row-level
+uniqueness of that operation is the canonical ownership seam, not any
+in-process mutex or `sync.Map`. A successful claim returns an
+`AttemptHandle` carrying `AttemptID` and `ClaimedAt`. `DispatchEmitter.Emit`
+refuses to publish an intent without a matching handle: every
+implementation MUST call `dispatch.ValidateHandle` first, which returns
+`ErrNoClaimedAttempt` for nil handles or attempt-id mismatches.
+`ClaimThenEmit` is the orchestrator that wires the two halves together
+and is the only allowed dispatch path in cluster-native code paths.
+
+### `BuildApprenticePod` (`pkg/agent`)
+
+`pkg/agent.BuildApprenticePod(spec PodSpec) (*corev1.Pod, error)` is
+the single source of truth for apprentice pod shape. Both the steward's
+cluster-native dispatch path and the operator's intent reconciler
+translate their own state into a `PodSpec` and call this constructor;
+neither hand-rolls pod shape. `PodSpec` has no opaque maps — every
+field is intentional and missing required inputs surface as typed
+`ErrPodSpec*` errors at build time rather than as init-container
+failures at runtime. The function never reads process env, never falls
+back to ambient CWD, and never hides missing identity behind a default.
+Pod-shape parity between callers is enforced by
+`pkg/agent/pod_builder_parity_test.go` and
+`operator/controllers/pod_builder_parity_test.go`.
 
 ## Components
 

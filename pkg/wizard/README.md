@@ -74,6 +74,11 @@ Specifically:
 If a change is about which role runs, which workspace it uses, or
 which handoff mode applies, it belongs in `pkg/executor`, not here.
 
+The wizard is also unaware of the tower's `DeploymentMode` — local-native
+spawn vs cluster-native intent emission is a steward concern. See
+[docs/ARCHITECTURE.md → Deployment modes](../../docs/ARCHITECTURE.md#deployment-modes)
+and [pkg/steward/README.md → Deployment-mode dispatch](../steward/README.md#deployment-mode-dispatch).
+
 ## Retry-from-step (cooperative recovery)
 
 When a cleric (recovery agent) sets a `RetryRequest` on a bead, the
