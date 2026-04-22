@@ -1387,6 +1387,9 @@ func (e *Executor) buildRecoveryActionCtx(sourceBeadID string, plan recovery.Rep
 		LogBaseDir:     dolt.GlobalDir(),
 		ParentRunID:    e.currentRunID,
 		AgentNamespace: "cleric-repair",
+		BuildRuntimeContract: func(cfg agent.SpawnConfig, step, workspaceName string, handle WorkspaceHandle, mode HandoffMode) (agent.SpawnConfig, error) {
+			return e.withRuntimeContract(cfg, e.runtimeTowerName(), repoPath, baseBranch, step, workspaceName, &handle, mode)
+		},
 	}
 
 	return actionCtx, ws, cleanup, nil

@@ -46,6 +46,16 @@ type RecoveryActionCtx struct {
 	ParentRunID    string
 	AgentNamespace string
 
+	// BuildRuntimeContract stamps the canonical runtime contract on cfg —
+	// Identity (tower/prefix/RepoURL/base), Workspace, and Run (backend,
+	// workspace kind/name/origin, handoff mode). It is the single
+	// construction site for the worker spawn: SpawnRepairWorker never
+	// hand-builds the process-only config that bypassed k8s substrate
+	// validation (spi-6wiz9). buildRecoveryActionCtx wires this to a
+	// closure over (*Executor).withRuntimeContract; tests may inject a
+	// stub that mirrors the canonical shape.
+	BuildRuntimeContract func(cfg agent.SpawnConfig, step, workspaceName string, ws WorkspaceHandle, mode HandoffMode) (agent.SpawnConfig, error)
+
 	// Optional hooks for test injection. When nil, the defaults call the real
 	// store.GetBead and an in-process dispatch via Spawner.
 	GetBeadFn  func(id string) (store.Bead, error)

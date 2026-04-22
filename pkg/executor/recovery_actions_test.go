@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
 )
@@ -265,12 +266,14 @@ func TestExecuteRecipe_MechanicalFailurePropagates(t *testing.T) {
 }
 
 // TestExecuteRecipe_WorkerActionDispatchesThroughSpawnRepairWorker asserts
-// that a promoted worker recipe (e.g. resolve-conflicts) routes into the
+// that a promoted worker recipe (e.g. targeted-fix) routes into the
 // canonical SpawnRepairWorker path — the same entry the un-promoted
 // worker plan uses. The test proxies the spawner with a DispatchFn so no
-// real apprentice is launched; success depends on workspace shape, which
-// we short-circuit by pointing at an empty worktree (no conflict files
-// means SpawnRepairWorker returns nil without dispatching).
+// real apprentice is launched. A non-conflict action is used so the
+// resolve-conflicts "no conflicts on disk" guard doesn't fire; the
+// important invariant here is that executeRecipe's worker branch reaches
+// SpawnRepairWorker, which in turn stamps the canonical runtime
+// contract via ctx.BuildRuntimeContract.
 func TestExecuteRecipe_WorkerActionDispatchesThroughSpawnRepairWorker(t *testing.T) {
 	dir := t.TempDir()
 	// Minimal git init so WorktreeContext helpers don't blow up.
@@ -279,21 +282,31 @@ func TestExecuteRecipe_WorkerActionDispatchesThroughSpawnRepairWorker(t *testing
 	}
 
 	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
+	var dispatched int
 	ctx := &RecoveryActionCtx{
-		Worktree: wc,
-		Spawner:  fakeSpawner{},
-		Log:      func(string) {},
+		Worktree:     wc,
+		TargetBeadID: "spi-target",
+		Spawner:      fakeSpawner{},
+		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			dispatched++
+			return &fakeHandle{name: cfg.Name}, nil
+		},
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
 	}
 	plan := recovery.RepairPlan{
 		Mode:   recovery.RepairModeRecipe,
-		Action: "resolve-conflicts",
+		Action: "targeted-fix",
 	}
 	result, err := executeRecipe(ctx, plan, WorkspaceHandle{Path: dir})
 	if err != nil {
 		t.Fatalf("executeRecipe err = %v", err)
 	}
-	if result.Recipe == nil || result.Recipe.Action != "resolve-conflicts" {
-		t.Errorf("result.Recipe = %+v, want resolve-conflicts recipe", result.Recipe)
+	if dispatched != 1 {
+		t.Errorf("dispatched = %d, want 1 — recipe replay should reach SpawnRepairWorker", dispatched)
+	}
+	if result.Recipe == nil || result.Recipe.Action != "targeted-fix" {
+		t.Errorf("result.Recipe = %+v, want targeted-fix recipe", result.Recipe)
 	}
 	if !strings.Contains(result.Output, "worker") {
 		t.Errorf("result.Output = %q, want to mention 'worker'", result.Output)

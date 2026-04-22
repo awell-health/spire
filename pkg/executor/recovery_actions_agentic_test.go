@@ -420,29 +420,111 @@ func (fakeSpawner) List() ([]agent.Info, error)        { return nil, nil }
 func (fakeSpawner) Logs(string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
 func (fakeSpawner) Kill(string) error                  { return nil }
 
-// TestSpawnRepairWorker_NoConflicts returns cleanly without dispatching
-// when ConflictedFiles() is empty.
-func TestSpawnRepairWorker_NoConflicts(t *testing.T) {
+// testBuildRuntimeContract is a minimal BuildRuntimeContract stub that
+// mirrors the shape (*Executor).withRuntimeContract produces — Identity
+// (TowerName, Prefix, RepoURL, BaseBranch), Workspace, Run (Backend,
+// FormulaStep, WorkspaceKind/Name/Origin, HandoffMode). Tests that
+// bypass the real Executor use it so the substrate-contract fields that
+// k8s validation enforces are present in the captured cfg. The stub
+// intentionally uses a fixed RepoURL so the k8s-contract assertion in
+// TestSpawnRepairWorker_BuildsCanonicalRuntimeContract can pin the
+// value.
+func testBuildRuntimeContract(cfg agent.SpawnConfig, step, workspaceName string, ws WorkspaceHandle, mode HandoffMode) (agent.SpawnConfig, error) {
+	prefix := store.PrefixFromID(cfg.BeadID)
+	if prefix == "" {
+		prefix = "spi"
+	}
+	if ws.Name == "" {
+		ws.Name = workspaceName
+	}
+	if ws.BaseBranch == "" {
+		ws.BaseBranch = "main"
+	}
+	cfg.Identity = RepoIdentity{
+		TowerName:  "test-tower",
+		TowerID:    "test-tower",
+		Prefix:     prefix,
+		RepoURL:    "https://example.com/test.git",
+		BaseBranch: ws.BaseBranch,
+	}
+	cfg.Workspace = &ws
+	cfg.Run = RunContext{
+		TowerName:       "test-tower",
+		Prefix:          prefix,
+		BeadID:          cfg.BeadID,
+		Role:            cfg.Role,
+		FormulaStep:     step,
+		Backend:         "k8s",
+		WorkspaceKind:   ws.Kind,
+		WorkspaceName:   ws.Name,
+		WorkspaceOrigin: ws.Origin,
+		HandoffMode:     mode,
+	}
+	return cfg, nil
+}
+
+// TestSpawnRepairWorker_ResolveConflictsNoConflictsErrors verifies that
+// resolve-conflicts with zero conflict markers on disk is a
+// decide/execute vocabulary mismatch — the pre-spi-6wiz9 blanket "no
+// conflicts → success" short-circuit is gone.
+func TestSpawnRepairWorker_ResolveConflictsNoConflictsErrors(t *testing.T) {
 	dir := initAgenticTestRepo(t)
 	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
 
-	var logged []string
 	ctx := &RecoveryActionCtx{
 		Worktree: wc,
-		Log:      func(msg string) { logged = append(logged, msg) },
+		Log:      func(string) {},
 	}
 
-	if _, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir}); err != nil {
-		t.Fatalf("SpawnRepairWorker on clean tree: %v", err)
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{Action: "resolve-conflicts"}, WorkspaceHandle{Path: dir})
+	if err == nil {
+		t.Fatal("expected error when resolve-conflicts runs against a clean worktree")
 	}
-	found := false
-	for _, m := range logged {
-		if strings.Contains(m, "no conflicted files found") {
-			found = true
-		}
+	if !strings.Contains(err.Error(), "no conflicted files") {
+		t.Errorf("error = %q, want to mention 'no conflicted files'", err)
 	}
-	if !found {
-		t.Errorf("expected 'no conflicted files' log, got %v", logged)
+}
+
+// TestSpawnRepairWorker_EmptyActionErrors verifies that an empty
+// plan.Action errors rather than silently succeeding. Pre-spi-6wiz9 the
+// worker path returned success when there were no conflicts, regardless
+// of action — that short-circuit is gone; decide must set a canonical
+// action for every worker plan.
+func TestSpawnRepairWorker_EmptyActionErrors(t *testing.T) {
+	dir := initAgenticTestRepo(t)
+	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
+
+	ctx := &RecoveryActionCtx{
+		Worktree: wc,
+		Log:      func(string) {},
+	}
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir})
+	if err == nil {
+		t.Fatal("expected error on empty plan.Action")
+	}
+	if !strings.Contains(err.Error(), "plan.Action is empty") {
+		t.Errorf("error = %q, want to mention 'plan.Action is empty'", err)
+	}
+}
+
+// TestSpawnRepairWorker_UnknownActionErrors verifies that an action
+// outside the closed worker-role set fails loudly. Decide/execute
+// vocabulary mismatches must surface rather than dispatch into an
+// ambiguous prompt.
+func TestSpawnRepairWorker_UnknownActionErrors(t *testing.T) {
+	dir := initAgenticTestRepo(t)
+	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
+
+	ctx := &RecoveryActionCtx{
+		Worktree: wc,
+		Log:      func(string) {},
+	}
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{Action: "invent-action"}, WorkspaceHandle{Path: dir})
+	if err == nil {
+		t.Fatal("expected error on unknown plan.Action")
+	}
+	if !strings.Contains(err.Error(), "unsupported action") {
+		t.Errorf("error = %q, want to mention 'unsupported action'", err)
 	}
 }
 
@@ -518,14 +600,15 @@ func TestSpawnRepairWorker_DispatchSucceedsAndGatesPass(t *testing.T) {
 	}
 
 	ctx := &RecoveryActionCtx{
-		Worktree:     wc,
-		TargetBeadID: "spi-target",
-		Spawner:      fakeSpawner{},
-		DispatchFn:   dispatch,
-		Log:          func(string) {},
+		Worktree:             wc,
+		TargetBeadID:         "spi-target",
+		Spawner:              fakeSpawner{},
+		DispatchFn:           dispatch,
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
 	}
 
-	if _, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir}); err != nil {
+	if _, err := SpawnRepairWorker(ctx, recovery.RepairPlan{Action: "resolve-conflicts"}, WorkspaceHandle{Path: dir}); err != nil {
 		t.Fatalf("SpawnRepairWorker: %v", err)
 	}
 	if dispatched != 1 {
@@ -567,14 +650,15 @@ func TestSpawnRepairWorker_GateFailsWhenMarkersRemain(t *testing.T) {
 		return &fakeHandle{name: cfg.Name}, nil
 	}
 	ctx := &RecoveryActionCtx{
-		Worktree:     wc,
-		TargetBeadID: "spi-target",
-		Spawner:      fakeSpawner{},
-		DispatchFn:   dispatch,
-		Log:          func(string) {},
+		Worktree:             wc,
+		TargetBeadID:         "spi-target",
+		Spawner:              fakeSpawner{},
+		DispatchFn:           dispatch,
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
 	}
 
-	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir})
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{Action: "resolve-conflicts"}, WorkspaceHandle{Path: dir})
 	if err == nil {
 		t.Fatal("expected gate to fail on unresolved markers")
 	}
@@ -611,14 +695,15 @@ func TestSpawnRepairWorker_DispatchSpawnError(t *testing.T) {
 		return nil, errors.New("boom: spawner broken")
 	}
 	ctx := &RecoveryActionCtx{
-		Worktree:     wc,
-		TargetBeadID: "spi-target",
-		Spawner:      fakeSpawner{},
-		DispatchFn:   dispatch,
-		Log:          func(string) {},
+		Worktree:             wc,
+		TargetBeadID:         "spi-target",
+		Spawner:              fakeSpawner{},
+		DispatchFn:           dispatch,
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
 	}
 
-	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{}, WorkspaceHandle{Path: dir})
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{Action: "resolve-conflicts"}, WorkspaceHandle{Path: dir})
 	if err == nil {
 		t.Fatal("expected error when dispatch fails to spawn")
 	}
@@ -670,7 +755,8 @@ func TestDispatchConflictApprentice_WaitErrorNonFatal(t *testing.T) {
 		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
 			return &fakeHandle{name: cfg.Name, wait: errors.New("non-zero exit")}, nil
 		},
-		Log: func(string) {},
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
 	}
 
 	_, err := dispatchConflictApprentice(ctx, conflictBundle{}, WorkspaceHandle{Path: dir})
@@ -694,7 +780,8 @@ func TestDispatchConflictApprentice_UsesCustomAgentNamespace(t *testing.T) {
 			captured = cfg
 			return &fakeHandle{name: cfg.Name}, nil
 		},
-		Log: func(string) {},
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
 	}
 
 	ws := WorkspaceHandle{
@@ -709,8 +796,8 @@ func TestDispatchConflictApprentice_UsesCustomAgentNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatchConflictApprentice: %v", err)
 	}
-	if !strings.HasPrefix(captured.Name, "custom-ns-spi-target-") {
-		t.Errorf("spawn name = %q, want prefix custom-ns-spi-target-", captured.Name)
+	if !strings.HasPrefix(captured.Name, "custom-ns-resolve-conflicts-spi-target-") {
+		t.Errorf("spawn name = %q, want prefix custom-ns-resolve-conflicts-spi-target-", captured.Name)
 	}
 	if captured.Role != agent.RoleApprentice {
 		t.Errorf("Role = %q, want apprentice", captured.Role)
@@ -740,6 +827,189 @@ func TestDispatchConflictApprentice_UsesCustomAgentNamespace(t *testing.T) {
 	}
 	if captured.Identity.Prefix != "spi" {
 		t.Errorf("identity prefix = %q, want %q", captured.Identity.Prefix, "spi")
+	}
+}
+
+// TestSpawnRepairWorker_NonConflictActionDispatches verifies the
+// spi-6wiz9 regression: a worker plan whose Action is not
+// resolve-conflicts (e.g. resummon) actually reaches the apprentice
+// spawn instead of silently returning success. Pre-fix, a plan with
+// zero conflicted files short-circuited to Output="no conflicts to
+// resolve" regardless of Action.
+func TestSpawnRepairWorker_NonConflictActionDispatches(t *testing.T) {
+	dir := initAgenticTestRepo(t)
+	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
+
+	var dispatched int
+	var captured agent.SpawnConfig
+	ctx := &RecoveryActionCtx{
+		Worktree:     wc,
+		TargetBeadID: "spi-target",
+		Spawner:      fakeSpawner{},
+		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			dispatched++
+			captured = cfg
+			return &fakeHandle{name: cfg.Name}, nil
+		},
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
+	}
+
+	plan := recovery.RepairPlan{
+		Action: "resummon",
+		Reason: "Test/build failure suggests transient",
+		Params: map[string]string{"hint": "retry"},
+	}
+	ws := WorkspaceHandle{
+		Name:       "recovery",
+		Kind:       WorkspaceKindBorrowedWorktree,
+		Path:       dir,
+		Branch:     "feat/spi-target",
+		BaseBranch: "main",
+		Origin:     WorkspaceOriginLocalBind,
+	}
+
+	result, err := SpawnRepairWorker(ctx, plan, ws)
+	if err != nil {
+		t.Fatalf("SpawnRepairWorker(resummon): %v", err)
+	}
+	if dispatched != 1 {
+		t.Fatalf("dispatched = %d, want 1 — the apprentice must be spawned for non-conflict actions", dispatched)
+	}
+	if result.WorkerAttemptID == "" {
+		t.Error("WorkerAttemptID empty — expected a spawn name even on success")
+	}
+	if !strings.Contains(result.Output, "resummon") {
+		t.Errorf("Output = %q, want to mention 'resummon' (got from non-conflict worker path)", result.Output)
+	}
+
+	// Prompt must carry the plan context the apprentice needs.
+	if captured.CustomPrompt == "" {
+		t.Fatal("captured CustomPrompt empty — apprentice would receive no context")
+	}
+	mustMention := []string{"resummon", "spi-target", "Test/build failure suggests transient", "hint: retry"}
+	for _, s := range mustMention {
+		if !strings.Contains(captured.CustomPrompt, s) {
+			t.Errorf("prompt missing %q; full prompt:\n%s", s, captured.CustomPrompt)
+		}
+	}
+
+	// FormulaStep must carry the action so metrics/logs distinguish
+	// worker roles. Backend must come from the builder, not be
+	// hard-coded "process" (the spi-6wiz9 bug).
+	if captured.Run.FormulaStep != "resummon" {
+		t.Errorf("Run.FormulaStep = %q, want %q", captured.Run.FormulaStep, "resummon")
+	}
+	if captured.Run.Backend == "process" {
+		// The stub sets Backend="k8s"; if it reads "process" here,
+		// someone reintroduced the hand-built SpawnConfig.
+		t.Errorf("Run.Backend = %q — suggests hand-built process-only config is back", captured.Run.Backend)
+	}
+}
+
+// TestSpawnRepairWorker_BuildsCanonicalRuntimeContract asserts the
+// k8s-oriented invariant from spi-6wiz9: every worker spawn — conflict
+// resolver or generic repair role — must carry the canonical
+// Identity/Workspace/RunContext fields that pkg/agent/backend_k8s.go
+// buildSubstratePod enforces (RepoURL, BaseBranch, Prefix, non-nil
+// Workspace, non-empty FormulaStep/HandoffMode). Before the fix,
+// SpawnRepairWorker hand-built Identity without RepoURL and Run.Backend
+// was hard-coded "process", so k8s dispatches would fail with
+// ErrIdentityRequired before the worker started.
+func TestSpawnRepairWorker_BuildsCanonicalRuntimeContract(t *testing.T) {
+	dir := initAgenticTestRepo(t)
+	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "feat/spi-target", BaseBranch: "main"}
+
+	var captured agent.SpawnConfig
+	ctx := &RecoveryActionCtx{
+		Worktree:     wc,
+		TargetBeadID: "spi-target",
+		BaseBranch:   "main",
+		Spawner:      fakeSpawner{},
+		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			captured = cfg
+			return &fakeHandle{name: cfg.Name}, nil
+		},
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
+	}
+
+	plan := recovery.RepairPlan{Action: "targeted-fix", Reason: "assertion failed"}
+	ws := WorkspaceHandle{
+		Name:       "recovery",
+		Kind:       WorkspaceKindBorrowedWorktree,
+		Path:       dir,
+		Branch:     "feat/spi-target",
+		BaseBranch: "main",
+		Origin:     WorkspaceOriginLocalBind,
+	}
+	if _, err := SpawnRepairWorker(ctx, plan, ws); err != nil {
+		t.Fatalf("SpawnRepairWorker(targeted-fix): %v", err)
+	}
+
+	// Exact preconditions from pkg/agent/backend_k8s.go:buildSubstratePod.
+	if captured.Workspace == nil {
+		t.Error("cfg.Workspace is nil — buildSubstratePod would reject with ErrWorkspaceRequired")
+	}
+	if captured.Identity.RepoURL == "" {
+		t.Error("Identity.RepoURL empty — buildSubstratePod would reject with ErrIdentityRequired (the spi-6wiz9 bug)")
+	}
+	if captured.Identity.BaseBranch == "" {
+		t.Error("Identity.BaseBranch empty — buildSubstratePod would reject with ErrIdentityRequired")
+	}
+	if captured.Identity.Prefix == "" {
+		t.Error("Identity.Prefix empty — buildSubstratePod would reject with ErrIdentityRequired")
+	}
+
+	// Run context must be stamped — these fields drive log / metric
+	// labels and the pod env contract.
+	if captured.Run.FormulaStep != "targeted-fix" {
+		t.Errorf("Run.FormulaStep = %q, want %q", captured.Run.FormulaStep, "targeted-fix")
+	}
+	if captured.Run.HandoffMode != HandoffBorrowed {
+		t.Errorf("Run.HandoffMode = %q, want %q", captured.Run.HandoffMode, HandoffBorrowed)
+	}
+	if captured.Run.Backend == "" {
+		t.Error("Run.Backend empty — must be set by the canonical builder, never hard-coded")
+	}
+	if captured.Run.Backend == "process" {
+		// The builder selects the backend from substrate config. If the
+		// stub (which sets backend="k8s") is bypassed and we see the
+		// legacy hard-coded "process", the hand-built config is back.
+		t.Errorf("Run.Backend = %q — hand-built process-only config is back (spi-6wiz9 regression)", captured.Run.Backend)
+	}
+	if captured.Run.WorkspaceKind != WorkspaceKindBorrowedWorktree {
+		t.Errorf("Run.WorkspaceKind = %q, want %q", captured.Run.WorkspaceKind, WorkspaceKindBorrowedWorktree)
+	}
+}
+
+// TestSpawnRepairWorker_RequiresRuntimeContractBuilder verifies that the
+// worker path refuses to dispatch when ctx.BuildRuntimeContract is not
+// wired. This prevents a silent regression where a future caller
+// bypasses buildRecoveryActionCtx and hand-builds a SpawnConfig without
+// the canonical runtime contract — the exact shape of the spi-6wiz9
+// bug.
+func TestSpawnRepairWorker_RequiresRuntimeContractBuilder(t *testing.T) {
+	dir := initAgenticTestRepo(t)
+	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
+
+	ctx := &RecoveryActionCtx{
+		Worktree:     wc,
+		TargetBeadID: "spi-target",
+		Spawner:      fakeSpawner{},
+		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			return &fakeHandle{name: cfg.Name}, nil
+		},
+		Log: func(string) {},
+		// BuildRuntimeContract intentionally nil.
+	}
+
+	_, err := SpawnRepairWorker(ctx, recovery.RepairPlan{Action: "resummon"}, WorkspaceHandle{Path: dir})
+	if err == nil {
+		t.Fatal("expected error when BuildRuntimeContract is not wired")
+	}
+	if !strings.Contains(err.Error(), "BuildRuntimeContract") {
+		t.Errorf("error = %q, want to mention BuildRuntimeContract", err)
 	}
 }
 

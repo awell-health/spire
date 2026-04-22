@@ -260,15 +260,25 @@ dispatch.
 | `resummon`            | Worker     | `borrowed_worktree`       |
 | `reset`               | Worker     | `borrowed_worktree`       |
 | `triage`              | Worker     | `borrowed_worktree`       |
-| `targeted-fix` (tombstone) | — | — (dispatch fails loudly, see below) |
+| `targeted-fix`        | Worker     | `borrowed_worktree`       |
 | `verify-clean`        | Noop       | n/a                       |
 | `escalate`            | Escalate   | n/a                       |
 
-The `targeted-fix` action is retired (see design §9 Q3). A tombstone
-(`actionTargetedFix` in `pkg/executor/recovery_actions.go`) remains for one
-release of coexistence so historical recovery beads that still reference
-the name fail loudly with a pointer at `RepairModeWorker` rather than
-silently dispatching to nothing.
+Worker dispatch (`SpawnRepairWorker` in `pkg/executor`) switches on
+`plan.Action`: `resolve-conflicts` assembles a conflict bundle and runs
+the conflict-marker validation gates; the other worker actions
+(`resummon`, `reset`, `triage`, `targeted-fix`) render a generic
+repair prompt and delegate success verification to the cleric's
+`verify` step. All worker spawns share a single `SpawnConfig`
+construction site (`ctx.BuildRuntimeContract`, wired to
+`(*Executor).withRuntimeContract`) so the canonical Identity /
+Workspace / RunContext fields required by the k8s substrate validator
+are populated — never a hand-built process-only config (spi-6wiz9).
+
+The legacy `actionTargetedFix` mechanical-dispatch tombstone in
+`pkg/executor/recovery_actions.go` is unrelated to the worker-mode
+action above: it exists only so stale paths that still call the
+function by name fail loudly with a pointer at `RepairModeWorker`.
 
 ## Constants
 

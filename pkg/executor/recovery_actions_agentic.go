@@ -47,22 +47,46 @@ type conflictBundle struct {
 	Files        []conflictFileContext
 }
 
-// SpawnRepairWorker is the canonical RepairModeWorker entrypoint: it
-// assembles a conflict bundle for the paused workspace, dispatches an
-// apprentice into it, waits for the worker to resolve and commit, then
-// runs validation gates. On any gate failure returns an error so the
-// cleric's on_error=record path captures it and decide can reconsider.
+// repairWorkerAction is the closed set of plan.Action values that
+// SpawnRepairWorker will dispatch. Anything outside this set errors
+// rather than silently succeeding (spi-6wiz9): a new worker role must
+// be added explicitly.
+var repairWorkerActions = map[string]bool{
+	"resolve-conflicts": true,
+	"resummon":          true,
+	"reset":             true,
+	"triage":            true,
+	"targeted-fix":      true,
+}
+
+// SpawnRepairWorker is the canonical RepairModeWorker entrypoint. It
+// dispatches on plan.Action to one of the repair-role specific apprentice
+// spawns — all of which share a single SpawnConfig construction site
+// through ctx.BuildRuntimeContract, so local and k8s backends both
+// receive the canonical Identity/Workspace/RunContext required by the
+// substrate validator.
+//
+//   - "resolve-conflicts": assemble a conflict bundle for the paused
+//     workspace, dispatch a resolver apprentice, and run the
+//     conflict-specific validation gates.
+//   - "resummon" / "reset" / "triage" / "targeted-fix": dispatch a
+//     generic repair apprentice with plan context; the cleric's verify
+//     step (VerifyPlan) is the authoritative success check — no
+//     conflict-marker gates apply here.
+//   - empty or unknown action: return an error so decide/execute can
+//     reconsider. Previously an empty action plus zero conflicted files
+//     silently returned success; that short-circuit is gone (spi-6wiz9).
 //
 // ws is the workspace the plan selected (borrowed from the target bead's
 // wizard today). When ctx.Worktree is nil, SpawnRepairWorker reconstructs
-// a WorktreeContext from ws so the existing buildConflictBundle /
-// runConflictValidationGates helpers find the repo without callers having
-// to thread a pre-built context.
+// a WorktreeContext from ws so conflict helpers find the repo without
+// callers having to thread a pre-built context.
 //
-// Required dispatcher deps on ctx: Spawner, RecordAgentRun (optional),
-// LogBaseDir (optional). When Spawner is missing the function returns an
-// error without dispatching so the caller (decide loop or execute step)
-// can either retry on a different mode or escalate.
+// Required dispatcher deps on ctx: Spawner, BuildRuntimeContract (wired
+// by buildRecoveryActionCtx), RecordAgentRun (optional), LogBaseDir
+// (optional). When Spawner or BuildRuntimeContract are missing the
+// function returns an error without dispatching so the caller can either
+// retry on a different mode or escalate.
 func SpawnRepairWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle) (RepairWorkerResult, error) {
 	if ctx.Worktree == nil {
 		ctx.Worktree = worktreeFromHandle(ws)
@@ -71,14 +95,33 @@ func SpawnRepairWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws Work
 	if wc == nil || wc.Dir == "" {
 		return RepairWorkerResult{}, fmt.Errorf("spawn repair worker: no workspace")
 	}
+	if plan.Action == "" {
+		return RepairWorkerResult{}, fmt.Errorf("spawn repair worker: plan.Action is empty — decide must set a canonical action")
+	}
+	if !repairWorkerActions[plan.Action] {
+		return RepairWorkerResult{}, fmt.Errorf("spawn repair worker: unsupported action %q (known: resolve-conflicts, resummon, reset, triage, targeted-fix)", plan.Action)
+	}
 
+	if plan.Action == "resolve-conflicts" {
+		return spawnConflictResolverWorker(ctx, plan, ws, wc)
+	}
+	return spawnGenericRepairWorker(ctx, plan, ws, wc)
+}
+
+// spawnConflictResolverWorker is the resolve-conflicts branch of the
+// worker dispatch. It inspects the paused worktree for conflict markers,
+// assembles the conflict bundle, dispatches the resolver apprentice
+// through the canonical spawn builder, and runs the conflict-specific
+// validation gates on return.
+func spawnConflictResolverWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle, wc *spgit.WorktreeContext) (RepairWorkerResult, error) {
 	files, err := wc.ConflictedFiles()
 	if err != nil {
 		return RepairWorkerResult{}, fmt.Errorf("list conflicted files: %w", err)
 	}
 	if len(files) == 0 {
-		ctx.logf("no conflicted files found — nothing to resolve")
-		return RepairWorkerResult{Output: "no conflicts to resolve"}, nil
+		// resolve-conflicts requested with no conflicts on disk is a
+		// decide/execute vocabulary mismatch — not a silent success.
+		return RepairWorkerResult{}, fmt.Errorf("resolve-conflicts: no conflicted files found on paused worktree (decide should have chosen a different action)")
 	}
 
 	bundle := buildConflictBundle(ctx, wc, files)
@@ -94,6 +137,52 @@ func SpawnRepairWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws Work
 
 	ctx.logf(fmt.Sprintf("repair worker completed; %d file(s) processed, all gates passed", len(files)))
 	return RepairWorkerResult{WorkerAttemptID: workerAttemptID, Output: fmt.Sprintf("%d file(s) resolved", len(files))}, nil
+}
+
+// spawnGenericRepairWorker is the non-conflict branch of the worker
+// dispatch. It builds a role-aware prompt (resummon / reset / triage /
+// targeted-fix), stamps the canonical runtime contract onto the
+// SpawnConfig via ctx.BuildRuntimeContract, and dispatches the
+// apprentice. It does NOT run the conflict-marker validation gates —
+// those are specific to the resolver path; the cleric's verify step
+// (VerifyPlan) is the authoritative success check for these roles.
+func spawnGenericRepairWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle, wc *spgit.WorktreeContext) (RepairWorkerResult, error) {
+	if ctx.Spawner == nil {
+		return RepairWorkerResult{}, fmt.Errorf("repair worker: no Spawner wired on ctx")
+	}
+
+	spawnName := repairWorkerSpawnName(ctx, plan.Action)
+	prompt := renderGenericRepairPrompt(ctx, plan)
+	cfg, err := buildRepairWorkerSpawnConfig(ctx, spawnName, plan, ws, prompt)
+	if err != nil {
+		return RepairWorkerResult{}, err
+	}
+
+	dispatch := ctx.DispatchFn
+	if dispatch == nil {
+		dispatch = ctx.Spawner.Spawn
+	}
+
+	started := time.Now()
+	handle, spawnErr := dispatch(cfg)
+	if spawnErr != nil {
+		recordResolverRun(ctx, spawnName, started, "spawn_error")
+		return RepairWorkerResult{WorkerAttemptID: spawnName}, fmt.Errorf("spawn %s apprentice: %w", plan.Action, spawnErr)
+	}
+
+	waitErr := handle.Wait()
+	result := "success"
+	if waitErr != nil {
+		result = "error"
+	}
+	recordResolverRun(ctx, spawnName, started, result)
+
+	if waitErr != nil {
+		ctx.logf(fmt.Sprintf("repair worker %s exited with %v", spawnName, waitErr))
+		return RepairWorkerResult{WorkerAttemptID: spawnName}, fmt.Errorf("repair worker %s: %w", plan.Action, waitErr)
+	}
+	ctx.logf(fmt.Sprintf("repair worker %s (%s) completed", spawnName, plan.Action))
+	return RepairWorkerResult{WorkerAttemptID: spawnName, Output: fmt.Sprintf("%s apprentice completed", plan.Action)}, nil
 }
 
 // buildConflictBundle assembles the full context bundle for the apprentice.
@@ -165,6 +254,10 @@ func resolveSideContext(ctx *RecoveryActionCtx, wc *spgit.WorktreeContext, sha, 
 // are the authoritative check — some subprocess errors are non-fatal (e.g.
 // hook noise) and a clean exit with conflict markers still on disk is a
 // real failure that the gates catch.
+//
+// The SpawnConfig is built through ctx.BuildRuntimeContract — the same
+// construction site the normal apprentice path uses — so k8s substrate
+// validation sees the canonical Identity/Workspace/RunContext fields.
 func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle, ws WorkspaceHandle) (string, error) {
 	if ctx.Spawner == nil {
 		return "", fmt.Errorf("repair worker: no Spawner wired on ctx")
@@ -173,51 +266,13 @@ func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle, w
 		return "", fmt.Errorf("repair worker: no worktree on ctx")
 	}
 
-	ns := ctx.AgentNamespace
-	if ns == "" {
-		ns = "cleric-repair"
-	}
-	spawnName := fmt.Sprintf("%s-%s-%d", ns, ctx.TargetBeadID, time.Now().UnixNano()%1_000_000)
-
+	spawnName := repairWorkerSpawnName(ctx, "resolve-conflicts")
 	prompt := renderConflictPrompt(ctx, bundle)
+	plan := recovery.RepairPlan{Action: "resolve-conflicts"}
 
-	logPath := ""
-	if ctx.LogBaseDir != "" {
-		logPath = filepath.Join(ctx.LogBaseDir, "wizards", spawnName+".log")
-		_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
-	}
-
-	cfg := agent.SpawnConfig{
-		Name:         spawnName,
-		BeadID:       ctx.TargetBeadID,
-		Role:         agent.RoleApprentice,
-		ExtraArgs:    []string{"--worktree-dir", ctx.Worktree.Dir, "--no-review"},
-		CustomPrompt: prompt,
-		LogPath:      logPath,
-	}
-	workspace := ws
-	if workspace.Name == "" {
-		workspace.Name = "recovery"
-	}
-	if workspace.BaseBranch == "" {
-		workspace.BaseBranch = ctx.BaseBranch
-	}
-	cfg.Identity = RepoIdentity{
-		Prefix:     store.PrefixFromID(ctx.TargetBeadID),
-		BaseBranch: workspace.BaseBranch,
-	}
-	cfg.Workspace = &workspace
-	cfg.Run = RunContext{
-		Prefix:          store.PrefixFromID(ctx.TargetBeadID),
-		BeadID:          ctx.TargetBeadID,
-		RunID:           ctx.ParentRunID,
-		Role:            cfg.Role,
-		FormulaStep:     "resolve-conflicts",
-		Backend:         "process",
-		WorkspaceKind:   workspace.Kind,
-		WorkspaceName:   workspace.Name,
-		WorkspaceOrigin: workspace.Origin,
-		HandoffMode:     HandoffBorrowed,
+	cfg, err := buildRepairWorkerSpawnConfig(ctx, spawnName, plan, ws, prompt)
+	if err != nil {
+		return "", err
 	}
 
 	dispatch := ctx.DispatchFn
@@ -248,6 +303,111 @@ func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle, w
 		ctx.logf(fmt.Sprintf("repair worker %s completed", spawnName))
 	}
 	return spawnName, nil
+}
+
+// repairWorkerSpawnName assembles the canonical spawn name used for every
+// repair-worker role. The action is included so downstream logs / metrics
+// can distinguish roles without parsing the prompt.
+func repairWorkerSpawnName(ctx *RecoveryActionCtx, action string) string {
+	ns := ctx.AgentNamespace
+	if ns == "" {
+		ns = "cleric-repair"
+	}
+	slug := action
+	if slug == "" {
+		slug = "repair"
+	}
+	return fmt.Sprintf("%s-%s-%s-%d", ns, slug, ctx.TargetBeadID, time.Now().UnixNano()%1_000_000)
+}
+
+// buildRepairWorkerSpawnConfig is the single SpawnConfig construction
+// site for every repair-worker role. It stamps the canonical runtime
+// contract via ctx.BuildRuntimeContract (wired by buildRecoveryActionCtx
+// to e.withRuntimeContract), so Identity/Workspace/Run fields match what
+// the k8s substrate validator and process backend both expect. There is
+// no hand-built process-only fallback: callers that bypass the builder
+// (direct tests) must inject their own BuildRuntimeContract stub.
+func buildRepairWorkerSpawnConfig(ctx *RecoveryActionCtx, spawnName string, plan recovery.RepairPlan, ws WorkspaceHandle, prompt string) (agent.SpawnConfig, error) {
+	logPath := ""
+	if ctx.LogBaseDir != "" {
+		logPath = filepath.Join(ctx.LogBaseDir, "wizards", spawnName+".log")
+		_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	}
+
+	workspace := ws
+	if workspace.Name == "" {
+		workspace.Name = "recovery"
+	}
+	if workspace.BaseBranch == "" {
+		workspace.BaseBranch = ctx.BaseBranch
+	}
+
+	cfg := agent.SpawnConfig{
+		Name:         spawnName,
+		BeadID:       ctx.TargetBeadID,
+		Role:         agent.RoleApprentice,
+		Step:         plan.Action,
+		ExtraArgs:    []string{"--worktree-dir", ctx.Worktree.Dir, "--no-review"},
+		CustomPrompt: prompt,
+		LogPath:      logPath,
+	}
+
+	if ctx.BuildRuntimeContract == nil {
+		return agent.SpawnConfig{}, fmt.Errorf("repair worker: ctx.BuildRuntimeContract is not wired — every worker spawn must flow through the canonical runtime-contract builder")
+	}
+	stamped, err := ctx.BuildRuntimeContract(cfg, plan.Action, workspace.Name, workspace, HandoffBorrowed)
+	if err != nil {
+		return agent.SpawnConfig{}, fmt.Errorf("repair worker: stamp runtime contract: %w", err)
+	}
+	return stamped, nil
+}
+
+// renderGenericRepairPrompt composes the apprentice system prompt for
+// non-conflict repair roles (resummon / reset / triage / targeted-fix).
+// It leads with the role the decide step chose and the reason, then
+// surfaces the target bead ID and any role-specific params from the plan
+// so the apprentice can pick up the intent without reading recovery
+// metadata.
+func renderGenericRepairPrompt(ctx *RecoveryActionCtx, plan recovery.RepairPlan) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("You are a cleric repair apprentice running the %q role on a borrowed workspace.\n", plan.Action))
+	sb.WriteString("Your job: resolve the failure that interrupted the parent bead so its wizard can resume.\n\n")
+
+	sb.WriteString("## Rules\n")
+	sb.WriteString("- Keep changes scoped to fixing the interruption. Do NOT redesign, reformat, or refactor unrelated code.\n")
+	sb.WriteString("- Commit your fix with a descriptive message referencing the target bead.\n")
+	sb.WriteString("- Do NOT create PRs, push, or touch other branches.\n\n")
+
+	if ctx.TargetBeadID != "" {
+		sb.WriteString(fmt.Sprintf("## Target bead\n%s\n\n", ctx.TargetBeadID))
+	}
+	if ctx.Worktree != nil && ctx.Worktree.Dir != "" {
+		sb.WriteString(fmt.Sprintf("## Worktree\n%s\n\n", ctx.Worktree.Dir))
+	}
+	if plan.Reason != "" {
+		sb.WriteString("## Decide reason\n")
+		sb.WriteString(plan.Reason)
+		if !strings.HasSuffix(plan.Reason, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(plan.Params) > 0 {
+		sb.WriteString("## Plan parameters\n")
+		keys := make([]string, 0, len(plan.Params))
+		for k := range plan.Params {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			sb.WriteString(fmt.Sprintf("- %s: %s\n", k, plan.Params[k]))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("Diagnose and fix the failure now.\n")
+	return sb.String()
 }
 
 // runConflictValidationGates runs the gates described in the task spec:
