@@ -1,0 +1,88 @@
+// Package intent defines the scheduler-to-reconciler seam used in
+// cluster-native Spire deployments. pkg/steward writes WorkloadIntent
+// values describing what work should run; the Kubernetes operator consumes
+// them and reconciles the actual runtime resources (apprentice pod, PVC,
+// etc.) to match.
+//
+// This seam MUST NOT carry LocalBindings, LocalPath, or any machine-local
+// workspace state. Cluster-native scheduling writes WorkloadIntent;
+// operator reconciles it.
+//
+// The package deliberately imports nothing from k8s.io/*, from pkg/dolt, or
+// from pkg/config. Intent values must be consumable without reading
+// deployment mode or touching any persistence backend, because the operator
+// reads them through a generic consumer transport (a CR watch, in
+// practice) rather than by importing scheduler-side packages.
+package intent
+
+import "context"
+
+// RepoIdentity is the minimal repo shape a WorkloadIntent carries. It is a
+// local struct — NOT pkg/config.LocalRepoBinding — so the intent remains
+// free of machine-local workspace fields. The operator resolves any
+// additional per-cluster state (credentials, clone paths, etc.) via its
+// own identity resolver rather than trusting values the scheduler might
+// have derived from local filesystem state.
+type RepoIdentity struct {
+	URL        string
+	BaseBranch string
+	Prefix     string
+}
+
+// Resources carries the CPU and memory envelope the apprentice pod should
+// run under. Values follow Kubernetes quantity-string conventions
+// (e.g. "500m", "1Gi") so the reconciler can pass them through to the pod
+// spec without re-parsing or re-deciding shape.
+type Resources struct {
+	CPURequest    string
+	CPULimit      string
+	MemoryRequest string
+	MemoryLimit   string
+}
+
+// WorkloadIntent is the dispatch-time request the scheduler writes and the
+// reconciler consumes. It describes what work to run for one attempt bead,
+// never how to run it locally.
+//
+// AttemptID is the bead ID of the attempt bead that owns this work and is
+// the canonical ownership seam. The struct is value-typed and its fields
+// are comparable — equality under == is meaningful and is exercised by
+// tests to guard the shape.
+//
+// New fields that describe machine-local workspace state (local paths,
+// local bindings, local workspace roots, or anything derived from
+// pkg/config.LocalBindings) must NOT be added here; a reflection-based
+// test in intent_test.go enforces that.
+type WorkloadIntent struct {
+	AttemptID    string
+	RepoIdentity RepoIdentity
+	FormulaPhase string
+	Resources    Resources
+	HandoffMode  string
+}
+
+// AssignmentIntent carries upstream policy decisions that come before a
+// WorkloadIntent is emitted — typically "which guild should this attempt
+// go to" and "what capabilities the guild must have". The scheduler
+// materializes a WorkloadIntent once an AssignmentIntent is accepted.
+type AssignmentIntent struct {
+	AttemptID    string
+	TargetGuild  string
+	Capabilities []string
+}
+
+// IntentPublisher is the scheduler-side seam. pkg/steward writes a
+// WorkloadIntent via Publish once it has claimed the backing attempt bead.
+// The transport is implementation-specific (a Kubernetes CR apply, in
+// cluster-native mode); callers depend only on this interface.
+type IntentPublisher interface {
+	Publish(ctx context.Context, intent WorkloadIntent) error
+}
+
+// IntentConsumer is the reconciler-side seam. The operator reads
+// WorkloadIntent values from the channel returned by Consume and
+// reconciles cluster resources to match. The channel is closed when the
+// context is cancelled or the underlying transport terminates.
+type IntentConsumer interface {
+	Consume(ctx context.Context) (<-chan WorkloadIntent, error)
+}
