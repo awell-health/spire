@@ -361,199 +361,122 @@ func TestParseHumanGuidance_NormalizesLeadingPunctuation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// decideFromGitState
+// Decide: agent-first routing (design spi-uhxdn)
 // ---------------------------------------------------------------------------
+//
+// The priority ladder is (0)/(a)/(a2)/(c)/(d). Git-state signals (conflicts,
+// behind-base divergence, dirty worktree) no longer short-circuit the
+// decision — they reach Claude via the diagnosis context so the agent can
+// reason about them directly. When no ClaudeRunner is wired, decide falls
+// back to `resummon` (step d).
 
-func TestDecideFromGitState_Diverged(t *testing.T) {
-	branch := &git.BranchDiagnostics{
-		Diverged:    true,
-		BehindMain:  3,
-		AheadOfMain: 2,
-	}
-	got := decideFromGitState(branch, nil, nil)
-	if got != "rebase-onto-base" {
-		t.Errorf("decideFromGitState(diverged) = %q, want 'rebase-onto-base'", got)
-	}
-}
-
-func TestDecideFromGitState_BehindMain(t *testing.T) {
-	branch := &git.BranchDiagnostics{
-		BehindMain:  5,
-		AheadOfMain: 1,
-		Diverged:    false,
-	}
-	got := decideFromGitState(branch, nil, nil)
-	if got != "rebase-onto-base" {
-		t.Errorf("decideFromGitState(behind) = %q, want 'rebase-onto-base'", got)
-	}
-}
-
-func TestDecideFromGitState_DirtyWorktree(t *testing.T) {
-	branch := &git.BranchDiagnostics{BehindMain: 0}
-	worktree := &git.WorktreeDiagnostics{
-		Exists:  true,
-		IsDirty: true,
-	}
-	got := decideFromGitState(branch, worktree, nil)
-	if got != "rebuild" {
-		t.Errorf("decideFromGitState(dirty worktree) = %q, want 'rebuild'", got)
-	}
-}
-
-func TestDecideFromGitState_CleanState(t *testing.T) {
-	branch := &git.BranchDiagnostics{BehindMain: 0}
-	worktree := &git.WorktreeDiagnostics{
-		Exists:  true,
-		IsDirty: false,
-	}
-	got := decideFromGitState(branch, worktree, nil)
-	if got != "" {
-		t.Errorf("decideFromGitState(clean) = %q, want empty", got)
-	}
-}
-
-func TestDecideFromGitState_NilGitState(t *testing.T) {
-	got := decideFromGitState(nil, nil, nil)
-	if got != "" {
-		t.Errorf("decideFromGitState(nil git) = %q, want empty", got)
-	}
-}
-
-func TestDecideFromGitState_WorktreeNotExists(t *testing.T) {
-	branch := &git.BranchDiagnostics{BehindMain: 0}
-	worktree := &git.WorktreeDiagnostics{Exists: false}
-	got := decideFromGitState(branch, worktree, nil)
-	if got != "" {
-		t.Errorf("decideFromGitState(worktree not exists) = %q, want empty", got)
-	}
-}
-
-func TestDecideFromGitState_PriorityOrder(t *testing.T) {
-	branch := &git.BranchDiagnostics{
-		Diverged:   true,
-		BehindMain: 3,
-	}
-	worktree := &git.WorktreeDiagnostics{
-		Exists:  true,
-		IsDirty: true,
-	}
-	got := decideFromGitState(branch, worktree, nil)
-	if got != "rebase-onto-base" {
-		t.Errorf("decideFromGitState(diverged+dirty) = %q, want 'rebase-onto-base' (diverged takes priority)", got)
-	}
-}
-
-// TestDecideFromGitState_ConflictsRouteToResolveConflicts verifies the
-// routing added for spi-nghqn: when conflictedFiles is non-empty, decide
-// must route to resolve-conflicts (the agentic resolver), NOT rebase-onto-base.
-func TestDecideFromGitState_ConflictsRouteToResolveConflicts(t *testing.T) {
-	got := decideFromGitState(nil, nil, []string{"pkg/gateway/gateway_test.go"})
-	if got != "resolve-conflicts" {
-		t.Errorf("decideFromGitState(conflicts present) = %q, want 'resolve-conflicts'", got)
-	}
-}
-
-// TestDecideFromGitState_ConflictsTakePriorityOverBehind verifies that even
-// when the branch also reports Diverged/Behind, conflicted files route to
-// resolve-conflicts — conflicts mean a paused git op, not a stale branch.
-func TestDecideFromGitState_ConflictsTakePriorityOverBehind(t *testing.T) {
-	branch := &git.BranchDiagnostics{
-		Diverged:   true,
-		BehindMain: 5,
-	}
-	worktree := &git.WorktreeDiagnostics{
-		Exists:  true,
-		IsDirty: true,
-	}
-	got := decideFromGitState(branch, worktree, []string{"a.go", "b.go"})
-	if got != "resolve-conflicts" {
-		t.Errorf("decideFromGitState(conflicts + diverged + dirty) = %q, want 'resolve-conflicts' (conflicts take top priority)", got)
-	}
-}
-
-// TestDecideFromGitState_EmptyConflictedFilesFallsThrough verifies that an
-// empty (but non-nil) slice is treated like nil — decide falls through to
-// behind/dirty logic.
-func TestDecideFromGitState_EmptyConflictedFilesFallsThrough(t *testing.T) {
-	branch := &git.BranchDiagnostics{BehindMain: 2}
-	got := decideFromGitState(branch, nil, []string{})
-	if got != "rebase-onto-base" {
-		t.Errorf("decideFromGitState(empty-slice + behind) = %q, want 'rebase-onto-base'", got)
-	}
-}
-
-// TestGitStateReasoning_ResolveConflictsUsesCount verifies gitStateReasoning
-// reports the file count when the action is resolve-conflicts and
-// conflictedFiles is populated.
-func TestGitStateReasoning_ResolveConflictsUsesCount(t *testing.T) {
-	got := gitStateReasoning(nil, []string{"a.go", "b.go", "c.go"}, "resolve-conflicts")
-	if !strings.Contains(got, "3 file") {
-		t.Errorf("gitStateReasoning(resolve-conflicts, 3 files) = %q, want to mention '3 file'", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// gitStateReasoning
-// ---------------------------------------------------------------------------
-
-func TestGitStateReasoning(t *testing.T) {
-	branch := &git.BranchDiagnostics{
-		BehindMain: 7,
-		MainRef:    "main",
-	}
-
-	tests := []struct {
-		action   string
-		contains string
+// TestDecide_GitStateSignalsFallThroughWhenClaudeAbsent verifies that
+// git-state signals that previously preempted to `rebase-onto-base` /
+// `resolve-conflicts` / `rebuild` no longer short-circuit: with no
+// ClaudeRunner, decide routes to the step-(d) fallback instead.
+func TestDecide_GitStateSignalsFallThroughWhenClaudeAbsent(t *testing.T) {
+	cases := []struct {
+		name string
+		deps Deps
 	}{
-		{"resolve-conflicts", "merge conflicts"},
-		{"rebase-onto-base", "7 commits behind main"},
-		{"rebuild", "uncommitted changes"},
-		{"unknown-action", "unknown-action"},
+		{
+			name: "behind base (would-have-been rebase-onto-base)",
+			deps: Deps{
+				BranchDiagnostics: &git.BranchDiagnostics{BehindMain: 3, MainRef: "origin/main"},
+			},
+		},
+		{
+			name: "diverged (would-have-been rebase-onto-base)",
+			deps: Deps{
+				BranchDiagnostics: &git.BranchDiagnostics{Diverged: true, BehindMain: 3, AheadOfMain: 2, MainRef: "origin/main"},
+			},
+		},
+		{
+			name: "unresolved conflicts (would-have-been resolve-conflicts)",
+			deps: Deps{
+				ConflictedFiles: []string{"a.go", "b.go"},
+			},
+		},
+		{
+			name: "dirty worktree (would-have-been rebuild)",
+			deps: Deps{
+				WorktreeDiagnostics: &git.WorktreeDiagnostics{Exists: true, IsDirty: true},
+			},
+		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.action, func(t *testing.T) {
-			got := gitStateReasoning(branch, nil, tt.action)
-			if !strings.Contains(got, tt.contains) {
-				t.Errorf("gitStateReasoning(%q) = %q, want to contain %q", tt.action, got, tt.contains)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnosis := Diagnosis{BeadID: "spi-src1"}
+			plan, err := Decide(context.Background(), diagnosis, nil, tc.deps)
+			if err != nil {
+				t.Fatalf("Decide err = %v", err)
+			}
+			if plan.Action != "resummon" {
+				t.Errorf("Action = %q, want resummon (fallback when Claude unavailable)", plan.Action)
+			}
+			if plan.Mode != RepairModeWorker {
+				t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeWorker)
 			}
 		})
 	}
 }
 
-func TestGitStateReasoning_NilGitState(t *testing.T) {
-	got := gitStateReasoning(nil, nil, "rebase-onto-base")
-	if got != "branch is behind base" {
-		t.Errorf("gitStateReasoning(nil git, rebase) = %q, want 'branch is behind base'", got)
+// TestDecide_GitStateSignalsRouteToClaudeWhenAvailable verifies that with
+// git-state signals present and a ClaudeRunner wired, decide routes through
+// Claude — the heuristics no longer preempt step (c).
+func TestDecide_GitStateSignalsRouteToClaudeWhenAvailable(t *testing.T) {
+	var claudeCalled bool
+	claudeStub := func(args []string, label string) ([]byte, error) {
+		claudeCalled = true
+		return []byte(`{"chosen_action":"resummon","confidence":0.8,"reasoning":"stubbed","needs_human":false,"expected_outcome":"ok"}`), nil
 	}
-}
 
-// ---------------------------------------------------------------------------
-// Decide: FailureClass → RepairMode matrix (design spi-h32xj §7)
-// ---------------------------------------------------------------------------
-
-// TestDecide_MergeFailure_MapsToMechanical pins the matrix row
-// `FailureClass=merge-failure → RepairMode=mechanical (rebase)`. A merge
-// failure typically surfaces as a branch that is behind/diverged from base
-// without unresolved conflicts on disk — decide routes to the
-// `rebase-onto-base` mechanical.
-func TestDecide_MergeFailure_MapsToMechanical(t *testing.T) {
-	diagnosis := Diagnosis{
-		BeadID:      "spi-src1",
-		FailureMode: FailMerge,
-	}
+	diagnosis := Diagnosis{BeadID: "spi-src1"}
 	deps := Deps{
-		BranchDiagnostics: &git.BranchDiagnostics{BehindMain: 3, MainRef: "origin/main"},
+		BranchDiagnostics:   &git.BranchDiagnostics{BehindMain: 3, MainRef: "origin/main"},
+		WorktreeDiagnostics: &git.WorktreeDiagnostics{Exists: true, IsDirty: true},
+		ConflictedFiles:     []string{"a.go"},
+		ClaudeRunner:        claudeStub,
 	}
-	plan, err := Decide(context.Background(), diagnosis, nil, deps)
+	_, err := Decide(context.Background(), diagnosis, nil, deps)
 	if err != nil {
 		t.Fatalf("Decide err = %v", err)
 	}
-	if plan.Mode != RepairModeMechanical {
-		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeMechanical)
+	if !claudeCalled {
+		t.Fatal("Claude runner not invoked — git-state signals should not preempt Claude")
 	}
-	if plan.Action != "rebase-onto-base" {
-		t.Errorf("Action = %q, want rebase-onto-base", plan.Action)
+}
+
+// TestDecide_ClaudeReceivesContextSummary verifies that the diagnosis
+// context summary (which carries conflict list, divergence counts, dirty
+// tree signals) reaches the Claude prompt — the heuristics-branch removal
+// requires these signals to flow through ContextSummary rather than
+// short-circuit the decision.
+func TestDecide_ClaudeReceivesContextSummary(t *testing.T) {
+	var capturedPrompt string
+	claudeStub := func(args []string, label string) ([]byte, error) {
+		for i, a := range args {
+			if a == "-p" && i+1 < len(args) {
+				capturedPrompt = args[i+1]
+				break
+			}
+		}
+		return []byte(`{"chosen_action":"resummon","confidence":0.8,"reasoning":"ok","needs_human":false,"expected_outcome":"ok"}`), nil
+	}
+
+	diagnosis := Diagnosis{BeadID: "spi-src1"}
+	deps := Deps{
+		ClaudeRunner:   claudeStub,
+		ContextSummary: "## Unresolved Merge Conflicts (2 file(s))\n- a.go\n- b.go\n",
+	}
+	if _, err := Decide(context.Background(), diagnosis, nil, deps); err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if !strings.Contains(capturedPrompt, "Unresolved Merge Conflicts") {
+		t.Error("ContextSummary did not flow into the Claude prompt")
+	}
+	if !strings.Contains(capturedPrompt, "a.go") {
+		t.Error("conflict file list missing from Claude prompt")
 	}
 }
 

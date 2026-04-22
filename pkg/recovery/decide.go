@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -31,16 +30,19 @@ type DecideResult struct {
 }
 
 // Decide produces a typed RepairPlan from a diagnosis + attempt history.
-// It preserves the decision priority order from the legacy
-// executor.handleDecide implementation:
+// The priority order is:
 //
 //	(0) auto-escalate when total attempts ≥ MaxAttempts
 //	(a) human guidance from bead comments
 //	(a2) promoted mechanical recipe replay
-//	(b) git-state heuristics (conflicts → resolve, behind → rebase,
-//	    dirty → rebuild)
 //	(c) Claude-backed decision via deps.ClaudeRunner
 //	(d) fallback to resummon when Claude is unavailable
+//
+// Claude is the agent-first default: once the attempt-budget / human /
+// promoted-recipe gates are past, Decide routes through Claude. Git-state
+// signals (conflicts, behind-base divergence, dirty worktree) are not
+// short-circuited — they flow into the diagnosis context (ContextSummary)
+// that Claude receives so the agent can reason about them explicitly.
 //
 // Rich context (git state, worktree state, conflicted files, human
 // comments, ranked actions, learnings, wizard log tail, context summary)
@@ -127,22 +129,11 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 		}
 	}
 
-	// (b) Git-state-driven decision.
-	if gitAction := decideFromGitState(deps.BranchDiagnostics, deps.WorktreeDiagnostics, deps.ConflictedFiles); gitAction != "" {
-		if repeatedFailures[gitAction] < 2 {
-			logf("recovery: decide: git-state-driven → %s", gitAction)
-			return planForAction(
-				gitAction,
-				0.85,
-				fmt.Sprintf("Git state analysis: %s", gitStateReasoning(deps.BranchDiagnostics, deps.ConflictedFiles, gitAction)),
-				false,
-			), nil
-		}
-		logf("recovery: decide: git-state suggests %s but it has %d prior failures, falling through to Claude",
-			gitAction, repeatedFailures[gitAction])
-	}
-
-	// (c) Claude-backed decision.
+	// (c) Claude-backed decision. Git-state signals (conflicts, behind-base
+	// divergence, dirty worktree) are not preempted here — they reach Claude
+	// via the diagnosis context (Deps.ContextSummary) and let the agent
+	// reason about them alongside the wizard log, attempt history, and
+	// learnings.
 	if deps.ClaudeRunner == nil {
 		// (d) No Claude runner → fallback to resummon.
 		logf("recovery: decide: ClaudeRunner not available, falling back to resummon")
@@ -382,43 +373,6 @@ func hasImperativeOpener(comment string) bool {
 	return imperativeOpeners[strings.ToLower(tok)]
 }
 
-// decideFromGitState returns a recovery action based on git diagnostics,
-// or "" if no clear action is indicated.
-//
-// Routing priority:
-//  1. Unresolved conflicts present in the target worktree → resolve-conflicts
-//     (the agentic resolver). Taking precedence over rebase-onto-base is
-//     deliberate: a paused rebase/merge/cherry-pick already has markers on
-//     disk, and rebasing again just re-hits the same conflict. The agentic
-//     resolver needs the paused worktree to stay paused so its commit
-//     advances the real rebase.
-//  2. Behind base (including diverged) → rebase-onto-base.
-//  3. Dirty worktree (uncommitted non-conflict changes) → rebuild.
-func decideFromGitState(branchDiag *git.BranchDiagnostics, worktreeDiag *git.WorktreeDiagnostics, conflictedFiles []string) string {
-	// Conflicts in progress → agentic resolve-conflicts. Route FIRST so we
-	// don't ask rebase-onto-base to re-do the work that just conflicted.
-	if len(conflictedFiles) > 0 {
-		return "resolve-conflicts"
-	}
-
-	// Behind base and diverged → rebase (diverged implies conflicts likely).
-	if branchDiag != nil && branchDiag.Diverged {
-		return "rebase-onto-base"
-	}
-
-	// Behind base → rebase.
-	if branchDiag != nil && branchDiag.BehindMain > 0 {
-		return "rebase-onto-base"
-	}
-
-	// Dirty worktree (uncommitted changes, likely broken build) → rebuild.
-	if worktreeDiag != nil && worktreeDiag.Exists && worktreeDiag.IsDirty {
-		return "rebuild"
-	}
-
-	return ""
-}
-
 // recipeDispatch extracts the executable action + params from a recipe
 // for use by the decide step. Only builtin recipes are directly dispatchable
 // today — sequence recipes would require planner support and are captured
@@ -431,27 +385,6 @@ func recipeDispatch(r *MechanicalRecipe) (action string, params map[string]strin
 		return "", nil
 	}
 	return r.Action, r.Params
-}
-
-// gitStateReasoning returns a human-readable explanation of why a
-// git-state-driven action was chosen.
-func gitStateReasoning(branchDiag *git.BranchDiagnostics, conflictedFiles []string, action string) string {
-	switch action {
-	case "resolve-conflicts":
-		if n := len(conflictedFiles); n > 0 {
-			return fmt.Sprintf("%d file(s) have unresolved merge conflicts", n)
-		}
-		return "worktree has merge conflicts"
-	case "rebase-onto-base":
-		if branchDiag != nil {
-			return fmt.Sprintf("branch is %d commits behind %s", branchDiag.BehindMain, branchDiag.MainRef)
-		}
-		return "branch is behind base"
-	case "rebuild":
-		return "worktree has uncommitted changes (dirty)"
-	default:
-		return action
-	}
 }
 
 // promptInputs bundles the data buildDecidePrompt consumes. Kept as a

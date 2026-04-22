@@ -321,6 +321,17 @@ func SummarizeContext(ctx *FullRecoveryContext) string {
 		sb.WriteString("## Worktree State\n\n*No worktree found for target bead*\n\n")
 	}
 
+	// Unresolved merge conflicts. Non-empty implies a paused
+	// rebase/merge/cherry-pick — surface the file list so Claude can route
+	// to the agentic conflict resolver instead of re-triggering the same op.
+	if len(ctx.ConflictedFiles) > 0 {
+		sb.WriteString(fmt.Sprintf("## Unresolved Merge Conflicts (%d file(s))\n\n", len(ctx.ConflictedFiles)))
+		for _, f := range ctx.ConflictedFiles {
+			sb.WriteString(fmt.Sprintf("- %s\n", f))
+		}
+		sb.WriteString("\n")
+	}
+
 	// Step output.
 	if ctx.StepOutput != "" {
 		sb.WriteString("## Failed Step Output\n\n```\n")

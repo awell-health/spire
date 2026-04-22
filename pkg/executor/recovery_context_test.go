@@ -417,3 +417,42 @@ func TestSummarizeContext_WorktreeNotExists(t *testing.T) {
 		t.Error("should show no worktree when Exists=false")
 	}
 }
+
+// TestSummarizeContext_WithConflictedFiles verifies the conflict file list
+// is surfaced as human-readable text in the Claude context summary. This
+// replaces the heuristic short-circuit (spi-t5gsg) — Claude now reasons
+// about the conflicts directly from the diagnosis context.
+func TestSummarizeContext_WithConflictedFiles(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		RecoveryBead:    store.Bead{ID: "spi-r"},
+		TargetBead:      store.Bead{ID: "spi-t", Title: "T", Status: "in_progress"},
+		ConflictedFiles: []string{"pkg/foo/foo.go", "pkg/bar/bar.go"},
+	}
+	got := SummarizeContext(ctx)
+	if !strings.Contains(got, "Unresolved Merge Conflicts") {
+		t.Error("missing conflicts header")
+	}
+	if !strings.Contains(got, "2 file(s)") {
+		t.Error("missing conflict file count")
+	}
+	if !strings.Contains(got, "pkg/foo/foo.go") {
+		t.Error("missing first conflict file")
+	}
+	if !strings.Contains(got, "pkg/bar/bar.go") {
+		t.Error("missing second conflict file")
+	}
+}
+
+// TestSummarizeContext_NoConflictsSectionWhenNone verifies the conflicts
+// section is omitted when ConflictedFiles is empty — avoids injecting a
+// misleading "0 files" block into the prompt.
+func TestSummarizeContext_NoConflictsSectionWhenNone(t *testing.T) {
+	ctx := &FullRecoveryContext{
+		RecoveryBead: store.Bead{ID: "spi-r"},
+		TargetBead:   store.Bead{ID: "spi-t", Title: "T", Status: "open"},
+	}
+	got := SummarizeContext(ctx)
+	if strings.Contains(got, "Unresolved Merge Conflicts") {
+		t.Error("conflicts section should be absent when no conflicts")
+	}
+}
