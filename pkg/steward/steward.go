@@ -37,6 +37,7 @@ import (
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/steward/attached"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -162,6 +163,14 @@ type StewardConfig struct {
 	ABRouter           *ABRouter                // nil = no A/B routing
 	CycleStats         *CycleStats              // nil = no stats tracking
 	GraphStateStore    executor.GraphStateStore // nil = use default file-backed store
+
+	// ClusterDispatch carries the cluster-native scheduler seams
+	// (identity resolver, attempt claimer, intent publisher) used when
+	// the tower's EffectiveDeploymentMode is cluster-native. Nil — or a
+	// nil field within it — disables cluster-native dispatch and the
+	// steward logs and skips. The local-native dispatch path is
+	// unaffected.
+	ClusterDispatch *ClusterDispatchConfig
 }
 
 // AgentNames extracts agent names from an agent.Info slice.
@@ -287,101 +296,118 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		prefix, len(schedulable), aliveCount, maxConcurrent)
 
 	// Step 4: Auto-summon — spawn new wizards for schedulable work up to capacity.
-	// Load tower config for local binding checks.
+	// Also load the tower's EffectiveDeploymentMode so the dispatch step
+	// branches on it. The default tower (towerName=="") and any tower whose
+	// config can't be loaded both fall through to local-native, preserving
+	// pre-deployment-mode behavior.
 	var towerBindings map[string]*config.LocalRepoBinding
+	deploymentMode := config.Default()
 	if towerName != "" {
 		if tower, tErr := LoadTowerConfigFunc(towerName); tErr == nil {
 			towerBindings = tower.LocalBindings
+			deploymentMode = tower.EffectiveDeploymentMode()
 		}
 	}
 
+	// Branch on deployment mode. Local-native runs the existing direct-
+	// spawn loop; cluster-native emits WorkloadIntents; attached-reserved
+	// is a typed not-implemented surface that skips dispatch entirely.
 	spawned := 0
-	for _, bead := range schedulable {
-		// Filter by repo bind state: only spawn for prefixes bound on this instance.
-		beadPrefix := beadRepoPrefix(bead.ID)
-		if towerBindings != nil {
-			binding, ok := towerBindings[beadPrefix]
-			if !ok || binding == nil || binding.State != "bound" {
-				log.Printf("[steward] %sskipping %s: prefix %s not bound on this instance", prefix, bead.ID, beadPrefix)
+	switch deploymentMode {
+	case config.DeploymentModeAttachedReserved:
+		log.Printf("[steward] %sattached-reserved: dispatch skipped — %s", prefix, attached.ErrAttachedNotImplemented)
+
+	case config.DeploymentModeClusterNative:
+		spawned = dispatchClusterNative(context.Background(), prefix, schedulable, cfg)
+
+	default: // DeploymentModeLocalNative — the unchanged historical path
+		for _, bead := range schedulable {
+			// Filter by repo bind state: only spawn for prefixes bound on this instance.
+			beadPrefix := beadRepoPrefix(bead.ID)
+			if towerBindings != nil {
+				binding, ok := towerBindings[beadPrefix]
+				if !ok || binding == nil || binding.State != "bound" {
+					log.Printf("[steward] %sskipping %s: prefix %s not bound on this instance", prefix, bead.ID, beadPrefix)
+					continue
+				}
+			}
+
+			// Check concurrency limit.
+			if cfg.ConcurrencyLimiter != nil && !cfg.ConcurrencyLimiter.CanSpawn(towerName, maxConcurrent) {
+				log.Printf("[steward] %sconcurrency limit reached (%d), deferring remaining work", prefix, maxConcurrent)
+				break
+			}
+
+			if cfg.DryRun {
+				log.Printf("[steward] %s[dry-run] would summon wizard for %s", prefix, bead.ID)
+				spawned++
 				continue
 			}
-		}
 
-		// Check concurrency limit.
-		if cfg.ConcurrencyLimiter != nil && !cfg.ConcurrencyLimiter.CanSpawn(towerName, maxConcurrent) {
-			log.Printf("[steward] %sconcurrency limit reached (%d), deferring remaining work", prefix, maxConcurrent)
-			break
-		}
-
-		if cfg.DryRun {
-			log.Printf("[steward] %s[dry-run] would summon wizard for %s", prefix, bead.ID)
-			spawned++
-			continue
-		}
-
-		// A/B routing: select formula variant if experiment is active.
-		if cfg.ABRouter != nil {
-			if db := GetDBForRoutingFunc(dbName); db != nil {
-				formulaName := formula.ResolveV3Name(formula.BeadInfo{
-					ID:     bead.ID,
-					Type:   bead.Type,
-					Labels: bead.Labels,
-				})
-				variant, _ := cfg.ABRouter.SelectVariant(context.Background(), db, towerName, formulaName, bead.ID)
-				if variant != formulaName {
-					AddLabelFunc(bead.ID, "formula:"+variant)
-					log.Printf("[steward] %sA/B routing: %s → %s", prefix, bead.ID, variant)
+			// A/B routing: select formula variant if experiment is active.
+			if cfg.ABRouter != nil {
+				if db := GetDBForRoutingFunc(dbName); db != nil {
+					formulaName := formula.ResolveV3Name(formula.BeadInfo{
+						ID:     bead.ID,
+						Type:   bead.Type,
+						Labels: bead.Labels,
+					})
+					variant, _ := cfg.ABRouter.SelectVariant(context.Background(), db, towerName, formulaName, bead.ID)
+					if variant != formulaName {
+						AddLabelFunc(bead.ID, "formula:"+variant)
+						log.Printf("[steward] %sA/B routing: %s → %s", prefix, bead.ID, variant)
+					}
+					db.Close()
 				}
-				db.Close()
 			}
-		}
 
-		// Generate wizard name from bead ID.
-		wizardName := "wizard-" + SanitizeK8sLabel(bead.ID)
+			// Generate wizard name from bead ID.
+			wizardName := "wizard-" + SanitizeK8sLabel(bead.ID)
 
-		// Repo bootstrap inputs for the k8s backend's wizard pod init
-		// containers (spi-fopwn). Sourced from the tower's LocalBinding
-		// for this prefix, which reconcileSharedRepos populates from the
-		// shared repos table. Other backends (process, docker) ignore
-		// these fields. If the binding is missing fields we log and
-		// continue: buildWizardPod will fail-fast with a clear error on
-		// the k8s path, and the process backend doesn't need them.
-		var repoURL, repoBranch string
-		if towerBindings != nil {
-			if binding, ok := towerBindings[beadPrefix]; ok && binding != nil {
-				repoURL = binding.RepoURL
-				repoBranch = binding.SharedBranch
+			// Repo bootstrap inputs for the k8s backend's wizard pod init
+			// containers (spi-fopwn). Sourced from the tower's LocalBinding
+			// for this prefix, which reconcileSharedRepos populates from the
+			// shared repos table. Other backends (process, docker) ignore
+			// these fields. If the binding is missing fields we log and
+			// continue: buildWizardPod will fail-fast with a clear error on
+			// the k8s path, and the process backend doesn't need them.
+			var repoURL, repoBranch string
+			if towerBindings != nil {
+				if binding, ok := towerBindings[beadPrefix]; ok && binding != nil {
+					repoURL = binding.RepoURL
+					repoBranch = binding.SharedBranch
+				}
 			}
-		}
 
-		// Summon the wizard with RoleWizard so the backend can apply the
-		// canonical wizard pod spec and resource tier. Include InstanceID so
-		// the process backend writes it to the registry entry.
-		handle, spawnErr := cfg.Backend.Spawn(agent.SpawnConfig{
-			Name:       wizardName,
-			BeadID:     bead.ID,
-			Role:       agent.RoleWizard,
-			Tower:      towerName,
-			InstanceID: InstanceIDFunc(),
-			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", wizardName+".log"),
-			RepoURL:    repoURL,
-			RepoBranch: repoBranch,
-			RepoPrefix: beadPrefix,
-		})
-		if spawnErr != nil {
-			log.Printf("[steward] %sspawn failed: %s → %s: %s", prefix, bead.ID, wizardName, spawnErr)
-			continue
-		}
-		if handle != nil {
-			log.Printf("[steward] %ssummoned %s for %s (%s)", prefix, wizardName, bead.ID, handle.Identifier())
-		}
-		spawned++
+			// Summon the wizard with RoleWizard so the backend can apply the
+			// canonical wizard pod spec and resource tier. Include InstanceID so
+			// the process backend writes it to the registry entry.
+			handle, spawnErr := cfg.Backend.Spawn(agent.SpawnConfig{
+				Name:       wizardName,
+				BeadID:     bead.ID,
+				Role:       agent.RoleWizard,
+				Tower:      towerName,
+				InstanceID: InstanceIDFunc(),
+				LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", wizardName+".log"),
+				RepoURL:    repoURL,
+				RepoBranch: repoBranch,
+				RepoPrefix: beadPrefix,
+			})
+			if spawnErr != nil {
+				log.Printf("[steward] %sspawn failed: %s → %s: %s", prefix, bead.ID, wizardName, spawnErr)
+				continue
+			}
+			if handle != nil {
+				log.Printf("[steward] %ssummoned %s for %s (%s)", prefix, wizardName, bead.ID, handle.Identifier())
+			}
+			spawned++
 
-		// Update concurrency limiter to account for the newly spawned agent
-		// so CanSpawn reflects within-cycle spawns.
-		if cfg.ConcurrencyLimiter != nil {
-			agents = append(agents, agent.Info{Name: wizardName, Alive: true, Tower: towerName})
-			cfg.ConcurrencyLimiter.Refresh(towerName, agents)
+			// Update concurrency limiter to account for the newly spawned agent
+			// so CanSpawn reflects within-cycle spawns.
+			if cfg.ConcurrencyLimiter != nil {
+				agents = append(agents, agent.Info{Name: wizardName, Alive: true, Tower: towerName})
+				cfg.ConcurrencyLimiter.Refresh(towerName, agents)
+			}
 		}
 	}
 
@@ -1405,7 +1431,6 @@ func findFailureEvidence(beadID string) (FailureEvidence, bool) {
 	}
 	return evidence, evidence.RecoveryBeadID != ""
 }
-
 
 // GetReviewBeads returns review-round child beads for a parent, sorted by round number.
 // Uses the test-replaceable GetChildrenFunc so tests can inject fake children.
