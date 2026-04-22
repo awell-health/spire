@@ -244,6 +244,12 @@ type CacheReconciler struct {
 	// unset and the reconciler resolves it lazily on first use; tests
 	// inject a fake.
 	PinnedStore pinnedIdentityStore
+
+	// WispStore is the bead-graph backend the reconciler uses to file
+	// cache-refresh failure wisps (spi-htay5). Same lazy-resolution
+	// contract as PinnedStore: nil falls back to pkg/store, tests
+	// inject a fake.
+	WispStore wispFilingStore
 }
 
 // pinnedStore returns r.PinnedStore, falling back to the
@@ -255,6 +261,16 @@ func (r *CacheReconciler) pinnedStore() pinnedIdentityStore {
 		return r.PinnedStore
 	}
 	return defaultPinnedIdentityStore{}
+}
+
+// wispStore returns r.WispStore, falling back to the package-level
+// pkg/store wrapper when unset. Mirrors the pinnedStore lazy-resolution
+// contract — tests inject a fake, prod leaves it nil.
+func (r *CacheReconciler) wispStore() wispFilingStore {
+	if r.WispStore != nil {
+		return r.WispStore
+	}
+	return defaultWispFilingStore{}
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -412,8 +428,96 @@ func (r *CacheReconciler) reconcileGuild(ctx context.Context, guild *spirev1.Wiz
 		return
 	}
 
+	// File a wisp recovery bead when the refresh Job has reached a
+	// permanent terminal failure (BackoffLimitExceeded / DeadlineExceeded).
+	// Idempotent via (a) the spire.awell.io/wisp-id annotation on the Job
+	// for per-generation dedupe and (b) a job_uid metadata query inside
+	// fileWispForCacheFailure that covers the post-create-pre-annotate
+	// race. See cache_recovery.go for the full contract.
+	if isRefreshJobBackoffExhausted(job) {
+		if err := r.dispatchCacheRecovery(ctx, guild, job); err != nil {
+			log.Error(err, "failed to dispatch cache recovery wisp")
+			// Fall through to status derivation so the CR still reflects
+			// the Failed phase + the underlying refresh error. The next
+			// reconcile cycle will retry wisp filing — the Job is still
+			// permanent-failed, the annotation is still absent.
+		}
+	}
+
 	newStatus := r.deriveStatus(ctx, guild, job)
 	r.patchCacheStatus(ctx, guild, newStatus)
+}
+
+// dispatchCacheRecovery files a wisp recovery bead for a permanently
+// failed refresh Job and stamps the wisp ID on the Job annotation for
+// idempotent reconcile. The helper is a thin adapter: it resolves the
+// pinned identity bead ID (owned by spi-2bgsm), short-circuits when the
+// Job is already annotated, and delegates the wisp-graph work to
+// fileWispForCacheFailure (owned by this task).
+//
+// Returns nil (with no error) when the pinned identity bead has not
+// yet been stamped — the reconciler requeues naturally on its
+// polling interval, so a missing pinned ID is a "not yet" rather than
+// a fatal state.
+func (r *CacheReconciler) dispatchCacheRecovery(
+	ctx context.Context,
+	guild *spirev1.WizardGuild,
+	job *batchv1.Job,
+) error {
+	if existing := job.Annotations[cacheWispIDAnnotation]; existing != "" {
+		// Already filed for this Job generation. Nothing to do until a
+		// new Job (new UID, annotation-less) is created for the next
+		// refresh attempt.
+		return nil
+	}
+
+	pinnedID, err := resolvePinnedIdentityID(guild)
+	if err != nil {
+		// Pinned identity not yet provisioned by spi-2bgsm path — the
+		// next cycle will run ensurePinnedIdentity and stamp Status, at
+		// which point this branch is unblocked.
+		r.Log.V(1).Info("cache recovery waiting for pinned identity",
+			"guild", guild.Name, "job", job.Name,
+			"tower", r.Database, "prefix", r.Prefix, "backend", "operator-k8s")
+		return nil
+	}
+
+	wispID, err := fileWispForCacheFailure(ctx, r.wispStore(), r.Client, guild, job, pinnedID)
+	if err != nil {
+		return fmt.Errorf("file wisp for %s/%s: %w", guild.Namespace, guild.Name, err)
+	}
+
+	if err := r.annotateJobWithWispID(ctx, job, wispID); err != nil {
+		// Don't propagate — the wisp is filed and fileWispForCacheFailure's
+		// entry guard will return the existing ID on the next cycle.
+		// Logging at Error level keeps the incident visible without
+		// wedging the status-update path.
+		r.Log.Error(err, "failed to annotate refresh Job with wisp ID",
+			"guild", guild.Name, "job", job.Name, "wisp_id", wispID,
+			"tower", r.Database, "prefix", r.Prefix, "backend", "operator-k8s")
+	}
+
+	r.Log.Info("filed cache-refresh recovery wisp",
+		"guild", guild.Name, "job", job.Name, "wisp_id", wispID, "pinned_id", pinnedID,
+		"tower", r.Database, "prefix", r.Prefix, "backend", "operator-k8s")
+	return nil
+}
+
+// annotateJobWithWispID stamps the Job with the wisp ID so subsequent
+// reconciles short-circuit the filing path. Patch semantics (rather
+// than Update) avoid racing with the Job controller's own status
+// writes.
+func (r *CacheReconciler) annotateJobWithWispID(
+	ctx context.Context,
+	job *batchv1.Job,
+	wispID string,
+) error {
+	patch := client.MergeFrom(job.DeepCopy())
+	if job.Annotations == nil {
+		job.Annotations = map[string]string{}
+	}
+	job.Annotations[cacheWispIDAnnotation] = wispID
+	return r.Client.Patch(ctx, job, patch)
 }
 
 // ensurePVC creates the guild cache PVC when missing. When present, it

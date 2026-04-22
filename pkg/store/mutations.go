@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -29,9 +30,17 @@ func CreateBead(opts CreateOpts) (string, error) {
 		Status:      beads.StatusOpen,
 		IssueType:   opts.Type,
 		Labels:      opts.Labels,
+		Ephemeral:   opts.Ephemeral,
 	}
 	if opts.Prefix != "" {
 		issue.PrefixOverride = opts.Prefix
+	}
+	if len(opts.Metadata) > 0 {
+		raw, err := json.Marshal(opts.Metadata)
+		if err != nil {
+			return "", fmt.Errorf("marshal bead metadata: %w", err)
+		}
+		issue.Metadata = json.RawMessage(raw)
 	}
 	if err := s.CreateIssue(ctx, issue, Actor()); err != nil {
 		return "", fmt.Errorf("create bead: %w", err)

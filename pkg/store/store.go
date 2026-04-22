@@ -287,6 +287,15 @@ type CreateOpts struct {
 	Labels      []string
 	Parent      string // creates parent-child dep after create
 	Prefix      string // sets Issue.PrefixOverride (the --rig equivalent)
+
+	// Ephemeral, when true, routes the bead to the wisps table at create time.
+	// Wisps are cluster-only and not git-synced. Flipping Ephemeral via
+	// UpdateBead after create does NOT move the row between tables — this
+	// field must be set on the create call for the routing to work.
+	Ephemeral bool
+	// Metadata is encoded to JSON and persisted on the bead's metadata column.
+	// A nil/empty map leaves the column unset.
+	Metadata map[string]string
 }
 
 // BeadsDirResolver is a function that resolves the .beads directory path.
