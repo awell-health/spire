@@ -21,6 +21,10 @@ context:
   - CLAUDE.md
   - SPIRE.md
   - docs/ZFC.md
+  - docs/VISION.md
+  - docs/VISION-LOCAL.md
+  - docs/VISION-CLUSTER.md
+  - docs/VISION-ATTACHED.md
   - pkg/executor/README.md
   - pkg/formula/README.md
   - pkg/wizard/README.md
