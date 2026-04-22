@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/steveyegge/beads"
 
+	"github.com/awell-health/spire/pkg/board/logstream"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/executor"
@@ -25,6 +26,16 @@ const (
 	InspectorTabLogs    = 1
 )
 
+// LogMode selects how the Logs tab renders the active log: LogModePretty
+// drives event rendering through the provider adapter, LogModeRaw prints
+// the raw transcript bytes.
+type LogMode int
+
+const (
+	LogModePretty LogMode = iota
+	LogModeRaw
+)
+
 // HookedStepInfo describes a hooked (parked) step for the inspector display.
 type HookedStepInfo struct {
 	StepName   string // e.g. "review", "design-check"
@@ -33,9 +44,26 @@ type HookedStepInfo struct {
 
 // LogView represents a single log source displayed in the inspector Logs tab.
 type LogView struct {
-	Name    string // e.g. "wizard", "epic-plan (13:09)", "recovery-decide (14:02)"
-	Path    string // absolute path to the log file on disk
-	Content string // full file contents
+	Name          string // e.g. "wizard", "epic-plan (13:09)", "recovery-decide (14:02)"
+	Path          string // absolute path to the log file on disk
+	Content       string // full stdout file contents
+
+	// Provider is the transcript's source adapter: "claude", "codex", or
+	// "" for raw fallback (operational logs, unknown formats).
+	Provider string
+
+	// StderrPath is the sidecar "<base>.stderr.log" path; empty when no
+	// sidecar file exists on disk.
+	StderrPath string
+
+	// StderrContent is the full sidecar contents, preloaded at LogView
+	// construction. Empty when StderrPath is empty.
+	StderrContent string
+
+	// Events holds the adapter-parsed stdout events plus one KindStderr
+	// event per non-empty sidecar line. Nil for raw fallback — renderer
+	// then prints Content verbatim regardless of mode.
+	Events []logstream.LogEvent
 }
 
 // InspectorData holds the fetched detail data for the inspector pane.
@@ -138,27 +166,12 @@ func FetchInspectorData(b BoardBead) InspectorData {
 		}
 	}
 
-	// Per-invocation claude subprocess logs.
-	claudeDir := filepath.Join(logDir, wizardName, "claude")
-	if matches, err := filepath.Glob(filepath.Join(claudeDir, "*.log")); err == nil && len(matches) > 0 {
-		// Sort descending (newest first, since timestamps sort lexicographically).
-		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
-		for _, path := range matches {
-			content, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			data.Logs = append(data.Logs, LogView{
-				Name:    claudeLogName(filepath.Base(path)),
-				Path:    path,
-				Content: string(content),
-			})
-		}
-	}
+	// Per-invocation provider subprocess logs (claude, codex, …).
+	data.Logs = append(data.Logs, loadProviderLogViews(filepath.Join(logDir, wizardName), "")...)
 
 	// Sibling spawn logs: apprentices, sages, clerics. Each spawn is named
 	// wizard-<beadID>-<suffix> (e.g. -impl, -sage-review-1, -w1-1, -seq-1),
-	// with its own claude/ subdir for any claude subprocesses it invokes.
+	// with its own provider subdirs for any subprocesses it invokes.
 	knownNames := map[string]bool{}
 	for _, lv := range data.Logs {
 		knownNames[filepath.Base(lv.Path)] = true
@@ -180,34 +193,141 @@ func FetchInspectorData(b BoardBead) InspectorData {
 				Path:    path,
 				Content: string(content),
 			})
-			sibClaudeDir := filepath.Join(logDir, stem, "claude")
-			if sibMatches, err := filepath.Glob(filepath.Join(sibClaudeDir, "*.log")); err == nil && len(sibMatches) > 0 {
-				sort.Sort(sort.Reverse(sort.StringSlice(sibMatches)))
-				for _, sp := range sibMatches {
-					sc, err := os.ReadFile(sp)
-					if err != nil {
-						continue
-					}
-					data.Logs = append(data.Logs, LogView{
-						Name:    name + "/" + claudeLogName(filepath.Base(sp)),
-						Path:    sp,
-						Content: string(sc),
-					})
-				}
-			}
+			data.Logs = append(data.Logs, loadProviderLogViews(filepath.Join(logDir, stem), name+"/")...)
 		}
 	}
 
 	return data
 }
 
-// claudeLogName derives a display name from a claude log filename.
-// Input: "<label>-<YYYYMMDD-HHMMSS>.log" (e.g. "epic-plan-20260417-173412.log").
+// loadProviderLogViews walks wizardDir/<provider>/ subdirectories and
+// returns a LogView for every transcript file it finds. The operational
+// worker log (a file named "<wizard>.log" alongside these subdirs) is
+// skipped by the IsDir() filter and must be loaded by the caller.
+//
+// Pattern selection per provider:
+//
+//   - "claude" → *.jsonl plus legacy *.log (backward compat for transcripts
+//     captured before the .jsonl convention landed)
+//   - any other name → *.jsonl only
+//
+// Files ending in ".stderr.log" are never returned as transcripts — they
+// are sidecars for a peer transcript and their contents are loaded into
+// StderrContent/StderrPath of the matching LogView.
+//
+// namePrefix is prepended to every returned Name (used to mark sibling
+// spawn logs with "<spawn-name>/"). Within each provider directory,
+// matches are sorted newest-first by filename (timestamps in the filename
+// sort lexicographically), matching the ordering used before this
+// helper existed.
+func loadProviderLogViews(wizardDir, namePrefix string) []LogView {
+	entries, err := os.ReadDir(wizardDir)
+	if err != nil {
+		return nil
+	}
+	var views []LogView
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		providerName := e.Name()
+		providerDir := filepath.Join(wizardDir, providerName)
+
+		patterns := []string{"*.jsonl"}
+		if providerName == "claude" {
+			patterns = append(patterns, "*.log")
+		}
+		seen := map[string]bool{}
+		var matches []string
+		for _, pat := range patterns {
+			paths, err := filepath.Glob(filepath.Join(providerDir, pat))
+			if err != nil {
+				continue
+			}
+			for _, p := range paths {
+				if strings.HasSuffix(p, ".stderr.log") {
+					continue
+				}
+				if seen[p] {
+					continue
+				}
+				seen[p] = true
+				matches = append(matches, p)
+			}
+		}
+		// Newest-first: timestamped filenames sort lexicographically, so
+		// reverse order is effectively descending by timestamp.
+		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+
+		adapter := logstream.Get(providerName)
+		for _, path := range matches {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			content := string(raw)
+
+			var stderrPath, stderrContent string
+			candidate := deriveStderrPath(path)
+			if sc, err := os.ReadFile(candidate); err == nil {
+				stderrPath = candidate
+				stderrContent = string(sc)
+			}
+
+			events, ok := adapter.Parse(content)
+			if !ok {
+				events = nil
+			}
+			if stderrContent != "" {
+				for _, line := range strings.Split(stderrContent, "\n") {
+					if line == "" {
+						continue
+					}
+					events = append(events, logstream.LogEvent{
+						Kind:  logstream.KindStderr,
+						Body:  line,
+						Raw:   line,
+						Error: true,
+					})
+				}
+			}
+
+			name := claudeLogName(filepath.Base(path))
+			if namePrefix != "" {
+				name = namePrefix + name
+			}
+			views = append(views, LogView{
+				Name:          name,
+				Path:          path,
+				Content:       content,
+				Provider:      providerName,
+				StderrPath:    stderrPath,
+				StderrContent: stderrContent,
+				Events:        events,
+			})
+		}
+	}
+	return views
+}
+
+// deriveStderrPath returns the sidecar path for a transcript: strip the
+// final extension and append ".stderr.log". For "foo/bar.jsonl" it
+// returns "foo/bar.stderr.log"; for "foo/bar.log" it returns the same.
+func deriveStderrPath(transcriptPath string) string {
+	ext := filepath.Ext(transcriptPath)
+	base := strings.TrimSuffix(transcriptPath, ext)
+	return base + ".stderr.log"
+}
+
+// claudeLogName derives a display name from a provider log filename.
+// Input: "<label>-<YYYYMMDD-HHMMSS>.{log,jsonl}" (e.g.
+// "epic-plan-20260417-173412.log" or "epic-plan-20260417-173412.jsonl").
 // Output: "<label> (HH:MM)" (e.g. "epic-plan (17:34)").
 // If the filename does not match the expected pattern, returns the filename
-// without its .log extension as a fallback.
+// without its extension as a fallback.
 func claudeLogName(filename string) string {
 	base := strings.TrimSuffix(filename, ".log")
+	base = strings.TrimSuffix(base, ".jsonl")
 	// Find the last occurrence of "-YYYYMMDD-HHMMSS" suffix.
 	// Scan from the right for a suffix of the form -DDDDDDDD-DDDDDD (8+6 digits).
 	if len(base) < 16 {
@@ -497,11 +617,11 @@ func InspectorLineCount(data InspectorData, width int) int {
 }
 
 // inspectorLineCountSnap counts inspector lines using the pure renderInspectorSnap function.
-func inspectorLineCountSnap(data *InspectorData, dag *DAGProgress, width, tab, logIdx int) int {
+func inspectorLineCountSnap(data *InspectorData, dag *DAGProgress, width, tab, logIdx int, logMode LogMode, errorsOnly, expandAll bool) int {
 	if data == nil {
 		return 3
 	}
-	full := renderInspectorSnap(data.Bead, data, dag, width, 10000, 0, tab, logIdx)
+	full := renderInspectorSnap(data.Bead, data, dag, width, 10000, 0, tab, logIdx, logMode, errorsOnly, expandAll)
 	return strings.Count(full, "\n") + 1
 }
 
@@ -668,7 +788,9 @@ func fetchInspectorCmd(b BoardBead) tea.Cmd {
 // If data is nil, returns a "Loading..." placeholder.
 // The tab parameter selects the active tab (0=details, 1=logs).
 // The logIdx parameter selects which log is shown within the Logs tab.
-func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, width, height, scrollOffset, tab, logIdx int) string {
+// logMode/errorsOnly/expandAll drive the Logs tab rendering (ignored on
+// the Details tab).
+func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, width, height, scrollOffset, tab, logIdx int, logMode LogMode, errorsOnly, expandAll bool) string {
 	if data == nil {
 		headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -690,7 +812,7 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	headerHint := "Esc close  Tab switch  j/k scroll  J/K ×5"
 	if tab == InspectorTabLogs {
-		headerHint = "Esc close  Tab switch  j/k scroll  ←/→ or h/l log"
+		headerHint = "Esc close  Tab switch  j/k scroll  ←/→ log  p raw  x expand  f errors"
 	}
 	if b.Type == "design" && b.HasLabel("needs-human") {
 		headerHint = "y Approve  n Reject  Esc close  Tab switch"
@@ -1000,24 +1122,9 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 			// 100-col prose cap): logs have long lines (args arrays, JSON
 			// stream) and event logs that benefit from room.
 			active := data.Logs[idx]
-			if active.Content != "" {
-				logLines := strings.Split(active.Content, "\n")
-				start := 0
-				if len(logLines) > 50 {
-					start = len(logLines) - 50
-					lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... showing last 50 of %d lines", len(logLines))))
-				}
-				logWidth := width - 4
-				if logWidth < 40 {
-					logWidth = 40
-				}
-				for _, ll := range logLines[start:] {
-					for _, wl := range wrapText(ll, logWidth-2) {
-						lines = append(lines, "  "+wl)
-					}
-				}
-			} else {
-				lines = append(lines, dimStyle.Render("  (empty log)"))
+			pane := renderLogPane(&active, width, logMode, errorsOnly, expandAll)
+			if pane != "" {
+				lines = append(lines, strings.Split(pane, "\n")...)
 			}
 		}
 	}
@@ -1095,4 +1202,67 @@ func RenderResolveInput(input string, width int) string {
 	}
 
 	return prompt + inputStyle.Render(displayInput) + cursor + hint
+}
+
+// renderLogPane renders the body of the Logs tab for the active LogView.
+//
+// LogModeRaw and LogViews with no parsed events (adapter returned nil or
+// the provider is unknown) print active.Content verbatim, wrapped to the
+// inspector width. No truncation — the inspector's own scroll region
+// handles overflow.
+//
+// LogModePretty walks active.Events through the provider adapter, applying
+// the errorsOnly/expandAll filters. Events that would otherwise be hidden
+// (stderr in default pretty view) are dropped via shouldShowEvent.
+//
+// A nil active or one with no stdout and no stderr content returns the
+// dim "(empty log)" placeholder. ErrorsOnly with no matching events
+// returns "(no errors)" so the pane is never blank.
+func renderLogPane(active *LogView, width int, mode LogMode, errorsOnly, expandAll bool) string {
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	if active == nil || (active.Content == "" && active.StderrContent == "") {
+		return "  " + dimStyle.Render("(empty log)")
+	}
+
+	logWidth := width - 4
+	if logWidth < 40 {
+		logWidth = 40
+	}
+
+	if mode == LogModeRaw || len(active.Events) == 0 {
+		var out []string
+		for _, ll := range strings.Split(active.Content, "\n") {
+			for _, wl := range wrapText(ll, logWidth-2) {
+				out = append(out, "  "+wl)
+			}
+		}
+		return strings.Join(out, "\n")
+	}
+
+	adapter := logstream.Get(active.Provider)
+	var out []string
+	for _, ev := range active.Events {
+		if !shouldShowEvent(ev, errorsOnly) {
+			continue
+		}
+		for _, line := range adapter.Render(ev, logWidth-2, expandAll) {
+			out = append(out, "  "+line)
+		}
+	}
+	if errorsOnly && len(out) == 0 {
+		return "  " + dimStyle.Render("(no errors)")
+	}
+	return strings.Join(out, "\n")
+}
+
+// shouldShowEvent is the per-event filter predicate for renderLogPane.
+// Default pretty view hides stderr events (they are noisy output from
+// subprocess wrappers). Errors-only keeps anything flagged with
+// ev.Error, any stderr line, and any KindUnknown event (which we can't
+// classify — surfacing it is safer than silently dropping).
+func shouldShowEvent(ev logstream.LogEvent, errorsOnly bool) bool {
+	if errorsOnly {
+		return ev.Error || ev.Kind == logstream.KindStderr || ev.Kind == logstream.KindUnknown
+	}
+	return ev.Kind != logstream.KindStderr
 }

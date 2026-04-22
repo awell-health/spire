@@ -107,6 +107,18 @@ type BoardMode struct {
 	// InspectorLogIdx is the active log within the Logs tab.
 	InspectorLogIdx int
 
+	// InspectorLogMode selects raw vs adapter-rendered log output.
+	// Ephemeral — resets to LogModePretty when the inspector closes.
+	InspectorLogMode LogMode
+
+	// InspectorErrorsOnly filters the Logs tab to errors+stderr+unknown
+	// events. Only meaningful in LogModePretty. Ephemeral.
+	InspectorErrorsOnly bool
+
+	// InspectorExpandAll expands collapsed event bodies in the Logs
+	// tab. Only meaningful in LogModePretty. Ephemeral.
+	InspectorExpandAll bool
+
 	// Vim gg key sequence: true after first g press, waiting for second key.
 	PendingG bool
 
@@ -1241,6 +1253,9 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				m.InspectorLogIdx = 0
 				m.InspectorData = nil
 				m.InspectorLoading = false
+				m.InspectorLogMode = LogModePretty
+				m.InspectorErrorsOnly = false
+				m.InspectorExpandAll = false
 			case "ctrl+c":
 				m.Quitting = true
 				return m, tea.Quit
@@ -1258,7 +1273,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 					if m.Snapshot != nil {
 						dag = m.Snapshot.DAGProgress[m.InspectorData.Bead.ID]
 					}
-					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab, m.InspectorLogIdx)
+					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab, m.InspectorLogIdx, m.InspectorLogMode, m.InspectorErrorsOnly, m.InspectorExpandAll)
 					maxVisible := m.Height - 2
 					if maxVisible < 5 {
 						maxVisible = 5
@@ -1284,7 +1299,7 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 					if m.Snapshot != nil {
 						dag = m.Snapshot.DAGProgress[m.InspectorData.Bead.ID]
 					}
-					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab, m.InspectorLogIdx)
+					total := inspectorLineCountSnap(m.InspectorData, dag, m.Width, m.InspectorTab, m.InspectorLogIdx, m.InspectorLogMode, m.InspectorErrorsOnly, m.InspectorExpandAll)
 					maxVisible := m.Height - 2
 					if maxVisible < 5 {
 						maxVisible = 5
@@ -1322,6 +1337,36 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 					if m.InspectorLogIdx < 0 {
 						m.InspectorLogIdx = len(m.InspectorData.Logs) - 1
 					}
+					m.InspectorScroll = 0
+				}
+			case "p":
+				// Toggle raw/pretty rendering on the Logs tab. Adapter-
+				// agnostic: Get never returns nil, and an empty Events
+				// slice makes renderLogPane fall back to raw anyway, so
+				// this toggle is always safe.
+				if m.InspectorTab == InspectorTabLogs {
+					if m.InspectorLogMode == LogModeRaw {
+						m.InspectorLogMode = LogModePretty
+					} else {
+						m.InspectorLogMode = LogModeRaw
+					}
+					m.InspectorScroll = 0
+				}
+			case "f":
+				// Toggle errors-only filter on the Logs tab. Only
+				// meaningful in pretty mode — raw mode shows the whole
+				// transcript regardless, so we gate on LogModePretty to
+				// avoid silently "doing something" that has no visible
+				// effect.
+				if m.InspectorTab == InspectorTabLogs && m.InspectorLogMode == LogModePretty {
+					m.InspectorErrorsOnly = !m.InspectorErrorsOnly
+					m.InspectorScroll = 0
+				}
+			case "x":
+				// Toggle expand-all on collapsed event bodies in the
+				// Logs tab. Only meaningful in pretty mode.
+				if m.InspectorTab == InspectorTabLogs && m.InspectorLogMode == LogModePretty {
+					m.InspectorExpandAll = !m.InspectorExpandAll
 					m.InspectorScroll = 0
 				}
 			}

@@ -251,7 +251,7 @@ func (m *BoardMode) View() string {
 		if m.ResolveActive {
 			inspectorHeight -= 1 // reserve one line for resolve input bar
 		}
-		result := renderInspectorSnap(b, m.InspectorData, dag, m.Width, inspectorHeight, m.InspectorScroll, m.InspectorTab, m.InspectorLogIdx)
+		result := renderInspectorSnap(b, m.InspectorData, dag, m.Width, inspectorHeight, m.InspectorScroll, m.InspectorTab, m.InspectorLogIdx, m.InspectorLogMode, m.InspectorErrorsOnly, m.InspectorExpandAll)
 		if m.FeedbackActive {
 			result += "\n" + RenderFeedbackInput(m.FeedbackInput, m.Width)
 		}
