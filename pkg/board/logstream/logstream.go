@@ -31,6 +31,8 @@ const (
 	KindUsage
 	KindStderr
 	KindFinal
+	KindHook
+	KindRateLimit
 )
 
 // String returns a short lowercase label for the kind.
@@ -56,6 +58,10 @@ func (k EventKind) String() string {
 		return "stderr"
 	case KindFinal:
 		return "final"
+	case KindHook:
+		return "hook"
+	case KindRateLimit:
+		return "rate-limit"
 	default:
 		return "unknown"
 	}

@@ -22,11 +22,12 @@ func (claudeAdapter) Name() string { return "claude" }
 // Claude-shape. Encountering any of these sets sawClaudeShape, which
 // guards Parse against accidentally "claiming" non-Claude JSONL.
 var knownClaudeTypes = map[string]bool{
-	"system":       true,
-	"user":         true,
-	"assistant":    true,
-	"result":       true,
-	"stream_event": true,
+	"system":           true,
+	"user":             true,
+	"assistant":        true,
+	"result":           true,
+	"stream_event":     true,
+	"rate_limit_event": true,
 }
 
 func (claudeAdapter) Parse(raw string) ([]LogEvent, bool) {
@@ -61,7 +62,8 @@ func (claudeAdapter) Parse(raw string) ([]LogEvent, bool) {
 		case "system":
 			var subtype string
 			_ = json.Unmarshal(obj["subtype"], &subtype)
-			if subtype == "init" {
+			switch subtype {
+			case "init":
 				meta := map[string]string{}
 				var sid, cwd string
 				if err := json.Unmarshal(obj["session_id"], &sid); err == nil && sid != "" {
@@ -77,6 +79,9 @@ func (claudeAdapter) Parse(raw string) ([]LogEvent, bool) {
 					Raw:   line,
 				}
 				events = append(events, ev)
+				onlyUnknown = false
+			case "hook_started", "hook_response":
+				events = append(events, buildHookEvent(obj, line, subtype))
 				onlyUnknown = false
 			}
 
@@ -96,6 +101,10 @@ func (claudeAdapter) Parse(raw string) ([]LogEvent, bool) {
 
 		case "result":
 			events = append(events, buildUsageEvent(obj, line), buildFinalEvent(obj, line))
+			onlyUnknown = false
+
+		case "rate_limit_event":
+			events = append(events, buildRateLimitEvent(obj, line))
 			onlyUnknown = false
 
 		case "stream_event":
@@ -164,11 +173,7 @@ func emitUserEvents(obj map[string]json.RawMessage, line string) []LogEvent {
 			)
 			_ = json.Unmarshal(b["tool_use_id"], &id)
 			_ = json.Unmarshal(b["is_error"], &isError)
-			body := stringifyToolResultContent(b["content"])
-			title := "← tool result"
-			if isError {
-				title = "← tool result (error)"
-			}
+			title, body := summarizeToolResultContent(b["content"], isError)
 			meta := map[string]string{}
 			if id != "" {
 				meta["tool_use_id"] = id
@@ -291,7 +296,8 @@ func buildFinalEvent(obj map[string]json.RawMessage, line string) LogEvent {
 
 // stringifyToolResultContent renders a tool_result content field as a
 // single string. The content can be a plain JSON string or an array of
-// blocks (e.g. [{type:"text", text:"..."}]).
+// blocks (e.g. [{type:"text", text:"..."}]). Non-text blocks surface as
+// "[<type>]" markers so expand-all has something to show.
 func stringifyToolResultContent(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -304,14 +310,179 @@ func stringifyToolResultContent(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &blocks); err == nil {
 		var parts []string
 		for _, b := range blocks {
-			var txt string
-			if err := json.Unmarshal(b["text"], &txt); err == nil {
-				parts = append(parts, txt)
+			var btyp string
+			_ = json.Unmarshal(b["type"], &btyp)
+			switch btyp {
+			case "text":
+				var txt string
+				if err := json.Unmarshal(b["text"], &txt); err == nil {
+					parts = append(parts, txt)
+				}
+			case "":
+				// Missing type: fall back to reading "text" if present.
+				var txt string
+				if err := json.Unmarshal(b["text"], &txt); err == nil {
+					parts = append(parts, txt)
+				}
+			default:
+				parts = append(parts, "["+btyp+"]")
 			}
 		}
 		return strings.Join(parts, "\n")
 	}
 	return string(raw)
+}
+
+// toolResultContentKinds returns the distinct block types present in a
+// tool_result content array. Returns nil for string or malformed content.
+func toolResultContentKinds(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var blocks []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var kinds []string
+	for _, b := range blocks {
+		var btyp string
+		_ = json.Unmarshal(b["type"], &btyp)
+		if btyp == "" {
+			btyp = "text"
+		}
+		if !seen[btyp] {
+			seen[btyp] = true
+			kinds = append(kinds, btyp)
+		}
+	}
+	return kinds
+}
+
+// summarizeToolResultContent returns a one-line summary title and the full
+// body for a tool_result content field. The summary format is:
+//   - on error: "↳ err: <first line, truncated to 120 chars>"
+//   - on success, image-only content: "↳ ok (image)"
+//   - on success, multi-line content: "↳ ok (<N> lines)"
+//   - on success, single-line content: "↳ ok (<N> bytes)"
+//
+// The body preserves the full content (including non-text block markers)
+// so expand-all renders it faithfully.
+func summarizeToolResultContent(raw json.RawMessage, isError bool) (title, body string) {
+	body = stringifyToolResultContent(raw)
+	if isError {
+		first := firstToolResultLine(body)
+		if first == "" {
+			first = "(empty)"
+		}
+		const maxErr = 120
+		if len(first) > maxErr {
+			first = first[:maxErr-1] + "…"
+		}
+		return "↳ err: " + first, body
+	}
+	kinds := toolResultContentKinds(raw)
+	imageOnly := len(kinds) > 0
+	for _, k := range kinds {
+		if k != "image" {
+			imageOnly = false
+			break
+		}
+	}
+	if imageOnly {
+		return "↳ ok (image)", body
+	}
+	if body == "" {
+		return "↳ ok (0 bytes)", body
+	}
+	trimmed := strings.TrimRight(body, "\n")
+	if strings.Contains(trimmed, "\n") {
+		lines := strings.Count(trimmed, "\n") + 1
+		return fmt.Sprintf("↳ ok (%d lines)", lines), body
+	}
+	if trimmed != body {
+		// Had a trailing newline but otherwise single-line. Treat as 1 line.
+		return "↳ ok (1 line)", body
+	}
+	return fmt.Sprintf("↳ ok (%d bytes)", len(body)), body
+}
+
+// firstToolResultLine returns the first non-empty line of s, stripped of
+// trailing whitespace. Used to build "err: <first line>" summaries.
+func firstToolResultLine(s string) string {
+	s = strings.TrimLeft(s, "\r\n\t ")
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimRight(s, "\r\t ")
+}
+
+// buildHookEvent produces a KindHook event from a system/hook_{started,response}
+// line. Title format is "⚙ hook:<hook_name> (<subtype>)"; the hook's output
+// (hook_response only) is stashed in Body for expand-all.
+func buildHookEvent(obj map[string]json.RawMessage, line, subtype string) LogEvent {
+	var hookName, hookID, hookEvent, output string
+	_ = json.Unmarshal(obj["hook_name"], &hookName)
+	_ = json.Unmarshal(obj["hook_id"], &hookID)
+	_ = json.Unmarshal(obj["hook_event"], &hookEvent)
+	_ = json.Unmarshal(obj["output"], &output)
+
+	name := hookName
+	if name == "" {
+		name = "<unknown>"
+	}
+	title := fmt.Sprintf("⚙ hook:%s (%s)", name, subtype)
+
+	meta := map[string]string{}
+	if hookID != "" {
+		meta["hook_id"] = hookID
+	}
+	if hookEvent != "" {
+		meta["hook_event"] = hookEvent
+	}
+
+	return LogEvent{
+		Kind:  KindHook,
+		Title: title,
+		Body:  output,
+		Meta:  meta,
+		Raw:   line,
+	}
+}
+
+// buildRateLimitEvent produces a KindRateLimit event from a rate_limit_event
+// line. Title summarizes limit_type, wait_seconds, and reset_at if present;
+// falls back to a bare "⏱ rate limit" when the payload has no known fields.
+// The raw line is preserved for expand-all.
+func buildRateLimitEvent(obj map[string]json.RawMessage, line string) LogEvent {
+	meta := map[string]string{}
+	for _, k := range []string{"limit_type", "reset_at", "wait_seconds"} {
+		if v, ok := obj[k]; ok && len(v) > 0 {
+			meta[k] = rawToString(v)
+		}
+	}
+
+	title := "⏱ rate limit"
+	if v, ok := meta["limit_type"]; ok && v != "" {
+		title = "⏱ rate limit: " + v
+	}
+	var extras []string
+	if v, ok := meta["wait_seconds"]; ok && v != "" {
+		extras = append(extras, "wait "+v+"s")
+	}
+	if v, ok := meta["reset_at"]; ok && v != "" {
+		extras = append(extras, "reset "+v)
+	}
+	if len(extras) > 0 {
+		title = title + " (" + strings.Join(extras, ", ") + ")"
+	}
+
+	return LogEvent{
+		Kind:  KindRateLimit,
+		Title: title,
+		Meta:  meta,
+		Raw:   line,
+	}
 }
 
 // shortInput returns a single-line summary of a tool_use input object,
@@ -393,6 +564,8 @@ func claudeStyles() map[EventKind]lipgloss.Style {
 		KindUsage:         success,
 		KindStderr:        warning,
 		KindFinal:         success,
+		KindHook:          dim,
+		KindRateLimit:     dim,
 	}
 }
 
@@ -418,7 +591,17 @@ func (claudeAdapter) Render(ev LogEvent, width int, expanded bool) []string {
 	var out []string
 	out = append(out, wrap.Render(titleStyle.Render(title)))
 
-	bodyLines, hidden := collapseBody(ev.Body, expanded)
+	// tool_result body is collapsed entirely by default: the summary line
+	// is already in Title, so we only show the body on expand-all.
+	var bodyLines []string
+	var hidden int
+	if ev.Kind == KindToolResult && !expanded {
+		if ev.Body != "" {
+			out = append(out, wrap.Render(dim.Render("… (x to expand)")))
+		}
+	} else {
+		bodyLines, hidden = collapseBody(ev.Body, expanded)
+	}
 	bodyStyle := styles[ev.Kind]
 	if ev.Kind == KindToolResult && ev.Error {
 		bodyStyle = warning

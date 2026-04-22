@@ -178,6 +178,290 @@ func TestClaudeAdapter_Render_ToolResultError(t *testing.T) {
 	}
 }
 
+func TestClaudeAdapter_Parse_HookStarted(t *testing.T) {
+	line := `{"type":"system","subtype":"hook_started","hook_id":"h_01","hook_name":"SessionStart:startup","hook_event":"SessionStart"}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if ev.Kind != KindHook {
+		t.Errorf("Kind = %v, want KindHook", ev.Kind)
+	}
+	if ev.Title != "⚙ hook:SessionStart:startup (hook_started)" {
+		t.Errorf("Title = %q", ev.Title)
+	}
+	if ev.Meta["hook_id"] != "h_01" {
+		t.Errorf("Meta[hook_id] = %q", ev.Meta["hook_id"])
+	}
+	if ev.Meta["hook_event"] != "SessionStart" {
+		t.Errorf("Meta[hook_event] = %q", ev.Meta["hook_event"])
+	}
+	if ev.Body != "" {
+		t.Errorf("Body = %q, want empty", ev.Body)
+	}
+	if ev.Raw != line {
+		t.Errorf("Raw did not preserve original line")
+	}
+}
+
+func TestClaudeAdapter_Parse_HookResponse(t *testing.T) {
+	line := `{"type":"system","subtype":"hook_response","hook_id":"h_01","hook_name":"PreToolUse:Bash","output":"blocked: reason\n"}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if ev.Kind != KindHook {
+		t.Errorf("Kind = %v, want KindHook", ev.Kind)
+	}
+	if ev.Title != "⚙ hook:PreToolUse:Bash (hook_response)" {
+		t.Errorf("Title = %q", ev.Title)
+	}
+	if ev.Body != "blocked: reason\n" {
+		t.Errorf("Body = %q, want full output", ev.Body)
+	}
+	if ev.Meta["hook_id"] != "h_01" {
+		t.Errorf("Meta[hook_id] = %q", ev.Meta["hook_id"])
+	}
+}
+
+func TestClaudeAdapter_Parse_HookMissingName(t *testing.T) {
+	line := `{"type":"system","subtype":"hook_started","hook_id":"h_02"}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	if !strings.Contains(events[0].Title, "<unknown>") {
+		t.Errorf("Title = %q, want fallback for missing hook_name", events[0].Title)
+	}
+}
+
+func TestClaudeAdapter_Parse_RateLimitEvent_WithWaitAndReset(t *testing.T) {
+	line := `{"type":"rate_limit_event","limit_type":"tokens","wait_seconds":60,"reset_at":"2026-04-22T15:00:00Z"}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if ev.Kind != KindRateLimit {
+		t.Errorf("Kind = %v, want KindRateLimit", ev.Kind)
+	}
+	want := "⏱ rate limit: tokens (wait 60s, reset 2026-04-22T15:00:00Z)"
+	if ev.Title != want {
+		t.Errorf("Title = %q, want %q", ev.Title, want)
+	}
+	if ev.Meta["limit_type"] != "tokens" {
+		t.Errorf("Meta[limit_type] = %q", ev.Meta["limit_type"])
+	}
+	if ev.Meta["wait_seconds"] != "60" {
+		t.Errorf("Meta[wait_seconds] = %q", ev.Meta["wait_seconds"])
+	}
+	if ev.Raw != line {
+		t.Errorf("Raw did not preserve original line")
+	}
+}
+
+func TestClaudeAdapter_Parse_RateLimitEvent_Minimal(t *testing.T) {
+	line := `{"type":"rate_limit_event"}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if ev.Kind != KindRateLimit {
+		t.Errorf("Kind = %v, want KindRateLimit", ev.Kind)
+	}
+	if ev.Title != "⏱ rate limit" {
+		t.Errorf("Title = %q, want bare fallback", ev.Title)
+	}
+}
+
+func TestClaudeAdapter_Parse_ToolResult_StringSuccess(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"hello world","is_error":false}]}}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if ev.Kind != KindToolResult {
+		t.Fatalf("Kind = %v, want KindToolResult", ev.Kind)
+	}
+	if ev.Title != "↳ ok (11 bytes)" {
+		t.Errorf("Title = %q, want '↳ ok (11 bytes)'", ev.Title)
+	}
+	if ev.Body != "hello world" {
+		t.Errorf("Body = %q, want full content", ev.Body)
+	}
+	if ev.Error {
+		t.Errorf("Error = true, want false")
+	}
+}
+
+func TestClaudeAdapter_Parse_ToolResult_MultilineSuccess(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"line1\nline2\nline3\n","is_error":false}]}}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if ev.Title != "↳ ok (3 lines)" {
+		t.Errorf("Title = %q, want '↳ ok (3 lines)'", ev.Title)
+	}
+	if ev.Body != "line1\nline2\nline3\n" {
+		t.Errorf("Body did not preserve full content: %q", ev.Body)
+	}
+}
+
+func TestClaudeAdapter_Parse_ToolResult_Error(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"boom: exit 1\ntrailing context","is_error":true}]}}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if !ev.Error {
+		t.Errorf("Error = false, want true")
+	}
+	if ev.Title != "↳ err: boom: exit 1" {
+		t.Errorf("Title = %q, want '↳ err: boom: exit 1'", ev.Title)
+	}
+	if !strings.Contains(ev.Body, "trailing context") {
+		t.Errorf("Body did not preserve full content: %q", ev.Body)
+	}
+}
+
+func TestClaudeAdapter_Parse_ToolResult_ErrorTruncation(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"` + long + `","is_error":true}]}}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	// Prefix "↳ err: " + 119 chars of content + "…" = 7 + 119 + len("…")
+	const maxLine = 120
+	// After "↳ err: " the error portion is capped at maxLine chars
+	errSuffix := strings.TrimPrefix(ev.Title, "↳ err: ")
+	if len([]rune(errSuffix)) > maxLine {
+		t.Errorf("error title not truncated: len=%d, want <= %d", len([]rune(errSuffix)), maxLine)
+	}
+	if !strings.HasSuffix(ev.Title, "…") {
+		t.Errorf("truncated title should end with ellipsis: %q", ev.Title)
+	}
+	if ev.Body != long {
+		t.Errorf("Body should preserve full content despite truncated title")
+	}
+}
+
+func TestClaudeAdapter_Parse_ToolResult_ErrorEmptyContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"","is_error":true}]}}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	if events[0].Title != "↳ err: (empty)" {
+		t.Errorf("Title = %q, want '↳ err: (empty)'", events[0].Title)
+	}
+}
+
+func TestClaudeAdapter_Parse_ToolResult_ArrayTextBlocks(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}],"is_error":false}]}}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	// Concatenated with newline: "first\nsecond" → 2 lines
+	if ev.Title != "↳ ok (2 lines)" {
+		t.Errorf("Title = %q, want '↳ ok (2 lines)'", ev.Title)
+	}
+	if ev.Body != "first\nsecond" {
+		t.Errorf("Body = %q, want concatenated text", ev.Body)
+	}
+}
+
+func TestClaudeAdapter_Parse_ToolResult_ImageOnly(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"image","source":{"type":"base64","data":"iVBOR..."}}],"is_error":false}]}}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if ev.Title != "↳ ok (image)" {
+		t.Errorf("Title = %q, want '↳ ok (image)'", ev.Title)
+	}
+	// Body should at least mark that there was an image for expand-all.
+	if !strings.Contains(ev.Body, "[image]") {
+		t.Errorf("Body should contain '[image]' marker: %q", ev.Body)
+	}
+}
+
+func TestClaudeAdapter_Parse_ToolResult_MissingIsError(t *testing.T) {
+	// is_error absent → treat as success
+	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`
+	events, ok := (&claudeAdapter{}).Parse(line)
+	if !ok || len(events) != 1 {
+		t.Fatalf("Parse returned ok=%v events=%d", ok, len(events))
+	}
+	ev := events[0]
+	if ev.Error {
+		t.Errorf("Error = true, want false when is_error absent")
+	}
+	if !strings.HasPrefix(ev.Title, "↳ ok") {
+		t.Errorf("Title = %q, want ok-prefixed", ev.Title)
+	}
+}
+
+func TestClaudeAdapter_Render_ToolResultCollapsed(t *testing.T) {
+	ev := LogEvent{
+		Kind:  KindToolResult,
+		Title: "↳ ok (5 lines)",
+		Body:  "l1\nl2\nl3\nl4\nl5",
+	}
+	lines := (&claudeAdapter{}).Render(ev, 80, false)
+	joined := strings.Join(lines, "\n")
+	for _, forbidden := range []string{"l1", "l2", "l3", "l4", "l5"} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("collapsed render should hide body content, got %q containing %q", joined, forbidden)
+		}
+	}
+	if !strings.Contains(joined, "x to expand") {
+		t.Errorf("collapsed render missing expand hint: %q", joined)
+	}
+
+	// Expanded: full content visible.
+	lines = (&claudeAdapter{}).Render(ev, 80, true)
+	joined = strings.Join(lines, "\n")
+	for _, want := range []string{"l1", "l2", "l3", "l4", "l5"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expanded render missing %q: %q", want, joined)
+		}
+	}
+}
+
+func TestClaudeAdapter_Render_ToolResultCollapsedEmptyBody(t *testing.T) {
+	// No body → don't emit an expand hint.
+	ev := LogEvent{Kind: KindToolResult, Title: "↳ ok (0 bytes)"}
+	lines := (&claudeAdapter{}).Render(ev, 80, false)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "x to expand") {
+		t.Errorf("no-body render should omit expand hint: %q", joined)
+	}
+}
+
+func TestClaudeAdapter_Render_HookDim(t *testing.T) {
+	ev := LogEvent{Kind: KindHook, Title: "⚙ hook:Test (hook_started)"}
+	lines := (&claudeAdapter{}).Render(ev, 80, false)
+	if len(lines) == 0 {
+		t.Fatal("Render returned no lines")
+	}
+	// Dim uses color 241 in the palette; assert the styling bytes appear.
+	if !strings.Contains(lines[0], "241") && !strings.Contains(lines[0], "\x1b[") {
+		t.Errorf("hook title should be dim-styled: %q", lines[0])
+	}
+}
+
 // kindsOf is a tiny helper for diagnostic output.
 func kindsOf(events []LogEvent) []string {
 	out := make([]string, len(events))

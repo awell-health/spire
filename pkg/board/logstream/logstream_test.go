@@ -78,6 +78,8 @@ func TestEventKind_String(t *testing.T) {
 		KindUsage:         "usage",
 		KindStderr:        "stderr",
 		KindFinal:         "final",
+		KindHook:          "hook",
+		KindRateLimit:     "rate-limit",
 	}
 	for k, want := range cases {
 		if got := k.String(); got != want {
