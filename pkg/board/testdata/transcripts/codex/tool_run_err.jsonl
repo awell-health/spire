@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"th_abc"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Running ls on a missing dir"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc ls /nope","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc ls /nope","aggregated_output":"ls: /nope: No such file or directory\n","exit_code":1,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Directory does not exist."}}
+{"type":"turn.completed","usage":{"input_tokens":18368,"cached_input_tokens":0,"output_tokens":29}}
