@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -59,6 +61,45 @@ type WizardGuildSpec struct {
 	// Pointer so unset (nil) is distinguishable from explicit false,
 	// matching the MaxApprentices precedence pattern above.
 	SharedWorkspace *bool `json:"sharedWorkspace,omitempty"`
+
+	// Cache declares a guild-owned repo cache that wizard pods derive
+	// their read-only repo substrate from, instead of each pod cloning
+	// from origin. The operator reconciles this into a PVC plus a
+	// refresh Job (see spi-myzn5). Repo identity is NOT declared here —
+	// it stays authoritative via tower/shared registration (spi-xplwy).
+	//
+	// Pointer so unset (nil) keeps the pre-cache behavior: no PVC
+	// provisioned, and wizard pods bootstrap without the cache mount.
+	Cache *CacheSpec `json:"cache,omitempty"`
+}
+
+// CacheSpec declares the storage and refresh contract for a
+// WizardGuild's repo cache. It intentionally contains no repo URL —
+// repo identity stays authoritative via tower/shared registration
+// (see spi-xplwy). The operator resolves the repo to clone from the
+// guild's existing configuration at reconcile time.
+type CacheSpec struct {
+	// StorageClassName names the StorageClass used for the cache PVC.
+	// When empty, the operator falls back to the cluster default.
+	StorageClassName string `json:"storageClassName,omitempty"`
+
+	// Size is the requested capacity for the cache PVC as a
+	// resource.Quantity (e.g. "10Gi").
+	Size resource.Quantity `json:"size"`
+
+	// AccessMode is the PVC access mode. Defaults to ReadOnlyMany so
+	// many wizard pods can mount the same cache in parallel.
+	// +kubebuilder:default=ReadOnlyMany
+	AccessMode corev1.PersistentVolumeAccessMode `json:"accessMode,omitempty"`
+
+	// RefreshInterval is how often the operator schedules a fetch
+	// against the cache. Defaults to 5m.
+	// +kubebuilder:default="5m"
+	RefreshInterval metav1.Duration `json:"refreshInterval,omitempty"`
+
+	// BranchPin, when set, constrains the cache to a specific git
+	// branch. When nil, the cache tracks the guild's default branch.
+	BranchPin *string `json:"branchPin,omitempty"`
 }
 
 type GuildResourceRequirements struct {
@@ -74,7 +115,54 @@ type WizardGuildStatus struct {
 	CompletedCount int      `json:"completedCount,omitempty"`
 	PodName        string   `json:"podName,omitempty"`
 	Message        string   `json:"message,omitempty"`
+
+	// Cache reports the lifecycle state of the guild-owned repo cache
+	// when Spec.Cache is set. Nil when no cache is declared.
+	Cache *CacheStatus `json:"cache,omitempty"`
 }
+
+// CacheStatus reports the observed state of a WizardGuild's repo
+// cache. It is set and maintained by the cache reconciler.
+type CacheStatus struct {
+	// Phase is one of Pending, Ready, Refreshing, Failed.
+	// +kubebuilder:validation:Enum=Pending;Ready;Refreshing;Failed
+	Phase string `json:"phase,omitempty"`
+
+	// Revision is the git commit SHA the cache currently points at.
+	// Empty until the first successful refresh completes.
+	Revision string `json:"revision,omitempty"`
+
+	// LastRefreshTime is when the cache was most recently refreshed.
+	LastRefreshTime *metav1.Time `json:"lastRefreshTime,omitempty"`
+
+	// RefreshError carries a human-readable message describing the
+	// most recent refresh failure, if any. Cleared on the next
+	// successful refresh.
+	RefreshError string `json:"refreshError,omitempty"`
+}
+
+// Cache-related condition types used on WizardGuild.Status.Conditions
+// (once conditions are wired). The set deliberately mirrors the
+// CacheStatus.Phase values that represent durable states — an
+// intermittent "Refreshing" is distinct from the terminal "Failed".
+const (
+	// CacheReady is True when the cache exists and has been refreshed
+	// successfully at least once. A wizard pod can safely bootstrap
+	// from the cache when this condition is True.
+	CacheReady = "CacheReady"
+
+	// CacheRefreshing is True while a refresh Job is in-flight. This
+	// is informational — workers do not block on it, because the
+	// reconciler serializes refresh so the cache never points at a
+	// half-written snapshot.
+	CacheRefreshing = "CacheRefreshing"
+
+	// CacheFailed is True when the most recent refresh failed and no
+	// newer successful refresh has taken its place. The Message on
+	// this condition should carry the same detail as
+	// CacheStatus.RefreshError.
+	CacheFailed = "CacheFailed"
+)
 
 // +kubebuilder:object:root=true
 type WizardGuildList struct {

@@ -45,6 +45,27 @@ func (in *WizardGuildSpec) DeepCopyInto(out *WizardGuildSpec) {
 		v := *in.SharedWorkspace
 		out.SharedWorkspace = &v
 	}
+	if in.Cache != nil {
+		out.Cache = new(CacheSpec)
+		in.Cache.DeepCopyInto(out.Cache)
+	}
+}
+
+func (in *CacheSpec) DeepCopyInto(out *CacheSpec) {
+	*out = *in
+	out.Size = in.Size.DeepCopy()
+	out.RefreshInterval = in.RefreshInterval
+	if in.BranchPin != nil {
+		v := *in.BranchPin
+		out.BranchPin = &v
+	}
+}
+
+func (in *CacheStatus) DeepCopyInto(out *CacheStatus) {
+	*out = *in
+	if in.LastRefreshTime != nil {
+		out.LastRefreshTime = in.LastRefreshTime.DeepCopy()
+	}
 }
 
 func (in *GuildResourceRequirements) DeepCopyInto(out *GuildResourceRequirements) {
@@ -68,6 +89,10 @@ func (in *WizardGuildStatus) DeepCopyInto(out *WizardGuildStatus) {
 	if in.CurrentWork != nil {
 		out.CurrentWork = make([]string, len(in.CurrentWork))
 		copy(out.CurrentWork, in.CurrentWork)
+	}
+	if in.Cache != nil {
+		out.Cache = new(CacheStatus)
+		in.Cache.DeepCopyInto(out.Cache)
 	}
 }
 
