@@ -26,6 +26,8 @@ func classifyInterruptLabel(label string) FailureClass {
 		return FailArbiter
 	case "step-failure":
 		return FailStepFailure
+	case "cache-refresh-failure":
+		return FailureClassCacheRefresh
 	default:
 		return FailUnknown
 	}

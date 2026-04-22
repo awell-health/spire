@@ -15,15 +15,30 @@ import (
 type FailureClass string
 
 const (
-	FailEmptyImplement FailureClass = "empty-implement"
-	FailMerge          FailureClass = "merge-failure"
-	FailBuild          FailureClass = "build-failure"
-	FailReviewFix      FailureClass = "review-fix"
-	FailRepoResolution FailureClass = "repo-resolution"
-	FailArbiter        FailureClass = "arbiter"
-	FailStepFailure    FailureClass = "step-failure" // v3 graph step failure
-	FailUnknown        FailureClass = "unknown"
+	FailEmptyImplement       FailureClass = "empty-implement"
+	FailMerge                FailureClass = "merge-failure"
+	FailBuild                FailureClass = "build-failure"
+	FailReviewFix            FailureClass = "review-fix"
+	FailRepoResolution       FailureClass = "repo-resolution"
+	FailArbiter              FailureClass = "arbiter"
+	FailStepFailure          FailureClass = "step-failure"          // v3 graph step failure
+	FailureClassCacheRefresh FailureClass = "cache-refresh-failure" // resource-scoped: cluster cache refresh failure
+	FailUnknown              FailureClass = "unknown"
 )
+
+// IsResourceScoped reports whether the failure class describes a cluster
+// resource (rather than a failing wizard bead). Resource-scoped classes flow
+// through the wisp + pinned-identity shape — see the "Resource-scoped
+// recoveries" section of pkg/recovery/README.md and the epic spi-w860i /
+// design spi-uhxdn for the full model.
+func (fc FailureClass) IsResourceScoped() bool {
+	switch fc {
+	case FailureClassCacheRefresh:
+		return true
+	default:
+		return false
+	}
+}
 
 // StepContext captures the v3 graph step that failed, if available.
 type StepContext struct {
@@ -45,18 +60,33 @@ type Diagnosis struct {
 	Title             string           `json:"title"`
 	Status            string           `json:"status"`
 	FailureMode       FailureClass     `json:"failure_mode"`
-	InterruptLabel    string           `json:"interrupt_label"`              // raw interrupted:* label
-	Phase             string           `json:"phase,omitempty"`              // current phase:* label value
-	AttemptCount      int              `json:"attempt_count"`                // total attempts on this bead
+	InterruptLabel    string           `json:"interrupt_label"`               // raw interrupted:* label
+	Phase             string           `json:"phase,omitempty"`               // current phase:* label value
+	AttemptCount      int              `json:"attempt_count"`                 // total attempts on this bead
 	LastAttemptResult string           `json:"last_attempt_result,omitempty"` // result label from most recent closed attempt
-	StepContext       *StepContext     `json:"step_context,omitempty"`       // v3: which graph step failed
-	Runtime           *RuntimeState    `json:"runtime,omitempty"`            // executor state if available
-	Git               *GitState        `json:"git,omitempty"`                // branch/worktree existence
-	AlertBeads        []AlertInfo      `json:"alert_beads,omitempty"`        // related alert bead IDs + labels
-	RecoveryBead      *RecoveryRef     `json:"recovery_bead,omitempty"`      // open recovery-for dependent if present
+	StepContext       *StepContext     `json:"step_context,omitempty"`        // v3: which graph step failed
+	Runtime           *RuntimeState    `json:"runtime,omitempty"`             // executor state if available
+	Git               *GitState        `json:"git,omitempty"`                 // branch/worktree existence
+	AlertBeads        []AlertInfo      `json:"alert_beads,omitempty"`         // related alert bead IDs + labels
+	RecoveryBead      *RecoveryRef     `json:"recovery_bead,omitempty"`       // open recovery-for dependent if present
 	WizardRunning     bool             `json:"wizard_running"`
 	WizardName        string           `json:"wizard_name,omitempty"`
 	Actions           []RecoveryAction `json:"actions"`
+	ResourceContext   *ResourceContext `json:"resource_context,omitempty"` // populated for resource-scoped failures (see FailureClass.IsResourceScoped)
+}
+
+// ResourceContext carries cluster-resource metadata for resource-scoped
+// recoveries (e.g. WizardGuild.Cache refresh failures). All fields are
+// plain strings — pkg/recovery imports no k8s packages; operator-side code
+// stamps these values onto the wisp bead as metadata and a caused-by edge
+// to a pinned-identity bead. See the "Resource-scoped recoveries" section
+// of pkg/recovery/README.md.
+type ResourceContext struct {
+	SourceResourceURI         string `json:"source_resource_uri,omitempty"`
+	ConditionSnapshot         string `json:"condition_snapshot,omitempty"`
+	TerminationLog            string `json:"termination_log,omitempty"`
+	PinnedIdentityBeadID      string `json:"pinned_identity_bead_id,omitempty"`
+	PinnedIdentityDescription string `json:"pinned_identity_description,omitempty"`
 }
 
 // RecoveryAction is a proposed recovery action with its metadata.

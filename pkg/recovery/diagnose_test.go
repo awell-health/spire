@@ -519,6 +519,7 @@ func TestClassify_AllModes(t *testing.T) {
 		{"interrupted:arbiter-failure", FailArbiter},
 		{"interrupted:arbiter", FailArbiter},
 		{"interrupted:step-failure", FailStepFailure},
+		{"interrupted:cache-refresh-failure", FailureClassCacheRefresh},
 		{"interrupted:something-else", FailUnknown},
 		{"not-an-interrupt", FailUnknown},
 	}
@@ -530,6 +531,26 @@ func TestClassify_AllModes(t *testing.T) {
 				t.Errorf("classifyInterruptLabel(%q) = %s, want %s", tt.label, got, tt.expected)
 			}
 		})
+	}
+}
+
+// TestClassify_CacheRefreshFailure verifies the new resource-scoped class
+// round-trips through the classifier and that IsResourceScoped flags it
+// correctly for downstream branching in Diagnose.
+func TestClassify_CacheRefreshFailure(t *testing.T) {
+	got := classifyInterruptLabel("interrupted:cache-refresh-failure")
+	if got != FailureClassCacheRefresh {
+		t.Fatalf("classifier = %s, want %s", got, FailureClassCacheRefresh)
+	}
+	if !got.IsResourceScoped() {
+		t.Errorf("IsResourceScoped() = false, want true for %s", got)
+	}
+
+	// Regression: wizard-failure classes must remain non-resource-scoped.
+	for _, fc := range []FailureClass{FailMerge, FailBuild, FailReviewFix, FailRepoResolution, FailArbiter, FailStepFailure, FailEmptyImplement, FailUnknown} {
+		if fc.IsResourceScoped() {
+			t.Errorf("IsResourceScoped() = true for %s; want false", fc)
+		}
 	}
 }
 
@@ -859,5 +880,245 @@ func TestDiagnose_HookedBeadWithCausedByRecoveryBeadAndAlert_PopulatesRecoveryBe
 	}
 	if diag.RecoveryBead.ID != "spi-rec1" {
 		t.Errorf("expected RecoveryBead.ID=%q, got %q", "spi-rec1", diag.RecoveryBead.ID)
+	}
+}
+
+// --- Resource-scoped recoveries (spi-w860i) ---
+
+// wispMockDeps builds a Deps fixture for a resource-scoped wisp bead with
+// all operator-stamped fields. Tests can mutate the returned Deps to remove
+// stamps or change the caused-by shape.
+func wispMockDeps() *Deps {
+	wisp := DepBead{
+		ID:     "spi-wisp1",
+		Title:  "cache-refresh failure on WizardGuild.Cache",
+		Status: "in_progress",
+		Labels: []string{"interrupted:cache-refresh-failure", "recovery-bead"},
+		Metadata: map[string]string{
+			"source-resource-uri": "spire.awell.health/wizardguild/default/primary#cache",
+			"termination-log":     "E1023 12:00:01 refresh loop: timeout after 5s\nE1023 12:00:02 backoff exhausted",
+			"condition-snapshot":  "Ready=False;Degraded=True;LastProbe=2026-04-22T12:00:03Z",
+		},
+	}
+	pinned := DepBead{
+		ID:          "spi-pour1",
+		Title:       "pinned identity: wizardguild/default/primary",
+		Status:      "open",
+		Description: "Pour identity for WizardGuild/default/primary — created by operator at 2026-04-22T11:58:00Z.",
+		Labels:      []string{"pinned-identity"},
+	}
+	beads := map[string]DepBead{
+		wisp.ID:   wisp,
+		pinned.ID: pinned,
+	}
+	return &Deps{
+		GetBead: func(id string) (DepBead, error) {
+			if b, ok := beads[id]; ok {
+				return b, nil
+			}
+			return DepBead{}, fmt.Errorf("not found: %s", id)
+		},
+		GetChildren: func(parentID string) ([]DepBead, error) { return nil, nil },
+		GetDependentsWithMeta: func(id string) ([]DepDependent, error) {
+			return nil, nil
+		},
+		GetDepsWithMeta: func(id string) ([]DepDependent, error) {
+			if id == wisp.ID {
+				return []DepDependent{
+					{
+						ID:             pinned.ID,
+						Title:          pinned.Title,
+						Status:         pinned.Status,
+						Labels:         pinned.Labels,
+						DependencyType: "caused-by",
+					},
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+}
+
+// TestDiagnose_ResourceScoped_CacheRefresh fabricates a fully-stamped wisp
+// and asserts the Diagnose output carries the URI, condition snapshot,
+// termination-log tail, pinned bead ID, and pinned description.
+func TestDiagnose_ResourceScoped_CacheRefresh(t *testing.T) {
+	deps := wispMockDeps()
+
+	diag, err := Diagnose("spi-wisp1", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+	if diag.FailureMode != FailureClassCacheRefresh {
+		t.Fatalf("FailureMode = %s, want %s", diag.FailureMode, FailureClassCacheRefresh)
+	}
+	if diag.ResourceContext == nil {
+		t.Fatal("ResourceContext was not populated")
+	}
+	rc := diag.ResourceContext
+	if rc.SourceResourceURI != "spire.awell.health/wizardguild/default/primary#cache" {
+		t.Errorf("SourceResourceURI = %q", rc.SourceResourceURI)
+	}
+	if !strings.Contains(rc.TerminationLog, "backoff exhausted") {
+		t.Errorf("TerminationLog = %q, want backoff-exhausted tail", rc.TerminationLog)
+	}
+	if !strings.Contains(rc.ConditionSnapshot, "Ready=False") {
+		t.Errorf("ConditionSnapshot = %q, want Ready=False token", rc.ConditionSnapshot)
+	}
+	if rc.PinnedIdentityBeadID != "spi-pour1" {
+		t.Errorf("PinnedIdentityBeadID = %q, want spi-pour1", rc.PinnedIdentityBeadID)
+	}
+	if !strings.Contains(rc.PinnedIdentityDescription, "WizardGuild/default/primary") {
+		t.Errorf("PinnedIdentityDescription = %q", rc.PinnedIdentityDescription)
+	}
+
+	// Rendered block must contain URI, conditions, termination-log, pinned
+	// bead ID, and description.
+	block := FormatResourceContext(rc)
+	for _, want := range []string{
+		"### Resource context",
+		"URI: spire.awell.health/wizardguild/default/primary#cache",
+		"Conditions: Ready=False;Degraded=True;LastProbe=2026-04-22T12:00:03Z",
+		"backoff exhausted",
+		"### Identity",
+		"Bead: spi-pour1",
+		"WizardGuild/default/primary",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("rendered block missing %q; block=%s", want, block)
+		}
+	}
+	if strings.Contains(block, "<not provided>") {
+		t.Errorf("fully-stamped wisp should not emit <not provided>; block=%s", block)
+	}
+}
+
+// TestDiagnose_ResourceScoped_MissingMetadata drops the termination-log and
+// condition-snapshot stamps; Diagnose must still succeed and the renderer
+// must fill <not provided> for those fields.
+func TestDiagnose_ResourceScoped_MissingMetadata(t *testing.T) {
+	deps := wispMockDeps()
+	deps.GetBead = func(id string) (DepBead, error) {
+		if id == "spi-wisp1" {
+			return DepBead{
+				ID:     "spi-wisp1",
+				Title:  "cache-refresh failure (sparse stamps)",
+				Status: "in_progress",
+				Labels: []string{"interrupted:cache-refresh-failure", "recovery-bead"},
+				Metadata: map[string]string{
+					"source-resource-uri": "spire.awell.health/wizardguild/default/primary#cache",
+				},
+			}, nil
+		}
+		if id == "spi-pour1" {
+			return DepBead{
+				ID:          "spi-pour1",
+				Title:       "pinned identity: wizardguild/default/primary",
+				Status:      "open",
+				Description: "Pour identity for WizardGuild/default/primary.",
+			}, nil
+		}
+		return DepBead{}, fmt.Errorf("not found: %s", id)
+	}
+
+	diag, err := Diagnose("spi-wisp1", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+	if diag.ResourceContext == nil {
+		t.Fatal("ResourceContext was not populated")
+	}
+	rc := diag.ResourceContext
+	if rc.SourceResourceURI == "" {
+		t.Error("SourceResourceURI dropped")
+	}
+	if rc.TerminationLog != "" || rc.ConditionSnapshot != "" {
+		t.Errorf("missing stamps should leave fields empty; got log=%q cond=%q", rc.TerminationLog, rc.ConditionSnapshot)
+	}
+
+	block := FormatResourceContext(rc)
+	// Missing stamps must render as "<not provided>".
+	if !strings.Contains(block, "Conditions: <not provided>") {
+		t.Errorf("block missing Conditions:<not provided>; block=%s", block)
+	}
+	if !strings.Contains(block, "Termination log tail: <not provided>") {
+		t.Errorf("block missing Termination log tail:<not provided>; block=%s", block)
+	}
+	// Populated stamps must still render normally.
+	if !strings.Contains(block, "URI: spire.awell.health/wizardguild/default/primary#cache") {
+		t.Errorf("block missing URI; block=%s", block)
+	}
+}
+
+// TestDiagnose_WizardFailure_Unchanged is a regression gate — existing
+// wizard-failure beads must produce the same Diagnosis shape they did
+// before the resource-scoped path was added. In particular, ResourceContext
+// must stay nil for IsResourceScoped()==false classes.
+func TestDiagnose_WizardFailure_Unchanged(t *testing.T) {
+	deps := mockDeps()
+	diag, err := Diagnose("spi-regression", deps)
+	if err != nil {
+		t.Fatalf("Diagnose returned error: %v", err)
+	}
+	if diag.FailureMode != FailMerge {
+		t.Errorf("FailureMode = %s, want %s", diag.FailureMode, FailMerge)
+	}
+	if diag.ResourceContext != nil {
+		t.Errorf("ResourceContext = %+v, want nil for wizard-failure class", diag.ResourceContext)
+	}
+	if diag.FailureMode.IsResourceScoped() {
+		t.Errorf("IsResourceScoped() = true for %s; want false", diag.FailureMode)
+	}
+}
+
+// TestExtractResourceContext_NoStamps covers the (_, false) degradation:
+// a bead with no operator stamps and no caused-by edge returns (nil,
+// false) so Diagnose leaves ResourceContext nil without erroring.
+func TestExtractResourceContext_NoStamps(t *testing.T) {
+	bead := DepBead{ID: "spi-bare", Labels: []string{"interrupted:cache-refresh-failure"}}
+	rc, ok := extractResourceContext(bead, &Deps{})
+	if ok {
+		t.Fatalf("expected (_, false) for bead with no stamps; got rc=%+v", rc)
+	}
+	if rc != nil {
+		t.Errorf("expected nil ResourceContext, got %+v", rc)
+	}
+}
+
+// TestExtractResourceContext_MultipleCausedBy exercises the warning path —
+// a wisp with more than one caused-by target. The first is picked; no
+// error is returned.
+func TestExtractResourceContext_MultipleCausedBy(t *testing.T) {
+	bead := DepBead{
+		ID:     "spi-wisp-multi",
+		Labels: []string{"interrupted:cache-refresh-failure"},
+		Metadata: map[string]string{
+			"source-resource-uri": "spire.awell.health/a/b/c#cache",
+		},
+	}
+	deps := &Deps{
+		GetBead: func(id string) (DepBead, error) {
+			if id == "spi-pour-first" {
+				return DepBead{ID: id, Description: "first pinned"}, nil
+			}
+			return DepBead{ID: id}, nil
+		},
+		GetDepsWithMeta: func(id string) ([]DepDependent, error) {
+			return []DepDependent{
+				{ID: "spi-pour-first", DependencyType: "caused-by"},
+				{ID: "spi-pour-second", DependencyType: "caused-by"},
+				{ID: "spi-other", DependencyType: "blocks"},
+			}, nil
+		},
+	}
+	rc, ok := extractResourceContext(bead, deps)
+	if !ok {
+		t.Fatal("expected ok=true for populated wisp")
+	}
+	if rc.PinnedIdentityBeadID != "spi-pour-first" {
+		t.Errorf("PinnedIdentityBeadID = %q, want spi-pour-first (first caused-by target)", rc.PinnedIdentityBeadID)
+	}
+	if rc.PinnedIdentityDescription != "first pinned" {
+		t.Errorf("PinnedIdentityDescription = %q, want 'first pinned'", rc.PinnedIdentityDescription)
 	}
 }

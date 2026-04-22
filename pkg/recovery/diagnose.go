@@ -117,6 +117,17 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 	fc := classifyInterruptLabel(interruptLabel)
 	actions := buildActions(fc, beadID, attemptCount, gitState)
 
+	// 9. Resource-scoped enrichment. Wizard-failure classes leave this nil
+	// so existing callers see no shape change. Missing operator stamps are
+	// tolerated — extractResourceContext returns (nil, false) and diagnose
+	// proceeds as normal.
+	var resourceCtx *ResourceContext
+	if fc.IsResourceScoped() {
+		if rc, ok := extractResourceContext(bead, deps); ok {
+			resourceCtx = rc
+		}
+	}
+
 	return &Diagnosis{
 		BeadID:            beadID,
 		Title:             bead.Title,
@@ -134,7 +145,103 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 		WizardRunning:     wizardRunning,
 		WizardName:        wizardName,
 		Actions:           actions,
+		ResourceContext:   resourceCtx,
 	}, nil
+}
+
+// Operator-stamped wisp metadata keys consumed by extractResourceContext.
+// Documented in pkg/recovery/README.md's "Resource-scoped recoveries"
+// section so operator-side code can target them.
+const (
+	metaKeySourceResourceURI = "source-resource-uri"
+	metaKeyTerminationLog    = "termination-log"
+	metaKeyConditionSnapshot = "condition-snapshot"
+)
+
+// extractResourceContext reads operator-stamped wisp metadata and resolves
+// the wisp's single caused-by target to assemble a ResourceContext for
+// resource-scoped recoveries. Returns (nil, false) when no fields are
+// populated so the caller can leave Diagnosis.ResourceContext nil.
+//
+// Missing individual metadata keys are tolerated — the renderer fills in
+// "<not provided>". Multiple caused-by targets are unexpected; the first
+// is used and a warning is logged (diagnose never errors on absent or
+// surprising operator stamps).
+func extractResourceContext(bead DepBead, deps *Deps) (*ResourceContext, bool) {
+	rc := &ResourceContext{}
+	if bead.Metadata != nil {
+		rc.SourceResourceURI = bead.Metadata[metaKeySourceResourceURI]
+		rc.TerminationLog = bead.Metadata[metaKeyTerminationLog]
+		rc.ConditionSnapshot = bead.Metadata[metaKeyConditionSnapshot]
+	}
+
+	if deps != nil && deps.GetDepsWithMeta != nil {
+		if targets, err := deps.GetDepsWithMeta(bead.ID); err == nil {
+			var pinnedIDs []string
+			for _, t := range targets {
+				if t.DependencyType == "caused-by" {
+					pinnedIDs = append(pinnedIDs, t.ID)
+				}
+			}
+			if len(pinnedIDs) > 1 {
+				log.Printf("[recovery] warning: wisp %s has %d caused-by targets; using first (%s)",
+					bead.ID, len(pinnedIDs), pinnedIDs[0])
+			}
+			if len(pinnedIDs) > 0 {
+				rc.PinnedIdentityBeadID = pinnedIDs[0]
+				if deps.GetBead != nil {
+					if pinned, err := deps.GetBead(pinnedIDs[0]); err == nil {
+						rc.PinnedIdentityDescription = pinned.Description
+					}
+				}
+			}
+		}
+	}
+
+	populated := rc.SourceResourceURI != "" ||
+		rc.ConditionSnapshot != "" ||
+		rc.TerminationLog != "" ||
+		rc.PinnedIdentityBeadID != "" ||
+		rc.PinnedIdentityDescription != ""
+	if !populated {
+		return nil, false
+	}
+	return rc, true
+}
+
+// FormatResourceContext renders a ResourceContext into a prompt-ready
+// markdown block suitable for inclusion in the cleric's decide prompt
+// alongside the existing git-state / log-tail sections. Missing fields
+// render as "<not provided>" so downstream agents can still reason about
+// what stamps are absent.
+//
+// Returns "" for a nil ResourceContext so callers can unconditionally
+// concatenate the result.
+func FormatResourceContext(rc *ResourceContext) string {
+	if rc == nil {
+		return ""
+	}
+	orDefault := func(s string) string {
+		if s == "" {
+			return "<not provided>"
+		}
+		return s
+	}
+	var b strings.Builder
+	b.WriteString("### Resource context\n")
+	b.WriteString("- URI: ")
+	b.WriteString(orDefault(rc.SourceResourceURI))
+	b.WriteString("\n- Conditions: ")
+	b.WriteString(orDefault(rc.ConditionSnapshot))
+	b.WriteString("\n- Termination log tail: ")
+	b.WriteString(orDefault(rc.TerminationLog))
+	b.WriteString("\n\n### Identity\n")
+	b.WriteString("- Bead: ")
+	b.WriteString(orDefault(rc.PinnedIdentityBeadID))
+	b.WriteString("\n- Description: ")
+	b.WriteString(orDefault(rc.PinnedIdentityDescription))
+	b.WriteString("\n")
+	return b.String()
 }
 
 // countAttempts counts attempt beads for the parent and returns the latest

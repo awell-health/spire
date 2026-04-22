@@ -7,12 +7,19 @@ import (
 
 // DepBead is the minimal bead projection needed by recovery.
 // Callers map from their store.Bead to this type.
+//
+// Description and Metadata are optional — adapters that want to surface
+// resource-scoped recovery context (see FailureClass.IsResourceScoped) must
+// populate them from the underlying store.Bead. Legacy wizard-failure paths
+// leave them empty; extractResourceContext is nil-safe.
 type DepBead struct {
-	ID     string
-	Title  string
-	Status string
-	Labels []string
-	Parent string
+	ID          string
+	Title       string
+	Status      string
+	Description string
+	Labels      []string
+	Parent      string
+	Metadata    map[string]string
 }
 
 // DepDependent represents a dependent bead with its dependency type.
@@ -38,6 +45,12 @@ type Deps struct {
 
 	// Dependents (reverse deps) — returns beads that depend on the given ID.
 	GetDependentsWithMeta func(id string) ([]DepDependent, error)
+
+	// Dependencies (forward deps) — returns beads the given ID depends on.
+	// Optional; only populated by adapters that surface resource-scoped
+	// recovery context. extractResourceContext uses this to resolve a
+	// wisp's caused-by edge to its pinned-identity bead.
+	GetDepsWithMeta func(id string) ([]DepDependent, error)
 
 	// Executor state — returns nil if no state file exists.
 	LoadExecutorState func(agentName string) (*RuntimeState, error)

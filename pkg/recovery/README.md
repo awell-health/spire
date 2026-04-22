@@ -187,7 +187,9 @@ agentic default (see `MarkDemoted` / `PromotionState`).
 - **Failure classification** (`FailureClass` + `classify.go`): maps
   `interrupted:*` labels + step context to one of `empty-implement`,
   `merge-failure`, `build-failure`, `review-fix`, `repo-resolution`,
-  `arbiter`, `step-failure`, `unknown`.
+  `arbiter`, `step-failure`, `cache-refresh-failure`, `unknown`.
+  `cache-refresh-failure` is resource-scoped — see "Resource-scoped
+  recoveries" below.
 - **Decide policy** (`Decide`): produces a `RepairPlan` from
   `Diagnosis + History`. Priority order: attempt-budget guard → human
   guidance → promoted recipe replay → git-state heuristics → Claude → fallback.
@@ -328,6 +330,47 @@ The legacy `actionTargetedFix` mechanical-dispatch tombstone in
 `pkg/executor/recovery_actions.go` is unrelated to the worker-mode
 action above: it exists only so stale paths that still call the
 function by name fail loudly with a pointer at `RepairModeWorker`.
+
+## Resource-scoped recoveries
+
+A resource-scoped recovery bead ("wisp") is one whose subject is a cluster
+resource rather than a failing wizard bead. The first instance is the
+WizardGuild cache refresh failure (`FailureClassCacheRefresh`). The shape
+is bead-centric and kube-unaware — `pkg/recovery` imports no k8s,
+controller-runtime, or apimachinery packages and reasons only about beads,
+labels, and metadata that operator-side code stamps on them.
+
+| `FailureClass`          | Constant                   | Resource-scoped |
+|-------------------------|----------------------------|-----------------|
+| `cache-refresh-failure` | `FailureClassCacheRefresh` | yes             |
+
+The operator-side reconciler files a wisp bead with:
+
+- An `interrupted:cache-refresh-failure` label so the existing classifier
+  resolves it to `FailureClassCacheRefresh`.
+- A `caused-by` dependency edge pointing at a pinned-identity bead (the
+  pour identity for the failing resource).
+- Metadata keys describing the resource's state at failure time:
+
+| Metadata key          | Read by                   | Purpose                                              |
+|-----------------------|---------------------------|------------------------------------------------------|
+| `source-resource-uri` | `extractResourceContext`  | Opaque URI of the cluster resource (operator-owned)  |
+| `termination-log`     | `extractResourceContext`  | Tail of the resource's termination/refresh log       |
+| `condition-snapshot`  | `extractResourceContext`  | Semicolon-delimited condition probe snapshot         |
+
+`Diagnose` branches on `FailureClass.IsResourceScoped()`. When true,
+`extractResourceContext` reads the three metadata keys off the wisp and
+resolves the single `caused-by` target via `Deps.GetDepsWithMeta` to pull
+the pinned-identity bead's ID and description into
+`Diagnosis.ResourceContext`. Missing metadata is tolerated — absent
+fields render as `<not provided>` via `FormatResourceContext`, and
+`Diagnose` never errors on partial operator stamps. Multiple `caused-by`
+targets emit a warning and use the first.
+
+Operator-side writers (wisp filing, pinned-identity creation) and the
+steward's `WriteOutcome` adjustments for `source-resource-uri` are
+handled in sibling subtasks of epic **spi-w860i**; see design
+**spi-uhxdn** for the full pattern.
 
 ## Constants
 
