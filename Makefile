@@ -1,4 +1,4 @@
-.PHONY: build build-steward build-agent load deploy apply restart logs status clean smoke-test-helm test-observability crd-check
+.PHONY: build build-steward build-agent load deploy apply restart logs status clean smoke-test-helm test-observability crd-check e2e
 
 NAMESPACE ?= spire
 
@@ -91,3 +91,13 @@ crd-check:
 # production metrics. See scripts/test-observability.sh for scope.
 test-observability:
 	bash scripts/test-observability.sh
+
+# --- End-to-end cache-recovery test (spi-p18tr) ---
+
+# Acceptance gate for the pinned-identity + wisp recovery epic
+# (spi-w860i). Requires a running minikube with spire-steward:dev and
+# spire-agent:dev loaded. The test helm-installs a fresh namespace
+# per run and tears it down on exit. See test/e2e/README.md for the
+# full data flow, prerequisites, and debugging tips.
+e2e: build load
+	go test -tags=e2e -timeout 30m ./test/e2e/... -v
