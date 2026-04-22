@@ -147,6 +147,11 @@ route by `Workspace.Kind`/`Origin`, adding `guild-cache` is an
 additive change: no contract edits, no parity-matrix change, and no
 migration for other workstreams.
 
+Current-state contract (CRD fields, PVC/Job naming, serialization
+approach, init-container flow, observability vocabulary, and the
+verification criteria operators check before flipping a guild to the
+cache-backed flow): [cluster-repo-cache.md](cluster-repo-cache.md).
+
 - [ ] spi-sn7o3 -- WizardGuild repo-cache; materializes workspaces with `Origin=guild-cache` for faster cold-pod start. Ships when spi-xplwy parity is green (it is) and cluster-image bootstrap (above) is stable enough to attach a cache PVC.
 
 ### 4. Workshop Skill

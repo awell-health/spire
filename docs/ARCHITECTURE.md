@@ -508,6 +508,18 @@ phase (`Succeeded` / `Failed`), records the outcome, and reaps the pod.
 There is no in-pod sidecar reporting; the pod's lifetime equals the
 wizard process's lifetime.
 
+#### Phase-2: guild-owned repo cache overlay
+
+When a `WizardGuild` declares `spec.cache`, the operator overlays the
+pod spec with a read-only cache PVC mount at `pkg/agent.CacheMountPath`
+and a `cache-bootstrap` init container that materializes the writable
+workspace at `pkg/agent.WorkspaceMountPath`, in place of the
+`repo-bootstrap` origin-clone init container. When `spec.cache` is
+unset, the pod keeps the pre-cache origin-clone behavior. See
+[cluster-repo-cache.md](cluster-repo-cache.md) for the full contract
+(CRD fields, PVC/Job naming, serialization approach, worker
+bootstrap, observability vocabulary, and migration order).
+
 ### Wizard Pod (Epic)
 
 Epic beads route to wizard pods the same way task beads do (see
