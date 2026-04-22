@@ -1,0 +1,11 @@
+{"type":"system","subtype":"init","session_id":"sess_01","cwd":"/tmp","tools":[],"mcp_servers":[]}
+{"type":"user","message":{"role":"user","content":"hello, please run pwd"}}
+{"type":"stream_event","event":{"type":"content_block_start","index":0}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll run pwd for you."}]}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"par"}}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"pwd"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"/tmp\n","is_error":false}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_02","name":"Bash","input":{"command":"false"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_02","content":"exit status 1","is_error":true}]}}
+{this line is deliberately malformed
+{"type":"result","subtype":"success","duration_ms":1234,"num_turns":2,"result":"done","total_cost_usd":0.0123,"usage":{"input_tokens":100,"output_tokens":50}}
