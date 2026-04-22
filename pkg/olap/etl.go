@@ -527,7 +527,52 @@ func readLifecycleCursor(ctx context.Context, db *sql.DB) (string, error) {
 	return val, nil
 }
 
-func queryDoltBeadLifecycle(ctx context.Context, doltConn *sql.DB, lastTS string) ([]beadLifecycleRow, error) {
+// lifecycleCursor is the composite (updated_at, bead_id) cursor used by the
+// bead_lifecycle ETL. The bead_id is load-bearing: bead_lifecycle.updated_at
+// is DATETIME (second resolution), so many rows can share a single boundary
+// timestamp. A timestamp-only cursor with strict > would drop those rows and
+// a cursor with >= would re-read the same page forever — neither advances.
+// Pairing the timestamp with bead_id gives a stable, total order on
+// (updated_at, bead_id) so the page query can use strict composite
+// inequality and always make forward progress.
+type lifecycleCursor struct {
+	UpdatedAt time.Time
+	BeadID    string
+}
+
+// lifecycleCursorDelim separates the two cursor components in etl_cursor.last_id.
+// Safe to use a literal '|' because RFC3339 timestamps contain no '|' and
+// bead IDs are alphanumeric plus '-' and '.'.
+const lifecycleCursorDelim = "|"
+
+// String serializes the cursor for etl_cursor.last_id storage.
+func (c lifecycleCursor) String() string {
+	return c.UpdatedAt.UTC().Format(time.RFC3339) + lifecycleCursorDelim + c.BeadID
+}
+
+// parseLifecycleCursor decodes a serialized cursor. An empty string returns
+// the zero cursor (first-ever sync). A bare RFC3339 timestamp with no delimiter
+// is a legacy value written before the composite-cursor fix — parse it as
+// (T, "") so the page query re-scans all rows at T. The empty bead_id sorts
+// before any real bead ID, so the strict composite inequality picks up every
+// row at T; the upsert in insertBeadLifecycleRows makes the re-scan
+// idempotent. No explicit migration is required.
+func parseLifecycleCursor(s string) (lifecycleCursor, error) {
+	if s == "" {
+		return lifecycleCursor{}, nil
+	}
+	tsPart, beadPart, hasDelim := strings.Cut(s, lifecycleCursorDelim)
+	t, err := time.Parse(time.RFC3339, tsPart)
+	if err != nil {
+		return lifecycleCursor{}, fmt.Errorf("parse cursor timestamp %q: %w", tsPart, err)
+	}
+	if !hasDelim {
+		return lifecycleCursor{UpdatedAt: t}, nil
+	}
+	return lifecycleCursor{UpdatedAt: t, BeadID: beadPart}, nil
+}
+
+func queryDoltBeadLifecycle(ctx context.Context, doltConn *sql.DB, lastCursor string) ([]beadLifecycleRow, error) {
 	baseCols := `SELECT
 		bead_id, bead_type,
 		filed_at, ready_at, started_at, closed_at, updated_at,
@@ -536,15 +581,23 @@ func queryDoltBeadLifecycle(ctx context.Context, doltConn *sql.DB, lastTS string
 
 	var query string
 	var args []any
-	if lastTS == "" {
+	if lastCursor == "" {
 		query = baseCols + ` ORDER BY updated_at, bead_id LIMIT 500`
 	} else {
-		ts, err := time.Parse(time.RFC3339, lastTS)
+		cur, err := parseLifecycleCursor(lastCursor)
 		if err != nil {
-			return nil, fmt.Errorf("parse cursor timestamp %q: %w", lastTS, err)
+			return nil, err
 		}
-		query = baseCols + ` WHERE updated_at >= ? ORDER BY updated_at, bead_id LIMIT 500`
-		args = append(args, ts)
+		// Strict composite inequality on (updated_at, bead_id) guarantees
+		// forward progress across DATETIME-second boundaries: a row sharing
+		// the cursor's second is still consumed on the next page because its
+		// bead_id sorts after the cursor's bead_id. The expanded form is
+		// used instead of the row-value `(a, b) > (?, ?)` because the DuckDB
+		// driver can't bind a TIMESTAMP parameter on the RHS of a tuple
+		// comparison; the expanded form is the drop-in equivalent and works
+		// across MySQL/Dolt and DuckDB alike.
+		query = baseCols + ` WHERE updated_at > ? OR (updated_at = ? AND bead_id > ?) ORDER BY updated_at, bead_id LIMIT 500`
+		args = append(args, cur.UpdatedAt, cur.UpdatedAt, cur.BeadID)
 	}
 
 	sqlRows, err := doltConn.QueryContext(ctx, query, args...)
@@ -629,12 +682,17 @@ func buildBeadLifecycleInsertSQL(rows []beadLifecycleRow) (string, []any) {
 	return b.String(), args
 }
 
+// lastLifecycleHighWater serializes the (updated_at, bead_id) cursor from the
+// last row of a page. Returning both components — not just the timestamp — is
+// what lets the next iteration skip past the exact row we stopped on, even
+// when many rows share an updated_at second. See lifecycleCursor.
 func lastLifecycleHighWater(rows []beadLifecycleRow) string {
 	last := rows[len(rows)-1]
+	ts := time.Now().UTC()
 	if last.UpdatedAt.Valid {
-		return last.UpdatedAt.Time.UTC().Format(time.RFC3339)
+		ts = last.UpdatedAt.Time.UTC()
 	}
-	return time.Now().UTC().Format(time.RFC3339)
+	return lifecycleCursor{UpdatedAt: ts, BeadID: last.BeadID}.String()
 }
 
 func updateLifecycleCursor(ctx context.Context, db *sql.DB, lastID string) error {
