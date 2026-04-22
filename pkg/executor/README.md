@@ -187,7 +187,7 @@ The `actionRegistry` maps opcode strings to handler functions:
 | `cleric.execute`        | Reads the decide step's `RepairPlan`, resolves its `WorkspaceRequest` via `resolveGraphWorkspace`, dispatches by `RepairMode` (mechanical fn, worker spawn, recipe replay, escalate). |
 | `cleric.verify`         | Dispatches the plan's `VerifyPlan` by `VerifyKind` (`rerun-step` via cooperative retry, `narrow-check` via command exec, `recipe-postcondition` via replay). |
 | `cleric.learn`          | Adapter around `recovery.DocumentLearning` and the promotion counter; writes to bead metadata + SQL table. |
-| `cleric.finish`         | Emits `RecoveryOutcome` via `recovery.WriteOutcome` and closes the recovery bead. Steward reads it via `recovery.ReadOutcome`. |
+| `cleric.finish`         | Emits `RecoveryOutcome` via `recovery.WriteOutcome` and closes the recovery bead (both resume and escalate paths close — see below). Steward reads it via `recovery.ReadOutcome`. |
 
 ### Cleric runtime surface
 
@@ -213,6 +213,13 @@ only the runtime glue:
   `narrow-check` and `recipe-postcondition` execute locally.
 - `handleFinish` writes the canonical `recovery.RecoveryOutcome` via
   `recovery.WriteOutcome`. That record is the sole steward contract.
+  Both terminal paths — `finish` (happy path) and
+  `finish_needs_human` / `finish_needs_human_on_error` (escalate) —
+  close the recovery bead. The escalate paths bypass the `learn` step
+  and therefore also write an outcome with `Decision=DecisionEscalate`
+  before closing, so the steward's hooked-step sweep reads a structural
+  terminal signal and leaves the hooked parent parked rather than
+  re-claiming an open recovery bead as fresh cleric work (spi-0nkot).
 
 The `actionTargetedFix` function in `recovery_actions.go` is a tombstone
 (one-release coexistence per design §9 Q3). It returns a helpful error

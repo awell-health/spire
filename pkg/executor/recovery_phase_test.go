@@ -27,7 +27,10 @@ func planJSONAction(t *testing.T, action string) string {
 }
 
 // TestHandleFinish_NeedsHuman verifies that when the decide step outputs
-// needs_human=true, the finish step does NOT close the recovery bead.
+// needs_human=true, the finish step closes the recovery bead with
+// status="needs_human". The bead must reach a terminal closed state so the
+// steward's hooked-step sweep does not re-claim it on every cycle — see
+// spi-0nkot.
 func TestHandleFinish_NeedsHuman(t *testing.T) {
 	var closedBead string
 
@@ -68,8 +71,8 @@ func TestHandleFinish_NeedsHuman(t *testing.T) {
 	if result.Outputs["status"] != "needs_human" {
 		t.Errorf("outputs[status] = %q, want %q", result.Outputs["status"], "needs_human")
 	}
-	if closedBead != "" {
-		t.Errorf("CloseBead was called with %q, but should NOT have been called for needs_human", closedBead)
+	if closedBead != "spi-recovery-nh" {
+		t.Errorf("CloseBead called with %q, want %q (escalated beads must close so steward won't re-claim)", closedBead, "spi-recovery-nh")
 	}
 }
 
@@ -1203,11 +1206,13 @@ func TestHandleRecordExecuteError_NilAddCommentDep(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestHandleFinish_NeedsHumanViaStepWith verifies that handleFinish honors
-// the formula-level override step.With["needs_human"]="true" and leaves the
-// recovery bead OPEN — even when the decide step did not set
-// outputs.needs_human. This is the path taken by
+// the formula-level override step.With["needs_human"]="true" and closes the
+// recovery bead with status="needs_human" — even when the decide step did
+// not set outputs.needs_human. This is the path taken by
 // finish_needs_human_on_error when the execute-error retry budget is
-// exhausted.
+// exhausted. The bead must reach a closed terminal state so the steward's
+// hooked-step sweep leaves the hooked parent parked instead of re-summoning
+// a cleric against an open recovery bead (spi-0nkot).
 func TestHandleFinish_NeedsHumanViaStepWith(t *testing.T) {
 	var closedBead string
 
@@ -1257,8 +1262,9 @@ func TestHandleFinish_NeedsHumanViaStepWith(t *testing.T) {
 		t.Errorf("outputs[status] = %q, want %q (forced via step.With)",
 			result.Outputs["status"], "needs_human")
 	}
-	if closedBead != "" {
-		t.Errorf("CloseBead was called with %q, but must be left open for spire resolve", closedBead)
+	if closedBead != "spi-recovery-finish-nh-with" {
+		t.Errorf("CloseBead called with %q, want %q (escalated beads must close so steward won't re-claim)",
+			closedBead, "spi-recovery-finish-nh-with")
 	}
 }
 

@@ -1078,9 +1078,10 @@ func handleRecordExecuteError(e *Executor, stepName string, step StepConfig, sta
 }
 
 // handleFinish writes a closing comment, cleans up recovery protocol labels,
-// and conditionally closes the recovery bead. If the decide step chose
-// escalate, the bead is left open so `spire resolve` can find it and write
-// the human learning before closing.
+// and closes the recovery bead. The escalate / needs_human path also persists
+// a RecoveryOutcome with Decision=DecisionEscalate (if learn didn't run) so
+// the steward's hooked-step sweep reads a terminal escalated state rather than
+// re-claiming an open recovery bead.
 //
 // The needs_human override can be triggered two ways:
 //  1. decide step output needs_human=true (Claude chose to escalate)
@@ -1158,23 +1159,29 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 
 	_ = e.deps.AddComment(e.beadID, comment.String())
 
-	// If decide chose escalate, leave the recovery bead open so that
-	// `spire resolve` can find it, write the learning, and close it.
+	// On escalate, persist a terminal Decision=DecisionEscalate outcome before
+	// closing. The finish_needs_human and finish_needs_human_on_error paths
+	// bypass the learn step, so WriteOutcome has not yet run for them —
+	// without this the steward reads !haveOutcome and (correctly but silently)
+	// falls back to the escalate path. Writing the outcome explicitly lets
+	// metrics and traces distinguish "cleric escalated" from "cleric crashed
+	// before writing an outcome".
 	if needsHuman {
-		e.log("recovery: finish: leaving %s open (needs_human=true, action=%s)",
-			e.beadID, chosenAction)
-		return ActionResult{Outputs: map[string]string{
-			"status":  "needs_human",
-			"action":  chosenAction,
-			"outcome": outcome,
-		}}
+		persistEscalatedOutcome(e, step, state)
 	}
 
-	// Close recovery bead for non-escalate paths.
+	// Close the recovery bead (escalate and non-escalate both close). Leaving
+	// escalated beads open caused the steward's hooked-step sweep to re-claim
+	// them on every cycle, spawning a new cleric for the same hooked parent
+	// forever (spi-0nkot).
 	if err := e.deps.CloseBead(e.beadID); err != nil {
 		e.log("recovery: finish: close bead %s: %s", e.beadID, err)
+		status := "failed"
+		if needsHuman {
+			status = "needs_human"
+		}
 		return ActionResult{
-			Outputs: map[string]string{"status": "failed"},
+			Outputs: map[string]string{"status": status},
 			Error:   fmt.Errorf("finish: close recovery bead: %w", err),
 		}
 	}
@@ -1182,11 +1189,70 @@ func handleFinish(e *Executor, stepName string, step StepConfig, state *GraphSta
 	e.log("recovery: finish: closed %s (action=%s, outcome=%s, needs_human=%t)",
 		e.beadID, chosenAction, outcome, needsHuman)
 
+	status := "success"
+	if needsHuman {
+		status = "needs_human"
+	}
 	return ActionResult{Outputs: map[string]string{
-		"status":  "success",
+		"status":  status,
 		"action":  chosenAction,
 		"outcome": outcome,
 	}}
+}
+
+// persistEscalatedOutcome writes a RecoveryOutcome with
+// Decision=DecisionEscalate onto the recovery bead when handleLearn did not
+// run. It is a no-op if an outcome has already been written — handleLearn is
+// the sole writer on the non-escalate paths, and WriteOutcome itself is the
+// sole authoritative writer of the record shape (see pkg/recovery/finish.go).
+// Errors are logged but do not fail the finish step: the bead still closes
+// and the steward treats a closed recovery without an outcome as escalated.
+func persistEscalatedOutcome(e *Executor, step StepConfig, state *GraphState) {
+	if e.deps == nil || e.deps.GetBead == nil {
+		return
+	}
+	bead, err := e.deps.GetBead(e.beadID)
+	if err != nil {
+		e.log("recovery: finish: get recovery bead for outcome: %s", err)
+		return
+	}
+	if _, haveOutcome := recovery.ReadOutcome(bead); haveOutcome {
+		return
+	}
+
+	var plan recovery.RepairPlan
+	var failureClass, failedStep string
+	var attemptID string
+	if state != nil {
+		if ds, ok := state.Steps["decide"]; ok {
+			if pjson := ds.Outputs["plan"]; pjson != "" {
+				_ = json.Unmarshal([]byte(pjson), &plan)
+			}
+		}
+		if cs, ok := state.Steps["collect_context"]; ok {
+			failureClass = cs.Outputs["failure_class"]
+			failedStep = cs.Outputs["failed_step"]
+		}
+		attemptID = state.AttemptBeadID
+	}
+	if failureClass == "" {
+		failureClass = bead.Meta(recovery.KeyFailureClass)
+	}
+
+	outcome := recovery.RecoveryOutcome{
+		RecoveryAttemptID: attemptID,
+		SourceRunID:       e.currentRunID,
+		SourceBeadID:      resolveSourceBead(e, step),
+		FailedStep:        failedStep,
+		FailureClass:      recovery.FailureClass(failureClass),
+		RepairMode:        plan.Mode,
+		RepairAction:      plan.Action,
+		WorkspaceKind:     plan.Workspace.Kind,
+		Decision:          recovery.DecisionEscalate,
+	}
+	if err := recovery.WriteOutcome(context.Background(), &bead, outcome); err != nil {
+		e.log("recovery: finish: WriteOutcome for escalate: %s", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

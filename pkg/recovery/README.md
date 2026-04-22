@@ -40,7 +40,7 @@ collect_context ──→ decide ──→ execute ──→ verify ──→ le
 | `execute`         | `pkg/executor` | Provisions the plan's `WorkspaceRequest` via the runtime contract, dispatches by `RepairMode`  |
 | `verify`          | `pkg/executor` | Runs the `VerifyPlan` embedded in the plan; cooperative retry for `rerun-step`                 |
 | `learn`           | `pkg/recovery` | Extracts learning; promotes a repeated resolution to a `MechanicalRecipe`                      |
-| `finish`          | `pkg/executor` | Emits `RecoveryOutcome` via `WriteOutcome` and closes the recovery bead                        |
+| `finish`          | `pkg/executor` | Emits `RecoveryOutcome` via `WriteOutcome` and closes the recovery bead (escalate paths too — see "Cleric-finish ↔ steward-sweep contract" below) |
 
 ## Domain types
 
@@ -241,6 +241,34 @@ metadata keys for decide-time query compatibility. The retired
 Learnings marked `reusable=true` (i.e. `Decision=DecisionResume`) are
 candidates for promotion on a subsequent match of the same failure
 signature.
+
+## Cleric-finish ↔ steward-sweep contract
+
+The cleric's terminal step (`finish` / `finish_needs_human` /
+`finish_needs_human_on_error`) always **closes** the recovery bead. Both
+Decision outcomes share this single completion contract:
+
+| Decision           | Recovery bead status | Steward hooked sweep              |
+|--------------------|----------------------|-----------------------------------|
+| `DecisionResume`   | closed (terminal)    | unhooks parent, re-summons wizard |
+| `DecisionEscalate` | closed (terminal)    | leaves parent parked for human    |
+
+An *open* recovery bead means a cleric is either running or needs to be
+summoned. The sweep relies on status=closed as the "done" signal and on
+`ReadOutcome` to decide between resume and stays-hooked.
+
+Leaving an escalated recovery bead open would cause the steward to
+re-claim it as fresh work on every sweep cycle, re-spawning a cleric
+against the same parked parent forever. The `finish_needs_human` and
+`finish_needs_human_on_error` paths bypass `learn`, so `handleFinish`
+persists `Decision=DecisionEscalate` via `WriteOutcome` before closing
+— keeping `WriteOutcome` the sole writer and giving the sweep a
+structural signal rather than label/comment parsing (see spi-0nkot).
+
+`findFailureEvidence` in `pkg/steward` picks the **latest** recovery bead
+(newest `CreatedAt`, ID as tiebreak) so a parent carrying historical
+caused-by edges from prior recoveries is evaluated against its most
+recent attempt.
 
 ## Action surface (names used across the stack)
 

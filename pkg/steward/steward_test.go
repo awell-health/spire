@@ -1959,6 +1959,154 @@ func TestSweepHookedSteps_FailureEvidence_ClericClosedWithoutOutcome_StaysHooked
 	}
 }
 
+// TestSweepHookedSteps_FailureEvidence_ClericEscalated_NoResummonOnRepeatSweep
+// is the spi-0nkot regression test. It proves that a hooked parent with a
+// closed, DecisionEscalate recovery bead is NOT re-claimed on the next sweep
+// cycle — even when the sweep is invoked multiple times in a row. Before the
+// fix, the cleric left escalated recovery beads open and the steward
+// claimed any open recovery bead as fresh cleric work on every cycle,
+// creating an infinite cleric spawn loop against the same parked parent.
+func TestSweepHookedSteps_FailureEvidence_ClericEscalated_NoResummonOnRepeatSweep(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	hookedStatus := beads.Status("hooked")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && *filter.Status == hookedStatus {
+			return []store.Bead{
+				{ID: "spi-parent-loop", Status: "hooked", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-parent-loop" {
+			return &store.Bead{ID: "spi-parent-loop.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) { return true, nil }
+	InstanceIDFunc = func() string { return "local-instance" }
+
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-parent-loop" {
+			return []store.Bead{
+				{ID: "spi-parent-loop.step-impl", Status: "hooked", Labels: []string{"step:implement-failed"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		switch id {
+		case "spi-parent-loop":
+			return store.Bead{
+				ID: "spi-parent-loop", Status: "hooked", Type: "task",
+				Labels: []string{"needs-human"},
+			}, nil
+		case "spi-recovery-escalated":
+			return store.Bead{
+				ID: "spi-recovery-escalated", Status: "closed", Type: "recovery",
+				Metadata: map[string]string{
+					recovery.KeyRecoveryOutcome: mustMarshalOutcome(t, recovery.RecoveryOutcome{
+						SourceBeadID:  "spi-parent-loop",
+						Decision:      recovery.DecisionEscalate,
+						VerifyVerdict: recovery.VerifyVerdictFail,
+					}),
+				},
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		if id == "spi-parent-loop" {
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-recovery-escalated", IssueType: "recovery", Status: "closed"},
+					DependencyType: "caused-by",
+				},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	UnhookStepBeadFunc = func(id string) error { return nil }
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error { return nil }
+
+	// Sentinel: if CreateAttemptBeadAtomicFunc is invoked, the sweep tried to
+	// claim the recovery bead — the exact loop behavior spi-0nkot fixes.
+	var claimAttempts int
+	CreateAttemptBeadAtomicFunc = func(parentID, agentName, model, branch string) (string, error) {
+		claimAttempts++
+		return parentID + ".attempt-1", nil
+	}
+	StampAttemptInstanceFunc = func(attemptID string, meta store.InstanceMeta) error { return nil }
+	InstanceNameFunc = func() string { return "test-machine" }
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+
+	const sweeps = 3
+	for i := 0; i < sweeps; i++ {
+		if count := SweepHookedSteps(false, backend, "test-tower", gsStore); count != 0 {
+			t.Errorf("sweep %d: SweepHookedSteps returned %d, want 0 (closed+escalated — parent stays parked)", i+1, count)
+		}
+	}
+	if claimAttempts != 0 {
+		t.Errorf("claim attempts = %d, want 0 across %d sweeps (escalated recovery must not be re-claimed)", claimAttempts, sweeps)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0 across %d sweeps", len(backend.spawns), sweeps)
+	}
+}
+
+// TestFindFailureEvidence_PrefersLatestRecovery verifies that
+// findFailureEvidence returns the newest recovery bead when a hooked parent
+// has both a historical (older) closed recovery and a current (newer) one.
+// This prevents the sweep from acting on stale recovery metadata when a
+// parent has been hooked multiple times (spi-0nkot).
+func TestFindFailureEvidence_PrefersLatestRecovery(t *testing.T) {
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		switch id {
+		case "spi-recovery-older", "spi-recovery-newer":
+			return store.Bead{ID: id, Type: "recovery"}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return []*beads.IssueWithDependencyMetadata{
+			{
+				Issue:          beads.Issue{ID: "spi-recovery-older", IssueType: "recovery", CreatedAt: older},
+				DependencyType: "caused-by",
+			},
+			{
+				Issue:          beads.Issue{ID: "spi-recovery-newer", IssueType: "recovery", CreatedAt: newer},
+				DependencyType: "caused-by",
+			},
+		}, nil
+	}
+
+	evidence, ok := findFailureEvidence("spi-parent-multi")
+	if !ok {
+		t.Fatal("findFailureEvidence returned !ok, want ok with latest recovery")
+	}
+	if evidence.RecoveryBeadID != "spi-recovery-newer" {
+		t.Errorf("RecoveryBeadID = %q, want %q (must pick latest CreatedAt)", evidence.RecoveryBeadID, "spi-recovery-newer")
+	}
+}
+
 // --- Steward cycle integration tests (wave-0 modules) ---
 
 // mockBackend records Spawn calls and returns configurable agents from List.

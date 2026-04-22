@@ -1365,8 +1365,12 @@ type FailureEvidence struct {
 }
 
 // findFailureEvidence queries dependents of a hooked bead for caused-by deps
-// pointing from recovery or alert beads. Returns the first non-closed recovery
-// bead found, plus any alert bead IDs.
+// pointing from recovery or alert beads. Returns the latest recovery bead
+// (deterministic: newer CreatedAt wins, ties broken by higher ID), plus any
+// alert bead IDs. Picking the latest matters because a parent may carry
+// historical caused-by edges from prior recovery attempts (closed with
+// DecisionResume or DecisionEscalate); the sweep must act on the newest
+// recovery, not any closed one it happens to iterate first.
 func findFailureEvidence(beadID string) (FailureEvidence, bool) {
 	dependents, err := GetDependentsWithMetaFunc(beadID)
 	if err != nil {
@@ -1375,6 +1379,8 @@ func findFailureEvidence(beadID string) (FailureEvidence, bool) {
 	}
 
 	var evidence FailureEvidence
+	var latestRecovery *beads.IssueWithDependencyMetadata
+
 	for _, dep := range dependents {
 		if string(dep.DependencyType) != "caused-by" {
 			continue
@@ -1384,14 +1390,19 @@ func findFailureEvidence(beadID string) (FailureEvidence, bool) {
 			continue
 		}
 		if b.Type == "recovery" {
-			if evidence.RecoveryBeadID == "" {
-				evidence.RecoveryBeadID = b.ID
+			if latestRecovery == nil ||
+				dep.CreatedAt.After(latestRecovery.CreatedAt) ||
+				(dep.CreatedAt.Equal(latestRecovery.CreatedAt) && dep.ID > latestRecovery.ID) {
+				latestRecovery = dep
 			}
 		} else if store.ContainsLabel(b, "alert:") || b.Type == "alert" {
 			evidence.AlertBeadIDs = append(evidence.AlertBeadIDs, b.ID)
 		}
 	}
 
+	if latestRecovery != nil {
+		evidence.RecoveryBeadID = latestRecovery.ID
+	}
 	return evidence, evidence.RecoveryBeadID != ""
 }
 
