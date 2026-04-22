@@ -81,10 +81,6 @@ func cmdDebugRecoveryDispatch(args []string) error {
 	return errors.New("spire debug recovery dispatch: not yet implemented")
 }
 
-func cmdDebugRecoveryTrace(args []string) error {
-	return errors.New("spire debug recovery trace: not yet implemented")
-}
-
 // requireDebugTower refuses to proceed unless the active tower is a
 // debug tower. Leaf debug commands must call this as their first
 // statement; this scaffold exposes the helper but does not enforce the
