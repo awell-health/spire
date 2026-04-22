@@ -298,6 +298,40 @@ stewardStorage:
   size: 1Gi
   # storageClass: ""
 
+## @section Guild repo cache storage
+##
+## Deployment-time defaults for the per-guild repo-cache PVCs that the
+## operator reconciler materializes from `WizardGuild.Spec.CacheSpec`.
+## The chart owns these defaults; the operator reads `WizardGuild.Spec.CacheSpec`
+## per guild and falls back to these values when a field is unset. When a
+## guild specifies its own `cacheSpec.storageClassName`, `cacheSpec.size`,
+## or `cacheSpec.accessMode`, those win; otherwise the PVC is created with
+## the values below.
+##
+## `storageClassName` defaults to "" (empty) so a fresh install picks the
+## cluster's default StorageClass — consistent with `dolt.storage.storageClass`
+## and `stewardStorage.storageClass`. Override when the cluster requires an
+## explicit class (e.g. ReadOnlyMany-capable CSI drivers like EFS, Filestore,
+## Azure Files).
+##
+## `defaultAccessMode` is `ReadOnlyMany` because the cache is populated by
+## one refresh Job and fanned out read-only to many wizard pods. Only
+## change this if your CSI driver cannot provide RWX/ROX and you are
+## deploying a single-wizard guild that can tolerate `ReadWriteOnce`.
+##
+## This section is consumed by the `spire.cachePVCSpec` / `spire.cacheDefaults*`
+## helpers in `_helpers.tpl`. Any template rendering a guild-cache PVC MUST
+## go through those helpers — do not hand-roll accessModes/storage/storageClassName
+## elsewhere, so there is exactly one place the defaults live.
+
+## @param cache.storageClassName StorageClass for guild-owned repo-cache PVCs. Empty string uses the cluster default StorageClass (matches the convention used by `dolt.storage.storageClass` and `stewardStorage.storageClass`). Overridden per-guild via `WizardGuild.Spec.CacheSpec.StorageClassName`.
+## @param cache.defaultSize Default size for guild-owned repo-cache PVCs. Applies when a guild does not set `WizardGuild.Spec.CacheSpec.Size`. 10Gi matches the plan-A phase-2 reference value; size up in values.yaml for monorepos with large working sets.
+## @param cache.defaultAccessMode Default access mode for guild-owned repo-cache PVCs. `ReadOnlyMany` is required for cache fan-out: one refresh Job writes, many wizard pods mount read-only. Change only if your CSI driver cannot provide RWX/ROX and the guild runs one pod at a time. Overridden per-guild via `WizardGuild.Spec.CacheSpec.AccessMode`.
+cache:
+  storageClassName: ""
+  defaultSize: "10Gi"
+  defaultAccessMode: "ReadOnlyMany"
+
 ## @section SpireConfig (polling and token routing)
 
 ## @param spireConfig.polling.interval SpireConfig poll interval.
