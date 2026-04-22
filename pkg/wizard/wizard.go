@@ -1309,7 +1309,7 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	}
 
 	var buf bytes.Buffer
-	stdoutWriters := []io.Writer{os.Stderr, &buf}
+	stdoutWriters := []io.Writer{&buf}
 	if stream != nil {
 		stdoutWriters = append(stdoutWriters, stream.stdout)
 	}

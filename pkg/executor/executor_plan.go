@@ -411,7 +411,7 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 		if maxTurns > 0 {
 			csArgs = append(csArgs, "--max-turns", fmt.Sprintf("%d", maxTurns))
 		}
-		out, err := e.runClaude(csArgs, "change-spec")
+		out, err := e.runClaude(csArgs, "change-spec-"+child.ID)
 		if err != nil {
 			e.log("warning: change spec for %s: %s", child.ID, err)
 			continue
