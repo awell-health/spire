@@ -10,7 +10,16 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
+
+// depsForRecoveryCheck loads the dep-meta list ensureRecoveryBead
+// inspects when the label shortcut misses. Declared as a package
+// variable so tests can substitute an in-memory loader without
+// touching the real store.
+var depsForRecoveryCheck = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	return store.GetDepsWithMeta(id)
+}
 
 // PhaseEvent is one observation of a cleric phase completing. The
 // foreground debug-dispatch path emits one PhaseEvent per phase run —
@@ -230,7 +239,7 @@ func ensureRecoveryBead(bead store.Bead) error {
 			return nil
 		}
 	}
-	deps, err := store.GetDepsWithMeta(bead.ID)
+	deps, err := depsForRecoveryCheck(bead.ID)
 	if err != nil {
 		return fmt.Errorf("verify recovery bead %s: %w", bead.ID, err)
 	}

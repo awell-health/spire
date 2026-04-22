@@ -46,7 +46,7 @@ var debugRecoveryDispatchCmd = &cobra.Command{
 	Use:   "dispatch",
 	Short: "Run the cleric in foreground against a recovery bead",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cmdDebugRecoveryDispatch(args)
+		return cmdDebugRecoveryDispatch(cmd, args)
 	},
 }
 
@@ -67,6 +67,6 @@ func init() {
 	debugCmd.AddCommand(debugRecoveryCmd)
 }
 
-func cmdDebugRecoveryDispatch(args []string) error {
-	return cmdDebugRecoveryDispatchImpl(args)
+func cmdDebugRecoveryDispatch(cmd *cobra.Command, args []string) error {
+	return cmdDebugRecoveryDispatchImpl(cmd, args)
 }

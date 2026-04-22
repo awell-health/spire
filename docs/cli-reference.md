@@ -808,6 +808,52 @@ spire debug recovery new --origin <bead> --failure-class <class> \
 | `--labels k=v,...` | Extra labels, comma-separated, merged into `interrupted:<k>=<v>` unless the key already starts with `interrupted:` (in which case the prefix is preserved verbatim). |
 | `--wisp` | Mark the bead as wisp-routed; records a `synthetic:wisp` provenance label. |
 
+##### `spire debug recovery dispatch`
+
+Run the `cleric-default` formula synchronously in the foreground
+against an existing recovery bead. Emits one human-readable status
+line per phase (`collect_context`, `decide`, `execute`, `verify`,
+`learn`, `finish`) as they complete, followed by an `OUTCOME` summary
+line. Refuses to run against a bead that is neither labeled
+`recovery-bead` nor carries a `caused-by` / `recovery-for` edge.
+
+```bash
+spire debug recovery dispatch --bead <recovery-bead>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--bead <recovery-bead>` | Recovery bead ID to dispatch (required). Typically the ID printed by `spire debug recovery new`. |
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Cleric finished with `decision=resume` (repair applied, source resumed). |
+| `2` | Cleric finished with `decision=escalate` (durably persisted on the bead). |
+| `1` | Infrastructure error — bead could not be loaded, guard rejected, or the cleric crashed before writing an outcome. |
+
+##### `spire debug recovery trace`
+
+Read the durable trace written by a completed cleric run: the decide
+branch, repair mode/action, verify verdict, final decision, and any
+related learnings. Works whether the recovery was driven by a real
+wizard escalation or `spire debug recovery dispatch`.
+
+```bash
+spire debug recovery trace <recovery-bead> [--json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Emit the full trace as indented JSON instead of the text rendering. |
+
+Positional argument: the recovery bead ID (exactly one). In text mode,
+the rendering includes the source bead, failure class, reconstructed
+decide branch, repair mode/action, any recipe reference, verify kind
+and verdict, final decision, the learning-summary metadata, and up to
+five related learning bead IDs.
+
 ---
 
 ## Cluster

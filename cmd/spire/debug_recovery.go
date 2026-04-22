@@ -18,6 +18,10 @@ func init() {
 }
 
 func cmdDebugRecoveryNew(cmd *cobra.Command, _ []string) error {
+	if err := requireDebugTower(); err != nil {
+		return err
+	}
+
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
 	}
@@ -37,10 +41,6 @@ func cmdDebugRecoveryNew(cmd *cobra.Command, _ []string) error {
 	if !isKnownFailureClass(class) {
 		return fmt.Errorf("--failure-class %q is not a recognized recovery.FailureClass; valid values: %s",
 			class, strings.Join(knownFailureClassNames(), ", "))
-	}
-
-	if err := requireDebugTower(); err != nil {
-		return err
 	}
 
 	extras, err := parseLabelPairs(labelsRaw)
