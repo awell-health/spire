@@ -3446,3 +3446,165 @@ func TestRecordOnErrorRecoveryAttempt_NoOpWhenNoChosenAction(t *testing.T) {
 		t.Errorf("sqlmock expectations: %v", err)
 	}
 }
+
+// --- ensureGraphStepBeads reopen-on-rewound-pending (spi-j7juo) ---
+
+// TestEnsureGraphStepBeads_ReopensClosedStepBeadsWithPendingState verifies that
+// when a reused step bead is closed but its graph-state step is now "pending"
+// (rewound by soft-reset --to), ensureGraphStepBeads reopens it so the graph
+// actually re-enters the step on resummon.
+func TestEnsureGraphStepBeads_ReopensClosedStepBeadsWithPendingState(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// Track bead status + activate calls.
+	beadStatus := map[string]string{
+		"step-plan":      "closed",
+		"step-implement": "closed",
+	}
+	var activated []string
+
+	deps.GetBead = func(id string) (Bead, error) {
+		status, ok := beadStatus[id]
+		if !ok {
+			return Bead{ID: id, Status: "open"}, nil
+		}
+		return Bead{ID: id, Status: status}, nil
+	}
+	deps.ActivateStepBead = func(stepID string) error {
+		activated = append(activated, stepID)
+		beadStatus[stepID] = "open"
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-reopen",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"plan":      {Action: "test.noop"},
+			"implement": {Action: "test.noop", Needs: []string{"plan"}},
+		},
+	}
+
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"plan":      {Status: "pending"},
+			"implement": {Status: "pending"},
+		},
+		StepBeadIDs: map[string]string{
+			"plan":      "step-plan",
+			"implement": "step-implement",
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	if err := exec.ensureGraphStepBeads(graph, state); err != nil {
+		t.Fatalf("ensureGraphStepBeads: %v", err)
+	}
+
+	// Both pending-closed beads must be reopened.
+	got := map[string]bool{}
+	for _, id := range activated {
+		got[id] = true
+	}
+	if !got["step-plan"] || !got["step-implement"] {
+		t.Errorf("expected both step-plan and step-implement to be reactivated, got: %v", activated)
+	}
+}
+
+// TestEnsureGraphStepBeads_DoesNotReopenCompletedSteps guards the bound of
+// reopen-on-pending: a closed step bead whose graph state is "completed"
+// must be left closed. Only rewound steps are reopened.
+func TestEnsureGraphStepBeads_DoesNotReopenCompletedSteps(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "closed"}, nil
+	}
+
+	var activated []string
+	deps.ActivateStepBead = func(stepID string) error {
+		activated = append(activated, stepID)
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-no-reopen",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"plan":      {Action: "test.noop"},
+			"implement": {Action: "test.noop", Needs: []string{"plan"}},
+		},
+	}
+
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"plan":      {Status: "completed"},
+			"implement": {Status: "completed"},
+		},
+		StepBeadIDs: map[string]string{
+			"plan":      "step-plan",
+			"implement": "step-implement",
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	if err := exec.ensureGraphStepBeads(graph, state); err != nil {
+		t.Fatalf("ensureGraphStepBeads: %v", err)
+	}
+
+	if len(activated) != 0 {
+		t.Errorf("expected no ActivateStepBead calls for completed steps, got: %v", activated)
+	}
+}
+
+// TestEnsureGraphStepBeads_MixedStates verifies only the pending subset is
+// reopened when some steps are rewound and others are still completed — the
+// reopen path must be per-step, not per-bead-status.
+func TestEnsureGraphStepBeads_MixedStates(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// All beads are closed; graph state has plan=completed (upstream of
+	// rewind target) and implement=pending (rewound).
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "closed"}, nil
+	}
+	var activated []string
+	deps.ActivateStepBead = func(stepID string) error {
+		activated = append(activated, stepID)
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-mixed",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"plan":      {Action: "test.noop"},
+			"implement": {Action: "test.noop", Needs: []string{"plan"}},
+		},
+	}
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"plan":      {Status: "completed"},
+			"implement": {Status: "pending"},
+		},
+		StepBeadIDs: map[string]string{
+			"plan":      "step-plan",
+			"implement": "step-implement",
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	if err := exec.ensureGraphStepBeads(graph, state); err != nil {
+		t.Fatalf("ensureGraphStepBeads: %v", err)
+	}
+
+	if len(activated) != 1 || activated[0] != "step-implement" {
+		t.Errorf("expected only step-implement to be reactivated, got: %v", activated)
+	}
+}

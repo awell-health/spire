@@ -1009,6 +1009,7 @@ func (e *Executor) initMissingGraphWorkspaces(graph *FormulaStepGraph, state *Gr
 func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphState) error {
 	if len(state.StepBeadIDs) > 0 {
 		e.log("graph step beads already exist (%d steps)", len(state.StepBeadIDs))
+		e.reopenRewoundStepBeads(state)
 		return nil
 	}
 
@@ -1051,7 +1052,50 @@ func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphSta
 		e.log("created step bead %s for step %s", id, stepName)
 	}
 
+	// Defense in depth: after reconciling reused step beads, reopen any that
+	// were left "closed" but whose graph state is now "pending" (e.g. from a
+	// reset path that forgot to reopen). Mirrors the review-substep pattern
+	// in ensureReviewSubStepBeads.
+	e.reopenRewoundStepBeads(state)
+
 	return e.graphStateStore().Save(e.agentName, state)
+}
+
+// reopenRewoundStepBeads re-activates any step beads in state.StepBeadIDs whose
+// graph-state status is "pending" but whose bead status is "closed". This
+// handles the case where a reset path rewound the graph state without also
+// reopening the step bead — the executor would otherwise skip the step on
+// resume because transitionStepBead treats a closed bead as a no-op.
+//
+// Only pending steps are reopened. Completed/in-progress/hooked/skipped
+// steps are left alone — a closed step bead for a completed step is the
+// correct terminal state.
+func (e *Executor) reopenRewoundStepBeads(state *GraphState) {
+	if e.deps.ActivateStepBead == nil || e.deps.GetBead == nil {
+		return
+	}
+	for stepName, stepID := range state.StepBeadIDs {
+		if stepID == "" {
+			continue
+		}
+		ss, ok := state.Steps[stepName]
+		if !ok || ss.Status != "pending" {
+			continue
+		}
+		b, err := e.deps.GetBead(stepID)
+		if err != nil {
+			e.log("warning: read step bead %s (%s): %s", stepID, stepName, err)
+			continue
+		}
+		if b.Status != "closed" {
+			continue
+		}
+		if err := e.deps.ActivateStepBead(stepID); err != nil {
+			e.log("warning: reopen rewound step bead %s (%s): %s", stepID, stepName, err)
+		} else {
+			e.log("reopened rewound step bead %s (%s) — graph state is pending", stepID, stepName)
+		}
+	}
 }
 
 // recordOnErrorRecoveryAttempt persists a recovery_attempts failure row for

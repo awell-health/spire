@@ -2,14 +2,24 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/recovery"
 )
+
+// executeRecoveryActionForTest is a thin wrapper around executeRecoveryAction
+// that builds a minimal RecoveryAction from a name string — simplifies tests
+// that only care about dispatch by name.
+func executeRecoveryActionForTest(beadID, name string) error {
+	return executeRecoveryAction(beadID, &recovery.RecoveryAction{Name: name})
+}
 
 // TestRemoveGraphStateFiles_ParentAndNested verifies that doRemoveGraphStateFiles
 // removes both the parent graph_state.json and nested sub-executor graph states.
@@ -938,5 +948,606 @@ func TestResetV3_GraphStateCleanup(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(nestedDir, "graph_state.json")); !os.IsNotExist(err) {
 		t.Error("nested graph_state.json should have been removed by resetV3")
+	}
+}
+
+// --- Decoupling from summon ---
+
+// withSummonRecorder swaps cmdSummonFunc to a recorder for the duration of a
+// test. The recorder fails the test if cmdSummonFunc is invoked, which is
+// the negative assertion that reset does not auto-summon.
+func withSummonRecorder(t *testing.T) *bool {
+	t.Helper()
+	called := false
+	orig := cmdSummonFunc
+	cmdSummonFunc = func(args []string) error {
+		called = true
+		t.Errorf("cmdSummonFunc was invoked with args=%v — reset must not auto-summon", args)
+		return nil
+	}
+	t.Cleanup(func() { cmdSummonFunc = orig })
+	return &called
+}
+
+// TestResetV3_DoesNotAutoSummon_Soft verifies a soft reset (plain reset without
+// --hard) does not invoke cmdSummonFunc.
+func TestResetV3_DoesNotAutoSummon_Soft(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	called := withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-resetv3-no-autosummon-soft",
+		Priority: 1,
+		Type:     parseIssueType("epic"),
+	})
+
+	wizardName := "wizard-test-no-autosummon-soft"
+	if err := resetV3(epicID, false, wizardName, ""); err != nil {
+		t.Fatalf("resetV3: %v", err)
+	}
+	if *called {
+		t.Error("cmdSummonFunc was invoked by resetV3 (soft) — reset must not auto-summon")
+	}
+}
+
+// TestResetV3_DoesNotAutoSummon_Hard verifies a hard reset does not invoke
+// cmdSummonFunc.
+func TestResetV3_DoesNotAutoSummon_Hard(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	called := withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-resetv3-no-autosummon-hard",
+		Priority: 1,
+		Type:     parseIssueType("epic"),
+	})
+
+	wizardName := "wizard-test-no-autosummon-hard"
+	if err := resetV3(epicID, true, wizardName, ""); err != nil {
+		t.Fatalf("resetV3 hard: %v", err)
+	}
+	if *called {
+		t.Error("cmdSummonFunc was invoked by resetV3 (hard) — reset must not auto-summon")
+	}
+}
+
+// TestBoardReset_DoesNotAutoSummon verifies the board reset/reset-hard actions
+// do not auto-summon after reset. Mirrors the CLI decoupling: one-click reset
+// resets only; the operator explicitly triggers summon as a separate action.
+func TestBoardReset_DoesNotAutoSummon(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	called := withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-board-reset-no-autosummon",
+		Priority: 1,
+		Type:     parseIssueType("epic"),
+	})
+
+	// Invoke the same paths the board dispatches via executeInlineAction
+	// (ActionResetSoft → cmdReset with no flags; ActionResetHard → --hard).
+	if err := cmdReset([]string{epicID}); err != nil {
+		t.Fatalf("cmdReset (soft): %v", err)
+	}
+	if *called {
+		t.Error("cmdSummonFunc was invoked during board soft-reset path")
+	}
+
+	// Reset the recorder for the hard-reset leg.
+	*called = false
+	if err := cmdReset([]string{epicID, "--hard"}); err != nil {
+		t.Fatalf("cmdReset (hard): %v", err)
+	}
+	if *called {
+		t.Error("cmdSummonFunc was invoked during board hard-reset path")
+	}
+}
+
+// --- removeNestedGraphStateRecursive ---
+
+// TestRemoveNestedGraphStateRecursive_ArbitraryDepth verifies nested graph_state.json
+// files are deleted at arbitrary depth — subgraph wave apprentices can be
+// nested several levels deep.
+func TestRemoveNestedGraphStateRecursive_ArbitraryDepth(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	wizardName := "wizard-spi-nested-walk"
+	runtimeDir := filepath.Join(tmp, "runtime")
+
+	// Level 1: wizard-<bead>-implement/graph_state.json
+	level1 := filepath.Join(runtimeDir, wizardName+"-implement")
+	if err := os.MkdirAll(level1, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(level1, "graph_state.json"), []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Level 2: wizard-<bead>-implement-w1-1/graph_state.json
+	level2 := filepath.Join(runtimeDir, wizardName+"-implement", "w1-1")
+	if err := os.MkdirAll(level2, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(level2, "graph_state.json"), []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Level 3: arbitrarily deep.
+	level3 := filepath.Join(runtimeDir, wizardName+"-implement", "w1-1", "spi-xyz")
+	if err := os.MkdirAll(level3, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(level3, "graph_state.json"), []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unrelated wizard tree — must be preserved.
+	other := filepath.Join(runtimeDir, "wizard-spi-other", "graph_state.json")
+	if err := os.MkdirAll(filepath.Dir(other), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	removeNestedGraphStateRecursive(wizardName)
+
+	// All three nested states should be removed.
+	for _, p := range []string{
+		filepath.Join(level1, "graph_state.json"),
+		filepath.Join(level2, "graph_state.json"),
+		filepath.Join(level3, "graph_state.json"),
+	} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed", p)
+		}
+	}
+	// Unrelated tree must be untouched.
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("unrelated wizard tree should be preserved, got err: %v", err)
+	}
+}
+
+// TestRemoveNestedGraphStateRecursive_TopLevelUntouched verifies the top-level
+// graph_state.json (runtime/<wizardName>/graph_state.json) is NOT touched — it
+// is rewritten in place by softResetV3's save, not removed.
+func TestRemoveNestedGraphStateRecursive_TopLevelUntouched(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	wizardName := "wizard-spi-top-level-untouched"
+	runtimeDir := filepath.Join(tmp, "runtime")
+
+	topDir := filepath.Join(runtimeDir, wizardName)
+	if err := os.MkdirAll(topDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	topGS := filepath.Join(topDir, "graph_state.json")
+	if err := os.WriteFile(topGS, []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	removeNestedGraphStateRecursive(wizardName)
+
+	if _, err := os.Stat(topGS); err != nil {
+		t.Errorf("top-level graph_state.json should be preserved, got err: %v", err)
+	}
+}
+
+// --- softResetV3 — integration tests requiring live store + formula ---
+
+// writeV3GraphStateForTask writes a GraphState matching the task-default formula
+// (plan → implement → review → merge/close with policy branches) suitable for
+// softResetV3 integration tests.
+func writeV3GraphStateForTask(t *testing.T, configRoot, wizardName, beadID string, steps map[string]executor.StepState, activeStep string, stepBeadIDs map[string]string) *executor.GraphState {
+	t.Helper()
+	gs := &executor.GraphState{
+		BeadID:      beadID,
+		AgentName:   wizardName,
+		Formula:     "task-default",
+		Steps:       steps,
+		ActiveStep:  activeStep,
+		StepBeadIDs: stepBeadIDs,
+		Workspaces:  map[string]executor.WorkspaceState{},
+	}
+	writeGraphState(t, configRoot, wizardName, gs)
+	return gs
+}
+
+// TestSoftResetV3_MissingGraphState_ReturnsError verifies that a missing graph
+// state yields a typed ErrNoGraphState error (not a silent "re-summoning"
+// success).
+func TestSoftResetV3_MissingGraphState_ReturnsError(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	// Lock down cmdSummonFunc so a silent summon on missing state would fail
+	// the test loudly.
+	withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-softreset-missing-gs",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-softreset-missing-gs"
+
+	err := softResetV3(epicID, "implement", wizardName)
+	if err == nil {
+		t.Fatal("expected error for missing graph state, got nil")
+	}
+	if !errors.Is(err, ErrNoGraphState) {
+		t.Errorf("expected error to wrap ErrNoGraphState, got: %v", err)
+	}
+}
+
+// TestSoftResetV3_RejectsPendingTarget verifies that attempting to --to a step
+// that has not been reached yet is rejected with a clear error and no state
+// mutation.
+func TestSoftResetV3_RejectsPendingTarget(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-softreset-reject-pending",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-softreset-reject-pending"
+
+	// plan completed, implement still pending.
+	gs := writeV3GraphStateForTask(t, tmp, wizardName, epicID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "pending"},
+			"review":    {Status: "pending"},
+		},
+		"",
+		nil,
+	)
+
+	// Snapshot file contents before.
+	gsPath := filepath.Join(tmp, "runtime", wizardName, "graph_state.json")
+	before, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state before: %v", err)
+	}
+
+	err = softResetV3(epicID, "implement", wizardName)
+	if err == nil {
+		t.Fatal("expected error for pending target, got nil")
+	}
+	if !strings.Contains(err.Error(), "has not been reached") {
+		t.Errorf("expected error to mention 'has not been reached', got: %v", err)
+	}
+
+	// Graph state file must be byte-identical.
+	after, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state after: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Error("graph_state.json was mutated despite rejected rewind — operation must be all-or-nothing")
+	}
+
+	// State in memory should be unchanged.
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state after: err=%v nil=%v", err, loaded == nil)
+	}
+	if loaded.Steps["plan"].Status != "completed" {
+		t.Errorf("plan status changed after rejected rewind: %q", loaded.Steps["plan"].Status)
+	}
+	if loaded.Steps["implement"].Status != "pending" {
+		t.Errorf("implement status changed after rejected rewind: %q", loaded.Steps["implement"].Status)
+	}
+	_ = gs
+}
+
+// TestSoftResetV3_ReopensClosedStepBeadsInResetSet verifies that step beads in
+// the rewind set get reopened (not closed) and annotated with an audit comment,
+// while step beads upstream of the target stay closed.
+func TestSoftResetV3_ReopensClosedStepBeadsInResetSet(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-softreset-reopen",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+
+	// Create step beads for plan, implement, review.
+	// plan and implement are completed (closed); review is active.
+	planStepID := createTestBead(t, createOpts{
+		Title:    "step:plan",
+		Priority: 3,
+		Type:     parseIssueType("task"),
+		Labels:   []string{"step:plan", "workflow-step"},
+		Parent:   epicID,
+	})
+	implStepID := createTestBead(t, createOpts{
+		Title:    "step:implement",
+		Priority: 3,
+		Type:     parseIssueType("task"),
+		Labels:   []string{"step:implement", "workflow-step"},
+		Parent:   epicID,
+	})
+	reviewStepID := createTestBead(t, createOpts{
+		Title:    "step:review",
+		Priority: 3,
+		Type:     parseIssueType("task"),
+		Labels:   []string{"step:review", "workflow-step"},
+		Parent:   epicID,
+	})
+	// Close plan and implement step beads (as if they had completed).
+	if err := storeCloseBead(planStepID); err != nil {
+		t.Fatalf("close plan step: %v", err)
+	}
+	if err := storeCloseBead(implStepID); err != nil {
+		t.Fatalf("close implement step: %v", err)
+	}
+
+	wizardName := "wizard-test-softreset-reopen"
+	writeV3GraphStateForTask(t, tmp, wizardName, epicID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:02:00Z"},
+			"review":    {Status: "active", StartedAt: "2026-01-01T00:03:00Z"},
+		},
+		"review",
+		map[string]string{
+			"plan":      planStepID,
+			"implement": implStepID,
+			"review":    reviewStepID,
+		},
+	)
+
+	if err := softResetV3(epicID, "implement", wizardName); err != nil {
+		t.Fatalf("softResetV3: %v", err)
+	}
+
+	// Step bead for implement should be reopened (was closed).
+	impl, err := storeGetBead(implStepID)
+	if err != nil {
+		t.Fatalf("get implement step: %v", err)
+	}
+	if impl.Status == "closed" {
+		t.Errorf("implement step bead should be reopened, got status=%q", impl.Status)
+	}
+
+	// Step bead for plan should still be closed (upstream of target).
+	plan, err := storeGetBead(planStepID)
+	if err != nil {
+		t.Fatalf("get plan step: %v", err)
+	}
+	if plan.Status != "closed" {
+		t.Errorf("plan step bead should remain closed (upstream of target), got status=%q", plan.Status)
+	}
+
+	// Graph state: implement and review should be pending, plan completed.
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+	if loaded.Steps["implement"].Status != "pending" {
+		t.Errorf("implement graph state = %q, want pending", loaded.Steps["implement"].Status)
+	}
+	if loaded.Steps["review"].Status != "pending" {
+		t.Errorf("review graph state = %q, want pending", loaded.Steps["review"].Status)
+	}
+	if loaded.Steps["plan"].Status != "completed" {
+		t.Errorf("plan graph state = %q, want completed (upstream of target)", loaded.Steps["plan"].Status)
+	}
+}
+
+// TestSoftResetV3_SetsStatusConsistentWithPlainReset verifies both reset paths
+// (plain and --to) produce status=open on the bead.
+func TestSoftResetV3_SetsStatusConsistentWithPlainReset(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	withSummonRecorder(t)
+
+	// --- Plain reset path ---
+	plainID := createTestBead(t, createOpts{
+		Title:    "test-reset-plain-status",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	if err := storeUpdateBead(plainID, map[string]interface{}{"status": "in_progress"}); err != nil {
+		t.Fatalf("update plain to in_progress: %v", err)
+	}
+	wizardNamePlain := "wizard-test-reset-plain-status"
+	if err := resetV3(plainID, false, wizardNamePlain, ""); err != nil {
+		t.Fatalf("resetV3 plain: %v", err)
+	}
+	plainBead, err := storeGetBead(plainID)
+	if err != nil {
+		t.Fatalf("get plain bead: %v", err)
+	}
+	if plainBead.Status != "open" {
+		t.Errorf("plain reset bead status = %q, want open", plainBead.Status)
+	}
+
+	// --- --to path ---
+	toID := createTestBead(t, createOpts{
+		Title:    "test-reset-to-status",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	if err := storeUpdateBead(toID, map[string]interface{}{"status": "in_progress"}); err != nil {
+		t.Fatalf("update to in_progress: %v", err)
+	}
+	wizardNameTo := "wizard-test-reset-to-status"
+	writeV3GraphStateForTask(t, tmp, wizardNameTo, toID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1},
+			"implement": {Status: "completed", CompletedCount: 1},
+			"review":    {Status: "active"},
+		},
+		"review",
+		nil,
+	)
+
+	if err := softResetV3(toID, "implement", wizardNameTo); err != nil {
+		t.Fatalf("softResetV3 --to: %v", err)
+	}
+	toBead, err := storeGetBead(toID)
+	if err != nil {
+		t.Fatalf("get --to bead: %v", err)
+	}
+	if toBead.Status != "open" {
+		t.Errorf("--to reset bead status = %q, want open (must match plain reset)", toBead.Status)
+	}
+	if toBead.Status != plainBead.Status {
+		t.Errorf("plain reset status=%q, --to reset status=%q — must match",
+			plainBead.Status, toBead.Status)
+	}
+}
+
+// --- recover.go chaining ---
+
+// TestRecover_ResetHardAction_ChainsResummon verifies the "reset-hard" recovery
+// action chains cmdResummonFunc after cmdReset.
+func TestRecover_ResetHardAction_ChainsResummon(t *testing.T) {
+	origReset := storeGetBeadFunc // unused, just to avoid unused-import guilt
+	_ = origReset
+
+	var resetCalled, resummonCalled bool
+	var resummonBead string
+
+	origResummon := cmdResummonFunc
+	cmdResummonFunc = func(beadID string) error {
+		resummonCalled = true
+		resummonBead = beadID
+		return nil
+	}
+	defer func() { cmdResummonFunc = origResummon }()
+
+	// Replace cmdReset through a proxy — since executeRecoveryAction calls
+	// cmdReset directly (not via a var), we instead wire a test by observing
+	// its side effect: cmdResummonFunc must be invoked after cmdReset returns
+	// success. To avoid performing real store mutations in this test, we
+	// swap cmdSummonFunc (called internally by cmdReset? no — cmdReset does
+	// NOT call cmdSummon anymore). So we run the recover path end-to-end
+	// and assert resummonCalled is true, using a safe benign bead ID.
+
+	// Use a lightweight recorder for cmdReset via a var.
+	origDoReset := cmdResetFunc
+	cmdResetFunc = func(args []string) error {
+		resetCalled = true
+		return nil
+	}
+	defer func() { cmdResetFunc = origDoReset }()
+
+	action := &struct{ Name string }{}
+	_ = action
+
+	// Execute the recover path for reset-hard.
+	beadID := "spi-test-recover-reset-hard"
+	if err := executeRecoveryActionForTest(beadID, "reset-hard"); err != nil {
+		t.Fatalf("executeRecoveryAction reset-hard: %v", err)
+	}
+	if !resetCalled {
+		t.Error("cmdResetFunc was not called during reset-hard recovery action")
+	}
+	if !resummonCalled {
+		t.Error("cmdResummonFunc was not called after reset-hard — recovery must chain resume")
+	}
+	if resummonBead != beadID {
+		t.Errorf("cmdResummonFunc called with %q, want %q", resummonBead, beadID)
+	}
+}
+
+// TestRecover_ResetToAction_ChainsResummon verifies reset-to-<phase> recovery
+// actions chain cmdResummonFunc after cmdReset.
+func TestRecover_ResetToAction_ChainsResummon(t *testing.T) {
+	var resetArgs []string
+	var resummonCalled bool
+	var resummonBead string
+
+	origReset := cmdResetFunc
+	cmdResetFunc = func(args []string) error {
+		resetArgs = args
+		return nil
+	}
+	defer func() { cmdResetFunc = origReset }()
+
+	origResummon := cmdResummonFunc
+	cmdResummonFunc = func(beadID string) error {
+		resummonCalled = true
+		resummonBead = beadID
+		return nil
+	}
+	defer func() { cmdResummonFunc = origResummon }()
+
+	beadID := "spi-test-recover-reset-to"
+	if err := executeRecoveryActionForTest(beadID, "reset-to-implement"); err != nil {
+		t.Fatalf("executeRecoveryAction reset-to-implement: %v", err)
+	}
+
+	wantResetArgs := []string{beadID, "--to", "implement"}
+	if !reflect.DeepEqual(resetArgs, wantResetArgs) {
+		t.Errorf("cmdResetFunc args = %v, want %v", resetArgs, wantResetArgs)
+	}
+	if !resummonCalled {
+		t.Error("cmdResummonFunc was not called after reset-to — recovery must chain resume")
+	}
+	if resummonBead != beadID {
+		t.Errorf("cmdResummonFunc called with %q, want %q", resummonBead, beadID)
+	}
+}
+
+// TestRecover_ResetActionPropagatesResetError verifies that when cmdReset
+// returns an error in a reset-hard / reset-to-* recovery action, cmdResummon
+// is NOT chained.
+func TestRecover_ResetActionPropagatesResetError(t *testing.T) {
+	resetErr := errors.New("reset failure")
+	var resummonCalled bool
+
+	origReset := cmdResetFunc
+	cmdResetFunc = func(args []string) error {
+		return resetErr
+	}
+	defer func() { cmdResetFunc = origReset }()
+
+	origResummon := cmdResummonFunc
+	cmdResummonFunc = func(beadID string) error {
+		resummonCalled = true
+		return nil
+	}
+	defer func() { cmdResummonFunc = origResummon }()
+
+	if err := executeRecoveryActionForTest("spi-err", "reset-hard"); !errors.Is(err, resetErr) {
+		t.Errorf("expected reset error to propagate, got: %v", err)
+	}
+	if resummonCalled {
+		t.Error("cmdResummonFunc was called despite cmdReset returning an error")
 	}
 }

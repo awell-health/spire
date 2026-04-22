@@ -209,16 +209,24 @@ func cmdRecover(beadID string, dryRun, jsonOut, auto bool, actionName string) er
 	return nil
 }
 
-// executeRecoveryAction delegates to existing Spire commands.
+// executeRecoveryAction delegates to existing Spire commands. Reset actions
+// chain an explicit cmdResummon after cmdReset — reset itself is decoupled
+// from summon, so recovery drives the resume step here.
 func executeRecoveryAction(beadID string, action *recovery.RecoveryAction) error {
 	switch {
 	case action.Name == "resummon":
-		return cmdResummon([]string{beadID})
+		return cmdResummonFunc(beadID)
 	case action.Name == "reset-hard":
-		return cmdReset([]string{beadID, "--hard"})
+		if err := cmdResetFunc([]string{beadID, "--hard"}); err != nil {
+			return err
+		}
+		return cmdResummonFunc(beadID)
 	case strings.HasPrefix(action.Name, "reset-to-"):
 		phase := strings.TrimPrefix(action.Name, "reset-to-")
-		return cmdReset([]string{beadID, "--to", phase})
+		if err := cmdResetFunc([]string{beadID, "--to", phase}); err != nil {
+			return err
+		}
+		return cmdResummonFunc(beadID)
 	case action.Name == "close":
 		return cmdClose([]string{beadID})
 	case action.Name == "manual-fix" || action.Name == "manual-review":

@@ -1,6 +1,83 @@
+// Package main — reset.go implements `spire reset`.
+//
+// Reset model
+//
+// `spire reset <bead>` does exactly one thing: it returns a bead to a clean
+// "ready to be summoned again" state. It does NOT re-summon. Callers who
+// want to resume (recover, board action, scripts) must call `spire summon`
+// explicitly as a separate step.
+//
+// Two variants:
+//
+//   - Plain reset (`spire reset <bead>` and `--hard`): wipes all graph state
+//     for the bead and (in hard mode) removes worktrees/branches. After this
+//     the bead is set to "open".
+//
+//   - Soft reset (`--to <step>`): rewinds the bead to a specific earlier step.
+//     Steps before the target stay completed; the target step + everything
+//     that transitively depends on it is rewound to "pending" and their step
+//     beads are re-opened. Rewind only — the target must have already been
+//     reached (Status != "pending"); a pending target is rejected.
+//
+// Child-bead categorization
+//
+// Reset treats the children of a bead in three groups:
+//
+//  1. Internal DAG beads (workflow-step, attempt, review-round):
+//     - soft reset → CLOSED (audit trail preserved)
+//     - hard reset → DELETED (including nested descendants like attempt→step)
+//     - `--to <step>` → step beads in the rewind set are REOPENED (not closed)
+//     so the graph re-enters those steps on the next summon. Everything
+//     outside the rewind set is left alone.
+//
+//  2. Real subtask children (type=task/bug/feature/etc. under an epic):
+//     - plain/hard reset → reopened if currently open/in_progress, leaving
+//     closed subtasks alone. They get re-dispatched on resummon.
+//     - `--to <step>` → unchanged (reset scoped to the rewound steps only).
+//
+//  3. Protected beads:
+//     - design beads (linked via discovered-from dep)
+//     - recovery beads (dep type recovery-for or caused-by, or labeled
+//     `recovery-bead`)
+//     - alert beads (labeled `alert:*` or linked via caused-by)
+//     These are NEVER touched by reset. `recovery.CloseRelatedRecoveryBeads`
+//     runs separately to close recovery-for dependents that are no longer
+//     applicable.
+//
+// Label stripping
+//
+// Reset removes the "stuck state" labels from the bead itself:
+//   - `interrupted:*` (executor-exit, build-failure, etc.)
+//   - `needs-human`
+//   - `feat-branch:*` (cleared only on hard reset and on plain reset)
+//
+// Unrelated labels (type tags, topic labels, etc.) are preserved.
+//
+// Graph state, worktrees, and branches
+//
+//   - Plain/hard reset: deletes the top-level graph_state.json plus any
+//     nested sub-executor state matching `<wizardName>-*/graph_state.json`.
+//     Hard reset also removes the wizard's worktree directory and the
+//     feat/<bead>, epic/<bead>, staging/<bead> branches.
+//
+//   - `--to <step>` soft reset: rewinds state for the rewound steps and
+//     recursively deletes every `graph_state.json` under the wizard's
+//     runtime dir — subgraph-dispatched wave apprentices live at arbitrary
+//     nesting depth and their state must be torn down before resummon can
+//     rebuild it cleanly. Wave-apprentice beads themselves are left alone;
+//     they get re-dispatched on the next summon.
+//
+// Step beads vs wave-apprentice beads
+//
+// The reopen-on-rewind logic in `--to` applies only to TOP-LEVEL step beads
+// (the ones tracked in GraphState.StepBeadIDs). Subgraphs dispatch wave
+// apprentices as separate beads with their own lifecycle — reset deletes
+// their state files but does NOT reopen closed wave-apprentice beads; the
+// epic re-dispatches them on resummon.
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +92,31 @@ import (
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/spf13/cobra"
 )
+
+// ErrNoGraphState is returned by softResetV3 when the bead has no graph
+// state file on disk — there is nothing to rewind. Plain reset also exits
+// early on this condition, but returns nil because plain reset has useful
+// work to do (strip labels, reopen subtasks) even without graph state.
+var ErrNoGraphState = errors.New("no graph state to rewind")
+
+// cmdSummonFunc is the function reset callers (recover, board) reach for when
+// they chain a resummon after reset. Tests swap it to a no-op recorder to
+// assert that reset itself does NOT invoke summon.
+var cmdSummonFunc = cmdSummon
+
+// cmdResummonFunc is the function recover/board use to chain a resummon after
+// reset. Held in a var so tests can observe the call and verify the chain.
+var cmdResummonFunc = func(beadID string) error {
+	return cmdResummon([]string{beadID})
+}
+
+// cmdResetFunc indirection lets recover tests stub cmdReset without
+// triggering real store mutations.
+var cmdResetFunc = cmdReset
+
+// storeActivateStepBeadFunc is a test-replaceable hook for reopening a closed
+// step bead. Production wiring delegates to store.ActivateStepBead.
+var storeActivateStepBeadFunc = storeActivateStepBead
 
 var resetCmd = &cobra.Command{
 	Use:   "reset <bead-id> [flags]",
@@ -368,20 +470,29 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 	}
 
 	fmt.Printf("%s reset (v3)\n", beadID)
-
-	// --- Re-summon ---
-	fmt.Printf("  %s↑ re-summoning wizard for %s%s\n", cyan, beadID, reset)
-	if err := cmdSummon([]string{"1", "--targets", beadID}); err != nil {
-		return fmt.Errorf("re-summon %s: %w", beadID, err)
-	}
-
+	// Reset is intentionally decoupled from summon — callers who want to
+	// resume must invoke `spire summon` (or cmdResummon) themselves.
 	return nil
 }
 
 // softResetV3 rewinds a v3 bead's graph state to a specific step and everything
-// after it, preserving completed steps before the target. Closes step beads for
-// reset steps (preserving audit trail), deletes nested graph state for those
-// steps, and cleans up step-scoped workspaces.
+// that transitively depends on it. Steps before the target are preserved
+// untouched. The target and its dependents are set back to "pending" and
+// their step beads are re-opened (not closed) so the graph re-enters those
+// steps on the next summon.
+//
+// Rewind semantics (strict):
+//   - Target step must have been reached (Status != "pending"). Fast-forward
+//     attempts are rejected with an error and no state is mutated.
+//   - Nested graph-state files for subgraph-dispatched wave apprentices are
+//     deleted recursively — they live at arbitrary depth under the wizard's
+//     runtime dir and re-materialize on resummon.
+//   - When graph_state.json is missing, returns ErrNoGraphState. A missing
+//     file means there's nothing to rewind, which is distinct from a
+//     successful rewind.
+//   - After a successful rewind the parent bead is set to "open" (same as
+//     plain reset). Soft reset does NOT auto-summon — callers resume
+//     explicitly.
 func softResetV3(beadID, targetStep, wizardName string) error {
 	// --- 1. Load and validate formula ---
 	bead, err := storeGetBead(beadID)
@@ -411,133 +522,191 @@ func softResetV3(beadID, targetStep, wizardName string) error {
 	// --- 2. Compute steps to reset (target + all transitive dependents) ---
 	stepsToReset := computeStepsToReset(graph, targetStep)
 
-	fmt.Printf("  %sresetting steps: %s%s\n", dim, strings.Join(mapKeys(stepsToReset), ", "), reset)
-
-	// --- 3. Load graph state ---
+	// --- 3. Load graph state (required — no silent resummon) ---
 	gs, err := executor.LoadGraphState(wizardName, configDir)
 	if err != nil {
 		return fmt.Errorf("load graph state for %s: %w", wizardName, err)
 	}
 	if gs == nil {
-		fmt.Printf("  %s(no graph state found — nothing to rewind)%s\n", dim, reset)
-		goto resummon
+		return fmt.Errorf("cannot rewind %s to %q: %w (wizard %s)",
+			beadID, targetStep, ErrNoGraphState, wizardName)
 	}
 
-	{
-		// --- 4. Rewind step states ---
-		resetCount := 0
-		for stepName := range stepsToReset {
-			ss, ok := gs.Steps[stepName]
-			if !ok {
-				continue
-			}
-			ss.Status = "pending"
-			ss.Outputs = nil
-			ss.StartedAt = ""
-			ss.CompletedAt = ""
-			// Preserve CompletedCount — it's mechanical and never reset.
-			gs.Steps[stepName] = ss
-			resetCount++
-		}
-		if resetCount > 0 {
-			fmt.Printf("  %s↺ rewound %d step(s) to pending%s\n", yellow, resetCount, reset)
-		}
-
-		// Clear active step if it's in the reset set.
-		if stepsToReset[gs.ActiveStep] {
-			gs.ActiveStep = ""
-		}
-
-		// --- 5. Workspace cleanup (step-scoped only) ---
-		cwd, _ := os.Getwd()
-		rc := &spgit.RepoContext{Dir: cwd}
-		for stepName := range stepsToReset {
-			stepCfg, ok := graph.Steps[stepName]
-			if !ok || stepCfg.Workspace == "" {
-				continue
-			}
-			ws, ok := gs.Workspaces[stepCfg.Workspace]
-			if !ok {
-				continue
-			}
-			// Only clean step-scoped workspaces — run-scoped ones are shared.
-			if ws.Scope != formula.WorkspaceScopeStep {
-				continue
-			}
-			if ws.Dir != "" {
-				rc.ForceRemoveWorktree(ws.Dir)
-				rc.PruneWorktrees()
-				fmt.Printf("  %s✗ removed worktree: %s%s\n", dim, ws.Dir, reset)
-			}
-			if ws.Branch != "" {
-				if err := rc.ForceDeleteBranch(ws.Branch); err == nil {
-					fmt.Printf("  %s✗ deleted branch: %s%s\n", dim, ws.Branch, reset)
-				}
-			}
-			delete(gs.Workspaces, stepCfg.Workspace)
-		}
-
-		// --- 6. Delete nested graph state for reset steps ---
-		dir, _ := configDir()
-		if dir != "" {
-			runtimeDir := filepath.Join(dir, "runtime")
-			for stepName := range stepsToReset {
-				nestedName := wizardName + "-" + stepName
-				nestedPath := filepath.Join(runtimeDir, nestedName, "graph_state.json")
-				if err := os.Remove(nestedPath); err == nil {
-					fmt.Printf("  %s✗ nested graph state removed: %s%s\n", dim, nestedName, reset)
-				}
-			}
-		}
-
-		// --- 7. Close step beads for reset steps (preserves audit trail) ---
-		closedSteps := 0
-		for stepName := range stepsToReset {
-			stepBeadID := gs.StepBeadIDs[stepName]
-			if stepBeadID == "" {
-				continue
-			}
-			// Annotate the closure with a reset reason before closing.
-			_ = storeAddComment(stepBeadID, fmt.Sprintf("Closed by soft-reset --to %s (step rewound to pending)", targetStep))
-			if err := storeCloseBead(stepBeadID); err != nil {
-				fmt.Printf("  %s(note: could not close step bead %s for %s: %s)%s\n", dim, stepBeadID, stepName, err, reset)
-			} else {
-				closedSteps++
-			}
-		}
-		if closedSteps > 0 {
-			fmt.Printf("  %s✗ closed %d step beads%s\n", dim, closedSteps, reset)
-		}
-
-		// --- 7b. Close related recovery beads ---
-		if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "reset --to (v3)"); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
-		}
-
-		// --- 8. Save updated graph state ---
-		if err := gs.Save(wizardName, configDir); err != nil {
-			return fmt.Errorf("save graph state: %w", err)
-		}
-		fmt.Printf("  %s✓ graph state saved%s\n", green, reset)
+	// --- 4. Pre-flight: reject if target step has not been reached ---
+	// Rewind-only semantics: --to must not be usable to fast-forward. The
+	// check runs BEFORE any mutation so the operation is all-or-nothing.
+	if ts, ok := gs.Steps[targetStep]; ok && ts.Status == "pending" {
+		return fmt.Errorf("cannot rewind %s to %q: step has not been reached yet", beadID, targetStep)
 	}
 
-	// --- 9. Set bead to in_progress (it was interrupted, summon will resume) ---
-	if err := storeUpdateBead(beadID, map[string]interface{}{"status": "in_progress"}); err != nil {
-		fmt.Printf("  %s(note: could not set %s to in_progress: %s)%s\n", dim, beadID, err, reset)
+	fmt.Printf("  %sresetting steps: %s%s\n", dim, strings.Join(mapKeys(stepsToReset), ", "), reset)
+
+	// --- 5. Rewind step states ---
+	resetCount := 0
+	for stepName := range stepsToReset {
+		ss, ok := gs.Steps[stepName]
+		if !ok {
+			continue
+		}
+		ss.Status = "pending"
+		ss.Outputs = nil
+		ss.StartedAt = ""
+		ss.CompletedAt = ""
+		// Preserve CompletedCount — it's mechanical and never reset.
+		gs.Steps[stepName] = ss
+		resetCount++
+	}
+	if resetCount > 0 {
+		fmt.Printf("  %s↺ rewound %d step(s) to pending%s\n", yellow, resetCount, reset)
+	}
+
+	// Clear active step if it's in the reset set.
+	if stepsToReset[gs.ActiveStep] {
+		gs.ActiveStep = ""
+	}
+
+	// --- 6. Workspace cleanup (step-scoped only) ---
+	cwd, _ := os.Getwd()
+	rc := &spgit.RepoContext{Dir: cwd}
+	for stepName := range stepsToReset {
+		stepCfg, ok := graph.Steps[stepName]
+		if !ok || stepCfg.Workspace == "" {
+			continue
+		}
+		ws, ok := gs.Workspaces[stepCfg.Workspace]
+		if !ok {
+			continue
+		}
+		// Only clean step-scoped workspaces — run-scoped ones are shared.
+		if ws.Scope != formula.WorkspaceScopeStep {
+			continue
+		}
+		if ws.Dir != "" {
+			rc.ForceRemoveWorktree(ws.Dir)
+			rc.PruneWorktrees()
+			fmt.Printf("  %s✗ removed worktree: %s%s\n", dim, ws.Dir, reset)
+		}
+		if ws.Branch != "" {
+			if err := rc.ForceDeleteBranch(ws.Branch); err == nil {
+				fmt.Printf("  %s✗ deleted branch: %s%s\n", dim, ws.Branch, reset)
+			}
+		}
+		delete(gs.Workspaces, stepCfg.Workspace)
+	}
+
+	// --- 7. Recursively delete nested graph state under rewound subgraphs ---
+	// Subgraph-dispatched wave apprentices live at arbitrary nesting depth,
+	// so a literal `<wizardName>-<stepName>` glob misses them. Walk every
+	// `graph_state.json` under `runtime/<wizardName>-*/` and delete it —
+	// subgraphs re-materialize on resummon. Unrelated wizard trees are
+	// naturally excluded because we only walk children of our wizard dir.
+	removeNestedGraphStateRecursive(wizardName)
+
+	// --- 8. Reopen step beads in the rewind set (audit trail preserved) ---
+	// Rewinding graph state to "pending" while the step bead stays "closed"
+	// would deadlock the next summon — the executor's transition path skips
+	// activating an already-closed step bead. So we reopen closed step beads
+	// here and add an audit comment explaining why. Open/in_progress beads
+	// are left as-is.
+	reopenedSteps := 0
+	leftSteps := 0
+	for stepName := range stepsToReset {
+		stepBeadID := gs.StepBeadIDs[stepName]
+		if stepBeadID == "" {
+			continue
+		}
+		b, err := storeGetBead(stepBeadID)
+		if err != nil {
+			fmt.Printf("  %s(note: could not read step bead %s for %s: %s)%s\n", dim, stepBeadID, stepName, err, reset)
+			continue
+		}
+		if b.Status == "closed" {
+			_ = storeAddComment(stepBeadID, fmt.Sprintf("Reopened by soft-reset --to %s (step rewound to pending)", targetStep))
+			if err := storeActivateStepBeadFunc(stepBeadID); err != nil {
+				fmt.Printf("  %s(note: could not reopen step bead %s for %s: %s)%s\n", dim, stepBeadID, stepName, err, reset)
+				continue
+			}
+			reopenedSteps++
+		} else {
+			leftSteps++
+		}
+	}
+	if reopenedSteps > 0 {
+		fmt.Printf("  %s↺ reopened %d step bead(s)%s\n", yellow, reopenedSteps, reset)
+	}
+	if leftSteps > 0 {
+		fmt.Printf("  %s(left %d step bead(s) unchanged — already open/in_progress)%s\n", dim, leftSteps, reset)
+	}
+
+	// --- 8b. Close related recovery beads ---
+	if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "reset --to (v3)"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
+	}
+
+	// --- 9. Save updated graph state ---
+	if err := gs.Save(wizardName, configDir); err != nil {
+		return fmt.Errorf("save graph state: %w", err)
+	}
+	fmt.Printf("  %s✓ graph state saved%s\n", green, reset)
+
+	// --- 10. Set bead status to "open" (matches plain reset) ---
+	if err := storeUpdateBead(beadID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
+		fmt.Printf("  %s(note: could not set %s to open: %s)%s\n", dim, beadID, err, reset)
 	} else {
-		fmt.Printf("  %s↺ %s set to in_progress%s\n", dim, beadID, reset)
+		fmt.Printf("  %s↺ %s set to open%s\n", yellow, beadID, reset)
 	}
 
-resummon:
 	fmt.Printf("%s soft-reset to step %q (v3)\n", beadID, targetStep)
-
-	// --- 10. Re-summon ---
-	fmt.Printf("  %s↑ re-summoning wizard for %s%s\n", cyan, beadID, reset)
-	if err := cmdSummon([]string{"1", "--targets", beadID}); err != nil {
-		return fmt.Errorf("re-summon %s: %w", beadID, err)
-	}
-
+	// Reset is intentionally decoupled from summon — callers who want to
+	// resume must invoke `spire summon` (or cmdResummon) themselves.
 	return nil
+}
+
+// removeNestedGraphStateRecursive deletes every graph_state.json nested under
+// the wizard's runtime tree. Used by softResetV3 to tear down subgraph-
+// dispatched wave apprentice state — they can nest arbitrarily deep and a
+// literal glob at the first level misses them.
+//
+// The top-level graph_state.json (runtime/<wizardName>/graph_state.json) is
+// NOT touched — it's rewritten in place by softResetV3's gs.Save() call.
+func removeNestedGraphStateRecursive(wizardName string) {
+	dir, err := configDir()
+	if err != nil || dir == "" {
+		return
+	}
+	runtimeDir := filepath.Join(dir, "runtime")
+
+	entries, err := os.ReadDir(runtimeDir)
+	if err != nil {
+		return
+	}
+	prefix := wizardName + "-"
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		subtree := filepath.Join(runtimeDir, name)
+		_ = filepath.WalkDir(subtree, func(path string, d os.DirEntry, werr error) error {
+			if werr != nil {
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if filepath.Base(path) != "graph_state.json" {
+				return nil
+			}
+			if err := os.Remove(path); err == nil {
+				rel, _ := filepath.Rel(runtimeDir, path)
+				fmt.Printf("  %s✗ nested graph state removed: %s%s\n", dim, rel, reset)
+			}
+			return nil
+		})
+	}
 }
 
 // computeStepsToReset builds the set of steps that need resetting: the target
