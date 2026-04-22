@@ -57,6 +57,27 @@ type TowerConfig struct {
 	// Apprentice toggles apprentice-side behavior, notably the transport
 	// mode apprentices use to deliver work back to the wizard.
 	Apprentice ApprenticeConfig `json:"apprentice,omitempty"`
+
+	// DeploymentMode names the control-plane topology for this tower
+	// (local-native / cluster-native / attached-reserved). Empty resolves to
+	// Default() via LoadTowerConfig and the EffectiveDeploymentMode accessor.
+	// See pkg/config/deployment_mode.go for the semantics and the explicit
+	// orthogonality to worker backend and sync transport.
+	DeploymentMode DeploymentMode `toml:"deployment_mode" yaml:"deployment_mode" json:"deployment_mode,omitempty"`
+}
+
+// EffectiveDeploymentMode returns the tower's control-plane topology, falling
+// back to Default() when the field is unset. Callers MUST use this accessor
+// rather than reading TowerConfig.DeploymentMode directly so legacy tower
+// configs that predate the field behave as local-native. The method name
+// follows the codebase pattern (see EffectiveTransport, EffectiveRemoteKind)
+// and is required here because a method cannot share a name with the struct
+// field it reads.
+func (t TowerConfig) EffectiveDeploymentMode() DeploymentMode {
+	if t.DeploymentMode == "" {
+		return Default()
+	}
+	return t.DeploymentMode
 }
 
 // ApprenticeConfig controls apprentice-side behavior for a tower. Currently
@@ -175,7 +196,10 @@ func TowerConfigPath(name string) (string, error) {
 	return filepath.Join(dir, name+".json"), nil
 }
 
-// LoadTowerConfig reads a tower config by name.
+// LoadTowerConfig reads a tower config by name. When the persisted config
+// omits deployment_mode (e.g. files written before the field existed), the
+// loader fills it in with Default() so callers can read the field directly
+// and still see the canonical default.
 func LoadTowerConfig(name string) (*TowerConfig, error) {
 	p, err := TowerConfigPath(name)
 	if err != nil {
@@ -188,6 +212,9 @@ func LoadTowerConfig(name string) (*TowerConfig, error) {
 	var tc TowerConfig
 	if err := json.Unmarshal(data, &tc); err != nil {
 		return nil, fmt.Errorf("parse tower config %s: %w", p, err)
+	}
+	if tc.DeploymentMode == "" {
+		tc.DeploymentMode = Default()
 	}
 	return &tc, nil
 }
