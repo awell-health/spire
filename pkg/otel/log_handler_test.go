@@ -137,7 +137,7 @@ func TestParseToolEvent(t *testing.T) {
 			{Key: "success", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}}},
 		},
 	}
-	res := resourceAttrs{SessionID: "sess-1", BeadID: "spi-abc", AgentName: "apprentice-0", Step: "implement"}
+	res := RunContext{SessionID: "sess-1", BeadID: "spi-abc", AgentName: "apprentice-0", FormulaStep: "implement"}
 	ts := time.Unix(0, int64(now)).UTC()
 
 	ev := parseToolEvent(lr, "claude", "tool_result", res, "my-tower", ts)
@@ -173,7 +173,7 @@ func TestParseToolEvent_FalseSuccess(t *testing.T) {
 			{Key: "success", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: false}}},
 		},
 	}
-	res := resourceAttrs{}
+	res := RunContext{}
 	ts := time.Now().UTC()
 
 	ev := parseToolEvent(lr, "codex", "tool_result", res, "tower", ts)
@@ -199,7 +199,7 @@ func TestParseAPIEvent(t *testing.T) {
 			{Key: "cost_usd", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 0.15}}},
 		},
 	}
-	res := resourceAttrs{SessionID: "sess-1", BeadID: "spi-abc", AgentName: "wizard-0", Step: "plan"}
+	res := RunContext{SessionID: "sess-1", BeadID: "spi-abc", AgentName: "wizard-0", FormulaStep: "plan"}
 	ts := time.Unix(0, int64(now)).UTC()
 
 	ev := parseAPIEvent(lr, "claude", res, "my-tower", ts)
@@ -784,9 +784,9 @@ func TestResolveLogTimestamp_FallsBackToObserved(t *testing.T) {
 	}
 }
 
-// --- extractLogResourceAttrs ---
+// --- ExtractRunContext (log-resource path, legacy-key back-compat) ---
 
-func TestExtractLogResourceAttrs(t *testing.T) {
+func TestExtractRunContext_LegacyLogResourceKeys(t *testing.T) {
 	res := &resourcepb.Resource{
 		Attributes: []*commonpb.KeyValue{
 			strKV("bead.id", "spi-xyz"),
@@ -797,15 +797,15 @@ func TestExtractLogResourceAttrs(t *testing.T) {
 		},
 	}
 
-	attrs := extractLogResourceAttrs(res)
+	attrs := ExtractRunContext(res)
 	if attrs.BeadID != "spi-xyz" {
 		t.Errorf("BeadID = %q, want spi-xyz", attrs.BeadID)
 	}
 	if attrs.AgentName != "wizard-spi-xyz" {
 		t.Errorf("AgentName = %q, want wizard-spi-xyz", attrs.AgentName)
 	}
-	if attrs.Step != "plan" {
-		t.Errorf("Step = %q, want plan", attrs.Step)
+	if attrs.FormulaStep != "plan" {
+		t.Errorf("FormulaStep = %q, want plan", attrs.FormulaStep)
 	}
 	if attrs.Tower != "my-tower" {
 		t.Errorf("Tower = %q, want my-tower", attrs.Tower)
@@ -815,22 +815,22 @@ func TestExtractLogResourceAttrs(t *testing.T) {
 	}
 }
 
-func TestExtractLogResourceAttrs_ServiceInstanceID(t *testing.T) {
+func TestExtractRunContext_ServiceInstanceID(t *testing.T) {
 	res := &resourcepb.Resource{
 		Attributes: []*commonpb.KeyValue{
 			strKV("service.instance.id", "instance-456"),
 		},
 	}
 
-	attrs := extractLogResourceAttrs(res)
+	attrs := ExtractRunContext(res)
 	if attrs.SessionID != "instance-456" {
 		t.Errorf("SessionID = %q, want instance-456", attrs.SessionID)
 	}
 }
 
-func TestExtractLogResourceAttrs_Nil(t *testing.T) {
-	attrs := extractLogResourceAttrs(nil)
-	if attrs.BeadID != "" || attrs.AgentName != "" || attrs.Step != "" {
+func TestExtractRunContext_Nil(t *testing.T) {
+	attrs := ExtractRunContext(nil)
+	if attrs.BeadID != "" || attrs.AgentName != "" || attrs.FormulaStep != "" {
 		t.Error("expected empty attrs for nil resource")
 	}
 }

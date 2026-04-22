@@ -108,39 +108,53 @@ func (r *Receiver) Stop() {
 	}
 }
 
-// Export implements the OTLP TraceService/Export RPC. It extracts tool-related
-// spans from the request, maps them to ToolEvents (for backward compat) and
-// ToolSpans (for the hierarchical waterfall view), and writes both to DuckDB.
-func (r *Receiver) Export(_ context.Context, req *collectorpb.ExportTraceServiceRequest) (*collectorpb.ExportTraceServiceResponse, error) {
-	var events []ToolEvent
-	var spans []ToolSpan
+// TraceParseResult holds the typed rows produced from an OTLP
+// ExportTraceServiceRequest before they are persisted. ParseResourceSpans
+// returns this shape so callers (the receiver on the ingestion path,
+// tests on the regression path) can inspect the pre-persist surface
+// without a DB dependency.
+type TraceParseResult struct {
+	ToolEvents []ToolEvent
+	ToolSpans  []ToolSpan
+}
 
-	for _, rs := range req.GetResourceSpans() {
-		resAttrs := extractResourceAttrs(rs)
-
+// ParseResourceSpans converts OTLP ResourceSpans to the typed row shapes
+// the receiver persists, without touching any storage layer. Pulled out
+// of Receiver.Export so the ingestion transform is exercised by tests
+// that assert on bead_id / formula_step correlation without needing a
+// DuckDB file or a live tower.
+func ParseResourceSpans(resourceSpans []*tracepb.ResourceSpans, defaultTower string) TraceParseResult {
+	var result TraceParseResult
+	for _, rs := range resourceSpans {
+		rc := ExtractRunContext(rs.GetResource())
 		for _, ss := range rs.GetScopeSpans() {
 			for _, span := range ss.GetSpans() {
-				// Write all spans to tool_spans for the waterfall view.
-				if ts, ok := spanToToolSpan(span, resAttrs, r.tower); ok {
-					spans = append(spans, ts)
+				if ts, ok := spanToToolSpan(span, rc, defaultTower); ok {
+					result.ToolSpans = append(result.ToolSpans, ts)
 				}
-
-				// Also write tool-filtered events to tool_events for backward compat.
-				if event, ok := spanToToolEvent(span, resAttrs, r.tower); ok {
-					events = append(events, event)
+				if event, ok := spanToToolEvent(span, rc, defaultTower); ok {
+					result.ToolEvents = append(result.ToolEvents, event)
 				}
 			}
 		}
 	}
+	return result
+}
 
-	if len(events) > 0 || len(spans) > 0 {
+// Export implements the OTLP TraceService/Export RPC. It extracts tool-related
+// spans from the request, maps them to ToolEvents (for backward compat) and
+// ToolSpans (for the hierarchical waterfall view), and writes both to DuckDB.
+func (r *Receiver) Export(_ context.Context, req *collectorpb.ExportTraceServiceRequest) (*collectorpb.ExportTraceServiceResponse, error) {
+	result := ParseResourceSpans(req.GetResourceSpans(), r.tower)
+
+	if len(result.ToolEvents) > 0 || len(result.ToolSpans) > 0 {
 		if err := r.writeFn(func(tx *sql.Tx) error {
-			if err := InsertBatchTx(tx, events); err != nil {
+			if err := InsertBatchTx(tx, result.ToolEvents); err != nil {
 				return err
 			}
-			return InsertToolSpansTx(tx, spans)
+			return InsertToolSpansTx(tx, result.ToolSpans)
 		}); err != nil {
-			log.Printf("[otel] write trace batch (%d events, %d spans): %v", len(events), len(spans), err)
+			log.Printf("[otel] write trace batch (%d events, %d spans): %v", len(result.ToolEvents), len(result.ToolSpans), err)
 		}
 	}
 
@@ -168,42 +182,9 @@ func (l *logsReceiver) Export(_ context.Context, req *collogspb.ExportLogsServic
 	return &collogspb.ExportLogsServiceResponse{}, nil
 }
 
-// resourceAttrs holds resource-level attributes extracted from OTEL_RESOURCE_ATTRIBUTES.
-type resourceAttrs struct {
-	BeadID    string
-	AgentName string
-	Step      string
-	Tower     string
-	SessionID string
-}
-
-// extractResourceAttrs reads bead.id, agent.name, step, tower from the
-// resource attributes that Spire injects via OTEL_RESOURCE_ATTRIBUTES at spawn.
-func extractResourceAttrs(rs *tracepb.ResourceSpans) resourceAttrs {
-	var attrs resourceAttrs
-	res := rs.GetResource()
-	if res == nil {
-		return attrs
-	}
-	for _, kv := range res.GetAttributes() {
-		val := kvStringValue(kv)
-		switch kv.GetKey() {
-		case "bead.id":
-			attrs.BeadID = val
-		case "agent.name":
-			attrs.AgentName = val
-		case "step":
-			attrs.Step = val
-		case "tower":
-			attrs.Tower = val
-		}
-	}
-	return attrs
-}
-
 // spanToToolEvent converts an OTel span to a ToolEvent if it represents a
 // known tool invocation. Returns false if the span should be discarded.
-func spanToToolEvent(span *tracepb.Span, res resourceAttrs, defaultTower string) (ToolEvent, bool) {
+func spanToToolEvent(span *tracepb.Span, res RunContext, defaultTower string) (ToolEvent, bool) {
 	name := span.GetName()
 
 	// Check if the span name itself is a known tool.
@@ -276,7 +257,7 @@ func spanToToolEvent(span *tracepb.Span, res resourceAttrs, defaultTower string)
 		SessionID:  sessionID,
 		BeadID:     res.BeadID,
 		AgentName:  res.AgentName,
-		Step:       res.Step,
+		Step:       res.FormulaStep,
 		ToolName:   toolName,
 		DurationMs: durationMs,
 		Success:    success,
@@ -288,7 +269,7 @@ func spanToToolEvent(span *tracepb.Span, res resourceAttrs, defaultTower string)
 // spanToToolSpan converts an OTel span to a ToolSpan for the waterfall view.
 // Unlike spanToToolEvent, this keeps all spans (not just known tools) to
 // preserve the full hierarchy for trace visualization.
-func spanToToolSpan(span *tracepb.Span, res resourceAttrs, defaultTower string) (ToolSpan, bool) {
+func spanToToolSpan(span *tracepb.Span, res RunContext, defaultTower string) (ToolSpan, bool) {
 	name := span.GetName()
 	if name == "" {
 		return ToolSpan{}, false
@@ -332,7 +313,7 @@ func spanToToolSpan(span *tracepb.Span, res resourceAttrs, defaultTower string) 
 		SessionID:    hex.EncodeToString(span.GetTraceId()),
 		BeadID:       res.BeadID,
 		AgentName:    res.AgentName,
-		Step:         res.Step,
+		Step:         res.FormulaStep,
 		SpanName:     name,
 		Kind:         kind,
 		DurationMs:   durationMs,

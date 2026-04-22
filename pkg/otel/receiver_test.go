@@ -24,11 +24,11 @@ func TestSpanToToolEvent_KnownTool(t *testing.T) {
 		Status:             &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
 	}
 
-	res := resourceAttrs{
-		BeadID:    "spi-abc",
-		AgentName: "apprentice-spi-abc-0",
-		Step:      "implement",
-		Tower:     "test-tower",
+	res := RunContext{
+		BeadID:      "spi-abc",
+		AgentName:   "apprentice-spi-abc-0",
+		FormulaStep: "implement",
+		Tower:       "test-tower",
 	}
 
 	event, ok := spanToToolEvent(span, res, "default-tower")
@@ -56,7 +56,7 @@ func TestSpanToToolEvent_UnknownSpanDiscarded(t *testing.T) {
 	span := &tracepb.Span{
 		Name: "http.request",
 	}
-	_, ok := spanToToolEvent(span, resourceAttrs{}, "tower")
+	_, ok := spanToToolEvent(span, RunContext{}, "tower")
 	if ok {
 		t.Error("expected unknown span to be discarded")
 	}
@@ -75,7 +75,7 @@ func TestSpanToToolEvent_ToolNameAttribute(t *testing.T) {
 		Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_ERROR},
 	}
 
-	event, ok := spanToToolEvent(span, resourceAttrs{Step: "review"}, "tower")
+	event, ok := spanToToolEvent(span, RunContext{FormulaStep: "review"}, "tower")
 	if !ok {
 		t.Fatal("expected tool_result span with tool_name=Bash to be recognized")
 	}
@@ -96,39 +96,12 @@ func TestSpanToToolEvent_FallbackTower(t *testing.T) {
 		StartTimeUnixNano: uint64(time.Now().UnixNano()),
 		EndTimeUnixNano:   uint64(time.Now().UnixNano()) + 10_000_000,
 	}
-	event, ok := spanToToolEvent(span, resourceAttrs{}, "fallback-tower")
+	event, ok := spanToToolEvent(span, RunContext{}, "fallback-tower")
 	if !ok {
 		t.Fatal("expected Edit span to be recognized")
 	}
 	if event.Tower != "fallback-tower" {
 		t.Errorf("tower = %q, want fallback-tower", event.Tower)
-	}
-}
-
-func TestExtractResourceAttrs(t *testing.T) {
-	rs := &tracepb.ResourceSpans{
-		Resource: &resourcepb.Resource{
-			Attributes: []*commonpb.KeyValue{
-				{Key: "bead.id", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "spi-xyz"}}},
-				{Key: "agent.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "wizard-spi-xyz"}}},
-				{Key: "step", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "plan"}}},
-				{Key: "tower", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "my-tower"}}},
-			},
-		},
-	}
-
-	attrs := extractResourceAttrs(rs)
-	if attrs.BeadID != "spi-xyz" {
-		t.Errorf("bead_id = %q, want spi-xyz", attrs.BeadID)
-	}
-	if attrs.AgentName != "wizard-spi-xyz" {
-		t.Errorf("agent_name = %q, want wizard-spi-xyz", attrs.AgentName)
-	}
-	if attrs.Step != "plan" {
-		t.Errorf("step = %q, want plan", attrs.Step)
-	}
-	if attrs.Tower != "my-tower" {
-		t.Errorf("tower = %q, want my-tower", attrs.Tower)
 	}
 }
 
@@ -149,11 +122,11 @@ func TestSpanToToolSpan_Basic(t *testing.T) {
 		},
 	}
 
-	res := resourceAttrs{
-		BeadID:    "spi-test",
-		AgentName: "apprentice-0",
-		Step:      "implement",
-		Tower:     "test-tower",
+	res := RunContext{
+		BeadID:      "spi-test",
+		AgentName:   "apprentice-0",
+		FormulaStep: "implement",
+		Tower:       "test-tower",
 	}
 
 	ts, ok := spanToToolSpan(span, res, "default-tower")
@@ -191,7 +164,7 @@ func TestSpanToToolSpan_EmptyNameDiscarded(t *testing.T) {
 	span := &tracepb.Span{
 		Name: "",
 	}
-	_, ok := spanToToolSpan(span, resourceAttrs{}, "tower")
+	_, ok := spanToToolSpan(span, RunContext{}, "tower")
 	if ok {
 		t.Error("expected empty-name span to be discarded")
 	}
@@ -208,7 +181,7 @@ func TestSpanToToolSpan_ErrorStatus(t *testing.T) {
 		Status:            &tracepb.Status{Code: tracepb.Status_STATUS_CODE_ERROR},
 	}
 
-	ts, ok := spanToToolSpan(span, resourceAttrs{}, "tower")
+	ts, ok := spanToToolSpan(span, RunContext{}, "tower")
 	if !ok {
 		t.Fatal("expected span to be accepted")
 	}
@@ -228,7 +201,7 @@ func TestSpanToToolSpan_FallbackTower(t *testing.T) {
 		StartTimeUnixNano: uint64(time.Now().UnixNano()),
 		EndTimeUnixNano:   uint64(time.Now().UnixNano()) + 10_000_000,
 	}
-	ts, ok := spanToToolSpan(span, resourceAttrs{}, "fallback-tower")
+	ts, ok := spanToToolSpan(span, RunContext{}, "fallback-tower")
 	if !ok {
 		t.Fatal("expected span to be accepted")
 	}

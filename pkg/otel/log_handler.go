@@ -9,7 +9,6 @@ import (
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
-	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 // LogParseResult holds the parsed tool events and API events from a batch of
@@ -25,7 +24,7 @@ func ParseLogRecords(resourceLogs []*logspb.ResourceLogs, defaultTower string) L
 	var result LogParseResult
 
 	for _, rl := range resourceLogs {
-		res := extractLogResourceAttrs(rl.GetResource())
+		res := ExtractRunContext(rl.GetResource())
 
 		for _, sl := range rl.GetScopeLogs() {
 			for _, lr := range sl.GetLogRecords() {
@@ -111,13 +110,13 @@ func isKnownEventPrefix(s string) bool {
 	return strings.HasPrefix(s, "claude_code.") || strings.HasPrefix(s, "codex.")
 }
 
-func parseToolEvent(lr *logspb.LogRecord, provider, kind string, res resourceAttrs, tower string, ts time.Time) ToolEvent {
+func parseToolEvent(lr *logspb.LogRecord, provider, kind string, res RunContext, tower string, ts time.Time) ToolEvent {
 	attrs := logAttrMap(lr.GetAttributes())
 	return ToolEvent{
 		SessionID:  res.SessionID,
 		BeadID:     res.BeadID,
 		AgentName:  res.AgentName,
-		Step:       res.Step,
+		Step:       res.FormulaStep,
 		ToolName:   attrStr(attrs, "tool_name", "tool.name"),
 		DurationMs: attrInt(attrs, "duration_ms", "duration"),
 		Success:    attrBool(attrs, "success", true),
@@ -128,13 +127,13 @@ func parseToolEvent(lr *logspb.LogRecord, provider, kind string, res resourceAtt
 	}
 }
 
-func parseAPIEvent(lr *logspb.LogRecord, provider string, res resourceAttrs, tower string, ts time.Time) APIEvent {
+func parseAPIEvent(lr *logspb.LogRecord, provider string, res RunContext, tower string, ts time.Time) APIEvent {
 	attrs := logAttrMap(lr.GetAttributes())
 	return APIEvent{
 		SessionID:        res.SessionID,
 		BeadID:           res.BeadID,
 		AgentName:        res.AgentName,
-		Step:             res.Step,
+		Step:             res.FormulaStep,
 		Provider:         provider,
 		Model:            attrStr(attrs, "model", "llm.model"),
 		DurationMs:       attrInt(attrs, "duration_ms", "duration"),
@@ -148,43 +147,19 @@ func parseAPIEvent(lr *logspb.LogRecord, provider string, res resourceAttrs, tow
 	}
 }
 
-func parseGenericToolEvent(lr *logspb.LogRecord, provider, kind string, res resourceAttrs, tower string, ts time.Time) ToolEvent {
+func parseGenericToolEvent(lr *logspb.LogRecord, provider, kind string, res RunContext, tower string, ts time.Time) ToolEvent {
 	attrs := logAttrMap(lr.GetAttributes())
 	return ToolEvent{
 		SessionID: res.SessionID,
 		BeadID:    res.BeadID,
 		AgentName: res.AgentName,
-		Step:      res.Step,
+		Step:      res.FormulaStep,
 		ToolName:  attrStr(attrs, "tool_name", "tool.name"),
 		Timestamp: ts,
 		Tower:     tower,
 		Provider:  provider,
 		EventKind: kind,
 	}
-}
-
-// extractLogResourceAttrs reads resource-level attributes from a log resource.
-func extractLogResourceAttrs(res *resourcepb.Resource) resourceAttrs {
-	var attrs resourceAttrs
-	if res == nil {
-		return attrs
-	}
-	for _, kv := range res.GetAttributes() {
-		val := kvStringValue(kv)
-		switch kv.GetKey() {
-		case "bead.id":
-			attrs.BeadID = val
-		case "agent.name":
-			attrs.AgentName = val
-		case "step":
-			attrs.Step = val
-		case "tower":
-			attrs.Tower = val
-		case "session.id", "service.instance.id":
-			attrs.SessionID = val
-		}
-	}
-	return attrs
 }
 
 // --- attribute helpers ---

@@ -27,7 +27,10 @@ import (
 	"testing"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/otel"
 	"github.com/awell-health/spire/pkg/runtime"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 // canonicalRun returns a fully-populated RunContext used as the parity
@@ -389,4 +392,97 @@ func TestLocalAndK8sBackendProduceTheSameCanonicalEnvVocabulary(t *testing.T) {
 // operator's pod shape to pkg/agent's shared builder byte-for-byte.
 func TestOperatorK8sParity(t *testing.T) {
 	t.Skip("operator-k8s parity is enforced by operator/controllers/pod_builder_parity_test; see comment on TestOperatorK8sParity for the live-cluster harness TODO (spi-smk2a / CI docs sweep).")
+}
+
+// parseOTELResourceAttrs parses the OTLP OTEL_RESOURCE_ATTRIBUTES
+// environment-variable format (comma-separated key=value pairs, as
+// defined by the OpenTelemetry spec) into a slice of OTLP KeyValue
+// protos. Used by the emitter→receiver round-trip parity test below.
+func parseOTELResourceAttrs(s string) []*commonpb.KeyValue {
+	if s == "" {
+		return nil
+	}
+	pairs := strings.Split(s, ",")
+	out := make([]*commonpb.KeyValue, 0, len(pairs))
+	for _, p := range pairs {
+		idx := strings.Index(p, "=")
+		if idx <= 0 {
+			continue
+		}
+		out = append(out, &commonpb.KeyValue{
+			Key: p[:idx],
+			Value: &commonpb.AnyValue{
+				Value: &commonpb.AnyValue_StringValue{StringValue: p[idx+1:]},
+			},
+		})
+	}
+	return out
+}
+
+// TestEmitterReceiverOTELResourceAttrsRoundTrip is the spi-ecnfe
+// gating parity test: the exact OTEL_RESOURCE_ATTRIBUTES string the
+// worker spawn path produces must feed through the OTEL receiver's
+// ExtractRunContext and yield a RunContext whose identity fields match
+// the canonical SpawnConfig. This closes the silent-disagreement gap
+// that let the emitter migrate to canonical keys (spi-xplwy / spi-zm3b1)
+// while the receiver still parsed legacy bead.id / step.
+//
+// Regression: if the emitter renames or drops a canonical attr, this
+// test fails because the receiver's RunContext misses the expected
+// value. If the receiver stops recognizing a canonical key, it also
+// fails here — neither side can drift silently.
+func TestEmitterReceiverOTELResourceAttrsRoundTrip(t *testing.T) {
+	cfg := canonicalSpawnConfig(t)
+	env := envVarsFromProcessBackend(t, cfg)
+
+	attrsStr, ok := env["OTEL_RESOURCE_ATTRIBUTES"]
+	if !ok {
+		t.Fatal("process backend did not set OTEL_RESOURCE_ATTRIBUTES")
+	}
+
+	kvs := parseOTELResourceAttrs(attrsStr)
+	if len(kvs) == 0 {
+		t.Fatalf("no attributes parsed from %q", attrsStr)
+	}
+
+	rc := otel.ExtractRunContext(&resourcepb.Resource{Attributes: kvs})
+
+	// Every canonical identity field from the SpawnConfig must round-trip
+	// through the receiver extractor intact. A miss here is either a
+	// broken emitter (dropped key / renamed key) or a broken receiver
+	// (stopped recognizing the canonical name).
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"BeadID", rc.BeadID, cfg.Run.BeadID},
+		{"AttemptID", rc.AttemptID, cfg.Run.AttemptID},
+		{"RunID", rc.RunID, cfg.Run.RunID},
+		{"Tower", rc.Tower, cfg.Run.TowerName},
+		{"Prefix", rc.Prefix, cfg.Run.Prefix},
+		{"Role", rc.Role, string(cfg.Run.Role)},
+		{"FormulaStep", rc.FormulaStep, cfg.Run.FormulaStep},
+		{"Backend", rc.Backend, cfg.Run.Backend},
+		{"WorkspaceKind", rc.WorkspaceKind, string(cfg.Run.WorkspaceKind)},
+		{"WorkspaceName", rc.WorkspaceName, cfg.Run.WorkspaceName},
+		{"WorkspaceOrigin", rc.WorkspaceOrigin, string(cfg.Run.WorkspaceOrigin)},
+		{"HandoffMode", rc.HandoffMode, string(cfg.Run.HandoffMode)},
+		{"AgentName", rc.AgentName, cfg.Name},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("RunContext.%s = %q, want %q — emitter/receiver drift on canonical attr", c.name, c.got, c.want)
+		}
+	}
+
+	// Spot-check the specific bug this bead fixes: the receiver must
+	// recognize canonical `bead_id` (underscore) and `formula_step` —
+	// the legacy `bead.id` / `step` extraction path alone is the bug.
+	if rc.BeadID == "" {
+		t.Error("canonical bead_id failed to populate RunContext.BeadID — the spi-ecnfe regression")
+	}
+	if rc.FormulaStep == "" {
+		t.Error("canonical formula_step failed to populate RunContext.FormulaStep — the spi-ecnfe regression")
+	}
 }
