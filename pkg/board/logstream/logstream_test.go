@@ -36,6 +36,19 @@ func TestGet_UnknownReturnsRaw(t *testing.T) {
 	}
 }
 
+func TestRegistered_ReturnsSortedKnownProviders(t *testing.T) {
+	got := Registered()
+	want := []string{"claude", "codex"}
+	if len(got) != len(want) {
+		t.Fatalf("Registered() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Registered()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestRawAdapter_ParsePassthrough(t *testing.T) {
 	events, ok := rawAdapter{}.Parse("hello\nworld")
 	if !ok {

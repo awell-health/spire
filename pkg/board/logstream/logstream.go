@@ -9,7 +9,10 @@
 // treats the bytes as opaque.
 package logstream
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // EventKind enumerates the canonical event types an adapter may emit.
 // The iota order is load-bearing — tests and future debug output rely on
@@ -102,4 +105,16 @@ func Get(name string) Adapter {
 		return a
 	}
 	return rawAdapter{}
+}
+
+// Registered returns the provider names with registered adapters, sorted
+// lexicographically. Callers outside the package use this to iterate the
+// known providers without reaching into the registry map.
+func Registered() []string {
+	names := make([]string, 0, len(registry))
+	for name := range registry {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
