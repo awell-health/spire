@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -56,6 +57,23 @@ func main() {
 	flag.StringVar(&database, "database", os.Getenv("BEADS_DATABASE"), "Dolt database name (tower identity). Defaults to $BEADS_DATABASE; falls back to --namespace when unset.")
 	flag.StringVar(&prefix, "prefix", os.Getenv("BEADS_PREFIX"), "Default bead prefix. Defaults to $BEADS_PREFIX.")
 	flag.StringVar(&dolthubRemote, "dolthub-remote", os.Getenv("DOLTHUB_REMOTE"), "DoltHub remote URL for tower-attach init containers. Defaults to $DOLTHUB_REMOTE.")
+
+	// Guild cache reconciler inputs — deployment-time defaults plumbed
+	// from the chart's `cache.*` values (see helm/spire/values.yaml and
+	// the `spire.cachePVCSpec` helpers in _helpers.tpl). The per-guild
+	// WizardGuild.Spec.CacheSpec fields override these.
+	var (
+		cacheGitImage          string
+		cacheReconcileInterval time.Duration
+		cacheStorageClass      string
+		cacheDefaultSize       string
+		cacheDefaultAccessMode string
+	)
+	flag.StringVar(&cacheGitImage, "cache-git-image", "alpine/git:latest", "Container image for guild cache refresh Jobs (must ship git + sh)")
+	flag.DurationVar(&cacheReconcileInterval, "cache-reconcile-interval", 1*time.Minute, "How often the cache reconciler wakes up to check refresh cadence")
+	flag.StringVar(&cacheStorageClass, "cache-storage-class", os.Getenv("SPIRE_CACHE_STORAGE_CLASS"), "Default StorageClass for guild-owned repo cache PVCs (chart fallback)")
+	flag.StringVar(&cacheDefaultSize, "cache-default-size", firstNonEmpty(os.Getenv("SPIRE_CACHE_DEFAULT_SIZE"), "10Gi"), "Default size for guild-owned repo cache PVCs (chart fallback)")
+	flag.StringVar(&cacheDefaultAccessMode, "cache-default-access-mode", firstNonEmpty(os.Getenv("SPIRE_CACHE_DEFAULT_ACCESS_MODE"), "ReadOnlyMany"), "Default access mode for guild-owned repo cache PVCs (chart fallback)")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -123,6 +141,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Cache reconciler — materializes per-WizardGuild repo cache PVCs
+	// and schedules refresh Jobs (spi-myzn5). Inactive for guilds that
+	// leave Spec.Cache unset.
+	cacheReconciler := &controllers.CacheReconciler{
+		Client:                 mgr.GetClient(),
+		Log:                    log.WithName("cache-reconciler"),
+		Namespace:              namespace,
+		Interval:               cacheReconcileInterval,
+		GitImage:               cacheGitImage,
+		ChartCacheStorageClass: cacheStorageClass,
+		ChartCacheSize:         cacheDefaultSize,
+		ChartCacheAccessMode:   corev1.PersistentVolumeAccessMode(cacheDefaultAccessMode),
+		Database:               database,
+		Prefix:                 prefix,
+	}
+	if err := mgr.Add(cacheReconciler); err != nil {
+		log.Error(err, "unable to add cache reconciler")
+		os.Exit(1)
+	}
+
 	log.Info("starting operator",
 		"namespace", namespace,
 		"interval", interval,
@@ -132,4 +170,13 @@ func main() {
 		log.Error(err, "operator exited with error")
 		os.Exit(1)
 	}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
