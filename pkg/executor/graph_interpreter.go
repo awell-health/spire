@@ -216,6 +216,23 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		// 4. Dispatch action.
 		result := e.dispatchAction(stepName, stepCfg, state)
 
+		// 4b. Notify the optional step observer before any branching. The
+		// observer sees the raw dispatch outcome (outputs + error) so a
+		// foreground cleric dispatcher can render one PhaseEvent per
+		// phase completion regardless of whether the step parks, records
+		// an error, or completes cleanly. Guarded with a recover so a
+		// panicking observer can't take the interpreter down.
+		if e.deps.OnStepCompleted != nil {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						e.log("warning: OnStepCompleted panic on %s: %v", stepName, r)
+					}
+				}()
+				e.deps.OnStepCompleted(stepName, result.Outputs, result.Error)
+			}()
+		}
+
 		// 5. Record outputs and update state.
 		if result.Error != nil {
 			// Opt-in: if step declares on_error = "record", treat the error as a

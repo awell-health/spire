@@ -69,9 +69,16 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 		logf = func(string, ...interface{}) {}
 	}
 
+	captureBranch := func(branch string) {
+		if deps.CaptureDecideBranch != nil {
+			deps.CaptureDecideBranch(branch)
+		}
+	}
+
 	// (0) Auto-escalate when attempt budget is exhausted.
 	if totalAttempts >= maxAttempts {
 		logf("recovery: decide: auto-escalate — total attempts %d >= max %d", totalAttempts, maxAttempts)
+		captureBranch(DecideBranchBudget)
 		return planForAction(
 			"escalate",
 			1.0,
@@ -84,6 +91,7 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 	// attempt-budget guard.
 	if guided := parseHumanGuidance(deps.HumanComments, repeatedFailures); guided != "" {
 		logf("recovery: decide: human guidance detected → %s", guided)
+		captureBranch(DecideBranchGuidance)
 		return planForAction(
 			guided,
 			0.90,
@@ -105,6 +113,7 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 			if action != "" && repeatedFailures[action] < 2 {
 				logf("recovery: decide: promoted mechanical recipe for %s → %s (count=%d threshold=%d)",
 					sig, action, promState.Count, promState.Threshold)
+				captureBranch(DecideBranchRecipe)
 				plan := planForAction(
 					action,
 					0.95,
@@ -137,6 +146,7 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 	if deps.ClaudeRunner == nil {
 		// (d) No Claude runner → fallback to resummon.
 		logf("recovery: decide: ClaudeRunner not available, falling back to resummon")
+		captureBranch(DecideBranchFallback)
 		return planForAction("resummon", 0.50, "Fallback: ClaudeRunner unavailable", false), nil
 	}
 
@@ -172,6 +182,7 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 	if err != nil {
 		// (d) Claude call failed → fallback to resummon.
 		logf("recovery: decide: claude call failed, falling back to resummon: %v", err)
+		captureBranch(DecideBranchFallback)
 		return planForAction(
 			"resummon",
 			0.40,
@@ -228,8 +239,22 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 	}
 
 	plan := planForAction(result.ChosenAction, result.Confidence, result.Reasoning, result.NeedsHuman)
+	captureBranch(DecideBranchClaude)
 	return plan, nil
 }
+
+// DecideBranch constants name the priority-ladder rungs that Decide can
+// fire. The single branch chosen per call flows out through
+// Deps.CaptureDecideBranch — the steward leaves the hook nil and ignores
+// the value; the foreground debug-dispatch path stamps it into a
+// PhaseEvent so operators see which rung won.
+const (
+	DecideBranchBudget   = "budget"
+	DecideBranchGuidance = "guidance"
+	DecideBranchRecipe   = "recipe"
+	DecideBranchClaude   = "claude"
+	DecideBranchFallback = "fallback"
+)
 
 // planForAction builds a RepairPlan from the classic action-string
 // vocabulary. It maps the action to its canonical RepairMode and stamps

@@ -874,6 +874,7 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 	}
 
 	var capturedClaudeResult *recovery.DecideResult
+	var capturedDecideBranch string
 	recDeps := recovery.Deps{
 		RecoveryBeadID:   e.beadID,
 		Logf:             e.log,
@@ -899,6 +900,9 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 		CaptureDecideResult: func(r recovery.DecideResult) {
 			rr := r
 			capturedClaudeResult = &rr
+		},
+		CaptureDecideBranch: func(branch string) {
+			capturedDecideBranch = branch
 		},
 	}
 
@@ -953,6 +957,9 @@ func handleDecide(e *Executor, stepName string, step StepConfig, state *GraphSta
 	}
 	if capturedClaudeResult != nil {
 		outputs["expected_outcome"] = capturedClaudeResult.ExpectedOutcome
+	}
+	if capturedDecideBranch != "" {
+		outputs["decide_branch"] = capturedDecideBranch
 	}
 	if plan.Mode == recovery.RepairModeRecipe {
 		outputs["promoted"] = "true"

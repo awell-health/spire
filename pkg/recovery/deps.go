@@ -121,6 +121,14 @@ type Deps struct {
 	// outputs with RecoveryOutcome.
 	CaptureDecideResult func(result DecideResult)
 
+	// CaptureDecideBranch is an optional side-channel hook invoked once
+	// per Decide call with the priority-ladder branch that produced the
+	// returned RepairPlan: "budget", "guidance", "recipe", "claude", or
+	// "fallback". Nil means "don't capture" — the steward path leaves
+	// this unset; the foreground debug-dispatch path wires it through
+	// to a PhaseEvent.Branch so operators see which rung fired.
+	CaptureDecideBranch func(branch string)
+
 	// --- Decide context data (spi-nwfn1) ---
 	// Pre-assembled by the caller before invoking Decide. These carry data
 	// that was historically read from FullRecoveryContext in the

@@ -77,8 +77,5 @@ func cmdDebugRecoveryNew(args []string) error {
 }
 
 func cmdDebugRecoveryDispatch(args []string) error {
-	if err := requireDebugTower(); err != nil {
-		return err
-	}
-	return errors.New("spire debug recovery dispatch: not yet implemented")
+	return cmdDebugRecoveryDispatchImpl(args)
 }

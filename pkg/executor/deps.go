@@ -182,4 +182,14 @@ type Deps struct {
 	HasLabel       func(b Bead, prefix string) string
 	ContainsLabel  func(b Bead, label string) bool
 	ParseIssueType func(s string) beads.IssueType
+
+	// OnStepCompleted is an optional observer invoked by RunGraph after
+	// every step finishes — including error-recorded and hooked
+	// outcomes. stepOutputs is a snapshot of the step's outputs; err is
+	// non-nil when the step errored (hooked or on_error=record path).
+	// Used by the foreground debug-dispatch path to translate each step
+	// completion into a recovery.PhaseEvent for the cleric observability
+	// surface. Nil means "don't observe" — production paths leave it
+	// unset and RunGraph skips the callback.
+	OnStepCompleted func(stepName string, stepOutputs map[string]string, err error)
 }
