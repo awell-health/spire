@@ -451,6 +451,17 @@ func (m *AgentMonitor) buildWorkloadPod(wg *spirev1.WizardGuild, beadID string, 
 	// about; applying them post-build keeps the shared shape authoritative.
 	m.applyOperatorOverlay(pod, wg, beadID, cfg, image, db, prefix)
 
+	// Phase-2 cache overlay (spi-sn7o3): when the guild declares a cache,
+	// rewire the pod so it boots from the guild-owned cache PVC instead
+	// of cloning from origin on every pod start. The overlay replaces the
+	// repo-bootstrap init container with cache-bootstrap, adds the cache
+	// PVC volume, and repoints the workspace mount at WorkspaceMountPath
+	// so the main container's runtime surface stays identical to phase-1
+	// (writable repo substrate at a single well-known mount).
+	if wg.Spec.Cache != nil {
+		applyCacheOverlay(pod, wg.Name, prefix, image)
+	}
+
 	return pod
 }
 
@@ -552,6 +563,100 @@ func (m *AgentMonitor) applyOperatorOverlay(
 	}
 	for i := range pod.Spec.InitContainers {
 		pod.Spec.InitContainers[i].Env = mergeEnv(pod.Spec.InitContainers[i].Env, overlayEnv)
+	}
+}
+
+// applyCacheOverlay rewires the pod to boot from the guild-owned repo
+// cache PVC instead of cloning from origin (phase-2 cluster repo-cache
+// contract, spi-sn7o3). Mutates pod in place:
+//
+//   - Adds a cache PVC volume named "repo-cache" pointing at the
+//     reconciler-managed <guild-name>-repo-cache PVC (pvcName() is the
+//     shared helper defined in cache_reconciler.go).
+//   - Replaces the shared builder's "repo-bootstrap" init container
+//     with "cache-bootstrap", which invokes `spire cache-bootstrap`
+//     (cmd/spire/cache_bootstrap.go) to call the pkg/agent helpers
+//     MaterializeWorkspaceFromCache then BindLocalRepo.
+//   - Mounts the cache PVC read-only at agent.CacheMountPath and the
+//     writable workspace emptyDir at agent.WorkspaceMountPath, on both
+//     the init container and the main container, so the main container
+//     finds the local repo substrate at WorkspaceMountPath.
+//   - Repoints the main container's WorkingDir to WorkspaceMountPath —
+//     MaterializeWorkspaceFromCache clones the cache tree directly into
+//     WorkspaceMountPath (no prefix subdirectory), so the repo root IS
+//     WorkspaceMountPath.
+//
+// The env overlay (SPIRE_REPO_URL/BRANCH/PREFIX, DOLT_DATA_DIR,
+// canonical observability identity from spi-xplwy) is already applied
+// by the shared builder and the operator overlay before this runs —
+// the cache overlay does not touch env, to keep pkg/executor and
+// pkg/wizard's runtime surface identical to phase-1.
+func applyCacheOverlay(pod *corev1.Pod, guildName, prefix, image string) {
+	// Add the cache PVC volume. Read-only access at the volume level is
+	// a belt-and-suspenders companion to the per-mount ReadOnly flag
+	// below — the PVC itself is provisioned ReadOnlyMany by the cache
+	// reconciler, so neither init nor main container can mutate it.
+	cacheVolume := corev1.Volume{
+		Name: "repo-cache",
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: pvcName(guildName),
+				ReadOnly:  true,
+			},
+		},
+	}
+	pod.Spec.Volumes = append(pod.Spec.Volumes, cacheVolume)
+
+	cacheMount := corev1.VolumeMount{
+		Name:      "repo-cache",
+		MountPath: agent.CacheMountPath,
+		ReadOnly:  true,
+	}
+	workspaceMount := corev1.VolumeMount{
+		Name:      "workspace",
+		MountPath: agent.WorkspaceMountPath,
+	}
+	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
+
+	// Replace the shared builder's repo-bootstrap init container with a
+	// cache-bootstrap init container. tower-attach stays as-is — it
+	// stages /data and does not care about the workspace/cache mounts.
+	for i := range pod.Spec.InitContainers {
+		ic := &pod.Spec.InitContainers[i]
+		if ic.Name != "repo-bootstrap" {
+			continue
+		}
+		ic.Name = "cache-bootstrap"
+		ic.Image = image
+		ic.Command = []string{
+			"spire", "cache-bootstrap",
+			"--cache-path=" + agent.CacheMountPath,
+			"--workspace-path=" + agent.WorkspaceMountPath,
+			"--prefix=" + prefix,
+		}
+		ic.VolumeMounts = []corev1.VolumeMount{dataMount, cacheMount, workspaceMount}
+	}
+
+	// Repoint the main container: mount the cache read-only at
+	// CacheMountPath, remap the workspace mount from /workspace (shared
+	// builder default) to WorkspaceMountPath, and set WorkingDir so
+	// cwd-sensitive code (resolveBeadsDir, ResolveBackend("")) lands
+	// inside the materialized repo tree.
+	for i := range pod.Spec.Containers {
+		main := &pod.Spec.Containers[i]
+		remapped := false
+		for j := range main.VolumeMounts {
+			vm := &main.VolumeMounts[j]
+			if vm.Name == "workspace" {
+				vm.MountPath = agent.WorkspaceMountPath
+				remapped = true
+			}
+		}
+		if !remapped {
+			main.VolumeMounts = append(main.VolumeMounts, workspaceMount)
+		}
+		main.VolumeMounts = append(main.VolumeMounts, cacheMount)
+		main.WorkingDir = agent.WorkspaceMountPath
 	}
 }
 
