@@ -200,7 +200,7 @@ spec:
         - name: BEADS_DOLT_SERVER_HOST
           value: spire-dolt.{namespace}.svc
         - name: BEADS_DOLT_SERVER_PORT
-          value: "3307"
+          value: "3306"
 
         # Identity
         - name: SPIRE_AGENT_NAME
@@ -320,7 +320,7 @@ Required on the main (`agent`) container:
 | `DOLT_DATA_DIR`            | `/data`                                                      |
 | `SPIRE_CONFIG_DIR`         | `/data/spire-config`                                         |
 | `BEADS_DOLT_SERVER_HOST`   | In-cluster dolt service (e.g. `spire-dolt.<ns>.svc`)         |
-| `BEADS_DOLT_SERVER_PORT`   | `3307`                                                       |
+| `BEADS_DOLT_SERVER_PORT`   | `3306`                                                       |
 | `SPIRE_AGENT_NAME`         | Agent identity                                               |
 | `SPIRE_BEAD_ID`            | Bead the wizard will execute                                 |
 | `SPIRE_TOWER`              | Tower name                                                   |

@@ -442,7 +442,7 @@ that sync failures don't block work assignment.
 ### Wizard Pod
 
 The wizard pod is the canonical per-bead runtime. It is a single-container
-pod with one init container and `restartPolicy: Never` (one-shot). See
+pod with two init containers and `restartPolicy: Never` (one-shot). See
 [k8s-operator-reference.md](k8s-operator-reference.md#canonical-wizard-pod-contract)
 for the authoritative spec.
 
@@ -463,12 +463,22 @@ for the authoritative spec.
 |                         |                                 |
 |                         v                                 |
 | +------------------------------------------------------+ |
+| | init: repo-bootstrap                                 | |
+| | clones SPIRE_REPO_URL@SPIRE_REPO_BRANCH into         | |
+| |   /workspace/<prefix>, then runs `spire repo         | |
+| |   bind-local` so wizard.ResolveRepo resolves it      | |
+| | volumeMounts: /data, /workspace                      | |
+| +------------------------------------------------------+ |
+|                         |                                 |
+|                         v                                 |
+| +------------------------------------------------------+ |
 | | agent (main)                                         | |
 | | spire execute <bead-id> --name <agent-name>          | |
 | | env: DOLT_DATA_DIR, SPIRE_CONFIG_DIR,                | |
 | |      BEADS_DOLT_SERVER_{HOST,PORT},                  | |
 | |      SPIRE_AGENT_NAME, SPIRE_BEAD_ID,                | |
 | |      SPIRE_TOWER, SPIRE_ROLE=wizard,                 | |
+| |      SPIRE_REPO_{URL,BRANCH,PREFIX},                 | |
 | |      OTEL_*, ANTHROPIC_API_KEY (Secret),             | |
 | |      GITHUB_TOKEN (Secret, optional)                 | |
 | | volumeMounts: /data, /workspace                      | |
@@ -476,18 +486,21 @@ for the authoritative spec.
 | +------------------------------------------------------+ |
 |                                                          |
 |   /data       emptyDir  — beads workspace + spire config |
-|   /workspace  emptyDir  — git clone for apprentice bundles|
+|   /workspace  emptyDir  — bead repo checkout +          |
+|                           apprentice bundle target       |
 +----------------------------------------------------------+
 ```
 
 Volumes:
 - `/data` (emptyDir) — beads workspace (dolt data dir) and spire config
   (`/data/spire-config`); primed by the `tower-attach` init container
-- `/workspace` (emptyDir) — git clone target for apprentice bundle production
+- `/workspace` (emptyDir) — bead repo checkout written by the
+  `repo-bootstrap` init container and also used as the git clone target
+  when the wizard produces apprentice bundles
 
-There is no `/comms` volume, no `beads-seed` ConfigMap, and no familiar
-sidecar. The init container does all bootstrap work that used to live
-in `agent-entrypoint.sh` and the `beads-seed` ConfigMap.
+There is no `/comms` volume and no familiar sidecar in the wizard pod.
+The two init containers do all bootstrap work that used to live in
+`agent-entrypoint.sh` and the `beads-seed` ConfigMap.
 
 #### Resource tier
 

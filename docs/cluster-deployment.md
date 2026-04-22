@@ -22,6 +22,7 @@ spire pull         <──  remote <────────────── s
                                                       |
                                                  wizard pods (one-shot)
                                                   ├── init: tower-attach
+                                                  ├── init: repo-bootstrap
                                                   └── agent container
                                                       (spire execute)
 ```
@@ -459,9 +460,10 @@ kubectl logs -n spire my-agent-wizard-spi-a3f8 -c agent
 kubectl logs -n spire my-agent-wizard-spi-a3f8 -c tower-attach
 ```
 
-The wizard pod is single-container (`agent`) with one init container
-(`tower-attach`). There is no familiar sidecar or `/comms` volume in
-wizard pods — see [k8s-operator-reference.md](k8s-operator-reference.md#deprecated-agent-entrypointsh--model-a).
+The wizard pod is single-container (`agent`) with two init containers
+(`tower-attach`, then `repo-bootstrap`). There is no familiar sidecar
+or `/comms` volume in wizard pods — see
+[k8s-operator-reference.md](k8s-operator-reference.md#deprecated-agent-entrypointsh--model-a).
 
 ### Check workload status
 

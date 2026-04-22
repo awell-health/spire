@@ -7,19 +7,19 @@ This document describes the Kubernetes infrastructure that powers Spire's autono
 Spire's k8s layer turns beads (work items) into running agent pods that clone repos, write code, run tests, and push branches — without human intervention.
 
 ```
-Human files bead          Operator sees it          Pod runs agent
+Human files bead          Operator sees it          Pod runs wizard
       |                        |                        |
       v                        v                        v
-  bd create          BeadWatcher creates         Worker: clone, claim,
-  "Fix auth bug"     SpireWorkload CR            focus, implement, test,
-  -p 1 -t task              |                    commit, push
-                             v                        |
-                     WorkloadAssigner              Sidecar: polls inbox,
-                     matches to agent              health checks, control
-                             |                    channel
-                             v                        |
-                     AgentMonitor creates          Pod exits, operator
-                     per-workload pod              reaps it, agent freed
+  bd create          BeadWatcher creates         `spire execute <bead>`:
+  "Fix auth bug"     SpireWorkload CR            claim, plan, dispatch
+  -p 1 -t task              |                    apprentices, review,
+                             v                    merge, close, exit
+                     WorkloadAssigner                    |
+                     matches to agent                    v
+                             |                    Pod exits, operator
+                             v                    reaps it via pod phase,
+                     AgentMonitor creates         agent freed
+                     per-workload pod
 ```
 
 ## Components
@@ -202,7 +202,7 @@ The steward/operator injects these into the main (`agent`) container:
 | `DOLT_DATA_DIR` | `/data` | Yes |
 | `SPIRE_CONFIG_DIR` | `/data/spire-config` | Yes |
 | `BEADS_DOLT_SERVER_HOST` | In-cluster dolt service (e.g. `spire-dolt.{ns}.svc`) | Yes |
-| `BEADS_DOLT_SERVER_PORT` | `3307` | Yes |
+| `BEADS_DOLT_SERVER_PORT` | `3306` | Yes |
 | `SPIRE_AGENT_NAME` | Agent identity | Yes |
 | `SPIRE_BEAD_ID` | Assigned bead ID | Yes |
 | `SPIRE_TOWER` | Tower name | Yes |

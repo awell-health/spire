@@ -14,7 +14,6 @@ Spire has a defined hierarchy of agent roles:
 | **Apprentice** | Implementer. Writes code in an isolated worktree. One-shot. | Dispatched by wizard |
 | **Sage** | Reviewer. Reviews code, returns a verdict. One-shot. | Dispatched by wizard |
 | **Steward** | Global coordinator. Assigns work, monitors health. | `spire steward` |
-| **Familiar** | Per-agent sidecar. Messaging, health checks. | Container sidecar (k8s only) |
 
 Most custom agent work falls into one of these patterns:
 1. **Custom formula** — modify the phase pipeline a wizard follows
