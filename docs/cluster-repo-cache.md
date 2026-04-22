@@ -21,7 +21,7 @@ runtime contract.
 | Wizard pod mounts + init container | operator (spi-s2dzk) | `operator/controllers/agent_monitor.go` (`applyCacheOverlay`) |
 | Worker bootstrap helper | `pkg/agent` (spi-jetfb) | `pkg/agent/cache_bootstrap.go` |
 | Bootstrap observability vocabulary | `pkg/agent` (spi-2tu4d) | `pkg/agent/cache_observability.go` |
-| Init-container entrypoint | `cmd/spire` | `cmd/spire/cache_bootstrap.go` (`spire cache-bootstrap`) |
+| Init-container entrypoint | `cmd/spire` | `cmd/spire/cache_bootstrap.go` (`spire cluster cache-bootstrap`) |
 | Helm storage defaults | chart (spi-bsngj) | `helm/spire/values.yaml` (`cache.*`) |
 
 ## (a) Cache owner
@@ -156,7 +156,7 @@ Replaces the shared builder's `repo-bootstrap` init container.
 - **Image:** the same agent image the main container uses.
 - **Command:**
   ```
-  spire cache-bootstrap \
+  spire cluster cache-bootstrap \
     --cache-path=/spire/cache \
     --workspace-path=/spire/workspace \
     --prefix=<guild-repo-prefix>
@@ -164,7 +164,7 @@ Replaces the shared builder's `repo-bootstrap` init container.
 - **Volumes mounted:** `data` (`/data`), `repo-cache` (read-only, at
   `CacheMountPath`), `workspace` (at `WorkspaceMountPath`).
 
-`spire cache-bootstrap` (`cmd/spire/cache_bootstrap.go`) calls, in
+`spire cluster cache-bootstrap` (`cmd/spire/cache_bootstrap.go`) calls, in
 order:
 
 1. `agent.MaterializeWorkspaceFromCache(ctx, cachePath, workspacePath, prefix)`
@@ -276,7 +276,7 @@ var ErrCacheUnavailable = errors.New("agent: guild repo cache is unavailable (no
 ```
 
 `MaterializeWorkspaceFromCache` propagates the wrapped error up to
-`spire cache-bootstrap`, which exits non-zero. The init container
+`spire cluster cache-bootstrap`, which exits non-zero. The init container
 fails, the main container does not start, and the operator's normal
 Job/pod retry behavior reschedules the pod — once the reconciler
 publishes the revision marker, the next pod attempt succeeds.

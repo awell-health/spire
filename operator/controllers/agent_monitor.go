@@ -668,7 +668,7 @@ func (m *AgentMonitor) applyOperatorOverlay(
 //     reconciler-managed <guild-name>-repo-cache PVC (pvcName() is the
 //     shared helper defined in cache_reconciler.go).
 //   - Replaces the shared builder's "repo-bootstrap" init container
-//     with "cache-bootstrap", which invokes `spire cache-bootstrap`
+//     with "cache-bootstrap", which invokes `spire cluster cache-bootstrap`
 //     (cmd/spire/cache_bootstrap.go) to call the pkg/agent helpers
 //     MaterializeWorkspaceFromCache then BindLocalRepo.
 //   - Mounts the cache PVC read-only at agent.CacheMountPath and the
@@ -723,7 +723,7 @@ func applyCacheOverlay(pod *corev1.Pod, guildName, prefix, image string) {
 		ic.Name = "cache-bootstrap"
 		ic.Image = image
 		ic.Command = []string{
-			"spire", "cache-bootstrap",
+			"spire", "cluster", "cache-bootstrap",
 			"--cache-path=" + agent.CacheMountPath,
 			"--workspace-path=" + agent.WorkspaceMountPath,
 			"--prefix=" + prefix,

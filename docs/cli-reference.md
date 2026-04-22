@@ -779,6 +779,39 @@ archmage workflow; documented here for completeness.
 
 ---
 
+## Cluster
+
+Cluster-only commands invoked from inside cluster workloads (wizard pod
+init containers, reconciler-managed Jobs, and other cluster-internal
+entrypoints). These verbs are grouped under `spire cluster` to keep
+cluster-internal surface out of the laptop/agent CLI — they do not
+appear in any `SPIRE_ROLE` catalog and are not intended for interactive
+use.
+
+### `spire cluster cache-bootstrap`
+
+Materialize a writable workspace from the guild repo cache and bind it
+locally. Invoked by the wizard pod's `cache-bootstrap` init container
+(see `operator/controllers/agent_monitor.go` `applyCacheOverlay`).
+
+```bash
+spire cluster cache-bootstrap [--cache-path <path>] [--workspace-path <path>] [--prefix <prefix>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--cache-path <path>` | Read-only guild cache mount path (default `pkg/agent.CacheMountPath`) |
+| `--workspace-path <path>` | Writable workspace mount path (default `pkg/agent.WorkspaceMountPath`) |
+| `--prefix <prefix>` | Canonical repo prefix (defaults to `$SPIRE_REPO_PREFIX`) |
+
+Runs `agent.MaterializeWorkspaceFromCache(cache-path, workspace-path, prefix)`
+to clone the read-only cache into a writable workspace, then
+`agent.BindLocalRepo(workspace-path, prefix)` to register the checkout
+in the tower's LocalBindings so `wizard.ResolveRepo` succeeds when the
+main container starts.
+
+---
+
 ## Deprecated
 
 The verbs in this section continue to work but print a stderr

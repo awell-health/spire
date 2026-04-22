@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// cacheBootstrapCmd is the hidden entrypoint the wizard pod's
-// cache-bootstrap init container invokes to derive a writable per-pod
+// cacheBootstrapCmd is the `spire cluster cache-bootstrap` entrypoint the
+// wizard pod's init container invokes to derive a writable per-pod
 // workspace from the guild-owned repo cache and perform the local repo
 // bind. Exposing it as a CLI subcommand (rather than expecting the init
 // container to shell-script the equivalent work) keeps the observability
@@ -25,9 +25,8 @@ import (
 // WorkspaceMountPath with all the canonical runtime identity env already
 // populated by the operator's pod builder.
 var cacheBootstrapCmd = &cobra.Command{
-	Use:    "cache-bootstrap",
-	Short:  "Materialize a writable workspace from the guild repo cache and bind it locally",
-	Hidden: true,
+	Use:   "cache-bootstrap",
+	Short: "Materialize a writable workspace from the guild repo cache and bind it locally",
 	Long: `cache-bootstrap is invoked by the wizard pod's init container. It runs
 agent.MaterializeWorkspaceFromCache(cache-path, workspace-path, prefix) to clone
 the read-only cache into a writable workspace, then agent.BindLocalRepo(workspace-path, prefix)
@@ -62,4 +61,5 @@ func init() {
 	cacheBootstrapCmd.Flags().String("cache-path", agent.CacheMountPath, "Read-only guild cache mount path")
 	cacheBootstrapCmd.Flags().String("workspace-path", agent.WorkspaceMountPath, "Writable workspace mount path")
 	cacheBootstrapCmd.Flags().String("prefix", "", "Canonical repo prefix (defaults to $SPIRE_REPO_PREFIX)")
+	clusterCmd.AddCommand(cacheBootstrapCmd)
 }

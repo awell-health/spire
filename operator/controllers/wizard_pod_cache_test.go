@@ -117,7 +117,7 @@ func TestBuildWorkloadPod_CacheOverlay_VolumesAndMounts(t *testing.T) {
 // TestBuildWorkloadPod_CacheOverlay_InitContainerInvokesBootstrap
 // verifies the init container contract: a single container named
 // `cache-bootstrap` replaces the shared builder's `repo-bootstrap`. It
-// must call `spire cache-bootstrap` with flags naming CacheMountPath,
+// must call `spire cluster cache-bootstrap` with flags naming CacheMountPath,
 // WorkspaceMountPath, and the guild's repo prefix — matching the
 // `cmd/spire/cache_bootstrap.go` entrypoint, which in turn calls
 // agent.MaterializeWorkspaceFromCache then agent.BindLocalRepo.
@@ -148,13 +148,13 @@ func TestBuildWorkloadPod_CacheOverlay_InitContainerInvokesBootstrap(t *testing.
 		t.Fatalf("cache-bootstrap init container missing; got %+v", pod.Spec.InitContainers)
 	}
 
-	// Command shape: `spire cache-bootstrap --cache-path=<CacheMountPath>
+	// Command shape: `spire cluster cache-bootstrap --cache-path=<CacheMountPath>
 	// --workspace-path=<WorkspaceMountPath> --prefix=<prefix>`. Expressed
 	// as substring checks so cosmetic flag-order reshuffles don't break
 	// the test.
 	cmd := strings.Join(bootstrap.Command, " ")
 	wantPieces := []string{
-		"spire", "cache-bootstrap",
+		"spire", "cluster", "cache-bootstrap",
 		"--cache-path=" + agent.CacheMountPath,
 		"--workspace-path=" + agent.WorkspaceMountPath,
 		"--prefix=spi",
@@ -187,7 +187,7 @@ func TestBuildWorkloadPod_CacheOverlay_InitContainerInvokesBootstrap(t *testing.
 	// The bootstrap helper runs from the shared agent image (same
 	// binary the main container uses), NOT from the pinned git-only
 	// image the cache refresh Job uses. That's how it has access to
-	// `spire cache-bootstrap`.
+	// `spire cluster cache-bootstrap`.
 	if bootstrap.Image != "spire-agent:dev" {
 		t.Errorf("cache-bootstrap Image = %q, want to match the agent image so it ships the `spire` CLI", bootstrap.Image)
 	}

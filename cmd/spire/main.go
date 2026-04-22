@@ -72,7 +72,6 @@ func init() {
 
 	// --- Internal / advanced ---
 	rootCmd.AddCommand(executeCmd)
-	rootCmd.AddCommand(cacheBootstrapCmd)
 
 	// --- Version ---
 	rootCmd.AddCommand(versionCmd)
