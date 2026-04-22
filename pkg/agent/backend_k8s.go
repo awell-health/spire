@@ -328,15 +328,32 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, ident runtime.RepoIdentity,
 	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
 	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"}
 
+	// Workspace volume source: emptyDir by default. When the caller opts
+	// in via cfg.SharedWorkspace, back /workspace with a per-wizard PVC
+	// instead so child apprentice/sage pods that mount the same PVC by
+	// label-selector see the wizard's clone. The PVC itself is
+	// provisioned out-of-band by the operator reconciler — this code path
+	// only wires the mount. A pod that references a missing PVC stays
+	// Pending until the operator creates it, which is the intended
+	// two-step (create pod → attach PVC with ownerRef=pod).
+	workspaceVol := corev1.Volume{
+		Name:         "workspace",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}
+	if cfg.SharedWorkspace {
+		workspaceVol.VolumeSource = corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: OwningWizardPVCName(podName),
+			},
+		}
+	}
+
 	volumes := []corev1.Volume{
 		{
 			Name:         "data",
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
-		{
-			Name:         "workspace",
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		},
+		workspaceVol,
 	}
 
 	initContainers := []corev1.Container{
@@ -370,6 +387,20 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, ident runtime.RepoIdentity,
 	}
 
 	return pod, nil
+}
+
+// OwningWizardPVCName returns the deterministic name of the per-wizard
+// shared-workspace PVC for a given wizard pod. Kept as a shared helper
+// so the shared pod builder, the operator PVC reconciler, and any test
+// that asserts wiring end-to-end all agree on the same name.
+//
+// The pod name (not the agent/guild name) is the anchor because a
+// wizard pod that gets recreated must get a fresh PVC — the old PVC is
+// GC'd via the previous pod's ownerRef. If we anchored on the guild or
+// agent name, a restart would reuse a potentially-corrupt PVC from the
+// prior run.
+func OwningWizardPVCName(podName string) string {
+	return podName + "-workspace"
 }
 
 // buildSubstratePod produces an apprentice/sage/cleric pod that needs

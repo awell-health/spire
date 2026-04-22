@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/go-logr/logr"
@@ -291,6 +292,35 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		}
 
 		m.Log.Info("created workload pod", "agent_name", agent.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s", "pod", pod.Name, "role", pod.Labels["spire.awell.io/role"], "workspace_kind", pod.Labels["spire.awell.io/workspace-kind"], "workspace_name", pod.Labels["spire.awell.io/workspace-name"], "handoff_mode", pod.Labels["spire.awell.io/handoff-mode"])
+
+		// After Create, pod.UID is populated by the client. Provision the
+		// per-wizard shared-workspace PVC so the pod can transition out
+		// of Pending. BlockOwnerDeletion ensures the PVC is kept around
+		// until the pod fully terminates, so in-flight writes flush.
+		if err := m.ensureOwningWizardPVC(ctx, agent, pod); err != nil {
+			m.Log.Error(err, "failed to ensure owning-wizard PVC",
+				"agent_name", agent.Name, "bead_id", beadID, "pod", pod.Name,
+				"tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
+		}
+	}
+
+	// Attach the owning-wizard PVC to any existing wizard pods that
+	// don't yet have one. This handles the recovery case where the
+	// operator restarted after creating the pod but before creating
+	// the PVC, and the steady-state case where a CR flip from
+	// sharedWorkspace=false → true needs to provision against pods
+	// that already exist. Skip pods that were just reaped or are
+	// being deleted — attaching a PVC to a terminating pod would
+	// provision something that kube-gc tears down on the next cycle.
+	for beadID, pod := range podsByBead {
+		if reaped[beadID] || pod.DeletionTimestamp != nil {
+			continue
+		}
+		if err := m.ensureOwningWizardPVC(ctx, agent, pod); err != nil {
+			m.Log.Error(err, "failed to ensure owning-wizard PVC for existing pod",
+				"agent_name", agent.Name, "pod", pod.Name,
+				"tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
+		}
 	}
 
 	// Delete pods for work that's no longer assigned
@@ -394,6 +424,8 @@ func (m *AgentMonitor) buildWorkloadPod(wg *spirev1.WizardGuild, beadID string, 
 	prefix := m.resolvePrefix(wg)
 	db := m.resolveDatabase()
 
+	sharedWorkspace := wg.Spec.SharedWorkspace != nil && *wg.Spec.SharedWorkspace
+
 	// SpawnConfig for the shared builder. Identity fields come from the
 	// operator's explicit startup config (Database / Prefix / DolthubRemote)
 	// and the WizardGuild CR — never from pod-building-time env reads.
@@ -424,6 +456,12 @@ func (m *AgentMonitor) buildWorkloadPod(wg *spirev1.WizardGuild, beadID string, 
 			WorkspaceOrigin: runtime.WorkspaceOriginOriginClone,
 			HandoffMode:     runtime.HandoffNone,
 		},
+		// Wire the shared pod builder to swap /workspace from emptyDir
+		// to the per-wizard PVC when the guild opts in. The PVC is
+		// provisioned by the operator in ensureOwningWizardPVC after
+		// the pod is created so the PVC's ownerReference can point at
+		// the live pod UID.
+		SharedWorkspace: sharedWorkspace,
 	}
 
 	// BuildPod uses the shared wizard-pod shape (tower-attach +
@@ -488,6 +526,22 @@ func (m *AgentMonitor) applyOperatorOverlay(
 		podName = podName[:63]
 	}
 	pod.Name = podName
+
+	// When the shared builder wired /workspace to a PVC (SharedWorkspace
+	// opt-in), its ClaimName was derived from the sanitized cfg.Name that
+	// the builder saw. The operator has just overridden pod.Name to the
+	// deterministic "<guild>-wizard-<bead>" form, so the PVC reference
+	// must be re-derived from the final pod name — otherwise the pod
+	// references a PVC that the reconciler never creates.
+	if wg.Spec.SharedWorkspace != nil && *wg.Spec.SharedWorkspace {
+		for i := range pod.Spec.Volumes {
+			v := &pod.Spec.Volumes[i]
+			if v.Name != "workspace" || v.PersistentVolumeClaim == nil {
+				continue
+			}
+			v.PersistentVolumeClaim.ClaimName = agent.OwningWizardPVCName(podName)
+		}
+	}
 
 	// spire.awell.io/* labels are load-bearing for reconcileManagedAgent's
 	// list selector and the workload_assigner prefix-match path. The
@@ -660,6 +714,112 @@ func applyCacheOverlay(pod *corev1.Pod, guildName, prefix, image string) {
 	}
 }
 
+// sharedWorkspaceDefaultSize is the deployment-time default when a
+// guild's SharedWorkspaceSize is unset. Matched to the cache default so
+// operators have one number to tune for baseline PVC sizing.
+var sharedWorkspaceDefaultSize = resource.MustParse("5Gi")
+
+// ensureOwningWizardPVC provisions the per-wizard shared-workspace PVC
+// for pod, labeled spire.io/owning-wizard-pod=<pod.Name> and
+// owner-referenced by the pod so k8s GC cascades the delete when the
+// pod terminates. Idempotent: returns nil when the PVC already exists.
+//
+// Only runs when:
+//   - the guild opts in via spec.sharedWorkspace=true, AND
+//   - the pod is a wizard pod (the canonical operator-managed shape).
+//
+// BlockOwnerDeletion=true so the PVC sticks around until the pod fully
+// terminates — without this, a fast pod delete can race the controller
+// and orphan in-flight writes.
+func (m *AgentMonitor) ensureOwningWizardPVC(
+	ctx context.Context,
+	wg *spirev1.WizardGuild,
+	pod *corev1.Pod,
+) error {
+	if wg.Spec.SharedWorkspace == nil || !*wg.Spec.SharedWorkspace {
+		return nil
+	}
+	if pod == nil || pod.Name == "" {
+		return nil
+	}
+
+	pvcName := agent.OwningWizardPVCName(pod.Name)
+
+	var existing corev1.PersistentVolumeClaim
+	err := m.Client.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: pvcName}, &existing)
+	if err == nil {
+		// PVC already exists. We intentionally do NOT patch the spec —
+		// k8s rejects most mutations on a bound PVC (size changes
+		// require storage class support; access mode changes are
+		// refused). If the guild's SharedWorkspaceSize or
+		// SharedWorkspaceStorageClass change, operators must delete the
+		// pod (which GCs the old PVC via ownerRef) and let the next
+		// reconcile create a fresh PVC with the new spec.
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("get PVC %s: %w", pvcName, err)
+	}
+
+	size := sharedWorkspaceDefaultSize
+	if q := wg.Spec.SharedWorkspaceSize; q != nil && !q.IsZero() {
+		size = *q
+	}
+
+	spec := corev1.PersistentVolumeClaimSpec{
+		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		Resources: corev1.VolumeResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceStorage: size,
+			},
+		},
+	}
+	// StorageClass: nil = cluster default. Empty string has a different
+	// meaning in k8s ("disable dynamic provisioning") so we deliberately
+	// do NOT pass through an empty-string override.
+	if sc := wg.Spec.SharedWorkspaceStorageClass; sc != nil && *sc != "" {
+		v := *sc
+		spec.StorageClassName = &v
+	}
+
+	block := true
+	controller := true
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvcName,
+			Namespace: m.Namespace,
+			Labels: map[string]string{
+				agent.LabelOwningWizardPod: pod.Name,
+				"spire.awell.io/guild":     wg.Name,
+				"app.kubernetes.io/name":   "spire-wizard-workspace",
+				"app.kubernetes.io/part-of": "spire",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "v1",
+					Kind:               "Pod",
+					Name:               pod.Name,
+					UID:                pod.UID,
+					Controller:         &controller,
+					BlockOwnerDeletion: &block,
+				},
+			},
+		},
+		Spec: spec,
+	}
+	if err := m.Client.Create(ctx, pvc); err != nil {
+		if errors.IsAlreadyExists(err) {
+			// Lost a race with a concurrent reconcile; treat as success.
+			return nil
+		}
+		return fmt.Errorf("create PVC %s: %w", pvcName, err)
+	}
+	m.Log.Info("provisioned per-wizard shared-workspace PVC",
+		"pvc", pvcName, "pod", pod.Name, "agent_name", wg.Name,
+		"tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
+	return nil
+}
+
 // buildOverlayEnv returns the operator-specific env vars applied on top
 // of the shared pkg/agent env. Kept as a method on AgentMonitor so tests
 // can build it in isolation.
@@ -673,16 +833,15 @@ func (m *AgentMonitor) buildOverlayEnv(wg *spirev1.WizardGuild, cfg *spirev1.Spi
 	}
 
 	// SPIRE_K8S_SHARED_WORKSPACE is opt-in via the guild CR
-	// (spec.sharedWorkspace). Default OFF because production PVC
-	// provisioning is not wired — flipping this on without a PVC
-	// labeled `spire.io/owning-wizard-pod=<name>` in the namespace
-	// makes child apprentice/sage spawns fail with
-	// ErrSharedWorkspacePVCNotFound (pkg/agent/backend_k8s.go
-	// resolveWorkspaceVolume). See spi-cslm8.
-	//
-	// When this flag lands production PVC provisioning, the default
-	// can flip back to ON; for now keep it opt-in so a missing PVC
-	// can't break operator-managed wizards in the field.
+	// (spec.sharedWorkspace). When the flag is on, the reconciler
+	// provisions a per-wizard PVC labeled
+	// `spire.io/owning-wizard-pod=<pod-name>` (see
+	// ensureOwningWizardPVC), mounts it on the wizard pod itself, and
+	// child apprentice/sage borrowed-worktree spawns discover it via
+	// the same label selector (pkg/agent/backend_k8s.go
+	// resolveWorkspaceVolume). Default stays off so clusters without
+	// the new PVC-provisioning RBAC (spi-zpnyu, spi-cslm8) keep
+	// today's emptyDir semantics.
 	if wg.Spec.SharedWorkspace != nil && *wg.Spec.SharedWorkspace {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_K8S_SHARED_WORKSPACE", Value: "1"})
 	}

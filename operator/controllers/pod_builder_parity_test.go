@@ -80,7 +80,10 @@ func TestBuildWorkloadPod_SharedBuilderParity(t *testing.T) {
 		t.Fatalf("operator buildWorkloadPod returned nil")
 	}
 
-	// Build the shared pkg/agent pod for the same SpawnConfig.
+	// Build the shared pkg/agent pod for the same SpawnConfig. The
+	// operator sets SharedWorkspace from wg.Spec.SharedWorkspace; pass
+	// the same flag here so the shared pod's workspace volume (PVC or
+	// emptyDir) matches the operator pod.
 	spawnCfg := agent.SpawnConfig{
 		Name:       guildName,
 		BeadID:     beadID,
@@ -108,6 +111,7 @@ func TestBuildWorkloadPod_SharedBuilderParity(t *testing.T) {
 			WorkspaceOrigin: runtime.WorkspaceOriginOriginClone,
 			HandoffMode:     runtime.HandoffNone,
 		},
+		SharedWorkspace: sharedWs,
 	}
 	builder := agent.NewPodBuilder(nil, ns, image, "")
 	sharedPod, err := builder.BuildPod(spawnCfg)

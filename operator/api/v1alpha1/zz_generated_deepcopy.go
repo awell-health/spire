@@ -45,6 +45,14 @@ func (in *WizardGuildSpec) DeepCopyInto(out *WizardGuildSpec) {
 		v := *in.SharedWorkspace
 		out.SharedWorkspace = &v
 	}
+	if in.SharedWorkspaceSize != nil {
+		v := in.SharedWorkspaceSize.DeepCopy()
+		out.SharedWorkspaceSize = &v
+	}
+	if in.SharedWorkspaceStorageClass != nil {
+		v := *in.SharedWorkspaceStorageClass
+		out.SharedWorkspaceStorageClass = &v
+	}
 	if in.Cache != nil {
 		out.Cache = new(CacheSpec)
 		in.Cache.DeepCopyInto(out.Cache)

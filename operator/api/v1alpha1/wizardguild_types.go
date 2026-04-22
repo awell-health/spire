@@ -44,23 +44,33 @@ type WizardGuildSpec struct {
 	Resources  *GuildResourceRequirements `json:"resources,omitempty"`
 
 	// SharedWorkspace opts the guild in to the borrowed-worktree k8s
-	// spawn path by setting SPIRE_K8S_SHARED_WORKSPACE=1 on the wizard
-	// pod. When true, child apprentice/sage pods spawned by the wizard
-	// mount the parent wizard's PVC (labeled
-	// `spire.io/owning-wizard-pod=<name>`) at /workspace; when false
-	// (default), /workspace is backed by an emptyDir and borrowed
-	// worktrees are not supported on the k8s backend.
-	//
-	// IMPORTANT: setting this to true WITHOUT production PVC
-	// provisioning will cause child pod spawns to fail with
-	// ErrSharedWorkspacePVCNotFound. The operator does not create the
-	// PVC today — see spi-cslm8 for the bug and the follow-up task for
-	// PVC provisioning. Until that lands, leave this unset (default
-	// false) to keep the operator's behavior correct.
+	// spawn path. When true, the operator provisions a per-wizard PVC
+	// (labeled `spire.io/owning-wizard-pod=<pod-name>`,
+	// owner-referenced by the wizard pod so GC cascades on pod
+	// termination), mounts it on the wizard pod at /workspace, and
+	// sets SPIRE_K8S_SHARED_WORKSPACE=1 on the wizard env so child
+	// apprentice/sage pods that look up the PVC by label selector see
+	// the wizard's clone. When false (default), /workspace is backed
+	// by an emptyDir and borrowed worktrees are not used on the k8s
+	// backend.
 	//
 	// Pointer so unset (nil) is distinguishable from explicit false,
 	// matching the MaxApprentices precedence pattern above.
 	SharedWorkspace *bool `json:"sharedWorkspace,omitempty"`
+
+	// SharedWorkspaceSize is the requested capacity for the per-wizard
+	// shared-workspace PVC the operator provisions alongside each
+	// managed wizard pod when SharedWorkspace is enabled. Pointer so
+	// unset (nil) means "use the operator default". Empty-string is
+	// treated as unset.
+	SharedWorkspaceSize *resource.Quantity `json:"sharedWorkspaceSize,omitempty"`
+
+	// SharedWorkspaceStorageClass names the StorageClass the operator
+	// uses for the per-wizard shared-workspace PVC. Nil means "use the
+	// cluster default StorageClass" (the operator does NOT emit an
+	// explicit empty string, which Kubernetes interprets as "disable
+	// dynamic provisioning").
+	SharedWorkspaceStorageClass *string `json:"sharedWorkspaceStorageClass,omitempty"`
 
 	// Cache declares a guild-owned repo cache that wizard pods derive
 	// their read-only repo substrate from, instead of each pod cloning

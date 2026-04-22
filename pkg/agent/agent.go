@@ -140,6 +140,15 @@ type SpawnConfig struct {
 	Identity  runtime.RepoIdentity    // canonical repo identity for the run
 	Workspace *runtime.WorkspaceHandle // materialized workspace substrate (nil if none)
 	Run       runtime.RunContext      // observability identity (tower/prefix/bead/attempt/role/step/backend/workspace/handoff)
+
+	// SharedWorkspace, when true, signals that the wizard pod's /workspace
+	// mount must be backed by a per-wizard PersistentVolumeClaim (named by
+	// OwningWizardPVCName(podName)) instead of an emptyDir. The PVC itself
+	// is provisioned by the operator's reconciler — the shared pod builder
+	// only wires the volume reference. Children (apprentice/sage)
+	// borrowed-worktree spawns continue to discover the PVC via the
+	// spire.io/owning-wizard-pod label selector (see resolveWorkspaceVolume).
+	SharedWorkspace bool
 }
 
 // NewSpawner returns a Spawner for the given backend.

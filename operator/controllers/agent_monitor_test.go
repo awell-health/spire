@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr/testr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -617,4 +618,297 @@ func anyHasPrefix(cmd []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+// TestReconcileManagedAgent_ProvisionsOwningWizardPVC asserts that when a
+// guild opts into sharedWorkspace, the reconcile cycle creates a PVC next
+// to each wizard pod with the canonical owning-wizard label and an
+// ownerReference that pins the PVC's lifetime to the pod. This closes
+// the gap spi-cslm8 left open (gate was opt-in, but nothing actually
+// provisioned the PVC).
+func TestReconcileManagedAgent_ProvisionsOwningWizardPVC(t *testing.T) {
+	ns := "spire"
+	sch := newTestScheme(t)
+
+	on := true
+	agent := makeAgent("test-agent", ns, []string{"spi-abc"})
+	agent.Spec.SharedWorkspace = &on
+
+	c := fake.NewClientBuilder().
+		WithScheme(sch).
+		WithObjects(agent).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+
+	orig := getBeadMetadataFn
+	getBeadMetadataFn = func(id string) (map[string]string, error) { return nil, nil }
+	defer func() { getBeadMetadataFn = orig }()
+
+	m := &AgentMonitor{
+		Client:       c,
+		Log:          testr.New(t),
+		Namespace:    ns,
+		Interval:     time.Minute,
+		StewardImage: "spire-agent:dev",
+		Database:     "spire",
+		Prefix:       "spi",
+	}
+
+	ctx := context.Background()
+	m.reconcileManagedAgent(ctx, agent, nil)
+
+	// The reconciler must have created both the wizard pod and the
+	// backing PVC.
+	var pod corev1.Pod
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "test-agent-wizard-spi-abc"}, &pod); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+
+	wantPVC := pod.Name + "-workspace"
+	var pvc corev1.PersistentVolumeClaim
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: wantPVC}, &pvc); err != nil {
+		t.Fatalf("get PVC %q: %v", wantPVC, err)
+	}
+
+	// Canonical label that child apprentice/sage pods select on.
+	if got := pvc.Labels["spire.io/owning-wizard-pod"]; got != pod.Name {
+		t.Errorf("PVC label spire.io/owning-wizard-pod = %q, want %q", got, pod.Name)
+	}
+
+	// OwnerReference: Controller=true so k8s GC cascades the delete;
+	// BlockOwnerDeletion=true so the PVC survives long enough for writes
+	// to flush. UID must match the pod's UID.
+	if len(pvc.OwnerReferences) != 1 {
+		t.Fatalf("PVC OwnerReferences = %+v, want exactly 1", pvc.OwnerReferences)
+	}
+	or := pvc.OwnerReferences[0]
+	if or.Kind != "Pod" {
+		t.Errorf("OwnerReference Kind = %q, want Pod", or.Kind)
+	}
+	if or.Name != pod.Name {
+		t.Errorf("OwnerReference Name = %q, want %q", or.Name, pod.Name)
+	}
+	if or.UID != pod.UID {
+		t.Errorf("OwnerReference UID = %q, want %q (pod UID)", or.UID, pod.UID)
+	}
+	if or.Controller == nil || !*or.Controller {
+		t.Errorf("OwnerReference Controller = %v, want true", or.Controller)
+	}
+	if or.BlockOwnerDeletion == nil || !*or.BlockOwnerDeletion {
+		t.Errorf("OwnerReference BlockOwnerDeletion = %v, want true", or.BlockOwnerDeletion)
+	}
+
+	// Pod's workspace volume must reference the provisioned PVC rather
+	// than an emptyDir — otherwise children mount a PVC whose contents
+	// differ from what the wizard sees.
+	var workspace *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == "workspace" {
+			workspace = &pod.Spec.Volumes[i]
+			break
+		}
+	}
+	if workspace == nil {
+		t.Fatalf("pod missing 'workspace' volume; volumes=%+v", pod.Spec.Volumes)
+	}
+	if workspace.PersistentVolumeClaim == nil {
+		t.Fatalf("workspace volume not backed by PVC (emptyDir=%v)", workspace.EmptyDir != nil)
+	}
+	if workspace.PersistentVolumeClaim.ClaimName != wantPVC {
+		t.Errorf("workspace ClaimName = %q, want %q", workspace.PersistentVolumeClaim.ClaimName, wantPVC)
+	}
+}
+
+// TestReconcileManagedAgent_DoesNotProvisionPVCWhenOptedOut asserts the
+// default path: without spec.sharedWorkspace=true the reconciler leaves
+// the workspace as an emptyDir and does not create a PVC.
+func TestReconcileManagedAgent_DoesNotProvisionPVCWhenOptedOut(t *testing.T) {
+	ns := "spire"
+	sch := newTestScheme(t)
+
+	agent := makeAgent("test-agent", ns, []string{"spi-abc"})
+	// SharedWorkspace deliberately left nil — the default-off case.
+
+	c := fake.NewClientBuilder().
+		WithScheme(sch).
+		WithObjects(agent).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+
+	orig := getBeadMetadataFn
+	getBeadMetadataFn = func(id string) (map[string]string, error) { return nil, nil }
+	defer func() { getBeadMetadataFn = orig }()
+
+	m := &AgentMonitor{
+		Client:       c,
+		Log:          testr.New(t),
+		Namespace:    ns,
+		Interval:     time.Minute,
+		StewardImage: "spire-agent:dev",
+		Database:     "spire",
+		Prefix:       "spi",
+	}
+
+	m.reconcileManagedAgent(context.Background(), agent, nil)
+
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := c.List(context.Background(), &pvcs, client.InNamespace(ns)); err != nil {
+		t.Fatalf("list PVCs: %v", err)
+	}
+	if len(pvcs.Items) != 0 {
+		t.Fatalf("unexpected PVCs created with sharedWorkspace off: %+v", pvcs.Items)
+	}
+}
+
+// TestReconcileManagedAgent_OwningWizardPVC_Idempotent confirms a second
+// reconcile cycle does NOT create a duplicate PVC or error out when the
+// PVC already exists. The reconciler must converge on a single PVC per
+// wizard pod even when the cycle fires repeatedly.
+func TestReconcileManagedAgent_OwningWizardPVC_Idempotent(t *testing.T) {
+	ns := "spire"
+	sch := newTestScheme(t)
+
+	on := true
+	agent := makeAgent("test-agent", ns, []string{"spi-abc"})
+	agent.Spec.SharedWorkspace = &on
+
+	c := fake.NewClientBuilder().
+		WithScheme(sch).
+		WithObjects(agent).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+
+	orig := getBeadMetadataFn
+	getBeadMetadataFn = func(id string) (map[string]string, error) { return nil, nil }
+	defer func() { getBeadMetadataFn = orig }()
+
+	m := &AgentMonitor{
+		Client:       c,
+		Log:          testr.New(t),
+		Namespace:    ns,
+		Interval:     time.Minute,
+		StewardImage: "spire-agent:dev",
+		Database:     "spire",
+		Prefix:       "spi",
+	}
+
+	ctx := context.Background()
+	m.reconcileManagedAgent(ctx, agent, nil)
+	// Second reconcile cycle — should be a no-op for PVC creation.
+	m.reconcileManagedAgent(ctx, agent, nil)
+
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := c.List(ctx, &pvcs, client.InNamespace(ns)); err != nil {
+		t.Fatalf("list PVCs: %v", err)
+	}
+	if len(pvcs.Items) != 1 {
+		t.Fatalf("len(PVCs) after two reconciles = %d, want 1 (idempotent)", len(pvcs.Items))
+	}
+}
+
+// TestReconcileManagedAgent_OwningWizardPVC_SizeAndStorageClass covers
+// the size and storage-class overrides on WizardGuildSpec: both fall
+// through to the PVC spec verbatim, and an unset size uses the operator
+// default (5Gi).
+func TestReconcileManagedAgent_OwningWizardPVC_SizeAndStorageClass(t *testing.T) {
+	ns := "spire"
+	sch := newTestScheme(t)
+
+	on := true
+	agent := makeAgent("test-agent", ns, []string{"spi-abc"})
+	agent.Spec.SharedWorkspace = &on
+	sc := "fast-ssd"
+	agent.Spec.SharedWorkspaceStorageClass = &sc
+	size := resource.MustParse("12Gi")
+	agent.Spec.SharedWorkspaceSize = &size
+
+	c := fake.NewClientBuilder().
+		WithScheme(sch).
+		WithObjects(agent).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+
+	orig := getBeadMetadataFn
+	getBeadMetadataFn = func(id string) (map[string]string, error) { return nil, nil }
+	defer func() { getBeadMetadataFn = orig }()
+
+	m := &AgentMonitor{
+		Client:       c,
+		Log:          testr.New(t),
+		Namespace:    ns,
+		Interval:     time.Minute,
+		StewardImage: "spire-agent:dev",
+		Database:     "spire",
+		Prefix:       "spi",
+	}
+
+	m.reconcileManagedAgent(context.Background(), agent, nil)
+
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := c.List(context.Background(), &pvcs, client.InNamespace(ns)); err != nil {
+		t.Fatalf("list PVCs: %v", err)
+	}
+	if len(pvcs.Items) != 1 {
+		t.Fatalf("want exactly 1 PVC, got %d", len(pvcs.Items))
+	}
+	pvc := pvcs.Items[0]
+
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "fast-ssd" {
+		t.Errorf("StorageClassName = %v, want fast-ssd", pvc.Spec.StorageClassName)
+	}
+	got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if got.Cmp(size) != 0 {
+		t.Errorf("storage request = %v, want %v", got.String(), size.String())
+	}
+	if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteOnce {
+		t.Errorf("AccessModes = %v, want [ReadWriteOnce]", pvc.Spec.AccessModes)
+	}
+}
+
+// TestReconcileManagedAgent_OwningWizardPVC_UsesDefaultSize covers the
+// fall-through when the guild does not override size: the PVC is
+// provisioned with the operator default (5Gi).
+func TestReconcileManagedAgent_OwningWizardPVC_UsesDefaultSize(t *testing.T) {
+	ns := "spire"
+	sch := newTestScheme(t)
+
+	on := true
+	agent := makeAgent("test-agent", ns, []string{"spi-abc"})
+	agent.Spec.SharedWorkspace = &on
+	// SharedWorkspaceSize intentionally unset
+
+	c := fake.NewClientBuilder().
+		WithScheme(sch).
+		WithObjects(agent).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+
+	orig := getBeadMetadataFn
+	getBeadMetadataFn = func(id string) (map[string]string, error) { return nil, nil }
+	defer func() { getBeadMetadataFn = orig }()
+
+	m := &AgentMonitor{
+		Client:       c,
+		Log:          testr.New(t),
+		Namespace:    ns,
+		Interval:     time.Minute,
+		StewardImage: "spire-agent:dev",
+		Database:     "spire",
+		Prefix:       "spi",
+	}
+
+	m.reconcileManagedAgent(context.Background(), agent, nil)
+
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := c.List(context.Background(), &pvcs, client.InNamespace(ns)); err != nil {
+		t.Fatalf("list PVCs: %v", err)
+	}
+	if len(pvcs.Items) != 1 {
+		t.Fatalf("want exactly 1 PVC, got %d", len(pvcs.Items))
+	}
+	got := pvcs.Items[0].Spec.Resources.Requests[corev1.ResourceStorage]
+	want := resource.MustParse("5Gi")
+	if got.Cmp(want) != 0 {
+		t.Errorf("default storage request = %v, want %v", got.String(), want.String())
+	}
 }

@@ -1501,3 +1501,100 @@ func TestK8sBackend_BuildRolePod_LegacyFieldFallback(t *testing.T) {
 		t.Errorf("label %s = %q, want spi", LabelPrefix, pod.Labels[LabelPrefix])
 	}
 }
+
+// TestK8sBackend_BuildWizardPod_SharedWorkspaceOn asserts that a wizard
+// pod constructed with cfg.SharedWorkspace=true mounts a PVC at
+// /workspace instead of an emptyDir. Children (apprentice/sage) mount
+// that same PVC by label selector — without this, the children see an
+// empty disk while the wizard has its clone, and the shared-workspace
+// contract silently breaks.
+func TestK8sBackend_BuildWizardPod_SharedWorkspaceOn(t *testing.T) {
+	b, _ := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:            "wizard-spi-abc",
+		BeadID:          "spi-abc",
+		Role:            RoleWizard,
+		Identity:        canonicalIdentity(),
+		SharedWorkspace: true,
+	}
+	pod, err := b.buildRolePod(cfg)
+	if err != nil {
+		t.Fatalf("buildRolePod: %v", err)
+	}
+
+	var workspace *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == "workspace" {
+			workspace = &pod.Spec.Volumes[i]
+			break
+		}
+	}
+	if workspace == nil {
+		t.Fatalf("wizard pod missing 'workspace' volume; volumes=%+v", pod.Spec.Volumes)
+	}
+	if workspace.EmptyDir != nil {
+		t.Errorf("SharedWorkspace=true: workspace unexpectedly backed by emptyDir %+v", workspace.EmptyDir)
+	}
+	if workspace.PersistentVolumeClaim == nil {
+		t.Fatalf("SharedWorkspace=true: workspace must be backed by a PVC; got %+v", workspace)
+	}
+	if got, want := workspace.PersistentVolumeClaim.ClaimName, OwningWizardPVCName(pod.Name); got != want {
+		t.Errorf("ClaimName = %q, want %q (OwningWizardPVCName of pod)", got, want)
+	}
+}
+
+// TestK8sBackend_BuildWizardPod_SharedWorkspaceOff_UsesEmptyDir pins the
+// default path: without the opt-in, the wizard's /workspace is a fresh
+// emptyDir (matches pre-spi-zpnyu behavior).
+func TestK8sBackend_BuildWizardPod_SharedWorkspaceOff_UsesEmptyDir(t *testing.T) {
+	b, _ := newTestBackend()
+
+	cfg := SpawnConfig{
+		Name:     "wizard-spi-def",
+		BeadID:   "spi-def",
+		Role:     RoleWizard,
+		Identity: canonicalIdentity(),
+		// SharedWorkspace intentionally left false.
+	}
+	pod, err := b.buildRolePod(cfg)
+	if err != nil {
+		t.Fatalf("buildRolePod: %v", err)
+	}
+
+	var workspace *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == "workspace" {
+			workspace = &pod.Spec.Volumes[i]
+			break
+		}
+	}
+	if workspace == nil {
+		t.Fatalf("wizard pod missing 'workspace' volume; volumes=%+v", pod.Spec.Volumes)
+	}
+	if workspace.EmptyDir == nil {
+		t.Errorf("SharedWorkspace off: workspace should be emptyDir, got %+v", workspace)
+	}
+	if workspace.PersistentVolumeClaim != nil {
+		t.Errorf("SharedWorkspace off: workspace unexpectedly routed to PVC %+v", workspace.PersistentVolumeClaim)
+	}
+}
+
+// TestOwningWizardPVCName locks the deterministic PVC naming convention
+// so the operator reconciler and the shared builder can't silently
+// diverge.
+func TestOwningWizardPVCName(t *testing.T) {
+	cases := []struct {
+		pod  string
+		want string
+	}{
+		{pod: "wizard-spi-abc", want: "wizard-spi-abc-workspace"},
+		{pod: "guild-wizard-spi-zpnyu", want: "guild-wizard-spi-zpnyu-workspace"},
+		{pod: "x", want: "x-workspace"},
+	}
+	for _, tc := range cases {
+		if got := OwningWizardPVCName(tc.pod); got != tc.want {
+			t.Errorf("OwningWizardPVCName(%q) = %q, want %q", tc.pod, got, tc.want)
+		}
+	}
+}
