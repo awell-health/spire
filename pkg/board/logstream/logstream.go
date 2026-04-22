@@ -88,10 +88,11 @@ type Adapter interface {
 	Render(ev LogEvent, width int, expanded bool) []string
 }
 
-// registry maps provider name to adapter. Additional adapters (e.g.
-// "codex") are added in their own subtasks; keep the map minimal here.
+// registry maps provider name to adapter. Additional adapters are added
+// in their own subtasks; keep the map minimal here.
 var registry = map[string]Adapter{
 	"claude": &claudeAdapter{},
+	"codex":  &codexAdapter{},
 }
 
 // Get returns the adapter for the named provider, or a terminal rawAdapter

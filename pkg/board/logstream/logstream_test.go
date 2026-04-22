@@ -12,10 +12,18 @@ func TestGet_KnownReturnsClaude(t *testing.T) {
 	}
 }
 
+func TestGet_KnownReturnsCodex(t *testing.T) {
+	a := Get("codex")
+	if a == nil {
+		t.Fatal("Get(\"codex\") returned nil")
+	}
+	if got := a.Name(); got != "codex" {
+		t.Errorf("Name() = %q, want %q", got, "codex")
+	}
+}
+
 func TestGet_UnknownReturnsRaw(t *testing.T) {
-	// "codex" is not yet registered — it's added in a later subtask. Until
-	// then, it should fall back to raw like any unknown name.
-	for _, name := range []string{"codex", "", "anything"} {
+	for _, name := range []string{"", "anything", "mystery"} {
 		t.Run(name, func(t *testing.T) {
 			a := Get(name)
 			if a == nil {
