@@ -72,6 +72,7 @@ func init() {
 
 	// --- Internal / advanced ---
 	rootCmd.AddCommand(executeCmd)
+	rootCmd.AddCommand(debugCmd)
 
 	// --- Version ---
 	rootCmd.AddCommand(versionCmd)
