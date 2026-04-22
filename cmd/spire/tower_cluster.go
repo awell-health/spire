@@ -197,6 +197,12 @@ func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote stri
 		Apprentice: config.ApprenticeConfig{
 			Transport: config.ApprenticeTransportBundle,
 		},
+		// attach-cluster is the cluster-bootstrap path. Stamp the mode
+		// explicitly so the persisted tower config matches the topology
+		// the pod is actually running in, instead of defaulting to
+		// local-native via the loader fallback. Idempotent: re-running
+		// attach-cluster on helm upgrade re-saves the same value.
+		DeploymentMode: config.DeploymentModeClusterNative,
 	}
 
 	beadsDir := filepath.Join(dataDir, ".beads")

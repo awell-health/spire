@@ -387,6 +387,31 @@ func TestCmdTowerCreate_UnknownFlag(t *testing.T) {
 	}
 }
 
+// TestCmdTowerCreate_InvalidMode rejects --mode values that don't match the
+// canonical constants. Silent acceptance of e.g. "cluster_native" would
+// cause hard-to-debug drift between CLI, persisted config, and the chart.
+func TestCmdTowerCreate_InvalidMode(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  string
+	}{
+		{name: "unknown word", arg: "--mode=garbage"},
+		{name: "underscore form", arg: "--mode=cluster_native"},
+		{name: "casing mismatch", arg: "--mode=Cluster-Native"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := cmdTowerCreate([]string{"--name=t1", tc.arg})
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.arg)
+			}
+			if !strings.Contains(err.Error(), "invalid --mode value") {
+				t.Errorf("unexpected error for %q: %v", tc.arg, err)
+			}
+		})
+	}
+}
+
 func TestCmdTowerAttach_NoArgs(t *testing.T) {
 	err := cmdTowerAttach([]string{})
 	if err == nil {

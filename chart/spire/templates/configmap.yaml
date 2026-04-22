@@ -9,5 +9,6 @@ data:
   tower.json: |
     {
       "name": {{ .Values.tower.name | quote }},
-      "max_concurrent": {{ .Values.tower.maxConcurrent }}
+      "max_concurrent": {{ .Values.tower.maxConcurrent }},
+      "deployment_mode": "cluster-native"
     }

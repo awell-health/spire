@@ -734,7 +734,7 @@ func cmdTower(args []string) error {
 // cmdTowerCreate creates a new tower (dolt database + identity + repos table).
 func cmdTowerCreate(args []string) error {
 	// Parse flags
-	var name, dolthub, prefix string
+	var name, dolthub, prefix, modeStr string
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--name" && i+1 < len(args):
@@ -752,13 +752,31 @@ func cmdTowerCreate(args []string) error {
 			prefix = args[i]
 		case strings.HasPrefix(args[i], "--prefix="):
 			prefix = strings.TrimPrefix(args[i], "--prefix=")
+		case args[i] == "--mode" && i+1 < len(args):
+			i++
+			modeStr = args[i]
+		case strings.HasPrefix(args[i], "--mode="):
+			modeStr = strings.TrimPrefix(args[i], "--mode=")
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire tower create --name <name> [--dolthub user/repo] [--prefix hub]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire tower create --name <name> [--dolthub user/repo] [--prefix hub] [--mode local-native|cluster-native]", args[i])
 		}
 	}
 
 	if name == "" {
-		return fmt.Errorf("--name is required\nusage: spire tower create --name <name> [--dolthub user/repo] [--prefix hub]")
+		return fmt.Errorf("--name is required\nusage: spire tower create --name <name> [--dolthub user/repo] [--prefix hub] [--mode local-native|cluster-native]")
+	}
+
+	// Resolve deployment mode. Empty → canonical default (local-native).
+	// Non-empty values go through Validate so typos like "cluster_native"
+	// surface immediately rather than silently diverging between the CLI,
+	// the persisted config, and the downstream chart.
+	mode := config.Default()
+	if modeStr != "" {
+		m, err := config.Validate(modeStr)
+		if err != nil {
+			return fmt.Errorf("invalid --mode value: %w", err)
+		}
+		mode = m
 	}
 
 	// Check if tower already exists
@@ -866,6 +884,7 @@ func cmdTowerCreate(args []string) error {
 		Apprentice: config.ApprenticeConfig{
 			Transport: config.ApprenticeTransportBundle,
 		},
+		DeploymentMode: mode,
 	}
 
 	// Create repos table — use rawDoltQuery (bd dolt sql doesn't exist in bd 0.62)
@@ -958,6 +977,7 @@ func cmdTowerCreate(args []string) error {
 	fmt.Printf("  project_id: %s\n", tower.ProjectID)
 	fmt.Printf("  prefix:     %s\n", tower.HubPrefix)
 	fmt.Printf("  database:   %s\n", tower.Database)
+	fmt.Printf("  mode:       %s\n", tower.DeploymentMode)
 	fmt.Printf("  dolthub:    %s\n", dolthubDisplay)
 	fmt.Printf("  config:     %s\n", configPathStr)
 	fmt.Printf("\nNext steps:\n")
