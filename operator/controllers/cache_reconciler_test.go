@@ -642,6 +642,263 @@ func TestCacheReconciler_StatusPreservesRevisionOnTransientFailure(t *testing.T)
 	}
 }
 
+// TestCacheReconciler_Revision_FirstSuccess_Populated covers the
+// first-ever successful refresh: prior status is nil and a Pod owned
+// by the Job carries a terminated-state message containing the
+// resolved SHA. The reconciler must surface that SHA on
+// CacheStatus.Revision and flip Phase to Ready.
+func TestCacheReconciler_Revision_FirstSuccess_Populated(t *testing.T) {
+	const (
+		ns   = "spire"
+		name = "core"
+		sha  = "abc1234deadbeef"
+	)
+	guild := makeCacheGuild(name, ns, "git@example.com:spire/repo.git")
+	guild.Spec.Cache.BranchPin = nil
+
+	desiredHash := specHash(guild.Spec.Cache, guild.Spec.Repo, guild.Spec.RepoBranch)
+	now := metav1.Now()
+	jobName := name + "-repo-cache-refresh"
+	succeededJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            jobName,
+			Namespace:       ns,
+			Annotations:     map[string]string{cacheSpecHashAnnotation: desiredHash},
+			OwnerReferences: []metav1.OwnerReference{ownerRefFor(guild)},
+		},
+		Status: batchv1.JobStatus{
+			CompletionTime: &now,
+			Conditions: []batchv1.JobCondition{{
+				Type:               batchv1.JobComplete,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: now,
+			}},
+		},
+	}
+	refreshPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName + "-pod",
+			Namespace: ns,
+			Labels:    map[string]string{jobNameLabel: jobName},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: cacheRefreshContainerName,
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						Message: sha,
+					},
+				},
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newCacheTestScheme(t)).
+		WithObjects(guild, succeededJob, refreshPod).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+	r := newCacheReconciler(t, c, ns)
+	r.cycle(context.Background())
+
+	var got spirev1.WizardGuild
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, &got); err != nil {
+		t.Fatalf("get guild: %v", err)
+	}
+	if got.Status.Cache == nil {
+		t.Fatalf("Status.Cache nil")
+	}
+	if got.Status.Cache.Phase != cachePhaseReady {
+		t.Errorf("Phase = %q, want Ready", got.Status.Cache.Phase)
+	}
+	if got.Status.Cache.Revision != sha {
+		t.Errorf("Revision = %q, want %q", got.Status.Cache.Revision, sha)
+	}
+}
+
+// TestCacheReconciler_Revision_PreserveOnRefreshing covers the
+// in-flight refresh case: a prior successful Revision must survive a
+// transition where the new Job is still running (no terminal
+// condition yet).
+func TestCacheReconciler_Revision_PreserveOnRefreshing(t *testing.T) {
+	const (
+		ns   = "spire"
+		name = "core"
+		oldRev = "deadbeef"
+	)
+	guild := makeCacheGuild(name, ns, "git@example.com:spire/repo.git")
+	guild.Spec.Cache.BranchPin = nil
+	prevRefresh := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	guild.Status = spirev1.WizardGuildStatus{
+		Cache: &spirev1.CacheStatus{
+			Phase:           cachePhaseReady,
+			Revision:        oldRev,
+			LastRefreshTime: &prevRefresh,
+		},
+	}
+
+	desiredHash := specHash(guild.Spec.Cache, guild.Spec.Repo, guild.Spec.RepoBranch)
+	// Running Job: no Complete/Failed condition, no CompletionTime.
+	runningJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name + "-repo-cache-refresh",
+			Namespace:       ns,
+			Annotations:     map[string]string{cacheSpecHashAnnotation: desiredHash},
+			OwnerReferences: []metav1.OwnerReference{ownerRefFor(guild)},
+		},
+		Status: batchv1.JobStatus{Active: 1},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newCacheTestScheme(t)).
+		WithObjects(guild, runningJob).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+	r := newCacheReconciler(t, c, ns)
+	r.cycle(context.Background())
+
+	var got spirev1.WizardGuild
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, &got); err != nil {
+		t.Fatalf("get guild: %v", err)
+	}
+	if got.Status.Cache == nil {
+		t.Fatalf("Status.Cache nil")
+	}
+	if got.Status.Cache.Phase != cachePhaseRefreshing {
+		t.Errorf("Phase = %q, want Refreshing", got.Status.Cache.Phase)
+	}
+	if got.Status.Cache.Revision != oldRev {
+		t.Errorf("Revision = %q, want preserved %q", got.Status.Cache.Revision, oldRev)
+	}
+}
+
+// TestCacheReconciler_Revision_PodGCRace_FirstSuccess covers the case
+// where a Job has succeeded but its Pod has already been
+// garbage-collected (no Pod matches the job-name label). The
+// reconciler must NOT crash and Revision must remain empty rather
+// than fabricate a value — Phase still flips to Ready, since the Job
+// itself reports success.
+func TestCacheReconciler_Revision_PodGCRace_FirstSuccess(t *testing.T) {
+	const (
+		ns   = "spire"
+		name = "core"
+	)
+	guild := makeCacheGuild(name, ns, "git@example.com:spire/repo.git")
+	guild.Spec.Cache.BranchPin = nil
+
+	desiredHash := specHash(guild.Spec.Cache, guild.Spec.Repo, guild.Spec.RepoBranch)
+	now := metav1.Now()
+	succeededJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name + "-repo-cache-refresh",
+			Namespace:       ns,
+			Annotations:     map[string]string{cacheSpecHashAnnotation: desiredHash},
+			OwnerReferences: []metav1.OwnerReference{ownerRefFor(guild)},
+		},
+		Status: batchv1.JobStatus{
+			CompletionTime: &now,
+			Conditions: []batchv1.JobCondition{{
+				Type:               batchv1.JobComplete,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: now,
+			}},
+		},
+	}
+
+	// No Pod object — simulates kube GC having reaped it.
+	c := fake.NewClientBuilder().
+		WithScheme(newCacheTestScheme(t)).
+		WithObjects(guild, succeededJob).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+	r := newCacheReconciler(t, c, ns)
+	r.cycle(context.Background())
+
+	var got spirev1.WizardGuild
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, &got); err != nil {
+		t.Fatalf("get guild: %v", err)
+	}
+	if got.Status.Cache == nil {
+		t.Fatalf("Status.Cache nil")
+	}
+	if got.Status.Cache.Phase != cachePhaseReady {
+		t.Errorf("Phase = %q, want Ready (Job-level success is independent of Pod presence)", got.Status.Cache.Phase)
+	}
+	if got.Status.Cache.Revision != "" {
+		t.Errorf("Revision = %q, want empty (no Pod to read termination message from)", got.Status.Cache.Revision)
+	}
+}
+
+// TestCacheReconciler_Revision_RejectsNonSHATerminationMessage
+// ensures the reader's shape-check rejects garbage in the termination
+// message rather than surfacing it as the cache Revision. A worker
+// would later fail to check out a non-SHA value, so the reader is the
+// right place to gate it.
+func TestCacheReconciler_Revision_RejectsNonSHATerminationMessage(t *testing.T) {
+	const (
+		ns   = "spire"
+		name = "core"
+	)
+	guild := makeCacheGuild(name, ns, "git@example.com:spire/repo.git")
+	guild.Spec.Cache.BranchPin = nil
+
+	desiredHash := specHash(guild.Spec.Cache, guild.Spec.Repo, guild.Spec.RepoBranch)
+	jobName := name + "-repo-cache-refresh"
+	now := metav1.Now()
+	succeededJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            jobName,
+			Namespace:       ns,
+			Annotations:     map[string]string{cacheSpecHashAnnotation: desiredHash},
+			OwnerReferences: []metav1.OwnerReference{ownerRefFor(guild)},
+		},
+		Status: batchv1.JobStatus{
+			CompletionTime: &now,
+			Conditions: []batchv1.JobCondition{{
+				Type:               batchv1.JobComplete,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: now,
+			}},
+		},
+	}
+	noisyPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName + "-pod",
+			Namespace: ns,
+			Labels:    map[string]string{jobNameLabel: jobName},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: cacheRefreshContainerName,
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						Message: "fatal: clone failed: auth denied\n",
+					},
+				},
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newCacheTestScheme(t)).
+		WithObjects(guild, succeededJob, noisyPod).
+		WithStatusSubresource(&spirev1.WizardGuild{}).
+		Build()
+	r := newCacheReconciler(t, c, ns)
+	r.cycle(context.Background())
+
+	var got spirev1.WizardGuild
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, &got); err != nil {
+		t.Fatalf("get guild: %v", err)
+	}
+	if got.Status.Cache == nil {
+		t.Fatalf("Status.Cache nil")
+	}
+	if got.Status.Cache.Revision != "" {
+		t.Errorf("Revision = %q, want empty (non-SHA termination message must be rejected)", got.Status.Cache.Revision)
+	}
+}
+
 // --- helpers ---
 
 // envVarMap returns a name-keyed map of env vars. Name collisions retain

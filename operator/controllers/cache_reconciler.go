@@ -53,6 +53,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -66,6 +68,13 @@ import (
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
 	"github.com/awell-health/spire/pkg/agent"
 )
+
+// cacheRevisionSHARegex enforces the shape of a git commit SHA on the
+// reader side: a 7-to-64 char lowercase hex string. The validator is
+// operator-local on purpose — pkg/git intentionally exposes no public
+// SHA-validator helper and we don't want to force every caller to
+// import pkg/git for a trivial string-shape check.
+var cacheRevisionSHARegex = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
 // cacheRefreshMountPath is the refresh Job's container-side mount point
 // for the cache PVC. Wizard pods mount the same PVC at
@@ -81,6 +90,17 @@ const cacheRefreshMountPath = "/cache"
 // it via env lets tests (and any non-Pod harness) override it with a
 // writable path.
 const cacheRefreshTerminationLog = "/dev/termination-log"
+
+// cacheRefreshContainerName is the container the refresh script runs
+// in. The Job builder stamps this on the Job's PodSpec; the reader
+// path filters Pod ContainerStatuses by the same name to pick the
+// right termination message.
+const cacheRefreshContainerName = "refresh"
+
+// jobNameLabel is the Kubernetes-stamped label on Pods the Job
+// controller spawns; the reconciler uses it to list refresh Pods by
+// owning Job name without traversing OwnerReferences manually.
+const jobNameLabel = "job-name"
 
 // cacheRefreshEnv returns the container-side env vars that the refresh
 // script reads. They are sourced from the canonical
@@ -307,7 +327,7 @@ func (r *CacheReconciler) reconcileGuild(ctx context.Context, guild *spirev1.Wiz
 		return
 	}
 
-	newStatus := r.deriveStatus(guild, job)
+	newStatus := r.deriveStatus(ctx, guild, job)
 	r.patchCacheStatus(ctx, guild, newStatus)
 }
 
@@ -502,7 +522,7 @@ func (r *CacheReconciler) createRefreshJob(
 						},
 					}},
 					Containers: []corev1.Container{{
-						Name:    "refresh",
+						Name:    cacheRefreshContainerName,
 						Image:   image,
 						Command: []string{"/bin/sh", "-c", cacheRefreshScript},
 						// Env mixes two concerns: (a) repo identity
@@ -569,7 +589,7 @@ func (r *CacheReconciler) isRefreshDue(guild *spirev1.WizardGuild, job *batchv1.
 }
 
 // deriveStatus maps the refresh Job's state onto a CacheStatus.
-func (r *CacheReconciler) deriveStatus(guild *spirev1.WizardGuild, job *batchv1.Job) *spirev1.CacheStatus {
+func (r *CacheReconciler) deriveStatus(ctx context.Context, guild *spirev1.WizardGuild, job *batchv1.Job) *spirev1.CacheStatus {
 	status := &spirev1.CacheStatus{}
 
 	// Preserve Revision from the previous successful refresh so
@@ -590,7 +610,7 @@ func (r *CacheReconciler) deriveStatus(guild *spirev1.WizardGuild, job *batchv1.
 		if ct := jobCompletionTime(job); ct != nil {
 			status.LastRefreshTime = ct
 		}
-		if rev := revisionFromJob(job); rev != "" {
+		if rev := r.revisionFromJob(ctx, job); rev != "" {
 			status.Revision = rev
 		}
 		status.RefreshError = ""
@@ -775,22 +795,47 @@ func jobCompletionTime(job *batchv1.Job) *metav1.Time {
 	return nil
 }
 
-// revisionFromJob reads the resolved commit SHA from the refresh pod's
-// container termination message. Returns "" when no pods are
-// accessible or the message is missing — the reconciler will retain
-// the previous Revision in that case.
-func revisionFromJob(job *batchv1.Job) string {
-	// The Job controller stores the completion index / pod state on
-	// the Job status, but NOT the container termination message. The
-	// reconciler would need a separate Pod list call to fetch the
-	// message. We keep this as a best-effort helper: for the first
-	// cut, we return "" and rely on the status-preserving behavior in
-	// deriveStatus to keep a previously-populated Revision intact.
-	//
-	// A follow-up pass can wire the Pod list and surface the
-	// termination message. Plumbing it here keeps the call site
-	// stable for that change.
-	_ = job
+// revisionFromJob reads the resolved commit SHA from the refresh
+// pod's `refresh` container termination message. The refresh script
+// writes the SHA to /dev/termination-log (see cacheRefreshScript),
+// which the kubelet surfaces on ContainerStatus.State.Terminated.Message.
+//
+// Returns "" when:
+//   - the Pod list call errors,
+//   - no Pods are owned by the Job (e.g. kube GC reaped them after
+//     completion — accepted cost; deriveStatus preserves the previous
+//     Revision when it can, and the next refresh repopulates it),
+//   - the container has not produced a terminated state yet,
+//   - or the message does not look like a git SHA.
+//
+// The reconciler treats an empty return as "leave Revision unchanged"
+// in deriveStatus, so a transient pod-list failure never wipes a
+// known-good Revision.
+func (r *CacheReconciler) revisionFromJob(ctx context.Context, job *batchv1.Job) string {
+	if job == nil {
+		return ""
+	}
+	var pods corev1.PodList
+	if err := r.Client.List(ctx, &pods,
+		client.InNamespace(job.Namespace),
+		client.MatchingLabels{jobNameLabel: job.Name},
+	); err != nil {
+		r.Log.V(1).Info("revisionFromJob: pod list failed",
+			"guild_job", job.Name, "err", err.Error(),
+			"tower", r.Database, "prefix", r.Prefix, "backend", "operator-k8s")
+		return ""
+	}
+	for _, pod := range pods.Items {
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Name != cacheRefreshContainerName || cs.State.Terminated == nil {
+				continue
+			}
+			msg := strings.TrimSpace(cs.State.Terminated.Message)
+			if cacheRevisionSHARegex.MatchString(msg) {
+				return msg
+			}
+		}
+	}
 	return ""
 }
 
