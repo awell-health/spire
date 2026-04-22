@@ -9,15 +9,22 @@
 // Serialization approach
 // ----------------------
 // The refresh script writes a generation marker file atomically at the
-// end of each successful refresh: the revision is written to
-// `<mount>/.spire-cache-revision.tmp` and then `mv`d to
-// `<mount>/.spire-cache-revision`. POSIX rename within the same
-// filesystem is atomic, so wizard pods observing the marker file never
-// see a half-written cache. We chose this over the
-// snapshot-promote-by-rename variant because the marker adds only one
-// tiny file to the PVC (vs. a full shadow tree) and the refresh Job
-// can run `git fetch` in place on a pre-existing mirror without an
-// intermediate copy.
+// end of each successful refresh: the revision is written to a
+// sibling .tmp file and then `mv`d onto the final marker name. POSIX
+// rename within the same filesystem is atomic, so wizard pods
+// observing the marker file never see a half-written cache. We chose
+// this over the snapshot-promote-by-rename variant because the marker
+// adds only one tiny file to the PVC (vs. a full shadow tree) and the
+// refresh Job can run `git fetch` in place on a pre-existing mirror
+// without an intermediate copy.
+//
+// The exact marker filenames and the mirror subdirectory name are
+// declared in pkg/agent as CacheRevisionMarkerName,
+// CacheRevisionTmpMarkerName, and CacheMirrorSubdir. The worker-side
+// bootstrap helper (pkg/agent/cache_bootstrap.go) consumes those same
+// constants, and the refresh script receives them via SPIRE_CACHE_*
+// env vars from cacheRefreshEnv — the intra-PVC layout is never
+// hardcoded twice.
 //
 // What this reconciler does NOT do
 // --------------------------------
@@ -57,23 +64,68 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
+	"github.com/awell-health/spire/pkg/agent"
 )
 
-const (
-	// cacheRefreshScript is the shell program the refresh Job runs.
-	//
-	// Uses `git clone --mirror` on a fresh PVC and `git fetch` on an
-	// existing mirror, then writes the resolved HEAD commit SHA to
-	// `<mount>/.spire-cache-revision` via an atomic rename. The same
-	// SHA is also echoed to /dev/termination-log so the reconciler
-	// can surface it on CacheStatus.Revision without mounting the PVC.
-	//
-	// BranchPin, when set, constrains the resolved revision to
-	// `refs/heads/<BranchPin>`. When unset, HEAD of the mirror's
-	// symbolic HEAD (the upstream's default branch) is used.
-	cacheRefreshScript = `set -eu
-MOUNT="/cache"
-MIRROR="$MOUNT/mirror"
+// cacheRefreshMountPath is the refresh Job's container-side mount point
+// for the cache PVC. Wizard pods mount the same PVC at
+// agent.CacheMountPath (different mount point, same volume). The
+// mount point is refresh-Job-internal and not part of the intra-PVC
+// contract workers observe — workers see paths relative to their own
+// mount.
+const cacheRefreshMountPath = "/cache"
+
+// cacheRefreshTerminationLog is the path the refresh Job writes the
+// resolved revision to so the reconciler can read it back via the
+// Pod's termination message. It is the kubelet-provided path; wiring
+// it via env lets tests (and any non-Pod harness) override it with a
+// writable path.
+const cacheRefreshTerminationLog = "/dev/termination-log"
+
+// cacheRefreshEnv returns the container-side env vars that the refresh
+// script reads. They are sourced from the canonical
+// agent.CacheMirrorSubdir / CacheRevisionMarkerName /
+// CacheRevisionTmpMarkerName constants so the script and the worker
+// consume the same values — a single Go source of truth crosses the
+// Go ↔ shell boundary rather than two sets of string literals.
+//
+// SPIRE_CACHE_MOUNT keeps the mount path in env so the script doesn't
+// hardcode "/cache". SPIRE_CACHE_TERMINATION_LOG does the same for the
+// termination-message write, which is /dev/termination-log inside a
+// Pod but has to be a writable temp file under a test harness.
+func cacheRefreshEnv(mountPath string) []corev1.EnvVar {
+	if mountPath == "" {
+		mountPath = cacheRefreshMountPath
+	}
+	return []corev1.EnvVar{
+		{Name: "SPIRE_CACHE_MOUNT", Value: mountPath},
+		{Name: "SPIRE_CACHE_MIRROR_SUBDIR", Value: agent.CacheMirrorSubdir},
+		{Name: "SPIRE_CACHE_REVISION_MARKER", Value: agent.CacheRevisionMarkerName},
+		{Name: "SPIRE_CACHE_REVISION_TMP_MARKER", Value: agent.CacheRevisionTmpMarkerName},
+		{Name: "SPIRE_CACHE_TERMINATION_LOG", Value: cacheRefreshTerminationLog},
+	}
+}
+
+// cacheRefreshScript is the shell program the refresh Job runs.
+//
+// Uses `git clone --mirror` on a fresh PVC and `git fetch` on an
+// existing mirror, then writes the resolved HEAD commit SHA to the
+// revision marker file via an atomic rename. The same SHA is also
+// echoed to /dev/termination-log so the reconciler can surface it on
+// CacheStatus.Revision without mounting the PVC.
+//
+// Intra-PVC layout is env-driven: the script references only the
+// SPIRE_CACHE_* env vars set by cacheRefreshEnv — no layout string
+// literals live here. That is deliberate: the worker side in
+// pkg/agent/cache_bootstrap.go consumes the same constants, so the
+// producer and consumer cannot drift apart.
+//
+// BranchPin, when set, constrains the resolved revision to
+// `refs/heads/<BranchPin>`. When unset, HEAD of the mirror's
+// symbolic HEAD (the upstream's default branch) is used.
+const cacheRefreshScript = `set -eu
+MOUNT="$SPIRE_CACHE_MOUNT"
+MIRROR="$MOUNT/$SPIRE_CACHE_MIRROR_SUBDIR"
 if [ -d "$MIRROR/objects" ]; then
   echo "refreshing existing mirror at $MIRROR" >&2
   cd "$MIRROR"
@@ -96,15 +148,16 @@ else
     REV=$(git rev-parse "refs/heads/$DEFAULT")
   fi
 fi
-TMP="$MOUNT/.spire-cache-revision.tmp"
-FINAL="$MOUNT/.spire-cache-revision"
+TMP="$MOUNT/$SPIRE_CACHE_REVISION_TMP_MARKER"
+FINAL="$MOUNT/$SPIRE_CACHE_REVISION_MARKER"
 printf '%s\n' "$REV" > "$TMP"
 sync
 mv "$TMP" "$FINAL"
-printf '%s' "$REV" > /dev/termination-log
+printf '%s' "$REV" > "$SPIRE_CACHE_TERMINATION_LOG"
 echo "cache refreshed to $REV" >&2
 `
 
+const (
 	// cacheDefaultSize is the deployment-time fallback when a guild's
 	// CacheSpec.Size is unset. Matches the helm chart default
 	// (`cache.defaultSize` in helm/spire/values.yaml) — keep these in
@@ -452,13 +505,22 @@ func (r *CacheReconciler) createRefreshJob(
 						Name:    "refresh",
 						Image:   image,
 						Command: []string{"/bin/sh", "-c", cacheRefreshScript},
-						Env: []corev1.EnvVar{
+						// Env mixes two concerns: (a) repo identity
+						// inputs the script reads (SPIRE_REPO_URL,
+						// SPIRE_BRANCH_PIN), (b) the canonical intra-PVC
+						// layout env vars from cacheRefreshEnv.
+						// Separating (b) into its own helper keeps the
+						// producer/consumer contract in one place; any
+						// layout drift would now require editing the
+						// agent.Cache* constants, which the worker side
+						// also reads.
+						Env: append([]corev1.EnvVar{
 							{Name: "SPIRE_REPO_URL", Value: guild.Spec.Repo},
 							{Name: "SPIRE_BRANCH_PIN", Value: branchPin},
-						},
+						}, cacheRefreshEnv(cacheRefreshMountPath)...),
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "cache",
-							MountPath: "/cache",
+							MountPath: cacheRefreshMountPath,
 						}},
 						TerminationMessagePath:   "/dev/termination-log",
 						TerminationMessagePolicy: corev1.TerminationMessageReadFile,

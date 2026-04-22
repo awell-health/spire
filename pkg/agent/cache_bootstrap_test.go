@@ -16,13 +16,13 @@ import (
 	spireruntime "github.com/awell-health/spire/pkg/runtime"
 )
 
-// TestCheckCacheReady_Fresh covers the happy path: a cache root with a
-// CACHE_READY marker and no CACHE_REFRESHING marker is usable, and
-// checkCacheReady returns the marker contents (the cache revision token).
+// TestCheckCacheReady_Fresh covers the happy path: a cache root with
+// the revision marker present is usable, and checkCacheReady returns
+// the marker contents (the cache revision token).
 func TestCheckCacheReady_Fresh(t *testing.T) {
 	cache := t.TempDir()
 	const rev = "deadbeef1234567890"
-	writeMarker(t, filepath.Join(cache, CacheReadyMarker), rev+"\n")
+	writeMarker(t, filepath.Join(cache, CacheRevisionMarkerName), rev+"\n")
 
 	got, err := checkCacheReady(cache)
 	if err != nil {
@@ -34,42 +34,40 @@ func TestCheckCacheReady_Fresh(t *testing.T) {
 }
 
 // TestCheckCacheReady_Missing covers the "no refresh has completed yet"
-// case: CACHE_READY absent means the cache is not yet safe to read.
-// checkCacheReady must wrap ErrCacheUnavailable so callers can use
-// errors.Is to detect the typed condition regardless of the underlying
-// os error.
+// case: the revision marker absent means the cache is not yet safe to
+// read. checkCacheReady must wrap ErrCacheUnavailable so callers can
+// use errors.Is to detect the typed condition regardless of the
+// underlying os error.
 func TestCheckCacheReady_Missing(t *testing.T) {
 	cache := t.TempDir() // no markers
 
 	_, err := checkCacheReady(cache)
 	if err == nil {
-		t.Fatalf("expected error when CACHE_READY marker missing; got nil")
+		t.Fatalf("expected error when revision marker missing; got nil")
 	}
 	if !errors.Is(err, ErrCacheUnavailable) {
 		t.Errorf("error = %v, want errors.Is(...ErrCacheUnavailable)", err)
 	}
 }
 
-// TestCheckCacheReady_MidUpdate covers the "refresh in flight" case:
-// CACHE_REFRESHING present means the reconciler is writing the cache
-// NOW. Readers must back off regardless of whether CACHE_READY also
-// exists (from a previous refresh).
-func TestCheckCacheReady_MidUpdate(t *testing.T) {
+// TestCheckCacheReady_TmpMarkerIsNotReadySignal covers the invariant
+// that the .tmp sibling is NOT a ready signal. The refresh script
+// writes the tmp file before the atomic rename; a worker that
+// happened to read the cache between those two steps must still see
+// "not ready" until the rename lands. If checkCacheReady treated
+// CacheRevisionTmpMarkerName as a ready signal, the atomic-rename
+// contract would collapse into "possibly partial".
+func TestCheckCacheReady_TmpMarkerIsNotReadySignal(t *testing.T) {
 	cache := t.TempDir()
-	writeMarker(t, filepath.Join(cache, CacheReadyMarker), "oldrev\n")
-	writeMarker(t, filepath.Join(cache, CacheRefreshingMarker), "")
+	// Only the .tmp sibling exists — the rename has not happened.
+	writeMarker(t, filepath.Join(cache, CacheRevisionTmpMarkerName), "in-flight-rev\n")
 
 	_, err := checkCacheReady(cache)
 	if err == nil {
-		t.Fatalf("expected error when CACHE_REFRESHING marker present; got nil")
+		t.Fatalf("expected error when only %s is present; got nil", CacheRevisionTmpMarkerName)
 	}
 	if !errors.Is(err, ErrCacheUnavailable) {
 		t.Errorf("error = %v, want errors.Is(...ErrCacheUnavailable)", err)
-	}
-	// The error message should name the refreshing marker so on-call
-	// operators can root-cause without reading the helper source.
-	if !strings.Contains(err.Error(), CacheRefreshingMarker) {
-		t.Errorf("error message %q does not mention %q", err.Error(), CacheRefreshingMarker)
 	}
 }
 
@@ -82,20 +80,18 @@ func TestCheckCacheReady_NoCachePath(t *testing.T) {
 	}
 }
 
-// TestMaterializeWorkspaceFromCache_Succeeds sets up a bare-ish git repo
-// (a real local repository with a commit) as the "cache" and runs
-// MaterializeWorkspaceFromCache end-to-end. The resulting workspace must
-// be a valid git clone, contain the committed file, and be writable.
-// Exercises the atomic clone → writable working tree transition, which
-// is the whole point of the phase-2 contract.
+// TestMaterializeWorkspaceFromCache_Succeeds sets up a cache fixture
+// that mirrors the real producer output (a mirror/ subdirectory
+// containing a fake git repo, plus a revision marker at the cache
+// root) and runs MaterializeWorkspaceFromCache end-to-end. The
+// resulting workspace must be a valid git clone, contain the
+// committed file, and be writable. Exercises the atomic clone →
+// writable working tree transition, which is the whole point of the
+// phase-2 contract.
 func TestMaterializeWorkspaceFromCache_Succeeds(t *testing.T) {
 	requireGit(t)
 
-	cache := makeFixtureRepo(t, "README.md", "hello from cache\n")
-	// Reconciler-written marker: a revision token that checkCacheReady
-	// surfaces on LabelCacheRevision. We use a stable token so the log
-	// assertion below is deterministic.
-	writeMarker(t, filepath.Join(cache, CacheReadyMarker), "cache-rev-a1b2c3\n")
+	cache := makeCacheFixture(t, "README.md", "hello from cache\n", "cache-rev-a1b2c3")
 
 	workspace := filepath.Join(t.TempDir(), "ws")
 	setRunContextEnv(t)
@@ -155,18 +151,23 @@ func TestMaterializeWorkspaceFromCache_Succeeds(t *testing.T) {
 	assertLogContains(t, logs, "metric="+MetricBootstrapDuration)
 	assertLogContains(t, logs, "metric="+MetricBootstrapSuccess)
 	assertLogContains(t, logs, "result=success")
-	// The cache revision (from CACHE_READY marker) must land on the
+	// The cache revision (from the revision marker) must land on the
 	// canonical high-cardinality label for trace/log correlation.
 	assertLogContains(t, logs, LabelCacheRevision+"=cache-rev-a1b2c3")
 }
 
-// TestMaterializeWorkspaceFromCache_StaleCacheReturnsSentinel asserts the
-// typed error contract — a missing CACHE_READY (or present
-// CACHE_REFRESHING) returns ErrCacheUnavailable rather than a generic
-// clone failure. Callers (the init container entrypoint) rely on the
-// sentinel to decide whether to fail the pod vs. let it try again.
+// TestMaterializeWorkspaceFromCache_StaleCacheReturnsSentinel asserts
+// the typed error contract — a missing revision marker returns
+// ErrCacheUnavailable rather than a generic clone failure. Callers
+// (the init container entrypoint) rely on the sentinel to decide
+// whether to fail the pod vs. let it try again.
 func TestMaterializeWorkspaceFromCache_StaleCacheReturnsSentinel(t *testing.T) {
-	cache := makeFixtureRepo(t, "README.md", "x") // note: no CACHE_READY
+	requireGit(t)
+	cache := t.TempDir()
+	// Mirror subdir exists but the revision marker never landed.
+	// That's the exact fingerprint of a crashed refresh: clone finished,
+	// atomic rename did not.
+	makeMirror(t, cache, "README.md", "x")
 	workspace := filepath.Join(t.TempDir(), "ws")
 	setRunContextEnv(t)
 
@@ -181,21 +182,24 @@ func TestMaterializeWorkspaceFromCache_StaleCacheReturnsSentinel(t *testing.T) {
 	}
 }
 
-// TestMaterializeWorkspaceFromCache_MidUpdateReturnsSentinel exercises
-// the second code path into ErrCacheUnavailable: the reconciler is
-// refreshing RIGHT NOW and has a lock marker present. Workers must
-// treat this identically to the stale-cache case.
-func TestMaterializeWorkspaceFromCache_MidUpdateReturnsSentinel(t *testing.T) {
-	cache := makeFixtureRepo(t, "README.md", "x")
-	writeMarker(t, filepath.Join(cache, CacheReadyMarker), "previous-rev\n")
-	writeMarker(t, filepath.Join(cache, CacheRefreshingMarker), "")
+// TestMaterializeWorkspaceFromCache_TmpMarkerOnlyReturnsSentinel
+// exercises the crash-between-tmp-and-rename path into
+// ErrCacheUnavailable: the refresh script wrote the tmp file but the
+// process died before the atomic rename, so the final marker is
+// absent. Workers must treat this identically to the "no marker"
+// case — the tmp file alone is NOT a ready signal.
+func TestMaterializeWorkspaceFromCache_TmpMarkerOnlyReturnsSentinel(t *testing.T) {
+	requireGit(t)
+	cache := t.TempDir()
+	makeMirror(t, cache, "README.md", "x")
+	writeMarker(t, filepath.Join(cache, CacheRevisionTmpMarkerName), "mid-write-rev\n")
 
 	workspace := filepath.Join(t.TempDir(), "ws")
 	setRunContextEnv(t)
 
 	err := MaterializeWorkspaceFromCache(context.Background(), cache, workspace, "spi")
 	if !errors.Is(err, ErrCacheUnavailable) {
-		t.Errorf("mid-update cache: err = %v, want errors.Is(...ErrCacheUnavailable)", err)
+		t.Errorf("tmp-only cache: err = %v, want errors.Is(...ErrCacheUnavailable)", err)
 	}
 }
 
@@ -207,8 +211,7 @@ func TestMaterializeWorkspaceFromCache_MidUpdateReturnsSentinel(t *testing.T) {
 func TestMaterializeWorkspaceFromCache_Idempotent(t *testing.T) {
 	requireGit(t)
 
-	cache := makeFixtureRepo(t, "README.md", "hello\n")
-	writeMarker(t, filepath.Join(cache, CacheReadyMarker), "rev1\n")
+	cache := makeCacheFixture(t, "README.md", "hello\n", "rev1")
 	workspace := filepath.Join(t.TempDir(), "ws")
 	setRunContextEnv(t)
 
@@ -385,32 +388,59 @@ func requireGit(t *testing.T) {
 	}
 }
 
-// makeFixtureRepo returns the path to a freshly-initialized git
-// repository with a single commit of (relPath → content). Used as a
-// stand-in for the read-only guild cache mount.
-func makeFixtureRepo(t *testing.T, relPath, content string) string {
+// makeCacheFixture returns the path to a cache root laid out the way
+// the real refresh Job publishes it:
+//
+//   - <cache>/<CacheMirrorSubdir>/   a git mirror that `git clone
+//                                    --local` can consume (seeded
+//                                    with a single committed file).
+//   - <cache>/<CacheRevisionMarkerName>  contains the given revision
+//                                        token.
+//
+// Tests that want to simulate partial publisher state (mirror without
+// marker, tmp-only, etc.) should compose makeMirror + writeMarker
+// manually rather than extending this helper with mode flags.
+func makeCacheFixture(t *testing.T, relPath, content, revision string) string {
 	t.Helper()
 	requireGit(t)
-	dir := t.TempDir()
-	if out, err := runGit(dir, "init", "-q", "-b", "main"); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
+	cache := t.TempDir()
+	makeMirror(t, cache, relPath, content)
+	writeMarker(t, filepath.Join(cache, CacheRevisionMarkerName), revision+"\n")
+	return cache
+}
+
+// makeMirror seeds <cache>/<CacheMirrorSubdir> with a freshly
+// initialized git repository containing a single commit of
+// (relPath → content). The subdirectory matches the refresh Job's
+// layout so MaterializeWorkspaceFromCache finds the clone source at
+// the right path. This is NOT a bare mirror (the real producer is);
+// the phase-2 worker contract only requires that `git clone --local`
+// of the path succeeds, which a non-bare repo also satisfies.
+func makeMirror(t *testing.T, cache, relPath, content string) {
+	t.Helper()
+	requireGit(t)
+	mirror := filepath.Join(cache, CacheMirrorSubdir)
+	if err := os.MkdirAll(mirror, 0o755); err != nil {
+		t.Fatalf("mkdir mirror: %v", err)
 	}
-	if out, err := runGit(dir, "config", "user.email", "fixture@example.com"); err != nil {
+	if out, err := runGit(mirror, "init", "-q", "-b", "main"); err != nil {
+		t.Fatalf("git init mirror: %v\n%s", err, out)
+	}
+	if out, err := runGit(mirror, "config", "user.email", "fixture@example.com"); err != nil {
 		t.Fatalf("git config email: %v\n%s", err, out)
 	}
-	if out, err := runGit(dir, "config", "user.name", "fixture"); err != nil {
+	if out, err := runGit(mirror, "config", "user.name", "fixture"); err != nil {
 		t.Fatalf("git config name: %v\n%s", err, out)
 	}
-	if err := os.WriteFile(filepath.Join(dir, relPath), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(mirror, relPath), []byte(content), 0o644); err != nil {
 		t.Fatalf("write fixture file: %v", err)
 	}
-	if out, err := runGit(dir, "add", relPath); err != nil {
+	if out, err := runGit(mirror, "add", relPath); err != nil {
 		t.Fatalf("git add: %v\n%s", err, out)
 	}
-	if out, err := runGit(dir, "commit", "-q", "-m", "init"); err != nil {
+	if out, err := runGit(mirror, "commit", "-q", "-m", "init"); err != nil {
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
-	return dir
 }
 
 func runGit(dir string, args ...string) (string, error) {

@@ -79,13 +79,24 @@ first cut.
 - **Volume:** mounts the cache PVC read-write at `/cache` (the refresh
   Job is the sole writer — wizard pods mount the same PVC read-only).
 - **Env:** `SPIRE_REPO_URL=<guild.Spec.Repo>`,
-  `SPIRE_BRANCH_PIN=<guild.Spec.Cache.BranchPin or "">`.
+  `SPIRE_BRANCH_PIN=<guild.Spec.Cache.BranchPin or "">`, plus the
+  canonical intra-PVC layout vars from `cacheRefreshEnv`:
+  `SPIRE_CACHE_MOUNT`, `SPIRE_CACHE_MIRROR_SUBDIR`,
+  `SPIRE_CACHE_REVISION_MARKER`, `SPIRE_CACHE_REVISION_TMP_MARKER`,
+  `SPIRE_CACHE_TERMINATION_LOG`. The layout vars are sourced from the
+  exported `pkg/agent` constants (`CacheMirrorSubdir`,
+  `CacheRevisionMarkerName`, `CacheRevisionTmpMarkerName`) so the
+  worker-side bootstrap helper and the refresh script share a single
+  Go source of truth — no intra-PVC path is a string literal in
+  either side.
 - **Script:** `git clone --mirror` on a fresh PVC, `git fetch --prune
   --prune-tags --tags origin` on an existing mirror (mirror lives at
-  `/cache/mirror`). Resolves the revision from
+  `$SPIRE_CACHE_MOUNT/$SPIRE_CACHE_MIRROR_SUBDIR`, i.e.
+  `/cache/mirror` in the default mount). Resolves the revision from
   `refs/heads/<BranchPin>` when set or the upstream's symbolic HEAD
   otherwise. Writes the revision to the cache root via an atomic
-  rename (see §(d)). Echoes the revision to `/dev/termination-log`.
+  rename (see §(d)). Echoes the revision to
+  `$SPIRE_CACHE_TERMINATION_LOG`.
 
 ### Refresh cadence and invalidation
 
@@ -202,70 +213,73 @@ obligations.
 
 ## (d) Failure and consistency model
 
+### Intra-PVC layout (single source of truth)
+
+The producer and consumer agree on three names declared as exported
+Go constants in `pkg/agent/cache_bootstrap.go`:
+
+| Constant | Value | Role |
+|---|---|---|
+| `agent.CacheMirrorSubdir` | `mirror` | subdirectory under the cache mount that holds the bare git mirror the refresh Job maintains; workers clone from this path. |
+| `agent.CacheRevisionMarkerName` | `.spire-cache-revision` | revision marker file at the cache root; its presence is the sole "cache is ready" signal, and its contents are the resolved commit SHA. |
+| `agent.CacheRevisionTmpMarkerName` | `.spire-cache-revision.tmp` | intermediate write target the refresh Job uses before the atomic rename; never read by workers. |
+
+The refresh Job reads these constants via `SPIRE_CACHE_*` env vars
+set by `cacheRefreshEnv` in `operator/controllers/cache_reconciler.go`;
+the worker side reads them directly. No intra-PVC path is a string
+literal in either side — the parity test
+(`TestCacheRefreshParity_ProducerFeedsConsumer` in
+`operator/controllers/cache_refresh_parity_test.go`) runs the real
+refresh script and feeds its output through the real consumer, so
+any drift fails CI before it reaches a cluster.
+
 ### Reconciler-side serialization
 
-The reconciler uses a **generation marker file written atomically via
-rename** (documented in the `cache_reconciler.go` file header). At the
-end of each successful refresh, the Job script writes:
+At the end of each successful refresh, the Job script writes:
 
 ```sh
-TMP="/cache/.spire-cache-revision.tmp"
-FINAL="/cache/.spire-cache-revision"
+TMP="$MOUNT/$SPIRE_CACHE_REVISION_TMP_MARKER"
+FINAL="$MOUNT/$SPIRE_CACHE_REVISION_MARKER"
 printf '%s\n' "$REV" > "$TMP"
 sync
 mv "$TMP" "$FINAL"
 ```
 
-POSIX rename within the same filesystem is atomic, so readers never
-observe a half-written revision file. This was chosen over
-snapshot-promote-by-rename because a marker file is one tiny extra
-file on the PVC (rather than a full shadow tree), and the refresh
-Job can `git fetch` in place on the existing mirror without an
-intermediate copy.
+POSIX rename within the same filesystem is atomic, so readers
+observing the cache at any moment see either the previous revision,
+the new revision, or NotFound — never a truncated/partial read.
+This was chosen over snapshot-promote-by-rename because a marker
+file is one tiny extra file on the PVC (rather than a full shadow
+tree), and the refresh Job can `git fetch` in place on the existing
+mirror without an intermediate copy.
 
 ### Worker-side readiness check
 
-`pkg/agent/cache_bootstrap.go:checkCacheReady` inspects the cache
-root for two marker files:
+`pkg/agent/cache_bootstrap.go:checkCacheReady` inspects a single
+marker file: `<cachePath>/<CacheRevisionMarkerName>`. If the file is
+present, its contents are the cache revision token (surfaced on
+`LabelCacheRevision`); if absent, the cache is unavailable. The
+`.tmp` sibling is deliberately NOT treated as a ready signal — its
+presence alone does not mean the refresh completed; only the atomic
+rename flips the cache to "ready".
 
-| File | Meaning (as implemented on worker side) |
-|---|---|
-| `CACHE_READY` | Present → cache is complete and safe. File contents are treated as the cache revision token and surfaced on `LabelCacheRevision`. |
-| `CACHE_REFRESHING` | Present → a refresh is in flight; cache must be treated as unsafe. |
+No separate "refreshing" sentinel is written. Because the atomic
+rename is the only state transition, a worker never observes a
+partial state — "refreshing" visibility is surfaced on
+`CacheStatus.Phase` for operators, not as a worker-observable marker.
 
-When either condition indicates the cache is unsafe — `CacheMountPath`
-does not exist, `CACHE_REFRESHING` is present, or `CACHE_READY` is
-missing / unreadable — the helper returns the exported sentinel:
+When the cache is unavailable (mount missing, marker absent, etc.)
+the helper returns the exported sentinel:
 
 ```go
-var ErrCacheUnavailable = errors.New("agent: guild repo cache is unavailable (stale or mid-update)")
+var ErrCacheUnavailable = errors.New("agent: guild repo cache is unavailable (no refresh has completed)")
 ```
 
 `MaterializeWorkspaceFromCache` propagates the wrapped error up to
 `spire cache-bootstrap`, which exits non-zero. The init container
 fails, the main container does not start, and the operator's normal
 Job/pod retry behavior reschedules the pod — once the reconciler
-republishes readiness, the next pod attempt succeeds.
-
-### Handshake drift (known gap)
-
-The marker-file handshake between the two sides is currently **not
-congruent**:
-
-- The refresh Job writes `/cache/.spire-cache-revision` via atomic
-  rename; no `CACHE_REFRESHING` sentinel is written while the Job
-  runs (refresh in-flightness is inferred by the reconciler from the
-  Job's own state and surfaced on `CacheStatus.Phase="Refreshing"`).
-- The worker reads `CACHE_READY` (presence + contents = revision) and
-  `CACHE_REFRESHING` (presence = in-flight) at the cache root.
-
-Neither side currently writes/reads the same filenames. This gap is
-why phase-1 origin-clone bootstrapping continues to be the live path
-— see §(g) for the migration order and the specific condition /
-metric operators check before flipping a guild to the cache-backed
-flow in cluster. The drift is tracked under epic spi-sn7o3 and is
-expected to resolve before cache-backed startup is verified in
-cluster; one side's marker semantics will be adopted by the other.
+publishes the revision marker, the next pod attempt succeeds.
 
 ## (e) Observability vocabulary
 
@@ -278,7 +292,7 @@ and the reconciler (`operator/controllers/cache_reconciler.go`).
 | Key | Where it appears | Value space |
 |---|---|---|
 | `spire.io/bootstrap-source` | Init container logs / metric labels | Phase-2 cluster wizards: `guild-cache` (`BootstrapSourceGuildCache`). Other code paths (local process, origin clone) own their own values. |
-| `spire.io/cache-revision` | Init container logs, intended for pod annotation | Contents of `CACHE_READY` — high cardinality, log/annotation only, never a metric label. |
+| `spire.io/cache-revision` | Init container logs, intended for pod annotation | Contents of the revision marker (`agent.CacheRevisionMarkerName`) — high cardinality, log/annotation only, never a metric label. |
 | `spire.io/startup-phase` | Init container log lines | `cache-ready`, `workspace-derive`, `local-bind-bootstrap` (`StartupPhase*`). |
 | `spire.io/cache-freshness` | Init container log lines | `fresh`, `stale`, `refreshing` (string values owned by the bootstrap helper + reconciler). |
 
@@ -397,7 +411,6 @@ cache for production traffic in a given cluster:
 | No failed refreshes outstanding | `RefreshError` is empty and `CacheFailed` condition is not True. |
 | Bootstrap succeeds end-to-end | `spire_bootstrap_success_total{source="guild-cache",result="success"}` increases with each wizard pod start, and `spire_bootstrap_success_total{...,result="failure"}` stays flat. |
 | Bootstrap latency is acceptable | `spire_bootstrap_duration_seconds{source="guild-cache"}` p95 is below the origin-clone baseline for the same repo. |
-| Handshake is congruent | See §(d) handshake drift — the marker-file mismatch between reconciler and worker must be resolved. Until then, cache-backed bootstrap will abort with `ErrCacheUnavailable` even on a freshly-refreshed cache, so leave `Cache` unset on production guilds. |
 
 If any check fails, unset `WizardGuildSpec.Cache` on the guild. The
 operator removes the overlay on the next reconcile, new pods fall

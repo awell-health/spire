@@ -33,28 +33,55 @@ const (
 	WorkspaceMountPath = "/spire/workspace"
 )
 
-// Serialization markers the cache reconciler (spi-myzn5) writes into the
-// guild cache root to signal readiness to workers. The reconciler owns
-// the write side; this package only reads.
+// Canonical intra-PVC layout for the guild repo cache. These names are
+// the single source of truth consumed by both sides of the phase-2
+// contract (spi-sn7o3, spi-yzmq0):
 //
-//   - CacheReadyMarker is touched last after a successful refresh; its
-//     presence means the cache tree is complete and safe to bind. Its
-//     contents, when present, are the cache revision/generation token
-//     and are surfaced on LabelCacheRevision.
-//   - CacheRefreshingMarker is present while a refresh is in flight.
-//     Readers must treat the cache as unsafe until the marker is gone.
+//   - The operator's refresh Job receives them as SPIRE_CACHE_* env
+//     vars (see cache_reconciler.go) and its shell script references
+//     only those env vars — no intra-PVC layout string literals live
+//     in shell.
+//   - The worker-side helpers in this file consume the constants
+//     directly.
+//
+// Layout, relative to the cache PVC's mount point (producer mounts at
+// /cache, consumer at CacheMountPath — mount points are per-container,
+// not part of this contract):
+//
+//   - <mount>/<CacheMirrorSubdir>/            bare git mirror the
+//                                             refresh Job maintains;
+//                                             workers clone from here.
+//   - <mount>/<CacheRevisionMarkerName>       atomic-rename-published
+//                                             file whose contents are
+//                                             the current cache revision
+//                                             (git commit SHA). Its
+//                                             presence is the sole
+//                                             "cache is ready" signal;
+//                                             absence means not yet
+//                                             refreshed.
+//   - <mount>/<CacheRevisionTmpMarkerName>    intermediate write target
+//                                             the refresh Job uses
+//                                             before the atomic rename.
+//                                             Never read by workers.
+//
+// There is no separate in-flight / refreshing sentinel: the atomic
+// rename of tmp→final means a worker inspecting the layout at any
+// moment sees either the old revision, the new revision, or NotFound
+// — never a partial state. "Refreshing" visibility is surfaced via
+// CacheStatus.Phase on the operator side; workers do not observe it
+// through a marker file.
 const (
-	CacheReadyMarker      = "CACHE_READY"
-	CacheRefreshingMarker = "CACHE_REFRESHING"
+	CacheMirrorSubdir          = "mirror"
+	CacheRevisionMarkerName    = ".spire-cache-revision"
+	CacheRevisionTmpMarkerName = ".spire-cache-revision.tmp"
 )
 
 // ErrCacheUnavailable is returned when the guild repo cache at cachePath
-// is not safe to read — either the ready marker is absent (no refresh
-// has completed yet) or the refreshing marker is present (a reconciler
-// run is in flight). Callers should fail the init container with this
-// error; the operator will retry the pod once the reconciler republishes
-// the ready marker.
-var ErrCacheUnavailable = errors.New("agent: guild repo cache is unavailable (stale or mid-update)")
+// is not safe to read — the revision marker is absent, so no refresh
+// has completed yet. Callers should fail the init container with this
+// error; the operator will retry the pod once the reconciler publishes
+// the marker.
+var ErrCacheUnavailable = errors.New("agent: guild repo cache is unavailable (no refresh has completed)")
 
 // MaterializeWorkspaceFromCache derives a writable working tree at
 // workspacePath from the read-only guild repo cache at cachePath. The
@@ -62,7 +89,7 @@ var ErrCacheUnavailable = errors.New("agent: guild repo cache is unavailable (st
 // runtime.RepoIdentity.Prefix) — callers MUST supply it from the
 // executor/runtime-contract surface rather than deriving it locally.
 //
-// Materialization strategy: a plain local clone `git clone --no-hardlinks <cache> <workspace>` is used instead of `git worktree add` because a worktree add would require writing to the cache's `.git/worktrees` registry (not possible on a read-only mount, and a shared-state hazard across pods).
+// Materialization strategy: a plain local clone `git clone --no-hardlinks <cache>/<CacheMirrorSubdir> <workspace>` is used instead of `git worktree add` because a worktree add would require writing to the cache's `.git/worktrees` registry (not possible on a read-only mount, and a shared-state hazard across pods).
 func MaterializeWorkspaceFromCache(ctx context.Context, cachePath, workspacePath, prefix string) error {
 	run := runtime.RunContextFromEnv()
 	if run.Prefix == "" {
@@ -79,7 +106,8 @@ func MaterializeWorkspaceFromCache(ctx context.Context, cachePath, workspacePath
 	}
 	logCacheFreshness(run, revision, "fresh")
 
-	logPhase(run, StartupPhaseWorkspaceDerive, "cloning cache %s → workspace %s (prefix=%s)", cachePath, workspacePath, prefix)
+	mirrorPath := filepath.Join(cachePath, CacheMirrorSubdir)
+	logPhase(run, StartupPhaseWorkspaceDerive, "cloning cache mirror %s → workspace %s (prefix=%s)", mirrorPath, workspacePath, prefix)
 	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o755); err != nil {
 		emitBootstrapResult(run, "failure", time.Since(start), err)
 		return fmt.Errorf("mkdir workspace parent: %w", err)
@@ -93,12 +121,12 @@ func MaterializeWorkspaceFromCache(ctx context.Context, cachePath, workspacePath
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "clone", "--no-hardlinks", cachePath, workspacePath)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--no-hardlinks", mirrorPath, workspacePath)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		emitBootstrapResult(run, "failure", time.Since(start), err)
-		return fmt.Errorf("git clone from cache %s to %s: %w", cachePath, workspacePath, err)
+		return fmt.Errorf("git clone from cache mirror %s to %s: %w", mirrorPath, workspacePath, err)
 	}
 
 	emitBootstrapResult(run, "success", time.Since(start), nil)
@@ -165,11 +193,17 @@ func BindLocalRepo(ctx context.Context, workspacePath, prefix string) error {
 	return nil
 }
 
-// checkCacheReady inspects the cache-root markers written by the
-// reconciler and returns the cache revision token (contents of
-// CacheReadyMarker) when the cache is safe to read. Returns
-// ErrCacheUnavailable when the ready marker is missing or the
-// refreshing marker is present.
+// checkCacheReady inspects the cache-root revision marker written by
+// the reconciler and returns the cache revision token (contents of
+// <cachePath>/<CacheRevisionMarkerName>) when the cache is safe to
+// read. Returns ErrCacheUnavailable when the marker is missing or the
+// cachePath itself does not exist.
+//
+// The refresh Job publishes the marker via an atomic rename of a
+// sibling .tmp file, so workers observing the cache at any moment see
+// either a previous revision, the new revision, or NotFound — never a
+// truncated read. The .tmp sibling is deliberately NOT treated as a
+// ready signal: its presence alone does not mean the refresh completed.
 func checkCacheReady(cachePath string) (string, error) {
 	if cachePath == "" {
 		return "", fmt.Errorf("cachePath is required")
@@ -177,14 +211,11 @@ func checkCacheReady(cachePath string) (string, error) {
 	if _, err := os.Stat(cachePath); err != nil {
 		return "", fmt.Errorf("%w: cache path %s: %v", ErrCacheUnavailable, cachePath, err)
 	}
-	if _, err := os.Stat(filepath.Join(cachePath, CacheRefreshingMarker)); err == nil {
-		return "", fmt.Errorf("%w: %s marker present at %s", ErrCacheUnavailable, CacheRefreshingMarker, cachePath)
-	}
-	ready, err := os.ReadFile(filepath.Join(cachePath, CacheReadyMarker))
+	revision, err := os.ReadFile(filepath.Join(cachePath, CacheRevisionMarkerName))
 	if err != nil {
-		return "", fmt.Errorf("%w: %s marker missing at %s: %v", ErrCacheUnavailable, CacheReadyMarker, cachePath, err)
+		return "", fmt.Errorf("%w: %s marker missing at %s: %v", ErrCacheUnavailable, CacheRevisionMarkerName, cachePath, err)
 	}
-	return strings.TrimSpace(string(ready)), nil
+	return strings.TrimSpace(string(revision)), nil
 }
 
 // logPhase emits a structured log line tagged with the canonical

@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
+	"github.com/awell-health/spire/pkg/agent"
 )
 
 // newCacheTestScheme registers corev1, batchv1, and spirev1 on a scheme
@@ -153,6 +154,16 @@ func TestCacheReconciler_GuildCreate_CreatesPVCAndJob(t *testing.T) {
 	if got := envMap["SPIRE_BRANCH_PIN"]; got.Value != "main" {
 		t.Errorf("SPIRE_BRANCH_PIN env = %q, want main", got.Value)
 	}
+
+	// Intra-PVC layout env must equal the canonical agent.* symbols —
+	// not equal to hardcoded test strings. Comparing against the Go
+	// constant means any silent rename of the constant will be caught
+	// by this test before it ships; comparing against a literal here
+	// would just repeat the same drift that shipped the original bug.
+	assertEnvEquals(t, envMap, "SPIRE_CACHE_MOUNT", cacheRefreshMountPath)
+	assertEnvEquals(t, envMap, "SPIRE_CACHE_MIRROR_SUBDIR", agent.CacheMirrorSubdir)
+	assertEnvEquals(t, envMap, "SPIRE_CACHE_REVISION_MARKER", agent.CacheRevisionMarkerName)
+	assertEnvEquals(t, envMap, "SPIRE_CACHE_REVISION_TMP_MARKER", agent.CacheRevisionTmpMarkerName)
 }
 
 // TestCacheReconciler_CacheSpecChange_RecreatesJob asserts that mutating
@@ -370,17 +381,25 @@ func TestCacheReconciler_RefreshFailure_PopulatesStatus(t *testing.T) {
 
 // TestCacheReconciler_RefreshScript_AtomicMarker asserts the refresh
 // script the Job runs writes the generation marker via an atomic
-// write-then-rename pattern. The reconciler's file-header comment commits
-// to this approach precisely so workers never observe a half-written
-// marker; any change that moves to "write in place" must break this test.
+// write-then-rename pattern. The reconciler's file-header comment
+// commits to this approach precisely so workers never observe a
+// half-written marker; any change that moves to "write in place"
+// must break this test.
 func TestCacheReconciler_RefreshScript_AtomicMarker(t *testing.T) {
 	script := cacheRefreshScript
 
 	// Atomic rename pattern: write .tmp, then mv .tmp → final. A
 	// reader that opens the marker at any moment either finds the old
-	// file, the new file, or NotFound — never a truncated/partial read.
-	if !strings.Contains(script, ".spire-cache-revision.tmp") {
-		t.Errorf("refresh script missing tmp marker write (.spire-cache-revision.tmp); got:\n%s", script)
+	// file, the new file, or NotFound — never a truncated/partial
+	// read. The script references the marker names via SPIRE_CACHE_*
+	// env vars (see cacheRefreshEnv) rather than string literals — the
+	// layout contract is the agent.* constants, not a string in this
+	// file.
+	if !strings.Contains(script, `TMP="$MOUNT/$SPIRE_CACHE_REVISION_TMP_MARKER"`) {
+		t.Errorf("refresh script missing tmp-marker env wiring; got:\n%s", script)
+	}
+	if !strings.Contains(script, `FINAL="$MOUNT/$SPIRE_CACHE_REVISION_MARKER"`) {
+		t.Errorf("refresh script missing final-marker env wiring; got:\n%s", script)
 	}
 	if !strings.Contains(script, `mv "$TMP" "$FINAL"`) {
 		t.Errorf("refresh script missing atomic rename (mv $TMP $FINAL); got:\n%s", script)
@@ -397,6 +416,49 @@ func TestCacheReconciler_RefreshScript_AtomicMarker(t *testing.T) {
 	iMv := strings.Index(script, `mv "$TMP" "$FINAL"`)
 	if iPrintf < 0 || iMv < 0 || iPrintf > iMv {
 		t.Errorf("refresh script must write $TMP BEFORE mv $TMP $FINAL; got printf@%d mv@%d", iPrintf, iMv)
+	}
+
+	// Guardrail against drift: the layout contract lives in
+	// pkg/agent constants. The script must NOT hardcode the marker
+	// filenames or mirror subdirectory — those must come from env
+	// vars. A hardcoded copy would re-introduce the producer/consumer
+	// drift bug (spi-yzmq0).
+	forbidden := []string{".spire-cache-revision", `"mirror"`, "/mirror"}
+	for _, lit := range forbidden {
+		if strings.Contains(script, lit) {
+			t.Errorf("refresh script must not hardcode %q; the layout is env-driven from pkg/agent constants", lit)
+		}
+	}
+}
+
+// TestCacheReconciler_RefreshEnv_LayoutFromAgentConstants locks the
+// contract that the Job's env carries the canonical intra-PVC layout
+// values, sourced from pkg/agent constants. If any of these assertions
+// fail, the producer and consumer have drifted: the refresh script
+// would write to paths the worker does not read (or vice versa).
+// Compared against the symbol, not a hardcoded string, so a silent
+// rename of the constant is still caught.
+func TestCacheReconciler_RefreshEnv_LayoutFromAgentConstants(t *testing.T) {
+	envs := cacheRefreshEnv(cacheRefreshMountPath)
+	got := make(map[string]string, len(envs))
+	for _, e := range envs {
+		got[e.Name] = e.Value
+	}
+
+	want := map[string]string{
+		"SPIRE_CACHE_MOUNT":               cacheRefreshMountPath,
+		"SPIRE_CACHE_MIRROR_SUBDIR":       agent.CacheMirrorSubdir,
+		"SPIRE_CACHE_REVISION_MARKER":     agent.CacheRevisionMarkerName,
+		"SPIRE_CACHE_REVISION_TMP_MARKER": agent.CacheRevisionTmpMarkerName,
+		"SPIRE_CACHE_TERMINATION_LOG":     cacheRefreshTerminationLog,
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("cacheRefreshEnv[%s] = %q, want %q", k, got[k], v)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("cacheRefreshEnv entries = %d, want %d; extra=%v", len(got), len(want), got)
 	}
 }
 
@@ -590,6 +652,29 @@ func envVarMap(env []corev1.EnvVar) map[string]corev1.EnvVar {
 		m[e.Name] = e
 	}
 	return m
+}
+
+// assertEnvEquals fails the test when the env var `name` is absent or
+// has a Value other than `want`. Used instead of direct map reads so
+// the failure message consistently names the key.
+func assertEnvEquals(t *testing.T, envs map[string]corev1.EnvVar, name, want string) {
+	t.Helper()
+	got, ok := envs[name]
+	if !ok {
+		t.Errorf("env %s missing from container; have: %v", name, keysOfEnvMap(envs))
+		return
+	}
+	if got.Value != want {
+		t.Errorf("env %s = %q, want %q", name, got.Value, want)
+	}
+}
+
+func keysOfEnvMap(envs map[string]corev1.EnvVar) []string {
+	out := make([]string, 0, len(envs))
+	for k := range envs {
+		out = append(out, k)
+	}
+	return out
 }
 
 // assertOwnedBy fails the test unless meta carries a controller owner
