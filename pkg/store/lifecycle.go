@@ -49,6 +49,16 @@ func doltDB() (*sql.DB, bool) {
 	return db, true
 }
 
+// ActiveDB returns the raw *sql.DB underlying the active beads store when the
+// storage backend exposes one. It is the exported form of doltDB: callers
+// outside pkg/store (e.g. the operator wiring a ClusterIdentityResolver, or
+// integration harnesses running SQL migrations) need the connection without
+// reaching into activeStore's internals. Returns ok=false when no store is
+// open or the backend does not expose a *sql.DB (e.g. test mocks).
+func ActiveDB() (*sql.DB, bool) {
+	return doltDB()
+}
+
 // StampFiled records a bead's initial filing timestamp. Idempotent — once
 // filed_at is set, subsequent calls do not overwrite it (COALESCE). Safe to
 // call on every create path.

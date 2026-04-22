@@ -236,6 +236,17 @@ type SpireConfigSpec struct {
 	Tokens       map[string]TokenRef `json:"tokens,omitempty"`
 	Routing      []RoutingRule       `json:"routing,omitempty"`
 	DefaultToken string              `json:"defaultToken,omitempty"`
+
+	// EnableLegacyScheduler is the OperatorEnableLegacyScheduler gate
+	// from spi-njzmg. When false (the canonical cluster-native default)
+	// the operator does NOT start the legacy BeadWatcher or
+	// WorkloadAssigner control loops; the operator only reconciles
+	// pkg/steward/intent.WorkloadIntent into apprentice pods via
+	// pkg/agent.BuildApprenticePod. When true, the legacy schedulers
+	// start alongside the intent reconciler as a transitional
+	// co-existence path. See pkg/config/deployment_mode.go for the
+	// deployment-mode contract the gate composes with.
+	EnableLegacyScheduler bool `json:"enableLegacyScheduler,omitempty"`
 }
 
 type DoltHubConfig struct {

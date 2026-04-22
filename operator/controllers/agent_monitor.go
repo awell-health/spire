@@ -19,6 +19,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/runtime"
+	"github.com/awell-health/spire/pkg/steward/identity"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -72,6 +73,17 @@ type AgentMonitor struct {
 	Prefix string
 	// DolthubRemote is the dolt remote URL for the tower-attach init container.
 	DolthubRemote string
+
+	// Resolver is the canonical source of cluster repo identity per
+	// spi-njzmg. When wired, buildWorkloadPod treats
+	// WizardGuild.Spec.Repo/RepoBranch/Prefixes as projection-only and
+	// reconciles them to the resolver's output — a drift between CR
+	// and resolver is logged and the resolver's values win.
+	//
+	// Nil disables the drift check: CR fields are used verbatim
+	// (the pre-spi-njzmg behavior) so existing unit tests continue to
+	// pass without requiring a live store.
+	Resolver identity.ClusterIdentityResolver
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -424,24 +436,52 @@ func (m *AgentMonitor) buildWorkloadPod(wg *spirev1.WizardGuild, beadID string, 
 	prefix := m.resolvePrefix(wg)
 	db := m.resolveDatabase()
 
+	// spi-njzmg: CR fields Repo/RepoBranch/Prefixes are projection-only.
+	// When a ClusterIdentityResolver is wired, reconcile them to the
+	// shared repo-registry output so scheduling decisions never treat
+	// the CR as source of truth. Drift is logged; resolver wins.
+	repoURL := wg.Spec.Repo
+	if m.Resolver != nil && prefix != "" {
+		if resolved, err := m.Resolver.Resolve(context.Background(), prefix); err == nil {
+			if repoURL != "" && repoURL != resolved.URL {
+				m.Log.Info("wizardguild Repo drifts from canonical resolver; using resolver",
+					"agent_name", wg.Name, "prefix", prefix,
+					"cr_url", repoURL, "canonical_url", resolved.URL, "backend", "operator-k8s")
+			}
+			if branch != "" && branch != resolved.BaseBranch {
+				m.Log.Info("wizardguild RepoBranch drifts from canonical resolver; using resolver",
+					"agent_name", wg.Name, "prefix", prefix,
+					"cr_branch", branch, "canonical_branch", resolved.BaseBranch, "backend", "operator-k8s")
+			}
+			repoURL = resolved.URL
+			branch = resolved.BaseBranch
+		} else {
+			m.Log.V(1).Info("resolver unable to resolve cluster repo identity; falling back to CR fields",
+				"agent_name", wg.Name, "prefix", prefix, "error", err, "backend", "operator-k8s")
+		}
+	}
+
 	sharedWorkspace := wg.Spec.SharedWorkspace != nil && *wg.Spec.SharedWorkspace
 
-	// SpawnConfig for the shared builder. Identity fields come from the
-	// operator's explicit startup config (Database / Prefix / DolthubRemote)
-	// and the WizardGuild CR — never from pod-building-time env reads.
+	// SpawnConfig for the shared builder. Identity fields come from
+	// the operator's explicit startup config (Database / Prefix /
+	// DolthubRemote) and, when a ClusterIdentityResolver is wired,
+	// the shared repo-registry output (spi-njzmg). CR fields are
+	// projection-only — they never become the source of truth for
+	// scheduling.
 	spawnCfg := agent.SpawnConfig{
 		Name:       wg.Name, // operator uses the guild name as the agent name
 		BeadID:     beadID,
 		Role:       agent.RoleWizard,
 		Tower:      db,
 		Step:       "wizard",
-		RepoURL:    wg.Spec.Repo,
+		RepoURL:    repoURL,
 		RepoBranch: branch,
 		RepoPrefix: prefix,
 		Identity: runtime.RepoIdentity{
 			TowerName:  db,
 			Prefix:     prefix,
-			RepoURL:    wg.Spec.Repo,
+			RepoURL:    repoURL,
 			BaseBranch: branch,
 		},
 		Run: runtime.RunContext{

@@ -1,5 +1,20 @@
 package controllers
 
+// TRANSITIONAL — LEGACY OPERATOR SCHEDULER (spi-njzmg).
+//
+// WorkloadAssigner is part of the pre-spi-sj18k operator scheduler loop.
+// The canonical cluster-native path no longer routes through it:
+// pkg/steward emits WorkloadIntent values and the operator's
+// IntentWorkloadReconciler reconciles them into apprentice pods via
+// pkg/agent.BuildApprenticePod.
+//
+// This file must only run when the OperatorEnableLegacyScheduler gate is
+// true (see pkg/config/deployment_mode.go for the deployment-mode contract
+// and operator/api/v1alpha1.SpireConfigSpec.EnableLegacyScheduler for the
+// CR-level toggle). Default is false. Do not reintroduce a start path for
+// this loop outside the gate — the operator is a reconciler, not a
+// scheduler.
+
 import (
 	"context"
 	"fmt"
