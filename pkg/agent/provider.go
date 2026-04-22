@@ -9,9 +9,11 @@
 package agent
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 // AIProvider abstracts the invocation of an AI CLI tool.
@@ -100,13 +102,13 @@ func (c *CodexProvider) Name() string   { return "codex" }
 func (c *CodexProvider) Binary() string { return "codex" }
 
 func (c *CodexProvider) BuildArgs(opts InvokeOpts) []string {
-	// Codex CLI uses: codex --approval-mode full-auto -q "prompt"
+	// Codex CLI uses: codex [--approval-mode full-auto] exec --json "prompt"
 	// --approval-mode full-auto is the equivalent of --dangerously-skip-permissions
 	var args []string
 	if opts.SkipPerms {
 		args = append(args, "--approval-mode", "full-auto")
 	}
-	args = append(args, "-q", opts.Prompt)
+	args = append(args, "exec", "--json", opts.Prompt)
 	if opts.Model != "" {
 		args = append(args, "--model", mapCodexModel(opts.Model))
 	}
@@ -114,9 +116,61 @@ func (c *CodexProvider) BuildArgs(opts InvokeOpts) []string {
 	return args
 }
 
+// codexEvent is one line of 'codex exec --json' JSONL output.
+// Only the fields NormalizeResult needs are modeled here; other fields
+// (usage totals, command_execution detail) are handled by the transcript
+// adapter in a separate subtask.
+type codexEvent struct {
+	Type string          `json:"type"`
+	Item *codexEventItem `json:"item,omitempty"`
+}
+
+type codexEventItem struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
 func (c *CodexProvider) NormalizeResult(raw []byte) (*ProviderResult, error) {
-	// Codex output is plain text by default.
-	return &ProviderResult{Text: string(raw)}, nil
+	text, err := parseCodexFinalMessage(string(raw))
+	if err != nil {
+		return nil, err
+	}
+	return &ProviderResult{Text: text}, nil
+}
+
+// parseCodexFinalMessage scans 'codex exec --json' stdout line by line,
+// tracking the last item.completed agent_message text and returning it.
+// Non-JSON lines and malformed JSON lines are skipped — the stream may
+// contain diagnostic noise before the JSONL begins. If no agent_message
+// event is observed, the trimmed raw stdout is returned as a fallback so
+// degenerate runs aren't worse than the previous plain-text behavior.
+func parseCodexFinalMessage(stdout string) (string, error) {
+	scanner := bufio.NewScanner(strings.NewReader(stdout))
+	// A single agent_message may exceed the default 64 KiB line cap.
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	var lastAgentText string
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev codexEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		if ev.Type == "item.completed" && ev.Item != nil && ev.Item.Type == "agent_message" {
+			lastAgentText = ev.Item.Text
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	if lastAgentText == "" {
+		return strings.TrimSpace(stdout), nil
+	}
+	return lastAgentText, nil
 }
 
 // mapCodexModel translates Claude model identifiers to Codex equivalents.

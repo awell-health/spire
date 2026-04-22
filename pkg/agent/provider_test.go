@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -155,43 +156,43 @@ func TestCodexProvider_BuildArgs(t *testing.T) {
 	}{
 		{
 			name: "minimal prompt",
-			opts: InvokeOpts{Prompt: "hello"},
-			want: []string{"-q", "hello"},
+			opts: InvokeOpts{Prompt: "my prompt"},
+			want: []string{"exec", "--json", "my prompt"},
 		},
 		{
 			name: "skip perms (full-auto)",
 			opts: InvokeOpts{Prompt: "plan", SkipPerms: true},
-			want: []string{"--approval-mode", "full-auto", "-q", "plan"},
+			want: []string{"--approval-mode", "full-auto", "exec", "--json", "plan"},
 		},
 		{
 			name: "model mapping opus",
 			opts: InvokeOpts{Prompt: "work", Model: "opus"},
-			want: []string{"-q", "work", "--model", "o3"},
+			want: []string{"exec", "--json", "work", "--model", "o3"},
 		},
 		{
 			name: "model mapping claude-opus-4-6",
 			opts: InvokeOpts{Prompt: "work", Model: "claude-opus-4-6"},
-			want: []string{"-q", "work", "--model", "o3"},
+			want: []string{"exec", "--json", "work", "--model", "o3"},
 		},
 		{
 			name: "model mapping sonnet",
 			opts: InvokeOpts{Prompt: "work", Model: "sonnet"},
-			want: []string{"-q", "work", "--model", "o4-mini"},
+			want: []string{"exec", "--json", "work", "--model", "o4-mini"},
 		},
 		{
 			name: "model mapping claude-sonnet-4-6",
 			opts: InvokeOpts{Prompt: "work", Model: "claude-sonnet-4-6"},
-			want: []string{"-q", "work", "--model", "o4-mini"},
+			want: []string{"exec", "--json", "work", "--model", "o4-mini"},
 		},
 		{
 			name: "native codex model passthrough",
 			opts: InvokeOpts{Prompt: "work", Model: "o3"},
-			want: []string{"-q", "work", "--model", "o3"},
+			want: []string{"exec", "--json", "work", "--model", "o3"},
 		},
 		{
 			name: "extra args",
 			opts: InvokeOpts{Prompt: "work", ExtraArgs: []string{"--verbose"}},
-			want: []string{"-q", "work", "--verbose"},
+			want: []string{"exec", "--json", "work", "--verbose"},
 		},
 	}
 	p := &CodexProvider{}
@@ -205,15 +206,125 @@ func TestCodexProvider_BuildArgs(t *testing.T) {
 	}
 }
 
-func TestCodexProvider_NormalizeResult(t *testing.T) {
-	raw := []byte("some codex output")
+func TestCodexProvider_NormalizeResult_NoToolRun(t *testing.T) {
+	// No-tool run transcript from the design doc.
+	raw := []byte(`{"type":"thread.started","thread_id":"t_0"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}
+{"type":"turn.completed","usage":{"input_tokens":18368,"cached_input_tokens":0,"output_tokens":29}}
+`)
 	p := &CodexProvider{}
 	r, err := p.NormalizeResult(raw)
 	if err != nil {
 		t.Fatalf("NormalizeResult error: %v", err)
 	}
-	if r.Text != "some codex output" {
-		t.Errorf("Text = %q, want %q", r.Text, "some codex output")
+	if r.Text != "hello" {
+		t.Errorf("Text = %q, want %q", r.Text, "hello")
+	}
+}
+
+func TestCodexProvider_NormalizeResult_ToolUsingRun(t *testing.T) {
+	// Tool-using run transcript from the design doc — final agent_message is
+	// "/private/tmp" and intervening command_execution items should be ignored.
+	raw := []byte(`{"type":"thread.started","thread_id":"t_0"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Running pwd..."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc pwd","aggregated_output":"/private/tmp\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"/private/tmp"}}
+{"type":"turn.completed","usage":{"input_tokens":36974,"cached_input_tokens":36736,"output_tokens":186}}
+`)
+	p := &CodexProvider{}
+	r, err := p.NormalizeResult(raw)
+	if err != nil {
+		t.Fatalf("NormalizeResult error: %v", err)
+	}
+	if r.Text != "/private/tmp" {
+		t.Errorf("Text = %q, want %q", r.Text, "/private/tmp")
+	}
+}
+
+func TestCodexProvider_NormalizeResult_MultipleAgentMessages(t *testing.T) {
+	// Two agent_message events in one turn — expect the later one.
+	raw := []byte(`{"type":"thread.started","thread_id":"t_0"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"first"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"second"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+`)
+	p := &CodexProvider{}
+	r, err := p.NormalizeResult(raw)
+	if err != nil {
+		t.Fatalf("NormalizeResult error: %v", err)
+	}
+	if r.Text != "second" {
+		t.Errorf("Text = %q, want %q", r.Text, "second")
+	}
+}
+
+func TestCodexProvider_NormalizeResult_LeadingNoise(t *testing.T) {
+	// Leading non-JSON lines (mimicking MCP/auth diagnostic output that might
+	// leak onto stdout) — parser must skip and still return the agent_message.
+	raw := []byte(`[debug] auth provider ready
+[info] mcp servers initialized
+{"type":"thread.started","thread_id":"t_0"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+`)
+	p := &CodexProvider{}
+	r, err := p.NormalizeResult(raw)
+	if err != nil {
+		t.Fatalf("NormalizeResult error: %v", err)
+	}
+	if r.Text != "hello" {
+		t.Errorf("Text = %q, want %q", r.Text, "hello")
+	}
+}
+
+func TestCodexProvider_NormalizeResult_MalformedJSONMidStream(t *testing.T) {
+	// One corrupt line between valid events — parser must skip it, not error.
+	raw := []byte(`{"type":"thread.started","thread_id":"t_0"}
+{"type":"turn.started"}
+{ this is not valid json
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+`)
+	p := &CodexProvider{}
+	r, err := p.NormalizeResult(raw)
+	if err != nil {
+		t.Fatalf("NormalizeResult error: %v", err)
+	}
+	if r.Text != "hello" {
+		t.Errorf("Text = %q, want %q", r.Text, "hello")
+	}
+}
+
+func TestCodexProvider_NormalizeResult_EmptyInput(t *testing.T) {
+	p := &CodexProvider{}
+	r, err := p.NormalizeResult([]byte{})
+	if err != nil {
+		t.Fatalf("NormalizeResult error: %v", err)
+	}
+	if r.Text != "" {
+		t.Errorf("Text = %q, want empty", r.Text)
+	}
+}
+
+func TestCodexProvider_NormalizeResult_NoAgentMessage(t *testing.T) {
+	// No agent_message events — fall back to trimmed raw stdout so behavior
+	// isn't worse than the previous plain-text pass-through for degenerate runs.
+	raw := []byte(`{"type":"thread.started","thread_id":"t_0"}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":0}}
+`)
+	p := &CodexProvider{}
+	r, err := p.NormalizeResult(raw)
+	if err != nil {
+		t.Fatalf("NormalizeResult error: %v", err)
+	}
+	want := strings.TrimSpace(string(raw))
+	if r.Text != want {
+		t.Errorf("Text = %q, want trimmed raw %q", r.Text, want)
 	}
 }
 
