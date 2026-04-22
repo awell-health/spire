@@ -15,15 +15,12 @@ import (
 
 // TestBuildWorkloadPod_SharedBuilderParity enforces that the operator's
 // buildWorkloadPod output converges on the shared pkg/agent wizard-pod
-// shape for the same SpawnConfig. Any difference that isn't an
-// operator-specific overlay (guild-scoped labels, SpireConfig-sourced
-// secret refs, MaxApprentices, custom image/resources, deterministic
-// pod name, operator-sourced --dolthub-remote) is a parity bug and
-// blocks merge per spi-fjt2t.
-//
-// The test covers the fields the spi-fjt2t task spec enumerates:
-// image, command, args, env, volumes, volumeMounts, init containers,
-// labels, annotations, resource requests/limits.
+// shape for the same SpawnConfig, modulo the deliberate cluster-native
+// cache overlay (spi-gvrfv): the operator always replaces repo-bootstrap
+// with cache-bootstrap, adds the repo-cache PVC volume, and repoints the
+// main container at WorkspaceMountPath. Every other field (image,
+// command, args, env values, labels, annotations, resource
+// requests/limits) must still match the shared builder.
 func TestBuildWorkloadPod_SharedBuilderParity(t *testing.T) {
 	const (
 		ns          = "spire"
@@ -120,14 +117,17 @@ func TestBuildWorkloadPod_SharedBuilderParity(t *testing.T) {
 	}
 
 	// --- Volumes ---
-	// Shape must match exactly (same names, same sources).
-	assertVolumesEqual(t, opPod.Spec.Volumes, sharedPod.Spec.Volumes)
+	// Every shared-builder volume must still exist on the operator pod.
+	// The cache overlay adds a repo-cache PVC volume on top; that is
+	// expected and not a parity violation.
+	assertVolumesSuperset(t, opPod.Spec.Volumes, sharedPod.Spec.Volumes)
 
 	// --- Init containers ---
-	// Same names, commands, volume mounts. Env: operator overlay adds
-	// SPIRE_AGENT_NAME / SPIRE_K8S_SHARED_WORKSPACE / MaxApprentices /
-	// secret refs on top; every shared-builder env var must survive.
-	assertInitContainersPartialEqual(t, opPod.Spec.InitContainers, sharedPod.Spec.InitContainers, opOverlayEnvNames())
+	// tower-attach must match the shared builder byte-for-byte (modulo
+	// the operator's --dolthub-remote override, asserted below). The
+	// shared builder's repo-bootstrap is intentionally replaced by
+	// cache-bootstrap; parity is preserved for the tower-attach init only.
+	assertTowerAttachPartialEqual(t, opPod.Spec.InitContainers, sharedPod.Spec.InitContainers, opOverlayEnvNames())
 
 	// tower-attach Command must use the operator's configured
 	// --dolthub-remote value (m.DolthubRemote), not whatever the shared
@@ -159,8 +159,10 @@ func TestBuildWorkloadPod_SharedBuilderParity(t *testing.T) {
 		t.Errorf("container Command: op=%v, shared=%v", opMain.Command, sharedMain.Command)
 	}
 
-	// VolumeMounts must match: /data + /workspace for the wizard shape.
-	assertVolumeMountsEqual(t, opMain.VolumeMounts, sharedMain.VolumeMounts)
+	// VolumeMounts: /data must match the shared builder's mount. /workspace
+	// is remapped by the cache overlay to WorkspaceMountPath and the
+	// overlay adds a /spire/cache RO mount — both expected divergences.
+	assertDataMountEqual(t, opMain.VolumeMounts, sharedMain.VolumeMounts)
 
 	// Env: every shared-builder env var with a fixed Value (skip secret
 	// refs and overlay names) must appear in the operator pod with the
@@ -236,13 +238,24 @@ func opOverlayEnvNames() map[string]struct{} {
 }
 
 // assertVolumesEqual checks that the two volume lists contain the same
-// volumes (by Name + EmptyDir/PVC presence). Order-insensitive.
+// volumes (by Name + EmptyDir/PVC presence). Order-insensitive. Used
+// for the apprentice-pod path, which mirrors the shared builder
+// byte-for-byte.
 func assertVolumesEqual(t *testing.T, got, want []corev1.Volume) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Errorf("volumes: got %d, want %d\n  got=%v\n  want=%v", len(got), len(want), got, want)
 		return
 	}
+	assertVolumesSuperset(t, got, want)
+}
+
+// assertVolumesSuperset checks that every shared-builder volume is
+// present on the operator pod with the same source type. The operator
+// is allowed to add additional volumes on top (e.g. the cache overlay's
+// repo-cache PVC).
+func assertVolumesSuperset(t *testing.T, got, want []corev1.Volume) {
+	t.Helper()
 	gotByName := make(map[string]corev1.Volume, len(got))
 	for _, v := range got {
 		gotByName[v.Name] = v
@@ -264,6 +277,9 @@ func assertVolumesEqual(t *testing.T, got, want []corev1.Volume) {
 	}
 }
 
+// assertVolumeMountsEqual asserts every wanted mount path is present on
+// got with matching Name. Used by the apprentice-pod parity test, which
+// mirrors the shared builder without the wizard-path cache overlay.
 func assertVolumeMountsEqual(t *testing.T, got, want []corev1.VolumeMount) {
 	t.Helper()
 	gm := make(map[string]corev1.VolumeMount, len(got))
@@ -282,9 +298,35 @@ func assertVolumeMountsEqual(t *testing.T, got, want []corev1.VolumeMount) {
 	}
 }
 
+// assertDataMountEqual checks the /data volume mount is identical
+// between the operator pod and the shared builder. The workspace mount
+// is remapped by the cache overlay (/workspace → WorkspaceMountPath) and
+// the overlay adds a /spire/cache RO mount — those divergences are
+// expected and not asserted here.
+func assertDataMountEqual(t *testing.T, got, want []corev1.VolumeMount) {
+	t.Helper()
+	var wantData corev1.VolumeMount
+	for _, w := range want {
+		if w.Name == "data" {
+			wantData = w
+			break
+		}
+	}
+	for _, g := range got {
+		if g.Name == "data" {
+			if g.MountPath != wantData.MountPath {
+				t.Errorf("data mount path: op=%q, shared=%q", g.MountPath, wantData.MountPath)
+			}
+			return
+		}
+	}
+	t.Errorf("operator pod missing data volume mount; got %+v", got)
+}
+
 // assertInitContainersPartialEqual checks init containers match by
 // Name/Image/Command/VolumeMounts; env must be a superset modulo the
-// overlay skip set.
+// overlay skip set. Used by the apprentice-pod path (reconciler
+// boundary), which does not go through the wizard-path cache overlay.
 func assertInitContainersPartialEqual(t *testing.T, got, want []corev1.Container, skip map[string]struct{}) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -302,15 +344,8 @@ func assertInitContainersPartialEqual(t *testing.T, got, want []corev1.Container
 			continue
 		}
 		if g.Image != w.Image {
-			// The operator overlay overrides the image from the guild
-			// CR; use wantImage only when unset on guild — here we pass
-			// the same image, so they should match.
 			t.Errorf("init %q Image: op=%q, shared=%q", w.Name, g.Image, w.Image)
 		}
-		// Command equality: tower-attach is special-cased because the
-		// operator overlay rewrites it with operator-sourced --dolthub-remote;
-		// for every other init container (repo-bootstrap, etc.) the
-		// commands must match byte-for-byte against the shared builder.
 		if w.Name != "tower-attach" {
 			if !stringSlicesEqual(g.Command, w.Command) {
 				t.Errorf("init %q Command:\n  op=%v\n  shared=%v", w.Name, g.Command, w.Command)
@@ -319,6 +354,43 @@ func assertInitContainersPartialEqual(t *testing.T, got, want []corev1.Container
 		assertVolumeMountsEqual(t, g.VolumeMounts, w.VolumeMounts)
 		assertEnvSupersetValuesOnly(t, w.Env, g.Env, skip)
 	}
+}
+
+// assertTowerAttachPartialEqual asserts tower-attach matches the shared
+// builder (image, volume mounts, env superset). Command is skipped
+// because the operator overlay rewrites it with its own --dolthub-remote.
+// repo-bootstrap from the shared builder is intentionally replaced by
+// cache-bootstrap in the operator pod (spi-gvrfv) and is not asserted
+// here.
+func assertTowerAttachPartialEqual(t *testing.T, got, want []corev1.Container, skip map[string]struct{}) {
+	t.Helper()
+	gm := make(map[string]corev1.Container, len(got))
+	for _, c := range got {
+		gm[c.Name] = c
+	}
+	w, ok := findContainerByName(want, "tower-attach")
+	if !ok {
+		t.Fatalf("shared builder missing tower-attach init container; got %+v", want)
+	}
+	g, ok := gm["tower-attach"]
+	if !ok {
+		t.Fatalf("operator pod missing tower-attach init container; got %+v", got)
+	}
+	if g.Image != w.Image {
+		t.Errorf("tower-attach Image: op=%q, shared=%q", g.Image, w.Image)
+	}
+	// Volume mounts on tower-attach: /data only.
+	assertDataMountEqual(t, g.VolumeMounts, w.VolumeMounts)
+	assertEnvSupersetValuesOnly(t, w.Env, g.Env, skip)
+}
+
+func findContainerByName(list []corev1.Container, name string) (corev1.Container, bool) {
+	for _, c := range list {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return corev1.Container{}, false
 }
 
 // assertEnvSupersetValuesOnly asserts every Name/Value env entry in

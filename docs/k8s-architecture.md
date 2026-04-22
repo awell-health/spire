@@ -117,11 +117,12 @@ Pod: {agent-name}
  │                       │                                    │
  │                       v                                    │
  │  ┌──────────────────────────────────────────────────────┐ │
- │  │  init: repo-bootstrap                                │ │
- │  │  sh -c 'git clone … && spire repo bind-local …'      │ │
- │  │    SPIRE_REPO_URL / SPIRE_REPO_BRANCH /              │ │
- │  │    SPIRE_REPO_PREFIX                                 │ │
- │  │  volumeMounts: /data, /workspace                     │ │
+ │  │  init: cache-bootstrap                               │ │
+ │  │  spire cluster cache-bootstrap                       │ │
+ │  │    --cache-path=/spire/cache                         │ │
+ │  │    --workspace-path=/spire/workspace                 │ │
+ │  │    --prefix=<prefix>                                 │ │
+ │  │  volumeMounts: /data, /spire/cache, /spire/workspace │ │
  │  └────────────────────┬─────────────────────────────────┘ │
  │                       │                                    │
  │                       v                                    │
@@ -131,13 +132,14 @@ Pod: {agent-name}
  │  │  - loads formula, claims bead                         │ │
  │  │  - plans, dispatches apprentices, reviews, merges    │ │
  │  │  - exits 0 on success / non-zero on failure          │ │
- │  │  volumeMounts: /data, /workspace                     │ │
+ │  │  volumeMounts: /data, /spire/workspace, /spire/cache │ │
+ │  │  workingDir:  /spire/workspace                        │ │
  │  └──────────────────────────────────────────────────────┘ │
  │                                                            │
  │  Shared volumes:                                           │
- │    /data      — beads workspace + spire config (emptyDir)  │
- │    /workspace — git clone target for apprentice bundles    │
- │                 (emptyDir)                                 │
+ │    /data            — beads workspace + config (emptyDir)  │
+ │    /spire/workspace — materialized repo root (emptyDir)    │
+ │    /spire/cache     — guild-owned cache mirror (PVC, RO)   │
  │                                                            │
  │  restartPolicy: Never  (one-shot)                          │
  │  priorityClassName: spire-agent-default                    │
@@ -161,19 +163,21 @@ can open dolt immediately.
 This replaces both the older `beads-seed` ConfigMap bootstrap and the
 `agent-entrypoint.sh` workspace-setup flow.
 
-### Init container: repo-bootstrap
+### Init container: cache-bootstrap
 
-The second init container, `repo-bootstrap`, clones the bead's repo
-into `/workspace/<prefix>` and invokes `spire repo bind-local` to write
-a local binding into the tower config on `/data`. `bind-local` is the
-local-only counterpart to `spire repo bind`: it takes repo URL and
-branch as explicit flags (rather than reading the shared dolt repos
-table) and writes only to `tower.LocalBindings` and `cfg.Instances`.
-This is what lets the bootstrap succeed in the pod's read path — the
-main container's `wizard.ResolveRepo` finds the checkout as soon as it
-starts. See [k8s-operator-reference.md — Init container:
-repo-bootstrap](k8s-operator-reference.md#init-container-repo-bootstrap)
-for the full contract.
+The second init container, `cache-bootstrap`, runs
+`spire cluster cache-bootstrap` — which calls the pkg/agent helpers
+`MaterializeWorkspaceFromCache` then `BindLocalRepo` — to materialize
+the writable workspace at `/spire/workspace` from the guild-owned
+read-only cache mirror at `/spire/cache`, and writes a local binding
+into the tower config on `/data`. The cache PVC is provisioned by the
+operator's `CacheReconciler` from the `WizardGuild.Spec.Cache`
+declaration; declaring `spec.cache` on every managed guild is now a
+deployment requirement (spi-gvrfv retired the older `repo-bootstrap`
+origin-clone path). See
+[cluster-repo-cache.md](cluster-repo-cache.md) for the full cache
+contract (CRD fields, PVC/Job naming, serialization, worker
+bootstrap, observability vocabulary).
 
 ### Main container: agent
 
@@ -207,8 +211,8 @@ The steward/operator injects these into the main (`agent`) container:
 | `SPIRE_BEAD_ID` | Assigned bead ID | Yes |
 | `SPIRE_TOWER` | Tower name | Yes |
 | `SPIRE_ROLE` | `wizard` | Yes |
-| `SPIRE_REPO_URL` | Git remote URL for the bead's prefix (also on `repo-bootstrap`) | Yes |
-| `SPIRE_REPO_BRANCH` | Branch cloned by `repo-bootstrap` (also on the init container) | Yes |
+| `SPIRE_REPO_URL` | Git remote URL for the bead's prefix | Yes |
+| `SPIRE_REPO_BRANCH` | Tracked branch identity | Yes |
 | `SPIRE_REPO_PREFIX` | Bead prefix — keys `cfg.Instances[prefix]` for `wizard.ResolveRepo` | Yes |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector (steward) | Yes |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Yes |

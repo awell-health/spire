@@ -529,16 +529,15 @@ func (m *AgentMonitor) buildWorkloadPod(wg *spirev1.WizardGuild, beadID string, 
 	// about; applying them post-build keeps the shared shape authoritative.
 	m.applyOperatorOverlay(pod, wg, beadID, cfg, image, db, prefix)
 
-	// Phase-2 cache overlay (spi-sn7o3): when the guild declares a cache,
-	// rewire the pod so it boots from the guild-owned cache PVC instead
-	// of cloning from origin on every pod start. The overlay replaces the
-	// repo-bootstrap init container with cache-bootstrap, adds the cache
-	// PVC volume, and repoints the workspace mount at WorkspaceMountPath
-	// so the main container's runtime surface stays identical to phase-1
-	// (writable repo substrate at a single well-known mount).
-	if wg.Spec.Cache != nil {
-		applyCacheOverlay(pod, wg.Name, prefix, image)
-	}
+	// Cache overlay is the canonical cluster-native substrate (spi-gvrfv):
+	// every operator-managed wizard pod boots from the guild-owned cache
+	// PVC, never from a fresh origin clone. The overlay replaces the
+	// shared builder's repo-bootstrap init container with cache-bootstrap,
+	// adds the cache PVC volume, and repoints the workspace mount at
+	// WorkspaceMountPath. The guild CR's spec.cache declaration is the
+	// signal for the CacheReconciler to provision the PVC — without it,
+	// the pod will stay Pending until the PVC appears.
+	applyCacheOverlay(pod, wg.Name, prefix, image)
 
 	return pod
 }

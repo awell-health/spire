@@ -1,5 +1,10 @@
 # A wizard — managed agent pod that does coding work.
 # The archmage assigns beads; the operator spins up a pod per assignment.
+#
+# `spec.cache` is the canonical cluster-native substrate: the operator
+# provisions a read-only guild-owned cache PVC and every wizard pod
+# mounts it via the cache-bootstrap init container. The old
+# repo-bootstrap origin-clone path is retired (spi-gvrfv).
 apiVersion: spire.awell.io/v1alpha1
 kind: WizardGuild
 metadata:
@@ -14,6 +19,10 @@ spec:
   image: spire-agent:dev
   repo: https://github.com/awell-health/spire.git
   repoBranch: main
+  cache:
+    size: 10Gi
+    accessMode: ReadOnlyMany
+    refreshInterval: 5m
   resources:
     requests:
       cpu: "500m"

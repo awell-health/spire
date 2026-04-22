@@ -364,6 +364,11 @@ func createWizardGuildCR(name string) error {
 	}
 	repoBranch = repoconfig.ResolveBranchBase(repoBranch)
 
+	// spec.cache is the canonical cluster-native substrate (spi-gvrfv):
+	// the operator provisions a read-only guild-owned cache PVC and every
+	// wizard pod mounts it via the cache-bootstrap init container. The
+	// old repo-bootstrap origin-clone path is retired, so a guild without
+	// spec.cache would never schedule.
 	manifest := fmt.Sprintf(`apiVersion: spire.awell.io/v1alpha1
 kind: WizardGuild
 metadata:
@@ -377,6 +382,10 @@ spec:
   maxConcurrent: 1
   repo: "%s"
   repoBranch: "%s"
+  cache:
+    size: 10Gi
+    accessMode: ReadOnlyMany
+    refreshInterval: 5m
 `, name, name, repoURL, repoBranch)
 
 	cmd := exec.Command("kubectl", "apply", "-f", "-")

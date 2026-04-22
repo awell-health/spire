@@ -562,11 +562,12 @@ for the authoritative spec.
 |                         |                                 |
 |                         v                                 |
 | +------------------------------------------------------+ |
-| | init: repo-bootstrap                                 | |
-| | clones SPIRE_REPO_URL@SPIRE_REPO_BRANCH into         | |
-| |   /workspace/<prefix>, then runs `spire repo         | |
+| | init: cache-bootstrap                                | |
+| | materializes the writable workspace at               | |
+| |   pkg/agent.WorkspaceMountPath from the read-only    | |
+| |   guild-owned cache PVC, then runs `spire repo       | |
 | |   bind-local` so wizard.ResolveRepo resolves it      | |
-| | volumeMounts: /data, /workspace                      | |
+| | volumeMounts: /data, /spire/workspace, /spire/cache  | |
 | +------------------------------------------------------+ |
 |                         |                                 |
 |                         v                                 |
@@ -580,22 +581,26 @@ for the authoritative spec.
 | |      SPIRE_REPO_{URL,BRANCH,PREFIX},                 | |
 | |      OTEL_*, ANTHROPIC_API_KEY (Secret),             | |
 | |      GITHUB_TOKEN (Secret, optional)                 | |
-| | volumeMounts: /data, /workspace                      | |
+| | volumeMounts: /data, /spire/workspace, /spire/cache  | |
+| | workingDir: /spire/workspace                         | |
 | | resources: 1Gi/250m req, 2Gi/1000m lim (overridable) | |
 | +------------------------------------------------------+ |
 |                                                          |
-|   /data       emptyDir  — beads workspace + spire config |
-|   /workspace  emptyDir  — bead repo checkout +          |
-|                           apprentice bundle target       |
+|   /data            emptyDir  — beads workspace + config  |
+|   /spire/workspace emptyDir  — materialized repo root    |
+|   /spire/cache     PVC (RO)  — guild-owned cache mirror  |
 +----------------------------------------------------------+
 ```
 
 Volumes:
 - `/data` (emptyDir) — beads workspace (dolt data dir) and spire config
   (`/data/spire-config`); primed by the `tower-attach` init container
-- `/workspace` (emptyDir) — bead repo checkout written by the
-  `repo-bootstrap` init container and also used as the git clone target
+- `/spire/workspace` (emptyDir) — bead repo checkout materialized by the
+  `cache-bootstrap` init container and also used as the git clone target
   when the wizard produces apprentice bundles
+- `/spire/cache` (PVC, read-only) — guild-owned repo cache mirror;
+  provisioned by the operator's `CacheReconciler` from the
+  `WizardGuild.Spec.Cache` declaration
 
 There is no `/comms` volume and no familiar sidecar in the wizard pod.
 The two init containers do all bootstrap work that used to live in
@@ -620,17 +625,20 @@ phase (`Succeeded` / `Failed`), records the outcome, and reaps the pod.
 There is no in-pod sidecar reporting; the pod's lifetime equals the
 wizard process's lifetime.
 
-#### Phase-2: guild-owned repo cache overlay
+#### Cache PVC is the canonical substrate
 
-When a `WizardGuild` declares `spec.cache`, the operator overlays the
-pod spec with a read-only cache PVC mount at `pkg/agent.CacheMountPath`
-and a `cache-bootstrap` init container that materializes the writable
-workspace at `pkg/agent.WorkspaceMountPath`, in place of the
-`repo-bootstrap` origin-clone init container. When `spec.cache` is
-unset, the pod keeps the pre-cache origin-clone behavior. See
+Every operator-managed wizard pod boots from the guild-owned cache PVC
+(spi-gvrfv). The operator's cache overlay runs unconditionally — the
+shared pkg/agent pod builder's `repo-bootstrap` init container is always
+replaced with `cache-bootstrap`, the repo-cache PVC is mounted
+read-only at `pkg/agent.CacheMountPath`, and the main container's
+writable workspace lives at `pkg/agent.WorkspaceMountPath`. A guild CR
+without `spec.cache` gets no PVC provisioned by `CacheReconciler` and
+its pods stay `Pending` — declaring `spec.cache` on every managed guild
+is now a deployment requirement. See
 [cluster-repo-cache.md](cluster-repo-cache.md) for the full contract
 (CRD fields, PVC/Job naming, serialization approach, worker
-bootstrap, observability vocabulary, and migration order).
+bootstrap, observability vocabulary).
 
 ### Wizard Pod (Epic)
 

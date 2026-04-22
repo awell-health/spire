@@ -32,4 +32,21 @@ spec:
   resources:
     {{- toYaml .resources | nindent 4 }}
   {{- end }}
+  # spec.cache is the canonical cluster-native substrate (spi-gvrfv): the
+  # operator provisions a guild-owned cache PVC and every wizard pod
+  # mounts it via the cache-bootstrap init container. The old
+  # repo-bootstrap origin-clone path is retired, so every managed-mode
+  # guild gets a cache block. Per-guild overrides win; chart defaults
+  # live under `.Values.cache.*`.
+  cache:
+    size: {{ (.cache).size | default (include "spire.cacheDefaultSize" $) | quote }}
+    accessMode: {{ (.cache).accessMode | default (include "spire.cacheDefaultAccessMode" $) | quote }}
+    refreshInterval: {{ (.cache).refreshInterval | default "5m" | quote }}
+    {{- $sc := (.cache).storageClassName | default (include "spire.cacheDefaultStorageClassName" $) }}
+    {{- if $sc }}
+    storageClassName: {{ $sc | quote }}
+    {{- end }}
+    {{- if (.cache).branchPin }}
+    branchPin: {{ (.cache).branchPin | quote }}
+    {{- end }}
 {{- end }}

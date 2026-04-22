@@ -375,6 +375,16 @@ spireConfig:
 ##         limits:
 ##           memory: "1Gi"
 ##           cpu: "500m"
+##       # Per-guild cache overrides (optional). The chart always renders a
+##       # spec.cache block on every guild (spi-gvrfv: cache is the
+##       # canonical cluster-native substrate); these fields override the
+##       # chart-wide defaults under `.Values.cache.*` for a specific guild.
+##       cache:
+##         size: 20Gi
+##         accessMode: ReadOnlyMany
+##         refreshInterval: 10m
+##         # storageClassName: "fast-rox"
+##         # branchPin: "main"
 
 ## @param guilds List of WizardGuild CRs to render. Default is empty; operators
 ## supply guilds per deployment. See section header for naming convention.

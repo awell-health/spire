@@ -193,13 +193,13 @@ func TestBuildWorkloadPod_CacheOverlay_InitContainerInvokesBootstrap(t *testing.
 	}
 }
 
-// TestBuildWorkloadPod_CacheOverlay_RuntimeSurfaceUnchanged is the
-// "pkg/executor and pkg/wizard fixtures still pass" assertion: the
-// canonical env surface pkg/executor / pkg/wizard reads (tower, prefix,
-// bead, role, backend, DOLT_DATA_DIR, SPIRE_CONFIG_DIR, SPIRE_REPO_*)
-// must be IDENTICAL whether or not the cache overlay is applied. If
-// the overlay changed those, pkg/executor / pkg/wizard code would need
-// to branch on cache-vs-clone origin — a boundary violation.
+// TestBuildWorkloadPod_CacheOverlay_RuntimeSurfaceUnchanged pins the
+// canonical runtime-contract env surface (spi-xplwy §1) pkg/executor
+// and pkg/wizard read. The overlay must not change DOLT_DATA_DIR,
+// SPIRE_CONFIG_DIR, SPIRE_REPO_*, SPIRE_TOWER/BEAD/ROLE/BACKEND, or the
+// workspace-identity triple between a guild that spells out CacheSpec
+// explicitly and one that does not. Any drift here would push
+// cache-vs-origin branching into wizard/executor — a boundary violation.
 func TestBuildWorkloadPod_CacheOverlay_RuntimeSurfaceUnchanged(t *testing.T) {
 	ns := "spire"
 	m := &AgentMonitor{
@@ -210,30 +210,28 @@ func TestBuildWorkloadPod_CacheOverlay_RuntimeSurfaceUnchanged(t *testing.T) {
 		Prefix:       "spi",
 	}
 
-	// Same guild spec on both sides, except the CacheSpec. Anything else
-	// would make the test flag spurious env-value drift (e.g. different
-	// repo URLs) rather than the overlay behavior we're pinning.
-	noCache := makeCachePodGuild("core", ns)
-	noCache.Spec.Cache = nil
-	noCachePod := m.buildWorkloadPod(noCache, "spi-abc", nil)
-	if noCachePod == nil {
-		t.Fatalf("phase-1 pod build failed")
+	// Bare guild (no explicit CacheSpec) vs. guild with explicit CacheSpec.
+	// Both go through the unconditional overlay (spi-gvrfv); env surface
+	// must be identical regardless of whether the CR declares the cache
+	// or just inherits the operator default. Use the same guild fixture
+	// on both sides so spurious Repo/Branch drift doesn't flag the test.
+	bare := makeCachePodGuild("core", ns)
+	bare.Spec.Cache = nil
+	barePod := m.buildWorkloadPod(bare, "spi-abc", nil)
+	if barePod == nil {
+		t.Fatalf("bare pod build failed")
 	}
-	noCacheMain := noCachePod.Spec.Containers[0]
-	noCacheEnv := envMap(noCacheMain.Env)
+	bareMain := barePod.Spec.Containers[0]
+	bareEnv := envMap(bareMain.Env)
 
 	withCache := makeCachePodGuild("core", ns)
 	withCachePod := m.buildWorkloadPod(withCache, "spi-abc", nil)
 	if withCachePod == nil {
-		t.Fatalf("phase-2 pod build failed")
+		t.Fatalf("explicit cache pod build failed")
 	}
 	withCacheMain := withCachePod.Spec.Containers[0]
 	withCacheEnv := envMap(withCacheMain.Env)
 
-	// The canonical runtime-contract surface (spi-xplwy §1) pkg/executor
-	// and pkg/wizard read. Their values must survive the cache overlay
-	// unchanged — otherwise wizard/executor code would have to branch on
-	// cache vs. origin-clone.
 	canonical := []string{
 		// Identity
 		"DOLT_DATA_DIR",
@@ -251,14 +249,14 @@ func TestBuildWorkloadPod_CacheOverlay_RuntimeSurfaceUnchanged(t *testing.T) {
 		"SPIRE_WORKSPACE_ORIGIN",
 	}
 	for _, name := range canonical {
-		want, wantOK := noCacheEnv[name]
+		want, wantOK := bareEnv[name]
 		got, gotOK := withCacheEnv[name]
 		if wantOK != gotOK {
-			t.Errorf("env %s presence changed: phase1=%v, phase2=%v", name, wantOK, gotOK)
+			t.Errorf("env %s presence changed: bare=%v, with-cache=%v", name, wantOK, gotOK)
 			continue
 		}
 		if wantOK && want.Value != got.Value {
-			t.Errorf("env %s drifted under cache overlay: phase1=%q, phase2=%q — pkg/executor / pkg/wizard would see a different surface",
+			t.Errorf("env %s drifted under cache overlay: bare=%q, with-cache=%q — pkg/executor / pkg/wizard would see a different surface",
 				name, want.Value, got.Value)
 		}
 	}
@@ -266,20 +264,21 @@ func TestBuildWorkloadPod_CacheOverlay_RuntimeSurfaceUnchanged(t *testing.T) {
 	// Command must still be `spire execute <bead> --name <guild>`. The
 	// cache overlay only changes how the workspace is MATERIALIZED; the
 	// main container's entrypoint is unchanged.
-	if !stringSlicesEqual(noCacheMain.Command, withCacheMain.Command) {
-		t.Errorf("main container Command changed under cache overlay:\n  phase1=%v\n  phase2=%v",
-			noCacheMain.Command, withCacheMain.Command)
+	if !stringSlicesEqual(bareMain.Command, withCacheMain.Command) {
+		t.Errorf("main container Command changed under cache overlay:\n  bare=%v\n  with-cache=%v",
+			bareMain.Command, withCacheMain.Command)
 	}
 }
 
-// TestBuildWorkloadPod_NoCacheSpec_NoOverlay pins the default path:
-// when Spec.Cache is nil, buildWorkloadPod must produce the
-// phase-1 pod shape untouched — same mounts, same init containers,
-// same WorkingDir. Any drift here would be a regression for existing
-// installs that haven't opted in to the cache.
-func TestBuildWorkloadPod_NoCacheSpec_NoOverlay(t *testing.T) {
+// TestBuildWorkloadPod_CacheOverlay_Unconditional pins the spi-gvrfv
+// contract: EVERY operator-managed wizard pod boots from the cache PVC,
+// regardless of whether the guild CR has an explicit CacheSpec. The
+// operator replaces the shared builder's repo-bootstrap with
+// cache-bootstrap unconditionally; the CacheSpec itself is only the
+// cache-reconciler's signal to provision the PVC.
+func TestBuildWorkloadPod_CacheOverlay_Unconditional(t *testing.T) {
 	ns := "spire"
-	wg := makeAgent("core", ns, nil) // no Cache
+	wg := makeAgent("core", ns, nil) // no explicit CacheSpec
 	m := &AgentMonitor{
 		Log:          testr.New(t),
 		Namespace:    ns,
@@ -292,33 +291,42 @@ func TestBuildWorkloadPod_NoCacheSpec_NoOverlay(t *testing.T) {
 		t.Fatalf("buildWorkloadPod returned nil")
 	}
 
-	// No cache volume — the PVC reference is the tell; if it shows up
-	// without an opt-in, kubelet will block pod creation on the missing
-	// PVC.
+	// Cache PVC volume must be present even without an explicit CacheSpec.
+	// The CacheReconciler provisions the PVC when spec.cache is set on the
+	// CR; the pod-builder wires the reference unconditionally so pods stay
+	// consistent between guilds that spell out the cache and guilds that
+	// rely on the operator default.
+	var foundCache bool
 	for _, v := range pod.Spec.Volumes {
 		if v.Name == "repo-cache" {
-			t.Errorf("repo-cache volume must not appear for guild without CacheSpec; got %+v", v)
-		}
-		if v.PersistentVolumeClaim != nil && strings.HasSuffix(v.PersistentVolumeClaim.ClaimName, "-repo-cache") {
-			t.Errorf("cache PVC reference must not appear without CacheSpec; got %+v", v)
+			foundCache = true
+			if v.PersistentVolumeClaim == nil || !strings.HasSuffix(v.PersistentVolumeClaim.ClaimName, "-repo-cache") {
+				t.Errorf("repo-cache volume must reference the cache PVC; got %+v", v)
+			}
 		}
 	}
-	// Init containers: repo-bootstrap preserved; no cache-bootstrap.
-	hasRepoBootstrap := false
+	if !foundCache {
+		t.Errorf("repo-cache volume must appear unconditionally; got %+v", pod.Spec.Volumes)
+	}
+
+	// Init containers: cache-bootstrap only; repo-bootstrap must be gone.
+	hasCacheBootstrap := false
 	for _, ic := range pod.Spec.InitContainers {
 		if ic.Name == "cache-bootstrap" {
-			t.Errorf("cache-bootstrap must not exist without CacheSpec")
+			hasCacheBootstrap = true
 		}
 		if ic.Name == "repo-bootstrap" {
-			hasRepoBootstrap = true
+			t.Errorf("repo-bootstrap must be retired from cluster-native path; got %+v", pod.Spec.InitContainers)
 		}
 	}
-	if !hasRepoBootstrap {
-		t.Errorf("repo-bootstrap must still exist in phase-1 mode")
+	if !hasCacheBootstrap {
+		t.Errorf("cache-bootstrap must be present on every operator-managed wizard pod")
 	}
-	// WorkingDir stays at /workspace/<prefix> (spi-vrzhf contract).
-	if got := pod.Spec.Containers[0].WorkingDir; got != "/workspace/spi" {
-		t.Errorf("phase-1 WorkingDir = %q, want /workspace/spi", got)
+
+	// WorkingDir lands on WorkspaceMountPath (cache-bootstrap materializes
+	// the repo root there, no prefix subdir).
+	if got := pod.Spec.Containers[0].WorkingDir; got != agent.WorkspaceMountPath {
+		t.Errorf("WorkingDir = %q, want %q", got, agent.WorkspaceMountPath)
 	}
 }
 

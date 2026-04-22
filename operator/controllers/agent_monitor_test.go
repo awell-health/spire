@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
+	"github.com/awell-health/spire/pkg/agent"
 )
 
 func newTestScheme(t *testing.T) *runtime.Scheme {
@@ -278,20 +279,24 @@ func TestBuildWorkloadPod_NameTruncatedTo63(t *testing.T) {
 }
 
 // TestBuildWorkloadPod_CanonicalShape pins the canonical wizard pod
-// contract produced by the shared pkg/agent builder (spi-fjt2t):
+// contract produced by the operator after the unconditional cache overlay
+// (spi-gvrfv): the shared pkg/agent builder still emits a repo-bootstrap
+// init container, but the operator overlay always replaces it with
+// cache-bootstrap and wires the guild-owned cache PVC. Every
+// operator-managed wizard pod therefore has:
 //
 //   - Two init containers: "tower-attach" (stages tower data onto /data)
-//     and "repo-bootstrap" (clones the repo into /workspace/<prefix>).
-//     Both match the pkg/agent wizard-pod shape.
+//     and "cache-bootstrap" (materializes /spire/workspace from the cache
+//     PVC). repo-bootstrap is retired from the cluster-native path.
 //   - One "agent" main container running `spire execute`.
-//   - Two emptyDir volumes: /data and /workspace.
+//   - Three volumes: /data + /workspace emptyDirs plus the repo-cache PVC.
 //   - No Model A artifacts (sidecar, /comms, beads-seed ConfigMap).
 //
 // Operator-specific overlay (labels, MaxApprentices, secret refs) is
 // tested separately in the parity test.
 func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 	ns := "spire"
-	agent := makeAgent("core", ns, nil)
+	wg := makeAgent("core", ns, nil)
 	m := &AgentMonitor{
 		Log:          testr.New(t),
 		Namespace:    ns,
@@ -300,15 +305,15 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 		Prefix:       "spi",
 	}
 
-	pod := m.buildWorkloadPod(agent, "spi-abc", nil)
+	pod := m.buildWorkloadPod(wg, "spi-abc", nil)
 	if pod == nil {
 		t.Fatalf("buildWorkloadPod returned nil (SpawnConfig validation failed?)")
 	}
 
-	// Init containers: tower-attach + repo-bootstrap, matching the shared
-	// pkg/agent wizard-pod shape.
+	// Init containers: tower-attach + cache-bootstrap. repo-bootstrap must
+	// not survive the operator overlay.
 	if len(pod.Spec.InitContainers) != 2 {
-		t.Fatalf("len(InitContainers) = %d, want 2 (tower-attach + repo-bootstrap)", len(pod.Spec.InitContainers))
+		t.Fatalf("len(InitContainers) = %d, want 2 (tower-attach + cache-bootstrap)", len(pod.Spec.InitContainers))
 	}
 	icByName := make(map[string]corev1.Container, len(pod.Spec.InitContainers))
 	for _, ic := range pod.Spec.InitContainers {
@@ -332,8 +337,11 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 			t.Errorf("init container Command missing flag with prefix %q; got %v", flag, ic.Command)
 		}
 	}
-	if _, ok := icByName["repo-bootstrap"]; !ok {
-		t.Errorf("init container %q not found; got %v", "repo-bootstrap", pod.Spec.InitContainers)
+	if _, ok := icByName["cache-bootstrap"]; !ok {
+		t.Errorf("init container %q not found; got %v", "cache-bootstrap", pod.Spec.InitContainers)
+	}
+	if _, stale := icByName["repo-bootstrap"]; stale {
+		t.Errorf("repo-bootstrap must be retired from operator-managed pods; got %v", pod.Spec.InitContainers)
 	}
 
 	// Main container: exactly one named "agent" running `spire execute`.
@@ -349,10 +357,8 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 		t.Errorf("main container Command = %v, want %v", main.Command, wantCmd)
 	}
 
-	// Volumes: exactly data + workspace emptyDir, no comms / beads-seed.
-	if len(pod.Spec.Volumes) != 2 {
-		t.Fatalf("len(Volumes) = %d, want 2; got %+v", len(pod.Spec.Volumes), pod.Spec.Volumes)
-	}
+	// Volumes: data + workspace emptyDirs plus the repo-cache PVC, no
+	// Model A artifacts.
 	vols := make(map[string]corev1.Volume, len(pod.Spec.Volumes))
 	for _, v := range pod.Spec.Volumes {
 		vols[v.Name] = v
@@ -366,6 +372,12 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 		if v.EmptyDir == nil {
 			t.Errorf("volume %q: EmptyDir is nil, want EmptyDir source", name)
 		}
+	}
+	cache, ok := vols["repo-cache"]
+	if !ok {
+		t.Errorf("missing repo-cache volume; cache overlay must add it unconditionally")
+	} else if cache.PersistentVolumeClaim == nil {
+		t.Errorf("repo-cache must be a PVC reference; got %+v", cache)
 	}
 	for _, forbidden := range []string{"comms", "beads-seed"} {
 		if _, ok := vols[forbidden]; ok {
@@ -405,7 +417,8 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 		t.Errorf("PriorityClassName = %q, want spire-agent-default", pod.Spec.PriorityClassName)
 	}
 
-	// Main container volume mounts: /data + /workspace, no /comms.
+	// Main container volume mounts: /data + /spire/workspace (remapped by
+	// cache overlay) + /spire/cache RO. /comms must not appear.
 	mainMounts := make(map[string]string, len(main.VolumeMounts))
 	for _, vm := range main.VolumeMounts {
 		mainMounts[vm.MountPath] = vm.Name
@@ -413,8 +426,13 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 	if mainMounts["/data"] != "data" {
 		t.Errorf("main container /data mount volume = %q, want data", mainMounts["/data"])
 	}
-	if mainMounts["/workspace"] != "workspace" {
-		t.Errorf("main container /workspace mount volume = %q, want workspace", mainMounts["/workspace"])
+	if mainMounts[agent.WorkspaceMountPath] != "workspace" {
+		t.Errorf("main container %s mount volume = %q, want workspace",
+			agent.WorkspaceMountPath, mainMounts[agent.WorkspaceMountPath])
+	}
+	if mainMounts[agent.CacheMountPath] != "repo-cache" {
+		t.Errorf("main container %s mount volume = %q, want repo-cache",
+			agent.CacheMountPath, mainMounts[agent.CacheMountPath])
 	}
 	if _, ok := mainMounts["/comms"]; ok {
 		t.Error("main container must not mount /comms on the canonical workload pod")
@@ -422,15 +440,15 @@ func TestBuildWorkloadPod_CanonicalShape(t *testing.T) {
 }
 
 // TestBuildWorkloadPod_WorkingDirInsideClone is the spi-vrzhf regression
-// test. The repo bootstrap init container clones to
-// /workspace/${SPIRE_REPO_PREFIX} (see pkg/agent/backend_k8s.go
-// repoBootstrapScript), so the main container's WorkingDir must point
-// at /workspace/<prefix> — not /workspace — otherwise spire.yaml lookups
-// in ResolveBackend("") and resolveMaxApprentices() silently fall back
-// to env/defaults and the k8s backend path is never exercised.
+// test, updated for the cache-bootstrap substrate (spi-gvrfv).
+// cache-bootstrap materializes the workspace at pkg/agent.WorkspaceMountPath
+// (no per-prefix subdirectory — the repo root IS the mount path), so the
+// main container's WorkingDir must land on WorkspaceMountPath for
+// spire.yaml lookups in ResolveBackend("") and resolveMaxApprentices()
+// to succeed.
 func TestBuildWorkloadPod_WorkingDirInsideClone(t *testing.T) {
 	ns := "spire"
-	agent := makeAgent("core", ns, nil)
+	wg := makeAgent("core", ns, nil)
 	m := &AgentMonitor{
 		Log:          testr.New(t),
 		Namespace:    ns,
@@ -439,7 +457,7 @@ func TestBuildWorkloadPod_WorkingDirInsideClone(t *testing.T) {
 		Prefix:       "spi",
 	}
 
-	pod := m.buildWorkloadPod(agent, "spi-abc", nil)
+	pod := m.buildWorkloadPod(wg, "spi-abc", nil)
 	if pod == nil {
 		t.Fatalf("buildWorkloadPod returned nil")
 	}
@@ -448,19 +466,17 @@ func TestBuildWorkloadPod_WorkingDirInsideClone(t *testing.T) {
 	}
 	main := pod.Spec.Containers[0]
 
-	// The clone lands at /workspace/<prefix>; WorkingDir must match so
-	// repoconfig.Load(".") walking from cwd finds spire.yaml.
-	wantDir := "/workspace/spi"
-	if main.WorkingDir != wantDir {
-		t.Errorf("main.WorkingDir = %q, want %q — the clone at /workspace/%s would be out of reach from cwd%s",
-			main.WorkingDir, wantDir, "spi",
-			" (spi-vrzhf regression)")
+	// cache-bootstrap clones the cache tree into WorkspaceMountPath;
+	// WorkingDir must match so repoconfig.Load(".") finds spire.yaml.
+	if main.WorkingDir != agent.WorkspaceMountPath {
+		t.Errorf("main.WorkingDir = %q, want %q — cache-bootstrap materializes repo root at WorkspaceMountPath",
+			main.WorkingDir, agent.WorkspaceMountPath)
 	}
 
-	// Double-check: the SPIRE_REPO_PREFIX env var the init container uses
-	// to choose the clone destination must carry the same value, so the
-	// two code paths don't drift. pkg/agent builds this into env, so it
-	// is present on every container.
+	// Double-check: the SPIRE_REPO_PREFIX env var remains on every
+	// container so downstream code that reads it (not for clone-path
+	// choice anymore, but for identity logging/routing) sees the right
+	// value.
 	var gotPrefix string
 	for _, e := range main.Env {
 		if e.Name == "SPIRE_REPO_PREFIX" {
