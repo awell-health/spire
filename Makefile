@@ -1,4 +1,4 @@
-.PHONY: build build-steward build-agent load deploy apply restart logs status clean smoke-test-helm
+.PHONY: build build-steward build-agent load deploy apply restart logs status clean smoke-test-helm test-observability
 
 NAMESPACE ?= spire
 
@@ -70,3 +70,13 @@ clean:
 # and verifies isolation. See docs/HELM.md for env-var options.
 smoke-test-helm:
 	bash hack/multi-tenant-smoke-test.sh
+
+# --- Observability regression suite ---
+
+# Layered regression tests for the observability pipeline: OTEL
+# ingestion (pkg/otel), OLAP storage contract (pkg/olap), and
+# bead-scoped CLI readers (cmd/spire). An observability regression is
+# caught by exactly one layer of this target, not by inspection of
+# production metrics. See scripts/test-observability.sh for scope.
+test-observability:
+	bash scripts/test-observability.sh

@@ -476,17 +476,42 @@ type beadSummary struct {
 	Children     []olap.BeadLifecycleIntervals   `json:"children,omitempty"`
 }
 
-// renderBeadMetrics queries agent_runs_olap for a specific bead and renders
-// the result, then overlays lifecycle timings, review/fix counts, and a child
-// drill-down (workflow step / attempt / sub-task timings). Any of those
-// secondary blocks may be empty if no lifecycle row exists yet for the bead.
-func renderBeadMetrics(adb *olap.DB, beadID string, jsonOut bool) error {
+// beadMetricsReader is the narrow read surface `spire metrics --bead`
+// consumes. Defined as an interface so the CLI test layer can inject a
+// fake and exercise the bead rendering path without opening
+// analytics.db (the layering rule pinned in spi-9h5rt). The default
+// implementation (*duckdbBeadReader) wraps *olap.DB and lives below.
+type beadMetricsReader interface {
+	BeadRunSummary(beadID string) (beadRunStats, error)
+	QueryLifecycleForBead(beadID string) (*olap.BeadLifecycleIntervals, error)
+	QueryReviewFixCounts(beadID string) (*olap.ReviewFixCounts, error)
+	QueryChildLifecycle(parentID string) ([]olap.BeadLifecycleIntervals, error)
+}
+
+// beadRunStats holds the derived per-bead run aggregation the bead
+// summary renders. Factored out of beadSummary so the reader seam can
+// return it without pulling in the lifecycle blocks.
+type beadRunStats struct {
+	TotalRuns    int
+	Successes    int
+	Failures     int
+	SuccessRate  float64
+	AvgCostUSD   float64
+	AvgDurationS float64
+	TotalCostUSD float64
+}
+
+// duckdbBeadReader adapts *olap.DB to the beadMetricsReader seam.
+// Keeps the raw agent_runs_olap SQL co-located with the other *olap.DB
+// methods the command uses; a future refactor can promote this to a
+// first-class MetricsReader method on the storage package itself.
+type duckdbBeadReader struct{ db *olap.DB }
+
+func (r duckdbBeadReader) BeadRunSummary(beadID string) (beadRunStats, error) {
 	ctx := context.Background()
-
+	var stats beadRunStats
 	var successRate, avgCost, avgDur, totalCost sql.NullFloat64
-	s := beadSummary{BeadID: beadID}
-
-	err := adb.SqlDB().QueryRowContext(ctx, `
+	err := r.db.SqlDB().QueryRowContext(ctx, `
 		SELECT
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END), 0),
@@ -497,33 +522,74 @@ func renderBeadMetrics(adb *olap.DB, beadID string, jsonOut bool) error {
 			COALESCE(SUM(cost_usd), 0)
 		FROM agent_runs_olap
 		WHERE bead_id = ?
-	`, beadID).Scan(&s.TotalRuns, &s.Successes, &s.Failures, &successRate, &avgCost, &avgDur, &totalCost)
+	`, beadID).Scan(&stats.TotalRuns, &stats.Successes, &stats.Failures,
+		&successRate, &avgCost, &avgDur, &totalCost)
+	if err != nil {
+		return stats, err
+	}
+	if successRate.Valid {
+		stats.SuccessRate = successRate.Float64
+	}
+	if avgCost.Valid {
+		stats.AvgCostUSD = avgCost.Float64
+	}
+	if avgDur.Valid {
+		stats.AvgDurationS = avgDur.Float64
+	}
+	if totalCost.Valid {
+		stats.TotalCostUSD = totalCost.Float64
+	}
+	return stats, nil
+}
+
+func (r duckdbBeadReader) QueryLifecycleForBead(beadID string) (*olap.BeadLifecycleIntervals, error) {
+	return r.db.QueryLifecycleForBead(beadID)
+}
+
+func (r duckdbBeadReader) QueryReviewFixCounts(beadID string) (*olap.ReviewFixCounts, error) {
+	return r.db.QueryReviewFixCounts(beadID)
+}
+
+func (r duckdbBeadReader) QueryChildLifecycle(parentID string) ([]olap.BeadLifecycleIntervals, error) {
+	return r.db.QueryChildLifecycle(parentID)
+}
+
+// renderBeadMetrics queries agent_runs_olap for a specific bead and renders
+// the result, then overlays lifecycle timings, review/fix counts, and a child
+// drill-down (workflow step / attempt / sub-task timings). Any of those
+// secondary blocks may be empty if no lifecycle row exists yet for the bead.
+func renderBeadMetrics(adb *olap.DB, beadID string, jsonOut bool) error {
+	return renderBeadMetricsFromReader(duckdbBeadReader{db: adb}, beadID, jsonOut)
+}
+
+// renderBeadMetricsFromReader is the reader-interface entry point.
+// Extracted so CLI regression tests can exercise the rendering path
+// against a fake reader without a DuckDB dependency.
+func renderBeadMetricsFromReader(r beadMetricsReader, beadID string, jsonOut bool) error {
+	s := beadSummary{BeadID: beadID}
+
+	stats, err := r.BeadRunSummary(beadID)
 	if err != nil {
 		return fmt.Errorf("metrics bead: %w", err)
 	}
-	if successRate.Valid {
-		s.SuccessRate = successRate.Float64
-	}
-	if avgCost.Valid {
-		s.AvgCostUSD = avgCost.Float64
-	}
-	if avgDur.Valid {
-		s.AvgDurationS = avgDur.Float64
-	}
-	if totalCost.Valid {
-		s.TotalCostUSD = totalCost.Float64
-	}
+	s.TotalRuns = stats.TotalRuns
+	s.Successes = stats.Successes
+	s.Failures = stats.Failures
+	s.SuccessRate = stats.SuccessRate
+	s.AvgCostUSD = stats.AvgCostUSD
+	s.AvgDurationS = stats.AvgDurationS
+	s.TotalCostUSD = stats.TotalCostUSD
 
 	// Fetch lifecycle timings, review/fix counts, and child breakdown.
 	// Errors are non-fatal — the bead summary still renders if the lifecycle
 	// sidecar hasn't been populated yet (fresh tower pre-backfill).
-	if lc, err := adb.QueryLifecycleForBead(beadID); err == nil {
+	if lc, err := r.QueryLifecycleForBead(beadID); err == nil {
 		s.Lifecycle = lc
 	}
-	if rf, err := adb.QueryReviewFixCounts(beadID); err == nil {
+	if rf, err := r.QueryReviewFixCounts(beadID); err == nil {
 		s.ReviewFix = rf
 	}
-	if kids, err := adb.QueryChildLifecycle(beadID); err == nil {
+	if kids, err := r.QueryChildLifecycle(beadID); err == nil {
 		s.Children = kids
 	}
 

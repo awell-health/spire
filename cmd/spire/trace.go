@@ -309,25 +309,22 @@ func buildTrace(beadID string) (*traceData, error) {
 		})
 	}
 
-	// OTel data: spans (waterfall), tool breakdown, API stats.
-	if tc, err := config.ActiveTowerConfig(); err == nil {
-		store, err := olap.OpenBackend(olap.Config{
-			Backend: os.Getenv("SPIRE_OLAP_BACKEND"),
-			Path:    tc.OLAPPath(),
-			DSN:     os.Getenv("SPIRE_CLICKHOUSE_DSN"),
-		})
-		if err == nil {
-			defer store.Close()
-			var reader olap.TraceReader = store
-			if spans, err := reader.QueryToolSpansByBead(beadID); err == nil && len(spans) > 0 {
-				td.Spans = spans
-			}
-			if steps, err := reader.QueryToolEventsByStep(beadID); err == nil && len(steps) > 0 {
-				td.ToolBreakdown = steps
-			}
-			if apiStats, err := reader.QueryAPIEventsByBead(beadID); err == nil && len(apiStats) > 0 {
-				td.APIStats = apiStats
-			}
+	// OTel data: spans (waterfall), tool breakdown, API stats. The reader
+	// is acquired through traceReaderProvider so CLI regression tests can
+	// inject a fake olap.TraceReader and assert the bead-scoped rendering
+	// path without opening analytics.db — matching the layered testing
+	// contract (pkg/olap owns DB-backed contract tests, CLI tests consume
+	// the reader interface).
+	if reader, closeReader, err := traceReaderProvider(); err == nil {
+		defer closeReader()
+		if spans, err := reader.QueryToolSpansByBead(beadID); err == nil && len(spans) > 0 {
+			td.Spans = spans
+		}
+		if steps, err := reader.QueryToolEventsByStep(beadID); err == nil && len(steps) > 0 {
+			td.ToolBreakdown = steps
+		}
+		if apiStats, err := reader.QueryAPIEventsByBead(beadID); err == nil && len(apiStats) > 0 {
+			td.APIStats = apiStats
 		}
 	}
 
@@ -946,4 +943,29 @@ Examples:
   spire trace spi-abc --log-lines 30  Show more log lines
   spire trace spi-abc --no-log     Trace without log output
   spire trace spi-abc --json       JSON output (includes log_file path)`)
+}
+
+// traceReaderProvider returns the olap.TraceReader and a close callback
+// used by buildTrace to fetch span / tool / API data. The indirection
+// is the testability seam: production code resolves the configured
+// OLAP backend, tests override the variable to inject a fake reader.
+// Keeping the default inline avoids any runtime behaviour change and
+// lets CLI regression tests consume a typed interface rather than
+// opening analytics.db (the layering rule spi-9h5rt pins).
+var traceReaderProvider = defaultTraceReaderProvider
+
+func defaultTraceReaderProvider() (olap.TraceReader, func(), error) {
+	tc, err := config.ActiveTowerConfig()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	store, err := olap.OpenBackend(olap.Config{
+		Backend: os.Getenv("SPIRE_OLAP_BACKEND"),
+		Path:    tc.OLAPPath(),
+		DSN:     os.Getenv("SPIRE_CLICKHOUSE_DSN"),
+	})
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return store, func() { _ = store.Close() }, nil
 }
