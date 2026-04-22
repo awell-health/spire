@@ -267,14 +267,24 @@ func cmdUp(args []string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			etl := olap.NewETLPath(olapPath)
 			n, syncErr := etl.Sync(ctx, doltConn)
-			cancel()
-			doltConn.Close()
 			if syncErr != nil {
 				fmt.Printf("\n  warning: %s: sync: %s", t.Name, syncErr)
 				olapWarned++
 			} else if n > 0 {
 				log.Printf("[up] [%s] olap: initial sync — %d rows", t.Name, n)
 			}
+			// Sync the bead_lifecycle sidecar alongside agent_runs. Runs
+			// even when agent_runs had zero rows — lifecycle rows exist for
+			// every bead, not just those with agent activity.
+			nL, syncErrL := etl.SyncBeadLifecycle(ctx, doltConn)
+			if syncErrL != nil {
+				fmt.Printf("\n  warning: %s: lifecycle sync: %s", t.Name, syncErrL)
+				olapWarned++
+			} else if nL > 0 {
+				log.Printf("[up] [%s] olap: bead_lifecycle sync — %d rows", t.Name, nL)
+			}
+			cancel()
+			doltConn.Close()
 		}
 		if olapWarned > 0 {
 			fmt.Println()
@@ -408,6 +418,12 @@ func migrateSpireTables(database string) error {
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, recoveryLearningsTableSQL)); err != nil {
 		return fmt.Errorf("create recovery_learnings: %w", err)
 	}
+	// bead_lifecycle is a sidecar keyed by bead_id that holds first-
+	// transition timestamps (filed/ready/started/closed) for every bead.
+	// It complements agent_runs — one row per bead, not per run.
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.BeadLifecycleTableSQL)); err != nil {
+		return fmt.Errorf("create bead_lifecycle: %w", err)
+	}
 
 	// Run column migrations — each entry checks SHOW COLUMNS and adds if missing.
 	for _, m := range spireMigrations {
@@ -416,6 +432,31 @@ func migrateSpireTables(database string) error {
 		}
 	}
 
+	// Backfill bead_lifecycle from the beads `issues` table. INSERT IGNORE
+	// is idempotent — historical beads get filed_at from created_at and
+	// closed_at from issues.closed_at; ready_at / started_at stay NULL.
+	if err := backfillBeadLifecycle(database); err != nil {
+		log.Printf("warning: backfill bead_lifecycle for %s: %s", database, err)
+	}
+
+	return nil
+}
+
+// backfillBeadLifecycle seeds the sidecar table from the beads library's
+// `issues` table on first run. See store.BackfillBeadLifecycle for SQL
+// semantics; here we dispatch via the dolt CLI because cmd/spire already
+// uses rawDoltQuery elsewhere for schema management.
+func backfillBeadLifecycle(database string) error {
+	sqlStmt := `INSERT IGNORE INTO bead_lifecycle (
+        bead_id, bead_type, filed_at, ready_at, started_at, closed_at,
+        updated_at, review_count, fix_count, arbiter_count
+    ) SELECT
+        id, issue_type, created_at, NULL, NULL, closed_at,
+        COALESCE(updated_at, created_at), NULL, NULL, NULL
+    FROM issues`
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, sqlStmt)); err != nil {
+		return err
+	}
 	return nil
 }
 

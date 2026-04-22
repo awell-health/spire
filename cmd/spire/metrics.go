@@ -19,7 +19,7 @@ import (
 
 var metricsCmd = &cobra.Command{
 	Use:   "metrics",
-	Short: "Agent run metrics (--bead, --model, --phase, --dora, --trends, --json)",
+	Short: "Agent run metrics (--bead, --model, --phase, --dora, --trends, --lifecycle-by-type, --json)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var fullArgs []string
 		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
@@ -52,6 +52,9 @@ var metricsCmd = &cobra.Command{
 		if fallback, _ := cmd.Flags().GetBool("fallback"); fallback {
 			fullArgs = append(fullArgs, "--fallback")
 		}
+		if lt, _ := cmd.Flags().GetBool("lifecycle-by-type"); lt {
+			fullArgs = append(fullArgs, "--lifecycle-by-type")
+		}
 		return cmdMetrics(fullArgs)
 	},
 }
@@ -67,6 +70,7 @@ func init() {
 	metricsCmd.Flags().Bool("tools", false, "Show tool usage per phase")
 	metricsCmd.Flags().Bool("bugs", false, "Show bug causality top-5")
 	metricsCmd.Flags().Bool("fallback", false, "Use Dolt fallback when DuckDB is unavailable (backward compat)")
+	metricsCmd.Flags().Bool("lifecycle-by-type", false, "Show P50/P95 bead lifecycle timings grouped by bead_type")
 }
 
 // metricsJSONEncode writes v as indented JSON to stdout.
@@ -78,16 +82,17 @@ func metricsJSONEncode(v any) error {
 
 func cmdMetrics(args []string) error {
 	var (
-		flagJSON     bool
-		flagBead     string
-		flagModel    bool
-		flagPhase    bool
-		flagDORA     bool
-		flagTrends   bool
-		flagFailures bool
-		flagTools    bool
-		flagBugs     bool
-		flagFallback bool
+		flagJSON            bool
+		flagBead            string
+		flagModel           bool
+		flagPhase           bool
+		flagDORA            bool
+		flagTrends          bool
+		flagFailures        bool
+		flagTools           bool
+		flagBugs            bool
+		flagFallback        bool
+		flagLifecycleByType bool
 	)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -109,6 +114,8 @@ func cmdMetrics(args []string) error {
 			flagBugs = true
 		case "--fallback":
 			flagFallback = true
+		case "--lifecycle-by-type":
+			flagLifecycleByType = true
 		case "--bead":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--bead requires a value")
@@ -116,7 +123,7 @@ func cmdMetrics(args []string) error {
 			i++
 			flagBead = args[i]
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire metrics [--bead <id>] [--model] [--phase] [--dora] [--trends] [--failures] [--tools] [--bugs] [--fallback] [--json]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: spire metrics [--bead <id>] [--model] [--phase] [--dora] [--trends] [--failures] [--tools] [--bugs] [--lifecycle-by-type] [--fallback] [--json]", args[i])
 		}
 	}
 
@@ -189,6 +196,21 @@ func cmdMetrics(args []string) error {
 			ShowModel: flagModel,
 			ShowPhase: flagPhase,
 		})
+	}
+
+	if flagLifecycleByType {
+		if adb == nil {
+			return fmt.Errorf("metrics --lifecycle-by-type requires the DuckDB OLAP database; no Dolt fallback available")
+		}
+		rows, err := adb.QueryLifecycleByType(since)
+		if err != nil {
+			return fmt.Errorf("metrics lifecycle-by-type: %w", err)
+		}
+		if flagJSON {
+			return metricsJSONEncode(rows)
+		}
+		renderLifecycleByType(rows)
+		return nil
 	}
 
 	if flagBead != "" {
@@ -441,17 +463,23 @@ func renderBugStats(bugs []olap.BugCausality) {
 
 // beadSummary holds bead-scoped metrics from DuckDB.
 type beadSummary struct {
-	BeadID       string  `json:"bead_id"`
-	TotalRuns    int     `json:"total_runs"`
-	Successes    int     `json:"successes"`
-	Failures     int     `json:"failures"`
-	SuccessRate  float64 `json:"success_rate"`
-	AvgCostUSD   float64 `json:"avg_cost_usd"`
-	AvgDurationS float64 `json:"avg_duration_s"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
+	BeadID       string                          `json:"bead_id"`
+	TotalRuns    int                             `json:"total_runs"`
+	Successes    int                             `json:"successes"`
+	Failures     int                             `json:"failures"`
+	SuccessRate  float64                         `json:"success_rate"`
+	AvgCostUSD   float64                         `json:"avg_cost_usd"`
+	AvgDurationS float64                         `json:"avg_duration_s"`
+	TotalCostUSD float64                         `json:"total_cost_usd"`
+	Lifecycle    *olap.BeadLifecycleIntervals    `json:"lifecycle,omitempty"`
+	ReviewFix    *olap.ReviewFixCounts           `json:"review_fix_counts,omitempty"`
+	Children     []olap.BeadLifecycleIntervals   `json:"children,omitempty"`
 }
 
-// renderBeadMetrics queries agent_runs_olap for a specific bead and renders the result.
+// renderBeadMetrics queries agent_runs_olap for a specific bead and renders
+// the result, then overlays lifecycle timings, review/fix counts, and a child
+// drill-down (workflow step / attempt / sub-task timings). Any of those
+// secondary blocks may be empty if no lifecycle row exists yet for the bead.
 func renderBeadMetrics(adb *olap.DB, beadID string, jsonOut bool) error {
 	ctx := context.Background()
 
@@ -486,6 +514,19 @@ func renderBeadMetrics(adb *olap.DB, beadID string, jsonOut bool) error {
 		s.TotalCostUSD = totalCost.Float64
 	}
 
+	// Fetch lifecycle timings, review/fix counts, and child breakdown.
+	// Errors are non-fatal — the bead summary still renders if the lifecycle
+	// sidecar hasn't been populated yet (fresh tower pre-backfill).
+	if lc, err := adb.QueryLifecycleForBead(beadID); err == nil {
+		s.Lifecycle = lc
+	}
+	if rf, err := adb.QueryReviewFixCounts(beadID); err == nil {
+		s.ReviewFix = rf
+	}
+	if kids, err := adb.QueryChildLifecycle(beadID); err == nil {
+		s.Children = kids
+	}
+
 	if jsonOut {
 		return metricsJSONEncode(s)
 	}
@@ -496,10 +537,156 @@ func renderBeadMetrics(adb *olap.DB, beadID string, jsonOut bool) error {
 	fmt.Printf("  Avg cost: $%.4f   Avg duration: %.0fs   Total cost: $%.2f\n",
 		s.AvgCostUSD, s.AvgDurationS, s.TotalCostUSD)
 
-	if s.TotalRuns == 0 {
-		fmt.Printf("\n  (no runs found for %s)\n", beadID)
+	renderBeadLifecycleBlock(s.Lifecycle)
+	renderReviewFixBlock(s.ReviewFix)
+	renderChildLifecycleBlock(s.Children)
+
+	if s.TotalRuns == 0 && s.Lifecycle == nil {
+		fmt.Printf("\n  (no runs or lifecycle data found for %s)\n", beadID)
 	}
 	return nil
+}
+
+// renderBeadLifecycleBlock prints the canonical lifecycle timings for a bead.
+// Each interval is shown as "—" when unknown (pre-feature bead or in-flight)
+// so NULL is distinguishable from a genuine 0s duration.
+func renderBeadLifecycleBlock(lc *olap.BeadLifecycleIntervals) {
+	if lc == nil {
+		return
+	}
+	fmt.Println()
+	fmt.Println("  Lifecycle:")
+	if lc.BeadType != "" {
+		fmt.Printf("    Type:              %s\n", lc.BeadType)
+	}
+	fmt.Printf("    Filed:             %s\n", fmtTime(lc.FiledAt))
+	fmt.Printf("    Ready:             %s\n", fmtTime(lc.ReadyAt))
+	fmt.Printf("    Started:           %s\n", fmtTime(lc.StartedAt))
+	fmt.Printf("    Closed:            %s\n", fmtTime(lc.ClosedAt))
+	fmt.Printf("    Filed → closed:    %s\n", fmtSecondsPtr(lc.FiledToClosedSeconds))
+	fmt.Printf("    Ready → closed:    %s\n", fmtSecondsPtr(lc.ReadyToClosedSeconds))
+	fmt.Printf("    Started → closed:  %s   (execution time)\n", fmtSecondsPtr(lc.StartedToClosedSeconds))
+	fmt.Printf("    Queue (ready→start): %s\n", fmtSecondsPtr(lc.QueueSeconds))
+}
+
+// renderReviewFixBlock prints review / fix / arbiter counts derived from
+// agent_runs_olap. Skipped when all counters are zero — a bead with no
+// review activity doesn't deserve an empty block.
+func renderReviewFixBlock(rf *olap.ReviewFixCounts) {
+	if rf == nil {
+		return
+	}
+	if rf.ReviewCount == 0 && rf.FixCount == 0 && rf.ArbiterCount == 0 && rf.MaxReviewRounds == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println("  Review dynamics:")
+	fmt.Printf("    Sage reviews:      %d\n", rf.ReviewCount)
+	fmt.Printf("    Fix loops:         %d\n", rf.FixCount)
+	fmt.Printf("    Arbiter rounds:    %d\n", rf.ArbiterCount)
+	if rf.MaxReviewRounds > 0 {
+		fmt.Printf("    Max review round:  %d\n", rf.MaxReviewRounds)
+	}
+}
+
+// renderChildLifecycleBlock prints the workflow step / attempt / sub-task
+// breakdown for a parent bead. Drives the "where did the time go?" drill-down.
+func renderChildLifecycleBlock(kids []olap.BeadLifecycleIntervals) {
+	if len(kids) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println("  Child timings:")
+	fmt.Printf("    %-24s %-10s %10s %10s %10s %10s\n",
+		"BEAD", "TYPE", "F→C", "R→C", "S→C", "QUEUE")
+	fmt.Printf("    %-24s %-10s %10s %10s %10s %10s\n",
+		"────", "────", "───", "───", "───", "─────")
+	for _, k := range kids {
+		fmt.Printf("    %-24s %-10s %10s %10s %10s %10s\n",
+			truncate(k.BeadID, 24),
+			truncate(k.BeadType, 10),
+			fmtSecondsPtr(k.FiledToClosedSeconds),
+			fmtSecondsPtr(k.ReadyToClosedSeconds),
+			fmtSecondsPtr(k.StartedToClosedSeconds),
+			fmtSecondsPtr(k.QueueSeconds),
+		)
+	}
+}
+
+// renderLifecycleByType prints the per-bead-type P50/P95 lifecycle rollup.
+func renderLifecycleByType(rows []olap.LifecycleByType) {
+	if len(rows) == 0 {
+		fmt.Println("(no closed beads with lifecycle data in the last 90 days)")
+		return
+	}
+	fmt.Println("Bead lifecycle by type (last 90 days, closed beads only)")
+	fmt.Println()
+	fmt.Printf("  %-10s %5s  %9s %9s  %9s %9s  %9s %9s  %8s %8s\n",
+		"TYPE", "CNT",
+		"F→C P50", "F→C P95",
+		"R→C P50", "R→C P95",
+		"S→C P50", "S→C P95",
+		"Q P50", "Q P95")
+	fmt.Printf("  %-10s %5s  %9s %9s  %9s %9s  %9s %9s  %8s %8s\n",
+		"────", "───",
+		"───────", "───────",
+		"───────", "───────",
+		"───────", "───────",
+		"─────", "─────")
+	for _, r := range rows {
+		fmt.Printf("  %-10s %5d  %9s %9s  %9s %9s  %9s %9s  %8s %8s\n",
+			truncate(r.BeadType, 10), r.Count,
+			fmtSeconds(r.FiledToClosedP50), fmtSeconds(r.FiledToClosedP95),
+			fmtSeconds(r.ReadyToClosedP50), fmtSeconds(r.ReadyToClosedP95),
+			fmtSeconds(r.StartedToClosedP50), fmtSeconds(r.StartedToClosedP95),
+			fmtSeconds(r.QueueP50), fmtSeconds(r.QueueP95),
+		)
+	}
+}
+
+// fmtTime renders a zero-value time as "—" so missing stamps are visually
+// distinct from epoch zero.
+func fmtTime(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return t.UTC().Format("2006-01-02 15:04 UTC")
+}
+
+// fmtSecondsPtr formats a nullable duration in seconds. Nil renders as "—"
+// so pre-feature beads and in-flight beads don't misreport as 0s.
+func fmtSecondsPtr(s *float64) string {
+	if s == nil {
+		return "—"
+	}
+	return fmtSeconds(*s)
+}
+
+// fmtSeconds formats a duration in seconds using the most-significant unit.
+// Small (<120s) values stay as seconds; minutes/hours for larger.
+func fmtSeconds(sec float64) string {
+	if sec < 0 {
+		return "—"
+	}
+	if sec < 120 {
+		return fmt.Sprintf("%.0fs", sec)
+	}
+	if sec < 7200 {
+		return fmt.Sprintf("%.1fm", sec/60)
+	}
+	return fmt.Sprintf("%.2fh", sec/3600)
+}
+
+// truncate shortens s to n runes with ellipsis when longer, else pads with
+// spaces. Used for fixed-width columns in lifecycle rendering.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
 }
 
 // ---------------------------------------------------------------------------

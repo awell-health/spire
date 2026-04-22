@@ -457,6 +457,268 @@ func (d *DB) QueryAPIEventsByBead(beadID string) ([]APIEventStats, error) {
 	return out, rows.Err()
 }
 
+// QueryLifecycleForBead returns lifecycle timestamps and derived intervals
+// for a single bead. Callers must tolerate zero-valued time fields (pre-
+// feature beads may never have received ready/started stamps).
+// Derived intervals are returned as *float64 so "missing" (bead not closed
+// yet) is distinguishable from "zero" (instant close — rare but possible).
+func (d *DB) QueryLifecycleForBead(beadID string) (*BeadLifecycleIntervals, error) {
+	ctx := context.Background()
+	var (
+		out       BeadLifecycleIntervals
+		beadType  sql.NullString
+		filed     sql.NullTime
+		ready     sql.NullTime
+		started   sql.NullTime
+		closed    sql.NullTime
+		updated   sql.NullTime
+		fileClose sql.NullFloat64
+		readClose sql.NullFloat64
+		startClos sql.NullFloat64
+		queue     sql.NullFloat64
+	)
+	err := d.db.QueryRowContext(ctx, `
+		SELECT
+			bead_id,
+			bead_type,
+			filed_at,
+			ready_at,
+			started_at,
+			closed_at,
+			updated_at,
+			CASE WHEN closed_at IS NOT NULL AND filed_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(filed_at) END AS filed_to_closed_s,
+			CASE WHEN closed_at IS NOT NULL AND ready_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(ready_at) END AS ready_to_closed_s,
+			CASE WHEN closed_at IS NOT NULL AND started_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(started_at) END AS started_to_closed_s,
+			CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
+			     THEN epoch(started_at) - epoch(ready_at) END AS queue_s
+		FROM bead_lifecycle_olap
+		WHERE bead_id = ?
+	`, beadID).Scan(
+		&out.BeadID, &beadType,
+		&filed, &ready, &started, &closed, &updated,
+		&fileClose, &readClose, &startClos, &queue,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if beadType.Valid {
+		out.BeadType = beadType.String
+	}
+	if filed.Valid {
+		out.FiledAt = filed.Time
+	}
+	if ready.Valid {
+		out.ReadyAt = ready.Time
+	}
+	if started.Valid {
+		out.StartedAt = started.Time
+	}
+	if closed.Valid {
+		out.ClosedAt = closed.Time
+	}
+	if updated.Valid {
+		out.UpdatedAt = updated.Time
+	}
+	if fileClose.Valid {
+		v := fileClose.Float64
+		out.FiledToClosedSeconds = &v
+	}
+	if readClose.Valid {
+		v := readClose.Float64
+		out.ReadyToClosedSeconds = &v
+	}
+	if startClos.Valid {
+		v := startClos.Float64
+		out.StartedToClosedSeconds = &v
+	}
+	if queue.Valid {
+		v := queue.Float64
+		out.QueueSeconds = &v
+	}
+	return &out, nil
+}
+
+// QueryLifecycleByType returns P50/P95 timings per bead_type for beads closed
+// in the window. Filters to closed_at IS NOT NULL so open beads don't skew
+// the percentiles.
+func (d *DB) QueryLifecycleByType(since time.Time) ([]LifecycleByType, error) {
+	ctx := context.Background()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(bead_type, 'unknown') AS bead_type,
+			COUNT(*) AS cnt,
+			COALESCE(quantile_cont(epoch(closed_at) - epoch(filed_at), 0.50), 0) AS f2c_p50,
+			COALESCE(quantile_cont(epoch(closed_at) - epoch(filed_at), 0.95), 0) AS f2c_p95,
+			COALESCE(quantile_cont(
+				CASE WHEN ready_at IS NOT NULL THEN epoch(closed_at) - epoch(ready_at) END, 0.50), 0) AS r2c_p50,
+			COALESCE(quantile_cont(
+				CASE WHEN ready_at IS NOT NULL THEN epoch(closed_at) - epoch(ready_at) END, 0.95), 0) AS r2c_p95,
+			COALESCE(quantile_cont(
+				CASE WHEN started_at IS NOT NULL THEN epoch(closed_at) - epoch(started_at) END, 0.50), 0) AS s2c_p50,
+			COALESCE(quantile_cont(
+				CASE WHEN started_at IS NOT NULL THEN epoch(closed_at) - epoch(started_at) END, 0.95), 0) AS s2c_p95,
+			COALESCE(quantile_cont(
+				CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
+				     THEN epoch(started_at) - epoch(ready_at) END, 0.50), 0) AS q_p50,
+			COALESCE(quantile_cont(
+				CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
+				     THEN epoch(started_at) - epoch(ready_at) END, 0.95), 0) AS q_p95
+		FROM bead_lifecycle_olap
+		WHERE closed_at IS NOT NULL
+		  AND filed_at IS NOT NULL
+		  AND closed_at >= ?
+		GROUP BY 1
+		ORDER BY cnt DESC
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []LifecycleByType
+	for rows.Next() {
+		var r LifecycleByType
+		if err := rows.Scan(
+			&r.BeadType, &r.Count,
+			&r.FiledToClosedP50, &r.FiledToClosedP95,
+			&r.ReadyToClosedP50, &r.ReadyToClosedP95,
+			&r.StartedToClosedP50, &r.StartedToClosedP95,
+			&r.QueueP50, &r.QueueP95,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// QueryReviewFixCounts aggregates review / fix / arbiter run counts for a
+// bead from agent_runs_olap (the live source of truth). Counts runs, not
+// review-round beads, to match the phase/role vocabulary used elsewhere.
+func (d *DB) QueryReviewFixCounts(beadID string) (*ReviewFixCounts, error) {
+	ctx := context.Background()
+	out := &ReviewFixCounts{BeadID: beadID}
+	var maxRounds sql.NullInt64
+	err := d.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN (role = 'sage' OR phase IN ('sage-review','review')) THEN 1 ELSE 0 END), 0) AS review_count,
+			COALESCE(SUM(CASE WHEN phase = 'fix' THEN 1 ELSE 0 END), 0) AS fix_count,
+			COALESCE(SUM(CASE WHEN role = 'arbiter' OR phase = 'arbiter' THEN 1 ELSE 0 END), 0) AS arbiter_count,
+			MAX(review_rounds) AS max_review_rounds
+		FROM agent_runs_olap
+		WHERE bead_id = ?
+	`, beadID).Scan(&out.ReviewCount, &out.FixCount, &out.ArbiterCount, &maxRounds)
+	if err == sql.ErrNoRows {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if maxRounds.Valid {
+		out.MaxReviewRounds = int(maxRounds.Int64)
+	}
+	return out, nil
+}
+
+// QueryChildLifecycle returns lifecycle intervals for every bead whose
+// bead_id starts with the parent's hierarchical prefix (parent-id + "."),
+// ordered by filed_at. This surfaces step beads, attempt beads, and summoned
+// sub-tasks under a wizard summon. Since the beads library owns dependency
+// storage and we do not mirror `dependencies` into DuckDB, we rely on the
+// hierarchical ID convention (`spi-xxx.1`, `spi-xxx.1.2`) — every child
+// created via --parent inherits the parent's prefix.
+func (d *DB) QueryChildLifecycle(parentID string) ([]BeadLifecycleIntervals, error) {
+	ctx := context.Background()
+	pattern := parentID + ".%"
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			bead_id,
+			COALESCE(bead_type, ''),
+			filed_at,
+			ready_at,
+			started_at,
+			closed_at,
+			updated_at,
+			CASE WHEN closed_at IS NOT NULL AND filed_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(filed_at) END,
+			CASE WHEN closed_at IS NOT NULL AND ready_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(ready_at) END,
+			CASE WHEN closed_at IS NOT NULL AND started_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(started_at) END,
+			CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
+			     THEN epoch(started_at) - epoch(ready_at) END
+		FROM bead_lifecycle_olap
+		WHERE bead_id LIKE ?
+		ORDER BY filed_at ASC, bead_id ASC
+	`, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []BeadLifecycleIntervals
+	for rows.Next() {
+		var (
+			r         BeadLifecycleIntervals
+			filed     sql.NullTime
+			ready     sql.NullTime
+			started   sql.NullTime
+			closed    sql.NullTime
+			updated   sql.NullTime
+			fileClose sql.NullFloat64
+			readClose sql.NullFloat64
+			startClos sql.NullFloat64
+			queue     sql.NullFloat64
+		)
+		if err := rows.Scan(
+			&r.BeadID, &r.BeadType,
+			&filed, &ready, &started, &closed, &updated,
+			&fileClose, &readClose, &startClos, &queue,
+		); err != nil {
+			return nil, err
+		}
+		if filed.Valid {
+			r.FiledAt = filed.Time
+		}
+		if ready.Valid {
+			r.ReadyAt = ready.Time
+		}
+		if started.Valid {
+			r.StartedAt = started.Time
+		}
+		if closed.Valid {
+			r.ClosedAt = closed.Time
+		}
+		if updated.Valid {
+			r.UpdatedAt = updated.Time
+		}
+		if fileClose.Valid {
+			v := fileClose.Float64
+			r.FiledToClosedSeconds = &v
+		}
+		if readClose.Valid {
+			v := readClose.Float64
+			r.ReadyToClosedSeconds = &v
+		}
+		if startClos.Valid {
+			v := startClos.Float64
+			r.StartedToClosedSeconds = &v
+		}
+		if queue.Valid {
+			v := queue.Float64
+			r.QueueSeconds = &v
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // QueryCostTrend returns daily cost and run count for the last N days.
 func (d *DB) QueryCostTrend(days int) ([]CostTrendPoint, error) {
 	ctx := context.Background()

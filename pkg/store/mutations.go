@@ -36,6 +36,10 @@ func CreateBead(opts CreateOpts) (string, error) {
 	if err := s.CreateIssue(ctx, issue, Actor()); err != nil {
 		return "", fmt.Errorf("create bead: %w", err)
 	}
+	// Stamp the canonical filed_at so lifecycle analytics can distinguish
+	// queue time from execution time. Best-effort: CreateIssue already
+	// committed, and the SQL upsert is idempotent.
+	stampFiledBestEffort(issue.ID, string(opts.Type))
 	// CreateIssue populates issue.ID
 	if opts.Parent != "" {
 		dep := &beads.Dependency{
@@ -85,7 +89,11 @@ func CloseBead(id string) error {
 	if err != nil {
 		return err
 	}
-	return s.CloseIssue(ctx, id, "", Actor(), "")
+	if err := s.CloseIssue(ctx, id, "", Actor(), ""); err != nil {
+		return err
+	}
+	stampStatusTransitionBestEffort(id, "closed")
+	return nil
 }
 
 // DeleteBead permanently deletes a bead and its associated data.
@@ -103,7 +111,18 @@ func UpdateBead(id string, updates map[string]interface{}) error {
 	if err != nil {
 		return err
 	}
-	return s.UpdateIssue(ctx, id, updates, Actor())
+	if err := s.UpdateIssue(ctx, id, updates, Actor()); err != nil {
+		return err
+	}
+	// Stamp the matching lifecycle transition when status moves. The SQL
+	// upsert is idempotent (first-wins for ready/started, last-wins for
+	// closed) so calling this on every update is safe.
+	if v, ok := updates["status"]; ok {
+		if s, ok := v.(string); ok {
+			stampStatusTransitionBestEffort(id, s)
+		}
+	}
+	return nil
 }
 
 // AddLabel adds a label to a bead.

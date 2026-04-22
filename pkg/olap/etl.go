@@ -423,3 +423,236 @@ func updateCursorTx(ctx context.Context, tx *sql.Tx, lastID string) error {
 	)
 	return err
 }
+
+// ---------------------------------------------------------------------------
+// Bead lifecycle ETL — mirrors the Dolt bead_lifecycle sidecar into DuckDB.
+// The cursor key is the literal string "bead_lifecycle" (the etl_cursor table
+// supports multiple rows, keyed by table_name). updated_at is the watermark
+// column because closed_at arrives later than filed_at; keying on filed_at
+// would miss late-arriving close stamps.
+// ---------------------------------------------------------------------------
+
+// beadLifecycleRow holds one row from the Dolt bead_lifecycle table.
+type beadLifecycleRow struct {
+	BeadID       string
+	BeadType     sql.NullString
+	FiledAt      sql.NullTime
+	ReadyAt      sql.NullTime
+	StartedAt    sql.NullTime
+	ClosedAt     sql.NullTime
+	UpdatedAt    sql.NullTime
+	ReviewCount  sql.NullInt64
+	FixCount     sql.NullInt64
+	ArbiterCount sql.NullInt64
+}
+
+// SyncBeadLifecycle incrementally syncs the Dolt bead_lifecycle table into
+// DuckDB's bead_lifecycle_olap. Separate from Sync because lifecycle rows have
+// their own cadence: filed_at is stamped at create, closed_at at close, and
+// updates ripple over the life of the bead. We watermark on updated_at to
+// capture every transition.
+func (e *ETL) SyncBeadLifecycle(ctx context.Context, doltConn *sql.DB) (int, error) {
+	if e.db != nil {
+		return e.syncLifecycleWithDB(ctx, doltConn)
+	}
+	return e.syncLifecycleWithPath(ctx, doltConn)
+}
+
+func (e *ETL) syncLifecycleWithDB(ctx context.Context, doltConn *sql.DB) (int, error) {
+	e.db.mu.Lock()
+	defer e.db.mu.Unlock()
+
+	lastTS, err := readLifecycleCursor(ctx, e.db.db)
+	if err != nil {
+		return 0, fmt.Errorf("olap etl bead_lifecycle read cursor: %w", err)
+	}
+	rows, err := queryDoltBeadLifecycle(ctx, doltConn, lastTS)
+	if err != nil {
+		return 0, fmt.Errorf("olap etl bead_lifecycle query: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	newHW, err := insertBeadLifecycleRows(ctx, e.db.db, rows)
+	if err != nil {
+		return 0, fmt.Errorf("olap etl bead_lifecycle insert: %w", err)
+	}
+	if err := updateLifecycleCursor(ctx, e.db.db, newHW); err != nil {
+		return 0, fmt.Errorf("olap etl bead_lifecycle update cursor: %w", err)
+	}
+	return len(rows), nil
+}
+
+func (e *ETL) syncLifecycleWithPath(ctx context.Context, doltConn *sql.DB) (int, error) {
+	var lastTS string
+	if err := ReadFunc(e.dbPath, func(db *sql.DB) error {
+		var err error
+		lastTS, err = readLifecycleCursor(ctx, db)
+		return err
+	}); err != nil {
+		return 0, fmt.Errorf("olap etl bead_lifecycle read cursor: %w", err)
+	}
+	rows, err := queryDoltBeadLifecycle(ctx, doltConn, lastTS)
+	if err != nil {
+		return 0, fmt.Errorf("olap etl bead_lifecycle query: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	var newHW string
+	if err := e.writeFn(func(tx *sql.Tx) error {
+		var txErr error
+		newHW, txErr = insertBeadLifecycleRowsTx(ctx, tx, rows)
+		if txErr != nil {
+			return fmt.Errorf("olap etl bead_lifecycle insert: %w", txErr)
+		}
+		return updateLifecycleCursorTx(ctx, tx, newHW)
+	}); err != nil {
+		return 0, err
+	}
+	return len(rows), nil
+}
+
+func readLifecycleCursor(ctx context.Context, db *sql.DB) (string, error) {
+	var val string
+	err := db.QueryRowContext(ctx,
+		"SELECT last_id FROM etl_cursor WHERE table_name = 'bead_lifecycle'",
+	).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+func queryDoltBeadLifecycle(ctx context.Context, doltConn *sql.DB, lastTS string) ([]beadLifecycleRow, error) {
+	baseCols := `SELECT
+		bead_id, bead_type,
+		filed_at, ready_at, started_at, closed_at, updated_at,
+		review_count, fix_count, arbiter_count
+	FROM bead_lifecycle`
+
+	var query string
+	var args []any
+	if lastTS == "" {
+		query = baseCols + ` ORDER BY updated_at, bead_id LIMIT 500`
+	} else {
+		ts, err := time.Parse(time.RFC3339, lastTS)
+		if err != nil {
+			return nil, fmt.Errorf("parse cursor timestamp %q: %w", lastTS, err)
+		}
+		query = baseCols + ` WHERE updated_at >= ? ORDER BY updated_at, bead_id LIMIT 500`
+		args = append(args, ts)
+	}
+
+	sqlRows, err := doltConn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer sqlRows.Close()
+
+	var rows []beadLifecycleRow
+	for sqlRows.Next() {
+		var r beadLifecycleRow
+		if err := sqlRows.Scan(
+			&r.BeadID, &r.BeadType,
+			&r.FiledAt, &r.ReadyAt, &r.StartedAt, &r.ClosedAt, &r.UpdatedAt,
+			&r.ReviewCount, &r.FixCount, &r.ArbiterCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan bead_lifecycle row: %w", err)
+		}
+		rows = append(rows, r)
+	}
+	return rows, sqlRows.Err()
+}
+
+func insertBeadLifecycleRows(ctx context.Context, db *sql.DB, rows []beadLifecycleRow) (string, error) {
+	if len(rows) == 0 {
+		return "", nil
+	}
+	q, args := buildBeadLifecycleInsertSQL(rows)
+	if _, err := db.ExecContext(ctx, q, args...); err != nil {
+		return "", err
+	}
+	return lastLifecycleHighWater(rows), nil
+}
+
+func insertBeadLifecycleRowsTx(ctx context.Context, tx *sql.Tx, rows []beadLifecycleRow) (string, error) {
+	if len(rows) == 0 {
+		return "", nil
+	}
+	q, args := buildBeadLifecycleInsertSQL(rows)
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return "", err
+	}
+	return lastLifecycleHighWater(rows), nil
+}
+
+// buildBeadLifecycleInsertSQL builds an upsert over bead_lifecycle_olap. All
+// timestamp columns are replaced from the Dolt row so later stamps (e.g. the
+// close that arrives after the file) correctly overwrite the initial state.
+func buildBeadLifecycleInsertSQL(rows []beadLifecycleRow) (string, []any) {
+	var b strings.Builder
+	b.WriteString(`INSERT INTO bead_lifecycle_olap (
+		bead_id, bead_type,
+		filed_at, ready_at, started_at, closed_at, updated_at,
+		review_count, fix_count, arbiter_count, synced_at
+	) VALUES `)
+
+	args := make([]any, 0, len(rows)*11)
+	for i, r := range rows {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		args = append(args,
+			r.BeadID, r.BeadType,
+			r.FiledAt, r.ReadyAt, r.StartedAt, r.ClosedAt, r.UpdatedAt,
+			r.ReviewCount, r.FixCount, r.ArbiterCount, time.Now().UTC(),
+		)
+	}
+
+	b.WriteString(` ON CONFLICT (bead_id) DO UPDATE SET
+		bead_type = EXCLUDED.bead_type,
+		filed_at = EXCLUDED.filed_at,
+		ready_at = EXCLUDED.ready_at,
+		started_at = EXCLUDED.started_at,
+		closed_at = EXCLUDED.closed_at,
+		updated_at = EXCLUDED.updated_at,
+		review_count = EXCLUDED.review_count,
+		fix_count = EXCLUDED.fix_count,
+		arbiter_count = EXCLUDED.arbiter_count,
+		synced_at = EXCLUDED.synced_at`)
+
+	return b.String(), args
+}
+
+func lastLifecycleHighWater(rows []beadLifecycleRow) string {
+	last := rows[len(rows)-1]
+	if last.UpdatedAt.Valid {
+		return last.UpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
+func updateLifecycleCursor(ctx context.Context, db *sql.DB, lastID string) error {
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO etl_cursor (table_name, last_id, last_synced)
+		 VALUES ('bead_lifecycle', ?, now())
+		 ON CONFLICT (table_name) DO UPDATE SET last_id = EXCLUDED.last_id, last_synced = now()`,
+		lastID,
+	)
+	return err
+}
+
+func updateLifecycleCursorTx(ctx context.Context, tx *sql.Tx, lastID string) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO etl_cursor (table_name, last_id, last_synced)
+		 VALUES ('bead_lifecycle', ?, now())
+		 ON CONFLICT (table_name) DO UPDATE SET last_id = EXCLUDED.last_id, last_synced = now()`,
+		lastID,
+	)
+	return err
+}

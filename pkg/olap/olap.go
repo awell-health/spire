@@ -88,6 +88,10 @@ type MetricsReader interface {
 	QueryBugCausality(limit int) ([]BugCausality, error)
 	QueryFormulaPerformance(since time.Time) ([]FormulaStats, error)
 	QueryCostTrend(days int) ([]CostTrendPoint, error)
+	QueryLifecycleForBead(beadID string) (*BeadLifecycleIntervals, error)
+	QueryLifecycleByType(since time.Time) ([]LifecycleByType, error)
+	QueryReviewFixCounts(beadID string) (*ReviewFixCounts, error)
+	QueryChildLifecycle(parentID string) ([]BeadLifecycleIntervals, error)
 }
 
 // ReadWrite is the minimum surface every OLAP backend must satisfy:
@@ -268,4 +272,62 @@ type APIEventStats struct {
 	TotalCostUSD      float64 `json:"total_cost_usd"`
 	TotalInputTokens  int64   `json:"total_input_tokens"`
 	TotalOutputTokens int64   `json:"total_output_tokens"`
+}
+
+// BeadLifecycle holds the canonical lifecycle timestamps for a single bead.
+// Any of FiledAt / ReadyAt / StartedAt / ClosedAt may be zero (NULL in the
+// backing store) — pre-feature beads never received ready/started stamps,
+// and in-flight beads have no close time yet. Renderers and consumers must
+// treat zero values as "unknown" rather than the Unix epoch.
+type BeadLifecycle struct {
+	BeadID    string    `json:"bead_id"`
+	BeadType  string    `json:"bead_type,omitempty"`
+	FiledAt   time.Time `json:"filed_at,omitempty"`
+	ReadyAt   time.Time `json:"ready_at,omitempty"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	ClosedAt  time.Time `json:"closed_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// BeadLifecycleIntervals holds derived interval durations for a single bead.
+// Each field is a *float64 pointer so we can distinguish "zero" from "missing"
+// (a bead that hasn't closed yet legitimately has no filed-to-closed
+// duration; rendering that as 0s would misreport execution time).
+type BeadLifecycleIntervals struct {
+	BeadLifecycle
+	FiledToClosedSeconds   *float64 `json:"filed_to_closed_seconds,omitempty"`
+	ReadyToClosedSeconds   *float64 `json:"ready_to_closed_seconds,omitempty"`
+	StartedToClosedSeconds *float64 `json:"started_to_closed_seconds,omitempty"`
+	QueueSeconds           *float64 `json:"queue_seconds,omitempty"` // started_at - ready_at
+}
+
+// LifecycleByType holds aggregated lifecycle timings grouped by bead_type.
+// Only closed beads contribute — open beads have no terminal timestamp.
+// Percentiles use DuckDB's quantile_cont; when fewer than N rows are
+// available for a given percentile, the value is NULL in SQL and zero here —
+// callers should prefer Count when deciding whether to display.
+type LifecycleByType struct {
+	BeadType               string  `json:"bead_type"`
+	Count                  int     `json:"count"`
+	FiledToClosedP50       float64 `json:"filed_to_closed_p50_seconds"`
+	FiledToClosedP95       float64 `json:"filed_to_closed_p95_seconds"`
+	ReadyToClosedP50       float64 `json:"ready_to_closed_p50_seconds"`
+	ReadyToClosedP95       float64 `json:"ready_to_closed_p95_seconds"`
+	StartedToClosedP50     float64 `json:"started_to_closed_p50_seconds"`
+	StartedToClosedP95     float64 `json:"started_to_closed_p95_seconds"`
+	QueueP50               float64 `json:"queue_p50_seconds"`
+	QueueP95               float64 `json:"queue_p95_seconds"`
+}
+
+// ReviewFixCounts holds derived review/fix/arbiter counts for a single bead.
+// Values are aggregated from agent_runs_olap (the live source of truth) rather
+// than the denormalized counters on bead_lifecycle, to avoid drift.
+type ReviewFixCounts struct {
+	BeadID       string `json:"bead_id"`
+	ReviewCount  int    `json:"review_count"`
+	FixCount     int    `json:"fix_count"`
+	ArbiterCount int    `json:"arbiter_count"`
+	// MaxReviewRounds is the highest review_round recorded across any run
+	// for this bead — a coarser proxy useful when review_step is unavailable.
+	MaxReviewRounds int `json:"max_review_rounds"`
 }

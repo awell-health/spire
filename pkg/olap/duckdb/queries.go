@@ -553,6 +553,244 @@ func (d *DB) QueryAPIEventsByBead(beadID string) ([]olap.APIEventStats, error) {
 	return out, rows.Err()
 }
 
+// QueryLifecycleForBead returns lifecycle timestamps and derived intervals
+// for a single bead. See pkg/olap.DB.QueryLifecycleForBead for semantics.
+func (d *DB) QueryLifecycleForBead(beadID string) (*olap.BeadLifecycleIntervals, error) {
+	ctx := context.Background()
+	var (
+		out       olap.BeadLifecycleIntervals
+		beadType  sql.NullString
+		filed     sql.NullTime
+		ready     sql.NullTime
+		started   sql.NullTime
+		closed    sql.NullTime
+		updated   sql.NullTime
+		fileClose sql.NullFloat64
+		readClose sql.NullFloat64
+		startClos sql.NullFloat64
+		queue     sql.NullFloat64
+	)
+	err := d.db.QueryRowContext(ctx, `
+		SELECT
+			bead_id, bead_type,
+			filed_at, ready_at, started_at, closed_at, updated_at,
+			CASE WHEN closed_at IS NOT NULL AND filed_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(filed_at) END,
+			CASE WHEN closed_at IS NOT NULL AND ready_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(ready_at) END,
+			CASE WHEN closed_at IS NOT NULL AND started_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(started_at) END,
+			CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
+			     THEN epoch(started_at) - epoch(ready_at) END
+		FROM bead_lifecycle_olap
+		WHERE bead_id = ?
+	`, beadID).Scan(
+		&out.BeadID, &beadType,
+		&filed, &ready, &started, &closed, &updated,
+		&fileClose, &readClose, &startClos, &queue,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if beadType.Valid {
+		out.BeadType = beadType.String
+	}
+	if filed.Valid {
+		out.FiledAt = filed.Time
+	}
+	if ready.Valid {
+		out.ReadyAt = ready.Time
+	}
+	if started.Valid {
+		out.StartedAt = started.Time
+	}
+	if closed.Valid {
+		out.ClosedAt = closed.Time
+	}
+	if updated.Valid {
+		out.UpdatedAt = updated.Time
+	}
+	if fileClose.Valid {
+		v := fileClose.Float64
+		out.FiledToClosedSeconds = &v
+	}
+	if readClose.Valid {
+		v := readClose.Float64
+		out.ReadyToClosedSeconds = &v
+	}
+	if startClos.Valid {
+		v := startClos.Float64
+		out.StartedToClosedSeconds = &v
+	}
+	if queue.Valid {
+		v := queue.Float64
+		out.QueueSeconds = &v
+	}
+	return &out, nil
+}
+
+// QueryLifecycleByType returns P50/P95 lifecycle timings per bead_type.
+func (d *DB) QueryLifecycleByType(since time.Time) ([]olap.LifecycleByType, error) {
+	ctx := context.Background()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(bead_type, 'unknown'),
+			COUNT(*),
+			COALESCE(quantile_cont(epoch(closed_at) - epoch(filed_at), 0.50), 0),
+			COALESCE(quantile_cont(epoch(closed_at) - epoch(filed_at), 0.95), 0),
+			COALESCE(quantile_cont(
+				CASE WHEN ready_at IS NOT NULL THEN epoch(closed_at) - epoch(ready_at) END, 0.50), 0),
+			COALESCE(quantile_cont(
+				CASE WHEN ready_at IS NOT NULL THEN epoch(closed_at) - epoch(ready_at) END, 0.95), 0),
+			COALESCE(quantile_cont(
+				CASE WHEN started_at IS NOT NULL THEN epoch(closed_at) - epoch(started_at) END, 0.50), 0),
+			COALESCE(quantile_cont(
+				CASE WHEN started_at IS NOT NULL THEN epoch(closed_at) - epoch(started_at) END, 0.95), 0),
+			COALESCE(quantile_cont(
+				CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
+				     THEN epoch(started_at) - epoch(ready_at) END, 0.50), 0),
+			COALESCE(quantile_cont(
+				CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
+				     THEN epoch(started_at) - epoch(ready_at) END, 0.95), 0)
+		FROM bead_lifecycle_olap
+		WHERE closed_at IS NOT NULL AND filed_at IS NOT NULL AND closed_at >= ?
+		GROUP BY 1
+		ORDER BY 2 DESC
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []olap.LifecycleByType
+	for rows.Next() {
+		var r olap.LifecycleByType
+		if err := rows.Scan(
+			&r.BeadType, &r.Count,
+			&r.FiledToClosedP50, &r.FiledToClosedP95,
+			&r.ReadyToClosedP50, &r.ReadyToClosedP95,
+			&r.StartedToClosedP50, &r.StartedToClosedP95,
+			&r.QueueP50, &r.QueueP95,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// QueryReviewFixCounts aggregates review/fix/arbiter run counts for a bead.
+func (d *DB) QueryReviewFixCounts(beadID string) (*olap.ReviewFixCounts, error) {
+	ctx := context.Background()
+	out := &olap.ReviewFixCounts{BeadID: beadID}
+	var maxRounds sql.NullInt64
+	err := d.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN (role = 'sage' OR phase IN ('sage-review','review')) THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN phase = 'fix' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN role = 'arbiter' OR phase = 'arbiter' THEN 1 ELSE 0 END), 0),
+			MAX(review_rounds)
+		FROM agent_runs_olap
+		WHERE bead_id = ?
+	`, beadID).Scan(&out.ReviewCount, &out.FixCount, &out.ArbiterCount, &maxRounds)
+	if err == sql.ErrNoRows {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if maxRounds.Valid {
+		out.MaxReviewRounds = int(maxRounds.Int64)
+	}
+	return out, nil
+}
+
+// QueryChildLifecycle returns lifecycle intervals for every hierarchical
+// descendant of parentID (bead_id LIKE 'parent.%').
+func (d *DB) QueryChildLifecycle(parentID string) ([]olap.BeadLifecycleIntervals, error) {
+	ctx := context.Background()
+	pattern := parentID + ".%"
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT
+			bead_id, COALESCE(bead_type, ''),
+			filed_at, ready_at, started_at, closed_at, updated_at,
+			CASE WHEN closed_at IS NOT NULL AND filed_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(filed_at) END,
+			CASE WHEN closed_at IS NOT NULL AND ready_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(ready_at) END,
+			CASE WHEN closed_at IS NOT NULL AND started_at IS NOT NULL
+			     THEN epoch(closed_at) - epoch(started_at) END,
+			CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
+			     THEN epoch(started_at) - epoch(ready_at) END
+		FROM bead_lifecycle_olap
+		WHERE bead_id LIKE ?
+		ORDER BY filed_at ASC, bead_id ASC
+	`, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []olap.BeadLifecycleIntervals
+	for rows.Next() {
+		var (
+			r         olap.BeadLifecycleIntervals
+			filed     sql.NullTime
+			ready     sql.NullTime
+			started   sql.NullTime
+			closed    sql.NullTime
+			updated   sql.NullTime
+			fileClose sql.NullFloat64
+			readClose sql.NullFloat64
+			startClos sql.NullFloat64
+			queue     sql.NullFloat64
+		)
+		if err := rows.Scan(
+			&r.BeadID, &r.BeadType,
+			&filed, &ready, &started, &closed, &updated,
+			&fileClose, &readClose, &startClos, &queue,
+		); err != nil {
+			return nil, err
+		}
+		if filed.Valid {
+			r.FiledAt = filed.Time
+		}
+		if ready.Valid {
+			r.ReadyAt = ready.Time
+		}
+		if started.Valid {
+			r.StartedAt = started.Time
+		}
+		if closed.Valid {
+			r.ClosedAt = closed.Time
+		}
+		if updated.Valid {
+			r.UpdatedAt = updated.Time
+		}
+		if fileClose.Valid {
+			v := fileClose.Float64
+			r.FiledToClosedSeconds = &v
+		}
+		if readClose.Valid {
+			v := readClose.Float64
+			r.ReadyToClosedSeconds = &v
+		}
+		if startClos.Valid {
+			v := startClos.Float64
+			r.StartedToClosedSeconds = &v
+		}
+		if queue.Valid {
+			v := queue.Float64
+			r.QueueSeconds = &v
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // QueryCostTrend returns daily cost and run count for the last N days.
 func (d *DB) QueryCostTrend(days int) ([]olap.CostTrendPoint, error) {
 	ctx := context.Background()

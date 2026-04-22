@@ -166,6 +166,25 @@ CREATE TABLE IF NOT EXISTS api_events (
     tower           VARCHAR
 )`
 
+// createBeadLifecycleOLAP mirrors the Dolt bead_lifecycle sidecar into DuckDB
+// for fast analytic queries. One row per bead_id. Pre-feature beads and
+// in-flight beads may have NULL ready_at / started_at / closed_at — queries
+// must guard against that when computing intervals.
+const createBeadLifecycleOLAP = `
+CREATE TABLE IF NOT EXISTS bead_lifecycle_olap (
+    bead_id       VARCHAR PRIMARY KEY,
+    bead_type     VARCHAR,
+    filed_at      TIMESTAMP,
+    ready_at      TIMESTAMP,
+    started_at    TIMESTAMP,
+    closed_at     TIMESTAMP,
+    updated_at    TIMESTAMP,
+    review_count  INTEGER,
+    fix_count     INTEGER,
+    arbiter_count INTEGER,
+    synced_at     TIMESTAMP DEFAULT now()
+)`
+
 // schemaMigrations returns ALTER TABLE statements for incremental schema
 // evolution. Each is executed with errors ignored (column may already exist).
 func schemaMigrations() []string {
@@ -193,5 +212,6 @@ func allSchemaStatements() []string {
 		createToolEvents,
 		createToolSpans,
 		createAPIEvents,
+		createBeadLifecycleOLAP,
 	}
 }
