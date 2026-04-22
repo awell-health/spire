@@ -796,7 +796,21 @@ func ensureWebhookQueue() {
 // reconcileSharedRepos diffs the shared repos table against the tower's local
 // bindings and creates "unbound" entries for newly discovered repos.
 // Idempotent: skipped/unmanaged/bound repos are not re-prompted.
+//
+// This function is laptop-only: it mirrors the shared `repos` table into
+// per-machine LocalBindings, which have no meaning in cluster-native pods
+// where ClusterIdentityResolver reads `repos` directly. When the tower's
+// EffectiveDeploymentMode is cluster-native, the function returns early as a
+// no-op so replicas do not cross-wire LocalBindings state they do not own.
+// Empty/unset modes fall through to the existing local-native behavior;
+// attached-reserved is intentionally NOT gated here (it is a declaration of
+// intent with no execution surface today).
 func reconcileSharedRepos(tower config.TowerConfig) error {
+	if tower.EffectiveDeploymentMode() == config.DeploymentModeClusterNative {
+		log.Printf("[daemon] [%s] reconcileSharedRepos: skipping (cluster-native mode reads repos directly via ClusterIdentityResolver)", tower.Name)
+		return nil
+	}
+
 	sql := fmt.Sprintf("SELECT prefix, repo_url, branch FROM `%s`.repos ORDER BY prefix", tower.Database)
 	out, err := dolt.RawQuery(sql)
 	if err != nil {
