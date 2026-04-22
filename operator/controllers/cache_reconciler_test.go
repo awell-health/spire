@@ -76,6 +76,12 @@ func newCacheReconciler(t *testing.T, c client.Client, ns string) *CacheReconcil
 		GitImage:  "alpine/git:test",
 		Database:  "spire",
 		Prefix:    "spi",
+		// Default to a recording in-memory pinned-identity store so
+		// existing tests that don't care about the bead-graph
+		// side-effects don't have to spin up a real beads store. Tests
+		// that need to inspect the bead-graph state set
+		// r.PinnedStore explicitly after construction.
+		PinnedStore: newRecordingStore(),
 	}
 }
 

@@ -64,6 +64,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
 	"github.com/awell-health/spire/pkg/agent"
@@ -236,6 +237,24 @@ type CacheReconciler struct {
 	// §1.1). Never read from pod env at reconcile time.
 	Database string
 	Prefix   string
+
+	// PinnedStore is the bead-graph backend the reconciler uses to
+	// maintain the per-guild pinned identity bead (spi-2bgsm). nil
+	// means "use the package-level pkg/store" — main.go leaves it
+	// unset and the reconciler resolves it lazily on first use; tests
+	// inject a fake.
+	PinnedStore pinnedIdentityStore
+}
+
+// pinnedStore returns r.PinnedStore, falling back to the
+// package-level pkg/store wrapper when unset. Lazy resolution lets
+// tests construct CacheReconciler without touching the global store
+// singleton, and main.go does not need to know about the interface.
+func (r *CacheReconciler) pinnedStore() pinnedIdentityStore {
+	if r.PinnedStore != nil {
+		return r.PinnedStore
+	}
+	return defaultPinnedIdentityStore{}
 }
 
 // Start implements controller-runtime's Runnable interface.
@@ -274,7 +293,11 @@ func (r *CacheReconciler) cycle(ctx context.Context) {
 	}
 	for i := range guilds.Items {
 		g := &guilds.Items[i]
-		if g.Spec.Cache == nil {
+		// Guilds with no Cache spec are skipped, EXCEPT when they still
+		// carry the pinned-identity finalizer — those need finalizer
+		// drainage on deletion regardless of whether the cache spec
+		// was later removed (otherwise the CR would be wedged).
+		if g.Spec.Cache == nil && !controllerutil.ContainsFinalizer(g, pinnedIdentityFinalizer) {
 			continue
 		}
 		r.reconcileGuild(ctx, g)
@@ -283,17 +306,39 @@ func (r *CacheReconciler) cycle(ctx context.Context) {
 
 // reconcileGuild walks the create → refresh → status-update path for a
 // single guild. Owner references on the PVC and Job mean guild delete
-// cascades through kube GC; this function never explicitly deletes the
-// child objects on guild-delete.
+// cascades through kube GC; the bead-graph cleanup (pinned identity +
+// caused-by wisps) runs here under the pinned-identity finalizer.
 func (r *CacheReconciler) reconcileGuild(ctx context.Context, guild *spirev1.WizardGuild) {
 	log := r.Log.WithValues(
 		"guild", guild.Name,
 		"tower", r.Database, "prefix", r.Prefix,
 		"backend", "operator-k8s")
 
+	// Deletion path: if our finalizer is present, drain the bead graph
+	// before letting the Kubernetes GC reap the CR. PVC + refresh Job
+	// still cascade via owner references — this branch only owns the
+	// pinned-identity cleanup, not the k8s objects.
 	if guild.DeletionTimestamp != nil {
-		// Guild is being deleted; owner-reference GC handles PVC + Job
-		// cleanup. Nothing to do here.
+		if !controllerutil.ContainsFinalizer(guild, pinnedIdentityFinalizer) {
+			return
+		}
+		if err := finalizePinnedIdentity(ctx, r.pinnedStore(), guild); err != nil {
+			log.Error(err, "pinned identity finalizer failed; will retry on next cycle",
+				"pinned_id", guild.Status.PinnedIdentityBeadID)
+			return
+		}
+		controllerutil.RemoveFinalizer(guild, pinnedIdentityFinalizer)
+		if err := r.Client.Update(ctx, guild); err != nil {
+			log.Error(err, "failed to remove pinned-identity finalizer")
+		}
+		return
+	}
+
+	// Cache spec was removed without a CR delete — leave the finalizer
+	// and pinned bead in place (re-enabling Cache picks the same bead
+	// up via idempotent ensurePinnedIdentity), and skip the rest of
+	// the cache PVC/Job reconciliation since there's nothing to own.
+	if guild.Spec.Cache == nil {
 		return
 	}
 
@@ -304,6 +349,46 @@ func (r *CacheReconciler) reconcileGuild(ctx context.Context, guild *spirev1.Wiz
 		})
 		log.Error(nil, "guild has CacheSpec but no Repo; skipping")
 		return
+	}
+
+	// Add the pinned-identity finalizer before any bead-graph
+	// side-effects so a crash between bead create and finalizer install
+	// can't leave the bead orphaned. We continue (not return) after a
+	// successful add: this is a polling reconciler, not a Reconcile()
+	// loop with a requeue, so deferring the rest of the work would
+	// stall PVC/Job creation by a full polling interval. The in-memory
+	// guild is mutated by AddFinalizer + Update so subsequent
+	// Status().Update calls below carry the right resourceVersion.
+	if !controllerutil.ContainsFinalizer(guild, pinnedIdentityFinalizer) {
+		controllerutil.AddFinalizer(guild, pinnedIdentityFinalizer)
+		if err := r.Client.Update(ctx, guild); err != nil {
+			log.Error(err, "failed to add pinned-identity finalizer")
+			return
+		}
+	}
+
+	// Ensure the pinned identity bead exists and Status carries its ID.
+	beadID, err := ensurePinnedIdentity(ctx, r.pinnedStore(), guild)
+	if err != nil {
+		log.Error(err, "failed to ensure pinned identity bead")
+		// Surface the error on CacheStatus so operators see it without
+		// digging through controller logs. Status updates are
+		// best-effort here; the next cycle will retry the bead create.
+		r.patchCacheStatus(ctx, guild, &spirev1.CacheStatus{
+			Phase:        cachePhaseFailed,
+			RefreshError: fmt.Sprintf("ensure pinned identity bead: %v", err),
+		})
+		return
+	}
+	if guild.Status.PinnedIdentityBeadID != beadID {
+		guild.Status.PinnedIdentityBeadID = beadID
+		if err := r.Client.Status().Update(ctx, guild); err != nil {
+			log.Error(err, "failed to stamp Status.PinnedIdentityBeadID",
+				"pinned_id", beadID)
+			// The next cycle will see the bead in the store and re-stamp
+			// idempotently — keep going so the cache PVC/Job still
+			// reconcile this cycle.
+		}
 	}
 
 	pvc, err := r.ensurePVC(ctx, guild)

@@ -129,6 +129,13 @@ type WizardGuildStatus struct {
 	// Cache reports the lifecycle state of the guild-owned repo cache
 	// when Spec.Cache is set. Nil when no cache is declared.
 	Cache *CacheStatus `json:"cache,omitempty"`
+
+	// PinnedIdentityBeadID is the ID of the pour+pinned bead representing
+	// this guild's cache as a cluster resource in the bead graph. Set by
+	// the operator when Cache.Enabled is reconciled; cleared by the
+	// pinned-identity finalizer on CR deletion. Empty when no cache is
+	// declared or the identity bead has not yet been provisioned.
+	PinnedIdentityBeadID string `json:"pinnedIdentityBeadID,omitempty"`
 }
 
 // CacheStatus reports the observed state of a WizardGuild's repo
