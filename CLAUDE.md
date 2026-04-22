@@ -5,7 +5,7 @@
 Before starting work, read these files in order to understand the system:
 
 1. `README.md` — what Spire is, quick start, CLI overview
-2. `docs/LOCAL.md` — local execution model, setup, wizard lifecycle
+2. `docs/VISION-LOCAL.md` — local-native deployment vision (paired with `VISION-CLUSTER.md` and `VISION-ATTACHED.md` for the other modes)
 3. `docs/PLAN.md` — current roadmap and priorities
 4. `docs/ARCHITECTURE.md` — components, data model, agent roles, pod architecture
 5. `docs/ZFC.md` — MUST-READ: Zero Framework Cognition boundaries; Spire is orchestration, not local product reasoning

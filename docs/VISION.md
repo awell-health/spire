@@ -74,7 +74,7 @@ A pattern that works in local-native mode means the same thing when the same cod
 
 ### 5. Canonical contracts, not ambient state
 
-Worker runtime is defined by explicit types — repo identity, workspace handle, handoff mode, run context — not by whatever directory the agent happened to be running in. Deployment mode is an explicit value with a reserved "not implemented" option, not a fallback path. Every seam that a future deployment topology could reuse is named and documented.
+Identity is resolved from explicit types, never from where a process happens to be running. Worker runtime uses `RepoIdentity`, `WorkspaceHandle`, `HandoffMode`, and `RunContext` instead of CWD walk-up or pod env. CLI commands resolve tower and repo identity from explicit flags and stored tower bindings, with filesystem-walk as a convenience fallback at most. Deployment mode is an explicit value with a reserved "not implemented" option, not a fallback path. Every seam that a future deployment topology could reuse is named and documented.
 
 ### 6. Open protocol
 
