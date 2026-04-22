@@ -43,6 +43,72 @@ The steward detects the hooked bead and dispatches a cleric pod. The cleric moun
 
 This is the cluster-native counterpart to local-native's in-process recovery: same cleric, same decide/execute/verify/learn loop, same promotion pipeline — just with a PVC instead of a local worktree path.
 
+## Cluster-resource-health
+
+Every recoverable cluster resource Spire manages — WizardGuild.Cache
+today, and syncer, ClickHouse, dolt StatefulSet, and broader
+operator/steward scheduling state as they come online — follows the
+same pinned-identity + wisp-recovery shape. A persistent **pinned
+identity bead** names the resource in the work graph; a transient
+**wisp recovery bead** carries each failure incident through the
+existing cleric pipeline.
+
+This shape is a durable commitment. Every new cluster resource Spire
+provisions adopts it; there is no second model for "resources that
+behave a little differently."
+
+### Why this shape
+
+The pattern earns the complexity of two bead tiers by delivering four
+user-visible properties at once:
+
+- **Discoverable** — the pinned identity bead is on the graph, so any
+  attached laptop sees the resource via remotesapi without touching
+  the cluster.
+- **Recoverable** — each failure is filed as a wisp, and the existing
+  cleric pipeline already knows how to claim, diagnose, repair,
+  verify, and learn from it. No new recovery plane.
+- **Quiet** — wisps stay cluster-local and are not git-synced, so
+  laptops never see the churn of cluster-resource failures in their
+  clones.
+- **Current** — the presence or absence of an open wisp is the health
+  signal. There is no stale metadata on the pinned bead to
+  archaeology through.
+
+### What this is not
+
+This is not a generic Kubernetes operator framework. Spire's operator
+reconciles only the resources Spire itself provisions, and the
+cluster-resource-health pattern applies only to those. It exists
+because Spire has agent-driven recovery recipes for those specific
+resources — not as a path for users to express arbitrary
+Kubernetes-resource health in beads. A user deploying their own
+workloads in the same cluster does not inherit the pattern for those
+workloads.
+
+### Boundary between operator and recovery engine
+
+The operator observes cluster state and writes beads. `pkg/recovery`
+consumes beads and drives recovery. Neither imports the other's
+concerns. That split is what keeps `pkg/recovery` unit-testable without
+a cluster — wisp metadata is the input it sees, not a live API server —
+and what keeps the operator free of recovery-policy logic. Cleric
+dispatch, decide-time policy, verify wiring, and learning promotion
+all stay on the recovery side of the line.
+
+### Cross-references
+
+See [ARCHITECTURE.md — Cluster-resource-health pattern](ARCHITECTURE.md#cluster-resource-health-pattern)
+for the mechanism: the two-tier bead model, the operator's
+bead-writer contract, the lifecycle, and the overlay shape for
+cleric-on-resource pods.
+
+Neither of the other deployment modes participates:
+[VISION-LOCAL.md](VISION-LOCAL.md) describes a mode with no operator
+and no cluster resources, so no pinned identities and no wisps for
+cluster resources exist; [VISION-ATTACHED.md](VISION-ATTACHED.md)
+inherits the cluster-native pattern on the remote execution surface.
+
 ## How laptops participate
 
 A laptop talks to a cluster-native tower through `spire tower attach-cluster <dolt://.../db>`. This points the laptop's CLI at the cluster's dolt via remotesapi. From there, the laptop can:

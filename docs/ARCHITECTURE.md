@@ -674,6 +674,164 @@ above.
 Wizard ↔ steward coordination flows through the dolt database and
 OTLP telemetry, not through files on a shared volume.
 
+## Cluster-resource-health pattern
+
+Spire represents recoverable cluster resources (WizardGuild.Cache,
+syncer, ClickHouse, dolt StatefulSet, and future operator/steward
+scheduling state) with a uniform two-tier bead shape. The invariant is
+"recovery targets a bead": the existing cleric pipeline expects a bead
+as the unit of work, and cluster resources — which have no parent bead
+from an agent run — need a durable target for that pipeline to address.
+The pattern supplies one.
+
+### Two-tier model
+
+| Tier | Substrate | Sync | Status flag | Carries | Lifecycle owner |
+|------|-----------|------|-------------|---------|-----------------|
+| **Pinned identity bead** | pour | persistent, git-synced | `StatusPinned` + `pinned: true` | static metadata only (resource URI, type, provisioning timestamp, owner references) | operator (create on provisioning, close on CR deletion) |
+| **Wisp recovery bead** | wisp | ephemeral, cluster-local, not git-synced | open while unhealthy | `caused-by` edge to pinned id, termination log, condition snapshot, `FailureClass`, `SourceResourceURI` | operator files; cleric `finish` closes; GC reaps |
+
+Exactly one pinned identity bead exists per recoverable cluster
+resource. It is immutable after creation. Zero or more wisp recovery
+beads exist per pinned identity — one per failure incident.
+
+**Why pour + pinned for identity.** Pours are the persistent, git-synced
+substrate, so a pinned identity is discoverable across the graph from
+any machine attached to the tower via remotesapi. Immutability after
+creation means the row never participates in a write conflict during
+sync; the pinned bead's job is to be a stable address, not a mutable
+record. Static metadata only — no health field, no last-seen timestamp,
+nothing that drifts — keeps the bead aligned with that contract.
+
+**Why wisps for recovery.** Wisps are ephemeral and cluster-local,
+which matches the nature of failure records: one per incident,
+frequently created and closed, with no value post-recovery. Keeping
+them cluster-local avoids flooding DoltHub (or laptop clones) with
+cluster-churn noise. GC reaps closed wisps on its cycle, which matches
+the transient purpose of a failure record — the durable audit of what
+happened lives elsewhere (see Durability & analytics below).
+
+The presence of an open wisp with `caused-by <pinned-id>` **is** the
+unhealthy signal. Absence **is** the healthy signal. There is no
+mutable health field on the pinned bead to keep in sync with cluster
+state — "health is current" because the graph itself is the query.
+
+### Lifecycle
+
+The flow for a cluster resource, using WizardGuild.Cache as the
+concrete example:
+
+```
+operator reconciler (observes WizardGuild.Cache.Enabled=true)
+  → creates pinned identity bead (pour, StatusPinned, pinned:true, static metadata)
+
+cache refresh Job (backoff exhausted)
+  → operator files wisp recovery bead
+      - caused-by → <pinned identity bead id>
+      - metadata: termination log, condition snapshot, FailureClass, SourceResourceURI
+
+steward hooked-sweep
+  → claims wisp → cleric runs cleric-default formula
+
+cleric decide (agent-first: Claude reads wisp metadata as diagnosis context)
+  → chosen action (mechanical recipe | worker-mode apprentice with cache PVC mount | escalate)
+
+cleric execute
+  → BuildApprenticePod with CacheSpec overlay (PVC RW, init-container order)
+
+cleric verify
+  → poll CacheRefreshing=False + observedRevision advance
+
+cleric finish
+  → closes wisp; writes RecoveryOutcome (bead metadata + recovery_learnings SQL row)
+  → GC reaps wisp + wisp_dependencies rows on next cycle
+
+CR deletion (finalizer)
+  → operator closes any open wisps FIRST
+  → then closes pinned identity bead
+```
+
+CR-deletion ordering is a referential-integrity discipline: closing
+wisps first ensures no open `caused-by` edge is ever left pointing at a
+closed pinned identity.
+
+### Boundary decisions
+
+Three boundaries make the pattern work without bleeding cluster state
+into recovery policy or vice versa.
+
+- **`pkg/recovery` stays bead-centric.** The package has no kube state
+  awareness. Wisp metadata (`SourceResourceURI`, termination log,
+  condition snapshot) carries the resource context; Claude reads it as
+  prompt input during diagnosis. This preserves unit-testability
+  without k8s fixtures — the cluster is an input string to the
+  diagnosis prompt, not a live dependency.
+
+- **Operator is a bead-writer, not a bead-claimer.** The operator's
+  new responsibilities are narrow: create a pinned identity bead when
+  a CR is provisioned, and file a wisp recovery bead when a Job's
+  backoff is exhausted. It does not claim work, dispatch agents, or
+  render review verdicts. Claiming, dispatching, and reviewing remain
+  with steward and cleric. The seam is clean: the operator writes
+  **observed cluster state** into beads; steward and cleric write
+  **work state** into beads.
+
+- **Cleric pod shape extends via overlay, not a new builder.**
+  `BuildApprenticePod` remains the single source of truth for pod
+  shape. Cleric-on-cache recoveries require a `CacheSpec`-aware
+  overlay (PVC access mode, init-container order), which is applied to
+  the same `PodSpec` the canonical builder already consumes. One pod
+  builder, overlay-per-resource-type — not a parallel builder per
+  recovery shape.
+
+### Durability & analytics
+
+The graph `caused-by` edge is an in-flight routing mechanism: the
+steward's hooked-sweep finds unclaimed wisps, cleric dispatch resolves
+the target pinned identity, and nothing more. Post-recovery the wisp
+is transient and the edge goes away with it when GC reaps the wisp and
+its `wisp_dependencies` rows.
+
+Durable audit lives in `RecoveryOutcome`: written by cleric `finish`
+into bead metadata (under `KeyRecoveryOutcome`) and into the
+`recovery_learnings` SQL table (see `pkg/recovery/README.md`).
+`recovery_learnings` survives wisp GC and is the authoritative source
+for cross-incident analytics. Queries by `FailureClass`,
+`SourceResourceURI`, or `failure_signature` run against the SQL table,
+not the bead graph.
+
+`RecoveryOutcome` itself stays resource-agnostic — the struct has no
+cache-specific or syncer-specific fields. Resource-specific data lives
+in wisp metadata while the wisp exists, and in the `recovery_learnings`
+row's `failure_signature` and `FailureClass` columns after the wisp is
+reaped.
+
+### Deployment-mode gating
+
+The operator reconciler runs when
+`deployment_mode IN (cluster-native, attached-reserved)`. Local-native
+is a no-op for cluster-resource-health: there is no operator, there
+are no cluster resources the operator would reconcile, there are no
+cleric pods to dispatch against them, and therefore no wisps for
+cluster resources.
+
+Mode gating is enforced at the same seams as every other mode-aware
+component (see [Deployment modes](#deployment-modes) above and the
+mode-gating infrastructure documented there). Components filing
+pinned identities or wisp recoveries consult the effective mode; they
+never assume the operator is running.
+
+### Failure classes
+
+`FailureClass` grows per-resource-type (`cache-refresh-failure`,
+`syncer-failure`, …) rather than a single generic
+`resource-unhealthy`. The rationale is sharpness: a promotion signature
+(`FailureClass + failure_signature`) keyed on a specific resource-type
+failure is useful for mechanical-recipe promotion; a generic bucket
+would collapse unrelated incidents into the same key and dilute the
+learning. Per-resource-type classes also match the existing enum style
+in `pkg/recovery/classify.go`.
+
 ## Deprecated: agent-entrypoint.sh / Model A
 
 Earlier revisions of this document described a richer wizard pod
