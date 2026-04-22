@@ -283,6 +283,10 @@ func TestResolveApprenticeHandoff(t *testing.T) {
 // deprecation-log + counter side-effects via the shared recordHandoffSelection
 // choke point.
 func TestWithRuntimeContract_HandoffModePopulates(t *testing.T) {
+	// Clear the env gate up front; the parity lane's transitional-gate job
+	// runs this package under SPIRE_FAIL_ON_TRANSITIONAL_HANDOFF=1, and the
+	// ungated sub-case below must see the gate off before we flip it on.
+	t.Setenv(EnvFailOnTransitionalHandoff, "")
 	ResetHandoffTransitionalCounters()
 
 	e := NewForTest("spi-target", "wizard-test", nil, &Deps{})
