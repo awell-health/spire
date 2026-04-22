@@ -1,8 +1,6 @@
 package main
 
 import (
-	"errors"
-
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +38,7 @@ var debugRecoveryNewCmd = &cobra.Command{
 	Use:   "new",
 	Short: "Author a synthetic recovery bead with controlled failure metadata",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cmdDebugRecoveryNew(args)
+		return cmdDebugRecoveryNew(cmd, args)
 	},
 }
 
@@ -67,13 +65,6 @@ func init() {
 		debugRecoveryTraceCmd,
 	)
 	debugCmd.AddCommand(debugRecoveryCmd)
-}
-
-func cmdDebugRecoveryNew(args []string) error {
-	if err := requireDebugTower(); err != nil {
-		return err
-	}
-	return errors.New("spire debug recovery new: not yet implemented")
 }
 
 func cmdDebugRecoveryDispatch(args []string) error {

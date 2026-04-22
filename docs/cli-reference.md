@@ -777,6 +777,37 @@ spire execute <bead-id>
 Internal — spawned by `summon` and the operator. Not part of the normal
 archmage workflow; documented here for completeness.
 
+#### `spire debug`
+
+Hidden parent for archmage-only debugging tooling. Subcommands refuse
+to operate against a non-debug tower: the active tower must have a
+`debug-` name prefix, or its name must appear in the comma-separated
+`SPIRE_DEBUG_TOWER` allowlist.
+
+```bash
+spire debug recovery <subcommand> [flags]
+```
+
+##### `spire debug recovery new`
+
+Author a synthetic recovery bead that mirrors the shape a real
+wizard/cleric escalation produces. Intended for exercising the cleric
+end-to-end without reproducing a real failure. Prints the new bead's
+ID to stdout so it composes with shell pipelines.
+
+```bash
+spire debug recovery new --origin <bead> --failure-class <class> \
+  [--failed-step <step>] [--labels k=v,...] [--wisp]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--origin <bead>` | Bead the synthetic recovery points at via a `caused-by` edge (required). Parent bead for a pour, or a pre-existing pinned identity bead when combined with `--wisp`. |
+| `--failure-class <class>` | Simulated recovery `FailureClass` (required). One of: `empty-implement`, `merge-failure`, `build-failure`, `review-fix`, `repo-resolution`, `arbiter`, `step-failure`, `unknown`. |
+| `--failed-step <step>` | Simulated failed-step hint; included in the `interrupted:failed-step=<step>` label and the `source_step` metadata. |
+| `--labels k=v,...` | Extra labels, comma-separated, merged into `interrupted:<k>=<v>` unless the key already starts with `interrupted:` (in which case the prefix is preserved verbatim). |
+| `--wisp` | Mark the bead as wisp-routed; records a `synthetic:wisp` provenance label. |
+
 ---
 
 ## Cluster
