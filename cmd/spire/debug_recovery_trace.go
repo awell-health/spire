@@ -29,6 +29,9 @@ type traceView struct {
 }
 
 func cmdDebugRecoveryTrace(args []string) error {
+	if err := requireDebugTower(); err != nil {
+		return err
+	}
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
 	}

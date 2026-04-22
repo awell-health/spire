@@ -2,11 +2,7 @@ package main
 
 import (
 	"errors"
-	"fmt"
-	"os"
-	"strings"
 
-	"github.com/awell-health/spire/pkg/config"
 	"github.com/spf13/cobra"
 )
 
@@ -74,41 +70,15 @@ func init() {
 }
 
 func cmdDebugRecoveryNew(args []string) error {
+	if err := requireDebugTower(); err != nil {
+		return err
+	}
 	return errors.New("spire debug recovery new: not yet implemented")
 }
 
 func cmdDebugRecoveryDispatch(args []string) error {
+	if err := requireDebugTower(); err != nil {
+		return err
+	}
 	return errors.New("spire debug recovery dispatch: not yet implemented")
-}
-
-// requireDebugTower refuses to proceed unless the active tower is a
-// debug tower. Leaf debug commands must call this as their first
-// statement; this scaffold exposes the helper but does not enforce the
-// call from the stub leaves.
-//
-// A tower qualifies if its name has the "debug-" prefix, or if it is
-// listed in the SPIRE_DEBUG_TOWER env var (comma-separated allowlist).
-func requireDebugTower() error {
-	if d := resolveBeadsDir(); d != "" {
-		os.Setenv("BEADS_DIR", d)
-	}
-	tc, err := config.ActiveTowerConfig()
-	if err != nil {
-		return fmt.Errorf("debug: cannot resolve current tower: %w", err)
-	}
-	if tc == nil || tc.Name == "" {
-		return errors.New("debug: no active tower")
-	}
-	tower := tc.Name
-	if strings.HasPrefix(tower, "debug-") {
-		return nil
-	}
-	if allow := os.Getenv("SPIRE_DEBUG_TOWER"); allow != "" {
-		for _, t := range strings.Split(allow, ",") {
-			if strings.TrimSpace(t) == tower {
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("refusing to file debug beads in tower %q — use --tower debug-* or set SPIRE_DEBUG_TOWER allowlist", tower)
 }
