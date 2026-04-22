@@ -151,11 +151,14 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 
 // Operator-stamped wisp metadata keys consumed by extractResourceContext.
 // Documented in pkg/recovery/README.md's "Resource-scoped recoveries"
-// section so operator-side code can target them.
+// section so operator-side code can target them. Keys use underscores to
+// match the operator's writer (operator/controllers/cache_recovery.go),
+// the SQL columns the e2e suite queries, and the JSON field tags on
+// ResourceContext in types.go.
 const (
-	metaKeySourceResourceURI = "source-resource-uri"
-	metaKeyTerminationLog    = "termination-log"
-	metaKeyConditionSnapshot = "condition-snapshot"
+	metaKeySourceResourceURI = "source_resource_uri"
+	metaKeyTerminationLog    = "termination_log"
+	metaKeyConditionSnapshot = "condition_snapshot"
 )
 
 // extractResourceContext reads operator-stamped wisp metadata and resolves

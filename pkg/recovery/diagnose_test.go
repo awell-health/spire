@@ -895,9 +895,9 @@ func wispMockDeps() *Deps {
 		Status: "in_progress",
 		Labels: []string{"interrupted:cache-refresh-failure", "recovery-bead"},
 		Metadata: map[string]string{
-			"source-resource-uri": "spire.awell.health/wizardguild/default/primary#cache",
-			"termination-log":     "E1023 12:00:01 refresh loop: timeout after 5s\nE1023 12:00:02 backoff exhausted",
-			"condition-snapshot":  "Ready=False;Degraded=True;LastProbe=2026-04-22T12:00:03Z",
+			"source_resource_uri": "spire.awell.health/wizardguild/default/primary#cache",
+			"termination_log":     "E1023 12:00:01 refresh loop: timeout after 5s\nE1023 12:00:02 backoff exhausted",
+			"condition_snapshot":  "Ready=False;Degraded=True;LastProbe=2026-04-22T12:00:03Z",
 		},
 	}
 	pinned := DepBead{
@@ -941,7 +941,7 @@ func wispMockDeps() *Deps {
 
 // TestDiagnose_ResourceScoped_CacheRefresh fabricates a fully-stamped wisp
 // and asserts the Diagnose output carries the URI, condition snapshot,
-// termination-log tail, pinned bead ID, and pinned description.
+// termination_log tail, pinned bead ID, and pinned description.
 func TestDiagnose_ResourceScoped_CacheRefresh(t *testing.T) {
 	deps := wispMockDeps()
 
@@ -972,7 +972,7 @@ func TestDiagnose_ResourceScoped_CacheRefresh(t *testing.T) {
 		t.Errorf("PinnedIdentityDescription = %q", rc.PinnedIdentityDescription)
 	}
 
-	// Rendered block must contain URI, conditions, termination-log, pinned
+	// Rendered block must contain URI, conditions, termination_log, pinned
 	// bead ID, and description.
 	block := FormatResourceContext(rc)
 	for _, want := range []string{
@@ -993,8 +993,8 @@ func TestDiagnose_ResourceScoped_CacheRefresh(t *testing.T) {
 	}
 }
 
-// TestDiagnose_ResourceScoped_MissingMetadata drops the termination-log and
-// condition-snapshot stamps; Diagnose must still succeed and the renderer
+// TestDiagnose_ResourceScoped_MissingMetadata drops the termination_log and
+// condition_snapshot stamps; Diagnose must still succeed and the renderer
 // must fill <not provided> for those fields.
 func TestDiagnose_ResourceScoped_MissingMetadata(t *testing.T) {
 	deps := wispMockDeps()
@@ -1006,7 +1006,7 @@ func TestDiagnose_ResourceScoped_MissingMetadata(t *testing.T) {
 				Status: "in_progress",
 				Labels: []string{"interrupted:cache-refresh-failure", "recovery-bead"},
 				Metadata: map[string]string{
-					"source-resource-uri": "spire.awell.health/wizardguild/default/primary#cache",
+					"source_resource_uri": "spire.awell.health/wizardguild/default/primary#cache",
 				},
 			}, nil
 		}
@@ -1093,7 +1093,7 @@ func TestExtractResourceContext_MultipleCausedBy(t *testing.T) {
 		ID:     "spi-wisp-multi",
 		Labels: []string{"interrupted:cache-refresh-failure"},
 		Metadata: map[string]string{
-			"source-resource-uri": "spire.awell.health/a/b/c#cache",
+			"source_resource_uri": "spire.awell.health/a/b/c#cache",
 		},
 	}
 	deps := &Deps{

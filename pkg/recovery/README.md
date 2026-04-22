@@ -354,9 +354,14 @@ The operator-side reconciler files a wisp bead with:
 
 | Metadata key          | Read by                   | Purpose                                              |
 |-----------------------|---------------------------|------------------------------------------------------|
-| `source-resource-uri` | `extractResourceContext`  | Opaque URI of the cluster resource (operator-owned)  |
-| `termination-log`     | `extractResourceContext`  | Tail of the resource's termination/refresh log       |
-| `condition-snapshot`  | `extractResourceContext`  | Semicolon-delimited condition probe snapshot         |
+| `source_resource_uri` | `extractResourceContext`  | Opaque URI of the cluster resource (operator-owned)  |
+| `termination_log`     | `extractResourceContext`  | Tail of the resource's termination/refresh log       |
+| `condition_snapshot`  | `extractResourceContext`  | Semicolon-delimited condition probe snapshot         |
+
+Keys use underscores to match the operator's writer in
+`operator/controllers/cache_recovery.go`, the SQL columns the e2e suite
+queries (`m.key = 'source_resource_uri'`), and the JSON field tags on
+`ResourceContext` in `types.go`.
 
 `Diagnose` branches on `FailureClass.IsResourceScoped()`. When true,
 `extractResourceContext` reads the three metadata keys off the wisp and
@@ -368,7 +373,7 @@ fields render as `<not provided>` via `FormatResourceContext`, and
 targets emit a warning and use the first.
 
 Operator-side writers (wisp filing, pinned-identity creation) and the
-steward's `WriteOutcome` adjustments for `source-resource-uri` are
+steward's `WriteOutcome` adjustments for `source_resource_uri` are
 handled in sibling subtasks of epic **spi-w860i**; see design
 **spi-uhxdn** for the full pattern.
 
