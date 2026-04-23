@@ -64,7 +64,10 @@ kubeconfig file.`,
 		dolthubRemote, _ := cmd.Flags().GetString("dolthub-remote")
 		waitDur, _ := cmd.Flags().GetDuration("dolt-wait")
 		bootstrapIfBlank, _ := cmd.Flags().GetBool("bootstrap-if-blank")
-		return cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote, waitDur, bootstrapIfBlank)
+		bundleBackend, _ := cmd.Flags().GetString("bundle-store-backend")
+		bundleGCSBucket, _ := cmd.Flags().GetString("bundle-store-gcs-bucket")
+		bundleGCSPrefix, _ := cmd.Flags().GetString("bundle-store-gcs-prefix")
+		return cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote, waitDur, bootstrapIfBlank, bundleBackend, bundleGCSBucket, bundleGCSPrefix)
 	},
 }
 
@@ -75,6 +78,15 @@ func init() {
 	towerAttachClusterCmd.Flags().String("dolthub-remote", "", "DoltHub remote path; stored in TowerConfig for provenance (bootstrap mode)")
 	towerAttachClusterCmd.Flags().Duration("dolt-wait", 120*time.Second, "How long to wait for dolt server reachability (bootstrap mode)")
 	towerAttachClusterCmd.Flags().Bool("bootstrap-if-blank", false, "If the target database has no user tables, run the `spire tower create` ritual (schema, project_id, custom types) before attaching. Required for Use Case 2b (no DoltHub install).")
+
+	// BundleStore configuration — persisted into the TowerConfig saved
+	// by this command. Empty values leave BundleStoreConfig zero-valued,
+	// which the runtime interprets as backend=local (the default). The
+	// helm chart passes these unconditionally from .Values.bundleStore.*
+	// — empty strings must be tolerated silently, not rejected.
+	towerAttachClusterCmd.Flags().String("bundle-store-backend", "", "BundleStore backend: 'local' (default) or 'gcs'. Empty = backend unset in tower config (runtime default = local).")
+	towerAttachClusterCmd.Flags().String("bundle-store-gcs-bucket", "", "GCS bucket name (without 'gs://') when bundle-store-backend=gcs. Must pre-exist; the store does not create it.")
+	towerAttachClusterCmd.Flags().String("bundle-store-gcs-prefix", "", "Optional object-name prefix inside the GCS bucket for multi-tower namespacing.")
 
 	towerAttachClusterCmd.Flags().String("namespace", "", "Kubernetes namespace for the cluster attachment (register mode)")
 	towerAttachClusterCmd.Flags().String("kubeconfig", "", "Path to kubeconfig; defaults to $KUBECONFIG or ~/.kube/config (register mode)")
@@ -128,7 +140,7 @@ var clusterRunBdInit = func(database, prefix, runDir string) error {
 	})
 }
 
-func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote string, waitDur time.Duration, bootstrapIfBlank bool) error {
+func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote string, waitDur time.Duration, bootstrapIfBlank bool, bundleBackend, bundleGCSBucket, bundleGCSPrefix string) error {
 	if database == "" {
 		return fmt.Errorf("--database is required")
 	}
@@ -221,6 +233,20 @@ func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote stri
 		// local-native via the loader fallback. Idempotent: re-running
 		// attach-cluster on helm upgrade re-saves the same value.
 		DeploymentMode: config.DeploymentModeClusterNative,
+	}
+
+	// BundleStore — populate from chart-supplied flags when non-empty.
+	// Empty values leave BundleStore zero-valued (runtime default = local);
+	// the helm chart passes these unconditionally from
+	// .Values.bundleStore.*, so tolerating empty strings is required.
+	if bundleBackend != "" {
+		tower.BundleStore.Backend = bundleBackend
+	}
+	if bundleGCSBucket != "" {
+		tower.BundleStore.GCS.Bucket = bundleGCSBucket
+	}
+	if bundleGCSPrefix != "" {
+		tower.BundleStore.GCS.Prefix = bundleGCSPrefix
 	}
 
 	beadsDir := filepath.Join(dataDir, ".beads")

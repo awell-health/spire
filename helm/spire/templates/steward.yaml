@@ -43,6 +43,9 @@ spec:
                 --database="$BEADS_DATABASE" \
                 --prefix="$BEADS_PREFIX" \
                 --dolthub-remote="$DOLTHUB_REMOTE" \
+                --bundle-store-backend="$BUNDLE_STORE_BACKEND" \
+                --bundle-store-gcs-bucket="$BUNDLE_STORE_GCS_BUCKET" \
+                --bundle-store-gcs-prefix="$BUNDLE_STORE_GCS_PREFIX" \
                 --bootstrap-if-blank \
                 --dolt-wait=300s
               # bd warns at 0755 — tighten. Done after attach-cluster so
@@ -67,6 +70,14 @@ spec:
               value: {{ .Values.beads.prefix | quote }}
             - name: DOLTHUB_REMOTE
               value: {{ .Values.dolthub.remoteUrl | quote }}
+            # BundleStore configuration — read by attach-cluster's new
+            # --bundle-store-* flags above, persisted into tower config.
+            - name: BUNDLE_STORE_BACKEND
+              value: {{ .Values.bundleStore.backend | quote }}
+            - name: BUNDLE_STORE_GCS_BUCKET
+              value: {{ .Values.bundleStore.gcs.bucket | quote }}
+            - name: BUNDLE_STORE_GCS_PREFIX
+              value: {{ .Values.bundleStore.gcs.prefix | quote }}
             # Persist the tower config on the shared PVC (init → main
             # container). Paired with DOLT_DATA_DIR so BeadsDirForTower
             # resolves via the laptop convention instead of needing a
@@ -115,6 +126,14 @@ spec:
               value: {{ include "spire.configDir" . | quote }}
             - name: DOLT_DATA_DIR
               value: {{ .Values.paths.dataRoot | quote }}
+            {{- if and (eq .Values.bundleStore.backend "gcs") .Values.gcp.serviceAccountJson }}
+            # Points the steward's BundleStore GCS client at the shared
+            # GCP SA credential. Janitor / lifecycle ops on bundles run
+            # from the steward, so this env must be present whenever the
+            # tower's BundleStore.backend=gcs.
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: {{ .Values.gcp.mountPath }}/{{ .Values.gcp.keyName }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.steward.metricsPort }}
@@ -144,6 +163,11 @@ spec:
             - name: spire-config
               mountPath: /etc/spire
               readOnly: true
+            {{- if and (eq .Values.bundleStore.backend "gcs") .Values.gcp.serviceAccountJson }}
+            - name: gcp-sa
+              mountPath: {{ .Values.gcp.mountPath }}
+              readOnly: true
+            {{- end }}
           workingDir: /etc/spire
         - name: sidecar
           image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
@@ -204,6 +228,12 @@ spec:
         - name: spire-config
           configMap:
             name: spire-config
+        {{- if and (eq .Values.bundleStore.backend "gcs") .Values.gcp.serviceAccountJson }}
+        - name: gcp-sa
+          secret:
+            secretName: {{ .Values.gcp.secretName | default (printf "%s-gcp-sa" .Release.Name) }}
+            defaultMode: 0400
+        {{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap

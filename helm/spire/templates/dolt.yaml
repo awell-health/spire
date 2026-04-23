@@ -102,11 +102,13 @@ spec:
                   name: {{ .Release.Name }}-dolthub-creds
                   key: key-id
             {{- end }}
-            {{- if and .Values.backup.enabled .Values.backup.gcs.serviceAccountJson }}
-            # Points dolt's GCS client at the mounted service-account
-            # JSON so `dolt backup sync <gcs-remote>` can authenticate.
+            {{- if and .Values.backup.enabled .Values.gcp.serviceAccountJson }}
+            # Points dolt's GCS client at the shared GCP SA credential
+            # so `dolt backup sync <gcs-remote>` can authenticate.
+            # Credential comes from the top-level `gcp.*` Secret
+            # (rendered by templates/secret-gcs.yaml), not backup-scoped.
             - name: GOOGLE_APPLICATION_CREDENTIALS
-              value: /creds/gcs/key.json
+              value: {{ .Values.gcp.mountPath }}/{{ .Values.gcp.keyName }}
             {{- end }}
           volumeMounts:
             - name: data
@@ -122,9 +124,9 @@ spec:
               mountPath: /creds-input
               readOnly: true
             {{- end }}
-            {{- if and .Values.backup.enabled .Values.backup.gcs.serviceAccountJson }}
-            - name: gcs-creds
-              mountPath: /creds/gcs
+            {{- if and .Values.backup.enabled .Values.gcp.serviceAccountJson }}
+            - name: gcp-sa
+              mountPath: {{ .Values.gcp.mountPath }}
               readOnly: true
             {{- end }}
           resources:
@@ -161,10 +163,10 @@ spec:
               - key: key-value
                 path: key-value
         {{- end }}
-        {{- if and .Values.backup.enabled .Values.backup.gcs.serviceAccountJson }}
-        - name: gcs-creds
+        {{- if and .Values.backup.enabled .Values.gcp.serviceAccountJson }}
+        - name: gcp-sa
           secret:
-            secretName: {{ .Release.Name }}-gcs-creds
+            secretName: {{ .Values.gcp.secretName | default (printf "%s-gcp-sa" .Release.Name) }}
             defaultMode: 0400
         {{- end }}
   volumeClaimTemplates:
