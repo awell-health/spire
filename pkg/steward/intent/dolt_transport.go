@@ -6,9 +6,11 @@ package intent
 //
 // The transport is a classic outbox:
 //
-//   - Publish inserts one row into workload_intents keyed by attempt_id.
-//     INSERT ... ON DUPLICATE KEY UPDATE makes re-publishes (e.g. after
-//     a transient steward restart) a safe no-op.
+//   - Publish inserts one row into workload_intents keyed by the
+//     (task_id, dispatch_seq) composite PK. INSERT ... ON DUPLICATE KEY
+//     UPDATE makes re-publishes of the same dispatch (e.g. after a
+//     transient steward restart) a safe no-op; retries bump
+//     dispatch_seq to land in a fresh row.
 //   - Consume opens a long-lived goroutine that polls the table every
 //     pollInterval, emits un-reconciled rows on a channel, and stamps
 //     reconciled_at once per row. The reconciler's own Create path is
@@ -60,7 +62,7 @@ func EnsureWorkloadIntentsTable(db *sql.DB) error {
 
 // DoltPublisher is the pkg/steward-side IntentPublisher backed by the
 // workload_intents dolt table. Publish writes one row per Publish call
-// and is idempotent on attempt_id.
+// and is idempotent on the (task_id, dispatch_seq) composite key.
 type DoltPublisher struct {
 	db  *sql.DB
 	now func() time.Time
@@ -74,26 +76,32 @@ func NewDoltPublisher(db *sql.DB) *DoltPublisher {
 }
 
 // Publish inserts the intent into workload_intents. Repeat publishes of
-// the same attempt_id are idempotent: ON DUPLICATE KEY UPDATE refreshes
-// the projection but preserves the original emitted_at and any
-// reconciled_at the consumer may have already stamped.
+// the same (task_id, dispatch_seq) are idempotent: ON DUPLICATE KEY
+// UPDATE refreshes the projection but preserves the original emitted_at
+// and any reconciled_at the consumer may have already stamped. A retry
+// after a failed dispatch bumps dispatch_seq and lands in a fresh row.
 func (p *DoltPublisher) Publish(ctx context.Context, i WorkloadIntent) error {
 	if p == nil || p.db == nil {
 		return fmt.Errorf("intent: DoltPublisher has nil DB")
 	}
-	if i.AttemptID == "" {
-		return fmt.Errorf("intent: Publish requires non-empty AttemptID")
+	if i.TaskID == "" {
+		return fmt.Errorf("intent: Publish requires non-empty TaskID")
+	}
+	if i.DispatchSeq < 1 {
+		return fmt.Errorf("intent: Publish requires DispatchSeq >= 1 (got %d)", i.DispatchSeq)
 	}
 	now := p.nowFn()
 	_, err := p.db.ExecContext(ctx, `
         INSERT INTO workload_intents (
-            attempt_id, repo_url, repo_base_branch, repo_prefix,
+            task_id, dispatch_seq, reason,
+            repo_url, repo_base_branch, repo_prefix,
             formula_phase, handoff_mode,
             resources_cpu_request, resources_cpu_limit,
             resources_memory_request, resources_memory_limit,
             emitted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
+            reason = VALUES(reason),
             repo_url = VALUES(repo_url),
             repo_base_branch = VALUES(repo_base_branch),
             repo_prefix = VALUES(repo_prefix),
@@ -104,7 +112,7 @@ func (p *DoltPublisher) Publish(ctx context.Context, i WorkloadIntent) error {
             resources_memory_request = VALUES(resources_memory_request),
             resources_memory_limit = VALUES(resources_memory_limit)
     `,
-		i.AttemptID,
+		i.TaskID, i.DispatchSeq, i.Reason,
 		i.RepoIdentity.URL, i.RepoIdentity.BaseBranch, i.RepoIdentity.Prefix,
 		i.FormulaPhase, i.HandoffMode,
 		i.Resources.CPURequest, i.Resources.CPULimit,
@@ -112,7 +120,7 @@ func (p *DoltPublisher) Publish(ctx context.Context, i WorkloadIntent) error {
 		now,
 	)
 	if err != nil {
-		return fmt.Errorf("intent: insert workload_intent %s: %w", i.AttemptID, err)
+		return fmt.Errorf("intent: insert workload_intent %s#%d: %w", i.TaskID, i.DispatchSeq, err)
 	}
 	return nil
 }
@@ -198,7 +206,8 @@ func (c *DoltConsumer) drainOnce(ctx context.Context, out chan<- WorkloadIntent)
 	}
 	rows, err := c.db.QueryContext(ctx, `
         SELECT
-            attempt_id, repo_url, repo_base_branch, repo_prefix,
+            task_id, dispatch_seq, reason,
+            repo_url, repo_base_branch, repo_prefix,
             formula_phase, handoff_mode,
             resources_cpu_request, resources_cpu_limit,
             resources_memory_request, resources_memory_limit
@@ -217,17 +226,18 @@ func (c *DoltConsumer) drainOnce(ctx context.Context, out chan<- WorkloadIntent)
 	var batch []pending
 	for rows.Next() {
 		var (
-			wi                                                     WorkloadIntent
-			cpuReq, cpuLim, memReq, memLim                         sql.NullString
+			wi                                     WorkloadIntent
+			reason, cpuReq, cpuLim, memReq, memLim sql.NullString
 		)
 		if err := rows.Scan(
-			&wi.AttemptID,
+			&wi.TaskID, &wi.DispatchSeq, &reason,
 			&wi.RepoIdentity.URL, &wi.RepoIdentity.BaseBranch, &wi.RepoIdentity.Prefix,
 			&wi.FormulaPhase, &wi.HandoffMode,
 			&cpuReq, &cpuLim, &memReq, &memLim,
 		); err != nil {
 			continue
 		}
+		wi.Reason = reason.String
 		wi.Resources.CPURequest = cpuReq.String
 		wi.Resources.CPULimit = cpuLim.String
 		wi.Resources.MemoryRequest = memReq.String
@@ -243,8 +253,8 @@ func (c *DoltConsumer) drainOnce(ctx context.Context, out chan<- WorkloadIntent)
 		case out <- p.wi:
 		}
 		_, _ = c.db.ExecContext(ctx,
-			`UPDATE workload_intents SET reconciled_at = ? WHERE attempt_id = ? AND reconciled_at IS NULL`,
-			c.nowFn(), p.wi.AttemptID)
+			`UPDATE workload_intents SET reconciled_at = ? WHERE task_id = ? AND dispatch_seq = ? AND reconciled_at IS NULL`,
+			c.nowFn(), p.wi.TaskID, p.wi.DispatchSeq)
 	}
 }
 

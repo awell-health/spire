@@ -64,7 +64,8 @@ func (f *fakeIdentityResolver) Resolve(_ context.Context, _ string) (identity.Cl
 func TestIntentReconciler_PodShapeMatchesSharedBuilder(t *testing.T) {
 	const (
 		ns                = "spire"
-		attempt           = "spi-abc-0"
+		taskID            = "spi-abc"
+		dispatchSeq       = 1
 		prefix            = "spi"
 		repoURL           = "git@example.com:spire-test/repo.git"
 		branch            = "main"
@@ -109,7 +110,8 @@ func TestIntentReconciler_PodShapeMatchesSharedBuilder(t *testing.T) {
 	}()
 
 	wi := intent.WorkloadIntent{
-		AttemptID: attempt,
+		TaskID:      taskID,
+		DispatchSeq: dispatchSeq,
 		RepoIdentity: intent.RepoIdentity{
 			URL:        repoURL,
 			BaseBranch: branch,
@@ -126,7 +128,7 @@ func TestIntentReconciler_PodShapeMatchesSharedBuilder(t *testing.T) {
 	}
 	ch <- wi
 
-	podName := apprenticePodName(attempt)
+	podName := apprenticePodName(taskID, dispatchSeq)
 	gotPod := waitForPod(t, c, ns, podName, 3*time.Second)
 
 	// Exactly-one-pod invariant: a single intent must produce a single
@@ -158,8 +160,7 @@ func TestIntentReconciler_PodShapeMatchesSharedBuilder(t *testing.T) {
 		Namespace:         ns,
 		Image:             image,
 		AgentName:         podName,
-		BeadID:            attempt,
-		AttemptID:         attempt,
+		BeadID:            taskID,
 		FormulaStep:       phase,
 		HandoffMode:       runtime.HandoffMode(handoff),
 		Backend:           "operator-k8s",
@@ -229,7 +230,7 @@ func TestIntentReconciler_PodShapeMatchesSharedBuilder(t *testing.T) {
 		}
 	}
 	wantOverlay := map[string]string{
-		"spire.awell.io/bead":       attempt,
+		"spire.awell.io/bead":       taskID,
 		"spire.awell.io/managed":    "true",
 		"spire.awell.io/reconciler": "intent",
 		"spire.awell.io/prefix":     prefix,
@@ -240,9 +241,11 @@ func TestIntentReconciler_PodShapeMatchesSharedBuilder(t *testing.T) {
 		}
 	}
 
-	// Annotations: the shared builder emits attempt-id on every
-	// apprentice pod (AttemptID was populated on the spec). The
-	// reconciler must not drop it.
+	// Annotations: shared builder output must survive the reconciler
+	// overlay. With the task-keyed dispatch protocol the reconciler no
+	// longer stamps an AttemptID on PodSpec — the wizard creates its
+	// own attempt inside the pod — so attempt annotations only appear
+	// when downstream code explicitly sets AttemptID.
 	for k, want := range wantPod.Annotations {
 		if got := gotPod.Annotations[k]; got != want {
 			t.Errorf("annotation %q: got %q, want %q", k, got, want)

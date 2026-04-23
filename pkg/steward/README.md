@@ -38,10 +38,15 @@ silently falling back to local spawn.
    `LocalBindings.LocalPath`, or `cfg.Instances`.
 2. **`dispatch.AttemptClaimer` + `dispatch.DispatchEmitter` via
    `dispatch.ClaimThenEmit`** — the only allowed dispatch path.
-   `ClaimNext` atomically opens an attempt bead in the shared store;
-   `Emit` refuses to publish without a matching `AttemptHandle`. The
-   attempt bead row is the canonical ownership seam — no in-process
-   busy map, mutex, or `sync.Map` is allowed as a substitute.
+   `ClaimNext` verifies no active attempt exists for the task and
+   reserves the next `dispatch_seq`; `Emit` refuses to publish without a
+   matching `ClaimHandle`. The `workload_intents` `(task_id,
+   dispatch_seq)` composite PK is the canonical ownership seam — no
+   in-process busy map, mutex, or `sync.Map` is allowed as a substitute.
+   **Steward does not create attempt beads.** Attempt-bead lifecycle is
+   wholly the wizard's responsibility: the wizard sees
+   `SPIRE_BEAD_ID=<task_id>` and calls `ensureAttemptBead` inside the
+   dispatched pod to open (or resume) its own attempt.
 3. **`intent.IntentPublisher`** — the scheduler-side exit seam that
    delivers a `WorkloadIntent` to the operator. The operator consumes
    it through `intent.IntentConsumer` and reconciles cluster resources

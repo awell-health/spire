@@ -67,9 +67,9 @@ type ClusterDispatchConfig struct {
 }
 
 // dispatchClusterNative emits a WorkloadIntent for each schedulable
-// bead in this cycle, threading the AttemptID from the claimed attempt
-// bead through dispatch.ClaimThenEmit. It returns the number of
-// successful emits.
+// task in this cycle, threading the (TaskID, DispatchSeq) from the
+// dispatch claim through dispatch.ClaimThenEmit. It returns the number
+// of successful emits.
 //
 // The function is the cluster-native counterpart to the local-native
 // backend.Spawn loop in TowerCycle. It runs only when the tower's
@@ -163,13 +163,15 @@ func beadDispatchPhase(override, beadType string) string {
 }
 
 // buildClusterIntent returns the buildIntent closure the steward hands
-// to dispatch.ClaimThenEmit. The closure stamps the claimed AttemptID
-// onto a pre-computed intent so dispatch.ValidateHandle inside the
-// emitter passes.
-func buildClusterIntent(ident identity.ClusterRepoIdentity, formulaPhase, handoffMode string) func(*dispatch.AttemptHandle) intent.WorkloadIntent {
-	return func(h *dispatch.AttemptHandle) intent.WorkloadIntent {
+// to dispatch.ClaimThenEmit. The closure stamps the claimed
+// (TaskID, DispatchSeq) onto a pre-computed intent so
+// dispatch.ValidateHandle inside the emitter passes.
+func buildClusterIntent(ident identity.ClusterRepoIdentity, formulaPhase, handoffMode string) func(*dispatch.ClaimHandle) intent.WorkloadIntent {
+	return func(h *dispatch.ClaimHandle) intent.WorkloadIntent {
 		return intent.WorkloadIntent{
-			AttemptID: h.AttemptID,
+			TaskID:      h.TaskID,
+			DispatchSeq: h.DispatchSeq,
+			Reason:      h.Reason,
 			RepoIdentity: intent.RepoIdentity{
 				URL:        ident.URL,
 				BaseBranch: ident.BaseBranch,
@@ -192,7 +194,7 @@ type publisherEmitter struct {
 // Emit implements dispatch.DispatchEmitter. It guards against missing
 // or mismatched handles via dispatch.ValidateHandle, then delegates to
 // the wrapped IntentPublisher.
-func (e publisherEmitter) Emit(ctx context.Context, h *dispatch.AttemptHandle, i intent.WorkloadIntent) error {
+func (e publisherEmitter) Emit(ctx context.Context, h *dispatch.ClaimHandle, i intent.WorkloadIntent) error {
 	if err := dispatch.ValidateHandle(h, i); err != nil {
 		return err
 	}

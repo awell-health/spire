@@ -35,69 +35,71 @@ func TestIntentReconciler_PhaseRouting(t *testing.T) {
 		handoff = "bundle"
 	)
 
+	const dispatchSeq = 1
+
 	cases := []struct {
-		name      string
-		phase     string
-		attemptID string
-		wantPod   func(string) string
-		wantRole  string
-		wantCmd   []string // first three args after "spire"
+		name     string
+		phase    string
+		taskID   string
+		wantPod  func(string, int) string
+		wantRole string
+		wantCmd  []string // first three args after "spire"
 	}{
 		{
-			name:      "bead-level wizard",
-			phase:     intent.PhaseWizard,
-			attemptID: "spi-w0",
-			wantPod:   wizardPodName,
-			wantRole:  string(agent.RoleWizard),
-			wantCmd:   []string{"execute", "spi-w0"},
+			name:     "bead-level wizard",
+			phase:    intent.PhaseWizard,
+			taskID:   "spi-w0",
+			wantPod:  wizardPodName,
+			wantRole: string(agent.RoleWizard),
+			wantCmd:  []string{"execute", "spi-w0"},
 		},
 		{
-			name:      "bead-level type=task routes to wizard",
-			phase:     "task",
-			attemptID: "spi-t0",
-			wantPod:   wizardPodName,
-			wantRole:  string(agent.RoleWizard),
-			wantCmd:   []string{"execute", "spi-t0"},
+			name:     "bead-level type=task routes to wizard",
+			phase:    "task",
+			taskID:   "spi-t0",
+			wantPod:  wizardPodName,
+			wantRole: string(agent.RoleWizard),
+			wantCmd:  []string{"execute", "spi-t0"},
 		},
 		{
-			name:      "bead-level type=epic routes to wizard",
-			phase:     "epic",
-			attemptID: "spi-e0",
-			wantPod:   wizardPodName,
-			wantRole:  string(agent.RoleWizard),
-			wantCmd:   []string{"execute", "spi-e0"},
+			name:     "bead-level type=epic routes to wizard",
+			phase:    "epic",
+			taskID:   "spi-e0",
+			wantPod:  wizardPodName,
+			wantRole: string(agent.RoleWizard),
+			wantCmd:  []string{"execute", "spi-e0"},
 		},
 		{
-			name:      "step-level implement routes to apprentice",
-			phase:     intent.PhaseImplement,
-			attemptID: "spi-i0",
-			wantPod:   apprenticePodName,
-			wantRole:  string(agent.RoleApprentice),
-			wantCmd:   []string{"apprentice", "run"},
+			name:     "step-level implement routes to apprentice",
+			phase:    intent.PhaseImplement,
+			taskID:   "spi-i0",
+			wantPod:  apprenticePodName,
+			wantRole: string(agent.RoleApprentice),
+			wantCmd:  []string{"apprentice", "run"},
 		},
 		{
-			name:      "step-level fix routes to apprentice",
-			phase:     intent.PhaseFix,
-			attemptID: "spi-f0",
-			wantPod:   apprenticePodName,
-			wantRole:  string(agent.RoleApprentice),
-			wantCmd:   []string{"apprentice", "run"},
+			name:     "step-level fix routes to apprentice",
+			phase:    intent.PhaseFix,
+			taskID:   "spi-f0",
+			wantPod:  apprenticePodName,
+			wantRole: string(agent.RoleApprentice),
+			wantCmd:  []string{"apprentice", "run"},
 		},
 		{
-			name:      "review-level review routes to sage",
-			phase:     intent.PhaseReview,
-			attemptID: "spi-r0",
-			wantPod:   sagePodName,
-			wantRole:  string(agent.RoleSage),
-			wantCmd:   []string{"sage", "review"},
+			name:     "review-level review routes to sage",
+			phase:    intent.PhaseReview,
+			taskID:   "spi-r0",
+			wantPod:  sagePodName,
+			wantRole: string(agent.RoleSage),
+			wantCmd:  []string{"sage", "review"},
 		},
 		{
-			name:      "review-level arbiter routes to sage",
-			phase:     intent.PhaseArbiter,
-			attemptID: "spi-a0",
-			wantPod:   sagePodName,
-			wantRole:  string(agent.RoleSage),
-			wantCmd:   []string{"sage", "review"},
+			name:     "review-level arbiter routes to sage",
+			phase:    intent.PhaseArbiter,
+			taskID:   "spi-a0",
+			wantPod:  sagePodName,
+			wantRole: string(agent.RoleSage),
+			wantCmd:  []string{"sage", "review"},
 		},
 	}
 
@@ -126,7 +128,8 @@ func TestIntentReconciler_PhaseRouting(t *testing.T) {
 			go func() { defer close(done); _ = r.Start(ctx) }()
 
 			ch <- intent.WorkloadIntent{
-				AttemptID: tc.attemptID,
+				TaskID:      tc.taskID,
+				DispatchSeq: dispatchSeq,
 				RepoIdentity: intent.RepoIdentity{
 					URL: repoURL, BaseBranch: branch, Prefix: prefix,
 				},
@@ -134,7 +137,7 @@ func TestIntentReconciler_PhaseRouting(t *testing.T) {
 				HandoffMode:  handoff,
 			}
 
-			pod := waitForPod(t, c, ns, tc.wantPod(tc.attemptID), 3*time.Second)
+			pod := waitForPod(t, c, ns, tc.wantPod(tc.taskID, dispatchSeq), 3*time.Second)
 			cancel()
 			<-done
 
@@ -182,7 +185,8 @@ func TestIntentReconciler_UnknownPhaseDropsIntent(t *testing.T) {
 	go func() { defer close(done); _ = r.Start(ctx) }()
 
 	ch <- intent.WorkloadIntent{
-		AttemptID: "spi-bogus-0",
+		TaskID:      "spi-bogus",
+		DispatchSeq: 1,
 		RepoIdentity: intent.RepoIdentity{
 			URL: "git@example.com:x/y.git", BaseBranch: "main", Prefix: "spi",
 		},

@@ -247,6 +247,123 @@ func TestEnsureAttemptBead_CreatesNew(t *testing.T) {
 	}
 }
 
+// TestEnsureAttemptBead_RejectsActiveAttemptFromDifferentAgent guards
+// the concurrency invariant in the task-keyed dispatch world: if a live
+// attempt bead owned by a different agent exists for the task, the
+// wizard MUST return an error instead of stomping it. The workload_intents
+// PK prevents two intents with the same (task_id, seq), but an operator
+// that re-creates a wizard pod under the same dispatch_seq must still
+// reject on the in-pod side.
+func TestEnsureAttemptBead_RejectsActiveAttemptFromDifferentAgent(t *testing.T) {
+	dir := t.TempDir()
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		GetActiveAttempt: func(parentID string) (*Bead, error) {
+			return &Bead{ID: parentID + ".attempt-alien", Status: "in_progress"}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string {
+			if prefix == "agent:" {
+				return "wizard-other"
+			}
+			return ""
+		},
+		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
+			t.Fatal("CreateAttemptBead should not be called when a foreign agent owns the attempt")
+			return "", nil
+		},
+	}
+
+	state := &State{BeadID: "spi-conflict", AgentName: "wizard-me"}
+	e := NewForTest("spi-conflict", "wizard-me", state, deps)
+	err := e.ensureAttemptBead()
+	if err == nil {
+		t.Fatal("ensureAttemptBead should error when attempt is owned by a different agent")
+	}
+}
+
+// TestEnsureAttemptBead_CreatesAfterClosedAttempt confirms the
+// retry-after-wizard-pod-death branch: prior closed attempts must not
+// block a fresh attempt from being created. GetActiveAttempt returns
+// nil (only open/in_progress attempts count), and CreateAttemptBead is
+// called to mint a new one.
+func TestEnsureAttemptBead_CreatesAfterClosedAttempt(t *testing.T) {
+	dir := t.TempDir()
+	var createdID string
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetBead: func(id string) (Bead, error) {
+			// Persisted state points at a previous attempt that's now closed.
+			return Bead{ID: id, Status: "closed"}, nil
+		},
+		GetActiveAttempt: func(parentID string) (*Bead, error) {
+			// No active attempt; the prior one is closed.
+			return nil, nil
+		},
+		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
+			createdID = parentID + ".attempt-2"
+			return createdID, nil
+		},
+		HasLabel: func(b Bead, prefix string) string { return "" },
+		AddLabel: func(id, label string) error { return nil },
+	}
+
+	state := &State{
+		BeadID:        "spi-retry",
+		AgentName:     "wizard-retry",
+		StagingBranch: "feat/spi-retry",
+		AttemptBeadID: "spi-retry.attempt-1", // stale reference to closed attempt
+	}
+	e := NewForTest("spi-retry", "wizard-retry", state, deps)
+	if err := e.ensureAttemptBead(); err != nil {
+		t.Fatalf("ensureAttemptBead: %v", err)
+	}
+	if e.state.AttemptBeadID != createdID {
+		t.Errorf("AttemptBeadID = %q, want fresh %q", e.state.AttemptBeadID, createdID)
+	}
+}
+
+// TestEnsureAttemptBead_ReusesSameAgentAttempt covers the claim-then-
+// execute path: cmdClaim opened an attempt for this agent; the executor
+// picks it up on first invocation rather than creating a second one.
+func TestEnsureAttemptBead_ReusesSameAgentAttempt(t *testing.T) {
+	dir := t.TempDir()
+
+	deps := &Deps{
+		ConfigDir: func() (string, error) { return dir, nil },
+		GetBead: func(id string) (Bead, error) {
+			return Bead{ID: id, Status: "in_progress"}, nil
+		},
+		GetActiveAttempt: func(parentID string) (*Bead, error) {
+			return &Bead{ID: parentID + ".attempt-claim", Status: "in_progress"}, nil
+		},
+		HasLabel: func(b Bead, prefix string) string {
+			if prefix == "agent:" {
+				return "wizard-me"
+			}
+			return ""
+		},
+		CreateAttemptBead: func(parentID, agentName, model, branch string) (string, error) {
+			t.Fatal("CreateAttemptBead should not be called when a same-agent attempt is active")
+			return "", nil
+		},
+		AddLabel: func(id, label string) error { return nil },
+	}
+
+	state := &State{BeadID: "spi-reuse", AgentName: "wizard-me"}
+	e := NewForTest("spi-reuse", "wizard-me", state, deps)
+	if err := e.ensureAttemptBead(); err != nil {
+		t.Fatalf("ensureAttemptBead: %v", err)
+	}
+	if e.state.AttemptBeadID != "spi-reuse.attempt-claim" {
+		t.Errorf("AttemptBeadID = %q, want spi-reuse.attempt-claim", e.state.AttemptBeadID)
+	}
+}
+
 // TestEnsureAttemptBead_ResumesExisting verifies resuming an existing attempt.
 func TestEnsureAttemptBead_ResumesExisting(t *testing.T) {
 	dir := t.TempDir()

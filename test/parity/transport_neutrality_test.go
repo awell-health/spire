@@ -43,6 +43,7 @@ package parity
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"testing"
@@ -172,7 +173,7 @@ type fixtureClaimer struct {
 	pos int
 }
 
-func (c *fixtureClaimer) ClaimNext(ctx context.Context, sel dispatch.ReadyWorkSelector) (*dispatch.AttemptHandle, error) {
+func (c *fixtureClaimer) ClaimNext(ctx context.Context, sel dispatch.ReadyWorkSelector) (*dispatch.ClaimHandle, error) {
 	ids, err := sel.SelectReady(ctx)
 	if err != nil {
 		return nil, err
@@ -180,12 +181,11 @@ func (c *fixtureClaimer) ClaimNext(ctx context.Context, sel dispatch.ReadyWorkSe
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	parentID := ids[0]
-	attemptID, ok := c.fx.attemptIDs[parentID]
-	if !ok {
+	taskID := ids[0]
+	if _, ok := c.fx.attemptIDs[taskID]; !ok {
 		return nil, nil
 	}
-	return &dispatch.AttemptHandle{AttemptID: attemptID}, nil
+	return &dispatch.ClaimHandle{TaskID: taskID, DispatchSeq: 1}, nil
 }
 
 // recordingPublisher accumulates every published WorkloadIntent in
@@ -234,9 +234,10 @@ func runClusterNativeCycle(ctx context.Context, t *testing.T, fx *storeFixture) 
 			t.Fatalf("resolver.Resolve(%q): %v", parent, err)
 		}
 
-		build := func(h *dispatch.AttemptHandle) intent.WorkloadIntent {
+		build := func(h *dispatch.ClaimHandle) intent.WorkloadIntent {
 			return intent.WorkloadIntent{
-				AttemptID: h.AttemptID,
+				TaskID:      h.TaskID,
+				DispatchSeq: h.DispatchSeq,
 				RepoIdentity: intent.RepoIdentity{
 					URL:        ident.URL,
 					BaseBranch: ident.BaseBranch,
@@ -262,7 +263,7 @@ type neutralityEmitter struct {
 	publisher intent.IntentPublisher
 }
 
-func (e *neutralityEmitter) Emit(ctx context.Context, h *dispatch.AttemptHandle, i intent.WorkloadIntent) error {
+func (e *neutralityEmitter) Emit(ctx context.Context, h *dispatch.ClaimHandle, i intent.WorkloadIntent) error {
 	if err := dispatch.ValidateHandle(h, i); err != nil {
 		return err
 	}
@@ -310,27 +311,24 @@ func TestTransportNeutrality_WorkloadIntentsAreByteIdentical(t *testing.T) {
 		}
 	}
 
-	// Explicit AttemptID and RepoIdentity assertions so a failure
-	// points at which field drifted. Using reflect.DeepEqual on the
-	// full slice makes the same claim but in one check.
+	// Explicit TaskID and RepoIdentity assertions so a failure points at
+	// which field drifted. Using reflect.DeepEqual on the full slice
+	// makes the same claim but in one check.
 	if !reflect.DeepEqual(with.intents, without.intents) {
 		t.Errorf("intent sequences differ under reflect.DeepEqual:\n  with    = %+v\n  without = %+v",
 			with.intents, without.intents)
 	}
 
-	// Sanity: the produced AttemptIDs match the fixture's canonical map
-	// in the fixture's declared order. This catches regressions where
-	// the scheduling loop accidentally reorders claims.
-	gotAttempts := make([]string, len(with.intents))
+	// Sanity: the produced TaskIDs match the fixture's declared order.
+	// This catches regressions where the scheduling loop accidentally
+	// reorders claims.
+	gotTasks := make([]string, len(with.intents))
 	for i, wi := range with.intents {
-		gotAttempts[i] = wi.AttemptID
+		gotTasks[i] = wi.TaskID
 	}
-	wantAttempts := make([]string, len(fxA.readyBeads))
-	for i, parent := range fxA.readyBeads {
-		wantAttempts[i] = fxA.attemptIDs[parent]
-	}
-	if !reflect.DeepEqual(gotAttempts, wantAttempts) {
-		t.Errorf("AttemptID order = %v, want %v", gotAttempts, wantAttempts)
+	wantTasks := append([]string{}, fxA.readyBeads...)
+	if !reflect.DeepEqual(gotTasks, wantTasks) {
+		t.Errorf("TaskID order = %v, want %v", gotTasks, wantTasks)
 	}
 }
 
@@ -392,16 +390,16 @@ func operatorReconcileIntent(ctx context.Context, t *testing.T, fx *storeFixture
 	if err != nil {
 		t.Fatalf("resolve canonical identity for %q: %v", wi.RepoIdentity.Prefix, err)
 	}
+	name := fmt.Sprintf("apprentice-%s-%d", sanitizeK8sSubdomain(wi.TaskID), wi.DispatchSeq)
 	return agent.PodSpec{
-		Name:         "apprentice-" + sanitizeK8sSubdomain(wi.AttemptID),
-		Namespace:    "spire",
-		Image:        fx.image,
-		AgentName:    "apprentice-" + sanitizeK8sSubdomain(wi.AttemptID),
-		BeadID:       wi.AttemptID,
-		AttemptID:    wi.AttemptID,
-		FormulaStep:  wi.FormulaPhase,
-		HandoffMode:  runtime.HandoffMode(wi.HandoffMode),
-		Backend:      "operator-k8s",
+		Name:        name,
+		Namespace:   "spire",
+		Image:       fx.image,
+		AgentName:   name,
+		BeadID:      wi.TaskID,
+		FormulaStep: wi.FormulaPhase,
+		HandoffMode: runtime.HandoffMode(wi.HandoffMode),
+		Backend:     "operator-k8s",
 		Identity: runtime.RepoIdentity{
 			TowerName:  fx.tower,
 			Prefix:     canonical.Prefix,

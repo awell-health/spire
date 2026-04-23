@@ -6,7 +6,7 @@ package dispatch
 // rests on, independent of the rest of the contract exercised in
 // dispatch_test.go:
 //
-//   1. Idempotency under repeated cycles. Given a single ready attempt,
+//   1. Idempotency under repeated cycles. Given a single ready task,
 //      N repeated ClaimThenEmit cycles emit exactly one WorkloadIntent.
 //      Running the loop ten times is deliberate — it is enough to rule
 //      out "every Nth cycle" behavior (a counter-gated suppressor) and
@@ -14,16 +14,16 @@ package dispatch
 //      produce ten emits.
 //
 //   2. Emit-side proof-of-claim. A DispatchEmitter.Emit call whose
-//      WorkloadIntent.AttemptID does not match the handle's AttemptID
-//      must return ErrNoClaimedAttempt. This is the final guard against
-//      a caller reusing a handle from one claim and building an intent
-//      for a different attempt.
+//      WorkloadIntent (TaskID, DispatchSeq) does not match the handle's
+//      values must return ErrNoClaimedAttempt. This is the final guard
+//      against a caller reusing a handle from one claim and building an
+//      intent for a different slot.
 //
 // Both properties are part of the cluster-native seam contract and are
-// load-bearing for multi-replica safety; the store's atomic attempt
-// row is the only ownership mechanism. If either property regresses,
-// the scheduler could emit duplicate intents or leak unclaimed
-// intents past the guard.
+// load-bearing for multi-replica safety; the workload_intents
+// (task_id, dispatch_seq) PK is the only ownership mechanism. If either
+// property regresses, the scheduler could emit duplicate intents or
+// leak unclaimed intents past the guard.
 
 import (
 	"context"
@@ -34,67 +34,49 @@ import (
 	"github.com/awell-health/spire/pkg/steward/intent"
 )
 
-// boundaryAttemptStore is a single-ready-attempt fake backed by a flag
-// recording whether the one attempt has been opened. It deliberately
-// does NOT share state with dispatch_test.go's fakeAttemptStore — this
-// test owns its own minimal fixture to make the boundary explicit.
+// boundaryDispatchStore is a single-ready-task fake backed by a flag
+// recording whether the task has been dispatched. It deliberately does
+// NOT share state with dispatch_test.go's fakeDispatchStore — this test
+// owns its own minimal fixture to make the boundary explicit.
 //
-// Semantics match the production store: once the attempt is opened,
-// SelectReady returns an empty slice (the scheduler's view of the work
-// drops the bead on subsequent cycles), and openAttempt refuses to
-// re-open.
-type boundaryAttemptStore struct {
-	beadID    string
-	opened    bool
-	serial    int
-	serialID  string
+// Semantics match production: once a task is dispatched, subsequent
+// SelectReady calls drop it until the wizard's attempt closes.
+type boundaryDispatchStore struct {
+	taskID     string
+	dispatched bool
 }
 
-func newBoundaryAttemptStore(beadID string) *boundaryAttemptStore {
-	return &boundaryAttemptStore{beadID: beadID}
+func newBoundaryDispatchStore(taskID string) *boundaryDispatchStore {
+	return &boundaryDispatchStore{taskID: taskID}
 }
 
-// SelectReady returns the single bead ID only while no attempt is open,
-// matching store.GetSchedulableWork's filter behavior.
-func (s *boundaryAttemptStore) SelectReady(_ context.Context) ([]string, error) {
-	if s.opened {
+// SelectReady returns the single task ID only while no dispatch has
+// occurred, matching store.GetSchedulableWork's filter behavior.
+func (s *boundaryDispatchStore) SelectReady(_ context.Context) ([]string, error) {
+	if s.dispatched {
 		return nil, nil
 	}
-	return []string{s.beadID}, nil
+	return []string{s.taskID}, nil
 }
 
-// openAttempt is the atomic-claim stand-in. Returns the new attempt ID
-// and true on the first call, ("", false) thereafter.
-func (s *boundaryAttemptStore) openAttempt() (string, bool) {
-	if s.opened {
-		return "", false
+// markDispatched is the atomic-claim stand-in. Returns the dispatch_seq
+// and true on the first call, (0, false) thereafter.
+func (s *boundaryDispatchStore) markDispatched() (int, bool) {
+	if s.dispatched {
+		return 0, false
 	}
-	s.serial++
-	s.opened = true
-	s.serialID = s.beadID + "/attempt-" + decString(s.serial)
-	return s.serialID, true
-}
-
-func decString(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
+	s.dispatched = true
+	return 1, true
 }
 
 // boundaryClaimer is the minimal AttemptClaimer wired on top of
-// boundaryAttemptStore. It defers uniqueness to the store — no mutex,
+// boundaryDispatchStore. It defers uniqueness to the store — no mutex,
 // no busy map — mirroring the production StoreClaimer's contract.
 type boundaryClaimer struct {
-	store *boundaryAttemptStore
+	store *boundaryDispatchStore
 }
 
-func (c *boundaryClaimer) ClaimNext(ctx context.Context, selector ReadyWorkSelector) (*AttemptHandle, error) {
+func (c *boundaryClaimer) ClaimNext(ctx context.Context, selector ReadyWorkSelector) (*ClaimHandle, error) {
 	ids, err := selector.SelectReady(ctx)
 	if err != nil {
 		return nil, err
@@ -102,11 +84,11 @@ func (c *boundaryClaimer) ClaimNext(ctx context.Context, selector ReadyWorkSelec
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	attemptID, ok := c.store.openAttempt()
+	seq, ok := c.store.markDispatched()
 	if !ok {
 		return nil, nil
 	}
-	return &AttemptHandle{AttemptID: attemptID, ClaimedAt: time.Now().UTC()}, nil
+	return &ClaimHandle{TaskID: ids[0], DispatchSeq: seq, ClaimedAt: time.Now().UTC()}, nil
 }
 
 // boundaryEmitter records every Emit call that passes ValidateHandle.
@@ -117,7 +99,7 @@ type boundaryEmitter struct {
 	calls []intent.WorkloadIntent
 }
 
-func (e *boundaryEmitter) Emit(_ context.Context, h *AttemptHandle, i intent.WorkloadIntent) error {
+func (e *boundaryEmitter) Emit(_ context.Context, h *ClaimHandle, i intent.WorkloadIntent) error {
 	if err := ValidateHandle(h, i); err != nil {
 		return err
 	}
@@ -125,12 +107,13 @@ func (e *boundaryEmitter) Emit(_ context.Context, h *AttemptHandle, i intent.Wor
 	return nil
 }
 
-// buildBoundaryIntent stamps the handle's AttemptID onto a pre-built
-// intent template, mirroring what cluster_dispatch.buildClusterIntent
-// does in production.
-func buildBoundaryIntent(h *AttemptHandle) intent.WorkloadIntent {
+// buildBoundaryIntent stamps the handle's (TaskID, DispatchSeq) onto a
+// pre-built intent template, mirroring what cluster_dispatch's
+// buildClusterIntent does in production.
+func buildBoundaryIntent(h *ClaimHandle) intent.WorkloadIntent {
 	return intent.WorkloadIntent{
-		AttemptID:    h.AttemptID,
+		TaskID:       h.TaskID,
+		DispatchSeq:  h.DispatchSeq,
 		FormulaPhase: "implement",
 		RepoIdentity: intent.RepoIdentity{
 			URL:        "https://example.test/repo.git",
@@ -143,17 +126,12 @@ func buildBoundaryIntent(h *AttemptHandle) intent.WorkloadIntent {
 
 // TestBoundary_ClaimThenEmit_TenCyclesEmitExactlyOnce pins the
 // idempotency property: ten ClaimThenEmit cycles over a single ready
-// attempt produce exactly one Emit invocation total. The first cycle
+// task produce exactly one Emit invocation total. The first cycle
 // claims + emits; cycles 2..10 see SelectReady return empty (because
-// the attempt is now open) and short-circuit without emitting.
-//
-// Ten iterations is deliberate. Five (as in TestClaimThenEmit_SingleReadyBeadEmitsExactlyOnce)
-// proves the property; ten is chosen because the task spec calls for
-// N=10 as a stronger signal against subtler regressions (e.g. "every
-// 7th cycle the guard is bypassed").
+// the dispatch marker is set) and short-circuit without emitting.
 func TestBoundary_ClaimThenEmit_TenCyclesEmitExactlyOnce(t *testing.T) {
 	ctx := context.Background()
-	st := newBoundaryAttemptStore("spi-boundary")
+	st := newBoundaryDispatchStore("spi-boundary")
 	claimer := &boundaryClaimer{store: st}
 	emitter := &boundaryEmitter{}
 
@@ -167,38 +145,37 @@ func TestBoundary_ClaimThenEmit_TenCyclesEmitExactlyOnce(t *testing.T) {
 	if got := len(emitter.calls); got != 1 {
 		t.Fatalf("after %d cycles: emitter.calls = %d, want 1", N, got)
 	}
-	if !st.opened {
-		t.Fatalf("after %d cycles: expected boundary store attempt still open, got opened=%v", N, st.opened)
+	if !st.dispatched {
+		t.Fatalf("after %d cycles: expected boundary store dispatched flag set", N)
 	}
-	if emitter.calls[0].AttemptID != st.serialID {
-		t.Fatalf("emitted AttemptID = %q, want %q (the single claimed attempt)",
-			emitter.calls[0].AttemptID, st.serialID)
+	if emitter.calls[0].TaskID != st.taskID {
+		t.Fatalf("emitted TaskID = %q, want %q (the single claimed task)",
+			emitter.calls[0].TaskID, st.taskID)
+	}
+	if emitter.calls[0].DispatchSeq != 1 {
+		t.Fatalf("emitted DispatchSeq = %d, want 1", emitter.calls[0].DispatchSeq)
 	}
 }
 
-// TestBoundary_Emit_MismatchedAttemptID pins the proof-of-claim guard:
-// an emitter that receives a handle whose AttemptID does not match the
-// intent's AttemptID must return ErrNoClaimedAttempt and record no
-// call. This is the final barrier against a caller leaking an intent
-// that was never claimed with the handle it was emitted under.
-//
-// The test calls boundaryEmitter.Emit directly — independent of
-// ClaimThenEmit — so the property is pinned on the Emit side even if a
-// regression hides the violation inside the orchestration helper.
-func TestBoundary_Emit_MismatchedAttemptID(t *testing.T) {
+// TestBoundary_Emit_MismatchedTaskID pins the proof-of-claim guard:
+// an emitter that receives a handle whose TaskID does not match the
+// intent's TaskID must return ErrNoClaimedAttempt.
+func TestBoundary_Emit_MismatchedTaskID(t *testing.T) {
 	emitter := &boundaryEmitter{}
-	handle := &AttemptHandle{
-		AttemptID: "spi-alpha/attempt-1",
-		ClaimedAt: time.Now().UTC(),
+	handle := &ClaimHandle{
+		TaskID:      "spi-alpha",
+		DispatchSeq: 1,
+		ClaimedAt:   time.Now().UTC(),
 	}
 	mismatched := intent.WorkloadIntent{
-		AttemptID: "spi-alpha/attempt-7", // not the handle's AttemptID
+		TaskID:       "spi-beta", // not the handle's TaskID
+		DispatchSeq:  1,
 		FormulaPhase: "implement",
 	}
 
 	err := emitter.Emit(context.Background(), handle, mismatched)
 	if !errors.Is(err, ErrNoClaimedAttempt) {
-		t.Fatalf("Emit(mismatched AttemptID) = %v, want ErrNoClaimedAttempt", err)
+		t.Fatalf("Emit(mismatched TaskID) = %v, want ErrNoClaimedAttempt", err)
 	}
 	if len(emitter.calls) != 0 {
 		t.Fatalf("emitter recorded %d calls on mismatch rejection, want 0", len(emitter.calls))
@@ -207,13 +184,11 @@ func TestBoundary_Emit_MismatchedAttemptID(t *testing.T) {
 
 // TestBoundary_Emit_NilHandle adds the companion guard test for the nil
 // handle path — Emit called with (nil handle, anything) must return
-// ErrNoClaimedAttempt. The property is already pinned at the
-// ValidateHandle layer; this test locks it in at the Emit layer too,
-// the level callers actually invoke in production.
+// ErrNoClaimedAttempt.
 func TestBoundary_Emit_NilHandle(t *testing.T) {
 	emitter := &boundaryEmitter{}
 
-	err := emitter.Emit(context.Background(), nil, intent.WorkloadIntent{AttemptID: "spi-whatever"})
+	err := emitter.Emit(context.Background(), nil, intent.WorkloadIntent{TaskID: "spi-whatever", DispatchSeq: 1})
 	if !errors.Is(err, ErrNoClaimedAttempt) {
 		t.Fatalf("Emit(nil handle) = %v, want ErrNoClaimedAttempt", err)
 	}
@@ -222,18 +197,16 @@ func TestBoundary_Emit_NilHandle(t *testing.T) {
 	}
 }
 
-// TestBoundary_ClaimThenEmit_TenCyclesAttemptIDStableAcrossSkips pins a
+// TestBoundary_ClaimThenEmit_TenCyclesIdentityStableAcrossSkips pins a
 // subtler property that sits adjacent to the main idempotency
-// invariant: the AttemptID on the single emit must equal the attempt
-// the claimer actually opened. A regression that claimed one attempt
-// and emitted under a different one would fail the proof-of-claim
-// guard, but a regression that silently chose a synthetic AttemptID
-// would pass the emit step yet detach the emitted intent from the
-// ownership row. Asserting the stored serial ID matches the emitted
-// AttemptID closes that gap.
-func TestBoundary_ClaimThenEmit_TenCyclesAttemptIDStableAcrossSkips(t *testing.T) {
+// invariant: the emit's (TaskID, DispatchSeq) must equal what the
+// claimer actually produced. A regression that claimed one slot and
+// emitted under a different one would fail ValidateHandle, but a
+// regression that silently chose synthetic identifiers would pass emit
+// yet detach the emitted intent from its claim row.
+func TestBoundary_ClaimThenEmit_TenCyclesIdentityStableAcrossSkips(t *testing.T) {
 	ctx := context.Background()
-	st := newBoundaryAttemptStore("spi-stable")
+	st := newBoundaryDispatchStore("spi-stable")
 	claimer := &boundaryClaimer{store: st}
 	emitter := &boundaryEmitter{}
 
@@ -246,19 +219,17 @@ func TestBoundary_ClaimThenEmit_TenCyclesAttemptIDStableAcrossSkips(t *testing.T
 	if len(emitter.calls) != 1 {
 		t.Fatalf("emitter.calls = %d, want 1", len(emitter.calls))
 	}
-	if emitter.calls[0].AttemptID != st.serialID {
-		t.Fatalf("emit AttemptID = %q, want %q (must match the claim's serial ID)",
-			emitter.calls[0].AttemptID, st.serialID)
+	if emitter.calls[0].TaskID != st.taskID {
+		t.Fatalf("emit TaskID = %q, want %q", emitter.calls[0].TaskID, st.taskID)
 	}
-	if st.serial != 1 {
-		t.Fatalf("store serial = %d, want 1 (only one open attempt across %d cycles)",
-			st.serial, 10)
+	if emitter.calls[0].DispatchSeq != 1 {
+		t.Fatalf("emit DispatchSeq = %d, want 1 (only one dispatch across 10 cycles)", emitter.calls[0].DispatchSeq)
 	}
 }
 
 // Compile-time conformance for the fakes.
 var (
-	_ ReadyWorkSelector = (*boundaryAttemptStore)(nil)
+	_ ReadyWorkSelector = (*boundaryDispatchStore)(nil)
 	_ AttemptClaimer    = (*boundaryClaimer)(nil)
 	_ DispatchEmitter   = (*boundaryEmitter)(nil)
 )

@@ -23,6 +23,7 @@ package steward
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -76,7 +77,7 @@ func (panicResolver) Resolve(_ context.Context, _ string) (identity.ClusterRepoI
 // panicResolver — only the cluster-native path may claim.
 type panicClaimer struct{}
 
-func (panicClaimer) ClaimNext(_ context.Context, _ dispatch.ReadyWorkSelector) (*dispatch.AttemptHandle, error) {
+func (panicClaimer) ClaimNext(_ context.Context, _ dispatch.ReadyWorkSelector) (*dispatch.ClaimHandle, error) {
 	panic("mode routing: this branch must not consult dispatch.AttemptClaimer")
 }
 
@@ -116,23 +117,27 @@ func (r staticResolver) Resolve(_ context.Context, _ string) (identity.ClusterRe
 	return r.ident, nil
 }
 
-// countingClaimer returns a fresh AttemptHandle for each selected
-// candidate, numbering attempts so the Publisher sees distinct AttemptIDs
-// per bead.
+// countingClaimer returns a fresh ClaimHandle for each selected
+// candidate, numbering dispatch slots so the Publisher sees distinct
+// (TaskID, DispatchSeq) rows per bead.
 type countingClaimer struct {
-	serial int
+	perTask map[string]int
 }
 
-func (c *countingClaimer) ClaimNext(ctx context.Context, selector dispatch.ReadyWorkSelector) (*dispatch.AttemptHandle, error) {
+func (c *countingClaimer) ClaimNext(ctx context.Context, selector dispatch.ReadyWorkSelector) (*dispatch.ClaimHandle, error) {
 	ids, err := selector.SelectReady(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, id := range ids {
-		c.serial++
-		return &dispatch.AttemptHandle{
-			AttemptID: id + "/attempt-" + serialString(c.serial),
-			ClaimedAt: time.Now().UTC(),
+		if c.perTask == nil {
+			c.perTask = make(map[string]int)
+		}
+		c.perTask[id]++
+		return &dispatch.ClaimHandle{
+			TaskID:      id,
+			DispatchSeq: c.perTask[id],
+			ClaimedAt:   time.Now().UTC(),
 		}, nil
 	}
 	return nil, nil
@@ -358,8 +363,11 @@ func TestTowerCycle_ClusterNative_EmitsIntentAndSkipsSpawn(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, c := range pub.calls {
-		if c.AttemptID == "" {
-			t.Errorf("cluster-native: emitted intent has empty AttemptID: %+v", c)
+		if c.TaskID == "" {
+			t.Errorf("cluster-native: emitted intent has empty TaskID: %+v", c)
+		}
+		if c.DispatchSeq < 1 {
+			t.Errorf("cluster-native: emitted intent has invalid DispatchSeq=%d: %+v", c.DispatchSeq, c)
 		}
 		if c.RepoIdentity.URL != "https://example.test/spire.git" {
 			t.Errorf("cluster-native: intent URL = %q, want canonical registry URL", c.RepoIdentity.URL)
@@ -367,10 +375,11 @@ func TestTowerCycle_ClusterNative_EmitsIntentAndSkipsSpawn(t *testing.T) {
 		if c.RepoIdentity.Prefix != "spi" {
 			t.Errorf("cluster-native: intent Prefix = %q, want %q", c.RepoIdentity.Prefix, "spi")
 		}
-		if seen[c.AttemptID] {
-			t.Errorf("cluster-native: duplicate AttemptID %q across emits", c.AttemptID)
+		key := fmt.Sprintf("%s#%d", c.TaskID, c.DispatchSeq)
+		if seen[key] {
+			t.Errorf("cluster-native: duplicate (TaskID, DispatchSeq) %q across emits", key)
 		}
-		seen[c.AttemptID] = true
+		seen[key] = true
 	}
 }
 
@@ -469,8 +478,11 @@ func TestTowerCycle_ClusterNative_InvokesBuildClusterDispatch(t *testing.T) {
 	if got := len(pub.calls); got != 1 {
 		t.Fatalf("publisher calls = %d, want 1", got)
 	}
-	if pub.calls[0].AttemptID == "" {
-		t.Errorf("emitted intent has empty AttemptID")
+	if pub.calls[0].TaskID == "" {
+		t.Errorf("emitted intent has empty TaskID")
+	}
+	if pub.calls[0].DispatchSeq < 1 {
+		t.Errorf("emitted intent has invalid DispatchSeq=%d", pub.calls[0].DispatchSeq)
 	}
 	if pub.calls[0].RepoIdentity.URL != "https://example.test/factory.git" {
 		t.Errorf("intent URL = %q, want factory.git URL", pub.calls[0].RepoIdentity.URL)

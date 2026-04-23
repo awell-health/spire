@@ -33,7 +33,8 @@ func TestAttachedDispatch_ReturnsNotImplemented(t *testing.T) {
 		{
 			name: "populated implement phase",
 			in: intent.WorkloadIntent{
-				AttemptID: "spi-4tfdo",
+				TaskID:      "spi-4tfdo",
+				DispatchSeq: 1,
 				RepoIdentity: intent.RepoIdentity{
 					URL:        "https://example.com/repo.git",
 					BaseBranch: "main",
@@ -52,7 +53,8 @@ func TestAttachedDispatch_ReturnsNotImplemented(t *testing.T) {
 		{
 			name: "populated review phase",
 			in: intent.WorkloadIntent{
-				AttemptID: "spi-other",
+				TaskID:       "spi-other",
+				DispatchSeq:  2,
 				RepoIdentity: intent.RepoIdentity{
 					URL:        "https://example.com/other.git",
 					BaseBranch: "trunk",

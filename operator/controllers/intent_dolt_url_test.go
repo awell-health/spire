@@ -37,11 +37,13 @@ func TestIntentReconciler_DoltURLStampedOnAllPhases(t *testing.T) {
 		wantPort = "3306"
 	)
 
+	const dispatchSeq = 1
+
 	cases := []struct {
-		name      string
-		phase     string
-		attemptID string
-		podName   func(string) string
+		name    string
+		phase   string
+		taskID  string
+		podName func(string, int) string
 	}{
 		{"bead-level wizard", intent.PhaseWizard, "smk-w0", wizardPodName},
 		{"step-level implement", intent.PhaseImplement, "smk-i0", apprenticePodName},
@@ -74,7 +76,8 @@ func TestIntentReconciler_DoltURLStampedOnAllPhases(t *testing.T) {
 			go func() { defer close(done); _ = r.Start(ctx) }()
 
 			ch <- intent.WorkloadIntent{
-				AttemptID: tc.attemptID,
+				TaskID:      tc.taskID,
+				DispatchSeq: dispatchSeq,
 				RepoIdentity: intent.RepoIdentity{
 					URL: repoURL, BaseBranch: branch, Prefix: prefix,
 				},
@@ -82,7 +85,7 @@ func TestIntentReconciler_DoltURLStampedOnAllPhases(t *testing.T) {
 				HandoffMode:  "bundle",
 			}
 
-			pod := waitForPod(t, c, ns, tc.podName(tc.attemptID), 3*time.Second)
+			pod := waitForPod(t, c, ns, tc.podName(tc.taskID, dispatchSeq), 3*time.Second)
 			cancel()
 			<-done
 
@@ -144,7 +147,8 @@ func TestIntentReconciler_EmptyDoltURLOmitsEnv(t *testing.T) {
 	go func() { defer close(done); _ = r.Start(ctx) }()
 
 	ch <- intent.WorkloadIntent{
-		AttemptID: "spi-x0",
+		TaskID:      "spi-x0",
+		DispatchSeq: 1,
 		RepoIdentity: intent.RepoIdentity{
 			URL: repoURL, BaseBranch: branch, Prefix: prefix,
 		},
@@ -152,7 +156,7 @@ func TestIntentReconciler_EmptyDoltURLOmitsEnv(t *testing.T) {
 		HandoffMode:  "bundle",
 	}
 
-	pod := waitForPod(t, c, ns, wizardPodName("spi-x0"), 3*time.Second)
+	pod := waitForPod(t, c, ns, wizardPodName("spi-x0", 1), 3*time.Second)
 	cancel()
 	<-done
 

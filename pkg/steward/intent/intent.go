@@ -106,20 +106,29 @@ type Resources struct {
 }
 
 // WorkloadIntent is the dispatch-time request the scheduler writes and the
-// reconciler consumes. It describes what work to run for one attempt bead,
+// reconciler consumes. It describes what work to run for one task,
 // never how to run it locally.
 //
-// AttemptID is the bead ID of the attempt bead that owns this work and is
-// the canonical ownership seam. The struct is value-typed and its fields
-// are comparable — equality under == is meaningful and is exercised by
-// tests to guard the shape.
+// TaskID is the bead ID of the task (or bug/feature/chore/epic) being
+// dispatched — the authoritative work identity. DispatchSeq distinguishes
+// multiple dispatches of the same task (retries) and together with TaskID
+// forms the canonical ownership seam for the dispatch row.
+//
+// Attempt-bead lifecycle is entirely wizard-owned: the wizard sees
+// SPIRE_BEAD_ID=<task_id> on startup and creates (or resumes) its own
+// attempt bead. No attempt ID crosses this seam.
+//
+// The struct is value-typed and its fields are comparable — equality
+// under == is meaningful and is exercised by tests to guard the shape.
 //
 // New fields that describe machine-local workspace state (local paths,
 // local bindings, local workspace roots, or anything derived from
 // pkg/config.LocalBindings) must NOT be added here; a reflection-based
 // test in intent_test.go enforces that.
 type WorkloadIntent struct {
-	AttemptID    string
+	TaskID       string
+	DispatchSeq  int
+	Reason       string
 	RepoIdentity RepoIdentity
 	FormulaPhase string
 	Resources    Resources
@@ -127,11 +136,11 @@ type WorkloadIntent struct {
 }
 
 // AssignmentIntent carries upstream policy decisions that come before a
-// WorkloadIntent is emitted — typically "which guild should this attempt
+// WorkloadIntent is emitted — typically "which guild should this task
 // go to" and "what capabilities the guild must have". The scheduler
 // materializes a WorkloadIntent once an AssignmentIntent is accepted.
 type AssignmentIntent struct {
-	AttemptID    string
+	TaskID       string
 	TargetGuild  string
 	Capabilities []string
 }

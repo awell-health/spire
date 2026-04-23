@@ -2,17 +2,21 @@
 // cluster-native scheduling may hand work to a reconciler.
 //
 // The rule the package encodes is simple: nothing downstream of the
-// scheduler sees a WorkloadIntent unless an attempt bead has already been
-// atomically claimed. The AttemptHandle returned by a successful claim is
-// the proof-of-claim token; DispatchEmitter.Emit refuses to run without a
-// matching handle.
+// scheduler sees a WorkloadIntent unless a dispatch slot has been
+// atomically reserved for (task_id, dispatch_seq). The ClaimHandle
+// returned by a successful claim is the proof-of-claim token;
+// DispatchEmitter.Emit refuses to run without a matching handle.
 //
-// The canonical ownership seam is the attempt bead — a row in the shared
-// store whose atomic creation (via pkg/store) is what prevents two agents
-// from dispatching the same work. Uniqueness is not enforced by any
-// in-memory map, mutex, or sync.Map in this package; doing so would add a
-// second, machine-local source of truth that is silently incorrect under
-// multi-replica control planes.
+// The canonical ownership seam is the task — identified by its bead ID.
+// Attempt beads are NOT created here; they are the wizard's concern
+// once the dispatched workload pod starts. The claim step verifies that
+// no active attempt exists for the task (preventing redispatch while a
+// wizard is alive) and computes the next monotonically-increasing
+// dispatch_seq for this task. Multiple replicas calling ClaimNext
+// concurrently on the same task both compute the same dispatch_seq;
+// the first one to INSERT into workload_intents wins (PK collision),
+// and the loser's Publish returns a duplicate-key error that callers
+// log and skip.
 package dispatch
 
 import (
@@ -27,23 +31,29 @@ import (
 )
 
 // ErrNoClaimedAttempt is returned by DispatchEmitter.Emit when the caller
-// hands it a nil handle or an intent whose AttemptID does not match the
-// handle's AttemptID. It exists so emit sites cannot bypass the claim
-// step: an emitter with no proof-of-claim must refuse to publish work.
-var ErrNoClaimedAttempt = errors.New("dispatch: emit requires a matching claimed attempt handle")
-
-// AttemptHandle is the proof-of-claim token a caller receives after an
-// AttemptClaimer successfully claims an attempt bead. It carries the
-// attempt bead's ID — the canonical ownership identifier — and the
-// monotonic UTC time the claim was recorded. Callers MUST thread
-// AttemptID into the WorkloadIntent they emit; DispatchEmitter.Emit
-// cross-checks the two.
+// hands it a nil handle or an intent whose (TaskID, DispatchSeq) does not
+// match the handle. It exists so emit sites cannot bypass the claim step:
+// an emitter with no proof-of-claim must refuse to publish work.
 //
-// A nil *AttemptHandle means "nothing claimed" and is the value callers
+// The name retains "Attempt" for historical continuity with callers that
+// errors.Is against it; semantically the guard now covers task-keyed
+// dispatch claims.
+var ErrNoClaimedAttempt = errors.New("dispatch: emit requires a matching claimed dispatch handle")
+
+// ClaimHandle is the proof-of-claim token a caller receives after an
+// AttemptClaimer successfully claims a dispatch slot for a task. It
+// carries the task's bead ID, the monotonic dispatch sequence number
+// (1 on first dispatch; bumped on retry), and the UTC time the claim
+// was recorded. Callers MUST thread (TaskID, DispatchSeq) into the
+// WorkloadIntent they emit; DispatchEmitter.Emit cross-checks them.
+//
+// A nil *ClaimHandle means "nothing claimed" and is the value callers
 // get back when no ready work was available.
-type AttemptHandle struct {
-	AttemptID string
-	ClaimedAt time.Time
+type ClaimHandle struct {
+	TaskID      string
+	DispatchSeq int
+	Reason      string
+	ClaimedAt   time.Time
 }
 
 // ReadyWorkSelector presents candidate parent bead IDs to an
@@ -60,45 +70,49 @@ type ReadyWorkSelector interface {
 }
 
 // AttemptClaimer is the claim half of the dispatch seam. ClaimNext walks
-// candidates from the selector and atomically claims the first one that
-// is still free. Returning (nil, nil) means nothing ready was claimable —
-// either the selector yielded no candidates, or every candidate was won
-// by another agent between selection and the atomic claim.
+// candidates from the selector and reserves a dispatch slot for the
+// first one that has no active attempt. Returning (nil, nil) means
+// nothing ready was claimable — either the selector yielded no
+// candidates, or every candidate already has a wizard working it.
 //
-// Implementations MUST use a shared-store atomic claim (pkg/store) as the
-// uniqueness mechanism. They MUST NOT use a package-level sync.Map, a
-// process mutex, or any other machine-local structure to decide who owns
-// a bead.
+// Implementations MUST derive uniqueness from the shared store: the
+// (task_id, dispatch_seq) PK on workload_intents is the tiebreaker
+// under multi-replica control planes. They MUST NOT use a package-level
+// sync.Map, a process mutex, or any other machine-local structure to
+// decide who owns a task.
 type AttemptClaimer interface {
-	ClaimNext(ctx context.Context, selector ReadyWorkSelector) (*AttemptHandle, error)
+	ClaimNext(ctx context.Context, selector ReadyWorkSelector) (*ClaimHandle, error)
 }
 
 // DispatchEmitter is the emit half of the dispatch seam. Implementations
 // MUST call ValidateHandle as the first step of Emit so that:
 //
 //   - a nil handle returns ErrNoClaimedAttempt, and
-//   - an intent whose AttemptID does not match the handle's AttemptID
-//     returns ErrNoClaimedAttempt.
+//   - an intent whose (TaskID, DispatchSeq) does not match the handle's
+//     values returns ErrNoClaimedAttempt.
 //
 // The contract guarantees that every emitted WorkloadIntent is backed by
-// a currently-claimed attempt bead with the same AttemptID.
+// a currently-claimed dispatch slot identified by (TaskID, DispatchSeq).
 type DispatchEmitter interface {
-	Emit(ctx context.Context, handle *AttemptHandle, intent intent.WorkloadIntent) error
+	Emit(ctx context.Context, handle *ClaimHandle, intent intent.WorkloadIntent) error
 }
 
 // ValidateHandle is the guard every DispatchEmitter.Emit implementation
 // MUST call before doing any work. It returns ErrNoClaimedAttempt when
-// the handle is nil or when the handle's AttemptID does not match the
-// WorkloadIntent's AttemptID.
+// the handle is nil or when the handle's (TaskID, DispatchSeq) does not
+// match the WorkloadIntent's values.
 //
 // Exposing the check as a helper means the invariant lives in one place
 // and every emitter — production transports and test fakes alike —
 // exercises the same validation.
-func ValidateHandle(handle *AttemptHandle, i intent.WorkloadIntent) error {
+func ValidateHandle(handle *ClaimHandle, i intent.WorkloadIntent) error {
 	if handle == nil {
 		return ErrNoClaimedAttempt
 	}
-	if i.AttemptID != handle.AttemptID {
+	if i.TaskID != handle.TaskID {
+		return ErrNoClaimedAttempt
+	}
+	if i.DispatchSeq != handle.DispatchSeq {
 		return ErrNoClaimedAttempt
 	}
 	return nil
@@ -107,12 +121,12 @@ func ValidateHandle(handle *AttemptHandle, i intent.WorkloadIntent) error {
 // ClaimThenEmit is the only allowed dispatch path. It claims first; if
 // nothing is ready it returns early without emitting; otherwise it builds
 // the WorkloadIntent from the claimed handle and emits it. The handle's
-// AttemptID threads into the intent via buildIntent so the emitter's
-// ValidateHandle check passes.
+// (TaskID, DispatchSeq) threads into the intent via buildIntent so the
+// emitter's ValidateHandle check passes.
 //
 // Callers that want to dispatch work wire a claimer, an emitter, a
 // selector, and a buildIntent closure that maps the handle to a
-// WorkloadIntent (typically by stamping handle.AttemptID onto a
+// WorkloadIntent (typically by stamping the handle's identifiers onto a
 // pre-built template). The function returns whatever error the claimer
 // or emitter raised, or nil when nothing was ready.
 func ClaimThenEmit(
@@ -120,7 +134,7 @@ func ClaimThenEmit(
 	claimer AttemptClaimer,
 	emitter DispatchEmitter,
 	selector ReadyWorkSelector,
-	buildIntent func(*AttemptHandle) intent.WorkloadIntent,
+	buildIntent func(*ClaimHandle) intent.WorkloadIntent,
 ) error {
 	if claimer == nil {
 		return errors.New("dispatch: nil claimer")
@@ -158,7 +172,8 @@ type StoreSelector struct{}
 // bead whose attempt graph is in an invariant-violation state is not a
 // valid claim target, and the steward's quarantine path handles it
 // elsewhere.
-func (StoreSelector) SelectReady(_ context.Context) ([]string, error) {
+func (s StoreSelector) SelectReady(_ context.Context) ([]string, error) {
+	_ = s
 	result, err := store.GetSchedulableWork(beads.WorkFilter{})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: select ready: %w", err)
@@ -174,44 +189,61 @@ func (StoreSelector) SelectReady(_ context.Context) ([]string, error) {
 }
 
 // StoreClaimer is the default pkg/store-backed AttemptClaimer. It
-// atomically selects + claims via store.CreateAttemptBeadAtomic. Neither
-// this struct nor the package holds any busy map, mutex, or sync.Map;
-// uniqueness comes from the shared store's atomic attempt-bead creation.
+// reserves a dispatch slot for a task by verifying no active attempt
+// exists and computing the next dispatch_seq. Crucially, it does NOT
+// pre-create an attempt bead — that responsibility belongs solely to
+// the wizard once the dispatched workload pod starts.
 //
-// The zero value is not usable — AgentName must be set so the attempt
-// bead carries ownership metadata. Model and Branch are optional; the
-// executor may update them later.
+// Uniqueness comes from two complementary mechanisms:
+//  1. GetActiveAttempt blocks redispatch while a wizard is alive (the
+//     wizard created an attempt; redispatch of the same task would
+//     race the wizard and must be refused until that attempt closes).
+//  2. The workload_intents (task_id, dispatch_seq) PK enforces
+//     single-winner semantics when two replicas concurrently publish
+//     with the same sequence. The losing replica's Publish returns a
+//     duplicate-key error that the caller logs and skips.
+//
+// The zero value is not usable — AgentName must be set so dispatch log
+// lines carry ownership metadata. DispatchSeqFn is an optional hook for
+// tests; production leaves it nil and ClaimNext derives the next
+// sequence from the store.
 type StoreClaimer struct {
-	// AgentName identifies the agent recording the claim. Required.
+	// AgentName identifies the steward replica recording the claim.
+	// Required.
 	AgentName string
-	// Model is the optional model label written on the attempt bead at
-	// claim time. Callers that do not know the model yet leave this
-	// empty and let the executor fill it in.
-	Model string
-	// Branch is the optional branch label written on the attempt bead
-	// at claim time.
-	Branch string
+	// Reason is an optional annotation carried onto the emitted
+	// WorkloadIntent (e.g. "retry-after-pod-death"). Empty on fresh
+	// dispatch.
+	Reason string
+	// DispatchSeqFn is a test hook that returns the next dispatch_seq
+	// for a task. Production leaves it nil and ClaimNext calls
+	// store.NextDispatchSeq.
+	DispatchSeqFn func(ctx context.Context, taskID string) (int, error)
 	// now is an override hook for tests; production leaves it nil and
 	// ClaimNext stamps time.Now().UTC().
 	now func() time.Time
 }
 
-// ClaimNext walks the candidate list returned by selector and attempts
-// to claim the first candidate that is still free. The sequence for
-// each candidate is:
+// ClaimNext walks the candidate list returned by selector and reserves
+// a dispatch slot for the first task that has no active attempt. The
+// sequence for each candidate is:
 //
-//  1. store.GetActiveAttempt — if any active attempt exists, skip (the
-//     bead is either already claimed or in an invariant state and the
-//     selector should eventually stop offering it).
-//  2. store.CreateAttemptBead — atomically create the attempt bead and
-//     stamp it in_progress. The beads library enforces row-level
-//     uniqueness at the underlying store layer, so two replicas calling
-//     this concurrently on the same parent will see exactly one
-//     attempt bead survive.
+//  1. store.GetActiveAttempt — if any active attempt exists, skip the
+//     task. A live wizard already owns it; redispatch would race the
+//     wizard. When the wizard finishes and the attempt closes the task
+//     remains in_progress only until the close cascade flips it; once
+//     the task is no longer ready, the selector stops offering it.
+//  2. Derive the next dispatch_seq via store.NextDispatchSeq. The seq
+//     is a monotonic counter scoped to the task; fresh tasks get 1,
+//     retries get +1.
+//  3. Return a ClaimHandle carrying (TaskID, DispatchSeq, Reason,
+//     ClaimedAt). The caller is responsible for INSERTing the
+//     workload_intents row under the composite PK — PK collision is
+//     how uniqueness survives multi-replica races.
 //
 // Returns (nil, nil) once the candidate list is exhausted without a
 // successful claim. Callers treat that as "nothing ready".
-func (c *StoreClaimer) ClaimNext(ctx context.Context, selector ReadyWorkSelector) (*AttemptHandle, error) {
+func (c *StoreClaimer) ClaimNext(ctx context.Context, selector ReadyWorkSelector) (*ClaimHandle, error) {
 	if c == nil {
 		return nil, errors.New("dispatch: nil StoreClaimer")
 	}
@@ -225,11 +257,11 @@ func (c *StoreClaimer) ClaimNext(ctx context.Context, selector ReadyWorkSelector
 	if err != nil {
 		return nil, err
 	}
-	for _, parentID := range ids {
+	for _, taskID := range ids {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		existing, gerr := store.GetActiveAttempt(parentID)
+		existing, gerr := store.GetActiveAttempt(taskID)
 		if gerr != nil {
 			// Invariant violation or I/O error — skip; the steward's
 			// quarantine path owns recovery. This is not an error we
@@ -240,19 +272,29 @@ func (c *StoreClaimer) ClaimNext(ctx context.Context, selector ReadyWorkSelector
 		if existing != nil {
 			continue
 		}
-		attemptID, cerr := store.CreateAttemptBead(parentID, c.AgentName, c.Model, c.Branch)
-		if cerr != nil {
-			// Race with another agent between GetActiveAttempt and
-			// CreateAttemptBead — the shared store is the tiebreaker,
-			// and the loser moves on.
+		seq, serr := c.nextDispatchSeq(ctx, taskID)
+		if serr != nil {
+			// I/O error deriving seq — skip this candidate.
 			continue
 		}
-		return &AttemptHandle{
-			AttemptID: attemptID,
-			ClaimedAt: c.nowFn(),
+		return &ClaimHandle{
+			TaskID:      taskID,
+			DispatchSeq: seq,
+			Reason:      c.Reason,
+			ClaimedAt:   c.nowFn(),
 		}, nil
 	}
 	return nil, nil
+}
+
+// nextDispatchSeq returns the next dispatch sequence for taskID,
+// delegating to DispatchSeqFn when set (tests) or
+// store.NextDispatchSeq in production.
+func (c *StoreClaimer) nextDispatchSeq(ctx context.Context, taskID string) (int, error) {
+	if c.DispatchSeqFn != nil {
+		return c.DispatchSeqFn(ctx, taskID)
+	}
+	return store.NextDispatchSeq(taskID)
 }
 
 func (c *StoreClaimer) nowFn() time.Time {

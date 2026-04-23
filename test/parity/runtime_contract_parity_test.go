@@ -150,16 +150,18 @@ func (s *fakeIntentSink) Publish(_ context.Context, i intent.WorkloadIntent) err
 	return nil
 }
 
-// trivialClaimer stamps a deterministic AttemptID onto each candidate
-// without touching a real store. The parity harness only cares that the
-// AttemptID threads through from claim → intent; uniqueness under
-// contention lives in pkg/store tests and is not re-covered here.
+// trivialClaimer stamps a deterministic (TaskID, DispatchSeq) onto each
+// candidate without touching a real store. The parity harness only
+// cares that the identifiers thread through from claim → intent;
+// uniqueness under contention lives in pkg/store tests and is not
+// re-covered here.
 type trivialClaimer struct {
-	attemptID string
-	claimed   bool
+	taskID      string
+	dispatchSeq int
+	claimed     bool
 }
 
-func (c *trivialClaimer) ClaimNext(_ context.Context, sel dispatch.ReadyWorkSelector) (*dispatch.AttemptHandle, error) {
+func (c *trivialClaimer) ClaimNext(_ context.Context, sel dispatch.ReadyWorkSelector) (*dispatch.ClaimHandle, error) {
 	if c.claimed {
 		return nil, nil
 	}
@@ -171,7 +173,15 @@ func (c *trivialClaimer) ClaimNext(_ context.Context, sel dispatch.ReadyWorkSele
 		return nil, nil
 	}
 	c.claimed = true
-	return &dispatch.AttemptHandle{AttemptID: c.attemptID}, nil
+	seq := c.dispatchSeq
+	if seq == 0 {
+		seq = 1
+	}
+	task := c.taskID
+	if task == "" {
+		task = ids[0]
+	}
+	return &dispatch.ClaimHandle{TaskID: task, DispatchSeq: seq}, nil
 }
 
 // singleParentSelector mirrors the steward's per-bead
@@ -289,11 +299,12 @@ func stewardClusterPathMaterialization(t *testing.T, in parityInput, registry id
 
 	sink := &fakeIntentSink{}
 	emitter := &validatingEmitter{publisher: sink}
-	claimer := &trivialClaimer{attemptID: in.AttemptID}
+	claimer := &trivialClaimer{taskID: in.BeadID, dispatchSeq: 1}
 
-	build := func(h *dispatch.AttemptHandle) intent.WorkloadIntent {
+	build := func(h *dispatch.ClaimHandle) intent.WorkloadIntent {
 		return intent.WorkloadIntent{
-			AttemptID: h.AttemptID,
+			TaskID:      h.TaskID,
+			DispatchSeq: h.DispatchSeq,
 			RepoIdentity: intent.RepoIdentity{
 				URL:        cri.URL,
 				BaseBranch: cri.BaseBranch,
@@ -328,7 +339,7 @@ func stewardClusterPathMaterialization(t *testing.T, in parityInput, registry id
 			TowerName:       in.TowerName,
 			Prefix:          wi.RepoIdentity.Prefix,
 			BeadID:          in.BeadID,
-			AttemptID:       wi.AttemptID,
+			AttemptID:       in.AttemptID,
 			Role:            runtime.RoleApprentice,
 			FormulaStep:     wi.FormulaPhase,
 			Backend:         "k8s",
@@ -381,14 +392,14 @@ func operatorPathMaterialization(t *testing.T, in parityInput, wi intent.Workloa
 		Origin:     runtime.WorkspaceOriginGuildCache,
 	}
 
-	podName := "apprentice-" + sanitizeK8sSubdomain(wi.AttemptID)
+	podName := "apprentice-" + sanitizeK8sSubdomain(wi.TaskID) + "-1"
 	spec := agent.PodSpec{
 		Name:         podName,
 		Namespace:    "spire",
 		Image:        "spire-agent:parity",
 		AgentName:    podName,
-		BeadID:       in.BeadID,
-		AttemptID:    wi.AttemptID,
+		BeadID:       wi.TaskID,
+		AttemptID:    in.AttemptID,
 		FormulaStep:  wi.FormulaPhase,
 		HandoffMode:  runtime.HandoffMode(wi.HandoffMode),
 		Backend:      "operator-k8s",
@@ -441,7 +452,7 @@ type validatingEmitter struct {
 	publisher intent.IntentPublisher
 }
 
-func (e *validatingEmitter) Emit(ctx context.Context, h *dispatch.AttemptHandle, i intent.WorkloadIntent) error {
+func (e *validatingEmitter) Emit(ctx context.Context, h *dispatch.ClaimHandle, i intent.WorkloadIntent) error {
 	if err := dispatch.ValidateHandle(h, i); err != nil {
 		return err
 	}

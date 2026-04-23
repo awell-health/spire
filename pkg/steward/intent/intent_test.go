@@ -11,8 +11,14 @@ import (
 func TestWorkloadIntent_ZeroValue(t *testing.T) {
 	var zero WorkloadIntent
 
-	if zero.AttemptID != "" {
-		t.Errorf("zero AttemptID = %q, want empty", zero.AttemptID)
+	if zero.TaskID != "" {
+		t.Errorf("zero TaskID = %q, want empty", zero.TaskID)
+	}
+	if zero.DispatchSeq != 0 {
+		t.Errorf("zero DispatchSeq = %d, want 0", zero.DispatchSeq)
+	}
+	if zero.Reason != "" {
+		t.Errorf("zero Reason = %q, want empty", zero.Reason)
 	}
 	if zero.RepoIdentity != (RepoIdentity{}) {
 		t.Errorf("zero RepoIdentity = %+v, want zero", zero.RepoIdentity)
@@ -30,7 +36,9 @@ func TestWorkloadIntent_ZeroValue(t *testing.T) {
 
 func TestWorkloadIntent_Equality(t *testing.T) {
 	a := WorkloadIntent{
-		AttemptID: "spi-abc123",
+		TaskID:      "spi-abc123",
+		DispatchSeq: 1,
+		Reason:      "fresh",
 		RepoIdentity: RepoIdentity{
 			URL:        "https://example.com/repo.git",
 			BaseBranch: "main",
@@ -51,10 +59,16 @@ func TestWorkloadIntent_Equality(t *testing.T) {
 		t.Errorf("identical WorkloadIntent copies should be equal under ==")
 	}
 
-	differentAttempt := a
-	differentAttempt.AttemptID = "spi-other"
-	if a == differentAttempt {
-		t.Errorf("WorkloadIntent values with different AttemptID must not be equal")
+	differentTask := a
+	differentTask.TaskID = "spi-other"
+	if a == differentTask {
+		t.Errorf("WorkloadIntent values with different TaskID must not be equal")
+	}
+
+	differentSeq := a
+	differentSeq.DispatchSeq = 2
+	if a == differentSeq {
+		t.Errorf("WorkloadIntent values with different DispatchSeq must not be equal")
 	}
 
 	differentPhase := a
@@ -85,8 +99,8 @@ func TestWorkloadIntent_Equality(t *testing.T) {
 func TestAssignmentIntent_ZeroValue(t *testing.T) {
 	var zero AssignmentIntent
 
-	if zero.AttemptID != "" {
-		t.Errorf("zero AttemptID = %q, want empty", zero.AttemptID)
+	if zero.TaskID != "" {
+		t.Errorf("zero TaskID = %q, want empty", zero.TaskID)
 	}
 	if zero.TargetGuild != "" {
 		t.Errorf("zero TargetGuild = %q, want empty", zero.TargetGuild)
@@ -121,7 +135,7 @@ func TestWorkloadIntent_NoLocalFields(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"AttemptID", "FormulaPhase", "HandoffMode", "RepoIdentity", "Resources"}
+	want := []string{"DispatchSeq", "FormulaPhase", "HandoffMode", "Reason", "RepoIdentity", "Resources", "TaskID"}
 	sort.Strings(want)
 
 	if !reflect.DeepEqual(got, want) {

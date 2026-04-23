@@ -21,7 +21,9 @@ func TestDoltPublisher_InsertIdempotent(t *testing.T) {
 	p.now = func() time.Time { return frozen }
 
 	wi := WorkloadIntent{
-		AttemptID: "spi-abc123",
+		TaskID:      "spi-abc123",
+		DispatchSeq: 1,
+		Reason:      "fresh",
 		RepoIdentity: RepoIdentity{
 			URL:        "https://example.com/repo.git",
 			BaseBranch: "main",
@@ -39,7 +41,7 @@ func TestDoltPublisher_InsertIdempotent(t *testing.T) {
 
 	mock.ExpectExec("INSERT INTO workload_intents").
 		WithArgs(
-			wi.AttemptID,
+			wi.TaskID, wi.DispatchSeq, wi.Reason,
 			wi.RepoIdentity.URL, wi.RepoIdentity.BaseBranch, wi.RepoIdentity.Prefix,
 			wi.FormulaPhase, wi.HandoffMode,
 			wi.Resources.CPURequest, wi.Resources.CPULimit,
@@ -58,7 +60,7 @@ func TestDoltPublisher_InsertIdempotent(t *testing.T) {
 	// 0-row result when nothing changed but the driver does not care.
 	mock.ExpectExec("INSERT INTO workload_intents").
 		WithArgs(
-			wi.AttemptID,
+			wi.TaskID, wi.DispatchSeq, wi.Reason,
 			wi.RepoIdentity.URL, wi.RepoIdentity.BaseBranch, wi.RepoIdentity.Prefix,
 			wi.FormulaPhase, wi.HandoffMode,
 			wi.Resources.CPURequest, wi.Resources.CPULimit,
@@ -76,7 +78,7 @@ func TestDoltPublisher_InsertIdempotent(t *testing.T) {
 	}
 }
 
-func TestDoltPublisher_RejectsEmptyAttemptID(t *testing.T) {
+func TestDoltPublisher_RejectsEmptyTaskID(t *testing.T) {
 	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -84,15 +86,29 @@ func TestDoltPublisher_RejectsEmptyAttemptID(t *testing.T) {
 	defer db.Close()
 
 	p := NewDoltPublisher(db)
-	err = p.Publish(context.Background(), WorkloadIntent{})
+	err = p.Publish(context.Background(), WorkloadIntent{DispatchSeq: 1})
 	if err == nil {
-		t.Fatal("Publish with empty AttemptID should error; got nil")
+		t.Fatal("Publish with empty TaskID should error; got nil")
+	}
+}
+
+func TestDoltPublisher_RejectsZeroDispatchSeq(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	p := NewDoltPublisher(db)
+	err = p.Publish(context.Background(), WorkloadIntent{TaskID: "spi-x"})
+	if err == nil {
+		t.Fatal("Publish with zero DispatchSeq should error; got nil")
 	}
 }
 
 func TestDoltPublisher_RejectsNilDB(t *testing.T) {
 	p := &DoltPublisher{}
-	err := p.Publish(context.Background(), WorkloadIntent{AttemptID: "spi-x"})
+	err := p.Publish(context.Background(), WorkloadIntent{TaskID: "spi-x", DispatchSeq: 1})
 	if err == nil {
 		t.Fatal("Publish with nil DB should error; got nil")
 	}
@@ -110,12 +126,14 @@ func TestDoltConsumer_EmitAndMark(t *testing.T) {
 	c.now = func() time.Time { return frozen }
 
 	rows := sqlmock.NewRows([]string{
-		"attempt_id", "repo_url", "repo_base_branch", "repo_prefix",
+		"task_id", "dispatch_seq", "reason",
+		"repo_url", "repo_base_branch", "repo_prefix",
 		"formula_phase", "handoff_mode",
 		"resources_cpu_request", "resources_cpu_limit",
 		"resources_memory_request", "resources_memory_limit",
 	}).AddRow(
-		"spi-xyz", "https://example.com/repo.git", "main", "spi",
+		"spi-xyz", 1, "fresh",
+		"https://example.com/repo.git", "main", "spi",
 		"implement", "bundle",
 		"500m", "1000m", "256Mi", "1Gi",
 	)
@@ -125,14 +143,15 @@ func TestDoltConsumer_EmitAndMark(t *testing.T) {
 		WillReturnRows(rows)
 
 	mock.ExpectExec("UPDATE workload_intents SET reconciled_at").
-		WithArgs(frozen, "spi-xyz").
+		WithArgs(frozen, "spi-xyz", 1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// After the first drain, subsequent polls find nothing.
 	mock.ExpectQuery("SELECT(.|\n)+FROM workload_intents(.|\n)+WHERE reconciled_at IS NULL").
 		WithArgs(defaultConsumerBatchSize).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"attempt_id", "repo_url", "repo_base_branch", "repo_prefix",
+			"task_id", "dispatch_seq", "reason",
+			"repo_url", "repo_base_branch", "repo_prefix",
 			"formula_phase", "handoff_mode",
 			"resources_cpu_request", "resources_cpu_limit",
 			"resources_memory_request", "resources_memory_limit",
@@ -157,8 +176,14 @@ func TestDoltConsumer_EmitAndMark(t *testing.T) {
 		if !ok {
 			t.Fatal("channel closed before emit")
 		}
-		if got.AttemptID != "spi-xyz" {
-			t.Errorf("AttemptID = %q, want spi-xyz", got.AttemptID)
+		if got.TaskID != "spi-xyz" {
+			t.Errorf("TaskID = %q, want spi-xyz", got.TaskID)
+		}
+		if got.DispatchSeq != 1 {
+			t.Errorf("DispatchSeq = %d, want 1", got.DispatchSeq)
+		}
+		if got.Reason != "fresh" {
+			t.Errorf("Reason = %q, want fresh", got.Reason)
 		}
 		if got.RepoIdentity.URL != "https://example.com/repo.git" {
 			t.Errorf("URL = %q, want repo.git", got.RepoIdentity.URL)
