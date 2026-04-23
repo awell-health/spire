@@ -226,18 +226,30 @@ func main() {
 		log.Info("no active dolt DB; intent reconciler will self-disable (no IntentConsumer wired)")
 	}
 
+	// Credentials Secret the reconciler stamps onto every apprentice
+	// PodSpec. Helm plumbs SPIRE_CREDENTIALS_SECRET from
+	// spire.secretName (see helm/spire/templates/operator.yaml). Empty
+	// defers to pkg/agent.DefaultCredentialsSecret — correct for
+	// non-Helm/test contexts but yields a hardcoded "spire-credentials"
+	// lookup that will fail against release-prefixed secrets.
+	credentialsSecret := os.Getenv("SPIRE_CREDENTIALS_SECRET")
+	if credentialsSecret == "" {
+		log.Info("SPIRE_CREDENTIALS_SECRET not set; apprentice pods will fall back to pkg/agent.DefaultCredentialsSecret")
+	}
+
 	intentReconciler := &controllers.IntentWorkloadReconciler{
-		Client:        mgr.GetClient(),
-		Log:           log.WithName("intent-reconciler"),
-		Namespace:     namespace,
-		Image:         stewardImage,
-		Tower:         database,
-		DolthubRemote: dolthubRemote,
-		Resolver:      resolver,
-		Consumer:      intentConsumer,
-		GCSSecretName: gcpSecretName,
-		GCSMountPath:  gcpMountPath,
-		GCSKeyName:    gcpKeyName,
+		Client:            mgr.GetClient(),
+		Log:               log.WithName("intent-reconciler"),
+		Namespace:         namespace,
+		Image:             stewardImage,
+		Tower:             database,
+		DolthubRemote:     dolthubRemote,
+		Resolver:          resolver,
+		Consumer:          intentConsumer,
+		CredentialsSecret: credentialsSecret,
+		GCSSecretName:     gcpSecretName,
+		GCSMountPath:      gcpMountPath,
+		GCSKeyName:        gcpKeyName,
 	}
 	if err := mgr.Add(intentReconciler); err != nil {
 		log.Error(err, "unable to add intent reconciler")

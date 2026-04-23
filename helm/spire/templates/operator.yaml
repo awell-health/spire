@@ -93,6 +93,14 @@ spec:
               value: {{ .Values.beads.prefix | quote }}
             - name: DOLTHUB_REMOTE
               value: {{ .Values.dolthub.remoteUrl | quote }}
+            # Secret the IntentWorkloadReconciler stamps onto every
+            # apprentice PodSpec it builds (operator/main.go reads this
+            # and populates IntentWorkloadReconciler.CredentialsSecret).
+            # Must match the helm-rendered Secret name so
+            # ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN resolve on the
+            # pod. Mirrors steward.yaml — same helper, same pattern.
+            - name: SPIRE_CREDENTIALS_SECRET
+              value: {{ include "spire.secretName" . | quote }}
             {{- if eq .Values.bundleStore.backend "gcs" }}
             # When the tower uses the GCS BundleStore, the operator needs
             # to propagate the Secret-mounted SA onto every wizard /
