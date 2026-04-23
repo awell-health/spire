@@ -140,6 +140,10 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 			if isWorkBoardBead(b) {
 				c.Ready = append(c.Ready, b)
 			}
+		case "dispatched":
+			if isWorkBoardBead(b) {
+				c.InProgress = append(c.InProgress, b)
+			}
 		case "in_progress":
 			if isWorkBoardBead(b) {
 				c.InProgress = append(c.InProgress, b)
@@ -209,6 +213,10 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		case "ready":
 			if isWorkBoardBead(b) {
 				c.Ready = append(c.Ready, b)
+			}
+		case "dispatched":
+			if isWorkBoardBead(b) {
+				c.InProgress = append(c.InProgress, b)
 			}
 		case "in_progress":
 			if isWorkBoardBead(b) {

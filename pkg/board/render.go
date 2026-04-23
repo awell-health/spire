@@ -655,6 +655,8 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 						icons = append(icons, greenLG.Render("✓"))
 					case "in_progress":
 						icons = append(icons, cyanLG.Render("▶"))
+					case "dispatched":
+						icons = append(icons, cyanLG.Render("⏳"))
 					case "hooked":
 						icons = append(icons, yellowLG.Render("⏸"))
 					default:
@@ -743,6 +745,8 @@ func RenderPipelineLipgloss(beadID string) string {
 			parts = append(parts, greenStyle.Render("✓"))
 		case "in_progress":
 			parts = append(parts, cyanStyle.Render("▶"))
+		case "dispatched":
+			parts = append(parts, cyanStyle.Render("⏳"))
 		case "hooked":
 			parts = append(parts, yellowStyle.Render("⏸"))
 		default:
@@ -787,6 +791,8 @@ func RenderPipelineFromDAG(dag *DAGProgress) string {
 			parts = append(parts, greenStyle.Render("✓"))
 		case "in_progress":
 			parts = append(parts, cyanStyle.Render("▶"))
+		case "dispatched":
+			parts = append(parts, cyanStyle.Render("⏳"))
 		case "hooked":
 			parts = append(parts, yellowStyle.Render("⏸"))
 		default:
@@ -923,6 +929,8 @@ func RenderAgentPanelSnap(agents []LocalAgent, dagMap map[string]*DAGProgress, m
 						icons = append(icons, greenLG.Render("✓"))
 					case "in_progress":
 						icons = append(icons, cyanLG.Render("▶"))
+					case "dispatched":
+						icons = append(icons, cyanLG.Render("⏳"))
 					case "hooked":
 						icons = append(icons, yellowLG.Render("⏸"))
 					default:
