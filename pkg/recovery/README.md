@@ -1,23 +1,36 @@
 # pkg/recovery
 
-Domain model and policy for the cleric repair loop. This package owns the
-diagnostic types, the decide-time policy, the learning/promotion model, and
-the canonical `RecoveryOutcome` contract the steward consumes.
+Domain model and policy for the in-wizard recovery loop. This package owns
+the diagnostic types, the decide-time policy, the learning/promotion model,
+and the canonical `RecoveryOutcome` contract the steward consumes. It is the
+policy library the wizard uses in-process on step failure — there is no
+separate cleric agent process.
 
-**Ownership split (design
-[spi-h32xj-cleric-repair-loop](../../docs/design/spi-h32xj-cleric-repair-loop.md)
-§1):**
+**Ownership split:**
 
-| Package        | Owns                                                                   |
-|----------------|------------------------------------------------------------------------|
-| `pkg/recovery` | Domain types, diagnosis, decide policy, recipe promotion, outcome I/O  |
-| `pkg/executor` | Runtime: cleric step adapters, workspace provisioning, spawn, verify wire protocol |
-| `pkg/wizard`   | Wizard-side retry: `checkRetryRequest`, skip-to-step, result reporting |
+| Package        | Owns                                                                         |
+|----------------|------------------------------------------------------------------------------|
+| `pkg/recovery` | Domain types, diagnosis, decide policy, recipe promotion, outcome I/O        |
+| `pkg/executor` | Runtime: `runRecoveryCycle` dispatch, workspace provisioning, mode execute functions, crash-resume |
+| `pkg/wizard`   | Wizard-side retry: `checkRetryRequest`, skip-to-step, result reporting       |
 | `pkg/steward`  | Observes `RecoveryOutcome` via `ReadOutcome`; decides resume vs stays-hooked |
 
-The cleric itself is the agent that runs the `cleric-default` formula. This
-package provides the diagnostic + policy foundation; `pkg/executor` drives
-the step-by-step runtime.
+The five `RepairMode`s each map to a dispatch surface inside the wizard's
+interpreter (`pkg/executor`):
+
+| RepairMode          | Executes in                                                                    |
+|---------------------|--------------------------------------------------------------------------------|
+| `Noop`              | `executeNoop` — no-op; the hooked step is rewound as-is                        |
+| `Mechanical`        | `executeMechanical` — wraps a `mechanicalActions[plan.Action]` entry (rebase-onto-base, cherry-pick, rebuild, reset-to-step) against the wizard's staging workspace |
+| `Worker` / `Recipe` | `executeWorker` — dispatches a repair apprentice via bundle handoff; identical to a wave apprentice except for the prompt |
+| Merge-conflict      | `executeMergeConflict` — labeled mechanical with `action=resolve-conflicts`; runs the Claude-driven conflict resolver on staging |
+| `Escalate`          | `executeEscalate` — marks bead needs-human, emits an alert bead, hooks the step, terminal |
+
+The historical cleric-default formula is a legacy compatibility path — its
+`cleric.*` action handlers remain functional for beads started before the
+in-wizard dispatch landed, but new recovery cycles flow through
+`runRecoveryCycle` directly. See `pkg/executor/README.md` → "Step failure →
+recovery dispatch" for the full lifecycle.
 
 ## Cleric lifecycle
 

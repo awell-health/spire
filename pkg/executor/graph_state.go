@@ -44,6 +44,93 @@ type StepState struct {
 	StartedAt      string            `json:"started_at,omitempty"`
 	CompletedAt    string            `json:"completed_at,omitempty"`
 	CompletedCount int               `json:"completed_count,omitempty"` // mechanical counter: how many times this step has completed
+
+	// RepairAttempts is the audit trail of in-wizard recovery cycles run against this
+	// step. A new entry is appended each time runRecoveryCycle fires, whether the cycle
+	// repaired, escalated, or was interrupted mid-flight and resumed as a new cycle.
+	// Missing field in persisted graph state loads as empty (back-compat).
+	RepairAttempts []RepairAttempt `json:"repair_attempts,omitempty"`
+	// CurrentRepair is non-nil when a recovery cycle is in flight for this step. It
+	// carries the phase the wizard is in so a mid-cycle crash can be resumed correctly
+	// on next startup. See resumeInFlightRepairs for the resume policy.
+	CurrentRepair *InFlightRepair `json:"current_repair,omitempty"`
+}
+
+// CrashPhase names a checkpoint inside a recovery cycle. The wizard persists
+// graph state every time it advances the phase so a crash at any point leaves
+// CurrentRepair.Phase pointing at exactly the work that was in flight.
+type CrashPhase string
+
+const (
+	PhaseCreateRecoveryBead   CrashPhase = "create_recovery_bead"
+	PhaseDiagnose             CrashPhase = "diagnose"
+	PhaseDecide               CrashPhase = "decide"
+	PhaseExecuteMechanical    CrashPhase = "execute_mechanical"
+	PhaseExecuteMergeConflict CrashPhase = "execute_merge_conflict"
+	PhaseExecuteWorker        CrashPhase = "execute_worker"
+	PhaseApplyBundle          CrashPhase = "apply_bundle"
+	PhaseRewindStep           CrashPhase = "rewind_step"
+	PhaseRedispatch           CrashPhase = "redispatch"
+)
+
+// RecoveryOutcomeKind is the terminal classification of a single recovery cycle.
+// It is what runRecoveryCycle returns to the interpreter and is what gets
+// appended to StepState.RepairAttempts.
+type RecoveryOutcomeKind string
+
+const (
+	// RecoveryRepaired means the cycle ran, executed a repair, and the step
+	// should be rewound to pending so the interpreter can re-dispatch it.
+	RecoveryRepaired RecoveryOutcomeKind = "repaired"
+	// RecoveryEscalated means the cycle decided the failure needs human
+	// intervention. The interpreter hooks the bead and exits.
+	RecoveryEscalated RecoveryOutcomeKind = "escalated"
+	// RecoveryBudgetExhausted means the per-step round budget was reached
+	// before this cycle could run. The interpreter hooks the bead and exits.
+	RecoveryBudgetExhausted RecoveryOutcomeKind = "budget_exhausted"
+	// RecoveryInterrupted means the cycle was started but did not complete,
+	// typically because the wizard crashed mid-flight. resumeInFlightRepairs
+	// translates an abandoned CurrentRepair into this outcome.
+	RecoveryInterrupted RecoveryOutcomeKind = "interrupted"
+	// RecoveryFailed means the cycle ran but the chosen repair failed to apply
+	// cleanly. Counts toward the round budget; next loop iteration retries.
+	RecoveryFailed RecoveryOutcomeKind = "failed"
+	// RecoveryNoop means decide returned Mode=noop — no repair needed; resume
+	// the hooked step as-is.
+	RecoveryNoop RecoveryOutcomeKind = "noop"
+)
+
+// RepairAttempt is the durable audit record for a single recovery cycle. The
+// wizard appends one RepairAttempt per cycle when the cycle finishes, regardless
+// of outcome. Interrupted cycles also produce a RepairAttempt so the round
+// counter stays honest across crashes (seams 14-15).
+type RepairAttempt struct {
+	Round          int                 `json:"round"`
+	Mode           string              `json:"mode,omitempty"`   // recovery.RepairMode value
+	Action         string              `json:"action,omitempty"` // mechanical fn, recipe id, or worker role
+	Outcome        RecoveryOutcomeKind `json:"outcome"`
+	StartedAt      string              `json:"started_at,omitempty"`
+	EndedAt        string              `json:"ended_at,omitempty"`
+	RecoveryBeadID string              `json:"recovery_bead_id,omitempty"`
+	// FinalPhase records the last phase the wizard reached before the cycle
+	// ended (useful for reasoning about interrupted cycles).
+	FinalPhase CrashPhase `json:"final_phase,omitempty"`
+	// Error carries the error text for Failed cycles (empty otherwise).
+	Error string `json:"error,omitempty"`
+}
+
+// InFlightRepair captures the live state of a recovery cycle that has not yet
+// finished. When the wizard resumes, resumeInFlightRepairs reads this to decide
+// whether to honor an in-flight apprentice, close the cycle as interrupted and
+// start a new round, or complete a post-repair bookkeeping step.
+type InFlightRepair struct {
+	Round           int        `json:"round"`
+	Mode            string     `json:"mode,omitempty"`
+	Action          string     `json:"action,omitempty"`
+	Phase           CrashPhase `json:"phase"`
+	RecoveryBeadID  string     `json:"recovery_bead_id,omitempty"`
+	StartedAt       string     `json:"started_at,omitempty"`
+	WorkerSignalKey string     `json:"worker_signal_key,omitempty"` // non-empty iff Mode==worker
 }
 
 // WorkspaceState is the persisted runtime state for a single declared workspace.

@@ -365,6 +365,46 @@ first use if not set).
 `Executor.Run()` delegates to `RunGraph`. `State` carries legacy fields
 (phase, wave, review rounds) used by `recordAgentRun` for metrics recording.
 
+## Step failure → recovery dispatch
+
+When a graph step errors, the interpreter calls `runRecoveryCycle` instead of
+immediately hooking the bead. The cycle runs in-process on the wizard's own
+staging workspace:
+
+1. Round-budget guard (`DefaultRecoveryBudget = 3`; overridable via
+   `SPIRE_RECOVERY_BUDGET`). Exhaustion escalates.
+2. Create (or reuse) a recovery bead — idempotent per `(parent, step, round)`.
+3. `recovery.Diagnose` → `Diagnosis`.
+4. `recovery.Decide` → typed `RepairPlan`.
+5. Dispatch by `RepairMode`:
+   - `Mechanical` — `recovery_mechanical.go` wraps the existing
+     `mechanicalActions` map (rebase-onto-base, cherry-pick, rebuild,
+     reset-to-step) against the wizard's workspace.
+   - `Worker` / `Recipe` — `recovery_worker.go` dispatches a repair
+     apprentice via `SpawnRepairWorker` (bundle-handoff path). The apprentice
+     is structurally identical to a wave apprentice — only the prompt differs.
+   - `MergeConflictResolution` (action `resolve-conflicts`) —
+     `recovery_merge_conflict.go` runs the Claude-driven resolver on staging.
+   - `Escalate` — `recovery_escalate.go` marks needs-human, emits an alert,
+     and returns terminal.
+   - `Noop` — resume the hooked step as-is.
+6. Append `RepairAttempt` to `StepState.RepairAttempts`, clear
+   `StepState.CurrentRepair`, persist, and return the outcome.
+
+On success the step is rewound to pending and the interpreter loop
+re-dispatches it. On escalate / budget-exhausted the bead is hooked and the
+interpreter exits.
+
+Persistence between every phase is the load-bearing rule for crash-resume:
+`resumeInFlightRepairs` reads `CurrentRepair.Phase` on wizard startup and
+applies seams-14/15 policy — early phases close the cycle as interrupted
+(counting toward the round budget), worker-phase crashes honor the
+apprentice's delivered bundle.
+
+Inline recovery is opt-in today via `SPIRE_INLINE_RECOVERY=1`; the default
+path still hooks-and-escalates so existing production behavior is preserved
+while the dispatch surface lands.
+
 ## Practical rules
 
 1. **Keep policy here, not runtime details.** The executor decides *what* should happen next, not *how Claude should be invoked* inside a subprocess.

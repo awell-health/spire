@@ -19,6 +19,19 @@ func (e *Executor) conflictResolver(maxTurns int) func(string, string) error {
 	}
 }
 
+// resolveMergeConflicts is the in-wizard entry point for the Claude-driven
+// merge-conflict resolver. It runs the resolver on a provisioned workspace
+// and returns when the conflict markers are cleared and the merge commit
+// lands. The wizard's recovery-dispatch path calls this via the
+// RepairMode=MergeConflictResolution branch; legacy merge flows still call
+// resolveConflictsWithBudget directly through the conflictResolver closure.
+//
+// maxTurns is the Claude CLI turn budget; pass 0 to omit --max-turns and
+// defer to the CLI's own ceiling.
+func (e *Executor) resolveMergeConflicts(repoPath, childBranch string, maxTurns int) error {
+	return e.resolveConflictsWithBudget(repoPath, childBranch, maxTurns)
+}
+
 // resolveConflictsWithBudget invokes Claude to resolve merge conflicts.
 // If maxTurns > 0, --max-turns is passed to the Claude CLI; otherwise the flag
 // is omitted (letting the CLI's own default or timeout govern).

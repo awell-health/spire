@@ -428,7 +428,7 @@ type promptInputs struct {
 // recovery bead.
 func buildDecidePrompt(cc *promptInputs, triageCount int, stats *store.LearningStats) string {
 	var b strings.Builder
-	b.WriteString("You are a cleric agent for Spire, an AI agent coordination system.\n\n")
+	b.WriteString("You are the Spire wizard's recovery-decision step — the in-process policy that picks a repair action when a graph step fails.\n\n")
 	b.WriteString("A bead (work item) has been interrupted and needs recovery. Analyze the diagnosis and choose the best recovery action.\n\n")
 
 	// Diagnosis context.

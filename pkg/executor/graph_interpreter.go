@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -101,6 +102,13 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	// Ensure step beads for each graph step.
 	if err := e.ensureGraphStepBeads(graph, state); err != nil {
 		e.log("warning: create graph step beads: %s", err)
+	}
+
+	// Resume any in-flight recovery cycles that were interrupted by a prior
+	// wizard crash. This runs after branch/state resolution so the resume
+	// policy has full context; it is a no-op on fresh starts.
+	if err := e.resumeInFlightRepairs(context.Background(), state); err != nil {
+		e.log("warning: resume in-flight repairs: %s", err)
 	}
 
 	// Record the executor's own top-level run before any child spawns,
@@ -275,6 +283,42 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				e.log("step %s errored (recorded as outputs.error, on_error=record): %s",
 					stepName, result.Error)
 				continue
+			}
+
+			// In-wizard recovery dispatch: before parking the step as hooked,
+			// attempt an inline recovery cycle. runRecoveryCycle runs
+			// diagnose/decide/execute against the wizard's own workspace and
+			// returns a RecoveryOutcomeKind telling us whether the repair
+			// landed, the step should escalate, the round budget is
+			// exhausted, or the failure cleared (noop). Full background in
+			// pkg/executor/recovery_dispatch.go.
+			if !e.recoveryDisabled() {
+				stepCopy := state.Steps[stepName]
+				outcome, recErr := e.runRecoveryCycle(&stepCopy, stepName, state, result.Error)
+				if recErr != nil {
+					e.log("recovery: cycle error for step %s: %s (continuing to hook)", stepName, recErr)
+				}
+				switch outcome {
+				case RecoveryRepaired, RecoveryNoop:
+					// Rewind the step to pending so the interpreter loop
+					// re-dispatches it (seam 11/12).
+					rewound := state.Steps[stepName]
+					rewound.Status = "pending"
+					rewound.Outputs = nil
+					rewound.StartedAt = ""
+					rewound.CompletedAt = ""
+					state.Steps[stepName] = rewound
+					state.ActiveStep = ""
+					graphStore.Save(e.agentName, state)
+					e.log("recovery: step %s rewound to pending after %s outcome", stepName, outcome)
+					continue
+				case RecoveryEscalated, RecoveryBudgetExhausted:
+					// Fall through to the hook-and-escalate path below.
+				case RecoveryFailed:
+					// Fall through; the next loop iteration will see the
+					// hooked step and runRecoveryCycle again (budget
+					// permitting).
+				}
 			}
 
 			// Park the step as hooked (not failed) so the resolve→steward→re-summon

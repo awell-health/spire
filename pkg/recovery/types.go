@@ -1,8 +1,11 @@
-// Package recovery provides diagnosis and recovery action proposals for
-// interrupted parent beads. It does not own interruption signaling (that's
-// executor) or display (that's board). It delegates action execution to
-// existing Spire commands. The steward imports this package for automated
-// recovery decisions.
+// Package recovery is the policy library the wizard uses in-process when a
+// graph step fails. It owns the diagnostic data model (Diagnosis, StepContext,
+// GitState, ...), the decide-time policy (Decide, promotion, classify), and
+// the canonical RecoveryOutcome the steward reads to decide resume vs
+// escalate. Runtime dispatch lives in pkg/executor — the wizard calls
+// recovery.Diagnose + recovery.Decide inline on its own pod's staging
+// workspace, then routes the typed RepairPlan through the matching
+// mode-specific execute function. There is no separate cleric agent process.
 package recovery
 
 import (
@@ -232,8 +235,8 @@ const (
 	VerifyKindRecipePostcondition VerifyKind = "recipe-postcondition"
 )
 
-// VerifyPlan describes how to confirm a repair succeeded. The cleric's
-// verify step dispatches on Kind.
+// VerifyPlan describes how to confirm a repair succeeded. The wizard's
+// recovery cycle dispatches on Kind.
 type VerifyPlan struct {
 	Kind     VerifyKind `json:"kind"`
 	StepName string     `json:"step_name,omitempty"` // for rerun-step
@@ -249,8 +252,8 @@ const (
 	VerifyVerdictTimeout VerifyVerdict = "timeout"
 )
 
-// Decision is the cleric's terminal decision consumed by the steward to
-// either resume the hooked parent or leave it escalated for human review.
+// Decision is the wizard's terminal recovery decision consumed by the steward
+// to either resume the hooked parent or leave it escalated for human review.
 type Decision string
 
 const (
