@@ -131,13 +131,86 @@ handles genuinely stranded bundles in the meantime.
 | Backend | Status      | Bead           | Notes |
 |---------|-------------|----------------|-------|
 | local   | ships today | spi-8qsmr      | Default for dev / single-tower mode. |
+| gcs     | ships today | spi-iyykmx     | Multi-pod k8s deployments; ADC-only auth. |
 | pvc     | follow-up   | tbd            | RWX PVC mounted into apprentice + wizard pods. Needs RWX provisioner in minikube. |
 | http    | follow-up   | tbd            | Namespaced one-pod HTTP object server. Works on RWO storage classes. |
-| gcs     | follow-up   | tbd            | Multi-cluster / multi-node deployments. |
-| s3      | follow-up   | tbd            | Same. |
+| s3      | follow-up   | tbd            | Parallel to gcs. |
 
 The interface is designed so additional backends are drop-in: no
 `*os.File` leaks, no filesystem-specific types in the public surface.
+
+## Backends
+
+### `local`
+
+Filesystem-backed. Default for single-tower dev. Writes to
+`$XDG_DATA_HOME/spire/bundles` unless `local_root` overrides.
+
+```json
+{
+  "bundle_store": {
+    "backend": "local",
+    "local_root": "/var/lib/spire/bundles"
+  }
+}
+```
+
+### `gcs`
+
+Google Cloud Storage-backed. Use this for multi-pod k8s deployments
+where apprentice and wizard pods cannot share a PVC.
+
+```json
+{
+  "bundle_store": {
+    "backend": "gcs",
+    "gcs": {
+      "bucket": "my-tower-bundles",
+      "prefix": "spire/bundles"
+    }
+  }
+}
+```
+
+- **bucket** — required. The bucket MUST exist; the store does not
+  create it. A missing bucket surfaces at tower startup with a
+  `gsutil mb gs://<bucket>` hint.
+- **prefix** — optional. Empty stores objects at the bucket root.
+  Backend-internal: the prefix never appears in `BundleHandle.Key`.
+
+#### Authentication — ADC only
+
+The `gcs` backend uses Application Default Credentials. No credential
+fields live in the tower config. The Go storage client picks up
+credentials from exactly one of these sources, in order:
+
+1. **GKE Workload Identity** — bind the wizard / apprentice KSA to a
+   GSA with `roles/storage.objectAdmin` on the bucket. This is the
+   supported production path; no secrets on disk.
+2. **GOOGLE_APPLICATION_CREDENTIALS** — set on the pod to a JSON key
+   file mounted as a secret. This is the documented minikube path.
+3. **gcloud ADC** — `gcloud auth application-default login` locally.
+   Used when running the tower directly on a developer workstation.
+
+The storage client already does exponential backoff on 5xx / retriable
+errors; the store does not add its own retry layer.
+
+#### Operation mapping
+
+| Op     | GCS primitive                                                 |
+|--------|---------------------------------------------------------------|
+| Put    | `Writer` with `Conditions.DoesNotExist=true` (412 → `ErrDuplicate`); `io.LimitReader(max+1)` for size enforcement |
+| Get    | `Object.NewReader(ctx)`; `ErrObjectNotExist` → `ErrNotFound`  |
+| Delete | `Object.Delete(ctx)`; `ErrObjectNotExist` → nil (idempotent)  |
+| List   | `Bucket.Objects(ctx, &Query{Prefix})` with internal pagination; prefix stripped from each object name |
+| Stat   | `Object.Attrs(ctx)` → `BundleInfo{Size, ModTime: Updated}`    |
+
+#### Minikube wiring
+
+See `k8s-smoke-test/gcs-example.yaml` for a worked example: a `Secret`
+holding `gcp-sa-key.json`, the volume mount, and
+`GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/gcp/gcp-sa-key.json` on
+both apprentice and wizard containers.
 
 ## Expected operational ceiling
 
@@ -155,14 +228,21 @@ single unbounded request to the underlying service.
   "bundle_store": {
     "backend": "local",
     "local_root": "",
+    "gcs": {
+      "bucket": "",
+      "prefix": ""
+    },
     "max_bytes": 10485760,
     "janitor_interval": "5m"
   }
 }
 ```
 
-- `backend` — currently only `"local"`. Empty defaults to `"local"`.
-- `local_root` — filesystem root. Empty defaults to
-  `$XDG_DATA_HOME/spire/bundles` (or `~/.local/share/spire/bundles`).
+- `backend` — one of `"local"`, `"gcs"`. Empty defaults to `"local"`.
+  An unknown backend fails tower startup with a diagnostic error.
+- `local_root` — filesystem root for the local backend. Empty defaults
+  to `$XDG_DATA_HOME/spire/bundles` (or `~/.local/share/spire/bundles`).
+- `gcs.bucket` — required when `backend = "gcs"`. Must exist.
+- `gcs.prefix` — optional object-name prefix. Empty stores at the root.
 - `max_bytes` — bundle size cap in bytes. 0 defaults to 10 MiB.
 - `janitor_interval` — duration string. 0 defaults to 5 minutes.

@@ -98,23 +98,28 @@ var apprenticeRunGit = func(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-// defaultNewBundleStore reads the active tower config (if any) and builds a
-// LocalStore rooted at the configured path — or at XDG_DATA_HOME when no
-// tower is resolvable. Any failure to resolve the tower falls through to
-// the zero-value config, which WithDefaults() turns into the platform default.
+// defaultNewBundleStore reads the active tower config (if any) and builds
+// a BundleStore matching the configured backend. Any failure to resolve
+// the tower falls through to the zero-value config, which WithDefaults
+// turns into a local store at the platform default root. Construction
+// of a non-local backend (e.g. gcs) is intentionally fail-loud — a
+// misconfigured tower should surface at startup, not deep inside the
+// first submit.
 func defaultNewBundleStore() (bundlestore.BundleStore, error) {
 	cfg := bundlestore.Config{}
 	if tc, err := activeTowerConfig(); err == nil && tc != nil {
 		cfg = bundlestore.Config{
 			Backend:   tc.BundleStore.Backend,
 			LocalRoot: tc.BundleStore.LocalRoot,
+			GCSBucket: tc.BundleStore.GCS.Bucket,
+			GCSPrefix: tc.BundleStore.GCS.Prefix,
 			MaxBytes:  tc.BundleStore.MaxBytes,
 		}
 		if d, perr := time.ParseDuration(tc.BundleStore.JanitorInterval); perr == nil {
 			cfg.JanitorInterval = d
 		}
 	}
-	return bundlestore.NewLocalStore(cfg.WithDefaults())
+	return bundlestore.New(context.Background(), cfg)
 }
 
 // signalPayload is retained as a type alias for tests that unmarshal the

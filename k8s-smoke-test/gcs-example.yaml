@@ -1,0 +1,86 @@
+# GCS bundlestore smoke-test pods.
+#
+# See k8s-smoke-test/README.md for setup (gcloud bucket creation,
+# service-account key, kubectl create secret).
+#
+# Preconditions:
+#   - Secret "spire-gcp-sa" exists in this namespace with key
+#     "gcp-sa-key.json" (service-account credential JSON).
+#   - Tower config selects backend=gcs with a pre-existing bucket.
+#
+# This file is illustrative — the image names, commands, and env vars
+# outside the GCS block are placeholders. Wire them to whatever your
+# tower's apprentice / wizard images actually expect.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apprentice-gcs-smoke
+  labels:
+    app: spire
+    role: apprentice
+    smoke-test: bundlestore-gcs
+spec:
+  restartPolicy: Never
+  containers:
+    - name: apprentice
+      image: ghcr.io/awell-health/spire-agent:latest
+      command: ["spire", "apprentice", "submit"]
+      env:
+        # ADC path: the GCS client reads this to locate the credential
+        # file mounted from the spire-gcp-sa Secret below. In production
+        # GKE, omit this env and rely on Workload Identity instead.
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /var/secrets/gcp/gcp-sa-key.json
+        # Placeholder wiring for the submit flow — replace with whatever
+        # the wizard-dispatched apprentice would normally see.
+        - name: SPIRE_BEAD_ID
+          value: spi-smoke-apprentice
+        - name: SPIRE_ATTEMPT_ID
+          value: spi-smoke-attempt
+        - name: SPIRE_APPRENTICE_IDX
+          value: "0"
+      volumeMounts:
+        - name: gcp-sa
+          mountPath: /var/secrets/gcp
+          readOnly: true
+  volumes:
+    - name: gcp-sa
+      secret:
+        secretName: spire-gcp-sa
+        items:
+          - key: gcp-sa-key.json
+            path: gcp-sa-key.json
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: wizard-gcs-smoke
+  labels:
+    app: spire
+    role: wizard
+    smoke-test: bundlestore-gcs
+spec:
+  restartPolicy: Never
+  containers:
+    - name: wizard
+      image: ghcr.io/awell-health/spire-agent:latest
+      # The wizard's default entrypoint reads tower config and constructs
+      # its own GCSStore; it inherits the same ADC path via the env below.
+      command: ["spire", "execute"]
+      env:
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /var/secrets/gcp/gcp-sa-key.json
+        - name: SPIRE_BEAD_ID
+          value: spi-smoke-wizard
+      volumeMounts:
+        - name: gcp-sa
+          mountPath: /var/secrets/gcp
+          readOnly: true
+  volumes:
+    - name: gcp-sa
+      secret:
+        secretName: spire-gcp-sa
+        items:
+          - key: gcp-sa-key.json
+            path: gcp-sa-key.json

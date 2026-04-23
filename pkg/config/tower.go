@@ -105,17 +105,32 @@ func (c ApprenticeConfig) EffectiveTransport() string {
 // tower state. Zero values are filled from bundlestore defaults at
 // construction time; nothing here is required in a fresh tower config.
 type BundleStoreConfig struct {
-	// Backend selects the implementation. Currently only "local" ships.
+	// Backend selects the implementation. Ships today: "local", "gcs".
 	Backend string `json:"backend,omitempty"`
 	// LocalRoot is the filesystem root for the local backend. Empty
 	// falls back to $XDG_DATA_HOME/spire/bundles.
 	LocalRoot string `json:"local_root,omitempty"`
+	// GCS holds backend-specific settings for the gcs backend. Nested
+	// (rather than flat) so future s3-backend config can be symmetrical.
+	GCS BundleStoreGCSConfig `json:"gcs,omitempty"`
 	// MaxBytes caps individual bundle size. 0 means use the package
 	// default (10 MiB).
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 	// JanitorInterval is parsed with time.ParseDuration. Empty means
 	// use the package default (5m).
 	JanitorInterval string `json:"janitor_interval,omitempty"`
+}
+
+// BundleStoreGCSConfig holds GCS-specific tower configuration for the
+// gcs bundlestore backend. Authentication uses Application Default
+// Credentials — no credential fields live here.
+type BundleStoreGCSConfig struct {
+	// Bucket is the pre-existing GCS bucket name. Required when Backend
+	// is "gcs". The backend does NOT create the bucket.
+	Bucket string `json:"bucket,omitempty"`
+	// Prefix is an optional object-name prefix within the bucket.
+	// Empty stores objects at the bucket root.
+	Prefix string `json:"prefix,omitempty"`
 }
 
 // EffectiveRemoteKind returns the remote kind, defaulting to "dolthub" when

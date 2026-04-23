@@ -12,6 +12,7 @@ package bundlestore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"regexp"
 	"time"
@@ -134,12 +135,20 @@ type BundleInfo struct {
 
 // Config controls BundleStore construction.
 type Config struct {
-	// Backend selects the implementation. Currently only "local" ships;
-	// "pvc", "http", "gcs", "s3" are planned follow-ups.
+	// Backend selects the implementation. Ships today: "local", "gcs".
+	// "pvc", "http", "s3" are planned follow-ups.
 	Backend string
 	// LocalRoot is the filesystem root for the local backend. Empty
 	// means "use the platform default under XDG_DATA_HOME/spire/bundles".
 	LocalRoot string
+	// GCSBucket is the pre-existing GCS bucket for the gcs backend. The
+	// backend does NOT create the bucket — it fails loud at construction
+	// when the bucket is missing or unauthorized.
+	GCSBucket string
+	// GCSPrefix is an optional object-name prefix within the bucket.
+	// Empty stores objects at the bucket root. The prefix is a backend
+	// detail and never appears in BundleHandle.Key.
+	GCSPrefix string
 	// MaxBytes caps individual bundle size. 0 means use DefaultMaxBytes.
 	MaxBytes int64
 	// JanitorInterval controls how often the janitor runs a retention
@@ -160,4 +169,25 @@ func (c Config) WithDefaults() Config {
 		c.JanitorInterval = DefaultJanitorInterval
 	}
 	return c
+}
+
+// New constructs a BundleStore from cfg, dispatching on cfg.Backend.
+// Supported backends: "" (defaults to "local"), "local", "gcs".
+// Callers that pass an unknown backend receive an error naming the
+// offending value and the supported list — the goal is a fail-loud
+// configuration error rather than a silent fallthrough.
+//
+// ctx is used by backends that probe remote resources at construction
+// time (e.g. the gcs backend's bucket-existence check); the local
+// backend ignores it.
+func New(ctx context.Context, cfg Config) (BundleStore, error) {
+	cfg = cfg.WithDefaults()
+	switch cfg.Backend {
+	case "local":
+		return NewLocalStore(cfg)
+	case "gcs":
+		return NewGCSStore(ctx, cfg)
+	default:
+		return nil, fmt.Errorf("bundlestore: unknown backend %q (supported: local, gcs)", cfg.Backend)
+	}
 }
