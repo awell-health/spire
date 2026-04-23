@@ -222,6 +222,18 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		e.log("step: %s (action: %s)", stepName, stepCfg.Action)
 
 		// 4. Dispatch action.
+		// Mark review-loop entry (once) so review_seconds spans the full
+		// sage→fix/arbiter→merge cycle even across wizard re-summons.
+		if isReviewSubgraphStep(stepCfg) {
+			e.markReviewLoopEntry()
+		}
+		// Capture any prior waitForHuman entry so we can emit working_seconds
+		// on the resuming completion. The entry itself is set below when the
+		// step first parks with Hooked=true.
+		waitForHumanEntry := ""
+		if stepCfg.Action == "human.approve" {
+			waitForHumanEntry = state.Vars[waitForHumanVarKey(stepName)]
+		}
 		result := e.dispatchAction(stepName, stepCfg, state)
 
 		// 4b. Notify the optional step observer before any branching. The
@@ -352,6 +364,18 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		}
 
 		if result.Hooked {
+			// Mark the moment the wizard parked on a human-approval gate so
+			// the subsequent unblock can emit a waitForHuman row with the
+			// actual blocked duration. Only set on the FIRST park — repeated
+			// hook-and-wake cycles preserve the original entry timestamp.
+			if stepCfg.Action == "human.approve" {
+				if state.Vars == nil {
+					state.Vars = make(map[string]string)
+				}
+				if _, exists := state.Vars[waitForHumanVarKey(stepName)]; !exists {
+					state.Vars[waitForHumanVarKey(stepName)] = time.Now().UTC().Format(time.RFC3339)
+				}
+			}
 			ss = state.Steps[stepName]
 			ss.Status = "hooked"
 			ss.Outputs = result.Outputs
@@ -381,6 +405,24 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		ss.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 		ss.CompletedCount++
 		state.Steps[stepName] = ss
+
+		// 5b. Emit dispatcher-level pseudo-phase recordings.
+		//   - human.approve resolving after a previous hook → waitForHuman row.
+		//   - review sub-graph step completing → wizard-level review row with
+		//     review_seconds, plus auto-approve when the review auto-advanced
+		//     to a merge outcome.
+		if stepCfg.Action == "human.approve" && waitForHumanEntry != "" {
+			if entered, perr := time.Parse(time.RFC3339, waitForHumanEntry); perr == nil {
+				e.recordWaitForHuman(e.beadID, "", entered, time.Now())
+			}
+			delete(state.Vars, waitForHumanVarKey(stepName))
+		}
+		if isReviewSubgraphStep(stepCfg) {
+			e.recordReviewPhase(e.beadID, "", time.Now())
+			if result.Outputs["outcome"] == "merge" {
+				e.recordAutoApprove(e.beadID, "")
+			}
+		}
 
 		// 6. Close step bead.
 		if stepBeadID, ok := state.StepBeadIDs[stepName]; ok {

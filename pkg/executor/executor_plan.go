@@ -21,6 +21,7 @@ func (e *Executor) wizardPlanTask(bead Bead, model string, maxTurns int) error {
 	for _, c := range existingComments {
 		if strings.HasPrefix(c.Text, "Implementation plan:") {
 			e.log("task already has an implementation plan — skipping")
+			e.recordSkipPhase(e.beadID, "", "plan-already-exists")
 			return nil
 		}
 	}
@@ -93,7 +94,8 @@ Be precise and actionable. The apprentice implementing this will use your plan a
 		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 	}
 	out, err := e.runClaude(args, "task-plan")
-	e.recordAgentRun(e.agentName, e.beadID, "", resolvedModel, "wizard", "plan", started, err)
+	e.recordAgentRun(e.agentName, e.beadID, "", resolvedModel, "wizard", "plan", started, err,
+		withParentRun(e.currentRunID))
 	if err != nil {
 		return fmt.Errorf("claude task plan: %w", err)
 	}
@@ -220,7 +222,8 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 		args = append(args, "--max-turns", fmt.Sprintf("%d", maxTurns))
 	}
 	out, err := e.runClaude(args, "epic-plan")
-	e.recordAgentRun(e.agentName, e.beadID, "", resolvedModel, "wizard", "plan", started, err)
+	e.recordAgentRun(e.agentName, e.beadID, "", resolvedModel, "wizard", "plan", started, err,
+		withParentRun(e.currentRunID))
 	if err != nil {
 		return fmt.Errorf("claude plan: %w", err)
 	}
@@ -351,6 +354,7 @@ func (e *Executor) enrichSubtasksWithChangeSpecs(children []Bead, epicContext, d
 		}
 		if alreadyEnriched {
 			e.log("subtask %s already has a change spec — skipping", child.ID)
+			e.recordSkipPhase(child.ID, e.beadID, "subtask-already-enriched")
 			continue
 		}
 
