@@ -92,6 +92,7 @@ type MetricsReader interface {
 	QueryLifecycleByType(since time.Time) ([]LifecycleByType, error)
 	QueryReviewFixCounts(beadID string) (*ReviewFixCounts, error)
 	QueryChildLifecycle(parentID string) ([]BeadLifecycleIntervals, error)
+	QueryRateLimitEvents(window time.Duration) ([]RateLimitBucket, error)
 }
 
 // ReadWrite is the minimum surface every OLAP backend must satisfy:
@@ -272,6 +273,14 @@ type APIEventStats struct {
 	TotalCostUSD      float64 `json:"total_cost_usd"`
 	TotalInputTokens  int64   `json:"total_input_tokens"`
 	TotalOutputTokens int64   `json:"total_output_tokens"`
+}
+
+// RateLimitBucket is one day's worth of rate-limit events from api_events
+// (rows with event_type='rate_limit'). Callers aggregate or render buckets
+// from QueryRateLimitEvents over a caller-supplied window.
+type RateLimitBucket struct {
+	Day   time.Time `json:"day"`
+	Count int       `json:"count"`
 }
 
 // BeadLifecycle holds the canonical lifecycle timestamps for a single bead.

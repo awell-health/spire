@@ -328,6 +328,9 @@ func cmdMetrics(args []string) error {
 			return metricsJSONEncode(stats)
 		}
 		renderSummaryStats(stats)
+		if rateLimits24h, rlErr := adb.QueryRateLimitEvents(24 * time.Hour); rlErr == nil {
+			renderRateLimitsLine(rateLimits24h)
+		}
 		appendFormulaComparison()
 		return nil
 	}
@@ -348,6 +351,24 @@ func renderSummaryStats(s *olap.SummaryStats) {
 		s.TotalRuns, s.Successes, s.Failures, s.SuccessRate)
 	fmt.Printf("  Avg cost: $%.4f   Avg duration: %.0fs   Total cost: $%.2f\n",
 		s.AvgCostUSD, s.AvgDurationS, s.TotalCostUSD)
+}
+
+// renderRateLimitsLine appends a one-line rate-limit count under the summary.
+// The buckets are per-day from QueryRateLimitEvents(24h); the total sum is
+// displayed so the line matches the "N in last 24h" shape documented in the
+// task scope.
+func renderRateLimitsLine(buckets []olap.RateLimitBucket) {
+	fmt.Printf("  Rate limits: %d in last 24h\n", sumRateLimitBuckets(buckets))
+}
+
+// sumRateLimitBuckets totals the Count field across per-day buckets. Callers
+// that only need a scalar window total (e.g. the summary renderer) use this.
+func sumRateLimitBuckets(buckets []olap.RateLimitBucket) int {
+	total := 0
+	for _, b := range buckets {
+		total += b.Count
+	}
+	return total
 }
 
 func renderModelBreakdown(models []olap.ModelStats) {

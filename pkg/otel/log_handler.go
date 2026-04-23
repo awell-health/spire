@@ -46,6 +46,8 @@ func ParseLogRecords(resourceLogs []*logspb.ResourceLogs, defaultTower string) L
 					result.ToolEvents = append(result.ToolEvents, parseToolEvent(lr, provider, kind, res, tower, ts))
 				case "api_request":
 					result.APIEvents = append(result.APIEvents, parseAPIEvent(lr, provider, res, tower, ts))
+				case "rate_limit_event":
+					result.APIEvents = append(result.APIEvents, parseRateLimitEvent(lr, provider, res, tower, ts))
 				case "tool_decision", "user_prompt":
 					result.ToolEvents = append(result.ToolEvents, parseGenericToolEvent(lr, provider, kind, res, tower, ts))
 				default:
@@ -144,6 +146,27 @@ func parseAPIEvent(lr *logspb.LogRecord, provider string, res RunContext, tower 
 		CostUSD:          attrFloat(attrs, "cost_usd", "cost"),
 		Timestamp:        ts,
 		Tower:            tower,
+		EventType:        "api_request",
+	}
+}
+
+// parseRateLimitEvent maps a claude_code.rate_limit_event (or the equivalent
+// provider-prefixed variant) onto an APIEvent row with event_type='rate_limit'.
+// Token / cost fields stay zero — a rate-limit row records the occurrence, not
+// a completed call. RetryCount is populated when the provider reports it.
+func parseRateLimitEvent(lr *logspb.LogRecord, provider string, res RunContext, tower string, ts time.Time) APIEvent {
+	attrs := logAttrMap(lr.GetAttributes())
+	return APIEvent{
+		SessionID:  res.SessionID,
+		BeadID:     res.BeadID,
+		AgentName:  res.AgentName,
+		Step:       res.FormulaStep,
+		Provider:   provider,
+		Model:      attrStr(attrs, "model", "llm.model"),
+		Timestamp:  ts,
+		Tower:      tower,
+		EventType:  "rate_limit",
+		RetryCount: attrInt(attrs, "retry_count", "attempt", "retry"),
 	}
 }
 

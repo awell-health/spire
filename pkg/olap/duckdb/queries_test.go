@@ -880,6 +880,70 @@ func TestQueryAPIEventsByBead_Empty(t *testing.T) {
 	}
 }
 
+func TestQueryRateLimitEvents(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// 2 rate-limit events within window + 1 old one outside the 24h window
+	// + 1 regular api_request (must be excluded by event_type filter).
+	rows := []struct {
+		ts        time.Time
+		eventType string
+	}{
+		{now.Add(-1 * time.Hour), "rate_limit"},
+		{now.Add(-3 * time.Hour), "rate_limit"},
+		{now.Add(-48 * time.Hour), "rate_limit"}, // outside 24h window
+		{now.Add(-30 * time.Minute), "api_request"},
+	}
+	for i, r := range rows {
+		if _, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO api_events (session_id, bead_id, agent_name, step, provider, model,
+				duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+				cost_usd, timestamp, tower, event_type, retry_count)
+			VALUES (?, 'spi-rl', 'agent', 'impl', 'claude', 'claude-opus-4-7',
+				0, 0, 0, 0, 0, 0, ?, 'tower', ?, 0)`,
+			"s"+string(rune('a'+i)), r.ts, r.eventType,
+		); err != nil {
+			t.Fatalf("insert api event: %v", err)
+		}
+	}
+
+	buckets, err := db.QueryRateLimitEvents(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("QueryRateLimitEvents: %v", err)
+	}
+
+	total := 0
+	for _, b := range buckets {
+		total += b.Count
+	}
+	if total != 2 {
+		t.Errorf("expected 2 rate_limit rows in 24h window, got %d (buckets=%+v)", total, buckets)
+	}
+}
+
+func TestQueryRateLimitEvents_Empty(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	buckets, err := db.QueryRateLimitEvents(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("QueryRateLimitEvents: %v", err)
+	}
+	if len(buckets) != 0 {
+		t.Errorf("expected 0 buckets, got %d", len(buckets))
+	}
+}
+
 func TestNewTablesExistAfterInit(t *testing.T) {
 	db, err := Open("")
 	if err != nil {

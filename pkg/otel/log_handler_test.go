@@ -713,6 +713,80 @@ func TestParseLogRecords_SkipsUnknownEvents(t *testing.T) {
 	}
 }
 
+func TestParseLogRecords_RateLimitEvent(t *testing.T) {
+	now := uint64(time.Now().UnixNano())
+	resourceLogs := []*logspb.ResourceLogs{
+		{
+			Resource: &resourcepb.Resource{
+				Attributes: []*commonpb.KeyValue{
+					strKV("bead.id", "spi-rl"),
+					strKV("session.id", "sess-rl"),
+					strKV("step", "implement"),
+				},
+			},
+			ScopeLogs: []*logspb.ScopeLogs{
+				{
+					LogRecords: []*logspb.LogRecord{
+						{
+							TimeUnixNano: now,
+							Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "claude_code.rate_limit_event"}},
+							Attributes: []*commonpb.KeyValue{
+								strKV("model", "claude-opus-4-7"),
+								strKV("limit_type", "requests_per_minute"),
+								intKV("retry_count", 2),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := ParseLogRecords(resourceLogs, "tower")
+	if len(result.APIEvents) != 1 {
+		t.Fatalf("expected 1 API event, got %d", len(result.APIEvents))
+	}
+	if len(result.ToolEvents) != 0 {
+		t.Fatalf("expected 0 tool events, got %d", len(result.ToolEvents))
+	}
+
+	ev := result.APIEvents[0]
+	if ev.EventType != "rate_limit" {
+		t.Errorf("EventType = %q, want rate_limit", ev.EventType)
+	}
+	if ev.Provider != "claude" {
+		t.Errorf("Provider = %q, want claude", ev.Provider)
+	}
+	if ev.Model != "claude-opus-4-7" {
+		t.Errorf("Model = %q, want claude-opus-4-7", ev.Model)
+	}
+	if ev.RetryCount != 2 {
+		t.Errorf("RetryCount = %d, want 2", ev.RetryCount)
+	}
+	if ev.BeadID != "spi-rl" {
+		t.Errorf("BeadID = %q, want spi-rl", ev.BeadID)
+	}
+	if ev.InputTokens != 0 || ev.OutputTokens != 0 || ev.CostUSD != 0 {
+		t.Errorf("expected zero tokens/cost on rate-limit row, got input=%d output=%d cost=%f",
+			ev.InputTokens, ev.OutputTokens, ev.CostUSD)
+	}
+}
+
+func TestParseAPIEvent_DefaultsEventType(t *testing.T) {
+	// Regression: normal api_request events must land with event_type='api_request'
+	// so the rate-limit filter in QueryRateLimitEvents excludes them.
+	lr := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().UnixNano()),
+		Attributes: []*commonpb.KeyValue{
+			strKV("model", "claude-opus-4-7"),
+		},
+	}
+	ev := parseAPIEvent(lr, "claude", RunContext{}, "tower", time.Now())
+	if ev.EventType != "api_request" {
+		t.Errorf("EventType = %q, want api_request", ev.EventType)
+	}
+}
+
 func TestParseLogRecords_MixedBatch(t *testing.T) {
 	now := uint64(time.Now().UnixNano())
 	resourceLogs := []*logspb.ResourceLogs{

@@ -181,6 +181,37 @@ func (d *DB) Submit(fn func(*sql.Tx) error) error {
 	return tx.Commit()
 }
 
+// QueryRateLimitEvents returns per-day counts of api_events rows with
+// event_type='rate_limit', covering the last `window` relative to now. Days
+// with no rate-limit observations are omitted. Callers that want a scalar
+// total (e.g. the CLI summary) sum the returned counts.
+func (d *DB) QueryRateLimitEvents(window time.Duration) ([]olap.RateLimitBucket, error) {
+	since := time.Now().Add(-window)
+	rows, err := d.db.QueryContext(context.Background(), `
+		SELECT
+			date_trunc('day', timestamp)::DATE AS day,
+			COUNT(*) AS count
+		FROM api_events
+		WHERE event_type = 'rate_limit'
+		  AND timestamp >= ?
+		GROUP BY 1
+		ORDER BY 1 DESC
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []olap.RateLimitBucket
+	for rows.Next() {
+		var b olap.RateLimitBucket
+		if err := rows.Scan(&b.Day, &b.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // QueryFormulaPerformance returns aggregated stats per formula name and version
 // for all runs with started_at >= since.
 //

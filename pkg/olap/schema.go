@@ -148,6 +148,9 @@ CREATE TABLE IF NOT EXISTS tool_spans (
     attributes     TEXT
 )`
 
+// event_type distinguishes normal LLM request rows ('api_request') from
+// rate-limit observations ('rate_limit'). retry_count is populated only for
+// rate-limit rows that carry a retry_count attribute; otherwise 0/NULL.
 const createAPIEvents = `
 CREATE TABLE IF NOT EXISTS api_events (
     session_id      VARCHAR,
@@ -163,7 +166,9 @@ CREATE TABLE IF NOT EXISTS api_events (
     cache_write_tokens BIGINT,
     cost_usd        DOUBLE,
     timestamp       TIMESTAMP DEFAULT current_timestamp,
-    tower           VARCHAR
+    tower           VARCHAR,
+    event_type      VARCHAR DEFAULT 'api_request',
+    retry_count     INTEGER
 )`
 
 // createBeadLifecycleOLAP mirrors the Dolt bead_lifecycle sidecar into DuckDB
@@ -196,6 +201,8 @@ func schemaMigrations() []string {
 		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS stop_reason VARCHAR`,
 		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT`,
 		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT`,
+		`ALTER TABLE api_events ADD COLUMN IF NOT EXISTS event_type VARCHAR DEFAULT 'api_request'`,
+		`ALTER TABLE api_events ADD COLUMN IF NOT EXISTS retry_count INTEGER`,
 	}
 }
 

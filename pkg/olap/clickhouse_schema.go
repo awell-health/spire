@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS api_events (
     cache_write_tokens Int64,
     cost_usd           Float64,
     timestamp          DateTime64(3) DEFAULT now64(3),
-    tower              String
+    tower              String,
+    event_type         String DEFAULT 'api_request',
+    retry_count        Int32
 ) ENGINE = MergeTree()
 ORDER BY (tower, bead_id, timestamp)
 `

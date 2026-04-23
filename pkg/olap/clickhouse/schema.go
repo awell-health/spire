@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS api_events (
     cache_write_tokens Int64,
     cost_usd           Float64,
     timestamp          DateTime64(3) DEFAULT now64(3),
-    tower              String
+    tower              String,
+    event_type         String DEFAULT 'api_request',
+    retry_count        Int32
 ) ENGINE = MergeTree()
 ORDER BY (tower, bead_id, timestamp)
 `
@@ -149,6 +151,8 @@ func schemaMigrations() []string {
 		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS stop_reason String`,
 		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS cache_read_tokens Int64`,
 		`ALTER TABLE agent_runs_olap ADD COLUMN IF NOT EXISTS cache_write_tokens Int64`,
+		`ALTER TABLE api_events ADD COLUMN IF NOT EXISTS event_type String DEFAULT 'api_request'`,
+		`ALTER TABLE api_events ADD COLUMN IF NOT EXISTS retry_count Int32`,
 	}
 }
 

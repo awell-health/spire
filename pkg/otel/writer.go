@@ -48,21 +48,30 @@ type ToolSpan struct {
 }
 
 // APIEvent represents an LLM API call captured from an OTel log record.
+//
+// EventType is "api_request" for normal LLM call observations and
+// "rate_limit" when the provider signalled that we were throttled. The
+// rate-limit variant reuses Model (the endpoint/model being called) and
+// Timestamp; token / cost fields are typically zero. RetryCount is the
+// retry attempt number that triggered the limit, when the provider
+// reports it; otherwise 0.
 type APIEvent struct {
-	SessionID       string
-	BeadID          string
-	AgentName       string
-	Step            string
-	Provider        string // "claude" or "codex"
-	Model           string
-	DurationMs      int
-	InputTokens     int64
-	OutputTokens    int64
-	CacheReadTokens int64
+	SessionID        string
+	BeadID           string
+	AgentName        string
+	Step             string
+	Provider         string // "claude" or "codex"
+	Model            string
+	DurationMs       int
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
 	CacheWriteTokens int64
-	CostUSD         float64
-	Timestamp       time.Time
-	Tower           string
+	CostUSD          float64
+	Timestamp        time.Time
+	Tower            string
+	EventType        string // "api_request" (default) or "rate_limit"
+	RetryCount       int
 }
 
 // WriteBatch inserts a batch of tool events into DuckDB in a single transaction.
@@ -157,6 +166,8 @@ func InsertToolSpansTx(tx *sql.Tx, spans []ToolSpan) error {
 }
 
 // InsertAPIEventsTx inserts a batch of API events inside an existing transaction.
+// Rows with an empty EventType are recorded as "api_request" so legacy call
+// sites that don't set the field keep their prior semantics.
 func InsertAPIEventsTx(tx *sql.Tx, events []APIEvent) error {
 	if len(events) == 0 {
 		return nil
@@ -165,8 +176,8 @@ func InsertAPIEventsTx(tx *sql.Tx, events []APIEvent) error {
 	stmt, err := tx.Prepare(`INSERT INTO api_events
 		(session_id, bead_id, agent_name, step, provider, model, duration_ms,
 		 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-		 cost_usd, timestamp, tower)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 cost_usd, timestamp, tower, event_type, retry_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("otel write api events: prepare: %w", err)
 	}
@@ -177,9 +188,14 @@ func InsertAPIEventsTx(tx *sql.Tx, events []APIEvent) error {
 		if ts.IsZero() {
 			ts = time.Now().UTC()
 		}
+		eventType := e.EventType
+		if eventType == "" {
+			eventType = "api_request"
+		}
 		if _, err := stmt.Exec(e.SessionID, e.BeadID, e.AgentName, e.Step,
 			e.Provider, e.Model, e.DurationMs, e.InputTokens, e.OutputTokens,
-			e.CacheReadTokens, e.CacheWriteTokens, e.CostUSD, ts, e.Tower); err != nil {
+			e.CacheReadTokens, e.CacheWriteTokens, e.CostUSD, ts, e.Tower,
+			eventType, e.RetryCount); err != nil {
 			return fmt.Errorf("otel write api events: exec: %w", err)
 		}
 	}
