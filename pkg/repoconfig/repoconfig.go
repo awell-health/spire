@@ -60,19 +60,24 @@ type DesignConfig struct {
 
 // RuntimeConfig describes how to install, test, build, and lint the repo.
 //
-// Test vs CITest: Test is the apprentice validation gate — it runs inside
-// sandboxed cluster pods with a ~10m wizard stale timeout, so it must be
-// narrow enough to pass without external fixtures (dolt, network, etc.).
-// CITest is the broader surface invoked by CI/build tooling to catch
-// cross-module drift (e.g. operator submodule breakage). If CITest is empty,
-// callers that want the broader scope fall back to Test.
+// Apprentice vs CI scopes: Test/Build/Lint are the apprentice validation
+// gate — they run inside sandboxed cluster pods with a ~10m wizard stale
+// timeout and a cold module cache, so they must stay narrow to keep the
+// implement phase under 2 min (see spi-dx5621). CITest/CIBuild/CILint are
+// the broader surfaces invoked by CI/build tooling to catch cross-module
+// drift (operator submodule breakage, go.mod normalization, CRD/RBAC
+// drift, etc.). If a CI* field is empty, callers that want the broader
+// scope fall back to the narrow variant. See spi-q3lfd3 for the original
+// test split and spi-dx5621 for the build/lint parallel.
 type RuntimeConfig struct {
-	Language string `yaml:"language"`          // go, typescript, python, rust
-	Install  string `yaml:"install"`           // e.g. "pnpm install"
-	Test     string `yaml:"test"`              // apprentice gate; narrow, sandbox-safe
-	CITest   string `yaml:"ci_test,omitempty"` // CI-scope tests; optional, falls back to Test
-	Build    string `yaml:"build,omitempty"`   // optional
-	Lint     string `yaml:"lint,omitempty"`    // optional
+	Language string `yaml:"language"`           // go, typescript, python, rust
+	Install  string `yaml:"install"`            // e.g. "pnpm install"
+	Test     string `yaml:"test"`               // apprentice gate; narrow, sandbox-safe
+	CITest   string `yaml:"ci_test,omitempty"`  // CI-scope tests; optional, falls back to Test
+	Build    string `yaml:"build,omitempty"`    // apprentice gate; narrow, sandbox-safe
+	CIBuild  string `yaml:"ci_build,omitempty"` // CI-scope build; optional, falls back to Build
+	Lint     string `yaml:"lint,omitempty"`     // apprentice gate; narrow, sandbox-safe
+	CILint   string `yaml:"ci_lint,omitempty"`  // CI-scope lint; optional, falls back to Lint
 }
 
 // AgentConfig controls autonomous agent behaviour.

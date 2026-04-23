@@ -11,8 +11,23 @@ runtime:
   # class that spi-w9qicf was filed against. Callers that want the broad
   # scope should prefer ci_test and fall back to test if ci_test is empty.
   ci_test: go test ./... -timeout=60s && cd operator && go test ./... -timeout=60s
-  build: go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./... && cd operator && go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./...
-  # lint covers Go vet (both modules), the RBAC marker-vs-generated
+  # build / lint follow the same apprentice-gate / CI-gate split as
+  # test / ci_test above (see spi-dx5621). Apprentice implement phases
+  # in sandboxed cluster pods hit a cold go module cache — running the
+  # broad `go mod tidy && go build ./...` across both the main module
+  # and the operator submodule was adding 5-10 min of overhead on every
+  # dispatch. The narrow build/lint below stay under the 2-min acceptance
+  # budget; cross-module drift coverage lives in ci_build / ci_lint and
+  # in the CI workflows under .github/workflows/. Do NOT re-broaden
+  # build/lint without revisiting spi-dx5621.
+  build: go build ./cmd/spire/
+  lint: go vet ./cmd/spire/
+  # ci_build mirrors the pre-spi-dx5621 build command byte-for-byte: full
+  # module tree + operator submodule + `go mod tidy` / `git diff
+  # --exit-code` drift guards. Invoked by CI/build tooling (not apprentice
+  # pods) to catch operator-submodule drift and go.mod normalization.
+  ci_build: go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./... && cd operator && go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./...
+  # ci_lint covers Go vet (both modules), the RBAC marker-vs-generated
   # drift guard (spi-3shzb7: verify-rbac regenerates
   # operator/config/rbac/role.yaml from +kubebuilder:rbac markers and
   # fails on any git diff), and a CRD consistency check. Helm chart
@@ -21,7 +36,7 @@ runtime:
   # live in the CI pipeline instead of the apprentice validation
   # gate (which runs in sandboxed cluster pods that intentionally
   # don't ship a production helm toolchain).
-  lint: go vet ./... && cd operator && go vet ./... && go generate ./api/... && make verify-rbac && cd .. && git diff --exit-code helm/spire/crds/
+  ci_lint: go vet ./... && cd operator && go vet ./... && go generate ./api/... && make verify-rbac && cd .. && git diff --exit-code helm/spire/crds/
 
 agent:
   model: claude-opus-4-7
