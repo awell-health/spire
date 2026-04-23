@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -173,6 +176,117 @@ func TestApplyProcessEnv_OmitsEmptyRole(t *testing.T) {
 		if strings.HasPrefix(e, "SPIRE_ROLE=") {
 			t.Errorf("unexpected SPIRE_ROLE set: %s", e)
 		}
+	}
+}
+
+// TestTeeSpawnOutput_WritesToBothLogAndStderr verifies that subprocess
+// stdout is captured by both the LogPath file AND the parent stderr
+// sink — the core tee guarantee that lets `kubectl logs` recover
+// apprentice/sage output after the wizard pod is GC'd.
+func TestTeeSpawnOutput_WritesToBothLogAndStderr(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "spawn.log")
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", "echo hello-tee")
+	logFile := teeSpawnOutput(cmd, logPath, pw)
+	if logFile == nil {
+		t.Fatalf("expected logFile to be opened")
+	}
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("cmd.Run: %v", err)
+	}
+	logFile.Close()
+	pw.Close()
+
+	captured, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	if !strings.Contains(string(captured), "hello-tee") {
+		t.Errorf("stderr sink missing 'hello-tee'; got: %q", captured)
+	}
+
+	onDisk, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read logPath: %v", err)
+	}
+	if !strings.Contains(string(onDisk), "hello-tee") {
+		t.Errorf("log file missing 'hello-tee'; got: %q", onDisk)
+	}
+}
+
+// TestTeeSpawnOutput_FallbackOnOpenFailure verifies that when the
+// LogPath file cannot be opened, Spawn falls back to stderr-only
+// instead of crashing — output must still reach the parent sink so the
+// cluster log path keeps working.
+func TestTeeSpawnOutput_FallbackOnOpenFailure(t *testing.T) {
+	dir := t.TempDir()
+	// Make the directory read-only so OpenFile(CREATE|WRONLY) fails.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
+	logPath := filepath.Join(dir, "spawn.log")
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", "echo fallback-ok")
+	logFile := teeSpawnOutput(cmd, logPath, pw)
+	if logFile != nil {
+		t.Errorf("expected logFile to be nil on open failure, got %v", logFile)
+	}
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("cmd.Run: %v", err)
+	}
+	pw.Close()
+
+	captured, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	if !strings.Contains(string(captured), "fallback-ok") {
+		t.Errorf("stderr sink missing 'fallback-ok'; got: %q", captured)
+	}
+	if !strings.Contains(string(captured), "falling back to stderr-only") {
+		t.Errorf("expected fallback log message in stderr sink; got: %q", captured)
+	}
+}
+
+// TestTeeSpawnOutput_NoLogPath verifies that when LogPath is empty,
+// output still reaches the stderr sink (the pre-tee behavior).
+func TestTeeSpawnOutput_NoLogPath(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", "echo no-log")
+	logFile := teeSpawnOutput(cmd, "", pw)
+	if logFile != nil {
+		t.Errorf("expected logFile nil when logPath empty, got %v", logFile)
+	}
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("cmd.Run: %v", err)
+	}
+	pw.Close()
+
+	captured, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	if !strings.Contains(string(captured), "no-log") {
+		t.Errorf("stderr sink missing 'no-log'; got: %q", captured)
 	}
 }
 

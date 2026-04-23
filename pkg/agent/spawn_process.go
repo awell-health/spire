@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,9 +23,10 @@ type ProcessSpawner struct{}
 
 // ProcessHandle tracks a locally-spawned agent process.
 type ProcessHandle struct {
-	name   string
-	cmd    *exec.Cmd
-	exited atomic.Bool
+	name    string
+	cmd     *exec.Cmd
+	logFile *os.File
+	exited  atomic.Bool
 }
 
 // NewProcessHandle creates a ProcessHandle wrapping an already-started exec.Cmd.
@@ -86,32 +88,30 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	cmd.Env = os.Environ()
 	applyProcessEnv(cmd, cfg)
 
-	if cfg.LogPath != "" {
-		os.MkdirAll(filepath.Dir(cfg.LogPath), 0755)
-		logFile, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-		if err != nil {
-			return nil, fmt.Errorf("open log %s: %w", cfg.LogPath, err)
-		}
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
-		// Start duplicates the fd for the child. Close our copy after Start.
-		defer logFile.Close()
-	} else {
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-	}
+	logFile := teeSpawnOutput(cmd, cfg.LogPath, os.Stderr)
 
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			logFile.Close()
+		}
 		return nil, err
 	}
 
-	return &ProcessHandle{name: cfg.Name, cmd: cmd}, nil
+	// When cmd.Stdout/Stderr is an io.Writer (not an *os.File), exec.Cmd
+	// spawns a copy goroutine that forwards the child's pipe to our
+	// writer, and that goroutine is only joined inside cmd.Wait(). We
+	// therefore cannot close logFile until Wait() returns — do it in
+	// ProcessHandle.Wait().
+	return &ProcessHandle{name: cfg.Name, cmd: cmd, logFile: logFile}, nil
 }
 
 // Wait blocks until the process exits.
 func (h *ProcessHandle) Wait() error {
 	err := h.cmd.Wait()
 	h.exited.Store(true)
+	if h.logFile != nil {
+		h.logFile.Close()
+	}
 	return err
 }
 
@@ -146,6 +146,34 @@ func (h *ProcessHandle) Identifier() string {
 		return strconv.Itoa(h.cmd.Process.Pid)
 	}
 	return ""
+}
+
+// teeSpawnOutput wires cmd.Stdout and cmd.Stderr so subprocess output
+// lands on both the LogPath file (preserves the local-native artifact
+// pairing used by the wizard plan inspector) and stderrSink (becomes
+// PID 1's stderr in-cluster, which kubelet retains via `kubectl logs`
+// even after the wizard pod is GC'd).
+//
+// Returns the opened log file so the caller can close it after
+// cmd.Wait() joins the copy goroutine that exec.Cmd spawns when Stdout
+// is a generic io.Writer. Returns nil if logPath is empty or the file
+// could not be opened; in either case output still reaches stderrSink.
+func teeSpawnOutput(cmd *exec.Cmd, logPath string, stderrSink io.Writer) *os.File {
+	var w io.Writer = stderrSink
+	var logFile *os.File
+	if logPath != "" {
+		os.MkdirAll(filepath.Dir(logPath), 0755)
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			fmt.Fprintf(stderrSink, "spawn: open log %s failed, falling back to stderr-only: %v\n", logPath, err)
+		} else {
+			logFile = f
+			w = io.MultiWriter(f, stderrSink)
+		}
+	}
+	cmd.Stdout = w
+	cmd.Stderr = w
+	return logFile
 }
 
 // applyProcessEnv injects all SpawnConfig-derived env vars into cmd.Env.
