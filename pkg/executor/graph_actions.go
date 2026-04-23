@@ -639,6 +639,13 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("handoff selection for %s: %w", stepName, err)}
 	}
+	// Validate the workspace on disk right before the spawn — heals missing
+	// paths, paused rebases/merges, stale locks, and detached HEADs in-process
+	// so resume either proceeds cleanly or fails with an actionable error.
+	stepBeadID := state.StepBeadIDs[stepName]
+	if vErr := e.validateWorkspaceForDispatch(state.RepoPath, stepName, stepBeadID, cfg.Workspace); vErr != nil {
+		return ActionResult{Error: fmt.Errorf("workspace validation failed for step %s: %w", stepName, vErr)}
+	}
 	handle, err := e.deps.Spawner.Spawn(cfg)
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("spawn %s: %w", stepName, err)}

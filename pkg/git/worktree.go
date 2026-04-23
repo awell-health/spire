@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,56 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+// ErrBranchNotFound indicates EnsureWorktreeAt was asked to recreate a worktree
+// for a branch that does not exist in the repo. Callers use errors.Is to
+// distinguish this from other worktree-add failures so the dispatch policy can
+// surface a "run spire reset --hard" message when both path and branch are gone.
+var ErrBranchNotFound = errors.New("branch not found")
+
+// EnsureWorktreeAt guarantees a worktree for branch exists at path. Pure
+// primitive: no policy, no logging. Returns nil when the directory already
+// exists and is a worktree at branch. Otherwise runs git worktree add path
+// branch. When branch does not exist, returns a wrapped ErrBranchNotFound so
+// the dispatch layer can surface the right recovery message.
+//
+// repoDir must point at the main repo; the worktree add runs from there so
+// git resolves refs against the main worktree's .git.
+func EnsureWorktreeAt(repoDir, path, branch string) error {
+	if path == "" {
+		return fmt.Errorf("ensure worktree at: empty path")
+	}
+	if branch == "" {
+		return fmt.Errorf("ensure worktree at %s: empty branch", path)
+	}
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		cur, cErr := currentBranchAt(path)
+		if cErr == nil && cur == branch {
+			return nil
+		}
+	}
+	rc := &RepoContext{Dir: repoDir}
+	if !rc.BranchExists(branch) {
+		return fmt.Errorf("ensure worktree at %s: %w: %s", path, ErrBranchNotFound, branch)
+	}
+	cmd := exec.Command("git", "worktree", "add", path, branch)
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree add %s %s: %w: %s", path, branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// currentBranchAt returns the branch name currently checked out at dir.
+// Returns empty string when dir is not a worktree or HEAD is detached.
+func currentBranchAt(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
 
 // WorktreeContext is the single abstraction for all git operations inside a
 // worktree. Every git command that runs in a worktree must go through this

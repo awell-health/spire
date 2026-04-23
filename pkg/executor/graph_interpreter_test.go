@@ -3608,3 +3608,285 @@ func TestEnsureGraphStepBeads_MixedStates(t *testing.T) {
 		t.Errorf("expected only step-implement to be reactivated, got: %v", activated)
 	}
 }
+
+// --- ensureGraphStepBeads resummon reconciliation (spi-xezdq4) ---
+//
+// These tests cover the expanded set of resummon drift cases: reused step beads
+// left "closed" OR "hooked" while graph state has rewound to "pending", plus
+// the parent-hook reconciliation pass that clears a stale hooked parent when
+// no step in graph state is hooked.
+
+// TestEnsureGraphStepBeads_ReopensClosedWithPendingState is the canonical
+// "reset-path forgot to reopen" case — graph state is pending, step bead is
+// closed. Reconciliation must reopen so the step actually runs on resume.
+func TestEnsureGraphStepBeads_ReopensClosedWithPendingState(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	beadStatus := map[string]string{"step-implement": "closed"}
+	var activated []string
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: beadStatus[id]}, nil
+	}
+	deps.ActivateStepBead = func(stepID string) error {
+		activated = append(activated, stepID)
+		beadStatus[stepID] = "open"
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-reopen-closed",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {Action: "test.noop"},
+		},
+	}
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"implement": {Status: "pending"},
+		},
+		StepBeadIDs: map[string]string{"implement": "step-implement"},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	if err := exec.ensureGraphStepBeads(graph, state); err != nil {
+		t.Fatalf("ensureGraphStepBeads: %v", err)
+	}
+
+	if len(activated) != 1 || activated[0] != "step-implement" {
+		t.Errorf("expected step-implement to be reactivated, got: %v", activated)
+	}
+}
+
+// TestEnsureGraphStepBeads_ReopensHookedWithPendingState is the new case
+// contributed by this task: a reused step bead in "hooked" status with a
+// pending graph state must also be reopened. Without this, a step bead that
+// was parked by a prior run but since cleaned up in graph state stays hooked
+// forever and the step silently skips on resume.
+func TestEnsureGraphStepBeads_ReopensHookedWithPendingState(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	beadStatus := map[string]string{"step-implement": "hooked"}
+	var activated []string
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: beadStatus[id]}, nil
+	}
+	deps.ActivateStepBead = func(stepID string) error {
+		activated = append(activated, stepID)
+		beadStatus[stepID] = "open"
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-reopen-hooked",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {Action: "test.noop"},
+		},
+	}
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"implement": {Status: "pending"},
+		},
+		StepBeadIDs: map[string]string{"implement": "step-implement"},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	if err := exec.ensureGraphStepBeads(graph, state); err != nil {
+		t.Fatalf("ensureGraphStepBeads: %v", err)
+	}
+
+	if len(activated) != 1 || activated[0] != "step-implement" {
+		t.Errorf("expected step-implement to be reactivated from hooked, got: %v", activated)
+	}
+}
+
+// TestEnsureGraphStepBeads_LeavesClosedCompletedAlone guards the terminal case:
+// a closed step bead whose graph state is "completed" is the correct terminal
+// state. No activation attempt.
+func TestEnsureGraphStepBeads_LeavesClosedCompletedAlone(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "closed"}, nil
+	}
+	var activated []string
+	deps.ActivateStepBead = func(stepID string) error {
+		activated = append(activated, stepID)
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-leave-completed",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {Action: "test.noop"},
+		},
+	}
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"implement": {Status: "completed"},
+		},
+		StepBeadIDs: map[string]string{"implement": "step-implement"},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	if err := exec.ensureGraphStepBeads(graph, state); err != nil {
+		t.Fatalf("ensureGraphStepBeads: %v", err)
+	}
+
+	if len(activated) != 0 {
+		t.Errorf("expected no activations for completed-closed step, got: %v", activated)
+	}
+}
+
+// TestEnsureGraphStepBeads_ClearsStaleParentHook verifies the parent-hook
+// reconciliation. If the parent bead is "hooked" but no step in graph state is
+// hooked, the hook is stale — the steward already cleaned up the step but
+// forgot the parent. Reconciliation clears it.
+func TestEnsureGraphStepBeads_ClearsStaleParentHook(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// Parent bead is hooked; step bead is already open.
+	beadStatus := map[string]string{
+		"spi-test":       "hooked",
+		"step-implement": "open",
+	}
+	var updates []map[string]interface{}
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: beadStatus[id]}, nil
+	}
+	deps.UpdateBead = func(id string, u map[string]interface{}) error {
+		cp := make(map[string]interface{}, len(u)+1)
+		cp["_id"] = id
+		for k, v := range u {
+			cp[k] = v
+		}
+		updates = append(updates, cp)
+		if s, ok := u["status"].(string); ok {
+			beadStatus[id] = s
+		}
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-clear-parent",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {Action: "test.noop"},
+		},
+	}
+	// No step is hooked in graph state — parent hook is stale.
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"implement": {Status: "completed"},
+		},
+		StepBeadIDs: map[string]string{"implement": "step-implement"},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	if err := exec.ensureGraphStepBeads(graph, state); err != nil {
+		t.Fatalf("ensureGraphStepBeads: %v", err)
+	}
+
+	found := false
+	for _, u := range updates {
+		if u["_id"] == "spi-test" && u["status"] == "in_progress" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected parent bead update clearing hook (status=in_progress), got: %v", updates)
+	}
+}
+
+// TestEnsureGraphStepBeads_PreservesCurrentParentHook is the bound-case:
+// if graph state has any hooked step, the parent hook is still current and
+// must be preserved.
+func TestEnsureGraphStepBeads_PreservesCurrentParentHook(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	beadStatus := map[string]string{
+		"spi-test":       "hooked",
+		"step-implement": "hooked",
+	}
+	var updates []map[string]interface{}
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: beadStatus[id]}, nil
+	}
+	deps.UpdateBead = func(id string, u map[string]interface{}) error {
+		cp := make(map[string]interface{}, len(u)+1)
+		cp["_id"] = id
+		for k, v := range u {
+			cp[k] = v
+		}
+		updates = append(updates, cp)
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-preserve-parent",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {Action: "test.noop"},
+		},
+	}
+	// A step is hooked — parent hook is still current.
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"implement": {Status: "hooked"},
+		},
+		StepBeadIDs: map[string]string{"implement": "step-implement"},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	if err := exec.ensureGraphStepBeads(graph, state); err != nil {
+		t.Fatalf("ensureGraphStepBeads: %v", err)
+	}
+
+	for _, u := range updates {
+		if u["_id"] == "spi-test" {
+			t.Errorf("expected no parent-bead update while step remains hooked, got: %v", u)
+		}
+	}
+}
+
+// TestInferPreHookParentStatus covers the status-inference helper directly so
+// the mapping rule (any-advanced-step → in_progress, all-pending → open)
+// doesn't silently drift.
+func TestInferPreHookParentStatus(t *testing.T) {
+	cases := []struct {
+		name   string
+		states map[string]string
+		want   string
+	}{
+		{"all pending", map[string]string{"a": "pending", "b": "pending"}, "open"},
+		{"one completed", map[string]string{"a": "completed", "b": "pending"}, "in_progress"},
+		{"one active", map[string]string{"a": "active"}, "in_progress"},
+		{"one failed", map[string]string{"a": "failed", "b": "pending"}, "in_progress"},
+		{"only skipped", map[string]string{"a": "skipped"}, "open"},
+		{"only hooked", map[string]string{"a": "hooked"}, "open"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			steps := map[string]StepState{}
+			for name, status := range c.states {
+				steps[name] = StepState{Status: status}
+			}
+			got := inferPreHookParentStatus(&GraphState{Steps: steps})
+			if got != c.want {
+				t.Errorf("inferPreHookParentStatus(%v) = %q, want %q", c.states, got, c.want)
+			}
+		})
+	}
+}
