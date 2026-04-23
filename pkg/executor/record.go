@@ -101,6 +101,42 @@ func withRecoveryBead(beadID string) recordOpt {
 	}
 }
 
+// withStartupSeconds records the startup phase duration — measured from
+// agent spawn to the first tool_event emitted by the agent. Captures
+// init cost: container/pod startup, repo clone, context focus, claim.
+func withStartupSeconds(s float64) recordOpt {
+	return func(r *AgentRun) {
+		r.StartupSeconds = int(s)
+	}
+}
+
+// withWorkingSeconds records the working phase duration — measured from
+// the first tool_event to the last tool_event emitted by the agent.
+// Captures the actual LLM work time, excluding startup and teardown.
+func withWorkingSeconds(s float64) recordOpt {
+	return func(r *AgentRun) {
+		r.WorkingSeconds = int(s)
+	}
+}
+
+// withQueueSeconds records the queue time — measured from the moment
+// the bead became ready (no open blockers) to the moment a wizard was
+// assigned and spawn began. Captures READY-queue latency.
+func withQueueSeconds(s float64) recordOpt {
+	return func(r *AgentRun) {
+		r.QueueSeconds = int(s)
+	}
+}
+
+// withReviewSeconds records the review cycle duration — measured from
+// review-loop entry (first sage dispatch) to review-loop exit (final
+// verdict: approve, reject, or arbiter decision).
+func withReviewSeconds(s float64) recordOpt {
+	return func(r *AgentRun) {
+		r.ReviewSeconds = int(s)
+	}
+}
+
 // populateTimingBucket returns the bucket label for a given duration.
 func populateTimingBucket(d time.Duration) string {
 	switch {

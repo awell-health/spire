@@ -38,6 +38,92 @@ func TestWithReviewStep(t *testing.T) {
 	}
 }
 
+func TestTimingBucketOptions(t *testing.T) {
+	t.Run("options mutate struct fields directly", func(t *testing.T) {
+		var run AgentRun
+		withStartupSeconds(12.7)(&run)
+		withWorkingSeconds(340.9)(&run)
+		withQueueSeconds(3.0)(&run)
+		withReviewSeconds(58.4)(&run)
+
+		if run.StartupSeconds != 12 {
+			t.Errorf("StartupSeconds = %d, want 12", run.StartupSeconds)
+		}
+		if run.WorkingSeconds != 340 {
+			t.Errorf("WorkingSeconds = %d, want 340", run.WorkingSeconds)
+		}
+		if run.QueueSeconds != 3 {
+			t.Errorf("QueueSeconds = %d, want 3", run.QueueSeconds)
+		}
+		if run.ReviewSeconds != 58 {
+			t.Errorf("ReviewSeconds = %d, want 58", run.ReviewSeconds)
+		}
+	})
+
+	t.Run("recordAgentRun writes non-zero timing fields when options are passed", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) (string, error) {
+				recorded = &run
+				return "", nil
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-7", "wizard", "review",
+			time.Now().Add(-10*time.Second), nil,
+			withStartupSeconds(7),
+			withWorkingSeconds(200),
+			withQueueSeconds(15),
+			withReviewSeconds(90),
+		)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.StartupSeconds != 7 {
+			t.Errorf("StartupSeconds = %d, want 7", recorded.StartupSeconds)
+		}
+		if recorded.WorkingSeconds != 200 {
+			t.Errorf("WorkingSeconds = %d, want 200", recorded.WorkingSeconds)
+		}
+		if recorded.QueueSeconds != 15 {
+			t.Errorf("QueueSeconds = %d, want 15", recorded.QueueSeconds)
+		}
+		if recorded.ReviewSeconds != 90 {
+			t.Errorf("ReviewSeconds = %d, want 90", recorded.ReviewSeconds)
+		}
+	})
+
+	t.Run("recordAgentRun leaves timing fields zero when no options are passed", func(t *testing.T) {
+		var recorded *AgentRun
+		deps := &Deps{
+			RecordAgentRun: func(run AgentRun) (string, error) {
+				recorded = &run
+				return "", nil
+			},
+		}
+		e := NewForTest("spi-test", "wizard-test", nil, deps)
+		e.recordAgentRun("test-agent", "spi-test", "", "claude-opus-4-7", "wizard", "implement",
+			time.Now().Add(-10*time.Second), nil)
+
+		if recorded == nil {
+			t.Fatal("RecordAgentRun was not called")
+		}
+		if recorded.StartupSeconds != 0 {
+			t.Errorf("StartupSeconds = %d, want 0", recorded.StartupSeconds)
+		}
+		if recorded.WorkingSeconds != 0 {
+			t.Errorf("WorkingSeconds = %d, want 0", recorded.WorkingSeconds)
+		}
+		if recorded.QueueSeconds != 0 {
+			t.Errorf("QueueSeconds = %d, want 0", recorded.QueueSeconds)
+		}
+		if recorded.ReviewSeconds != 0 {
+			t.Errorf("ReviewSeconds = %d, want 0", recorded.ReviewSeconds)
+		}
+	})
+}
+
 func TestMapResultValue(t *testing.T) {
 	tests := []struct {
 		input string
