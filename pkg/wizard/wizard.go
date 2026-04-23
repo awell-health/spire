@@ -246,8 +246,8 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		} else {
 			log("configured github token auth for push")
 		}
-	} else {
-		log("WARN: no GITHUB_TOKEN configured — push to origin will fail")
+	} else if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		log("WARN: no GITHUB_TOKEN configured — cluster push requires this env var")
 	}
 
 	if err := deps.RequireDolt(); err != nil {
