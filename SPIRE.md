@@ -328,6 +328,30 @@ goes into the appropriate `pkg/` package, not `cmd/spire/`. The only
 code in `cmd/spire/` should be CLI adapters (flag parsing + delegation)
 and bridge files that wire cross-package callbacks.
 
+### 14. Validation coverage must be a superset of the deploy surface
+
+If a thing ships, it must be checked. If it's checked only at deploy
+time, the check is too late.
+
+The deploy surface includes:
+
+- Every Go module and submodule that ships in any image (repo root,
+  `operator/`, any future submodules)
+- Every chart template that renders into the cluster (`helm/spire/`)
+- Every CRD the chart installs (`helm/spire/crds/`)
+- Every RBAC rule the operator depends on
+- The match between Go types and the CRD schemas built from them
+- The match between reconciler controllers and the RBAC rules
+
+The apprentice validation loop (`spire.yaml` build/test/lint commands)
+must cover all of the above. Docker builds and `helm install` are
+useful last-line defenses; they must never be the first line.
+
+**Why:** Epic spi-qxbont tightens the validation loop to meet this
+principle. See design spi-uhhxoc for the five-bug case study that
+motivated the principle (CRD drift, RBAC drift, latent-path bugs,
+build-scope drift).
+
 ## Code rules
 
 ### Where new code goes
