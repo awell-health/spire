@@ -343,9 +343,19 @@ The deploy surface includes:
 - The match between Go types and the CRD schemas built from them
 - The match between reconciler controllers and the RBAC rules
 
-The apprentice validation loop (`spire.yaml` build/test/lint commands)
-must cover all of the above. Docker builds and `helm install` are
-useful last-line defenses; they must never be the first line.
+The validation loop (`spire.yaml` build/test/lint commands) must cover
+all of the above. Docker builds and `helm install` are useful last-line
+defenses; they must never be the first line.
+
+Since spi-q3lfd3 and spi-dx5621 the loop is split across two scopes:
+`runtime.{test,build,lint}` is the narrow apprentice gate (sandboxed
+cluster pods, cold module cache, ~10m stale timeout) and
+`runtime.ci_{test,build,lint}` is the broad cross-module surface
+(operator submodule, `go mod tidy` drift, `make verify-rbac`, CRD copy
+drift). Both scopes together must be a superset of the deploy surface;
+CI workflows under `.github/workflows/` mirror the `ci_*` commands so
+cross-module drift is still caught before merge even though the
+apprentice gate no longer runs them.
 
 **Why:** Epic spi-qxbont tightens the validation loop to meet this
 principle. See design spi-uhhxoc for the five-bug case study that

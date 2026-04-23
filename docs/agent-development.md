@@ -267,7 +267,10 @@ Key elements of an effective agent prompt:
 1. **Role and task** — what the agent is and what it's doing
 2. **Context paths** — which files to read before starting (mirrors `spire.yaml`'s `context:`)
 3. **Bead description** — from `spire focus <bead-id>` or `bd show <bead-id> --json`
-4. **Validation commands** — from `spire.yaml` (`runtime.lint`, `runtime.build`, `runtime.test`)
+4. **Validation commands** — from `spire.yaml`'s narrow apprentice-gate
+   triple `runtime.{test,build,lint}` (sandbox-safe; broad cross-module
+   drift lives in `runtime.ci_{test,build,lint}` and runs in CI only,
+   see spi-q3lfd3 and spi-dx5621)
 5. **Commit format** — `<type>(<bead-id>): <message>`
 6. **Finishing instructions** — close the bead, commit, push
 

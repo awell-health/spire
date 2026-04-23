@@ -10,6 +10,12 @@ permissions:
   contents: write
 
 jobs:
+  # Apprentice validation gate (spi-q3lfd3 + spi-dx5621) runs only the
+  # narrow `runtime.{test,build,lint}` commands in sandboxed cluster pods;
+  # the broad cross-module drift surface — operator submodule, go.mod
+  # normalization, RBAC marker-vs-generated, CRD copy drift — lives in
+  # `runtime.ci_{test,build,lint}` and MUST be enforced here instead.
+  # Keep these steps in sync with spire.yaml's ci_build / ci_lint / ci_test.
   build:
     runs-on: ubuntu-latest
     steps:
@@ -19,13 +25,30 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build
-        run: go build ./cmd/spire/
-      - name: Test
-        run: go test ./pkg/... ./cmd/spire/... -count=1 -timeout 120s
-      - name: Vet
-        run: go vet ./...
-      - name: CRD drift check
+      - name: CI build (mirrors runtime.ci_build)
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go build ./...
+          cd operator
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go build ./...
+      - name: CI test (mirrors runtime.ci_test)
+        run: |
+          go test ./... -count=1 -timeout 120s
+          cd operator
+          go test ./... -count=1 -timeout 120s
+      - name: CI lint (mirrors runtime.ci_lint)
+        run: |
+          go vet ./...
+          cd operator
+          go vet ./...
+          go generate ./api/...
+          make verify-rbac
+          cd ..
+          git diff --exit-code helm/spire/crds/
+      - name: CRD drift check (k8s/crds ↔ helm/spire/crds parity)
         run: make crd-check
 
   # ClickHouse integration tests — runs the pkg/olap/clickhouse contract
