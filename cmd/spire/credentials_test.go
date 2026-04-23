@@ -1,11 +1,24 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// redact masks a credential-shaped value for safe inclusion in test failure
+// messages. Real credentials can leak into assertion output when tests run in
+// environments where GITHUB_TOKEN / ANTHROPIC_API_KEY are set (CI, cluster
+// pods, support bundles). Last 5 chars + length disambiguates values without
+// revealing them.
+func redact(s string) string {
+	if len(s) < 5 {
+		return strings.Repeat("*", len(s))
+	}
+	return fmt.Sprintf("[REDACTED %d chars …%s]", len(s), s[len(s)-5:])
+}
 
 func TestIsCredentialKey(t *testing.T) {
 	valid := []string{"anthropic-key", "github-token", "dolthub-user", "dolthub-password"}
@@ -169,21 +182,21 @@ func TestGetCredentialEnvOverride(t *testing.T) {
 	// Without env var, should get file value
 	got := getCredentialFrom(path, "anthropic-key")
 	if got != "file-value-sk-test" {
-		t.Errorf("without env: got %q, want %q", got, "file-value-sk-test")
+		t.Errorf("without env: got %s, want %s", redact(got), redact("file-value-sk-test"))
 	}
 
 	// Standard env var overrides file
 	t.Setenv("ANTHROPIC_API_KEY", "env-value-standard")
 	got = getCredentialFrom(path, "anthropic-key")
 	if got != "env-value-standard" {
-		t.Errorf("with standard env: got %q, want %q", got, "env-value-standard")
+		t.Errorf("with standard env: got %s, want %s", redact(got), redact("env-value-standard"))
 	}
 
 	// SPIRE_-prefixed env var takes precedence over standard
 	t.Setenv("SPIRE_ANTHROPIC_KEY", "env-value-spire")
 	got = getCredentialFrom(path, "anthropic-key")
 	if got != "env-value-spire" {
-		t.Errorf("with SPIRE env: got %q, want %q", got, "env-value-spire")
+		t.Errorf("with SPIRE env: got %s, want %s", redact(got), redact("env-value-spire"))
 	}
 }
 
@@ -194,14 +207,14 @@ func TestGetCredentialGithubToken(t *testing.T) {
 	// No file, no env — empty
 	got := getCredentialFrom(path, "github-token")
 	if got != "" {
-		t.Errorf("expected empty, got %q", got)
+		t.Errorf("expected empty, got %s", redact(got))
 	}
 
 	// Set env
 	t.Setenv("GITHUB_TOKEN", "ghp_from_env")
 	got = getCredentialFrom(path, "github-token")
 	if got != "ghp_from_env" {
-		t.Errorf("got %q, want %q", got, "ghp_from_env")
+		t.Errorf("got %s, want %s", redact(got), redact("ghp_from_env"))
 	}
 }
 
