@@ -1,8 +1,8 @@
 runtime:
   language: go
-  test: go test ./cmd/spire/ -timeout=60s
-  build: go build ./cmd/spire/
-  lint: go vet ./cmd/spire/
+  test: go test ./... -timeout=60s && cd operator && go test ./... -timeout=60s
+  build: go build ./... && cd operator && go build ./...
+  lint: go vet ./... && cd operator && go vet ./...
 
 agent:
   model: claude-opus-4-7
