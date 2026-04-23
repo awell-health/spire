@@ -14,7 +14,9 @@ import (
 func (e *Executor) wizardValidateDesign() (retErr error) {
 	started := time.Now()
 	defer func() {
-		e.recordAgentRun(e.agentName, e.beadID, "", "", "wizard", "validate-design", started, retErr)
+		e.recordAgentRun(e.agentName, e.beadID, "", "", "wizard", "validate-design", started, retErr,
+			withParentRun(e.currentRunID),
+			withWorkingSeconds(time.Since(started).Seconds()))
 	}()
 
 	interval := e.designPollInterval
@@ -159,4 +161,19 @@ func (e *Executor) wizardValidateDesign() (retErr error) {
 		e.deps.AddComment(e.beadID, fmt.Sprintf("Wizard: design validated — %d design bead(s) linked and closed. Advancing to plan.", len(designBeads)))
 		return nil
 	}
+}
+
+// wizardEnrichSubtasks is the bookended handler for the enrich-subtasks phase.
+// It wraps enrichSubtasksWithChangeSpecs with recordAgentRun so that the time
+// spent enriching epic subtasks with per-subtask change specs is captured in
+// agent_runs (phase='enrich-subtasks', role='wizard') and linked to the parent
+// wizard run via withParentRun(e.currentRunID).
+func (e *Executor) wizardEnrichSubtasks(children []Bead, epicContext, designContext, model string, maxTurns int) (retErr error) {
+	started := time.Now()
+	defer func() {
+		e.recordAgentRun(e.agentName, e.beadID, "", "", "wizard", "enrich-subtasks", started, retErr,
+			withParentRun(e.currentRunID),
+			withWorkingSeconds(time.Since(started).Seconds()))
+	}()
+	return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext, model, maxTurns)
 }
