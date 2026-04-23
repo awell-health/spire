@@ -53,12 +53,40 @@ each ETL sync.
 | `parent_run_id` | VARCHAR | ID of the parent run (for nested agent spawns) |
 | `formula_name` | VARCHAR | Formula used (e.g. `task-default`, `epic-wizard`) |
 | `formula_version` | VARCHAR | Formula version string |
-| `phase` | VARCHAR | Execution phase (e.g. `implement`, `review`, `seal`, `merge`) |
-| `role` | VARCHAR | Agent role (e.g. `apprentice`, `sage`, `wizard`) |
+| `phase` | VARCHAR | Execution phase — see **`phase` values** below |
+| `phase_bucket` | VARCHAR | High-level attribution bucket (`design`, `implement`, `review`, or empty) derived from `phase` |
+| `role` | VARCHAR | Agent role (e.g. `apprentice`, `sage`, `wizard`, `arbiter`, `cleric`) |
 | `model` | VARCHAR | LLM model used (e.g. `claude-opus-4-6`) |
 | `tower` | VARCHAR | Tower name |
 | `repo` | VARCHAR | Repository prefix |
 | `branch` | VARCHAR | Git branch |
+
+**`phase` values:**
+
+`recordAgentRun` emits one row per phase transition. The full set of values
+currently emitted by the executor:
+
+| Value | Recorded by | Meaning |
+|-------|-------------|---------|
+| `plan` | `pkg/executor/executor_plan.go` | Wizard plan phase (apprentice dispatch for planning) |
+| `implement` | `pkg/executor/graph_interpreter.go`, `action_dispatch.go` | Apprentice implementation run (any step whose action spawns an apprentice resolves to the step name — usually `implement`) |
+| `review` | `pkg/executor/executor_review.go`, `graph_actions.go` | Wizard review-loop row (timing) + per-sage/arbiter dispatch rows |
+| `merge` | `pkg/executor/graph_actions.go` (`actionMergeToMain`) | Staging branch landed on the base branch — `result='success'` or `result='error'`. Drives DORA deploy-count |
+| `close` | `pkg/executor/graph_actions.go` (`actionBeadFinish`) | Bead closed via terminal-close path |
+| `discard` | `pkg/executor/graph_actions.go` (`actionBeadFinish`) | Bead discarded (wontfix/discard terminal path) |
+| `validate-design` | `pkg/executor/executor_design.go` | Wizard design-validation phase (wait/poll for linked design bead) |
+| `enrich-subtasks` | `pkg/executor/executor_design.go` | Wizard epic subtask-enrichment phase (change-spec generation) |
+| `auto-approve` | `pkg/executor/executor_review.go` | Wizard advanced past a gate without dispatch (e.g. sage approved on first round) |
+| `skip` | `pkg/executor/executor_review.go` | Wizard skipped a formula phase (reason captured via `skip_reason`) |
+| `waitForHuman` | `pkg/executor/executor_review.go` | Wizard parked waiting for human approval; `working_seconds` captures the block duration |
+| `execute` | `pkg/executor/graph_interpreter.go` | Top-level wizard execute row (parent run for all child phases) |
+| `triage` | `pkg/executor/recovery_phase.go` | Cleric recovery triage dispatch |
+
+`phase_bucket` rolls these up into `design` / `implement` / `review` for
+cost-attribution queries; `merge`, `close`, `discard`, `plan`, `execute`,
+and `triage` currently bucket to empty (they are not cost-attributed into
+the three high-level buckets). See `phaseToBucket` in
+`pkg/executor/record.go` for the exact mapping.
 
 ### Result
 
@@ -98,11 +126,28 @@ improvement task (spi-hj1kt).
 
 | Column | Type | Unit | Description |
 |--------|------|------|-------------|
-| `duration_seconds` | DOUBLE | seconds | Total wall-clock time for the run |
-| `startup_seconds` | DOUBLE | seconds | Time from spawn to first agent action |
-| `working_seconds` | DOUBLE | seconds | Time spent in active implementation |
-| `queue_seconds` | DOUBLE | seconds | Time waiting in queue before execution |
-| `review_seconds` | DOUBLE | seconds | Time spent in review rounds |
+| `duration_seconds` | DOUBLE | seconds | Total wall-clock time for the run (`completed_at − started_at`). **Per-attempt:** when a step retries (e.g. review-fix rounds in `wizardRunSpawn`), each attempt records its own `duration_seconds` rather than accumulating from the first attempt. |
+| `startup_seconds` | DOUBLE | seconds | Time from agent spawn to the first `tool_event` emitted by the agent. Captures init cost: container/pod startup, repo clone, context focus, claim. |
+| `working_seconds` | DOUBLE | seconds | Time from the first `tool_event` to the last `tool_event`. Captures active LLM work, excluding startup and teardown. |
+| `queue_seconds` | DOUBLE | seconds | Time from the bead becoming ready (no open blockers) to the wizard being assigned and spawn beginning. READY-queue latency. |
+| `review_seconds` | DOUBLE | seconds | Time from review-loop entry (first sage dispatch) to review-loop exit (final verdict: approve, reject, or arbiter decision). Persisted in graph-state `Vars` so a loop that spans re-summons still records end-to-end. |
+
+**Current bucket coverage.** The bucket *columns* are always present on
+`agent_runs`; population is per-phase and intentionally partial — we
+record what we can measure reliably rather than synthesize values.
+
+| Phase | `startup_seconds` | `working_seconds` | `queue_seconds` | `review_seconds` |
+|-------|-------------------|-------------------|-----------------|------------------|
+| `merge` | populated | populated | — | — |
+| `validate-design` | — | populated | — | — |
+| `enrich-subtasks` | — | populated | — | — |
+| `waitForHuman` | — | populated (= block duration) | — | — |
+| `review` (wizard loop row) | — | — | — | populated |
+| `implement`, `review` (sage), `plan`, `close`, `discard`, `auto-approve`, `skip` | — | — | — | — |
+
+`queue_seconds` has a defined option (`withQueueSeconds` in
+`pkg/executor/record.go`) but no caller populates it yet; the column
+exists for forward-compatibility with a READY-queue tracker.
 
 ### Tokens and Cost
 
@@ -310,10 +355,11 @@ OpenTelemetry trace spans for waterfall/timeline visualization:
 ## API/Cost Metrics
 
 **Source table:** `api_events` (DuckDB, defined in `pkg/olap/schema.go`)
-**Query function:** `QueryAPIEventsByBead(beadID) -> []APIEventStats`
-**Go type:** `olap.APIEventStats`
+**Query functions:** `QueryAPIEventsByBead(beadID) -> []APIEventStats`, `QueryRateLimitEvents(window) -> []RateLimitBucket`
+**Go types:** `olap.APIEventStats`, `olap.RateLimitBucket`
 
-Per-model LLM API call data, populated via the OTel pipeline:
+Per-model LLM API call data plus rate-limit observations, populated via
+the OTel pipeline and direct writes from the Anthropic-call wrapper:
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -331,6 +377,8 @@ Per-model LLM API call data, populated via the OTel pipeline:
 | `cost_usd` | DOUBLE | Cost for this API call in USD |
 | `timestamp` | TIMESTAMP | When the call occurred |
 | `tower` | VARCHAR | Tower name |
+| `event_type` | VARCHAR | `api_request` (default, for normal LLM calls) or `rate_limit` (429/throttle observation) |
+| `retry_count` | INTEGER | For `rate_limit` rows: number of retries the SDK attempted before giving up or succeeding. `NULL` for `api_request` rows. |
 
 **Aggregated query results (`APIEventStats`):**
 
@@ -342,6 +390,32 @@ Per-model LLM API call data, populated via the OTel pipeline:
 | `TotalCostUSD` | float64 | Total cost across all calls |
 | `TotalInputTokens` | int64 | Total tokens sent |
 | `TotalOutputTokens` | int64 | Total tokens received |
+
+### Rate-Limit Events
+
+Every Anthropic API rate-limit observation (HTTP 429, throttle, or
+SDK-surfaced retry-after event) writes one `api_events` row with
+`event_type='rate_limit'`. The row records `provider`, `model`,
+`timestamp`, and `retry_count` (when the SDK reports it); `input_tokens`
+/ `output_tokens` / `cost_usd` are typically zero for these rows since
+the request did not complete.
+
+`QueryRateLimitEvents(window time.Duration) -> []RateLimitBucket`
+aggregates per day over the window. Each bucket:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Day` | time.Time | Calendar day (truncated to day) |
+| `Count` | int | Rate-limit rows observed that day |
+
+The CLI surface is `spire metrics` (default flag), which prints a single
+line under the summary block:
+
+```
+Rate limits: N in last 24h
+```
+
+computed by summing the 24-hour window's buckets.
 
 ---
 
@@ -408,6 +482,32 @@ Aggregated per `(date, tower, formula_name, phase)`:
 | `phase` | VARCHAR (PK) | Execution phase |
 | `run_count` | INTEGER | Number of runs |
 | `total_cost` | DOUBLE | Total cost in USD for this phase |
+
+### Attribution model (phase-level, not turn-level)
+
+Token and cost attribution stops at the **phase** granularity recorded
+on `agent_runs` — `prompt_tokens`, `completion_tokens`, `cost_usd`, and
+`cache_*_tokens` are summed over the whole run and aggregated into
+`phase_cost_breakdown` per `(date, tower, formula_name, phase)`. There
+is deliberately no per-turn cost table.
+
+**Why not per-turn:** every consumer we ship (DORA, formula performance,
+cost trend, per-bead trace, CLI `--phase`) answers questions at the
+phase or run level. A turn-level table would multiply row volume by
+~10–100× per run and would not change any dashboard we serve today, so
+we pay the extra storage only when a consumer asks for it.
+
+**If this decision ever flips**, the shape would be:
+
+> `turn_events` table (one row per model turn) with `run_id` FK to
+> `agent_runs`, `turn_index`, `input_tokens`, `output_tokens`,
+> `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `tool_name`
+> (if the turn ended in a tool_use), and `timestamp`. Populated from
+> the OTel `api_events` stream, which already carries per-call tokens
+> and cost. Aggregations stay in `phase_cost_breakdown`; the new table
+> is additive.
+
+Until a consumer asks for per-turn visibility, do not add the table.
 
 ---
 
@@ -500,7 +600,7 @@ The CLI exposes all metrics via flags. Default time window is 90 days.
 
 | Flag | Query Function | What it shows |
 |------|---------------|---------------|
-| _(default)_ | `QuerySummary` + `QueryFormulaPerformance` | Overall stats + formula comparison |
+| _(default)_ | `QuerySummary` + `QueryRateLimitEvents(24h)` + `QueryFormulaPerformance` | Overall stats + rate-limit line + formula comparison |
 | `--dora` | `QueryDORA` | DORA four key metrics |
 | `--model` | `QueryModelBreakdown` | Per-model stats (runs, success rate, cost, tokens) |
 | `--phase` | `QueryPhaseBreakdown` | Per-phase stats (runs, success rate, cost, duration) |
