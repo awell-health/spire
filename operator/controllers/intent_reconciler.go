@@ -172,7 +172,14 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		return
 	}
 
-	podName := apprenticePodName(wi.AttemptID)
+	podName, builder, role, err := podBuilderForPhase(wi.FormulaPhase, wi.AttemptID)
+	if err != nil {
+		r.Log.Error(err, "intent: unknown formula_phase; dropping intent",
+			"bead_id", wi.AttemptID,
+			"formula_phase", wi.FormulaPhase,
+			"backend", "operator-k8s")
+		return
+	}
 	spec := agent.PodSpec{
 		Name:              podName,
 		Namespace:         r.Namespace,
@@ -181,6 +188,7 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		BeadID:            wi.AttemptID,
 		AttemptID:         wi.AttemptID,
 		FormulaStep:       wi.FormulaPhase,
+		Role:              role,
 		HandoffMode:       runtime.HandoffMode(wi.HandoffMode),
 		Backend:           "operator-k8s",
 		CredentialsSecret: r.CredentialsSecret,
@@ -197,11 +205,12 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		Resources:     podResourcesFromIntent(wi.Resources),
 	}
 
-	pod, err := agent.BuildApprenticePod(spec)
+	pod, err := builder(spec)
 	if err != nil {
-		r.Log.Error(err, "agent.BuildApprenticePod failed; dropping intent",
+		r.Log.Error(err, "agent pod builder failed; dropping intent",
 			"bead_id", wi.AttemptID,
 			"prefix", canonical.Prefix,
+			"formula_phase", wi.FormulaPhase,
 			"backend", "operator-k8s")
 		return
 	}
@@ -228,7 +237,7 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		return
 	}
 
-	r.Log.Info("reconciled intent into apprentice pod",
+	r.Log.Info("reconciled intent into pod",
 		"pod", pod.Name,
 		"bead_id", wi.AttemptID,
 		"prefix", canonical.Prefix,
@@ -285,11 +294,45 @@ func (r *IntentWorkloadReconciler) canonicalIdentity(ctx context.Context, projec
 // no-op when the pod already exists, so repeated intents for the same
 // attempt ID converge on a single pod.
 func apprenticePodName(attemptID string) string {
-	name := "apprentice-" + sanitizeK8sName(attemptID)
+	return cappedPodName("apprentice-", attemptID)
+}
+
+// wizardPodName returns the canonical deterministic pod name for a
+// wizard pod dispatched by the bead-level intent path.
+func wizardPodName(attemptID string) string {
+	return cappedPodName("wizard-", attemptID)
+}
+
+// sagePodName returns the canonical deterministic pod name for a sage
+// pod dispatched for a review or arbiter intent.
+func sagePodName(attemptID string) string {
+	return cappedPodName("sage-", attemptID)
+}
+
+func cappedPodName(prefix, attemptID string) string {
+	name := prefix + sanitizeK8sName(attemptID)
 	if len(name) > 63 {
 		name = name[:63]
 	}
 	return name
+}
+
+// podBuilderForPhase routes an intent's FormulaPhase to the
+// appropriate (pod-name, pod-builder, role) tuple. An unknown phase
+// returns an error so the reconciler can drop the intent rather than
+// silently building the wrong pod shape — the previous default of
+// "always build apprentice" is the exact bug this routing fixes.
+func podBuilderForPhase(phase, attemptID string) (string, func(agent.PodSpec) (*corev1.Pod, error), runtime.SpawnRole, error) {
+	switch {
+	case intent.IsBeadLevelPhase(phase):
+		return wizardPodName(attemptID), agent.BuildWizardPod, agent.RoleWizard, nil
+	case intent.IsStepLevelPhase(phase):
+		return apprenticePodName(attemptID), agent.BuildApprenticePod, agent.RoleApprentice, nil
+	case intent.IsReviewLevelPhase(phase):
+		return sagePodName(attemptID), agent.BuildSagePod, agent.RoleSage, nil
+	default:
+		return "", nil, "", fmt.Errorf("intent: unknown formula_phase %q", phase)
+	}
 }
 
 // podResourcesFromIntent converts the intent's string-quantity envelope

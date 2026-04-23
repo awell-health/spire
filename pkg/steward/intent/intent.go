@@ -17,6 +17,71 @@ package intent
 
 import "context"
 
+// Phase classification.
+//
+// A WorkloadIntent's FormulaPhase string carries one of two semantic
+// levels:
+//
+//   - bead-level: the steward's "claim a bead, run its formula" emit.
+//     The operator routes these to a wizard pod. The phase value is
+//     either the literal "wizard" or the bead's type (task / bug /
+//     epic / feature / chore) — both classify as bead-level.
+//   - step-level: a phase emitted from inside a wizard pod for one
+//     formula step. The operator routes "implement"/"fix" to an
+//     apprentice pod and "review"/"arbiter" to a sage pod.
+//
+// The helpers below are the single source of truth for that
+// classification. Both sides of the seam (steward emit, operator
+// reconcile) call them so the routing rule lives in one place.
+const (
+	// PhaseWizard is the canonical bead-level phase string. The
+	// steward stamps it (or the bead's type, see IsBeadLevelPhase)
+	// onto the intent so the operator routes to a wizard pod.
+	PhaseWizard = "wizard"
+
+	// Step-level phase names — emitted from inside a wizard pod when
+	// it dispatches a one-shot step worker.
+	PhaseImplement = "implement"
+	PhaseFix       = "fix"
+
+	// Review-level phase names — sage / arbiter.
+	PhaseReview  = "review"
+	PhaseArbiter = "arbiter"
+)
+
+// IsBeadLevelPhase reports whether s is a phase value the operator
+// must route to a wizard pod. The literal "wizard" plus every
+// registered bead type qualifies; bead types are accepted because
+// formulas resolve by bead type and using the type as the phase
+// avoids inventing a parallel naming axis.
+func IsBeadLevelPhase(s string) bool {
+	switch s {
+	case PhaseWizard, "task", "bug", "epic", "feature", "chore":
+		return true
+	}
+	return false
+}
+
+// IsStepLevelPhase reports whether s is a step-level phase the
+// operator must route to an apprentice pod.
+func IsStepLevelPhase(s string) bool {
+	switch s {
+	case PhaseImplement, PhaseFix:
+		return true
+	}
+	return false
+}
+
+// IsReviewLevelPhase reports whether s is a review-level phase the
+// operator must route to a sage pod.
+func IsReviewLevelPhase(s string) bool {
+	switch s {
+	case PhaseReview, PhaseArbiter:
+		return true
+	}
+	return false
+}
+
 // RepoIdentity is the minimal repo shape a WorkloadIntent carries. It is a
 // local struct — NOT pkg/config.LocalRepoBinding — so the intent remains
 // free of machine-local workspace fields. The operator resolves any

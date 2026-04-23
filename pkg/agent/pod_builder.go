@@ -128,6 +128,13 @@ type PodSpec struct {
 	// FormulaStep is the current formula step name (e.g. "implement").
 	FormulaStep string
 
+	// Role is the SpawnRole the pod runs as (apprentice / wizard /
+	// sage). Empty defaults to RoleApprentice for backward
+	// compatibility — every existing call site builds apprentice
+	// pods. BuildWizardPod and BuildSagePod set this explicitly so
+	// the canonical labels, env, and command vary by role.
+	Role runtime.SpawnRole
+
 	// Identity is the canonical repo identity. TowerName, Prefix,
 	// RepoURL, and BaseBranch are all required for an apprentice pod
 	// because the repo-bootstrap init container clones from them.
@@ -372,6 +379,16 @@ func (s PodSpec) effectiveAgentName() string {
 	return s.Name
 }
 
+// effectiveRole returns the spawn role for the pod. Empty defaults to
+// RoleApprentice so existing call sites that built apprentice pods
+// without setting Role continue to work unchanged.
+func (s PodSpec) effectiveRole() runtime.SpawnRole {
+	if s.Role == "" {
+		return RoleApprentice
+	}
+	return s.Role
+}
+
 // buildEnv builds the canonical env set for the main container. Init
 // containers reuse the same list so shell scripts and CLI invocations
 // see identical values across container boundaries.
@@ -411,7 +428,7 @@ func (s PodSpec) buildEnv() []corev1.EnvVar {
 	// Canonical RunContext env vocabulary.
 	env = append(env,
 		corev1.EnvVar{Name: "SPIRE_TOWER", Value: s.Identity.TowerName},
-		corev1.EnvVar{Name: "SPIRE_ROLE", Value: string(RoleApprentice)},
+		corev1.EnvVar{Name: "SPIRE_ROLE", Value: string(s.effectiveRole())},
 		corev1.EnvVar{Name: "SPIRE_BEAD_ID", Value: s.BeadID},
 		corev1.EnvVar{Name: "SPIRE_BACKEND", Value: s.Backend},
 	)
@@ -606,7 +623,7 @@ func (s PodSpec) buildLabels() map[string]string {
 		"spire.agent":      "true",
 		"spire.agent.name": s.effectiveAgentName(),
 		"spire.bead":       s.BeadID,
-		"spire.role":       string(RoleApprentice),
+		"spire.role":       string(s.effectiveRole()),
 		"spire.tower":      s.Identity.TowerName,
 	}
 
@@ -614,7 +631,7 @@ func (s PodSpec) buildLabels() map[string]string {
 	setLabel(labels, LabelTower, s.Identity.TowerName)
 	setLabel(labels, LabelPrefix, s.Identity.Prefix)
 	setLabel(labels, LabelBead, s.BeadID)
-	setLabel(labels, LabelRole, string(RoleApprentice))
+	setLabel(labels, LabelRole, string(s.effectiveRole()))
 	setLabel(labels, LabelFormulaStep, s.FormulaStep)
 	setLabel(labels, LabelWorkspaceKind, string(s.Workspace.Kind))
 	setLabel(labels, LabelWorkspaceName, s.Workspace.Name)
@@ -661,7 +678,7 @@ func (s PodSpec) otelResourceAttrs() string {
 	add("bead_id", s.BeadID)
 	add("attempt_id", s.AttemptID)
 	add("run_id", s.RunID)
-	add("role", string(RoleApprentice))
+	add("role", string(s.effectiveRole()))
 	add("formula_step", s.FormulaStep)
 	add("backend", s.Backend)
 	add("workspace_kind", string(s.Workspace.Kind))

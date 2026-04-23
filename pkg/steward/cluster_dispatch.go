@@ -96,10 +96,6 @@ func dispatchClusterNative(
 	}
 
 	emitter := publisherEmitter{publisher: cd.Publisher}
-	formulaPhase := cd.FormulaPhase
-	if formulaPhase == "" {
-		formulaPhase = "implement"
-	}
 	handoffMode := cd.HandoffMode
 	if handoffMode == "" {
 		handoffMode = string(runtime.HandoffBundle)
@@ -109,6 +105,8 @@ func dispatchClusterNative(
 	for _, bead := range schedulable {
 		beadID := bead.ID
 		repoPrefix := beadRepoPrefix(beadID)
+
+		formulaPhase := beadDispatchPhase(cd.FormulaPhase, bead.Type)
 
 		ident, err := cd.Resolver.Resolve(ctx, repoPrefix)
 		if err != nil {
@@ -140,6 +138,28 @@ func dispatchClusterNative(
 	}
 
 	return emitted
+}
+
+// beadDispatchPhase decides the FormulaPhase string the steward
+// stamps on a bead-level WorkloadIntent.
+//
+// Resolution order:
+//   1. override — when ClusterDispatchConfig.FormulaPhase is set, it
+//      wins. Tests pin this; production normally leaves it empty.
+//   2. bead type — task / bug / epic / feature / chore. The operator
+//      classifies these as bead-level (intent.IsBeadLevelPhase) and
+//      routes them to a wizard pod.
+//   3. fallback — intent.PhaseWizard. Beads with an empty type
+//      string still need to dispatch somewhere; the canonical
+//      bead-level value is "wizard".
+func beadDispatchPhase(override, beadType string) string {
+	if override != "" {
+		return override
+	}
+	if beadType != "" {
+		return beadType
+	}
+	return intent.PhaseWizard
 }
 
 // buildClusterIntent returns the buildIntent closure the steward hands
