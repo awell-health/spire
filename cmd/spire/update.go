@@ -70,13 +70,11 @@ func cmdUpdate(cmd *cobra.Command, args []string) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	// Validate bead exists and isn't closed.
+	// Validate bead exists. Closed beads are allowed — reopen and historical
+	// corrections go through this same path, matching bd update semantics.
 	target, err := updateGetBeadFunc(id)
 	if err != nil {
 		return fmt.Errorf("bead %s not found: %w", id, err)
-	}
-	if target.Status == "closed" {
-		return fmt.Errorf("bead %s is already closed", id)
 	}
 
 	// Reject conflicting --defer + --status.
@@ -178,6 +176,15 @@ func cmdUpdate(cmd *cobra.Command, args []string) error {
 		}
 
 		updates["parent"] = parentID
+	}
+
+	// If the bead is already closed and the only status change requested is
+	// closed→closed, strip it so the store isn't called for that no-op.
+	// Other fields in the same update (e.g. --title) still flow through.
+	if target.Status == "closed" {
+		if v, ok := updates["status"]; ok && v == "closed" {
+			delete(updates, "status")
+		}
 	}
 
 	// Apply field updates if any.

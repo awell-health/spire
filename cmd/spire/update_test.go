@@ -165,17 +165,114 @@ func TestUpdate_DeferWithStatusConflict(t *testing.T) {
 	}
 }
 
-func TestUpdate_RejectsClosedBead(t *testing.T) {
+func TestUpdate_ReopenClosedBead(t *testing.T) {
 	bead := Bead{ID: "spi-test", Title: "some task", Status: "closed"}
 	cleanup := stubUpdateDeps(t, bead)
 	defer cleanup()
 
-	err := executeUpdateCmd([]string{"spi-test", "--title", "new title"})
-	if err == nil {
-		t.Fatal("expected error for closed bead, got nil")
+	var capturedUpdates map[string]interface{}
+	updateUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+		capturedUpdates = updates
+		return nil
 	}
-	if !strings.Contains(err.Error(), "already closed") {
-		t.Errorf("expected 'already closed' error, got: %v", err)
+
+	// --status open on a closed bead should reopen it via the store.
+	if err := executeUpdateCmd([]string{"spi-test", "--status", "open"}); err != nil {
+		t.Fatalf("expected reopen to succeed, got: %v", err)
+	}
+	if capturedUpdates["status"] != "open" {
+		t.Errorf("expected status='open', got %v", capturedUpdates["status"])
+	}
+}
+
+func TestUpdate_ReopenClosedBeadToInProgress(t *testing.T) {
+	// Reopen must work for every non-closed target status, not just 'open'.
+	for _, status := range []string{"open", "ready", "in_progress", "deferred"} {
+		t.Run(status, func(t *testing.T) {
+			bead := Bead{ID: "spi-test", Title: "some task", Status: "closed"}
+			cleanup := stubUpdateDeps(t, bead)
+			defer cleanup()
+
+			var capturedUpdates map[string]interface{}
+			updateUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+				capturedUpdates = updates
+				return nil
+			}
+
+			if err := executeUpdateCmd([]string{"spi-test", "--status", status}); err != nil {
+				t.Fatalf("expected reopen to %q to succeed, got: %v", status, err)
+			}
+			if capturedUpdates["status"] != status {
+				t.Errorf("expected status=%q, got %v", status, capturedUpdates["status"])
+			}
+		})
+	}
+}
+
+func TestUpdate_FieldEditOnClosedBead(t *testing.T) {
+	bead := Bead{ID: "spi-test", Title: "some task", Status: "closed"}
+	cleanup := stubUpdateDeps(t, bead)
+	defer cleanup()
+
+	var capturedUpdates map[string]interface{}
+	updateUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+		capturedUpdates = updates
+		return nil
+	}
+
+	// Non-status field edits on a closed bead are allowed (historical correction).
+	if err := executeUpdateCmd([]string{"spi-test", "--title", "new title"}); err != nil {
+		t.Fatalf("expected title edit on closed bead to succeed, got: %v", err)
+	}
+	if capturedUpdates["title"] != "new title" {
+		t.Errorf("expected title='new title', got %v", capturedUpdates["title"])
+	}
+	if _, hasStatus := capturedUpdates["status"]; hasStatus {
+		t.Errorf("expected no status in updates, got %v", capturedUpdates["status"])
+	}
+}
+
+func TestUpdate_ClosedToClosedIsNoop(t *testing.T) {
+	bead := Bead{ID: "spi-test", Title: "some task", Status: "closed"}
+	cleanup := stubUpdateDeps(t, bead)
+	defer cleanup()
+
+	updateCalled := false
+	updateUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+		updateCalled = true
+		return nil
+	}
+
+	// --status closed on an already-closed bead must succeed without writing.
+	if err := executeUpdateCmd([]string{"spi-test", "--status", "closed"}); err != nil {
+		t.Fatalf("expected closed→closed no-op to succeed, got: %v", err)
+	}
+	if updateCalled {
+		t.Error("expected updateUpdateBeadFunc NOT to be called for closed→closed no-op")
+	}
+}
+
+func TestUpdate_ClosedToClosedWithFieldEditStillWritesField(t *testing.T) {
+	// Mixing --status=closed with a real field change must still write the field;
+	// only the redundant status update is stripped.
+	bead := Bead{ID: "spi-test", Title: "some task", Status: "closed"}
+	cleanup := stubUpdateDeps(t, bead)
+	defer cleanup()
+
+	var capturedUpdates map[string]interface{}
+	updateUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+		capturedUpdates = updates
+		return nil
+	}
+
+	if err := executeUpdateCmd([]string{"spi-test", "--status", "closed", "--title", "renamed"}); err != nil {
+		t.Fatalf("expected mixed update on closed bead to succeed, got: %v", err)
+	}
+	if capturedUpdates["title"] != "renamed" {
+		t.Errorf("expected title='renamed', got %v", capturedUpdates["title"])
+	}
+	if _, hasStatus := capturedUpdates["status"]; hasStatus {
+		t.Errorf("expected redundant status=closed to be stripped, got %v", capturedUpdates["status"])
 	}
 }
 
