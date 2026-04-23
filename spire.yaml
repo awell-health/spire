@@ -12,18 +12,16 @@ runtime:
   # scope should prefer ci_test and fall back to test if ci_test is empty.
   ci_test: go test ./... -timeout=60s && cd operator && go test ./... -timeout=60s
   build: go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./... && cd operator && go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./...
-  # lint additionally runs two RBAC drift guards (spi-3shzb7):
-  #   verify-rbac:           regenerates operator/config/rbac/role.yaml
-  #                          from +kubebuilder:rbac markers and fails on
-  #                          any git diff. Catches "marker edited, file
-  #                          not regenerated" and hand-edits of role.yaml.
-  #   verify-rbac-parity.sh: renders the helm chart and fails if the
-  #                          chart's operator ClusterRole differs (in
-  #                          either direction) from the generated role.
-  #                          Catches the spi-p5nr8i class: markers say
-  #                          the operator needs a verb, chart doesn't
-  #                          ship the rule.
-  lint: go vet ./... && helm lint helm/spire && helm lint helm/spire -f k8s/values.smoke.yaml && cd operator && go vet ./... && go generate ./api/... && make verify-rbac && cd .. && git diff --exit-code helm/spire/crds/ && bash scripts/verify-rbac-parity.sh
+  # lint covers Go vet (both modules), the RBAC marker-vs-generated
+  # drift guard (spi-3shzb7: verify-rbac regenerates
+  # operator/config/rbac/role.yaml from +kubebuilder:rbac markers and
+  # fails on any git diff), and a CRD consistency check. Helm chart
+  # rendering, helm lint, and the chart↔operator RBAC parity check
+  # all require `helm` on PATH and helm template expansion; those
+  # live in the CI pipeline instead of the apprentice validation
+  # gate (which runs in sandboxed cluster pods that intentionally
+  # don't ship a production helm toolchain).
+  lint: go vet ./... && cd operator && go vet ./... && go generate ./api/... && make verify-rbac && cd .. && git diff --exit-code helm/spire/crds/
 
 agent:
   model: claude-opus-4-7
