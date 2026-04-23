@@ -111,7 +111,13 @@ func (e *Executor) ensureGraphStagingWorktree(state *GraphState) (*spgit.Staging
 					break
 				}
 			}
-			state.Save(e.agentName, e.deps.ConfigDir)
+			// Route the save by the state's own AgentName, not e.agentName.
+			// When this helper is called from an action running inside a nested
+			// subgraph (e.g. dispatch-children in subgraph-implement), state is
+			// the NESTED state while e.agentName is the PARENT executor's name.
+			// Using e.agentName would write nested content to the parent's
+			// graph_state.json path and clobber it (spi-dggw7p).
+			state.Save(state.AgentName, e.deps.ConfigDir)
 			return e.stagingWt, nil
 		}
 		e.log("stale worktree state %s — recreating", state.WorktreeDir)
@@ -168,7 +174,9 @@ func (e *Executor) ensureGraphStagingWorktree(state *GraphState) (*spgit.Staging
 		e.deps.AddLabel(state.AttemptBeadID, "worktree:"+wtDir)
 	}
 	e.deps.AddLabel(e.beadID, "feat-branch:"+stagingBranch)
-	state.Save(e.agentName, e.deps.ConfigDir)
+	// See comment on the sibling save above: route by state.AgentName so a
+	// nested-state caller doesn't clobber the parent's graph_state.json.
+	state.Save(state.AgentName, e.deps.ConfigDir)
 	return wt, nil
 }
 
