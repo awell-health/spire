@@ -1,7 +1,11 @@
 # Smoke-test values overlay. Pair with:
 #
-#   helm install spire-smoke helm/spire \
-#     -n spire-smoke --create-namespace \
+#   # Idempotent across retries (unlike `helm install --create-namespace`
+#   # which chokes on re-install when the namespace or release already exists).
+#   kubectl create namespace spire-smoke --dry-run=client -o yaml \
+#     | kubectl apply -f -
+#
+#   helm upgrade --install spire-smoke helm/spire -n spire-smoke \
 #     -f k8s/values.smoke.yaml \
 #     --set-file dolthub.credsKeyValue=$HOME/.dolt/creds/<keyId>.jwk \
 #     --set-file gcp.serviceAccountJson=$HOME/Downloads/spire-gcs-sa.json
@@ -12,14 +16,78 @@
 
 namespace: spire-smoke
 
-beads:
-  prefix: "spi"
+# --- Dev images ---
+# Chart default resolves tag to .Chart.AppVersion (currently 0.0.0) which
+# is not published. The smoke test builds spire-steward:dev and
+# spire-agent:dev directly into minikube docker via runbook stage 2;
+# this override points the chart at those local builds.
+images:
+  steward:
+    repository: spire-steward
+    tag: dev
+    pullPolicy: Never
+  agent:
+    repository: spire-agent
+    tag: dev
+    pullPolicy: Never
 
+# --- Fresh tower identity ---
+# `smoke` database is created blank by the dolt-provision post-install
+# Job; attach-cluster's --bootstrap-if-blank path runs the tower-create
+# ritual. Prefix `smk` keeps the bead graph disjoint from the `spi` tower.
+beads:
+  prefix: smk
+  database: smoke
+
+# --- DoltHub (placeholder values only) ---
+# No DoltHub remote for this tower (syncer disabled below). The chart
+# still requires non-empty values for the cluster-internal remotesapi
+# SQL user credentials that the `spire-dolt-provision` post-install Job
+# CREATE USERs into the running dolt server. These are not DoltHub
+# account credentials — they're the username/password the cluster's
+# own dolt-sql-server accepts for `dolt clone/pull/push` traffic over
+# remotesapi. Safe to leave as placeholder for the smoke tower; rotate
+# if you ever expose the dolt service externally.
+#
+# The JWK (`credsKeyId` / `credsKeyValue`) is only needed for DoltHub
+# sync, which this tower doesn't do. Leave unset; the Secret template
+# skips the JWK fields when credsKeyId is empty.
+dolthub:
+  remoteUrl: ""
+  user: "smoke-remote"
+  password: "smoke-change-me-nonempty"
+  credsKeyId: ""
+  userName: ""
+  userEmail: ""
+
+# --- Single guild: github.com/awell-health/spire with smk- prefix ---
+# Same GitHub repo as the `spi` tower; disjoint bead graph. Cache PVC
+# provisioned unconditionally via the guild template's cache defaults.
+guilds:
+  - name: main
+    mode: managed
+    repo: https://github.com/awell-health/spire.git
+    repoBranch: main
+    prefixes: ["smk-"]
+    maxConcurrent: 1
+
+# --- BundleStore: GCS backend ---
 # Exercise the GCS BundleStore backend end-to-end. When backend=gcs,
 # helm fails the render unless gcp.serviceAccountJson is set via
 # --set-file (see helm/spire/templates/steward.yaml's `required` gate).
+# Bucket `spire-awell` must pre-exist with `roles/storage.objectAdmin`
+# granted to the SA key passed via --set-file. Storage class: Standard
+# (bundles are short-lived — janitor reaps 30m after seal; Nearline
+# would charge early-deletion fees).
 bundleStore:
   backend: gcs
   gcs:
     bucket: spire-awell
     prefix: smoke
+
+# --- No DoltHub sync loop ---
+# Cluster dolt is authoritative; no round-trip through a hosted remote.
+# Laptop attach-cluster (future work) will attach via remotesapi
+# port-forward instead.
+syncer:
+  enabled: false
