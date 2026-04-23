@@ -58,6 +58,67 @@ call `pkg/agent.BuildApprenticePod` rather than building the pod shape
 locally. There is no in-package pod construction in cluster-native code
 paths.
 
+## Bead status lifecycle
+
+Cluster-native dispatch walks a bead through four states. Ownership of
+each transition is strict:
+
+```
+ready
+  ↓ (steward: INSERT workload_intents + UPDATE issue status, one tx)
+dispatched
+  ↓ (wizard: spire claim, once the pod starts)
+in_progress
+  ↓ (wizard: close action)
+closed
+```
+
+Recovery paths (steward-owned):
+
+- `dispatched → ready` via `RecoverStaleDispatched` on a short
+  timeout (~5m). Catches pods that never started: image pull error,
+  node pressure, crash loop. Holding the dispatched state means the
+  slot stays counted against the concurrency cap, so prompt recovery
+  is required.
+- `in_progress → ready` via the existing stale detector (hours).
+  Catches wizards that died mid-work.
+
+| Transition | Owner |
+|---|---|
+| `ready → dispatched` | Steward (`DoltPublisher.Publish` emission tx) |
+| `dispatched → in_progress` | Wizard (`spire claim`) |
+| `in_progress → closed` | Wizard (close action) |
+| `dispatched → ready` (stale) | Steward (`RecoverStaleDispatched`, short timeout) |
+| `in_progress → ready` (stale) | Steward (`CheckBeadHealth`, long timeout) |
+
+The operator is task-status-agnostic: it reconciles `workload_intents`
+rows into apprentice pods, but never mutates `issues.status`. That
+boundary is the invariant that keeps `dispatched` meaningful — if the
+operator touched status, the meaning would diffuse.
+
+Local-native `spire summon` skips the `dispatched` intermediate: the
+local path has no polling loop, so the wizard claim flips
+`ready → in_progress` directly. `spire claim` accepts both `ready` and
+`dispatched` as valid source statuses so both paths work.
+
+## Concurrency caps
+
+Two layers, both applied at dispatch time against the same in-flight
+predicate `status IN ('dispatched', 'in_progress')`:
+
+- **Tower-global cap** — `ClusterDispatchConfig.MaxConcurrent` (helm
+  value `steward.maxConcurrent`, flag `--max-concurrent`, env
+  `STEWARD_MAX_CONCURRENT`). 0 = unlimited. Enforced in
+  `dispatchClusterNative` before emitting any intents; the cycle skips
+  dispatch entirely when at or above the cap.
+- **Per-guild cap** — `WizardGuild.Spec.MaxConcurrent`. Enforced at
+  the operator layer when assigning workloads to guilds.
+
+Before `dispatched` existed, the 50–90s window between emit and wizard
+claim wasn't counted anywhere, so both caps under-counted and could
+burst through their limits. Including `dispatched` in the predicate
+closes that window.
+
 ### The LocalBindings rule
 
 > **Cluster-native code paths MUST NEVER read `LocalBindings.State`,

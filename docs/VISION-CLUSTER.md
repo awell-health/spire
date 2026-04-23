@@ -20,6 +20,33 @@ The entire stack — steward, operator, dolt, OLAP, guild caches — is deployed
 
 Future work (spi-sj18k) will move apprentice execution out of the wizard pod into dedicated apprentice pods dispatched through the operator's intent reconciler. The canonical `BuildApprenticePod` exists today and is exercised by parity tests, but cluster-native dispatch still runs apprentice work in-wizard — matching the local-native shape.
 
+## Bead status lifecycle
+
+In cluster-native deployments, a work bead walks through four states:
+
+```
+ready → dispatched → in_progress → closed
+```
+
+The `dispatched` state covers the 50–90s window between the steward
+emitting a `WorkloadIntent` and the wizard pod starting and running
+`spire claim`. Holding an explicit state for that window matters
+because concurrency caps — both tower-global (`steward.maxConcurrent`)
+and per-guild (`WizardGuild.Spec.MaxConcurrent`) — count in-flight work
+as `status IN ('dispatched', 'in_progress')`. Without the
+`dispatched` state the caps would under-count and burst past their
+limits while pods boot.
+
+The steward owns `ready → dispatched` (atomic with the
+`workload_intents` INSERT) and the two stale-recovery paths
+(`dispatched → ready` on a short timeout, `in_progress → ready` on a
+long timeout). The wizard owns `dispatched → in_progress` at claim and
+`in_progress → closed` at seal. The operator stays task-status-agnostic
+— it reconciles `workload_intents` into pods, never touches
+`issues.status`. Local-native `spire summon` skips `dispatched`
+entirely; the local path has no polling loop, so claim flips
+`ready → in_progress` directly.
+
 ## Who it's for
 
 - Teams that want agents running around the clock, not tied to a developer's laptop being open

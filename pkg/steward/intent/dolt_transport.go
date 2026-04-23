@@ -75,11 +75,19 @@ func NewDoltPublisher(db *sql.DB) *DoltPublisher {
 	return &DoltPublisher{db: db}
 }
 
-// Publish inserts the intent into workload_intents. Repeat publishes of
-// the same (task_id, dispatch_seq) are idempotent: ON DUPLICATE KEY
-// UPDATE refreshes the projection but preserves the original emitted_at
-// and any reconciled_at the consumer may have already stamped. A retry
-// after a failed dispatch bumps dispatch_seq and lands in a fresh row.
+// Publish inserts the intent into workload_intents AND transitions the
+// backing issue row from 'ready' → 'dispatched' in the same SQL
+// transaction. Both sides commit or neither does — so after a
+// successful Publish the steward's scheduler can trust that any row
+// still showing status='ready' has not been dispatched.
+//
+// Idempotency: the INSERT uses ON DUPLICATE KEY UPDATE so re-publishes
+// of the same (task_id, dispatch_seq) refresh the projection without
+// duplicating history. The status UPDATE is guarded by
+// `WHERE id=? AND status='ready'` — a retry whose target has already
+// advanced past ready (to dispatched, in_progress, or closed) no-ops
+// on the status side rather than regressing it, and the publish still
+// succeeds because the INSERT is the authoritative dispatch marker.
 func (p *DoltPublisher) Publish(ctx context.Context, i WorkloadIntent) error {
 	if p == nil || p.db == nil {
 		return fmt.Errorf("intent: DoltPublisher has nil DB")
@@ -91,7 +99,19 @@ func (p *DoltPublisher) Publish(ctx context.Context, i WorkloadIntent) error {
 		return fmt.Errorf("intent: Publish requires DispatchSeq >= 1 (got %d)", i.DispatchSeq)
 	}
 	now := p.nowFn()
-	_, err := p.db.ExecContext(ctx, `
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("intent: begin tx for %s#%d: %w", i.TaskID, i.DispatchSeq, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, `
         INSERT INTO workload_intents (
             task_id, dispatch_seq, reason,
             repo_url, repo_base_branch, repo_prefix,
@@ -118,10 +138,21 @@ func (p *DoltPublisher) Publish(ctx context.Context, i WorkloadIntent) error {
 		i.Resources.CPURequest, i.Resources.CPULimit,
 		i.Resources.MemoryRequest, i.Resources.MemoryLimit,
 		now,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("intent: insert workload_intent %s#%d: %w", i.TaskID, i.DispatchSeq, err)
 	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE issues SET status = 'dispatched', updated_at = ? WHERE id = ? AND status = 'ready'`,
+		now, i.TaskID,
+	); err != nil {
+		return fmt.Errorf("intent: mark %s dispatched: %w", i.TaskID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("intent: commit dispatch %s#%d: %w", i.TaskID, i.DispatchSeq, err)
+	}
+	committed = true
 	return nil
 }
 

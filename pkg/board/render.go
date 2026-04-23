@@ -712,8 +712,8 @@ func RenderCardStr(b BoardBead, clr color.Color, width int, selected ...bool) st
 		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
 	}
 
-	// Show compact DAG pipeline for in-progress and hooked beads.
-	if b.Status == "in_progress" || b.Status == "hooked" {
+	// Show compact DAG pipeline for in-progress, dispatched, and hooked beads.
+	if b.Status == "in_progress" || b.Status == "hooked" || b.Status == "dispatched" {
 		if pipeline := RenderPipelineLipgloss(b.ID); pipeline != "" {
 			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
 		}
@@ -852,8 +852,11 @@ func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, clr color.Co
 		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
 	}
 
-	// Show compact DAG pipeline for in-progress and hooked beads.
-	if b.Status == "in_progress" || b.Status == "hooked" {
+	// Show compact DAG pipeline for in-progress, dispatched, and hooked beads.
+	// Dispatched beads haven't been claimed yet, so their DAG is usually
+	// empty — rendering still works and shows "○ ○ ○" to signal the bead
+	// is scheduled but unstarted.
+	if b.Status == "in_progress" || b.Status == "hooked" || b.Status == "dispatched" {
 		if pipeline := RenderPipelineFromDAG(dag); pipeline != "" {
 			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
 		}

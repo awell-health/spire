@@ -102,6 +102,10 @@ spec:
               value: {{ .Values.steward.backend | quote }}
             - name: STEWARD_METRICS_PORT
               value: {{ .Values.steward.metricsPort | quote }}
+            - name: STEWARD_MAX_CONCURRENT
+              value: {{ .Values.steward.maxConcurrent | default 0 | quote }}
+            - name: STEWARD_DISPATCHED_TIMEOUT
+              value: {{ .Values.steward.dispatchedTimeout | default "5m" | quote }}
             # Required for STEWARD_BACKEND=k8s — the agent pod image the
             # operator spawns when a wizard is needed.
             - name: SPIRE_AGENT_IMAGE

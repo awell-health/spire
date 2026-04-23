@@ -154,6 +154,17 @@ type StewardConfig struct {
 	Backend           agent.Backend
 	StaleThreshold    time.Duration
 	ShutdownThreshold time.Duration
+	// DispatchedTimeout is the short-timeout threshold that flips stuck
+	// `dispatched` beads back to `ready`. The steward transitions
+	// ready→dispatched at emit time, and the wizard is expected to
+	// claim (flipping dispatched→in_progress) within a short window
+	// once the cluster-native pod starts. If the pod never starts —
+	// image pull error, node pressure, etc. — this timeout recovers
+	// the bead so another dispatch cycle can pick it up. Distinct
+	// from StaleThreshold (which covers long-running in_progress);
+	// typical default is ~5m vs StaleThreshold's hours.
+	// Zero = disabled (no dispatched stale recovery).
+	DispatchedTimeout time.Duration
 	AgentList         []string
 	MetricsPort       int // 0 = disabled; non-zero = start HTTP metrics server
 
@@ -475,6 +486,16 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		log.Printf("[steward] %sstale: none", prefix)
 	}
 
+	// Step 5b: Short-timeout stale sweep for beads stuck in `dispatched`.
+	// A dispatched bead whose pod never came up (image pull, node pressure)
+	// must be recovered back to ready so a subsequent dispatch cycle can
+	// retry; otherwise its slot stays occupied under the concurrency cap.
+	if cfg.DispatchedTimeout > 0 {
+		if reverted := RecoverStaleDispatched(cfg.DispatchedTimeout, cfg.DryRun); reverted > 0 {
+			log.Printf("[steward] %sdispatched sweep: reverted %d bead(s) to ready", prefix, reverted)
+		}
+	}
+
 	// Step 6b: Process merge queue (one per cycle to serialize).
 	if cfg.MergeQueue != nil && cfg.MergeQueue.Depth() > 0 {
 		result := cfg.MergeQueue.ProcessNext(context.Background(), ExecuteMergeFunc)
@@ -540,6 +561,62 @@ func BeadsDirForTower(towerName string) string {
 		}
 	}
 	return ""
+}
+
+// RecoverStaleDispatched flips beads stuck in `dispatched` back to `ready`
+// when they have sat past timeout. It exists because the steward
+// transitions `ready → dispatched` atomically at emit time, but the
+// `dispatched → in_progress` transition is owned by the wizard and only
+// happens once the cluster-native workload pod starts and runs
+// `spire claim`. If the pod never starts (image pull error, node
+// pressure, crash loop), the bead would sit in `dispatched` forever
+// while holding an in-flight slot under the concurrency cap.
+//
+// The threshold is a SHORT timeout (typical default ~5 minutes): long
+// enough for a normal pod startup + claim, short enough that a failing
+// dispatch frees its slot for another try promptly. Contrast with
+// StaleThreshold (hours) used for in_progress recovery.
+//
+// Returns the number of beads reverted. dryRun logs the action without
+// performing the UPDATE.
+func RecoverStaleDispatched(timeout time.Duration, dryRun bool) int {
+	stuck, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.Status("dispatched"))})
+	if err != nil {
+		log.Printf("[steward] recover dispatched: %s", err)
+		return 0
+	}
+	now := time.Now()
+	reverted := 0
+	for _, b := range stuck {
+		if !store.IsWorkBead(b) {
+			continue
+		}
+		if b.UpdatedAt == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, b.UpdatedAt)
+		if err != nil {
+			t, err = time.Parse("2006-01-02 15:04:05", b.UpdatedAt)
+			if err != nil {
+				continue
+			}
+		}
+		if now.Sub(t) < timeout {
+			continue
+		}
+		if dryRun {
+			log.Printf("[steward] [dry-run] dispatched→ready: %s (%s) age=%s", b.ID, b.Title, now.Sub(t).Round(time.Second))
+			reverted++
+			continue
+		}
+		if err := store.UpdateBead(b.ID, map[string]interface{}{"status": "ready"}); err != nil {
+			log.Printf("[steward] recover dispatched %s: %s", b.ID, err)
+			continue
+		}
+		log.Printf("[steward] dispatched→ready: %s (%s) age=%s", b.ID, b.Title, now.Sub(t).Round(time.Second))
+		reverted++
+	}
+	return reverted
 }
 
 // CheckBeadHealth checks in_progress beads against two thresholds:

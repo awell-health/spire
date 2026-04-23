@@ -8,6 +8,7 @@ type BeadStatus string
 const (
 	StatusOpen       BeadStatus = "open"
 	StatusReady      BeadStatus = "ready"
+	StatusDispatched BeadStatus = "dispatched"
 	StatusInProgress BeadStatus = "in_progress"
 	StatusDeferred   BeadStatus = "deferred"
 	StatusClosed     BeadStatus = "closed"

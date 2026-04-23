@@ -57,6 +57,12 @@ var stewardCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetInt("metrics-port"); v > 0 {
 			fullArgs = append(fullArgs, "--metrics-port", strconv.Itoa(v))
 		}
+		if v, _ := cmd.Flags().GetInt("max-concurrent"); v > 0 {
+			fullArgs = append(fullArgs, "--max-concurrent", strconv.Itoa(v))
+		}
+		if v, _ := cmd.Flags().GetString("dispatched-timeout"); v != "" {
+			fullArgs = append(fullArgs, "--dispatched-timeout", v)
+		}
 		return cmdSteward(fullArgs)
 	},
 }
@@ -70,6 +76,8 @@ func init() {
 	stewardCmd.Flags().String("backend", "", "Agent backend: process, docker, or k8s")
 	stewardCmd.Flags().String("agents", "", "Comma-separated agent names")
 	stewardCmd.Flags().Int("metrics-port", 0, "Expose Prometheus metrics on this port (0=disabled)")
+	stewardCmd.Flags().Int("max-concurrent", 0, "Global cap on in-flight (dispatched+in_progress) beads; 0=unlimited")
+	stewardCmd.Flags().String("dispatched-timeout", "", "Short stale timeout for dispatched beads (default 5m)")
 }
 
 // agentNames delegates to pkg/steward for backward compatibility.
@@ -91,7 +99,21 @@ func cmdSteward(args []string) error {
 	noAssign := false // skip sending assignment messages (managed agents get work via operator)
 	backendName := "" // default: auto-resolve from ResolveBackend
 	metricsPort := 0  // 0 = disabled
+	maxConcurrent := 0
+	dispatchedTimeout := 5 * time.Minute
 	var agentList []string
+
+	// Env fallbacks (flags take precedence; parsed below).
+	if v := os.Getenv("STEWARD_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			maxConcurrent = n
+		}
+	}
+	if v := os.Getenv("STEWARD_DISPATCHED_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			dispatchedTimeout = d
+		}
+	}
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -167,6 +189,26 @@ func cmdSteward(args []string) error {
 				return fmt.Errorf("--metrics-port: invalid port %q", args[i])
 			}
 			metricsPort = p
+		case "--max-concurrent":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--max-concurrent requires a non-negative integer (0=unlimited)")
+			}
+			i++
+			n, nErr := strconv.Atoi(args[i])
+			if nErr != nil || n < 0 {
+				return fmt.Errorf("--max-concurrent: invalid value %q", args[i])
+			}
+			maxConcurrent = n
+		case "--dispatched-timeout":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--dispatched-timeout requires a duration (e.g. 5m)")
+			}
+			i++
+			d, dErr := time.ParseDuration(args[i])
+			if dErr != nil {
+				return fmt.Errorf("--dispatched-timeout: invalid duration %q", args[i])
+			}
+			dispatchedTimeout = d
 		default:
 			return fmt.Errorf("unknown flag: %s\nusage: spire steward [--once] [--dry-run] [--interval 2m] [--stale-threshold 15m] [--backend process|docker|k8s] [--agents a,b,c] [--metrics-port 9090]", args[i])
 		}
@@ -199,8 +241,8 @@ func cmdSteward(args []string) error {
 	}
 
 	backend := ResolveBackend(backendName)
-	log.Printf("[steward] starting (backend=%s, interval=%s, once=%v, dry-run=%v, stale=%s, shutdown=%s)",
-		backendName, interval, once, dryRun, staleThreshold, shutdownThreshold)
+	log.Printf("[steward] starting (backend=%s, interval=%s, once=%v, dry-run=%v, stale=%s, shutdown=%s, dispatched-timeout=%s, max-concurrent=%d)",
+		backendName, interval, once, dryRun, staleThreshold, shutdownThreshold, dispatchedTimeout, maxConcurrent)
 	if backendName == "" {
 		log.Printf("[steward] backend auto-resolved to process")
 	}
@@ -237,6 +279,7 @@ func cmdSteward(args []string) error {
 		Backend:            backend,
 		StaleThreshold:     staleThreshold,
 		ShutdownThreshold:  shutdownThreshold,
+		DispatchedTimeout:  dispatchedTimeout,
 		AgentList:          agentList,
 		MetricsPort:        metricsPort,
 		GraphStateStore:    graphStore,
@@ -251,7 +294,13 @@ func cmdSteward(args []string) error {
 		// Daemon startup does NOT populate ClusterDispatch itself —
 		// capturing a store.ActiveDB() here would yield nil or a
 		// stale connection across tower switches.
-		BuildClusterDispatch: buildClusterDispatch,
+		BuildClusterDispatch: func(towerName string) *steward.ClusterDispatchConfig {
+			cfg := buildClusterDispatch(towerName)
+			if cfg != nil {
+				cfg.MaxConcurrent = maxConcurrent
+			}
+			return cfg
+		},
 	}
 
 	// Start metrics server if configured.

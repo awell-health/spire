@@ -31,6 +31,14 @@ images:
     tag: dev
     pullPolicy: Never
 
+# --- Concurrency cap (acceptance test) ---
+# Cap tower-global in-flight at 2. With more than 2 ready beads the
+# steward emits at most 2 WorkloadIntents per cycle; the remainder
+# wait in status=ready until an in-flight bead closes.
+steward:
+  maxConcurrent: 2
+  dispatchedTimeout: "5m"
+
 # --- Fresh tower identity ---
 # `smoke` database is created blank by the dolt-provision post-install
 # Job; attach-cluster's --bootstrap-if-blank path runs the tower-create

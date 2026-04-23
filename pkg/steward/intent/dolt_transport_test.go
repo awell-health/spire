@@ -39,36 +39,36 @@ func TestDoltPublisher_InsertIdempotent(t *testing.T) {
 		},
 	}
 
-	mock.ExpectExec("INSERT INTO workload_intents").
-		WithArgs(
-			wi.TaskID, wi.DispatchSeq, wi.Reason,
-			wi.RepoIdentity.URL, wi.RepoIdentity.BaseBranch, wi.RepoIdentity.Prefix,
-			wi.FormulaPhase, wi.HandoffMode,
-			wi.Resources.CPURequest, wi.Resources.CPULimit,
-			wi.Resources.MemoryRequest, wi.Resources.MemoryLimit,
-			frozen,
-		).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+	// Publish now wraps the INSERT and the ready→dispatched status
+	// UPDATE in one SQL transaction — both sides commit or neither.
+	expectPublishTx := func(insertRows, updateRows int64) {
+		mock.ExpectBegin()
+		mock.ExpectExec("INSERT INTO workload_intents").
+			WithArgs(
+				wi.TaskID, wi.DispatchSeq, wi.Reason,
+				wi.RepoIdentity.URL, wi.RepoIdentity.BaseBranch, wi.RepoIdentity.Prefix,
+				wi.FormulaPhase, wi.HandoffMode,
+				wi.Resources.CPURequest, wi.Resources.CPULimit,
+				wi.Resources.MemoryRequest, wi.Resources.MemoryLimit,
+				frozen,
+			).
+			WillReturnResult(sqlmock.NewResult(1, insertRows))
+		mock.ExpectExec("UPDATE issues SET status = 'dispatched'").
+			WithArgs(frozen, wi.TaskID).
+			WillReturnResult(sqlmock.NewResult(0, updateRows))
+		mock.ExpectCommit()
+	}
 
+	expectPublishTx(1, 1)
 	if err := p.Publish(context.Background(), wi); err != nil {
 		t.Fatalf("Publish error: %v", err)
 	}
 
 	// A second Publish of the same intent goes through ON DUPLICATE KEY
-	// UPDATE semantics — the publisher does not reject re-publishes. We
-	// re-expect the same INSERT; a production dolt server returns a
-	// 0-row result when nothing changed but the driver does not care.
-	mock.ExpectExec("INSERT INTO workload_intents").
-		WithArgs(
-			wi.TaskID, wi.DispatchSeq, wi.Reason,
-			wi.RepoIdentity.URL, wi.RepoIdentity.BaseBranch, wi.RepoIdentity.Prefix,
-			wi.FormulaPhase, wi.HandoffMode,
-			wi.Resources.CPURequest, wi.Resources.CPULimit,
-			wi.Resources.MemoryRequest, wi.Resources.MemoryLimit,
-			frozen,
-		).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
+	// UPDATE semantics on the INSERT side, and the WHERE status='ready'
+	// guard makes the UPDATE a 0-row no-op on the status side — but the
+	// overall tx still commits cleanly.
+	expectPublishTx(0, 0)
 	if err := p.Publish(context.Background(), wi); err != nil {
 		t.Fatalf("Publish (re-emit) error: %v", err)
 	}

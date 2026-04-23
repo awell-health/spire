@@ -207,6 +207,21 @@ steward:
   interval: "10s"
   backend: "k8s"
   metricsPort: 9090
+  # Tower-global cap on in-flight (status IN dispatched, in_progress)
+  # work beads. 0 = unlimited (cap disabled). Any positive N means the
+  # steward skips emission once N beads are already in flight; the
+  # remainder wait in status=ready. Lives alongside per-guild
+  # WizardGuild.Spec.MaxConcurrent — both predicates apply.
+  maxConcurrent: 0
+  # Short-timeout stale recovery for beads stuck in `dispatched`.
+  # The steward flips ready→dispatched atomically at emit time; the
+  # wizard is expected to claim (dispatched→in_progress) shortly after
+  # its pod starts. If the pod never comes up (image pull error, node
+  # pressure), this timeout reverts the bead to `ready` so a subsequent
+  # dispatch cycle can retry. 5m is short enough that a stuck dispatch
+  # frees its slot promptly; distinct from stale (hours) for
+  # in_progress.
+  dispatchedTimeout: "5m"
   # LLM model for the sidecar (message router / condition tracker).
   # haiku-4-5 handles routine routing well; bump to sonnet/opus only if
   # directives become nuanced enough to warrant it.

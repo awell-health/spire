@@ -28,6 +28,7 @@ import (
 	"github.com/awell-health/spire/pkg/steward/dispatch"
 	"github.com/awell-health/spire/pkg/steward/identity"
 	"github.com/awell-health/spire/pkg/steward/intent"
+	"github.com/steveyegge/beads"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -64,6 +65,15 @@ type ClusterDispatchConfig struct {
 	// HandoffMode, when non-empty, overrides the default
 	// runtime.HandoffBundle the steward stamps on each emitted intent.
 	HandoffMode string
+
+	// MaxConcurrent is the tower-global cap on in-flight work at
+	// dispatch time. In-flight means status IN ('dispatched',
+	// 'in_progress') — both states hold a wizard slot. When the number
+	// of in-flight beads is at or above MaxConcurrent, this cycle
+	// emits zero new intents and the remainder wait in status=ready.
+	// Zero (the default) disables the cap — unlimited dispatch,
+	// matching the pre-cap behavior.
+	MaxConcurrent int
 }
 
 // dispatchClusterNative emits a WorkloadIntent for each schedulable
@@ -101,8 +111,26 @@ func dispatchClusterNative(
 		handoffMode = string(runtime.HandoffBundle)
 	}
 
+	// Tower-global concurrency cap: count beads already in-flight
+	// (status dispatched or in_progress) and compute the remaining
+	// slots this cycle may fill. MaxConcurrent <= 0 disables the cap.
+	inFlight := 0
+	remaining := -1 // -1 = unlimited
+	if cd.MaxConcurrent > 0 {
+		inFlight = countInFlight()
+		remaining = cd.MaxConcurrent - inFlight
+		if remaining <= 0 {
+			log.Printf("[steward] %scluster-native: capped at %d/%d in flight — skipping dispatch", logPrefix, inFlight, cd.MaxConcurrent)
+			return 0
+		}
+	}
+
 	emitted := 0
 	for _, bead := range schedulable {
+		if remaining == 0 {
+			log.Printf("[steward] %scluster-native: cap %d reached mid-cycle — deferring %d candidate(s)", logPrefix, cd.MaxConcurrent, len(schedulable)-emitted)
+			break
+		}
 		beadID := bead.ID
 		repoPrefix := beadRepoPrefix(beadID)
 
@@ -131,6 +159,9 @@ func dispatchClusterNative(
 			continue
 		}
 		emitted++
+		if remaining > 0 {
+			remaining--
+		}
 	}
 
 	if emitted > 0 {
@@ -199,6 +230,38 @@ func (e publisherEmitter) Emit(ctx context.Context, h *dispatch.ClaimHandle, i i
 		return err
 	}
 	return e.publisher.Publish(ctx, i)
+}
+
+// countInFlight returns the number of top-level work beads currently
+// holding a wizard slot — status IN ('dispatched', 'in_progress').
+// The predicate deliberately includes `dispatched` so the 50–90s
+// window between emit and wizard-claim still counts toward the
+// concurrency cap; without it the cap would burst through N+M in
+// flight (N in_progress + M dispatched) until the wizards caught up.
+//
+// Internal/child beads are skipped via store.IsWorkBead, matching the
+// filter the rest of the scheduler uses.
+func countInFlight() int {
+	inProg, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
+	if err != nil {
+		log.Printf("[steward] count in-flight (in_progress): %s", err)
+	}
+	disp, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.Status("dispatched"))})
+	if err != nil {
+		log.Printf("[steward] count in-flight (dispatched): %s", err)
+	}
+	n := 0
+	for _, b := range inProg {
+		if store.IsWorkBead(b) {
+			n++
+		}
+	}
+	for _, b := range disp {
+		if store.IsWorkBead(b) {
+			n++
+		}
+	}
+	return n
 }
 
 // singleBeadSelector is a dispatch.ReadyWorkSelector that yields a
