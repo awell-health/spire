@@ -66,6 +66,15 @@ func main() {
 	flag.StringVar(&prefix, "prefix", os.Getenv("BEADS_PREFIX"), "Default bead prefix. Defaults to $BEADS_PREFIX.")
 	flag.StringVar(&dolthubRemote, "dolthub-remote", os.Getenv("DOLTHUB_REMOTE"), "DoltHub remote URL for tower-attach init containers. Defaults to $DOLTHUB_REMOTE.")
 
+	// Authoritative in-cluster dolt sql server address (host:port, no
+	// scheme). Stamped onto every PodSpec the IntentWorkloadReconciler
+	// builds so tower-attach / in-pod workers hit the cluster dolt
+	// service instead of falling back to the laptop default
+	// 127.0.0.1:3307 (spi-o4f4eh). Helm injects DOLT_HOST + DOLT_PORT
+	// into the operator deployment env; the default composes them.
+	var doltURL string
+	flag.StringVar(&doltURL, "dolt-url", "", "Cluster dolt sql server URL (host:port). Defaults to $DOLT_HOST:$DOLT_PORT.")
+
 	// Guild cache reconciler inputs — deployment-time defaults plumbed
 	// from the chart's `cache.*` values (see helm/spire/values.yaml and
 	// the `spire.cachePVCSpec` helpers in _helpers.tpl). The per-guild
@@ -147,6 +156,22 @@ func main() {
 	// release-scoped database name equals the install namespace.
 	if database == "" {
 		database = namespace
+	}
+
+	// Dolt URL resolution (spi-o4f4eh). Prefer the explicit flag; else
+	// compose from the helm-injected DOLT_HOST + DOLT_PORT env; else
+	// fall back to the chart's own default service DNS. When both env
+	// vars are unset in non-cluster contexts the reconciler stamps an
+	// empty value onto PodSpec and pkg/agent.buildEnv omits the dolt
+	// vars — logged here so it is not silent.
+	if doltURL == "" {
+		if host, port := os.Getenv("DOLT_HOST"), os.Getenv("DOLT_PORT"); host != "" && port != "" {
+			doltURL = host + ":" + port
+		} else {
+			doltURL = "spire-dolt." + namespace + ".svc:3306"
+			log.Info("--dolt-url not set and DOLT_HOST/DOLT_PORT unset; falling back to chart default",
+				"dolt_url", doltURL)
+		}
 	}
 
 	// Agent monitor — tracks heartbeats and manages pods.
@@ -244,6 +269,7 @@ func main() {
 		Image:             stewardImage,
 		Tower:             database,
 		DolthubRemote:     dolthubRemote,
+		DoltURL:           doltURL,
 		Resolver:          resolver,
 		Consumer:          intentConsumer,
 		CredentialsSecret: credentialsSecret,

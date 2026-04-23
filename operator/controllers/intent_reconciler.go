@@ -77,6 +77,16 @@ type IntentWorkloadReconciler struct {
 	// container uses. Plumbed from --dolthub-remote.
 	DolthubRemote string
 
+	// DoltURL is the authoritative in-cluster dolt sql server URL
+	// (host:port, no scheme) that the reconciler stamps onto every
+	// PodSpec. pkg/agent.buildEnv splits this into DOLT_URL plus
+	// BEADS_DOLT_SERVER_HOST/BEADS_DOLT_SERVER_PORT so in-pod
+	// tower-attach and workers connect to the cluster dolt service
+	// instead of falling back to the laptop default 127.0.0.1:3307.
+	// Plumbed from the operator's --dolt-url flag (default built from
+	// $DOLT_HOST + $DOLT_PORT injected by the helm chart).
+	DoltURL string
+
 	// CredentialsSecret is the k8s Secret name holding
 	// ANTHROPIC_API_KEY_DEFAULT + GITHUB_TOKEN. Empty defers to
 	// agent.DefaultCredentialsSecret.
@@ -193,6 +203,7 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		Backend:           "operator-k8s",
 		CredentialsSecret: r.CredentialsSecret,
 		DolthubRemote:     r.DolthubRemote,
+		DoltURL:           r.DoltURL,
 		Identity: runtime.RepoIdentity{
 			TowerName:  r.Tower,
 			Prefix:     canonical.Prefix,
