@@ -207,10 +207,27 @@ errors; the store does not add its own retry layer.
 
 #### Minikube wiring
 
-See `k8s-smoke-test/gcs-example.yaml` for a worked example: a `Secret`
-holding `gcp-sa-key.json`, the volume mount, and
-`GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/gcp/gcp-sa-key.json` on
-both apprentice and wizard containers.
+For a real install, enable the chart's shared GCP credential:
+
+```sh
+helm install spire-smoke helm/spire \
+  -n spire-smoke --create-namespace \
+  -f k8s/values.smoke.yaml \
+  --set-file gcp.serviceAccountJson=./spire-gcs-sa.json \
+  --set-file dolthub.credsKeyValue=$HOME/.dolt/creds/<keyId>.jwk
+```
+
+The chart renders a `<release>-gcp-sa` Secret from
+`gcp.serviceAccountJson` and mounts it at `.Values.gcp.mountPath`
+(default `/var/secrets/gcp`) with key `.Values.gcp.keyName` (default
+`key.json`) on every pod that consumes GCS (steward + operator-built
+wizard + apprentice). The same Secret is used by the dolt backup sync
+CronJob when `backup.enabled=true` — one credential, two features.
+
+`k8s-smoke-test/gcs-example.yaml` keeps the minimal hand-rolled shape
+for ad-hoc testing outside the chart (pods mount a `spire-gcp-sa`
+Secret at `/var/secrets/gcp/`). Both paths arrive at the same ADC env:
+`GOOGLE_APPLICATION_CREDENTIALS=<mountPath>/<keyName>`.
 
 ## Expected operational ceiling
 

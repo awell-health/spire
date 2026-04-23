@@ -1,0 +1,25 @@
+# Smoke-test values overlay. Pair with:
+#
+#   helm install spire-smoke helm/spire \
+#     -n spire-smoke --create-namespace \
+#     -f k8s/values.smoke.yaml \
+#     --set-file dolthub.credsKeyValue=$HOME/.dolt/creds/<keyId>.jwk \
+#     --set-file gcp.serviceAccountJson=$HOME/Downloads/spire-gcs-sa.json
+#
+# The two `--set-file` flags inject file contents at install time so no
+# out-of-band `kubectl create secret` step is needed. See
+# k8s-smoke-test/README.md §1 for the full walkthrough.
+
+namespace: spire-smoke
+
+beads:
+  prefix: "spi"
+
+# Exercise the GCS BundleStore backend end-to-end. When backend=gcs,
+# helm fails the render unless gcp.serviceAccountJson is set via
+# --set-file (see helm/spire/templates/steward.yaml's `required` gate).
+bundleStore:
+  backend: gcs
+  gcs:
+    bucket: spire-awell
+    prefix: smoke

@@ -103,10 +103,11 @@ spec:
                   key: key-id
             {{- end }}
             {{- if and .Values.backup.enabled .Values.gcp.serviceAccountJson }}
-            # Points dolt's GCS client at the shared GCP SA credential
-            # so `dolt backup sync <gcs-remote>` can authenticate.
-            # Credential comes from the top-level `gcp.*` Secret
-            # (rendered by templates/secret-gcs.yaml), not backup-scoped.
+            # Points dolt's GCS client at the mounted service-account
+            # JSON so `dolt backup sync <gcs-remote>` can authenticate.
+            # The SA file and path come from the shared gcp.* top-level
+            # values — same Secret is consumed by BundleStore's steward
+            # path.
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: {{ .Values.gcp.mountPath }}/{{ .Values.gcp.keyName }}
             {{- end }}
@@ -166,7 +167,7 @@ spec:
         {{- if and .Values.backup.enabled .Values.gcp.serviceAccountJson }}
         - name: gcp-sa
           secret:
-            secretName: {{ .Values.gcp.secretName | default (printf "%s-gcp-sa" .Release.Name) }}
+            secretName: {{ include "spire.gcpSecretName" . }}
             defaultMode: 0400
         {{- end }}
   volumeClaimTemplates:

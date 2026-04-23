@@ -505,6 +505,54 @@ func TestBuildApprenticePod_Parametric_NoFieldDrift(t *testing.T) {
 			},
 		},
 		{
+			name: "GCSSecretName enables gcp-sa volume, mount, and GOOGLE_APPLICATION_CREDENTIALS",
+			mutate: func(s *PodSpec) {
+				s.GCSSecretName = "spire-smoke-gcp-sa"
+				s.GCSMountPath = "/var/secrets/gcp"
+				s.GCSKeyName = "key.json"
+			},
+			wantEnv: map[string]string{
+				"GOOGLE_APPLICATION_CREDENTIALS": "/var/secrets/gcp/key.json",
+			},
+			extraChecks: func(t *testing.T, base, mut *corev1.Pod) {
+				// Volume, mount, and env must all be wired on the mutated
+				// pod and absent from the baseline (local-backend) pod.
+				baseVols := volumeByName(base.Spec.Volumes)
+				if _, ok := baseVols["gcp-sa"]; ok {
+					t.Error("baseline pod has unexpected gcp-sa volume")
+				}
+				mutVols := volumeByName(mut.Spec.Volumes)
+				v, ok := mutVols["gcp-sa"]
+				if !ok {
+					t.Fatal("mutated pod missing gcp-sa volume")
+				}
+				if v.Secret == nil {
+					t.Fatalf("gcp-sa volume source = %+v, want Secret", v.VolumeSource)
+				}
+				if v.Secret.SecretName != "spire-smoke-gcp-sa" {
+					t.Errorf("gcp-sa SecretName = %q, want spire-smoke-gcp-sa", v.Secret.SecretName)
+				}
+
+				mainMounts := mountByPath(mut.Spec.Containers[0].VolumeMounts)
+				mount, ok := mainMounts["/var/secrets/gcp"]
+				if !ok {
+					t.Fatal("main container missing /var/secrets/gcp mount")
+				}
+				if mount.Name != "gcp-sa" {
+					t.Errorf("gcp-sa mount name = %q, want gcp-sa", mount.Name)
+				}
+				if !mount.ReadOnly {
+					t.Error("gcp-sa mount ReadOnly = false, want true")
+				}
+				// Baseline must NOT have the mount — this is the gate
+				// that asserts local-backend pods stay untouched.
+				baseMainMounts := mountByPath(base.Spec.Containers[0].VolumeMounts)
+				if _, ok := baseMainMounts["/var/secrets/gcp"]; ok {
+					t.Error("baseline main container has unexpected /var/secrets/gcp mount")
+				}
+			},
+		},
+		{
 			name:   "OTLPEndpoint enables full OTLP env block",
 			mutate: func(s *PodSpec) { s.OTLPEndpoint = "http://otel.svc:4317" },
 			wantEnv: map[string]string{
@@ -667,6 +715,11 @@ func TestBuildApprenticePod_ForbiddenEnvKeys(t *testing.T) {
 		{"shared workspace PVC", func(s *PodSpec) { s.SharedWorkspacePVCName = "wiz-ws" }},
 		{"custom prompt", func(s *PodSpec) { s.CustomPrompt = "custom.md" }},
 		{"extra args", func(s *PodSpec) { s.ExtraArgs = []string{"--review-fix"} }},
+		{"gcs backend", func(s *PodSpec) {
+			s.GCSSecretName = "spire-smoke-gcp-sa"
+			s.GCSMountPath = "/var/secrets/gcp"
+			s.GCSKeyName = "key.json"
+		}},
 	}
 
 	// Any key containing any of these substrings is forbidden (case-

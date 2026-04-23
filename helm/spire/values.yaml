@@ -102,29 +102,6 @@ dolthub:
   # Dolt CLI user.email — the account's email.
   userEmail: ""
 
-## @section GCP service-account credential (shared)
-##
-## A single GCP service-account key reused by every feature in the chart
-## that talks to Google Cloud services (today: BundleStore GCS backend
-## and the dolt-backup sync CronJob). The key JSON is passed at install
-## time via `--set-file gcp.serviceAccountJson=...`; helm renders it
-## into a single `<release>-gcp-sa` Secret that features mount.
-##
-## The same SA should have the relevant IAM roles on whichever buckets
-## each feature targets — typically `roles/storage.objectAdmin`. Use
-## separate buckets per feature when storage-class economics differ
-## (bundles are hot / short-lived; backups are cold / long-lived).
-
-## @param gcp.serviceAccountJson Raw JSON of a GCP service-account key with the relevant bucket roles. Pass via `--set-file gcp.serviceAccountJson=sa.json`. When empty, the shared Secret is not rendered and features that depend on it must either be disabled or configured with an externally-managed secret via `gcp.secretName`.
-## @param gcp.mountPath Filesystem path where the SA key gets mounted inside pods. Defaults to /var/secrets/gcp.
-## @param gcp.keyName Filename for the mounted SA key. Concatenated with mountPath to produce GOOGLE_APPLICATION_CREDENTIALS.
-## @param gcp.secretName Override the rendered Secret name. Empty defaults to `<release>-gcp-sa`. Set this to reuse a Secret managed outside the chart (e.g. ExternalSecrets, SOPS); the chart will skip rendering the in-chart Secret when both secretName is set AND serviceAccountJson is empty.
-gcp:
-  serviceAccountJson: ""
-  mountPath: /var/secrets/gcp
-  keyName: gcp-sa-key.json
-  secretName: ""
-
 ## @section Agent credentials
 ##
 ## Credentials used by apprentice agents running in the cluster. Provide the
@@ -178,6 +155,41 @@ existingSecret: ""
 beads:
   prefix: "spi"
   database: ""
+
+## @section Shared GCP credential
+##
+## One top-level service-account JSON that every GCP-consuming feature
+## in this chart reads — the dolt backup sync CronJob AND the
+## BundleStore GCS backend both mount this single Secret. Provisioned by
+## helm itself: `--set-file gcp.serviceAccountJson=sa.json` at install
+## time base64-encodes the file into a chart-rendered Secret named
+## `<release>-gcp-sa`. This matches the `dolthub.credsKeyValue` pattern
+## — no out-of-band `kubectl create secret` step.
+##
+## The secret is rendered whenever `gcp.serviceAccountJson` is non-empty;
+## consumers of the secret gate independently (backup on `backup.enabled`,
+## steward on `bundleStore.backend == "gcs"`). Leaving the JSON empty
+## means no Secret, no mounts, no GCS-dependent features.
+
+## @param gcp.serviceAccountJson Raw JSON of a GCP service account key with the IAM grants both features need. Pass with `--set-file gcp.serviceAccountJson=<path>` so helm reads from file. Empty disables all GCP-dependent features (backup, BundleStore GCS backend).
+## @param gcp.mountPath In-pod mount path for the service-account JSON. The same path is used everywhere the secret is mounted so one `GOOGLE_APPLICATION_CREDENTIALS` setting works for every feature.
+## @param gcp.keyName Filename of the service-account JSON inside the mount. Data key on the rendered Secret.
+## @param gcp.secretName Override the chart-rendered Secret name. Empty uses `<release>-gcp-sa`. Useful for plumbing to an externally-managed Secret: set this AND leave `gcp.serviceAccountJson` empty to skip rendering while still referencing the external name.
+gcp:
+  # Raw JSON contents of a GCP service account key. Pass with
+  # `--set-file gcp.serviceAccountJson=<path>` so helm reads from file
+  # rather than requiring the caller to inline the JSON in values.yaml.
+  # Empty disables every GCP-dependent feature in this chart.
+  serviceAccountJson: ""
+  # In-pod mount path for the service account JSON. Every feature that
+  # consumes the secret mounts at this same path so one
+  # `GOOGLE_APPLICATION_CREDENTIALS` value covers every consumer.
+  mountPath: /var/secrets/gcp
+  # Filename of the service account JSON inside the mount. Also the
+  # data key of the rendered Secret.
+  keyName: key.json
+  # Override the rendered Secret name. Empty uses `<release>-gcp-sa`.
+  secretName: ""
 
 ## @section Steward configuration
 
@@ -464,11 +476,14 @@ bundleStore:
 ##   gsutil lifecycle set lifecycle.json gs://<bucket>
 ## with a rule that deletes objects older than `retentionDays` days.
 ##
-## Credentials rotation: the GCS service-account JSON is mounted into
-## the dolt pod as GOOGLE_APPLICATION_CREDENTIALS. Rotating the JSON
-## requires restarting the dolt StatefulSet.
+## Credentials rotation: the GCP service-account JSON is mounted into
+## the dolt pod as GOOGLE_APPLICATION_CREDENTIALS. The credential itself
+## lives under the top-level `gcp.*` block and is shared with every other
+## GCP-consuming feature in this chart (e.g. the BundleStore GCS backend).
+## Rotating the JSON requires re-running `helm upgrade --set-file
+## gcp.serviceAccountJson=<new>` and restarting the dolt StatefulSet.
 
-## @param backup.enabled Whether to render the GCS backup resources (CronJob, Secret, RBAC, dolt-side volume/env). Off by default — Phase-1 opt-in.
+## @param backup.enabled Whether to render the GCS backup resources (CronJob, RBAC, dolt-side volume/env). Off by default — Phase-1 opt-in. The GCP SA credential used for auth comes from the shared `gcp.serviceAccountJson` top-level value; ensure it is set when `backup.enabled=true`.
 ## @param backup.schedule Cron expression for the backup CronJob. Default is daily at 03:00 UTC.
 ## @param backup.remoteName Name of the dolt backup remote registered by dolt-init (`dolt backup add <name> <url>`). Must match what the CronJob syncs.
 ## @param backup.gcs.bucket GCS bucket name (without `gs://`). Required when backup.enabled=true. A separate bucket from bundleStore.gcs.bucket is recommended — backups suit Nearline/Coldline storage classes; bundles need Standard due to their short-lived delete cycle.
@@ -485,8 +500,6 @@ backup:
   gcs:
     bucket: ""            # e.g. "awell-spire-backups" — separate from bundleStore.gcs.bucket (Nearline/Coldline vs Standard)
     prefix: ""            # e.g. "prod/spi" → gs://bucket/prefix
-  # SA credential lives at top-level `gcp.serviceAccountJson`; both
-  # backup sync and BundleStore (when backend=gcs) share it.
   # Retention is enforced by a GCS bucket lifecycle rule. The chart does
   # NOT manage this — configure it out-of-band:
   #   gsutil lifecycle set lifecycle.json gs://<bucket>

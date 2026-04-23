@@ -254,6 +254,80 @@ func padRight(s string, headerLen int) string {
 	return strings.Repeat(" ", headerLen-len(s))
 }
 
+// TestTowerConfig_BundleStoreRoundTrip confirms a TowerConfig carrying a
+// gcs BundleStore selection round-trips through SaveTowerConfig /
+// LoadTowerConfig without field drift. The cluster path
+// (`spire tower attach-cluster --bundle-store-backend=gcs ...`) writes
+// this block, the steward and apprentice pods read it back; a silent
+// marshal/unmarshal regression would turn every GCS-backed tower into a
+// local-backend tower after the first pod restart.
+func TestTowerConfig_BundleStoreRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	tower := &TowerConfig{
+		Name:      "bundle-tower",
+		ProjectID: "22222222-3333-4444-8555-666666666666",
+		HubPrefix: "bdl",
+		Database:  "beads_bdl",
+		CreatedAt: "2026-04-22T10:00:00Z",
+		BundleStore: BundleStoreConfig{
+			Backend: "gcs",
+			GCS: BundleStoreGCSConfig{
+				Bucket: "spire-awell",
+				Prefix: "smoke",
+			},
+		},
+	}
+	if err := SaveTowerConfig(tower); err != nil {
+		t.Fatalf("SaveTowerConfig: %v", err)
+	}
+
+	// Wire-format assertion: the JSON on disk MUST contain the
+	// bundle_store block with the nested gcs object. A drift in the
+	// json tags would silently erase the selection after reload.
+	p, _ := TowerConfigPath("bundle-tower")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("parse written config: %v", err)
+	}
+	bs, ok := wire["bundle_store"].(map[string]any)
+	if !ok {
+		t.Fatalf("bundle_store missing or wrong type in %s: %v", p, wire["bundle_store"])
+	}
+	if got, _ := bs["backend"].(string); got != "gcs" {
+		t.Errorf("bundle_store.backend = %q, want gcs", got)
+	}
+	gcs, ok := bs["gcs"].(map[string]any)
+	if !ok {
+		t.Fatalf("bundle_store.gcs missing or wrong type: %v", bs["gcs"])
+	}
+	if got, _ := gcs["bucket"].(string); got != "spire-awell" {
+		t.Errorf("bundle_store.gcs.bucket = %q, want spire-awell", got)
+	}
+	if got, _ := gcs["prefix"].(string); got != "smoke" {
+		t.Errorf("bundle_store.gcs.prefix = %q, want smoke", got)
+	}
+
+	loaded, err := LoadTowerConfig("bundle-tower")
+	if err != nil {
+		t.Fatalf("LoadTowerConfig: %v", err)
+	}
+	if loaded.BundleStore.Backend != "gcs" {
+		t.Errorf("BundleStore.Backend = %q, want gcs", loaded.BundleStore.Backend)
+	}
+	if loaded.BundleStore.GCS.Bucket != "spire-awell" {
+		t.Errorf("BundleStore.GCS.Bucket = %q, want spire-awell", loaded.BundleStore.GCS.Bucket)
+	}
+	if loaded.BundleStore.GCS.Prefix != "smoke" {
+		t.Errorf("BundleStore.GCS.Prefix = %q, want smoke", loaded.BundleStore.GCS.Prefix)
+	}
+}
+
 // TestTowerConfig_EffectiveDeploymentMode covers the accessor directly so
 // downstream packages have a reliable fallback even when constructing a
 // TowerConfig value outside the loader path (tests, in-memory tower).

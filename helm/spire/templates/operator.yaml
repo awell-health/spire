@@ -93,6 +93,22 @@ spec:
               value: {{ .Values.beads.prefix | quote }}
             - name: DOLTHUB_REMOTE
               value: {{ .Values.dolthub.remoteUrl | quote }}
+            {{- if eq .Values.bundleStore.backend "gcs" }}
+            # When the tower uses the GCS BundleStore, the operator needs
+            # to propagate the Secret-mounted SA onto every wizard /
+            # apprentice pod it builds so they can authenticate against
+            # GCS for bundle Put/Get. The three env vars below are read
+            # by AgentMonitor.applyOperatorOverlay (wizard pods) and by
+            # IntentWorkloadReconciler (apprentice pods built through
+            # agent.BuildApprenticePod). Empty backend leaves them unset
+            # and every built pod stays on the local-backend shape.
+            - name: SPIRE_GCP_SECRET_NAME
+              value: {{ include "spire.gcpSecretName" . | quote }}
+            - name: SPIRE_GCP_MOUNT_PATH
+              value: {{ .Values.gcp.mountPath | quote }}
+            - name: SPIRE_GCP_KEY_NAME
+              value: {{ .Values.gcp.keyName | quote }}
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: {{ .Values.paths.dataRoot }}

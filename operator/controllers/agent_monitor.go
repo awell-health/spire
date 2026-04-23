@@ -74,6 +74,17 @@ type AgentMonitor struct {
 	// DolthubRemote is the dolt remote URL for the tower-attach init container.
 	DolthubRemote string
 
+	// GCSSecretName, GCSMountPath, GCSKeyName plumb the shared GCP
+	// service-account credential from the helm chart onto every
+	// operator-built wizard pod (see applyOperatorOverlay). When the
+	// chart deploys with bundleStore.backend=gcs the operator pod
+	// receives SPIRE_GCP_SECRET_NAME / SPIRE_GCP_MOUNT_PATH /
+	// SPIRE_GCP_KEY_NAME and main.go copies them here. Empty means no
+	// GCS mount — the wizard pod keeps the local-backend shape.
+	GCSSecretName string
+	GCSMountPath  string
+	GCSKeyName    string
+
 	// Resolver is the canonical source of cluster repo identity per
 	// spi-njzmg. When wired, buildWorkloadPod treats
 	// WizardGuild.Spec.Repo/RepoBranch/Prefixes as projection-only and
@@ -539,7 +550,68 @@ func (m *AgentMonitor) buildWorkloadPod(wg *spirev1.WizardGuild, beadID string, 
 	// the pod will stay Pending until the PVC appears.
 	applyCacheOverlay(pod, wg.Name, prefix, image)
 
+	// GCS overlay wires the shared gcp-sa Secret onto the wizard pod
+	// when the tower's BundleStore is configured for the gcs backend.
+	// Plumbed via the operator's SPIRE_GCP_* env; empty secret name
+	// leaves the pod unchanged (local-backend wizards keep today's
+	// shape). Applied last so it composes cleanly with cache / shared-
+	// workspace overlays without stomping their mounts.
+	if m.GCSSecretName != "" {
+		applyGCSOverlay(pod, m.GCSSecretName, m.GCSMountPath, m.GCSKeyName)
+	}
+
 	return pod
+}
+
+// applyGCSOverlay mutates pod in place to add the shared GCP SA Secret
+// mount + GOOGLE_APPLICATION_CREDENTIALS env to every container + init
+// container on the pod. The Secret is projected read-only at mountPath,
+// and every container gets the env var pointing at
+// "<mountPath>/<keyName>" so both the tower-attach init container's
+// spire process and the main wizard process resolve ADC to the same
+// file. When the pod already has a "gcp-sa" volume (e.g. the shared
+// builder added it through a future PodSpec path), the overlay is a
+// no-op — we don't double-add the same mount.
+func applyGCSOverlay(pod *corev1.Pod, secretName, mountPath, keyName string) {
+	if mountPath == "" || keyName == "" {
+		// Missing values would produce a broken env pointer; the operator
+		// logs this at startup via the envOrLog helper used in main.go.
+		return
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == "gcp-sa" {
+			return
+		}
+	}
+	mode := int32(0400)
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name: "gcp-sa",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName:  secretName,
+				DefaultMode: &mode,
+			},
+		},
+	})
+
+	mount := corev1.VolumeMount{
+		Name:      "gcp-sa",
+		MountPath: mountPath,
+		ReadOnly:  true,
+	}
+	adcEnv := corev1.EnvVar{
+		Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+		Value: mountPath + "/" + keyName,
+	}
+
+	for i := range pod.Spec.Containers {
+		pod.Spec.Containers[i].VolumeMounts = append(pod.Spec.Containers[i].VolumeMounts, mount)
+		pod.Spec.Containers[i].Env = mergeEnv(pod.Spec.Containers[i].Env, []corev1.EnvVar{adcEnv})
+	}
+	for i := range pod.Spec.InitContainers {
+		pod.Spec.InitContainers[i].VolumeMounts = append(pod.Spec.InitContainers[i].VolumeMounts, mount)
+		pod.Spec.InitContainers[i].Env = mergeEnv(pod.Spec.InitContainers[i].Env, []corev1.EnvVar{adcEnv})
+	}
 }
 
 // applyOperatorOverlay mutates pod in place to carry operator-specific

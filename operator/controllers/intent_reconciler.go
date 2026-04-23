@@ -74,6 +74,22 @@ type IntentWorkloadReconciler struct {
 	// agent.DefaultCredentialsSecret.
 	CredentialsSecret string
 
+	// GCSSecretName, when non-empty, is copied onto every apprentice
+	// PodSpec so the in-pod BundleStore GCS client can authenticate
+	// via a mounted service-account JSON. Plumbed from the operator
+	// pod's SPIRE_GCP_SECRET_NAME env (helm sets it when the chart
+	// deploys with bundleStore.backend=gcs). Empty disables the GCS
+	// mount — local-backend apprentices stay on the unmounted shape.
+	GCSSecretName string
+	// GCSMountPath is the in-pod directory where the secret is mounted.
+	// Plumbed from SPIRE_GCP_MOUNT_PATH; must match what the chart
+	// renders for Values.gcp.mountPath so one
+	// GOOGLE_APPLICATION_CREDENTIALS value works across features.
+	GCSMountPath string
+	// GCSKeyName is the filename of the service-account JSON within the
+	// mount (the Secret's data key). Plumbed from SPIRE_GCP_KEY_NAME.
+	GCSKeyName string
+
 	// Consumer is the scheduler-to-reconciler seam. pkg/steward writes
 	// WorkloadIntents via intent.IntentPublisher; the operator reads
 	// them here. Nil disables the reconciler (Start returns
@@ -167,7 +183,10 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 			RepoURL:    canonical.URL,
 			BaseBranch: canonical.BaseBranch,
 		},
-		Resources: podResourcesFromIntent(wi.Resources),
+		GCSSecretName: r.GCSSecretName,
+		GCSMountPath:  r.GCSMountPath,
+		GCSKeyName:    r.GCSKeyName,
+		Resources:     podResourcesFromIntent(wi.Resources),
 	}
 
 	pod, err := agent.BuildApprenticePod(spec)

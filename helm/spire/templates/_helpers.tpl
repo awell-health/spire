@@ -52,6 +52,19 @@ file and the main container reports "no tower configured".
 {{- end -}}
 
 {{/*
+spire.gcpSecretName — resolved name of the Secret holding the shared
+GCP service-account JSON. Three templates reference this (secret-gcp,
+dolt, steward) so the helper is the single source of truth for the
+name resolution rule: when `.Values.gcp.secretName` is set it wins
+(externally-managed secret); otherwise the chart renders
+`<release>-gcp-sa`. Returning the same name from all three templates
+keeps the three features mounting the same Secret object.
+*/}}
+{{- define "spire.gcpSecretName" -}}
+{{- .Values.gcp.secretName | default (printf "%s-gcp-sa" .Release.Name) -}}
+{{- end -}}
+
+{{/*
 spire.additionalUsersSecretName — name of the chart-managed Secret that
 holds inline passwords (from `entry.password`) for dolt.additionalUsers.
 Kept separate from `spire.secretName` so external-secret setups don't

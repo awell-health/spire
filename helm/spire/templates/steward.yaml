@@ -1,3 +1,7 @@
+{{- if eq .Values.bundleStore.backend "gcs" -}}
+{{- $_ := required "gcp.serviceAccountJson is required when bundleStore.backend=gcs — pass with --set-file gcp.serviceAccountJson=<path>" .Values.gcp.serviceAccountJson -}}
+{{- $_ = required "bundleStore.gcs.bucket is required when bundleStore.backend=gcs" .Values.bundleStore.gcs.bucket -}}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,9 +47,9 @@ spec:
                 --database="$BEADS_DATABASE" \
                 --prefix="$BEADS_PREFIX" \
                 --dolthub-remote="$DOLTHUB_REMOTE" \
-                --bundle-store-backend="$BUNDLE_STORE_BACKEND" \
-                --bundle-store-gcs-bucket="$BUNDLE_STORE_GCS_BUCKET" \
-                --bundle-store-gcs-prefix="$BUNDLE_STORE_GCS_PREFIX" \
+                --bundle-store-backend={{ .Values.bundleStore.backend | quote }} \
+                --bundle-store-gcs-bucket={{ .Values.bundleStore.gcs.bucket | quote }} \
+                --bundle-store-gcs-prefix={{ .Values.bundleStore.gcs.prefix | quote }} \
                 --bootstrap-if-blank \
                 --dolt-wait=300s
               # bd warns at 0755 — tighten. Done after attach-cluster so
@@ -70,14 +74,6 @@ spec:
               value: {{ .Values.beads.prefix | quote }}
             - name: DOLTHUB_REMOTE
               value: {{ .Values.dolthub.remoteUrl | quote }}
-            # BundleStore configuration — read by attach-cluster's new
-            # --bundle-store-* flags above, persisted into tower config.
-            - name: BUNDLE_STORE_BACKEND
-              value: {{ .Values.bundleStore.backend | quote }}
-            - name: BUNDLE_STORE_GCS_BUCKET
-              value: {{ .Values.bundleStore.gcs.bucket | quote }}
-            - name: BUNDLE_STORE_GCS_PREFIX
-              value: {{ .Values.bundleStore.gcs.prefix | quote }}
             # Persist the tower config on the shared PVC (init → main
             # container). Paired with DOLT_DATA_DIR so BeadsDirForTower
             # resolves via the laptop convention instead of needing a
@@ -126,11 +122,12 @@ spec:
               value: {{ include "spire.configDir" . | quote }}
             - name: DOLT_DATA_DIR
               value: {{ .Values.paths.dataRoot | quote }}
-            {{- if and (eq .Values.bundleStore.backend "gcs") .Values.gcp.serviceAccountJson }}
-            # Points the steward's BundleStore GCS client at the shared
-            # GCP SA credential. Janitor / lifecycle ops on bundles run
-            # from the steward, so this env must be present whenever the
-            # tower's BundleStore.backend=gcs.
+            {{- if eq .Values.bundleStore.backend "gcs" }}
+            # ADC path for the GCS BundleStore client. The gcs backend
+            # picks this up via google.golang.org/api/option.WithCredentialsFile
+            # when the ClusterCred resolver returns the Secret-mounted
+            # file — same env var the minikube smoke path documents in
+            # pkg/bundlestore/README.md.
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: {{ .Values.gcp.mountPath }}/{{ .Values.gcp.keyName }}
             {{- end }}
@@ -163,7 +160,7 @@ spec:
             - name: spire-config
               mountPath: /etc/spire
               readOnly: true
-            {{- if and (eq .Values.bundleStore.backend "gcs") .Values.gcp.serviceAccountJson }}
+            {{- if eq .Values.bundleStore.backend "gcs" }}
             - name: gcp-sa
               mountPath: {{ .Values.gcp.mountPath }}
               readOnly: true
@@ -228,10 +225,10 @@ spec:
         - name: spire-config
           configMap:
             name: spire-config
-        {{- if and (eq .Values.bundleStore.backend "gcs") .Values.gcp.serviceAccountJson }}
+        {{- if eq .Values.bundleStore.backend "gcs" }}
         - name: gcp-sa
           secret:
-            secretName: {{ .Values.gcp.secretName | default (printf "%s-gcp-sa" .Release.Name) }}
+            secretName: {{ include "spire.gcpSecretName" . }}
             defaultMode: 0400
         {{- end }}
 ---

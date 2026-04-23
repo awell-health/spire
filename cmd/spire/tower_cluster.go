@@ -64,10 +64,10 @@ kubeconfig file.`,
 		dolthubRemote, _ := cmd.Flags().GetString("dolthub-remote")
 		waitDur, _ := cmd.Flags().GetDuration("dolt-wait")
 		bootstrapIfBlank, _ := cmd.Flags().GetBool("bootstrap-if-blank")
-		bundleBackend, _ := cmd.Flags().GetString("bundle-store-backend")
-		bundleGCSBucket, _ := cmd.Flags().GetString("bundle-store-gcs-bucket")
-		bundleGCSPrefix, _ := cmd.Flags().GetString("bundle-store-gcs-prefix")
-		return cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote, waitDur, bootstrapIfBlank, bundleBackend, bundleGCSBucket, bundleGCSPrefix)
+		bundleStoreBackend, _ := cmd.Flags().GetString("bundle-store-backend")
+		bundleStoreGCSBucket, _ := cmd.Flags().GetString("bundle-store-gcs-bucket")
+		bundleStoreGCSPrefix, _ := cmd.Flags().GetString("bundle-store-gcs-prefix")
+		return cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote, waitDur, bootstrapIfBlank, bundleStoreBackend, bundleStoreGCSBucket, bundleStoreGCSPrefix)
 	},
 }
 
@@ -84,9 +84,9 @@ func init() {
 	// which the runtime interprets as backend=local (the default). The
 	// helm chart passes these unconditionally from .Values.bundleStore.*
 	// — empty strings must be tolerated silently, not rejected.
-	towerAttachClusterCmd.Flags().String("bundle-store-backend", "", "BundleStore backend: 'local' (default) or 'gcs'. Empty = backend unset in tower config (runtime default = local).")
-	towerAttachClusterCmd.Flags().String("bundle-store-gcs-bucket", "", "GCS bucket name (without 'gs://') when bundle-store-backend=gcs. Must pre-exist; the store does not create it.")
-	towerAttachClusterCmd.Flags().String("bundle-store-gcs-prefix", "", "Optional object-name prefix inside the GCS bucket for multi-tower namespacing.")
+	towerAttachClusterCmd.Flags().String("bundle-store-backend", "", "BundleStore backend to persist in tower config. Empty leaves the existing value untouched; \"local\" or \"gcs\" write-through to tower.bundle_store.backend. Helm passes this from .Values.bundleStore.backend so the steward's tower config reflects what the chart deployed.")
+	towerAttachClusterCmd.Flags().String("bundle-store-gcs-bucket", "", "GCS bucket name for backend=gcs. Required when --bundle-store-backend=gcs. Stored as tower.bundle_store.gcs.bucket.")
+	towerAttachClusterCmd.Flags().String("bundle-store-gcs-prefix", "", "Optional GCS object-name prefix for backend=gcs. Stored as tower.bundle_store.gcs.prefix.")
 
 	towerAttachClusterCmd.Flags().String("namespace", "", "Kubernetes namespace for the cluster attachment (register mode)")
 	towerAttachClusterCmd.Flags().String("kubeconfig", "", "Path to kubeconfig; defaults to $KUBECONFIG or ~/.kube/config (register mode)")
@@ -140,7 +140,7 @@ var clusterRunBdInit = func(database, prefix, runDir string) error {
 	})
 }
 
-func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote string, waitDur time.Duration, bootstrapIfBlank bool, bundleBackend, bundleGCSBucket, bundleGCSPrefix string) error {
+func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote string, waitDur time.Duration, bootstrapIfBlank bool, bundleStoreBackend, bundleStoreGCSBucket, bundleStoreGCSPrefix string) error {
 	if database == "" {
 		return fmt.Errorf("--database is required")
 	}
@@ -235,18 +235,21 @@ func cmdTowerAttachCluster(dataDir, database, prefixFallback, dolthubRemote stri
 		DeploymentMode: config.DeploymentModeClusterNative,
 	}
 
-	// BundleStore — populate from chart-supplied flags when non-empty.
-	// Empty values leave BundleStore zero-valued (runtime default = local);
-	// the helm chart passes these unconditionally from
-	// .Values.bundleStore.*, so tolerating empty strings is required.
-	if bundleBackend != "" {
-		tower.BundleStore.Backend = bundleBackend
-	}
-	if bundleGCSBucket != "" {
-		tower.BundleStore.GCS.Bucket = bundleGCSBucket
-	}
-	if bundleGCSPrefix != "" {
-		tower.BundleStore.GCS.Prefix = bundleGCSPrefix
+	// Persist BundleStore selection when the chart supplied one. Empty
+	// backend leaves the field zero-valued so the existing in-process
+	// defaults in pkg/bundlestore still apply (local backend under
+	// $XDG_DATA_HOME). When backend=gcs, both the steward (this pod) and
+	// every apprentice/wizard pod the operator spawns read the persisted
+	// config — we're writing through the chart's selection to the cluster
+	// dispatch path via the tower config on the shared PVC.
+	if bundleStoreBackend != "" {
+		tower.BundleStore = config.BundleStoreConfig{
+			Backend: bundleStoreBackend,
+			GCS: config.BundleStoreGCSConfig{
+				Bucket: bundleStoreGCSBucket,
+				Prefix: bundleStoreGCSPrefix,
+			},
+		}
 	}
 
 	beadsDir := filepath.Join(dataDir, ".beads")

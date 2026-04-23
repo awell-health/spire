@@ -193,6 +193,26 @@ type PodSpec struct {
 	// for apprentices that continue a parent wizard's checkout.
 	SharedWorkspacePVCName string
 
+	// GCSSecretName, if non-empty, mounts that k8s Secret at
+	// GCSMountPath on the main container and sets
+	// GOOGLE_APPLICATION_CREDENTIALS so the in-pod GCS BundleStore
+	// client can authenticate via the mounted service-account JSON.
+	// Callers populate this when the tower's BundleStore backend is
+	// "gcs". Empty leaves the pod unchanged — local-backend apprentices
+	// have no GCS volume, no env, nothing.
+	GCSSecretName string
+
+	// GCSMountPath is the in-pod directory the GCS Secret is mounted
+	// under. Only consulted when GCSSecretName is non-empty. Matches the
+	// chart's .Values.gcp.mountPath so one path works across every
+	// GCP-consuming feature.
+	GCSMountPath string
+
+	// GCSKeyName is the filename of the service-account JSON inside the
+	// mount (the Secret's data key). Joined with GCSMountPath to form
+	// GOOGLE_APPLICATION_CREDENTIALS.
+	GCSKeyName string
+
 	// OTLPEndpoint is the destination for OTEL traces/logs
 	// (e.g. "http://spire-steward.spire.svc:4317"). Empty disables the
 	// OTLP env block so local test fixtures do not emit OTLP.
@@ -262,6 +282,13 @@ func BuildApprenticePod(spec PodSpec) (*corev1.Pod, error) {
 		mainMounts = append(mainMounts, corev1.VolumeMount{
 			Name:      "repo-cache",
 			MountPath: CacheMountPath,
+			ReadOnly:  true,
+		})
+	}
+	if spec.GCSSecretName != "" {
+		mainMounts = append(mainMounts, corev1.VolumeMount{
+			Name:      "gcp-sa",
+			MountPath: spec.GCSMountPath,
 			ReadOnly:  true,
 		})
 	}
@@ -427,6 +454,17 @@ func (s PodSpec) buildEnv() []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_CUSTOM_PROMPT", Value: s.CustomPrompt})
 	}
 
+	// GOOGLE_APPLICATION_CREDENTIALS — only emitted when the caller
+	// opts in via GCSSecretName. Points at the mounted service-account
+	// JSON so the in-pod GCS client (pkg/bundlestore.gcsStore) can
+	// authenticate. Same env var the dolt backup path sets when it's on.
+	if s.GCSSecretName != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+			Value: s.GCSMountPath + "/" + s.GCSKeyName,
+		})
+	}
+
 	// OTLP telemetry. When the caller leaves the endpoint empty, we
 	// emit nothing — local test fixtures should not ship traces.
 	if s.OTLPEndpoint != "" {
@@ -507,6 +545,19 @@ func (s PodSpec) buildVolumes() []corev1.Volume {
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: s.CachePVCName,
 					ReadOnly:  readOnly,
+				},
+			},
+		})
+	}
+
+	if s.GCSSecretName != "" {
+		mode := int32(0400)
+		volumes = append(volumes, corev1.Volume{
+			Name: "gcp-sa",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  s.GCSSecretName,
+					DefaultMode: &mode,
 				},
 			},
 		})

@@ -147,6 +147,16 @@ func main() {
 	// spi-njzmg. When wired, WizardGuild Repo/RepoBranch are treated
 	// as projection-only and reconciled to the resolver's output.
 	resolver := newClusterIdentityResolver()
+
+	// Shared GCP SA identity — helm populates SPIRE_GCP_* when the
+	// chart deploys with bundleStore.backend=gcs. Read once at startup
+	// so pod-build code never hunts the process env per pod. Empty
+	// Secret name means no GCS overlay; local-backend pods keep today's
+	// shape.
+	gcpSecretName := os.Getenv("SPIRE_GCP_SECRET_NAME")
+	gcpMountPath := os.Getenv("SPIRE_GCP_MOUNT_PATH")
+	gcpKeyName := os.Getenv("SPIRE_GCP_KEY_NAME")
+
 	monitor := &controllers.AgentMonitor{
 		Client:         mgr.GetClient(),
 		Log:            log.WithName("agent-monitor"),
@@ -158,6 +168,9 @@ func main() {
 		Prefix:         prefix,
 		DolthubRemote:  dolthubRemote,
 		Resolver:       resolver,
+		GCSSecretName:  gcpSecretName,
+		GCSMountPath:   gcpMountPath,
+		GCSKeyName:     gcpKeyName,
 	}
 	if err := mgr.Add(monitor); err != nil {
 		log.Error(err, "unable to add agent monitor")
@@ -201,6 +214,9 @@ func main() {
 		Tower:         database,
 		DolthubRemote: dolthubRemote,
 		Resolver:      resolver,
+		GCSSecretName: gcpSecretName,
+		GCSMountPath:  gcpMountPath,
+		GCSKeyName:    gcpKeyName,
 	}
 	if err := mgr.Add(intentReconciler); err != nil {
 		log.Error(err, "unable to add intent reconciler")
