@@ -18,6 +18,7 @@ func init() {
 	rootCmd.AddCommand(reviewCmd)
 	rootCmd.AddCommand(inboxCmd)
 	rootCmd.AddCommand(readCmd)
+	rootCmd.AddCommand(commentCmd)
 	rootCmd.AddCommand(claimCmd)
 	rootCmd.AddCommand(closeCmd)
 	rootCmd.AddCommand(readyCmd)

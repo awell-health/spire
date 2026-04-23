@@ -216,6 +216,10 @@ func storeAddComment(id, text string) error {
 	return store.AddComment(id, text)
 }
 
+func storeAddCommentAs(id, author, text string) error {
+	return store.AddCommentAs(id, author, text)
+}
+
 func storeCommitPending(message string) error {
 	return store.CommitPending(message)
 }

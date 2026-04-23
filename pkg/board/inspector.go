@@ -560,15 +560,11 @@ func RenderInspector(data InspectorData, width, height, scrollOffset int) string
 		lines = append(lines, "")
 		lines = append(lines, sectionHeader(fmt.Sprintf("Comments (%d)", len(data.Comments))))
 		for i, c := range data.Comments {
-			author := c.Author
-			if author == "" {
-				author = "unknown"
-			}
 			ts := ""
 			if !c.CreatedAt.IsZero() {
 				ts = " " + dimStyle.Render(TimeAgo(c.CreatedAt.Format(time.RFC3339)))
 			}
-			lines = append(lines, fmt.Sprintf("  %s%s:", lipgloss.NewStyle().Bold(true).Render(author), ts))
+			lines = append(lines, fmt.Sprintf("  %s%s:", renderCommentAuthor(c.Author), ts))
 			for _, tl := range wrapText(c.Text, contentWidth-4) {
 				lines = append(lines, "    "+tl)
 			}
@@ -1046,15 +1042,11 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 			lines = append(lines, "")
 			lines = append(lines, sectionHeader(fmt.Sprintf("Comments (%d)", len(data.Comments))))
 			for i, c := range data.Comments {
-				author := c.Author
-				if author == "" {
-					author = "unknown"
-				}
 				ts := ""
 				if !c.CreatedAt.IsZero() {
 					ts = " " + dimStyle.Render(TimeAgo(c.CreatedAt.Format(time.RFC3339)))
 				}
-				lines = append(lines, fmt.Sprintf("  %s%s:", lipgloss.NewStyle().Bold(true).Render(author), ts))
+				lines = append(lines, fmt.Sprintf("  %s%s:", renderCommentAuthor(c.Author), ts))
 				for _, tl := range wrapText(c.Text, contentWidth-4) {
 					lines = append(lines, "    "+tl)
 				}

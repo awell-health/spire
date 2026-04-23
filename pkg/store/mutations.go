@@ -184,6 +184,20 @@ func AddComment(id, text string) error {
 	return err
 }
 
+// AddCommentAs adds a comment authored by the given actor.
+//
+// Unlike AddComment, which defaults to Actor()="spire" for agent-issued
+// comments, AddCommentAs lets the caller supply an explicit author string
+// (e.g. "Name <email>" for archmage-authored comments from the CLI).
+func AddCommentAs(id, author, text string) error {
+	s, ctx, err := getStore()
+	if err != nil {
+		return err
+	}
+	_, err = s.AddIssueComment(ctx, id, author, text)
+	return err
+}
+
 // CommitPending commits pending dolt changes. Requires PendingCommitter sub-interface.
 func CommitPending(message string) error {
 	s, _, err := getStore()
