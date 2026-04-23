@@ -66,6 +66,11 @@ var allowedGetwdSites = map[string]string{
 	// operator-pod scenario (WorkingDir above the clone, spi-vrzhf) and
 	// need to restore the original cwd.
 	"pkg/agent/backend_test.go": "test-only: save/restore cwd around chdir in spi-vrzhf regression test",
+	// pkg/executor: Principle-1 audit walks sibling pkg/ sources to scan
+	// for borrowed-handoff usages in commit paths. Uses cwd as the
+	// source-tree anchor for locating sibling package dirs, not as
+	// tower/prefix identity.
+	"pkg/executor/principle1_audit_test.go": "test-only: walks sibling pkg/ sources for Principle 1 audit, cwd as source-tree anchor not identity",
 }
 
 // violation describes one flagged call site.
