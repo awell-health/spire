@@ -45,10 +45,13 @@ func IsBlankDB(exec SQLExec, database string) (bool, error) {
 	if database == "" {
 		return false, errors.New("IsBlankDB: database is required")
 	}
-	// Intentionally unaliased: config.ExtractSQLValue's header-skip
-	// allowlist contains "COUNT(*)" but not "cnt" — aliasing would
-	// cause the header to be parsed as data. Parser fragility tracked
-	// separately in spi-19v3oa.
+	// Intentionally unaliased as belt-and-suspenders. After spi-19v3oa
+	// config.ExtractSQLValue parses dolt's tabular output positionally
+	// and is column-name-agnostic, so an alias no longer breaks the
+	// parser. Keeping COUNT(*) unaliased here still limits the blast
+	// radius of any future parser regression — a literal header is
+	// the one shape both the old allowlist and the new positional
+	// parser agree on.
 	out, err := exec(fmt.Sprintf(
 		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '%s'",
 		database))

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -110,6 +111,147 @@ func TestTowerConfig_DeploymentModeRoundTrip(t *testing.T) {
 	if loaded.DeploymentMode != DeploymentModeClusterNative {
 		t.Errorf("DeploymentMode after round-trip = %q, want %q", loaded.DeploymentMode, DeploymentModeClusterNative)
 	}
+}
+
+// TestExtractSQLValue pins the positional parser's behavior across the
+// alias shapes that broke the previous allowlist-based implementation
+// (spi-69b6ge / spi-19v3oa). The parser must return the first cell of
+// the first data row regardless of what the column header says.
+func TestExtractSQLValue(t *testing.T) {
+	table := func(header, data string) string {
+		rule := "+" + strings.Repeat("-", len(header)+2) + "+"
+		return strings.Join([]string{
+			rule,
+			"| " + header + " |",
+			rule,
+			"| " + data + padRight(data, len(header)) + " |",
+			rule,
+		}, "\n")
+	}
+
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "legacy value header",
+			input: table("value", "abc"),
+			want:  "abc",
+		},
+		{
+			name:  "unaliased COUNT header",
+			input: table("COUNT(*)", "42"),
+			want:  "42",
+		},
+		{
+			name:  "cnt alias regression from spi-69b6ge",
+			input: table("cnt", "0"),
+			want:  "0",
+		},
+		{
+			name:  "underscore alias",
+			input: table("total_rows", "17"),
+			want:  "17",
+		},
+		{
+			name: "multi-column returns first cell",
+			input: strings.Join([]string{
+				"+----+----+",
+				"| c1 | c2 |",
+				"+----+----+",
+				"| a  | b  |",
+				"+----+----+",
+			}, "\n"),
+			want: "a",
+		},
+		{
+			name: "leading log lines before table",
+			input: strings.Join([]string{
+				"Warning: slow query",
+				"[notice] connection established",
+				"+-----+",
+				"| cnt |",
+				"+-----+",
+				"| 5   |",
+				"+-----+",
+			}, "\n"),
+			want: "5",
+		},
+		{
+			name: "empty result set returns empty",
+			input: strings.Join([]string{
+				"+-------+",
+				"| value |",
+				"+-------+",
+				"+-------+",
+			}, "\n"),
+			want: "",
+		},
+		{
+			name: "NULL data cell returned literally",
+			input: strings.Join([]string{
+				"+-------+",
+				"| value |",
+				"+-------+",
+				"| NULL  |",
+				"+-------+",
+			}, "\n"),
+			want: "NULL",
+		},
+		{
+			name: "multi-row data returns first row",
+			input: strings.Join([]string{
+				"+---+",
+				"| v |",
+				"+---+",
+				"| 1 |",
+				"| 2 |",
+				"| 3 |",
+				"+---+",
+			}, "\n"),
+			want: "1",
+		},
+		{
+			name:  "plain-text fallback passes through",
+			input: "hello",
+			want:  "hello",
+		},
+		{
+			name:  "empty input returns empty",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "whitespace-only input returns empty",
+			input: "   \n\n  ",
+			want:  "",
+		},
+		{
+			name:  "non-table dolt message returns last line",
+			input: "Query OK, 0 rows affected (0.00 sec)",
+			want:  "Query OK, 0 rows affected (0.00 sec)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractSQLValue(tc.input)
+			if got != tc.want {
+				t.Errorf("ExtractSQLValue() = %q, want %q\ninput:\n%s", got, tc.want, tc.input)
+			}
+		})
+	}
+}
+
+// padRight pads s with spaces so the final cell width matches headerLen.
+// Mirrors dolt's fixed-width tabular output, which is what the positional
+// parser walks over.
+func padRight(s string, headerLen int) string {
+	if len(s) >= headerLen {
+		return ""
+	}
+	return strings.Repeat(" ", headerLen-len(s))
 }
 
 // TestTowerConfig_EffectiveDeploymentMode covers the accessor directly so

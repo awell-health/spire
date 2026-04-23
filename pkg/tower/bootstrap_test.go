@@ -60,12 +60,12 @@ func TestIsBlankDB_EmptyDatabaseRejected(t *testing.T) {
 }
 
 // TestIsBlankDB_ProbeQueryHasNoAlias pins the invariant that the probe
-// query uses an unaliased COUNT(*). config.ExtractSQLValue's header-skip
-// allowlist contains "COUNT(*)" but not "cnt" — aliasing to "cnt" would
-// cause the header line "| cnt |" to be mis-parsed as a data row,
-// making blank DBs look populated and silently skipping bootstrap.
-// See spi-69b6ge for the original incident and spi-19v3oa for the
-// follow-up parser rewrite.
+// query uses an unaliased COUNT(*). spi-19v3oa rewrote
+// config.ExtractSQLValue to parse positionally (alias-agnostic), so an
+// alias no longer breaks parsing on its own — but keeping the probe
+// unaliased is belt-and-suspenders: a literal `COUNT(*)` header is
+// the one shape any parser generation is expected to agree on. See
+// spi-69b6ge for the original incident.
 func TestIsBlankDB_ProbeQueryHasNoAlias(t *testing.T) {
 	var gotQuery string
 	exec := func(q string) (string, error) {
@@ -82,9 +82,9 @@ func TestIsBlankDB_ProbeQueryHasNoAlias(t *testing.T) {
 
 // TestIsBlankDB_ParsesCountHeader verifies that dolt tabular output
 // with a literal `| COUNT(*) |` header (what the unaliased probe
-// actually produces) parses to the expected data row. Regression
-// guard against re-introducing an alias that the parser's allowlist
-// doesn't recognize.
+// actually produces) parses to the expected data row. End-to-end
+// regression guard over the IsBlankDB → ExtractSQLValue path;
+// column-level parser coverage lives in pkg/config.TestExtractSQLValue.
 func TestIsBlankDB_ParsesCountHeader(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -111,8 +111,10 @@ func TestIsBlankDB_ParsesCountHeader(t *testing.T) {
 }
 
 // pipeCountOutput mimics `dolt sql -q` output for an unaliased
-// SELECT COUNT(*) — column header is `COUNT(*)`, which must stay in
-// sync with config.ExtractSQLValue's header-skip allowlist.
+// SELECT COUNT(*) — column header is `COUNT(*)`. The positional
+// parser added in spi-19v3oa is name-agnostic, so any header works;
+// we use the literal COUNT(*) here to match what the production
+// probe query actually emits.
 func pipeCountOutput(value string) string {
 	return strings.Join([]string{
 		"+----------+",

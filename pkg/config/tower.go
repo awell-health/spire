@@ -398,31 +398,110 @@ func NameFromDolthubURL(input string) string {
 }
 
 // ExtractSQLValue extracts a single value from SQL output.
-// Handles tabular output from dolt sql -q by looking for data rows.
+//
+// Parses dolt's tabular output positionally, not by column name:
+//
+//	+-------+
+//	| value |   ← header (name ignored)
+//	+-------+
+//	| abc   |   ← first data row, first non-empty cell returned
+//	+-------+
+//
+// The parser is column-name-agnostic — any alias works (spi-69b6ge
+// regression: `SELECT COUNT(*) AS cnt` produced header `| cnt |`
+// which the previous allowlist-based parser mistook for a data value).
+//
+// Returns an empty string for empty input, empty result sets
+// (header + separator but no data row), or plain-text dolt output
+// that doesn't contain a table (e.g. `Query OK, 0 rows affected`).
+// Callers (IsBlankDB, ReadMetadata) treat empty-string as the
+// "no value" signal; this function intentionally never returns an
+// error to keep the single-value contract narrow.
+//
+// A plain-text non-table input (no `+---+` separators) is returned
+// verbatim — this preserves legacy behavior for callers that pipe
+// raw strings through the function.
 func ExtractSQLValue(output string) string {
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		// Skip header separators, empty lines, and column headers
-		if line == "" || strings.HasPrefix(line, "+") || strings.HasPrefix(line, "|") && strings.Contains(line, "value") {
+
+	// Walk the lines looking for the dolt table shape:
+	//   rule → header → rule → data-row
+	// Anything before the first rule (leading warnings/log lines
+	// dolt sometimes emits) is skipped.
+	for i := 0; i < len(lines); i++ {
+		if !isTableRule(lines[i]) {
 			continue
 		}
-		// Look for data row in pipe-delimited format: | value |
-		if strings.HasPrefix(line, "|") {
-			parts := strings.Split(line, "|")
-			for _, p := range parts {
-				p = strings.TrimSpace(p)
-				if p != "" && p != "value" && p != "COUNT(*)" {
-					return p
-				}
+		// lines[i] is the top rule; lines[i+1] is the header row
+		// (content ignored — we parse positionally, not by name).
+		// Then the next rule closes the header, and the first
+		// `| … |` line after that is the data row.
+		headerIdx := i + 1
+		if headerIdx >= len(lines) {
+			break
+		}
+		// Advance past the header-closing rule.
+		closeIdx := headerIdx + 1
+		for closeIdx < len(lines) && !isTableRule(lines[closeIdx]) {
+			closeIdx++
+		}
+		if closeIdx >= len(lines) {
+			break
+		}
+		// Scan for the first data row between the header-closing
+		// rule and the table-closing rule. A rule here means the
+		// result set is empty (e.g. `SELECT value WHERE …` with
+		// no match) — return "" per the "no value" contract.
+		for j := closeIdx + 1; j < len(lines); j++ {
+			trimmed := strings.TrimSpace(lines[j])
+			if isTableRule(trimmed) {
+				return ""
+			}
+			if strings.HasPrefix(trimmed, "|") {
+				return firstTableCell(trimmed)
 			}
 		}
+		break
 	}
-	// Fallback: return the last non-empty line
+
+	// Fallback: no table shape detected. Return the last non-empty,
+	// non-table line so callers that pass plain dolt text (e.g.
+	// a bare query result or a log line) still get something back.
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line != "" && !strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "|") {
 			return line
+		}
+	}
+	return ""
+}
+
+// isTableRule reports whether the line is a dolt table separator
+// (e.g. `+-------+` or `+---+---+` for multi-column tables). Rules
+// consist entirely of `+` and `-` characters and start with `+`.
+func isTableRule(line string) bool {
+	line = strings.TrimSpace(line)
+	if len(line) < 2 || line[0] != '+' {
+		return false
+	}
+	for _, r := range line {
+		if r != '+' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// firstTableCell returns the first non-empty cell from a dolt data
+// row like `| a | b | c |`. Multi-column rows collapse to the first
+// cell — ExtractSQLValue's contract is single-value; callers wanting
+// more than one column should parse the output themselves.
+func firstTableCell(row string) string {
+	parts := strings.Split(row, "|")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			return p
 		}
 	}
 	return ""
