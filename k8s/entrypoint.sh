@@ -8,14 +8,16 @@ echo "[steward] starting up..."
 : "${STEWARD_BACKEND:=}"
 : "${STEWARD_METRICS_PORT:=0}"
 
-# .beads/ is seeded by the initContainer from the beads-seed ConfigMap.
+# .beads/ is seeded by the initContainer at $BEADS_DIR (per-database
+# layout: <dataRoot>/<database>/.beads — see helm/spire/templates/_helpers.tpl).
 # No bd init, no project ID alignment, no DoltHub remotes.
-[ -f /data/.beads/metadata.json ] || { echo "[steward] FATAL: .beads/metadata.json missing (initContainer failed?)"; exit 1; }
+: "${BEADS_DIR:?BEADS_DIR not set — container env must plumb it from spire.beadsDir}"
+[ -f "$BEADS_DIR/metadata.json" ] || { echo "[steward] FATAL: $BEADS_DIR/metadata.json missing (initContainer failed?)"; exit 1; }
 
 git config --global user.name "spire-steward"
 git config --global user.email "steward@spire.local"
 
-cd /data
+cd "$(dirname "$BEADS_DIR")"
 
 # Wait for dolt
 echo "[steward] waiting for dolt..."

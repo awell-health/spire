@@ -352,6 +352,30 @@ principle. See design spi-uhhxoc for the five-bug case study that
 motivated the principle (CRD drift, RBAC drift, latent-path bugs,
 build-scope drift).
 
+### 15. Scripts and manifests never literal-embed cluster paths
+
+Shell scripts baked into images (e.g. `k8s/entrypoint.sh`,
+`k8s/bead-bridge.sh`) and raw kubectl manifests must NEVER hardcode
+cluster paths like `/data/.beads`. All paths originate in
+`helm/spire/templates/_helpers.tpl` (`spire.beadsDir`, `spire.dbDataDir`,
+`spire.configDir`) and flow outward via env vars. Scripts read
+`$BEADS_DIR`, `$DOLT_DATA_DIR`, `$SPIRE_CONFIG_DIR` — never literal
+strings. When a script needs a path, the caller (the chart, the
+init container, the Deployment spec) plumbs the env var.
+
+The env block shared by the steward pod's main + sidecar containers
+lives in a single helm partial (`spire.stewardCommonEnv`) so the two
+env lists cannot drift apart. Add new shared paths to the partial, not
+to one container.
+
+**Why:** The canonical path shape is per-database (`<dataRoot>/<database>/.beads`),
+but an earlier revision of `entrypoint.sh` FATAL-checked `/data/.beads`,
+and the sidecar container was missing `DOLT_DATA_DIR`/`SPIRE_CONFIG_DIR`/
+`BEADS_PREFIX`/`BEADS_DIR`. Every helm-chart update to the path
+convention left the duplicated literals silently rotting; the next
+smoke test failed at the next-most-exotic layout. One source of truth
+for paths eliminates the class.
+
 ## Code rules
 
 ### Where new code goes

@@ -145,6 +145,43 @@ gate rendering of the chart-managed inline-password Secret.
 {{- end -}}
 
 {{/*
+spire.stewardCommonEnv — env block shared by both containers of the
+steward Deployment (main steward and sidecar router). Emits the set
+of variables that let each container resolve the tower's per-database
+paths and reach the in-cluster dolt server. Main-only entries
+(STEWARD_INTERVAL/BACKEND/METRICS_PORT, SPIRE_AGENT_IMAGE,
+SPIRE_CREDENTIALS_SECRET) and conditional ones (GOOGLE_APPLICATION_CREDENTIALS
+when bundleStore.backend=gcs) are layered in AFTER this include at the
+call site — they must never leak into the sidecar via this partial.
+
+Keeping the shared block here prevents the two env lists from drifting
+apart, which previously caused the sidecar to fall back to /data/.beads
+and fail with "no tower configured" when the canonical per-database
+layout was `<dataRoot>/<database>/.beads`.
+
+The partial emits `- name:`/`value:` list items starting at column 0;
+callers indent with `nindent 12` under the container's `env:` key.
+*/}}
+{{- define "spire.stewardCommonEnv" -}}
+- name: BEADS_DIR
+  value: {{ include "spire.beadsDir" . | quote }}
+- name: DOLT_DATA_DIR
+  value: {{ .Values.paths.dataRoot | quote }}
+- name: SPIRE_CONFIG_DIR
+  value: {{ include "spire.configDir" . | quote }}
+- name: BEADS_PREFIX
+  value: {{ .Values.beads.prefix | quote }}
+- name: DOLT_HOST
+  value: "spire-dolt.{{ .Values.namespace }}.svc"
+- name: DOLT_PORT
+  value: {{ .Values.dolt.port | quote }}
+- name: BEADS_DOLT_SERVER_HOST
+  value: "spire-dolt.{{ .Values.namespace }}.svc"
+- name: BEADS_DOLT_SERVER_PORT
+  value: {{ .Values.dolt.port | quote }}
+{{- end -}}
+
+{{/*
 spire.cacheDefaultStorageClassName — deployment-time default StorageClass
 for guild-owned repo-cache PVCs. Reads from `.Values.cache.storageClassName`.
 Empty string means "use the cluster default StorageClass" — callers that

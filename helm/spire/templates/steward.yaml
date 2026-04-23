@@ -90,16 +90,12 @@ spec:
           image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
           env:
-            - name: BEADS_PREFIX
-              value: {{ .Values.beads.prefix | quote }}
-            - name: DOLT_HOST
-              value: "spire-dolt.{{ .Values.namespace }}.svc"
-            - name: DOLT_PORT
-              value: {{ .Values.dolt.port | quote }}
-            - name: BEADS_DOLT_SERVER_HOST
-              value: "spire-dolt.{{ .Values.namespace }}.svc"
-            - name: BEADS_DOLT_SERVER_PORT
-              value: {{ .Values.dolt.port | quote }}
+            # Shared with the sidecar container — see spire.stewardCommonEnv
+            # in _helpers.tpl. Main-only entries (STEWARD_*, SPIRE_AGENT_IMAGE,
+            # SPIRE_CREDENTIALS_SECRET, and the gcs-gated
+            # GOOGLE_APPLICATION_CREDENTIALS) are layered on after the
+            # include so they never leak into the sidecar.
+            {{- include "spire.stewardCommonEnv" . | nindent 12 }}
             - name: STEWARD_INTERVAL
               value: {{ .Values.steward.interval | quote }}
             - name: STEWARD_BACKEND
@@ -115,13 +111,6 @@ spec:
             # ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN resolve.
             - name: SPIRE_CREDENTIALS_SECRET
               value: {{ include "spire.secretName" . | quote }}
-            # Must match the init container's values so (a) the tower
-            # config attach-cluster wrote is readable here, and (b)
-            # BeadsDirForTower's convention-based lookup resolves.
-            - name: SPIRE_CONFIG_DIR
-              value: {{ include "spire.configDir" . | quote }}
-            - name: DOLT_DATA_DIR
-              value: {{ .Values.paths.dataRoot | quote }}
             {{- if eq .Values.bundleStore.backend "gcs" }}
             # ADC path for the GCS BundleStore client. The gcs backend
             # picks this up via google.golang.org/api/option.WithCredentialsFile
@@ -177,14 +166,13 @@ spec:
             - "--context-threshold=0.45"
             - "--port=8081"
           env:
-            - name: DOLT_HOST
-              value: "spire-dolt.{{ .Values.namespace }}.svc"
-            - name: DOLT_PORT
-              value: {{ .Values.dolt.port | quote }}
-            - name: BEADS_DOLT_SERVER_HOST
-              value: "spire-dolt.{{ .Values.namespace }}.svc"
-            - name: BEADS_DOLT_SERVER_PORT
-              value: {{ .Values.dolt.port | quote }}
+            # Shared with the main steward container — see
+            # spire.stewardCommonEnv in _helpers.tpl. The sidecar's
+            # runtime needs BEADS_DIR / DOLT_DATA_DIR / SPIRE_CONFIG_DIR /
+            # BEADS_PREFIX to resolve the tower via config.ActiveTower()
+            # and BeadsDirForTower(); without them it falls back to
+            # /data/.beads and reports "no tower configured".
+            {{- include "spire.stewardCommonEnv" . | nindent 12 }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
