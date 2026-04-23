@@ -638,10 +638,13 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 // principle1 audit test enforces that the literal HandoffBorrowed never
 // appears in fix-adjacent or cleric-worker call sites.
 func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, state *GraphState, role agent.SpawnRole, extraArgs []string, workspace *WorkspaceHandle, handoffMode HandoffMode) ActionResult {
-	started := time.Now()
-
 	attemptNum := state.Steps[stepName].CompletedCount + 1
 	spawnName := fmt.Sprintf("%s-%s-%d", e.agentName, stepName, attemptNum)
+
+	// Timing is per-attempt: captured after attemptNum is resolved so each
+	// review-fix retry (or any re-dispatch of the step) records its own
+	// duration_seconds rather than accumulating across attempts.
+	started := time.Now()
 
 	cfg := agent.SpawnConfig{
 		Name:         spawnName,
@@ -866,7 +869,12 @@ func actionNoop(_ *Executor, _ string, _ StepConfig, _ *GraphState) ActionResult
 //	outcome: alias for status (used by some formulas)
 //
 // For epic formulas, also closes orphan subtask beads.
+//
+// Records an agent_runs row with phase='close' on the successful close path
+// and phase='discard' on the successful discard path so the bead-lifecycle
+// terminal transitions are visible in the metrics surface.
 func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	started := time.Now()
 	status := step.With["status"]
 	if status == "" {
 		status = step.With["outcome"]
@@ -948,6 +956,8 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 		}
 
 		e.terminated = true
+		e.recordAgentRun(e.agentName, e.beadID, "", step.Model, "wizard", "close", started, nil,
+			withParentRun(e.currentRunID))
 		return ActionResult{Outputs: map[string]string{"status": "closed"}}
 
 	case "wontfix", "discard":
@@ -955,6 +965,8 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 			return ActionResult{Error: fmt.Errorf("terminal discard: %w", err)}
 		}
 		e.terminated = true
+		e.recordAgentRun(e.agentName, e.beadID, "", step.Model, "wizard", "discard", started, nil,
+			withParentRun(e.currentRunID))
 		return ActionResult{Outputs: map[string]string{"status": "discarded"}}
 
 	case "escalate":
@@ -976,7 +988,15 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 //	doc_patterns: comma-separated glob patterns for doc review (optional)
 //
 // Does NOT close beads — that's bead.finish.
+//
+// Records an agent_runs row with phase='merge' on every exit path that reaches
+// the actual merge operation, so DORA deploy-count reflects successful merges
+// (result='success') and failed-merge rounds (result='error'). Pre-merge errors
+// that abort before the merge attempt itself (workspace resolution, build
+// verification) do not produce a merge row — the merge never happened.
 func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+	started := time.Now()
+
 	// Resolve workspace and determine the actual branch being merged.
 	// When a step declares a workspace, use that workspace's branch for merge
 	// operations and cleanup. Fall back to state.StagingBranch for legacy paths.
@@ -1034,20 +1054,37 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 		mergeEnv = e.deps.ArchmageGitEnv(tower)
 	}
 
+	// workingStarted splits the startup (setup/validation) phase from the
+	// working (actual merge + push) phase for the timing-bucket attribution.
+	workingStarted := time.Now()
+
 	e.log("merging %s -> %s", mergeBranch, state.BaseBranch)
 	if mergeErr := stagingWt.MergeToMain(state.BaseBranch, mergeEnv, buildStr, testStr, resolver); mergeErr != nil {
+		e.recordAgentRun(e.agentName, e.beadID, "", step.Model, "wizard", "merge", started, mergeErr,
+			withParentRun(e.currentRunID),
+			withStartupSeconds(workingStarted.Sub(started).Seconds()),
+			withWorkingSeconds(time.Since(workingStarted).Seconds()))
 		return ActionResult{Error: fmt.Errorf("merge to main: %w", mergeErr)}
 	}
 
 	// Push main.
 	rc := &spgit.RepoContext{Dir: state.RepoPath, BaseBranch: state.BaseBranch, Log: e.log}
 	if pushErr := rc.Push("origin", state.BaseBranch, mergeEnv); pushErr != nil {
+		e.recordAgentRun(e.agentName, e.beadID, "", step.Model, "wizard", "merge", started, pushErr,
+			withParentRun(e.currentRunID),
+			withStartupSeconds(workingStarted.Sub(started).Seconds()),
+			withWorkingSeconds(time.Since(workingStarted).Seconds()))
 		return ActionResult{Error: fmt.Errorf("push %s: %w", state.BaseBranch, pushErr)}
 	}
 
 	// Clean up the actual branch that was merged (best-effort).
 	rc.DeleteBranch(mergeBranch)
 	rc.DeleteRemoteBranch("origin", mergeBranch)
+
+	e.recordAgentRun(e.agentName, e.beadID, "", step.Model, "wizard", "merge", started, nil,
+		withParentRun(e.currentRunID),
+		withStartupSeconds(workingStarted.Sub(started).Seconds()),
+		withWorkingSeconds(time.Since(workingStarted).Seconds()))
 
 	return ActionResult{Outputs: map[string]string{"merged": "true"}}
 }
