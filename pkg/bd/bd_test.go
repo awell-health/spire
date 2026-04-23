@@ -339,6 +339,26 @@ func TestInitArgs(t *testing.T) {
 			},
 			wantArgs: []string{"init", "--database", "spi", "--prefix", "spi", "--force"},
 		},
+		{
+			name: "server mode",
+			opts: InitOpts{
+				Database:   "smoke",
+				Prefix:     "smk",
+				Server:     true,
+				ServerHost: "spire-dolt.spire-smoke.svc",
+				ServerPort: 3306,
+				ServerUser: "root",
+			},
+			wantArgs: []string{
+				"init",
+				"--database", "smoke",
+				"--prefix", "smk",
+				"--server",
+				"--server-host", "spire-dolt.spire-smoke.svc",
+				"--server-port", "3306",
+				"--server-user", "root",
+			},
+		},
 	}
 
 	for _, tt := range tests {

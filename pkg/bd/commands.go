@@ -37,10 +37,19 @@ type UpdateOpts struct {
 }
 
 // InitOpts are options for initializing beads.
+//
+// Server mode (Server=true) is required for CGO-disabled builds
+// because bd's embedded Dolt engine needs CGO. When Server is set,
+// bd connects to an external dolt sql-server using ServerHost/Port/User;
+// the server password is read from BEADS_DOLT_PASSWORD by bd itself.
 type InitOpts struct {
-	Database string
-	Prefix   string
-	Force    bool
+	Database   string
+	Prefix     string
+	Force      bool
+	Server     bool   // pass --server (external dolt sql-server)
+	ServerHost string // --server-host; empty omits
+	ServerPort int    // --server-port; 0 omits
+	ServerUser string // --server-user; empty omits
 }
 
 // --- Arg builders (exported for testability within package) ---
@@ -120,6 +129,18 @@ func buildInitArgs(opts InitOpts) []string {
 	}
 	if opts.Prefix != "" {
 		args = append(args, "--prefix", opts.Prefix)
+	}
+	if opts.Server {
+		args = append(args, "--server")
+	}
+	if opts.ServerHost != "" {
+		args = append(args, "--server-host", opts.ServerHost)
+	}
+	if opts.ServerPort != 0 {
+		args = append(args, "--server-port", strconv.Itoa(opts.ServerPort))
+	}
+	if opts.ServerUser != "" {
+		args = append(args, "--server-user", opts.ServerUser)
 	}
 	if opts.Force {
 		args = append(args, "--force")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	bdpkg "github.com/awell-health/spire/pkg/bd"
@@ -86,10 +87,19 @@ func init() {
 
 // clusterRunBdInit is the default RunBdInit wiring for cluster bootstrap.
 // Shells out to `bd init` with the steward PV as cwd so the command's
-// `.beads/` workspace lands on the PV. The dolt connection is taken from
-// ambient env (BEADS_DOLT_SERVER_HOST/PORT), which the steward init
-// container sets — bd will connect to the external dolt server instead
-// of auto-starting an embedded one.
+// `.beads/` workspace lands on the PV. Forces server mode with the dolt
+// connection resolved from pkg/dolt (which reads BEADS_DOLT_SERVER_HOST
+// / BEADS_DOLT_SERVER_PORT set by the steward init container).
+//
+// Server mode is required here: the steward image is built CGO-disabled
+// for a static binary, so bd's embedded Dolt engine is unavailable and
+// embedded-mode init fails hard with "embedded Dolt requires CGO". The
+// --server flag routes bd at the external dolt sql-server running in
+// the cluster.
+//
+// Sandbox stays on: the cluster bootstrap path hits a blank DB with no
+// remote configured, and without --sandbox bd would try to auto-sync
+// and error.
 //
 // Declared as a package var so tests can swap it for a stub without
 // shelling out to a real bd binary.
@@ -101,12 +111,20 @@ func init() {
 // loudly instead of clobbering an in-flight project_id seed. project_id
 // stability is a spec-level invariant ("generate once and only once").
 var clusterRunBdInit = func(database, prefix, runDir string) error {
+	port, err := strconv.Atoi(dolt.Port())
+	if err != nil {
+		return fmt.Errorf("parse dolt port %q: %w", dolt.Port(), err)
+	}
 	client := bdpkg.NewClient()
 	client.RunDir = runDir
 	client.Sandbox = true // no remote is configured on the blank path
 	return client.Init(bdpkg.InitOpts{
-		Database: database,
-		Prefix:   prefix,
+		Database:   database,
+		Prefix:     prefix,
+		Server:     true,
+		ServerHost: dolt.Host(),
+		ServerPort: port,
+		ServerUser: "root",
 	})
 }
 
