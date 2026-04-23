@@ -162,9 +162,11 @@ func TestBootstrapBlank_Success(t *testing.T) {
 		gotRunDir  string
 		typesDir   string
 		typesCalls int
+		execQueries []string
 	)
 
 	exec := func(q string) (string, error) {
+		execQueries = append(execQueries, q)
 		if strings.Contains(q, "_project_id") {
 			return pipeOutput("proj-123"), nil
 		}
@@ -201,6 +203,86 @@ func TestBootstrapBlank_Success(t *testing.T) {
 	}
 	if want := filepath.Join("/data", ".beads"); typesDir != want {
 		t.Errorf("EnsureCustomTypes got %q, want %q", typesDir, want)
+	}
+
+	// spi-2xf158: BootstrapBlank must apply Spire's schema extensions
+	// (repos, agent_runs, bead_lifecycle) after bd init so the cluster-
+	// bootstrap path lands with a fully-provisioned tower schema.
+	for _, table := range []string{"repos", "agent_runs", "bead_lifecycle"} {
+		found := false
+		for _, q := range execQueries {
+			if strings.Contains(q, "CREATE TABLE IF NOT EXISTS "+table) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("BootstrapBlank did not issue CREATE TABLE for %q; saw queries: %v", table, execQueries)
+		}
+	}
+}
+
+// TestBootstrapBlank_AppliesExtensionsBeforeCustomTypes pins the ordering
+// contract: Spire's schema extensions land *before* custom bead type
+// registration, so any downstream ensure-types hook that reads these
+// tables sees them populated. Reversing the order would reintroduce the
+// spi-2xf158 failure mode inside the bootstrap flow itself.
+func TestBootstrapBlank_AppliesExtensionsBeforeCustomTypes(t *testing.T) {
+	var events []string
+	exec := func(q string) (string, error) {
+		if strings.Contains(q, "_project_id") {
+			return pipeOutput("proj-1"), nil
+		}
+		if strings.Contains(q, "CREATE TABLE IF NOT EXISTS repos") {
+			events = append(events, "extensions:repos")
+		}
+		return "", nil
+	}
+	opts := BlankBootstrapOpts{
+		Database:  "spi",
+		Prefix:    "spi",
+		DataDir:   "/data",
+		RunBdInit: func(db, prefix, runDir string) error { return nil },
+		EnsureCustomTypes: func(dir string) error {
+			events = append(events, "custom-types")
+			return nil
+		},
+	}
+	if err := BootstrapBlank(exec, opts); err != nil {
+		t.Fatalf("BootstrapBlank: %v", err)
+	}
+	if len(events) != 2 || events[0] != "extensions:repos" || events[1] != "custom-types" {
+		t.Errorf("want [extensions:repos, custom-types], got %v", events)
+	}
+}
+
+// TestBootstrapBlank_ExtensionFailureIsReported guards the error path
+// for the new ApplySpireExtensions step — a broken CREATE TABLE must
+// halt bootstrap so the operator does not leave the cluster in a half-
+// provisioned state that the user would notice only on first repo add.
+func TestBootstrapBlank_ExtensionFailureIsReported(t *testing.T) {
+	sentinel := errors.New("dolt exploded")
+	exec := func(q string) (string, error) {
+		if strings.Contains(q, "_project_id") {
+			return pipeOutput("proj-1"), nil
+		}
+		if strings.Contains(q, "CREATE TABLE IF NOT EXISTS repos") {
+			return "", sentinel
+		}
+		return "", nil
+	}
+	opts := BlankBootstrapOpts{
+		Database:  "spi",
+		Prefix:    "spi",
+		DataDir:   "/data",
+		RunBdInit: func(db, prefix, runDir string) error { return nil },
+	}
+	err := BootstrapBlank(exec, opts)
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Fatalf("got %v, want chain wrapping sentinel", err)
+	}
+	if !strings.Contains(err.Error(), "spire extensions") {
+		t.Errorf("error should name the failing stage; got %v", err)
 	}
 }
 

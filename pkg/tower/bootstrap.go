@@ -109,6 +109,16 @@ func BootstrapBlank(exec SQLExec, opts BlankBootstrapOpts) error {
 		return fmt.Errorf("bd init completed but %s.metadata has no _project_id", opts.Database)
 	}
 
+	// bd init creates its own core schema (issues, comments, deps, ...)
+	// but not Spire's extension tables (repos, agent_runs, bead_lifecycle).
+	// Apply them here so the cluster-bootstrap path lands with the same
+	// schema as `spire tower create` — without this, `spire repo add` and
+	// the metrics/lifecycle pipeline fail against a freshly bootstrapped
+	// cluster tower. See spi-2xf158 for the incident.
+	if err := ApplySpireExtensions(exec, opts.Database); err != nil {
+		return fmt.Errorf("apply spire extensions: %w", err)
+	}
+
 	if opts.EnsureCustomTypes != nil {
 		beadsDir := filepath.Join(opts.DataDir, ".beads")
 		if err := opts.EnsureCustomTypes(beadsDir); err != nil {

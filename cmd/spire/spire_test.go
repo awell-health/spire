@@ -1217,7 +1217,7 @@ func TestSpireMigrationsCoversAllColumns(t *testing.T) {
 		migrated[m.table][m.column] = true
 	}
 
-	// agent_runs expected columns (from agentRunsTableSQL)
+	// agent_runs expected columns (from towerpkg.AgentRunsTableSQL)
 	agentRunsCols := []string{
 		"id", "bead_id", "epic_id", "agent_name", "model", "role", "phase",
 		"context_tokens_in", "context_tokens_out", "total_tokens", "turns",

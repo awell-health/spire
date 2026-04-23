@@ -17,6 +17,7 @@ import (
 	"github.com/awell-health/spire/pkg/olap"
 	"github.com/awell-health/spire/pkg/process"
 	"github.com/awell-health/spire/pkg/store"
+	towerpkg "github.com/awell-health/spire/pkg/tower"
 	"github.com/spf13/cobra"
 )
 
@@ -405,9 +406,12 @@ func cmdUp(args []string) error {
 //
 // ensureAgentRunsTable is kept as an alias for backward compatibility.
 func migrateSpireTables(database string) error {
-	// Create tables if they don't exist (initial schema).
-	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, agentRunsTableSQL)); err != nil {
-		return fmt.Errorf("create agent_runs: %w", err)
+	// Apply Spire's schema extensions (repos, agent_runs, bead_lifecycle)
+	// — idempotent via CREATE TABLE IF NOT EXISTS. Running here is the
+	// defense-in-depth backstop if a blank tower was bootstrapped by an
+	// older binary that predated the shared helper.
+	if err := towerpkg.ApplySpireExtensions(rawDoltQuery, database); err != nil {
+		return err
 	}
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, goldenPromptsTableSQL)); err != nil {
 		return fmt.Errorf("create golden_prompts: %w", err)
@@ -417,12 +421,6 @@ func migrateSpireTables(database string) error {
 	}
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, recoveryLearningsTableSQL)); err != nil {
 		return fmt.Errorf("create recovery_learnings: %w", err)
-	}
-	// bead_lifecycle is a sidecar keyed by bead_id that holds first-
-	// transition timestamps (filed/ready/started/closed) for every bead.
-	// It complements agent_runs — one row per bead, not per run.
-	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.BeadLifecycleTableSQL)); err != nil {
-		return fmt.Errorf("create bead_lifecycle: %w", err)
 	}
 
 	// Run column migrations — each entry checks SHOW COLUMNS and adds if missing.

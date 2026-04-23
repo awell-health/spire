@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	towerpkg "github.com/awell-health/spire/pkg/tower"
 )
 
 func TestTowerConfigSaveLoadRoundtrip(t *testing.T) {
@@ -145,30 +147,33 @@ func TestReadBeadsProjectID_Missing(t *testing.T) {
 }
 
 func TestReposTableSQL(t *testing.T) {
-	// Verify the SQL is non-empty and contains expected keywords
-	if reposTableSQL == "" {
-		t.Fatal("reposTableSQL is empty")
+	// Verify the SQL is non-empty and contains expected keywords. The
+	// constant moved to pkg/tower in spi-2xf158 so both local-native and
+	// cluster-native bootstrap paths share a single DDL source of truth.
+	sql := towerpkg.ReposTableSQL
+	if sql == "" {
+		t.Fatal("ReposTableSQL is empty")
 	}
-	if !strings.Contains(reposTableSQL, "CREATE TABLE") {
-		t.Error("reposTableSQL missing CREATE TABLE")
+	if !strings.Contains(sql, "CREATE TABLE") {
+		t.Error("ReposTableSQL missing CREATE TABLE")
 	}
-	if !strings.Contains(reposTableSQL, "repos") {
-		t.Error("reposTableSQL missing table name 'repos'")
+	if !strings.Contains(sql, "repos") {
+		t.Error("ReposTableSQL missing table name 'repos'")
 	}
-	if !strings.Contains(reposTableSQL, "prefix") {
-		t.Error("reposTableSQL missing 'prefix' column")
+	if !strings.Contains(sql, "prefix") {
+		t.Error("ReposTableSQL missing 'prefix' column")
 	}
-	if !strings.Contains(reposTableSQL, "repo_url") {
-		t.Error("reposTableSQL missing 'repo_url' column")
+	if !strings.Contains(sql, "repo_url") {
+		t.Error("ReposTableSQL missing 'repo_url' column")
 	}
-	if !strings.Contains(reposTableSQL, "branch") {
-		t.Error("reposTableSQL missing 'branch' column")
+	if !strings.Contains(sql, "branch") {
+		t.Error("ReposTableSQL missing 'branch' column")
 	}
-	if !strings.Contains(reposTableSQL, "PRIMARY KEY") {
-		t.Error("reposTableSQL missing PRIMARY KEY")
+	if !strings.Contains(sql, "PRIMARY KEY") {
+		t.Error("ReposTableSQL missing PRIMARY KEY")
 	}
-	if !strings.Contains(reposTableSQL, "IF NOT EXISTS") {
-		t.Error("reposTableSQL missing IF NOT EXISTS")
+	if !strings.Contains(sql, "IF NOT EXISTS") {
+		t.Error("ReposTableSQL missing IF NOT EXISTS")
 	}
 }
 

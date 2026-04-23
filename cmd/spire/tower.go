@@ -19,7 +19,6 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/repoconfig"
-	"github.com/awell-health/spire/pkg/store"
 	towerpkg "github.com/awell-health/spire/pkg/tower"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -149,80 +148,6 @@ func readPasswordFromStdin() (string, error) {
 	}
 	return strings.TrimRight(line, "\r\n"), nil
 }
-
-const reposTableSQL = `CREATE TABLE IF NOT EXISTS repos (
-    prefix       VARCHAR(16) PRIMARY KEY,
-    repo_url     VARCHAR(512) NOT NULL,
-    branch       VARCHAR(128) NOT NULL DEFAULT 'main',
-    language     VARCHAR(32),
-    registered_by VARCHAR(64),
-    registered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-)`
-
-const agentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
-    id VARCHAR(32) PRIMARY KEY,
-    bead_id VARCHAR(64) NOT NULL,
-    epic_id VARCHAR(64),
-    agent_name VARCHAR(128),
-    model VARCHAR(64) NOT NULL,
-    role VARCHAR(16) NOT NULL,
-    phase VARCHAR(16),
-    context_tokens_in INT,
-    context_tokens_out INT,
-    total_tokens INT,
-    turns INT,
-    duration_seconds INT,
-    startup_seconds INT,
-    working_seconds INT,
-    queue_seconds INT,
-    review_seconds INT,
-    result VARCHAR(32) NOT NULL,
-    review_rounds INT DEFAULT 0,
-    artificer_verdict VARCHAR(32),
-    review_step VARCHAR(16),
-    review_round INT,
-    spec_file VARCHAR(256),
-    spec_size_tokens INT,
-    focus_context_tokens INT,
-    files_changed INT,
-    lines_added INT,
-    lines_removed INT,
-    tests_added INT,
-    tests_passed BOOLEAN,
-    system_prompt_hash VARCHAR(64),
-    golden_run BOOLEAN DEFAULT FALSE,
-    cost_usd DECIMAL(10,4),
-    started_at DATETIME NOT NULL,
-    completed_at DATETIME,
-    formula_name VARCHAR(64),
-    formula_version INT,
-    formula_source VARCHAR(16),
-    branch VARCHAR(128),
-    commit_sha VARCHAR(64),
-    bead_type VARCHAR(32),
-    tower VARCHAR(64),
-    parent_run_id VARCHAR(32),
-    wave_index INT,
-    timing_bucket VARCHAR(32),
-    skip_reason VARCHAR(128),
-    failure_class VARCHAR(32),
-    attempt_number INT,
-    recovery_bead_id VARCHAR(32),
-    read_calls INT,
-    edit_calls INT,
-    tool_calls_json TEXT,
-    max_turns INT,
-    stop_reason VARCHAR(32),
-    cache_read_tokens BIGINT,
-    cache_write_tokens BIGINT,
-    INDEX idx_bead (bead_id),
-    INDEX idx_epic (epic_id),
-    INDEX idx_result (result),
-    INDEX idx_golden (golden_run),
-    INDEX idx_model (model),
-    INDEX idx_phase (phase),
-    INDEX idx_failure_class (failure_class)
-)`
 
 const formulasTableSQL = `CREATE TABLE IF NOT EXISTS formulas (
     name         VARCHAR(128) NOT NULL PRIMARY KEY,
@@ -887,17 +812,18 @@ func cmdTowerCreate(args []string) error {
 		DeploymentMode: mode,
 	}
 
-	// Create repos table — use rawDoltQuery (bd dolt sql doesn't exist in bd 0.62)
-	fmt.Println("creating repos table...")
-	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, reposTableSQL)); err != nil {
-		return fmt.Errorf("create repos table: %w", err)
+	// Apply Spire's schema extensions (repos, agent_runs, bead_lifecycle) —
+	// the single source of truth shared with the cluster-bootstrap path
+	// in towerpkg.BootstrapBlank. Changing the set of extension tables
+	// requires editing pkg/tower/schema.go, not this call site.
+	fmt.Println("creating spire schema extensions...")
+	if err := towerpkg.ApplySpireExtensions(rawDoltQuery, database); err != nil {
+		return err
 	}
 
-	// Create agent_runs + golden_prompts tables for metrics pipeline
-	fmt.Println("creating agent_runs tables...")
-	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, agentRunsTableSQL)); err != nil {
-		return fmt.Errorf("create agent_runs table: %w", err)
-	}
+	// Metrics/formulas/recovery tables are layered on every `spire up` by
+	// migrateSpireTables; create them here so a fresh tower is usable
+	// before the daemon's first migration pass.
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, goldenPromptsTableSQL)); err != nil {
 		return fmt.Errorf("create golden_prompts table: %w", err)
 	}
@@ -906,9 +832,6 @@ func cmdTowerCreate(args []string) error {
 	}
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, recoveryLearningsTableSQL)); err != nil {
 		return fmt.Errorf("create recovery_learnings table: %w", err)
-	}
-	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.BeadLifecycleTableSQL)); err != nil {
-		return fmt.Errorf("create bead_lifecycle table: %w", err)
 	}
 
 	// bd init wrote issue_prefix to the embedded dolt's config table, but spire's
