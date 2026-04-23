@@ -11,7 +11,8 @@ In practice, `pkg/wizard` owns:
 - sage entrypoints (`sage review`)
 - prompt assembly for those subprocesses
 - Claude invocation, timeout handling, validation, commit, and result writing
-- worktree preparation for a single subprocess — owns a fresh worktree when self-managed, or resumes a borrowed worktree via `--worktree-dir` (now honored for all modes: implement, review-fix, build-fix)
+- worktree preparation for a single subprocess — owns a fresh worktree when self-managed, or resumes a borrowed worktree via `--worktree-dir` (honored for all modes: implement, review-fix, build-fix). The worktree mount is a *runtime* concern; bundle delivery (Principle 1, spi-1dk71j) is independent.
+- bundle production for every commit-producing apprentice mode (implement, review-fix) via `deliverApprenticeWork` — including review-fix, where the executor consumes the bundle into staging
 - review-round bead creation/closure and review-specific handoff behavior
 - legacy `wizard-epic` helpers that predate the formula executor
 

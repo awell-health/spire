@@ -176,11 +176,12 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		}
 		return result
 	case "review-fix":
-		extraArgs := []string{"--review-fix", "--apprentice"}
-		if wsDir != "" {
-			extraArgs = append(extraArgs, "--worktree-dir", wsDir)
-		}
-		return wizardRunSpawn(e, stepName, step, state, agent.RoleApprentice, extraArgs, workspace)
+		// Principle 1 (spi-1dk71j / spi-tlj32a): the fix apprentice produces
+		// commits, so it MUST deliver a bundle — no borrowed handoff. Both
+		// the fix apprentice and the worker-mode cleric repair (spi-icgqhi)
+		// run through actionReviewFix's bundle-handoff path so neither
+		// silently regresses to the borrowed model.
+		return actionReviewFix(e, stepName, step, state, wsDir, workspace)
 	case "arbiter":
 		return actionArbiterEscalate(e, stepName, step, state)
 	default:
@@ -612,7 +613,31 @@ func actionArbiterEscalate(e *Executor, stepName string, step StepConfig, state 
 // suffixed with -N but result dir unsuffixed) remain readable as raw files but
 // their claude transcripts won't be paired by the inspector — migration of old
 // trees is intentionally out of scope.
+//
+// Defaults to HandoffBorrowed (same-owner continuations such as
+// sage-review and recovery-verify, where no commits are produced and no
+// delivery protocol is needed). Bundle-handoff dispatch sites call
+// wizardRunSpawnWithHandoff directly with the resolved bundle mode; see
+// commit_producing_apprentice.go for the Principle 1 dispatch path.
 func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphState, role agent.SpawnRole, extraArgs []string, workspace *WorkspaceHandle) ActionResult {
+	// principle1-exception: this is the wrapper default for non-commit
+	// flows (sage-review, recovery-verify). Commit-producing callers go
+	// through wizardRunSpawnWithHandoff with the resolved bundle mode —
+	// the dispatch sites in commit_producing_apprentice.go enforce that.
+	return wizardRunSpawnWithHandoff(e, stepName, step, state, role, extraArgs, workspace, HandoffBorrowed)
+}
+
+// wizardRunSpawnWithHandoff is wizardRunSpawn parameterized by HandoffMode.
+// Callers that produce git commits (review-fix, cleric-worker) MUST pass
+// the resolved bundle handoff (e.resolveApprenticeHandoff()) so the runtime
+// contract on the spawned process records bundle delivery — that is the
+// enforcement surface for Principle 1.
+//
+// HandoffBorrowed is permitted only for non-commit-producing dispatch paths
+// (sage-review reads the diff; recovery-verify runs narrow checks). The
+// principle1 audit test enforces that the literal HandoffBorrowed never
+// appears in fix-adjacent or cleric-worker call sites.
+func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, state *GraphState, role agent.SpawnRole, extraArgs []string, workspace *WorkspaceHandle, handoffMode HandoffMode) ActionResult {
 	started := time.Now()
 
 	attemptNum := state.Steps[stepName].CompletedCount + 1
@@ -628,14 +653,7 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 		CustomPrompt: step.With["prompt"],
 		LogPath:      filepath.Join(dolt.GlobalDir(), "wizards", spawnName+".log"),
 	}
-	// In-bead wizard.run flows (implement, sage-review, review-fix,
-	// recovery-verify, arbiter, etc.) are same-owner continuations: the
-	// subprocess is the next step for the same bead, on the same workspace.
-	// No cross-owner delivery happens at this boundary, so HandoffBorrowed
-	// is correct even when the workspace is a fresh owned_worktree — the
-	// borrowed-vs-owned distinction on WorkspaceHandle is about cleanup,
-	// not about whether a handoff protocol runs.
-	cfg, err := e.withRuntimeContract(cfg, state.TowerName, state.RepoPath, state.BaseBranch, stepName, step.Workspace, workspace, HandoffBorrowed)
+	cfg, err := e.withRuntimeContract(cfg, state.TowerName, state.RepoPath, state.BaseBranch, stepName, step.Workspace, workspace, handoffMode)
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("handoff selection for %s: %w", stepName, err)}
 	}

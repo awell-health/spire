@@ -53,6 +53,14 @@ verdict_only = true
 
 # Step 2: Fix apprentice. Routes when sage rejects AND round budget remains.
 # After fix completes, resets sage-review and fix to pending for re-review.
+#
+# Handoff: bundle (Principle 1, spi-1dk71j / spi-tlj32a). The fix apprentice
+# produces git commits and therefore MUST deliver them as a bundle artifact
+# — the executor consumes the bundle into the parent's staging worktree
+# before re-entering sage-review. The dispatch path is
+# pkg/executor/commit_producing_apprentice.go (actionReviewFix), shared with
+# the worker-mode cleric repair so both signal/apply contracts stay
+# byte-compatible.
 [steps.fix]
 kind = "op"
 action = "wizard.run"
