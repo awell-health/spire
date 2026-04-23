@@ -149,6 +149,25 @@ type SpawnConfig struct {
 	// borrowed-worktree spawns continue to discover the PVC via the
 	// spire.io/owning-wizard-pod label selector (see resolveWorkspaceVolume).
 	SharedWorkspace bool
+
+	// DetachFromParent declares that the caller will NOT Handle.Wait() and
+	// the spawned process must survive parent exit. Fire-and-forget callers
+	// like `spire summon` set this true; synchronous callers (wizard pod
+	// spawning apprentice/sage, which Wait on the subprocess) leave it false.
+	//
+	// When true, ProcessSpawner routes stdout/stderr directly to the log
+	// *os.File (Go's exec.Cmd uses dup2 for *os.File sinks, so no parent-
+	// side pipe or forwarder goroutine is created). It also sets
+	// SysProcAttr.Setpgid so the child is not killed by SIGHUP when the
+	// parent's controlling terminal closes.
+	//
+	// When false (default), ProcessSpawner keeps the tee to the log file +
+	// parent stderr via an in-parent goroutine so cluster-native wizard
+	// pods surface subprocess output in `kubectl logs` (spi-fxfq5f). That
+	// goroutine is joined by Handle.Wait(); callers that don't Wait and
+	// don't set DetachFromParent will truncate the log when the parent
+	// exits.
+	DetachFromParent bool
 }
 
 // NewSpawner returns a Spawner for the given backend.

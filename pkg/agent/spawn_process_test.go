@@ -193,7 +193,7 @@ func TestTeeSpawnOutput_WritesToBothLogAndStderr(t *testing.T) {
 	}
 
 	cmd := exec.Command("sh", "-c", "echo hello-tee")
-	logFile := teeSpawnOutput(cmd, logPath, pw)
+	logFile := teeSpawnOutput(cmd, logPath, pw, false)
 	if logFile == nil {
 		t.Fatalf("expected logFile to be opened")
 	}
@@ -240,7 +240,7 @@ func TestTeeSpawnOutput_FallbackOnOpenFailure(t *testing.T) {
 	}
 
 	cmd := exec.Command("sh", "-c", "echo fallback-ok")
-	logFile := teeSpawnOutput(cmd, logPath, pw)
+	logFile := teeSpawnOutput(cmd, logPath, pw, false)
 	if logFile != nil {
 		t.Errorf("expected logFile to be nil on open failure, got %v", logFile)
 	}
@@ -271,7 +271,7 @@ func TestTeeSpawnOutput_NoLogPath(t *testing.T) {
 	}
 
 	cmd := exec.Command("sh", "-c", "echo no-log")
-	logFile := teeSpawnOutput(cmd, "", pw)
+	logFile := teeSpawnOutput(cmd, "", pw, false)
 	if logFile != nil {
 		t.Errorf("expected logFile nil when logPath empty, got %v", logFile)
 	}
@@ -287,6 +287,61 @@ func TestTeeSpawnOutput_NoLogPath(t *testing.T) {
 	}
 	if !strings.Contains(string(captured), "no-log") {
 		t.Errorf("stderr sink missing 'no-log'; got: %q", captured)
+	}
+}
+
+// TestTeeSpawnOutput_DetachDupsLogFileDirectly verifies that the detach
+// path wires cmd.Stdout/Stderr straight to the *os.File, bypassing the
+// in-parent goroutine that would otherwise forward pipe bytes to a
+// user-space writer. This is the property that makes subprocess output
+// survive a fire-and-forget parent exit: exec.Cmd recognises *os.File
+// sinks and dup2's them into the child at fork time, so the child
+// writes kernel-to-kernel with no parent-side scheduling in the loop.
+func TestTeeSpawnOutput_DetachDupsLogFileDirectly(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "detached.log")
+
+	// stderrSink must not receive output in the detach path — it's
+	// meaningless once the parent exits and the tee is deliberately
+	// skipped. Use a pipe so we can assert it stays empty.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", "echo detached-ok")
+	logFile := teeSpawnOutput(cmd, logPath, pw, true)
+	if logFile == nil {
+		t.Fatalf("expected logFile to be opened")
+	}
+
+	// The detach contract: Stdout/Stderr are the *os.File itself, not a
+	// generic io.Writer. This is what makes exec.Cmd use dup2 instead
+	// of spinning up a forwarder goroutine.
+	if cmd.Stdout != logFile {
+		t.Errorf("detach: cmd.Stdout = %T, want *os.File identical to logFile", cmd.Stdout)
+	}
+	if cmd.Stderr != logFile {
+		t.Errorf("detach: cmd.Stderr = %T, want *os.File identical to logFile", cmd.Stderr)
+	}
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("cmd.Run: %v", err)
+	}
+	logFile.Close()
+	pw.Close()
+
+	onDisk, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read logPath: %v", err)
+	}
+	if !strings.Contains(string(onDisk), "detached-ok") {
+		t.Errorf("log file missing 'detached-ok'; got: %q", onDisk)
+	}
+
+	captured, _ := io.ReadAll(pr)
+	if strings.Contains(string(captured), "detached-ok") {
+		t.Errorf("detach path must not tee to stderr sink; got: %q", captured)
 	}
 }
 

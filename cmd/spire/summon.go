@@ -536,6 +536,11 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 			Tower:     towerName,
 			LogPath:   filepath.Join(logDir, name+".log"),
 			ExtraArgs: []string{"--formula", formulaName},
+			// summon is fire-and-forget — it does not Handle.Wait().
+			// DetachFromParent tells the spawner to dup2 the log file
+			// directly into the child (no pipe, no forwarder goroutine)
+			// so the child's output survives this process exiting.
+			DetachFromParent: true,
 		})
 		if err != nil {
 			return fmt.Errorf("spawn %s: %w", name, err)

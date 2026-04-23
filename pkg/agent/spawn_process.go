@@ -88,7 +88,10 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	cmd.Env = os.Environ()
 	applyProcessEnv(cmd, cfg)
 
-	logFile := teeSpawnOutput(cmd, cfg.LogPath, os.Stderr)
+	logFile := teeSpawnOutput(cmd, cfg.LogPath, os.Stderr, cfg.DetachFromParent)
+	if cfg.DetachFromParent {
+		applyDetachAttrs(cmd)
+	}
 
 	if err := cmd.Start(); err != nil {
 		if logFile != nil {
@@ -158,8 +161,32 @@ func (h *ProcessHandle) Identifier() string {
 // cmd.Wait() joins the copy goroutine that exec.Cmd spawns when Stdout
 // is a generic io.Writer. Returns nil if logPath is empty or the file
 // could not be opened; in either case output still reaches stderrSink.
-func teeSpawnOutput(cmd *exec.Cmd, logPath string, stderrSink io.Writer) *os.File {
-	var w io.Writer = stderrSink
+// teeSpawnOutput wires cmd.Stdout/Stderr for a spawned subprocess.
+//
+// Two shapes depending on the caller's lifetime contract:
+//
+//   - detach=false (default, synchronous callers that will Handle.Wait()):
+//     stdout/stderr are tee'd to both the log file and stderrSink via an
+//     in-parent io.Writer. exec.Cmd creates a pipe per stream and a
+//     forwarder goroutine that io.Copy's pipe→writer. The goroutine is
+//     joined inside cmd.Wait(). This surfaces subprocess output on the
+//     parent's stderr so cluster-native wizard pods get kubectl-logs
+//     visibility (spi-fxfq5f).
+//
+//   - detach=true (fire-and-forget callers like `spire summon`):
+//     stdout/stderr point directly at the log *os.File. exec.Cmd
+//     recognizes the concrete *os.File type and uses dup2 at fork time
+//     to give the child its own fd — no pipe, no forwarder goroutine, no
+//     dependency on the parent's lifetime. stderrSink is not tee'd; the
+//     parent exits immediately after Start and there would be nothing to
+//     tee through. A caller that sets DetachFromParent but still wants
+//     parent-stderr tee should keep Waiting instead.
+//
+// Returns the opened log file so the caller can close it after
+// cmd.Wait() joins the forwarder goroutine (synchronous path) or
+// after Start (detach path — the fd has already been dup'd into the
+// child, closing our handle does not affect the child's copy).
+func teeSpawnOutput(cmd *exec.Cmd, logPath string, stderrSink io.Writer, detach bool) *os.File {
 	var logFile *os.File
 	if logPath != "" {
 		os.MkdirAll(filepath.Dir(logPath), 0755)
@@ -168,8 +195,33 @@ func teeSpawnOutput(cmd *exec.Cmd, logPath string, stderrSink io.Writer) *os.Fil
 			fmt.Fprintf(stderrSink, "spawn: open log %s failed, falling back to stderr-only: %v\n", logPath, err)
 		} else {
 			logFile = f
-			w = io.MultiWriter(f, stderrSink)
 		}
+	}
+
+	if detach {
+		// Detach path: dup the log fd directly into the child. When
+		// logFile is nil (logPath empty or open failed) we cannot tee
+		// to a parent-side writer either — the parent will exit
+		// immediately, so there's nothing to keep alive for stderrSink.
+		// Fall through to stderrSink only as a last resort; the
+		// subprocess's stderr may survive long enough to capture a
+		// startup error if Start is slow.
+		if logFile != nil {
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
+		} else {
+			cmd.Stdout = stderrSink
+			cmd.Stderr = stderrSink
+		}
+		return logFile
+	}
+
+	// Attached path: tee to logFile + stderrSink via a parent-side
+	// forwarder goroutine. io.MultiWriter is appropriate here because
+	// both sinks are alive for the subprocess's lifetime.
+	var w io.Writer = stderrSink
+	if logFile != nil {
+		w = io.MultiWriter(logFile, stderrSink)
 	}
 	cmd.Stdout = w
 	cmd.Stderr = w
