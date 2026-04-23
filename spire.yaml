@@ -2,7 +2,18 @@ runtime:
   language: go
   test: go test ./... -timeout=60s && cd operator && go test ./... -timeout=60s
   build: go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./... && cd operator && go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./...
-  lint: go vet ./... && helm lint helm/spire && helm lint helm/spire -f k8s/values.smoke.yaml && cd operator && go vet ./... && go generate ./api/... && cd .. && git diff --exit-code helm/spire/crds/
+  # lint additionally runs two RBAC drift guards (spi-3shzb7):
+  #   verify-rbac:           regenerates operator/config/rbac/role.yaml
+  #                          from +kubebuilder:rbac markers and fails on
+  #                          any git diff. Catches "marker edited, file
+  #                          not regenerated" and hand-edits of role.yaml.
+  #   verify-rbac-parity.sh: renders the helm chart and fails if the
+  #                          chart's operator ClusterRole differs (in
+  #                          either direction) from the generated role.
+  #                          Catches the spi-p5nr8i class: markers say
+  #                          the operator needs a verb, chart doesn't
+  #                          ship the rule.
+  lint: go vet ./... && helm lint helm/spire && helm lint helm/spire -f k8s/values.smoke.yaml && cd operator && go vet ./... && go generate ./api/... && make verify-rbac && cd .. && git diff --exit-code helm/spire/crds/ && bash scripts/verify-rbac-parity.sh
 
 agent:
   model: claude-opus-4-7

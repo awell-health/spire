@@ -47,6 +47,20 @@ func hasApprenticeSignal(beadID string) (bool, error) {
 	return false, nil
 }
 
+// RBAC for the agent monitor. Derived from m.Client calls on
+// WizardGuild (list + status update), SpireConfig (get in loadConfig),
+// core/Pod (list, create, delete for managed-agent workload pods),
+// core/PVC (get + create in ensureOwningWizardPVC), and core/Secret
+// (get in loadGitHubToken under remote_branch.go). Watch is required
+// on read paths because the reconciler reads through the
+// controller-manager cached client.
+//+kubebuilder:rbac:groups=spire.awell.io,resources=wizardguilds,verbs=get;list;watch
+//+kubebuilder:rbac:groups=spire.awell.io,resources=wizardguilds/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=spire.awell.io,resources=spireconfigs,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
+//+kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get
+
 // AgentMonitor tracks agent heartbeats and manages pods for managed agents.
 type AgentMonitor struct {
 	Client         client.Client

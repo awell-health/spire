@@ -29,6 +29,15 @@ import (
 	"github.com/awell-health/spire/pkg/store"
 )
 
+// RBAC for the (transitional) bead watcher. Lists and creates
+// SpireWorkload CRs and writes their status; transitional per the
+// top-of-file notice — these rules only take effect when the
+// legacy-scheduler gate is on. Markers stay even while the gate is
+// off so the generated role does not drift from in-tree controller
+// code.
+//+kubebuilder:rbac:groups=spire.awell.io,resources=spireworkloads,verbs=get;list;watch;create
+//+kubebuilder:rbac:groups=spire.awell.io,resources=spireworkloads/status,verbs=get;update;patch
+
 // BeadWatcher reads beads from the shared dolt server and reconciles SpireWorkload CRs.
 // DoltHub remote sync is handled by the dedicated spire-syncer pod.
 type BeadWatcher struct {

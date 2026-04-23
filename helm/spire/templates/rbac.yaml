@@ -16,25 +16,41 @@ metadata:
   name: {{ .Release.Name }}-operator
   labels:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
+# Rules MUST stay in strict parity with operator/config/rbac/role.yaml
+# (the controller-gen output from the +kubebuilder:rbac markers on each
+# controller). scripts/verify-rbac-parity.sh runs in apprentice
+# validation and fails on any drift in either direction — adding a
+# verb here that no marker declares is as much a regression as a marker
+# that the chart doesn't ship. When the generated role changes, update
+# this list to match (both directions strictly equal).
 rules:
   - apiGroups: ["spire.awell.io"]
-    resources: ["wizardguilds", "spireworkloads", "spireconfigs"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    resources: ["wizardguilds"]
+    verbs: ["get", "list", "watch", "update"]
   - apiGroups: ["spire.awell.io"]
-    resources: ["wizardguilds/status", "spireworkloads/status", "spireconfigs/status"]
+    resources: ["wizardguilds/status"]
     verbs: ["get", "update", "patch"]
+  - apiGroups: ["spire.awell.io"]
+    resources: ["spireworkloads"]
+    verbs: ["get", "list", "watch", "create"]
+  - apiGroups: ["spire.awell.io"]
+    resources: ["spireworkloads/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["spire.awell.io"]
+    resources: ["spireconfigs"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

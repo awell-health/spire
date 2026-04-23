@@ -40,6 +40,14 @@ import (
 	"github.com/awell-health/spire/pkg/steward/intent"
 )
 
+// RBAC for the intent reconciler. The reconciler consumes a
+// WorkloadIntent stream from the steward and creates a single apprentice
+// pod per intent via r.Client.Create. It does not list or delete pods —
+// lifecycle + cleanup are owned by AgentMonitor. The pod-create verb
+// is already declared on AgentMonitor; repeating it here keeps the
+// marker set local to the controller that actually runs the call.
+//+kubebuilder:rbac:groups="",resources=pods,verbs=create
+
 // IntentWorkloadReconciler consumes WorkloadIntent values from an
 // intent.IntentConsumer and reconciles apprentice pods in the cluster
 // via agent.BuildApprenticePod.

@@ -30,6 +30,16 @@ import (
 	"github.com/awell-health/spire/pkg/store"
 )
 
+// RBAC for the (transitional) workload assigner. Lists
+// SpireWorkloads and WizardGuilds and writes their status during
+// match/reassign cycles. Transitional per the top-of-file notice;
+// markers stay so the generated role does not drift from in-tree
+// controller code while the gate is off.
+//+kubebuilder:rbac:groups=spire.awell.io,resources=spireworkloads,verbs=get;list;watch
+//+kubebuilder:rbac:groups=spire.awell.io,resources=spireworkloads/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=spire.awell.io,resources=wizardguilds,verbs=get;list;watch
+//+kubebuilder:rbac:groups=spire.awell.io,resources=wizardguilds/status,verbs=get;update;patch
+
 // WorkloadAssigner matches pending SpireWorkloads to available WizardGuilds.
 type WorkloadAssigner struct {
 	Client             client.Client

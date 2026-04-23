@@ -205,6 +205,19 @@ const (
 	cacheRoleLabel = "spire.awell.io/cache-role"
 )
 
+// RBAC for the cache reconciler. Derived from r.Client calls on
+// WizardGuild (list for cycle fan-out, update for finalizer persistence,
+// status update for CacheStatus), batch/Job (full lifecycle for refresh
+// Jobs), core/PVC (create + get in ensurePVC), and core/Pod (list in
+// revisionFromJob / collectJobFailureSnapshot). Watch is required on
+// read paths because the reconciler uses the controller-manager cached
+// client, which backs typed reads with an informer.
+//+kubebuilder:rbac:groups=spire.awell.io,resources=wizardguilds,verbs=get;list;watch;update
+//+kubebuilder:rbac:groups=spire.awell.io,resources=wizardguilds/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;patch;delete
+//+kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create
+//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+
 // CacheReconciler reconciles a WizardGuild's CacheSpec into a guild-owned
 // PVC plus a refresh Job, and surfaces state on WizardGuild.Status.Cache.
 type CacheReconciler struct {
