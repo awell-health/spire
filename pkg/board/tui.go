@@ -8,12 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 
 	"github.com/awell-health/spire/pkg/store"
 )
+
+// commentCharLimit caps comment input to a reasonable size for a TUI modal.
+const commentCharLimit = 4000
 
 // PendingAction identifies an action to run after the TUI exits.
 type PendingAction int
@@ -139,10 +143,12 @@ type BoardMode struct {
 	FeedbackInput   string // current text
 	FeedbackBeadID  string // bead to add the comment to
 
-	// Comment input state for adding comments to beads.
-	CommentActive bool   // true when comment text input is shown
-	CommentInput  string // current text
-	CommentBeadID string // bead to add the comment to
+	// Comment input state for adding comments to beads. When CommentActive is
+	// true, CommentTextarea is a focused bubbles textarea model that owns the
+	// buffer, cursor, and multiline editing semantics.
+	CommentActive   bool
+	CommentTextarea textarea.Model
+	CommentBeadID   string
 
 	// Resolve input state for needs-human bead resolution.
 	ResolveFn      func(beadID, comment string) error
@@ -541,7 +547,7 @@ func (m *BoardMode) FooterHints() string {
 		return "j/k navigate  enter select  esc close"
 	}
 	if m.CommentActive {
-		return "type comment  enter submit  esc cancel"
+		return "ctrl+d submit  esc cancel  enter newline"
 	}
 	if m.SearchActive {
 		return "type to filter  enter accept  esc clear"
@@ -908,25 +914,44 @@ func (m *BoardMode) updateFeedbackInput(msg tea.KeyMsg) (Mode, tea.Cmd) {
 	}
 }
 
-// updateCommentInput handles keypresses in the comment text input mode.
+// openCommentModal activates the comment modal for a bead. A fresh textarea
+// model is constructed each time so that stale buffer contents from a previous
+// open cannot leak into the new session.
+func (m *BoardMode) openCommentModal(beadID string) {
+	ta := textarea.New()
+	ta.Placeholder = "Comment…"
+	ta.CharLimit = commentCharLimit
+	ta.ShowLineNumbers = false
+	ta.Focus()
+	m.CommentTextarea = ta
+	m.CommentActive = true
+	m.CommentBeadID = beadID
+}
+
+// closeCommentModal clears comment modal state without submitting.
+func (m *BoardMode) closeCommentModal() {
+	m.CommentActive = false
+	m.CommentTextarea = textarea.Model{}
+	m.CommentBeadID = ""
+}
+
+// updateCommentInput handles keypresses in the comment text input modal.
+// esc cancels; ctrl+d submits; other keys (including enter, which inserts a
+// newline) are delegated to the bubbles textarea widget.
 func (m *BoardMode) updateCommentInput(msg tea.KeyMsg) (Mode, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.CommentActive = false
-		m.CommentInput = ""
-		m.CommentBeadID = ""
+		m.closeCommentModal()
 		return m, nil
-	case "enter":
-		text := strings.TrimSpace(m.CommentInput)
+	case "ctrl+d":
+		text := strings.TrimSpace(m.CommentTextarea.Value())
 		if text == "" {
 			m.ActionStatus = "Comment text required"
 			m.ActionStatusTime = time.Now()
 			return m, nil
 		}
 		beadID := m.CommentBeadID
-		m.CommentActive = false
-		m.CommentInput = ""
-		m.CommentBeadID = ""
+		m.closeCommentModal()
 		m.ActionRunning = true
 		m.ActionStatus = "Adding comment..."
 		m.ActionStatusTime = time.Now()
@@ -934,20 +959,10 @@ func (m *BoardMode) updateCommentInput(msg tea.KeyMsg) (Mode, tea.Cmd) {
 			err := store.AddComment(beadID, text)
 			return commentResultMsg{BeadID: beadID, Err: err}
 		}
-	case "backspace":
-		if len(m.CommentInput) > 0 {
-			m.CommentInput = m.CommentInput[:len(m.CommentInput)-1]
-		}
-		return m, nil
-	case "ctrl+u":
-		m.CommentInput = ""
-		return m, nil
-	default:
-		if len(msg.String()) == 1 && msg.String()[0] >= 32 {
-			m.CommentInput += msg.String()
-		}
-		return m, nil
 	}
+	var cmd tea.Cmd
+	m.CommentTextarea, cmd = m.CommentTextarea.Update(msg)
+	return m, cmd
 }
 
 // updateResolveInput handles keypresses in the resolve text input mode.
@@ -1625,13 +1640,11 @@ func (m *BoardMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 				return m, nil
 			}
 
-		// Comment — open text input overlay (any bead).
+		// Comment — open multiline modal overlay (any bead).
 		case "c":
 			if bead := m.SelectedBead(); bead != nil {
-				m.CommentActive = true
-				m.CommentInput = ""
-				m.CommentBeadID = bead.ID
-				return m, nil
+				m.openCommentModal(bead.ID)
+				return m, textarea.Blink
 			}
 
 		// Command mode.

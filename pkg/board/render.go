@@ -553,6 +553,12 @@ func (m *BoardMode) View() string {
 
 	boardOutput := s.String()
 
+	// Comment modal overlay: multiline textarea centered above the board.
+	if m.CommentActive {
+		popup := renderCommentModal(m)
+		return overlayPopup(boardOutput, popup, m.Width, m.Height)
+	}
+
 	// Terminal pane overlay: large scrollable content viewer.
 	if m.TermOpen {
 		popW := m.Width * 9 / 10
