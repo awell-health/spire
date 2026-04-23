@@ -1049,6 +1049,52 @@ Managed via kustomize (`k8s/kustomization.yaml`):
 | `operator.yaml`  | Deployment     | Operator (bead watcher + assigner + monitor) |
 | `syncer.yaml`    | CronJob/Deploy | DoltHub sync (optional)              |
 
+## OLAP backends (dual-backend factory pattern)
+
+Spire has two OLAP backends and a single factory in `pkg/olap/factory.go`
+that dispatches between them. Dolt remains the source of truth; OLAP is
+derived / ETL'd.
+
+| Backend | Build tag | Deployment | Why |
+|---------|-----------|------------|-----|
+| `duckdb` | cgo-only | local single-binary | rich SQL (quantile_cont, epoch, ON CONFLICT), zero ops |
+| `clickhouse` | pure-Go | cluster (helm/spire) | no CGO in the agent image; horizontally scalable; native Go driver |
+
+**Selection.** `SPIRE_OLAP_BACKEND` selects the backend (`duckdb` or
+`clickhouse`); default is `duckdb`. In the cluster, the helm chart sets
+`SPIRE_OLAP_BACKEND=clickhouse` and `SPIRE_CLICKHOUSE_URL=<svc>:9000`
+on the steward, operator, and wizard-pod envs when
+`clickhouse.enabled=true`. Local installs leave the env unset and fall
+through to the DuckDB path.
+
+**Factory split.** Two entry points with different interfaces:
+
+- `olap.OpenBackend(cfg) (ReadWrite, error)` — returns Writer +
+  TraceReader. Compiles in both cgo and nocgo builds.
+- `olap.OpenStore(cfg) (Store, error)` — returns the full Store
+  (adds MetricsReader). Only DuckDB implements MetricsReader, so
+  `OpenStore` returns an error for ClickHouse. This makes "metrics
+  queries need DuckDB" a build-time contract rather than a runtime
+  panic. See the design note at the top of `pkg/olap/factory.go`.
+
+**Schema parity.** `pkg/olap/schema.go` (DuckDB) and
+`pkg/olap/clickhouse_schema.go` (ClickHouse) are kept in sync for every
+column written by the ETL and receivers: `agent_runs_olap`,
+`bead_lifecycle_olap`, `api_events`, `tool_events`, `tool_spans`,
+`etl_cursor`, and the aggregate tables (`daily_formula_stats`,
+`weekly_merge_stats`, `phase_cost_breakdown`, `tool_usage_stats`,
+`failure_hotspots`). ClickHouse uses `MergeTree` for append-only event
+tables and `ReplacingMergeTree(synced_at)` for tables that need upsert
+semantics (agent_runs_olap, bead_lifecycle_olap, etl_cursor, all
+aggregate tables).
+
+**Views.** `pkg/olap/views.go` holds the DuckDB view-refresh DDL
+(DELETE + INSERT … ON CONFLICT + DuckDB-native functions like `epoch()`
+and `INTERVAL N DAY`). `pkg/olap/clickhouse_views.go` holds the
+ClickHouse equivalents, translated to `dateDiff('second', …)`,
+`today() - N`, `toStartOfWeek`, and plain INSERTs that rely on
+ReplacingMergeTree dedup.
+
 ## Naming Conventions (RPG Theme)
 
 | Role          | Name       | Description                                     |

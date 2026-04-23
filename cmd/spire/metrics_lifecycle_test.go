@@ -264,6 +264,7 @@ func TestCmdMetrics_LifecycleByTypeFlag_ParsedCorrectly(t *testing.T) {
 // run without the DuckDB OLAP database — there's no Dolt fallback for
 // quantile_cont aggregates.
 func TestCmdMetrics_LifecycleByType_RequiresOLAP(t *testing.T) {
+	skipIfNoDuckDB(t)
 	tmp := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 	t.Setenv("SPIRE_TOWER", "")
@@ -286,6 +287,7 @@ func TestCmdMetrics_LifecycleByType_RequiresOLAP(t *testing.T) {
 func TestRenderBeadMetrics_EmptyJSON_StructureIntact(t *testing.T) {
 	// Use a minimal in-memory fixture by writing a DuckDB file and opening it.
 	// If DuckDB isn't available (nocgo build), skip.
+	skipIfNoDuckDB(t)
 	tmp := t.TempDir()
 	configDir := filepath.Join(tmp, "config")
 	dataDir := filepath.Join(tmp, "data")

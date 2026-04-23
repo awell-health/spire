@@ -128,6 +128,101 @@ CREATE TABLE IF NOT EXISTS etl_cursor (
 ORDER BY (table_name)
 `
 
+// bead_lifecycle_olap mirrors the Dolt bead_lifecycle sidecar (hmdwm feature).
+// One row per bead_id; ReplacingMergeTree keeps the latest synced_at so later
+// transitions (e.g. close after file) overwrite earlier state.
+const chCreateBeadLifecycleOLAP = `
+CREATE TABLE IF NOT EXISTS bead_lifecycle_olap (
+    bead_id       String,
+    bead_type     String,
+    filed_at      Nullable(DateTime64(3)),
+    ready_at      Nullable(DateTime64(3)),
+    started_at    Nullable(DateTime64(3)),
+    closed_at     Nullable(DateTime64(3)),
+    updated_at    Nullable(DateTime64(3)),
+    review_count  Int32,
+    fix_count     Int32,
+    arbiter_count Int32,
+    synced_at     DateTime64(3) DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(synced_at)
+ORDER BY (bead_id)
+`
+
+// Aggregate tables refreshed by RefreshMaterializedViews. Use
+// ReplacingMergeTree keyed on synced_at so repeated refreshes deduplicate by
+// primary key during background merges. Queries should use FINAL or GROUP BY
+// to get the deduped row.
+const chCreateDailyFormulaStats = `
+CREATE TABLE IF NOT EXISTS daily_formula_stats (
+    date              Date,
+    formula_name      String,
+    formula_version   String,
+    tower             String,
+    repo              String,
+    run_count         Int32,
+    success_count     Int32,
+    total_cost_usd    Float64,
+    avg_duration_s    Float64,
+    avg_review_rounds Float64,
+    synced_at         DateTime64(3) DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(synced_at)
+ORDER BY (date, formula_name, formula_version, tower, repo)
+`
+
+const chCreateWeeklyMergeStats = `
+CREATE TABLE IF NOT EXISTS weekly_merge_stats (
+    week_start      Date,
+    tower           String,
+    repo            String,
+    merge_count     Int32,
+    failure_count   Int32,
+    avg_lead_time_s Float64,
+    synced_at       DateTime64(3) DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(synced_at)
+ORDER BY (week_start, tower, repo)
+`
+
+const chCreatePhaseCostBreakdown = `
+CREATE TABLE IF NOT EXISTS phase_cost_breakdown (
+    date         Date,
+    tower        String,
+    formula_name String,
+    phase        String,
+    run_count    Int32,
+    total_cost   Float64,
+    synced_at    DateTime64(3) DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(synced_at)
+ORDER BY (date, tower, formula_name, phase)
+`
+
+const chCreateToolUsageStats = `
+CREATE TABLE IF NOT EXISTS tool_usage_stats (
+    date         Date,
+    tower        String,
+    formula_name String,
+    phase        String,
+    total_runs   Int32,
+    total_read   Int32,
+    total_edit   Int32,
+    total_tools  Int32,
+    synced_at    DateTime64(3) DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(synced_at)
+ORDER BY (date, tower, formula_name, phase)
+`
+
+const chCreateFailureHotspots = `
+CREATE TABLE IF NOT EXISTS failure_hotspots (
+    week_start      Date,
+    tower           String,
+    bead_id         String,
+    failure_class   String,
+    attempt_count   Int32,
+    last_failure_at DateTime64(3),
+    synced_at       DateTime64(3) DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(synced_at)
+ORDER BY (week_start, tower, bead_id, failure_class)
+`
+
 // clickHouseSchemaStatements returns all ClickHouse DDL in creation order.
 func clickHouseSchemaStatements() []string {
 	return []string{
@@ -136,6 +231,12 @@ func clickHouseSchemaStatements() []string {
 		chCreateAPIEvents,
 		chCreateAgentRunsOLAP,
 		chCreateETLCursor,
+		chCreateBeadLifecycleOLAP,
+		chCreateDailyFormulaStats,
+		chCreateWeeklyMergeStats,
+		chCreatePhaseCostBreakdown,
+		chCreateToolUsageStats,
+		chCreateFailureHotspots,
 	}
 }
 
