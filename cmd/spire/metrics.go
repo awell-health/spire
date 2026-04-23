@@ -702,10 +702,10 @@ func renderLifecycleByType(rows []olap.LifecycleByType) {
 	for _, r := range rows {
 		fmt.Printf("  %-10s %5d  %9s %9s  %9s %9s  %9s %9s  %8s %8s\n",
 			truncate(r.BeadType, 10), r.Count,
-			fmtSeconds(r.FiledToClosedP50), fmtSeconds(r.FiledToClosedP95),
-			fmtSeconds(r.ReadyToClosedP50), fmtSeconds(r.ReadyToClosedP95),
-			fmtSeconds(r.StartedToClosedP50), fmtSeconds(r.StartedToClosedP95),
-			fmtSeconds(r.QueueP50), fmtSeconds(r.QueueP95),
+			fmtSecondsPtr(r.FiledToClosedP50), fmtSecondsPtr(r.FiledToClosedP95),
+			fmtSecondsPtr(r.ReadyToClosedP50), fmtSecondsPtr(r.ReadyToClosedP95),
+			fmtSecondsPtr(r.StartedToClosedP50), fmtSecondsPtr(r.StartedToClosedP95),
+			fmtSecondsPtr(r.QueueP50), fmtSecondsPtr(r.QueueP95),
 		)
 	}
 }

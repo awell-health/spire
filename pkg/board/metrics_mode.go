@@ -682,13 +682,22 @@ func (m *MetricsMode) renderLifecycleContent() []string {
 	for _, r := range m.lifecycleByType {
 		lines = append(lines, fmt.Sprintf("  %-7s %3d %5s %5s %5s %5s %5s %5s %5s %5s",
 			Truncate(r.BeadType, 7), r.Count,
-			fmtSecondsCompact(r.FiledToClosedP50), fmtSecondsCompact(r.FiledToClosedP95),
-			fmtSecondsCompact(r.ReadyToClosedP50), fmtSecondsCompact(r.ReadyToClosedP95),
-			fmtSecondsCompact(r.StartedToClosedP50), fmtSecondsCompact(r.StartedToClosedP95),
-			fmtSecondsCompact(r.QueueP50), fmtSecondsCompact(r.QueueP95),
+			fmtSecondsCompactPtr(r.FiledToClosedP50), fmtSecondsCompactPtr(r.FiledToClosedP95),
+			fmtSecondsCompactPtr(r.ReadyToClosedP50), fmtSecondsCompactPtr(r.ReadyToClosedP95),
+			fmtSecondsCompactPtr(r.StartedToClosedP50), fmtSecondsCompactPtr(r.StartedToClosedP95),
+			fmtSecondsCompactPtr(r.QueueP50), fmtSecondsCompactPtr(r.QueueP95),
 		))
 	}
 	return lines
+}
+
+// fmtSecondsCompactPtr formats a nullable duration in seconds. Nil renders
+// as "—" so pre-feature bead populations don't misreport as 0s.
+func fmtSecondsCompactPtr(s *float64) string {
+	if s == nil {
+		return "—"
+	}
+	return fmtSecondsCompact(*s)
 }
 
 // fmtSecondsCompact formats a duration in seconds using the most-significant

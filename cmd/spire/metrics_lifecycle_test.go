@@ -205,9 +205,13 @@ func TestRenderLifecycleByType_Empty(t *testing.T) {
 }
 
 func TestRenderLifecycleByType_Populated(t *testing.T) {
+	taskF2C50, taskF2C95 := 3600.0, 7200.0
+	taskQ50, taskQ95 := 30.0, 600.0
+	bugF2C50, bugF2C95 := 60.0, 120.0
+	bugQ50, bugQ95 := 10.0, 15.0
 	rows := []olap.LifecycleByType{
-		{BeadType: "task", Count: 42, FiledToClosedP50: 3600, FiledToClosedP95: 7200, QueueP50: 30, QueueP95: 600},
-		{BeadType: "bug", Count: 5, FiledToClosedP50: 60, FiledToClosedP95: 120, QueueP50: 10, QueueP95: 15},
+		{BeadType: "task", Count: 42, FiledToClosedP50: &taskF2C50, FiledToClosedP95: &taskF2C95, QueueP50: &taskQ50, QueueP95: &taskQ95},
+		{BeadType: "bug", Count: 5, FiledToClosedP50: &bugF2C50, FiledToClosedP95: &bugF2C95, QueueP50: &bugQ50, QueueP95: &bugQ95},
 	}
 	out := captureRenderOutput(t, func() {
 		renderLifecycleByType(rows)
@@ -220,6 +224,27 @@ func TestRenderLifecycleByType_Populated(t *testing.T) {
 	}
 	if !strings.Contains(out, "42") {
 		t.Errorf("missing count for task, got:\n%s", out)
+	}
+}
+
+// TestRenderLifecycleByType_NilRendersEmDash verifies that nil percentiles
+// (the "no data" case — e.g. pre-feature beads whose ready_at/started_at are
+// NULL) render as em-dash rather than misreporting as 0s.
+func TestRenderLifecycleByType_NilRendersEmDash(t *testing.T) {
+	f2c50, f2c95 := 3600.0, 7200.0
+	rows := []olap.LifecycleByType{
+		{
+			BeadType: "task", Count: 10,
+			FiledToClosedP50: &f2c50, FiledToClosedP95: &f2c95,
+			// R→C, S→C, Q intentionally nil — historical beads with no
+			// ready/started stamps.
+		},
+	}
+	out := captureRenderOutput(t, func() {
+		renderLifecycleByType(rows)
+	})
+	if !strings.Contains(out, "—") {
+		t.Errorf("nil percentiles should render em-dash, got:\n%s", out)
 	}
 }
 

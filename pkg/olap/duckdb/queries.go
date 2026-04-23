@@ -633,30 +633,37 @@ func (d *DB) QueryLifecycleForBead(beadID string) (*olap.BeadLifecycleIntervals,
 }
 
 // QueryLifecycleByType returns P50/P95 lifecycle timings per bead_type.
+// Filters out executor-generated synthetic beads (message/step/attempt/
+// review) so the rollup reflects user-filed work only — see
+// pkg/store/internal_types.go for the canonical type list.
+// Percentile columns stay nullable: a group whose underlying CASE
+// expression is NULL for every row (e.g. pre-feature beads with no
+// ready_at) returns nil, which the renderer prints as "—" instead of 0s.
 func (d *DB) QueryLifecycleByType(since time.Time) ([]olap.LifecycleByType, error) {
 	ctx := context.Background()
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT
 			COALESCE(bead_type, 'unknown'),
 			COUNT(*),
-			COALESCE(quantile_cont(epoch(closed_at) - epoch(filed_at), 0.50), 0),
-			COALESCE(quantile_cont(epoch(closed_at) - epoch(filed_at), 0.95), 0),
-			COALESCE(quantile_cont(
-				CASE WHEN ready_at IS NOT NULL THEN epoch(closed_at) - epoch(ready_at) END, 0.50), 0),
-			COALESCE(quantile_cont(
-				CASE WHEN ready_at IS NOT NULL THEN epoch(closed_at) - epoch(ready_at) END, 0.95), 0),
-			COALESCE(quantile_cont(
-				CASE WHEN started_at IS NOT NULL THEN epoch(closed_at) - epoch(started_at) END, 0.50), 0),
-			COALESCE(quantile_cont(
-				CASE WHEN started_at IS NOT NULL THEN epoch(closed_at) - epoch(started_at) END, 0.95), 0),
-			COALESCE(quantile_cont(
+			quantile_cont(epoch(closed_at) - epoch(filed_at), 0.50),
+			quantile_cont(epoch(closed_at) - epoch(filed_at), 0.95),
+			quantile_cont(
+				CASE WHEN ready_at IS NOT NULL THEN epoch(closed_at) - epoch(ready_at) END, 0.50),
+			quantile_cont(
+				CASE WHEN ready_at IS NOT NULL THEN epoch(closed_at) - epoch(ready_at) END, 0.95),
+			quantile_cont(
+				CASE WHEN started_at IS NOT NULL THEN epoch(closed_at) - epoch(started_at) END, 0.50),
+			quantile_cont(
+				CASE WHEN started_at IS NOT NULL THEN epoch(closed_at) - epoch(started_at) END, 0.95),
+			quantile_cont(
 				CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
-				     THEN epoch(started_at) - epoch(ready_at) END, 0.50), 0),
-			COALESCE(quantile_cont(
+				     THEN epoch(started_at) - epoch(ready_at) END, 0.50),
+			quantile_cont(
 				CASE WHEN started_at IS NOT NULL AND ready_at IS NOT NULL
-				     THEN epoch(started_at) - epoch(ready_at) END, 0.95), 0)
+				     THEN epoch(started_at) - epoch(ready_at) END, 0.95)
 		FROM bead_lifecycle_olap
 		WHERE closed_at IS NOT NULL AND filed_at IS NOT NULL AND closed_at >= ?
+		  AND (bead_type IS NULL OR bead_type NOT IN ('message', 'step', 'attempt', 'review'))
 		GROUP BY 1
 		ORDER BY 2 DESC
 	`, since)
@@ -667,19 +674,48 @@ func (d *DB) QueryLifecycleByType(since time.Time) ([]olap.LifecycleByType, erro
 
 	var out []olap.LifecycleByType
 	for rows.Next() {
-		var r olap.LifecycleByType
+		var (
+			r        olap.LifecycleByType
+			f2cP50   sql.NullFloat64
+			f2cP95   sql.NullFloat64
+			r2cP50   sql.NullFloat64
+			r2cP95   sql.NullFloat64
+			s2cP50   sql.NullFloat64
+			s2cP95   sql.NullFloat64
+			queueP50 sql.NullFloat64
+			queueP95 sql.NullFloat64
+		)
 		if err := rows.Scan(
 			&r.BeadType, &r.Count,
-			&r.FiledToClosedP50, &r.FiledToClosedP95,
-			&r.ReadyToClosedP50, &r.ReadyToClosedP95,
-			&r.StartedToClosedP50, &r.StartedToClosedP95,
-			&r.QueueP50, &r.QueueP95,
+			&f2cP50, &f2cP95,
+			&r2cP50, &r2cP95,
+			&s2cP50, &s2cP95,
+			&queueP50, &queueP95,
 		); err != nil {
 			return nil, err
 		}
+		r.FiledToClosedP50 = nullFloatPtr(f2cP50)
+		r.FiledToClosedP95 = nullFloatPtr(f2cP95)
+		r.ReadyToClosedP50 = nullFloatPtr(r2cP50)
+		r.ReadyToClosedP95 = nullFloatPtr(r2cP95)
+		r.StartedToClosedP50 = nullFloatPtr(s2cP50)
+		r.StartedToClosedP95 = nullFloatPtr(s2cP95)
+		r.QueueP50 = nullFloatPtr(queueP50)
+		r.QueueP95 = nullFloatPtr(queueP95)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// nullFloatPtr converts a sql.NullFloat64 into *float64, returning nil
+// when the value is NULL. Used by the lifecycle-by-type query to keep
+// "no data" visually distinct from "zero duration".
+func nullFloatPtr(n sql.NullFloat64) *float64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Float64
+	return &v
 }
 
 // QueryReviewFixCounts aggregates review/fix/arbiter run counts for a bead.

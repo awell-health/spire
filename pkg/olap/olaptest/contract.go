@@ -865,6 +865,9 @@ func RunLifecycleContract(t *testing.T, store StoreFactory) {
 	t.Run("PerBeadIntervals_CanonicalFields", func(t *testing.T) { testLifecycleIntervals(t, store) })
 	t.Run("PerBeadIntervals_InFlightReturnsNilIntervals", func(t *testing.T) { testLifecycleInFlight(t, store) })
 	t.Run("ByType_P50P95Rollup", func(t *testing.T) { testLifecycleByType(t, store) })
+	t.Run("ByType_NullPercentilesForMissingColumns", func(t *testing.T) { testLifecycleByTypeNulls(t, store) })
+	t.Run("ByType_ExcludesSyntheticBeadTypes", func(t *testing.T) { testLifecycleByTypeExcludesSynthetic(t, store) })
+	t.Run("ByType_P50LeqP95Invariant", func(t *testing.T) { testLifecycleByTypeInvariant(t, store) })
 	t.Run("ReviewFixCounts_FromAgentRuns", func(t *testing.T) { testReviewFixCounts(t, store) })
 	t.Run("ChildDrilldown_HierarchicalPrefix", func(t *testing.T) { testChildDrilldown(t, store) })
 	t.Run("QueueSeparateFromExecution", func(t *testing.T) { testQueueSeparateFromExecution(t, store) })
@@ -996,6 +999,16 @@ func testLifecycleByType(t *testing.T, store StoreFactory) {
 		t.Fatalf("QueryLifecycleByType: got %d rows, want at least 2 (task + bug)", len(rollup))
 	}
 
+	// Invariant: for any row, P50 ≤ P95. Mathematically true of
+	// quantile_cont on any non-empty sorted population; a violation
+	// indicates a SQL/scan bug and should fail loudly before ship.
+	for _, r := range rollup {
+		checkP50LEP95(t, r.BeadType, "F→C", r.FiledToClosedP50, r.FiledToClosedP95)
+		checkP50LEP95(t, r.BeadType, "R→C", r.ReadyToClosedP50, r.ReadyToClosedP95)
+		checkP50LEP95(t, r.BeadType, "S→C", r.StartedToClosedP50, r.StartedToClosedP95)
+		checkP50LEP95(t, r.BeadType, "Q", r.QueueP50, r.QueueP95)
+	}
+
 	byType := map[string]olap.LifecycleByType{}
 	for _, r := range rollup {
 		byType[r.BeadType] = r
@@ -1007,7 +1020,7 @@ func testLifecycleByType(t *testing.T, store StoreFactory) {
 	if task.Count != 5 {
 		t.Errorf("task count = %d, want 5", task.Count)
 	}
-	if task.FiledToClosedP50 <= 0 {
+	if task.FiledToClosedP50 == nil || *task.FiledToClosedP50 <= 0 {
 		t.Errorf("task FiledToClosedP50 = %v, want > 0", task.FiledToClosedP50)
 	}
 
@@ -1017,6 +1030,223 @@ func testLifecycleByType(t *testing.T, store StoreFactory) {
 	}
 	if bug.Count != 1 {
 		t.Errorf("bug count = %d, want 1", bug.Count)
+	}
+}
+
+// checkP50LEP95 asserts the mathematical invariant P50 ≤ P95 on any
+// quantile_cont-produced pair. nil on either side is treated as "no data"
+// and skipped — the acceptance path allows "—" when a column has no
+// source rows (e.g. pre-feature beads with no ready_at).
+func checkP50LEP95(t *testing.T, beadType, col string, p50, p95 *float64) {
+	t.Helper()
+	if p50 == nil || p95 == nil {
+		return
+	}
+	if *p50 > *p95 {
+		t.Errorf("%s row: %s P50=%.2fs > P95=%.2fs — quantile invariant violated",
+			beadType, col, *p50, *p95)
+	}
+}
+
+// testLifecycleByTypeNulls seeds a population of "pre-feature" beads
+// whose ready_at / started_at columns are NULL — the shape historical
+// beads end up in after BackfillBeadLifecycle. The rollup must return
+// nil for the ready/started/queue percentiles so the renderer can print
+// "—" rather than 0s.
+func testLifecycleByTypeNulls(t *testing.T, store StoreFactory) {
+	s := store(t)
+	t.Cleanup(func() { _ = s.Close() })
+
+	base := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+
+	var fixtures []LifecycleFixture
+	for i := 0; i < 3; i++ {
+		filed := base.Add(time.Duration(i) * time.Minute)
+		closed := filed.Add(time.Duration(60+i*60) * time.Second)
+		fixtures = append(fixtures, LifecycleFixture{
+			BeadID:    fmt.Sprintf("spi-pre-%d", i),
+			BeadType:  "task",
+			FiledAt:   filed,
+			// ReadyAt and StartedAt are zero → NULL in the store.
+			ClosedAt:  closed,
+			UpdatedAt: closed,
+		})
+	}
+	if err := InsertBeadLifecycles(s, fixtures); err != nil {
+		t.Fatalf("InsertBeadLifecycles: %v", err)
+	}
+
+	rollup, err := s.QueryLifecycleByType(base.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("QueryLifecycleByType: %v", err)
+	}
+	var taskRow *olap.LifecycleByType
+	for i := range rollup {
+		if rollup[i].BeadType == "task" {
+			taskRow = &rollup[i]
+			break
+		}
+	}
+	if taskRow == nil {
+		t.Fatalf("task row missing from rollup: %+v", rollup)
+	}
+	// F→C uses filed_at and closed_at — both non-null — so these remain
+	// numeric.
+	if taskRow.FiledToClosedP50 == nil {
+		t.Errorf("FiledToClosedP50 = nil, want numeric — filed_at/closed_at were seeded")
+	}
+	// R→C, S→C, Q all depend on ready_at / started_at. Entire population
+	// has NULL for those columns, so quantile_cont returns NULL → nil.
+	if taskRow.ReadyToClosedP50 != nil {
+		t.Errorf("ReadyToClosedP50 = %v, want nil — no ready_at in any row", *taskRow.ReadyToClosedP50)
+	}
+	if taskRow.ReadyToClosedP95 != nil {
+		t.Errorf("ReadyToClosedP95 = %v, want nil", *taskRow.ReadyToClosedP95)
+	}
+	if taskRow.StartedToClosedP50 != nil {
+		t.Errorf("StartedToClosedP50 = %v, want nil", *taskRow.StartedToClosedP50)
+	}
+	if taskRow.QueueP50 != nil {
+		t.Errorf("QueueP50 = %v, want nil", *taskRow.QueueP50)
+	}
+}
+
+// testLifecycleByTypeExcludesSynthetic seeds a mix of user-filed work
+// and executor-generated internal beads (attempt / step / review /
+// message) and asserts the rollup excludes the synthetic types entirely.
+// These internal beads typically close in the same second they're filed,
+// which drags the P50 of any bucket they leak into to zero and misleads
+// the archmage about user-work cycle times.
+func testLifecycleByTypeExcludesSynthetic(t *testing.T, store StoreFactory) {
+	s := store(t)
+	t.Cleanup(func() { _ = s.Close() })
+
+	base := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+
+	var fixtures []LifecycleFixture
+	// User-filed work — should appear in the rollup.
+	for i := 0; i < 3; i++ {
+		filed := base.Add(time.Duration(i) * time.Minute)
+		closed := filed.Add(10 * time.Minute)
+		fixtures = append(fixtures, LifecycleFixture{
+			BeadID:    fmt.Sprintf("spi-user-%d", i),
+			BeadType:  "task",
+			FiledAt:   filed,
+			ReadyAt:   filed.Add(5 * time.Second),
+			StartedAt: filed.Add(10 * time.Second),
+			ClosedAt:  closed,
+			UpdatedAt: closed,
+		})
+	}
+	// Synthetic beads — must be filtered out. Same filed/closed second
+	// to mirror the production signature that pulls medians to zero.
+	syntheticTypes := []string{"message", "step", "attempt", "review"}
+	for i, typ := range syntheticTypes {
+		for j := 0; j < 20; j++ { // 80 synthetic, 3 real — synthetic swamp.
+			filed := base.Add(time.Duration(i*20+j) * time.Second)
+			fixtures = append(fixtures, LifecycleFixture{
+				BeadID:    fmt.Sprintf("spi-syn-%s-%d", typ, j),
+				BeadType:  typ,
+				FiledAt:   filed,
+				ClosedAt:  filed, // same-second close = 0s duration
+				UpdatedAt: filed,
+			})
+		}
+	}
+	if err := InsertBeadLifecycles(s, fixtures); err != nil {
+		t.Fatalf("InsertBeadLifecycles: %v", err)
+	}
+
+	rollup, err := s.QueryLifecycleByType(base.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("QueryLifecycleByType: %v", err)
+	}
+
+	for _, r := range rollup {
+		switch r.BeadType {
+		case "message", "step", "attempt", "review":
+			t.Errorf("synthetic bead_type %q leaked into rollup (count=%d)", r.BeadType, r.Count)
+		}
+	}
+
+	var taskRow *olap.LifecycleByType
+	for i := range rollup {
+		if rollup[i].BeadType == "task" {
+			taskRow = &rollup[i]
+			break
+		}
+	}
+	if taskRow == nil {
+		t.Fatalf("task row missing from rollup: %+v", rollup)
+	}
+	if taskRow.Count != 3 {
+		t.Errorf("task count = %d, want 3 — synthetic beads should not be counted", taskRow.Count)
+	}
+	if taskRow.FiledToClosedP50 == nil || *taskRow.FiledToClosedP50 < 590 {
+		// 10-minute durations → P50 ~= 600s. If synthetic beads leak
+		// in, the P50 would collapse toward zero.
+		t.Errorf("task FiledToClosedP50 = %v, want ~600s (synthetic beads must be filtered)",
+			taskRow.FiledToClosedP50)
+	}
+}
+
+// testLifecycleByTypeInvariant asserts the P50 ≤ P95 invariant holds
+// across a mixed population of user-filed beads. This is a shippability
+// gate — quantile_cont on any sorted population must satisfy it; a
+// violation points at a SQL/scan bug that must be root-caused before
+// release (see spi-urjdiq).
+func testLifecycleByTypeInvariant(t *testing.T, store StoreFactory) {
+	s := store(t)
+	t.Cleanup(func() { _ = s.Close() })
+
+	base := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+
+	// Seed a varied population across multiple types with a range of
+	// durations so quantile_cont has enough distinct values to spread
+	// P50 and P95. 12 epics to match the failing production shape.
+	var fixtures []LifecycleFixture
+	for i := 0; i < 12; i++ {
+		filed := base.Add(time.Duration(i) * time.Hour)
+		closed := filed.Add(time.Duration((i+1)*10) * time.Minute)
+		fixtures = append(fixtures, LifecycleFixture{
+			BeadID:    fmt.Sprintf("spi-epic-%d", i),
+			BeadType:  "epic",
+			FiledAt:   filed,
+			ReadyAt:   filed.Add(30 * time.Second),
+			StartedAt: filed.Add(60 * time.Second),
+			ClosedAt:  closed,
+			UpdatedAt: closed,
+		})
+	}
+	for i := 0; i < 10; i++ {
+		filed := base.Add(time.Duration(i) * time.Minute)
+		closed := filed.Add(time.Duration(30+i*15) * time.Second)
+		fixtures = append(fixtures, LifecycleFixture{
+			BeadID:    fmt.Sprintf("spi-task-%d", i),
+			BeadType:  "task",
+			FiledAt:   filed,
+			ReadyAt:   filed.Add(5 * time.Second),
+			StartedAt: filed.Add(10 * time.Second),
+			ClosedAt:  closed,
+			UpdatedAt: closed,
+		})
+	}
+	if err := InsertBeadLifecycles(s, fixtures); err != nil {
+		t.Fatalf("InsertBeadLifecycles: %v", err)
+	}
+
+	rollup, err := s.QueryLifecycleByType(base.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("QueryLifecycleByType: %v", err)
+	}
+	if len(rollup) == 0 {
+		t.Fatal("rollup is empty — expected at least epic and task rows")
+	}
+	for _, r := range rollup {
+		checkP50LEP95(t, r.BeadType, "F→C", r.FiledToClosedP50, r.FiledToClosedP95)
+		checkP50LEP95(t, r.BeadType, "R→C", r.ReadyToClosedP50, r.ReadyToClosedP95)
+		checkP50LEP95(t, r.BeadType, "S→C", r.StartedToClosedP50, r.StartedToClosedP95)
+		checkP50LEP95(t, r.BeadType, "Q", r.QueueP50, r.QueueP95)
 	}
 }
 

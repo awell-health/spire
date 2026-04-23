@@ -303,20 +303,21 @@ type BeadLifecycleIntervals struct {
 
 // LifecycleByType holds aggregated lifecycle timings grouped by bead_type.
 // Only closed beads contribute — open beads have no terminal timestamp.
-// Percentiles use DuckDB's quantile_cont; when fewer than N rows are
-// available for a given percentile, the value is NULL in SQL and zero here —
-// callers should prefer Count when deciding whether to display.
+// Each percentile field is *float64 to distinguish "NULL in SQL" (entire
+// population had no value for the underlying CASE expression — e.g.
+// pre-feature beads with no ready_at) from a legitimate zero duration.
+// Renderers should print "—" when the pointer is nil.
 type LifecycleByType struct {
-	BeadType               string  `json:"bead_type"`
-	Count                  int     `json:"count"`
-	FiledToClosedP50       float64 `json:"filed_to_closed_p50_seconds"`
-	FiledToClosedP95       float64 `json:"filed_to_closed_p95_seconds"`
-	ReadyToClosedP50       float64 `json:"ready_to_closed_p50_seconds"`
-	ReadyToClosedP95       float64 `json:"ready_to_closed_p95_seconds"`
-	StartedToClosedP50     float64 `json:"started_to_closed_p50_seconds"`
-	StartedToClosedP95     float64 `json:"started_to_closed_p95_seconds"`
-	QueueP50               float64 `json:"queue_p50_seconds"`
-	QueueP95               float64 `json:"queue_p95_seconds"`
+	BeadType           string   `json:"bead_type"`
+	Count              int      `json:"count"`
+	FiledToClosedP50   *float64 `json:"filed_to_closed_p50_seconds,omitempty"`
+	FiledToClosedP95   *float64 `json:"filed_to_closed_p95_seconds,omitempty"`
+	ReadyToClosedP50   *float64 `json:"ready_to_closed_p50_seconds,omitempty"`
+	ReadyToClosedP95   *float64 `json:"ready_to_closed_p95_seconds,omitempty"`
+	StartedToClosedP50 *float64 `json:"started_to_closed_p50_seconds,omitempty"`
+	StartedToClosedP95 *float64 `json:"started_to_closed_p95_seconds,omitempty"`
+	QueueP50           *float64 `json:"queue_p50_seconds,omitempty"`
+	QueueP95           *float64 `json:"queue_p95_seconds,omitempty"`
 }
 
 // ReviewFixCounts holds derived review/fix/arbiter counts for a single bead.

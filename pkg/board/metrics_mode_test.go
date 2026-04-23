@@ -42,21 +42,23 @@ func newTestMetricsMode() *MetricsMode {
 	m.lifecycleByType = []olap.LifecycleByType{
 		{
 			BeadType: "task", Count: 12,
-			FiledToClosedP50: 3600, FiledToClosedP95: 7200,
-			ReadyToClosedP50: 1800, ReadyToClosedP95: 3600,
-			StartedToClosedP50: 900, StartedToClosedP95: 1800,
-			QueueP50: 300, QueueP95: 600,
+			FiledToClosedP50: ptrFloat(3600), FiledToClosedP95: ptrFloat(7200),
+			ReadyToClosedP50: ptrFloat(1800), ReadyToClosedP95: ptrFloat(3600),
+			StartedToClosedP50: ptrFloat(900), StartedToClosedP95: ptrFloat(1800),
+			QueueP50: ptrFloat(300), QueueP95: ptrFloat(600),
 		},
 		{
 			BeadType: "bug", Count: 5,
-			FiledToClosedP50: 1200, FiledToClosedP95: 2400,
-			ReadyToClosedP50: 600, ReadyToClosedP95: 1200,
-			StartedToClosedP50: 300, StartedToClosedP95: 600,
-			QueueP50: 60, QueueP95: 120,
+			FiledToClosedP50: ptrFloat(1200), FiledToClosedP95: ptrFloat(2400),
+			ReadyToClosedP50: ptrFloat(600), ReadyToClosedP95: ptrFloat(1200),
+			StartedToClosedP50: ptrFloat(300), StartedToClosedP95: ptrFloat(600),
+			QueueP50: ptrFloat(60), QueueP95: ptrFloat(120),
 		},
 	}
 	return m
 }
+
+func ptrFloat(v float64) *float64 { return &v }
 
 func sendKey(m *MetricsMode, key string) {
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
