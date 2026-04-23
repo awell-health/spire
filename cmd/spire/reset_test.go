@@ -1187,7 +1187,7 @@ func TestSoftResetV3_MissingGraphState_ReturnsError(t *testing.T) {
 	})
 	wizardName := "wizard-test-softreset-missing-gs"
 
-	err := softResetV3(epicID, "implement", wizardName)
+	err := softResetV3(epicID, "implement", wizardName, false, nil)
 	if err == nil {
 		t.Fatal("expected error for missing graph state, got nil")
 	}
@@ -1232,7 +1232,7 @@ func TestSoftResetV3_RejectsPendingTarget(t *testing.T) {
 		t.Fatalf("read graph_state before: %v", err)
 	}
 
-	err = softResetV3(epicID, "implement", wizardName)
+	err = softResetV3(epicID, "implement", wizardName, false, nil)
 	if err == nil {
 		t.Fatal("expected error for pending target, got nil")
 	}
@@ -1326,7 +1326,7 @@ func TestSoftResetV3_ReopensClosedStepBeadsInResetSet(t *testing.T) {
 		},
 	)
 
-	if err := softResetV3(epicID, "implement", wizardName); err != nil {
+	if err := softResetV3(epicID, "implement", wizardName, false, nil); err != nil {
 		t.Fatalf("softResetV3: %v", err)
 	}
 
@@ -1415,7 +1415,7 @@ func TestSoftResetV3_SetsStatusConsistentWithPlainReset(t *testing.T) {
 		nil,
 	)
 
-	if err := softResetV3(toID, "implement", wizardNameTo); err != nil {
+	if err := softResetV3(toID, "implement", wizardNameTo, false, nil); err != nil {
 		t.Fatalf("softResetV3 --to: %v", err)
 	}
 	toBead, err := storeGetBead(toID)
@@ -1549,5 +1549,620 @@ func TestRecover_ResetActionPropagatesResetError(t *testing.T) {
 	}
 	if resummonCalled {
 		t.Error("cmdResummonFunc was called despite cmdReset returning an error")
+	}
+}
+
+// --- parseSetFlag unit tests (no store needed) ---
+
+// TestParseSetFlag_ValidTokens covers shape success cases: single token,
+// multiple tokens across steps, values containing '=' (only the first '='
+// is the delimiter — values are opaque).
+func TestParseSetFlag_ValidTokens(t *testing.T) {
+	graph := &formula.FormulaStepGraph{
+		Name: "task-default",
+		Steps: map[string]formula.StepConfig{
+			"plan":      {},
+			"implement": {Needs: []string{"plan"}},
+			"review":    {Needs: []string{"implement"}},
+		},
+	}
+
+	got, err := parseSetFlag([]string{
+		"implement.outputs.outcome=verified",
+		"review.outputs.outcome=merge",
+		"review.outputs.blob={\"key\":\"a=b\"}", // value contains '='
+	}, graph)
+	if err != nil {
+		t.Fatalf("parseSetFlag: %v", err)
+	}
+
+	want := map[string]map[string]string{
+		"implement": {"outcome": "verified"},
+		"review":    {"outcome": "merge", "blob": `{"key":"a=b"}`},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseSetFlag mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// TestParseSetFlag_EmptyReturnsNil verifies that zero tokens return a nil
+// map (so callers can short-circuit cleanly).
+func TestParseSetFlag_EmptyReturnsNil(t *testing.T) {
+	graph := &formula.FormulaStepGraph{Steps: map[string]formula.StepConfig{"plan": {}}}
+	got, err := parseSetFlag(nil, graph)
+	if err != nil {
+		t.Fatalf("parseSetFlag: %v", err)
+	}
+	if got != nil {
+		t.Errorf("parseSetFlag(nil) = %#v, want nil", got)
+	}
+}
+
+// TestParseSetFlag_RejectionCases covers every rejection branch:
+//   - missing '='
+//   - wrong path segment count (fewer/more than 3)
+//   - middle segment is 'status' (explicit separate message)
+//   - middle segment is neither 'outputs' nor 'status'
+//   - unknown step name
+//   - empty step or empty key segment
+func TestParseSetFlag_RejectionCases(t *testing.T) {
+	graph := &formula.FormulaStepGraph{
+		Name: "task-default",
+		Steps: map[string]formula.StepConfig{
+			"plan":      {},
+			"implement": {Needs: []string{"plan"}},
+			"review":    {Needs: []string{"implement"}},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		token     string
+		contains  string // expected substring in error
+	}{
+		{"no equals", "implement.outputs.outcome", "expected"},
+		{"two segments", "implement.outcome=verified", "segment"},
+		{"four segments (nested)", "review.outputs.blob.nested=v", "segment"},
+		{"status write rejected", "review.status=completed", "status"},
+		{"unknown kind", "review.state.x=y", "outputs"},
+		{"unknown step", "nonexistent.outputs.x=y", "not found"},
+		{"empty step", ".outputs.key=value", "must be non-empty"},
+		{"empty key", "review.outputs.=value", "must be non-empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSetFlag([]string{tt.token}, graph)
+			if err == nil {
+				t.Fatalf("parseSetFlag(%q) = %v, want error", tt.token, got)
+			}
+			if !strings.Contains(err.Error(), tt.contains) {
+				t.Errorf("parseSetFlag(%q) error = %q, want substring %q", tt.token, err.Error(), tt.contains)
+			}
+			if got != nil {
+				t.Errorf("parseSetFlag(%q): expected nil map on error, got %#v", tt.token, got)
+			}
+		})
+	}
+}
+
+// TestParseSetFlag_FailsEarlyOnFirstBadToken verifies a single bad token
+// in a batch invalidates the whole batch — no partial map returned.
+func TestParseSetFlag_FailsEarlyOnFirstBadToken(t *testing.T) {
+	graph := &formula.FormulaStepGraph{
+		Name: "task-default",
+		Steps: map[string]formula.StepConfig{
+			"implement": {},
+			"review":    {Needs: []string{"implement"}},
+		},
+	}
+
+	got, err := parseSetFlag([]string{
+		"implement.outputs.outcome=verified", // valid
+		"review.status=completed",            // invalid — rejected
+	}, graph)
+	if err == nil {
+		t.Fatalf("expected error from bad token, got nil (result=%#v)", got)
+	}
+	if got != nil {
+		t.Errorf("expected nil map on error, got %#v — partial writes must not leak", got)
+	}
+}
+
+// --- expandRewindSetForOverrides unit tests (pure function, no store) ---
+
+// TestExpandRewindSetForOverrides_PropagatesToCompletedDownstream verifies
+// that override propagation adds completed downstream-of-override steps
+// to the rewind set so their when-clauses re-evaluate on next summon.
+func TestExpandRewindSetForOverrides_PropagatesToCompletedDownstream(t *testing.T) {
+	graph := &formula.FormulaStepGraph{
+		Steps: map[string]formula.StepConfig{
+			"implement":        {},
+			"implement-failed": {Needs: []string{"implement"}},
+			"review":           {Needs: []string{"implement"}},
+			"merge":            {Needs: []string{"review"}},
+		},
+	}
+	gs := &executor.GraphState{
+		Steps: map[string]executor.StepState{
+			"implement":        {Status: "completed"},
+			"implement-failed": {Status: "completed"},
+			"review":           {Status: "pending"},
+			"merge":            {Status: "pending"},
+		},
+	}
+	base := map[string]bool{"review": true, "merge": true}
+	overrides := map[string]map[string]string{"implement": {"outcome": "verified"}}
+
+	got := expandRewindSetForOverrides(base, graph, gs, overrides)
+
+	// implement-failed is completed and downstream of implement → added.
+	// implement itself is excluded (overridden step isn't self-rewound).
+	// review is pending (not completed) but already in base.
+	if !got["implement-failed"] {
+		t.Errorf("implement-failed should be in expanded rewind set (completed downstream of overridden step)")
+	}
+	if got["implement"] {
+		t.Errorf("implement (the overridden step itself) must NOT be in rewind set")
+	}
+	if !got["review"] || !got["merge"] {
+		t.Errorf("base rewind set members must be preserved")
+	}
+}
+
+// TestExpandRewindSetForOverrides_NoOverridesReturnsBase verifies the
+// zero-override case is a no-op.
+func TestExpandRewindSetForOverrides_NoOverridesReturnsBase(t *testing.T) {
+	graph := &formula.FormulaStepGraph{
+		Steps: map[string]formula.StepConfig{
+			"a": {},
+			"b": {Needs: []string{"a"}},
+		},
+	}
+	gs := &executor.GraphState{Steps: map[string]executor.StepState{
+		"a": {Status: "completed"},
+		"b": {Status: "pending"},
+	}}
+	base := map[string]bool{"b": true}
+	got := expandRewindSetForOverrides(base, graph, gs, nil)
+	if len(got) != 1 || !got["b"] {
+		t.Errorf("expected base set unchanged, got %v", got)
+	}
+}
+
+// TestExpandRewindSetForOverrides_PendingDownstreamNotAdded verifies that
+// pending (never-reached) downstream steps are NOT added via override
+// propagation — they are left for the standard rewind/force-advance pass
+// to classify. Only already-completed steps need their when-clauses
+// re-evaluated; pending steps have not yet decided anything.
+func TestExpandRewindSetForOverrides_PendingDownstreamNotAdded(t *testing.T) {
+	graph := &formula.FormulaStepGraph{
+		Steps: map[string]formula.StepConfig{
+			"a": {},
+			"b": {Needs: []string{"a"}},
+			"c": {Needs: []string{"b"}},
+		},
+	}
+	gs := &executor.GraphState{Steps: map[string]executor.StepState{
+		"a": {Status: "completed"},
+		"b": {Status: "pending"},
+		"c": {Status: "pending"},
+	}}
+	base := map[string]bool{} // empty base — isolate the propagation behavior
+	overrides := map[string]map[string]string{"a": {"x": "y"}}
+
+	got := expandRewindSetForOverrides(base, graph, gs, overrides)
+	if got["b"] || got["c"] {
+		t.Errorf("pending downstream steps must not be auto-added by override propagation, got %v", got)
+	}
+}
+
+// --- softResetV3 --force / --set integration tests (spi-tmv38n) ---
+
+// writeV3GraphStateForEpic writes a GraphState matching the epic-default formula
+// (design-check → plan → materialize → implement → {implement-failed, review}
+// → merge/discard/close) for --force/--set integration tests that need the
+// implement-failed sibling branch.
+func writeV3GraphStateForEpic(t *testing.T, configRoot, wizardName, beadID string, steps map[string]executor.StepState, activeStep string, stepBeadIDs map[string]string) *executor.GraphState {
+	t.Helper()
+	gs := &executor.GraphState{
+		BeadID:      beadID,
+		AgentName:   wizardName,
+		Formula:     "epic-default",
+		Steps:       steps,
+		ActiveStep:  activeStep,
+		StepBeadIDs: stepBeadIDs,
+		Workspaces:  map[string]executor.WorkspaceState{},
+	}
+	writeGraphState(t, configRoot, wizardName, gs)
+	return gs
+}
+
+// TestResetTo_ForceAdvanceToPendingTarget is the canonical spi-cwgiy9 replay:
+// epic stuck in implement-failed terminal with apprentice work intact. Operator
+// uses --force --set to reroute to review without re-running implement.
+func TestResetTo_ForceAdvanceToPendingTarget(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-advance",
+		Priority: 1,
+		Type:     parseIssueType("epic"),
+	})
+	wizardName := "wizard-test-resetto-force-advance"
+
+	// Fixture: prior phases completed, implement ran with build-failed,
+	// implement-failed terminal fired, review never reached.
+	writeV3GraphStateForEpic(t, tmp, wizardName, epicID,
+		map[string]executor.StepState{
+			"design-check":     {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"plan":             {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:02:00Z"},
+			"materialize":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:03:00Z"},
+			"implement":        {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:04:00Z", Outputs: map[string]string{"outcome": "build-failed"}},
+			"implement-failed": {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:05:00Z"},
+			"review":           {Status: "pending"},
+			"merge":            {Status: "pending"},
+			"discard":          {Status: "pending"},
+			"close":            {Status: "pending"},
+		},
+		"",
+		nil,
+	)
+
+	err := softResetV3(epicID, "review", wizardName, true, []string{"implement.outputs.outcome=verified"})
+	if err != nil {
+		t.Fatalf("softResetV3 --to review --force --set implement.outputs.outcome=verified: %v", err)
+	}
+
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+
+	// Target + transitive dependents rewound to pending.
+	for _, name := range []string{"review", "merge", "discard", "close"} {
+		if got := loaded.Steps[name].Status; got != "pending" {
+			t.Errorf("%s.status = %q, want pending (rewind)", name, got)
+		}
+	}
+
+	// Override applied to implement.outputs.outcome; implement itself stays completed.
+	if got := loaded.Steps["implement"].Outputs["outcome"]; got != "verified" {
+		t.Errorf("implement.outputs.outcome = %q, want \"verified\" (overridden)", got)
+	}
+	if got := loaded.Steps["implement"].Status; got != "completed" {
+		t.Errorf("implement.status = %q, want completed (not rewound, only outputs overridden)", got)
+	}
+
+	// implement-failed was completed in a forward cone of the overridden step;
+	// expansion adds it to the rewind set so its when-clause can re-evaluate
+	// (now false since outcome=verified) on next summon.
+	if got := loaded.Steps["implement-failed"].Status; got != "pending" {
+		t.Errorf("implement-failed.status = %q, want pending (override propagation rewinds completed downstream)", got)
+	}
+	if len(loaded.Steps["implement-failed"].Outputs) != 0 {
+		t.Errorf("implement-failed.Outputs = %v, want empty (rewound)", loaded.Steps["implement-failed"].Outputs)
+	}
+
+	// Upstream steps untouched.
+	for _, name := range []string{"design-check", "plan", "materialize"} {
+		if got := loaded.Steps[name].Status; got != "completed" {
+			t.Errorf("%s.status = %q, want completed (upstream of target)", name, got)
+		}
+	}
+}
+
+// TestResetTo_SetOutputsOverridesCompletedStep verifies that --set rewrites
+// the overridden step's Outputs map and the value persists through the
+// rewind. On next summon, review's when-clauses will see the new outcome.
+func TestResetTo_SetOutputsOverridesCompletedStep(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+
+	beadID := createTestBead(t, createOpts{
+		Title:    "test-resetto-set-overrides-completed",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-resetto-set-overrides-completed"
+
+	writeV3GraphStateForTask(t, tmp, wizardName, beadID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:02:00Z", Outputs: map[string]string{"outcome": "verified"}},
+			"review":    {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:03:00Z", Outputs: map[string]string{"outcome": "request_changes"}},
+			"merge":     {Status: "pending"},
+			"discard":   {Status: "pending"},
+			"close":     {Status: "pending"},
+		},
+		"",
+		nil,
+	)
+
+	if err := softResetV3(beadID, "review", wizardName, false, []string{"review.outputs.outcome=merge"}); err != nil {
+		t.Fatalf("softResetV3 --to review --set review.outputs.outcome=merge: %v", err)
+	}
+
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+
+	// review is rewound to pending AND has the overridden outcome attached,
+	// so on next summon merge.when (review.outputs.outcome == "merge") fires.
+	if got := loaded.Steps["review"].Status; got != "pending" {
+		t.Errorf("review.status = %q, want pending (rewound)", got)
+	}
+	if got := loaded.Steps["review"].Outputs["outcome"]; got != "merge" {
+		t.Errorf("review.outputs.outcome = %q, want \"merge\" (override applied)", got)
+	}
+
+	// Upstream untouched.
+	if got := loaded.Steps["plan"].Status; got != "completed" {
+		t.Errorf("plan.status = %q, want completed", got)
+	}
+	if got := loaded.Steps["implement"].Status; got != "completed" {
+		t.Errorf("implement.status = %q, want completed", got)
+	}
+	if got := loaded.Steps["implement"].Outputs["outcome"]; got != "verified" {
+		t.Errorf("implement.outputs.outcome = %q, want \"verified\" (untouched)", got)
+	}
+}
+
+// TestResetTo_SetRejectsUnknownStep verifies that an unknown step name in
+// --set fails the operation before any state mutation — the rejection names
+// the offending step and the graph_state.json is byte-identical to before.
+func TestResetTo_SetRejectsUnknownStep(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+
+	beadID := createTestBead(t, createOpts{
+		Title:    "test-resetto-set-rejects-unknown",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-resetto-set-rejects-unknown"
+
+	writeV3GraphStateForTask(t, tmp, wizardName, beadID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1},
+			"implement": {Status: "completed", CompletedCount: 1, Outputs: map[string]string{"outcome": "verified"}},
+			"review":    {Status: "active"},
+		},
+		"review",
+		nil,
+	)
+
+	gsPath := filepath.Join(tmp, "runtime", wizardName, "graph_state.json")
+	before, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state before: %v", err)
+	}
+
+	err = softResetV3(beadID, "review", wizardName, false, []string{"nonexistent.outputs.x=y"})
+	if err == nil {
+		t.Fatal("expected error for unknown step, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("expected error to name the unknown step, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected error to mention 'not found', got: %v", err)
+	}
+
+	after, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state after: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Error("graph_state.json was mutated despite rejected --set — operation must be all-or-nothing")
+	}
+}
+
+// TestResetTo_SetRejectsStatus verifies that <step>.status=... in --set is
+// rejected (status transitions live on --to/--force; --set is scoped to
+// outputs). No state mutation happens on rejection.
+func TestResetTo_SetRejectsStatus(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+
+	beadID := createTestBead(t, createOpts{
+		Title:    "test-resetto-set-rejects-status",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-resetto-set-rejects-status"
+
+	writeV3GraphStateForTask(t, tmp, wizardName, beadID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1},
+			"implement": {Status: "completed", CompletedCount: 1, Outputs: map[string]string{"outcome": "verified"}},
+			"review":    {Status: "active"},
+		},
+		"review",
+		nil,
+	)
+
+	gsPath := filepath.Join(tmp, "runtime", wizardName, "graph_state.json")
+	before, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state before: %v", err)
+	}
+
+	err = softResetV3(beadID, "review", wizardName, false, []string{"review.status=completed"})
+	if err == nil {
+		t.Fatal("expected error for --set ...status=..., got nil")
+	}
+	if !strings.Contains(err.Error(), "status") {
+		t.Errorf("expected error to mention 'status', got: %v", err)
+	}
+
+	after, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state after: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Error("graph_state.json was mutated despite rejected --set status= — operation must be all-or-nothing")
+	}
+}
+
+// TestResetTo_ForceWithoutSet_SkippedStepsEmptyOutputs verifies --force alone
+// produces non-corrupt state: pending steps outside the rewind set are
+// promoted to completed with outputs={}, so the wizard can either route by
+// default path or stall cleanly. No --set means downstream when-clauses will
+// evaluate against empty outputs — the reset command's job is just to leave
+// state coherent, not to validate when-clause completeness.
+func TestResetTo_ForceWithoutSet_SkippedStepsEmptyOutputs(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-no-set",
+		Priority: 1,
+		Type:     parseIssueType("epic"),
+	})
+	wizardName := "wizard-test-resetto-force-no-set"
+
+	// Fixture: prior phases done, implement completed but its children
+	// (implement-failed and review) have not dispatched yet — e.g. the
+	// wizard crashed between implement completing and its children firing.
+	writeV3GraphStateForEpic(t, tmp, wizardName, epicID,
+		map[string]executor.StepState{
+			"design-check":     {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"plan":             {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:02:00Z"},
+			"materialize":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:03:00Z"},
+			"implement":        {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:04:00Z", Outputs: map[string]string{"outcome": "verified"}},
+			"implement-failed": {Status: "pending"},
+			"review":           {Status: "pending"},
+			"merge":            {Status: "pending"},
+			"discard":          {Status: "pending"},
+			"close":            {Status: "pending"},
+		},
+		"",
+		nil,
+	)
+
+	if err := softResetV3(epicID, "review", wizardName, true, nil); err != nil {
+		t.Fatalf("softResetV3 --to review --force: %v", err)
+	}
+
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+
+	// Target stays pending (it was in the rewind set).
+	if got := loaded.Steps["review"].Status; got != "pending" {
+		t.Errorf("review.status = %q, want pending", got)
+	}
+
+	// Pending steps OUTSIDE the rewind set (i.e. implement-failed) get
+	// force-advanced to completed with empty outputs — they are skipped
+	// not-taken branches and must not dispatch on next summon.
+	if got := loaded.Steps["implement-failed"].Status; got != "completed" {
+		t.Errorf("implement-failed.status = %q, want completed (force-advanced)", got)
+	}
+	if got := loaded.Steps["implement-failed"].Outputs; got == nil || len(got) != 0 {
+		t.Errorf("implement-failed.Outputs = %v, want empty map (force-advanced with outputs={})", got)
+	}
+
+	// Rewind set members still pending (merge/discard/close are transitive
+	// dependents of review and were already pending).
+	for _, name := range []string{"merge", "discard", "close"} {
+		if got := loaded.Steps[name].Status; got != "pending" {
+			t.Errorf("%s.status = %q, want pending (in rewind set)", name, got)
+		}
+	}
+}
+
+// TestResetTo_ForceNoLongerFailsValidation is the regression for the
+// spi-j7juo precondition: a pending target is rejected WITHOUT --force but
+// SUCCEEDS WITH --force. Proves --force surgically drops exactly that one
+// gate and nothing else.
+func TestResetTo_ForceNoLongerFailsValidation(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+
+	// Fresh fixture for the no-force leg.
+	beadID1 := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-regression-noforce",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName1 := "wizard-test-resetto-force-regression-noforce"
+
+	writeV3GraphStateForTask(t, tmp, wizardName1, beadID1,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "pending"},
+			"review":    {Status: "pending"},
+		},
+		"",
+		nil,
+	)
+
+	err := softResetV3(beadID1, "implement", wizardName1, false, nil)
+	if err == nil {
+		t.Fatal("expected error for pending target without --force, got nil")
+	}
+	if !strings.Contains(err.Error(), "has not been reached") {
+		t.Errorf("expected 'has not been reached' error without --force, got: %v", err)
+	}
+
+	// Fresh fixture for the --force leg (separate wizard so the rejected
+	// no-force run above doesn't muddy the state).
+	beadID2 := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-regression-force",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName2 := "wizard-test-resetto-force-regression-force"
+
+	writeV3GraphStateForTask(t, tmp, wizardName2, beadID2,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "pending"},
+			"review":    {Status: "pending"},
+		},
+		"",
+		nil,
+	)
+
+	if err := softResetV3(beadID2, "implement", wizardName2, true, nil); err != nil {
+		t.Fatalf("softResetV3 with --force on pending target should succeed, got: %v", err)
+	}
+
+	loaded, err := executor.LoadGraphState(wizardName2, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+
+	// Target still pending (it WAS pending and is in the rewind set — rewind
+	// to pending is a no-op for an already-pending step).
+	if got := loaded.Steps["implement"].Status; got != "pending" {
+		t.Errorf("implement.status = %q, want pending", got)
+	}
+	// plan stays completed (upstream of target).
+	if got := loaded.Steps["plan"].Status; got != "completed" {
+		t.Errorf("plan.status = %q, want completed (upstream)", got)
 	}
 }

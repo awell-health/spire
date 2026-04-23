@@ -17,7 +17,30 @@
 //     Steps before the target stay completed; the target step + everything
 //     that transitively depends on it is rewound to "pending" and their step
 //     beads are re-opened. Rewind only — the target must have already been
-//     reached (Status != "pending"); a pending target is rejected.
+//     reached (Status != "pending"); a pending target is rejected. Two flags
+//     compose onto `--to` for manual operator override:
+//
+//     * `--force` drops the "target must be reached" precondition. Pending
+//       steps outside the rewind set are force-advanced to completed with
+//       empty outputs, so the graph can route forward from target on resume.
+//
+//     * `--set <step>.outputs.<key>=<value>` writes output overrides onto
+//       any step in the graph (repeatable; value may contain `=`). Overrides
+//       apply regardless of whether the step is inside the rewind set. When
+//       an override is applied, any completed step downstream of the
+//       overridden step is added to the rewind set so its when-clause can
+//       re-evaluate on next summon.
+//
+//     Canonical spi-cwgiy9 replay (epic stuck in implement-failed terminal
+//     with the apprentice work actually good):
+//
+//         spire reset spi-cwgiy9 --to review --force \
+//             --set implement.outputs.outcome=verified
+//
+//     This force-advances past the missing precondition (review was never
+//     reached), overrides implement's output so review's when-clause fires
+//     and implement-failed's doesn't, and rewinds implement-failed so it
+//     re-evaluates instead of routing to bead.finish on resume.
 //
 // Child-bead categorization
 //
@@ -131,23 +154,35 @@ var resetCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("to"); v != "" {
 			fullArgs = append(fullArgs, "--to", v)
 		}
+		if force, _ := cmd.Flags().GetBool("force"); force {
+			fullArgs = append(fullArgs, "--force")
+		}
+		if sets, _ := cmd.Flags().GetStringArray("set"); len(sets) > 0 {
+			for _, s := range sets {
+				fullArgs = append(fullArgs, "--set", s)
+			}
+		}
 		return cmdReset(fullArgs)
 	},
 }
 
 func init() {
 	resetCmd.Flags().Bool("hard", false, "Hard reset (delete worktree and state)")
-	resetCmd.Flags().String("to", "", "Reset to a specific phase")
+	resetCmd.Flags().String("to", "", "Reset to a specific step")
+	resetCmd.Flags().Bool("force", false, "With --to, bypass the 'target must have been reached' precondition; pending steps outside the rewind set are advanced to completed. Example: --to review --force --set implement.outputs.outcome=verified")
+	resetCmd.Flags().StringArray("set", nil, "With --to, override a step's outputs (format: <step>.outputs.<key>=<value>; repeatable). Rejects '<step>.status=...'. Example: --set review.outputs.outcome=merge")
 }
 
 func cmdReset(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire reset <bead-id> [--to <phase>] [--hard]")
+		return fmt.Errorf("usage: spire reset <bead-id> [--to <step> [--force] [--set <step>.outputs.<key>=<value>]...] [--hard]")
 	}
 
 	var beadID string
 	var toPhase string
 	var hard bool
+	var force bool
+	var setArgs []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--hard":
@@ -158,20 +193,31 @@ func cmdReset(args []string) error {
 			}
 			i++
 			toPhase = args[i]
+		case "--force":
+			force = true
+		case "--set":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--set requires <step>.outputs.<key>=<value>")
+			}
+			i++
+			setArgs = append(setArgs, args[i])
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				return fmt.Errorf("unknown flag %q\nusage: spire reset <bead-id> [--to <phase>] [--hard]", args[i])
+				return fmt.Errorf("unknown flag %q\nusage: spire reset <bead-id> [--to <step> [--force] [--set <step>.outputs.<key>=<value>]...] [--hard]", args[i])
 			}
 			beadID = args[i]
 		}
 	}
 
 	if beadID == "" {
-		return fmt.Errorf("usage: spire reset <bead-id> [--to <step>] [--hard]")
+		return fmt.Errorf("usage: spire reset <bead-id> [--to <step> [--force] [--set <step>.outputs.<key>=<value>]...] [--hard]")
 	}
 
 	if hard && toPhase != "" {
 		return fmt.Errorf("cannot use --hard and --to together: --hard deletes all state, --to rewinds to a specific step")
+	}
+	if (force || len(setArgs) > 0) && toPhase == "" {
+		return fmt.Errorf("--force and --set require --to <step>")
 	}
 
 	if d := resolveBeadsDir(); d != "" {
@@ -259,7 +305,7 @@ func cmdReset(args []string) error {
 
 	// All formulas are v3 step graphs.
 	if toPhase != "" {
-		return softResetV3(beadID, toPhase, wizardName)
+		return softResetV3(beadID, toPhase, wizardName, force, setArgs)
 	}
 	return resetV3(beadID, hard, wizardName, worktreePath)
 }
@@ -475,6 +521,83 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 	return nil
 }
 
+// parseSetFlag parses repeated --set tokens into a nested map of step → key → value.
+// Each token must match <step>.outputs.<key>=<value>. Values may contain '=' —
+// only the first '=' is treated as the delimiter. Rejects status-writes
+// (<step>.status=...), nested paths (outputs.foo.bar), empty segments, and
+// references to steps not declared in the formula. Any error is reported
+// with the offending token and no partial map is returned.
+func parseSetFlag(tokens []string, graph *formula.FormulaStepGraph) (map[string]map[string]string, error) {
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]map[string]string)
+	for _, tok := range tokens {
+		eq := strings.IndexByte(tok, '=')
+		if eq < 0 {
+			return nil, fmt.Errorf("--set %q: expected <step>.outputs.<key>=<value>", tok)
+		}
+		lhs, value := tok[:eq], tok[eq+1:]
+		segs := strings.Split(lhs, ".")
+		if len(segs) != 3 {
+			return nil, fmt.Errorf("--set %q: expected <step>.outputs.<key>, got %d path segment(s)", tok, len(segs))
+		}
+		step, kind, key := segs[0], segs[1], segs[2]
+		if kind == "status" {
+			return nil, fmt.Errorf("--set %q: setting status is not allowed — --set is scoped to outputs", tok)
+		}
+		if kind != "outputs" {
+			return nil, fmt.Errorf("--set %q: only <step>.outputs.<key> is supported (got middle segment %q)", tok, kind)
+		}
+		if step == "" || key == "" {
+			return nil, fmt.Errorf("--set %q: step and key must be non-empty", tok)
+		}
+		if _, ok := graph.Steps[step]; !ok {
+			var valid []string
+			for name := range graph.Steps {
+				valid = append(valid, name)
+			}
+			sort.Strings(valid)
+			return nil, fmt.Errorf("--set %q: step %q not found in formula %s (valid steps: %s)",
+				tok, step, graph.Name, strings.Join(valid, ", "))
+		}
+		m, ok := result[step]
+		if !ok {
+			m = make(map[string]string)
+			result[step] = m
+		}
+		m[key] = value
+	}
+	return result, nil
+}
+
+// expandRewindSetForOverrides extends the base rewind set with any step that
+// is a forward dependent of an overridden step AND is currently completed.
+// Rationale: when an overridden output would change how a downstream step's
+// when-clause routes, the downstream step must be rewound so its condition
+// re-evaluates on the next summon. Pending downstream steps are left for
+// the standard rewind/force-advance pass to handle.
+func expandRewindSetForOverrides(base map[string]bool, graph *formula.FormulaStepGraph, gs *executor.GraphState, overrides map[string]map[string]string) map[string]bool {
+	if len(overrides) == 0 {
+		return base
+	}
+	out := make(map[string]bool, len(base))
+	for k, v := range base {
+		out[k] = v
+	}
+	for step := range overrides {
+		for downstream := range computeStepsToReset(graph, step) {
+			if downstream == step {
+				continue // overridden step itself is not rewound by override propagation
+			}
+			if ss, ok := gs.Steps[downstream]; ok && ss.Status == "completed" {
+				out[downstream] = true
+			}
+		}
+	}
+	return out
+}
+
 // softResetV3 rewinds a v3 bead's graph state to a specific step and everything
 // that transitively depends on it. Steps before the target are preserved
 // untouched. The target and its dependents are set back to "pending" and
@@ -482,8 +605,9 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 // steps on the next summon.
 //
 // Rewind semantics (strict):
-//   - Target step must have been reached (Status != "pending"). Fast-forward
-//     attempts are rejected with an error and no state is mutated.
+//   - Target step must have been reached (Status != "pending") unless
+//     forceAdvance is true. Fast-forward attempts without --force are
+//     rejected with an error and no state is mutated.
 //   - Nested graph-state files for subgraph-dispatched wave apprentices are
 //     deleted recursively — they live at arbitrary depth under the wizard's
 //     runtime dir and re-materialize on resummon.
@@ -493,7 +617,18 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 //   - After a successful rewind the parent bead is set to "open" (same as
 //     plain reset). Soft reset does NOT auto-summon — callers resume
 //     explicitly.
-func softResetV3(beadID, targetStep, wizardName string) error {
+//
+// Composed flags:
+//   - forceAdvance: skip the 'target must be reached' precondition. Pending
+//     steps outside the rewind set are promoted to completed with empty
+//     outputs so the next summon can route forward from target without the
+//     graph stalling on pre-target not-taken branches.
+//   - setArgs: repeated "<step>.outputs.<key>=<value>" tokens. Overrides are
+//     parsed and validated BEFORE any state mutation (invalid tokens fail
+//     early with no partial writes). Any completed step downstream of an
+//     overridden step is added to the rewind set so its when-clause
+//     re-evaluates on the next summon.
+func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setArgs []string) error {
 	// --- 1. Load and validate formula ---
 	bead, err := storeGetBead(beadID)
 	if err != nil {
@@ -519,8 +654,15 @@ func softResetV3(beadID, targetStep, wizardName string) error {
 			targetStep, graph.Name, strings.Join(validSteps, ", "))
 	}
 
-	// --- 2. Compute steps to reset (target + all transitive dependents) ---
-	stepsToReset := computeStepsToReset(graph, targetStep)
+	// Parse and validate --set tokens BEFORE any state mutation. A typo in
+	// --set must not produce a partial write.
+	overrides, err := parseSetFlag(setArgs, graph)
+	if err != nil {
+		return err
+	}
+
+	// --- 2. Compute base rewind set (target + all transitive dependents) ---
+	baseRewind := computeStepsToReset(graph, targetStep)
 
 	// --- 3. Load graph state (required — no silent resummon) ---
 	gs, err := executor.LoadGraphState(wizardName, configDir)
@@ -532,12 +674,18 @@ func softResetV3(beadID, targetStep, wizardName string) error {
 			beadID, targetStep, ErrNoGraphState, wizardName)
 	}
 
-	// --- 4. Pre-flight: reject if target step has not been reached ---
-	// Rewind-only semantics: --to must not be usable to fast-forward. The
-	// check runs BEFORE any mutation so the operation is all-or-nothing.
-	if ts, ok := gs.Steps[targetStep]; ok && ts.Status == "pending" {
-		return fmt.Errorf("cannot rewind %s to %q: step has not been reached yet", beadID, targetStep)
+	// --- 4. Pre-flight: reject if target step has not been reached (unless --force) ---
+	// Rewind-only semantics by default: --to must not be usable to
+	// fast-forward. --force drops this check. The check runs BEFORE any
+	// mutation so the operation is all-or-nothing.
+	if !forceAdvance {
+		if ts, ok := gs.Steps[targetStep]; ok && ts.Status == "pending" {
+			return fmt.Errorf("cannot rewind %s to %q: step has not been reached yet (pass --force to advance anyway)", beadID, targetStep)
+		}
 	}
+
+	// --- 4b. Expand rewind set to include stale-completed downstream-of-override steps ---
+	stepsToReset := expandRewindSetForOverrides(baseRewind, graph, gs, overrides)
 
 	fmt.Printf("  %sresetting steps: %s%s\n", dim, strings.Join(mapKeys(stepsToReset), ", "), reset)
 
@@ -563,6 +711,58 @@ func softResetV3(beadID, targetStep, wizardName string) error {
 	// Clear active step if it's in the reset set.
 	if stepsToReset[gs.ActiveStep] {
 		gs.ActiveStep = ""
+	}
+
+	// --- 5b. Under --force, promote pending steps outside the rewind set ---
+	// to completed with empty outputs. This unblocks forward routing: on the
+	// next summon the interpreter sees skipped not-taken branches as already
+	// resolved and dispatches from target. Without this, a stuck graph where
+	// the target was never reached would still stall on a pending predecessor
+	// or sibling branch.
+	if forceAdvance {
+		advanced := 0
+		for stepName, ss := range gs.Steps {
+			if stepsToReset[stepName] {
+				continue
+			}
+			if ss.Status != "pending" {
+				continue
+			}
+			ss.Status = "completed"
+			ss.Outputs = map[string]string{}
+			gs.Steps[stepName] = ss
+			advanced++
+		}
+		if advanced > 0 {
+			fmt.Printf("  %s↟ force-advanced %d pending step(s) to completed (outputs={})%s\n", yellow, advanced, reset)
+		}
+	}
+
+	// --- 5c. Apply --set output overrides AFTER rewind and force-advance ---
+	// so override values take precedence over both wiped (nil) and force-
+	// advanced (empty-map) outputs. Targets in the rewind set end up as
+	// pending with the overridden outputs attached; overrides on steps
+	// outside the rewind set update their Outputs map while leaving status
+	// unchanged.
+	if len(overrides) > 0 {
+		overrideCount := 0
+		for stepName, kv := range overrides {
+			ss, ok := gs.Steps[stepName]
+			if !ok {
+				continue
+			}
+			if ss.Outputs == nil {
+				ss.Outputs = make(map[string]string, len(kv))
+			}
+			for k, v := range kv {
+				ss.Outputs[k] = v
+				overrideCount++
+			}
+			gs.Steps[stepName] = ss
+		}
+		if overrideCount > 0 {
+			fmt.Printf("  %s✎ applied %d output override(s) across %d step(s)%s\n", yellow, overrideCount, len(overrides), reset)
+		}
 	}
 
 	// --- 6. Workspace cleanup (step-scoped only) ---
