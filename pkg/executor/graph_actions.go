@@ -795,6 +795,37 @@ func (e *Executor) sendArchmageMessage(msg string) {
 	MessageArchmage(e.agentName, e.beadID, msg, e.deps)
 }
 
+// childHasSuccessfulAttempt returns true if childID has at least one closed
+// attempt bead carrying a result:success label. Used by the close-cascade
+// guard in actionBeadFinish to distinguish children whose code has landed
+// from children that slipped through dispatch (no attempt bead at all) or
+// failed mid-attempt. A missing or errored GetChildren is treated as
+// "cannot confirm success" — conservative so the guard refuses to close
+// rather than silently cascading.
+func childHasSuccessfulAttempt(e *Executor, childID string) bool {
+	if e == nil || e.deps == nil || e.deps.GetChildren == nil {
+		return false
+	}
+	grandchildren, err := e.deps.GetChildren(childID)
+	if err != nil {
+		return false
+	}
+	for _, gc := range grandchildren {
+		if !e.deps.IsAttemptBead(gc) {
+			continue
+		}
+		if gc.Status != "closed" {
+			continue
+		}
+		for _, l := range gc.Labels {
+			if l == "result:success" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // actionBeadFinish closes the bead and sets executor to terminated.
 // Reads With parameters:
 //
@@ -818,6 +849,46 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 
 	switch status {
 	case "closed", "done", "success", "resolved", "":
+		// Close-cascade guard (defense in depth for spi-g4yi6j Fix A).
+		//
+		// Before cascading close to non-DAG children, verify each one either
+		// is already closed (closed intentionally earlier, e.g. wontfix /
+		// duplicate) or has a successful attempt bead (code landed). A child
+		// that slipped through dispatch without an attempt would be force-
+		// closed by the cascade below — silently stranding it against
+		// SPIRE.md Principle 6 ("Beads close AFTER code lands on main").
+		//
+		// When stranded children are detected, label the epic needs-human
+		// and message the archmage; refuse to close so the protocol gap
+		// surfaces instead of going unnoticed.
+		if children, childErr := e.deps.GetChildren(e.beadID); childErr == nil {
+			var stranded []string
+			for _, child := range children {
+				if child.Status == "closed" {
+					continue
+				}
+				if e.deps.IsAttemptBead(child) || e.deps.IsStepBead(child) || e.deps.IsReviewRoundBead(child) {
+					continue
+				}
+				if !childHasSuccessfulAttempt(e, child.ID) {
+					stranded = append(stranded, child.ID)
+				}
+			}
+			if len(stranded) > 0 {
+				if e.deps.AddLabel != nil {
+					if lErr := e.deps.AddLabel(e.beadID, "needs-human"); lErr != nil {
+						e.log("warning: add needs-human label to %s: %s", e.beadID, lErr)
+					}
+				}
+				msg := fmt.Sprintf(
+					"refuse close of %s: %d child(ren) stranded without landed code: %s",
+					e.beadID, len(stranded), strings.Join(stranded, ", "))
+				e.sendArchmageMessage(msg)
+				e.log("%s", msg)
+				return ActionResult{Error: fmt.Errorf("%s", msg)}
+			}
+		}
+
 		// Close orphan subtask beads (for epic formulas).
 		if children, childErr := e.deps.GetChildren(e.beadID); childErr == nil {
 			for _, child := range children {

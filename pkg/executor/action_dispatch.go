@@ -180,6 +180,14 @@ type childResult struct {
 // maxApprentices caps how many apprentice subprocesses run concurrently within
 // a single wave. Callers pass the resolved value (>=1); a non-positive value
 // falls back to repoconfig.DefaultMaxApprentices.
+//
+// After the initial waves complete, dispatchWaveCore re-queries the epic's
+// children for any that were injected after the plan phase and have not yet
+// been dispatched. Any such children are dispatched as additional waves until
+// the set is empty. This closes the protocol gap described in spi-g4yi6j:
+// before the fix, a `spire inject` after wave-1 could silently strand the new
+// child because the wizard never re-scanned for ready children after wave
+// completion.
 func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWorktree, model string, resolver func(string, string) error, maxApprentices int) ([]childResult, error) {
 	if maxApprentices <= 0 {
 		maxApprentices = repoconfig.DefaultMaxApprentices
@@ -194,141 +202,225 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 	apprenticeHandoff := e.resolveApprenticeHandoff()
 
 	var allResults []childResult
-	var startRef string
+	startRef := ""
 
-	for waveIdx, wave := range waves {
-		e.log("=== wave %d: %d subtask(s) ===", waveIdx, len(wave))
-
-		type waveResult struct {
-			BeadID string
-			Agent  string
-			Err    error
-		}
-
-		var wg sync.WaitGroup
-		resultCh := make(chan waveResult, len(wave))
-		sem := make(chan struct{}, maxApprentices)
-
-		for i, subtaskID := range wave {
-			wg.Add(1)
-			go func(idx int, beadID string) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx+1, idx+1)
-				e.log("  dispatching %s for %s", name, beadID)
-
-				e.deps.UpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
-
-				extraArgs := []string{"--apprentice"}
-				started := time.Now()
-				cfg := agent.SpawnConfig{
-					Name:          name,
-					BeadID:        beadID,
-					Role:          agent.RoleApprentice,
-					ExtraArgs:     extraArgs,
-					StartRef:      startRef,
-					LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
-					AttemptID:     e.attemptID(),
-					ApprenticeIdx: "0",
-				}
-				cfg, contractErr := e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil, apprenticeHandoff)
-				if contractErr != nil {
-					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, contractErr,
-						withParentRun(e.currentRunID))
-					resultCh <- waveResult{BeadID: beadID, Agent: name, Err: contractErr}
-					return
-				}
-				h, spawnErr := e.deps.Spawner.Spawn(cfg)
-				if spawnErr != nil {
-					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr,
-						withParentRun(e.currentRunID))
-					resultCh <- waveResult{BeadID: beadID, Agent: name, Err: spawnErr}
-					return
-				}
-				waitErr := h.Wait()
-				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, waitErr,
-					withParentRun(e.currentRunID))
-				if waitErr != nil {
-					resultCh <- waveResult{BeadID: beadID, Agent: name, Err: waitErr}
-					return
-				}
-				resultCh <- waveResult{BeadID: beadID, Agent: name}
-			}(i, subtaskID)
-		}
-
-		wg.Wait()
-		close(resultCh)
-
-		// Collect results.
-		var errs []string
-		var waveResults []childResult
-		for r := range resultCh {
-			cr := childResult{
-				BeadID: r.BeadID,
-				Agent:  r.Agent,
-				Branch: e.resolveBranch(r.BeadID),
-				Err:    r.Err,
-			}
-			waveResults = append(waveResults, cr)
-			allResults = append(allResults, cr)
-			if r.Err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %s", r.BeadID, r.Err))
-			}
-		}
-
-		if len(errs) > 0 {
-			e.log("wave %d: %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))
-		}
-
-		// Apply each successful apprentice's bundle into staging, then merge.
-		// No-op signals skip merge entirely. The bundle is deleted only after
-		// a successful merge so a conflict can be retried with the bundle
-		// still present.
-		if stagingWt != nil {
-			for _, cr := range waveResults {
-				if cr.Err != nil {
-					continue
-				}
-				if e.deps.BundleStore != nil {
-					outcome, err := e.applyApprenticeBundle(cr.BeadID, 0, stagingWt)
-					if err != nil {
-						return allResults, fmt.Errorf("apply apprentice bundle for %s: %w", cr.BeadID, err)
-					}
-					if outcome.NoOp {
-						continue
-					}
-					if outcome.Applied {
-						if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
-							return allResults, fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
-						}
-						e.deleteApprenticeBundle(cr.BeadID, outcome.Handle)
-						continue
-					}
-				}
-				// Push-transport / legacy fallback: fetch the apprentice's
-				// feat branch from the remote (idempotent; cheap) then merge.
-				if cr.Branch == "" {
-					continue
-				}
-				if fetchErr := stagingWt.FetchBranch("origin", cr.Branch); fetchErr != nil {
-					e.log("fetch %s (best-effort): %s", cr.Branch, fetchErr)
-				}
-				if mergeErr := stagingWt.MergeBranch(cr.Branch, resolver); mergeErr != nil {
-					return allResults, fmt.Errorf("merge %s into staging: %w", cr.Branch, mergeErr)
-				}
-			}
-
-			// Update startRef for next wave.
-			if sha, err := stagingWt.HeadSHA(); err == nil && sha != "" {
-				startRef = sha
-				e.log("next wave start-ref: %s", startRef)
-			}
+	// Track which bead IDs have been dispatched across all waves (including
+	// re-scan waves). Pre-populate from the initial set so ComputeWaves can
+	// be called with this as a skip-list.
+	dispatched := make(map[string]bool)
+	for _, w := range waves {
+		for _, id := range w {
+			dispatched[id] = true
 		}
 	}
 
+	waveIdx := 0
+	for _, wave := range waves {
+		newStartRef, err := e.runDispatchWave(wave, waveIdx, startRef, stagingWt, model, resolver, maxApprentices, apprenticeHandoff, &allResults)
+		if err != nil {
+			return allResults, err
+		}
+		startRef = newStartRef
+		waveIdx++
+	}
+
+	// Re-scan for late-injected children. An inject that arrives after the
+	// initial wave set was computed (e.g. archmage runs `spire inject` while
+	// wave-1 is mid-flight) writes a new subtask into the epic's children
+	// list. Without a re-scan here the new child falls through dispatch and
+	// the epic closes with it stranded (spi-g4yi6j).
+	//
+	// The re-scan depends on GetChildren + GetBlockedIssues being wired. In
+	// production both are set on Deps; legacy test harnesses that bypass
+	// actionDispatchChildren and call dispatchWaveCore directly sometimes
+	// leave them nil — treat that as "no re-scan" so those tests still
+	// exercise the wave-dispatch machinery without a panic in ComputeWaves.
+	if e.deps == nil || e.deps.GetChildren == nil || e.deps.GetBlockedIssues == nil {
+		return allResults, nil
+	}
+	for {
+		newWaves, waveErr := ComputeWaves(e.beadID, e.deps)
+		if waveErr != nil {
+			e.log("wave re-scan: compute waves failed: %s", waveErr)
+			break
+		}
+		// Flatten and filter out already-dispatched beads. ComputeWaves
+		// returns non-closed subtasks; dispatched ones are typically
+		// in_progress until the epic close step runs, so we must skip them
+		// explicitly rather than relying on status.
+		var batch []string
+		for _, w := range newWaves {
+			for _, id := range w {
+				if !dispatched[id] {
+					batch = append(batch, id)
+				}
+			}
+		}
+		if len(batch) == 0 {
+			break
+		}
+		e.log("wave re-scan: %d late-injected child(ren) detected — dispatching as wave %d", len(batch), waveIdx+1)
+		for _, id := range batch {
+			dispatched[id] = true
+		}
+		newStartRef, err := e.runDispatchWave(batch, waveIdx, startRef, stagingWt, model, resolver, maxApprentices, apprenticeHandoff, &allResults)
+		if err != nil {
+			return allResults, err
+		}
+		startRef = newStartRef
+		waveIdx++
+	}
+
 	return allResults, nil
+}
+
+// runDispatchWave dispatches a single wave: spawns apprentices (capped by
+// maxApprentices), collects their results, and merges successful bundles into
+// staging. It appends to *allResults and returns the updated startRef for the
+// next wave. Extracted from dispatchWaveCore so the same single-wave logic is
+// shared between initial waves and re-scan waves.
+func (e *Executor) runDispatchWave(
+	wave []string,
+	waveIdx int,
+	startRef string,
+	stagingWt *spgit.StagingWorktree,
+	model string,
+	resolver func(string, string) error,
+	maxApprentices int,
+	apprenticeHandoff HandoffMode,
+	allResults *[]childResult,
+) (string, error) {
+	e.log("=== wave %d: %d subtask(s) ===", waveIdx, len(wave))
+
+	type waveResult struct {
+		BeadID string
+		Agent  string
+		Err    error
+	}
+
+	var wg sync.WaitGroup
+	resultCh := make(chan waveResult, len(wave))
+	sem := make(chan struct{}, maxApprentices)
+
+	for i, subtaskID := range wave {
+		wg.Add(1)
+		go func(idx int, beadID string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx+1, idx+1)
+			e.log("  dispatching %s for %s", name, beadID)
+
+			e.deps.UpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
+
+			extraArgs := []string{"--apprentice"}
+			started := time.Now()
+			cfg := agent.SpawnConfig{
+				Name:          name,
+				BeadID:        beadID,
+				Role:          agent.RoleApprentice,
+				ExtraArgs:     extraArgs,
+				StartRef:      startRef,
+				LogPath:       filepath.Join(dolt.GlobalDir(), "wizards", name+".log"),
+				AttemptID:     e.attemptID(),
+				ApprenticeIdx: "0",
+			}
+			cfg, contractErr := e.withRuntimeContract(cfg, e.runtimeTowerName(), e.effectiveRepoPath(), e.runtimeBaseBranch(), "implement", "", nil, apprenticeHandoff)
+			if contractErr != nil {
+				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, contractErr,
+					withParentRun(e.currentRunID))
+				resultCh <- waveResult{BeadID: beadID, Agent: name, Err: contractErr}
+				return
+			}
+			h, spawnErr := e.deps.Spawner.Spawn(cfg)
+			if spawnErr != nil {
+				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr,
+					withParentRun(e.currentRunID))
+				resultCh <- waveResult{BeadID: beadID, Agent: name, Err: spawnErr}
+				return
+			}
+			waitErr := h.Wait()
+			e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, waitErr,
+				withParentRun(e.currentRunID))
+			if waitErr != nil {
+				resultCh <- waveResult{BeadID: beadID, Agent: name, Err: waitErr}
+				return
+			}
+			resultCh <- waveResult{BeadID: beadID, Agent: name}
+		}(i, subtaskID)
+	}
+
+	wg.Wait()
+	close(resultCh)
+
+	// Collect results.
+	var errs []string
+	var waveResults []childResult
+	for r := range resultCh {
+		cr := childResult{
+			BeadID: r.BeadID,
+			Agent:  r.Agent,
+			Branch: e.resolveBranch(r.BeadID),
+			Err:    r.Err,
+		}
+		waveResults = append(waveResults, cr)
+		*allResults = append(*allResults, cr)
+		if r.Err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %s", r.BeadID, r.Err))
+		}
+	}
+
+	if len(errs) > 0 {
+		e.log("wave %d: %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))
+	}
+
+	// Apply each successful apprentice's bundle into staging, then merge.
+	// No-op signals skip merge entirely. The bundle is deleted only after
+	// a successful merge so a conflict can be retried with the bundle
+	// still present.
+	if stagingWt != nil {
+		for _, cr := range waveResults {
+			if cr.Err != nil {
+				continue
+			}
+			if e.deps.BundleStore != nil {
+				outcome, err := e.applyApprenticeBundle(cr.BeadID, 0, stagingWt)
+				if err != nil {
+					return startRef, fmt.Errorf("apply apprentice bundle for %s: %w", cr.BeadID, err)
+				}
+				if outcome.NoOp {
+					continue
+				}
+				if outcome.Applied {
+					if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
+						return startRef, fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
+					}
+					e.deleteApprenticeBundle(cr.BeadID, outcome.Handle)
+					continue
+				}
+			}
+			// Push-transport / legacy fallback: fetch the apprentice's
+			// feat branch from the remote (idempotent; cheap) then merge.
+			if cr.Branch == "" {
+				continue
+			}
+			if fetchErr := stagingWt.FetchBranch("origin", cr.Branch); fetchErr != nil {
+				e.log("fetch %s (best-effort): %s", cr.Branch, fetchErr)
+			}
+			if mergeErr := stagingWt.MergeBranch(cr.Branch, resolver); mergeErr != nil {
+				return startRef, fmt.Errorf("merge %s into staging: %w", cr.Branch, mergeErr)
+			}
+		}
+
+		// Update startRef for next wave.
+		if sha, err := stagingWt.HeadSHA(); err == nil && sha != "" {
+			startRef = sha
+			e.log("next wave start-ref: %s", startRef)
+		}
+	}
+
+	return startRef, nil
 }
 
 // dispatchSequentialCore executes children one at a time, merging each into
