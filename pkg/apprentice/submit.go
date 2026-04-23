@@ -62,6 +62,15 @@ type Options struct {
 	// empty, defaults to "main" — callers that care should set it explicitly
 	// from the bead's base-branch: label.
 	BaseBranch string
+	// StartSHA is the branch tip at the start of the apprentice session.
+	// When non-empty, the commit-reference check (every commit must reference
+	// the bead ID) is scoped to StartSHA..HEAD instead of BaseBranch..HEAD.
+	// This matters for review-fix apprentices on epic branches, where
+	// BaseBranch..HEAD includes pre-existing subtask commits that legitimately
+	// reference child bead IDs, not the epic bead ID — those are not the fix
+	// apprentice's work, so they must be outside the hygiene check. Bundle
+	// creation continues to use BaseBranch..HEAD regardless.
+	StartSHA string
 	// WorktreeDir is the directory the apprentice's feat branch is checked
 	// out in. When empty, git commands run in the process CWD (legacy CLI
 	// behavior). When set, git commands are run with -C WorktreeDir so the
@@ -177,13 +186,24 @@ func Submit(ctx context.Context, opts Options) error {
 		return fmt.Errorf("refusing to submit: worktree has uncommitted changes:\n%s", dirty)
 	}
 
-	// Commit-message verification. Every commit in base..HEAD must carry
-	// the task bead ID in its conventional prefix.
-	logOut, err := opts.runGit("log", "--format=%H%x09%s", base+"..HEAD")
-	if err != nil {
-		return fmt.Errorf("git log %s..HEAD: %w", base, err)
+	// Commit-message verification. Every commit the apprentice produced in
+	// this session must carry the task bead ID in its conventional prefix.
+	//
+	// Scope: StartSHA..HEAD when StartSHA is set (apprentice's own commits
+	// only), otherwise BaseBranch..HEAD (legacy behavior for standalone
+	// CLI submissions without session baseline). Pre-existing branch
+	// commits before StartSHA are out of scope — they are not this
+	// apprentice's work (e.g., subtask commits on an epic branch during a
+	// review-fix session legitimately reference child bead IDs, not the
+	// epic bead ID).
+	hygieneRange := base + "..HEAD"
+	if opts.StartSHA != "" {
+		hygieneRange = opts.StartSHA + "..HEAD"
 	}
-	var commitShas []string
+	logOut, err := opts.runGit("log", "--format=%H%x09%s", hygieneRange)
+	if err != nil {
+		return fmt.Errorf("git log %s: %w", hygieneRange, err)
+	}
 	var offenders []string
 	for _, line := range strings.Split(strings.TrimRight(string(logOut), "\n"), "\n") {
 		if line == "" {
@@ -197,13 +217,25 @@ func Submit(ctx context.Context, opts Options) error {
 		got := git.BeadIDFromSubject(subject)
 		if got != opts.BeadID {
 			offenders = append(offenders, fmt.Sprintf("%s %s", sha, subject))
-			continue
 		}
-		commitShas = append(commitShas, sha)
 	}
 	if len(offenders) > 0 {
 		return fmt.Errorf("refusing to submit: %d commit(s) do not reference %s:\n%s",
 			len(offenders), opts.BeadID, strings.Join(offenders, "\n"))
+	}
+
+	// Bundle enumeration stays on base..HEAD so the bundle content matches
+	// existing receiver expectations (full branch history since base).
+	logOut, err = opts.runGit("log", "--format=%H", base+"..HEAD")
+	if err != nil {
+		return fmt.Errorf("git log %s..HEAD: %w", base, err)
+	}
+	var commitShas []string
+	for _, line := range strings.Split(strings.TrimRight(string(logOut), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		commitShas = append(commitShas, line)
 	}
 
 	// Reverse chronological order -> commit order.

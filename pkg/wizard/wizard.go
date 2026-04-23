@@ -697,6 +697,7 @@ func deliverApprenticeWork(wc *spgit.WorktreeContext, beadID string, apprenticeI
 			AttemptID:     attemptID,
 			ApprenticeIdx: apprenticeIdx,
 			BaseBranch:    wc.BaseBranch,
+			StartSHA:      wc.StartSHA,
 			WorktreeDir:   wc.Dir,
 			Store:         bstore,
 		})

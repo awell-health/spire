@@ -569,3 +569,107 @@ func keysOf(m map[string]string) []string {
 	}
 	return ks
 }
+
+// TestSubmit_StartSHA_ScopesHygieneCheck covers the review-fix-on-epic
+// scenario: the branch has pre-existing subtask commits referencing child
+// bead IDs (not the epic's ID), then the fix apprentice adds a new commit
+// referencing the epic. With StartSHA set to the session baseline, the
+// commit-reference check must skip the pre-existing commits and only
+// validate what the apprentice itself produced.
+func TestSubmit_StartSHA_ScopesHygieneCheck(t *testing.T) {
+	f := newSubmitFixture(t, "spi-epic", "main")
+	// Pre-existing subtask commits on the epic branch. These reference
+	// child bead IDs, NOT the epic bead ID — legitimate for an epic branch.
+	f.addCommit("a.txt", "feat(spi-child1): first subtask")
+	f.addCommit("b.txt", "feat(spi-child2): second subtask")
+	f.addCommit("c.txt", "feat(spi-child3): third subtask")
+
+	// Capture the branch tip here — this is what wc.StartSHA would be at
+	// the start of the review-fix apprentice session.
+	out, err := exec.Command("git", "-C", f.repoDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	startSHA := strings.TrimSpace(string(out))
+
+	// Fix apprentice adds its own commit referencing the epic bead.
+	fixSHA := f.addCommit("d.txt", "fix(spi-epic): address sage feedback")
+
+	opts := f.options("spi-epic", 0)
+	opts.BaseBranch = "main"
+	opts.StartSHA = startSHA
+	if err := Submit(context.Background(), opts); err != nil {
+		t.Fatalf("Submit with StartSHA should succeed despite pre-existing commits: %v", err)
+	}
+
+	// Signal should still contain ALL commits in base..HEAD (bundle content
+	// is untouched by the scoping change).
+	raw := f.metadata["apprentice_signal_apprentice-spi-epic-0"]
+	var payload SignalPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(payload.Commits) != 4 {
+		t.Errorf("bundle commit list = %d commits, want 4 (3 pre-existing + 1 fix)", len(payload.Commits))
+	}
+	foundFix := false
+	for _, c := range payload.Commits {
+		if c == fixSHA {
+			foundFix = true
+		}
+	}
+	if !foundFix {
+		t.Errorf("fix commit %s missing from payload commits %v", fixSHA, payload.Commits)
+	}
+}
+
+// TestSubmit_StartSHA_StillRejectsUntaggedOwnCommits verifies the scoping
+// doesn't disable hygiene entirely — a new commit made by the apprentice
+// that fails to reference the bead is still rejected, while the
+// pre-existing commits are left alone.
+func TestSubmit_StartSHA_StillRejectsUntaggedOwnCommits(t *testing.T) {
+	f := newSubmitFixture(t, "spi-epic2", "main")
+	f.addCommit("a.txt", "feat(spi-child1): subtask work")
+
+	out, _ := exec.Command("git", "-C", f.repoDir, "rev-parse", "HEAD").Output()
+	startSHA := strings.TrimSpace(string(out))
+
+	// Apprentice makes a commit that fails to reference the epic bead.
+	f.addCommit("d.txt", "chore: forgot to tag this one")
+
+	opts := f.options("spi-epic2", 0)
+	opts.BaseBranch = "main"
+	opts.StartSHA = startSHA
+	err := Submit(context.Background(), opts)
+	if err == nil {
+		t.Fatal("Submit should reject an untagged own-commit, got nil error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "1 commit(s) do not reference spi-epic2") {
+		t.Errorf("error should count exactly 1 offender (the own-commit), got: %v", err)
+	}
+	if !strings.Contains(msg, "forgot to tag") {
+		t.Errorf("error should cite the offending commit subject, got: %v", err)
+	}
+	if strings.Contains(msg, "spi-child1") {
+		t.Errorf("error must NOT cite the pre-baseline commit; StartSHA scoping failed: %v", err)
+	}
+}
+
+// TestSubmit_NoStartSHA_LegacyBehavior verifies the check falls back to
+// base..HEAD when StartSHA is empty, preserving CLI-caller behavior.
+func TestSubmit_NoStartSHA_LegacyBehavior(t *testing.T) {
+	f := newSubmitFixture(t, "spi-leg", "main")
+	f.addCommit("a.txt", "feat(spi-other): forgotten commit")
+
+	opts := f.options("spi-leg", 0)
+	opts.BaseBranch = "main"
+	// StartSHA intentionally empty → legacy full-range check.
+	err := Submit(context.Background(), opts)
+	if err == nil {
+		t.Fatal("Submit should reject in legacy mode when an unrelated commit is in base..HEAD")
+	}
+	if !strings.Contains(err.Error(), "1 commit(s) do not reference spi-leg") {
+		t.Errorf("legacy error shape unexpected: %v", err)
+	}
+}
