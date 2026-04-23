@@ -62,6 +62,16 @@ DuckDB-specific SQL dialect (`quantile_cont`, `ON CONFLICT`). Expanding
 the CLI to query ClickHouse is tracked separately; the write path is
 already backend-agnostic.
 
+**Materialized-view refresh on ClickHouse is deferred.**
+`pkg/olap/clickhouse_views.go` ships the ClickHouse-dialect DDL
+(`INSERT … SELECT` against `ReplacingMergeTree` aggregate tables, no
+`ON CONFLICT`), but nothing calls it today — `RefreshMaterializedViews`
+in `views.go` still runs only against the DuckDB handle. Cluster reads
+against ClickHouse go directly against `agent_runs_olap` and the event
+tables; the aggregate tables stay empty on CH until a follow-up wires a
+CH-side refresh driver. See the header of `pkg/olap/clickhouse_views.go`
+for the rationale.
+
 ---
 
 ## Per-Run Metrics

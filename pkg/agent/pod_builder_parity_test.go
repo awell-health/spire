@@ -553,6 +553,35 @@ func TestBuildApprenticePod_Parametric_NoFieldDrift(t *testing.T) {
 			},
 		},
 		{
+			name: "OLAPBackend alone emits SPIRE_OLAP_BACKEND without DSN",
+			mutate: func(s *PodSpec) {
+				s.OLAPBackend = "clickhouse"
+			},
+			wantEnv: map[string]string{
+				"SPIRE_OLAP_BACKEND": "clickhouse",
+			},
+		},
+		{
+			name: "OLAPBackend + OLAPDSN emits both env vars",
+			mutate: func(s *PodSpec) {
+				s.OLAPBackend = "clickhouse"
+				s.OLAPDSN = "clickhouse://clickhouse.spire.svc:9000/spire"
+			},
+			wantEnv: map[string]string{
+				"SPIRE_OLAP_BACKEND":   "clickhouse",
+				"SPIRE_CLICKHOUSE_DSN": "clickhouse://clickhouse.spire.svc:9000/spire",
+			},
+		},
+		{
+			name: "OLAPDSN alone (no backend) emits nothing — DSN gated on backend",
+			mutate: func(s *PodSpec) {
+				s.OLAPDSN = "clickhouse://clickhouse.spire.svc:9000/spire"
+			},
+			// Baseline has no OLAP env and mutated still has none — empty
+			// backend means the DSN is never emitted, so no drift.
+			wantEnv: map[string]string{},
+		},
+		{
 			name:   "OTLPEndpoint enables full OTLP env block",
 			mutate: func(s *PodSpec) { s.OTLPEndpoint = "http://otel.svc:4317" },
 			wantEnv: map[string]string{

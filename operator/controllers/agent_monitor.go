@@ -973,6 +973,18 @@ func (m *AgentMonitor) buildOverlayEnv(wg *spirev1.WizardGuild, cfg *spirev1.Spi
 	// apprentice/sage subprocesses spawned from the wizard pod inherit
 	// the same analytics target as the steward/operator. Empty leaves
 	// the env unset (laptop default = DuckDB).
+	//
+	// Why overlay instead of PodSpec.OLAPBackend/OLAPDSN:
+	// the wizard pod is produced by the role-switch surface
+	// (agent.K8sBackend.BuildPod via SpawnConfig) rather than the
+	// apprentice PodSpec path — SpawnConfig has no OLAP fields today,
+	// so the shared builder cannot emit these env vars on wizard
+	// containers. The apprentice path (pkg/agent.BuildApprenticePod)
+	// DOES use PodSpec.OLAPBackend/OLAPDSN and the operator's
+	// intent_reconciler plumbs those fields directly (see
+	// intent_reconciler.go:234). Keep both paths in sync when the
+	// envs change; revisit consolidation if SpawnConfig grows OLAP
+	// fields in the future (would fold this overlay into BuildPod).
 	if m.OLAPBackend != "" {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_OLAP_BACKEND", Value: m.OLAPBackend})
 		if m.OLAPDSN != "" {

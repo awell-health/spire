@@ -11,11 +11,19 @@ package olap
 // Date arithmetic uses today() - N and toDate / toStartOfWeek; timestamp
 // differences use dateDiff('second', …) instead of epoch().
 //
-// These statements are not currently wired into the refresh loop (the only
-// production caller today is the DuckDB path via RefreshMaterializedViews).
-// They are kept here so the ClickHouse backend has parity DDL ready for the
-// cluster-side refresh driver; the smoke tower's primary read path is
-// agent_runs_olap directly, not the aggregate tables.
+// Deferred: not currently wired into any refresh loop.
+//
+// RefreshMaterializedViews in views.go runs against *DB (the DuckDB handle);
+// the ClickHouse Store (pkg/olap/clickhouse) has no analogous refresh driver
+// yet. These statements are kept here so the ClickHouse backend has parity
+// DDL ready for when the cluster-side refresh driver lands, but as of this
+// change the smoke tower's primary ClickHouse read path is agent_runs_olap
+// directly (populated by the ETL) rather than the aggregate tables.
+//
+// Scope note for spi-6w6lb2: the `spire metrics` CLI targets DuckDB only
+// (see docs/METRICS.md "Backend selection"). The end-to-end ClickHouse
+// metrics read path — including a CH-side RefreshMaterializedViews
+// caller — is tracked as follow-up work, not in this task.
 
 func clickHouseViewRefreshStatements() []string {
 	return []string{
