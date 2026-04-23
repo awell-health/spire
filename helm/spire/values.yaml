@@ -325,6 +325,55 @@ dolt:
     size: 5Gi
     # storageClass: "" # leave empty to use cluster default
 
+## @section ClickHouse OLAP backend
+##
+## ClickHouse is the pure-Go (CGO-off) OLAP backend for the cluster path.
+## DuckDB remains the local/single-binary backend — it requires CGO and
+## only makes sense when the analytics DB lives on one laptop's filesystem.
+##
+## When `clickhouse.enabled=true` the chart renders a ConfigMap + Service
+## + single-replica StatefulSet, and the steward/operator Deployments
+## receive `SPIRE_OLAP_BACKEND=clickhouse` + `SPIRE_CLICKHOUSE_DSN`
+## pointing at the in-cluster Service. Wizard pods built via
+## `pkg/agent/pod_builder.go` inherit the same env so apprentice/sage
+## subprocesses also route OLAP writes through ClickHouse instead of
+## falling through to DuckDB (which fails at runtime with CGO off).
+##
+## Defaults `enabled: false` so a local-native install keeps using DuckDB
+## with no new dependencies. Smoke/cluster values overlays flip it to
+## true.
+
+## @param clickhouse.enabled Render the ClickHouse StatefulSet and wire SPIRE_OLAP_BACKEND + SPIRE_CLICKHOUSE_DSN into every Spire-owned pod.
+## @param clickhouse.image.repository ClickHouse server image repository.
+## @param clickhouse.image.tag ClickHouse server image tag.
+## @param clickhouse.image.pullPolicy ClickHouse image pull policy.
+## @param clickhouse.ports.http ClickHouse HTTP port (also used for /ping liveness/readiness probes).
+## @param clickhouse.ports.native ClickHouse native protocol port (used by the Go clickhouse driver).
+## @param clickhouse.database ClickHouse database name created by the init script on first boot.
+## @param clickhouse.storage.size Size of the PVC backing the ClickHouse StatefulSet.
+## @param clickhouse.storage.storageClass StorageClass for the ClickHouse PVC. Empty uses the cluster default.
+## @param clickhouse.resources ClickHouse container resource requests/limits.
+clickhouse:
+  enabled: false
+  image:
+    repository: clickhouse/clickhouse-server
+    tag: "24.8"
+    pullPolicy: IfNotPresent
+  ports:
+    http: 8123
+    native: 9000
+  database: spire
+  storage:
+    size: 20Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
 ## @section Steward persistent storage
 
 ## @param stewardStorage.size Size of the PVC backing the steward /data volume.

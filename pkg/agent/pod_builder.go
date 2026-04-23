@@ -225,6 +225,20 @@ type PodSpec struct {
 	// OTLP env block so local test fixtures do not emit OTLP.
 	OTLPEndpoint string
 
+	// OLAPBackend, when non-empty, is emitted as SPIRE_OLAP_BACKEND so
+	// the in-pod worker's olap.Config picks the cluster analytics
+	// backend (typically "clickhouse") instead of falling through to
+	// DuckDB — which fails at runtime in the CGO-off agent image.
+	// Empty leaves the env unset; the worker keeps the laptop default.
+	OLAPBackend string
+
+	// OLAPDSN, when non-empty, is emitted as SPIRE_CLICKHOUSE_DSN so the
+	// ClickHouse driver knows where to connect. Only meaningful when
+	// OLAPBackend="clickhouse". Callers plumb the in-cluster DNS name
+	// produced by helm's `spire.clickhouseDSN` helper (native protocol
+	// port, e.g. "clickhouse://spire-clickhouse.spire.svc:9000/spire").
+	OLAPDSN string
+
 	// CustomPrompt, if non-empty, is emitted as SPIRE_CUSTOM_PROMPT on
 	// the main container so the apprentice runs with a formula-supplied
 	// prompt override.
@@ -480,6 +494,20 @@ func (s PodSpec) buildEnv() []corev1.EnvVar {
 			Name:  "GOOGLE_APPLICATION_CREDENTIALS",
 			Value: s.GCSMountPath + "/" + s.GCSKeyName,
 		})
+	}
+
+	// OLAP backend selection. Emit SPIRE_OLAP_BACKEND + SPIRE_CLICKHOUSE_DSN
+	// when the caller opts in so the in-pod worker's olap.Config picks
+	// the cluster backend. Empty OLAPBackend leaves the pod on the laptop
+	// default (DuckDB via CGO) — correct for local test fixtures and
+	// incorrect for CGO-off cluster images, which is why cluster callers
+	// (operator IntentWorkloadReconciler, AgentMonitor) plumb this
+	// explicitly from the helm chart's clickhouse block.
+	if s.OLAPBackend != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_OLAP_BACKEND", Value: s.OLAPBackend})
+		if s.OLAPDSN != "" {
+			env = append(env, corev1.EnvVar{Name: "SPIRE_CLICKHOUSE_DSN", Value: s.OLAPDSN})
+		}
 	}
 
 	// OTLP telemetry. When the caller leaves the endpoint empty, we

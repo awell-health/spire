@@ -99,6 +99,18 @@ type AgentMonitor struct {
 	GCSMountPath  string
 	GCSKeyName    string
 
+	// OLAPBackend + OLAPDSN plumb the cluster analytics backend
+	// selection from helm onto every operator-built wizard pod. The
+	// helm chart sets SPIRE_OLAP_BACKEND + SPIRE_CLICKHOUSE_DSN on the
+	// operator container when clickhouse.enabled=true; main.go copies
+	// them here; buildOverlayEnv emits them on every wizard container
+	// so apprentice/sage subprocesses spawned from the wizard reach the
+	// cluster ClickHouse instead of falling back to DuckDB (which fails
+	// at runtime in the CGO-off agent image). Empty leaves wizards on
+	// the laptop default.
+	OLAPBackend string
+	OLAPDSN     string
+
 	// Resolver is the canonical source of cluster repo identity per
 	// spi-njzmg. When wired, buildWorkloadPod treats
 	// WizardGuild.Spec.Repo/RepoBranch/Prefixes as projection-only and
@@ -955,6 +967,17 @@ func (m *AgentMonitor) buildOverlayEnv(wg *spirev1.WizardGuild, cfg *spirev1.Spi
 		// the process/docker backends have no analog. Wizards read it
 		// for logging and metric attribution.
 		{Name: "SPIRE_AGENT_NAME", Value: wg.Name},
+	}
+
+	// OLAP backend selection. Emitted on every wizard container so
+	// apprentice/sage subprocesses spawned from the wizard pod inherit
+	// the same analytics target as the steward/operator. Empty leaves
+	// the env unset (laptop default = DuckDB).
+	if m.OLAPBackend != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_OLAP_BACKEND", Value: m.OLAPBackend})
+		if m.OLAPDSN != "" {
+			env = append(env, corev1.EnvVar{Name: "SPIRE_CLICKHOUSE_DSN", Value: m.OLAPDSN})
+		}
 	}
 
 	// SPIRE_K8S_SHARED_WORKSPACE is opt-in via the guild CR

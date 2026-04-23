@@ -111,6 +111,7 @@ spec:
             # ANTHROPIC_API_KEY_DEFAULT / GITHUB_TOKEN resolve.
             - name: SPIRE_CREDENTIALS_SECRET
               value: {{ include "spire.secretName" . | quote }}
+            {{- include "spire.olapEnv" . | nindent 12 }}
             {{- if eq .Values.bundleStore.backend "gcs" }}
             # ADC path for the GCS BundleStore client. The gcs backend
             # picks this up via google.golang.org/api/option.WithCredentialsFile

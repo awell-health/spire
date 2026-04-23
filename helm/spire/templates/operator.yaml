@@ -101,6 +101,7 @@ spec:
             # pod. Mirrors steward.yaml — same helper, same pattern.
             - name: SPIRE_CREDENTIALS_SECRET
               value: {{ include "spire.secretName" . | quote }}
+            {{- include "spire.olapEnv" . | nindent 12 }}
             {{- if eq .Values.bundleStore.backend "gcs" }}
             # When the tower uses the GCS BundleStore, the operator needs
             # to propagate the Secret-mounted SA onto every wizard /

@@ -108,6 +108,18 @@ type IntentWorkloadReconciler struct {
 	// mount (the Secret's data key). Plumbed from SPIRE_GCP_KEY_NAME.
 	GCSKeyName string
 
+	// OLAPBackend, when non-empty, is stamped onto every apprentice
+	// PodSpec as PodSpec.OLAPBackend so the in-pod worker's olap.Config
+	// picks the cluster analytics backend (helm sets
+	// SPIRE_OLAP_BACKEND=clickhouse on the operator pod when the chart
+	// deploys with clickhouse.enabled=true). Empty leaves apprentices on
+	// the laptop default — which breaks at runtime in the CGO-off agent
+	// image, so cluster installs MUST set this.
+	OLAPBackend string
+	// OLAPDSN is the ClickHouse connection string (native protocol).
+	// Plumbed from SPIRE_CLICKHOUSE_DSN.
+	OLAPDSN string
+
 	// Consumer is the scheduler-to-reconciler seam. pkg/steward writes
 	// WorkloadIntents via intent.IntentPublisher; the operator reads
 	// them here. Nil disables the reconciler (Start returns
@@ -219,6 +231,8 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		GCSSecretName: r.GCSSecretName,
 		GCSMountPath:  r.GCSMountPath,
 		GCSKeyName:    r.GCSKeyName,
+		OLAPBackend:   r.OLAPBackend,
+		OLAPDSN:       r.OLAPDSN,
 		Resources:     podResourcesFromIntent(wi.Resources),
 	}
 

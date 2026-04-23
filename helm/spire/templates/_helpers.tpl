@@ -145,6 +145,43 @@ gate rendering of the chart-managed inline-password Secret.
 {{- end -}}
 
 {{/*
+spire.clickhouseDSN — in-cluster ClickHouse DSN for the chart-rendered
+StatefulSet. Uses the native protocol port (9000) because the Go
+clickhouse driver speaks native, not HTTP. The database path segment
+resolves via `.Values.clickhouse.database` so operators can rename the
+target DB without having to override this helper.
+Only meaningful when `.Values.clickhouse.enabled=true`.
+*/}}
+{{- define "spire.clickhouseDSN" -}}
+clickhouse://spire-clickhouse.{{ .Values.namespace }}.svc:{{ .Values.clickhouse.ports.native }}/{{ .Values.clickhouse.database }}
+{{- end -}}
+
+{{/*
+spire.olapEnv — SPIRE_OLAP_BACKEND + SPIRE_CLICKHOUSE_DSN env entries,
+conditional on `.Values.clickhouse.enabled`. Emits nothing when
+ClickHouse is disabled so local-native installs keep their DuckDB
+defaults (and steward/operator pods don't carry an env that would
+force a connect to a service that isn't there).
+
+Consumed by steward.yaml, operator.yaml, and any other Spire-owned
+Deployment that opens OLAP. The operator also projects the same two
+vars onto every wizard pod it builds (see
+`pkg/agent/pod_builder.go` and `operator/controllers/agent_monitor.go`)
+so apprentice/sage subprocesses route their OLAP writes the same way.
+
+The emitted block starts at column 0; callers indent with `nindent 12`
+under the container's `env:` key.
+*/}}
+{{- define "spire.olapEnv" -}}
+{{- if .Values.clickhouse.enabled }}
+- name: SPIRE_OLAP_BACKEND
+  value: "clickhouse"
+- name: SPIRE_CLICKHOUSE_DSN
+  value: {{ include "spire.clickhouseDSN" . | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
 spire.stewardCommonEnv — env block shared by both containers of the
 steward Deployment (main steward and sidecar router). Emits the set
 of variables that let each container resolve the tower's per-database

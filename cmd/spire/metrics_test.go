@@ -55,6 +55,7 @@ func TestCmdMetrics_NoOLAP_WithFallback_SkipsOLAPError(t *testing.T) {
 // TestCmdMetrics_OLAPAvailable_UsesDuckDB verifies that when DuckDB is
 // available, the command uses it for queries (not Dolt).
 func TestCmdMetrics_OLAPAvailable_UsesDuckDB(t *testing.T) {
+	skipIfNoDuckDB(t)
 	tmp := t.TempDir()
 	configDir := filepath.Join(tmp, "config")
 	dataDir := filepath.Join(tmp, "data")
@@ -112,6 +113,7 @@ func TestCmdMetrics_OLAPAvailable_UsesDuckDB(t *testing.T) {
 // TestCmdMetrics_OLAPAvailable_DORAFlag verifies the --dora flag works
 // with DuckDB and returns valid output.
 func TestCmdMetrics_OLAPAvailable_DORAFlag(t *testing.T) {
+	skipIfNoDuckDB(t)
 	tmp := t.TempDir()
 	configDir := filepath.Join(tmp, "config")
 	dataDir := filepath.Join(tmp, "data")

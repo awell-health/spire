@@ -189,6 +189,14 @@ func main() {
 	gcpMountPath := os.Getenv("SPIRE_GCP_MOUNT_PATH")
 	gcpKeyName := os.Getenv("SPIRE_GCP_KEY_NAME")
 
+	// Cluster analytics backend. Helm sets these on the operator pod
+	// when clickhouse.enabled=true so wizard/apprentice pods reach the
+	// in-cluster ClickHouse service instead of trying DuckDB (which
+	// fails at runtime because the agent image builds with CGO=0). Both
+	// empty = laptop default (DuckDB); we don't second-guess the chart.
+	olapBackend := os.Getenv("SPIRE_OLAP_BACKEND")
+	olapDSN := os.Getenv("SPIRE_CLICKHOUSE_DSN")
+
 	monitor := &controllers.AgentMonitor{
 		Client:         mgr.GetClient(),
 		Log:            log.WithName("agent-monitor"),
@@ -203,6 +211,8 @@ func main() {
 		GCSSecretName:  gcpSecretName,
 		GCSMountPath:   gcpMountPath,
 		GCSKeyName:     gcpKeyName,
+		OLAPBackend:    olapBackend,
+		OLAPDSN:        olapDSN,
 	}
 	if err := mgr.Add(monitor); err != nil {
 		log.Error(err, "unable to add agent monitor")
@@ -276,6 +286,8 @@ func main() {
 		GCSSecretName:     gcpSecretName,
 		GCSMountPath:      gcpMountPath,
 		GCSKeyName:        gcpKeyName,
+		OLAPBackend:       olapBackend,
+		OLAPDSN:           olapDSN,
 	}
 	if err := mgr.Add(intentReconciler); err != nil {
 		log.Error(err, "unable to add intent reconciler")

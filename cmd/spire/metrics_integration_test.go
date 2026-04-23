@@ -23,6 +23,7 @@ const (
 // environment variables. Returns a cleanup function.
 func setupMetricsTestDB(t *testing.T) (cleanup func()) {
 	t.Helper()
+	skipIfNoDuckDB(t)
 
 	tmp := t.TempDir()
 	configDir := filepath.Join(tmp, "config")

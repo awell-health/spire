@@ -35,6 +35,33 @@ All materialized views use a rolling 90-day window (`viewRetentionDays = 90`
 in `pkg/olap/views.go`). Views are rebuilt via DELETE + re-aggregate after
 each ETL sync.
 
+### Backend selection — DuckDB (local) vs ClickHouse (cluster)
+
+The OLAP layer is dual-backend. `pkg/olap/factory.go` dispatches on the
+`SPIRE_OLAP_BACKEND` env var:
+
+| Backend | Deployment | Build | Why |
+|---------|------------|-------|-----|
+| `duckdb` (default) | local / single-binary | CGO-required | Embedded, zero-ops, file-backed; matches laptop workflow |
+| `clickhouse` | cluster / Kubernetes | pure-Go | Works with `CGO_ENABLED=0` agent images; scales past a laptop's RAM/disk |
+
+The helm chart's `clickhouse:` block (see `helm/spire/values.yaml`) renders
+a single-replica ClickHouse StatefulSet and stamps `SPIRE_OLAP_BACKEND=clickhouse`
++ `SPIRE_CLICKHOUSE_DSN=clickhouse://spire-clickhouse.<ns>.svc:9000/spire`
+onto every Spire-owned pod (steward, operator, wizard, apprentice) so the
+whole fleet shares one analytics target. Leaving `clickhouse.enabled=false`
+keeps local-native installs on DuckDB with no new dependencies.
+
+Dolt remains the source of truth for `agent_runs`; ClickHouse is an ETL-derived
+copy. Both schemas are kept in lockstep across `pkg/olap/schema.go`
+(DuckDB DDL) and `pkg/olap/clickhouse_schema.go` (ClickHouse DDL).
+
+`spire metrics` CLI currently targets DuckDB only — see
+`pkg/olap/factory.go OpenStore` — because the materialized-view queries use
+DuckDB-specific SQL dialect (`quantile_cont`, `ON CONFLICT`). Expanding
+the CLI to query ClickHouse is tracked separately; the write path is
+already backend-agnostic.
+
 ---
 
 ## Per-Run Metrics
