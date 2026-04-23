@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +21,10 @@ import (
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward"
+	"github.com/awell-health/spire/pkg/steward/dispatch"
+	"github.com/awell-health/spire/pkg/steward/identity"
+	"github.com/awell-health/spire/pkg/steward/intent"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -240,6 +245,13 @@ func cmdSteward(args []string) error {
 		TrustChecker:       trustChecker,
 		ABRouter:           abRouter,
 		CycleStats:         cycleStats,
+		// Lazy factory: cluster-native scheduler seams are built
+		// against the per-tower DB that becomes available inside
+		// TowerCycle (after StoreOpenAtFunc opens the tower's store).
+		// Daemon startup does NOT populate ClusterDispatch itself —
+		// capturing a store.ActiveDB() here would yield nil or a
+		// stale connection across tower switches.
+		BuildClusterDispatch: buildClusterDispatch,
 	}
 
 	// Start metrics server if configured.
@@ -303,3 +315,55 @@ func sanitizeK8sLabel(s string) string { return steward.SanitizeK8sLabel(s) }
 func pushState()                       {}
 func reviewBeadVerdict(b Bead) string  { return steward.ReviewBeadVerdict(b) }
 func beadsDirForTower(name string) string     { return steward.BeadsDirForTower(name) }
+
+// intentTableOnce guards EnsureWorkloadIntentsTable per-tower so the
+// factory only issues the CREATE TABLE IF NOT EXISTS once per tower
+// name across the steward's lifetime. Concurrent tower cycles on the
+// same tower name therefore pay the DDL round-trip exactly once.
+var intentTableOnce sync.Map // map[string]*sync.Once
+
+func intentTableOnceFor(towerName string) *sync.Once {
+	if v, ok := intentTableOnce.Load(towerName); ok {
+		return v.(*sync.Once)
+	}
+	v, _ := intentTableOnce.LoadOrStore(towerName, &sync.Once{})
+	return v.(*sync.Once)
+}
+
+// buildClusterDispatch is the lazy factory plumbed into
+// steward.StewardConfig.BuildClusterDispatch. It runs inside
+// TowerCycle's per-tower scope so store.ActiveDB() returns the
+// connection for the tower currently being cycled (the cmdSteward
+// caller does NOT own that connection — it's opened by StoreOpenAtFunc
+// a few lines above the factory invocation).
+//
+// When the active DB is not available (e.g. the backing store is a
+// test mock), the factory returns nil and the cycle falls back to the
+// existing "ClusterDispatch is not configured" skip path — matching
+// the shape the panic-fakes in mode_routing_test.go already rely on.
+//
+// The first call per tower also ensures the workload_intents table
+// exists, so a freshly-deployed cluster does not need operator-side
+// migrations to have completed first. EnsureWorkloadIntentsTable is
+// idempotent; the sync.Once just avoids redundant DDL per cycle.
+func buildClusterDispatch(towerName string) *steward.ClusterDispatchConfig {
+	db, ok := store.ActiveDB()
+	if !ok || db == nil {
+		return nil
+	}
+	intentTableOnceFor(towerName).Do(func() {
+		if err := intent.EnsureWorkloadIntentsTable(db); err != nil {
+			log.Printf("[steward] cluster-native: ensure workload_intents table for tower %q: %s", towerName, err)
+		}
+	})
+	agentName := "steward-" + config.InstanceID()
+	return &steward.ClusterDispatchConfig{
+		Resolver: &identity.DefaultClusterIdentityResolver{
+			Registry: identity.NewSQLRegistryStore(db),
+		},
+		Claimer: &dispatch.StoreClaimer{
+			AgentName: agentName,
+		},
+		Publisher: intent.NewDoltPublisher(db),
+	}
+}

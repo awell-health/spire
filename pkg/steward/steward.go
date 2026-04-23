@@ -170,7 +170,30 @@ type StewardConfig struct {
 	// nil field within it — disables cluster-native dispatch and the
 	// steward logs and skips. The local-native dispatch path is
 	// unaffected.
+	//
+	// When BuildClusterDispatch is also set, ClusterDispatch acts as a
+	// pre-built override (tests use it); production callers leave it nil
+	// and set BuildClusterDispatch instead so the config is constructed
+	// inside TowerCycle's per-tower DB context.
 	ClusterDispatch *ClusterDispatchConfig
+
+	// BuildClusterDispatch, when non-nil, is invoked inside TowerCycle
+	// on the cluster-native branch AFTER StoreOpenAtFunc has opened the
+	// tower's dolt store (so store.ActiveDB is valid) and BEFORE
+	// dispatchClusterNative runs. It returns the fully-populated
+	// *ClusterDispatchConfig for this cycle, or nil to fall back to the
+	// existing "ClusterDispatch is not configured" skip.
+	//
+	// The factory pattern exists because the cluster-native seams
+	// (SQLRegistryStore, StoreClaimer, DoltPublisher) are all backed by
+	// the per-tower *sql.DB that only becomes available once the
+	// per-tower store is opened. Building the config eagerly at daemon
+	// startup would capture a stale (or nil) DB; building it here means
+	// every cycle sees the currently-active tower's connection.
+	//
+	// When both ClusterDispatch and BuildClusterDispatch are set, the
+	// explicit ClusterDispatch wins (test-override path).
+	BuildClusterDispatch func(towerName string) *ClusterDispatchConfig
 }
 
 // AgentNames extracts agent names from an agent.Info slice.
@@ -318,7 +341,15 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		log.Printf("[steward] %sattached-reserved: dispatch skipped — %s", prefix, attached.ErrAttachedNotImplemented)
 
 	case config.DeploymentModeClusterNative:
-		spawned = dispatchClusterNative(context.Background(), prefix, schedulable, cfg)
+		// Resolve ClusterDispatch lazily: if the caller set it
+		// explicitly (test override) use that; otherwise invoke the
+		// factory, which builds the config against the per-tower DB
+		// that was opened above by StoreOpenAtFunc.
+		cycleCfg := cfg
+		if cycleCfg.ClusterDispatch == nil && cycleCfg.BuildClusterDispatch != nil {
+			cycleCfg.ClusterDispatch = cycleCfg.BuildClusterDispatch(towerName)
+		}
+		spawned = dispatchClusterNative(context.Background(), prefix, schedulable, cycleCfg)
 
 	default: // DeploymentModeLocalNative — the unchanged historical path
 		for _, bead := range schedulable {

@@ -15,8 +15,15 @@ import (
 	spirev1 "github.com/awell-health/spire/operator/api/v1alpha1"
 	"github.com/awell-health/spire/operator/controllers"
 	"github.com/awell-health/spire/pkg/steward/identity"
+	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
 )
+
+// operatorIntentPollInterval is the cadence the operator polls the
+// workload_intents outbox for un-reconciled rows. Matches
+// intent.defaultConsumerPollInterval but named locally for visibility
+// in the operator's wiring.
+const operatorIntentPollInterval = 2 * time.Second
 
 var scheme = runtime.NewScheme()
 
@@ -203,9 +210,22 @@ func main() {
 	// the authoritative source of cluster repo identity; CR-only
 	// fields are never trusted for scheduling decisions.
 	//
-	// The IntentConsumer transport is wired by the steward emitter in
-	// wave-1 (spi-9zkal). Until that lands, Consumer stays nil and the
-	// reconciler self-disables at Start.
+	// The IntentConsumer is a DoltConsumer reading from the shared
+	// workload_intents outbox the steward publishes into (spi-t8a57s).
+	// EnsureWorkloadIntentsTable is defense-in-depth — whichever pod
+	// comes up first creates the table; the steward's factory does the
+	// same on its side.
+	var intentConsumer intent.IntentConsumer
+	if db, ok := store.ActiveDB(); ok && db != nil {
+		if err := intent.EnsureWorkloadIntentsTable(db); err != nil {
+			log.Error(err, "failed to ensure workload_intents table; intent reconciler will self-disable")
+		} else {
+			intentConsumer = intent.NewDoltConsumer(db, operatorIntentPollInterval)
+		}
+	} else {
+		log.Info("no active dolt DB; intent reconciler will self-disable (no IntentConsumer wired)")
+	}
+
 	intentReconciler := &controllers.IntentWorkloadReconciler{
 		Client:        mgr.GetClient(),
 		Log:           log.WithName("intent-reconciler"),
@@ -214,6 +234,7 @@ func main() {
 		Tower:         database,
 		DolthubRemote: dolthubRemote,
 		Resolver:      resolver,
+		Consumer:      intentConsumer,
 		GCSSecretName: gcpSecretName,
 		GCSMountPath:  gcpMountPath,
 		GCSKeyName:    gcpKeyName,

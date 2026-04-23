@@ -422,6 +422,21 @@ func migrateSpireTables(database string) error {
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, recoveryLearningsTableSQL)); err != nil {
 		return fmt.Errorf("create recovery_learnings: %w", err)
 	}
+	// bead_lifecycle is a sidecar keyed by bead_id that holds first-
+	// transition timestamps (filed/ready/started/closed) for every bead.
+	// It complements agent_runs — one row per bead, not per run.
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.BeadLifecycleTableSQL)); err != nil {
+		return fmt.Errorf("create bead_lifecycle: %w", err)
+	}
+	// workload_intents is the dolt-backed outbox the cluster-native
+	// steward publishes WorkloadIntent values into and the operator's
+	// IntentWorkloadReconciler consumes from. Local-native towers
+	// still create the table (idempotent DDL; costs nothing) so a
+	// later switch to cluster-native doesn't require a second
+	// migration pass.
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.WorkloadIntentsTableSQL)); err != nil {
+		return fmt.Errorf("create workload_intents: %w", err)
+	}
 
 	// Run column migrations — each entry checks SHOW COLUMNS and adds if missing.
 	for _, m := range spireMigrations {

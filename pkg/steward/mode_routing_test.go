@@ -407,6 +407,171 @@ func TestTowerCycle_ClusterNative_NilClusterDispatchIsInert(t *testing.T) {
 	// and Spawn would panic via panicSpawnBackend if it ran.
 }
 
+// TestTowerCycle_ClusterNative_InvokesBuildClusterDispatch pins the
+// factory contract: when ClusterDispatch is nil but
+// BuildClusterDispatch is set, TowerCycle calls the factory ONCE per
+// cycle (scoped to towerName) and dispatches through the returned
+// config. This is the shape cmd/spire uses in production — the factory
+// is the only place store.ActiveDB() is read, because the DB is only
+// valid inside TowerCycle's StoreOpenAtFunc-scoped block.
+func TestTowerCycle_ClusterNative_InvokesBuildClusterDispatch(t *testing.T) {
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	tc := &config.TowerConfig{
+		Name:           "factory-tower",
+		DeploymentMode: config.DeploymentModeClusterNative,
+	}
+	schedulable := []store.Bead{{ID: "spi-factory1", Type: "task"}}
+	modeRoutingSetup(t, tc, schedulable)
+
+	registry := &fakeRegistryStore{
+		rows: map[string]fakeRegistryRow{
+			"spi": {url: "https://example.test/factory.git", branch: "main"},
+		},
+	}
+	claimer := &countingClaimer{}
+	pub := &recordingPublisher{}
+
+	factoryCalls := 0
+	factory := func(name string) *ClusterDispatchConfig {
+		factoryCalls++
+		if name != "factory-tower" {
+			t.Errorf("factory: tower name = %q, want %q", name, "factory-tower")
+		}
+		return &ClusterDispatchConfig{
+			Resolver: &identity.DefaultClusterIdentityResolver{
+				Registry: registry,
+			},
+			Claimer:   claimer,
+			Publisher: pub,
+		}
+	}
+
+	backend := panicSpawnBackend{}
+	cfg := StewardConfig{
+		Backend:              backend,
+		StaleThreshold:       10 * time.Minute,
+		ShutdownThreshold:    30 * time.Minute,
+		BuildClusterDispatch: factory,
+	}
+
+	defer func() {
+		if p := recover(); p != nil {
+			t.Fatalf("factory-wired cluster cycle panicked: %v", p)
+		}
+	}()
+
+	TowerCycle(1, "factory-tower", cfg)
+
+	if factoryCalls != 1 {
+		t.Fatalf("factory calls = %d, want 1", factoryCalls)
+	}
+	if got := len(pub.calls); got != 1 {
+		t.Fatalf("publisher calls = %d, want 1", got)
+	}
+	if pub.calls[0].AttemptID == "" {
+		t.Errorf("emitted intent has empty AttemptID")
+	}
+	if pub.calls[0].RepoIdentity.URL != "https://example.test/factory.git" {
+		t.Errorf("intent URL = %q, want factory.git URL", pub.calls[0].RepoIdentity.URL)
+	}
+}
+
+// TestTowerCycle_ClusterNative_FactoryOverriddenByExplicitDispatch pins
+// the precedence contract: when a caller sets BOTH ClusterDispatch and
+// BuildClusterDispatch, the explicit ClusterDispatch wins and the
+// factory is never invoked. This keeps test overrides sharp — a test
+// that wires an explicit panicking fake must not see its fake silently
+// replaced by a factory-built real config.
+func TestTowerCycle_ClusterNative_FactoryOverriddenByExplicitDispatch(t *testing.T) {
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	tc := &config.TowerConfig{
+		Name:           "override-tower",
+		DeploymentMode: config.DeploymentModeClusterNative,
+	}
+	modeRoutingSetup(t, tc, []store.Bead{{ID: "spi-override1", Type: "task"}})
+
+	factoryCalls := 0
+	factory := func(_ string) *ClusterDispatchConfig {
+		factoryCalls++
+		return nil
+	}
+
+	registry := &fakeRegistryStore{
+		rows: map[string]fakeRegistryRow{
+			"spi": {url: "https://example.test/override.git", branch: "main"},
+		},
+	}
+	claimer := &countingClaimer{}
+	pub := &recordingPublisher{}
+
+	backend := panicSpawnBackend{}
+	cfg := StewardConfig{
+		Backend:           backend,
+		StaleThreshold:    10 * time.Minute,
+		ShutdownThreshold: 30 * time.Minute,
+		ClusterDispatch: &ClusterDispatchConfig{
+			Resolver: &identity.DefaultClusterIdentityResolver{
+				Registry: registry,
+			},
+			Claimer:   claimer,
+			Publisher: pub,
+		},
+		BuildClusterDispatch: factory,
+	}
+
+	TowerCycle(1, "override-tower", cfg)
+
+	if factoryCalls != 0 {
+		t.Errorf("factory called %d times when explicit ClusterDispatch set; want 0", factoryCalls)
+	}
+	if got := len(pub.calls); got != 1 {
+		t.Fatalf("publisher calls = %d, want 1", got)
+	}
+}
+
+// TestTowerCycle_ClusterNative_NilFactoryResultSkipsDispatch pins the
+// "factory returned nil" fallback: the cycle logs and skips dispatch,
+// does not panic, does not spawn. Production uses this path when
+// store.ActiveDB() is not yet available (e.g. a test-backed steward
+// whose store does not expose *sql.DB).
+func TestTowerCycle_ClusterNative_NilFactoryResultSkipsDispatch(t *testing.T) {
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	tc := &config.TowerConfig{
+		Name:           "nil-factory-tower",
+		DeploymentMode: config.DeploymentModeClusterNative,
+	}
+	modeRoutingSetup(t, tc, []store.Bead{{ID: "spi-nilfactory1", Type: "task"}})
+
+	factoryCalls := 0
+	factory := func(_ string) *ClusterDispatchConfig {
+		factoryCalls++
+		return nil
+	}
+
+	backend := panicSpawnBackend{}
+	cfg := StewardConfig{
+		Backend:              backend,
+		StaleThreshold:       10 * time.Minute,
+		ShutdownThreshold:    30 * time.Minute,
+		BuildClusterDispatch: factory,
+	}
+
+	defer func() {
+		if p := recover(); p != nil {
+			t.Fatalf("nil-factory cluster cycle panicked: %v", p)
+		}
+	}()
+
+	TowerCycle(1, "nil-factory-tower", cfg)
+
+	if factoryCalls != 1 {
+		t.Errorf("factory calls = %d, want 1", factoryCalls)
+	}
+}
+
 // --- attached-reserved: must not spawn, claim, emit, or resolve ---
 
 // TestTowerCycle_AttachedReserved_NoDispatch pins the attached-reserved

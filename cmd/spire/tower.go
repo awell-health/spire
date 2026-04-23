@@ -19,6 +19,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
 	towerpkg "github.com/awell-health/spire/pkg/tower"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -832,6 +833,12 @@ func cmdTowerCreate(args []string) error {
 	}
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, recoveryLearningsTableSQL)); err != nil {
 		return fmt.Errorf("create recovery_learnings table: %w", err)
+	}
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.BeadLifecycleTableSQL)); err != nil {
+		return fmt.Errorf("create bead_lifecycle table: %w", err)
+	}
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.WorkloadIntentsTableSQL)); err != nil {
+		return fmt.Errorf("create workload_intents table: %w", err)
 	}
 
 	// bd init wrote issue_prefix to the embedded dolt's config table, but spire's
