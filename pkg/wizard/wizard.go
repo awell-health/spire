@@ -234,6 +234,22 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		return cmdBuildFix(beadID, wizardName, worktreeDirOverride, startedAt, deps, log)
 	}
 
+	// Cluster wizard pods receive a GitHub PAT via the GITHUB_TOKEN env var
+	// (pod_builder wires it as an Optional SecretKeyRef). Install a global
+	// url.insteadOf rewrite so `git push origin <base>` in the merge phase
+	// authenticates transparently. Local-native wizards typically have no
+	// GITHUB_TOKEN set; they fall back to the user's credential helper / SSH
+	// keys and get a clear warning if neither is in play.
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		if err := spgit.ConfigureGitHubTokenAuth(tok); err != nil {
+			log("WARN: configure github token auth: %v", err)
+		} else {
+			log("configured github token auth for push")
+		}
+	} else {
+		log("WARN: no GITHUB_TOKEN configured — push to origin will fail")
+	}
+
 	if err := deps.RequireDolt(); err != nil {
 		return err
 	}

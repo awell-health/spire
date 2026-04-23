@@ -1070,6 +1070,7 @@ func actionMergeToMain(e *Executor, stepName string, step StepConfig, state *Gra
 	// Push main.
 	rc := &spgit.RepoContext{Dir: state.RepoPath, BaseBranch: state.BaseBranch, Log: e.log}
 	if pushErr := rc.Push("origin", state.BaseBranch, mergeEnv); pushErr != nil {
+		e.log("merge push failed: %v", pushErr)
 		e.recordAgentRun(e.agentName, e.beadID, "", step.Model, "wizard", "merge", started, pushErr,
 			withParentRun(e.currentRunID),
 			withStartupSeconds(workingStarted.Sub(started).Seconds()),

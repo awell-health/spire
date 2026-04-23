@@ -70,6 +70,7 @@ func TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, deps *
 	rc := &spgit.RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: log}
 	log("pushing %s", baseBranch)
 	if err := rc.Push("origin", baseBranch, mergeEnv); err != nil {
+		log("merge push failed: %v", err)
 		return fmt.Errorf("push %s: %w", baseBranch, err)
 	}
 

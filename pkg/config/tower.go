@@ -381,6 +381,12 @@ func DerivePrefixFromName(name string) string {
 // ArchmageGitEnv returns environment variables that set BOTH the git author
 // and committer identity to the archmage. This ensures all commits merged
 // to main are attributed to the archmage on GitHub (which shows author).
+//
+// This intentionally does NOT handle GitHub push authentication. Cluster
+// wizard pods configure push auth separately via
+// git.ConfigureGitHubTokenAuth (called from CmdWizardRun) using the
+// GITHUB_TOKEN env var wired through pod_builder. Local archmage flows
+// rely on the user's existing git credential helper or SSH keys.
 func ArchmageGitEnv(tower *TowerConfig) []string {
 	env := os.Environ()
 	if tower.Archmage.Name != "" {

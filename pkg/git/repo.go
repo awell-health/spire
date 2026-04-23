@@ -300,6 +300,27 @@ func (rc *RepoContext) PruneWorktrees() error {
 	return nil
 }
 
+// ConfigureGitHubTokenAuth installs a global url.insteadOf rewrite so that
+// any https://github.com/ remote transparently authenticates with the given
+// PAT via the x-access-token scheme. Idempotent: git config overwrites on
+// repeat calls. Empty token is a no-op (returns nil), so callers can pass
+// os.Getenv("GITHUB_TOKEN") unchecked.
+//
+// This is intended for cluster wizard pods where no credential helper or
+// SSH key is available. Local archmage workflows should rely on the user's
+// existing git credential helper instead.
+func ConfigureGitHubTokenAuth(token string) error {
+	if token == "" {
+		return nil
+	}
+	key := `url.https://x-access-token:` + token + `@github.com/.insteadOf`
+	cmd := exec.Command("git", "config", "--global", key, "https://github.com/")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git config --global %s: %w\n%s", key, err, out)
+	}
+	return nil
+}
+
 // ConfigGet reads a git config value. Pass extra args like "--global" before the key.
 // Returns "" if the key is not set or git fails.
 func ConfigGet(args ...string) string {
