@@ -45,8 +45,12 @@ func IsBlankDB(exec SQLExec, database string) (bool, error) {
 	if database == "" {
 		return false, errors.New("IsBlankDB: database is required")
 	}
+	// Intentionally unaliased: config.ExtractSQLValue's header-skip
+	// allowlist contains "COUNT(*)" but not "cnt" — aliasing would
+	// cause the header to be parsed as data. Parser fragility tracked
+	// separately in spi-19v3oa.
 	out, err := exec(fmt.Sprintf(
-		"SELECT COUNT(*) AS cnt FROM information_schema.tables WHERE table_schema = '%s'",
+		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '%s'",
 		database))
 	if err != nil {
 		return false, fmt.Errorf("count tables in %s: %w", database, err)

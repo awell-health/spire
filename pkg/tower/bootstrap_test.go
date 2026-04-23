@@ -59,6 +59,70 @@ func TestIsBlankDB_EmptyDatabaseRejected(t *testing.T) {
 	}
 }
 
+// TestIsBlankDB_ProbeQueryHasNoAlias pins the invariant that the probe
+// query uses an unaliased COUNT(*). config.ExtractSQLValue's header-skip
+// allowlist contains "COUNT(*)" but not "cnt" — aliasing to "cnt" would
+// cause the header line "| cnt |" to be mis-parsed as a data row,
+// making blank DBs look populated and silently skipping bootstrap.
+// See spi-69b6ge for the original incident and spi-19v3oa for the
+// follow-up parser rewrite.
+func TestIsBlankDB_ProbeQueryHasNoAlias(t *testing.T) {
+	var gotQuery string
+	exec := func(q string) (string, error) {
+		gotQuery = q
+		return pipeCountOutput("0"), nil
+	}
+	if _, err := IsBlankDB(exec, "smoke"); err != nil {
+		t.Fatalf("IsBlankDB: %v", err)
+	}
+	if strings.Contains(strings.ToLower(gotQuery), " as ") {
+		t.Errorf("probe query must not alias COUNT(*); got %q", gotQuery)
+	}
+}
+
+// TestIsBlankDB_ParsesCountHeader verifies that dolt tabular output
+// with a literal `| COUNT(*) |` header (what the unaliased probe
+// actually produces) parses to the expected data row. Regression
+// guard against re-introducing an alias that the parser's allowlist
+// doesn't recognize.
+func TestIsBlankDB_ParsesCountHeader(t *testing.T) {
+	tests := []struct {
+		name      string
+		count     string
+		wantBlank bool
+	}{
+		{"zero means blank", "0", true},
+		{"nonzero means populated", "42", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := func(q string) (string, error) {
+				return pipeCountOutput(tc.count), nil
+			}
+			blank, err := IsBlankDB(exec, "smoke")
+			if err != nil {
+				t.Fatalf("IsBlankDB: %v", err)
+			}
+			if blank != tc.wantBlank {
+				t.Fatalf("blank=%v, want %v (count=%q)", blank, tc.wantBlank, tc.count)
+			}
+		})
+	}
+}
+
+// pipeCountOutput mimics `dolt sql -q` output for an unaliased
+// SELECT COUNT(*) — column header is `COUNT(*)`, which must stay in
+// sync with config.ExtractSQLValue's header-skip allowlist.
+func pipeCountOutput(value string) string {
+	return strings.Join([]string{
+		"+----------+",
+		"| COUNT(*) |",
+		"+----------+",
+		fmt.Sprintf("| %-8s |", value),
+		"+----------+",
+	}, "\n")
+}
+
 func TestBootstrapBlank_Validation(t *testing.T) {
 	base := BlankBootstrapOpts{
 		Database:  "spi",
