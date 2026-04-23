@@ -191,6 +191,7 @@ type WizardGuildList struct {
 // SpireWorkload represents a bead assignment.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:path=spireworkloads,singular=spireworkload,shortName=sw;workload
 type SpireWorkload struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -229,6 +230,7 @@ type SpireWorkloadList struct {
 // SpireConfig is the cluster-wide configuration singleton.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:path=spireconfigs,singular=spireconfig,shortName=sc
 type SpireConfig struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -2,7 +2,7 @@ runtime:
   language: go
   test: go test ./... -timeout=60s && cd operator && go test ./... -timeout=60s
   build: go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./... && cd operator && go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./...
-  lint: go vet ./... && helm lint helm/spire && helm lint helm/spire -f k8s/values.smoke.yaml && cd operator && go vet ./...
+  lint: go vet ./... && helm lint helm/spire && helm lint helm/spire -f k8s/values.smoke.yaml && cd operator && go vet ./... && go generate ./api/... && cd .. && git diff --exit-code helm/spire/crds/
 
 agent:
   model: claude-opus-4-7
