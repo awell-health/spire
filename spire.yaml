@@ -1,6 +1,16 @@
 runtime:
   language: go
-  test: go test ./... -timeout=60s && cd operator && go test ./... -timeout=60s
+  # test is the apprentice validation gate. It runs inside sandboxed cluster
+  # pods (no dolt server, no network to the tower, ~10m wizard stale timeout)
+  # so it must stay narrow. Cross-module drift (operator submodule, pkg/*
+  # integration suites) is covered by ci_test below and by CI workflows —
+  # NOT by this command. See spi-q3lfd3 for the scope split rationale.
+  test: go test ./cmd/spire/ -timeout=60s
+  # ci_test is the broad surface: full module tree + operator submodule.
+  # Invoked by CI/build tooling (not apprentice pods) to catch the drift
+  # class that spi-w9qicf was filed against. Callers that want the broad
+  # scope should prefer ci_test and fall back to test if ci_test is empty.
+  ci_test: go test ./... -timeout=60s && cd operator && go test ./... -timeout=60s
   build: go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./... && cd operator && go mod tidy && git diff --exit-code -- go.mod go.sum && go build ./...
   # lint additionally runs two RBAC drift guards (spi-3shzb7):
   #   verify-rbac:           regenerates operator/config/rbac/role.yaml

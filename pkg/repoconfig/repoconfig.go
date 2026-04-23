@@ -59,12 +59,20 @@ type DesignConfig struct {
 }
 
 // RuntimeConfig describes how to install, test, build, and lint the repo.
+//
+// Test vs CITest: Test is the apprentice validation gate — it runs inside
+// sandboxed cluster pods with a ~10m wizard stale timeout, so it must be
+// narrow enough to pass without external fixtures (dolt, network, etc.).
+// CITest is the broader surface invoked by CI/build tooling to catch
+// cross-module drift (e.g. operator submodule breakage). If CITest is empty,
+// callers that want the broader scope fall back to Test.
 type RuntimeConfig struct {
-	Language string `yaml:"language"`        // go, typescript, python, rust
-	Install  string `yaml:"install"`         // e.g. "pnpm install"
-	Test     string `yaml:"test"`            // e.g. "pnpm test"
-	Build    string `yaml:"build,omitempty"` // optional
-	Lint     string `yaml:"lint,omitempty"`  // optional
+	Language string `yaml:"language"`          // go, typescript, python, rust
+	Install  string `yaml:"install"`           // e.g. "pnpm install"
+	Test     string `yaml:"test"`              // apprentice gate; narrow, sandbox-safe
+	CITest   string `yaml:"ci_test,omitempty"` // CI-scope tests; optional, falls back to Test
+	Build    string `yaml:"build,omitempty"`   // optional
+	Lint     string `yaml:"lint,omitempty"`    // optional
 }
 
 // AgentConfig controls autonomous agent behaviour.
