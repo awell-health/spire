@@ -34,6 +34,13 @@ func newWizardClaimHarness(t *testing.T) (*wizardClaimHarness, func()) {
 	origCreate := wizardClaimCreateAttempt
 	origUpdate := wizardClaimUpdateBead
 	origIdentity := wizardClaimIdentity
+	origGet := wizardClaimGetBead
+
+	// Default: bead exists in a claimable status. Tests that need a
+	// different status (closed, unknown) can override after construction.
+	wizardClaimGetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "ready"}, nil
+	}
 
 	wizardClaimCreateAttempt = func(parentID, agent, model, branch string) (string, error) {
 		if h.createErr != nil {
@@ -58,6 +65,7 @@ func newWizardClaimHarness(t *testing.T) (*wizardClaimHarness, func()) {
 		wizardClaimCreateAttempt = origCreate
 		wizardClaimUpdateBead = origUpdate
 		wizardClaimIdentity = origIdentity
+		wizardClaimGetBead = origGet
 	}
 }
 
@@ -123,6 +131,44 @@ func TestWizardClaim_HappyPath(t *testing.T) {
 	}
 	if h.updatedStatus != "in_progress" {
 		t.Errorf("updatedStatus = %q, want in_progress", h.updatedStatus)
+	}
+}
+
+// TestWizardClaim_AcceptsDispatchedSource verifies Seam 3 for the wizard
+// path: cmdWizardClaim accepts `dispatched` as a valid source status (the
+// cluster-native pod startup path, where the steward flipped
+// ready→dispatched at emit time).
+func TestWizardClaim_AcceptsDispatchedSource(t *testing.T) {
+	_, cleanup := newWizardClaimHarness(t)
+	defer cleanup()
+	wizardClaimGetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "dispatched"}, nil
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := cmdWizardClaim("spi-task")
+	w.Close()
+	os.Stdout = oldStdout
+	_, _ = io.Copy(io.Discard, r)
+
+	if err != nil {
+		t.Fatalf("expected claim from dispatched to succeed, got: %v", err)
+	}
+}
+
+// TestWizardClaim_RejectsClosedSource makes the refusal path explicit.
+func TestWizardClaim_RejectsClosedSource(t *testing.T) {
+	_, cleanup := newWizardClaimHarness(t)
+	defer cleanup()
+	wizardClaimGetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "closed"}, nil
+	}
+
+	err := cmdWizardClaim("spi-task")
+	if err == nil || !strings.Contains(err.Error(), "already closed") {
+		t.Fatalf("expected 'already closed' error, got: %v", err)
 	}
 }
 

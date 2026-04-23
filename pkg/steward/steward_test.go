@@ -464,6 +464,165 @@ func TestCleanUpdatedLabels_ListErrorReturnsZero(t *testing.T) {
 	}
 }
 
+// --- RecoverStaleDispatched tests ---
+
+func TestRecoverStaleDispatched_FlipsStuckBead(t *testing.T) {
+	origList := ListBeadsFunc
+	origUpdate := UpdateBeadFunc
+	defer func() {
+		ListBeadsFunc = origList
+		UpdateBeadFunc = origUpdate
+	}()
+
+	stuckTime := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	freshTime := time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339)
+
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-stuck", Type: "task", Title: "stuck", UpdatedAt: stuckTime},
+			{ID: "spi-fresh", Type: "task", Title: "fresh", UpdatedAt: freshTime},
+		}, nil
+	}
+	updated := map[string]map[string]interface{}{}
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error {
+		updated[id] = fields
+		return nil
+	}
+
+	reverted := RecoverStaleDispatched(5*time.Minute, false)
+	if reverted != 1 {
+		t.Errorf("reverted = %d, want 1 (only spi-stuck past timeout)", reverted)
+	}
+	if updated["spi-stuck"]["status"] != "ready" {
+		t.Errorf("spi-stuck update = %v, want status=ready", updated["spi-stuck"])
+	}
+	if _, ok := updated["spi-fresh"]; ok {
+		t.Errorf("spi-fresh was updated but is under timeout: %v", updated["spi-fresh"])
+	}
+}
+
+func TestRecoverStaleDispatched_DryRun(t *testing.T) {
+	origList := ListBeadsFunc
+	origUpdate := UpdateBeadFunc
+	defer func() {
+		ListBeadsFunc = origList
+		UpdateBeadFunc = origUpdate
+	}()
+
+	stuckTime := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{{ID: "spi-stuck", Type: "task", UpdatedAt: stuckTime}}, nil
+	}
+	updateCalled := false
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error {
+		updateCalled = true
+		return nil
+	}
+
+	reverted := RecoverStaleDispatched(5*time.Minute, true)
+	if reverted != 1 {
+		t.Errorf("reverted (dry-run count) = %d, want 1", reverted)
+	}
+	if updateCalled {
+		t.Error("UpdateBeadFunc was called during dry-run")
+	}
+}
+
+func TestRecoverStaleDispatched_SkipsInternalBeads(t *testing.T) {
+	origList := ListBeadsFunc
+	origUpdate := UpdateBeadFunc
+	defer func() {
+		ListBeadsFunc = origList
+		UpdateBeadFunc = origUpdate
+	}()
+
+	stuckTime := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-attempt", Type: "attempt", UpdatedAt: stuckTime},          // internal
+			{ID: "spi-child", Type: "task", Parent: "spi-a", UpdatedAt: stuckTime}, // child
+			{ID: "spi-top", Type: "task", UpdatedAt: stuckTime},                   // counts
+		}, nil
+	}
+	updated := 0
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error {
+		updated++
+		if id != "spi-top" {
+			t.Errorf("unexpected update on %s (should be IsWorkBead-filtered)", id)
+		}
+		return nil
+	}
+
+	reverted := RecoverStaleDispatched(5*time.Minute, false)
+	if reverted != 1 {
+		t.Errorf("reverted = %d, want 1 (only top-level work bead)", reverted)
+	}
+	if updated != 1 {
+		t.Errorf("update count = %d, want 1", updated)
+	}
+}
+
+func TestRecoverStaleDispatched_ParsesBothTimeFormats(t *testing.T) {
+	origList := ListBeadsFunc
+	origUpdate := UpdateBeadFunc
+	defer func() {
+		ListBeadsFunc = origList
+		UpdateBeadFunc = origUpdate
+	}()
+
+	// dolt sometimes emits MySQL datetime instead of RFC3339 — the
+	// recovery path has a fallback parser for that format.
+	stuckTime := time.Now().Add(-10 * time.Minute).UTC().Format("2006-01-02 15:04:05")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{{ID: "spi-dolt", Type: "task", UpdatedAt: stuckTime}}, nil
+	}
+	updated := false
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error {
+		updated = true
+		return nil
+	}
+
+	reverted := RecoverStaleDispatched(5*time.Minute, false)
+	if reverted != 1 || !updated {
+		t.Errorf("RecoverStaleDispatched with MySQL-format timestamp: reverted=%d updated=%v, want 1/true", reverted, updated)
+	}
+}
+
+func TestRecoverStaleDispatched_SkipsUnparseableAndEmptyTime(t *testing.T) {
+	origList := ListBeadsFunc
+	origUpdate := UpdateBeadFunc
+	defer func() {
+		ListBeadsFunc = origList
+		UpdateBeadFunc = origUpdate
+	}()
+
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-empty", Type: "task", UpdatedAt: ""},
+			{ID: "spi-garbage", Type: "task", UpdatedAt: "not-a-timestamp"},
+		}, nil
+	}
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error {
+		t.Errorf("unexpected update on %s", id)
+		return nil
+	}
+
+	if got := RecoverStaleDispatched(5*time.Minute, false); got != 0 {
+		t.Errorf("reverted = %d, want 0 when timestamps unusable", got)
+	}
+}
+
+func TestRecoverStaleDispatched_ListErrorReturnsZero(t *testing.T) {
+	origList := ListBeadsFunc
+	defer func() { ListBeadsFunc = origList }()
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return nil, fmt.Errorf("db down")
+	}
+	if got := RecoverStaleDispatched(5*time.Minute, false); got != 0 {
+		t.Errorf("reverted on list error = %d, want 0", got)
+	}
+}
+
 func TestCleanUpdatedLabels_RemoveLabelErrorContinues(t *testing.T) {
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {

@@ -35,6 +35,7 @@ merge commit + seal timestamp and closes the open attempt.`,
 
 var wizardClaimCreateAttempt = storeCreateAttemptBeadAtomic
 var wizardClaimUpdateBead = storeUpdateBead
+var wizardClaimGetBead = storeGetBead
 var wizardClaimIdentity = func(asFlag string) (string, error) { return detectIdentity(asFlag) }
 
 var wizardSealGetActiveAttempt = storeGetActiveAttempt
@@ -105,6 +106,23 @@ func cmdWizardClaim(beadID string) error {
 	agent, err := wizardClaimIdentity("")
 	if err != nil {
 		return fmt.Errorf("detect identity: %w", err)
+	}
+
+	// Seam 3: accept `ready` or `dispatched` as valid source statuses.
+	// `in_progress`/`hooked` flow through reclaim (CreateAttemptBeadAtomic
+	// enforces same-agent identity). `open` is allowed for legacy beads.
+	target, err := wizardClaimGetBead(beadID)
+	if err != nil {
+		return fmt.Errorf("bead %s not found: %w", beadID, err)
+	}
+	if target.Status == "closed" {
+		return fmt.Errorf("bead %s is already closed", beadID)
+	}
+	switch target.Status {
+	case "ready", "dispatched", "in_progress", "hooked", "open", "":
+		// ok
+	default:
+		return fmt.Errorf("bead %s has unclaimable status %q (expected ready or dispatched)", beadID, target.Status)
 	}
 
 	branch := resolveClaimBranch(beadID)

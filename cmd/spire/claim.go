@@ -70,6 +70,17 @@ func cmdClaim(args []string) error {
 		return fmt.Errorf("bead %s is already closed", id)
 	}
 
+	// Seam 3: accept `ready` or `dispatched` as valid source statuses
+	// for a fresh claim. `in_progress`/`hooked` flow through the reclaim
+	// path below (same-agent identity check in CreateAttemptBeadAtomic).
+	// `open` is allowed for legacy beads that never transitioned to ready.
+	switch target.Status {
+	case "ready", "dispatched", "in_progress", "hooked", "open", "":
+		// ok
+	default:
+		return fmt.Errorf("bead %s has unclaimable status %q (expected ready or dispatched)", id, target.Status)
+	}
+
 	wasHooked := target.Status == "hooked"
 
 	// Create or reclaim the attempt bead atomically.

@@ -24,12 +24,14 @@ import (
 	"errors"
 	"log"
 
+	"github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/steward/dispatch"
 	"github.com/awell-health/spire/pkg/steward/identity"
 	"github.com/awell-health/spire/pkg/steward/intent"
-	"github.com/steveyegge/beads"
 	"github.com/awell-health/spire/pkg/store"
+
+	"github.com/steveyegge/beads"
 )
 
 // ClusterDispatchConfig bundles the three cluster-native seams the
@@ -246,7 +248,7 @@ func countInFlight() int {
 	if err != nil {
 		log.Printf("[steward] count in-flight (in_progress): %s", err)
 	}
-	disp, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.Status("dispatched"))})
+	disp, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.Status(bd.StatusDispatched))})
 	if err != nil {
 		log.Printf("[steward] count in-flight (dispatched): %s", err)
 	}

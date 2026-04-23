@@ -30,6 +30,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/executor"
@@ -580,7 +581,7 @@ func BeadsDirForTower(towerName string) string {
 // Returns the number of beads reverted. dryRun logs the action without
 // performing the UPDATE.
 func RecoverStaleDispatched(timeout time.Duration, dryRun bool) int {
-	stuck, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.Status("dispatched"))})
+	stuck, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.Status(bd.StatusDispatched))})
 	if err != nil {
 		log.Printf("[steward] recover dispatched: %s", err)
 		return 0
@@ -609,7 +610,7 @@ func RecoverStaleDispatched(timeout time.Duration, dryRun bool) int {
 			reverted++
 			continue
 		}
-		if err := store.UpdateBead(b.ID, map[string]interface{}{"status": "ready"}); err != nil {
+		if err := UpdateBeadFunc(b.ID, map[string]interface{}{"status": "ready"}); err != nil {
 			log.Printf("[steward] recover dispatched %s: %s", b.ID, err)
 			continue
 		}

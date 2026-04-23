@@ -227,6 +227,48 @@ func TestClaim_ReclaimFailsForeignInstance(t *testing.T) {
 	}
 }
 
+// TestClaim_AcceptsReadySource verifies Seam 3: `spire claim` accepts
+// status=ready (the local-native path) as a valid source.
+func TestClaim_AcceptsReadySource(t *testing.T) {
+	bead := Bead{ID: "spi-ready", Title: "ready task", Status: "ready"}
+	cleanup := stubClaimDeps(t, bead, nil, "wizard-self")
+	defer cleanup()
+
+	if err := cmdClaim([]string{"spi-ready"}); err != nil {
+		t.Fatalf("expected claim from ready to succeed, got: %v", err)
+	}
+}
+
+// TestClaim_AcceptsDispatchedSource verifies Seam 3: `spire claim`
+// accepts status=dispatched (the cluster-native path, where the steward
+// flipped ready→dispatched at emit time) as a valid source.
+func TestClaim_AcceptsDispatchedSource(t *testing.T) {
+	bead := Bead{ID: "spi-disp", Title: "dispatched task", Status: "dispatched"}
+	cleanup := stubClaimDeps(t, bead, nil, "wizard-self")
+	defer cleanup()
+
+	if err := cmdClaim([]string{"spi-disp"}); err != nil {
+		t.Fatalf("expected claim from dispatched to succeed, got: %v", err)
+	}
+}
+
+// TestClaim_RejectsClosedSource is explicit about the one status the
+// claim must refuse. Closed is terminal — reclaiming would resurrect
+// already-sealed work.
+func TestClaim_RejectsClosedSource(t *testing.T) {
+	bead := Bead{ID: "spi-closed", Title: "closed task", Status: "closed"}
+	cleanup := stubClaimDeps(t, bead, nil, "wizard-self")
+	defer cleanup()
+
+	err := cmdClaim([]string{"spi-closed"})
+	if err == nil {
+		t.Fatal("expected claim from closed to fail, got nil error")
+	}
+	if !strings.Contains(err.Error(), "already closed") {
+		t.Errorf("expected 'already closed' in error, got: %v", err)
+	}
+}
+
 // TestClaim_OutputIncludesInstanceFields verifies that the JSON output from cmdClaim
 // includes instance_name and instance_id fields.
 func TestClaim_OutputIncludesInstanceFields(t *testing.T) {
