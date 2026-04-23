@@ -169,6 +169,7 @@ func TestResolveDatabase_MultipleTowersWithActive(t *testing.T) {
 func TestTowerUse(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SPIRE_CONFIG_DIR", filepath.Join(home, ".config", "spire"))
 	t.Setenv("SPIRE_TOWER", "")
 	writeTowerConfig(t, home, "alpha", "beads_alpha")
 	writeTowerConfig(t, home, "beta", "beads_beta")

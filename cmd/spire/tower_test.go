@@ -442,6 +442,7 @@ func TestMustHelper(t *testing.T) {
 func TestTowerConfigForDatabase(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("SPIRE_CONFIG_DIR", tmpDir)
 
 	// Save two towers
 	t1 := &TowerConfig{
@@ -500,6 +501,7 @@ func TestTowerConfigForDatabase(t *testing.T) {
 func TestInstanceTowerRoundtrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("SPIRE_CONFIG_DIR", tmpDir)
 
 	cfg := &SpireConfig{
 		Instances: map[string]*Instance{
