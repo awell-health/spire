@@ -183,17 +183,23 @@ func (d *DB) Submit(fn func(*sql.Tx) error) error {
 
 // QueryFormulaPerformance returns aggregated stats per formula name and version
 // for all runs with started_at >= since.
+//
+// Success counting mirrors weekly_merge_stats (views.go): result='approve' is a
+// sage verdict for successful review and must count alongside result='success'.
+// avg_review_rounds mirrors daily_formula_stats (views.go): runs with
+// review_rounds=0 (apprentice/wizard) are excluded so the average reflects only
+// the phases that actually accumulate review rounds (sage-review).
 func (d *DB) QueryFormulaPerformance(since time.Time) ([]olap.FormulaStats, error) {
 	const q = `
 		SELECT
 			formula_name,
-			COALESCE(formula_version, 'unknown')                   AS formula_version,
-			COUNT(*)                                                AS total_runs,
-			SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END)    AS successes,
-			ROUND(100.0 * SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END)
-				/ NULLIF(COUNT(*), 0), 1)                          AS success_rate,
-			ROUND(COALESCE(AVG(cost_usd), 0), 4)                   AS avg_cost_usd,
-			ROUND(COALESCE(AVG(review_rounds), 0), 1)              AS avg_review_rounds,
+			COALESCE(formula_version, 'unknown')                            AS formula_version,
+			COUNT(*)                                                         AS total_runs,
+			SUM(CASE WHEN result IN ('success', 'approve') THEN 1 ELSE 0 END) AS successes,
+			ROUND(100.0 * SUM(CASE WHEN result IN ('success', 'approve') THEN 1 ELSE 0 END)
+				/ NULLIF(COUNT(*), 0), 1)                                    AS success_rate,
+			ROUND(COALESCE(AVG(cost_usd), 0), 4)                             AS avg_cost_usd,
+			ROUND(COALESCE(AVG(CASE WHEN review_rounds > 0 THEN review_rounds END), 0), 1) AS avg_review_rounds,
 			SUM(CASE WHEN started_at >= current_timestamp::TIMESTAMP - INTERVAL 30 DAY THEN 1 ELSE 0 END) AS runs_last_30d
 		FROM agent_runs_olap
 		WHERE formula_name IS NOT NULL

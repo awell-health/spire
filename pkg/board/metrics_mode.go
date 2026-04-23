@@ -18,13 +18,14 @@ var _ Mode = (*MetricsMode)(nil)
 
 // metricsDataMsg carries fetched metrics data back to the Update loop.
 type metricsDataMsg struct {
-	dora       *olap.DORAMetrics
-	formulas   []olap.FormulaStats
-	bugs       []olap.BugCausality
-	costTrend  []olap.CostTrendPoint
-	toolUsage  []olap.ToolUsageStats
-	toolEvents []olap.ToolEventStats
-	err        error
+	dora            *olap.DORAMetrics
+	formulas        []olap.FormulaStats
+	bugs            []olap.BugCausality
+	costTrend       []olap.CostTrendPoint
+	toolUsage       []olap.ToolUsageStats
+	toolEvents      []olap.ToolEventStats
+	lifecycleByType []olap.LifecycleByType
+	err             error
 }
 
 // metricsTickMsg triggers a periodic refresh.
@@ -45,21 +46,26 @@ type MetricsMode struct {
 	db            *olap.DB
 
 	// Cached data (populated by async fetch).
-	dora       *olap.DORAMetrics
-	formulas   []olap.FormulaStats
-	bugs       []olap.BugCausality
-	costTrend  []olap.CostTrendPoint
-	toolUsage  []olap.ToolUsageStats
-	toolEvents []olap.ToolEventStats
+	dora            *olap.DORAMetrics
+	formulas        []olap.FormulaStats
+	bugs            []olap.BugCausality
+	costTrend       []olap.CostTrendPoint
+	toolUsage       []olap.ToolUsageStats
+	toolEvents      []olap.ToolEventStats
+	lifecycleByType []olap.LifecycleByType
 
 	loading     bool
 	lastErr     error
 	lastRefresh time.Time
 
 	// Grid navigation state.
-	focusedSection int      // 0–3 index into the 2x2 grid
-	scrollOffset   [4]int   // per-section vertical scroll offset
-	sectionLines   [4]int   // per-section total content lines (set during render)
+	focusedSection int    // 0–3 index into the 2x2 grid
+	scrollOffset   [4]int // per-section vertical scroll offset
+	sectionLines   [4]int // per-section total content lines (set during render)
+
+	// showLifecyclePanel toggles the bottom-right section between the
+	// Tool Usage view (default) and the Lifecycle P50/P95 view. Bound to 't'.
+	showLifecyclePanel bool
 }
 
 // NewMetricsMode creates a new MetricsMode.
@@ -141,6 +147,7 @@ func (m *MetricsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			m.costTrend = msg.costTrend
 			m.toolUsage = msg.toolUsage
 			m.toolEvents = msg.toolEvents
+			m.lifecycleByType = msg.lifecycleByType
 			m.lastRefresh = time.Now()
 			// Reset scroll offsets on data refresh to avoid stale positions.
 			m.scrollOffset = [4]int{}
@@ -220,6 +227,13 @@ func (m *MetricsMode) Update(msg tea.Msg) (Mode, tea.Cmd) {
 			m.focusedSection = secBugHotspots
 		case "4":
 			m.focusedSection = secToolUsage
+
+		case "t":
+			// Toggle the bottom-right panel between Tool Usage (default) and
+			// Lifecycle P50/P95. Reset the panel's scroll offset so the new
+			// content renders from the top.
+			m.showLifecyclePanel = !m.showLifecyclePanel
+			m.scrollOffset[secToolUsage] = 0
 		}
 		return m, nil
 	}
@@ -261,13 +275,15 @@ func (m *MetricsMode) fetchMetrics() tea.Cmd {
 		costTrend, _ := db.QueryCostTrend(30)
 		toolUsage, _ := db.QueryToolUsage(since)
 		toolEvents, _ := db.QueryToolEvents(since)
+		lifecycleByType, _ := db.QueryLifecycleByType(since)
 		return metricsDataMsg{
-			dora:       dora,
-			formulas:   formulas,
-			bugs:       bugs,
-			costTrend:  costTrend,
-			toolUsage:  toolUsage,
-			toolEvents: toolEvents,
+			dora:            dora,
+			formulas:        formulas,
+			bugs:            bugs,
+			costTrend:       costTrend,
+			toolUsage:       toolUsage,
+			toolEvents:      toolEvents,
+			lifecycleByType: lifecycleByType,
 		}
 	}
 }
@@ -281,7 +297,7 @@ func scheduleMetricsTick() tea.Cmd {
 
 // FooterHints returns keybinding hints for the metrics mode.
 func (m *MetricsMode) FooterHints() string {
-	parts := []string{"h/l=column", "j/k=scroll", "1-4=sections"}
+	parts := []string{"h/l=column", "j/k=scroll", "1-4=sections", "t=tool/lifecycle"}
 	if !m.lastRefresh.IsZero() {
 		parts = append(parts, fmt.Sprintf("updated %s", relativeTime(m.lastRefresh)))
 	}
@@ -322,21 +338,30 @@ func (m *MetricsMode) View() string {
 	leftColWidth := m.width / 2
 	rightColWidth := m.width - leftColWidth
 
-	// Render the four sections, recording content line counts.
+	// Render the four sections, recording content line counts. The bottom-right
+	// panel toggles between Tool Usage (default) and Lifecycle P50/P95 via 't'.
 	formulaContent := m.renderFormulaContent()
 	costContent := m.renderCostTrendContent()
 	bugContent := m.renderBugContent()
-	toolContent := m.renderToolUsageContent()
+	var bottomRightContent []string
+	var bottomRightTitle string
+	if m.showLifecyclePanel {
+		bottomRightContent = m.renderLifecycleContent()
+		bottomRightTitle = "Lifecycle P50/P95"
+	} else {
+		bottomRightContent = m.renderToolUsageContent()
+		bottomRightTitle = "Tool Usage"
+	}
 
 	m.sectionLines[secFormulaPerf] = len(formulaContent)
 	m.sectionLines[secCostTrend] = len(costContent)
 	m.sectionLines[secBugHotspots] = len(bugContent)
-	m.sectionLines[secToolUsage] = len(toolContent)
+	m.sectionLines[secToolUsage] = len(bottomRightContent)
 
 	topLeft := m.renderSection("Formula Performance", formulaContent, leftColWidth, topRowHeight, secFormulaPerf)
 	topRight := m.renderSection("Cost Trend (30d)", costContent, rightColWidth, topRowHeight, secCostTrend)
 	bottomLeft := m.renderSection("Failure Hotspots", bugContent, leftColWidth, bottomRowHeight, secBugHotspots)
-	bottomRight := m.renderSection("Tool Usage", toolContent, rightColWidth, bottomRowHeight, secToolUsage)
+	bottomRight := m.renderSection(bottomRightTitle, bottomRightContent, rightColWidth, bottomRowHeight, secToolUsage)
 
 	topRow := lipgloss.JoinHorizontal(lipgloss.Top, topLeft, topRight)
 	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, bottomLeft, bottomRight)
@@ -630,6 +655,56 @@ func (m *MetricsMode) renderToolUsageContent() []string {
 			Truncate(t.FormulaName, 14), Truncate(t.Phase, 10), t.TotalRead, t.TotalEdit, t.TotalTools, ratioStr))
 	}
 	return lines
+}
+
+// renderLifecycleContent returns lines for the Lifecycle P50/P95 panel,
+// a compact per-bead-type rollup mirroring cmd/spire/metrics.go's
+// renderLifecycleByType template. The column widths are narrower than the
+// CLI version to fit the bottom-right board panel.
+//
+// Columns: TYPE, CNT, F→C P50, F→C P95, R→C P50, R→C P95,
+// S→C P50, S→C P95, Q P50, Q P95.
+func (m *MetricsMode) renderLifecycleContent() []string {
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	if len(m.lifecycleByType) == 0 {
+		return []string{dimStyle.Render("  No lifecycle data")}
+	}
+
+	lines := []string{
+		dimStyle.Render(fmt.Sprintf("  %-7s %3s %5s %5s %5s %5s %5s %5s %5s %5s",
+			"TYPE", "CNT",
+			"F→C50", "F→C95",
+			"R→C50", "R→C95",
+			"S→C50", "S→C95",
+			"Q50", "Q95")),
+	}
+	for _, r := range m.lifecycleByType {
+		lines = append(lines, fmt.Sprintf("  %-7s %3d %5s %5s %5s %5s %5s %5s %5s %5s",
+			Truncate(r.BeadType, 7), r.Count,
+			fmtSecondsCompact(r.FiledToClosedP50), fmtSecondsCompact(r.FiledToClosedP95),
+			fmtSecondsCompact(r.ReadyToClosedP50), fmtSecondsCompact(r.ReadyToClosedP95),
+			fmtSecondsCompact(r.StartedToClosedP50), fmtSecondsCompact(r.StartedToClosedP95),
+			fmtSecondsCompact(r.QueueP50), fmtSecondsCompact(r.QueueP95),
+		))
+	}
+	return lines
+}
+
+// fmtSecondsCompact formats a duration in seconds using the most-significant
+// unit. Mirrors the fmtSeconds semantics from cmd/spire/metrics.go so the
+// board display matches the CLI.
+func fmtSecondsCompact(sec float64) string {
+	if sec < 0 {
+		return "—"
+	}
+	if sec < 120 {
+		return fmt.Sprintf("%.0fs", sec)
+	}
+	if sec < 7200 {
+		return fmt.Sprintf("%.1fm", sec/60)
+	}
+	return fmt.Sprintf("%.2fh", sec/3600)
 }
 
 // centeredMessage renders a message centered in the available space.

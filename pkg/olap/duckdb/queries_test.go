@@ -1305,3 +1305,118 @@ func TestViewRefreshDORAWithApproveResult(t *testing.T) {
 		t.Errorf("QueryTrends total merges: got %d, want 1", totalMerges)
 	}
 }
+
+// TestQueryFormulaPerformance_AvgReviewRoundsUndiluted verifies that
+// avg_review_rounds reflects only rows with review_rounds > 0 (i.e. sage
+// runs) and is not diluted by zero-valued apprentice/wizard rows. This
+// mirrors the pattern already applied to daily_formula_stats.
+func TestQueryFormulaPerformance_AvgReviewRoundsUndiluted(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Seed 3 apprentice runs (review_rounds=0) and 1 sage run (review_rounds=3).
+	// Dilution bug: AVG(review_rounds) over {0,0,0,3} = 0.75.
+	// Correct:     AVG(CASE WHEN review_rounds > 0 ...) = 3.0.
+	runs := []struct {
+		id, phase, result string
+		rounds            int
+	}{
+		{"a1", "implement", "success", 0},
+		{"a2", "implement", "success", 0},
+		{"a3", "implement", "failure", 0},
+		{"a4", "sage-review", "approve", 3},
+	}
+	for _, r := range runs {
+		_, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO agent_runs_olap (id, bead_id, formula_name, formula_version,
+				phase, tower, repo, result, review_rounds, started_at, completed_at)
+			VALUES (?, 'b1', 'review-heavy', '1', ?, 't1', '', ?, ?, ?, ?)`,
+			r.id, r.phase, r.result, r.rounds,
+			now.Add(-time.Hour), now.Add(-time.Hour+time.Minute))
+		if err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	stats, err := db.QueryFormulaPerformance(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("QueryFormulaPerformance: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 formula row, got %d", len(stats))
+	}
+	got := stats[0]
+	if got.FormulaName != "review-heavy" {
+		t.Errorf("FormulaName: got %q, want review-heavy", got.FormulaName)
+	}
+	if got.TotalRuns != 4 {
+		t.Errorf("TotalRuns: got %d, want 4", got.TotalRuns)
+	}
+	// Only the sage row contributes to avg_review_rounds (3.0 rounded to 1dp).
+	if math.Abs(got.AvgReviewRounds-3.0) > 0.1 {
+		t.Errorf("AvgReviewRounds: got %.2f, want 3.0 (undiluted by review_rounds=0 rows)", got.AvgReviewRounds)
+	}
+}
+
+// TestQueryFormulaPerformance_ApproveCountsAsSuccess verifies that result
+// 'approve' (the sage verdict for successful review) counts toward successes
+// and success_rate alongside result 'success'. Mirrors the spi-wob6d fix in
+// weekly_merge_stats where review-heavy formulas were under-reporting because
+// sage approvals weren't being counted.
+func TestQueryFormulaPerformance_ApproveCountsAsSuccess(t *testing.T) {
+	db, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// 2 success + 2 approve + 1 failure → 4 of 5 = 80% success.
+	// Before the fix: only 2/5 = 40% would be reported.
+	runs := []struct {
+		id, phase, result string
+	}{
+		{"s1", "implement", "success"},
+		{"s2", "implement", "success"},
+		{"s3", "sage-review", "approve"},
+		{"s4", "sage-review", "approve"},
+		{"s5", "implement", "failure"},
+	}
+	for _, r := range runs {
+		_, err := db.SqlDB().ExecContext(ctx, `
+			INSERT INTO agent_runs_olap (id, bead_id, formula_name, formula_version,
+				phase, tower, repo, result, started_at, completed_at)
+			VALUES (?, 'b1', 'review-heavy', '1', ?, 't1', '', ?, ?, ?)`,
+			r.id, r.phase, r.result,
+			now.Add(-time.Hour), now.Add(-time.Hour+time.Minute))
+		if err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	stats, err := db.QueryFormulaPerformance(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("QueryFormulaPerformance: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 formula row, got %d", len(stats))
+	}
+	got := stats[0]
+	if got.TotalRuns != 5 {
+		t.Errorf("TotalRuns: got %d, want 5", got.TotalRuns)
+	}
+	if got.Successes != 4 {
+		t.Errorf("Successes (success + approve): got %d, want 4", got.Successes)
+	}
+	if math.Abs(got.SuccessRate-80.0) > 0.1 {
+		t.Errorf("SuccessRate: got %.1f, want 80.0 (counts approve alongside success)", got.SuccessRate)
+	}
+}

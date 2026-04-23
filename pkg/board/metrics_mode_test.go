@@ -39,6 +39,22 @@ func newTestMetricsMode() *MetricsMode {
 	m.toolUsage = []olap.ToolUsageStats{
 		{FormulaName: "task-default", Phase: "implement", TotalRead: 120, TotalEdit: 40, ReadRatio: 0.75},
 	}
+	m.lifecycleByType = []olap.LifecycleByType{
+		{
+			BeadType: "task", Count: 12,
+			FiledToClosedP50: 3600, FiledToClosedP95: 7200,
+			ReadyToClosedP50: 1800, ReadyToClosedP95: 3600,
+			StartedToClosedP50: 900, StartedToClosedP95: 1800,
+			QueueP50: 300, QueueP95: 600,
+		},
+		{
+			BeadType: "bug", Count: 5,
+			FiledToClosedP50: 1200, FiledToClosedP95: 2400,
+			ReadyToClosedP50: 600, ReadyToClosedP95: 1200,
+			StartedToClosedP50: 300, StartedToClosedP95: 600,
+			QueueP50: 60, QueueP95: 120,
+		},
+	}
 	return m
 }
 
@@ -731,9 +747,159 @@ func TestFooterHints(t *testing.T) {
 	m := newTestMetricsMode()
 	hints := m.FooterHints()
 
-	for _, hint := range []string{"h/l=column", "j/k=scroll", "1-4=sections", "r=refresh"} {
+	for _, hint := range []string{"h/l=column", "j/k=scroll", "1-4=sections", "t=tool/lifecycle", "r=refresh"} {
 		if !strings.Contains(hints, hint) {
 			t.Fatalf("expected %q in footer hints", hint)
+		}
+	}
+}
+
+// --- Lifecycle toggle tests ---
+
+// TestLifecycleToggle_SwapsBottomRightPanel verifies that pressing 't' swaps
+// the bottom-right panel from the Tool Usage view to the Lifecycle P50/P95
+// view, and that pressing 't' again swaps it back.
+func TestLifecycleToggle_SwapsBottomRightPanel(t *testing.T) {
+	m := newTestMetricsMode()
+
+	// Default: Tool Usage panel.
+	if m.showLifecyclePanel {
+		t.Fatal("expected showLifecyclePanel=false by default")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Tool Usage") {
+		t.Fatal("expected 'Tool Usage' title in default view")
+	}
+	if strings.Contains(view, "Lifecycle P50/P95") {
+		t.Fatal("unexpected 'Lifecycle P50/P95' title before toggle")
+	}
+
+	// Press 't' — should flip to Lifecycle panel.
+	sendKey(m, "t")
+	if !m.showLifecyclePanel {
+		t.Fatal("expected showLifecyclePanel=true after 't'")
+	}
+	view = m.View()
+	if !strings.Contains(view, "Lifecycle P50/P95") {
+		t.Fatal("expected 'Lifecycle P50/P95' title after toggle")
+	}
+	if strings.Contains(view, "Tool Usage") {
+		t.Fatal("unexpected 'Tool Usage' title after toggle")
+	}
+
+	// Press 't' again — back to Tool Usage.
+	sendKey(m, "t")
+	if m.showLifecyclePanel {
+		t.Fatal("expected showLifecyclePanel=false after second 't'")
+	}
+	view = m.View()
+	if !strings.Contains(view, "Tool Usage") {
+		t.Fatal("expected 'Tool Usage' title after second toggle")
+	}
+}
+
+// TestLifecycleToggle_RendersSeededData verifies the lifecycle panel renders
+// the seeded data (bead types, counts, and at least one formatted duration).
+func TestLifecycleToggle_RendersSeededData(t *testing.T) {
+	m := newTestMetricsMode()
+	m.showLifecyclePanel = true
+
+	lines := m.renderLifecycleContent()
+	// Expect header + 2 data rows.
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines (header + 2 rows), got %d", len(lines))
+	}
+
+	combined := strings.Join(lines, "\n")
+	for _, want := range []string{"TYPE", "CNT", "F→C50", "task", "bug"} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("expected %q in rendered lifecycle content; got:\n%s", want, combined)
+		}
+	}
+
+	// Verify fmtSecondsCompact output appears for the seeded values. The task
+	// row has FiledToClosedP50=3600s which formats as "60.0m".
+	if !strings.Contains(combined, "60.0m") {
+		t.Errorf("expected '60.0m' (FiledToClosedP50=3600) in rendered content; got:\n%s", combined)
+	}
+}
+
+// TestLifecycleToggle_EmptyDataDoesNotCrash verifies the lifecycle panel
+// gracefully handles zero rows, mirroring how other panels render an empty
+// state line rather than an empty box.
+func TestLifecycleToggle_EmptyDataDoesNotCrash(t *testing.T) {
+	m := newTestMetricsMode()
+	m.lifecycleByType = nil
+	m.showLifecyclePanel = true
+
+	lines := m.renderLifecycleContent()
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line for empty data, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "No lifecycle data") {
+		t.Fatalf("expected 'No lifecycle data' empty-state message, got %q", lines[0])
+	}
+
+	// View() must still render without panicking.
+	view := m.View()
+	if !strings.Contains(view, "Lifecycle P50/P95") {
+		t.Fatal("expected 'Lifecycle P50/P95' title even with empty data")
+	}
+}
+
+// TestLifecycleToggle_DoesNotCollideWithNavigation verifies that toggling the
+// lifecycle panel with 't' does not disturb the existing 1-4/h/j/k/l focus
+// state, and that existing navigation still works after a toggle.
+func TestLifecycleToggle_DoesNotCollideWithNavigation(t *testing.T) {
+	m := newTestMetricsMode()
+
+	// Move focus to section 2 first.
+	sendKey(m, "3")
+	if m.focusedSection != secBugHotspots {
+		t.Fatalf("expected secBugHotspots after '3', got %d", m.focusedSection)
+	}
+
+	// 't' should not change focus.
+	sendKey(m, "t")
+	if m.focusedSection != secBugHotspots {
+		t.Fatalf("expected focus unchanged by 't', got %d", m.focusedSection)
+	}
+	if !m.showLifecyclePanel {
+		t.Fatal("expected lifecycle panel active after 't'")
+	}
+
+	// Navigation keys still work after toggle.
+	sendKey(m, "l")
+	if m.focusedSection != secToolUsage {
+		t.Fatalf("expected secToolUsage after 'l' from secBugHotspots, got %d", m.focusedSection)
+	}
+	sendKey(m, "1")
+	if m.focusedSection != secFormulaPerf {
+		t.Fatalf("expected secFormulaPerf after '1', got %d", m.focusedSection)
+	}
+}
+
+// TestFmtSecondsCompact verifies the compact seconds formatter mirrors the
+// CLI's fmtSeconds semantics (seconds under 120, minutes under 7200, hours
+// beyond).
+func TestFmtSecondsCompact(t *testing.T) {
+	tests := []struct {
+		sec  float64
+		want string
+	}{
+		{-1, "—"},
+		{0, "0s"},
+		{30, "30s"},
+		{119, "119s"},
+		{120, "2.0m"},
+		{7199, "120.0m"},
+		{7200, "2.00h"},
+		{36000, "10.00h"},
+	}
+	for _, tt := range tests {
+		got := fmtSecondsCompact(tt.sec)
+		if got != tt.want {
+			t.Errorf("fmtSecondsCompact(%v) = %q, want %q", tt.sec, got, tt.want)
 		}
 	}
 }
