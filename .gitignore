@@ -21,6 +21,7 @@ mysql:/
 synced-epics.json
 .beads/push-state.json
 .spire/
+.spire-prompt.txt
 
 # Next.js
 .next/
