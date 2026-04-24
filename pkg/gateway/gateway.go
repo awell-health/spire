@@ -285,12 +285,22 @@ func (s *Server) createBead(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 
-// handleBeadByID routes GET and PATCH for /api/v1/beads/{id}
+// handleBeadByID routes GET and PATCH for /api/v1/beads/{id} and
+// GET /api/v1/beads/{id}/tree (subtree graph).
 func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	id := pathSuffix(r.URL.Path, "/api/v1/beads/")
-	// Strip trailing /read etc — only handle bare ID here.
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bead ID required"})
+		return
+	}
+	// /api/v1/beads/{id}/tree
+	if strings.HasSuffix(id, "/tree") {
+		s.getBeadTree(w, r, strings.TrimSuffix(id, "/tree"))
+		return
+	}
+	// /api/v1/beads/{id}/comments
+	if strings.HasSuffix(id, "/comments") {
+		s.getBeadComments(w, r, strings.TrimSuffix(id, "/comments"))
 		return
 	}
 	switch r.Method {
@@ -301,6 +311,70 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+// getBeadTree answers GET /api/v1/beads/{id}/tree with the selected bead's
+// full ancestor chain (root → target) and descendant subtree (target → leaves).
+// Built in-memory from a single store.ListBeads({}) call — for the local
+// tower's ~2k beads this completes in sub-millisecond time.
+func (s *Server) getBeadTree(w http.ResponseWriter, _ *http.Request, id string) {
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	// ListBoardBeads populates dependencies so FindParentID resolves —
+	// ListBeads leaves Parent empty since it doesn't populate deps.
+	// ListBoardBeads defaults ExcludeStatus=[closed] when ExcludeStatus is
+	// empty, so pass a sentinel (harmless) status to bypass the default and
+	// surface closed beads in the graph.
+	filter := beads.IssueFilter{ExcludeStatus: []beads.Status{"__none__"}}
+	all, err := store.ListBoardBeads(filter)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	byID := make(map[string]store.BoardBead, len(all))
+	childrenOf := make(map[string][]string)
+	for _, b := range all {
+		byID[b.ID] = b
+		if b.Parent != "" {
+			childrenOf[b.Parent] = append(childrenOf[b.Parent], b.ID)
+		}
+	}
+	root, ok := byID[id]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bead not found"})
+		return
+	}
+	// Ancestor chain — root-most first.
+	var ancestors []store.BoardBead
+	for cur := root.Parent; cur != ""; {
+		p, ok := byID[cur]
+		if !ok {
+			break
+		}
+		ancestors = append([]store.BoardBead{p}, ancestors...)
+		cur = p.Parent
+	}
+	// Descendant subtree — flat list (each with parent pointer) so the client
+	// can render its own tree shape.
+	var descendants []store.BoardBead
+	var walk func(string)
+	walk = func(pid string) {
+		for _, cid := range childrenOf[pid] {
+			if c, ok := byID[cid]; ok {
+				descendants = append(descendants, c)
+				walk(cid)
+			}
+		}
+	}
+	walk(id)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":          id,
+		"bead":        root,
+		"ancestors":   ancestors,
+		"descendants": descendants,
+	})
 }
 
 func (s *Server) getBead(w http.ResponseWriter, _ *http.Request, id string) {
@@ -544,6 +618,27 @@ func (s *Server) handleTower(w http.ResponseWriter, r *http.Request) {
 		out["archmage"] = tower.Archmage.Name
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// getBeadComments answers GET /api/v1/beads/{id}/comments — the full
+// comment thread in insertion order, newest last. The CLI surfaces the
+// same list via `spire focus`; this is how the desktop's Comments tab
+// hydrates.
+func (s *Server) getBeadComments(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	comments, err := store.GetComments(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, comments)
 }
 
 // handleTowers answers GET /api/v1/towers with every tower config on disk
