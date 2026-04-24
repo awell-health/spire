@@ -101,6 +101,17 @@ Wizards orchestrate the full lifecycle. You don't need to drive each step manual
 
 See the [epic formula diagram](docs/epic-formula.md) for a visual walkthrough of how an epic moves through design → plan → implement → review → merge.
 
+## Authentication
+
+Spire carries two Claude credential slots: a **subscription** OAuth token (for Max/Team accounts) and an **api-key** (`sk-ant-api03-…`). The default slot handles routine work; P0 beads and `--turbo` summons automatically use the api-key slot, and a 429 on the subscription can auto-promote mid-run. Install both with:
+
+```bash
+echo "$SUBSCRIPTION_TOKEN" | spire config auth set subscription --token-stdin
+echo "$API_KEY"           | spire config auth set api-key      --key-stdin
+```
+
+See [docs/auth.md](docs/auth.md) for the full walkthrough: the 6-step selection order, `-H` per-run overrides, 429 auto-promote behavior, observability (`spire cost`, `spire config auth show`), and security notes.
+
 ## The archmage's toolkit
 
 ### See what's happening
