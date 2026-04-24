@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads"
@@ -16,6 +17,20 @@ type BeadOps interface {
 	CloseBead(id string) error
 }
 
+// Dependent-kind constants consumed by CloseRelatedDependents.
+// Callers compose a []string with any combination; unknown values are ignored.
+const (
+	// KindRecovery matches beads carrying the "recovery-bead" label. This
+	// covers both new-style (type=recovery) and legacy (type=task with
+	// recovery-bead label) recovery beads.
+	KindRecovery = "recovery"
+	// KindAlert matches beads carrying any "alert:*" label (or the bare
+	// "alert" label). These are the per-failure alert beads that the
+	// executor escalation path files (merge-failure, dispatch-failure,
+	// build-failure, ...).
+	KindAlert = "alert"
+)
+
 // isRecoveryBead returns true for both new-style (type=recovery) and old-style
 // (type=task + recovery-bead label) beads. Uses the "recovery-bead" label which
 // both styles carry.
@@ -28,16 +43,61 @@ func isRecoveryBead(item *beads.IssueWithDependencyMetadata) bool {
 	return false
 }
 
+// isAlertBead returns true for beads carrying any "alert:*" label or the bare
+// "alert" label. Spire's escalation paths file these per-failure-class so the
+// board can surface them; reset should close them in the cascade (spi-pwdhs5
+// Bug B) so stale alerts don't linger past a reset.
+func isAlertBead(item *beads.IssueWithDependencyMetadata) bool {
+	for _, l := range item.Labels {
+		if l == "alert" || strings.HasPrefix(l, "alert:") {
+			return true
+		}
+	}
+	return false
+}
+
 // isRecoveryLink returns true for both caused-by (new) and recovery-for (old)
 // dependency edges.
 func isRecoveryLink(depType string) bool {
 	return depType == "caused-by" || depType == "recovery-for"
 }
 
-// CloseRelatedRecoveryBeads closes all open recovery beads linked to beadID.
-// Handles both new (caused-by) and legacy (recovery-for) dependency edges.
-// reason is appended as a comment before closing.
-func CloseRelatedRecoveryBeads(ops BeadOps, beadID, reason string) error {
+// matchesKind returns true if item satisfies any of the requested kinds.
+// KindRecovery matches recovery beads (recovery-bead label); KindAlert
+// matches alert beads (alert:* label). Unknown kinds are silently ignored —
+// callers typed this list in source, not at runtime, so a bad kind is a
+// programmer error surfaced by tests.
+func matchesKind(item *beads.IssueWithDependencyMetadata, kinds []string) bool {
+	for _, k := range kinds {
+		switch k {
+		case KindRecovery:
+			if isRecoveryBead(item) {
+				return true
+			}
+		case KindAlert:
+			if isAlertBead(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// CloseRelatedDependents closes open dependent beads linked to beadID whose
+// kind appears in the kinds slice. This is the generalized replacement for
+// CloseRelatedRecoveryBeads — pass kinds=[]string{KindRecovery} to preserve
+// the old behavior; pass kinds=[]string{KindRecovery, KindAlert} to also
+// close alert beads (the spi-pwdhs5 Bug B reset-cascade fix).
+//
+// Dependents are matched via the recovery-link edge set (caused-by or
+// recovery-for). The dependency edge type is what distinguishes related
+// failure/recovery/alert children from unrelated dependents (blocked-by,
+// discovered-from, etc.) — we never close beads linked by arbitrary edge.
+//
+// reason is appended as a comment before closing. When kinds contains
+// KindAlert, callers typically pass a "reset-cycle:<N>" string so the board
+// can group post-reset state by cycle (see cmd/spire/reset.go).
+func CloseRelatedDependents(ops BeadOps, beadID string, kinds []string, reason string) error {
 	items, err := ops.GetDependentsWithMeta(beadID)
 	if err != nil {
 		return err
@@ -46,12 +106,15 @@ func CloseRelatedRecoveryBeads(ops BeadOps, beadID, reason string) error {
 		if item.Status != beads.StatusOpen && item.Status != beads.StatusInProgress {
 			continue
 		}
-		if !isRecoveryBead(item) || !isRecoveryLink(string(item.DependencyType)) {
+		if !isRecoveryLink(string(item.DependencyType)) {
+			continue
+		}
+		if !matchesKind(item, kinds) {
 			continue
 		}
 		_ = ops.AddComment(item.ID, fmt.Sprintf("Resolved: %s", reason))
 		if err := ops.CloseBead(item.ID); err != nil {
-			return fmt.Errorf("close recovery bead %s: %w", item.ID, err)
+			return fmt.Errorf("close dependent bead %s: %w", item.ID, err)
 		}
 	}
 	return nil

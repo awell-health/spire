@@ -102,7 +102,6 @@ func init() {
 	summonCmd.Flags().Bool("turbo", false, "Alias for --auth=api-key")
 	summonCmd.Flags().StringArrayP("header", "H", nil, "Ephemeral Anthropic header: x-anthropic-api-key or x-anthropic-token (repeatable)")
 
-
 	dismissCmd.Flags().Bool("all", false, "Dismiss all wizards")
 	dismissCmd.Flags().String("targets", "", "Comma-separated bead IDs to dismiss")
 	dismissCmd.Flags().String("target", "", "Alias for --targets")
@@ -118,11 +117,11 @@ func init() {
 
 // --- Registry function wrappers ---
 
-func wizardRegistryPath() string                              { return agent.RegistryPath() }
-func loadWizardRegistry() wizardRegistry                      { return agent.LoadRegistry() }
-func saveWizardRegistry(reg wizardRegistry)                   { agent.SaveRegistry(reg) }
-func wizardRegistryAdd(entry localWizard) error               { return agent.RegistryAdd(entry) }
-func wizardRegistryRemove(name string) error                  { return agent.RegistryRemove(name) }
+func wizardRegistryPath() string                { return agent.RegistryPath() }
+func loadWizardRegistry() wizardRegistry        { return agent.LoadRegistry() }
+func saveWizardRegistry(reg wizardRegistry)     { agent.SaveRegistry(reg) }
+func wizardRegistryAdd(entry localWizard) error { return agent.RegistryAdd(entry) }
+func wizardRegistryRemove(name string) error    { return agent.RegistryRemove(name) }
 func wizardRegistryUpdate(name string, f func(*localWizard)) error {
 	return agent.RegistryUpdate(name, f)
 }
@@ -581,6 +580,14 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 		saveWizardRegistry(reg)
 	}
 
+	// Orphan-attempt reconciliation before the interpreter starts.
+	// If a prior wizard was kill -9'd mid-attempt, its attempt bead stays
+	// in_progress forever with no live process and no graph_state.json —
+	// the next summon would stack a second attempt on top. Close the
+	// orphan here so the wizard's next CreateAttemptBead call starts from
+	// a clean slate. Seam 15 (wizard dead → wizard resumed) in spi-1dk71j.
+	reconcileOrphanAttempts(targetIDs, reg)
+
 	if len(targetIDs) > 0 {
 		// Look up each target bead directly.
 		for _, id := range targetIDs {
@@ -868,6 +875,147 @@ func reapDeadWizard(w localWizard, quiet bool) {
 				}
 			}
 		}
+	}
+}
+
+// orphanReconcilerSeams holds the test-replaceable function pointers used by
+// reconcileOrphanAttempts. Production wiring uses the package-level store
+// and executor helpers; tests assign their own implementations to exercise
+// the reconciler without a live dolt server or runtime directory.
+type orphanReconcilerSeams struct {
+	GetChildren       func(parentID string) ([]Bead, error)
+	ListBeads         func(filter beads.IssueFilter) ([]Bead, error)
+	LoadGraphState    func(agentName string) (*executor.GraphState, error)
+	AddLabel          func(beadID, label string) error
+	AddComment        func(beadID, text string) error
+	CloseBead         func(beadID string) error
+	ProcessAliveCheck func(pid int) bool
+}
+
+// defaultOrphanReconcilerSeams returns the production seam wiring.
+func defaultOrphanReconcilerSeams() orphanReconcilerSeams {
+	return orphanReconcilerSeams{
+		GetChildren: storeGetChildren,
+		ListBeads:   storeListBeads,
+		LoadGraphState: func(agentName string) (*executor.GraphState, error) {
+			return executor.LoadGraphState(agentName, configDir)
+		},
+		AddLabel:          storeAddLabel,
+		AddComment:        storeAddComment,
+		CloseBead:         storeCloseBead,
+		ProcessAliveCheck: processAlive,
+	}
+}
+
+// reconcileOrphanAttempts scans for in_progress/open attempt beads whose
+// parent wizard is neither alive (no process in the registry) nor has
+// graph state on disk, and closes them as interrupted:orphan. Runs before
+// the interpreter starts so the next summon creates a fresh attempt bead
+// rather than stacking a second one on top of the ghost attempt.
+//
+// This is seam 15 from spi-1dk71j ("wizard dead → wizard resumed"): when
+// a wizard is kill -9'd mid-attempt with no reset ever running, the
+// attempt stays in_progress forever because neither the wizard (dead) nor
+// the reset path (not invoked) cleans it up. Next summon would create a
+// second attempt, and the first would leak.
+//
+// Idempotency: the scan rechecks state each time. Calling it twice in a
+// row closes nothing new — the second run finds the orphans already
+// closed (status=closed short-circuits). Zero-target scans also no-op.
+//
+// Strict additivity: we only close an attempt when BOTH (a) the registry
+// shows no live wizard process AND (b) the wizard has no graph_state.json
+// on disk. Either signal alone is treated as "wizard may still be alive"
+// and the attempt is left alone. False positives here cause real data
+// loss (a running wizard's attempt bead closed underneath it).
+//
+// targetIDs (optional) scopes the reconciliation to specific parent beads;
+// empty means all in_progress attempt beads in the tower.
+func reconcileOrphanAttempts(targetIDs []string, liveReg wizardRegistry) {
+	reconcileOrphanAttemptsWithSeams(targetIDs, liveReg, defaultOrphanReconcilerSeams())
+}
+
+// reconcileOrphanAttemptsWithSeams is the test-seamed form. See
+// reconcileOrphanAttempts for the full contract.
+func reconcileOrphanAttemptsWithSeams(targetIDs []string, liveReg wizardRegistry, seams orphanReconcilerSeams) {
+	// Build set of live agent names from the registry.
+	liveAgents := make(map[string]bool)
+	for _, w := range liveReg.Wizards {
+		if w.PID > 0 && seams.ProcessAliveCheck(w.PID) {
+			liveAgents[w.Name] = true
+		}
+	}
+
+	var attemptCandidates []Bead
+	if len(targetIDs) > 0 {
+		// Scoped scan: only look at children of the named parents.
+		for _, parentID := range targetIDs {
+			children, err := seams.GetChildren(parentID)
+			if err != nil {
+				continue
+			}
+			for _, c := range children {
+				if isAttemptBead(c) && (c.Status == "in_progress" || c.Status == "open") {
+					attemptCandidates = append(attemptCandidates, c)
+				}
+			}
+		}
+	} else {
+		// Tower-wide scan: every in_progress attempt bead.
+		items, err := seams.ListBeads(beads.IssueFilter{})
+		if err != nil {
+			return
+		}
+		for _, b := range items {
+			if !isAttemptBead(b) {
+				continue
+			}
+			if b.Status != "in_progress" && b.Status != "open" {
+				continue
+			}
+			attemptCandidates = append(attemptCandidates, b)
+		}
+	}
+
+	for _, att := range attemptCandidates {
+		// Resolve the wizard name from the attempt's agent:<name> label.
+		agentName := hasLabel(att, "agent:")
+		if agentName == "" {
+			// Legacy attempt beads may lack the label; fall back to the
+			// parent-derived name "wizard-<parent>".
+			if att.Parent != "" {
+				agentName = "wizard-" + att.Parent
+			}
+		}
+		if agentName == "" {
+			continue // cannot identify the wizard — leave alone
+		}
+
+		// Gate A: registry shows a live wizard process → skip.
+		if liveAgents[agentName] {
+			continue
+		}
+
+		// Gate B: graph_state.json on disk → skip (wizard may be about
+		// to resume; reaper will clean up if the process is truly dead).
+		existingGraphState, _ := seams.LoadGraphState(agentName)
+		if existingGraphState != nil {
+			continue
+		}
+
+		// Both gates cleared — this attempt is an orphan. Close it.
+		if err := seams.AddLabel(att.ID, "interrupted:orphan"); err != nil {
+			fmt.Printf("  %s(note: could not label orphan attempt %s: %s)%s\n", dim, att.ID, err, reset)
+		}
+		if err := seams.AddComment(att.ID, "Closed by summon orphan reconciler: wizard has no live process and no graph state on disk"); err != nil {
+			// Best-effort — do not abort on comment failure.
+			_ = err
+		}
+		if err := seams.CloseBead(att.ID); err != nil {
+			fmt.Printf("  %s(note: could not close orphan attempt %s: %s)%s\n", dim, att.ID, err, reset)
+			continue
+		}
+		fmt.Printf("  %s✗ closed orphan attempt %s (wizard %s: dead + no state)%s\n", dim, att.ID, agentName, reset)
 	}
 }
 

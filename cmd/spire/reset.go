@@ -1,6 +1,6 @@
 // Package main — reset.go implements `spire reset`.
 //
-// Reset model
+// # Reset model
 //
 // `spire reset <bead>` does exactly one thing: it returns a bead to a clean
 // "ready to be summoned again" state. It does NOT re-summon. Callers who
@@ -20,29 +20,29 @@
 //     reached (Status != "pending"); a pending target is rejected. Two flags
 //     compose onto `--to` for manual operator override:
 //
-//     * `--force` drops the "target must be reached" precondition. Pending
-//       steps outside the rewind set are force-advanced to completed with
-//       empty outputs, so the graph can route forward from target on resume.
+//   - `--force` drops the "target must be reached" precondition. Pending
+//     steps outside the rewind set are force-advanced to completed with
+//     empty outputs, so the graph can route forward from target on resume.
 //
-//     * `--set <step>.outputs.<key>=<value>` writes output overrides onto
-//       any step in the graph (repeatable; value may contain `=`). Overrides
-//       apply regardless of whether the step is inside the rewind set. When
-//       an override is applied, any completed step downstream of the
-//       overridden step is added to the rewind set so its when-clause can
-//       re-evaluate on next summon.
+//   - `--set <step>.outputs.<key>=<value>` writes output overrides onto
+//     any step in the graph (repeatable; value may contain `=`). Overrides
+//     apply regardless of whether the step is inside the rewind set. When
+//     an override is applied, any completed step downstream of the
+//     overridden step is added to the rewind set so its when-clause can
+//     re-evaluate on next summon.
 //
 //     Canonical spi-cwgiy9 replay (epic stuck in implement-failed terminal
 //     with the apprentice work actually good):
 //
-//         spire reset spi-cwgiy9 --to review --force \
-//             --set implement.outputs.outcome=verified
+//     spire reset spi-cwgiy9 --to review --force \
+//     --set implement.outputs.outcome=verified
 //
 //     This force-advances past the missing precondition (review was never
 //     reached), overrides implement's output so review's when-clause fires
 //     and implement-failed's doesn't, and rewinds implement-failed so it
 //     re-evaluates instead of routing to bead.finish on resume.
 //
-// Child-bead categorization
+// # Child-bead categorization
 //
 // Reset treats the children of a bead in three groups:
 //
@@ -75,7 +75,7 @@
 //     runs separately to close recovery-for dependents that are no longer
 //     applicable.
 //
-// Label stripping
+// # Label stripping
 //
 // Reset removes the "stuck state" labels from the bead itself:
 //   - `interrupted:*` (executor-exit, build-failure, etc.)
@@ -98,7 +98,7 @@
 //     rebuild it cleanly. Wave-apprentice beads themselves are left alone;
 //     they get re-dispatched on the next summon.
 //
-// Step beads vs wave-apprentice beads
+// # Step beads vs wave-apprentice beads
 //
 // The reopen-on-rewind logic in `--to` applies only to TOP-LEVEL step beads
 // (the ones tracked in GraphState.StepBeadIDs). Subgraphs dispatch wave
@@ -535,9 +535,16 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		bumpParentResetCycle(beadID)
 	}
 
-	// --- Close related recovery beads (both soft and hard paths) ---
-	if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "reset (v3)"); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
+	// --- Close related recovery + alert beads (both soft and hard paths) ---
+	// Alerts are included in the cascade so stale alerts (merge-failure,
+	// dispatch-failure, ...) don't linger on the board referencing a
+	// deleted worktree after reset. readParentResetCycle returns the
+	// cycle that was already in effect on this bead (pre-bump), so the
+	// stamp points at the cycle the alerts *belonged* to — the one that
+	// just ended. See spi-pwdhs5 Bug B.
+	cascadeReason := fmt.Sprintf("reset-cycle:%d", readParentResetCycle(beadID))
+	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, cascadeReason); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not close dependents: %v\n", err)
 	}
 
 	fmt.Printf("%s reset (v3)\n", beadID)
@@ -863,9 +870,10 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 		fmt.Printf("  %s(left %d step bead(s) unchanged — already open/in_progress)%s\n", dim, leftSteps, reset)
 	}
 
-	// --- 8b. Close related recovery beads ---
-	if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "reset --to (v3)"); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
+	// --- 8b. Close related recovery + alert beads ---
+	cascadeReason := fmt.Sprintf("reset-cycle:%d", readParentResetCycle(beadID))
+	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, cascadeReason); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not close dependents: %v\n", err)
 	}
 
 	// --- 9. Save updated graph state ---
@@ -1191,8 +1199,14 @@ func doRemoveGraphStateFiles(wizardName string, quiet bool) bool {
 // buildProtectedBeadIDs builds a set of bead IDs that should never be touched
 // during reset. This includes:
 //   - Design beads (linked via discovered-from deps)
-//   - Recovery beads (linked via recovery-for or caused-by deps, or with recovery-bead label)
-//   - Alert beads (linked via caused-by deps with alert:* label, or children with alert:* label)
+//   - Recovery beads (linked via recovery-for or caused-by deps, or with
+//     recovery-bead label)
+//
+// Alert beads are intentionally NOT protected — they flow through the reset
+// cascade via CloseRelatedDependents with kinds=[recovery, alert] and are
+// stamped reset-cycle:<N> for audit. Prior behavior kept them alive across
+// reset, which left stale alerts (merge-failure, dispatch-failure) referencing
+// deleted worktrees on the board after a reset. See spi-pwdhs5 Bug B.
 func buildProtectedBeadIDs(beadID string, children []Bead) map[string]bool {
 	protectedIDs := make(map[string]bool)
 
@@ -1205,17 +1219,31 @@ func buildProtectedBeadIDs(beadID string, children []Bead) map[string]bool {
 		}
 	}
 
-	// Recovery and alert beads: linked as dependents via recovery-for or caused-by.
+	// Recovery beads ONLY (not alerts): linked as dependents via recovery-for
+	// or caused-by AND carrying the recovery-bead label. Alert beads on the
+	// same edge types are NOT protected — the reset cascade closes them.
 	if dependents, err := storeGetDependentsWithMeta(beadID); err == nil {
 		for _, dep := range dependents {
-			if dep.DependencyType == "recovery-for" || dep.DependencyType == "caused-by" {
+			if dep.DependencyType != "recovery-for" && dep.DependencyType != "caused-by" {
+				continue
+			}
+			// Narrowed: only recovery-labeled beads are protected.
+			isRecovery := false
+			for _, l := range dep.Labels {
+				if l == "recovery-bead" {
+					isRecovery = true
+					break
+				}
+			}
+			if isRecovery {
 				protectedIDs[dep.ID] = true
 			}
 		}
 	}
 
-	// Belt-and-suspenders: protect children with recovery-bead or alert:* labels
-	// even if they weren't found via dependency edges.
+	// Belt-and-suspenders: protect children with recovery-bead labels
+	// even if they weren't found via dependency edges. Alert-labeled
+	// children are NOT protected (fall through to the reset cascade).
 	for _, child := range children {
 		if isProtectedByLabel(child) {
 			protectedIDs[child.ID] = true
@@ -1226,13 +1254,11 @@ func buildProtectedBeadIDs(beadID string, children []Bead) map[string]bool {
 }
 
 // isProtectedByLabel returns true if a bead should be protected from reset
-// based on its labels (recovery-bead or alert:* labels).
+// based on its labels. Narrowed to strict recovery-bead labels — alert:*
+// labels are no longer protected (see spi-pwdhs5 Bug B).
 func isProtectedByLabel(b Bead) bool {
 	for _, l := range b.Labels {
 		if l == "recovery-bead" {
-			return true
-		}
-		if strings.HasPrefix(l, "alert:") {
 			return true
 		}
 	}
@@ -1317,6 +1343,17 @@ func deleteBeadDescendants(parentID string) {
 
 // resetCleanWorktreesAndBranches removes worktrees and branches for a bead.
 // Shared between v2 hard-reset and v3 hard-reset paths.
+//
+// In addition to the primary worktree and the `.worktrees/<bead>*` set, this
+// also sweeps `$TMPDIR/spire-review/<name>/<bead>*` and
+// `$TMPDIR/spire-wizard/<name>/<bead>*` (see spi-pwdhs5 Bug B). A sage or
+// wizard that died mid-run can leave a worktree under one of those paths
+// that holds `feat/<bead>` open; next summon + merge would collide. Globs
+// are per-bead (not `*` wholesale) so concurrent wizards on other beads are
+// never disturbed. The cwgiy9 in-wizard recovery design guarantees there is
+// no parallel cleric pod whose worktree could be wrongly wiped — if a
+// future cleric-pod reintroduction breaks that invariant, this sweep must
+// be tightened to check ownership before removal.
 func resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName string) {
 	// Remove worktree directory.
 	if worktreePath == "" {
@@ -1340,6 +1377,35 @@ func resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName string) {
 	for _, m := range wtMatches {
 		if err := os.RemoveAll(m); err == nil {
 			fmt.Printf("  %s✗ subtask worktree removed: %s%s\n", dim, filepath.Base(m), reset)
+		}
+	}
+
+	// Sweep $TMPDIR/spire-review/<name>/<bead>* and
+	// $TMPDIR/spire-wizard/<name>/<bead>* for stale sage/wizard worktrees
+	// left holding feat/<bead> open. Per-bead scoping only — each glob
+	// anchors on the specific bead ID, never a wildcard.
+	tmpRoots := []string{
+		filepath.Join(os.TempDir(), "spire-review"),
+		filepath.Join(os.TempDir(), "spire-wizard"),
+	}
+	for _, root := range tmpRoots {
+		// Glob match: <root>/<anyname>/<bead>*. Each <anyname> subdir belongs
+		// to a sage or wizard identity; we match only per-bead children.
+		tmpMatches, _ := filepath.Glob(filepath.Join(root, "*", beadID+"*"))
+		for _, m := range tmpMatches {
+			// Extra safety: ensure the last path segment looks like a
+			// same-bead worktree. filepath.Glob already ensures this by
+			// virtue of the literal beadID+"*" suffix, but the base check
+			// guards against accidental shell-glob escapes.
+			base := filepath.Base(m)
+			if base != beadID && !strings.HasPrefix(base, beadID+"-") && !strings.HasPrefix(base, beadID+".") {
+				continue
+			}
+			if err := os.RemoveAll(m); err == nil {
+				fmt.Printf("  %s✗ temp worktree removed: %s%s\n", dim, m, reset)
+			} else if !os.IsNotExist(err) {
+				fmt.Printf("  %s(note: could not remove temp worktree %s: %s)%s\n", dim, m, err, reset)
+			}
 		}
 	}
 
