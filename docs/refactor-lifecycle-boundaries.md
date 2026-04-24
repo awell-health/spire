@@ -324,12 +324,16 @@ type BeginOpts struct {
 
 // BeginWork establishes the full work state for a local-summon.
 //
-// Steps (local mode):
+// Steps (local mode), IN THIS ORDER:
 //   1. Calls OrphanSweep(deps, OrphanScope{BeadID: beadID}) to close
-//      any in-progress attempts for this bead whose registry entries are dead.
-//   2. Creates a new attempt bead via Deps.CreateAttemptBead.
-//   3. Flips the task bead to status=in_progress.
-//   4. Upserts the registry entry (ModeLocal only; skipped for ModeCluster).
+//      any in-progress attempts for this bead whose registry entries are dead,
+//      AND to close any orphan attempt beads (in_progress attempt with no live
+//      registry entry — phantom-attempt case where a prior registry write failed).
+//   2. Upserts the registry entry FIRST (ModeLocal only).
+//      Registry-first ordering means that if step 3 or 4 fails, the entry
+//      exists for the next OrphanSweep to find and clean up.
+//   3. Creates a new attempt bead via Deps.CreateAttemptBead.
+//   4. Flips the task bead to status=in_progress.
 //
 // Returns the new attempt bead ID.
 // Error if the bead is already in_progress with a live owner (caller must
@@ -343,10 +347,10 @@ func BeginWork(deps Deps, beadID string, opts BeginOpts) (attemptID string, err 
 // ClaimWork is the claim-path entrypoint (both local and cluster).
 // Called from cmd/spire/claim.go.
 //
-// Steps:
+// ClaimWork is the MINIMAL STATE MACHINE ONLY:
 //   1. Reads the bead status. Accepts: ready, dispatched, in_progress, hooked.
 //   2. If status is in_progress or hooked:
-//      - If an attempt exists with the same agentName → reclaim (return existing attemptID).
+//      - If an attempt exists owned by the same agentName → reclaim (return existing attemptID).
 //      - Otherwise → return error (different agent owns it).
 //   3. If status is ready or dispatched:
 //      - Creates a new attempt bead.
@@ -354,6 +358,14 @@ func BeginWork(deps Deps, beadID string, opts BeginOpts) (attemptID string, err 
 //      - For ModeLocal: upserts registry entry.
 //
 // Returns the attempt bead ID (new or reclaimed).
+//
+// IMPORTANT: The following business logic from cmd/spire/claim.go stays IN claim.go,
+// NOT in ClaimWork:
+//   - Instance ownership verification (IsOwnedByInstance / StampAttemptInstance)
+//   - Assignee field stamping on the bead
+//   - Hooked-step clearing on human-takeover path
+// Agent C should keep this logic in claim.go and extract only the
+// attempt-creation + status-flip + registry steps into ClaimWork.
 func ClaimWork(deps Deps, beadID string, opts BeginOpts) (attemptID string, err error)
 
 // EndResult describes the outcome of a work unit.
@@ -381,14 +393,18 @@ type EndResult struct {
 //
 // Steps:
 //   1. Closes the current attempt bead with EndResult.Status as the result label.
-//   2. Closes alert + recovery children of beadID via
-//      Deps.AlertCascadeClose(beadID, []string{"caused-by", "related"}).
+//   2. Closes alert + recovery children of beadID via Deps.AlertCascadeClose(beadID),
+//      which covers caused-by, recovery-for (legacy), AND related dep edges.
 //   3. If ReopenTask: transitions task bead in_progress → open.
 //      If !ReopenTask: transitions task bead in_progress → closed.
 //   4. Strips EndResult.StripLabels from the task bead.
 //   5. Removes registry entry (ModeLocal only; noop for ModeCluster).
 //
 // Idempotent: safe to call even if parts of the state are already clean.
+//
+// NOTE: EndWork is called from cmd/spire/ paths (resummon, reset) and pkg/steward.
+// It is NOT called from pkg/executor/graph_actions.go:actionBeadFinish — the
+// executor's close path is a deliberate carve-out (see Migration section).
 func EndWork(deps Deps, beadID string, opts BeginOpts, result EndResult) error
 
 // OrphanScope controls what OrphanSweep examines.
@@ -421,16 +437,22 @@ type SweepReport struct {
 // OrphanSweep is the canonical cleanup pass. LOCAL-NATIVE ONLY.
 // Cluster-native uses CheckBeadHealth + stale heartbeat instead.
 //
-// Dual-signal orphan detection: an entry is declared dead when BOTH
-// conditions hold:
-//   (a) syscall.Kill(entry.PID, 0) returns an error (PID not running), AND
-//   (b) no graph_state.json exists at entry.Worktree/.spire/graph_state.json
-//       (worktree is empty or absent).
+// OrphanSweep runs TWO complementary scans to close all phantom-attempt cases:
 //
-// This preserves crash-safe resume: a wizard that just crashed but
-// left a graph_state.json can still be resummon'd into existing state.
-// An entry with no graph_state.json has no resumable state — it is
-// safe to declare orphaned.
+// SCAN A — Registry-driven (detects crashed wizards):
+//   An entry is declared dead when BOTH conditions hold:
+//   (a) syscall.Kill(entry.PID, 0) returns an error (PID not running), AND
+//   (b) no graph_state.json exists at entry.Worktree/.spire/graph_state.json.
+//   Dead PID + graph_state.json present → NOT orphaned (crash-safe resume).
+//   Dead PID + no graph_state.json → orphaned; close attempt, reopen bead, remove entry.
+//
+// SCAN B — Attempt-driven (detects phantom attempts from failed registry writes):
+//   Scan all in_progress attempt beads whose parent task bead is in_progress.
+//   For each, check if there is a live registry entry with the attempt's agent name.
+//   If no live registry entry exists (registry write failed during BeginWork):
+//   check graph_state.json — if absent, close attempt + reopen bead.
+//   This replaces the current cmd/spire/summon.go:reconcileOrphanAttempts logic,
+//   which the steward daemon is the correct owner of.
 //
 // Called every tick by the steward daemon AND defensively by BeginWork.
 // Idempotent: second call on already-clean state is a no-op.
@@ -444,9 +466,11 @@ type Deps interface {
     CloseAttemptBead(attemptID string, resultLabel string) error
     ListAttemptsForBead(beadID string) ([]store.Bead, error)
     RemoveLabel(id, label string) error
-    // AlertCascadeClose closes all caused-by and related alert+recovery
-    // children of sourceBeadID.
-    AlertCascadeClose(sourceBeadID string, depTypes []string) error
+    // AlertCascadeClose closes all alert+recovery children of sourceBeadID
+    // reachable via any of: caused-by, recovery-for (legacy edge), or related.
+    // Implementation: calls pkg/recovery.CloseRelatedDependents with
+    // depTypes=[]string{"caused-by", "recovery-for", "related"}.
+    AlertCascadeClose(sourceBeadID string) error
 }
 ```
 
@@ -455,18 +479,27 @@ type Deps interface {
 | Old call site | New |
 |---|---|
 | `cmd/spire/summon.go:543-558` (status transition + attempt logic) | `beadlifecycle.BeginWork(deps, beadID, BeginOpts{Mode: ModeLocal, ...})` |
-| `cmd/spire/claim.go:86-139` (attempt creation + status transition) | `beadlifecycle.ClaimWork(deps, beadID, BeginOpts{...})` |
-| `cmd/spire/summon.go:861 reconcileOrphanAttempts` | **DELETE**. Daemon tick handles it. |
-| `cmd/spire/summon.go:767 cleanDeadWizards` / `summon.go:799 reapDeadWizard` | **DELETE**. Daemon tick handles it. |
-| `pkg/steward/daemon.go:699 ReapDeadAgents` | `beadlifecycle.OrphanSweep(deps, OrphanScope{All: true})` |
-| `pkg/executor/graph_actions.go actionBeadFinish close path` | `beadlifecycle.EndWork(deps, beadID, opts, EndResult{Status: "success"})` |
-| `pkg/executor/graph_actions.go discard path` | `beadlifecycle.EndWork(..., EndResult{Status: "discarded"})` |
+| `cmd/spire/claim.go:86-139` (attempt creation + status transition only) | `beadlifecycle.ClaimWork(deps, beadID, BeginOpts{...})` — business logic stays in claim.go |
+| `cmd/spire/summon.go:861 reconcileOrphanAttempts` | **DELETE**. OrphanSweep's Scan B absorbs this logic in the daemon, which is the correct owner. |
+| `cmd/spire/summon.go:767 cleanDeadWizards` / `summon.go:799 reapDeadWizard` | **DELETE**. OrphanSweep's Scan A absorbs this. |
+| `pkg/steward/daemon.go:699 ReapDeadAgents` | `beadlifecycle.OrphanSweep(deps, OrphanScope{All: true})` — runs both scans |
 | `cmd/spire/resummon.go:62-112` (state cleanup before re-summon) | `beadlifecycle.EndWork(..., EndResult{Status: "interrupted", ReopenTask: true, CascadeReason: "resummon", StripLabels: []string{"review-approved"}})` then `beadlifecycle.BeginWork(...)` |
 | `cmd/spire/reset.go:1097,1280,1304` attempt-closing calls | `beadlifecycle.EndWork(..., EndResult{Status: "reset", ReopenTask: true, CascadeReason: "reset"})` |
 
-**Note on `actionBeadFinish` + close guard:**
+**EXPLICIT CARVE-OUT — executor's close path:**
 
-The close-cascade guard (`childHasSuccessfulAttempt` / `childLandedOnBranch`) stays in `pkg/executor/graph_actions.go:actionBeadFinish`. `EndWork` is called AFTER the guard passes — it is the executor of the decision, not the decision-maker. This is the correct division: the executor determines when a close is legitimate; `beadlifecycle` handles the mechanical state transitions once the decision is made.
+`pkg/executor/graph_actions.go:actionBeadFinish` is **out of scope** for this refactor.
+
+The executor is a library that runs the formula and is responsible for formula completion. Making it call `beadlifecycle.EndWork` would require the executor to import `pkg/beadlifecycle`, violating the dep boundary (see dependency diagram). It would also require changing how execution completion is signalled back to the wizard layer — a larger refactor in its own right.
+
+For this refactor, `actionBeadFinish` continues to:
+- Run the close guard (`childLandedOnBranch`)
+- Loop over orphan subtask children and close them (graph_actions.go:1026)
+- Close the task bead via `deps.CloseBead`
+- Call `recovery.CloseRelatedDependents` for cascade (widened by Agent B)
+- Close the attempt bead via `deps.CloseAttemptBead`
+
+Agent C does NOT touch `actionBeadFinish`. The acceptance criterion (item 3) explicitly exempts this path.
 
 **Note on `RegisterSelf` replacement:**
 
@@ -481,7 +514,7 @@ Per-entrypoint unit tests with stubbed Deps:
 - `TestBeginWork_AlreadyInProgress_Live` — prior attempt in_progress with live owner → returns error.
 - `TestClaimWork_Dispatched_Cluster` — dispatched bead, ModeCluster → attempt created, bead in_progress, no registry call.
 - `TestClaimWork_Reclaim_Same_Agent` — in_progress bead with matching agentName → returns existing attemptID.
-- `TestEndWork_HappyClose_Local` — attempt closed with result:success, bead closed, alerts+recovery cascaded (both caused-by and related deps), registry removed.
+- `TestEndWork_HappyClose_Local` — attempt closed with result:success, bead closed, alerts+recovery cascaded (caused-by + recovery-for + related deps), registry removed.
 - `TestEndWork_Interrupted_Reopen` — ReopenTask=true → bead reopened, not closed.
 - `TestEndWork_StripLabels` — StripLabels=["review-approved"] → label removed from task bead.
 - `TestEndWork_ClusterMode_SkipsRegistry` — ModeCluster → registry.Remove not called.
@@ -490,6 +523,8 @@ Per-entrypoint unit tests with stubbed Deps:
 - `TestOrphanSweep_LivePID` — live PID → NOT orphaned.
 - `TestOrphanSweep_DeadOnly_AllScope` — 2 dead + 1 live → sweeps 2, leaves 1.
 - `TestOrphanSweep_Idempotent` — second call is a no-op.
+- `TestOrphanSweep_PhantomAttempt` — in_progress attempt bead with no live registry entry AND no graph_state.json → Scan B closes it + reopens parent (phantom-attempt from failed registry write).
+- `TestOrphanSweep_PhantomAttempt_HasGraphState` — in_progress attempt bead with no live registry entry BUT graph_state.json present → NOT reaped (crash-safe resume).
 
 Integration tests (against a real sqlite/dolt fixture):
 
@@ -517,7 +552,7 @@ These are small but urgent — they close the specific leaks visible on the boar
 
    **Agent B prerequisite:** `pkg/recovery/bead_ops.CloseRelatedDependents` currently filters by `isRecoveryLink` (line 109), which only accepts `caused-by` and `recovery-for`. Agent B must extend this function to accept a `depTypes []string` parameter replacing the hardcoded `isRecoveryLink` check. Signature change: `func CloseRelatedDependents(ops BeadOps, beadID string, kinds []string, depTypes []string, reason string) error`. Existing callers pass `depTypes: []string{"caused-by", "recovery-for"}` to preserve current behaviour; `AlertCascadeClose` passes `depTypes: []string{"caused-by", "related"}`. This is Agent B's work because it touches the cascade logic that Agent B is already migrating.
 
-5. **Dead-letter labeling preserved** — `OrphanSweep` adds label `dead-letter` to registry entries it marks as orphaned before removing them. This preserves audit history: grep `bd list --label dead-letter` to see what was reaped.
+5. **Dead-letter labeling** — when OrphanSweep declares a wizard orphaned, it adds label `dead-letter:orphan` to the **task bead** (not the registry entry — registry entries are JSON, not queryable via `bd`). This gives a bd-queryable record of what was reaped and why. Note: the existing daemon's `dead-letter:<agent>` labeling on *message beads* is a separate mechanism (unread messages) and is unaffected by this refactor.
 
 ---
 
@@ -566,7 +601,7 @@ Each agent works in its own worktree. The merge agent integrates in order Phase 
 4. Archmage message beads and alert beads carry the source bead's prefix. Unit tests verify against spd-parent fixtures.
 5. Steward daemon tick closes orphan attempt beads + reopens their parents within one tick. Integration test: start fake wizard (local mode), kill it (remove PID + graph_state.json), wait one tick, verify state clean.
 6. Steward daemon tick does NOT reap a wizard that crashed but left graph_state.json. Integration test: kill PID, keep graph_state.json, wait one tick, verify bead still in_progress (resumable).
-7. After successful bead close, all caused-by AND related alert children are closed. Integration test: 2 alert deps (one caused-by, one related) + 1 recovery dep; all three closed.
+7. After EndWork close (resummon/reset paths), all caused-by + recovery-for + related alert/recovery children are closed. Integration test: 1 caused-by alert + 1 related alert + 1 recovery-for recovery bead; all three closed. (The executor's actionBeadFinish path is separately tested in pkg/executor tests.)
 8. `spire claim <dispatched-bead>` in cluster mode creates attempt bead + transitions in_progress + NO registry entry. Integration test.
 9. Full `go test ./...` green. No tests skipped. Pre-existing test suites for summon / claim / reset / resummon / executor all pass.
 10. `wizards.json` never contains entries for beads whose status is `closed`. Daemon tick guarantees this.
