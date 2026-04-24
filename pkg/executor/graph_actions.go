@@ -3,7 +3,9 @@ package executor
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -884,6 +886,75 @@ func childHasSuccessfulAttempt(e *Executor, childID string) bool {
 	return false
 }
 
+// commitAttributionRE matches Conventional-Commit subjects of the form
+// "<type>(<bead-id>): ...", per CLAUDE.md. Capture group 1 is the bead ID.
+// Kept permissive on the type token (alphanumerics) so new types added to
+// the convention (e.g. "perf") do not silently slip past attribution.
+var commitAttributionRE = regexp.MustCompile(`^[a-zA-Z]+\(([^)]+)\):`)
+
+// commitAttributesBead returns true if subject is a Conventional-Commit
+// header attributed to childID. Case-sensitive: bead IDs are lowercase by
+// convention. Empty/malformed subjects return false.
+func commitAttributesBead(subject, childID string) bool {
+	if subject == "" || childID == "" {
+		return false
+	}
+	m := commitAttributionRE.FindStringSubmatch(subject)
+	if len(m) < 2 {
+		return false
+	}
+	return m[1] == childID
+}
+
+// mergedCommitsAttributeBead reports whether any commit reachable from
+// branchTip but not from base carries a "<type>(<childID>):" subject.
+//
+// Scoping: we list commits on base..branchTip only — typically the merged
+// epic/feature branch's unique history since divergence from main. Bounded
+// by the branch's own size, not the repo history, so the check is
+// O(branch-commits) per call. When repoPath or branchTip is empty (unit-test
+// paths) the function returns (false, nil) — the caller then falls back to
+// the attempt-bead check.
+func mergedCommitsAttributeBead(repoPath, base, branchTip, childID string) (bool, error) {
+	if repoPath == "" || branchTip == "" || childID == "" {
+		return false, nil
+	}
+	rangeArg := branchTip
+	if base != "" {
+		rangeArg = base + ".." + branchTip
+	}
+	cmd := exec.Command("git", "-C", repoPath, "log", "--pretty=format:%s", rangeArg)
+	out, err := cmd.Output()
+	if err != nil {
+		// Ref resolution failures (e.g. staging branch already pruned post-merge)
+		// should not strand the epic — return false and let the caller fall back.
+		return false, nil
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if commitAttributesBead(strings.TrimSpace(line), childID) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// childLandedOnBranch returns true if child has either a successful attempt
+// bead or a commit on the merged branch attributed to its ID. This is the
+// close-cascade guard's "landed" predicate. Wave apprentices implement
+// multiple subtasks on one branch in one run, producing per-subtask commit
+// attribution (feat(<child>): ...) but no per-subtask attempt beads. Commit
+// attribution is a stronger proof of landing than an attempt bead.
+func childLandedOnBranch(e *Executor, state *GraphState, childID string) bool {
+	if childHasSuccessfulAttempt(e, childID) {
+		return true
+	}
+	if state == nil {
+		return false
+	}
+	ok, _ := mergedCommitsAttributeBead(state.RepoPath, state.BaseBranch, state.StagingBranch, childID)
+	return ok
+}
+
 // actionBeadFinish closes the bead and sets executor to terminated.
 // Reads With parameters:
 //
@@ -933,7 +1004,7 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 				if e.deps.IsAttemptBead(child) || e.deps.IsStepBead(child) || e.deps.IsReviewRoundBead(child) {
 					continue
 				}
-				if !childHasSuccessfulAttempt(e, child.ID) {
+				if !childLandedOnBranch(e, state, child.ID) {
 					stranded = append(stranded, child.ID)
 				}
 			}

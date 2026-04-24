@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -2038,5 +2039,85 @@ func TestActionHumanApprove_InconsistentState(t *testing.T) {
 	}
 	if result.Outputs["status"] != "approved" {
 		t.Errorf("expected status=approved, got %q", result.Outputs["status"])
+	}
+}
+
+// Unit test: the Conventional-Commit attribution matcher. Asserts the
+// exact shape of subject lines we treat as "this commit attributes code
+// to <childID>", per CLAUDE.md's `<type>(<bead-id>): <message>` format.
+func TestCommitAttributesBead_Table(t *testing.T) {
+	cases := []struct {
+		name, subject, child string
+		want                 bool
+	}{
+		{"feat match", "feat(spi-k465sm): add thing", "spi-k465sm", true},
+		{"fix match", "fix(spi-abc): repair", "spi-abc", true},
+		{"docs match", "docs(spi-abc): update readme", "spi-abc", true},
+		{"chore match", "chore(spi-abc): deps", "spi-abc", true},
+		{"refactor match", "refactor(spi-abc): rename", "spi-abc", true},
+		{"test match", "test(spi-abc): coverage", "spi-abc", true},
+		{"wrong id", "feat(spi-other): add thing", "spi-abc", false},
+		{"no type", "(spi-abc): headerless", "spi-abc", false},
+		{"no parens", "feat spi-abc add thing", "spi-abc", false},
+		{"revert style", `Revert "feat(spi-abc): x"`, "spi-abc", false},
+		{"empty subject", "", "spi-abc", false},
+		{"empty id", "feat(spi-abc): x", "", false},
+		{"case mismatch", "feat(SPI-ABC): x", "spi-abc", false},
+		{"hierarchical id", "feat(spi-abc.1): hier", "spi-abc.1", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commitAttributesBead(tc.subject, tc.child); got != tc.want {
+				t.Fatalf("commitAttributesBead(%q, %q) = %v, want %v", tc.subject, tc.child, got, tc.want)
+			}
+		})
+	}
+}
+
+// Integration test: drive mergedCommitsAttributeBead against a real
+// temp git repo. Confirms that wave-apprentice-style commits attributed
+// to subtask IDs are discoverable on the feature/epic branch.
+func TestMergedCommitsAttributeBead_FindsAttribution(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "T")
+	run("commit", "--allow-empty", "-m", "base")
+	run("checkout", "-q", "-b", "feat/epic")
+	run("commit", "--allow-empty", "-m", "feat(spi-k465sm): wave work")
+	run("commit", "--allow-empty", "-m", "feat(spi-uq03af): more wave work")
+	run("commit", "--allow-empty", "-m", "chore: untagged")
+
+	ok, err := mergedCommitsAttributeBead(dir, "main", "feat/epic", "spi-k465sm")
+	if err != nil {
+		t.Fatalf("spi-k465sm: err=%v", err)
+	}
+	if !ok {
+		t.Fatal("spi-k465sm: not found (want true)")
+	}
+	ok, _ = mergedCommitsAttributeBead(dir, "main", "feat/epic", "spi-uq03af")
+	if !ok {
+		t.Fatal("spi-uq03af not found on branch")
+	}
+	ok, _ = mergedCommitsAttributeBead(dir, "main", "feat/epic", "spi-missing")
+	if ok {
+		t.Fatal("spi-missing should not be found")
+	}
+	// Empty inputs are non-fatal.
+	ok, err = mergedCommitsAttributeBead("", "main", "feat/epic", "spi-k465sm")
+	if ok || err != nil {
+		t.Fatalf("empty repoPath: want (false,nil), got (%v,%v)", ok, err)
+	}
+	// Missing ref → (false, nil) — caller falls back to attempt-bead check.
+	ok, err = mergedCommitsAttributeBead(dir, "main", "feat/nonexistent", "spi-k465sm")
+	if ok || err != nil {
+		t.Fatalf("missing ref: want (false,nil), got (%v,%v)", ok, err)
 	}
 }
