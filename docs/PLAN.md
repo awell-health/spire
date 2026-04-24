@@ -152,6 +152,47 @@ approach, init-container flow, observability vocabulary, and the
 verification criteria operators check before flipping a guild to the
 cache-backed flow): [cluster-repo-cache.md](cluster-repo-cache.md).
 
+#### Phase 3 (cluster-attach for Spire Desktop): spi-mbglak
+
+Goal: one archmage runs a GKE-hosted tower and operates it from Spire
+Desktop on their laptop over HTTPS — no port-forward ritual, no
+hand-rolled tokens, helm install from scratch with a real runbook.
+Design bead: [`spi-mbglak`](../_) "Cluster-attach v1: GKE-hosted tower
++ Spire Desktop from laptop".
+
+Six epics chained into a critical path:
+
+| # | Epic | Work |
+|---|------|------|
+| 0 | `spi-s6nifs` | Split the gateway into its own Deployment (decouple from steward pod) — prerequisite for scaling, independent rollout, and ingress |
+| 1 | `spi-bvp0n9` | Ship spire images to GCR / Artifact Registry so GKE nodes can pull them |
+| 2 | `spi-mupwy4` | `helm/spire/values.gke.yaml` overlay — ClusterIP Service, GCS bundle-store via Workload Identity, real DoltHub sync, replicas>1 on gateway |
+| 3 | `spi-nsuwoj` | Gateway ingress + TLS — GKE Ingress + Google-managed cert OR nginx + cert-manager; routable `https://spire.<domain>` |
+| 4 | `spi-wsb115` | `spire tower attach-cluster --url=X --token=Y` writes a remote-gateway tower config and stores the token in the OS keychain |
+| 5 | `spd-8qs0` | Desktop first-run attach flow + mode indicator in chrome + keychain-backed credentials (no more `SPIRE_API_URL` env var ritual) |
+| 6 | `spi-8bidhs` | `docs/cluster-install.md` — clean GCP project → working tower + attached desktop |
+
+Dep chain:
+
+```
+spi-s6nifs (gateway split) ──────────────────────────────┐
+                                                          │
+spi-bvp0n9 (images) ──┐                                   │
+                      ↓                                   ↓
+                spi-mupwy4 (values.gke.yaml)   spi-nsuwoj (ingress + TLS)
+                      │                                   │
+                      │        spi-wsb115 (attach-cli) ───┤
+                      │                                   │
+                      │                                   ↓
+                      │                            spd-8qs0 (desktop UX)
+                      ↓                                   ↓
+                      └──────────────→ spi-8bidhs (runbook)
+```
+
+Explicit non-goals in v1 (deferred to follow-on work): multi-user /
+per-archmage auth, auto-updater + signed desktop installers,
+multi-tower attach, observability / SLO tooling, backup/restore drill.
+
 - [ ] spi-sn7o3 -- WizardGuild repo-cache; materializes workspaces with `Origin=guild-cache` for faster cold-pod start. Ships when spi-xplwy parity is green (it is) and cluster-image bootstrap (above) is stable enough to attach a cache PVC.
 
 ### 4. Workshop Skill
