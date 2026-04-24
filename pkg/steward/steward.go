@@ -37,6 +37,7 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward/attached"
 	"github.com/awell-health/spire/pkg/store"
@@ -1012,11 +1013,12 @@ func DetectReviewFeedback(dryRun bool) {
 		// Find the wizard owner from the last attempt or fall back.
 		owner := "wizard"
 		// Check wizard registry for a wizard associated with this bead.
-		reg := agent.LoadRegistry()
-		for _, w := range reg.Wizards {
-			if w.BeadID == b.ID {
-				owner = w.Name
-				break
+		if regEntries, err := registry.List(); err == nil {
+			for _, w := range regEntries {
+				if w.BeadID == b.ID {
+					owner = w.Name
+					break
+				}
 			}
 		}
 

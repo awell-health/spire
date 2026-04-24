@@ -20,6 +20,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -177,15 +178,16 @@ func Collect(beadID string, opts Options) (*Data, error) {
 		}
 		agentName = aa.Name
 		if aa.Name != "" {
-			reg := agent.LoadRegistry()
-			for _, w := range reg.Wizards {
-				if w.Name == aa.Name || w.BeadID == beadID {
-					if w.StartedAt != "" {
-						if t, tErr := time.Parse(time.RFC3339, w.StartedAt); tErr == nil {
-							aa.ElapsedMs = time.Since(t).Milliseconds()
+			if regEntries, err := registry.List(); err == nil {
+				for _, w := range regEntries {
+					if w.Name == aa.Name || w.BeadID == beadID {
+						if w.StartedAt != "" {
+							if t, tErr := time.Parse(time.RFC3339, w.StartedAt); tErr == nil {
+								aa.ElapsedMs = time.Since(t).Milliseconds()
+							}
 						}
+						break
 					}
-					break
 				}
 			}
 		}

@@ -23,6 +23,7 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/process"
+	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -125,15 +126,18 @@ func SpawnWizard(bead store.Bead, dispatch string) (Result, error) {
 		}
 	}
 
-	reg := agent.LoadRegistry()
-	before := len(reg.Wizards)
-	reg = cleanDeadWizards(reg)
-	if len(reg.Wizards) < before {
-		agent.SaveRegistry(reg)
+	// Find a live wizard for this bead from the registry.
+	// The duplicate guard uses registry.List() directly.
+	regEntries, _ := registry.List()
+	var liveWizard *registry.Entry
+	for i := range regEntries {
+		if regEntries[i].BeadID == bead.ID && process.ProcessAlive(regEntries[i].PID) {
+			liveWizard = &regEntries[i]
+			break
+		}
 	}
-
-	if w := agent.FindLiveForBead(reg, bead.ID); w != nil && process.ProcessAlive(w.PID) {
-		return Result{WizardName: w.Name}, fmt.Errorf("%w: %s for %s (pid %d)", ErrAlreadyRunning, w.Name, bead.ID, w.PID)
+	if liveWizard != nil {
+		return Result{WizardName: liveWizard.Name}, fmt.Errorf("%w: %s for %s (pid %d)", ErrAlreadyRunning, liveWizard.Name, bead.ID, liveWizard.PID)
 	}
 
 	name := "wizard-" + bead.ID
@@ -161,7 +165,9 @@ func SpawnWizard(bead store.Bead, dispatch string) (Result, error) {
 
 	pid, _ := strconv.Atoi(handle.Identifier())
 	worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
-	if err := agent.RegistryAdd(agent.Entry{
+	// NOTE: registry entry created here. In Phase 2 this will move to
+	// beadlifecycle.BeginWork; for now summon is the sole creator.
+	if err := registry.Upsert(registry.Entry{
 		Name:      name,
 		PID:       pid,
 		BeadID:    bead.ID,
@@ -178,25 +184,6 @@ func SpawnWizard(bead store.Bead, dispatch string) (Result, error) {
 	}
 
 	return Result{WizardName: name, CommentID: commentID}, nil
-}
-
-// cleanDeadWizards is a trimmed copy of cmd/spire's helper — just what Run /
-// SpawnWizard need. It drops placeholder entries (PID<=0) and entries whose
-// process is no longer alive. Side-effect-free beyond filtering — the caller
-// decides whether to reap bead state, label cleanup, etc.
-func cleanDeadWizards(reg agent.Registry) agent.Registry {
-	var alive []agent.Entry
-	for _, w := range reg.Wizards {
-		if w.PID <= 0 {
-			continue
-		}
-		if !process.ProcessAlive(w.PID) {
-			continue
-		}
-		alive = append(alive, w)
-	}
-	reg.Wizards = alive
-	return reg
 }
 
 // resolveTowerName walks the usual sources in precedence order so the spawned

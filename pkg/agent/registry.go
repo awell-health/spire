@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/registry"
 )
 
 // Registry tracks locally summoned wizards.
@@ -39,18 +40,26 @@ func RegistryPath() string {
 }
 
 // LoadRegistry reads the wizard registry from disk.
+// DEPRECATED: migrated to pkg/registry. Use registry.List instead.
 func LoadRegistry() Registry {
-	var reg Registry
-	data, err := os.ReadFile(RegistryPath())
+	entries, err := registry.List()
 	if err != nil {
-		return reg
+		return Registry{}
 	}
-	json.Unmarshal(data, &reg)
+	var reg Registry
+	for _, e := range entries {
+		reg.Wizards = append(reg.Wizards, fromRegistryEntry(e))
+	}
 	return reg
 }
 
 // SaveRegistry writes the wizard registry to disk.
+// DEPRECATED: migrated to pkg/registry. Direct callers should migrate to the
+// atomic Upsert/Remove/Update operations.
 func SaveRegistry(reg Registry) {
+	// Reconstruct from the provided registry by replacing all entries.
+	// This mirrors the legacy behaviour: overwrite the file with whatever
+	// the caller built in-memory. Not atomic — prefer Upsert/Remove.
 	path := RegistryPath()
 	os.MkdirAll(filepath.Dir(path), 0755)
 	data, _ := json.MarshalIndent(reg, "", "  ")
@@ -84,77 +93,63 @@ func RegistryLock() (func(), error) {
 	}
 }
 
+// toRegistryEntry converts an agent.Entry to a registry.Entry.
+func toRegistryEntry(e Entry) registry.Entry {
+	return registry.Entry{
+		Name:           e.Name,
+		PID:            e.PID,
+		BeadID:         e.BeadID,
+		Worktree:       e.Worktree,
+		StartedAt:      e.StartedAt,
+		Phase:          e.Phase,
+		PhaseStartedAt: e.PhaseStartedAt,
+		Tower:          e.Tower,
+		InstanceID:     e.InstanceID,
+	}
+}
+
+// fromRegistryEntry converts a registry.Entry to an agent.Entry.
+func fromRegistryEntry(e registry.Entry) Entry {
+	return Entry{
+		Name:           e.Name,
+		PID:            e.PID,
+		BeadID:         e.BeadID,
+		Worktree:       e.Worktree,
+		StartedAt:      e.StartedAt,
+		Phase:          e.Phase,
+		PhaseStartedAt: e.PhaseStartedAt,
+		Tower:          e.Tower,
+		InstanceID:     e.InstanceID,
+	}
+}
+
 // RegistryAdd adds or replaces an entry in the wizard registry (file-locked).
+// DEPRECATED: migrated to pkg/registry. Use registry.Upsert instead.
 func RegistryAdd(entry Entry) error {
-	unlock, err := RegistryLock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	reg := LoadRegistry()
-
-	// Deduplicate by name — replace if exists, append if new.
-	found := false
-	for i, w := range reg.Wizards {
-		if w.Name == entry.Name {
-			reg.Wizards[i] = entry
-			found = true
-			break
-		}
-	}
-	if !found {
-		reg.Wizards = append(reg.Wizards, entry)
-	}
-
-	SaveRegistry(reg)
-	return nil
+	return registry.Upsert(toRegistryEntry(entry))
 }
 
 // RegistryRemove removes an entry by name from the wizard registry (file-locked).
+// DEPRECATED: migrated to pkg/registry. Use registry.Remove instead.
 func RegistryRemove(name string) error {
-	unlock, err := RegistryLock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	reg := LoadRegistry()
-
-	var kept []Entry
-	for _, w := range reg.Wizards {
-		if w.Name != name {
-			kept = append(kept, w)
-		}
-	}
-	reg.Wizards = kept
-
-	SaveRegistry(reg)
-	return nil
+	return registry.Remove(name)
 }
 
 // RegistryUpdate updates an entry by name using the provided function (file-locked).
+// DEPRECATED: migrated to pkg/registry. Use registry.Update instead.
 func RegistryUpdate(name string, update func(*Entry)) error {
-	unlock, err := RegistryLock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	reg := LoadRegistry()
-
-	for i := range reg.Wizards {
-		if reg.Wizards[i].Name == name {
-			update(&reg.Wizards[i])
-			SaveRegistry(reg)
-			return nil
-		}
-	}
-	return fmt.Errorf("wizard %q not found in registry", name)
+	return registry.Update(name, func(re *registry.Entry) {
+		ae := fromRegistryEntry(*re)
+		update(&ae)
+		*re = toRegistryEntry(ae)
+	})
 }
 
 // RegisterSelf registers the current process in the wizard registry and returns
 // a cleanup function that removes it. Call cleanup via defer.
+// DEPRECATED: migrated to pkg/registry. Runtime field-stamp callers should use
+// registry.Update; summon callers will use beadlifecycle.BeginWork once that
+// package is wired in Phase 2.
 func RegisterSelf(name, beadID, phase string, opts ...func(*Entry)) func() {
 	now := time.Now().UTC().Format(time.RFC3339)
 	entry := Entry{
