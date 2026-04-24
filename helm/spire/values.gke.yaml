@@ -1,0 +1,21 @@
+# Spire Helm chart — GKE overlay
+#
+# Use with: `helm upgrade --install spire -n spire helm/spire -f values.gke.yaml`
+# then layer your own overlay on top for secrets, hosts, and cluster-specific
+# knobs. Settings left commented out here are opt-in examples; uncomment and
+# adapt to your environment.
+
+# Enable HTTPS ingress via GKE Ingress + Google-managed cert.
+# See docs/ingress-tls.md for DNS + cert setup.
+# gateway:
+#   ingress:
+#     enabled: true
+#     className: gce
+#     host: spire.example.com
+#     managedCert:
+#       enabled: true
+#       name: spire-gateway-cert
+#     backendConfig:
+#       enabled: true
+#       http2: true
+#       healthCheckPath: /healthz

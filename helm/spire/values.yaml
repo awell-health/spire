@@ -258,6 +258,17 @@ steward:
 ## @param gateway.resources.requests.memory Gateway memory request.
 ## @param gateway.resources.limits.cpu Gateway CPU limit.
 ## @param gateway.resources.limits.memory Gateway memory limit.
+## @param gateway.ingress.enabled Render an Ingress (and optionally a ManagedCertificate / BackendConfig) in front of the gateway Service. Off by default — opt-in from a GKE overlay or `--set`.
+## @param gateway.ingress.className Value written to `spec.ingressClassName`. Common values: "gce", "gce-internal" (GKE Ingress), or "nginx" (nginx-ingress). Empty leaves the field off so the cluster default class applies.
+## @param gateway.ingress.host Hostname served by the Ingress (e.g. `spire.example.com`). Required when `ingress.enabled=true`.
+## @param gateway.ingress.annotations Extra annotations merged onto the Ingress metadata. Use this for e.g. `cert-manager.io/cluster-issuer` when running Strategy B.
+## @param gateway.ingress.managedCert.enabled Strategy A: render a `networking.gke.io/v1` ManagedCertificate and wire the Ingress via annotation. GKE-only. Mutually exclusive with `tls.enabled`.
+## @param gateway.ingress.managedCert.name Name of the ManagedCertificate resource. Empty defaults to `<fullname>-gateway-cert`; the same default is referenced by the Ingress annotation so the names stay in sync.
+## @param gateway.ingress.tls.enabled Strategy B: populate `spec.tls` on the Ingress. Used with cert-manager (via annotation) or an existing TLS Secret. Mutually exclusive with `managedCert.enabled`.
+## @param gateway.ingress.tls.secretName Name of the TLS Secret referenced by `spec.tls[0].secretName` (e.g. `spire-gateway-tls`). cert-manager writes into this Secret when it issues the certificate.
+## @param gateway.ingress.backendConfig.enabled Render a `cloud.google.com/v1` BackendConfig and annotate the Service to use it. GKE-only; used to control the load-balancer health check and backend protocol.
+## @param gateway.ingress.backendConfig.healthCheckPath HTTP path the GKE health check probes against the gateway pods.
+## @param gateway.ingress.backendConfig.http2 When true, annotate the Service with `cloud.google.com/app-protocols='{"http":"HTTP2"}'` so the GCLB talks HTTP/2 to the gateway.
 gateway:
   enabled: false
   replicas: 1
@@ -274,6 +285,21 @@ gateway:
     limits:
       cpu: 200m
       memory: 256Mi
+  ingress:
+    enabled: false
+    className: ""          # "gce", "gce-internal", or "nginx"
+    host: ""               # e.g. spire.example.com
+    annotations: {}        # extra annotations merged onto the Ingress
+    managedCert:
+      enabled: false       # Strategy A: Google-managed cert
+      name: ""             # defaults to <fullname>-gateway-cert
+    tls:
+      enabled: false       # Strategy B: cert-manager / TLS secret
+      secretName: ""       # e.g. spire-gateway-tls
+    backendConfig:
+      enabled: false       # GKE BackendConfig (healthcheck / HTTP2)
+      healthCheckPath: /healthz
+      http2: false
 
 ## @section Operator configuration
 
