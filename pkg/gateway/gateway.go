@@ -15,6 +15,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -356,15 +357,78 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Recursive CTE queries for parent-child tree walks. Both walk the
+// dependencies table (type='parent-child') to an absolute depth cap of 10,
+// with a row cap of 2000. Indexes on (depends_on_id, type) and (issue_id)
+// make this single-digit-ms against a 6k-row tower. The LEFT JOIN + subquery
+// to resolve the parent uses LIMIT 1 to defend against stray duplicate
+// parent-child edges.
+const treeDescendantsSQL = `
+WITH RECURSIVE walk AS (
+  SELECT d.issue_id AS id, 1 AS depth
+    FROM dependencies d
+   WHERE d.depends_on_id = ? AND d.type = 'parent-child'
+  UNION ALL
+  SELECT d.issue_id, w.depth + 1
+    FROM dependencies d JOIN walk w ON d.depends_on_id = w.id
+   WHERE d.type = 'parent-child' AND w.depth < 10
+)
+SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+       COALESCE((SELECT p.depends_on_id FROM dependencies p
+                   WHERE p.issue_id = i.id AND p.type = 'parent-child' LIMIT 1), '') AS parent,
+       DATE_FORMAT(i.updated_at, '%Y-%m-%dT%H:%i:%sZ') AS updated_at
+  FROM walk w
+  JOIN issues i ON i.id = w.id
+ ORDER BY w.depth, i.id
+ LIMIT 2000`
+
+const treeAncestorsSQL = `
+WITH RECURSIVE walk AS (
+  SELECT d.depends_on_id AS id, 1 AS depth
+    FROM dependencies d
+   WHERE d.issue_id = ? AND d.type = 'parent-child'
+  UNION ALL
+  SELECT d.depends_on_id, w.depth + 1
+    FROM dependencies d JOIN walk w ON d.issue_id = w.id
+   WHERE d.type = 'parent-child' AND w.depth < 10
+)
+SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+       COALESCE((SELECT p.depends_on_id FROM dependencies p
+                   WHERE p.issue_id = i.id AND p.type = 'parent-child' LIMIT 1), '') AS parent,
+       DATE_FORMAT(i.updated_at, '%Y-%m-%dT%H:%i:%sZ') AS updated_at
+  FROM walk w
+  JOIN issues i ON i.id = w.id
+ ORDER BY w.depth DESC, i.id
+ LIMIT 2000`
+
+// queryWalk runs a recursive tree-walk query bound to a single bead id and
+// scans the result rows into store.Bead values. Labels / Metadata /
+// Dependencies are left empty — tree/lineage clients consume only the
+// lightweight fields.
+func queryWalk(db *sql.DB, query, id string) ([]store.Bead, error) {
+	rows, err := db.Query(query, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]store.Bead, 0, 32)
+	for rows.Next() {
+		var b store.Bead
+		if err := rows.Scan(&b.ID, &b.Title, &b.Description, &b.Status, &b.Priority, &b.Type, &b.Parent, &b.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // getBeadTree answers GET /api/v1/beads/{id}/tree with the selected bead's
 // full ancestor chain (root → target) and descendant subtree (target → leaves).
 //
-// The previous implementation loaded every bead in the tower (ListBoardBeads
-// + PopulateDependencies across ~6k+ rows) just to walk a single subtree,
-// which hit 40–70s for a root-level epic. This version only fetches beads
-// along the actual walks: one GetBead per ancestor (bounded by depth, usually
-// <5), and GetChildrenBatch per descendant level. Typical response is now
-// under 200ms even for epics with dozens of subtasks.
+// Earlier implementations either loaded every bead in the tower (ListBoardBeads,
+// 40–70s) or did a Go-side BFS with one SQL round-trip per level (~4s on a
+// deep tree). This version issues two recursive CTE queries against the raw
+// *sql.DB, which returns in tens of ms even for root-level epics.
 func (s *Server) getBeadTree(w http.ResponseWriter, _ *http.Request, id string) {
 	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -375,40 +439,20 @@ func (s *Server) getBeadTree(w http.ResponseWriter, _ *http.Request, id string) 
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	// Ancestor chain — walk up via Parent one at a time. Each GetBead call
-	// populates its own dep graph (so Parent resolves). Cycle-safe via seen-set.
-	ancestors := make([]store.Bead, 0, 4)
-	seen := map[string]bool{root.ID: true}
-	for cur := root.Parent; cur != "" && !seen[cur]; {
-		seen[cur] = true
-		p, err := store.GetBead(cur)
-		if err != nil {
-			break
-		}
-		ancestors = append([]store.Bead{p}, ancestors...)
-		cur = p.Parent
+	db, ok := store.ActiveDB()
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "active db not initialised"})
+		return
 	}
-	// Descendants — BFS by level with GetChildrenBatch so each level is a
-	// single SQL round-trip even when the tree fans out wide.
-	descendants := make([]store.Bead, 0, 32)
-	frontier := []string{id}
-	for len(frontier) > 0 && len(descendants) < 2000 /* safety cap */ {
-		batch, err := store.GetChildrenBatch(frontier)
-		if err != nil {
-			break
-		}
-		next := frontier[:0]
-		for _, pid := range frontier {
-			for _, k := range batch[pid] {
-				if seen[k.ID] {
-					continue
-				}
-				seen[k.ID] = true
-				descendants = append(descendants, k)
-				next = append(next, k.ID)
-			}
-		}
-		frontier = append([]string(nil), next...)
+	ancestors, err := queryWalk(db, treeAncestorsSQL, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	descendants, err := queryWalk(db, treeDescendantsSQL, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":          id,
@@ -832,36 +876,87 @@ func (s *Server) getBeadLineage(w http.ResponseWriter, r *http.Request, id strin
 		Type string `json:"type"`
 	}
 	nodes := map[string]store.Bead{id: target}
-	var edges []edge
-	visited := map[string]bool{id: true}
+	edges := []edge{}
 
-	const maxDepth = 5
-	var walk func(beadID string, depth int)
-	walk = func(beadID string, depth int) {
-		if depth >= maxDepth {
-			return
-		}
-		deps, err := store.GetDepsWithMeta(beadID)
-		if err != nil {
-			return
-		}
-		for _, dep := range deps {
-			edges = append(edges, edge{
-				From: beadID,
-				To:   dep.ID,
-				Type: string(dep.DependencyType),
-			})
-			if visited[dep.ID] {
-				continue
-			}
-			visited[dep.ID] = true
-			if b, err := store.GetBead(dep.ID); err == nil {
-				nodes[dep.ID] = b
-			}
-			walk(dep.ID, depth+1)
-		}
+	db, ok := store.ActiveDB()
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "active db not initialised"})
+		return
 	}
-	walk(id, 0)
+
+	// Recursive walk over every dependency type, depth cap 5. Returns edge
+	// triples; we then batch-fetch the reached node rows in one IN query.
+	const lineageSQL = `
+WITH RECURSIVE walk AS (
+  SELECT d.issue_id AS from_id, d.depends_on_id AS to_id, d.type AS dep_type, 1 AS depth
+    FROM dependencies d
+   WHERE d.issue_id = ?
+  UNION ALL
+  SELECT d.issue_id, d.depends_on_id, d.type, w.depth + 1
+    FROM dependencies d JOIN walk w ON d.issue_id = w.to_id
+   WHERE w.depth < 5
+)
+SELECT from_id, to_id, dep_type FROM walk LIMIT 2000`
+
+	rows, err := db.Query(lineageSQL, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	nodeIDs := map[string]bool{}
+	for rows.Next() {
+		var e edge
+		if err := rows.Scan(&e.From, &e.To, &e.Type); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		edges = append(edges, e)
+		nodeIDs[e.From] = true
+		nodeIDs[e.To] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Batch-fetch beads for all referenced node ids (minus the target, which
+	// is already in `nodes`). Single SELECT ... WHERE id IN (...).
+	var missing []string
+	for nid := range nodeIDs {
+		if nid == id {
+			continue
+		}
+		missing = append(missing, nid)
+	}
+	if len(missing) > 0 {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(missing)), ",")
+		q := `SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+		             COALESCE((SELECT p.depends_on_id FROM dependencies p
+		                         WHERE p.issue_id = i.id AND p.type = 'parent-child' LIMIT 1), '') AS parent,
+		             DATE_FORMAT(i.updated_at, '%Y-%m-%dT%H:%i:%sZ') AS updated_at
+		        FROM issues i WHERE i.id IN (` + placeholders + `)`
+		args := make([]interface{}, len(missing))
+		for i, v := range missing {
+			args[i] = v
+		}
+		nrows, err := db.Query(q, args...)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		for nrows.Next() {
+			var b store.Bead
+			if err := nrows.Scan(&b.ID, &b.Title, &b.Description, &b.Status, &b.Priority, &b.Type, &b.Parent, &b.UpdatedAt); err != nil {
+				nrows.Close()
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			nodes[b.ID] = b
+		}
+		nrows.Close()
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":     id,
