@@ -113,6 +113,16 @@ func TestScanOrphanedBeads_SkipsInvalidJSON(t *testing.T) {
 // --- Positional bead-ID parsing tests ---
 
 func TestCmdSummon_PositionalBeadIDs_PassesParsing(t *testing.T) {
+	// Stub the preflight resolver: this test verifies that a single
+	// positional bead ID clears arg parsing, not that the prefix is
+	// actually bound. Without the stub, cmdSummon would call the real
+	// resolver (hitting dolt) — which is out of scope here.
+	prev := wizardResolveRepoForSummon
+	wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+		return "/tmp/fake", "git@example/fake.git", "main", nil
+	}
+	t.Cleanup(func() { wizardResolveRepoForSummon = prev })
+
 	// Single bead ID: should pass arg parsing and fail later at the store layer.
 	err := cmdSummon([]string{"spi-xxx"})
 	if err == nil {
@@ -128,6 +138,14 @@ func TestCmdSummon_PositionalBeadIDs_PassesParsing(t *testing.T) {
 }
 
 func TestCmdSummon_MultiplePositionalBeadIDs_PassesParsing(t *testing.T) {
+	// See TestCmdSummon_PositionalBeadIDs_PassesParsing for why we stub
+	// the resolver.
+	prev := wizardResolveRepoForSummon
+	wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+		return "/tmp/fake", "git@example/fake.git", "main", nil
+	}
+	t.Cleanup(func() { wizardResolveRepoForSummon = prev })
+
 	// Multiple bead IDs: should pass arg parsing and fail later at the store layer.
 	err := cmdSummon([]string{"spi-xxx", "spi-yyy", "spi-zzz"})
 	if err == nil {
@@ -162,6 +180,14 @@ func TestCmdSummon_PositionalBeadIDs_MutualExclWithCount(t *testing.T) {
 }
 
 func TestCmdSummon_PositionalBeadIDs_CountInferred(t *testing.T) {
+	// See TestCmdSummon_PositionalBeadIDs_PassesParsing for why we stub
+	// the resolver.
+	prev := wizardResolveRepoForSummon
+	wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+		return "/tmp/fake", "git@example/fake.git", "main", nil
+	}
+	t.Cleanup(func() { wizardResolveRepoForSummon = prev })
+
 	// Two positional bead IDs with no explicit count: should infer count=2.
 	// This will fail at the store layer, not at parsing — verifying
 	// that the count-inference logic doesn't produce a "requires a positive number" error.

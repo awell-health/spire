@@ -252,7 +252,16 @@ func preflightResolveTargets(targetIDs []string) error {
 // wizardResolveRepoForSummon is a test seam for preflightResolveTargets
 // so unit tests can inject an in-memory resolver without shelling out to
 // dolt. Production callers always go through wizardResolveRepo.
-var wizardResolveRepoForSummon = wizardResolveRepo
+//
+// It is wrapped in a closure rather than assigned directly
+// (`= wizardResolveRepo`) because wizardResolveRepo is itself a var
+// whose value is set in wizard_bridge.go's init() — package-level var
+// initializers run before init(), so a direct assignment would capture
+// the zero-valued (nil) function. The closure captures the var
+// identifier, dereferencing it at call time after init() has run.
+var wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+	return wizardResolveRepo(beadID)
+}
 
 // formatSummonBindError renders a diagnostic message when a summoned
 // bead's prefix has no local binding. The message names the prefix, its

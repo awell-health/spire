@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/awell-health/spire/pkg/config"
 )
 
 func TestParseDoltRows(t *testing.T) {
@@ -301,5 +304,45 @@ func TestResolveRemoveDatabase_NoTowerNoInstance(t *testing.T) {
 	_, err := resolveRemoveDatabase(cfg, "unknown")
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestRenderLocalBindingCell_UnboundStatesGetWarningMarker verifies that
+// every binding state that collectUnboundPrefixes treats as unbound
+// also renders with a visible `!` marker in `spire repo list`. The two
+// views must agree or operators see a warning at the bottom of `spire
+// status` without any visible cue in the table above. See spi-rpuzs6
+// round-1 review feedback.
+func TestRenderLocalBindingCell_UnboundStatesGetWarningMarker(t *testing.T) {
+	cases := []struct {
+		name    string
+		binding *config.LocalRepoBinding
+	}{
+		{name: "nil binding", binding: nil},
+		{name: "empty state", binding: &config.LocalRepoBinding{State: ""}},
+		{name: "explicit unbound", binding: &config.LocalRepoBinding{State: "unbound"}},
+		{name: "bound with no path", binding: &config.LocalRepoBinding{State: "bound", LocalPath: ""}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plain := renderLocalBindingCell(tc.binding, false)
+			if !strings.HasPrefix(plain, "! ") {
+				t.Errorf("plain render of %q = %q, want `! ` prefix", tc.name, plain)
+			}
+		})
+	}
+}
+
+// TestRenderLocalBindingCell_BoundWithPathIsClean verifies that a
+// properly-bound binding renders without the warning marker — the
+// happy path must not look like a warning.
+func TestRenderLocalBindingCell_BoundWithPathIsClean(t *testing.T) {
+	b := &config.LocalRepoBinding{State: "bound", LocalPath: "/tmp/foo"}
+	plain := renderLocalBindingCell(b, false)
+	if strings.HasPrefix(plain, "! ") {
+		t.Errorf("bound binding with path should not show `!`, got %q", plain)
+	}
+	if !strings.Contains(plain, "/tmp/foo") {
+		t.Errorf("bound binding render %q should contain path", plain)
 	}
 }

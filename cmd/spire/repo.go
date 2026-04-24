@@ -456,6 +456,11 @@ func colorOutputEnabled() bool {
 // red+bold coloring when a TTY is attached) so they don't visually
 // blend with bound entries — see spi-rpuzs6. When NO_COLOR is set or
 // stdout is not a TTY, only the plain-text `!` prefix remains.
+//
+// This must stay in sync with collectUnboundPrefixes in
+// lifecycle_status.go: every state that collectUnboundPrefixes treats
+// as unbound renders with the `!` warning marker here, so the two
+// views agree.
 func renderLocalBindingCell(b *config.LocalRepoBinding, useColor bool) string {
 	if b == nil {
 		if useColor {
@@ -468,7 +473,12 @@ func renderLocalBindingCell(b *config.LocalRepoBinding, useColor bool) string {
 		if b.LocalPath != "" {
 			return fmt.Sprintf("bound (%s)", b.LocalPath)
 		}
-		return "bound"
+		// bound but missing LocalPath: treated as unbound by
+		// collectUnboundPrefixes, so render with the warning marker.
+		if useColor {
+			return red + bold + "! bound (no path)" + reset
+		}
+		return "! bound (no path)"
 	case "unbound":
 		if useColor {
 			return red + bold + "! unbound" + reset
@@ -484,6 +494,14 @@ func renderLocalBindingCell(b *config.LocalRepoBinding, useColor bool) string {
 			return dim + "unmanaged" + reset
 		}
 		return "unmanaged"
+	case "":
+		// Empty state: also treated as unbound by
+		// collectUnboundPrefixes. Render with the warning marker
+		// rather than falling through to an empty string.
+		if useColor {
+			return red + bold + "! unbound" + reset
+		}
+		return "! unbound"
 	default:
 		return b.State
 	}
