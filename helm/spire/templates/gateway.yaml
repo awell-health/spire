@@ -12,6 +12,13 @@ metadata:
     app.kubernetes.io/name: spire-gateway
     app.kubernetes.io/part-of: spire
     app.kubernetes.io/managed-by: {{ .Release.Service }}
+  {{- if and .Values.gateway.ingress.enabled .Values.gateway.ingress.backendConfig.enabled }}
+  annotations:
+    cloud.google.com/backend-config: '{"default": "spire-gateway"}'
+    {{- if .Values.gateway.ingress.backendConfig.http2 }}
+    cloud.google.com/app-protocols: '{"http": "HTTP2"}'
+    {{- end }}
+  {{- end }}
 spec:
   type: {{ .Values.gateway.service.type }}
   selector:
