@@ -19,6 +19,11 @@ The Helm chart now has a `gateway` block (values.yaml §HTTP API gateway).
 `values.smoke.yaml` sets `gateway.enabled: true` with a NodePort Service
 on port 30030.
 
+The gateway runs as its own `spire-gateway` Deployment (separate from
+the steward pod), so rolling one does not disturb the other. Each
+gateway replica brings up its own `.beads/` workspace on an emptyDir
+via the shared tower-attach init-container.
+
 ```bash
 cd /Users/jb/awell/spire
 
@@ -26,7 +31,8 @@ cd /Users/jb/awell/spire
 eval $(minikube -p spire docker-env)
 docker build -f Dockerfile.steward -t spire-steward:dev .
 
-# Helm upgrade — gateway container appears in the steward pod, Service added
+# Helm upgrade — spire-gateway Deployment + Service appear; steward pod
+# loses its gateway container.
 helm upgrade spire-smoke helm/spire -n spire-smoke \
   -f k8s/values.smoke.yaml \
   --set-file gcp.serviceAccountJson=$HOME/Downloads/spire-gcs-sa.json \
@@ -35,13 +41,19 @@ helm upgrade spire-smoke helm/spire -n spire-smoke \
 # (If dolthub creds aren't needed because the smoke tower doesn't sync,
 # pass a dummy: --set-file dolthub.credsKeyValue=/dev/null)
 
-# Wait for rollout
+# Wait for both rollouts
 kubectl -n spire-smoke rollout status deploy/spire-steward --timeout=120s
+kubectl -n spire-smoke rollout status deploy/spire-gateway --timeout=120s
 
-# Verify 3 containers now running
+# Steward pod is now 2 containers (steward + sidecar, no gateway).
 kubectl -n spire-smoke get pod -l app.kubernetes.io/name=spire-steward \
   -o jsonpath='{.items[0].spec.containers[*].name}'
-# Expect: steward gateway sidecar  (or steward sidecar gateway)
+# Expect: steward sidecar
+
+# Gateway pod is a separate Deployment with 1 container.
+kubectl -n spire-smoke get pod -l app.kubernetes.io/name=spire-gateway \
+  -o jsonpath='{.items[0].spec.containers[*].name}'
+# Expect: gateway
 ```
 
 ## 2 — Verify gateway endpoint in-cluster
@@ -107,11 +119,12 @@ cd /Users/jb/awell/spire
 git checkout helm/spire/values.yaml \
               helm/spire/templates/steward.yaml \
               helm/spire/templates/gateway.yaml \
+              helm/spire/templates/gateway-deployment.yaml \
               helm/spire/templates/_helpers.tpl \
               k8s/values.smoke.yaml
 
 # If the gateway template already rendered and you want to drop the
-# Service + gateway container without full rollback:
+# Deployment + Service without full rollback:
 helm upgrade spire-smoke helm/spire -n spire-smoke \
   -f k8s/values.smoke.yaml \
   --set gateway.enabled=false \
@@ -121,20 +134,23 @@ helm upgrade spire-smoke helm/spire -n spire-smoke \
 ## Known edges
 
 1. **Gateway dataDir** — the container sets `BEADS_DIR` to the same
-   per-database path as the steward (via `spire.stewardCommonEnv`).
-   `store.Ensure()` picks that up. If you see "no tower configured",
-   the init container probably didn't complete — check steward pod
-   logs for the `tower-attach` initContainer.
+   per-database path as the steward (via `spire.stewardCommonEnv`), but
+   the gateway's `.beads/` lives on an emptyDir seeded by its own
+   tower-attach init-container. `store.Ensure()` picks that up. If you
+   see "no tower configured", check the gateway pod's `tower-attach`
+   initContainer logs (`kubectl -n spire-smoke logs <gateway-pod> -c
+   tower-attach`), not the steward's.
 
 2. **Dev mode auth** — `apiToken: ""` means no Bearer check. Fine on
    minikube behind the laptop's firewall. Before ever exposing the
    NodePort outside, set `gateway.apiToken` via --set or --set-file
    and rebuild the desktop client to send the header.
 
-3. **Pod lifecycle** — the gateway shares the steward pod. Any roll
-   (image bump, env change) restarts all three containers together.
-   Acceptable for smoke; future work is a separate Deployment so the
-   desktop doesn't get disconnected when the steward restarts.
+3. **Pod lifecycle** — the gateway runs as its own Deployment. Rolling
+   `spire-gateway` (e.g. `kubectl rollout restart deploy/spire-gateway`)
+   does not touch the steward pod, and vice versa. Scale via
+   `gateway.replicas` — each replica runs its own init-container
+   against a private emptyDir; only the steward's PVC is single-writer.
 
 4. **Board handler** — `/api/v1/board` returns `result.Columns.ToJSON(nil)`,
    grouping beads by pipeline phase (design/plan/implement/review/merge),

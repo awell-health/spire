@@ -1,8 +1,8 @@
 {{- if .Values.gateway.enabled }}
-# Service exposing the spire-serve HTTP API gateway (runs as a container in
-# the steward pod). Electron desktop clients connect here for /api/v1/*
-# routes. Webhook receiver on a separate port keeps Linear/GitHub POST
-# endpoints reachable at the same Service.
+# Service fronting the spire-gateway Deployment (gateway-deployment.yaml).
+# Electron desktop clients connect here for /api/v1/* routes. Webhook
+# receiver on a separate port keeps Linear/GitHub POST endpoints reachable
+# at the same Service.
 apiVersion: v1
 kind: Service
 metadata:
@@ -15,7 +15,7 @@ metadata:
 spec:
   type: {{ .Values.gateway.service.type }}
   selector:
-    app.kubernetes.io/name: spire-steward
+    app.kubernetes.io/name: spire-gateway
   ports:
     - name: api
       port: {{ .Values.gateway.apiPort }}

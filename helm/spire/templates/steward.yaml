@@ -160,55 +160,6 @@ spec:
               readOnly: true
             {{- end }}
           workingDir: /etc/spire
-        {{- if .Values.gateway.enabled }}
-        - name: gateway
-          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
-          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
-          command: ["spire"]
-          args:
-            - "serve"
-            - "--port={{ .Values.gateway.webhookPort }}"
-            - "--api-port={{ .Values.gateway.apiPort }}"
-          env:
-            # Shared with steward/sidecar: resolves tower paths, dolt host.
-            {{- include "spire.stewardCommonEnv" . | nindent 12 }}
-            {{- if .Values.gateway.apiToken }}
-            - name: SPIRE_API_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "spire.gatewaySecretName" . }}
-                  key: SPIRE_API_TOKEN
-            {{- end }}
-          ports:
-            - name: api
-              containerPort: {{ .Values.gateway.apiPort }}
-              protocol: TCP
-            - name: webhook
-              containerPort: {{ .Values.gateway.webhookPort }}
-              protocol: TCP
-          resources:
-            requests:
-              cpu: {{ .Values.gateway.resources.requests.cpu }}
-              memory: {{ .Values.gateway.resources.requests.memory }}
-            limits:
-              cpu: {{ .Values.gateway.resources.limits.cpu }}
-              memory: {{ .Values.gateway.resources.limits.memory }}
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: api
-            initialDelaySeconds: 10
-            periodSeconds: 30
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: api
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          volumeMounts:
-            - name: data
-              mountPath: {{ .Values.paths.dataRoot }}
-        {{- end }}
         - name: sidecar
           image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.images.steward.pullPolicy }}

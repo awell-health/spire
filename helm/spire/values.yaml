@@ -240,20 +240,27 @@ steward:
 
 ## @section HTTP API gateway (for Spire Desktop)
 ##
-## Runs `spire serve` as a third container inside the steward pod,
-## exposing /api/v1/* for the Electron desktop app and /sync for
-## Linear/GitHub webhooks. Shares the steward's data volume so it
-## reads the same per-database .beads/ workspace without needing its
-## own PVC.
+## Runs `spire serve` as its own Deployment, exposing /api/v1/* for the
+## Electron desktop app and /sync for Linear/GitHub webhooks. Each replica
+## materialises its own `.beads/` workspace via the same tower-attach
+## init-container the steward uses, but backed by an emptyDir (not the
+## steward PVC) so the gateway can scale horizontally for cluster-attach
+## mode. The steward remains a singleton on its PVC.
 
-## @param gateway.enabled Render the gateway sidecar + Service.
+## @param gateway.enabled Render the gateway Deployment + Service.
+## @param gateway.replicas Number of gateway pods. Safe to scale >1 because each replica runs its own idempotent tower-attach init against an emptyDir and the steward owns the only writer-side PVC.
 ## @param gateway.apiPort Port the /api/v1/* JSON API listens on.
 ## @param gateway.webhookPort Port the /sync webhook receiver listens on.
 ## @param gateway.apiToken Bearer token for /api/v1/*. Empty = dev mode (no auth). Materialised into a Secret the gateway container reads via envFrom.
 ## @param gateway.service.type Service type. ClusterIP for in-cluster access (default), NodePort for laptop development against minikube.
 ## @param gateway.service.nodePort NodePort to pin when service.type=NodePort. Leave empty for auto-assign.
+## @param gateway.resources.requests.cpu Gateway CPU request. Lighter than steward — this is a mostly-HTTP workload.
+## @param gateway.resources.requests.memory Gateway memory request.
+## @param gateway.resources.limits.cpu Gateway CPU limit.
+## @param gateway.resources.limits.memory Gateway memory limit.
 gateway:
   enabled: false
+  replicas: 1
   apiPort: 3030
   webhookPort: 8080
   apiToken: ""

@@ -1,0 +1,134 @@
+{{- if .Values.gateway.enabled }}
+# Dedicated Deployment for the spire-serve HTTP API gateway. Split out of
+# the steward pod so the gateway scales independently (replicas>1 for
+# cluster-attach mode) and rolling updates of either side don't disturb
+# the other. The matching Service lives in gateway.yaml and selects
+# app.kubernetes.io/name=spire-gateway so the selector flip is atomic
+# with this template.
+#
+# The .beads/ workspace is backed by an emptyDir — each replica runs the
+# tower-attach initContainer against its own copy. attach-cluster is
+# idempotent (--bootstrap-if-blank) so concurrent init across replicas
+# is safe; only the steward's PVC-backed pod writes authoritative state.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-gateway
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-gateway
+    app.kubernetes.io/part-of: spire
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.gateway.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-gateway
+    spec:
+      initContainers:
+        # Mirrors steward.yaml's tower-attach init, against an emptyDir
+        # instead of the PVC. attach-cluster --bootstrap-if-blank is
+        # idempotent so N gateway replicas running this concurrently
+        # against N separate emptyDirs is safe — each replica just
+        # materialises the same workspace locally.
+        - name: tower-attach
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ ! -d {{ .Values.paths.dataRoot }}/.git ]; then
+                cd {{ .Values.paths.dataRoot }} && git init -q 2>/dev/null || true
+                git config user.name "spire-gateway"
+                git config user.email "gateway@spire.local"
+              fi
+              mkdir -p {{ include "spire.dbDataDir" . }}
+              spire tower attach-cluster \
+                --data-dir={{ include "spire.dbDataDir" . }} \
+                --database="$BEADS_DATABASE" \
+                --prefix="$BEADS_PREFIX" \
+                --dolthub-remote="$DOLTHUB_REMOTE" \
+                --bundle-store-backend={{ .Values.bundleStore.backend | quote }} \
+                --bundle-store-gcs-bucket={{ .Values.bundleStore.gcs.bucket | quote }} \
+                --bundle-store-gcs-prefix={{ .Values.bundleStore.gcs.prefix | quote }} \
+                --bootstrap-if-blank \
+                --dolt-wait=300s
+              chmod 700 {{ include "spire.beadsDir" . }} 2>/dev/null || true
+          env:
+            - name: DOLT_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DOLT_SERVER_HOST
+              value: "spire-dolt.{{ .Values.namespace }}.svc"
+            - name: BEADS_DOLT_SERVER_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: BEADS_DATABASE
+              value: {{ include "spire.database" . | quote }}
+            - name: BEADS_PREFIX
+              value: {{ .Values.beads.prefix | quote }}
+            - name: DOLTHUB_REMOTE
+              value: {{ .Values.dolthub.remoteUrl | quote }}
+            - name: SPIRE_CONFIG_DIR
+              value: {{ include "spire.configDir" . | quote }}
+            - name: DOLT_DATA_DIR
+              value: {{ .Values.paths.dataRoot | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.paths.dataRoot }}
+      containers:
+        - name: gateway
+          image: {{ .Values.images.steward.repository }}:{{ .Values.images.steward.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.images.steward.pullPolicy }}
+          command: ["spire"]
+          args:
+            - "serve"
+            - "--port={{ .Values.gateway.webhookPort }}"
+            - "--api-port={{ .Values.gateway.apiPort }}"
+          env:
+            {{- include "spire.stewardCommonEnv" . | nindent 12 }}
+            {{- if .Values.gateway.apiToken }}
+            - name: SPIRE_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spire.gatewaySecretName" . }}
+                  key: SPIRE_API_TOKEN
+            {{- end }}
+          ports:
+            - name: api
+              containerPort: {{ .Values.gateway.apiPort }}
+              protocol: TCP
+            - name: webhook
+              containerPort: {{ .Values.gateway.webhookPort }}
+              protocol: TCP
+          resources:
+            requests:
+              cpu: {{ .Values.gateway.resources.requests.cpu }}
+              memory: {{ .Values.gateway.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.gateway.resources.limits.cpu }}
+              memory: {{ .Values.gateway.resources.limits.memory }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.paths.dataRoot }}
+      volumes:
+        - name: data
+          emptyDir: {}
+{{- end }}
