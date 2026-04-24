@@ -303,6 +303,11 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 		s.getBeadComments(w, r, strings.TrimSuffix(id, "/comments"))
 		return
 	}
+	// /api/v1/beads/{id}/logs
+	if strings.HasSuffix(id, "/logs") {
+		s.getBeadLogs(w, r, strings.TrimSuffix(id, "/logs"))
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.getBead(w, r, id)
@@ -639,6 +644,62 @@ func (s *Server) getBeadComments(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, comments)
+}
+
+// getBeadLogs answers GET /api/v1/beads/{id}/logs with every wizard /
+// apprentice / sage log the TUI inspector surfaces — name, full content,
+// reset-cycle tag, and whether a sidecar stderr file exists. The desktop
+// Logs tab renders this list grouped by Cycle the same way the TUI does.
+func (s *Server) getBeadLogs(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	// Inspector needs a BoardBead — fetch via ListBoardBeads filtered to this id.
+	listed, err := store.ListBoardBeads(beads.IssueFilter{
+		IDPrefix:      id,
+		ExcludeStatus: []beads.Status{"__none__"},
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	var target *store.BoardBead
+	for i := range listed {
+		if listed[i].ID == id {
+			target = &listed[i]
+			break
+		}
+	}
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bead not found"})
+		return
+	}
+	data := board.FetchInspectorData(*target)
+	// Project LogView to a JSON-friendly shape; stderr content stays on the
+	// server (we ship names only; desktop will later fetch content on demand).
+	type logRow struct {
+		Name    string `json:"name"`
+		Path    string `json:"path"`
+		Cycle   int    `json:"cycle"`
+		Size    int    `json:"size"`
+		Content string `json:"content"`
+	}
+	out := make([]logRow, 0, len(data.Logs))
+	for _, lv := range data.Logs {
+		out = append(out, logRow{
+			Name:    lv.Name,
+			Path:    lv.Path,
+			Cycle:   lv.Cycle,
+			Size:    len(lv.Content),
+			Content: lv.Content,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleTowers answers GET /api/v1/towers with every tower config on disk
