@@ -639,16 +639,34 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 // appears in fix-adjacent or cleric-worker call sites.
 func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, state *GraphState, role agent.SpawnRole, extraArgs []string, workspace *WorkspaceHandle, handoffMode HandoffMode) ActionResult {
 	attemptNum := state.Steps[stepName].CompletedCount + 1
-	// For sage-review, override the spawn-naming counter with the monotonic
-	// round number derived from review-round child beads. CompletedCount is
-	// reset alongside graph_state.json on every reset, so without this
-	// override the post-reset log filename collides with a pre-reset file
-	// (e.g. wizard-<id>-sage-review-1.log overwritten on cycle 2).
-	// Reading max(round) from preserved (closed) review beads makes the
-	// filename monotonic across resets.
-	if step.Flow == "sage-review" {
+	// Override the spawn-naming counter with a monotonic value derived from
+	// preserved child beads. CompletedCount is reset alongside graph_state.json
+	// on every reset, so without this override a post-reset log filename
+	// collides with a pre-reset file (e.g. wizard-<id>-sage-review-1.log or
+	// wizard-<id>-implement-1.log overwritten on cycle 2). The bead-derived
+	// counters (round:N on review-round beads, attempt:N on attempt beads)
+	// survive resets because those beads are closed, not deleted.
+	switch step.Flow {
+	case "sage-review":
+		// Sage creates the review-round-N bead inside its spawn. At dispatch
+		// time max(round) reflects the prior completed round, so the next
+		// round is max+1 — matching the round the sage will stamp.
 		if maxRound := store.MaxRoundNumber(e.beadID); maxRound > 0 {
 			attemptNum = maxRound + 1
+		}
+	case "review-fix":
+		// Fix runs after sage-review has completed and stamped review-round-N.
+		// Reuse that N so fix-N.log sits alongside sage-review-N.log for the
+		// same round and stays unique across resets.
+		if maxRound := store.MaxRoundNumber(e.beadID); maxRound > 0 {
+			attemptNum = maxRound
+		}
+	case "implement":
+		// Implement is paired with the attempt bead the executor created at
+		// run start. attempt:N is monotonic across resets because attempt
+		// beads are closed (not deleted) on reset.
+		if maxAttempt := store.MaxAttemptNumber(e.beadID); maxAttempt > 0 {
+			attemptNum = maxAttempt
 		}
 	}
 	spawnName := fmt.Sprintf("%s-%s-%d", e.agentName, stepName, attemptNum)

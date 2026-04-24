@@ -232,17 +232,33 @@ func FetchInspectorData(b BoardBead) InspectorData {
 	return data
 }
 
+// Step-name lists used by buildLogCycleMap to pair log filenames with the
+// bead whose counter named them. The lists mirror the monotonic-naming
+// overrides in pkg/executor/graph_actions.go: any flow that reuses round:N
+// for its spawn name must appear in reviewPairedStepNames, any flow that
+// reuses attempt:N must appear in attemptPairedStepNames. Future steps that
+// start paying the monotonic counter (e.g. validate, deploy) just append
+// their name to the appropriate list — no logic change required.
+var (
+	reviewPairedStepNames  = []string{"sage-review", "fix"}
+	attemptPairedStepNames = []string{"implement"}
+)
+
 // buildLogCycleMap maps a wizard log's display name (the suffix after
 // "wizard-<beadID>-") to its reset cycle.
 //
 // The mapping relies on the spawn-name convention from
 // pkg/executor/graph_actions.go: spawnName = "<agentName>-<step>-<N>", which
 // produces a log file "wizard-<beadID>-<step>-<N>.log" and a stripped name
-// "<step>-<N>".
+// "<step>-<N>". The monotonic override there reuses round:N or attempt:N
+// for the N — so the log name can be joined back to the originating bead's
+// reset-cycle by looking up N in the appropriate counter map.
 //
-//   - "sage-review-<N>"  → review-round bead with round:<N> label
-//   - "<other-step>-<N>" → attempt bead with attempt:<N> label (where the
-//     attempt corresponds to that step's spawn)
+//   - "sage-review-<N>" / "fix-<N>" → paired with review-round bead
+//     round:<N> (fix runs after the sage-review round that requested
+//     changes and inherits its N; see wizardRunSpawnWithHandoff).
+//   - "implement-<N>" → paired with attempt bead attempt:<N> (created by
+//     the executor at run start; the implement spawn reuses its N).
 //
 // The returned cycle is the bead's reset-cycle:<N> label value (defaults
 // to 1 when missing). Unmatched names are absent from the map.
@@ -250,8 +266,8 @@ func buildLogCycleMap(children []Bead) map[string]int {
 	if len(children) == 0 {
 		return nil
 	}
-	roundCycle := map[int]int{}    // round number → cycle (review rounds)
-	attemptCycle := map[int]int{}  // attempt number → cycle (attempt beads)
+	roundCycle := map[int]int{}   // round number → cycle (review rounds)
+	attemptCycle := map[int]int{} // attempt number → cycle (attempt beads)
 	for _, c := range children {
 		switch {
 		case store.IsReviewRoundBead(c):
@@ -269,18 +285,18 @@ func buildLogCycleMap(children []Bead) map[string]int {
 	if len(roundCycle) == 0 && len(attemptCycle) == 0 {
 		return nil
 	}
-	out := make(map[string]int, len(roundCycle)+len(attemptCycle))
+	out := make(map[string]int,
+		len(roundCycle)*len(reviewPairedStepNames)+
+			len(attemptCycle)*len(attemptPairedStepNames))
 	for n, cycle := range roundCycle {
-		out[fmt.Sprintf("sage-review-%d", n)] = cycle
+		for _, step := range reviewPairedStepNames {
+			out[fmt.Sprintf("%s-%d", step, n)] = cycle
+		}
 	}
-	// For attempts the spawn-step name is the *step* the attempt ran under
-	// (implement, fix, etc.) — we don't know which step a given attempt
-	// belongs to from the bead alone, so the most reliable match is on the
-	// numeric suffix. The renderer falls back to the unmatched-cycle group
-	// if the suffix lookup fails.
 	for n, cycle := range attemptCycle {
-		out[fmt.Sprintf("implement-%d", n)] = cycle
-		out[fmt.Sprintf("fix-%d", n)] = cycle
+		for _, step := range attemptPairedStepNames {
+			out[fmt.Sprintf("%s-%d", step, n)] = cycle
+		}
 	}
 	return out
 }
