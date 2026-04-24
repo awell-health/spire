@@ -17,8 +17,17 @@ func PrefixFromID(id string) string {
 	return ""
 }
 
-// CreateBead creates a new bead and returns its ID.
+// CreateBead creates a new bead and returns its ID. Routes through the
+// gateway HTTPS API when the active tower is in gateway mode; otherwise
+// writes directly to the local Dolt-backed store.
 func CreateBead(opts CreateOpts) (string, error) {
+	if t, ok := isGatewayMode(); ok {
+		return createBeadGateway(t, opts)
+	}
+	return createBeadDirect(opts)
+}
+
+func createBeadDirect(opts CreateOpts) (string, error) {
 	s, ctx, err := getStore()
 	if err != nil {
 		return "", err
@@ -114,8 +123,17 @@ func DeleteBead(id string) error {
 	return s.DeleteIssue(ctx, id)
 }
 
-// UpdateBead updates a bead's fields.
+// UpdateBead updates a bead's fields. Routes through the gateway HTTPS
+// API when the active tower is in gateway mode; otherwise writes directly
+// to the local Dolt-backed store.
 func UpdateBead(id string, updates map[string]interface{}) error {
+	if t, ok := isGatewayMode(); ok {
+		return updateBeadGateway(t, id, updates)
+	}
+	return updateBeadDirect(id, updates)
+}
+
+func updateBeadDirect(id string, updates map[string]interface{}) error {
 	s, ctx, err := getStore()
 	if err != nil {
 		return err

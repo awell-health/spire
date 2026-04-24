@@ -1,8 +1,19 @@
 // Package store provides bead persistence: types, queries, mutations, and
 // bead subtype helpers (attempts, steps, review rounds). It wraps the beads
-// library with Spire-specific semantics. pkg/store has no dependencies on
-// other Spire packages — cross-package wiring uses callback variables
-// (e.g. BeadsDirResolver) set by cmd/spire at init time.
+// library with Spire-specific semantics.
+//
+// Public bead/message/dep functions dispatch on the active tower's mode
+// (see pkg/config.TowerConfig.IsGateway): gateway-mode towers route through
+// pkg/gatewayclient over HTTPS; direct-mode towers use the embedded Dolt
+// path. The mode branch is centralized in dispatch.go; every public entry
+// point (GetBead, ListBeads, CreateBead, UpdateBead, ListMessages,
+// SendMessage, MarkMessageRead, ListDeps, GetBlockedIssues) preserves its
+// pre-dispatch signature so cmd/spire callers are unchanged.
+//
+// pkg/store depends on pkg/config (tower resolution, keychain) and
+// pkg/gatewayclient (HTTPS transport) for the dispatch surface; legacy
+// cross-package wiring still uses callback variables like BeadsDirResolver
+// that cmd/spire populates at init time.
 package store
 
 import (
