@@ -164,7 +164,7 @@ func TestServer_RunAndShutdown(t *testing.T) {
 	_ = ln.Close()
 
 	trig := &fakeTrigger{}
-	s := NewServer(addr, trig, log.New(io.Discard, "", 0))
+	s := NewServer(addr, trig, log.New(io.Discard, "", 0), "", "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)

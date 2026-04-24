@@ -85,7 +85,7 @@ func runDaemon(interval, debounce time.Duration, once bool, database, remote, br
 	// call d.Trigger directly (no RPC boundary needed here).
 	if serve != "" {
 		go func() {
-			srv := gateway.NewServer(serve, d, nil)
+			srv := gateway.NewServer(serve, d, nil, "", "")
 			if err := srv.Run(ctx); err != nil {
 				log.Printf("[gateway] exited: %s", err)
 			}

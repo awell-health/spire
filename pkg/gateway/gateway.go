@@ -1,22 +1,33 @@
-// Package gateway provides the HTTP surface of a Spire tower. Today it has
-// a single concern: accept POST /sync and relay the request to a Triggerable
-// (typically a pkg/steward.Daemon). Future routes (message submission,
-// status, etc.) land here too — gateway.Server is the stable seam between
-// outside-the-cluster callers and inside-the-cluster workers.
+// Package gateway provides the HTTP surface of a Spire tower. It serves two
+// concerns:
+//
+//  1. POST /sync — accepts webhook triggers and relays them to a Triggerable
+//     (typically a pkg/steward.Daemon).
+//
+//  2. GET/POST/PATCH /api/v1/* — a JSON API for the Electron desktop app to
+//     read and mutate beads, messages, board, and roster data.
 //
 // Boundaries:
-//   - gateway owns HTTP wiring, method/verb validation, response shape.
+//   - gateway owns HTTP wiring, method/verb validation, auth, CORS, response shape.
 //   - gateway does NOT own debounce, rate limit, sync logic, or dolt access.
-//     Those live behind the Triggerable interface so callers (Daemon, tests,
-//     fakes) can implement their own throttling policy.
+//     Those live behind the Triggerable interface or pkg/store/pkg/board.
 package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/awell-health/spire/pkg/board"
+	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
 
 // Triggerable is implemented by anything that can be asked to do work now.
@@ -30,30 +41,58 @@ type Triggerable interface {
 // Server is the HTTP gateway. Construct with NewServer and Run under a
 // context the caller can cancel for graceful shutdown.
 type Server struct {
-	addr   string
-	target Triggerable
-	log    *log.Logger
+	addr     string
+	target   Triggerable
+	log      *log.Logger
+	dataDir  string
+	apiToken string
+
+	devModeLogOnce sync.Once
 }
 
-// NewServer wires a server listening on addr (e.g. ":8082") that forwards
+// NewServer wires a server listening on addr (e.g. ":3030") that forwards
 // POST /sync to target.Trigger. Pass a non-nil logger to capture request
-// logs; nil uses log.Default().
-func NewServer(addr string, target Triggerable, logger *log.Logger) *Server {
+// logs; nil uses log.Default(). dataDir is the .beads directory path used
+// by the /api/v1/* handlers. apiToken is the expected Bearer token; if empty
+// the server runs without auth (dev mode).
+func NewServer(addr string, target Triggerable, logger *log.Logger, dataDir string, apiToken string) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Server{addr: addr, target: target, log: logger}
+	return &Server{
+		addr:     addr,
+		target:   target,
+		log:      logger,
+		dataDir:  dataDir,
+		apiToken: apiToken,
+	}
 }
 
 // Run blocks on the HTTP server until ctx is done, then shuts down with a
 // 5s grace period. Returns the first ListenAndServe error if any, or nil
 // on clean shutdown.
 func (s *Server) Run(ctx context.Context) error {
+	if s.apiToken == "" {
+		s.log.Println("[gateway] SPIRE_API_TOKEN not set, running in dev mode (no auth)")
+	}
+
 	mux := http.NewServeMux()
+
+	// Legacy routes (no auth required — pre-existing behaviour).
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
-	mux.HandleFunc("/sync", s.handleSync)
+	if s.target != nil {
+		mux.HandleFunc("/sync", s.handleSync)
+	}
+
+	// /api/v1/* routes — all wrapped with CORS + Bearer auth.
+	mux.Handle("/api/v1/beads", s.corsMiddleware(s.bearerAuth(s.handleBeads)))
+	mux.Handle("/api/v1/beads/", s.corsMiddleware(s.bearerAuth(s.handleBeadByID)))
+	mux.Handle("/api/v1/messages", s.corsMiddleware(s.bearerAuth(s.handleMessages)))
+	mux.Handle("/api/v1/messages/", s.corsMiddleware(s.bearerAuth(s.handleMessageByID)))
+	mux.Handle("/api/v1/board", s.corsMiddleware(s.bearerAuth(s.handleBoard)))
+	mux.Handle("/api/v1/roster", s.corsMiddleware(s.bearerAuth(s.handleRoster)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -63,7 +102,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		s.log.Printf("[gateway] listening on %s (POST /sync)", s.addr)
+		s.log.Printf("[gateway] listening on %s", s.addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
@@ -81,6 +120,54 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
+// --------------------------------------------------------------------------
+// Middleware
+// --------------------------------------------------------------------------
+
+// corsMiddleware sets CORS headers and handles preflight OPTIONS requests.
+func (s *Server) corsMiddleware(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next(w, r)
+	})
+}
+
+// bearerAuth validates the Authorization: Bearer <token> header.
+// If SPIRE_API_TOKEN is empty, skips validation (dev mode).
+func (s *Server) bearerAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.apiToken == "" {
+			// Dev mode: no token required.
+			s.devModeLogOnce.Do(func() {
+				s.log.Println("[gateway] dev mode: skipping auth on /api/v1/* requests")
+			})
+			next(w, r)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if token != s.apiToken {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// --------------------------------------------------------------------------
+// /sync handler (legacy)
+// --------------------------------------------------------------------------
+
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed (POST)", http.StatusMethodNotAllowed)
@@ -97,4 +184,357 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Fprintln(w, "triggered")
+}
+
+// --------------------------------------------------------------------------
+// /api/v1/beads handlers
+// --------------------------------------------------------------------------
+
+// handleBeads routes GET (list) and POST (create) for /api/v1/beads.
+func (s *Server) handleBeads(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.listBeads(w, r)
+	case http.MethodPost:
+		s.createBead(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// listBeads handles GET /api/v1/beads
+// Query params: status, label, prefix, type
+func (s *Server) listBeads(w http.ResponseWriter, r *http.Request) {
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	filter := beads.IssueFilter{}
+	if v := r.URL.Query().Get("status"); v != "" {
+		bs := beads.Status(v)
+		filter.Status = &bs
+	}
+	if v := r.URL.Query().Get("label"); v != "" {
+		filter.Labels = strings.Split(v, ",")
+	}
+	if v := r.URL.Query().Get("prefix"); v != "" {
+		filter.IDPrefix = v + "-"
+	}
+
+	beadList, err := store.ListBeads(filter)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, beadList)
+}
+
+// createBead handles POST /api/v1/beads
+// Body: {"title":"...", "type":"task", "priority":1, "description":"...", "labels":[], "parent":""}
+func (s *Server) createBead(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title       string   `json:"title"`
+		Type        string   `json:"type"`
+		Priority    int      `json:"priority"`
+		Description string   `json:"description"`
+		Labels      []string `json:"labels"`
+		Parent      string   `json:"parent"`
+		Prefix      string   `json:"prefix"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if body.Title == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title is required"})
+		return
+	}
+
+	// Ensure store is initialized so store.CreateBead (package-level singleton) works.
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	issType := beads.IssueType(body.Type)
+	if issType == "" {
+		issType = beads.TypeTask
+	}
+
+	id, err := store.CreateBead(store.CreateOpts{
+		Title:       body.Title,
+		Description: body.Description,
+		Priority:    body.Priority,
+		Type:        issType,
+		Labels:      body.Labels,
+		Parent:      body.Parent,
+		Prefix:      body.Prefix,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// handleBeadByID routes GET and PATCH for /api/v1/beads/{id}
+func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
+	id := pathSuffix(r.URL.Path, "/api/v1/beads/")
+	// Strip trailing /read etc — only handle bare ID here.
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bead ID required"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.getBead(w, r, id)
+	case http.MethodPatch:
+		s.updateBead(w, r, id)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) getBead(w http.ResponseWriter, _ *http.Request, id string) {
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	b, err := store.GetBead(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *Server) updateBead(w http.ResponseWriter, r *http.Request, id string) {
+	var updates map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := store.UpdateBead(id, updates); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "updated"})
+}
+
+// --------------------------------------------------------------------------
+// /api/v1/messages handlers
+// --------------------------------------------------------------------------
+
+// handleMessages routes GET (list) and POST (send) for /api/v1/messages.
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.listMessages(w, r)
+	case http.MethodPost:
+		s.sendMessage(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// listMessages handles GET /api/v1/messages
+// Query params: to (agent name)
+func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	filter := beads.IssueFilter{
+		IDPrefix: "spi-",
+		Labels:   []string{"msg"},
+	}
+	if to := r.URL.Query().Get("to"); to != "" {
+		filter.Labels = append(filter.Labels, "to:"+to)
+	}
+	open := beads.StatusOpen
+	filter.Status = &open
+
+	msgs, err := store.ListBeads(filter)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, msgs)
+}
+
+// sendMessage handles POST /api/v1/messages
+// Body: {"to":"agent", "message":"...", "from":"...", "ref":"spi-xxx", "priority":3}
+func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		To       string `json:"to"`
+		Message  string `json:"message"`
+		From     string `json:"from"`
+		Ref      string `json:"ref"`
+		Thread   string `json:"thread"`
+		Priority int    `json:"priority"`
+	}
+	body.Priority = 3 // default
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if body.To == "" || body.Message == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "to and message are required"})
+		return
+	}
+	if body.From == "" {
+		body.From = "gateway"
+	}
+
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	labels := []string{"msg", "to:" + body.To, "from:" + body.From}
+	if body.Ref != "" {
+		labels = append(labels, "ref:"+body.Ref)
+	}
+
+	id, err := store.CreateBead(store.CreateOpts{
+		Title:    body.Message,
+		Priority: body.Priority,
+		Type:     beads.IssueType("message"),
+		Prefix:   "spi",
+		Labels:   labels,
+		Parent:   body.Thread,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// handleMessageByID routes POST /api/v1/messages/{id}/read
+func (s *Server) handleMessageByID(w http.ResponseWriter, r *http.Request) {
+	// Path: /api/v1/messages/{id}/read  or  /api/v1/messages/{id}
+	rest := pathSuffix(r.URL.Path, "/api/v1/messages/")
+	parts := strings.SplitN(rest, "/", 2)
+	id := parts[0]
+	action := ""
+	if len(parts) == 2 {
+		action = parts[1]
+	}
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message ID required"})
+		return
+	}
+	if action == "read" && r.Method == http.MethodPost {
+		s.markRead(w, r, id)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+}
+
+func (s *Server) markRead(w http.ResponseWriter, _ *http.Request, id string) {
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := store.CloseBead(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "read"})
+}
+
+// --------------------------------------------------------------------------
+// /api/v1/board handler
+// --------------------------------------------------------------------------
+
+func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	opts := board.Opts{}
+	result, err := board.FetchBoard(opts, "")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result.Columns.ToJSON(nil))
+}
+
+// --------------------------------------------------------------------------
+// /api/v1/roster handler
+// --------------------------------------------------------------------------
+
+func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	timeout := 15 * time.Minute
+
+	// Try k8s first, then local wizards, then beads-based.
+	var agents []board.RosterAgent
+	if a, err := board.RosterFromK8s(timeout); err == nil && len(a) > 0 {
+		agents = a
+	} else {
+		rosterDeps := board.RosterDeps{
+			LoadWizardRegistry: func() []board.LocalAgent { return nil },
+			SaveWizardRegistry: func([]board.LocalAgent) {},
+			CleanDeadWizards:   func(a []board.LocalAgent) []board.LocalAgent { return a },
+			ProcessAlive:       dolt.ProcessAlive,
+		}
+		if local := board.RosterFromLocalWizards(timeout, rosterDeps); len(local) > 0 {
+			agents = local
+		} else {
+			agents = board.RosterFromBeads(timeout)
+		}
+	}
+
+	agents = board.EnrichRosterAgents(agents)
+	summary := board.BuildSummary(agents, timeout)
+	writeJSON(w, http.StatusOK, summary)
+}
+
+// --------------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------------
+
+// effectiveDataDir returns dataDir if set, otherwise falls back to BEADS_DIR env.
+func (s *Server) effectiveDataDir() string {
+	if s.dataDir != "" {
+		return s.dataDir
+	}
+	return os.Getenv("BEADS_DIR")
+}
+
+// pathSuffix strips a URL path prefix and returns the remaining segment(s).
+func pathSuffix(path, prefix string) string {
+	return strings.TrimPrefix(path, prefix)
+}
+
+// writeJSON encodes v as JSON and writes it to w with the given status code.
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// Header already written — best effort.
+		fmt.Fprintf(w, `{"error":"encode error: %s"}`, err)
+	}
 }
