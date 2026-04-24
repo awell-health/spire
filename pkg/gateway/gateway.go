@@ -1213,7 +1213,9 @@ func (s *Server) handleTowers(w http.ResponseWriter, r *http.Request) {
 // Returns false when the PID file is missing, unparsable, or the PID is stale.
 // summonRunner and stewardAliveFunc are package-level seams so tests can stub
 // out the fork/exec path and the PID-file probe without standing up the real
-// steward or dolt services.
+// steward or dolt services. The ready* seams serve the same purpose for
+// handleBeadReady — they let tests exercise the status-switch branches and
+// audit-comment path without standing up a real beads store.
 var (
 	summonRunner = summon.Run
 
@@ -1224,6 +1226,14 @@ var (
 		}
 		return process.ProcessAlive(pid)
 	}
+
+	readyStoreEnsureFunc = func(dir string) error {
+		_, err := store.Ensure(dir)
+		return err
+	}
+	readyGetBeadFunc    = store.GetBead
+	readyUpdateBeadFunc = store.UpdateBead
+	readyAddCommentFunc = store.AddCommentReturning
 )
 
 // handleBeadSummon answers POST /api/v1/beads/{id}/summon — spawns a wizard
@@ -1311,15 +1321,19 @@ func statusForSummonError(err error) int {
 
 // handleBeadReady answers POST /api/v1/beads/{id}/ready — promotes an open
 // bead into the ready queue so the steward picks it up on the next cycle.
-// Mirrors `spire ready <id>` semantics.
+// Mirrors `spire ready <id>` semantics. store.UpdateBead fires the canonical
+// StampReady lifecycle event the steward's own dispatched→ready recovery
+// would have fired, so the audit footprint matches the CLI/steward path; a
+// short "promoted to ready" comment is also recorded to give the desktop a
+// visible audit row for the action (parity with /summon).
 //
 // Responses:
 //
-//	200 { id, status: "ready" }   — flipped (or already ready, idempotent)
-//	400 { error }                 — wrong source status
-//	404 { error }                 — bead not found
-//	405                           — non-POST
-//	500 { error }                 — update error
+//	200 { id, status: "ready", comment_id } — flipped (or already ready, idempotent)
+//	400 { error }                           — wrong source status
+//	404 { error }                           — bead not found
+//	405                                     — non-POST
+//	500 { error }                           — update error
 func (s *Server) handleBeadReady(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -1329,11 +1343,11 @@ func (s *Server) handleBeadReady(w http.ResponseWriter, r *http.Request, id stri
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bead ID required"})
 		return
 	}
-	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+	if err := readyStoreEnsureFunc(s.effectiveDataDir()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	bead, err := store.GetBead(id)
+	bead, err := readyGetBeadFunc(id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -1359,11 +1373,16 @@ func (s *Server) handleBeadReady(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 
-	if err := store.UpdateBead(id, map[string]interface{}{"status": "ready"}); err != nil {
+	if err := readyUpdateBeadFunc(id, map[string]interface{}{"status": "ready"}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready"})
+	commentID, cerr := readyAddCommentFunc(id, "promoted to ready")
+	if cerr != nil {
+		// Non-fatal: lifecycle stamp has already fired via UpdateBead.
+		log.Printf("[gateway] ready audit comment for %s: %v", id, cerr)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready", "comment_id": commentID})
 }
 
 // effectiveDataDir returns dataDir if set, otherwise falls back to BEADS_DIR env.

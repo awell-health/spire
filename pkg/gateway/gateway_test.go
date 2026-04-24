@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/summon"
 )
 
@@ -289,6 +291,9 @@ func TestStatusForSummonError_MapsKnownMessages(t *testing.T) {
 		{errors.New("target spi-1 is a design bead — design beads are not executable"), http.StatusBadRequest},
 		{errors.New("invalid dispatch mode \"bogus\": must be sequential, wave, or direct"), http.StatusBadRequest},
 		{errors.New("spawn wizard-spi-1: exec: no such file"), http.StatusInternalServerError},
+		// ErrAlreadyRunning is wrapped with context by SpawnWizard; errors.Is
+		// unwraps so the handler must map it to 409 Conflict, not 500.
+		{fmt.Errorf("wizard-spi-1 for spi-1 (pid 42): %w", summon.ErrAlreadyRunning), http.StatusConflict},
 	}
 	for _, tc := range tests {
 		got := statusForSummonError(tc.err)
@@ -319,6 +324,226 @@ func TestHandleBeadReady_RejectsEmptyID(t *testing.T) {
 	s.handleBeadReady(rec, req, "")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+// readyCalls records what the readyUpdateBeadFunc and readyAddCommentFunc
+// stubs observed so each test can assert on them.
+type readyCalls struct {
+	updates  []readyUpdate
+	comments []readyComment
+}
+
+type readyUpdate struct {
+	id      string
+	updates map[string]interface{}
+}
+type readyComment struct{ id, text string }
+
+// withReadyStubs swaps the package-level seams for a stubbed beads store
+// view. get/update errors and the returned bead status are configurable;
+// the readyCalls handle lets each test assert on what the stubs observed.
+func withReadyStubs(t *testing.T, bead store.Bead, getErr, updateErr, commentErr error) *readyCalls {
+	t.Helper()
+	prevEnsure := readyStoreEnsureFunc
+	prevGet := readyGetBeadFunc
+	prevUpdate := readyUpdateBeadFunc
+	prevComment := readyAddCommentFunc
+
+	calls := &readyCalls{}
+	readyStoreEnsureFunc = func(string) error { return nil }
+	readyGetBeadFunc = func(id string) (store.Bead, error) {
+		if getErr != nil {
+			return store.Bead{}, getErr
+		}
+		b := bead
+		b.ID = id
+		return b, nil
+	}
+	readyUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
+		if updateErr != nil {
+			return updateErr
+		}
+		calls.updates = append(calls.updates, readyUpdate{id: id, updates: updates})
+		return nil
+	}
+	readyAddCommentFunc = func(id, text string) (string, error) {
+		if commentErr != nil {
+			return "", commentErr
+		}
+		calls.comments = append(calls.comments, readyComment{id: id, text: text})
+		return "c-ready-1", nil
+	}
+	t.Cleanup(func() {
+		readyStoreEnsureFunc = prevEnsure
+		readyGetBeadFunc = prevGet
+		readyUpdateBeadFunc = prevUpdate
+		readyAddCommentFunc = prevComment
+	})
+	return calls
+}
+
+func TestHandleBeadReady_OpenToReadyHappyPath(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withReadyStubs(t, store.Bead{Status: "open"}, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReady(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	// store.UpdateBead must have flipped status → ready (this is the
+	// canonical StampReady-firing call that matches the steward's own path).
+	if len(calls.updates) != 1 {
+		t.Fatalf("update calls = %d, want 1", len(calls.updates))
+	}
+	if calls.updates[0].id != "spi-abc" {
+		t.Fatalf("update id = %q, want spi-abc", calls.updates[0].id)
+	}
+	if got, ok := calls.updates[0].updates["status"].(string); !ok || got != "ready" {
+		t.Fatalf("update status = %v, want \"ready\"", calls.updates[0].updates["status"])
+	}
+	// Audit comment must fire so the desktop has a visible promotion row.
+	if len(calls.comments) != 1 || calls.comments[0].id != "spi-abc" {
+		t.Fatalf("comments = %+v, want one for spi-abc", calls.comments)
+	}
+	if !strings.Contains(calls.comments[0].text, "ready") {
+		t.Fatalf("comment text = %q, want to mention \"ready\"", calls.comments[0].text)
+	}
+	// Response body echoes the new state + the audit comment id.
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["id"] != "spi-abc" || got["status"] != "ready" {
+		t.Fatalf("body = %+v, want id=spi-abc status=ready", got)
+	}
+	if got["comment_id"] != "c-ready-1" {
+		t.Fatalf("comment_id = %q, want c-ready-1", got["comment_id"])
+	}
+}
+
+func TestHandleBeadReady_IdempotentOnReady(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withReadyStubs(t, store.Bead{Status: "ready"}, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReady(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	// Already-ready must not trigger an update or an audit comment —
+	// matches CLI's "already ready, skip" semantics.
+	if len(calls.updates) != 0 {
+		t.Fatalf("update calls = %+v, want 0 (idempotent no-op)", calls.updates)
+	}
+	if len(calls.comments) != 0 {
+		t.Fatalf("comments = %+v, want 0 (idempotent no-op)", calls.comments)
+	}
+}
+
+func TestHandleBeadReady_RejectsInProgress(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withReadyStubs(t, store.Bead{Status: "in_progress"}, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReady(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "already in progress") {
+		t.Fatalf("body = %q, want mention of \"already in progress\"", rec.Body.String())
+	}
+	if len(calls.updates) != 0 {
+		t.Fatalf("unexpected UpdateBead call on in_progress reject: %+v", calls.updates)
+	}
+}
+
+func TestHandleBeadReady_RejectsClosed(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withReadyStubs(t, store.Bead{Status: "closed"}, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReady(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "is closed") {
+		t.Fatalf("body = %q, want mention of \"is closed\"", rec.Body.String())
+	}
+	if len(calls.updates) != 0 {
+		t.Fatalf("unexpected UpdateBead call on closed reject: %+v", calls.updates)
+	}
+}
+
+func TestHandleBeadReady_RejectsDeferred(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withReadyStubs(t, store.Bead{Status: "deferred"}, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReady(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "deferred") {
+		t.Fatalf("body = %q, want mention of \"deferred\"", rec.Body.String())
+	}
+	if len(calls.updates) != 0 {
+		t.Fatalf("unexpected UpdateBead call on deferred reject: %+v", calls.updates)
+	}
+}
+
+func TestHandleBeadReady_NotFoundReturns404(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withReadyStubs(t, store.Bead{}, errors.New("bead spi-nope not found"), nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-nope/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReady(rec, req, "spi-nope")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBeadReady_UpdateErrorReturns500(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withReadyStubs(t, store.Bead{Status: "open"}, nil, errors.New("dolt: connection reset"), nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReady(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBeadReady_CommentErrorDoesNotFailResponse(t *testing.T) {
+	// An audit-comment failure must not regress the main 200 — the lifecycle
+	// stamp has already fired via UpdateBead and the bead is already flipped.
+	s := newTestServer(&fakeTrigger{})
+	calls := withReadyStubs(t, store.Bead{Status: "open"}, nil, nil, errors.New("comment write failed"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReady(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if len(calls.updates) != 1 {
+		t.Fatalf("update calls = %d, want 1 (status flip must still happen)", len(calls.updates))
 	}
 }
 
