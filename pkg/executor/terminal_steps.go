@@ -34,6 +34,27 @@ func TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, deps *
 	wtDir := filepath.Join(repoPath, ".worktrees", beadID)
 	var stagingWt *spgit.StagingWorktree
 
+	// Pre-flight: widen the sibling cleanup to include the sage/wizard
+	// temp-dir roots. Same-bead worktrees under
+	// $TMPDIR/spire-review/<name>/<bead> and $TMPDIR/spire-wizard/<name>/<bead>
+	// would otherwise cause git to refuse the staging worktree creation
+	// with "'feat/<bead>' is already used by worktree at ...". The safe
+	// variant applies the same four-gate check per sibling, so this does
+	// not wipe in-flight sage reviews or concurrent wizard work. The
+	// cwgiy9 in-wizard recovery design means there is no parallel cleric
+	// pod whose worktree we'd wrongly wipe; if that invariant changes,
+	// this scan must become per-bead-scoped in the extra roots too.
+	//
+	// Kept unconditional on both the resume and create paths because a
+	// stale sage worktree can survive across a wizard restart and its
+	// branch-holding lock persists regardless of whether this call
+	// creates a new worktree or resumes an existing one.
+	extraRoots := []string{
+		filepath.Join(os.TempDir(), "spire-review"),
+		filepath.Join(os.TempDir(), "spire-wizard"),
+	}
+	spgit.CleanupStaleSiblingWorktreesSafeWithExtraRoots(repoPath, wtDir, extraRoots, log)
+
 	if _, err := os.Stat(wtDir); err == nil {
 		log("resuming existing worktree at %s", wtDir)
 		stagingWt = spgit.ResumeStagingWorktree(repoPath, wtDir, branch, baseBranch, log)
@@ -208,4 +229,3 @@ func TerminalDiscard(beadID string, deps *Deps, log func(string, ...interface{})
 	log("terminal discard complete — branch deleted and bead closed as wontfix")
 	return nil
 }
-

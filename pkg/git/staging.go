@@ -195,30 +195,98 @@ type SiblingCleanupFate struct {
 // record what happened per sibling.
 func CleanupStaleSiblingWorktreesSafe(repoPath, targetDir string, log func(string, ...interface{})) []SiblingCleanupFate {
 	rc := &RepoContext{Dir: repoPath, Log: log}
-	return cleanupStaleSiblingWorktreesSafe(rc, targetDir, log)
+	return cleanupStaleSiblingWorktreesSafe(rc, targetDir, nil, log)
+}
+
+// CleanupStaleSiblingWorktreesSafeWithExtraRoots is the generalized form of
+// CleanupStaleSiblingWorktreesSafe that also scans additional roots for
+// same-bead worktrees. It is used by TerminalMerge to find stale sage or
+// wizard worktrees living under $TMPDIR/spire-review/<name>/<bead> and
+// $TMPDIR/spire-wizard/<name>/<bead> that would otherwise cause a branch
+// collision when the merge staging worktree is created.
+//
+// extraScanRoots is a list of directories to scan in addition to the parent
+// of targetDir. Each root is expanded via filepath.Glob with the pattern
+// "<root>/*" — each matched subdirectory is itself scanned for
+// `<beadID>*` entries and gated identically to the in-parent siblings.
+// Example: passing "/tmp/spire-review" matches
+// "/tmp/spire-review/wizard-spi-xxx-review" as a subdir, then scans that
+// subdir for "spi-xxx*" children.
+//
+// The cwgiy9 in-wizard recovery design means no parallel cleric pod exists
+// per bead; the only worktrees under these temp roots belong to the sage
+// for this bead (or a dead sage from a prior run). Future cleric-pod
+// reintroduction would need to widen this contract carefully — the extra
+// roots would need per-bead scoping so one cleric's worktree can't be
+// wiped by another bead's merge.
+func CleanupStaleSiblingWorktreesSafeWithExtraRoots(repoPath, targetDir string, extraScanRoots []string, log func(string, ...interface{})) []SiblingCleanupFate {
+	rc := &RepoContext{Dir: repoPath, Log: log}
+	return cleanupStaleSiblingWorktreesSafe(rc, targetDir, extraScanRoots, log)
 }
 
 // cleanupStaleSiblingWorktreesSafe is the package-private driver used by the
-// exported safe variant and by NewStagingWorktreeAt. See
+// exported safe variants and by NewStagingWorktreeAt. See
 // CleanupStaleSiblingWorktreesSafe for the full contract.
-func cleanupStaleSiblingWorktreesSafe(rc *RepoContext, targetDir string, log func(string, ...interface{})) []SiblingCleanupFate {
+//
+// extraScanRoots (optional): additional directories whose immediate children
+// are scanned for same-bead worktrees. For each root "R", each subdirectory
+// "R/<anything>" is treated as a containing directory and scanned for
+// "<beadID>*" children. Each matched child is gated and force-removed /
+// quarantined exactly like in-parent siblings.
+func cleanupStaleSiblingWorktreesSafe(rc *RepoContext, targetDir string, extraScanRoots []string, log func(string, ...interface{})) []SiblingCleanupFate {
 	beadID := deriveBeadIDFromPath(targetDir)
 	if beadID == "" {
 		return nil
 	}
 	parent := filepath.Dir(targetDir)
-	entries, err := os.ReadDir(parent)
+	targetBase := filepath.Base(targetDir)
+
+	var fates []SiblingCleanupFate
+
+	// Scan the immediate parent directory of targetDir.
+	fates = append(fates, scanDirForSiblings(rc, parent, targetBase, beadID, log)...)
+
+	// Scan each extra root's children (one directory deep), then within each
+	// child directory look for `<beadID>*`. Matches only — a root with no
+	// matching children is a no-op.
+	for _, root := range extraScanRoots {
+		// Glob each immediate child of the root. For "/tmp/spire-review",
+		// children like "/tmp/spire-review/wizard-spi-xxx-review" are each
+		// scanned for "spi-xxx*" within.
+		subdirs, _ := filepath.Glob(filepath.Join(root, "*"))
+		for _, sub := range subdirs {
+			info, statErr := os.Stat(sub)
+			if statErr != nil || !info.IsDir() {
+				continue
+			}
+			fates = append(fates, scanDirForSiblings(rc, sub, "", beadID, log)...)
+		}
+	}
+
+	// Prune git's internal worktree registry so any records for the removed
+	// siblings don't linger and block a fresh `git worktree add`. The
+	// quarantined paths still exist on disk; git will re-register them if
+	// `git worktree add` ever targets them again.
+	_ = rc.PruneWorktrees()
+	return fates
+}
+
+// scanDirForSiblings scans dir for same-bead sibling worktrees, applying the
+// four-gate safety check to each. targetBase (optional) is skipped to avoid
+// acting on the worktree we're about to create ourselves. beadID anchors the
+// name match — entries whose names don't start with beadID or match it
+// exactly are ignored. Returns per-sibling fates.
+func scanDirForSiblings(rc *RepoContext, dir, targetBase, beadID string, log func(string, ...interface{})) []SiblingCleanupFate {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
-	targetBase := filepath.Base(targetDir)
-
 	var fates []SiblingCleanupFate
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		if entry.Name() == targetBase {
+		if targetBase != "" && entry.Name() == targetBase {
 			continue
 		}
 		// Skip already-quarantined siblings so repeat invocations don't
@@ -229,7 +297,7 @@ func cleanupStaleSiblingWorktreesSafe(rc *RepoContext, targetDir string, log fun
 		if !isSameBeadWorktree(entry.Name(), beadID) {
 			continue
 		}
-		sibling := filepath.Join(parent, entry.Name())
+		sibling := filepath.Join(dir, entry.Name())
 		fate := evaluateSiblingGates(sibling, beadID)
 		if fate.Action == "removed" {
 			if log != nil {
@@ -250,7 +318,7 @@ func cleanupStaleSiblingWorktreesSafe(rc *RepoContext, targetDir string, log fun
 		}
 		// Gate failed — rename instead of destroy. Never silently delete
 		// in-flight or dirty work.
-		quarantinePath := filepath.Join(parent, fmt.Sprintf(".abandoned-%d-%s", time.Now().Unix(), entry.Name()))
+		quarantinePath := filepath.Join(dir, fmt.Sprintf(".abandoned-%d-%s", time.Now().Unix(), entry.Name()))
 		if log != nil {
 			log("sibling %s: %s — quarantining to %s (bead %s)", sibling, fate.Reason, quarantinePath, beadID)
 		}
@@ -266,11 +334,6 @@ func cleanupStaleSiblingWorktreesSafe(rc *RepoContext, targetDir string, log fun
 		}
 		fates = append(fates, fate)
 	}
-	// Prune git's internal worktree registry so any records for the removed
-	// siblings don't linger and block a fresh `git worktree add`. The
-	// quarantined paths still exist on disk; git will re-register them if
-	// `git worktree add` ever targets them again.
-	_ = rc.PruneWorktrees()
 	return fates
 }
 
@@ -392,7 +455,7 @@ func NewStagingWorktree(repoPath, branch, baseBranch, nameHint, userName, userEm
 
 	return &StagingWorktree{
 		WorktreeContext: wc,
-		tmpDir:         tmpDir,
+		tmpDir:          tmpDir,
 	}, nil
 }
 
@@ -419,7 +482,7 @@ func NewStagingWorktreeAt(repoPath, dir, branch, baseBranch, userName, userEmail
 	// dirty/in-flight siblings to a `.abandoned-*` quarantine path so we
 	// never silently destroy concurrent work, then force-removes the rest so
 	// `git worktree add` doesn't collide.
-	cleanupStaleSiblingWorktreesSafe(rc, dir, log)
+	cleanupStaleSiblingWorktreesSafe(rc, dir, nil, log)
 
 	// Clean up stale worktree at this path
 	if _, err := os.Stat(dir); err == nil {
