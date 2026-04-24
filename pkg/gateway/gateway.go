@@ -17,10 +17,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +31,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/trace"
 	"github.com/steveyegge/beads"
 )
 
@@ -345,6 +348,11 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	// /api/v1/beads/{id}/lineage
 	if strings.HasSuffix(id, "/lineage") {
 		s.getBeadLineage(w, r, strings.TrimSuffix(id, "/lineage"))
+		return
+	}
+	// /api/v1/beads/{id}/trace
+	if strings.HasSuffix(id, "/trace") {
+		s.getBeadTrace(w, r, strings.TrimSuffix(id, "/trace"))
 		return
 	}
 	switch r.Method {
@@ -1084,6 +1092,62 @@ func (s *Server) getBeadLogs(w http.ResponseWriter, r *http.Request, id string) 
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// traceCollect is the package-level indirection through which
+// getBeadTrace calls pkg/trace.Collect. Kept as a var so handler tests
+// can inject a fake collector without spinning up a real dolt store.
+// Mirrors the store.GetActiveAttemptFunc seam.
+var traceCollect = trace.Collect
+
+// getBeadTrace answers GET /api/v1/beads/{id}/trace with the composite
+// pipeline + totals + active-agent + log-tail view the desktop's TRACE
+// tab consumes. The shape is locked on pkg/trace.Data (see that package's
+// doc for field semantics); this handler is a thin HTTP wrapper around
+// trace.Collect with query-param parsing and error-to-status mapping.
+//
+// Query params:
+//   - tail=N (default 200, clamped to [0, MaxTailLines]) — 0 returns an
+//     empty log_tail array, matching the "no tail requested" semantics.
+//
+// Status codes:
+//   - 200 with empty-shape JSON when the bead exists but has never run.
+//   - 404 when the bead ID does not resolve (pkg/trace.NotFoundError).
+//   - 500 only for unexpected store/collection failures.
+func (s *Server) getBeadTrace(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	// store.Ensure is not called explicitly here: trace.Collect walks the
+	// store via getStore(), which auto-ensures through BeadsDirResolver.
+	// Keeping the handler lean also makes it unit-testable without a real
+	// dolt via the traceCollect indirection.
+	tail := trace.DefaultTailLines
+	if v := r.URL.Query().Get("tail"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			// Bad input silently clamps to the default rather than 400 —
+			// the desktop's pollers prefer a usable response over an
+			// error when the user edits the URL by hand.
+			n = trace.DefaultTailLines
+		}
+		if n > trace.MaxTailLines {
+			n = trace.MaxTailLines
+		}
+		tail = n
+	}
+	data, err := traceCollect(id, trace.Options{Tail: tail})
+	if err != nil {
+		var nf *trace.NotFoundError
+		if errors.As(err, &nf) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": nf.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleTowers answers GET /api/v1/towers with every tower config on disk
