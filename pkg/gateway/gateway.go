@@ -25,10 +25,15 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/board"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
+
+// Version is the spire binary version string. cmd/spire sets it in init()
+// so release builds surface the actual version through /api/v1/tower.
+var Version = "dev"
 
 // Triggerable is implemented by anything that can be asked to do work now.
 // A returned error means the request was declined (debounced, in-progress,
@@ -93,6 +98,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/messages/", s.corsMiddleware(s.bearerAuth(s.handleMessageByID)))
 	mux.Handle("/api/v1/board", s.corsMiddleware(s.bearerAuth(s.handleBoard)))
 	mux.Handle("/api/v1/roster", s.corsMiddleware(s.bearerAuth(s.handleRoster)))
+	mux.Handle("/api/v1/tower", s.corsMiddleware(s.bearerAuth(s.handleTower)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -515,6 +521,29 @@ func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
+
+// handleTower answers GET /api/v1/tower with the active tower's identity
+// so the desktop header can show the real tower name / deploy mode / dolt
+// URL without hard-coding. Returns a sparse object when no tower is
+// configured so the client falls back gracefully.
+func (s *Server) handleTower(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	out := map[string]string{
+		"version": Version,
+	}
+	if tower, err := config.ResolveTowerConfig(); err == nil && tower != nil {
+		out["name"] = tower.Name
+		out["prefix"] = tower.HubPrefix
+		out["database"] = tower.Database
+		out["deploy_mode"] = string(tower.EffectiveDeploymentMode())
+		out["dolt_url"] = tower.DolthubRemote
+		out["archmage"] = tower.Archmage.Name
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 
 // effectiveDataDir returns dataDir if set, otherwise falls back to BEADS_DIR env.
 func (s *Server) effectiveDataDir() string {

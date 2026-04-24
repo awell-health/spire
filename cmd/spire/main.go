@@ -4,12 +4,17 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/awell-health/spire/pkg/gateway"
 	"github.com/spf13/cobra"
 )
 
 var version = "dev"
 
 func init() {
+	// Propagate the binary's version string into the gateway so the
+	// desktop app's /api/v1/tower response surfaces the real release.
+	gateway.Version = version
+
 	// --- Simple commands (no flags or minimal) ---
 	rootCmd.AddCommand(registerCmd)
 	rootCmd.AddCommand(unregisterCmd)
