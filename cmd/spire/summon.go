@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
@@ -455,6 +456,10 @@ var isK8sAvailableFunc = isK8sAvailable
 // used by summonLocal for status transitions.
 var summonUpdateBeadFunc = storeUpdateBead
 
+// summonBeginWorkFunc is a test-replaceable wrapper around beadlifecycle.BeginWork
+// used by summonLocal to set up per-bead work state.
+var summonBeginWorkFunc = beadlifecycle.BeginWork
+
 // summonSpawnFunc is the seam around backend.Spawn so unit tests can exercise
 // summonLocal without fork/exec'ing the test binary (which would inherit
 // SPIRE_CONFIG_DIR and race with t.TempDir's RemoveAll).
@@ -580,13 +585,11 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 		saveWizardRegistry(reg)
 	}
 
-	// Orphan-attempt reconciliation before the interpreter starts.
-	// If a prior wizard was kill -9'd mid-attempt, its attempt bead stays
-	// in_progress forever with no live process and no graph_state.json —
-	// the next summon would stack a second attempt on top. Close the
-	// orphan here so the wizard's next CreateAttemptBead call starts from
-	// a clean slate. Seam 15 (wizard dead → wizard resumed) in spi-1dk71j.
-	reconcileOrphanAttempts(targetIDs, reg)
+	// BeginWork runs OrphanSweep + creates attempt bead + transitions to in_progress.
+	// This replaces the old reconcileOrphanAttempts call and the per-bead status
+	// transitions below. The wizard calling `spire claim` will reclaim the
+	// existing attempt created here (same agent name, reclaim path in ClaimWork).
+	// spi-6pmit1: beadlifecycle.BeginWork is the canonical local-summon path.
 
 	if len(targetIDs) > 0 {
 		// Look up each target bead directly.
@@ -603,16 +606,26 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 				return fmt.Errorf("target %s is closed — reopen it first (bd update %s --status open)", id, id)
 			case "deferred":
 				return fmt.Errorf("target %s is deferred — set to open or ready first (bd update %s --status open)", id, id)
-			case "hooked":
-				// Transition to in_progress before summoning — do NOT unhook step beads,
-				// let the wizard/executor evaluate the hook condition and decide.
-				if err := summonUpdateBeadFunc(id, map[string]interface{}{"status": "in_progress"}); err != nil {
-					return fmt.Errorf("transition hooked bead %s to in_progress: %w", id, err)
+			case "hooked", "open", "ready", "in_progress", "":
+				// BeginWork handles the status transition, orphan sweep, attempt creation,
+				// and registry placeholder entry. The wizard name is deterministic: wizard-<id>.
+				// NOTE: The registry entry's PID is 0 here (wizard not yet spawned).
+				// SpawnWizard stamps the real PID after spawn via registry.Update.
+				wizardName := "wizard-" + id
+				worktree := filepath.Join(os.TempDir(), "spire-wizard", wizardName, id)
+				towerName := ""
+				if tc, err2 := activeTowerConfig(); err2 == nil && tc != nil {
+					towerName = tc.Name
+				} else if t2 := os.Getenv("SPIRE_TOWER"); t2 != "" {
+					towerName = t2
 				}
-				bead.Status = "in_progress"
-			case "open", "ready":
-				if err := summonUpdateBeadFunc(id, map[string]interface{}{"status": "in_progress"}); err != nil {
-					return fmt.Errorf("transition %s bead %s to in_progress: %w", bead.Status, id, err)
+				if _, berr := summonBeginWorkFunc(newLifecycleDeps(), id, beadlifecycle.BeginOpts{
+					Mode:      beadlifecycle.ModeLocal,
+					AgentName: wizardName,
+					Worktree:  worktree,
+					Tower:     towerName,
+				}); berr != nil {
+					return fmt.Errorf("begin work for %s: %w", id, berr)
 				}
 				bead.Status = "in_progress"
 			}

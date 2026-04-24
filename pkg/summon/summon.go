@@ -164,18 +164,23 @@ func SpawnWizard(bead store.Bead, dispatch string) (Result, error) {
 	}
 
 	pid, _ := strconv.Atoi(handle.Identifier())
-	worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
-	// NOTE: registry entry created here. In Phase 2 this will move to
-	// beadlifecycle.BeginWork; for now summon is the sole creator.
-	if err := registry.Upsert(registry.Entry{
-		Name:      name,
-		PID:       pid,
-		BeadID:    bead.ID,
-		Worktree:  worktree,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Tower:     towerName,
-	}); err != nil {
-		log.Printf("warning: registry add for %s: %v", name, err)
+	// spi-6pmit1: BeginWork (called from cmd/spire/summon.go) already created the
+	// registry entry with a placeholder PID=0 (registry-first ordering). Now that
+	// we have the real PID, stamp it via registry.Update. Falls back to Upsert when
+	// called from contexts that don't call BeginWork (e.g. HTTP gateway via Run).
+	if uerr := registry.Update(name, func(e *registry.Entry) { e.PID = pid }); uerr != nil {
+		// Entry may not exist (gateway path skips BeginWork). Fall back to full Upsert.
+		worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
+		if ferr := registry.Upsert(registry.Entry{
+			Name:      name,
+			PID:       pid,
+			BeadID:    bead.ID,
+			Worktree:  worktree,
+			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			Tower:     towerName,
+		}); ferr != nil {
+			log.Printf("warning: registry add for %s: %v", name, ferr)
+		}
 	}
 
 	commentID, cerr := AddCommentFunc(bead.ID, "summoned "+name)

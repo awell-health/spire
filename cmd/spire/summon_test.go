@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/wizard"
 )
@@ -388,20 +389,20 @@ func TestSummonLocal_AllowsInProgressBead(t *testing.T) {
 }
 
 // TestSummonLocal_TransitionsOpenToInProgress verifies that a bead with
-// status "open" is advanced to "in_progress" via summonUpdateBeadFunc before
-// the wizard spawn path runs. This is the core fix for spi-corqy: prior to
-// the fix, the status-transition switch had no case for "open"/"ready", so
-// summoned beads stayed in the backlog lane on the board.
+// status "open" invokes summonBeginWorkFunc (which handles orphan sweep +
+// attempt creation + in_progress transition). This is the core fix for
+// spi-corqy: prior to the fix, the status-transition switch had no case for
+// "open"/"ready". Now BeginWork handles all non-closed statuses.
 func TestSummonLocal_TransitionsOpenToInProgress(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
 	origGet := storeGetBeadFunc
-	origUpdate := summonUpdateBeadFunc
+	origBegin := summonBeginWorkFunc
 	origSpawn := summonSpawnFunc
 	defer func() {
 		storeGetBeadFunc = origGet
-		summonUpdateBeadFunc = origUpdate
+		summonBeginWorkFunc = origBegin
 		summonSpawnFunc = origSpawn
 	}()
 
@@ -409,37 +410,32 @@ func TestSummonLocal_TransitionsOpenToInProgress(t *testing.T) {
 		return Bead{ID: id, Status: "open", Title: "test"}, nil
 	}
 
-	var gotID string
-	var gotUpdates map[string]interface{}
-	summonUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
-		gotID = id
-		gotUpdates = updates
-		return nil
+	var gotBeadID string
+	summonBeginWorkFunc = func(deps beadlifecycle.Deps, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
+		gotBeadID = beadID
+		return "att-stub", nil
 	}
 	summonSpawnFunc = stubSpawn
 
 	_ = summonLocal(1, []string{"spi-open"}, "", synthHeaderAuth)
 
-	if gotID != "spi-open" {
-		t.Fatalf("expected summonUpdateBeadFunc called for spi-open, got %q", gotID)
-	}
-	if gotUpdates["status"] != "in_progress" {
-		t.Fatalf("expected status=in_progress, got %v", gotUpdates["status"])
+	if gotBeadID != "spi-open" {
+		t.Fatalf("expected BeginWork called for spi-open, got %q", gotBeadID)
 	}
 }
 
-// TestSummonLocal_TransitionsReadyToInProgress verifies the same transition
-// from "ready" (the other status that falls into the new switch case).
+// TestSummonLocal_TransitionsReadyToInProgress verifies the same flow
+// from "ready" (the other status that falls into the BeginWork case).
 func TestSummonLocal_TransitionsReadyToInProgress(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
 	origGet := storeGetBeadFunc
-	origUpdate := summonUpdateBeadFunc
+	origBegin := summonBeginWorkFunc
 	origSpawn := summonSpawnFunc
 	defer func() {
 		storeGetBeadFunc = origGet
-		summonUpdateBeadFunc = origUpdate
+		summonBeginWorkFunc = origBegin
 		summonSpawnFunc = origSpawn
 	}()
 
@@ -447,74 +443,74 @@ func TestSummonLocal_TransitionsReadyToInProgress(t *testing.T) {
 		return Bead{ID: id, Status: "ready", Title: "test"}, nil
 	}
 
-	var gotID string
-	var gotUpdates map[string]interface{}
-	summonUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
-		gotID = id
-		gotUpdates = updates
-		return nil
+	var gotBeadID string
+	summonBeginWorkFunc = func(deps beadlifecycle.Deps, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
+		gotBeadID = beadID
+		return "att-stub", nil
 	}
 	summonSpawnFunc = stubSpawn
 
 	_ = summonLocal(1, []string{"spi-ready"}, "", synthHeaderAuth)
 
-	if gotID != "spi-ready" {
-		t.Fatalf("expected summonUpdateBeadFunc called for spi-ready, got %q", gotID)
-	}
-	if gotUpdates["status"] != "in_progress" {
-		t.Fatalf("expected status=in_progress, got %v", gotUpdates["status"])
+	if gotBeadID != "spi-ready" {
+		t.Fatalf("expected BeginWork called for spi-ready, got %q", gotBeadID)
 	}
 }
 
-// TestSummonLocal_TransitionFailurePropagates verifies that when the store
-// update call fails, summonLocal aborts with a wrapped error mentioning the
-// original status — ensuring the caller learns which bead state failed.
+// TestSummonLocal_TransitionFailurePropagates verifies that when BeginWork
+// fails, summonLocal aborts with a wrapped error mentioning the bead.
 func TestSummonLocal_TransitionFailurePropagates(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
 	origGet := storeGetBeadFunc
-	origUpdate := summonUpdateBeadFunc
+	origBegin := summonBeginWorkFunc
 	defer func() {
 		storeGetBeadFunc = origGet
-		summonUpdateBeadFunc = origUpdate
+		summonBeginWorkFunc = origBegin
 	}()
 
 	storeGetBeadFunc = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: "open", Title: "test"}, nil
 	}
-	summonUpdateBeadFunc = func(id string, updates map[string]interface{}) error {
-		return fmt.Errorf("db down")
+	summonBeginWorkFunc = func(deps beadlifecycle.Deps, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
+		return "", fmt.Errorf("db down")
 	}
 
 	err := summonLocal(1, []string{"spi-open"}, "", wizard.SelectFlags{})
 	if err == nil {
-		t.Fatal("expected error when update fails")
+		t.Fatal("expected error when BeginWork fails")
 	}
-	if !strings.Contains(err.Error(), "transition open bead spi-open to in_progress") {
-		t.Fatalf("expected transition error mentioning bead and status, got: %v", err)
+	if !strings.Contains(err.Error(), "spi-open") {
+		t.Fatalf("expected error mentioning bead spi-open, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "db down") {
-		t.Fatalf("expected wrapped update error, got: %v", err)
+		t.Fatalf("expected wrapped BeginWork error, got: %v", err)
 	}
 }
 
 // TestSummonLocal_RejectsMultipleTargets_FirstBadFails verifies that when
-// multiple targets are provided, the first invalid one causes an immediate error.
+// multiple targets are provided, the first closed one causes an immediate error.
 func TestSummonLocal_RejectsMultipleTargets_FirstBadFails(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
 
-	orig := storeGetBeadFunc
-	defer func() { storeGetBeadFunc = orig }()
+	origGet := storeGetBeadFunc
+	origBegin := summonBeginWorkFunc
+	defer func() {
+		storeGetBeadFunc = origGet
+		summonBeginWorkFunc = origBegin
+	}()
 
-	callCount := 0
 	storeGetBeadFunc = func(id string) (Bead, error) {
-		callCount++
 		if id == "spi-good" {
 			return Bead{ID: id, Status: "in_progress", Title: "good"}, nil
 		}
 		return Bead{ID: id, Status: "closed", Title: "bad"}, nil
+	}
+	// Stub BeginWork so spi-good doesn't need a live store.
+	summonBeginWorkFunc = func(deps beadlifecycle.Deps, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
+		return "att-stub", nil
 	}
 
 	err := summonLocal(2, []string{"spi-good", "spi-bad"}, "", wizard.SelectFlags{})

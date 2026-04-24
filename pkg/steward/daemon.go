@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
+	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
@@ -295,6 +296,16 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 	reaped := ReapDeadAgents(tower.Name)
 	if reaped > 0 {
 		log.Printf("[daemon] [%s] reaped %d dead agent(s)", tower.Name, reaped)
+	}
+
+	// OrphanSweep: close orphaned attempt beads whose wizards are dead (dual-signal:
+	// PID dead AND no graph_state.json). This is the canonical bead-level orphan
+	// cleanup; ReapDeadAgents handles message dead-lettering separately.
+	// spi-6pmit1: beadlifecycle.OrphanSweep is the authoritative sweep path.
+	if report, serr := beadlifecycle.OrphanSweep(newDaemonLifecycleDeps(), beadlifecycle.OrphanScope{All: true}); serr != nil {
+		log.Printf("[daemon] [%s] orphan sweep error: %s", tower.Name, serr)
+	} else if report.Cleaned > 0 {
+		log.Printf("[daemon] [%s] orphan sweep: examined %d, dead %d, cleaned %d", tower.Name, report.Examined, report.Dead, report.Cleaned)
 	}
 
 	// Remove stale updated:<timestamp> labels left by the old heartbeat mechanism.
