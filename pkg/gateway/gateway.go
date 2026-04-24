@@ -101,6 +101,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/tower", s.corsMiddleware(s.bearerAuth(s.handleTower)))
 	mux.Handle("/api/v1/towers", s.corsMiddleware(s.bearerAuth(s.handleTowers)))
 	mux.Handle("/api/v1/cleanup/step-beads", s.corsMiddleware(s.bearerAuth(s.handleCleanupStepBeads)))
+	mux.Handle("/api/v1/blocked", s.corsMiddleware(s.bearerAuth(s.handleBlocked)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -652,6 +653,33 @@ func (s *Server) getBeadComments(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, comments)
+}
+
+// handleBlocked answers GET /api/v1/blocked with the ID set of open beads
+// that have unresolved blocking dependencies. The desktop uses this to
+// split its OPEN column into READY (unblocked) vs BLOCKED (waiting).
+func (s *Server) handleBlocked(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	blocked, err := store.GetBlockedIssues(beads.WorkFilter{})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	ids := make([]string, 0, len(blocked))
+	for _, b := range blocked {
+		ids = append(ids, b.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"count": len(ids),
+		"ids":   ids,
+	})
 }
 
 // handleCleanupStepBeads answers POST /api/v1/cleanup/step-beads and
