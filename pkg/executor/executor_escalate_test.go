@@ -125,3 +125,33 @@ func TestSeedRecoveryMetadata_EmptyRecoveryID(t *testing.T) {
 	// If it doesn't guard, this test panics or errors.
 	seedRecoveryMetadata("", "spi-parent", "merge-failure", "step=implement")
 }
+
+// TestMessageArchmage_DerivesPrefix verifies that MessageArchmage creates
+// the message bead using the source bead's prefix, not a hardcoded one.
+func TestMessageArchmage_DerivesPrefix(t *testing.T) {
+	tests := []struct {
+		name       string
+		beadID     string
+		wantPrefix string
+	}{
+		{"spi prefix", "spi-abc123", "spi"},
+		{"spd prefix", "spd-ac5", "spd"},
+		{"web prefix", "web-xyz", "web"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPrefix string
+			deps := &Deps{
+				CreateBead: func(opts CreateOpts) (string, error) {
+					gotPrefix = opts.Prefix
+					return "msg-001", nil
+				},
+				AddDepTyped: func(issueID, dependsOnID, depType string) error { return nil },
+			}
+			MessageArchmage("test-agent", tt.beadID, "test message", deps)
+			if gotPrefix != tt.wantPrefix {
+				t.Errorf("CreateBead prefix = %q, want %q", gotPrefix, tt.wantPrefix)
+			}
+		})
+	}
+}

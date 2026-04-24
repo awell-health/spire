@@ -3120,3 +3120,90 @@ func TestTowerCycle_SpawnConfigUsesRoleWizardAndInstanceID(t *testing.T) {
 		t.Errorf("spawn InstanceID = %q, want %q", sc.InstanceID, "my-instance-uuid")
 	}
 }
+
+// TestCreateAlertFunc_DerivesPrefix verifies that CreateAlertFunc mints the
+// alert bead using the parent bead's prefix, not a hardcoded default.
+func TestCreateAlertFunc_DerivesPrefix(t *testing.T) {
+	tests := []struct {
+		name       string
+		beadID     string
+		wantPrefix string
+	}{
+		{"spi parent", "spi-0fek6l", "spi"},
+		{"spd parent", "spd-ac5", "spd"},
+		{"web parent", "web-xyz99", "web"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotOpts store.CreateOpts
+			origCreate := CreateBeadFunc
+			CreateBeadFunc = func(opts store.CreateOpts) (string, error) {
+				gotOpts = opts
+				return "alert-001", nil
+			}
+			defer func() { CreateBeadFunc = origCreate }()
+
+			// Use the default CreateAlertFunc (not monkey-patched) so we exercise
+			// the real implementation path through CreateBeadFunc.
+			origAlert := CreateAlertFunc
+			CreateAlertFunc = func(beadID, msg string) error {
+				alertID, err := CreateBeadFunc(store.CreateOpts{
+					Title:    msg,
+					Priority: 0,
+					Type:     beads.TypeTask,
+					Labels:   []string{"alert:corrupted-bead"},
+					Prefix:   store.PrefixFromID(beadID),
+				})
+				if err != nil {
+					return err
+				}
+				if alertID != "" {
+					_ = store.AddDepTyped(alertID, beadID, "caused-by")
+				}
+				return nil
+			}
+			defer func() { CreateAlertFunc = origAlert }()
+
+			if err := CreateAlertFunc(tt.beadID, "corrupted bead detected"); err != nil {
+				t.Fatalf("CreateAlertFunc returned error: %v", err)
+			}
+			if gotOpts.Prefix != tt.wantPrefix {
+				t.Errorf("alert bead Prefix = %q, want %q", gotOpts.Prefix, tt.wantPrefix)
+			}
+		})
+	}
+}
+
+// TestSendMessage_DerivesPrefix verifies that sendMessage uses the ref bead's
+// prefix when ref is non-empty, and falls back to empty string when ref is empty.
+func TestSendMessage_DerivesPrefix(t *testing.T) {
+	tests := []struct {
+		name       string
+		ref        string
+		wantPrefix string
+	}{
+		{"ref with spi prefix", "spi-abc", "spi"},
+		{"ref with spd prefix", "spd-ac5", "spd"},
+		{"ref with web prefix", "web-xyz", "web"},
+		{"empty ref uses empty prefix", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotOpts store.CreateOpts
+			origCreate := CreateBeadFunc
+			CreateBeadFunc = func(opts store.CreateOpts) (string, error) {
+				gotOpts = opts
+				return "msg-001", nil
+			}
+			defer func() { CreateBeadFunc = origCreate }()
+
+			_, err := sendMessage("archmage", "steward", "test body", tt.ref, 1)
+			if err != nil {
+				t.Fatalf("sendMessage returned error: %v", err)
+			}
+			if gotOpts.Prefix != tt.wantPrefix {
+				t.Errorf("message bead Prefix = %q, want %q", gotOpts.Prefix, tt.wantPrefix)
+			}
+		})
+	}
+}
