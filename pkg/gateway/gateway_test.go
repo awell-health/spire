@@ -547,6 +547,171 @@ func TestHandleBeadReady_CommentErrorDoesNotFailResponse(t *testing.T) {
 	}
 }
 
+// --- /api/v1/beads/{id}/comments POST ---
+
+// commentsPostCall records what commentsAddFunc was called with so tests
+// can assert the handler forwarded the right (id, text).
+type commentsPostCall struct{ id, text string }
+
+// withCommentsPostStubs swaps the package-level seams for the life of the
+// test. Returns a pointer to the recorded call slice and a pointer to the
+// error the stub will return (mutable across cases).
+func withCommentsPostStubs(t *testing.T, returnID string, addErr error) *[]commentsPostCall {
+	t.Helper()
+	prevEnsure := commentsStoreEnsureFunc
+	prevAdd := commentsAddFunc
+
+	var calls []commentsPostCall
+	commentsStoreEnsureFunc = func(string) error { return nil }
+	commentsAddFunc = func(id, text string) (string, error) {
+		calls = append(calls, commentsPostCall{id: id, text: text})
+		if addErr != nil {
+			return "", addErr
+		}
+		return returnID, nil
+	}
+	t.Cleanup(func() {
+		commentsStoreEnsureFunc = prevEnsure
+		commentsAddFunc = prevAdd
+	})
+	return &calls
+}
+
+func TestPostBeadComment_HappyPathReturns201AndID(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withCommentsPostStubs(t, "c-1", nil)
+
+	body := strings.NewReader(`{"text":"hello"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/comments", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.postBeadComment(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("commentsAddFunc calls = %d, want 1", len(*calls))
+	}
+	if (*calls)[0].id != "spi-abc" || (*calls)[0].text != "hello" {
+		t.Fatalf("commentsAddFunc args = %+v, want id=spi-abc text=hello", (*calls)[0])
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["id"] != "c-1" {
+		t.Fatalf("id = %q, want c-1", got["id"])
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("content-type = %q, want application/json", ct)
+	}
+}
+
+func TestPostBeadComment_MissingTextReturns400(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withCommentsPostStubs(t, "c-1", nil)
+
+	for _, payload := range []string{`{}`, `{"text":""}`, `{"text":"   "}`} {
+		body := strings.NewReader(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/comments", body)
+		req.ContentLength = int64(body.Len())
+		rec := httptest.NewRecorder()
+		s.postBeadComment(rec, req, "spi-abc")
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("payload=%s: status = %d, want 400 (body=%q)", payload, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "text is required") {
+			t.Fatalf("payload=%s: body = %q, want mention of \"text is required\"", payload, rec.Body.String())
+		}
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("commentsAddFunc must not be called when text is empty; calls = %+v", *calls)
+	}
+}
+
+func TestPostBeadComment_MalformedJSONReturns400(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withCommentsPostStubs(t, "c-1", nil)
+
+	body := strings.NewReader(`not-json`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/comments", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.postBeadComment(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid JSON") {
+		t.Fatalf("body = %q, want mention of \"invalid JSON\"", rec.Body.String())
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("commentsAddFunc must not be called on malformed JSON; calls = %+v", *calls)
+	}
+}
+
+func TestPostBeadComment_BeadNotFoundReturns404(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withCommentsPostStubs(t, "", errors.New("issue not found: spi-nope"))
+
+	body := strings.NewReader(`{"text":"hello"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-nope/comments", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.postBeadComment(rec, req, "spi-nope")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostBeadComment_StoreErrorReturns500(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withCommentsPostStubs(t, "", errors.New("dolt: connection reset"))
+
+	body := strings.NewReader(`{"text":"hello"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/comments", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.postBeadComment(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleBeadByID_RoutesCommentsMethods verifies the method switch at
+// the /comments branch dispatches GET vs POST to the right handler and
+// rejects other verbs with 405 (preserves the CORS headers set by
+// corsMiddleware — not tested here, see the middleware wiring).
+func TestHandleBeadByID_RoutesCommentsMethods(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withCommentsPostStubs(t, "c-routed", nil)
+
+	// POST → postBeadComment
+	body := strings.NewReader(`{"text":"routed"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/comments", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadByID(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST routing: status = %d, want 201 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 || (*calls)[0].text != "routed" {
+		t.Fatalf("POST routing: commentsAddFunc calls = %+v, want one with text=routed", *calls)
+	}
+
+	// DELETE → 405 (proves the default branch of the method switch fires)
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/beads/spi-abc/comments", nil)
+	rec = httptest.NewRecorder()
+	s.handleBeadByID(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE routing: status = %d, want 405 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
 // --- Routing ---
 
 func TestHandleBeadByID_RoutesSummonAndReady(t *testing.T) {

@@ -340,7 +340,15 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	}
 	// /api/v1/beads/{id}/comments
 	if strings.HasSuffix(id, "/comments") {
-		s.getBeadComments(w, r, strings.TrimSuffix(id, "/comments"))
+		beadID := strings.TrimSuffix(id, "/comments")
+		switch r.Method {
+		case http.MethodGet:
+			s.getBeadComments(w, r, beadID)
+		case http.MethodPost:
+			s.postBeadComment(w, r, beadID)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
 		return
 	}
 	// /api/v1/beads/{id}/logs
@@ -745,6 +753,40 @@ func (s *Server) getBeadComments(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, comments)
+}
+
+// postBeadComment answers POST /api/v1/beads/{id}/comments — appends a
+// comment authored by Actor() (defaults to "spire") and returns the new
+// comment id. Used by the desktop Comments-tab composer and the
+// CloseBeadModal optional-farewell flow: before this handler existed the
+// modal's comment POST failed with 405 and aborted the follow-up status
+// flip so beads couldn't be closed with a comment from the desktop.
+func (s *Server) postBeadComment(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.Text) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		return
+	}
+	if err := commentsStoreEnsureFunc(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	commentID, err := commentsAddFunc(id, body.Text)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": commentID})
 }
 
 // handleRepos answers GET /api/v1/repos with every registered repo in
@@ -1234,6 +1276,12 @@ var (
 	readyGetBeadFunc    = store.GetBead
 	readyUpdateBeadFunc = store.UpdateBead
 	readyAddCommentFunc = store.AddCommentReturning
+
+	commentsStoreEnsureFunc = func(dir string) error {
+		_, err := store.Ensure(dir)
+		return err
+	}
+	commentsAddFunc = store.AddCommentReturning
 )
 
 // handleBeadSummon answers POST /api/v1/beads/{id}/summon — spawns a wizard
