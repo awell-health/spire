@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/summon"
+	"github.com/awell-health/spire/pkg/wizard"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
@@ -29,7 +31,7 @@ type localWizard = agent.Entry
 
 var summonCmd = &cobra.Command{
 	Use:   "summon <bead-id>... | <N> [flags]",
-	Short: "Summon wizards (--targets <ids>, --auto)",
+	Short: "Summon wizards (--targets <ids>, --auto, --auth, --turbo, -H)",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var fullArgs []string
@@ -50,6 +52,17 @@ var summonCmd = &cobra.Command{
 		}
 		if dispatch, _ := cmd.Flags().GetString("dispatch"); dispatch != "" {
 			fullArgs = append(fullArgs, "--dispatch", dispatch)
+		}
+		if authSlot, _ := cmd.Flags().GetString("auth"); authSlot != "" {
+			fullArgs = append(fullArgs, "--auth", authSlot)
+		}
+		if turbo, _ := cmd.Flags().GetBool("turbo"); turbo {
+			fullArgs = append(fullArgs, "--turbo")
+		}
+		if headers, _ := cmd.Flags().GetStringArray("header"); len(headers) > 0 {
+			for _, h := range headers {
+				fullArgs = append(fullArgs, "-H", h)
+			}
 		}
 		fullArgs = append(fullArgs, args...)
 		return cmdSummon(fullArgs)
@@ -85,6 +98,9 @@ func init() {
 	summonCmd.Flags().String("target", "", "Alias for --targets")
 	summonCmd.Flags().Bool("auto", false, "Auto mode")
 	summonCmd.Flags().String("dispatch", "", "Override dispatch mode: sequential, wave, or direct (persists as dispatch:<mode> label; omit to use formula default)")
+	summonCmd.Flags().String("auth", "", "Auth slot to use for this run: subscription or api-key")
+	summonCmd.Flags().Bool("turbo", false, "Alias for --auth=api-key")
+	summonCmd.Flags().StringArrayP("header", "H", nil, "Ephemeral Anthropic header: x-anthropic-api-key or x-anthropic-token (repeatable)")
 
 
 	dismissCmd.Flags().Bool("all", false, "Dismiss all wizards")
@@ -119,7 +135,7 @@ func wizardsForTower(reg wizardRegistry, tower string) []localWizard {
 
 func cmdSummon(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire summon <bead-id>... | <N> [--targets <ids>] [--auto] [--dispatch <mode>]")
+		return fmt.Errorf("usage: spire summon <bead-id>... | <N> [--targets <ids>] [--auto] [--dispatch <mode>] [--auth <slot>] [--turbo] [-H name:value]")
 	}
 
 	if d := resolveBeadsDir(); d != "" {
@@ -132,6 +148,8 @@ func cmdSummon(args []string) error {
 	var dispatch string
 	var targetIDs []string
 	var hasExplicitCount bool
+	var authFlags wizard.SelectFlags
+	var rawHeaders []string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -151,6 +169,20 @@ func cmdSummon(args []string) error {
 			dispatch = args[i]
 		case "--auto":
 			auto = true
+		case "--auth":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--auth requires a slot: subscription or api-key")
+			}
+			i++
+			authFlags.AuthSlot = args[i]
+		case "--turbo":
+			authFlags.Turbo = true
+		case "-H", "--header":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a header value (e.g. 'x-anthropic-api-key: sk-ant-…')", args[i])
+			}
+			i++
+			rawHeaders = append(rawHeaders, args[i])
 		default:
 			if strings.Contains(args[i], "-") {
 				// Looks like a bead ID (e.g. spi-xxx)
@@ -158,12 +190,26 @@ func cmdSummon(args []string) error {
 			} else {
 				n, err := strconv.Atoi(args[i])
 				if err != nil {
-					return fmt.Errorf("expected a bead ID or number, got %q\nusage: spire summon <bead-id>... | <N> [--targets <ids>] [--auto] [--dispatch <mode>]", args[i])
+					return fmt.Errorf("expected a bead ID or number, got %q\nusage: spire summon <bead-id>... | <N> [--targets <ids>] [--auto] [--dispatch <mode>] [--auth <slot>] [--turbo] [-H name:value]", args[i])
 				}
 				count = n
 				hasExplicitCount = true
 			}
 		}
+	}
+
+	// Parse -H headers separately so ValidateFlags runs once against the
+	// fully-populated SelectFlags and the caller gets one consolidated
+	// error rather than one-per-header. ParseSummonHeaders also rejects
+	// any unsupported header name with a clear error.
+	parsed, err := wizard.ParseSummonHeaders(rawHeaders)
+	if err != nil {
+		return err
+	}
+	authFlags.HeaderAPIKey = parsed.HeaderAPIKey
+	authFlags.HeaderToken = parsed.HeaderToken
+	if err := wizard.ValidateFlags(authFlags); err != nil {
+		return err
 	}
 
 	// Validate dispatch mode if provided.
@@ -223,7 +269,7 @@ func cmdSummon(args []string) error {
 	if isK8sAvailableFunc() {
 		return summonK8s(count)
 	}
-	return summonLocal(count, targetIDs, dispatch)
+	return summonLocal(count, targetIDs, dispatch, authFlags)
 }
 
 // preflightResolveTargets verifies that every target bead ID has a
@@ -512,8 +558,21 @@ func deleteWizardGuildCR(name string) error {
 
 // --- Local mode ---
 
-func summonLocal(count int, targetIDs []string, dispatch string) error {
+func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizard.SelectFlags) error {
 	var candidates []Bead
+
+	// Resolve the auth config once for the whole summon call — SelectAuth is
+	// pure so the same config serves every candidate. Errors reading the
+	// config file are fatal: if the operator has credentials configured but
+	// we can't read them, silently falling back to a default would spawn a
+	// wizard with the wrong credential. A missing config file is fine (the
+	// returned AuthConfig has nil slots and AutoPromoteOn429=true); that
+	// only fails SelectAuth when a flag/rule actually needs an unconfigured
+	// slot, which is the error we want to surface.
+	authCfg, err := selectAuthReadConfig()
+	if err != nil {
+		return fmt.Errorf("read auth config: %w", err)
+	}
 
 	reg := loadWizardRegistry()
 	before := len(reg.Wizards)
@@ -595,6 +654,20 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 		// vs "starting". This is display-only; the wizard itself decides
 		// whether to resume from graph state.
 		existingGraphState, _ := executor.LoadGraphState("wizard-"+bead.ID, configDir)
+
+		// Pick the auth slot for this run and stash it on the (pre-spawn)
+		// graph state so the wizard subprocess picks it up when it loads
+		// or materializes its state. SelectAuth is per-bead because the
+		// P0 rule depends on bead priority. Abort the whole summon on
+		// selection error so the operator sees every issue at once rather
+		// than spawning some wizards and failing others mid-loop.
+		authCtx, err := wizard.SelectAuth(authCfg, bead.Priority, authFlags)
+		if err != nil {
+			return fmt.Errorf("select auth for %s: %w", bead.ID, err)
+		}
+		if err := attachAuthToRunState("wizard-"+bead.ID, authCtx, existingGraphState); err != nil {
+			return fmt.Errorf("attach auth to %s run state: %w", bead.ID, err)
+		}
 
 		res, err := summon.SpawnWizard(bead, dispatch)
 		if errors.Is(err, summon.ErrAlreadyRunning) {
@@ -862,4 +935,36 @@ func scanOrphanedBeads(liveReg wizardRegistry) []Bead {
 	}
 
 	return orphans
+}
+
+// selectAuthReadConfig is a seam around config.ReadAuthConfig so summon tests
+// can inject a fixture without a real credentials file. Defaults to the
+// real reader; tests that need a specific auth state reassign this before
+// calling summonLocal.
+var selectAuthReadConfig = config.ReadAuthConfig
+
+// attachAuthToRunState writes the selected AuthContext onto the wizard's
+// per-run graph state so the spawned wizard subprocess (which runs in a
+// fresh process) reads the same credential the CLI selected. If a graph
+// state file already exists (resumption), the Auth field is updated in
+// place; otherwise a preliminary state is written with only BeadID,
+// AgentName, and Auth populated — NewGraph's load path merges it into a
+// fresh graph state the first time the wizard runs.
+//
+// existingState is what summonLocal already loaded for the resumption-
+// detection branch; passing it here avoids a second disk read. Nil means
+// no prior state, which is the fresh-spawn case.
+var attachAuthToRunState = func(agentName string, auth *config.AuthContext, existingState *executor.GraphState) error {
+	if auth == nil {
+		return nil // nothing to attach
+	}
+	state := existingState
+	if state == nil {
+		state = &executor.GraphState{
+			BeadID:    strings.TrimPrefix(agentName, "wizard-"),
+			AgentName: agentName,
+		}
+	}
+	state.Auth = auth
+	return state.Save(agentName, configDir)
 }
