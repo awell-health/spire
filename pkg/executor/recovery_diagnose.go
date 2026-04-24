@@ -14,26 +14,46 @@ import (
 // When Diagnose returns an error, a stub Diagnosis is produced from what the
 // failure itself tells us so the decide step still has something to reason
 // over (parity with the formula-era collect_context step's fallback).
+//
+// After the base diagnosis is produced, the raw step error is inspected via
+// recovery.ClassifyError. A non-unknown match (currently merge-race and
+// stale-worktree) overrides FailureMode and populates SubClass so Decide can
+// short-circuit to the matching mechanical repair without consulting Claude.
+// Label-based classification (interrupted:* labels) is still the default for
+// everything else.
 func (e *Executor) diagnoseFailure(stepName string, failure error, state *GraphState) (recovery.Diagnosis, error) {
 	rdeps := buildExecutorRecoveryDeps(e)
 	diag, err := recovery.Diagnose(e.beadID, rdeps)
+	var result recovery.Diagnosis
 	if err != nil || diag == nil {
-		stub := recovery.Diagnosis{
+		result = recovery.Diagnosis{
 			BeadID:      e.beadID,
 			FailureMode: recovery.FailStepFailure,
 			StepContext: &recovery.StepContext{StepName: stepName},
 		}
 		if failure != nil {
-			stub.InterruptLabel = "interrupted:step-failure"
+			result.InterruptLabel = "interrupted:step-failure"
 		}
-		return stub, err
+	} else {
+		result = *diag
+		if result.StepContext == nil {
+			result.StepContext = &recovery.StepContext{StepName: stepName}
+		} else if result.StepContext.StepName == "" {
+			result.StepContext.StepName = stepName
+		}
 	}
-	if diag.StepContext == nil {
-		diag.StepContext = &recovery.StepContext{StepName: stepName}
-	} else if diag.StepContext.StepName == "" {
-		diag.StepContext.StepName = stepName
+
+	// Error-based classification. When the raw step error matches a known
+	// recoverable pattern, override the label-driven classification so the
+	// deterministic mechanical path fires in Decide.
+	if failure != nil {
+		if class, subClass := recovery.ClassifyError(failure); class != recovery.FailUnknown {
+			result.FailureMode = class
+			result.SubClass = subClass
+		}
 	}
-	return *diag, nil
+
+	return result, err
 }
 
 // decideRepair wraps recovery.Decide for the in-wizard path. The plumbing

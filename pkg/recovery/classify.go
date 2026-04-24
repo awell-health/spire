@@ -1,9 +1,59 @@
 package recovery
 
 import (
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/git"
 )
+
+// Sub-class tags for FailMerge. These are set on Diagnosis.SubClass when
+// ClassifyError matches a specific, mechanically-recoverable merge failure —
+// letting Decide short-circuit to the right mechanical action instead of
+// falling through to Claude-backed decision making or archmage escalation.
+const (
+	SubClassMergeRace     = "merge-race"
+	SubClassStaleWorktree = "stale-worktree"
+)
+
+// staleWorktreePattern matches the "'<branch>' is already used by worktree at
+// '<path>'" family of git errors. Git's exact wording varies by version:
+//   - "'feat/spi-xyz' is already used by worktree at '/path/to/other'"
+//   - "'feat/spi-xyz' is already checked out at '/path/to/other'"
+//
+// Both variants indicate the same recoverable condition — a sibling worktree
+// still holds the branch. The pattern is anchored on the leading quote to
+// avoid matching unrelated text that happens to contain the substring.
+var staleWorktreePattern = regexp.MustCompile(`'[^']+' is already (used by worktree|checked out) at `)
+
+// ClassifyError inspects an error returned by the merge/staging pipeline and
+// returns a (class, subClass) pair the recovery layer can use to pick a
+// mechanical repair.
+//
+// Contract:
+//   - errors.Is(err, git.ErrMergeRace) → (FailMerge, "merge-race")
+//   - error string matching the stale-worktree pattern → (FailMerge, "stale-worktree")
+//   - anything else → (FailUnknown, "")
+//
+// The caller remains responsible for deciding whether to act on the class —
+// ClassifyError does not itself decide escalation vs repair. Exposed so the
+// in-wizard diagnose path can refine Diagnosis.FailureMode/SubClass from the
+// raw step failure when label-based classification (classifyInterruptLabel)
+// hasn't run yet.
+func ClassifyError(err error) (FailureClass, string) {
+	if err == nil {
+		return FailUnknown, ""
+	}
+	if errors.Is(err, git.ErrMergeRace) {
+		return FailMerge, SubClassMergeRace
+	}
+	if staleWorktreePattern.MatchString(err.Error()) {
+		return FailMerge, SubClassStaleWorktree
+	}
+	return FailUnknown, ""
+}
 
 // classifyInterruptLabel parses an interrupted:* label into a FailureClass.
 func classifyInterruptLabel(label string) FailureClass {

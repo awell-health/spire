@@ -87,6 +87,30 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 		), nil
 	}
 
+	// (0a) Deterministic merge-failure sub-classes (merge-race, stale-
+	// worktree). These are mechanically recoverable by retrying the merge
+	// (which internally re-runs the bounded rebase loop in MergeToMain) or by
+	// cleaning up sibling worktrees for the bead. Short-circuit Claude so we
+	// don't burn the triage budget on a policy decision that's already
+	// determined by the error itself.
+	//
+	// Respects repeated-failure suppression: if the same mechanical has
+	// failed twice already, fall through to the normal Claude path so the
+	// agent can decide whether to escalate instead of looping.
+	if diagnosis.FailureMode == FailMerge {
+		if action := mergeSubClassAction(diagnosis.SubClass); action != "" && repeatedFailures[action] < 2 {
+			logf("recovery: decide: deterministic merge repair for sub-class %q → %s", diagnosis.SubClass, action)
+			captureBranch(DecideBranchRecipe)
+			plan := planForAction(
+				action,
+				0.95,
+				fmt.Sprintf("Deterministic mechanical repair for %s failure sub-class", diagnosis.SubClass),
+				false,
+			)
+			return plan, nil
+		}
+	}
+
 	// (a) Human guidance in bead comments wins over everything except the
 	// attempt-budget guard.
 	if guided := parseHumanGuidance(deps.HumanComments, repeatedFailures); guided != "" {
@@ -284,12 +308,27 @@ func actionToRepairMode(action string) RepairMode {
 	case "do_nothing", "verify_clean", "verify-clean":
 		return RepairModeNoop
 	case "rebase-onto-base", "rebuild", "cherry-pick", "reset-hard", "reset_hard",
-		"reset-to-step", "reset_to_step":
+		"reset-to-step", "reset_to_step",
+		"retry-merge", "cleanup-stale-worktrees":
 		return RepairModeMechanical
 	case "resolve-conflicts", "resummon", "reset", "triage", "targeted-fix":
 		return RepairModeWorker
 	default:
 		return RepairModeWorker
+	}
+}
+
+// mergeSubClassAction maps a merge-failure sub-class to its canonical
+// mechanical action. Returns "" when the sub-class is unknown so the caller
+// can fall through to the normal Decide pipeline.
+func mergeSubClassAction(subClass string) string {
+	switch subClass {
+	case SubClassMergeRace:
+		return "retry-merge"
+	case SubClassStaleWorktree:
+		return "cleanup-stale-worktrees"
+	default:
+		return ""
 	}
 }
 

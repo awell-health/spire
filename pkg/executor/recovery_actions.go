@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -108,10 +109,12 @@ type mechanicalAction func(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws 
 // decide/execute-vocabulary mismatch and surfaces as an error — we
 // never fall back to "unknown action" silently.
 var mechanicalActions = map[string]mechanicalAction{
-	"rebase-onto-base": mechanicalRebaseOntoBase,
-	"cherry-pick":      mechanicalCherryPick,
-	"rebuild":          mechanicalRebuild,
-	"reset-to-step":    mechanicalResetToStep,
+	"rebase-onto-base":         mechanicalRebaseOntoBase,
+	"cherry-pick":              mechanicalCherryPick,
+	"rebuild":                  mechanicalRebuild,
+	"reset-to-step":            mechanicalResetToStep,
+	"retry-merge":              mechanicalRetryMerge,
+	"cleanup-stale-worktrees":  mechanicalCleanupStaleWorktrees,
 }
 
 // mechanicalRebaseOntoBase fetches origin/<base> and rebases the
@@ -188,6 +191,46 @@ func mechanicalResetToStep(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws 
 		return nil, fmt.Errorf("reset-to-step: missing 'step' parameter")
 	}
 	ctx.logf(fmt.Sprintf("marking reset to step: %s", step))
+	return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
+}
+
+// mechanicalRetryMerge is the record-only mechanical for the merge-race
+// sub-class. The real retry happens via the step-rewind path:
+// runRecoveryCycle returns RecoveryRepaired when this action succeeds, which
+// causes graph_interpreter to reset the merge step to pending and re-dispatch
+// it. On the next run, actionMergeToMain creates a fresh staging worktree and
+// re-enters MergeToMain with a full maxMergeAttempts budget (so transient
+// contention that exhausted the first pass gets a second chance).
+//
+// No workspace mutation happens here — the mechanical succeeds trivially so
+// the outer recovery cycle counter still advances and the overall budget
+// (DefaultRecoveryBudget) bounds total retries.
+func mechanicalRetryMerge(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle) (*recovery.MechanicalRecipe, error) {
+	ctx.logf("merge-race classified — rewinding merge step to retry with fresh budget")
+	return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
+}
+
+// mechanicalCleanupStaleWorktrees force-removes any sibling `.worktrees/
+// <beadID>*` paths that are holding the bead's feature branch checked out.
+// The target path for a fresh staging worktree is `.worktrees/<beadID>`; any
+// other `<beadID>-<suffix>` dirs are leftovers from prior wizard runs that
+// block `git worktree add` with "'feat/<beadID>' is already used by worktree
+// at ..." errors.
+//
+// Idempotent: a second call with no siblings present is a no-op. After the
+// cleanup, step rewind re-runs actionMergeToMain which goes through
+// NewStagingWorktreeAt — that constructor now also cleans siblings as a
+// belt-and-suspenders, so either path is safe.
+func mechanicalCleanupStaleWorktrees(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle) (*recovery.MechanicalRecipe, error) {
+	if ctx == nil || ctx.TargetBeadID == "" || ctx.RepoPath == "" {
+		return nil, fmt.Errorf("cleanup-stale-worktrees: missing repo/target context")
+	}
+	targetDir := filepath.Join(ctx.RepoPath, ".worktrees", ctx.TargetBeadID)
+	ctx.logf(fmt.Sprintf("cleaning stale sibling worktrees for %s (target=%s)", ctx.TargetBeadID, targetDir))
+	log := func(format string, args ...interface{}) {
+		ctx.logf(fmt.Sprintf(format, args...))
+	}
+	spgit.CleanupStaleSiblingWorktrees(ctx.RepoPath, targetDir, log)
 	return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
 }
 

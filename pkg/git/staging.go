@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -15,14 +16,138 @@ import (
 // race from a terminal failure (e.g. rebase conflict).
 var ErrMergeRace = errors.New("merge race: main advanced during landing")
 
-// maxMergeAttempts is the number of rebase→verify→ff-only cycles
-// MergeToMain will attempt before returning ErrMergeRace.
-const maxMergeAttempts = 3
+// defaultMaxMergeAttempts is the baseline number of rebase→verify→ff-only
+// cycles MergeToMain will attempt before returning ErrMergeRace. Overridable
+// via SPIRE_MAX_MERGE_ATTEMPTS so smoke tests with known contention can tune
+// the budget without a rebuild.
+const defaultMaxMergeAttempts = 3
+
+// maxMergeAttempts is the effective merge-attempt budget, resolved once at
+// package load and consumed by MergeToMain. Tests read this value back to
+// assert the actual attempt count.
+var maxMergeAttempts = resolveMaxMergeAttempts()
+
+// MaxMergeAttempts returns the effective merge-attempt budget, honoring the
+// SPIRE_MAX_MERGE_ATTEMPTS env override. Exposed so wizard startup can log the
+// value alongside other recovery-budget config.
+func MaxMergeAttempts() int {
+	return maxMergeAttempts
+}
+
+// resolveMaxMergeAttempts reads SPIRE_MAX_MERGE_ATTEMPTS and falls back to
+// defaultMaxMergeAttempts on missing/invalid values. Invalid values (non-int
+// or ≤0) are treated as missing — we never produce a zero budget that would
+// skip the retry loop entirely.
+func resolveMaxMergeAttempts() int {
+	if v := os.Getenv("SPIRE_MAX_MERGE_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxMergeAttempts
+}
 
 // hasRebaseConflicts reports whether git status (porcelain format) indicates
 // unresolved merge/rebase conflicts. UU = both modified, AA = both added.
 func hasRebaseConflicts(status string) bool {
 	return strings.Contains(status, "UU ") || strings.Contains(status, "AA ")
+}
+
+// deriveBeadIDFromPath extracts the bead-ID token from a path like
+// `<repo>/.worktrees/<beadID>` or `<repo>/.worktrees/<beadID>-feature`. The
+// bead ID is the last path segment up to the first '-' separator. Returns ""
+// when dir has no "<base>-<id>" shape (defensive — unknown input should not
+// touch sibling paths).
+func deriveBeadIDFromPath(dir string) string {
+	base := filepath.Base(dir)
+	if base == "" || base == "." || base == "/" {
+		return ""
+	}
+	// Bead IDs are "<prefix>-<slug>" — the first dash separates prefix from
+	// slug, and the slug itself has no dash. A suffix like "-feature" adds a
+	// second dash. Split on '-' and keep the first two tokens joined.
+	parts := strings.Split(base, "-")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[0] + "-" + parts[1]
+}
+
+// isSameBeadWorktree reports whether path names a worktree belonging to the
+// given bead ID. Match rules: the final path component must be exactly beadID
+// or start with "beadID-" (a suffix like "-feature"). Guards against the
+// common collision where one bead ID is a prefix of another
+// (e.g. spi-0fek6l vs. spi-0fek6l2) by anchoring on the trailing character.
+func isSameBeadWorktree(path, beadID string) bool {
+	base := filepath.Base(path)
+	if base == "" || beadID == "" {
+		return false
+	}
+	if base == beadID {
+		return true
+	}
+	return strings.HasPrefix(base, beadID+"-")
+}
+
+// cleanupStaleSiblingWorktrees force-removes any `.worktrees/<beadID>*` paths
+// that are NOT targetDir, and whose bead-ID prefix matches targetDir's bead ID.
+// This is the "stale sibling" case seen in the spi-0fek6l scenario: a prior
+// wizard left `.worktrees/<beadID>-feature` checked out on `feat/<beadID>` and
+// the next attempt to create `.worktrees/<beadID>` on the same branch fails
+// with "'feat/<beadID>' is already used by worktree at ...".
+//
+// The cleanup is a best-effort, idempotent pass: each failed removal is logged
+// but does not fail the caller. A concurrent wizard re-creating a sibling mid-
+// pass is tolerated — the next constructor invocation will re-scan and clean
+// again. Unknown target paths (no bead-ID prefix inferrable) are skipped.
+func cleanupStaleSiblingWorktrees(rc *RepoContext, targetDir string, log func(string, ...interface{})) {
+	beadID := deriveBeadIDFromPath(targetDir)
+	if beadID == "" {
+		return
+	}
+	parent := filepath.Dir(targetDir)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	targetBase := filepath.Base(targetDir)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if entry.Name() == targetBase {
+			continue
+		}
+		if !isSameBeadWorktree(entry.Name(), beadID) {
+			continue
+		}
+		sibling := filepath.Join(parent, entry.Name())
+		if log != nil {
+			log("removing stale sibling worktree %s for bead %s", sibling, beadID)
+		}
+		if err := rc.ForceRemoveWorktree(sibling); err != nil {
+			if log != nil {
+				log("warning: force-remove sibling %s: %s", sibling, err)
+			}
+			// Fall through and try os.RemoveAll so the path is gone even if
+			// git's administrative record was already cleaned up.
+		}
+		if err := os.RemoveAll(sibling); err != nil && log != nil {
+			log("warning: remove sibling dir %s: %s", sibling, err)
+		}
+	}
+	// Prune git's internal worktree registry so any records for the removed
+	// siblings don't linger and block a fresh `git worktree add`.
+	_ = rc.PruneWorktrees()
+}
+
+// CleanupStaleSiblingWorktrees is the exported form of the internal helper so
+// the recovery mechanical (pkg/executor) can invoke it when the classifier
+// dispatches the stale-worktree repair. targetDir is the prospective new
+// staging-worktree path; siblings for the same bead are force-removed.
+func CleanupStaleSiblingWorktrees(repoPath, targetDir string, log func(string, ...interface{})) {
+	rc := &RepoContext{Dir: repoPath, Log: log}
+	cleanupStaleSiblingWorktrees(rc, targetDir, log)
 }
 
 // StagingWorktree manages a temporary git worktree for staging operations.
@@ -70,10 +195,23 @@ func NewStagingWorktree(repoPath, branch, baseBranch, nameHint, userName, userEm
 // at dir, making it discoverable by other processes that know the path.
 // userName and userEmail configure the git identity in the worktree.
 //
+// Before creating the new worktree it force-removes any sibling worktrees for
+// the same bead that might still be checked out on `branch` from a prior
+// wizard run (e.g. `.worktrees/<beadID>-feature`). Without this, git refuses to
+// check out the target path with "'<branch>' is already used by worktree at ..."
+// and the step escalates to archmage. Sibling cleanup is scoped strictly to
+// the same bead prefix so unrelated beads' worktrees are never touched.
+//
 // The caller must call Close() when done. Close removes the git worktree and
 // the directory itself.
 func NewStagingWorktreeAt(repoPath, dir, branch, baseBranch, userName, userEmail string, log func(string, ...interface{})) (*StagingWorktree, error) {
 	rc := &RepoContext{Dir: repoPath, BaseBranch: baseBranch, Log: log}
+
+	// Clean up stale sibling worktrees for this bead (not the target path).
+	// The branch we're about to check out may already be in use by a sibling
+	// path left over from a prior wizard — force-remove siblings first so
+	// git worktree add doesn't collide.
+	cleanupStaleSiblingWorktrees(rc, dir, log)
 
 	// Clean up stale worktree at this path
 	if _, err := os.Stat(dir); err == nil {

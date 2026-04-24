@@ -13,6 +13,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
+	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -1008,6 +1009,8 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 
 	e.log("branch state resolved: repo=%s base=%s staging=%s",
 		state.RepoPath, state.BaseBranch, state.StagingBranch)
+	e.log("recovery budget: max_merge_attempts=%d recovery_budget=%d",
+		spgit.MaxMergeAttempts(), maxRecoveryAttempts(nil))
 	return nil
 }
 

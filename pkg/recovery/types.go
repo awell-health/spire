@@ -63,6 +63,7 @@ type Diagnosis struct {
 	Title             string           `json:"title"`
 	Status            string           `json:"status"`
 	FailureMode       FailureClass     `json:"failure_mode"`
+	SubClass          string           `json:"sub_class,omitempty"`           // finer-grained classifier tag (e.g. "merge-race", "stale-worktree")
 	InterruptLabel    string           `json:"interrupt_label"`               // raw interrupted:* label
 	Phase             string           `json:"phase,omitempty"`               // current phase:* label value
 	AttemptCount      int              `json:"attempt_count"`                 // total attempts on this bead

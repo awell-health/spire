@@ -543,3 +543,122 @@ func TestDecide_ReviewFix_FallbackMapsToWorker(t *testing.T) {
 		t.Errorf("Action = %q, want resummon", plan.Action)
 	}
 }
+
+// TestDecide_MergeRaceSubClass_ShortCircuitsToRetryMerge verifies the
+// deterministic merge-race path: Decide must emit a Mechanical RepairPlan with
+// action=retry-merge WITHOUT invoking Claude. This is the core guarantee that
+// keeps merge-race recovery in-process.
+func TestDecide_MergeRaceSubClass_ShortCircuitsToRetryMerge(t *testing.T) {
+	claudeCalled := false
+	claudeStub := func(args []string, label string) ([]byte, error) {
+		claudeCalled = true
+		return []byte(`{"chosen_action":"escalate"}`), nil
+	}
+
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+		SubClass:    SubClassMergeRace,
+	}
+	deps := Deps{ClaudeRunner: claudeStub}
+
+	plan, err := Decide(context.Background(), diagnosis, nil, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if claudeCalled {
+		t.Error("Claude runner was invoked — merge-race should short-circuit before (c)")
+	}
+	if plan.Mode != RepairModeMechanical {
+		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeMechanical)
+	}
+	if plan.Action != "retry-merge" {
+		t.Errorf("Action = %q, want retry-merge", plan.Action)
+	}
+}
+
+// TestDecide_StaleWorktreeSubClass_ShortCircuitsToCleanup verifies the
+// deterministic stale-worktree path.
+func TestDecide_StaleWorktreeSubClass_ShortCircuitsToCleanup(t *testing.T) {
+	claudeCalled := false
+	claudeStub := func(args []string, label string) ([]byte, error) {
+		claudeCalled = true
+		return []byte(`{"chosen_action":"escalate"}`), nil
+	}
+
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+		SubClass:    SubClassStaleWorktree,
+	}
+	deps := Deps{ClaudeRunner: claudeStub}
+
+	plan, err := Decide(context.Background(), diagnosis, nil, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if claudeCalled {
+		t.Error("Claude runner was invoked — stale-worktree should short-circuit before (c)")
+	}
+	if plan.Mode != RepairModeMechanical {
+		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeMechanical)
+	}
+	if plan.Action != "cleanup-stale-worktrees" {
+		t.Errorf("Action = %q, want cleanup-stale-worktrees", plan.Action)
+	}
+}
+
+// TestDecide_MergeSubClass_FallsThroughWhenRepeated verifies the repeated-
+// failure guard: after a mechanical retry has failed twice already, Decide
+// must NOT keep looping on the same mechanical — it falls through to the
+// normal Claude path so the agent can choose to escalate instead.
+func TestDecide_MergeSubClass_FallsThroughWhenRepeated(t *testing.T) {
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+		SubClass:    SubClassMergeRace,
+	}
+
+	history := []Attempt{
+		{Action: "retry-merge", Outcome: "failure"},
+		{Action: "retry-merge", Outcome: "failure"},
+	}
+
+	// No ClaudeRunner → Decide's fallback path fires. Whatever it picks must
+	// NOT be "retry-merge" (the deterministic path is suppressed by the guard).
+	deps := Deps{}
+
+	plan, err := Decide(context.Background(), diagnosis, history, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if plan.Action == "retry-merge" {
+		t.Errorf("Action = retry-merge after 2 prior failures — repeated-failure guard did not fire")
+	}
+}
+
+// TestDecide_UnknownMergeSubClass_FallsThrough verifies that a merge failure
+// without a known sub-class takes the normal decide pipeline (Claude or
+// fallback). This keeps the existing FailMerge code path intact for failures
+// that ClassifyError didn't refine.
+func TestDecide_UnknownMergeSubClass_FallsThrough(t *testing.T) {
+	claudeCalled := false
+	claudeStub := func(args []string, label string) ([]byte, error) {
+		claudeCalled = true
+		return []byte(`{"chosen_action":"resummon","confidence":0.8,"reasoning":"ok","needs_human":false,"expected_outcome":"ok"}`), nil
+	}
+
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+		// SubClass left empty.
+	}
+	deps := Deps{ClaudeRunner: claudeStub}
+
+	if _, err := Decide(context.Background(), diagnosis, nil, deps); err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if !claudeCalled {
+		t.Error("Claude was not invoked — FailMerge without sub-class should flow through to Claude")
+	}
+}

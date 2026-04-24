@@ -548,3 +548,178 @@ func TestMergeBranch_RebaseSucceedsWhileChildBranchIsCheckedOutElsewhere(t *test
 		t.Fatalf("child branch HEAD changed in its own worktree: got %s want %s", got, child1Head)
 	}
 }
+
+// =============================================================================
+// NewStagingWorktreeAt sibling cleanup tests
+// =============================================================================
+
+// TestNewStagingWorktreeAt_RemovesStaleSiblingWorktree reproduces the spi-0fek6l
+// scenario: a prior wizard left .worktrees/<beadID>-feature checked out on the
+// same branch we now want in .worktrees/<beadID>. Without sibling cleanup, git
+// refuses the new worktree with "'<branch>' is already used by worktree at ..."
+// and the merge step escalates. The constructor must detect and force-remove
+// the sibling before creating the new target.
+func TestNewStagingWorktreeAt_RemovesStaleSiblingWorktree(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	// Create the feature branch.
+	branch := "feat/spi-test01"
+	if err := rc.CreateBranch(branch); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+
+	// Simulate a stale sibling: .worktrees/spi-test01-feature on the same branch.
+	wtRoot := filepath.Join(dir, ".worktrees")
+	sibling := filepath.Join(wtRoot, "spi-test01-feature")
+	if err := os.MkdirAll(wtRoot, 0755); err != nil {
+		t.Fatalf("mkdir wtRoot: %v", err)
+	}
+	if _, err := rc.CreateWorktree(sibling, branch); err != nil {
+		t.Fatalf("create sibling worktree: %v", err)
+	}
+
+	// Now attempt the target worktree at .worktrees/spi-test01 on the same branch.
+	// Without the fix this would fail with an "already used by worktree" error.
+	target := filepath.Join(wtRoot, "spi-test01")
+	sw, err := NewStagingWorktreeAt(dir, target, branch, "main", "Test", "test@test.com", nil)
+	if err != nil {
+		t.Fatalf("NewStagingWorktreeAt: %v", err)
+	}
+	defer sw.Close()
+
+	// Target must exist and be on the branch.
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("target worktree not created: %v", err)
+	}
+	// Sibling must have been removed.
+	if _, err := os.Stat(sibling); err == nil {
+		t.Errorf("stale sibling %s should have been removed", sibling)
+	}
+}
+
+// TestNewStagingWorktreeAt_SiblingScopedToSameBead verifies the sibling sweep
+// never touches paths belonging to other beads. Collision guard: a bead ID
+// "spi-0fek6l" must not match "spi-0fek6l2" (where the second bead happens to
+// share a prefix) nor "spi-other".
+func TestNewStagingWorktreeAt_SiblingScopedToSameBead(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	otherBranch := "feat/spi-test002"
+	unrelatedBranch := "feat/spi-other"
+	if err := rc.CreateBranch(otherBranch); err != nil {
+		t.Fatalf("CreateBranch other: %v", err)
+	}
+	if err := rc.CreateBranch(unrelatedBranch); err != nil {
+		t.Fatalf("CreateBranch unrelated: %v", err)
+	}
+
+	wtRoot := filepath.Join(dir, ".worktrees")
+	if err := os.MkdirAll(wtRoot, 0755); err != nil {
+		t.Fatalf("mkdir wtRoot: %v", err)
+	}
+
+	// .worktrees/spi-test002 — prefix collision candidate for spi-test00.
+	prefixCollision := filepath.Join(wtRoot, "spi-test002")
+	if _, err := rc.CreateWorktree(prefixCollision, otherBranch); err != nil {
+		t.Fatalf("create prefixCollision: %v", err)
+	}
+
+	// .worktrees/spi-other — totally unrelated bead.
+	unrelated := filepath.Join(wtRoot, "spi-other")
+	if _, err := rc.CreateWorktree(unrelated, unrelatedBranch); err != nil {
+		t.Fatalf("create unrelated: %v", err)
+	}
+
+	// Create the target for a completely different bead (spi-test00) on yet
+	// another branch so there's no actual collision, only naming proximity.
+	targetBranch := "feat/spi-test00"
+	if err := rc.CreateBranch(targetBranch); err != nil {
+		t.Fatalf("CreateBranch target: %v", err)
+	}
+	target := filepath.Join(wtRoot, "spi-test00")
+	sw, err := NewStagingWorktreeAt(dir, target, targetBranch, "main", "Test", "test@test.com", nil)
+	if err != nil {
+		t.Fatalf("NewStagingWorktreeAt: %v", err)
+	}
+	defer sw.Close()
+
+	// Both unrelated worktrees must still exist.
+	if _, err := os.Stat(prefixCollision); err != nil {
+		t.Errorf("prefix-collision worktree %s was incorrectly removed: %v", prefixCollision, err)
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Errorf("unrelated worktree %s was incorrectly removed: %v", unrelated, err)
+	}
+}
+
+// TestNewStagingWorktreeAt_IdempotentWithNoSiblings verifies the sibling sweep
+// is a no-op when there are no stale siblings. Same sequence as the happy path.
+func TestNewStagingWorktreeAt_IdempotentWithNoSiblings(t *testing.T) {
+	dir := initTestRepo(t)
+	rc := &RepoContext{Dir: dir, BaseBranch: "main"}
+
+	branch := "feat/spi-clean0"
+	if err := rc.CreateBranch(branch); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+
+	target := filepath.Join(dir, ".worktrees", "spi-clean0")
+	sw, err := NewStagingWorktreeAt(dir, target, branch, "main", "Test", "test@test.com", nil)
+	if err != nil {
+		t.Fatalf("NewStagingWorktreeAt (no siblings): %v", err)
+	}
+	sw.Close()
+
+	// Second call — after close, directory may be gone; should succeed again.
+	sw2, err := NewStagingWorktreeAt(dir, target, branch, "main", "Test", "test@test.com", nil)
+	if err != nil {
+		t.Fatalf("NewStagingWorktreeAt (re-create): %v", err)
+	}
+	sw2.Close()
+}
+
+// =============================================================================
+// SPIRE_MAX_MERGE_ATTEMPTS configuration tests
+// =============================================================================
+
+// TestMaxMergeAttempts_EnvOverride verifies resolveMaxMergeAttempts reads
+// SPIRE_MAX_MERGE_ATTEMPTS and honors positive-int overrides. Invalid and
+// negative values fall back to the default.
+func TestMaxMergeAttempts_EnvOverride(t *testing.T) {
+	origEnv, had := os.LookupEnv("SPIRE_MAX_MERGE_ATTEMPTS")
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("SPIRE_MAX_MERGE_ATTEMPTS", origEnv)
+		} else {
+			os.Unsetenv("SPIRE_MAX_MERGE_ATTEMPTS")
+		}
+	})
+
+	cases := []struct {
+		name     string
+		envValue string
+		unset    bool
+		want     int
+	}{
+		{"unset falls back to default", "", true, defaultMaxMergeAttempts},
+		{"override with positive int", "7", false, 7},
+		{"invalid value falls back", "not-a-number", false, defaultMaxMergeAttempts},
+		{"negative value falls back", "-1", false, defaultMaxMergeAttempts},
+		{"zero falls back (never skip retries)", "0", false, defaultMaxMergeAttempts},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.unset {
+				os.Unsetenv("SPIRE_MAX_MERGE_ATTEMPTS")
+			} else {
+				os.Setenv("SPIRE_MAX_MERGE_ATTEMPTS", tc.envValue)
+			}
+			got := resolveMaxMergeAttempts()
+			if got != tc.want {
+				t.Errorf("resolveMaxMergeAttempts() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
