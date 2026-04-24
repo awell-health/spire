@@ -41,8 +41,19 @@ type RecoveryLearning struct {
 	Outcome            string // from learning_outcome metadata key ("clean"/"dirty"/"relapsed")
 }
 
-// GetBead fetches a single bead by ID.
+// GetBead fetches a single bead by ID. Routes through the gateway HTTPS
+// API when the active tower is in gateway mode; otherwise reads directly
+// from the local Dolt-backed store. Returns ErrNotFound when the bead
+// does not exist (gateway-side or direct-side — callers match on a single
+// sentinel via errors.Is).
 func GetBead(id string) (Bead, error) {
+	if t, ok := isGatewayMode(); ok {
+		return getBeadGateway(t, id)
+	}
+	return getBeadDirect(id)
+}
+
+func getBeadDirect(id string) (Bead, error) {
 	issue, err := GetIssue(id)
 	if err != nil {
 		return Bead{}, err
@@ -78,9 +89,18 @@ func GetIssue(id string) (*beads.Issue, error) {
 	return issue, nil
 }
 
-// ListBeads searches for beads matching the given filter.
-// Excludes closed beads by default (matching bd list behavior).
+// ListBeads searches for beads matching the given filter. Excludes closed
+// beads by default (matching bd list behavior). Routes through the gateway
+// HTTPS API when the active tower is in gateway mode; otherwise reads
+// directly from the local Dolt-backed store.
 func ListBeads(filter beads.IssueFilter) ([]Bead, error) {
+	if t, ok := isGatewayMode(); ok {
+		return listBeadsGateway(t, filter)
+	}
+	return listBeadsDirect(filter)
+}
+
+func listBeadsDirect(filter beads.IssueFilter) ([]Bead, error) {
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
@@ -215,8 +235,19 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	return filtered, nil
 }
 
-// GetBlockedIssues returns open beads that have unresolved blocking dependencies.
+// GetBlockedIssues returns open beads that have unresolved blocking
+// dependencies. Routes through the gateway HTTPS API when the active
+// tower is in gateway mode; otherwise reads directly from the local
+// Dolt-backed store. Gateway mode returns ID-only BoardBead rows today
+// (the /api/v1/beads/blocked endpoint does not hydrate bodies).
 func GetBlockedIssues(filter beads.WorkFilter) ([]BoardBead, error) {
+	if t, ok := isGatewayMode(); ok {
+		return getBlockedIssuesGateway(t, filter)
+	}
+	return getBlockedIssuesDirect(filter)
+}
+
+func getBlockedIssuesDirect(filter beads.WorkFilter) ([]BoardBead, error) {
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
