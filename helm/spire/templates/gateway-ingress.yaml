@@ -1,7 +1,15 @@
 {{- if .Values.gateway.ingress.enabled }}
 {{- $fullname := include "spire.fullname" . -}}
 {{- $ingress := .Values.gateway.ingress -}}
-{{- $serviceName := printf "%s-gateway" $fullname -}}
+{{/*
+  $serviceName is hardcoded to match gateway.yaml and
+  gateway-backendconfig.yaml, which also hardcode "spire-gateway". A
+  release installed as `helm install myrelease ...` must still produce
+  an Ingress whose backend resolves to the Service — so the name here
+  MUST match the Service's metadata.name verbatim. When gateway.yaml
+  migrates to `spire.fullname`-based naming, update this line in lockstep.
+*/}}
+{{- $serviceName := "spire-gateway" -}}
 {{- $host := required "gateway.ingress.host is required when ingress.enabled=true" $ingress.host -}}
 # HTTPS Ingress fronting the gateway Service. Gated by
 # `.Values.gateway.ingress.enabled` and off by default, so local/minikube
@@ -54,14 +62,14 @@ spec:
               service:
                 name: {{ $serviceName }}
                 port:
-                  name: http
+                  name: api
           - path: /healthz
             pathType: Exact
             backend:
               service:
                 name: {{ $serviceName }}
                 port:
-                  name: http
+                  name: api
   {{- if and $ingress.tls.enabled (not $ingress.managedCert.enabled) }}
   tls:
     - hosts:

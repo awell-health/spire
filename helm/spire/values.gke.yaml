@@ -5,17 +5,21 @@
 # knobs. Settings left commented out here are opt-in examples; uncomment and
 # adapt to your environment.
 
-# Enable HTTPS ingress via GKE Ingress + Google-managed cert.
+# HTTPS ingress via GKE Ingress + Google-managed cert. The structure is
+# uncommented so `helm show values -f values.gke.yaml` surfaces the schema
+# and the GKE-specific defaults (className: gce, managedCert + backendConfig
+# opted in, HTTP/2 backend). Still gated off via `ingress.enabled: false`;
+# flip to true AND set a real `host` in your own overlay to turn it on.
 # See docs/ingress-tls.md for DNS + cert setup.
-# gateway:
-#   ingress:
-#     enabled: true
-#     className: gce
-#     host: spire.example.com
-#     managedCert:
-#       enabled: true
-#       name: spire-gateway-cert
-#     backendConfig:
-#       enabled: true
-#       http2: true
-#       healthCheckPath: /healthz
+gateway:
+  ingress:
+    enabled: false
+    className: gce
+    host: ""             # e.g. spire.example.com — required when enabled=true
+    managedCert:
+      enabled: true
+      name: spire-gateway-cert
+    backendConfig:
+      enabled: true
+      http2: true
+      healthCheckPath: /healthz

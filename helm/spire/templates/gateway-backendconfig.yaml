@@ -2,9 +2,14 @@
 # GKE BackendConfig attached to the gateway Service via the
 # cloud.google.com/backend-config annotation (see gateway.yaml). Tells
 # the GCLB how to health-check the gateway and — when
-# backendConfig.http2 is true — to speak HTTP/2 to the backend. The
-# metadata.name MUST match the gateway Service name exactly; the Service
-# annotation references this resource by name.
+# backendConfig.http2 is true — to speak HTTP/2 to the backend.
+#
+# metadata.name is hardcoded to "spire-gateway" to match gateway.yaml's
+# Service and gateway-ingress.yaml's backend reference verbatim. The
+# Service annotation wires this resource in by name, so any drift
+# breaks GCLB wiring regardless of release name. If gateway.yaml
+# migrates to `spire.fullname`-based naming, update this line and the
+# Service annotation in lockstep.
 apiVersion: cloud.google.com/v1
 kind: BackendConfig
 metadata:
