@@ -358,60 +358,58 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 
 // getBeadTree answers GET /api/v1/beads/{id}/tree with the selected bead's
 // full ancestor chain (root → target) and descendant subtree (target → leaves).
-// Built in-memory from a single store.ListBeads({}) call — for the local
-// tower's ~2k beads this completes in sub-millisecond time.
+//
+// The previous implementation loaded every bead in the tower (ListBoardBeads
+// + PopulateDependencies across ~6k+ rows) just to walk a single subtree,
+// which hit 40–70s for a root-level epic. This version only fetches beads
+// along the actual walks: one GetBead per ancestor (bounded by depth, usually
+// <5), and GetChildrenBatch per descendant level. Typical response is now
+// under 200ms even for epics with dozens of subtasks.
 func (s *Server) getBeadTree(w http.ResponseWriter, _ *http.Request, id string) {
 	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	// ListBoardBeads populates dependencies so FindParentID resolves —
-	// ListBeads leaves Parent empty since it doesn't populate deps.
-	// ListBoardBeads defaults ExcludeStatus=[closed] when ExcludeStatus is
-	// empty, so pass a sentinel (harmless) status to bypass the default and
-	// surface closed beads in the graph.
-	filter := beads.IssueFilter{ExcludeStatus: []beads.Status{"__none__"}}
-	all, err := store.ListBoardBeads(filter)
+	root, err := store.GetBead(id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	byID := make(map[string]store.BoardBead, len(all))
-	childrenOf := make(map[string][]string)
-	for _, b := range all {
-		byID[b.ID] = b
-		if b.Parent != "" {
-			childrenOf[b.Parent] = append(childrenOf[b.Parent], b.ID)
-		}
-	}
-	root, ok := byID[id]
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bead not found"})
-		return
-	}
-	// Ancestor chain — root-most first.
-	var ancestors []store.BoardBead
-	for cur := root.Parent; cur != ""; {
-		p, ok := byID[cur]
-		if !ok {
+	// Ancestor chain — walk up via Parent one at a time. Each GetBead call
+	// populates its own dep graph (so Parent resolves). Cycle-safe via seen-set.
+	ancestors := make([]store.Bead, 0, 4)
+	seen := map[string]bool{root.ID: true}
+	for cur := root.Parent; cur != "" && !seen[cur]; {
+		seen[cur] = true
+		p, err := store.GetBead(cur)
+		if err != nil {
 			break
 		}
-		ancestors = append([]store.BoardBead{p}, ancestors...)
+		ancestors = append([]store.Bead{p}, ancestors...)
 		cur = p.Parent
 	}
-	// Descendant subtree — flat list (each with parent pointer) so the client
-	// can render its own tree shape.
-	var descendants []store.BoardBead
-	var walk func(string)
-	walk = func(pid string) {
-		for _, cid := range childrenOf[pid] {
-			if c, ok := byID[cid]; ok {
-				descendants = append(descendants, c)
-				walk(cid)
+	// Descendants — BFS by level with GetChildrenBatch so each level is a
+	// single SQL round-trip even when the tree fans out wide.
+	descendants := make([]store.Bead, 0, 32)
+	frontier := []string{id}
+	for len(frontier) > 0 && len(descendants) < 2000 /* safety cap */ {
+		batch, err := store.GetChildrenBatch(frontier)
+		if err != nil {
+			break
+		}
+		next := frontier[:0]
+		for _, pid := range frontier {
+			for _, k := range batch[pid] {
+				if seen[k.ID] {
+					continue
+				}
+				seen[k.ID] = true
+				descendants = append(descendants, k)
+				next = append(next, k.ID)
 			}
 		}
+		frontier = append([]string(nil), next...)
 	}
-	walk(id)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":          id,
 		"bead":        root,
