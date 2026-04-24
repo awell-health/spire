@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"runtime"
 	"strings"
@@ -396,5 +397,151 @@ func mustNoErr(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("setup: %v", err)
+	}
+}
+
+// TestConfigAuthShow_RecentRuns_Empty: the "Recent runs (last N per
+// slot)" footer must render `(no runs yet)` for a slot the fake reader
+// returns zero rows for — that's the fresh-install UX.
+func TestConfigAuthShow_RecentRuns_Empty(t *testing.T) {
+	out, _ := setupAuthCLITest(t)
+	withAuthObsReader(t, fakeAuthObsReader{Recent: map[string][]authRunDisplay{}})
+
+	if err := cmdConfigAuth([]string{"show"}); err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "Recent runs (last 10 per slot)") {
+		t.Errorf("show missing Recent-runs header:\n%s", s)
+	}
+	// Both slot headers must appear inside the recent-runs block.
+	if !strings.Contains(s, "subscription:") || !strings.Contains(s, "api-key:") {
+		t.Errorf("show missing per-slot headers in recent-runs block:\n%s", s)
+	}
+	// A reader that returns zero rows must produce `(no runs yet)` under
+	// each slot, not a silent blank section.
+	noRunCount := strings.Count(s, "(no runs yet)")
+	if noRunCount != 2 {
+		t.Errorf("expected `(no runs yet)` twice (once per slot), got %d:\n%s", noRunCount, s)
+	}
+}
+
+// TestConfigAuthShow_RecentRuns_Populated: rows returned by the reader
+// must render per-slot with timestamp, bead id, phase, token count.
+// Swap rows carry an extra marker. The limit passed to the reader is 10.
+func TestConfigAuthShow_RecentRuns_Populated(t *testing.T) {
+	out, _ := setupAuthCLITest(t)
+
+	subRuns := []authRunDisplay{
+		{StartedAt: "2026-04-24 17:34:43", BeadID: "spi-aaa111", Phase: "implement", TotalTokens: 12_345},
+		{StartedAt: "2026-04-24 17:20:00", BeadID: "spi-bbb222", Phase: "review", TotalTokens: 9_876, Swapped: true},
+	}
+	apiRuns := []authRunDisplay{
+		{StartedAt: "2026-04-24 17:30:00", BeadID: "spi-ccc333", Phase: "implement", TotalTokens: 50_000},
+	}
+	withAuthObsReader(t, fakeAuthObsReader{
+		Recent: map[string][]authRunDisplay{
+			config.AuthSlotSubscription: subRuns,
+			config.AuthSlotAPIKey:       apiRuns,
+		},
+	})
+
+	if err := cmdConfigAuth([]string{"show"}); err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	s := out.String()
+
+	// Each row's bead id must appear in the output.
+	for _, id := range []string{"spi-aaa111", "spi-bbb222", "spi-ccc333"} {
+		if !strings.Contains(s, id) {
+			t.Errorf("show missing bead id %s:\n%s", id, s)
+		}
+	}
+	// Phase labels must appear verbatim.
+	if !strings.Contains(s, "implement") || !strings.Contains(s, "review") {
+		t.Errorf("show missing phase labels:\n%s", s)
+	}
+	// Token counts render via humanTokens ("12.3k", "9.9k", "50.0k").
+	if !strings.Contains(s, "12.3k") || !strings.Contains(s, "50.0k") {
+		t.Errorf("show missing humanized token counts:\n%s", s)
+	}
+	// Swap marker must appear on the swapped row only.
+	if !strings.Contains(s, "swap→api-key") {
+		t.Errorf("swapped row missing swap marker:\n%s", s)
+	}
+	// Empty-placeholder must not appear when both slots have data.
+	if strings.Contains(s, "(no runs yet)") {
+		t.Errorf("populated slots should not show (no runs yet):\n%s", s)
+	}
+}
+
+// TestConfigAuthShow_RecentRuns_LimitPerSlot: the reader is called with
+// limit=10. A fake returning more than 10 rows lets us verify the
+// per-slot cap is enforced downstream of the caller (defense-in-depth —
+// real implementations enforce this in SQL, but the renderer shouldn't
+// blindly render 100 rows if the reader ever slips).
+func TestConfigAuthShow_RecentRuns_LimitPerSlot(t *testing.T) {
+	out, _ := setupAuthCLITest(t)
+
+	// Build 15 subscription rows; reader honors limit=10, so only the
+	// first 10 should reach the output.
+	many := make([]authRunDisplay, 15)
+	for i := range many {
+		many[i] = authRunDisplay{
+			StartedAt:   "2026-04-24 17:00:00",
+			BeadID:      fmt.Sprintf("spi-row%02d", i),
+			Phase:       "implement",
+			TotalTokens: 1000 + i,
+		}
+	}
+	withAuthObsReader(t, fakeAuthObsReader{
+		Recent: map[string][]authRunDisplay{
+			config.AuthSlotSubscription: many,
+		},
+	})
+
+	if err := cmdConfigAuth([]string{"show"}); err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	s := out.String()
+
+	// The first 10 must be present.
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("spi-row%02d", i)
+		if !strings.Contains(s, id) {
+			t.Errorf("first-10 row missing: %s", id)
+		}
+	}
+	// Rows beyond the limit must NOT appear.
+	for i := 10; i < 15; i++ {
+		id := fmt.Sprintf("spi-row%02d", i)
+		if strings.Contains(s, id) {
+			t.Errorf("row beyond limit leaked into output: %s", id)
+		}
+	}
+}
+
+// TestConfigAuthShow_RecentRuns_ReaderErrorNonFatal: a reader failure
+// must not break `show`. The slot summary is still the point; recent
+// runs are a nice-to-have surfaced behind an error note.
+func TestConfigAuthShow_RecentRuns_ReaderErrorNonFatal(t *testing.T) {
+	out, _ := setupAuthCLITest(t)
+	withAuthObsReader(t, fakeAuthObsReader{Err: fmt.Errorf("db offline")})
+
+	if err := cmdConfigAuth([]string{"show"}); err != nil {
+		t.Fatalf("show must not error on reader failure, got: %v", err)
+	}
+	s := out.String()
+
+	// Primary slot output must still be present — the reader failure
+	// must not swallow the configured-credentials rendering.
+	if !strings.Contains(s, "auto_promote_on_429") {
+		t.Errorf("show must still render its main block on reader failure:\n%s", s)
+	}
+	if !strings.Contains(s, "recent runs unavailable") {
+		t.Errorf("show must surface a note when recent runs fail:\n%s", s)
+	}
+	if !strings.Contains(s, "db offline") {
+		t.Errorf("show must include the underlying reader error:\n%s", s)
 	}
 }

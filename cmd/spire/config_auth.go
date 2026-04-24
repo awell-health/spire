@@ -238,6 +238,15 @@ func cmdConfigAuthShow(args []string) error {
 		fmt.Fprintf(w, "default              = %s\n", cfg.Default)
 	}
 	fmt.Fprintf(w, "auto_promote_on_429  = %s\n", onOff(cfg.AutoPromoteOn429))
+
+	// Recent-runs footer (spi-uvqe3r): surface the auth_profile
+	// observability column as a quick sanity check on what each slot
+	// has been doing lately. A reader error is non-fatal so `show` stays
+	// useful on towers without agent_runs populated (fresh install, no
+	// bd in PATH, etc.) — we just print a short note instead.
+	if err := renderRecentRunsPerSlot(w, authObsReader, 10); err != nil {
+		fmt.Fprintf(w, "\n(recent runs unavailable: %v)\n", err)
+	}
 	return nil
 }
 
