@@ -8,8 +8,8 @@ import (
 	"charm.land/lipgloss/v2"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/process"
+	"github.com/awell-health/spire/pkg/registry"
 )
 
 // AgentSnapshot holds the latest fetched state of all registered agents.
@@ -485,8 +485,14 @@ func (m *AgentsMode) FooterHints() string {
 func (m *AgentsMode) fetchAgents() tea.Cmd {
 	tower := m.towerName
 	return func() tea.Msg {
-		reg := agent.LoadRegistry()
-		entries := agent.WizardsForTower(reg, tower)
+		allEntries, _ := registry.List()
+		// Filter by tower (empty towerName matches all).
+		var entries []registry.Entry
+		for _, e := range allEntries {
+			if tower == "" || e.Tower == tower {
+				entries = append(entries, e)
+			}
+		}
 
 		now := time.Now()
 		agents := make([]AgentInfo, 0, len(entries))

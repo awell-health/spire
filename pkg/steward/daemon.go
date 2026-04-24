@@ -15,12 +15,12 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
-	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
 	"github.com/awell-health/spire/pkg/olap"
 	spireOtel "github.com/awell-health/spire/pkg/otel"
+	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -543,8 +543,8 @@ func DeliverAgentInboxes() int {
 	// 2. Registered agent beads (persistent agents)
 	agents := make(map[string]bool)
 
-	reg := agent.LoadRegistry()
-	for _, w := range reg.Wizards {
+	regEntries, _ := registry.List()
+	for _, w := range regEntries {
 		if w.Name != "" {
 			agents[w.Name] = true
 		}
@@ -697,8 +697,19 @@ func WriteInboxFile(agentName string, data []byte) error {
 // with dead-letter:<name> and removes the wizard from the registry.
 // Returns the number of agents reaped.
 func ReapDeadAgents(towerName string) int {
-	reg := agent.LoadRegistry()
-	wizards := agent.WizardsForTower(reg, towerName)
+	allEntries, err := registry.List()
+	if err != nil {
+		log.Printf("[daemon] reap: list registry: %s", err)
+		return 0
+	}
+
+	// Filter by tower (empty towerName matches all).
+	var wizards []registry.Entry
+	for _, e := range allEntries {
+		if towerName == "" || e.Tower == towerName {
+			wizards = append(wizards, e)
+		}
+	}
 
 	reaped := 0
 	for _, w := range wizards {
@@ -729,7 +740,7 @@ func ReapDeadAgents(towerName string) int {
 			}
 		}
 
-		if err := agent.RegistryRemove(w.Name); err != nil {
+		if err := registry.Remove(w.Name); err != nil {
 			log.Printf("[daemon] reap %s: remove from registry: %s", w.Name, err)
 			continue
 		}
