@@ -283,6 +283,12 @@ var spireMigrations = []columnMigration{
 	{table: "agent_runs", column: "cache_read_tokens", ddl: "ADD COLUMN cache_read_tokens BIGINT"},
 	{table: "agent_runs", column: "cache_write_tokens", ddl: "ADD COLUMN cache_write_tokens BIGINT"},
 
+	// --- agent_runs: auth_profile observability (spi-bkug1n) ---
+	// auth_profile is the credential slot active at run-start; auth_profile_final
+	// is non-null only when a mid-run 429 triggered a swap to api-key.
+	{table: "agent_runs", column: "auth_profile", ddl: "ADD COLUMN auth_profile TEXT"},
+	{table: "agent_runs", column: "auth_profile_final", ddl: "ADD COLUMN auth_profile_final TEXT"},
+
 	// --- golden_prompts columns (in table order) ---
 	{table: "golden_prompts", column: "run_id", ddl: "ADD COLUMN run_id VARCHAR(32) NOT NULL PRIMARY KEY"},
 	{table: "golden_prompts", column: "bead_id", ddl: "ADD COLUMN bead_id VARCHAR(64) NOT NULL"},
