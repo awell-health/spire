@@ -31,6 +31,10 @@ type agentResultJSON struct {
 	CacheWriteTokens int64          `json:"cache_write_tokens,omitempty"`
 	CostUSD          float64        `json:"cost_usd,omitempty"`
 	ToolCalls        map[string]int `json:"tool_calls,omitempty"` // tool_name → invocation count
+	// AuthProfileFinal is set to "api-key" by the wizard when a mid-run
+	// 429 triggered a subscription→api-key swap (spi-mdxtww). Propagates
+	// to agent_runs.auth_profile_final so cost analysis can see the swap.
+	AuthProfileFinal string `json:"auth_profile_final,omitempty"`
 }
 
 // recordOpt is a functional option for recordAgentRun.
@@ -242,6 +246,13 @@ func (e *Executor) recordAgentRun(name, beadID, epicID, model, role, phase strin
 			if blob, err := json.Marshal(ar.ToolCalls); err == nil {
 				run.ToolCallsJSON = string(blob)
 			}
+		}
+		// AuthProfileFinal is set by the wizard when a 429 triggered a
+		// mid-run subscription→api-key swap (spi-mdxtww). Copy the pointer
+		// only when non-empty so historical rows stay NULL.
+		if ar.AuthProfileFinal != "" {
+			final := ar.AuthProfileFinal
+			run.AuthProfileFinal = &final
 		}
 	} else {
 		// No result.json available — derive result from the process error.

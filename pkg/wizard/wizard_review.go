@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -44,6 +45,11 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	}
 
 	log := wizardLogSink(reviewerName)
+
+	// Prime the wizard's AuthContext cache so sage review picks up the
+	// operator's selected credential slot and participates in 429
+	// auto-promote (spi-mdxtww) just like the apprentice path.
+	InitWizardAuth(LoadWizardAuthFromState(reviewerName, deps.ConfigDir))
 
 	// Self-register in the wizard registry.
 	regCleanup := deps.RegisterSelf(reviewerName, beadID, "review")
@@ -361,19 +367,19 @@ Verdicts:
 	// Build full prompt for claude CLI
 	fullPrompt := fmt.Sprintf("System: %s\n\n%s", systemPrompt, userPrompt.String())
 
-	// Run claude with Opus model using JSON output for metrics capture
-	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-p", fullPrompt, "--model", reviewModel, "--output-format", "json")
-	cmd.Env = os.Environ()
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, ClaudeMetrics{}, fmt.Errorf("claude review: %w", err)
+	// Run claude with Opus model using JSON output for metrics capture.
+	// Auth-aware: 429 on a subscription-slot run auto-promotes to api-key.
+	args := []string{"--dangerously-skip-permissions", "-p", fullPrompt, "--model", reviewModel, "--output-format", "json"}
+	res := runWizardClaudeInvoke(context.Background(), args, "", nil, os.Stderr, "sage-review")
+	if res.Err != nil {
+		return nil, ClaudeMetrics{}, fmt.Errorf("claude review: %w", res.Err)
 	}
 
-	resultText, metrics := parseClaudeResultJSON(out)
+	resultText, metrics := parseClaudeResultJSON(res.Stdout)
+	metrics.AuthProfileFinal = wizardPromotionSlot()
 	// Fall back to raw output if parsing didn't find a result event
 	if resultText == "" {
-		resultText = string(out)
+		resultText = string(res.Stdout)
 	}
 
 	review, parseErr := ParseReviewOutput(resultText)
@@ -686,15 +692,15 @@ Decision meanings:
 - "split": The remaining issues are real but independent. Create child beads for each and close this bead.
 `, policy.MaxRounds, bead.Title, bead.Description, lastReview.Summary, reviewHistory.String())
 
-	// Run arbiter via claude CLI
-	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-p", prompt, "--model", policy.ArbiterModel, "--output-format", "text")
-	cmd.Env = os.Environ()
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
-		log("arbiter failed: %s — escalating to archmage", err)
-		deps.AddComment(beadID, fmt.Sprintf("Arbiter failed: %s — needs human resolution", err))
-		deps.EscalateHumanFailure(beadID, reviewerName, "arbiter-failure", err.Error())
+	// Run arbiter via claude CLI — auth-aware so a 429 on subscription
+	// promotes to api-key and retries once (spi-mdxtww).
+	args := []string{"--dangerously-skip-permissions", "-p", prompt, "--model", policy.ArbiterModel, "--output-format", "text"}
+	res := runWizardClaudeInvoke(context.Background(), args, "", nil, os.Stderr, "arbiter")
+	out := res.Stdout
+	if res.Err != nil {
+		log("arbiter failed: %s — escalating to archmage", res.Err)
+		deps.AddComment(beadID, fmt.Sprintf("Arbiter failed: %s — needs human resolution", res.Err))
+		deps.EscalateHumanFailure(beadID, reviewerName, "arbiter-failure", res.Err.Error())
 		return nil
 	}
 

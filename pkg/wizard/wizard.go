@@ -13,11 +13,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/apprentice"
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/runtime"
@@ -53,6 +56,10 @@ type ClaudeMetrics struct {
 	CacheWriteTokens int64
 	CostUSD          float64
 	ToolCalls        map[string]int // tool_name → invocation count (e.g. {"Read": 12, "Edit": 3})
+	// AuthProfileFinal is set to "api-key" when a 429 on a subscription-slot
+	// invocation triggered a subscription→api-key swap (spi-mdxtww). Empty
+	// otherwise. Propagates to agent_runs.auth_profile_final via result.json.
+	AuthProfileFinal string
 }
 
 // Add returns the sum of two ClaudeMetrics values.
@@ -75,6 +82,13 @@ func (m ClaudeMetrics) Add(other ClaudeMetrics) ClaudeMetrics {
 	}
 	if merged.StopReason == "" {
 		merged.StopReason = other.StopReason
+	}
+	// AuthProfileFinal is sticky: if either side observed a 429 auto-promote
+	// anywhere in the run, the merged metrics carry "api-key" forward so
+	// downstream agent_runs reflects the final credential used.
+	merged.AuthProfileFinal = m.AuthProfileFinal
+	if merged.AuthProfileFinal == "" {
+		merged.AuthProfileFinal = other.AuthProfileFinal
 	}
 	// Merge tool call maps.
 	if len(m.ToolCalls) > 0 || len(other.ToolCalls) > 0 {
@@ -157,6 +171,86 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 	return
 }
 
+// wizardAuthState caches the AuthContext for the wizard subprocess so the
+// 429 auto-promote swap (spi-mdxtww) is sticky across Claude invocations
+// for the rest of the subprocess's lifetime. The cache holds a single
+// pointer; (*config.AuthContext).SwapToAPIKey mutates *that* pointer, so
+// every subsequent WizardRunClaude / WizardRunClaudeCapture call in the
+// same process sees the promoted slot. The cache is never persisted — a
+// wizard restart clears it (matches the "cooldown in-memory only" rule
+// from the epic).
+var wizardAuthState struct {
+	mu      sync.Mutex
+	ctx     *config.AuthContext
+	promote string // "" or config.AuthSlotAPIKey once a 429-driven swap fires
+}
+
+// InitWizardAuth primes the wizard's AuthContext cache. The wizard's
+// entry points (CmdWizardRun, CmdWizardReview) should call this once at
+// startup with the AuthContext loaded from GraphState so subsequent
+// claude invocations see the operator's selected credential slot. Safe
+// to call with a nil ctx — callers that never configured auth (legacy
+// path) keep the pre-auth behavior (no env injection, no 429 handling).
+func InitWizardAuth(ctx *config.AuthContext) {
+	wizardAuthState.mu.Lock()
+	defer wizardAuthState.mu.Unlock()
+	wizardAuthState.ctx = ctx
+	wizardAuthState.promote = ""
+}
+
+// LoadWizardAuthFromState reads the wizard's AuthContext from the graph
+// state file written by `spire summon`. Returns nil when the agent name
+// can't be resolved, the state file doesn't exist, or no Auth was
+// selected — callers treat all three as "no auth configured" and fall
+// through to legacy env behavior.
+func LoadWizardAuthFromState(agentName string, configDirFn func() (string, error)) *config.AuthContext {
+	if agentName == "" || configDirFn == nil {
+		return nil
+	}
+	state, err := executor.LoadGraphState(agentName, configDirFn)
+	if err != nil || state == nil {
+		return nil
+	}
+	return state.Auth
+}
+
+// currentWizardAuth returns the cached AuthContext (or nil). Access is
+// through this helper so the mutex stays encapsulated.
+func currentWizardAuth() *config.AuthContext {
+	wizardAuthState.mu.Lock()
+	defer wizardAuthState.mu.Unlock()
+	return wizardAuthState.ctx
+}
+
+// recordWizardPromotion is invoked when InvokeClaudeWithAuth reports a
+// 429-driven swap. Subsequent WizardWriteResult calls surface the final
+// slot to result.json so the executor's recordAgentRun propagates it to
+// agent_runs.auth_profile_final. The flag is sticky: once set it never
+// clears for the remainder of the wizard process.
+func recordWizardPromotion(slot string) {
+	wizardAuthState.mu.Lock()
+	defer wizardAuthState.mu.Unlock()
+	if wizardAuthState.promote == "" && slot != "" {
+		wizardAuthState.promote = slot
+	}
+}
+
+// wizardPromotionSlot returns the promote slot ("" or "api-key").
+func wizardPromotionSlot() string {
+	wizardAuthState.mu.Lock()
+	defer wizardAuthState.mu.Unlock()
+	return wizardAuthState.promote
+}
+
+// resetWizardAuthStateForTest resets the package-level cache so each
+// test starts from a clean slate.
+func resetWizardAuthStateForTest() {
+	wizardAuthState.mu.Lock()
+	defer wizardAuthState.mu.Unlock()
+	wizardAuthState.ctx = nil
+	wizardAuthState.promote = ""
+}
+
 // CmdWizardRun is the internal entry point for a local wizard process.
 // It claims a bead, creates a worktree, runs design + implement phases,
 // validates, commits, updates the bead, and hands off to review.
@@ -226,6 +320,12 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	startedAt := time.Now()
 	log := wizardLogSink(wizardName)
+
+	// Prime the wizard's AuthContext cache from the graph state file
+	// written by `spire summon`. A nil result means no auth was selected
+	// (legacy path); the helper treats that as "no injection, no 429
+	// handling" — pre-auth-config behavior.
+	InitWizardAuth(LoadWizardAuthFromState(wizardName, deps.ConfigDir))
 
 	// --- Build-fix mode: early return path ---
 	// The executor spawns the apprentice with --build-fix --apprentice --worktree-dir <path>.
@@ -1297,6 +1397,11 @@ func WizardAgentResultDir(deps *Deps, wizardName string) string {
 // transcript and a .stderr.log sidecar. Returns token usage metrics
 // parsed from the stream's final result event. timeout enforces a hard
 // process-level deadline via context.
+//
+// When the wizard's cached AuthContext is configured for subscription and
+// the api-key slot is populated, a 429 from claude triggers an in-memory
+// subscription→api-key swap and a single retry (spi-mdxtww). The swap is
+// sticky for subsequent calls in the same wizard process.
 func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
@@ -1315,10 +1420,6 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Dir = worktreeDir
-	cmd.Env = os.Environ()
-
 	stream := openClaudeProviderStream(agentResultDir, label, worktreeDir, args)
 	if stream != nil {
 		defer stream.stdout.Close()
@@ -1326,26 +1427,25 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	}
 
 	var buf bytes.Buffer
-	stdoutWriters := []io.Writer{&buf}
+	stdoutTee := io.Writer(&buf)
 	if stream != nil {
-		stdoutWriters = append(stdoutWriters, stream.stdout)
+		stdoutTee = io.MultiWriter(&buf, stream.stdout)
 	}
-	cmd.Stdout = io.MultiWriter(stdoutWriters...)
+	var stderrTee io.Writer = os.Stderr
 	if stream != nil {
-		cmd.Stderr = io.MultiWriter(os.Stderr, stream.stderr)
-	} else {
-		cmd.Stderr = os.Stderr
+		stderrTee = io.MultiWriter(os.Stderr, stream.stderr)
 	}
 
 	started := time.Now()
-	runErr := cmd.Run()
+	res := runWizardClaudeInvoke(ctx, args, worktreeDir, stdoutTee, stderrTee, label)
 	if stream != nil {
-		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", runErr, time.Since(started))
+		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", res.Err, time.Since(started))
 	}
 
 	_, metrics := parseClaudeResultJSON(buf.Bytes())
 	metrics.MaxTurns = maxTurns
-	return metrics, runErr
+	metrics.AuthProfileFinal = wizardPromotionSlot()
+	return metrics, res.Err
 }
 
 // WizardRunClaudeCapture invokes the claude CLI and captures the text result.
@@ -1355,6 +1455,8 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 // When agentResultDir is non-empty, the full stream is also teed to
 // <agentResultDir>/claude/<label>-<ts>.jsonl, with a sidecar
 // <label>-<ts>.stderr.log for stderr.
+//
+// Same 429 auto-promote behavior as WizardRunClaude (spi-mdxtww).
 func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (string, ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
@@ -1372,10 +1474,6 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Dir = worktreeDir
-	cmd.Env = os.Environ()
-
 	stream := openClaudeProviderStream(agentResultDir, label, worktreeDir, args)
 	if stream != nil {
 		defer stream.stdout.Close()
@@ -1383,32 +1481,67 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	}
 
 	var buf bytes.Buffer
-	stdoutWriters := []io.Writer{&buf}
+	stdoutTee := io.Writer(&buf)
 	if stream != nil {
-		stdoutWriters = append(stdoutWriters, stream.stdout)
+		stdoutTee = io.MultiWriter(&buf, stream.stdout)
 	}
-	cmd.Stdout = io.MultiWriter(stdoutWriters...)
+	var stderrTee io.Writer = os.Stderr
 	if stream != nil {
-		cmd.Stderr = io.MultiWriter(os.Stderr, stream.stderr)
-	} else {
-		cmd.Stderr = os.Stderr
+		stderrTee = io.MultiWriter(os.Stderr, stream.stderr)
 	}
 
 	started := time.Now()
-	runErr := cmd.Run()
+	res := runWizardClaudeInvoke(ctx, args, worktreeDir, stdoutTee, stderrTee, label)
 	if stream != nil {
-		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", runErr, time.Since(started))
+		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", res.Err, time.Since(started))
 	}
 
 	out := buf.Bytes()
 	resultText, metrics := parseClaudeResultJSON(out)
 	metrics.MaxTurns = maxTurns
+	metrics.AuthProfileFinal = wizardPromotionSlot()
 	// Fall back to raw output if parsing didn't find a result event
 	if resultText == "" {
 		resultText = string(out)
 	}
 
-	return resultText, metrics, runErr
+	return resultText, metrics, res.Err
+}
+
+// wizardClaudeCLIRunner is the injected claude-invocation shim. Defaults
+// to agent.DefaultClaudeCLIRunner; tests override it to stub the CLI.
+var wizardClaudeCLIRunner = agent.DefaultClaudeCLIRunner
+
+// runWizardClaudeInvoke centralizes the auth-aware claude invocation used
+// by WizardRunClaude and WizardRunClaudeCapture. It pulls the current
+// AuthContext from the wizard-scoped cache, runs the CLI, and on a 429
+// with auto-promote preconditions met, swaps to the api-key slot and
+// retries once. Promotes are recorded in the package-level cache so
+// future calls in the same wizard process see the sticky slot and
+// WizardWriteResult surfaces auth_profile_final.
+func runWizardClaudeInvoke(ctx context.Context, args []string, dir string, stdoutTee, stderrTee io.Writer, label string) agent.ClaudeInvokeResult {
+	auth := currentWizardAuth()
+	beadID := os.Getenv("SPIRE_BEAD_ID")
+	res := agent.InvokeClaudeWithAuth(agent.ClaudeInvokeParams{
+		Ctx:     ctx,
+		Args:    args,
+		Dir:     dir,
+		BaseEnv: os.Environ(),
+		Auth:    auth,
+		Stdout:  stdoutTee,
+		Stderr:  stderrTee,
+		BeadID:  beadID,
+		Step:    label,
+		Log: func(format string, a ...interface{}) {
+			fmt.Fprintf(os.Stderr, "[wizard] "+format+"%s\n",
+				append(a, runtime.LogFields(runtime.RunContextFromEnv()))...)
+		},
+		Runner: wizardClaudeCLIRunner,
+	})
+	if res.Promoted && auth != nil {
+		recordWizardPromotion(auth.SlotName())
+	}
+	return res
 }
 
 // writeClaudeLogHeader writes an identifying preamble to the claude
@@ -1765,6 +1898,17 @@ func WizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
 	}
 	if len(metrics.ToolCalls) > 0 {
 		data["tool_calls"] = metrics.ToolCalls
+	}
+	// Prefer metrics.AuthProfileFinal when callers set it explicitly; fall
+	// back to the wizard's package-level cache so even a result produced
+	// without the 429-aware Claude helpers (e.g. legacy sage review path)
+	// still surfaces any promote that happened earlier in the run.
+	finalSlot := metrics.AuthProfileFinal
+	if finalSlot == "" {
+		finalSlot = wizardPromotionSlot()
+	}
+	if finalSlot != "" {
+		data["auth_profile_final"] = finalSlot
 	}
 	out, _ := json.MarshalIndent(data, "", "  ")
 	resultPath := filepath.Join(resultDir, "result.json")
