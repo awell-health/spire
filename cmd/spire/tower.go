@@ -1318,7 +1318,14 @@ func cmdTowerUse(name string) error {
 	// Warn about running wizards for the old tower.
 	if cfg.ActiveTower != "" && cfg.ActiveTower != name {
 		reg := loadWizardRegistry()
-		reg = cleanDeadWizards(reg, false)
+		// Filter to live entries only (display purposes; OrphanSweep handles bead cleanup).
+		var liveWizards []localWizard
+		for _, w := range reg.Wizards {
+			if w.PID > 0 && processAlive(w.PID) {
+				liveWizards = append(liveWizards, w)
+			}
+		}
+		reg.Wizards = liveWizards
 		var running []localWizard
 		for _, w := range reg.Wizards {
 			// Check if wizard's bead prefix matches old tower's instances.
@@ -1387,9 +1394,18 @@ func cmdTowerRemove(name string, force bool) error {
 	var summary []string
 
 	// 4. Kill running wizards for this tower.
+	// Only include entries with live PIDs (OrphanSweep handles bead-level cleanup).
 	wizardsKilled := 0
 	reg := loadWizardRegistry()
-	reg = cleanDeadWizards(reg, false)
+	{
+		var live []localWizard
+		for _, w := range reg.Wizards {
+			if w.PID > 0 && processAlive(w.PID) {
+				live = append(live, w)
+			}
+		}
+		reg.Wizards = live
+	}
 	var remaining []localWizard
 	for _, w := range reg.Wizards {
 		if w.Tower == name {

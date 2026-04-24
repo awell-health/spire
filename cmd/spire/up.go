@@ -294,14 +294,23 @@ func cmdUp(args []string) error {
 		}
 	}
 
-	// Step 2.5: Clean dead wizards from registry and remove stale state files.
+	// Step 2.5: Prune dead wizard registry entries (PID no longer alive).
+	// Bead-level cleanup (attempt close, bead reopen) is handled by
+	// beadlifecycle.OrphanSweep which runs on every BeginWork and steward tick.
 	fmt.Print("dead wizard cleanup: ")
 	{
 		reg := loadWizardRegistry()
-		cleaned := cleanDeadWizards(reg, false)
-		if len(reg.Wizards) > len(cleaned.Wizards) {
-			saveWizardRegistry(cleaned)
-			fmt.Printf("reaped %d defunct process(es)\n", len(reg.Wizards)-len(cleaned.Wizards))
+		before := len(reg.Wizards)
+		var live []localWizard
+		for _, w := range reg.Wizards {
+			if w.PID > 0 && processAlive(w.PID) {
+				live = append(live, w)
+			}
+		}
+		if len(live) < before {
+			reg.Wizards = live
+			saveWizardRegistry(reg)
+			fmt.Printf("pruned %d defunct process(es)\n", before-len(live))
 		} else {
 			fmt.Println("none")
 		}

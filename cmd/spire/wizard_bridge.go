@@ -117,9 +117,6 @@ func buildWizardDeps() *wizard.Deps {
 		RegistryAdd:    func(entry agent.Entry) error { return wizardRegistryAdd(entry) },
 		RegistryRemove: func(name string) error { return wizardRegistryRemove(name) },
 		RegistryUpdate: func(name string, f func(*agent.Entry)) error { return wizardRegistryUpdate(name, f) },
-		RegisterSelf: func(name, beadID, phase string, opts ...func(*agent.Entry)) func() {
-			return agent.RegisterSelf(name, beadID, phase, opts...)
-		},
 
 		// Agent spawner
 		ResolveBackend: func(name string) wizard.Backend { return ResolveBackend(name) },

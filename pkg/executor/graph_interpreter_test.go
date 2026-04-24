@@ -13,6 +13,7 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -75,7 +76,6 @@ func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 		ResolveBranch:  func(beadID string) string { return "feat/" + beadID },
 		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
-		RegisterSelf:   func(name, beadID, phase string, opts ...func(*agent.Entry)) func() { return func() {} },
 		HasLabel:       func(b Bead, prefix string) string { return "" },
 		ContainsLabel:  func(b Bead, label string) bool { return false },
 		AddLabel:       func(id, label string) error { return nil },
@@ -2424,15 +2424,28 @@ func TestRunGraph_Heartbeats(t *testing.T) {
 	}
 }
 
-// TestRunGraph_RegisterSelfIncludesInstanceID verifies that RegisterSelf is
-// called with the WithInstanceID option.
-func TestRunGraph_RegisterSelfIncludesInstanceID(t *testing.T) {
+// TestRunGraph_StampsRegistryPhaseAndInstanceID verifies that RunGraph stamps
+// the existing registry entry (created by BeginWork) with the graph phase and
+// the current instance ID via registry.Update. The old RegisterSelf dep was
+// removed in Phase 3 of the lifecycle-boundaries refactor (spi-pbuhit).
+func TestRunGraph_StampsRegistryPhaseAndInstanceID(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
 	deps, _ := testGraphDeps(t)
 
-	var capturedOpts []func(*agent.Entry)
-	deps.RegisterSelf = func(name, beadID, phase string, opts ...func(*agent.Entry)) func() {
-		capturedOpts = opts
-		return func() {}
+	agentName := "wizard-spi-stamp-test"
+	beadID := "spi-stamp-test"
+
+	// Pre-create a registry entry as BeginWork would (PID=0 placeholder).
+	if err := registry.Upsert(registry.Entry{
+		Name:    agentName,
+		PID:     0,
+		BeadID:  beadID,
+		Phase:   "",
+		Tower:   "test-tower",
+	}); err != nil {
+		t.Fatalf("pre-create registry entry: %v", err)
 	}
 
 	// Register a simple terminal action.
@@ -2461,20 +2474,29 @@ func TestRunGraph_RegisterSelfIncludesInstanceID(t *testing.T) {
 		},
 	}
 
-	exec := NewGraphForTest("spi-test", "wizard-test", graph, nil, deps)
+	exec := NewGraphForTest(beadID, agentName, graph, nil, deps)
 	_ = exec.RunGraph(graph, exec.graphState)
 
-	if len(capturedOpts) == 0 {
-		t.Fatal("expected RegisterSelf to be called with opts, got none")
+	// Verify the registry entry was stamped with a graph: phase.
+	entries, err := registry.List()
+	if err != nil {
+		t.Fatalf("list registry: %v", err)
 	}
-
-	// Apply opts to a test entry to verify InstanceID is set.
-	entry := &agent.Entry{}
-	for _, opt := range capturedOpts {
-		opt(entry)
+	var found *registry.Entry
+	for i := range entries {
+		if entries[i].Name == agentName {
+			found = &entries[i]
+			break
+		}
 	}
-	if entry.InstanceID == "" {
-		t.Error("expected InstanceID to be set via WithInstanceID opt")
+	if found == nil {
+		t.Fatal("expected registry entry to still exist after RunGraph")
+	}
+	if !strings.HasPrefix(found.Phase, "graph:") {
+		t.Errorf("expected Phase to start with 'graph:', got %q", found.Phase)
+	}
+	if found.PhaseStartedAt == "" {
+		t.Error("expected PhaseStartedAt to be set")
 	}
 }
 

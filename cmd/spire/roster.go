@@ -69,8 +69,15 @@ func cmdRoster(args []string) error {
 			saveWizardRegistry(wizardRegistry{Wizards: agents})
 		},
 		CleanDeadWizards: func(agents []board.LocalAgent) []board.LocalAgent {
-			reg := cleanDeadWizards(wizardRegistry{Wizards: agents}, true)
-			return reg.Wizards
+			// Filter out dead entries for display. OrphanSweep handles bead-level
+			// cleanup; this only prunes entries whose PID is no longer alive.
+			var live []board.LocalAgent
+			for _, w := range agents {
+				if w.PID > 0 && processAlive(w.PID) {
+					live = append(live, w)
+				}
+			}
+			return live
 		},
 		ProcessAlive: func(pid int) bool {
 			return dolt.ProcessAlive(pid)

@@ -22,6 +22,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
+	pkgregistry "github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/store"
@@ -431,18 +432,24 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	worktreeDir := wc.Dir
 	log("worktree: %s", worktreeDir)
 
-	// 4. Self-register in wizards.json
-	regCleanup := deps.RegisterSelf(wizardName, beadID, "init", func(e *Entry) {
-		e.Worktree = worktreeDir
-	})
-	defer regCleanup()
+	// 4. Stamp phase and worktree on the existing registry entry created by BeginWork.
+	// OrphanSweep and EndWork are the sole removers — the wizard no longer owns
+	// registry cleanup. Log but don't fail if entry not found (e.g. test modes
+	// that don't call BeginWork).
+	if uerr := pkgregistry.Update(wizardName, func(re *pkgregistry.Entry) {
+		re.Phase = "init"
+		re.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
+		re.Worktree = worktreeDir
+	}); uerr != nil {
+		log("warning: registry stamp for %s: %v", wizardName, uerr)
+	}
 
-	// Signal handler for clean unregister on interrupt
+	// Signal handler — registry cleanup is no longer done here; the entry
+	// was created by BeginWork and is cleaned by OrphanSweep/EndWork.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		regCleanup()
 		os.Exit(1)
 	}()
 

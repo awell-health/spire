@@ -100,7 +100,6 @@ type Deps struct {
 	RegistryAdd    func(entry Entry) error
 	RegistryRemove func(name string) error
 	RegistryUpdate func(name string, f func(*Entry)) error
-	RegisterSelf   func(name, beadID, phase string, opts ...func(*Entry)) func()
 
 	// Agent spawner
 	ResolveBackend func(name string) Backend
