@@ -47,11 +47,19 @@
 // Reset treats the children of a bead in three groups:
 //
 //  1. Internal DAG beads (workflow-step, attempt, review-round):
-//     - soft reset → CLOSED (audit trail preserved)
-//     - hard reset → DELETED (including nested descendants like attempt→step)
+//     - soft reset → step beads CLOSED, attempt/review beads CLOSED and
+//     stamped with reset-cycle:<N>
+//     - hard reset → step beads DELETED (including nested descendants);
+//     attempt/review beads CLOSED (NOT deleted — spi-cjotlm) and stamped
+//     with reset-cycle:<N> so the round counter and on-disk log filenames
+//     stay monotonic across reset cycles
 //     - `--to <step>` → step beads in the rewind set are REOPENED (not closed)
 //     so the graph re-enters those steps on the next summon. Everything
 //     outside the rewind set is left alone.
+//
+//     After cleanup, both soft and hard reset bump the parent bead's
+//     reset-cycle:<N> label (default 1 → 2, etc.) so post-resummon work
+//     groups under a fresh cycle on the board.
 //
 //  2. Real subtask children (type=task/bug/feature/etc. under an epic):
 //     - plain/hard reset → reopened if currently open/in_progress, leaving
@@ -113,6 +121,7 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -167,7 +176,7 @@ var resetCmd = &cobra.Command{
 }
 
 func init() {
-	resetCmd.Flags().Bool("hard", false, "Hard reset (delete worktree and state)")
+	resetCmd.Flags().Bool("hard", false, "Hard reset (delete worktree and graph state; attempt/review beads are closed and tagged with reset-cycle, not deleted, so logs survive)")
 	resetCmd.Flags().String("to", "", "Reset to a specific step")
 	resetCmd.Flags().Bool("force", false, "With --to, bypass the 'target must have been reached' precondition; pending steps outside the rewind set are advanced to completed. Example: --to review --force --set implement.outputs.outcome=verified")
 	resetCmd.Flags().StringArray("set", nil, "With --to, override a step's outputs (format: <step>.outputs.<key>=<value>; repeatable). Rejects '<step>.status=...'. Example: --set review.outputs.outcome=merge")
@@ -386,7 +395,11 @@ func hardResetBeadCore(beadID string) error {
 		}
 	}
 
-	counts := deleteInternalDAGBeadsRecursive(processable)
+	// Read the parent's CURRENT cycle so we stamp closing children with the
+	// cycle they belong to (the cycle that just ended), then bump the parent
+	// for the next batch of work after resummon.
+	currentCycle := readParentResetCycle(beadID)
+	counts := deleteInternalDAGBeadsRecursive(processable, currentCycle)
 	logInternalDAGCleanup(counts)
 
 	// Reopen subtask children so the epic can re-dispatch.
@@ -434,6 +447,10 @@ func hardResetBeadCore(beadID string) error {
 	// --- 6. Git cleanup: worktrees + branches ---
 	resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName)
 
+	// --- 7. Bump parent reset-cycle so the next attempt/review batch lands
+	// in a new cycle group on the board.
+	bumpParentResetCycle(beadID)
+
 	return nil
 }
 
@@ -465,7 +482,11 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 			}
 		}
 
-		counts := cleanupInternalDAGChildren(processable, false)
+		// Read the parent's CURRENT cycle so we stamp closing children with
+		// the cycle they belong to (the cycle that just ended), then bump
+		// the parent for the next batch of work after resummon.
+		currentCycle := readParentResetCycle(beadID)
+		counts := cleanupInternalDAGChildren(processable, false, currentCycle)
 		logInternalDAGCleanup(counts)
 		reopenedChildren := 0
 
@@ -508,6 +529,10 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 		} else {
 			fmt.Printf("  %s↺ %s set to open%s\n", yellow, beadID, reset)
 		}
+
+		// 5. Bump parent reset-cycle so post-resummon work groups under a
+		// fresh cycle on the board (parity with the hard-reset path).
+		bumpParentResetCycle(beadID)
 	}
 
 	// --- Close related recovery beads (both soft and hard paths) ---
@@ -950,7 +975,80 @@ func isInternalDAGBead(b Bead) bool {
 	return isStepBead(b) || isAttemptBead(b) || isReviewRoundBead(b)
 }
 
-func cleanupInternalDAGChildren(children []Bead, hard bool) internalDAGCleanupCounts {
+// hasResetCycleLabel reports whether the bead already carries any
+// reset-cycle:<N> label. Used to make stamping idempotent so repeated resets
+// don't pile on duplicate labels.
+func hasResetCycleLabel(b Bead) bool {
+	for _, l := range b.Labels {
+		if strings.HasPrefix(l, "reset-cycle:") {
+			return true
+		}
+	}
+	return false
+}
+
+// readParentResetCycle returns the parent bead's current reset cycle,
+// defaulting to 1 when the bead is missing or carries no reset-cycle:<N>
+// label. This is the cycle that already-existing children belong to and
+// that any in-flight stamping should use.
+func readParentResetCycle(parentID string) int {
+	parent, err := storeGetBead(parentID)
+	if err != nil {
+		return 1
+	}
+	return store.ResetCycleNumber(parent)
+}
+
+// bumpParentResetCycle replaces the parent's reset-cycle:<N> label with
+// reset-cycle:<N+1>. New attempt/review children created after the next
+// summon will inherit the bumped cycle (via store.ParentResetCycle), so
+// the board can group them under their own cycle header.
+//
+// Returns the new cycle, or the prior cycle on failure (best-effort).
+func bumpParentResetCycle(parentID string) int {
+	current := readParentResetCycle(parentID)
+	if err := storeRemoveLabel(parentID, fmt.Sprintf("reset-cycle:%d", current)); err != nil {
+		// Tolerated: the label may not have existed yet (pre-feature beads
+		// default to cycle 1 with no label). The AddLabel below still
+		// installs the new cycle.
+	}
+	next := current + 1
+	if err := storeAddLabel(parentID, fmt.Sprintf("reset-cycle:%d", next)); err != nil {
+		fmt.Printf("  %s(note: could not bump reset-cycle on %s: %s)%s\n", dim, parentID, err, reset)
+		return current
+	}
+	fmt.Printf("  %s↻ %s reset-cycle → %d%s\n", yellow, parentID, next, reset)
+	return next
+}
+
+// stampResetCycleIfMissing adds reset-cycle:<cycle> to the child if it does
+// not already carry such a label. cycle <= 0 disables stamping.
+func stampResetCycleIfMissing(child Bead, cycle int) {
+	if cycle <= 0 || hasResetCycleLabel(child) {
+		return
+	}
+	if err := storeAddLabelFunc(child.ID, fmt.Sprintf("reset-cycle:%d", cycle)); err != nil {
+		fmt.Printf("  %s(note: could not stamp reset-cycle on %s: %s)%s\n", dim, child.ID, err, reset)
+	}
+}
+
+// cleanupInternalDAGChildren disposes of attempt/review/step children during
+// soft and hard reset.
+//
+// Attempt and review-round children are always CLOSED (never deleted) so the
+// audit trail — including the round:<N> label that drives the monotonic
+// counter and the on-disk wizard log filename — survives across reset cycles.
+// hard mode used to delete these; that lost history, including the very logs
+// the board was supposed to surface.
+//
+// Step children are still deleted on hard reset (steps are regenerated by
+// resummon and have no historical content worth preserving) and closed on
+// soft reset.
+//
+// cycle is the reset cycle to stamp on attempt/review children that lack a
+// reset-cycle:<N> label (idempotent — already-stamped children are skipped).
+// cycle <= 0 disables stamping.
+func cleanupInternalDAGChildren(children []Bead, hard bool, cycle int) internalDAGCleanupCounts {
 	var counts internalDAGCleanupCounts
 
 	for _, child := range children {
@@ -966,20 +1064,23 @@ func cleanupInternalDAGChildren(children []Bead, hard bool) internalDAGCleanupCo
 			continue
 		}
 
-		if hard {
+		// Hard reset still deletes step beads — they're regenerated on
+		// resummon and carry no audit history beyond the workflow-step label.
+		if hard && kind == "step" {
 			if err := storeDeleteBeadFunc(child.ID); err != nil {
 				fmt.Printf("  %s(note: could not delete %s: %s)%s\n", dim, child.ID, err, reset)
 				continue
 			}
-			switch kind {
-			case "step":
-				counts.DeletedSteps++
-			case "review":
-				counts.DeletedReviewRounds++
-			case "attempt":
-				counts.DeletedAttempts++
-			}
+			counts.DeletedSteps++
 			continue
+		}
+
+		// Attempt/review beads are preserved (closed, not deleted) so their
+		// labels and the matching on-disk log files keep working across
+		// reset cycles. Stamp the current cycle before closing so the board
+		// can later group the round under its cycle.
+		if kind == "attempt" || kind == "review" {
+			stampResetCycleIfMissing(child, cycle)
 		}
 
 		if child.Status == "closed" {
@@ -1138,10 +1239,19 @@ func isProtectedByLabel(b Bead) bool {
 	return false
 }
 
-// deleteInternalDAGBeadsRecursive deletes all internal DAG beads and their
-// descendants. For nested internal beads (e.g., attempt children under step beads),
-// it deletes bottom-up (leaves first) to avoid orphaned children.
-func deleteInternalDAGBeadsRecursive(children []Bead) internalDAGCleanupCounts {
+// deleteInternalDAGBeadsRecursive disposes of internal DAG beads and their
+// descendants during hard reset.
+//
+// Step beads are deleted (along with their descendants — bottom-up to avoid
+// orphans). Attempt and review-round beads are CLOSED (not deleted) and
+// stamped with reset-cycle:<cycle> so the on-disk wizard log filename and
+// the round:<N> label survive across the reset boundary. The board then
+// surfaces them grouped by cycle and the next sage-review picks up the
+// monotonic counter from max(round)+1 instead of restarting at 1.
+//
+// cycle is the reset cycle to stamp on attempt/review children that lack a
+// reset-cycle:<N> label. cycle <= 0 disables stamping.
+func deleteInternalDAGBeadsRecursive(children []Bead, cycle int) internalDAGCleanupCounts {
 	var counts internalDAGCleanupCounts
 
 	for _, child := range children {
@@ -1157,21 +1267,35 @@ func deleteInternalDAGBeadsRecursive(children []Bead) internalDAGCleanupCounts {
 			continue
 		}
 
-		// Recursively delete descendants first (bottom-up).
+		// Attempt/review beads are preserved across hard reset for log
+		// continuity. Close them in place (idempotent for already-closed
+		// children) and stamp the cycle.
+		if kind == "attempt" || kind == "review" {
+			stampResetCycleIfMissing(child, cycle)
+			if child.Status == "closed" {
+				continue
+			}
+			if err := storeCloseBeadFunc(child.ID); err != nil {
+				fmt.Printf("  %s(note: could not close %s: %s)%s\n", dim, child.ID, err, reset)
+				continue
+			}
+			switch kind {
+			case "review":
+				counts.ClosedReviewRounds++
+			case "attempt":
+				counts.ClosedAttempts++
+			}
+			continue
+		}
+
+		// Step beads still get the historical bottom-up delete behavior.
 		deleteBeadDescendants(child.ID)
 
 		if err := storeDeleteBeadFunc(child.ID); err != nil {
 			fmt.Printf("  %s(note: could not delete %s: %s)%s\n", dim, child.ID, err, reset)
 			continue
 		}
-		switch kind {
-		case "step":
-			counts.DeletedSteps++
-		case "review":
-			counts.DeletedReviewRounds++
-		case "attempt":
-			counts.DeletedAttempts++
-		}
+		counts.DeletedSteps++
 	}
 
 	return counts

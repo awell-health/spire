@@ -266,7 +266,8 @@ func TestCleanupInternalDAGChildren_SoftClosesInternalArtifacts(t *testing.T) {
 		{ID: "spi-task", Title: "real subtask", Status: "open"},
 	}
 
-	counts := cleanupInternalDAGChildren(children, false)
+	// Pass cycle=0 to skip stamping (covered separately by the cycle test).
+	counts := cleanupInternalDAGChildren(children, false, 0)
 
 	if !reflect.DeepEqual(closedIDs, []string{"spi-step", "spi-attempt"}) {
 		t.Fatalf("closed IDs = %v, want [spi-step spi-attempt]", closedIDs)
@@ -282,7 +283,10 @@ func TestCleanupInternalDAGChildren_SoftClosesInternalArtifacts(t *testing.T) {
 	}
 }
 
-func TestCleanupInternalDAGChildren_HardDeletesInternalArtifacts(t *testing.T) {
+// TestCleanupInternalDAGChildren_HardPreservesAttemptsAndReviews verifies that
+// hard reset DELETES step beads but CLOSES attempt/review beads (the spi-cjotlm
+// fix for log-collision across reset cycles).
+func TestCleanupInternalDAGChildren_HardPreservesAttemptsAndReviews(t *testing.T) {
 	origClose := storeCloseBeadFunc
 	origDelete := storeDeleteBeadFunc
 	defer func() {
@@ -307,37 +311,140 @@ func TestCleanupInternalDAGChildren_HardDeletesInternalArtifacts(t *testing.T) {
 		{ID: "spi-task", Title: "real subtask", Status: "open"},
 	}
 
-	counts := cleanupInternalDAGChildren(children, true)
+	// cycle=0 disables stamping so this test stays focused on close-vs-delete.
+	counts := cleanupInternalDAGChildren(children, true, 0)
 
-	if len(closedIDs) != 0 {
-		t.Fatalf("closed IDs = %v, want none", closedIDs)
+	if !reflect.DeepEqual(deletedIDs, []string{"spi-step"}) {
+		t.Fatalf("deleted IDs = %v, want [spi-step] (attempts and reviews must be preserved)", deletedIDs)
 	}
-	if !reflect.DeepEqual(deletedIDs, []string{"spi-step", "spi-attempt", "spi-review"}) {
-		t.Fatalf("deleted IDs = %v, want [spi-step spi-attempt spi-review]", deletedIDs)
+	// Only the in_progress attempt is closed by this call — the already-closed
+	// review is left alone (idempotent), even though it would have been stamped
+	// if cycle > 0.
+	if !reflect.DeepEqual(closedIDs, []string{"spi-attempt"}) {
+		t.Fatalf("closed IDs = %v, want [spi-attempt]", closedIDs)
 	}
-	if counts.DeletedSteps != 1 || counts.DeletedAttempts != 1 || counts.DeletedReviewRounds != 1 {
+	if counts.DeletedSteps != 1 || counts.DeletedAttempts != 0 || counts.DeletedReviewRounds != 0 {
 		t.Fatalf("unexpected delete counts: %+v", counts)
 	}
-	if counts.ClosedSteps != 0 || counts.ClosedAttempts != 0 || counts.ClosedReviewRounds != 0 {
+	if counts.ClosedAttempts != 1 || counts.ClosedReviewRounds != 0 {
 		t.Fatalf("unexpected close counts: %+v", counts)
 	}
 }
 
-func TestDeleteInternalDAGBeadsRecursive_DeletesAllInternalAndDescendants(t *testing.T) {
+// TestCleanupInternalDAGChildren_StampsResetCycle verifies the spi-cjotlm
+// behavior: each attempt/review child without an existing reset-cycle:<N>
+// label is stamped with the supplied cycle, and the stamping is idempotent
+// (already-labeled children are skipped).
+func TestCleanupInternalDAGChildren_StampsResetCycle(t *testing.T) {
+	origClose := storeCloseBeadFunc
 	origDelete := storeDeleteBeadFunc
+	origAddLabel := storeAddLabelFunc
+	defer func() {
+		storeCloseBeadFunc = origClose
+		storeDeleteBeadFunc = origDelete
+		storeAddLabelFunc = origAddLabel
+	}()
+
+	storeCloseBeadFunc = func(id string) error { return nil }
+	storeDeleteBeadFunc = func(id string) error { return nil }
+
+	type stamp struct{ id, label string }
+	var stamps []stamp
+	storeAddLabelFunc = func(id, label string) error {
+		stamps = append(stamps, stamp{id, label})
+		return nil
+	}
+
+	children := []Bead{
+		{ID: "spi-step", Title: "step:implement", Status: "in_progress", Labels: []string{"workflow-step", "step:implement"}},
+		// No reset-cycle yet — should be stamped with cycle 2.
+		{ID: "spi-attempt-fresh", Title: "attempt: w", Status: "open", Labels: []string{"attempt"}},
+		// Already carries reset-cycle:1 from a previous reset — must NOT be re-stamped (idempotency).
+		{ID: "spi-attempt-old", Title: "attempt: w", Status: "closed", Labels: []string{"attempt", "reset-cycle:1"}},
+		// Review without reset-cycle — should be stamped with cycle 2.
+		{ID: "spi-review-fresh", Title: "review-round-3", Status: "in_progress", Labels: []string{"review-round", "round:3"}},
+		// Real subtask — never stamped.
+		{ID: "spi-task", Title: "real subtask", Status: "open"},
+	}
+
+	cleanupInternalDAGChildren(children, false, 2)
+
+	wantStamps := []stamp{
+		{"spi-attempt-fresh", "reset-cycle:2"},
+		{"spi-review-fresh", "reset-cycle:2"},
+	}
+	if !reflect.DeepEqual(stamps, wantStamps) {
+		t.Fatalf("stamps = %+v, want %+v", stamps, wantStamps)
+	}
+}
+
+// TestDeleteInternalDAGBeadsRecursive_StampsResetCycle is the parity test
+// for the hard-reset path — same close-not-delete + stamp behavior as the
+// soft path covered above.
+func TestDeleteInternalDAGBeadsRecursive_StampsResetCycle(t *testing.T) {
+	origClose := storeCloseBeadFunc
+	origDelete := storeDeleteBeadFunc
+	origAddLabel := storeAddLabelFunc
 	origGetChildren := storeGetChildrenFunc
 	defer func() {
+		storeCloseBeadFunc = origClose
 		storeDeleteBeadFunc = origDelete
+		storeAddLabelFunc = origAddLabel
 		storeGetChildrenFunc = origGetChildren
 	}()
 
-	var deletedIDs []string
+	storeCloseBeadFunc = func(id string) error { return nil }
+	storeDeleteBeadFunc = func(id string) error { return nil }
+	storeGetChildrenFunc = func(parentID string) ([]Bead, error) { return nil, nil }
+
+	type stamp struct{ id, label string }
+	var stamps []stamp
+	storeAddLabelFunc = func(id, label string) error {
+		stamps = append(stamps, stamp{id, label})
+		return nil
+	}
+
+	children := []Bead{
+		{ID: "spi-attempt", Title: "attempt: w", Status: "in_progress", Labels: []string{"attempt"}},
+		{ID: "spi-review", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "round:1"}},
+	}
+
+	deleteInternalDAGBeadsRecursive(children, 1)
+
+	wantStamps := []stamp{
+		{"spi-attempt", "reset-cycle:1"},
+		{"spi-review", "reset-cycle:1"},
+	}
+	if !reflect.DeepEqual(stamps, wantStamps) {
+		t.Fatalf("stamps = %+v, want %+v", stamps, wantStamps)
+	}
+}
+
+// TestDeleteInternalDAGBeadsRecursive_PreservesAttemptsAndReviews verifies the
+// spi-cjotlm fix: hard reset deletes step beads (along with their nested
+// descendants) but CLOSES — never deletes — attempt and review-round beads.
+func TestDeleteInternalDAGBeadsRecursive_PreservesAttemptsAndReviews(t *testing.T) {
+	origDelete := storeDeleteBeadFunc
+	origClose := storeCloseBeadFunc
+	origGetChildren := storeGetChildrenFunc
+	defer func() {
+		storeDeleteBeadFunc = origDelete
+		storeCloseBeadFunc = origClose
+		storeGetChildrenFunc = origGetChildren
+	}()
+
+	var deletedIDs, closedIDs []string
 	storeDeleteBeadFunc = func(id string) error {
 		deletedIDs = append(deletedIDs, id)
 		return nil
 	}
+	storeCloseBeadFunc = func(id string) error {
+		closedIDs = append(closedIDs, id)
+		return nil
+	}
 
-	// Simulate nested children: step bead has a nested attempt child.
+	// Simulate nested children: step bead has a nested attempt child (still
+	// gets recursively deleted because it's part of the step subtree).
 	storeGetChildrenFunc = func(parentID string) ([]Bead, error) {
 		if parentID == "spi-step" {
 			return []Bead{
@@ -354,32 +461,24 @@ func TestDeleteInternalDAGBeadsRecursive_DeletesAllInternalAndDescendants(t *tes
 		{ID: "spi-task", Title: "real subtask", Status: "open"},
 	}
 
-	counts := deleteInternalDAGBeadsRecursive(children)
+	// cycle=0 skips reset-cycle stamping so the test stays focused on
+	// close-vs-delete behavior; cycle stamping is covered separately below.
+	counts := deleteInternalDAGBeadsRecursive(children, 0)
 
-	// The nested attempt under spi-step should be deleted first (bottom-up),
-	// then the step, attempt, and review-round beads.
-	if len(deletedIDs) != 4 {
-		t.Fatalf("deleted IDs = %v, want 4 deletions", deletedIDs)
+	// Top-level attempt is closed (preserved for log continuity), the step is
+	// deleted, the nested attempt under the step is deleted bottom-up, and
+	// the already-closed review-round is left alone (no double-close).
+	if !reflect.DeepEqual(deletedIDs, []string{"spi-nested-attempt", "spi-step"}) {
+		t.Fatalf("deleted IDs = %v, want [spi-nested-attempt spi-step]", deletedIDs)
 	}
-	// spi-nested-attempt must come before spi-step (bottom-up ordering).
-	nestedIdx, stepIdx := -1, -1
-	for i, id := range deletedIDs {
-		if id == "spi-nested-attempt" {
-			nestedIdx = i
-		}
-		if id == "spi-step" {
-			stepIdx = i
-		}
+	if !reflect.DeepEqual(closedIDs, []string{"spi-attempt"}) {
+		t.Fatalf("closed IDs = %v, want [spi-attempt]", closedIDs)
 	}
-	if nestedIdx == -1 || stepIdx == -1 {
-		t.Fatalf("expected both spi-nested-attempt and spi-step in deleted IDs: %v", deletedIDs)
-	}
-	if nestedIdx >= stepIdx {
-		t.Errorf("nested attempt (idx %d) should be deleted before step (idx %d)", nestedIdx, stepIdx)
-	}
-
-	if counts.DeletedSteps != 1 || counts.DeletedAttempts != 1 || counts.DeletedReviewRounds != 1 {
+	if counts.DeletedSteps != 1 || counts.DeletedAttempts != 0 || counts.DeletedReviewRounds != 0 {
 		t.Fatalf("unexpected delete counts: %+v", counts)
+	}
+	if counts.ClosedAttempts != 1 || counts.ClosedReviewRounds != 0 {
+		t.Fatalf("unexpected close counts: %+v", counts)
 	}
 }
 
@@ -405,7 +504,7 @@ func TestDeleteInternalDAGBeadsRecursive_SkipsRealSubtasks(t *testing.T) {
 		{ID: "spi-task2", Title: "real subtask 2", Status: "open"},
 	}
 
-	counts := deleteInternalDAGBeadsRecursive(children)
+	counts := deleteInternalDAGBeadsRecursive(children, 0)
 
 	if len(deletedIDs) != 0 {
 		t.Fatalf("deleted IDs = %v, want none (real subtasks should be skipped)", deletedIDs)

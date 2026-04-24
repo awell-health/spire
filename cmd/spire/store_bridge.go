@@ -54,6 +54,10 @@ var storeCloseBeadFunc = storeCloseBead
 // storeDeleteBeadFunc is a test-replaceable function for storeDeleteBead.
 var storeDeleteBeadFunc = storeDeleteBead
 
+// storeAddLabelFunc is a test-replaceable function for storeAddLabel.
+// reset.go uses it for reset-cycle stamping during cleanup.
+var storeAddLabelFunc = storeAddLabel
+
 // storeCheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.
 var storeCheckExistingAlertFunc = func(beadID string) bool {

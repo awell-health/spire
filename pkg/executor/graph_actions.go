@@ -639,6 +639,18 @@ func wizardRunSpawn(e *Executor, stepName string, step StepConfig, state *GraphS
 // appears in fix-adjacent or cleric-worker call sites.
 func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, state *GraphState, role agent.SpawnRole, extraArgs []string, workspace *WorkspaceHandle, handoffMode HandoffMode) ActionResult {
 	attemptNum := state.Steps[stepName].CompletedCount + 1
+	// For sage-review, override the spawn-naming counter with the monotonic
+	// round number derived from review-round child beads. CompletedCount is
+	// reset alongside graph_state.json on every reset, so without this
+	// override the post-reset log filename collides with a pre-reset file
+	// (e.g. wizard-<id>-sage-review-1.log overwritten on cycle 2).
+	// Reading max(round) from preserved (closed) review beads makes the
+	// filename monotonic across resets.
+	if step.Flow == "sage-review" {
+		if maxRound := store.MaxRoundNumber(e.beadID); maxRound > 0 {
+			attemptNum = maxRound + 1
+		}
+	}
 	spawnName := fmt.Sprintf("%s-%s-%d", e.agentName, stepName, attemptNum)
 
 	// Timing is per-attempt: captured after attemptNum is resolved so each

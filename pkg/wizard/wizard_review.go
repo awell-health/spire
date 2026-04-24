@@ -134,9 +134,13 @@ func CmdWizardReview(args []string, deps *Deps) error {
 		}
 	}
 
-	// 7. Get current review round from existing review child beads
+	// 7. Get current review round from existing review child beads.
+	// Use the max round:<N> label across open + closed reviews so the
+	// counter is monotonic across reset cycles. Closed reviews from prior
+	// cycles still carry their round labels, so the next round is always
+	// max(round)+1 — never restarting at 1 after a reset.
 	existingReviews, _ := deps.GetReviewBeads(beadID)
-	round := len(existingReviews) + 1
+	round := store.MaxRoundNumberFromBeads(existingReviews) + 1
 	log("review round: %d", round)
 
 	// 7b. Default revision policy (v2 formula loading removed).

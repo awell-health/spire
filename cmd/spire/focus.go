@@ -114,6 +114,27 @@ func focusV3(target Bead, graph *formula.FormulaStepGraph) error {
 	if interrupted {
 		fmt.Printf("!! INTERRUPTED: %s\n", interruptLabel)
 	}
+
+	// Cross-cycle review summary (spi-cjotlm). Surfaces "round N of N (across
+	// M reset cycles)" when the bead has any preserved review-round children.
+	// Counter is monotonic across resets thanks to round:<N> being preserved
+	// even when the bead is closed during reset.
+	if reviews, err := storeGetReviewBeads(id); err == nil && len(reviews) > 0 {
+		maxRound := store.MaxRoundNumberFromBeads(reviews)
+		cycles := map[int]struct{}{}
+		for _, r := range reviews {
+			cycles[store.ResetCycleNumber(r)] = struct{}{}
+		}
+		// "round N of N" surfaces both the highest round number and the
+		// total count — they match in the common case (rounds are
+		// monotonic), but diverge if any rounds were ever deleted out of
+		// band. Showing both is the cheapest way to flag drift.
+		if len(cycles) > 1 {
+			fmt.Printf("Review: round %d of %d (across %d reset cycles)\n", maxRound, len(reviews), len(cycles))
+		} else {
+			fmt.Printf("Review: round %d of %d\n", maxRound, len(reviews))
+		}
+	}
 	fmt.Println()
 
 	// --- Step Graph ---

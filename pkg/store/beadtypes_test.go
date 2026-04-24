@@ -436,3 +436,169 @@ func TestGetHookedSteps_NoneHooked(t *testing.T) {
 		t.Errorf("expected 0 hooked steps, got %d", len(hooked))
 	}
 }
+
+// TestMaxRoundNumberFromBeads_Monotonic covers the spi-cjotlm round counter
+// behavior: scanning round:<N> labels across review-round children must return
+// the numeric maximum so the next round = max + 1, regardless of bead status
+// or insertion order. This is what makes round numbers monotonic across
+// reset cycles.
+func TestMaxRoundNumberFromBeads_Monotonic(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []Bead
+		want int
+	}{
+		{
+			name: "empty input → 0 (next round will be 1)",
+			in:   nil,
+			want: 0,
+		},
+		{
+			name: "single review with round:3 → 3",
+			in: []Bead{
+				{ID: "r-1", Title: "review-round-3", Status: "closed", Labels: []string{"review-round", "round:3"}},
+			},
+			want: 3,
+		},
+		{
+			name: "rounds 1, 2, 3 → 3 (closed reviews preserved across reset)",
+			in: []Bead{
+				{ID: "r-3", Title: "review-round-3", Status: "closed", Labels: []string{"review-round", "round:3"}},
+				{ID: "r-1", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "round:1"}},
+				{ID: "r-2", Title: "review-round-2", Status: "closed", Labels: []string{"review-round", "round:2"}},
+			},
+			want: 3,
+		},
+		{
+			name: "round:10 outranks round:2 (numeric, not lexical)",
+			in: []Bead{
+				{ID: "r-2", Title: "review-round-2", Status: "closed", Labels: []string{"review-round", "round:2"}},
+				{ID: "r-10", Title: "review-round-10", Status: "closed", Labels: []string{"review-round", "round:10"}},
+			},
+			want: 10,
+		},
+		{
+			name: "non-review beads are ignored",
+			in: []Bead{
+				{ID: "att-1", Title: "attempt: w", Status: "closed", Labels: []string{"attempt", "round:99"}},
+				{ID: "r-1", Title: "review-round-1", Status: "closed", Labels: []string{"review-round", "round:1"}},
+			},
+			want: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MaxRoundNumberFromBeads(tt.in); got != tt.want {
+				t.Errorf("MaxRoundNumberFromBeads() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMaxRoundNumberFromBeads_HandlesMalformed verifies the helper is robust
+// against malformed round labels — they are skipped, not panicked on, and
+// the max scan continues across the rest of the input.
+func TestMaxRoundNumberFromBeads_HandlesMalformed(t *testing.T) {
+	in := []Bead{
+		{ID: "r-good", Title: "review-round-2", Status: "closed", Labels: []string{"review-round", "round:2"}},
+		{ID: "r-empty", Title: "review-round-x", Status: "closed", Labels: []string{"review-round", "round:"}},
+		{ID: "r-alpha", Title: "review-round-x", Status: "closed", Labels: []string{"review-round", "round:abc"}},
+	}
+	if got := MaxRoundNumberFromBeads(in); got != 2 {
+		t.Errorf("MaxRoundNumberFromBeads() with malformed labels = %d, want 2", got)
+	}
+}
+
+// TestAttemptNumber covers parsing of the attempt:<N> label introduced in
+// spi-cjotlm. Missing or malformed labels return 0 (the legacy default for
+// pre-feature attempts).
+func TestAttemptNumber(t *testing.T) {
+	tests := []struct {
+		name string
+		bead Bead
+		want int
+	}{
+		{"with attempt:5", Bead{Labels: []string{"attempt", "attempt:5"}}, 5},
+		{"with attempt:1", Bead{Labels: []string{"attempt", "attempt:1"}}, 1},
+		{"no attempt label (legacy)", Bead{Labels: []string{"attempt", "agent:wizard"}}, 0},
+		{"empty labels", Bead{}, 0},
+		{"malformed attempt:abc", Bead{Labels: []string{"attempt", "attempt:abc"}}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := AttemptNumber(tt.bead); got != tt.want {
+				t.Errorf("AttemptNumber() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestResetCycleNumber_DefaultsToOne covers the migration policy: beads
+// without a reset-cycle:<N> label are treated as cycle 1 (the implicit first
+// cycle), and malformed labels also default to 1.
+func TestResetCycleNumber_DefaultsToOne(t *testing.T) {
+	tests := []struct {
+		name string
+		bead Bead
+		want int
+	}{
+		{"no label → cycle 1 (pre-feature default)", Bead{Labels: []string{"attempt"}}, 1},
+		{"empty labels → cycle 1", Bead{}, 1},
+		{"reset-cycle:1", Bead{Labels: []string{"attempt", "reset-cycle:1"}}, 1},
+		{"reset-cycle:5", Bead{Labels: []string{"attempt", "reset-cycle:5"}}, 5},
+		{"reset-cycle:42", Bead{Labels: []string{"attempt", "reset-cycle:42"}}, 42},
+		{"malformed reset-cycle: → 1", Bead{Labels: []string{"reset-cycle:"}}, 1},
+		{"malformed reset-cycle:abc → 1", Bead{Labels: []string{"reset-cycle:abc"}}, 1},
+		{"malformed reset-cycle:0 → 1 (cycles are 1-indexed)", Bead{Labels: []string{"reset-cycle:0"}}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResetCycleNumber(tt.bead); got != tt.want {
+				t.Errorf("ResetCycleNumber() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMaxAttemptNumberFromBeads covers attempt-counter parity with the round
+// counter. Like rounds, attempts must be picked numerically so attempt:10
+// outranks attempt:2.
+func TestMaxAttemptNumberFromBeads(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []Bead
+		want int
+	}{
+		{"empty → 0", nil, 0},
+		{
+			name: "max across attempts (numeric, not lexical)",
+			in: []Bead{
+				{ID: "a-2", Title: "attempt: w", Labels: []string{"attempt", "attempt:2"}},
+				{ID: "a-10", Title: "attempt: w", Labels: []string{"attempt", "attempt:10"}},
+			},
+			want: 10,
+		},
+		{
+			name: "non-attempt beads ignored",
+			in: []Bead{
+				{ID: "r-1", Title: "review-round-1", Labels: []string{"review-round", "attempt:99"}},
+				{ID: "a-1", Title: "attempt: w", Labels: []string{"attempt", "attempt:1"}},
+			},
+			want: 1,
+		},
+		{
+			name: "legacy attempts (no attempt:N label) → 0",
+			in: []Bead{
+				{ID: "a-old", Title: "attempt: w", Labels: []string{"attempt", "agent:wizard"}},
+			},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MaxAttemptNumberFromBeads(tt.in); got != tt.want {
+				t.Errorf("MaxAttemptNumberFromBeads() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

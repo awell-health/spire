@@ -64,6 +64,13 @@ type LogView struct {
 	// event per non-empty sidecar line. Nil for raw fallback — renderer
 	// then prints Content verbatim regardless of mode.
 	Events []logstream.LogEvent
+
+	// Cycle is the reset cycle this log was produced in (matched via the
+	// review/attempt bead's reset-cycle:<N> label). 0 means uncategorized
+	// (e.g. the top-level wizard log or logs whose owning bead can't be
+	// matched). The Logs tab groups views with non-zero Cycle under a
+	// "Reset cycle N" header.
+	Cycle int
 }
 
 // InspectorData holds the fetched detail data for the inspector pane.
@@ -92,10 +99,14 @@ func FetchInspectorData(b BoardBead) InspectorData {
 	if comments, err := store.GetComments(b.ID); err == nil {
 		data.Comments = comments
 	}
-	if children, err := store.GetChildren(b.ID); err == nil {
+	// Fetch ALL children once (open + closed). Used both to populate the
+	// visible Children list (real subtasks) and to build the cycle-lookup
+	// map for log grouping below.
+	allChildren, _ := store.GetChildren(b.ID)
+	if allChildren != nil {
 		// Filter out internal beads (step, attempt, review-round).
 		var visible []Bead
-		for _, c := range children {
+		for _, c := range allChildren {
 			if store.IsStepBead(c) || store.IsAttemptBead(c) || store.IsReviewRoundBead(c) {
 				continue
 			}
@@ -197,7 +208,81 @@ func FetchInspectorData(b BoardBead) InspectorData {
 		}
 	}
 
+	// Tag each LogView with the reset cycle of its owning attempt/review
+	// bead so the renderer can group them under cycle headers. Logs that
+	// don't match any bead (top-level wizard log, legacy logs from before
+	// reset-cycle stamping) keep Cycle=0 and render outside any group.
+	cycleByLogName := buildLogCycleMap(allChildren)
+	if len(cycleByLogName) > 0 {
+		for i := range data.Logs {
+			if c, ok := cycleByLogName[data.Logs[i].Name]; ok {
+				data.Logs[i].Cycle = c
+				continue
+			}
+			// Provider sub-logs are named "<spawn>/...". Match on the
+			// spawn-prefix so claude transcripts inherit the spawn's cycle.
+			if slash := strings.IndexByte(data.Logs[i].Name, '/'); slash > 0 {
+				if c, ok := cycleByLogName[data.Logs[i].Name[:slash]]; ok {
+					data.Logs[i].Cycle = c
+				}
+			}
+		}
+	}
+
 	return data
+}
+
+// buildLogCycleMap maps a wizard log's display name (the suffix after
+// "wizard-<beadID>-") to its reset cycle.
+//
+// The mapping relies on the spawn-name convention from
+// pkg/executor/graph_actions.go: spawnName = "<agentName>-<step>-<N>", which
+// produces a log file "wizard-<beadID>-<step>-<N>.log" and a stripped name
+// "<step>-<N>".
+//
+//   - "sage-review-<N>"  → review-round bead with round:<N> label
+//   - "<other-step>-<N>" → attempt bead with attempt:<N> label (where the
+//     attempt corresponds to that step's spawn)
+//
+// The returned cycle is the bead's reset-cycle:<N> label value (defaults
+// to 1 when missing). Unmatched names are absent from the map.
+func buildLogCycleMap(children []Bead) map[string]int {
+	if len(children) == 0 {
+		return nil
+	}
+	roundCycle := map[int]int{}    // round number → cycle (review rounds)
+	attemptCycle := map[int]int{}  // attempt number → cycle (attempt beads)
+	for _, c := range children {
+		switch {
+		case store.IsReviewRoundBead(c):
+			n := store.ReviewRoundNumber(c)
+			if n > 0 {
+				roundCycle[n] = store.ResetCycleNumber(c)
+			}
+		case store.IsAttemptBead(c):
+			n := store.AttemptNumber(c)
+			if n > 0 {
+				attemptCycle[n] = store.ResetCycleNumber(c)
+			}
+		}
+	}
+	if len(roundCycle) == 0 && len(attemptCycle) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(roundCycle)+len(attemptCycle))
+	for n, cycle := range roundCycle {
+		out[fmt.Sprintf("sage-review-%d", n)] = cycle
+	}
+	// For attempts the spawn-step name is the *step* the attempt ran under
+	// (implement, fix, etc.) — we don't know which step a given attempt
+	// belongs to from the bead alone, so the most reliable match is on the
+	// numeric suffix. The renderer falls back to the unmatched-cycle group
+	// if the suffix lookup fails.
+	for n, cycle := range attemptCycle {
+		out[fmt.Sprintf("implement-%d", n)] = cycle
+		out[fmt.Sprintf("fix-%d", n)] = cycle
+	}
+	return out
 }
 
 // loadProviderLogViews walks wizardDir/<provider>/ subdirectories and
@@ -1074,8 +1159,14 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 			// multiple lines when there are many spawns (epic with N
 			// apprentices + sage + their claude logs can easily exceed
 			// terminal width). Lines pack greedily by visible width.
+			//
+			// Logs whose owning attempt/review bead carries a reset-cycle
+			// label render under "Reset cycle N" headers so cycles read as
+			// distinct groups; unmatched logs (top-level wizard log, legacy
+			// pre-feature spawns) render plainly outside any group.
 			activeLogStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Underline(true)
 			inactiveLogStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+			cycleHeaderStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 			counter := dimStyle.Render(fmt.Sprintf("%d/%d", idx+1, len(data.Logs))) + " " + dimStyle.Render("← h/l →")
 			header := dimStyle.Render("Logs:") + " "
 			headerW := lipgloss.Width(header)
@@ -1084,7 +1175,21 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 			var stripLines []string
 			cur := header
 			curW := headerW
+			lastCycle := -1 // -1 sentinel so we always emit a header on first cycle change
 			for i, lv := range data.Logs {
+				if lv.Cycle != lastCycle {
+					// Flush the in-progress strip line before emitting a
+					// header so the header sits on its own line.
+					if curW > headerW {
+						stripLines = append(stripLines, cur)
+						cur = header
+						curW = headerW
+					}
+					if lv.Cycle > 0 {
+						stripLines = append(stripLines, cycleHeaderStyle.Render(fmt.Sprintf("── Reset cycle %d ──", lv.Cycle)))
+					}
+					lastCycle = lv.Cycle
+				}
 				var part string
 				if i == idx {
 					part = activeLogStyle.Render("[" + lv.Name + "]")

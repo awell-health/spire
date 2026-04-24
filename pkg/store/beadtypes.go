@@ -57,15 +57,26 @@ func GetActiveAttempt(parentID string) (*Bead, error) {
 }
 
 // CreateAttemptBead creates a child attempt bead under parentID.
-// Sets status=in_progress and adds labels: attempt, agent:<agentName>, branch:<branch>.
+// Sets status=in_progress and adds labels: attempt, attempt:<N>,
+// agent:<agentName>, branch:<branch>, reset-cycle:<C>.
+//
+// The attempt:<N> sequence number is monotonic across reset cycles — it scans
+// all attempt children (open + closed) for the largest existing attempt:<N>
+// label and increments it. The reset-cycle:<C> label is inherited from the
+// parent bead so the board can later group historical attempts by cycle.
+//
 // The model label is only added when model is non-empty (callers like cmdClaim
 // may not know the model at claim time -- the executor updates it later).
 // Returns the attempt bead ID.
 func CreateAttemptBead(parentID, agentName, model, branch string) (string, error) {
+	nextN := MaxAttemptNumber(parentID) + 1
+	cycle := ParentResetCycle(parentID)
 	labels := []string{
 		"attempt",
+		fmt.Sprintf("attempt:%d", nextN),
 		"agent:" + agentName,
 		"branch:" + branch,
+		fmt.Sprintf("reset-cycle:%d", cycle),
 	}
 	if model != "" {
 		labels = append(labels, "model:"+model)
@@ -188,14 +199,21 @@ func IsAttemptBoardBead(b BoardBead) bool {
 // --- Review round bead helpers ---
 
 // CreateReviewBead creates a child review-round bead under parentID.
-// Sets status=in_progress and adds labels: review-round, sage:<sageName>, round:<N>.
-// The round number is determined by counting existing review children + 1.
+// Sets status=in_progress and adds labels: review-round, sage:<sageName>,
+// round:<N>, reset-cycle:<C>.
+//
+// The caller is responsible for passing a monotonic round number — see
+// MaxRoundNumber for the canonical lookup. The reset-cycle:<C> label is
+// inherited from the parent bead so the board can later group historical
+// rounds by cycle.
 // Returns the review bead ID.
 func CreateReviewBead(parentID, sageName string, round int) (string, error) {
+	cycle := ParentResetCycle(parentID)
 	labels := []string{
 		"review-round",
 		fmt.Sprintf("sage:%s", sageName),
 		fmt.Sprintf("round:%d", round),
+		fmt.Sprintf("reset-cycle:%d", cycle),
 	}
 	id, err := CreateBead(CreateOpts{
 		Title:    fmt.Sprintf("review-round-%d", round),
@@ -485,6 +503,102 @@ func ReviewRoundNumber(b Bead) int {
 	n := 0
 	fmt.Sscanf(val, "%d", &n)
 	return n
+}
+
+// AttemptNumber extracts the attempt sequence number from an attempt bead's
+// attempt:<N> label. Returns 0 if no such label is present (legacy attempts
+// created before the monotonic counter was introduced lack this label).
+func AttemptNumber(b Bead) int {
+	val := HasLabel(b, "attempt:")
+	if val == "" {
+		return 0
+	}
+	n := 0
+	fmt.Sscanf(val, "%d", &n)
+	return n
+}
+
+// ResetCycleNumber extracts the reset cycle from a bead's reset-cycle:<N>
+// label. Beads created before the feature shipped have no label; treat
+// missing as cycle 1 (the implicit first cycle).
+func ResetCycleNumber(b Bead) int {
+	val := HasLabel(b, "reset-cycle:")
+	if val == "" {
+		return 1
+	}
+	n := 0
+	fmt.Sscanf(val, "%d", &n)
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// MaxRoundNumberFromBeads returns the largest round:<N> label value found
+// across the given review beads. Returns 0 when no review carries a parseable
+// round label. Robust against malformed labels (round:, round:abc) — they are
+// skipped, not panicked on.
+func MaxRoundNumberFromBeads(reviews []Bead) int {
+	max := 0
+	for _, r := range reviews {
+		if !IsReviewRoundBead(r) {
+			continue
+		}
+		if n := ReviewRoundNumber(r); n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// MaxRoundNumber scans all review-round children of parentID (open + closed)
+// and returns the highest round:<N> label value. Returns 0 when there are no
+// reviews. The next monotonic round is therefore MaxRoundNumber(parentID)+1.
+func MaxRoundNumber(parentID string) int {
+	reviews, err := GetReviewBeads(parentID)
+	if err != nil {
+		return 0
+	}
+	return MaxRoundNumberFromBeads(reviews)
+}
+
+// MaxAttemptNumberFromBeads returns the largest attempt:<N> label value found
+// across the given attempt beads. Returns 0 when none carry a parseable
+// attempt label.
+func MaxAttemptNumberFromBeads(beads []Bead) int {
+	max := 0
+	for _, b := range beads {
+		if !IsAttemptBead(b) {
+			continue
+		}
+		if n := AttemptNumber(b); n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// MaxAttemptNumber scans all attempt children of parentID (open + closed) and
+// returns the highest attempt:<N> label value. Returns 0 when there are no
+// attempts (or all predate the attempt:<N> label).
+func MaxAttemptNumber(parentID string) int {
+	children, err := GetChildren(parentID)
+	if err != nil {
+		return 0
+	}
+	return MaxAttemptNumberFromBeads(children)
+}
+
+// ParentResetCycle returns the parent bead's current reset-cycle. New
+// attempt/review children should inherit this value at creation time so they
+// can later be grouped by cycle on the board. Defaults to 1 when the parent
+// has no label (pre-feature beads or first cycle).
+func ParentResetCycle(parentID string) int {
+	parent, err := GetBead(parentID)
+	if err != nil {
+		return 1
+	}
+	return ResetCycleNumber(parent)
 }
 
 // StepBeadPhaseName extracts the phase name from a step bead's step:<name> label.
