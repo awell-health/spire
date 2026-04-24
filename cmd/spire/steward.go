@@ -266,7 +266,11 @@ func cmdSteward(args []string) error {
 	// store and log the reason so the operator can fix it. (We do not
 	// hard-fail: the steward should keep running in degraded
 	// local-only mode rather than crash-looping.)
-	graphStore, gsErr := resolveGraphStateStoreForCLI("")
+	//
+	// Uses the global (empty-prefix) resolver explicitly — the steward
+	// is tower-scoped, not bead-scoped. See spi-pwdhs5 Bug C: the
+	// per-bead call sites use resolveGraphStateStoreForBeadOrLocal.
+	graphStore, gsErr := resolveGlobalGraphStateStore()
 	if gsErr != nil {
 		log.Printf("[steward] graph-state store: %s (falling back to local file store)",
 			friendlyIdentityError(gsErr))
@@ -360,10 +364,10 @@ func cmdSteward(args []string) error {
 
 // --- Backward-compatible wrappers for callers elsewhere in cmd/spire ---
 
-func sanitizeK8sLabel(s string) string { return steward.SanitizeK8sLabel(s) }
-func pushState()                       {}
-func reviewBeadVerdict(b Bead) string  { return steward.ReviewBeadVerdict(b) }
-func beadsDirForTower(name string) string     { return steward.BeadsDirForTower(name) }
+func sanitizeK8sLabel(s string) string    { return steward.SanitizeK8sLabel(s) }
+func pushState()                          {}
+func reviewBeadVerdict(b Bead) string     { return steward.ReviewBeadVerdict(b) }
+func beadsDirForTower(name string) string { return steward.BeadsDirForTower(name) }
 
 // intentTableOnce guards EnsureWorkloadIntentsTable per-tower so the
 // factory only issues the CREATE TABLE IF NOT EXISTS once per tower

@@ -34,6 +34,7 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // resolveRepoIdentity returns the canonical RepoIdentity for the active
@@ -268,6 +269,57 @@ func resolveGraphStateStoreOrLocal(prefixOverride string) executor.GraphStateSto
 		friendlyIdentityError(err),
 	)
 	return &executor.FileGraphStateStore{ConfigDir: configDir}
+}
+
+// resolveGraphStateStoreForBead resolves the graph-state store for a
+// specific bead using the bead ID's prefix segment (see store.PrefixFromID).
+// This is the per-bead form of the resolver: it treats an empty beadID as
+// a programmer error (hard fail), because the whole point of this helper
+// is to avoid the silent cluster-mode write-loss that happens when the
+// prefix is absent on a multi-prefix tower.
+//
+// When the bead ID is non-empty but has no prefix separator (e.g. passed
+// in malformed), the underlying resolver returns ErrAmbiguousPrefix or
+// similar on multi-prefix towers; single-prefix towers auto-pick.
+//
+// Callers that sweep all beads in a tower (steward daemon) MUST use
+// resolveGlobalGraphStateStore instead — passing "" here is rejected.
+func resolveGraphStateStoreForBead(beadID string) (executor.GraphStateStore, error) {
+	if beadID == "" {
+		return nil, fmt.Errorf("resolveGraphStateStoreForBead: beadID must be non-empty (use resolveGlobalGraphStateStore for tower-global sweeps)")
+	}
+	prefix := store.PrefixFromID(beadID)
+	return resolveGraphStateStoreForCLI(prefix)
+}
+
+// resolveGraphStateStoreForBeadOrLocal is the non-error-returning form of
+// resolveGraphStateStoreForBead, suitable for use inside a Deps struct
+// literal. It panics on an empty beadID — that's a programmer error, not
+// an operator misconfiguration.
+func resolveGraphStateStoreForBeadOrLocal(beadID string) executor.GraphStateStore {
+	if beadID == "" {
+		panic("resolveGraphStateStoreForBeadOrLocal: beadID must be non-empty (use resolveGlobalGraphStateStore for tower-global sweeps)")
+	}
+	prefix := store.PrefixFromID(beadID)
+	s, err := resolveGraphStateStoreForCLI(prefix)
+	if err == nil {
+		return s
+	}
+	fmt.Fprintf(os.Stderr,
+		"[spire] graph-state store running in local-only mode: %s\n",
+		friendlyIdentityError(err),
+	)
+	return &executor.FileGraphStateStore{ConfigDir: configDir}
+}
+
+// resolveGlobalGraphStateStore is the tower-global form of the resolver,
+// used by the steward daemon that sweeps every agent's graph state
+// regardless of prefix. Empty prefix is intentional here — the steward
+// is tower-scoped, not bead-scoped. This is a rename of the historical
+// resolveGraphStateStoreForCLI("") idiom so the intentional case is typed
+// distinctly from the accidental empty-prefix one that Bug C fixes.
+func resolveGlobalGraphStateStore() (executor.GraphStateStore, error) {
+	return resolveGraphStateStoreForCLI("")
 }
 
 // friendlyIdentityError converts the typed errors from
