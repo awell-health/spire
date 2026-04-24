@@ -570,6 +570,88 @@ func TestHandleBeadByID_RoutesSummonAndReady(t *testing.T) {
 	}
 }
 
+// --- /api/v1/beads/{id}/lineage helpers ---
+
+// TestDedupeLineageEdges covers the (from,to,type) dedupe behavior the
+// recursive-CTE walks rely on. MySQL's UNION ALL emits duplicate rows on
+// diamond graphs (multiple paths reach the same node); the Go-side dedupe
+// is what guarantees the response edge sets are unique. When the `edges`
+// compat alias is removed in the next release, this test guards the
+// invariant that upstream/downstream sets each contain unique triples.
+func TestDedupeLineageEdges(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []lineageEdge
+		want []lineageEdge
+	}{
+		{
+			name: "empty input returns empty slice",
+			in:   []lineageEdge{},
+			want: []lineageEdge{},
+		},
+		{
+			name: "no duplicates passes through in order",
+			in: []lineageEdge{
+				{From: "a", To: "b", Type: "parent-child"},
+				{From: "b", To: "c", Type: "discovered-from"},
+			},
+			want: []lineageEdge{
+				{From: "a", To: "b", Type: "parent-child"},
+				{From: "b", To: "c", Type: "discovered-from"},
+			},
+		},
+		{
+			name: "diamond graph emits each edge once",
+			// a → b, a → c, b → d, c → d. A recursive CTE expanding from
+			// `a` reaches `d` via two paths and emits b→d / c→d once each;
+			// but it can also re-emit a→b and a→c when joining at deeper
+			// levels of the recursion. Dedupe must preserve first occurrence.
+			in: []lineageEdge{
+				{From: "a", To: "b", Type: "parent-child"},
+				{From: "a", To: "c", Type: "parent-child"},
+				{From: "b", To: "d", Type: "discovered-from"},
+				{From: "c", To: "d", Type: "discovered-from"},
+				{From: "a", To: "b", Type: "parent-child"}, // duplicate
+				{From: "b", To: "d", Type: "discovered-from"}, // duplicate
+			},
+			want: []lineageEdge{
+				{From: "a", To: "b", Type: "parent-child"},
+				{From: "a", To: "c", Type: "parent-child"},
+				{From: "b", To: "d", Type: "discovered-from"},
+				{From: "c", To: "d", Type: "discovered-from"},
+			},
+		},
+		{
+			name: "same (from,to) but different type are distinct",
+			// Two beads can be connected by both parent-child and
+			// discovered-from — the dedupe key includes type so both
+			// edges must survive.
+			in: []lineageEdge{
+				{From: "a", To: "b", Type: "parent-child"},
+				{From: "a", To: "b", Type: "discovered-from"},
+				{From: "a", To: "b", Type: "parent-child"}, // duplicate of #1
+			},
+			want: []lineageEdge{
+				{From: "a", To: "b", Type: "parent-child"},
+				{From: "a", To: "b", Type: "discovered-from"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dedupeLineageEdges(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d (got=%+v)", len(got), len(tc.want), got)
+			}
+			for i, e := range got {
+				if e != tc.want[i] {
+					t.Fatalf("got[%d] = %+v, want %+v", i, e, tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestServer_RunAndShutdown(t *testing.T) {
 	// End-to-end: bind a real ephemeral port, make one request, then cancel
 	// the context and verify Run returns cleanly.
