@@ -51,6 +51,7 @@ func init() {
 
 type formulaExecutor = executor.Executor
 type executorState = executor.State
+
 // SplitTask is re-exported from pkg/executor.
 type SplitTask = executor.SplitTask
 
@@ -173,39 +174,43 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.De
 			repoPath = rp
 		}
 	}
+	// Graph state persistence — Dolt-backed in cluster, file-backed
+	// locally. When we have a bead ID in scope, the prefix is derived
+	// from it (via store.PrefixFromID) so a multi-prefix tower doesn't
+	// silently fall back to local-only mode (which, on cluster mode,
+	// loses writes — see spi-pwdhs5 Bug C). When beadID is empty
+	// (legacy archmage-identity callers), the empty-prefix form is
+	// used, which may fall back to local-only mode; those call sites
+	// don't persist graph state anyway. Steward-style tower-global
+	// sweeps must use resolveGlobalGraphStateStore instead.
+	var gsStore executor.GraphStateStore
+	if beadID != "" {
+		gsStore = resolveGraphStateStoreForBeadOrLocal(beadID)
+	} else {
+		gsStore = resolveGraphStateStoreOrLocal("")
+	}
 	return &executor.Deps{
-		// Graph state persistence — Dolt-backed in cluster, file-backed
-		// locally. Identity is resolved from the active tower (+
-		// auto-picked prefix when unambiguous). On ErrNoTowerBound or
-		// ErrAmbiguousPrefix we fall back to a local FileGraphStateStore
-		// scoped by configDir so the executor can still read/write
-		// state; the error is logged so operators notice the
-		// misconfiguration. Commands that require cluster-mode
-		// persistence (the steward) should validate identity up front
-		// via resolveGraphStateStoreForCLI. See
-		// docs/design/spi-xplwy-runtime-contract.md §1.1 and
-		// docs/CLI-MIGRATION.md.
-		GraphStateStore: resolveGraphStateStoreOrLocal(""),
+		GraphStateStore: gsStore,
 
 		MaxApprentices: resolveMaxApprenticesForRepo(repoPath),
 
 		// Store operations
-		GetBead:          storeGetBead,
-		GetChildren:      storeGetChildren,
-		GetComments:      storeGetComments,
-		AddComment:       storeAddComment,
-		CreateBead:       storeCreateBead,
-		CloseBead:        storeCloseBead,
-		UpdateBead:       storeUpdateBead,
-		AddLabel:         storeAddLabel,
-		RemoveLabel:      storeRemoveLabel,
-		AddDep:           storeAddDep,
-		AddDepTyped:      storeAddDepTyped,
+		GetBead:               storeGetBead,
+		GetChildren:           storeGetChildren,
+		GetComments:           storeGetComments,
+		AddComment:            storeAddComment,
+		CreateBead:            storeCreateBead,
+		CloseBead:             storeCloseBead,
+		UpdateBead:            storeUpdateBead,
+		AddLabel:              storeAddLabel,
+		RemoveLabel:           storeRemoveLabel,
+		AddDep:                storeAddDep,
+		AddDepTyped:           storeAddDepTyped,
 		GetDepsWithMeta:       storeGetDepsWithMeta,
 		GetDependentsWithMeta: storeGetDependentsWithMeta,
 		GetBlockedIssues:      storeGetBlockedIssues,
-		GetReviewBeads:   storeGetReviewBeads,
-		ListBeads:        storeListBeads,
+		GetReviewBeads:        storeGetReviewBeads,
+		ListBeads:             storeListBeads,
 
 		// Attempt operations
 		CreateAttemptBead:      storeCreateAttemptBead,
