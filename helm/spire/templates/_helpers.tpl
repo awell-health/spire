@@ -208,6 +208,45 @@ rotated without re-rolling the whole release.
 spire-gateway-auth
 {{- end -}}
 
+{{/*
+spire.fullname — release-qualified name used as the prefix for resources
+that should not clash across co-installed releases of this chart.
+Follows the standard Helm convention: `<Release.Name>-<Chart.Name>`, with
+de-duplication when the release name already contains the chart name (so
+`helm install spire ...` yields `spire`, not `spire-spire`). The ingress
+templates (gateway-managedcert, gateway-ingress, gateway-backendconfig)
+use this helper to derive default object names so that the Ingress
+annotation and the ManagedCertificate/BackendConfig it references always
+resolve to the same object when users leave the explicit `name` fields
+empty.
+*/}}
+{{- define "spire.fullname" -}}
+{{- $name := .Chart.Name -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+spire.labels — common metadata labels applied to resources rendered by
+the chart. Used by templates that don't need to pin a hardcoded
+`app.kubernetes.io/name` for selector purposes (e.g. ingress-adjacent
+resources like ManagedCertificate, BackendConfig, Ingress itself, which
+are targeted by other Kubernetes objects via their own name rather than
+by label selector). Templates that are the selector target for a
+Service/Deployment selector should continue to set
+`app.kubernetes.io/name: <component>` inline so the selector contract is
+explicit at the call site.
+*/}}
+{{- define "spire.labels" -}}
+app.kubernetes.io/name: {{ .Chart.Name }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: spire
+{{- end -}}
+
 {{- define "spire.stewardCommonEnv" -}}
 - name: BEADS_DIR
   value: {{ include "spire.beadsDir" . | quote }}

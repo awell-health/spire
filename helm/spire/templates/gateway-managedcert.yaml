@@ -1,0 +1,19 @@
+{{- if and .Values.gateway.ingress.enabled .Values.gateway.ingress.managedCert.enabled -}}
+# GKE-managed TLS certificate for the gateway Ingress (Strategy A in the
+# gateway.ingress value schema). Google issues and renews the cert once
+# DNS for `gateway.ingress.host` resolves to the Ingress IP. The Ingress
+# template references this object by name via the
+# `networking.gke.io/managed-certificates` annotation, so the default
+# name expression `<fullname>-gateway-cert` MUST match the default used
+# by that annotation — don't drift.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: {{ .Values.gateway.ingress.managedCert.name | default (printf "%s-gateway-cert" (include "spire.fullname" .)) }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+spec:
+  domains:
+    - {{ required "gateway.ingress.host is required when managedCert.enabled=true" .Values.gateway.ingress.host }}
+{{- end }}
