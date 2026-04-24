@@ -230,6 +230,13 @@ var retryMergeAttempt = realRetryMergeAttempt
 // testSetRetryMergeTuning is a test-only helper that swaps the wall-time and
 // backoff schedule so unit tests don't block for a full minute. The returned
 // cleanup function restores defaults.
+//
+// NOT SAFE for parallel tests: the knobs swapped here
+// (retryMergeWallTime, retryMergeBackoffs, retryMergeSleep, retryMergeNow,
+// retryMergeAttempt) are package-level vars, so tests that call this helper
+// MUST NOT use t.Parallel(). Converting retry-merge tuning to struct fields
+// on RecoveryActionCtx is tracked as a follow-up; today this is an explicit
+// non-parallel constraint.
 func testSetRetryMergeTuning(wallTime time.Duration, backoffs []time.Duration, sleep func(time.Duration), now func() time.Time) func() {
 	prevWall := retryMergeWallTime
 	prevBackoffs := retryMergeBackoffs
@@ -266,13 +273,21 @@ func realRetryMergeAttempt(rc *spgit.RepoContext, baseBranch, stagingBranch stri
 
 // mechanicalRetryMerge is the time-bounded merge retry for the merge-race and
 // post-rebase-ff-only sub-classes. On entry it runs an idempotent safe
-// sibling-worktree cleanup (to clear any branch-in-use locks), then loops:
+// sibling-worktree cleanup (to clear any branch-in-use locks), resumes the
+// staging worktree at ws.Path (captures HEAD SHA for session-scoped commit
+// detection), then loops:
 //
 //  1. Pull origin/<baseBranch> into the main repo.
 //  2. ff-only merge <stagingBranch> into <baseBranch>.
 //  3. On success, return the captured recipe.
 //  4. On failure, sleep per retryMergeBackoffs (capped at 4s) and retry.
 //  5. Abort when total wall time ≥ retryMergeWallTime (default 60s).
+//
+// The merge operations themselves run against the main repo (parity with
+// StagingWorktree.MergeToMain) — you can't ff-only-merge a branch into the
+// branch you're on — but the staging worktree is the source of truth for the
+// staging branch and is resumed here so any downstream logic (e.g. learning
+// which commits landed this session) has a consistent handle.
 //
 // Wall-time exhaustion is returned as an error; Decide's next round then sees
 // repeatedFailures["retry-merge"]++ and — after two failures — upgrades to
@@ -293,7 +308,6 @@ func mechanicalRetryMerge(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws W
 	log := func(format string, args ...interface{}) {
 		ctx.logf(fmt.Sprintf(format, args...))
 	}
-	rc := &spgit.RepoContext{Dir: ctx.RepoPath, BaseBranch: baseBranch, Log: log}
 
 	// Step 0: idempotent safe cleanup of stale sibling worktrees for this
 	// bead. A prior wizard run may have left `.worktrees/<beadID>-*` paths
@@ -317,16 +331,37 @@ func mechanicalRetryMerge(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws W
 		}
 	}
 
-	ctx.logf(fmt.Sprintf("retry-merge: starting time-bounded retry (branch=%s base=%s wall=%s)",
-		ws.Branch, baseBranch, retryMergeWallTime))
+	// Resume the staging worktree at ws.Path so session-scoped commit
+	// detection has a baseline (StartSHA is captured from the worktree's HEAD
+	// at resume time) and so the merge lifecycle mirrors StagingWorktree's
+	// canonical pattern. The main-repo RepoContext used by PullFFOnly /
+	// MergeFFOnly below is derived from stagingWt.RepoPath — it targets the
+	// same repo we passed in, just wired through the staging wrapper so the
+	// flow stays aligned with StagingWorktree.MergeToMain.
+	stagingWt := spgit.ResumeStagingWorktree(ctx.RepoPath, ws.Path, ws.Branch, baseBranch, log)
+	if stagingWt != nil && stagingWt.StartSHA != "" {
+		log("retry-merge: resumed staging worktree at %s (startSHA=%s branch=%s)",
+			ws.Path, stagingWt.StartSHA, ws.Branch)
+	} else {
+		log("retry-merge: resumed staging worktree at %s (branch=%s; no StartSHA — worktree may be bare)",
+			ws.Path, ws.Branch)
+	}
+	repoDir := ctx.RepoPath
+	if stagingWt != nil && stagingWt.RepoPath != "" {
+		repoDir = stagingWt.RepoPath
+	}
+	rc := &spgit.RepoContext{Dir: repoDir, BaseBranch: baseBranch, Log: log}
+
+	log("retry-merge: starting time-bounded retry (branch=%s base=%s wall=%s)",
+		ws.Branch, baseBranch, retryMergeWallTime)
 
 	start := retryMergeNow()
 	var lastErr error
 	for round := 1; ; round++ {
 		elapsed := retryMergeNow().Sub(start)
 		if elapsed >= retryMergeWallTime {
-			ctx.logf(fmt.Sprintf("retry-merge: wall-time budget exhausted after %s and %d rounds",
-				elapsed.Round(time.Millisecond), round-1))
+			log("retry-merge: wall-time budget exhausted after %s and %d rounds",
+				elapsed.Round(time.Millisecond), round-1)
 			if lastErr != nil {
 				return nil, fmt.Errorf("retry-merge: wall-time exhausted after %d rounds (%s): %w",
 					round-1, retryMergeWallTime, lastErr)
@@ -335,15 +370,14 @@ func mechanicalRetryMerge(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws W
 				round-1, retryMergeWallTime)
 		}
 
-		ctx.logf(fmt.Sprintf("retry-merge: round %d (elapsed %s)",
-			round, elapsed.Round(time.Millisecond)))
+		log("retry-merge: round %d (elapsed %s)", round, elapsed.Round(time.Millisecond))
 		if err := retryMergeAttempt(rc, baseBranch, ws.Branch, nil); err == nil {
-			ctx.logf(fmt.Sprintf("retry-merge: succeeded on round %d after %s",
-				round, retryMergeNow().Sub(start).Round(time.Millisecond)))
+			log("retry-merge: succeeded on round %d after %s",
+				round, retryMergeNow().Sub(start).Round(time.Millisecond))
 			return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
 		} else {
 			lastErr = err
-			ctx.logf(fmt.Sprintf("retry-merge: round %d failed: %s", round, err))
+			log("retry-merge: round %d failed: %s", round, err)
 		}
 
 		// Pick the backoff for the next sleep. Rounds beyond the schedule
@@ -377,22 +411,22 @@ func mechanicalCleanupStaleWorktrees(ctx *RecoveryActionCtx, plan recovery.Repai
 	if ctx == nil || ctx.TargetBeadID == "" || ctx.RepoPath == "" {
 		return nil, fmt.Errorf("cleanup-stale-worktrees: missing repo/target context")
 	}
-	targetDir := filepath.Join(ctx.RepoPath, ".worktrees", ctx.TargetBeadID)
-	ctx.logf(fmt.Sprintf("cleaning stale sibling worktrees for %s (target=%s)", ctx.TargetBeadID, targetDir))
 	log := func(format string, args ...interface{}) {
 		ctx.logf(fmt.Sprintf(format, args...))
 	}
+	targetDir := filepath.Join(ctx.RepoPath, ".worktrees", ctx.TargetBeadID)
+	log("cleaning stale sibling worktrees for %s (target=%s)", ctx.TargetBeadID, targetDir)
 	fates := spgit.CleanupStaleSiblingWorktreesSafe(ctx.RepoPath, targetDir, log)
 	for _, f := range fates {
 		switch f.Action {
 		case "removed":
-			ctx.logf(fmt.Sprintf("cleanup: sibling %s removed", f.Path))
+			log("cleanup: sibling %s removed", f.Path)
 		case "renamed":
-			ctx.logf(fmt.Sprintf("cleanup: sibling %s quarantined to %s (%s)", f.Path, f.NewPath, f.Reason))
+			log("cleanup: sibling %s quarantined to %s (%s)", f.Path, f.NewPath, f.Reason)
 		case "skipped-live":
-			ctx.logf(fmt.Sprintf("cleanup: sibling %s skipped (%s)", f.Path, f.Reason))
+			log("cleanup: sibling %s skipped (%s)", f.Path, f.Reason)
 		case "error":
-			ctx.logf(fmt.Sprintf("cleanup: sibling %s error: %s", f.Path, f.Reason))
+			log("cleanup: sibling %s error: %s", f.Path, f.Reason)
 		}
 	}
 	return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
