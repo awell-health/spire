@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/summon"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
@@ -88,6 +90,14 @@ func init() {
 	dismissCmd.Flags().Bool("all", false, "Dismiss all wizards")
 	dismissCmd.Flags().String("targets", "", "Comma-separated bead IDs to dismiss")
 	dismissCmd.Flags().String("target", "", "Alias for --targets")
+
+	// Route pkg/summon's seams through the cmd/spire-level mock points so
+	// existing summon_test.go tests that reassign the CLI vars still intercept
+	// the calls. The closures dereference the cmd/spire vars at each call, so
+	// test swaps take effect immediately.
+	summon.SpawnFunc = func(b agent.Backend, cfg agent.SpawnConfig) (agent.Handle, error) {
+		return summonSpawnFunc(b, cfg)
+	}
 }
 
 // --- Registry function wrappers ---
@@ -481,88 +491,33 @@ func summonLocal(count int, targetIDs []string, dispatch string) error {
 		count = len(candidates)
 	}
 
-	// Persist dispatch override as a label on each target bead.
-	if dispatch != "" {
-		for _, bead := range candidates[:count] {
-			// Remove any existing dispatch: label to ensure at most one.
-			for _, l := range bead.Labels {
-				if strings.HasPrefix(l, "dispatch:") {
-					if err := storeRemoveLabel(bead.ID, l); err != nil {
-						return fmt.Errorf("remove existing dispatch label %q for %s: %w", l, bead.ID, err)
-					}
-				}
-			}
-			if err := storeAddLabel(bead.ID, "dispatch:"+dispatch); err != nil {
-				return fmt.Errorf("persist dispatch override for %s: %w", bead.ID, err)
-			}
-			fmt.Printf("  %s → dispatch override: %s%s\n", bead.ID, dispatch, reset)
-		}
-	}
-
 	logDir := filepath.Join(doltGlobalDir(), "wizards")
-	backend := ResolveBackend("")
 
 	spawned := 0
 	for i := 0; i < count; i++ {
 		bead := candidates[i]
-		name := "wizard-" + bead.ID
 
-		// Skip if a live wizard is already running for this bead.
-		if w := findLiveWizardForBead(reg, bead.ID); w != nil && processAlive(w.PID) {
-			fmt.Printf("  %s already running for %s (pid %d) — skipping\n", w.Name, bead.ID, w.PID)
+		// Check for existing graph state so the CLI print can say "resuming"
+		// vs "starting". This is display-only; the wizard itself decides
+		// whether to resume from graph state.
+		existingGraphState, _ := executor.LoadGraphState("wizard-"+bead.ID, configDir)
+
+		res, err := summon.SpawnWizard(bead, dispatch)
+		if errors.Is(err, summon.ErrAlreadyRunning) {
+			fmt.Printf("  %s — skipping\n", err)
 			continue
 		}
-
-		// Check for existing graph state to determine resume vs fresh start.
-		existingGraphState, _ := executor.LoadGraphState(name, configDir)
-
-		// Resolve formula for the bead — best-effort, fall back to default.
-		formulaName := resolveFormulaName(bead)
-
-		// Resolve tower for this wizard.
-		towerName := ""
-		if tc, err := activeTowerConfig(); err == nil {
-			towerName = tc.Name
-		} else if tName := os.Getenv("SPIRE_TOWER"); tName != "" {
-			towerName = tName
-		} else if cfg, err := loadConfig(); err == nil && cfg.ActiveTower != "" {
-			towerName = cfg.ActiveTower
-		}
-
-		handle, err := summonSpawnFunc(backend, SpawnConfig{
-			Name:      name,
-			BeadID:    bead.ID,
-			Role:      RoleExecutor,
-			Tower:     towerName,
-			LogPath:   filepath.Join(logDir, name+".log"),
-			ExtraArgs: []string{"--formula", formulaName},
-			// summon is fire-and-forget — it does not Handle.Wait().
-			// DetachFromParent tells the spawner to dup2 the log file
-			// directly into the child (no pipe, no forwarder goroutine)
-			// so the child's output survives this process exiting.
-			DetachFromParent: true,
-		})
 		if err != nil {
-			return fmt.Errorf("spawn %s: %w", name, err)
+			return err
 		}
 
-		pid, _ := strconv.Atoi(handle.Identifier())
-		worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
-		if err := wizardRegistryAdd(localWizard{
-			Name:      name,
-			PID:       pid,
-			BeadID:    bead.ID,
-			Worktree:  worktree,
-			StartedAt: time.Now().UTC().Format(time.RFC3339),
-			Tower:     towerName,
-		}); err != nil {
-			log.Printf("warning: registry add for %s: %v", name, err)
+		if dispatch != "" {
+			fmt.Printf("  %s → dispatch override: %s%s\n", bead.ID, dispatch, reset)
 		}
-
 		if existingGraphState != nil && existingGraphState.ActiveStep != "" {
-			fmt.Printf("  %s%s%s → resuming %s from %s step [%s] formula=%s\n", cyan, name, reset, bead.ID, existingGraphState.ActiveStep, handle.Identifier(), formulaName)
+			fmt.Printf("  %s%s%s → resuming %s from %s step\n", cyan, res.WizardName, reset, bead.ID, existingGraphState.ActiveStep)
 		} else {
-			fmt.Printf("  %s%s%s → starting %s (%s) [%s] formula=%s\n", cyan, name, reset, bead.ID, bead.Title, handle.Identifier(), formulaName)
+			fmt.Printf("  %s%s%s → starting %s (%s)\n", cyan, res.WizardName, reset, bead.ID, bead.Title)
 		}
 		spawned++
 	}

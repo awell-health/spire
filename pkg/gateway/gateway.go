@@ -30,7 +30,9 @@ import (
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/process"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/summon"
 	"github.com/awell-health/spire/pkg/trace"
 	"github.com/steveyegge/beads"
 )
@@ -354,6 +356,16 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	// /api/v1/beads/{id}/trace
 	if strings.HasSuffix(id, "/trace") {
 		s.getBeadTrace(w, r, strings.TrimSuffix(id, "/trace"))
+		return
+	}
+	// /api/v1/beads/{id}/summon
+	if strings.HasSuffix(id, "/summon") {
+		s.handleBeadSummon(w, r, strings.TrimSuffix(id, "/summon"))
+		return
+	}
+	// /api/v1/beads/{id}/ready
+	if strings.HasSuffix(id, "/ready") {
+		s.handleBeadReady(w, r, strings.TrimSuffix(id, "/ready"))
 		return
 	}
 	switch r.Method {
@@ -1195,6 +1207,163 @@ func (s *Server) handleTowers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// stewardAlive reports whether the steward daemon is running.
+// Returns false when the PID file is missing, unparsable, or the PID is stale.
+// summonRunner and stewardAliveFunc are package-level seams so tests can stub
+// out the fork/exec path and the PID-file probe without standing up the real
+// steward or dolt services.
+var (
+	summonRunner = summon.Run
+
+	stewardAliveFunc = func() bool {
+		pid := process.ReadPID(dolt.StewardPIDPath())
+		if pid <= 0 {
+			return false
+		}
+		return process.ProcessAlive(pid)
+	}
+)
+
+// handleBeadSummon answers POST /api/v1/beads/{id}/summon — spawns a wizard
+// for the bead. Wraps the same code path as `spire summon <id>` so the
+// archmage can kick off work from the desktop without dropping to a terminal.
+//
+// Request body (optional):
+//
+//	{ "dispatch": "sequential" | "wave" | "direct" }
+//
+// Responses:
+//
+//	200 { id, wizard, comment_id } — wizard spawned
+//	400 { error }                 — bad body, bad status, already-running, etc.
+//	404 { error }                 — bead not found
+//	405                           — non-POST
+//	412 { error }                 — steward not running (spire up missing)
+//	500 { error }                 — spawn / IO error
+func (s *Server) handleBeadSummon(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bead ID required"})
+		return
+	}
+
+	var body struct {
+		Dispatch string `json:"dispatch"`
+	}
+	// Empty body is OK — only reject malformed JSON.
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+	}
+	if err := summon.ValidateDispatch(body.Dispatch); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	// Steward precondition check runs before store.Ensure so that a missing
+	// steward returns the well-known 412 even when dolt itself is down.
+	if !stewardAliveFunc() {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{"error": "steward not running — run 'spire up'"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	res, err := summonRunner(id, body.Dispatch)
+	if err != nil {
+		writeJSON(w, statusForSummonError(err), map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id":         id,
+		"wizard":     res.WizardName,
+		"comment_id": res.CommentID,
+	})
+}
+
+// statusForSummonError maps a summon.Run error to the HTTP status the gateway
+// should return. Status-gate / already-running / bad-dispatch errors become
+// 400; "not found" becomes 404; anything else becomes 500.
+func statusForSummonError(err error) int {
+	msg := err.Error()
+	if errors.Is(err, summon.ErrAlreadyRunning) {
+		return http.StatusConflict
+	}
+	if strings.Contains(msg, "not found") {
+		return http.StatusNotFound
+	}
+	if strings.Contains(msg, "is closed") ||
+		strings.Contains(msg, "is deferred") ||
+		strings.Contains(msg, "is a design bead") ||
+		strings.Contains(msg, "invalid dispatch mode") {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+// handleBeadReady answers POST /api/v1/beads/{id}/ready — promotes an open
+// bead into the ready queue so the steward picks it up on the next cycle.
+// Mirrors `spire ready <id>` semantics.
+//
+// Responses:
+//
+//	200 { id, status: "ready" }   — flipped (or already ready, idempotent)
+//	400 { error }                 — wrong source status
+//	404 { error }                 — bead not found
+//	405                           — non-POST
+//	500 { error }                 — update error
+func (s *Server) handleBeadReady(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bead ID required"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	bead, err := store.GetBead(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	switch bead.Status {
+	case "open":
+		// Proceed.
+	case "ready":
+		writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready"})
+		return
+	case "in_progress":
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("bead %s is already in progress", id)})
+		return
+	case "closed":
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("bead %s is closed", id)})
+		return
+	case "deferred":
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("bead %s is deferred — undefer it first", id)})
+		return
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("bead %s has unexpected status %q", id, bead.Status)})
+		return
+	}
+
+	if err := store.UpdateBead(id, map[string]interface{}{"status": "ready"}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready"})
 }
 
 // effectiveDataDir returns dataDir if set, otherwise falls back to BEADS_DIR env.

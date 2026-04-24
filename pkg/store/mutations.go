@@ -184,6 +184,22 @@ func AddComment(id, text string) error {
 	return err
 }
 
+// AddCommentReturning adds a comment and returns its ID.
+func AddCommentReturning(id, text string) (string, error) {
+	s, ctx, err := getStore()
+	if err != nil {
+		return "", err
+	}
+	c, err := s.AddIssueComment(ctx, id, Actor(), text)
+	if err != nil {
+		return "", err
+	}
+	if c == nil {
+		return "", nil
+	}
+	return c.ID, nil
+}
+
 // AddCommentAs adds a comment authored by the given actor.
 //
 // Unlike AddComment, which defaults to Actor()="spire" for agent-issued
