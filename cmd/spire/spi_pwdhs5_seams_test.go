@@ -163,7 +163,7 @@ func TestSeam3_CloseRelatedDependents_ClosesAlertBeads(t *testing.T) {
 	}
 
 	err := recovery.CloseRelatedDependents(ops, "spi-parent",
-		[]string{recovery.KindRecovery, recovery.KindAlert}, "reset-cycle:2")
+		[]string{recovery.KindRecovery, recovery.KindAlert}, []string{"caused-by", "recovery-for"}, "reset-cycle:2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestSeam3_CloseRelatedDependents_RecoveryOnly(t *testing.T) {
 	}
 
 	err := recovery.CloseRelatedDependents(ops, "spi-parent",
-		[]string{recovery.KindRecovery}, "completed")
+		[]string{recovery.KindRecovery}, []string{"caused-by", "recovery-for"}, "completed")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

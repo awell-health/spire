@@ -60,7 +60,7 @@ func TestCloseRelatedDependents_AlertOnly(t *testing.T) {
 		},
 	)
 
-	err := CloseRelatedDependents(ops, "parent", []string{KindAlert}, "test")
+	err := CloseRelatedDependents(ops, "parent", []string{KindAlert}, []string{"caused-by", "recovery-for"}, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestCloseRelatedDependents_BothKinds(t *testing.T) {
 		},
 	)
 
-	err := CloseRelatedDependents(ops, "parent", []string{KindRecovery, KindAlert}, "reset-cycle:3")
+	err := CloseRelatedDependents(ops, "parent", []string{KindRecovery, KindAlert}, []string{"caused-by", "recovery-for"}, "reset-cycle:3")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestCloseRelatedDependents_WrongEdgeTypeIgnored(t *testing.T) {
 		},
 	)
 
-	err := CloseRelatedDependents(ops, "parent", []string{KindRecovery, KindAlert}, "test")
+	err := CloseRelatedDependents(ops, "parent", []string{KindRecovery, KindAlert}, []string{"caused-by", "recovery-for"}, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestCloseRelatedDependents_ClosedBeadsIgnored(t *testing.T) {
 			DependencyType: "caused-by",
 		},
 	)
-	err := CloseRelatedDependents(ops, "parent", []string{KindAlert}, "test")
+	err := CloseRelatedDependents(ops, "parent", []string{KindAlert}, []string{"caused-by", "recovery-for"}, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -30,6 +30,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/alerts"
 	"github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
@@ -107,6 +108,9 @@ var InstanceNameFunc = config.InstanceName
 // UpdateBeadFunc is a test-replaceable function for store.UpdateBead.
 var UpdateBeadFunc = store.UpdateBead
 
+// AddDepTypedFunc is a test-replaceable function for store.AddDepTyped.
+var AddDepTypedFunc = store.AddDepTyped
+
 // SendMessageFunc creates a message bead. Test-replaceable.
 var SendMessageFunc = sendMessage
 
@@ -133,24 +137,24 @@ var CheckExistingAlertFunc = func(beadID string) bool {
 	return false
 }
 
+// stewardBeadOps adapts the steward's test-replaceable function vars to the
+// alerts.BeadOps interface so tests can substitute CreateBeadFunc without
+// bypassing the alerts ownership boundary.
+type stewardBeadOps struct{}
+
+func (stewardBeadOps) CreateBead(opts store.CreateOpts) (string, error) {
+	return CreateBeadFunc(opts)
+}
+
+func (stewardBeadOps) AddDepTyped(from, to, depType string) error {
+	return AddDepTypedFunc(from, to, depType)
+}
+
 // CreateAlertFunc creates the alert bead for a corrupted bead and links it via a caused-by dep.
 var CreateAlertFunc = func(beadID, msg string) error {
-	alertID, err := CreateBeadFunc(store.CreateOpts{
-		Title:    msg,
-		Priority: 0,
-		Type:     beads.TypeTask,
-		Labels:   []string{"alert:corrupted-bead"},
-		Prefix:   store.PrefixFromID(beadID),
-	})
-	if err != nil {
-		return err
-	}
-	if alertID != "" {
-		if derr := store.AddDepTyped(alertID, beadID, "caused-by"); derr != nil {
-			log.Printf("[store] warning: add caused-by dep %s→%s: %s", alertID, beadID, derr)
-		}
-	}
-	return nil
+	_, err := alerts.Raise(stewardBeadOps{}, beadID, alerts.ClassAlert, msg,
+		alerts.WithSubclass("corrupted-bead"))
+	return err
 }
 
 // StewardConfig holds configuration for the steward cycle.
@@ -1609,20 +1613,26 @@ func SanitizeK8sLabel(s string) string {
 func pushState() {}
 
 // sendMessage creates a message bead with the appropriate labels.
+//
+// When ref != "" the message is attributed to a source bead and ownership of
+// the creation goes through pkg/alerts so the exclusive-owner invariant holds.
+// When ref == "" the message is a tower-level notification with no source bead;
+// this is the sole legitimate exception to the pkg/alerts ownership rule
+// because alerts.Raise requires a non-empty sourceBeadID.
 func sendMessage(to, from, body, ref string, priority int) (string, error) {
+	if ref != "" {
+		return alerts.Raise(stewardBeadOps{}, ref, alerts.ClassArchmageMsg, body,
+			alerts.WithFrom(from),
+			alerts.WithPriority(priority),
+			alerts.WithExtraLabels("to:"+to))
+	}
+	// sole legitimate exception: tower-level message has no source bead.
 	labels := []string{"msg", "to:" + to, "from:" + from}
-	if ref != "" {
-		labels = append(labels, "ref:"+ref)
-	}
-	prefix := ""
-	if ref != "" {
-		prefix = store.PrefixFromID(ref)
-	}
 	return CreateBeadFunc(store.CreateOpts{
 		Title:    body,
 		Priority: priority,
 		Type:     "message",
-		Prefix:   prefix,
+		Prefix:   "",
 		Labels:   labels,
 	})
 }
