@@ -88,6 +88,19 @@ func extractSQLValue(output string) string {
 	return config.ExtractSQLValue(output)
 }
 
+// isDoltAuthError reports whether the combined stderr from a `dolt clone`
+// invocation signals DoltHub authentication failure (vs. a 404, network
+// error, filesystem permission error, etc.). We match on two signals:
+//
+//   - the gRPC single-token "PermissionDenied" status string alone, or
+//   - "permission denied" text co-located with "could not access dolt url",
+//     so unrelated filesystem "permission denied" messages don't trip us.
+func isDoltAuthError(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "permissiondenied") ||
+		(strings.Contains(s, "permission denied") && strings.Contains(s, "could not access dolt url"))
+}
+
 func must(s string, err error) string {
 	return config.Must(s, err)
 }
@@ -1060,6 +1073,20 @@ func cmdTowerAttach(args []string) error {
 			if pullOut, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
 				return fmt.Errorf("pull from DoltHub: %w (clone error: %s)\n%s", pullErr, outStr, strings.TrimSpace(string(pullOut)))
 			}
+		} else if isDoltAuthError(outStr) {
+			return fmt.Errorf(`DoltHub authentication required for %s.
+
+Option 1 — run the dolt web auth flow, then retry:
+  dolt creds new
+  spire tower attach %s
+
+Option 2 — pass credentials directly:
+  spire tower attach %s --user <user> --password <password>
+
+Option 3 — set env vars before running:
+  export DOLT_REMOTE_USER=<user>
+  export DOLT_REMOTE_PASSWORD=<password>
+`, dolthubArg, dolthubArg, dolthubArg)
 		} else {
 			return fmt.Errorf("clone from DoltHub: %s\n%s", err, outStr)
 		}

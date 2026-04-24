@@ -951,3 +951,62 @@ func TestInstanceTowerOmitEmpty(t *testing.T) {
 		t.Error("expected tower to be omitted when empty")
 	}
 }
+
+func TestIsDoltAuthError(t *testing.T) {
+	// Real stderr from the bug report — gRPC PermissionDenied plus the
+	// "could not access dolt url" preamble.
+	realBugReport := `cloning https://doltremoteapi.dolthub.com/awell/awell
+error: failed to get remote db
+cause: could not access dolt url 'https://doltremoteapi.dolthub.com/awell/awell': rpc error: code = PermissionDenied desc = permission denied`
+
+	cases := []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{
+			name:   "real bug report stderr",
+			stderr: realBugReport,
+			want:   true,
+		},
+		{
+			name:   "PermissionDenied token alone (gRPC shape)",
+			stderr: "rpc error: code = PermissionDenied desc = permission denied",
+			want:   true,
+		},
+		{
+			name:   "mixed case PermissionDenied",
+			stderr: "some prefix PERMISSIONDENIED suffix",
+			want:   true,
+		},
+		{
+			name:   "repository not found (404-like)",
+			stderr: "error: repository not found",
+			want:   false,
+		},
+		{
+			name:   "network timeout",
+			stderr: "dial tcp: i/o timeout",
+			want:   false,
+		},
+		{
+			name:   "empty stderr",
+			stderr: "",
+			want:   false,
+		},
+		{
+			name:   "unrelated filesystem permission denied (no dolt url preamble)",
+			stderr: "open /home/user/.dolt/creds/foo.jwk: permission denied",
+			want:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isDoltAuthError(tc.stderr)
+			if got != tc.want {
+				t.Errorf("isDoltAuthError(%q) = %v, want %v", tc.stderr, got, tc.want)
+			}
+		})
+	}
+}
