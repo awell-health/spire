@@ -104,6 +104,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/towers", s.corsMiddleware(s.bearerAuth(s.handleTowers)))
 	mux.Handle("/api/v1/cleanup/step-beads", s.corsMiddleware(s.bearerAuth(s.handleCleanupStepBeads)))
 	mux.Handle("/api/v1/blocked", s.corsMiddleware(s.bearerAuth(s.handleBlocked)))
+	mux.Handle("/api/v1/repos", s.corsMiddleware(s.bearerAuth(s.handleRepos)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -660,6 +661,52 @@ func (s *Server) getBeadComments(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, comments)
+}
+
+// handleRepos answers GET /api/v1/repos with every registered repo in
+// the active tower: prefix, repo URL, branch, language. Desktop uses
+// this to offer a prefix picker in the file-bead dialog so new beads
+// land under the right repo (spi / spd / oo) instead of the tower default.
+func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	activeTower := ""
+	if t, err := config.ResolveTowerConfigWith(cfg); err == nil && t != nil {
+		activeTower = t.Name
+	}
+	type repoRow struct {
+		Prefix   string `json:"prefix"`
+		Path     string `json:"path"`
+		Database string `json:"database"`
+		Tower    string `json:"tower"`
+	}
+	var rows []repoRow
+	for _, inst := range cfg.Instances {
+		if inst == nil {
+			continue
+		}
+		// Only include repos bound to the active tower (or tower-agnostic).
+		if inst.Tower != "" && inst.Tower != activeTower {
+			continue
+		}
+		rows = append(rows, repoRow{
+			Prefix:   inst.Prefix,
+			Path:     inst.Path,
+			Database: inst.Database,
+			Tower:    inst.Tower,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"active_tower": activeTower,
+		"repos":        rows,
+	})
 }
 
 // handleBlocked answers GET /api/v1/blocked with the ID set of open beads
