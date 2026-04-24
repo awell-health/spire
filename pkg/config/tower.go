@@ -27,6 +27,17 @@ const (
 	ApprenticeTransportBundle = "bundle"
 )
 
+// Tower modes for TowerConfig.Mode. Empty defaults to TowerModeDirect so
+// ~/.config/spire/towers/*.json files written before this field existed
+// keep working as direct-Dolt towers. TowerModeGateway means the tower is
+// reached through an HTTPS gateway (pkg/gatewayclient); in that mode URL
+// and TokenRef carry the endpoint and keychain identifier for the bearer
+// token and the Dolt host/port fields are unused.
+const (
+	TowerModeDirect  = "direct"
+	TowerModeGateway = "gateway"
+)
+
 // TowerConfig represents a tower's identity and configuration.
 type TowerConfig struct {
 	Name          string                       `json:"name"`
@@ -64,6 +75,38 @@ type TowerConfig struct {
 	// See pkg/config/deployment_mode.go for the semantics and the explicit
 	// orthogonality to worker backend and sync transport.
 	DeploymentMode DeploymentMode `toml:"deployment_mode" yaml:"deployment_mode" json:"deployment_mode,omitempty"`
+
+	// Mode selects how the local CLI talks to this tower. Empty and
+	// TowerModeDirect both mean direct Dolt (existing behavior).
+	// TowerModeGateway means go through an HTTPS gateway — URL and
+	// TokenRef below carry the endpoint and the keychain identifier
+	// for the bearer token. See IsGateway / IsDirect for the guard
+	// callers should use instead of comparing the string themselves.
+	Mode string `json:"mode,omitempty"`
+
+	// URL is the gateway base URL (e.g. https://spire.example.com).
+	// Populated only when Mode == TowerModeGateway.
+	URL string `json:"url,omitempty"`
+
+	// TokenRef is the keychain identifier (typically the tower name)
+	// used to look up the bearer token via config.GetTowerToken.
+	// Populated only when Mode == TowerModeGateway. The token itself
+	// is never persisted here — it lives in the OS keychain.
+	TokenRef string `json:"token_ref,omitempty"`
+}
+
+// IsGateway reports whether the tower is attached through the HTTPS
+// gateway (Mode == TowerModeGateway). Callers routing bead/message ops
+// should use this rather than comparing the string themselves.
+func (t TowerConfig) IsGateway() bool {
+	return t.Mode == TowerModeGateway
+}
+
+// IsDirect reports whether the tower speaks raw Dolt. Empty Mode counts
+// as direct so ~/.config/spire/towers/*.json files written before the
+// Mode field existed keep working without a migration.
+func (t TowerConfig) IsDirect() bool {
+	return t.Mode == "" || t.Mode == TowerModeDirect
 }
 
 // EffectiveDeploymentMode returns the tower's control-plane topology, falling

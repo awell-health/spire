@@ -49,11 +49,42 @@ type Instance struct {
 	Paths          []string `json:"paths,omitempty"`           // additional directories (e.g. git worktrees)
 	Prefix         string   `json:"prefix"`
 	Database       string   `json:"database"`
-	DoltPort       int      `json:"dolt_port,omitempty"`       // default: 3307
+	DoltPort       int      `json:"dolt_port,omitempty"`       // default: 3307 (used only when Mode=direct)
 	DaemonInterval string   `json:"daemon_interval,omitempty"` // default: "2m"
 	DolthubRemote  string   `json:"dolthub_remote,omitempty"`
 	Identity       string   `json:"identity,omitempty"`        // default: prefix
 	Tower          string   `json:"tower,omitempty"`           // tower name this instance belongs to
+
+	// Mode mirrors TowerConfig.Mode for this instance. Empty and
+	// TowerModeDirect both mean talk to Dolt on DoltPort (existing
+	// behavior); TowerModeGateway means route through the HTTPS
+	// gateway at URL using the bearer token stored in the keychain
+	// under TokenRef. Kept coherent with the linked tower's Mode —
+	// attach-cluster writes both sides at once.
+	Mode string `json:"mode,omitempty"`
+
+	// URL is the gateway base URL when Mode=gateway. Unused in direct
+	// mode; DoltPort is the direct-mode endpoint.
+	URL string `json:"url,omitempty"`
+
+	// TokenRef is the keychain identifier used to look up the bearer
+	// token for gateway mode. The token itself is never persisted
+	// here — it lives in the OS keychain.
+	TokenRef string `json:"token_ref,omitempty"`
+}
+
+// IsGateway reports whether the instance is attached through the HTTPS
+// gateway. Mirrors TowerConfig.IsGateway for callers that hold an
+// Instance without having resolved the parent tower.
+func (i *Instance) IsGateway() bool {
+	return i != nil && i.Mode == TowerModeGateway
+}
+
+// IsDirect reports whether the instance speaks raw Dolt. Empty Mode
+// counts as direct so instances registered before the field existed
+// keep working.
+func (i *Instance) IsDirect() bool {
+	return i == nil || i.Mode == "" || i.Mode == TowerModeDirect
 }
 
 // RealCwd returns the current working directory with symlinks resolved.
