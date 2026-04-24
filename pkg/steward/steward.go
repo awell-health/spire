@@ -45,6 +45,9 @@ import (
 
 // --- Test-replaceable function variables ---
 
+// CreateBeadFunc is a test-replaceable function for store.CreateBead.
+var CreateBeadFunc = store.CreateBead
+
 // GetActiveAttemptFunc is a test-replaceable function for store.GetActiveAttempt.
 var GetActiveAttemptFunc = store.GetActiveAttempt
 
@@ -131,11 +134,12 @@ var CheckExistingAlertFunc = func(beadID string) bool {
 
 // CreateAlertFunc creates the alert bead for a corrupted bead and links it via a caused-by dep.
 var CreateAlertFunc = func(beadID, msg string) error {
-	alertID, err := store.CreateBead(store.CreateOpts{
+	alertID, err := CreateBeadFunc(store.CreateOpts{
 		Title:    msg,
 		Priority: 0,
 		Type:     beads.TypeTask,
 		Labels:   []string{"alert:corrupted-bead"},
+		Prefix:   store.PrefixFromID(beadID),
 	})
 	if err != nil {
 		return err
@@ -1608,11 +1612,15 @@ func sendMessage(to, from, body, ref string, priority int) (string, error) {
 	if ref != "" {
 		labels = append(labels, "ref:"+ref)
 	}
-	return store.CreateBead(store.CreateOpts{
+	prefix := ""
+	if ref != "" {
+		prefix = store.PrefixFromID(ref)
+	}
+	return CreateBeadFunc(store.CreateOpts{
 		Title:    body,
 		Priority: priority,
 		Type:     "message",
-		Prefix:   "spi",
+		Prefix:   prefix,
 		Labels:   labels,
 	})
 }

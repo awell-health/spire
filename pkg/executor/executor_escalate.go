@@ -66,7 +66,7 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 		Title:    message,
 		Priority: 1,
 		Type:     beads.IssueType("message"),
-		Prefix:   "spi",
+		Prefix:   store.PrefixFromID(beadID),
 		Labels:   labels,
 	})
 	if err != nil {
