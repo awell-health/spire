@@ -566,7 +566,7 @@ These are small but urgent — they close the specific leaks visible on the boar
 
 **Phase 2 (sequential after Phase 1):**
 
-- **Agent C:** build `pkg/beadlifecycle` (BeginWork + ClaimWork + EndWork + OrphanSweep) + tests. Wire the call sites in `cmd/spire/summon.go`, `cmd/spire/claim.go`, `cmd/spire/resummon.go`, `cmd/spire/reset.go`, `pkg/executor/graph_actions.go:actionBeadFinish`, and `pkg/steward/daemon.go:699`.
+- **Agent C:** build `pkg/beadlifecycle` (BeginWork + ClaimWork + EndWork + OrphanSweep) + tests. Wire the call sites in `cmd/spire/summon.go`, `cmd/spire/claim.go`, `cmd/spire/resummon.go`, `cmd/spire/reset.go`, and `pkg/steward/daemon.go:699`. `pkg/executor/graph_actions.go:actionBeadFinish` is the explicit carve-out — Agent C does not touch it.
 
 **Phase 3 (cleanup):**
 
