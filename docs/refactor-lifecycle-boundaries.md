@@ -198,7 +198,8 @@ func Sweep() ([]Entry, error)
 | `agent.RegistryRemove(name)` | `registry.Remove(name)` |
 | `agent.RegistryUpdate(name, fn)` | `registry.Update(name, fn)` |
 | `agent.LoadRegistry()` / `.Wizards` iteration | `registry.List()` |
-| `agent.RegisterSelf(...)` | **DELETE**. Callers go through `beadlifecycle.BeginWork` instead. |
+| `agent.RegisterSelf(...)` in `cmd/spire/summon.go` | **DELETE** from summon callers. `BeginWork` creates the entry. |
+| `agent.RegisterSelf(...)` in `pkg/executor/graph_interpreter.go:35`, `pkg/wizard/wizard.go:334`, `pkg/wizard/wizard_review.go:48` | These are runtime field stamps (PID, phase) on an entry that already exists. Map to `registry.Update(name, fn)`, **not** `BeginWork`. The entry was created by summon; these callers only patch fields after spawn. |
 | `pkg/summon/summon.go:187 cleanDeadWizards` clone | **DELETE**. Daemon tick handles it via `beadlifecycle.OrphanSweep`. |
 
 **Test strategy:**
@@ -276,6 +277,8 @@ Replace:
 - `pkg/executor/executor_escalate.go:109-126` (empty-implement alert) — becomes `alerts.Raise(..., ClassAlert, ..., WithSubclass("empty-implement"))`
 - `pkg/executor/executor_escalate.go:164-181` (`EscalateHumanFailure` alert section) — becomes `alerts.Raise(..., ClassAlert, ..., WithSubclass(failureType))`
 - `pkg/executor/executor_escalate.go:233-248` (`EscalateGraphStepFailure` alert section) — becomes `alerts.Raise(..., ClassAlert, ..., WithSubclass(failureType))`
+- `pkg/steward/steward.go:CreateAlertFunc` (line ~134) — becomes `alerts.Raise(..., ClassAlert, msg, WithSubclass("corrupted-bead"))`. The `beadID` parameter already carries the source bead. spi-ff7nrq fixed the prefix; Agent B completes the ownership migration.
+- `pkg/steward/steward.go:sendMessage` (line ~1605) — becomes `alerts.Raise(..., ClassArchmageMsg, body, WithFrom(from), WithExtraLabels("to:"+to))` when `ref != ""`, with `ref` as the sourceBeadID. When `ref == ""` (tower-level messages with no bead context), keep the direct `store.CreateBead` call with an explicit comment explaining this is the sole legitimate exception to the ownership rule.
 
 Keep the three `Escalate*` functions as thin wrappers calling `alerts.Raise`, for minimal call-site churn. Each wrapper's job is to compose the alert + the recovery bead + the comment; `alerts.Raise` handles only the bead-creation + caused-by-dep part.
 
@@ -512,6 +515,8 @@ These are small but urgent — they close the specific leaks visible on the boar
 
 4. **Alert cascade on close covers `related` deps** — `EndWork` calls `AlertCascadeClose(beadID, []string{"caused-by", "related"})`. The resummon path links alert beads via `related` (not `caused-by`); both must be closed to prevent stale alerts.
 
+   **Agent B prerequisite:** `pkg/recovery/bead_ops.CloseRelatedDependents` currently filters by `isRecoveryLink` (line 109), which only accepts `caused-by` and `recovery-for`. Agent B must extend this function to accept a `depTypes []string` parameter replacing the hardcoded `isRecoveryLink` check. Signature change: `func CloseRelatedDependents(ops BeadOps, beadID string, kinds []string, depTypes []string, reason string) error`. Existing callers pass `depTypes: []string{"caused-by", "recovery-for"}` to preserve current behaviour; `AlertCascadeClose` passes `depTypes: []string{"caused-by", "related"}`. This is Agent B's work because it touches the cascade logic that Agent B is already migrating.
+
 5. **Dead-letter labeling preserved** — `OrphanSweep` adds label `dead-letter` to registry entries it marks as orphaned before removing them. This preserves audit history: grep `bd list --label dead-letter` to see what was reaped.
 
 ---
@@ -522,7 +527,7 @@ These are small but urgent — they close the specific leaks visible on the boar
 
 - **Agent A:** build `pkg/registry` + tests. Delete / migrate callers of `pkg/agent/registry.go`. Does not touch `pkg/executor/` or `pkg/steward/`.
 
-- **Agent B:** build `pkg/alerts` + tests. Migrate the 4 `executor_escalate.go` call sites. **Also:** widen the cascade in `graph_actions.go:1051` (adds `recovery.KindAlert`). These two are in the same package and same agent to avoid the Phase 1 parallelism conflict.
+- **Agent B:** build `pkg/alerts` + tests. Migrate the 4 `executor_escalate.go` call sites + the 2 `pkg/steward/steward.go` call sites (`CreateAlertFunc` and `sendMessage`). **Also:** widen the cascade in `graph_actions.go:1051` (adds `recovery.KindAlert`); extend `pkg/recovery/bead_ops.CloseRelatedDependents` to accept a `depTypes []string` parameter. These all touch alert/cascade logic and go together.
 
 **Phase 2 (sequential after Phase 1):**
 
@@ -557,7 +562,7 @@ Each agent works in its own worktree. The merge agent integrates in order Phase 
 
 1. `~/.config/spire/wizards.json` writes happen **only** from `pkg/registry`. `grep -rn "RegistryAdd\|RegistryRemove\|RegistryUpdate\|SaveRegistry" pkg/ cmd/` returns zero hits outside `pkg/registry/`.
 2. Alert beads are created **only** via `pkg/alerts.Raise` (or thin `Escalate*` wrappers). No direct `CreateBead(..., Labels: []string{"alert:..."})` outside the new package.
-3. Task bead status transitions happen **only** via `pkg/beadlifecycle.{BeginWork,ClaimWork,EndWork,OrphanSweep}`. Grep `UpdateBead.*status` confirms.
+3. Task/epic bead transitions between `open`, `ready`, `in_progress`, `dispatched`, and `closed` happen **only** via `pkg/beadlifecycle.{BeginWork,ClaimWork,EndWork,OrphanSweep}`. **Excluded from this check (out of scope, stay as-is):** step-bead transitions in `pkg/executor/graph_interpreter.go`, hook/unhook transitions for task beads in `graph_interpreter.go`, and `closeAllOpenGraphStepBeads` in `cmd/spire/summon.go`. A targeted grep confirming no new in-scope callers were added is sufficient; the excluded paths are identified by their file location.
 4. Archmage message beads and alert beads carry the source bead's prefix. Unit tests verify against spd-parent fixtures.
 5. Steward daemon tick closes orphan attempt beads + reopens their parents within one tick. Integration test: start fake wizard (local mode), kill it (remove PID + graph_state.json), wait one tick, verify state clean.
 6. Steward daemon tick does NOT reap a wizard that crashed but left graph_state.json. Integration test: kill PID, keep graph_state.json, wait one tick, verify bead still in_progress (resumable).
@@ -583,7 +588,7 @@ Each agent works in its own worktree. The merge agent integrates in order Phase 
 ## Summary diff (rough scale)
 
 - New files: `pkg/registry/*.go` (~3 files), `pkg/alerts/*.go` (~2 files), `pkg/beadlifecycle/*.go` (~5 files including integration tests) — ~1800 lines including tests.
-- Modified: `pkg/executor/executor_escalate.go`, `pkg/executor/graph_actions.go`, `pkg/steward/daemon.go`, `cmd/spire/summon.go`, `cmd/spire/claim.go`, `cmd/spire/resummon.go`, `cmd/spire/reset.go`, `pkg/summon/summon.go`, `pkg/agent/registry.go`.
+- Modified: `pkg/executor/executor_escalate.go`, `pkg/executor/graph_actions.go`, `pkg/recovery/bead_ops.go`, `pkg/steward/steward.go`, `pkg/steward/daemon.go`, `cmd/spire/summon.go`, `cmd/spire/claim.go`, `cmd/spire/resummon.go`, `cmd/spire/reset.go`, `pkg/summon/summon.go`, `pkg/agent/registry.go`.
 - Deleted: `RegisterSelf` (~18 lines), `pkg/summon/summon.go:187 cleanDeadWizards` (~40 lines), `cmd/spire/summon.go:reconcileOrphanAttempts` + `cleanDeadWizards` + `reapDeadWizard` (~150 lines).
 
 Net line change: approximately -200 lines of scattered duplication, +1800 lines of owned packages with tests.
