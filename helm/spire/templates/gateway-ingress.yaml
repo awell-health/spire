@@ -1,0 +1,71 @@
+{{- if .Values.gateway.ingress.enabled }}
+{{- $fullname := include "spire.fullname" . -}}
+{{- $ingress := .Values.gateway.ingress -}}
+{{- $serviceName := printf "%s-gateway" $fullname -}}
+{{- $host := required "gateway.ingress.host is required when ingress.enabled=true" $ingress.host -}}
+# HTTPS Ingress fronting the gateway Service. Gated by
+# `.Values.gateway.ingress.enabled` and off by default, so local/minikube
+# installs (ClusterIP gateway + port-forward) keep working unchanged.
+#
+# Two TLS strategies are supported and are mutually exclusive:
+#
+#   A. managedCert.enabled — GKE Ingress + Google-managed cert. The
+#      `networking.gke.io/managed-certificates` annotation is emitted
+#      here; the matching ManagedCertificate resource lives in
+#      gateway-managedcert.yaml. spec.tls is deliberately NOT emitted
+#      because GKE wires managed certs via annotation, not tls blocks.
+#
+#   B. tls.enabled — cert-manager (or any pre-created TLS Secret). The
+#      spec.tls block is emitted with the user's secretName; cert-manager
+#      itself is wired via `.Values.gateway.ingress.annotations`
+#      (e.g. cert-manager.io/cluster-issuer=letsencrypt-prod).
+#
+# Only /api/v1 (Prefix) and /healthz (Exact) are routed here. /sync
+# (Linear/GitHub webhook receiver) stays on its own port and is not
+# routed by this Ingress in v1 — do not add a /sync rule without also
+# revisiting how webhooks authenticate.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $serviceName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "spire.labels" . | nindent 4 }}
+  {{- if or $ingress.managedCert.enabled $ingress.annotations }}
+  annotations:
+    {{- if $ingress.managedCert.enabled }}
+    networking.gke.io/managed-certificates: {{ $ingress.managedCert.name | default (printf "%s-gateway-cert" $fullname) | quote }}
+    {{- end }}
+    {{- with $ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- with $ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $serviceName }}
+                port:
+                  name: http
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $serviceName }}
+                port:
+                  name: http
+  {{- if and $ingress.tls.enabled (not $ingress.managedCert.enabled) }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ $ingress.tls.secretName | quote }}
+  {{- end }}
+{{- end }}

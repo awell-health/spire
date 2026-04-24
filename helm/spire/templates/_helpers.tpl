@@ -209,42 +209,74 @@ spire-gateway-auth
 {{- end -}}
 
 {{/*
-spire.fullname — release-qualified name used as the prefix for resources
-that should not clash across co-installed releases of this chart.
-Follows the standard Helm convention: `<Release.Name>-<Chart.Name>`, with
-de-duplication when the release name already contains the chart name (so
-`helm install spire ...` yields `spire`, not `spire-spire`). The ingress
-templates (gateway-managedcert, gateway-ingress, gateway-backendconfig)
-use this helper to derive default object names so that the Ingress
-annotation and the ManagedCertificate/BackendConfig it references always
-resolve to the same object when users leave the explicit `name` fields
-empty.
+spire.name — chart name, truncated to the 63-char k8s label limit and
+trimmed of trailing dashes. Used as the canonical `app.kubernetes.io/name`
+value on resources whose selector is release-agnostic (ingress,
+managed-cert, backend-config), and as the chart-identifier component of
+`spire.fullname`.
+*/}}
+{{- define "spire.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+spire.fullname — fully-qualified release-scoped name. Standard helm
+scaffolding: when the release name already contains the chart name (e.g.
+`helm install spire ./spire`) we emit just the release name; otherwise
+we join `<release>-<chart>` so two releases of this chart into one
+namespace don't collide. Callers append their own suffix
+(`"-gateway"`, `"-gateway-cert"`) so sibling resources stay grouped
+under one prefix — the derivation MUST match between the Ingress, the
+ManagedCertificate, and the BackendConfig or GKE won't wire them up.
 */}}
 {{- define "spire.fullname" -}}
-{{- $name := .Chart.Name -}}
+{{- if .Values.fullnameOverride -}}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := default .Chart.Name .Values.nameOverride -}}
 {{- if contains $name .Release.Name -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
 {{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
 
 {{/*
-spire.labels — common metadata labels applied to resources rendered by
-the chart. Used by templates that don't need to pin a hardcoded
-`app.kubernetes.io/name` for selector purposes (e.g. ingress-adjacent
-resources like ManagedCertificate, BackendConfig, Ingress itself, which
-are targeted by other Kubernetes objects via their own name rather than
-by label selector). Templates that are the selector target for a
-Service/Deployment selector should continue to set
-`app.kubernetes.io/name: <component>` inline so the selector contract is
-explicit at the call site.
+spire.chart — chart name + version for the `helm.sh/chart` label.
+Replaces `+` with `_` so pre-release suffixes stay label-safe.
+*/}}
+{{- define "spire.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+spire.labels — standard `app.kubernetes.io/*` label block. Callers emit
+these under `metadata.labels` so `kubectl -l app.kubernetes.io/part-of=spire`
+filters hit every chart-owned resource. Existing pre-split templates
+(gateway.yaml, dolt.yaml, steward.yaml) hardcode a narrower label set
+tied to pod selectors; this helper is for new resources (ingress,
+managed-cert, backend-config) that don't double as selectors.
 */}}
 {{- define "spire.labels" -}}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+helm.sh/chart: {{ include "spire.chart" . }}
+{{ include "spire.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: spire
+{{- end -}}
+
+{{/*
+spire.selectorLabels — subset of `spire.labels` safe for use inside a
+Deployment/Service selector (values never change across upgrades so
+selectors don't go stale). Kept separate from `spire.labels` so the
+broader label block can grow without invalidating existing selectors.
+*/}}
+{{- define "spire.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "spire.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "spire.stewardCommonEnv" -}}
