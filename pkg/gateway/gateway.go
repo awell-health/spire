@@ -903,11 +903,11 @@ SELECT from_id, to_id, dep_type FROM walk LIMIT 2000`
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	defer rows.Close()
 	nodeIDs := map[string]bool{}
 	for rows.Next() {
 		var e edge
 		if err := rows.Scan(&e.From, &e.To, &e.Type); err != nil {
-			rows.Close()
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -915,7 +915,6 @@ SELECT from_id, to_id, dep_type FROM walk LIMIT 2000`
 		nodeIDs[e.From] = true
 		nodeIDs[e.To] = true
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -946,16 +945,19 @@ SELECT from_id, to_id, dep_type FROM walk LIMIT 2000`
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		defer nrows.Close()
 		for nrows.Next() {
 			var b store.Bead
 			if err := nrows.Scan(&b.ID, &b.Title, &b.Description, &b.Status, &b.Priority, &b.Type, &b.Parent, &b.UpdatedAt); err != nil {
-				nrows.Close()
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
 			nodes[b.ID] = b
 		}
-		nrows.Close()
+		if err := nrows.Err(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
