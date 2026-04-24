@@ -13,6 +13,7 @@ import (
 	"time"
 
 	spgit "github.com/awell-health/spire/pkg/git"
+	pkgregistry "github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -45,17 +46,22 @@ func CmdWizardReview(args []string, deps *Deps) error {
 
 	log := wizardLogSink(reviewerName)
 
-	// Self-register in the wizard registry.
-	regCleanup := deps.RegisterSelf(reviewerName, beadID, "review")
-	defer regCleanup()
+	// Stamp the review phase on the existing registry entry created by BeginWork.
+	// OrphanSweep and EndWork are the sole removers — the reviewer no longer owns
+	// registry cleanup. Log but don't fail if entry not found.
+	if uerr := pkgregistry.Update(reviewerName, func(re *pkgregistry.Entry) {
+		re.Phase = "review"
+		re.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
+	}); uerr != nil {
+		log("warning: registry stamp for %s: %v", reviewerName, uerr)
+	}
 
-	// Signal handler for cleanup. os.Exit skips defers, so we must
-	// replicate the registry cleanup here.
+	// Signal handler — registry cleanup is no longer done here; the entry
+	// was created by BeginWork and is cleaned by OrphanSweep/EndWork.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		regCleanup()
 		os.Exit(1)
 	}()
 

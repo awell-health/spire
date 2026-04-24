@@ -157,12 +157,16 @@ func cmdBoard(args []string) error {
 
 	fetchAgents := func() []board.LocalAgent {
 		reg := agent.LoadRegistry()
-		before := len(reg.Wizards)
-		reg = cleanDeadWizards(reg, true)
-		if len(reg.Wizards) < before {
-			saveWizardRegistry(reg)
+		// Filter out dead entries (PID<=0 or process no longer alive) before
+		// surfacing to the board. OrphanSweep (run by BeginWork/steward daemon)
+		// handles bead-level cleanup; we only prune the display list here.
+		var live []agent.Entry
+		for _, w := range reg.Wizards {
+			if w.PID > 0 && processAlive(w.PID) {
+				live = append(live, w)
+			}
 		}
-		return reg.Wizards
+		return live
 	}
 
 	actionFn := func(action board.PendingAction, beadID string) bool {

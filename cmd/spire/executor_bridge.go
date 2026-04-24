@@ -231,9 +231,6 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.De
 		// Agent registry
 		RegistryAdd:    func(entry agent.Entry) error { return wizardRegistryAdd(entry) },
 		RegistryRemove: func(name string) error { return wizardRegistryRemove(name) },
-		RegisterSelf: func(name, beadID, phase string, opts ...func(*agent.Entry)) func() {
-			return agent.RegisterSelf(name, beadID, phase, opts...)
-		},
 
 		// Resolution
 		ResolveRepo:   wizardResolveRepo,

@@ -145,29 +145,8 @@ func RegistryUpdate(name string, update func(*Entry)) error {
 	})
 }
 
-// RegisterSelf registers the current process in the wizard registry and returns
-// a cleanup function that removes it. Call cleanup via defer.
-// DEPRECATED: migrated to pkg/registry. Runtime field-stamp callers should use
-// registry.Update; summon callers will use beadlifecycle.BeginWork once that
-// package is wired in Phase 2.
-func RegisterSelf(name, beadID, phase string, opts ...func(*Entry)) func() {
-	now := time.Now().UTC().Format(time.RFC3339)
-	entry := Entry{
-		Name:           name,
-		PID:            os.Getpid(),
-		BeadID:         beadID,
-		StartedAt:      now,
-		Phase:          phase,
-		PhaseStartedAt: now,
-	}
-	for _, opt := range opts {
-		opt(&entry)
-	}
-	RegistryAdd(entry)
-	return func() { RegistryRemove(name) }
-}
-
-// WithInstanceID returns a RegisterSelf option that sets the entry's InstanceID.
+// WithInstanceID returns an option function that sets the InstanceID field on an Entry.
+// Used by callers that construct entries manually (e.g. tests, registry.Update closures).
 func WithInstanceID(id string) func(*Entry) {
 	return func(e *Entry) {
 		e.InstanceID = id

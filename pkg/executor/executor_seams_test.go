@@ -1334,15 +1334,16 @@ func TestCollectDesignContext_NoDeps(t *testing.T) {
 }
 
 // =============================================================================
-// Seam: Wave executor exit cleanup — orphaned-open-attempt / empty-registry
+// Seam: Wave executor exit cleanup — orphaned-open-attempt
 //
-// Bug: wave executor disappears after startup, leaving attempt bead open and
-// registry empty. Root cause: deferred CloseAttemptBead can be skipped if a
-// prior defer panics, or if RegistryAdd was in the constructor but RegistryRemove
-// only runs inside Run/RunGraph.
-//
+// Bug: wave executor disappears after startup, leaving attempt bead open.
 // These tests verify the invariant: after executor exit (success or failure),
-// RegistryRemove is called AND CloseAttemptBead is called.
+// CloseAttemptBead is called.
+//
+// Note: RegistryAdd/RegistryRemove are no longer called by RunGraph. Registry
+// entries are created by BeginWork (PID=0 placeholder) and stamped by RunGraph
+// via registry.Update. Cleanup is the responsibility of OrphanSweep/EndWork.
+// spi-pbuhit Phase 3: RegisterSelf dep removed.
 // =============================================================================
 
 
@@ -1353,8 +1354,6 @@ func TestGraphExecutorExitCleansUpRegistry(t *testing.T) {
 	configDir := t.TempDir()
 	configDirFn := func() (string, error) { return configDir, nil }
 
-	registryAddCalled := false
-	registryRemoveCalled := false
 	var closedAttemptID string
 	var closedAttemptResult string
 
@@ -1385,18 +1384,8 @@ func TestGraphExecutorExitCleansUpRegistry(t *testing.T) {
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return "", "", "", fmt.Errorf("simulated repo resolution failure")
 		},
-		RegistryAdd: func(entry agent.Entry) error {
-			registryAddCalled = true
-			return nil
-		},
-		RegistryRemove: func(name string) error {
-			registryRemoveCalled = true
-			return nil
-		},
-		RegisterSelf: func(name, beadID, phase string, opts ...func(*agent.Entry)) func() {
-			registryAddCalled = true
-			return func() { registryRemoveCalled = true }
-		},
+		RegistryAdd:    func(entry agent.Entry) error { return nil },
+		RegistryRemove: func(name string) error { return nil },
 		UpdateBead: func(id string, updates map[string]interface{}) error { return nil },
 		CreateBead: func(opts CreateOpts) (string, error) {
 			return "spi-graph.alert-1", nil
@@ -1438,16 +1427,6 @@ func TestGraphExecutorExitCleansUpRegistry(t *testing.T) {
 	// Expect an error from the failed repo resolution.
 	if err == nil {
 		t.Fatal("expected error from repo resolution failure, got nil")
-	}
-
-	// INVARIANT: RegistryAdd must have been called.
-	if !registryAddCalled {
-		t.Error("RegistryAdd was not called")
-	}
-
-	// INVARIANT: RegistryRemove must have been called.
-	if !registryRemoveCalled {
-		t.Error("RegistryRemove was not called — registry entry is orphaned")
 	}
 
 	// INVARIANT: CloseAttemptBead must have been called.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -32,11 +34,18 @@ func (e *Executor) graphStateStore() GraphStateStore {
 func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	graphStore := e.graphStateStore()
 
-	// Register with wizard registry inside RunGraph() — paired with the deferred
-	// cleanup below so registration and cleanup are always atomic.
-	regCleanup := e.deps.RegisterSelf(e.agentName, e.beadID, "graph:"+state.ActiveStep,
-		agent.WithInstanceID(config.InstanceID()))
-	defer regCleanup()
+	// Stamp the current phase and instance ID on the existing registry entry that
+	// BeginWork created with PID=0. OrphanSweep and EndWork are the sole removers —
+	// RunGraph no longer owns entry cleanup. Log but don't fail if entry not found
+	// (executor may run in modes where no registry entry was created, e.g. tests).
+	instanceID := config.InstanceID()
+	if uerr := registry.Update(e.agentName, func(re *registry.Entry) {
+		re.Phase = "graph:" + state.ActiveStep
+		re.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
+		re.InstanceID = instanceID
+	}); uerr != nil {
+		log.Printf("warning: registry stamp for %s: %v", e.agentName, uerr)
+	}
 	defer func() {
 		if e.terminated {
 			graphStore.Remove(e.agentName)

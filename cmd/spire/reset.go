@@ -1094,6 +1094,12 @@ func cleanupInternalDAGChildren(children []Bead, hard bool, cycle int) internalD
 		if child.Status == "closed" {
 			continue
 		}
+		// NOTE: EndWork is NOT appropriate here. EndWork operates on the parent
+		// task bead's attempt bead (the one created by BeginWork). These child
+		// beads are internal DAG sub-beads (step attempts, review rounds) nested
+		// UNDER the parent task's attempt — closing them directly with
+		// storeCloseBeadFunc is correct. The parent task bead's attempt is
+		// handled separately by the reset flow.
 		if err := storeCloseBeadFunc(child.ID); err != nil {
 			fmt.Printf("  %s(note: could not close %s: %s)%s\n", dim, child.ID, err, reset)
 			continue
@@ -1296,6 +1302,12 @@ func deleteInternalDAGBeadsRecursive(children []Bead, cycle int) internalDAGClea
 		// Attempt/review beads are preserved across hard reset for log
 		// continuity. Close them in place (idempotent for already-closed
 		// children) and stamp the cycle.
+		//
+		// NOTE: EndWork is NOT appropriate here. EndWork operates on the parent
+		// task bead's attempt bead (the one created by BeginWork). These children
+		// are internal DAG sub-beads (step attempts, review rounds) nested UNDER
+		// the parent task's attempt — closing them directly with storeCloseBeadFunc
+		// is correct. The parent task bead's attempt is handled separately.
 		if kind == "attempt" || kind == "review" {
 			stampResetCycleIfMissing(child, cycle)
 			if child.Status == "closed" {
