@@ -6,10 +6,28 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/alerts"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
+
+// depsBeadOps adapts *Deps to alerts.BeadOps so Raise can be called with
+// the executor's existing dependency surface.
+type depsBeadOps struct {
+	deps *Deps
+}
+
+func (a depsBeadOps) CreateBead(opts store.CreateOpts) (string, error) {
+	return a.deps.CreateBead(opts)
+}
+
+func (a depsBeadOps) AddDepTyped(from, to, depType string) error {
+	if a.deps.AddDepTyped == nil {
+		return nil
+	}
+	return a.deps.AddDepTyped(from, to, depType)
+}
 
 // isRecoveryBead returns true if the bead is itself a recovery bead,
 // used as a circuit breaker to prevent cascading escalations.
@@ -61,24 +79,9 @@ func (o executorBeadOps) CloseBead(id string) error {
 // MessageArchmage sends a spire message to the archmage referencing the given bead.
 // Errors are logged but do not block the caller.
 func MessageArchmage(from, beadID, message string, deps *Deps) {
-	labels := []string{"msg", "to:archmage", "from:" + from}
-	msgID, err := deps.CreateBead(CreateOpts{
-		Title:    message,
-		Priority: 1,
-		Type:     beads.IssueType("message"),
-		Prefix:   store.PrefixFromID(beadID),
-		Labels:   labels,
-	})
-	if err != nil {
+	if _, err := alerts.Raise(depsBeadOps{deps}, beadID, alerts.ClassArchmageMsg, message,
+		alerts.WithFrom(from)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: message archmage: %s\n", err)
-		return
-	}
-
-	// Link message to bead via related dep (not ref: label).
-	if msgID != "" && deps.AddDepTyped != nil {
-		if derr := deps.AddDepTyped(msgID, beadID, "related"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", msgID, beadID, derr)
-		}
 	}
 }
 
@@ -100,29 +103,10 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 		return
 	}
 
-	prefix := store.PrefixFromID(beadID)
 	alertTitle := fmt.Sprintf("[empty-implement] %s: apprentice produced no code changes", beadID)
-	if len(alertTitle) > 200 {
-		alertTitle = alertTitle[:200]
-	}
-	alertLabels := []string{"alert:empty-implement"}
-	alertID, err := deps.CreateBead(CreateOpts{
-		Title:    alertTitle,
-		Priority: 0,
-		Type:     beads.TypeTask,
-		Labels:   alertLabels,
-		Prefix:   prefix,
-	})
-	if err != nil {
+	if _, err := alerts.Raise(depsBeadOps{deps}, beadID, alerts.ClassAlert, alertTitle,
+		alerts.WithSubclass("empty-implement")); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: escalate empty-implement alert: %s\n", err)
-	}
-
-	// Link alert to source bead via caused-by dep so closing the source
-	// bead can cascade-close this alert automatically.
-	if alertID != "" && deps.AddDepTyped != nil {
-		if derr := deps.AddDepTyped(alertID, beadID, "caused-by"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", alertID, beadID, derr)
-		}
 	}
 
 	deps.AddComment(beadID, fmt.Sprintf(
@@ -153,31 +137,11 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 		return
 	}
 
-	prefix := store.PrefixFromID(beadID)
-
 	// Create an alert bead that surfaces at the top of the board.
 	alertTitle := fmt.Sprintf("[%s] %s: %s", failureType, beadID, message)
-	if len(alertTitle) > 200 {
-		alertTitle = alertTitle[:200]
-	}
-	alertLabels := []string{"alert:" + failureType}
-	alertID, err := deps.CreateBead(CreateOpts{
-		Title:    alertTitle,
-		Priority: 0,
-		Type:     beads.TypeTask,
-		Labels:   alertLabels,
-		Prefix:   prefix,
-	})
-	if err != nil {
+	if _, err := alerts.Raise(depsBeadOps{deps}, beadID, alerts.ClassAlert, alertTitle,
+		alerts.WithSubclass(failureType)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: escalate alert: %s\n", err)
-	}
-
-	// Link alert to source bead via caused-by dep so closing the source
-	// bead can cascade-close this alert automatically.
-	if alertID != "" && deps.AddDepTyped != nil {
-		if derr := deps.AddDepTyped(alertID, beadID, "caused-by"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", alertID, beadID, derr)
-		}
 	}
 
 	// Leave a comment on the bead so the history is clear.
@@ -206,8 +170,6 @@ func EscalateGraphStepFailure(beadID, agentName, failureType, message string, st
 		return
 	}
 
-	prefix := store.PrefixFromID(beadID)
-
 	// Build node-scoped context string.
 	var ctx []string
 	if stepName != "" {
@@ -226,25 +188,9 @@ func EscalateGraphStepFailure(beadID, agentName, failureType, message string, st
 
 	// Alert title includes node context.
 	alertTitle := fmt.Sprintf("[%s] %s: %s (%s)", failureType, beadID, message, stepCtx)
-	if len(alertTitle) > 200 {
-		alertTitle = alertTitle[:200]
-	}
-	alertLabels := []string{"alert:" + failureType}
-	alertID, err := deps.CreateBead(CreateOpts{
-		Title:    alertTitle,
-		Priority: 0,
-		Type:     beads.TypeTask,
-		Labels:   alertLabels,
-		Prefix:   prefix,
-	})
-	if err != nil {
+	if _, err := alerts.Raise(depsBeadOps{deps}, beadID, alerts.ClassAlert, alertTitle,
+		alerts.WithSubclass(failureType)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: escalate alert: %s\n", err)
-	}
-
-	if alertID != "" && deps.AddDepTyped != nil {
-		if derr := deps.AddDepTyped(alertID, beadID, "caused-by"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", alertID, beadID, derr)
-		}
 	}
 
 	// Comment uses node-scoped wording.

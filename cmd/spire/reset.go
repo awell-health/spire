@@ -543,7 +543,7 @@ func resetV3(beadID string, hard bool, wizardName, worktreePath string) error {
 	// stamp points at the cycle the alerts *belonged* to — the one that
 	// just ended. See spi-pwdhs5 Bug B.
 	cascadeReason := fmt.Sprintf("reset-cycle:%d", readParentResetCycle(beadID))
-	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, cascadeReason); err != nil {
+	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, []string{"caused-by", "recovery-for"}, cascadeReason); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not close dependents: %v\n", err)
 	}
 
@@ -872,7 +872,7 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 
 	// --- 8b. Close related recovery + alert beads ---
 	cascadeReason := fmt.Sprintf("reset-cycle:%d", readParentResetCycle(beadID))
-	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, cascadeReason); err != nil {
+	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, []string{"caused-by", "recovery-for"}, cascadeReason); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not close dependents: %v\n", err)
 	}
 

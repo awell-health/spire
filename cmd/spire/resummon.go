@@ -117,7 +117,7 @@ func cmdResummon(args []string) error {
 	// per-caller alert close in step 5 (closeRelatedAlerts) is kept as a
 	// belt-and-suspenders helper; CloseRelatedDependents is the canonical
 	// path.
-	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, "resummon"); err != nil {
+	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, []string{"caused-by", "recovery-for"}, "resummon"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not close dependents: %v\n", err)
 	}
 

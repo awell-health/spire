@@ -3197,6 +3197,13 @@ func TestSendMessage_DerivesPrefix(t *testing.T) {
 			}
 			defer func() { CreateBeadFunc = origCreate }()
 
+			// Stub AddDepTyped so sendMessage with ref != "" can call alerts.Raise
+			// without a live store. When ref != "", sendMessage routes through
+			// pkg/alerts which calls AddDepTyped after CreateBead.
+			origAddDep := AddDepTypedFunc
+			AddDepTypedFunc = func(from, to, depType string) error { return nil }
+			defer func() { AddDepTypedFunc = origAddDep }()
+
 			_, err := sendMessage("archmage", "steward", "test body", tt.ref, 1)
 			if err != nil {
 				t.Fatalf("sendMessage returned error: %v", err)

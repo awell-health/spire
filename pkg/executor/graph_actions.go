@@ -1048,7 +1048,7 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 		// any surviving alert:* dependents should have been handled on
 		// their own closure path. Bug B only widens the reset cascade
 		// (not the success cascade) to include alerts.
-		if err := recovery.CloseRelatedDependents(executorBeadOps{e.deps}, e.beadID, []string{recovery.KindRecovery}, "bead finished successfully"); err != nil {
+		if err := recovery.CloseRelatedDependents(executorBeadOps{e.deps}, e.beadID, []string{recovery.KindRecovery, recovery.KindAlert}, []string{"caused-by", "recovery-for"}, "bead finished successfully"); err != nil {
 			e.log("warning: close recovery beads: %v", err)
 		}
 

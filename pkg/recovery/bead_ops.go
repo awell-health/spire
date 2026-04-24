@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -84,20 +85,20 @@ func matchesKind(item *beads.IssueWithDependencyMetadata, kinds []string) bool {
 }
 
 // CloseRelatedDependents closes open dependent beads linked to beadID whose
-// kind appears in the kinds slice. This is the generalized replacement for
-// CloseRelatedRecoveryBeads — pass kinds=[]string{KindRecovery} to preserve
-// the old behavior; pass kinds=[]string{KindRecovery, KindAlert} to also
-// close alert beads (the spi-pwdhs5 Bug B reset-cascade fix).
+// kind appears in the kinds slice and whose dependency edge type appears in
+// the depTypes slice.
 //
-// Dependents are matched via the recovery-link edge set (caused-by or
-// recovery-for). The dependency edge type is what distinguishes related
-// failure/recovery/alert children from unrelated dependents (blocked-by,
-// discovered-from, etc.) — we never close beads linked by arbitrary edge.
+// kinds controls which bead kinds to close (KindRecovery, KindAlert).
+// depTypes controls which dependency edge types to traverse. Pass
+// []string{"caused-by", "recovery-for"} to preserve the previous behaviour
+// (equivalent to the old hardcoded isRecoveryLink check). Pass
+// []string{"caused-by", "related"} to also traverse "related" edges, which
+// is needed when alert beads were linked via the resummon path.
 //
 // reason is appended as a comment before closing. When kinds contains
 // KindAlert, callers typically pass a "reset-cycle:<N>" string so the board
 // can group post-reset state by cycle (see cmd/spire/reset.go).
-func CloseRelatedDependents(ops BeadOps, beadID string, kinds []string, reason string) error {
+func CloseRelatedDependents(ops BeadOps, beadID string, kinds []string, depTypes []string, reason string) error {
 	items, err := ops.GetDependentsWithMeta(beadID)
 	if err != nil {
 		return err
@@ -106,7 +107,7 @@ func CloseRelatedDependents(ops BeadOps, beadID string, kinds []string, reason s
 		if item.Status != beads.StatusOpen && item.Status != beads.StatusInProgress {
 			continue
 		}
-		if !isRecoveryLink(string(item.DependencyType)) {
+		if !slices.Contains(depTypes, string(item.DependencyType)) {
 			continue
 		}
 		if !matchesKind(item, kinds) {
