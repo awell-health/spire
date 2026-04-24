@@ -1,0 +1,59 @@
+name: Release to Artifact Registry
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Chart.yaml appVersion matches tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          chart_app_version="$(awk '/^appVersion:/ {gsub(/"/, "", $2); sub(/^v/, "", $2); print $2}' helm/spire/Chart.yaml)"
+          if [ "$tag" != "$chart_app_version" ]; then
+            echo "ERROR: helm/spire/Chart.yaml appVersion ($chart_app_version) does not match git tag ($tag)" >&2
+            echo "The Helm chart appVersion must match the image tag being released." >&2
+            exit 1
+          fi
+          echo "Chart.yaml appVersion matches tag: $tag"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GAR_WIF_PROVIDER }}
+          service_account: ${{ secrets.GAR_SERVICE_ACCOUNT }}
+
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push steward image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.steward
+          push: true
+          tags: |
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/spire/steward:${{ github.ref_name }}
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/spire/steward:latest
+
+      - name: Build and push agent image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.agent
+          push: true
+          tags: |
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/spire/agent:${{ github.ref_name }}
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/spire/agent:latest
