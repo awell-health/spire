@@ -99,6 +99,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/board", s.corsMiddleware(s.bearerAuth(s.handleBoard)))
 	mux.Handle("/api/v1/roster", s.corsMiddleware(s.bearerAuth(s.handleRoster)))
 	mux.Handle("/api/v1/tower", s.corsMiddleware(s.bearerAuth(s.handleTower)))
+	mux.Handle("/api/v1/towers", s.corsMiddleware(s.bearerAuth(s.handleTowers)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -541,6 +542,41 @@ func (s *Server) handleTower(w http.ResponseWriter, r *http.Request) {
 		out["deploy_mode"] = string(tower.EffectiveDeploymentMode())
 		out["dolt_url"] = tower.DolthubRemote
 		out["archmage"] = tower.Archmage.Name
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleTowers answers GET /api/v1/towers with every tower config on disk
+// plus the currently-active one. Consumed by the desktop's tower picker;
+// switching still requires `spire tower use <name>` from the CLI because
+// the gateway process is bound to one dolt/config at boot.
+func (s *Server) handleTowers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	towers, _ := config.ListTowerConfigs()
+	active := ""
+	if t, err := config.ResolveTowerConfig(); err == nil && t != nil {
+		active = t.Name
+	}
+	type towerRow struct {
+		Name     string `json:"name"`
+		Prefix   string `json:"prefix"`
+		Database string `json:"database"`
+		Active   bool   `json:"active"`
+	}
+	out := struct {
+		Active string     `json:"active"`
+		Towers []towerRow `json:"towers"`
+	}{Active: active}
+	for _, t := range towers {
+		out.Towers = append(out.Towers, towerRow{
+			Name:     t.Name,
+			Prefix:   t.HubPrefix,
+			Database: t.Database,
+			Active:   t.Name == active,
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
