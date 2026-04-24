@@ -83,10 +83,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 
-	// Legacy routes (no auth required — pre-existing behaviour).
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	// Legacy routes (no auth required — pre-existing behaviour). Wrap
+	// /healthz with CORS so the Electron renderer's connection probe
+	// succeeds from the Vite dev origin (http://localhost:5173).
+	mux.Handle("/healthz", s.corsMiddleware(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
-	})
+	}))
 	if s.target != nil {
 		mux.HandleFunc("/sync", s.handleSync)
 	}
