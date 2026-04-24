@@ -1000,12 +1000,21 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 		return nil
 	}
 
-	repoPath, _, baseBranch, err := e.deps.ResolveRepo(e.beadID)
+	repoPath, repoURL, baseBranch, err := e.deps.ResolveRepo(e.beadID)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
 	if repoPath == "" {
-		repoPath = "."
+		return fmt.Errorf("executor: repo path unresolved for bead %s (prefix likely unbound; run `spire repo list` to check and `spire repo bind <prefix> <path>` to register a local path)", e.beadID)
+	}
+
+	// Step-dispatch prologue: verify the resolved path exists on disk,
+	// is a git repo, and its origin matches the prefix's registered
+	// remote URL. Mismatches mean we're about to hand a role off to the
+	// wrong filesystem repo (see spi-rpuzs6). Fail loud rather than
+	// letting the dispatch continue against a foreign repo.
+	if err := verifyResolvedRepo(repoPath, extractPrefix(e.beadID), repoURL); err != nil {
+		return fmt.Errorf("verify resolved repo for bead %s: %w", e.beadID, err)
 	}
 
 	state.RepoPath = repoPath

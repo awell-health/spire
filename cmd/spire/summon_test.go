@@ -520,3 +520,65 @@ func TestScanOrphanedBeads_DeduplicatesBeadID(t *testing.T) {
 		}
 	}
 }
+
+// TestPreflightResolveTargets_UnboundAborts is the layer-0 guard
+// (spi-rpuzs6). `spire summon spd-1jd` where the spd prefix is unbound
+// must exit non-zero with a bind-instructions error before any wizard
+// is spawned.
+func TestPreflightResolveTargets_UnboundAborts(t *testing.T) {
+	prev := wizardResolveRepoForSummon
+	wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+		return "", "", "", fmt.Errorf("no local repo registered for prefix %q (bead %s)", "spd", beadID)
+	}
+	t.Cleanup(func() { wizardResolveRepoForSummon = prev })
+
+	err := preflightResolveTargets([]string{"spd-1jd"})
+	if err == nil {
+		t.Fatal("preflightResolveTargets with unbound prefix = nil, want aborting error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"spd-1jd", "spd", "spire repo bind", "unbound"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+// TestPreflightResolveTargets_BoundPasses confirms that a resolvable
+// prefix short-circuits with a nil error — the normal summon path.
+func TestPreflightResolveTargets_BoundPasses(t *testing.T) {
+	prev := wizardResolveRepoForSummon
+	wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+		return "/tmp/spire", "git@github.com:example/spire.git", "main", nil
+	}
+	t.Cleanup(func() { wizardResolveRepoForSummon = prev })
+
+	if err := preflightResolveTargets([]string{"spi-abc"}); err != nil {
+		t.Fatalf("preflightResolveTargets with bound prefix err = %v, want nil", err)
+	}
+}
+
+// TestPreflightResolveTargets_ReportsAllUnbound verifies the pre-flight
+// surfaces every unbound prefix in one pass — so operators fix them
+// together instead of playing whack-a-mole.
+func TestPreflightResolveTargets_ReportsAllUnbound(t *testing.T) {
+	prev := wizardResolveRepoForSummon
+	wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+		prefix := beadID
+		if idx := strings.Index(beadID, "-"); idx > 0 {
+			prefix = beadID[:idx]
+		}
+		return "", "", "", fmt.Errorf("no local repo registered for prefix %q (bead %s)", prefix, beadID)
+	}
+	t.Cleanup(func() { wizardResolveRepoForSummon = prev })
+
+	err := preflightResolveTargets([]string{"spd-1jd", "oo-abc"})
+	if err == nil {
+		t.Fatal("preflightResolveTargets = nil, want error listing both unbound prefixes")
+	}
+	for _, want := range []string{"spd-1jd", "oo-abc"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q:\n%s", want, err.Error())
+		}
+	}
+}

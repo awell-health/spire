@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,42 +58,71 @@ type SplitTask = executor.SplitTask
 
 // newGraphExecutor creates a v3 graph executor for a bead, wiring up all dependencies.
 func newGraphExecutor(beadID, agentName string, graph *formulaPkg.FormulaStepGraph, spawner AgentBackend) (*formulaExecutor, error) {
-	deps := buildExecutorDepsForBead(beadID, spawner)
+	deps, err := buildExecutorDepsForBead(beadID, spawner)
+	if err != nil {
+		return nil, err
+	}
 	return executor.NewGraph(beadID, agentName, graph, deps)
 }
 
 // computeWaves delegates to pkg/executor.ComputeWaves.
 func computeWaves(epicID string) ([][]string, error) {
-	deps := buildExecutorDepsForBead(epicID, resolveBackendForBead(epicID))
+	deps, err := buildExecutorDepsForBead(epicID, resolveBackendForBead(epicID))
+	if err != nil {
+		return nil, err
+	}
 	return executor.ComputeWaves(epicID, deps)
 }
 
 // --- Terminal step wrappers ---
 
-func terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, log func(string, ...interface{})) error {
-	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
-	return executor.TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd, deps, log)
+func terminalMerge(beadID, branch, baseBranch, repoPath, buildCmd string, logFn func(string, ...interface{})) error {
+	deps, err := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
+	if err != nil {
+		return err
+	}
+	return executor.TerminalMerge(beadID, branch, baseBranch, repoPath, buildCmd, deps, logFn)
 }
 
-func terminalSplit(beadID, reviewerName string, splitTasks []SplitTask, log func(string, ...interface{})) error {
-	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
-	return executor.TerminalSplit(beadID, reviewerName, splitTasks, deps, log)
+func terminalSplit(beadID, reviewerName string, splitTasks []SplitTask, logFn func(string, ...interface{})) error {
+	deps, err := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
+	if err != nil {
+		return err
+	}
+	return executor.TerminalSplit(beadID, reviewerName, splitTasks, deps, logFn)
 }
 
-func terminalDiscard(beadID string, log func(string, ...interface{})) error {
-	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
-	return executor.TerminalDiscard(beadID, deps, log)
+func terminalDiscard(beadID string, logFn func(string, ...interface{})) error {
+	deps, err := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
+	if err != nil {
+		return err
+	}
+	return executor.TerminalDiscard(beadID, deps, logFn)
 }
 
 // --- Escalation wrappers ---
 
 func wizardMessageArchmage(from, beadID, message string) {
-	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
+	// Fire-and-forget escalation path. If the bead's prefix is unbound
+	// the error is logged and the message is dropped — we refuse to
+	// proceed with an unresolved repo. The upstream guards (summon
+	// pre-flight, graph_interpreter) should prevent this from ever being
+	// reached in practice; this is belt-and-suspenders.
+	deps, err := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
+	if err != nil {
+		log.Printf("[ERROR] wizardMessageArchmage: dropping message for bead %s: %v", beadID, err)
+		return
+	}
 	executor.MessageArchmage(from, beadID, message, deps)
 }
 
 func escalateHumanFailure(beadID, agentName, failureType, message string) {
-	deps := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
+	// Fire-and-forget escalation path. See wizardMessageArchmage.
+	deps, err := buildExecutorDepsForBead(beadID, resolveBackendForBead(beadID))
+	if err != nil {
+		log.Printf("[ERROR] escalateHumanFailure: dropping escalation for bead %s: %v", beadID, err)
+		return
+	}
 	executor.EscalateHumanFailure(beadID, agentName, failureType, message, deps)
 }
 
@@ -102,7 +132,8 @@ func archmageIdentity() (name, email string) {
 	// No bead context — fall back to cwd-based resolution. archmageIdentity
 	// only reads git config, so the spawner choice here does not affect
 	// behavior; we pass a process backend to avoid the cwd assertion.
-	deps := buildExecutorDepsForBead("", ResolveBackend(""))
+	// buildExecutorDepsForBead cannot error when beadID is empty.
+	deps, _ := buildExecutorDepsForBead("", ResolveBackend(""))
 	return executor.ArchmageIdentity(deps)
 }
 
@@ -111,18 +142,34 @@ func archmageIdentity() (name, email string) {
 // buildExecutorDeps is the legacy, cwd-based wiring entry point. Prefer
 // buildExecutorDepsForBead so config reads honor the bead's registered
 // repo path rather than ambient CWD. See spi-vrzhf.
+//
+// Always returns a non-nil *executor.Deps with a nil error because the
+// empty beadID bypasses the ResolveRepo check. Tests and legacy callers
+// ignore the second return value.
 func buildExecutorDeps(spawner AgentBackend) *executor.Deps {
-	return buildExecutorDepsForBead("", spawner)
+	deps, _ := buildExecutorDepsForBead("", spawner)
+	return deps
 }
 
 // buildExecutorDepsForBead resolves executor.Deps values that read
 // spire.yaml from the bead's registered repo path. Pass beadID="" when
 // no bead context is available (e.g. archmage-identity only reads git
 // config and is insensitive to backend/repo config).
-func buildExecutorDepsForBead(beadID string, spawner AgentBackend) *executor.Deps {
+//
+// When beadID's prefix is unbound, wizardResolveRepo returns an error.
+// That error is logged loudly and propagated up via the returned error.
+// Callers must not silently substitute a CWD fallback — the empty
+// repoPath flows downstream only to make it observable to the executor
+// guard in pkg/executor/graph_interpreter.go, which fails closed.
+func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.Deps, error) {
 	repoPath := ""
+	var resolveErr error
 	if beadID != "" {
-		if rp, _, _, err := wizardResolveRepo(beadID); err == nil {
+		rp, _, _, err := wizardResolveRepo(beadID)
+		if err != nil {
+			log.Printf("[ERROR] executor_bridge: ResolveRepo failed for bead %s: %v (run `spire repo list` to see prefix bindings; `spire repo bind <prefix> <path>` to register a local path)", beadID, err)
+			resolveErr = fmt.Errorf("executor_bridge: resolve repo for bead %s: %w", beadID, err)
+		} else {
 			repoPath = rp
 		}
 	}
@@ -266,7 +313,7 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) *executor.Dep
 		HasLabel:       hasLabel,
 		ContainsLabel:  containsLabel,
 		ParseIssueType: parseIssueType,
-	}
+	}, resolveErr
 }
 
 // bridgeReviewEscalateToArbiter adapts the cmd/spire reviewEscalateToArbiter

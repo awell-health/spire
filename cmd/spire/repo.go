@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var setRepoURL string
@@ -216,16 +218,10 @@ func repoList(jsonOut bool) error {
 				data, _ := json.MarshalIndent(rows, "", "  ")
 				fmt.Println(string(data))
 			} else {
+				useColor := colorOutputEnabled()
 				fmt.Printf("%-10s %-50s %-10s %-12s %s\n", "PREFIX", "REPO", "BRANCH", "LANGUAGE", "LOCAL")
 				for _, r := range rows {
-					local := "—"
-					if b := bindings[r["prefix"]]; b != nil {
-						if b.State == "bound" && b.LocalPath != "" {
-							local = fmt.Sprintf("bound (%s)", b.LocalPath)
-						} else {
-							local = b.State
-						}
-					}
+					local := renderLocalBindingCell(bindings[r["prefix"]], useColor)
 					fmt.Printf("%-10s %-50s %-10s %-12s %s\n", r["prefix"], r["repo_url"], r["branch"], r["language"], local)
 				}
 			}
@@ -443,4 +439,52 @@ func repoRemove(arg string) error {
 // Delegates to pkg/dolt.ParseDoltRows.
 func parseDoltRows(out string, columns []string) []map[string]string {
 	return dolt.ParseDoltRows(out, columns)
+}
+
+// colorOutputEnabled reports whether ANSI color escapes should be
+// emitted. Honors NO_COLOR (see no-color.org) and falls back to an
+// stdout-TTY probe so pipes, CI logs, and redirections stay plain.
+func colorOutputEnabled() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// renderLocalBindingCell formats the LOCAL column of `spire repo list`.
+// Unbound / skipped / unmanaged states get a visible `!` prefix (and
+// red+bold coloring when a TTY is attached) so they don't visually
+// blend with bound entries — see spi-rpuzs6. When NO_COLOR is set or
+// stdout is not a TTY, only the plain-text `!` prefix remains.
+func renderLocalBindingCell(b *config.LocalRepoBinding, useColor bool) string {
+	if b == nil {
+		if useColor {
+			return red + bold + "! unbound" + reset
+		}
+		return "! unbound"
+	}
+	switch b.State {
+	case "bound":
+		if b.LocalPath != "" {
+			return fmt.Sprintf("bound (%s)", b.LocalPath)
+		}
+		return "bound"
+	case "unbound":
+		if useColor {
+			return red + bold + "! unbound" + reset
+		}
+		return "! unbound"
+	case "skipped":
+		if useColor {
+			return yellow + "! skipped" + reset
+		}
+		return "! skipped"
+	case "unmanaged":
+		if useColor {
+			return dim + "unmanaged" + reset
+		}
+		return "unmanaged"
+	default:
+		return b.State
+	}
 }

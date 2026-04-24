@@ -41,7 +41,10 @@ func cmdDebugRecoveryDispatchImpl(cmd *cobra.Command, _ []string) error {
 	// would. Backend resolution follows the same cwd/repoPath
 	// fallback as every other dispatch site.
 	spawner := resolveBackendForBead(beadID)
-	deps := buildExecutorDepsForBead(beadID, spawner)
+	deps, err := buildExecutorDepsForBead(beadID, spawner)
+	if err != nil {
+		return fmt.Errorf("build executor deps: %w", err)
+	}
 
 	runner := func(ctx context.Context, bead *store.Bead, events chan<- recovery.PhaseEvent) (recovery.RecoveryOutcome, error) {
 		return executor.RunClericForeground(ctx, bead, deps, events)

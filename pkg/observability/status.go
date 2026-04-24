@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
@@ -74,6 +75,13 @@ type StatusData struct {
 	GlobalDir     string
 	Backend       agent.Backend
 	StewardHealth *StewardHealthData // nil if steward health unavailable
+
+	// UnboundPrefixes lists registered repo prefixes that have no local
+	// binding on this machine. Populated from the active tower's
+	// LocalBindings. Rendered as a warning row so operators see the
+	// misconfiguration (spi-rpuzs6) before a wizard writes to the wrong
+	// repo.
+	UnboundPrefixes []string
 }
 
 // RenderStatus renders the full lifecycle status display to stdout.
@@ -85,6 +93,11 @@ func RenderStatus(data StatusData) error {
 	renderDoltStatus(data.Services)
 	renderDaemonStatus(data.Services)
 	renderStewardStatus(data.Services)
+
+	// --- Unbound prefixes warning ---
+	if len(data.UnboundPrefixes) > 0 {
+		renderUnboundPrefixes(data.UnboundPrefixes)
+	}
 
 	// --- Steward Health ---
 	if data.StewardHealth != nil {
@@ -160,6 +173,25 @@ func renderStewardStatus(s ServiceStatus) {
 	} else {
 		fmt.Printf("  %s○%s steward        %sstopped%s\n", Dim, Reset, Dim, Reset)
 	}
+}
+
+// renderUnboundPrefixes surfaces prefixes with no local binding as a
+// visible warning row. Wizards can't summon against these prefixes —
+// the summon pre-flight will refuse, and the executor guard will fail
+// closed. See spi-rpuzs6 for the underlying silent-fallback bug.
+func renderUnboundPrefixes(prefixes []string) {
+	fmt.Printf("  %s⚠%s unbound prefix%s  %s%s%s\n",
+		Yellow, Reset, pluralize(len(prefixes)),
+		Bold, strings.Join(prefixes, ", "), Reset)
+	fmt.Printf("    %srun `spire repo bind <prefix> <path>` to register a local checkout%s\n",
+		Dim, Reset)
+}
+
+func pluralize(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "es"
 }
 
 func renderSyncInfo(si SyncInfo) {

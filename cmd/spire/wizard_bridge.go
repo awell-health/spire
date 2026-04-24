@@ -21,8 +21,22 @@ type ReviewIssue = wizard.ReviewIssue
 // --- Function aliases for backward compatibility ---
 // Other cmd/spire files (executor_bridge.go, formula_bridge.go) call these.
 
-func wizardResolveRepo(beadID string) (repoPath, repoURL, baseBranch string, err error) {
-	return wizard.ResolveRepo(beadID, buildWizardDeps())
+// wizardResolveRepo is exposed as a var (not a top-level func) so test
+// seams can replace it without threading a Deps struct through the
+// bridge. Production callers invoke it exactly like a function; the
+// extra indirection is invisible. See spi-rpuzs6.
+//
+// Initialized lazily in init() below to avoid the compile-time
+// initialization cycle: this var is referenced by buildWizardDeps, which
+// is referenced by computeWaves → resolveBackendForBead → back here.
+// The cycle exists only in the reference graph (closures), not at
+// runtime — so we break it by assigning after package init.
+var wizardResolveRepo func(beadID string) (repoPath, repoURL, baseBranch string, err error)
+
+func init() {
+	wizardResolveRepo = func(beadID string) (string, string, string, error) {
+		return wizard.ResolveRepo(beadID, buildWizardDeps())
+	}
 }
 
 func resolveBranchForBead(beadID, repoPath string) string {

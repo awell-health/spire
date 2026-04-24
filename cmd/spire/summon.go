@@ -211,11 +211,96 @@ func cmdSummon(args []string) error {
 		return fmt.Errorf("summon requires a positive number")
 	}
 
+	// Pre-flight: for explicit target bead IDs, verify each prefix is
+	// bound to a local path. Unbound prefixes silently default to CWD
+	// downstream, which causes wizards to commit to the wrong repo. Fail
+	// fast here before any wizard is spawned. (spi-rpuzs6)
+	if err := preflightResolveTargets(targetIDs); err != nil {
+		return err
+	}
+
 	// Detect mode: k8s or local.
 	if isK8sAvailableFunc() {
 		return summonK8s(count)
 	}
 	return summonLocal(count, targetIDs, dispatch)
+}
+
+// preflightResolveTargets verifies that every target bead ID has a
+// locally-bound prefix before any wizard is spawned. On any failure it
+// returns a diagnostic error listing each unbound prefix with the
+// `spire repo bind` one-liner. Beads with resolvable prefixes are
+// allowed through. Called before both summonK8s and summonLocal —
+// k8s-mode wizards also need local repo bindings when they clone back
+// to the operator's host, so the check is not local-mode-only.
+func preflightResolveTargets(targetIDs []string) error {
+	if len(targetIDs) == 0 {
+		return nil
+	}
+	var problems []string
+	for _, id := range targetIDs {
+		if _, _, _, err := wizardResolveRepoForSummon(id); err != nil {
+			problems = append(problems, formatSummonBindError(id, err))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.Join(problems, "\n"))
+}
+
+// wizardResolveRepoForSummon is a test seam for preflightResolveTargets
+// so unit tests can inject an in-memory resolver without shelling out to
+// dolt. Production callers always go through wizardResolveRepo.
+var wizardResolveRepoForSummon = wizardResolveRepo
+
+// formatSummonBindError renders a diagnostic message when a summoned
+// bead's prefix has no local binding. The message names the prefix, its
+// remote URL (if known), and the two bind one-liners the bug report
+// calls for.
+func formatSummonBindError(beadID string, resolveErr error) string {
+	prefix := ""
+	if idx := strings.Index(beadID, "-"); idx > 0 {
+		prefix = beadID[:idx]
+	}
+	remote := lookupRemoteForPrefix(prefix)
+	remoteLine := ""
+	if remote != "" {
+		remoteLine = fmt.Sprintf("  %s → %s (unbound)\n", prefix, remote)
+	} else {
+		remoteLine = fmt.Sprintf("  %s (unbound)\n", prefix)
+	}
+	return fmt.Sprintf(
+		"spire summon %s: prefix %q has no local binding.\n%s\nBind it with:\n  spire repo bind %s /path/to/local/checkout\n\nOr clone + bind in one step:\n  spire repo clone %s\n\n(underlying error: %v)",
+		beadID, prefix, remoteLine, prefix, prefix, resolveErr,
+	)
+}
+
+// lookupRemoteForPrefix returns the shared repo URL for a prefix, or ""
+// if it can't be determined (e.g. dolt unreachable, prefix not in the
+// repos table). Used only for error messaging.
+func lookupRemoteForPrefix(prefix string) string {
+	if prefix == "" {
+		return ""
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return ""
+	}
+	database, ambiguous := resolveDatabase(cfg)
+	if database == "" || ambiguous {
+		return ""
+	}
+	sql := fmt.Sprintf("SELECT repo_url FROM `%s`.repos WHERE prefix = '%s'", database, sqlEscape(prefix))
+	out, err := rawDoltQuery(sql)
+	if err != nil {
+		return ""
+	}
+	rows := parseDoltRows(out, []string{"repo_url"})
+	if len(rows) == 0 {
+		return ""
+	}
+	return rows[0]["repo_url"]
 }
 
 func cmdDismiss(args []string) error {

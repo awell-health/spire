@@ -31,8 +31,18 @@ func mustPlanJSON(t *testing.T, action string) string {
 
 // testGraphDeps returns mock deps suitable for graph interpreter tests.
 // The returned actionLog captures dispatched action calls.
+//
+// Tests that exercise resolveGraphBranchState use fake repo paths like
+// "/tmp/repo" which do not exist on disk and are not git repos. The
+// real verifyResolvedRepo introduced for spi-rpuzs6 would fail these
+// paths. We replace it with a no-op for the duration of each test and
+// restore the real implementation on cleanup. Production callers go
+// through verifyResolvedRepoReal — see repo_verify.go.
 func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 	t.Helper()
+	prev := verifyResolvedRepo
+	verifyResolvedRepo = func(repoPath, prefix, expectedURL string) error { return nil }
+	t.Cleanup(func() { verifyResolvedRepo = prev })
 	dir := t.TempDir()
 	actionLog := &[]string{}
 

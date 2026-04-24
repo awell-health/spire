@@ -1185,7 +1185,63 @@ Option 3 — set env vars before running:
 	fmt.Printf("  beads:       %s\n", beadCount)
 	fmt.Printf("  config:      %s\n", configPathStr)
 
+	// Surface any prefixes that still need binding. Without these,
+	// `spire summon` will refuse to run against them (see spi-rpuzs6).
+	// Re-read the tower from disk since walkSharedReposForBind has
+	// already persisted user bind choices.
+	if fresh, err := loadTowerConfig(tower.Name); err == nil {
+		printNextStepsBindPrefixes(fresh)
+	} else {
+		printNextStepsBindPrefixes(tower)
+	}
+
 	return nil
+}
+
+// printNextStepsBindPrefixes lists every registered prefix and, for any
+// not yet bound to a local path, prints the `spire repo bind` one-liner
+// the operator can run. Called at the end of `spire tower attach` so
+// users don't have to hunt down `spire repo list` to discover missing
+// bindings. See spi-rpuzs6.
+func printNextStepsBindPrefixes(tower *TowerConfig) {
+	if tower == nil || !isValidDatabaseName(tower.Database) {
+		return
+	}
+	sql := fmt.Sprintf("SELECT prefix, repo_url FROM `%s`.repos ORDER BY prefix", tower.Database)
+	out, err := rawDoltQuery(sql)
+	if err != nil {
+		return
+	}
+	rows := parseDoltRows(out, []string{"prefix", "repo_url"})
+	if len(rows) == 0 {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Next steps: bind prefixes")
+	for _, r := range rows {
+		prefix := r["prefix"]
+		if prefix == "" {
+			continue
+		}
+		remote := r["repo_url"]
+		var state, localPath string
+		if b := tower.LocalBindings[prefix]; b != nil {
+			state = b.State
+			localPath = b.LocalPath
+		}
+		switch {
+		case state == "bound" && localPath != "":
+			fmt.Printf("  %-10s %s  →  bound (%s)\n", prefix, remote, localPath)
+		case state == "skipped":
+			fmt.Printf("  %-10s %s  →  skipped\n", prefix, remote)
+		case state == "unmanaged":
+			fmt.Printf("  %-10s %s  →  unmanaged\n", prefix, remote)
+		default:
+			fmt.Printf("  %-10s %s\n", prefix, remote)
+			fmt.Printf("             spire repo bind %s /path/to/local/checkout\n", prefix)
+		}
+	}
 }
 
 // cmdTowerList lists all configured towers.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/observability"
 	"github.com/awell-health/spire/pkg/steward"
 	"github.com/awell-health/spire/pkg/store"
@@ -131,14 +132,62 @@ func cmdStatus(args []string) error {
 			StewardPID:    stewardPID,
 			StewardAlive:  stewardAlive,
 		},
-		SyncInfos:     syncInfos,
-		Agents:        agents,
-		AgentErr:      agentErr,
-		WorkQueue:     wq,
-		GlobalDir:     doltGlobalDir(),
-		Backend:       backend,
-		StewardHealth: stewardHealth,
+		SyncInfos:       syncInfos,
+		Agents:          agents,
+		AgentErr:        agentErr,
+		WorkQueue:       wq,
+		GlobalDir:       doltGlobalDir(),
+		Backend:         backend,
+		StewardHealth:   stewardHealth,
+		UnboundPrefixes: collectUnboundPrefixes(),
 	})
+}
+
+// collectUnboundPrefixes returns the prefixes registered in the active
+// tower's repos table whose local binding is either missing from the
+// tower config or marked as "unbound". Other states ("skipped",
+// "unmanaged") are intentionally-opted-out and are not warned about.
+// Returns nil when there is no active tower or dolt is unreachable —
+// the status view stays silent rather than surfacing a misleading
+// warning built from partial data. See spi-rpuzs6.
+func collectUnboundPrefixes() []string {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil
+	}
+	database, ambiguous := resolveDatabase(cfg)
+	if database == "" || ambiguous {
+		return nil
+	}
+	sql := fmt.Sprintf("SELECT prefix FROM `%s`.repos ORDER BY prefix", database)
+	out, err := rawDoltQuery(sql)
+	if err != nil {
+		return nil
+	}
+	rows := parseDoltRows(out, []string{"prefix"})
+	if len(rows) == 0 {
+		return nil
+	}
+
+	var bindings map[string]*config.LocalRepoBinding
+	if tc, err := towerConfigForDatabase(database); err == nil && tc.LocalBindings != nil {
+		bindings = tc.LocalBindings
+	}
+
+	var unbound []string
+	for _, r := range rows {
+		prefix := r["prefix"]
+		if prefix == "" {
+			continue
+		}
+		b := bindings[prefix]
+		// Treat both missing entries and explicit "unbound" state as
+		// warnings — either way, no local path is set.
+		if b == nil || b.State == "" || b.State == "unbound" || b.LocalPath == "" && b.State == "bound" {
+			unbound = append(unbound, prefix)
+		}
+	}
+	return unbound
 }
 
 // queryStewardHealth fetches /health/detailed from the steward's metrics server
