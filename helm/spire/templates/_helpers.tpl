@@ -199,6 +199,15 @@ layout was `<dataRoot>/<database>/.beads`.
 The partial emits `- name:`/`value:` list items starting at column 0;
 callers indent with `nindent 12` under the container's `env:` key.
 */}}
+{{/*
+spire.gatewaySecretName — Secret name for the gateway's SPIRE_API_TOKEN.
+Co-resident with the main spire Secret but separate so the token can be
+rotated without re-rolling the whole release.
+*/}}
+{{- define "spire.gatewaySecretName" -}}
+spire-gateway-auth
+{{- end -}}
+
 {{- define "spire.stewardCommonEnv" -}}
 - name: BEADS_DIR
   value: {{ include "spire.beadsDir" . | quote }}

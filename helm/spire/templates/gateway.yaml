@@ -1,0 +1,49 @@
+{{- if .Values.gateway.enabled }}
+# Service exposing the spire-serve HTTP API gateway (runs as a container in
+# the steward pod). Electron desktop clients connect here for /api/v1/*
+# routes. Webhook receiver on a separate port keeps Linear/GitHub POST
+# endpoints reachable at the same Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-gateway
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: spire-gateway
+    app.kubernetes.io/part-of: spire
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    app.kubernetes.io/name: spire-steward
+  ports:
+    - name: api
+      port: {{ .Values.gateway.apiPort }}
+      targetPort: api
+      protocol: TCP
+      {{- if and (eq .Values.gateway.service.type "NodePort") .Values.gateway.service.nodePort }}
+      nodePort: {{ .Values.gateway.service.nodePort }}
+      {{- end }}
+    - name: webhook
+      port: {{ .Values.gateway.webhookPort }}
+      targetPort: webhook
+      protocol: TCP
+{{- if .Values.gateway.apiToken }}
+---
+# Secret holding the Bearer token the gateway validates against. Set
+# `gateway.apiToken` via `--set-file` or `--set` at helm install time.
+# When unset, the gateway starts in dev mode (no auth) — fine for smoke
+# tests behind a cluster-local port-forward, but NEVER expose to the
+# internet without a token.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "spire.gatewaySecretName" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: spire
+type: Opaque
+stringData:
+  SPIRE_API_TOKEN: {{ .Values.gateway.apiToken | quote }}
+{{- end }}
+{{- end }}

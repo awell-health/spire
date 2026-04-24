@@ -91,3 +91,18 @@ bundleStore:
 # port-forward instead.
 syncer:
   enabled: false
+
+# --- Spire Desktop HTTP API gateway ---
+# Runs `spire serve --api-port 3030` as a container in the steward pod.
+# Exposes /api/v1/* for the Electron desktop app via a NodePort Service
+# so `minikube service spire-gateway` works out of the box. Dev mode
+# (empty apiToken) is fine behind minikube's local-only node IP; set a
+# real token before publishing the node outside the laptop.
+gateway:
+  enabled: true
+  apiPort: 3030
+  webhookPort: 8080
+  apiToken: ""
+  service:
+    type: NodePort
+    nodePort: 30030
