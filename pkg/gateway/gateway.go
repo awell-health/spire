@@ -241,10 +241,31 @@ func (s *Server) listBeads(w http.ResponseWriter, r *http.Request) {
 		filter.IDPrefix = v + "-"
 	}
 
-	beadList, err := store.ListBeads(filter)
+	// Use ListBoardBeads so Dependencies are populated — otherwise
+	// FindParentID can't resolve and the Parent field is always empty,
+	// which breaks client-side grouping on the board.
+	boardBeads, err := store.ListBoardBeads(filter)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	// Project back down to the lightweight Bead shape so the response
+	// stays small; parent survives because BoardBead.Parent is also
+	// derived from the populated dep graph.
+	beadList := make([]store.Bead, len(boardBeads))
+	for i, bb := range boardBeads {
+		beadList[i] = store.Bead{
+			ID:          bb.ID,
+			Title:       bb.Title,
+			Description: bb.Description,
+			Status:      bb.Status,
+			Priority:    bb.Priority,
+			Type:        bb.Type,
+			Labels:      bb.Labels,
+			Parent:      bb.Parent,
+			UpdatedAt:   bb.UpdatedAt,
+			Metadata:    bb.Metadata,
+		}
 	}
 	writeJSON(w, http.StatusOK, beadList)
 }
