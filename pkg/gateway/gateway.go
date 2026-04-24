@@ -100,6 +100,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/roster", s.corsMiddleware(s.bearerAuth(s.handleRoster)))
 	mux.Handle("/api/v1/tower", s.corsMiddleware(s.bearerAuth(s.handleTower)))
 	mux.Handle("/api/v1/towers", s.corsMiddleware(s.bearerAuth(s.handleTowers)))
+	mux.Handle("/api/v1/cleanup/step-beads", s.corsMiddleware(s.bearerAuth(s.handleCleanupStepBeads)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -217,10 +218,17 @@ func (s *Server) listBeads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter := beads.IssueFilter{}
+	// By default, include every status (including closed) so the desktop
+	// board can show a CLOSED column. store.ListBeads applies
+	// ExcludeStatus=[closed] when the filter is empty; bypass that default
+	// with a sentinel that matches no real status.
+	filter := beads.IssueFilter{
+		ExcludeStatus: []beads.Status{"__none__"},
+	}
 	if v := r.URL.Query().Get("status"); v != "" {
 		bs := beads.Status(v)
 		filter.Status = &bs
+		filter.ExcludeStatus = nil
 	}
 	if v := r.URL.Query().Get("label"); v != "" {
 		filter.Labels = strings.Split(v, ",")
@@ -644,6 +652,57 @@ func (s *Server) getBeadComments(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, comments)
+}
+
+// handleCleanupStepBeads answers POST /api/v1/cleanup/step-beads and
+// closes every open step bead whose parent (task/epic/feature/bug/chore)
+// is already closed. Step beads are internal phase markers — once the
+// parent work is done they're just noise on the board.
+func (s *Server) handleCleanupStepBeads(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	all, err := store.ListBoardBeads(beads.IssueFilter{
+		ExcludeStatus: []beads.Status{"__none__"},
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	byID := make(map[string]store.BoardBead, len(all))
+	for _, b := range all {
+		byID[b.ID] = b
+	}
+	closedTypes := map[string]bool{
+		"task": true, "epic": true, "feature": true,
+		"bug": true, "chore": true, "design": true,
+	}
+	var closedIDs []string
+	for _, b := range all {
+		if b.Type != "step" || b.Status == "closed" {
+			continue
+		}
+		p, ok := byID[b.Parent]
+		if !ok || p.Status != "closed" || !closedTypes[p.Type] {
+			continue
+		}
+		if err := store.UpdateBead(b.ID, map[string]interface{}{"status": "closed"}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("closing %s: %s", b.ID, err.Error()),
+			})
+			return
+		}
+		closedIDs = append(closedIDs, b.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"closed_count": len(closedIDs),
+		"closed_ids":   closedIDs,
+	})
 }
 
 // getBeadLogs answers GET /api/v1/beads/{id}/logs with every wizard /
