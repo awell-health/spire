@@ -16,6 +16,13 @@ import (
 const (
 	SubClassMergeRace     = "merge-race"
 	SubClassStaleWorktree = "stale-worktree"
+	// SubClassPostRebaseFF marks a failure where the rebase succeeded but the
+	// subsequent ff-only merge failed because main advanced again between the
+	// rebase and the merge. Recoverable by retrying the merge.
+	SubClassPostRebaseFF = "post-rebase-ff-only"
+	// SubClassMergeConflict marks a content collision during rebase (UU/AA in
+	// git status). Requires Claude-driven resolver to fix, not a blind retry.
+	SubClassMergeConflict = "merge-conflict"
 )
 
 // staleWorktreePattern matches the "'<branch>' is already used by worktree at
@@ -28,13 +35,24 @@ const (
 // avoid matching unrelated text that happens to contain the substring.
 var staleWorktreePattern = regexp.MustCompile(`'[^']+' is already (used by worktree|checked out) at `)
 
+// mergeConflictPattern matches rebase-conflict diagnostics: "rebase conflict
+// in files: <list>" (emitted by mechanicalRebaseOntoBase), the porcelain UU
+// marker for "both modified," and generic "rebase … conflict" phrasings.
+var mergeConflictPattern = regexp.MustCompile(`(?i)rebase conflict in files:|\bUU \b|rebase[^\n]*conflict`)
+
+// postRebaseFFPattern matches the "ff-only merge failed after rebase" signal
+// produced by MergeBranch when main advances between rebase and ff-only merge.
+var postRebaseFFPattern = regexp.MustCompile(`ff-only merge failed after rebase`)
+
 // ClassifyError inspects an error returned by the merge/staging pipeline and
 // returns a (class, subClass) pair the recovery layer can use to pick a
 // mechanical repair.
 //
 // Contract:
-//   - errors.Is(err, git.ErrMergeRace) → (FailMerge, "merge-race")
+//   - errors.Is(err, git.ErrMergeRace) anywhere in chain → (FailMerge, "merge-race")
 //   - error string matching the stale-worktree pattern → (FailMerge, "stale-worktree")
+//   - "ff-only merge failed after rebase" → (FailMerge, "post-rebase-ff-only")
+//   - rebase-conflict / UU / "rebase … conflict" → (FailMerge, "merge-conflict")
 //   - anything else → (FailUnknown, "")
 //
 // The caller remains responsible for deciding whether to act on the class —
@@ -49,8 +67,15 @@ func ClassifyError(err error) (FailureClass, string) {
 	if errors.Is(err, git.ErrMergeRace) {
 		return FailMerge, SubClassMergeRace
 	}
-	if staleWorktreePattern.MatchString(err.Error()) {
+	msg := err.Error()
+	if staleWorktreePattern.MatchString(msg) {
 		return FailMerge, SubClassStaleWorktree
+	}
+	if postRebaseFFPattern.MatchString(msg) {
+		return FailMerge, SubClassPostRebaseFF
+	}
+	if mergeConflictPattern.MatchString(msg) {
+		return FailMerge, SubClassMergeConflict
 	}
 	return FailUnknown, ""
 }

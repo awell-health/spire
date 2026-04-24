@@ -16,12 +16,23 @@ import (
 // cannot spin forever.
 const DefaultRecoveryBudget = 3
 
-// recoveryDisabled returns true when inline recovery should be skipped on step
-// failure. Inline recovery is opt-in via SPIRE_INLINE_RECOVERY=1 until the
-// surrounding Decide/Worker/Mechanical paths are wired end-to-end in a
-// wizard's live pod; the default stays on the legacy hook-and-escalate path so
-// existing behavior is preserved. The recovery formula itself always skips
-// (running recovery inside a recovery cycle would recurse).
+// recoveryDisabled returns true when inline recovery should be skipped on
+// step failure. Inline recovery is the default — every step failure runs
+// through the Diagnose→Decide→Dispatch cycle described in
+// pkg/executor/recovery_dispatch.go. Two conditions still skip it:
+//
+//  1. The recovery formulas themselves ("cleric-default", "recovery",
+//     "spire-recovery-v3"). Running recovery inside a recovery cycle would
+//     recurse — this guard is load-bearing.
+//  2. The SPIRE_DISABLE_INLINE_RECOVERY=1 kill-switch for ops rollback. Use
+//     this only to debug the legacy hook-and-escalate path; production
+//     should leave it unset.
+//
+// The older SPIRE_INLINE_RECOVERY opt-in flag has been removed: the cycle is
+// now always on by default, and the kill-switch is the inverse. This is the
+// change at the heart of spi-gdzd7d — prior to flipping the default, every
+// merge failure took the hook-and-escalate path with no Diagnose, no Decide,
+// and no repair attempt.
 func (e *Executor) recoveryDisabled() bool {
 	if e.graphState != nil {
 		switch e.graphState.Formula {
@@ -29,10 +40,10 @@ func (e *Executor) recoveryDisabled() bool {
 			return true
 		}
 	}
-	if v := os.Getenv("SPIRE_INLINE_RECOVERY"); v == "1" || v == "true" {
-		return false
+	if v := os.Getenv("SPIRE_DISABLE_INLINE_RECOVERY"); v == "1" || v == "true" {
+		return true
 	}
-	return true
+	return false
 }
 
 // maxRecoveryAttempts returns the per-step recovery budget. Production reads
@@ -77,13 +88,26 @@ func (e *Executor) runRecoveryCycle(step *StepState, stepName string, state *Gra
 	}
 
 	round := len(step.RepairAttempts) + 1
-	startedAt := time.Now().UTC().Format(time.RFC3339)
+	startedAt := time.Now()
+	startedAtStr := startedAt.UTC().Format(time.RFC3339)
+
+	// Every structured log line in the cycle is prefixed with this so
+	// acceptance #7 (log-parsing assertion) can grep `recovery[bead=...
+	// step=... attempt=...]` to reconstruct the phase sequence for any one
+	// cycle. Invisibility is what let this bug live undetected; these lines
+	// are not optional.
+	prefix := fmt.Sprintf("recovery[bead=%s step=%s attempt=%d]", e.beadID, stepName, round)
+	failureText := "<nil>"
+	if failure != nil {
+		failureText = failure.Error()
+	}
+	e.log("%s cycle start: raw_error=%q", prefix, failureText)
 
 	// Open in-flight state and persist before doing any external work.
 	step.CurrentRepair = &InFlightRepair{
 		Round:     round,
 		Phase:     PhaseCreateRecoveryBead,
-		StartedAt: startedAt,
+		StartedAt: startedAtStr,
 	}
 	state.Steps[stepName] = *step
 	e.persistGraphState(state)
@@ -102,43 +126,57 @@ func (e *Executor) runRecoveryCycle(step *StepState, stepName string, state *Gra
 
 	// Diagnose: reuse pkg/recovery.Diagnose via the same adapter the
 	// formula-mode collect_context step uses.
+	e.log("%s diagnose start", prefix)
 	diag, diagErr := e.diagnoseFailure(stepName, failure, state)
 	if diagErr != nil {
 		e.log("recovery: diagnose for step %s: %s (continuing with partial context)", stepName, diagErr)
 	}
+	e.log("%s diagnose produced: failure_mode=%s sub_class=%q",
+		prefix, diag.FailureMode, diag.SubClass)
 
 	step.CurrentRepair.Phase = PhaseDecide
 	state.Steps[stepName] = *step
 	e.persistGraphState(state)
 
 	// Decide: produce a typed RepairPlan.
+	e.log("%s decide start", prefix)
 	plan, decideErr := e.decideRepair(diag, state)
 	if decideErr != nil {
 		e.log("recovery: decide for step %s: %s (escalating)", stepName, decideErr)
 		step.CurrentRepair.Phase = PhaseExecuteMechanical // terminal; phase is immaterial
+		e.log("%s cycle close: outcome=%s final_phase=%s duration=%s",
+			prefix, RecoveryEscalated, PhaseDecide, time.Since(startedAt).Round(time.Millisecond))
 		return e.finishCycle(step, stepName, state, RepairAttempt{
 			Round:          round,
 			Outcome:        RecoveryEscalated,
-			StartedAt:      startedAt,
+			StartedAt:      startedAtStr,
 			EndedAt:        time.Now().UTC().Format(time.RFC3339),
 			RecoveryBeadID: recoveryBeadID,
 			FinalPhase:     PhaseDecide,
 			Error:          decideErr.Error(),
 		}), nil
 	}
+	e.log("%s decide plan: mode=%s action=%s confidence=%.2f reason=%q",
+		prefix, plan.Mode, plan.Action, plan.Confidence, plan.Reason)
 
 	step.CurrentRepair.Mode = string(plan.Mode)
 	step.CurrentRepair.Action = plan.Action
 
 	// Dispatch by RepairMode.
+	e.log("%s dispatch start: mode=%s", prefix, plan.Mode)
 	outcome, execErr := e.dispatchRepair(plan, step, stepName, state)
+	execErrText := "<nil>"
+	if execErr != nil {
+		execErrText = execErr.Error()
+	}
+	e.log("%s dispatch result: outcome=%s err=%q", prefix, outcome, execErrText)
 
 	attempt := RepairAttempt{
 		Round:          round,
 		Mode:           string(plan.Mode),
 		Action:         plan.Action,
 		Outcome:        outcome,
-		StartedAt:      startedAt,
+		StartedAt:      startedAtStr,
 		EndedAt:        time.Now().UTC().Format(time.RFC3339),
 		RecoveryBeadID: recoveryBeadID,
 		FinalPhase:     step.CurrentRepair.Phase,
@@ -146,7 +184,10 @@ func (e *Executor) runRecoveryCycle(step *StepState, stepName string, state *Gra
 	if execErr != nil {
 		attempt.Error = execErr.Error()
 	}
-	return e.finishCycle(step, stepName, state, attempt), execErr
+	finalOutcome := e.finishCycle(step, stepName, state, attempt)
+	e.log("%s cycle close: outcome=%s final_phase=%s duration=%s",
+		prefix, finalOutcome, attempt.FinalPhase, time.Since(startedAt).Round(time.Millisecond))
+	return finalOutcome, execErr
 }
 
 // dispatchRepair routes a RepairPlan to the matching execute function based on

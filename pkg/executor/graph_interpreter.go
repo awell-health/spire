@@ -305,7 +305,18 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			// landed, the step should escalate, the round budget is
 			// exhausted, or the failure cleared (noop). Full background in
 			// pkg/executor/recovery_dispatch.go.
+			//
+			// Hook invariant (spi-gdzd7d acceptance #6): `Status = "hooked"`
+			// below is only reachable when either
+			//   (a) the cycle ran and returned RecoveryEscalated /
+			//       RecoveryBudgetExhausted / RecoveryFailed, or
+			//   (b) recoveryDisabled() explicitly skipped the cycle
+			//       (kill-switch on, or the recovery formulas themselves
+			//       — which would otherwise recurse).
+			// There is no static control flow from `result.Error != nil`
+			// to hook that bypasses both branches.
 			if !e.recoveryDisabled() {
+				e.log("recovery: step %s failed — entering recovery cycle (pre-cycle)", stepName)
 				stepCopy := state.Steps[stepName]
 				outcome, recErr := e.runRecoveryCycle(&stepCopy, stepName, state, result.Error)
 				if recErr != nil {
@@ -314,7 +325,9 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				switch outcome {
 				case RecoveryRepaired, RecoveryNoop:
 					// Rewind the step to pending so the interpreter loop
-					// re-dispatches it (seam 11/12).
+					// re-dispatches it (seam 11/12). This branch does NOT
+					// reach the hook path — the invariant holds because
+					// `continue` returns to the top of the loop.
 					rewound := state.Steps[stepName]
 					rewound.Status = "pending"
 					rewound.Outputs = nil
@@ -325,18 +338,24 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 					graphStore.Save(e.agentName, state)
 					e.log("recovery: step %s rewound to pending after %s outcome", stepName, outcome)
 					continue
-				case RecoveryEscalated, RecoveryBudgetExhausted:
-					// Fall through to the hook-and-escalate path below.
-				case RecoveryFailed:
-					// Fall through; the next loop iteration will see the
-					// hooked step and runRecoveryCycle again (budget
-					// permitting).
+				case RecoveryEscalated, RecoveryBudgetExhausted, RecoveryFailed:
+					// Post-cycle log so operators can see the exact
+					// outcome before the step parks. Fall through to the
+					// hook-and-escalate block below.
+					e.log("recovery: step %s cycle closed with outcome=%s — parking (post-cycle)",
+						stepName, outcome)
+				default:
+					// Defensive: unknown outcome. Log loudly and treat as
+					// failed so we don't silently diverge from the
+					// documented invariant.
+					e.log("recovery: step %s cycle returned unexpected outcome=%s — parking as RecoveryFailed",
+						stepName, outcome)
 				}
 			}
 
-			// Park the step as hooked (not failed) so the resolve→steward→re-summon
-			// flow can retry it. The graph loop will detect hooked steps and exit
-			// gracefully without a second escalation.
+			// Park the step as hooked (not failed) so the resolve→steward→
+			// re-summon flow can retry it. The graph loop will detect hooked
+			// steps and exit gracefully without a second escalation.
 			ss = state.Steps[stepName]
 			ss.Status = "hooked"
 			// Do NOT set CompletedAt — the step is parked, not completed.

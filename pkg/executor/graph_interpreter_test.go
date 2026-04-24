@@ -1373,10 +1373,23 @@ func TestRunGraph_StepFailure_NodeScopedResult(t *testing.T) {
 	}
 
 	// Verify alert bead was created with node-scoped context.
+	// Since spi-gdzd7d flipped inline recovery on by default, runRecoveryCycle
+	// creates a "Recovery: …" bead before the step falls through to the
+	// hook-and-escalate path. Find the actual alert (created by
+	// EscalateGraphStepFailure) rather than indexing blindly into [0].
 	if len(createdAlerts) == 0 {
 		t.Fatal("expected alert bead to be created")
 	}
-	alertTitle := createdAlerts[0]
+	alertTitle := ""
+	for _, title := range createdAlerts {
+		if strings.Contains(title, "step=") {
+			alertTitle = title
+			break
+		}
+	}
+	if alertTitle == "" {
+		t.Fatalf("expected one of created beads to look like an alert title, got: %v", createdAlerts)
+	}
 	if !strings.Contains(alertTitle, "step=implement") {
 		t.Errorf("expected alert title to contain 'step=implement', got: %s", alertTitle)
 	}

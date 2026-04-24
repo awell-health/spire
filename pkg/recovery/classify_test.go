@@ -97,6 +97,8 @@ func TestMergeSubClassAction_Mapping(t *testing.T) {
 	}{
 		{SubClassMergeRace, "retry-merge"},
 		{SubClassStaleWorktree, "cleanup-stale-worktrees"},
+		{SubClassPostRebaseFF, "retry-merge"},
+		{SubClassMergeConflict, "resolve-conflicts"},
 		{"", ""},
 		{"unknown-sub", ""},
 	}
@@ -107,5 +109,75 @@ func TestMergeSubClassAction_Mapping(t *testing.T) {
 				t.Errorf("mergeSubClassAction(%q) = %q, want %q", tc.subClass, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestClassifyError_PostRebaseFF verifies that an "ff-only merge failed after
+// rebase" error routes to SubClassPostRebaseFF — the signal that main advanced
+// again after a successful rebase, recoverable by retrying the merge.
+func TestClassifyError_PostRebaseFF(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{
+			"direct",
+			errors.New("ff-only merge failed after rebase: Not possible to fast-forward"),
+		},
+		{
+			"wrapped",
+			fmt.Errorf("step merge: %w", errors.New("ff-only merge failed after rebase: some detail")),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			class, sub := ClassifyError(tc.err)
+			if class != FailMerge || sub != SubClassPostRebaseFF {
+				t.Errorf("got (%s, %s), want (%s, %s)", class, sub, FailMerge, SubClassPostRebaseFF)
+			}
+		})
+	}
+}
+
+// TestClassifyError_MergeConflict verifies the three phrasings that mark a
+// content collision during rebase. Each should route to SubClassMergeConflict
+// so Decide dispatches a Worker (resolve-conflicts) instead of a blind retry.
+func TestClassifyError_MergeConflict(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{
+			"rebase conflict in files list",
+			"rebase conflict in files: pkg/gateway/gateway_test.go",
+		},
+		{
+			"porcelain UU marker",
+			"git status says:\nUU file.go\nrebase stopped",
+		},
+		{
+			"generic rebase conflict phrasing",
+			"rebase --continue aborted due to conflict in next commit",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			class, sub := ClassifyError(errors.New(tc.msg))
+			if class != FailMerge || sub != SubClassMergeConflict {
+				t.Errorf("got (%s, %s), want (%s, %s)", class, sub, FailMerge, SubClassMergeConflict)
+			}
+		})
+	}
+}
+
+// TestClassifyError_MergeRaceTakesPrecedence verifies that when both the
+// sentinel ErrMergeRace is present in the chain AND the error text contains
+// other patterns, the merge-race classification wins. This pins the priority
+// order the classifier applies.
+func TestClassifyError_MergeRaceTakesPrecedence(t *testing.T) {
+	combined := fmt.Errorf("ff-only merge failed after rebase: %w", git.ErrMergeRace)
+	class, sub := ClassifyError(combined)
+	if class != FailMerge || sub != SubClassMergeRace {
+		t.Errorf("got (%s, %s), want (FailMerge, merge-race)", class, sub)
 	}
 }

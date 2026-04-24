@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrMergeRace is returned when the base branch advances during the
@@ -145,9 +146,214 @@ func cleanupStaleSiblingWorktrees(rc *RepoContext, targetDir string, log func(st
 // the recovery mechanical (pkg/executor) can invoke it when the classifier
 // dispatches the stale-worktree repair. targetDir is the prospective new
 // staging-worktree path; siblings for the same bead are force-removed.
+//
+// Deprecated: merge-recovery code paths should call
+// CleanupStaleSiblingWorktreesSafe instead. This variant force-removes sibling
+// worktrees unconditionally and can destroy uncommitted work or an in-progress
+// rebase. It is kept only for callers that know the worktrees they're scrubbing
+// are fully disposable (e.g. explicit teardown, not automated recovery).
 func CleanupStaleSiblingWorktrees(repoPath, targetDir string, log func(string, ...interface{})) {
 	rc := &RepoContext{Dir: repoPath, Log: log}
 	cleanupStaleSiblingWorktrees(rc, targetDir, log)
+}
+
+// SiblingCleanupFate records what CleanupStaleSiblingWorktreesSafe decided to
+// do with a given sibling worktree. Exposed for callers (recovery mechanicals)
+// that want to log per-sibling outcomes.
+type SiblingCleanupFate struct {
+	Path   string // absolute path to the sibling before cleanup
+	Action string // "removed", "renamed", "skipped-live", "error"
+	// NewPath is set when Action == "renamed" — the quarantine path.
+	NewPath string
+	// Reason is a short human-readable description of why the sibling took
+	// this fate (which gate tripped, or the removal error).
+	Reason string
+}
+
+// CleanupStaleSiblingWorktreesSafe scans `.worktrees/<beadID>*` siblings of
+// targetDir and applies a four-gate safety check before force-removing any
+// sibling. The goal is to clear the branch-in-use lock that blocks
+// `git worktree add` WITHOUT destroying in-flight work from a parallel wizard
+// or an interrupted rebase.
+//
+// Gates (all must pass to force-remove):
+//
+//   - Gate A: `git status --porcelain` non-empty → uncommitted work present.
+//   - Gate B: any of `.git/rebase-merge`, `.git/rebase-apply`,
+//     `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD` exists → in-progress
+//     rebase/merge/cherry-pick.
+//   - Gate C: `rev-parse --abbrev-ref HEAD` doesn't match `feat/<beadID>` or
+//     `staging/<beadID>` → branch mismatch, unsafe to touch.
+//   - Gate D: `time.Since(stat.ModTime()) < 5*time.Minute` → sibling is
+//     "fresh" (another wizard may be actively using it).
+//
+// All gates pass → force-remove as the unsafe variant did.
+// Any gate fails → rename to `.worktrees/.abandoned-<unix-ts>-<base>` via
+// os.Rename. Never destroy silently.
+//
+// Returns the list of fates so callers (log consumers, recovery audit) can
+// record what happened per sibling.
+func CleanupStaleSiblingWorktreesSafe(repoPath, targetDir string, log func(string, ...interface{})) []SiblingCleanupFate {
+	rc := &RepoContext{Dir: repoPath, Log: log}
+	return cleanupStaleSiblingWorktreesSafe(rc, targetDir, log)
+}
+
+// cleanupStaleSiblingWorktreesSafe is the package-private driver used by the
+// exported safe variant and by NewStagingWorktreeAt. See
+// CleanupStaleSiblingWorktreesSafe for the full contract.
+func cleanupStaleSiblingWorktreesSafe(rc *RepoContext, targetDir string, log func(string, ...interface{})) []SiblingCleanupFate {
+	beadID := deriveBeadIDFromPath(targetDir)
+	if beadID == "" {
+		return nil
+	}
+	parent := filepath.Dir(targetDir)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil
+	}
+	targetBase := filepath.Base(targetDir)
+
+	var fates []SiblingCleanupFate
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if entry.Name() == targetBase {
+			continue
+		}
+		// Skip already-quarantined siblings so repeat invocations don't
+		// re-rename them into nested .abandoned-.abandoned-... chains.
+		if strings.HasPrefix(entry.Name(), ".abandoned-") {
+			continue
+		}
+		if !isSameBeadWorktree(entry.Name(), beadID) {
+			continue
+		}
+		sibling := filepath.Join(parent, entry.Name())
+		fate := evaluateSiblingGates(sibling, beadID)
+		if fate.Action == "removed" {
+			if log != nil {
+				log("sibling %s: all gates passed — removing (bead %s)", sibling, beadID)
+			}
+			if err := rc.ForceRemoveWorktree(sibling); err != nil {
+				if log != nil {
+					log("warning: force-remove sibling %s: %s", sibling, err)
+				}
+				// Fall through and try os.RemoveAll so the path is gone even
+				// if git's administrative record was already cleaned up.
+			}
+			if err := os.RemoveAll(sibling); err != nil && log != nil {
+				log("warning: remove sibling dir %s: %s", sibling, err)
+			}
+			fates = append(fates, fate)
+			continue
+		}
+		// Gate failed — rename instead of destroy. Never silently delete
+		// in-flight or dirty work.
+		quarantinePath := filepath.Join(parent, fmt.Sprintf(".abandoned-%d-%s", time.Now().Unix(), entry.Name()))
+		if log != nil {
+			log("sibling %s: %s — quarantining to %s (bead %s)", sibling, fate.Reason, quarantinePath, beadID)
+		}
+		if err := os.Rename(sibling, quarantinePath); err != nil {
+			if log != nil {
+				log("warning: rename sibling %s → %s: %s", sibling, quarantinePath, err)
+			}
+			fate.Action = "error"
+			fate.Reason = fmt.Sprintf("rename failed: %s (original reason: %s)", err, fate.Reason)
+		} else {
+			fate.Action = "renamed"
+			fate.NewPath = quarantinePath
+		}
+		fates = append(fates, fate)
+	}
+	// Prune git's internal worktree registry so any records for the removed
+	// siblings don't linger and block a fresh `git worktree add`. The
+	// quarantined paths still exist on disk; git will re-register them if
+	// `git worktree add` ever targets them again.
+	_ = rc.PruneWorktrees()
+	return fates
+}
+
+// evaluateSiblingGates runs the four safety gates against a sibling worktree
+// path. Returns a SiblingCleanupFate whose Action is either "removed" (all
+// gates passed) or "skipped-live" (at least one gate failed). Reason names the
+// first gate that failed, so the caller can surface it for debugging.
+func evaluateSiblingGates(siblingPath, beadID string) SiblingCleanupFate {
+	fate := SiblingCleanupFate{Path: siblingPath}
+
+	// Gate A: uncommitted work (git status --porcelain non-empty).
+	if out, err := exec.Command("git", "-C", siblingPath, "status", "--porcelain").Output(); err == nil {
+		if strings.TrimSpace(string(out)) != "" {
+			fate.Action = "skipped-live"
+			fate.Reason = "gate A failed: uncommitted work (git status --porcelain non-empty)"
+			return fate
+		}
+	}
+	// A failure to read `git status` is treated as "unknown state" — fall
+	// through to subsequent gates rather than declaring it safe to delete.
+
+	// Gate B: in-progress rebase/merge/cherry-pick markers in .git.
+	for _, marker := range []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"} {
+		if _, err := os.Stat(filepath.Join(siblingPath, ".git", marker)); err == nil {
+			fate.Action = "skipped-live"
+			fate.Reason = "gate B failed: in-progress " + marker
+			return fate
+		}
+	}
+	// Worktrees record their .git as a file pointing to the main repo's
+	// admin dir; the rebase/merge markers land there. Resolve and check that
+	// path too.
+	if adminDir := resolveWorktreeGitDir(siblingPath); adminDir != "" {
+		for _, marker := range []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"} {
+			if _, err := os.Stat(filepath.Join(adminDir, marker)); err == nil {
+				fate.Action = "skipped-live"
+				fate.Reason = "gate B failed: in-progress " + marker + " (admin dir)"
+				return fate
+			}
+		}
+	}
+
+	// Gate C: branch mismatch. Expected "feat/<beadID>" or
+	// "staging/<beadID>"; anything else is unsafe to force-remove.
+	if out, err := exec.Command("git", "-C", siblingPath, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+		branch := strings.TrimSpace(string(out))
+		expectedFeat := "feat/" + beadID
+		expectedStaging := "staging/" + beadID
+		if branch != expectedFeat && branch != expectedStaging {
+			fate.Action = "skipped-live"
+			fate.Reason = fmt.Sprintf("gate C failed: branch %q not in {%s, %s}", branch, expectedFeat, expectedStaging)
+			return fate
+		}
+	}
+
+	// Gate D: mtime < 5 minutes → treat as live.
+	if stat, err := os.Stat(siblingPath); err == nil {
+		if time.Since(stat.ModTime()) < 5*time.Minute {
+			fate.Action = "skipped-live"
+			fate.Reason = fmt.Sprintf("gate D failed: mtime %s (< 5m old)", stat.ModTime().Format(time.RFC3339))
+			return fate
+		}
+	}
+
+	fate.Action = "removed"
+	return fate
+}
+
+// resolveWorktreeGitDir reads the `.git` file inside a worktree and returns
+// the admin directory it points at (e.g.
+// `<repo>/.git/worktrees/<sibling>`). Returns "" when the file is absent or
+// unparseable — callers treat that as "no secondary admin dir to probe."
+func resolveWorktreeGitDir(siblingPath string) string {
+	data, err := os.ReadFile(filepath.Join(siblingPath, ".git"))
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(data))
+	const prefix = "gitdir:"
+	if !strings.HasPrefix(line, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, prefix))
 }
 
 // StagingWorktree manages a temporary git worktree for staging operations.
@@ -209,9 +415,11 @@ func NewStagingWorktreeAt(repoPath, dir, branch, baseBranch, userName, userEmail
 
 	// Clean up stale sibling worktrees for this bead (not the target path).
 	// The branch we're about to check out may already be in use by a sibling
-	// path left over from a prior wizard — force-remove siblings first so
-	// git worktree add doesn't collide.
-	cleanupStaleSiblingWorktrees(rc, dir, log)
+	// path left over from a prior wizard — gate-checked cleanup renames
+	// dirty/in-flight siblings to a `.abandoned-*` quarantine path so we
+	// never silently destroy concurrent work, then force-removes the rest so
+	// `git worktree add` doesn't collide.
+	cleanupStaleSiblingWorktreesSafe(rc, dir, log)
 
 	// Clean up stale worktree at this path
 	if _, err := os.Stat(dir); err == nil {

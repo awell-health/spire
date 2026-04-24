@@ -637,6 +637,134 @@ func TestDecide_MergeSubClass_FallsThroughWhenRepeated(t *testing.T) {
 	}
 }
 
+// TestDecide_PostRebaseFFSubClass_ShortCircuitsToRetryMerge verifies the
+// deterministic post-rebase-ff-only path: Decide must emit a Mechanical
+// RepairPlan with action=retry-merge WITHOUT invoking Claude. This is the
+// follow-up path when main advances between a successful rebase and the
+// ff-only merge.
+func TestDecide_PostRebaseFFSubClass_ShortCircuitsToRetryMerge(t *testing.T) {
+	claudeCalled := false
+	claudeStub := func(args []string, label string) ([]byte, error) {
+		claudeCalled = true
+		return []byte(`{"chosen_action":"escalate"}`), nil
+	}
+
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+		SubClass:    SubClassPostRebaseFF,
+	}
+	deps := Deps{ClaudeRunner: claudeStub}
+
+	plan, err := Decide(context.Background(), diagnosis, nil, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if claudeCalled {
+		t.Error("Claude runner was invoked — post-rebase-ff-only should short-circuit before (c)")
+	}
+	if plan.Mode != RepairModeMechanical {
+		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeMechanical)
+	}
+	if plan.Action != "retry-merge" {
+		t.Errorf("Action = %q, want retry-merge", plan.Action)
+	}
+}
+
+// TestDecide_MergeConflictSubClass_RoutesToWorker verifies that a content-
+// collision rebase conflict routes to a Worker (resolve-conflicts) without
+// invoking Claude for the decision. The conflict resolver IS the Worker.
+func TestDecide_MergeConflictSubClass_RoutesToWorker(t *testing.T) {
+	claudeCalled := false
+	claudeStub := func(args []string, label string) ([]byte, error) {
+		claudeCalled = true
+		return []byte(`{"chosen_action":"escalate"}`), nil
+	}
+
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+		SubClass:    SubClassMergeConflict,
+	}
+	deps := Deps{ClaudeRunner: claudeStub}
+
+	plan, err := Decide(context.Background(), diagnosis, nil, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if claudeCalled {
+		t.Error("Claude runner was invoked — merge-conflict should short-circuit before (c)")
+	}
+	if plan.Mode != RepairModeWorker {
+		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeWorker)
+	}
+	if plan.Action != "resolve-conflicts" {
+		t.Errorf("Action = %q, want resolve-conflicts", plan.Action)
+	}
+}
+
+// TestDecide_MergeRace_FailsTwice_UpgradesToWorker verifies the budget
+// upgrade: after 2 failed retry-merge rounds, Decide must emit a Worker plan
+// with action=resolve-conflicts so persistent contention escalates from
+// blind retry to a conflict-resolving agent.
+func TestDecide_MergeRace_FailsTwice_UpgradesToWorker(t *testing.T) {
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+		SubClass:    SubClassMergeRace,
+	}
+
+	history := []Attempt{
+		{Action: "retry-merge", Outcome: "failure"},
+		{Action: "retry-merge", Outcome: "failure"},
+	}
+
+	// No ClaudeRunner — we should still get the Worker upgrade, not fall
+	// through to the ClaudeRunner-absent resummon fallback.
+	deps := Deps{}
+
+	plan, err := Decide(context.Background(), diagnosis, history, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if plan.Action != "resolve-conflicts" {
+		t.Errorf("Action = %q, want resolve-conflicts (budget upgrade)", plan.Action)
+	}
+	if plan.Mode != RepairModeWorker {
+		t.Errorf("Mode = %q, want %q (Worker upgrade)", plan.Mode, RepairModeWorker)
+	}
+}
+
+// TestDecide_MergeRace_FailsThrice_Escalates verifies that on the 3rd total
+// failure, the totalAttempts >= maxAttempts guard fires and Decide emits an
+// escalate plan. This is the budget-exhaustion exit.
+func TestDecide_MergeRace_FailsThrice_Escalates(t *testing.T) {
+	diagnosis := Diagnosis{
+		BeadID:      "spi-src1",
+		FailureMode: FailMerge,
+		SubClass:    SubClassMergeRace,
+	}
+
+	history := []Attempt{
+		{Action: "retry-merge", Outcome: "failure"},
+		{Action: "retry-merge", Outcome: "failure"},
+		{Action: "resolve-conflicts", Outcome: "failure"},
+	}
+
+	deps := Deps{}
+
+	plan, err := Decide(context.Background(), diagnosis, history, deps)
+	if err != nil {
+		t.Fatalf("Decide err = %v", err)
+	}
+	if plan.Action != "escalate" {
+		t.Errorf("Action = %q, want escalate (budget exhausted)", plan.Action)
+	}
+	if plan.Mode != RepairModeEscalate {
+		t.Errorf("Mode = %q, want %q", plan.Mode, RepairModeEscalate)
+	}
+}
+
 // TestDecide_UnknownMergeSubClass_FallsThrough verifies that a merge failure
 // without a known sub-class takes the normal decide pipeline (Claude or
 // fallback). This keeps the existing FailMerge code path intact for failures

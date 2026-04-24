@@ -87,27 +87,50 @@ func Decide(ctx context.Context, diagnosis Diagnosis, history []Attempt, deps De
 		), nil
 	}
 
-	// (0a) Deterministic merge-failure sub-classes (merge-race, stale-
-	// worktree). These are mechanically recoverable by retrying the merge
-	// (which internally re-runs the bounded rebase loop in MergeToMain) or by
-	// cleaning up sibling worktrees for the bead. Short-circuit Claude so we
-	// don't burn the triage budget on a policy decision that's already
-	// determined by the error itself.
+	// (0a) Deterministic merge-failure sub-classes. These are mechanically
+	// recoverable (or, for content collisions, Worker-recoverable via a
+	// conflict resolver): retrying the merge for merge-race and
+	// post-rebase-ff-only, cleaning up sibling worktrees for stale-worktree,
+	// or dispatching resolve-conflicts for merge-conflict. Short-circuit
+	// Claude so we don't burn the triage budget on a policy decision that's
+	// already determined by the error itself.
 	//
-	// Respects repeated-failure suppression: if the same mechanical has
-	// failed twice already, fall through to the normal Claude path so the
-	// agent can decide whether to escalate instead of looping.
+	// Budget progression: after 2 failed retry-merge rounds, force an upgrade
+	// to resolve-conflicts (Worker) so persistent contention escalates from
+	// blind retry to a conflict-resolving agent instead of looping. The
+	// existing totalAttempts >= maxAttempts guard at the top of Decide then
+	// auto-escalates on the 3rd total failure.
+	//
+	// Respects repeated-failure suppression: if the chosen action has failed
+	// twice already, fall through to the normal Claude path so the agent can
+	// decide whether to escalate instead of looping.
 	if diagnosis.FailureMode == FailMerge {
-		if action := mergeSubClassAction(diagnosis.SubClass); action != "" && repeatedFailures[action] < 2 {
-			logf("recovery: decide: deterministic merge repair for sub-class %q → %s", diagnosis.SubClass, action)
-			captureBranch(DecideBranchRecipe)
-			plan := planForAction(
-				action,
-				0.95,
-				fmt.Sprintf("Deterministic mechanical repair for %s failure sub-class", diagnosis.SubClass),
-				false,
-			)
-			return plan, nil
+		if action := mergeSubClassAction(diagnosis.SubClass); action != "" {
+			// Budget-upgrade: 2 failed retry-merge rounds → upgrade to
+			// resolve-conflicts (Worker). Persistent merge contention that
+			// blind retry couldn't clear needs a conflict-resolving agent.
+			if action == "retry-merge" && repeatedFailures["retry-merge"] >= 2 {
+				logf("recovery: decide: retry-merge failed %d times — upgrading to resolve-conflicts (Worker)",
+					repeatedFailures["retry-merge"])
+				captureBranch(DecideBranchRecipe)
+				return planForAction(
+					"resolve-conflicts",
+					0.90,
+					"Budget-upgrade: retry-merge exhausted, dispatching conflict resolver",
+					false,
+				), nil
+			}
+			if repeatedFailures[action] < 2 {
+				logf("recovery: decide: deterministic merge repair for sub-class %q → %s", diagnosis.SubClass, action)
+				captureBranch(DecideBranchRecipe)
+				plan := planForAction(
+					action,
+					0.95,
+					fmt.Sprintf("Deterministic mechanical repair for %s failure sub-class", diagnosis.SubClass),
+					false,
+				)
+				return plan, nil
+			}
 		}
 	}
 
@@ -319,14 +342,20 @@ func actionToRepairMode(action string) RepairMode {
 }
 
 // mergeSubClassAction maps a merge-failure sub-class to its canonical
-// mechanical action. Returns "" when the sub-class is unknown so the caller
-// can fall through to the normal Decide pipeline.
+// recovery action. Merge-race and post-rebase-ff-only route to the
+// time-bounded retry-merge mechanical; stale-worktree routes to the safe
+// sibling cleanup mechanical; merge-conflict routes to the resolve-conflicts
+// Worker (content collisions need a Claude-driven resolver, not a blind
+// retry). Returns "" when the sub-class is unknown so the caller can fall
+// through to the normal Decide pipeline.
 func mergeSubClassAction(subClass string) string {
 	switch subClass {
-	case SubClassMergeRace:
+	case SubClassMergeRace, SubClassPostRebaseFF:
 		return "retry-merge"
 	case SubClassStaleWorktree:
 		return "cleanup-stale-worktrees"
+	case SubClassMergeConflict:
+		return "resolve-conflicts"
 	default:
 		return ""
 	}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
@@ -194,33 +195,184 @@ func mechanicalResetToStep(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws 
 	return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
 }
 
-// mechanicalRetryMerge is the record-only mechanical for the merge-race
-// sub-class. The real retry happens via the step-rewind path:
-// runRecoveryCycle returns RecoveryRepaired when this action succeeds, which
-// causes graph_interpreter to reset the merge step to pending and re-dispatch
-// it. On the next run, actionMergeToMain creates a fresh staging worktree and
-// re-enters MergeToMain with a full maxMergeAttempts budget (so transient
-// contention that exhausted the first pass gets a second chance).
-//
-// No workspace mutation happens here — the mechanical succeeds trivially so
-// the outer recovery cycle counter still advances and the overall budget
-// (DefaultRecoveryBudget) bounds total retries.
-func mechanicalRetryMerge(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle) (*recovery.MechanicalRecipe, error) {
-	ctx.logf("merge-race classified — rewinding merge step to retry with fresh budget")
-	return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
+// retryMergeWallTime bounds the total wall-clock time mechanicalRetryMerge
+// spends retrying. Tests override this (via testSetRetryMergeTuning) to
+// exercise the loop without waiting a minute per test case.
+var retryMergeWallTime = 60 * time.Second
+
+// retryMergeBackoffs is the exponential backoff schedule between retries.
+// Capped at 4s so at least four rounds fit inside retryMergeWallTime, per
+// acceptance #3 (≥4 rounds within 60±2s).
+var retryMergeBackoffs = []time.Duration{
+	200 * time.Millisecond,
+	500 * time.Millisecond,
+	1 * time.Second,
+	2 * time.Second,
+	4 * time.Second,
 }
 
-// mechanicalCleanupStaleWorktrees force-removes any sibling `.worktrees/
-// <beadID>*` paths that are holding the bead's feature branch checked out.
-// The target path for a fresh staging worktree is `.worktrees/<beadID>`; any
-// other `<beadID>-<suffix>` dirs are leftovers from prior wizard runs that
-// block `git worktree add` with "'feat/<beadID>' is already used by worktree
-// at ..." errors.
+// retryMergeSleep is time.Sleep by default; tests swap in a fake that
+// advances a clock instead of blocking.
+var retryMergeSleep = time.Sleep
+
+// retryMergeNow is time.Now by default; paired with retryMergeSleep so a
+// fake clock stays consistent across both.
+var retryMergeNow = time.Now
+
+// retryMergeAttempt is the merge attempt closure the loop calls each round.
+// Production builds a closure around RepoContext.PullFFOnly + MergeFFOnly;
+// tests inject a stub that simulates contention or success on a chosen round.
+// The function is overridable at the package level; mechanicalRetryMerge
+// builds the real attempt lazily and dispatches through this hook so tests
+// that override the hook don't need to stand up a full repo.
+var retryMergeAttempt = realRetryMergeAttempt
+
+// testSetRetryMergeTuning is a test-only helper that swaps the wall-time and
+// backoff schedule so unit tests don't block for a full minute. The returned
+// cleanup function restores defaults.
+func testSetRetryMergeTuning(wallTime time.Duration, backoffs []time.Duration, sleep func(time.Duration), now func() time.Time) func() {
+	prevWall := retryMergeWallTime
+	prevBackoffs := retryMergeBackoffs
+	prevSleep := retryMergeSleep
+	prevNow := retryMergeNow
+	retryMergeWallTime = wallTime
+	retryMergeBackoffs = backoffs
+	if sleep != nil {
+		retryMergeSleep = sleep
+	}
+	if now != nil {
+		retryMergeNow = now
+	}
+	return func() {
+		retryMergeWallTime = prevWall
+		retryMergeBackoffs = prevBackoffs
+		retryMergeSleep = prevSleep
+		retryMergeNow = prevNow
+	}
+}
+
+// realRetryMergeAttempt is the production merge attempt: pull origin/base
+// into the main repo, then ff-only merge the staging branch. Returns nil on
+// success.
+func realRetryMergeAttempt(rc *spgit.RepoContext, baseBranch, stagingBranch string, env []string) error {
+	if pullErr := rc.PullFFOnly("origin", baseBranch, env); pullErr != nil {
+		return fmt.Errorf("pull %s: %w", baseBranch, pullErr)
+	}
+	if mergeErr := rc.MergeFFOnly(stagingBranch, env); mergeErr != nil {
+		return fmt.Errorf("ff-only merge %s → %s: %w", stagingBranch, baseBranch, mergeErr)
+	}
+	return nil
+}
+
+// mechanicalRetryMerge is the time-bounded merge retry for the merge-race and
+// post-rebase-ff-only sub-classes. On entry it runs an idempotent safe
+// sibling-worktree cleanup (to clear any branch-in-use locks), then loops:
 //
-// Idempotent: a second call with no siblings present is a no-op. After the
-// cleanup, step rewind re-runs actionMergeToMain which goes through
-// NewStagingWorktreeAt — that constructor now also cleans siblings as a
-// belt-and-suspenders, so either path is safe.
+//  1. Pull origin/<baseBranch> into the main repo.
+//  2. ff-only merge <stagingBranch> into <baseBranch>.
+//  3. On success, return the captured recipe.
+//  4. On failure, sleep per retryMergeBackoffs (capped at 4s) and retry.
+//  5. Abort when total wall time ≥ retryMergeWallTime (default 60s).
+//
+// Wall-time exhaustion is returned as an error; Decide's next round then sees
+// repeatedFailures["retry-merge"]++ and — after two failures — upgrades to
+// resolve-conflicts (Worker). A third total failure auto-escalates via the
+// totalAttempts >= maxAttempts guard in Decide.
+func mechanicalRetryMerge(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle) (*recovery.MechanicalRecipe, error) {
+	if ctx == nil || ctx.RepoPath == "" {
+		return nil, fmt.Errorf("retry-merge: missing repo context")
+	}
+	if ws.Branch == "" {
+		return nil, fmt.Errorf("retry-merge: missing staging branch in workspace handle")
+	}
+	baseBranch := ws.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	log := func(format string, args ...interface{}) {
+		ctx.logf(fmt.Sprintf(format, args...))
+	}
+	rc := &spgit.RepoContext{Dir: ctx.RepoPath, BaseBranch: baseBranch, Log: log}
+
+	// Step 0: idempotent safe cleanup of stale sibling worktrees for this
+	// bead. A prior wizard run may have left `.worktrees/<beadID>-*` paths
+	// holding the bead's feature branch checked out; the safe variant
+	// quarantines anything with uncommitted/in-flight work rather than
+	// deleting it, then force-removes the rest.
+	if ctx.TargetBeadID != "" {
+		targetDir := filepath.Join(ctx.RepoPath, ".worktrees", ctx.TargetBeadID)
+		fates := spgit.CleanupStaleSiblingWorktreesSafe(ctx.RepoPath, targetDir, log)
+		for _, f := range fates {
+			switch f.Action {
+			case "renamed":
+				log("retry-merge: sibling %s quarantined to %s (%s)", f.Path, f.NewPath, f.Reason)
+			case "removed":
+				log("retry-merge: sibling %s removed", f.Path)
+			case "skipped-live":
+				log("retry-merge: sibling %s skipped (%s)", f.Path, f.Reason)
+			case "error":
+				log("retry-merge: sibling %s cleanup error: %s", f.Path, f.Reason)
+			}
+		}
+	}
+
+	ctx.logf(fmt.Sprintf("retry-merge: starting time-bounded retry (branch=%s base=%s wall=%s)",
+		ws.Branch, baseBranch, retryMergeWallTime))
+
+	start := retryMergeNow()
+	var lastErr error
+	for round := 1; ; round++ {
+		elapsed := retryMergeNow().Sub(start)
+		if elapsed >= retryMergeWallTime {
+			ctx.logf(fmt.Sprintf("retry-merge: wall-time budget exhausted after %s and %d rounds",
+				elapsed.Round(time.Millisecond), round-1))
+			if lastErr != nil {
+				return nil, fmt.Errorf("retry-merge: wall-time exhausted after %d rounds (%s): %w",
+					round-1, retryMergeWallTime, lastErr)
+			}
+			return nil, fmt.Errorf("retry-merge: wall-time exhausted after %d rounds (%s)",
+				round-1, retryMergeWallTime)
+		}
+
+		ctx.logf(fmt.Sprintf("retry-merge: round %d (elapsed %s)",
+			round, elapsed.Round(time.Millisecond)))
+		if err := retryMergeAttempt(rc, baseBranch, ws.Branch, nil); err == nil {
+			ctx.logf(fmt.Sprintf("retry-merge: succeeded on round %d after %s",
+				round, retryMergeNow().Sub(start).Round(time.Millisecond)))
+			return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
+		} else {
+			lastErr = err
+			ctx.logf(fmt.Sprintf("retry-merge: round %d failed: %s", round, err))
+		}
+
+		// Pick the backoff for the next sleep. Rounds beyond the schedule
+		// reuse the last (cap) duration — so ≥4 rounds comfortably fit in
+		// a 60s budget.
+		idx := round - 1
+		if idx >= len(retryMergeBackoffs) {
+			idx = len(retryMergeBackoffs) - 1
+		}
+		backoff := retryMergeBackoffs[idx]
+		remaining := retryMergeWallTime - retryMergeNow().Sub(start)
+		if backoff > remaining {
+			backoff = remaining
+		}
+		if backoff <= 0 {
+			continue
+		}
+		retryMergeSleep(backoff)
+	}
+}
+
+// mechanicalCleanupStaleWorktrees runs the SAFE sibling-cleanup for this
+// bead's `.worktrees/<beadID>*` paths. Unlike the prior unsafe variant, it
+// quarantines anything with uncommitted changes, an in-progress rebase/merge,
+// a mismatched branch, or a recent mtime — those get renamed to
+// `.worktrees/.abandoned-<unix-ts>-<base>` via os.Rename rather than deleted.
+// Only siblings that pass all four gates are force-removed.
+//
+// Idempotent: a second call with no un-quarantined siblings present is a no-op.
 func mechanicalCleanupStaleWorktrees(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws WorkspaceHandle) (*recovery.MechanicalRecipe, error) {
 	if ctx == nil || ctx.TargetBeadID == "" || ctx.RepoPath == "" {
 		return nil, fmt.Errorf("cleanup-stale-worktrees: missing repo/target context")
@@ -230,7 +382,19 @@ func mechanicalCleanupStaleWorktrees(ctx *RecoveryActionCtx, plan recovery.Repai
 	log := func(format string, args ...interface{}) {
 		ctx.logf(fmt.Sprintf(format, args...))
 	}
-	spgit.CleanupStaleSiblingWorktrees(ctx.RepoPath, targetDir, log)
+	fates := spgit.CleanupStaleSiblingWorktreesSafe(ctx.RepoPath, targetDir, log)
+	for _, f := range fates {
+		switch f.Action {
+		case "removed":
+			ctx.logf(fmt.Sprintf("cleanup: sibling %s removed", f.Path))
+		case "renamed":
+			ctx.logf(fmt.Sprintf("cleanup: sibling %s quarantined to %s (%s)", f.Path, f.NewPath, f.Reason))
+		case "skipped-live":
+			ctx.logf(fmt.Sprintf("cleanup: sibling %s skipped (%s)", f.Path, f.Reason))
+		case "error":
+			ctx.logf(fmt.Sprintf("cleanup: sibling %s error: %s", f.Path, f.Reason))
+		}
+	}
 	return recovery.NewBuiltinRecipe(plan.Action, plan.Params), nil
 }
 
