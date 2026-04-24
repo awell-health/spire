@@ -907,6 +907,95 @@ func TestSpawnRepairWorker_NonConflictActionDispatches(t *testing.T) {
 	}
 }
 
+// TestSpawnRepairWorker_ResummonRejectedInsideLiveWizard verifies the
+// self-collision gate: when ctx.ParentAgentName is set (in-process
+// recovery cycle inside a live wizard), plan.Action="resummon" is
+// rejected BEFORE the apprentice spawn. The apprentice would otherwise
+// try to `spire claim` the bead and collide with the parent wizard's
+// own active attempt — producing the 20-second failure loop observed
+// on spi-wsb115 / spi-bvp0n9.
+func TestSpawnRepairWorker_ResummonRejectedInsideLiveWizard(t *testing.T) {
+	dir := initAgenticTestRepo(t)
+	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
+
+	var dispatched int
+	ctx := &RecoveryActionCtx{
+		Worktree:        wc,
+		TargetBeadID:    "spi-wsb115",
+		ParentAgentName: "wizard-spi-wsb115",
+		Spawner:         fakeSpawner{},
+		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			dispatched++
+			return &fakeHandle{name: cfg.Name}, nil
+		},
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
+	}
+	plan := recovery.RepairPlan{Action: "resummon", Reason: "transient"}
+	ws := WorkspaceHandle{
+		Name:       "recovery",
+		Kind:       WorkspaceKindBorrowedWorktree,
+		Path:       dir,
+		Branch:     "feat/spi-wsb115",
+		BaseBranch: "main",
+		Origin:     WorkspaceOriginLocalBind,
+	}
+
+	_, err := SpawnRepairWorker(ctx, plan, ws)
+	if err == nil {
+		t.Fatal("SpawnRepairWorker(resummon, ParentAgentName set) returned nil; expected self-collision rejection")
+	}
+	if !strings.Contains(err.Error(), "cannot run inside a live wizard") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if dispatched != 0 {
+		t.Errorf("apprentice dispatched %d times; expected 0 (gate must fire before spawn)", dispatched)
+	}
+}
+
+// TestSpawnRepairWorker_ResummonAllowedWhenNoParent verifies the gate
+// does NOT fire for external callers (ParentAgentName unset). The
+// legitimate `spire resummon` CLI path and any future external cleric
+// dispatch must still be able to use action="resummon".
+//
+// This is the complement of the in-process test: same plan, no parent
+// signal, apprentice should spawn normally. It also guards against an
+// over-broad future change that rejects resummon unconditionally.
+func TestSpawnRepairWorker_ResummonAllowedWhenNoParent(t *testing.T) {
+	dir := initAgenticTestRepo(t)
+	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
+
+	var dispatched int
+	ctx := &RecoveryActionCtx{
+		Worktree:     wc,
+		TargetBeadID: "spi-target",
+		// ParentAgentName deliberately empty: external caller.
+		Spawner: fakeSpawner{},
+		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			dispatched++
+			return &fakeHandle{name: cfg.Name}, nil
+		},
+		BuildRuntimeContract: testBuildRuntimeContract,
+		Log:                  func(string) {},
+	}
+	plan := recovery.RepairPlan{Action: "resummon", Reason: "wizard dead"}
+	ws := WorkspaceHandle{
+		Name:       "recovery",
+		Kind:       WorkspaceKindBorrowedWorktree,
+		Path:       dir,
+		Branch:     "feat/spi-target",
+		BaseBranch: "main",
+		Origin:     WorkspaceOriginLocalBind,
+	}
+
+	if _, err := SpawnRepairWorker(ctx, plan, ws); err != nil {
+		t.Fatalf("SpawnRepairWorker(resummon, no parent): %v", err)
+	}
+	if dispatched != 1 {
+		t.Errorf("dispatched = %d, want 1 (external resummon must still spawn)", dispatched)
+	}
+}
+
 // TestSpawnRepairWorker_BuildsCanonicalRuntimeContract asserts the
 // k8s-oriented invariant from spi-6wiz9: every worker spawn — conflict
 // resolver or generic repair role — must carry the canonical
