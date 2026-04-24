@@ -113,9 +113,12 @@ func cmdResummon(args []string) error {
 	// 5. Close any open alert beads that reference this bead (merge-failure, etc.).
 	closeRelatedAlerts(beadID)
 
-	// 5b. Close any open recovery beads linked to this bead.
-	if err := recovery.CloseRelatedRecoveryBeads(storeBridgeOps{}, beadID, "resummon"); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not close recovery beads: %v\n", err)
+	// 5b. Close any open recovery + alert beads linked to this bead. The
+	// per-caller alert close in step 5 (closeRelatedAlerts) is kept as a
+	// belt-and-suspenders helper; CloseRelatedDependents is the canonical
+	// path.
+	if err := recovery.CloseRelatedDependents(storeBridgeOps{}, beadID, []string{recovery.KindRecovery, recovery.KindAlert}, "resummon"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not close dependents: %v\n", err)
 	}
 
 	// 6. Warn that no recovery learning is recorded.

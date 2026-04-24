@@ -526,14 +526,18 @@ func TestIsProtectedByLabel(t *testing.T) {
 			expect: true,
 		},
 		{
+			// spi-pwdhs5 Bug B narrowed the protected set to recovery-bead
+			// only; alert:* labels are NOT protected so the reset cascade
+			// can close them and stamp a reset-cycle:<N> for audit.
 			name:   "alert label",
 			bead:   Bead{ID: "spi-alert", Labels: []string{"alert:corrupted-bead"}},
-			expect: true,
+			expect: false,
 		},
 		{
+			// See above — alert-labeled beads flow through the cascade.
 			name:   "alert merge-failure label",
 			bead:   Bead{ID: "spi-alert2", Labels: []string{"alert:merge-failure"}},
-			expect: true,
+			expect: false,
 		},
 		{
 			name:   "normal step bead",
@@ -1715,9 +1719,9 @@ func TestParseSetFlag_RejectionCases(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		token     string
-		contains  string // expected substring in error
+		name     string
+		token    string
+		contains string // expected substring in error
 	}{
 		{"no equals", "implement.outputs.outcome", "expected"},
 		{"two segments", "implement.outcome=verified", "segment"},
