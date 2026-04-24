@@ -71,11 +71,11 @@ func currentBranchAt(dir string) (string, error) {
 //   - Checkout — worktrees don't switch branches
 //   - SetGlobalConfig — use --worktree flag instead
 type WorktreeContext struct {
-	Dir        string              // absolute path to this worktree
-	Branch     string              // branch checked out in this worktree
-	BaseBranch string              // the branch this was forked from (e.g. "main")
-	RepoPath   string              // the main repo (for worktree management only)
-	StartSHA   string              // HEAD SHA captured at session start (for session-scoped commit detection)
+	Dir        string               // absolute path to this worktree
+	Branch     string               // branch checked out in this worktree
+	BaseBranch string               // the branch this was forked from (e.g. "main")
+	RepoPath   string               // the main repo (for worktree management only)
+	StartSHA   string               // HEAD SHA captured at session start (for session-scoped commit detection)
 	Log        func(string, ...any) // optional structured logger; nil = silent
 }
 
@@ -369,11 +369,17 @@ func (wc *WorktreeContext) DiffNameOnly(ref string) ([]string, error) {
 }
 
 // Cleanup removes this worktree from git and deletes its directory.
+// Idempotent: callers may invoke this multiple times (e.g. an explicit call
+// before verdict dispatch plus a deferred safety-net call); subsequent calls
+// are no-ops. After the first successful call wc.Dir is cleared so the
+// WorktreeContext is not reused by accident.
 func (wc *WorktreeContext) Cleanup() {
-	if wc.Dir != "" {
-		exec.Command("git", "-C", wc.RepoPath, "worktree", "remove", "--force", wc.Dir).Run()
-		os.RemoveAll(wc.Dir)
+	if wc == nil || wc.Dir == "" {
+		return
 	}
+	exec.Command("git", "-C", wc.RepoPath, "worktree", "remove", "--force", wc.Dir).Run()
+	os.RemoveAll(wc.Dir)
+	wc.Dir = ""
 }
 
 // ConflictState describes an in-progress conflicted operation in a worktree.

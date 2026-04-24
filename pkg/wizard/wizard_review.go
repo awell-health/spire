@@ -122,6 +122,14 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	}
 	if diff == "" {
 		log("no diff found — approving (nothing to review)")
+		// Release the sage review worktree before exiting — no verdict
+		// dispatch runs on this path, but the exit-through-defer happens
+		// only after WriteResult, and keeping the worktree alive longer
+		// than necessary risks branch-lock collisions if a caller
+		// immediately dispatches a follow-up action.
+		if worktreeDir == "" && wc != nil {
+			wc.Cleanup()
+		}
 		// Write an explicit approve verdict so v3 review graphs can route.
 		reviewElapsed := time.Since(startedAt)
 		WizardWriteResult(reviewerName, beadID, "approve", "", "", reviewElapsed, ClaudeMetrics{}, deps, log)
@@ -205,6 +213,23 @@ func CmdWizardReview(args []string, deps *Deps) error {
 			})
 		}
 		deps.CloseReviewBead(reviewBeadID, review.Verdict, summaryBuf.String(), errorCount, warningCount, round, findings)
+	}
+
+	// Release the sage review worktree BEFORE dispatching any terminal
+	// action that touches the same branch. Otherwise TerminalMerge's
+	// staging worktree would collide with the sage's checkout and git
+	// would refuse with "'feat/<bead>' is already used by worktree at
+	// ...". The diff/testOutput are already captured into local variables
+	// above, so releasing the worktree here is safe.
+	//
+	// The line-105 defer still fires as a no-op safety net for the
+	// error paths below; Cleanup is idempotent.
+	//
+	// Only release worktrees this function created — a shared executor
+	// worktree (worktreeDir != "") is owned upstream and must not be
+	// touched here.
+	if worktreeDir == "" && wc != nil {
+		wc.Cleanup()
 	}
 
 	// 9. Handle verdict
