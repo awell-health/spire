@@ -30,6 +30,8 @@ import (
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/metrics/report"
+	"github.com/awell-health/spire/pkg/olap"
 	"github.com/awell-health/spire/pkg/process"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/summon"
@@ -111,7 +113,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/cleanup/step-beads", s.corsMiddleware(s.bearerAuth(s.handleCleanupStepBeads)))
 	mux.Handle("/api/v1/blocked", s.corsMiddleware(s.bearerAuth(s.handleBlocked)))
 	mux.Handle("/api/v1/repos", s.corsMiddleware(s.bearerAuth(s.handleRepos)))
-	mux.Handle("/api/v1/metrics", s.corsMiddleware(s.bearerAuth(s.handleMetricsStub)))
+	mux.Handle("/api/v1/metrics", s.corsMiddleware(s.bearerAuth(s.handleMetrics)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -835,15 +837,90 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleMetricsStub answers /api/v1/metrics with 501 Not Implemented plus a
-// JSON body pointing at the backend bead that tracks the real implementation.
-// Registered so the CORS preflight succeeds — without a mux entry, the
-// default 404 bypasses corsMiddleware and the desktop's fetch fails at
-// preflight, preventing its fixture-fallback path from ever running.
-func (s *Server) handleMetricsStub(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{
-		"error": "metrics endpoint not yet implemented — see spd-1jd",
-	})
+// metricsReaderFactory returns a report.Reader and a cleanup func
+// the handler defers. The default production implementation opens a
+// DuckDB file via the active tower config. Tests overwrite this to
+// return a fake Reader so handler branches can be exercised without
+// a real DB.
+var metricsReaderFactory = func() (report.Reader, func(), error) {
+	tc, err := config.ActiveTowerConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+	adb, err := olap.Open(tc.OLAPPath())
+	if err != nil {
+		return nil, nil, err
+	}
+	return report.NewSQLReader(adb.SqlDB()), func() { adb.Close() }, nil
+}
+
+// metricsBuild is the indirection through which handleMetrics calls
+// report.Build — swapped in tests so handler-level branches (query
+// parsing, error mapping) can be exercised without a real OLAP.
+var metricsBuild = report.Build
+
+// handleMetrics answers GET /api/v1/metrics with the full dashboard
+// payload consumed by spire-desktop's MetricsView. Query params:
+//
+//	scope=all|<prefix>         — default: all
+//	window=24h|7d|30d|90d|custom — default: 7d
+//	aspirational=true|false    — default: false
+//	since=<RFC3339>            — required when window=custom
+//	until=<RFC3339>            — required when window=custom
+//
+// Status codes:
+//   - 200 on success (MetricsResponse body).
+//   - 400 on invalid query params (bad window, missing since/until).
+//   - 503 when the OLAP database is unreachable — the frontend falls
+//     back to its bundled fixture on non-200, so this keeps the UI
+//     usable when DuckDB isn't yet wired up.
+//   - 500 on unexpected query errors.
+//
+// Each request opens a fresh *olap.DB handle so DuckDB's file lock
+// doesn't leak between callers; at the 60s poll cadence the per-
+// request open cost is negligible.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	q := r.URL.Query()
+
+	scope := report.ParseScope(q.Get("scope"))
+	win, err := report.ParseWindow(q.Get("window"), q.Get("since"), q.Get("until"), time.Now().UTC())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	aspirational := false
+	if v := strings.ToLower(q.Get("aspirational")); v == "true" || v == "1" || v == "yes" {
+		aspirational = true
+	}
+
+	reader, cleanup, err := metricsReaderFactory()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": fmt.Sprintf("metrics: OLAP unavailable (%v) — run 'spire up' to start services", err),
+		})
+		return
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	opts := report.Options{
+		Scope:        scope,
+		Window:       win,
+		Aspirational: aspirational,
+		Now:          time.Now().UTC(),
+	}
+	resp, err := metricsBuild(r.Context(), reader, opts)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleBlocked answers GET /api/v1/blocked with the ID set of open beads
