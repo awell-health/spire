@@ -850,11 +850,91 @@ func (s *Server) handleCleanupStepBeads(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// getBeadLineage answers GET /api/v1/beads/{id}/lineage with the transitive
-// closure of "what this bead came from": walks every outgoing dependency
-// (parent-child, discovered-from, blocks, caused-by, related, supersedes)
-// up to depth 5, then returns the node set and typed edges so the desktop
-// Graph view can render "where did this bug come from?" provenance.
+// lineageEdge is a (from, to, type) triple used by both the upstream and
+// downstream walks of getBeadLineage. JSON tags match the desktop
+// Graph view contract.
+type lineageEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Type string `json:"type"`
+}
+
+// Recursive CTE queries for bidirectional lineage walks. Depth cap 20,
+// row cap 5000 per direction — both safety rails against runaway joins
+// or adversarial cycles. Dedupe happens in Go after scan since MySQL
+// recursive UNION ALL can emit duplicate rows when multiple paths reach
+// the same node.
+const lineageUpstreamSQL = `
+WITH RECURSIVE up AS (
+  SELECT d.issue_id AS from_id, d.depends_on_id AS to_id, d.type AS dep_type, 1 AS depth
+    FROM dependencies d
+   WHERE d.issue_id = ?
+  UNION ALL
+  SELECT d.issue_id, d.depends_on_id, d.type, up.depth + 1
+    FROM dependencies d JOIN up ON d.issue_id = up.to_id
+   WHERE up.depth < 20
+)
+SELECT from_id, to_id, dep_type FROM up LIMIT 5000`
+
+const lineageDownstreamSQL = `
+WITH RECURSIVE down AS (
+  SELECT d.issue_id AS from_id, d.depends_on_id AS to_id, d.type AS dep_type, 1 AS depth
+    FROM dependencies d
+   WHERE d.depends_on_id = ?
+  UNION ALL
+  SELECT d.issue_id, d.depends_on_id, d.type, down.depth + 1
+    FROM dependencies d JOIN down ON d.depends_on_id = down.from_id
+   WHERE down.depth < 20
+)
+SELECT from_id, to_id, dep_type FROM down LIMIT 5000`
+
+// queryLineageEdges runs one of the lineage CTE queries bound to a bead id
+// and scans the result rows into lineageEdge values. Callers are responsible
+// for deduping — recursive UNION ALL can emit duplicates on diamond graphs.
+func queryLineageEdges(db *sql.DB, query, id string) ([]lineageEdge, error) {
+	rows, err := db.Query(query, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]lineageEdge, 0, 32)
+	for rows.Next() {
+		var e lineageEdge
+		if err := rows.Scan(&e.From, &e.To, &e.Type); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// dedupeLineageEdges returns the unique edges in input order, keyed on
+// (from, to, type).
+func dedupeLineageEdges(in []lineageEdge) []lineageEdge {
+	seen := make(map[[3]string]struct{}, len(in))
+	out := make([]lineageEdge, 0, len(in))
+	for _, e := range in {
+		k := [3]string{e.From, e.To, e.Type}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, e)
+	}
+	return out
+}
+
+// getBeadLineage answers GET /api/v1/beads/{id}/lineage with the bidirectional
+// transitive closure of this bead's dependency graph:
+//
+//   - upstream_edges: what this bead depends on (what it came from)
+//   - downstream_edges: what depends on this bead (what came out of it)
+//
+// Both walks cover every dependency type (parent-child, discovered-from,
+// blocks, caused-by, related, supersedes) to a depth cap of 20 and a row
+// cap of 5000 per direction. The response includes an `edges` alias for
+// `upstream_edges` held for one release so CLI/desktop clients can migrate
+// smoothly.
 func (s *Server) getBeadLineage(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -870,54 +950,34 @@ func (s *Server) getBeadLineage(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 
-	type edge struct {
-		From string `json:"from"`
-		To   string `json:"to"`
-		Type string `json:"type"`
-	}
-	nodes := map[string]store.Bead{id: target}
-	edges := []edge{}
-
 	db, ok := store.ActiveDB()
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "active db not initialised"})
 		return
 	}
 
-	// Recursive walk over every dependency type, depth cap 5. Returns edge
-	// triples; we then batch-fetch the reached node rows in one IN query.
-	const lineageSQL = `
-WITH RECURSIVE walk AS (
-  SELECT d.issue_id AS from_id, d.depends_on_id AS to_id, d.type AS dep_type, 1 AS depth
-    FROM dependencies d
-   WHERE d.issue_id = ?
-  UNION ALL
-  SELECT d.issue_id, d.depends_on_id, d.type, w.depth + 1
-    FROM dependencies d JOIN walk w ON d.issue_id = w.to_id
-   WHERE w.depth < 5
-)
-SELECT from_id, to_id, dep_type FROM walk LIMIT 2000`
-
-	rows, err := db.Query(lineageSQL, id)
+	upRaw, err := queryLineageEdges(db, lineageUpstreamSQL, id)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	defer rows.Close()
-	nodeIDs := map[string]bool{}
-	for rows.Next() {
-		var e edge
-		if err := rows.Scan(&e.From, &e.To, &e.Type); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		edges = append(edges, e)
+	downRaw, err := queryLineageEdges(db, lineageDownstreamSQL, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	upstreamEdges := dedupeLineageEdges(upRaw)
+	downstreamEdges := dedupeLineageEdges(downRaw)
+
+	nodes := map[string]store.Bead{id: target}
+	nodeIDs := map[string]bool{id: true}
+	for _, e := range upstreamEdges {
 		nodeIDs[e.From] = true
 		nodeIDs[e.To] = true
 	}
-	if err := rows.Err(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	for _, e := range downstreamEdges {
+		nodeIDs[e.From] = true
+		nodeIDs[e.To] = true
 	}
 
 	// Batch-fetch beads for all referenced node ids (minus the target, which
@@ -961,10 +1021,12 @@ SELECT from_id, to_id, dep_type FROM walk LIMIT 2000`
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":     id,
-		"target": target,
-		"nodes":  nodes,
-		"edges":  edges,
+		"id":               id,
+		"target":           target,
+		"nodes":            nodes,
+		"upstream_edges":   upstreamEdges,
+		"downstream_edges": downstreamEdges,
+		"edges":            upstreamEdges,
 	})
 }
 
