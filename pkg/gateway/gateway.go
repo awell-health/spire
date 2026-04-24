@@ -317,6 +317,11 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 		s.getBeadLogs(w, r, strings.TrimSuffix(id, "/logs"))
 		return
 	}
+	// /api/v1/beads/{id}/lineage
+	if strings.HasSuffix(id, "/lineage") {
+		s.getBeadLineage(w, r, strings.TrimSuffix(id, "/lineage"))
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.getBead(w, r, id)
@@ -730,6 +735,71 @@ func (s *Server) handleCleanupStepBeads(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"closed_count": len(closedIDs),
 		"closed_ids":   closedIDs,
+	})
+}
+
+// getBeadLineage answers GET /api/v1/beads/{id}/lineage with the transitive
+// closure of "what this bead came from": walks every outgoing dependency
+// (parent-child, discovered-from, blocks, caused-by, related, supersedes)
+// up to depth 5, then returns the node set and typed edges so the desktop
+// Graph view can render "where did this bug come from?" provenance.
+func (s *Server) getBeadLineage(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	target, err := store.GetBead(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	type edge struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+		Type string `json:"type"`
+	}
+	nodes := map[string]store.Bead{id: target}
+	var edges []edge
+	visited := map[string]bool{id: true}
+
+	const maxDepth = 5
+	var walk func(beadID string, depth int)
+	walk = func(beadID string, depth int) {
+		if depth >= maxDepth {
+			return
+		}
+		deps, err := store.GetDepsWithMeta(beadID)
+		if err != nil {
+			return
+		}
+		for _, dep := range deps {
+			edges = append(edges, edge{
+				From: beadID,
+				To:   dep.ID,
+				Type: string(dep.DependencyType),
+			})
+			if visited[dep.ID] {
+				continue
+			}
+			visited[dep.ID] = true
+			if b, err := store.GetBead(dep.ID); err == nil {
+				nodes[dep.ID] = b
+			}
+			walk(dep.ID, depth+1)
+		}
+	}
+	walk(id, 0)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":     id,
+		"target": target,
+		"nodes":  nodes,
+		"edges":  edges,
 	})
 }
 
