@@ -13,6 +13,7 @@ import (
 
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
 )
 
 // TerminalMerge implements the merge terminal step:
@@ -125,18 +126,30 @@ func TerminalSplit(beadID, reviewerName string, splitTasks []SplitTask, deps *De
 	}
 
 	// Create child beads for the remaining work.
+	//
+	// Split children are independent tasks, not sub-beads of the parent:
+	//   - Type is forced to task regardless of parent type — split lists are
+	//     already scoped work; promoting epic children would trigger Linear
+	//     sync and imply further decomposition.
+	//   - No Parent link. The parent was just closed by ReviewHandleApproval
+	//     above, and parenting under a closed bead hides children from the
+	//     board (IsWorkBead filters Parent != "").
+	//   - Lineage is carried by a discovered-from dep, mirroring how --design
+	//     links an epic back to its design bead.
 	for _, task := range splitTasks {
 		childID, cerr := deps.CreateBead(CreateOpts{
 			Title:       task.Title,
 			Description: task.Description,
 			Priority:    bead.Priority,
-			Type:        deps.ParseIssueType(bead.Type),
-			Parent:      beadID,
+			Type:        beads.TypeTask,
 			Prefix:      store.PrefixFromID(beadID),
 		})
 		if cerr != nil {
 			log("warning: create split task %q: %s", task.Title, cerr)
 			continue
+		}
+		if derr := deps.AddDepTyped(childID, beadID, "discovered-from"); derr != nil {
+			return fmt.Errorf("terminal split: add discovered-from dep %s → %s: %w", childID, beadID, derr)
 		}
 		log("created split task: %s — %s", childID, task.Title)
 		deps.AddComment(beadID, fmt.Sprintf("Split task created: %s — %s", childID, task.Title))
