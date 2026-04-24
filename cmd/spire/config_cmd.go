@@ -11,19 +11,12 @@ import (
 )
 
 var configCmd = &cobra.Command{
-	Use:   "config <get|set|list|repo> [key] [value]",
-	Short: "Read/write config values and credentials",
-	Args:  cobra.MinimumNArgs(1),
+	Use:                "config <get|set|list|repo|auth> [key] [value]",
+	Short:              "Read/write config values, credentials, and auth slots",
+	Args:               cobra.MinimumNArgs(1),
+	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var fullArgs []string
-		if repo, _ := cmd.Flags().GetBool("repo"); repo {
-			fullArgs = append(fullArgs, "--repo")
-		}
-		if unmask, _ := cmd.Flags().GetBool("unmask"); unmask {
-			fullArgs = append(fullArgs, "--unmask")
-		}
-		fullArgs = append(fullArgs, args...)
-		return cmdConfig(fullArgs)
+		return cmdConfig(args)
 	},
 }
 
@@ -34,7 +27,14 @@ func init() {
 
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire config <get|set|list|repo> [key] [value]\n\nConfig keys: identity, dolt.port, daemon.interval, editor.cursor, editor.claude, mcp-server.path, dolthub.remote\nCredential keys: %s\n\nFlags:\n  --unmask  Show full credential values (default: masked)\n\nSubcommands:\n  repo    Print resolved spire.yaml (repo-level agent config)", strings.Join(validCredentialKeys(), ", "))
+		return fmt.Errorf("usage: spire config <get|set|list|repo|auth> [key] [value]\n\nConfig keys: identity, dolt.port, daemon.interval, editor.cursor, editor.claude, mcp-server.path, dolthub.remote\nCredential keys: %s\n\nFlags:\n  --unmask  Show full credential values (default: masked)\n\nSubcommands:\n  repo    Print resolved spire.yaml (repo-level agent config)\n  auth    Manage Anthropic auth credential slots (subscription, api-key)", strings.Join(validCredentialKeys(), ", "))
+	}
+
+	// `auth` has its own flag grammar (--token, --key, --token-stdin,
+	// --key-stdin). Dispatch directly with the unmodified tail so the
+	// --repo/--unmask flag scanner below doesn't eat auth flags.
+	if args[0] == "auth" {
+		return cmdConfigAuth(args[1:])
 	}
 
 	// Parse flags
@@ -73,7 +73,7 @@ func cmdConfig(args []string) error {
 	case "repo":
 		return configRepo()
 	default:
-		return fmt.Errorf("unknown config subcommand: %q\nusage: spire config <get|set|list|repo> [key] [value]", args[0])
+		return fmt.Errorf("unknown config subcommand: %q\nusage: spire config <get|set|list|repo|auth> [key] [value]", args[0])
 	}
 }
 
