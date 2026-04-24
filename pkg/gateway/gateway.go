@@ -109,6 +109,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/cleanup/step-beads", s.corsMiddleware(s.bearerAuth(s.handleCleanupStepBeads)))
 	mux.Handle("/api/v1/blocked", s.corsMiddleware(s.bearerAuth(s.handleBlocked)))
 	mux.Handle("/api/v1/repos", s.corsMiddleware(s.bearerAuth(s.handleRepos)))
+	mux.Handle("/api/v1/metrics", s.corsMiddleware(s.bearerAuth(s.handleMetricsStub)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -777,6 +778,17 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"active_tower": activeTower,
 		"repos":        rows,
+	})
+}
+
+// handleMetricsStub answers /api/v1/metrics with 501 Not Implemented plus a
+// JSON body pointing at the backend bead that tracks the real implementation.
+// Registered so the CORS preflight succeeds — without a mux entry, the
+// default 404 bypasses corsMiddleware and the desktop's fetch fails at
+// preflight, preventing its fixture-fallback path from ever running.
+func (s *Server) handleMetricsStub(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"error": "metrics endpoint not yet implemented — see spd-1jd",
 	})
 }
 
