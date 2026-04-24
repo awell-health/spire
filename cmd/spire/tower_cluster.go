@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	bdpkg "github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/gatewayclient"
 	towerpkg "github.com/awell-health/spire/pkg/tower"
 	"github.com/spf13/cobra"
 )
@@ -30,7 +32,13 @@ import (
 var towerAttachClusterCmd = &cobra.Command{
 	Use:   "attach-cluster",
 	Short: "Non-interactive tower attach for cluster bootstrap",
-	Long: `attach-cluster has two modes.
+	Long: `attach-cluster has three modes.
+
+Gateway mode (--url/--token): attaches a local CLI to a remote tower over
+HTTPS. Fetches tower identity from GET /api/v1/tower on the gateway,
+verifies the returned Name matches --tower, persists the bearer token in
+the OS keychain, and writes a gateway-mode tower config locally. Every
+subsequent bead/message op against this tower tunnels through the gateway.
 
 Bootstrap mode (--data-dir/--database): seeds .beads/ in --data-dir after
 reading the attached tower's project_id and prefix from the live dolt server.
@@ -44,6 +52,26 @@ so later dispatch code can route work to a specific Kubernetes namespace.
 When --in-cluster is set, uses the pod service account instead of a
 kubeconfig file.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		url, _ := cmd.Flags().GetString("url")
+		token, _ := cmd.Flags().GetString("token")
+		// Gateway mode is selected when either --url or --token is set. Both
+		// must be provided together — refusing a half-configured invocation
+		// avoids partially-written state (e.g. keychain without tower config).
+		if url != "" || token != "" {
+			if url == "" {
+				return fmt.Errorf("--url is required when --token is set")
+			}
+			if token == "" {
+				return fmt.Errorf("--token is required when --url is set")
+			}
+			towerName, _ := cmd.Flags().GetString("tower")
+			if towerName == "" {
+				return fmt.Errorf("--tower is required for gateway attach")
+			}
+			localAlias, _ := cmd.Flags().GetString("name")
+			return cmdTowerAttachClusterGateway(url, token, towerName, localAlias)
+		}
+
 		namespace, _ := cmd.Flags().GetString("namespace")
 		if namespace != "" {
 			towerName, _ := cmd.Flags().GetString("tower")
@@ -92,9 +120,114 @@ func init() {
 	towerAttachClusterCmd.Flags().String("kubeconfig", "", "Path to kubeconfig; defaults to $KUBECONFIG or ~/.kube/config (register mode)")
 	towerAttachClusterCmd.Flags().String("context", "", "Kubeconfig context name; empty means current context (register mode)")
 	towerAttachClusterCmd.Flags().Bool("in-cluster", false, "Use pod service account instead of a kubeconfig file (register mode)")
-	towerAttachClusterCmd.Flags().String("tower", "", "Target tower name; defaults to the active tower (register mode)")
+	towerAttachClusterCmd.Flags().String("tower", "", "Target tower name; defaults to the active tower (register mode / required for gateway mode)")
+
+	// Gateway-mode flags. --url + --token must be provided together; --name
+	// optionally overrides the local alias (default is --tower).
+	towerAttachClusterCmd.Flags().String("url", "", "Gateway base URL (https://...) for gateway-mode attach; pairs with --token")
+	towerAttachClusterCmd.Flags().String("token", "", "Gateway bearer token for gateway-mode attach; pairs with --url")
+	towerAttachClusterCmd.Flags().String("name", "", "Local alias for the attached gateway tower; defaults to --tower (gateway mode)")
 
 	towerCmd.AddCommand(towerAttachClusterCmd)
+}
+
+// gatewayAttachFetchTower fetches the remote tower identity via the gateway
+// HTTPS API. Declared as a package variable so tests can substitute a fake
+// that avoids building a real *http.Client. The default implementation is a
+// thin wrapper around gatewayclient.NewClient + GetTower.
+var gatewayAttachFetchTower = func(ctx context.Context, url, token string) (gatewayclient.TowerInfo, error) {
+	return gatewayclient.NewClient(url, token).GetTower(ctx)
+}
+
+// gatewayAttachSetToken persists the bearer token in the OS keychain. Wrapped
+// in a package variable so tests can stub out keychain access without shelling
+// out to `security` (macOS) or `secret-tool` (Linux).
+var gatewayAttachSetToken = config.SetTowerToken
+
+// cmdTowerAttachClusterGateway runs the gateway-mode flow of attach-cluster:
+// verifies the remote tower identity, stores the bearer token in the OS
+// keychain, and persists a gateway-mode tower config + instance entry so
+// later CLI commands route bead/message ops through the gateway. Returns
+// cleanly diagnosable errors on mismatch; callers should not retry with
+// the same arguments after a name mismatch.
+func cmdTowerAttachClusterGateway(url, token, towerName, localAlias string) error {
+	if url == "" {
+		return fmt.Errorf("--url is required for gateway attach")
+	}
+	if token == "" {
+		return fmt.Errorf("--token is required for gateway attach")
+	}
+	if towerName == "" {
+		return fmt.Errorf("--tower is required for gateway attach")
+	}
+
+	effectiveName := towerName
+	if localAlias != "" {
+		effectiveName = localAlias
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	info, err := gatewayAttachFetchTower(ctx, url, token)
+	if err != nil {
+		return fmt.Errorf("fetch tower from gateway at %s: %w", url, err)
+	}
+
+	if info.Name != towerName {
+		return fmt.Errorf("tower name mismatch: --tower=%q but gateway reports %q", towerName, info.Name)
+	}
+
+	// Persist the token before writing any config so a later config save
+	// failure does not leave a tower file pointing at a keychain entry that
+	// does not exist. Keychain writes are idempotent (re-store overwrites).
+	if err := gatewayAttachSetToken(effectiveName, token); err != nil {
+		return fmt.Errorf("store bearer token in keychain: %w", err)
+	}
+
+	tower := &config.TowerConfig{
+		Name:      effectiveName,
+		HubPrefix: info.Prefix,
+		Archmage:  config.ArchmageConfig{Name: info.Archmage},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Mode:      config.TowerModeGateway,
+		URL:       url,
+		TokenRef:  effectiveName,
+	}
+	if err := config.SaveTowerConfig(tower); err != nil {
+		return fmt.Errorf("save tower config: %w", err)
+	}
+
+	// Mirror Mode/URL/TokenRef onto an Instance entry keyed by tower prefix
+	// so CWD-based tower resolution and any code path that reads the
+	// parallel instance config stays coherent with the tower file.
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load spire config: %w", err)
+	}
+	if cfg.Instances == nil {
+		cfg.Instances = make(map[string]*Instance)
+	}
+	cfg.Instances[info.Prefix] = &Instance{
+		Prefix:   info.Prefix,
+		Tower:    effectiveName,
+		Mode:     config.TowerModeGateway,
+		URL:      url,
+		TokenRef: effectiveName,
+	}
+	cfg.ActiveTower = effectiveName
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("save spire config: %w", err)
+	}
+
+	fmt.Printf("Tower attached via gateway: %s\n", tower.Name)
+	fmt.Printf("  prefix:      %s\n", tower.HubPrefix)
+	if info.Archmage != "" {
+		fmt.Printf("  archmage:    %s\n", info.Archmage)
+	}
+	fmt.Printf("  url:         %s\n", tower.URL)
+	fmt.Printf("  local alias: %s\n", effectiveName)
+	return nil
 }
 
 // clusterRunBdInit is the default RunBdInit wiring for cluster bootstrap.
