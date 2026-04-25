@@ -275,7 +275,7 @@ func TestExtractSQLValueCallersStayInAllowlist(t *testing.T) {
 		}
 		if info.IsDir() {
 			name := info.Name()
-			if name == "vendor" || name == ".git" || name == "node_modules" {
+			if name == "vendor" || name == ".git" || name == "node_modules" || name == ".worktrees" {
 				return filepath.SkipDir
 			}
 			return nil
