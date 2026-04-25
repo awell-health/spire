@@ -176,8 +176,11 @@ func TestClickHouseWriter_Close(t *testing.T) {
 // TestClickHouseSchemaStatements verifies the expected number of DDL statements.
 func TestClickHouseSchemaStatements(t *testing.T) {
 	stmts := clickHouseSchemaStatements()
-	// 5 tables: tool_events, tool_spans, api_events, agent_runs_olap, etl_cursor
-	if len(stmts) != 5 {
-		t.Errorf("expected 5 schema statements, got %d", len(stmts))
+	// 11 tables: tool_events, tool_spans, api_events, agent_runs_olap,
+	// etl_cursor, bead_lifecycle_olap, daily_formula_stats,
+	// weekly_merge_stats, phase_cost_breakdown, tool_usage_stats,
+	// failure_hotspots.
+	if len(stmts) != 11 {
+		t.Errorf("expected 11 schema statements, got %d", len(stmts))
 	}
 }
