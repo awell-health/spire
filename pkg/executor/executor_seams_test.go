@@ -1384,7 +1384,6 @@ func TestGraphExecutorExitCleansUpRegistry(t *testing.T) {
 		ResolveRepo: func(beadID string) (string, string, string, error) {
 			return "", "", "", fmt.Errorf("simulated repo resolution failure")
 		},
-		RegistryAdd:    func(entry agent.Entry) error { return nil },
 		RegistryRemove: func(name string) error { return nil },
 		UpdateBead: func(id string, updates map[string]interface{}) error { return nil },
 		CreateBead: func(opts CreateOpts) (string, error) {

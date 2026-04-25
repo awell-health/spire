@@ -32,6 +32,12 @@ func newProcessBackend() *ProcessBackend {
 
 // Spawn delegates to processSpawner.Spawn and registers the agent in the
 // wizard registry with the PID from the returned handle.
+//
+// ProcessBackend.Spawn is the SOLE seam that creates wizard registry entries
+// for spawned agents — see pkg/agent/README.md "Registry lifecycle". Wizard /
+// handoff code must not pre-register or self-register; the child runtime
+// stamps Phase via registry.Update from pkg/executor/graph_interpreter.go and
+// pkg/wizard/wizard*.go after this Add lands.
 func (b *ProcessBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 	handle, err := b.spawner.Spawn(cfg)
 	if err != nil {
@@ -49,8 +55,7 @@ func (b *ProcessBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 		InstanceID: cfg.InstanceID,
 	}
 	if err := RegistryAdd(entry); err != nil {
-		// Non-fatal: log and continue. The agent is running regardless.
-		fmt.Fprintf(os.Stderr, "[processBackend] warning: registry add for %s: %v%s\n", cfg.Name, err, runtime.LogFields(cfg.Run))
+		return handle, fmt.Errorf("[processBackend] registry add for %s: %w%s", cfg.Name, err, runtime.LogFields(cfg.Run))
 	}
 
 	return handle, nil

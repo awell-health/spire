@@ -113,8 +113,8 @@ func buildWizardDeps() *wizard.Deps {
 		// Phase helpers
 		GetPhase: getPhase,
 
-		// Agent registry
-		RegistryAdd:    func(entry agent.Entry) error { return wizardRegistryAdd(entry) },
+		// Agent registry. RegistryAdd is intentionally absent — backend.Spawn
+		// is the sole creator (see pkg/agent/README.md "Registry lifecycle").
 		RegistryRemove: func(name string) error { return wizardRegistryRemove(name) },
 		RegistryUpdate: func(name string, f func(*agent.Entry)) error { return wizardRegistryUpdate(name, f) },
 

@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/bundlestore"
 	"github.com/awell-health/spire/pkg/executor"
 	formulaPkg "github.com/awell-health/spire/pkg/formula"
@@ -228,8 +227,8 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.De
 		HookStepBead:     storeHookStepBead,
 		UnhookStepBead:   storeUnhookStepBead,
 
-		// Agent registry
-		RegistryAdd:    func(entry agent.Entry) error { return wizardRegistryAdd(entry) },
+		// Agent registry. RegistryAdd is intentionally absent — backend.Spawn
+		// is the sole creator (see pkg/agent/README.md "Registry lifecycle").
 		RegistryRemove: func(name string) error { return wizardRegistryRemove(name) },
 
 		// Resolution

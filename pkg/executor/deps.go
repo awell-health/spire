@@ -98,8 +98,9 @@ type Deps struct {
 	HookStepBead     func(stepID string) error
 	UnhookStepBead   func(stepID string) error
 
-	// Agent registry
-	RegistryAdd    func(entry agent.Entry) error
+	// Agent registry. RegistryAdd is intentionally absent — backend.Spawn is
+	// the sole creator of registry entries (see pkg/agent/README.md "Registry
+	// lifecycle"). RunGraph stamps Phase via registry.Update directly.
 	RegistryRemove func(name string) error
 
 	// Resolution

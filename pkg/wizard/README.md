@@ -103,6 +103,34 @@ Multiple retry requests are deduplicated — only the latest (highest
 | `ReviewHandleApproval` | Review-side terminal handoff when the sage approves. |
 | `CmdWizardEpic` | Legacy epic orchestrator entrypoint. |
 
+## Registry writes are forbidden here
+
+Wizard, handoff, and re-engagement code in this package MUST NOT call
+`registry.Add` / `registry.Upsert` (and `Deps.RegistryAdd` no longer
+exists, so this is enforced at compile time). The only legitimate
+creator of a wizard registry row is `pkg/agent.ProcessBackend.Spawn` —
+see [pkg/agent/README.md → Registry lifecycle](../agent/README.md#registry-lifecycle)
+for the canonical ownership table.
+
+What this package may do:
+
+- `registry.Update(...)` to stamp `Phase`, `PhaseStartedAt`, `Worktree`
+  on the row that `backend.Spawn` already created. `CmdWizardRun` and
+  `CmdWizardReview` do this on entry.
+- `Deps.RegistryRemove(...)` to clean up after a `backend.Spawn`
+  failure (e.g. `WizardReviewHandoff` removes the partially-created
+  reviewer entry if the spawn errors out).
+- `Deps.RegistryUpdate(...)` to stamp the real PID once the spawn
+  handle returns (the placeholder was 0 inside the backend's Add).
+
+What this package may **not** do:
+
+- Pre-register an entry "so the row is visible early." The dual-write
+  with `backend.Spawn` was the spi-30nma0 bug. Visibility shifts by
+  milliseconds without it; consumers must tolerate that.
+- Self-register in the child runtime via `registry.Upsert` or any other
+  creator. Stamping (`Update`) is the child's only legitimate write.
+
 ## Practical rules
 
 1. **Use `pkg/git` for worktree and branch semantics.** `pkg/wizard` may choose between "create" and "resume", but it should not hand-roll git mechanics.
@@ -110,6 +138,7 @@ Multiple retry requests are deduplicated — only the latest (highest
 3. **Borrowed worktrees are not owned here.** If the caller supplied `--worktree-dir` (common in v3 graph execution for all modes, not just review-fix), this package must not clean it up or create/switch branches inside it.
 4. **Preserve the existing apprentice contract.** If you add a new apprentice mode, keep prompt, timeout, validation, commit, and `result.json` behavior consistent unless the change is intentional and documented.
 5. **Treat `wizard-epic` as legacy-specialized code.** New formula-lifecycle work should usually extend `pkg/executor`, not the older epic loop, unless you are explicitly maintaining that command.
+6. **Never write the wizard registry from this package.** See "Registry writes are forbidden here" above; `backend.Spawn` is the sole creator.
 
 ## Where new work usually belongs
 

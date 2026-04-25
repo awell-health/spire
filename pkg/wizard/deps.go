@@ -96,8 +96,10 @@ type Deps struct {
 	// Phase helpers
 	GetPhase func(b Bead) string
 
-	// Agent registry
-	RegistryAdd    func(entry Entry) error
+	// Agent registry. RegistryAdd is intentionally absent — backend.Spawn is
+	// the sole creator of registry entries (see pkg/agent/README.md "Registry
+	// lifecycle"). Wizard / handoff code only Removes (cleanup on spawn
+	// failure) and Updates (stamp Phase / PID after spawn).
 	RegistryRemove func(name string) error
 	RegistryUpdate func(name string, f func(*Entry)) error
 

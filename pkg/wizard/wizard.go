@@ -1999,20 +1999,16 @@ func WizardCollectReviewHistory(beadID, wizardName string, deps *Deps) string {
 // WizardReviewHandoff spawns a reviewer process for a bead.
 // On spawn failure, the steward's detectReviewReady() will detect the bead
 // needs review via its closed implement step bead and re-route on the next cycle.
+//
+// Registry lifecycle: backend.Spawn is the sole creator of the reviewer's
+// registry entry — see pkg/agent/README.md "Registry lifecycle". This function
+// must not pre-register the reviewer; doing so would dual-write with the
+// backend's Add and risk skew if the spawn fails partway through the contract
+// population below.
 func WizardReviewHandoff(beadID, wizardName, branchName string, deps *Deps, log func(string, ...interface{})) {
 	deps.AddLabel(beadID, "feat-branch:"+branchName)
 
-	// Transition to review phase
-	// Register reviewer in wizard registry
 	reviewerName := wizardName + "-review"
-	deps.RegistryAdd(Entry{
-		Name:           reviewerName,
-		PID:            0, // will be set by the reviewer process
-		BeadID:         beadID,
-		StartedAt:      time.Now().UTC().Format(time.RFC3339),
-		Phase:          "review",
-		PhaseStartedAt: time.Now().UTC().Format(time.RFC3339),
-	})
 
 	// Resolve tower identity and repo context so the runtime-contract
 	// fields on SpawnConfig are populated (required by cluster backends

@@ -129,7 +129,6 @@ func init() {
 func wizardRegistryPath() string                { return agent.RegistryPath() }
 func loadWizardRegistry() wizardRegistry        { return agent.LoadRegistry() }
 func saveWizardRegistry(reg wizardRegistry)     { agent.SaveRegistry(reg) }
-func wizardRegistryAdd(entry localWizard) error { return agent.RegistryAdd(entry) }
 func wizardRegistryRemove(name string) error    { return agent.RegistryRemove(name) }
 func wizardRegistryUpdate(name string, f func(*localWizard)) error {
 	return agent.RegistryUpdate(name, f)

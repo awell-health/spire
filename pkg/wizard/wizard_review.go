@@ -636,18 +636,11 @@ func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	// go test binary recursively re-runs the test suite.
 	reviewFixSendMessage(wizardName, feedbackText, beadID, reviewerName)
 
-	// Register re-engaged wizard
-	reengageNow := time.Now().UTC().Format(time.RFC3339)
-	deps.RegistryAdd(Entry{
-		Name:           wizardName,
-		PID:            0,
-		BeadID:         beadID,
-		StartedAt:      reengageNow,
-		Phase:          "review-fix",
-		PhaseStartedAt: reengageNow,
-	})
-
-	// Spawn apprentice with --review-fix
+	// Spawn apprentice with --review-fix.
+	// Registry lifecycle: backend.Spawn is the sole creator of the re-engaged
+	// wizard's registry entry — see pkg/agent/README.md "Registry lifecycle".
+	// The wizard subprocess (CmdWizardRun) stamps Phase via registry.Update
+	// once it boots; pre-registering here would dual-write with backend.Spawn.
 	log("spawning %s --review-fix", wizardName)
 	logDir := filepath.Join(deps.DoltGlobalDir(), "wizards")
 

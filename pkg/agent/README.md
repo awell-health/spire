@@ -158,6 +158,44 @@ spi-sj18k epic.
 | `ProcessBackend` | local process implementation. |
 | `DockerBackend` | Docker-backed implementation. |
 
+## Registry lifecycle
+
+The local wizard registry (`~/.config/spire/wizards.json`, owned by
+`pkg/registry`) tracks one row per locally spawned agent. Three discrete
+roles touch each row over its lifetime; mixing them up was the
+spi-30nma0 bug. These rules are normative.
+
+| Role | Who | What | Where |
+|------|-----|------|-------|
+| **Create** | `ProcessBackend.Spawn` | `registry.Upsert` (via `RegistryAdd`) — writes the row with the real PID returned by the process spawner. | [`backend_process.go`](backend_process.go) |
+| **Stamp** | child runtime | `registry.Update` — fills in `Phase`, `PhaseStartedAt`, `InstanceID`, and (for the main wizard) `Worktree` once the child has booted enough to know them. | [`pkg/executor/graph_interpreter.go`](../executor/graph_interpreter.go), [`pkg/wizard/wizard.go`](../wizard/wizard.go), [`pkg/wizard/wizard_review.go`](../wizard/wizard_review.go) |
+| **Remove** | sweep / teardown | `registry.Remove` — cleans up dead PIDs (`OrphanSweep`) or finished work (`EndWork`). | [`pkg/beadlifecycle/lifecycle.go`](../beadlifecycle/lifecycle.go) |
+
+Two notes on Create:
+
+- `BeginWork` (in `pkg/beadlifecycle`) also calls `registry.Upsert` for
+  the **main** wizard — it writes a PID=0 placeholder *before* spawn so
+  `OrphanSweep` can find a half-finished summon if step 3 (attempt bead)
+  or step 4 (status flip) fails. `ProcessBackend.Spawn` then overwrites
+  it with the real PID. The two writes are explicitly cooperative and
+  use the same key. Reviewers and review-fix wizards have no `BeginWork`
+  upstream — for them, `ProcessBackend.Spawn` is the *only* writer.
+- Wizard / handoff / orchestration code MUST NOT call `RegistryAdd`
+  themselves. The seam was removed from `pkg/wizard/Deps` and
+  `pkg/executor/Deps` so this is enforced at compile time. The only
+  legitimate creator is the backend's `Spawn`. Pre-registering before
+  `backend.Spawn` (or self-registering inside the child) was the old
+  dual-write that this rule eliminates.
+
+Stamp callers must use `registry.Update`, not `Upsert` — `Update` returns
+`registry.ErrNotFound` if no entry exists, surfacing the bug where the
+child boots without the parent having created its row.
+
+If `RegistryAdd` itself returns an error (file lock, marshal, write),
+`Spawn` propagates it. The handle is still returned so a caller that
+wants to clean up the running process can do so; callers that just
+proceed risk an unregistered orphan that `OrphanSweep` cannot find.
+
 ## Practical rules
 
 1. **Keep this package backend-facing.** It translates execution intent into a
@@ -170,6 +208,9 @@ spi-sj18k epic.
    materialize prerequisites, but they must not decide review/merge behavior.
 5. **Document backend-only contracts here.** If k8s requires a special pod
    surface, this README should say so explicitly.
+6. **Backend.Spawn is the sole registry creator.** See "Registry lifecycle"
+   above. Any new spawn site goes through this seam — never write the
+   registry from wizard / handoff / orchestration code.
 
 ## Where new work usually belongs
 

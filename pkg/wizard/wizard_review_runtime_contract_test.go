@@ -56,7 +56,6 @@ func TestWizardReviewHandoff_PopulatesRuntimeContract(t *testing.T) {
 	backend := &spyBackend{}
 	deps := &Deps{
 		AddLabel:       func(id, label string) error { return nil },
-		RegistryAdd:    func(_ Entry) error { return nil },
 		RegistryRemove: func(_ string) error { return nil },
 		RegistryUpdate: func(_ string, _ func(*Entry)) error { return nil },
 		AddComment:     func(_, _ string) error { return nil },
@@ -129,7 +128,6 @@ func TestReviewHandleRequestChanges_PopulatesRuntimeContract(t *testing.T) {
 	deps := &Deps{
 		AddComment:     func(_, _ string) error { return nil },
 		AddLabel:       func(_, _ string) error { return nil },
-		RegistryAdd:    func(_ Entry) error { return nil },
 		RegistryUpdate: func(_ string, _ func(*Entry)) error { return nil },
 		ResolveBackend: func(_ string) Backend { return backend },
 		ResolveRepo: func(_ string) (string, string, string, error) {
@@ -210,7 +208,6 @@ func TestReviewHandleRequestChanges_FailOnTransitionalPropagates(t *testing.T) {
 	deps := &Deps{
 		AddComment:     func(_, _ string) error { return nil },
 		AddLabel:       func(_, _ string) error { return nil },
-		RegistryAdd:    func(_ Entry) error { return nil },
 		RegistryUpdate: func(_ string, _ func(*Entry)) error { return nil },
 		ResolveBackend: func(_ string) Backend { return backend },
 		ResolveRepo: func(_ string) (string, string, string, error) {
