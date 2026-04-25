@@ -1,15 +1,18 @@
-// Package agent — wizard / sage pod builders.
+// Package agent — wizard / sage / cleric pod builders.
 //
-// BuildWizardPod and BuildSagePod are siblings of BuildApprenticePod
-// (pod_builder.go). The cluster-native dispatch path emits one
-// WorkloadIntent per claimed bead at the bead-level phase
-// (intent.IsBeadLevelPhase) and the operator routes that to a wizard
-// pod via BuildWizardPod. The wizard then emits step-level intents
-// from inside the pod; the operator routes review/arbiter phases to a
-// sage pod via BuildSagePod and implement/fix phases to an apprentice
-// pod via BuildApprenticePod.
+// BuildWizardPod, BuildSagePod, and BuildClericPod are siblings of
+// BuildApprenticePod (pod_builder.go). The cluster-native dispatch
+// path emits one WorkloadIntent per claimed bead carrying explicit
+// (Role, Phase, Runtime) — see pkg/steward/intent.WorkloadIntent and
+// the contract.go enum/allowlist. The operator validates the intent
+// and selects a builder via SelectBuilder(role, phase) which routes:
 //
-// All three builders share PodSpec, validate(), withDefaults(), and
+//   - (wizard, implement)               → BuildWizardPod
+//   - (apprentice, implement|fix|review-fix) → BuildApprenticePod
+//   - (sage, review)                    → BuildSagePod
+//   - (cleric, recovery)                → BuildClericPod
+//
+// All four builders share PodSpec, validate(), withDefaults(), and
 // the volume / init-container / env / label helpers. The only thing
 // that differs is the spawn role and the main container's command.
 package agent
@@ -56,6 +59,33 @@ func BuildSagePod(spec PodSpec) (*corev1.Pod, error) {
 	spec = spec.withDefaults()
 
 	args := []string{"sage", "review", spec.BeadID, "--name", spec.effectiveAgentName()}
+	args = append(args, spec.ExtraArgs...)
+	return buildRolePodFromSpec(spec, args)
+}
+
+// BuildClericPod returns the canonical cleric pod for spec. The cleric
+// pod runs `spire cleric diagnose <bead-id> --name <agent>` and is the
+// failure-recovery driver dispatched against a recovery bead.
+//
+// Cluster routing comes through the Role=cleric, Phase=recovery
+// allowlist entry — the operator no longer routes cleric work via
+// formula_phase=recovery (which the operator does not recognize as a
+// formula step name).
+//
+// PodSpec.Role is set to RoleApprentice as a sentinel because the
+// runtime SpawnRole vocabulary in pkg/runtime does not currently
+// declare a cleric role; the canonical "cleric" identity travels via
+// the cluster intent contract (intent.RoleCleric) and the per-pod
+// agent name + command. A future refactor that adds a cleric SpawnRole
+// to pkg/runtime should switch this to that role.
+func BuildClericPod(spec PodSpec) (*corev1.Pod, error) {
+	spec.Role = RoleApprentice
+	if err := spec.validate(); err != nil {
+		return nil, err
+	}
+	spec = spec.withDefaults()
+
+	args := []string{"cleric", "diagnose", spec.BeadID, "--name", spec.effectiveAgentName()}
 	args = append(args, spec.ExtraArgs...)
 	return buildRolePodFromSpec(spec, args)
 }

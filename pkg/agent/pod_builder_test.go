@@ -7,9 +7,134 @@ import (
 
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/runtime"
+	"github.com/awell-health/spire/pkg/steward/intent"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
+
+// TestSelectBuilder_AllAllowedPairsResolveToBuilder asserts that every
+// pair in intent.Allowed has a registered PodBuilder in builderTable,
+// and that each one produces a valid (non-nil) pod from the canonical
+// fixture. A new entry in intent.Allowed without a corresponding
+// builderTable entry surfaces as an explicit failure here.
+func TestSelectBuilder_AllAllowedPairsResolveToBuilder(t *testing.T) {
+	for role, phases := range intent.Allowed {
+		for phase := range phases {
+			t.Run(string(role)+"/"+string(phase), func(t *testing.T) {
+				b, err := SelectBuilder(role, phase)
+				if err != nil {
+					t.Fatalf("SelectBuilder(%s, %s) = err %v, want nil", role, phase, err)
+				}
+				if b == nil {
+					t.Fatalf("SelectBuilder(%s, %s) returned nil builder", role, phase)
+				}
+
+				pod, err := b(canonicalPodSpec())
+				if err != nil {
+					t.Fatalf("builder(%s, %s) on canonical spec: %v", role, phase, err)
+				}
+				if pod == nil {
+					t.Fatalf("builder(%s, %s) returned nil pod", role, phase)
+				}
+				if len(pod.Spec.Containers) != 1 {
+					t.Fatalf("builder(%s, %s) produced %d containers, want 1",
+						role, phase, len(pod.Spec.Containers))
+				}
+			})
+		}
+	}
+}
+
+// TestSelectBuilder_FailsClosedForDisallowedPair pins the fail-closed
+// invariant: any (Role, Phase) pair not in intent.Allowed must return
+// an error rather than silently defaulting to apprentice. Covers the
+// classic misroute (sage/implement) plus an unknown-role case.
+func TestSelectBuilder_FailsClosedForDisallowedPair(t *testing.T) {
+	cases := []struct {
+		name       string
+		role       intent.Role
+		phase      intent.Phase
+		wantSubstr string
+	}{
+		{"unknown role", "necromancer", intent.PhaseImplement, `unknown role "necromancer"`},
+		{"sage on implement", intent.RoleSage, intent.PhaseImplement, "no pod builder for sage/implement"},
+		{"cleric on review", intent.RoleCleric, intent.PhaseReview, "no pod builder for cleric/review"},
+		{"wizard on recovery", intent.RoleWizard, intent.PhaseRecovery, "no pod builder for wizard/recovery"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := SelectBuilder(tc.role, tc.phase)
+			if err == nil {
+				t.Fatalf("SelectBuilder(%s, %s) returned builder %v, want error",
+					tc.role, tc.phase, b)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("SelectBuilder(%s, %s) error = %q, want substring %q",
+					tc.role, tc.phase, err.Error(), tc.wantSubstr)
+			}
+			if b != nil {
+				t.Errorf("SelectBuilder(%s, %s) returned non-nil builder alongside error",
+					tc.role, tc.phase)
+			}
+		})
+	}
+}
+
+// TestSelectBuilder_BuilderTableMatchesIntentAllowed enforces the
+// invariant that builderTable's keys exactly mirror intent.Allowed.
+// A divergence (extra builderTable entry, missing one) is a contract
+// drift that must surface immediately, not at runtime when a real
+// intent shows up unrouted.
+func TestSelectBuilder_BuilderTableMatchesIntentAllowed(t *testing.T) {
+	for role, phases := range intent.Allowed {
+		got, ok := builderTable[role]
+		if !ok {
+			t.Errorf("builderTable missing role %q from intent.Allowed", role)
+			continue
+		}
+		for phase := range phases {
+			if _, ok := got[phase]; !ok {
+				t.Errorf("builderTable[%s] missing phase %q", role, phase)
+			}
+		}
+	}
+	for role, phases := range builderTable {
+		if _, ok := intent.Allowed[role]; !ok {
+			t.Errorf("builderTable has role %q absent from intent.Allowed", role)
+			continue
+		}
+		for phase := range phases {
+			if _, ok := intent.Allowed[role][phase]; !ok {
+				t.Errorf("builderTable[%s] has phase %q absent from intent.Allowed[%s]",
+					role, phase, role)
+			}
+		}
+	}
+}
+
+// TestBuildClericPod_Command pins the cleric pod's main container
+// command. The operator routes cleric work via Role=cleric/Phase=
+// recovery (no formula_phase=recovery) and the produced pod must
+// invoke the cleric verb so the recovery driver actually runs.
+func TestBuildClericPod_Command(t *testing.T) {
+	spec := canonicalPodSpec()
+	spec.Name = "cleric-spi-rec-0"
+	spec.AgentName = "cleric-spi-rec-0"
+	spec.BeadID = "spi-rec"
+	spec.FormulaStep = string(intent.PhaseRecovery)
+
+	pod, err := BuildClericPod(spec)
+	if err != nil {
+		t.Fatalf("BuildClericPod: %v", err)
+	}
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatalf("Containers = %d, want 1", len(pod.Spec.Containers))
+	}
+	wantCmd := []string{"spire", "cleric", "diagnose", "spi-rec", "--name", "cleric-spi-rec-0"}
+	if !stringSliceEq(pod.Spec.Containers[0].Command, wantCmd) {
+		t.Errorf("cleric Command = %v, want %v", pod.Spec.Containers[0].Command, wantCmd)
+	}
+}
 
 // canonicalPodSpec returns a PodSpec populated with every required
 // field plus every optional field that flows into the golden shape.

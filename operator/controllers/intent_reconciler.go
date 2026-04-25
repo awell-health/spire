@@ -178,6 +178,15 @@ func (r *IntentWorkloadReconciler) Start(ctx context.Context) error {
 // agent.BuildApprenticePod, and applying it through the controller
 // client. Errors are logged and swallowed — the transport handles
 // retries so the reconciler never falls behind on a single bad intent.
+//
+// Routing is keyed on the cluster contract's (Role, Phase) pair. The
+// reconciler calls intent.Validate first and rejects any intent that
+// fails the contract check (empty/unknown Role, empty/unknown Phase,
+// unsupported pair, missing Runtime.Image). Routing then dispatches by
+// Role through agent.SelectBuilder; the formula_phase field is no
+// longer consulted for routing decisions. Cleric work routes via
+// Role=cleric/Phase=recovery — the operator no longer recognizes
+// formula_phase=recovery as a routing key.
 func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.WorkloadIntent) {
 	if wi.TaskID == "" {
 		r.Log.Error(nil, "dropping intent with empty TaskID",
@@ -191,6 +200,14 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 			"backend", "operator-k8s")
 		return
 	}
+	if err := intent.Validate(wi); err != nil {
+		r.Log.Error(err, "intent failed contract validation; dropping",
+			"task_id", wi.TaskID,
+			"role", wi.Role,
+			"phase", wi.Phase,
+			"backend", "operator-k8s")
+		return
+	}
 
 	canonical, err := r.canonicalIdentity(ctx, wi.RepoIdentity)
 	if err != nil {
@@ -201,22 +218,23 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		return
 	}
 
-	podName, builder, role, err := podBuilderForPhase(wi.FormulaPhase, wi.TaskID, wi.DispatchSeq)
+	podName := podNameForRole(wi.Role, wi.TaskID, wi.DispatchSeq)
+	builder, err := agent.SelectBuilder(wi.Role, wi.Phase)
 	if err != nil {
-		r.Log.Error(err, "intent: unknown formula_phase; dropping intent",
+		r.Log.Error(err, "intent: no pod builder for role/phase; dropping",
 			"task_id", wi.TaskID,
-			"formula_phase", wi.FormulaPhase,
+			"role", wi.Role,
+			"phase", wi.Phase,
 			"backend", "operator-k8s")
 		return
 	}
 	spec := agent.PodSpec{
 		Name:              podName,
 		Namespace:         r.Namespace,
-		Image:             r.Image,
+		Image:             effectiveImage(wi.Runtime.Image, r.Image),
 		AgentName:         podName,
 		BeadID:            wi.TaskID,
-		FormulaStep:       wi.FormulaPhase,
-		Role:              role,
+		FormulaStep:       string(wi.Phase),
 		HandoffMode:       runtime.HandoffMode(wi.HandoffMode),
 		Backend:           "operator-k8s",
 		CredentialsSecret: r.CredentialsSecret,
@@ -241,7 +259,8 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		r.Log.Error(err, "agent pod builder failed; dropping intent",
 			"task_id", wi.TaskID,
 			"prefix", canonical.Prefix,
-			"formula_phase", wi.FormulaPhase,
+			"role", wi.Role,
+			"phase", wi.Phase,
 			"backend", "operator-k8s")
 		return
 	}
@@ -273,9 +292,46 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 		"task_id", wi.TaskID,
 		"dispatch_seq", wi.DispatchSeq,
 		"prefix", canonical.Prefix,
-		"formula_phase", wi.FormulaPhase,
+		"role", wi.Role,
+		"phase", wi.Phase,
 		"handoff_mode", wi.HandoffMode,
 		"backend", "operator-k8s")
+}
+
+// effectiveImage returns the runtime image the cluster contract
+// supplied (preferred) or the reconciler-level default. The cluster
+// contract's intent.Validate guarantees runtimeImage is non-empty when
+// reached through the canonical reconcile path; the fallback is in
+// place for test fixtures that build a PodSpec directly without going
+// through Validate.
+func effectiveImage(runtimeImage, defaultImage string) string {
+	if runtimeImage != "" {
+		return runtimeImage
+	}
+	return defaultImage
+}
+
+// podNameForRole returns the deterministic pod name for a (role, task)
+// dispatch. The role prefix lets the operator's pod-list code
+// distinguish wizards/apprentices/sages/clerics at a glance without
+// re-deriving the type from labels.
+func podNameForRole(role intent.Role, taskID string, dispatchSeq int) string {
+	switch role {
+	case intent.RoleWizard:
+		return wizardPodName(taskID, dispatchSeq)
+	case intent.RoleApprentice:
+		return apprenticePodName(taskID, dispatchSeq)
+	case intent.RoleSage:
+		return sagePodName(taskID, dispatchSeq)
+	case intent.RoleCleric:
+		return clericPodName(taskID, dispatchSeq)
+	default:
+		// Defense-in-depth: intent.Validate has already rejected
+		// unknown roles, but a role added to intent.Allowed without
+		// updating this switch should still produce a unique-enough
+		// name for diagnostics.
+		return cappedDispatchPodName(string(role)+"-", taskID, dispatchSeq)
+	}
 }
 
 // canonicalIdentity reconciles the intent's projected RepoIdentity
@@ -343,6 +399,12 @@ func sagePodName(taskID string, dispatchSeq int) string {
 	return cappedDispatchPodName("sage-", taskID, dispatchSeq)
 }
 
+// clericPodName returns the canonical deterministic pod name for a
+// cleric pod dispatched on a recovery bead via Role=cleric routing.
+func clericPodName(taskID string, dispatchSeq int) string {
+	return cappedDispatchPodName("cleric-", taskID, dispatchSeq)
+}
+
 func cappedDispatchPodName(prefix, taskID string, dispatchSeq int) string {
 	suffix := fmt.Sprintf("-%d", dispatchSeq)
 	name := prefix + sanitizeK8sName(taskID) + suffix
@@ -359,24 +421,6 @@ func cappedDispatchPodName(prefix, taskID string, dispatchSeq int) string {
 		name = prefix + taskPart + suffix
 	}
 	return name
-}
-
-// podBuilderForPhase routes an intent's FormulaPhase to the
-// appropriate (pod-name, pod-builder, role) tuple. An unknown phase
-// returns an error so the reconciler can drop the intent rather than
-// silently building the wrong pod shape — the previous default of
-// "always build apprentice" is the exact bug this routing fixes.
-func podBuilderForPhase(phase, taskID string, dispatchSeq int) (string, func(agent.PodSpec) (*corev1.Pod, error), runtime.SpawnRole, error) {
-	switch {
-	case intent.IsBeadLevelPhase(phase):
-		return wizardPodName(taskID, dispatchSeq), agent.BuildWizardPod, agent.RoleWizard, nil
-	case intent.IsStepLevelPhase(phase):
-		return apprenticePodName(taskID, dispatchSeq), agent.BuildApprenticePod, agent.RoleApprentice, nil
-	case intent.IsReviewLevelPhase(phase):
-		return sagePodName(taskID, dispatchSeq), agent.BuildSagePod, agent.RoleSage, nil
-	default:
-		return "", nil, "", fmt.Errorf("intent: unknown formula_phase %q", phase)
-	}
 }
 
 // podResourcesFromIntent converts the intent's string-quantity envelope

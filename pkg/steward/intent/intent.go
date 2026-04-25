@@ -118,8 +118,16 @@ type Resources struct {
 // SPIRE_BEAD_ID=<task_id> on startup and creates (or resumes) its own
 // attempt bead. No attempt ID crosses this seam.
 //
-// The struct is value-typed and its fields are comparable — equality
-// under == is meaningful and is exercised by tests to guard the shape.
+// Routing identity (Role, Phase, Runtime) crosses the wizard→operator
+// seam explicitly: the operator routes by Role, validates the
+// (Role, Phase) pair against Allowed, and materializes the pod from
+// Runtime.Image / Command / Env. See contract.go for the canonical
+// enums and Validate.
+//
+// The struct's fields include Runtime which contains a slice and a map,
+// so equality under == is no longer meaningful for the full value;
+// callers that need equality checks should compare the comparable
+// fields explicitly.
 //
 // New fields that describe machine-local workspace state (local paths,
 // local bindings, local workspace roots, or anything derived from
@@ -130,9 +138,28 @@ type WorkloadIntent struct {
 	DispatchSeq  int
 	Reason       string
 	RepoIdentity RepoIdentity
+	// FormulaPhase is the legacy bead-/step-/review-level phase string
+	// that pre-dated the explicit Role/Phase/Runtime contract. The
+	// operator no longer routes on FormulaPhase; producers may continue
+	// to set it for log/metric continuity until spi-5bzu9r.5 retires
+	// the field.
+	//
+	// deprecated: routing now uses Role/Phase; .5 will retire this.
 	FormulaPhase string
 	Resources    Resources
 	HandoffMode  string
+
+	// Role is the cluster role the child run materializes as. The
+	// operator routes by Role; pod-builder selection picks a builder
+	// per (Role, Phase). See Allowed and Validate in contract.go.
+	Role Role
+	// Phase is the formula phase the child run is performing. The
+	// (Role, Phase) pair must appear in Allowed.
+	Phase Phase
+	// Runtime is the explicit image/command/env/resources the operator
+	// needs to materialize the pod. Validate rejects an intent with
+	// empty Runtime.Image.
+	Runtime Runtime
 }
 
 // AssignmentIntent carries upstream policy decisions that come before a

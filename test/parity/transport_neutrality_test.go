@@ -305,7 +305,7 @@ func TestTransportNeutrality_WorkloadIntentsAreByteIdentical(t *testing.T) {
 	}
 
 	for i := range with.intents {
-		if with.intents[i] != without.intents[i] {
+		if !reflect.DeepEqual(with.intents[i], without.intents[i]) {
 			t.Errorf("intent[%d] differs:\n  with    = %+v\n  without = %+v",
 				i, with.intents[i], without.intents[i])
 		}

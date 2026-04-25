@@ -35,6 +35,11 @@ func TestWorkloadIntent_ZeroValue(t *testing.T) {
 }
 
 func TestWorkloadIntent_Equality(t *testing.T) {
+	// Runtime carries a slice and a map, so WorkloadIntent is no longer
+	// comparable under ==. The cluster contract crosses the seam by
+	// value, and reflect.DeepEqual is the canonical equality predicate
+	// for that crossing — these cases pin the field-by-field equality
+	// shape using DeepEqual instead of ==.
 	a := WorkloadIntent{
 		TaskID:      "spi-abc123",
 		DispatchSeq: 1,
@@ -52,47 +57,72 @@ func TestWorkloadIntent_Equality(t *testing.T) {
 			MemoryLimit:   "1Gi",
 		},
 		HandoffMode: "bundle",
+		Role:        RoleApprentice,
+		Phase:       PhaseImplement,
+		Runtime: Runtime{
+			Image:   "spire-agent:dev",
+			Command: []string{"spire", "apprentice", "run"},
+			Env:     map[string]string{"FOO": "bar"},
+		},
 	}
 
 	b := a
-	if a != b {
-		t.Errorf("identical WorkloadIntent copies should be equal under ==")
+	if !reflect.DeepEqual(a, b) {
+		t.Errorf("identical WorkloadIntent copies should be DeepEqual")
 	}
 
 	differentTask := a
 	differentTask.TaskID = "spi-other"
-	if a == differentTask {
-		t.Errorf("WorkloadIntent values with different TaskID must not be equal")
+	if reflect.DeepEqual(a, differentTask) {
+		t.Errorf("WorkloadIntent values with different TaskID must not be DeepEqual")
 	}
 
 	differentSeq := a
 	differentSeq.DispatchSeq = 2
-	if a == differentSeq {
-		t.Errorf("WorkloadIntent values with different DispatchSeq must not be equal")
+	if reflect.DeepEqual(a, differentSeq) {
+		t.Errorf("WorkloadIntent values with different DispatchSeq must not be DeepEqual")
 	}
 
 	differentPhase := a
 	differentPhase.FormulaPhase = "review"
-	if a == differentPhase {
-		t.Errorf("WorkloadIntent values with different FormulaPhase must not be equal")
+	if reflect.DeepEqual(a, differentPhase) {
+		t.Errorf("WorkloadIntent values with different FormulaPhase must not be DeepEqual")
 	}
 
 	differentRepo := a
 	differentRepo.RepoIdentity.URL = "https://example.com/other.git"
-	if a == differentRepo {
-		t.Errorf("WorkloadIntent values with different RepoIdentity must not be equal")
+	if reflect.DeepEqual(a, differentRepo) {
+		t.Errorf("WorkloadIntent values with different RepoIdentity must not be DeepEqual")
 	}
 
 	differentResources := a
 	differentResources.Resources.CPURequest = "1000m"
-	if a == differentResources {
-		t.Errorf("WorkloadIntent values with different Resources must not be equal")
+	if reflect.DeepEqual(a, differentResources) {
+		t.Errorf("WorkloadIntent values with different Resources must not be DeepEqual")
 	}
 
 	differentHandoff := a
 	differentHandoff.HandoffMode = "transitional"
-	if a == differentHandoff {
-		t.Errorf("WorkloadIntent values with different HandoffMode must not be equal")
+	if reflect.DeepEqual(a, differentHandoff) {
+		t.Errorf("WorkloadIntent values with different HandoffMode must not be DeepEqual")
+	}
+
+	differentRole := a
+	differentRole.Role = RoleSage
+	if reflect.DeepEqual(a, differentRole) {
+		t.Errorf("WorkloadIntent values with different Role must not be DeepEqual")
+	}
+
+	differentTypedPhase := a
+	differentTypedPhase.Phase = PhaseReview
+	if reflect.DeepEqual(a, differentTypedPhase) {
+		t.Errorf("WorkloadIntent values with different Phase must not be DeepEqual")
+	}
+
+	differentRuntime := a
+	differentRuntime.Runtime.Image = "spire-agent:other"
+	if reflect.DeepEqual(a, differentRuntime) {
+		t.Errorf("WorkloadIntent values with different Runtime.Image must not be DeepEqual")
 	}
 }
 
@@ -135,7 +165,18 @@ func TestWorkloadIntent_NoLocalFields(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"DispatchSeq", "FormulaPhase", "HandoffMode", "Reason", "RepoIdentity", "Resources", "TaskID"}
+	want := []string{
+		"DispatchSeq",
+		"FormulaPhase",
+		"HandoffMode",
+		"Phase",
+		"Reason",
+		"RepoIdentity",
+		"Resources",
+		"Role",
+		"Runtime",
+		"TaskID",
+	}
 	sort.Strings(want)
 
 	if !reflect.DeepEqual(got, want) {

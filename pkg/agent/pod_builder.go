@@ -47,9 +47,63 @@ import (
 
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/runtime"
+	"github.com/awell-health/spire/pkg/steward/intent"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+// PodBuilder is the canonical signature shared by BuildApprenticePod,
+// BuildWizardPod, BuildSagePod, and BuildClericPod. SelectBuilder
+// returns the right one for an (intent.Role, intent.Phase) pair so
+// callers (the operator's intent reconciler, integration fixtures)
+// dispatch off the cluster contract instead of a string-keyed phase
+// switch.
+type PodBuilder = func(PodSpec) (*corev1.Pod, error)
+
+// SelectBuilder returns the PodBuilder for an (role, phase) pair, or
+// an error if the pair is not in intent.Allowed or has no registered
+// builder. Fail-closed: any combination not enumerated in builderTable
+// rejects with a stable error message so observability surfaces
+// distinguish unknown contract violations from runtime errors.
+//
+// Operator routing (operator/controllers/intent_reconciler.go) calls
+// SelectBuilder after intent.Validate has accepted the intent, so the
+// "missing from intent.Allowed" path is defense-in-depth: a registry
+// entry that is allowed but unmapped (e.g. a future role) still fails
+// here rather than silently building the wrong pod shape.
+func SelectBuilder(role intent.Role, phase intent.Phase) (PodBuilder, error) {
+	if _, ok := intent.Allowed[role]; !ok {
+		return nil, fmt.Errorf("agent: no pod builder for unknown role %q", role)
+	}
+	if _, ok := intent.Allowed[role][phase]; !ok {
+		return nil, fmt.Errorf("agent: no pod builder for %s/%s (not in intent.Allowed)", role, phase)
+	}
+	if b, ok := builderTable[role][phase]; ok {
+		return b, nil
+	}
+	return nil, fmt.Errorf("agent: no pod builder for %s/%s", role, phase)
+}
+
+// builderTable maps the cluster contract's (Role, Phase) allowlist
+// entries to the per-role builder function. Keep keys identical to
+// intent.Allowed so SelectBuilder fails closed for any pair the
+// allowlist accepts but the table misses.
+var builderTable = map[intent.Role]map[intent.Phase]PodBuilder{
+	intent.RoleWizard: {
+		intent.PhaseImplement: BuildWizardPod,
+	},
+	intent.RoleApprentice: {
+		intent.PhaseImplement: BuildApprenticePod,
+		intent.PhaseFix:       BuildApprenticePod,
+		intent.PhaseReviewFix: BuildApprenticePod,
+	},
+	intent.RoleSage: {
+		intent.PhaseReview: BuildSagePod,
+	},
+	intent.RoleCleric: {
+		intent.PhaseRecovery: BuildClericPod,
+	},
+}
 
 // DefaultCredentialsSecret is the k8s Secret name BuildApprenticePod
 // uses when PodSpec.CredentialsSecret is left empty. Matches the

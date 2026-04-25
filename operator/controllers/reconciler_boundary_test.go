@@ -119,6 +119,9 @@ func TestIntentReconciler_PodShapeMatchesSharedBuilder(t *testing.T) {
 		},
 		FormulaPhase: phase,
 		HandoffMode:  handoff,
+		Role:         intent.RoleApprentice,
+		Phase:        intent.PhaseImplement,
+		Runtime:      intent.Runtime{Image: image},
 		Resources: intent.Resources{
 			CPURequest:    "500m",
 			CPULimit:      "1000m",

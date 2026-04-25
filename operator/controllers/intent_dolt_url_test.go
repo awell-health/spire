@@ -41,13 +41,14 @@ func TestIntentReconciler_DoltURLStampedOnAllPhases(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		phase   string
+		role    intent.Role
+		phase   intent.Phase
 		taskID  string
 		podName func(string, int) string
 	}{
-		{"bead-level wizard", intent.PhaseWizard, "smk-w0", wizardPodName},
-		{"step-level implement", intent.PhaseImplement, "smk-i0", apprenticePodName},
-		{"review-level review", intent.PhaseReview, "smk-r0", sagePodName},
+		{"wizard/implement", intent.RoleWizard, intent.PhaseImplement, "smk-w0", wizardPodName},
+		{"apprentice/implement", intent.RoleApprentice, intent.PhaseImplement, "smk-i0", apprenticePodName},
+		{"sage/review", intent.RoleSage, intent.PhaseReview, "smk-r0", sagePodName},
 	}
 
 	for _, tc := range cases {
@@ -81,8 +82,10 @@ func TestIntentReconciler_DoltURLStampedOnAllPhases(t *testing.T) {
 				RepoIdentity: intent.RepoIdentity{
 					URL: repoURL, BaseBranch: branch, Prefix: prefix,
 				},
-				FormulaPhase: tc.phase,
-				HandoffMode:  "bundle",
+				HandoffMode: "bundle",
+				Role:        tc.role,
+				Phase:       tc.phase,
+				Runtime:     intent.Runtime{Image: image},
 			}
 
 			pod := waitForPod(t, c, ns, tc.podName(tc.taskID, dispatchSeq), 3*time.Second)
@@ -152,8 +155,10 @@ func TestIntentReconciler_EmptyDoltURLOmitsEnv(t *testing.T) {
 		RepoIdentity: intent.RepoIdentity{
 			URL: repoURL, BaseBranch: branch, Prefix: prefix,
 		},
-		FormulaPhase: intent.PhaseWizard,
-		HandoffMode:  "bundle",
+		HandoffMode: "bundle",
+		Role:        intent.RoleWizard,
+		Phase:       intent.PhaseImplement,
+		Runtime:     intent.Runtime{Image: "spire-agent:dev"},
 	}
 
 	pod := waitForPod(t, c, ns, wizardPodName("spi-x0", 1), 3*time.Second)
