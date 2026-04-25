@@ -1326,10 +1326,10 @@ func (s *Server) getBeadGraph(w http.ResponseWriter, r *http.Request, id string)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
+	// store.Ensure is not called explicitly here: graph.Collect walks the
+	// store via getStore(), which auto-ensures through BeadsDirResolver.
+	// Same pattern as getBeadTrace — keeps the handler unit-testable
+	// without a real dolt via the graphCollect indirection.
 	depth := graph.DefaultMaxDepth
 	if v := r.URL.Query().Get("max_depth"); v != "" {
 		n, err := strconv.Atoi(v)
