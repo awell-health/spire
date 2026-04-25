@@ -109,9 +109,11 @@ dolthub:
 ## on a Max/Team subscription.
 
 ## @param anthropic.apiKey Anthropic classic API key (mutually exclusive with oauthToken).
+## @param anthropic.subscriptionToken Claude subscription token (Max/Team) surfaced to wizard pods when summoned with --auth=subscription. Rendered as ANTHROPIC_SUBSCRIPTION_TOKEN in the credentials Secret; pod_builder routes it based on AuthSlot. Leave empty if you only use api-key auth.
 ## @param anthropic.oauthToken Anthropic OAuth token from `claude setup-token` on a Max/Team subscription (starts with sk-ant-oat01-...).
 anthropic:
   apiKey: ""
+  subscriptionToken: ""
   oauthToken: ""
 
 ## @param openai.apiKey OpenAI API key for the codex provider.
