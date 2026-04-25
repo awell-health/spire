@@ -11,20 +11,20 @@
 // Pod shape (keep in sync with docs/design/spi-xplwy-runtime-contract.md):
 //
 //   - Two init containers, executed in order:
-//       tower-attach    → stages /data/<db>/.beads + tower config onto
-//                         the shared emptyDir.
-//       repo-bootstrap  → clones RepoURL@BaseBranch into
-//                         /workspace/<prefix> and binds it locally so
-//                         resolveBeadsDir / wizard.ResolveRepo find it.
+//     tower-attach    → stages /data/<db>/.beads + tower config onto
+//     the shared emptyDir.
+//     repo-bootstrap  → clones RepoURL@BaseBranch into
+//     /workspace/<prefix> and binds it locally so
+//     resolveBeadsDir / wizard.ResolveRepo find it.
 //   - Main container: `spire apprentice run <bead-id> --name <agent>`.
-//       - Canonical env: DOLT_URL, SPIRE_BEAD_ID, SPIRE_REPO_PREFIX,
-//         SPIRE_HANDOFF_MODE, and the full RunContext vocabulary
-//         (tower, attempt, run, role, formula-step, backend, workspace
-//         kind/name/origin).
-//       - Credentials mounted via SecretKeyRef against CredentialsSecret
-//         (ANTHROPIC_API_KEY, GITHUB_TOKEN).
-//       - OTLP telemetry env for the trace/log pipeline, plus
-//         OTEL_RESOURCE_ATTRIBUTES carrying the same RunContext.
+//   - Canonical env: DOLT_URL, SPIRE_BEAD_ID, SPIRE_REPO_PREFIX,
+//     SPIRE_HANDOFF_MODE, and the full RunContext vocabulary
+//     (tower, attempt, run, role, formula-step, backend, workspace
+//     kind/name/origin).
+//   - Credentials mounted via SecretKeyRef against CredentialsSecret
+//     (ANTHROPIC_API_KEY, GITHUB_TOKEN).
+//   - OTLP telemetry env for the trace/log pipeline, plus
+//     OTEL_RESOURCE_ATTRIBUTES carrying the same RunContext.
 //   - /data (emptyDir) and /workspace volumes. /workspace is a fresh
 //     emptyDir by default; callers can plumb SharedWorkspacePVCName to
 //     mount a pre-provisioned PVC instead.
@@ -45,6 +45,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/runtime"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -174,6 +175,24 @@ type PodSpec struct {
 	// ANTHROPIC_API_KEY_DEFAULT and GITHUB_TOKEN. Empty defaults to
 	// DefaultCredentialsSecret.
 	CredentialsSecret string
+
+	// AuthSlot selects which Anthropic credential the pod receives.
+	// Mirrors the local two-slot auth model from spi-gsmvr4: use
+	// config.AuthSlotSubscription to wire the OAuth subscription token
+	// from Secret key ANTHROPIC_SUBSCRIPTION_TOKEN as
+	// CLAUDE_CODE_OAUTH_TOKEN, or config.AuthSlotAPIKey for the
+	// ANTHROPIC_API_KEY_DEFAULT key as ANTHROPIC_API_KEY. Empty defaults
+	// to api-key for back-compat with installs that pre-date the
+	// two-slot model.
+	AuthSlot string
+
+	// AuthEnv, when non-empty, overrides the env var name the credential
+	// is injected as. Defaults to the slot's canonical env name
+	// (ANTHROPIC_API_KEY for api-key, CLAUDE_CODE_OAUTH_TOKEN for
+	// subscription). Used by callers that need to plumb the credential
+	// under a non-default env name without changing the secret-key
+	// routing.
+	AuthEnv string
 
 	// Resources is the main container's resource requests/limits.
 	// Callers pass explicit values; BuildApprenticePod never falls
@@ -529,18 +548,64 @@ func (s PodSpec) buildEnv() []corev1.EnvVar {
 	return env
 }
 
-// secretEnvRefs builds the ANTHROPIC_API_KEY + GITHUB_TOKEN SecretKeyRef
-// env entries. GITHUB_TOKEN is Optional so installs without a GitHub
-// token do not block pod creation.
+// SecretKeyAnthropicAPIKey is the Secret key the api-key slot reads.
+// Mirrors what helm/spire/templates/secret.yaml renders from
+// .Values.anthropic.apiKey.
+const SecretKeyAnthropicAPIKey = "ANTHROPIC_API_KEY_DEFAULT"
+
+// SecretKeyAnthropicSubscriptionToken is the Secret key the subscription
+// slot reads. Mirrors what helm/spire/templates/secret.yaml renders from
+// .Values.anthropic.subscriptionToken.
+const SecretKeyAnthropicSubscriptionToken = "ANTHROPIC_SUBSCRIPTION_TOKEN"
+
+// secretEnvRefs builds the Anthropic credential + GITHUB_TOKEN
+// SecretKeyRef env entries. The Anthropic ref is routed by AuthSlot:
+//
+//   - api-key (default) wires Secret key ANTHROPIC_API_KEY_DEFAULT as
+//     env var ANTHROPIC_API_KEY (back-compat: empty AuthSlot is treated
+//     as api-key).
+//   - subscription wires Secret key ANTHROPIC_SUBSCRIPTION_TOKEN as env
+//     var CLAUDE_CODE_OAUTH_TOKEN — the env name the `claude` CLI reads
+//     for Max/Team OAuth tokens (mirrors pkg/config.AuthContext.InjectEnv
+//     and the local spawner's two-slot routing). The SecretKeyRef is
+//     marked Optional so a pod summoned with --auth=subscription against
+//     a Secret that only populated apiKey still launches; the agent
+//     surfaces a clear runtime error rather than the pod hanging in
+//     CreateContainerConfigError.
+//
+// AuthEnv, when non-empty, overrides the env var name. GITHUB_TOKEN is
+// always Optional so installs without a GitHub token do not block pod
+// creation.
 func (s PodSpec) secretEnvRefs() []corev1.EnvVar {
 	optional := true
+
+	var (
+		secretKey    string
+		envName      string
+		anthropicOpt *bool
+	)
+	switch s.AuthSlot {
+	case config.AuthSlotSubscription:
+		secretKey = SecretKeyAnthropicSubscriptionToken
+		envName = config.EnvClaudeCodeOAuthToken
+		anthropicOpt = &optional
+	default:
+		// api-key slot or empty/default: preserve pre-AuthSlot behavior.
+		secretKey = SecretKeyAnthropicAPIKey
+		envName = config.EnvAnthropicAPIKey
+	}
+	if s.AuthEnv != "" {
+		envName = s.AuthEnv
+	}
+
 	return []corev1.EnvVar{
 		{
-			Name: "ANTHROPIC_API_KEY",
+			Name: envName,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: s.CredentialsSecret},
-					Key:                  "ANTHROPIC_API_KEY_DEFAULT",
+					Key:                  secretKey,
+					Optional:             anthropicOpt,
 				},
 			},
 		},

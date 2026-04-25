@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/runtime"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -43,11 +44,11 @@ func canonicalPodSpec() PodSpec {
 			Origin:     runtime.WorkspaceOriginOriginClone,
 			Borrowed:   true,
 		},
-		HandoffMode:   runtime.HandoffBorrowed,
-		Backend:       "k8s",
-		Provider:      "claude",
-		DoltURL:       "spire-dolt.spire-test.svc:3306",
-		OTLPEndpoint:  "http://spire-steward.spire-test.svc:4317",
+		HandoffMode:  runtime.HandoffBorrowed,
+		Backend:      "k8s",
+		Provider:     "claude",
+		DoltURL:      "spire-dolt.spire-test.svc:3306",
+		OTLPEndpoint: "http://spire-steward.spire-test.svc:4317",
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceMemory: resource.MustParse("1Gi"),
@@ -154,12 +155,12 @@ func TestBuildApprenticePod_RequiredEnv(t *testing.T) {
 		"SPIRE_WORKSPACE_ORIGIN": string(runtime.WorkspaceOriginOriginClone),
 		"SPIRE_WORKSPACE_PATH":   "/workspace/spi",
 		// Provider + substrate.
-		"SPIRE_PROVIDER":    "claude",
-		"DOLT_DATA_DIR":     DataMountPath,
-		"SPIRE_CONFIG_DIR":  DataMountPath + "/spire-config",
-		"BEADS_DATABASE":    "test-tower",
-		"BEADS_PREFIX":      "spi",
-		"DOLTHUB_REMOTE":    "https://dolthub.test/example/repo",
+		"SPIRE_PROVIDER":   "claude",
+		"DOLT_DATA_DIR":    DataMountPath,
+		"SPIRE_CONFIG_DIR": DataMountPath + "/spire-config",
+		"BEADS_DATABASE":   "test-tower",
+		"BEADS_PREFIX":     "spi",
+		"DOLTHUB_REMOTE":   "https://dolthub.test/example/repo",
 		// OTLP.
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://spire-steward.spire-test.svc:4317",
 	}
@@ -612,6 +613,201 @@ func TestBuildApprenticePod_ExtraArgs(t *testing.T) {
 	}
 }
 
+// TestBuildApprenticePod_AuthSlot_Subscription verifies that AuthSlot
+// = subscription routes the Anthropic credential to Secret key
+// ANTHROPIC_SUBSCRIPTION_TOKEN under env var CLAUDE_CODE_OAUTH_TOKEN
+// (the env name the `claude` CLI reads for Max/Team OAuth tokens) and
+// that the SecretKeyRef is Optional so a partially-populated cluster
+// secret does not block pod scheduling.
+func TestBuildApprenticePod_AuthSlot_Subscription(t *testing.T) {
+	spec := canonicalPodSpec()
+	spec.AuthSlot = config.AuthSlotSubscription
+
+	pod, err := BuildApprenticePod(spec)
+	if err != nil {
+		t.Fatalf("BuildApprenticePod: %v", err)
+	}
+
+	env := envByName(pod.Spec.Containers[0].Env)
+
+	// API-key env var must be absent — the slot routing replaced it.
+	if _, ok := env[config.EnvAnthropicAPIKey]; ok {
+		t.Errorf("subscription slot must not emit %s env var; got %+v",
+			config.EnvAnthropicAPIKey, env[config.EnvAnthropicAPIKey])
+	}
+
+	cred, ok := env[config.EnvClaudeCodeOAuthToken]
+	if !ok {
+		t.Fatalf("missing %s env var for subscription slot", config.EnvClaudeCodeOAuthToken)
+	}
+	if cred.ValueFrom == nil || cred.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("%s must use SecretKeyRef, got %+v", config.EnvClaudeCodeOAuthToken, cred)
+	}
+	if got := cred.ValueFrom.SecretKeyRef.Key; got != SecretKeyAnthropicSubscriptionToken {
+		t.Errorf("subscription SecretKeyRef Key = %q, want %q",
+			got, SecretKeyAnthropicSubscriptionToken)
+	}
+	if got := cred.ValueFrom.SecretKeyRef.Name; got != DefaultCredentialsSecret {
+		t.Errorf("subscription SecretKeyRef Name = %q, want %q",
+			got, DefaultCredentialsSecret)
+	}
+	if cred.ValueFrom.SecretKeyRef.Optional == nil || !*cred.ValueFrom.SecretKeyRef.Optional {
+		t.Error("subscription SecretKeyRef must be Optional=true so missing-token does not block scheduling")
+	}
+}
+
+// TestBuildApprenticePod_AuthSlot_APIKey verifies the api-key slot
+// routes to Secret key ANTHROPIC_API_KEY_DEFAULT under env var
+// ANTHROPIC_API_KEY (existing default behavior, asserted explicitly so
+// the routing does not silently regress when the slot is set).
+func TestBuildApprenticePod_AuthSlot_APIKey(t *testing.T) {
+	spec := canonicalPodSpec()
+	spec.AuthSlot = config.AuthSlotAPIKey
+
+	pod, err := BuildApprenticePod(spec)
+	if err != nil {
+		t.Fatalf("BuildApprenticePod: %v", err)
+	}
+
+	env := envByName(pod.Spec.Containers[0].Env)
+
+	// Subscription env var must be absent.
+	if _, ok := env[config.EnvClaudeCodeOAuthToken]; ok {
+		t.Errorf("api-key slot must not emit %s env var", config.EnvClaudeCodeOAuthToken)
+	}
+
+	cred, ok := env[config.EnvAnthropicAPIKey]
+	if !ok {
+		t.Fatalf("missing %s env var for api-key slot", config.EnvAnthropicAPIKey)
+	}
+	if cred.ValueFrom == nil || cred.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("%s must use SecretKeyRef", config.EnvAnthropicAPIKey)
+	}
+	if got := cred.ValueFrom.SecretKeyRef.Key; got != SecretKeyAnthropicAPIKey {
+		t.Errorf("api-key SecretKeyRef Key = %q, want %q", got, SecretKeyAnthropicAPIKey)
+	}
+	// Back-compat: api-key SecretKeyRef must remain non-Optional so
+	// installs that always populate apiKey fail fast on a missing key
+	// rather than silently launching with no credential.
+	if cred.ValueFrom.SecretKeyRef.Optional != nil {
+		t.Errorf("api-key SecretKeyRef Optional = %v, want nil (back-compat)",
+			*cred.ValueFrom.SecretKeyRef.Optional)
+	}
+}
+
+// TestBuildApprenticePod_AuthSlot_EmptyDefault pins the back-compat
+// path: an unset AuthSlot must produce the same env shape as before
+// the two-slot routing landed (ANTHROPIC_API_KEY_DEFAULT key, env var
+// ANTHROPIC_API_KEY, non-Optional).
+func TestBuildApprenticePod_AuthSlot_EmptyDefault(t *testing.T) {
+	spec := canonicalPodSpec()
+	spec.AuthSlot = ""
+	spec.AuthEnv = ""
+
+	pod, err := BuildApprenticePod(spec)
+	if err != nil {
+		t.Fatalf("BuildApprenticePod: %v", err)
+	}
+
+	env := envByName(pod.Spec.Containers[0].Env)
+
+	cred, ok := env["ANTHROPIC_API_KEY"]
+	if !ok {
+		t.Fatal("missing ANTHROPIC_API_KEY env var for empty AuthSlot (back-compat)")
+	}
+	if cred.ValueFrom == nil || cred.ValueFrom.SecretKeyRef == nil {
+		t.Fatal("ANTHROPIC_API_KEY must use SecretKeyRef")
+	}
+	if got := cred.ValueFrom.SecretKeyRef.Key; got != "ANTHROPIC_API_KEY_DEFAULT" {
+		t.Errorf("empty-slot SecretKeyRef Key = %q, want ANTHROPIC_API_KEY_DEFAULT (back-compat)", got)
+	}
+	if cred.ValueFrom.SecretKeyRef.Optional != nil {
+		t.Errorf("empty-slot SecretKeyRef Optional = %v, want nil (back-compat)",
+			*cred.ValueFrom.SecretKeyRef.Optional)
+	}
+	// Subscription env var must be absent.
+	if _, ok := env[config.EnvClaudeCodeOAuthToken]; ok {
+		t.Errorf("empty AuthSlot must not emit %s", config.EnvClaudeCodeOAuthToken)
+	}
+}
+
+// TestBuildApprenticePod_AuthEnv_Override verifies that a non-empty
+// AuthEnv replaces the slot's default env var name without changing
+// the secret-key routing. Exercised on both slots so the override
+// honours the slot-specific Optional flag.
+func TestBuildApprenticePod_AuthEnv_Override(t *testing.T) {
+	cases := []struct {
+		name        string
+		slot        string
+		envOverride string
+		wantKey     string
+		wantOpt     bool
+	}{
+		{
+			name:        "subscription with custom env",
+			slot:        config.AuthSlotSubscription,
+			envOverride: "MY_CUSTOM_OAUTH_TOKEN",
+			wantKey:     SecretKeyAnthropicSubscriptionToken,
+			wantOpt:     true,
+		},
+		{
+			name:        "api-key with custom env",
+			slot:        config.AuthSlotAPIKey,
+			envOverride: "MY_CUSTOM_API_KEY",
+			wantKey:     SecretKeyAnthropicAPIKey,
+			wantOpt:     false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := canonicalPodSpec()
+			spec.AuthSlot = tc.slot
+			spec.AuthEnv = tc.envOverride
+
+			pod, err := BuildApprenticePod(spec)
+			if err != nil {
+				t.Fatalf("BuildApprenticePod: %v", err)
+			}
+
+			env := envByName(pod.Spec.Containers[0].Env)
+
+			cred, ok := env[tc.envOverride]
+			if !ok {
+				t.Fatalf("missing override env var %q; got %+v",
+					tc.envOverride, mapKeys(env))
+			}
+			if cred.ValueFrom == nil || cred.ValueFrom.SecretKeyRef == nil {
+				t.Fatalf("%s must use SecretKeyRef", tc.envOverride)
+			}
+			if got := cred.ValueFrom.SecretKeyRef.Key; got != tc.wantKey {
+				t.Errorf("override SecretKeyRef Key = %q, want %q (slot routing must be unchanged)",
+					got, tc.wantKey)
+			}
+
+			gotOpt := cred.ValueFrom.SecretKeyRef.Optional != nil &&
+				*cred.ValueFrom.SecretKeyRef.Optional
+			if gotOpt != tc.wantOpt {
+				t.Errorf("override SecretKeyRef Optional = %v, want %v (slot must drive Optional)",
+					gotOpt, tc.wantOpt)
+			}
+
+			// The slot's canonical env name must not also appear; the
+			// override is a replacement, not an addition.
+			canonical := config.EnvAnthropicAPIKey
+			if tc.slot == config.AuthSlotSubscription {
+				canonical = config.EnvClaudeCodeOAuthToken
+			}
+			if canonical == tc.envOverride {
+				return
+			}
+			if _, leaked := env[canonical]; leaked {
+				t.Errorf("override leaked canonical env var %q alongside override %q",
+					canonical, tc.envOverride)
+			}
+		})
+	}
+}
+
 // --- helpers ------------------------------------------------------------
 
 func envByName(list []corev1.EnvVar) map[string]corev1.EnvVar {
@@ -620,6 +816,14 @@ func envByName(list []corev1.EnvVar) map[string]corev1.EnvVar {
 		m[e.Name] = e
 	}
 	return m
+}
+
+func mapKeys(m map[string]corev1.EnvVar) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func volumeByName(list []corev1.Volume) map[string]corev1.Volume {
