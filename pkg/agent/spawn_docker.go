@@ -160,11 +160,21 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 		"-e", fmt.Sprintf("SPIRE_CONFIG_DIR=%s", containerConfigDir),
 	}
 
-	// Inherit key environment variables.
+	// Inherit key environment variables. Skip ANTHROPIC_API_KEY when the
+	// caller has selected an explicit auth slot — AuthEnv below is the
+	// source of truth for that variable.
+	authManagesAnthropic := len(cfg.AuthEnv) > 0
 	for _, key := range []string{"BEADS_DIR", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"} {
+		if authManagesAnthropic && key == "ANTHROPIC_API_KEY" {
+			continue
+		}
 		if val := os.Getenv(key); val != "" {
 			args = append(args, "-e", fmt.Sprintf("%s=%s", key, val))
 		}
+	}
+	// AuthEnv: pass through whichever Anthropic env var the slot uses.
+	for _, e := range cfg.AuthEnv {
+		args = append(args, "-e", e)
 	}
 	// SPIRE_TOWER: prefer explicit cfg.Tower, fall back to env.
 	if tower := cfg.Tower; tower != "" {

@@ -422,6 +422,49 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 		setEnv(cmd, "OTEL_LOGS_EXPORTER", "otlp")
 		setEnv(cmd, "OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
 	}
+
+	// Auth credential injection: when the caller has selected an auth
+	// slot (subscription | api-key) for this run, replace cmd.Env's
+	// inherited Anthropic credential vars with whatever AuthEnv says.
+	// AuthEnv is produced via config.AuthContext.InjectEnv applied to a
+	// base env, so its tail entry is the slot's own env var. We only
+	// need to copy the (single) Anthropic var across, leaving everything
+	// else cmd.Env already has alone.
+	if len(cfg.AuthEnv) > 0 {
+		applyAuthEnv(cmd, cfg.AuthEnv)
+	}
+}
+
+// applyAuthEnv merges Anthropic-credential entries from authEnv into
+// cmd.Env, replacing any existing entries for the managed env var keys.
+// Entries unrelated to auth are ignored — the slice is treated as opaque
+// state produced by AuthContext.InjectEnv.
+func applyAuthEnv(cmd *exec.Cmd, authEnv []string) {
+	managed := []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"}
+	for _, key := range managed {
+		// Strip any existing entry for this key, then take whatever
+		// authEnv says (may be empty, in which case we leave it stripped).
+		stripEnv(cmd, key)
+	}
+	for _, e := range authEnv {
+		for _, key := range managed {
+			if strings.HasPrefix(e, key+"=") {
+				cmd.Env = append(cmd.Env, e)
+				break
+			}
+		}
+	}
+}
+
+func stripEnv(cmd *exec.Cmd, key string) {
+	prefix := key + "="
+	out := cmd.Env[:0]
+	for _, e := range cmd.Env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	cmd.Env = out
 }
 
 // ApplyProcessEnvForTest is the exported entry point test code uses to

@@ -52,6 +52,11 @@ spire config set github-token ghp_...
 spire config set dolthub-user myuser
 spire config set dolthub-password mypassword
 
+# (Optional) Install both an Anthropic subscription token and an api-key
+# for per-summon slot selection — see docs/auth.md.
+#   spire config auth set subscription --token sk-ant-...
+#   spire config auth set api-key      --key   sk-ant-api03-...
+
 # Create a tower and register your repo
 spire tower create --name my-team
 cd my-project && spire repo add

@@ -168,6 +168,19 @@ type SpawnConfig struct {
 	// don't set DetachFromParent will truncate the log when the parent
 	// exits.
 	DetachFromParent bool
+
+	// AuthEnv, when non-nil, overrides the inherited Anthropic credential
+	// env vars on the spawned process. It is the env-var slice produced by
+	// AuthContext.InjectEnv applied to a base environment, kept here as a
+	// flat []string so pkg/agent backends can stay free of pkg/config
+	// import cycles. Nil means "inherit whatever is in the parent process
+	// env" (legacy behavior).
+	AuthEnv []string
+
+	// AuthSlot is the slot name (subscription | api-key) of AuthEnv. Used
+	// by observability sites to tag agent_runs rows. Empty when AuthEnv is
+	// nil.
+	AuthSlot string
 }
 
 // NewSpawner returns a Spawner for the given backend.

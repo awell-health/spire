@@ -112,6 +112,14 @@ func init() {
 	// the calls. The closures dereference the cmd/spire vars at each call, so
 	// test swaps take effect immediately.
 	summon.SpawnFunc = func(b agent.Backend, cfg agent.SpawnConfig) (agent.Handle, error) {
+		// Stamp the bead's selected AuthContext onto cfg so the backend
+		// injects the right Anthropic env var. Lookup-by-bead-ID stays
+		// consistent across local + cluster spawn paths.
+		if cfg.BeadID != "" && len(cfg.AuthEnv) == 0 {
+			env, slot := authEnvForBead(cfg.BeadID)
+			cfg.AuthEnv = env
+			cfg.AuthSlot = slot
+		}
 		return summonSpawnFunc(b, cfg)
 	}
 }
@@ -152,22 +160,22 @@ func cmdSummon(args []string) error {
 	var rawHeaders []string
 
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--for":
+		switch {
+		case args[i] == "--for":
 			return fmt.Errorf("--for has been removed; use --targets <bead-id> for exact targeting")
-		case "--targets":
+		case args[i] == "--targets":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--targets requires comma-separated bead IDs")
 			}
 			i++
 			targets = args[i]
-		case "--dispatch":
+		case args[i] == "--dispatch":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--dispatch requires a mode: sequential, wave, or direct")
 			}
 			i++
 			dispatch = args[i]
-		case "--auto":
+		case args[i] == "--auto":
 			auto = true
 		case "--auth":
 			if i+1 >= len(args) {
@@ -264,6 +272,8 @@ func cmdSummon(args []string) error {
 	if err := preflightResolveTargets(targetIDs); err != nil {
 		return err
 	}
+
+	authFlags := wizard.SelectFlags{Auth: authFlag, Turbo: turbo, Headers: headers}
 
 	// Detect mode: k8s or local.
 	if isK8sAvailableFunc() {
@@ -667,6 +677,17 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 	spawned := 0
 	for i := 0; i < count; i++ {
 		bead := candidates[i]
+
+		// Resolve the auth slot for this bead now so the user sees the
+		// outcome before we hand off to SpawnWizard. Errors here mean a
+		// required slot isn't configured, so the user gets actionable
+		// guidance and we don't half-spawn.
+		authCtx, authErr := wizard.SelectAuth(authCfg, bead.Priority, auth)
+		if authErr != nil {
+			return fmt.Errorf("auth selection for %s: %w", bead.ID, authErr)
+		}
+		setBeadAuthContext(bead.ID, authCtx)
+		fmt.Printf("  %s → auth: %s%s\n", bead.ID, authCtx.SlotName(), ephemeralSuffix(authCtx))
 
 		// Check for existing graph state so the CLI print can say "resuming"
 		// vs "starting". This is display-only; the wizard itself decides

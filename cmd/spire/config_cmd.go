@@ -72,6 +72,8 @@ func cmdConfig(args []string) error {
 		return configList()
 	case "repo":
 		return configRepo()
+	case "auth":
+		return cmdConfigAuth(args[1:])
 	default:
 		return fmt.Errorf("unknown config subcommand: %q\nusage: spire config <get|set|list|repo|auth> [key] [value]", args[0])
 	}
