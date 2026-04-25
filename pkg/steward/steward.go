@@ -1260,7 +1260,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				handle, spawnErr := backend.Spawn(agent.SpawnConfig{
 					Name:       wizName,
 					BeadID:     parent.ID,
-					Role:       agent.RoleApprentice,
+					Role:       agent.RoleWizard,
 					Tower:      towerName,
 					InstanceID: localInstanceID,
 					LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", wizName+".log"),
@@ -1359,7 +1359,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 		handle, spawnErr := backend.Spawn(agent.SpawnConfig{
 			Name:       agentName,
 			BeadID:     parent.ID,
-			Role:       agent.RoleApprentice,
+			Role:       agent.RoleWizard,
 			Tower:      towerName,
 			InstanceID: localInstanceID,
 			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
@@ -1484,7 +1484,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
 				Name:       agentName,
 				BeadID:     gs.BeadID,
-				Role:       agent.RoleApprentice,
+				Role:       agent.RoleWizard,
 				Tower:      towerName,
 				InstanceID: localInstanceID,
 				LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),

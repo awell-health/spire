@@ -936,8 +936,11 @@ func TestSweepHookedSteps_ResolvesDesign(t *testing.T) {
 	if sc.BeadID != "spi-test1" {
 		t.Errorf("spawn bead = %q, want spi-test1", sc.BeadID)
 	}
-	if sc.Role != agent.RoleApprentice {
-		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleApprentice)
+	// Role must be RoleWizard so the K8s backend builds a wizard pod
+	// (spi-fcord7); RoleApprentice was the masked bug from the process
+	// backend's command-map indirection.
+	if sc.Role != agent.RoleWizard {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleWizard)
 	}
 }
 
@@ -1225,8 +1228,11 @@ func TestSweepHookedSteps_HumanApprove_LabelsCleared_Resolves(t *testing.T) {
 	if sc.BeadID != "spi-approve2" {
 		t.Errorf("spawn bead = %q, want spi-approve2", sc.BeadID)
 	}
-	if sc.Role != agent.RoleApprentice {
-		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleApprentice)
+	// Role must be RoleWizard so the K8s backend builds a wizard pod
+	// (spi-fcord7); RoleApprentice was the masked bug from the process
+	// backend's command-map indirection.
+	if sc.Role != agent.RoleWizard {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleWizard)
 	}
 }
 
@@ -1927,6 +1933,12 @@ func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t 
 	}
 
 	// Verify a wizard (not cleric) was spawned for the parent bead.
+	// Role must be RoleWizard so the K8s backend's selectPodShape routes to
+	// the wizard pod shape (spi-fcord7). RoleApprentice was the bug — it
+	// happened to work locally because the process backend's command map
+	// re-enters CmdWizardRun via "spire apprentice run", but in cluster the
+	// k8s backend would build an apprentice pod running the apprentice
+	// command instead of a wizard pod running `spire execute`.
 	if len(backend.spawns) != 1 {
 		t.Fatalf("spawn count = %d, want 1", len(backend.spawns))
 	}
@@ -1934,8 +1946,8 @@ func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t 
 	if sc.BeadID != "spi-parent4" {
 		t.Errorf("spawn bead = %q, want spi-parent4", sc.BeadID)
 	}
-	if sc.Role != agent.RoleApprentice {
-		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleApprentice)
+	if sc.Role != agent.RoleWizard {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleWizard)
 	}
 }
 

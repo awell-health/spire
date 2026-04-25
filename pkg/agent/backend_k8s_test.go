@@ -1598,3 +1598,100 @@ func TestOwningWizardPVCName(t *testing.T) {
 		}
 	}
 }
+
+// TestK8sBackend_Spawn_HookedStepResumeBuildsWizardPod is the spi-fcord7
+// regression test. The steward's hooked-step resume sites in
+// SweepHookedSteps (pkg/steward/steward.go) call backend.Spawn after a
+// cleric recovery succeeds. They previously passed Role: RoleApprentice;
+// the process backend's roleToSubcmd map silently mapped that to
+// "apprentice run" which re-entered CmdWizardRun, masking the bug.
+//
+// In the cluster the K8sBackend uses Role to pick pod shape via
+// selectPodShape. RoleApprentice routed to the flat (apprentice) pod
+// running `spire apprentice run`, but the steward needed the wizard pod
+// running `spire execute`. This test pins the wizard pod shape produced
+// when the steward's resume SpawnConfig hits K8sBackend.Spawn.
+func TestK8sBackend_Spawn_HookedStepResumeBuildsWizardPod(t *testing.T) {
+	b, client := newTestBackend()
+
+	// Mirrors the SpawnConfig the steward emits at SweepHookedSteps's
+	// re-summon sites after the spi-fcord7 fix: RoleWizard so
+	// selectPodShape returns podShapeWizard. RepoURL/RepoBranch/
+	// RepoPrefix populate the wizard pod's tower-attach + repo-bootstrap
+	// init container inputs.
+	cfg := SpawnConfig{
+		Name:       "wizard-spi-parent4",
+		BeadID:     "spi-parent4",
+		Role:       RoleWizard,
+		Tower:      "test-tower",
+		RepoURL:    "https://github.com/example/repo.git",
+		RepoBranch: "main",
+		RepoPrefix: "spi",
+	}
+
+	if _, err := b.Spawn(cfg); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	pods, err := client.CoreV1().Pods(testNamespace).List(
+		context.Background(), metav1.ListOptions{},
+	)
+	if err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	if len(pods.Items) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(pods.Items))
+	}
+	pod := pods.Items[0]
+
+	// Wizard pods get tower-attach + repo-bootstrap init containers in
+	// that order; the buggy apprentice-flat shape has zero init containers.
+	if len(pod.Spec.InitContainers) != 2 {
+		t.Fatalf("InitContainers count = %d, want 2 (tower-attach + repo-bootstrap)", len(pod.Spec.InitContainers))
+	}
+	if got := pod.Spec.InitContainers[0].Name; got != "tower-attach" {
+		t.Errorf("InitContainers[0].Name = %q, want tower-attach", got)
+	}
+	if got := pod.Spec.InitContainers[1].Name; got != "repo-bootstrap" {
+		t.Errorf("InitContainers[1].Name = %q, want repo-bootstrap", got)
+	}
+
+	// Main container command must be `spire execute <bead> --name <agent>`.
+	// The buggy apprentice path would have emitted `spire apprentice run …`.
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatalf("main container count = %d, want 1", len(pod.Spec.Containers))
+	}
+	c := pod.Spec.Containers[0]
+	wantCmd := []string{"spire", "execute", cfg.BeadID, "--name", cfg.Name}
+	if !reflect.DeepEqual(c.Command, wantCmd) {
+		t.Errorf("Command = %v, want %v", c.Command, wantCmd)
+	}
+
+	// Resources must match WizardResources(), not resourcesForRole(RoleApprentice).
+	wantWizard := WizardResources()
+	for name, want := range wantWizard.Requests {
+		got := c.Resources.Requests[name]
+		if !got.Equal(want) {
+			t.Errorf("Resources.Requests[%s] = %s, want %s (WizardResources)", name, got.String(), want.String())
+		}
+	}
+	for name, want := range wantWizard.Limits {
+		got := c.Resources.Limits[name]
+		if !got.Equal(want) {
+			t.Errorf("Resources.Limits[%s] = %s, want %s (WizardResources)", name, got.String(), want.String())
+		}
+	}
+
+	// SPIRE_ROLE env must propagate the wizard role so the in-pod hook
+	// emits the wizard command catalog rather than the apprentice one.
+	var spireRole string
+	for _, e := range c.Env {
+		if e.Name == "SPIRE_ROLE" {
+			spireRole = e.Value
+			break
+		}
+	}
+	if spireRole != string(RoleWizard) {
+		t.Errorf("SPIRE_ROLE = %q, want %q", spireRole, string(RoleWizard))
+	}
+}
