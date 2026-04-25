@@ -48,19 +48,6 @@ type RecoveryActionCtx struct {
 	ParentRunID    string
 	AgentNamespace string
 
-	// ParentAgentName is the agent name of the executor that built this
-	// ctx, if the dispatch is in-process. Set by buildRecoveryActionCtx to
-	// e.agentName so SpawnRepairWorker can detect when it's being called
-	// from inside a live wizard's recovery cycle — the only context where
-	// action="resummon" would self-collide on the parent's own active
-	// attempt (see pkg/executor/executor_dag.go:43 and
-	// pkg/executor/graph_interpreter.go:941).
-	//
-	// Left empty for external / test callers (e.g. the dispatcher tests
-	// in recovery_actions_agentic_test.go). Empty means "no in-process
-	// parent; self-collision gate does not fire."
-	ParentAgentName string
-
 	// BuildRuntimeContract stamps the canonical runtime contract on cfg —
 	// Identity (tower/prefix/RepoURL/base), Workspace, and Run (backend,
 	// workspace kind/name/origin, handoff mode). It is the single

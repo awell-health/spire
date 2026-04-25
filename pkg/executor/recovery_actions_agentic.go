@@ -102,23 +102,6 @@ func SpawnRepairWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws Work
 		return RepairWorkerResult{}, fmt.Errorf("spawn repair worker: unsupported action %q (known: resolve-conflicts, resummon, reset, triage, targeted-fix)", plan.Action)
 	}
 
-	// Self-collision gate: resummon in-process would spawn an apprentice
-	// that tries to `spire claim` the target bead, but the parent wizard's
-	// own active attempt is still alive (we're running inside its recovery
-	// cycle). The claim check at pkg/executor/executor_dag.go:43 and
-	// pkg/executor/graph_interpreter.go:941 refuses with "active attempt
-	// ... already exists (agent: wizard-*)". Resummon only makes sense
-	// when the parent wizard is already dead — i.e. the legitimate path
-	// through `cmd/spire/resummon.go`, which kills the old wizard and
-	// closes its attempt before cmdSummon. Reject loudly here so the
-	// recovery cycle records a clear outcome and escalates rather than
-	// burning a round on a structurally-impossible dispatch.
-	if plan.Action == "resummon" && ctx.ParentAgentName != "" {
-		return RepairWorkerResult{}, fmt.Errorf(
-			"spawn repair worker: resummon cannot run inside a live wizard (parent=%s would self-collide on claim); decide must pick a different action or the step must escalate",
-			ctx.ParentAgentName)
-	}
-
 	if plan.Action == "resolve-conflicts" {
 		return spawnConflictResolverWorker(ctx, plan, ws, wc)
 	}
@@ -360,11 +343,17 @@ func buildRepairWorkerSpawnConfig(ctx *RecoveryActionCtx, spawnName string, plan
 	}
 
 	cfg := agent.SpawnConfig{
-		Name:         spawnName,
-		BeadID:       ctx.TargetBeadID,
-		Role:         agent.RoleApprentice,
-		Step:         plan.Action,
-		ExtraArgs:    []string{"--worktree-dir", ctx.Worktree.Dir, "--no-review"},
+		Name:   spawnName,
+		BeadID: ctx.TargetBeadID,
+		Role:   agent.RoleApprentice,
+		Step:   plan.Action,
+		// --apprentice tells CmdWizardRun to skip the bead-claim path
+		// (pkg/wizard/wizard.go:458). Without it, the spawned subprocess
+		// re-enters the wizard claim flow and collides with the target
+		// bead's existing active attempt — the "already exists (agent:
+		// wizard-*)" failure that previously made resummon unreachable
+		// from live recovery loops.
+		ExtraArgs:    []string{"--apprentice", "--worktree-dir", ctx.Worktree.Dir, "--no-review"},
 		CustomPrompt: prompt,
 		LogPath:      logPath,
 	}

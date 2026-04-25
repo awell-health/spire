@@ -907,78 +907,34 @@ func TestSpawnRepairWorker_NonConflictActionDispatches(t *testing.T) {
 	}
 }
 
-// TestSpawnRepairWorker_ResummonRejectedInsideLiveWizard verifies the
-// self-collision gate: when ctx.ParentAgentName is set (in-process
-// recovery cycle inside a live wizard), plan.Action="resummon" is
-// rejected BEFORE the apprentice spawn. The apprentice would otherwise
-// try to `spire claim` the bead and collide with the parent wizard's
-// own active attempt — producing the 20-second failure loop observed
-// on spi-wsb115 / spi-bvp0n9.
-func TestSpawnRepairWorker_ResummonRejectedInsideLiveWizard(t *testing.T) {
+// TestSpawnRepairWorker_ResummonDispatchesWithSkipClaimFlag pins the
+// fix for spi-77bk9s: the repair-worker SpawnConfig must carry the
+// `--apprentice` skip-claim flag so the spawned subprocess takes the
+// apprentice path in CmdWizardRun (pkg/wizard/wizard.go:458) instead
+// of re-entering the wizard claim flow and colliding with the target
+// bead's existing active attempt. The earlier in-process self-collision
+// gate that rejected resummon was masking this missing flag and made
+// resummon unreachable from live recovery loops (reproduced on
+// spi-mupwy4 / spi-1daurp).
+func TestSpawnRepairWorker_ResummonDispatchesWithSkipClaimFlag(t *testing.T) {
 	dir := initAgenticTestRepo(t)
 	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
 
 	var dispatched int
-	ctx := &RecoveryActionCtx{
-		Worktree:        wc,
-		TargetBeadID:    "spi-wsb115",
-		ParentAgentName: "wizard-spi-wsb115",
-		Spawner:         fakeSpawner{},
-		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
-			dispatched++
-			return &fakeHandle{name: cfg.Name}, nil
-		},
-		BuildRuntimeContract: testBuildRuntimeContract,
-		Log:                  func(string) {},
-	}
-	plan := recovery.RepairPlan{Action: "resummon", Reason: "transient"}
-	ws := WorkspaceHandle{
-		Name:       "recovery",
-		Kind:       WorkspaceKindBorrowedWorktree,
-		Path:       dir,
-		Branch:     "feat/spi-wsb115",
-		BaseBranch: "main",
-		Origin:     WorkspaceOriginLocalBind,
-	}
-
-	_, err := SpawnRepairWorker(ctx, plan, ws)
-	if err == nil {
-		t.Fatal("SpawnRepairWorker(resummon, ParentAgentName set) returned nil; expected self-collision rejection")
-	}
-	if !strings.Contains(err.Error(), "cannot run inside a live wizard") {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if dispatched != 0 {
-		t.Errorf("apprentice dispatched %d times; expected 0 (gate must fire before spawn)", dispatched)
-	}
-}
-
-// TestSpawnRepairWorker_ResummonAllowedWhenNoParent verifies the gate
-// does NOT fire for external callers (ParentAgentName unset). The
-// legitimate `spire resummon` CLI path and any future external cleric
-// dispatch must still be able to use action="resummon".
-//
-// This is the complement of the in-process test: same plan, no parent
-// signal, apprentice should spawn normally. It also guards against an
-// over-broad future change that rejects resummon unconditionally.
-func TestSpawnRepairWorker_ResummonAllowedWhenNoParent(t *testing.T) {
-	dir := initAgenticTestRepo(t)
-	wc := &spgit.WorktreeContext{Dir: dir, RepoPath: dir, Branch: "main", BaseBranch: "main"}
-
-	var dispatched int
+	var captured agent.SpawnConfig
 	ctx := &RecoveryActionCtx{
 		Worktree:     wc,
 		TargetBeadID: "spi-target",
-		// ParentAgentName deliberately empty: external caller.
-		Spawner: fakeSpawner{},
+		Spawner:      fakeSpawner{},
 		DispatchFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
 			dispatched++
+			captured = cfg
 			return &fakeHandle{name: cfg.Name}, nil
 		},
 		BuildRuntimeContract: testBuildRuntimeContract,
 		Log:                  func(string) {},
 	}
-	plan := recovery.RepairPlan{Action: "resummon", Reason: "wizard dead"}
+	plan := recovery.RepairPlan{Action: "resummon", Reason: "wizard interrupted on close"}
 	ws := WorkspaceHandle{
 		Name:       "recovery",
 		Kind:       WorkspaceKindBorrowedWorktree,
@@ -989,10 +945,47 @@ func TestSpawnRepairWorker_ResummonAllowedWhenNoParent(t *testing.T) {
 	}
 
 	if _, err := SpawnRepairWorker(ctx, plan, ws); err != nil {
-		t.Fatalf("SpawnRepairWorker(resummon, no parent): %v", err)
+		t.Fatalf("SpawnRepairWorker(resummon): %v", err)
 	}
 	if dispatched != 1 {
-		t.Errorf("dispatched = %d, want 1 (external resummon must still spawn)", dispatched)
+		t.Fatalf("dispatched = %d, want 1 — resummon must reach the apprentice spawn", dispatched)
+	}
+
+	// Apprentice role: the subprocess must take the apprentice code
+	// path, not be registered as a fresh wizard.
+	if captured.Role != agent.RoleApprentice {
+		t.Errorf("Role = %q, want %q", captured.Role, agent.RoleApprentice)
+	}
+	// --apprentice flag: the canonical skip-claim signal — without it,
+	// CmdWizardRun re-enters the claim flow and self-collides with the
+	// target bead's active attempt.
+	if !containsArg(captured.ExtraArgs, "--apprentice") {
+		t.Errorf("ExtraArgs missing --apprentice (skip-claim): %v", captured.ExtraArgs)
+	}
+	// --worktree-dir: borrowed worktree, not a fresh provision.
+	if !containsArg(captured.ExtraArgs, "--worktree-dir") {
+		t.Errorf("ExtraArgs missing --worktree-dir: %v", captured.ExtraArgs)
+	}
+	if !containsArg(captured.ExtraArgs, dir) {
+		t.Errorf("ExtraArgs missing borrowed worktree path %q: %v", dir, captured.ExtraArgs)
+	}
+	if !containsArg(captured.ExtraArgs, "--no-review") {
+		t.Errorf("ExtraArgs missing --no-review: %v", captured.ExtraArgs)
+	}
+	// Target bead: the repair worker acts on the parent bead, not the
+	// recovery bead.
+	if captured.BeadID != "spi-target" {
+		t.Errorf("BeadID = %q, want %q", captured.BeadID, "spi-target")
+	}
+	// Borrowed-handoff runtime contract: workspace must be the borrowed
+	// worktree, not a fresh provision.
+	if captured.Run.WorkspaceKind != WorkspaceKindBorrowedWorktree {
+		t.Errorf("Run.WorkspaceKind = %q, want %q",
+			captured.Run.WorkspaceKind, WorkspaceKindBorrowedWorktree)
+	}
+	if captured.Run.HandoffMode != HandoffBorrowed {
+		t.Errorf("Run.HandoffMode = %q, want %q",
+			captured.Run.HandoffMode, HandoffBorrowed)
 	}
 }
 
