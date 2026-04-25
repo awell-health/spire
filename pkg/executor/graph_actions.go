@@ -889,6 +889,12 @@ func commitAttributesBead(subject, childID string) bool {
 // O(branch-commits) per call. When repoPath or branchTip is empty (unit-test
 // paths) the function returns (false, nil) — the caller then falls back to
 // the attempt-bead check.
+//
+// After a fast-forward merge, base and branchTip resolve to the same SHA;
+// the base..branchTip range is then empty and would miss already-landed
+// child commits. In that case we widen the scan to all commits reachable
+// from branchTip and rely on the uniqueness of bead-ID attribution (random
+// 6-char suffixes) to avoid false matches against unrelated history.
 func mergedCommitsAttributeBead(repoPath, base, branchTip, childID string) (bool, error) {
 	if repoPath == "" || branchTip == "" || childID == "" {
 		return false, nil
@@ -896,6 +902,9 @@ func mergedCommitsAttributeBead(repoPath, base, branchTip, childID string) (bool
 	rangeArg := branchTip
 	if base != "" {
 		rangeArg = base + ".." + branchTip
+		if sameRef(repoPath, base, branchTip) {
+			rangeArg = branchTip
+		}
 	}
 	cmd := exec.Command("git", "-C", repoPath, "log", "--pretty=format:%s", rangeArg)
 	out, err := cmd.Output()
@@ -910,6 +919,27 @@ func mergedCommitsAttributeBead(repoPath, base, branchTip, childID string) (bool
 		}
 	}
 	return false, nil
+}
+
+// sameRef reports whether two git refs in repoPath resolve to the same
+// commit SHA. Returns false if either ref fails to resolve — callers
+// should treat that as "cannot determine equality" and keep their
+// existing range.
+func sameRef(repoPath, a, b string) bool {
+	resolve := func(ref string) (string, bool) {
+		cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", ref)
+		out, err := cmd.Output()
+		if err != nil {
+			return "", false
+		}
+		return strings.TrimSpace(string(out)), true
+	}
+	shaA, okA := resolve(a)
+	shaB, okB := resolve(b)
+	if !okA || !okB {
+		return false
+	}
+	return shaA == shaB
 }
 
 // childLandedOnBranch returns true if child has either a successful attempt

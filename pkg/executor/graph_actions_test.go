@@ -2121,3 +2121,42 @@ func TestMergedCommitsAttributeBead_FindsAttribution(t *testing.T) {
 		t.Fatalf("missing ref: want (false,nil), got (%v,%v)", ok, err)
 	}
 }
+
+// Regression for spi-h61t0w: after a fast-forward merge, base and the
+// merged branch point at the same SHA, so base..branchTip is empty and
+// the close guard misclassifies already-landed child commits as stranded.
+// The fix widens the scan to branchTip's full history when refs match.
+func TestMergedCommitsAttributeBead_FastForwardCase(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "T")
+	run("commit", "--allow-empty", "-m", "base")
+	run("checkout", "-q", "-b", "feat/epic")
+	run("commit", "--allow-empty", "-m", "feat(spi-ff001): wave work")
+	run("checkout", "-q", "main")
+	run("merge", "--ff-only", "feat/epic")
+
+	// main and feat/epic now point at the same SHA. Pre-fix, base..branchTip
+	// is empty and the attribution check returns (false, nil); post-fix the
+	// scan widens to branchTip's full history and finds the child commit.
+	ok, err := mergedCommitsAttributeBead(dir, "main", "feat/epic", "spi-ff001")
+	if err != nil {
+		t.Fatalf("ff case: err=%v", err)
+	}
+	if !ok {
+		t.Fatal("ff case: spi-ff001 not found (want true)")
+	}
+	// Sanity: a child ID that was never committed must still return false.
+	ok, _ = mergedCommitsAttributeBead(dir, "main", "feat/epic", "spi-absent")
+	if ok {
+		t.Fatal("ff case: spi-absent should not be found")
+	}
+}
