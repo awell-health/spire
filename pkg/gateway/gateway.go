@@ -30,6 +30,7 @@ import (
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/graph"
 	"github.com/awell-health/spire/pkg/metrics/report"
 	"github.com/awell-health/spire/pkg/olap"
 	"github.com/awell-health/spire/pkg/process"
@@ -366,6 +367,11 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	// /api/v1/beads/{id}/trace
 	if strings.HasSuffix(id, "/trace") {
 		s.getBeadTrace(w, r, strings.TrimSuffix(id, "/trace"))
+		return
+	}
+	// /api/v1/beads/{id}/graph
+	if strings.HasSuffix(id, "/graph") {
+		s.getBeadGraph(w, r, strings.TrimSuffix(id, "/graph"))
 		return
 	}
 	// /api/v1/beads/{id}/summon
@@ -1285,6 +1291,62 @@ func (s *Server) getBeadTrace(w http.ResponseWriter, r *http.Request, id string)
 		var nf *trace.NotFoundError
 		if errors.As(err, &nf) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": nf.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+
+// graphCollect is the package-level indirection through which getBeadGraph
+// calls pkg/graph.Collect. Kept as a var so handler tests can inject a fake
+// collector without spinning up a real dolt store. Mirrors traceCollect.
+var graphCollect = graph.Collect
+
+// getBeadGraph answers GET /api/v1/beads/{id}/graph with the descendant
+// subgraph the desktop's TRACE tab renders as a "you are here" map. Shape
+// is locked on graph.GraphResponse — see that package's doc for field
+// semantics.
+//
+// Query params:
+//   - max_depth=N (default DefaultMaxDepth, clamped to [1, MaxMaxDepth]) —
+//     bad input clamps to default rather than 400, matching the trace
+//     handler's tolerance for hand-edited URLs. Values above MaxMaxDepth
+//     return 400 because they would blow the latency budget; clamping
+//     would silently lie about how much of the subgraph was walked.
+//
+// Status codes:
+//   - 200 with the assembled response (single-node when the bead is a leaf).
+//   - 400 when max_depth is above the server cap.
+//   - 404 when the bead ID does not resolve (graph.NotFoundError).
+//   - 500 only for unexpected store/query failures.
+func (s *Server) getBeadGraph(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	depth := graph.DefaultMaxDepth
+	if v := r.URL.Query().Get("max_depth"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			n = graph.DefaultMaxDepth
+		}
+		depth = n
+	}
+	data, err := graphCollect(id, graph.Options{MaxDepth: depth})
+	if err != nil {
+		var nf *graph.NotFoundError
+		if errors.As(err, &nf) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": nf.Error()})
+			return
+		}
+		if errors.Is(err, graph.ErrMaxDepthExceeded) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
