@@ -192,6 +192,11 @@ func cmdBoard(args []string) error {
 		return renderTraceForBoard(beadID)
 	}
 
+	// Wizard-liveness boundary (spi-p6unf3). The board's Agents tab
+	// consults the wizardregistry.Registry contract; the CLI runs only
+	// in local mode so the local adapter is the right impl here.
+	opts.AgentRegistry = newLocalRegistryAdapter()
+
 	return board.RunBoard(opts, identity, fetchAgents, actionFn, inlineActionFn, rejectDesignFn)
 }
 

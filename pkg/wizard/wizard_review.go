@@ -17,7 +17,6 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
-	pkgregistry "github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
@@ -59,7 +58,7 @@ func CmdWizardReview(args []string, deps *Deps) error {
 	// Stamp the review phase on the existing registry entry created by BeginWork.
 	// OrphanSweep and EndWork are the sole removers — the reviewer no longer owns
 	// registry cleanup. Log but don't fail if entry not found.
-	if uerr := pkgregistry.Update(reviewerName, func(re *pkgregistry.Entry) {
+	if uerr := agent.RegistryUpdate(reviewerName, func(re *agent.Entry) {
 		re.Phase = "review"
 		re.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
 	}); uerr != nil {

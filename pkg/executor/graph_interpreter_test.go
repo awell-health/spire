@@ -13,7 +13,6 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -2437,7 +2436,7 @@ func TestRunGraph_StampsRegistryPhaseAndInstanceID(t *testing.T) {
 	beadID := "spi-stamp-test"
 
 	// Pre-create a registry entry as BeginWork would (PID=0 placeholder).
-	if err := registry.Upsert(registry.Entry{
+	if err := agent.RegistryAdd(agent.Entry{
 		Name:    agentName,
 		PID:     0,
 		BeadID:  beadID,
@@ -2477,11 +2476,11 @@ func TestRunGraph_StampsRegistryPhaseAndInstanceID(t *testing.T) {
 	_ = exec.RunGraph(graph, exec.graphState)
 
 	// Verify the registry entry was stamped with a graph: phase.
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		t.Fatalf("list registry: %v", err)
 	}
-	var found *registry.Entry
+	var found *agent.Entry
 	for i := range entries {
 		if entries[i].Name == agentName {
 			found = &entries[i]

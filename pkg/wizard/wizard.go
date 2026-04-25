@@ -22,7 +22,6 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
-	pkgregistry "github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/store"
@@ -436,7 +435,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	// OrphanSweep and EndWork are the sole removers — the wizard no longer owns
 	// registry cleanup. Log but don't fail if entry not found (e.g. test modes
 	// that don't call BeginWork).
-	if uerr := pkgregistry.Update(wizardName, func(re *pkgregistry.Entry) {
+	if uerr := agent.RegistryUpdate(wizardName, func(re *agent.Entry) {
 		re.Phase = "init"
 		re.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
 		re.Worktree = worktreeDir

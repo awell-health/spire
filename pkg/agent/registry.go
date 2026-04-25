@@ -2,13 +2,15 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/awell-health/spire/pkg/config"
-	"github.com/awell-health/spire/pkg/registry"
+	"github.com/awell-health/spire/pkg/process"
 )
 
 // Registry tracks locally summoned wizards.
@@ -29,6 +31,13 @@ type Entry struct {
 	InstanceID     string `json:"instance_id,omitempty"`
 }
 
+// ErrNotFound is returned by RegistryUpdate when no entry with the given Name exists.
+var ErrNotFound = errors.New("agent: registry entry not found")
+
+// registryMu serializes intra-process read-modify-write critical sections.
+// Cross-process serialization is provided by the file lock below.
+var registryMu sync.Mutex
+
 // RegistryPath returns the path to the wizard registry JSON file.
 func RegistryPath() string {
 	dir, err := config.Dir()
@@ -39,52 +48,50 @@ func RegistryPath() string {
 	return filepath.Join(dir, "wizards.json")
 }
 
-// LoadRegistry reads the wizard registry from disk.
-// DEPRECATED: migrated to pkg/registry. Use registry.List instead.
-func LoadRegistry() Registry {
-	entries, err := registry.List()
-	if err != nil {
-		return Registry{}
-	}
+// loadRegistry reads the registry from disk. Returns an empty Registry on any error.
+func loadRegistry() Registry {
 	var reg Registry
-	for _, e := range entries {
-		reg.Wizards = append(reg.Wizards, fromRegistryEntry(e))
+	data, err := os.ReadFile(RegistryPath())
+	if err != nil {
+		return reg
 	}
+	_ = json.Unmarshal(data, &reg)
 	return reg
 }
 
-// SaveRegistry writes the wizard registry to disk.
-// DEPRECATED: migrated to pkg/registry. Direct callers should migrate to the
-// atomic Upsert/Remove/Update operations.
-func SaveRegistry(reg Registry) {
-	// Reconstruct from the provided registry by replacing all entries.
-	// This mirrors the legacy behaviour: overwrite the file with whatever
-	// the caller built in-memory. Not atomic — prefer Upsert/Remove.
+// saveRegistry writes the registry to disk.
+func saveRegistry(reg Registry) error {
 	path := RegistryPath()
-	os.MkdirAll(filepath.Dir(path), 0755)
-	data, _ := json.MarshalIndent(reg, "", "  ")
-	os.WriteFile(path, data, 0644)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("agent registry: mkdir: %w", err)
+	}
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("agent registry: marshal: %w", err)
+	}
+	return os.WriteFile(path, data, 0o644)
 }
 
 // RegistryLock acquires a file lock for the wizard registry.
 // Returns a cleanup function that releases the lock.
 func RegistryLock() (func(), error) {
 	lockPath := RegistryPath() + ".lock"
-	os.MkdirAll(filepath.Dir(lockPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("agent registry: mkdir for lock: %w", err)
+	}
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
 			f.Close()
 			return func() { os.Remove(lockPath) }, nil
 		}
 		if time.Now().After(deadline) {
-			// Force-remove stale lock and retry once
 			os.Remove(lockPath)
-			f, err = os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+			f, err = os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 			if err != nil {
-				return nil, fmt.Errorf("acquire registry lock: %w", err)
+				return nil, fmt.Errorf("agent registry: acquire lock: %w", err)
 			}
 			f.Close()
 			return func() { os.Remove(lockPath) }, nil
@@ -93,60 +100,120 @@ func RegistryLock() (func(), error) {
 	}
 }
 
-// toRegistryEntry converts an agent.Entry to a registry.Entry.
-func toRegistryEntry(e Entry) registry.Entry {
-	return registry.Entry{
-		Name:           e.Name,
-		PID:            e.PID,
-		BeadID:         e.BeadID,
-		Worktree:       e.Worktree,
-		StartedAt:      e.StartedAt,
-		Phase:          e.Phase,
-		PhaseStartedAt: e.PhaseStartedAt,
-		Tower:          e.Tower,
-		InstanceID:     e.InstanceID,
-	}
+// LoadRegistry reads the wizard registry from disk.
+func LoadRegistry() Registry {
+	return loadRegistry()
 }
 
-// fromRegistryEntry converts a registry.Entry to an agent.Entry.
-func fromRegistryEntry(e registry.Entry) Entry {
-	return Entry{
-		Name:           e.Name,
-		PID:            e.PID,
-		BeadID:         e.BeadID,
-		Worktree:       e.Worktree,
-		StartedAt:      e.StartedAt,
-		Phase:          e.Phase,
-		PhaseStartedAt: e.PhaseStartedAt,
-		Tower:          e.Tower,
-		InstanceID:     e.InstanceID,
-	}
+// SaveRegistry writes the wizard registry to disk.
+// Non-atomic; prefer RegistryAdd/RegistryRemove/RegistryUpdate.
+func SaveRegistry(reg Registry) {
+	path := RegistryPath()
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	data, _ := json.MarshalIndent(reg, "", "  ")
+	os.WriteFile(path, data, 0o644)
 }
 
-// RegistryAdd adds or replaces an entry in the wizard registry (file-locked).
-// DEPRECATED: migrated to pkg/registry. Use registry.Upsert instead.
+// RegistryAdd adds or replaces an entry keyed by Name. File-locked.
 func RegistryAdd(entry Entry) error {
-	return registry.Upsert(toRegistryEntry(entry))
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	unlock, err := RegistryLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	reg := loadRegistry()
+	found := false
+	for i, w := range reg.Wizards {
+		if w.Name == entry.Name {
+			reg.Wizards[i] = entry
+			found = true
+			break
+		}
+	}
+	if !found {
+		reg.Wizards = append(reg.Wizards, entry)
+	}
+	return saveRegistry(reg)
 }
 
-// RegistryRemove removes an entry by name from the wizard registry (file-locked).
-// DEPRECATED: migrated to pkg/registry. Use registry.Remove instead.
+// RegistryRemove deletes the entry with the given Name. Idempotent.
 func RegistryRemove(name string) error {
-	return registry.Remove(name)
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	unlock, err := RegistryLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	reg := loadRegistry()
+	var kept []Entry
+	for _, w := range reg.Wizards {
+		if w.Name != name {
+			kept = append(kept, w)
+		}
+	}
+	reg.Wizards = kept
+	return saveRegistry(reg)
 }
 
-// RegistryUpdate updates an entry by name using the provided function (file-locked).
-// DEPRECATED: migrated to pkg/registry. Use registry.Update instead.
-func RegistryUpdate(name string, update func(*Entry)) error {
-	return registry.Update(name, func(re *registry.Entry) {
-		ae := fromRegistryEntry(*re)
-		update(&ae)
-		*re = toRegistryEntry(ae)
-	})
+// RegistryUpdate runs fn against the entry with the given Name inside the
+// file lock, persists the result, and returns ErrNotFound if no such entry
+// exists.
+func RegistryUpdate(name string, fn func(*Entry)) error {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	unlock, err := RegistryLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	reg := loadRegistry()
+	for i := range reg.Wizards {
+		if reg.Wizards[i].Name == name {
+			fn(&reg.Wizards[i])
+			return saveRegistry(reg)
+		}
+	}
+	return fmt.Errorf("%w: %q", ErrNotFound, name)
+}
+
+// RegistryList returns a snapshot of all entries.
+func RegistryList() ([]Entry, error) {
+	reg := loadRegistry()
+	entries := make([]Entry, len(reg.Wizards))
+	copy(entries, reg.Wizards)
+	return entries, nil
+}
+
+// pidProbe is the function used by RegistrySweep to test whether a PID is
+// alive. Replaceable in tests. Defaults to process.ProcessAlive, which is
+// zombie-safe (zombies report as dead).
+var pidProbe = process.ProcessAlive
+
+// RegistrySweep returns the subset of RegistryList() whose PID is no longer
+// running per pidProbe. Sweep does NOT remove entries — caller decides what
+// to do with them.
+func RegistrySweep() ([]Entry, error) {
+	entries, err := RegistryList()
+	if err != nil {
+		return nil, err
+	}
+	var dead []Entry
+	for _, e := range entries {
+		if !pidProbe(e.PID) {
+			dead = append(dead, e)
+		}
+	}
+	return dead, nil
 }
 
 // WithInstanceID returns an option function that sets the InstanceID field on an Entry.
-// Used by callers that construct entries manually (e.g. tests, registry.Update closures).
+// Used by callers that construct entries manually.
 func WithInstanceID(id string) func(*Entry) {
 	return func(e *Entry) {
 		e.InstanceID = id

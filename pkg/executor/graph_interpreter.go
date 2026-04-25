@@ -16,7 +16,6 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -39,7 +38,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 	// RunGraph no longer owns entry cleanup. Log but don't fail if entry not found
 	// (executor may run in modes where no registry entry was created, e.g. tests).
 	instanceID := config.InstanceID()
-	if uerr := registry.Update(e.agentName, func(re *registry.Entry) {
+	if uerr := agent.RegistryUpdate(e.agentName, func(re *agent.Entry) {
 		re.Phase = "graph:" + state.ActiveStep
 		re.PhaseStartedAt = time.Now().UTC().Format(time.RFC3339)
 		re.InstanceID = instanceID
