@@ -28,8 +28,14 @@ behind these branches.
 When `EffectiveDeploymentMode == cluster-native`, the steward composes
 exactly three seams. Wiring lives on `StewardConfig.ClusterDispatch`
 (see `cluster_dispatch.go`); a nil entry — or any nil field — disables
-cluster-native dispatch and the steward logs and skips rather than
-silently falling back to local spawn.
+cluster-native dispatch.
+
+For the bead-level scheduling entry (`dispatchClusterNative`), a nil
+seam logs and skips the cycle. For the per-phase dispatch entry
+(`dispatchPhase`, used by review-ready and hooked-recovery), a nil
+seam fails closed with `ErrClusterDispatchUnavailable` rather than
+falling back to `backend.Spawn` — the cluster path must never reach
+`backend.Spawn`, even on misconfiguration.
 
 1. **`identity.ClusterIdentityResolver`** — resolves a repo prefix to its
    canonical `ClusterRepoIdentity` using the shared tower repo registry
@@ -192,7 +198,17 @@ The steward uses the same atomic claim pattern as `spire claim`:
    this call rejects and the steward skips the summon.
 2. `StampAttemptInstance` — stamps instance ownership metadata on the attempt.
 3. `UpdateBead` — sets the recovery bead to `in_progress`.
-4. `backend.Spawn` — starts the cleric executor process.
+4. `dispatchPhase` — routes the cleric: in local-native mode this calls
+   `backend.Spawn`; in cluster-native mode it emits a phase-keyed
+   `WorkloadIntent` via the cluster seam (no `backend.Spawn`).
+
+In cluster-native mode, the cleric dispatch carries
+`FormulaPhase = clericDispatchPhase()` (currently `intent.PhaseWizard`,
+the canonical bead-level phase). Stamping the recovery bead's type
+(`"recovery"`) would emit an unsupported `formula_phase` value the
+operator drops — `clericDispatchPhase` keeps the phase choice in one
+place so it can switch when the cluster intent contract gains a
+dedicated cleric role/phase pair.
 
 The spawned cleric executor calls `ensureGraphAttemptBead` on startup, finds
 the attempt bead created by the steward (matching agent name), and reuses it.

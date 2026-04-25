@@ -1401,10 +1401,12 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			log.Printf("[steward] hooked sweep: summoning cleric %s for recovery %s (source %s)", clericName, evidence.RecoveryBeadID, parent.ID)
 
 			// Dispatch the recovery bead (not the parent) — the cleric's
-			// workload is the recovery bead itself. A recovery bead is a
-			// bead-level dispatch, so we stamp the recovery bead type (or
-			// PhaseWizard fallback) as the intent phase. recoveryBead was
-			// fetched above at the "cleric finished?" branch; reuse it.
+			// workload is the recovery bead itself. The recovery bead's
+			// type ("recovery") is not a bead-level phase the operator
+			// routes, so use clericDispatchPhase() for a phase the
+			// cluster intent contract recognizes. The local backend
+			// ignores FormulaPhase; only cluster-native dispatch reads
+			// it.
 			handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 				Name:       clericName,
 				BeadID:     evidence.RecoveryBeadID,
@@ -1412,7 +1414,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				Tower:      towerName,
 				InstanceID: localInstanceID,
 				LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", clericName+".log"),
-			}, beadDispatchPhase("", recoveryBead.Type))
+			}, clericDispatchPhase())
 			if spawnErr != nil {
 				log.Printf("[steward] hooked sweep: dispatch cleric %s: %s", clericName, spawnErr)
 			} else if handle != nil {
@@ -1608,6 +1610,23 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 // changes to "which phase does a resume use" stay in one place.
 func hookedResumePhase(beadType string) string {
 	return beadDispatchPhase("", beadType)
+}
+
+// clericDispatchPhase returns the FormulaPhase the steward stamps on a
+// cleric dispatch intent. Cleric dispatch is bead-level (the cleric
+// runs the recovery bead's formula end-to-end inside a wizard-shaped
+// pod), so the operator must route it through the bead-level pod
+// builder — the same routing wizards use.
+//
+// The recovery bead's type ("recovery") is NOT a bead-level phase per
+// intent.IsBeadLevelPhase, so stamping the bead type would emit
+// formula_phase=recovery — an unsupported value the operator drops.
+// Returning intent.PhaseWizard makes the operator route to a wizard
+// pod that walks the recovery formula. Isolating the choice here
+// gives a single point to update when the cluster intent contract
+// gains a dedicated cleric role/phase pair.
+func clericDispatchPhase() string {
+	return intent.PhaseWizard
 }
 
 // FailureEvidence holds the IDs of recovery and alert beads linked to a hooked parent

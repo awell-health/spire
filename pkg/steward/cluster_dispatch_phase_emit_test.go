@@ -236,26 +236,31 @@ func TestDispatchPhase_ZeroValueDefaultsToSpawn(t *testing.T) {
 	}
 }
 
-func TestDispatchPhase_ClusterNativeWithoutConfigFallsBackToSpawn(t *testing.T) {
-	// Safety valve: if the tower is cluster-native but ClusterDispatch
-	// isn't wired (e.g. factory returned nil mid-cycle), fall back to
-	// backend.Spawn with a log line rather than silently dropping the
-	// work. The observable behavior for callers is "handle non-nil,
-	// backend.Spawn called".
+func TestDispatchPhase_ClusterNativeWithoutConfig_FailsClosed(t *testing.T) {
+	// Cluster-native must never fall back to backend.Spawn when the
+	// intent seam is unwired — the fallback would let a misconfigured
+	// cluster mode silently spawn a local pod and bypass the operator.
+	// Instead dispatchPhase fails closed with
+	// ErrClusterDispatchUnavailable so callers/log readers can detect
+	// the seam gap.
 	backend := &phaseSpyBackend{}
 	pd := PhaseDispatch{Mode: config.DeploymentModeClusterNative, ClusterDispatch: nil}
 	handle, err := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 		Name:   "x",
 		BeadID: "spi-x",
 	}, intent.PhaseReview)
-	if err != nil {
-		t.Fatalf("dispatchPhase: %v", err)
+	if err == nil {
+		t.Fatalf("dispatchPhase: expected error, got nil")
 	}
-	if handle == nil {
-		t.Errorf("handle = nil, want non-nil (fallback should spawn)")
+	if !errors.Is(err, ErrClusterDispatchUnavailable) {
+		t.Errorf("err = %v, want wrapping ErrClusterDispatchUnavailable", err)
 	}
-	if len(backend.spawns) != 1 {
-		t.Errorf("backend.Spawn called %d time(s), want 1 (fallback)", len(backend.spawns))
+	if handle != nil {
+		t.Errorf("handle = %v, want nil — fail-closed must not return a Handle", handle)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("backend.Spawn called %d time(s), want 0 — cluster-native must never fall back to Spawn",
+			len(backend.spawns))
 	}
 }
 
@@ -286,5 +291,98 @@ func TestHookedResumePhase_ReturnsBeadLevel(t *testing.T) {
 			t.Errorf("hookedResumePhase(%q) = %q, which is not a bead-level phase — operator would misroute",
 				tc.beadType, got)
 		}
+	}
+}
+
+// TestClericDispatchPhase_IsBeadLevelAndNotRecovery pins the cleric
+// dispatch contract: the steward MUST emit a bead-level FormulaPhase
+// the operator can route to a wizard-shaped pod, and MUST NOT stamp the
+// recovery bead's type ("recovery") which would be unsupported.
+func TestClericDispatchPhase_IsBeadLevelAndNotRecovery(t *testing.T) {
+	got := clericDispatchPhase()
+	if got == "recovery" {
+		t.Fatalf("clericDispatchPhase() = %q, must not emit unsupported formula_phase=recovery", got)
+	}
+	if !intent.IsBeadLevelPhase(got) {
+		t.Errorf("clericDispatchPhase() = %q, not a bead-level phase — operator would drop the intent", got)
+	}
+}
+
+// TestDispatchPhase_ClusterNativeReviewUsesSupportedRolePhase pins the
+// review-ready dispatch path's contract: cluster-native review must
+// emit FormulaPhase=intent.PhaseReview (a review-level phase the
+// operator routes to a sage pod), with no backend.Spawn invocation.
+func TestDispatchPhase_ClusterNativeReviewUsesSupportedRolePhase(t *testing.T) {
+	withStubbedNextDispatchSeq(t, 11)
+	pub := &phaseTrackingPublisher{}
+	backend := &phaseSpyBackend{}
+
+	pd := PhaseDispatch{
+		Mode: config.DeploymentModeClusterNative,
+		ClusterDispatch: &ClusterDispatchConfig{
+			Resolver:  fakeResolver{},
+			Publisher: pub,
+		},
+	}
+	sc := agent.SpawnConfig{
+		Name:   "reviewer-spi-rev",
+		BeadID: "spi-rev",
+		Role:   agent.RoleSage,
+	}
+	if _, err := dispatchPhase(context.Background(), pd, backend, sc, intent.PhaseReview); err != nil {
+		t.Fatalf("dispatchPhase: %v", err)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("backend.Spawn called %d time(s), want 0 — cluster-native review must not spawn", len(backend.spawns))
+	}
+	if len(pub.published) != 1 {
+		t.Fatalf("published intents = %d, want 1", len(pub.published))
+	}
+	if pub.published[0].FormulaPhase != intent.PhaseReview {
+		t.Errorf("FormulaPhase = %q, want %q", pub.published[0].FormulaPhase, intent.PhaseReview)
+	}
+	if !intent.IsReviewLevelPhase(pub.published[0].FormulaPhase) {
+		t.Errorf("FormulaPhase = %q is not review-level — operator would misroute", pub.published[0].FormulaPhase)
+	}
+}
+
+// TestDispatchPhase_ClusterNativeClericUsesSupportedRolePhase pins the
+// hooked-recovery cleric dispatch path: it must emit a bead-level
+// FormulaPhase (NOT "recovery"), with no backend.Spawn invocation.
+func TestDispatchPhase_ClusterNativeClericUsesSupportedRolePhase(t *testing.T) {
+	withStubbedNextDispatchSeq(t, 13)
+	pub := &phaseTrackingPublisher{}
+	backend := &phaseSpyBackend{}
+
+	pd := PhaseDispatch{
+		Mode: config.DeploymentModeClusterNative,
+		ClusterDispatch: &ClusterDispatchConfig{
+			Resolver:  fakeResolver{},
+			Publisher: pub,
+		},
+	}
+	sc := agent.SpawnConfig{
+		Name:   "cleric-spi-recovery",
+		BeadID: "spi-recovery",
+		Role:   agent.RoleExecutor,
+	}
+	if _, err := dispatchPhase(context.Background(), pd, backend, sc, clericDispatchPhase()); err != nil {
+		t.Fatalf("dispatchPhase: %v", err)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("backend.Spawn called %d time(s), want 0 — cluster-native cleric must not spawn", len(backend.spawns))
+	}
+	if len(pub.published) != 1 {
+		t.Fatalf("published intents = %d, want 1", len(pub.published))
+	}
+	got := pub.published[0]
+	if got.FormulaPhase == "recovery" {
+		t.Errorf("FormulaPhase = %q, must not emit unsupported formula_phase=recovery", got.FormulaPhase)
+	}
+	if !intent.IsBeadLevelPhase(got.FormulaPhase) {
+		t.Errorf("FormulaPhase = %q is not bead-level — operator would misroute cleric", got.FormulaPhase)
+	}
+	if got.TaskID != "spi-recovery" {
+		t.Errorf("TaskID = %q, want spi-recovery", got.TaskID)
 	}
 }

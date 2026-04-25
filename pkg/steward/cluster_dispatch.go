@@ -15,7 +15,9 @@ package steward
 //     into pods. The dispatchPhase seam's local-native branch DOES call
 //     backend.Spawn — that is the shared mode-aware entry point for
 //     per-phase dispatch and the Spawn call only runs when Mode is not
-//     cluster-native.
+//     cluster-native. When Mode is cluster-native and the seam is
+//     unwired, dispatchPhase fails closed with
+//     ErrClusterDispatchUnavailable rather than falling back to Spawn.
 //   - Bead-level dispatch MUST go through dispatch.ClaimThenEmit. The
 //     attempt bead row created by the claim is the canonical ownership
 //     seam — the in-process busy map and per-bead mutex are explicitly
@@ -45,6 +47,15 @@ import (
 
 	"github.com/steveyegge/beads"
 )
+
+// ErrClusterDispatchUnavailable is the sentinel returned when a
+// cluster-native dispatch path is reached but the cluster intent seam
+// (ClusterDispatch on PhaseDispatch) is unwired. Callers and tests use
+// errors.Is(err, ErrClusterDispatchUnavailable) to distinguish this
+// fail-closed condition from other dispatch errors. There is no
+// backend.Spawn fallback in cluster-native mode by design — the
+// convergence is mechanical.
+var ErrClusterDispatchUnavailable = errors.New("cluster dispatch seam unavailable")
 
 // ClusterDispatchConfig bundles the three cluster-native seams the
 // steward consumes when EffectiveDeploymentMode is cluster-native:
@@ -313,9 +324,10 @@ type PhaseDispatch struct {
 	Mode config.DeploymentMode
 
 	// ClusterDispatch carries the cluster-native seams used when Mode is
-	// cluster-native. Nil disables the cluster-native branch and
-	// dispatchPhase falls back to backend.Spawn even in cluster-native
-	// mode (with a log line so the gap is visible).
+	// cluster-native. Nil makes dispatchPhase fail closed with
+	// ErrClusterDispatchUnavailable rather than silently falling back to
+	// backend.Spawn — the cluster path must never reach backend.Spawn,
+	// even on misconfiguration.
 	ClusterDispatch *ClusterDispatchConfig
 }
 
@@ -327,7 +339,9 @@ type PhaseDispatch struct {
 //     dispatchPhaseClusterNative; the operator reconciles it into the
 //     correct pod shape (sage for review, apprentice for implement/fix,
 //     wizard for bead-level). Returns a nil Handle because no local
-//     process is created.
+//     process is created. If ClusterDispatch is nil the call fails
+//     closed with ErrClusterDispatchUnavailable; backend.Spawn is
+//     unreachable from this branch by design.
 //   - local-native (and zero value): forwards to backend.Spawn with the
 //     provided SpawnConfig, preserving historical behavior.
 //
@@ -339,8 +353,8 @@ type PhaseDispatch struct {
 func dispatchPhase(ctx context.Context, pd PhaseDispatch, backend agent.Backend, sc agent.SpawnConfig, phase string) (agent.Handle, error) {
 	if pd.Mode == config.DeploymentModeClusterNative {
 		if pd.ClusterDispatch == nil {
-			log.Printf("[steward] cluster-native phase dispatch: ClusterDispatch unset for %s (%s) — falling back to backend.Spawn", sc.BeadID, phase)
-			return backend.Spawn(sc)
+			return nil, fmt.Errorf("steward: cluster dispatch seam unavailable for %s (phase %q): %w",
+				sc.BeadID, phase, ErrClusterDispatchUnavailable)
 		}
 		if err := dispatchPhaseClusterNative(ctx, pd.ClusterDispatch, sc.BeadID, phase); err != nil {
 			return nil, err
