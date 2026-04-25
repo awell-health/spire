@@ -8,9 +8,14 @@ package steward
 //     cfg.Instances. Cluster repo identity comes only from
 //     identity.ClusterIdentityResolver, backed by the shared tower repo
 //     registry.
-//   - It MUST NOT call backend.Spawn. Cluster-native scheduling does not
-//     create pods; it emits intent.WorkloadIntent values and the operator
-//     reconciles them into pods.
+//   - The cluster-native code paths in this file (dispatchClusterNative,
+//     dispatchPhaseClusterNative) MUST NOT call backend.Spawn.
+//     Cluster-native scheduling does not create pods; it emits
+//     intent.WorkloadIntent values and the operator reconciles them
+//     into pods. The dispatchPhase seam's local-native branch DOES call
+//     backend.Spawn — that is the shared mode-aware entry point for
+//     per-phase dispatch and the Spawn call only runs when Mode is not
+//     cluster-native.
 //   - Bead-level dispatch MUST go through dispatch.ClaimThenEmit. The
 //     attempt bead row created by the claim is the canonical ownership
 //     seam — the in-process busy map and per-bead mutex are explicitly

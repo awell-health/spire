@@ -1236,6 +1236,79 @@ func TestSweepHookedSteps_HumanApprove_LabelsCleared_Resolves(t *testing.T) {
 	}
 }
 
+// TestSweepHookedSteps_ClusterNative_EmitsIntentInsteadOfSpawn pins the
+// spi-agmsk5 fix: when the tower's deployment mode is cluster-native,
+// the hooked-sweep resume must emit a WorkloadIntent for the operator
+// to reconcile and must NOT call backend.Spawn. The graph-state +
+// bead-status setup mirrors the local-native HumanApprove_LabelsCleared
+// case so the two tests pin the same scenario across both modes.
+func TestSweepHookedSteps_ClusterNative_EmitsIntentInsteadOfSpawn(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	gs := map[string]interface{}{
+		"bead_id": "spi-cluster1",
+		"steps": map[string]interface{}{
+			"approve": map[string]interface{}{
+				"status":  "hooked",
+				"outputs": map[string]string{},
+			},
+		},
+	}
+	writeGraphState(t, cfgDir, "wizard-cluster1", gs)
+
+	origGetBead := GetBeadFunc
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		if id == "spi-cluster1" {
+			return store.Bead{
+				ID:     "spi-cluster1",
+				Type:   "task",
+				Status: "in_progress",
+				Labels: []string{},
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	defer func() { GetBeadFunc = origGetBead }()
+
+	withStubbedNextDispatchSeq(t, 11)
+
+	backend := &spawnTrackingBackend{}
+	pub := &phaseTrackingPublisher{}
+	pd := PhaseDispatch{
+		Mode: config.DeploymentModeClusterNative,
+		ClusterDispatch: &ClusterDispatchConfig{
+			Resolver:  fakeResolver{},
+			Publisher: pub,
+		},
+	}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, pd)
+
+	if count != 1 {
+		t.Fatalf("SweepHookedSteps = %d, want 1", count)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("backend.Spawn called %d time(s), want 0 — cluster-native must emit intent, not spawn", len(backend.spawns))
+	}
+	if len(pub.published) != 1 {
+		t.Fatalf("published intents = %d, want 1", len(pub.published))
+	}
+	got := pub.published[0]
+	if got.TaskID != "spi-cluster1" {
+		t.Errorf("TaskID = %q, want spi-cluster1", got.TaskID)
+	}
+	if got.DispatchSeq != 11 {
+		t.Errorf("DispatchSeq = %d, want 11 (stubbed)", got.DispatchSeq)
+	}
+	// A hooked-sweep resume re-dispatches the whole bead, so the phase
+	// is bead-level. For a task, that's "task".
+	if got.FormulaPhase != "task" {
+		t.Errorf("FormulaPhase = %q, want %q (bead-level resume)", got.FormulaPhase, "task")
+	}
+}
+
 // --- ReviewBeadVerdict tests ---
 
 func TestReviewBeadVerdict_FromMetadata(t *testing.T) {
