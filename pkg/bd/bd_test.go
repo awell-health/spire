@@ -310,9 +310,9 @@ func TestUpdateArgs(t *testing.T) {
 
 // TestMolPourArgs verifies molecule args building.
 func TestMolPourArgs(t *testing.T) {
-	got := buildMolArgs("pour", "spire-agent-work", map[string]string{"task": "spi-001"})
+	got := buildMolArgs("pour", "task-default", map[string]string{"task": "spi-001"})
 	// vars order from map is nondeterministic, but with one var it's fine
-	want := []string{"mol", "pour", "spire-agent-work", "--var", "task=spi-001"}
+	want := []string{"mol", "pour", "task-default", "--var", "task=spi-001"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("args = %v, want %v", got, want)
 	}

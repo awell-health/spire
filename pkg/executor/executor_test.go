@@ -46,7 +46,7 @@ func TestSaveAndLoadState(t *testing.T) {
 	state := &State{
 		BeadID:    "spi-xyz",
 		AgentName: "wizard-spi-xyz",
-		Formula:   "spire-agent-work",
+		Formula:   "task-default",
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 

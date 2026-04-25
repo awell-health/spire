@@ -79,18 +79,6 @@ func TestResolveV3_ExplicitFormula(t *testing.T) {
 	}
 }
 
-func TestResolveV3_LegacyNameTranslation(t *testing.T) {
-	// Legacy v2 formula name should resolve via legacyV2NameMap to task-default.
-	bead := BeadInfo{ID: "spi-test", Type: "task", Labels: []string{"formula:spire-agent-work"}}
-	g, err := ResolveV3(bead)
-	if err != nil {
-		t.Fatalf("ResolveV3: %v", err)
-	}
-	if g.Name != "task-default" {
-		t.Errorf("expected task-default, got %s", g.Name)
-	}
-}
-
 func TestResolveV3_ByType(t *testing.T) {
 	tests := []struct {
 		beadType     string

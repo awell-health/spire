@@ -174,28 +174,28 @@ Formulas determine the phase pipeline a wizard follows. The mapping is automatic
 
 | Bead type | Formula | Phases |
 |-----------|---------|--------|
-| `task`, `feature`, `chore` | `spire-agent-work` | plan → implement → review → merge |
-| `bug` | `spire-bugfix` | plan → implement → review → merge |
-| `epic` | `spire-epic` | design → plan → implement → review → merge |
+| `task`, `feature`, `chore` | `task-default` | plan → implement → review → merge |
+| `bug` | `bug-default` | plan → implement → review → merge |
+| `epic` | `epic-default` | design → plan → implement → review → merge |
 
 **Override per-repo** (affects all beads in this repo unless the bead has a label):
 
 ```yaml
 agent:
-  formula: spire-bugfix    # use bugfix formula for everything
+  formula: bug-default    # use bug formula for everything
 ```
 
 **Override per-bead** (highest priority):
 
 ```bash
-bd label add spi-abc "formula:spire-bugfix"
+bd label add spi-abc "formula:bug-default"
 ```
 
 **Custom formulas:** Place `.toml` files in `.beads/formulas/` to override or extend built-in formulas:
 
 ```
-.beads/formulas/spire-agent-work.formula.toml   # override default
-.beads/formulas/my-custom.formula.toml          # add new formula
+.beads/formulas/task-default.formula.toml   # override default
+.beads/formulas/my-custom.formula.toml      # add new formula
 ```
 
 Formula files use TOML:
@@ -230,7 +230,7 @@ strategy = "squash"
 auto = true
 ```
 
-A phase that isn't declared doesn't exist in the formula. A custom `spire-agent-work` that only has `[phases.implement]` skips review and merge entirely.
+A phase that isn't declared doesn't exist in the formula. A custom `task-default` that only has `[phases.implement]` skips review and merge entirely.
 
 ---
 

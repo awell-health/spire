@@ -81,7 +81,7 @@ behind the v3 execution model.
 | `ParseFormulaAny` | Parses v3 formula from TOML bytes. Returns `*FormulaStepGraph`. |
 | `LoadStepGraphByName` | Layered v3 resolution: on-disk override -> embedded default. |
 | `LoadEmbeddedStepGraph` | Load a v3 formula from embedded defaults compiled into the binary. |
-| `LoadReviewPhaseFormula` | Convenience loader for the embedded review-phase graph. |
+| `LoadReviewPhaseFormula` | Convenience loader for the embedded subgraph-review graph. |
 | **Resolution** | |
 | `ResolveAny` | Default resolution path -- v3 only. Returns `*FormulaStepGraph`. |
 | `ResolveV3` | Explicit v3 resolution for a bead. |

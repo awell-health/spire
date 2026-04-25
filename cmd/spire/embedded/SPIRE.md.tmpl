@@ -28,9 +28,9 @@ Every bead type maps to a formula that defines the phase pipeline:
 
 | Bead type | Formula | Phases |
 |-----------|---------|--------|
-| epic | `spire-epic` | design → plan → implement (waves) → review → merge |
-| bug | `spire-bugfix` | implement → review → merge |
-| task, feature, chore | `spire-agent-work` | implement → review → merge |
+| epic | `epic-default` | design → plan → implement (waves) → review → merge |
+| bug | `bug-default` | implement → review → merge |
+| task, feature, chore | `task-default` | implement → review → merge |
 
 ## Design beads
 
@@ -73,9 +73,9 @@ wizard drives. These are the defaults — override them per-bead with a
 
 | Bead type | Default formula | Default phases |
 |-----------|----------------|----------------|
-| epic | `spire-epic` | design → plan → implement (waves) → review → merge |
-| bug | `spire-bugfix` | implement → review → merge |
-| task, feature, chore | `spire-agent-work` | implement → review → merge |
+| epic | `epic-default` | design → plan → implement (waves) → review → merge |
+| bug | `bug-default` | implement → review → merge |
+| task, feature, chore | `task-default` | implement → review → merge |
 | design | (none) | Not a work item. Close when settled, link via `discovered-from`. |
 
 Custom formulas can be created in the workshop (`spire workshop`).

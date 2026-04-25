@@ -1,6 +1,6 @@
 # Epic Formula Lifecycle
 
-The `spire-epic` formula drives an epic bead through five phases. The **wizard** (per-epic orchestrator) owns the lifecycle and dispatches specialized agents for each phase.
+The `epic-default` formula drives an epic bead through five phases. The **wizard** (per-epic orchestrator) owns the lifecycle and dispatches specialized agents for each phase.
 
 ```mermaid
 flowchart TD

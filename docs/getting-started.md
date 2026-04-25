@@ -190,7 +190,7 @@ change directly by merging to `branch.base`.
 You filed a bead → Wizard claimed it → Wizard planned + implemented it → Sage reviewed it → The executor merged it
 ```
 
-The wizard followed the `spire-agent-work` formula: plan → implement → review → merge. For more complex work, use epics with the `spire-epic` formula, which includes design validation, planning, wave dispatch, and sage review.
+The wizard followed the `task-default` formula: plan → implement → review → merge. For more complex work, use epics with the `epic-default` formula, which includes design validation, planning, wave dispatch, and sage review.
 
 ---
 

@@ -85,7 +85,7 @@ func cmdGrok(args []string) error {
 
 	// Workflow progress
 	if progressOut != "" {
-		fmt.Println("--- Workflow (spire-agent-work) ---")
+		fmt.Printf("--- Workflow (%s) ---\n", resolveFormulaName(target))
 		fmt.Println(progressOut)
 		fmt.Println()
 	}

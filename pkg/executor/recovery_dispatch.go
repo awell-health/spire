@@ -21,9 +21,9 @@ const DefaultRecoveryBudget = 3
 // through the Diagnose→Decide→Dispatch cycle described in
 // pkg/executor/recovery_dispatch.go. Two conditions still skip it:
 //
-//  1. The recovery formulas themselves ("cleric-default", "recovery",
-//     "spire-recovery-v3"). Running recovery inside a recovery cycle would
-//     recurse — this guard is load-bearing.
+//  1. The recovery formulas themselves ("cleric-default", "recovery").
+//     Running recovery inside a recovery cycle would recurse — this guard
+//     is load-bearing.
 //  2. The SPIRE_DISABLE_INLINE_RECOVERY=1 kill-switch for ops rollback. Use
 //     this only to debug the legacy hook-and-escalate path; production
 //     should leave it unset.
@@ -36,7 +36,7 @@ const DefaultRecoveryBudget = 3
 func (e *Executor) recoveryDisabled() bool {
 	if e.graphState != nil {
 		switch e.graphState.Formula {
-		case "cleric-default", "recovery", "spire-recovery-v3":
+		case "cleric-default", "recovery":
 			return true
 		}
 	}

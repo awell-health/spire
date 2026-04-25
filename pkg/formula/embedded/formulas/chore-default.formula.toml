@@ -67,7 +67,7 @@ needs = ["research"]
 workspace = "feature"
 title = "Implement changes"
 
-# Step 3: Review via the review-phase sub-graph.
+# Step 3: Review via the subgraph-review sub-graph.
 [steps.review]
 kind = "call"
 action = "graph.run"

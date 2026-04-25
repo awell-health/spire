@@ -77,7 +77,7 @@ Does not own:
 The runtime uses a single graph-based model (`FormulaStepGraph`).
 
 ```toml
-name = "spire-epic-v3"
+name = "epic-default"
 version = 3
 entry = "design-check"
 
@@ -237,11 +237,11 @@ formula manually encode loop mechanics.
 
 ## Epic Example
 
-Below is a proposed `spire-epic-v3` shape. This is not intended to parse
+Below is a proposed `epic-default` shape. This is not intended to parse
 today; it is a target runtime contract.
 
 ```toml
-name = "spire-epic-v3"
+name = "epic-default"
 description = "Design-gated epic execution with declarative planning, wave implementation, staged review, and merge"
 version = 3
 entry = "design-check"

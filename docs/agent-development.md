@@ -41,9 +41,9 @@ resolve repo → claim bead → load formula
 
 The formula is selected in this order (first match wins):
 1. Label `formula:<name>` on the bead
-2. Bead type → formula mapping (`task`→`spire-agent-work`, `bug`→`spire-bugfix`, `epic`→`spire-epic`)
+2. Bead type → formula mapping (`task`→`task-default`, `bug`→`bug-default`, `epic`→`epic-default`)
 3. `agent.formula` field in `spire.yaml`
-4. Default: `spire-agent-work`
+4. Default: `task-default`
 
 ### Writing a custom formula
 

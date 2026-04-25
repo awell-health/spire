@@ -771,7 +771,7 @@ func TestSoftResetV3_RewindsStepsAndPreservesUpstream(t *testing.T) {
 	gs := &executor.GraphState{
 		BeadID:    epicID,
 		AgentName: wizardName,
-		Formula:   "spire-agent-work",
+		Formula:   "task-default",
 		Steps: map[string]executor.StepState{
 			"plan":      {Status: "completed", CompletedCount: 1, StartedAt: "2026-01-01T00:00:00Z", CompletedAt: "2026-01-01T00:01:00Z", Outputs: map[string]string{"result": "ok"}},
 			"implement": {Status: "completed", CompletedCount: 1, StartedAt: "2026-01-01T00:01:00Z", CompletedAt: "2026-01-01T00:02:00Z", Outputs: map[string]string{"branch": "feat/test"}},

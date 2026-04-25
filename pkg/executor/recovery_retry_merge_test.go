@@ -192,7 +192,7 @@ func TestRecoveryDisabled_OldEnvVarIgnored(t *testing.T) {
 func TestRecoveryDisabled_RecursionGuard(t *testing.T) {
 	t.Setenv("SPIRE_DISABLE_INLINE_RECOVERY", "")
 
-	for _, formula := range []string{"cleric-default", "recovery", "spire-recovery-v3"} {
+	for _, formula := range []string{"cleric-default", "recovery"} {
 		t.Run(formula, func(t *testing.T) {
 			e := &Executor{
 				graphState: &GraphState{Formula: formula},

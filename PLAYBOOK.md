@@ -16,7 +16,7 @@ CLAUDE.md tells you the rules. This file tells you the exact commands.
 | **Artificer** | Formula creator | Workshop CLI (not yet built) | Crafts and tests formulas (spells). Does NOT orchestrate epics or review code |
 | **Familiar** | Per-agent companion | daemon (local) / container (k8s) | Messaging infrastructure, inbox file delivery |
 
-A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration. A bug gets `spire-bugfix` (implement → review → merge). An epic gets `spire-epic` (plan → wave dispatch → review with judgment → merge). Same executor, different formula.
+A wizard is summoned to support a bead. The **formula** (derived from bead type) determines the orchestration. A bug gets `bug-default` (implement → review → merge). An epic gets `epic-default` (plan → wave dispatch → review with judgment → merge). Same executor, different formula.
 
 ## bd CLI quick reference
 
@@ -91,10 +91,10 @@ bd dep tree spi-abc                 # show dependency tree
 
 ```bash
 bd formula list                     # list available formulas
-bd formula show spire-agent-work    # show formula details
+bd formula show task-default        # show formula details
 
-bd cook spire-agent-work --persist  # cook formula into proto (idempotent)
-bd mol pour spire-agent-work --var task=spi-abc --json  # instantiate molecule
+bd cook task-default --persist      # cook formula into proto (idempotent)
+bd mol pour task-default --var task=spi-abc --json  # instantiate molecule
 bd mol progress spi-mol-xyz         # show (N/M) progress
 bd mol show spi-mol-xyz             # show molecule structure
 bd mol current spi-mol-xyz          # show current position in workflow
@@ -165,18 +165,18 @@ spire dismiss --all                     # dismiss all agents
 ### Formulas
 
 ```
-.beads/formulas/spire-agent-work.formula.toml   # default: design → implement → review → merge
-.beads/formulas/spire-bugfix.formula.toml        # quick: implement → review → merge
-.beads/formulas/spire-epic.formula.toml          # epic: plan → wave implement → review (judgment) → merge
+.beads/formulas/task-default.formula.toml   # default: design → implement → review → merge
+.beads/formulas/bug-default.formula.toml    # quick: implement → review → merge
+.beads/formulas/epic-default.formula.toml   # epic: plan → wave implement → review (judgment) → merge
 ```
 
 Formula resolution (automatic):
 1. Bead label `formula:<name>` — explicit override
-2. Bead type → formula: task→spire-agent-work, bug→spire-bugfix, epic→spire-epic
+2. Bead type → formula: task→task-default, bug→bug-default, epic→epic-default
 3. spire.yaml `agent.formula` field
-4. Default: spire-agent-work
+4. Default: task-default
 
-Override per-bead: `bd label add spi-abc "formula:spire-bugfix"`
+Override per-bead: `bd label add spi-abc "formula:bug-default"`
 
 ## Common gotchas
 
@@ -200,7 +200,7 @@ These commands require subcommands — bare invocations don't do what you'd expe
 | `bd comment spi-abc "text"` | `bd comments add spi-abc "text"` |
 | `bd label spi-abc "label"` | `bd label add spi-abc "label"` |
 | `bd dep spi-a spi-b` | `bd dep add spi-a spi-b` |
-| `bd mol pour spire-agent-work` | `bd mol pour spire-agent-work --var task=spi-abc` |
+| `bd mol pour task-default` | `bd mol pour task-default --var task=spi-abc` |
 
 ### --json everywhere
 
@@ -360,7 +360,7 @@ Empty columns collapse automatically.
 ### Formula v2 configures phases
 
 ```toml
-formula = "spire-agent-work"
+formula = "task-default"
 
 [phases.design]
 timeout = "10m"
@@ -408,7 +408,7 @@ At `max_rounds` (from formula revision policy), the arbiter role is activated. A
 
 ### Wave-based execution
 
-When an epic has subtasks with dependencies, the executor (using `spire-epic` formula with `dispatch = "wave"`) dispatches apprentices in waves:
+When an epic has subtasks with dependencies, the executor (using `epic-default` formula with `dispatch = "wave"`) dispatches apprentices in waves:
 
 ```
 Wave 0 (parallel):  spi-zpp.1    spi-zpp.2     ← no deps, start immediately
@@ -472,7 +472,7 @@ Individual subtasks don't need phase labels — they're implementation units, no
 
 ## Lifecycle reference (worked example: spi-zpp)
 
-This is the full cycle that produced the phase pipeline itself — dogfooding the process. This predates the formula executor; the phases are the same but the execution was manual. With the executor, `spire summon 1 --targets=spi-zpp` would run the same lifecycle automatically via the `spire-epic` formula.
+This is the full cycle that produced the phase pipeline itself — dogfooding the process. This predates the formula executor; the phases are the same but the execution was manual. With the executor, `spire summon 1 --targets=spi-zpp` would run the same lifecycle automatically via the `epic-default` formula.
 
 ### Design (interactive)
 - Human + agent explored the problem space in conversation

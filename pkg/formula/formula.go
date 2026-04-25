@@ -240,46 +240,20 @@ type BeadInfo struct {
 // Injected by cmd/spire to bridge repoconfig + wizard logic.
 var RepoFormulaNameFunc func(beadID string) string
 
-// legacyV2NameMap translates v2 formula names to their v3 equivalents.
-// Used when a bead label or repo config references a v2 name.
-var legacyV2NameMap = map[string]string{
-	// v2 names
-	"spire-agent-work": "task-default",
-	"spire-bugfix":     "bug-default",
-	"spire-epic":       "epic-default",
-	// v3 names (backward compat for existing bead labels)
-	"spire-agent-work-v3":  "task-default",
-	"spire-bugfix-v3":      "bug-default",
-	"spire-epic-v3":        "epic-default",
-	"spire-recovery-v3":    "cleric-default",
-	"review-phase":         "subgraph-review",
-	"epic-implement-phase": "subgraph-implement",
-}
-
-// translateLegacyName returns the v3 equivalent if name is a known v2 formula,
-// otherwise returns name unchanged.
-func translateLegacyName(name string) string {
-	if v3, ok := legacyV2NameMap[name]; ok {
-		return v3
-	}
-	return name
-}
-
 // ResolveV3Name returns the v3 formula name for a bead without loading it.
 // Resolution order: formula:<name> label > repo config > bead type map > fallback.
-// Legacy v2 names (e.g. "spire-bugfix") are translated to v3 equivalents.
 func ResolveV3Name(bead BeadInfo) string {
 	// 1. Check bead labels for formula:<name> (explicit override)
 	for _, l := range bead.Labels {
 		if strings.HasPrefix(l, "formula:") {
-			return translateLegacyName(l[len("formula:"):])
+			return l[len("formula:"):]
 		}
 	}
 
 	// 2. Check repo-level formula via callback
 	if RepoFormulaNameFunc != nil {
 		if name := RepoFormulaNameFunc(bead.ID); name != "" {
-			return translateLegacyName(name)
+			return name
 		}
 	}
 

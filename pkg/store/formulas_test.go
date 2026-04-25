@@ -16,14 +16,14 @@ func TestGetTowerFormula_Found(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectQuery(`SELECT content FROM formulas WHERE name = \?`).
-		WithArgs("spire-agent-work").
-		WillReturnRows(sqlmock.NewRows([]string{"content"}).AddRow("[formula]\nname = \"spire-agent-work\""))
+		WithArgs("task-default").
+		WillReturnRows(sqlmock.NewRows([]string{"content"}).AddRow("[formula]\nname = \"task-default\""))
 
-	content, err := GetTowerFormula(db, "spire-agent-work")
+	content, err := GetTowerFormula(db, "task-default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if content != "[formula]\nname = \"spire-agent-work\"" {
+	if content != "[formula]\nname = \"task-default\"" {
 		t.Errorf("got content %q", content)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

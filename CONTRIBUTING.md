@@ -55,7 +55,7 @@ spire/
       specs/          Design specs for new features
       plans/          Implementation plans
   .beads/
-    formulas/         Workflow templates (spire-agent-work)
+    formulas/         Workflow templates (task-default)
     routes.jsonl      Multi-repo routing config
   cursor/             Cursor IDE rules
   setup.sh            Hub + satellite setup

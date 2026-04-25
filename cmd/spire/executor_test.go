@@ -37,7 +37,7 @@ func TestCmdExecuteSkipsClaimWhenResuming(t *testing.T) {
 	// Write a graph_state.json file for this agent so LoadGraphState returns non-nil.
 	gsPath := graphStatePath(agentName)
 	os.MkdirAll(gsPath[:len(gsPath)-len("/graph_state.json")], 0755)
-	data := fmt.Sprintf(`{"bead_id":"spi-resume-test","agent_name":"%s","formula":"spire-agent-work","active_step":"implement","steps":{},"started_at":"%s"}`,
+	data := fmt.Sprintf(`{"bead_id":"spi-resume-test","agent_name":"%s","formula":"task-default","active_step":"implement","steps":{},"started_at":"%s"}`,
 		agentName, time.Now().UTC().Format(time.RFC3339))
 	os.WriteFile(gsPath, []byte(data), 0644)
 

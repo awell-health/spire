@@ -71,10 +71,10 @@ dependency graph.
 
 ### 2. Review DAG (spi-0ky8g)
 
-Declarative review formula (review-phase.formula.toml) with terminal step
+Declarative review formula (subgraph-review.formula.toml) with terminal step
 enforcement. Every review path ends with branch merged or deleted.
 
-**Files:** terminal_steps.go (new), review-phase.formula.toml, wizard_review.go
+**Files:** terminal_steps.go (new), subgraph-review.formula.toml, wizard_review.go
 
 ### 3. Board interactivity (spi-1syd)
 
