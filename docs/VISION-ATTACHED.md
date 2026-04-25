@@ -33,9 +33,11 @@ Attached mode composes existing contracts. It must not perturb any of them:
 - **Runtime contract** — `RepoIdentity`, `WorkspaceHandle`, `HandoffMode`, and `RunContext` hold identically across local process, cluster-native, and attached deployments.
 - **Repo-identity ownership** — cluster-side identity resolution stays in the cluster's own resolver. Attached mode ships minimal identity (URL, base branch, prefix) in the intent payload.
 - **Attempt-bead ownership** — the attempt bead remains the canonical ownership seam. Attached mode does not introduce parallel ownership through pod names, CR UIDs, or remote-side identifiers.
+- **Operator-owned dispatch on the remote side** — attached mode reuses the cluster-native dispatch invariant: the remote operator materializes pods from intents, and no path on the remote side calls `pkg/agent.Spawner.Spawn` for child workloads. The control-plane half on the laptop publishes intents and reads outcomes; it does not spawn into the cluster. See [VISION-CLUSTER.md → Operator-owned dispatch](VISION-CLUSTER.md#operator-owned-dispatch-cluster-native-invariant).
+- **Shared-state ownership for review feedback** — attached mode looks up review-feedback owners through the same shared-state surface that cluster-native uses (attempt-bead linkage, typed review outcomes). The local wizard registry is local-native bookkeeping and does not span the seam.
 - **Orthogonality** — attached mode is orthogonal to backend (process/docker/k8s) and transport (syncer/remotesapi/DoltHub). A future implementation must not conflate "my deployment mode is attached" with "my backend is k8s" or "my transport is remotesapi."
 
-These invariants are enforced today by reflection-based tests that guard the intent shape against smuggled machine-local state.
+These invariants are enforced today by reflection-based tests that guard the intent shape against smuggled machine-local state, and by the static AST invariant in [`pkg/executor/cluster_dispatch_invariant_test.go`](../pkg/executor/cluster_dispatch_invariant_test.go) that pins the "no direct `Spawner.Spawn` in cluster-native dispatch paths" boundary attached mode inherits.
 
 ## Why keep it reserved
 

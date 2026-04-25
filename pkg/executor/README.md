@@ -54,8 +54,47 @@ If you find yourself adding prompt text, Claude CLI flags, timeout policy, or co
 
 ## Relationship To Steward And Workshop
 
-- **Steward** is above the executor. It ensures the tower has enough wizard capacity, summons and resets workers, and routes work to ready beads. The steward branches on `pkg/config.DeploymentMode` at its dispatch entry — see [docs/ARCHITECTURE.md → Deployment modes](../../docs/ARCHITECTURE.md#deployment-modes) and [pkg/steward/README.md → Deployment-mode dispatch](../steward/README.md#deployment-mode-dispatch). The executor is unaware of mode; it runs the same formula graph regardless of how the steward chose to dispatch the bead.
+- **Steward** is above the executor. It ensures the tower has enough wizard capacity, summons and resets workers, and routes work to ready beads. The steward branches on `pkg/config.DeploymentMode` at its dispatch entry — see [docs/ARCHITECTURE.md → Deployment modes](../../docs/ARCHITECTURE.md#deployment-modes) and [pkg/steward/README.md → Deployment-mode dispatch](../steward/README.md#deployment-mode-dispatch). The executor uses the same `pkg/config.DeploymentMode` boundary at its child-dispatch sites: in `local-native`, it spawns child workers in-process via `pkg/agent.Spawner`; in `cluster-native`, it emits child intents through the operator seam. The shared formula graph and step-bead lifecycle are mode-agnostic.
 - **Workshop** is beside the executor. It defines and validates the formulas that the executor consumes, but it does not run those formulas on live beads. Workshop also defines the `FormulaStepGraph` structure (steps, workspaces, vars) that the executor consumes at runtime.
+
+## Child dispatch (mode-aware)
+
+The executor's child-dispatch entry points — implement (wave / sequential
+/ direct), review, review-fix, and cleric — are deployment-mode aware.
+
+- **Local-native** (`local-native`): the executor invokes
+  `pkg/agent.Spawner.Spawn` with a populated `SpawnConfig`. The spawner
+  starts an apprentice or sage subprocess (process / docker / k8s
+  backend) and returns a handle the executor waits on. This is the
+  reference path; every other mode is composed from the same dispatch
+  policy.
+- **Cluster-native** (`cluster-native`): the executor MUST NOT call
+  `Spawner.Spawn`. Each child-dispatch site emits a child intent
+  through the operator seam — the intent carries the `(role, phase,
+  runtime)` triple defined in
+  [docs/VISION-CLUSTER.md → The role / phase / runtime contract](../../docs/VISION-CLUSTER.md#the-role--phase--runtime-contract)
+  and the runtime contract types (`RepoIdentity`, `WorkspaceHandle`,
+  `HandoffMode`, `RunContext`). The operator materializes the child
+  pod; the parent wizard observes the bundle-signal close path
+  (`spi-e6m3p6`) the same way it does locally.
+
+The supported `(role, phase)` mappings emitted from this package are:
+
+| Dispatch site | Role | Phase | Notes |
+|---------------|------|-------|-------|
+| `dispatch.children` (wave / sequential / direct) | `apprentice` | `implement` | Bundle handoff to staging worktree. |
+| review-fix re-entry | `apprentice` | `fix` | Borrowed worktree on the wizard's PVC. |
+| sage review | `sage` | `review` | Diff review against staging. |
+| sage re-review (after fix) | `sage` | `review-fix` | Re-review of a fix bundle. |
+| cleric dispatch (recovery worker) | `apprentice` | `fix` | A repair worker is structurally an apprentice; bundle handoff. |
+
+Cluster-native dispatch fails closed when the operator seam is
+unavailable. There is no silent local fallback — the dispatch returns
+an error, the step is hooked or escalated, and a recovery bead can be
+filed against it. The static AST invariant in
+[`cluster_dispatch_invariant_test.go`](cluster_dispatch_invariant_test.go)
+rejects any new `Spawner.Spawn` call site that is reachable from a
+cluster-native dispatch path.
 
 ## Runtime contract types (normative)
 

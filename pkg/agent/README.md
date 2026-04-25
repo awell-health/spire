@@ -44,6 +44,37 @@ If a change is about *which* role should run, it does not belong here.
 If a change is about *how a backend must materialize the runtime surface for a
 spawned role*, it probably does.
 
+## Boundary: local-native (and attached) only
+
+`Spawner` is a **local-native** abstraction. It owns the in-process
+spawn surface — process / docker / k8s — that the steward, executor,
+and wizard use to materialize child workers when the tower runs in
+`local-native` mode. It is **not** the universal child-dispatch
+entry point.
+
+In `cluster-native` mode the operator owns child-pod dispatch. Code
+paths reachable from cluster-native scheduling MUST NOT call
+`Spawner.Spawn` or `backend.Spawn`; they emit child intents through
+the operator seam (`pkg/steward/intent.IntentPublisher`) and the
+operator's pod-builder validates the `(role, phase, runtime)` triple
+before materializing the pod. See:
+
+- [docs/VISION-CLUSTER.md → Operator-owned dispatch](../../docs/VISION-CLUSTER.md#operator-owned-dispatch-cluster-native-invariant)
+- [docs/ARCHITECTURE.md → Cluster-native child-dispatch contract](../../docs/ARCHITECTURE.md#cluster-native-child-dispatch-contract)
+- [pkg/steward/README.md → Cluster-native fail-closed posture](../steward/README.md#cluster-native-fail-closed-posture)
+
+Attached mode (today: reserved) reuses the cluster-native invariant on
+its remote execution surface. The local control-plane half publishes
+intents; it does not spawn into the remote cluster.
+
+This boundary is enforced by the static AST invariant in
+[`pkg/executor/cluster_dispatch_invariant_test.go`](../executor/cluster_dispatch_invariant_test.go)
+and by regression tests under `pkg/executor` and `pkg/steward` that
+wire a failing spawner into cluster-native dispatch entry points and
+fail any test that triggers a `Spawn` call. **No code change in
+this package is needed to maintain the invariant — it is a contract
+on the *callers*, not on `pkg/agent`.**
+
 ## Backend obligations (normative)
 
 This section is the normative reference for §2 ("Backend obligations") of

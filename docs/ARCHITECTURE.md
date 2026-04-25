@@ -16,11 +16,11 @@ The mode is deliberately orthogonal to **worker backend** (process /
 docker / k8s) and to **sync transport** (syncer / remotesapi / DoltHub) —
 see [Non-goals](#non-goals) below.
 
-| Mode | Wire value | What runs where |
-|------|------------|-----------------|
-| Local-native | `local-native` | Full control plane and workers on the archmage's machine. The steward spawns wizard subprocesses directly via `pkg/agent.Backend.Spawn`. The canonical default for new towers. |
-| Cluster-native | `cluster-native` | Steward runs in a pod, emits bead-level `pkg/steward/intent.WorkloadIntent` without pre-creating an attempt bead, and the operator reconciles those intents into wizard pods. The wizard pod later claims the bead and opens or resumes its own attempt. The archmage's machine is a client of the cluster control plane. |
-| Attached-reserved | `attached-reserved` | A local control plane targeting a remote cluster execution surface through the same `WorkloadIntent` seam. **Reserved — not implemented.** Selecting it is a declaration of intent; consumers return `attached.ErrAttachedNotImplemented`. See [docs/attached-mode.md](attached-mode.md) for the full reservation. |
+| Mode | Wire value | Child dispatch | What runs where |
+|------|------------|----------------|-----------------|
+| Local-native | `local-native` | In-process spawn via `pkg/agent.Backend.Spawn`. | Full control plane and workers on the archmage's machine. The steward, executor, and wizard each call `pkg/agent.Spawner.Spawn` for their own child workers (apprentice / sage / wizard / cleric). The canonical default for new towers. |
+| Cluster-native | `cluster-native` | Operator materializes pods from intents emitted by the steward / executor / wizard. **No code path calls `Spawner.Spawn`.** | Steward runs in a pod, emits bead-level `pkg/steward/intent.WorkloadIntent` without pre-creating an attempt bead, and the operator reconciles those intents into wizard pods. Per-phase intents (review, review-fix, hooked-step resume, cleric) are emitted through the same publisher seam. The archmage's machine is a client of the cluster control plane. |
+| Attached-reserved | `attached-reserved` | Operator-owned, per [VISION-ATTACHED.md](VISION-ATTACHED.md). | A local control plane targeting a remote cluster execution surface through the same `WorkloadIntent` seam. **Reserved — not implemented.** Selecting it is a declaration of intent; consumers return `attached.ErrAttachedNotImplemented`. See [docs/attached-mode.md](attached-mode.md) for the full reservation. |
 
 The shared work graph still flows over Dolt + DoltHub regardless of which
 mode is in effect: local-native pushes locally, cluster-native syncs via
@@ -44,6 +44,50 @@ transport selection dictates. Sync is not the mode switch.
                                   ▼
                            attempt bead opened/resumed
 ```
+
+### Cluster-native child-dispatch contract
+
+Cluster-native dispatch carries an explicit `(role, phase, runtime)`
+triple across the scheduler-to-reconciler seam. The operator's
+pod-builder validates the triple against an allowlist; an unrecognized
+combination is rejected at intent-consumption time rather than as an
+init-container failure inside the pod. The supported combinations are:
+
+| Role | Phase | Runtime | Pod shape |
+|------|-------|---------|-----------|
+| `apprentice` | `implement` | `worker` | Apprentice pod (`BuildApprenticePod`). Bundle handoff to the parent wizard. |
+| `apprentice` | `fix` | `worker` | Apprentice pod for review-feedback / review-fix re-entry. |
+| `sage` | `review` | `reviewer` | Sage pod (`BuildSagePod`). Diff review against staging. |
+| `sage` | `review-fix` | `reviewer` | Sage pod for re-review of a fix bundle. |
+| `cleric` | `<bead-type>` | `wizard` | Wizard-shaped pod that drives `cleric-default`. Phase MUST classify under `intent.IsBeadLevelPhase` — `recovery` is **not** a supported value. |
+| `wizard` | `<bead-type>` or `wizard` | `wizard` | Wizard pod (`BuildWizardPod`). Steward bead-level dispatch, hooked-step resume. |
+
+[VISION-CLUSTER.md → Operator-owned dispatch](VISION-CLUSTER.md#operator-owned-dispatch-cluster-native-invariant)
+is the source of truth for this contract; the table above is a
+summary. The fail-closed rule for missing seams (no silent local
+spawn) and the AST invariant guarding the boundary live there too.
+
+### Shared-state ownership for review feedback
+
+In cluster-native mode the steward does not consult the local wizard
+registry (`pkg/registry`, `~/.config/spire/wizards.json`) to find a
+remote wizard owner for review-feedback re-engagement. That registry
+is per-machine bookkeeping owned by `pkg/agent`'s process backend; it
+has no meaning across cluster replicas and would silently fragment
+ownership.
+
+Cluster-native control paths look up review-feedback owners through a
+shared-state surface that is durable across replicas:
+
+- the `implemented-by` / attempt-bead linkage on the work bead,
+- attempt-bead metadata (instance, agent name, started-at, last-seen),
+- the typed review outcome stamped on the review/sage step bead.
+
+This is the same shared-state surface the steward already uses for
+hooked-step recovery, stale-attempt detection, and `dispatched`-state
+concurrency accounting. There is no second ownership plane in
+cluster-native — see
+[`pkg/steward/README.md` → Cluster-native: the three seams](../pkg/steward/README.md#cluster-native-the-three-seams).
 
 ## Non-goals
 

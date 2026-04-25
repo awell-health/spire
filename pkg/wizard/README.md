@@ -75,10 +75,56 @@ Specifically:
 If a change is about which role runs, which workspace it uses, or
 which handoff mode applies, it belongs in `pkg/executor`, not here.
 
-The wizard is also unaware of the tower's `DeploymentMode` — local-native
-spawn vs cluster-native intent emission is a steward concern. See
-[docs/ARCHITECTURE.md → Deployment modes](../../docs/ARCHITECTURE.md#deployment-modes)
-and [pkg/steward/README.md → Deployment-mode dispatch](../steward/README.md#deployment-mode-dispatch).
+### Deployment-mode awareness at the review-fix seam
+
+A wizard subprocess does its own work without knowing the tower's
+`DeploymentMode`. The exception is the small set of call sites that
+re-enter the dispatch plane to spawn another child — most notably
+`wizard_review.go`'s review-fix re-entry. Those sites are
+mode-aware:
+
+- In `local-native`, review-fix re-entry spawns an apprentice through
+  `pkg/agent.Spawner.Spawn` like any other child.
+- In `cluster-native`, those call sites emit an intent (role
+  `apprentice`, phase `fix`) through the operator seam. They do not
+  call `Spawner.Spawn`. Wizard pods materialize apprentice and sage
+  pods only by way of intent emission — the operator is the dispatch
+  authority, not the wizard. See
+  [docs/VISION-CLUSTER.md → Operator-owned dispatch](../../docs/VISION-CLUSTER.md#operator-owned-dispatch-cluster-native-invariant).
+
+`wizard.Summon`-style helpers and other dispatch-time entry points
+are contract-only emit points in cluster-native paths: they assemble
+the runtime contract (`RepoIdentity`, `WorkspaceHandle`,
+`HandoffMode`, `RunContext`) and hand it to the publisher. The
+runtime portion of the wizard — prompt assembly, Claude invocation,
+validation, commit, result writing — is unchanged across modes.
+
+### Review-feedback ownership in cluster-native
+
+In cluster-native mode the wizard's local registry row is **not** the
+ownership surface for review-feedback re-engagement. The wizard's
+process registry (`~/.config/spire/wizards.json`, owned by
+`pkg/agent`) is per-machine bookkeeping; another steward replica on
+another machine cannot rely on it to find the wizard that produced
+the staging branch.
+
+Cluster-native review-feedback re-engagement instead reads from a
+shared-state surface that is durable across replicas — the
+`implemented-by` / attempt-bead linkage, attempt metadata, and the
+typed review outcome. The wizard rehydrates its identity from
+attempt-bead metadata + env (`SPIRE_BEAD_ID`, `SPIRE_AGENT_NAME`,
+`BEADS_DATABASE`) when it reboots into the next review-feedback
+cycle; it does not require its old registry row to exist.
+
+In local-native mode the registry row remains the wizard's local
+identity ledger and is used for stale detection / orphan sweep.
+`pkg/agent.ProcessBackend.Spawn` is still its sole creator. The
+[Registry writes are forbidden here](#registry-writes-are-forbidden-here)
+rule applies in both modes.
+
+See
+[docs/ARCHITECTURE.md → Shared-state ownership for review feedback](../../docs/ARCHITECTURE.md#shared-state-ownership-for-review-feedback)
+and [pkg/steward/README.md → Shared-state ownership for review feedback](../steward/README.md#shared-state-ownership-for-review-feedback).
 
 ## Retry-from-step (cooperative recovery)
 

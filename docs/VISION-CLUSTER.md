@@ -20,6 +20,118 @@ The entire stack — steward, operator, dolt, OLAP, guild caches — is deployed
 
 Future work (spi-sj18k) will move apprentice execution out of the wizard pod into dedicated apprentice pods dispatched through the operator's intent reconciler. The canonical `BuildApprenticePod` exists today and is exercised by parity tests, but cluster-native dispatch still runs apprentice work in-wizard — matching the local-native shape.
 
+## Operator-owned dispatch (cluster-native invariant)
+
+Cluster-native is defined by a single boundary: **the operator owns
+all child-pod dispatch.** Wizards, apprentices, sages, and clerics in
+this mode are materialized by the operator from intents the steward
+or wizard emits — no scheduling code path calls `pkg/agent.Spawner.Spawn`
+or `backend.Spawn` directly. That includes the steward's
+ready-work loop, its review-ready dispatch, its hooked-step / cleric
+dispatch, the wizard's review-fix re-entry, and the executor's
+implement / fix / sage-review children.
+
+```
+wizard / executor / steward decides a child is needed
+  → emits a child intent (role + phase + runtime, plus the runtime contract)
+  → intent reaches the operator through the shared-state outbox
+  → operator pod-builder validates (role, phase, runtime) is supported
+  → operator materializes the pod (apprentice / sage / cleric / wizard)
+  → child runs; bundle-signal close path back to the parent wizard preserved
+    (see `spi-e6m3p6`)
+```
+
+This makes one statement true everywhere in the cluster-native code
+paths: **`pkg/agent.Spawner.Spawn` is a local-native concept.** It is
+not the universal child-dispatch entry point. The cluster-native
+invariant is enforced by the static AST test in
+[`pkg/executor/cluster_dispatch_invariant_test.go`](../pkg/executor/cluster_dispatch_invariant_test.go)
+and by regression tests in `pkg/executor` and `pkg/steward` that wire
+a failing spawner into cluster-native dispatch entry points and assert
+no `Spawn` call is ever made.
+
+### The role / phase / runtime contract
+
+Every cluster-native child intent carries an unambiguous `(role,
+phase, runtime)` triple. The operator's pod-builder uses the triple
+to pick a builder and validates it against an allowlist; an
+unrecognized triple is rejected at intent-consumption time, not as
+an init-container failure inside the dispatched pod.
+
+| Role | Phase | Runtime | Pod shape |
+|------|-------|---------|-----------|
+| `apprentice` | `implement` | `worker` | Apprentice pod (`BuildApprenticePod`); fresh worktree; bundle handoff back to parent wizard. |
+| `apprentice` | `fix` | `worker` | Apprentice pod; review-feedback / review-fix re-entry; can use a borrowed worktree. |
+| `sage` | `review` | `reviewer` | Sage pod (`BuildSagePod`); diff-only review against the staging branch. |
+| `sage` | `review-fix` | `reviewer` | Sage pod; re-review of a fix bundle. |
+| `cleric` | `<bead-type>` | `wizard` | Cleric pod that drives `cleric-default`; the phase MUST be a bead-level phase the operator routes to a wizard pod (e.g., `recovery` is **not** a supported phase value — see [Cleric dispatch](#cleric-dispatch) below). |
+| `wizard` | `<bead-type>` or `wizard` | `wizard` | Wizard pod (`BuildWizardPod`); steward's bead-level dispatch and hooked-step resume. |
+
+The runtime field is the canonical worker runtime contract — see
+[ARCHITECTURE.md → Worker Runtime Contract](ARCHITECTURE.md#worker-runtime-contract).
+Identity (`URL`, `BaseBranch`, `Prefix`) comes from the shared tower
+`repos` registry through `pkg/steward/identity.ClusterIdentityResolver`,
+never from per-machine `LocalBindings`. Workspace materialization is the
+backend obligation defined in
+[`pkg/agent/README.md` → Backend obligations](../pkg/agent/README.md#backend-obligations-normative);
+the operator's pod-builder reads the backend obligations through
+`pkg/agent.PodSpec` rather than re-deriving them.
+
+### Cleric dispatch
+
+Cleric dispatch in cluster-native is a wizard-shaped workload: the
+pod runs `spire execute <recovery-bead>` and drives the
+`cleric-default` formula the same way a normal wizard drives a
+task formula. The intent therefore carries `role=cleric` with a
+**bead-level** phase (the recovery bead's type, with `wizard` as the
+fallback) and `runtime=wizard`. This is the converged shape — the
+operator is not asked to recognize a `formula_phase=recovery`
+bead-level value, because that string is not a registered bead-level
+phase and would not classify under
+[`pkg/steward/intent.IsBeadLevelPhase`](../pkg/steward/intent/intent.go).
+
+### Shared-state ownership for review feedback
+
+Review-feedback re-engagement does not consult the local wizard
+registry (`~/.config/spire/wizards.json`) in cluster-native paths.
+That registry is per-machine bookkeeping owned by `pkg/agent`'s
+process backend; it has no meaning across cluster replicas. Instead,
+review-feedback owners are looked up through a shared-state surface
+that is durable across replicas and pod restarts:
+
+- the `implemented-by` / attempt-bead linkage on the work bead,
+- attempt metadata (instance, agent name, started-at) carried on the
+  attempt bead,
+- the typed review outcome stamped onto the review/sage step bead.
+
+This is the substrate that lets the operator close a request-changes
+loop without depending on which steward replica or which laptop wrote
+the original wizard's row. It is the same shared-state surface the
+steward already uses for hooked-step recovery and for stale-attempt
+detection — there is no second ownership plane.
+
+### Fail closed, never fall back
+
+Every cluster-native dispatch site fails closed when a seam is
+missing. There is no silent local-spawn fallback — the steward logs
+and skips the cycle, or the entry point returns a typed error, but
+the work does not leak onto the local backend. Concretely:
+
+- `pkg/steward/cluster_dispatch.go` skips dispatch if
+  `ClusterDispatchConfig` or any of its required fields
+  (`Resolver`, `Claimer`, `Publisher`) is nil.
+- `dispatchPhaseClusterNative` returns an error if the resolver or
+  publisher is missing — phase-level dispatch sites surface that
+  error; they do not call `backend.Spawn` to recover.
+- Executor child-dispatch sites in cluster-native mode either emit
+  an intent or return an error. The static AST invariant test
+  rejects any new `Spawner.Spawn` call site that is reachable from
+  a cluster-native dispatch path.
+
+The fail-closed posture is the contract review feedback expects: a
+visible alert is recoverable; a silent local fall-back fragments
+ownership across the cluster and the operator's view of the world.
+
 ## Bead status lifecycle
 
 In cluster-native deployments, a work bead walks through four states:

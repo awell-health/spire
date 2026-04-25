@@ -64,6 +64,68 @@ call `pkg/agent.BuildApprenticePod` rather than building the pod shape
 locally. There is no in-package pod construction in cluster-native code
 paths.
 
+### Cluster-native fail-closed posture
+
+Every cluster-native steward path fails closed when a seam is missing.
+There is no silent local-spawn fallback for the cluster-native loop:
+
+- `dispatchClusterNative` (the bead-level loop) skips the cycle and
+  logs when `ClusterDispatchConfig` or any required field is nil; it
+  never falls back to `backend.Spawn`.
+- `dispatchPhaseClusterNative` (review-ready, hooked-step / cleric
+  resume) returns a typed error if the resolver or publisher is
+  missing. Callers surface the error; they do not silently spawn.
+- The shared `dispatchPhase` seam is the only mode-aware entry point
+  for per-phase dispatch in this package. New review or recovery
+  dispatch sites MUST use it. The static AST invariant in
+  [`pkg/executor/cluster_dispatch_invariant_test.go`](../executor/cluster_dispatch_invariant_test.go)
+  rejects any new `backend.Spawn` call site that is reachable from a
+  cluster-native steward path.
+
+### Cleric dispatch routing
+
+Cleric dispatch in cluster-native mode emits a wizard-shaped intent —
+a recovery bead is a bead-level workload that runs `spire execute` to
+drive the `cleric-default` formula. The intent's `FormulaPhase` MUST
+classify under `intent.IsBeadLevelPhase` (typically the recovery
+bead's type, with `intent.PhaseWizard` as the fallback). The string
+`"recovery"` is **not** a registered bead-level phase and would be
+rejected by the operator's pod-builder allowlist.
+
+`SweepHookedSteps` routes both branches through `dispatchPhase`:
+
+- the resume branch (parent bead unhooked after cleric success) emits
+  `hookedResumePhase(parent.Type)` — a bead-level phase keyed off the
+  parent's type, with `wizard` as the fallback.
+- the cleric-summon branch emits `beadDispatchPhase("",
+  recoveryBead.Type)` — also bead-level. The operator materializes a
+  wizard pod that drives the cleric formula via `spire execute`.
+
+### Shared-state ownership for review feedback
+
+Cluster-native review-feedback re-engagement does not consult the
+local wizard registry (`registry.List()`, `~/.config/spire/wizards.json`).
+That registry is per-machine bookkeeping owned by `pkg/agent`'s
+process backend; reading it from a steward replica that did not spawn
+the original wizard would miss the owner silently and route the
+re-engagement message into a dead drop.
+
+Cluster-native control paths look up review-feedback owners through
+the same shared-state surface the steward already uses for
+hooked-step recovery, stale-attempt detection, and `dispatched`-state
+concurrency accounting:
+
+- the `implemented-by` / attempt-bead linkage on the work bead,
+- attempt metadata (instance, agent name, started-at, last-seen)
+  carried on the attempt bead,
+- the typed review outcome stamped onto the review/sage step bead.
+
+The local-native path may continue to read `registry.List()` — it is
+the only caller that owns the per-machine wizard set. The cluster-
+native code paths in this package treat the registry as if it did not
+exist, the same way they treat `LocalBindings`. See
+[`docs/ARCHITECTURE.md` → Shared-state ownership for review feedback](../../docs/ARCHITECTURE.md#shared-state-ownership-for-review-feedback).
+
 ## Bead status lifecycle
 
 Cluster-native dispatch walks a bead through four states. Ownership of

@@ -16,32 +16,90 @@ heartbeats). Architectural framing lives in
 The canonical cluster-native flow is:
 
 ```
-steward (pod)                      operator                       cluster
-  │ ClaimThenEmit                    │ Consume(WorkloadIntent)      │
-  │   └─ atomic attempt-bead claim   │   └─ reconcile pod state     │
-  │ Publish(WorkloadIntent) ────────▶│ BuildApprenticePod ─────────▶│ apprentice pod
+steward / executor / wizard (pod)   operator                       cluster
+  │ Publish(WorkloadIntent)            │ Consume(WorkloadIntent)      │
+  │   ├─ steward bead-level dispatch   │   └─ reconcile pod state     │
+  │   ├─ executor child dispatch       │                              │
+  │   │   (implement / fix / review /  │                              │
+  │   │    review-fix / cleric)        │                              │
+  │   └─ wizard review-fix re-entry    │                              │
+  ▼                                    ▼ BuildWizardPod / Sage / Apprentice
+                                       apprentice / sage / cleric / wizard pod
 ```
 
+The operator is the cluster-native dispatch authority: every child
+pod (wizard, apprentice, sage, cleric) is materialized here from an
+intent, never from a scheduler that called `pkg/agent.Spawner.Spawn`.
 The operator does not decide what work should run, when it should run,
 or which agent should take it. Those are scheduler responsibilities and
-they live in `pkg/steward`. The operator's job is to drive cluster
-state toward the intents the steward has already published.
+they live in `pkg/steward` (bead-level) and `pkg/executor` /
+`pkg/wizard` (per-step / review-fix). The operator's job is to drive
+cluster state toward the intents the scheduler has already published.
 
 Concretely this means:
 
 - **No second scheduler in this module.** The operator never reads `bd
   ready` to decide what to dispatch, never opens an attempt bead, and
   never picks a guild for a workload. It only reconciles intents the
-  steward has emitted.
-- **Pod creation goes through `pkg/agent.BuildApprenticePod`.** Pod
-  shape is owned by `pkg/agent`. There is no in-operator pod shape
-  logic; new fields go on `pkg/agent.PodSpec` and are plumbed through.
-  See [pkg/agent/README.md → Apprentice pod shape](../pkg/agent/README.md#apprentice-pod-shape-buildapprenticepod-is-canonical).
+  scheduler has emitted.
+- **Pod creation goes through `pkg/agent.BuildApprenticePod` /
+  `BuildSagePod` / `BuildWizardPod`.** Pod shape is owned by
+  `pkg/agent`. There is no in-operator pod shape logic; new fields go
+  on `pkg/agent.PodSpec` and are plumbed through. See
+  [pkg/agent/README.md → Apprentice pod shape](../pkg/agent/README.md#apprentice-pod-shape-buildapprenticepod-is-canonical).
 - **Repo identity comes from `pkg/steward/identity.ClusterIdentityResolver`.**
   CR fields like `WizardGuild.Spec.Repo` and `Spec.RepoBranch` are
   treated as projection-only. The operator reconciles them to the
   resolver's output rather than making scheduling decisions from them.
   CRs can drift; the shared tower `repos` registry is authoritative.
+
+## Supported (role, phase, runtime) combinations
+
+The pod-builder accepts only the combinations enumerated in
+[docs/VISION-CLUSTER.md → The role / phase / runtime contract](../docs/VISION-CLUSTER.md#the-role--phase--runtime-contract).
+Any other combination is rejected at intent-consumption time, not as
+an init-container failure inside the pod. The summary table:
+
+| Role | Phase | Runtime | Pod shape |
+|------|-------|---------|-----------|
+| `apprentice` | `implement` | `worker` | Apprentice pod (`BuildApprenticePod`); fresh worktree; bundle handoff. |
+| `apprentice` | `fix` | `worker` | Apprentice pod for review-feedback / review-fix re-entry. |
+| `sage` | `review` | `reviewer` | Sage pod (`BuildSagePod`). |
+| `sage` | `review-fix` | `reviewer` | Sage pod re-reviewing a fix bundle. |
+| `cleric` | `<bead-type>` | `wizard` | Wizard-shaped pod that drives `cleric-default`. The phase MUST classify under `intent.IsBeadLevelPhase` — the literal `"recovery"` is NOT supported. |
+| `wizard` | `<bead-type>` or `wizard` | `wizard` | Wizard pod (`BuildWizardPod`). |
+
+Phase classification helpers live in
+[`pkg/steward/intent`](../pkg/steward/intent/intent.go)
+(`IsBeadLevelPhase`, `IsStepLevelPhase`, `IsReviewLevelPhase`) and
+are the single source of truth for routing. Both sides of the seam
+(scheduler emit, operator reconcile) call them.
+
+## Shared-state ownership for review feedback
+
+The operator reads and writes the same shared-state surface the
+scheduler uses for review-feedback ownership: the `implemented-by` /
+attempt-bead linkage on the work bead, attempt metadata (instance,
+agent name, started-at, last-seen) carried on the attempt bead, and
+the typed review outcome stamped onto the review/sage step bead. The
+operator does **not** read the per-machine wizard registry
+(`pkg/registry`); that is local-native bookkeeping.
+
+This shared-state surface is the substrate that lets a request-changes
+loop close in cluster-native without depending on which steward replica
+or which laptop produced the original wizard's row. See
+[docs/ARCHITECTURE.md → Shared-state ownership for review feedback](../docs/ARCHITECTURE.md#shared-state-ownership-for-review-feedback).
+
+## Relationship to `spi-e6m3p6` bundle-signal close semantics
+
+Cluster-native dispatch ownership preserves the bundle-signal close
+loop at the apprentice/wizard seam introduced in `spi-e6m3p6`. The
+apprentice still emits a bundle-signal outcome as the canonical
+"this child task is done" event; the parent wizard still closes the
+child bead at the apprentice/bundle seam, regardless of whether the
+apprentice was materialized by the operator (cluster-native) or by
+`Spawner.Spawn` (local-native). Dispatch ownership changes do **not**
+move close semantics back onto backend-specific boundaries.
 
 ## The `OperatorEnableLegacyScheduler` gate
 
