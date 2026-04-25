@@ -29,6 +29,13 @@ func IsInternalBead(b Bead) bool {
 	return InternalTypes[b.Type]
 }
 
+// IsInternalType returns true if the issue type is an internal bookkeeping type
+// (message, step, attempt, review). These types are created programmatically by
+// the executor (formula pipeline) and must not be filed by humans through the CLI.
+func IsInternalType(t beads.IssueType) bool {
+	return InternalTypes[string(t)]
+}
+
 // labelToType maps legacy label-based identification to the new internal bead types.
 var labelToType = []struct {
 	label    string

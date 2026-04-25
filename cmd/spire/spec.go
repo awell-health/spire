@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -194,9 +195,18 @@ Flags:
 		if p, err := fmt.Sscanf(priority, "%d", &pri); p == 0 || err != nil {
 			pri = 2
 		}
+		// Strict parse + internal-type rejection: spec is a human-facing
+		// command, so typos and internal types must surface as errors.
+		t, perr := store.ParseIssueType(beadType)
+		if perr != nil {
+			return perr
+		}
+		if store.IsInternalType(t) {
+			return fmt.Errorf("type %q is internal and only created by the executor (formula pipeline); cannot be filed via spire spec", beadType)
+		}
 		id, err := storeCreateBead(createOpts{
 			Title:    title,
-			Type:     parseIssueType(beadType),
+			Type:     t,
 			Priority: pri,
 		})
 		if err != nil {

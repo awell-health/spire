@@ -394,8 +394,13 @@ func parseStatus(s string) beads.Status {
 	return store.ParseStatus(s)
 }
 
+// parseIssueType is the lenient bridge wrapper used for executor wiring and
+// internal CLI callers that pass hardcoded valid type strings (e.g. "design",
+// "task"). User-facing CLI commands like `spire file` must call
+// store.ParseIssueType directly so typos surface as errors instead of silently
+// becoming tasks.
 func parseIssueType(s string) beads.IssueType {
-	return store.ParseIssueType(s)
+	return store.ParseIssueTypeOrTask(s)
 }
 
 // storeActor removed — no callers in cmd/spire.

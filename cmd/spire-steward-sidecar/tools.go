@@ -421,7 +421,7 @@ func (t *StewardTools) createBead(input json.RawMessage) (string, error) {
 		Title:       params.Title,
 		Description: params.Description,
 		Priority:    params.Priority,
-		Type:        store.ParseIssueType(params.Type),
+		Type:        store.ParseIssueTypeOrTask(params.Type),
 		Labels:      params.Labels,
 		Parent:      params.Parent,
 	})

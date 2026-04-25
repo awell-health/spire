@@ -245,34 +245,50 @@ func ParseStatus(s string) beads.Status {
 	}
 }
 
-// ParseIssueType converts a type string to a beads.IssueType.
-func ParseIssueType(s string) beads.IssueType {
+// ParseIssueType converts a type string to a beads.IssueType. Returns an error
+// for unknown strings so CLI callers can surface typos (e.g. "taks") instead of
+// silently downgrading to task. Internal types (message, step, attempt, review)
+// parse successfully here — IsInternalType is the gate for the human-facing CLI.
+func ParseIssueType(s string) (beads.IssueType, error) {
 	switch strings.ToLower(s) {
 	case "bug":
-		return beads.TypeBug
+		return beads.TypeBug, nil
 	case "feature":
-		return beads.TypeFeature
+		return beads.TypeFeature, nil
 	case "task":
-		return beads.TypeTask
+		return beads.TypeTask, nil
 	case "epic":
-		return beads.TypeEpic
+		return beads.TypeEpic, nil
 	case "chore":
-		return beads.TypeChore
+		return beads.TypeChore, nil
 	case "design":
-		return beads.IssueType("design")
+		return beads.IssueType("design"), nil
 	case "recovery":
-		return beads.IssueType("recovery")
+		return beads.IssueType("recovery"), nil
 	case "message":
-		return beads.IssueType("message")
+		return beads.IssueType("message"), nil
 	case "step":
-		return beads.IssueType("step")
+		return beads.IssueType("step"), nil
 	case "attempt":
-		return beads.IssueType("attempt")
+		return beads.IssueType("attempt"), nil
 	case "review":
-		return beads.IssueType("review")
+		return beads.IssueType("review"), nil
 	default:
+		return "", fmt.Errorf("unknown issue type %q (valid: task, bug, feature, epic, chore, design, recovery)", s)
+	}
+}
+
+// ParseIssueTypeOrTask is a lenient wrapper around ParseIssueType for non-CLI
+// callers (Linear webhook intake, daemon paths, executor wiring) where silently
+// downgrading an unknown type preserves resilience. Logs a warning so typos are
+// not invisible. Use the strict ParseIssueType at human-facing boundaries.
+func ParseIssueTypeOrTask(s string) beads.IssueType {
+	t, err := ParseIssueType(s)
+	if err != nil {
+		log.Printf("[store] ParseIssueTypeOrTask: %v — falling back to task", err)
 		return beads.TypeTask
 	}
+	return t
 }
 
 // --- Local interfaces for sub-interface access ---

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -170,7 +171,20 @@ func cmdFile(args []string) error {
 		case remaining[i] == "-t" || remaining[i] == "--type":
 			if i+1 < len(remaining) {
 				i++
-				opts.Type = parseIssueType(remaining[i])
+				typeStr := remaining[i]
+				// Strict parse: surface typos like "-t taks" instead of
+				// silently downgrading to task.
+				t, err := store.ParseIssueType(typeStr)
+				if err != nil {
+					return err
+				}
+				// Reject internal bookkeeping types at the human-facing
+				// CLI boundary — they're created by the executor
+				// (formula pipeline), never by humans.
+				if store.IsInternalType(t) {
+					return fmt.Errorf("type %q is internal and only created by the executor (formula pipeline); cannot be filed via spire file", typeStr)
+				}
+				opts.Type = t
 			}
 		case remaining[i] == "-p" || remaining[i] == "--priority":
 			if i+1 < len(remaining) {

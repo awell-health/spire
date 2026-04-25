@@ -388,7 +388,7 @@ func fileWispForCacheFailure(
 		Title:       title,
 		Description: desc,
 		Priority:    1,
-		Type:        store.ParseIssueType("recovery"),
+		Type:        store.ParseIssueTypeOrTask("recovery"),
 		Labels: []string{
 			"recovery-bead",
 			cacheRefreshFailureLabel,
