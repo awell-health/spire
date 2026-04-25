@@ -624,7 +624,7 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 				} else if t2 := os.Getenv("SPIRE_TOWER"); t2 != "" {
 					towerName = t2
 				}
-				if _, berr := summonBeginWorkFunc(newLifecycleDeps(), id, beadlifecycle.BeginOpts{
+				if _, berr := summonBeginWorkFunc(newLifecycleDeps(), newLocalRegistryAdapter(), id, beadlifecycle.BeginOpts{
 					Mode:      beadlifecycle.ModeLocal,
 					AgentName: wizardName,
 					Worktree:  worktree,

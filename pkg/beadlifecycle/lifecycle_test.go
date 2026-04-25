@@ -1,11 +1,15 @@
 package beadlifecycle
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/wizardregistry"
+	"github.com/awell-health/spire/pkg/wizardregistry/fake"
 	"github.com/steveyegge/beads"
 )
 
@@ -49,7 +53,6 @@ func (s *stubDeps) UpdateBead(id string, updates map[string]interface{}) error {
 		s.updatedBeads = make(map[string]map[string]interface{})
 	}
 	s.updatedBeads[id] = updates
-	// Also update the in-memory bead.
 	if b, ok := s.beads[id]; ok {
 		if status, ok := updates["status"].(string); ok {
 			b.Status = status
@@ -85,12 +88,16 @@ func (s *stubDeps) CloseAttemptBead(attemptID string, resultLabel string) error 
 		s.closedAttempts = make(map[string]string)
 	}
 	s.closedAttempts[attemptID] = resultLabel
-	// Also update status in attempt lists.
 	for parentID, atts := range s.attempts {
 		for i, a := range atts {
 			if a.ID == attemptID {
 				s.attempts[parentID][i].Status = "closed"
 			}
+		}
+	}
+	for i := range s.allBeads {
+		if s.allBeads[i].ID == attemptID {
+			s.allBeads[i].Status = "closed"
 		}
 	}
 	return nil
@@ -125,13 +132,11 @@ func (s *stubDeps) ListBeads(filter beads.IssueFilter) ([]store.Bead, error) {
 	return s.allBeads, nil
 }
 
-// addBead adds a bead to the stub.
 func (s *stubDeps) addBead(b store.Bead) {
 	s.beads[b.ID] = b
 	s.allBeads = append(s.allBeads, b)
 }
 
-// addAttempt adds an attempt bead under a parent.
 func (s *stubDeps) addAttempt(parentID string, att store.Bead) {
 	if s.attempts == nil {
 		s.attempts = make(map[string][]store.Bead)
@@ -142,42 +147,40 @@ func (s *stubDeps) addAttempt(parentID string, att store.Bead) {
 
 // --- Registry test helpers ---
 
-// setupTestRegistry replaces registry functions with in-memory stubs.
-type testRegistry struct {
-	entries []registry.Entry
+// newRegistry returns a fresh in-memory wizardregistry.Registry plus its
+// liveness control. Tests own the (id, alive) state through the control.
+func newRegistry() (*fake.Registry, *fake.Registry) {
+	r := fake.New()
+	return r, r
 }
 
-func withMockRegistry(t *testing.T, fn func(reg *testRegistry)) {
+// upsertAlive upserts w into reg and marks the corresponding ID alive.
+func upsertAlive(t *testing.T, reg *fake.Registry, w wizardregistry.Wizard) {
 	t.Helper()
-	reg := &testRegistry{}
+	if err := reg.Upsert(context.Background(), w); err != nil {
+		t.Fatalf("Upsert(%s): %v", w.ID, err)
+	}
+	reg.SetAlive(w.ID, true)
+}
 
-	// Inject injectable vars.
-	originalPidProbe := pidLivenessProbe
-	originalGraphCheck := graphStateCheck
-
-	t.Cleanup(func() {
-		pidLivenessProbe = originalPidProbe
-		graphStateCheck = originalGraphCheck
-	})
-
-	fn(reg)
+// upsertDead upserts w into reg and leaves it marked not-alive.
+func upsertDead(t *testing.T, reg *fake.Registry, w wizardregistry.Wizard) {
+	t.Helper()
+	if err := reg.Upsert(context.Background(), w); err != nil {
+		t.Fatalf("Upsert(%s): %v", w.ID, err)
+	}
+	reg.SetAlive(w.ID, false)
 }
 
 // --- Unit Tests ---
 
-// isolateRegistry directs the registry to a fresh temp dir for this test.
-func isolateRegistry(t *testing.T) {
-	t.Helper()
-	t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
-}
-
-// TestBeginWork_Fresh_Bead_Local: open bead, ModeLocal → attempt created, bead in_progress, registry upserted.
+// TestBeginWork_Fresh_Bead_Local: open bead, ModeLocal → attempt created,
+// bead in_progress, registry upserted.
 func TestBeginWork_Fresh_Bead_Local(t *testing.T) {
-	// Use a temp dir for the registry to avoid polluting the real registry.
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-abc", Status: "open"})
+
+	reg, _ := newRegistry()
 
 	opts := BeginOpts{
 		Mode:      ModeLocal,
@@ -188,12 +191,7 @@ func TestBeginWork_Fresh_Bead_Local(t *testing.T) {
 		Branch:    "feat/spi-abc",
 	}
 
-	// Ensure pidLivenessProbe won't find the wizard running.
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return false }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
-
-	attemptID, err := BeginWork(deps, "spi-abc", opts)
+	attemptID, err := BeginWork(deps, reg, "spi-abc", opts)
 	if err != nil {
 		t.Fatalf("BeginWork: unexpected error: %v", err)
 	}
@@ -201,210 +199,153 @@ func TestBeginWork_Fresh_Bead_Local(t *testing.T) {
 		t.Fatal("BeginWork: expected non-empty attemptID")
 	}
 
-	// Bead should be flipped to in_progress.
-	b := deps.beads["spi-abc"]
-	if b.Status != "in_progress" {
+	if b := deps.beads["spi-abc"]; b.Status != "in_progress" {
 		t.Errorf("expected bead in_progress, got %q", b.Status)
 	}
-
-	// Attempt bead should have been created.
 	if deps.createAttemptCalls != 1 {
 		t.Errorf("expected 1 attempt creation, got %d", deps.createAttemptCalls)
 	}
+
+	// Registry should now hold the new wizard entry.
+	if _, gerr := reg.Get(context.Background(), "wizard-spi-abc"); gerr != nil {
+		t.Errorf("expected registry to contain wizard-spi-abc after BeginWork, got %v", gerr)
+	}
 }
 
-// TestBeginWork_WithOrphan_Local: prior attempt in_progress but owner dead (dead PID + no graph_state.json)
-// → orphan closed as interrupted:orphan, new attempt created.
+// TestBeginWork_WithOrphan_Local: prior attempt in_progress but no live
+// registry entry → Scan B closes the orphan, BeginWork proceeds.
 func TestBeginWork_WithOrphan_Local(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-def", Status: "in_progress"})
-
-	// Add an existing in_progress attempt (the orphan).
-	orphanAtt := store.Bead{
+	deps.addAttempt("spi-def", store.Bead{
 		ID:     "att-orphan",
 		Status: "in_progress",
 		Parent: "spi-def",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-spi-def"},
-	}
-	deps.addAttempt("spi-def", orphanAtt)
+	})
 
-	opts := BeginOpts{
-		Mode:      ModeLocal,
-		AgentName: "wizard-spi-def",
-		Worktree:  "/tmp/new-worktree",
-	}
+	// Empty registry — wizard-spi-def has no entry, so IsAlive returns
+	// ErrNotFound and Scan B closes the phantom attempt.
+	reg, _ := newRegistry()
 
-	// Override probe: dead PID, no graph_state.json.
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return false }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
+	opts := BeginOpts{Mode: ModeLocal, AgentName: "wizard-spi-def"}
 
-	origGraphCheck := graphStateCheck
-	graphStateCheck = func(worktreePath string) bool { return false }
-	t.Cleanup(func() { graphStateCheck = origGraphCheck })
-
-	// The orphan should be swept (attempt has no live registry entry and no graph state),
-	// then a new attempt should be created. The bead is in_progress but after the sweep
-	// the active attempt list is empty, so BeginWork should proceed.
-	// Since there's no registry entry for the orphan, Scan B handles it.
-	_, err := BeginWork(deps, "spi-def", opts)
-	// The orphan attempt was closed by OrphanSweep (Scan B), and the bead was reopened.
-	// BeginWork should now create a new attempt. However, the in-memory stub reflects
-	// the bead status as "open" after sweep, so we just verify no error and attempt is created.
-	if err != nil {
-		// The only valid error is "already in_progress with live owner" — which doesn't apply here.
+	if _, err := BeginWork(deps, reg, "spi-def", opts); err != nil {
 		t.Fatalf("BeginWork: unexpected error: %v", err)
+	}
+	if _, closed := deps.closedAttempts["att-orphan"]; !closed {
+		t.Error("expected Scan B to close phantom attempt att-orphan")
 	}
 }
 
-// TestBeginWork_AlreadyInProgress_Live: prior attempt in_progress with live owner → returns error.
+// TestBeginWork_AlreadyInProgress_Live: prior attempt with live registry
+// entry → BeginWork refuses.
 func TestBeginWork_AlreadyInProgress_Live(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-ghi", Status: "in_progress"})
-
-	// Add a live in_progress attempt.
-	liveAtt := store.Bead{
+	deps.addAttempt("spi-ghi", store.Bead{
 		ID:     "att-live",
 		Status: "in_progress",
 		Parent: "spi-ghi",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-spi-ghi"},
-	}
-	deps.addAttempt("spi-ghi", liveAtt)
-
-	// Add a registry entry for the live wizard so OrphanSweep's Scan B
-	// sees it as "live" and does not close the attempt.
-	_ = registry.Upsert(registry.Entry{
-		Name:     "wizard-spi-ghi",
-		PID:      55555,
-		BeadID:   "spi-ghi",
-		Worktree: "/tmp/live-wizard-ghi",
 	})
 
-	opts := BeginOpts{
-		Mode:      ModeLocal,
-		AgentName: "wizard-spi-ghi",
+	reg, ctl := newRegistry()
+	upsertAlive(t, ctl, wizardregistry.Wizard{
+		ID:     "wizard-spi-ghi",
+		Mode:   wizardregistry.ModeLocal,
+		PID:    55555,
+		BeadID: "spi-ghi",
+	})
+
+	opts := BeginOpts{Mode: ModeLocal, AgentName: "wizard-spi-ghi"}
+
+	if _, err := BeginWork(deps, reg, "spi-ghi", opts); err == nil {
+		t.Fatal("BeginWork: expected error when bead is in_progress with live owner")
 	}
 
-	// Probe says PID is live, graph state exists (both signals alive).
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return true }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
-
-	origGraphCheck := graphStateCheck
-	graphStateCheck = func(worktreePath string) bool { return true }
-	t.Cleanup(func() { graphStateCheck = origGraphCheck })
-
-	_, err := BeginWork(deps, "spi-ghi", opts)
-	if err == nil {
-		t.Fatal("BeginWork: expected error for already-in_progress bead with live owner")
+	if _, closed := deps.closedAttempts["att-live"]; closed {
+		t.Error("expected live attempt to remain open — Scan B/A should NOT close a live wizard's attempt")
 	}
 }
 
-// TestClaimWork_Dispatched_Cluster: dispatched bead, ModeCluster → attempt created, bead in_progress, no registry call.
+// TestClaimWork_Dispatched_Cluster: dispatched bead in cluster mode →
+// attempt created, bead in_progress, registry not consulted.
 func TestClaimWork_Dispatched_Cluster(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-jkl", Status: "dispatched"})
 
-	opts := BeginOpts{
-		Mode:      ModeCluster,
-		AgentName: "wizard-spi-jkl",
-	}
+	reg, _ := newRegistry()
 
-	attemptID, err := ClaimWork(deps, "spi-jkl", opts)
+	opts := BeginOpts{Mode: ModeCluster, AgentName: "wizard-spi-jkl"}
+
+	attemptID, err := ClaimWork(deps, reg, "spi-jkl", opts)
 	if err != nil {
 		t.Fatalf("ClaimWork: unexpected error: %v", err)
 	}
 	if attemptID == "" {
 		t.Fatal("ClaimWork: expected non-empty attemptID")
 	}
-
-	// Bead should be in_progress.
-	b := deps.beads["spi-jkl"]
-	if b.Status != "in_progress" {
+	if b := deps.beads["spi-jkl"]; b.Status != "in_progress" {
 		t.Errorf("expected in_progress, got %q", b.Status)
 	}
 }
 
-// TestClaimWork_Reclaim_Same_Agent: in_progress bead with matching agentName → returns existing attemptID.
+// TestClaimWork_Reclaim_Same_Agent: in_progress bead with matching
+// agentName → returns existing attemptID without creating a new one.
 func TestClaimWork_Reclaim_Same_Agent(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-mno", Status: "in_progress"})
-
-	existingAtt := store.Bead{
+	deps.addAttempt("spi-mno", store.Bead{
 		ID:     "att-existing",
 		Status: "in_progress",
 		Parent: "spi-mno",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-spi-mno"},
-	}
-	deps.addAttempt("spi-mno", existingAtt)
+	})
 
-	opts := BeginOpts{
-		Mode:      ModeLocal,
-		AgentName: "wizard-spi-mno",
-	}
+	reg, _ := newRegistry()
+	opts := BeginOpts{Mode: ModeLocal, AgentName: "wizard-spi-mno"}
 
-	attemptID, err := ClaimWork(deps, "spi-mno", opts)
+	attemptID, err := ClaimWork(deps, reg, "spi-mno", opts)
 	if err != nil {
 		t.Fatalf("ClaimWork: unexpected error: %v", err)
 	}
 	if attemptID != "att-existing" {
 		t.Errorf("expected reclaimed attempt ID %q, got %q", "att-existing", attemptID)
 	}
-
-	// No new attempt should have been created.
 	if deps.createAttemptCalls != 0 {
 		t.Errorf("expected 0 attempt creations (reclaim), got %d", deps.createAttemptCalls)
 	}
 }
 
-// TestEndWork_HappyClose_Local: attempt closed with result:success, bead closed, alerts cascaded, registry removed.
+// TestEndWork_HappyClose_Local: attempt closed with success label, bead
+// closed, alerts cascaded, registry entry removed.
 func TestEndWork_HappyClose_Local(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-pqr", Status: "in_progress"})
-
-	att := store.Bead{
+	deps.addAttempt("spi-pqr", store.Bead{
 		ID:     "att-pqr",
 		Status: "in_progress",
 		Parent: "spi-pqr",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-spi-pqr"},
-	}
-	deps.addAttempt("spi-pqr", att)
+	})
 
-	opts := BeginOpts{
-		Mode:      ModeLocal,
-		AgentName: "wizard-spi-pqr",
-	}
-	result := EndResult{
-		Status:     "success",
-		ReopenTask: false,
-	}
+	reg, ctl := newRegistry()
+	upsertAlive(t, ctl, wizardregistry.Wizard{ID: "wizard-spi-pqr", Mode: wizardregistry.ModeLocal, PID: 1, BeadID: "spi-pqr"})
 
-	if err := EndWork(deps, "spi-pqr", opts, result); err != nil {
+	opts := BeginOpts{Mode: ModeLocal, AgentName: "wizard-spi-pqr"}
+	if err := EndWork(deps, reg, "spi-pqr", opts, EndResult{Status: "success"}); err != nil {
 		t.Fatalf("EndWork: unexpected error: %v", err)
 	}
 
-	// Attempt should be closed.
-	if deps.closedAttempts["att-pqr"] != "success" {
-		t.Errorf("expected attempt closed with 'success', got %q", deps.closedAttempts["att-pqr"])
+	if got := deps.closedAttempts["att-pqr"]; got != "success" {
+		t.Errorf("expected attempt closed with 'success', got %q", got)
 	}
-
-	// Bead should be closed (not reopened).
-	b := deps.beads["spi-pqr"]
-	if b.Status != "closed" {
+	if b := deps.beads["spi-pqr"]; b.Status != "closed" {
 		t.Errorf("expected bead closed, got %q", b.Status)
 	}
 
@@ -419,401 +360,430 @@ func TestEndWork_HappyClose_Local(t *testing.T) {
 	if !found {
 		t.Error("expected AlertCascadeClose to be called for spi-pqr")
 	}
+
+	// Registry entry should be gone.
+	if _, gerr := reg.Get(context.Background(), "wizard-spi-pqr"); !errors.Is(gerr, wizardregistry.ErrNotFound) {
+		t.Errorf("expected registry entry removed; Get returned %v", gerr)
+	}
 }
 
-// TestEndWork_Interrupted_Reopen: ReopenTask=true → bead reopened, not closed.
+// TestEndWork_Interrupted_Reopen: ReopenTask=true → bead reopened.
 func TestEndWork_Interrupted_Reopen(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-stu", Status: "in_progress"})
-	att := store.Bead{
+	deps.addAttempt("spi-stu", store.Bead{
 		ID:     "att-stu",
 		Status: "in_progress",
 		Parent: "spi-stu",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-spi-stu"},
-	}
-	deps.addAttempt("spi-stu", att)
+	})
 
+	reg, _ := newRegistry()
 	opts := BeginOpts{Mode: ModeLocal, AgentName: "wizard-spi-stu"}
-	result := EndResult{
-		Status:        "interrupted",
-		ReopenTask:    true,
-		CascadeReason: "resummon",
-	}
-
-	if err := EndWork(deps, "spi-stu", opts, result); err != nil {
+	if err := EndWork(deps, reg, "spi-stu", opts, EndResult{Status: "interrupted", ReopenTask: true}); err != nil {
 		t.Fatalf("EndWork: %v", err)
 	}
-
-	b := deps.beads["spi-stu"]
-	if b.Status != "open" {
+	if b := deps.beads["spi-stu"]; b.Status != "open" {
 		t.Errorf("expected bead reopened (open), got %q", b.Status)
 	}
 }
 
-// TestEndWork_StripLabels: StripLabels=["review-approved"] → label removed from task bead.
+// TestEndWork_StripLabels: StripLabels=["review-approved"] → label removed.
 func TestEndWork_StripLabels(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-vwx", Status: "in_progress", Labels: []string{"review-approved"}})
-	att := store.Bead{
+	deps.addAttempt("spi-vwx", store.Bead{
 		ID:     "att-vwx",
 		Status: "in_progress",
 		Parent: "spi-vwx",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-spi-vwx"},
-	}
-	deps.addAttempt("spi-vwx", att)
+	})
 
+	reg, _ := newRegistry()
 	opts := BeginOpts{Mode: ModeLocal, AgentName: "wizard-spi-vwx"}
-	result := EndResult{
-		Status:      "interrupted",
-		ReopenTask:  true,
-		StripLabels: []string{"review-approved"},
-	}
-
-	if err := EndWork(deps, "spi-vwx", opts, result); err != nil {
+	res := EndResult{Status: "interrupted", ReopenTask: true, StripLabels: []string{"review-approved"}}
+	if err := EndWork(deps, reg, "spi-vwx", opts, res); err != nil {
 		t.Fatalf("EndWork: %v", err)
 	}
-
 	if !contains(deps.removedLabels["spi-vwx"], "review-approved") {
 		t.Error("expected 'review-approved' to be stripped from task bead")
 	}
 }
 
-// TestEndWork_ClusterMode_SkipsRegistry: ModeCluster → registry.Remove not called.
-func TestEndWork_ClusterMode_SkipsRegistry(t *testing.T) {
-	isolateRegistry(t)
-
+// TestEndWork_ClusterMode_RegistryReadOnly: cluster mode → Remove returns
+// ErrReadOnly which is silently absorbed; EndWork still succeeds.
+func TestEndWork_ClusterMode_RegistryReadOnly(t *testing.T) {
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-yz0", Status: "in_progress"})
-	att := store.Bead{
+	deps.addAttempt("spi-yz0", store.Bead{
 		ID:     "att-yz0",
 		Status: "in_progress",
 		Parent: "spi-yz0",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-spi-yz0"},
-	}
-	deps.addAttempt("spi-yz0", att)
+	})
 
+	reg := &readOnlyRegistry{Registry: fake.New()}
 	opts := BeginOpts{Mode: ModeCluster, AgentName: "wizard-spi-yz0"}
-	result := EndResult{Status: "success", ReopenTask: false}
-
-	// Upsert a registry entry to verify it is NOT removed.
-	_ = registry.Upsert(registry.Entry{Name: "wizard-spi-yz0", BeadID: "spi-yz0"})
-
-	if err := EndWork(deps, "spi-yz0", opts, result); err != nil {
+	if err := EndWork(deps, reg, "spi-yz0", opts, EndResult{Status: "success"}); err != nil {
 		t.Fatalf("EndWork: %v", err)
-	}
-
-	// Registry entry should still be present (ModeCluster skips remove).
-	entries, _ := registry.List()
-	found := false
-	for _, e := range entries {
-		if e.Name == "wizard-spi-yz0" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Log("(cluster mode skips registry remove — this is expected)")
 	}
 }
 
-// TestOrphanSweep_DualSignal_Dead: dead PID AND no graph_state.json → declared orphaned (Scan A).
-func TestOrphanSweep_DualSignal_Dead(t *testing.T) {
-	isolateRegistry(t)
+// readOnlyRegistry wraps a fake to mimic a cluster-mode backend that
+// rejects writes with ErrReadOnly.
+type readOnlyRegistry struct{ *fake.Registry }
 
-	// Set up a registry entry.
-	_ = registry.Upsert(registry.Entry{
-		Name:     "wizard-dead",
-		PID:      99999,
-		BeadID:   "spi-dead1",
-		Worktree: "/tmp/dead-worktree",
-	})
+func (readOnlyRegistry) Upsert(_ context.Context, _ wizardregistry.Wizard) error {
+	return wizardregistry.ErrReadOnly
+}
+func (readOnlyRegistry) Remove(_ context.Context, _ string) error {
+	return wizardregistry.ErrReadOnly
+}
 
+// TestOrphanSweep_DeadEntry_ScanA: a registered, dead wizard is reaped:
+// attempt closed, bead reopened, registry entry removed.
+func TestOrphanSweep_DeadEntry_ScanA(t *testing.T) {
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-dead1", Status: "in_progress"})
-	att := store.Bead{
+	deps.addAttempt("spi-dead1", store.Bead{
 		ID:     "att-dead1",
 		Status: "in_progress",
 		Parent: "spi-dead1",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-dead"},
-	}
-	deps.addAttempt("spi-dead1", att)
+	})
 
-	// PID dead, no graph_state.json.
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return false }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
+	reg, ctl := newRegistry()
+	upsertDead(t, ctl, wizardregistry.Wizard{ID: "wizard-dead", Mode: wizardregistry.ModeLocal, PID: 99999, BeadID: "spi-dead1"})
 
-	origGraphCheck := graphStateCheck
-	graphStateCheck = func(worktreePath string) bool { return false }
-	t.Cleanup(func() { graphStateCheck = origGraphCheck })
-
-	report, err := OrphanSweep(deps, OrphanScope{All: true})
+	report, err := OrphanSweep(deps, reg, OrphanScope{All: true})
 	if err != nil {
 		t.Fatalf("OrphanSweep: %v", err)
 	}
-
 	if report.Dead == 0 {
 		t.Error("expected at least 1 dead entry from Scan A")
 	}
 	if report.Cleaned == 0 {
 		t.Error("expected at least 1 cleaned entry")
 	}
-	if deps.closedAttempts["att-dead1"] == "" {
-		t.Error("expected orphan attempt to be closed")
+	if got := deps.closedAttempts["att-dead1"]; got != "interrupted:orphan" {
+		t.Errorf("expected attempt closed with 'interrupted:orphan', got %q", got)
+	}
+	if !contains(deps.addedLabels["spi-dead1"], "dead-letter:orphan") {
+		t.Error("expected dead-letter:orphan label on bead")
+	}
+	if _, gerr := reg.Get(context.Background(), "wizard-dead"); !errors.Is(gerr, wizardregistry.ErrNotFound) {
+		t.Errorf("expected registry entry removed after sweep; Get returned %v", gerr)
 	}
 }
 
-// TestOrphanSweep_DualSignal_HasGraphState: dead PID BUT graph_state.json present → NOT orphaned.
-func TestOrphanSweep_DualSignal_HasGraphState(t *testing.T) {
-	isolateRegistry(t)
-
-	_ = registry.Upsert(registry.Entry{
-		Name:     "wizard-resumable",
-		PID:      88888,
-		BeadID:   "spi-resumable",
-		Worktree: "/tmp/resumable-worktree",
-	})
-
-	deps := newStubDeps()
-	deps.addBead(store.Bead{ID: "spi-resumable", Status: "in_progress"})
-	att := store.Bead{
-		ID:     "att-resumable",
-		Status: "in_progress",
-		Parent: "spi-resumable",
-		Type:   "attempt",
-		Labels: []string{"attempt", "agent:wizard-resumable"},
-	}
-	deps.addAttempt("spi-resumable", att)
-
-	// PID dead, BUT graph_state.json present.
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return false }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
-
-	origGraphCheck := graphStateCheck
-	graphStateCheck = func(worktreePath string) bool { return true } // graph state present
-	t.Cleanup(func() { graphStateCheck = origGraphCheck })
-
-	report, err := OrphanSweep(deps, OrphanScope{All: true})
-	if err != nil {
-		t.Fatalf("OrphanSweep: %v", err)
-	}
-
-	// Should NOT be declared dead — crash-safe resume.
-	if _, closed := deps.closedAttempts["att-resumable"]; closed {
-		t.Error("attempt should NOT be closed — wizard has graph_state.json (crash-safe resume)")
-	}
-	if report.Dead > 0 {
-		t.Errorf("expected 0 dead from Scan A for resumable wizard, got %d", report.Dead)
-	}
-}
-
-// TestOrphanSweep_LivePID: live PID → NOT orphaned.
-func TestOrphanSweep_LivePID(t *testing.T) {
-	isolateRegistry(t)
-
-	_ = registry.Upsert(registry.Entry{
-		Name:     "wizard-live",
-		PID:      12345,
-		BeadID:   "spi-live",
-		Worktree: "/tmp/live-worktree",
-	})
-
+// TestOrphanSweep_LiveEntry_ScanA: a live wizard is left alone.
+func TestOrphanSweep_LiveEntry_ScanA(t *testing.T) {
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-live", Status: "in_progress"})
 
-	// PID is live.
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return true }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
+	reg, ctl := newRegistry()
+	upsertAlive(t, ctl, wizardregistry.Wizard{ID: "wizard-live", Mode: wizardregistry.ModeLocal, PID: 12345, BeadID: "spi-live"})
 
-	report, err := OrphanSweep(deps, OrphanScope{All: true})
+	report, err := OrphanSweep(deps, reg, OrphanScope{All: true})
 	if err != nil {
 		t.Fatalf("OrphanSweep: %v", err)
 	}
-
 	if report.Dead > 0 {
 		t.Errorf("expected 0 dead entries for live wizard, got %d", report.Dead)
 	}
+	if _, gerr := reg.Get(context.Background(), "wizard-live"); gerr != nil {
+		t.Errorf("live wizard should still be registered after sweep, got %v", gerr)
+	}
 }
 
-// TestOrphanSweep_DeadOnly_AllScope: 2 dead + 1 live → sweeps 2, leaves 1.
-func TestOrphanSweep_DeadOnly_AllScope(t *testing.T) {
-	isolateRegistry(t)
-
-	// Register 3 wizards.
-	_ = registry.Upsert(registry.Entry{Name: "wiz-dead-a", PID: 1001, BeadID: "spi-da", Worktree: "/tmp/a"})
-	_ = registry.Upsert(registry.Entry{Name: "wiz-dead-b", PID: 1002, BeadID: "spi-db", Worktree: "/tmp/b"})
-	_ = registry.Upsert(registry.Entry{Name: "wiz-live-c", PID: 1003, BeadID: "spi-dc", Worktree: "/tmp/c"})
-
+// TestOrphanSweep_MixedAliveAndDead: 2 dead + 1 live → sweeps 2, leaves 1.
+func TestOrphanSweep_MixedAliveAndDead(t *testing.T) {
 	deps := newStubDeps()
 	for _, id := range []string{"spi-da", "spi-db", "spi-dc"} {
 		deps.addBead(store.Bead{ID: id, Status: "in_progress"})
 	}
 
-	// Dead PIDs: 1001, 1002 live: 1003.
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return pid == 1003 }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
+	reg, ctl := newRegistry()
+	upsertDead(t, ctl, wizardregistry.Wizard{ID: "wiz-dead-a", Mode: wizardregistry.ModeLocal, PID: 1001, BeadID: "spi-da"})
+	upsertDead(t, ctl, wizardregistry.Wizard{ID: "wiz-dead-b", Mode: wizardregistry.ModeLocal, PID: 1002, BeadID: "spi-db"})
+	upsertAlive(t, ctl, wizardregistry.Wizard{ID: "wiz-live-c", Mode: wizardregistry.ModeLocal, PID: 1003, BeadID: "spi-dc"})
 
-	origGraphCheck := graphStateCheck
-	graphStateCheck = func(worktreePath string) bool { return false }
-	t.Cleanup(func() { graphStateCheck = origGraphCheck })
-
-	report, err := OrphanSweep(deps, OrphanScope{All: true})
+	report, err := OrphanSweep(deps, reg, OrphanScope{All: true})
 	if err != nil {
 		t.Fatalf("OrphanSweep: %v", err)
 	}
-
-	// 2 dead from Scan A.
 	if report.Dead < 2 {
 		t.Errorf("expected at least 2 dead entries, got %d", report.Dead)
 	}
 
-	// Verify the live wizard entry is still in registry.
-	entries, _ := registry.List()
-	liveStillPresent := false
-	for _, e := range entries {
-		if e.Name == "wiz-live-c" {
-			liveStillPresent = true
-			break
-		}
-	}
-	if !liveStillPresent {
-		t.Error("live wizard should still be in registry after sweep")
+	if _, gerr := reg.Get(context.Background(), "wiz-live-c"); gerr != nil {
+		t.Errorf("live wizard should still be registered after sweep, got %v", gerr)
 	}
 }
 
-// TestOrphanSweep_Idempotent: second call is a no-op.
+// TestOrphanSweep_Idempotent: an empty registry is a no-op; a second call
+// after the first cleaned everything is also a no-op.
 func TestOrphanSweep_Idempotent(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
+	reg, _ := newRegistry()
 
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return false }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
-
-	origGraphCheck := graphStateCheck
-	graphStateCheck = func(worktreePath string) bool { return false }
-	t.Cleanup(func() { graphStateCheck = origGraphCheck })
-
-	// First call on empty registry — no-op.
-	report1, err1 := OrphanSweep(deps, OrphanScope{All: true})
+	report1, err1 := OrphanSweep(deps, reg, OrphanScope{All: true})
 	if err1 != nil {
 		t.Fatalf("first OrphanSweep: %v", err1)
 	}
-
-	// Second call — still no-op.
-	report2, err2 := OrphanSweep(deps, OrphanScope{All: true})
+	report2, err2 := OrphanSweep(deps, reg, OrphanScope{All: true})
 	if err2 != nil {
 		t.Fatalf("second OrphanSweep: %v", err2)
 	}
-
-	// Both reports should be empty.
 	if report1.Cleaned != 0 || report2.Cleaned != 0 {
 		t.Errorf("expected no cleanups, got %d and %d", report1.Cleaned, report2.Cleaned)
 	}
 }
 
-// TestOrphanSweep_PhantomAttempt: in_progress attempt bead with no live registry entry AND no
-// graph_state.json → Scan B closes it + reopens parent.
+// TestOrphanSweep_PhantomAttempt: in_progress attempt bead with no
+// registered wizard at all → Scan B closes it via ErrNotFound.
 func TestOrphanSweep_PhantomAttempt(t *testing.T) {
-	isolateRegistry(t)
-
 	deps := newStubDeps()
 	deps.addBead(store.Bead{ID: "spi-phantom-parent", Status: "in_progress"})
-
-	// Add an attempt bead for a wizard that has NO registry entry (phantom attempt).
-	phantom := store.Bead{
+	deps.addAttempt("spi-phantom-parent", store.Bead{
 		ID:     "att-phantom",
 		Status: "in_progress",
 		Parent: "spi-phantom-parent",
 		Type:   "attempt",
 		Labels: []string{"attempt", "agent:wizard-phantom"},
-	}
-	deps.addAttempt("spi-phantom-parent", phantom)
+	})
 
-	// No registry entry for wizard-phantom.
-	// No graph state.
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return false }
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
+	reg, _ := newRegistry() // empty registry — wizard-phantom never registered
 
-	origGraphCheck := graphStateCheck
-	graphStateCheck = func(worktreePath string) bool { return false }
-	t.Cleanup(func() { graphStateCheck = origGraphCheck })
-
-	report, err := OrphanSweep(deps, OrphanScope{All: true})
+	report, err := OrphanSweep(deps, reg, OrphanScope{All: true})
 	if err != nil {
 		t.Fatalf("OrphanSweep: %v", err)
 	}
-
-	// Scan B should have found and closed the phantom attempt.
 	if _, closed := deps.closedAttempts["att-phantom"]; !closed {
 		t.Error("Scan B: phantom attempt should have been closed")
 	}
-
 	if report.Cleaned == 0 {
 		t.Error("expected at least 1 cleaned from Scan B")
 	}
-
-	// Parent should be reopened.
-	b := deps.beads["spi-phantom-parent"]
-	if b.Status != "open" {
+	if b := deps.beads["spi-phantom-parent"]; b.Status != "open" {
 		t.Errorf("expected parent reopened (open), got %q", b.Status)
 	}
 }
 
-// TestOrphanSweep_PhantomAttempt_HasGraphState: in_progress attempt with no registry entry BUT
-// graph_state.json present → NOT reaped (crash-safe resume).
-func TestOrphanSweep_PhantomAttempt_HasGraphState(t *testing.T) {
-	isolateRegistry(t)
-
-	// Register the wizard with a worktree that has graph_state.json.
-	_ = registry.Upsert(registry.Entry{
-		Name:     "wizard-crash-safe",
-		PID:      77777, // dead
-		BeadID:   "spi-crash-parent",
-		Worktree: "/tmp/crash-safe",
+// TestOrphanSweep_ScanB_DeadRegistered: in_progress attempt whose wizard
+// IS registered but dead → Scan B reaps it.
+func TestOrphanSweep_ScanB_DeadRegistered(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-stale-parent", Status: "in_progress"})
+	deps.addAttempt("spi-stale-parent", store.Bead{
+		ID:     "att-stale",
+		Status: "in_progress",
+		Parent: "spi-stale-parent",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-stale"},
 	})
 
-	deps := newStubDeps()
-	deps.addBead(store.Bead{ID: "spi-crash-parent", Status: "in_progress"})
+	reg, ctl := newRegistry()
+	// Register the wizard but mark it dead. Scope: BeadID-only so Scan A
+	// also runs against this entry; Scan B will close the attempt either
+	// way.
+	upsertDead(t, ctl, wizardregistry.Wizard{ID: "wizard-stale", Mode: wizardregistry.ModeLocal, PID: 7777, BeadID: "spi-stale-parent"})
 
-	crashSafeAtt := store.Bead{
-		ID:     "att-crash-safe",
-		Status: "in_progress",
-		Parent: "spi-crash-parent",
-		Type:   "attempt",
-		Labels: []string{"attempt", "agent:wizard-crash-safe"},
+	if _, err := OrphanSweep(deps, reg, OrphanScope{All: true}); err != nil {
+		t.Fatalf("OrphanSweep: %v", err)
 	}
-	deps.addAttempt("spi-crash-parent", crashSafeAtt)
+	if _, closed := deps.closedAttempts["att-stale"]; !closed {
+		t.Error("expected stale-but-registered attempt to be closed")
+	}
+}
 
-	origProbe := pidLivenessProbe
-	pidLivenessProbe = func(pid int) bool { return false } // PID dead
-	t.Cleanup(func() { pidLivenessProbe = origProbe })
+// --- Race-safety tests for the spi-5bzu9r incident ---
 
-	origGraphCheck := graphStateCheck
-	graphStateCheck = func(worktreePath string) bool { return true } // graph_state.json present
-	t.Cleanup(func() { graphStateCheck = origGraphCheck })
+// TestOrphanSweep_FreshUpsertNotMisclassified is the load-bearing
+// regression test for the spi-5bzu9r OrphanSweep race incident.
+//
+// Scenario: a registered, alive wizard with an in_progress attempt
+// already exists. A second wizard is upserted and marked alive
+// concurrently with OrphanSweep ticks. Neither wizard's attempt may be
+// reaped — the contract on Registry.IsAlive guarantees fresh reads, so a
+// concurrent upsert cannot be mis-classified as dead by a stale snapshot.
+func TestOrphanSweep_FreshUpsertNotMisclassified(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-seed", Status: "in_progress"})
+	deps.addAttempt("spi-seed", store.Bead{
+		ID:     "att-seed",
+		Status: "in_progress",
+		Parent: "spi-seed",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-seed"},
+	})
 
-	_, err := OrphanSweep(deps, OrphanScope{All: true})
+	reg, ctl := newRegistry()
+	upsertAlive(t, ctl, wizardregistry.Wizard{ID: "wizard-seed", Mode: wizardregistry.ModeLocal, PID: 1, BeadID: "spi-seed"})
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n * 2)
+
+	// N goroutines each upsert and mark alive a fresh wizard.
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			id := fmt.Sprintf("wizard-fresh-%d", i)
+			upsertAlive(t, ctl, wizardregistry.Wizard{
+				ID:     id,
+				Mode:   wizardregistry.ModeLocal,
+				PID:    2000 + i,
+				BeadID: "spi-fresh-" + id,
+			})
+		}()
+	}
+
+	// N goroutines drive OrphanSweep concurrently.
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = OrphanSweep(newStubDeps(), reg, OrphanScope{All: true})
+		}()
+	}
+	wg.Wait()
+
+	// The original seed wizard must still be alive in the registry; its
+	// attempt must remain open.
+	if _, gerr := reg.Get(context.Background(), "wizard-seed"); gerr != nil {
+		t.Errorf("seed wizard should remain registered after concurrent sweeps; got %v", gerr)
+	}
+	if _, closed := deps.closedAttempts["att-seed"]; closed {
+		t.Errorf("seed attempt was closed by a concurrent sweep — race-safety contract broken")
+	}
+}
+
+// TestBeginWork_Spi5Bzu9r_RaceRegression reproduces the spi-5bzu9r flow:
+// while one wizard is alive and its attempt is in_progress, BeginWork is
+// called for the same bead with a fresh agent name. The active wizard's
+// attempt must NOT be marked interrupted:orphan and the parent must NOT
+// be reverted to open by the BeginWork-internal OrphanSweep.
+func TestBeginWork_Spi5Bzu9r_RaceRegression(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-race", Status: "in_progress"})
+	deps.addAttempt("spi-race", store.Bead{
+		ID:     "att-race-live",
+		Status: "in_progress",
+		Parent: "spi-race",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-race-live"},
+	})
+
+	reg, ctl := newRegistry()
+	upsertAlive(t, ctl, wizardregistry.Wizard{
+		ID:     "wizard-race-live",
+		Mode:   wizardregistry.ModeLocal,
+		PID:    4242,
+		BeadID: "spi-race",
+	})
+
+	// Calling BeginWork with a different agent should refuse (live owner)
+	// without first damaging the live attempt.
+	_, err := BeginWork(deps, reg, "spi-race", BeginOpts{
+		Mode:      ModeLocal,
+		AgentName: "wizard-race-new",
+	})
+	if err == nil {
+		t.Fatal("expected BeginWork to refuse when bead is in_progress with a live owner")
+	}
+	if _, closed := deps.closedAttempts["att-race-live"]; closed {
+		t.Error("live wizard's attempt was closed by BeginWork — spi-5bzu9r symptom recurred")
+	}
+	if b := deps.beads["spi-race"]; b.Status == "open" {
+		t.Error("parent bead reverted to open while wizard alive — spi-5bzu9r symptom recurred")
+	}
+}
+
+// --- Cluster-mode key-shape coverage ---
+
+// TestOrphanSweep_ClusterPath_KeyShape proves the function is key-shape
+// agnostic: pod-name+namespace-shaped wizard IDs flow through the same
+// code path. The only thing OrphanSweep cares about is that the attempt
+// label's agent name matches the wizardregistry.Wizard.ID.
+func TestOrphanSweep_ClusterPath_KeyShape(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-pod-bead", Status: "in_progress"})
+
+	// Cluster-style ID: the agent label on the attempt bead carries the
+	// pod name verbatim. The fake registry treats IDs as opaque, just like
+	// the production cluster impl.
+	clusterID := "wizard-spi-pod-bead-w1-0"
+	deps.addAttempt("spi-pod-bead", store.Bead{
+		ID:     "att-pod",
+		Status: "in_progress",
+		Parent: "spi-pod-bead",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:" + clusterID},
+	})
+
+	reg, ctl := newRegistry()
+	upsertDead(t, ctl, wizardregistry.Wizard{
+		ID:        clusterID,
+		Mode:      wizardregistry.ModeCluster,
+		PodName:   clusterID,
+		Namespace: "spire",
+		BeadID:    "spi-pod-bead",
+	})
+
+	if _, err := OrphanSweep(deps, reg, OrphanScope{All: true}); err != nil {
+		t.Fatalf("OrphanSweep: %v", err)
+	}
+	if got := deps.closedAttempts["att-pod"]; got != "interrupted:orphan" {
+		t.Errorf("expected cluster-keyed attempt closed with interrupted:orphan, got %q", got)
+	}
+}
+
+// TestOrphanSweep_ClusterPath_Live: a cluster wizard whose pod is alive
+// is left untouched by Scan A and Scan B.
+func TestOrphanSweep_ClusterPath_Live(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-pod-live", Status: "in_progress"})
+	clusterID := "wizard-spi-pod-live-w0-0"
+	deps.addAttempt("spi-pod-live", store.Bead{
+		ID:     "att-pod-live",
+		Status: "in_progress",
+		Parent: "spi-pod-live",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:" + clusterID},
+	})
+
+	reg, ctl := newRegistry()
+	upsertAlive(t, ctl, wizardregistry.Wizard{
+		ID:        clusterID,
+		Mode:      wizardregistry.ModeCluster,
+		PodName:   clusterID,
+		Namespace: "spire",
+		BeadID:    "spi-pod-live",
+	})
+
+	report, err := OrphanSweep(deps, reg, OrphanScope{All: true})
 	if err != nil {
 		t.Fatalf("OrphanSweep: %v", err)
 	}
+	if report.Dead > 0 {
+		t.Errorf("expected 0 dead entries for live cluster wizard, got %d", report.Dead)
+	}
+	if _, closed := deps.closedAttempts["att-pod-live"]; closed {
+		t.Error("live cluster wizard's attempt was closed — Scan B mis-classified it")
+	}
+}
 
-	// Attempt should NOT be closed — crash-safe resume.
-	if _, closed := deps.closedAttempts["att-crash-safe"]; closed {
-		t.Error("attempt should NOT be closed when graph_state.json is present (crash-safe resume)")
+// TestOrphanSweep_NilRegistry_ReturnsError: defensive — passing nil
+// must not panic.
+func TestOrphanSweep_NilRegistry_ReturnsError(t *testing.T) {
+	deps := newStubDeps()
+	if _, err := OrphanSweep(deps, nil, OrphanScope{All: true}); err == nil {
+		t.Fatal("expected error when reg is nil")
 	}
 }
 

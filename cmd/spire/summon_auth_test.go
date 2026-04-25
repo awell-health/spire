@@ -12,6 +12,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/wizard"
+	"github.com/awell-health/spire/pkg/wizardregistry"
 )
 
 // TestCmdSummon_UnsupportedHeader surfaces the single user-facing invariant
@@ -227,7 +228,7 @@ func TestCmdSummon_AuthPlumbingReachesSummonLocal(t *testing.T) {
 
 	prevBegin := summonBeginWorkFunc
 	defer func() { summonBeginWorkFunc = prevBegin }()
-	summonBeginWorkFunc = func(_ beadlifecycle.Deps, _ string, _ beadlifecycle.BeginOpts) (string, error) {
+	summonBeginWorkFunc = func(_ beadlifecycle.Deps, _ wizardregistry.Registry, _ string, _ beadlifecycle.BeginOpts) (string, error) {
 		return "attempt-stub", nil
 	}
 
@@ -275,7 +276,7 @@ func TestCmdSummon_HeaderPlumbingReachesSummonLocal(t *testing.T) {
 
 	prevBegin := summonBeginWorkFunc
 	defer func() { summonBeginWorkFunc = prevBegin }()
-	summonBeginWorkFunc = func(_ beadlifecycle.Deps, _ string, _ beadlifecycle.BeginOpts) (string, error) {
+	summonBeginWorkFunc = func(_ beadlifecycle.Deps, _ wizardregistry.Registry, _ string, _ beadlifecycle.BeginOpts) (string, error) {
 		return "attempt-stub", nil
 	}
 
