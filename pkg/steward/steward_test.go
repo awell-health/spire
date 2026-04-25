@@ -903,7 +903,7 @@ func TestSweepHookedSteps_ResolvesDesign(t *testing.T) {
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 1 {
 		t.Errorf("SweepHookedSteps returned %d, want 1", count)
@@ -985,7 +985,7 @@ func TestSweepHookedSteps_SkipsOpenDesign(t *testing.T) {
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0", count)
@@ -1066,7 +1066,7 @@ func TestSweepHookedSteps_TowerScoped(t *testing.T) {
 	// Sweep as tower "awell" — should process awell + legacy, skip mlti.
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "awell", gsStore)
+	count := SweepHookedSteps(false, backend, "awell", gsStore, PhaseDispatch{})
 
 	if count != 2 {
 		t.Errorf("SweepHookedSteps returned %d, want 2", count)
@@ -1135,7 +1135,7 @@ func TestSweepHookedSteps_HumanApprove_LabelsPresent_Skips(t *testing.T) {
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (labels still present)", count)
@@ -1195,7 +1195,7 @@ func TestSweepHookedSteps_HumanApprove_LabelsCleared_Resolves(t *testing.T) {
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 1 {
 		t.Errorf("SweepHookedSteps returned %d, want 1", count)
@@ -1351,7 +1351,7 @@ func TestSweepHookedSteps_HumanApprove_OnlyNeedsHumanPresent_Skips(t *testing.T)
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (needs-human still present)", count)
@@ -1434,7 +1434,7 @@ func TestSweepHookedSteps_SkipsForeignOwnedAttempt(t *testing.T) {
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (foreign attempt skipped)", count)
@@ -1508,7 +1508,7 @@ func TestSweepHookedSteps_SkipsForeignOwnedAttempt_GraphStateFallback(t *testing
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (foreign attempt skipped in graph-state fallback)", count)
@@ -1643,7 +1643,7 @@ func TestSweepHookedSteps_FailureEvidence_SummonsCleric(t *testing.T) {
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 1 {
 		t.Errorf("SweepHookedSteps returned %d, want 1", count)
@@ -1745,7 +1745,7 @@ func TestSweepHookedSteps_FailureEvidence_AlreadyClaimed_Skips(t *testing.T) {
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (already claimed)", count)
@@ -1815,7 +1815,7 @@ func TestSweepHookedSteps_FailureEvidence_NoRecoveryBead_Skips(t *testing.T) {
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (no failure evidence)", count)
@@ -1916,7 +1916,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t 
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 1 {
 		t.Errorf("SweepHookedSteps returned %d, want 1", count)
@@ -2032,7 +2032,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_StaysHooked(t *testing
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (escalated — stays hooked)", count)
@@ -2120,7 +2120,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericClosedWithoutOutcome_StaysHooked
 
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
-	count := SweepHookedSteps(false, backend, "test-tower", gsStore)
+	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
 
 	if count != 0 {
 		t.Errorf("SweepHookedSteps returned %d, want 0 (no outcome — stays hooked)", count)
@@ -2225,7 +2225,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_NoResummonOnRepeatSwee
 
 	const sweeps = 3
 	for i := 0; i < sweeps; i++ {
-		if count := SweepHookedSteps(false, backend, "test-tower", gsStore); count != 0 {
+		if count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{}); count != 0 {
 			t.Errorf("sweep %d: SweepHookedSteps returned %d, want 0 (closed+escalated — parent stays parked)", i+1, count)
 		}
 	}

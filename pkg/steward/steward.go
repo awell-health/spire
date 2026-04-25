@@ -41,6 +41,7 @@ import (
 	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward/attached"
+	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -353,6 +354,18 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		}
 	}
 
+	// Resolve ClusterDispatch lazily for cluster-native mode: if the
+	// caller set it explicitly (test override) use that; otherwise invoke
+	// the factory, which builds the config against the per-tower DB that
+	// was opened above by StoreOpenAtFunc. The resolved value is shared
+	// across the bead-level dispatch branch below and the phase-level
+	// dispatch seam used by the review/hooked-sweep paths at step 4b/4d
+	// — invoking the factory once per cycle, not once per call site.
+	cycleClusterDispatch := cfg.ClusterDispatch
+	if deploymentMode == config.DeploymentModeClusterNative && cycleClusterDispatch == nil && cfg.BuildClusterDispatch != nil {
+		cycleClusterDispatch = cfg.BuildClusterDispatch(towerName)
+	}
+
 	// Branch on deployment mode. Local-native runs the existing direct-
 	// spawn loop; cluster-native emits WorkloadIntents; attached-reserved
 	// is a typed not-implemented surface that skips dispatch entirely.
@@ -362,14 +375,8 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		log.Printf("[steward] %sattached-reserved: dispatch skipped — %s", prefix, attached.ErrAttachedNotImplemented)
 
 	case config.DeploymentModeClusterNative:
-		// Resolve ClusterDispatch lazily: if the caller set it
-		// explicitly (test override) use that; otherwise invoke the
-		// factory, which builds the config against the per-tower DB
-		// that was opened above by StoreOpenAtFunc.
 		cycleCfg := cfg
-		if cycleCfg.ClusterDispatch == nil && cycleCfg.BuildClusterDispatch != nil {
-			cycleCfg.ClusterDispatch = cycleCfg.BuildClusterDispatch(towerName)
-		}
+		cycleCfg.ClusterDispatch = cycleClusterDispatch
 		spawned = dispatchClusterNative(context.Background(), prefix, schedulable, cycleCfg)
 
 	default: // DeploymentModeLocalNative — the unchanged historical path
@@ -467,8 +474,21 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		log.Printf("[steward] %ssummoned: %d wizard(s)", prefix, spawned)
 	}
 
+	// Per-phase dispatch seam: the review-routing and hooked-sweep paths
+	// need to emit cluster-native WorkloadIntents instead of calling
+	// backend.Spawn when the tower's EffectiveDeploymentMode is
+	// cluster-native. Bundle the state they need into a PhaseDispatch so
+	// each callee can branch through dispatchPhase. Local-native towers
+	// get a PhaseDispatch with Mode set; ClusterDispatch is read only on
+	// the cluster-native branch. Reuse the same cycleClusterDispatch the
+	// bead-level dispatch used above so the factory fires once per cycle.
+	phaseDispatch := PhaseDispatch{
+		Mode:            deploymentMode,
+		ClusterDispatch: cycleClusterDispatch,
+	}
+
 	// Step 4b: Detect standalone tasks ready for review.
-	DetectReviewReady(cfg.DryRun, cfg.Backend, towerName)
+	DetectReviewReady(cfg.DryRun, cfg.Backend, towerName, phaseDispatch)
 
 	// Step 4c: Detect tasks with review feedback that need wizard re-engagement.
 	DetectReviewFeedback(cfg.DryRun)
@@ -479,7 +499,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	if graphStore == nil {
 		graphStore = &executor.FileGraphStateStore{ConfigDir: config.Dir}
 	}
-	if hookedCount := SweepHookedSteps(cfg.DryRun, cfg.Backend, towerName, graphStore); hookedCount > 0 {
+	if hookedCount := SweepHookedSteps(cfg.DryRun, cfg.Backend, towerName, graphStore, phaseDispatch); hookedCount > 0 {
 		log.Printf("[steward] %shooked sweep: re-summoned %d wizard(s)", prefix, hookedCount)
 	}
 
@@ -774,7 +794,13 @@ func CleanUpdatedLabels() int {
 //   - It has no active (in_progress) review-round bead (review already running)
 //
 // This replaces the legacy label-based query (review-ready label).
-func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string) {
+//
+// pd carries the tower's deployment-mode seam: when the mode is
+// cluster-native and pd.ClusterDispatch is populated, review dispatch
+// emits a PhaseReview WorkloadIntent instead of calling backend.Spawn
+// directly. Tests that exercise only local-native behavior can pass a
+// zero-value PhaseDispatch.
+func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string, pd PhaseDispatch) {
 	inProgress, err := store.ListBeads(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] detectReviewReady: %s", err)
@@ -846,18 +872,20 @@ func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string) {
 
 		reviewerName := "reviewer-" + SanitizeK8sLabel(b.ID)
 
-		handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+		handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 			Name:       reviewerName,
 			BeadID:     b.ID,
 			Role:       agent.RoleSage,
 			Tower:      towerName,
 			InstanceID: InstanceIDFunc(),
 			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", reviewerName+".log"),
-		})
+		}, intent.PhaseReview)
 		if spawnErr != nil {
-			log.Printf("[steward] failed to spawn reviewer for %s: %v", b.ID, spawnErr)
-		} else {
+			log.Printf("[steward] failed to route reviewer for %s: %v", b.ID, spawnErr)
+		} else if handle != nil {
 			log.Printf("[steward] spawned reviewer %s for %s (%s)", reviewerName, b.ID, handle.Identifier())
+		} else {
+			log.Printf("[steward] emitted review intent for %s (phase=%s)", b.ID, intent.PhaseReview)
 		}
 	}
 }
@@ -1036,7 +1064,15 @@ func DetectReviewFeedback(dryRun bool) {
 
 // SweepHookedSteps finds graph states with hooked steps and re-summons
 // wizards when the hooked condition is resolved (e.g., design bead closed).
-func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, graphStore executor.GraphStateStore) int {
+//
+// pd carries the tower's deployment-mode seam: when the mode is
+// cluster-native and pd.ClusterDispatch is populated, re-summon emits a
+// bead-level WorkloadIntent instead of calling backend.Spawn directly —
+// the operator then reconciles a fresh wizard pod for the resumed bead.
+// The cleric-summon branch for recovery beads (a different bead than the
+// hooked parent) is also routed through the same seam. Tests that only
+// exercise local-native behavior can pass a zero-value PhaseDispatch.
+func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, graphStore executor.GraphStateStore, pd PhaseDispatch) int {
 	resummoned := 0
 
 	// --- Primary path: bead-status-driven sweep ---
@@ -1257,18 +1293,20 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				if wizName == "" {
 					wizName = "wizard-" + SanitizeK8sLabel(parent.ID)
 				}
-				handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+				handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 					Name:       wizName,
 					BeadID:     parent.ID,
 					Role:       agent.RoleWizard,
 					Tower:      towerName,
 					InstanceID: localInstanceID,
 					LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", wizName+".log"),
-				})
+				}, hookedResumePhase(parent.Type))
 				if spawnErr != nil {
-					log.Printf("[steward] hooked sweep: spawn %s: %s", wizName, spawnErr)
+					log.Printf("[steward] hooked sweep: dispatch %s: %s", wizName, spawnErr)
 				} else if handle != nil {
 					log.Printf("[steward] hooked sweep: re-summoned %s for %s after cleric success (%s)", wizName, parent.ID, handle.Identifier())
+				} else {
+					log.Printf("[steward] hooked sweep: emitted resume intent for %s after cleric success", parent.ID)
 				}
 				resolvedBeadIDs[parent.ID] = true
 				resummoned++
@@ -1315,18 +1353,25 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 
 			log.Printf("[steward] hooked sweep: summoning cleric %s for recovery %s (source %s)", clericName, evidence.RecoveryBeadID, parent.ID)
 
-			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+			// Dispatch the recovery bead (not the parent) — the cleric's
+			// workload is the recovery bead itself. A recovery bead is a
+			// bead-level dispatch, so we stamp the recovery bead type (or
+			// PhaseWizard fallback) as the intent phase. recoveryBead was
+			// fetched above at the "cleric finished?" branch; reuse it.
+			handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 				Name:       clericName,
 				BeadID:     evidence.RecoveryBeadID,
 				Role:       agent.RoleExecutor,
 				Tower:      towerName,
 				InstanceID: localInstanceID,
 				LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", clericName+".log"),
-			})
+			}, beadDispatchPhase("", recoveryBead.Type))
 			if spawnErr != nil {
-				log.Printf("[steward] hooked sweep: spawn cleric %s: %s", clericName, spawnErr)
+				log.Printf("[steward] hooked sweep: dispatch cleric %s: %s", clericName, spawnErr)
 			} else if handle != nil {
 				log.Printf("[steward] hooked sweep: summoned cleric %s for %s (%s)", clericName, evidence.RecoveryBeadID, handle.Identifier())
+			} else {
+				log.Printf("[steward] hooked sweep: emitted cleric intent for recovery %s", evidence.RecoveryBeadID)
 			}
 			resummoned++
 			continue
@@ -1356,18 +1401,20 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 		if agentName == "" {
 			agentName = "wizard-" + SanitizeK8sLabel(parent.ID)
 		}
-		handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+		handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 			Name:       agentName,
 			BeadID:     parent.ID,
 			Role:       agent.RoleWizard,
 			Tower:      towerName,
 			InstanceID: localInstanceID,
 			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
-		})
+		}, hookedResumePhase(parent.Type))
 		if spawnErr != nil {
-			log.Printf("[steward] hooked sweep: spawn %s: %s", agentName, spawnErr)
+			log.Printf("[steward] hooked sweep: dispatch %s: %s", agentName, spawnErr)
 		} else if handle != nil {
 			log.Printf("[steward] hooked sweep: re-summoned %s for %s (%s)", agentName, parent.ID, handle.Identifier())
+		} else {
+			log.Printf("[steward] hooked sweep: emitted resume intent for %s", parent.ID)
 		}
 		resummoned++
 	}
@@ -1481,18 +1528,21 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			}
 
 			// Re-summon wizard.
-			handle, spawnErr := backend.Spawn(agent.SpawnConfig{
+			parentForPhase, _ := GetBeadFunc(gs.BeadID)
+			handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 				Name:       agentName,
 				BeadID:     gs.BeadID,
 				Role:       agent.RoleWizard,
 				Tower:      towerName,
 				InstanceID: localInstanceID,
 				LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", agentName+".log"),
-			})
+			}, hookedResumePhase(parentForPhase.Type))
 			if spawnErr != nil {
-				log.Printf("[steward] hooked sweep: spawn %s: %s", agentName, spawnErr)
+				log.Printf("[steward] hooked sweep: dispatch %s: %s", agentName, spawnErr)
 			} else if handle != nil {
 				log.Printf("[steward] hooked sweep: re-summoned %s for %s (%s) (graph-state fallback)", agentName, gs.BeadID, handle.Identifier())
+			} else {
+				log.Printf("[steward] hooked sweep: emitted resume intent for %s (graph-state fallback)", gs.BeadID)
 			}
 			resummoned++
 			break
@@ -1500,6 +1550,17 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 	}
 
 	return resummoned
+}
+
+// hookedResumePhase returns the FormulaPhase a hooked-sweep resume should
+// stamp on an emitted WorkloadIntent. A resume re-dispatches the whole
+// bead (the wizard walks the formula and picks up the hooked step), so
+// the phase is bead-level — same resolution rule as dispatchClusterNative:
+// the bead's type when present, intent.PhaseWizard as the fallback.
+// Keeping this behind a single helper lets tests pin the rule and future
+// changes to "which phase does a resume use" stay in one place.
+func hookedResumePhase(beadType string) string {
+	return beadDispatchPhase("", beadType)
 }
 
 // FailureEvidence holds the IDs of recovery and alert beads linked to a hooked parent

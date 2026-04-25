@@ -11,10 +11,14 @@ package steward
 //   - It MUST NOT call backend.Spawn. Cluster-native scheduling does not
 //     create pods; it emits intent.WorkloadIntent values and the operator
 //     reconciles them into pods.
-//   - It MUST go through dispatch.ClaimThenEmit for every dispatch. The
+//   - Bead-level dispatch MUST go through dispatch.ClaimThenEmit. The
 //     attempt bead row created by the claim is the canonical ownership
 //     seam — the in-process busy map and per-bead mutex are explicitly
-//     not allowed as substitutes.
+//     not allowed as substitutes. Phase-level dispatch (review, hooked-
+//     step resume) emits directly via the IntentPublisher because the
+//     wizard's bead-level claim is already in place; per-phase intents
+//     derive their uniqueness from the (task_id, dispatch_seq) PK on
+//     workload_intents, bumped by store.NextDispatchSeq.
 //
 // The file deliberately contains no k8s.io imports. Talking to a cluster
 // is the IntentPublisher's concern, plumbed in from cmd/spire wiring.
@@ -22,9 +26,12 @@ package steward
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/bd"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/steward/dispatch"
 	"github.com/awell-health/spire/pkg/steward/identity"
@@ -286,3 +293,124 @@ func (s singleBeadSelector) SelectReady(_ context.Context) ([]string, error) {
 	}
 	return []string{s.id}, nil
 }
+
+// PhaseDispatch bundles the deployment-mode seam state that per-phase
+// dispatch points (DetectReviewReady, SweepHookedSteps) need to route a
+// workload correctly. The zero value behaves as local-native mode: the
+// caller's backend.Spawn is invoked directly and ClusterDispatch is
+// unused. Tests that don't exercise cluster-native paths can pass a zero
+// value.
+type PhaseDispatch struct {
+	// Mode is the tower's effective deployment mode. When set to
+	// config.DeploymentModeClusterNative and ClusterDispatch is non-nil,
+	// dispatchPhase emits a WorkloadIntent instead of calling
+	// backend.Spawn.
+	Mode config.DeploymentMode
+
+	// ClusterDispatch carries the cluster-native seams used when Mode is
+	// cluster-native. Nil disables the cluster-native branch and
+	// dispatchPhase falls back to backend.Spawn even in cluster-native
+	// mode (with a log line so the gap is visible).
+	ClusterDispatch *ClusterDispatchConfig
+}
+
+// dispatchPhase is the single mode-aware entry point for per-phase
+// workload dispatch — review routing and hooked-step resume. It branches
+// on pd.Mode:
+//
+//   - cluster-native: emits a phase-keyed WorkloadIntent via
+//     dispatchPhaseClusterNative; the operator reconciles it into the
+//     correct pod shape (sage for review, apprentice for implement/fix,
+//     wizard for bead-level). Returns a nil Handle because no local
+//     process is created.
+//   - local-native (and zero value): forwards to backend.Spawn with the
+//     provided SpawnConfig, preserving historical behavior.
+//
+// All per-phase dispatch points in pkg/steward MUST go through this seam
+// so the "cluster-native never calls backend.Spawn" invariant documented
+// at the top of this file holds end-to-end. Callers route each site by
+// passing the corresponding intent phase constant (intent.PhaseReview,
+// intent.PhaseWizard, intent.PhaseImplement, etc.).
+func dispatchPhase(ctx context.Context, pd PhaseDispatch, backend agent.Backend, sc agent.SpawnConfig, phase string) (agent.Handle, error) {
+	if pd.Mode == config.DeploymentModeClusterNative {
+		if pd.ClusterDispatch == nil {
+			log.Printf("[steward] cluster-native phase dispatch: ClusterDispatch unset for %s (%s) — falling back to backend.Spawn", sc.BeadID, phase)
+			return backend.Spawn(sc)
+		}
+		if err := dispatchPhaseClusterNative(ctx, pd.ClusterDispatch, sc.BeadID, phase); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	return backend.Spawn(sc)
+}
+
+// dispatchPhaseClusterNative emits a phase-keyed WorkloadIntent for the
+// given bead and phase. It is the phase-level counterpart to
+// dispatchClusterNative and is invoked when a per-phase workload (review
+// pod, hooked-step resume) needs to run while the bead's wizard attempt
+// is already active.
+//
+// Unlike dispatchClusterNative this path does NOT claim a bead-level
+// dispatch slot — the wizard already claimed the bead, and the
+// (task_id, dispatch_seq) PK on workload_intents is the uniqueness
+// mechanism for the emitted row. store.NextDispatchSeq bumps the
+// sequence monotonically across all prior intents for the task, so a
+// per-phase emit never collides with the bead-level intent or a prior
+// phase-level emit.
+//
+// The function preserves the file-level invariant that we never call
+// backend.Spawn: it only writes to the intent outbox; the operator
+// reconciles the resulting pod.
+func dispatchPhaseClusterNative(ctx context.Context, cd *ClusterDispatchConfig, beadID, phase string) error {
+	if cd == nil {
+		return errors.New("cluster-native phase dispatch: ClusterDispatch is not configured")
+	}
+	if cd.Resolver == nil || cd.Publisher == nil {
+		return errors.New("cluster-native phase dispatch: Resolver and Publisher both required")
+	}
+	if beadID == "" {
+		return errors.New("cluster-native phase dispatch: beadID is required")
+	}
+	if phase == "" {
+		return errors.New("cluster-native phase dispatch: phase is required")
+	}
+
+	repoPrefix := beadRepoPrefix(beadID)
+	ident, err := cd.Resolver.Resolve(ctx, repoPrefix)
+	if err != nil {
+		return fmt.Errorf("cluster-native phase dispatch: resolve repo %q for %s: %w", repoPrefix, beadID, err)
+	}
+
+	seq, err := NextDispatchSeqFunc(beadID)
+	if err != nil {
+		return fmt.Errorf("cluster-native phase dispatch: next dispatch seq for %s: %w", beadID, err)
+	}
+
+	handoffMode := cd.HandoffMode
+	if handoffMode == "" {
+		handoffMode = string(runtime.HandoffBundle)
+	}
+
+	wi := intent.WorkloadIntent{
+		TaskID:      beadID,
+		DispatchSeq: seq,
+		Reason:      "phase:" + phase,
+		RepoIdentity: intent.RepoIdentity{
+			URL:        ident.URL,
+			BaseBranch: ident.BaseBranch,
+			Prefix:     ident.Prefix,
+		},
+		FormulaPhase: phase,
+		HandoffMode:  handoffMode,
+	}
+
+	if err := cd.Publisher.Publish(ctx, wi); err != nil {
+		return fmt.Errorf("cluster-native phase dispatch: publish %s (%s, seq=%d): %w", beadID, phase, seq, err)
+	}
+	return nil
+}
+
+// NextDispatchSeqFunc is a test-replaceable hook for store.NextDispatchSeq
+// so unit tests can avoid depending on an open dolt connection.
+var NextDispatchSeqFunc = store.NextDispatchSeq
