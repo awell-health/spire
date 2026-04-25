@@ -293,8 +293,14 @@ ServiceAccount (KSA) and to the bucket.
 
 ### Namespace
 
+Section 2 already created the `spire` namespace as part of the cluster
+verification step. If you are running section 4 in a fresh shell or are
+unsure, the idempotent re-apply below will create the namespace if it
+is missing and quietly succeed if it already exists:
+
 ```bash
-kubectl create namespace spire
+kubectl create namespace spire \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 The chart defaults to namespace `spire` (overridable via
@@ -406,7 +412,7 @@ replace) `helm/spire/values.yaml`, so both render together when you
 pass `-f helm/spire/values.gke.yaml`. Sections 1–4 of this runbook
 already created the GKE cluster, the Artifact Registry images, the
 DoltHub tower repo, the GCS bundle bucket, and the Workload Identity
-binding from the `spire-operator` KSA to
+binding from the `spire-tower` KSA to
 `spire-tower@${PROJECT_ID}.iam.gserviceaccount.com`. This step turns
 all of that into running pods.
 
@@ -491,7 +497,7 @@ What each override does and where it lands:
   pure-Workload-Identity install. Pass `/dev/null` (or any empty
   file) via `--set-file` to satisfy the gate; the runtime credential
   resolution still goes through Workload Identity because the
-  `spire-operator` KSA is bound to the GSA. (TODO: verify whether the
+  `spire-tower` KSA is bound to the GSA. (TODO: verify whether the
   chart has since grown a `--no-gcp-key` opt-out — this gate is
   tracked for removal in the cluster-attach epic chain.)
 - `gateway.apiToken` — Bearer token the gateway validates for every
@@ -512,7 +518,7 @@ What each override does and where it lands:
 
 There is no `serviceAccount.googleServiceAccount` value on this
 chart. The header of `helm/spire/values.gke.yaml` is the source of
-truth: bind the `spire-operator` KSA in the `spire` namespace to
+truth: bind the `spire-tower` KSA in the `spire` namespace to
 `spire-tower@${PROJECT_ID}.iam.gserviceaccount.com` with `gcloud iam
 service-accounts add-iam-policy-binding` and `kubectl annotate
 serviceaccount`, then the chart picks it up at runtime. Section 4
@@ -1065,24 +1071,33 @@ Upgrading the tower is a helm upgrade with a new image tag. The cluster does the
 
 ### 11.1 Pick the new image tag
 
-You either bump the tag in `helm/spire/values.gke.yaml`:
+You either bump the per-component tags in `helm/spire/values.gke.yaml`:
 
 ```yaml
-image:
-  repository: us-central1-docker.pkg.dev/${PROJECT_ID}/spire/spire
-  tag: ${NEW_TAG}
+images:
+  steward:
+    repository: us-central1-docker.pkg.dev/${PROJECT_ID}/spire/spire-steward
+    tag: ${NEW_TAG}
+  agent:
+    repository: us-central1-docker.pkg.dev/${PROJECT_ID}/spire/spire-agent
+    tag: ${NEW_TAG}
 ```
 
-…or pass it on the command line for a one-shot upgrade without editing the values file:
+…or pass them on the command line for a one-shot upgrade without editing the values file:
 
 ```bash
 helm upgrade --install spire helm/spire \
   -n spire \
   -f helm/spire/values.gke.yaml \
-  --set image.tag=${NEW_TAG}
+  --set images.steward.tag=${NEW_TAG} \
+  --set images.agent.tag=${NEW_TAG}
 ```
 
-This is the same `helm upgrade --install` invocation as the first install (section 5); helm idempotently reconciles to the new tag.
+The chart uses per-component image keys (`images.steward.*` and
+`images.agent.*`); a singular `image.tag` override is silently ignored,
+so make sure to set both. This is the same `helm upgrade --install`
+invocation as the first install (section 5); helm idempotently
+reconciles to the new tags.
 
 ### 11.2 Expected rollout
 
@@ -1175,23 +1190,23 @@ missing on the KSA, or the GSA's IAM policy never got the
 
 ```bash
 # Confirm the KSA carries the WI annotation
-kubectl get sa spire -n spire -o jsonpath='{.metadata.annotations.iam\.gke\.io/gcp-service-account}'
-# Expect: spire-bundles@<project>.iam.gserviceaccount.com
+kubectl get sa spire-tower -n spire -o jsonpath='{.metadata.annotations.iam\.gke\.io/gcp-service-account}'
+# Expect: spire-tower@${PROJECT_ID}.iam.gserviceaccount.com
 
 # Confirm the GSA's IAM policy lists the KSA as a workloadIdentityUser
 gcloud iam service-accounts get-iam-policy \
-  spire-bundles@<project>.iam.gserviceaccount.com \
-  --project=<project> \
+  spire-tower@${PROJECT_ID}.iam.gserviceaccount.com \
+  --project=${PROJECT_ID} \
   --format='table(bindings.role,bindings.members)'
 # Expect a binding "roles/iam.workloadIdentityUser" with member
-# "serviceAccount:<project>.svc.id.goog[spire/spire]"
+# "serviceAccount:${PROJECT_ID}.svc.id.goog[spire/spire-tower]"
 
 # From inside the pod, prove the metadata server is returning a token for
 # the expected GSA.
 kubectl exec deploy/spire-steward -n spire -c steward -- \
   curl -sS -H "Metadata-Flavor: Google" \
   http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email
-# Expect: spire-bundles@<project>.iam.gserviceaccount.com
+# Expect: spire-tower@${PROJECT_ID}.iam.gserviceaccount.com
 ```
 
 If the email comes back as the node default service account
@@ -1204,14 +1219,14 @@ isn't taking effect for this pod — the KSA annotation, the node-pool
 ```bash
 # Bind the KSA → GSA (one-time per namespace/SA)
 gcloud iam service-accounts add-iam-policy-binding \
-  spire-bundles@<project>.iam.gserviceaccount.com \
+  spire-tower@${PROJECT_ID}.iam.gserviceaccount.com \
   --role=roles/iam.workloadIdentityUser \
-  --member="serviceAccount:<project>.svc.id.goog[spire/spire]" \
-  --project=<project>
+  --member="serviceAccount:${PROJECT_ID}.svc.id.goog[spire/spire-tower]" \
+  --project=${PROJECT_ID}
 
 # Annotate the KSA to declare which GSA to impersonate
-kubectl annotate serviceaccount spire -n spire \
-  iam.gke.io/gcp-service-account=spire-bundles@<project>.iam.gserviceaccount.com \
+kubectl annotate serviceaccount spire-tower -n spire \
+  iam.gke.io/gcp-service-account=spire-tower@${PROJECT_ID}.iam.gserviceaccount.com \
   --overwrite
 
 # Rotate pods so they pick up the fresh token
@@ -1219,7 +1234,7 @@ kubectl rollout restart deploy/spire-steward deploy/spire-gateway -n spire
 ```
 
 If the cluster itself isn't WI-enabled, recreate it with
-`--workload-pool=<project>.svc.id.goog` (cluster-level) and the node pool
+`--workload-pool=${PROJECT_ID}.svc.id.goog` (cluster-level) and the node pool
 with `--workload-metadata=GKE_METADATA`.
 
 ### ManagedCertificate stuck in `Provisioning`
