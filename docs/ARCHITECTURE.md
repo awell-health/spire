@@ -186,6 +186,15 @@ Key operations: `create`, `update`, `close`, `list`, `show`, `ready`
 (returns beads with no open blockers), `dep add`, `children`, `dolt commit`,
 `dolt push`, `dolt pull`.
 
+**Internal bead types:** Spire stores four internal-only types —
+`message`, `step`, `attempt`, `review` — alongside user-facing work
+beads in the `issues` table. They are created programmatically by the
+engine (executor, wizard, dispatch layer), never by `spire file`, and
+are hidden from the board, the steward queue, and `bd ready`. The
+`IsWorkBead` invariant (`!InternalTypes[type] && Parent == ""`) gates
+every dispatch path. See [INTERNAL-BEADS.md](INTERNAL-BEADS.md) for the
+full taxonomy, filter sites, and legacy label fallback.
+
 **Hooked status model:** Step beads (children of a parent work bead)
 carry their own status: `open` -> `in_progress` -> `hooked` / `completed`
 / `failed`. A step enters `hooked` when it is parked waiting for an

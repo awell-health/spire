@@ -8,6 +8,9 @@ import (
 )
 
 // InternalTypes are bead types used for internal bookkeeping, not user-facing work.
+// See docs/INTERNAL-BEADS.md for the full taxonomy, IsWorkBead invariant,
+// and the list of filter sites that hide these types from the board,
+// steward queue, and inspector.
 var InternalTypes = map[string]bool{
 	"message": true,
 	"step":    true,

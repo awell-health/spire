@@ -86,6 +86,11 @@ spire file "Implement the thing" -t task -p 1 --design spi-xxx
 spire file "My subtask" -t task -p 1 --parent spi-xxx
 ```
 
+> **Internal bead types** (`message`, `step`, `attempt`, `review`) are
+> programmatic-only — created by the engine, not by `spire file`. Don't
+> hand-file them. See [docs/INTERNAL-BEADS.md](docs/INTERNAL-BEADS.md)
+> for the taxonomy, invariant, and filter sites.
+
 ### Design-first workflow
 
 Always start with a design bead before filing tasks or epics:
