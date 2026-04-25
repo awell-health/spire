@@ -1,6 +1,8 @@
 package board
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -8,8 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/awell-health/spire/pkg/process"
-	"github.com/awell-health/spire/pkg/registry"
+	"github.com/awell-health/spire/pkg/wizardregistry"
 )
 
 // AgentSnapshot holds the latest fetched state of all registered agents.
@@ -45,6 +46,11 @@ type AgentsMode struct {
 	height       int
 	cursor    int    // selected row
 	towerName string
+
+	// Registry is the wizard liveness oracle. When nil the agents tab
+	// renders empty — callers wire wizardregistry/local in local mode and
+	// wizardregistry/cluster in cluster mode.
+	Registry wizardregistry.Registry
 
 	// InlineActionFn executes an action within the TUI via tea.Cmd.
 	InlineActionFn func(PendingAction, string) error
@@ -482,30 +488,39 @@ func (m *AgentsMode) FooterHints() string {
 }
 
 // fetchAgents returns a tea.Cmd that reads the agent registry and produces an AgentSnapshot.
+//
+// Liveness goes through the wizardregistry.Registry contract — local mode
+// reads the on-disk wizards.json via wizardregistry/local; cluster mode
+// reads pod phase via wizardregistry/cluster. The two impls share the
+// same race-safety guarantee (no snapshot caching across IsAlive calls).
 func (m *AgentsMode) fetchAgents() tea.Cmd {
-	tower := m.towerName
+	reg := m.Registry
 	return func() tea.Msg {
-		allEntries, _ := registry.List()
-		// Filter by tower (empty towerName matches all).
-		var entries []registry.Entry
-		for _, e := range allEntries {
-			if tower == "" || e.Tower == tower {
-				entries = append(entries, e)
+		now := time.Now()
+		if reg == nil {
+			return AgentSnapshot{Agents: []AgentInfo{}, FetchedAt: now}
+		}
+		ctx := context.Background()
+		entries, listErr := reg.List(ctx)
+		if listErr != nil {
+			return AgentSnapshot{
+				Agents:    []AgentInfo{},
+				Error:     listErr.Error(),
+				FetchedAt: now,
 			}
 		}
-
-		now := time.Now()
 		agents := make([]AgentInfo, 0, len(entries))
-		for _, e := range entries {
+		for _, w := range entries {
 			info := AgentInfo{
-				Name:   e.Name,
-				BeadID: e.BeadID,
+				Name:   w.ID,
+				BeadID: w.BeadID,
 			}
-
-			// Determine status from PID liveness.
-			alive := e.PID > 0 && process.ProcessAlive(e.PID)
+			alive, err := reg.IsAlive(ctx, w.ID)
+			if err != nil && !errors.Is(err, wizardregistry.ErrNotFound) {
+				alive = false
+			}
 			if alive {
-				if e.BeadID != "" {
+				if w.BeadID != "" {
 					info.Status = "running"
 				} else {
 					info.Status = "idle"
@@ -513,18 +528,12 @@ func (m *AgentsMode) fetchAgents() tea.Cmd {
 			} else {
 				info.Status = "idle"
 			}
-
-			// Parse start time for duration.
-			if e.StartedAt != "" {
-				if t, err := time.Parse(time.RFC3339, e.StartedAt); err == nil {
-					info.StartedAt = t
-					info.Duration = now.Sub(t).Round(time.Second)
-				}
+			if !w.StartedAt.IsZero() {
+				info.StartedAt = w.StartedAt
+				info.Duration = now.Sub(w.StartedAt).Round(time.Second)
 			}
-
 			agents = append(agents, info)
 		}
-
 		return AgentSnapshot{
 			Agents:    agents,
 			FetchedAt: now,

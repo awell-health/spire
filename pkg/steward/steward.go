@@ -38,7 +38,6 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward/attached"
 	"github.com/awell-health/spire/pkg/steward/intent"
@@ -120,14 +119,13 @@ var AddDepTypedFunc = store.AddDepTyped
 // SendMessageFunc creates a message bead. Test-replaceable.
 var SendMessageFunc = sendMessage
 
-// reviewRegistryListFunc is a test-replaceable hook for registry.List used
-// by the local-native review-feedback fallback. Production points at
-// registry.List directly; tests stub it so the cluster-native path can
-// assert "no registry interaction" without touching the on-disk
-// wizards.json. The cluster-native branch in DetectReviewFeedback never
-// calls this — see lookupReviewOwner for the cluster-safe ownership
-// surface.
-var reviewRegistryListFunc = registry.List
+// reviewRegistryListFunc is a test-replaceable hook for the local-native
+// review-feedback fallback. Production points at agent.RegistryList
+// directly; tests stub it so the cluster-native path can assert "no
+// registry interaction" without touching the on-disk wizards.json. The
+// cluster-native branch in DetectReviewFeedback never calls this — see
+// lookupReviewOwner for the cluster-safe ownership surface.
+var reviewRegistryListFunc = agent.RegistryList
 
 // CheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.

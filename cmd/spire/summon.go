@@ -122,6 +122,12 @@ func init() {
 		}
 		return summonSpawnFunc(b, cfg)
 	}
+
+	// Wire pkg/summon's Registry seam to the local-mode wizardregistry
+	// adapter (spi-p6unf3). The CLI runs only on the laptop, so local is
+	// the right impl here; cluster summons go through the operator's
+	// wizardregistry/cluster path, not this code.
+	summon.Registry = newLocalRegistryAdapter()
 }
 
 // --- Registry function wrappers ---
@@ -624,7 +630,7 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 				} else if t2 := os.Getenv("SPIRE_TOWER"); t2 != "" {
 					towerName = t2
 				}
-				if _, berr := summonBeginWorkFunc(newLifecycleDeps(), id, beadlifecycle.BeginOpts{
+				if _, berr := summonBeginWorkFunc(newLifecycleDeps(), newLocalRegistryAdapter(), id, beadlifecycle.BeginOpts{
 					Mode:      beadlifecycle.ModeLocal,
 					AgentName: wizardName,
 					Worktree:  worktree,

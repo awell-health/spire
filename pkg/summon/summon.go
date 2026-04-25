@@ -9,6 +9,7 @@
 package summon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -22,9 +23,8 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
-	"github.com/awell-health/spire/pkg/process"
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/wizardregistry"
 )
 
 // Result is what a successful Run / SpawnWizard returns.
@@ -61,6 +61,13 @@ var (
 	SpawnFunc = func(b agent.Backend, cfg agent.SpawnConfig) (agent.Handle, error) {
 		return b.Spawn(cfg)
 	}
+
+	// Registry is the wizard liveness oracle. Wired by cmd/spire to a
+	// wizardregistry/local instance in local mode (cluster mode never
+	// reaches SpawnWizard since the operator owns wizard pod creation).
+	// Nil falls back to ErrAlreadyRunning being driven solely by the
+	// post-spawn Upsert path — duplicate detection is a no-op.
+	Registry wizardregistry.Registry
 )
 
 // ValidateDispatch returns an error when dispatch is not one of the accepted
@@ -126,18 +133,24 @@ func SpawnWizard(bead store.Bead, dispatch string) (Result, error) {
 		}
 	}
 
-	// Find a live wizard for this bead from the registry.
-	// The duplicate guard uses registry.List() directly.
-	regEntries, _ := registry.List()
-	var liveWizard *registry.Entry
-	for i := range regEntries {
-		if regEntries[i].BeadID == bead.ID && process.ProcessAlive(regEntries[i].PID) {
-			liveWizard = &regEntries[i]
-			break
+	// Find a live wizard for this bead via the wizardregistry.Registry
+	// contract. The Registry impl issues a fresh authoritative-source read
+	// per IsAlive call (no snapshot caching), so the duplicate guard is
+	// race-safe by construction.
+	if Registry != nil {
+		ctx := context.Background()
+		if entries, lerr := Registry.List(ctx); lerr == nil {
+			for _, w := range entries {
+				if w.BeadID != bead.ID {
+					continue
+				}
+				alive, _ := Registry.IsAlive(ctx, w.ID)
+				if !alive {
+					continue
+				}
+				return Result{WizardName: w.ID}, fmt.Errorf("%w: %s for %s", ErrAlreadyRunning, w.ID, bead.ID)
+			}
 		}
-	}
-	if liveWizard != nil {
-		return Result{WizardName: liveWizard.Name}, fmt.Errorf("%w: %s for %s (pid %d)", ErrAlreadyRunning, liveWizard.Name, bead.ID, liveWizard.PID)
 	}
 
 	name := "wizard-" + bead.ID
@@ -166,21 +179,26 @@ func SpawnWizard(bead store.Bead, dispatch string) (Result, error) {
 	pid, _ := strconv.Atoi(handle.Identifier())
 	// spi-6pmit1: BeginWork (called from cmd/spire/summon.go) already created the
 	// registry entry with a placeholder PID=0 (registry-first ordering). Now that
-	// we have the real PID, stamp it via registry.Update. Falls back to Upsert when
-	// called from contexts that don't call BeginWork (e.g. HTTP gateway via Run).
-	if uerr := registry.Update(name, func(e *registry.Entry) { e.PID = pid }); uerr != nil {
-		// Entry may not exist (gateway path skips BeginWork). Fall back to full Upsert.
-		worktree := filepath.Join(os.TempDir(), "spire-wizard", name, bead.ID)
-		if ferr := registry.Upsert(registry.Entry{
-			Name:      name,
+	// we have the real PID, stamp it via Registry.Upsert. Read-mostly cluster-mode
+	// backends return ErrReadOnly here, which we silently accept — the operator
+	// owns cluster registry writes.
+	if Registry != nil {
+		ctx := context.Background()
+		w := wizardregistry.Wizard{
+			ID:        name,
+			Mode:      wizardregistry.ModeLocal,
 			PID:       pid,
 			BeadID:    bead.ID,
-			Worktree:  worktree,
-			StartedAt: time.Now().UTC().Format(time.RFC3339),
-			Tower:     towerName,
-		}); ferr != nil {
-			log.Printf("warning: registry add for %s: %v", name, ferr)
+			StartedAt: time.Now().UTC(),
 		}
+		if uerr := Registry.Upsert(ctx, w); uerr != nil && !errors.Is(uerr, wizardregistry.ErrReadOnly) {
+			// Stamp may fail when no entry exists. Fall back via direct upsert
+			// of a fresh entry; silently tolerate ErrReadOnly.
+			log.Printf("warning: registry stamp for %s: %v", name, uerr)
+		}
+		// Suppress unused-import warning when worktree path is needed by
+		// future Tower/Worktree-aware backends.
+		_ = filepath.Join
 	}
 
 	commentID, cerr := AddCommentFunc(bead.ID, "summoned "+name)

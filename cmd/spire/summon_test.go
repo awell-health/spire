@@ -12,6 +12,7 @@ import (
 	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/wizard"
+	"github.com/awell-health/spire/pkg/wizardregistry"
 )
 
 // synthHeaderAuth is a SelectFlags value that synthesizes a throwaway
@@ -411,7 +412,7 @@ func TestSummonLocal_TransitionsOpenToInProgress(t *testing.T) {
 	}
 
 	var gotBeadID string
-	summonBeginWorkFunc = func(deps beadlifecycle.Deps, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
+	summonBeginWorkFunc = func(deps beadlifecycle.Deps, _ wizardregistry.Registry, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
 		gotBeadID = beadID
 		return "att-stub", nil
 	}
@@ -444,7 +445,7 @@ func TestSummonLocal_TransitionsReadyToInProgress(t *testing.T) {
 	}
 
 	var gotBeadID string
-	summonBeginWorkFunc = func(deps beadlifecycle.Deps, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
+	summonBeginWorkFunc = func(deps beadlifecycle.Deps, _ wizardregistry.Registry, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
 		gotBeadID = beadID
 		return "att-stub", nil
 	}
@@ -473,7 +474,7 @@ func TestSummonLocal_TransitionFailurePropagates(t *testing.T) {
 	storeGetBeadFunc = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: "open", Title: "test"}, nil
 	}
-	summonBeginWorkFunc = func(deps beadlifecycle.Deps, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
+	summonBeginWorkFunc = func(deps beadlifecycle.Deps, _ wizardregistry.Registry, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
 		return "", fmt.Errorf("db down")
 	}
 
@@ -509,7 +510,7 @@ func TestSummonLocal_RejectsMultipleTargets_FirstBadFails(t *testing.T) {
 		return Bead{ID: id, Status: "closed", Title: "bad"}, nil
 	}
 	// Stub BeginWork so spi-good doesn't need a live store.
-	summonBeginWorkFunc = func(deps beadlifecycle.Deps, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
+	summonBeginWorkFunc = func(deps beadlifecycle.Deps, _ wizardregistry.Registry, beadID string, opts beadlifecycle.BeginOpts) (string, error) {
 		return "att-stub", nil
 	}
 

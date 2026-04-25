@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -17,6 +18,8 @@ import (
 	"github.com/awell-health/spire/pkg/steward/identity"
 	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/wizardregistry"
+	wzcluster "github.com/awell-health/spire/pkg/wizardregistry/cluster"
 )
 
 // operatorIntentPollInterval is the cadence the operator polls the
@@ -197,6 +200,26 @@ func main() {
 	olapBackend := os.Getenv("SPIRE_OLAP_BACKEND")
 	olapDSN := os.Getenv("SPIRE_CLICKHOUSE_DSN")
 
+	// Wizard-liveness boundary (spi-p6unf3). The operator owns the
+	// canonical cluster Registry: a wizardregistry/cluster instance
+	// backed by live k8s pod-phase reads in the operator's namespace.
+	// AgentMonitor consumes Registry.IsAlive for liveness queries; pod
+	// reaping, stale-pod deletion, and phase updates remain k8s-native
+	// because they need the live pod object to delete/patch it. The
+	// Registry impl is read-only from clients (Upsert/Remove return
+	// ErrReadOnly); the operator reconciliation loop is the sole writer
+	// of cluster pod state.
+	var clusterRegistry wizardregistry.Registry
+	if k8sCfg, kerr := ctrl.GetConfig(); kerr == nil {
+		if cs, cserr := kubernetes.NewForConfig(k8sCfg); cserr == nil {
+			clusterRegistry = wzcluster.New(cs, wzcluster.Options{Namespace: namespace})
+		} else {
+			log.Error(cserr, "wizardregistry/cluster: build clientset failed; AgentMonitor.Registry will be nil")
+		}
+	} else {
+		log.Error(kerr, "wizardregistry/cluster: get rest.Config failed; AgentMonitor.Registry will be nil")
+	}
+
 	monitor := &controllers.AgentMonitor{
 		Client:         mgr.GetClient(),
 		Log:            log.WithName("agent-monitor"),
@@ -208,6 +231,7 @@ func main() {
 		Prefix:         prefix,
 		DolthubRemote:  dolthubRemote,
 		Resolver:       resolver,
+		Registry:       clusterRegistry,
 		GCSSecretName:  gcpSecretName,
 		GCSMountPath:   gcpMountPath,
 		GCSKeyName:     gcpKeyName,

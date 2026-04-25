@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/config"
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -26,7 +26,7 @@ type reviewFeedbackTestCtx struct {
 	parentBead         store.Bead
 	reviewBead         store.Bead
 	attemptBeads       []store.Bead
-	registryEntries    []registry.Entry
+	registryEntries    []agent.Entry
 	registryListCalled int
 	sentMessages       []sentMessage
 }
@@ -71,7 +71,7 @@ func newReviewFeedbackTest(t *testing.T) *reviewFeedbackTestCtx {
 		// Tests that need an active attempt set this directly.
 		return nil, nil
 	}
-	reviewRegistryListFunc = func() ([]registry.Entry, error) {
+	reviewRegistryListFunc = func() ([]agent.Entry, error) {
 		ctx.registryListCalled++
 		return ctx.registryEntries, nil
 	}
@@ -197,7 +197,7 @@ func TestDetectReviewFeedback_ClusterMode_UsesAttemptOwner(t *testing.T) {
 func TestDetectReviewFeedback_ClusterMode_NoAttemptFailsClosed(t *testing.T) {
 	ctx := newReviewFeedbackTest(t)
 	ctx.requestChangesParent("spi-cluster-noattempt")
-	ctx.registryEntries = []registry.Entry{
+	ctx.registryEntries = []agent.Entry{
 		{Name: "wizard-stale", BeadID: "spi-cluster-noattempt"},
 	}
 
@@ -220,7 +220,7 @@ func TestDetectReviewFeedback_LocalMode_PrefersAttemptOwner(t *testing.T) {
 	ctx := newReviewFeedbackTest(t)
 	ctx.requestChangesParent("spi-local-rfb")
 	ctx.addAttempt("spi-local-rfb.attempt-1", "wizard-from-attempt", 1)
-	ctx.registryEntries = []registry.Entry{
+	ctx.registryEntries = []agent.Entry{
 		{Name: "wizard-from-registry", BeadID: "spi-local-rfb"},
 	}
 
@@ -243,7 +243,7 @@ func TestDetectReviewFeedback_LocalMode_PrefersAttemptOwner(t *testing.T) {
 func TestDetectReviewFeedback_LocalMode_FallsBackToRegistry(t *testing.T) {
 	ctx := newReviewFeedbackTest(t)
 	ctx.requestChangesParent("spi-local-fallback")
-	ctx.registryEntries = []registry.Entry{
+	ctx.registryEntries = []agent.Entry{
 		{Name: "wizard-from-registry", BeadID: "spi-local-fallback"},
 	}
 

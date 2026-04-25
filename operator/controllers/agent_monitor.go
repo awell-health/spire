@@ -21,6 +21,7 @@ import (
 	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/steward/identity"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/wizardregistry"
 )
 
 // apprenticeSignalKeyPrefix is the metadata-key prefix written by
@@ -121,6 +122,17 @@ type AgentMonitor struct {
 	// (the pre-spi-njzmg behavior) so existing unit tests continue to
 	// pass without requiring a live store.
 	Resolver identity.ClusterIdentityResolver
+
+	// Registry is the canonical wizard-liveness oracle for the cluster
+	// (spi-p6unf3). Operator-internal code that needs to ask "is this
+	// wizard alive?" consults Registry.IsAlive instead of inspecting pod
+	// phase ad hoc — so AgentMonitor and OrphanSweep go through the same
+	// interface across local and cluster modes. Pod-reaping, stale-pod
+	// deletion, phase updates, and other k8s-native lifecycle actions stay
+	// here (they hold the pod object directly to delete/patch it); only
+	// liveness queries route through Registry. Wired at manager setup time
+	// from operator/main.go via wizardregistry/cluster.New.
+	Registry wizardregistry.Registry
 }
 
 // Start implements controller-runtime's Runnable interface.

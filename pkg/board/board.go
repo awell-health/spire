@@ -12,6 +12,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/wizardregistry"
 	"github.com/spf13/cobra"
 )
 
@@ -107,6 +108,9 @@ type Opts struct {
 	TermContentFn func(beadID string) (string, error)
 	// TowerItems lists available towers with their beads dirs for the RootModel tower switcher.
 	TowerItems []TowerItem
+	// AgentRegistry powers the Agents tab. wizardregistry/local in local mode,
+	// wizardregistry/cluster in cluster mode. Nil renders the tab empty.
+	AgentRegistry wizardregistry.Registry
 }
 
 // ViewMode identifies which tabbed view is active on the board.
@@ -345,6 +349,7 @@ func RunBoard(opts Opts, identity string, fetchAgents func() []LocalAgent, actio
 
 		agentsMode := NewAgentsMode(opts.TowerName)
 		agentsMode.InlineActionFn = inlineActionFn
+		agentsMode.Registry = opts.AgentRegistry
 		workshopMode := NewWorkshopMode()
 		messagesMode := NewMessagesMode()
 		metricsMode := NewMetricsMode()
