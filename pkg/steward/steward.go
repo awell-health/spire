@@ -120,6 +120,15 @@ var AddDepTypedFunc = store.AddDepTyped
 // SendMessageFunc creates a message bead. Test-replaceable.
 var SendMessageFunc = sendMessage
 
+// reviewRegistryListFunc is a test-replaceable hook for registry.List used
+// by the local-native review-feedback fallback. Production points at
+// registry.List directly; tests stub it so the cluster-native path can
+// assert "no registry interaction" without touching the on-disk
+// wizards.json. The cluster-native branch in DetectReviewFeedback never
+// calls this — see lookupReviewOwner for the cluster-safe ownership
+// surface.
+var reviewRegistryListFunc = registry.List
+
 // CheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.
 var CheckExistingAlertFunc = func(beadID string) bool {
@@ -496,7 +505,10 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	DetectReviewReady(cfg.DryRun, cfg.Backend, towerName, towerBindings, phaseDispatch)
 
 	// Step 4c: Detect tasks with review feedback that need wizard re-engagement.
-	DetectReviewFeedback(cfg.DryRun)
+	// Pass the tower's effective deployment mode so the lookup branches
+	// correctly: cluster-native fails closed when shared-state owner data is
+	// missing, local-native falls back to the legacy wizards.json registry.
+	DetectReviewFeedback(cfg.DryRun, deploymentMode)
 
 	// Step 4d: Sweep hooked graph steps.
 	// Use configured store if available, otherwise fall back to file-backed store.
@@ -1041,11 +1053,95 @@ func arbiterVerdictFromMeta(b store.Bead) string {
 	return payload.Verdict
 }
 
+// ReviewOwnerRef identifies the agent that owns a bead's in-progress work
+// for the purpose of review-feedback re-engagement. It is the cluster-safe
+// alternative to a local-registry lookup: the fields are sourced from the
+// shared bead store (Dolt-backed) and are visible to every steward replica.
+//
+// AgentID is the wizard agent name (e.g. "wizard-spi-abcd"). It matches the
+// Name field on a registry entry on local-native, but is sourced from the
+// attempt bead's `agent:<name>` label rather than from the in-process
+// registry so the value is correct on cluster replicas that never wrote
+// the registry file.
+//
+// AttemptID is the bead ID of the most recent attempt bead — empty when
+// no attempt bead exists. The .3 dispatch follow-up uses this to thread a
+// (task_id, dispatch_seq) intent through to the operator; today it is
+// produced and observed but not consumed by the message-only re-engagement
+// path.
+type ReviewOwnerRef struct {
+	AgentID   string
+	AttemptID string
+}
+
+// IsZero reports whether the ref carries no usable ownership data.
+func (r ReviewOwnerRef) IsZero() bool {
+	return r.AgentID == "" && r.AttemptID == ""
+}
+
+// lookupReviewOwner resolves the agent that owns a bead's in-progress work
+// via shared state (Dolt-backed). This is the cluster-safe surface; the
+// local in-process registry is local-only and must not be referenced from
+// cluster control paths.
+//
+// The lookup picks the highest-numbered attempt bead — open or closed —
+// and reads its `agent:<name>` label. The attempt bead is the canonical
+// shared-state ownership surface (see pkg/steward/README.md "Bead status
+// lifecycle" and the rule "Do not use registry-based duplicate detection
+// for spawn decisions"). For request-changes re-entry the active attempt
+// has already closed, so this function deliberately does not require an
+// open attempt; it walks all attempt children and returns the most
+// recent. spi-5bzu9r.1's runtime contract extends WorkloadIntent with
+// explicit Role/Phase/Runtime fields but does not introduce a separate
+// `implemented-by` typed dep, so attempt metadata remains the
+// authoritative shared-state surface for review re-engagement.
+//
+// Returns a zero ReviewOwnerRef (with nil error) when no attempt bead
+// exists. The caller decides how to handle that — cluster-native fails
+// closed, local-native may consult the legacy wizards.json registry.
+func lookupReviewOwner(beadID string) (ReviewOwnerRef, error) {
+	children, err := GetChildrenFunc(beadID)
+	if err != nil {
+		return ReviewOwnerRef{}, fmt.Errorf("get children for %s: %w", beadID, err)
+	}
+	var latest *store.Bead
+	latestN := -1
+	for i := range children {
+		child := children[i]
+		if !store.IsAttemptBead(child) {
+			continue
+		}
+		n := store.AttemptNumber(child)
+		if n > latestN {
+			latest = &children[i]
+			latestN = n
+		}
+	}
+	if latest == nil {
+		return ReviewOwnerRef{}, nil
+	}
+	return ReviewOwnerRef{
+		AgentID:   store.HasLabel(*latest, "agent:"),
+		AttemptID: latest.ID,
+	}, nil
+}
+
 // DetectReviewFeedback finds in_progress beads whose last review-round bead
 // is closed with verdict "request_changes" and no active attempt bead (wizard
-// not already working on it). It re-spawns a wizard to address the feedback.
-func DetectReviewFeedback(dryRun bool) {
-	inProgress, err := store.ListBeads(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
+// not already working on it). It re-engages the owning wizard so the
+// feedback can be addressed.
+//
+// mode gates the ownership lookup. In cluster-native, ownership is sourced
+// from shared state via lookupReviewOwner and the function fails closed
+// when no owner is found — the local wizards.json registry is never
+// consulted because cluster replicas don't write it. In local-native, the
+// same shared-state lookup runs first; the registry is only used as a
+// legacy fallback for towers that haven't migrated their attempt-bead
+// writes yet. The "actually re-engage this owner" mechanic (intent
+// emission, dispatcher call) is owned by spi-5bzu9r.3; this function
+// stops at producing the owner ref and emitting the message.
+func DetectReviewFeedback(dryRun bool, mode config.DeploymentMode) {
+	inProgress, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] detectReviewFeedback: %s", err)
 		return
@@ -1089,15 +1185,40 @@ func DetectReviewFeedback(dryRun bool) {
 
 		log.Printf("[steward] re-engaging wizard for %s (review feedback round %d)", b.ID, len(reviews))
 
-		// Find the wizard owner from the last attempt or fall back.
-		owner := "wizard"
-		// Check wizard registry for a wizard associated with this bead.
-		if regEntries, err := registry.List(); err == nil {
-			for _, w := range regEntries {
-				if w.BeadID == b.ID {
-					owner = w.Name
-					break
+		// Resolve the wizard owner from the shared-state surface (attempt
+		// beads). Cluster control paths must NOT fall back to the local
+		// in-process registry — its entries are process-local and have no
+		// meaning across cluster replicas.
+		owner := ""
+		ownerRef, lookupErr := lookupReviewOwner(b.ID)
+		if lookupErr != nil {
+			log.Printf("[steward] review-feedback: lookup owner for %s: %v", b.ID, lookupErr)
+		}
+		owner = ownerRef.AgentID
+
+		if owner == "" {
+			if mode == config.DeploymentModeClusterNative {
+				// Fail closed: cluster-native requires a shared-state
+				// ownership surface. Skipping with a diagnostic is
+				// safer than re-engaging an unknown wizard or leaking
+				// through local-only paths. The diagnostic names the
+				// queried surface (attempt beads) so a human can
+				// investigate the gap.
+				log.Printf("[steward] review-feedback: cluster-native lookup found no owner for %s (queried: attempt-bead agent: label) — skipping re-engagement", b.ID)
+				continue
+			}
+			// LOCAL-ONLY: registry is process-local; cluster control
+			// paths use lookupReviewOwner and never reach this branch.
+			if regEntries, regErr := reviewRegistryListFunc(); regErr == nil {
+				for _, w := range regEntries {
+					if w.BeadID == b.ID {
+						owner = w.Name
+						break
+					}
 				}
+			}
+			if owner == "" {
+				owner = "wizard"
 			}
 		}
 

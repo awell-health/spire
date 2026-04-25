@@ -222,6 +222,25 @@ agent registry (`wizards.json`) is a local process tracker — it is not an
 ownership mechanism. Use attempt beads for ownership; they live in the shared
 store and are atomically created.
 
+### Review-feedback re-engagement
+
+`DetectReviewFeedback` (cluster control path) resolves the owning wizard
+through `lookupReviewOwner`, which reads the highest-numbered attempt
+bead's `agent:<name>` label. Cluster control paths MUST NOT call
+`registry.List()` — `wizards.json` is process-local and has no meaning
+across cluster replicas.
+
+| Mode | Lookup | When the surface is empty |
+|---|---|---|
+| `cluster-native` | attempt bead `agent:<name>` only | fail closed (skip with diagnostic) |
+| `local-native` | attempt bead `agent:<name>` first; legacy `registry.List()` second | route to a generic `wizard` recipient |
+
+The local registry remains a working surface for local-native daemons
+that haven't migrated all attempt-bead writes yet, but it is no longer
+the source of truth even there. Future tasks (spi-5bzu9r.3) will own the
+re-engagement *dispatch* — `lookupReviewOwner` only produces the owner
+ref.
+
 ## What this package does NOT own
 
 - **Per-bead lifecycle execution**: once work is assigned, the executor owns
