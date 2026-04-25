@@ -381,6 +381,19 @@ func dispatchPhase(ctx context.Context, pd PhaseDispatch, backend agent.Backend,
 // The function preserves the file-level invariant that we never call
 // backend.Spawn: it only writes to the intent outbox; the operator
 // reconciles the resulting pod.
+//
+// KNOWN GAP — steward producer migration follow-up: this function does
+// not yet populate WorkloadIntent.Role, .Phase, or .Runtime.Image. The
+// operator's intent.Validate (operator/controllers/intent_reconciler.go)
+// requires all three and will drop the emitted intent. Until the
+// steward producer migration lands (separate follow-up under
+// spi-5bzu9r), per-phase and bead-level emits from this function are
+// effectively no-ops on the cluster path. Executor- and wizard-side
+// emits (apprentice/sage children built via
+// pkg/executor.childIntentForApprentice and childIntentForSage) DO
+// populate the triple and are unaffected. Doc tables in
+// docs/VISION-CLUSTER.md, docs/ARCHITECTURE.md, and operator/README.md
+// flag this gap so consumers do not infer steward emits work today.
 func dispatchPhaseClusterNative(ctx context.Context, cd *ClusterDispatchConfig, beadID, phase string) error {
 	if cd == nil {
 		return errors.New("cluster-native phase dispatch: ClusterDispatch is not configured")

@@ -78,15 +78,17 @@ The executor's child-dispatch entry points — implement (wave / sequential
   pod; the parent wizard observes the bundle-signal close path
   (`spi-e6m3p6`) the same way it does locally.
 
-The supported `(role, phase)` mappings emitted from this package are:
+The supported `(role, phase)` mappings emitted from this package are
+(mirrors `intent.Allowed` in
+[`pkg/steward/intent/contract.go`](../steward/intent/contract.go)):
 
 | Dispatch site | Role | Phase | Notes |
 |---------------|------|-------|-------|
 | `dispatch.children` (wave / sequential / direct) | `apprentice` | `implement` | Bundle handoff to staging worktree. |
-| review-fix re-entry | `apprentice` | `fix` | Borrowed worktree on the wizard's PVC. |
-| sage review | `sage` | `review` | Diff review against staging. |
-| sage re-review (after fix) | `sage` | `review-fix` | Re-review of a fix bundle. |
-| cleric dispatch (recovery worker) | `apprentice` | `fix` | A repair worker is structurally an apprentice; bundle handoff. |
+| review-fix re-entry (`actionWizardRun` for `flow="review-fix"`) | `apprentice` | `review-fix` | Post-review re-engagement after a sage `request_changes`; borrowed worktree on the wizard's PVC. |
+| diagnostic fix worker (`flow="fix"`) | `apprentice` | `fix` | Bundle handoff. |
+| sage review (`flow="sage-review"` / `flow="review"`) | `sage` | `review` | Diff review against staging. The second sage round in a review loop also emits `(sage, review)` — there is no `(sage, review-fix)` pair. |
+| cleric-worker (recovery worker) | `apprentice` | `fix` | A repair worker is structurally an apprentice; bundle handoff. |
 
 Cluster-native dispatch fails closed when the operator seam is
 unavailable. There is no silent local fallback — the dispatch returns

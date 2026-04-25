@@ -58,14 +58,23 @@ to pick a builder and validates it against an allowlist; an
 unrecognized triple is rejected at intent-consumption time, not as
 an init-container failure inside the dispatched pod.
 
+The allowlist is the `intent.Allowed` map in
+[`pkg/steward/intent/contract.go`](../pkg/steward/intent/contract.go);
+the table below mirrors it row-for-row.
+
 | Role | Phase | Runtime | Pod shape |
 |------|-------|---------|-----------|
+| `wizard` | `implement` | `wizard` | Wizard pod (`BuildWizardPod`); the per-bead orchestrator that drives the formula. |
 | `apprentice` | `implement` | `worker` | Apprentice pod (`BuildApprenticePod`); fresh worktree; bundle handoff back to parent wizard. |
-| `apprentice` | `fix` | `worker` | Apprentice pod; review-feedback / review-fix re-entry; can use a borrowed worktree. |
+| `apprentice` | `fix` | `worker` | Apprentice pod; diagnostic fix worker; can use a borrowed worktree. |
+| `apprentice` | `review-fix` | `worker` | Apprentice pod; post-review re-engagement after a sage `request_changes`. |
 | `sage` | `review` | `reviewer` | Sage pod (`BuildSagePod`); diff-only review against the staging branch. |
-| `sage` | `review-fix` | `reviewer` | Sage pod; re-review of a fix bundle. |
-| `cleric` | `<bead-type>` | `wizard` | Cleric pod that drives `cleric-default`; the phase MUST be a bead-level phase the operator routes to a wizard pod (e.g., `recovery` is **not** a supported phase value — see [Cleric dispatch](#cleric-dispatch) below). |
-| `wizard` | `<bead-type>` or `wizard` | `wizard` | Wizard pod (`BuildWizardPod`); steward's bead-level dispatch and hooked-step resume. |
+| `cleric` | `recovery` | `wizard` | Cleric pod (`BuildClericPod`); failure-recovery driver that runs the `cleric-default` formula. The operator routes by `Role=cleric`, not by `formula_phase=recovery`. |
+
+`intent.Validate` rejects any pair not in this table (and any intent
+missing `Runtime.Image`); `agent.SelectBuilder` then picks the builder
+from the matching `(Role, Phase)` entry. Both sides share a single
+source of truth in `pkg/steward/intent/contract.go`.
 
 The runtime field is the canonical worker runtime contract — see
 [ARCHITECTURE.md → Worker Runtime Contract](ARCHITECTURE.md#worker-runtime-contract).
@@ -77,18 +86,25 @@ backend obligation defined in
 the operator's pod-builder reads the backend obligations through
 `pkg/agent.PodSpec` rather than re-deriving them.
 
+> **Steward producer gap (known follow-up):** the steward's
+> `dispatchPhaseClusterNative` does not yet populate `Role`, `Phase`,
+> or `Runtime.Image` on the intents it emits, so its phase-level and
+> bead-level emits are dropped by `intent.Validate` until the producer
+> migration lands. Executor- and wizard-side emits (apprentice/sage
+> children) populate the triple through `childIntentForApprentice` /
+> `childIntentForSage` and are unaffected. See
+> [`pkg/steward/cluster_dispatch.go`](../pkg/steward/cluster_dispatch.go).
+
 ### Cleric dispatch
 
 Cleric dispatch in cluster-native is a wizard-shaped workload: the
 pod runs `spire execute <recovery-bead>` and drives the
 `cleric-default` formula the same way a normal wizard drives a
-task formula. The intent therefore carries `role=cleric` with a
-**bead-level** phase (the recovery bead's type, with `wizard` as the
-fallback) and `runtime=wizard`. This is the converged shape — the
-operator is not asked to recognize a `formula_phase=recovery`
-bead-level value, because that string is not a registered bead-level
-phase and would not classify under
-[`pkg/steward/intent.IsBeadLevelPhase`](../pkg/steward/intent/intent.go).
+task formula. Under the new contract the intent carries `role=cleric`
+and `phase=recovery`; the operator routes by `Role=cleric` and
+materializes a cleric pod via `BuildClericPod`. The legacy
+`formula_phase=recovery` routing key is gone — routing is keyed on
+the `(Role, Phase)` pair, not on `formula_phase`.
 
 ### Shared-state ownership for review feedback
 

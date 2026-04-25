@@ -55,25 +55,41 @@ Concretely this means:
 
 ## Supported (role, phase, runtime) combinations
 
-The pod-builder accepts only the combinations enumerated in
+The pod-builder accepts only the combinations enumerated in the
+`intent.Allowed` map in
+[`pkg/steward/intent/contract.go`](../pkg/steward/intent/contract.go);
+the same set is mirrored in
 [docs/VISION-CLUSTER.md → The role / phase / runtime contract](../docs/VISION-CLUSTER.md#the-role--phase--runtime-contract).
-Any other combination is rejected at intent-consumption time, not as
-an init-container failure inside the pod. The summary table:
+Any other combination is rejected at intent-consumption time
+(`intent.Validate`), not as an init-container failure inside the pod.
+The summary table:
 
 | Role | Phase | Runtime | Pod shape |
 |------|-------|---------|-----------|
+| `wizard` | `implement` | `wizard` | Wizard pod (`BuildWizardPod`). Per-bead orchestrator. |
 | `apprentice` | `implement` | `worker` | Apprentice pod (`BuildApprenticePod`); fresh worktree; bundle handoff. |
-| `apprentice` | `fix` | `worker` | Apprentice pod for review-feedback / review-fix re-entry. |
+| `apprentice` | `fix` | `worker` | Apprentice pod for diagnostic fix workers. |
+| `apprentice` | `review-fix` | `worker` | Apprentice pod for post-review re-engagement after a sage `request_changes`. |
 | `sage` | `review` | `reviewer` | Sage pod (`BuildSagePod`). |
-| `sage` | `review-fix` | `reviewer` | Sage pod re-reviewing a fix bundle. |
-| `cleric` | `<bead-type>` | `wizard` | Wizard-shaped pod that drives `cleric-default`. The phase MUST classify under `intent.IsBeadLevelPhase` — the literal `"recovery"` is NOT supported. |
-| `wizard` | `<bead-type>` or `wizard` | `wizard` | Wizard pod (`BuildWizardPod`). |
+| `cleric` | `recovery` | `wizard` | Cleric pod (`BuildClericPod`). Failure-recovery driver. |
 
-Phase classification helpers live in
-[`pkg/steward/intent`](../pkg/steward/intent/intent.go)
-(`IsBeadLevelPhase`, `IsStepLevelPhase`, `IsReviewLevelPhase`) and
-are the single source of truth for routing. Both sides of the seam
-(scheduler emit, operator reconcile) call them.
+Routing is keyed on the `(Role, Phase)` pair via
+`agent.SelectBuilder`, which mirrors `intent.Allowed` row-for-row.
+The reconciler no longer consults `formula_phase` for routing
+decisions; the legacy `IsBeadLevelPhase` / `IsStepLevelPhase` /
+`IsReviewLevelPhase` classifiers in
+[`pkg/steward/intent`](../pkg/steward/intent/intent.go) are vestigial
+on the operator side.
+
+> **Steward producer gap (known follow-up):** the steward's
+> `dispatchPhaseClusterNative` (review-ready and hooked-step / cleric
+> dispatch) does not yet populate `Role`, `Phase`, or `Runtime.Image`
+> on the intents it emits, so its emits currently fail
+> `intent.Validate` and are dropped by this reconciler. Executor- and
+> wizard-side emits (apprentice/sage children) already populate the
+> triple via `pkg/executor.childIntentForApprentice` and
+> `childIntentForSage` and are unaffected. See
+> [`pkg/steward/cluster_dispatch.go`](../pkg/steward/cluster_dispatch.go).
 
 ## Shared-state ownership for review feedback
 

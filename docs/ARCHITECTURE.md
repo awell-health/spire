@@ -49,23 +49,28 @@ transport selection dictates. Sync is not the mode switch.
 
 Cluster-native dispatch carries an explicit `(role, phase, runtime)`
 triple across the scheduler-to-reconciler seam. The operator's
-pod-builder validates the triple against an allowlist; an unrecognized
-combination is rejected at intent-consumption time rather than as an
-init-container failure inside the pod. The supported combinations are:
+pod-builder validates the triple against the `intent.Allowed`
+allowlist in
+[`pkg/steward/intent/contract.go`](../pkg/steward/intent/contract.go);
+an unrecognized combination is rejected at intent-consumption time
+rather than as an init-container failure inside the pod. The
+supported combinations are:
 
 | Role | Phase | Runtime | Pod shape |
 |------|-------|---------|-----------|
+| `wizard` | `implement` | `wizard` | Wizard pod (`BuildWizardPod`). Per-bead orchestrator. |
 | `apprentice` | `implement` | `worker` | Apprentice pod (`BuildApprenticePod`). Bundle handoff to the parent wizard. |
-| `apprentice` | `fix` | `worker` | Apprentice pod for review-feedback / review-fix re-entry. |
+| `apprentice` | `fix` | `worker` | Apprentice pod for diagnostic fix workers. |
+| `apprentice` | `review-fix` | `worker` | Apprentice pod for post-review re-engagement after a sage `request_changes`. |
 | `sage` | `review` | `reviewer` | Sage pod (`BuildSagePod`). Diff review against staging. |
-| `sage` | `review-fix` | `reviewer` | Sage pod for re-review of a fix bundle. |
-| `cleric` | `<bead-type>` | `wizard` | Wizard-shaped pod that drives `cleric-default`. Phase MUST classify under `intent.IsBeadLevelPhase` — `recovery` is **not** a supported value. |
-| `wizard` | `<bead-type>` or `wizard` | `wizard` | Wizard pod (`BuildWizardPod`). Steward bead-level dispatch, hooked-step resume. |
+| `cleric` | `recovery` | `wizard` | Cleric pod (`BuildClericPod`). Failure-recovery driver routed by `Role=cleric`, not by `formula_phase=recovery`. |
 
 [VISION-CLUSTER.md → Operator-owned dispatch](VISION-CLUSTER.md#operator-owned-dispatch-cluster-native-invariant)
 is the source of truth for this contract; the table above is a
 summary. The fail-closed rule for missing seams (no silent local
-spawn) and the AST invariant guarding the boundary live there too.
+spawn), the AST invariant guarding the boundary, and the known
+steward-producer gap (steward's `dispatchPhaseClusterNative` does not
+yet populate `Role`/`Phase`/`Runtime.Image`) are documented there.
 
 ### Shared-state ownership for review feedback
 
