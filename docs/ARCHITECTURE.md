@@ -337,6 +337,37 @@ Reaps completed/failed pods and removes work from the agent's CurrentWork
 list. See [k8s-operator-reference.md](k8s-operator-reference.md#canonical-wizard-pod-contract)
 for the canonical wizard pod spec.
 
+### Wizard-liveness boundary (spi-p6unf3)
+
+"Is this wizard alive?" is answered through the
+[`pkg/wizardregistry`](../pkg/wizardregistry/README.md) `Registry` interface
+in both deployment modes. The interface guarantees fresh authoritative-source
+reads per call — no snapshot caching — so cross-mode callers
+(`pkg/beadlifecycle/OrphanSweep`, `pkg/summon`'s duplicate guard, board,
+trace) are race-safe by construction.
+
+| Mode | Registry impl | Authoritative source for liveness |
+|------|---------------|-----------------------------------|
+| local-native | `pkg/wizardregistry/local` | OS PID via `pkg/process.ProcessAlive` (zombie-aware) |
+| cluster-native | `pkg/wizardregistry/cluster` | `corev1.Pod.Status.Phase` queried fresh against the kube-apiserver |
+| (test fixtures) | `pkg/wizardregistry/fake` | In-memory liveness flag |
+
+The cluster impl is **read-only**: `Upsert`/`Remove` return `ErrReadOnly`.
+The operator's reconciliation loop is the sole writer of cluster pod state;
+clients consume liveness through `IsAlive`/`Sweep`/`List`. AgentMonitor
+owns the cluster `Registry` instance (constructed in `operator/main.go`)
+and uses `Registry.IsAlive` as defense-in-depth at the stale-pod-delete
+seam in `cycle()`. Pod reaping, phase updates, and stale-pod deletion
+remain k8s-native because they need the live `*corev1.Pod` object to
+delete or patch — Registry exposes only the liveness predicate, not the
+lifecycle actions.
+
+New backends (Redis-backed, lease-based, etc.) are accommodated by the
+contract: any implementation that satisfies the `Registry` interface and
+its race-safety guarantee can be wired in without touching cross-mode
+callers. The conformance suite (`pkg/wizardregistry/conformance`) is what
+both shipped impls (and any future backend) must pass.
+
 **CRDs** (`operator/api/v1alpha1/types.go`):
 
 | CRD             | Purpose                                            |

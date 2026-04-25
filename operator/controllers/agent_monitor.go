@@ -22,6 +22,7 @@ import (
 	"github.com/awell-health/spire/pkg/steward/identity"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/wizardregistry"
+	wzcluster "github.com/awell-health/spire/pkg/wizardregistry/cluster"
 )
 
 // apprenticeSignalKeyPrefix is the metadata-key prefix written by
@@ -397,6 +398,25 @@ func (m *AgentMonitor) reconcileManagedAgent(ctx context.Context, agent *spirev1
 		}
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			continue // already handled above
+		}
+		// Defense-in-depth via the wizardregistry liveness boundary
+		// (spi-p6unf3): cross-check against the canonical Registry oracle
+		// before deleting. The pod-phase check above is the local view;
+		// Registry.IsAlive issues a fresh API read scoped to wizard-role
+		// labels and is what cross-mode callers consult. A drift between
+		// the two surfaces a real incident — log it and proceed (the
+		// work-assignment set is authoritative for "should this pod
+		// exist", but the warning lets operators correlate stale-pod
+		// deletes with mid-flight wizards).
+		if m.Registry != nil {
+			if wizardName := pod.Labels[wzcluster.DefaultIDLabel]; wizardName != "" {
+				alive, lerr := m.Registry.IsAlive(ctx, wizardName)
+				if lerr == nil && alive {
+					m.Log.Info("registry reports wizard alive but workload deassigned — deleting anyway (assignment is authoritative)",
+						"pod", pod.Name, "agent_name", agent.Name, "wizard_name", wizardName, "bead_id", beadID,
+						"tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")
+				}
+			}
 		}
 		if err := m.Client.Delete(ctx, pod); err != nil {
 			m.Log.Error(err, "failed to delete stale workload pod", "pod", pod.Name, "bead_id", beadID, "tower", m.Database, "prefix", m.Prefix, "backend", "operator-k8s")

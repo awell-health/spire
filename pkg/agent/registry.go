@@ -49,14 +49,36 @@ func RegistryPath() string {
 }
 
 // loadRegistry reads the registry from disk. Returns an empty Registry on any error.
+//
+// Deprecated: error-silencing behavior is unsafe for race-sensitive
+// callers (a transient JSON parse error during a concurrent write
+// would silently report "no wizards"). New call sites should use
+// loadRegistryE and propagate errors.
 func loadRegistry() Registry {
+	reg, _ := loadRegistryE()
+	return reg
+}
+
+// loadRegistryE reads the registry from disk and surfaces errors.
+// A missing file is not an error (returns an empty registry).
+// Callers MUST hold registryMu and the cross-process file lock while
+// using this function as part of a read-modify-write critical section.
+func loadRegistryE() (Registry, error) {
 	var reg Registry
 	data, err := os.ReadFile(RegistryPath())
 	if err != nil {
-		return reg
+		if os.IsNotExist(err) {
+			return reg, nil
+		}
+		return reg, fmt.Errorf("agent registry: read %s: %w", RegistryPath(), err)
 	}
-	_ = json.Unmarshal(data, &reg)
-	return reg
+	if len(data) == 0 {
+		return reg, nil
+	}
+	if err := json.Unmarshal(data, &reg); err != nil {
+		return reg, fmt.Errorf("agent registry: parse %s: %w", RegistryPath(), err)
+	}
+	return reg, nil
 }
 
 // saveRegistry writes the registry to disk.
@@ -182,9 +204,28 @@ func RegistryUpdate(name string, fn func(*Entry)) error {
 	return fmt.Errorf("%w: %q", ErrNotFound, name)
 }
 
-// RegistryList returns a snapshot of all entries.
+// RegistryList returns a snapshot of all entries. File-locked.
+//
+// Acquires registryMu and the cross-process file lock around the read,
+// then releases both before returning. JSON parse and read errors are
+// surfaced — callers no longer silently observe an empty list when the
+// underlying file is mid-write or otherwise unreadable.
+//
+// This is the race-safe read path required by the
+// wizardregistry.Registry contract.
 func RegistryList() ([]Entry, error) {
-	reg := loadRegistry()
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	unlock, err := RegistryLock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	reg, err := loadRegistryE()
+	if err != nil {
+		return nil, err
+	}
 	entries := make([]Entry, len(reg.Wizards))
 	copy(entries, reg.Wizards)
 	return entries, nil
