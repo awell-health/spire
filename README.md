@@ -259,6 +259,8 @@ kubectl apply -f k8s/crds/
 kubectl apply -f k8s/steward.yaml
 ```
 
+Running on GKE? See [docs/cluster-install.md](docs/cluster-install.md) for the end-to-end install runbook.
+
 See [docs/k8s-architecture.md](docs/k8s-architecture.md) for the full deployment guide.
 
 ## Architecture
