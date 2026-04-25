@@ -33,6 +33,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -143,7 +144,7 @@ func TestFakeChildIntentSink_CapturesPublish(t *testing.T) {
 		t.Fatalf("Calls = %d, want %d", len(sink.Calls), len(want))
 	}
 	for i, got := range sink.Calls {
-		if got != want[i] {
+		if !reflect.DeepEqual(got, want[i]) {
 			t.Errorf("Calls[%d] = %+v, want %+v", i, got, want[i])
 		}
 	}
