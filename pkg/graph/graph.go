@@ -8,8 +8,9 @@
 //     the response shape on the wire.
 //   - graph does NOT touch pkg/trace — the legacy /api/v1/beads/{id}/trace
 //     endpoint and `spire trace <bead>` CLI keep their existing data path.
-//   - graph relies on store.ActiveDB for the *sql.DB and store.GetBead for
-//     existence + 404 mapping; it does not open its own connection.
+//   - graph relies on store.ActiveDB for the *sql.DB and uses the descendant
+//     CTE itself for existence + 404 mapping; it does not open its own
+//     connection and does not issue a separate GetBead probe.
 package graph
 
 
@@ -64,18 +65,23 @@ type GraphResponse struct {
 // raw bead fields; Labels is split from the CTE's GROUP_CONCAT. Metrics is
 // nil when the bead has no agent_runs rows — keeping the field absent in
 // JSON rather than emitting zero values clarifies "never ran" vs "ran with
-// zero cost" on the wire.
+// zero cost" on the wire. Agent is non-nil only for the bead's currently
+// in-progress agent_runs row (latest started); the desktop renders it inline
+// on the in-progress node so no client-side join against ActiveAgents is
+// needed. The same payload is also surfaced in GraphResponse.ActiveAgents
+// for callers that want a flat list.
 type Node struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Type      string   `json:"type"`
-	Parent    string   `json:"parent"`
-	Priority  int      `json:"priority"`
-	Labels    []string `json:"labels"`
-	UpdatedAt string   `json:"updated_at"`
-	Depth     int      `json:"depth"`
-	Metrics   *Metrics `json:"metrics,omitempty"`
+	ID        string       `json:"id"`
+	Title     string       `json:"title"`
+	Status    string       `json:"status"`
+	Type      string       `json:"type"`
+	Parent    string       `json:"parent"`
+	Priority  int          `json:"priority"`
+	Labels    []string     `json:"labels"`
+	UpdatedAt string       `json:"updated_at"`
+	Depth     int          `json:"depth"`
+	Metrics   *Metrics     `json:"metrics,omitempty"`
+	Agent     *ActiveAgent `json:"agent,omitempty"`
 }
 
 // Edge is a parent-child link from From → To. Type is hard-coded "parent" so
@@ -218,12 +224,6 @@ var dbProvider = func() (*sql.DB, bool) {
 	return store.ActiveDB()
 }
 
-// beadGetter resolves a bead id to a store.Bead for existence + 404 mapping.
-// Same indirection rationale as dbProvider.
-var beadGetter = func(id string) (store.Bead, error) {
-	return store.GetBead(id)
-}
-
 // nowFunc is the wall-clock used to compute ActiveAgent.ElapsedMs. Tests
 // freeze it; production reads time.Now.
 var nowFunc = time.Now
@@ -232,6 +232,9 @@ var nowFunc = time.Now
 //
 // Errors:
 //   - *NotFoundError when the root bead does not resolve (gateway → 404).
+//     The descendant CTE's INNER JOIN to issues drops rows for non-existent
+//     beads, so a zero-row result is the existence signal — no separate
+//     GetBead probe round-trip.
 //   - ErrMaxDepthExceeded when opts.MaxDepth > MaxMaxDepth (gateway → 400).
 //   - Wrapped SQL errors when the descendant or aggregate queries fail.
 //
@@ -245,10 +248,6 @@ func Collect(beadID string, opts Options) (*GraphResponse, error) {
 	}
 	if depth > MaxMaxDepth {
 		return nil, ErrMaxDepthExceeded
-	}
-
-	if _, err := beadGetter(beadID); err != nil {
-		return nil, &NotFoundError{ID: beadID, Err: err}
 	}
 
 	db, ok := dbProvider()
@@ -301,6 +300,11 @@ func Collect(beadID string, opts Options) (*GraphResponse, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("graph: descendants iter: %w", err)
 	}
+	if len(ids) == 0 {
+		// CTE returned no rows → the seed id has no matching issues row →
+		// the bead does not exist. Mapped to 404 by the gateway.
+		return nil, &NotFoundError{ID: beadID}
+	}
 	if len(ids) > RowLimit {
 		// Drop the overflow row from every projection so the client sees a
 		// stable count. The truncated flag tells it the count is partial.
@@ -322,24 +326,6 @@ func Collect(beadID string, opts Options) (*GraphResponse, error) {
 		}
 		resp.Edges = kept
 		resp.Truncated = true
-	}
-	if len(ids) == 0 {
-		// store.GetBead said the bead exists but the CTE returned nothing —
-		// only possible if the row vanished between calls. Fall back to a
-		// single-node response rather than 500'ing the desktop.
-		stub := Node{ID: beadID, Status: "open", Labels: []string{}}
-		if b, err := beadGetter(beadID); err == nil {
-			stub.Title = b.Title
-			stub.Status = b.Status
-			stub.Type = b.Type
-			stub.Priority = b.Priority
-			stub.Labels = append([]string{}, b.Labels...)
-			stub.UpdatedAt = b.UpdatedAt
-		}
-		resp.Nodes[beadID] = stub
-		resp.Totals.ByStatus[stub.Status]++
-		resp.Totals.ByType[stub.Type]++
-		return resp, nil
 	}
 	if err := loadRunMetrics(db, ids, resp); err != nil {
 		return nil, err
@@ -421,6 +407,14 @@ func loadRunMetrics(db *sql.DB, ids []string, resp *GraphResponse) error {
 			}
 		}
 		resp.ActiveAgents = append(resp.ActiveAgents, a)
+		// Mirror the same payload onto the node so the desktop can render
+		// active info inline without a client-side join against the
+		// top-level ActiveAgents array. Both representations stay in sync.
+		if n, ok := resp.Nodes[a.BeadID]; ok {
+			agent := a
+			n.Agent = &agent
+			resp.Nodes[a.BeadID] = n
+		}
 	}
 	if err := activeRows.Err(); err != nil {
 		return fmt.Errorf("graph: active iter: %w", err)

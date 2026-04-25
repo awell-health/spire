@@ -9,36 +9,22 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/awell-health/spire/pkg/store"
 )
 
-// withFakes installs the package-level seams (db provider, bead getter,
-// clock) for the duration of a test and restores them in cleanup. Tests
-// can't use t.Parallel because these are package-globals, same shape as
-// gateway's withFakeCollect.
-func withFakes(t *testing.T, db *sql.DB, getter func(string) (store.Bead, error), now time.Time) {
+// withFakes installs the package-level seams (db provider, clock) for the
+// duration of a test and restores them in cleanup. Tests can't use
+// t.Parallel because these are package-globals, same shape as gateway's
+// withFakeCollect.
+func withFakes(t *testing.T, db *sql.DB, now time.Time) {
 	t.Helper()
 	origDB := dbProvider
-	origGet := beadGetter
 	origNow := nowFunc
 	dbProvider = func() (*sql.DB, bool) { return db, db != nil }
-	beadGetter = getter
 	nowFunc = func() time.Time { return now }
 	t.Cleanup(func() {
 		dbProvider = origDB
-		beadGetter = origGet
 		nowFunc = origNow
 	})
-}
-
-// stubBead returns a getter that resolves a fixed id to b and 404s the rest.
-func stubBead(id string, b store.Bead) func(string) (store.Bead, error) {
-	return func(got string) (store.Bead, error) {
-		if got == id {
-			return b, nil
-		}
-		return store.Bead{}, fmt.Errorf("not found: %s", got)
-	}
 }
 
 func descendantCols() []string {
@@ -53,10 +39,23 @@ func activeCols() []string {
 	return []string{"bead_id", "agent_name", "model", "branch", "started_at"}
 }
 
+// TestCollect_NotFound exercises the existence-via-CTE path: the descendant
+// CTE INNER JOINs issues, so a non-existent root id yields zero rows and
+// Collect maps that to *NotFoundError without a separate GetBead probe.
 func TestCollect_NotFound(t *testing.T) {
-	withFakes(t, nil, stubBead("spi-other", store.Bead{ID: "spi-other"}), time.Now())
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
 
-	_, err := Collect("spi-missing", Options{})
+	withFakes(t, db, time.Now())
+
+	mock.ExpectQuery(`WITH RECURSIVE walk`).
+		WithArgs("spi-missing").
+		WillReturnRows(sqlmock.NewRows(descendantCols()))
+
+	_, err = Collect("spi-missing", Options{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -67,10 +66,13 @@ func TestCollect_NotFound(t *testing.T) {
 	if nf.ID != "spi-missing" {
 		t.Errorf("NotFoundError.ID = %q, want spi-missing", nf.ID)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCollect_MaxDepthRejected(t *testing.T) {
-	withFakes(t, nil, stubBead("spi-root", store.Bead{ID: "spi-root"}), time.Now())
+	withFakes(t, nil, time.Now())
 
 	_, err := Collect("spi-root", Options{MaxDepth: MaxMaxDepth + 1})
 	if !errors.Is(err, ErrMaxDepthExceeded) {
@@ -79,7 +81,7 @@ func TestCollect_MaxDepthRejected(t *testing.T) {
 }
 
 func TestCollect_DBNotInitialised(t *testing.T) {
-	withFakes(t, nil, stubBead("spi-root", store.Bead{ID: "spi-root"}), time.Now())
+	withFakes(t, nil, time.Now())
 
 	_, err := Collect("spi-root", Options{})
 	if err == nil || !strings.Contains(err.Error(), "active db not initialised") {
@@ -97,7 +99,7 @@ func TestCollect_LeafBead(t *testing.T) {
 	}
 	defer db.Close()
 
-	withFakes(t, db, stubBead("spi-leaf", store.Bead{ID: "spi-leaf"}), time.Now())
+	withFakes(t, db, time.Now())
 
 	rows := sqlmock.NewRows(descendantCols()).
 		AddRow("spi-leaf", "Leaf bead", "open", 1, "task", "", nil, "2026-04-25T15:00:00Z", 0)
@@ -161,7 +163,7 @@ func TestCollect_FullSubgraph(t *testing.T) {
 
 	now := time.Date(2026, 4, 25, 16, 0, 0, 0, time.UTC)
 	started := time.Date(2026, 4, 25, 15, 58, 0, 0, time.UTC) // 2 minutes ago
-	withFakes(t, db, stubBead("spi-epic", store.Bead{ID: "spi-epic"}), now)
+	withFakes(t, db, now)
 
 	rows := sqlmock.NewRows(descendantCols()).
 		AddRow("spi-epic", "Root epic", "in_progress", 0, "epic", "", "epic,trace", "2026-04-25T15:48:00Z", 0).
@@ -249,6 +251,23 @@ func TestCollect_FullSubgraph(t *testing.T) {
 	if a.ElapsedMs != wantElapsed {
 		t.Errorf("ElapsedMs = %d, want %d", a.ElapsedMs, wantElapsed)
 	}
+	// Agent should also be embedded on the active node (no client-side join
+	// needed). Other in-progress nodes without an active run keep Agent nil.
+	t2 := resp.Nodes["spi-task2"]
+	if t2.Agent == nil {
+		t.Fatal("spi-task2 Agent should be embedded, got nil")
+	}
+	if t2.Agent.BeadID != "spi-task2" || t2.Agent.Name != "wizard-spi-task2" ||
+		t2.Agent.Model != "claude-opus-4-7" || t2.Agent.Branch != "feat/spi-task2" ||
+		t2.Agent.ElapsedMs != wantElapsed {
+		t.Errorf("embedded agent = %+v", t2.Agent)
+	}
+	if resp.Nodes["spi-step1"].Agent != nil {
+		t.Errorf("spi-step1 Agent = %+v, want nil (no in-progress run)", resp.Nodes["spi-step1"].Agent)
+	}
+	if resp.Nodes["spi-epic"].Agent != nil {
+		t.Errorf("spi-epic Agent = %+v, want nil (no in-progress run)", resp.Nodes["spi-epic"].Agent)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +280,7 @@ func TestCollect_Truncation(t *testing.T) {
 	}
 	defer db.Close()
 
-	withFakes(t, db, stubBead("spi-mega", store.Bead{ID: "spi-mega"}), time.Now())
+	withFakes(t, db, time.Now())
 
 	// Build RowLimit+1 rows so the truncation branch fires.
 	rows := sqlmock.NewRows(descendantCols())
@@ -307,7 +326,7 @@ func TestCollect_DescendantQueryError(t *testing.T) {
 	}
 	defer db.Close()
 
-	withFakes(t, db, stubBead("spi-x", store.Bead{ID: "spi-x"}), time.Now())
+	withFakes(t, db, time.Now())
 
 	mock.ExpectQuery(`WITH RECURSIVE walk`).
 		WithArgs("spi-x").
@@ -326,7 +345,7 @@ func TestCollect_DefaultsMaxDepth(t *testing.T) {
 	}
 	defer db.Close()
 
-	withFakes(t, db, stubBead("spi-root", store.Bead{ID: "spi-root"}), time.Now())
+	withFakes(t, db, time.Now())
 
 	// Match the literal DefaultMaxDepth interpolated into the SQL string.
 	pattern := fmt.Sprintf(`w\.depth < %d`, DefaultMaxDepth)
@@ -355,7 +374,7 @@ func TestCollect_NodesContainRoot(t *testing.T) {
 	}
 	defer db.Close()
 
-	withFakes(t, db, stubBead("spi-only", store.Bead{ID: "spi-only", Title: "Only", Status: "open", Type: "task"}), time.Now())
+	withFakes(t, db, time.Now())
 
 	mock.ExpectQuery(`WITH RECURSIVE walk`).
 		WithArgs("spi-only").
