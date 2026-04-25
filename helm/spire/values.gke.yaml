@@ -1,17 +1,153 @@
-# Spire Helm chart — GKE overlay
+# Spire Helm chart — GKE prod-leaning overlay
 #
-# Use with: `helm upgrade --install spire -n spire helm/spire -f values.gke.yaml`
-# then layer your own overlay on top for secrets, hosts, and cluster-specific
-# knobs. Settings left commented out here are opt-in examples; uncomment and
-# adapt to your environment.
+# Purpose
+#   This overlay COMPLEMENTS helm/spire/values.yaml — it does not replace it.
+#   Apply both with:
+#
+#     helm upgrade --install spire -n spire helm/spire \
+#       -f helm/spire/values.gke.yaml \
+#       --set bundleStore.gcs.bucket=<your-bundle-bucket> \
+#       --set-file gcp.serviceAccountJson=<path>            # see Secrets note below
+#
+#   Only fields whose default in values.yaml differs from prod requirements
+#   are overridden here. Fields already correct at the chart default are NOT
+#   duplicated. Layer your own overlay on top for hostnames, replica counts,
+#   and any cluster-specific knobs.
+#
+# Workload Identity prerequisites
+#   - The target GKE cluster MUST have Workload Identity enabled (cluster
+#     and node-pool level — `--workload-pool=<project>.svc.id.goog` and
+#     `--workload-metadata=GKE_METADATA`). Without it the steward pod
+#     cannot reach GCS using its KSA.
+#   - The steward Kubernetes ServiceAccount must be bound to a Google
+#     Service Account that holds `roles/storage.objectAdmin` on the
+#     bundle bucket (and on the dolt-backup bucket if `backup.enabled=true`
+#     is later layered in). Bind via:
+#
+#       gcloud iam service-accounts add-iam-policy-binding \
+#         --role roles/iam.workloadIdentityUser \
+#         --member "serviceAccount:<project>.svc.id.goog[spire/spire-steward]" \
+#         <gsa>@<project>.iam.gserviceaccount.com
+#
+#       kubectl annotate serviceaccount -n spire spire-steward \
+#         iam.gke.io/gcp-service-account=<gsa>@<project>.iam.gserviceaccount.com
+#
+#     The chart template currently still enforces a non-empty
+#     `gcp.serviceAccountJson` when `bundleStore.backend=gcs` (see
+#     templates/steward.yaml). Until that gate is loosened to allow a
+#     pure-Workload-Identity path, supply a placeholder via --set-file (or
+#     a dummy value via --set) so the render passes; the runtime credential
+#     resolution still goes through Workload Identity when the KSA is bound.
+#
+# Secrets handling
+#   DoltHub creds, Linear API key, GitHub PAT, and BOTH Anthropic
+#   credential slots (apiKey + subscriptionToken) currently render as plain
+#   Kubernetes Secrets via helm/spire/templates/secret.yaml. For prod do
+#   NOT commit them to this file. Recommended path is External Secrets
+#   Operator (https://external-secrets.io/) sourcing from Google Secret
+#   Manager — set `existingSecret: <eso-target-name>` once your ESO
+#   ExternalSecret is reconciling, which makes the chart skip its own
+#   Secret render and reference yours instead. As a stopgap, `--set-file`
+#   / `--set` against `helm upgrade` keeps the values out of git.
+#
+# Cluster-attach context
+#   This overlay is one of six epics in the cluster-attach chain
+#   (design bead spi-mbglak): chart-side hardening, gateway split, ingress
+#   + TLS, GKE values overlay (this file), bundle-store hardening, and
+#   the laptop attach-cluster path. Read spi-mbglak before tweaking
+#   semantics that other epics depend on.
 
-# HTTPS ingress via GKE Ingress + Google-managed cert. The structure is
-# uncommented so `helm show values -f values.gke.yaml` surfaces the schema
-# and the GKE-specific defaults (className: gce, managedCert + backendConfig
-# opted in, HTTP/2 backend). Still gated off via `ingress.enabled: false`;
-# flip to true AND set a real `host` in your own overlay to turn it on.
-# See docs/ingress-tls.md for DNS + cert setup.
+## --- Images ---
+# Replace PROJECT_ID below with your GCP project. Operators typically
+# mirror the public ghcr.io/awell-health/spire-* images into a private
+# Artifact Registry repo (`gcloud artifacts repositories create spire ...`)
+# so pulls stay inside the VPC, image scanning runs on every digest, and
+# `helm upgrade` doesn't take a hard dependency on ghcr.io availability.
+# Tags are intentionally omitted — the chart resolves them to .Chart.AppVersion
+# at render time so `helm install` of a published chart pins to the matching
+# release without per-environment --set flags.
+images:
+  steward:
+    # Replace PROJECT_ID with your GCP project (or change the registry path
+    # entirely). Region prefix `us-central1` should match where your nodes
+    # run to keep image pulls in-region.
+    repository: us-central1-docker.pkg.dev/PROJECT_ID/spire/spire-steward
+    pullPolicy: IfNotPresent
+  agent:
+    # Replace PROJECT_ID with your GCP project.
+    repository: us-central1-docker.pkg.dev/PROJECT_ID/spire/spire-agent
+    pullPolicy: IfNotPresent
+  dolt:
+    # Upstream image — keep the chart default unless you mirror it for
+    # supply-chain reasons. If you do mirror, update the path here:
+    #   us-central1-docker.pkg.dev/PROJECT_ID/spire/dolt-sql-server
+    repository: dolthub/dolt-sql-server
+    pullPolicy: IfNotPresent
+
+## --- Pod priority ---
+# PriorityClasses are required for wizard pods (the Go backend in
+# pkg/agent/backend_k8s.go hardcodes the class names). On a dedicated
+# Spire namespace this is the right default; flip to false only if a
+# cluster-wide operator already owns the same class names.
+podPriority:
+  enabled: true
+
+## --- Steward (sized for prod single-archmage workload) ---
+# Bumped from chart defaults (50m/128Mi req, 200m/256Mi limit) to absorb
+# bursty cycles when several beads transition state at once and the
+# sidecar LLM call fires concurrently with the dispatch loop.
+steward:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+## --- Operator ---
+# Bumped from chart defaults (50m/128Mi req, 200m/256Mi limit) so the
+# reconcile loop has headroom when several WizardGuilds + WorkloadIntents
+# churn in parallel.
+operator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+## --- Gateway (HTTP API for Spire Desktop) ---
+# Enabled so Spire Desktop and Linear/GitHub webhooks can reach the
+# tower. Service is ClusterIP because Ingress fronts it (separate epic;
+# see helm/spire/values.gke.yaml ingress block below for the GKE
+# defaults; flip ingress.enabled=true and set ingress.host in your own
+# overlay to actually expose the gateway).
+#
+# replicas: 2 requires the gateway-split work (spi-s6nifs) to have
+# landed — the gateway must be a separate Deployment with an emptyDir
+# .beads/ workspace per replica (idempotent tower-attach init). If
+# spi-s6nifs has NOT shipped in the version you are deploying, override
+# back to replicas: 1 to avoid two pods racing on the same PVC.
 gateway:
+  enabled: true
+  replicas: 2
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # HTTPS ingress via GKE Ingress + Google-managed cert. The structure is
+  # uncommented so `helm show values -f values.gke.yaml` surfaces the schema
+  # and the GKE-specific defaults (className: gce, managedCert + backendConfig
+  # opted in, HTTP/2 backend). Still gated off via `ingress.enabled: false`;
+  # flip to true AND set a real `host` in your own overlay to turn it on.
+  # See docs/ingress-tls.md for DNS + cert setup.
   ingress:
     enabled: false
     className: gce
@@ -23,3 +159,93 @@ gateway:
       enabled: true
       http2: true
       healthCheckPath: /healthz
+
+## --- Dolt (sized for prod single-archmage workload) ---
+# Bumped from chart defaults (100m/256Mi req, 500m/512Mi limit) since dolt
+# is the hottest component in this chart and the only one a stuck query
+# can starve.
+dolt:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  storage:
+    # premium-rwo is GKE's SSD-backed persistent disk class — the right
+    # default for the dolt write path on a paid cluster. Switch to
+    # standard-rwo for cost-sensitive installs; the dolt SQL server tolerates
+    # the slower disk fine for a single-archmage workload, you just trade
+    # latency on commit and on remotesapi clone/pull.
+    storageClass: premium-rwo
+
+## --- Syncer ---
+# DoltHub round-trip loop. Replace the placeholder remoteUrl with the
+# DoltHub repo this tower archives to (e.g. `your-org/your-tower`). Required
+# whenever syncer.enabled=true; if you don't archive to DoltHub, override
+# syncer.enabled=false instead.
+syncer:
+  enabled: true
+
+## --- DoltHub remote ---
+# Operators MUST set dolthub.remoteUrl when the syncer is enabled. The
+# user/password/JWK fields stay in chart defaults here (empty); supply
+# them via External Secrets, KMS-backed Secret, or `--set-file` for the
+# JWK at install time. Never commit DoltHub creds to this file.
+dolthub:
+  # Placeholder — replace with `your-org/your-tower` when you install.
+  # Leaving this blank with syncer.enabled=true will boot a syncer that
+  # logs auth errors every interval. See header "Secrets handling" for
+  # the recommended out-of-band injection path.
+  remoteUrl: ""
+
+## --- BundleStore (GCS via Workload Identity) ---
+# The steward ServiceAccount must be bound (via Workload Identity) to a
+# GSA holding `roles/storage.objectAdmin` on the bucket below. Without
+# that binding the GCS client returns 403 on every put/get and bead
+# review/merge stalls. See header "Workload Identity prerequisites" for
+# the gcloud + kubectl annotate sequence. The bucket itself MUST pre-exist
+# with Standard storage class (bundles are short-lived; Nearline/Coldline
+# would charge early-deletion fees). Override `bundleStore.gcs.bucket`
+# and `bundleStore.gcs.prefix` per environment.
+bundleStore:
+  backend: gcs
+  gcs:
+    # Replace PROJECT_ID with your GCP project. Bucket MUST pre-exist with
+    # Standard storage class. The chart enforces this is non-empty whenever
+    # backend=gcs (templates/steward.yaml `required` gate).
+    bucket: PROJECT_ID-spire-bundles
+    # Optional per-tower namespace inside the bucket — useful when one
+    # bucket fronts multiple Spire installs.
+    prefix: ""
+
+## --- GCP credential ---
+# In a Workload-Identity-only world this would be empty. Today the chart
+# enforces a non-empty value whenever bundleStore.backend=gcs (see
+# templates/steward.yaml `required` gate); the placeholder below satisfies
+# that gate so the overlay renders standalone, but it is NOT a usable
+# credential. At install time, EITHER:
+#   (a) Override with a real key file:
+#         helm upgrade --set-file gcp.serviceAccountJson=$HOME/.gcp/sa.json
+#       and accept that the SA key now lives in a chart-rendered Secret.
+#   (b) Wait for the chart to grow a "skip-key, use Workload Identity only"
+#       path and override to that mode. Until then, the runtime credential
+#       resolution still goes through Workload Identity if the steward KSA
+#       is annotated — the chart-mounted key file is just a fallback.
+gcp:
+  serviceAccountJson: "PLACEHOLDER — override at install with --set-file gcp.serviceAccountJson=<path>"
+
+## --- Anthropic credentials (two-slot, populated out-of-band) ---
+# Both slots are intentionally empty here. NEVER commit Anthropic
+# credentials to git. Populate via External Secrets / KMS-backed Secret
+# / `--set-file` at install time. The two-slot model is consumed by
+# pkg/agent/pod_builder.go: AuthSlot routes wizard pods to either
+# ANTHROPIC_API_KEY_DEFAULT (api-key) or ANTHROPIC_SUBSCRIPTION_TOKEN
+# (subscription / Max OAuth) inside the chart-rendered Secret.
+anthropic:
+  # Anthropic classic API key. Populate via External Secrets / KMS / --set-file; never commit.
+  apiKey: ""
+  # Claude subscription token (Max/Team), surfaced when wizard runs with --auth=subscription.
+  # Populate via External Secrets / KMS / --set-file; never commit.
+  subscriptionToken: ""
