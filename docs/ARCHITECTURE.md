@@ -19,7 +19,7 @@ see [Non-goals](#non-goals) below.
 | Mode | Wire value | What runs where |
 |------|------------|-----------------|
 | Local-native | `local-native` | Full control plane and workers on the archmage's machine. The steward spawns wizard subprocesses directly via `pkg/agent.Backend.Spawn`. The canonical default for new towers. |
-| Cluster-native | `cluster-native` | Steward runs in a pod, emits `pkg/steward/intent.WorkloadIntent` after an atomic attempt-bead claim, and the operator reconciles those intents into apprentice pods. The archmage's machine is a client of the cluster control plane. |
+| Cluster-native | `cluster-native` | Steward runs in a pod, emits bead-level `pkg/steward/intent.WorkloadIntent` without pre-creating an attempt bead, and the operator reconciles those intents into wizard pods. The wizard pod later claims the bead and opens or resumes its own attempt. The archmage's machine is a client of the cluster control plane. |
 | Attached-reserved | `attached-reserved` | A local control plane targeting a remote cluster execution surface through the same `WorkloadIntent` seam. **Reserved — not implemented.** Selecting it is a declaration of intent; consumers return `attached.ErrAttachedNotImplemented`. See [docs/attached-mode.md](attached-mode.md) for the full reservation. |
 
 The shared work graph still flows over Dolt + DoltHub regardless of which
@@ -28,17 +28,21 @@ the syncer pod, and an attached-mode tower would do whatever its sync
 transport selection dictates. Sync is not the mode switch.
 
 ```
-  Local-native                  Cluster-native                     Attached-reserved
-  ------------                  --------------                     -----------------
-  steward (CLI)                 steward (pod)                      steward (CLI)
-    │                             │                                  │
-    │ Spawn (process/docker/k8s)  │ Publish(WorkloadIntent)          │ Publish(WorkloadIntent) → remote
-    ▼                             ▼                                  ▼  (transport TBD)
-  apprentice process            operator reconciler                ErrAttachedNotImplemented
+  Local-native                  Cluster-native                          Attached-reserved
+  ------------                  --------------                          -----------------
+  steward (CLI)                 steward (pod)                           steward (CLI)
+    │                             │                                       │
+    │ Spawn (process/docker/k8s)  │ Publish(bead-level WorkloadIntent)    │ Publish(WorkloadIntent) → remote
+    ▼                             ▼                                       ▼  (transport TBD)
+  wizard subprocess             operator reconciler                     ErrAttachedNotImplemented
                                   │
-                                  │ BuildApprenticePod
+                                  │ BuildWizardPod
                                   ▼
-                                apprentice pod
+                                wizard pod
+                                  │
+                                  │ `spire claim`
+                                  ▼
+                           attempt bead opened/resumed
 ```
 
 ## Non-goals
@@ -83,9 +87,12 @@ prevent it from drifting into a second source of truth.
 
 `WorkloadIntent` is the dispatch-time payload that crosses the
 scheduler-to-reconciler boundary in cluster-native (and, eventually,
-attached) mode. It carries `AttemptID`, a minimal `RepoIdentity`
-(`URL`, `BaseBranch`, `Prefix`), `FormulaPhase`, `Resources`, and
-`HandoffMode` — and **nothing machine-local**. The package imports
+attached) mode. It carries a minimal `RepoIdentity` (`URL`,
+`BaseBranch`, `Prefix`), `FormulaPhase`, `Resources`, and
+`HandoffMode` — and **nothing machine-local**. Attempt-bead lifecycle
+does not cross this seam: the wizard sees `SPIRE_BEAD_ID=<task_id>` on
+startup and creates or resumes its own attempt when it runs `spire claim`.
+The package imports
 nothing from `k8s.io/*`, `pkg/dolt`, or `pkg/config`, and a reflection
 test in `intent_test.go` rejects any new field that smuggles
 `LocalBindings`, local paths, or other per-machine state onto the wire.
@@ -112,29 +119,29 @@ shared dolt connection.
 
 `pkg/steward/dispatch` formalizes claim-then-emit as the only path by
 which cluster-native scheduling may hand work to a reconciler.
-`AttemptClaimer.ClaimNext` atomically opens an attempt bead in the
-shared store via `pkg/store.CreateAttemptBead` — the row-level
-uniqueness of that operation is the canonical ownership seam, not any
-in-process mutex or `sync.Map`. A successful claim returns an
-`AttemptHandle` carrying `AttemptID` and `ClaimedAt`. `DispatchEmitter.Emit`
+`AttemptClaimer.ClaimNext` does **not** create an attempt bead. It
+verifies that no active wizard attempt already exists for the task,
+reserves the next monotonic `dispatch_seq`, and returns a `ClaimHandle`
+carrying `(TaskID, DispatchSeq, ClaimedAt)`. `DispatchEmitter.Emit`
 refuses to publish an intent without a matching handle: every
 implementation MUST call `dispatch.ValidateHandle` first, which returns
-`ErrNoClaimedAttempt` for nil handles or attempt-id mismatches.
-`ClaimThenEmit` is the orchestrator that wires the two halves together
-and is the only allowed dispatch path in cluster-native code paths.
+`ErrNoClaimedAttempt` for nil handles or `(TaskID, DispatchSeq)`
+mismatches. `ClaimThenEmit` is the orchestrator that wires the two
+halves together and is the only allowed dispatch path in cluster-native
+code paths. The attempt bead is wizard-owned and is opened later by the
+wizard's `spire claim`.
 
-### `BuildApprenticePod` (`pkg/agent`)
+### Pod builders (`pkg/agent`)
 
-`pkg/agent.BuildApprenticePod(spec PodSpec) (*corev1.Pod, error)` is
-the single source of truth for apprentice pod shape. Both the steward's
-cluster-native dispatch path and the operator's intent reconciler
-translate their own state into a `PodSpec` and call this constructor;
-neither hand-rolls pod shape. `PodSpec` has no opaque maps — every
-field is intentional and missing required inputs surface as typed
-`ErrPodSpec*` errors at build time rather than as init-container
-failures at runtime. The function never reads process env, never falls
-back to ambient CWD, and never hides missing identity behind a default.
-Pod-shape parity between callers is enforced by
+`pkg/agent.BuildWizardPod`, `BuildSagePod`, and `BuildApprenticePod`
+are the canonical pod-shape constructors. The operator's intent
+reconciler chooses among them from `FormulaPhase`; cluster-native
+scheduling in `pkg/steward` does not build pods directly. `PodSpec` has
+no opaque maps — every field is intentional and missing required inputs
+surface as typed `ErrPodSpec*` errors at build time rather than as
+init-container failures at runtime. The builders never read process env,
+never fall back to ambient CWD, and never hide missing identity behind a
+default. Pod-shape parity between callers is enforced by
 `pkg/agent/pod_builder_parity_test.go` and
 `operator/controllers/pod_builder_parity_test.go`.
 
