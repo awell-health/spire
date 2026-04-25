@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/wizard"
@@ -224,6 +225,12 @@ func TestCmdSummon_AuthPlumbingReachesSummonLocal(t *testing.T) {
 	defer func() { isK8sAvailableFunc = prevK8s }()
 	isK8sAvailableFunc = func() bool { return false }
 
+	prevBegin := summonBeginWorkFunc
+	defer func() { summonBeginWorkFunc = prevBegin }()
+	summonBeginWorkFunc = func(_ beadlifecycle.Deps, _ string, _ beadlifecycle.BeginOpts) (string, error) {
+		return "attempt-stub", nil
+	}
+
 	err := cmdSummon([]string{"spi-abc", "--auth", "api-key"})
 	if err == nil {
 		t.Fatal("expected error because api-key slot is not configured")
@@ -265,6 +272,12 @@ func TestCmdSummon_HeaderPlumbingReachesSummonLocal(t *testing.T) {
 	prevK8s := isK8sAvailableFunc
 	defer func() { isK8sAvailableFunc = prevK8s }()
 	isK8sAvailableFunc = func() bool { return false }
+
+	prevBegin := summonBeginWorkFunc
+	defer func() { summonBeginWorkFunc = prevBegin }()
+	summonBeginWorkFunc = func(_ beadlifecycle.Deps, _ string, _ beadlifecycle.BeginOpts) (string, error) {
+		return "attempt-stub", nil
+	}
 
 	prevSpawn := summonSpawnFunc
 	defer func() { summonSpawnFunc = prevSpawn }()

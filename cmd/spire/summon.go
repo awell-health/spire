@@ -177,15 +177,15 @@ func cmdSummon(args []string) error {
 			dispatch = args[i]
 		case args[i] == "--auto":
 			auto = true
-		case "--auth":
+		case args[i] == "--auth":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--auth requires a slot: subscription or api-key")
 			}
 			i++
 			authFlags.AuthSlot = args[i]
-		case "--turbo":
+		case args[i] == "--turbo":
 			authFlags.Turbo = true
-		case "-H", "--header":
+		case args[i] == "-H", args[i] == "--header":
 			if i+1 >= len(args) {
 				return fmt.Errorf("%s requires a header value (e.g. 'x-anthropic-api-key: sk-ant-…')", args[i])
 			}
@@ -272,8 +272,6 @@ func cmdSummon(args []string) error {
 	if err := preflightResolveTargets(targetIDs); err != nil {
 		return err
 	}
-
-	authFlags := wizard.SelectFlags{Auth: authFlag, Turbo: turbo, Headers: headers}
 
 	// Detect mode: k8s or local.
 	if isK8sAvailableFunc() {
@@ -682,7 +680,7 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 		// outcome before we hand off to SpawnWizard. Errors here mean a
 		// required slot isn't configured, so the user gets actionable
 		// guidance and we don't half-spawn.
-		authCtx, authErr := wizard.SelectAuth(authCfg, bead.Priority, auth)
+		authCtx, authErr := wizard.SelectAuth(authCfg, bead.Priority, authFlags)
 		if authErr != nil {
 			return fmt.Errorf("auth selection for %s: %w", bead.ID, authErr)
 		}
