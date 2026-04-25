@@ -122,6 +122,12 @@ func init() {
 		}
 		return summonSpawnFunc(b, cfg)
 	}
+
+	// Wire pkg/summon's Registry seam to the local-mode wizardregistry
+	// adapter (spi-p6unf3). The CLI runs only on the laptop, so local is
+	// the right impl here; cluster summons go through the operator's
+	// wizardregistry/cluster path, not this code.
+	summon.Registry = newLocalRegistryAdapter()
 }
 
 // --- Registry function wrappers ---

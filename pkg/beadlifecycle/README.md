@@ -39,8 +39,15 @@ implementation hides the mode-specific liveness oracle:
 
 | Mode | Implementation | Liveness oracle |
 |------|----------------|-----------------|
-| local-native | `pkg/wizardregistry/local` (or the legacy `pkg/registry` adapter during the migration window) | `process.ProcessAlive` — a zombie-aware PID probe |
+| local-native | `pkg/wizardregistry/local` (or `cmd/spire`'s adapter that projects the rich `pkg/agent` registry shape onto the same contract) | `process.ProcessAlive` — a zombie-aware PID probe |
 | cluster-native | `pkg/wizardregistry/cluster` | live k8s pod-phase query (`Running` ⇔ alive) |
+
+`OrphanSweep` (and every other consumer of the contract — AgentMonitor
+liveness queries, steward, board, trace, summon) takes a
+`wizardregistry.Registry` as its liveness oracle. The legacy
+`pkg/registry` package is removed (spi-p6unf3); the
+[`pkg/wizardregistry`](../wizardregistry/README.md) contract is the
+sole sanctioned wizard-tracking surface across modes.
 
 The `Wizard.ID` field is opaque to `beadlifecycle`: in `ModeLocal` it is
 the agent name (`wizard-<bead-id>`); in `ModeCluster` it is the pod

@@ -8,6 +8,7 @@ package trace
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +21,8 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/observability"
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/wizardregistry"
 )
 
 // Data is the response shape returned by Collect. Field names and JSON
@@ -98,6 +99,11 @@ func (e *NotFoundError) Unwrap() error { return e.Err }
 type Options struct {
 	// Tail is the max number of log lines to return. 0 skips log tailing.
 	Tail int
+
+	// Registry resolves the active wizard's start time so the trace can
+	// report ElapsedMs. Wired by callers in local mode (wizardregistry/local)
+	// and cluster mode (wizardregistry/cluster). Nil leaves ElapsedMs at 0.
+	Registry wizardregistry.Registry
 }
 
 // DefaultTailLines is the default log-tail cap callers should use when
@@ -177,15 +183,16 @@ func Collect(beadID string, opts Options) (*Data, error) {
 			}
 		}
 		agentName = aa.Name
-		if aa.Name != "" {
-			if regEntries, err := registry.List(); err == nil {
-				for _, w := range regEntries {
-					if w.Name == aa.Name || w.BeadID == beadID {
-						if w.StartedAt != "" {
-							if t, tErr := time.Parse(time.RFC3339, w.StartedAt); tErr == nil {
-								aa.ElapsedMs = time.Since(t).Milliseconds()
-							}
-						}
+		if aa.Name != "" && opts.Registry != nil {
+			ctx := context.Background()
+			if w, gerr := opts.Registry.Get(ctx, aa.Name); gerr == nil {
+				if !w.StartedAt.IsZero() {
+					aa.ElapsedMs = time.Since(w.StartedAt).Milliseconds()
+				}
+			} else if entries, lerr := opts.Registry.List(ctx); lerr == nil {
+				for _, w := range entries {
+					if w.BeadID == beadID && !w.StartedAt.IsZero() {
+						aa.ElapsedMs = time.Since(w.StartedAt).Milliseconds()
 						break
 					}
 				}

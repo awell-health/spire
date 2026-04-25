@@ -1,6 +1,7 @@
 package summon
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/wizardregistry"
+	"github.com/awell-health/spire/pkg/wizardregistry/fake"
 )
 
 // fakeHandle satisfies agent.Handle for SpawnFunc stubs. A real process
@@ -39,11 +42,12 @@ type commentCall struct{ id, text string }
 
 // stubOpts configures installStubs.
 type stubOpts struct {
-	bead       store.Bead // returned by GetBeadFunc (ID gets set from request arg)
-	getErr     error      // returned by GetBeadFunc
-	updateErr  error      // returned by UpdateBeadFunc
-	commentErr error      // returned by AddCommentFunc
-	spawnErr   error      // returned by SpawnFunc
+	bead       store.Bead       // returned by GetBeadFunc (ID gets set from request arg)
+	getErr     error            // returned by GetBeadFunc
+	updateErr  error            // returned by UpdateBeadFunc
+	commentErr error            // returned by AddCommentFunc
+	spawnErr   error            // returned by SpawnFunc
+	registry   *fake.Registry   // pre-populated registry; nil → fresh empty fake
 }
 
 // installStubs swaps package-level seams with test doubles and isolates the
@@ -60,6 +64,16 @@ func installStubs(t *testing.T, opts stubOpts) *stubCalls {
 	prevRemoveLabel := RemoveLabelFunc
 	prevComment := AddCommentFunc
 	prevSpawn := SpawnFunc
+	prevRegistry := Registry
+
+	// Wire the wizardregistry.Registry seam to a fake. The duplicate
+	// guard in SpawnWizard is gated on Registry != nil, so this is what
+	// makes the duplicate test reach the guard at all.
+	reg := opts.registry
+	if reg == nil {
+		reg = fake.New()
+	}
+	Registry = reg
 
 	calls := &stubCalls{}
 	GetBeadFunc = func(id string) (store.Bead, error) {
@@ -109,6 +123,7 @@ func installStubs(t *testing.T, opts stubOpts) *stubCalls {
 		RemoveLabelFunc = prevRemoveLabel
 		AddCommentFunc = prevComment
 		SpawnFunc = prevSpawn
+		Registry = prevRegistry
 	})
 	return calls
 }
@@ -313,18 +328,20 @@ func TestSpawnWizard_RecordsAuditComment(t *testing.T) {
 }
 
 func TestSpawnWizard_DuplicateReturnsErrAlreadyRunning(t *testing.T) {
-	// Seam stubs also set SPIRE_CONFIG_DIR to a tempdir for us.
-	calls := installStubs(t, stubOpts{})
-	// Pre-populate the registry with a live wizard pointing at this bead.
-	// PID=os.Getpid() is guaranteed alive for the duration of this test.
-	if err := agent.RegistryAdd(agent.Entry{
-		Name:      "wizard-spi-abc",
-		PID:       os.Getpid(),
-		BeadID:    "spi-abc",
-		StartedAt: "2026-04-24T00:00:00Z",
+	// Seed the wizardregistry.Registry seam with a live wizard pointing
+	// at this bead. The duplicate guard in SpawnWizard reads via
+	// Registry.List + Registry.IsAlive — so the seed must go through the
+	// fake registry, not the legacy file-based pkg/registry.
+	reg := fake.New()
+	if err := reg.Upsert(context.Background(), wizardregistry.Wizard{
+		ID:     "wizard-spi-abc",
+		BeadID: "spi-abc",
+		Mode:   wizardregistry.ModeLocal,
 	}); err != nil {
 		t.Fatalf("seed registry: %v", err)
 	}
+	reg.SetAlive("wizard-spi-abc", true)
+	calls := installStubs(t, stubOpts{registry: reg})
 
 	bead := store.Bead{ID: "spi-abc", Status: "in_progress", Type: "task"}
 	res, err := SpawnWizard(bead, "")

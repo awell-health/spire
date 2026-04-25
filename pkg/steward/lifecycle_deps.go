@@ -4,22 +4,22 @@ package steward
 // store + recovery functions available inside pkg/steward. This lets the
 // daemon tick call beadlifecycle.OrphanSweep without importing cmd/spire.
 //
-// It also exposes a wizardregistry.Registry adapter wired to the legacy
-// pkg/registry file. The adapter exists for the migration window during
-// which pkg/beadlifecycle has moved to the new interface but pkg/summon
-// still updates the actual PID via pkg/registry.Update; both views must
-// agree on liveness, which they do via the shared file. Once pkg/summon
-// migrates, this adapter can be replaced by wizardregistry/local.
+// It also exposes a wizardregistry.Registry adapter wired to the local
+// wizard registry file owned by pkg/agent. The adapter projects the rich
+// agent.Entry shape (PID, Phase, Worktree, Tower, etc.) onto the minimal
+// wizardregistry.Wizard contract used by mode-portable callers. Two views
+// over the same on-disk file agree on liveness via the shared file lock
+// and the zombie-safe pkg/process.ProcessAlive probe.
 
 import (
 	"context"
 	"sync"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/process"
 	"github.com/awell-health/spire/pkg/recovery"
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/wizardregistry"
 	"github.com/steveyegge/beads"
@@ -103,8 +103,8 @@ func newDaemonLifecycleDeps() beadlifecycle.Deps {
 }
 
 // localRegistryAdapter satisfies wizardregistry.Registry on top of the
-// legacy pkg/registry file. Race-safety: each IsAlive call performs a
-// fresh registry.List() read and a fresh process.ProcessAlive() probe;
+// pkg/agent registry file. Race-safety: each IsAlive call performs a
+// fresh agent.RegistryList() read and a fresh process.ProcessAlive() probe;
 // no per-sweep snapshot is cached.
 type localRegistryAdapter struct {
 	mu sync.Mutex // serializes Upsert/Remove read-modify-write within this process
@@ -113,25 +113,25 @@ type localRegistryAdapter struct {
 func newLocalRegistryAdapter() *localRegistryAdapter { return &localRegistryAdapter{} }
 
 func (a *localRegistryAdapter) List(_ context.Context) ([]wizardregistry.Wizard, error) {
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]wizardregistry.Wizard, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, registryEntryToWizard(e))
+		out = append(out, agentEntryToWizard(e))
 	}
 	return out, nil
 }
 
 func (a *localRegistryAdapter) Get(_ context.Context, id string) (wizardregistry.Wizard, error) {
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return wizardregistry.Wizard{}, err
 	}
 	for _, e := range entries {
 		if e.Name == id {
-			return registryEntryToWizard(e), nil
+			return agentEntryToWizard(e), nil
 		}
 	}
 	return wizardregistry.Wizard{}, wizardregistry.ErrNotFound
@@ -140,15 +140,15 @@ func (a *localRegistryAdapter) Get(_ context.Context, id string) (wizardregistry
 func (a *localRegistryAdapter) Upsert(_ context.Context, w wizardregistry.Wizard) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	existing, _ := registry.List()
-	var prev *registry.Entry
+	existing, _ := agent.RegistryList()
+	var prev *agent.Entry
 	for i := range existing {
 		if existing[i].Name == w.ID {
 			prev = &existing[i]
 			break
 		}
 	}
-	entry := registry.Entry{
+	entry := agent.Entry{
 		Name:      w.ID,
 		PID:       w.PID,
 		BeadID:    w.BeadID,
@@ -167,13 +167,13 @@ func (a *localRegistryAdapter) Upsert(_ context.Context, w wizardregistry.Wizard
 		entry.PhaseStartedAt = prev.PhaseStartedAt
 		entry.InstanceID = prev.InstanceID
 	}
-	return registry.Upsert(entry)
+	return agent.RegistryAdd(entry)
 }
 
 func (a *localRegistryAdapter) Remove(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return err
 	}
@@ -187,11 +187,11 @@ func (a *localRegistryAdapter) Remove(_ context.Context, id string) error {
 	if !found {
 		return wizardregistry.ErrNotFound
 	}
-	return registry.Remove(id)
+	return agent.RegistryRemove(id)
 }
 
 func (a *localRegistryAdapter) IsAlive(_ context.Context, id string) (bool, error) {
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return false, err
 	}
@@ -204,20 +204,20 @@ func (a *localRegistryAdapter) IsAlive(_ context.Context, id string) (bool, erro
 }
 
 func (a *localRegistryAdapter) Sweep(_ context.Context) ([]wizardregistry.Wizard, error) {
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return nil, err
 	}
 	var dead []wizardregistry.Wizard
 	for _, e := range entries {
 		if !process.ProcessAlive(e.PID) {
-			dead = append(dead, registryEntryToWizard(e))
+			dead = append(dead, agentEntryToWizard(e))
 		}
 	}
 	return dead, nil
 }
 
-func registryEntryToWizard(e registry.Entry) wizardregistry.Wizard {
+func agentEntryToWizard(e agent.Entry) wizardregistry.Wizard {
 	return wizardregistry.Wizard{
 		ID:        e.Name,
 		Mode:      wizardregistry.ModeLocal,

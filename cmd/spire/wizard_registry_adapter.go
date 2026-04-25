@@ -1,32 +1,33 @@
 package main
 
-// wizard_registry_adapter.go bridges pkg/registry (the legacy local-native
-// wizard-tracking file at ~/.config/spire/wizards.json) to the
-// wizardregistry.Registry interface. It exists for the migration window
-// during which pkg/beadlifecycle and pkg/steward have moved to the new
-// interface but pkg/summon still writes the actual PID into pkg/registry
-// via registry.Update. Once pkg/summon migrates (sibling subtask), this
-// adapter can be replaced by wizardregistry/local.New(...) directly.
+// wizard_registry_adapter.go projects the rich pkg/agent registry shape
+// (PID + Phase + Worktree + Tower + InstanceID) onto the minimal
+// wizardregistry.Registry contract used by mode-portable callers
+// (OrphanSweep, summon, board, trace).
 //
 // The adapter satisfies the Registry race-safety contract: every IsAlive
-// call performs a fresh registry.List() read and a fresh
+// call performs a fresh agent.RegistryList() read and a fresh
 // process.ProcessAlive() probe. There is no per-sweep snapshot.
+//
+// In cluster mode the operator wires wizardregistry/cluster directly;
+// this adapter is the local-mode counterpart and never runs inside an
+// operator pod.
 
 import (
 	"context"
 	"sync"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/process"
-	"github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/wizardregistry"
 )
 
 // localRegistryAdapter implements wizardregistry.Registry on top of the
-// legacy pkg/registry file store.
+// pkg/agent registry storage.
 type localRegistryAdapter struct {
 	// mu guards the read-modify-write critical section in Upsert against
-	// intra-process interleaving. The pkg/registry file lock provides
+	// intra-process interleaving. The pkg/agent file lock provides
 	// cross-process serialization.
 	mu sync.Mutex
 }
@@ -37,7 +38,7 @@ func newLocalRegistryAdapter() *localRegistryAdapter {
 }
 
 func (a *localRegistryAdapter) List(_ context.Context) ([]wizardregistry.Wizard, error) {
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +50,7 @@ func (a *localRegistryAdapter) List(_ context.Context) ([]wizardregistry.Wizard,
 }
 
 func (a *localRegistryAdapter) Get(_ context.Context, id string) (wizardregistry.Wizard, error) {
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return wizardregistry.Wizard{}, err
 	}
@@ -65,17 +66,16 @@ func (a *localRegistryAdapter) Upsert(_ context.Context, w wizardregistry.Wizard
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	// Preserve fields the new Wizard struct does not carry (Worktree,
-	// Tower, Phase, InstanceID) when an entry already exists. pkg/summon
-	// later reads Worktree off the entry it Updates with the real PID.
-	existing, _ := registry.List()
-	var prev *registry.Entry
+	// Tower, Phase, InstanceID) when an entry already exists.
+	existing, _ := agent.RegistryList()
+	var prev *agent.Entry
 	for i := range existing {
 		if existing[i].Name == w.ID {
 			prev = &existing[i]
 			break
 		}
 	}
-	entry := registry.Entry{
+	entry := agent.Entry{
 		Name:      w.ID,
 		PID:       w.PID,
 		BeadID:    w.BeadID,
@@ -94,13 +94,13 @@ func (a *localRegistryAdapter) Upsert(_ context.Context, w wizardregistry.Wizard
 		entry.PhaseStartedAt = prev.PhaseStartedAt
 		entry.InstanceID = prev.InstanceID
 	}
-	return registry.Upsert(entry)
+	return agent.RegistryAdd(entry)
 }
 
 func (a *localRegistryAdapter) Remove(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return err
 	}
@@ -114,11 +114,11 @@ func (a *localRegistryAdapter) Remove(_ context.Context, id string) error {
 	if !found {
 		return wizardregistry.ErrNotFound
 	}
-	return registry.Remove(id)
+	return agent.RegistryRemove(id)
 }
 
 func (a *localRegistryAdapter) IsAlive(_ context.Context, id string) (bool, error) {
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return false, err
 	}
@@ -131,7 +131,7 @@ func (a *localRegistryAdapter) IsAlive(_ context.Context, id string) (bool, erro
 }
 
 func (a *localRegistryAdapter) Sweep(_ context.Context) ([]wizardregistry.Wizard, error) {
-	entries, err := registry.List()
+	entries, err := agent.RegistryList()
 	if err != nil {
 		return nil, err
 	}
@@ -144,9 +144,9 @@ func (a *localRegistryAdapter) Sweep(_ context.Context) ([]wizardregistry.Wizard
 	return dead, nil
 }
 
-// entryToWizard projects a pkg/registry.Entry into a wizardregistry.Wizard.
-// The legacy on-disk entries are local-native only; Mode is hardcoded.
-func entryToWizard(e registry.Entry) wizardregistry.Wizard {
+// entryToWizard projects an agent.Entry into a wizardregistry.Wizard.
+// pkg/agent's on-disk entries are local-native only; Mode is hardcoded.
+func entryToWizard(e agent.Entry) wizardregistry.Wizard {
 	return wizardregistry.Wizard{
 		ID:        e.Name,
 		Mode:      wizardregistry.ModeLocal,
