@@ -75,6 +75,22 @@ func ResolveBackendForRepo(name, repoDir string) Backend {
 	}
 }
 
+// ResolveBackendName resolves the backend type identifier ("process",
+// "docker", "k8s", ...) for the repo rooted at repoDir. Reads
+// spire.yaml's agent.backend; defaults to "process" when no repo
+// config is available (unset field, missing file, zero-value). Used by
+// dispatch sites outside pkg/executor (steward review routing, wizard
+// review handoff) to populate Run.Backend on SpawnConfigs — the
+// executor's own path goes through (*Executor).runtimeBackend, which
+// keeps the same default behavior.
+func ResolveBackendName(repoDir string) string {
+	name := resolveBackendNameFromConfig(repoDir)
+	if name == "" {
+		return "process"
+	}
+	return name
+}
+
 // resolveBackendNameFromConfig reads agent.backend from spire.yaml,
 // walking up from repoDir. Returns "" when no config is found or the
 // field is unset; callers fall through to process.

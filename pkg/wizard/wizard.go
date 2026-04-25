@@ -2014,13 +2014,56 @@ func WizardReviewHandoff(beadID, wizardName, branchName string, deps *Deps, log 
 		PhaseStartedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 
+	// Resolve tower identity and repo context so the runtime-contract
+	// fields on SpawnConfig are populated (required by cluster backends
+	// at buildSubstratePod — see pkg/agent/backend_k8s.go
+	// ErrIdentityRequired/ErrWorkspaceRequired). A best-effort lookup:
+	// missing tower config (local-dev, unit tests) leaves TowerName
+	// empty and PopulateRuntimeContract fills workspace defaults so
+	// ProcessBackend still works unchanged.
+	var towerName string
+	if tower, tErr := deps.ActiveTowerConfig(); tErr == nil && tower != nil {
+		towerName = tower.Name
+	}
+	repoPath, repoURL, baseBranch, rErr := deps.ResolveRepo(beadID)
+	if rErr != nil {
+		log("resolve repo for review handoff: %s — continuing with empty repo identity", rErr)
+	}
+	if bb := findBaseBranchInParentChain(beadID, deps); bb != "" {
+		baseBranch = bb
+	}
+
+	sc := SpawnConfig{
+		Name:       reviewerName,
+		BeadID:     beadID,
+		Role:       RoleSage,
+		Tower:      towerName,
+		InstanceID: config.InstanceID(),
+	}
+
+	// Sage review is a same-owner read of the implement workspace, so
+	// HandoffBorrowed is the correct delivery semantic — matches the
+	// executor's wizardRunSpawn default for the sage-review flow.
+	sc, contractErr := executor.PopulateRuntimeContract(sc, executor.RuntimeContractInputs{
+		TowerName:   towerName,
+		RepoURL:     repoURL,
+		RepoPath:    repoPath,
+		BaseBranch:  baseBranch,
+		RunStep:     "review",
+		Backend:     agent.ResolveBackendName(repoPath),
+		HandoffMode: executor.HandoffBorrowed,
+		Log:         log,
+	})
+	if contractErr != nil {
+		log("failed to populate runtime contract for review handoff: %s", contractErr)
+		deps.RegistryRemove(reviewerName)
+		deps.AddComment(beadID, fmt.Sprintf("Review handoff runtime contract: %s", contractErr))
+		return
+	}
+
 	// Spawn reviewer
 	backend := deps.ResolveBackend("")
-	handle, spawnErr := backend.Spawn(SpawnConfig{
-		Name:   reviewerName,
-		BeadID: beadID,
-		Role:   RoleSage,
-	})
+	handle, spawnErr := backend.Spawn(sc)
 	if spawnErr != nil {
 		log("failed to spawn reviewer: %s — steward will detect via review beads", spawnErr)
 		// Remove the dead registry entry; the steward's detectReviewReady()

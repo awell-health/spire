@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
 	pkgregistry "github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
@@ -564,6 +567,18 @@ func ReviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, deps *D
 	return nil
 }
 
+// reviewFixSendMessage delivers the review feedback to the target
+// wizard via `spire send`. Package-level var so tests can stub out the
+// subprocess call — invoking os.Executable() from a go test binary
+// recursively re-runs the test suite.
+var reviewFixSendMessage = func(wizardName, feedbackText, beadID, reviewerName string) {
+	spireBin, _ := os.Executable()
+	sendCmd := exec.Command(spireBin, "send", wizardName, feedbackText, "--ref", beadID, "--as", reviewerName)
+	sendCmd.Env = os.Environ()
+	sendCmd.Stderr = os.Stderr
+	sendCmd.Run()
+}
+
 // ReviewHandleRequestChanges handles a request_changes verdict: posts comments,
 // spawns an apprentice with --review-fix, and returns.
 func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, round int, revPolicy RevisionPolicy, deps *Deps, log func(string, ...interface{})) error {
@@ -616,12 +631,10 @@ func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 		feedbackText = buf.String()
 	}
 
-	// Send via spire send
-	spireBin, _ := os.Executable()
-	sendCmd := exec.Command(spireBin, "send", wizardName, feedbackText, "--ref", beadID, "--as", reviewerName)
-	sendCmd.Env = os.Environ()
-	sendCmd.Stderr = os.Stderr
-	sendCmd.Run()
+	// Send via spire send. Routed through reviewFixSendMessage so tests
+	// can replace the subprocess call — invoking os.Executable() from a
+	// go test binary recursively re-runs the test suite.
+	reviewFixSendMessage(wizardName, feedbackText, beadID, reviewerName)
 
 	// Register re-engaged wizard
 	reengageNow := time.Now().UTC().Format(time.RFC3339)
@@ -637,15 +650,57 @@ func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 	// Spawn apprentice with --review-fix
 	log("spawning %s --review-fix", wizardName)
 	logDir := filepath.Join(deps.DoltGlobalDir(), "wizards")
-	backend := deps.ResolveBackend("")
-	handle, spawnErr := backend.Spawn(SpawnConfig{
+
+	// Resolve tower + repo identity so the cluster backend's
+	// ErrIdentityRequired / ErrWorkspaceRequired validation at
+	// buildSubstratePod is satisfied. Review-fix produces commits, so
+	// the handoff mode mirrors the executor's review-fix dispatch —
+	// apprenticeDeliveryHandoff(tower) returns HandoffBundle or
+	// HandoffTransitional depending on the tower's apprentice
+	// transport.
+	var tower *TowerConfig
+	if deps.ActiveTowerConfig != nil {
+		tower, _ = deps.ActiveTowerConfig()
+	}
+	var towerName string
+	if tower != nil {
+		towerName = tower.Name
+	}
+	repoPath, repoURL, baseBranch, rErr := deps.ResolveRepo(beadID)
+	if rErr != nil {
+		log("resolve repo for review-fix handoff: %s — continuing with empty repo identity", rErr)
+	}
+	if bb := findBaseBranchInParentChain(beadID, deps); bb != "" {
+		baseBranch = bb
+	}
+
+	sc := SpawnConfig{
 		Name:          wizardName,
 		BeadID:        beadID,
 		Role:          RoleApprentice,
+		Tower:         towerName,
+		InstanceID:    config.InstanceID(),
 		ExtraArgs:     []string{"--review-fix"},
 		LogPath:       filepath.Join(logDir, wizardName+"-fix.log"),
 		ApprenticeIdx: "0",
+	}
+	sc, contractErr := executor.PopulateRuntimeContract(sc, executor.RuntimeContractInputs{
+		TowerName:   towerName,
+		RepoURL:     repoURL,
+		RepoPath:    repoPath,
+		BaseBranch:  baseBranch,
+		RunStep:     "review-fix",
+		Backend:     agent.ResolveBackendName(repoPath),
+		HandoffMode: executor.ApprenticeDeliveryHandoff(tower),
+		Log:         log,
 	})
+	if contractErr != nil {
+		log("failed to populate runtime contract for review-fix: %s", contractErr)
+		return contractErr
+	}
+
+	backend := deps.ResolveBackend("")
+	handle, spawnErr := backend.Spawn(sc)
 	if spawnErr != nil {
 		log("failed to spawn wizard: %s", spawnErr)
 	} else if id := handle.Identifier(); id != "" {

@@ -490,62 +490,36 @@ func normalizeWorkspaceHandle(workspace *WorkspaceHandle, workspaceName, repoPat
 // deprecation log, and honors the SPIRE_FAIL_ON_TRANSITIONAL_HANDOFF gate
 // via recordHandoffSelection. The returned error, when non-nil, must be
 // propagated so the caller can fail the spawn.
+//
+// withRuntimeContract is a thin wrapper around the package-level
+// PopulateRuntimeContract: it sources the executor-specific fields
+// (attempt ID, repo URL from active tower, backend name, run ID,
+// logger) from e's state and delegates the remaining population to the
+// shared helper. Dispatch sites outside pkg/executor call
+// PopulateRuntimeContract directly.
 func (e *Executor) withRuntimeContract(cfg agent.SpawnConfig, towerName, repoPath, baseBranch, runStep, workspaceName string, workspace *WorkspaceHandle, mode HandoffMode) (agent.SpawnConfig, error) {
-	prefix := store.PrefixFromID(cfg.BeadID)
-	if prefix == "" {
-		prefix = cfg.RepoPrefix
+	if cfg.AttemptID == "" {
+		cfg.AttemptID = e.attemptID()
 	}
-	if baseBranch == "" {
-		baseBranch = cfg.RepoBranch
-	}
-
-	workspace = normalizeWorkspaceHandle(workspace, workspaceName, repoPath, baseBranch)
-	attemptID := cfg.AttemptID
-	if attemptID == "" {
-		attemptID = e.attemptID()
-	}
-
 	// RepoURL is resolved from executor state (active tower's registered-
 	// repo binding) rather than copied from cfg.RepoURL. This removes the
 	// foot-gun that let same-bead k8s dispatches fail at buildSubstratePod
 	// with ErrIdentityRequired because no caller had populated cfg.RepoURL
 	// (spi-x7fus). If state resolution returns empty (unit tests, no tower
-	// bound), fall back to any explicit cfg.RepoURL the caller did set so
-	// existing call sites that do thread the field through keep working.
-	repoURL := e.runtimeRepoURL()
-	if repoURL == "" {
-		repoURL = cfg.RepoURL
-	}
-
-	cfg.Identity = RepoIdentity{
-		TowerName:  towerName,
-		TowerID:    towerName,
-		Prefix:     prefix,
-		RepoURL:    repoURL,
-		BaseBranch: baseBranch,
-	}
-	cfg.Workspace = workspace
-	cfg.Run = RunContext{
-		TowerName:   towerName,
-		Prefix:      prefix,
-		BeadID:      cfg.BeadID,
-		AttemptID:   attemptID,
-		RunID:       e.currentRunID,
-		Role:        cfg.Role,
-		FormulaStep: runStep,
-		Backend:     e.runtimeBackend(),
-		HandoffMode: mode,
-	}
-	if workspace != nil {
-		cfg.Run.WorkspaceKind = workspace.Kind
-		cfg.Run.WorkspaceName = workspace.Name
-		cfg.Run.WorkspaceOrigin = workspace.Origin
-	}
-
-	if err := recordHandoffSelection(e.log, mode, cfg.Run); err != nil {
-		return cfg, err
-	}
-	return cfg, nil
+	// bound), PopulateRuntimeContract falls back to cfg.RepoURL.
+	return PopulateRuntimeContract(cfg, RuntimeContractInputs{
+		TowerName:     towerName,
+		RepoURL:       e.runtimeRepoURL(),
+		RepoPath:      repoPath,
+		BaseBranch:    baseBranch,
+		RunStep:       runStep,
+		WorkspaceName: workspaceName,
+		Workspace:     workspace,
+		Backend:       e.runtimeBackend(),
+		RunID:         e.currentRunID,
+		HandoffMode:   mode,
+		Log:           e.log,
+	})
 }
 
 // actionArbiterEscalate routes the "arbiter" flow to the executor's arbiter

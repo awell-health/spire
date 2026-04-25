@@ -69,6 +69,11 @@ var RaiseCorruptedBeadAlertFunc = RaiseCorruptedBeadAlert
 // GetChildrenFunc is a test-replaceable function for store.GetChildren.
 var GetChildrenFunc = store.GetChildren
 
+// GetStepBeadsFunc is a test-replaceable function for store.GetStepBeads.
+// Used by DetectReviewReady so tests can drive the review dispatch path
+// with synthetic step beads without a live store.
+var GetStepBeadsFunc = store.GetStepBeads
+
 // GetBeadFunc is a test-replaceable function for store.GetBead.
 var GetBeadFunc = store.GetBead
 
@@ -488,7 +493,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	}
 
 	// Step 4b: Detect standalone tasks ready for review.
-	DetectReviewReady(cfg.DryRun, cfg.Backend, towerName, phaseDispatch)
+	DetectReviewReady(cfg.DryRun, cfg.Backend, towerName, towerBindings, phaseDispatch)
 
 	// Step 4c: Detect tasks with review feedback that need wizard re-engagement.
 	DetectReviewFeedback(cfg.DryRun)
@@ -800,8 +805,17 @@ func CleanUpdatedLabels() int {
 // emits a PhaseReview WorkloadIntent instead of calling backend.Spawn
 // directly. Tests that exercise only local-native behavior can pass a
 // zero-value PhaseDispatch.
-func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string, pd PhaseDispatch) {
-	inProgress, err := store.ListBeads(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
+//
+// towerBindings maps a bead prefix to its LocalRepoBinding; used to
+// source the canonical repo identity (RepoURL/BaseBranch/local path)
+// that executor.PopulateRuntimeContract stamps onto SpawnConfig before
+// reaching the backend. Pass nil when the tower is unknown (legacy
+// single-tower mode) — the helper falls back to the binding's
+// SharedBranch of "" and PopulateRuntimeContract fills kind=repo
+// defaults for the workspace so cluster-backend validation still sees
+// non-empty Identity/Workspace fields.
+func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string, towerBindings map[string]*config.LocalRepoBinding, pd PhaseDispatch) {
+	inProgress, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] detectReviewReady: %s", err)
 		return
@@ -814,7 +828,7 @@ func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string, pd 
 		}
 
 		// Check if implement step is closed.
-		steps, sErr := store.GetStepBeads(b.ID)
+		steps, sErr := GetStepBeadsFunc(b.ID)
 		if sErr != nil || len(steps) == 0 {
 			continue // no workflow molecule — not eligible
 		}
@@ -872,14 +886,47 @@ func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string, pd 
 
 		reviewerName := "reviewer-" + SanitizeK8sLabel(b.ID)
 
-		handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
+		sc := agent.SpawnConfig{
 			Name:       reviewerName,
 			BeadID:     b.ID,
 			Role:       agent.RoleSage,
 			Tower:      towerName,
 			InstanceID: InstanceIDFunc(),
 			LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", reviewerName+".log"),
-		}, intent.PhaseReview)
+		}
+
+		// Populate the canonical runtime-contract fields. Cluster backends
+		// reject any SpawnConfig with empty Identity/Workspace at
+		// buildSubstratePod (ErrIdentityRequired / ErrWorkspaceRequired).
+		// Sage review is a same-owner read of the implement workspace, so
+		// HandoffBorrowed is the correct delivery semantic — the reviewer
+		// does not produce commits (see pkg/executor/graph_actions.go
+		// wizardRunSpawn which uses the same default for sage-review).
+		beadPrefix := beadRepoPrefix(b.ID)
+		var repoURL, repoPath, baseBranch string
+		if binding, ok := towerBindings[beadPrefix]; ok && binding != nil {
+			repoURL = binding.RepoURL
+			repoPath = binding.LocalPath
+			baseBranch = binding.SharedBranch
+		}
+		sc, contractErr := executor.PopulateRuntimeContract(sc, executor.RuntimeContractInputs{
+			TowerName:   towerName,
+			RepoURL:     repoURL,
+			RepoPath:    repoPath,
+			BaseBranch:  baseBranch,
+			RunStep:     "review",
+			Backend:     agent.ResolveBackendName(repoPath),
+			HandoffMode: executor.HandoffBorrowed,
+			Log: func(format string, args ...interface{}) {
+				log.Printf("[steward] "+format, args...)
+			},
+		})
+		if contractErr != nil {
+			log.Printf("[steward] failed to populate runtime contract for %s: %v", b.ID, contractErr)
+			continue
+		}
+
+		handle, spawnErr := dispatchPhase(context.Background(), pd, backend, sc, intent.PhaseReview)
 		if spawnErr != nil {
 			log.Printf("[steward] failed to route reviewer for %s: %v", b.ID, spawnErr)
 		} else if handle != nil {
