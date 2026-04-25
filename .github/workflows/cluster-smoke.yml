@@ -1,0 +1,206 @@
+# Manual smoke for docs/cluster-install.md.
+# Intended to be triggered periodically by an engineer to catch runbook
+# drift. Requires GCP_SA_KEY repo secret with project owner permissions
+# on a scratch project.
+#
+# How this is supposed to be used:
+#   1. An operator (engineer/SRE) clicks "Run workflow" in the Actions
+#      tab on the main branch.
+#   2. They supply project_id and domain for a *scratch* project — never
+#      a real one, since this creates and destroys cluster resources.
+#   3. The job walks the runbook (sections 4-7 + 10) end-to-end and
+#      tears down what it created on completion.
+#   4. If any step fails, the operator inspects the failure, files a
+#      bead against docs/cluster-install.md, and the runbook is
+#      corrected before the next run.
+#
+# This workflow is intentionally NOT triggered on push/pr/cron — it
+# costs real money (a GKE cluster + GCS + AR storage for the run's
+# duration) and exists for human-paced drift detection. Per epic
+# acceptance criterion 5, no scheduled (cron) trigger.
+
+name: Cluster install smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'GCP project ID for the scratch cluster (must be a throwaway project)'
+        required: true
+        type: string
+      domain:
+        description: 'DNS domain for the gateway (e.g. spire-smoke.example.com)'
+        required: true
+        type: string
+      image_tag:
+        description: 'spire-steward / spire-agent image tag to deploy'
+        required: false
+        type: string
+        default: latest
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  smoke:
+    name: End-to-end cluster install smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      PROJECT_ID: ${{ inputs.project_id }}
+      DOMAIN: ${{ inputs.domain }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      REGION: us-central1
+      CLUSTER_NAME: spire-smoke-${{ github.run_id }}
+      NAMESPACE: spire
+      RELEASE: spire
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ----- Section 4 prelude: gcloud auth -----
+      # Requires repo secret GCP_SA_KEY: a JSON service-account key with
+      # project owner (or equivalent admin) on the scratch project. Set
+      # under Settings → Secrets and variables → Actions.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ inputs.project_id }}
+
+      - name: Set up kubectl + helm
+        run: |
+          # TODO: pin versions once the runbook locks them
+          gcloud components install kubectl gke-gcloud-auth-plugin --quiet
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      # ----- Runbook section 2: Create the GKE cluster -----
+      - name: Create scratch GKE cluster
+        run: |
+          # TODO: align machine-type / size with the runbook section 2
+          # recommendations. The single-zone autopilot variant is enough
+          # for smoke; production sizing lives in the runbook.
+          echo "+ gcloud container clusters create ${CLUSTER_NAME}"
+          gcloud container clusters create-auto "${CLUSTER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --release-channel=regular \
+            --gateway-api=standard \
+            --workload-pool="${PROJECT_ID}.svc.id.goog"
+
+          echo "+ gcloud container clusters get-credentials ${CLUSTER_NAME}"
+          gcloud container clusters get-credentials "${CLUSTER_NAME}" \
+            --region="${REGION}" \
+            --project="${PROJECT_ID}"
+
+      # ----- Runbook section 3-4: images + GCP resources -----
+      - name: Provision GCS bucket + service accounts
+        run: |
+          # TODO: wire the exact bucket-name + GSA names the runbook
+          # standardises on. For now, echo the commands the runbook prescribes.
+          BUCKET="spire-smoke-${{ github.run_id }}"
+          GSA="spire-bundles@${PROJECT_ID}.iam.gserviceaccount.com"
+
+          echo "+ gsutil mb -p ${PROJECT_ID} -l ${REGION} gs://${BUCKET}"
+          echo "+ gcloud iam service-accounts create spire-bundles --project=${PROJECT_ID}"
+          echo "+ gsutil iam ch serviceAccount:${GSA}:roles/storage.objectAdmin gs://${BUCKET}"
+          echo "+ gcloud iam service-accounts add-iam-policy-binding ${GSA} ..."
+          # Echo-only stubs above; real wiring lands when the runbook
+          # finalises section 4.
+
+          echo "BUCKET=${BUCKET}" >> "$GITHUB_ENV"
+          echo "GSA=${GSA}" >> "$GITHUB_ENV"
+
+      - name: Verify Spire images are reachable from the cluster
+        run: |
+          # TODO: the runbook (section 3) covers either using
+          # ghcr.io/awell-health images or pushing into a scratch GAR.
+          # For now, just confirm we can pull-check whatever the overlay
+          # references.
+          echo "+ kubectl run pull-check --image=<region>-docker.pkg.dev/.../agent:${IMAGE_TAG} ..."
+
+      # ----- Runbook section 5: First helm install -----
+      - name: Helm install spire chart
+        run: |
+          echo "+ helm upgrade --install ${RELEASE} helm/spire -n ${NAMESPACE} ..."
+          # TODO: assemble the --set / --set-file arguments the runbook
+          # calls for. At a minimum: image tags, dolthub creds, anthropic
+          # API key, gateway domain. All sensitive bits live in repo
+          # secrets and get materialised here.
+          #
+          # helm upgrade --install "${RELEASE}" helm/spire \
+          #   -n "${NAMESPACE}" --create-namespace \
+          #   -f helm/spire/values.gke.yaml \
+          #   --set images.steward.tag="${IMAGE_TAG}" \
+          #   --set images.agent.tag="${IMAGE_TAG}" \
+          #   --set gateway.ingress.host="${DOMAIN}" \
+          #   --set anthropic.apiKey="$ANTHROPIC_API_KEY" \
+          #   --set-file dolthub.credsKeyValue=/tmp/dolthub.jwk \
+          #   --wait --timeout=10m
+
+      # ----- Runbook section 6: DNS + TLS -----
+      - name: Wait for gateway external IP and managed cert
+        run: |
+          echo "+ kubectl get gateway -n ${NAMESPACE} -w   (until ADDRESS populated)"
+          echo "+ Update DNS A record: ${DOMAIN} -> <gateway-ip>"
+          echo "+ kubectl describe managedcertificate -n ${NAMESPACE}   (Status: Active)"
+          # TODO: in a full implementation, this step would poll
+          # `kubectl get gateway -n spire -o jsonpath=...` until an IP
+          # appears, update DNS via Cloud DNS API, then poll the
+          # managedcertificate Status until Active.
+
+      # ----- Runbook section 7: Verify -----
+      - name: Verify pods Ready and /healthz reachable
+        run: |
+          echo "+ kubectl get pods -n ${NAMESPACE}   (all Ready)"
+          echo "+ curl -sSf https://${DOMAIN}/healthz   (expect 200)"
+          # TODO: hard-fail the workflow if pods aren't Ready or
+          # /healthz returns non-200, e.g.
+          #   kubectl wait --for=condition=Available --timeout=5m \
+          #     deploy/spire-steward deploy/spire-gateway -n "${NAMESPACE}"
+          #   curl -sSf "https://${DOMAIN}/healthz"
+
+      # ----- Runbook section 10: First bead lifecycle -----
+      - name: Demo bead — file, claim, summon, close
+        run: |
+          echo "+ spire file 'smoke demo bead' -t task -p 2"
+          echo "+ spire push"
+          echo "+ kubectl get spireworkloads -n ${NAMESPACE}   (workload appears)"
+          echo "+ kubectl get pods -n ${NAMESPACE} -w   (wizard pod spawned)"
+          echo "+ wait for wizard pod to reach Completed / bead status closed"
+          echo "+ spire pull && bd show <id>   (verify closed)"
+          # TODO: replace echoes with the actual sequence once the
+          # runbook section 10 commits to a canonical demo bead title /
+          # tower flow. Should fail the workflow if the bead doesn't
+          # close within an SLO window (e.g. 10m).
+
+      # ----- Always tear down -----
+      - name: Tear down scratch cluster
+        if: always()
+        run: |
+          echo "+ helm uninstall ${RELEASE} -n ${NAMESPACE} || true"
+          helm uninstall "${RELEASE}" -n "${NAMESPACE}" --wait || true
+
+          echo "+ gcloud container clusters delete ${CLUSTER_NAME}"
+          gcloud container clusters delete "${CLUSTER_NAME}" \
+            --region="${REGION}" \
+            --project="${PROJECT_ID}" \
+            --quiet || true
+
+          # Clean up the GCS bucket (force-recursive — it only contains
+          # this run's bundle artifacts).
+          if [ -n "${BUCKET:-}" ]; then
+            echo "+ gsutil -m rm -r gs://${BUCKET}"
+            gsutil -m rm -r "gs://${BUCKET}" || true
+          fi
+
+          # The scratch GSA can stay or be deleted; the runbook leaves
+          # it for inspection on failure runs.
+          # gcloud iam service-accounts delete "${GSA}" --quiet || true
