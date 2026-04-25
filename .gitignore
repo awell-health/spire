@@ -9,6 +9,7 @@ cmd/spire/spire
 /spire
 /spire-sidecar
 /spire-steward-sidecar
+operator/operator
 
 # Claude Code worktrees
 .claude/worktrees/
