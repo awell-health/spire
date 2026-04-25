@@ -245,14 +245,14 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 			break
 		}
 		// Flatten and filter out already-dispatched beads. Eager close at
-		// the staging-merge seam (closeChildAfterStagingMerge) means
-		// children that have already merged fall out of ComputeWaves
-		// naturally — they're closed and ComputeWaves only returns
-		// non-closed subtasks. The dispatched[id] map still has work to
-		// do for in-flight (mid-dispatch, pre-merge) children that are
-		// in_progress but not yet closed; without this skip-list a
-		// late-inject re-scan landing while wave-N is still merging
-		// would re-dispatch them.
+		// the apprentice/bundle seam (closeChildAfterBundleSignal) means
+		// children whose apprentice has produced a bundle outcome fall
+		// out of ComputeWaves naturally — they're closed and ComputeWaves
+		// only returns non-closed subtasks. The dispatched[id] map still
+		// has work to do for in-flight (mid-dispatch, pre-bundle-signal)
+		// children that are in_progress but not yet closed; without this
+		// skip-list a late-inject re-scan landing while wave-N is still
+		// dispatching would re-dispatch them.
 		var batch []string
 		for _, w := range newWaves {
 			for _, id := range w {
@@ -383,9 +383,15 @@ func (e *Executor) runDispatchWave(
 	// Apply each successful apprentice's bundle into staging, then merge.
 	// No-op signals skip merge entirely. The bundle is deleted only after
 	// a successful merge so a conflict can be retried with the bundle
-	// still present. After a successful merge the child bead is eagerly
-	// closed (see closeChildAfterStagingMerge) — once code is in staging,
-	// the task is done relative to the epic.
+	// still present. The child bead is eagerly closed at the apprentice/
+	// bundle seam (see closeChildAfterBundleSignal) as soon as
+	// applyApprenticeBundle returns a clean Applied or NoOp outcome —
+	// task completion is the apprentice's responsibility, not the
+	// wizard's downstream merge mechanics. A subsequent MergeBranch
+	// failure does NOT reopen the bead; the failure surfaces through the
+	// wizard's existing error path / recovery bead naming the offending
+	// child. The legacy push-fetch fallback (no BundleStore) keeps the
+	// post-MergeBranch close — that path has no separate bundle signal.
 	if stagingWt != nil {
 		for _, cr := range waveResults {
 			if cr.Err != nil {
@@ -397,19 +403,22 @@ func (e *Executor) runDispatchWave(
 					return startRef, fmt.Errorf("apply apprentice bundle for %s: %w", cr.BeadID, err)
 				}
 				if outcome.NoOp {
+					e.closeChildAfterBundleSignal(cr.BeadID)
 					continue
 				}
 				if outcome.Applied {
+					e.closeChildAfterBundleSignal(cr.BeadID)
 					if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
 						return startRef, fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
 					}
-					e.closeChildAfterStagingMerge(cr.BeadID)
 					e.deleteApprenticeBundle(cr.BeadID, outcome.Handle)
 					continue
 				}
 			}
 			// Push-transport / legacy fallback: fetch the apprentice's
 			// feat branch from the remote (idempotent; cheap) then merge.
+			// No bundle-signal event in this path, so the close trigger
+			// stays on MergeBranch success (spi-b2qjqv semantics).
 			if cr.Branch == "" {
 				continue
 			}
@@ -419,7 +428,7 @@ func (e *Executor) runDispatchWave(
 			if mergeErr := stagingWt.MergeBranch(cr.Branch, resolver); mergeErr != nil {
 				return startRef, fmt.Errorf("merge %s into staging: %w", cr.Branch, mergeErr)
 			}
-			e.closeChildAfterStagingMerge(cr.BeadID)
+			e.closeChildAfterBundleSignal(cr.BeadID)
 		}
 
 		// Update startRef for next wave.
@@ -493,12 +502,18 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 		// Apply the apprentice's bundle into staging, then merge. No-op
 		// signals skip merge entirely. The bundle is deleted only after a
 		// successful merge so a conflict can be retried with the bundle
-		// still present. After a successful merge the child bead is
-		// eagerly closed (see closeChildAfterStagingMerge) — once code is
-		// in staging, the task is done relative to the epic.
+		// still present. The child bead is eagerly closed at the
+		// apprentice/bundle seam (see closeChildAfterBundleSignal) as
+		// soon as applyApprenticeBundle returns a clean Applied or NoOp
+		// outcome — task completion is the apprentice's responsibility,
+		// not the wizard's downstream merge mechanics. A subsequent
+		// MergeBranch failure does NOT reopen the bead; the failure
+		// surfaces through the wizard's existing error path / recovery
+		// bead naming the offending child. The legacy push-fetch
+		// fallback (no BundleStore) keeps the post-MergeBranch close —
+		// that path has no separate bundle signal.
 		if stagingWt != nil {
-			merged := false
-			mergedBranch := false
+			bundleHandled := false
 			if e.deps.BundleStore != nil {
 				outcome, err := e.applyApprenticeBundle(subtaskID, 0, stagingWt)
 				if err != nil {
@@ -506,29 +521,29 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 				}
 				switch {
 				case outcome.NoOp:
-					merged = true // nothing to merge counts as success
+					e.closeChildAfterBundleSignal(subtaskID)
+					bundleHandled = true
 				case outcome.Applied:
+					e.closeChildAfterBundleSignal(subtaskID)
 					if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
 						return allResults, fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
 					}
 					e.deleteApprenticeBundle(subtaskID, outcome.Handle)
-					merged = true
-					mergedBranch = true
+					bundleHandled = true
 				}
 			}
-			if !merged {
+			if !bundleHandled {
 				// Push-transport / legacy fallback: fetch the apprentice's
-				// feat branch from the remote (idempotent) then merge.
+				// feat branch from the remote (idempotent) then merge. No
+				// bundle-signal event in this path, so the close trigger
+				// stays on MergeBranch success (spi-b2qjqv semantics).
 				if fetchErr := stagingWt.FetchBranch("origin", featBranch); fetchErr != nil {
 					e.log("fetch %s (best-effort): %s", featBranch, fetchErr)
 				}
 				if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
 					return allResults, fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 				}
-				mergedBranch = true
-			}
-			if mergedBranch {
-				e.closeChildAfterStagingMerge(subtaskID)
+				e.closeChildAfterBundleSignal(subtaskID)
 			}
 			// Update startRef for next child.
 			if sha, err := stagingWt.HeadSHA(); err == nil && sha != "" {
@@ -620,27 +635,35 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 	return nil
 }
 
-// closeChildAfterStagingMerge transitions a child task bead to "closed"
-// after its work has successfully landed in the epic's staging branch.
-// It is the eager-close seam invoked by runDispatchWave and
-// dispatchSequentialCore after every successful MergeBranch — at that
-// point the task is "in the merge target" relative to its role in the
-// epic, so users see per-task progress instead of a single flip at epic
-// close.
+// closeChildAfterBundleSignal transitions a child task bead to "closed"
+// once the apprentice has produced its bundle outcome (Applied or NoOp).
+// The seam is the apprentice/bundle boundary — task completion is owned
+// by the apprentice, not by the wizard's downstream merge mechanics.
+// runDispatchWave and dispatchSequentialCore call this on the bundle-
+// store path immediately after applyApprenticeBundle returns a clean
+// outcome, before MergeBranch runs. A subsequent merge failure does NOT
+// reopen the bead — the failure surfaces through the wizard's existing
+// error path / recovery bead naming the offending child.
+//
+// On the legacy push-fetch fallback (BundleStore == nil) there is no
+// bundle-signal event, so the helper is invoked after MergeBranch
+// success — preserving the spi-b2qjqv staging-merge close semantics for
+// that migration-period path.
 //
 // Idempotent: short-circuits when GetBead reports the bead is already
 // closed. The underlying CloseIssue path matches by id only with no
 // status filter (see internal/storage/dolt/issues.go), so a redundant
 // call would re-stamp closed_at and emit a duplicate EventClosed —
-// which is why the status pre-check is load-bearing.
+// which is why the status pre-check is load-bearing for the defensive
+// cascade in actionBeadFinish.
 //
 // Errors are non-fatal: the helper only logs and returns. The defensive
 // cascade in actionBeadFinish closes any survivors at epic close (e.g.
-// if the wizard dies between MergeBranch returning and this helper
-// running). Direct dispatch (dispatchDirectCore) does not call this —
-// its single apprentice runs against the parent's own bead, so closing
-// the parent mid-flight would be wrong.
-func (e *Executor) closeChildAfterStagingMerge(childID string) {
+// if the wizard dies between applyApprenticeBundle returning and this
+// helper running). Direct dispatch (dispatchDirectCore) does not call
+// this — its single apprentice runs against the parent's own bead, so
+// closing the parent mid-flight would be wrong.
+func (e *Executor) closeChildAfterBundleSignal(childID string) {
 	if e.deps == nil || e.deps.CloseBead == nil {
 		return
 	}
@@ -650,6 +673,6 @@ func (e *Executor) closeChildAfterStagingMerge(childID string) {
 		}
 	}
 	if err := e.deps.CloseBead(childID); err != nil {
-		e.log("warning: close child %s after staging merge: %s", childID, err)
+		e.log("warning: close child %s after bundle signal: %s", childID, err)
 	}
 }
