@@ -75,6 +75,13 @@ type AgentRun struct {
 	ReadCalls          int    `json:"read_calls,omitempty"`         // count of Read tool invocations
 	EditCalls          int    `json:"edit_calls,omitempty"`         // count of Edit + Write tool invocations
 	ToolCallsJSON      string `json:"tool_calls_json,omitempty"`    // full {"Read": 12, "Edit": 3, ...} blob
+	// AuthProfile is the credential slot active at run-start ("subscription" or
+	// "api-key"). Nil for historical rows and for runs that predate the auth
+	// observability wiring.
+	AuthProfile        *string `json:"auth_profile,omitempty"`
+	// AuthProfileFinal is set only when a mid-run 429 promoted the run from
+	// subscription to api-key. Nil (or equal to AuthProfile) means no swap.
+	AuthProfileFinal   *string `json:"auth_profile_final,omitempty"`
 	StartedAt          string `json:"started_at"`
 	CompletedAt        string `json:"completed_at,omitempty"`
 }
@@ -95,7 +102,13 @@ func Record(run AgentRun) (string, error) {
 	if run.ID == "" {
 		run.ID = GenerateID()
 	}
+	return run.ID, bdSQL(buildInsertSQL(run))
+}
 
+// buildInsertSQL builds the INSERT statement for an AgentRun. Extracted from
+// Record so tests can verify column inclusion without a live bd binary.
+// Caller must ensure run.ID is set.
+func buildInsertSQL(run AgentRun) string {
 	cols := []string{
 		"id", "bead_id", "model", "role", "result", "started_at",
 	}
@@ -304,13 +317,19 @@ func Record(run AgentRun) (string, error) {
 		cols = append(cols, "completed_at")
 		vals = append(vals, esc(run.CompletedAt))
 	}
+	if run.AuthProfile != nil {
+		cols = append(cols, "auth_profile")
+		vals = append(vals, esc(*run.AuthProfile))
+	}
+	if run.AuthProfileFinal != nil {
+		cols = append(cols, "auth_profile_final")
+		vals = append(vals, esc(*run.AuthProfileFinal))
+	}
 
-	query := fmt.Sprintf("INSERT INTO agent_runs (%s) VALUES (%s)",
+	return fmt.Sprintf("INSERT INTO agent_runs (%s) VALUES (%s)",
 		strings.Join(cols, ", "),
 		strings.Join(vals, ", "),
 	)
-
-	return run.ID, bdSQL(query)
 }
 
 // MarkGolden sets golden_run=TRUE for the given run ID.

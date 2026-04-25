@@ -11,7 +11,14 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/executor"
+	"github.com/awell-health/spire/pkg/wizard"
 )
+
+// synthHeaderAuth is a SelectFlags value that synthesizes a throwaway
+// subscription credential via the -H header path. Tests that exercise the
+// spawn flow but don't care about auth use this so SelectAuth succeeds
+// without requiring a real credentials file in the test tempdir.
+var synthHeaderAuth = wizard.SelectFlags{HeaderToken: "test-token"}
 
 // stubSpawn is a summonSpawnFunc that refuses to spawn a real subprocess.
 // Tests that reach summonLocal's spawn path use it to avoid fork/exec'ing the
@@ -276,7 +283,7 @@ func TestSummonLocal_RejectsClosedBead(t *testing.T) {
 		return Bead{ID: id, Status: "closed", Title: "test"}, nil
 	}
 
-	err := summonLocal(1, []string{"spi-closed"}, "")
+	err := summonLocal(1, []string{"spi-closed"}, "", wizard.SelectFlags{})
 	if err == nil {
 		t.Fatal("expected error for closed bead")
 	}
@@ -300,7 +307,7 @@ func TestSummonLocal_RejectsDoneBead(t *testing.T) {
 		return Bead{ID: id, Status: "done", Title: "test"}, nil
 	}
 
-	err := summonLocal(1, []string{"spi-done"}, "")
+	err := summonLocal(1, []string{"spi-done"}, "", wizard.SelectFlags{})
 	if err == nil {
 		t.Fatal("expected error for done bead")
 	}
@@ -321,7 +328,7 @@ func TestSummonLocal_RejectsDeferredBead(t *testing.T) {
 		return Bead{ID: id, Status: "deferred", Title: "test"}, nil
 	}
 
-	err := summonLocal(1, []string{"spi-deferred"}, "")
+	err := summonLocal(1, []string{"spi-deferred"}, "", wizard.SelectFlags{})
 	if err == nil {
 		t.Fatal("expected error for deferred bead")
 	}
@@ -351,7 +358,7 @@ func TestSummonLocal_AllowsOpenBead(t *testing.T) {
 	}
 	summonSpawnFunc = stubSpawn
 
-	err := summonLocal(1, []string{"spi-open"}, "")
+	err := summonLocal(1, []string{"spi-open"}, "", synthHeaderAuth)
 	// Should NOT get a status rejection error. It will fail later
 	// (no formula, no DB, etc.) but that's fine — we're testing the gate.
 	if err != nil && (strings.Contains(err.Error(), "is closed") || strings.Contains(err.Error(), "is deferred")) {
@@ -375,7 +382,7 @@ func TestSummonLocal_AllowsInProgressBead(t *testing.T) {
 	}
 	summonSpawnFunc = stubSpawn
 
-	err := summonLocal(1, []string{"spi-wip"}, "")
+	err := summonLocal(1, []string{"spi-wip"}, "", synthHeaderAuth)
 	if err != nil && (strings.Contains(err.Error(), "is closed") || strings.Contains(err.Error(), "is deferred")) {
 		t.Fatalf("in_progress bead should not be rejected by status gate, got: %v", err)
 	}
@@ -410,7 +417,7 @@ func TestSummonLocal_TransitionsOpenToInProgress(t *testing.T) {
 	}
 	summonSpawnFunc = stubSpawn
 
-	_ = summonLocal(1, []string{"spi-open"}, "")
+	_ = summonLocal(1, []string{"spi-open"}, "", synthHeaderAuth)
 
 	if gotBeadID != "spi-open" {
 		t.Fatalf("expected BeginWork called for spi-open, got %q", gotBeadID)
@@ -443,7 +450,7 @@ func TestSummonLocal_TransitionsReadyToInProgress(t *testing.T) {
 	}
 	summonSpawnFunc = stubSpawn
 
-	_ = summonLocal(1, []string{"spi-ready"}, "")
+	_ = summonLocal(1, []string{"spi-ready"}, "", synthHeaderAuth)
 
 	if gotBeadID != "spi-ready" {
 		t.Fatalf("expected BeginWork called for spi-ready, got %q", gotBeadID)
@@ -470,7 +477,7 @@ func TestSummonLocal_TransitionFailurePropagates(t *testing.T) {
 		return "", fmt.Errorf("db down")
 	}
 
-	err := summonLocal(1, []string{"spi-open"}, "")
+	err := summonLocal(1, []string{"spi-open"}, "", wizard.SelectFlags{})
 	if err == nil {
 		t.Fatal("expected error when BeginWork fails")
 	}
@@ -506,7 +513,7 @@ func TestSummonLocal_RejectsMultipleTargets_FirstBadFails(t *testing.T) {
 		return "att-stub", nil
 	}
 
-	err := summonLocal(2, []string{"spi-good", "spi-bad"}, "")
+	err := summonLocal(2, []string{"spi-good", "spi-bad"}, "", wizard.SelectFlags{})
 	if err == nil {
 		t.Fatal("expected error when second target is closed")
 	}

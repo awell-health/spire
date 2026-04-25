@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     golden_run BOOLEAN DEFAULT FALSE,
     cost_usd DECIMAL(10,4),
 
+    -- Auth slot tracking (subscription | api-key). auth_profile_final is
+    -- set only when a 429 auto-promote swap occurred mid-run.
+    auth_profile VARCHAR(32),
+    auth_profile_final VARCHAR(32),
+
     -- Timestamps
     started_at DATETIME NOT NULL,
     completed_at DATETIME,
@@ -70,7 +75,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     INDEX idx_formula (formula_name),
     INDEX idx_bead_type (bead_type),
     INDEX idx_tower (tower),
-    INDEX idx_started_at (started_at)
+    INDEX idx_started_at (started_at),
+    INDEX idx_auth_profile (auth_profile)
 );
 
 CREATE TABLE IF NOT EXISTS golden_prompts (

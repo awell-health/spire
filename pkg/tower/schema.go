@@ -81,6 +81,8 @@ const AgentRunsTableSQL = `CREATE TABLE IF NOT EXISTS agent_runs (
     stop_reason VARCHAR(32),
     cache_read_tokens BIGINT,
     cache_write_tokens BIGINT,
+    auth_profile TEXT,
+    auth_profile_final TEXT,
     INDEX idx_bead (bead_id),
     INDEX idx_epic (epic_id),
     INDEX idx_result (result),

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/awell-health/spire/pkg/config"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/runtime"
@@ -99,8 +100,18 @@ func NewGraph(beadID, agentName string, graph *FormulaStepGraph, deps *Deps) (*E
 	if err != nil {
 		return nil, fmt.Errorf("load graph state: %w", err)
 	}
-	if state == nil {
+	// A preliminary state has Auth set by summon but no formula/steps yet —
+	// summon writes it before spawning the wizard so the credential
+	// selection survives the process boundary (spi-rs8sb2). Treat it as a
+	// fresh start: build the real state from the graph, carry Auth over.
+	isPreliminary := state != nil && state.Formula == "" && len(state.Steps) == 0
+	if state == nil || isPreliminary {
+		carriedAuth := (*config.AuthContext)(nil)
+		if isPreliminary {
+			carriedAuth = state.Auth
+		}
 		state = NewGraphState(graph, beadID, agentName)
+		state.Auth = carriedAuth
 		// Tag with tower name so sweep/resolve can filter by tower.
 		if deps.ActiveTowerConfig != nil {
 			if tc, err := deps.ActiveTowerConfig(); err == nil && tc != nil {

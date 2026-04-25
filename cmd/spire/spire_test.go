@@ -1257,6 +1257,36 @@ func TestSpireMigrationsCoversAllColumns(t *testing.T) {
 	}
 }
 
+// TestSpireMigrationsAuthProfileColumns asserts the auth_profile observability
+// columns are present in spireMigrations. The two columns are written by the
+// spawn-point plumbing (auth_profile) and the 429 handler (auth_profile_final)
+// — fresh installs get them via the canonical DDL, existing ones via ALTER.
+func TestSpireMigrationsAuthProfileColumns(t *testing.T) {
+	wantDDL := map[string]string{
+		"auth_profile":       "ADD COLUMN auth_profile TEXT",
+		"auth_profile_final": "ADD COLUMN auth_profile_final TEXT",
+	}
+	got := make(map[string]string)
+	for _, m := range spireMigrations {
+		if m.table != "agent_runs" {
+			continue
+		}
+		if _, ok := wantDDL[m.column]; ok {
+			got[m.column] = m.ddl
+		}
+	}
+	for col, ddl := range wantDDL {
+		gotDDL, ok := got[col]
+		if !ok {
+			t.Errorf("spireMigrations missing entry for agent_runs.%s", col)
+			continue
+		}
+		if gotDDL != ddl {
+			t.Errorf("spireMigrations[agent_runs.%s].ddl = %q, want %q", col, gotDDL, ddl)
+		}
+	}
+}
+
 // TestIntegrationMigrateSpireTablesIdempotent verifies that migrateSpireTables
 // can be called twice without error.
 func TestIntegrationMigrateSpireTablesIdempotent(t *testing.T) {

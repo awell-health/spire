@@ -34,7 +34,12 @@ var CredSpireEnvVars = map[string]string{
 	CredKeyDolthubPassword: "SPIRE_DOLTHUB_PASSWORD",
 }
 
-// CredentialsPath returns the path to the credentials file (~/.config/spire/credentials).
+// CredentialsPath returns the path to the legacy flat key=value credentials
+// file (~/.config/spire/credentials). Non-auth credentials (github-token,
+// dolthub-user, remotesapi-*, etc.) continue to live in this file. Auth
+// credentials live alongside it in AuthConfigPath (credentials.toml) —
+// on first ReadAuthConfig, auth-related flat entries are promoted out of
+// this file and into the TOML file.
 func CredentialsPath() (string, error) {
 	dir, err := Dir()
 	if err != nil {

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/awell-health/spire/pkg/config"
 )
 
 // GraphState is the generic step-oriented state model for v3 graph execution.
@@ -35,6 +37,14 @@ type GraphState struct {
 	StepBeadIDs   map[string]string `json:"step_bead_ids,omitempty"`
 	WorktreeDir   string            `json:"worktree_dir,omitempty"`
 	InjectedTasks []string          `json:"injected_tasks,omitempty"`
+
+	// Auth is the per-run selected auth context (spi-rs8sb2). Populated by
+	// `spire summon`'s selection logic and read by downstream spawn/HTTP
+	// code. Persisted with the rest of GraphState so a resumed wizard picks
+	// up the same credential slot the original summon selected. The parent
+	// directory uses 0700 and this file is written with 0600 (see Save) to
+	// keep the embedded secret off world-readable state.
+	Auth *config.AuthContext `json:"auth,omitempty"`
 }
 
 // StepState tracks the status and outputs of a single graph step.
@@ -245,16 +255,19 @@ func LoadGraphState(agentName string, configDirFn func() (string, error)) (*Grap
 	return &state, nil
 }
 
-// Save persists the graph state to disk.
+// Save persists the graph state to disk. Uses 0700 on the parent directory
+// and 0600 on the file itself because Auth embeds subscription/api-key
+// secrets (spi-rs8sb2); the rest of the state is per-user runtime state
+// that has no business being world-readable either.
 func (s *GraphState) Save(agentName string, configDirFn func() (string, error)) error {
 	path := GraphStatePath(agentName, configDirFn)
-	os.MkdirAll(filepath.Dir(path), 0755)
+	os.MkdirAll(filepath.Dir(path), 0700)
 	s.LastActionAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal graph state: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // HasHookedSteps returns true if any step in the graph has status "hooked".

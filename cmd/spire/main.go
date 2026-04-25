@@ -54,6 +54,7 @@ func init() {
 	rootCmd.AddCommand(upCmd)
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(metricsCmd)
+	rootCmd.AddCommand(costCmd)
 	rootCmd.AddCommand(traceCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(alertCmd)

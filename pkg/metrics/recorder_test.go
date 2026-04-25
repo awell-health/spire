@@ -6,6 +6,106 @@ import (
 	"time"
 )
 
+func TestBuildInsertSQL_AuthProfile(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	base := AgentRun{
+		ID:        "run-01020304",
+		BeadID:    "spi-abc123",
+		Model:     "claude-opus-4-7",
+		Role:      "wizard",
+		Result:    "success",
+		StartedAt: "2026-04-24T10:00:00Z",
+	}
+
+	tests := []struct {
+		name                   string
+		profile                *string
+		profileFinal           *string
+		wantProfileCol         bool
+		wantProfileFinalCol    bool
+		wantProfileValue       string
+		wantProfileFinalValue  string
+	}{
+		{
+			name:                "both nil — historical row semantic",
+			profile:             nil,
+			profileFinal:        nil,
+			wantProfileCol:      false,
+			wantProfileFinalCol: false,
+		},
+		{
+			name:                 "only auth_profile set — no 429 swap",
+			profile:              strPtr("subscription"),
+			profileFinal:         nil,
+			wantProfileCol:       true,
+			wantProfileFinalCol:  false,
+			wantProfileValue:     "'subscription'",
+		},
+		{
+			name:                  "both set — 429 swap occurred",
+			profile:               strPtr("subscription"),
+			profileFinal:          strPtr("api-key"),
+			wantProfileCol:        true,
+			wantProfileFinalCol:   true,
+			wantProfileValue:      "'subscription'",
+			wantProfileFinalValue: "'api-key'",
+		},
+		{
+			name:                 "empty-string pointer still writes",
+			profile:              strPtr(""),
+			profileFinal:         nil,
+			wantProfileCol:       true,
+			wantProfileFinalCol:  false,
+			wantProfileValue:     "''",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := base
+			run.AuthProfile = tt.profile
+			run.AuthProfileFinal = tt.profileFinal
+			sql := buildInsertSQL(run)
+
+			hasProfileCol := strings.Contains(sql, "auth_profile,") || strings.Contains(sql, "auth_profile)")
+			if hasProfileCol != tt.wantProfileCol {
+				t.Errorf("auth_profile column present = %v, want %v\nSQL: %s", hasProfileCol, tt.wantProfileCol, sql)
+			}
+
+			hasProfileFinalCol := strings.Contains(sql, "auth_profile_final")
+			if hasProfileFinalCol != tt.wantProfileFinalCol {
+				t.Errorf("auth_profile_final column present = %v, want %v\nSQL: %s", hasProfileFinalCol, tt.wantProfileFinalCol, sql)
+			}
+
+			if tt.wantProfileValue != "" && !strings.Contains(sql, tt.wantProfileValue) {
+				t.Errorf("expected auth_profile value %q in SQL: %s", tt.wantProfileValue, sql)
+			}
+			if tt.wantProfileFinalValue != "" && !strings.Contains(sql, tt.wantProfileFinalValue) {
+				t.Errorf("expected auth_profile_final value %q in SQL: %s", tt.wantProfileFinalValue, sql)
+			}
+		})
+	}
+}
+
+func TestBuildInsertSQL_AuthProfileEscaping(t *testing.T) {
+	// Exotic slot names with apostrophes must be escaped like any other string.
+	nasty := "sub'scription"
+	run := AgentRun{
+		ID:          "run-01020304",
+		BeadID:      "spi-abc123",
+		Model:       "claude-opus-4-7",
+		Role:        "wizard",
+		Result:      "success",
+		StartedAt:   "2026-04-24T10:00:00Z",
+		AuthProfile: &nasty,
+	}
+	sql := buildInsertSQL(run)
+	if !strings.Contains(sql, "'sub''scription'") {
+		t.Errorf("expected escaped apostrophe in SQL, got: %s", sql)
+	}
+}
+
 func TestParseReviewCycleMetrics(t *testing.T) {
 	// Helper to build CSV rows. Each row: review_round,review_step,started_at,completed_at,result
 	csv := func(rows ...string) string {
