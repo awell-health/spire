@@ -1027,7 +1027,14 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 			}
 		}
 
-		// Close orphan subtask beads (for epic formulas).
+		// Defensive close-cascade for orphan subtask beads (epic formulas).
+		// Eager close at the staging-merge seam (see
+		// action_dispatch.go:closeChildAfterStagingMerge) is the normal
+		// path — children are closed as their work merges, so the
+		// status guard below short-circuits them here. This cascade
+		// catches survivors: a wizard crash between MergeBranch and the
+		// eager close, beads that landed via paths that didn't run the
+		// helper, or legacy beads predating the eager-close change.
 		if children, childErr := e.deps.GetChildren(e.beadID); childErr == nil {
 			for _, child := range children {
 				if child.Status == "closed" {

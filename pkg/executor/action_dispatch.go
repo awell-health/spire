@@ -244,10 +244,15 @@ func (e *Executor) dispatchWaveCore(waves [][]string, stagingWt *spgit.StagingWo
 			e.log("wave re-scan: compute waves failed: %s", waveErr)
 			break
 		}
-		// Flatten and filter out already-dispatched beads. ComputeWaves
-		// returns non-closed subtasks; dispatched ones are typically
-		// in_progress until the epic close step runs, so we must skip them
-		// explicitly rather than relying on status.
+		// Flatten and filter out already-dispatched beads. Eager close at
+		// the staging-merge seam (closeChildAfterStagingMerge) means
+		// children that have already merged fall out of ComputeWaves
+		// naturally — they're closed and ComputeWaves only returns
+		// non-closed subtasks. The dispatched[id] map still has work to
+		// do for in-flight (mid-dispatch, pre-merge) children that are
+		// in_progress but not yet closed; without this skip-list a
+		// late-inject re-scan landing while wave-N is still merging
+		// would re-dispatch them.
 		var batch []string
 		for _, w := range newWaves {
 			for _, id := range w {
@@ -378,7 +383,9 @@ func (e *Executor) runDispatchWave(
 	// Apply each successful apprentice's bundle into staging, then merge.
 	// No-op signals skip merge entirely. The bundle is deleted only after
 	// a successful merge so a conflict can be retried with the bundle
-	// still present.
+	// still present. After a successful merge the child bead is eagerly
+	// closed (see closeChildAfterStagingMerge) — once code is in staging,
+	// the task is done relative to the epic.
 	if stagingWt != nil {
 		for _, cr := range waveResults {
 			if cr.Err != nil {
@@ -396,6 +403,7 @@ func (e *Executor) runDispatchWave(
 					if mergeErr := stagingWt.MergeBranch(outcome.Branch, resolver); mergeErr != nil {
 						return startRef, fmt.Errorf("merge %s into staging: %w", outcome.Branch, mergeErr)
 					}
+					e.closeChildAfterStagingMerge(cr.BeadID)
 					e.deleteApprenticeBundle(cr.BeadID, outcome.Handle)
 					continue
 				}
@@ -411,6 +419,7 @@ func (e *Executor) runDispatchWave(
 			if mergeErr := stagingWt.MergeBranch(cr.Branch, resolver); mergeErr != nil {
 				return startRef, fmt.Errorf("merge %s into staging: %w", cr.Branch, mergeErr)
 			}
+			e.closeChildAfterStagingMerge(cr.BeadID)
 		}
 
 		// Update startRef for next wave.
@@ -484,9 +493,12 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 		// Apply the apprentice's bundle into staging, then merge. No-op
 		// signals skip merge entirely. The bundle is deleted only after a
 		// successful merge so a conflict can be retried with the bundle
-		// still present.
+		// still present. After a successful merge the child bead is
+		// eagerly closed (see closeChildAfterStagingMerge) — once code is
+		// in staging, the task is done relative to the epic.
 		if stagingWt != nil {
 			merged := false
+			mergedBranch := false
 			if e.deps.BundleStore != nil {
 				outcome, err := e.applyApprenticeBundle(subtaskID, 0, stagingWt)
 				if err != nil {
@@ -501,6 +513,7 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 					}
 					e.deleteApprenticeBundle(subtaskID, outcome.Handle)
 					merged = true
+					mergedBranch = true
 				}
 			}
 			if !merged {
@@ -512,6 +525,10 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 				if mergeErr := stagingWt.MergeBranch(featBranch, resolver); mergeErr != nil {
 					return allResults, fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 				}
+				mergedBranch = true
+			}
+			if mergedBranch {
+				e.closeChildAfterStagingMerge(subtaskID)
 			}
 			// Update startRef for next child.
 			if sha, err := stagingWt.HeadSHA(); err == nil && sha != "" {
@@ -601,4 +618,38 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 		return fmt.Errorf("merge %s into staging: %w", featBranch, mergeErr)
 	}
 	return nil
+}
+
+// closeChildAfterStagingMerge transitions a child task bead to "closed"
+// after its work has successfully landed in the epic's staging branch.
+// It is the eager-close seam invoked by runDispatchWave and
+// dispatchSequentialCore after every successful MergeBranch — at that
+// point the task is "in the merge target" relative to its role in the
+// epic, so users see per-task progress instead of a single flip at epic
+// close.
+//
+// Idempotent: short-circuits when GetBead reports the bead is already
+// closed. The underlying CloseIssue path matches by id only with no
+// status filter (see internal/storage/dolt/issues.go), so a redundant
+// call would re-stamp closed_at and emit a duplicate EventClosed —
+// which is why the status pre-check is load-bearing.
+//
+// Errors are non-fatal: the helper only logs and returns. The defensive
+// cascade in actionBeadFinish closes any survivors at epic close (e.g.
+// if the wizard dies between MergeBranch returning and this helper
+// running). Direct dispatch (dispatchDirectCore) does not call this —
+// its single apprentice runs against the parent's own bead, so closing
+// the parent mid-flight would be wrong.
+func (e *Executor) closeChildAfterStagingMerge(childID string) {
+	if e.deps == nil || e.deps.CloseBead == nil {
+		return
+	}
+	if e.deps.GetBead != nil {
+		if bead, err := e.deps.GetBead(childID); err == nil && bead.Status == "closed" {
+			return
+		}
+	}
+	if err := e.deps.CloseBead(childID); err != nil {
+		e.log("warning: close child %s after staging merge: %s", childID, err)
+	}
 }
