@@ -19,6 +19,7 @@ require (
 	github.com/steveyegge/beads v1.0.0
 	go.opentelemetry.io/proto/otlp v1.9.0
 	golang.org/x/mod v0.33.0
+	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.41.0
 	google.golang.org/api v0.274.0
 	google.golang.org/grpc v1.80.0
@@ -136,7 +137,6 @@ require (
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260209163413-e7419c687ee4 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

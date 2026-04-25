@@ -28,7 +28,13 @@ func WritePID(path string, pid int) error {
 	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0644)
 }
 
-// ProcessAlive checks if a process with the given PID is running.
+// ProcessAlive checks if a process with the given PID is running and
+// not in a zombie/defunct state. Plain kill -0 (Signal 0) returns success
+// for zombies because the kernel keeps an entry until the parent reaps
+// it; that masked dead wizards as alive on the board and in the orphan
+// sweep. We additionally consult a platform-specific isZombie probe
+// (Linux: /proc/<pid>/stat; macOS: sysctl kern.proc.pid) and report dead
+// when the process is zombified.
 func ProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -38,8 +44,10 @@ func ProcessAlive(pid int) bool {
 		return false
 	}
 	// On Unix, FindProcess always succeeds. Use kill -0 to check.
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+	return !isZombie(pid)
 }
 
 // StopProcess stops a process by PID with SIGTERM then SIGKILL.
