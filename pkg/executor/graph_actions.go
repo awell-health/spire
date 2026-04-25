@@ -15,6 +15,7 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -673,6 +674,45 @@ func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, st
 	if vErr := e.validateWorkspaceForDispatch(state.RepoPath, stepName, stepBeadID, cfg.Workspace); vErr != nil {
 		return ActionResult{Error: fmt.Errorf("workspace validation failed for step %s: %w", stepName, vErr)}
 	}
+
+	model := step.Model
+
+	// Cluster-native dispatch: emit a WorkloadIntent through the .1
+	// seam instead of spawning a subprocess. The operator materializes
+	// the apprentice/sage pod and the in-pod wizard writes result.json
+	// asynchronously — for cluster mode the executor returns
+	// ActionResult{Outputs: {"result": "dispatched"}} so the formula
+	// can route on the dispatch outcome rather than a synchronous
+	// subprocess result. Local-native paths (the else branch below)
+	// remain identical to the pre-migration code: same Spawner.Spawn
+	// call, same handle.Wait, same result.json read.
+	if e.useClusterChildDispatch() {
+		intentRole, intentPhase, ok := stepRoleAndPhase(role, step.Flow, stepName)
+		if !ok {
+			err := fmt.Errorf("step %q (flow %q, role %q): no cluster (Role, Phase) mapping", stepName, step.Flow, role)
+			e.recordAgentRun(spawnName, e.beadID, "", model, string(role), stepName, started, err,
+				withParentRun(e.currentRunID),
+				withAttemptNumber(attemptNum))
+			return ActionResult{Error: err}
+		}
+		var wi intent.WorkloadIntent
+		if intentRole == intent.RoleSage {
+			wi = e.childIntentForSage(e.beadID, state.BaseBranch, "step:"+stepName, intentPhase, handoffMode)
+		} else {
+			wi = e.childIntentForApprentice(e.beadID, state.BaseBranch, "step:"+stepName, intentPhase, handoffMode)
+		}
+		if dispErr := e.dispatchClusterChildAndWait("step:"+stepName, wi); dispErr != nil {
+			e.recordAgentRun(spawnName, e.beadID, "", model, string(role), stepName, started, dispErr,
+				withParentRun(e.currentRunID),
+				withAttemptNumber(attemptNum))
+			return ActionResult{Error: fmt.Errorf("cluster dispatch %s: %w", stepName, dispErr)}
+		}
+		e.recordAgentRun(spawnName, e.beadID, "", model, string(role), stepName, started, nil,
+			withParentRun(e.currentRunID),
+			withAttemptNumber(attemptNum))
+		return ActionResult{Outputs: map[string]string{"result": "dispatched"}}
+	}
+
 	handle, err := e.deps.Spawner.Spawn(cfg)
 	if err != nil {
 		return ActionResult{Error: fmt.Errorf("spawn %s: %w", stepName, err)}
@@ -701,7 +741,6 @@ func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, st
 		outputs["result"] = "success"
 	}
 
-	model := step.Model
 	e.recordAgentRun(spawnName, e.beadID, "", model, string(role), stepName, started, waitErr,
 		withParentRun(e.currentRunID),
 		withAttemptNumber(attemptNum))
@@ -715,6 +754,54 @@ func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, st
 	}
 
 	return ActionResult{Outputs: outputs}
+}
+
+// stepRoleAndPhase maps the executor's local (SpawnRole, step.Flow,
+// stepName) trio onto the cluster contract's (intent.Role, intent.Phase)
+// pair. Returns the canonical pair plus ok=true when the combination is
+// supported by intent.Allowed; ok=false signals the call site to fail
+// closed rather than guess. The mapping is keyed on step.Flow first
+// (the executor's authoritative flow vocabulary) and falls back to
+// stepName for legacy formulas that omit Flow.
+//
+// Supported pairs (must remain in sync with intent.Allowed):
+//
+//   - (apprentice, implement)   — implement / verify-recovery / default
+//   - (apprentice, fix)         — review-fix's underlying step ("fix")
+//   - (apprentice, review-fix)  — explicit review-fix flow
+//   - (sage,       review)      — sage-review flow
+func stepRoleAndPhase(role agent.SpawnRole, flow, stepName string) (intent.Role, intent.Phase, bool) {
+	if role == agent.RoleSage {
+		// review and arbiter both run as sage; arbiter is not yet in
+		// intent.Allowed so route only PhaseReview from this seam.
+		switch flow {
+		case "sage-review", "review":
+			return intent.RoleSage, intent.PhaseReview, true
+		}
+		switch stepName {
+		case "sage-review", "review":
+			return intent.RoleSage, intent.PhaseReview, true
+		}
+		return "", "", false
+	}
+	// Apprentice flows.
+	switch flow {
+	case "implement", "recovery-verify":
+		return intent.RoleApprentice, intent.PhaseImplement, true
+	case "review-fix":
+		return intent.RoleApprentice, intent.PhaseReviewFix, true
+	case "fix":
+		return intent.RoleApprentice, intent.PhaseFix, true
+	}
+	switch stepName {
+	case "implement":
+		return intent.RoleApprentice, intent.PhaseImplement, true
+	case "fix":
+		return intent.RoleApprentice, intent.PhaseFix, true
+	case "review-fix":
+		return intent.RoleApprentice, intent.PhaseReviewFix, true
+	}
+	return "", "", false
 }
 
 // actionCheckDesignLinked extracts the design validation logic into a

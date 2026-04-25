@@ -4,7 +4,9 @@ package executor
 // Moves wave/sequential/direct child execution behind a declared executor action.
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -12,11 +14,140 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/steward/intent"
 )
+
+// useClusterChildDispatch reports whether executor child-dispatch sites
+// should publish a WorkloadIntent through the .1-introduced cluster
+// seam instead of calling Spawner.Spawn. Returns true only when both
+// conditions hold:
+//
+//   - the active tower's effective deployment mode is cluster-native
+//   - Deps.ClusterChildDispatcher is wired
+//
+// Centralized here so action handlers (graph_actions.go,
+// action_dispatch.go, plus wizard_review.go via deps.ClusterChildDispatcher)
+// never re-inspect tower config themselves; the mode decision is made
+// once at executor construction (cmd/spire/executor_bridge.go) and read
+// through this helper.
+//
+// A nil dispatcher in cluster-native mode is treated as "do not
+// dispatch" — call sites then surface a fail-closed error rather than
+// silently falling back to Spawner.Spawn. That keeps the cluster-native
+// invariant (no direct backend.Spawn for executor child work) explicit.
+func (e *Executor) useClusterChildDispatch() bool {
+	if e == nil || e.deps == nil || e.deps.ClusterChildDispatcher == nil {
+		return false
+	}
+	if e.deps.ActiveTowerConfig == nil {
+		return false
+	}
+	tower, err := e.deps.ActiveTowerConfig()
+	if err != nil || tower == nil {
+		return false
+	}
+	return tower.EffectiveDeploymentMode() == config.DeploymentModeClusterNative
+}
+
+// childIntentRepoIdentity assembles the intent.RepoIdentity for a child
+// dispatch from the active tower's registered binding for the given
+// bead. Returns the zero value when no binding is available — Validate
+// inside the dispatcher will reject empty values, surfacing the
+// configuration gap rather than guessing.
+func (e *Executor) childIntentRepoIdentity(beadID, baseBranch string) intent.RepoIdentity {
+	prefix := prefixFromBeadID(beadID)
+	url := e.runtimeRepoURL()
+	bb := baseBranch
+	if bb == "" {
+		bb = e.runtimeBaseBranch()
+	}
+	return intent.RepoIdentity{
+		URL:        url,
+		BaseBranch: bb,
+		Prefix:     prefix,
+	}
+}
+
+// childIntentForApprentice builds a WorkloadIntent for an apprentice
+// child run. The dispatcher (Dispatch implementations) is responsible
+// for assigning DispatchSeq and invoking intent.Validate; the executor
+// only fills the role/phase/runtime/repo identity that it owns.
+//
+// reasonTag is stamped on Reason for log/metric continuity (e.g.
+// "implement", "fix", "review-fix", "wave-implement"). HandoffMode is
+// the executor-resolved delivery contract.
+func (e *Executor) childIntentForApprentice(beadID, baseBranch, reasonTag string, phase intent.Phase, handoffMode HandoffMode) intent.WorkloadIntent {
+	return intent.WorkloadIntent{
+		TaskID:       beadID,
+		Reason:       "executor:" + reasonTag,
+		RepoIdentity: e.childIntentRepoIdentity(beadID, baseBranch),
+		FormulaPhase: string(phase),
+		HandoffMode:  string(handoffMode),
+		Role:         intent.RoleApprentice,
+		Phase:        phase,
+		Runtime: intent.Runtime{
+			Image: clusterAgentImage(),
+		},
+	}
+}
+
+// childIntentForSage builds a WorkloadIntent for a sage child run
+// (review or arbiter). Same shape as childIntentForApprentice but with
+// Role=sage; the (sage, Phase) pair must appear in intent.Allowed.
+func (e *Executor) childIntentForSage(beadID, baseBranch, reasonTag string, phase intent.Phase, handoffMode HandoffMode) intent.WorkloadIntent {
+	return intent.WorkloadIntent{
+		TaskID:       beadID,
+		Reason:       "executor:" + reasonTag,
+		RepoIdentity: e.childIntentRepoIdentity(beadID, baseBranch),
+		FormulaPhase: string(phase),
+		HandoffMode:  string(handoffMode),
+		Role:         intent.RoleSage,
+		Phase:        phase,
+		Runtime: intent.Runtime{
+			Image: clusterAgentImage(),
+		},
+	}
+}
+
+// dispatchClusterChildAndWait emits the intent and returns. In
+// cluster-native dispatch the executor never blocks on a local handle
+// because no local process is created — the operator's reconciler picks
+// up the intent asynchronously. This helper exists so call sites have
+// one obvious shape (build intent → emit → return error) rather than
+// inlining the same context.Background() + error wrapping at every
+// site.
+func (e *Executor) dispatchClusterChildAndWait(reasonTag string, wi intent.WorkloadIntent) error {
+	if e == nil || e.deps == nil || e.deps.ClusterChildDispatcher == nil {
+		return fmt.Errorf("cluster child dispatch (%s): no ClusterChildDispatcher wired", reasonTag)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.deps.ClusterChildDispatcher.Dispatch(ctx, wi); err != nil {
+		return fmt.Errorf("cluster child dispatch (%s) for %s: %w", reasonTag, wi.TaskID, err)
+	}
+	return nil
+}
+
+// clusterAgentImage returns the agent container image the cluster
+// reconciler should materialize the child pod from. The operator
+// requires intent.Runtime.Image to be non-empty (intent.Validate
+// rejects an empty value). The canonical source in cluster-native
+// deployments is the SPIRE_AGENT_IMAGE env var the helm chart sets on
+// the wizard pod — the same env var pkg/agent/backend_k8s.go already
+// reads. Empty when unset; the dispatcher's Validate call will then
+// surface the configuration gap rather than silently shipping a
+// rejected intent.
+//
+// Defined as a package-level var so tests can override it without
+// touching process env.
+var clusterAgentImage = func() string {
+	return os.Getenv("SPIRE_AGENT_IMAGE")
+}
 
 // actionDispatchChildren orchestrates child bead execution.
 // Reads With parameters:
@@ -307,6 +438,8 @@ func (e *Executor) runDispatchWave(
 	resultCh := make(chan waveResult, len(wave))
 	sem := make(chan struct{}, maxApprentices)
 
+	useCluster := e.useClusterChildDispatch()
+
 	for i, subtaskID := range wave {
 		wg.Add(1)
 		go func(idx int, beadID string) {
@@ -319,8 +452,32 @@ func (e *Executor) runDispatchWave(
 
 			e.deps.UpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
 
-			extraArgs := []string{"--apprentice"}
 			started := time.Now()
+
+			if useCluster {
+				// Cluster-native: emit a WorkloadIntent through the
+				// .1 seam. The operator materializes the apprentice
+				// pod; no local handle to wait on. Treat publish
+				// success as the wave entry's success — the parent's
+				// bundle-apply / staging-merge cascade below picks up
+				// the work via the BundleStore once the apprentice
+				// pod produces it. Failures wrap in the same shape
+				// the local-spawn path uses so callers see one error
+				// vocabulary.
+				wi := e.childIntentForApprentice(beadID, e.runtimeBaseBranch(), "wave-implement", intent.PhaseImplement, apprenticeHandoff)
+				if dispErr := e.dispatchClusterChildAndWait("wave-implement", wi); dispErr != nil {
+					e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, dispErr,
+						withParentRun(e.currentRunID))
+					resultCh <- waveResult{BeadID: beadID, Agent: name, Err: dispErr}
+					return
+				}
+				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, nil,
+					withParentRun(e.currentRunID))
+				resultCh <- waveResult{BeadID: beadID, Agent: name}
+				return
+			}
+
+			extraArgs := []string{"--apprentice"}
 			cfg := agent.SpawnConfig{
 				Name:          name,
 				BeadID:        beadID,
@@ -451,6 +608,8 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 	// configured apprentice transport decides bundle vs transitional.
 	apprenticeHandoff := e.resolveApprenticeHandoff()
 
+	useCluster := e.useClusterChildDispatch()
+
 	var allResults []childResult
 	var startRef string
 
@@ -460,6 +619,33 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 
 		name := fmt.Sprintf("%s-seq-%d", e.agentName, i+1)
 		started := time.Now()
+
+		if useCluster {
+			// Cluster-native: emit a WorkloadIntent through the .1
+			// seam. The operator materializes the apprentice pod;
+			// the executor records the dispatch and continues. The
+			// downstream bundle-apply / merge cascade picks up the
+			// child's work asynchronously through the BundleStore
+			// once the apprentice produces it.
+			wi := e.childIntentForApprentice(subtaskID, e.runtimeBaseBranch(), "sequential-implement", intent.PhaseImplement, apprenticeHandoff)
+			if dispErr := e.dispatchClusterChildAndWait("sequential-implement", wi); dispErr != nil {
+				e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, dispErr,
+					withParentRun(e.currentRunID))
+				return allResults, fmt.Errorf("cluster dispatch apprentice for %s: %w", subtaskID, dispErr)
+			}
+			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, nil,
+				withParentRun(e.currentRunID))
+
+			featBranch := e.resolveBranch(subtaskID)
+			cr := childResult{
+				BeadID: subtaskID,
+				Agent:  name,
+				Branch: featBranch,
+			}
+			allResults = append(allResults, cr)
+			continue
+		}
+
 		cfg := agent.SpawnConfig{
 			Name:          name,
 			BeadID:        subtaskID,
@@ -567,6 +753,26 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 	apprenticeHandoff := e.resolveApprenticeHandoff()
 
 	started := time.Now()
+
+	if e.useClusterChildDispatch() {
+		// Cluster-native: emit a WorkloadIntent through the .1 seam.
+		// The operator materializes the apprentice pod from
+		// Runtime.Image; the executor records the dispatch and
+		// returns. Downstream bundle-apply / merge mechanics pick up
+		// the apprentice's output asynchronously through the
+		// BundleStore once the operator-materialized pod produces it.
+		wi := e.childIntentForApprentice(e.beadID, e.runtimeBaseBranch(), "direct-implement", intent.PhaseImplement, apprenticeHandoff)
+		if dispErr := e.dispatchClusterChildAndWait("direct-implement", wi); dispErr != nil {
+			e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, dispErr,
+				withParentRun(e.currentRunID))
+			return fmt.Errorf("cluster dispatch apprentice: %w", dispErr)
+		}
+		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, nil,
+			withParentRun(e.currentRunID))
+		e.log("apprentice dispatched (cluster-native)")
+		return nil
+	}
+
 	cfg := agent.SpawnConfig{
 		Name:          apprenticeName,
 		BeadID:        e.beadID,

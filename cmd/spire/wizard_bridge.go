@@ -121,6 +121,18 @@ func buildWizardDeps() *wizard.Deps {
 		// Agent spawner
 		ResolveBackend: func(name string) wizard.Backend { return ResolveBackend(name) },
 
+		// ClusterChildDispatcher — wired only in cluster-native towers.
+		// Wizard's review-fix re-entry consults this through
+		// useClusterChildDispatchForReviewFix to fail closed when the
+		// dispatcher is missing in cluster-native mode rather than
+		// silently falling back to backend.Spawn. Local-native towers
+		// see nil and use the existing ResolveBackend path unchanged.
+		// Construction is shared with the executor side
+		// (buildExecutorClusterChildDispatcher) so wizard and executor
+		// see one ClusterChildDispatcher per process — the .1 contract
+		// is identical for both call sites.
+		ClusterChildDispatcher: buildExecutorClusterChildDispatcher(),
+
 		// Resolution — the bridge functions wizardResolveRepo and resolveBranchForBead
 		// are the canonical call sites; they construct deps internally.
 		ResolveRepo: func(beadID string) (string, string, string, error) {

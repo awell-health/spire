@@ -8,6 +8,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/bundlestore"
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -105,6 +106,21 @@ type Deps struct {
 
 	// Agent spawner
 	ResolveBackend func(name string) Backend
+
+	// ClusterChildDispatcher, when non-nil AND the active tower's mode
+	// is cluster-native, replaces the direct backend.Spawn call at the
+	// review-fix re-entry site (ReviewHandleRequestChanges) with a
+	// WorkloadIntent emit through the .1-introduced cluster intent
+	// plane. Operator routing materializes the apprentice pod with
+	// Role=apprentice / Phase=review-fix per intent.Allowed. Local-
+	// native deployments leave this nil and the existing
+	// ResolveBackend("").Spawn(...) path is preserved unchanged.
+	//
+	// The seam type lives in pkg/executor (see
+	// pkg/executor/cluster_dispatch.go) so executor and wizard share
+	// one named contract; this field is a re-export of that interface
+	// rather than a parallel definition.
+	ClusterChildDispatcher executor.ClusterChildDispatcher
 
 	// Resolution
 	ResolveRepo   func(beadID string) (repoPath, repoURL, baseBranch string, err error)

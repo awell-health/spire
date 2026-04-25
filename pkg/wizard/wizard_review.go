@@ -19,6 +19,7 @@ import (
 	spgit "github.com/awell-health/spire/pkg/git"
 	pkgregistry "github.com/awell-health/spire/pkg/registry"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -692,6 +693,26 @@ func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 		return contractErr
 	}
 
+	// Cluster-native: emit a WorkloadIntent with Role=apprentice /
+	// Phase=review-fix instead of calling backend.Spawn. The operator
+	// materializes the apprentice pod through the .1-introduced intent
+	// plane. The bead ID is preserved on the intent (TaskID), so the
+	// receiving wizard pod resumes the same attempt root rather than
+	// starting a new one — review-fix is a re-entry on the same task.
+	// Local-native (else branch) preserves the existing ResolveBackend
+	// + backend.Spawn shape unchanged.
+	if useClusterChildDispatchForReviewFix(deps, tower) {
+		wi := buildReviewFixIntent(beadID, repoURL, baseBranch, executor.ApprenticeDeliveryHandoff(tower), round)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if dispErr := deps.ClusterChildDispatcher.Dispatch(ctx, wi); dispErr != nil {
+			log("failed to dispatch review-fix intent: %s", dispErr)
+			return fmt.Errorf("cluster dispatch review-fix for %s: %w", beadID, dispErr)
+		}
+		log("done — re-engaged %s for round %d (cluster-native)", wizardName, round)
+		return nil
+	}
+
 	backend := deps.ResolveBackend("")
 	handle, spawnErr := backend.Spawn(sc)
 	if spawnErr != nil {
@@ -706,6 +727,52 @@ func ReviewHandleRequestChanges(beadID, reviewerName string, review *Review, rou
 
 	log("done — re-engaged %s for round %d", wizardName, round)
 	return nil
+}
+
+// useClusterChildDispatchForReviewFix mirrors
+// (*executor.Executor).useClusterChildDispatch but for the wizard
+// deps shape. Returns true only when the tower's effective deployment
+// mode is cluster-native AND deps.ClusterChildDispatcher is wired —
+// the same fail-closed contract the executor enforces, so a cluster-
+// native deployment with the dispatcher missing surfaces an explicit
+// configuration error instead of silently spawning locally.
+func useClusterChildDispatchForReviewFix(deps *Deps, tower *TowerConfig) bool {
+	if deps == nil || deps.ClusterChildDispatcher == nil {
+		return false
+	}
+	if tower == nil {
+		return false
+	}
+	return tower.EffectiveDeploymentMode() == config.DeploymentModeClusterNative
+}
+
+// buildReviewFixIntent constructs the apprentice / review-fix
+// WorkloadIntent the cluster operator materializes from. The Reason
+// field is stamped with the round number so log/metric continuity
+// across the seam preserves the round at which the re-entry fired —
+// the steward and operator log all carry that for a request_changes
+// → review-fix correlation chain. Runtime.Image is sourced from
+// SPIRE_AGENT_IMAGE on the wizard pod (the same env var the helm
+// chart injects on the wizard deployment); the caller's intent
+// dispatcher invokes intent.Validate before publish, so a missing
+// image surfaces fail-closed.
+func buildReviewFixIntent(beadID, repoURL, baseBranch string, handoffMode executor.HandoffMode, round int) intent.WorkloadIntent {
+	return intent.WorkloadIntent{
+		TaskID: beadID,
+		Reason: fmt.Sprintf("wizard:review-fix:round=%d", round),
+		RepoIdentity: intent.RepoIdentity{
+			URL:        repoURL,
+			BaseBranch: baseBranch,
+			Prefix:     store.PrefixFromID(beadID),
+		},
+		FormulaPhase: string(intent.PhaseReviewFix),
+		HandoffMode:  string(handoffMode),
+		Role:         intent.RoleApprentice,
+		Phase:        intent.PhaseReviewFix,
+		Runtime: intent.Runtime{
+			Image: os.Getenv("SPIRE_AGENT_IMAGE"),
+		},
+	}
 }
 
 // ReviewEscalateToArbiter runs the arbiter model to make a final decision.

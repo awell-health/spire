@@ -119,6 +119,19 @@ type Deps struct {
 	// Spawner
 	Spawner Backend
 
+	// ClusterChildDispatcher, when non-nil AND tower mode is
+	// cluster-native, replaces direct Spawner.Spawn for executor-driven
+	// child work (step/implement/fix dispatch in graph_actions.go and
+	// action_dispatch.go, plus the wizard's review-fix re-entry). The
+	// dispatcher publishes a WorkloadIntent through the .1-introduced
+	// intent plane and the operator materializes the child pod. In
+	// local-native mode this stays nil and dispatch falls through to
+	// Spawner.Spawn unchanged. See cluster_dispatch.go for the seam
+	// contract; the cluster branch fails closed (no Spawner.Spawn
+	// fallback) so a missing dispatcher in cluster-native is an explicit
+	// configuration error rather than silent local execution.
+	ClusterChildDispatcher ClusterChildDispatcher
+
 	// BundleStore is the artifact store the wizard consumes apprentice
 	// bundles from. Nil when unavailable (tests or older setups) — dispatch
 	// sites must nil-check and fall back to the legacy branch-merge path.

@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -14,11 +15,13 @@ import (
 	"strconv"
 
 	"github.com/awell-health/spire/pkg/bundlestore"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	formulaPkg "github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/metrics"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/repoconfig"
+	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -262,6 +265,18 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.De
 		// Spawner
 		Spawner: spawner,
 
+		// ClusterChildDispatcher is wired only when the active tower's
+		// effective deployment mode is cluster-native. The dispatcher
+		// adapts intent.NewDoltPublisher (the .1-introduced canonical
+		// transport) into the executor's ClusterChildDispatcher seam,
+		// adding a fresh DispatchSeq via store.NextDispatchSeq and an
+		// intent.Validate gate before publish. Local-native deployments
+		// see nil here and the executor's useClusterChildDispatch()
+		// helper falls through to Spawner.Spawn unchanged. The mode
+		// decision is made once here at construction so action handlers
+		// never re-inspect tower config themselves.
+		ClusterChildDispatcher: buildExecutorClusterChildDispatcher(),
+
 		// BundleStore — same resolver used by `spire apprentice submit` so
 		// producer and consumer agree on the backend. Nil when construction
 		// fails; dispatch sites fall back to legacy merge behavior.
@@ -427,6 +442,74 @@ func buildBundleStore() bundlestore.BundleStore {
 		return nil
 	}
 	return bs
+}
+
+// buildExecutorClusterChildDispatcher wires the executor's
+// cluster-native child-dispatch seam. Returns nil for local-native
+// towers, a missing ActiveDB (test/mock paths), or unresolvable tower
+// config — the executor's useClusterChildDispatch() helper treats nil
+// as "fall through to Spawner.Spawn", so a nil here is safe in
+// local-native mode. In cluster-native mode a nil here makes the
+// dispatch site fail closed (no Spawner.Spawn fallback) which keeps
+// the cluster-native invariant explicit.
+//
+// The dispatcher itself is the doltPublisherChildDispatcher adapter
+// declared below — it adds a fresh DispatchSeq via store.NextDispatchSeq
+// and an intent.Validate gate before delegating to the .1-introduced
+// intent.IntentPublisher.
+func buildExecutorClusterChildDispatcher() executor.ClusterChildDispatcher {
+	tower, err := activeTowerConfig()
+	if err != nil || tower == nil {
+		return nil
+	}
+	if tower.EffectiveDeploymentMode() != config.DeploymentModeClusterNative {
+		return nil
+	}
+	db, ok := store.ActiveDB()
+	if !ok || db == nil {
+		log.Printf("[executor] cluster-native dispatcher: ActiveDB unavailable; cluster child dispatch disabled")
+		return nil
+	}
+	if ensureErr := intent.EnsureWorkloadIntentsTable(db); ensureErr != nil {
+		log.Printf("[executor] cluster-native dispatcher: ensure workload_intents table: %s", ensureErr)
+	}
+	return &doltPublisherChildDispatcher{
+		publisher: intent.NewDoltPublisher(db),
+		nextSeq:   store.NextDispatchSeq,
+	}
+}
+
+// doltPublisherChildDispatcher adapts intent.IntentPublisher into
+// executor.ClusterChildDispatcher. It assigns a fresh DispatchSeq when
+// the caller leaves it zero (the executor side never tracks dispatch
+// seq itself — that's the dolt outbox's monotonic counter) and runs
+// intent.Validate before publish so a malformed (Role, Phase, Runtime)
+// triple fails closed at the dispatch site rather than reaching the
+// operator's reconcile path.
+type doltPublisherChildDispatcher struct {
+	publisher intent.IntentPublisher
+	nextSeq   func(taskID string) (int, error)
+}
+
+// Dispatch implements executor.ClusterChildDispatcher.
+func (d *doltPublisherChildDispatcher) Dispatch(ctx context.Context, wi intent.WorkloadIntent) error {
+	if d == nil || d.publisher == nil {
+		return fmt.Errorf("cluster child dispatcher: nil publisher")
+	}
+	if wi.TaskID == "" {
+		return fmt.Errorf("cluster child dispatcher: empty TaskID")
+	}
+	if wi.DispatchSeq < 1 && d.nextSeq != nil {
+		seq, err := d.nextSeq(wi.TaskID)
+		if err != nil {
+			return fmt.Errorf("cluster child dispatcher: next seq for %s: %w", wi.TaskID, err)
+		}
+		wi.DispatchSeq = seq
+	}
+	if err := intent.Validate(wi); err != nil {
+		return fmt.Errorf("cluster child dispatcher: validate intent for %s: %w", wi.TaskID, err)
+	}
+	return d.publisher.Publish(ctx, wi)
 }
 
 // executorResolveBranch loads spire.yaml from the bead's repo and resolves
