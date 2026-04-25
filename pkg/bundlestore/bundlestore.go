@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -44,10 +45,12 @@ var (
 	ErrInvalidRequest = errors.New("bundlestore: invalid put request")
 )
 
-// idPattern matches bead and attempt IDs: lowercase alphanumeric + dashes,
-// 1–64 characters. This is the path-hygiene guard — anything that fails
-// this check is rejected before touching the filesystem.
-var idPattern = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+// idPattern matches bead and attempt IDs: lowercase alphanumeric, dashes,
+// and dots, 1–64 characters. Dots are permitted because hierarchical
+// subtask IDs use the `parent.N` format (e.g. `spi-5bzu9r.1`). The
+// validator separately rejects `..`, leading dots, and trailing dots so
+// path-traversal sequences and reserved names never reach the filesystem.
+var idPattern = regexp.MustCompile(`^[a-z0-9.-]{1,64}$`)
 
 // BundleHandle is an opaque pointer returned by Put and consumed by Get /
 // Delete. The Key is store-defined; callers must treat it as opaque and
@@ -79,16 +82,32 @@ type PutRequest struct {
 // filesystem path. Implementations should call this at the start of Put
 // before doing any I/O.
 func (r PutRequest) Validate() error {
-	if !idPattern.MatchString(r.BeadID) {
+	if !validIDPart(r.BeadID) {
 		return ErrInvalidRequest
 	}
-	if !idPattern.MatchString(r.AttemptID) {
+	if !validIDPart(r.AttemptID) {
 		return ErrInvalidRequest
 	}
 	if r.ApprenticeIdx < 0 {
 		return ErrInvalidRequest
 	}
 	return nil
+}
+
+// validIDPart returns true when s is a path-safe bead or attempt ID.
+// It enforces idPattern and additionally rejects `..` (traversal),
+// leading dots, and trailing dots.
+func validIDPart(s string) bool {
+	if !idPattern.MatchString(s) {
+		return false
+	}
+	if strings.Contains(s, "..") {
+		return false
+	}
+	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
+		return false
+	}
+	return true
 }
 
 // BundleStore is the storage substrate for git-bundle artifacts.
