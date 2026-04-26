@@ -115,3 +115,50 @@ func TestRosterFromLocalWizards_PropagatesRegistryError(t *testing.T) {
 		t.Fatalf("err = %v, want wrapping %v", err, wantErr)
 	}
 }
+
+// TestRosterFromLocalWizards_StampsArchmageFromDeps verifies the new
+// per-archmage origin field on RosterAgent: when ResolveArchmage is
+// supplied, each row carries the archmage attribution returned for its
+// LocalAgent. Missing closure leaves the field empty (no attribution),
+// preserving backward compatibility with callers that don't supply it.
+func TestRosterFromLocalWizards_StampsArchmageFromDeps(t *testing.T) {
+	in := []LocalAgent{
+		{Name: "wizard-spi-aaa", PID: 1001, BeadID: "spi-aaa", StartedAt: "2026-04-26T10:00:00Z"},
+		{Name: "wizard-spi-bbb", PID: 1002, BeadID: "spi-bbb", StartedAt: "2026-04-26T10:00:00Z"},
+	}
+	deps := RosterDeps{
+		LoadWizardRegistry: func() ([]LocalAgent, error) { return in, nil },
+		CleanDeadWizards:   func(a []LocalAgent) []LocalAgent { return a },
+		ProcessAlive:       func(int) bool { return true },
+		ResolveArchmage:    func(a LocalAgent) string { return "Bob" },
+	}
+	got, err := RosterFromLocalWizards(time.Minute, deps)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (got=%+v)", len(got), got)
+	}
+	for _, a := range got {
+		if a.Archmage != "Bob" {
+			t.Errorf("agent %s archmage = %q, want Bob", a.Name, a.Archmage)
+		}
+	}
+
+	// No closure: Archmage stays empty, surfaced in JSON via the
+	// `archmage,omitempty` tag.
+	deps2 := RosterDeps{
+		LoadWizardRegistry: func() ([]LocalAgent, error) { return in, nil },
+		CleanDeadWizards:   func(a []LocalAgent) []LocalAgent { return a },
+		ProcessAlive:       func(int) bool { return true },
+	}
+	got2, err := RosterFromLocalWizards(time.Minute, deps2)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, a := range got2 {
+		if a.Archmage != "" {
+			t.Errorf("agent %s archmage = %q, want empty when no resolver", a.Name, a.Archmage)
+		}
+	}
+}

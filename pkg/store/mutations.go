@@ -51,7 +51,11 @@ func createBeadDirect(opts CreateOpts) (string, error) {
 		}
 		issue.Metadata = json.RawMessage(raw)
 	}
-	if err := s.CreateIssue(ctx, issue, Actor()); err != nil {
+	actor := Actor()
+	if opts.Author != "" {
+		actor = opts.Author
+	}
+	if err := s.CreateIssue(ctx, issue, actor); err != nil {
 		return "", fmt.Errorf("create bead: %w", err)
 	}
 	// Stamp the canonical filed_at so lifecycle analytics can distinguish
@@ -65,7 +69,7 @@ func createBeadDirect(opts CreateOpts) (string, error) {
 			DependsOnID: opts.Parent,
 			Type:        beads.DepParentChild,
 		}
-		if err := s.AddDependency(ctx, dep, Actor()); err != nil {
+		if err := s.AddDependency(ctx, dep, actor); err != nil {
 			return issue.ID, fmt.Errorf("add parent dep for %s: %w", issue.ID, err)
 		}
 	}
@@ -230,6 +234,31 @@ func AddCommentAs(id, author, text string) error {
 	}
 	_, err = s.AddIssueComment(ctx, id, author, text)
 	return err
+}
+
+// AddCommentAsReturning adds a comment authored by the given actor and
+// returns the new comment's ID. Mirrors AddCommentReturning but with a
+// caller-supplied author so per-archmage attribution can flow through the
+// gateway's POST /api/v1/beads/{id}/comments path without losing the comment
+// id the desktop renders in its response. An empty author falls back to
+// Actor()="spire" so callers don't need a separate branch when they don't
+// have an identity to attribute to.
+func AddCommentAsReturning(id, author, text string) (string, error) {
+	s, ctx, err := getStore()
+	if err != nil {
+		return "", err
+	}
+	if author == "" {
+		author = Actor()
+	}
+	c, err := s.AddIssueComment(ctx, id, author, text)
+	if err != nil {
+		return "", err
+	}
+	if c == nil {
+		return "", nil
+	}
+	return c.ID, nil
 }
 
 // CommitPending commits pending dolt changes. Requires PendingCommitter sub-interface.

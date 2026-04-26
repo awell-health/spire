@@ -59,7 +59,18 @@ func newGatewayClientReal(t *config.TowerConfig) (*gatewayclient.Client, error) 
 		}
 		return nil, fmt.Errorf("store: read gateway token for tower %q: %w", t.Name, err)
 	}
-	return gatewayclient.NewClient(t.URL, token), nil
+	// Pass the local tower's archmage as the per-call identity so the
+	// gateway records mutations under the calling desktop's archmage
+	// instead of the cluster tower's static default. attach-cluster
+	// initially seeds Archmage with the cluster's archmage, but the user
+	// can override via `spire tower set --archmage-name/--archmage-email`
+	// to record their own identity. Empty Name or Email suppresses the
+	// headers — the gateway falls back to its tower default.
+	id := gatewayclient.Identity{
+		Name:  t.Archmage.Name,
+		Email: t.Archmage.Email,
+	}
+	return gatewayclient.NewClientWithIdentity(t.URL, token, id), nil
 }
 
 // isGatewayMode reports whether ops should route through a gateway client.
