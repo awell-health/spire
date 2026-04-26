@@ -349,3 +349,256 @@ func TestTowerAttachClusterCmd_GatewayRoutes(t *testing.T) {
 		t.Errorf("tower config not written: %v", err)
 	}
 }
+
+// TestCmdTowerAttachClusterGateway_CollisionExistingTowerPrefix verifies
+// that an existing tower with the same HubPrefix as the gateway tower
+// blocks attach-cluster before any persistence. Mirrors the spi-6f6ky8
+// repro: laptop has tower "awell" with prefix "spi" pointing at DoltHub,
+// and `attach-cluster --tower spi --url ...` would previously succeed
+// silently and route mutations to the wrong tower.
+func TestCmdTowerAttachClusterGateway_CollisionExistingTowerPrefix(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	// Pre-existing local-native tower with the colliding prefix.
+	if err := saveTowerConfig(&TowerConfig{
+		Name:      "awell",
+		HubPrefix: "spi",
+		Database:  "beads_awell",
+	}); err != nil {
+		t.Fatalf("seed tower: %v", err)
+	}
+
+	info := gatewayclient.TowerInfo{Name: "spi-gateway", Prefix: "spi"}
+	_, _, tokenStore, cleanup := stubGatewayAttachDeps(t, info, nil)
+	defer cleanup()
+
+	err := cmdTowerAttachClusterGateway("https://x", "tok", "spi-gateway", "")
+	if err == nil {
+		t.Fatal("expected collision error, got nil")
+	}
+	msg := err.Error()
+	// Error must name the existing tower and include a copy-pasteable remove command.
+	if !strings.Contains(msg, `"awell"`) {
+		t.Errorf("error should mention existing tower name %q, got: %s", "awell", msg)
+	}
+	if !strings.Contains(msg, "spire tower remove awell") {
+		t.Errorf("error should include exact remove command, got: %s", msg)
+	}
+	if !strings.Contains(msg, "re-run") {
+		t.Errorf("error should instruct user to re-run, got: %s", msg)
+	}
+
+	// No partial state: no keychain entry, no new tower file, no instance.
+	if len(tokenStore) != 0 {
+		t.Errorf("keychain touched on collision: %v", tokenStore)
+	}
+	if _, err := loadTowerConfig("spi-gateway"); err == nil {
+		t.Errorf("tower config written despite collision")
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if _, ok := cfg.Instances["spi"]; ok {
+		t.Errorf("instance entry written despite collision: %v", cfg.Instances)
+	}
+	if cfg.ActiveTower == "spi-gateway" {
+		t.Errorf("ActiveTower mutated despite collision: %q", cfg.ActiveTower)
+	}
+}
+
+// TestCmdTowerAttachClusterGateway_CollisionExistingInstancePrefix
+// verifies that even with no matching tower config on disk, a stale
+// cfg.Instances entry with the same prefix blocks attach-cluster.
+// A previous local-native registration can leave an instance pointing
+// at a deleted/missing tower; CWD resolution still uses that instance.
+func TestCmdTowerAttachClusterGateway_CollisionExistingInstancePrefix(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	// Pre-existing instance with the colliding prefix, but no tower file.
+	cfg := &SpireConfig{
+		Instances: map[string]*Instance{
+			"spi": {Prefix: "spi", Tower: "awell-old"},
+		},
+	}
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	info := gatewayclient.TowerInfo{Name: "spi-gateway", Prefix: "spi"}
+	_, _, tokenStore, cleanup := stubGatewayAttachDeps(t, info, nil)
+	defer cleanup()
+
+	err := cmdTowerAttachClusterGateway("https://x", "tok", "spi-gateway", "")
+	if err == nil {
+		t.Fatal("expected collision error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "awell-old") {
+		t.Errorf("error should mention existing instance tower %q, got: %s", "awell-old", msg)
+	}
+	if !strings.Contains(msg, "spire tower remove") {
+		t.Errorf("error should include remove command, got: %s", msg)
+	}
+
+	// Nothing persisted on collision.
+	if len(tokenStore) != 0 {
+		t.Errorf("keychain touched on collision: %v", tokenStore)
+	}
+	if _, err := loadTowerConfig("spi-gateway"); err == nil {
+		t.Errorf("tower config written despite collision")
+	}
+
+	// Instance entry must be unchanged (still points at awell-old, not the gateway).
+	got, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	inst, ok := got.Instances["spi"]
+	if !ok {
+		t.Fatal("seed instance disappeared")
+	}
+	if inst.Tower != "awell-old" {
+		t.Errorf("instance Tower = %q, want %q (collision should not overwrite)", inst.Tower, "awell-old")
+	}
+	if got.ActiveTower == "spi-gateway" {
+		t.Errorf("ActiveTower mutated despite collision: %q", got.ActiveTower)
+	}
+}
+
+// TestCmdTowerAttachClusterGateway_CollisionAliasNameMatch verifies
+// that even when prefixes do not collide, an existing tower whose
+// Name matches the chosen local alias blocks attach-cluster — otherwise
+// SaveTowerConfig would silently overwrite the existing tower file.
+func TestCmdTowerAttachClusterGateway_CollisionAliasNameMatch(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	// Pre-existing tower with the same name the gateway attach would write.
+	if err := saveTowerConfig(&TowerConfig{
+		Name:      "my-prod",
+		HubPrefix: "old",
+		Database:  "beads_old",
+	}); err != nil {
+		t.Fatalf("seed tower: %v", err)
+	}
+
+	// Gateway prefix differs (no prefix collision); collision is on the
+	// resolved local alias my-prod (--name override).
+	info := gatewayclient.TowerInfo{Name: "remote-tower", Prefix: "rem"}
+	_, _, tokenStore, cleanup := stubGatewayAttachDeps(t, info, nil)
+	defer cleanup()
+
+	err := cmdTowerAttachClusterGateway("https://x", "tok", "remote-tower", "my-prod")
+	if err == nil {
+		t.Fatal("expected collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), `tower "my-prod"`) {
+		t.Errorf("error should mention colliding tower %q, got: %s", "my-prod", err.Error())
+	}
+	if !strings.Contains(err.Error(), "spire tower remove my-prod") {
+		t.Errorf("error should include exact remove command, got: %s", err.Error())
+	}
+
+	// Original tower must not have been overwritten.
+	got, err := loadTowerConfig("my-prod")
+	if err != nil {
+		t.Fatalf("loadTowerConfig: %v", err)
+	}
+	if got.HubPrefix != "old" {
+		t.Errorf("existing tower HubPrefix = %q, want %q (overwritten)", got.HubPrefix, "old")
+	}
+	if len(tokenStore) != 0 {
+		t.Errorf("keychain touched on collision: %v", tokenStore)
+	}
+}
+
+// TestCmdTowerAttachClusterGateway_CollisionCaseInsensitive verifies
+// the prefix comparison is case-insensitive. An operator who created
+// a local tower with prefix "SPI" should still be blocked from attaching
+// a gateway tower with prefix "spi" (or vice versa).
+func TestCmdTowerAttachClusterGateway_CollisionCaseInsensitive(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	if err := saveTowerConfig(&TowerConfig{
+		Name:      "awell",
+		HubPrefix: "SPI",
+		Database:  "beads_awell",
+	}); err != nil {
+		t.Fatalf("seed tower: %v", err)
+	}
+
+	info := gatewayclient.TowerInfo{Name: "spi-gateway", Prefix: "spi"}
+	_, _, tokenStore, cleanup := stubGatewayAttachDeps(t, info, nil)
+	defer cleanup()
+
+	err := cmdTowerAttachClusterGateway("https://x", "tok", "spi-gateway", "")
+	if err == nil {
+		t.Fatal("expected collision error for case mismatch, got nil")
+	}
+	if len(tokenStore) != 0 {
+		t.Errorf("keychain touched on collision: %v", tokenStore)
+	}
+}
+
+// TestCmdTowerAttachClusterGateway_KeychainFailureRollsBack verifies the
+// reorder + rollback contract: when the keychain write fails after the
+// tower file and spire config have been saved, the tower file is deleted
+// and the instance/active-tower entries are reverted so a retry sees no
+// orphaned state.
+func TestCmdTowerAttachClusterGateway_KeychainFailureRollsBack(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	info := gatewayclient.TowerInfo{Name: "prod-tower", Prefix: "prd"}
+
+	origFetch := gatewayAttachFetchTower
+	origSet := gatewayAttachSetToken
+	t.Cleanup(func() {
+		gatewayAttachFetchTower = origFetch
+		gatewayAttachSetToken = origSet
+	})
+	gatewayAttachFetchTower = func(ctx context.Context, url, token string) (gatewayclient.TowerInfo, error) {
+		return info, nil
+	}
+	keychainCalls := 0
+	gatewayAttachSetToken = func(towerName, token string) error {
+		keychainCalls++
+		return errors.New("keychain unavailable")
+	}
+
+	err := cmdTowerAttachClusterGateway("https://x", "tok", "prod-tower", "")
+	if err == nil {
+		t.Fatal("expected keychain error, got nil")
+	}
+	if !strings.Contains(err.Error(), "keychain") {
+		t.Errorf("error should mention keychain, got: %s", err.Error())
+	}
+	if keychainCalls != 1 {
+		t.Errorf("SetTowerToken called %d times, want 1", keychainCalls)
+	}
+
+	// Tower file must have been rolled back.
+	if _, err := loadTowerConfig("prod-tower"); err == nil {
+		t.Errorf("tower config persisted despite keychain failure — rollback skipped")
+	}
+	// Instance and ActiveTower must have been reverted.
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if _, ok := cfg.Instances["prd"]; ok {
+		t.Errorf("instance entry persisted despite keychain failure: %v", cfg.Instances)
+	}
+	if cfg.ActiveTower == "prod-tower" {
+		t.Errorf("ActiveTower not reverted after keychain failure: %q", cfg.ActiveTower)
+	}
+}

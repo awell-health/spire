@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	bdpkg "github.com/awell-health/spire/pkg/bd"
@@ -144,6 +145,101 @@ var gatewayAttachFetchTower = func(ctx context.Context, url, token string) (gate
 // out to `security` (macOS) or `secret-tool` (Linux).
 var gatewayAttachSetToken = config.SetTowerToken
 
+// checkGatewayTowerCollision rejects gateway-mode attach when the local
+// config already resolves the gateway tower's prefix or local alias. The
+// spec is explicit: refuse and instruct the user to remove the existing
+// tower first. There is no auto-conversion path.
+//
+// The check compares (case-insensitive, trimmed):
+//   - gateway.Prefix vs every existing tower's HubPrefix
+//   - gateway.Prefix vs every cfg.Instances entry's Prefix (or map key)
+//   - localAlias vs every existing tower's Name
+//
+// On collision, returns an error whose message includes a copy-pasteable
+// `spire tower remove <name>` command. Prefix collisions take precedence
+// over name collisions in the message because that is the resolution path
+// most likely to silently route mutations to the wrong tower (CWD →
+// instance → tower); name collisions are rarer but equally fatal because
+// SaveTowerConfig would overwrite the existing config file.
+func checkGatewayTowerCollision(cfg *SpireConfig, gateway gatewayclient.TowerInfo, localAlias string) error {
+	gwPrefix := normalizeForCollision(gateway.Prefix)
+	gwAlias := normalizeForCollision(localAlias)
+
+	// 1. Prefix collisions on existing tower configs. A same-prefix
+	// direct/local tower will route CWD-resolved store dispatch to the
+	// wrong place (see spi-43q7hp); refuse before any write.
+	if gwPrefix != "" {
+		towers, err := listTowerConfigs()
+		if err != nil {
+			return fmt.Errorf("list towers: %w", err)
+		}
+		for _, t := range towers {
+			if normalizeForCollision(t.HubPrefix) == gwPrefix {
+				return collisionError(t.Name, "prefix", t.HubPrefix)
+			}
+		}
+	}
+
+	// 2. Prefix collisions on existing instance entries. Instances are a
+	// parallel source of CWD → tower resolution; a stale instance entry
+	// can shadow a freshly-attached gateway tower even with no matching
+	// tower config on disk.
+	if gwPrefix != "" {
+		for key, inst := range cfg.Instances {
+			if inst == nil {
+				continue
+			}
+			instPrefix := normalizeForCollision(inst.Prefix)
+			if instPrefix == "" {
+				instPrefix = normalizeForCollision(key)
+			}
+			if instPrefix == gwPrefix {
+				name := inst.Tower
+				if name == "" {
+					name = key
+				}
+				return collisionError(name, "prefix", inst.Prefix)
+			}
+		}
+	}
+
+	// 3. Local alias / name collisions. SaveTowerConfig writes
+	// ~/.config/spire/towers/<alias>.json, which would silently
+	// overwrite an existing tower config of the same name.
+	if gwAlias != "" {
+		towers, err := listTowerConfigs()
+		if err != nil {
+			return fmt.Errorf("list towers: %w", err)
+		}
+		for _, t := range towers {
+			if normalizeForCollision(t.Name) == gwAlias {
+				return collisionError(t.Name, "name", t.Name)
+			}
+		}
+	}
+
+	return nil
+}
+
+// normalizeForCollision lower-cases and trims a config string for
+// case-insensitive comparison. Aliases and prefixes are typically
+// stored lowercase already, but operators occasionally type
+// `--tower=Spi` and we should not let a single capital letter slip
+// the collision check.
+func normalizeForCollision(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// collisionError builds the user-facing error for a tower collision.
+// Single-line so the suggested remove command is easy to copy-paste
+// from a terminal.
+func collisionError(existingName, kind, value string) error {
+	return fmt.Errorf(
+		"tower %q already uses %s %q. Remove it first: spire tower remove %s, then re-run spire tower attach-cluster.",
+		existingName, kind, value, existingName,
+	)
+}
+
 // cmdTowerAttachClusterGateway runs the gateway-mode flow of attach-cluster:
 // verifies the remote tower identity, stores the bearer token in the OS
 // keychain, and persists a gateway-mode tower config + instance entry so
@@ -178,11 +274,23 @@ func cmdTowerAttachClusterGateway(url, token, towerName, localAlias string) erro
 		return fmt.Errorf("tower name mismatch: --tower=%q but gateway reports %q", towerName, info.Name)
 	}
 
-	// Persist the token before writing any config so a later config save
-	// failure does not leave a tower file pointing at a keychain entry that
-	// does not exist. Keychain writes are idempotent (re-store overwrites).
-	if err := gatewayAttachSetToken(effectiveName, token); err != nil {
-		return fmt.Errorf("store bearer token in keychain: %w", err)
+	// Load the spire config once so the collision check and the later
+	// instance write both see the same on-disk snapshot. Loading before
+	// any persistence means a load failure cannot leave partial state.
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load spire config: %w", err)
+	}
+	if cfg.Instances == nil {
+		cfg.Instances = make(map[string]*Instance)
+	}
+
+	// Refuse the attach if the local config already resolves to the
+	// gateway tower's prefix or alias. Runs before any persistence so
+	// no partial state (keychain entry, tower file, instance entry) can
+	// leak when a collision is detected.
+	if err := checkGatewayTowerCollision(cfg, info, effectiveName); err != nil {
+		return err
 	}
 
 	tower := &config.TowerConfig{
@@ -194,6 +302,11 @@ func cmdTowerAttachClusterGateway(url, token, towerName, localAlias string) erro
 		URL:       url,
 		TokenRef:  effectiveName,
 	}
+
+	// Write order: tower config → spire config (instance + active tower)
+	// → keychain. Keychain is last so a config-save failure cannot leave
+	// an orphan token entry. If keychain write fails, roll back the
+	// tower-file and active-tower fields so the next attach starts clean.
 	if err := config.SaveTowerConfig(tower); err != nil {
 		return fmt.Errorf("save tower config: %w", err)
 	}
@@ -201,13 +314,6 @@ func cmdTowerAttachClusterGateway(url, token, towerName, localAlias string) erro
 	// Mirror Mode/URL/TokenRef onto an Instance entry keyed by tower prefix
 	// so CWD-based tower resolution and any code path that reads the
 	// parallel instance config stays coherent with the tower file.
-	cfg, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("load spire config: %w", err)
-	}
-	if cfg.Instances == nil {
-		cfg.Instances = make(map[string]*Instance)
-	}
 	cfg.Instances[info.Prefix] = &Instance{
 		Prefix:   info.Prefix,
 		Tower:    effectiveName,
@@ -215,9 +321,25 @@ func cmdTowerAttachClusterGateway(url, token, towerName, localAlias string) erro
 		URL:      url,
 		TokenRef: effectiveName,
 	}
+	prevActive := cfg.ActiveTower
 	cfg.ActiveTower = effectiveName
 	if err := saveConfig(cfg); err != nil {
+		// Tower file already written; roll it back so a failed attach
+		// does not leave dangling tower config on disk.
+		_ = config.DeleteTowerConfig(effectiveName)
 		return fmt.Errorf("save spire config: %w", err)
+	}
+
+	if err := gatewayAttachSetToken(effectiveName, token); err != nil {
+		// Roll back both tower file and instance/active-tower config so
+		// no orphan keychain reference is left dangling. Best-effort: if
+		// rollback itself fails we surface the original token error,
+		// since that is the reason the attach is aborting.
+		_ = config.DeleteTowerConfig(effectiveName)
+		delete(cfg.Instances, info.Prefix)
+		cfg.ActiveTower = prevActive
+		_ = saveConfig(cfg)
+		return fmt.Errorf("store bearer token in keychain: %w", err)
 	}
 
 	fmt.Printf("Tower attached via gateway: %s\n", tower.Name)
