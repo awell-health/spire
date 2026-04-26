@@ -115,9 +115,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
@@ -151,6 +151,32 @@ var cmdResetFunc = cmdReset
 // storeActivateStepBeadFunc is a test-replaceable hook for reopening a closed
 // step bead. Production wiring delegates to store.ActivateStepBead.
 var storeActivateStepBeadFunc = storeActivateStepBead
+
+// terminateBeadFunc is the seam reset uses to reap every runtime worker the
+// backend spawned for a bead — the parent wizard plus any nested
+// apprentice / sage / cleric workers AND any provider subprocess (claude,
+// codex) descended from them. Default impl resolves the backend for the
+// bead and dispatches to Backend.TerminateBead so reset gets PGID-scoped
+// process-group reaping (spi-w65pr1) instead of the legacy per-PID
+// signal that left detached children alive.
+//
+// Tests swap this var to record calls and skip real signalling — see
+// reset_test.go's withFakeTerminateBead helper.
+var terminateBeadFunc = func(ctx context.Context, beadID string) error {
+	backend := resolveBackendForBead(beadID)
+	if backend == nil {
+		return nil
+	}
+	err := backend.TerminateBead(ctx, beadID)
+	// ErrTerminateBeadNotImplemented is a no-op for backends that have
+	// not yet wired bead-scoped termination (docker, k8s pre-spd-1lu5).
+	// The local CLI runs against the process backend, so the production
+	// reset path always exercises the real PGID reap.
+	if errors.Is(err, agent.ErrTerminateBeadNotImplemented) {
+		return nil
+	}
+	return err
+}
 
 // findLiveWizardForBeadFunc reports whether a wizard with a live OS process
 // owns the given bead. Returns the registry entry when alive, nil otherwise.
@@ -277,21 +303,43 @@ func runResetSoft(ctx context.Context, opts resetpkg.Opts) (*store.Bead, error) 
 	return runResetCore(ctx, opts, false)
 }
 
+// lookupWizardForBead returns a copy of the first registry entry whose
+// BeadID matches the given bead, or nil. Reset paths use this to capture
+// wizardName and worktreePath BEFORE TerminateBead clears the registry.
+// Returning a copy (not a pointer into reg.Wizards) keeps callers safe
+// against later registry mutations.
+func lookupWizardForBead(beadID string) *localWizard {
+	reg := loadWizardRegistry()
+	for i := range reg.Wizards {
+		if reg.Wizards[i].BeadID == beadID {
+			w := reg.Wizards[i]
+			return &w
+		}
+	}
+	return nil
+}
+
 // runResetCore is the shared prelude + dispatch used by both the CLI's
 // `spire reset` (with or without `--hard`) and the gateway's POST /reset
-// endpoint. It owns the registry-PID lookup, SIGTERM → 5s grace → SIGKILL,
-// registry remove, label strip, step-child unhook, and the dispatch into
-// softResetV3 (when opts.To is set) or resetV3 (otherwise).
+// endpoint. It owns the registry-PID lookup, the bead-scoped TerminateBead
+// reap, label strip, step-child unhook, and the dispatch into softResetV3
+// (when opts.To is set) or resetV3 (otherwise).
 //
 // When hard is true, opts.To/Force/Set are ignored — the hard path always
-// goes through resetV3(beadID, true, ...). The order of operations
-// (SIGTERM → wait → SIGKILL → registry remove → label strip → unhook
-// children → softResetV3/resetV3) is preserved verbatim from the original
-// cmdReset body.
+// goes through resetV3(beadID, true, ...).
+//
+// Termination goes through Backend.TerminateBead (spi-w65pr1) instead of
+// signalling the registered parent PID. The backend reaps every entry
+// registered for the bead — parent wizard, nested apprentice / sage /
+// cleric workers, and any provider subprocess (claude, codex) descended
+// from them — by signalling -PGID. Detached children that reparent to
+// PID 1 retain their original PGID, so the kill still reaches them.
+// Errors from TerminateBead surface as a fail-closed reset error so the
+// operator gets the manual-cleanup PID list instead of a silent half-reset.
 //
 // Returns the post-reset bead so callers (gateway, future tooling) can
 // re-render without a follow-up GET.
-func runResetCore(_ context.Context, opts resetpkg.Opts, hard bool) (*store.Bead, error) {
+func runResetCore(ctx context.Context, opts resetpkg.Opts, hard bool) (*store.Bead, error) {
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
 	}
@@ -301,52 +349,26 @@ func runResetCore(_ context.Context, opts resetpkg.Opts, hard bool) (*store.Bead
 		return nil, fmt.Errorf("reset: bead ID required")
 	}
 
-	// --- 1. Kill wizard process if alive ---
-
-	reg := loadWizardRegistry()
-	var wizard *localWizard
-	for i := range reg.Wizards {
-		if reg.Wizards[i].BeadID == beadID {
-			wizard = &reg.Wizards[i]
-			break
-		}
-	}
-
+	// --- 1. Reap every bead-scoped runtime worker (spi-w65pr1) ---
+	//
+	// Capture wizardName/worktreePath BEFORE TerminateBead because the
+	// terminate primitive clears the registry entries on success and the
+	// downstream graph cleanup still needs both fields.
+	wizard := lookupWizardForBead(beadID)
 	var wizardName string
 	var worktreePath string
-
 	if wizard != nil {
 		wizardName = wizard.Name
 		worktreePath = wizard.Worktree
-
-		if wizard.PID > 0 && processAlive(wizard.PID) {
-			if proc, err := os.FindProcess(wizard.PID); err == nil {
-				proc.Signal(syscall.SIGTERM)
-				deadline := time.Now().Add(5 * time.Second)
-				for time.Now().Before(deadline) {
-					time.Sleep(200 * time.Millisecond)
-					if !processAlive(wizard.PID) {
-						break
-					}
-				}
-				if processAlive(wizard.PID) {
-					proc.Signal(syscall.SIGKILL)
-				}
-			}
-			fmt.Printf("  %s↓ %s killed (pid %d)%s\n", dim, wizardName, wizard.PID, reset)
-		}
-
-		// Remove registry entry.
-		var remaining []localWizard
-		for _, w := range reg.Wizards {
-			if w.BeadID != beadID {
-				remaining = append(remaining, w)
-			}
-		}
-		reg.Wizards = remaining
-		saveWizardRegistry(reg)
 	} else {
 		wizardName = "wizard-" + beadID
+	}
+
+	if err := terminateBeadFunc(ctx, beadID); err != nil {
+		return nil, fmt.Errorf("reset %s: terminate bead-scoped processes: %w", beadID, err)
+	}
+	if wizard != nil && wizard.PID > 0 {
+		fmt.Printf("  %s↓ %s reaped (pid %d, pgid %d)%s\n", dim, wizardName, wizard.PID, wizard.PGID, reset)
 	}
 
 	// --- Resolve formula to determine enabled phases and default --to ---
@@ -455,45 +477,23 @@ func hardResetBeadCore(beadID string) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	// --- 1. Kill wizard process if alive + remove registry entry ---
-	reg := loadWizardRegistry()
+	// --- 1. Reap every bead-scoped runtime worker (spi-w65pr1) ---
+	//
+	// Capture wizardName/worktreePath BEFORE TerminateBead because the
+	// terminate primitive clears the registry on success and the
+	// downstream worktree/branch cleanup still needs both fields.
 	var wizardName string
 	var worktreePath string
-	for i := range reg.Wizards {
-		if reg.Wizards[i].BeadID == beadID {
-			wiz := &reg.Wizards[i]
-			wizardName = wiz.Name
-			worktreePath = wiz.Worktree
-
-			if wiz.PID > 0 && processAlive(wiz.PID) {
-				if proc, err := os.FindProcess(wiz.PID); err == nil {
-					proc.Signal(syscall.SIGTERM)
-					deadline := time.Now().Add(5 * time.Second)
-					for time.Now().Before(deadline) {
-						time.Sleep(200 * time.Millisecond)
-						if !processAlive(wiz.PID) {
-							break
-						}
-					}
-					if processAlive(wiz.PID) {
-						proc.Signal(syscall.SIGKILL)
-					}
-				}
-			}
-
-			var remaining []localWizard
-			for _, w := range reg.Wizards {
-				if w.BeadID != beadID {
-					remaining = append(remaining, w)
-				}
-			}
-			reg.Wizards = remaining
-			saveWizardRegistry(reg)
-			break
-		}
+	if wiz := lookupWizardForBead(beadID); wiz != nil {
+		wizardName = wiz.Name
+		worktreePath = wiz.Worktree
 	}
 	if wizardName == "" {
 		wizardName = "wizard-" + beadID
+	}
+
+	if err := terminateBeadFunc(context.Background(), beadID); err != nil {
+		return fmt.Errorf("hard reset %s: terminate bead-scoped processes: %w", beadID, err)
 	}
 
 	// --- 2. Remove graph state files (parent + nested) ---
