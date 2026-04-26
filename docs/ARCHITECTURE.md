@@ -282,12 +282,13 @@ reviews, and monitors health.
 6. Detect review feedback -- re-engages original wizard when last review verdict is `request_changes`
 7. Check bead health (stale warning at `agent.stale`, kill at `agent.timeout`)
 
-> **Current state (2026-04-03):** The steward runs as a sibling process
-> via `spire up --steward`. V1.0 target: merge into the daemon as a
-> unified single process. Locally, `spire summon` remains available for
-> manual capacity alongside steward-driven assignment. In k8s, the
-> operator watches WizardGuild CRDs; the target is for the operator to
-> read the `repos` table directly and derive agent configurations.
+> **Current state (2026-04-26):** The steward runs as a sibling process
+> started by default by `spire up`. Pass `--no-steward` for sync-only
+> mode. V1.0 target: merge into the daemon as a unified single process.
+> Locally, `spire summon` remains available for manual capacity
+> alongside steward-driven assignment. In k8s, the operator watches
+> WizardGuild CRDs; the target is for the operator to read the `repos`
+> table directly and derive agent configurations.
 
 Assignment modes:
 - **External agents**: steward sends an assignment message via `spire send`

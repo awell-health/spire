@@ -236,14 +236,14 @@ The `context` list declares files that every agent must read before starting wor
 ### Services
 
 ```bash
-spire up              # start dolt server + daemon (Linear sync, webhook processing)
-spire up --steward    # also start a steward process for automatic assignment
+spire up              # start the local control plane: dolt + daemon + steward
+spire up --no-steward # start dolt + daemon only (sync-only / debug mode)
 spire down            # stop daemon (dolt keeps running)
 spire shutdown        # stop everything (daemon + dolt)
 spire status          # check what's running
 ```
 
-`spire up` without `--steward` starts infrastructure only — you manage capacity manually with `spire summon`. Add `--steward` to run the coordinator loop as a separate sibling process. Process mode is the default execution backend for local agents, and `spire summon` remains the primary local capacity control.
+`spire up` runs the full local control plane by default — dolt for the database, the sync daemon for Linear/webhook traffic, and the steward for automatic assignment and lifecycle maintenance. Pass `--no-steward` to skip the steward when you only need sync infrastructure (debugging, or when another machine in the tower owns assignment). Process mode is the default execution backend for local agents, and `spire summon` remains available for manual capacity alongside steward-driven assignment.
 
 ## Kubernetes
 

@@ -9,10 +9,11 @@ Local-native is the zero-infrastructure entry point to Spire. The control plane,
 On a laptop in local-native mode:
 
 - **Dolt server** — a long-lived process on localhost, holding the tower's database
-- **Daemon** — `spire up` starts the sync daemon; optional steward mode adds the coordinator loop
+- **Daemon** — `spire up` starts the sync daemon (Linear sync, webhook processing)
+- **Steward** — `spire up` also starts the local steward by default; it owns work assignment, hooked-step resume, and lifecycle maintenance. Pass `--no-steward` to skip it for sync-only/debug runs.
 - **Agents** — wizards, apprentices, sages, arbiters, and clerics run as child processes of the daemon by default, or as Docker containers if configured
 
-There is no Kubernetes, no remote control plane, no intent queue on the wire. The steward (when enabled) directly dispatches a wizard process; the wizard directly spawns apprentice and sage processes. Claim, dispatch, and handoff all happen through in-process calls plus dolt writes.
+There is no Kubernetes, no remote control plane, no intent queue on the wire. The steward directly dispatches a wizard process; the wizard directly spawns apprentice and sage processes. Claim, dispatch, and handoff all happen through in-process calls plus dolt writes.
 
 ## Who it's for
 

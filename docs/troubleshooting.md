@@ -306,17 +306,17 @@ spire tower create --name local-tower    # no --dolthub flag
 
 Yes. One developer creates the tower with `spire tower create`. Others join with `spire tower attach <dolthub-url>`.
 
-Only one machine should run the steward at a time. The steward assigns work — two stewards would race. Run infrastructure only:
+Each machine runs its own steward by default — `spire up` starts dolt + daemon + steward. Steward instances are scoped by instance identity (`~/.config/spire/instance.json`) and coordinate through attempt leases in dolt, so multiple stewards can coexist without racing — each only manages its own agents.
 
 ```bash
-spire up           # dolt + daemon only (no steward)
-spire summon N     # manual capacity management
+spire up              # dolt + daemon + steward (default)
 ```
 
-One designated machine runs:
+If you'd rather have one designated machine own assignment and run the others as sync-only, use the explicit opt-out on the secondary machines:
 
 ```bash
-spire up --steward    # dolt + daemon + steward
+spire up --no-steward  # dolt + daemon only
+spire summon N         # manual capacity management
 ```
 
 ### Can I use Spire with a monorepo?

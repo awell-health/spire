@@ -272,7 +272,7 @@ spire up
 
 ### Multiple stewards
 
-Each machine runs its own steward when `spire up --steward` is set. Steward instances are scoped by instance identity (`~/.config/spire/instance.json`) and coordinate through attempt leases in dolt, so multiple stewards can coexist without racing — each only manages its own agents.
+Each machine runs its own steward by default — `spire up` starts dolt + daemon + steward together. Steward instances are scoped by instance identity (`~/.config/spire/instance.json`) and coordinate through attempt leases in dolt, so multiple stewards can coexist without racing — each only manages its own agents. If a machine should run sync infrastructure only (no assignment), use `spire up --no-steward`.
 
 ### Working across multiple towers
 

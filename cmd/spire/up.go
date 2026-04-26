@@ -23,14 +23,14 @@ import (
 
 var upCmd = &cobra.Command{
 	Use:   "up",
-	Short: "Start dolt server + daemon (--interval)",
+	Short: "Start the local control plane (dolt + daemon + steward)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var fullArgs []string
 		if v, _ := cmd.Flags().GetString("interval"); v != "" {
 			fullArgs = append(fullArgs, "--interval", v)
 		}
-		if steward, _ := cmd.Flags().GetBool("steward"); steward {
-			fullArgs = append(fullArgs, "--steward")
+		if noSteward, _ := cmd.Flags().GetBool("no-steward"); noSteward {
+			fullArgs = append(fullArgs, "--no-steward")
 		}
 		if v, _ := cmd.Flags().GetString("backend"); v != "" {
 			fullArgs = append(fullArgs, "--backend", v)
@@ -44,43 +44,68 @@ var upCmd = &cobra.Command{
 
 func init() {
 	upCmd.Flags().String("interval", "", "Daemon sync interval (e.g. 2m)")
-	upCmd.Flags().Bool("steward", false, "Also start the steward")
+	upCmd.Flags().Bool("no-steward", false, "Don't start the steward (sync-only/debug mode)")
+	upCmd.Flags().Bool("steward", false, "Deprecated: steward starts by default; use --no-steward to opt out")
+	_ = upCmd.Flags().MarkDeprecated("steward", "steward starts by default; use --no-steward to opt out")
 	upCmd.Flags().String("backend", "", "Agent backend: process, docker, or k8s")
 	upCmd.Flags().Int("metrics-port", 0, "Expose Prometheus metrics on this port (k8s mode; 0=disabled)")
 }
 
-func cmdUp(args []string) error {
-	// Parse flags
-	interval := "2m"
-	startSteward := false
-	backendName := ""
-	metricsPort := ""
+// upOpts captures the parsed flags for `spire up`.
+type upOpts struct {
+	interval     string
+	startSteward bool
+	backendName  string
+	metricsPort  string
+}
+
+// parseUpArgs parses the argv passed to cmdUp. The steward starts by default;
+// `--no-steward` opts out. `--steward` is accepted as a back-compat no-op.
+func parseUpArgs(args []string) (upOpts, error) {
+	opts := upOpts{
+		interval:     "2m",
+		startSteward: true,
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--interval":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--interval requires a value")
+				return opts, fmt.Errorf("--interval requires a value")
 			}
 			i++
-			interval = args[i]
+			opts.interval = args[i]
 		case "--steward":
-			startSteward = true
+			// Back-compat no-op: the steward starts by default now.
+		case "--no-steward":
+			opts.startSteward = false
 		case "--backend":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--backend requires a value: process, docker, or k8s")
+				return opts, fmt.Errorf("--backend requires a value: process, docker, or k8s")
 			}
 			i++
-			backendName = args[i]
+			opts.backendName = args[i]
 		case "--metrics-port":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--metrics-port requires a port number")
+				return opts, fmt.Errorf("--metrics-port requires a port number")
 			}
 			i++
-			metricsPort = args[i]
+			opts.metricsPort = args[i]
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: spire up [--interval 2m] [--steward] [--backend process|docker|k8s] [--metrics-port 9090]", args[i])
+			return opts, fmt.Errorf("unknown flag: %s\nusage: spire up [--interval 2m] [--no-steward] [--backend process|docker|k8s] [--metrics-port 9090]", args[i])
 		}
 	}
+	return opts, nil
+}
+
+func cmdUp(args []string) error {
+	opts, err := parseUpArgs(args)
+	if err != nil {
+		return err
+	}
+	interval := opts.interval
+	startSteward := opts.startSteward
+	backendName := opts.backendName
+	metricsPort := opts.metricsPort
 
 	// Prevent multiple 'spire up' from racing.
 	lockPath := filepath.Join(doltGlobalDir(), "spire-up.lock")
@@ -361,7 +386,7 @@ func cmdUp(args []string) error {
 		}
 	}
 
-	// Step 3: Start steward (if --steward)
+	// Step 3: Start steward (default; skipped by --no-steward).
 	if startSteward {
 		fmt.Print("spire steward: ")
 		stewardPID := readPID(stewardPIDPath())

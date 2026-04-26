@@ -524,11 +524,13 @@ spire pull [url] [--force]
 
 #### `spire up`
 
-Start the dolt server and sync daemon.
+Start the local control plane: dolt server, sync daemon, and steward.
 
 ```bash
-spire up [--interval 2m] [--steward] [--backend process|docker|k8s]
+spire up [--interval 2m] [--no-steward] [--backend process|docker|k8s]
 ```
+
+Pass `--no-steward` to start dolt + daemon only (sync-only / debug mode). The deprecated `--steward` flag is still accepted as a no-op for back-compat — the steward starts by default now.
 
 #### `spire down`
 
