@@ -202,7 +202,7 @@ func TestActionBeadFinish_RefusesCloseWithStrandedChild(t *testing.T) {
 			}
 			return "spi-msg-1", nil
 		},
-		AddDepTyped: func(issueID, dependsOnID, depType string) error { return nil },
+		AddDepTyped:       func(issueID, dependsOnID, depType string) error { return nil },
 		IsAttemptBead:     func(b Bead) bool { return false },
 		IsStepBead:        func(b Bead) bool { return false },
 		IsReviewRoundBead: func(b Bead) bool { return false },
@@ -286,9 +286,9 @@ func TestActionBeadFinish_AllowsCloseWhenChildHasSuccessfulAttempt(t *testing.T)
 			closedBeadIDs = append(closedBeadIDs, id)
 			return nil
 		},
-		AddLabel:    func(id, label string) error { return nil },
-		CreateBead:  func(opts CreateOpts) (string, error) { return "spi-msg-1", nil },
-		AddDepTyped: func(issueID, dependsOnID, depType string) error { return nil },
+		AddLabel:         func(id, label string) error { return nil },
+		CreateBead:       func(opts CreateOpts) (string, error) { return "spi-msg-1", nil },
+		AddDepTyped:      func(issueID, dependsOnID, depType string) error { return nil },
 		CloseAttemptBead: func(attemptID, result string) error { return nil },
 		GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
 			return nil, nil
@@ -345,3 +345,116 @@ func TestActionBeadFinish_AllowsCloseWhenChildHasSuccessfulAttempt(t *testing.T)
 	}
 }
 
+// TestActionBeadFinish_AllowsCloseWithOpenRecoveryChild verifies that recovery
+// children created by recovery bookkeeping do not trip the stranded-work guard.
+// They have no landed code of their own; successful parent close means the
+// failure they represent was resolved by the eventual successful run.
+func TestActionBeadFinish_AllowsCloseWithOpenRecoveryChild(t *testing.T) {
+	tests := []struct {
+		name  string
+		child Bead
+	}{
+		{
+			name: "inline type recovery child",
+			child: Bead{
+				ID:     "spi-rec-type",
+				Status: "open",
+				Type:   "recovery",
+				Labels: []string{
+					"recovery",
+					"recovery:step:implement",
+					"recovery:round:1",
+					"recovery:source:spi-parent",
+				},
+			},
+		},
+		{
+			name: "legacy recovery-bead label child",
+			child: Bead{
+				ID:     "spi-rec-label",
+				Status: "open",
+				Type:   "task",
+				Labels: []string{"recovery-bead", "failure_class:step-failure"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			var closedBeadIDs []string
+			var addedLabels []string
+
+			deps := &Deps{
+				ConfigDir: func() (string, error) { return dir, nil },
+				GetChildren: func(parentID string) ([]Bead, error) {
+					if parentID == "spi-parent" {
+						return []Bead{tt.child}, nil
+					}
+					return nil, nil
+				},
+				CloseBead: func(id string) error {
+					closedBeadIDs = append(closedBeadIDs, id)
+					return nil
+				},
+				AddLabel: func(id, label string) error {
+					addedLabels = append(addedLabels, id+":"+label)
+					return nil
+				},
+				CreateBead:       func(opts CreateOpts) (string, error) { return "spi-msg-1", nil },
+				AddDepTyped:      func(issueID, dependsOnID, depType string) error { return nil },
+				CloseAttemptBead: func(attemptID, result string) error { return nil },
+				GetDependentsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+					return nil, nil
+				},
+				AddComment:        func(id, text string) error { return nil },
+				IsAttemptBead:     func(b Bead) bool { return false },
+				IsStepBead:        func(b Bead) bool { return false },
+				IsReviewRoundBead: func(b Bead) bool { return false },
+			}
+
+			graph := &formula.FormulaStepGraph{
+				Name:    "test-recovery-close",
+				Version: 3,
+				Steps: map[string]formula.StepConfig{
+					"close": {Action: "bead.finish"},
+				},
+			}
+			exec := NewGraphForTest("spi-parent", "wizard-parent", graph, nil, deps)
+
+			step := StepConfig{
+				Action: "bead.finish",
+				With:   map[string]string{"status": "closed"},
+			}
+
+			result := actionBeadFinish(exec, "close", step, exec.graphState)
+			if result.Error != nil {
+				t.Fatalf("actionBeadFinish must not refuse close on recovery child %s: %v", tt.child.ID, result.Error)
+			}
+
+			foundParent := false
+			foundRecovery := false
+			for _, id := range closedBeadIDs {
+				if id == "spi-parent" {
+					foundParent = true
+				}
+				if id == tt.child.ID {
+					foundRecovery = true
+				}
+			}
+			if !foundParent {
+				t.Errorf("parent was not closed; closed beads: %v", closedBeadIDs)
+			}
+			if !foundRecovery {
+				t.Errorf("recovery child was not closed by cascade; closed beads: %v", closedBeadIDs)
+			}
+
+			for _, label := range addedLabels {
+				if label == "spi-parent:needs-human" {
+					t.Errorf("guard wrongly added needs-human for recovery child: %v", addedLabels)
+				}
+			}
+		})
+	}
+}

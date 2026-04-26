@@ -1046,6 +1046,18 @@ func childLandedOnBranch(e *Executor, state *GraphState, childID string) bool {
 	return ok
 }
 
+func isRecoveryChildBead(child Bead) bool {
+	if child.Type == "recovery" {
+		return true
+	}
+	for _, label := range child.Labels {
+		if label == "recovery-bead" {
+			return true
+		}
+	}
+	return false
+}
+
 // actionBeadFinish closes the bead and sets executor to terminated.
 // Reads With parameters:
 //
@@ -1093,6 +1105,13 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 					continue
 				}
 				if e.deps.IsAttemptBead(child) || e.deps.IsStepBead(child) || e.deps.IsReviewRoundBead(child) {
+					continue
+				}
+				// Recovery beads are bookkeeping for prior failures of this
+				// same parent, not independently-landed product work. Let them
+				// pass the stranded-work guard so the close cascade below can
+				// clean up inline parent-child recovery beads after success.
+				if isRecoveryChildBead(child) {
 					continue
 				}
 				if !childLandedOnBranch(e, state, child.ID) {
