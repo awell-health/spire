@@ -10,6 +10,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/beadlifecycle"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/wizard"
 	"github.com/awell-health/spire/pkg/wizardregistry"
@@ -249,10 +250,20 @@ func TestCmdSummon_DispatchValidModes(t *testing.T) {
 	t.Setenv("BEADS_DIR", tmp)
 	resetStore()
 
-	// Force the k8s-availability probe to return false so cmdSummon
-	// takes the local path. Without this the real probe shells out to
-	// kubectl, which hangs indefinitely on machines whose current
-	// context targets an unreachable API server.
+	// Drive dispatch through a fake local-native tower so cmdSummon
+	// takes the local path. Without this the real activeTowerConfig
+	// would try to resolve a tower from the test's temp dir and fail
+	// before dispatch validation is exercised.
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "test", DeploymentMode: config.DeploymentModeLocalNative}, nil
+	}
+
+	// Belt-and-suspenders: even though the local-native branch never
+	// consults isK8sAvailableFunc, stub it to a no-op so the real probe
+	// (which shells out to kubectl) can't fire if the dispatch logic
+	// ever changes.
 	origK8s := isK8sAvailableFunc
 	defer func() { isK8sAvailableFunc = origK8s }()
 	isK8sAvailableFunc = func() bool { return false }
@@ -609,6 +620,206 @@ func TestPreflightResolveTargets_ReportsAllUnbound(t *testing.T) {
 	for _, want := range []string{"spd-1jd", "oo-abc"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %q:\n%s", want, err.Error())
+		}
+	}
+}
+
+// --- Dispatch routing tests (spi-jsxa3v) ---
+//
+// cmdSummon and cmdDismiss must dispatch on the active tower's
+// deployment mode, NOT on kubectl reachability. The bug being fixed:
+// a local-native tower with a reachable minikube on the side was
+// silently routed to the k8s path because isK8sAvailable() returned
+// true. These tests pin that the active tower's mode wins.
+
+// TestCmdSummon_ClusterNative_UnreachableErrors verifies that a
+// cluster-native tower with no reachable cluster fails loudly rather
+// than silently falling back to the local path.
+func TestCmdSummon_ClusterNative_UnreachableErrors(t *testing.T) {
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "remote", DeploymentMode: config.DeploymentModeClusterNative}, nil
+	}
+
+	origK8s := isK8sAvailableFunc
+	defer func() { isK8sAvailableFunc = origK8s }()
+	isK8sAvailableFunc = func() bool { return false }
+
+	err := cmdSummon([]string{"1"})
+	if err == nil {
+		t.Fatal("expected error when cluster-native tower can't reach kubectl")
+	}
+	if !strings.Contains(err.Error(), "cluster-native") {
+		t.Fatalf("error should mention cluster-native, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "remote") {
+		t.Fatalf("error should mention tower name, got: %v", err)
+	}
+}
+
+// TestCmdSummon_AttachedReservedErrors verifies the attached-reserved
+// mode produces a not-yet-supported error rather than silently
+// dispatching to either path.
+func TestCmdSummon_AttachedReservedErrors(t *testing.T) {
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "attached", DeploymentMode: config.DeploymentModeAttachedReserved}, nil
+	}
+
+	err := cmdSummon([]string{"1"})
+	if err == nil {
+		t.Fatal("expected error for attached-reserved mode")
+	}
+	if !strings.Contains(err.Error(), "attached-reserved") {
+		t.Fatalf("error should mention attached-reserved, got: %v", err)
+	}
+}
+
+// TestCmdSummon_UnknownModeErrors verifies the default branch fires for
+// any unrecognized mode value rather than silently falling back.
+func TestCmdSummon_UnknownModeErrors(t *testing.T) {
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "weird", DeploymentMode: config.DeploymentMode("bogus")}, nil
+	}
+
+	err := cmdSummon([]string{"1"})
+	if err == nil {
+		t.Fatal("expected error for unknown deployment mode")
+	}
+	if !strings.Contains(err.Error(), "unknown deployment mode") {
+		t.Fatalf("error should mention unknown deployment mode, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Fatalf("error should mention the bad mode value, got: %v", err)
+	}
+}
+
+// TestCmdSummon_TowerLookupErrors verifies a tower-resolution failure
+// surfaces with the "summon: resolve active tower" prefix rather than
+// silently picking a path.
+func TestCmdSummon_TowerLookupErrors(t *testing.T) {
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return nil, fmt.Errorf("no tower configured")
+	}
+
+	err := cmdSummon([]string{"1"})
+	if err == nil {
+		t.Fatal("expected error when tower lookup fails")
+	}
+	if !strings.Contains(err.Error(), "resolve active tower") {
+		t.Fatalf("error should mention resolve active tower, got: %v", err)
+	}
+}
+
+// TestCmdDismiss_ClusterNative_UnreachableErrors mirrors the summon
+// case for the dismiss path: cluster-native tower + unreachable
+// kubectl must fail loudly.
+func TestCmdDismiss_ClusterNative_UnreachableErrors(t *testing.T) {
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "remote", DeploymentMode: config.DeploymentModeClusterNative}, nil
+	}
+
+	origK8s := isK8sAvailableFunc
+	defer func() { isK8sAvailableFunc = origK8s }()
+	isK8sAvailableFunc = func() bool { return false }
+
+	err := cmdDismiss([]string{"1"})
+	if err == nil {
+		t.Fatal("expected error when cluster-native tower can't reach kubectl")
+	}
+	if !strings.Contains(err.Error(), "cluster-native") {
+		t.Fatalf("error should mention cluster-native, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "dismiss:") {
+		t.Fatalf("error should be prefixed with dismiss:, got: %v", err)
+	}
+}
+
+// TestCmdDismiss_AttachedReservedErrors verifies the dismiss path also
+// rejects attached-reserved.
+func TestCmdDismiss_AttachedReservedErrors(t *testing.T) {
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "attached", DeploymentMode: config.DeploymentModeAttachedReserved}, nil
+	}
+
+	err := cmdDismiss([]string{"1"})
+	if err == nil {
+		t.Fatal("expected error for attached-reserved mode")
+	}
+	if !strings.Contains(err.Error(), "attached-reserved") {
+		t.Fatalf("error should mention attached-reserved, got: %v", err)
+	}
+}
+
+// TestCmdDismiss_UnknownModeErrors verifies the dismiss default branch.
+func TestCmdDismiss_UnknownModeErrors(t *testing.T) {
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "weird", DeploymentMode: config.DeploymentMode("bogus")}, nil
+	}
+
+	err := cmdDismiss([]string{"1"})
+	if err == nil {
+		t.Fatal("expected error for unknown deployment mode")
+	}
+	if !strings.Contains(err.Error(), "unknown deployment mode") {
+		t.Fatalf("error should mention unknown deployment mode, got: %v", err)
+	}
+}
+
+// TestCmdSummon_LocalNative_IgnoresK8sReachability is the central
+// regression test for spi-jsxa3v: a local-native tower with kubectl
+// reporting the spire namespace as reachable must STILL take the
+// local path. Before the fix, isK8sAvailable() returning true would
+// silently route to the k8s path regardless of the tower's mode.
+//
+// We can't observe summonLocal directly from cmdSummon without
+// spawning a subprocess, but we can pin the negative: if the dispatch
+// had taken the k8s path it would have called summonK8s, which never
+// touches BEADS_DIR or the local store. Taking the local path means
+// the failure mode is store-related, not k8s-related. We assert the
+// error doesn't look like a k8s reachability complaint.
+func TestCmdSummon_LocalNative_IgnoresK8sReachability(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("BEADS_DIR", tmp)
+	resetStore()
+
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "local", DeploymentMode: config.DeploymentModeLocalNative}, nil
+	}
+
+	// Simulate the original symptom: kubectl reachable to a cluster
+	// with the spire namespace. Before the fix this silently switched
+	// to the k8s path. After the fix, a local-native tower means the
+	// local path runs regardless.
+	origK8s := isK8sAvailableFunc
+	defer func() { isK8sAvailableFunc = origK8s }()
+	isK8sAvailableFunc = func() bool { return true }
+
+	// summonLocal will fail downstream (no dolt server); we just
+	// verify the failure path is the local one. Any error mentioning
+	// cluster-native / kubectl indicates we mistakenly took the k8s
+	// branch.
+	err := cmdSummon([]string{"1"})
+	if err != nil {
+		if strings.Contains(err.Error(), "cluster-native") {
+			t.Fatalf("local-native tower should not produce cluster-native error: %v", err)
+		}
+		if strings.Contains(err.Error(), "kubectl") {
+			t.Fatalf("local-native tower should not produce kubectl error: %v", err)
 		}
 	}
 }

@@ -226,6 +226,12 @@ func TestCmdSummon_AuthPlumbingReachesSummonLocal(t *testing.T) {
 	defer func() { isK8sAvailableFunc = prevK8s }()
 	isK8sAvailableFunc = func() bool { return false }
 
+	prevTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = prevTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "test", DeploymentMode: config.DeploymentModeLocalNative}, nil
+	}
+
 	prevBegin := summonBeginWorkFunc
 	defer func() { summonBeginWorkFunc = prevBegin }()
 	summonBeginWorkFunc = func(_ beadlifecycle.Deps, _ wizardregistry.Registry, _ string, _ beadlifecycle.BeginOpts) (string, error) {
@@ -273,6 +279,12 @@ func TestCmdSummon_HeaderPlumbingReachesSummonLocal(t *testing.T) {
 	prevK8s := isK8sAvailableFunc
 	defer func() { isK8sAvailableFunc = prevK8s }()
 	isK8sAvailableFunc = func() bool { return false }
+
+	prevTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = prevTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "test", DeploymentMode: config.DeploymentModeLocalNative}, nil
+	}
 
 	prevBegin := summonBeginWorkFunc
 	defer func() { summonBeginWorkFunc = prevBegin }()

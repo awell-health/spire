@@ -278,11 +278,29 @@ func cmdSummon(args []string) error {
 		return err
 	}
 
-	// Detect mode: k8s or local.
-	if isK8sAvailableFunc() {
-		return summonK8s(count)
+	// Dispatch on the active tower's deployment mode rather than on
+	// kubectl reachability. The active tower is the source of truth for
+	// where work runs; probing kubectl can pick up an unrelated cluster
+	// (a developer's minikube, a stale dev cluster) and silently subvert
+	// the user's tower choice. See spi-jsxa3v.
+	tower, err := activeTowerConfigFunc()
+	if err != nil {
+		return fmt.Errorf("summon: resolve active tower: %w", err)
 	}
-	return summonLocal(count, targetIDs, dispatch, authFlags)
+	switch tower.EffectiveDeploymentMode() {
+	case config.DeploymentModeClusterNative:
+		if !isK8sAvailableFunc() {
+			return fmt.Errorf("summon: tower %q is cluster-native but kubectl cannot reach the spire namespace", tower.Name)
+		}
+		return summonK8s(count)
+	case config.DeploymentModeLocalNative:
+		return summonLocal(count, targetIDs, dispatch, authFlags)
+	case config.DeploymentModeAttachedReserved:
+		return fmt.Errorf("summon: attached-reserved mode is not yet supported")
+	default:
+		return fmt.Errorf("summon: unknown deployment mode %q on tower %q",
+			tower.EffectiveDeploymentMode(), tower.Name)
+	}
 }
 
 // preflightResolveTargets verifies that every target bead ID has a
@@ -409,10 +427,24 @@ func cmdDismiss(args []string) error {
 		}
 	}
 
-	if isK8sAvailableFunc() {
-		return dismissK8s(count, dismissAll)
+	tower, err := activeTowerConfigFunc()
+	if err != nil {
+		return fmt.Errorf("dismiss: resolve active tower: %w", err)
 	}
-	return dismissLocal(count, dismissAll, targetIDs)
+	switch tower.EffectiveDeploymentMode() {
+	case config.DeploymentModeClusterNative:
+		if !isK8sAvailableFunc() {
+			return fmt.Errorf("dismiss: tower %q is cluster-native but kubectl cannot reach the spire namespace", tower.Name)
+		}
+		return dismissK8s(count, dismissAll)
+	case config.DeploymentModeLocalNative:
+		return dismissLocal(count, dismissAll, targetIDs)
+	case config.DeploymentModeAttachedReserved:
+		return fmt.Errorf("dismiss: attached-reserved mode is not yet supported")
+	default:
+		return fmt.Errorf("dismiss: unknown deployment mode %q on tower %q",
+			tower.EffectiveDeploymentMode(), tower.Name)
+	}
 }
 
 // --- k8s mode ---
@@ -463,7 +495,18 @@ func dismissK8s(count int, all bool) error {
 // isK8sAvailableFunc is the indirection used by cmdSummon / cmdDismiss so
 // tests can stub k8s detection without shelling out. Production callers
 // leave this alone; tests assign a func that returns a fixed bool.
+//
+// As of spi-jsxa3v this is no longer the primary dispatch signal — the
+// active tower's deployment mode is. It survives as a defensive
+// reachability check on the cluster-native branch (so a cluster-native
+// tower with no reachable cluster fails loudly instead of silently
+// taking the local path).
 var isK8sAvailableFunc = isK8sAvailable
+
+// activeTowerConfigFunc is the indirection used by cmdSummon / cmdDismiss
+// so tests can drive dispatch through a fake tower config without
+// touching the real config dir. Production callers leave this alone.
+var activeTowerConfigFunc = activeTowerConfig
 
 // summonUpdateBeadFunc is a test-replaceable wrapper around storeUpdateBead
 // used by summonLocal for status transitions.
