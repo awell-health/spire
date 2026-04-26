@@ -30,6 +30,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
+	closepkg "github.com/awell-health/spire/pkg/close"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/graph"
@@ -468,6 +469,11 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	// /api/v1/beads/{id}/reset
 	if strings.HasSuffix(id, "/reset") {
 		s.handleBeadReset(w, r, strings.TrimSuffix(id, "/reset"))
+		return
+	}
+	// /api/v1/beads/{id}/close
+	if strings.HasSuffix(id, "/close") {
+		s.handleBeadClose(w, r, strings.TrimSuffix(id, "/close"))
 		return
 	}
 	switch r.Method {
@@ -1870,6 +1876,70 @@ func (s *Server) handleBeadReset(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, bead)
+}
+
+// closeBeadFunc is the package-level seam through which handleBeadClose
+// dispatches into the close-lifecycle code path. cmd/spire wires
+// close.RunFunc in its init(); pkg/close.RunLifecycle is the canonical
+// entry point. The indirection exists so handler tests can swap in a
+// recorder without booting the CLI.
+var closeBeadFunc = closepkg.RunLifecycle
+
+// closeStoreEnsureFunc verifies the server-side Dolt store is available
+// before dispatching close. Kept as a seam so handler tests can exercise
+// close routing without depending on a real server-side .beads directory.
+var closeStoreEnsureFunc = func(dataDir string) error {
+	_, err := store.Ensure(dataDir)
+	return err
+}
+
+// handleBeadClose answers POST /api/v1/beads/{id}/close — runs the full
+// `spire close` lifecycle (workflow-step children + label cleanup +
+// caused-by alert cascade + parent close) server-side. Cluster-attached
+// gateway-mode clients route through this endpoint because their local
+// pkg/store cannot discover workflow-step children (GetChildren is
+// gateway-unsupported).
+//
+// Empty body — the lifecycle takes only the bead ID.
+//
+// Responses:
+//
+//	200 { id, status: "closed" }   — close lifecycle completed
+//	400 { error }                  — empty bead ID
+//	404 { error }                  — bead not found
+//	405                            — non-POST
+//	500 { error }                  — close lifecycle failure
+func (s *Server) handleBeadClose(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bead ID required"})
+		return
+	}
+	if err := closeStoreEnsureFunc(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := closeBeadFunc(id); err != nil {
+		writeJSON(w, statusForCloseError(err), map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "closed"})
+}
+
+// statusForCloseError maps a close-lifecycle error to the HTTP status the
+// gateway should return. "Not found" becomes 404; anything else becomes
+// 500.
+func statusForCloseError(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	if strings.Contains(err.Error(), "not found") {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
 }
 
 // statusForResetError maps a soft-reset error to the HTTP status the

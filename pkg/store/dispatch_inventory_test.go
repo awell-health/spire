@@ -361,4 +361,9 @@ var nonDispatchableAPIs = []string{
 
 	// testing.go — test-only scaffolding.
 	"SetTestStorage",
+
+	// dispatch.go — gateway-client constructor; no Storage access. cmd/spire
+	// callers (cmdClose's gateway-mode short-circuit) use this to bypass the
+	// pkg/store dispatch layer entirely and talk to the gateway directly.
+	"NewGatewayClientForTower",
 }

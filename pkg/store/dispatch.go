@@ -59,6 +59,15 @@ func gatewayClient(t *config.TowerConfig) (*gatewayclient.Client, error) {
 	return newGatewayClientFn(t)
 }
 
+// NewGatewayClientForTower is the public version of gatewayClient. cmd/spire
+// callers (e.g. cmdClose's gateway-mode short-circuit) need a configured
+// client without the rest of the dispatch layer; this exposes the same
+// keychain-token + identity-header construction as the internal dispatchers
+// so callers don't have to re-implement it.
+func NewGatewayClientForTower(t *config.TowerConfig) (*gatewayclient.Client, error) {
+	return newGatewayClientFn(t)
+}
+
 func resolveActiveTower() (*config.TowerConfig, error) {
 	return config.ResolveTowerConfig()
 }

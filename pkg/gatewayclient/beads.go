@@ -101,3 +101,13 @@ func (c *Client) CreateBead(ctx context.Context, in CreateBeadInput) (string, er
 func (c *Client) UpdateBead(ctx context.Context, id string, updates map[string]any) error {
 	return c.doJSON(ctx, http.MethodPatch, "/api/v1/beads/"+id, updates, nil)
 }
+
+// CloseBead calls POST /api/v1/beads/{id}/close. Runs the full close
+// lifecycle (workflow-step children + label cleanup + caused-by alert
+// cascade + parent close) server-side. Returns ErrNotFound if the gateway
+// responds 404. The response body is discarded — the lifecycle either
+// succeeded or returned an error, the caller doesn't need the post-close
+// shape today.
+func (c *Client) CloseBead(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodPost, "/api/v1/beads/"+id+"/close", nil, nil)
+}

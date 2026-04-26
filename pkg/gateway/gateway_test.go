@@ -801,6 +801,14 @@ func TestHandleBeadByID_RoutesSummonAndReady(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("/ready routing: status = %d, want 405 (body=%q)", rec.Code, rec.Body.String())
 	}
+
+	// /close with GET → 405 (proves routing reached handleBeadClose)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-abc/close", nil)
+	rec = httptest.NewRecorder()
+	s.handleBeadByID(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("/close routing: status = %d, want 405 (body=%q)", rec.Code, rec.Body.String())
+	}
 }
 
 // --- /api/v1/beads/{id}/lineage helpers ---
@@ -1180,6 +1188,145 @@ func TestStatusForResetError_MapsKnownMessages(t *testing.T) {
 				label = tc.err.Error()
 			}
 			t.Errorf("statusForResetError(%q) = %d, want %d", label, got, tc.want)
+		}
+	}
+}
+
+// --- /api/v1/beads/{id}/close ---
+
+// closeCalls records what closeBeadFunc observed so tests can assert that
+// the handler invoked the lifecycle for the right bead.
+type closeCalls struct {
+	runs   int
+	lastID string
+}
+
+// withCloseStubs swaps the package-level seams used by handleBeadClose.
+// runErr controls whether the lifecycle returns an error so tests can
+// exercise the 404/500 mapping branches.
+func withCloseStubs(t *testing.T, runErr error) *closeCalls {
+	t.Helper()
+	prevFunc := closeBeadFunc
+	prevEnsure := closeStoreEnsureFunc
+
+	calls := &closeCalls{}
+	closeStoreEnsureFunc = func(string) error {
+		return nil
+	}
+	closeBeadFunc = func(id string) error {
+		calls.runs++
+		calls.lastID = id
+		return runErr
+	}
+	t.Cleanup(func() {
+		closeBeadFunc = prevFunc
+		closeStoreEnsureFunc = prevEnsure
+	})
+	return calls
+}
+
+func TestHandleBeadClose_RejectsNonPOST(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withCloseStubs(t, nil)
+
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		req := httptest.NewRequest(method, "/api/v1/beads/spi-abc/close", nil)
+		rec := httptest.NewRecorder()
+		s.handleBeadClose(rec, req, "spi-abc")
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s: status = %d, want 405", method, rec.Code)
+		}
+	}
+	if calls.runs != 0 {
+		t.Errorf("closeBeadFunc invoked on non-POST: %d times", calls.runs)
+	}
+}
+
+func TestHandleBeadClose_RejectsEmptyID(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withCloseStubs(t, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads//close", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadClose(rec, req, "")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if calls.runs != 0 {
+		t.Errorf("closeBeadFunc invoked on empty id: %d times", calls.runs)
+	}
+}
+
+func TestHandleBeadClose_HappyPath(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withCloseStubs(t, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/close", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadClose(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if calls.runs != 1 {
+		t.Fatalf("closeBeadFunc invocations = %d, want 1", calls.runs)
+	}
+	if calls.lastID != "spi-abc" {
+		t.Errorf("forwarded id = %q, want spi-abc", calls.lastID)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["id"] != "spi-abc" || got["status"] != "closed" {
+		t.Errorf("body = %+v, want id=spi-abc status=closed", got)
+	}
+}
+
+func TestHandleBeadClose_NotFoundReturns404(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withCloseStubs(t, errors.New("get bead spi-missing: not found"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-missing/close", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadClose(rec, req, "spi-missing")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBeadClose_GenericErrorReturns500(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withCloseStubs(t, errors.New("dolt: connection reset"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/close", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadClose(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStatusForCloseError_MapsKnownMessages(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{nil, http.StatusOK},
+		{errors.New("get bead spi-1: not found"), http.StatusNotFound},
+		{errors.New("dolt: connection reset"), http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		got := statusForCloseError(tc.err)
+		if got != tc.want {
+			label := "<nil>"
+			if tc.err != nil {
+				label = tc.err.Error()
+			}
+			t.Errorf("statusForCloseError(%q) = %d, want %d", label, got, tc.want)
 		}
 	}
 }

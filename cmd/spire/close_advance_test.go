@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
@@ -144,6 +147,8 @@ func stubCloseStore(t *testing.T) func() {
 	origClose := storeCloseBeadFunc
 	origRemoveLabel := storeRemoveLabelFunc
 	origDependents := storeGetDependentsWithMetaFunc
+	origTower := activeTowerConfigFunc
+	origGateway := gatewayCloseBeadFunc
 
 	storeGetBeadFunc = func(id string) (Bead, error) { return Bead{ID: id, Status: string(beads.StatusOpen)}, nil }
 	storeGetChildrenFunc = func(string) ([]Bead, error) { return nil, nil }
@@ -151,6 +156,13 @@ func stubCloseStore(t *testing.T) func() {
 	storeCloseBeadFunc = func(string) error { return nil }
 	storeRemoveLabelFunc = func(string, string) error { return nil }
 	storeGetDependentsWithMetaFunc = func(string) ([]*beads.IssueWithDependencyMetadata, error) { return nil, nil }
+	// Default to a non-gateway tower so cmdClose takes the direct-mode
+	// branch. Tests that need the gateway path swap this seam explicitly.
+	activeTowerConfigFunc = func() (*TowerConfig, error) { return nil, nil }
+	gatewayCloseBeadFunc = func(context.Context, string) error {
+		t.Fatalf("gatewayCloseBeadFunc must not be called in direct-mode tests")
+		return nil
+	}
 
 	return func() {
 		storeGetBeadFunc = origGetBead
@@ -159,5 +171,97 @@ func stubCloseStore(t *testing.T) func() {
 		storeCloseBeadFunc = origClose
 		storeRemoveLabelFunc = origRemoveLabel
 		storeGetDependentsWithMetaFunc = origDependents
+		activeTowerConfigFunc = origTower
+		gatewayCloseBeadFunc = origGateway
+	}
+}
+
+// TestCmdCloseGatewayModeRoutesToGatewayClient verifies that cmdClose, on
+// a gateway-mode tower, posts to the gateway endpoint instead of running
+// the direct-mode lifecycle. The direct-mode store hooks must not be
+// invoked — close is owned server-side.
+func TestCmdCloseGatewayModeRoutesToGatewayClient(t *testing.T) {
+	restore := stubCloseStore(t)
+	defer restore()
+
+	storeGetBeadFunc = func(string) (Bead, error) {
+		t.Fatalf("storeGetBeadFunc must not be called in gateway mode")
+		return Bead{}, nil
+	}
+	storeGetChildrenFunc = func(string) ([]Bead, error) {
+		t.Fatalf("storeGetChildrenFunc must not be called in gateway mode")
+		return nil, nil
+	}
+	storeCloseBeadFunc = func(string) error {
+		t.Fatalf("storeCloseBeadFunc must not be called in gateway mode")
+		return nil
+	}
+
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "cluster", Mode: config.TowerModeGateway, URL: "https://example.com"}, nil
+	}
+
+	var gatewayCalledWith string
+	gatewayCloseBeadFunc = func(_ context.Context, id string) error {
+		gatewayCalledWith = id
+		return nil
+	}
+
+	if err := cmdClose([]string{"spi-parent"}); err != nil {
+		t.Fatalf("cmdClose: %v", err)
+	}
+	if gatewayCalledWith != "spi-parent" {
+		t.Fatalf("gatewayCloseBeadFunc id = %q, want spi-parent", gatewayCalledWith)
+	}
+}
+
+// TestCmdCloseGatewayModePropagatesError verifies that the CLI surfaces
+// a gateway-side close error verbatim — the user must see why the close
+// failed (e.g. 404 from the gateway).
+func TestCmdCloseGatewayModePropagatesError(t *testing.T) {
+	restore := stubCloseStore(t)
+	defer restore()
+
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "cluster", Mode: config.TowerModeGateway, URL: "https://example.com"}, nil
+	}
+
+	wantErr := errors.New("gatewayclient: not found")
+	gatewayCloseBeadFunc = func(context.Context, string) error { return wantErr }
+
+	err := cmdClose([]string{"spi-missing"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("cmdClose err = %v, want %v", err, wantErr)
+	}
+}
+
+// TestCloseBeadLifecycleFailsClosedOnGatewayUnsupported verifies the
+// defense-in-depth fail-closed guard inside closeBeadLifecycle: when
+// child discovery returns store.ErrGatewayUnsupported, the parent must
+// NOT be closed and the lifecycle must surface the error.
+func TestCloseBeadLifecycleFailsClosedOnGatewayUnsupported(t *testing.T) {
+	restore := stubCloseStore(t)
+	defer restore()
+
+	storeGetChildrenFunc = func(string) ([]Bead, error) {
+		return nil, store.ErrGatewayUnsupported
+	}
+
+	closeCalled := false
+	storeCloseBeadFunc = func(string) error {
+		closeCalled = true
+		return nil
+	}
+
+	bead := Bead{ID: "spi-parent", Status: string(beads.StatusOpen), Labels: []string{"phase:close"}}
+	err := closeBeadLifecycle("spi-parent", bead)
+	if err == nil {
+		t.Fatalf("closeBeadLifecycle: expected error, got nil")
+	}
+	if !errors.Is(err, store.ErrGatewayUnsupported) {
+		t.Fatalf("err = %v, want wrap of store.ErrGatewayUnsupported", err)
+	}
+	if closeCalled {
+		t.Fatalf("storeCloseBeadFunc was called despite gateway-unsupported child discovery — fail-closed guard regressed")
 	}
 }
