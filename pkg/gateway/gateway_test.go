@@ -69,6 +69,31 @@ func TestHandleSync_TableDriven(t *testing.T) {
 			wantReason:     "http:signal",
 		},
 		{
+			// Explicit-empty ?reason= is a separate code path from absent
+			// key — both return "" from r.URL.Query().Get("reason"), but
+			// only the present-but-empty case exercises the URL-parser's
+			// "key set to empty string" branch. Both must collapse to the
+			// "http" default so the trigger reason becomes "http:http".
+			name:           "POST with explicit empty reason falls back to default",
+			method:         http.MethodPost,
+			path:           "/sync?reason=",
+			triggerErr:     nil,
+			wantStatus:     http.StatusOK,
+			wantBodyPrefix: "triggered",
+			wantReason:     "http:http",
+		},
+		{
+			// Hyphenated reasons round-trip unchanged — the gateway does
+			// not sanitize, it just concatenates with "http:" prefix.
+			name:           "POST with hyphenated reason round-trips",
+			method:         http.MethodPost,
+			path:           "/sync?reason=cron-tick",
+			triggerErr:     nil,
+			wantStatus:     http.StatusOK,
+			wantBodyPrefix: "triggered",
+			wantReason:     "http:cron-tick",
+		},
+		{
 			name:           "debounced trigger returns 202 skipped",
 			method:         http.MethodPost,
 			path:           "/sync",
@@ -96,6 +121,34 @@ func TestHandleSync_TableDriven(t *testing.T) {
 		{
 			name:           "PUT rejected with 405",
 			method:         http.MethodPut,
+			path:           "/sync",
+			wantStatus:     http.StatusMethodNotAllowed,
+			wantBodyPrefix: "method not allowed",
+		},
+		{
+			name:           "DELETE rejected with 405",
+			method:         http.MethodDelete,
+			path:           "/sync",
+			wantStatus:     http.StatusMethodNotAllowed,
+			wantBodyPrefix: "method not allowed",
+		},
+		{
+			name:           "PATCH rejected with 405",
+			method:         http.MethodPatch,
+			path:           "/sync",
+			wantStatus:     http.StatusMethodNotAllowed,
+			wantBodyPrefix: "method not allowed",
+		},
+		{
+			name:           "HEAD rejected with 405",
+			method:         http.MethodHead,
+			path:           "/sync",
+			wantStatus:     http.StatusMethodNotAllowed,
+			wantBodyPrefix: "method not allowed",
+		},
+		{
+			name:           "OPTIONS rejected with 405",
+			method:         http.MethodOptions,
 			path:           "/sync",
 			wantStatus:     http.StatusMethodNotAllowed,
 			wantBodyPrefix: "method not allowed",
