@@ -66,7 +66,15 @@ func getBeadDirect(id string) (Bead, error) {
 // (assignee, acceptance_criteria, created_at, created_by, etc.).
 // Dependencies are populated so Parent and related queries work off the
 // returned issue.
+//
+// Gateway mode: the gateway only exposes the lightweight Bead shape over
+// /api/v1/beads/{id}; the raw beads.Issue projection is not available.
+// Fails closed with ErrGatewayUnsupported so callers either reach for
+// GetBead instead or surface the missing transport.
 func GetIssue(id string) (*beads.Issue, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetIssue")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
@@ -116,7 +124,12 @@ func listBeadsDirect(filter beads.IssueFilter) ([]Bead, error) {
 }
 
 // ListBoardBeads searches for beads with full board metadata.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func ListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("ListBoardBeads")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
@@ -133,7 +146,14 @@ func ListBoardBeads(filter beads.IssueFilter) ([]BoardBead, error) {
 }
 
 // GetDepsWithMeta returns all dependencies of a bead with their relationship metadata.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
+// The /api/v1/beads/{id}/deps endpoint returns BoardDep edges via ListDeps,
+// not the IssueWithDependencyMetadata projection callers expect here.
 func GetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetDepsWithMeta")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
@@ -143,7 +163,12 @@ func GetDepsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
 
 // GetConfig gets a config value. Returns "" if key is not set.
 // Real store errors (connection, missing table) are propagated.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetConfig(key string) (string, error) {
+	if _, ok := isGatewayMode(); ok {
+		return "", gatewayUnsupportedErr("GetConfig")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return "", err
@@ -157,7 +182,14 @@ func GetConfig(key string) (string, error) {
 // Filters out internal beads (message, step, attempt, review), child beads,
 // design beads, and beads with active attempt children so they don't appear
 // as assignable work in the steward cycle.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
+// This intentionally blocks the steward's "schedule work" loop on a gateway
+// tower; cluster-as-truth deployments run scheduling server-side.
 func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetReadyWork")
+	}
 	// Default to status="ready" when the caller doesn't specify — "ready"
 	// is a Spire-specific custom active status registered in the beads
 	// `custom_statuses` table, and `beads.Storage.GetReadyWork` hardcodes
@@ -285,7 +317,12 @@ func getBlockedIssuesDirect(filter beads.WorkFilter) ([]BoardBead, error) {
 
 // GetDependentsWithMeta returns all beads that depend on the given bead, with dependency metadata.
 // This is the reverse of GetDepsWithMeta: it finds beads where the given bead is the dependency target.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetDependentsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetDependentsWithMeta")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
@@ -294,7 +331,12 @@ func GetDependentsWithMeta(id string) ([]*beads.IssueWithDependencyMetadata, err
 }
 
 // GetComments returns comments for a bead.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetComments(id string) ([]*beads.Comment, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetComments")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
@@ -303,7 +345,12 @@ func GetComments(id string) ([]*beads.Comment, error) {
 }
 
 // GetChildren returns child beads of a parent.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetChildren(parentID string) ([]Bead, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetChildren")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return nil, err
@@ -320,9 +367,14 @@ func GetChildren(parentID string) ([]Bead, error) {
 // GetChildrenBatch fetches children for multiple parent IDs and returns them
 // grouped by parent ID. It reuses the same SearchIssues + ParentID filter logic
 // as GetChildren, ensuring identically-structured Bead values.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetChildrenBatch(parentIDs []string) (map[string][]Bead, error) {
 	if len(parentIDs) == 0 {
 		return map[string][]Bead{}, nil
+	}
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetChildrenBatch")
 	}
 	s, ctx, err := getStore()
 	if err != nil {
@@ -349,9 +401,14 @@ func GetChildrenBatch(parentIDs []string) (map[string][]Bead, error) {
 // GetChildrenBatch. For typical DORA windows (28 days) this is acceptable, but
 // could be slow with hundreds of parents. A batch filter at the storage layer
 // would be the fix if this becomes a bottleneck.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetChildrenBoardBatch(parentIDs []string) (map[string][]BoardBead, error) {
 	if len(parentIDs) == 0 {
 		return map[string][]BoardBead{}, nil
+	}
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetChildrenBoardBatch")
 	}
 	s, ctx, err := getStore()
 	if err != nil {
