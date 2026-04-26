@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/reset"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/summon"
 )
@@ -940,5 +942,239 @@ func TestServer_RunAndShutdown(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not return after context cancel")
+	}
+}
+
+// --- /api/v1/beads/{id}/reset ---
+
+// withResetStubs swaps the package-level seams used by handleBeadReset:
+// the resetBeadFunc that dispatches into pkg/reset.ResetBead, and the
+// resetTowerModeFunc that decides whether to short-circuit to 501 in
+// cluster mode. Each call records the (mode, opts) the handler resolved
+// so tests can assert on cluster-mode dispatch and Opts propagation.
+func withResetStubs(t *testing.T, mode string, modeErr error, bead *store.Bead, runErr error) *resetCalls {
+	t.Helper()
+	prevFunc := resetBeadFunc
+	prevMode := resetTowerModeFunc
+
+	calls := &resetCalls{}
+	resetTowerModeFunc = func() (string, error) {
+		calls.modeReads++
+		if modeErr != nil {
+			return "", modeErr
+		}
+		return mode, nil
+	}
+	resetBeadFunc = func(_ context.Context, opts pkgresetOpts) (*store.Bead, error) {
+		calls.runs++
+		calls.lastOpts = opts
+		if runErr != nil {
+			return nil, runErr
+		}
+		return bead, nil
+	}
+	t.Cleanup(func() {
+		resetBeadFunc = prevFunc
+		resetTowerModeFunc = prevMode
+	})
+	return calls
+}
+
+// pkgresetOpts is a shorthand alias used inside the test stubs so the test
+// helpers can reference reset.Opts without re-importing under a different
+// name. The compiler treats this as the same type as reset.Opts.
+type pkgresetOpts = reset.Opts
+
+// resetCalls records what withResetStubs observed.
+type resetCalls struct {
+	modeReads int
+	runs      int
+	lastOpts  pkgresetOpts
+}
+
+func TestHandleBeadReset_RejectsNonPOST(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withResetStubs(t, "", nil, &store.Bead{ID: "spi-abc", Status: "open"}, nil)
+
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		req := httptest.NewRequest(method, "/api/v1/beads/spi-abc/reset", nil)
+		rec := httptest.NewRecorder()
+		s.handleBeadReset(rec, req, "spi-abc")
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s: status = %d, want 405", method, rec.Code)
+		}
+	}
+}
+
+func TestHandleBeadReset_RejectsEmptyID(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withResetStubs(t, "", nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads//reset", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleBeadReset_ClusterModeReturns501 exercises the cluster-mode
+// short-circuit. The acceptance criterion mandates the 501 body verbatim
+// — desktop clients pattern-match on it to distinguish "reset is not
+// implemented in this topology" from a generic 5xx.
+func TestHandleBeadReset_ClusterModeReturns501(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withResetStubs(t, config.TowerModeGateway, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 (body=%q)", rec.Code, rec.Body.String())
+	}
+	// resetBeadFunc must NOT be invoked when the cluster short-circuit fires.
+	if calls.runs != 0 {
+		t.Errorf("resetBeadFunc was invoked %d times in cluster mode; expected zero — the gateway must short-circuit before the soft-reset path", calls.runs)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "reset not supported in cluster mode") {
+		t.Errorf("body = %q, want documented 501 message", body)
+	}
+	if !strings.Contains(body, "follow-up bead") {
+		t.Errorf("body = %q, want mention of follow-up bead", body)
+	}
+}
+
+// TestHandleBeadReset_HappyPath_NoBody covers the v1 desktop call shape:
+// POST with no body → 200 + the post-reset bead. resetBeadFunc receives
+// an Opts with all zero values.
+func TestHandleBeadReset_HappyPath_NoBody(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	want := &store.Bead{ID: "spi-abc", Status: "open", Labels: []string{"type:task"}}
+	calls := withResetStubs(t, "", nil, want, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if calls.runs != 1 {
+		t.Fatalf("resetBeadFunc invocations = %d, want 1", calls.runs)
+	}
+	if calls.lastOpts.BeadID != "spi-abc" {
+		t.Errorf("opts.BeadID = %q, want spi-abc", calls.lastOpts.BeadID)
+	}
+	if calls.lastOpts.To != "" || calls.lastOpts.Force || calls.lastOpts.Set != nil {
+		t.Errorf("default opts not zero-valued: %+v", calls.lastOpts)
+	}
+	var got store.Bead
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.ID != want.ID || got.Status != want.Status {
+		t.Errorf("response bead = %+v, want %+v", got, want)
+	}
+}
+
+// TestHandleBeadReset_HappyPath_WithBody verifies the To/Force/Set fields
+// round-trip from the JSON body into resetBeadFunc's Opts argument.
+func TestHandleBeadReset_HappyPath_WithBody(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	want := &store.Bead{ID: "spi-abc", Status: "open"}
+	calls := withResetStubs(t, "", nil, want, nil)
+
+	body := strings.NewReader(`{"to":"implement","force":true,"set":{"implement.outputs.outcome":"verified"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if calls.lastOpts.To != "implement" {
+		t.Errorf("opts.To = %q, want implement", calls.lastOpts.To)
+	}
+	if !calls.lastOpts.Force {
+		t.Errorf("opts.Force = false, want true")
+	}
+	if got := calls.lastOpts.Set["implement.outputs.outcome"]; got != "verified" {
+		t.Errorf("opts.Set[implement.outputs.outcome] = %q, want verified", got)
+	}
+}
+
+// TestHandleBeadReset_InvalidJSONReturns400 keeps the standard JSON-error
+// behaviour for malformed bodies (matches /summon and /comments).
+func TestHandleBeadReset_InvalidJSONReturns400(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withResetStubs(t, "", nil, nil, nil)
+
+	body := strings.NewReader(`{not valid json`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if calls.runs != 0 {
+		t.Errorf("resetBeadFunc was invoked despite malformed JSON")
+	}
+}
+
+// TestHandleBeadReset_NotFoundReturns404 verifies that errors whose message
+// contains "not found" map to 404 — the desktop relies on this so a 404
+// surface matches a missing-bead state rather than a generic failure.
+func TestHandleBeadReset_NotFoundReturns404(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withResetStubs(t, "", nil, nil, errors.New("get bead spi-missing: not found"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-missing/reset", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-missing")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBeadReset_GenericErrorReturns500(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	withResetStubs(t, "", nil, nil, errors.New("dolt: connection reset"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStatusForResetError_MapsKnownMessages(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{nil, http.StatusOK},
+		{errors.New("get bead spi-1: not found"), http.StatusNotFound},
+		{errors.New("cannot rewind spi-1 to \"implement\": no graph state to rewind"), http.StatusConflict},
+		{errors.New("cannot rewind spi-1 to \"review\": step has not been reached yet"), http.StatusConflict},
+		{errors.New("dolt: connection reset"), http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		got := statusForResetError(tc.err)
+		if got != tc.want {
+			label := "<nil>"
+			if tc.err != nil {
+				label = tc.err.Error()
+			}
+			t.Errorf("statusForResetError(%q) = %d, want %d", label, got, tc.want)
+		}
 	}
 }

@@ -108,6 +108,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -121,6 +122,7 @@ import (
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
+	resetpkg "github.com/awell-health/spire/pkg/reset"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -180,6 +182,12 @@ func init() {
 	resetCmd.Flags().String("to", "", "Reset to a specific step")
 	resetCmd.Flags().Bool("force", false, "With --to, bypass the 'target must have been reached' precondition; pending steps outside the rewind set are advanced to completed. Example: --to review --force --set implement.outputs.outcome=verified")
 	resetCmd.Flags().StringArray("set", nil, "With --to, override a step's outputs (format: <step>.outputs.<key>=<value>; repeatable). Rejects '<step>.status=...'. Example: --set review.outputs.outcome=merge")
+
+	// Wire pkg/reset.RunFunc so the gateway (and any other in-process
+	// caller) can drive the soft-reset path through the same code that
+	// `spire reset` runs from the CLI. The CLI uses runResetSoft directly;
+	// the gateway dispatches via reset.ResetBead → RunFunc.
+	resetpkg.RunFunc = runResetSoft
 }
 
 func cmdReset(args []string) error {
@@ -229,8 +237,46 @@ func cmdReset(args []string) error {
 		return fmt.Errorf("--force and --set require --to <step>")
 	}
 
+	setMap := resetSetArgsToMap(setArgs)
+	_, err := runResetCore(context.Background(), resetpkg.Opts{
+		BeadID: beadID,
+		To:     toPhase,
+		Force:  force,
+		Set:    setMap,
+	}, hard)
+	return err
+}
+
+// runResetSoft is the in-process entry point for the non-hard reset path.
+// It is wired to resetpkg.RunFunc in init() so the gateway and any other
+// pkg/reset.ResetBead caller share the exact same kill-wizard → strip-labels
+// → unhook → walk-back sequence the CLI runs.
+func runResetSoft(ctx context.Context, opts resetpkg.Opts) (*store.Bead, error) {
+	return runResetCore(ctx, opts, false)
+}
+
+// runResetCore is the shared prelude + dispatch used by both the CLI's
+// `spire reset` (with or without `--hard`) and the gateway's POST /reset
+// endpoint. It owns the registry-PID lookup, SIGTERM → 5s grace → SIGKILL,
+// registry remove, label strip, step-child unhook, and the dispatch into
+// softResetV3 (when opts.To is set) or resetV3 (otherwise).
+//
+// When hard is true, opts.To/Force/Set are ignored — the hard path always
+// goes through resetV3(beadID, true, ...). The order of operations
+// (SIGTERM → wait → SIGKILL → registry remove → label strip → unhook
+// children → softResetV3/resetV3) is preserved verbatim from the original
+// cmdReset body.
+//
+// Returns the post-reset bead so callers (gateway, future tooling) can
+// re-render without a follow-up GET.
+func runResetCore(_ context.Context, opts resetpkg.Opts, hard bool) (*store.Bead, error) {
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
+	}
+
+	beadID := opts.BeadID
+	if beadID == "" {
+		return nil, fmt.Errorf("reset: bead ID required")
 	}
 
 	// --- 1. Kill wizard process if alive ---
@@ -285,7 +331,7 @@ func cmdReset(args []string) error {
 
 	bead, err := storeGetBead(beadID)
 	if err != nil {
-		return fmt.Errorf("get bead %s: %w", beadID, err)
+		return nil, fmt.Errorf("get bead %s: %w", beadID, err)
 	}
 
 	// Strip interrupted:* and needs-human labels — reset fully clears stuck state.
@@ -313,10 +359,61 @@ func cmdReset(args []string) error {
 	}
 
 	// All formulas are v3 step graphs.
-	if toPhase != "" {
-		return softResetV3(beadID, toPhase, wizardName, force, setArgs)
+	if !hard && opts.To != "" {
+		if err := softResetV3(beadID, opts.To, wizardName, opts.Force, resetMapToSetArgs(opts.Set)); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := resetV3(beadID, hard, wizardName, worktreePath); err != nil {
+			return nil, err
+		}
 	}
-	return resetV3(beadID, hard, wizardName, worktreePath)
+
+	// Re-fetch the post-reset bead so callers (the gateway, in particular)
+	// can return the updated state without a follow-up GET. The CLI ignores
+	// the return value; printing already happened inside softResetV3 / resetV3.
+	post, gerr := storeGetBead(beadID)
+	if gerr != nil {
+		return nil, fmt.Errorf("get bead %s after reset: %w", beadID, gerr)
+	}
+	return &post, nil
+}
+
+// resetSetArgsToMap converts the CLI's repeated `--set <step>.outputs.<key>=<value>`
+// tokens into the map[string]string shape Opts.Set expects.
+//
+// Each token is split at the FIRST '=' so values may legally contain '='
+// (matching parseSetFlag's behaviour). Tokens with no '=' map the whole
+// token to "" — parseSetFlag rejects them downstream with a clear error.
+func resetSetArgsToMap(setArgs []string) map[string]string {
+	if len(setArgs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(setArgs))
+	for _, s := range setArgs {
+		eq := strings.IndexByte(s, '=')
+		if eq < 0 {
+			out[s] = ""
+			continue
+		}
+		out[s[:eq]] = s[eq+1:]
+	}
+	return out
+}
+
+// resetMapToSetArgs reverses resetSetArgsToMap so runResetCore can hand
+// Opts.Set back to softResetV3 in the []string shape it already expects.
+func resetMapToSetArgs(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k, v := range m {
+		out = append(out, k+"="+v)
+	}
+	// Sort so test output is deterministic; parseSetFlag is order-invariant.
+	sort.Strings(out)
+	return out
 }
 
 // TODO(spi-tph8j): audit resummon, recover, close-advance, and summon resume

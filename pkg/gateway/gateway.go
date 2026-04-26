@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -35,6 +36,7 @@ import (
 	"github.com/awell-health/spire/pkg/metrics/report"
 	"github.com/awell-health/spire/pkg/olap"
 	"github.com/awell-health/spire/pkg/process"
+	"github.com/awell-health/spire/pkg/reset"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/summon"
 	"github.com/awell-health/spire/pkg/trace"
@@ -461,6 +463,11 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	// /api/v1/beads/{id}/ready
 	if strings.HasSuffix(id, "/ready") {
 		s.handleBeadReady(w, r, strings.TrimSuffix(id, "/ready"))
+		return
+	}
+	// /api/v1/beads/{id}/reset
+	if strings.HasSuffix(id, "/reset") {
+		s.handleBeadReset(w, r, strings.TrimSuffix(id, "/reset"))
 		return
 	}
 	switch r.Method {
@@ -1747,6 +1754,134 @@ func (s *Server) handleBeadReady(w http.ResponseWriter, r *http.Request, id stri
 		log.Printf("[gateway] ready audit comment for %s: %v", id, cerr)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready", "comment_id": commentID})
+}
+
+// resetBeadRequest is the optional body for POST /api/v1/beads/{id}/reset.
+// All fields are optional; v1 desktop sends an empty body and gets a default
+// soft reset. The fields mirror the CLI's --to / --force / --set flags.
+type resetBeadRequest struct {
+	To    string            `json:"to,omitempty"`
+	Force bool              `json:"force,omitempty"`
+	Set   map[string]string `json:"set,omitempty"`
+}
+
+// resetBeadFunc is the package-level seam through which handleBeadReset
+// dispatches into the soft-reset code path. cmd/spire wires reset.RunFunc
+// in its init(); pkg/reset.ResetBead is the canonical entry point. The
+// indirection exists so handler tests can swap in a recorder without
+// booting the CLI.
+var resetBeadFunc = reset.ResetBead
+
+// resetTowerModeFunc resolves the active tower so handleBeadReset can
+// short-circuit to 501 in TowerModeGateway. Held in a var so tests can
+// inject a deterministic mode without touching real config.
+var resetTowerModeFunc = func() (string, error) {
+	tc, err := config.ResolveTowerConfig()
+	if err != nil {
+		return "", err
+	}
+	if tc == nil {
+		return "", nil
+	}
+	return tc.Mode, nil
+}
+
+// handleBeadReset answers POST /api/v1/beads/{id}/reset — wraps the soft
+// form of `spire reset <id>` so the desktop can unsummon an active wizard
+// or send a ready bead back to open without dropping to the CLI. Mirrors
+// the CLI semantics exactly: SIGTERM the wizard PID (5s grace + SIGKILL),
+// remove the registry entry, strip interrupted:* / needs-human labels,
+// unhook step children, walk the bead back via softResetV3.
+//
+// Body (all fields optional):
+//
+//	{"to": "<step>", "force": <bool>, "set": {"<step>.outputs.<key>": "<value>"}}
+//
+// Empty body is accepted (and is what v1 desktop sends).
+//
+// Responses:
+//
+//	200 ApiBead JSON                — post-reset bead
+//	400 { error }                   — invalid JSON in body
+//	404 { error }                   — bead not found
+//	405                             — non-POST
+//	409 { error }                   — bead in an invalid state for reset
+//	500 { error }                   — unexpected reset failure
+//	501 { error }                   — TowerModeGateway (cluster-mode reset
+//	                                  is a follow-up bead; v1 desktop is
+//	                                  local-only)
+func (s *Server) handleBeadReset(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bead ID required"})
+		return
+	}
+
+	// Cluster-mode short-circuit. v1 desktop does not support reset against a
+	// remote cluster operator — the gateway can't reach the wizard pod
+	// directly to SIGTERM it. The cluster path is filed as a follow-up bead
+	// (spd-1lu5); returning 501 here is part of the acceptance criterion.
+	mode, err := resetTowerModeFunc()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if mode == config.TowerModeGateway {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{
+			"error": "reset not supported in cluster mode yet — see follow-up bead",
+		})
+		return
+	}
+
+	var body resetBeadRequest
+	// Empty body is OK (v1 desktop sends no body) — only reject malformed JSON.
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil &&
+			!errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+	}
+
+	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	bead, err := resetBeadFunc(r.Context(), reset.Opts{
+		BeadID: id,
+		To:     body.To,
+		Force:  body.Force,
+		Set:    body.Set,
+	})
+	if err != nil {
+		writeJSON(w, statusForResetError(err), map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, bead)
+}
+
+// statusForResetError maps a soft-reset error to the HTTP status the
+// gateway should return. "Not found" becomes 404; recognised
+// invalid-state errors (cannot rewind, target not reached, no graph
+// state) become 409; anything else becomes 500.
+func statusForResetError(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "not found") {
+		return http.StatusNotFound
+	}
+	if strings.Contains(msg, "cannot rewind") ||
+		strings.Contains(msg, "no graph state") ||
+		strings.Contains(msg, "not reached") {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 // effectiveDataDir returns dataDir if set, otherwise falls back to BEADS_DIR env.
