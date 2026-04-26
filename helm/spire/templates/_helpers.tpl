@@ -65,6 +65,56 @@ keeps the three features mounting the same Secret object.
 {{- end -}}
 
 {{/*
+spire.gcpAuthConfigured — returns "true" when at least one GCP auth
+path is configured for backup/bundleStore consumers. Two acceptable
+paths today:
+  1. `.Values.gcp.serviceAccountJson` non-empty — chart-managed Secret.
+  2. `.Values.gcp.secretName` non-empty — externally-managed Secret
+     (sealed-secrets, external-secrets-operator, Workload Identity
+     placeholder, etc.). The consumer mounts this Secret by name; the
+     chart does NOT render its contents.
+Empty string when neither is set. Read by `spire.validateBackup` and by
+the dolt/steward templates so the credential volume renders for both
+auth shapes.
+*/}}
+{{- define "spire.gcpAuthConfigured" -}}
+{{- if or .Values.gcp.serviceAccountJson .Values.gcp.secretName -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+spire.validateBackup — fail-fast validation for cluster-as-truth backup
+config. Called from NOTES.txt so it runs unconditionally during
+`helm template` and `helm install`/`helm upgrade`. Fires two checks
+in sequence when `.Values.backup.enabled` is true:
+
+  1. `.Values.backup.gcs.bucket` empty → fail. Without a bucket the
+     chart would otherwise render `BACKUP_URL="gs:///"` in the dolt-init
+     ConfigMap, which `dolt backup add` accepts but `dolt backup sync`
+     fails on at runtime — the deployment looks healthy until the first
+     backup attempt.
+  2. No GCP auth path configured → fail. Either `gcp.serviceAccountJson`
+     (inline JSON, materialized into the chart-rendered Secret) or
+     `gcp.secretName` (externally-managed Secret name, used when an
+     ESO/sealed-secrets/Workload-Identity flow injects creds) must be
+     non-empty. Without one, the dolt pod can't authenticate to GCS.
+
+Disposable/dev clusters that explicitly do not need disaster recovery
+opt out via `--set backup.enabled=false`; that bypasses both checks.
+The failure messages link to the install-ritual sections of
+docs/cluster-deployment.md and k8s/DEPLOY.md so users can self-serve.
+*/}}
+{{- define "spire.validateBackup" -}}
+{{- if .Values.backup.enabled -}}
+  {{- if not .Values.backup.gcs.bucket -}}
+{{- fail (printf "%s\n  - Set --set backup.gcs.bucket=<bucket-name> (the bucket MUST pre-exist).\n  - Or --set backup.enabled=false ONLY for disposable/dev clusters that do not need DR.\n  See docs/cluster-deployment.md (Backup bucket setup) and k8s/DEPLOY.md §1 (Prerequisites)." "backup.enabled=true requires backup.gcs.bucket — cluster-as-truth deployments use GCS as the disaster-recovery substrate.") -}}
+  {{- end -}}
+  {{- if not (include "spire.gcpAuthConfigured" .) -}}
+{{- fail (printf "%s\n  - Inline JSON: --set-file gcp.serviceAccountJson=<path-to-sa.json>.\n  - External Secret: --set gcp.secretName=<existing-secret-name> (sealed-secrets, external-secrets-operator, or a Workload-Identity placeholder Secret).\n  - Or --set backup.enabled=false ONLY for disposable/dev clusters that do not need DR.\n  See docs/cluster-deployment.md (GCP auth) and k8s/DEPLOY.md §1 (Prerequisites)." "backup.enabled=true requires a GCP auth path — neither gcp.serviceAccountJson nor gcp.secretName is set.") -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 spire.additionalUsersSecretName — name of the chart-managed Secret that
 holds inline passwords (from `entry.password`) for dolt.additionalUsers.
 Kept separate from `spire.secretName` so external-secret setups don't

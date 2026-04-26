@@ -1,3 +1,9 @@
+{{- /* Fail the render fast if backup.enabled=true is missing required
+     bucket / GCP auth config. NOTES.txt is rendered unconditionally on
+     every `helm template` / `helm install` / `helm upgrade`, so calling
+     the validator here guarantees the failure surfaces before any
+     manifest is applied to the cluster. */ -}}
+{{- include "spire.validateBackup" . -}}
 Spire has been deployed to namespace "{{ .Values.namespace }}".
 
 Next steps:

@@ -49,19 +49,112 @@ The operator does not yet derive them automatically from the tower's
 
 - Helm 3.x: `brew install helm`
 - A Kubernetes cluster (minikube, EKS, GKE, etc.)
-- A DoltHub remote (create with `spire tower create`)
+- A DoltHub remote (create with `spire tower create`) — used as the **first-install seed** in cluster-as-truth deployments. After cutover the cluster Dolt is the write authority; DoltHub is not a bidirectional mirror.
+- A **GCS backup bucket** for disaster recovery — see [Backup bucket setup](#backup-bucket-setup) below. `backup.enabled=true` is the chart default; install will fail fast without a bucket.
+- A **GCP service-account JSON** with `roles/storage.objectAdmin` on the backup bucket (and on the bundle bucket if `bundleStore.backend=gcs`), OR a Workload-Identity binding plus an external Secret pinned via `gcp.secretName`. See [GCP auth](#gcp-auth) below.
+
+---
+
+## Backup bucket setup
+
+Cluster-as-truth deployments use GCS as the disaster-recovery substrate. Backup is **on by default** in the chart (`backup.enabled=true`); the install fails fast if the bucket or auth path is missing. This section is a required pre-install step, not an optional appendix.
+
+### 1. Create the bucket
+
+```bash
+PROJECT_ID=<your-gcp-project>
+BACKUP_BUCKET=$PROJECT_ID-spire-backups
+
+gcloud storage buckets create gs://$BACKUP_BUCKET \
+  --project=$PROJECT_ID \
+  --location=us-central1 \
+  --default-storage-class=NEARLINE     # Nearline/Coldline suit dolt backups
+```
+
+Use a separate bucket from `bundleStore.gcs.bucket` — backup objects sit in Nearline/Coldline; bundles are short-lived and need Standard.
+
+### 2. Configure retention
+
+The chart records `backup.retentionDays` for documentation only. Apply a GCS lifecycle rule out-of-band so old backups age out automatically:
+
+```bash
+cat > /tmp/lifecycle.json <<EOF
+{ "lifecycle": { "rule": [
+  { "action": { "type": "Delete" },
+    "condition": { "age": 30 } }
+] } }
+EOF
+gsutil lifecycle set /tmp/lifecycle.json gs://$BACKUP_BUCKET
+```
+
+### 3. Wire the bucket into your values overlay
+
+```yaml
+backup:
+  enabled: true                    # chart default; opt out only for disposable/dev
+  gcs:
+    bucket: $PROJECT_ID-spire-backups
+    prefix: prod                   # optional per-tower namespace inside the bucket
+```
+
+### Opt-out (disposable/dev clusters only)
+
+Disposable/dev clusters that explicitly do not need DR can opt out:
+
+```yaml
+backup:
+  enabled: false
+```
+
+This is the only documented reason to disable backup. Production installs MUST keep it on.
+
+### Production readiness
+
+Backup default-on means the CronJob runs once a day and archives to GCS. **It does not prove the restore path is healthy.** Production cutover is gated on the restore drill (bead `spi-i7k1ag.3`); do not announce DR readiness based on backup-enabled alone.
+
+---
+
+## GCP auth
+
+The dolt backup CronJob and the BundleStore GCS backend share one
+service-account credential mounted via the chart's `gcp.*` block. Two
+auth paths are supported and the chart's `spire.validateBackup` helper
+fails the render at install time if neither is configured while
+`backup.enabled=true`:
+
+1. **Inline JSON** (`gcp.serviceAccountJson`) — pass with `--set-file
+   gcp.serviceAccountJson=<path-to-sa.json>`. Helm base64-encodes the
+   file into a chart-rendered Secret named `<release>-gcp-sa`. Use this
+   for minikube and any environment where you control the SA key file.
+
+2. **External Secret** (`gcp.secretName`) — set
+   `--set gcp.secretName=<existing-secret-name>` and provision the
+   Secret out-of-band via sealed-secrets, external-secrets-operator, or
+   a Workload-Identity placeholder Secret. Use this for GKE in
+   production where SA keys are managed by an external secret store and
+   the runtime identity comes through Workload Identity.
+
+The dolt pod mounts the resolved Secret at `gcp.mountPath` and exports
+`GOOGLE_APPLICATION_CREDENTIALS` so `dolt backup sync` can authenticate
+to GCS at the configured cron cadence.
 
 ---
 
 ## Quick start (minikube)
 
-For local development and testing:
+For local development and testing. Two paths:
+
+- **Disposable cluster (no DR needed):** opt out of backup with `--set
+  backup.enabled=false`. This is the only documented reason to disable
+  backup; production installs MUST keep it on.
+- **Cluster-as-truth dogfood:** keep the chart default
+  `backup.enabled=true` and supply a real GCS bucket + SA JSON.
 
 ```bash
 # Start minikube if not running
 minikube start --memory=4096 --cpus=2
 
-# Install Spire with local images
+# Install Spire with local images (disposable-cluster opt-out)
 helm install spire ./helm/spire \
   --namespace spire \
   --create-namespace \
@@ -77,8 +170,15 @@ helm install spire ./helm/spire \
   --set dolthub.userName=your-dolthub-username \
   --set dolthub.user=dolt_remote \
   --set dolthub.password=<strong-remotesapi-password> \
-  --set anthropic.apiKey=sk-ant-...
+  --set anthropic.apiKey=sk-ant-... \
+  --set backup.enabled=false
 ```
+
+For a backup-enabled minikube install, follow [Backup bucket
+setup](#backup-bucket-setup) first, then add `--set
+backup.gcs.bucket=<bucket>` and `--set-file
+gcp.serviceAccountJson=<path>` to the command above (and drop the
+`--set backup.enabled=false` line).
 
 To use the demo build script that builds images first:
 
@@ -145,6 +245,15 @@ beads:
   prefix: spi
   database: spi
 
+# Cluster-as-truth disaster-recovery (chart default backup.enabled=true).
+# helm install will fail fast without bucket+auth — see Backup bucket setup
+# above for the bucket creation + GCP auth steps.
+backup:
+  enabled: true
+  gcs:
+    bucket: your-org-spire-backups
+    prefix: prod
+
 # Define guilds — one WizardGuild CR per repo. `name` is the guild shortname
 # and prefixes every wizard pod spawned under it (`<name>-wizard-<bead>`).
 guilds:
@@ -169,8 +278,15 @@ guilds:
 helm install spire ./helm/spire \
   --namespace spire \
   --create-namespace \
-  --values my-values.yaml
+  --values my-values.yaml \
+  --set-file gcp.serviceAccountJson=$HOME/.gcp/spire-sa.json
 ```
+
+`gcp.serviceAccountJson` is required when `backup.enabled=true` (the
+chart default). Pass it with `--set-file` so the SA JSON never lands in
+your values file. To use Workload Identity / external-secrets instead,
+swap `--set-file gcp.serviceAccountJson=...` for `--set
+gcp.secretName=<existing-secret>`. See [GCP auth](#gcp-auth) above.
 
 Watch the rollout:
 

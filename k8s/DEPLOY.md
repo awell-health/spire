@@ -27,15 +27,55 @@ Universal:
 - **docker** (for image builds; minikube only)
 - **A DoltHub credential** with read access to your tower's repo (initial seed; this is the only time DoltHub HTTPS auth is required from the cluster)
 - **An Anthropic OAuth token** (Max subscription) or **API key** for managed agents
-- **A GCP service-account JSON** with `roles/storage.objectAdmin` on:
-  - The bundle store bucket (apprentice→wizard git-bundle artifacts)
-  - The dolt-backup bucket (if `backup.enabled=true`)
+- **A GCS bundle bucket** for apprentice→wizard git-bundle artifacts (`bundleStore.gcs.bucket`)
+- **A GCS dolt-backup bucket** for the cluster-as-truth disaster-recovery substrate (`backup.gcs.bucket`). The chart defaults `backup.enabled=true` and Helm will fail the render if the bucket is missing; opting out is **only** appropriate for disposable/dev clusters that explicitly do not need DR. See [§1.1 Backup bucket](#11-backup-bucket-cluster-as-truth-dr) below.
+- **A GCP service-account JSON** with `roles/storage.objectAdmin` on BOTH buckets above. Workload-Identity GKE installs may instead pin `gcp.secretName` to an externally-managed Secret — both auth paths are accepted by the chart's `spire.validateBackup` helper.
 - **A GitHub fine-grained PAT** with `contents:write` on the workspace repo (wizard pods use this to push merge commits)
 
 Track-specific:
 
 - **Minikube**: minikube CLI, ~12 GB free disk, ~10 GB RAM
 - **GKE**: a project with Workload Identity enabled, Artifact Registry repo for images, an Ingress-capable LB or `cert-manager`
+
+### 1.1 Backup bucket (cluster-as-truth DR)
+
+In the cluster-as-truth topology the cluster Dolt database is the only writable copy of the bead graph — DoltHub is not a bidirectional mirror. GCS is the disaster-recovery substrate and the chart defaults `backup.enabled=true`. The dolt-init script registers a `dolt backup` remote on first boot and a CronJob runs `dolt backup sync` on the configured cadence (default daily 03:00 UTC).
+
+Before `helm install`:
+
+```bash
+PROJECT_ID=<your-gcp-project>
+BACKUP_BUCKET=$PROJECT_ID-spire-backups
+
+# 1. Create the bucket (Nearline/Coldline storage class — backups are
+#    cold data; do NOT reuse the bundle bucket which needs Standard).
+gcloud storage buckets create gs://$BACKUP_BUCKET \
+  --project=$PROJECT_ID \
+  --location=us-central1 \
+  --default-storage-class=NEARLINE
+
+# 2. Apply a lifecycle rule so old backups age out — `backup.retentionDays`
+#    in values.yaml is documentation-only; this is what enforces it.
+cat > /tmp/lifecycle.json <<EOF
+{ "lifecycle": { "rule": [
+  { "action": { "type": "Delete" },
+    "condition": { "age": 30 } }
+] } }
+EOF
+gsutil lifecycle set /tmp/lifecycle.json gs://$BACKUP_BUCKET
+
+# 3. Grant the Spire service account roles/storage.objectAdmin on the bucket
+#    (or set up Workload Identity — see §4.2 for the GKE flow).
+gcloud storage buckets add-iam-policy-binding gs://$BACKUP_BUCKET \
+  --member="serviceAccount:<sa>@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role=roles/storage.objectAdmin
+```
+
+Then wire `backup.gcs.bucket` into your local values overlay (see §2). `helm install` fails fast at template time if the bucket or auth path is missing — the failure points back here.
+
+**Backup-enabled is not the same as DR-ready.** The restore drill (bead `spi-i7k1ag.3`) must be exercised before announcing production cutover. Until that bead lands, treat backup as "archival is happening" not "we know we can recover."
+
+To opt out (disposable/dev cluster only), set `--set backup.enabled=false`. This is the only documented reason to disable backup; production installs MUST keep it on.
 
 ---
 
@@ -564,7 +604,6 @@ All filed under epic [spi-i7k1ag — DoltHub becomes archive-only](https://). Se
 | **spi-6f6ky8** | P1 | Nothing prevents a laptop in gateway-mode from running `spire push` | Operational discipline — don't run `spire push` against a gateway-mode tower |
 | **spi-hr3tcv** | P2 | Auto-push call sites in pkg/dolt, pkg/store, pkg/syncer not gated by mode | Same as above — discipline + spi-6f6ky8 |
 | **spi-43q7hp** | P2 | `spire tower list` shows `kind=dolthub remote=local` for gateway-mode towers | Cosmetic only; identify gateway-mode towers by the `Mode=gateway` line in `~/.spire/towers/<name>.json` |
-| **spi-6az9s7** | P3 | `backup.enabled` defaults to false in chart | Set explicitly in your overlay (§2 / §4.3) |
 
 When a bead closes, update the corresponding row above and remove the workaround text.
 

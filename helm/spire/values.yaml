@@ -595,15 +595,29 @@ bundleStore:
 
 ## @section Dolt backups (GCS)
 ##
-## Phase-1 disaster-recovery path: a CronJob that runs `dolt backup sync`
-## against a GCS bucket. The backup target is registered once by the
-## dolt-init script (`dolt backup add <name> gs://...`) so every install
-## is self-contained. Retention (30-day deletion) is enforced by a GCS
-## bucket lifecycle rule, NOT by the chart — Helm has no native way to
-## reconcile GCS bucket policies. Configure the lifecycle rule once on
-## the bucket, out-of-band, e.g.:
+## Cluster-as-truth disaster-recovery substrate: a CronJob that runs
+## `dolt backup sync` against a GCS bucket. The backup target is
+## registered once by the dolt-init script (`dolt backup add <name>
+## gs://...`) so every install is self-contained. Retention (30-day
+## deletion) is enforced by a GCS bucket lifecycle rule, NOT by the
+## chart — Helm has no native way to reconcile GCS bucket policies.
+## Configure the lifecycle rule once on the bucket, out-of-band, e.g.:
 ##   gsutil lifecycle set lifecycle.json gs://<bucket>
 ## with a rule that deletes objects older than `retentionDays` days.
+##
+## Default-on rationale: in the cluster-as-truth topology, the cluster
+## Dolt database is the single write authority — DoltHub is no longer a
+## bidirectional mirror — so GCS archival is the only disaster-recovery
+## path. Defaulting `backup.enabled=true` means a fresh install is DR-ready
+## as soon as the operator supplies a bucket. The chart's
+## `spire.validateBackup` helper (see _helpers.tpl) fails the render at
+## install time when `backup.enabled=true` and either `backup.gcs.bucket`
+## is empty or no GCP auth path is configured (`gcp.serviceAccountJson`
+## inline, or `gcp.secretName` referencing an externally-managed Secret).
+## Disposable/dev clusters that explicitly do not need DR can opt out
+## with `--set backup.enabled=false`; that is the only documented reason
+## to disable it. Backup is not production-ready until the restore drill
+## (spi-i7k1ag.3) is exercised — see docs/cluster-deployment.md.
 ##
 ## Credentials rotation: the GCP service-account JSON is mounted into
 ## the dolt pod as GOOGLE_APPLICATION_CREDENTIALS. The credential itself
@@ -612,10 +626,10 @@ bundleStore:
 ## Rotating the JSON requires re-running `helm upgrade --set-file
 ## gcp.serviceAccountJson=<new>` and restarting the dolt StatefulSet.
 
-## @param backup.enabled Whether to render the GCS backup resources (CronJob, RBAC, dolt-side volume/env). Off by default — Phase-1 opt-in. The GCP SA credential used for auth comes from the shared `gcp.serviceAccountJson` top-level value; ensure it is set when `backup.enabled=true`.
+## @param backup.enabled Whether to render the GCS backup resources (CronJob, RBAC, dolt-side volume/env). Defaults to true — cluster-as-truth deployments use GCS as the disaster-recovery substrate (DoltHub is no longer a bidirectional mirror in this topology). The chart fails fast at render time when `backup.enabled=true` without a bucket or a GCP auth path. Set to false ONLY for disposable/dev clusters that do not need DR.
 ## @param backup.schedule Cron expression for the backup CronJob. Default is daily at 03:00 UTC.
 ## @param backup.remoteName Name of the dolt backup remote registered by dolt-init (`dolt backup add <name> <url>`). Must match what the CronJob syncs.
-## @param backup.gcs.bucket GCS bucket name (without `gs://`). Required when backup.enabled=true. A separate bucket from bundleStore.gcs.bucket is recommended — backups suit Nearline/Coldline storage classes; bundles need Standard due to their short-lived delete cycle.
+## @param backup.gcs.bucket GCS bucket name (without `gs://`). Required when backup.enabled=true — Helm fails fast at render time if empty. A separate bucket from bundleStore.gcs.bucket is recommended — backups suit Nearline/Coldline storage classes; bundles need Standard due to their short-lived delete cycle.
 ## @param backup.gcs.prefix Optional path prefix inside the bucket. Final URL is `gs://<bucket>/<prefix>`. Empty = bucket root.
 ## @param backup.retentionDays Documentation-only. Enforced by a GCS bucket lifecycle rule configured out-of-band — the chart does not manage it.
 ## @param backup.resources.requests.cpu CronJob trigger-container CPU request (tiny kubectl-exec workload).
@@ -623,11 +637,22 @@ bundleStore:
 ## @param backup.resources.limits.cpu CronJob trigger-container CPU limit.
 ## @param backup.resources.limits.memory CronJob trigger-container memory limit.
 backup:
-  enabled: false
+  # Default true — cluster-as-truth deployments must have a DR substrate.
+  # Helm render fails fast when this is true and `backup.gcs.bucket` is
+  # empty or no GCP auth path is configured. The only documented reason
+  # to set this to false is a disposable/dev cluster that does not need
+  # disaster recovery.
+  enabled: true
   schedule: "0 3 * * *"   # daily 03:00 UTC
   remoteName: "gcs-backup"
   gcs:
-    bucket: ""            # e.g. "awell-spire-backups" — separate from bundleStore.gcs.bucket (Nearline/Coldline vs Standard)
+    # Required when backup.enabled=true. Empty bucket triggers a
+    # render-time failure from `spire.validateBackup` rather than
+    # silently emitting `BACKUP_URL="gs:///"`. A separate bucket from
+    # bundleStore.gcs.bucket is recommended — backups suit
+    # Nearline/Coldline storage classes; bundles need Standard due to
+    # their short-lived delete cycle. Example: "awell-spire-backups".
+    bucket: ""
     prefix: ""            # e.g. "prod/spi" → gs://bucket/prefix
   # Retention is enforced by a GCS bucket lifecycle rule. The chart does
   # NOT manage this — configure it out-of-band:

@@ -220,6 +220,43 @@ bundleStore:
     # bucket fronts multiple Spire installs.
     prefix: ""
 
+## --- Dolt backup (GCS, cluster-as-truth DR substrate) ---
+# Production deployments MUST run with `backup.enabled=true`. In the
+# cluster-as-truth topology the cluster Dolt database is the single
+# write authority — DoltHub is no longer a bidirectional mirror — so
+# the GCS backup CronJob is the only disaster-recovery path. Set
+# explicitly here (matches the chart default) so the production
+# expectation is legible at the overlay level rather than relying on
+# the values.yaml default.
+#
+# Operators MUST also supply `backup.gcs.bucket` (a separate bucket
+# from `bundleStore.gcs.bucket` is recommended — backups suit
+# Nearline/Coldline storage classes; bundles need Standard) and a GCP
+# auth path. Workload-Identity GKE clusters typically pin
+# `gcp.serviceAccountJson` to the placeholder below, but the same SA
+# binding (`roles/storage.objectAdmin`) must cover the backup bucket
+# in addition to the bundle bucket — see "Workload Identity
+# prerequisites" at the top of this file.
+#
+# Helm fails the render fast when `backup.enabled=true` is left without
+# `backup.gcs.bucket` or any GCP auth path. The only documented reason
+# to flip this off is a disposable/dev cluster that explicitly does not
+# need DR. Backup readiness is not the same as DR readiness — the
+# restore drill (see spi-i7k1ag.3) must be exercised separately before
+# announcing production cutover.
+backup:
+  enabled: true
+  gcs:
+    # Replace PROJECT_ID with your GCP project. Bucket MUST pre-exist
+    # before `helm install` — the chart does not create it. A separate
+    # bucket from `bundleStore.gcs.bucket` is recommended so backup
+    # objects can sit in Nearline/Coldline storage class without
+    # colliding with the short-lived bundle delete cycle. Configure a
+    # bucket lifecycle rule to enforce `backup.retentionDays`:
+    #   gsutil lifecycle set lifecycle.json gs://<bucket>
+    bucket: PROJECT_ID-spire-backups
+    prefix: prod
+
 ## --- GCP credential ---
 # In a Workload-Identity-only world this would be empty. Today the chart
 # enforces a non-empty value whenever bundleStore.backend=gcs (see

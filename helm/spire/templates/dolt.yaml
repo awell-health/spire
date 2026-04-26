@@ -102,12 +102,15 @@ spec:
                   name: {{ .Release.Name }}-dolthub-creds
                   key: key-id
             {{- end }}
-            {{- if and .Values.backup.enabled .Values.gcp.serviceAccountJson }}
+            {{- if and .Values.backup.enabled (include "spire.gcpAuthConfigured" .) }}
             # Points dolt's GCS client at the mounted service-account
             # JSON so `dolt backup sync <gcs-remote>` can authenticate.
             # The SA file and path come from the shared gcp.* top-level
             # values — same Secret is consumed by BundleStore's steward
-            # path.
+            # path. Renders for both auth shapes (inline JSON via
+            # `gcp.serviceAccountJson` and externally-managed Secret via
+            # `gcp.secretName`); `spire.validateBackup` guarantees one
+            # of them is set whenever `backup.enabled=true`.
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: {{ .Values.gcp.mountPath }}/{{ .Values.gcp.keyName }}
             {{- end }}
@@ -125,7 +128,7 @@ spec:
               mountPath: /creds-input
               readOnly: true
             {{- end }}
-            {{- if and .Values.backup.enabled .Values.gcp.serviceAccountJson }}
+            {{- if and .Values.backup.enabled (include "spire.gcpAuthConfigured" .) }}
             - name: gcp-sa
               mountPath: {{ .Values.gcp.mountPath }}
               readOnly: true
@@ -164,7 +167,7 @@ spec:
               - key: key-value
                 path: key-value
         {{- end }}
-        {{- if and .Values.backup.enabled .Values.gcp.serviceAccountJson }}
+        {{- if and .Values.backup.enabled (include "spire.gcpAuthConfigured" .) }}
         - name: gcp-sa
           secret:
             secretName: {{ include "spire.gcpSecretName" . }}
@@ -286,11 +289,14 @@ data:
       dolt remote add origin "https://doltremoteapi.dolthub.com/{{ .Values.dolthub.remoteUrl }}"
     fi
 
-    {{- if .Values.backup.enabled }}
+    {{- if and .Values.backup.enabled .Values.backup.gcs.bucket }}
     # Register the GCS backup remote (idempotent — `dolt backup add`
     # errors harmlessly if the target already exists, so we swallow it).
     # `dolt backup sync` (run later by the spire-dolt-backup CronJob)
-    # resolves this name to the gs:// URL.
+    # resolves this name to the gs:// URL. Guarded on a non-empty
+    # bucket so an opt-out install or a misconfigured one never emits
+    # `BACKUP_URL="gs:///"`; `spire.validateBackup` already fails the
+    # render before we get here in the misconfigured case.
     cd "$DB_DIR"
     BACKUP_URL="gs://{{ .Values.backup.gcs.bucket }}/{{ .Values.backup.gcs.prefix }}"
     echo "[dolt-init] registering backup remote {{ .Values.backup.remoteName }} -> $BACKUP_URL"
