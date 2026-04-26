@@ -698,24 +698,7 @@ func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
 	if a, err := board.RosterFromK8s(timeout); err == nil && len(a) > 0 {
 		agents = a
 	} else {
-		rosterDeps := board.RosterDeps{
-			LoadWizardRegistry: func() []board.LocalAgent {
-				return agent.LoadRegistry().Wizards
-			},
-			SaveWizardRegistry: func(agents []board.LocalAgent) {
-				agent.SaveRegistry(agent.Registry{Wizards: agents})
-			},
-			CleanDeadWizards: func(agents []board.LocalAgent) []board.LocalAgent {
-				var live []board.LocalAgent
-				for _, w := range agents {
-					if w.PID > 0 && process.ProcessAlive(w.PID) {
-						live = append(live, w)
-					}
-				}
-				return live
-			},
-			ProcessAlive: dolt.ProcessAlive,
-		}
+		rosterDeps := defaultRosterDeps()
 		if local := board.RosterFromLocalWizards(timeout, rosterDeps); len(local) > 0 {
 			agents = local
 		} else {
@@ -726,6 +709,39 @@ func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
 	agents = board.EnrichRosterAgents(agents)
 	summary := board.BuildSummary(agents, timeout)
 	writeJSON(w, http.StatusOK, summary)
+}
+
+// defaultRosterDeps builds the RosterDeps used by handleRoster's local-native
+// fallback. Wires the on-disk wizard registry (via pkg/agent) and the
+// process-alive probe so RosterFromLocalWizards can surface in-flight wizards.
+// Extracted from handleRoster so the closures are unit-testable against a
+// temp-dir-backed registry without booting an HTTP handler.
+func defaultRosterDeps() board.RosterDeps {
+	return board.RosterDeps{
+		LoadWizardRegistry: func() []board.LocalAgent {
+			return agent.LoadRegistry().Wizards
+		},
+		SaveWizardRegistry: func(agents []board.LocalAgent) {
+			agent.SaveRegistry(agent.Registry{Wizards: agents})
+		},
+		CleanDeadWizards: func(agents []board.LocalAgent) []board.LocalAgent {
+			return cleanDeadLocalWizards(agents, process.ProcessAlive)
+		},
+		ProcessAlive: dolt.ProcessAlive,
+	}
+}
+
+// cleanDeadLocalWizards returns the subset of agents whose PID is alive
+// per pidAlive. Entries with PID <= 0 are also dropped. Extracted so the
+// filter logic is unit-testable with a fake pidAlive probe.
+func cleanDeadLocalWizards(agents []board.LocalAgent, pidAlive func(int) bool) []board.LocalAgent {
+	var live []board.LocalAgent
+	for _, w := range agents {
+		if w.PID > 0 && pidAlive(w.PID) {
+			live = append(live, w)
+		}
+	}
+	return live
 }
 
 // --------------------------------------------------------------------------
