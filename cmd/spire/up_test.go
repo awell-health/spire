@@ -16,11 +16,61 @@ func TestParseUpArgs_DefaultsStartSteward(t *testing.T) {
 	if opts.interval != "2m" {
 		t.Errorf("interval = %q, want %q", opts.interval, "2m")
 	}
+	if opts.stewardInterval != "10s" {
+		t.Errorf("stewardInterval = %q, want %q", opts.stewardInterval, "10s")
+	}
 	if opts.backendName != "" {
 		t.Errorf("backendName = %q, want empty", opts.backendName)
 	}
 	if opts.metricsPort != "" {
 		t.Errorf("metricsPort = %q, want empty", opts.metricsPort)
+	}
+}
+
+func TestParseUpArgs_StewardIntervalOverride(t *testing.T) {
+	opts, err := parseUpArgs([]string{"--steward-interval", "5s"})
+	if err != nil {
+		t.Fatalf("parseUpArgs --steward-interval 5s: %v", err)
+	}
+	if opts.stewardInterval != "5s" {
+		t.Errorf("stewardInterval = %q, want %q", opts.stewardInterval, "5s")
+	}
+	// Daemon interval default must remain unchanged.
+	if opts.interval != "2m" {
+		t.Errorf("interval = %q, want %q (unchanged when only --steward-interval is set)", opts.interval, "2m")
+	}
+}
+
+func TestParseUpArgs_DaemonIntervalDoesNotAffectStewardInterval(t *testing.T) {
+	opts, err := parseUpArgs([]string{"--interval", "5m"})
+	if err != nil {
+		t.Fatalf("parseUpArgs --interval 5m: %v", err)
+	}
+	if opts.interval != "5m" {
+		t.Errorf("interval = %q, want %q", opts.interval, "5m")
+	}
+	// The two intervals are independent: daemon override leaves steward at default.
+	if opts.stewardInterval != "10s" {
+		t.Errorf("stewardInterval = %q, want %q (must remain at default when only --interval is set)", opts.stewardInterval, "10s")
+	}
+}
+
+func TestParseUpArgs_BothIntervals(t *testing.T) {
+	opts, err := parseUpArgs([]string{"--interval", "5m", "--steward-interval", "30s"})
+	if err != nil {
+		t.Fatalf("parseUpArgs --interval 5m --steward-interval 30s: %v", err)
+	}
+	if opts.interval != "5m" {
+		t.Errorf("interval = %q, want %q", opts.interval, "5m")
+	}
+	if opts.stewardInterval != "30s" {
+		t.Errorf("stewardInterval = %q, want %q", opts.stewardInterval, "30s")
+	}
+}
+
+func TestParseUpArgs_StewardIntervalMissingValue(t *testing.T) {
+	if _, err := parseUpArgs([]string{"--steward-interval"}); err == nil {
+		t.Errorf("--steward-interval with no value: expected error, got nil")
 	}
 }
 
@@ -88,13 +138,16 @@ func TestParseUpArgs_UnknownFlagAdvertisesNoSteward(t *testing.T) {
 	if !strings.Contains(msg, "--no-steward") {
 		t.Errorf("usage string should advertise --no-steward, got: %q", msg)
 	}
+	if !strings.Contains(msg, "--steward-interval") {
+		t.Errorf("usage string should advertise --steward-interval, got: %q", msg)
+	}
 	if strings.Contains(msg, "[--steward]") {
 		t.Errorf("usage string should not advertise the deprecated --steward, got: %q", msg)
 	}
 }
 
 func TestParseUpArgs_MissingValues(t *testing.T) {
-	cases := []string{"--interval", "--backend", "--metrics-port"}
+	cases := []string{"--interval", "--steward-interval", "--backend", "--metrics-port"}
 	for _, flag := range cases {
 		if _, err := parseUpArgs([]string{flag}); err == nil {
 			t.Errorf("%s with no value: expected error, got nil", flag)

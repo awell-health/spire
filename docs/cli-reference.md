@@ -527,10 +527,15 @@ spire pull [url] [--force]
 Start the local control plane: dolt server, sync daemon, and steward.
 
 ```bash
-spire up [--interval 2m] [--no-steward] [--backend process|docker|k8s]
+spire up [--interval 2m] [--steward-interval 10s] [--no-steward] [--backend process|docker|k8s]
 ```
 
-Pass `--no-steward` to start dolt + daemon only (sync-only / debug mode). The deprecated `--steward` flag is still accepted as a no-op for back-compat — the steward starts by default now.
+The daemon and steward have independent intervals:
+
+- `--interval` (default `2m`) — daemon cadence; controls dolt push/pull, Linear sync, webhook processing, and OLAP ETL. Heavy work; raising it is fine, lowering it is wasteful.
+- `--steward-interval` (default `10s`) — steward cadence; controls ready-bead dispatch, hooked sweep, orphan cleanup, and stale detection. Cheap local work; the default keeps ready→spawn latency under ~15s.
+
+Pass `--no-steward` to start dolt + daemon only (sync-only / debug mode). The deprecated `--steward` flag is still accepted as a no-op for back-compat — the steward starts by default now. Scripts that pass only `--interval` keep working: that flag now affects the daemon alone, and the steward gets its 10s default.
 
 #### `spire down`
 

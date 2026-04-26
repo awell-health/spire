@@ -245,6 +245,8 @@ spire status          # check what's running
 
 `spire up` runs the full local control plane by default — dolt for the database, the sync daemon for Linear/webhook traffic, and the steward for automatic assignment and lifecycle maintenance. Pass `--no-steward` to skip the steward when you only need sync infrastructure (debugging, or when another machine in the tower owns assignment). Process mode is the default execution backend for local agents, and `spire summon` remains available for manual capacity alongside steward-driven assignment.
 
+The daemon and steward have independent intervals. `--interval` controls the daemon (heavy: dolt push/pull, Linear sync, OLAP ETL — defaults to `2m`); `--steward-interval` controls the steward (cheap: local dolt queries + PID probes — defaults to `10s` for low ready→spawn latency). Pass them separately if you need to tune one without affecting the other.
+
 ## Kubernetes
 
 Spire runs on k8s for production workloads. The steward runs alongside the operator, and wizards run as one-shot pods handling all workload types (tasks, epics, reviews).

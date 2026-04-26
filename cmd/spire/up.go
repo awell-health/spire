@@ -29,6 +29,9 @@ var upCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("interval"); v != "" {
 			fullArgs = append(fullArgs, "--interval", v)
 		}
+		if v, _ := cmd.Flags().GetString("steward-interval"); v != "" {
+			fullArgs = append(fullArgs, "--steward-interval", v)
+		}
 		if noSteward, _ := cmd.Flags().GetBool("no-steward"); noSteward {
 			fullArgs = append(fullArgs, "--no-steward")
 		}
@@ -44,6 +47,7 @@ var upCmd = &cobra.Command{
 
 func init() {
 	upCmd.Flags().String("interval", "", "Daemon sync interval (e.g. 2m)")
+	upCmd.Flags().String("steward-interval", "", "Steward cycle interval (e.g. 10s)")
 	upCmd.Flags().Bool("no-steward", false, "Don't start the steward (sync-only/debug mode)")
 	upCmd.Flags().Bool("steward", false, "Deprecated: steward starts by default; use --no-steward to opt out")
 	_ = upCmd.Flags().MarkDeprecated("steward", "steward starts by default; use --no-steward to opt out")
@@ -53,18 +57,25 @@ func init() {
 
 // upOpts captures the parsed flags for `spire up`.
 type upOpts struct {
-	interval     string
-	startSteward bool
-	backendName  string
-	metricsPort  string
+	interval        string
+	stewardInterval string
+	startSteward    bool
+	backendName     string
+	metricsPort     string
 }
 
 // parseUpArgs parses the argv passed to cmdUp. The steward starts by default;
 // `--no-steward` opts out. `--steward` is accepted as a back-compat no-op.
+//
+// The daemon and steward have independent intervals: `--interval` controls the
+// daemon (heavy: dolt push/pull, Linear sync, OLAP ETL — 2m default), and
+// `--steward-interval` controls the steward (cheap: local dolt queries +
+// PID probes — 10s default for low ready→spawn latency).
 func parseUpArgs(args []string) (upOpts, error) {
 	opts := upOpts{
-		interval:     "2m",
-		startSteward: true,
+		interval:        "2m",
+		stewardInterval: "10s",
+		startSteward:    true,
 	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -74,6 +85,12 @@ func parseUpArgs(args []string) (upOpts, error) {
 			}
 			i++
 			opts.interval = args[i]
+		case "--steward-interval":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--steward-interval requires a value")
+			}
+			i++
+			opts.stewardInterval = args[i]
 		case "--steward":
 			// Back-compat no-op: the steward starts by default now.
 		case "--no-steward":
@@ -91,7 +108,7 @@ func parseUpArgs(args []string) (upOpts, error) {
 			i++
 			opts.metricsPort = args[i]
 		default:
-			return opts, fmt.Errorf("unknown flag: %s\nusage: spire up [--interval 2m] [--no-steward] [--backend process|docker|k8s] [--metrics-port 9090]", args[i])
+			return opts, fmt.Errorf("unknown flag: %s\nusage: spire up [--interval 2m] [--steward-interval 10s] [--no-steward] [--backend process|docker|k8s] [--metrics-port 9090]", args[i])
 		}
 	}
 	return opts, nil
@@ -103,6 +120,7 @@ func cmdUp(args []string) error {
 		return err
 	}
 	interval := opts.interval
+	stewardInterval := opts.stewardInterval
 	startSteward := opts.startSteward
 	backendName := opts.backendName
 	metricsPort := opts.metricsPort
@@ -398,7 +416,7 @@ func cmdUp(args []string) error {
 				os.Remove(stewardPIDPath())
 			}
 
-			stewardArgs := []string{"steward", "--interval", interval}
+			stewardArgs := []string{"steward", "--interval", stewardInterval}
 			if backendName != "" {
 				stewardArgs = append(stewardArgs, "--backend", backendName)
 			}
@@ -424,7 +442,7 @@ func cmdUp(args []string) error {
 			// Brief wait to confirm it stayed alive
 			time.Sleep(500 * time.Millisecond)
 			if processAlive(newPID) {
-				fmt.Printf("started (pid %d, interval %s)\n", newPID, interval)
+				fmt.Printf("started (pid %d, interval %s)\n", newPID, stewardInterval)
 			} else {
 				fmt.Printf("started but may have exited (pid %d)\n", newPID)
 			}

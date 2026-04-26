@@ -105,7 +105,8 @@ spire up
 
 This starts:
 - The Dolt SQL server (localhost:3307)
-- The sync daemon (pushes/pulls on a 2-minute interval when a remote is configured)
+- The sync daemon (pushes/pulls on a 2-minute interval when a remote is configured; tune with `--interval`)
+- The steward (10-second cycle for dispatching ready beads and lifecycle maintenance; tune with `--steward-interval`)
 
 Leave this running. Use `spire status` to check what's running. Use `spire shutdown` to stop everything.
 

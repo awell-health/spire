@@ -92,7 +92,7 @@ func busySet(agents []AgentInfo) map[string]bool {
 
 func cmdSteward(args []string) error {
 	// Parse flags — staleThreshold left at zero to detect "not overridden".
-	interval := 2 * time.Minute
+	interval := 10 * time.Second
 	var staleOverride time.Duration
 	once := false
 	dryRun := false
